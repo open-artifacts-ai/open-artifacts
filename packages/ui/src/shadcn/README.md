@@ -116,6 +116,13 @@ focus outline, and each overlay opened from the keyboard.
   row is `bg-brand-soft` with a 3px inset `--brand` bar on its first cell.
   Menu and select highlights use `--accent`, now `--oa-sunken`, plus the
   inset focus outline.
+- **Reduced motion (dialog, alert-dialog, dropdown-menu, select, tooltip,
+  sheet, sidebar):** every `animate-in`/`animate-out` class string adds
+  `motion-reduce:animate-none!` (important, so it beats the `data-[state]`
+  variants), and every transition that moves or resizes (sidebar width,
+  offset, rail, label, menu button, action; sheet) adds
+  `motion-reduce:transition-none`. Color-only transitions stay. Sonner's
+  toasts already turn motion off under `prefers-reduced-motion`.
 - **sidebar, sheet:** the focus rings (`ring-2 ring-sidebar-ring`, a box
   shadow) become the solid outline, inset in the sidebar. The active item is
   `bg-card` with a 1px inset `--input` ring (≥ 3:1) instead of
