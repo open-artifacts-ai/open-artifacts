@@ -35,6 +35,12 @@ export type AppVariables = {
   authMethod: AuthMethod | null;
   /** Session expiry (ms) for a cookie session; null otherwise. */
   sessionExp: number | null;
+  /**
+   * When this request's authorization began (ms): stamped by the policy gate
+   * before the session read, so a revocation written after any access read
+   * has revokedAt >= authzAt (UserPresence.touch on socket accept).
+   */
+  authzAt?: number;
 };
 export type AppEnv = { Bindings: Env; Variables: AppVariables };
 

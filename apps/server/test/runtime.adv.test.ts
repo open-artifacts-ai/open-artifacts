@@ -158,7 +158,11 @@ describe("B12 adversarial", () => {
   it("BREAK hostile client messages close the socket (subscribe-only)", async () => {
     const s = stubFor();
     const res = await s.fetch("http://do/s?collection=v", {
-      headers: { Upgrade: "websocket", "X-OA-Actor": "u:1" },
+      headers: {
+        Upgrade: "websocket",
+        "X-OA-Actor": "u:1",
+        "X-OA-Authz-At": String(Date.now()),
+      },
     });
     const ws = res.webSocket!;
     ws.accept();
@@ -180,7 +184,11 @@ describe("B12 adversarial", () => {
     for (let k = 0; k < 200; k++) {
       // Distinct signed-in actors: the 200-socket pool, under per-actor caps.
       const r = await s.fetch("http://do/s?collection=v", {
-        headers: { Upgrade: "websocket", "X-OA-Actor": `u:${k}` },
+        headers: {
+          Upgrade: "websocket",
+          "X-OA-Actor": `u:${k}`,
+          "X-OA-Authz-At": String(Date.now()),
+        },
       });
       const ws = r.webSocket!;
       ws.accept();
@@ -188,7 +196,11 @@ describe("B12 adversarial", () => {
         ws.addEventListener("message", (e) => msgs.push(e.data as string));
     }
     const over = await s.fetch("http://do/s?collection=v", {
-      headers: { Upgrade: "websocket", "X-OA-Actor": "u:999" },
+      headers: {
+        Upgrade: "websocket",
+        "X-OA-Actor": "u:999",
+        "X-OA-Authz-At": String(Date.now()),
+      },
     });
     expect(over.status).toBe(429);
     expect(await inDo(s, (_i, st) => st.getWebSockets("v").length)).toBe(200);

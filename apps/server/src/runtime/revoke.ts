@@ -1,6 +1,7 @@
 import type { Env } from "../env.js";
 import { logError } from "../log.js";
 import { type GoneReason, runtimeStub } from "./do.js";
+import { presenceStub } from "./presence.js";
 
 type Ctx = Pick<ExecutionContext, "waitUntil">;
 
@@ -31,4 +32,48 @@ export async function closeRuntimeSockets(
   });
   if (ctx) ctx.waitUntil(all);
   else await all;
+}
+
+/** Retries of a failed UserPresence.closeAll call inside revokeUserLive. */
+export const REVOKE_RETRIES = 3;
+/** Delay before the n-th retry (1-based): 50, 100, 200 ms. */
+export const revokeRetryMs = (n: number) => 50 * 2 ** (n - 1);
+
+/**
+ * Closes every live socket `userId` holds (data and events, 4403) after
+ * their access was cut: status change, membership or mapping narrowing,
+ * sync, member removal, transfer, customer mismatch. UserPresence sets
+ * revokedAt first, so a socket racing the revocation is refused too; failed
+ * closes are retried by its alarm. A failed closeAll call is retried up to
+ * REVOKE_RETRIES times (revokeRetryMs apart), each on a fresh stub. Runs in
+ * waitUntil when a context is given. Never throws.
+ */
+export async function revokeUserLive(
+  env: Pick<Env, "USER_PRESENCE">,
+  userId: string,
+  reason: string,
+  ctx?: Ctx,
+): Promise<void> {
+  const run = (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const p = presenceStub(env, userId);
+        if (p) await p.closeAll(reason);
+        return;
+      } catch (e) {
+        if (attempt >= REVOKE_RETRIES) throw e;
+        logError("revoke_user_live_retry", e, { attempt: attempt + 1 });
+        await new Promise((r) => setTimeout(r, revokeRetryMs(attempt + 1)));
+      }
+    }
+  })().catch((e) => logError("revoke_user_live_failed", e));
+  if (ctx) {
+    try {
+      ctx.waitUntil(run);
+      return;
+    } catch (e) {
+      logError("revoke_user_live_failed", e);
+    }
+  }
+  await run;
 }

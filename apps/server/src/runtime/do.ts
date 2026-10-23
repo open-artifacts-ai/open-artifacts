@@ -35,6 +35,7 @@ import {
   THUMB,
   type ThumbResult,
 } from "../services/thumbs.js";
+import { presenceStub } from "./presence.js";
 
 // Errors cross the RPC boundary as plain Error (subclass + fields are lost), so the
 // code rides in the message: "oa:<code>:<message>". B13 maps it back with toRuntimeApiError.
@@ -140,6 +141,12 @@ export const THUMB_RETRY_MS = 60_000;
 export const THUMB_LAUNCH_BACKOFF_MS = 3_600_000;
 /** Header carrying the subscriber's actor from the route to fetch. */
 export const ACTOR_HEADER = "X-OA-Actor";
+/**
+ * Header carrying when the route's authorization ran (ms), required for
+ * signed-in ("u:") actors: the accept path awaits UserPresence.touch with it,
+ * and closes the socket 4403 when a revocation started at or after it.
+ */
+export const AUTHZ_AT_HEADER = "X-OA-Authz-At";
 /**
  * where/orderBy queries scan and json-decode every doc in the collection, so they are
  * refused once its tracked byte total (totals.cols[collection]) exceeds this. A ~50 MB scan
@@ -324,7 +331,9 @@ type SocketMeta = { t: number; named?: boolean };
  * R.events socket tags. Not DataNames (NAME_RE has no "~"), so they never
  * collide with a data-subscribe collection tag. Every events socket has
  * EVENTS_TAG, one budget-pool tag (signed-in or ip) and one viewer-class tag
- * (named or anon); its per-actor tag is "ea:{actor}" (data sockets: "a:").
+ * (named or anon); its per-actor cap tag is "ea:{actor}". Data and events
+ * sockets alike also carry "a:{actor}" (closeActor); a data socket's
+ * per-actor cap counts its "a:" sockets that are not events sockets.
  */
 const EVENTS_TAG = "~ev";
 const EVENTS_NAMED_TAG = "~ev:named";
@@ -1067,6 +1076,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const actor = req.headers.get(ACTOR_HEADER);
     if (actor !== null && !ACTOR_RE.test(actor))
       return new Response("Invalid actor", { status: 400 });
+    // Signed-in sockets are recorded in the user's presence (revocation).
+    const userId = actor?.startsWith("u:") ? actor.slice(2) : null;
+    const authzAt = Number(req.headers.get(AUTHZ_AT_HEADER) ?? Number.NaN);
+    if (userId !== null && (!Number.isSafeInteger(authzAt) || authzAt < 1))
+      return new Response("Missing authorization time", { status: 400 });
     let tags: string[];
     let hello: string | null = null;
     let named: boolean | undefined;
@@ -1095,7 +1109,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
         (anon ? MAX_ANON_EVENTS_PER_ACTOR : MAX_SOCKETS_PER_ACTOR)
       )
         return new Response("Too many subscriptions", { status: 429 });
-      tags.push(tag);
+      tags.push(tag, `a:${actor}`);
       hello = `{"type":"hello","version":${v}}`;
     } else {
       const r = DataNameSchema.safeParse(url.searchParams.get("collection"));
@@ -1114,10 +1128,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
       )
         return new Response("Too many subscribers", { status: 429 });
       const tag = `a:${actor}`;
-      if (
-        this.ctx.getWebSockets(tag).length >=
-        (anon ? MAX_ANON_SOCKETS_PER_ACTOR : MAX_SOCKETS_PER_ACTOR)
-      )
+      // Events sockets also carry "a:" (closeActor): count data sockets only.
+      const held = this.ctx
+        .getWebSockets(tag)
+        .filter((ws) => !this.ctx.getTags(ws).includes(EVENTS_TAG)).length;
+      if (held >= (anon ? MAX_ANON_SOCKETS_PER_ACTOR : MAX_SOCKETS_PER_ACTOR))
         return new Response("Too many subscriptions", { status: 429 });
       tags = [r.data, pool, tag];
     }
@@ -1127,9 +1142,47 @@ export class ArtifactRuntime extends DurableObject<Env> {
     pair[1].serializeAttachment(
       (named === undefined ? { t } : { t, named }) satisfies SocketMeta,
     );
-    if (hello) pair[1].send(hello);
     await this.armAt(t + SOCKET_TTL_MS);
+    // Accepted (and tagged) before touch, so a closeActor that runs while
+    // touch is in flight finds it; a touch after the revocation started is
+    // refused, and the socket closes here.
+    if (userId !== null && !(await this.touchPresence(userId, authzAt))) {
+      try {
+        pair[1].close(4403, "access revoked");
+      } catch {
+        // already closed
+      }
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+    if (hello) pair[1].send(hello);
     return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  /**
+   * Records the socket in the user's presence. False when a revocation
+   * started at or after `authzAt`, or presence failed (fail closed). An
+   * install without the USER_PRESENCE binding keeps the 10 minute socket
+   * TTL as its only ceiling (logged).
+   */
+  private async touchPresence(
+    userId: string,
+    authzAt: number,
+  ): Promise<boolean> {
+    const p = presenceStub(this.env, userId);
+    if (!p) return true;
+    try {
+      return (await p.touch(this.artifactId(), authzAt)).ok;
+    } catch (e) {
+      logError("presence_touch_failed", e);
+      return false;
+    }
+  }
+
+  /** The artifact id this DO serves: the name it was addressed by. */
+  private artifactId(): string {
+    const name = this.ctx.id.name;
+    if (!name) throw new Error("ArtifactRuntime needs a named id");
+    return name;
   }
 
   /** Moves the one alarm earlier to `t` (never later): it serves every kind of work. */
@@ -1495,6 +1548,31 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return all.length;
   }
 
+  /**
+   * Closes `actor`'s data and events sockets (tag "a:{actor}") with 4403
+   * after their access was revoked (UserPresence.closeAll); events sockets
+   * get a `gone` frame first. Returns the number closed. Other actors'
+   * sockets stay open.
+   */
+  closeActor(actor: string, reason: string): number {
+    const a = actorOf(actor);
+    const why = String(reason).slice(0, 120);
+    // "ea:" too: events sockets accepted before "a:" was added to them.
+    const socks = new Set([
+      ...this.ctx.getWebSockets(`a:${a}`),
+      ...this.ctx.getWebSockets(`ea:${a}`),
+    ]);
+    for (const ws of socks) {
+      try {
+        if (this.ctx.getTags(ws).includes(EVENTS_TAG)) ws.send(GONE_CHANGED);
+        ws.close(4403, why);
+      } catch {
+        // already closed
+      }
+    }
+    return socks.size;
+  }
+
   /** Wipes all data (called by purge). The schema is recreated lazily on next use. */
   async destroy(): Promise<void> {
     for (const ws of this.ctx.getWebSockets()) {
@@ -1527,6 +1605,7 @@ type RpcMethods =
   | "storageSetRaw"
   | "replaceRaw"
   | "closeSockets"
+  | "closeActor"
   | "scheduleIndex"
   | "pendingIndex"
   | "storageDelete"

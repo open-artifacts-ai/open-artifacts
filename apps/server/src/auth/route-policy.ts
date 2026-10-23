@@ -301,6 +301,8 @@ export const enforcePolicy = (
   table: Readonly<Record<string, Policy>> = ROUTE_POLICY,
 ): MiddlewareHandler<AppEnv> =>
   mw(async (c, next) => {
+    // Before any session or access read (live socket revocation).
+    c.set("authzAt", Date.now());
     const t = targetRoute(c);
     // No answering route: the app's notFound handler answers 404.
     if (!t) return next();
