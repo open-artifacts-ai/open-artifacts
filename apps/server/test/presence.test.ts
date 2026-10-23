@@ -19,7 +19,9 @@ import {
   type UserPresence,
 } from "../src/runtime/presence.js";
 import { REVOKE_RETRIES, revokeUserLive } from "../src/runtime/revoke.js";
-import { publish } from "../src/services/artifacts.js";
+import { patch, publish } from "../src/services/artifacts.js";
+import { patchMember, removeMember } from "../src/services/members.js";
+import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 
@@ -134,13 +136,18 @@ describe("UserPresence", () => {
     await revokeUserLive(env, uid, "removed");
     const revokedAt = await inPresence(uid, (p) => p.revokedAt());
     expect(revokedAt).not.toBeNull();
-    const before = await direct(art, uid, (revokedAt as number) - 5);
-    const same = await direct(art, uid, revokedAt as number);
+    const at = revokedAt as number;
+    const before = await direct(art, uid, at - 5);
+    const same = await direct(art, uid, at);
+    // The skew-margin boundary: revokedAt + 2000 is refused, + 2001 is not.
+    expect(SKEW_MS).toBe(2000);
+    const edge = await direct(art, uid, at + 2000);
     expect(await before.closed).toBe(4403);
     expect(await same.closed).toBe(4403);
+    expect(await edge.closed).toBe(4403);
     // Authorized after the revocation plus the skew margin (a reactivated
     // user): stays open.
-    const after = await direct(art, uid, (revokedAt as number) + SKEW_MS + 1);
+    const after = await direct(art, uid, at + 2001);
     await tick();
     expect(after.isOpen()).toBe(true);
     after.ws.close();
@@ -233,7 +240,43 @@ describe("UserPresence", () => {
     expect(calls).toBe(REVOKE_RETRIES + 1);
   });
 
-  it("presence_unbound is logged at most once per isolate", async () => {
+  it("closeAll failing after the retries alerts and still writes revokedAt", async () => {
+    let marked = 0;
+    const down = {
+      USER_PRESENCE: {
+        idFromName: (n: string) => n,
+        get: () => ({
+          closeAll: async () => {
+            throw new Error("down");
+          },
+          markRevoked: async () => ++marked,
+        }),
+      } as never,
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await revokeUserLive(down, "u-down", "x");
+      expect(marked).toBe(1);
+      const alerts = warn.mock.calls.filter((c) =>
+        String(c[0]).includes("presence_revoke_failed"),
+      );
+      expect(alerts).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      err.mockRestore();
+    }
+  });
+
+  it("markRevoked alone refuses later accepts", async () => {
+    const uid = `pr-mark-${newId()}`;
+    const art = await pub();
+    const at = await inPresence(uid, (p) => p.markRevoked());
+    const s = await direct(art, uid, at - 1);
+    expect(await s.closed).toBe(4403);
+  });
+
+  it("revokeUserLive logs presence_unbound on every call", async () => {
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       await revokeUserLive({ USER_PRESENCE: undefined }, "u1", "x");
@@ -241,7 +284,7 @@ describe("UserPresence", () => {
       const n = spy.mock.calls.filter((c) =>
         String(c[0]).includes("presence_unbound"),
       ).length;
-      expect(n).toBeLessThanOrEqual(1);
+      expect(n).toBe(2);
     } finally {
       spy.mockRestore();
     }
@@ -269,6 +312,80 @@ describe("UserPresence", () => {
     expect(await data.closed).toBe(4403);
     expect(await events.closed).toBe(4403);
   }, 20_000);
+
+  it("removeMember closes the member's sockets on team artifacts", async () => {
+    await mk("pr-instance-owner", "owner"); // removeMember reassigns to them
+    const u = await mk(`pr-rm-${newId().slice(0, 4)}`, "member");
+    const art = await pub();
+    const ws = await openSockets(u, art);
+    await removeMember(env, u.userId);
+    expect(await ws.data.closed).toBe(4403);
+    expect(await ws.events.closed).toBe(4403);
+  });
+
+  it("a role change closes the member's sockets", async () => {
+    const u = await mk(`pr-role-${newId().slice(0, 4)}`, "member");
+    const art = await pub();
+    const ws = await openSockets(u, art);
+    await patchMember(env, u.userId, { role: "admin" });
+    expect(await ws.data.closed).toBe(4403);
+    expect(await ws.events.closed).toBe(4403);
+  });
+
+  it("a guest deactivated by their last unshare is revoked in presence", async () => {
+    const g = await mk(`pr-g-${newId().slice(0, 4)}`, "guest");
+    const id = (
+      await publish(
+        env,
+        owner.member,
+        {
+          title: "g",
+          format: "html",
+          content: "<p>g</p>",
+          visibility: "private",
+          capabilities: { db: true, viewer: true, storage: true },
+        } as never,
+        null,
+        undefined,
+        "create",
+      )
+    ).id;
+    await putShare(env, owner.member, id, { email: g.email, role: "viewer" });
+    await deleteShare(env, owner.member, id, g.email);
+    expect(await inPresence(g.userId, (p) => p.revokedAt())).toEqual(
+      expect.any(Number),
+    );
+  });
+
+  it("an artifact's access change refuses sockets authorized before it (any actor)", async () => {
+    const art = await pub();
+    const before = Date.now();
+    await patch(env, owner.member, art, { visibility: "private" });
+    const at = await runInDurableObject(
+      runtimeStub(env, art) as never,
+      (i: { accessChangedAt(): number | null }) => i.accessChangedAt(),
+    );
+    expect(at).toEqual(expect.any(Number));
+    const user = await direct(art, `pr-v-${newId()}`, before);
+    expect(await user.closed).toBe(4403);
+    const r = await runtimeStub(env, art).fetch(
+      "https://runtime.invalid/subscribe?collection=c",
+      {
+        headers: {
+          Upgrade: "websocket",
+          [ACTOR_HEADER]: "ip:198.51.100.77",
+          [AUTHZ_AT_HEADER]: String(before),
+        },
+      },
+    );
+    if (!r.webSocket) throw new Error(`no websocket (${r.status})`);
+    expect(await wrap(r.webSocket).closed).toBe(4403);
+    // Authorized after the change plus the skew margin: accepted.
+    const later = await direct(art, `pr-v2-${newId()}`, (at as number) + 2001);
+    await tick();
+    expect(later.isOpen()).toBe(true);
+    later.ws.close();
+  });
 
   it("a signed-in socket without an authorization time is refused", async () => {
     const art = await pub();

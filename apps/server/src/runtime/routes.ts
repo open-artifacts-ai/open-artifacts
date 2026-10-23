@@ -85,7 +85,12 @@ type Gate = {
  * the session read, so a revocation written after any access read has
  * revokedAt >= authzAt and a socket it raced is refused (presence).
  */
-const authzAtOf = (c: C): number => c.get("authzAt") ?? Date.now();
+function authzAtOf(c: C): number {
+  const t = c.get("authzAt");
+  // No fallback: a later stamp could miss a revocation that raced the read.
+  if (t === undefined) throw new Error("authzAt not stamped (enforcePolicy)");
+  return t;
+}
 
 const NO_CAPS: Capabilities = { db: false, viewer: false, storage: false };
 /** Declared capabilities; malformed JSON means none (capability_denied, never 500). */

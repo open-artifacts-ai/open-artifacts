@@ -35,7 +35,7 @@ import {
   THUMB,
   type ThumbResult,
 } from "../services/thumbs.js";
-import { presenceStub } from "./presence.js";
+import { presenceStub, SKEW_MS } from "./presence.js";
 
 // Errors cross the RPC boundary as plain Error (subclass + fields are lost), so the
 // code rides in the message: "oa:<code>:<message>". B13 maps it back with toRuntimeApiError.
@@ -318,7 +318,13 @@ create table if not exists thumb_job (
   version integer not null, attempts integer not null, due integer not null,
   state text not null
 );
+create table if not exists access_change (
+  id integer primary key check (id = 1), at integer not null
+);
 `;
+
+/** presence_unbound is logged once per isolate on the accept path. */
+let unboundLogged = false;
 
 type SqlParam = string | number | null;
 /**
@@ -1078,8 +1084,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
       return new Response("Invalid actor", { status: 400 });
     // Signed-in sockets are recorded in the user's presence (revocation).
     const userId = actor?.startsWith("u:") ? actor.slice(2) : null;
-    const authzAt = Number(req.headers.get(AUTHZ_AT_HEADER) ?? Number.NaN);
-    if (userId !== null && (!Number.isSafeInteger(authzAt) || authzAt < 1))
+    const rawAt = req.headers.get(AUTHZ_AT_HEADER);
+    const authzAt = Number(rawAt ?? Number.NaN);
+    const validAt = Number.isSafeInteger(authzAt) && authzAt >= 1;
+    // Required for signed-in actors; the route sends it for every actor.
+    if ((userId !== null || rawAt !== null) && !validAt)
       return new Response("Missing authorization time", { status: 400 });
     let tags: string[];
     let hello: string | null = null;
@@ -1143,10 +1152,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
       (named === undefined ? { t } : { t, named }) satisfies SocketMeta,
     );
     await this.armAt(t + SOCKET_TTL_MS);
+    // Authorized before this artifact's last access change (closeSockets):
+    // the check may have seen the old access, so refuse (any actor).
+    const changed = this.accessChangedAt();
+    const stale = validAt && changed !== null && authzAt <= changed + SKEW_MS;
     // Accepted (and tagged) before touch, so a closeActor that runs while
     // touch is in flight finds it; a touch after the revocation started is
     // refused, and the socket closes here.
-    if (userId !== null && !(await this.touchPresence(userId, authzAt))) {
+    if (
+      stale ||
+      (userId !== null && !(await this.touchPresence(userId, authzAt)))
+    ) {
       try {
         pair[1].close(4403, "access revoked");
       } catch {
@@ -1169,13 +1185,28 @@ export class ArtifactRuntime extends DurableObject<Env> {
     authzAt: number,
   ): Promise<boolean> {
     const p = presenceStub(this.env, userId);
-    if (!p) return true;
+    if (!p) {
+      if (!unboundLogged) {
+        unboundLogged = true;
+        logError("presence_unbound", new Error("USER_PRESENCE is not bound"));
+      }
+      return true;
+    }
     try {
       return (await p.touch(this.artifactId(), authzAt)).ok;
     } catch (e) {
       logError("presence_touch_failed", e);
       return false;
     }
+  }
+
+  /** When closeSockets last ran (ms; an access change), or null. */
+  accessChangedAt(): number | null {
+    return (
+      this.sql
+        .exec<{ at: number }>("select at from access_change where id = 1")
+        .toArray()[0]?.at ?? null
+    );
   }
 
   /** The artifact id this DO serves: the name it was addressed by. */
@@ -1522,13 +1553,22 @@ export class ArtifactRuntime extends DurableObject<Env> {
 
   /**
    * Closes every subscriber socket with 4403 (access may have changed: share
-   * revoked, visibility changed, artifact deleted). Clients reconnect through
+   * revoked, visibility changed, artifact deleted), and records the change
+   * time, so a socket authorized before it is refused on accept (fetch).
+   * Clients reconnect through
    * the shell, which re-checks access. R.events sockets get a `gone` frame
    * first: access isn't re-evaluated per socket here, so every one closes
    * and the client's reconnect re-checks it (404 = really gone). `gone` is
    * the frame's reason: "deleted" for a soft delete, else "changed".
    */
   closeSockets(reason: string, gone: GoneReason = "changed"): number {
+    // Recorded first: a socket whose access check ran before this change
+    // (authzAt <= at + SKEW_MS) and reaches fetch after it is refused there.
+    this.sql.exec(
+      `insert into access_change (id, at) values (1, ?)
+       on conflict (id) do update set at = max(at, excluded.at)`,
+      this.now(),
+    );
     const frame = gone === "deleted" ? GONE_DELETED : GONE_CHANGED;
     for (const ws of this.ctx.getWebSockets(EVENTS_TAG)) {
       try {

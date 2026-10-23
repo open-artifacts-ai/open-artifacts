@@ -8,6 +8,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
+import { revokeUserLive } from "../runtime/revoke.js";
 import { audit, signInAudit, userActor } from "./audit.js";
 import { googleLinkStmts, toMember } from "./users.js";
 
@@ -234,6 +235,7 @@ export async function resetIdentity(
   env: Env,
   actor: Member,
   userId: string,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
   if (!orgCan(actor, "members.manage"))
     throw new ApiError("not_found", "Not found");
@@ -286,4 +288,6 @@ export async function resetIdentity(
     ).bind(userId, null, owner),
   ]);
   if (!results[3]?.results.length) throw new ApiError("not_found", "Not found");
+  // Sessions and tokens are gone: their live sockets close now (P3 T7).
+  await revokeUserLive(env, userId, "identity reset", ctx);
 }

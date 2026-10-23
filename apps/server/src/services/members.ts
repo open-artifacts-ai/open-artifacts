@@ -27,7 +27,11 @@ import { inviteEmail, senderName } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
-import { closeRuntimeSockets, MAX_CLOSE } from "../runtime/revoke.js";
+import {
+  closeRuntimeSockets,
+  MAX_CLOSE,
+  revokeUserLive,
+} from "../runtime/revoke.js";
 import { insertUser, toMember } from "./users.js";
 
 export async function listMembers(env: Env): Promise<Member[]> {
@@ -91,6 +95,7 @@ export async function patchMember(
   env: Env,
   id: string,
   patch: MemberPatch,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<Member> {
   const row = await getRow(env, id);
   if (row.role === "owner")
@@ -103,6 +108,9 @@ export async function patchMember(
     .where(eq(users.id, id))
     .returning();
   if (!out) throw new ApiError("not_found", "Not found");
+  // Sessions ended above; live sockets were authorized under the old role:
+  // close them too (P3 T7).
+  await revokeUserLive(env, id, "role changed", ctx);
   // Guests can't connect agents: a demotion revokes their PATs and OAuth grants.
   // (MemberPatch allows only admin|member today; this guards a wider contract.)
   const role: string = patch.role;
@@ -177,12 +185,10 @@ export async function removeMember(
     db.delete(identities).where(eq(identities.userId, id)),
     db.delete(users).where(eq(users.id, id)),
   ]);
-  // Live sockets the member opened via shares stay open otherwise (best effort, capped).
-  // Accepted ceiling: their sockets on TEAM artifacts (data-subscribe and
-  // R.events, which may carry publisher names) are not closed here, since that
-  // would be one DO RPC per team artifact. They close at the socket TTL
-  // rotation (4408, at most LIMITS.signedUrlTtlSec = 10 min), and the
-  // reconnect is refused. See docs/security/security.md.
+  // Every live socket the member holds (team artifacts included) closes
+  // through their UserPresence (P3 T7); it never throws.
+  await revokeUserLive(env, id, "member removed", ctx);
+  // Belt and braces for the artifacts shared with them (best effort, capped).
   const shared = await db
     .select({ id: shares.artifactId })
     .from(shares)

@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { Member } from "@oa/shared";
 import { describe, expect, it } from "vitest";
@@ -349,6 +350,19 @@ describe("resetIdentity", () => {
     expect((await rowOf(uid)).e).toBe(1);
     expect(await pats(uid)).toBe(0);
     expect(await grants(uid)).toBe(0);
+  });
+
+  it("revokes the user's live sockets (UserPresence revokedAt set, P3 T7)", async () => {
+    const email = uniq("live");
+    const uid = await seedUser(email, "member", { googleSub: `L-${email}` });
+    await resetIdentity(env, admin, uid);
+    const ns = env.USER_PRESENCE;
+    if (!ns) throw new Error("USER_PRESENCE unbound");
+    const at = await runInDurableObject(
+      ns.get(ns.idFromName(uid)) as never,
+      (p: { revokedAt(): number | null }) => p.revokedAt(),
+    );
+    expect(at).toEqual(expect.any(Number));
   });
 
   it("a grant (KV) failure fails the reset before D1 changes; a retry completes it", async () => {
