@@ -10,6 +10,7 @@ import type { AppType } from "../src/routes/index.js";
 import { mountRoutes } from "../src/routes/index.js";
 import {
   ACTOR_HEADER,
+  type ArtifactRuntime,
   AUTHZ_AT_HEADER,
   runtimeStub,
 } from "../src/runtime/do.js";
@@ -362,8 +363,8 @@ describe("UserPresence", () => {
     const before = Date.now();
     await patch(env, owner.member, art, { visibility: "private" });
     const at = await runInDurableObject(
-      runtimeStub(env, art) as never,
-      (i: { accessChangedAt(): number | null }) => i.accessChangedAt(),
+      runtimeStub(env, art) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (i) => i.accessChangedAt(),
     );
     expect(at).toEqual(expect.any(Number));
     const user = await direct(art, `pr-v-${newId()}`, before);

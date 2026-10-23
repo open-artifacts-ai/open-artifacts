@@ -7,6 +7,7 @@ import { createPat } from "../src/auth/pat.js";
 import type { VerifiedIdentity } from "../src/auth/providers/types.js";
 import type { Env } from "../src/env.js";
 import { oauthApi } from "../src/mcp/oauth-api.js";
+import type { UserPresence } from "../src/runtime/presence.js";
 import {
   admit,
   codeEligibility,
@@ -359,8 +360,8 @@ describe("resetIdentity", () => {
     const ns = env.USER_PRESENCE;
     if (!ns) throw new Error("USER_PRESENCE unbound");
     const at = await runInDurableObject(
-      ns.get(ns.idFromName(uid)) as never,
-      (p: { revokedAt(): number | null }) => p.revokedAt(),
+      ns.get(ns.idFromName(uid)) as unknown as DurableObjectStub<UserPresence>,
+      (p) => p.revokedAt(),
     );
     expect(at).toEqual(expect.any(Number));
   });
