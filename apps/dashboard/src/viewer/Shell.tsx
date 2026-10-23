@@ -1,5 +1,5 @@
 import { type ArtifactSummary, type Me, viewerPath } from "@oa/shared";
-import { Button } from "@oa/ui";
+import { Button } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   type ReactNode,
@@ -52,7 +52,11 @@ function ErrorPanel({ onRetry }: { onRetry?: () => void }) {
       <section className="oa-panel">
         <h1>Couldn't load this artifact</h1>
         <p>Something went wrong. Try again in a moment.</p>
-        {onRetry && <Button onClick={onRetry}>Retry</Button>}
+        {onRetry && (
+          <Button variant="outline" onClick={onRetry}>
+            Retry
+          </Button>
+        )}
       </section>
     </div>
   );

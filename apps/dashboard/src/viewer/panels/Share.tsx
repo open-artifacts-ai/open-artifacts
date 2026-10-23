@@ -6,7 +6,7 @@ import {
   type Visibility,
   viewerPath,
 } from "@oa/shared";
-import { Avatar, Banner, Checkbox, displayName, VisibilityBadge } from "@oa/ui";
+import { Banner, Checkbox, displayName, VisibilityBadge } from "@oa/ui";
 import {
   Button,
   Input,
@@ -33,6 +33,7 @@ import { useCan } from "../../auth/permissions";
 import { useMe } from "../../auth/useMe";
 import { CopyLink } from "../../layout/CopyLink";
 import { Modal } from "../../layout/Modal";
+import { PersonAvatar } from "../../layout/PersonAvatar";
 import { toast } from "../../layout/toast";
 import { visibilityHint } from "../../spaces/SpaceMarker";
 
@@ -385,7 +386,10 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
         <h3 className={H3}>People</h3>
         <ul className="flex flex-col gap-[var(--oa-space-2)] p-0">
           <li className={PERSON}>
-            <Avatar name={artifact.owner.name} email={artifact.owner.email} />
+            <PersonAvatar
+              name={artifact.owner.name}
+              email={artifact.owner.email}
+            />
             <span className={NAME} title={displayName(artifact.owner)}>
               {displayName(artifact.owner)}
             </span>
@@ -393,7 +397,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           </li>
           {(shares.data ?? []).map((s) => (
             <li key={s.email} className={PERSON}>
-              <Avatar name={null} email={s.email} />
+              <PersonAvatar name={null} email={s.email} />
               <span className={NAME} title={s.email}>
                 {s.email}
               </span>

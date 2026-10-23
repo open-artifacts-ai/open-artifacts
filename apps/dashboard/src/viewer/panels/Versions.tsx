@@ -4,7 +4,7 @@ import {
   type VersionInfo,
   viewerPath,
 } from "@oa/shared";
-import { Button, Dialog, displayName } from "@oa/ui";
+import { displayName } from "@oa/ui";
 import { Input, Button as ShButton, Skeleton } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
@@ -16,6 +16,7 @@ import {
 } from "../../api/queries";
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { useCan } from "../../auth/permissions";
+import { Modal } from "../../layout/Modal";
 import { toast } from "../../layout/toast";
 import { AppLink } from "../../library/AppLink";
 import { useSentinel } from "../../library/useInfinite";
@@ -390,19 +391,20 @@ export function Versions({
           </div>
         )}
       </div>
-      <Dialog
+      <Modal
         open={target !== null}
-        onOpenChange={(o) => !o && setTarget(null)}
+        onClose={() => setTarget(null)}
         title={`Restore v${target ?? ""}?`}
         description="This publishes a new version with the contents of the selected one."
         footer={
           <>
-            <Button variant="ghost" onClick={() => setTarget(null)}>
+            <ShButton variant="ghost" onClick={() => setTarget(null)}>
               Cancel
-            </Button>
-            <Button
-              variant="primary"
-              loading={restore.isPending}
+            </ShButton>
+            <ShButton
+              variant="default"
+              disabled={restore.isPending}
+              aria-busy={restore.isPending}
               onClick={() =>
                 target !== null &&
                 once((done) =>
@@ -428,7 +430,7 @@ export function Versions({
               }
             >
               Restore version
-            </Button>
+            </ShButton>
           </>
         }
       />

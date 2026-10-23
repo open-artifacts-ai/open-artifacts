@@ -1,5 +1,5 @@
 import { type ArtifactSummary, AUTH, R, viewerPath } from "@oa/shared";
-import { Button, Dialog, FormatIcon } from "@oa/ui";
+import { FormatIcon } from "@oa/ui";
 import {
   Badge,
   DropdownMenu,
@@ -26,6 +26,7 @@ import {
   useVersionInfo,
 } from "../api/queries";
 import { accessLabel, useCan, useHosted } from "../auth/permissions";
+import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
 import { VersionsDot } from "./LiveChip";
 import { VERSIONS_PANEL_ID } from "./panels/Versions";
@@ -375,19 +376,20 @@ export function TitleBar({
           </ShButton>
         )}
       </div>
-      <Dialog
+      <Modal
         open={confirm}
-        onOpenChange={setConfirm}
+        onClose={() => setConfirm(false)}
         title="Delete artifact?"
         description={`"${artifact.title}" will be recoverable for 30 days.`}
         footer={
           <>
-            <Button variant="ghost" onClick={() => setConfirm(false)}>
+            <ShButton variant="ghost" onClick={() => setConfirm(false)}>
               Cancel
-            </Button>
-            <Button
-              variant="danger"
-              loading={del.isPending}
+            </ShButton>
+            <ShButton
+              variant="destructive"
+              disabled={del.isPending}
+              aria-busy={del.isPending}
               onClick={() => {
                 if (deleting.current) return;
                 deleting.current = true;
@@ -405,7 +407,7 @@ export function TitleBar({
               }}
             >
               Delete
-            </Button>
+            </ShButton>
           </>
         }
       />
