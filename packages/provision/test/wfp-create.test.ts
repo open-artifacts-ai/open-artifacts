@@ -38,6 +38,7 @@ import {
   type Env,
   hosts as hostsOf0,
   platformNames,
+  registryKey,
 } from "../src/names.js";
 import { canonicalJson, inputsHash } from "../src/platform.js";
 import {
@@ -963,7 +964,9 @@ describe("WfpProvisioner.create", () => {
       await fails(s.p.create(input()));
       const [row1] = s.rows();
       const reg = () =>
-        JSON.parse(s.fake.kvValues(s.regId).get(row1.id) as string);
+        JSON.parse(
+          s.fake.kvValues(s.regId).get(registryKey(row1.id)) as string,
+        );
       expect(reg().keys).toHaveLength(1);
       expect(row1.broker_kid).toBeNull();
       const before = regPuts(s).length;
@@ -1011,8 +1014,9 @@ describe("WfpProvisioner.create", () => {
       const s = setup({ brokerEnabled: true });
       const inst = await s.p.create(input());
       const reg = s.fake.kvValues(s.regId);
-      expect(reg.size).toBe(1);
-      const raw = reg.get(inst.id) as string;
+      // The key the auth broker reads (apps/auth-broker/src/registry.ts).
+      expect([...reg.keys()]).toEqual([`install:${inst.id}`]);
+      const raw = reg.get(registryKey(inst.id)) as string;
       const entry = JSON.parse(raw);
       expect(Object.keys(entry).sort()).toEqual([
         "installId",
