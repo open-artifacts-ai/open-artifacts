@@ -63,6 +63,11 @@ export type AuthEvent =
   | { evt: "directory_sync_failed" }
   /** revokeUserLive could not close a user's live sockets (P3 T7): alert. */
   | { evt: "presence_revoke_failed"; uid: string }
+  /**
+   * revokeUsersLive hit its per-invocation cap (P3 T9): alert. The users past
+   * it keep open sockets until the socket TTL (refused on reconnect).
+   */
+  | { evt: "revoke_fanout_truncated"; total: number; cap: number }
   | { evt: "email_drift"; outcome: "kept" };
 
 /** Letters and underscores only: an enum or error code, never an address, URL or token. */

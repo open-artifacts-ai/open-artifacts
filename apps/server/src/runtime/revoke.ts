@@ -1,3 +1,4 @@
+import { planOf } from "@oa/shared";
 import { logAuth } from "../auth/audit.js";
 import type { Env } from "../env.js";
 import { logError } from "../log.js";
@@ -95,22 +96,41 @@ export async function revokeUserLive(
 export const REVOKE_PAGE = 50;
 
 /**
+ * Most users one revokeUsersLive call revokes, per plan. Each user is one
+ * UserPresence call (more on a retry: up to REVOKE_RETRIES more plus
+ * markRevoked), and every call counts toward the invocation's subrequest
+ * limit (Workers Free 50, Paid 1000 by default), alongside the request's own
+ * D1 and DO calls. The cap keeps half the limit, after a reserve for the
+ * request, for retries: Free (50 - 10) / 2 = 20, Paid (1000 - 100) / 2 = 450.
+ */
+export const REVOKE_FANOUT_CAP = { free: 20, paid: 450 } as const;
+
+export const revokeFanoutCap = (env: Pick<Env, "PLAN">): number =>
+  REVOKE_FANOUT_CAP[planOf(env.PLAN)];
+
+/**
  * revokeUserLive for many users after a space-wide narrowing (a mapping
  * removed or lowered, allMembersRole lowered, a restricted group added):
- * pages of REVOKE_PAGE concurrent calls, one page after another, with no
- * cap. Runs in waitUntil when a context is given, so the response never
- * waits on the fan-out (the D1 change already refuses new requests); each
- * user's DO call counts toward the invocation's subrequest limit. Never
- * throws.
+ * pages of REVOKE_PAGE concurrent calls, one page after another, up to
+ * revokeFanoutCap(env) users. Past the cap, an alert-level
+ * `revoke_fanout_truncated` is logged and the rest are not signalled: the D1
+ * change already refuses their next request and reconnect, and their open
+ * sockets end at the socket TTL (10 minutes) until P3 T13's DirectorySync
+ * queue takes the fan-out. Runs in waitUntil when a context is given, so
+ * the response never waits on it. Never throws.
  */
 export async function revokeUsersLive(
-  env: Pick<Env, "USER_PRESENCE">,
+  env: Pick<Env, "USER_PRESENCE" | "PLAN">,
   userIds: readonly string[],
   reason: string,
   ctx?: Ctx,
 ): Promise<void> {
-  const ids = [...new Set(userIds)];
-  if (!ids.length) return;
+  const all = [...new Set(userIds)];
+  if (!all.length) return;
+  const cap = revokeFanoutCap(env);
+  if (all.length > cap)
+    logAuth({ evt: "revoke_fanout_truncated", total: all.length, cap });
+  const ids = all.slice(0, cap);
   const run = (async () => {
     for (let i = 0; i < ids.length; i += REVOKE_PAGE)
       await Promise.all(

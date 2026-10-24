@@ -330,8 +330,11 @@ export async function createSpace(
 }
 
 // Every active member allMembersRole reaches (decide: team roles, uncapped).
+// Most recently seen first: past revokeUsersLive's cap, the ones most likely
+// to hold a socket are signalled.
 const ALL_MEMBERS = `select id from users where status = 'active'
-  and role in ('owner', 'admin', 'member') and restricted_manual = 0 and restricted_sync = 0`;
+  and role in ('owner', 'admin', 'member') and restricted_manual = 0 and restricted_sync = 0
+  order by last_seen_at desc`;
 
 /**
  * PATCH R.space(id). name and publicLinks: the space's managers and org
@@ -914,8 +917,9 @@ const RESYNC_INSERT = `insert into space_members (space_id, user_id, role, sourc
   from directory_members dm join group_mappings gm on gm.group_id = dm.group_id and gm.space_id = ?1
   where dm.user_id in (select user_id from directory_members where group_id = ?2)
   group by dm.user_id`;
-const GROUP_MEMBERS =
-  "select user_id as id from directory_members where group_id = ?";
+// Active members only (the others hold no socket), most recently seen first.
+const GROUP_MEMBERS = `select u.id from directory_members dm join users u on u.id = dm.user_id
+  where dm.group_id = ? and u.status = 'active' order by u.last_seen_at desc`;
 const GROUP_OF = `select (select role from group_mappings where space_id = ?1 and group_id = ?2) as cur,
   (select email from directory_groups where group_id = ?2) as email,
   (select count(*) from directory_members where group_id = ?2) as n`;

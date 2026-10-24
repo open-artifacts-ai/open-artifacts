@@ -14,12 +14,12 @@ import {
   type SpaceMember,
   type SpaceMembersPage,
 } from "@oa/shared";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { accessLevel, callerOf } from "../src/auth/authz.js";
 import type { Env } from "../src/env.js";
 import type { UserPresence } from "../src/runtime/presence.js";
-import { revokeUsersLive } from "../src/runtime/revoke.js";
+import { REVOKE_FANOUT_CAP, revokeUsersLive } from "../src/runtime/revoke.js";
 import { getUser } from "../src/services/users.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
 
@@ -36,7 +36,9 @@ const MAIL = {
   },
   EMAIL_FROM: "oa@example.com",
 };
-const base = env as object;
+// Paid: the allMembersRole fan-out reaches every member in the shared test
+// D1, which can pass the Free cap (the cap has its own tests below).
+const base = { ...(env as object), PLAN: "paid" };
 /** Spaces on, Google sync running. */
 const GOOGLE = {
   ...base,
@@ -1284,12 +1286,47 @@ describe("attacks", () => {
 });
 
 describe("fan-out", () => {
-  it("revokeUsersLive covers every user, in pages of 50", async () => {
+  it("revokeUsersLive covers every user under the cap, in pages of 50 (Paid)", async () => {
     const ids = Array.from({ length: 120 }, () => newId());
-    await revokeUsersLive(env, ids, "test");
+    await revokeUsersLive({ ...env, PLAN: "paid" }, ids, "test");
     const at = await Promise.all(
       [ids[0], ids[60], ids[119]].map((id) => revokedAt(id as string)),
     );
     for (const t of at) expect(t).not.toBeNull();
+  });
+
+  it("past the per-invocation cap: the first cap users only, and an alert-level revoke_fanout_truncated", async () => {
+    expect(REVOKE_FANOUT_CAP).toEqual({ free: 20, paid: 450 });
+    const ids = Array.from({ length: 25 }, () => newId());
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await revokeUsersLive({ ...env, PLAN: "free" }, ids, "test");
+      const alerts = warn.mock.calls.filter((c) =>
+        String(c[0]).includes("revoke_fanout_truncated"),
+      );
+      expect(alerts).toHaveLength(1);
+      expect(String(alerts[0]?.[0])).toContain('"total":25');
+      expect(String(alerts[0]?.[0])).toContain('"cap":20');
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await revokedAt(ids[19] as string)).not.toBeNull();
+    expect(await revokedAt(ids[20] as string)).toBeNull();
+    expect(await revokedAt(ids[24] as string)).toBeNull();
+  });
+
+  it("at the cap: no alert", async () => {
+    const ids = Array.from({ length: 20 }, () => newId());
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await revokeUsersLive({ ...env, PLAN: "free" }, ids, "test");
+      expect(
+        warn.mock.calls.some((c) =>
+          String(c[0]).includes("revoke_fanout_truncated"),
+        ),
+      ).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
