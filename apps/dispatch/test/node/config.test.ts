@@ -28,6 +28,7 @@ describe("wrangler.jsonc", () => {
     for (const env of ENVS) {
       const e = cfg.env[env];
       expect(e.name).toBe(platformNames(env).dispatch);
+      expect(e.main).toBe("src/index.ts");
       expect(e.vars).toEqual({ OA_ENV: env });
       expect(e.dispatch_namespaces).toEqual([
         { binding: "DISPATCHER", namespace: NAMESPACES[env] },
@@ -55,6 +56,7 @@ describe("wrangler.jsonc", () => {
   it("has no top-level name, bindings or vars (a deploy without --env can't run)", () => {
     for (const k of [
       "name",
+      "main",
       "vars",
       "kv_namespaces",
       "dispatch_namespaces",
@@ -84,7 +86,16 @@ const wrangler = (args: string[]) =>
 describe("bundle", () => {
   it("wrangler deploy without --env is refused", () => {
     const out = mkdtempSync(join(tmpdir(), "oa-dispatch-"));
-    expect(() => wrangler(["--outdir", out])).toThrow(/name of your worker/);
+    expect(() => wrangler(["--outdir", out])).toThrow(
+      /name of your worker|entry-point/,
+    );
+  });
+
+  it("wrangler deploy --name without --env is refused too (no top-level main)", () => {
+    const out = mkdtempSync(join(tmpdir(), "oa-dispatch-"));
+    expect(() =>
+      wrangler(["--name", platformNames("prod").dispatch, "--outdir", out]),
+    ).toThrow(/entry-point/);
   });
 
   it("wrangler deploy --dry-run is under 50 KB per env", () => {

@@ -7,8 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "test": "pnpm --filter @oa/provision build && vitest run && vitest run -c vitest.node.config.ts",
+    "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit"
   },
   "dependencies": {
     "@oa/auth-core": "workspace:*",
@@ -17,6 +17,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.4",
     "@cloudflare/workers-types": "^5.20261018.1",
+    "@oa/provision": "workspace:*",
     "@types/node": "^20.19.43",
     "jose": "^6.2.12",
     "typescript": "^5.9.3",

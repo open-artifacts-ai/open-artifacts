@@ -423,6 +423,8 @@ export const useCreateSpace = () =>
     (input: SpaceCreateInput) => api.send("POST", R.spaces, input, SpaceSchema),
     () => [["spaces"], qk.me],
     "Couldn't create the space.",
+    // A refused name shows under the field.
+    (e) => e.status === 400,
   );
 /** Turning public links off rewrites public artifacts to team, so the library refreshes. */
 export const usePatchSpace = (id: string) =>
@@ -431,6 +433,7 @@ export const usePatchSpace = (id: string) =>
       api.send("PATCH", R.space(id), patch, SpaceSchema),
     () => [["spaces"], qk.me, ["artifacts"]],
     "Couldn't save the space.",
+    (e) => e.status === 400,
   );
 /** The page shows space_not_empty itself (the server is the authority for delete). */
 export const useDeleteSpace = () =>
