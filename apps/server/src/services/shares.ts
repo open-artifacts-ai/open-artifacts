@@ -86,7 +86,24 @@ const IS_USER = "select 1 as x from users where email = ? limit 1";
 // Only a lapsed guest (removed by the last-share cleanup): an admin or
 // directory removal clears guest_lapsed and stays removed (P3 T6).
 const REACTIVATE_GUEST =
-  "update users set status = 'active', guest_lapsed = 0 where email = ? and role = 'guest' and status = 'removed' and guest_lapsed = 1";
+  "update users set status = 'active', guest_lapsed = 0, status_changed_at = ?2 where email = ?1 and role = 'guest' and status = 'removed' and guest_lapsed = 1";
+
+/**
+ * user.status for a guest lapsing (last share gone) or coming back (a new
+ * share), right after that statement in its batch: written only when the
+ * statement changed the row. The actor is the member whose share change
+ * caused it. No reason (AuditReason has none for shares); ids only.
+ */
+const lapseAudit = (
+  env: Env,
+  guestId: string,
+  status: "removed" | "active",
+  actorId: string,
+) =>
+  audit(env, "user.status", { type: "user", id: guestId }, userActor(actorId), {
+    detail: { status, cause: status === "removed" ? "last_share" : "share" },
+    when: { sql: "changes() > 0", args: [] },
+  });
 
 /**
  * Upsert (owner-only). Sharing only ever adds access; see accessLevel.
@@ -147,7 +164,17 @@ export async function putShare(
   // A guest deactivated when their last share went comes back on a new one
   // (same row: their history and name are intact). After the insert, so a
   // concurrent cleanup either sees this share or is undone here.
-  if (created) await stmt(env.DB, REACTIVATE_GUEST).bind(email).run();
+  // Audited (user.status, active) in the same batch, only when it happened.
+  if (created) {
+    const guest = await stmt(env.DB, GUEST_ID)
+      .bind(email)
+      .first<{ id: string }>();
+    if (guest)
+      await env.DB.batch([
+        stmt(env.DB, REACTIVATE_GUEST).bind(email, Date.now()),
+        lapseAudit(env, guest.id, "active", user.id),
+      ]);
+  }
   return {
     ...toShare(row),
     emailed: created && (await emailShare(env, user, artifact, email, s.role)),
@@ -231,7 +258,9 @@ export async function deleteShare(
 // batch is atomic against a concurrent promotion or putShare.
 const UNSHARED_GUEST =
   "email = ?1 AND role = 'guest' AND NOT EXISTS (SELECT 1 FROM shares WHERE email = ?1)";
-const DEACTIVATE_GUEST = `UPDATE users SET status = 'removed', guest_lapsed = 1, session_epoch = session_epoch + 1
+const GUEST_ID = "select id from users where email = ? and role = 'guest'";
+const DEACTIVATE_GUEST = `UPDATE users SET status = 'removed', guest_lapsed = 1, status_changed_at = ?2,
+   session_epoch = session_epoch + 1
    WHERE ${UNSHARED_GUEST} AND status = 'active' RETURNING id`;
 const DELETE_GUEST_TOKENS = `DELETE FROM tokens WHERE user_id IN
    (SELECT id FROM users WHERE ${UNSHARED_GUEST} AND status = 'removed')`;
@@ -251,8 +280,14 @@ export async function removeGuestIfUnshared(
   log: { artifactId: string; actorId: string },
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
+  const guest = await stmt(env.DB, GUEST_ID)
+    .bind(email)
+    .first<{ id: string }>();
+  if (!guest) return;
   const [deactivated] = await env.DB.batch<{ id: string }>([
-    stmt(env.DB, DEACTIVATE_GUEST).bind(email),
+    stmt(env.DB, DEACTIVATE_GUEST).bind(email, Date.now()),
+    // Directly after the deactivation: audited only when it happened.
+    lapseAudit(env, guest.id, "removed", log.actorId),
     stmt(env.DB, DELETE_GUEST_TOKENS).bind(email),
   ]);
   const id = deactivated?.results[0]?.id;

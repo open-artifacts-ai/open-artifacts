@@ -109,7 +109,8 @@ const actorFor = (why: AuditReason): AuditActor =>
 // A lapsed guest (removed because their last share went, guest_lapsed = 1)
 // can still be removed for good: that clears guest_lapsed, so a later share
 // no longer revives them (putShare).
-const SET_STATUS = `update users set status = ?2, guest_lapsed = 0, session_epoch = session_epoch + 1
+const SET_STATUS = `update users set status = ?2, guest_lapsed = 0, status_changed_at = ?3,
+  session_epoch = session_epoch + 1
   where id = ?1 and role <> 'owner'
   and ((status <> ?2 and status <> 'removed')
     or (?2 = 'removed' and status = 'removed' and guest_lapsed = 1))`;
@@ -139,7 +140,7 @@ export async function setUserStatus(
   by: AuditActor = actorFor(why),
 ): Promise<void> {
   const out = await env.DB.batch([
-    stmt(env.DB, SET_STATUS).bind(userId, status),
+    stmt(env.DB, SET_STATUS).bind(userId, status, Date.now()),
     // Directly after the update: audited only when it changed the row.
     audit(env, "user.status", { type: "user", id: userId }, by, {
       reason: why,
@@ -151,9 +152,15 @@ export async function setUserStatus(
   ]);
   const now = (out[3]?.results[0] as { status?: string } | undefined)?.status;
   if (status === "active" || now !== status) return;
-  await revokeAllGrants(env, userId);
-  // Sessions, PATs and grants are gone: their live sockets close now (P3 T7).
-  await revokeUserLive(env, userId, `user ${status}`, ctx);
+  try {
+    // A grant this misses (KV listing lag) is still refused: it was issued
+    // before status_changed_at (oauth.ts apiHandler).
+    await revokeAllGrants(env, userId);
+  } finally {
+    // Sessions and PATs are gone: their live sockets close now (P3 T7), even
+    // when the grant revocation failed.
+    await revokeUserLive(env, userId, `user ${status}`, ctx);
+  }
 }
 
 // A role change ends the member's sessions (they re-sign-in with the new role).

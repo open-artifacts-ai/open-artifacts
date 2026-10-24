@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { newId, type OAuthClient, OAuthClientSchema, R } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import designConsent from "../../../design/screens/oauth-consent.html?raw";
 import { createApp } from "../src/app.js";
 import { createPat, verifyPat } from "../src/auth/pat.js";
@@ -8,6 +8,7 @@ import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { FAVICON_TAGS } from "../src/http/head.js";
 import { CONSENT_TEMPLATE } from "../src/mcp/consent-template.js";
 import { clientNameOf, oauthApi, oauthProvider } from "../src/mcp/oauth.js";
+import * as oauthApiModule from "../src/mcp/oauth-api.js";
 import { oauthApi as helpers } from "../src/mcp/oauth-api.js";
 import {
   MAX_REGISTRATIONS_PER_DAY,
@@ -189,8 +190,12 @@ const decide = (
 };
 
 /** Full flow for `email` (member): register → consent approve → token. */
-async function oauthToken(email: string, clientName = "Test Agent") {
-  const member = await login(email);
+async function oauthToken(
+  email: string,
+  clientName = "Test Agent",
+  existing?: { cookie: string; userId: string },
+) {
+  const member = existing ?? (await login(email));
   const clientId = await register(clientName);
   const { verifier, challenge } = await pkce();
   const page = await consentPage(
@@ -305,6 +310,86 @@ describe("MCP auth: OAuth", () => {
       expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
       await setUserStatus(env, member.userId, "suspended", "admin_suspend");
       expect((await listTools(`Bearer ${accessToken}`)).status).toBe(401);
+    });
+
+    /** A fresh session cookie at the user's current epoch. */
+    const freshCookie = async (userId: string) => {
+      const row = await env.DB.prepare(
+        "select session_epoch e from users where id = ?",
+      )
+        .bind(userId)
+        .first<{ e: number }>();
+      return `${sessionCookieName(env)}=${await signSession(env, userId, Date.now(), { provider: "access", epoch: row?.e ?? 0 })}`;
+    };
+
+    it("a grant the KV revocation missed is refused after an unsuspend; a new one works", async () => {
+      const email = `oauth-miss-${tag}@x.com`;
+      const { member, accessToken } = await oauthToken(email);
+      expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
+      // listUserGrants lagged: setUserStatus's D1 writes landed (a suspend,
+      // then an unsuspend), the KV revocation missed this grant.
+      await new Promise((r) => setTimeout(r, 5));
+      await env.DB.prepare(
+        "update users set status = 'active', status_changed_at = ? where id = ?",
+      )
+        .bind(Date.now(), member.userId)
+        .run();
+      expect(
+        (await helpers(env).listUserGrants(member.userId)).items,
+      ).toHaveLength(1);
+      expect((await listTools(`Bearer ${accessToken}`)).status).toBe(401);
+      // Past the status change: a grant approved now is honoured.
+      await new Promise((r) => setTimeout(r, 5));
+      const again = await oauthToken(email, "Again", {
+        userId: member.userId,
+        cookie: await freshCookie(member.userId),
+      });
+      expect((await listTools(`Bearer ${again.accessToken}`)).status).toBe(200);
+    });
+
+    it("consent approved while the user is suspended writes no grant", async () => {
+      const email = `oauth-late-${tag}@x.com`;
+      const m = await login(email);
+      // The suspension commits after the session read, before the grant.
+      const real = oauthApiModule.oauthApi;
+      const spy = vi
+        .spyOn(oauthApiModule, "oauthApi")
+        .mockImplementation((e) => {
+          const api = real(e);
+          return new Proxy(api, {
+            get(t, k) {
+              if (k === "approveConsent")
+                return async (...a: Parameters<typeof api.approveConsent>) => {
+                  await setUserStatus(
+                    env,
+                    m.userId,
+                    "suspended",
+                    "admin_suspend",
+                  );
+                  return t.approveConsent(...a);
+                };
+              const v = Reflect.get(t, k);
+              return typeof v === "function" ? v.bind(t) : v;
+            },
+          });
+        });
+      try {
+        const clientId = await register("Late");
+        const page = await consentPage(
+          authorizeUrl(clientId, (await pkce()).challenge),
+          m.cookie,
+        );
+        expect(page.r.status).toBe(200);
+        const r = await decide([m.cookie, ...page.cookies].join("; "), {
+          csrf: page.csrf,
+          request: page.request,
+          decision: "approve",
+        });
+        expect(r.status).toBe(401);
+      } finally {
+        spy.mockRestore();
+      }
+      expect((await helpers(env).listUserGrants(m.userId)).items).toEqual([]);
     });
   });
 

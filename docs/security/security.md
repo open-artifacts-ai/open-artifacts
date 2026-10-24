@@ -35,6 +35,17 @@ Still bounded only by the socket TTL (`LIMITS.signedUrlTtlSec`, 10 minutes, then
 
 Data-subscribe sockets split the same way: 200 per DO for signed-in viewers (20 per user), 100 for anonymous viewers (8 per anonymous actor, an IPv4 address or an IPv6 /56, also the `sub:ip:` RL_ANON key). Anonymous floods from many addresses fill only the anonymous pool, so members keep live data. A data socket with no actor is refused (400).
 
+## User status (P3 T6)
+
+Suspending or removing a user (`setUserStatus`) writes the status, ends every session (`session_epoch`), revokes their PATs and audits `user.status` in one D1 batch, then revokes their OAuth grants and closes their live sockets. Only `active` rows resolve to a user, on every credential.
+
+- **OAuth grants.** Each grant records when consent was approved, and each user row when its status last changed. A grant approved at or before that change is refused at `/mcp`. A grant minted while a suspension commits, or missed by KV's eventually consistent grant listing, is refused even after an unsuspend. Consent re-checks that the user is active just before the grant is written.
+- **PATs.** A PAT is inserted only while its user is active (one statement), so none minted during a suspension comes back on unsuspend. Unsuspending never revives revoked PATs or sessions.
+- **Guests.** A guest whose last share went comes back on a new share. A guest removed by an admin or by the directory stays removed.
+- **Still serving after a removal:**
+  - Public `/p/` links on the removed user's artifacts keep serving. The artifacts belong to the organization (shared spaces) or to whoever they are transferred to, and only a visibility change or a delete ends a public link.
+  - A signed content URL minted before the removal stays valid until it expires (`LIMITS.signedUrlTtlSec`, up to 600 seconds). Content host revocation in D1 is P3 Task 11.
+
 ## Direct sign-in (hosted M1, P2)
 
 Direct sign-in replaces Cloudflare Access with Google (one multi-tenant client) and emailed codes. The red line is that no one signs in to another customer's install.

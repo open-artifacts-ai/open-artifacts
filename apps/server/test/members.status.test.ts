@@ -422,9 +422,17 @@ describe("review fixes (P3 T6)", () => {
     await deleteShare(env, by, a, gEmail);
     // Lapsed, then removed for good by an admin: a share no longer revives.
     await removeMember(SPACES, g.userId, undefined, userActor(admin.userId));
-    expect(await auditsFor(g.userId, "user.status")).toHaveLength(1);
     await putShare(env, by, a, { email: gEmail, role: "viewer" });
     expect(await status(g.userId)).toBe("removed");
+    // Each lapse and revive is audited with the change; the first share (an
+    // active guest) and the refused revive write nothing.
+    const rows = await auditsFor(g.userId, "user.status");
+    expect(rows.map((r) => [r.actor_id, JSON.parse(r.detail)])).toEqual([
+      [sharer.userId, { status: "removed", cause: "last_share" }],
+      [sharer.userId, { status: "active", cause: "share" }],
+      [sharer.userId, { status: "removed", cause: "last_share" }],
+      [admin.userId, { status: "removed", reason: "admin_remove" }],
+    ]);
   });
 
   it("no PAT is created for a user suspended after the request's user read", async () => {

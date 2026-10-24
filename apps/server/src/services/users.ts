@@ -228,7 +228,7 @@ export async function upsertWithRole(
 }
 
 const USER_BY_ID =
-  "select id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, session_epoch as sessionEpoch, restricted_manual as restrictedManual, restricted_sync as restrictedSync from users where id = ? and status = 'active' limit 1";
+  "select id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, session_epoch as sessionEpoch, restricted_manual as restrictedManual, restricted_sync as restrictedSync, status_changed_at as statusChangedAt from users where id = ? and status = 'active' limit 1";
 
 /**
  * Every authenticated request: one prepared D1 statement, no ORM mapping.
@@ -239,7 +239,12 @@ const USER_BY_ID =
 export async function getUserWithEpoch(
   env: Env,
   id: string,
-): Promise<{ user: Member; sessionEpoch: number } | null> {
+): Promise<{
+  user: Member;
+  sessionEpoch: number;
+  /** When status last changed (ms) or null: OAuth grants issued at or before it are refused. */
+  statusChangedAt: number | null;
+} | null> {
   const row = await stmt(env.DB, USER_BY_ID)
     .bind(id)
     .first<
@@ -254,6 +259,7 @@ export async function getUserWithEpoch(
         | "sessionEpoch"
         | "restrictedManual"
         | "restrictedSync"
+        | "statusChangedAt"
       >
     >();
   // Every request's user comes through here (session, PAT, OAuth), so the cap
@@ -274,6 +280,7 @@ export async function getUserWithEpoch(
       ),
     ),
     sessionEpoch: row.sessionEpoch,
+    statusChangedAt: row.statusChangedAt ?? null,
   };
 }
 

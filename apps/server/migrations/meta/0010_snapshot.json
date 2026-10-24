@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f3e0d580-3bd4-434f-8828-68b1b8d8008c",
+  "id": "f4186a92-729b-43c4-828a-464f2337e0a2",
   "prevId": "ed9f6006-e113-4893-9b90-b1592d946c38",
   "tables": {
     "artifacts": {
@@ -1280,6 +1280,13 @@
           "notNull": true,
           "autoincrement": false,
           "default": 0
+        },
+        "status_changed_at": {
+          "name": "status_changed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {

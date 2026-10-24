@@ -346,6 +346,22 @@ describe("UserPresence", () => {
     expect(await ws.events.closed).toBe(4403);
   });
 
+  it("a failing grant revocation still closes the suspended user's sockets", async () => {
+    const u = await mk(`pr-kvdown-${newId().slice(0, 4)}`, "member");
+    const art = await pub();
+    const ws = await openSockets(u, art);
+    const down = new Proxy(
+      {},
+      { get: () => () => Promise.reject(new Error("kv down")) },
+    );
+    const e = { ...env, OAUTH_KV: down } as typeof env;
+    await expect(
+      setUserStatus(e, u.userId, "suspended", "admin_suspend"),
+    ).rejects.toThrow(/kv down/);
+    expect(await ws.data.closed).toBe(4403);
+    expect(await ws.events.closed).toBe(4403);
+  });
+
   it("a share downgraded from editor to viewer closes the artifact's sockets", async () => {
     const u = await mk(`pr-down-${newId().slice(0, 4)}`, "member");
     const id = (
