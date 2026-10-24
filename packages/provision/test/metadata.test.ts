@@ -573,7 +573,11 @@ describe("round 1", () => {
   // Manager ruling 2026-10-24 (#572): hosted AUTH_DOMAINS isn't verified as
   // owned, so a hosted install never admits by domain until it is.
   it("always renders AUTH_DOMAIN_JOIN=invite", () => {
-    for (const vars of [{}, { AUTH_DOMAIN_JOIN: "invite" }]) {
+    const cases: Record<string, string>[] = [
+      {},
+      { AUTH_DOMAIN_JOIN: "invite" },
+    ];
+    for (const vars of cases) {
       const m = userWorkerMetadata(inst({ vars }), res());
       expect(text(m.bindings, "AUTH_DOMAIN_JOIN")).toBe("invite");
     }
