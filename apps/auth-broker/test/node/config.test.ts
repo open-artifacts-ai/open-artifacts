@@ -26,6 +26,11 @@ const NS = {
   staging: { ip: "1101", install: "1102" },
   prod: { ip: "1111", install: "1112" },
 };
+const DIRECTORY_CLIENT_ID = {
+  staging:
+    "1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com",
+  prod: "{{GOOGLE_DIRECTORY_CLIENT_ID_PROD}}",
+};
 const CLIENT_ID = {
   staging:
     "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
@@ -38,6 +43,7 @@ describe("wrangler.jsonc", () => {
     for (const env of ENVS) {
       const e = cfg.env[env];
       expect(e.name).toBe(platformNames(env).broker);
+      expect(e.main).toBe("src/index.ts");
       // One placeholder per env, so filling one env can't bind the other's KV.
       expect(e.kv_namespaces).toEqual([
         {
@@ -59,6 +65,7 @@ describe("wrangler.jsonc", () => {
       ]);
       expect(e.vars).toEqual({
         GOOGLE_CLIENT_ID: CLIENT_ID[env],
+        GOOGLE_DIRECTORY_CLIENT_ID: DIRECTORY_CLIENT_ID[env],
         BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
       });
       // Workers Logs would record callback URLs carrying the code and state.
@@ -90,6 +97,7 @@ describe("wrangler.jsonc", () => {
   it("has no top-level name, bindings or vars (a deploy without --env can't run)", () => {
     for (const k of [
       "name",
+      "main",
       "vars",
       "kv_namespaces",
       "ratelimits",
@@ -110,7 +118,16 @@ const wrangler = (args: string[]) =>
 describe("bundle", () => {
   it("wrangler deploy without --env is refused", () => {
     const out = mkdtempSync(join(tmpdir(), "oa-broker-"));
-    expect(() => wrangler(["--outdir", out])).toThrow(/name of your worker/);
+    expect(() => wrangler(["--outdir", out])).toThrow(
+      /name of your worker|entry-point/,
+    );
+  });
+
+  it("wrangler deploy --name without --env is refused too (no top-level main)", () => {
+    const out = mkdtempSync(join(tmpdir(), "oa-broker-"));
+    expect(() =>
+      wrangler(["--name", platformNames("prod").broker, "--outdir", out]),
+    ).toThrow(/entry-point/);
   });
 
   it("wrangler deploy --dry-run bundles per env", () => {

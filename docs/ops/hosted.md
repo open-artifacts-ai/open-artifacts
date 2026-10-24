@@ -64,7 +64,7 @@ Namespace `oa-spike-staging`, dispatch Worker `oa-s-spike-dispatch` (account scr
 
 `apps/dispatch` maps the request host (lowercased, one trailing dot stripped, port ignored) to an install id in `HOSTS` and forwards the original request to `oa-<p>-<id>` in the env's dispatch namespace. A miss, a value that isn't an install id, a KV or binding error, a deleted script and a crashing install all get the same plain `404 Not found`. On an error it logs `dispatch failed <category> <host>`, where category is `kv`, `not_found` (no such script) or `exception`. It never logs the error text, the URL or headers. Observability (Workers Logs) is off in each env and must stay off, because it would record full URLs.
 
-The repo config has no routes, custom domains or `workers.dev`, and no top-level name, so a deploy without `--env` is refused (tests pin all of it). Routing is wired once per env by this step. **The Manager and the user run it by hand; CI never does.**
+The repo config has no routes, custom domains or `workers.dev`, and no top-level name or `main`, so a deploy without `--env` is refused, even with `--name` (tests pin all of it). A positional entry (`wrangler deploy src/index.ts --name ...`) would still get past that guard. **Always deploy with `--env`, and never pass an entry point.** Routing is wired once per env by this step. **The Manager and the user run it by hand; CI never does.**
 
 | Env | Worker | Namespace | HOSTS KV title | Config placeholder |
 |---|---|---|---|---|
@@ -143,14 +143,14 @@ Unmapping and slug purges: dispatch reads HOSTS with `cacheTtl: 60`, so an edge 
 
 ## Auth broker: one-time deploy per env (gated)
 
-`apps/auth-broker` is the hosted Google sign-in broker on `auth.<app zone>`. It holds the multi-tenant Google client secret; the registry KV holds public keys only. The repo config has no routes, custom domains or `workers.dev`, and no top-level name, so a deploy without `--env` is refused (tests pin all of it). Observability (Workers Logs) is off in each env and must stay off, because it records full URLs and the callback URL carries the OAuth code and state. **The Manager and the user run this by hand; CI never does.**
+`apps/auth-broker` is the hosted Google sign-in broker on `auth.<app zone>`. It holds the multi-tenant Google client secret; the registry KV holds public keys only. The repo config has no routes, custom domains or `workers.dev`, and no top-level name or `main`, so a deploy without `--env` is refused, even with `--name` (tests pin all of it). A positional entry (`wrangler deploy src/index.ts --name ...`) would still get past that guard. **Always deploy with `--env`, and never pass an entry point.** Observability (Workers Logs) is off in each env and must stay off, because it records full URLs and the callback URL carries the OAuth code and state. **The Manager and the user run this by hand; CI never does.**
 
 | Env | Worker | Registry KV title | Config placeholder | Ratelimit ids |
 |---|---|---|---|---|
 | staging | `oa-s-auth-broker` | `oa-s-broker-registry` | `{{BROKER_REGISTRY_ID_STAGING}}` | 1101, 1102 |
 | prod | `oa-p-auth-broker` | `oa-p-broker-registry` | `{{BROKER_REGISTRY_ID_PROD}}` | 1111, 1112 |
 
-Prod's `GOOGLE_CLIENT_ID` is the placeholder `{{GOOGLE_CLIENT_ID_PROD}}` until a prod client exists, so a prod deploy fails the check in step 3 until then.
+Prod's `GOOGLE_CLIENT_ID` and `GOOGLE_DIRECTORY_CLIENT_ID` are the placeholders `{{GOOGLE_CLIENT_ID_PROD}}` and `{{GOOGLE_DIRECTORY_CLIENT_ID_PROD}}` until prod clients exist, so a prod deploy fails the check in step 3 until then. The check strips whole-line `//` comments only: keep comments in `wrangler.jsonc` on their own lines.
 
 Set `ENV`, `P`, `APP` and `UP` as in the dispatch section. Then, per env:
 
@@ -166,11 +166,12 @@ Set `ENV`, `P`, `APP` and `UP` as in the dispatch section. Then, per env:
      && pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env "$ENV" \
      && rm wrangler.deploy.jsonc
    ```
-   The deploy output must name `oa-$P-auth-broker` with `BROKER_REGISTRY`, `RL_BROKER_IP`, `RL_BROKER_INSTALL` and the two vars, and no routes or workers.dev URL.
+   The deploy output must name `oa-$P-auth-broker` with `BROKER_REGISTRY`, `RL_BROKER_IP`, `RL_BROKER_INSTALL` and the three vars, and no routes or workers.dev URL.
 4. Set the secrets **after** the Worker exists, never before (`wrangler secret put` on a missing Worker creates one). Never echo them:
    ```sh
-   npx wrangler secret put GOOGLE_CLIENT_SECRET --env "$ENV"     # paste from the password manager
-   openssl rand -base64 32 | npx wrangler secret put BROKER_STATE_KEY --env "$ENV"
+   pnpm exec wrangler secret put GOOGLE_CLIENT_SECRET --env "$ENV"             # paste from the password manager
+   pnpm exec wrangler secret put GOOGLE_DIRECTORY_CLIENT_SECRET --env "$ENV"   # paste from the password manager
+   openssl rand -base64 32 | pnpm exec wrangler secret put BROKER_STATE_KEY --env "$ENV"
    ```
 5. The route, added in the same gated zone-token step as the dispatch routes (steps 4 to 7 of the dispatch section), on the app zone only: `POST /zones/<zone_id>/workers/routes` with `{"pattern": "auth.$APP/*", "script": "oa-$P-auth-broker"}`. The most specific matching route wins, so this beats the `*.$APP/*` dispatch wildcard (see [How routes work](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior)). `auth.$APP` is covered by the wildcard DNS record from the dispatch step.
 6. Check: `curl -sS -o /dev/null -w '%{http_code}\n' "https://auth.$APP/"` must be the broker's answer, not dispatch's plain `404 Not found` with body `Not found`.
@@ -182,7 +183,7 @@ Public values only. The client secrets live in the user's password manager until
 | Env | Project | Client | Client id | Redirect URI |
 |---|---|---|---|---|
 | staging | `open-artifacts-staging` | Sign-in (used by the broker) | `1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com` | `https://auth.open-artifacts-staging.app/google/callback` |
-| staging | `open-artifacts-staging` | Directory (P3 directory sync, not used by the broker) | `1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com` | none |
+| staging | `open-artifacts-staging` | Directory (P3 directory sync; the broker carries its id and secret but doesn't use them) | `1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com` | none |
 | prod | not created yet | | | |
 
 ## Nightly scheduler: one-time deploy per env (Task 7, gated)

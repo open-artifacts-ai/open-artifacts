@@ -6,6 +6,7 @@ dist-assets/
 .superpowers/
 logs/
 apps/server/wrangler.jsonc
+apps/auth-broker/wrangler.deploy.jsonc
 apps/dispatch/wrangler.deploy.jsonc
 apps/scheduler/wrangler.deploy.jsonc
 apps/server/src/version.gen.ts

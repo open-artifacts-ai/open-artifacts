@@ -43,9 +43,9 @@ code, verifier, token, email, nonce, state or key.
 | `BROKER_STATE_KEY` | secret | HMAC key for the broker state (32+ chars) |
 
 Config is per env (`wrangler.jsonc` has `env.staging` and `env.prod`, no
-top-level name): deploy with `--env`, see `docs/ops/hosted.md`. Workers Logs
-stays off, because it records the full URL, and the callback URL carries the
-OAuth code and state.
+top-level name or `main`): deploy with `--env staging|prod` only, never with a
+positional entry (see `docs/ops/hosted.md`). Workers Logs stays off, because it
+records the full URL, and the callback URL carries the OAuth code and state.
 
 If either rate-limit binding is missing the broker fails closed with 503. A
 bucket denial is 429.
