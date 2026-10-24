@@ -27,9 +27,13 @@ describe("the Worker answers only its own hosts", () => {
   });
 
   it("keeps serving the content host", async () => {
-    // /healthz is not a content route: the content app's own 404, not the
-    // app's 200, proves the request was routed there.
-    expect((await get("http://content.localhost/healthz")).status).toBe(404);
+    // /healthz is not a content route. The content app's JSON not_found (not
+    // the app's 200, and not the bare foreign-host "Not found") proves the
+    // request was routed there.
+    const r = await get("http://content.localhost/healthz");
+    expect(r.status).toBe(404);
+    expect(r.headers.get("content-type")).toMatch(/^application\/json/);
+    expect(await r.json()).toMatchObject({ error: { code: "not_found" } });
   });
 
   it("answers a foreign host with a plain 404 before auth", async () => {
@@ -74,28 +78,52 @@ describe("the Worker answers only its own hosts", () => {
       ).toBe(404);
   });
 
-  it("self-host unchanged: APP_HOST unset keeps the any-host behavior", async () => {
-    for (const host of ["app.localhost", "anything.example", "localhost"])
-      expect(
-        (
-          await get(`http://${host}/healthz`, {
-            APP_HOST: undefined,
-            ENVIRONMENT: "production",
-          })
-        ).status,
-      ).toBe(200);
+  it("APP_HOST unset fails closed for every install, self-host included", async () => {
+    // Setup always renders APP_HOST (scripts/setup refuses an empty one), so
+    // a missing value is a broken config: answer nothing, hosted or not.
+    for (const over of [
+      { APP_HOST: undefined, ENVIRONMENT: "production" },
+      { APP_HOST: "", ENVIRONMENT: "production" },
+      { APP_HOST: undefined, HOSTED: "1" },
+      { APP_HOST: undefined },
+      { APP_HOST: undefined, CONTENT_HOST: undefined },
+      { APP_HOST: "", CONTENT_HOST: "" },
+    ])
+      for (const host of ["app.localhost", "anything.example", "localhost"]) {
+        const r = await get(`http://${host}/healthz`, over);
+        expect(r.status).toBe(404);
+        expect(await r.text()).toBe("Not found");
+      }
   });
 
-  it("hosted with no APP_HOST fails closed", async () => {
-    for (const host of ["app.localhost", "anything.example", "localhost"])
+  it("CONTENT_HOST unset: the app host still answers, the content host is foreign", async () => {
+    for (const CONTENT_HOST of [undefined, ""]) {
       expect(
-        (
-          await get(`http://${host}/healthz`, {
-            APP_HOST: undefined,
-            HOSTED: "1",
-          })
-        ).status,
-      ).toBe(404);
+        (await get("http://app.localhost/healthz", { CONTENT_HOST })).status,
+      ).toBe(200);
+      for (const url of [
+        "http://content.localhost/healthz",
+        "http://anything.example/healthz",
+      ]) {
+        const r = await get(url, { CONTENT_HOST, ENVIRONMENT: "production" });
+        expect(r.status).toBe(404);
+        expect(await r.text()).toBe("Not found");
+      }
+    }
+  });
+
+  it("self-host answers a foreign host with the same 404 as hosted", async () => {
+    for (const HOSTED of [undefined, "0", "1"]) {
+      const r = await get("https://other-install.example/healthz", {
+        HOSTED,
+        ENVIRONMENT: "production",
+      });
+      expect(r.status).toBe(404);
+      expect(await r.text()).toBe("Not found");
+      expect([...r.headers]).toEqual([
+        ["content-type", "text/plain;charset=UTF-8"],
+      ]);
+    }
   });
 
   it("refuses foreign hosts on every pre-auth surface", async () => {

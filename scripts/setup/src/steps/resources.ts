@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { hostPairProblem } from "../hosts.ts";
 import type { State } from "../state.ts";
 import type { Ctx, Step } from "../step.ts";
 import { resolveVars } from "../tunables.ts";
@@ -83,6 +84,18 @@ export function renderConfig(
   plan: "free" | "paid" = "free",
   tunables: Record<string, string> = {},
 ): string {
+  // The server answers these two hosts only (no any-host fallback), so a
+  // template naming them must get a pair it can serve. A missing value is
+  // the placeholder error below.
+  if (
+    template.includes("{{APP_HOST}}") &&
+    template.includes("{{CONTENT_HOST}}") &&
+    vars.APP_HOST !== undefined &&
+    vars.CONTENT_HOST !== undefined
+  ) {
+    const problem = hostPairProblem(vars.APP_HOST, vars.CONTENT_HOST);
+    if (problem) throw new Error(`rendered config: ${problem}`);
+  }
   // The template stays strict JSON (e2e fixtures JSON.parse it), so the
   // browser and email lines are matched by their keys and dropped when off.
   // EMAIL_FROM and SERVER_THUMBNAILS are never the last var, so dropping

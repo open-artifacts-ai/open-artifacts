@@ -3,6 +3,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { type Deployed, fromWorker, type Sources } from "./by-name.ts";
 import { type Deps, makeApi, makeWrangler, realDeps, realFs } from "./cf.ts";
+import { hostPairProblem } from "./hosts.ts";
 import { readOnlyDeps } from "./readonly.ts";
 import { rollbackCommand } from "./rollback.ts";
 import { readState, type State, statePath, writeState } from "./state.ts";
@@ -237,6 +238,12 @@ async function resolve(
     ci: v.ci,
     revokeCi: v["revoke-ci-tokens"],
   };
+  // Setup and every --check/--upgrade preflight: refuse a pair the server
+  // can't serve (it answers APP_HOST and CONTENT_HOST only).
+  if (!v["revoke-ci-tokens"]) {
+    const problem = hostPairProblem(opts.appHost, opts.contentHost);
+    if (problem) throw new Error(`${problem} (--app-host, --content-host)`);
+  }
   // A saved default follows a changed app host; an explicit domain is kept.
   // prereqs keeps it only for a team install.
   const saved =

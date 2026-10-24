@@ -12,8 +12,6 @@ const SRC = join(import.meta.dirname, "../../src");
 
 /** `file: enclosing function` → why this read only tightens or reports. */
 const READS: Record<string, string> = {
-  "index.ts: isForeignHost":
-    "fail closed: a hosted install without APP_HOST answers no host",
   "auth/sign-in.ts: showsSignInFields":
     "reports: Me carries the hosted sign-in fields (shape only, no access)",
   "auth/config.ts: googleConfig":
