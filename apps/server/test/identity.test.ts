@@ -46,6 +46,46 @@ const cfg = (over: Partial<Env> = {}) => authConfig(direct(over));
 const admin = { id: "x", role: "admin" } as Member;
 
 describe("admit (Google)", () => {
+  it("an admin demotion racing the sign-in sticks (role promoted in SQL)", async () => {
+    const id = g();
+    const userId = await seedUser(id.email, "admin", { googleSub: id.subject });
+    // The demotion lands between admit's read and touch's write: the first
+    // batch through this DB runs it first.
+    let raced = false;
+    const DB = new Proxy(env.DB, {
+      get(t, k) {
+        if (k === "batch")
+          return async (s: D1PreparedStatement[]) => {
+            if (!raced) {
+              raced = true;
+              await t
+                .prepare("update users set role = 'member' where id = ?")
+                .bind(userId)
+                .run();
+            }
+            return t.batch(s);
+          };
+        const v = Reflect.get(t, k);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const e = { ...env, DB } as Env;
+    const r = await admit(e, cfg(), id);
+    expect(raced).toBe(true);
+    expect(r).toMatchObject({ ok: true, user: { role: "member" } });
+    expect((await rowOf(userId)).role).toBe("member");
+  });
+
+  it("a guest signing in with a verified Google identity becomes a member", async () => {
+    const id = g();
+    const userId = await seedUser(id.email, "guest", { googleSub: id.subject });
+    expect(await admit(env, cfg(), id)).toMatchObject({
+      ok: true,
+      user: { role: "member" },
+    });
+    expect((await rowOf(userId)).role).toBe("member");
+  });
+
   it("no user, join member: creates a member and links (google, sub)", async () => {
     const id = g();
     const r = await admit(env, cfg(), id);

@@ -53,9 +53,11 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
  * to close. Each entry says why; a stale entry fails the test below.
  */
 const WIDENS: Readonly<Record<string, string>> = {
-  // Sign-in: role = promotedRole (guest becomes member, never narrower) or
-  // owner for OWNER_EMAIL while no owner exists.
-  "services/identity.ts:touch": "sign-in promotion only",
+  // Sign-in: the role is computed in SQL from the row's current role (guest
+  // becomes member, every other role kept), or owner for OWNER_EMAIL while
+  // no owner exists. It never writes back an earlier read, so it can't undo
+  // a racing demotion.
+  "services/identity.ts:touch": "sign-in promotion from the current role only",
   // Access sign-in: .set(set) holds only lastSeenAt and name.
   "services/users.ts:upsertOnLogin": "sign-in touch: last_seen_at and name",
 };
