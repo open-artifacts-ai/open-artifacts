@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.46.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.45.0...v0.46.0) (2026-10-24)
+
+
+### Features
+
+* **directory-broker:** per-env config test and deploy wiring ([#579](https://github.com/open-artifacts-ai/open-artifacts/issues/579)) ([bd4a784](https://github.com/open-artifacts-ai/open-artifacts/commit/bd4a784e08eb949b89e3c7b657f09e96e0770f22))
+* **server:** directory connection via a separate directory broker (P3 T12) ([#564](https://github.com/open-artifacts-ai/open-artifacts/issues/564)) ([45890f3](https://github.com/open-artifacts-ai/open-artifacts/commit/45890f35c9082ccc5fc6ee6c09cd6fbdb5e31fac))
+* **server:** DirectorySync DO class and binding, inert (P3 T13a) ([#571](https://github.com/open-artifacts-ai/open-artifacts/issues/571)) ([da64a86](https://github.com/open-artifacts-ai/open-artifacts/commit/da64a864df54a455ec3a274b6a9a998cb3d2186d))
+* **server:** identity cards for connected agents ([#559](https://github.com/open-artifacts-ai/open-artifacts/issues/559)) ([d4b509f](https://github.com/open-artifacts-ai/open-artifacts/commit/d4b509f2fc8f4633a0c864cc2bea088883902449))
+
+
+### Bug Fixes
+
+* **provision:** hosted installs always join by invite ([#573](https://github.com/open-artifacts-ai/open-artifacts/issues/573)) ([8a2b9f8](https://github.com/open-artifacts-ai/open-artifacts/commit/8a2b9f86233e987dfbcdecce72842d7440694631))
+* **provision:** refuse a Cloudflare token within 5 days of expiry ([#547](https://github.com/open-artifacts-ai/open-artifacts/issues/547)) ([e0691f4](https://github.com/open-artifacts-ai/open-artifacts/commit/e0691f44916cc3059bc14fab0d696b1a9b83d036))
+* **provision:** write the registry under install:&lt;id&gt;, the key the broker reads ([#566](https://github.com/open-artifacts-ai/open-artifacts/issues/566)) ([09f4855](https://github.com/open-artifacts-ai/open-artifacts/commit/09f48556dc41a94439cced0f0995bd7221cce0a0))
+* **server:** hosted installs admit by invite only ([#574](https://github.com/open-artifacts-ai/open-artifacts/issues/574)) ([e0c2386](https://github.com/open-artifacts-ai/open-artifacts/commit/e0c23860c29d62c45259417ff0d02c011afd0bb9))
+
 ## [0.45.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.44.0...v0.45.0) (2026-10-24)
 
 
