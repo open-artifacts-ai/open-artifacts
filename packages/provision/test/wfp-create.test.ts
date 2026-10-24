@@ -1125,6 +1125,8 @@ describe("WfpProvisioner.create", () => {
       "FILES",
       "OAUTH_KV",
       "ARTIFACT_RUNTIME",
+      // P3 T7b: UserPresence, bound one release after its class tag (v2).
+      "USER_PRESENCE",
       "RL_ANON",
       "RL_AUTH",
       "PLAN",

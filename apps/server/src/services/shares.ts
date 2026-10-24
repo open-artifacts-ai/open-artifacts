@@ -18,7 +18,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
-import { closeRuntimeSockets } from "../runtime/revoke.js";
+import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { getSettings } from "./members.js";
 
@@ -204,12 +204,14 @@ export async function deleteShare(
     shareAudit(env, "artifact.unshare", user, artifact, {}),
   ]);
   if (!out?.results.length) throw new ApiError("not_found", "Not found");
+  // Closes the artifact's sockets and records the change in its DO, so a
+  // socket authorized before it is refused on accept (P3 T7). Not the
+  // person's presence: their sockets on other artifacts are unaffected.
   await closeRuntimeSockets(env, [id], "share revoked", ctx);
   // Best effort: the share is already gone, and that is what the caller asked.
-  // The deleted share's sockets were closed above; with no share left there
-  // are no other share-opened sockets to close (team ones: removeMember's ceiling).
+  // A guest left with no share is deactivated, which revokes their presence.
   const log = { artifactId: id, actorId: user.id };
-  await removeGuestIfUnshared(env, e, log).catch((err) =>
+  await removeGuestIfUnshared(env, e, log, ctx).catch((err) =>
     logWarn("guest_cleanup_failed", err, {
       ...log,
       reason: err instanceof ApiError ? err.code : "error",
@@ -239,6 +241,7 @@ export async function removeGuestIfUnshared(
   env: Env,
   email: string,
   log: { artifactId: string; actorId: string },
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
   const [deactivated] = await env.DB.batch<{ id: string }>([
     stmt(env.DB, DEACTIVATE_GUEST).bind(email),
@@ -246,6 +249,8 @@ export async function removeGuestIfUnshared(
   ]);
   const id = deactivated?.results[0]?.id;
   if (!id) return;
+  // Their live sockets close now (P3 T7); never throws.
+  await revokeUserLive(env, id, "guest removed", ctx);
   // OAuth grants live in KV, outside the batch.
   await revokeAllGrants(env, id);
   logInfo("guest_removed", log);

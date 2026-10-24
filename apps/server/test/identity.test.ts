@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { Member } from "@oa/shared";
 import { describe, expect, it } from "vitest";
@@ -6,6 +7,7 @@ import { createPat } from "../src/auth/pat.js";
 import type { VerifiedIdentity } from "../src/auth/providers/types.js";
 import type { Env } from "../src/env.js";
 import { oauthApi } from "../src/mcp/oauth-api.js";
+import type { UserPresence } from "../src/runtime/presence.js";
 import {
   admit,
   codeEligibility,
@@ -349,6 +351,19 @@ describe("resetIdentity", () => {
     expect((await rowOf(uid)).e).toBe(1);
     expect(await pats(uid)).toBe(0);
     expect(await grants(uid)).toBe(0);
+  });
+
+  it("revokes the user's live sockets (UserPresence revokedAt set, P3 T7)", async () => {
+    const email = uniq("live");
+    const uid = await seedUser(email, "member", { googleSub: `L-${email}` });
+    await resetIdentity(env, admin, uid);
+    const ns = env.USER_PRESENCE;
+    if (!ns) throw new Error("USER_PRESENCE unbound");
+    const at = await runInDurableObject(
+      ns.get(ns.idFromName(uid)) as unknown as DurableObjectStub<UserPresence>,
+      (p) => p.revokedAt(),
+    );
+    expect(at).toEqual(expect.any(Number));
   });
 
   it("a grant (KV) failure fails the reset before D1 changes; a retry completes it", async () => {

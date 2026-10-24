@@ -134,6 +134,21 @@ export class UserPresence extends DurableObject<Env> {
   }
 
   /**
+   * Writes revokedAt = now (never moves it back) and returns it, closing
+   * nothing: the last resort when closeAll keeps failing, so at least new
+   * accepts are refused.
+   */
+  markRevoked(): number {
+    const now = this.now();
+    this.sql.exec(
+      `insert into state (id, revoked_at) values (1, ?)
+       on conflict (id) do update set revoked_at = max(revoked_at, excluded.revoked_at)`,
+      now,
+    );
+    return now;
+  }
+
+  /**
    * Starts a revocation: revokedAt = now is written before any close, then
    * the user's sockets on each recorded artifact close (4403). Failed closes,
    * and any past CLOSE_FANOUT, go to the retry queue. Returns the number of
@@ -142,12 +157,7 @@ export class UserPresence extends DurableObject<Env> {
   async closeAll(reason: string): Promise<number> {
     const why = String(reason).slice(0, MAX_REASON);
     const actor = this.actor;
-    const now = this.now();
-    this.sql.exec(
-      `insert into state (id, revoked_at) values (1, ?)
-       on conflict (id) do update set revoked_at = max(revoked_at, excluded.revoked_at)`,
-      now,
-    );
+    const now = this.markRevoked();
     const ids = this.sql
       .exec<{ artifact_id: string }>(
         "delete from seen where seen_at >= ? returning artifact_id",
@@ -282,25 +292,18 @@ export class UserPresence extends DurableObject<Env> {
 export type PresenceStub = {
   touch(artifactId: string, authzAt: number): Promise<{ ok: boolean }>;
   closeAll(reason: string): Promise<number>;
+  markRevoked(): Promise<number>;
 };
-
-let unboundLogged = false;
 
 /**
  * The user's presence DO, or null when the install has no USER_PRESENCE
- * binding (logged once per isolate as presence_unbound).
+ * binding (callers log presence_unbound).
  */
 export function presenceStub(
   env: Pick<Env, "USER_PRESENCE">,
   userId: string,
 ): PresenceStub | null {
   const ns = env.USER_PRESENCE;
-  if (!ns) {
-    if (!unboundLogged) {
-      unboundLogged = true;
-      logError("presence_unbound", new Error("USER_PRESENCE is not bound"));
-    }
-    return null;
-  }
+  if (!ns) return null;
   return ns.get(ns.idFromName(userId)) as unknown as PresenceStub;
 }

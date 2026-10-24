@@ -34,6 +34,7 @@ import type { AppType } from "../routes/index.js";
 import { type AnonId, resolveAnonId } from "./anon-id.js";
 import {
   ACTOR_HEADER,
+  AUTHZ_AT_HEADER,
   EVENTS_NAMED_HEADER,
   EVENTS_VERSION_HEADER,
   publicActor,
@@ -71,7 +72,25 @@ const IP_RE = /^[0-9A-Fa-f:.]{2,45}$/;
 const IPV4_RE = /^\d{1,3}(?:\.\d{1,3}){3}$/;
 
 type C = Context<AppEnv>;
-type Gate = { artifactId: string; actor: string; anon: AnonId | null };
+/** `authzAt`: when the access check ran (ms), for the presence check on sockets. */
+type Gate = {
+  artifactId: string;
+  actor: string;
+  anon: AnonId | null;
+  authzAt: number;
+};
+
+/**
+ * When this request's authorization began: stamped by the policy gate before
+ * the session read, so a revocation written after any access read has
+ * revokedAt >= authzAt and a socket it raced is refused (presence).
+ */
+function authzAtOf(c: C): number {
+  const t = c.get("authzAt");
+  // No fallback: a later stamp could miss a revocation that raced the read.
+  if (t === undefined) throw new Error("authzAt not stamped (enforcePolicy)");
+  return t;
+}
 
 const NO_CAPS: Capabilities = { db: false, viewer: false, storage: false };
 /** Declared capabilities; malformed JSON means none (capability_denied, never 500). */
@@ -190,6 +209,7 @@ async function gate(
   // whatever cookie or token came with it (#295 does this app-wide).
   const who: Caller =
     c.req.header("x-oa-embed") === "1" ? { kind: "anonymous" } : caller(c);
+  const authzAt = authzAtOf(c);
   const r = await accessLevel(c.env, who, artifactId);
   if (!r) throw new ApiError("not_found", "Not found");
   const a = r.artifact;
@@ -206,9 +226,9 @@ async function gate(
     // Signed-in callers asking for an anonId get the route's own 401 below.
     if (kind !== "anonId" && !allowed())
       throw new ApiError("not_found", "Not found");
-    return { artifactId, actor: `u:${who.user.id}`, anon: null };
+    return { artifactId, actor: `u:${who.user.id}`, anon: null, authzAt };
   }
-  if (kind === "read") return { artifactId, actor: "", anon: null };
+  if (kind === "read") return { artifactId, actor: "", anon: null, authzAt };
   const optIn = a.allowAnonymousWrites === 1;
   if (kind === "storage" || (kind === "write" && !optIn))
     throw new ApiError("unauthorized", "Sign in to save changes");
@@ -231,15 +251,15 @@ async function gate(
     throw new ApiError("rate_limited", "Anonymous access is unavailable");
   if (kind === "subscribe") {
     await anonLimit(c, `sub:ip:${key}`, "subscriptions");
-    return { artifactId, actor: `ip:${key}`, anon: null };
+    return { artifactId, actor: `ip:${key}`, anon: null, authzAt };
   }
   if (kind === "anonId") {
     await anonLimit(c, `anonid:ip:${key}`, "requests");
-    return { artifactId, actor: "", anon: await anonId() };
+    return { artifactId, actor: "", anon: await anonId(), authzAt };
   }
   await anonLimit(c, `ip:${key}`, "writes");
   const anon = await anonId();
-  return { artifactId, actor: `ip:${key}|${anon.short}`, anon };
+  return { artifactId, actor: `ip:${key}|${anon.short}`, anon, authzAt };
 }
 
 /** `res` carrying a newly minted anonId token, if the gate minted one. */
@@ -392,7 +412,12 @@ export function mountRuntime(app: AppType): void {
       dataResetLimit(plan),
       dataResetTooLargeMessage(plan),
     );
-    const g: Gate = { artifactId, actor: `u:${who.user.id}`, anon: null };
+    const g: Gate = {
+      artifactId,
+      actor: `u:${who.user.id}`,
+      anon: null,
+      authzAt: authzAtOf(c),
+    };
     return c.json(
       await runtimeCall(() => stub(c, g).replaceRaw(toBuffer(body), g.actor)),
     );
@@ -410,7 +435,11 @@ export function mountRuntime(app: AppType): void {
     const col = name(c.req.query("collection"), "collection");
     const url = `https://runtime.invalid/subscribe?collection=${encodeURIComponent(col)}`;
     return stub(c, g).fetch(url, {
-      headers: { Upgrade: "websocket", [ACTOR_HEADER]: g.actor },
+      headers: {
+        Upgrade: "websocket",
+        [ACTOR_HEADER]: g.actor,
+        [AUTHZ_AT_HEADER]: String(g.authzAt),
+      },
     });
   });
 
@@ -425,6 +454,7 @@ export function mountRuntime(app: AppType): void {
     // Embed mode is downgrade-only (caller() also honours ?embed=1).
     const who: Caller =
       c.req.header("x-oa-embed") === "1" ? { kind: "anonymous" } : caller(c);
+    const authzAt = authzAtOf(c);
     const r = await accessLevel(c.env, who, artifactId);
     if (!r) throw new ApiError("not_found", "Not found");
     let actor: string;
@@ -454,6 +484,7 @@ export function mountRuntime(app: AppType): void {
         headers: {
           Upgrade: "websocket",
           [ACTOR_HEADER]: actor,
+          [AUTHZ_AT_HEADER]: String(authzAt),
           [EVENTS_VERSION_HEADER]: String(r.artifact.currentVersion),
           [EVENTS_NAMED_HEADER]: named ? "1" : "0",
         },

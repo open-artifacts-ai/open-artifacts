@@ -49,7 +49,9 @@ export function mountMembers(app: AppType): void {
   app.patch(MEMBER, async (c) => {
     requireManager(c);
     const patch = await jsonBody(c, MemberPatchSchema);
-    return c.json(await patchMember(c.env, c.req.param("id"), patch));
+    return c.json(
+      await patchMember(c.env, c.req.param("id"), patch, execCtx(c)),
+    );
   });
 
   app.delete(MEMBER, async (c) => {
@@ -62,7 +64,7 @@ export function mountMembers(app: AppType): void {
   // Clears an identity_conflict: the member's next Google sign-in links afresh.
   app.delete("/api/v1/members/:id/identities/google", async (c) => {
     const actor = requireManager(c);
-    await resetIdentity(c.env, actor, c.req.param("id"));
+    await resetIdentity(c.env, actor, c.req.param("id"), execCtx(c));
     return c.body(null, 204);
   });
 }
