@@ -191,6 +191,24 @@ describe("staging Durable Objects", () => {
     });
 });
 
+describe("staging DirectorySync (P3 T13a #571, unbound)", () => {
+  it("adds DirectorySync in migration v3, after v2 (UserPresence)", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+    const tags = env.migrations.map((m: any) => m.tag);
+    expect(tags.slice(0, 3)).toEqual(["v1", "v2", "v3"]);
+    expect(env.migrations[2]).toEqual({
+      tag: "v3",
+      new_sqlite_classes: ["DirectorySync"],
+    });
+  });
+  it("leaves DirectorySync unbound until its first user (#575), one release later", () => {
+    expect(
+      // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+      env.durable_objects.bindings.map((b: any) => b.class_name),
+    ).not.toContain("DirectorySync");
+  });
+});
+
 describe("staging UserPresence (P3 T7a #502, T7b #503)", () => {
   it("adds UserPresence in migration v2, after v1 (ArtifactRuntime)", () => {
     // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
