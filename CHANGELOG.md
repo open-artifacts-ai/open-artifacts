@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.40.0...v0.40.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **viewer:** in-artifact links: /a/ in place, external links in the same tab via the shell (P0) ([#512](https://github.com/open-artifacts-ai/open-artifacts/issues/512)) ([3012b51](https://github.com/open-artifacts-ai/open-artifacts/commit/3012b51447e9be8664b75d07450f226b051bd39b))
+
 ## [0.40.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.39.0...v0.40.0) (2026-10-24)
 
 
