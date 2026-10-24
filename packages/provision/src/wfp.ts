@@ -62,6 +62,7 @@ import {
   newInstallId,
   platformNames,
   type RegistryEntry,
+  registryDomains,
   registryEntry,
   registryKey,
 } from "./names.js";
@@ -1041,6 +1042,7 @@ export class WfpProvisioner {
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars);
     this.checkEmailCodeDomain(vars, "domains");
+    if (this.o.brokerEnabled) this.registryDomainsOf(vars);
     const rel = await this.readRelease(i);
 
     // Secrets for a fresh upload; unused (and dropped) when the script exists.
@@ -1441,7 +1443,13 @@ export class WfpProvisioner {
       await cf.scriptSubdomain(target, n.script, scriptSubdomainSettings());
     }
 
-    if (this.o.brokerEnabled) await this.broker(id, n.script, m.appHost);
+    if (this.o.brokerEnabled)
+      await this.broker(
+        id,
+        n.script,
+        m.appHost,
+        this.registryDomainsOf(m.vars),
+      );
 
     // HOSTS: after the script exists and holds every secret.
     for (const h of [m.appHost, m.contentHost]) {
@@ -1804,6 +1812,7 @@ export class WfpProvisioner {
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars);
     this.checkEmailCodeDomain(vars, "domains");
+    if (this.o.brokerEnabled) this.registryDomainsOf(vars);
     const ownerEmail = normOwnerEmail(row.owner_email ?? "");
     if (!ownerEmail)
       throw new ProvisionRefused(`install ${row.id} has no valid owner email`);
@@ -2615,6 +2624,9 @@ export class WfpProvisioner {
         });
         uploaded = true;
         await this.write({ vars: canonicalJson(vars) });
+        // H-RD: the registry copies follow the live vars, in this lease.
+        if (this.o.brokerEnabled)
+          await this.syncRegistry(id, m.appHost, this.registryDomainsOf(vars));
         await this.hold();
         await this.platform.putVersion(id, version, {
           vars,
@@ -2945,10 +2957,79 @@ export class WfpProvisioner {
   }
 
   /** P2 v3: add the new key -> upload BROKER_SIGNING_KEY -> journal kid -> drop the old key. */
+  /** H-RD: the registry's domains from AUTH_DOMAINS; refused in pre-flight, before any write. */
+  private registryDomainsOf(vars: Record<string, string>): string[] {
+    try {
+      return registryDomains(vars.AUTH_DOMAINS);
+    } catch (e) {
+      throw new ProvisionRefused((e as Error).message);
+    }
+  }
+
+  /** The entry, written to the broker registry and then, identical, to its directory copy. */
+  private async putEntry(
+    id: InstallId,
+    appHost: string,
+    e: Omit<RegistryEntry, "installId" | "origin">,
+  ): Promise<void> {
+    const reg = this.registryKv as { id: string; title: string };
+    const dir = this.directoryKv as { id: string; title: string };
+    const value = registryEntry({
+      installId: id,
+      origin: brokerOrigin(appHost),
+      ...e,
+    });
+    assertBrokerOrigin(value.origin, appHost);
+    const text = JSON.stringify(value);
+    assertOwnResource(reg.title, this.env);
+    await this.cf.kvPut(reg.id, registryKey(id), text);
+    assertOwnResource(dir.title, this.env);
+    await this.cf.kvPut(dir.id, registryKey(id), text);
+  }
+
+  /**
+   * H-RD: after a var change is live, both copies carry its domains, with the
+   * same keys. No entry yet: create's broker step owns writing the first one.
+   * Each copy is written only if it differs, so a rerun finishes a partial one.
+   */
+  private async syncRegistry(
+    id: InstallId,
+    appHost: string,
+    domains: string[],
+  ): Promise<void> {
+    const reg = this.registryKv as { id: string; title: string };
+    const dir = this.directoryKv as { id: string; title: string };
+    const raw = await this.cf.kvGet(reg.id, registryKey(id));
+    if (raw === null) return;
+    const entry = JSON.parse(raw) as RegistryEntry;
+    if (entry.installId !== id || entry.origin !== brokerOrigin(appHost))
+      throw new ProvisionRefused(
+        `broker registry entry for ${id} has another origin or id`,
+      );
+    const text = JSON.stringify(
+      registryEntry({ ...entry, domains, disabled: entry.disabled === true }),
+    );
+    if (raw !== text) {
+      await this.hold();
+      await this.putEntry(id, appHost, {
+        keys: entry.keys,
+        domains,
+        disabled: entry.disabled === true,
+      });
+      return;
+    }
+    if ((await this.cf.kvGet(dir.id, registryKey(id))) !== raw) {
+      assertOwnResource(dir.title, this.env);
+      await this.hold();
+      await this.cf.kvPut(dir.id, registryKey(id), raw);
+    }
+  }
+
   private async broker(
     id: InstallId,
     script: string,
     appHost: string,
+    domains: string[],
   ): Promise<void> {
     const reg = this.registryKv as { id: string; title: string };
     const dir = this.directoryKv as { id: string; title: string };
@@ -2974,26 +3055,23 @@ export class WfpProvisioner {
       assertOwnResource(dir.title, this.env);
       await this.cf.kvPut(dir.id, registryKey(id), value);
     };
+    const put = (keys: RegistryEntry["keys"]) =>
+      this.putEntry(id, appHost, {
+        keys,
+        domains,
+        disabled: entry?.disabled === true,
+      });
     if (healthy) {
-      if ((await this.cf.kvGet(dir.id, registryKey(id))) !== raw) {
+      // H-RD: stale domains (or none, from before they existed) rewrite both.
+      if (JSON.stringify(entry.domains ?? null) !== JSON.stringify(domains)) {
+        await this.hold();
+        await put(entry.keys);
+      } else if ((await this.cf.kvGet(dir.id, registryKey(id))) !== raw) {
         await this.hold();
         await copy(raw as string);
       }
       return;
     }
-    const put = async (keys: RegistryEntry["keys"]) => {
-      const value = registryEntry({
-        installId: id,
-        origin,
-        keys,
-        disabled: entry?.disabled === true,
-      });
-      assertBrokerOrigin(value.origin, appHost);
-      const text = JSON.stringify(value);
-      assertOwnResource(reg.title, this.env);
-      await this.cf.kvPut(reg.id, registryKey(id), text);
-      await copy(text);
-    };
     let keys = entry?.keys ?? [];
     if (keys.length >= 2)
       keys = [

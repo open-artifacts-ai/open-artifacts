@@ -1028,10 +1028,13 @@ describe("WfpProvisioner.create", () => {
       const raw = reg.get(registryKey(inst.id)) as string;
       const entry = JSON.parse(raw);
       expect(Object.keys(entry).sort()).toEqual([
+        "domains",
         "installId",
         "keys",
         "origin",
       ]);
+      // No AUTH_DOMAINS: always written, empty.
+      expect(entry.domains).toEqual([]);
       expect(entry.installId).toBe(inst.id);
       expect(entry.origin).toBe("https://finqore.open-artifacts-staging.app");
       expect(Object.keys(entry.keys[0]).sort()).toEqual(["kid", "x"]);
@@ -1190,6 +1193,70 @@ describe("WfpProvisioner.create", () => {
       expect(s.fake.kvValues(s.regId).has(registryKey(inst.id))).toBe(false);
       expect(s.fake.kvValues(s.dirId).has(registryKey(inst.id))).toBe(false);
       expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+    });
+
+    it("H-RD: both copies carry AUTH_DOMAINS as parsed by the shared parser", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(
+        input("finqore", {
+          vars: { AUTH_DOMAINS: "B.example, a.example,b.example" },
+        }),
+      );
+      const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
+      expect(JSON.parse(raw).domains).toEqual(["a.example", "b.example"]);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
+      expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+    });
+
+    it("H-RD: more than 50 domains, or an invalid one, is refused before any write", async () => {
+      for (const AUTH_DOMAINS of [
+        Array.from({ length: 51 }, (_, i) => `d${i}.example`).join(","),
+        `${"a".repeat(64)}.example`,
+      ]) {
+        const s = setup({ brokerEnabled: true });
+        const e = await fails(
+          s.p.create(input("finqore", { vars: { AUTH_DOMAINS } })),
+        );
+        expect(e).toBeInstanceOf(ProvisionRefused);
+        expect(e.message).toMatch(/domain/);
+        expect(s.fake.writes()).toEqual([]);
+      }
+    });
+
+    it("H-RD: status flags copies whose domains differ as a mismatch", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(
+        input("finqore", { vars: { AUTH_DOMAINS: "a.example" } }),
+      );
+      const key = registryKey(inst.id);
+      const raw = s.fake.kvValues(s.regId).get(key) as string;
+      s.fake
+        .kvValues(s.dirId)
+        .set(
+          key,
+          JSON.stringify({ ...JSON.parse(raw), domains: ["b.example"] }),
+        );
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "mismatch",
+      });
+    });
+
+    it("H-RD: a resumed create rewrites both copies when the domains are stale, keeping the key", async () => {
+      const s = setup({ brokerEnabled: true });
+      const i = input("finqore", { vars: { AUTH_DOMAINS: "a.example" } });
+      await failAtHealth(s, i);
+      const [row] = s.rows();
+      const key = registryKey(row.id);
+      const before = JSON.parse(s.fake.kvValues(s.regId).get(key) as string);
+      // An entry written before domains existed.
+      const legacy = JSON.stringify({ ...before, domains: undefined });
+      s.fake.kvValues(s.regId).set(key, legacy);
+      s.fake.kvValues(s.dirId).set(key, legacy);
+      await s.p.create(i);
+      const raw = s.fake.kvValues(s.regId).get(key) as string;
+      expect(JSON.parse(raw)).toEqual({ ...before, domains: ["a.example"] });
+      expect(s.fake.kvValues(s.dirId).get(key)).toBe(raw);
     });
 
     it("is not written when brokerEnabled is false", async () => {

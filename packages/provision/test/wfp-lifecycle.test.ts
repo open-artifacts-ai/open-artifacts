@@ -1166,6 +1166,99 @@ describe("updateVars and the session cut", () => {
     expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
   });
 
+  describe("H-RD: the registry copies follow AUTH_DOMAINS and google on/off", () => {
+    const entries = (s: S, id: string) => {
+      const reg = s.fake.kvValues(s.regId).get(registryKey(id)) as string;
+      const dir = s.fake.kvValues(s.dirId).get(registryKey(id)) as string;
+      return { reg, dir, entry: JSON.parse(reg) };
+    };
+    const brokered = async () => {
+      const s = setup();
+      const p = s.mk({ brokerEnabled: true });
+      const inst = keep(
+        await p.create(
+          input("finqore", { vars: { AUTH_DOMAINS: "a.example" } }),
+        ),
+      );
+      return { s, p, inst };
+    };
+
+    it("updateVars rewrites both copies with the new domains, same keys, in the op's lease", async () => {
+      const { s, p, inst } = await brokered();
+      const keys = entries(s, inst.id).entry.keys;
+      const r = await p.updateVars(inst.id, {
+        AUTH_DOMAINS: "c.example,B.example",
+      });
+      expect(r).toMatchObject({ ok: true });
+      const { reg, dir, entry } = entries(s, inst.id);
+      expect(entry.domains).toEqual(["b.example", "c.example"]);
+      expect(entry.keys).toEqual(keys);
+      expect(dir).toBe(reg);
+      expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+      expect((await p.status(inst.id)).registryDrift).toBeNull();
+    });
+
+    it("google on, then off: both copies follow the domains each time", async () => {
+      const { s, p, inst } = await brokered();
+      await p.updateVars(inst.id, {
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "g.example",
+      });
+      let e = entries(s, inst.id);
+      expect(e.entry.domains).toEqual(["g.example"]);
+      expect(e.dir).toBe(e.reg);
+      await p.updateVars(inst.id, { AUTH_PROVIDERS: "email" });
+      e = entries(s, inst.id);
+      expect(e.entry.domains).toEqual([]);
+      expect(e.dir).toBe(e.reg);
+    });
+
+    it("updateVars refuses more than 50 domains before any write", async () => {
+      const { s, p, inst } = await brokered();
+      const w = s.fake.writes().length;
+      const e = await fails(
+        p.updateVars(inst.id, {
+          AUTH_DOMAINS: Array.from(
+            { length: 51 },
+            (_, i) => `d${i}.example`,
+          ).join(","),
+        }),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(/more than 50 domains/);
+      expect(s.fake.writes().length).toBe(w);
+    });
+
+    it("a failed directory write in updateVars is reported, and a rerun makes both equal", async () => {
+      const { s, p, inst } = await brokered();
+      s.fake.inject(
+        (m, q) => m === "PUT" && q.includes(`/namespaces/${s.dirId}/values/`),
+        { status: 400 },
+      );
+      const next = { AUTH_DOMAINS: "n.example" };
+      const r = await p.updateVars(inst.id, next);
+      expect(r).toMatchObject({ ok: false });
+      expect((await p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "mismatch",
+      });
+      expect(await p.updateVars(inst.id, next)).toMatchObject({ ok: true });
+      const e = entries(s, inst.id);
+      expect(e.entry.domains).toEqual(["n.example"]);
+      expect(e.dir).toBe(e.reg);
+    });
+
+    it("upgrade and rollback keep the domains (they reuse the current vars)", async () => {
+      const { s, p, inst } = await brokered();
+      const before = entries(s, inst.id).reg;
+      keep(await p.upgrade(inst.id, "0.24.0"));
+      keep(await p.rollback(inst.id));
+      const e = entries(s, inst.id);
+      expect(e.reg).toBe(before);
+      expect(e.dir).toBe(before);
+    });
+  });
+
   it("turning google on bumps the epoch in the install's own D1 after the new vars are live, once per enablement", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));

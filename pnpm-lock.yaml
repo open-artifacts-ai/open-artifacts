@@ -313,6 +313,9 @@ importers:
 
   packages/provision:
     dependencies:
+      '@oa/auth-core':
+        specifier: workspace:*
+        version: link:../auth-core
       '@oa/shared':
         specifier: workspace:*
         version: link:../shared
