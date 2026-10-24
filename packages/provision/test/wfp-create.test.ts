@@ -606,6 +606,16 @@ const seedRow = (
   h.run(r.content, r.id);
 };
 
+// The template's latest DO migration tag, derived so a new server DO tag needs
+// no edit here; pinned to the vN shape so a missing tag can't pass vacuously.
+const lastTag = loadTemplate().migrations?.at(-1)?.tag;
+
+describe("template DO migration tag", () => {
+  it("is a vN tag", () => {
+    expect(lastTag).toMatch(/^v\d+$/);
+  });
+});
+
 describe("WfpProvisioner.create", () => {
   it("creates every resource named by install id and maps both hosts", async () => {
     const s = setup();
@@ -620,8 +630,7 @@ describe("WfpProvisioner.create", () => {
       state: "active",
       test_hooks: 0,
       version: "0.23.0",
-      // The template's latest tag (v2 adds UserPresence, unbound, P3 T7a).
-      do_migration_tag: "v2",
+      do_migration_tag: lastTag,
     });
     expect(
       s
@@ -1301,6 +1310,9 @@ describe("WfpProvisioner.create", () => {
       "ARTIFACT_RUNTIME",
       // P3 T7b: UserPresence, bound one release after its class tag (v2).
       "USER_PRESENCE",
+      // P3 T13: DirectorySync (v3) and the directory groups limiter.
+      "DIRECTORY_SYNC",
+      "RL_DIRECTORY",
       "RL_ANON",
       "RL_AUTH",
       "PLAN",
@@ -1933,7 +1945,17 @@ describe("WfpProvisioner.create", () => {
   });
 
   describe("ratelimits (decision 12)", () => {
-    it("RL_ANON gets rlNs and RL_AUTH rlNs + 1; two installs never share an id", async () => {
+    it("each template ratelimit gets rlNs + its index (RL_ANON rlNs, RL_AUTH rlNs + 1); two installs never share an id", async () => {
+      // Derived from the live template, so a new server limiter (P3 T13's
+      // RL_DIRECTORY) needs no edit here.
+      const tplRl = (loadTemplate().ratelimits ?? []) as {
+        name: string;
+        namespace_id: string;
+      }[];
+      expect(tplRl.slice(0, 2).map((r) => r.name)).toEqual([
+        "RL_ANON",
+        "RL_AUTH",
+      ]);
       const s = setup();
       const a = await s.p.create(input("alpha"));
       const b = await s.p.create(input("beta"));
@@ -1954,15 +1976,15 @@ describe("WfpProvisioner.create", () => {
             x.namespace_id,
           ]),
         );
-        expect(by).toEqual({
-          RL_ANON: String(row.rl_ns),
-          RL_AUTH: String(row.rl_ns + 1),
-        });
+        expect(by).toEqual(
+          Object.fromEntries(
+            tplRl.map((r, k) => [r.name, String(row.rl_ns + k)]),
+          ),
+        );
         ids.push(...Object.values(by as Record<string, string>));
       }
-      expect(new Set(ids).size).toBe(4);
-      expect(ids).not.toContain("1001");
-      expect(ids).not.toContain("1002");
+      expect(new Set(ids).size).toBe(2 * tplRl.length);
+      for (const r of tplRl) expect(ids).not.toContain(r.namespace_id);
     });
 
     it.each([
@@ -2044,13 +2066,37 @@ describe("WfpProvisioner.create", () => {
       },
     );
 
-    it("warns when the token expires within 5 days, and never calls a zone, DNS or email API", async () => {
+    it.each([
+      ["2 days", 2 * 86_400_000],
+      ["exactly 5 days", 5 * 86_400_000],
+    ])(
+      "a token that expires within 5 days (%s) is refused before any write, naming the date and the fix",
+      async (_n, ms) => {
+        const s = setup();
+        const exp = new Date(NOW + ms).toISOString();
+        s.fake.tokenInfo.expires_on = exp;
+        const e = await fails(s.p.create(input()));
+        expect(e.message).toContain(exp.slice(0, 10));
+        expect(e.message).toMatch(/expires/);
+        expect(e.message).toMatch(/roll/i);
+        expect(e.message).toMatch(/My Profile > API Tokens/);
+        expect(s.fake.writes()).toEqual([]);
+        expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
+      },
+    );
+
+    it("a token with just over 5 days left is accepted, with no expiry note", async () => {
       const s = setup();
       s.fake.tokenInfo.expires_on = new Date(
-        NOW + 2 * 86_400_000,
+        NOW + 5 * 86_400_000 + 60_000,
       ).toISOString();
+      await s.p.create(input());
+      expect(s.p.notes.join("\n")).not.toMatch(/expires/);
+    });
+
+    it("never calls a zone, DNS or email API", async () => {
+      const s = setup();
       const inst = await s.p.create(input());
-      expect(s.p.notes.join("\n")).toMatch(/expires/);
       for (const e of s.fake.log)
         expect(e.path).not.toMatch(
           /\/zones|dns_records|custom_domains|\/workers\/domains|\/email\//,
@@ -2512,9 +2558,12 @@ describe("account target is test-only (H-T4b L3)", () => {
 });
 
 describe("Durable Object migration safety (H-T4b L5)", () => {
+  // A step after the live template's own tags (derived, never a literal that
+  // a new server DO tag would collide with).
+  const STEP_TAG = `${lastTag}-step`;
   const withStep = (step: Record<string, unknown>) => {
     const t = structuredClone(loadTemplate());
-    t.migrations = [...(t.migrations ?? []), { tag: "v2", ...step }];
+    t.migrations = [...(t.migrations ?? []), { tag: STEP_TAG, ...step }];
     return t;
   };
   it.each([
@@ -2573,7 +2622,7 @@ describe("Durable Object migration safety (H-T4b L5)", () => {
       }),
     });
     await s.p.create(input());
-    expect(s.rows()[0].do_migration_tag).toBe("v2");
+    expect(s.rows()[0].do_migration_tag).toBe(STEP_TAG);
   });
 });
 

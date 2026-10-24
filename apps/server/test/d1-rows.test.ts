@@ -16,6 +16,15 @@ import { indexVersionOrThrow } from "../src/services/search.js";
 import { getUser, getUserWithEpoch } from "../src/services/users.js";
 import { contentCall, fakeAssets } from "./assets-stub.js";
 import { direct, seedUser, uniq } from "./auth-helpers.js";
+import {
+  begin,
+  DIR_CID,
+  directEnv,
+  get,
+  post,
+  resetDirectory,
+} from "./directory-helpers.js";
+import { fakeDirectory } from "./fixtures/fake-directory.js";
 import { api, login } from "./helpers.js";
 
 /** env.DB whose run/batch results add their meta.rows_written to `rows.n`. */
@@ -307,4 +316,79 @@ it("content host (P3 T11): one statement per file; the bound viewer adds one PK 
   expect(await read(`${unbound}a.css`)).toEqual([1]);
   expect(await read(`${publicPrefix(pub, 1)}__view`)).toEqual([2]);
   expect(await read(`${publicPrefix(pub, 1)}a.css`)).toEqual([1]);
+});
+
+it("directory connect (P3 T12): the pending flow, then binding, sealed token, audit and the initial pass", async () => {
+  // Rows written by every statement (run, all, first and batch alike).
+  const w = { n: 0 };
+  const note = <T extends D1Result>(r: T) => {
+    w.n += r.meta.rows_written;
+    return r;
+  };
+  const wrap = (s: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(s, {
+      get(t, p) {
+        if (p === "bind") return (...a: unknown[]) => wrap(t.bind(...a));
+        if (p === "run") return async () => note(await t.run());
+        if (p === "all") return async () => note(await t.all());
+        if (p === "first")
+          return async (col?: string) => {
+            const r = note(await t.all<Record<string, unknown>>());
+            const row = r.results[0] ?? null;
+            return col ? (row?.[col] ?? null) : row;
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  const DB = new Proxy(env.DB, {
+    get(t, p) {
+      if (p === "prepare") return (q: string) => wrap(t.prepare(q));
+      if (p === "batch")
+        return async (ss: D1PreparedStatement[]) =>
+          (await t.batch(ss)).map(note);
+      const v = Reflect.get(t, p);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  await resetDirectory();
+  const g = fakeDirectory();
+  const sub = `g-rows-${crypto.randomUUID()}`;
+  g.addUser({ id: sub, primaryEmail: uniq("rows-super"), isAdmin: true });
+  // One unknown in-domain user: created, with its personal space and identity.
+  g.addUser({
+    id: `g-rows-new-${crypto.randomUUID()}`,
+    primaryEmail: uniq("rows-new"),
+  });
+  const owner = await login(uniq("rows-dir-owner"), "owner");
+  const e = directEnv({ DB } as never);
+  w.n = 0;
+  const b = await begin(e, owner.cookie);
+  expect(b.r.status).toBe(302);
+  // directory_state connect.pending 1.
+  expect(w.n).toBe(1);
+  const code = g.issueCode(b.to?.searchParams.get("code_challenge") as string, {
+    sub,
+    aud: DIR_CID,
+  });
+  w.n = 0;
+  const r = await get(
+    e,
+    `${R.directoryCallback}?code=${code}&state=${encodeURIComponent(b.to?.searchParams.get("state") ?? "")}`,
+    `${owner.cookie}; ${b.dirCookie}`,
+  );
+  expect(new URL(r.headers.get("location") ?? "").search).toBe("");
+  // Consent only: pending delete 1 + binding 1 + refresh 1 + confirm row 1
+  // + audit 2 (table, audit_events_at_idx). No users, identities or spaces.
+  expect(w.n).toBe(6);
+  w.n = 0;
+  const c = await post(e, R.directoryConfirm, owner.cookie);
+  expect(c.status).toBe(200);
+  // Confirm: the swap (grant.sub 1, binding 1, refresh 1, pending rows
+  // deleted 2, confirm row deleted 1) + audit 2 + binding.initial 1, plus 6 per
+  // created user (the super admin and the new user): users 2 (table, email
+  // unique), personal space 2 (table, spaces_kind_name_idx), identity 2
+  // (table, identities_user_provider).
+  expect(w.n).toBe(21);
+  g.restore();
 });

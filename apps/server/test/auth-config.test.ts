@@ -144,6 +144,32 @@ describe("authConfig", () => {
     }
   });
 
+  test("HOSTED=1 admits by invite only: member is refused with a problem", () => {
+    const hosted = (over: Partial<Env>) =>
+      authConfig(
+        direct({
+          HOSTED: "1",
+          AUTH_BROKER_URL: "https://auth.h.test",
+          BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+          ...over,
+        }),
+      );
+    const member = hosted({ AUTH_DOMAIN_JOIN: "member" });
+    expect(member.domainJoin).toBe("invite");
+    expect(member.problems).toContain(
+      "AUTH_DOMAIN_JOIN: HOSTED=1 allows invite only",
+    );
+    for (const join of [undefined, "invite"]) {
+      const c = hosted({ AUTH_DOMAIN_JOIN: join });
+      expect(c.domainJoin).toBe("invite");
+      expect(c.problems).toEqual([]);
+    }
+    // Self-host is unchanged.
+    expect(authConfig(direct({ AUTH_DOMAIN_JOIN: "member" })).domainJoin).toBe(
+      "member",
+    );
+  });
+
   test("code email pool: 1..10000, default 200", () => {
     expect(authConfig(direct()).codeEmailsPerDay).toBe(200);
     expect(

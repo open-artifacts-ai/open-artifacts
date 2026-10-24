@@ -3,20 +3,21 @@
 // that install's user Worker in the env's dispatch namespace.
 //
 // Deploy with --env staging or --env prod only (docs/ops/hosted.md): the top
-// level has no name, so a deploy without --env is refused. No routes, custom
+// level has no name and no main, so a deploy without --env is refused,
+// even with --name. No routes, custom
 // domains or workers.dev here: the wildcard routes are wired once per env by
 // the gated ops step, never from this file. Each env's HOSTS id has its own
 // placeholder, filled at deploy (the id of oa-s-hosts / oa-p-hosts).
 // Observability stays off: Workers Logs would record full URLs.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "workers_dev": false,
   "preview_urls": false,
   "env": {
     "staging": {
       "name": "oa-s-dispatch",
+      "main": "src/index.ts",
       "workers_dev": false,
       "preview_urls": false,
       "vars": { "OA_ENV": "staging" },
@@ -28,6 +29,7 @@
     },
     "prod": {
       "name": "oa-p-dispatch",
+      "main": "src/index.ts",
       "workers_dev": false,
       "preview_urls": false,
       "vars": { "OA_ENV": "prod" },

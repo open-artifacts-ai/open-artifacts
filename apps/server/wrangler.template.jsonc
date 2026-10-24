@@ -35,7 +35,8 @@
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ArtifactRuntime"] },
-    { "tag": "v2", "new_sqlite_classes": ["UserPresence"] }
+    { "tag": "v2", "new_sqlite_classes": ["UserPresence"] },
+    { "tag": "v3", "new_sqlite_classes": ["DirectorySync"] }
   ],
   "ratelimits": [
     {

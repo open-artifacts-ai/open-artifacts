@@ -79,6 +79,7 @@ export const HOSTED_ADDED = [
   "CODE_EMAILS_PER_DAY",
   "AUTH_PROVIDERS",
   "AUTH_DOMAINS",
+  "AUTH_DOMAIN_JOIN",
   "AUTH_BROKER_URL",
   "NIGHTLY_PUBKEY",
   "TEST_HOOKS",
@@ -108,6 +109,12 @@ export const HOSTED_VARS: Record<string, (v: string) => string | undefined> = {
   CODE_EMAILS_PER_DAY: posInt,
   AUTH_PROVIDERS: list(/^[a-z][a-z0-9_-]*$/),
   AUTH_DOMAINS: list(/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i),
+  // Hosted AUTH_DOMAINS isn't verified as owned, so a hosted install never
+  // admits by domain: always "invite" until ownership is proven (#572).
+  AUTH_DOMAIN_JOIN: (v) =>
+    v === "invite"
+      ? undefined
+      : 'hosted installs must use "invite" until domain ownership is proven (#572)',
   AUTH_BROKER_URL: (v) =>
     /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?(?:\/\S*)?$/i.test(v)
       ? undefined
@@ -410,6 +417,7 @@ export function userWorkerMetadata(
     HOSTED: "1",
     INSTALL_ID: i.id,
     FEATURES: features,
+    AUTH_DOMAIN_JOIN: "invite",
   });
   for (const k of PASSTHROUGH) {
     const v = i.vars[k];

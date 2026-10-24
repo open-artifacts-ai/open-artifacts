@@ -14,9 +14,23 @@ import {
   flowHash,
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_TOKEN_URL,
-  keyId,
-  verifyRedeem,
 } from "@oa/auth-core";
+import {
+  ASSERTION_SKEW_MS,
+  type BrokerState,
+  json,
+  installLimited as limitInstall,
+  ipLimited as limitIp,
+  logger,
+  MAX_BODY,
+  notFound,
+  fixedOrigin as originOf,
+  readState as readSigned,
+  refused,
+  same,
+  signState as signSigned,
+  verifyAssertion,
+} from "@oa/broker-core";
 import { lookupInstall } from "./registry.js";
 
 export interface Env {
@@ -36,144 +50,38 @@ export interface Env {
   RL_BROKER_INSTALL?: RateLimit;
 }
 
+// Responses, logging, the signed state, rate limits and the install
+// assertion are @oa/broker-core's, shared with the directory broker.
 const STATE_TTL_MS = 10 * 60_000;
-const REDEEM_SKEW_MS = 60_000;
-const MAX_BODY = 4096;
+const REDEEM_PATH = "/google/redeem";
 /** S256 of 32 bytes, base64url: exactly what the installs generate. */
 const CHALLENGE_RE = /^[A-Za-z0-9_-]{43}$/;
 const enc = new TextEncoder();
-
-const b64 = (bytes: Uint8Array) => {
-  let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
-  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-};
-const unb64 = (s: string): string | null => {
-  try {
-    return atob(s.replace(/-/g, "+").replace(/_/g, "/"));
-  } catch {
-    return null;
-  }
-};
-
-const json = (body: unknown, status = 200) =>
-  Response.json(body, {
-    status,
-    headers: { "cache-control": "no-store", "x-robots-tag": "noindex" },
-  });
-const notFound = () => json({ error: "not_found" }, 404);
-const refused = () => json({ error: "unauthorized" }, 401);
-
-/** One line per outcome; never a code, verifier, token, email or key. */
-const log = (route: string, outcome: string) =>
-  console.log(JSON.stringify({ evt: "broker", route, outcome }));
-
-async function hmac(key: string, data: string): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(key),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(data)));
-}
-
-function same(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let d = 0;
-  for (let i = 0; i < a.length; i++) d |= (a[i] as number) ^ (b[i] as number);
-  return d === 0;
-}
+const log = logger("broker");
 
 /**
  * The broker state binds the exact flow: install, the install's client state,
  * H(client nonce || code challenge), and a short expiry. A state minted for
- * one nonce/challenge pair can't be replayed for another.
+ * one nonce/challenge pair can't be replayed for another. Sign-in states are
+ * MACed over the payload alone (no domain), as in P2.
  */
-type BrokerState = { i: string; s: string; h: string; exp: number };
-
-async function signState(env: Env, st: BrokerState): Promise<string> {
-  const p = b64(enc.encode(JSON.stringify(st)));
-  return `${p}.${b64(await hmac(env.BROKER_STATE_KEY, p))}`;
-}
-
-async function readState(
-  env: Env,
-  v: string,
-  now: number,
-): Promise<BrokerState | null> {
-  const [p, sig, extra] = v.split(".");
-  if (!p || !sig || extra !== undefined) return null;
-  const want = await hmac(env.BROKER_STATE_KEY, p);
-  const got = unb64(sig);
-  if (
-    got === null ||
-    !same(
-      want,
-      Uint8Array.from(got, (c) => c.charCodeAt(0)),
-    )
-  )
-    return null;
-  try {
-    const raw = unb64(p);
-    const st = raw ? (JSON.parse(raw) as BrokerState) : null;
-    if (
-      !st ||
-      typeof st.i !== "string" ||
-      typeof st.s !== "string" ||
-      typeof st.h !== "string"
-    )
-      return null;
-    return typeof st.exp === "number" && st.exp > now ? st : null;
-  } catch {
-    return null;
-  }
-}
+const signState = (env: Env, st: BrokerState) =>
+  signSigned(env.BROKER_STATE_KEY, st);
+const readState = (env: Env, v: string, now: number) =>
+  readSigned(env.BROKER_STATE_KEY, v, now);
 
 /** The fixed public origin, or null when BROKER_ORIGIN is missing/invalid. */
-function fixedOrigin(env: Env): string | null {
-  try {
-    const u = new URL(env.BROKER_ORIGIN);
-    return u.protocol === "https:" ? u.origin : null;
-  } catch {
-    return null;
-  }
-}
+const fixedOrigin = (env: Env) => originOf(env.BROKER_ORIGIN);
 
 const callbackUrl = (origin: string) => `${origin}/google/callback`;
 
-const ipOf = (req: Request) =>
-  req.headers.get("cf-connecting-ip")?.trim() || "unknown";
-
-/**
- * Charges the per-IP bucket before any Google or registry work. A missing
- * binding (either one) fails closed (503) rather than unlimited.
- */
-async function ipLimited(env: Env, req: Request): Promise<Response | null> {
-  if (!env.RL_BROKER_IP || !env.RL_BROKER_INSTALL)
-    return log("rate_limit", "unbound"), json({ error: "unavailable" }, 503);
-  if (!(await env.RL_BROKER_IP.limit({ key: `ip:${ipOf(req)}` })).success)
-    return log("rate_limit", "ip"), json({ error: "rate_limited" }, 429);
-  return null;
-}
-
-/**
- * Charges the per-install bucket only once the request is tied to a real
- * install (authorize) or authenticated as it (redeem): junk requests naming
- * install B must not drain B's sign-in.
- */
-async function installLimited(
-  env: Env,
-  install: string,
-): Promise<Response | null> {
-  const byInstall = env.RL_BROKER_INSTALL;
-  if (!byInstall)
-    return log("rate_limit", "unbound"), json({ error: "unavailable" }, 503);
-  if (!(await byInstall.limit({ key: `install:${install}` })).success)
-    return log("rate_limit", "install"), json({ error: "rate_limited" }, 429);
-  return null;
-}
+const limits = (env: Env) => ({
+  ip: env.RL_BROKER_IP,
+  install: env.RL_BROKER_INSTALL,
+});
+const ipLimited = (env: Env, req: Request) => limitIp(limits(env), req, log);
+const installLimited = (env: Env, install: string) =>
+  limitInstall(limits(env), install, log);
 
 async function authorize(
   req: Request,
@@ -301,15 +209,12 @@ async function redeem(req: Request, env: Env, now: number): Promise<Response> {
   if (limited) return limited;
   const entry = await lookupInstall(env.BROKER_REGISTRY, body.install, now);
   if (!entry) return log("redeem", "unknown_install"), refused();
-  // The kid must be one of this install's keys AND derive from its x.
-  let x: string | null = null;
-  for (const k of entry.keys)
-    if (k.kid === kid && (await keyId(k.x)) === kid) x = k.x;
-  // The signature covers method, path, kid and body: a valid redeem can't be
+  // The kid must be one of this install's keys AND derive from its x. The
+  // signature covers method, path, kid and body: a valid redeem can't be
   // transplanted to another route or replayed under another key id.
-  if (!x || !(await verifyRedeem(x, kid, text, sig)))
+  if (!(await verifyAssertion(entry, REDEEM_PATH, kid, text, sig)))
     return log("redeem", "bad_signature"), refused();
-  if (Math.abs(now - body.ts) > REDEEM_SKEW_MS)
+  if (Math.abs(now - body.ts) > ASSERTION_SKEW_MS)
     return log("redeem", "stale"), refused();
   const busy = await installLimited(env, body.install);
   if (busy) return busy;
@@ -364,7 +269,7 @@ export default {
       return authorize(req, env, now);
     if (req.method === "GET" && pathname === "/google/callback")
       return callback(req, env, now);
-    if (req.method === "POST" && pathname === "/google/redeem")
+    if (req.method === "POST" && pathname === REDEEM_PATH)
       return redeem(req, env, now);
     return notFound();
   },

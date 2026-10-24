@@ -14,15 +14,23 @@ export const KEY_LABELS = [
   "oa:login-codes",
   "oa:code-email",
   "oa:audit-cursor",
+  // P3 directory connect: the state cookie binding a consent to its browser.
+  "oa:directory-state",
   // From CONTENT_SIGNING_KEY instead (contentKey below), so a content token
   // and an upload signature can never verify as each other.
   "oa:content-url",
   "oa:upload",
+  // From DIRECTORY_TOKEN_KEY instead (directoryKey below): the AES-GCM key
+  // sealing the directory refresh token at rest.
+  "oa:directory-token",
 ] as const;
 export type KeyLabel = (typeof KEY_LABELS)[number];
-/** The labels keyed by CONTENT_SIGNING_KEY (contentKey); every other label is SESSION_SECRET's. */
+/** The labels keyed by CONTENT_SIGNING_KEY (contentKey); oa:directory-token is DIRECTORY_TOKEN_KEY's; every other label is SESSION_SECRET's. */
 export type ContentKeyLabel = "oa:content-url" | "oa:upload";
-type SessionKeyLabel = Exclude<KeyLabel, ContentKeyLabel>;
+type SessionKeyLabel = Exclude<
+  KeyLabel,
+  ContentKeyLabel | "oa:directory-token"
+>;
 
 const HKDF_SALT = "open-artifacts/hkdf/v1";
 const enc = new TextEncoder();
@@ -79,6 +87,25 @@ export function contentKey(
       new Error("CONTENT_SIGNING_KEY must be at least 32 characters"),
     );
   return cached(k, label);
+}
+
+/** DIRECTORY_TOKEN_KEY's minimum length (setup and provisioning generate 32 random bytes). */
+export const MIN_DIRECTORY_KEY_LENGTH = 32;
+
+/**
+ * The refresh-token sealing key (P3 directory sync), derived from
+ * DIRECTORY_TOKEN_KEY with the same HKDF ("oa:directory-token"); the raw
+ * secret seals nothing. Missing or short: rejects.
+ */
+export function directoryKey(
+  env: Pick<Env, "DIRECTORY_TOKEN_KEY">,
+): Promise<string> {
+  const k = env.DIRECTORY_TOKEN_KEY;
+  if (typeof k !== "string" || k.length < MIN_DIRECTORY_KEY_LENGTH)
+    return Promise.reject(
+      new Error("DIRECTORY_TOKEN_KEY must be at least 32 characters"),
+    );
+  return cached(k, "oa:directory-token");
 }
 
 function cached(secret: string, label: KeyLabel): Promise<string> {
