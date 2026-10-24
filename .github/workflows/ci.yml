@@ -253,7 +253,8 @@ jobs:
           OA_REQUIRE_NODE20: "1"
         run: |
           "$OA_NODE20" --version
-          pnpm --filter @oa/shared build
+          # provision imports @oa/auth-core/domains, which node resolves to its dist.
+          pnpm --filter @oa/shared --filter @oa/auth-core build
           pnpm --filter @oa/provision exec vitest run test/sign-release.test.ts -t "Node 20"
   # No secrets: the real suite runs a local `wrangler dev` (ENVIRONMENT=dev in a
   # generated temp config), never staging.

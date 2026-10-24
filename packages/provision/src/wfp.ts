@@ -1822,7 +1822,6 @@ export class WfpProvisioner {
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars);
     this.checkEmailCodeDomain(vars, "domains");
-    if (this.o.brokerEnabled) this.registryDomainsOf(vars);
     const ownerEmail = normOwnerEmail(row.owner_email ?? "");
     if (!ownerEmail)
       throw new ProvisionRefused(`install ${row.id} has no valid owner email`);
@@ -2552,6 +2551,12 @@ export class WfpProvisioner {
       const prev = this.currentVars(row);
       const vars = { ...nextVars };
       const m = this.renderInputs(row, vars);
+      // H-RD: only the paths that write the registry check its domains (here
+      // and create); upgrade and rollback never do, so a rollback is never
+      // blocked by them.
+      const domains = this.o.brokerEnabled
+        ? this.registryDomainsOf(vars)
+        : null;
       const rel = await this.readRelease({
         version,
         bundle: m.testHooks ? "redline" : "release",
@@ -2633,8 +2638,7 @@ export class WfpProvisioner {
         uploaded = true;
         await this.write({ vars: canonicalJson(vars) });
         // H-RD: the registry copies follow the live vars, in this lease.
-        if (this.o.brokerEnabled)
-          await this.syncRegistry(id, m.appHost, this.registryDomainsOf(vars));
+        if (domains !== null) await this.syncRegistry(id, m.appHost, domains);
         await this.hold();
         await this.platform.putVersion(id, version, {
           vars,
@@ -2963,7 +2967,6 @@ export class WfpProvisioner {
     }
   }
 
-  /** P2 v3: add the new key -> upload BROKER_SIGNING_KEY -> journal kid -> drop the old key. */
   /** H-RD: the registry's domains from AUTH_DOMAINS; refused in pre-flight, before any write. */
   private registryDomainsOf(vars: Record<string, string>): string[] {
     try {
@@ -3032,6 +3035,7 @@ export class WfpProvisioner {
     }
   }
 
+  /** P2 v3: add the new key -> upload BROKER_SIGNING_KEY -> journal kid -> drop the old key. */
   private async broker(
     id: InstallId,
     script: string,
