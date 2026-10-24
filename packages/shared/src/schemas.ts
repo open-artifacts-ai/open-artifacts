@@ -326,8 +326,48 @@ export const ShareInputSchema = z.strictObject({
 });
 export type ShareInput = z.infer<typeof ShareInputSchema>;
 
+/**
+ * C0 controls (U+0000-U+001F), DEL (U+007F), bidi controls (LRM/RLM,
+ * ALM, LRE..RLO, LRI..PDI) and zero-width characters (ZWSP, ZWNJ, ZWJ,
+ * BOM/ZWNBSP): stripped from space names and agent labels.
+ */
+const NAME_CONTROLS =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  /[\u0000-\u001F\u007F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+
+/** A name with control and bidi characters removed. */
+export const stripNameControls = (s: string): string =>
+  s.replace(NAME_CONTROLS, "");
+
+/**
+ * A user label on a connected agent: control and bidi characters stripped
+ * (`stripNameControls`), then trimmed, 1-`max` characters (a label of only
+ * such characters is 400).
+ */
+const agentLabel = (max: number) =>
+  z
+    .string()
+    .transform(stripNameControls)
+    .pipe(
+      z
+        .string()
+        .trim()
+        .min(1, "Label must not be blank")
+        .refine(
+          (s) => [...s].length <= max,
+          `Label must be at most ${max} characters`,
+        ),
+    );
+
+/** An OAuth grant's label: 1-60 characters (see `agentLabel`). */
+export const AgentLabelSchema = agentLabel(60);
+
+/** A token's label on create and PATCH: 1-80 characters (see `agentLabel`). */
+export const TokenLabelSchema = agentLabel(80);
+
+/** POST R.tokens. The label is cleaned and counted as on PATCH (TokenLabelSchema). */
 export const TokenCreateInputSchema = z.strictObject({
-  label: z.string().trim().min(1).max(80),
+  label: TokenLabelSchema,
 });
 export type TokenCreateInput = z.infer<typeof TokenCreateInputSchema>;
 
@@ -442,45 +482,6 @@ export const DisplayNameSchema = z
 
 export const MePatchSchema = z.strictObject({ displayName: DisplayNameSchema });
 export type MePatch = z.infer<typeof MePatchSchema>;
-
-/**
- * C0 controls (U+0000-U+001F), DEL (U+007F), bidi controls (LRM/RLM,
- * ALM, LRE..RLO, LRI..PDI) and zero-width characters (ZWSP, ZWNJ, ZWJ,
- * BOM/ZWNBSP): stripped from space names and agent labels.
- */
-const NAME_CONTROLS =
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-  /[\u0000-\u001F\u007F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
-
-/** A name with control and bidi characters removed. */
-export const stripNameControls = (s: string): string =>
-  s.replace(NAME_CONTROLS, "");
-
-/**
- * A user label on a connected agent: control and bidi characters stripped
- * (`stripNameControls`), then trimmed, 1-`max` characters (a label of only
- * such characters is 400).
- */
-const agentLabel = (max: number) =>
-  z
-    .string()
-    .transform(stripNameControls)
-    .pipe(
-      z
-        .string()
-        .trim()
-        .min(1, "Label must not be blank")
-        .refine(
-          (s) => [...s].length <= max,
-          `Label must be at most ${max} characters`,
-        ),
-    );
-
-/** An OAuth grant's label: 1-60 characters (see `agentLabel`). */
-export const AgentLabelSchema = agentLabel(60);
-
-/** A token's label on PATCH: 1-80 characters, as on create (see `agentLabel`). */
-export const TokenLabelSchema = agentLabel(80);
 
 export const TokenSchema = z.object({
   id: z.string(),

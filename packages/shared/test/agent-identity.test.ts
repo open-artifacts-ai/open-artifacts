@@ -4,6 +4,7 @@ import {
   OAuthClientPatchSchema,
   OAuthClientSchema,
   stripNameControls,
+  TokenCreateInputSchema,
   TokenPatchSchema,
   TokenSchema,
 } from "../src/index.js";
@@ -44,6 +45,22 @@ describe("agent identity cards", () => {
       false,
     );
     expect(TokenPatchSchema.safeParse({ label: null }).success).toBe(false);
+  });
+  it("TokenCreateInputSchema cleans and counts the label as PATCH does", () => {
+    expect(TokenCreateInputSchema.parse({ label: " ci\u202e\u0007 " })).toEqual(
+      {
+        label: "ci",
+      },
+    );
+    expect(TokenCreateInputSchema.parse({ label: "😀".repeat(80) }).label).toBe(
+      "😀".repeat(80),
+    );
+    expect(
+      TokenCreateInputSchema.safeParse({ label: "x".repeat(81) }).success,
+    ).toBe(false);
+    expect(TokenCreateInputSchema.safeParse({ label: "\u2066" }).success).toBe(
+      false,
+    );
   });
   it("old grants and tokens parse without the new fields", () => {
     const grant = { grantId: "g", clientName: "c", createdAt: "t" };
