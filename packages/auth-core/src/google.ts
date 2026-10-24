@@ -17,7 +17,39 @@ export const GOOGLE_ISSUERS = [
 export const GOOGLE_AUTHORIZE_URL =
   "https://accounts.google.com/o/oauth2/v2/auth";
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+/** RFC 7009 revocation (a refresh token revokes the whole grant). */
+export const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 export const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
+
+/**
+ * Directory sync consent (P3): read-only Admin SDK scopes plus openid email,
+ * requested by the broker (hosted) or the install itself (direct transport).
+ * The install refuses a grant missing any of them.
+ */
+export const GOOGLE_DIRECTORY_SCOPES = [
+  "openid",
+  "email",
+  "https://www.googleapis.com/auth/admin.directory.user.readonly",
+  "https://www.googleapis.com/auth/admin.directory.group.readonly",
+  "https://www.googleapis.com/auth/admin.directory.domain.readonly",
+  "https://www.googleapis.com/auth/admin.reports.audit.readonly",
+] as const;
+
+/** Google reports the `email` scope back under its long name. */
+const SCOPE_ALIASES: Record<string, string> = {
+  "https://www.googleapis.com/auth/userinfo.email": "email",
+};
+
+/** True when `granted` (the token response's space-separated `scope`) covers every directory scope. */
+export function hasDirectoryScopes(granted: string): boolean {
+  const got = new Set(
+    granted
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((s) => SCOPE_ALIASES[s] ?? s),
+  );
+  return GOOGLE_DIRECTORY_SCOPES.every((s) => got.has(s));
+}
 
 const CLOCK_TOLERANCE_S = 60;
 /** Google ID tokens live 1 h; refuse anything issued earlier than that. */

@@ -66,6 +66,16 @@ export const SyncStatusSchema = z.object({
     .object({ expected: z.string(), actual: z.string() })
     .nullable(),
   held: z.array(HeldSweepSchema),
+  /**
+   * state pending_confirm only (else null / false / null): active in-domain
+   * directory users the binding pass would link or create, counted over at
+   * most one page; `pendingCountCapped` true means "500+". Defaulted so a
+   * payload from before the confirm step still parses.
+   */
+  pendingCount: z.number().int().nullable().default(null),
+  pendingCountCapped: z.boolean().default(false),
+  /** When the unconfirmed connection is dropped (24 h after consent). */
+  pendingExpiresAt: z.string().nullable().default(null),
 });
 export type SyncStatus = z.infer<typeof SyncStatusSchema>;
 

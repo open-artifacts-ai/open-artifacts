@@ -14,11 +14,13 @@ export const RESERVED_SLUGS: readonly string[] = [
   "docs",
   "staging",
   "content",
-  // Platform hosts on the tenant domains (P2 auth broker at auth.<app-domain>).
+  // Platform hosts on the tenant domains (P2 auth broker at auth.<app-domain>,
+  // P3 directory broker at directory.<app-domain>).
   "auth",
   "broker",
   "login",
   "sso",
+  "directory",
 ];
 
 export function isInstallId(s: string): s is InstallId {
