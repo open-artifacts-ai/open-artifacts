@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -536,6 +536,32 @@ describe("release-please.yml deploy-prod invariants (#172)", () => {
       } else if (inRun && l.trim() && indent > runIndent)
         expect(l).not.toMatch(/\$\{\{\s*vars\.PROD_/);
       else if (l.trim()) inRun = false;
+    }
+  });
+  it("every workflow that runs prod-setup.sh install, preflight or upgrade forwards the sign-in variables through env", () => {
+    const dir = join(import.meta.dirname, "../../.github/workflows");
+    const files = readdirSync(dir).filter((f) => /\.ya?ml$/.test(f));
+    const users = files.filter((f) =>
+      /prod-setup\.sh (install|preflight|upgrade)\b/.test(
+        readFileSync(join(dir, f), "utf8"),
+      ),
+    );
+    expect(users.sort()).toEqual([
+      "ops-prod-install.yml",
+      "release-please.yml",
+    ]);
+    for (const f of users) {
+      const text = readFileSync(join(dir, f), "utf8");
+      for (const v of [
+        "PROD_AUTH_PROVIDERS",
+        "PROD_AUTH_DOMAINS",
+        "PROD_AUTH_DOMAIN_JOIN",
+        "PROD_GOOGLE_CLIENT_ID",
+      ])
+        expect(text, `${f} ${v}`).toMatch(
+          new RegExp(`\\n +${v}: \\$\\{\\{ vars\\.${v} \\}\\}\\n`),
+        );
+      expect(text, f).not.toMatch(/run:[^\n]*\$\{\{\s*vars\.PROD_/);
     }
   });
   it("verify-release skips the prod check when prod is not installed", () => {

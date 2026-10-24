@@ -153,49 +153,137 @@ describe("setup keeps direct sign-in vars across upgrades", () => {
     expect(line(ok, "deploy").message).not.toContain("GOOGLE_CLIENT_SECRET");
   });
 
-  it("the saved values stand in when the live Worker is unreadable", async () => {
-    const o: Parameters<typeof world>[0] = {
-      secrets: ["GOOGLE_CLIENT_SECRET"],
-    };
-    const w = world(o);
-    expect(await run([...HOSTS, ...GOOGLE], w.deps, ROOT)).toBe(0);
-    expect(w.state().signin).toMatchObject(LIVE);
-    o.settingsFail = true;
-    w.ops.length = 0;
-    expect(await run([...HOSTS, "--upgrade"], w.deps, ROOT)).toBe(0);
-    expect(w.ops).toContain("deploy");
-    expect(deployedVars(w)).toMatchObject(LIVE);
-  });
-
-  it("an unreadable Worker with no saved sign-in values: a full setup warns", async () => {
+  it("a fresh install with unreadable settings (no Worker yet) still deploys", async () => {
     const w = world({ settingsFail: true });
     expect(await run([...HOSTS, "--plan", "free"], w.deps, ROOT)).toBe(0);
-    expect(line(w, "deploy").message).toMatch(
-      /warning: could not read the live Worker's sign-in vars/,
-    );
+    expect(deploys(w)).toContain("deploy");
   });
 
-  it("an unreadable Worker with no saved sign-in values: --upgrade refuses before deploying", async () => {
+  it("the kept note names each value", async () => {
+    const w = await deployedWithGoogle();
+    expect(await run([...HOSTS, "--upgrade"], w.deps, ROOT)).toBe(0);
+    expect(line(w, "deploy").message).toContain(
+      "kept the deployed AUTH_PROVIDERS=access,google,email, AUTH_DOMAINS=example.com,example.org",
+    );
+  });
+});
+
+describe("M2: an existing Worker whose settings can't be read is never deployed", () => {
+  const cases: [string, Parameters<typeof world>[0], string[], boolean][] = [
+    ["unreadable, full setup, saved state", { settingsFail: true }, [], true],
+    [
+      "unreadable, --upgrade, saved state",
+      { settingsFail: true },
+      ["--upgrade"],
+      true,
+    ],
+    ["partial, full setup, saved state", { settingsPartial: true }, [], true],
+    [
+      "partial, --upgrade, no state",
+      { settingsPartial: true },
+      ["--upgrade"],
+      false,
+    ],
+  ];
+  for (const [name, fail, extra, keepState] of cases)
+    it(name, async () => {
+      const o: Parameters<typeof world>[0] = {
+        secrets: ["GOOGLE_CLIENT_SECRET"],
+      };
+      const w = world(o);
+      expect(await run([...HOSTS, ...GOOGLE], w.deps, ROOT)).toBe(0);
+      const before = w.deployed();
+      if (!keepState) w.files.delete(STATE);
+      Object.assign(o, fail);
+      w.ops.length = 0;
+      w.lines.length = 0;
+      const code = await run(
+        [...HOSTS, ...extra, "--plan", "free"],
+        w.deps,
+        ROOT,
+      );
+      expect(code).not.toBe(0);
+      expect(w.lines.join("\n")).toMatch(
+        /never deploys without (them|its sign-in vars)|could not read/,
+      );
+      expect(deploys(w)).toEqual([]);
+      expect(w.deployed()).toBe(before);
+    });
+
+  it("the deploy step names the reason", async () => {
     const o: Parameters<typeof world>[0] = {};
     const w = world(o);
     expect(await run(HOSTS, w.deps, ROOT)).toBe(0);
-    // State saved before setup kept sign-in vars (stateless, it fails earlier on the read).
-    const st = w.state();
-    delete st.signin;
-    w.files.set(STATE, JSON.stringify(st));
-    o.settingsFail = true;
-    w.ops.length = 0;
+    o.settingsPartial = true;
     w.lines.length = 0;
-    const code = await run(
-      [...HOSTS, "--upgrade", "--plan", "free"],
-      w.deps,
-      ROOT,
-    );
-    expect(code).toBe(2);
+    expect(await run(HOSTS, w.deps, ROOT)).toBe(2);
     expect(line(w, "deploy").message).toMatch(
-      /could not read the live Worker's sign-in vars.*--auth-providers/,
+      /refusing to deploy: the live Worker's settings came back without its vars/,
     );
-    expect(deploys(w)).toEqual([]);
+  });
+});
+
+describe("M1: live values are carried byte for byte or refused", () => {
+  const live = (name: string, text: string) =>
+    world({
+      secrets: ["GOOGLE_CLIENT_SECRET"],
+      workerBindings: [{ type: "plain_text", name, text }],
+    });
+  for (const [name, text, flag] of [
+    ["AUTH_DOMAIN_JOIN", "member ", "--auth-domain-join"],
+    ["EMAIL_CODE_DOMAIN", " on", "--email-code-domain"],
+    ["AUTH_PROVIDERS", "Google", "--auth-providers"],
+    ["AUTH_PROVIDERS", "access,,google", "--auth-providers"],
+    ["AUTH_PROVIDERS", "", "--auth-providers"],
+    ["AUTH_DOMAINS", "Example.com", "--auth-domains"],
+    ["CODE_EMAILS_PER_DAY", "0", "--code-emails-per-day"],
+  ] as const)
+    it(`refuses a live ${name}=${JSON.stringify(text)} before any deploy call`, async () => {
+      const w = live(name, text);
+      expect(await run(HOSTS, w.deps, ROOT)).not.toBe(0);
+      const m = line(w, "deploy").message;
+      expect(m).toContain(`the deployed ${name} ${JSON.stringify(text)}`);
+      expect(m).toContain(flag);
+      expect(deploys(w)).toEqual([]);
+    });
+
+  it("a flag replaces a bad live value", async () => {
+    const w = live("AUTH_DOMAIN_JOIN", "member ");
+    const argv = [...HOSTS, "--auth-domain-join", "invite"];
+    expect(await run(argv, w.deps, ROOT)).toBe(0);
+    expect(deployedVars(w).AUTH_DOMAIN_JOIN).toBe("invite");
+  });
+
+  it("flags are normalized: trimmed and lowercased", async () => {
+    const w = world({ secrets: ["GOOGLE_CLIENT_SECRET"] });
+    const argv = [
+      ...HOSTS,
+      ...["--auth-providers", " Access, GOOGLE "],
+      ...["--auth-domains", " Example.COM "],
+      ...["--auth-domain-join", "Member"],
+      ...["--google-client-id", " x.apps "],
+    ];
+    expect(await run(argv, w.deps, ROOT)).toBe(0);
+    expect(deployedVars(w)).toMatchObject({
+      AUTH_PROVIDERS: "access,google",
+      AUTH_DOMAINS: "example.com",
+      AUTH_DOMAIN_JOIN: "member",
+      GOOGLE_CLIENT_ID: "x.apps",
+    });
+  });
+
+  it("a sign-in var held as a secret or a json binding is refused, naming the flag", async () => {
+    for (const type of ["secret_text", "json"]) {
+      const w = world({
+        secrets: ["GOOGLE_CLIENT_SECRET"],
+        workerBindings: [{ type, name: "GOOGLE_CLIENT_ID" }],
+      });
+      expect(await run(HOSTS, w.deps, ROOT), type).not.toBe(0);
+      expect(line(w, "deploy").message, type).toMatch(
+        /GOOGLE_CLIENT_ID is a .* on the Worker.*--google-client-id/,
+      );
+      expect(deploys(w), type).toEqual([]);
+    }
   });
 });
 
@@ -270,7 +358,7 @@ describe("fail closed before any deploy call", () => {
     });
     expect(await run(HOSTS, w.deps, ROOT)).toBe(1);
     expect(line(w, "deploy").message).toMatch(
-      /refusing to deploy: AUTH_DOMAIN_JOIN: "open"/,
+      /refusing to deploy: the deployed AUTH_DOMAIN_JOIN "open"/,
     );
     expect(deploys(w)).toEqual([]);
   });
@@ -307,16 +395,14 @@ describe("rules match the server", () => {
     expect(signinProblems({ ...empty, ...LIVE })).toEqual([]);
   });
 
-  it("resolveSignin: flag, then live; saved state only when live is unreadable", () => {
-    const live = new Map(Object.entries({ AUTH_PROVIDERS: "access,google" }));
-    const state = { AUTH_PROVIDERS: "access" };
-    const r = resolveSignin({ flags: { AUTH_DOMAINS: "" }, live, state });
+  it("resolveSignin: the flag, then the live value as is", () => {
+    const live = [
+      { type: "plain_text", name: "AUTH_PROVIDERS", text: "access,google" },
+    ];
+    const r = resolveSignin({ flags: { AUTH_DOMAINS: "" }, live });
     expect(r.values.AUTH_PROVIDERS).toBe("access,google");
     expect(r.values.AUTH_DOMAINS).toBe("");
-    expect(r.kept).toEqual(["AUTH_PROVIDERS"]);
-    expect(r.missing).toEqual([]);
-    const u = resolveSignin({ flags: {}, state });
-    expect(u.values.AUTH_PROVIDERS).toBe("access");
-    expect(u.missing).toContain("AUTH_DOMAINS");
+    expect(r.kept).toEqual([["AUTH_PROVIDERS", "access,google"]]);
+    expect(r.problems).toEqual([]);
   });
 });
