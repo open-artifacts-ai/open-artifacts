@@ -19,6 +19,7 @@ import {
   touchGrant,
   uaFamily,
 } from "../src/services/agent-usage.js";
+import { removeMember } from "../src/services/members.js";
 import { api, errOf, login } from "./helpers.js";
 import { APP, callWorker, connect, nextIp, tool } from "./mcp-helpers.js";
 
@@ -481,5 +482,19 @@ describe("PATCH labels", () => {
     expect((await patch(other.cookie, { label: "z" })).status).toBe(404);
     await api(app, R.token(id), u.cookie, { method: "DELETE" });
     expect((await patch(u.cookie, { label: "z" })).status).toBe(404);
+  });
+});
+
+describe("member removal", () => {
+  it("removes the member's grant usage rows (they reference the user)", async () => {
+    const { member, card } = await grant(`card-rm-${tag}@x.com`);
+    await api(app, R.oauthClient(card.grantId), member.cookie, {
+      method: "PATCH",
+      body: { label: "doomed" },
+    });
+    expect(await usageRow(card.grantId)).not.toBeNull();
+    await login(`card-rm-owner-${tag}@x.com`, "owner");
+    await removeMember(env, member.userId);
+    expect(await usageRow(card.grantId)).toBeNull();
   });
 });

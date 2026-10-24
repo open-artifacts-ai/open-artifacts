@@ -13,6 +13,7 @@ import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { authConfig } from "../auth/config.js";
 import { getDb } from "../db/client.js";
 import {
+  agentGrants,
   artifacts,
   identities,
   reservedArtifacts,
@@ -323,6 +324,8 @@ async function deleteMember(
       .set({ userId: to })
       .where(eq(reservedArtifacts.userId, id)),
     db.delete(tokens).where(eq(tokens.userId, id)),
+    // Grant usage rows reference the user (their grants are revoked above).
+    db.delete(agentGrants).where(eq(agentGrants.userId, id)),
     db.delete(identities).where(eq(identities.userId, id)),
   ];
   await env.DB.batch([
