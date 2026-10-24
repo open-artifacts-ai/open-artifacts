@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.45.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.44.0...v0.45.0) (2026-10-24)
+
+
+### Features
+
+* **auth-broker:** per-env config for staging and prod ([#561](https://github.com/open-artifacts-ai/open-artifacts/issues/561)) ([3d97d90](https://github.com/open-artifacts-ai/open-artifacts/commit/3d97d904c0eb31a3b6ac48adf009f80135efccca))
+* **dashboard:** validate space names, say when a group's access just changed ([#550](https://github.com/open-artifacts-ai/open-artifacts/issues/550)) ([a3e5917](https://github.com/open-artifacts-ai/open-artifacts/commit/a3e5917fd7de58b4c219068ca96bb8e4ea2500e3))
+
+
+### Bug Fixes
+
+* **provision:** reserve the directory slug ([#562](https://github.com/open-artifacts-ai/open-artifacts/issues/562)) ([0edad66](https://github.com/open-artifacts-ai/open-artifacts/commit/0edad66a1d14d03bd20ecf96807073eae1467e1e))
+
 ## [0.44.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.43.0...v0.44.0) (2026-10-24)
 
 
