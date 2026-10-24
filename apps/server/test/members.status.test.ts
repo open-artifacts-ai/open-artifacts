@@ -283,6 +283,50 @@ describe("removeMember with the spaces flag off (#478)", () => {
     });
     expect(await one("select id from users where id = ?", u.userId)).toBeNull();
   });
+
+  it("writes exactly one user.status row (admin_remove) with the removal", async () => {
+    const u = await mk("st-rm-audit");
+    await removeMember(env, u.userId, undefined, userActor(admin.userId));
+    const rows = await auditsFor(u.userId, "user.status");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actor_kind: "user",
+      actor_id: admin.userId,
+      target_type: "user",
+      target_id: u.userId,
+    });
+    expect(JSON.parse(rows[0]?.detail ?? "{}")).toEqual({
+      status: "removed",
+      reason: "admin_remove",
+    });
+  });
+
+  it("a failing audit insert rolls the whole removal back", async () => {
+    const u = await mk("st-rm-atomic");
+    const mine = newId();
+    await insertArtifact(mine, u.userId, u.userId);
+    const { id: pat } = await createPat(env, u.userId, "t");
+    await env.DB.prepare(
+      "create trigger if not exists audit_fail_rm before insert on audit_events begin select raise(abort, 'audit down'); end",
+    ).run();
+    try {
+      await expect(removeMember(env, u.userId)).rejects.toThrow(/audit down/);
+    } finally {
+      await env.DB.prepare("drop trigger if exists audit_fail_rm").run();
+    }
+    expect(await status(u.userId)).toBe("active");
+    expect(await placement(mine)).toEqual({
+      owner_id: u.userId,
+      space_id: u.userId,
+    });
+    expect(
+      await one("select id, kind from spaces where id = ?", u.userId),
+    ).toEqual({ id: u.userId, kind: "personal" });
+    expect(await one("select id from tokens where id = ?", pat)).toEqual({
+      id: pat,
+    });
+    expect(await auditsFor(u.userId, "user.status")).toEqual([]);
+  });
 });
 
 describe("patchMember", () => {

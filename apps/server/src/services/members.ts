@@ -196,7 +196,8 @@ export async function patchMember(
  * it stay: personal artifacts wait for an admin transfer, and shared-space
  * artifacts stay in their spaces.
  *
- * Otherwise the user row is removed in one D1 batch. Their personal-space
+ * Otherwise the user row is removed in one D1 batch with its user.status
+ * audit row (admin_remove), so both commit or neither does. Their personal-space
  * artifacts move to the instance owner's personal space. Shared-space
  * artifacts keep their space (#478); only owner_id moves, because it must
  * name a user and it grants nothing in a shared space. Every other row that
@@ -216,7 +217,7 @@ export async function removeMember(
   const db = getDb(env);
   if (authConfig(env).features.includes("spaces"))
     await setUserStatus(env, id, "removed", "admin_remove", ctx, by);
-  else await deleteMember(env, id, ctx);
+  else await deleteMember(env, id, ctx, by);
   // Belt and braces for the artifacts shared with them (best effort, capped).
   const shared = await db
     .select({ id: shares.artifactId })
@@ -231,11 +232,15 @@ export async function removeMember(
   );
 }
 
-/** removeMember with the spaces flag off: the row goes (see removeMember). */
+/**
+ * removeMember with the spaces flag off: the row goes (see removeMember),
+ * audited as user.status (admin_remove) in the same batch.
+ */
 async function deleteMember(
   env: Env,
   id: string,
-  ctx?: Pick<ExecutionContext, "waitUntil">,
+  ctx: Pick<ExecutionContext, "waitUntil"> | undefined,
+  by: AuditActor,
 ): Promise<void> {
   const db = getDb(env);
   const owner = (
@@ -256,7 +261,13 @@ async function deleteMember(
     ownerId: to,
     spaceId: sql`case when ${artifacts.spaceId} = ${id} then ${to} else ${artifacts.spaceId} end`,
   };
-  await db.batch([
+  // Raw D1 statements, so the audit() statement joins the same batch: the
+  // removal and its user.status row commit together or not at all.
+  const raw = (q: { toSQL(): { sql: string; params: unknown[] } }) => {
+    const { sql: text, params } = q.toSQL();
+    return env.DB.prepare(text).bind(...params);
+  };
+  const writes = [
     // Split live/deleted: owner_id is only indexed by the two partial indexes (#248).
     db
       .update(artifacts)
@@ -285,7 +296,18 @@ async function deleteMember(
       .where(eq(reservedArtifacts.userId, id)),
     db.delete(tokens).where(eq(tokens.userId, id)),
     db.delete(identities).where(eq(identities.userId, id)),
-    db.delete(users).where(eq(users.id, id)),
+  ];
+  await env.DB.batch([
+    ...writes.map(raw),
+    // Before the row goes, and only while it exists (a concurrent removal
+    // writes one row). The target id stays; the actor's email is joined at
+    // read time, so a deleted target only reads back without one.
+    audit(env, "user.status", { type: "user", id }, by, {
+      reason: "admin_remove",
+      detail: { status: "removed" },
+      when: { sql: "exists (select 1 from users where id = ?)", args: [id] },
+    }),
+    raw(db.delete(users).where(eq(users.id, id))),
   ]);
   // Every live socket the member holds (team artifacts included) closes
   // through their UserPresence (P3 T7); it never throws.
