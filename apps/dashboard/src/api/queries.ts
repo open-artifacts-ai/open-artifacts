@@ -11,6 +11,7 @@ import {
   MemberSchema,
   type MePatch,
   MeSchema,
+  type OAuthClient,
   OAuthClientSchema,
   PageSchema,
   type PublishInput,
@@ -188,6 +189,24 @@ export const useRevokeToken = () =>
     () => [qk.tokens],
     "Couldn't revoke the token.",
   );
+/** PATCH a grant's label (null clears it); the list shows the answer. */
+export const useLabelOAuthClient = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { grantId: string; label: string | null }) =>
+      api.send(
+        "PATCH",
+        R.oauthClient(v.grantId),
+        { label: v.label },
+        OAuthClientSchema,
+      ),
+    onSuccess: (c) =>
+      qc.setQueryData<OAuthClient[]>(qk.oauthClients, (list) =>
+        list?.map((x) => (x.grantId === c.grantId ? c : x)),
+      ),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.oauthClients }),
+  });
+};
 export const useRevokeOAuthClient = () =>
   useInvalidating(
     (grantId: string) => api.send("DELETE", R.oauthClient(grantId), undefined),

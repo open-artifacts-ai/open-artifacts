@@ -22,6 +22,20 @@ const URL_ = fixtures.me.instance.mcpUrl;
 const SECRET = "oa_pat_SECRETSECRETSECRETSECRETSECRET12";
 const FILE = secretFile("pat", { hostSlug: hostSlug(location.host) });
 const all = (url: string) => snippets(url, { tokenFile: FILE });
+/** Tokens have a Revoke button; agents keep Revoke… in their ••• menu. */
+const startRevoke = async (name: string) => {
+  const direct = screen.queryByRole("button", { name: `Revoke ${name}` });
+  if (direct) return fireEvent.click(direct);
+  fireEvent.pointerDown(
+    await screen.findByRole("button", { name: `More for ${name}` }),
+    { button: 0, pointerType: "mouse" },
+  );
+  fireEvent.click(
+    within(await screen.findByRole("menu")).getByRole("menuitem", {
+      name: "Revoke…",
+    }),
+  );
+};
 
 describe("snippets", () => {
   it("covers 5 agents over OAuth, 4 over a token file, url verbatim", () => {
@@ -117,9 +131,7 @@ describe("Agents settings", () => {
         deletes.push(new URL(request.url).pathname);
     });
     mount("/settings/agents");
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Revoke Example MCP client" }),
-    );
+    await startRevoke("Example MCP client");
     expect(deletes).toEqual([]);
     const dlg = await screen.findByRole("alertdialog");
     fireEvent.click(within(dlg).getByRole("button", { name: /^revoke/i }));
@@ -282,12 +294,8 @@ describe("Agents settings", () => {
   });
 
   it.each([
-    ["token", "Revoke laptop", "*/api/v1/tokens/:id"],
-    [
-      "OAuth client",
-      "Revoke Example MCP client",
-      "*/api/v1/oauth-clients/:grantId",
-    ],
+    ["token", "laptop", "*/api/v1/tokens/:id"],
+    ["OAuth client", "Example MCP client", "*/api/v1/oauth-clients/:grantId"],
   ])(
     "a failed %s revoke shows a danger toast with the server message",
     async (_n, button, path) => {
@@ -300,7 +308,8 @@ describe("Agents settings", () => {
         ),
       );
       mount("/settings/agents");
-      fireEvent.click(await screen.findByRole("button", { name: button }));
+      await screen.findByText("laptop");
+      await startRevoke(button);
       fireEvent.click(
         within(await screen.findByRole("alertdialog")).getByRole("button", {
           name: /^revoke/i,
