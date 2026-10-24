@@ -1,3 +1,4 @@
+import { parseDomains } from "@oa/auth-core/domains";
 import type { InstallId } from "./types.js";
 
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
@@ -139,7 +140,29 @@ export interface RegistryEntry {
   installId: string;
   origin: string;
   keys: { kid: string; x: string }[];
+  /** The install's AUTH_DOMAINS: lowercase A-labels, unique, sorted; [] when none. */
+  domains: string[];
   disabled?: boolean;
+}
+
+/** The broker refuses an entry with more (#564). */
+export const REGISTRY_MAX_DOMAINS = 50;
+
+/**
+ * An install's registry domains from its AUTH_DOMAINS, through the parser the
+ * server and the broker use (@oa/auth-core), never a copy of it.
+ */
+export function registryDomains(authDomains: string | undefined): string[] {
+  const { domains, invalid } = parseDomains(authDomains ?? "");
+  if (invalid.length > 0)
+    throw new Error(
+      `AUTH_DOMAINS has an invalid domain (${invalid.length} invalid)`,
+    );
+  if (domains.length > REGISTRY_MAX_DOMAINS)
+    throw new Error(
+      `AUTH_DOMAINS has more than ${REGISTRY_MAX_DOMAINS} domains`,
+    );
+  return domains.sort();
 }
 
 /** The registry KV key of an install: exactly what the broker reads. */
@@ -149,14 +172,37 @@ export function registryKey(id: string): string {
   return `install:${id}`;
 }
 
-/** An entry in the broker's shape; `disabled` only when true. */
+/**
+ * An entry in the broker's shape; `domains` always (sorted), `disabled` only
+ * when true. Each domain must already be in the shared parser's canonical
+ * form; anything else, a duplicate or more than 50, is refused.
+ */
 export function registryEntry(e: RegistryEntry): RegistryEntry {
   if (e.keys.length > 2)
     throw new Error("broker registry entry would hold more than 2 keys");
+  if (!Array.isArray(e.domains))
+    throw new Error("broker registry entry needs a domains array");
+  if (e.domains.length > REGISTRY_MAX_DOMAINS)
+    throw new Error(
+      `broker registry entry would hold more than ${REGISTRY_MAX_DOMAINS} domains`,
+    );
+  for (const d of e.domains) {
+    const p = typeof d === "string" ? parseDomains(d) : null;
+    if (
+      !p ||
+      p.invalid.length > 0 ||
+      p.domains.length !== 1 ||
+      p.domains[0] !== d
+    )
+      throw new Error("broker registry entry has an invalid domain");
+  }
+  if (new Set(e.domains).size !== e.domains.length)
+    throw new Error("broker registry entry has a duplicate domain");
   const out: RegistryEntry = {
     installId: e.installId,
     origin: e.origin,
     keys: e.keys.map(({ kid, x }) => ({ kid, x })),
+    domains: [...e.domains].sort(),
   };
   if (e.disabled === true) out.disabled = true;
   return out;
