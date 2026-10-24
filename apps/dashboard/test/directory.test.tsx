@@ -377,21 +377,22 @@ it.each([
   ],
   ["denied", "Google access was declined. Nothing was connected."],
   ["expired", "The connection took too long. Try again."],
-  ["failed", "Couldn't connect. Try again."],
+  ["failed", null],
 ])("?error=%s", async (error, copy) => {
   mountHosted(`/settings/directory?error=${error}`);
   const alert = await screen.findByRole("alert");
-  expect(alert).toHaveTextContent("Couldn't connect Google Workspace");
-  expect(alert).toHaveTextContent(copy);
+  expect(alert).toHaveTextContent("Couldn't connect Google Workspace.");
+  if (copy) expect(alert).toHaveTextContent(copy);
+  else expect(alert).not.toHaveTextContent("Try again.");
   expect(
     within(alert).getByRole("link", { name: "Try again" }),
   ).toHaveAttribute("href", R.directoryConnect);
 });
 
-it("an unknown ?error= shows the failed copy and is never echoed", async () => {
+it("an unknown ?error= shows only the title and is never echoed", async () => {
   mountHosted("/settings/directory?error=%3Cimg%20src%3Dx%3E");
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Couldn't connect. Try again.",
+    "Couldn't connect Google Workspace.",
   );
   expect(document.body.innerHTML).not.toContain("<img src=x>");
   expect(document.body.textContent).not.toContain("img src");

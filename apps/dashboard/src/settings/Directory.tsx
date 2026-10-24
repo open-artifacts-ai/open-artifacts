@@ -4,7 +4,7 @@
 // then the connection with Disconnect last. Copy: build spec t6cjQuskQ6zrZaJd
 // v5. Losing sync never cuts access, so `staleAt` is never shown.
 import { R } from "@oa/shared";
-import { Banner, displayName } from "@oa/ui";
+import { displayName } from "@oa/ui";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -38,6 +38,7 @@ import {
   useRestrictedGroups,
 } from "../api/queries";
 import { useMe } from "../auth/useMe";
+import { Notice } from "../layout/Notice";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { GroupPicker } from "./GroupPicker";
@@ -106,7 +107,8 @@ const At = ({ iso }: { iso: string }) => <When iso={iso} text={when(iso)} />;
 
 // -- connect errors (`?error=` after Google)
 
-const connectCopy = (raw: string, domain: string | null) => {
+/** The reason Google gave, or null when there is none to show. */
+const connectCopy = (raw: string, domain: string | null): string | null => {
   const parsed = DirectoryConnectErrorSchema.safeParse(raw);
   switch (parsed.success ? parsed.data : "failed") {
     case "not_super_admin":
@@ -124,7 +126,7 @@ const connectCopy = (raw: string, domain: string | null) => {
     case "expired":
       return "The connection took too long. Try again.";
     default:
-      return "Couldn't connect. Try again.";
+      return null;
   }
 };
 
@@ -815,9 +817,9 @@ export function Directory() {
     <div className={STACK}>
       {/* After the status loads: the copy names the bound domain. */}
       {search.error !== undefined && !status.isPending && (
-        <Banner
+        <Notice
           tone="danger"
-          title="Couldn't connect Google Workspace"
+          title="Couldn't connect Google Workspace."
           action={
             owner ? (
               <Button asChild size="sm" variant="outline">
@@ -828,16 +830,16 @@ export function Directory() {
           onDismiss={clearQuery}
         >
           {connectCopy(String(search.error), domain)}
-        </Banner>
+        </Notice>
       )}
       {search.connected === "1" && (
-        <Banner
+        <Notice
           tone="success"
           title="Google Workspace connected."
           onDismiss={clearQuery}
         >
           The first sync is running. It usually takes a few minutes.
-        </Banner>
+        </Notice>
       )}
       {status.isError && !data && (
         <p role="alert" className={errorText}>

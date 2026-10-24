@@ -1,5 +1,4 @@
 import type { Usage as UsageData } from "@oa/shared";
-import { Banner } from "@oa/ui";
 import {
   Badge,
   Button,
@@ -13,6 +12,7 @@ import { useUsage } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { ExtIcon } from "../layout/CpuBanner";
 import { COSTS_DOC, PRICING_URL } from "../layout/cpu";
+import { Notice } from "../layout/Notice";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import {
   CARD,
@@ -363,9 +363,9 @@ function Setup() {
 function alerts(metrics: Metric[]) {
   if (metrics.every((m) => !(m.used > 0)))
     return (
-      <Banner tone="info" title="No usage recorded yet today.">
+      <Notice tone="info" title="No usage recorded yet today.">
         Cloudflare's analytics can lag a few minutes behind real traffic.
-      </Banner>
+      </Notice>
     );
   return metrics
     .filter((m) => m.limit > 0 && toneOf(percent(m.used, m.limit)) === "danger")
@@ -373,7 +373,7 @@ function alerts(metrics: Metric[]) {
       const pct = percent(m.used, m.limit);
       const name = LABELS[m.key].name;
       return (
-        <Banner
+        <Notice
           key={m.key}
           tone="danger"
           title={
@@ -383,7 +383,7 @@ function alerts(metrics: Metric[]) {
           }
         >
           Past the limit, writes fail until 00:00 UTC.
-        </Banner>
+        </Notice>
       );
     });
 }
@@ -410,7 +410,7 @@ export function Usage() {
       </div>
       <PlanLine plan={q.data?.plan} />
       {q.isError ? (
-        <Banner
+        <Notice
           tone="danger"
           title="Couldn't load usage."
           action={
@@ -424,7 +424,7 @@ export function Usage() {
           }
         >
           This doesn't affect your artifacts.
-        </Banner>
+        </Notice>
       ) : !q.data ? (
         <div className={GRID} aria-busy="true">
           <span className="sr-only">Loading…</span>

@@ -4,10 +4,10 @@ import {
   TokenCreatedSchema,
   TokenCreateInputSchema,
 } from "@oa/shared";
-import { Kbd } from "@oa/ui";
 import {
   Button,
   Input,
+  Kbd,
   Tabs,
   TabsContent,
   TabsList,

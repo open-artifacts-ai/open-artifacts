@@ -1,5 +1,4 @@
 import { type Settings, SettingsSchema } from "@oa/shared";
-import { Banner } from "@oa/ui";
 import {
   Button,
   Card,
@@ -13,6 +12,7 @@ import {
 import { useState } from "react";
 import { useSettings, useUpdateSettings } from "../api/queries";
 import { useMe } from "../auth/useMe";
+import { Notice } from "../layout/Notice";
 import { instanceUpdate } from "../layout/update";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { CARD, errorText, INSET, muted, STACK } from "./ui";
@@ -49,7 +49,7 @@ function InstanceSettings() {
   const [saving, setSaving] = useState(false);
   if (settings.isError && !settings.data)
     return (
-      <Banner
+      <Notice
         tone="danger"
         title="Couldn't load instance settings"
         action={
@@ -100,9 +100,9 @@ function InstanceSettings() {
         <CardContent className={`grid min-w-0 ${INSET}`}>
           {settings.isError && (
             <div className="pb-[var(--oa-space-3)]">
-              <Banner tone="warning" title="Couldn't refresh settings.">
+              <Notice tone="warning" title="Couldn't refresh settings.">
                 Showing the last loaded values. Your edits are kept.
-              </Banner>
+              </Notice>
             </div>
           )}
           <div className={FIELD}>

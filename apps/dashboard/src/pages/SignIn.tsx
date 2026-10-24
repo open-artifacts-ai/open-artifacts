@@ -1,5 +1,4 @@
 import { AUTH } from "@oa/shared";
-import { Banner } from "@oa/ui";
 import { brand } from "@oa/ui/brand";
 import { Button } from "@oa/ui/shadcn";
 import { Link } from "@tanstack/react-router";
@@ -12,6 +11,7 @@ import {
   SignInErrorSchema,
 } from "../api/contract";
 import { safeNext } from "../auth/safeNext";
+import { Notice } from "../layout/Notice";
 import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
 import { CodeSignIn } from "./CodeSignIn";
 
@@ -137,9 +137,9 @@ function AccessSignIn({ failed }: { failed: boolean }) {
       <h1>Sign in</h1>
       <p className="oa-split-sub">Use your work email to open {name}.</p>
       {failed && (
-        <Banner tone="danger" title="Sign-in didn't finish.">
+        <Notice tone="danger" title="Sign-in didn't finish.">
           The login link expired or was cancelled. Try again.
-        </Banner>
+        </Notice>
       )}
       <Button asChild className="oa-split-btn">
         <a href={AUTH.login}>
@@ -203,7 +203,7 @@ function HostedSignIn({
     ? `${google.start}?next=${encodeURIComponent(next)}`
     : undefined;
   const banner = error && (
-    <Banner tone="danger">{errorCopy(error, name, domain)}</Banner>
+    <Notice tone="danger">{errorCopy(error, name, domain)}</Notice>
   );
 
   if (!google && !email)

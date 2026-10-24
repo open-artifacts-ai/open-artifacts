@@ -1,8 +1,8 @@
 import { type Me, R } from "@oa/shared";
-import { Banner } from "@oa/ui";
 import { useLayoutEffect, useRef, useState } from "react";
 import type { InstanceDirectory, SyncState } from "../api/contract";
 import { AppLink } from "../library/AppLink";
+import { Notice } from "./Notice";
 
 const DISMISSED_KEY = "oa.syncBanner.dismissed";
 const DAY_MS = 24 * 3600_000;
@@ -118,7 +118,7 @@ export function SyncBanner({
   };
   return (
     <div ref={ref} className={`oa-sync-banner ${className}`}>
-      <Banner
+      <Notice
         tone={stage}
         title={c.title}
         onDismiss={owner && stage === "danger" ? undefined : dismiss}
@@ -157,7 +157,7 @@ export function SyncBanner({
             </p>
           </div>
         )}
-      </Banner>
+      </Notice>
     </div>
   );
 }

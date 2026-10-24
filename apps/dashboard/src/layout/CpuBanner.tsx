@@ -1,8 +1,8 @@
 import { type Me, REPO_URL } from "@oa/shared";
-import { Banner } from "@oa/ui";
 import { useState } from "react";
 import { AppLink } from "../library/AppLink";
 import { CPU_DOC, PLANS_URL, useCpuSignals, utcDay } from "./cpu";
+import { Notice } from "./Notice";
 
 const DISMISSED_KEY = "oa.cpuBanner.dismissed";
 
@@ -89,7 +89,7 @@ export function CpuBanner({
   if (paid)
     return (
       <div className={`oa-cpu-banner ${className}`}>
-        <Banner
+        <Notice
           tone="warning"
           title="Some requests hit Cloudflare's CPU limit"
           icon={GaugeIcon}
@@ -120,12 +120,12 @@ export function CpuBanner({
               {ExtIcon}
             </a>
           </div>
-        </Banner>
+        </Notice>
       </div>
     );
   return (
     <div className={`oa-cpu-banner ${className}`}>
-      <Banner
+      <Notice
         tone="warning"
         title="Some requests hit Cloudflare's free CPU limit"
         icon={GaugeIcon}
@@ -157,7 +157,7 @@ export function CpuBanner({
             Learn more<span className="oa-sr"> about the CPU limit</span>
           </a>
         </div>
-      </Banner>
+      </Notice>
     </div>
   );
 }

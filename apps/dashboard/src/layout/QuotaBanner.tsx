@@ -1,7 +1,7 @@
 import { QUOTA_MESSAGE } from "@oa/shared";
-import { Banner } from "@oa/ui";
 import { useQuery } from "@tanstack/react-query";
 import { QUOTA_KEY } from "../api/queryClient";
+import { Notice } from "./Notice";
 
 /** Shown once any query or mutation has failed with `quota_exceeded`. */
 export function QuotaBanner() {
@@ -13,5 +13,5 @@ export function QuotaBanner() {
     staleTime: Number.POSITIVE_INFINITY,
     gcTime: Number.POSITIVE_INFINITY,
   });
-  return data ? <Banner tone="warning" title={QUOTA_MESSAGE} /> : null;
+  return data ? <Notice tone="warning" title={QUOTA_MESSAGE} /> : null;
 }
