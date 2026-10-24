@@ -1,5 +1,6 @@
 import type { ArtifactSummary } from "@oa/shared";
-import { Button, Dialog, displayName, Input, Textarea } from "@oa/ui";
+import { displayName, Textarea } from "@oa/ui";
+import { Button, Input } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../../api/client";
@@ -11,6 +12,7 @@ import {
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { useCan, useHosted } from "../../auth/permissions";
 import { toast } from "../../layout/toast";
+import { ConfirmDialog } from "../../settings/ConfirmDialog";
 import { MoveDialog, useMoveTargets } from "../../spaces/MoveDialog";
 import { useOfferUndo } from "../useOfferUndo";
 
@@ -120,9 +122,9 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
           </div>
           <Button
             type="submit"
-            variant="primary"
-            loading={patch.isPending}
-            disabled={!valid || !dirty}
+            variant="default"
+            aria-busy={patch.isPending}
+            disabled={!valid || !dirty || patch.isPending}
           >
             Save
           </Button>
@@ -161,7 +163,7 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
         )}
       </dl>
       {spaces && can.move && targets.length > 0 && (
-        <Button variant="secondary" onClick={() => setMoving(true)}>
+        <Button variant="outline" onClick={() => setMoving(true)}>
           Move
         </Button>
       )}
@@ -171,28 +173,19 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
       )}
       {can.delete && (
         <>
-          <Button variant="danger" onClick={() => setConfirm(true)}>
+          <Button variant="destructive" onClick={() => setConfirm(true)}>
             Delete artifact
           </Button>
-          <Dialog
+          <ConfirmDialog
             open={confirm}
-            onOpenChange={setConfirm}
+            onClose={() => setConfirm(false)}
             title="Delete artifact?"
-            description={`"${artifact.title}" will be recoverable for 30 days.`}
-            footer={
-              <>
-                <Button variant="ghost" onClick={() => setConfirm(false)}>
-                  Cancel
-                </Button>
-                <Button
-                  variant="danger"
-                  loading={del.isPending}
-                  onClick={remove}
-                >
-                  Delete
-                </Button>
-              </>
-            }
+            body={<p>"{artifact.title}" will be recoverable for 30 days.</p>}
+            confirm="Delete"
+            danger
+            pending="Deleting…"
+            busy={del.isPending}
+            onConfirm={remove}
           />
         </>
       )}

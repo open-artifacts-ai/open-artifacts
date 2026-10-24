@@ -1,4 +1,4 @@
-import { Button } from "@oa/ui";
+import { Button } from "@oa/ui/shadcn";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { filesFromDrop, filterIgnored } from "./collect";
 import { UploadDialog } from "./UploadDialog";
@@ -125,7 +125,7 @@ export function DropZone({
     <>
       {button && (
         <span className="up-buttons">
-          <Button onClick={() => filePicker.current?.click()}>
+          <Button variant="outline" onClick={() => filePicker.current?.click()}>
             Upload files
           </Button>
           <Button variant="ghost" onClick={() => folderPicker.current?.click()}>

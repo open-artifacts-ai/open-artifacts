@@ -1,5 +1,6 @@
 import { normalizePath, viewerPath } from "@oa/shared";
-import { Button, Dialog, Input, Select, Textarea } from "@oa/ui";
+import { Textarea } from "@oa/ui";
+import { Button, Input } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -9,7 +10,9 @@ import { qk } from "../api/queries";
 import { useHosted } from "../auth/permissions";
 import { SpacePicker } from "../spaces/SpacePicker";
 import "./upload.css";
+import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
+import { OptionSelect } from "../settings/OptionSelect";
 import {
   commonFolder,
   defaultEntry,
@@ -110,22 +113,22 @@ export function UploadDialog({
   };
 
   return (
-    <Dialog
+    <Modal
       open
-      onOpenChange={(o) => !o && cancel()}
+      onClose={cancel}
       title="Create artifact"
       description={`${files.length} file${files.length === 1 ? "" : "s"} selected`}
       footer={
         <>
-          <Button variant="ghost" onClick={cancel}>
+          <Button variant="outline" onClick={cancel}>
             Cancel
           </Button>
           <Button
-            variant="primary"
+            variant="default"
             disabled={busy || invalid}
             onClick={() => void submit()}
           >
-            {busy ? "Uploading…" : "Create"}
+            {busy ? "Creating…" : "Create"}
           </Button>
         </>
       }
@@ -151,13 +154,13 @@ export function UploadDialog({
         </div>
         {needsEntry && (
           <div>
-            <span id="up-entry" className="up-entry-label">
+            <span className="up-entry-label" aria-hidden="true">
               Entry file
             </span>
-            <Select
-              aria-labelledby="up-entry"
+            <OptionSelect
+              label="Entry file"
               options={paths.map((p) => ({ value: p, label: p }))}
-              value={entry}
+              value={entry ?? null}
               onChange={setEntry}
               placeholder="Choose the file to open first"
               disabled={busy}
@@ -186,6 +189,6 @@ export function UploadDialog({
           </p>
         )}
       </form>
-    </Dialog>
+    </Modal>
   );
 }

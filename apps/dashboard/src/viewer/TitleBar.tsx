@@ -1,5 +1,5 @@
 import { type ArtifactSummary, AUTH, R, viewerPath } from "@oa/shared";
-import { Button, Dialog, FormatIcon } from "@oa/ui";
+import { FormatIcon } from "@oa/ui";
 import {
   Badge,
   DropdownMenu,
@@ -27,6 +27,7 @@ import {
 } from "../api/queries";
 import { accessLabel, useCan, useHosted } from "../auth/permissions";
 import { toast } from "../layout/toast";
+import { ConfirmDialog } from "../settings/ConfirmDialog";
 import { VersionsDot } from "./LiveChip";
 import { VERSIONS_PANEL_ID } from "./panels/Versions";
 import { fullPath } from "./paths";
@@ -375,39 +376,30 @@ export function TitleBar({
           </ShButton>
         )}
       </div>
-      <Dialog
+      <ConfirmDialog
         open={confirm}
-        onOpenChange={setConfirm}
+        onClose={() => setConfirm(false)}
         title="Delete artifact?"
-        description={`"${artifact.title}" will be recoverable for 30 days.`}
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setConfirm(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              loading={del.isPending}
-              onClick={() => {
-                if (deleting.current) return;
-                deleting.current = true;
-                del.mutate(undefined, {
-                  onSuccess: () => {
-                    deleted.current = true;
-                    go("/");
-                    offerUndo(artifact.id, artifact.title);
-                  },
-                  onError: () => {
-                    deleting.current = false;
-                    toast({ title: "Couldn't delete", tone: "danger" });
-                  },
-                });
-              }}
-            >
-              Delete
-            </Button>
-          </>
-        }
+        body={<p>"{artifact.title}" will be recoverable for 30 days.</p>}
+        confirm="Delete"
+        danger
+        pending="Deleting…"
+        busy={del.isPending}
+        onConfirm={() => {
+          if (deleting.current) return;
+          deleting.current = true;
+          del.mutate(undefined, {
+            onSuccess: () => {
+              deleted.current = true;
+              go("/");
+              offerUndo(artifact.id, artifact.title);
+            },
+            onError: () => {
+              deleting.current = false;
+              toast({ title: "Couldn't delete", tone: "danger" });
+            },
+          });
+        }}
       />
     </div>
   );

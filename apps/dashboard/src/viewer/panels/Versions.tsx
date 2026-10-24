@@ -4,7 +4,7 @@ import {
   type VersionInfo,
   viewerPath,
 } from "@oa/shared";
-import { Button, Dialog, displayName } from "@oa/ui";
+import { displayName } from "@oa/ui";
 import { Input, Button as ShButton, Skeleton } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
@@ -19,6 +19,7 @@ import { useCan } from "../../auth/permissions";
 import { toast } from "../../layout/toast";
 import { AppLink } from "../../library/AppLink";
 import { useSentinel } from "../../library/useInfinite";
+import { ConfirmDialog } from "../../settings/ConfirmDialog";
 import { LINK_BTN, SM, TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 
@@ -390,46 +391,40 @@ export function Versions({
           </div>
         )}
       </div>
-      <Dialog
+      <ConfirmDialog
         open={target !== null}
-        onOpenChange={(o) => !o && setTarget(null)}
+        onClose={() => setTarget(null)}
         title={`Restore v${target ?? ""}?`}
-        description="This publishes a new version with the contents of the selected one."
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              loading={restore.isPending}
-              onClick={() =>
-                target !== null &&
-                once((done) =>
-                  restore.mutate(target, {
-                    onSuccess: (r) => {
-                      setTarget(null);
-                      void navigate({
-                        to: viewerPath(id, r.version) as string,
-                        search: search as never,
-                      });
-                    },
-                    onError: (e) =>
-                      toast({
-                        title:
-                          e instanceof ApiClientError
-                            ? e.message
-                            : "Couldn't restore",
-                        tone: "danger",
-                      }),
-                    onSettled: done,
-                  }),
-                )
-              }
-            >
-              Restore version
-            </Button>
-          </>
+        body={
+          <p>
+            This publishes a new version with the contents of the selected one.
+          </p>
+        }
+        confirm="Restore version"
+        pending="Restoring…"
+        busy={restore.isPending}
+        onConfirm={() =>
+          target !== null &&
+          once((done) =>
+            restore.mutate(target, {
+              onSuccess: (r) => {
+                setTarget(null);
+                void navigate({
+                  to: viewerPath(id, r.version) as string,
+                  search: search as never,
+                });
+              },
+              onError: (e) =>
+                toast({
+                  title:
+                    e instanceof ApiClientError
+                      ? e.message
+                      : "Couldn't restore",
+                  tone: "danger",
+                }),
+              onSettled: done,
+            }),
+          )
         }
       />
     </div>

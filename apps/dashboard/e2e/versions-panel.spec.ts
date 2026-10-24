@@ -57,6 +57,8 @@ for (const scheme of ["light", "dark"] as const)
       test("current, pinned, matches, none: axe and layout", async ({
         page,
       }, info) => {
+        // Four axe runs and a navigation: slow when the suite runs in parallel.
+        test.slow();
         const out = (n: string) => info.outputPath(n);
         await page.goto(`/a/${ID}`);
         await chip(page).click();

@@ -19,6 +19,8 @@ export function ConfirmDialog({
   confirm,
   danger,
   onConfirm,
+  pending,
+  busy = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -28,6 +30,12 @@ export function ConfirmDialog({
   /** The action destroys something: the danger button. */
   danger?: boolean;
   onConfirm: () => void;
+  /**
+   * The action's label while `busy` (e.g. "Deleting…"). With it, the action
+   * keeps the dialog open: the caller closes it when the work is done.
+   */
+  pending?: string;
+  busy?: boolean;
 }) {
   const opener = useRef<HTMLElement | null>(null);
   return (
@@ -57,12 +65,14 @@ export function ConfirmDialog({
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <Button
             variant={danger ? "destructive" : "default"}
+            disabled={busy}
+            aria-busy={busy || undefined}
             onClick={() => {
-              onClose();
+              if (pending === undefined) onClose();
               onConfirm();
             }}
           >
-            {confirm}
+            {busy && pending ? pending : confirm}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>
