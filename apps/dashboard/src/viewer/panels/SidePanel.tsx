@@ -11,8 +11,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@oa/ui/shadcn";
+import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
-import { ICON, TXT } from "../ui";
+import { TXT } from "../ui";
 import { Details } from "./Details";
 import { Share } from "./Share";
 import { refocusPending, VERSIONS_PANEL_ID, Versions } from "./Versions";
@@ -103,14 +104,15 @@ export function SidePanel({
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
+            {/* Centred on the 34px tab row below the 16px top padding. */}
             <Button
-              variant="outline"
-              size="icon-xs"
-              className={`absolute top-2 right-2 z-10 size-7 ${ICON} ${TXT}`}
+              variant="ghost"
+              size="icon-sm"
+              className="absolute top-[17px] right-4 z-10"
               aria-label="Close panel"
               onClick={onClose}
             >
-              ×
+              <X aria-hidden="true" />
             </Button>
           </TooltipTrigger>
           <TooltipContent>Close panel</TooltipContent>
