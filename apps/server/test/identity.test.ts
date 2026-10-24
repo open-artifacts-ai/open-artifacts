@@ -577,12 +577,14 @@ describe("resetIdentity", () => {
     expect(await subjectOf(uid)).toBe(`O2-${email}`);
   });
 
-  it("a capped owner can't reset an admin (manageAdmins needs uncapped): 403 owner_only", async () => {
+  // members.manage is checked under the cap first (#553), so a capped owner
+  // is refused before manageAdmins: 404, as on every members route.
+  it("a capped owner can't reset an admin (manageAdmins needs uncapped): refused, 404", async () => {
     const email = uniq("capadm");
     const uid = await seedUser(email, "admin", { googleSub: `C-${email}` });
     await expect(
       resetIdentity(env, actor("owner", "restricted"), uid),
-    ).rejects.toMatchObject({ code: "owner_only" });
+    ).rejects.toMatchObject({ code: "not_found" });
     expect(await subjectOf(uid)).toBe(`C-${email}`);
     expect((await rowOf(uid)).e).toBe(0);
   });
