@@ -140,6 +140,15 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "DELETE /api/v1/directory/restricted-groups/:groupId": {
     org: "restricted.groups",
   },
+  // P3 T12: the directory connection. GET status: owners and admins (the
+  // problem string for owners only). The callback admits any signed-in
+  // caller so a refusal still redirects with ?error= and an audit row; the
+  // handler refuses all but the org owner (directory.manage).
+  "GET /api/v1/directory": { org: "members.manage" },
+  "GET /api/v1/directory/connect": { org: "directory.manage" },
+  "GET /api/v1/directory/callback": {
+    user: "org owner (the handler); refusals redirect with ?error=",
+  },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
