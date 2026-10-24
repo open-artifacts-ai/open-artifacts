@@ -76,6 +76,40 @@ describe("admit (Google)", () => {
     expect((await rowOf(userId)).role).toBe("member");
   });
 
+  it("a user suspended mid-sign-in is refused, with no auth.signin row", async () => {
+    const id = g();
+    const userId = await seedUser(id.email, "member", {
+      googleSub: id.subject,
+    });
+    let raced = false;
+    const DB = new Proxy(env.DB, {
+      get(t, k) {
+        if (k === "batch")
+          return async (s: D1PreparedStatement[]) => {
+            if (!raced) {
+              raced = true;
+              await t
+                .prepare("update users set status = 'suspended' where id = ?")
+                .bind(userId)
+                .run();
+            }
+            return t.batch(s);
+          };
+        const v = Reflect.get(t, k);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const r = await admit({ ...env, DB } as Env, cfg(), id);
+    expect(raced).toBe(true);
+    expect(r).toEqual({ ok: false, reason: "removed" });
+    expect(
+      await count(
+        "audit_events where target_id = ? and action = 'auth.signin'",
+        userId,
+      ),
+    ).toBe(0);
+  });
+
   it("a guest signing in with a verified Google identity becomes a member", async () => {
     const id = g();
     const userId = await seedUser(id.email, "guest", { googleSub: id.subject });

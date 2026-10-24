@@ -347,6 +347,42 @@ describe("MCP auth: OAuth", () => {
       expect((await listTools(`Bearer ${again.accessToken}`)).status).toBe(200);
     });
 
+    it("a legacy grant (no issuedAt) keeps working while status never changed", async () => {
+      // A grant written before P3 T6: its props carry no issuedAt.
+      const real = oauthApiModule.oauthApi;
+      const spy = vi
+        .spyOn(oauthApiModule, "oauthApi")
+        .mockImplementation((e) => {
+          const api = real(e);
+          return new Proxy(api, {
+            get(t, k) {
+              if (k === "completeAuthorization")
+                return (o: Parameters<typeof api.completeAuthorization>[0]) => {
+                  const { issuedAt: _, ...legacy } = o.props as {
+                    issuedAt?: number;
+                  };
+                  return t.completeAuthorization({ ...o, props: legacy });
+                };
+              const v = Reflect.get(t, k);
+              return typeof v === "function" ? v.bind(t) : v;
+            },
+          });
+        });
+      let token: { member: { userId: string }; accessToken: string };
+      try {
+        token = await oauthToken(`oauth-legacy-${tag}@x.com`, "Legacy");
+      } finally {
+        spy.mockRestore();
+      }
+      const row = await env.DB.prepare(
+        "select status_changed_at s from users where id = ?",
+      )
+        .bind(token.member.userId)
+        .first<{ s: number | null }>();
+      expect(row?.s).toBeNull();
+      expect((await listTools(`Bearer ${token.accessToken}`)).status).toBe(200);
+    });
+
     it("consent approved while the user is suspended writes no grant", async () => {
       const email = `oauth-late-${tag}@x.com`;
       const m = await login(email);
