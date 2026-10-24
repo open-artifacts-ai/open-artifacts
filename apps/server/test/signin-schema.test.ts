@@ -7,7 +7,11 @@ import { createPat } from "../src/auth/pat.js";
 import { scheduled } from "../src/cron.js";
 import { oauthApi } from "../src/mcp/oauth-api.js";
 import { publish } from "../src/services/artifacts.js";
-import { patchMember, removeMember } from "../src/services/members.js";
+import {
+  patchMember,
+  removeMember,
+  SYSTEM_ACTOR,
+} from "../src/services/members.js";
 import { removeGuestIfUnshared } from "../src/services/shares.js";
 import { getUser, upsertOnLogin } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
@@ -105,7 +109,7 @@ describe("lifecycle", () => {
   it("removeMember deletes the member's identities", async () => {
     const { userId } = await login(`s3-rm-${tag}@a.com`);
     await linkGoogle(userId, `RM-${tag}`);
-    await removeMember(env, userId);
+    await removeMember(env, userId, SYSTEM_ACTOR);
     expect(
       await one<{ n: number }>(
         "select count(*) n from identities where user_id = ?",
@@ -116,9 +120,9 @@ describe("lifecycle", () => {
 
   it("a role change bumps session_epoch", async () => {
     const { userId } = await login(`s3-role-${tag}@a.com`);
-    await patchMember(env, userId, { role: "admin" });
+    await patchMember(env, userId, { role: "admin" }, SYSTEM_ACTOR);
     expect(await epochOf(userId)).toBe(1);
-    await patchMember(env, userId, { role: "member" });
+    await patchMember(env, userId, { role: "member" }, SYSTEM_ACTOR);
     expect(await epochOf(userId)).toBe(2);
   });
 

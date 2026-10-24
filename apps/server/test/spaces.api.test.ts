@@ -20,7 +20,7 @@ import { accessLevel, callerOf } from "../src/auth/authz.js";
 import type { Env } from "../src/env.js";
 import type { UserPresence } from "../src/runtime/presence.js";
 import { REVOKE_FANOUT_CAP, revokeUsersLive } from "../src/runtime/revoke.js";
-import { patchMember } from "../src/services/members.js";
+import { patchMember, SYSTEM_ACTOR } from "../src/services/members.js";
 import {
   deleteSpaceMapping,
   deleteSpaceMember,
@@ -1112,7 +1112,7 @@ describe("restrictions", () => {
     await call(GOOGLE, R.restrictedGroup(g), admin.cookie, { method: "PUT" });
     expect(await flag(a2.userId)).toBe(0);
     const before = await revokedAt(a2.userId);
-    await patchMember(GOOGLE, a2.userId, { role: "member" });
+    await patchMember(GOOGLE, a2.userId, { role: "member" }, SYSTEM_ACTOR);
     expect(await flag(a2.userId)).toBe(1);
     expect(await level(GOOGLE, a2.userId, art)).toBe("viewer");
     expect(await revokedAt(a2.userId)).not.toBe(before);
@@ -1126,7 +1126,7 @@ describe("restrictions", () => {
     const g = await group([m.userId]);
     await call(GOOGLE, R.restrictedGroup(g), admin.cookie, { method: "PUT" });
     expect(await flag(m.userId)).toBe(1);
-    await patchMember(GOOGLE, m.userId, { role: "admin" });
+    await patchMember(GOOGLE, m.userId, { role: "admin" }, SYSTEM_ACTOR);
     expect(await flag(m.userId)).toBe(0);
     expect((await getUser(GOOGLE, m.userId)) && true).toBe(true);
     await call(GOOGLE, R.restrictedGroup(g), admin.cookie, {
@@ -1149,18 +1149,18 @@ describe("promotion clears the manual restriction (ruling c)", () => {
         )
       )?.r;
     expect(await manual()).toBe(1);
-    await patchMember(GOOGLE, m.userId, { role: "admin" });
+    await patchMember(GOOGLE, m.userId, { role: "admin" }, SYSTEM_ACTOR);
     expect(await manual()).toBe(0);
     expect(await audits("restricted.remove", m.userId)).toHaveLength(1);
     // A demotion back leaves it off (no restriction re-applied, no row).
-    await patchMember(GOOGLE, m.userId, { role: "member" });
+    await patchMember(GOOGLE, m.userId, { role: "member" }, SYSTEM_ACTOR);
     expect(await manual()).toBe(0);
     expect(await audits("restricted.remove", m.userId)).toHaveLength(1);
   });
 
   it("a member role change on an unrestricted member writes no restricted.remove", async () => {
     const m = await mk("rnone");
-    await patchMember(GOOGLE, m.userId, { role: "admin" });
+    await patchMember(GOOGLE, m.userId, { role: "admin" }, SYSTEM_ACTOR);
     expect(await audits("restricted.remove", m.userId)).toHaveLength(0);
   });
 });

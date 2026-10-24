@@ -4,7 +4,7 @@ import { newId, R } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createPat } from "../src/auth/pat.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
-import { removeMember } from "../src/services/members.js";
+import { removeMember, SYSTEM_ACTOR } from "../src/services/members.js";
 import { login } from "./helpers.js";
 import {
   APP,
@@ -679,11 +679,11 @@ describe("M2 whole-track adversarial", () => {
         ).status,
       ).toBe(401);
       await login(`owner@example.com`, "owner").catch(() => {});
-      await removeMember(env, o.m.userId);
+      await removeMember(env, o.m.userId, SYSTEM_ACTOR);
       expect(
         (await rpc({ authorization: `Bearer ${o.access_token}` })).status,
       ).toBe(401);
-      await removeMember(env, m.userId);
+      await removeMember(env, m.userId, SYSTEM_ACTOR);
       expect((await rpc({ authorization: `Bearer ${token}` })).status).toBe(
         401,
       );

@@ -1,7 +1,7 @@
 import { inDomains, normalizeEmail } from "@oa/auth-core";
 import type { Member, Role } from "@oa/shared";
 import { logAuth } from "../auth/audit.js";
-import { managesAdmins } from "../auth/authz.js";
+import { callerOf, capOfCaller, managesAdmins } from "../auth/authz.js";
 import type { AuthConfig } from "../auth/config.js";
 import { isGuestRole, orgCan } from "../auth/policy.js";
 import type { VerifiedIdentity } from "../auth/providers/types.js";
@@ -230,18 +230,21 @@ export async function codeEligibility(
 const TARGET_OK = `u.role <> 'owner' and (u.role <> 'admin' or ?3 = 1)`;
 const RESETTABLE = `exists (select 1 from identities i join users u on u.id = i.user_id
   where i.provider = 'google' and u.id = ?1 and ${TARGET_OK})`;
-/** A Google-linked owner or admin: only the owner may act on one (#475). */
-const LINKED_ADMIN = `select 1 from users u join identities i
-  on i.user_id = u.id and i.provider = 'google'
-  where u.id = ?1 and u.role in ('owner', 'admin')`;
+/**
+ * An owner or admin: only the owner may act on one (#475). Checked by role,
+ * never by link, so a refusal doesn't reveal whether they are linked.
+ */
+const ADMIN_TARGET =
+  "select 1 from users where id = ?1 and role in ('owner', 'admin')";
 
 /**
  * Admin action (owner or admin; 404 for anyone else): removes a member's
  * Google link so their next Google sign-in links afresh (clears an
  * identity_conflict). Never the owner's link; 404 when there is none. An
- * admin's link only by the (uncapped) owner: an admin resetting an admin's or
- * the owner's link gets 403 owner_only (it would sign a peer admin out, #475),
- * also when the target was promoted between the check and the batch.
+ * admin's link only by the (uncapped) owner: an admin acting on an admin or
+ * the owner gets 403 owner_only whether or not they are linked (it would
+ * sign a peer admin out, #475), also when the target was promoted between
+ * the check and the batch.
  * One D1 transaction revokes their PATs, ends their sessions and deletes the
  * link, each gated on the same predicate, so all happen or none do. OAuth
  * grants (KV) are revoked first, once the link is known to be resettable, so
@@ -254,15 +257,15 @@ export async function resetIdentity(
   userId: string,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
-  if (!orgCan(actor, "members.manage"))
+  if (!orgCan(actor, "members.manage", { cap: capOfCaller(callerOf(actor)) }))
     throw new ApiError("not_found", "Not found");
   const owner = managesAdmins(actor) ? 1 : 0;
-  // A linked owner or admin the actor may not reset is 403 owner_only;
-  // anything else not resettable stays a 404.
+  // An owner or admin the actor may not act on is 403 owner_only, linked or
+  // not; anything else not resettable stays a 404.
   const refuse = async (): Promise<never> => {
     if (!owner) {
-      const linked = await stmt(env.DB, LINKED_ADMIN).bind(userId).first();
-      if (linked)
+      const admin = await stmt(env.DB, ADMIN_TARGET).bind(userId).first();
+      if (admin)
         throw new ApiError(
           "owner_only",
           "Only the owner can reset an admin's Google link",

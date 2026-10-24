@@ -510,11 +510,26 @@ describe("resetIdentity", () => {
     expect(await subjectOf(uid)).toBeNull();
   });
 
-  it("admin → admin without a link: 404, not owner_only", async () => {
-    const uid = await seedUser(uniq("bareadm"), "admin");
-    await expect(resetIdentity(env, admin, uid)).rejects.toMatchObject({
+  it("admin → admin or owner without a link: 403 owner_only too (no link oracle); owner → unlinked admin: 404", async () => {
+    for (const role of ["admin", "owner"] as const) {
+      const uid = await seedUser(uniq(`bare${role}`), role);
+      await expect(resetIdentity(env, admin, uid)).rejects.toMatchObject({
+        code: "owner_only",
+      });
+    }
+    const uid = await seedUser(uniq("bareadm2"), "admin");
+    await expect(resetIdentity(env, ownerActor, uid)).rejects.toMatchObject({
       code: "not_found",
     });
+  });
+
+  it("a capped admin can't reset at all (404, members.manage under the cap)", async () => {
+    const email = uniq("capmem");
+    const uid = await seedUser(email, "member", { googleSub: `CM-${email}` });
+    await expect(
+      resetIdentity(env, actor("admin", "restricted"), uid),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(await subjectOf(uid)).toBe(`CM-${email}`);
   });
 
   it("target promoted to admin between the precheck and the batch: 403 owner_only, D1 unchanged", async () => {

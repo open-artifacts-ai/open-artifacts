@@ -991,18 +991,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       "*/api/v1/members/:id/identities/:provider",
       authed(({ params }) => {
         const m = memberOf(params.id as string);
-        if (
-          !m ||
-          !isAdmin() ||
-          params.provider !== "google" ||
-          !m.identities?.includes("google")
-        )
-          return notFound();
-        // Resetting an admin's link signs a peer admin out: owner only.
+        if (!m || !isAdmin() || params.provider !== "google") return notFound();
+        // Resetting an admin's link signs a peer admin out: owner only. By
+        // role, before the link, so a refusal never reveals one (#475).
         if (needsOwner(m))
           return err("owner_only", "Only the owner can reset an admin's link");
-        if (m.role === "owner") return notFound();
-        m.identities = m.identities.filter((x) => x !== "google");
+        if (m.role === "owner" || !m.identities?.includes("google"))
+          return notFound();
+        m.identities = (m.identities ?? []).filter((x) => x !== "google");
         log("identity.reset", { type: "user", id: m.id });
         return noContent();
       }),

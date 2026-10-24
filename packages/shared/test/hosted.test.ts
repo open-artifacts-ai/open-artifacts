@@ -1394,6 +1394,23 @@ describe("hosted mocks: reset a Google link", () => {
     ).toBe(204);
   });
 
+  it("an admin resetting an unlinked admin gets owner_only too (by role, not link)", async () => {
+    fresh({ hosted: { actAs: "admin" } });
+    const dan = await byEmail("dan@example.com");
+    expect(dan?.identities).toEqual([]);
+    const id = dan?.id as string;
+    // Before the promotion, an unlinked member is 404 (nothing to reset).
+    expect((await call("DELETE", R.memberIdentity(id, "google"))).status).toBe(
+      404,
+    );
+    expect((await call("PATCH", R.member(id), { role: "admin" })).status).toBe(
+      200,
+    );
+    const r = await call("DELETE", R.memberIdentity(id, "google"));
+    expect(r.status).toBe(403);
+    expect((await errCode(r)).code).toBe("owner_only");
+  });
+
   it("an admin resetting the owner's link gets owner_only; the owner's own stays 404", async () => {
     fresh({ hosted: { actAs: "admin" } });
     const ada = await byEmail("ada@example.com");

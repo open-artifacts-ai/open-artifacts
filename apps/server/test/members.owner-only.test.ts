@@ -8,8 +8,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { withCap } from "../src/auth/authz.js";
 import { createPat } from "../src/auth/pat.js";
+import { sessionCookieName, signSession } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
-import { userActor } from "../src/services/audit.js";
 import {
   patchMember,
   removeMember,
@@ -114,35 +114,26 @@ const PATHS: Path[] = [
   {
     name: "patchMember (role change)",
     env,
-    run: (e, id, a) =>
-      patchMember(e, id, { role: "member" }, ctx, userActor(a.id), a),
+    run: (e, id, a) => patchMember(e, id, { role: "member" }, a, ctx),
     done: async (id) => expect((await rowOf(id))?.role).toBe("member"),
   },
   {
     name: "removeMember, spaces off (row deleted)",
     env,
-    run: (e, id, a) => removeMember(e, id, ctx, userActor(a.id), a),
+    run: (e, id, a) => removeMember(e, id, a, ctx),
     done: async (id) => expect(await rowOf(id)).toBeNull(),
   },
   {
     name: "removeMember, spaces on (status removed)",
     env: SPACES,
-    run: (e, id, a) => removeMember(e, id, ctx, userActor(a.id), a),
+    run: (e, id, a) => removeMember(e, id, a, ctx),
     done: async (id) => expect((await rowOf(id))?.status).toBe("removed"),
   },
   {
     name: "setUserStatus (suspension)",
     env: SPACES,
     run: (e, id, a) =>
-      setUserStatus(
-        e,
-        id,
-        "suspended",
-        "admin_suspend",
-        ctx,
-        userActor(a.id),
-        a,
-      ),
+      setUserStatus(e, id, "suspended", "admin_suspend", a, ctx),
     done: async (id) => expect((await rowOf(id))?.status).toBe("suspended"),
   },
 ];
@@ -239,5 +230,28 @@ describe("routes (#475)", () => {
     expect(
       (await call(R.member(t.userId), admin.cookie, "DELETE")).status,
     ).toBe(204);
+  });
+
+  it("a capped admin (a code session outside the verified domains) gets 404 on the members routes", async () => {
+    const t = await mk("oo-capped", "member");
+    const cookie = `${sessionCookieName(env)}=${await signSession(
+      env,
+      admin.userId,
+      Date.now(),
+      { provider: "code", epoch: 0 },
+    )}`;
+    expect((await call(R.members, cookie, "GET")).status).toBe(404);
+    expect(
+      (await call(R.member(t.userId), cookie, "PATCH", { role: "admin" }))
+        .status,
+    ).toBe(404);
+    expect((await call(R.member(t.userId), cookie, "DELETE")).status).toBe(404);
+    expect(
+      (await call(R.memberIdentity(t.userId, "google"), cookie, "DELETE"))
+        .status,
+    ).toBe(404);
+    expect((await rowOf(t.userId))?.role).toBe("member");
+    // The same admin, uncapped, still lists members.
+    expect((await call(R.members, admin.cookie, "GET")).status).toBe(200);
   });
 });

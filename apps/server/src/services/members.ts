@@ -36,7 +36,7 @@ import {
   MAX_CLOSE,
   revokeUserLive,
 } from "../runtime/revoke.js";
-import { type AuditActor, audit } from "./audit.js";
+import { type AuditActor, audit, userActor } from "./audit.js";
 import { RESTRICTED_SYNC_FOR_USER } from "./restriction.js";
 import { insertUser, toMember } from "./users.js";
 
@@ -102,11 +102,24 @@ async function getRow(env: Env, id: string) {
 const SYSTEM: AuditActor = { kind: "system", id: null };
 
 /**
- * 1 when `actor` may act on an org owner or admin (#475), else 0: the flag
- * every guarded write binds. No actor (system, directory sync) may.
+ * The actor of a system or directory-sync member change: may act on an org
+ * owner or admin. Always passed explicitly (#475): the actor is a required
+ * argument, so a forgotten one is a type error, never a fail-open default.
  */
-const adminsOk = (actor?: Member): 0 | 1 =>
-  !actor || managesAdmins(actor) ? 1 : 0;
+export const SYSTEM_ACTOR: unique symbol = Symbol("oa.system-actor");
+/** Who changes a member: the signed-in member (routes) or SYSTEM_ACTOR. */
+export type MemberActor = Member | typeof SYSTEM_ACTOR;
+
+/**
+ * 1 when `actor` may act on an org owner or admin (#475), else 0: the flag
+ * every guarded write binds. SYSTEM_ACTOR (system, directory sync) may.
+ */
+const adminsOk = (actor: MemberActor): 0 | 1 =>
+  actor === SYSTEM_ACTOR || managesAdmins(actor) ? 1 : 0;
+
+/** The audit actor: the member, else system (sync for directory reasons). */
+const auditActor = (actor: MemberActor, why?: AuditReason): AuditActor =>
+  actor === SYSTEM_ACTOR ? (why ? actorFor(why) : SYSTEM) : userActor(actor.id);
 
 const ownerOnly = () =>
   new ApiError("owner_only", "Only the owner can manage an owner or admin");
@@ -129,9 +142,10 @@ async function raceCheck(env: Env, id: string, admins: 0 | 1): Promise<void> {
   if (await stmt(env.DB, GUARDED_TARGET).bind(id).first()) throw ownerOnly();
 }
 
-/** The audit actor when none is given: sync for directory reasons. */
-const actorFor = (why: AuditReason): AuditActor =>
-  why.startsWith("directory_") ? { kind: "sync", id: null } : SYSTEM;
+/** A system change's audit actor: sync for directory reasons. */
+function actorFor(why: AuditReason): AuditActor {
+  return why.startsWith("directory_") ? { kind: "sync", id: null } : SYSTEM;
+}
 
 // One statement per status change. A removed row stays removed, and the
 // instance owner is never deactivated. Any change ends every session
@@ -164,21 +178,21 @@ const STATUS_OF = "select status from users where id = ?1";
  * removed. getUser resolves only active rows, so every credential stops at
  * the next request.
  *
- * `actor` is the member acting (routes): an admin may not suspend or remove
- * an owner or admin, 403 owner_only, enforced in the write so a promotion
- * racing the call changes nothing (#475). Omitted for system and directory
- * sync.
+ * `actor` is the member acting (routes; audited as them) or SYSTEM_ACTOR
+ * (system and directory sync). An admin may not suspend or remove an owner
+ * or admin, 403 owner_only, enforced in the write so a promotion racing the
+ * call changes nothing (#475).
  */
 export async function setUserStatus(
   env: Env,
   userId: string,
   status: MemberStatus,
   why: AuditReason,
+  actor: MemberActor,
   ctx?: Pick<ExecutionContext, "waitUntil">,
-  by: AuditActor = actorFor(why),
-  actor?: Member,
 ): Promise<void> {
   const admins = adminsOk(actor);
+  const by = auditActor(actor, why);
   const out = await env.DB.batch([
     stmt(env.DB, SET_STATUS).bind(userId, status, Date.now(), admins),
     // Directly after the update: audited only when it changed the row.
@@ -218,22 +232,21 @@ const CLEAR_MANUAL_RESTRICTION = `update users set restricted_manual = 0
   where id = ?1 and ?2 = 'admin' and restricted_manual <> 0 and ${ROLE_TARGET}`;
 
 /**
- * Changes a member's role. `actor` is the member acting (routes): an admin
- * may not change an owner's or admin's role, 403 owner_only, enforced in the
- * write so a promotion racing the call changes nothing (#475). Omitted for
- * system callers.
+ * Changes a member's role. `actor` is the member acting (routes; audited as
+ * them) or SYSTEM_ACTOR. An admin may not change an owner's or admin's role,
+ * 403 owner_only, enforced in the write so a promotion racing the call
+ * changes nothing (#475).
  */
-
 export async function patchMember(
   env: Env,
   id: string,
   patch: MemberPatch,
+  actor: MemberActor,
   ctx?: Pick<ExecutionContext, "waitUntil">,
-  by: AuditActor = SYSTEM,
-  actor?: Member,
 ): Promise<Member> {
   const row = await getRow(env, id);
   const admins = adminsOk(actor);
+  const by = auditActor(actor);
   checkTarget(row.role, admins);
   if (row.role === "owner")
     throw new ApiError("bad_request", "The owner cannot be demoted");
@@ -294,15 +307,15 @@ export async function patchMember(
  * deleted (tokens.user_id has no cascade, so revoked rows would block the
  * delete). Shares addressed to their email are kept.
  *
- * `actor` is the member acting (routes): an admin may not remove an owner or
- * admin, 403 owner_only, enforced in the writes too (#475).
+ * `actor` is the member acting (routes; audited as them) or SYSTEM_ACTOR. An
+ * admin may not remove an owner or admin, 403 owner_only, enforced in the
+ * writes too (#475).
  */
 export async function removeMember(
   env: Env,
   id: string,
+  actor: MemberActor,
   ctx?: Pick<ExecutionContext, "waitUntil">,
-  by: AuditActor = SYSTEM,
-  actor?: Member,
 ): Promise<void> {
   const row = await getRow(env, id);
   checkTarget(row.role, adminsOk(actor));
@@ -310,8 +323,8 @@ export async function removeMember(
     throw new ApiError("bad_request", "The owner cannot be removed");
   const db = getDb(env);
   if (authConfig(env).features.includes("spaces"))
-    await setUserStatus(env, id, "removed", "admin_remove", ctx, by, actor);
-  else await deleteMember(env, id, ctx, by, actor);
+    await setUserStatus(env, id, "removed", "admin_remove", actor, ctx);
+  else await deleteMember(env, id, actor, ctx);
   // Belt and braces for the artifacts shared with them (best effort, capped).
   const shared = await db
     .select({ id: shares.artifactId })
@@ -336,14 +349,15 @@ export async function removeMember(
 async function deleteMember(
   env: Env,
   id: string,
+  actor: MemberActor,
   ctx: Pick<ExecutionContext, "waitUntil"> | undefined,
-  by: AuditActor,
-  actor?: Member,
 ): Promise<void> {
   const db = getDb(env);
   const admins = adminsOk(actor);
+  const by = auditActor(actor);
+  // As ROLE_TARGET: never the owner, an admin only when the actor may.
   const target = sql`exists (select 1 from users u where u.id = ${id}
-    and (u.role <> 'admin' or ${admins} = 1))`;
+    and u.role <> 'owner' and (u.role <> 'admin' or ${admins} = 1))`;
   const owner = (
     await db
       .select({ id: users.id })
@@ -417,7 +431,7 @@ async function deleteMember(
       reason: "admin_remove",
       detail: { status: "removed" },
       when: {
-        sql: "exists (select 1 from users where id = ? and (role <> 'admin' or ? = 1))",
+        sql: "exists (select 1 from users where id = ? and role <> 'owner' and (role <> 'admin' or ? = 1))",
         args: [id, admins],
       },
     }),
