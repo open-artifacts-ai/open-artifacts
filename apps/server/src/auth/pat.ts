@@ -35,7 +35,8 @@ export async function createPat(
   const res = await stmt(env.DB, CREATE_PAT)
     .bind(id, userId, label, await sha256Hex(token), Date.now())
     .run();
-  if (res.meta.changes === 0) throw new ApiError("unauthorized", "Sign in again");
+  if (res.meta.changes === 0)
+    throw new ApiError("unauthorized", "Sign in again");
   return { id, token };
 }
 
