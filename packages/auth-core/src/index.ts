@@ -5,8 +5,11 @@ export {
   keyId,
   publicFromPkcs8,
   redeemTranscript,
+  requestTranscript,
   signRedeem,
+  signRequest,
   verifyRedeem,
+  verifyRequest,
 } from "./ed25519.js";
 export { isAsciiEmail, normalizeEmail } from "./email.js";
 export {
