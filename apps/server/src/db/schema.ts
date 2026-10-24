@@ -327,6 +327,9 @@ export const versions = sqliteTable(
     message: text("message"),
     agentName: text("agent_name"),
     agentVersion: text("agent_version"),
+    // The grant or token that published this version: `g:<grantId>` or
+    // `t:<tokenId>` (NULL: a session, or written before 0012).
+    agentVia: text("agent_via"),
     createdBy: text("created_by")
       .notNull()
       .references(() => users.id),
@@ -373,6 +376,23 @@ export const tokens = sqliteTable("tokens", {
   createdAt: integer("created_at").notNull(),
   lastUsedAt: integer("last_used_at"),
   revokedAt: integer("revoked_at"),
+  // Versions published with this token (+1 in the publish batch).
+  versionsPublished: integer("versions_published").notNull().default(0),
+});
+
+// Per OAuth grant, what the grant record (OAUTH_KV) doesn't hold: the owner's
+// label and usage. Created on first use, label or publish (upserts); the KV
+// grant list stays the source of which grants exist.
+export const agentGrants = sqliteTable("agent_grants", {
+  grantId: text("grant_id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id),
+  label: text("label"),
+  // Written at most once a minute (conditional upsert, waitUntil).
+  lastUsedAt: integer("last_used_at"),
+  clientVersion: text("client_version"),
+  versionsPublished: integer("versions_published").notNull().default(0),
 });
 
 export const uploads = sqliteTable("uploads", {

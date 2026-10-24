@@ -1,5 +1,4 @@
 import {
-  type AgentRef,
   ArtifactPatchSchema,
   INLINE_TOO_LARGE_MESSAGE,
   isId,
@@ -29,6 +28,7 @@ import {
   softDelete,
   undelete,
 } from "../services/artifacts.js";
+import type { AgentAttr } from "../services/agent-usage.js";
 import { planFiles, RESERVED_KEYS } from "../services/manifest.js";
 import { putExtractedText } from "../services/search.js";
 import { utf8Decoder } from "../util/text.js";
@@ -84,9 +84,13 @@ async function publishInput(
 }
 
 /** REST attribution: the PAT label when authenticated by token, else none. */
-const agentOf = (c: Context<AppEnv>): AgentRef | null =>
+const agentOf = (c: Context<AppEnv>): AgentAttr | null =>
   c.var.tokenId && c.var.tokenLabel
-    ? { name: c.var.tokenLabel, version: null }
+    ? {
+        name: c.var.tokenLabel,
+        version: null,
+        via: { kind: "token", id: c.var.tokenId },
+      }
     : null;
 
 const notFound = () => new ApiError("not_found", "Not found");

@@ -5,6 +5,7 @@ import {
   type Token,
   type TokenCreated,
   TokenCreateInputSchema,
+  TokenPatchSchema,
 } from "@oa/shared";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { requireUser } from "../auth/authz.js";
@@ -27,6 +28,20 @@ const isActive = async (env: Env, id: string) =>
     .first()) !== null;
 const iso = (ms: number) => new Date(ms).toISOString();
 
+const toToken = (r: {
+  id: string;
+  label: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  versionsPublished: number;
+}): Token => ({
+  id: r.id,
+  label: r.label,
+  createdAt: iso(r.createdAt),
+  lastUsedAt: r.lastUsedAt == null ? null : iso(r.lastUsedAt),
+  versionsPublished: r.versionsPublished,
+});
+
 export function mountTokens(app: AppType): void {
   app.get(R.tokens, async (c) => {
     const user = requireUser(c);
@@ -36,17 +51,12 @@ export function mountTokens(app: AppType): void {
         label: tokens.label,
         createdAt: tokens.createdAt,
         lastUsedAt: tokens.lastUsedAt,
+        versionsPublished: tokens.versionsPublished,
       })
       .from(tokens)
       .where(and(eq(tokens.userId, user.id), isNull(tokens.revokedAt)))
       .orderBy(desc(tokens.createdAt));
-    const out: Token[] = rows.map((r) => ({
-      id: r.id,
-      label: r.label,
-      createdAt: iso(r.createdAt),
-      lastUsedAt: r.lastUsedAt == null ? null : iso(r.lastUsedAt),
-    }));
-    return c.json(out);
+    return c.json(rows.map(toToken));
   });
 
   app.post(R.tokens, async (c) => {
@@ -82,9 +92,35 @@ export function mountTokens(app: AppType): void {
       label,
       createdAt: iso(now),
       lastUsedAt: null,
+      versionsPublished: 0,
       token,
     };
     return c.json(out, 201);
+  });
+
+  // The caller's own live token only (else 404); a label of 1-80 characters.
+  app.patch("/api/v1/tokens/:id", async (c) => {
+    const user = requireUser(c);
+    const { label } = await jsonBody(c, TokenPatchSchema);
+    const [row] = await getDb(c.env)
+      .update(tokens)
+      .set({ label })
+      .where(
+        and(
+          eq(tokens.id, c.req.param("id")),
+          eq(tokens.userId, user.id),
+          isNull(tokens.revokedAt),
+        ),
+      )
+      .returning({
+        id: tokens.id,
+        label: tokens.label,
+        createdAt: tokens.createdAt,
+        lastUsedAt: tokens.lastUsedAt,
+        versionsPublished: tokens.versionsPublished,
+      });
+    if (!row) throw new ApiError("not_found", "Not found");
+    return c.json(toToken(row));
   });
 
   app.delete("/api/v1/tokens/:id", async (c) => {
