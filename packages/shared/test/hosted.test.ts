@@ -1393,4 +1393,83 @@ describe("hosted mocks: reset a Google link", () => {
         .status,
     ).toBe(204);
   });
+
+  it("an admin resetting the owner's link gets owner_only; the owner's own stays 404", async () => {
+    fresh({ hosted: { actAs: "admin" } });
+    const ada = await byEmail("ada@example.com");
+    const r = await call(
+      "DELETE",
+      R.memberIdentity(ada?.id as string, "google"),
+    );
+    expect(r.status).toBe(403);
+    expect((await errCode(r)).code).toBe("owner_only");
+    fresh({ hosted: true });
+    expect(
+      (await call("DELETE", R.memberIdentity(ada?.id as string, "google")))
+        .status,
+    ).toBe(404);
+  });
+});
+
+describe("hosted mocks: acting on an owner or admin is owner-only (#475)", () => {
+  const byEmail = async (email: string) =>
+    (
+      (await json(await call("GET", R.members))) as {
+        id: string;
+        email: string;
+        role: string;
+      }[]
+    ).find((m) => m.email === email);
+
+  it("an admin can't change an admin's or the owner's role, or remove them (403 owner_only)", async () => {
+    fresh({ hosted: { actAs: "admin" } });
+    const erin = await byEmail("erin@example.com");
+    const ada = await byEmail("ada@example.com");
+    for (const id of [erin?.id, ada?.id] as string[]) {
+      const p = await call("PATCH", R.member(id), { role: "member" });
+      expect(p.status).toBe(403);
+      expect((await errCode(p)).code).toBe("owner_only");
+      const d = await call("DELETE", R.member(id));
+      expect(d.status).toBe(403);
+      expect((await errCode(d)).code).toBe("owner_only");
+    }
+    expect((await byEmail("erin@example.com"))?.role).toBe("admin");
+  });
+
+  it("an admin still manages members", async () => {
+    fresh({ hosted: { actAs: "admin" } });
+    const bob = await byEmail("bob@example.com");
+    const dan = await byEmail("dan@example.com");
+    expect(
+      (await call("PATCH", R.member(bob?.id as string), { role: "admin" }))
+        .status,
+    ).toBe(200);
+    expect((await call("DELETE", R.member(dan?.id as string))).status).toBe(
+      204,
+    );
+  });
+
+  it("the owner changes an admin's role and removes them; the owner on themselves stays 400", async () => {
+    fresh({ hosted: true });
+    const erin = await byEmail("erin@example.com");
+    const ada = await byEmail("ada@example.com");
+    const p = await call("PATCH", R.member(erin?.id as string), {
+      role: "member",
+    });
+    expect(p.status).toBe(200);
+    expect(
+      (await call("PATCH", R.member(erin?.id as string), { role: "admin" }))
+        .status,
+    ).toBe(200);
+    expect((await call("DELETE", R.member(erin?.id as string))).status).toBe(
+      204,
+    );
+    expect(
+      (await call("PATCH", R.member(ada?.id as string), { role: "member" }))
+        .status,
+    ).toBe(400);
+    expect((await call("DELETE", R.member(ada?.id as string))).status).toBe(
+      400,
+    );
+  });
 });

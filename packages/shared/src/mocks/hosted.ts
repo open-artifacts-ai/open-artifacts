@@ -397,6 +397,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
 
   // ---- derived views --------------------------------------------------------
   const isAdmin = () => me.user.role === "owner" || me.user.role === "admin";
+  /**
+   * Changing an owner's or admin's role, removing them or resetting their
+   * Google link needs the uncapped owner (#475): 403 owner_only otherwise.
+   */
+  const needsOwner = (m: Member) =>
+    (m.role === "owner" || m.role === "admin") &&
+    (me.user.role !== "owner" || cap() !== null);
   const findSpace = (id: unknown) => spaces.find((s) => s.id === id);
   const memberOf = (id: string) => members.find((m) => m.id === id);
   /** guests_read_only: P2's authConfig.guestsReadOnly, true whenever google or email sign-in is on. */
@@ -882,6 +889,16 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     http.get("*/api/v1/usage", () =>
       features().includes("usage_off") ? notFound() : undefined,
     ),
+    // -- members: acting on an owner or admin is owner-only (#475); anything
+    // else falls through to the base handlers.
+    ...(["patch", "delete"] as const).map((method) =>
+      http[method]("*/api/v1/members/:id", ({ request, params }) => {
+        const m = memberOf(params.id as string);
+        if (c.isAnon(request) || !m || !isAdmin() || !needsOwner(m))
+          return undefined;
+        return err("owner_only", "Only the owner can manage an owner or admin");
+      }),
+    ),
     // -- members (status filter), departed transfer, identity reset
     http.get(
       "*/api/v1/members",
@@ -977,14 +994,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (
           !m ||
           !isAdmin() ||
-          m.role === "owner" ||
           params.provider !== "google" ||
           !m.identities?.includes("google")
         )
           return notFound();
         // Resetting an admin's link signs a peer admin out: owner only.
-        if (m.role === "admin" && me.user.role !== "owner")
+        if (needsOwner(m))
           return err("owner_only", "Only the owner can reset an admin's link");
+        if (m.role === "owner") return notFound();
         m.identities = m.identities.filter((x) => x !== "google");
         log("identity.reset", { type: "user", id: m.id });
         return noContent();

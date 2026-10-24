@@ -24,9 +24,7 @@ const SPACES = { ...(env as object), FEATURES: "spaces" } as Env;
 
 type Row = { role: string; status: string; e: number } | null;
 const rowOf = (id: string) =>
-  env.DB.prepare(
-    "select role, status, session_epoch e from users where id = ?",
-  )
+  env.DB.prepare("select role, status, session_epoch e from users where id = ?")
     .bind(id)
     .first<Row>();
 const audits = async (id: string) =>

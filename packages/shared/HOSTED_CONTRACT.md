@@ -16,7 +16,8 @@ hosted off.
 - **No access is 404**, never 403. The exceptions are explicit codes:
   `space_forbidden` (403) on publish or move into a space the caller can't
   publish to, or on a member or mapping change the caller's role can't make
-  (details `SpaceForbiddenDetails { target: member | mapping }`), `public_links_off`, `turnstile_failed`, `csrf`, `capability_denied`.
+  (details `SpaceForbiddenDetails { target: member | mapping }`), `owner_only`
+  (an admin acting on an org owner or admin), `public_links_off`, `turnstile_failed`, `csrf`, `capability_denied`.
 - **Groups are keyed by `groupId`** (Google's stable group id, never the email)
   in every route and shape (`GroupRef { groupId, email, name }`).
 - **Owner checks are exact.** `manager` has the owner's rank but never passes
@@ -99,7 +100,7 @@ every flag that is on.
 | `GET AUTH.callbackGoogle` `/auth/callback/google` | 302 `next`; any refusal (incl. `no_access`) 302 `SIGN_IN_PAGE?error=SignInError&next` only |
 | `POST AUTH.codeRequest` `/auth/code/request` | `CodeRequest` → 202 `CodeRequested` |
 | `POST AUTH.codeVerify` `/auth/code/verify` | `CodeVerify` → 200 `CodeVerified` |
-| `DELETE R.memberIdentity(id, "google")` | 204; owner/admin reset a member's Google link (never the owner's). An ADMIN target needs the OWNER: an admin resetting a peer admin gets 403 `owner_only` (server rule pending; mocked). |
+| `DELETE R.memberIdentity(id, "google")` | 204; owner/admin reset a member's Google link (never the owner's: the owner on themselves is 404). An admin or owner target needs the uncapped OWNER: an admin resetting a linked admin's or the owner's link gets 403 `owner_only`, also when the target is promoted to admin mid-request (enforced in the write; nothing changes). No link is still 404. |
 
 | Schema | Meaning |
 |---|---|
@@ -179,6 +180,8 @@ line, never twice. A non-null `cap` still limits access to viewer.
 | `POST R.moveArtifact(id)` | `MoveArtifactInput {spaceId}` → `ArtifactSummary` | manager/owner on the artifact (else 404); shared target only (the caller's own personal space: 400 `space_personal`; anyone else's: 404); editor+ in target (else 403 `space_forbidden`). A public artifact moved into a space with publicLinks off becomes `team` in the same batch and its anonymous sockets close (the toggle itself never rewrites or revokes); the returned summary shows `visibility: "team"`. Compare-and-set on the space and visibility read: a concurrent change is 409 `conflict`. Audited `artifact.move` |
 | `POST R.transferArtifact(id)` | `TransferArtifactInput {userId}` → `ArtifactSummary` | `level === "owner"` only, personal (else 404; a manager can't); successor active, non-guest, non-restricted (400 `invalid_successor`); former owner keeps an editor share; audited `artifact.transfer` |
 | `GET R.members?status=` | `MembersQuery` → `Member[]` | comma list, default `active`; other statuses org owner/admin |
+| `PATCH R.member(id)` | `MemberPatch` → `Member` | org owner, admin (else 404). An org owner or admin target needs the uncapped owner: an admin gets 403 `owner_only` (#475). The owner on themselves stays 400. Enforced in the write: a target promoted to admin mid-request is 403 `owner_only`, nothing changes or is audited |
+| `DELETE R.member(id)` | 204 | org owner, admin (else 404); spaces on: status `removed` (suspension and removal share this rule). An org owner or admin target needs the uncapped owner: an admin gets 403 `owner_only` (#475). The owner on themselves stays 400. Enforced in the write, as PATCH |
 | `GET R.memberTransfer(id)` | → `TransferSummary {live, deleted}` | counts only; org owner, admin |
 | `POST R.memberTransfer(id)` | `TransferInput {to: user\|space, cursor?}` → `TransferResult {moved, remaining, nextCursor}` | 409 `member_active`; user target active, non-guest, non-restricted (400 `invalid_successor`); ≤ `TRANSFER_PAGE` (100) per call; repeat with `cursor` until `nextCursor` is null (each call moves the next page still in the departed person's space; the cursor is a continuation marker only, so a forged one moves no more). Into a space with publicLinks off, public artifacts become `team` and their sockets close, and a page is at most 50 so the closes fit one request. The target (and a user target's eligibility) is re-checked in the write: if it changed, nothing moves and the call is 409 `conflict`. One `artifact.transfer` audit row per call (`detail: { moved, teamed, to }`) |
 | MCP `list_spaces` | → `{ items: MySpace[] }` | the spaces the caller can publish into: their personal space first, then shared spaces where they are editor or manager; empty for a capped caller |
@@ -233,6 +236,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `code_unavailable` | 503 | code sign-in can't run: `SESSION_SECRET` is under 32 characters, so the code keys can't be derived, or the `RL_AUTH` rate-limit binding is missing |
 | `reauth_required` | 401 | break-glass routes need a fresh Google sign-in |
 | `restrict_admin` | 400 | `PUT R.memberRestricted(id)` on an org owner or admin |
+| `owner_only` | 403 | an admin (or a capped owner) acting on an org owner or admin: `PATCH`/`DELETE R.member(id)`, `DELETE R.memberIdentity(id, "google")` (#475). Admins keep managing members and guests |
 | `directory_mapping_off` | 403 | a space manager (not an org admin) adds or changes a space mapping (PUT) while `Settings.spaceManagerMappings` is off; list and DELETE stay allowed |
 | `member_synced` | 409 | `DELETE R.spaceMember` on a synced-only row while sync is live. UI copy: "This person comes from a Google group. Remove them from the group in Google, or change their role here." |
 
@@ -258,7 +262,9 @@ personal space per member, Engineering (caller manager, allMembersRole viewer,
 "Contractors", member Dan: `cap: "restricted"`, no allMembersRole); a suspended
 member Carol with `{ live: 2, deleted: 1 }` to transfer; a held sweep
 (`gSales03`); `can` from `artifactCan` on every request; `public_links_off`
-on PATCH and publish; `Settings.spaceManagerMappings` (default on, PATCH
+on PATCH and publish; `owner_only` when an admin changes, removes or resets
+the Google link of the owner or an admin (`actAs: "admin"`; Erin is the seeded
+admin); `Settings.spaceManagerMappings` (default on, PATCH
 admin-only and audited); space managers map `viewer`/`editor` only (never over a manager row); org
 mappings (none seeded) merge into shared spaces at read time, never personal. Code flow: `HOSTED_MOCK_CODE` (`24681357`) verifies the last
 requested address; 5 wrong tries expire it; 6+ requests per address 429.

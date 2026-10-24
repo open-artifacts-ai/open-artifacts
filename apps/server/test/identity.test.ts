@@ -469,9 +469,9 @@ describe("resetIdentity", () => {
     const uid = await seedUser(email, "member", { googleSub: `V-${email}` });
     await createPat(env, uid, "t");
     for (const role of ["member", "guest"] as const)
-      await expect(
-        resetIdentity(env, actor(role), uid),
-      ).rejects.toMatchObject({ code: "not_found" });
+      await expect(resetIdentity(env, actor(role), uid)).rejects.toMatchObject({
+        code: "not_found",
+      });
     expect(await subjectOf(uid)).toBe(`V-${email}`);
     expect((await rowOf(uid)).e).toBe(0);
     expect(await pats(uid)).toBe(1);
