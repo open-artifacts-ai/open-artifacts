@@ -250,19 +250,17 @@ function ConnectButton({ domains }: { domains: string }) {
 function PendingConfirm({
   sync,
   domains,
-  onOutcome,
+  confirm,
+  cancel,
 }: {
   sync: SyncStatus;
   domains: string;
-  onOutcome: (o: Outcome) => void;
+  confirm: ReturnType<typeof useConfirmDirectory>;
+  cancel: ReturnType<typeof useCancelDirectory>;
 }) {
-  const confirm = useConfirmDirectory();
-  const cancel = useCancelDirectory();
   const busy = confirm.isPending || cancel.isPending;
   const capped = sync.pendingCountCapped;
   const n = sync.pendingCount ?? 0;
-  const expired = (e: unknown) =>
-    e instanceof ApiClientError && e.status === 409 && onOutcome("expired");
   return (
     <Header
       tone="info"
@@ -283,19 +281,14 @@ function PendingConfirm({
         <Button
           variant="outline"
           disabled={busy}
-          onClick={() =>
-            cancel.mutate(undefined, {
-              onSuccess: () => onOutcome("cancelled"),
-              onError: expired,
-            })
-          }
+          onClick={() => cancel.mutate()}
         >
           Cancel
         </Button>
         <Button
           disabled={busy}
           aria-busy={confirm.isPending || undefined}
-          onClick={() => confirm.mutate(undefined, { onError: expired })}
+          onClick={() => confirm.mutate()}
         >
           {capped ? "Add people" : `Add ${people(n)}`}
         </Button>
@@ -344,10 +337,12 @@ function StatusHeader({
   onSync,
   refusal,
   outcome,
-  onOutcome,
+  confirm,
+  cancel,
 }: {
   outcome: Outcome;
-  onOutcome: (o: Outcome) => void;
+  confirm: ReturnType<typeof useConfirmDirectory>;
+  cancel: ReturnType<typeof useCancelDirectory>;
   sync: SyncStatus;
   owner: boolean;
   ownerName: string | null;
@@ -392,7 +387,12 @@ function StatusHeader({
 
   if (sync.state === "pending_confirm")
     return owner ? (
-      <PendingConfirm sync={sync} domains={domains} onOutcome={onOutcome} />
+      <PendingConfirm
+        sync={sync}
+        domains={domains}
+        confirm={confirm}
+        cancel={cancel}
+      />
     ) : (
       <Header tone="info" label="Waiting for the owner to confirm">
         <p>
@@ -954,7 +954,16 @@ export function Directory() {
     until: number;
   } | null>(null);
   const data = status.data;
+  // Here, not on the confirm screen: the outcome must outlive it (the status
+  // can move to "off" and unmount that screen before the 409 lands).
   const [outcome, setOutcome] = useState<Outcome>(null);
+  const confirmDir = useConfirmDirectory({
+    expired: () => setOutcome("expired"),
+  });
+  const cancelDir = useCancelDirectory({
+    done: () => setOutcome("cancelled"),
+    expired: () => setOutcome("expired"),
+  });
   useEffect(() => {
     if (!syncing || !data) return;
     if (
@@ -1030,7 +1039,8 @@ export function Directory() {
             syncing={syncing !== null}
             refusal={refusal}
             outcome={outcome}
-            onOutcome={setOutcome}
+            confirm={confirmDir}
+            cancel={cancelDir}
             onSync={() =>
               sync.mutate(undefined, {
                 onSuccess: () =>
