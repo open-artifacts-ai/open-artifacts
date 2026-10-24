@@ -162,3 +162,49 @@ describe("wrangler.staging.jsonc env.staging", () => {
     expect(ACCESS_CLIENT_ID).toMatch(/^[0-9a-f]{64}$/);
   });
 });
+
+describe("staging Durable Objects", () => {
+  // A class must exist one release before anything binds it (the P1 rule):
+  // every bound class is migrated, and every migrated class is exported by the
+  // server entry (a migration for a class the server doesn't export fails the
+  // staging deploy, so this config can't land before the class does).
+  const entry = readFileSync(join(root, "apps/server", cfg.main), "utf8");
+  // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+  const bound: string[] = env.durable_objects.bindings.map(
+    (b: any) => b.class_name,
+  );
+  // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+  const migrated: string[] = env.migrations.flatMap((m: any) => [
+    ...(m.new_sqlite_classes ?? []),
+    ...(m.new_classes ?? []),
+  ]);
+  it("every bound class is migrated", () => {
+    for (const c of bound) expect(migrated, c).toContain(c);
+  });
+  for (const name of migrated)
+    it(`the server entry exports ${name}`, () => {
+      expect(entry).toMatch(
+        new RegExp(
+          `export\\s+(?:class\\s+${name}\\b|\\{[^}]*\\b${name}\\b[^}]*\\})`,
+        ),
+      );
+    });
+});
+
+describe("staging UserPresence (P3 T7a, #502)", () => {
+  it("adds UserPresence in migration v2, after v1 (ArtifactRuntime)", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+    const tags = env.migrations.map((m: any) => m.tag);
+    expect(tags.slice(0, 2)).toEqual(["v1", "v2"]);
+    expect(env.migrations[1]).toEqual({
+      tag: "v2",
+      new_sqlite_classes: ["UserPresence"],
+    });
+  });
+  it("does not bind it yet (T7b binds and uses it, one release later)", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+    expect(env.durable_objects.bindings.map((b: any) => b.name)).not.toContain(
+      "USER_PRESENCE",
+    );
+  });
+});
