@@ -145,6 +145,15 @@ const BASE_TEMPLATE: Template = JSON.parse(
     .replace(/\/\/[^\n]*/g, "")
     .replace(/,(\s*[}\]])/g, "$1"),
 );
+// The fixture tags derive from the live template, so a new server DO tag
+// (P3 T7a's UserPresence v2) doesn't collide with them: BASE_TAG is the
+// release's own latest tag, LEDGER_TAG the fixture's added class, and
+// FOREIGN_TAG a live tag that is in no release.
+const BASE_TAG = String(
+  (BASE_TEMPLATE.migrations as { tag: string }[]).at(-1)?.tag,
+);
+const LEDGER_TAG = `${BASE_TAG}-ledger`;
+const FOREIGN_TAG = "foreign-tag";
 const MIGRATION_FILES: ReleaseFile[] = SERVER_MIGRATIONS.map((name) => ({
   name,
   bytes: new Uint8Array(
@@ -266,13 +275,13 @@ const V24: Spec = {
   migrations: [...MIGRATION_FILES, NEW_MIGRATION],
   assets: ASSETS_24,
 };
-/** 0.25.0 adds a DO class (tag v2) without binding it: allowed. */
+/** 0.25.0 adds a DO class (LEDGER_TAG) without binding it: allowed. */
 const V25_TAG: Spec = {
   template: {
     ...BASE_TEMPLATE,
     migrations: [
       ...BASE_TEMPLATE.migrations,
-      { tag: "v2", new_sqlite_classes: ["Ledger"] },
+      { tag: LEDGER_TAG, new_sqlite_classes: ["Ledger"] },
     ],
   },
 };
@@ -300,7 +309,7 @@ const V26_BOUND: Spec = {
     },
     migrations: [
       ...BASE_TEMPLATE.migrations,
-      { tag: "v2", new_sqlite_classes: ["Ledger"] },
+      { tag: LEDGER_TAG, new_sqlite_classes: ["Ledger"] },
     ],
   },
 };
@@ -504,7 +513,7 @@ describe("create stores per-version metadata", () => {
     const inst = keep(await s.p.create(input()));
     const st = s.stored(inst.id, "0.23.0");
     expect(st).toBeDefined();
-    expect(st?.do_migration_tag).toBe("v1");
+    expect(st?.do_migration_tag).toBe(BASE_TAG);
     const m = JSON.parse(st?.metadata as string);
     expect(m.main_module).toBe("index.js");
     expect(m.compatibility_date).toBe(BASE_TEMPLATE.compatibility_date);
@@ -603,7 +612,7 @@ describe("upgrade", () => {
       state: "active",
       version: "0.24.0",
       previous_version: "0.23.0",
-      do_migration_tag: "v1",
+      do_migration_tag: BASE_TAG,
       lease: null,
     });
     expect(s.stored(inst.id, "0.24.0")).toBeDefined();
@@ -633,7 +642,7 @@ describe("upgrade", () => {
       state: "active",
       version: "0.23.0",
       previous_version: "0.24.0",
-      do_migration_tag: "v1",
+      do_migration_tag: BASE_TAG,
     });
     expect(s.audit(a.id)).toEqual(
       expect.arrayContaining(["upgrade.failed", "rollback.done"]),
@@ -667,7 +676,7 @@ describe("upgrade", () => {
     // The same class, added unbound one release earlier, is fine.
     const r = keep(await s.p.upgrade(inst.id, "0.25.0"));
     expect(r.ok).toBe(true);
-    expect(s.row(inst.id).do_migration_tag).toBe("v2");
+    expect(s.row(inst.id).do_migration_tag).toBe(LEDGER_TAG);
   });
 
   it("sends migrations only when the target tag differs from the live one", async () => {
@@ -677,12 +686,12 @@ describe("upgrade", () => {
     await s.p.upgrade(inst.id, "0.25.0");
     const meta = metaOf(uploads(s.fake, from)[0]?.body as string);
     expect(meta.migrations).toEqual({
-      old_tag: "v1",
-      new_tag: "v2",
+      old_tag: BASE_TAG,
+      new_tag: LEDGER_TAG,
       steps: [{ new_sqlite_classes: ["Ledger"] }],
     });
-    expect(s.scriptOf(inst.id)?.migrationTag).toBe("v2");
-    expect(s.stored(inst.id, "0.25.0")?.do_migration_tag).toBe("v2");
+    expect(s.scriptOf(inst.id)?.migrationTag).toBe(LEDGER_TAG);
+    expect(s.stored(inst.id, "0.25.0")?.do_migration_tag).toBe(LEDGER_TAG);
   });
 
   it("a release below the floor's minVersion, or revoked, is refused on upgrade", async () => {
@@ -787,7 +796,7 @@ describe("rollback", () => {
       state: "active",
       version: "0.25.0",
       previous_version: "0.23.0",
-      do_migration_tag: "v2",
+      do_migration_tag: LEDGER_TAG,
     });
     expect(s.audit(inst.id)).toContain("upgrade.forward_fix");
     s.fake.health = undefined;
@@ -1717,10 +1726,12 @@ describe("fix round 2", () => {
     await s.p.upgrade(inst.id, "0.24.0");
     const sc = s.scriptOf(inst.id);
     if (!sc) throw new Error("no script");
-    sc.migrationTag = "v2";
+    sc.migrationTag = FOREIGN_TAG;
     let from = s.fake.log.length;
     const e = await fails(s.p.rollback(inst.id));
-    expect(e.message).toMatch(/live Durable Object migration tag is v2/);
+    expect(e.message).toMatch(
+      new RegExp(`live Durable Object migration tag is ${FOREIGN_TAG}`),
+    );
     expect(probes(s.fake, from)).toHaveLength(1);
     expect(uploads(s.fake, from)).toHaveLength(0);
     sc.migrationTag = "v9";
@@ -2184,7 +2195,8 @@ describe("fix round 5 (security review)", () => {
     const s = setup();
     const a = keep(await s.p.create(input("alpha")));
     await s.p.upgrade(a.id, "0.24.0");
-    (s.scriptOf(a.id) as { migrationTag: string | null }).migrationTag = "v2";
+    (s.scriptOf(a.id) as { migrationTag: string | null }).migrationTag =
+      FOREIGN_TAG;
     await fails(s.p.rollback(a.id));
     expect(s.audit(a.id)).toEqual(
       expect.arrayContaining(["rollback.start", "rollback.aborted"]),
@@ -2219,13 +2231,13 @@ describe("fix round 5 (security review)", () => {
     const from = s.fake.log.length;
     await s.p.upgrade(inst.id, "0.25.0");
     const sent = metaOf(uploads(s.fake, from)[0]?.body as string);
-    expect(sent.migrations?.new_tag).toBe("v2");
-    expect(s.scriptOf(inst.id)?.migrationTag).toBe("v2");
-    expect(s.row(inst.id).do_migration_tag).toBe("v2");
-    expect(s.stored(inst.id, "0.25.0")?.do_migration_tag).toBe("v2");
+    expect(sent.migrations?.new_tag).toBe(LEDGER_TAG);
+    expect(s.scriptOf(inst.id)?.migrationTag).toBe(LEDGER_TAG);
+    expect(s.row(inst.id).do_migration_tag).toBe(LEDGER_TAG);
+    expect(s.stored(inst.id, "0.25.0")?.do_migration_tag).toBe(LEDGER_TAG);
     await s.p.updateVars(inst.id, { FEATURES: "beta" });
-    expect(s.row(inst.id).do_migration_tag).toBe("v2");
-    expect(s.stored(inst.id, "0.25.0")?.do_migration_tag).toBe("v2");
+    expect(s.row(inst.id).do_migration_tag).toBe(LEDGER_TAG);
+    expect(s.stored(inst.id, "0.25.0")?.do_migration_tag).toBe(LEDGER_TAG);
   });
 
   it("4: a google-on upload accepted before a crash: the next op applies the cut even when it renders google off, exactly once", async () => {

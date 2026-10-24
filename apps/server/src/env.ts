@@ -1,10 +1,17 @@
 import type { ArtifactRuntime } from "./runtime/do.js";
+import type { UserPresence } from "./runtime/presence.js";
 
 export interface Env {
   DB: D1Database;
   FILES: R2Bucket;
   OAUTH_KV: KVNamespace;
   ARTIFACT_RUNTIME: DurableObjectNamespace<ArtifactRuntime>;
+  /**
+   * One UserPresence DO per user (runtime/presence.ts): closes a revoked
+   * user's live sockets at once. Unbound, sockets keep only the 10 minute
+   * TTL ceiling (logged as presence_unbound).
+   */
+  USER_PRESENCE?: DurableObjectNamespace<UserPresence>;
   ASSETS: Fetcher;
   /** Anonymous-write limiter (per IP); unbound in the test pool. */
   RL_ANON?: RateLimit;

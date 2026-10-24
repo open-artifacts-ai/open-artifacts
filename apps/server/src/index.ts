@@ -17,6 +17,7 @@ import { getUser } from "./services/users.js";
 
 export type { Env } from "./env.js";
 export { ArtifactRuntime } from "./runtime/do.js";
+export { UserPresence } from "./runtime/presence.js";
 
 const normHost = (h: string) =>
   h.toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "");

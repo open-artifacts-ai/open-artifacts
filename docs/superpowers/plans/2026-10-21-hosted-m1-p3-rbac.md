@@ -167,7 +167,7 @@ Each surface's gate is enforced by `enforcePolicy` middleware (Task 5) before th
 - `apps/server/src/content/signing.ts`, `content/app.ts` (modify): `uid` in tokens; the serve statement joins `users` and `spaces`.
 - `apps/server/src/services/{users,members,artifacts,shares,uploads,search}.ts` (modify): status, personal space on insert, the ad-hoc `ownerId` checks removed.
 - `apps/server/src/mcp/tools/{artifacts,data}.ts`, `mcp/tool-defs.ts`, `mcp/instructions.ts` (modify).
-- `apps/server/wrangler.{template,test,staging}.jsonc` (modify): `DIRECTORY_SYNC` and `USER_PRESENCE` bindings; migration tag `v2` (the template's last tag is `v1` today) with `new_sqlite_classes: ["DirectorySync","UserPresence"]`; `ratelimits` entry `RL_DIRECTORY`.
+- `apps/server/wrangler.{template,test,staging}.jsonc` (modify): `DIRECTORY_SYNC` and `USER_PRESENCE` bindings; migration tag `v2` with `new_sqlite_classes: ["UserPresence"]` (Task 7, shipped one release before the code that uses it), then tag `v3` with `new_sqlite_classes: ["DirectorySync"]` (Task 13); `ratelimits` entry `RL_DIRECTORY`.
 - P2's `POST /__test/session` (extend body only, Task 17).
 - `apps/server/src/routes/usage.ts` (modify, Task 19: `usage_off`).
 - Tests: `apps/server/test/` as named per task; P5 hooks under `apps/server/test/authz/`.

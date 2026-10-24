@@ -616,7 +616,8 @@ describe("WfpProvisioner.create", () => {
       state: "active",
       test_hooks: 0,
       version: "0.23.0",
-      do_migration_tag: "v1",
+      // The template's latest tag (v2 adds UserPresence, unbound, P3 T7a).
+      do_migration_tag: "v2",
     });
     expect(
       s

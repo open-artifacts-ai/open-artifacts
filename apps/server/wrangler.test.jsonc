@@ -15,10 +15,14 @@
   "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "oa-kv-test" }],
   "durable_objects": {
     "bindings": [
-      { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" }
+      { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" },
+      { "name": "USER_PRESENCE", "class_name": "UserPresence" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ArtifactRuntime"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ArtifactRuntime"] },
+    { "tag": "v2", "new_sqlite_classes": ["UserPresence"] }
+  ],
   "ratelimits": [
     {
       "name": "RL_ANON",
