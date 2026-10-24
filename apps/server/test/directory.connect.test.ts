@@ -5,6 +5,7 @@
 import { env } from "cloudflare:workers";
 import { R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { scheduled } from "../src/cron.js";
 import { open, seal } from "../src/directory/crypto.js";
 import type { Env } from "../src/env.js";
 import { seedUser, uniq } from "./auth-helpers.js";
@@ -15,6 +16,7 @@ import {
   get,
   hostedEnv,
   loc,
+  post,
   registerInstall,
   resetDirectory,
 } from "./directory-helpers.js";
@@ -59,7 +61,7 @@ const audits = async () =>
 describe.each([
   ["direct", () => directEnv()],
   ["broker", () => hostedEnv()],
-] as const)("%s transport", (_kind, mk) => {
+] as const)("%s transport", (kind, mk) => {
   let e: Env;
   beforeEach(() => {
     e = mk();
@@ -99,7 +101,7 @@ describe.each([
     expect(await binding()).toBeNull();
   });
 
-  it("callback refuses missing scopes → ?error=scopes; accepts openid email plus the four → ?connected=1", async () => {
+  it("callback refuses missing scopes → ?error=scopes; accepts openid email plus the four → pending, then confirmed", async () => {
     const r = await connect(e, owner.cookie, g, {
       sub: admin.sub,
       scope:
@@ -108,7 +110,7 @@ describe.each([
     expect(r.q.get("error")).toBe("scopes");
     expect(await binding()).toBeNull();
     const ok = await connect(e, owner.cookie, g, { sub: admin.sub });
-    expect(ok.q.get("connected")).toBe("1");
+    expect(ok.ok).toBe(true);
     expect(JSON.parse((await binding()) as string)).toMatchObject({
       provider: "google",
       customerId: g.customerId,
@@ -119,10 +121,8 @@ describe.each([
 
   it("a reconnect to another customer → ?error=customer_mismatch; the binding stays", async () => {
     expect(
-      (await connect(e, owner.cookie, g, { sub: admin.sub })).q.get(
-        "connected",
-      ),
-    ).toBe("1");
+      (await connect(e, owner.cookie, g, { sub: admin.sub })).ok,
+    ).toBe(true);
     const other = g.addUser({
       id: `g-other-${crypto.randomUUID()}`,
       primaryEmail: uniq("other"),
@@ -145,7 +145,13 @@ describe.each([
     const sealed = rows.find((r) => r.key === "refresh")?.value ?? "";
     expect(sealed).toMatch(/^1\./);
     expect(JSON.stringify(rows)).not.toContain(`rt-${admin.sub}`);
-    expect(await open(e, sealed)).toBe(`rt-${admin.sub}`);
+    const inner = await open(e, sealed);
+    if (kind === "direct") expect(inner).toBe(`rt-${admin.sub}`);
+    // Broker: the install only ever holds the broker's install-bound wrap.
+    else {
+      expect(inner).toMatch(/^v1\./);
+      expect(inner).not.toContain(`rt-${admin.sub}`);
+    }
   });
 
   it("audits each outcome with ids and enums only (no email, code or token)", async () => {
@@ -156,7 +162,11 @@ describe.each([
     await connect(e, owner.cookie, g, { sub: del.id });
     await connect(e, owner.cookie, g, { sub: admin.sub });
     const rows = (await audits()).filter((r) => r.actor === owner.userId);
-    expect(rows.map((r) => r.detail.outcome)).toEqual(["refused", "connected"]);
+    expect(rows.map((r) => r.detail.outcome)).toEqual([
+      "refused",
+      "consented",
+      "confirmed",
+    ]);
     expect(rows[0]?.detail.error).toBe("not_super_admin");
     expect(rows.every((r) => r.actor === owner.userId)).toBe(true);
     const text = JSON.stringify(rows);
@@ -198,7 +208,7 @@ describe("attacks", () => {
   it("a replayed callback → ?error=expired (the pending flow is single use)", async () => {
     const env1 = e();
     const ok = await connect(env1, owner.cookie, g, { sub: admin.sub });
-    expect(ok.q.get("connected")).toBe("1");
+    expect(ok.ok).toBe(true);
     const again = await get(
       env1,
       `${ok.back.pathname}${ok.back.search}`,
@@ -334,5 +344,204 @@ describe("hosted", () => {
       .bind(gid)
       .first<{ user_id: string; directory_bound: number }>();
     expect(row).toEqual({ user_id: uid, directory_bound: 1 });
+  });
+});
+
+describe("confirm step", () => {
+  const status = async (e: Env, cookie = owner.cookie) =>
+    (await (await get(e, R.directory, cookie)).json()) as SyncStatus;
+  const ident = (gid: string) =>
+    env.DB.prepare(
+      "select user_id from identities where provider = 'google' and subject = ?",
+    )
+      .bind(gid)
+      .first();
+  const keys = async () => (await state()).map((r) => r.key).sort();
+
+  it("nothing is written to users, identities or memberships before confirm; confirm runs the binding pass", async () => {
+    const e = directEnv();
+    const linkEmail = uniq("pending-link");
+    const linkId = await seedUser(linkEmail, "member");
+    const gLink = g.addUser({
+      id: `g-pl-${crypto.randomUUID()}`,
+      primaryEmail: linkEmail,
+    });
+    const gNew = g.addUser({
+      id: `g-pn-${crypto.randomUUID()}`,
+      primaryEmail: uniq("pending-new"),
+    });
+    const count = async () =>
+      (
+        await env.DB.prepare(
+          "select (select count(*) from users) + (select count(*) from identities) + (select count(*) from space_members) n",
+        ).first<{ n: number }>()
+      )?.n;
+    const before = await count();
+    const r = await connect(
+      e,
+      owner.cookie,
+      g,
+      { sub: admin.sub },
+      { confirm: false },
+    );
+    expect(r.consented).toBe(true);
+    expect(r.path).toBe("/settings/directory");
+    expect([...r.q.keys()]).toEqual([]);
+    expect(await ident(gLink.id)).toBeNull();
+    expect(await ident(gNew.id)).toBeNull();
+    expect(await count()).toBe(before);
+    const s = await status(e);
+    expect(s.state).toBe("pending_confirm");
+    // The super admin, the linkable user and the new one: active, in domain.
+    expect(s.pendingCount).toBe(3);
+    expect(s.pendingCountCapped).toBe(false);
+    expect(
+      Date.parse(s.pendingExpiresAt ?? "") - Date.now(),
+    ).toBeGreaterThan(23 * 3600_000);
+    expect(s.binding?.customerId).toBe(g.customerId);
+
+    const c = await post(e, R.directoryConfirm, owner.cookie);
+    expect(c.status).toBe(200);
+    const after = (await c.json()) as SyncStatus;
+    expect(after.state).not.toBe("pending_confirm");
+    expect(after.pendingCount).toBeNull();
+    expect(await ident(gLink.id)).toEqual({ user_id: linkId });
+    expect(await ident(gNew.id)).not.toBeNull();
+    // Confirmed once: a second confirm finds nothing pending.
+    expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(404);
+  });
+
+  it("a non-starter owner, an admin or a member gets 404 on confirm and cancel", async () => {
+    const e = directEnv();
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    const other = await login(uniq("dir-owner-other"), "owner");
+    const a = await login(uniq("dir-admin-c"), "admin");
+    const m = await login(uniq("dir-member-c"));
+    for (const who of [other, a, m])
+      for (const path of [R.directoryConfirm, R.directoryCancel])
+        expect((await post(e, path, who.cookie)).status, path).toBe(404);
+    expect(await keys()).toEqual(["binding", "connect.confirm", "refresh"]);
+  });
+
+  it("an owner demoted after connecting can't confirm (still the org owner required)", async () => {
+    const e = directEnv();
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    await env.DB.prepare("update users set role = 'admin' where id = ?")
+      .bind(owner.userId)
+      .run();
+    expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(404);
+  });
+
+  it("cancel deletes the token and binding, with an audit row", async () => {
+    const e = directEnv();
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    expect((await post(e, R.directoryCancel, owner.cookie)).status).toBe(204);
+    expect(await keys()).toEqual([]);
+    const row = await env.DB.prepare(
+      "select detail from audit_events where action = 'directory.disconnect' and actor_id = ?",
+    )
+      .bind(owner.userId)
+      .first<{ detail: string }>();
+    expect(JSON.parse(row?.detail ?? "{}")).toEqual({ outcome: "cancelled" });
+    expect((await status(e)).binding).toBeNull();
+  });
+
+  it("expiry (24 h) deletes the token: lazily on read, on confirm (409), and by the cron", async () => {
+    const e = directEnv();
+    const age = () =>
+      env.DB.prepare(
+        "update directory_state set value = json_set(value, '$.exp', 1) where key = 'connect.confirm'",
+      ).run();
+    // On read.
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    await age();
+    const s = await status(e);
+    expect(s.state).toBe("never");
+    expect(s.binding).toBeNull();
+    expect(await keys()).toEqual([]);
+    // On confirm: 409 conflict, and dropped.
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    await age();
+    const c = await post(e, R.directoryConfirm, owner.cookie);
+    expect(c.status).toBe(409);
+    expect(((await c.json()) as { error: { code: string } }).error.code).toBe(
+      "conflict",
+    );
+    expect(await keys()).toEqual([]);
+    // By the daily cron.
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    await age();
+    const waits: Promise<unknown>[] = [];
+    await scheduled({} as ScheduledController, e, {
+      waitUntil: (p: Promise<unknown>) => waits.push(p),
+      passThroughOnException() {},
+    } as never);
+    await Promise.all(waits);
+    expect(await keys()).toEqual([]);
+    const expired = await env.DB.prepare(
+      "select count(*) n from audit_events where action = 'directory.connect' and actor_kind = 'system' and json_extract(detail, '$.outcome') = 'expired'",
+    ).first<{ n: number }>();
+    expect(expired?.n).toBeGreaterThanOrEqual(3);
+  });
+
+  it("the count stops at one page and reports 500+", async () => {
+    const e = directEnv();
+    for (let i = 0; i < 501; i++)
+      g.addUser({
+        id: `g-cap-${i}-${crypto.randomUUID()}`,
+        primaryEmail: uniq(`cap${i}`),
+      });
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    const s = await status(e);
+    expect(s.pendingCount).toBe(500);
+    expect(s.pendingCountCapped).toBe(true);
+  });
+});
+
+describe("review fixes", () => {
+  it("email linking ignores out-of-domain rows: a guest at a secondary domain stays an unlinked guest", async () => {
+    const e = directEnv();
+    const email = uniq("bob", "secondary.com");
+    const id = await seedUser(email, "guest");
+    const gid = `g-sec-${crypto.randomUUID()}`;
+    g.addUser({ id: gid, primaryEmail: email });
+    expect((await connect(e, owner.cookie, g, { sub: admin.sub })).ok).toBe(
+      true,
+    );
+    expect(
+      await env.DB.prepare(
+        "select 1 from identities where provider = 'google' and subject = ?",
+      )
+        .bind(gid)
+        .first(),
+    ).toBeNull();
+    const row = await env.DB.prepare("select role from users where id = ?")
+      .bind(id)
+      .first<{ role: string }>();
+    expect(row?.role).toBe("guest");
+  });
+
+  it("every suspended linked user on a page is suspended at once (30, past one batch)", async () => {
+    const e = directEnv();
+    const ids: string[] = [];
+    for (let i = 0; i < 30; i++) {
+      const email = uniq(`susp30-${i}`);
+      ids.push(await seedUser(email, "member"));
+      g.addUser({
+        id: `g-s30-${i}-${crypto.randomUUID()}`,
+        primaryEmail: email,
+        suspended: true,
+      });
+    }
+    expect((await connect(e, owner.cookie, g, { sub: admin.sub })).ok).toBe(
+      true,
+    );
+    const { results } = await env.DB.prepare(
+      `select status from users where id in (${ids.map(() => "?").join(",")})`,
+    )
+      .bind(...ids)
+      .all<{ status: string }>();
+    expect(results).toHaveLength(30);
+    expect(results.every((r) => r.status === "suspended")).toBe(true);
   });
 });

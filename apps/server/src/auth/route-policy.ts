@@ -149,6 +149,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/directory/callback": {
     user: "org owner (the handler); refusals redirect with ?error=",
   },
+  // The service also requires the owner who started the connect (404).
+  "POST /api/v1/directory/confirm": { org: "directory.manage" },
+  "POST /api/v1/directory/cancel": { org: "directory.manage" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },

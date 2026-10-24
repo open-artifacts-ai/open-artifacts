@@ -9,7 +9,7 @@ import { authConfig } from "../auth/config.js";
 import { deriveKey } from "../auth/keys.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
-import { appOrigin } from "../http/errors.js";
+import { ApiError, appOrigin } from "../http/errors.js";
 import { logInfo, logWarn } from "../log.js";
 import { audit, userActor } from "../services/audit.js";
 import { afterDirectoryConnect } from "../services/directory.js";
@@ -21,11 +21,25 @@ import {
   hmacVerify,
   sha256Hex,
 } from "../util/crypto.js";
-import { initialBinding } from "./binding.js";
+import { initialBinding, planPage } from "./binding.js";
 import { directoryClient } from "./client.js";
 import { seal } from "./crypto.js";
-import { GoogleApiError, getUser, verifiedDomains } from "./google.js";
-import { K, putState, readBinding } from "./store.js";
+import {
+  GoogleApiError,
+  getUser,
+  listUsers,
+  verifiedDomains,
+} from "./google.js";
+import {
+  CONFIRM_TTL_MS,
+  dropConnection,
+  expirePending,
+  K,
+  type PendingConfirm,
+  putState,
+  readBinding,
+  readPending,
+} from "./store.js";
 import {
   type DirectoryClient,
   directoryTransport,
@@ -35,9 +49,13 @@ import {
 // Directory connect (P3 T12): GET R.directoryConnect starts consent for the
 // org owner; GET R.directoryCallback runs every check in order and fails
 // closed. Each refusal redirects to /settings/directory?error=<code> and
-// writes a directory.connect audit row (ids and enums only). Success records
-// the binding and the sealed refresh token, runs the initial binding pass,
-// then hands off to T13 (afterDirectoryConnect).
+// writes a directory.connect audit row (ids and enums only). Success stores
+// the binding, the sealed refresh token and a pending confirmation (with a
+// one-page count of the users it would bind) and writes nothing to users,
+// identities or memberships. The connecting owner then confirms
+// (R.directoryConfirm: afterConsent runs the initial binding pass and hands
+// off to T13) or cancels (R.directoryCancel). Unconfirmed for 24 h, it is
+// dropped: lazily on the next status read or confirm, and by the daily cron.
 
 export const SETTINGS_DIRECTORY = "/settings/directory";
 const STATE_TTL_MS = 10 * 60_000;
@@ -152,8 +170,10 @@ export type CallbackQuery = {
   bstate?: string;
 };
 
-const target = (env: Env, q: Record<string, string>) =>
-  `${appOrigin(env)}${SETTINGS_DIRECTORY}?${new URLSearchParams(q)}`;
+const target = (env: Env, q: Record<string, string>) => {
+  const qs = new URLSearchParams(q).toString();
+  return `${appOrigin(env)}${SETTINGS_DIRECTORY}${qs ? `?${qs}` : ""}`;
+};
 
 class Refuse extends Error {
   constructor(
@@ -178,6 +198,8 @@ const AUDIT_TARGET = { type: "directory", id: "google" } as const;
  * 6. users.get(sub) is a super admin with a customer id: `not_super_admin`;
  * 7. a reconnect keeps the bound customer: `customer_mismatch`;
  * 8. domains.list(customerId) has hd verified: `domain_mismatch`.
+ * Then the one-page count (a Google failure: `failed`), and the binding,
+ * sealed token and pending confirmation in one batch.
  * Returns the redirect location (never carries a code or token).
  */
 export async function finishConnect(
@@ -186,7 +208,6 @@ export async function finishConnect(
   user: Member,
   q: CallbackQuery,
   cookie: string | undefined,
-  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<string> {
   const actor = userActor(user.id);
   try {
@@ -246,6 +267,10 @@ export async function finishConnect(
     );
     if (!verified.includes(hd)) throw new Refuse("domain_mismatch", "domains");
 
+    // Nothing is linked yet: count what confirm would bind (one page).
+    const count = await google(() =>
+      countPending(env, grant.accessToken, who.customerId as string),
+    );
     const binding: DirectoryBinding = {
       provider: "google",
       customerId: who.customerId,
@@ -253,11 +278,18 @@ export async function finishConnect(
       connectedBy: user.id,
       connectedAt: new Date(now).toISOString(),
     };
+    const pending: PendingConfirm = {
+      u: user.id,
+      exp: now + CONFIRM_TTL_MS,
+      count: count.count,
+      capped: count.capped,
+    };
     await env.DB.batch([
       putState(env, K.binding, JSON.stringify(binding)),
       putState(env, K.refresh, await seal(env, grant.refreshToken)),
+      putState(env, K.confirm, JSON.stringify(pending)),
       audit(env, "directory.connect", AUDIT_TARGET, actor, {
-        detail: { outcome: "connected", transport: client.kind },
+        detail: { outcome: "consented", transport: client.kind },
         when: {
           sql: `exists (select 1 from directory_state where key = ?
                   and json_extract(value, '$.customerId') = ?)`,
@@ -265,23 +297,25 @@ export async function finishConnect(
         },
       }),
     ]);
-    logInfo("directory_connect", { outcome: "connected", kind: client.kind });
-    const pass = await initialBinding(
-      env,
-      grant.accessToken,
-      who.customerId,
-      hd,
-      ctx,
-    );
-    await afterDirectoryConnect(env, { initialDone: pass.done }).catch((e) =>
-      logWarn("directory_after_connect", e),
-    );
-    return target(env, { connected: "1" });
+    logInfo("directory_connect", { outcome: "consented", kind: client.kind });
+    return target(env, {});
   } catch (e) {
     const r = e instanceof Refuse ? e : new Refuse("failed", "internal");
     if (!(e instanceof Refuse)) logWarn("directory_connect_internal", e);
     return refuseConnect(env, user, r.code, r.stage);
   }
+}
+
+/** Active, in-domain users on the first users.list page; capped past it ("500+"). */
+async function countPending(
+  env: Env,
+  token: string,
+  customerId: string,
+): Promise<{ count: number; capped: boolean }> {
+  const page = await listUsers(token, customerId);
+  // `create` is exactly the active in-domain users.
+  const { create } = planPage(new Set(authConfig(env).domains), page.users);
+  return { count: create.length, capped: page.nextPageToken !== null };
 }
 
 /** One refusal: the log line, the audit row (ids and enums only), the redirect. */
@@ -300,23 +334,114 @@ export async function refuseConnect(
   return target(env, { error: code });
 }
 
+const notFound = () => new ApiError("not_found", "Not found");
+
+/**
+ * The pending confirmation `user` may act on: theirs (they started the
+ * connect; the route checked they are still the org owner) and present.
+ * Anyone else, or nothing pending: 404. An expired one is dropped (audited)
+ * and answers 409 conflict.
+ */
+async function ownPending(env: Env, user: Member): Promise<PendingConfirm> {
+  const p = await readPending(env);
+  if (!p || p.u !== user.id) throw notFound();
+  if (p.exp <= Date.now()) {
+    await expirePending(env);
+    throw new ApiError(
+      "conflict",
+      "The directory connection expired before it was confirmed; connect again",
+    );
+  }
+  return p;
+}
+
+/**
+ * POST R.directoryConfirm, the step after consent: runs the binding pass
+ * (links and creates members) with a fresh access token from the stored,
+ * sealed refresh token, then clears the pending row and hands off to T13.
+ * Kept apart from storing the token so nothing is written to users,
+ * identities or memberships before the owner confirms.
+ */
+export async function afterConsent(
+  env: Env,
+  client: DirectoryClient,
+  user: Member,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<SyncStatus> {
+  await ownPending(env, user);
+  const { binding, sealed } = await readBinding(env);
+  if (!binding || !sealed) throw notFound();
+  let token: string;
+  try {
+    token = await client.accessToken(sealed);
+  } catch (e) {
+    logWarn("directory_confirm_token", e);
+    throw new ApiError("conflict", "Google refused the stored grant; connect again");
+  }
+  const out = await env.DB.batch([
+    stmt(env.DB, "delete from directory_state where key = ? and json_extract(value, '$.u') = ?").bind(
+      K.confirm,
+      user.id,
+    ),
+    audit(env, "directory.connect", AUDIT_TARGET, userActor(user.id), {
+      detail: { outcome: "confirmed", transport: client.kind },
+      when: { sql: "changes() > 0", args: [] },
+    }),
+  ]);
+  // A racing confirm or cancel took it first.
+  if (!out[0]?.meta.changes) throw notFound();
+  logInfo("directory_connect", { outcome: "confirmed", kind: client.kind });
+  const pass = await initialBinding(
+    env,
+    token,
+    binding.customerId,
+    binding.domain,
+    ctx,
+  );
+  await afterDirectoryConnect(env, { initialDone: pass.done }).catch((e) =>
+    logWarn("directory_after_connect", e),
+  );
+  return directoryStatus(env, { showProblem: true });
+}
+
+/** POST R.directoryCancel: drops the pending token and binding (audited). */
+export async function cancelConnect(env: Env, user: Member): Promise<void> {
+  await ownPending(env, user);
+  await env.DB.batch([
+    audit(env, "directory.disconnect", AUDIT_TARGET, userActor(user.id), {
+      detail: { outcome: "cancelled" },
+      when: {
+        sql: "exists (select 1 from directory_state where key = ? and json_extract(value, '$.u') = ?)",
+        args: [K.confirm, user.id],
+      },
+    }),
+    dropConnection(env),
+  ]);
+  logInfo("directory_connect", { outcome: "cancelled" });
+}
+
 /**
  * GET R.directory until T13's DirectorySync serves it. With no transport,
  * mode is "off" and, with `showProblem` (the org owner: directory.manage),
- * lastError carries the configuration problem.
+ * lastError carries the configuration problem. An expired pending
+ * confirmation is dropped first (lazy expiry).
  */
 export async function directoryStatus(
   env: Env,
   o: { showProblem: boolean },
 ): Promise<SyncStatus> {
+  await expirePending(env);
   const t = directoryTransport(env);
   const mode = t.kind === "none" ? "off" : directoryMode(env);
-  const { binding } = await readBinding(env);
+  const [{ binding }, pending] = await Promise.all([
+    readBinding(env),
+    readPending(env),
+  ]);
   return {
     mode,
     binding,
     healthy: mode === "off" ? null : false,
-    state: "never",
+    state: pending ? "pending_confirm" : "never",
     unhealthySince: null,
     lastSuccessAt: null,
     lastError:
@@ -328,5 +453,8 @@ export async function directoryStatus(
     alertedAt: null,
     customerMismatch: null,
     held: [],
+    pendingCount: pending ? pending.count : null,
+    pendingCountCapped: pending ? pending.capped : false,
+    pendingExpiresAt: pending ? new Date(pending.exp).toISOString() : null,
   };
 }

@@ -260,14 +260,16 @@ describe("POST /google/directory/token", () => {
     const text = await r.text();
     for (const raw of ["rt-1", "at-1", "raw.id.token"])
       expect(text).not.toContain(raw);
-    const out = JSON.parse(text) as { scope: string; box: never };
-    expect(out.scope).toBe(GOOGLE_DIRECTORY_SCOPES.join(" "));
+    const out = JSON.parse(text) as { box: never };
+    // Nothing but the box: the scope is sealed with the tokens.
+    expect(Object.keys(out)).toEqual(["box"]);
     expect(
       JSON.parse(await openFromBroker(box, "inst-a", kid, out.box)),
     ).toEqual({
       refresh_token: "rt-1",
       access_token: "at-1",
       id_token: "raw.id.token",
+      scope: GOOGLE_DIRECTORY_SCOPES.join(" "),
     });
     // Another install id or another key pair can't open it.
     await expect(openFromBroker(box, "inst-b", kid, out.box)).rejects.toThrow();
@@ -363,7 +365,8 @@ describe("registry", () => {
       refresh_token: "rt",
     });
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls.every((c) => c === "get" || c === "list")).toBe(true);
+    // Only get: never put, delete or list.
+    expect(new Set(calls)).toEqual(new Set(["get"]));
   });
 
   it("the config never binds BROKER_REGISTRY, and keeps observability off", () => {

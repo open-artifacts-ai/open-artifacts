@@ -193,7 +193,9 @@ Accepted disclosure: `scope=space` (or any `spaceId`) naming another user's pers
 | `DELETE R.directory` | 204 (disconnect; memberships freeze) | org owner |
 | `GET R.directoryGroups` | `DirectoryGroupsQuery` → `Page<DirectoryGroup>` (group picker) | org admin |
 | `GET R.directoryConnect` | 302 to Google consent | org owner |
-| `GET R.directoryCallback` | 302 `/settings/directory?connected=1` or `?error=DirectoryConnectError` | OAuth |
+| `GET R.directoryCallback` | 302 `/settings/directory` (consent and binding stored, `SyncStatus.state` `pending_confirm`; nothing linked yet) or `?error=DirectoryConnectError` | OAuth |
+| `POST R.directoryConfirm` `/directory/confirm` | 200 `SyncStatus`: runs the binding pass (links and creates members). 404 when nothing is pending; 409 `conflict` when the confirmation expired (24 h after consent; the token and binding are then dropped) | the owner who connected, still org owner; anyone else 404. Audited `directory.connect` |
+| `POST R.directoryCancel` `/directory/cancel` | 204: drops the pending token and binding | same as confirm. Audited `directory.disconnect` |
 | `POST R.directorySync` | 202 `SyncStatus` ("Sync now") | org owner |
 | `POST R.directoryHeldConfirm(groupId)` | 202 `SyncStatus` | org owner |
 | `GET R.audit` / `R.auditExport` | `Page<AuditEvent>` / NDJSON | org owner, admin. Export takes `?cursor` and returns at most 5000 events (10 pages of 500) per request, newest first; when more remain, header `X-OA-Next-Cursor` (`AUDIT_NEXT_CURSOR_HEADER`) holds the cursor for the next request |
@@ -205,6 +207,7 @@ sync routes, after a fresh Google sign-in (10 min); else 401 `reauth_required`.
 |---|---|
 | `SyncStatusSchema` | `{ mode, binding, healthy, state, unhealthySince, lastSuccessAt, lastError, nextRunAt, staleAt, alertedAt, customerMismatch, held }` |
 | `DirectoryBindingSchema` | `{ provider, customerId, domain, connectedBy, connectedAt }` |
+| `SyncStatusSchema` pending fields | `pendingCount: number \| null` (active in-domain users the pass would link or create, over at most one page of 500), `pendingCountCapped: boolean` (true: show "500+"), `pendingExpiresAt: string \| null` (ISO, consent + 24 h). Set only while `state` is `pending_confirm` (`SyncState` gains `pending_confirm`) |
 | `HeldSweepSchema` | `GroupRef + { wouldRemove, members, since }` |
 | `DirUserSchema` | `{ id (= Google sub), primaryEmail, suspended, deleted }` |
 | `DirectoryGroupSchema` | `{ groupId, email, name, memberCount }` |

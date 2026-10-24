@@ -117,15 +117,17 @@ export type Grant = {
 
 /**
  * One full connect for `session` on `e` (direct or broker), with Google
- * granting `grant`. Returns the final redirect's query, plus the raw pieces
- * for attack tests.
+ * granting `grant`. Returns the callback redirect's query, plus the raw
+ * pieces for attack tests. A consent that passed every check is then
+ * confirmed (R.directoryConfirm) unless `confirm: false`; `ok` is true when
+ * both steps succeeded.
  */
 export async function connect(
   e: Env,
   session: string,
   g: FakeDirectory,
   grant: Grant,
-  o: { tamper?: (u: URL) => void; cookie?: string } = {},
+  o: { tamper?: (u: URL) => void; cookie?: string; confirm?: boolean } = {},
 ) {
   const b = await begin(e, session);
   if (!b.to) throw new Error(`connect ${b.r.status}`);
@@ -159,14 +161,34 @@ export async function connect(
   }
   o.tamper?.(back);
   const r = await get(e, `${back.pathname}${back.search}`, cookie);
+  const q = new URL(loc(r)).searchParams;
+  const consented = r.status === 302 && !q.has("error");
+  const confirmed =
+    consented && o.confirm !== false
+      ? await post(e, R.directoryConfirm, session)
+      : null;
   return {
     r,
     back,
     cookie,
-    q: new URL(loc(r)).searchParams,
+    q,
     path: new URL(loc(r)).pathname,
+    consented,
+    confirmed,
+    ok: consented && (o.confirm === false || confirmed?.status === 200),
   };
 }
+
+/** A same-origin POST with the CSRF header. */
+export const post = (e: Env, path: string, cookie?: string) =>
+  fetchAndWait(
+    app,
+    new Request(`${APP}${path}`, {
+      method: "POST",
+      headers: { "x-oa-request": "1", ...(cookie ? { cookie } : {}) },
+    }),
+    e,
+  );
 
 /** Wipes the directory connection between tests (one D1 per file). */
 export const resetDirectory = () =>

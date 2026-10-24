@@ -109,7 +109,7 @@ export function brokerClient(env: Env, t: Broker): DirectoryClient {
     },
     async completeConsent(cb: ConsentCallback) {
       if (!cb.bstate) throw new TransportError("refused");
-      const { out, tokens } = await post(env, t, {
+      const { tokens } = await post(env, t, {
         grant: "code",
         code: cb.code,
         verifier: cb.verifier,
@@ -117,7 +117,8 @@ export function brokerClient(env: Env, t: Broker): DirectoryClient {
       });
       // The broker's client id is not this install's to know: aud unchecked
       // (the broker fetched the token from Google itself).
-      return grantOf({ ...tokens, scope: out.scope }, null);
+      // The granted scope comes from inside the box, like the tokens.
+      return grantOf(tokens, null);
     },
     async accessToken(sealedRefresh) {
       const { tokens } = await post(env, t, {

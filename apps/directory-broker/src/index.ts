@@ -12,7 +12,9 @@
 //   only (/api/v1/directory/callback?code&state&bstate).
 // - POST /google/directory/token     the install (Ed25519-signed install
 //   assertion over a path-bound transcript, within 60 s) trades the code
-//   (proving the PKCE verifier against the state) or refreshes. Every token
+//   (proving the PKCE verifier against the state) or refreshes. Google's
+//   refresh token never leaves raw: the install gets it wrapped for its id
+//   (wrap.ts), and only that install's refresh opens it. Every token
 //   comes back sealed to the X25519 key the install put in that signed
 //   request (auth-core box.ts), never raw. The install re-seals the refresh
 //   token at rest with its DIRECTORY_TOKEN_KEY.
@@ -39,6 +41,7 @@ import {
   signState,
   verifyAssertion,
 } from "@oa/broker-core";
+import { unwrapRefresh, wrapRefresh } from "./wrap.js";
 
 export interface Env {
   /** Install registry (Platform writes it; read only here). Never BROKER_REGISTRY. */
@@ -101,7 +104,9 @@ async function start(req: Request, env: Env, now: number): Promise<Response> {
   if (limited) return limited;
   const entry = await lookupInstall(env.DIRECTORY_REGISTRY, install, now);
   if (!entry) return log("start", "unknown_install"), notFound();
-  const busy = await installLimited(limits(env), install, log);
+  // Its own bucket: /start is unauthenticated, so it must never drain the
+  // install's /token bucket (refresh polling).
+  const busy = await installLimited(limits(env), install, log, "start");
   if (busy) return busy;
   const u = new URL(GOOGLE_AUTHORIZE_URL);
   u.search = new URLSearchParams({
@@ -208,9 +213,9 @@ function parse(text: string): TokenBody | null {
 }
 
 /**
- * The token exchange for one authenticated install. Code grant:
- * `{ box, scope }`, the box holding Google's refresh_token, access_token and
- * id_token (the install checks scopes, hd, super admin and customer itself).
+ * The token exchange for one authenticated install. Code grant: `{ box }`,
+ * the box holding Google's refresh_token, access_token, id_token and the
+ * granted scope (inside, so nothing outside the box can change it) (the install checks scopes, hd, super admin and customer itself).
  * Refresh grant: `{ box }` holding access_token and expires_in. Google's
  * invalid_grant comes back as 400 invalid_grant (the install marks its sync
  * auth_failed).
@@ -236,7 +241,7 @@ async function token(req: Request, env: Env, now: number): Promise<Response> {
     return log("token", "bad_signature"), refused();
   if (Math.abs(now - body.ts) > ASSERTION_SKEW_MS)
     return log("token", "stale"), refused();
-  const busy = await installLimited(limits(env), body.install, log);
+  const busy = await installLimited(limits(env), body.install, log, "token");
   if (busy) return busy;
 
   let form: Record<string, string>;
@@ -261,8 +266,17 @@ async function token(req: Request, env: Env, now: number): Promise<Response> {
       redirect_uri: callbackUrl(origin),
       code_verifier: body.verifier,
     };
-  } else
-    form = { grant_type: "refresh_token", refresh_token: body.refresh_token };
+  } else {
+    // Only a blob this broker wrapped for the asserting install opens: a raw
+    // Google token or another install's blob is refused like any other.
+    const rt = await unwrapRefresh(
+      env.DIRECTORY_STATE_KEY,
+      body.install,
+      body.refresh_token,
+    );
+    if (!rt) return log("token", "bad_refresh"), refused();
+    form = { grant_type: "refresh_token", refresh_token: rt };
+  }
 
   const res = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
@@ -315,11 +329,16 @@ async function token(req: Request, env: Env, now: number): Promise<Response> {
     );
   log("token", "code_ok");
   return json({
-    scope: out.scope,
     box: await sealed({
-      refresh_token: out.refresh_token,
+      // Bound to this install: only it can ever refresh with this token.
+      refresh_token: await wrapRefresh(
+        env.DIRECTORY_STATE_KEY,
+        body.install,
+        out.refresh_token,
+      ),
       access_token: out.access_token,
       id_token: out.id_token,
+      scope: out.scope,
     }),
   });
 }

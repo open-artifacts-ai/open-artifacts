@@ -145,16 +145,21 @@ export async function ipLimited(
 /**
  * Charges the per-install bucket only once the request is tied to a real
  * install (or authenticated as it): junk requests naming install B must not
- * drain B's bucket.
+ * drain B's bucket. `scope` gives a route its own bucket within the binding
+ * (key `<scope>:install:<id>`), so an unauthenticated route can't drain an
+ * authenticated one; without it the key is `install:<id>` (the sign-in
+ * broker's, unchanged).
  */
 export async function installLimited(
   rl: Limits,
   install: string,
   log: Log,
+  scope?: string,
 ): Promise<Response | null> {
   if (!rl.install)
     return log("rate_limit", "unbound"), json({ error: "unavailable" }, 503);
-  if (!(await rl.install.limit({ key: `install:${install}` })).success)
+  const key = `${scope ? `${scope}:` : ""}install:${install}`;
+  if (!(await rl.install.limit({ key })).success)
     return log("rate_limit", "install"), json({ error: "rate_limited" }, 429);
   return null;
 }

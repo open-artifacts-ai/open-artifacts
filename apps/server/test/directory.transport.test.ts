@@ -131,7 +131,7 @@ describe("direct", () => {
   it("direct: code exchange and refresh against the fake Google; the refresh token is sealed", async () => {
     const e = directEnv();
     const r = await connect(e, owner.cookie, g, { sub: adminSub });
-    expect(r.q.get("connected")).toBe("1");
+    expect(r.ok).toBe(true);
     const ex = g.tokenCalls.find(
       (t) => t.get("grant_type") === "authorization_code",
     );
@@ -181,8 +181,8 @@ describe("direct", () => {
     ).toBeNull();
     // The same grant with this install's client id connects.
     expect(
-      (await connect(e, owner.cookie, g, { sub: adminSub })).q.get("connected"),
-    ).toBe("1");
+      (await connect(e, owner.cookie, g, { sub: adminSub })).ok,
+    ).toBe(true);
   });
 });
 
@@ -190,7 +190,7 @@ describe("broker", () => {
   it("broker: the install signs the token call and never sees a client secret", async () => {
     const e = hostedEnv();
     const r = await connect(e, owner.cookie, g, { sub: adminSub });
-    expect(r.q.get("connected")).toBe("1");
+    expect(r.ok).toBe(true);
     const ex = g.tokenCalls.find(
       (t) => t.get("grant_type") === "authorization_code",
     );
@@ -205,12 +205,24 @@ describe("broker", () => {
     expect(await directoryClient(e)?.accessToken(sealed)).toBe("at-refreshed");
   });
 
-  it("broker: a revoked grant surfaces as invalid_grant", async () => {
+  it("broker: a revoked grant surfaces as invalid_grant; a raw refresh token is refused", async () => {
     const e = hostedEnv();
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
+    const sealed = (
+      await env.DB.prepare(
+        "select value from directory_state where key = 'refresh'",
+      ).first<{ value: string }>()
+    )?.value as string;
     g.setRefreshStatus(400);
+    await expect(directoryClient(e)?.accessToken(sealed)).rejects.toMatchObject(
+      { stage: "invalid_grant" },
+    );
+    // Google's own token, not the broker's install-bound wrap: refused.
     await expect(
-      directoryClient(e)?.accessToken(await seal(e, "rt-x")),
-    ).rejects.toMatchObject({ stage: "invalid_grant" });
+      directoryClient(e)?.accessToken(await seal(e, `rt-${adminSub}`)),
+    ).rejects.toMatchObject({ stage: "refused" });
   });
 
   it("broker: a request signed with another key is refused", async () => {
@@ -251,8 +263,8 @@ describe.each(["broker", "direct"] as const)("%s", (kind) => {
       ).q.get("error"),
     ).toBe("scopes");
     expect(
-      (await connect(e, owner.cookie, g, { sub: adminSub })).q.get("connected"),
-    ).toBe("1");
+      (await connect(e, owner.cookie, g, { sub: adminSub })).ok,
+    ).toBe(true);
     const foreign = g.addUser({
       id: `g-f-${crypto.randomUUID()}`,
       primaryEmail: uniq("f"),
@@ -283,8 +295,8 @@ describe("initial binding", () => {
       primaryEmail: first,
     });
     expect(
-      (await connect(e, owner.cookie, g, { sub: adminSub })).q.get("connected"),
-    ).toBe("1");
+      (await connect(e, owner.cookie, g, { sub: adminSub })).ok,
+    ).toBe(true);
     expect(await ident(gBob.id)).toEqual({
       user_id: bobId,
       directory_bound: 1,
@@ -299,8 +311,8 @@ describe("initial binding", () => {
       primaryEmail: later,
     });
     expect(
-      (await connect(e, owner.cookie, g, { sub: adminSub })).q.get("connected"),
-    ).toBe("1");
+      (await connect(e, owner.cookie, g, { sub: adminSub })).ok,
+    ).toBe(true);
     expect(await ident(gCarol.id)).toBeNull();
     const rows = await env.DB.prepare("select id from users where email = ?")
       .bind(later)

@@ -4,6 +4,8 @@ import { getCookie } from "hono/cookie";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import {
+  afterConsent,
+  cancelConnect,
   clearDirCookie,
   connectClient,
   dirCookieName,
@@ -80,9 +82,24 @@ export function mountDirectory(app: AppType): void {
           bstate: q.bstate,
         },
         getCookie(c, dirCookieName(c.env)),
-        execCtx(c),
       ),
       clear,
     );
+  });
+
+  // Only the owner who connected, still the org owner (the route policy and
+  // manages): anyone else 404. Expired: 409 conflict (afterConsent).
+  app.post(R.directoryConfirm, async (c) => {
+    const client = connectClient(c.env);
+    if (!client || !manages(c)) throw notFound();
+    return c.json(
+      await afterConsent(c.env, client, requireUser(c), execCtx(c)),
+    );
+  });
+
+  app.post(R.directoryCancel, async (c) => {
+    if (!manages(c)) throw notFound();
+    await cancelConnect(c.env, requireUser(c));
+    return c.body(null, 204);
   });
 }
