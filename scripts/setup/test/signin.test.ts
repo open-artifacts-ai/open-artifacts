@@ -210,6 +210,22 @@ describe("M2: an existing Worker whose settings can't be read is never deployed"
       expect(w.deployed()).toBe(before);
     });
 
+  it("install mode, no state, an empty settings read and an existing Worker: refused before any deploy call", async () => {
+    const w = world({ settingsPartial: true, workerVersion: "ver-live" });
+    expect(await run([...HOSTS, "--plan", "free"], w.deps, ROOT)).toBe(2);
+    expect(line(w, "deploy").message).toMatch(
+      /refusing to deploy: the live Worker's settings came back with no bindings/,
+    );
+    expect(deploys(w)).toEqual([]);
+    expect(w.deployed()).toBeUndefined();
+  });
+
+  it("install mode, no state, an empty settings read and no Worker: a fresh install still deploys", async () => {
+    const w = world({ settingsPartial: true });
+    expect(await run([...HOSTS, "--plan", "free"], w.deps, ROOT)).toBe(0);
+    expect(deploys(w)).toContain("deploy");
+  });
+
   it("the deploy step names the reason", async () => {
     const o: Parameters<typeof world>[0] = {};
     const w = world(o);

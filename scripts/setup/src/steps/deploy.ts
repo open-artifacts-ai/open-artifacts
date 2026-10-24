@@ -148,8 +148,8 @@ type Live = Awaited<ReturnType<typeof workerBindings>> | "unreadable";
 /**
  * The live bindings sign-in is settled from, or why there are none to trust.
  * An existing Worker is never deployed without them: an unreadable read, or a
- * 200 with no bindings from a Worker known to be deployed (saved state,
- * --upgrade), refuses in every mode. Unreadable with no Worker yet
+ * 200 with no bindings, refuses in every mode when the Worker exists (saved
+ * state, --upgrade, or a deployments read that isn't a 404). Unreadable with no Worker yet
  * (deployments 404) is a fresh install: nothing to keep.
  */
 async function signinLive(
@@ -159,22 +159,20 @@ async function signinLive(
 ): Promise<Binding[] | string> {
   const never =
     "setup never deploys an existing Worker without its sign-in vars; rerun once the Worker's settings are readable (the token needs Workers Scripts Read)";
-  const known = Boolean(
-    state.workerVersion || state.deployedVersion || ctx.opts.upgrade,
-  );
-  if (live === "unreadable") {
-    const exists =
-      known ||
-      (await currentVersion(ctx.api, ctx.opts.name, state.accountId ?? "").then(
-        (v) => v !== undefined,
-        () => true,
-      ));
-    return exists
+  // Known deployed (saved state, --upgrade), else a deployments read that
+  // isn't a 404; a failed read counts as existing.
+  const exists = async () =>
+    Boolean(state.workerVersion || state.deployedVersion || ctx.opts.upgrade) ||
+    (await currentVersion(ctx.api, ctx.opts.name, state.accountId ?? "").then(
+      (v) => v !== undefined,
+      () => true,
+    ));
+  if (live === "unreadable")
+    return (await exists())
       ? `refusing to deploy: could not read the live Worker's settings; ${never}`
       : [];
-  }
   // A deployed Worker always has bindings (D1, KV, secrets): none is a partial read.
-  if (live && known && live.length === 0)
+  if (live?.length === 0 && (await exists()))
     return `refusing to deploy: the live Worker's settings came back with no bindings; ${never}`;
   return live ?? [];
 }
