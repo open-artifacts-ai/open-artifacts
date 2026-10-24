@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.44.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.43.0...v0.44.0) (2026-10-24)
+
+
+### Features
+
+* **landing:** hero leads with Open Artifacts; Cloudflare only for self-host ([#421](https://github.com/open-artifacts-ai/open-artifacts/issues/421)) ([#554](https://github.com/open-artifacts-ai/open-artifacts/issues/554)) ([7d57ef5](https://github.com/open-artifacts-ai/open-artifacts/commit/7d57ef50bfb5cad12fa2377fe4b6adaa75b5d7f4))
+* **server:** content host revocation in D1 (P3 T11) ([#544](https://github.com/open-artifacts-ai/open-artifacts/issues/544)) ([b7720e7](https://github.com/open-artifacts-ai/open-artifacts/commit/b7720e70a2aaf8535aa8bdfd093444a0b71f8f96))
+* **server:** publish into spaces, move, transfer, MCP (P3 T10) ([#534](https://github.com/open-artifacts-ai/open-artifacts/issues/534)) ([13dc9d0](https://github.com/open-artifacts-ai/open-artifacts/commit/13dc9d0d9c65b1e77bd7fd5e8106dec0aa7739d7))
+
+
+### Bug Fixes
+
+* **ops:** the signing key script no longer requires a prod reviewer ([#545](https://github.com/open-artifacts-ai/open-artifacts/issues/545)) ([b507e93](https://github.com/open-artifacts-ai/open-artifacts/commit/b507e937f32bb8a6e2bddef1e0a8c9c673d6bff8))
+* **viewer:** a live swap keeps the exact offset when it fits; re-report after restore and on resize ([#546](https://github.com/open-artifacts-ai/open-artifacts/issues/546)) ([c3d4fc1](https://github.com/open-artifacts-ai/open-artifacts/commit/c3d4fc1fcc28cca1557f0c55bcaf7fa1d5c8ae28))
+
 ## [0.43.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.42.0...v0.43.0) (2026-10-24)
 
 
