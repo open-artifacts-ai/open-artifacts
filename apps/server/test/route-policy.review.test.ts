@@ -150,7 +150,12 @@ describe("M3: capped callers don't list team artifacts", () => {
 
 describe("L2: MCP tools are enforced at dispatch", () => {
   it("a tool registered without a policy can't run", async () => {
-    const server = createServer({ env, user: viewer, agent: null });
+    const server = createServer({
+      env,
+      user: viewer,
+      sessionEpoch: 0,
+      agent: null,
+    });
     server.registerTool("evil_tool", { description: "x" }, async () => ({
       content: [{ type: "text", text: "leaked" }],
     }));

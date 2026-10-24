@@ -1,5 +1,6 @@
 import { LIMITS } from "@oa/shared";
 import { authConfig } from "../auth/config.js";
+import { contentKey } from "../auth/keys.js";
 import type { Env } from "../env.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
 
@@ -31,16 +32,19 @@ export type ContentViewer = { uid: string; epoch: number };
  * current epoch while FEATURES has content_revocation (hosted sets it), else
  * null (today's two-part token). Verification checks any bound token,
  * flag or not, so turning the flag off never loosens one already minted.
+ * Fails closed: with the flag on, a user without an epoch throws rather than
+ * getting an unbound token.
  */
 export function contentViewer(
   env: Env,
   uid: string | null | undefined,
   epoch: number | null | undefined,
 ): ContentViewer | null {
-  if (!uid || epoch == null) return null;
-  return authConfig(env).features.includes("content_revocation")
-    ? { uid, epoch }
-    : null;
+  if (!uid) return null;
+  if (!authConfig(env).features.includes("content_revocation")) return null;
+  if (epoch == null)
+    throw new Error("content_revocation: a signed-in viewer needs an epoch");
+  return { uid, epoch };
 }
 
 /**
@@ -53,12 +57,8 @@ export const CAPTURE_HEADER = "X-OA-Capture";
 /** Upper bound on a capture header's lifetime. */
 export const CAPTURE_MAX_TTL_SEC = 120;
 
-function signingKey(env: Env): string {
-  const k = env.CONTENT_SIGNING_KEY;
-  if (typeof k !== "string" || k.length < 32)
-    throw new Error("CONTENT_SIGNING_KEY must be at least 32 characters");
-  return k;
-}
+/** Content tokens and capture headers: the "oa:content-url" subkey (never the upload one). */
+const signingKey = (env: Env) => contentKey(env, "oa:content-url");
 
 /**
  * The mode is in the MAC: a frame token can't be turned into dl. So is the
@@ -96,7 +96,7 @@ export async function signContent(
 ): Promise<{ prefix: string; exp: number }> {
   const exp = Math.floor(now / 1000) + Math.min(ttlSec, LIMITS.signedUrlTtlSec);
   const sig = await hmacSign(
-    signingKey(env),
+    await signingKey(env),
     payload(id, v, exp, mode, viewer),
   );
   const t = viewer
@@ -185,7 +185,7 @@ export async function verifyContentToken(
   if (!t) return null;
   const mode: SignMode = dl ? "dl" : "frame";
   const ok = await hmacVerify(
-    signingKey(env),
+    await signingKey(env),
     payload(id, v, t.exp, mode, t.viewer),
     t.sig,
   );
@@ -214,7 +214,7 @@ export async function signCapture(
   ttlSec = 60,
 ): Promise<string> {
   const exp = Math.floor(now / 1000) + Math.min(ttlSec, CAPTURE_MAX_TTL_SEC);
-  return `${exp}.${await hmacSign(signingKey(env), capturePayload(id, v, exp))}`;
+  return `${exp}.${await hmacSign(await signingKey(env), capturePayload(id, v, exp))}`;
 }
 
 /** Whether a CAPTURE_HEADER value is valid now for id at v. */
@@ -228,7 +228,7 @@ export async function verifyCapture(
   if (!value) return false;
   const t = window_(value.trim(), CAPTURE_MAX_TTL_SEC, now);
   if (!t) return false;
-  return hmacVerify(signingKey(env), capturePayload(id, v, t.exp), t.sig);
+  return hmacVerify(await signingKey(env), capturePayload(id, v, t.exp), t.sig);
 }
 
 /** "/p/{id}/v{v}/" (public artifacts only; checked per request). */

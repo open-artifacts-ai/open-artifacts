@@ -5,6 +5,7 @@ import { createApp } from "../src/app.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import {
   CAPTURE_HEADER,
+  contentViewer,
   publicPrefix,
   signCapture,
   signContent,
@@ -614,6 +615,17 @@ describe("content host revocation in D1 (P3 T11)", () => {
         "create",
       )
     ).id;
+
+  it("contentViewer fails closed: flag on, a user and no epoch throws", () => {
+    const uid = "Z".repeat(16);
+    expect(() => contentViewer(REV, uid, null)).toThrow(/needs an epoch/);
+    expect(() => contentViewer(REV, uid, undefined)).toThrow(/needs an epoch/);
+    expect(contentViewer(REV, uid, 3)).toEqual({ uid, epoch: 3 });
+    // Anonymous, or the flag off: today's two-part token.
+    expect(contentViewer(REV, null, null)).toBeNull();
+    expect(contentViewer(env, uid, null)).toBeNull();
+    expect(contentViewer(env, uid, 3)).toBeNull();
+  });
 
   it("content-url binds uid and epoch with the flag on, two-part without it", async () => {
     const u = await fresh("rev-shape");
