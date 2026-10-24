@@ -312,7 +312,7 @@ Every name carries the env prefix `oa-<p>-` (`oa-s-` staging, `oa-p-` prod), and
 | `oa-<p>-inventory` | Inventory |
 | `oa-<p>-turnstile` | The env's one Turnstile widget |
 
-Why a copy: Workers KV has no read-only binding, so a directory broker bound to `oa-<p>-broker-registry` could plant a sign-in trust anchor if it were compromised. Provision writes each install's entry to the broker registry first, then the identical value to the directory registry, in the same step; delete removes both. `WfpProvisioner.status(id)` reports drift per install in `registryDrift` (`missing_broker`, `missing_directory` or `mismatch`) and never repairs it; rerun `create` (or `delete`) to finish.
+Why a copy: Workers KV has no read-only binding, so a directory broker bound to `oa-<p>-broker-registry` could plant a sign-in trust anchor if it were compromised. Provision writes each install's entry to the broker registry first, then the identical value to the directory registry, in the same step; delete removes both. `WfpProvisioner.status(id)` reports drift per install in `registryDrift` (`missing_broker`, `missing_directory`, `mismatch`, or `missing_both` for an install that should have an entry: active, or creating past the registry step) and never repairs it; rerun `create` (or `delete`) to finish.
 
 ### First-create checklist (per env)
 
