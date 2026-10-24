@@ -141,6 +141,50 @@ UP=$(printf %s "$ENV" | tr a-z A-Z)
 
 Unmapping and slug purges: dispatch reads HOSTS with `cacheTtl: 60`, so an edge can serve a removed mapping for up to about 60 s plus KV propagation. `delete` deletes the user script right after the unmap (`packages/provision/src/wfp.ts`: HOSTS keys at line 2792, script at line 2804, then KV, R2 and D1), so a stale mapping hits a missing script and gets the 404, not a half-deleted install. **A slug purge (freeing a deleted install's hosts for reuse) must wait at least 2 minutes after the unmap**, so no edge still maps the host to the old id when a new install takes it.
 
+## Auth broker: one-time deploy per env (gated)
+
+`apps/auth-broker` is the hosted Google sign-in broker on `auth.<app zone>`. It holds the multi-tenant Google client secret; the registry KV holds public keys only. The repo config has no routes, custom domains or `workers.dev`, and no top-level name, so a deploy without `--env` is refused (tests pin all of it). Observability (Workers Logs) is off in each env and must stay off, because it records full URLs and the callback URL carries the OAuth code and state. **The Manager and the user run this by hand; CI never does.**
+
+| Env | Worker | Registry KV title | Config placeholder | Ratelimit ids |
+|---|---|---|---|---|
+| staging | `oa-s-auth-broker` | `oa-s-broker-registry` | `{{BROKER_REGISTRY_ID_STAGING}}` | 1101, 1102 |
+| prod | `oa-p-auth-broker` | `oa-p-broker-registry` | `{{BROKER_REGISTRY_ID_PROD}}` | 1111, 1112 |
+
+Prod's `GOOGLE_CLIENT_ID` is the placeholder `{{GOOGLE_CLIENT_ID_PROD}}` until a prod client exists, so a prod deploy fails the check in step 3 until then.
+
+Set `ENV`, `P`, `APP` and `UP` as in the dispatch section. Then, per env:
+
+1. Create the registry KV if provisioning hasn't (`pnpm exec wrangler kv namespace create oa-$P-broker-registry`; skip if `wrangler kv namespace list` shows it).
+2. Build from a clean checkout of the reviewed commit, as in the dispatch section, and run `pnpm --filter @oa/auth-broker test`.
+3. Deploy with the provisioning token. Fill only this env's placeholder into a gitignored copy of the config, deploy it, fail closed if any `{{` for this env remains, then remove the copy:
+   ```sh
+   cd apps/auth-broker
+   REG_ID=$(pnpm exec wrangler kv namespace list | jq -r --arg t "oa-$P-broker-registry" '.[] | select(.title == $t) | .id')
+   test -n "$REG_ID" \
+     && sed "s/{{BROKER_REGISTRY_ID_$UP}}/$REG_ID/" wrangler.jsonc > wrangler.deploy.jsonc \
+     && sed -E '/^[[:space:]]*\/\//d' wrangler.deploy.jsonc | jq -e --arg e "$ENV" '.env[$e] | tostring | contains("{{") | not' >/dev/null \
+     && pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env "$ENV" \
+     && rm wrangler.deploy.jsonc
+   ```
+   The deploy output must name `oa-$P-auth-broker` with `BROKER_REGISTRY`, `RL_BROKER_IP`, `RL_BROKER_INSTALL` and the two vars, and no routes or workers.dev URL.
+4. Set the secrets **after** the Worker exists, never before (`wrangler secret put` on a missing Worker creates one). Never echo them:
+   ```sh
+   npx wrangler secret put GOOGLE_CLIENT_SECRET --env "$ENV"     # paste from the password manager
+   openssl rand -base64 32 | npx wrangler secret put BROKER_STATE_KEY --env "$ENV"
+   ```
+5. The route, added in the same gated zone-token step as the dispatch routes (steps 4 to 7 of the dispatch section), on the app zone only: `POST /zones/<zone_id>/workers/routes` with `{"pattern": "auth.$APP/*", "script": "oa-$P-auth-broker"}`. The most specific matching route wins, so this beats the `*.$APP/*` dispatch wildcard (see [How routes work](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior)). `auth.$APP` is covered by the wildcard DNS record from the dispatch step.
+6. Check: `curl -sS -o /dev/null -w '%{http_code}\n' "https://auth.$APP/"` must be the broker's answer, not dispatch's plain `404 Not found` with body `Not found`.
+
+### Google clients (record)
+
+Public values only. The client secrets live in the user's password manager until each Worker exists.
+
+| Env | Project | Client | Client id | Redirect URI |
+|---|---|---|---|---|
+| staging | `open-artifacts-staging` | Sign-in (used by the broker) | `1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com` | `https://auth.open-artifacts-staging.app/google/callback` |
+| staging | `open-artifacts-staging` | Directory (P3 directory sync, not used by the broker) | `1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com` | none |
+| prod | not created yet | | | |
+
 ## Nightly scheduler: one-time deploy per env (Task 7, gated)
 
 User Workers in a dispatch namespace get no cron triggers, so `apps/scheduler` is the only nightly caller. Its cron (`17 3 * * *`, the same as a self-hosted install's) reads `SELECT id FROM installs WHERE state = 'active'` from the platform D1 (in keyset pages of 500) and calls `DISPATCHER.get(oa-<p>-<id>).scheduled({ cron, scheduledTime })` on each:

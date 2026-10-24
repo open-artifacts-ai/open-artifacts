@@ -1,31 +1,81 @@
-// Hosted auth broker (P2 T11): one Worker on auth.<hosted domain>, deployed by
-// Platform. It holds the multi-tenant Google client secret and nothing else
-// secret; the registry (written by P1 provisioning) holds public keys only.
-// Placeholders are filled at deploy time.
+// Hosted auth broker (P2 T11): one Worker per env on auth.<env's app domain>,
+// deployed by Platform. It holds the multi-tenant Google client secret and
+// nothing else secret; the registry (written by P1 provisioning) holds public
+// keys only.
+//
+// Deploy with --env staging or --env prod only (docs/ops/hosted.md): the top
+// level has no name, so a deploy without --env is refused. No routes, custom
+// domains or workers.dev here: the auth.<domain>/* route is wired by the gated
+// ops step, never from this file. Placeholders ({{...}}) are filled at deploy.
+// Observability stays off: Workers Logs records the full request URL, and the
+// callback and redeem URLs carry the OAuth code and state in the query.
+// The ratelimit namespace ids are distinct per env (both envs share one
+// Cloudflare account): staging 1101/1102, prod 1111/1112.
+// Secrets (set after the Worker exists): GOOGLE_CLIENT_SECRET,
+// BROKER_STATE_KEY (32+ random bytes).
+// BROKER_ORIGIN is the fixed public origin (https://auth.<app domain>); the
+// redirect_uri is built from it, never the request Host.
 {
-  "name": "oa-auth-broker",
+  "$schema": "node_modules/wrangler/config-schema.json",
   "main": "src/index.ts",
   "compatibility_date": "2026-01-01",
-  "kv_namespaces": [
-    { "binding": "BROKER_REGISTRY", "id": "{{BROKER_REGISTRY_ID}}" }
-  ],
-  "ratelimits": [
-    {
-      "name": "RL_BROKER_IP",
-      "namespace_id": "1101",
-      "simple": { "limit": 60, "period": 60 }
+  "workers_dev": false,
+  "preview_urls": false,
+  "env": {
+    "staging": {
+      "name": "oa-s-auth-broker",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": false },
+      "kv_namespaces": [
+        {
+          "binding": "BROKER_REGISTRY",
+          "id": "{{BROKER_REGISTRY_ID_STAGING}}"
+        }
+      ],
+      "ratelimits": [
+        {
+          "name": "RL_BROKER_IP",
+          "namespace_id": "1101",
+          "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          "name": "RL_BROKER_INSTALL",
+          "namespace_id": "1102",
+          "simple": { "limit": 300, "period": 60 }
+        }
+      ],
+      "vars": {
+        // Public value: the sign-in client of the open-artifacts-staging project.
+        "GOOGLE_CLIENT_ID": "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
+        "BROKER_ORIGIN": "https://auth.open-artifacts-staging.app"
+      }
     },
-    {
-      "name": "RL_BROKER_INSTALL",
-      "namespace_id": "1102",
-      "simple": { "limit": 300, "period": 60 }
+    "prod": {
+      "name": "oa-p-auth-broker",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": false },
+      "kv_namespaces": [
+        { "binding": "BROKER_REGISTRY", "id": "{{BROKER_REGISTRY_ID_PROD}}" }
+      ],
+      "ratelimits": [
+        {
+          "name": "RL_BROKER_IP",
+          "namespace_id": "1111",
+          "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          "name": "RL_BROKER_INSTALL",
+          "namespace_id": "1112",
+          "simple": { "limit": 300, "period": 60 }
+        }
+      ],
+      "vars": {
+        // No prod Google client yet: the placeholder makes the deploy gate fail closed.
+        "GOOGLE_CLIENT_ID": "{{GOOGLE_CLIENT_ID_PROD}}",
+        "BROKER_ORIGIN": "https://auth.open-artifacts.app"
+      }
     }
-  ],
-  "vars": {
-    "GOOGLE_CLIENT_ID": "{{GOOGLE_CLIENT_ID}}",
-    "BROKER_ORIGIN": "{{BROKER_ORIGIN}}"
   }
-  // Secrets: GOOGLE_CLIENT_SECRET, BROKER_STATE_KEY (32+ random bytes).
-  // BROKER_ORIGIN is the fixed public origin (https://auth.<hosted>); the
-  // redirect_uri is built from it, never the request Host.
 }
