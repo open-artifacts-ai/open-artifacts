@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, posix, relative, sep } from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
@@ -48,6 +48,18 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   "services/artifacts.ts:softDelete": "artifact",
 };
 
+/**
+ * Units that match a marker but only ever widen access, so no socket needs
+ * to close. Each entry says why; a stale entry fails the test below.
+ */
+const WIDENS: Readonly<Record<string, string>> = {
+  // Sign-in: role = promotedRole (guest becomes member, never narrower) or
+  // owner for OWNER_EMAIL while no owner exists.
+  "services/identity.ts:touch": "sign-in promotion only",
+  // Access sign-in: .set(set) holds only lastSeenAt and name.
+  "services/users.ts:upsertOnLogin": "sign-in touch: last_seen_at and name",
+};
+
 /** Exempt from the scan: the primitives themselves. */
 const SKIP_FILES = new Set(["runtime/revoke.ts", "mcp/oauth-api.ts"]);
 
@@ -59,16 +71,18 @@ const SHRINK: readonly RegExp[] = [
   /\.delete\((shares|identities)\)/,
   /delete from (shares|identities)\b/i,
   /status = 'removed'|status = 'suspended'|\bDEACTIVATE_GUEST\b/,
-  // Status writes, SQL or drizzle (the value may be bound). A bare
-  // `\bstatus\s*[:=]` flags every HTTP status, so it is scoped to a set.
-  /\bset\s+(?:[\w.]+\s*=\s*[^,;]*?,\s*)*status\s*=[^=]/i,
-  /\.set\(\{[^}]*\bstatus\s*:/,
+  // Status and role writes, SQL or drizzle (the value may be bound). A
+  // bare `\bstatus\s*[:=]` flags every HTTP status, so these are scoped to
+  // an SQL SET list (any earlier assignment, never past its WHERE or
+  // RETURNING) or a drizzle .set({ ... }), shorthand included.
+  /\bset\s(?:(?!\bwhere\b|\breturning\b)[^;]){0,400}?\b(status|role)\s*=[^=]/i,
+  /\.set\(\{[^}]*\b(status|role)\b/,
+  // A users or tokens update from a variable object (.set(patch)): the
+  // fields aren't visible, so it counts.
+  /\.update\((users|tokens)\)\s*\.set\((?!\s*\{)/,
   // Token revocation, SQL or drizzle.
   /update tokens set revoked_at/i,
   /\.delete\(tokens\)/,
-  // Role writes (a demotion narrows every space and agent grant).
-  /\.set\(\{[^}]*\brole\s*:/,
-  /\bset role = /i,
   // Visibility writes (a narrowing cuts team or public viewers).
   /\.set\(\{[^}]*\bvisibility\s*:/,
   /\bset[^;`]*\bvisibility = \?|"visibility = \?"/i,
@@ -142,56 +156,128 @@ const isUnit = (n: ts.Node): n is ts.FunctionLikeDeclaration =>
   ts.isSetAccessorDeclaration(n) ||
   ts.isConstructorDeclaration(n);
 
-/** "rel:name" → the unit's code with comments stripped. */
-function unitsOf(rel: string, text: string): Map<string, string> {
-  const out = new Map<string, string>();
-  const src = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true);
-  // Module-level string constants (SQL kept outside the function): a unit
-  // that names one is scanned with its text appended.
+const stringish = (e: ts.Expression): boolean =>
+  ts.isStringLiteral(e) ||
+  ts.isNoSubstitutionTemplateLiteral(e) ||
+  ts.isTemplateExpression(e);
+
+/** `x as const` / `x satisfies T` → x. */
+const unwrap = (e: ts.Expression): ts.Expression =>
+  ts.isAsExpression(e) || ts.isSatisfiesExpression(e)
+    ? unwrap(e.expression)
+    : e;
+
+/**
+ * Module-level string constants and the string properties of module-level
+ * object literals (SQL kept outside the function): name → text.
+ */
+function moduleConsts(src: ts.SourceFile): Map<string, string> {
   const consts = new Map<string, string>();
-  for (const st of src.statements)
-    if (ts.isVariableStatement(st))
-      for (const d of st.declarationList.declarations)
-        if (
-          ts.isIdentifier(d.name) &&
-          d.initializer &&
-          (ts.isStringLiteral(d.initializer) ||
-            ts.isNoSubstitutionTemplateLiteral(d.initializer) ||
-            ts.isTemplateExpression(d.initializer))
-        )
-          consts.set(d.name.text, d.initializer.getText(src));
-  const withConsts = (code: string) => {
-    const used = [...consts].filter(([k]) =>
-      new RegExp(`\\b${k}\\b`).test(code),
-    );
-    return [code, ...used.map(([, v]) => v)].join("\n");
-  };
-  const visit = (n: ts.Node): void => {
-    if (isUnit(n) && n.body) {
-      let key = `${rel}:${unitName(n, src)}`;
-      while (out.has(key)) key += "'";
-      out.set(
-        key,
-        withConsts(printer.printNode(ts.EmitHint.Unspecified, n, src)),
-      );
-      // A nested function belongs to this unit: its code is in the text.
-      return;
+  for (const st of src.statements) {
+    if (!ts.isVariableStatement(st)) continue;
+    for (const d of st.declarationList.declarations) {
+      if (!ts.isIdentifier(d.name) || !d.initializer) continue;
+      const init = unwrap(d.initializer);
+      if (stringish(init)) consts.set(d.name.text, init.getText(src));
+      else if (ts.isObjectLiteralExpression(init)) {
+        const props = init.properties
+          .filter(ts.isPropertyAssignment)
+          .map((p) => unwrap(p.initializer))
+          .filter(stringish)
+          .map((e) => e.getText(src));
+        if (props.length) consts.set(d.name.text, props.join("\n"));
+      }
     }
-    ts.forEachChild(n, visit);
-  };
-  visit(src);
+  }
+  return consts;
+}
+
+/** Named imports from other scanned files: local name → that file's constant. */
+function importedConsts(
+  rel: string,
+  src: ts.SourceFile,
+  all: ReadonlyMap<string, Map<string, string>>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const st of src.statements) {
+    if (
+      !ts.isImportDeclaration(st) ||
+      !ts.isStringLiteral(st.moduleSpecifier) ||
+      !st.moduleSpecifier.text.startsWith(".")
+    )
+      continue;
+    const target = posix
+      .normalize(posix.join(posix.dirname(rel), st.moduleSpecifier.text))
+      .replace(/\.js$/, ".ts");
+    const consts = all.get(target);
+    const named = st.importClause?.namedBindings;
+    if (!consts || !named || !ts.isNamedImports(named)) continue;
+    for (const el of named.elements) {
+      const v = consts.get((el.propertyName ?? el.name).text);
+      if (v !== undefined) out.set(el.name.text, v);
+    }
+  }
   return out;
 }
 
-function units(root: string): Map<string, string> {
+/**
+ * "rel:name" → each unit's code with comments stripped, plus the text of
+ * every module-level or imported constant it names. `sources` maps
+ * src-relative paths ("/"-separated) to file text.
+ */
+function scan(sources: ReadonlyMap<string, string>): Map<string, string> {
+  const parsed = new Map(
+    [...sources].map(([rel, text]) => [
+      rel,
+      ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true),
+    ]),
+  );
+  const consts = new Map(
+    [...parsed].map(([rel, src]) => [rel, moduleConsts(src)]),
+  );
   const out = new Map<string, string>();
-  for (const file of files(root)) {
-    const rel = relative(root, file);
+  for (const [rel, src] of parsed) {
     if (SKIP_FILES.has(rel)) continue;
-    for (const [k, v] of unitsOf(rel, readFileSync(file, "utf8")))
-      out.set(k, v);
+    const known = new Map([
+      ...importedConsts(rel, src, consts),
+      ...(consts.get(rel) ?? []),
+    ]);
+    const withConsts = (code: string) => {
+      const used = [...known].filter(([k]) =>
+        new RegExp(`\\b${k}\\b`).test(code),
+      );
+      return [code, ...used.map(([, v]) => v)].join("\n");
+    };
+    const visit = (n: ts.Node): void => {
+      if (isUnit(n) && n.body) {
+        let key = `${rel}:${unitName(n, src)}`;
+        while (out.has(key)) key += "'";
+        out.set(
+          key,
+          withConsts(printer.printNode(ts.EmitHint.Unspecified, n, src)),
+        );
+        // A nested function belongs to this unit: its code is in the text.
+        return;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(src);
   }
   return out;
+}
+
+/** One file's units (the self-tests). */
+const unitsOf = (rel: string, text: string) => scan(new Map([[rel, text]]));
+
+function units(root: string): Map<string, string> {
+  return scan(
+    new Map(
+      files(root).map((f) => [
+        relative(root, f).split(sep).join("/"),
+        readFileSync(f, "utf8"),
+      ]),
+    ),
+  );
 }
 
 /** Shrinking units with no registry entry, and registered units without their guard. */
@@ -202,7 +288,7 @@ function check(
   const missing = [...fns]
     .filter(([, body]) => SHRINK.some((re) => re.test(body)))
     .map(([k]) => k)
-    .filter((k) => !(k in registry));
+    .filter((k) => !(k in registry) && !(k in WIDENS));
   const unguarded = Object.entries(registry)
     .filter(([k, g]) => {
       const body = fns.get(k);
@@ -221,6 +307,14 @@ describe("revocation lint (P3 T7)", () => {
 
   it("every registered function calls its guard", () => {
     expect(check(fns, REGISTRY).unguarded).toEqual([]);
+  });
+
+  it("every widening exemption still names a unit that matches a marker", () => {
+    const stale = Object.keys(WIDENS).filter((k) => {
+      const body = fns.get(k);
+      return body === undefined || !SHRINK.some((re) => re.test(body));
+    });
+    expect(stale).toEqual([]);
   });
 
   it("finds a shrinking function that skips the guard (self-test)", () => {
@@ -278,6 +372,76 @@ describe("revocation lint (P3 T7)", () => {
       "d.ts:drop",
       "d.ts:forget",
       "d.ts:revokeAll",
+    ]);
+  });
+
+  it("e5: a status write after a comma in an earlier SET expression counts", () => {
+    const src = `
+      export async function rename(env: Env) {
+        await env.DB.prepare("update users set name = coalesce(?3, name), status = ?2 where id = ?1").run();
+      }
+      export async function promote(env: Env) {
+        await env.DB.prepare("update users set name = coalesce(?3, name), role = 'admin' where id = ?1").run();
+      }
+      export async function touch(env: Env) {
+        await env.DB.prepare("update users set last_seen_at = ? where status = 'active'").run();
+      }`;
+    expect(check(unitsOf("e5.ts", src), {}).missing).toEqual([
+      "e5.ts:rename",
+      "e5.ts:promote",
+    ]);
+  });
+
+  it("e6: drizzle shorthand .set({ status }) and .set({ role }) count", () => {
+    const src = `
+      export async function a(status: string) { await db.update(users).set({ status }); }
+      export async function b(role: string) { await db.update(users).set({ name, role }); }`;
+    expect(check(unitsOf("e6.ts", src), {}).missing).toEqual([
+      "e6.ts:a",
+      "e6.ts:b",
+    ]);
+  });
+
+  it("e7: a users or tokens update from a variable object counts", () => {
+    const src = `
+      export async function a(patch: object) { await db.update(users).set(patch); }
+      export async function b(patch: object) { await db.update(tokens)
+        .set(patch); }
+      export async function c(patch: object) { await db.update(versions).set(patch); }`;
+    expect(check(unitsOf("e7.ts", src), {}).missing).toEqual([
+      "e7.ts:a",
+      "e7.ts:b",
+    ]);
+  });
+
+  it("e8: SQL in a module-level object or an imported constant counts", () => {
+    const sql = `
+      export const TOKENS_SQL = {
+        revoke: "update tokens set revoked_at = ? where user_id = ?",
+      } as const;
+      export const SUSPEND = \`update users set status = 'suspended' where id = ?\`;`;
+    const local = `
+      const TOKENS_SQL = { revoke: "update tokens set revoked_at = ? where user_id = ?" };
+      export async function viaObject(env: Env) {
+        await env.DB.prepare(TOKENS_SQL.revoke).run();
+      }`;
+    const user = `
+      import { SUSPEND as S, TOKENS_SQL } from "../db/sql.js";
+      export async function viaImport(env: Env) { await env.DB.prepare(S).run(); }
+      export async function viaImportedObject(env: Env) {
+        await env.DB.prepare(TOKENS_SQL.revoke).run();
+      }`;
+    const fns = scan(
+      new Map([
+        ["db/sql.ts", sql],
+        ["services/local.ts", local],
+        ["services/user.ts", user],
+      ]),
+    );
+    expect(check(fns, {}).missing).toEqual([
+      "services/local.ts:viaObject",
+      "services/user.ts:viaImport",
+      "services/user.ts:viaImportedObject",
     ]);
   });
 
