@@ -1762,7 +1762,17 @@ describe("WfpProvisioner.create", () => {
   });
 
   describe("ratelimits (decision 12)", () => {
-    it("RL_ANON gets rlNs and RL_AUTH rlNs + 1; two installs never share an id", async () => {
+    it("each template ratelimit gets rlNs + its index (RL_ANON rlNs, RL_AUTH rlNs + 1); two installs never share an id", async () => {
+      // Derived from the live template, so a new server limiter (P3 T13's
+      // RL_DIRECTORY) needs no edit here.
+      const tplRl = (loadTemplate().ratelimits ?? []) as {
+        name: string;
+        namespace_id: string;
+      }[];
+      expect(tplRl.slice(0, 2).map((r) => r.name)).toEqual([
+        "RL_ANON",
+        "RL_AUTH",
+      ]);
       const s = setup();
       const a = await s.p.create(input("alpha"));
       const b = await s.p.create(input("beta"));
@@ -1783,15 +1793,15 @@ describe("WfpProvisioner.create", () => {
             x.namespace_id,
           ]),
         );
-        expect(by).toEqual({
-          RL_ANON: String(row.rl_ns),
-          RL_AUTH: String(row.rl_ns + 1),
-        });
+        expect(by).toEqual(
+          Object.fromEntries(
+            tplRl.map((r, k) => [r.name, String(row.rl_ns + k)]),
+          ),
+        );
         ids.push(...Object.values(by as Record<string, string>));
       }
-      expect(new Set(ids).size).toBe(4);
-      expect(ids).not.toContain("1001");
-      expect(ids).not.toContain("1002");
+      expect(new Set(ids).size).toBe(2 * tplRl.length);
+      for (const r of tplRl) expect(ids).not.toContain(r.namespace_id);
     });
 
     it.each([
