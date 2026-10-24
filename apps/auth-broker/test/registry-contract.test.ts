@@ -50,6 +50,15 @@ describe("registry contract with @oa/provision", () => {
     expect(got?.domains).toEqual([]);
   });
 
+  it("a legacy entry with no domains field (written before H-RD) still validates for sign-in", async () => {
+    const { domains: _, ...legacy } = await provisioned();
+    await env.BROKER_REGISTRY.put(registryKey(ID), JSON.stringify(legacy));
+    clearRegistryCache();
+    const got = await lookupInstall(env.BROKER_REGISTRY, ID);
+    expect(got).toEqual(legacy);
+    expect(got && "domains" in got).toBe(false);
+  });
+
   it("returns the domains provision writes, intact", async () => {
     const entry = await provisioned(false, ["b.example", "a.example"]);
     const got = await lookupInstall(env.BROKER_REGISTRY, ID);
