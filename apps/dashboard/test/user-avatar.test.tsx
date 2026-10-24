@@ -1,20 +1,20 @@
-// The shadcn PersonAvatar keeps @oa/ui Avatar's name, initials and hue.
+// The shadcn UserAvatar keeps @oa/ui Avatar's name, initials and hue.
 import { avatarHue } from "@oa/ui";
 import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
-import { initials, PersonAvatar } from "../src/layout/PersonAvatar";
+import { initials, UserAvatar } from "../src/layout/UserAvatar";
 
 it("is an image named for the person, with their initials", () => {
-  render(<PersonAvatar name="Ada Lovelace" email="ada@example.com" />);
+  render(<UserAvatar name="Ada Lovelace" email="ada@example.com" />);
   const a = screen.getByRole("img", { name: "Ada Lovelace" });
   expect(a).toHaveTextContent("AL");
-  expect(a.style.getPropertyValue("--hue")).toBe(
-    String(avatarHue("ada@example.com")),
-  );
+  expect(a.querySelector("[data-slot=avatar-fallback]")).toHaveStyle({
+    backgroundColor: `hsl(${avatarHue("ada@example.com")} 45% 30%)`,
+  });
 });
 
 it("falls back to the email, then to ?", () => {
-  render(<PersonAvatar name={null} email="bob@example.com" />);
+  render(<UserAvatar name={null} email="bob@example.com" />);
   expect(
     screen.getByRole("img", { name: "bob@example.com" }),
   ).toHaveTextContent("BO");

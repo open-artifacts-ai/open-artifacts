@@ -11,8 +11,8 @@ import {
 } from "../../api/queries";
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { useCan, useHosted } from "../../auth/permissions";
-import { Modal } from "../../layout/Modal";
 import { toast } from "../../layout/toast";
+import { ConfirmDialog } from "../../settings/ConfirmDialog";
 import { MoveDialog, useMoveTargets } from "../../spaces/MoveDialog";
 import { useOfferUndo } from "../useOfferUndo";
 
@@ -176,26 +176,16 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
           <Button variant="destructive" onClick={() => setConfirm(true)}>
             Delete artifact
           </Button>
-          <Modal
+          <ConfirmDialog
             open={confirm}
             onClose={() => setConfirm(false)}
             title="Delete artifact?"
-            description={`"${artifact.title}" will be recoverable for 30 days.`}
-            footer={
-              <>
-                <Button variant="ghost" onClick={() => setConfirm(false)}>
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  disabled={del.isPending}
-                  aria-busy={del.isPending}
-                  onClick={remove}
-                >
-                  Delete
-                </Button>
-              </>
-            }
+            body={<p>"{artifact.title}" will be recoverable for 30 days.</p>}
+            confirm="Delete"
+            danger
+            pending="Deleting…"
+            busy={del.isPending}
+            onConfirm={remove}
           />
         </>
       )}

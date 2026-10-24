@@ -41,8 +41,13 @@ const clean = async (page: Page) => {
 };
 
 /** Tab and Shift+Tab stay inside the dialog; Escape closes it and focus goes back. */
-const trapped = async (page: Page, name: string, opener: () => Locator) => {
-  const d = page.getByRole("dialog", { name });
+const trapped = async (
+  page: Page,
+  name: string,
+  opener: () => Locator,
+  role: "dialog" | "alertdialog" = "alertdialog",
+) => {
+  const d = page.getByRole(role, { name });
   await expect(d).toBeVisible();
   for (const key of ["Tab", "Tab", "Tab", "Tab", "Shift+Tab", "Shift+Tab"]) {
     await page.keyboard.press(key);
@@ -78,7 +83,7 @@ for (const scheme of ["light", "dark"] as const)
         const del = page.getByRole("button", { name: "Delete artifact" });
         await del.click();
         await expect(
-          page.getByRole("dialog", { name: "Delete artifact?" }),
+          page.getByRole("alertdialog", { name: "Delete artifact?" }),
         ).toContainText("will be recoverable for 30 days.");
         await clean(page);
         await shot(page, "details-delete", (n) => info.outputPath(n));
@@ -99,7 +104,7 @@ for (const scheme of ["light", "dark"] as const)
         const restore = page.getByRole("button", { name: "Restore" });
         await restore.click();
         await expect(
-          page.getByRole("dialog", { name: "Restore v1?" }),
+          page.getByRole("alertdialog", { name: "Restore v1?" }),
         ).toBeVisible();
         await clean(page);
         await shot(page, "restore", (n) => info.outputPath(n));
@@ -110,12 +115,16 @@ for (const scheme of ["light", "dark"] as const)
         await more.click();
         await page.getByRole("menuitem", { name: "Delete" }).click();
         await expect(
-          page.getByRole("dialog", { name: "Delete artifact?" }),
+          page.getByRole("alertdialog", { name: "Delete artifact?" }),
         ).toBeVisible();
         await clean(page);
         await shot(page, "titlebar-delete", (n) => info.outputPath(n));
+        // Design: no × on a confirm; Cancel is outline.
+        await expect(
+          page.getByRole("alertdialog").getByRole("button", { name: "Close" }),
+        ).toHaveCount(0);
         await page.keyboard.press("Escape");
-        await expect(page.getByRole("dialog")).toHaveCount(0);
+        await expect(page.getByRole("alertdialog")).toHaveCount(0);
       });
 
       test("upload buttons and the Create artifact dialog", async ({

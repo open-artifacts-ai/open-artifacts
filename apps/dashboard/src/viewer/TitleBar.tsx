@@ -26,8 +26,8 @@ import {
   useVersionInfo,
 } from "../api/queries";
 import { accessLabel, useCan, useHosted } from "../auth/permissions";
-import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
+import { ConfirmDialog } from "../settings/ConfirmDialog";
 import { VersionsDot } from "./LiveChip";
 import { VERSIONS_PANEL_ID } from "./panels/Versions";
 import { fullPath } from "./paths";
@@ -376,40 +376,30 @@ export function TitleBar({
           </ShButton>
         )}
       </div>
-      <Modal
+      <ConfirmDialog
         open={confirm}
         onClose={() => setConfirm(false)}
         title="Delete artifact?"
-        description={`"${artifact.title}" will be recoverable for 30 days.`}
-        footer={
-          <>
-            <ShButton variant="ghost" onClick={() => setConfirm(false)}>
-              Cancel
-            </ShButton>
-            <ShButton
-              variant="destructive"
-              disabled={del.isPending}
-              aria-busy={del.isPending}
-              onClick={() => {
-                if (deleting.current) return;
-                deleting.current = true;
-                del.mutate(undefined, {
-                  onSuccess: () => {
-                    deleted.current = true;
-                    go("/");
-                    offerUndo(artifact.id, artifact.title);
-                  },
-                  onError: () => {
-                    deleting.current = false;
-                    toast({ title: "Couldn't delete", tone: "danger" });
-                  },
-                });
-              }}
-            >
-              Delete
-            </ShButton>
-          </>
-        }
+        body={<p>"{artifact.title}" will be recoverable for 30 days.</p>}
+        confirm="Delete"
+        danger
+        pending="Deleting…"
+        busy={del.isPending}
+        onConfirm={() => {
+          if (deleting.current) return;
+          deleting.current = true;
+          del.mutate(undefined, {
+            onSuccess: () => {
+              deleted.current = true;
+              go("/");
+              offerUndo(artifact.id, artifact.title);
+            },
+            onError: () => {
+              deleting.current = false;
+              toast({ title: "Couldn't delete", tone: "danger" });
+            },
+          });
+        }}
       />
     </div>
   );

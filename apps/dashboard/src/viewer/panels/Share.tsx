@@ -33,8 +33,8 @@ import { useCan } from "../../auth/permissions";
 import { useMe } from "../../auth/useMe";
 import { CopyLink } from "../../layout/CopyLink";
 import { Modal } from "../../layout/Modal";
-import { PersonAvatar } from "../../layout/PersonAvatar";
 import { toast } from "../../layout/toast";
+import { UserAvatar } from "../../layout/UserAvatar";
 import { visibilityHint } from "../../spaces/SpaceMarker";
 
 const VIS: { value: Visibility; label: string }[] = [
@@ -386,7 +386,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
         <h3 className={H3}>People</h3>
         <ul className="flex flex-col gap-[var(--oa-space-2)] p-0">
           <li className={PERSON}>
-            <PersonAvatar
+            <UserAvatar
               name={artifact.owner.name}
               email={artifact.owner.email}
             />
@@ -397,7 +397,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           </li>
           {(shares.data ?? []).map((s) => (
             <li key={s.email} className={PERSON}>
-              <PersonAvatar name={null} email={s.email} />
+              <UserAvatar name={null} email={s.email} />
               <span className={NAME} title={s.email}>
                 {s.email}
               </span>

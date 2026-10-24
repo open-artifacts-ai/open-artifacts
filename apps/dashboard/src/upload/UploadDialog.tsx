@@ -120,7 +120,7 @@ export function UploadDialog({
       description={`${files.length} file${files.length === 1 ? "" : "s"} selected`}
       footer={
         <>
-          <Button variant="ghost" onClick={cancel}>
+          <Button variant="outline" onClick={cancel}>
             Cancel
           </Button>
           <Button
@@ -128,7 +128,7 @@ export function UploadDialog({
             disabled={busy || invalid}
             onClick={() => void submit()}
           >
-            {busy ? "Uploading…" : "Create"}
+            {busy ? "Creating…" : "Create"}
           </Button>
         </>
       }

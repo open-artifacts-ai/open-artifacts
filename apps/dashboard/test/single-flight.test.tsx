@@ -96,7 +96,7 @@ describe("one request per submit", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: "Delete artifact" }),
     );
-    const confirm = within(await screen.findByRole("dialog")).getByRole(
+    const confirm = within(await screen.findByRole("alertdialog")).getByRole(
       "button",
       { name: "Delete" },
     );

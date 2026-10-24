@@ -38,9 +38,9 @@ test("restore dialog offers a keyboard-reachable Cancel", async ({ page }) => {
   await page.goto("/a/Cd5fGhJkLm6nPqRs/v/1?panel=open&tab=versions");
   await page.getByRole("button", { name: "Restore" }).focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByRole("alertdialog")).toBeVisible();
   await expect(
-    page.getByRole("dialog").getByRole("button", { name: "Cancel" }),
+    page.getByRole("alertdialog").getByRole("button", { name: "Cancel" }),
   ).toBeVisible();
 });
 
