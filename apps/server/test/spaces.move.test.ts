@@ -14,8 +14,8 @@ import {
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { createPat } from "../src/auth/pat.js";
 import { accessLevel, callerOf } from "../src/auth/authz.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { getUser } from "../src/services/users.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
@@ -348,10 +348,12 @@ describe("publish compare-and-set with agent attribution (#559)", () => {
   // The versions insert binds the CAS guard and agent_via positionally: a
   // swapped bind would break one of these silently.
   const versionsOf = async (id: string) =>
-    (await one<{ n: number }>(
-      "select count(*) as n from versions where artifact_id = ?",
-      id,
-    ))?.n;
+    (
+      await one<{ n: number }>(
+        "select count(*) as n from versions where artifact_id = ?",
+        id,
+      )
+    )?.n;
 
   it("a stale visibility change on publish: 409, no version written", async () => {
     const u = await mk("vcas");
