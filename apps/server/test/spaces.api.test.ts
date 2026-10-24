@@ -38,9 +38,17 @@ const MAIL = {
 };
 const base = env as object;
 /** Spaces on, Google sync running. */
-const GOOGLE = { ...base, ...MAIL, FEATURES: "spaces,sync_google" } as unknown as Env;
+const GOOGLE = {
+  ...base,
+  ...MAIL,
+  FEATURES: "spaces,sync_google",
+} as unknown as Env;
 /** Spaces on, sync frozen (Team after trial). */
-const FROZEN = { ...base, ...MAIL, FEATURES: "spaces,sync_frozen" } as unknown as Env;
+const FROZEN = {
+  ...base,
+  ...MAIL,
+  FEATURES: "spaces,sync_frozen",
+} as unknown as Env;
 /** Spaces on, no directory. */
 const OFF = { ...base, ...MAIL, FEATURES: "spaces" } as unknown as Env;
 /** Self-hosted default: no spaces. */
@@ -95,15 +103,19 @@ const audits = async (action: string, targetId: string) =>
 const presence = (userId: string) => {
   const ns = env.USER_PRESENCE;
   if (!ns) throw new Error("USER_PRESENCE unbound");
-  return ns.get(ns.idFromName(userId)) as unknown as DurableObjectStub<UserPresence>;
+  return ns.get(
+    ns.idFromName(userId),
+  ) as unknown as DurableObjectStub<UserPresence>;
 };
 /** When the user's live access was last revoked (null = never). */
 const revokedAt = (userId: string) =>
   runInDurableObject(presence(userId), (p) => p.revokedAt());
 
 type U = { cookie: string; userId: string };
-const mk = (p: string, role: "member" | "admin" | "guest" | "owner" = "member") =>
-  login(`${p}-${newId().slice(0, 4).toLowerCase()}-${tag}@x.com`, role);
+const mk = (
+  p: string,
+  role: "member" | "admin" | "guest" | "owner" = "member",
+) => login(`${p}-${newId().slice(0, 4).toLowerCase()}-${tag}@x.com`, role);
 
 const level = async (
   e: Env,
@@ -162,13 +174,7 @@ const createSpace = async (
   expect(r.status).toBe(201);
   return json<Space>(r);
 };
-const putMember = (
-  e: Env,
-  who: U,
-  sid: string,
-  userId: string,
-  role: string,
-) =>
+const putMember = (e: Env, who: U, sid: string, userId: string, role: string) =>
   call(e, R.spaceMember(sid, userId), who.cookie, {
     method: "PUT",
     body: { role },
@@ -207,9 +213,9 @@ describe("the spaces flag", () => {
     const { s, ed } = await staffed();
     const art = await insertArtifact(ed.userId, s.id);
     expect(await level(NONE, ed.userId, art)).toBe("editor");
-    expect(
-      (await call(NONE, R.spaceMembers(s.id), admin.cookie)).status,
-    ).toBe(404);
+    expect((await call(NONE, R.spaceMembers(s.id), admin.cookie)).status).toBe(
+      404,
+    );
   });
 });
 
@@ -240,7 +246,9 @@ describe("spaces", () => {
     const made: string[] = [];
     for (let i = 0; i < 3; i++) {
       const s = await createSpace();
-      expect((await putMember(GOOGLE, admin, s.id, m.userId, "viewer")).status).toBe(200);
+      expect(
+        (await putMember(GOOGLE, admin, s.id, m.userId, "viewer")).status,
+      ).toBe(200);
       made.push(s.id);
     }
     const seen: Space[] = [];
@@ -260,7 +268,11 @@ describe("spaces", () => {
       cursor = p.nextCursor;
       pages++;
     } while (cursor && pages < 10);
-    expect(seen[0]).toMatchObject({ id: m.userId, kind: "personal", myRole: "manager" });
+    expect(seen[0]).toMatchObject({
+      id: m.userId,
+      kind: "personal",
+      myRole: "manager",
+    });
     const ids = seen.map((s) => s.id);
     expect(ids).toEqual(expect.arrayContaining([m.userId, ...made]));
     // Every id once, and only the caller's own personal space.
@@ -279,7 +291,11 @@ describe("spaces", () => {
     do {
       const q: string = c2 ? `&cursor=${encodeURIComponent(c2)}` : "";
       const p = await json<Page<Space>>(
-        await call(GOOGLE, `${R.spaces}?kind=shared&limit=200${q}`, admin.cookie),
+        await call(
+          GOOGLE,
+          `${R.spaces}?kind=shared&limit=200${q}`,
+          admin.cookie,
+        ),
       );
       all.push(...p.items);
       c2 = p.nextCursor;
@@ -301,9 +317,15 @@ describe("spaces", () => {
       can: { manageMappings: false },
     });
     const stranger = await mk("str");
-    expect((await call(GOOGLE, R.space(s.id), stranger.cookie)).status).toBe(404);
-    expect((await call(GOOGLE, R.space(vw.userId), stranger.cookie)).status).toBe(404);
-    expect((await call(GOOGLE, R.space(newId()), stranger.cookie)).status).toBe(404);
+    expect((await call(GOOGLE, R.space(s.id), stranger.cookie)).status).toBe(
+      404,
+    );
+    expect(
+      (await call(GOOGLE, R.space(vw.userId), stranger.cookie)).status,
+    ).toBe(404);
+    expect((await call(GOOGLE, R.space(newId()), stranger.cookie)).status).toBe(
+      404,
+    );
     const own = await call(GOOGLE, R.space(stranger.userId), stranger.cookie);
     expect(await json<Space>(own)).toMatchObject({
       kind: "personal",
@@ -382,8 +404,12 @@ describe("spaces", () => {
       body: { publicLinks: false },
     });
     expect(
-      (await one<{ visibility: string }>("select visibility from artifacts where id = ?", pub))
-        ?.visibility,
+      (
+        await one<{ visibility: string }>(
+          "select visibility from artifacts where id = ?",
+          pub,
+        )
+      )?.visibility,
     ).toBe("public");
     expect(await level(GOOGLE, vw.userId, pub)).toBe("viewer");
     expect(await revokedAt(vw.userId)).toBe(before);
@@ -421,18 +447,27 @@ describe("spaces", () => {
   it("DELETE: trash counts (409 space_not_empty); empty 204 audited; personal 400; managers 404", async () => {
     const { s, mgr } = await staffed();
     const art = await insertArtifact(mgr.userId, s.id, "private", Date.now());
-    let r = await call(GOOGLE, R.space(s.id), admin.cookie, { method: "DELETE" });
+    let r = await call(GOOGLE, R.space(s.id), admin.cookie, {
+      method: "DELETE",
+    });
     expect(r.status).toBe(409);
     expect(await code(r)).toBe("space_not_empty");
     expect(await audits("space.delete", s.id)).toHaveLength(0);
-    expect((await call(GOOGLE, R.space(s.id), mgr.cookie, { method: "DELETE" })).status).toBe(404);
+    expect(
+      (await call(GOOGLE, R.space(s.id), mgr.cookie, { method: "DELETE" }))
+        .status,
+    ).toBe(404);
     await run("delete from artifacts where id = ?", art);
     r = await call(GOOGLE, R.space(s.id), admin.cookie, { method: "DELETE" });
     expect(r.status).toBe(204);
     expect(await audits("space.delete", s.id)).toHaveLength(1);
     expect((await call(GOOGLE, R.space(s.id), admin.cookie)).status).toBe(404);
     expect(
-      await code(await call(GOOGLE, R.space(mgr.userId), mgr.cookie, { method: "DELETE" })),
+      await code(
+        await call(GOOGLE, R.space(mgr.userId), mgr.cookie, {
+          method: "DELETE",
+        }),
+      ),
     ).toBe("space_personal");
   });
 });
@@ -441,10 +476,16 @@ describe("space members", () => {
   it("PUT: add and role change audited (no row on a no-op); no email in detail", async () => {
     const { s, mgr } = await staffed();
     const m = await mk("mem");
-    expect((await putMember(GOOGLE, mgr, s.id, m.userId, "viewer")).status).toBe(200);
+    expect(
+      (await putMember(GOOGLE, mgr, s.id, m.userId, "viewer")).status,
+    ).toBe(200);
     const add = await audits("space.member.add", m.userId);
     expect(add).toHaveLength(1);
-    expect(add[0]).toMatchObject({ space_id: s.id, actor_id: mgr.userId, target_type: "user" });
+    expect(add[0]).toMatchObject({
+      space_id: s.id,
+      actor_id: mgr.userId,
+      target_type: "user",
+    });
     const r = await putMember(GOOGLE, mgr, s.id, m.userId, "editor");
     expect(await json<SpaceMember>(r)).toMatchObject({
       userId: m.userId,
@@ -454,10 +495,15 @@ describe("space members", () => {
     });
     await putMember(GOOGLE, mgr, s.id, m.userId, "editor");
     expect(await audits("space.member.role", m.userId)).toHaveLength(1);
-    for (const row of [...add, ...(await audits("space.member.role", m.userId))])
+    for (const row of [
+      ...add,
+      ...(await audits("space.member.role", m.userId)),
+    ])
       expect(row.detail).not.toContain("@");
     // Unknown user: 404.
-    expect((await putMember(GOOGLE, mgr, s.id, newId(), "viewer")).status).toBe(404);
+    expect((await putMember(GOOGLE, mgr, s.id, newId(), "viewer")).status).toBe(
+      404,
+    );
   });
 
   it("a space manager can't grant manager or change a manager (403 space_forbidden, target member)", async () => {
@@ -473,7 +519,9 @@ describe("space members", () => {
     r = await putMember(GOOGLE, mgr, s.id, mgr2.userId, "viewer");
     expect(r.status).toBe(403);
     // Org admins may.
-    expect((await putMember(GOOGLE, admin, s.id, ed.userId, "manager")).status).toBe(200);
+    expect(
+      (await putMember(GOOGLE, admin, s.id, ed.userId, "manager")).status,
+    ).toBe(200);
   });
 
   it("a demotion revokes the member's live access", async () => {
@@ -488,13 +536,19 @@ describe("space members", () => {
     const { s, mgr, vw } = await staffed();
     const art = await insertArtifact(mgr.userId, s.id);
     expect(await level(GOOGLE, vw.userId, art)).toBe("viewer");
-    const r = await call(GOOGLE, R.spaceMember(s.id, vw.userId), mgr.cookie, { method: "DELETE" });
+    const r = await call(GOOGLE, R.spaceMember(s.id, vw.userId), mgr.cookie, {
+      method: "DELETE",
+    });
     expect(r.status).toBe(204);
     expect(await level(GOOGLE, vw.userId, art)).toBeNull();
     expect(await audits("space.member.remove", vw.userId)).toHaveLength(1);
     expect(await revokedAt(vw.userId)).not.toBeNull();
     expect(
-      (await call(GOOGLE, R.spaceMember(s.id, vw.userId), mgr.cookie, { method: "DELETE" })).status,
+      (
+        await call(GOOGLE, R.spaceMember(s.id, vw.userId), mgr.cookie, {
+          method: "DELETE",
+        })
+      ).status,
     ).toBe(404);
   });
 
@@ -506,15 +560,25 @@ describe("space members", () => {
       s.id,
       m.userId,
     );
-    let r = await call(GOOGLE, R.spaceMember(s.id, m.userId), admin.cookie, { method: "DELETE" });
+    let r = await call(GOOGLE, R.spaceMember(s.id, m.userId), admin.cookie, {
+      method: "DELETE",
+    });
     expect(r.status).toBe(409);
     expect(await code(r)).toBe("member_synced");
-    r = await call(FROZEN, R.spaceMember(s.id, m.userId), admin.cookie, { method: "DELETE" });
+    r = await call(FROZEN, R.spaceMember(s.id, m.userId), admin.cookie, {
+      method: "DELETE",
+    });
     expect(r.status).toBe(204);
     const rows = await audits("space.member.remove", m.userId);
-    expect(JSON.parse(rows.at(-1)?.detail ?? "{}")).toEqual({ syncFrozen: true });
+    expect(JSON.parse(rows.at(-1)?.detail ?? "{}")).toEqual({
+      syncFrozen: true,
+    });
     expect(
-      await one("select 1 from space_members where space_id = ? and user_id = ?", s.id, m.userId),
+      await one(
+        "select 1 from space_members where space_id = ? and user_id = ?",
+        s.id,
+        m.userId,
+      ),
     ).toBeNull();
   });
 
@@ -559,7 +623,11 @@ describe("space members", () => {
       `${every.toLowerCase()}@x.com`,
     );
     try {
-      const r = await call(GOOGLE, `${R.spaceMembers(s.id)}?limit=2`, vw.cookie);
+      const r = await call(
+        GOOGLE,
+        `${R.spaceMembers(s.id)}?limit=2`,
+        vw.cookie,
+      );
       expect(r.status).toBe(200);
       const p = await json<SpaceMembersPage>(r);
       expect(p.items).toHaveLength(2);
@@ -575,11 +643,21 @@ describe("space members", () => {
       );
       expect(byG.items.map((m) => m.userId)).toEqual([ed.userId]);
       expect(byG.items[0]?.groups).toEqual([
-        { groupId: g, email: `${g.toLowerCase()}@x.com`, name: null, role: "editor", via: "space" },
+        {
+          groupId: g,
+          email: `${g.toLowerCase()}@x.com`,
+          name: null,
+          role: "editor",
+          via: "space",
+        },
       ]);
       const vwRow = (
         await json<SpaceMembersPage>(
-          await call(GOOGLE, `${R.spaceMembers(s.id)}?group=${every}`, vw.cookie),
+          await call(
+            GOOGLE,
+            `${R.spaceMembers(s.id)}?group=${every}`,
+            vw.cookie,
+          ),
         )
       ).items[0];
       expect(vwRow).toMatchObject({
@@ -593,7 +671,9 @@ describe("space members", () => {
       });
       expect(vwRow?.groups[0]).toMatchObject({ via: "every", role: "editor" });
       const stranger = await mk("str");
-      expect((await call(GOOGLE, R.spaceMembers(s.id), stranger.cookie)).status).toBe(404);
+      expect(
+        (await call(GOOGLE, R.spaceMembers(s.id), stranger.cookie)).status,
+      ).toBe(404);
     } finally {
       await run("delete from org_group_mappings where group_id = ?", every);
     }
@@ -607,11 +687,19 @@ describe("space members", () => {
       body: { role: "manager" },
     });
     expect(r.status).toBe(201);
-    expect(await json<SpaceMember>(r)).toMatchObject({ userId: owner.userId, role: "manager" });
+    expect(await json<SpaceMember>(r)).toMatchObject({
+      userId: owner.userId,
+      role: "manager",
+    });
     const rows = await audits("space.admin_self_add", owner.userId);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ space_id: s.id });
-    const mgrEmail = (await one<{ email: string }>("select email from users where id = ?", mgr.userId))?.email;
+    const mgrEmail = (
+      await one<{ email: string }>(
+        "select email from users where id = ?",
+        mgr.userId,
+      )
+    )?.email;
     expect(sent.map((m) => m.to)).toEqual([mgrEmail]);
     for (const m of sent) expect(m.subject).not.toContain("—");
     expect(
@@ -635,7 +723,10 @@ describe("space members", () => {
 
 describe("space mappings", () => {
   const putMap = (e: Env, who: U, sid: string, gid: string, role: string) =>
-    call(e, R.spaceMapping(sid, gid), who.cookie, { method: "PUT", body: { role } });
+    call(e, R.spaceMapping(sid, gid), who.cookie, {
+      method: "PUT",
+      body: { role },
+    });
   const delMap = (e: Env, who: U, sid: string, gid: string) =>
     call(e, R.spaceMapping(sid, gid), who.cookie, { method: "DELETE" });
   const setSmm = (on: boolean) =>
@@ -675,7 +766,9 @@ describe("space mappings", () => {
     );
     expect(list.map((x) => x.groupId)).toEqual([g]);
     // Unknown group: 404.
-    expect((await putMap(GOOGLE, mgr, s.id, "gNOPE", "viewer")).status).toBe(404);
+    expect((await putMap(GOOGLE, mgr, s.id, "gNOPE", "viewer")).status).toBe(
+      404,
+    );
   });
 
   it("space manager maps a group as manager → 403 space_forbidden (target mapping)", async () => {
@@ -693,8 +786,12 @@ describe("space mappings", () => {
     const { s, mgr } = await staffed();
     const g = await group([]);
     expect((await putMap(GOOGLE, admin, s.id, g, "manager")).status).toBe(200);
-    expect(await code(await putMap(GOOGLE, mgr, s.id, g, "viewer"))).toBe("space_forbidden");
-    expect(await code(await delMap(GOOGLE, mgr, s.id, g))).toBe("space_forbidden");
+    expect(await code(await putMap(GOOGLE, mgr, s.id, g, "viewer"))).toBe(
+      "space_forbidden",
+    );
+    expect(await code(await delMap(GOOGLE, mgr, s.id, g))).toBe(
+      "space_forbidden",
+    );
   });
 
   it("spaceManagerMappings off: manager PUT → 403 directory_mapping_off; GET and DELETE of a viewer row still work", async () => {
@@ -707,12 +804,18 @@ describe("space mappings", () => {
       const r = await putMap(GOOGLE, mgr, s.id, g2, "viewer");
       expect(r.status).toBe(403);
       expect(await code(r)).toBe("directory_mapping_off");
-      const space = await json<Space>(await call(GOOGLE, R.space(s.id), mgr.cookie));
+      const space = await json<Space>(
+        await call(GOOGLE, R.space(s.id), mgr.cookie),
+      );
       expect(space.can).toEqual({ manageMappings: false });
-      expect((await call(GOOGLE, R.spaceMappings(s.id), mgr.cookie)).status).toBe(200);
+      expect(
+        (await call(GOOGLE, R.spaceMappings(s.id), mgr.cookie)).status,
+      ).toBe(200);
       expect((await delMap(GOOGLE, mgr, s.id, g)).status).toBe(204);
       // Org admins may still map any role.
-      expect((await putMap(GOOGLE, admin, s.id, g2, "manager")).status).toBe(200);
+      expect((await putMap(GOOGLE, admin, s.id, g2, "manager")).status).toBe(
+        200,
+      );
     } finally {
       await setSmm(true);
     }
@@ -738,7 +841,9 @@ describe("space mappings", () => {
     const r = await call(GOOGLE, R.spaceMappings(m.userId), m.cookie);
     expect(r.status).toBe(400);
     expect(await code(r)).toBe("space_personal");
-    expect(await code(await putMap(GOOGLE, m, m.userId, "gx", "viewer"))).toBe("space_personal");
+    expect(await code(await putMap(GOOGLE, m, m.userId, "gx", "viewer"))).toBe(
+      "space_personal",
+    );
   });
 
   it("removing or lowering a mapping cuts and revokes the group's members", async () => {
@@ -772,12 +877,25 @@ describe("Every-space mappings", () => {
     const r = await put(GOOGLE, admin, g, "editor");
     try {
       expect(r.status).toBe(200);
-      expect(await json<GroupMapping>(r)).toMatchObject({ groupId: g, role: "editor" });
+      expect(await json<GroupMapping>(r)).toMatchObject({
+        groupId: g,
+        role: "editor",
+      });
       expect(
-        (await one<{ n: number }>("select count(*) n from org_group_mappings where group_id = ?", g))?.n,
+        (
+          await one<{ n: number }>(
+            "select count(*) n from org_group_mappings where group_id = ?",
+            g,
+          )
+        )?.n,
       ).toBe(1);
       expect(
-        (await one<{ n: number }>("select count(*) n from space_members where user_id = ?", m.userId))?.n,
+        (
+          await one<{ n: number }>(
+            "select count(*) n from space_members where user_id = ?",
+            m.userId,
+          )
+        )?.n,
       ).toBe(0);
       const later = await createSpace();
       const art = await insertArtifact(admin.userId, later.id);
@@ -786,7 +904,10 @@ describe("Every-space mappings", () => {
       expect(await level(GOOGLE, m.userId, personal)).toBeNull();
       const rows = await audits("mapping.set", g);
       expect(rows[0]).toMatchObject({ space_id: null });
-      expect(JSON.parse(rows[0]?.detail ?? "{}")).toMatchObject({ scope: "org", role: "editor" });
+      expect(JSON.parse(rows[0]?.detail ?? "{}")).toMatchObject({
+        scope: "org",
+        role: "editor",
+      });
     } finally {
       await run("delete from org_group_mappings where group_id = ?", g);
     }
@@ -815,7 +936,9 @@ describe("Every-space mappings", () => {
     const s = await createSpace();
     const art = await insertArtifact(admin.userId, s.id);
     expect(await level(GOOGLE, m.userId, art)).toBe("viewer");
-    const r = await call(GOOGLE, R.orgMapping(g), admin.cookie, { method: "DELETE" });
+    const r = await call(GOOGLE, R.orgMapping(g), admin.cookie, {
+      method: "DELETE",
+    });
     expect(r.status).toBe(204);
     expect(await level(GOOGLE, m.userId, art)).toBeNull();
     expect(await revokedAt(m.userId)).not.toBeNull();
@@ -825,7 +948,9 @@ describe("Every-space mappings", () => {
 
   it("sync off → 409; a space manager → 404", async () => {
     const g = await group([]);
-    expect(await code(await put(OFF, admin, g, "viewer"))).toBe("directory_sync_off");
+    expect(await code(await put(OFF, admin, g, "viewer"))).toBe(
+      "directory_sync_off",
+    );
     const { mgr } = await staffed();
     expect((await put(GOOGLE, mgr, g, "viewer")).status).toBe(404);
   });
@@ -835,7 +960,9 @@ describe("restrictions", () => {
   it("per-user restricted flag caps a member and audits restricted.set; revoked", async () => {
     const { s, ed } = await staffed();
     const art = await insertArtifact(admin.userId, s.id);
-    const r = await call(GOOGLE, R.memberRestricted(ed.userId), admin.cookie, { method: "PUT" });
+    const r = await call(GOOGLE, R.memberRestricted(ed.userId), admin.cookie, {
+      method: "PUT",
+    });
     expect(r.status).toBe(200);
     expect(await json<{ restriction: unknown }>(r)).toMatchObject({
       id: ed.userId,
@@ -844,7 +971,9 @@ describe("restrictions", () => {
     expect(await level(GOOGLE, ed.userId, art)).toBe("viewer");
     expect(await audits("restricted.set", ed.userId)).toHaveLength(1);
     expect(await revokedAt(ed.userId)).not.toBeNull();
-    const d = await call(GOOGLE, R.memberRestricted(ed.userId), admin.cookie, { method: "DELETE" });
+    const d = await call(GOOGLE, R.memberRestricted(ed.userId), admin.cookie, {
+      method: "DELETE",
+    });
     expect(d.status).toBe(200);
     expect(await level(GOOGLE, ed.userId, art)).toBe("editor");
     expect(await audits("restricted.remove", ed.userId)).toHaveLength(1);
@@ -852,7 +981,9 @@ describe("restrictions", () => {
 
   it("restricting an owner or admin → 400 restrict_admin", async () => {
     for (const t of [owner, admin]) {
-      const r = await call(GOOGLE, R.memberRestricted(t.userId), owner.cookie, { method: "PUT" });
+      const r = await call(GOOGLE, R.memberRestricted(t.userId), owner.cookie, {
+        method: "PUT",
+      });
       expect(r.status).toBe(400);
       expect(await code(r)).toBe("restrict_admin");
     }
@@ -862,12 +993,20 @@ describe("restrictions", () => {
     const { s, ed } = await staffed();
     const g = await group([ed.userId]);
     const art = await insertArtifact(admin.userId, s.id);
-    expect((await call(GOOGLE, R.restrictedGroup(g), admin.cookie, { method: "PUT" })).status).toBe(200);
+    expect(
+      (
+        await call(GOOGLE, R.restrictedGroup(g), admin.cookie, {
+          method: "PUT",
+        })
+      ).status,
+    ).toBe(200);
     expect(await level(FROZEN, ed.userId, art)).toBe("viewer");
     expect(await audits("restricted.set", g)).toHaveLength(1);
     expect(await revokedAt(ed.userId)).not.toBeNull();
     const g2 = await group([]);
-    const r = await call(FROZEN, R.restrictedGroup(g2), admin.cookie, { method: "PUT" });
+    const r = await call(FROZEN, R.restrictedGroup(g2), admin.cookie, {
+      method: "PUT",
+    });
     expect(r.status).toBe(409);
     expect(await code(r)).toBe("directory_sync_off");
     expect(await level(FROZEN, ed.userId, art)).toBe("viewer");
@@ -883,7 +1022,9 @@ describe("restrictions", () => {
     const art = await insertArtifact(admin.userId, s.id);
     await call(GOOGLE, R.restrictedGroup(g), admin.cookie, { method: "PUT" });
     expect(await level(FROZEN, ed.userId, art)).toBe("viewer");
-    const r = await call(FROZEN, R.restrictedGroup(g), admin.cookie, { method: "DELETE" });
+    const r = await call(FROZEN, R.restrictedGroup(g), admin.cookie, {
+      method: "DELETE",
+    });
     expect(r.status).toBe(204);
     expect(await level(FROZEN, ed.userId, art)).toBe("editor");
     expect(await audits("restricted.remove", g)).toHaveLength(1);
@@ -894,13 +1035,23 @@ describe("restrictions", () => {
     const g = await group([ed.userId]);
     const art = await insertArtifact(admin.userId, s.id);
     await call(GOOGLE, R.restrictedGroup(g), admin.cookie, { method: "PUT" });
-    await call(GOOGLE, R.memberRestricted(ed.userId), admin.cookie, { method: "PUT" });
-    const r = await call(GOOGLE, R.memberRestricted(ed.userId), admin.cookie, { method: "DELETE" });
-    expect(await json<{ restriction: { manual: boolean; groups: { groupId: string }[] } }>(r)).toMatchObject({
+    await call(GOOGLE, R.memberRestricted(ed.userId), admin.cookie, {
+      method: "PUT",
+    });
+    const r = await call(GOOGLE, R.memberRestricted(ed.userId), admin.cookie, {
+      method: "DELETE",
+    });
+    expect(
+      await json<{
+        restriction: { manual: boolean; groups: { groupId: string }[] };
+      }>(r),
+    ).toMatchObject({
       restriction: { manual: false, groups: [{ groupId: g }] },
     });
     expect(await level(GOOGLE, ed.userId, art)).toBe("viewer");
-    await call(GOOGLE, R.restrictedGroup(g), admin.cookie, { method: "DELETE" });
+    await call(GOOGLE, R.restrictedGroup(g), admin.cookie, {
+      method: "DELETE",
+    });
   });
 
   it("a restricted group never restricts an owner or admin", async () => {
@@ -908,9 +1059,16 @@ describe("restrictions", () => {
     const g = await group([a2.userId]);
     await call(GOOGLE, R.restrictedGroup(g), admin.cookie, { method: "PUT" });
     expect(
-      (await one<{ r: number }>("select restricted_sync r from users where id = ?", a2.userId))?.r,
+      (
+        await one<{ r: number }>(
+          "select restricted_sync r from users where id = ?",
+          a2.userId,
+        )
+      )?.r,
     ).toBe(0);
-    await call(GOOGLE, R.restrictedGroup(g), admin.cookie, { method: "DELETE" });
+    await call(GOOGLE, R.restrictedGroup(g), admin.cookie, {
+      method: "DELETE",
+    });
   });
 });
 
@@ -955,7 +1113,10 @@ describe("attacks", () => {
         [R.space(id), { method: "PATCH", body: { name: "x" } }],
         [R.space(id), { method: "DELETE" }],
         [R.spaceMembers(id), {}],
-        [R.spaceMember(id, vw.userId), { method: "PUT", body: { role: "viewer" } }],
+        [
+          R.spaceMember(id, vw.userId),
+          { method: "PUT", body: { role: "viewer" } },
+        ],
         [R.spaceMember(id, vw.userId), { method: "DELETE" }],
         [R.spaceMemberSelf(id), { method: "POST", body: { role: "manager" } }],
         [R.spaceMappings(id), {}],
@@ -964,7 +1125,11 @@ describe("attacks", () => {
       ];
       for (const [path, init] of reqs) {
         const r = await call(GOOGLE, path, stranger.cookie, init);
-        expect([path, init.method ?? "GET", r.status]).toEqual([path, init.method ?? "GET", 404]);
+        expect([path, init.method ?? "GET", r.status]).toEqual([
+          path,
+          init.method ?? "GET",
+          404,
+        ]);
       }
     }
     // Viewers and editors are members, but not managers: 404 on writes.
@@ -979,14 +1144,55 @@ describe("attacks", () => {
   it("a manager can't escalate to manager through mappings, Every-space mappings, allMembersRole or self-add", async () => {
     const { s, mgr, ed } = await staffed();
     const g = await group([ed.userId]);
-    expect((await call(GOOGLE, R.spaceMapping(s.id, g), mgr.cookie, { method: "PUT", body: { role: "manager" } })).status).toBe(403);
-    expect((await call(GOOGLE, R.orgMapping(g), mgr.cookie, { method: "PUT", body: { role: "manager" } })).status).toBe(404);
-    expect((await call(GOOGLE, R.space(s.id), mgr.cookie, { method: "PATCH", body: { allMembersRole: "manager" } })).status).toBe(404);
-    expect((await call(GOOGLE, R.spaceMemberSelf(s.id), mgr.cookie, { method: "POST", body: { role: "manager" } })).status).toBe(404);
-    expect((await call(GOOGLE, R.restrictedGroup(g), mgr.cookie, { method: "PUT" })).status).toBe(404);
-    expect((await call(GOOGLE, R.memberRestricted(ed.userId), mgr.cookie, { method: "PUT" })).status).toBe(404);
     expect(
-      await one("select 1 from group_mappings where space_id = ? and group_id = ?", s.id, g),
+      (
+        await call(GOOGLE, R.spaceMapping(s.id, g), mgr.cookie, {
+          method: "PUT",
+          body: { role: "manager" },
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await call(GOOGLE, R.orgMapping(g), mgr.cookie, {
+          method: "PUT",
+          body: { role: "manager" },
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await call(GOOGLE, R.space(s.id), mgr.cookie, {
+          method: "PATCH",
+          body: { allMembersRole: "manager" },
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await call(GOOGLE, R.spaceMemberSelf(s.id), mgr.cookie, {
+          method: "POST",
+          body: { role: "manager" },
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (await call(GOOGLE, R.restrictedGroup(g), mgr.cookie, { method: "PUT" }))
+        .status,
+    ).toBe(404);
+    expect(
+      (
+        await call(GOOGLE, R.memberRestricted(ed.userId), mgr.cookie, {
+          method: "PUT",
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      await one(
+        "select 1 from group_mappings where space_id = ? and group_id = ?",
+        s.id,
+        g,
+      ),
     ).toBeNull();
     const art = await insertArtifact(admin.userId, s.id);
     expect(await level(GOOGLE, ed.userId, art)).toBe("editor");
@@ -994,34 +1200,85 @@ describe("attacks", () => {
 
   it("a capped (restricted) manager can't manage their space", async () => {
     const { s, mgr, vw } = await staffed();
-    await call(GOOGLE, R.memberRestricted(mgr.userId), admin.cookie, { method: "PUT" });
-    expect((await putMember(GOOGLE, mgr, s.id, vw.userId, "editor")).status).toBe(404);
-    expect((await call(GOOGLE, R.space(s.id), mgr.cookie, { method: "PATCH", body: { name: "x" } })).status).toBe(404);
+    await call(GOOGLE, R.memberRestricted(mgr.userId), admin.cookie, {
+      method: "PUT",
+    });
+    expect(
+      (await putMember(GOOGLE, mgr, s.id, vw.userId, "editor")).status,
+    ).toBe(404);
+    expect(
+      (
+        await call(GOOGLE, R.space(s.id), mgr.cookie, {
+          method: "PATCH",
+          body: { name: "x" },
+        })
+      ).status,
+    ).toBe(404);
     // Reads still work: they are a member.
     const r = await call(GOOGLE, R.space(s.id), mgr.cookie);
     expect(r.status).toBe(200);
     expect((await json<Space>(r)).can).toEqual({ manageMappings: false });
     const g = await group([]);
-    expect((await call(GOOGLE, R.spaceMappings(s.id), mgr.cookie)).status).toBe(404);
-    expect((await call(GOOGLE, R.spaceMapping(s.id, g), mgr.cookie, { method: "PUT", body: { role: "viewer" } })).status).toBe(404);
+    expect((await call(GOOGLE, R.spaceMappings(s.id), mgr.cookie)).status).toBe(
+      404,
+    );
+    expect(
+      (
+        await call(GOOGLE, R.spaceMapping(s.id, g), mgr.cookie, {
+          method: "PUT",
+          body: { role: "viewer" },
+        })
+      ).status,
+    ).toBe(404);
   });
 
   it("cross-space id swaps: a manager of one space can't touch another's members or mappings", async () => {
     const a = await staffed();
     const b = await staffed();
     const g = await group([]);
-    await call(GOOGLE, R.spaceMapping(b.s.id, g), admin.cookie, { method: "PUT", body: { role: "viewer" } });
+    await call(GOOGLE, R.spaceMapping(b.s.id, g), admin.cookie, {
+      method: "PUT",
+      body: { role: "viewer" },
+    });
     // b's member, through a's path: not a's member, so nothing to remove.
-    expect((await call(GOOGLE, R.spaceMember(a.s.id, b.vw.userId), a.mgr.cookie, { method: "DELETE" })).status).toBe(404);
-    expect((await call(GOOGLE, R.spaceMember(b.s.id, b.vw.userId), a.mgr.cookie, { method: "DELETE" })).status).toBe(404);
-    expect((await putMember(GOOGLE, a.mgr, b.s.id, b.vw.userId, "editor")).status).toBe(404);
-    // b's mapping, through a's path: a has none.
-    expect((await call(GOOGLE, R.spaceMapping(a.s.id, g), a.mgr.cookie, { method: "DELETE" })).status).toBe(404);
     expect(
-      await one("select 1 from group_mappings where space_id = ? and group_id = ?", b.s.id, g),
+      (
+        await call(GOOGLE, R.spaceMember(a.s.id, b.vw.userId), a.mgr.cookie, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await call(GOOGLE, R.spaceMember(b.s.id, b.vw.userId), a.mgr.cookie, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (await putMember(GOOGLE, a.mgr, b.s.id, b.vw.userId, "editor")).status,
+    ).toBe(404);
+    // b's mapping, through a's path: a has none.
+    expect(
+      (
+        await call(GOOGLE, R.spaceMapping(a.s.id, g), a.mgr.cookie, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      await one(
+        "select 1 from group_mappings where space_id = ? and group_id = ?",
+        b.s.id,
+        g,
+      ),
     ).not.toBeNull();
     expect(
-      await one("select 1 from space_members where space_id = ? and user_id = ?", b.s.id, b.vw.userId),
+      await one(
+        "select 1 from space_members where space_id = ? and user_id = ?",
+        b.s.id,
+        b.vw.userId,
+      ),
     ).not.toBeNull();
   });
 });
@@ -1030,7 +1287,9 @@ describe("fan-out", () => {
   it("revokeUsersLive covers every user, in pages of 50", async () => {
     const ids = Array.from({ length: 120 }, () => newId());
     await revokeUsersLive(env, ids, "test");
-    const at = await Promise.all([ids[0], ids[60], ids[119]].map((id) => revokedAt(id as string)));
+    const at = await Promise.all(
+      [ids[0], ids[60], ids[119]].map((id) => revokedAt(id as string)),
+    );
     for (const t of at) expect(t).not.toBeNull();
   });
 });

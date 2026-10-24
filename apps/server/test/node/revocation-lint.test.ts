@@ -46,6 +46,22 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   "services/artifacts.ts:patch": "artifact",
   "services/artifacts.ts:publish": "artifact",
   "services/artifacts.ts:softDelete": "artifact",
+  // P3 T9 spaces API. A member's manual row lowered, a frozen override or a
+  // self-add below the current role: that user.
+  "services/spaces.ts:putSpaceMember": "user",
+  "services/spaces.ts:deleteSpaceMember": "user",
+  "services/spaces.ts:selfAddSpace": "user",
+  // A per-space or Every-space mapping lowered or removed: the group's
+  // members (revokeUsersLive, pages of 50).
+  "services/spaces.ts:putSpaceMapping": "user",
+  "services/spaces.ts:deleteSpaceMapping": "user",
+  "services/spaces.ts:putOrgMapping": "user",
+  "services/spaces.ts:deleteOrgMapping": "user",
+  // allMembersRole lowered or removed: every member it reached.
+  "services/spaces.ts:patchSpace": "user",
+  // Restricted flag or group set: the user, or the group's members.
+  "services/spaces.ts:setMemberRestricted": "user",
+  "services/spaces.ts:putRestrictedGroup": "user",
 };
 
 /**
@@ -60,6 +76,9 @@ const WIDENS: Readonly<Record<string, string>> = {
   "services/identity.ts:touch": "sign-in promotion from the current role only",
   // Access sign-in: .set(set) holds only lastSeenAt and name.
   "services/users.ts:upsertOnLogin": "sign-in touch: last_seen_at and name",
+  // Removing a restricted group only lifts caps (restricted_sync recomputed
+  // from the groups that remain).
+  "services/spaces.ts:deleteRestrictedGroup": "lifts a restriction only",
 };
 
 /** Exempt from the scan: the primitives themselves. */
@@ -91,9 +110,14 @@ const SHRINK: readonly RegExp[] = [
   // Space membership and group mapping removals.
   /\.delete\((spaceMembers|groupMappings|orgGroupMappings)\)/,
   /delete from (space_members|group_mappings|org_group_mappings)\b/i,
+  // P3 T9: allMembersRole and the restriction caps (manual flag, group).
+  /\ball_members_role\s*=[^=]|\.set\(\{[^}]*\ballMembersRole\b/,
+  /\brestricted_(manual|sync)\s*=[^=]|\.set\(\{[^}]*\brestricted(Manual|Sync)\b/,
+  /\binto restricted_groups\b/i,
 ];
 const CALLS: Record<Guard, RegExp> = {
-  user: /\brevokeUserLive\(/,
+  // revokeUsersLive: revokeUserLive for many users (a group, every member).
+  user: /\brevokeUsers?Live\(/,
   artifact: /\bcloseRuntimeSockets\(/,
 };
 
@@ -445,6 +469,27 @@ describe("revocation lint (P3 T7)", () => {
       "services/user.ts:viaImport",
       "services/user.ts:viaImportedObject",
     ]);
+  });
+
+  it("T9: allMembersRole and restriction writes count; revokeUsersLive guards", () => {
+    const src = `
+      export async function lower(env: Env) {
+        await env.DB.prepare("update spaces set all_members_role = ?2 where id = ?1").run();
+      }
+      export async function cap(env: Env) {
+        await env.DB.prepare("update users set restricted_manual = 1 where id = ?").run();
+      }
+      export async function group(env: Env) {
+        await env.DB.prepare("insert or ignore into restricted_groups (group_id) values (?)").run();
+        await revokeUsersLive(env, ids, "restricted");
+      }`;
+    const fns = unitsOf("t9.ts", src);
+    expect(check(fns, {}).missing).toEqual([
+      "t9.ts:lower",
+      "t9.ts:cap",
+      "t9.ts:group",
+    ]);
+    expect(check(fns, { "t9.ts:group": "user" }).unguarded).toEqual([]);
   });
 
   it("a guard named only in a comment does not count", () => {

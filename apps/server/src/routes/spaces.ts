@@ -55,7 +55,9 @@ function query<T>(
   schema: {
     safeParse(
       x: unknown,
-    ): { success: true; data: T } | { success: false; error: { issues: unknown } };
+    ):
+      | { success: true; data: T }
+      | { success: false; error: { issues: unknown } };
   },
 ): T {
   const r = schema.safeParse(c.req.query());
@@ -139,13 +141,7 @@ export function mountSpaces(app: AppType): void {
     orgAdmin(c, "space.adminSelfAdd");
     const { role } = await jsonBody(c, SpaceMemberPutSchema);
     return c.json(
-      await selfAddSpace(
-        c.env,
-        caller(c),
-        c.req.param("id"),
-        role,
-        execCtx(c),
-      ),
+      await selfAddSpace(c.env, caller(c), c.req.param("id"), role, execCtx(c)),
       201,
     );
   });
@@ -243,12 +239,7 @@ export function mountSpaces(app: AppType): void {
   app.put(RESTRICTED, async (c) => {
     const user = orgAdmin(c, "restricted.groups");
     return c.json(
-      await putRestrictedGroup(
-        c.env,
-        user,
-        c.req.param("groupId"),
-        execCtx(c),
-      ),
+      await putRestrictedGroup(c.env, user, c.req.param("groupId"), execCtx(c)),
     );
   });
 

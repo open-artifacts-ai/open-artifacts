@@ -22,13 +22,9 @@ import {
   type SpacesQuery,
 } from "@oa/shared";
 import { and, eq, isNull, or, type SQL, sql } from "drizzle-orm";
-import {
-  type Caller,
-  capOfCaller,
-  roleRankSql,
-} from "../auth/authz.js";
+import { type Caller, capOfCaller, roleRankSql } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { capOf, orgCan } from "../auth/policy.js";
+import { canBeRestricted, capOf, isGuestRole, orgCan } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { spaces } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -246,7 +242,11 @@ async function seeSpace(env: Env, c: Caller, id: string): Promise<ViewRow> {
 }
 
 /** GET R.space(id). */
-export async function getSpace(env: Env, c: Caller, id: string): Promise<Space> {
+export async function getSpace(
+  env: Env,
+  c: Caller,
+  id: string,
+): Promise<Space> {
   return toSpace(c, await seeSpace(env, c, id));
 }
 
@@ -517,12 +517,16 @@ function groupsOf(
     return [];
   }
   if (!Array.isArray(v)) return [];
-  return v.flatMap((g: { groupId?: unknown; email?: unknown; role?: unknown }) => {
-    const role = knownRole(g?.role);
-    return role && typeof g.groupId === "string" && typeof g.email === "string"
-      ? [{ groupId: g.groupId, email: g.email, name: null, role, via }]
-      : [];
-  });
+  return v.flatMap(
+    (g: { groupId?: unknown; email?: unknown; role?: unknown }) => {
+      const role = knownRole(g?.role);
+      return role &&
+        typeof g.groupId === "string" &&
+        typeof g.email === "string"
+        ? [{ groupId: g.groupId, email: g.email, name: null, role, via }]
+        : [];
+    },
+  );
 }
 
 const capFor = (
@@ -530,7 +534,11 @@ const capFor = (
   r: { role: string; rm: number; rs: number },
 ): CapReason | null =>
   capOf(
-    { role: r.role as Role, restrictedManual: r.rm !== 0, restrictedSync: r.rs !== 0 },
+    {
+      role: r.role as Role,
+      restrictedManual: r.rm !== 0,
+      restrictedSync: r.rs !== 0,
+    },
     authConfig(env),
   );
 
@@ -566,7 +574,9 @@ function toSpaceMember(
     cap,
     // As decide(): allMembersRole never reaches guests or capped members.
     allMembers:
-      r.role !== "guest" && cap === null ? knownRole(allMembersRole) : null,
+      !isGuestRole(r.role as Role) && cap === null
+        ? knownRole(allMembersRole)
+        : null,
   };
 }
 
@@ -683,7 +693,7 @@ export async function putSpaceMember(
   const u = requireSpaceManager(c, r);
   const admin = isAdmin(c);
   const t = await stmt(env.DB, ROWS_OF).bind(id, userId).first<Rows>();
-  if (!t || t.status !== "active") throw notFound();
+  if (t?.status !== "active") throw notFound();
   const manual = knownRole(t.manual);
   const synced = knownRole(t.sync);
   if (!admin && (role === "manager" || manual === "manager"))
@@ -775,7 +785,10 @@ export async function deleteSpaceMember(
       {
         spaceId: id,
         ...(both ? { detail: { syncFrozen: true } } : {}),
-        when: { sql: both ? `(${MANUAL_ROW} or ${SYNC_ROW})` : MANUAL_ROW, args: both ? [id, userId, id, userId] : [id, userId] },
+        when: {
+          sql: both ? `(${MANUAL_ROW} or ${SYNC_ROW})` : MANUAL_ROW,
+          args: both ? [id, userId, id, userId] : [id, userId],
+        },
       },
     ),
     stmt(
@@ -813,19 +826,27 @@ export async function selfAddSpace(
     .first<{ kind: string; name: string; allMembersRole: string | null }>();
   if (!s) throw notFound();
   if (s.kind !== "shared")
-    throw personalError("can't be joined: admins add themselves to shared spaces only");
+    throw personalError(
+      "can't be joined: admins add themselves to shared spaces only",
+    );
   const t = await stmt(env.DB, ROWS_OF).bind(id, u.id).first<Rows>();
   const manual = knownRole(t?.manual);
   const synced = knownRole(t?.sync);
   await env.DB.batch([
-    audit(env, "space.admin_self_add", { type: "user", id: u.id }, userActor(u.id), {
-      spaceId: id,
-      detail: { role },
-      when: {
-        sql: "not exists (select 1 from space_members where space_id = ? and user_id = ? and source = 'manual' and role = ?)",
-        args: [id, u.id, role],
+    audit(
+      env,
+      "space.admin_self_add",
+      { type: "user", id: u.id },
+      userActor(u.id),
+      {
+        spaceId: id,
+        detail: { role },
+        when: {
+          sql: "not exists (select 1 from space_members where space_id = ? and user_id = ? and source = 'manual' and role = ?)",
+          args: [id, u.id, role],
+        },
       },
-    }),
+    ),
     stmt(env.DB, UPSERT_MANUAL).bind(id, u.id, role, Date.now(), 1),
   ]);
   if (rank(maxRole(role, synced)) < rank(maxRole(manual, synced)))
@@ -893,7 +914,8 @@ const RESYNC_INSERT = `insert into space_members (space_id, user_id, role, sourc
   from directory_members dm join group_mappings gm on gm.group_id = dm.group_id and gm.space_id = ?1
   where dm.user_id in (select user_id from directory_members where group_id = ?2)
   group by dm.user_id`;
-const GROUP_MEMBERS = "select user_id as id from directory_members where group_id = ?";
+const GROUP_MEMBERS =
+  "select user_id as id from directory_members where group_id = ?";
 const GROUP_OF = `select (select role from group_mappings where space_id = ?1 and group_id = ?2) as cur,
   (select email from directory_groups where group_id = ?2) as email,
   (select count(*) from directory_members where group_id = ?2) as n`;
@@ -1116,14 +1138,20 @@ export async function putOrgMapping(
   if (!g?.email) throw notFound();
   const cur = knownRole(g.cur);
   const out = await env.DB.batch([
-    audit(env, "mapping.set", { type: "mapping", id: groupId }, userActor(actor.id), {
-      spaceId: null,
-      detail: { scope: "org", role },
-      when: {
-        sql: "not exists (select 1 from org_group_mappings where group_id = ? and role = ?)",
-        args: [groupId, role],
+    audit(
+      env,
+      "mapping.set",
+      { type: "mapping", id: groupId },
+      userActor(actor.id),
+      {
+        spaceId: null,
+        detail: { scope: "org", role },
+        when: {
+          sql: "not exists (select 1 from org_group_mappings where group_id = ? and role = ?)",
+          args: [groupId, role],
+        },
       },
-    }),
+    ),
     stmt(
       env.DB,
       `insert into org_group_mappings (group_id, group_email, role) values (?1, ?2, ?3)
@@ -1132,7 +1160,12 @@ export async function putOrgMapping(
     stmt(env.DB, GROUP_MEMBERS).bind(groupId),
   ]);
   if (cur && rank(role) < rank(cur))
-    await revokeUsersLive(env, idsOf(out[2]), "every-space mapping lowered", ctx);
+    await revokeUsersLive(
+      env,
+      idsOf(out[2]),
+      "every-space mapping lowered",
+      ctx,
+    );
   return mapping(groupId, g.email, role, g.n);
 }
 
@@ -1145,14 +1178,20 @@ export async function deleteOrgMapping(
 ): Promise<void> {
   if (directoryMode(env) !== "google") throw syncOff();
   const out = await env.DB.batch([
-    audit(env, "mapping.remove", { type: "mapping", id: groupId }, userActor(actor.id), {
-      spaceId: null,
-      detail: { scope: "org" },
-      when: {
-        sql: "exists (select 1 from org_group_mappings where group_id = ?)",
-        args: [groupId],
+    audit(
+      env,
+      "mapping.remove",
+      { type: "mapping", id: groupId },
+      userActor(actor.id),
+      {
+        spaceId: null,
+        detail: { scope: "org" },
+        when: {
+          sql: "exists (select 1 from org_group_mappings where group_id = ?)",
+          args: [groupId],
+        },
       },
-    }),
+    ),
     stmt(env.DB, "delete from org_group_mappings where group_id = ?").bind(
       groupId,
     ),
@@ -1226,9 +1265,15 @@ export async function putRestrictedGroup(
       env.DB,
       "insert or ignore into restricted_groups (group_id, group_email, created_at) values (?, ?, ?)",
     ).bind(groupId, g.email, Date.now()),
-    audit(env, "restricted.set", { type: "group", id: groupId }, userActor(actor.id), {
-      when: { sql: "changes() > 0", args: [] },
-    }),
+    audit(
+      env,
+      "restricted.set",
+      { type: "group", id: groupId },
+      userActor(actor.id),
+      {
+        when: { sql: "changes() > 0", args: [] },
+      },
+    ),
     stmt(env.DB, RESTRICT_RECOMPUTE).bind(groupId),
     stmt(env.DB, GROUP_MEMBERS).bind(groupId),
     stmt(env.DB, RESTRICTED_LIST).bind(groupId),
@@ -1250,12 +1295,18 @@ export async function deleteRestrictedGroup(
   groupId: string,
 ): Promise<void> {
   const out = await env.DB.batch([
-    audit(env, "restricted.remove", { type: "group", id: groupId }, userActor(actor.id), {
-      when: {
-        sql: "exists (select 1 from restricted_groups where group_id = ?)",
-        args: [groupId],
+    audit(
+      env,
+      "restricted.remove",
+      { type: "group", id: groupId },
+      userActor(actor.id),
+      {
+        when: {
+          sql: "exists (select 1 from restricted_groups where group_id = ?)",
+          args: [groupId],
+        },
       },
-    }),
+    ),
     stmt(env.DB, "delete from restricted_groups where group_id = ?").bind(
       groupId,
     ),
@@ -1287,8 +1338,11 @@ export async function setMemberRestricted(
     .bind(userId)
     .first<{ role: string }>();
   if (!t) throw notFound();
-  if (on && (t.role === "owner" || t.role === "admin"))
-    throw new ApiError("restrict_admin", "Owners and admins can't be restricted");
+  if (on && !canBeRestricted(t.role as Role))
+    throw new ApiError(
+      "restrict_admin",
+      "Owners and admins can't be restricted",
+    );
   const v = on ? 1 : 0;
   const out = await env.DB.batch([
     stmt(
@@ -1316,7 +1370,10 @@ export async function setMemberRestricted(
   if (!row) throw notFound();
   let groups: GroupRef[] = [];
   try {
-    const v = JSON.parse(row.groups ?? "[]") as { groupId: string; email: string }[];
+    const v = JSON.parse(row.groups ?? "[]") as {
+      groupId: string;
+      email: string;
+    }[];
     groups = v.map((g) => ({ groupId: g.groupId, email: g.email, name: null }));
   } catch {}
   return {

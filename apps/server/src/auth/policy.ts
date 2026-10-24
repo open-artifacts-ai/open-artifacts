@@ -276,6 +276,10 @@ export function can(
 
 const ORG_ADMINS: readonly Role[] = ["owner", "admin"];
 
+/** Org owners and admins can't be restricted (400 restrict_admin; sync skips them). */
+export const canBeRestricted = (role: Role): boolean =>
+  !ORG_ADMINS.includes(role);
+
 /** Instance and space administration (no artifact involved). */
 export function orgCan(
   m: Member,

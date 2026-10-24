@@ -411,6 +411,7 @@ describe("orgCan", () => {
     "space.create",
     "space.delete",
     "space.mappings",
+    "org.mappings",
     "space.allMembers",
     "space.adminSelfAdd",
     "restricted.groups",
@@ -432,10 +433,18 @@ describe("orgCan", () => {
     "space.members",
     "space.rename",
     "space.publicLinks",
+    "space.mappings.manage",
   ] as OrgAction[])("%s: admins or the space manager", (action) => {
     expect(orgCan(member("member"), action, { spaceRole: "manager" })).toBe(
       true,
     );
+    // A cap drops it, manager or not.
+    expect(
+      orgCan(member("member"), action, {
+        spaceRole: "manager",
+        cap: "restricted",
+      }),
+    ).toBe(false);
     expect(orgCan(member("member"), action, { spaceRole: "editor" })).toBe(
       false,
     );

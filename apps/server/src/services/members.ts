@@ -417,7 +417,10 @@ export async function patchSettings(
           },
         },
       ),
-      stmt(env.DB, UPSERT_SETTING).bind(SPACE_MANAGER_MAPPINGS_KEY, String(smm)),
+      stmt(env.DB, UPSERT_SETTING).bind(
+        SPACE_MANAGER_MAPPINGS_KEY,
+        String(smm),
+      ),
     );
   if (writes.length) await env.DB.batch(writes);
   return settingsView(env, opts.spaces === true);

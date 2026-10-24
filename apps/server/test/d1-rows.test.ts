@@ -91,3 +91,41 @@ it("a Google sign-in writes the user touch plus the auth.signin audit row", asyn
   // users touch 1 + audit_events 2 (table, audit_events_at_idx).
   expect(rows.n).toBe(3);
 });
+
+it("spaces API (P3 T9): create, member add, a no-op and a role change", async () => {
+  const spacesEnv = {
+    ...(counted as object),
+    FEATURES: "spaces",
+  } as unknown as typeof env;
+  const S = {
+    fetch: (r: Request, _e: unknown, c: never) => app.fetch(r, spacesEnv, c),
+  };
+  const admin = await login("rows-space-admin@x.com", "admin");
+  const m = await login("rows-space-member@x.com");
+  rows.n = 0;
+  const r = await api(S as never, R.spaces, admin.cookie, {
+    method: "POST",
+    body: { name: "Rows" },
+  });
+  expect(r.status).toBe(201);
+  const { id } = (await r.json()) as { id: string };
+  // spaces 1 (WITHOUT ROWID) + audit_events 2 (table, audit_events_at_idx).
+  expect(rows.n).toBe(3);
+  const put = (role: string) =>
+    api(S as never, R.spaceMember(id, m.userId), admin.cookie, {
+      method: "PUT",
+      body: { role },
+    });
+  rows.n = 0;
+  expect((await put("viewer")).status).toBe(200);
+  // space_members 2 (table, space_members_user_idx) + audit 2.
+  expect(rows.n).toBe(4);
+  rows.n = 0;
+  await put("viewer");
+  // A no-op writes nothing: no audit row, no update.
+  expect(rows.n).toBe(0);
+  rows.n = 0;
+  await put("editor");
+  // space_members role update 1 + audit 2.
+  expect(rows.n).toBe(3);
+});
