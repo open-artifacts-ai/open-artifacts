@@ -380,6 +380,7 @@ A failed or skipped alert never changes the nightly lines above.
 
 ### Leases and recovery (Task 5)
 
+- **Rollback barrier at Durable Object tag v3.** The release that adds tag v3 (`DirectorySync`, #571) is a rollback barrier for hosted installs. Provision refuses any rollback that crosses a Durable Object migration tag, so an install on that release or later can't roll back below it: fix forward instead. This is separate from the signed release floor (`releases/floor.json`, `minVersion`), which this doesn't raise.
 - Every create, upgrade, rollback, var change, Turnstile rotation and delete holds the install row's lease (`installs.lease`, `lease_until`, 30 minutes, renewed before each step). A second operation on the same install is refused while the lease is live. `status(id)` shows the state, the versions, `lease_until` and any pending session cut without taking the lease.
 - Use one `WfpProvisioner` per concurrent operation. A second operation started on an instance that is already running one is refused.
 - **After a `<op>.lost_lease` audit row** (the operation stopped with "lost the lease"), check `status(id)`. After `create.lost_lease`, re-run `delete(id, confirm: id)` if the install should go, or re-run create to resume it. Either one claims the row only once the other operation's lease has ended.
