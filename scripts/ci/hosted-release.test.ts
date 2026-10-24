@@ -48,9 +48,24 @@ const NODE22_ASSERT =
  * Decision 4 (Manager's security review, fix round 2), H-N22: a key job runs
  * ONLY checkout, setup-node (Node 22 from .nvmrc, no cache), a v22 assert,
  * download-artifact (for sign) and the sign step, every action pinned by SHA:
- * no install, no strip-types, plain .mjs.
+ * no install, no strip-types, plain .mjs. The key and every other secret
+ * appear only in the sign step's env: never job-level env or defaults.
  */
-function keyJobShape(st: Step[], o: { download: boolean; script: string }) {
+function keyJobShape(job: Step, o: { download: boolean; script: string }) {
+  expect(job.env).toBeUndefined();
+  expect(job.defaults).toBeUndefined();
+  const st: Step[] = job.steps;
+  expect(JSON.stringify({ ...job, steps: undefined })).not.toContain(
+    "secrets.",
+  );
+  // Exact keys per step: no if, continue-on-error, shell or env sneaks in.
+  expect(st.map((s) => Object.keys(s).sort().join(","))).toEqual([
+    "uses,with",
+    "uses,with",
+    "name,run",
+    ...(o.download ? ["uses,with"] : []),
+    "env,id,name,run",
+  ]);
   const uses = st.map((s) => s.uses).filter(Boolean) as string[];
   expect(uses.map((u) => u.split("@")[0])).toEqual([
     "actions/checkout",
@@ -99,6 +114,7 @@ function keyJobShape(st: Step[], o: { download: boolean; script: string }) {
   expect(run.match(/RELEASE_SIGNING_KEY/g)).toHaveLength(1);
   expect(run).not.toMatch(/set -x|set -o xtrace|--key/);
   expect(JSON.stringify(st.slice(0, -1))).not.toContain("secrets.");
+  expect(JSON.stringify(last).match(/secrets\./g)).toHaveLength(1);
   expect(JSON.stringify(st)).not.toMatch(/CLOUDFLARE_/);
 }
 
@@ -233,7 +249,7 @@ describe("release-please.yml hosted jobs", () => {
         expect(job.env).toBeUndefined();
       });
       it("has the key-job shape: checkout, setup-node 22, the v22 assert, download-artifact, sign-release.mjs", () => {
-        keyJobShape(st, { download: true, script: "sign-release.mjs" });
+        keyJobShape(job, { download: true, script: "sign-release.mjs" });
       });
       it("signs only its own env and outputs only its own names", () => {
         const env2 = st.at(-1)?.env ?? {};
@@ -348,7 +364,7 @@ describe("hosted-floor.yml (H1)", () => {
     expect([job.needs].flat()).toEqual(["floor-guard"]);
     expect(job.permissions).toEqual({ contents: "read" });
     const st = stepsOf(fw, "hosted-floor");
-    keyJobShape(st, { download: false, script: "sign-floor.mjs" });
+    keyJobShape(job, { download: false, script: "sign-floor.mjs" });
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(st[0]?.with?.ref).toBe("${{ needs.floor-guard.outputs.sha }}");
     const run = String(st.at(-1)?.run);
@@ -395,7 +411,7 @@ describe("the key jobs' scripts: plain .mjs, node:* only, Node 22", () => {
   // APIs and syntax missing from some Node 22.x (the key jobs run any 22 from
   // .nvmrc): added after 22.0, flagged in 22, or 23+.
   const POST_22 =
-    /\bprocess\.getBuiltinModule\b|\bURL\.parse\b|\bWebSocket\b|\bnode:sqlite\b|\bglob\(|\bfromBase64\b|\btoBase64\b|\bPromise\.try\b|\busing\s+\w+\s*=|\bRegExp\.escape\b|\bError\.isError\b|\bFloat16Array\b|\bimport\.meta\.main\b|\bprocess\.features\.typescript\b/;
+    /\bprocess\.getBuiltinModule\b|\bURL\.parse\b|\bWebSocket\b|\bnode:sqlite\b|\bglob\(|\bfromBase64\b|\btoBase64\b|\bPromise\.try\b|\busing\s+\w+\s*=|\bRegExp\.escape\b|\bError\.isError\b|\bFloat16Array\b|\bimport\.meta\.main\b|\bprocess\.features\.typescript\b|\bcrc32\b|\bmatchesGlob\b|\bduplexPair\b|\bgetCallSites\b/;
   const importsOf = (src: string): string[] =>
     [
       ...src.matchAll(
@@ -486,6 +502,10 @@ describe("the key jobs' scripts: plain .mjs, node:* only, Node 22", () => {
       "URL.parse(u)",
       "using r = open();",
       "RegExp.escape(s)",
+      "zlib.crc32(b)",
+      "path.matchesGlob(p, g)",
+      "duplexPair()",
+      "util.getCallSites()",
     ])
       expect(POST_22.test(x), x).toBe(true);
     for (const x of [
