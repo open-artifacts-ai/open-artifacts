@@ -1248,6 +1248,34 @@ describe("updateVars and the session cut", () => {
       expect(e.dir).toBe(e.reg);
     });
 
+    it("upgrade and rollback never refuse on the registry domain check (they never write the registry)", async () => {
+      const { s, p, inst } = await brokered();
+      const before = entries(s, inst.id).reg;
+      // Passes HOSTED_VARS, fails the registry check (more than 50).
+      const bad = {
+        AUTH_DOMAINS: Array.from(
+          { length: 51 },
+          (_, i) => `d${i}.example`,
+        ).join(","),
+      };
+      s.db()
+        .prepare("UPDATE installs SET vars = ? WHERE id = ?")
+        .run(canonicalJson(bad), inst.id);
+      expect(keep(await p.upgrade(inst.id, "0.24.0"))).toMatchObject({
+        ok: true,
+      });
+      expect(keep(await p.rollback(inst.id))).toMatchObject({
+        ok: true,
+        rolledBack: true,
+      });
+      expect(entries(s, inst.id).reg).toBe(before);
+      expect(entries(s, inst.id).dir).toBe(before);
+      // updateVars does write the registry, so it still refuses.
+      expect((await fails(p.updateVars(inst.id, bad))).message).toMatch(
+        /more than 50 domains/,
+      );
+    });
+
     it("upgrade and rollback keep the domains (they reuse the current vars)", async () => {
       const { s, p, inst } = await brokered();
       const before = entries(s, inst.id).reg;
