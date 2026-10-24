@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { contentKey, deriveKey, KEY_LABELS } from "../src/auth/keys.js";
+import {
+  contentKey,
+  deriveKey,
+  directoryKey,
+  KEY_LABELS,
+} from "../src/auth/keys.js";
 
 const secret = { SESSION_SECRET: "x".repeat(32) };
 
@@ -16,12 +21,15 @@ describe("deriveKey", () => {
     const both = {
       SESSION_SECRET: secret.SESSION_SECRET,
       CONTENT_SIGNING_KEY: secret.SESSION_SECRET,
+      DIRECTORY_TOKEN_KEY: secret.SESSION_SECRET,
     };
     const ks = await Promise.all(
       KEY_LABELS.map((l) =>
         l === "oa:content-url" || l === "oa:upload"
           ? contentKey(both, l)
-          : deriveKey(both, l),
+          : l === "oa:directory-token"
+            ? directoryKey(both)
+            : deriveKey(both, l),
       ),
     );
     expect(new Set(ks).size).toBe(KEY_LABELS.length);
@@ -32,8 +40,10 @@ describe("deriveKey", () => {
       "oa:login-codes",
       "oa:code-email",
       "oa:audit-cursor",
+      "oa:directory-state",
       "oa:content-url",
       "oa:upload",
+      "oa:directory-token",
     ]);
   });
 

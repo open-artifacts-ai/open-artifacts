@@ -11,7 +11,8 @@
     "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit"
   },
   "dependencies": {
-    "@oa/auth-core": "workspace:*"
+    "@oa/auth-core": "workspace:*",
+    "@oa/broker-core": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.4",

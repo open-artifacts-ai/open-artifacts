@@ -44,7 +44,8 @@ const PKCS8_ED25519 = [
 const nonEmpty = (v: string | undefined): v is string =>
   typeof v === "string" && v.trim() !== "";
 
-function isEd25519Pkcs8(v: string): boolean {
+/** A PKCS#8 Ed25519 private key (base64url): the broker signing key's shape. */
+export function isEd25519Pkcs8(v: string): boolean {
   const raw = b64urlDecode(v);
   return (
     raw !== null &&

@@ -71,6 +71,7 @@ export const COOP_EXEMPT: ReadonlySet<string> = new Set([
 export const NO_REFERRER: ReadonlySet<string> = new Set([
   AUTH.callback,
   AUTH.callbackGoogle,
+  R.directoryCallback,
 ]);
 
 /**

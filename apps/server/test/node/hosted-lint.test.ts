@@ -19,6 +19,8 @@ const READS: Record<string, string> = {
   "routes/codes.ts: (anonymous)":
     "fail closed: hosted code sign-in requires Turnstile",
   "routes/me.ts: toMe": "reports: Me.instance.hosted",
+  "directory/transport.ts: resolve":
+    "fail closed: hosted directory sync requires the broker; direct vars or no broker resolve to none",
 };
 
 function files(dir: string): string[] {
