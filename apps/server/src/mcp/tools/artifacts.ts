@@ -168,7 +168,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
 
   server.registerTool("share_artifact", toolConfig("share_artifact"), (input) =>
     guard(async () => {
-      const s = await putShare(env, user, input.id, input);
+      const s = await putShare(env, user, input.id, input, t.exec);
       return ok(
         `Shared ${input.id} with ${s.email} as ${s.role}: ${viewUrl(env, input.id)}. ${
           s.emailed ? `Emailed ${s.email} a link.` : "No email sent."

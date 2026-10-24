@@ -95,6 +95,7 @@ export async function putShare(
   user: Member,
   id: string,
   s: { email: string; role: ShareRole },
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<ShareResult> {
   const artifact = await ownerOnly(env, user, id);
   const email = normalizeEmail(s.email);
@@ -136,6 +137,11 @@ export async function putShare(
     );
   // An update keeps the original created_at, so this is a new share.
   const created = row.createdAt === now;
+  // A changed share at viewer is a downgrade from editor: the sockets opened
+  // as editor close, and the artifact's DO refuses accepts authorized before
+  // it (P3 T7). Not the person's presence: their other artifacts are unaffected.
+  if (res?.results[0] && !created && s.role === "viewer")
+    await closeRuntimeSockets(env, [id], "share narrowed", ctx);
   // A guest deactivated when their last share went comes back on a new one
   // (same row: their history and name are intact). After the insert, so a
   // concurrent cleanup either sees this share or is undone here.

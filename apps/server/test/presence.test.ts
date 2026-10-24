@@ -333,6 +333,34 @@ describe("UserPresence", () => {
     expect(await ws.events.closed).toBe(4403);
   });
 
+  it("a share downgraded from editor to viewer closes the artifact's sockets", async () => {
+    const u = await mk(`pr-down-${newId().slice(0, 4)}`, "member");
+    const id = (
+      await publish(
+        env,
+        owner.member,
+        {
+          title: "d",
+          format: "html",
+          content: "<p>d</p>",
+          visibility: "private",
+          capabilities: { db: true, viewer: true, storage: true },
+        } as never,
+        null,
+        undefined,
+        "create",
+      )
+    ).id;
+    await putShare(env, owner.member, id, { email: u.email, role: "editor" });
+    const ws = await openSockets(u, id);
+    // Same role: nothing narrows, nothing closes.
+    await putShare(env, owner.member, id, { email: u.email, role: "editor" });
+    expect(ws.data.isOpen()).toBe(true);
+    await putShare(env, owner.member, id, { email: u.email, role: "viewer" });
+    expect(await ws.data.closed).toBe(4403);
+    expect(await ws.events.closed).toBe(4403);
+  });
+
   it("a guest deactivated by their last unshare is revoked in presence", async () => {
     const g = await mk(`pr-g-${newId().slice(0, 4)}`, "guest");
     const id = (
