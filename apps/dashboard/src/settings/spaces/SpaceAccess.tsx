@@ -170,7 +170,10 @@ export function AccessRow({
       {note && (
         <tr>
           <td colSpan={2} className="pb-[var(--oa-space-2)]">
-            <p role="status" className={`m-0 ${errorText}`}>
+            <p
+              role="status"
+              className="m-0 text-[length:var(--oa-text-sm)] text-[var(--oa-warning)]"
+            >
               {note}
             </p>
           </td>
