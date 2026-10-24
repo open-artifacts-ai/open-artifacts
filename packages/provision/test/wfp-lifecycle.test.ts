@@ -2334,3 +2334,68 @@ describe("no per-install cron (T7: the central scheduler is the only nightly cal
     expect(s.fake.log.some((e) => /schedules/i.test(e.path))).toBe(false);
   });
 });
+
+// Manager ruling 2026-10-24: within 5 days of expiry, forward changes are
+// refused, but an incident rollback (or a delete) never waits on a token
+// roll: it runs with a loud note naming the date. An expired token still fails.
+describe("token within 5 days of expiry", () => {
+  const soon = () => new Date(NOW + 2 * 86_400_000).toISOString();
+
+  it("refuses upgrade and var changes before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.tokenInfo.expires_on = soon();
+    const from = s.fake.log.length;
+    for (const op of [
+      () => s.p.upgrade(inst.id, "0.24.0"),
+      () => s.p.updateVars(inst.id, { EMAIL_DAILY_CAP: "50" }),
+    ]) {
+      const e = await fails(op());
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toContain(soon().slice(0, 10));
+      expect(e.message).toMatch(/roll it/);
+    }
+    expect(s.fake.log.slice(from).filter((e) => e.method !== "GET")).toEqual(
+      [],
+    );
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.23.0",
+    });
+  });
+
+  it("lets a rollback run, with a warning that names the date", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    s.fake.tokenInfo.expires_on = soon();
+    const r = keep(await s.p.rollback(inst.id));
+    expect(r).toMatchObject({ ok: true, rolledBack: true, to: "0.23.0" });
+    expect(s.p.notes.join("\n")).toContain(
+      `WARNING: the Cloudflare token expires on ${soon().slice(0, 10)}`,
+    );
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.23.0",
+    });
+  });
+
+  it("lets a delete run, with the same warning", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.tokenInfo.expires_on = soon();
+    const r = keep(await s.p.delete(inst.id, inst.id));
+    expect(r).toMatchObject({ ok: true, state: "deleted" });
+    expect(s.p.notes.join("\n")).toContain(soon().slice(0, 10));
+  });
+
+  it("an expired token still refuses a rollback", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    s.fake.tokenInfo.expires_on = new Date(NOW - 1000).toISOString();
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e.message).toMatch(/expired/);
+    expect(s.row(inst.id)).toMatchObject({ version: "0.24.0" });
+  });
+});

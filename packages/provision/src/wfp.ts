@@ -227,7 +227,7 @@ const HEALTH_INTERVAL_MS = 2_000;
 const MAX_ACTIVE_TOKENS = 50;
 const TOKEN_LABEL = "provision";
 const MAX_TOKEN_DAYS = 30;
-const WARN_TOKEN_DAYS = 5;
+const REFUSE_TOKEN_DAYS = 5;
 const DAY = 86_400_000;
 const HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
 const ASCII_EMAIL = /^[!-?A-~]+@[!-?A-~]+$/;
@@ -1213,7 +1213,14 @@ export class WfpProvisioner {
     return byId;
   }
 
-  private async checkToken(): Promise<void> {
+  /**
+   * `nearExpiry`: within REFUSE_TOKEN_DAYS of expiry, forward changes refuse;
+   * a recovery (rollback, delete, releasing a lease) goes on with a loud note,
+   * so an incident never waits on a token roll. An expired token always fails.
+   */
+  private async checkToken(
+    nearExpiry: "refuse" | "warn" = "refuse",
+  ): Promise<void> {
     const t = await this.cf.tokenVerify();
     const now = this.now();
     if (t?.status !== "active")
@@ -1233,10 +1240,12 @@ export class WfpProvisioner {
       throw new ProvisionRefused(
         `Cloudflare token expires more than ${MAX_TOKEN_DAYS} days out; mint one with a shorter expiry`,
       );
-    if (exp <= now + WARN_TOKEN_DAYS * DAY)
-      this.notes.push(
-        `the Cloudflare token expires within ${WARN_TOKEN_DAYS} days (${t.expires_on})`,
-      );
+    if (exp <= now + REFUSE_TOKEN_DAYS * DAY) {
+      const why = `the Cloudflare token expires on ${new Date(exp).toISOString().slice(0, 10)}, within ${REFUSE_TOKEN_DAYS} days; roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and update the keychain item`;
+      if (nearExpiry === "refuse")
+        throw new ProvisionRefused(`${why}, then retry`);
+      this.notes.push(`WARNING: ${why}`);
+    }
     try {
       await this.cf.scriptsRead();
     } catch (e) {
@@ -1651,10 +1660,11 @@ export class WfpProvisioner {
   private async openInstall(
     id: InstallId,
     states: InstallState[],
+    nearExpiry: "refuse" | "warn" = "refuse",
   ): Promise<InstallRow> {
     if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
     this.checkOptions();
-    await this.checkToken();
+    await this.checkToken(nearExpiry);
     await this.resolvePlatform();
     const row = await this.platform.byId(id);
     if (!row) throw new ProvisionRefused(`install ${id} not found`);
@@ -1909,13 +1919,11 @@ export class WfpProvisioner {
         throw new ProvisionRefused(
           "releaseLease needs confirm to be exactly the install id",
         );
-      const row = await this.openInstall(id, [
-        "creating",
-        "active",
-        "upgrading",
-        "deleting",
-        "deleted",
-      ]);
+      const row = await this.openInstall(
+        id,
+        ["creating", "active", "upgrading", "deleting", "deleted"],
+        "warn",
+      );
       if (row.lease === null)
         throw new ProvisionRefused(`install ${id} holds no lease`);
       const live = row.lease_until !== null && row.lease_until > this.now();
@@ -2268,7 +2276,7 @@ export class WfpProvisioner {
    */
   async rollback(id: InstallId): Promise<UpgradeResult> {
     return this.guarded(async () => {
-      const row = await this.openInstall(id, ["active"]);
+      const row = await this.openInstall(id, ["active"], "warn");
       const plan = await this.planRollback(row);
       await this.claim(row, ["active"], "upgrading", "rollback");
       try {
@@ -2735,12 +2743,11 @@ export class WfpProvisioner {
         throw new ProvisionRefused(
           "delete needs confirm to be exactly the install id",
         );
-      const row = await this.openInstall(id, [
-        "creating",
-        "active",
-        "deleting",
-        "deleted",
-      ]);
+      const row = await this.openInstall(
+        id,
+        ["creating", "active", "deleting", "deleted"],
+        "warn",
+      );
       if (row.state === "deleted") {
         // R2-N2: a HOSTS put that landed in the lease's TOCTOU window (a
         // stalled create) still maps a host to this deleted id; clear it.
