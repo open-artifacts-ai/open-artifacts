@@ -30,6 +30,7 @@ import {
   listUsers,
   verifiedDomains,
 } from "./google.js";
+import { healthFields, NEVER, readHealth } from "./health.js";
 import {
   CONFIRM_TTL_MS,
   CONFIRM_WON,
@@ -487,26 +488,29 @@ export async function directoryStatus(
   await expirePending(env);
   const t = directoryTransport(env);
   const mode = t.kind === "none" ? "off" : directoryMode(env);
-  const [{ binding }, pending] = await Promise.all([
+  const [{ binding }, pending, health] = await Promise.all([
     readBinding(env),
     readPending(env),
+    readHealth(env),
   ]);
+  // T13: DirectorySync's health while a live binding exists.
+  const h = healthFields(binding ? health : NEVER);
   return {
     mode,
     binding,
-    healthy: mode === "off" ? null : false,
-    state: pending ? "pending_confirm" : "never",
-    unhealthySince: null,
-    lastSuccessAt: null,
+    healthy: mode === "off" ? null : h.healthy,
+    state: pending ? "pending_confirm" : binding ? health.state : "never",
+    unhealthySince: h.unhealthySince,
+    lastSuccessAt: h.lastSuccessAt,
     lastError:
       t.kind === "none" && o.showProblem
         ? { at: new Date().toISOString(), message: t.problem }
-        : null,
-    nextRunAt: null,
-    staleAt: null,
-    alertedAt: null,
-    customerMismatch: null,
-    held: [],
+        : h.lastError,
+    nextRunAt: h.nextRunAt,
+    staleAt: h.staleAt,
+    alertedAt: h.alertedAt,
+    customerMismatch: h.customerMismatch,
+    held: h.held,
     pendingCount: pending ? pending.count : null,
     pendingCountCapped: pending ? pending.capped : false,
     pendingExpiresAt: pending ? new Date(pending.exp).toISOString() : null,

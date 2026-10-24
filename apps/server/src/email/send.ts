@@ -35,7 +35,7 @@ const SINGLE_ADDRESS = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+$/;
 /** Sender display name, the same on every email. */
 const FROM_NAME = "Open Artifacts";
 
-export type EmailKind = "invite" | "share" | "code" | "space";
+export type EmailKind = "invite" | "share" | "code" | "space" | "directory";
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 class EmailTimeout extends Error {}

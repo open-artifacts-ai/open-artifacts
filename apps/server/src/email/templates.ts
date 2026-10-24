@@ -273,3 +273,57 @@ export function spaceSelfAddEmail(p: {
     },
   );
 }
+
+/** Why the directory alert went out (P3 T13). */
+export type DirectoryAlert =
+  | "unhealthy"
+  | "customer_mismatch"
+  | "scope_missing";
+
+const DIRECTORY_ALERT_LINE: Record<DirectoryAlert, string> = {
+  unhealthy:
+    "Google directory sync has been failing for 24 hours. People keep the access they had at the last successful sync until it recovers.",
+  customer_mismatch:
+    "Directory sync is paused: the connected Google account belongs to a different Google Workspace than the one this instance was connected to. Reconnect the directory to resume it.",
+  scope_missing:
+    "Google directory sync stopped: a permission it needs was removed. Reconnect the directory and grant every permission.",
+};
+
+const DIRECTORY_TXT = `{{alertLine}}
+
+You get this email because you own {{instanceName}}.
+
+Open directory settings: {{settingsUrl}}
+
+{{appHost}}
+`;
+
+const DIRECTORY_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Directory sync needs attention</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p>{{alertLine}}</p>
+<p>You get this email because you own {{instanceName}}.</p>
+<p><a href="{{settingsUrl}}">Open directory settings</a></p>
+<p style="color:#5d636e">{{appHost}}</p>
+</body></html>
+`;
+
+/** To the org owners when directory sync needs them (P3 T13). */
+export function directoryAlertEmail(p: {
+  instance: string;
+  recipient: string;
+  appHost: string;
+  why: DirectoryAlert;
+}): EmailContent {
+  const { origin, values } = common({ ...p, inviter: p.instance });
+  return render(
+    DIRECTORY_HTML,
+    DIRECTORY_TXT,
+    "Directory sync needs attention on {{instanceName}}",
+    {
+      ...values,
+      alertLine: DIRECTORY_ALERT_LINE[p.why],
+      settingsUrl: linkOn(origin, "/settings/directory"),
+    },
+  );
+}

@@ -23,6 +23,8 @@ export interface Env {
   RL_ANON?: RateLimit;
   /** Sign-in code limiter, keyed `${installKey}:${ip}`; unbound in the test pool. */
   RL_AUTH?: RateLimit;
+  /** GET R.directoryGroups limiter, keyed per caller (P3 T13); unbound: unlimited. */
+  RL_DIRECTORY?: RateLimit;
   /** Optional service binding to the hosted auth broker (else AUTH_BROKER_URL over HTTPS). */
   BROKER?: Fetcher;
   /** Browser Run, for server-side thumbnails (services/thumbs.ts); optional. */

@@ -1,0 +1,19 @@
+{
+  "users": [
+    {
+      "id": "100000000000000000001",
+      "primaryEmail": "ada@example.com",
+      "suspended": false,
+      "isAdmin": true,
+      "customerId": "C0123"
+    },
+    {
+      "id": "100000000000000000002",
+      "primaryEmail": "grace@example.com",
+      "suspended": true,
+      "isAdmin": false,
+      "customerId": "C0123"
+    }
+  ],
+  "nextPageToken": "page-2"
+}

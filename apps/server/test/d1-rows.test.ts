@@ -1,5 +1,6 @@
 // #248: D1 bills rows written (every index entry, and 1 per FTS statement).
 // Pins the per-publish costs measured there, after the cuts.
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { R } from "@oa/shared";
 import { beforeAll, expect, it } from "vitest";
@@ -11,6 +12,8 @@ import {
   signContent,
   signContentPrefix,
 } from "../src/content/signing.js";
+import { SyncEngine } from "../src/directory/sync.js";
+import type { Env } from "../src/env.js";
 import { resetTouchMemo, touchGrant } from "../src/services/agent-usage.js";
 import { publish } from "../src/services/artifacts.js";
 import { admit } from "../src/services/identity.js";
@@ -425,5 +428,30 @@ it("directory connect (P3 T12): the pending flow, then binding, sealed token, au
   // unique), personal space 2 (table, spaces_kind_name_idx), identity 2
   // (table, identities_user_provider).
   expect(w.n).toBe(21);
+
+  // P3 T13 DirectorySync, steady state: after the first reconcile, a fast
+  // tick with no events writes nothing, and the next hourly reconcile only
+  // its lastSuccessAt (the health row).
+  const ns = env.DIRECTORY_SYNC as NonNullable<Env["DIRECTORY_SYNC"]>;
+  const ds = ns.get(ns.idFromName(`rows-${crypto.randomUUID()}`));
+  const drainAt = async (now: number) => {
+    for (let i = 0; i < 40; i++) {
+      const due = await runInDurableObject(ds, async (_i, s) => {
+        const en = new SyncEngine(e, s.storage);
+        await en.alarm(now);
+        return en.due(now);
+      });
+      if (!due) return;
+    }
+    throw new Error("sync never settled");
+  };
+  const t0 = Date.now();
+  await drainAt(t0);
+  w.n = 0;
+  await drainAt(t0 + 2 * 60_000);
+  expect(w.n).toBe(0);
+  await drainAt(t0 + 62 * 60_000);
+  // directory_state sync.health 1.
+  expect(w.n).toBe(1);
   g.restore();
 });

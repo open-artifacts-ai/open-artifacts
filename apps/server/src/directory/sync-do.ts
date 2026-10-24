@@ -1,52 +1,46 @@
 import { DurableObject } from "cloudflare:workers";
 import type { SyncStatus } from "@oa/shared";
 import type { Env } from "../env.js";
+import type { AuditActor } from "../services/audit.js";
+import { type KickReason, SyncEngine, type SyncJob } from "./sync.js";
 
-/** Why a run was asked for (P3 T13). */
-export type KickReason = "cron" | "mapping" | "manual" | "signin";
-
-/** A queued access job (P3 T9: space-wide socket closes, revocation retries). */
-export type SyncJob = { kind: string; [k: string]: unknown };
-
-/** SyncStatus before any successful run: nothing bound, nothing synced. */
-export function neverStatus(): SyncStatus {
-  return {
-    mode: "off",
-    binding: null,
-    healthy: null,
-    state: "never",
-    unhealthySince: null,
-    lastSuccessAt: null,
-    lastError: null,
-    nextRunAt: null,
-    staleAt: null,
-    alertedAt: null,
-    customerMismatch: null,
-    held: [],
-    pendingCount: null,
-    pendingCountCapped: false,
-    pendingExpiresAt: null,
-  };
-}
+export type { KickReason, SyncJob } from "./sync.js";
 
 /**
- * One per install (idFromName("install")): Google polling, reconcile and the
- * queued access jobs (P3 T13). This release ships the class inert, one
- * release before anything calls it (the P1 rule): no storage, no alarm, and
- * every RPC answers the "never" status.
+ * One per install (idFromName(SYNC_DO_NAME)): Google polling, reconcile,
+ * health and the queued access jobs (P3 T13). The engine (sync.ts) holds the
+ * logic; this class is its alarm and RPC surface.
  */
 export class DirectorySync extends DurableObject<Env> {
-  async kick(_reason: KickReason): Promise<SyncStatus> {
-    return neverStatus();
+  private engine: SyncEngine;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.engine = new SyncEngine(env, ctx.storage, ctx);
   }
 
-  async status(): Promise<SyncStatus> {
-    return neverStatus();
+  kick(reason: KickReason): Promise<SyncStatus> {
+    return this.engine.kick(reason);
   }
 
-  async confirmHeld(_groupId: string): Promise<SyncStatus> {
-    return neverStatus();
+  status(): Promise<SyncStatus> {
+    return this.engine.status();
   }
 
-  async enqueue(_job: SyncJob): Promise<void> {}
+  /** Null: nothing confirmable (no hold, or an unreadable group). */
+  confirmHeld(groupId: string, by?: AuditActor): Promise<SyncStatus | null> {
+    return this.engine.confirmHeld(groupId, by);
+  }
+
+  reset(): Promise<void> {
+    return this.engine.reset();
+  }
+
+  enqueue(job: SyncJob): Promise<void> {
+    return this.engine.enqueue(job);
+  }
+
+  async alarm(): Promise<void> {
+    await this.engine.alarm();
+  }
 }
