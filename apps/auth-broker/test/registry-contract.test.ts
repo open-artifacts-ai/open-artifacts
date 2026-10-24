@@ -1,5 +1,9 @@
 // Contract: an entry built and keyed by provision's own code (the writer)
-// is the entry the broker's lookupInstall (the reader) returns.
+// is the entry the broker's lookupInstall (the reader) returns. Both brokers
+// read install:<id> (sign-in on BROKER_REGISTRY, directory on
+// DIRECTORY_REGISTRY), and provision writes both KVs through registryKey.
+// lookupInstall comes from wherever the auth broker imports it; after
+// Backend's T12 moves it to packages/broker-core, target broker-core here.
 import { env } from "cloudflare:workers";
 import { keyId, publicFromPkcs8 } from "@oa/auth-core";
 import { registryEntry, registryKey } from "@oa/provision/names";
