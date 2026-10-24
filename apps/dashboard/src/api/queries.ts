@@ -331,6 +331,8 @@ const useOptimisticMembers = <V>(
   fn: (v: V) => Promise<unknown>,
   apply: (list: Member[], v: V) => Member[],
   failure: string,
+  /** A 403 owner_only: the caller says so on the row (no toast). */
+  onOwnerOnly?: (v: V) => void,
 ) => {
   const qc = useQueryClient();
   return useMutation({
@@ -347,25 +349,32 @@ const useOptimisticMembers = <V>(
       return { prev };
     },
     // Here, not at the call site: the row (and its component) may be gone by now.
-    onError: (e, _v, ctx) => {
-      failToast(e, failure);
+    onError: (e, v, ctx) => {
       for (const [key, list] of ctx?.prev ?? []) qc.setQueryData(key, list);
+      if (e instanceof ApiClientError && e.code === "owner_only") {
+        // Your role changed under the page: refetch it, and say so on the row.
+        void qc.invalidateQueries({ queryKey: qk.me });
+        if (onOwnerOnly) return onOwnerOnly(v);
+      }
+      failToast(e, failure);
     },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.members }),
   });
 };
-export const usePatchMember = () =>
+export const usePatchMember = (onOwnerOnly?: (id: string) => void) =>
   useOptimisticMembers(
     (v: { id: string } & MemberPatch) =>
       api.send("PATCH", R.member(v.id), { role: v.role }, MemberSchema),
     (list, v) => list.map((m) => (m.id === v.id ? { ...m, role: v.role } : m)),
     "Couldn't change the role.",
+    onOwnerOnly && ((v) => onOwnerOnly(v.id)),
   );
-export const useRemoveMember = () =>
+export const useRemoveMember = (onOwnerOnly?: (id: string) => void) =>
   useOptimisticMembers(
     (id: string) => api.send("DELETE", R.member(id), undefined),
     (list, id) => list.filter((m) => m.id !== id),
     "Couldn't remove the member.",
+    onOwnerOnly,
   );
 
 /** PATCH /me; the response is the new Me, so it replaces the cache. Errors are the caller's to show. */

@@ -1,5 +1,5 @@
 // Hosted P4 Task 16: "Reset Google link…" in the Members row menu (Design
-// D11). The owner resets Bob; an admin gets no item on another admin (Erin);
+// D11). The owner resets Bob; an admin sees another admin's row (Erin) read-only;
 // a stale owner_only 403 shows the owner copy. 1280 and 390, light and dark.
 import { expect, type Page, test } from "@playwright/test";
 
@@ -55,19 +55,21 @@ for (const scheme of ["light", "dark"] as const)
         await shot(page, info.outputPath(`reset-done-${scheme}-${width}.png`));
       });
 
-      test("an admin gets no reset on another admin (Erin)", async ({
+      test("an admin sees another admin's row read-only (Erin)", async ({
         page,
       }, info) => {
         await open(page, "1,admin");
-        const menu = await menuFor(page, "Erin Admin");
-        await expect(menu.getByRole("menuitem").first()).toBeVisible();
+        // #475: role as text, no menu (so no Reset or Remove).
+        const erin = page.locator("li", { hasText: "Erin Admin" });
+        await expect(erin.getByText("Admin", { exact: true })).toBeVisible();
+        await expect(erin.getByRole("combobox")).toHaveCount(0);
         await expect(
-          menu.getByRole("menuitem", { name: /^Reset Google link/ }),
+          erin.getByRole("button", { name: "More for Erin Admin" }),
         ).toHaveCount(0);
         await settle(page);
         await shot(
           page,
-          info.outputPath(`reset-admin-erin-${scheme}-${width}.png`),
+          info.outputPath(`members-admin-row-${scheme}-${width}.png`),
         );
       });
 
