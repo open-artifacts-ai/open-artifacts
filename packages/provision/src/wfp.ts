@@ -532,12 +532,14 @@ export interface InstallStatus {
   } | null;
   /**
    * H-DR: the install's broker registry entry against its directory copy.
-   * Data-free (no key material); null when both agree, including both absent.
+   * Data-free (no key material); null when both agree. Both absent is
+   * `missing_both` only where an entry is owed: an active install (broker on,
+   * or a broker_kid recorded) or a creating one past the registry step.
    * Reported only, never repaired here: rerun create to resync.
    */
   registryDrift: {
     id: InstallId;
-    kind: "missing_broker" | "missing_directory" | "mismatch";
+    kind: "missing_broker" | "missing_directory" | "mismatch" | "missing_both";
   } | null;
 }
 
@@ -2035,7 +2037,7 @@ export class WfpProvisioner {
       const row = await platform.byId(id);
       if (!row) throw new ProvisionRefused(`install ${id} not found`);
       const cut = this.pendingCut(row);
-      const registryDrift = await this.registryDrift(id);
+      const registryDrift = await this.registryDrift(row);
       return {
         id,
         state: row.state,
@@ -2059,8 +2061,9 @@ export class WfpProvisioner {
 
   /** H-DR, read only: a namespace that is missing reads as empty; nothing is written. */
   private async registryDrift(
-    id: InstallId,
+    row: InstallRow,
   ): Promise<InstallStatus["registryDrift"]> {
+    const id = row.id;
     const read = async (title: string) => {
       const ns = await this.cf.kvFind(title);
       return ns ? await this.cf.kvGet(ns, id) : null;
@@ -2068,6 +2071,14 @@ export class WfpProvisioner {
     const p = platformNames(this.env);
     const reg = await read(p.registry);
     const dir = await read(p.directoryRegistry);
+    if (reg === null && dir === null) {
+      // create puts the entry before it records broker_kid; delete removes it.
+      const owed =
+        row.broker_kid !== null
+          ? row.state === "active" || row.state === "creating"
+          : row.state === "active" && this.o.brokerEnabled === true;
+      return owed ? { id, kind: "missing_both" } : null;
+    }
     if (reg === dir) return null;
     if (reg === null) return { id, kind: "missing_broker" };
     if (dir === null) return { id, kind: "missing_directory" };

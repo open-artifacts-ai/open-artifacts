@@ -1136,6 +1136,47 @@ describe("WfpProvisioner.create", () => {
       expect(dir.get(inst.id)).not.toBe(raw);
     });
 
+    it("H-DR: an install that should have an entry and is in neither registry is missing_both", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(input());
+      s.fake.kvValues(s.regId).delete(inst.id);
+      s.fake.kvValues(s.dirId).delete(inst.id);
+      const w = s.fake.writes().length;
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "missing_both",
+      });
+      expect(s.fake.writes().length).toBe(w);
+      // A creating row past the registry step (broker_kid recorded) too.
+      const s2 = setup({ brokerEnabled: true });
+      await failAtHealth(s2);
+      const [row] = s2.rows();
+      expect(row.state).toBe("creating");
+      expect(row.broker_kid).toBeTruthy();
+      s2.fake.kvValues(s2.regId).delete(row.id);
+      s2.fake.kvValues(s2.dirId).delete(row.id);
+      expect((await s2.p.status(row.id)).registryDrift).toEqual({
+        id: row.id,
+        kind: "missing_both",
+      });
+    });
+
+    it("H-DR: no drift for a creating row before the registry step, or a deleted install", async () => {
+      const s = setup({ brokerEnabled: true });
+      s.fake.inject((m, p) => m === "POST" && p.endsWith("/r2/buckets"));
+      await fails(s.p.create(input()));
+      const [row] = s.rows();
+      expect(row.state).toBe("creating");
+      expect(row.broker_kid).toBeNull();
+      expect((await s.p.status(row.id)).registryDrift).toBeNull();
+      const inst = await s.p.create(input());
+      await s.p.delete(inst.id, inst.id);
+      expect(s.rows()[0].state).toBe("deleted");
+      expect(s.fake.kvValues(s.regId).has(inst.id)).toBe(false);
+      expect(s.fake.kvValues(s.dirId).has(inst.id)).toBe(false);
+      expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+    });
+
     it("is not written when brokerEnabled is false", async () => {
       const s = setup();
       const inst = await s.p.create(input());
