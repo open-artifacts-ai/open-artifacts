@@ -38,11 +38,11 @@ const MAIL = {
 };
 const base = env as object;
 /** Spaces on, Google sync running. */
-const GOOGLE = { ...base, ...MAIL, FEATURES: "spaces,sync_google" } as Env;
+const GOOGLE = { ...base, ...MAIL, FEATURES: "spaces,sync_google" } as unknown as Env;
 /** Spaces on, sync frozen (Team after trial). */
-const FROZEN = { ...base, ...MAIL, FEATURES: "spaces,sync_frozen" } as Env;
+const FROZEN = { ...base, ...MAIL, FEATURES: "spaces,sync_frozen" } as unknown as Env;
 /** Spaces on, no directory. */
-const OFF = { ...base, ...MAIL, FEATURES: "spaces" } as Env;
+const OFF = { ...base, ...MAIL, FEATURES: "spaces" } as unknown as Env;
 /** Self-hosted default: no spaces. */
 const NONE = { ...base, FEATURES: "" } as Env;
 

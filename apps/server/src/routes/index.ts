@@ -12,6 +12,7 @@ import { mountSearch } from "./search.js";
 import { mountSettings } from "./settings.js";
 import { mountShares } from "./shares.js";
 import { mountShell } from "./shell.js";
+import { mountSpaces } from "./spaces.js";
 import { mountTokens } from "./tokens.js";
 import { mountUploads } from "./uploads.js";
 import { mountUsage } from "./usage.js";
@@ -26,6 +27,7 @@ export function mountRoutes(app: AppType): void {
   mountMe(app);
   mountMembers(app);
   mountSettings(app);
+  mountSpaces(app);
   mountArtifacts(app);
   mountUploads(app);
   mountShares(app);

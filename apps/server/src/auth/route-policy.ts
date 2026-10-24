@@ -64,6 +64,7 @@ const art = (
 ): Policy => ({ artifact: action, ...extra });
 const SAVE = "Sign in to save changes";
 const ARTS = "/api/v1/artifacts/:id";
+const SPACES = "/api/v1/spaces/:id";
 const signedIn = { signedIn: true } as const;
 
 /** App host routes, keyed `${method} ${path}` as Hono registers them. */
@@ -100,6 +101,44 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // The handler requires a manager and 404s for the owner's own link.
   "DELETE /api/v1/members/:id/identities/google": { org: "members.manage" },
   "GET /api/v1/settings": { org: "settings.read" },
+  // P3 T9 spaces API: 404 without the spaces feature. Space routes admit any
+  // signed-in caller; the service applies the per-space rule (member, the
+  // space's manager, or an org admin; 404 otherwise, never 403 except the
+  // contract's space_forbidden and directory_mapping_off).
+  "GET /api/v1/spaces": { user: "spaces the caller can see" },
+  "POST /api/v1/spaces": { org: "space.create" },
+  [`GET ${SPACES}`]: { user: "member or org admin (the service)" },
+  [`PATCH ${SPACES}`]: { user: "space manager or org admin (the service)" },
+  [`DELETE ${SPACES}`]: { user: "org admin; personal 400 first (the service)" },
+  [`GET ${SPACES}/members`]: { user: "member or org admin (the service)" },
+  [`POST ${SPACES}/members/self`]: { org: "space.adminSelfAdd" },
+  [`PUT ${SPACES}/members/:userId`]: {
+    user: "space manager or org admin (the service)",
+  },
+  [`DELETE ${SPACES}/members/:userId`]: {
+    user: "space manager or org admin (the service)",
+  },
+  [`GET ${SPACES}/mappings`]: {
+    user: "space manager or org admin (the service)",
+  },
+  [`PUT ${SPACES}/mappings/:groupId`]: {
+    user: "space manager (viewer, editor) or org admin (the service)",
+  },
+  [`DELETE ${SPACES}/mappings/:groupId`]: {
+    user: "space manager (viewer, editor) or org admin (the service)",
+  },
+  "GET /api/v1/directory/org-mappings": { org: "org.mappings" },
+  "PUT /api/v1/directory/org-mappings/:groupId": { org: "org.mappings" },
+  "DELETE /api/v1/directory/org-mappings/:groupId": { org: "org.mappings" },
+  "GET /api/v1/directory/restricted-groups": { org: "restricted.groups" },
+  "PUT /api/v1/directory/restricted-groups/:groupId": {
+    org: "restricted.groups",
+  },
+  "DELETE /api/v1/directory/restricted-groups/:groupId": {
+    org: "restricted.groups",
+  },
+  "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
+  "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
   "GET /api/v1/artifacts": { user: "list, filtered by listFilterSql" },
   "POST /api/v1/artifacts": {

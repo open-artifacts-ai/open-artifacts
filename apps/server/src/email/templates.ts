@@ -221,3 +221,55 @@ export function loginCodeEmail(p: {
     values,
   );
 }
+
+const SPACE_ROLE_LABEL: Record<"viewer" | "editor" | "manager", string> = {
+  viewer: "Viewer",
+  editor: "Editor",
+  manager: "Manager",
+};
+
+const SELF_ADD_TXT = `{{adminName}} added themselves to {{spaceName}} on {{instanceName}} as {{role}}.
+
+You get this email because you manage this space. Org admins can join any shared space, and when they do, its managers hear about it.
+
+Review the space's members: {{membersUrl}}
+
+{{appHost}}
+`;
+
+const SELF_ADD_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Admin joined a space</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p><strong>{{adminName}}</strong> added themselves to <strong>{{spaceName}}</strong> on {{instanceName}} as {{role}}.</p>
+<p>You get this email because you manage this space. Org admins can join any shared space, and when they do, its managers hear about it.</p>
+<p><a href="{{membersUrl}}">Review the space's members</a></p>
+<p style="color:#5d636e">{{appHost}}</p>
+</body></html>
+`;
+
+/**
+ * To a space's managers when an org admin adds themselves to it (P3 T9,
+ * space.admin_self_add). Names only; the link points to the app host.
+ */
+export function spaceSelfAddEmail(p: {
+  admin: string;
+  instance: string;
+  recipient: string;
+  appHost: string;
+  space: string;
+  role: "viewer" | "editor" | "manager";
+}): EmailContent {
+  const { origin, values } = common({ ...p, inviter: p.admin });
+  return render(
+    SELF_ADD_HTML,
+    SELF_ADD_TXT,
+    "{{adminName}} joined {{spaceName}}",
+    {
+      ...values,
+      adminName: oneLine(p.admin, NAME_MAX),
+      spaceName: oneLine(p.space, NAME_MAX),
+      role: SPACE_ROLE_LABEL[p.role],
+      membersUrl: linkOn(origin, "/settings/spaces"),
+    },
+  );
+}

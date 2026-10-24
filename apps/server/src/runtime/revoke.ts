@@ -90,3 +90,42 @@ export async function revokeUserLive(
   }
   await run;
 }
+
+/** Users revoked concurrently per page by revokeUsersLive. */
+export const REVOKE_PAGE = 50;
+
+/**
+ * revokeUserLive for many users after a space-wide narrowing (a mapping
+ * removed or lowered, allMembersRole lowered, a restricted group added):
+ * pages of REVOKE_PAGE concurrent calls, one page after another, with no
+ * cap. Runs in waitUntil when a context is given, so the response never
+ * waits on the fan-out (the D1 change already refuses new requests); each
+ * user's DO call counts toward the invocation's subrequest limit. Never
+ * throws.
+ */
+export async function revokeUsersLive(
+  env: Pick<Env, "USER_PRESENCE">,
+  userIds: readonly string[],
+  reason: string,
+  ctx?: Ctx,
+): Promise<void> {
+  const ids = [...new Set(userIds)];
+  if (!ids.length) return;
+  const run = (async () => {
+    for (let i = 0; i < ids.length; i += REVOKE_PAGE)
+      await Promise.all(
+        ids
+          .slice(i, i + REVOKE_PAGE)
+          .map((id) => revokeUserLive(env, id, reason)),
+      );
+  })().catch((e) => logError("revoke_users_live_failed", e));
+  if (ctx) {
+    try {
+      ctx.waitUntil(run);
+      return;
+    } catch (e) {
+      logError("revoke_users_live_failed", e);
+    }
+  }
+  await run;
+}

@@ -176,6 +176,8 @@ export const orgGroupMappings = sqliteTable(
 export const restrictedGroups = sqliteTable("restricted_groups", {
   groupId: text("group_id").primaryKey(),
   groupEmail: text("group_email").notNull(),
+  /** When the group was restricted (ms); null for rows written before P3 T9. */
+  createdAt: integer("created_at"),
 });
 
 // Raw directory rows from the last successful read: a parent_ids list resolves

@@ -3,7 +3,9 @@ import { requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
-import { getSettings, patchSettings } from "../services/members.js";
+import { userActor } from "../services/audit.js";
+import { patchSettings, settingsView } from "../services/members.js";
+import { spacesOn } from "../services/spaces.js";
 import type { AppType } from "./index.js";
 import { requireManager } from "./members.js";
 
@@ -32,13 +34,18 @@ export function mountSettings(app: AppType): void {
     const user = requireUser(c);
     if (!orgCan(user, "settings.read"))
       throw new ApiError("not_found", "Not found");
-    return c.json(await getSettings(c.env));
+    return c.json(await settingsView(c.env, spacesOn(c.env)));
   });
 
   app.patch(R.settings, async (c) => {
-    requireManager(c);
+    const actor = requireManager(c);
     const patch = await jsonBody(c, SettingsPatchSchema);
     if (patch.name !== undefined) patch.name = cleanName(patch.name);
-    return c.json(await patchSettings(c.env, patch));
+    return c.json(
+      await patchSettings(c.env, patch, {
+        spaces: spacesOn(c.env),
+        by: userActor(actor.id),
+      }),
+    );
   });
 }

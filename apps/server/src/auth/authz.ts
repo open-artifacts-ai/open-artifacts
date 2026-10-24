@@ -267,7 +267,7 @@ function spaceRankSql(
  * space is `spaces` (joined), its id `spaceId`. Lists and checkListSpace
  * share it.
  */
-function roleRankSql(
+export function roleRankSql(
   c: Caller,
   spaceId: SQL = sql`${artifacts.spaceId}`,
 ): SQL<number> {

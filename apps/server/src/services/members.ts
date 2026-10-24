@@ -16,7 +16,6 @@ import {
   artifacts,
   identities,
   reservedArtifacts,
-  settings,
   shares,
   spaces,
   tokens,
@@ -364,23 +363,62 @@ export async function getSettings(env: Env): Promise<Settings> {
   return toSettings(await getSettingsKv(env));
 }
 
+/** Settings row for the hosted spaceManagerMappings flag (absent = true). */
+export const SPACE_MANAGER_MAPPINGS_KEY = "space_manager_mappings";
+
+/**
+ * GET R.settings: the instance settings, plus spaceManagerMappings (default
+ * true) when the spaces feature is on; absent otherwise, so self-hosted
+ * installs keep today's shape.
+ */
+export async function settingsView(
+  env: Env,
+  spaces: boolean,
+): Promise<Settings> {
+  const kv = await getSettingsKv(env);
+  const s = toSettings(kv);
+  return spaces
+    ? {
+        ...s,
+        spaceManagerMappings: kv.get(SPACE_MANAGER_MAPPINGS_KEY) !== "false",
+      }
+    : s;
+}
+
+const UPSERT_SETTING = `insert into settings (key, value) values (?1, ?2)
+  on conflict (key) do update set value = excluded.value`;
+
+/**
+ * Writes the patch in one batch. spaceManagerMappings is written only with
+ * the spaces feature on, audited settings.space_manager_mappings in the same
+ * batch and only when it changes.
+ */
 export async function patchSettings(
   env: Env,
   patch: SettingsPatch,
+  opts: { spaces?: boolean; by?: AuditActor } = {},
 ): Promise<Settings> {
-  const db = getDb(env);
   const writes = (Object.keys(KEY) as (keyof typeof KEY)[])
     .filter((k) => patch[k] !== undefined)
-    .map((k) =>
-      db
-        .insert(settings)
-        .values({ key: KEY[k], value: String(patch[k]) })
-        .onConflictDoUpdate({
-          target: settings.key,
-          set: { value: String(patch[k]) },
-        }),
+    .map((k) => stmt(env.DB, UPSERT_SETTING).bind(KEY[k], String(patch[k])));
+  const smm = patch.spaceManagerMappings;
+  if (opts.spaces && smm !== undefined)
+    writes.push(
+      audit(
+        env,
+        "settings.space_manager_mappings",
+        { type: "directory", id: "settings" },
+        opts.by ?? SYSTEM,
+        {
+          detail: { spaceManagerMappings: smm },
+          when: {
+            sql: "coalesce((select value from settings where key = ?), 'true') <> ?",
+            args: [SPACE_MANAGER_MAPPINGS_KEY, String(smm)],
+          },
+        },
+      ),
+      stmt(env.DB, UPSERT_SETTING).bind(SPACE_MANAGER_MAPPINGS_KEY, String(smm)),
     );
-  const [first, ...rest] = writes;
-  if (first) await db.batch([first, ...rest]);
-  return getSettings(env);
+  if (writes.length) await env.DB.batch(writes);
+  return settingsView(env, opts.spaces === true);
 }
