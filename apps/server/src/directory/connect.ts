@@ -32,13 +32,16 @@ import {
 } from "./google.js";
 import {
   CONFIRM_TTL_MS,
-  dropConnection,
+  dropPending,
   expirePending,
   K,
+  liveSub,
   type PendingConfirm,
+  promotePending,
   putState,
   readBinding,
   readPending,
+  revokeGrant,
 } from "./store.js";
 import {
   type DirectoryClient,
@@ -283,21 +286,35 @@ export async function finishConnect(
       exp: now + CONFIRM_TTL_MS,
       count: count.count,
       capped: count.capped,
+      s: who.id,
     };
+    // Pending rows only: a live connection (a reconnect) keeps syncing until
+    // confirm swaps these in. An earlier unconfirmed consent is replaced and
+    // its grant revoked.
+    const [{ sealed: replaced }, before, live] = await Promise.all([
+      readBinding(env, "pending"),
+      readPending(env),
+      liveSub(env),
+    ]);
     await env.DB.batch([
-      putState(env, K.binding, JSON.stringify(binding)),
-      putState(env, K.refresh, await seal(env, grant.refreshToken)),
+      putState(env, K.pendingBinding, JSON.stringify(binding)),
+      putState(env, K.pendingRefresh, await seal(env, grant.refreshToken)),
       putState(env, K.confirm, JSON.stringify(pending)),
       audit(env, "directory.connect", AUDIT_TARGET, actor, {
         detail: { outcome: "consented", transport: client.kind },
         when: {
           sql: `exists (select 1 from directory_state where key = ?
                   and json_extract(value, '$.customerId') = ?)`,
-          args: [K.binding, who.customerId],
+          args: [K.pendingBinding, who.customerId],
         },
       }),
     ]);
     logInfo("directory_connect", { outcome: "consented", kind: client.kind });
+    if (replaced)
+      await revokeGrant(env, replaced, actor, "pending", {
+        sub: before?.s,
+        keep: [live, who.id],
+      });
     return target(env, {});
   } catch (e) {
     const r = e instanceof Refuse ? e : new Refuse("failed", "internal");
@@ -356,10 +373,11 @@ async function ownPending(env: Env, user: Member): Promise<PendingConfirm> {
 }
 
 /**
- * POST R.directoryConfirm, the step after consent: runs the binding pass
- * (links and creates members) with a fresh access token from the stored,
- * sealed refresh token, then clears the pending row and hands off to T13.
- * Kept apart from storing the token so nothing is written to users,
+ * POST R.directoryConfirm, the step after consent: swaps the pending
+ * binding and token in as the live ones in one D1 batch, revokes the OLD
+ * live grant at Google (best effort: a failure is audited, never an error),
+ * then runs the binding pass (links and creates members) and hands off to
+ * T13. Kept apart from storing the token so nothing is written to users,
  * identities or memberships before the owner confirms.
  */
 export async function afterConsent(
@@ -368,8 +386,12 @@ export async function afterConsent(
   user: Member,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<SyncStatus> {
-  await ownPending(env, user);
-  const { binding, sealed } = await readBinding(env);
+  const p = await ownPending(env, user);
+  const [{ binding, sealed }, { sealed: old }, oldSub] = await Promise.all([
+    readBinding(env, "pending"),
+    readBinding(env, "live"),
+    liveSub(env),
+  ]);
   if (!binding || !sealed) throw notFound();
   let token: string;
   try {
@@ -381,19 +403,22 @@ export async function afterConsent(
       "Google refused the stored grant; connect again",
     );
   }
+  const swap = promotePending(env, user.id, Date.now());
   const out = await env.DB.batch([
-    stmt(
-      env.DB,
-      "delete from directory_state where key = ? and json_extract(value, '$.u') = ?",
-    ).bind(K.confirm, user.id),
+    ...swap,
     audit(env, "directory.connect", AUDIT_TARGET, userActor(user.id), {
       detail: { outcome: "confirmed", transport: client.kind },
       when: { sql: "changes() > 0", args: [] },
     }),
   ]);
-  // A racing confirm or cancel took it first.
-  if (!out[0]?.meta.changes) throw notFound();
+  // A racing confirm or cancel (or the expiry) took it first.
+  if (!out[swap.length - 1]?.meta.changes) throw notFound();
   logInfo("directory_connect", { outcome: "confirmed", kind: client.kind });
+  if (old)
+    await revokeGrant(env, old, userActor(user.id), "old", {
+      sub: oldSub,
+      keep: [p.s ?? null],
+    });
   const pass = await initialBinding(
     env,
     token,
@@ -407,10 +432,16 @@ export async function afterConsent(
   return directoryStatus(env, { showProblem: true });
 }
 
-/** POST R.directoryCancel: drops the pending token and binding (audited). */
+/**
+ * POST R.directoryCancel: drops only the pending token and binding
+ * (audited); a live connection and its sync stay. The pending grant is then
+ * revoked at Google (best effort).
+ */
 export async function cancelConnect(env: Env, user: Member): Promise<void> {
-  await ownPending(env, user);
-  await env.DB.batch([
+  const p = await ownPending(env, user);
+  const { sealed } = await readBinding(env, "pending");
+  const live = await liveSub(env);
+  const out = await env.DB.batch([
     audit(env, "directory.disconnect", AUDIT_TARGET, userActor(user.id), {
       detail: { outcome: "cancelled" },
       when: {
@@ -418,9 +449,15 @@ export async function cancelConnect(env: Env, user: Member): Promise<void> {
         args: [K.confirm, user.id],
       },
     }),
-    dropConnection(env),
+    dropPending(env),
   ]);
+  if (!out[1]?.meta.changes) return;
   logInfo("directory_connect", { outcome: "cancelled" });
+  if (sealed)
+    await revokeGrant(env, sealed, userActor(user.id), "pending", {
+      sub: p.s,
+      keep: [live],
+    });
 }
 
 /**

@@ -398,13 +398,15 @@ describe("confirm step", () => {
     expect(Date.parse(s.pendingExpiresAt ?? "") - Date.now()).toBeGreaterThan(
       23 * 3600_000,
     );
-    expect(s.binding?.customerId).toBe(g.customerId);
+    // A first connect: nothing is live until confirm.
+    expect(s.binding).toBeNull();
 
     const c = await post(e, R.directoryConfirm, owner.cookie);
     expect(c.status).toBe(200);
     const after = (await c.json()) as SyncStatus;
     expect(after.state).not.toBe("pending_confirm");
     expect(after.pendingCount).toBeNull();
+    expect(after.binding?.customerId).toBe(g.customerId);
     expect(await ident(gLink.id)).toEqual({ user_id: linkId });
     expect(await ident(gNew.id)).not.toBeNull();
     // Confirmed once: a second confirm finds nothing pending.
@@ -420,7 +422,11 @@ describe("confirm step", () => {
     for (const who of [other, a, m])
       for (const path of [R.directoryConfirm, R.directoryCancel])
         expect((await post(e, path, who.cookie)).status, path).toBe(404);
-    expect(await keys()).toEqual(["binding", "connect.confirm", "refresh"]);
+    expect(await keys()).toEqual([
+      "connect.confirm",
+      "pending.binding",
+      "pending.refresh",
+    ]);
   });
 
   it("an owner demoted after connecting can't confirm (still the org owner required)", async () => {
@@ -543,5 +549,91 @@ describe("review fixes", () => {
       .all<{ status: string }>();
     expect(results).toHaveLength(30);
     expect(results.every((r) => r.status === "suspended")).toBe(true);
+  });
+});
+
+describe.each([
+  ["direct", () => directEnv()],
+  ["broker", () => hostedEnv()],
+] as const)("reconnect (%s)", (_kind, mk) => {
+  let e: Env;
+  let second: string;
+  /** The live rows, as stored. */
+  const live = async () =>
+    Object.fromEntries(
+      (await state())
+        .filter((r) => ["binding", "refresh", "grant.sub"].includes(r.key))
+        .map((r) => [r.key, r.value]),
+    );
+  const outcomes = async () =>
+    (await audits())
+      .filter((r) => r.actor === owner.userId || r.actor === null)
+      .map((r) => r.detail.outcome);
+  beforeEach(async () => {
+    e = mk();
+    // A confirmed, live connection by the first super admin.
+    expect((await connect(e, owner.cookie, g, { sub: admin.sub })).ok).toBe(
+      true,
+    );
+    second = `g-admin2-${crypto.randomUUID()}`;
+    g.addUser({ id: second, primaryEmail: uniq("super2"), isAdmin: true });
+    g.revoked.length = 0;
+  });
+
+  it("reconnect then cancel keeps the old binding, token and sync; the pending grant is revoked", async () => {
+    const before = await live();
+    await connect(e, owner.cookie, g, { sub: second }, { confirm: false });
+    // The live pair is untouched while the reconnect waits.
+    expect(await live()).toEqual(before);
+    expect((await post(e, R.directoryCancel, owner.cookie)).status).toBe(204);
+    expect(await live()).toEqual(before);
+    expect(before["grant.sub"]).toBe(admin.sub);
+    expect(g.revoked).toEqual([`rt-${second}`]);
+  });
+
+  it("reconnect then expiry keeps the old binding and token; the pending grant is revoked", async () => {
+    const before = await live();
+    await connect(e, owner.cookie, g, { sub: second }, { confirm: false });
+    await env.DB.prepare(
+      "update directory_state set value = json_set(value, '$.exp', 1) where key = 'connect.confirm'",
+    ).run();
+    const s = (await (
+      await get(e, R.directory, owner.cookie)
+    ).json()) as SyncStatus;
+    expect(s.state).not.toBe("pending_confirm");
+    expect(await live()).toEqual(before);
+    expect(g.revoked).toEqual([`rt-${second}`]);
+  });
+
+  it("reconnect then confirm swaps atomically and revokes the OLD grant", async () => {
+    const before = await live();
+    await connect(e, owner.cookie, g, { sub: second }, { confirm: false });
+    expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(200);
+    const after = await live();
+    expect(after["grant.sub"]).toBe(second);
+    expect(after.refresh).not.toBe(before.refresh);
+    expect(after.binding).not.toBe(before.binding);
+    // Nothing pending is left behind: the swap moved every row.
+    expect((await state()).map((r) => r.key).sort()).toEqual(
+      ["binding", "binding.initial", "grant.sub", "refresh"].sort(),
+    );
+    expect(g.revoked).toEqual([`rt-${admin.sub}`]);
+    expect(await outcomes()).toContain("revoked");
+  });
+
+  it("a failed revoke still confirms, and is audited", async () => {
+    await connect(e, owner.cookie, g, { sub: second }, { confirm: false });
+    g.setRevokeStatus(500);
+    const c = await post(e, R.directoryConfirm, owner.cookie);
+    expect(c.status).toBe(200);
+    expect((await live())["grant.sub"]).toBe(second);
+    expect(await outcomes()).toContain("revoke_failed");
+  });
+
+  it("a reconnect by the same Google account never revokes (Google would end the new grant too)", async () => {
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(200);
+    expect(g.revoked).toEqual([]);
+    expect(await outcomes()).toContain("revoke_skipped");
   });
 });

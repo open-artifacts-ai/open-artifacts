@@ -21,6 +21,7 @@
 import {
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_DIRECTORY_SCOPES,
+  GOOGLE_REVOKE_URL,
   GOOGLE_TOKEN_URL,
   sealToInstall,
 } from "@oa/auth-core";
@@ -66,6 +67,7 @@ const STATE_DOMAIN = "oa-dir-v1";
 export const START_PATH = "/google/directory/start";
 export const CALLBACK_PATH = "/google/directory/callback";
 export const TOKEN_PATH = "/google/directory/token";
+export const REVOKE_PATH = "/google/directory/revoke";
 /** Where the user goes back to on the install (R.directoryCallback). */
 const INSTALL_CALLBACK = "/api/v1/directory/callback";
 /** S256 of 32 bytes, base64url: exactly what the installs generate. */
@@ -343,6 +345,63 @@ async function token(req: Request, env: Env, now: number): Promise<Response> {
   });
 }
 
+/**
+ * Revokes one install's grant at Google: the same install assertion as the
+ * token route (path-bound to REVOKE_PATH), its own per-install bucket
+ * (`revoke:install:<id>`), and only a blob wrapped for the asserting install
+ * (anything else: the generic 401). Body `{ install, ts, refresh_token }`.
+ * 204 when Google revoked it (or it was already invalid); 400 otherwise.
+ */
+async function revoke(req: Request, env: Env, now: number): Promise<Response> {
+  const kid = req.headers.get("x-oa-kid") ?? "";
+  const sig = req.headers.get("x-oa-sig") ?? "";
+  const text = await req.text();
+  if (text.length > MAX_BODY) return refused();
+  let body: { install?: unknown; ts?: unknown; refresh_token?: unknown };
+  try {
+    body = JSON.parse(text) as typeof body;
+  } catch {
+    return refused();
+  }
+  if (
+    typeof body?.install !== "string" ||
+    typeof body.ts !== "number" ||
+    typeof body.refresh_token !== "string"
+  )
+    return refused();
+  if (!client(env)) return log("revoke", "unconfigured"), notFound();
+  const limited = await ipLimited(limits(env), req, log);
+  if (limited) return limited;
+  const entry = await lookupInstall(env.DIRECTORY_REGISTRY, body.install, now);
+  if (!entry) return log("revoke", "unknown_install"), refused();
+  if (!(await verifyAssertion(entry, REVOKE_PATH, kid, text, sig)))
+    return log("revoke", "bad_signature"), refused();
+  if (Math.abs(now - body.ts) > ASSERTION_SKEW_MS)
+    return log("revoke", "stale"), refused();
+  const busy = await installLimited(limits(env), body.install, log, "revoke");
+  if (busy) return busy;
+  const rt = await unwrapRefresh(
+    env.DIRECTORY_STATE_KEY,
+    body.install,
+    body.refresh_token,
+  );
+  if (!rt) return log("revoke", "bad_refresh"), refused();
+  const res = await fetch(GOOGLE_REVOKE_URL, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ token: rt }),
+    redirect: "manual",
+  }).catch(() => null);
+  const out = res?.ok
+    ? null
+    : ((await res?.json().catch(() => null)) as { error?: unknown } | null);
+  await res?.body?.cancel().catch(() => {});
+  // Already revoked or expired at Google: the goal is met.
+  if (res?.ok || out?.error === "invalid_token")
+    return log("revoke", "ok"), new Response(null, { status: 204 });
+  return log("revoke", "failed"), json({ error: "revoke_failed" }, 400);
+}
+
 export default {
   async fetch(req, env): Promise<Response> {
     const { pathname } = new URL(req.url);
@@ -353,6 +412,8 @@ export default {
       return callback(req, env, now);
     if (req.method === "POST" && pathname === TOKEN_PATH)
       return token(req, env, now);
+    if (req.method === "POST" && pathname === REVOKE_PATH)
+      return revoke(req, env, now);
     return notFound();
   },
 } satisfies ExportedHandler<Env>;

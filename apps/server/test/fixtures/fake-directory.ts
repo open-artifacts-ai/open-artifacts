@@ -1,4 +1,8 @@
-import { GOOGLE_DIRECTORY_SCOPES, GOOGLE_TOKEN_URL } from "@oa/auth-core";
+import {
+  GOOGLE_DIRECTORY_SCOPES,
+  GOOGLE_REVOKE_URL,
+  GOOGLE_TOKEN_URL,
+} from "@oa/auth-core";
 import { vi } from "vitest";
 import { ADMIN_API } from "../../src/directory/google.js";
 import { b64urlEncode } from "../../src/util/crypto.js";
@@ -56,6 +60,9 @@ export function fakeDirectory(o: { customerId?: string } = {}) {
   const adminCalls: string[] = [];
   let pageSize = 500;
   let refreshStatus = 200;
+  let revokeStatus = 200;
+  /** Raw refresh tokens Google was asked to revoke. */
+  const revoked: string[] = [];
   const realFetch = globalThis.fetch;
 
   const spy = vi
@@ -64,6 +71,15 @@ export function fakeDirectory(o: { customerId?: string } = {}) {
       const req = new Request(input, init);
       const routed = routes.get(new URL(req.url).origin);
       if (routed) return routed(req);
+      if (req.url === GOOGLE_REVOKE_URL && req.method === "POST") {
+        if (revokeStatus !== 200)
+          return Response.json(
+            { error: "server_error" },
+            { status: revokeStatus },
+          );
+        revoked.push(new URLSearchParams(await req.text()).get("token") ?? "");
+        return new Response(null, { status: 200 });
+      }
       if (req.url === GOOGLE_TOKEN_URL && req.method === "POST") {
         const body = new URLSearchParams(await req.text());
         tokenCalls.push(body);
@@ -168,6 +184,10 @@ export function fakeDirectory(o: { customerId?: string } = {}) {
     },
     setRefreshStatus(s: number) {
       refreshStatus = s;
+    },
+    revoked,
+    setRevokeStatus(s: number) {
+      revokeStatus = s;
     },
     restore: () => spy.mockRestore(),
   };

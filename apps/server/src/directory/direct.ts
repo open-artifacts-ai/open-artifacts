@@ -1,6 +1,7 @@
 import {
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_DIRECTORY_SCOPES,
+  GOOGLE_REVOKE_URL,
   GOOGLE_TOKEN_URL,
 } from "@oa/auth-core";
 import { R } from "@oa/shared";
@@ -91,6 +92,26 @@ export function directClient(env: Env, t: Direct): DirectoryClient {
       if (typeof out?.access_token !== "string")
         throw new TransportError("exchange");
       return out.access_token;
+    },
+    async revoke(sealedRefresh) {
+      let res: Response;
+      try {
+        res = await fetch(GOOGLE_REVOKE_URL, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ token: await open(env, sealedRefresh) }),
+          redirect: "manual",
+        });
+      } catch {
+        throw new TransportError("exchange");
+      }
+      const out = res.ok
+        ? null
+        : ((await res.json().catch(() => null)) as { error?: unknown } | null);
+      await res.body?.cancel().catch(() => {});
+      // Already revoked or expired at Google: the goal is met.
+      if (!res.ok && out?.error !== "invalid_token")
+        throw new TransportError("exchange");
     },
   };
 }

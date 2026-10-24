@@ -23,6 +23,7 @@ export {
   GOOGLE_DIRECTORY_SCOPES,
   GOOGLE_ISSUERS,
   GOOGLE_JWKS_URL,
+  GOOGLE_REVOKE_URL,
   GOOGLE_TOKEN_URL,
   type GoogleIdentity,
   GoogleTokenError,

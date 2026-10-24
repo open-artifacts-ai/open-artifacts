@@ -26,6 +26,7 @@ import {
 
 export const DIRECTORY_START = "/google/directory/start";
 export const DIRECTORY_TOKEN = "/google/directory/token";
+export const DIRECTORY_REVOKE = "/google/directory/revoke";
 
 type Broker = Extract<DirectoryTransport, { kind: "broker" }>;
 
@@ -40,40 +41,50 @@ const kidOf = (signingKey: string) => {
   return k;
 };
 
+/** One POST to a broker route, signed with the install assertion for `path`. */
+async function signedPost(
+  t: Broker,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<{ res: Response; kid: string }> {
+  const text = JSON.stringify({
+    install: t.installId,
+    ts: Date.now(),
+    ...body,
+  });
+  const kid = await kidOf(t.signingKey);
+  const req = new Request(`${t.brokerUrl}${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-oa-kid": kid,
+      "x-oa-sig": await signRequest(t.signingKey, path, kid, text),
+    },
+    body: text,
+    redirect: "manual",
+  });
+  try {
+    // Public HTTPS to DIRECTORY_BROKER_URL; the request is signed.
+    return { res: await fetch(req), kid };
+  } catch {
+    throw new TransportError("exchange");
+  }
+}
+
 /**
  * One signed POST to the broker's token route. Resolves to the outer JSON
  * and the opened box (the tokens), or throws a TransportError.
  */
 async function post(
-  env: Env,
+  _env: Env,
   t: Broker,
   body: Record<string, unknown>,
 ): Promise<{ out: Record<string, unknown>; tokens: Record<string, unknown> }> {
   const self = await boxKeyPair();
-  const text = JSON.stringify({
-    install: t.installId,
-    ts: Date.now(),
+  const { res, kid } = await signedPost(t, DIRECTORY_TOKEN, {
     epk: self.pub,
     ...body,
   });
-  const kid = await kidOf(t.signingKey);
-  const req = new Request(`${t.brokerUrl}${DIRECTORY_TOKEN}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-oa-kid": kid,
-      "x-oa-sig": await signRequest(t.signingKey, DIRECTORY_TOKEN, kid, text),
-    },
-    body: text,
-    redirect: "manual",
-  });
-  let res: Response;
-  try {
-    // Public HTTPS to DIRECTORY_BROKER_URL; the request is signed.
-    res = await fetch(req);
-  } catch {
-    throw new TransportError("exchange");
-  }
   const out = (await res.json().catch(() => null)) as Record<
     string,
     unknown
@@ -128,6 +139,14 @@ export function brokerClient(env: Env, t: Broker): DirectoryClient {
       if (typeof tokens.access_token !== "string")
         throw new TransportError("exchange");
       return tokens.access_token;
+    },
+    async revoke(sealedRefresh) {
+      const { res } = await signedPost(t, DIRECTORY_REVOKE, {
+        refresh_token: await open(env, sealedRefresh),
+      });
+      await res.body?.cancel();
+      if (res.status === 401) throw new TransportError("refused");
+      if (!res.ok) throw new TransportError("exchange");
     },
   };
 }

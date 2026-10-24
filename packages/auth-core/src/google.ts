@@ -17,6 +17,8 @@ export const GOOGLE_ISSUERS = [
 export const GOOGLE_AUTHORIZE_URL =
   "https://accounts.google.com/o/oauth2/v2/auth";
 export const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+/** RFC 7009 revocation (a refresh token revokes the whole grant). */
+export const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 export const GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs";
 
 /**

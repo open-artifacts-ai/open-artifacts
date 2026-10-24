@@ -384,10 +384,11 @@ it("directory connect (P3 T12): the pending flow, then binding, sealed token, au
   w.n = 0;
   const c = await post(e, R.directoryConfirm, owner.cookie);
   expect(c.status).toBe(200);
-  // Confirm: confirm row delete 1 + audit 2 + binding.initial 1, plus 6 per
+  // Confirm: the swap (grant.sub 1, binding 1, refresh 1, pending rows
+  // deleted 2, confirm row deleted 1) + audit 2 + binding.initial 1, plus 6 per
   // created user (the super admin and the new user): users 2 (table, email
   // unique), personal space 2 (table, spaces_kind_name_idx), identity 2
   // (table, identities_user_provider).
-  expect(w.n).toBe(16);
+  expect(w.n).toBe(21);
   g.restore();
 });

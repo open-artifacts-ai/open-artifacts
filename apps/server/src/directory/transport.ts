@@ -139,6 +139,8 @@ export interface DirectoryClient {
   completeConsent(cb: ConsentCallback): Promise<ConsentResult>;
   /** A fresh access token for the sealed refresh token (T13 polling). */
   accessToken(sealedRefresh: string): Promise<string>;
+  /** Revokes the grant behind the sealed refresh token at Google. Throws TransportError. */
+  revoke(sealedRefresh: string): Promise<void>;
 }
 
 /**
