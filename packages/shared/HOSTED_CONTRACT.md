@@ -207,7 +207,7 @@ sync routes, after a fresh Google sign-in (10 min); else 401 `reauth_required`.
 |---|---|
 | `SyncStatusSchema` | `{ mode, binding, healthy, state, unhealthySince, lastSuccessAt, lastError, nextRunAt, staleAt, alertedAt, customerMismatch, held }` |
 | `DirectoryBindingSchema` | `{ provider, customerId, domain, connectedBy, connectedAt }` |
-| `SyncStatusSchema` pending fields | `pendingCount: number \| null` (active in-domain users the pass would link or create, over at most one page of 500), `pendingCountCapped: boolean` (true: show "500+"), `pendingExpiresAt: string \| null` (ISO, consent + 24 h). Set only while `state` is `pending_confirm` (`SyncState` gains `pending_confirm`) |
+| `SyncStatusSchema` pending fields | `pendingCount: number \| null` (active in-domain users the pass would link or create, over at most one page of 500), `pendingCountCapped: boolean` (true: show "500+"), `pendingExpiresAt: string \| null` (ISO, consent + 24 h). Set only while `state` is `pending_confirm` (`SyncState` gains `pending_confirm`). Defaults `null` / `false` / `null` when absent, so a payload from before the confirm step still parses |
 | `HeldSweepSchema` | `GroupRef + { wouldRemove, members, since }` |
 | `DirUserSchema` | `{ id (= Google sub), primaryEmail, suspended, deleted }` |
 | `DirectoryGroupSchema` | `{ groupId, email, name, memberCount }` |
