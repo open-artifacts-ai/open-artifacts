@@ -1,0 +1,7 @@
+// Tests call the handler with fake DISPATCHER and HOSTS bindings, so the
+// runtime config needs no bindings of its own.
+{
+  "name": "oa-dispatch-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01"
+}

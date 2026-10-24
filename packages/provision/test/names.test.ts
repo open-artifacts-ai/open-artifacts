@@ -4,6 +4,7 @@ import {
   ENV_PREFIX,
   ForeignResource,
   hosts,
+  hostsKvTitle,
   isInstallId,
   names,
   newInstallId,
@@ -41,10 +42,15 @@ describe("provision names", () => {
       inventory: "oa-s-inventory",
       broker: "oa-s-auth-broker",
       dispatch: "oa-s-dispatch",
+      hosts: "oa-s-hosts",
       turnstile: "oa-s-turnstile",
     });
     expect(platformNames("prod").turnstile).toBe("oa-p-turnstile");
     expect(platformNames("prod").db).toBe("oa-p-platform");
+    expect(platformNames("prod").hosts).toBe("oa-p-hosts");
+    // Create and delete write HOSTS under the same title the dispatch Worker binds.
+    expect(hostsKvTitle("staging")).toBe(platformNames("staging").hosts);
+    expect(hostsKvTitle("prod")).toBe(platformNames("prod").hosts);
     for (const env of ["staging", "prod"] as const) {
       const other = env === "staging" ? "prod" : "staging";
       for (const v of Object.values(platformNames(env))) {

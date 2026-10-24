@@ -60,6 +60,87 @@ Namespace `oa-spike-staging`, dispatch Worker `oa-s-spike-dispatch` (account scr
 - Release records: `create` uploads and applies only the release's own files, never the local checkout. Those files are the modules, the assets, the server template, the D1 migrations and the Welcome artifact text. Each one is checked against the release record. The record names its `env` and `version`, and is signed with Ed25519 over `"oa-release-v1\n" + env + "\n" + canonicalJson(record)`, then verified against `RELEASE_PUBKEY[env]`. A downgrade below an install's current version is refused.
 - Gates: `PROD_UNLOCKED`, `ALLOW_ACCOUNT_TARGET`, `RELEASE_PUBKEY` and `FLOOR_MIN_SEQ` are code constants in `packages/provision/src/internal/gates.ts`. The package does not export them, and no option can set them. Prod stays locked (`ProdLocked`) until a separate one-line PR, after the key ceremony, sets the real per-env public keys and flips `PROD_UNLOCKED`.
 
+## Dispatch Worker: one-time deploy per env (Task 6, gated)
+
+`apps/dispatch` maps the request host (lowercased, one trailing dot stripped, port ignored) to an install id in `HOSTS` and forwards the original request to `oa-<p>-<id>` in the env's dispatch namespace. A miss, a value that isn't an install id, a KV or binding error, a deleted script and a crashing install all get the same plain `404 Not found`. On an error it logs `dispatch failed <category> <host>`, where category is `kv`, `not_found` (no such script) or `exception`. It never logs the error text, the URL or headers. Observability (Workers Logs) is off in each env and must stay off, because it would record full URLs.
+
+The repo config has no routes, custom domains or `workers.dev`, and no top-level name, so a deploy without `--env` is refused (tests pin all of it). Routing is wired once per env by this step. **The Manager and the user run it by hand; CI never does.**
+
+| Env | Worker | Namespace | HOSTS KV title | Config placeholder |
+|---|---|---|---|---|
+| staging | `oa-s-dispatch` | `oa-staging` | `oa-s-hosts` | `{{HOSTS_KV_ID_STAGING}}` |
+| prod | `oa-p-dispatch` | `oa-prod` | `oa-p-hosts` | `{{HOSTS_KV_ID_PROD}}` |
+
+The four routes (two per env, one per tenant zone):
+
+| Env | Zone | Route | Worker |
+|---|---|---|---|
+| staging | `open-artifacts-staging.app` | `*.open-artifacts-staging.app/*` | `oa-s-dispatch` |
+| staging | `open-artifacts-staging.page` | `*.open-artifacts-staging.page/*` | `oa-s-dispatch` |
+| prod | `open-artifacts.app` | `*.open-artifacts.app/*` | `oa-p-dispatch` |
+| prod | `open-artifacts.page` | `*.open-artifacts.page/*` | `oa-p-dispatch` |
+
+**Platform hosts on the tenant zones** (the auth broker at `auth.<app zone>`, and any later one) must be attached as a Custom Domain, which takes precedence over routes, or as an exact route (`auth.$APP/*`). Never rely on a wildcard. Attach them before or with step 6, because the wildcard route sends anything unattached to dispatch, which returns 404. Their slugs are reserved (`RESERVED_SLUGS`), so no install can hold them.
+
+Steps, per env. Set only `ENV`; everything else is derived from it:
+
+```sh
+case "$ENV" in
+  staging) P=s; APP=open-artifacts-staging.app; PAGE=open-artifacts-staging.page ;;
+  prod)    P=p; APP=open-artifacts.app;         PAGE=open-artifacts.page ;;
+  *) echo "ENV must be staging or prod" >&2; exit 1 ;;
+esac
+UP=$(printf %s "$ENV" | tr a-z A-Z)
+```
+
+1. Preconditions: the namespace `oa-$ENV` and the `oa-$P-hosts` KV namespace exist (create's preflight needs both anyway).
+2. Build from a clean checkout of the reviewed commit. `@oa/provision/names` resolves to `packages/provision/src/names.ts` under wrangler (the `workerd` export condition), so the bundle never uses a stale `dist`. The build is still needed for the typecheck and tests:
+   ```sh
+   git status --porcelain | grep -q . && { echo "dirty checkout" >&2; exit 1; }
+   pnpm install --frozen-lockfile && pnpm --filter @oa/provision build && pnpm --filter @oa/dispatch test
+   ```
+3. Deploy with the provisioning token. Fill only this env's placeholder into a gitignored copy of the config, deploy it, then remove the copy:
+   ```sh
+   cd apps/dispatch
+   HOSTS_ID=$(pnpm exec wrangler kv namespace list | jq -r --arg t "oa-$P-hosts" '.[] | select(.title == $t) | .id')
+   test -n "$HOSTS_ID" \
+     && sed "s/{{HOSTS_KV_ID_$UP}}/$HOSTS_ID/" wrangler.jsonc > wrangler.deploy.jsonc \
+     && pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env "$ENV" \
+     && rm wrangler.deploy.jsonc
+   ```
+   Then check that the deployed binding is the right namespace: the Worker's `HOSTS` id must be the namespace titled `oa-$P-hosts`. `CF_ACCOUNT_ID` is the hosted account's id, and `CF_API_TOKEN` is the env's provisioning token read from the keychain (never echoed):
+   ```sh
+   CF_ACCOUNT_ID=<the hosted account id>
+   CF_API_TOKEN=$(security find-generic-password -s "oa-hosted-$ENV" -w)
+   BOUND=$(curl -sS -H "Authorization: Bearer $CF_API_TOKEN" \
+     "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/oa-$P-dispatch/settings" \
+     | jq -r '.result.bindings[] | select(.name == "HOSTS") | .namespace_id')
+   TITLE=$(curl -sS -H "Authorization: Bearer $CF_API_TOKEN" \
+     "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/storage/kv/namespaces/$BOUND" | jq -r .result.title)
+   test "$TITLE" = "oa-$P-hosts" || { echo "HOSTS bound to $TITLE" >&2; exit 1; }
+   ```
+   The deploy output must name `oa-$P-dispatch` with `DISPATCHER (oa-$ENV)`, `HOSTS` and `OA_ENV ("$ENV")`, and no routes or workers.dev URL.
+4. Create a short-lived zone token (expires within the day), scoped to the env's two zones only, with Zone Read, Zone Settings Edit, DNS Edit and Workers Routes Edit. Verify it (`GET /user/tokens/verify`) before any write.
+5. HTTPS hardening, on each of the two zones (`PATCH /zones/<zone_id>/settings/<name>`): `ssl` = `strict` (Full (strict)), `always_use_https` = `on`, `min_tls_version` = `1.2`. Turn on HSTS (`security_header`) once every host on the zone is confirmed HTTPS-only; it is hard to undo.
+6. On each of the two zones, add one proxied wildcard record, `AAAA * 100::` with `proxied: true` (`POST /zones/<zone_id>/dns_records`); refuse if a `*` record already exists that isn't this one. Then add the route (`POST /zones/<zone_id>/workers/routes`): `{"pattern": "*.$APP/*", "script": "oa-$P-dispatch"}` on the app zone and `{"pattern": "*.$PAGE/*", "script": "oa-$P-dispatch"}` on the page zone.
+7. Revoke the zone token.
+8. Check, on both zones:
+   ```sh
+   for Z in "$APP" "$PAGE"; do
+     for H in "nope.$Z" "www.$Z" "$Z"; do
+       test "$(curl -sS -o /tmp/body -w '%{http_code}' "https://$H/")" = 404 && test "$(cat /tmp/body)" = "Not found" \
+         || echo "FAIL https://$H/"
+     done
+     test "$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' "http://nope.$Z/")" = "301 https://nope.$Z/" \
+       || echo "FAIL http://nope.$Z/ does not redirect to https"
+   done
+   curl -sS -o /dev/null -w '%{http_code}\n' "https://auth.$APP/"   # the broker's answer, not dispatch's 404 "Not found"
+   ```
+   The bare apex has no record from this step, so it may fail to resolve instead of returning 404. Either result is fine; reaching an install is not. Task 9's smoke then checks a real install's host on each zone.
+9. CPU, after some traffic: CPU time for `oa-$P-dispatch` must stay under 1 ms at both p50 and p99 (Global Constraints). Read it from the GraphQL Analytics API (`workersInvocationsAdaptive`, `filter: { scriptName: "oa-$P-dispatch" }`, `quantiles { cpuTimeP50 cpuTimeP99 }`, in microseconds), or the Worker's Metrics tab. It can't be measured locally, because workerd's clock doesn't advance without I/O.
+
+Unmapping and slug purges: dispatch reads HOSTS with `cacheTtl: 60`, so an edge can serve a removed mapping for up to about 60 s plus KV propagation. `delete` deletes the user script right after the unmap (`packages/provision/src/wfp.ts`: HOSTS keys at line 2792, script at line 2804, then KV, R2 and D1), so a stale mapping hits a missing script and gets the 404, not a half-deleted install. **A slug purge (freeing a deleted install's hosts for reuse) must wait at least 2 minutes after the unmap**, so no edge still maps the host to the old id when a new install takes it.
+
 ## Hosted release files (T3b)
 
 - The stored record is `{ "record": "<canonicalJson(record)>", "signature": "<base64url>" }`. The signature covers `"oa-release-v1\n" + env + "\n" + record` (the exact string). Readers verify that string, parse it refusing duplicate keys (objects built with a null prototype), and require it to re-serialize byte for byte.

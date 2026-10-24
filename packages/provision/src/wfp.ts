@@ -53,7 +53,6 @@ import {
 } from "./metadata.js";
 import {
   assertOwnResource,
-  ENV_PREFIX,
   type Env,
   ForeignResource,
   hosts,
@@ -141,7 +140,7 @@ export const HOSTED_DOMAINS: Readonly<
 });
 
 /** The platform HOSTS KV namespace title (host -> install id). */
-export const hostsKvTitle = (env: Env): string => `${ENV_PREFIX[env]}hosts`;
+export const hostsKvTitle = (env: Env): string => platformNames(env).hosts;
 
 export interface WfpCreateInput extends CreateInput {
   bundle: BundleVariant;

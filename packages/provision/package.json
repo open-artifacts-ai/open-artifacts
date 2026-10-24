@@ -13,6 +13,12 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./names": {
+      "types": "./dist/names.d.ts",
+      "workerd": "./src/names.ts",
+      "import": "./dist/names.js",
+      "default": "./dist/names.js"
     }
   },
   "files": [

@@ -79,6 +79,7 @@ export function platformNames(env: Env): {
   inventory: string;
   broker: string;
   dispatch: string;
+  hosts: string;
   turnstile: string;
 } {
   if (!Object.hasOwn(ENV_PREFIX, env)) throw new ForeignResource("", env);
@@ -91,6 +92,8 @@ export function platformNames(env: Env): {
     inventory: `${p}inventory`,
     broker: `${p}auth-broker`,
     dispatch: `${p}dispatch`,
+    // HOSTS KV (host -> install id): written by create/delete, read by dispatch.
+    hosts: `${p}hosts`,
     // The one Turnstile widget of the env (created once by Task 8's init).
     turnstile: `${p}turnstile`,
   };

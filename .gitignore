@@ -6,6 +6,7 @@ dist-assets/
 .superpowers/
 logs/
 apps/server/wrangler.jsonc
+apps/dispatch/wrangler.deploy.jsonc
 apps/server/src/version.gen.ts
 apps/server/src/mcp/skill.generated.ts
 apps/server/src/mcp/upgrade.generated.ts
