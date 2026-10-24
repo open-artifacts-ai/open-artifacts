@@ -25,9 +25,9 @@
     "dist"
   ],
   "scripts": {
-    "build": "pnpm --filter @oa/shared build && tsc -b",
-    "test": "pnpm --filter @oa/shared build && vitest run",
-    "typecheck": "pnpm --filter @oa/shared build && tsc --noEmit -p tsconfig.typecheck.json"
+    "build": "pnpm --filter @oa/shared --filter @oa/auth-core build && tsc -b",
+    "test": "pnpm --filter @oa/shared --filter @oa/auth-core build && vitest run",
+    "typecheck": "pnpm --filter @oa/shared --filter @oa/auth-core build && tsc --noEmit -p tsconfig.typecheck.json"
   },
   "devDependencies": {
     "@types/node": "^22.20.5"
