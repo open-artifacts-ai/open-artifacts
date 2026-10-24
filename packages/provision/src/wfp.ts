@@ -60,6 +60,9 @@ import {
   names,
   newInstallId,
   platformNames,
+  type RegistryEntry,
+  registryEntry,
+  registryKey,
 } from "./names.js";
 import {
   canonicalJson,
@@ -284,13 +287,6 @@ export function brokerKid(x: string): string {
     .update(Buffer.from(x, "base64url"))
     .digest("base64url")
     .slice(0, 16);
-}
-
-interface RegistryEntry {
-  installId: string;
-  origin: string;
-  keys: { kid: string; x: string }[];
-  disabled?: boolean;
 }
 
 function newBrokerKey(): { kid: string; x: string; pkcs8: string } {
@@ -2796,7 +2792,7 @@ export class WfpProvisioner {
         if (regId) {
           assertOwnResource(regTitle, env);
           await this.hold();
-          await cf.kvDeleteKey(regId, id);
+          await cf.kvDeleteKey(regId, registryKey(id));
         }
         if (await cf.scriptExists(target, n.script)) {
           assertOwnResource(n.script, env);
@@ -2895,7 +2891,7 @@ export class WfpProvisioner {
   ): Promise<void> {
     const reg = this.registryKv as { id: string; title: string };
     const origin = brokerOrigin(appHost);
-    const raw = await this.cf.kvGet(reg.id, id);
+    const raw = await this.cf.kvGet(reg.id, registryKey(id));
     const entry: RegistryEntry | null = raw === null ? null : JSON.parse(raw);
     if (entry && (entry.installId !== id || entry.origin !== origin))
       throw new ProvisionRefused(
@@ -2912,13 +2908,15 @@ export class WfpProvisioner {
       secrets.includes("BROKER_SIGNING_KEY");
     if (healthy) return;
     const put = async (keys: RegistryEntry["keys"]) => {
-      if (keys.length > 2)
-        throw new Error("broker registry entry would hold more than 2 keys");
-      const value: RegistryEntry = { installId: id, origin, keys };
+      const value = registryEntry({
+        installId: id,
+        origin,
+        keys,
+        disabled: entry?.disabled === true,
+      });
       assertBrokerOrigin(value.origin, appHost);
-      if (entry?.disabled) value.disabled = true;
       assertOwnResource(reg.title, this.env);
-      await this.cf.kvPut(reg.id, id, JSON.stringify(value));
+      await this.cf.kvPut(reg.id, registryKey(id), JSON.stringify(value));
     };
     let keys = entry?.keys ?? [];
     if (keys.length >= 2)

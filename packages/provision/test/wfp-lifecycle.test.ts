@@ -9,7 +9,12 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cfClient, type Target } from "../src/cf.js";
 import { epochBumpSql, type Template } from "../src/metadata.js";
-import { ENV_PREFIX, type Env, platformNames } from "../src/names.js";
+import {
+  ENV_PREFIX,
+  type Env,
+  platformNames,
+  registryKey,
+} from "../src/names.js";
 import { canonicalJson } from "../src/platform.js";
 import {
   assetEntries,
@@ -1473,6 +1478,16 @@ describe("delete", () => {
       expect(r3, name).toEqual({ id: inst.id, ok: true, state: "deleted" });
       expect(s.fake.writes().length, name).toBe(n);
     }
+  });
+
+  it("delete removes the registry entry under install:<id>, the key the broker reads", async () => {
+    const s = setup();
+    const inst = keep(await s.mk({ brokerEnabled: true }).create(input()));
+    expect([...s.fake.kvValues(s.regId).keys()]).toEqual([
+      registryKey(inst.id),
+    ]);
+    keep(await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id));
+    expect(s.fake.kvValues(s.regId).size).toBe(0);
   });
 
   it("refuses to delete anything whose name isn't names(id)", async () => {
