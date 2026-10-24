@@ -93,17 +93,14 @@ describe("wrangler.jsonc", () => {
     expect(JSON.stringify(cfg)).not.toMatch(/custom_domain|"pattern"|zone_/);
   });
 
-  it("has no top-level name, bindings or vars (a deploy without --env can't run)", () => {
-    for (const k of [
-      "name",
-      "main",
-      "vars",
-      "kv_namespaces",
-      "ratelimits",
-      "dispatch_namespaces",
-      "services",
-    ])
-      expect(cfg).not.toHaveProperty(k);
+  it("has exactly these top-level keys: no name, main, vars or bindings (a deploy without --env can't run)", () => {
+    expect(Object.keys(cfg).sort()).toEqual([
+      "$schema",
+      "compatibility_date",
+      "env",
+      "preview_urls",
+      "workers_dev",
+    ]);
   });
 });
 
