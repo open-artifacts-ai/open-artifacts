@@ -156,10 +156,10 @@ Set `ENV`, `P`, `APP` and `UP` as in the dispatch section. Then, per env:
 
 1. Create the registry KV if provisioning hasn't (`pnpm exec wrangler kv namespace create oa-$P-broker-registry`; skip if `wrangler kv namespace list` shows it).
 2. Build from a clean checkout of the reviewed commit, as in the dispatch section, and run `pnpm --filter @oa/auth-broker test`.
-3. Deploy with the provisioning token, through the wrapper. It runs from `apps/auth-broker`, fills this env's placeholders from the environment into a gitignored `wrangler.deploy.jsonc`, refuses if any `{{..._<ENV>}}` remains, runs `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env <env>` (never an entry point, never `--name`), and removes the copy on exit:
+3. Deploy with the provisioning token, through the wrapper (`deploy-platform-worker.sh`, a hard-coded allowlist of apps). It runs from the app's directory, fills this env's placeholders from the environment into a gitignored `wrangler.deploy.jsonc`, refuses if any `{{..._<ENV>}}` remains, runs `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env <env>` (never an entry point, never `--name`), and removes the copy on exit:
    ```sh
    REG_ID=$(pnpm exec wrangler kv namespace list | jq -r --arg t "oa-$P-broker-registry" '.[] | select(.title == $t) | .id')
-   BROKER_REGISTRY_ID="$REG_ID" scripts/ops/deploy-broker.sh "$ENV"   # prod also needs GOOGLE_CLIENT_ID_PROD
+   BROKER_REGISTRY_ID="$REG_ID" scripts/ops/deploy-platform-worker.sh auth-broker "$ENV"   # prod also needs GOOGLE_CLIENT_ID_PROD
    ```
    The deploy output must name `oa-$P-auth-broker` with `BROKER_REGISTRY`, `RL_BROKER_IP`, `RL_BROKER_INSTALL` and the two vars, and no routes or workers.dev URL.
 4. Set the secrets **after** the Worker exists, never before (`wrangler secret put` on a missing Worker creates one). Never echo them:

@@ -3,10 +3,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { root, sandbox } from "../ci/stubs.ts";
 
-// The broker deploy wrapper: one env argument, always from apps/auth-broker,
+// The platform Worker deploy wrapper: an allowlisted app and one env, always from apps/auth-broker,
 // this env's placeholders filled into a copy that is removed on exit, and
 // exactly `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env <env>`.
-const SCRIPT = join(root, "scripts/ops/deploy-broker.sh");
+const SCRIPT = join(root, "scripts/ops/deploy-platform-worker.sh");
 const APP = join(root, "apps/auth-broker");
 const COPY = join(APP, "wrangler.deploy.jsonc");
 const REG = "0123456789abcdef0123456789abcdef";
@@ -27,9 +27,9 @@ const run = (args: string[], env: Record<string, string> = {}) => {
 
 afterEach(() => expect(existsSync(COPY)).toBe(false));
 
-describe("deploy-broker.sh", () => {
+describe("deploy-platform-worker.sh", () => {
   it("staging: deploys from apps/auth-broker with exact argv, then removes the copy", () => {
-    const r = run(["staging"], { BROKER_REGISTRY_ID: REG });
+    const r = run(["auth-broker", "staging"], { BROKER_REGISTRY_ID: REG });
     expect(r.code).toBe(0);
     expect(r.log).toEqual([
       "pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env staging",
@@ -43,7 +43,7 @@ describe("deploy-broker.sh", () => {
   });
 
   it("prod: fills the registry id and the prod client id", () => {
-    const r = run(["prod"], {
+    const r = run(["auth-broker", "prod"], {
       BROKER_REGISTRY_ID: REG,
       GOOGLE_CLIENT_ID_PROD: CLIENT,
     });
@@ -57,8 +57,23 @@ describe("deploy-broker.sh", () => {
   });
 
   it("refuses a bad env, no env and extra args without deploying", () => {
-    for (const args of [["dev"], [], ["staging", "x"], ["staging", "--name"]]) {
+    for (const args of [
+      ["auth-broker", "dev"],
+      ["auth-broker"],
+      [],
+      ["auth-broker", "staging", "x"],
+      ["auth-broker", "staging", "--name"],
+      ["staging"],
+    ]) {
       const r = run(args, { BROKER_REGISTRY_ID: REG });
+      expect(r.code).toBe(2);
+      expect(r.log).toEqual([]);
+    }
+  });
+
+  it("refuses an app that isn't in the allowlist", () => {
+    for (const a of ["dispatch", "../auth-broker", "apps/auth-broker", ""]) {
+      const r = run([a, "staging"], { BROKER_REGISTRY_ID: REG });
       expect(r.code).toBe(2);
       expect(r.log).toEqual([]);
     }
@@ -66,14 +81,14 @@ describe("deploy-broker.sh", () => {
 
   it("refuses a missing or malformed registry id", () => {
     for (const id of ["", "abc", `${REG}/x`, "../../etc"]) {
-      const r = run(["staging"], { BROKER_REGISTRY_ID: id });
+      const r = run(["auth-broker", "staging"], { BROKER_REGISTRY_ID: id });
       expect(r.code).toBe(1);
       expect(r.log).toEqual([]);
     }
   });
 
   it("prod refuses while the client id placeholder is unfilled", () => {
-    const r = run(["prod"], { BROKER_REGISTRY_ID: REG });
+    const r = run(["auth-broker", "prod"], { BROKER_REGISTRY_ID: REG });
     expect(r.code).toBe(1);
     expect(r.log).toEqual([]);
     expect(r.err).toContain("{{GOOGLE_CLIENT_ID_PROD}}");
@@ -81,7 +96,7 @@ describe("deploy-broker.sh", () => {
   });
 
   it("prod refuses a client id that isn't a Google client id", () => {
-    const r = run(["prod"], {
+    const r = run(["auth-broker", "prod"], {
       BROKER_REGISTRY_ID: REG,
       GOOGLE_CLIENT_ID_PROD: "x/y&z",
     });
