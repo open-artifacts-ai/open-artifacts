@@ -602,6 +602,16 @@ const seedRow = (
   h.run(r.content, r.id);
 };
 
+// The template's latest DO migration tag, derived so a new server DO tag needs
+// no edit here; pinned to the vN shape so a missing tag can't pass vacuously.
+const lastTag = loadTemplate().migrations?.at(-1)?.tag;
+
+describe("template DO migration tag", () => {
+  it("is a vN tag", () => {
+    expect(lastTag).toMatch(/^v\d+$/);
+  });
+});
+
 describe("WfpProvisioner.create", () => {
   it("creates every resource named by install id and maps both hosts", async () => {
     const s = setup();
@@ -616,8 +626,7 @@ describe("WfpProvisioner.create", () => {
       state: "active",
       test_hooks: 0,
       version: "0.23.0",
-      // The template's latest tag (v2 adds UserPresence, unbound, P3 T7a).
-      do_migration_tag: "v2",
+      do_migration_tag: lastTag,
     });
     expect(
       s
@@ -1127,6 +1136,9 @@ describe("WfpProvisioner.create", () => {
       "ARTIFACT_RUNTIME",
       // P3 T7b: UserPresence, bound one release after its class tag (v2).
       "USER_PRESENCE",
+      // P3 T13: DirectorySync (v3) and the directory groups limiter.
+      "DIRECTORY_SYNC",
+      "RL_DIRECTORY",
       "RL_ANON",
       "RL_AUTH",
       "PLAN",
@@ -1759,7 +1771,17 @@ describe("WfpProvisioner.create", () => {
   });
 
   describe("ratelimits (decision 12)", () => {
-    it("RL_ANON gets rlNs and RL_AUTH rlNs + 1; two installs never share an id", async () => {
+    it("each template ratelimit gets rlNs + its index (RL_ANON rlNs, RL_AUTH rlNs + 1); two installs never share an id", async () => {
+      // Derived from the live template, so a new server limiter (P3 T13's
+      // RL_DIRECTORY) needs no edit here.
+      const tplRl = (loadTemplate().ratelimits ?? []) as {
+        name: string;
+        namespace_id: string;
+      }[];
+      expect(tplRl.slice(0, 2).map((r) => r.name)).toEqual([
+        "RL_ANON",
+        "RL_AUTH",
+      ]);
       const s = setup();
       const a = await s.p.create(input("alpha"));
       const b = await s.p.create(input("beta"));
@@ -1780,15 +1802,15 @@ describe("WfpProvisioner.create", () => {
             x.namespace_id,
           ]),
         );
-        expect(by).toEqual({
-          RL_ANON: String(row.rl_ns),
-          RL_AUTH: String(row.rl_ns + 1),
-        });
+        expect(by).toEqual(
+          Object.fromEntries(
+            tplRl.map((r, k) => [r.name, String(row.rl_ns + k)]),
+          ),
+        );
         ids.push(...Object.values(by as Record<string, string>));
       }
-      expect(new Set(ids).size).toBe(4);
-      expect(ids).not.toContain("1001");
-      expect(ids).not.toContain("1002");
+      expect(new Set(ids).size).toBe(2 * tplRl.length);
+      for (const r of tplRl) expect(ids).not.toContain(r.namespace_id);
     });
 
     it.each([
@@ -2362,9 +2384,12 @@ describe("account target is test-only (H-T4b L3)", () => {
 });
 
 describe("Durable Object migration safety (H-T4b L5)", () => {
+  // A step after the live template's own tags (derived, never a literal that
+  // a new server DO tag would collide with).
+  const STEP_TAG = `${lastTag}-step`;
   const withStep = (step: Record<string, unknown>) => {
     const t = structuredClone(loadTemplate());
-    t.migrations = [...(t.migrations ?? []), { tag: "v2", ...step }];
+    t.migrations = [...(t.migrations ?? []), { tag: STEP_TAG, ...step }];
     return t;
   };
   it.each([
@@ -2423,7 +2448,7 @@ describe("Durable Object migration safety (H-T4b L5)", () => {
       }),
     });
     await s.p.create(input());
-    expect(s.rows()[0].do_migration_tag).toBe("v2");
+    expect(s.rows()[0].do_migration_tag).toBe(STEP_TAG);
   });
 });
 
