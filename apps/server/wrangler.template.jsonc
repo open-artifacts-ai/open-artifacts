@@ -29,7 +29,8 @@
   "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "{{KV_ID}}" }],
   "durable_objects": {
     "bindings": [
-      { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" }
+      { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" },
+      { "name": "USER_PRESENCE", "class_name": "UserPresence" }
     ]
   },
   "migrations": [
