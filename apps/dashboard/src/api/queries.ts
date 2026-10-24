@@ -642,6 +642,40 @@ export const useDirectorySync = () =>
     "Couldn't start a sync.",
     directoryInline,
   );
+/**
+ * The connect confirm step (#564): Confirm runs the binding and answers the
+ * new status; Cancel drops the pending connection. 404 (nothing pending) and
+ * 409 (expired) are the caller's to show: both refetch the status.
+ */
+const usePendingDirectory = <T>(fn: () => Promise<T>, failure: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: (s) => {
+      if (s) qc.setQueryData(qk.directory, s);
+    },
+    onError: (e) => {
+      if (e instanceof ApiClientError && (e.status === 404 || e.status === 409))
+        return;
+      failureToast(qc, failure, e);
+    },
+    onSettled: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: qk.directory }),
+        qc.invalidateQueries({ queryKey: qk.me }),
+      ]),
+  });
+};
+export const useConfirmDirectory = () =>
+  usePendingDirectory(
+    () => api.send("POST", R.directoryConfirm, undefined, SyncStatusSchema),
+    "Couldn't add the people.",
+  );
+export const useCancelDirectory = () =>
+  usePendingDirectory(
+    () => api.send("POST", R.directoryCancel, undefined).then(() => null),
+    "Couldn't cancel the connection.",
+  );
 export const useConfirmHeld = () =>
   useInvalidating(
     (groupId: string) =>
