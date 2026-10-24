@@ -337,6 +337,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
   const pdb = fake.seedD1(platformNames(env).db, PLATFORM_SQL);
   const hostsId = fake.seedKv(hostsKvTitle(env));
   const regId = fake.seedKv(platformNames(env).registry);
+  const dirId = fake.seedKv(platformNames(env).directoryRegistry);
   fake.turnstile.set(TS.sitekey, {
     sitekey: TS.sitekey,
     name: platformNames(env).turnstile,
@@ -431,6 +432,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     pdb,
     hostsId,
     regId,
+    dirId,
     rel,
     target,
     db,
@@ -654,6 +656,25 @@ describe("upgrade", () => {
     );
     expect(s.scriptOf(b.id)?.uploads).toBe(bUploads);
     expect(s.row(b.id)).toMatchObject({ version: "0.23.0", state: "active" });
+  });
+
+  it("H-DR: upgrade and rollback keep the broker and directory registry entries equal", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input()));
+    const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
+    expect(raw).toBeTruthy();
+    const up = keep(
+      await s.mk({ brokerEnabled: true }).upgrade(inst.id, "0.24.0"),
+    );
+    expect(up).toMatchObject({ ok: true });
+    expect(s.fake.kvValues(s.regId).get(registryKey(inst.id))).toBe(raw);
+    expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
+    keep(await s.mk({ brokerEnabled: true }).rollback(inst.id));
+    expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(
+      s.fake.kvValues(s.regId).get(registryKey(inst.id)),
+    );
+    expect((await s.p.status(inst.id)).registryDrift).toBeNull();
   });
 
   it("upgrade to an older version, or to the installed one, is refused before any write", async () => {
@@ -1405,19 +1426,22 @@ describe("delete", () => {
       .map((p) =>
         p.includes(`/namespaces/${s.regId}/values/`)
           ? "registry"
-          : /\/scripts\//.test(p)
-            ? "script"
-            : /\/storage\/kv\/namespaces\/[^/]+$/.test(p)
-              ? "kv"
-              : /\/r2\/buckets\/[^/]+\/objects\//.test(p)
-                ? "r2-object"
-                : /\/r2\/buckets\/[^/]+$/.test(p)
-                  ? "r2"
-                  : /\/d1\/database\/[^/]+$/.test(p)
-                    ? "d1"
-                    : p,
+          : p.includes(`/namespaces/${s.dirId}/values/`)
+            ? "directory"
+            : /\/scripts\//.test(p)
+              ? "script"
+              : /\/storage\/kv\/namespaces\/[^/]+$/.test(p)
+                ? "kv"
+                : /\/r2\/buckets\/[^/]+\/objects\//.test(p)
+                  ? "r2-object"
+                  : /\/r2\/buckets\/[^/]+$/.test(p)
+                    ? "r2"
+                    : /\/d1\/database\/[^/]+$/.test(p)
+                      ? "d1"
+                      : p,
       );
     expect(seq).toEqual([
+      "directory",
       "registry",
       "script",
       "kv",
@@ -1478,6 +1502,39 @@ describe("delete", () => {
       expect(r3, name).toEqual({ id: inst.id, ok: true, state: "deleted" });
       expect(s.fake.writes().length, name).toBe(n);
     }
+  });
+
+  it("H-DR: delete removes the directory copy, then the broker entry, and resumes after a failure between them", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input()));
+    const key = registryKey(inst.id);
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(true);
+    expect(s.fake.kvValues(s.dirId).get(key)).toBe(
+      s.fake.kvValues(s.regId).get(key),
+    );
+    s.fake.inject(
+      (m, q) => m === "DELETE" && q.includes(`/namespaces/${s.regId}/values/`),
+      { status: 400, message: "boom broker" },
+    );
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).delete(inst.id, inst.id),
+    );
+    expect(e.message).toMatch(/boom broker/);
+    expect(s.row(inst.id)).toMatchObject({ state: "deleting", lease: null });
+    // L1: the directory is never ahead of sign-in.
+    expect(s.fake.kvValues(s.dirId).has(key)).toBe(false);
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(true);
+    expect(await s.p.status(inst.id)).toMatchObject({
+      registryDrift: { id: inst.id, kind: "missing_directory" },
+    });
+    const r = keep(
+      await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id),
+    );
+    expect(r).toEqual({ id: inst.id, ok: true, state: "deleted" });
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(false);
+    expect(s.fake.kvValues(s.dirId).has(key)).toBe(false);
+    expect((await s.p.status(inst.id)).registryDrift).toBeNull();
   });
 
   it("delete removes the registry entry under install:<id>, the key the broker reads", async () => {
@@ -2042,6 +2099,7 @@ describe("fix round 3", () => {
       lease_until: null,
       leaseLive: false,
       sessionCut: null,
+      registryDrift: null,
     });
     s.db()
       .prepare(

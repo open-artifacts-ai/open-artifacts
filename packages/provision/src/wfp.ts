@@ -7,7 +7,8 @@
 //     email, bundle variant, Turnstile inputs, the signed release record,
 //     the signed release floor, every release file against the record,
 //     secrets, metadata dry run
-//   token check -> resolve platform D1, HOSTS and registry by name
+//   token check -> resolve platform D1, HOSTS, registry and its directory
+//   copy by name
 //   -> floor_seq (the D1 cache of the floor: refuse below it, raise to it)
 //   -> Turnstile widget (GET, codes on only)
 //   -> platform row (creating, rl_ns, hosts, audit; one batch) -> D1 -> R2
@@ -525,6 +526,18 @@ export interface InstallStatus {
     pending: true;
     owedRelativeToRecordedVars: boolean;
   } | null;
+  /**
+   * H-DR: the install's broker registry entry against its directory copy.
+   * Data-free (no key material); null when both agree. Both absent is
+   * `missing_both` only where an entry is owed: an active or upgrading install
+   * (broker on, or a broker_kid recorded) or a creating one past the registry
+   * step.
+   * Reported only, never repaired here: rerun create to resync.
+   */
+  registryDrift: {
+    id: InstallId;
+    kind: "missing_broker" | "missing_directory" | "mismatch" | "missing_both";
+  } | null;
 }
 
 /**
@@ -554,6 +567,8 @@ export class WfpProvisioner {
   private platform!: PlatformDb;
   private hostsKv!: { id: string; title: string };
   private registryKv?: { id: string; title: string };
+  /** H-DR: the directory broker's copy of the registry (it never binds the one above). */
+  private directoryKv?: { id: string; title: string };
 
   constructor(private readonly o: WfpOptions) {
     // F1: the gates live in src/internal/gates.ts; an option never opens one.
@@ -1152,7 +1167,7 @@ export class WfpProvisioner {
     }
   }
 
-  /** H1: the platform D1, HOSTS and registry come from env names, never from ids handed in. */
+  /** H1: the platform D1, HOSTS, registry and directory copy come from env names, never from ids handed in. */
   private async resolvePlatform(): Promise<void> {
     const env = this.env;
     const dbName = platformNames(env).db;
@@ -1175,6 +1190,13 @@ export class WfpProvisioner {
       if (!regId)
         throw new ProvisionRefused(`broker registry KV ${regTitle} not found`);
       this.registryKv = { id: regId, title: regTitle };
+      const dirTitle = platformNames(env).directoryRegistry;
+      const dirId = await this.cf.kvFind(dirTitle);
+      if (!dirId)
+        throw new ProvisionRefused(
+          `directory registry KV ${dirTitle} not found`,
+        );
+      this.directoryKv = { id: dirId, title: dirTitle };
     }
   }
 
@@ -2020,6 +2042,7 @@ export class WfpProvisioner {
       const row = await platform.byId(id);
       if (!row) throw new ProvisionRefused(`install ${id} not found`);
       const cut = this.pendingCut(row);
+      const registryDrift = await this.registryDrift(row);
       return {
         id,
         state: row.state,
@@ -2036,8 +2059,36 @@ export class WfpProvisioner {
                   row.vars !== null &&
                   googleNewlyEnabled(cut.base, JSON.parse(row.vars)),
               },
+        registryDrift,
       };
     }
+  }
+
+  /** H-DR, read only: a namespace that is missing reads as empty; nothing is written. */
+  private async registryDrift(
+    row: InstallRow,
+  ): Promise<InstallStatus["registryDrift"]> {
+    const id = row.id;
+    const read = async (title: string) => {
+      const ns = await this.cf.kvFind(title);
+      return ns ? await this.cf.kvGet(ns, registryKey(id)) : null;
+    };
+    const p = platformNames(this.env);
+    const reg = await read(p.registry);
+    const dir = await read(p.directoryRegistry);
+    if (reg === null && dir === null) {
+      // create puts the entry before it records broker_kid; delete removes it.
+      const owed =
+        row.broker_kid !== null
+          ? ["active", "upgrading", "creating"].includes(row.state)
+          : ["active", "upgrading"].includes(row.state) &&
+            this.o.brokerEnabled === true;
+      return owed ? { id, kind: "missing_both" } : null;
+    }
+    if (reg === dir) return null;
+    if (reg === null) return { id, kind: "missing_broker" };
+    if (dir === null) return { id, kind: "missing_directory" };
+    return { id, kind: "mismatch" };
   }
 
   /** The install's D1 and script, both present, and every secret create sends. */
@@ -2729,7 +2780,7 @@ export class WfpProvisioner {
   /**
    * Review Focus 4: confirm must equal the id. Unmaps first (HOSTS, then the
    * hosts rows), so the dispatch Worker 404s at once; then the registry
-   * entry, the script, KV, R2 (emptied first), D1 and the local token files.
+   * entry's directory copy and then the entry, the script, KV, R2 (emptied first), D1 and the local token files.
    * The row ends deleted and stays, holding the slug. Each step checks first
    * and renews the lock, so a rerun after a partial failure finishes the job.
    */
@@ -2774,6 +2825,8 @@ export class WfpProvisioner {
       const res = await this.resources(row, true);
       const regTitle = platformNames(env).registry;
       const regId = await cf.kvFind(regTitle);
+      const dirTitle = platformNames(env).directoryRegistry;
+      const dirId = await cf.kvFind(dirTitle);
 
       await this.claim(
         row,
@@ -2796,6 +2849,14 @@ export class WfpProvisioner {
         }
         await this.hold();
         await this.platform.unmapHosts(id);
+        // L1: the directory copy first, then the broker entry, so the
+        // directory never trusts a key that sign-in has dropped. A rerun
+        // redoes both.
+        if (dirId) {
+          assertOwnResource(dirTitle, env);
+          await this.hold();
+          await cf.kvDeleteKey(dirId, registryKey(id));
+        }
         if (regId) {
           assertOwnResource(regTitle, env);
           await this.hold();
@@ -2897,6 +2958,7 @@ export class WfpProvisioner {
     appHost: string,
   ): Promise<void> {
     const reg = this.registryKv as { id: string; title: string };
+    const dir = this.directoryKv as { id: string; title: string };
     const origin = brokerOrigin(appHost);
     const raw = await this.cf.kvGet(reg.id, registryKey(id));
     const entry: RegistryEntry | null = raw === null ? null : JSON.parse(raw);
@@ -2913,7 +2975,19 @@ export class WfpProvisioner {
       entry.keys.length === 1 &&
       entry.keys[0]?.kid === kid &&
       secrets.includes("BROKER_SIGNING_KEY");
-    if (healthy) return;
+    // H-DR: the directory copy is the broker entry byte for byte. A run that
+    // stopped between the two writes finishes the copy here.
+    const copy = async (value: string) => {
+      assertOwnResource(dir.title, this.env);
+      await this.cf.kvPut(dir.id, registryKey(id), value);
+    };
+    if (healthy) {
+      if ((await this.cf.kvGet(dir.id, registryKey(id))) !== raw) {
+        await this.hold();
+        await copy(raw as string);
+      }
+      return;
+    }
     const put = async (keys: RegistryEntry["keys"]) => {
       const value = registryEntry({
         installId: id,
@@ -2922,8 +2996,10 @@ export class WfpProvisioner {
         disabled: entry?.disabled === true,
       });
       assertBrokerOrigin(value.origin, appHost);
+      const text = JSON.stringify(value);
       assertOwnResource(reg.title, this.env);
-      await this.cf.kvPut(reg.id, registryKey(id), JSON.stringify(value));
+      await this.cf.kvPut(reg.id, registryKey(id), text);
+      await copy(text);
     };
     let keys = entry?.keys ?? [];
     if (keys.length >= 2)

@@ -69,6 +69,7 @@ import {
   hostsKvTitle,
   NAMESPACES,
   ProdLocked,
+  ProvisionRefused,
   type WfpOptions,
   WfpProvisioner,
 } from "../src/wfp.js";
@@ -463,6 +464,7 @@ function setup(o: SetupOpts = {}) {
   const pdb = seed ? fake.seedD1(platformNames(env).db, PLATFORM_SQL) : "";
   const hostsId = seed ? fake.seedKv(hostsKvTitle(env)) : "";
   const regId = seed ? fake.seedKv(platformNames(env).registry) : "";
+  const dirId = seed ? fake.seedKv(platformNames(env).directoryRegistry) : "";
   // The one Turnstile widget of each env (Task 8 creates it once per env).
   for (const e of ["staging", "prod"] as const)
     fake.turnstile.set(TS[e].sitekey, {
@@ -529,6 +531,7 @@ function setup(o: SetupOpts = {}) {
     pdb,
     hostsId,
     regId,
+    dirId,
     patDir,
     release,
     target,
@@ -903,13 +906,28 @@ describe("WfpProvisioner.create", () => {
       expect(s.fake.writes()).toEqual([]);
     });
 
+    it("H-DR: a missing staging directory registry is refused with zero writes", async () => {
+      const s = setup({ seed: false, brokerEnabled: true });
+      s.fake.seedD1(platformNames("staging").db, PLATFORM_SQL);
+      s.fake.seedKv(hostsKvTitle("staging"));
+      s.fake.seedKv(platformNames("staging").registry);
+      s.fake.seedKv(platformNames("prod").directoryRegistry);
+      const e = await fails(s.p.create(input()));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(
+        /directory registry KV oa-s-directory-registry not found/,
+      );
+      expect(s.fake.writes()).toEqual([]);
+    });
+
     it("a staging create only ever touches the staging platform ids", async () => {
       const s = setup({ brokerEnabled: true });
       const prodDb = s.fake.seedD1(platformNames("prod").db, PLATFORM_SQL);
       const prodHosts = s.fake.seedKv(hostsKvTitle("prod"));
       const prodReg = s.fake.seedKv(platformNames("prod").registry);
+      const prodDir = s.fake.seedKv(platformNames("prod").directoryRegistry);
       await s.p.create(input());
-      for (const id of [prodDb, prodHosts, prodReg])
+      for (const id of [prodDb, prodHosts, prodReg, prodDir])
         expect(s.fake.log.some((e) => e.path.includes(id))).toBe(false);
     });
 
@@ -1029,6 +1047,158 @@ describe("WfpProvisioner.create", () => {
       expect(raw).not.toContain(OWNER);
       for (const v of s.scriptOf(inst.id)?.secrets.values() ?? [])
         expect(raw).not.toContain(v);
+    });
+
+    it("H-DR: create writes the identical entry to the directory registry, after the broker registry", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(input());
+      const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
+      expect(raw).toBeTruthy();
+      expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
+      // The same key the broker reads: install:<id> (registryKey).
+      expect([...s.fake.kvValues(s.dirId).keys()]).toEqual([
+        `install:${inst.id}`,
+      ]);
+      // Every directory put follows a broker put of the same body.
+      const puts = s.fake.log
+        .map((e, i) => ({ ...e, body: s.fake.raw[i]?.body ?? "" }))
+        .filter(
+          (e) =>
+            e.method === "PUT" &&
+            (e.path.includes(`/namespaces/${s.regId}/values/`) ||
+              e.path.includes(`/namespaces/${s.dirId}/values/`)),
+        )
+        .map((e) => ({ dir: e.path.includes(s.dirId), body: e.body }));
+      expect(puts.length).toBe(4);
+      for (let k = 0; k < puts.length; k += 2) {
+        expect(puts[k]?.dir).toBe(false);
+        expect(puts[k + 1]).toEqual({ dir: true, body: puts[k]?.body });
+      }
+      expect(await s.p.status(inst.id)).toMatchObject({ registryDrift: null });
+    });
+
+    it("H-DR: a failure between the broker and directory writes resumes to both", async () => {
+      const s = setup({ brokerEnabled: true });
+      // The final directory put (right after the final broker put) fails.
+      s.fake.inject(
+        (m, p) => m === "PUT" && p.includes(`/namespaces/${s.dirId}/values/`),
+        { status: 400, skip: 1 },
+      );
+      const e = await fails(s.p.create(input()));
+      expect(e.message).toContain(`/namespaces/${s.dirId}/values/`);
+      const [row] = s.rows();
+      expect(row.state).toBe("creating");
+      expect(row.lease).toBeNull();
+      expect(row.broker_kid).toMatch(/^[A-Za-z0-9_-]{16}$/);
+      const reg = s.fake.kvValues(s.regId).get(registryKey(row.id)) as string;
+      expect(JSON.parse(reg).keys).toHaveLength(1);
+      // Stand in for a copy that kept an older value (e.g. mid-rotation).
+      s.fake
+        .kvValues(s.dirId)
+        .set(registryKey(row.id), reg.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
+      expect(await s.p.status(row.id)).toMatchObject({
+        registryDrift: { id: row.id, kind: "mismatch" },
+      });
+      const inst = await s.p.create(input());
+      expect(inst.id).toBe(row.id);
+      // The broker entry was healthy, so it stays; only the copy is rewritten.
+      expect(s.fake.kvValues(s.regId).get(registryKey(row.id))).toBe(reg);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(row.id))).toBe(reg);
+      expect(await s.p.status(row.id)).toMatchObject({ registryDrift: null });
+    });
+
+    it("H-DR: a failure of the first directory write resumes to both", async () => {
+      const s = setup({ brokerEnabled: true });
+      s.fake.inject(
+        (m, p) => m === "PUT" && p.includes(`/namespaces/${s.dirId}/values/`),
+        { status: 400 },
+      );
+      await fails(s.p.create(input()));
+      const [row] = s.rows();
+      expect(s.fake.kvValues(s.regId).has(registryKey(row.id))).toBe(true);
+      expect(s.fake.kvValues(s.dirId).has(registryKey(row.id))).toBe(false);
+      expect(await s.p.status(row.id)).toMatchObject({
+        registryDrift: { id: row.id, kind: "missing_directory" },
+      });
+      await s.p.create(input());
+      const reg = s.fake.kvValues(s.regId).get(registryKey(row.id)) as string;
+      expect(JSON.parse(reg).keys).toHaveLength(1);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(row.id))).toBe(reg);
+    });
+
+    it("H-DR: status reports each drift kind with a data-free shape and never repairs", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(input());
+      expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+      const reg = s.fake.kvValues(s.regId);
+      const dir = s.fake.kvValues(s.dirId);
+      const raw = reg.get(registryKey(inst.id)) as string;
+      const check = async (kind: string) => {
+        const w = s.fake.writes().length;
+        const st = await s.p.status(inst.id);
+        expect(st.registryDrift).toEqual({ id: inst.id, kind });
+        expect(JSON.stringify(st)).not.toContain(JSON.parse(raw).keys[0].x);
+        expect(s.fake.writes().length).toBe(w);
+      };
+      dir.delete(registryKey(inst.id));
+      await check("missing_directory");
+      dir.set(registryKey(inst.id), raw);
+      reg.delete(registryKey(inst.id));
+      await check("missing_broker");
+      reg.set(registryKey(inst.id), raw);
+      dir.set(registryKey(inst.id), raw.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
+      await check("mismatch");
+      // Report only: status left the drift in place.
+      expect(dir.get(registryKey(inst.id))).not.toBe(raw);
+    });
+
+    it("H-DR: an install that should have an entry and is in neither registry is missing_both", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(input());
+      s.fake.kvValues(s.regId).delete(registryKey(inst.id));
+      s.fake.kvValues(s.dirId).delete(registryKey(inst.id));
+      const w = s.fake.writes().length;
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "missing_both",
+      });
+      expect(s.fake.writes().length).toBe(w);
+      // L2: an install mid-upgrade owes its entry like an active one.
+      s.db()
+        .prepare("UPDATE installs SET state = 'upgrading' WHERE id = ?")
+        .run(inst.id);
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "missing_both",
+      });
+      // A creating row past the registry step (broker_kid recorded) too.
+      const s2 = setup({ brokerEnabled: true });
+      await failAtHealth(s2);
+      const [row] = s2.rows();
+      expect(row.state).toBe("creating");
+      expect(row.broker_kid).toBeTruthy();
+      s2.fake.kvValues(s2.regId).delete(registryKey(row.id));
+      s2.fake.kvValues(s2.dirId).delete(registryKey(row.id));
+      expect((await s2.p.status(row.id)).registryDrift).toEqual({
+        id: row.id,
+        kind: "missing_both",
+      });
+    });
+
+    it("H-DR: no drift for a creating row before the registry step, or a deleted install", async () => {
+      const s = setup({ brokerEnabled: true });
+      s.fake.inject((m, p) => m === "POST" && p.endsWith("/r2/buckets"));
+      await fails(s.p.create(input()));
+      const [row] = s.rows();
+      expect(row.state).toBe("creating");
+      expect(row.broker_kid).toBeNull();
+      expect((await s.p.status(row.id)).registryDrift).toBeNull();
+      const inst = await s.p.create(input());
+      await s.p.delete(inst.id, inst.id);
+      expect(s.rows()[0].state).toBe("deleted");
+      expect(s.fake.kvValues(s.regId).has(registryKey(inst.id))).toBe(false);
+      expect(s.fake.kvValues(s.dirId).has(registryKey(inst.id))).toBe(false);
+      expect((await s.p.status(inst.id)).registryDrift).toBeNull();
     });
 
     it("is not written when brokerEnabled is false", async () => {
