@@ -1,6 +1,5 @@
 import { join } from "node:path";
 import type { Fs } from "./cf.ts";
-import type { Signin } from "./signin.ts";
 
 export type State = {
   name?: string;
@@ -39,8 +38,6 @@ export type State = {
   plan?: "free" | "paid" | "unknown";
   /** Tunable Worker vars (PUBLIC_HOME, ...) last deployed; kept across --upgrade. */
   vars?: Record<string, string>;
-  /** The direct sign-in vars last deployed ("" unset); stand in only when the live Worker is unreadable. */
-  signin?: Partial<Signin>;
   /** The PLAN var last rendered into the Worker config (what /healthz reports). */
   planVar?: "free" | "paid";
   /** "Just you, or a team?": team turns the email step on. Absent means solo. */

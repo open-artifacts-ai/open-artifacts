@@ -105,56 +105,81 @@ export function signinProblems(s: Signin): string[] {
   return out;
 }
 
-/** The sign-in flags given this run (an empty value clears); throws on a value invalid on its own. */
+/** Flags whose values the server compares exactly in lowercase. */
+const LOWER: SigninVar[] = [
+  "AUTH_PROVIDERS",
+  "AUTH_DOMAIN_JOIN",
+  "EMAIL_CODE_DOMAIN",
+];
+
+/** The sign-in flags given this run (an empty value clears), trimmed and lowercased where that is safe; throws on a value invalid on its own. */
 export function parseSigninFlags(v: Record<string, unknown>): Partial<Signin> {
   const out: Partial<Signin> = {};
   for (const name of SIGNIN_VARS) {
     const raw = v[SIGNIN[name]];
     if (typeof raw !== "string") continue;
-    const why = valueProblems(name, raw.trim());
+    const t = LOWER.includes(name) ? raw.trim().toLowerCase() : raw.trim();
+    const why = valueProblems(name, t);
     if (why.length)
       throw new Error(`invalid --${SIGNIN[name]}: ${why.join("; ")}`);
-    out[name] = normalize(name, raw);
+    out[name] = normalize(name, t);
   }
   return out;
 }
 
+type Binding = { type: string; name: string; text?: string };
+
 /**
- * The sign-in vars to render: the flag, then the live Worker's value. With an
- * unreadable Worker (`live` undefined) the saved state stands in, and a var
- * with neither a flag nor a saved value is `missing`. Live and saved values
- * are normalized only when valid; invalid ones are kept as is for
- * signinProblems to refuse.
+ * Why a live binding can't be carried forward as is: never trimmed or
+ * rewritten, because the server reads it byte for byte (" member" is invite).
+ * Only the canonical form of a valid value is carried.
  */
-export function resolveSignin(o: {
-  flags: Partial<Signin>;
-  live?: Map<string, string | undefined>;
-  state?: Partial<Signin>;
-}): {
+function liveProblem(name: SigninVar, b: Binding): string | undefined {
+  const fix = `fix it with --${SIGNIN[name]} <value> (empty to remove it)`;
+  if (b.type !== "plain_text")
+    return `${name} is a ${b.type === "secret_text" ? "secret" : `${b.type} binding`} on the Worker, which setup can't check or keep; make it a plain var: ${fix}`;
+  const t = b.text ?? "";
+  // The server reads an empty AUTH_PROVIDERS as no provider at all; the others as unset.
+  if (t === "" && name !== "AUTH_PROVIDERS") return undefined;
+  const why = t === "" ? ["no sign-in at all"] : valueProblems(name, t);
+  if (why.length || normalize(name, t) !== t)
+    return `the deployed ${name} ${JSON.stringify(t)} is not exactly a value the server accepts (${why.length ? why.join("; ") : "padding, case or an empty list item"}); ${fix}`;
+  return undefined;
+}
+
+/**
+ * The sign-in vars to render: the flag, then the live Worker's plain-text
+ * value exactly as deployed. `problems` lists live values that can't be
+ * carried and, when there are none, combinations the server would not serve.
+ */
+export function resolveSignin(o: { flags: Partial<Signin>; live: Binding[] }): {
   values: Signin;
   /** Flags that change a live value: [name, live, flag]. */
   changed: [SigninVar, string, string][];
-  /** Names carried forward from the live Worker. */
-  kept: SigninVar[];
-  missing: SigninVar[];
+  /** Values carried forward from the live Worker: [name, value]. */
+  kept: [SigninVar, string][];
+  problems: string[];
 } {
   const values = {} as Signin;
   const changed: [SigninVar, string, string][] = [];
-  const kept: SigninVar[] = [];
-  const missing: SigninVar[] = [];
+  const kept: [SigninVar, string][] = [];
+  const problems: string[] = [];
   for (const name of SIGNIN_VARS) {
     const flag = o.flags[name];
-    const other = o.live ? o.live.get(name)?.trim() : o.state?.[name];
-    if (flag === undefined && other === undefined && !o.live)
-      missing.push(name);
-    const v = flag ?? other ?? "";
-    values[name] = valueProblems(name, v).length ? v : normalize(name, v);
-    const was = o.live?.get(name)?.trim() ?? "";
-    if (flag !== undefined && o.live && flag !== was)
-      changed.push([name, was, flag]);
-    if (flag === undefined && o.live && was) kept.push(name);
+    const b = o.live.find((x) => x.name === name);
+    const was = b?.type === "plain_text" ? (b.text ?? "") : "";
+    if (flag !== undefined) {
+      values[name] = flag;
+      if (flag !== was) changed.push([name, was, flag]);
+      continue;
+    }
+    const bad = b && liveProblem(name, b);
+    if (bad) problems.push(bad);
+    values[name] = bad ? "" : was;
+    if (!bad && was) kept.push([name, was]);
   }
-  return { values, changed, kept, missing };
+  if (!problems.length) problems.push(...signinProblems(values));
+  return { values, changed, kept, problems };
 }
 
 /** Only the set values: what the rendered config and reports carry. */

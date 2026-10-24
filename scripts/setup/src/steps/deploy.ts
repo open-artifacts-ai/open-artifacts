@@ -146,39 +146,75 @@ function settleVars(state: State, ctx: Ctx, live: Live) {
 type Live = Awaited<ReturnType<typeof workerBindings>> | "unreadable";
 
 /**
- * Settles the direct sign-in vars (flag, then the live Worker; the values
- * saved by the last deploy only when it is unreadable) and sets them in the
- * rendered config: the template has none, so a deploy would drop them.
- * Refuses, before any deploy call, a combination the server would not serve.
+ * The live bindings sign-in is settled from, or why there are none to trust.
+ * An existing Worker is never deployed without them: an unreadable read, or a
+ * 200 with no bindings from a Worker known to be deployed (saved state,
+ * --upgrade), refuses in every mode. Unreadable with no Worker yet
+ * (deployments 404) is a fresh install: nothing to keep.
  */
-function settleSignin(state: State, ctx: Ctx, live: Live): Signin {
-  const { values, changed, kept, missing } = resolveSignin({
-    flags: ctx.opts.signinFlags,
-    live:
-      live === "unreadable"
-        ? undefined
-        : new Map(
-            (live ?? [])
-              .filter((b) => b.type === "plain_text")
-              .map((b) => [b.name, b.text]),
-          ),
-    state: state.signin,
-  });
-  // An --upgrade (stateless CI included) has a Worker whose sign-in a deploy
-  // could drop: refuse. A full setup only warns, like the tunables.
-  if (missing.length) {
-    const m = `could not read the live Worker's sign-in vars and none are saved; pass ${missing.map((k) => `--${SIGNIN[k]}`).join(", ")} (empty for one that is unset) so the deploy keeps them`;
-    if (ctx.opts.upgrade && !ctx.opts.check) throw new NeedInput(m);
-    ctx.notes.push(`warning: ${m}`);
+async function signinLive(
+  state: State,
+  ctx: Ctx,
+  live: Live,
+): Promise<Binding[] | string> {
+  const never =
+    "setup never deploys an existing Worker without its sign-in vars; rerun once the Worker's settings are readable (the token needs Workers Scripts Read)";
+  const known = Boolean(
+    state.workerVersion || state.deployedVersion || ctx.opts.upgrade,
+  );
+  if (live === "unreadable") {
+    const exists =
+      known ||
+      (await currentVersion(ctx.api, ctx.opts.name, state.accountId ?? "").then(
+        (v) => v !== undefined,
+        () => true,
+      ));
+    return exists
+      ? `refusing to deploy: could not read the live Worker's settings; ${never}`
+      : [];
   }
-  const problems = signinProblems(values);
+  // A deployed Worker always has bindings (D1, KV, secrets): none is a partial read.
+  if (live && known && live.length === 0)
+    return `refusing to deploy: the live Worker's settings came back with no bindings; ${never}`;
+  return live ?? [];
+}
+
+type Binding = NonNullable<Awaited<ReturnType<typeof workerBindings>>>[number];
+
+/**
+ * Settles the direct sign-in vars (the flag, then the live Worker's value as
+ * deployed) and sets them in the rendered config: the template has none, so a
+ * deploy would drop them. Throws, before any deploy call, on a live value
+ * that can't be carried or a combination the server would not serve; returns
+ * the unreadable-settings refusal for the caller to raise.
+ */
+async function settleSignin(
+  state: State,
+  ctx: Ctx,
+  live: Live,
+): Promise<{ values: Signin; refuse?: string }> {
+  const bindings = await signinLive(state, ctx, live);
+  if (typeof bindings === "string") {
+    ctx.signin = undefined;
+    return {
+      values: resolveSignin({ flags: ctx.opts.signinFlags, live: [] }).values,
+      refuse: bindings,
+    };
+  }
+  const { values, changed, kept, problems } = resolveSignin({
+    flags: ctx.opts.signinFlags,
+    live: bindings,
+  });
   if (problems.length)
     throw new Error(`refusing to deploy: ${problems.join("; ")}`);
   for (const [k, was, now] of changed)
     ctx.notes.push(
-      `--${SIGNIN[k]} ${now || '""'} differs from the deployed ${k} ${was}; using the flag`,
+      `--${SIGNIN[k]} ${now || '""'} differs from the deployed ${k} ${was || "(unset)"}; using the flag`,
     );
-  if (kept.length) ctx.notes.push(`kept the deployed ${kept.join(", ")}`);
+  if (kept.length)
+    ctx.notes.push(
+      `kept the deployed ${kept.map(([k, v]) => `${k}=${v}`).join(", ")}`,
+    );
   ctx.signin = values;
   if (!ctx.opts.check) {
     const file = join(ctx.root, CONFIG);
@@ -193,7 +229,7 @@ function settleSignin(state: State, ctx: Ctx, live: Live): Signin {
       if (next !== text) ctx.fs.write(file, next);
     }
   }
-  return values;
+  return { values };
 }
 
 /** Sign-in that needs a secret the Worker lacks: a warning, never a refusal. */
@@ -322,7 +358,9 @@ export const deploy: Step = {
     if (ctx.opts.check) {
       const live = await readLive(ctx, state.accountId ?? "");
       const vars = settleVars(state, ctx, live);
-      const signin = setOnly(settleSignin(state, ctx, live));
+      const settled = await settleSignin(state, ctx, live);
+      if (settled.refuse) throw new NeedInput(settled.refuse);
+      const signin = setOnly(settled.values);
       ctx.data = {
         ...ctx.version,
         ...(Object.keys(vars).length ? { vars } : {}),
@@ -350,7 +388,7 @@ export const deploy: Step = {
   async apply(state, ctx) {
     const live = await readLive(ctx, state.accountId ?? "");
     const tuned = settleVars(state, ctx, live);
-    const signin = settleSignin(state, ctx, live);
+    const { values: signin, refuse } = await settleSignin(state, ctx, live);
     const vars = renderedVars(ctx);
     const shown = Object.keys(tuned).length ? { vars: tuned } : {};
     // The version guard ran in prereqs, before anything had a side effect.
@@ -369,6 +407,7 @@ export const deploy: Step = {
       );
     const guard = planGuard(state, ctx, vars, live);
     if (guard) return { status: "action_required", message: guard };
+    if (refuse) return { status: "action_required", message: refuse };
     const have = await listSecrets(ctx);
     const missing = REQUIRED.filter((n) => !have.has(n));
     if (missing.length)
@@ -408,7 +447,6 @@ export const deploy: Step = {
         ...shown,
       };
       state.vars = Object.keys(tuned).length ? tuned : undefined;
-      state.signin = signin;
       return undefined;
     }
     await checkNoTestHooks(ctx);
@@ -423,7 +461,6 @@ export const deploy: Step = {
     state.deployHash = hash;
     state.planVar = ctx.opts.planVar;
     state.vars = Object.keys(tuned).length ? tuned : undefined;
-    state.signin = signin;
     ctx.notes.push(`deployed ${state.deployedVersion}`);
     ctx.data = { deployedVersion: state.deployedVersion, ...ver, ...shown };
     return undefined;

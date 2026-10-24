@@ -413,10 +413,12 @@ export const HELP = `Usage: pnpm oa:setup [options]
                 Refused before deploying: an unknown provider, a malformed domain, a
                 join other than invite or member, or google without both
                 GOOGLE_CLIENT_ID and AUTH_DOMAINS. A missing GOOGLE_CLIENT_SECRET
-                secret only warns. When the live Worker can't be read, the values
-                saved by the last deploy stand in; with none saved, --upgrade stops
-                (action_required) until each flag is passed, and a full setup warns.
-                --check reports data.signin.
+                secret only warns. Flags are trimmed (and lowercased, except ids);
+                a live value is carried byte for byte, and one the server would read
+                differently (padded, wrong case, empty list items, a secret or json
+                binding) is refused: fix it with its flag. A Worker whose settings
+                can't be read (or come back with no bindings) is never deployed
+                (action_required). --check reports data.signin.
   --token-links [--json]  Print each Cloudflare token setup needs (deploy, access,
                 analytics) with its permissions and a link that pre-fills the
                 dashboard form; account and zone come from --account-id/--app-host

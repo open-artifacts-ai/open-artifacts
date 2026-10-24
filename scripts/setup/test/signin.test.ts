@@ -204,7 +204,7 @@ describe("M2: an existing Worker whose settings can't be read is never deployed"
       );
       expect(code).not.toBe(0);
       expect(w.lines.join("\n")).toMatch(
-        /never deploys without (them|its sign-in vars)|could not read/,
+        /setup never deploys an existing Worker without its sign-in vars/,
       );
       expect(deploys(w)).toEqual([]);
       expect(w.deployed()).toBe(before);
@@ -218,7 +218,7 @@ describe("M2: an existing Worker whose settings can't be read is never deployed"
     w.lines.length = 0;
     expect(await run(HOSTS, w.deps, ROOT)).toBe(2);
     expect(line(w, "deploy").message).toMatch(
-      /refusing to deploy: the live Worker's settings came back without its vars/,
+      /refusing to deploy: the live Worker's settings came back with no bindings/,
     );
   });
 });
@@ -397,12 +397,12 @@ describe("rules match the server", () => {
 
   it("resolveSignin: the flag, then the live value as is", () => {
     const live = [
-      { type: "plain_text", name: "AUTH_PROVIDERS", text: "access,google" },
+      { type: "plain_text", name: "AUTH_PROVIDERS", text: "access,email" },
     ];
     const r = resolveSignin({ flags: { AUTH_DOMAINS: "" }, live });
-    expect(r.values.AUTH_PROVIDERS).toBe("access,google");
+    expect(r.values.AUTH_PROVIDERS).toBe("access,email");
     expect(r.values.AUTH_DOMAINS).toBe("");
-    expect(r.kept).toEqual([["AUTH_PROVIDERS", "access,google"]]);
+    expect(r.kept).toEqual([["AUTH_PROVIDERS", "access,email"]]);
     expect(r.problems).toEqual([]);
   });
 });
