@@ -13,6 +13,7 @@ import { shares } from "../src/db/schema.js";
 import { INSTRUCTIONS } from "../src/mcp/instructions.js";
 import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
 import manifest from "../src/mcp/tool-manifest.json";
+import { setUserStatus } from "../src/services/members.js";
 import { login } from "./helpers.js";
 import {
   APP,
@@ -702,5 +703,28 @@ describe("MCP spaces (P3 T10)", () => {
   it("the skill lists list_spaces and the instructions say owner or space manager", () => {
     expect(TOOL_DEFS.map((t) => t.name)).toContain("list_spaces");
     expect(INSTRUCTIONS("free")).toContain("owner or space manager");
+  });
+});
+
+describe("content revocation (P3 T11)", () => {
+  it("with content_revocation, download URLs bind the agent's user; a suspension refuses them", async () => {
+    const u = await login(`mcp-rev-${tag}@x.com`);
+    const rev = E({ FEATURES: "content_revocation" });
+    const c = await connect((await createPat(env, u.userId, "rev")).token, {
+      env: rev,
+    });
+    const { id } = await publishMd(c, "# rev");
+    const { downloadUrl } = sc<{ downloadUrl: string }>(
+      await tool(c, "get_artifact", { id, includeContent: false }),
+    );
+    const url = new URL(downloadUrl);
+    expect(url.pathname).toMatch(
+      new RegExp(`^/c/\\d+\\.${u.userId}\\.\\d+\\.[A-Za-z0-9_-]{43}/${id}/`),
+    );
+    const get = () =>
+      callWorker(new Request(`http://content.localhost${url.pathname}?dl=1`));
+    expect((await get()).status).toBe(200);
+    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
+    expect((await get()).status).toBe(404);
   });
 });

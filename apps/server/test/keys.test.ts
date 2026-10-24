@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { deriveKey, KEY_LABELS } from "../src/auth/keys.js";
+import { contentKey, deriveKey, KEY_LABELS } from "../src/auth/keys.js";
 
 const secret = { SESSION_SECRET: "x".repeat(32) };
 
@@ -12,7 +12,18 @@ describe("deriveKey", () => {
   });
 
   test("labels give distinct keys", async () => {
-    const ks = await Promise.all(KEY_LABELS.map((l) => deriveKey(secret, l)));
+    // One secret for both kinds here, so every label is compared.
+    const both = {
+      SESSION_SECRET: secret.SESSION_SECRET,
+      CONTENT_SIGNING_KEY: secret.SESSION_SECRET,
+    };
+    const ks = await Promise.all(
+      KEY_LABELS.map((l) =>
+        l === "oa:content-url" || l === "oa:upload"
+          ? contentKey(both, l)
+          : deriveKey(both, l),
+      ),
+    );
     expect(new Set(ks).size).toBe(KEY_LABELS.length);
     expect(KEY_LABELS).toEqual([
       "oa:session",
@@ -21,7 +32,23 @@ describe("deriveKey", () => {
       "oa:login-codes",
       "oa:code-email",
       "oa:audit-cursor",
+      "oa:content-url",
+      "oa:upload",
     ]);
+  });
+
+  test("content keys derive from CONTENT_SIGNING_KEY, never equal it, and need 32+ chars", async () => {
+    const c = { CONTENT_SIGNING_KEY: "c".repeat(32) };
+    const url = await contentKey(c, "oa:content-url");
+    const up = await contentKey(c, "oa:upload");
+    expect(url).not.toBe(up);
+    expect(url).not.toBe(c.CONTENT_SIGNING_KEY);
+    expect(
+      await contentKey({ CONTENT_SIGNING_KEY: "d".repeat(32) }, "oa:upload"),
+    ).not.toBe(up);
+    await expect(
+      contentKey({ CONTENT_SIGNING_KEY: "short" }, "oa:upload"),
+    ).rejects.toThrow("CONTENT_SIGNING_KEY must be at least 32 characters");
   });
 
   test("depends on the secret", async () => {

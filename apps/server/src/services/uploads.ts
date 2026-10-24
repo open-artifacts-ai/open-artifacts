@@ -10,6 +10,7 @@ import {
   type UploadCreateInput,
 } from "@oa/shared";
 import { authorize, callerOf, capOfCaller } from "../auth/authz.js";
+import { contentKey } from "../auth/keys.js";
 import { orgCan } from "../auth/policy.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
@@ -19,12 +20,8 @@ const CONTENT_TYPE =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(\s*;\s*[a-z0-9_.+-]+=("[^"\\\r\n]*"|[a-z0-9_.+-]+))*$/i;
 const notFound = () => new ApiError("not_found", "Not found");
 
-function signingKey(env: Env): string {
-  const k = env.CONTENT_SIGNING_KEY;
-  if (typeof k !== "string" || k.length < 32)
-    throw new Error("CONTENT_SIGNING_KEY must be at least 32 characters");
-  return k;
-}
+/** Upload URLs: the "oa:upload" subkey (never the content-token one). */
+const signingKey = (env: Env) => contentKey(env, "oa:upload");
 
 /**
  * Registers an upload and returns a signed PUT URL (valid LIMITS.uploadUrlTtlSec).
@@ -67,7 +64,7 @@ export async function createUpload(
       path: input.path,
       reason: "invalid_content_type",
     });
-  const key = signingKey(env);
+  const key = await signingKey(env);
   const db = env.DB;
   const stmts: D1PreparedStatement[] = [];
   let artifactId = input.artifactId;
@@ -150,7 +147,7 @@ export async function putUpload(
 ): Promise<void> {
   if (!isId(uploadId) || !/^\d{1,12}$/.test(exp) || !sig) throw notFound();
   if (Number(exp) * 1000 <= now) throw notFound();
-  if (!(await hmacVerify(signingKey(env), `${uploadId}:${exp}`, sig)))
+  if (!(await hmacVerify(await signingKey(env), `${uploadId}:${exp}`, sig)))
     throw notFound();
   const row = await env.DB.prepare(
     "select r2_key, size, content_type from uploads where id = ? and consumed = 0",

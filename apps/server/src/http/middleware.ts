@@ -19,7 +19,7 @@ import {
   sessionCookieName,
 } from "../auth/session.js";
 import type { Env } from "../env.js";
-import { getUser, getUserWithEpoch } from "../services/users.js";
+import { getUserWithEpoch } from "../services/users.js";
 import { frameOpts, isEmbedRequest } from "./embed.js";
 import { ApiError, appOrigin, toErrorResponse } from "./errors.js";
 
@@ -35,6 +35,8 @@ export type AppVariables = {
   authMethod: AuthMethod | null;
   /** Session expiry (ms) for a cookie session; null otherwise. */
   sessionExp: number | null;
+  /** The user's session_epoch, read with the user row (content-url binds it, P3 T11); null when anonymous. */
+  sessionEpoch: number | null;
   /**
    * When this request's authorization began (ms): stamped by the policy gate
    * before the session read, so a revocation written after any access read
@@ -194,6 +196,7 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
   c.set("tokenId", null);
   c.set("authMethod", null);
   c.set("sessionExp", null);
+  c.set("sessionEpoch", null);
   // Embed mode: anonymous regardless of cookie or Bearer (a downgrade only).
   if (isEmbedRequest(c.req.raw)) return;
   const bearer = BEARER.exec(c.req.header("authorization") ?? "");
@@ -205,12 +208,13 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       ctx = undefined;
     }
     const pat = await verifyPat(c.env, bearer[1] ?? "", ctx);
-    const user = pat ? await getUser(c.env, pat.userId) : null;
-    if (pat && user) {
-      c.set("user", user);
+    const row = pat ? await getUserWithEpoch(c.env, pat.userId) : null;
+    if (pat && row) {
+      c.set("user", row.user);
       c.set("tokenLabel", pat.label);
       c.set("tokenId", pat.tokenId);
       c.set("authMethod", "pat");
+      c.set("sessionEpoch", row.sessionEpoch);
     }
   } else {
     const s = await readSession(c.env, getCookie(c, sessionCookieName(c.env)));
@@ -228,6 +232,7 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       else c.set("user", row.user);
       c.set("authMethod", s.p);
       c.set("sessionExp", s.exp);
+      c.set("sessionEpoch", row.sessionEpoch);
     }
   }
 }

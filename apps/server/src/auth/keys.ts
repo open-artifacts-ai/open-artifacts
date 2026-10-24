@@ -14,8 +14,15 @@ export const KEY_LABELS = [
   "oa:login-codes",
   "oa:code-email",
   "oa:audit-cursor",
+  // From CONTENT_SIGNING_KEY instead (contentKey below), so a content token
+  // and an upload signature can never verify as each other.
+  "oa:content-url",
+  "oa:upload",
 ] as const;
 export type KeyLabel = (typeof KEY_LABELS)[number];
+/** The labels keyed by CONTENT_SIGNING_KEY (contentKey); every other label is SESSION_SECRET's. */
+export type ContentKeyLabel = "oa:content-url" | "oa:upload";
+type SessionKeyLabel = Exclude<KeyLabel, ContentKeyLabel>;
 
 const HKDF_SALT = "open-artifacts/hkdf/v1";
 const enc = new TextEncoder();
@@ -49,11 +56,32 @@ async function derive(secret: string, label: KeyLabel): Promise<string> {
  */
 export function deriveKey(
   env: Pick<Env, "SESSION_SECRET">,
-  label: KeyLabel,
+  label: SessionKeyLabel,
 ): Promise<string> {
   const secret = env.SESSION_SECRET;
   if (typeof secret !== "string" || secret.length === 0)
     return Promise.reject(new Error("SESSION_SECRET is not set"));
+  return cached(secret, label);
+}
+
+/**
+ * A per-purpose key derived from CONTENT_SIGNING_KEY (same HKDF as
+ * deriveKey): "oa:content-url" for content tokens and capture headers,
+ * "oa:upload" for upload URLs. The raw secret signs nothing.
+ */
+export function contentKey(
+  env: Pick<Env, "CONTENT_SIGNING_KEY">,
+  label: ContentKeyLabel,
+): Promise<string> {
+  const k = env.CONTENT_SIGNING_KEY;
+  if (typeof k !== "string" || k.length < 32)
+    return Promise.reject(
+      new Error("CONTENT_SIGNING_KEY must be at least 32 characters"),
+    );
+  return cached(k, label);
+}
+
+function cached(secret: string, label: KeyLabel): Promise<string> {
   const id = `${label}\u0000${secret}`;
   let k = cache.get(id);
   if (!k) {

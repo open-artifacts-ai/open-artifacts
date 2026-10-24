@@ -2,6 +2,8 @@ import { env } from "cloudflare:workers";
 import { newId, R, UploadCreatedSchema } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { contentKey } from "../src/auth/keys.js";
+import { verifyContentToken } from "../src/content/signing.js";
 import { putUpload, sweepUploads } from "../src/services/uploads.js";
 import { hmacSign } from "../src/util/crypto.js";
 import { api, errOf, login } from "./helpers.js";
@@ -159,7 +161,7 @@ describe("uploads", () => {
     expect((await put(u.toString(), "hello")).status).toBe(404);
     const exp = String(Math.floor(Date.now() / 1000) - 10);
     const sig = await hmacSign(
-      env.CONTENT_SIGNING_KEY,
+      await contentKey(env, "oa:upload"),
       `${up.uploadId}:${exp}`,
     );
     const old = new URL(up.url);
@@ -360,5 +362,54 @@ describe("sweepUploads", () => {
     const kept = await upload(fresh.uploadId);
     expect(kept).not.toBeNull();
     expect(await env.FILES.head(kept?.r2_key ?? "")).not.toBeNull();
+  });
+});
+
+describe("per-purpose keys from CONTENT_SIGNING_KEY", () => {
+  const exp = () => String(Math.floor(Date.now() / 1000) + 300);
+
+  it("an upload signature made with the content-url key (or the raw secret) is refused", async () => {
+    const up = await create(alice.cookie, { path: "k.txt", size: 2 });
+    const e = exp();
+    for (const key of [
+      await contentKey(env, "oa:content-url"),
+      env.CONTENT_SIGNING_KEY,
+    ]) {
+      const u = new URL(up.url);
+      u.searchParams.set("exp", e);
+      u.searchParams.set("sig", await hmacSign(key, `${up.uploadId}:${e}`));
+      expect((await put(u.toString(), "hi")).status).toBe(404);
+    }
+    // The same forgery with the upload key is accepted: only the key differs.
+    const u = new URL(up.url);
+    u.searchParams.set("exp", e);
+    u.searchParams.set(
+      "sig",
+      await hmacSign(await contentKey(env, "oa:upload"), `${up.uploadId}:${e}`),
+    );
+    expect((await put(u.toString(), "hi")).status).toBe(204);
+  });
+
+  it("a content token made with the upload key (or the raw secret) is refused", async () => {
+    const id = newId();
+    const e = exp();
+    const token = async (key: string) =>
+      `${e}.${await hmacSign(key, `${id}:1:${e}`)}`;
+    for (const key of [
+      await contentKey(env, "oa:upload"),
+      env.CONTENT_SIGNING_KEY,
+    ])
+      expect(
+        await verifyContentToken(env, await token(key), id, 1, false),
+      ).toBeNull();
+    expect(
+      await verifyContentToken(
+        env,
+        await token(await contentKey(env, "oa:content-url")),
+        id,
+        1,
+        false,
+      ),
+    ).toEqual({ mode: "frame", viewer: null });
   });
 });
