@@ -1,6 +1,6 @@
 // Hosted P4 Task 16: "Reset Google link…" in the Members row menu (Design
 // D11). The owner resets Bob; an admin sees another admin's row (Erin) read-only;
-// a stale owner_only 403 shows the owner copy. 1280 and 390, light and dark.
+// a stale page's owner_only 403 shows on that row. 1280 and 390, light and dark.
 import { expect, type Page, test } from "@playwright/test";
 
 const open = async (page: Page, hosted = "1") => {
@@ -79,31 +79,32 @@ for (const scheme of ["light", "dark"] as const)
         );
       });
 
-      test("a stale owner_only 403 shows the owner copy", async ({
+      test("a stale page: an admin's Reset on another admin is refused on that row", async ({
         page,
       }, info) => {
-        // The page still thinks you're the owner; the server says otherwise.
-        // The mocks run in a service worker, so answer before fetch reaches it.
+        // You're an admin (the mock refuses with owner_only), but the page
+        // still has you as the owner from before: the first /me says owner.
         await page.addInitScript(() => {
           const real = window.fetch.bind(window);
-          window.fetch = (input, init) => {
+          let first = true;
+          window.fetch = async (input, init) => {
+            const res = await real(input, init);
             const r = new Request(input, init);
-            if (r.method !== "DELETE" || !r.url.endsWith("/identities/google"))
-              return real(input, init);
-            return Promise.resolve(
-              Response.json(
-                {
-                  error: {
-                    code: "owner_only",
-                    message: "Only the owner can reset an admin's link",
-                  },
-                },
-                { status: 403 },
-              ),
+            if (
+              !first ||
+              r.method !== "GET" ||
+              !new URL(r.url).pathname.endsWith("/api/v1/me")
+            )
+              return res;
+            first = false;
+            const me = await res.clone().json();
+            return Response.json(
+              { ...me, user: { ...me.user, role: "owner" } },
+              { status: res.status, headers: res.headers },
             );
           };
         });
-        await open(page);
+        await open(page, "1,admin");
         const menu = await menuFor(page, "Erin Admin");
         await menu
           .getByRole("menuitem", { name: "Reset Google link…" })
@@ -112,12 +113,17 @@ for (const scheme of ["light", "dark"] as const)
           .getByRole("alertdialog")
           .getByRole("button", { name: "Reset link" })
           .click();
-        await expect(
-          page.getByText(
-            "Only the owner can reset another admin's Google link.",
-          ),
-        ).toBeVisible();
+        // Inline under Erin's row, warning text, a polite status.
+        const erin = page.locator("li", { hasText: "Erin Admin" });
+        const note = erin.getByRole("status");
+        await expect(note).toHaveText(
+          "Only the owner can reset another admin's Google link.",
+        );
         await expect(page.getByRole("alertdialog")).toHaveCount(0);
+        // The refetch turned the row read-only (you're an admin after all).
+        await expect(
+          erin.getByRole("button", { name: "More for Erin Admin" }),
+        ).toHaveCount(0);
         await settle(page);
         await shot(
           page,

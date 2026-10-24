@@ -142,9 +142,10 @@ it("a stale owner_only on Reset Google link: inline on the row", async () => {
       name: "Reset link",
     }),
   );
-  expect(
-    await within(await row(BOB.name)).findByText(RESET_COPY),
-  ).toBeVisible();
+  const note = await within(await row(BOB.name)).findByText(RESET_COPY);
+  // Under that row, warning text, a polite status (like the other refusals).
+  expect(note).toHaveAttribute("role", "status");
+  expect(note.className).toContain("text-[var(--oa-warning)]");
 });
 
 describe("the muted line under Members", () => {

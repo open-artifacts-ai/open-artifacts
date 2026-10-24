@@ -412,7 +412,7 @@ function Row({
       {denied && (
         <p
           role="status"
-          className={`col-span-full m-0 text-[length:var(--oa-text-sm)] ${muted}`}
+          className="col-span-full m-0 text-[length:var(--oa-text-sm)] text-[var(--oa-warning)]"
         >
           {denied}
         </p>
