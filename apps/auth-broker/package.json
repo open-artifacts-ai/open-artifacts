@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "pnpm --filter @oa/provision build && vitest run",
+    "test": "pnpm --filter @oa/provision build && vitest run && vitest run -c vitest.node.config.ts",
     "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit"
   },
   "dependencies": {
