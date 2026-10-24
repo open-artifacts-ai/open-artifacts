@@ -265,14 +265,16 @@ const useInvalidating = <V, T>(
   return useMutation({
     mutationFn: fn,
     // Here, not at the call site: the row (and its component) may be gone by now.
-    ...(failure
-      ? {
-          onError: (e: unknown) => {
-            if (e instanceof ApiClientError && inline?.(e)) return;
-            failureToast(qc, failure, e);
-          },
-        }
-      : {}),
+    onError: (e: unknown) => {
+      // A 409 conflict means what we read is stale: reload it.
+      if (e instanceof ApiClientError && e.code === "conflict")
+        void Promise.all(
+          keys().map((queryKey) => qc.invalidateQueries({ queryKey })),
+        );
+      if (!failure) return;
+      if (e instanceof ApiClientError && inline?.(e)) return;
+      failureToast(qc, failure, e);
+    },
     onSuccess: () =>
       Promise.all(keys().map((queryKey) => qc.invalidateQueries({ queryKey }))),
   });

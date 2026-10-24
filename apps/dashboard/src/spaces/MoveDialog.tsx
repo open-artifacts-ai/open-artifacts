@@ -10,6 +10,7 @@ import { errorCopy } from "../api/errorCopy";
 import { useMoveArtifact, useSpaces } from "../api/queries";
 import { canPublishTo, useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
+import { ConflictNote, isConflict } from "../layout/ConflictNote";
 import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
@@ -112,7 +113,10 @@ export function MoveDialog({
                   name="oa-move-to"
                   value={s.id}
                   checked={to === s.id}
-                  onChange={() => setTo(s.id)}
+                  onChange={() => {
+                    setTo(s.id);
+                    move.reset();
+                  }}
                 />
                 <span className="flex-1 font-medium">{s.name}</span>
                 <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
@@ -126,7 +130,8 @@ export function MoveDialog({
               {impact}
             </p>
           )}
-          {move.error && (
+          {isConflict(move.error) && <ConflictNote />}
+          {move.error && !isConflict(move.error) && (
             <p
               role="alert"
               className="m-0 text-[length:var(--oa-text-sm)] text-destructive"
