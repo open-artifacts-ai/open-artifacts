@@ -16,6 +16,12 @@ env:
   PROD_APP_HOST: artifacts.leourbina.com
   PROD_CONTENT_HOST: artifacts-content.leourbina.com
   PROD_OWNER_EMAIL: me@leourbina.com
+  # Direct sign-in (docs/self-hosting/direct-sign-in.md): repository
+  # variables, read by prod-setup.sh from env. Unset keeps the live value.
+  PROD_AUTH_PROVIDERS: ${{ vars.PROD_AUTH_PROVIDERS }}
+  PROD_AUTH_DOMAINS: ${{ vars.PROD_AUTH_DOMAINS }}
+  PROD_AUTH_DOMAIN_JOIN: ${{ vars.PROD_AUTH_DOMAIN_JOIN }}
+  PROD_GOOGLE_CLIENT_ID: ${{ vars.PROD_GOOGLE_CLIENT_ID }}
 jobs:
   install:
     if: github.ref == 'refs/heads/main'
