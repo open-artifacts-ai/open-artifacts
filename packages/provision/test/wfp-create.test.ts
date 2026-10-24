@@ -602,6 +602,16 @@ const seedRow = (
   h.run(r.content, r.id);
 };
 
+// The template's latest DO migration tag, derived so a new server DO tag needs
+// no edit here; pinned to the vN shape so a missing tag can't pass vacuously.
+const lastTag = loadTemplate().migrations?.at(-1)?.tag;
+
+describe("template DO migration tag", () => {
+  it("is a vN tag", () => {
+    expect(lastTag).toMatch(/^v\d+$/);
+  });
+});
+
 describe("WfpProvisioner.create", () => {
   it("creates every resource named by install id and maps both hosts", async () => {
     const s = setup();
@@ -616,8 +626,7 @@ describe("WfpProvisioner.create", () => {
       state: "active",
       test_hooks: 0,
       version: "0.23.0",
-      // The template's latest tag, derived so a new server DO tag needs no edit.
-      do_migration_tag: loadTemplate().migrations?.at(-1)?.tag,
+      do_migration_tag: lastTag,
     });
     expect(
       s
@@ -2377,7 +2386,7 @@ describe("account target is test-only (H-T4b L3)", () => {
 describe("Durable Object migration safety (H-T4b L5)", () => {
   // A step after the live template's own tags (derived, never a literal that
   // a new server DO tag would collide with).
-  const STEP_TAG = `${loadTemplate().migrations?.at(-1)?.tag}-step`;
+  const STEP_TAG = `${lastTag}-step`;
   const withStep = (step: Record<string, unknown>) => {
     const t = structuredClone(loadTemplate());
     t.migrations = [...(t.migrations ?? []), { tag: STEP_TAG, ...step }];

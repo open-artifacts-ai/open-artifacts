@@ -30,8 +30,7 @@
   "durable_objects": {
     "bindings": [
       { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" },
-      { "name": "USER_PRESENCE", "class_name": "UserPresence" },
-      { "name": "DIRECTORY_SYNC", "class_name": "DirectorySync" }
+      { "name": "USER_PRESENCE", "class_name": "UserPresence" }
     ]
   },
   "migrations": [
