@@ -135,6 +135,7 @@ export const AuditActionSchema = z.enum([
   "artifact.unshare",
   "artifact.visibility",
   "user.status",
+  "user.role",
   "identity.reset",
   "directory.connect",
   "directory.disconnect",

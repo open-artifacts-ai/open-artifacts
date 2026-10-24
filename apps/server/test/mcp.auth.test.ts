@@ -15,6 +15,7 @@ import {
 } from "../src/mcp/registrations.js";
 import { stripTemplateComment } from "../src/mcp/template.js";
 import { patchMember, removeMember } from "../src/services/members.js";
+import { setUserStatus } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 import {
   APP,
@@ -292,6 +293,15 @@ describe("MCP auth: OAuth", () => {
     it("a valid OAuth token is unaffected", async () => {
       const { accessToken } = await oauthToken(`oauth-401-${tag}@x.com`);
       expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
+    });
+
+    it("suspended user → 401 via OAuth (P3 T6)", async () => {
+      const { member, accessToken } = await oauthToken(
+        `oauth-susp-${tag}@x.com`,
+      );
+      expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
+      await setUserStatus(env, member.userId, "suspended", "admin_suspend");
+      expect((await listTools(`Bearer ${accessToken}`)).status).toBe(401);
     });
   });
 

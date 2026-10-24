@@ -23,7 +23,7 @@ import { REVOKE_RETRIES, revokeUserLive } from "../src/runtime/revoke.js";
 import { patch, publish } from "../src/services/artifacts.js";
 import { patchMember, removeMember } from "../src/services/members.js";
 import { deleteShare, putShare } from "../src/services/shares.js";
-import { getUser } from "../src/services/users.js";
+import { getUser, setUserStatus } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 
 const app = createApp();
@@ -320,6 +320,15 @@ describe("UserPresence", () => {
     const art = await pub();
     const ws = await openSockets(u, art);
     await removeMember(env, u.userId);
+    expect(await ws.data.closed).toBe(4403);
+    expect(await ws.events.closed).toBe(4403);
+  });
+
+  it("suspending a user closes their data and events sockets (setUserStatus)", async () => {
+    const u = await mk(`pr-susp-${newId().slice(0, 4)}`, "member");
+    const art = await pub();
+    const ws = await openSockets(u, art);
+    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
     expect(await ws.data.closed).toBe(4403);
     expect(await ws.events.closed).toBe(4403);
   });
