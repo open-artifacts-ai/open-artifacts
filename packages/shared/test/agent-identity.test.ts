@@ -33,8 +33,16 @@ describe("agent identity cards", () => {
       OAuthClientPatchSchema.safeParse({ label: "a", clientName: "x" }).success,
     ).toBe(false);
   });
-  it("TokenPatchSchema: label required, null is 400", () => {
-    expect(TokenPatchSchema.parse({ label: "ci" })).toEqual({ label: "ci" });
+  it("TokenPatchSchema: label required 1-80 (as on create), null is 400", () => {
+    expect(TokenPatchSchema.parse({ label: " ci\u202e " })).toEqual({
+      label: "ci",
+    });
+    expect(
+      TokenPatchSchema.parse({ label: "x".repeat(80) }).label,
+    ).toHaveLength(80);
+    expect(TokenPatchSchema.safeParse({ label: "x".repeat(81) }).success).toBe(
+      false,
+    );
     expect(TokenPatchSchema.safeParse({ label: null }).success).toBe(false);
   });
   it("old grants and tokens parse without the new fields", () => {

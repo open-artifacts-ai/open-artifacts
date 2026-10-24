@@ -457,23 +457,30 @@ export const stripNameControls = (s: string): string =>
   s.replace(NAME_CONTROLS, "");
 
 /**
- * A user label on a connected agent (OAuth grant or token): control and bidi
- * characters stripped (`stripNameControls`), then trimmed, 1-60 characters
- * (a label of only such characters is 400).
+ * A user label on a connected agent: control and bidi characters stripped
+ * (`stripNameControls`), then trimmed, 1-`max` characters (a label of only
+ * such characters is 400).
  */
-export const AgentLabelSchema = z
-  .string()
-  .transform(stripNameControls)
-  .pipe(
-    z
-      .string()
-      .trim()
-      .min(1, "Label must not be blank")
-      .refine(
-        (s) => [...s].length <= 60,
-        "Label must be at most 60 characters",
-      ),
-  );
+const agentLabel = (max: number) =>
+  z
+    .string()
+    .transform(stripNameControls)
+    .pipe(
+      z
+        .string()
+        .trim()
+        .min(1, "Label must not be blank")
+        .refine(
+          (s) => [...s].length <= max,
+          `Label must be at most ${max} characters`,
+        ),
+    );
+
+/** An OAuth grant's label: 1-60 characters (see `agentLabel`). */
+export const AgentLabelSchema = agentLabel(60);
+
+/** A token's label on PATCH: 1-80 characters, as on create (see `agentLabel`). */
+export const TokenLabelSchema = agentLabel(80);
 
 export const TokenSchema = z.object({
   id: z.string(),
@@ -493,7 +500,7 @@ export type TokenCreated = z.infer<typeof TokenCreatedSchema>;
  * PATCH R.token(id) -> Token. The caller's own tokens only (else 404). A
  * token's label is required, so null is 400.
  */
-export const TokenPatchSchema = z.strictObject({ label: AgentLabelSchema });
+export const TokenPatchSchema = z.strictObject({ label: TokenLabelSchema });
 export type TokenPatch = z.infer<typeof TokenPatchSchema>;
 export type TokenPatchInput = z.input<typeof TokenPatchSchema>;
 
