@@ -16,11 +16,11 @@ Open live sockets (data subscribe and the `R.events` version feed) are authorize
 Two guards, by the scope of the change:
 
 - **One person, every artifact (`UserPresence`, one DO per user).** Every signed-in socket accept awaits `touch(artifactId, authzAt)`, which records the artifact; if `touch` fails, the socket is closed. `revokeUserLive` calls `closeAll`, which writes `revokedAt` first, then closes that person's sockets (tag `a:u:{id}`) on each artifact they touched in the last 10 minutes.
-  - Closes **within about a second**: removing a member (team artifacts included), changing a member's role, deactivating a guest when their last share is removed, and resetting a member's Google link.
+  - Closes **within about a second**: removing or suspending a member (team artifacts included), changing a member's role, deactivating a guest when their last share is removed, and resetting a member's Google link.
   - A failed close is queued in the DO and retried by alarm with backoff (1 s up to 60 s) until it is 11 minutes old.
   - If `closeAll` itself fails after 3 retries, `presence_revoke_failed` is logged at alert level, and `revokedAt` alone is written when the DO is reachable. New accepts are then refused, but open sockets wait for the TTL.
 - **One artifact, every actor (`closeRuntimeSockets`).** The artifact's DO records the change time, then closes every socket on it, anonymous ones included. Accepts authorized before the change are refused.
-  - Closes **at once**: delete, visibility and capability changes (in a patch or a publish), and removing a share.
+  - Closes **at once**: delete, visibility and capability changes (in a patch or a publish), removing a share, and changing a share from editor to viewer.
   - A share removal doesn't revoke the person's presence: that would close their sockets on unrelated artifacts, and the artifact guard already covers this one.
 
 Still bounded only by the socket TTL (`LIMITS.signedUrlTtlSec`, 10 minutes, then 4408 and a re-checked reconnect):
@@ -29,7 +29,7 @@ Still bounded only by the socket TTL (`LIMITS.signedUrlTtlSec`, 10 minutes, then
 - A `closeAll` that keeps failing (above).
 - Clock skew over 2 seconds between the Worker and a DO, for a socket that races a revocation.
 - A rolling deploy. For a short time a new Worker can reach a DO still running the old code, which neither calls `touch` nor checks the access-change time. A socket accepted there is not recorded, so a revocation in that window misses it. (An old Worker reaching a new DO sends no `authzAt`: signed-in sockets are refused with 400, and anonymous ones skip the guard.)
-- Changes that don't call `revokeUserLive` yet: user suspension, space role and group mapping narrowing, directory sync, transfers and a customer mismatch land with later P3 tasks. A test (`test/node/revocation-lint.test.ts`) fails any access-shrinking service function that is not listed with its guard.
+- Changes that don't call `revokeUserLive` yet: space role and group mapping narrowing, directory sync, transfers and a customer mismatch land with later P3 tasks. A test (`test/node/revocation-lint.test.ts`) fails any access-shrinking function or class method (nested functions count toward the one that contains them; comments are ignored) that is not listed with its guard.
 
 `R.events` sockets have their own per-DO budgets, apart from data sockets: 200 for signed-in viewers, 100 for anonymous viewers, and 3 per anonymous actor (an IPv4 address or an IPv6 /56). Anonymous sockets can't starve live data or members.
 
