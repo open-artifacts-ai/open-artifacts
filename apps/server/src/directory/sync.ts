@@ -118,6 +118,8 @@ type Walk = {
   missing: boolean;
   /** The target itself refused its listing (a 4xx other than 401/429/404). */
   refused?: boolean;
+  /** When this walk read its first page: rows added after it are kept. */
+  startedAt?: number;
 };
 type Step =
   | { kind: "customer" }
@@ -253,7 +255,9 @@ const DIRTY_TARGETS = `with recursive up(origin, g) as (
 const UIDS_FOR_SUBJECTS = `select subject, user_id from identities
   where provider = 'google' and directory_bound = 1
     and subject in (select value from json_each(?1))`;
-const MEMBERS_OF = "select user_id from directory_members where group_id = ?1";
+/** gen holds when the row was added (ms; 0 before T13): see sweep(). */
+const MEMBERS_OF =
+  "select user_id, gen from directory_members where group_id = ?1";
 const COUNT_OF =
   "select count(*) as n from directory_members where group_id = ?1";
 const GROUP_ROW = "select email from directory_groups where group_id = ?1";
@@ -268,8 +272,8 @@ const UPSERT_CHILD = `insert into directory_groups (group_id, email, parent_ids)
       else json_insert(directory_groups.parent_ids, '$[#]', ?3) end
   where directory_groups.email <> excluded.email
     or not exists (select 1 from json_each(directory_groups.parent_ids) where value = ?3)`;
-const ADD_MEMBERS = `insert or ignore into directory_members (group_id, user_id)
-  select ?1, value from json_each(?2)
+const ADD_MEMBERS = `insert or ignore into directory_members (group_id, user_id, gen)
+  select ?1, value, ?3 from json_each(?2)
   where exists (select 1 from users where id = value)`;
 const REMOVE_MEMBERS = `delete from directory_members
   where group_id = ?1 and user_id in (select value from json_each(?2))`;
@@ -373,8 +377,9 @@ export class SyncEngine {
 
   /**
    * During a backoff a lane may still run for a kick that arrived after its
-   * last failure: a confirm (fast) or a mapping change (rec) once per kick,
-   * "Sync now" (rec) at most once per MANUAL_BYPASS_MS.
+   * last failure: a confirm (fast) once per kick; a mapping change or "Sync
+   * now" (rec) at most once per MANUAL_BYPASS_MS together, so repeated
+   * mapping writes can't drive Google or broker load during a backoff.
    */
   private bypass(lane: Lane, now: number): boolean {
     const reasons = this.reasons();
@@ -382,10 +387,9 @@ export class SyncEngine {
     const after = (r: KickReason) =>
       reasons.includes(r) && (this.get<number>(`kick.${r}`) ?? -1) > failAt;
     if (lane === "fast") return after("confirm");
-    if (after("mapping")) return true;
     return (
-      after("manual") &&
-      now - (this.get<number>("bypass.manual") ?? -MANUAL_BYPASS_MS) >=
+      (after("mapping") || after("manual")) &&
+      now - (this.get<number>("bypass.rec") ?? -MANUAL_BYPASS_MS) >=
         MANUAL_BYPASS_MS
     );
   }
@@ -484,7 +488,7 @@ export class SyncEngine {
         `delete from kv where k in ('run.fast', 'run.rec', 'lastActive',
           'cursor.admin', 'cursor.groups', 'retryAt.fast', 'retryAt.rec',
           'backoff.fast', 'backoff.rec', 'failAt.fast', 'failAt.rec',
-          'bypass.manual', 'next.fast', 'next.reconcile', 'lastLane')`,
+          'bypass.rec', 'next.fast', 'next.reconcile', 'lastLane')`,
       );
     });
     this.cached = null;
@@ -587,14 +591,9 @@ export class SyncEngine {
           : "fast"
         : (ready[0] as Lane);
     const retryAt = this.get<number>(`retryAt.${lane}`);
-    // A "Sync now" bypass: spent for MANUAL_BYPASS_MS.
-    if (
-      lane === "rec" &&
-      retryAt !== null &&
-      now < retryAt &&
-      !this.reasons().includes("mapping")
-    )
-      this.put("bypass.manual", now);
+    // A rec bypass (mapping or "Sync now"): spent for MANUAL_BYPASS_MS.
+    if (lane === "rec" && retryAt !== null && now < retryAt)
+      this.put("bypass.rec", now);
     this.put("lastLane", lane);
     if (!this.get<Run>(`run.${lane}`))
       this.plan(lane, now, groups, this.reasons());
@@ -1043,6 +1042,7 @@ export class SyncEngine {
           status: (e as GoogleApiError).status,
         });
       w.had = had;
+      if (init) w.startedAt = this.now;
       if (top.g === w.target) {
         if (gone) w.missing = true;
         else {
@@ -1078,6 +1078,7 @@ export class SyncEngine {
     }
     // D1 done: advance the walk.
     w.had = had;
+    if (init) w.startedAt = this.now;
     if (page.nextPageToken) top.page = page.nextPageToken;
     else w.stack.splice(i, 1);
     // A whole-customer member can't be flattened here: removes nobody.
@@ -1141,11 +1142,19 @@ export class SyncEngine {
     const email = row?.email ?? w.target;
     const { results } = await stmt(this.env.DB, MEMBERS_OF)
       .bind(w.target)
-      .all<{ user_id: string }>();
+      .all<{ user_id: string; gen: number }>();
     const cur = new Set(results.map((r) => r.user_id));
+    // A row added after this walk began (the other lane read the group
+    // later) is newer than what this walk saw: never removed by it.
+    const begun = w.startedAt ?? run.startedAt;
+    const newer = new Set(
+      results.filter((r) => Number(r.gen) >= begun).map((r) => r.user_id),
+    );
     const d = memberDiff(seen, cur);
     const added = w.missing ? [] : d.added;
-    let removed = w.partial ? [] : w.missing ? [...cur] : d.removed;
+    let removed = (w.partial ? [] : w.missing ? [...cur] : d.removed).filter(
+      (u) => !newer.has(u),
+    );
     const had = w.had ?? cur.size;
     const clicked =
       prior?.confirmed_at === null || prior?.confirmed_at === undefined
@@ -1335,7 +1344,11 @@ export class SyncEngine {
     this.guard();
     const out = await this.env.DB.batch([
       ...pre,
-      stmt(this.env.DB, ADD_MEMBERS).bind(groupId, JSON.stringify(added)),
+      stmt(this.env.DB, ADD_MEMBERS).bind(
+        groupId,
+        JSON.stringify(added),
+        this.now,
+      ),
       stmt(this.env.DB, REMOVE_MEMBERS).bind(groupId, JSON.stringify(removed)),
       stmt(this.env.DB, RESTRICTED_FOR_USERS).bind(touched),
     ]);

@@ -783,7 +783,7 @@ describe("review fixes (P3 T13)", () => {
       expect(await kv(k)).toBeNull();
   });
 
-  it("during a backoff, Sync now runs at most once per 10 min; a mapping change once per kick", async () => {
+  it("during a backoff, Sync now and mapping kicks share one run per 10 min", async () => {
     const t0 = Date.now();
     await connected(t0);
     // The reconcile's user listing keeps failing: the rec lane backs off.
@@ -801,15 +801,101 @@ describe("review fixes (P3 T13)", () => {
     n = lists();
     await kickAt("manual", t0 + 2 * MIN + 30_000);
     await drain(t0 + 2 * MIN + 30_000);
-    expect(lists()).toBe(n);
     await kickAt("mapping", t0 + 2 * MIN + 40_000);
     await drain(t0 + 2 * MIN + 40_000);
-    expect(lists()).toBe(n + 1);
-    await drain(t0 + 2 * MIN + 45_000);
-    expect(lists()).toBe(n + 1);
-    await kickAt("mapping", t0 + 2 * MIN + 50_000);
-    await drain(t0 + 2 * MIN + 50_000);
-    expect(lists()).toBe(n + 2);
+    expect(lists()).toBe(n);
+  });
+
+  it("a loop of mapping kicks during auth_failed gives at most one run per window", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    g.setRefreshStatus(400);
+    // Both lanes fail: the fast tick, and a reconcile asked for by Sync now.
+    await inDo((s) =>
+      new SyncEngine(e, s.storage).kick("manual", t0 + 2 * MIN),
+    );
+    await drain(t0 + 2 * MIN);
+    expect((await status()).state).toBe("auth_failed");
+    expect(await kv<number>("retryAt.rec")).toBeGreaterThan(t0 + 30 * MIN);
+    const refreshes = () =>
+      g.tokenCalls.filter((c) => c.get("grant_type") === "refresh_token")
+        .length;
+    const n = refreshes();
+    for (let k = 0; k < 9; k++) {
+      const at = t0 + 3 * MIN + k * MIN;
+      await inDo((s) => new SyncEngine(e, s.storage).kick("mapping", at));
+      await drain(at);
+    }
+    expect(refreshes() - n).toBe(1);
+    const at = t0 + 3 * MIN + 11 * MIN;
+    await inDo((s) => new SyncEngine(e, s.storage).kick("mapping", at));
+    await drain(at);
+    expect(refreshes() - n).toBe(2);
+  });
+
+  it("a mapping PUT that changes nothing kicks nothing", async () => {
+    await connect(e, owner.cookie, g, { sub: adminSub });
+    const gid = `grp-same-${crypto.randomUUID()}`;
+    await env.DB.prepare(
+      "insert into directory_groups (group_id, email) values (?, ?)",
+    )
+      .bind(gid, `${gid}@a.com`)
+      .run();
+    const put = () =>
+      fetchAndWait(
+        app,
+        new Request(`${APP}${R.orgMapping(gid)}`, {
+          method: "PUT",
+          headers: {
+            "x-oa-request": "1",
+            "content-type": "application/json",
+            cookie: owner.cookie,
+          },
+          body: JSON.stringify({ role: "viewer" }),
+        }),
+        e,
+      );
+    await inDo((s) => s.storage.sql.exec("delete from kv where k = 'reasons'"));
+    expect((await put()).status).toBe(200);
+    expect(await kv<string[]>("reasons")).toContain("mapping");
+    await inDo((s) => s.storage.sql.exec("delete from kv where k = 'reasons'"));
+    expect((await put()).status).toBe(200);
+    expect(await kv("reasons")).toBeNull();
+  });
+
+  it("the reconcile never removes a member the fast lane added after its walk began", async () => {
+    const us = dirUsers(5, "late");
+    const gid = `grp-late-${crypto.randomUUID()}`;
+    await mappedGroup(
+      gid,
+      us.slice(0, 4).map((u) => u.id),
+    );
+    g.setMemberPageSize(1);
+    const t0 = Date.now();
+    await connected(t0);
+    const at = t0 + 61 * MIN;
+    // The reconcile reads the group's first page.
+    for (let i = 0; i < 40; i++) {
+      await tick(at);
+      const rec = await kv<{
+        queue: { kind: string; target?: string; had?: number | null }[];
+      }>("run.rec");
+      const head = rec?.queue[0];
+      if (head?.kind === "walk" && head.had !== null && head.target === gid)
+        break;
+    }
+    // In Google, us[4] replaces us[0] on the page already read; the fast
+    // lane then adds us[4] (its row is newer than the walk).
+    const fg = g.groups.get(gid);
+    if (fg) fg.members[0] = us[4]?.id as string;
+    const late = await uidOf(us[4]?.id as string);
+    await env.DB.prepare(
+      "insert into directory_members (group_id, user_id, gen) values (?, ?, ?)",
+    )
+      .bind(gid, late, at + 1)
+      .run();
+    await drain(at);
+    expect(await membersOf(gid)).toContain(late);
   });
 
   it("a reset during an alarm's Google call commits nothing of that run", async () => {
