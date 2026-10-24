@@ -8,6 +8,20 @@ describe("install registry format", () => {
     expect(registryKey("iabc123def45")).toBe("install:iabc123def45");
   });
 
+  it("refuses an id that is not an install id", () => {
+    for (const bad of [
+      "",
+      "IABC123DEF45",
+      "install:iabc123def45",
+      "install:x",
+      "../iabc123def45",
+      "iabc123def45/x",
+      "iabc123def45a",
+      `i${"a".repeat(64)}`,
+    ])
+      expect(() => registryKey(bad), bad).toThrow(/not an install id/);
+  });
+
   it("builds installId, origin and keys, and disabled only when set", () => {
     const keys = [{ kid: "k".repeat(16), x: "x".repeat(43) }];
     const e = registryEntry({
