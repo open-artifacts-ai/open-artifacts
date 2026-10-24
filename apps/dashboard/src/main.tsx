@@ -94,6 +94,23 @@ async function startMocks() {
       }),
     );
   }
+  // ?mock=group-race (with ?hosted=1): changing a group's role on a space is refused as a race
+  // (403 space_forbidden { target: "mapping" }).
+  if (params.get("mock") === "group-race")
+    extra.push(
+      http.put("*/api/v1/spaces/:id/mappings/:g", () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "space_forbidden",
+              message: "Only an admin can change a manager mapping",
+              details: { target: "mapping" },
+            },
+          },
+          { status: 403 },
+        ),
+      ),
+    );
   // ?mock=name: no display name yet (suggested "Ada Lovelace"); after a PATCH the shared mock answers.
   if (params.get("mock") === "name") {
     let named = false;

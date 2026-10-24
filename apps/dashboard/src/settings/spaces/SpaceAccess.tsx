@@ -12,11 +12,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@oa/ui/shadcn";
+import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiClientError } from "../../api/client";
 import type { GroupMapping, Space, SpaceRole } from "../../api/contract";
 import { errorCopy, errorLink } from "../../api/errorCopy";
 import {
+  qk,
   useDeleteMapping,
   useOrgMappings,
   usePatchSpace,
@@ -97,11 +99,19 @@ export function RoleSelect({
   );
 }
 
+/** space_forbidden { target: "mapping" }: the row changed under the editor. */
+const isMappingRace = (e: unknown) =>
+  e instanceof ApiClientError &&
+  e.code === "space_forbidden" &&
+  (e.details as { target?: string } | undefined)?.target === "mapping";
+
 /** What a refused mapping change says, and its link (sync off points to Directory). */
 export const mappingProblem = (e: unknown) => {
   if (e instanceof ApiClientError && e.code === "space_forbidden")
     return {
-      text: "Only an admin can make a group a manager.",
+      text: isMappingRace(e)
+        ? "This group's access just changed. Check it and try again."
+        : "Only an admin can make a group a manager.",
       link: null,
     };
   return {
@@ -136,23 +146,40 @@ export function AccessRow({
   who,
   meta,
   control,
+  note,
 }: {
   who: string;
   meta: string;
   control: React.ReactNode;
+  /** A refusal for this row, shown right under it. */
+  note?: string | null;
 }) {
   return (
-    <tr className="border-0 border-t border-border first:border-t-0">
-      <td className="min-w-0 py-[var(--oa-space-3)] pr-[var(--oa-space-3)]">
-        <b className="block truncate font-medium">{who}</b>
-        <small className={`block truncate ${muted}`}>{meta}</small>
-      </td>
-      <td className="py-[var(--oa-space-3)]">
-        <div className="flex flex-wrap items-center justify-end gap-[var(--oa-space-2)]">
-          {control}
-        </div>
-      </td>
-    </tr>
+    <>
+      <tr className="border-0 border-t border-border first:border-t-0">
+        <td className="min-w-0 py-[var(--oa-space-3)] pr-[var(--oa-space-3)]">
+          <b className="block truncate font-medium">{who}</b>
+          <small className={`block truncate ${muted}`}>{meta}</small>
+        </td>
+        <td className="py-[var(--oa-space-3)]">
+          <div className="flex flex-wrap items-center justify-end gap-[var(--oa-space-2)]">
+            {control}
+          </div>
+        </td>
+      </tr>
+      {note && (
+        <tr>
+          <td colSpan={2} className="pb-[var(--oa-space-2)]">
+            <p
+              role="status"
+              className="m-0 text-[length:var(--oa-text-sm)] text-[var(--oa-warning)]"
+            >
+              {note}
+            </p>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -179,10 +206,28 @@ export function SpaceAccess({
   const put = usePutMapping(space.id);
   const remove = useDeleteMapping(space.id);
   const patch = usePatchSpace(space.id);
+  const qc = useQueryClient();
   const [pending, setPending] = useState<Record<string, SpaceRole>>({});
   const [problem, setProblem] = useState<ReturnType<
     typeof mappingProblem
   > | null>(null);
+  // A group that changed under the editor: said on its own row.
+  const [rowProblem, setRowProblem] = useState<{
+    groupId: string;
+    text: string;
+  } | null>(null);
+
+  // The row changed under the editor: say so by the row, and reload the groups.
+  const refused = (e: unknown, groupId?: string) => {
+    if (groupId && isMappingRace(e)) {
+      setRowProblem({ groupId, text: mappingProblem(e).text });
+      void qc.invalidateQueries({ queryKey: qk.spaceMappings(space.id) });
+    } else {
+      setProblem(mappingProblem(e));
+      if (isMappingRace(e))
+        void qc.invalidateQueries({ queryKey: qk.spaceMappings(space.id) });
+    }
+  };
 
   const manager = space.myRole === "manager";
   const canMap = admin || (manager && (space.can?.manageMappings ?? false));
@@ -195,11 +240,12 @@ export function SpaceAccess({
 
   const change = (groupId: string, role: SpaceRole) => {
     setProblem(null);
+    setRowProblem(null);
     setPending((p) => ({ ...p, [groupId]: role }));
     put.mutate(
       { groupId, role },
       {
-        onError: (e) => setProblem(mappingProblem(e)),
+        onError: (e) => refused(e, groupId),
         onSettled: () => setPending(({ [groupId]: _, ...rest }) => rest),
       },
     );
@@ -238,6 +284,9 @@ export function SpaceAccess({
                     ? "Manager · set by an admin"
                     : groupMeta(g)
                 }
+                note={
+                  rowProblem?.groupId === g.groupId ? rowProblem.text : null
+                }
                 control={
                   own ? (
                     <>
@@ -255,8 +304,9 @@ export function SpaceAccess({
                         aria-label={`Remove ${g.email}`}
                         onClick={() => {
                           setProblem(null);
+                          setRowProblem(null);
                           remove.mutate(g.groupId, {
-                            onError: (e) => setProblem(mappingProblem(e)),
+                            onError: (e) => refused(e, g.groupId),
                           });
                         }}
                       >
@@ -322,7 +372,7 @@ export function SpaceAccess({
             setProblem(null);
             put.mutate(
               { groupId: g.groupId, role: "viewer" },
-              { onError: (e) => setProblem(mappingProblem(e)) },
+              { onError: (e) => refused(e) },
             );
           }}
         />
