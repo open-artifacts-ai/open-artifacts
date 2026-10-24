@@ -87,7 +87,8 @@ export const SpaceMemberGroupSchema = GroupRefSchema.extend({
 export type SpaceMemberGroup = z.infer<typeof SpaceMemberGroupSchema>;
 
 /**
- * GET R.spaceMembers(id) -> SpaceMembersPage. Keyed by user id. The UI's
+ * GET R.spaceMembers(id) -> SpaceMembersPage (personal: 400 space_personal).
+ * Keyed by user id. The UI's
  * per-row reason line comes from manualRole, groups[].role/via and
  * allMembers (e.g. "Manager by hand, Editor via eng@", "Viewer via All
  * members").
@@ -141,6 +142,7 @@ export type SpaceForbiddenDetails = z.infer<typeof SpaceForbiddenDetailsSchema>;
 
 /*
  * PUT R.spaceMember(id, userId) (space manager, org admin) -> SpaceMember.
+ * The target must be an existing, active member, else 404.
  * Sets the manual row. A space manager (not an org admin) granting manager,
  * or changing a member whose manualRole is manager: 403 space_forbidden
  * { target: "member" }. While sync is frozen, on a row with a syncRole: any

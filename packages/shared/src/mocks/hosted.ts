@@ -1108,13 +1108,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           r.data.publicLinks !== undefined &&
           r.data.publicLinks !== s.publicLinks
         ) {
+          // Off refuses NEW public links only (decided): existing public
+          // artifacts, their links and sockets keep working; nothing is rewritten.
           log("space.public_links", { type: "space", id: s.id }, s.id, {
             publicLinks: r.data.publicLinks,
           });
-          if (!r.data.publicLinks)
-            for (const a of artifacts)
-              if (a.space?.id === s.id && a.visibility === "public")
-                a.visibility = "team";
         }
         Object.assign(s, r.data);
         log("space.update", { type: "space", id: s.id }, s.id, { keys });
@@ -1142,6 +1140,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       authed(async ({ request, params }) => {
         const s = sharedSpace(params.id);
         if (s instanceof Response) return s;
+        if (s.kind === "personal")
+          return err("space_personal", "Personal spaces have no members");
         const qs = new URL(request.url).searchParams;
         const raw: Record<string, string> = {};
         qs.forEach((v, k) => {
@@ -1211,8 +1211,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (s.kind === "personal")
           return err("space_personal", "Personal spaces have no members");
         if (!isAdmin() && roleIn(s) !== "manager") return notFound();
+        // An existing, active member only (as the server): else 404.
         const u = memberOf(params.userId as string);
-        if (!u) return notFound();
+        if (!u || (u.status ?? "active") !== "active") return notFound();
         const r = await c.body(request, SpaceMemberPutSchema);
         if (r.error) return r.error;
         const cur = rowsOf(s).find((x) => x.userId === u.id);

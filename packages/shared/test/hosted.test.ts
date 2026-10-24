@@ -652,6 +652,45 @@ describe("hosted mocks: restriction, public links, admin self-add, audit", () =>
     expect((await errCode(create)).code).toBe("public_links_off");
   });
 
+  it("public links off keeps an existing public artifact public (no rewrite)", async () => {
+    fresh({ hosted: true });
+    const me = Strict.Me.parse(await json(await call("GET", R.me)));
+    const eng = me.spaces?.find((s) => s.name === "Engineering")?.id as string;
+    const notes = fixtures.artifacts.find((a) => a.title === "Meeting notes")
+      ?.id as string;
+    expect(
+      (await call("PATCH", R.artifact(notes), { visibility: "public" })).status,
+    ).toBe(200);
+    expect(
+      (await call("PATCH", R.space(eng), { publicLinks: false })).status,
+    ).toBe(200);
+    const a = await json(await call("GET", R.artifact(notes)));
+    expect(a).toMatchObject({
+      visibility: "public",
+      space: { id: eng, publicLinks: false },
+    });
+  });
+
+  it("space members: personal space 400 space_personal; PUT needs an existing, active target", async () => {
+    fresh({ hosted: true });
+    const ada = fixtures.members[0]?.id as string;
+    expect((await errCode(await call("GET", R.spaceMembers(ada)))).code).toBe(
+      "space_personal",
+    );
+    const me = Strict.Me.parse(await json(await call("GET", R.me)));
+    const eng = me.spaces?.find((s) => s.name === "Engineering")?.id as string;
+    // Carol is suspended; the other id names nobody.
+    for (const userId of ["Cr7tNpQrSt8uVwXy", "Zz0nobodyZz0abcd"])
+      expect(
+        (await call("PUT", R.spaceMember(eng, userId), { role: "viewer" }))
+          .status,
+      ).toBe(404);
+    const bob = fixtures.members[1]?.id as string;
+    expect(
+      (await call("PUT", R.spaceMember(eng, bob), { role: "viewer" })).status,
+    ).toBe(200);
+  });
+
   it("admin self-add to a shared space only, audited", async () => {
     fresh({ hosted: true });
     const spaces = PageSchema(Strict.Space).parse(
@@ -991,7 +1030,6 @@ describe("hosted contract: space People", () => {
   const EXEC = "SpExcNpQrSt3uVwX";
   const ada = fixtures.members[0]?.id as string;
   const bob = fixtures.members[1]?.id as string;
-  const carol = "Cr7tNpQrSt8uVwXy";
   const dan = "Dn8uPqRsTu9vWxYz";
   const StrictMember = SpaceMemberSchema.extend({
     groups: z.array(SpaceMemberGroupSchema.strict()),
@@ -1106,7 +1144,7 @@ describe("hosted contract: space People", () => {
     await signIn("bob@example.com");
     expect(
       await forbidden(
-        await call("PUT", R.spaceMember(ENG, carol), { role: "manager" }),
+        await call("PUT", R.spaceMember(ENG, dan), { role: "manager" }),
       ),
     ).toBe("member");
     // Ada is a manager by hand: demoting her is changing the Manager role.
@@ -1118,10 +1156,10 @@ describe("hosted contract: space People", () => {
     expect(
       StrictMember.parse(
         await json(
-          await call("PUT", R.spaceMember(ENG, carol), { role: "editor" }),
+          await call("PUT", R.spaceMember(ENG, dan), { role: "editor" }),
         ),
       ),
-    ).toMatchObject({ userId: carol, manualRole: "editor" });
+    ).toMatchObject({ userId: dan, manualRole: "editor" });
     expect(
       await forbidden(
         await call("PUT", R.spaceMapping(ENG, "gSales03"), { role: "manager" }),
