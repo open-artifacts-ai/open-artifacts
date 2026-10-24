@@ -48,6 +48,17 @@ anchors.
     logged as `bad_refresh`). Returns `{ box }` holding `access_token` and
     `expires_in`, or 400 `invalid_grant` when Google revoked the grant.
 
+- `POST /google/directory/revoke` (headers `X-OA-Kid`, `X-OA-Sig`)
+  The same install assertion, path-bound to `/google/directory/revoke`, and
+  its own bucket (`revoke:install:<id>`). Body `{ install, ts,
+  refresh_token }`, where `refresh_token` must be a wrap made for the
+  asserting install (anything else: 401). The broker unwraps it and calls
+  Google's revocation endpoint. 204 when revoked (or already invalid at
+  Google), 400 `revoke_failed` otherwise. The install calls it after a
+  reconnect is confirmed (the old grant) and after a cancel or expiry (the
+  pending one), never for a grant that shares its Google account with the
+  token that stays (Google revokes the whole grant).
+
   Refresh tokens are bound to the install (`src/wrap.ts`):
   `v1.<base64url(iv || AES-256-GCM(key, refresh_token))>`, AD
   `oa-dir-refresh-v1|<installId>`, a random 96-bit IV, and the key

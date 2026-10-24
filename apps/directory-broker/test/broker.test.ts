@@ -3,6 +3,7 @@ import {
   boxKeyPair,
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_DIRECTORY_SCOPES,
+  GOOGLE_REVOKE_URL,
   GOOGLE_TOKEN_URL,
   keyId,
   openFromBroker,
@@ -20,6 +21,7 @@ import wranglerText from "../wrangler.jsonc?raw";
 // and a registry it only reads.
 const ORIGIN = "https://directory.hosted.test";
 const TOKEN = "/google/directory/token";
+const REVOKE = "/google/directory/revoke";
 
 /** The registry as the Worker sees it: every call recorded; writes refused. */
 const calls: string[] = [];
@@ -114,7 +116,11 @@ async function signed(
 
 let tokenCalls: URLSearchParams[] = [];
 let tokenReply: () => Response;
+let revoked: string[] = [];
+let revokeReply: () => Response = () => new Response(null, { status: 200 });
 beforeEach(async () => {
+  revoked = [];
+  revokeReply = () => new Response(null, { status: 200 });
   clearRegistryCache();
   calls.length = 0;
   tokenCalls = [];
@@ -131,6 +137,10 @@ beforeEach(async () => {
     if (req.url === GOOGLE_TOKEN_URL) {
       tokenCalls.push(new URLSearchParams(await req.text()));
       return tokenReply();
+    }
+    if (req.url === GOOGLE_REVOKE_URL) {
+      revoked.push(new URLSearchParams(await req.text()).get("token") ?? "");
+      return revokeReply();
     }
     throw new Error(`unexpected fetch ${req.url}`);
   });
@@ -342,6 +352,86 @@ describe("POST /google/directory/token", () => {
     expect(tokenCalls).toHaveLength(0);
     // The right install succeeds.
     expect((await signed(refresh("inst-a", aBlob))).r.status).toBe(200);
+  });
+
+  /** A signed revoke for `install` (signed with `key`, path-bound to /revoke). */
+  const revokeCall = async (
+    install: string,
+    refresh_token: string,
+    key = KEY_A,
+    e: Env = E(),
+  ) => {
+    const text = JSON.stringify({ install, ts: Date.now(), refresh_token });
+    const kid = await kidOf(key);
+    return call(
+      REVOKE,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-oa-kid": kid,
+          "x-oa-sig": await signRequest(key, REVOKE, kid, text),
+        },
+        body: text,
+      },
+      e,
+    );
+  };
+
+  it("revoke: the asserting install's own blob is revoked at Google", async () => {
+    const aBlob = await blobFor("inst-a", KEY_A);
+    expect((await revokeCall("inst-a", aBlob)).status).toBe(204);
+    expect(revoked).toEqual(["rt-1"]);
+    // Already revoked at Google: still done.
+    revokeReply = () =>
+      Response.json({ error: "invalid_token" }, { status: 400 });
+    expect((await revokeCall("inst-a", aBlob)).status).toBe(204);
+    revokeReply = () => Response.json({ error: "x" }, { status: 503 });
+    expect((await revokeCall("inst-a", aBlob)).status).toBe(400);
+  });
+
+  it("revoke: install B can't revoke A's blob; a raw token, a token-route signature or a stale ts is refused", async () => {
+    const aBlob = await blobFor("inst-a", KEY_A);
+    expect((await revokeCall("inst-b", aBlob, KEY_B)).status).toBe(401);
+    expect((await revokeCall("inst-a", "rt-1")).status).toBe(401);
+    // Signed for /token, sent to /revoke.
+    const text = JSON.stringify({
+      install: "inst-a",
+      ts: Date.now(),
+      refresh_token: aBlob,
+    });
+    const kid = await kidOf(KEY_A);
+    const crossRoute = await call(REVOKE, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-oa-kid": kid,
+        "x-oa-sig": await signRequest(KEY_A, TOKEN, kid, text),
+      },
+      body: text,
+    });
+    expect(crossRoute.status).toBe(401);
+    expect(revoked).toEqual([]);
+  });
+
+  it("revoke is rate-limited under its own per-install bucket", async () => {
+    const aBlob = await blobFor("inst-a", KEY_A);
+    const keys: string[] = [];
+    const deny = {
+      limit: async ({ key }: { key: string }) => {
+        keys.push(key);
+        return { success: false };
+      },
+    };
+    const r = await revokeCall(
+      "inst-a",
+      aBlob,
+      KEY_A,
+      E({ RL_DIRECTORY_INSTALL: deny as never }),
+    );
+    expect(r.status).toBe(429);
+    expect(keys).toEqual(["revoke:install:inst-a"]);
+    expect(revoked).toEqual([]);
   });
 
   it("/start and /token charge separate per-install buckets", async () => {
