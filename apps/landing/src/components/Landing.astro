@@ -1,6 +1,7 @@
 ---
 // The landing page body, shared by the index and /v1/ (Product demo).
 import { REPO_URL } from "@oa/shared";
+import { heroActions } from "../lib/hero";
 import AgentWiring from "./AgentWiring.astro";
 import ChatDemo from "./ChatDemo.astro";
 import FeatureStory from "./FeatureStory.astro";
@@ -11,6 +12,7 @@ import Shot from "./Shot.astro";
 const prompt = "install open-artifacts.com/llms.txt";
 // The chip keeps the URL on one line when the phrase wraps.
 const [promptLead, promptUrl] = prompt.split(/(?<=install )/);
+const actions = heroActions(import.meta.env.HOSTED_SIGNUP_URL);
 
 const features = [
   {
@@ -35,7 +37,7 @@ const features = [
   },
   {
     title: "Yours to run",
-    body: "MIT-licensed, on your own Cloudflare account and domain. Nothing passes through us.",
+    body: "MIT-licensed. Run it yourself, in your own Cloudflare account.",
   },
 ];
 
@@ -58,16 +60,23 @@ const plans = [
     <h1>
       <span>Bring any agent.</span>
       <span>Keep every artifact.</span>
-      <span>For Free. Seriously.</span>
     </h1>
     <p class="lede">
-      Open Artifacts is free and <a href={REPO_URL}>open source</a>. It keeps the pages, docs, code
-      and PDFs from any AI agent (Claude Code, Codex, Cursor, OpenCode) on your own Cloudflare
-      account, so usage follows your Workers plan.
+      Open Artifacts is an <a href={REPO_URL}>open source</a> home for the pages, docs, code and
+      PDFs that any AI agent makes. Share them with your team, keep every version, and build live
+      pages people use together.
     </p>
 
+    <div class="hero-actions">
+      {actions.map((a) => (
+        <a class:list={["btn", "lg", { primary: a.primary }]} href={a.href}>{a.label}</a>
+      ))}
+    </div>
+
     <div class="cta" role="group" aria-labelledby="cta-label">
-      <p id="cta-label" class="cta-label">Tell your agent:</p>
+      <p id="cta-label" class="cta-label">
+        Self-hosting runs in your own Cloudflare account. Tell your agent:
+      </p>
       <div class="cta-row">
         <code class="cta-prompt">{prompt}</code>
         <button class="btn primary" type="button" data-copy={prompt} hidden>
@@ -117,9 +126,9 @@ const plans = [
     <Multiplayer />
   </section>
 
-  <section class="band" aria-labelledby="steps-h">
+  <section class="band" id="self-host" aria-labelledby="steps-h">
     <div class="wrap">
-      <h2 id="steps-h">Set up in three steps</h2>
+      <h2 id="steps-h">Self-host in three steps</h2>
       <ol class="steps">
         <li>
           <h3>Tell your agent</h3>
@@ -280,7 +289,7 @@ const plans = [
           }
         }, 2000);
       } catch {
-        if (note) note.textContent = "Copy failed. Select the text and copy it by hand.";
+        if (note) note.textContent = "Copy failed. Select the text and copy it yourself.";
       }
     });
   }

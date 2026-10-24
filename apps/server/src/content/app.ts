@@ -10,6 +10,7 @@ import { CONTENT_CSP } from "../http/middleware.js";
 import { injectRuntime } from "./inject.js";
 import {
   CAPTURE_HEADER,
+  type ContentViewer,
   type SignMode,
   verifyCapture,
   verifyContentToken,
@@ -162,38 +163,52 @@ type Row = {
   current_version: number;
   visibility: string;
   deleted_at: number | null;
+  /** The token's bound viewer (P3 T11); null without a uid or a user row. */
+  viewer_status: string | null;
+  viewer_epoch: number | null;
   entry?: string;
   manifest?: string;
   language?: string | null;
   vformat?: Format | null;
 };
 
+// The bound viewer's row by primary key, in the same statement (P3 T11):
+// with no uid (?2 null) the join matches nothing. No KV deny list, and the
+// space's public-links toggle is deliberately absent (it only blocks new
+// public links).
+const VIEWER_COLS =
+  "u.status as viewer_status, u.session_epoch as viewer_epoch";
+const VIEWER_JOIN = "left join users u on u.id = ?2";
+
 /**
- * One D1 read: the artifact's live state, plus the version's manifest on an
- * LRU miss. Null when the artifact or version doesn't exist.
+ * One D1 read: the artifact's live state, the token's viewer (status and
+ * epoch), plus the version's manifest on an LRU miss. Null when the artifact
+ * or version doesn't exist.
  */
 async function load(
   env: Env,
   id: string,
   v: number,
+  uid: string | null,
 ): Promise<{ row: Row; data: VersionData } | null> {
   const key = `${id}:${v}`;
   const cached = lruGet(key);
   if (cached) {
     const row = await env.DB.prepare(
-      "select format, current_version, visibility, deleted_at from artifacts where id = ?",
+      `select a.format, a.current_version, a.visibility, a.deleted_at, ${VIEWER_COLS}
+       from artifacts a ${VIEWER_JOIN} where a.id = ?1`,
     )
-      .bind(id)
+      .bind(id, uid)
       .first<Row>();
     return row ? { row, data: cached } : null;
   }
   const row = await env.DB.prepare(
     `select a.format, a.current_version, a.visibility, a.deleted_at, v.entry, v.manifest, v.language,
-       v.format as vformat
-     from artifacts a join versions v on v.artifact_id = a.id
-     where a.id = ? and v.version = ?`,
+       v.format as vformat, ${VIEWER_COLS}
+     from artifacts a join versions v on v.artifact_id = a.id ${VIEWER_JOIN}
+     where a.id = ?1 and v.version = ?3`,
   )
-    .bind(id, v)
+    .bind(id, uid, v)
     .first<Row>();
   if (!row || row.entry == null || row.manifest == null) return null;
   const entries = JSON.parse(row.manifest) as ManifestEntry[];
@@ -364,16 +379,26 @@ async function serve(
   const dl = dls.length === 1;
   // Downloads are signed only: an unsigned /p/ URL can't ask for one.
   let mode: SignMode | null = "frame";
-  if (signed !== null)
-    mode = await verifyContentToken(c.env, signed, id, v, dl);
-  else if (dl) mode = null;
+  let viewer: ContentViewer | null = null;
+  if (signed !== null) {
+    const t = await verifyContentToken(c.env, signed, id, v, dl);
+    mode = t?.mode ?? null;
+    viewer = t?.viewer ?? null;
+  } else if (dl) mode = null;
   if (mode === null) throw notFound();
   const path = rest === "__view" ? "__view" : filePath(rest);
   if (path === null || (mode === "dl" && path === "__view")) throw notFound();
-  const got = await load(c.env, id, v);
+  const got = await load(c.env, id, v, viewer?.uid ?? null);
   if (!got) throw notFound();
   const { row, data } = got;
   if (row.deleted_at != null) throw notFound();
+  // A uid-bound token serves only while its user is active and still at the
+  // epoch it was minted under (any status change bumps it).
+  if (
+    viewer &&
+    (row.viewer_status !== "active" || row.viewer_epoch !== viewer.epoch)
+  )
+    throw notFound();
   if (
     signed === null &&
     !isPubliclyServable({

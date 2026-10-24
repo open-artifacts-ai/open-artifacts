@@ -4,7 +4,11 @@ import {
   type GetArtifactResult,
   viewerPath,
 } from "@oa/shared";
-import { signDownload } from "../../content/signing.js";
+import {
+  type ContentViewer,
+  contentViewer,
+  signDownload,
+} from "../../content/signing.js";
 import type { Env } from "../../env.js";
 import { ApiError, appOrigin, contentOrigin } from "../../http/errors.js";
 import {
@@ -39,15 +43,24 @@ const more = (cursor: string | null) => (cursor ? " (more: pass cursor)" : "");
 /**
  * Content-host download URL for one file, signed for 10 minutes: an explicit
  * download (attachment), so a browser that opens it saves the file rather
- * than rendering it.
+ * than rendering it. Bound to `viewer` when content_revocation is on (P3 T11).
  */
 async function downloadUrl(
   env: Env,
   a: ArtifactSummary,
   v: number,
   path: string,
+  viewer: ContentViewer | null,
 ): Promise<string> {
-  return `${contentOrigin(env)}${(await signDownload(env, a.id, v, path)).path}`;
+  const { path: p } = await signDownload(
+    env,
+    a.id,
+    v,
+    path,
+    Date.now(),
+    viewer,
+  );
+  return `${contentOrigin(env)}${p}`;
 }
 
 export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
@@ -94,7 +107,13 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
         const { body } = await readVersionFile(env, caller, input.id, v, path);
         out.content = await body.text();
       } else {
-        out.downloadUrl = await downloadUrl(env, artifact, v, path);
+        out.downloadUrl = await downloadUrl(
+          env,
+          artifact,
+          v,
+          path,
+          contentViewer(env, user.id, t.sessionEpoch),
+        );
       }
       const what =
         out.content !== undefined

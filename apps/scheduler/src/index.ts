@@ -4,8 +4,9 @@ import {
   names,
   type Env as OaEnv,
 } from "@oa/provision/names";
+import { emailQuota, type QuotaEnv } from "./quota.js";
 
-export interface Env {
+export interface Env extends QuotaEnv {
   DISPATCHER: DispatchNamespace;
   /** Platform D1 (installs metadata only; no customer data). */
   PLATFORM_DB: D1Database;
@@ -454,10 +455,13 @@ export async function nightly(
 export default {
   async scheduled(event, env, _ctx) {
     await nightly(env, event.scheduledTime);
-    // TODO(Backend): the email-quota alert (80% of the account limit) needs
-    // each install's send count for the previous day. The counters live in
-    // the install's own D1 (`counters`, keys `email:*` and `code:*`), are
-    // swept by its own nightly job, and no route exposes them. Backend to
-    // define that contract before the scheduler sums them.
+    // Own try, after the nightly result is settled: it never changes it
+    // (emailQuota logs one fixed line and doesn't throw; this catch is
+    // defense only, unreachable today).
+    try {
+      await emailQuota(env, event.scheduledTime);
+    } catch {
+      console.error("email-quota failed http");
+    }
   },
 } satisfies ExportedHandler<Env>;

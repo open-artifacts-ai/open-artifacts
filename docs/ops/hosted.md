@@ -53,7 +53,7 @@ Namespace `oa-spike-staging`, dispatch Worker `oa-s-spike-dispatch` (account scr
 - Per env: one dispatch namespace (`oa-staging`, `oa-prod`), one dispatch Worker with the `dispatch_namespace` binding, one wildcard DNS record and wildcard route per tenant domain pair, platform D1 + `HOSTS` KV, `BROKER_REGISTRY`, the scheduler.
 - Create/upgrade/delete: see `@oa/provision` and the P1 plan tasks 4/5/8.
 - Nightly: the scheduler calls `DISPATCHER.get(id).scheduled(...)` for every `active` install, 6 at a time, 25 s each, 13-minute deadline (see "Nightly scheduler" below).
-- Tokens: per-env provisioning token (Workers Admin + KV/R2/D1 Edit account-wide) and per-env zone tokens (Zone Read, DNS Edit, Workers Routes Edit on the env's two zones), each ≤ 30 days and verified before any write.
+- Tokens: per-env provisioning token (Workers Admin + KV/R2/D1 Edit account-wide) and per-env zone tokens (Zone Read, DNS Edit, Workers Routes Edit on the env's two zones), each ≤ 30 days and verified before any write. Within 5 days of a provisioning token's expiry, create, upgrade, var changes and Turnstile rotation are refused, with the expiry date: roll it (My Profile > API Tokens > Roll) and update the keychain item `oa-hosted-<env>`. Rollback, delete and releasing a lease still run, with a WARNING note naming the date, so an incident never waits on a token roll. An expired token fails every operation.
 - Provisioning tokens must be **user-owned** (created under My Profile > API Tokens), not account-owned. The provisioner (`cfClient().tokenVerify`, which the CLI uses) checks the token with `GET /user/tokens/verify`, and that endpoint refuses account-owned tokens. An account-owned token would need `GET /accounts/{account_id}/tokens/verify` instead, which the CLI does not call.
 - The provisioning token also needs **Account > Turnstile > Read**, so `create` can check the env's widget. **Turnstile > Edit** is needed only for the one-time `oa:hosted turnstile-init --env <env>` (Task 8).
 - Turnstile: one widget per env, not per install. It is named `oa-s-turnstile` or `oa-p-turnstile`, and its domains are exactly `[open-artifacts-staging.app]` or `[open-artifacts.app]` (a hostname covers its subdomains). Its sitekey and secret are kept in the keychain item `oa-hosted-<env>-turnstile`. When codes are on (`AUTH_PROVIDERS` includes `email`, or `EMAIL_CODE_DOMAIN=on`), `create` reads the widget (GET only) and uploads `TURNSTILE_SITE_KEY` as a var and `TURNSTILE_SECRET` as `secret_text`.
@@ -64,7 +64,7 @@ Namespace `oa-spike-staging`, dispatch Worker `oa-s-spike-dispatch` (account scr
 
 `apps/dispatch` maps the request host (lowercased, one trailing dot stripped, port ignored) to an install id in `HOSTS` and forwards the original request to `oa-<p>-<id>` in the env's dispatch namespace. A miss, a value that isn't an install id, a KV or binding error, a deleted script and a crashing install all get the same plain `404 Not found`. On an error it logs `dispatch failed <category> <host>`, where category is `kv`, `not_found` (no such script) or `exception`. It never logs the error text, the URL or headers. Observability (Workers Logs) is off in each env and must stay off, because it would record full URLs.
 
-The repo config has no routes, custom domains or `workers.dev`, and no top-level name, so a deploy without `--env` is refused (tests pin all of it). Routing is wired once per env by this step. **The Manager and the user run it by hand; CI never does.**
+The repo config has no routes, custom domains or `workers.dev`, and no top-level name or `main`, so a deploy without `--env` is refused, even with `--name` (tests pin all of it). A positional entry (`wrangler deploy src/index.ts --name ...`) would still get past that guard. **Always deploy with `--env`, and never pass an entry point.** Routing is wired once per env by this step. **The Manager and the user run it by hand; CI never does.**
 
 | Env | Worker | Namespace | HOSTS KV title | Config placeholder |
 |---|---|---|---|---|
@@ -141,6 +141,45 @@ UP=$(printf %s "$ENV" | tr a-z A-Z)
 
 Unmapping and slug purges: dispatch reads HOSTS with `cacheTtl: 60`, so an edge can serve a removed mapping for up to about 60 s plus KV propagation. `delete` deletes the user script right after the unmap (`packages/provision/src/wfp.ts`: HOSTS keys at line 2792, script at line 2804, then KV, R2 and D1), so a stale mapping hits a missing script and gets the 404, not a half-deleted install. **A slug purge (freeing a deleted install's hosts for reuse) must wait at least 2 minutes after the unmap**, so no edge still maps the host to the old id when a new install takes it.
 
+## Auth broker: one-time deploy per env (gated)
+
+`apps/auth-broker` is the hosted Google sign-in broker on `auth.<app zone>`. It holds the multi-tenant Google client secret; the registry KV holds public keys only. The repo config has no routes, custom domains or `workers.dev`, and no top-level name or `main`, so a deploy without `--env` is refused, even with `--name` (tests pin all of it). A positional entry (`wrangler deploy src/index.ts --name ...`) would still get past that guard. **Always deploy with `--env`, and never pass an entry point.** Observability (Workers Logs) is off in each env and must stay off, because it records full URLs and the callback URL carries the OAuth code and state. **The Manager and the user run this by hand; CI never does.**
+
+| Env | Worker | Registry KV title | Config placeholder | Ratelimit ids |
+|---|---|---|---|---|
+| staging | `oa-s-auth-broker` | `oa-s-broker-registry` | `{{BROKER_REGISTRY_ID_STAGING}}` | 1101, 1102 |
+| prod | `oa-p-auth-broker` | `oa-p-broker-registry` | `{{BROKER_REGISTRY_ID_PROD}}` | 1111, 1112 |
+
+Prod's `GOOGLE_CLIENT_ID` is the placeholder `{{GOOGLE_CLIENT_ID_PROD}}` until a prod client exists, so a prod deploy is refused by step 3 until then (pass the id as `GOOGLE_CLIENT_ID_PROD`). The broker's vars are exactly `GOOGLE_CLIENT_ID` and `BROKER_ORIGIN`; it never holds the Directory client.
+
+Set `ENV`, `P`, `APP` and `UP` as in the dispatch section. Then, per env:
+
+1. Create the registry KV if provisioning hasn't (`pnpm exec wrangler kv namespace create oa-$P-broker-registry`; skip if `wrangler kv namespace list` shows it).
+2. Build from a clean checkout of the reviewed commit, as in the dispatch section, and run `pnpm --filter @oa/auth-broker test`.
+3. Deploy with the provisioning token, through the wrapper (`deploy-platform-worker.sh`, a hard-coded allowlist of apps). It runs from the app's directory, fills this env's placeholders from the environment into a gitignored `wrangler.deploy.jsonc`, refuses if any `{{..._<ENV>}}` remains, runs `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env <env>` (never an entry point, never `--name`), and removes the copy on exit:
+   ```sh
+   REG_ID=$(pnpm exec wrangler kv namespace list | jq -r --arg t "oa-$P-broker-registry" '.[] | select(.title == $t) | .id')
+   BROKER_REGISTRY_ID="$REG_ID" scripts/ops/deploy-platform-worker.sh auth-broker "$ENV"   # prod also needs GOOGLE_CLIENT_ID_PROD
+   ```
+   The deploy output must name `oa-$P-auth-broker` with `BROKER_REGISTRY`, `RL_BROKER_IP`, `RL_BROKER_INSTALL` and the two vars, and no routes or workers.dev URL.
+4. Set the secrets **after** the Worker exists, never before (`wrangler secret put` on a missing Worker creates one). Never echo them:
+   ```sh
+   pnpm exec wrangler secret put GOOGLE_CLIENT_SECRET --env "$ENV"   # paste from the password manager
+   openssl rand -base64 32 | pnpm exec wrangler secret put BROKER_STATE_KEY --env "$ENV"
+   ```
+5. The route, added in the same gated zone-token step as the dispatch routes (steps 4 to 7 of the dispatch section), on the app zone only: `POST /zones/<zone_id>/workers/routes` with `{"pattern": "auth.$APP/*", "script": "oa-$P-auth-broker"}`. The most specific matching route wins, so this beats the `*.$APP/*` dispatch wildcard (see [How routes work](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior)). `auth.$APP` is covered by the wildcard DNS record from the dispatch step.
+6. Check: `curl -sS -o /dev/null -w '%{http_code}\n' "https://auth.$APP/"` must be the broker's answer, not dispatch's plain `404 Not found` with body `Not found`.
+
+### Google clients (record)
+
+Public values only. The client secrets live in the user's password manager until each Worker exists.
+
+| Env | Project | Client | Client id | Redirect URI |
+|---|---|---|---|---|
+| staging | `open-artifacts-staging` | Sign-in (used by the broker) | `1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com` | `https://auth.open-artifacts-staging.app/google/callback` |
+| staging | `open-artifacts-staging` | Directory (P3 directory sync; not on the broker, P3 T12 decides where it lives) | `1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com` | none |
+| prod | not created yet | | | |
+
 ## Nightly scheduler: one-time deploy per env (Task 7, gated)
 
 User Workers in a dispatch namespace get no cron triggers, so `apps/scheduler` is the only nightly caller. Its cron (`17 3 * * *`, the same as a self-hosted install's) reads `SELECT id FROM installs WHERE state = 'active'` from the platform D1 (in keyset pages of 500) and calls `DISPATCHER.get(oa-<p>-<id>).scheduled({ cron, scheduledTime })` on each:
@@ -156,6 +195,14 @@ User Workers in a dispatch namespace get no cron triggers, so `apps/scheduler` i
 - **6 at a time.** Calling a service binding doesn't count toward the 6 simultaneous open connections, but the installs' own fetch, KV, R2, Cache and Queues calls share the scheduler's limit while they wait for headers ([limits](https://developers.cloudflare.com/workers/platform/limits/#simultaneous-open-connections), [service bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/#limits)). A call is reported `timeout` after 25 s, but it keeps its slot until it settles. A stuck call holds its slot for at most 60 s after its timeout. Then the slot is given back, the call counts as `leaked`, and the run goes on. A call still unsettled when the run ends is `leaked` too. Leaked calls may still hold connections, so the real bound is on unsettled calls: at most 12 (2 × the 6 slots, in a slot or leaked) at any time. At that cap no new call starts until one settles, or the deadline hits.
 - **Deadline.** No call starts after 13 minutes, under the 15-minute cron wall time. The rest is `skipped`, and the summary still lands.
 - One install throwing, timing out or missing never stops the others.
+- **Email-quota alert.** After the nightly run, in its own try, the scheduler reads the previous UTC day's sends from Cloudflare's Email Sending analytics (GraphQL, dataset `emailSendingAdaptiveGroups`, zone-level; [metrics](https://developers.cloudflare.com/email-service/observability/metrics-analytics/)) and sums them over `EMAIL_QUOTA_ZONES`. It never reads an install's D1, never changes or delays the nightly result, and gives up after 10 s. The sending limit is per account, not per zone ([limits](https://developers.cloudflare.com/email-service/platform/limits/)), so list every sending zone of the account and set `EMAIL_DAILY_LIMIT` to that account's current daily limit (new accounts start low and scale up, so re-check it in the dashboard). The window is `[day start, day end)` in UTC, from `event.scheduledTime`. The query filters `isLastEvent: 1`, so each email counts once (`count` is per event, and only an email's last event has it), and sums `count` over every status on purpose: Cloudflare doesn't count suppressed or verified-destination sends toward the limit, but the alert does, so it may read slightly high. Over-counting is the safe direction. At most 10 zones. Both vars are per-env placeholders, filled at deploy like `PLATFORM_DB`:
+
+  | Var | Placeholder (staging, prod) | Value |
+  |---|---|---|
+  | `EMAIL_QUOTA_ZONES` | `{{EMAIL_ZONE_TAG_STAGING}}`, `{{EMAIL_ZONE_TAG_PROD}}` | Comma-separated zone tags (32 hex chars). Each is the zone's id: dashboard > the domain > Overview > API section > Zone ID |
+  | `EMAIL_DAILY_LIMIT` | `{{EMAIL_DAILY_LIMIT_STAGING}}`, `{{EMAIL_DAILY_LIMIT_PROD}}` | The account's Email Sending daily limit, a positive integer: dashboard > Compute > Email Service > Email Sending |
+
+  Step 3 below fills them in the same gitignored copy as the D1 id and refuses to deploy if any of this env's placeholders is left. An unfilled placeholder would be an invalid config, so the alert would skip.
 
 A hosted upload carries no cron of its own (`TEMPLATE_BINDINGS_EXCLUDED.triggers`). That's pinned for the metadata in `packages/provision/test/metadata.test.ts`, and for the create, upgrade and rollback uploads, with no `/schedules` call, in `wfp-lifecycle.test.ts`. So the job runs once.
 
@@ -174,17 +221,26 @@ Steps, per env (`ENV`, `P` and `UP` as in the dispatch steps above):
    git status --porcelain | grep -q . && { echo "dirty checkout" >&2; exit 1; }
    pnpm install --frozen-lockfile && pnpm --filter @oa/provision build && pnpm --filter @oa/scheduler test
    ```
-3. Deploy with the provisioning token. Fill only this env's placeholder into a gitignored copy, deploy it, then remove the copy:
+3. Deploy with the provisioning token. Fill this env's placeholders into a gitignored copy, refuse if any of this env's `{{...}}` is left, deploy the copy, then remove it. `ZONES` is the sending zone tags, comma-separated (each is the zone's id: dashboard > the domain > Overview > API section > Zone ID, 32 lowercase hex chars). `LIMIT` is the account's Email Sending daily limit (dashboard > Compute > Email Service > Email Sending), a positive integer of at most 9 digits. Replace both quoted values before running; the chain refuses anything `apps/scheduler/src/quota.ts` would reject (an empty value, the example text, a bad tag or limit):
    ```sh
    cd apps/scheduler
+   ZONES='<zone tag>[,<zone tag>...]'
+   LIMIT='<daily limit>'
    DB_ID=$(pnpm exec wrangler d1 list --json | jq -r --arg n "oa-$P-platform" '.[] | select(.name == $n) | .uuid')
-   test -n "$DB_ID" \
-     && sed "s/{{PLATFORM_DB_ID_$UP}}/$DB_ID/" wrangler.jsonc > wrangler.deploy.jsonc \
+   printf '%s' "$ZONES" | grep -Eq '^[0-9a-f]{32}(,[0-9a-f]{32}){0,9}$' \
+     && printf '%s' "$LIMIT" | grep -Eq '^[1-9][0-9]{0,8}$' \
+     && test -n "$DB_ID" \
+     && sed -e "s/{{PLATFORM_DB_ID_$UP}}/$DB_ID/" \
+            -e "s/{{EMAIL_ZONE_TAG_$UP}}/$ZONES/" \
+            -e "s/{{EMAIL_DAILY_LIMIT_$UP}}/$LIMIT/" wrangler.jsonc > wrangler.deploy.jsonc \
+     && { ! grep -q "{{[A-Z_]*_$UP}}" wrangler.deploy.jsonc \
+          || { rm wrangler.deploy.jsonc; echo "unfilled $UP placeholder" >&2; false; }; } \
      && pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env "$ENV" \
      && rm wrangler.deploy.jsonc
    ```
-   The deploy output must name `oa-$P-scheduler` with `DISPATCHER (oa-$ENV)`, `PLATFORM_DB (oa-$P-platform)`, `OA_ENV ("$ENV")`, the schedule `17 3 * * *`, and no routes or workers.dev URL.
-4. Binding check, from the deployed settings: `PLATFORM_DB` must be the database named `oa-$P-platform`, `DISPATCHER` must be the namespace `oa-$ENV`, `OA_ENV` must be `$ENV`, and the schedules must be exactly `17 3 * * *`. Never another env's (`CF_ACCOUNT_ID` and `CF_API_TOKEN` as in the dispatch check):
+   The copy is the whole file, so the other env's placeholders stay in it (harmless: `--env` deploys only this env's block); the check is on this env's. A refused chain leaves nothing deployed; if `wrangler deploy` itself fails, remove `wrangler.deploy.jsonc` by hand.
+   The deploy output must name `oa-$P-scheduler` with `DISPATCHER (oa-$ENV)`, `PLATFORM_DB (oa-$P-platform)`, `OA_ENV ("$ENV")`, `EMAIL_QUOTA_ZONES ("<your zone tags>")` and `EMAIL_DAILY_LIMIT ("<your limit>")` (no `{{`), the schedule `17 3 * * *`, and no routes or workers.dev URL.
+4. Binding check, from the deployed settings (in the same shell as step 3, so `ZONES` and `LIMIT` are still set): `PLATFORM_DB` must be the database named `oa-$P-platform`, `DISPATCHER` must be the namespace `oa-$ENV`, `OA_ENV` must be `$ENV`, `EMAIL_QUOTA_ZONES` and `EMAIL_DAILY_LIMIT` must be the values from step 3, and the schedules must be exactly `17 3 * * *`. Never another env's (`CF_ACCOUNT_ID` and `CF_API_TOKEN` as in the dispatch check):
    ```sh
    API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID"
    SET=$(curl -sS -H "Authorization: Bearer $CF_API_TOKEN" "$API/workers/scripts/oa-$P-scheduler/settings")
@@ -195,6 +251,10 @@ Steps, per env (`ENV`, `P` and `UP` as in the dispatch steps above):
      || { echo "DISPATCHER is not oa-$ENV" >&2; exit 1; }
    test "$(printf %s "$SET" | jq -r '.result.bindings[] | select(.name == "OA_ENV") | .text')" = "$ENV" \
      || { echo "OA_ENV is not $ENV" >&2; exit 1; }
+   test "$(printf %s "$SET" | jq -r '.result.bindings[] | select(.name == "EMAIL_QUOTA_ZONES") | .text')" = "$ZONES" \
+     || { echo "EMAIL_QUOTA_ZONES is not the zones set at deploy" >&2; exit 1; }
+   test "$(printf %s "$SET" | jq -r '.result.bindings[] | select(.name == "EMAIL_DAILY_LIMIT") | .text')" = "$LIMIT" \
+     || { echo "EMAIL_DAILY_LIMIT is not the limit set at deploy" >&2; exit 1; }
    test "$(curl -sS -H "Authorization: Bearer $CF_API_TOKEN" "$API/workers/scripts/oa-$P-scheduler/schedules" \
      | jq -c '[.result.schedules[].cron]')" = '["17 3 * * *"]' \
      || { echo "schedules are not exactly 17 3 * * *" >&2; exit 1; }
@@ -202,6 +262,29 @@ Steps, per env (`ENV`, `P` and `UP` as in the dispatch steps above):
 5. **Per-request invocation limit: measured, no cap.** The service-bindings docs say "A single request has a maximum of 32 Worker invocations, and each call to a Service binding counts". Measured on staging 2026-10-24: 100 sequential dispatch `scheduled()` calls from one request, no invocation cap hit (probe: `.superpowers/platform/probe_invocations.py` in the platform workspace). The same probe showed that `scheduled()` resolves to `undefined` when the install's handler succeeds, and rejects with the handler's own error when it throws. The scheduler logs only a fixed category, never that text. On the first real staging run, also confirm:
    - the rejection for a missing script maps to `not_found`;
    - whether a timed-out install's job is canceled when the scheduler's invocation ends.
+   - the first `email-quota` line (once the token is set) is `ok` or `warn`, not `failed graphql` (the window variables are sent as ISO times with milliseconds, e.g. `2026-10-23T00:00:00.000Z`; a `graphql` failure on the first run points there or at the `datetimeHour_lt` filter).
+
+### Email-quota token (optional, set after the scheduler is deployed)
+
+The alert needs one secret, `EMAIL_QUOTA_TOKEN`: a Cloudflare API token that can only read analytics. Without it the alert skips, and nothing else changes.
+
+| | |
+|---|---|
+| Permission | Zone > Analytics > Read |
+| Scope | Specific zone: each zone in `EMAIL_QUOTA_ZONES`. Nothing else. |
+| TTL | 30 days or less (set an expiry; recreate it before it lapses, or the alert logs `email-quota failed http`) |
+
+Steps, per env:
+
+1. Dashboard > My Profile > API Tokens > Create Token > Custom token.
+2. Add Zone / Analytics / Read. Zone Resources: Include > Specific zone, then pick the sending zone (add one row per zone). Set the TTL.
+3. Create the token and copy it. Don't paste it anywhere else.
+4. Only after the scheduler is deployed, from `apps/scheduler`:
+   ```sh
+   pbpaste | npx wrangler secret put EMAIL_QUOTA_TOKEN --env <staging|prod>
+   ```
+5. Put the expiry in a calendar: at 30 days or less the token lapses, and the alert then logs `email-quota failed http` every night until it is rotated (repeat steps 1 to 4).
+6. Clear the clipboard. The token is used only as the `Authorization` header of the call to `api.cloudflare.com`, and is never logged.
 
 ### Reading the nightly run
 
@@ -218,7 +301,20 @@ Read the lines in Workers Logs for `oa-$P-scheduler` (dashboard, or the Observab
 | `nightly scale active=<n> over 300` | Past what one run fits (about 190 at 6 × 25 s in 13 minutes, fewer under shared-connection queuing). The M2 Queue fan-out is overdue. |
 | `nightly aborted <env\|exception>` | The run stopped before any call: a bad `OA_ENV` (`env`) or a platform D1 read error (`exception`). Cron Events shows the failure. |
 
-The email-quota alert (80% of the account limit) is not in M1: the per-install send counters live in each install's own D1 and no route exposes them. Backend owns that contract.
+Email-quota lines (one per run, after `nightly summary`; filter on `email-quota`). Same rules: no token, zone tag, response text, address or URL:
+
+| Line | Meaning |
+|---|---|
+| `email-quota ok sent=<n> limit=<L> pct=<p>` | Yesterday's (UTC) sends are under 80% of the limit. `console.log`. |
+| `email-quota warn sent=<n> limit=<L> pct=<p>` | At or above 80% (`pct` is rounded down; over 100 means the limit was passed). `console.warn`. Ask Cloudflare for a higher limit, or cut sending. |
+| `email-quota skipped no_token` | `EMAIL_QUOTA_TOKEN` isn't set. No call was made. |
+| `email-quota skipped config` | `EMAIL_QUOTA_ZONES` has no zone, a bad tag, or more than 10, or `EMAIL_DAILY_LIMIT` isn't a positive integer (an unfilled `{{...}}` placeholder is one). No call was made. |
+| `email-quota failed http` | Non-2xx from the API (an expired or wrongly scoped token is a 401 or 403) or a network error. |
+| `email-quota failed graphql` | The API answered with GraphQL `errors`. |
+| `email-quota failed timeout` | No full answer within 10 s. |
+| `email-quota failed shape` | Not JSON, or not the expected shape (including a configured zone missing from the answer). |
+
+A failed or skipped alert never changes the nightly lines above.
 
 ## Hosted release files (T3b)
 

@@ -10,19 +10,42 @@ Open Artifacts signs people in through Cloudflare Access by default. Direct sign
 
 ## Configuration
 
-| Variable | Kind | Meaning |
-|---|---|---|
-| `AUTH_PROVIDERS` | var | `google,email` (or `google`, or `email`). Unset means Access only. |
-| `AUTH_DOMAINS` | var | Your verified domains, comma separated, e.g. `example.com`. |
-| `AUTH_DOMAIN_JOIN` | var | `member` (anyone in the domain joins) or `invite` (default). |
-| `GOOGLE_CLIENT_ID` | var | Your Google OAuth client id. |
-| `GOOGLE_CLIENT_SECRET` | secret | Its secret. |
-| `EMAIL_CODE_DOMAIN` | var | `on` lets domain members use codes, only while Google is off. |
-| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | var, secret | When set, every code request needs a Turnstile token. Required for domain codes. |
-| `CODE_EMAILS_PER_DAY` | var | Daily cap on code emails (default 200), separate from invites (`EMAIL_DAILY_CAP`, default 100). |
-| `SESSION_SECRET` | secret | At least 32 characters of random data (setup generates one). See below. |
+| Variable | Kind | Setup flag | Meaning |
+|---|---|---|---|
+| `AUTH_PROVIDERS` | var | `--auth-providers` | `google,email` (or `google`, or `email`), optionally with `access`. Unset means Access only. |
+| `AUTH_DOMAINS` | var | `--auth-domains` | Your verified domains, comma separated, e.g. `example.com`. |
+| `AUTH_DOMAIN_JOIN` | var | `--auth-domain-join` | `member` (anyone in the domain joins) or `invite` (default). |
+| `GOOGLE_CLIENT_ID` | var | `--google-client-id` | Your Google OAuth client id. |
+| `GOOGLE_CLIENT_SECRET` | secret | none | Its secret. |
+| `EMAIL_CODE_DOMAIN` | var | `--email-code-domain` | `on` lets domain members use codes, only while Google is off. |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | var, secret | `--turnstile-site-key` (the key only) | When set, every code request needs a Turnstile token. Required for domain codes. |
+| `CODE_EMAILS_PER_DAY` | var | `--code-emails-per-day` | Daily cap on code emails (default 200, at most 10000), separate from invites (`EMAIL_DAILY_CAP`, default 100). |
+| `SESSION_SECRET` | secret | none | At least 32 characters of random data (setup generates one). See below. |
 
 Codes need email sending set up (`EMAIL` binding and `EMAIL_FROM`). Code requests are rate limited per IP by the `RL_AUTH` binding.
+
+## Setting it with setup
+
+Pass the vars to setup as flags, and put the secrets on the Worker yourself (they never go through setup):
+
+```sh
+pnpm oa:setup --upgrade --name <name> \
+  --auth-providers access,google,email \
+  --auth-domains example.com \
+  --auth-domain-join invite \
+  --google-client-id <id>.apps.googleusercontent.com
+pnpm -C apps/server exec wrangler secret put GOOGLE_CLIENT_SECRET --name <name>
+```
+
+- **Upgrades keep them.** Every setup run deploys the Worker, and a deploy replaces its vars with the rendered config. Without a flag, setup reads the value already on the deployed Worker and deploys it again, so a later `--upgrade` (stateless CI included) keeps your sign-in settings. A flag replaces the value, with a note naming the old one. Values set in the Cloudflare dashboard are kept the same way.
+- **Clearing one:** pass it empty, e.g. `--auth-domains ""` or `--auth-domain-join=`. The var is removed and the server default applies.
+- **Setup refuses before deploying** an unknown provider, a malformed domain, an `AUTH_DOMAIN_JOIN` other than `invite` or `member`, and `google` without both `GOOGLE_CLIENT_ID` and `AUTH_DOMAINS`. Flags are trimmed, and provider names, the join mode and `EMAIL_CODE_DOMAIN` lowercased. A value already on the Worker is carried exactly as it is; one the server would read differently (padded like `"member "`, wrong case like `Google`, an empty list item, an empty `AUTH_PROVIDERS`, or the var held as a secret or JSON binding) is refused instead: fix it with its flag. A missing `GOOGLE_CLIENT_SECRET` (or `TURNSTILE_SECRET` with a site key) is only a warning on the `deploy` line; that sign-in method stays off until you set it.
+- **If setup can't read the Worker's settings** (or they come back with no bindings), it never deploys an existing Worker, with or without `--upgrade`: the deploy step stops with `action_required`. Rerun once they are readable (the token needs Workers Scripts Read). A first install, with no Worker yet, is not affected.
+- `--check` reports the values it would deploy as `data.signin` on the `deploy` line.
+
+### This repository's production
+
+`artifacts.leourbina.com` is deployed by the release workflow (`deploy-prod` in `.github/workflows/release-please.yml`, through `scripts/ci/prod-setup.sh`). It and the manual install workflow (`ops-prod-install.yml`) read four repository variables, `PROD_AUTH_PROVIDERS`, `PROD_AUTH_DOMAINS`, `PROD_AUTH_DOMAIN_JOIN` and `PROD_GOOGLE_CLIENT_ID`, and passes each one that is set as its setup flag. An unset variable passes no flag, so the live value carries forward. Turning Google on is a variable change plus a re-run of the deploy, with no PR; `GOOGLE_CLIENT_SECRET` goes on the Worker with `wrangler secret put` first. To switch back, set `PROD_AUTH_PROVIDERS` to `access` and re-run the deploy.
 
 ## SESSION_SECRET
 
@@ -43,7 +66,7 @@ Direct sign-in keys everything it signs from `SESSION_SECRET`: one key per purpo
 
 ## Switching an existing install
 
-Existing members keep their accounts and artifacts. On their first Google sign-in, the account with the same email address is linked to their Google account. Existing sessions keep working. To switch back, set `AUTH_PROVIDERS` to `access` again; nothing else changes.
+Existing members keep their accounts and artifacts. On their first Google sign-in, the account with the same email address is linked to their Google account. Existing sessions keep working. To switch back, run setup with `--auth-providers access` (or set `AUTH_PROVIDERS` to `access` and keep it there: setup carries it forward); nothing else changes.
 
 ## Security notes
 

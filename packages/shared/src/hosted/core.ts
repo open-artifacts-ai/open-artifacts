@@ -115,7 +115,8 @@ export const parseFeatures = (raw: string | undefined): FeatureFlag[] => [
  * ok; backoff (429/5xx); auth_failed (401/invalid_grant); customer_mismatch;
  * scope_missing (a granted scope was revoked: Admin SDK 403
  * insufficientPermissions; fix copy "reconnect and grant all scopes");
- * never (no success yet).
+ * never (no success yet); pending_confirm (consent stored, waiting for
+ * the connecting owner to confirm or cancel; nothing synced yet).
  */
 export const SyncStateSchema = z.enum([
   "ok",
@@ -124,6 +125,7 @@ export const SyncStateSchema = z.enum([
   "customer_mismatch",
   "scope_missing",
   "never",
+  "pending_confirm",
 ]);
 export type SyncState = z.infer<typeof SyncStateSchema>;
 

@@ -155,7 +155,7 @@ const NOW = Date.UTC(2026, 9, 24, 3, 17);
 
 /** The whole log vocabulary: install ids, fixed categories and counts. */
 const LOG_LINE =
-  /^(?:nightly failed (?:timeout|not_found|canceled|exception) i[a-z0-9]{11}|nightly skipped (?:state|deadline|capped|recheck|db_error) i[a-z0-9]{11}|nightly db_error i[a-z0-9]{11}|nightly leaked i[a-z0-9]{11}|nightly summary active=\d+ ok=\d+ failed=\d+ skipped=\d+ capped=\d+ db_errors=\d+ leaked=\d+|nightly invalid ids=\d+|nightly scale active=\d+ over 300|nightly aborted (?:env|exception))$/;
+  /^(?:nightly failed (?:timeout|not_found|canceled|exception) i[a-z0-9]{11}|nightly skipped (?:state|deadline|capped|recheck|db_error) i[a-z0-9]{11}|nightly db_error i[a-z0-9]{11}|nightly leaked i[a-z0-9]{11}|nightly summary active=\d+ ok=\d+ failed=\d+ skipped=\d+ capped=\d+ db_errors=\d+ leaked=\d+|nightly invalid ids=\d+|nightly scale active=\d+ over 300|nightly aborted (?:env|exception)|email-quota skipped (?:no_token|config)|email-quota failed (?:http|graphql|timeout|shape)|email-quota (?:ok|warn) sent=\d+ limit=\d+ pct=\d+)$/;
 
 const DAY = 86_400_000;
 const GOLDEN = 0.3819660112501051;
@@ -1050,6 +1050,8 @@ describe("scheduled", () => {
         `nightly failed not_found ${idOf(2)}`,
         "nightly invalid ids=1",
         "nightly summary active=3 ok=1 failed=2 skipped=0 capped=0 db_errors=0 leaked=0",
+        // No EMAIL_QUOTA_TOKEN in the test env: the quota alert skips.
+        "email-quota skipped no_token",
       ].sort(),
     );
     // Every line is ids, fixed categories and counts only.
@@ -1102,6 +1104,7 @@ describe("scheduled", () => {
     await scheduler.scheduled(controller(NOW), f.env, createExecutionContext());
     expect(lines).toEqual([
       "nightly summary active=0 ok=0 failed=0 skipped=0 capped=0 db_errors=0 leaked=0",
+      "email-quota skipped no_token",
     ]);
     expect(f.scripts).toEqual([]);
   });
@@ -1115,5 +1118,95 @@ describe("scheduled", () => {
     ).rejects.toThrow();
     expect(lines).toEqual(["nightly aborted env"]);
     expect(bad.scripts).toEqual([]);
+  });
+});
+
+describe("scheduled: the email-quota alert", () => {
+  const controller = (scheduledTime: number) =>
+    ({ scheduledTime, cron: CRON, noRetry() {} }) as ScheduledController;
+  const Z = "a".repeat(32);
+  const quotaEnv = (f: ReturnType<typeof fakes>, o: Partial<Env> = {}) =>
+    ({
+      ...f.env,
+      EMAIL_QUOTA_TOKEN: "tok_SECRET_0123456789abcdef",
+      EMAIL_QUOTA_ZONES: Z,
+      EMAIL_DAILY_LIMIT: "100",
+      ...o,
+    }) as Env;
+  const reply = (count: number) =>
+    new Response(
+      JSON.stringify({
+        data: {
+          viewer: { zones: [{ emailSendingAdaptiveGroups: [{ count }] }] },
+        },
+        errors: null,
+      }),
+    );
+
+  it("runs after the nightly job, from the scheduled time, and logs one line", async () => {
+    await seed(ids(2));
+    const lines = captureLogs();
+    const fetchMock = vi.fn(async () => reply(85));
+    vi.stubGlobal("fetch", fetchMock);
+    const f = fakes();
+    await scheduler.scheduled(
+      controller(NOW),
+      quotaEnv(f),
+      createExecutionContext(),
+    );
+    vi.unstubAllGlobals();
+    expect(f.calls).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(lines).toEqual([
+      "nightly summary active=2 ok=2 failed=0 skipped=0 capped=0 db_errors=0 leaked=0",
+      "email-quota warn sent=85 limit=100 pct=85",
+    ]);
+    for (const l of lines) expect(l).toMatch(LOG_LINE);
+  });
+
+  it("a quota failure leaves the nightly result and summary intact", async () => {
+    await seed(ids(2));
+    const lines = captureLogs();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("boom owner@customer.test tok_SECRET");
+      }),
+    );
+    const f = fakes("staging", (s) => (s.endsWith(idOf(1)) ? "throw" : "ok"));
+    await expect(
+      scheduler.scheduled(
+        controller(NOW),
+        quotaEnv(f),
+        createExecutionContext(),
+      ),
+    ).resolves.toBeUndefined();
+    vi.unstubAllGlobals();
+    expect(f.calls).toHaveLength(2);
+    expect([...lines].sort()).toEqual(
+      [
+        `nightly failed exception ${idOf(1)}`,
+        "nightly summary active=2 ok=1 failed=1 skipped=0 capped=0 db_errors=0 leaked=0",
+        "email-quota failed http",
+      ].sort(),
+    );
+    for (const l of lines) expect(l).toMatch(LOG_LINE);
+  });
+
+  it("an aborted nightly run does not call the quota API", async () => {
+    await seed(ids(1));
+    captureLogs();
+    const fetchMock = vi.fn(async () => reply(1));
+    vi.stubGlobal("fetch", fetchMock);
+    const bad = fakes("dev" as "prod");
+    await expect(
+      scheduler.scheduled(
+        controller(NOW),
+        quotaEnv(bad),
+        createExecutionContext(),
+      ),
+    ).rejects.toThrow();
+    vi.unstubAllGlobals();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

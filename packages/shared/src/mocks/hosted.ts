@@ -377,6 +377,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     staleAt: null,
     alertedAt: null,
     customerMismatch: null,
+    pendingCount: null,
+    pendingCountCapped: false,
+    pendingExpiresAt: null,
     held:
       directoryMode === "google"
         ? [
@@ -1578,6 +1581,37 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           return err("directory_sync_off", "Directory sync is off or frozen");
         sync.nextRunAt = iso();
         return HttpResponse.json(sync, { status: 202 });
+      }),
+    ),
+    http.post(
+      "*/api/v1/directory/confirm",
+      authed(() => {
+        if (me.user.role !== "owner" || sync.state !== "pending_confirm")
+          return notFound();
+        Object.assign(sync, {
+          state: "never",
+          pendingCount: null,
+          pendingCountCapped: false,
+          pendingExpiresAt: null,
+        });
+        log("directory.connect", { type: "directory", id: "google" });
+        return HttpResponse.json(sync);
+      }),
+    ),
+    http.post(
+      "*/api/v1/directory/cancel",
+      authed(() => {
+        if (me.user.role !== "owner" || sync.state !== "pending_confirm")
+          return notFound();
+        Object.assign(sync, {
+          state: "never",
+          binding: null,
+          pendingCount: null,
+          pendingCountCapped: false,
+          pendingExpiresAt: null,
+        });
+        log("directory.disconnect", { type: "directory", id: "google" });
+        return noContent();
       }),
     ),
     http.post(

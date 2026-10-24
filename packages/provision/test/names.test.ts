@@ -95,6 +95,7 @@ describe("provision names", () => {
       "broker",
       "login",
       "sso",
+      "directory",
       "Acme",
       "a.b",
       "-a",

@@ -2,17 +2,21 @@ import { env } from "cloudflare:workers";
 import { ContentUrlSchema, type Member, newId, R } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { sessionCookieName, signSession } from "../src/auth/session.js";
 import {
   CAPTURE_HEADER,
+  contentViewer,
   publicPrefix,
   signCapture,
+  signContent,
   signContentPrefix,
   signDownload,
   verifyContentPrefix,
 } from "../src/content/signing.js";
 import { appOrigin } from "../src/http/errors.js";
 import { patch, publish, softDelete } from "../src/services/artifacts.js";
-import { getUser } from "../src/services/users.js";
+import { setUserStatus } from "../src/services/members.js";
+import { getUser, getUserWithEpoch } from "../src/services/users.js";
 import {
   CHUNK_JS,
   contentCall as call,
@@ -570,6 +574,207 @@ describe("no top-level rendering (#292)", () => {
       const b = await top(bad);
       expect(b.status, bad).toBe(303);
       expect(await b.text()).toBe("");
+    }
+  });
+});
+
+describe("content host revocation in D1 (P3 T11)", () => {
+  /** content_revocation on: content-url binds the viewer into the token. */
+  const REV = {
+    ...(env as object),
+    FEATURES: "content_revocation",
+  } as typeof env;
+  const revApp = {
+    fetch: (r: Request, _e: unknown, c: never) => app.fetch(r, REV, c),
+  };
+  const mint = async (id: string, cookie: string) => {
+    const r = await api(revApp as never, R.contentUrl(id), cookie);
+    expect(r.status).toBe(200);
+    return new URL(ContentUrlSchema.parse(await r.json()).url).pathname;
+  };
+  const fresh = async (p: string) => {
+    const l = await login(`${p}-${newId().slice(0, 6).toLowerCase()}@x.com`);
+    const m = await getUser(env, l.userId);
+    if (!m) throw new Error("no user");
+    return { cookie: l.cookie, member: m };
+  };
+  const site = async (m: Member, visibility = "private") =>
+    (
+      await publish(
+        env,
+        m,
+        {
+          title: "rev",
+          format: "html",
+          entry: "index.html",
+          files: { "index.html": "<p>hi</p>", "a.css": "x{}" },
+          visibility,
+        } as never,
+        null,
+        undefined,
+        "create",
+      )
+    ).id;
+
+  it("contentViewer fails closed: flag on, a user and no epoch throws", () => {
+    const uid = "Z".repeat(16);
+    expect(() => contentViewer(REV, uid, null)).toThrow(/needs an epoch/);
+    expect(() => contentViewer(REV, uid, undefined)).toThrow(/needs an epoch/);
+    expect(contentViewer(REV, uid, 3)).toEqual({ uid, epoch: 3 });
+    // Anonymous, or the flag off: today's two-part token.
+    expect(contentViewer(REV, null, null)).toBeNull();
+    expect(contentViewer(env, uid, null)).toBeNull();
+    expect(contentViewer(env, uid, 3)).toBeNull();
+  });
+
+  it("content-url binds uid and epoch with the flag on, two-part without it", async () => {
+    const u = await fresh("rev-shape");
+    const id = await site(u.member);
+    expect(await mint(id, u.cookie)).toMatch(
+      new RegExp(
+        `^/c/\\d+\\.${u.member.id}\\.\\d+\\.[A-Za-z0-9_-]{43}/${id}/v1/__view$`,
+      ),
+    );
+    const r = await api(app, R.contentUrl(id), u.cookie);
+    expect(ContentUrlSchema.parse(await r.json()).url).toMatch(
+      new RegExp(`/c/\\d+\\.[A-Za-z0-9_-]{43}/${id}/v1/__view$`),
+    );
+  });
+
+  it("signed token for a user suspended after minting → 404 on the next file", async () => {
+    const u = await fresh("rev-susp");
+    const id = await site(u.member);
+    const view = await mint(id, u.cookie);
+    expect((await call(view)).status).toBe(200);
+    await setUserStatus(env, u.member.id, "suspended", "admin_suspend");
+    // The very next request is refused: no cache, no KV, the one statement.
+    expect((await call(view.replace("__view", "a.css"))).status).toBe(404);
+    expect((await call(view)).status).toBe(404);
+  });
+
+  it("a reactivated user's old URL stays refused (the epoch is bound); a new one serves", async () => {
+    const u = await fresh("rev-react");
+    const id = await site(u.member);
+    const old = await mint(id, u.cookie);
+    await setUserStatus(env, u.member.id, "suspended", "admin_suspend");
+    await setUserStatus(env, u.member.id, "active", "admin_restore");
+    expect((await call(old)).status).toBe(404);
+    // A fresh sign-in at the new epoch mints a URL that serves.
+    const row = await getUserWithEpoch(env, u.member.id);
+    const cookie = `${sessionCookieName(env)}=${await signSession(
+      env,
+      u.member.id,
+      Date.now(),
+      { provider: "access", epoch: row?.sessionEpoch ?? -1 },
+    )}`;
+    expect((await call(await mint(id, cookie))).status).toBe(200);
+  });
+
+  it("a removed user's download URL is refused too", async () => {
+    const u = await fresh("rev-dl");
+    const id = await site(u.member);
+    const row = await getUserWithEpoch(env, u.member.id);
+    const { path } = await signDownload(env, id, 1, "a.css", Date.now(), {
+      uid: u.member.id,
+      epoch: row?.sessionEpoch ?? -1,
+    });
+    expect((await call(path)).status).toBe(200);
+    await setUserStatus(env, u.member.id, "removed", "admin_remove");
+    expect((await call(path)).status).toBe(404);
+  });
+
+  it("the uid and epoch are in the MAC; an unknown user is refused", async () => {
+    const u = await fresh("rev-mac");
+    const other = await fresh("rev-mac2");
+    const id = await site(u.member);
+    const view = await mint(id, u.cookie);
+    expect((await call(view)).status).toBe(200);
+    const token = view.split("/")[2] ?? "";
+    const [exp, uid, epoch, sig] = token.split(".");
+    for (const bad of [
+      `${exp}.${other.member.id}.${epoch}.${sig}`, // another user
+      `${exp}.${uid}.${Number(epoch) + 1}.${sig}`, // another epoch
+      `${exp}.${sig}`, // stripped to the two-part form
+    ])
+      expect((await call(view.replace(token, bad))).status, bad).toBe(404);
+    // A valid MAC for a user id with no row: refused.
+    const { prefix } = await signContent(env, id, 1, Date.now(), 600, "frame", {
+      uid: "Z".repeat(16),
+      epoch: 0,
+    });
+    expect((await call(`${prefix}__view`)).status).toBe(404);
+  });
+
+  it("/p/ on a space with public links off still serves an existing public row (the toggle blocks new links only)", async () => {
+    const u = await fresh("rev-pl");
+    const id = await site(u.member, "public");
+    const sid = newId();
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into spaces (id, kind, name, public_links, created_at) values (?, 'shared', ?, 0, 1)",
+      ).bind(sid, `pl-${sid}`),
+      // Forced row: a public artifact in a links-off space.
+      env.DB.prepare("update artifacts set space_id = ? where id = ?").bind(
+        sid,
+        id,
+      ),
+    ]);
+    expect((await call(`${publicPrefix(id, 1)}__view`)).status).toBe(200);
+  });
+
+  it("anonymous /p/ is unaffected by the owner's removal", async () => {
+    const u = await fresh("rev-pub");
+    const id = await site(u.member, "public");
+    const p = `${publicPrefix(id, 1)}a.css`;
+    expect((await call(p)).status).toBe(200);
+    await setUserStatus(env, u.member.id, "removed", "admin_remove");
+    expect((await call(p)).status).toBe(200);
+  });
+
+  it("two-part tokens still verify for public and capture", async () => {
+    const u = await fresh("rev-two");
+    const id = await site(u.member);
+    await setUserStatus(env, u.member.id, "suspended", "admin_suspend");
+    // Unbound: tokens minted with the flag off, and thumbnails, carry no user.
+    const prefix = await signContentPrefix(env, id, 1);
+    expect((await call(`${prefix}a.css`)).status).toBe(200);
+    const top = await call(`${prefix}__view`, {
+      headers: {
+        "sec-fetch-dest": "document",
+        [CAPTURE_HEADER]: await signCapture(env, id, 1),
+      },
+    });
+    expect(top.status).toBe(200);
+  });
+
+  it("content host does one D1 statement per request", async () => {
+    const u = await fresh("rev-one");
+    const id = await site(u.member);
+    const pub = await site(u.member, "public");
+    const view = await mint(id, u.cookie);
+    let statements = 0;
+    const DB = new Proxy(env.DB, {
+      get(t, p) {
+        if (p === "prepare")
+          return (q: string) => {
+            statements++;
+            return t.prepare(q);
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    for (const path of [
+      view, // version manifest not cached yet
+      view.replace("__view", "a.css"), // cached manifest
+      `${publicPrefix(pub, 1)}__view`,
+      `${publicPrefix(pub, 1)}a.css`,
+      `${await signContentPrefix(env, id, 1)}a.css`,
+    ]) {
+      statements = 0;
+      const r = await call(path, undefined, fakeAssets().fetcher, { DB });
+      expect(r.status, path).toBe(200);
+      expect(statements, path).toBe(1);
     }
   });
 });
