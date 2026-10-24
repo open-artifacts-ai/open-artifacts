@@ -120,9 +120,9 @@ describe.each([
   });
 
   it("a reconnect to another customer → ?error=customer_mismatch; the binding stays", async () => {
-    expect(
-      (await connect(e, owner.cookie, g, { sub: admin.sub })).ok,
-    ).toBe(true);
+    expect((await connect(e, owner.cookie, g, { sub: admin.sub })).ok).toBe(
+      true,
+    );
     const other = g.addUser({
       id: `g-other-${crypto.randomUUID()}`,
       primaryEmail: uniq("other"),
@@ -395,9 +395,9 @@ describe("confirm step", () => {
     // The super admin, the linkable user and the new one: active, in domain.
     expect(s.pendingCount).toBe(3);
     expect(s.pendingCountCapped).toBe(false);
-    expect(
-      Date.parse(s.pendingExpiresAt ?? "") - Date.now(),
-    ).toBeGreaterThan(23 * 3600_000);
+    expect(Date.parse(s.pendingExpiresAt ?? "") - Date.now()).toBeGreaterThan(
+      23 * 3600_000,
+    );
     expect(s.binding?.customerId).toBe(g.customerId);
 
     const c = await post(e, R.directoryConfirm, owner.cookie);

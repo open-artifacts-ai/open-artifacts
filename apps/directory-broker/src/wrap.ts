@@ -49,9 +49,8 @@ function keyFor(secret: string): Promise<CryptoKey> {
 const unb64 = (s: string): Uint8Array<ArrayBuffer> | null => {
   if (!/^[A-Za-z0-9_-]+$/.test(s)) return null;
   try {
-    return Uint8Array.from(
-      atob(s.replace(/-/g, "+").replace(/_/g, "/")),
-      (c) => c.charCodeAt(0),
+    return Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) =>
+      c.charCodeAt(0),
     );
   } catch {
     return null;

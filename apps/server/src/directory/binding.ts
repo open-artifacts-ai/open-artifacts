@@ -9,7 +9,7 @@ import { setUserStatus } from "../services/members.js";
 import { type GoogleUser, listUsers } from "./google.js";
 import { putInitial, readInitial } from "./store.js";
 
-// The initial binding (P3 T12): right after connect, a full users.list links
+// The initial binding (P3 T12): once the owner confirms the connect (R.directoryConfirm), a full users.list links
 // every directory user to an install user through identities('google', id)
 // (directory_bound = 1), creating the user row when none exists. Email
 // matching is allowed in this one pass only (binding.initial.done): every

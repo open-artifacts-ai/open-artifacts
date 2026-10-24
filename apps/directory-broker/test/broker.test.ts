@@ -263,14 +263,17 @@ describe("POST /google/directory/token", () => {
     const out = JSON.parse(text) as { box: never };
     // Nothing but the box: the scope is sealed with the tokens.
     expect(Object.keys(out)).toEqual(["box"]);
-    expect(
-      JSON.parse(await openFromBroker(box, "inst-a", kid, out.box)),
-    ).toEqual({
-      refresh_token: "rt-1",
+    const tokens = JSON.parse(
+      await openFromBroker(box, "inst-a", kid, out.box),
+    ) as Record<string, string>;
+    expect(tokens).toEqual({
+      refresh_token: expect.stringMatching(/^v1\./),
       access_token: "at-1",
       id_token: "raw.id.token",
       scope: GOOGLE_DIRECTORY_SCOPES.join(" "),
     });
+    // Google's refresh token never leaves raw, even inside the box.
+    expect(tokens.refresh_token).not.toContain("rt-1");
     // Another install id or another key pair can't open it.
     await expect(openFromBroker(box, "inst-b", kid, out.box)).rejects.toThrow();
     await expect(
@@ -283,24 +286,92 @@ describe("POST /google/directory/token", () => {
     expect(t?.get("code_verifier")).toBe(VERIFIER);
   });
 
+  /** The install-bound refresh blob a code grant hands `install`. */
+  const blobFor = async (install = "inst-a", key = KEY_A) => {
+    const bstate = (await start(install)).q?.get("state") ?? "";
+    const { r, box, kid } = await signed(
+      await codeBody({ install, bstate }),
+      key,
+    );
+    const out = (await r.json()) as { box: never };
+    return (
+      JSON.parse(await openFromBroker(box, install, kid, out.box)) as {
+        refresh_token: string;
+      }
+    ).refresh_token;
+  };
+
   it("refresh grant: a sealed access token; Google's invalid_grant is 400 invalid_grant", async () => {
     const body = {
       install: "inst-a",
       ts: Date.now(),
       grant: "refresh",
-      refresh_token: "rt-1",
+      refresh_token: await blobFor(),
     };
+    tokenCalls = [];
     const { r, box, kid } = await signed(body);
     const out = (await r.json()) as { box: never };
     expect(
       JSON.parse(await openFromBroker(box, "inst-a", kid, out.box)),
     ).toEqual({ access_token: "at-1", expires_in: 3599 });
     expect(tokenCalls[0]?.get("grant_type")).toBe("refresh_token");
+    // Google sees its own token, unwrapped by the broker.
+    expect(tokenCalls[0]?.get("refresh_token")).toBe("rt-1");
     tokenReply = () =>
       Response.json({ error: "invalid_grant" }, { status: 400 });
     const bad = (await signed({ ...body, ts: Date.now() })).r;
     expect(bad.status).toBe(400);
     expect(await bad.json()).toEqual({ error: "invalid_grant" });
+  });
+
+  it("refresh tokens are bound to the install: a cross-install blob, a raw token or a tampered blob is refused", async () => {
+    const aBlob = await blobFor("inst-a", KEY_A);
+    tokenCalls = [];
+    const refresh = (install: string, refresh_token: string) => ({
+      install,
+      ts: Date.now(),
+      grant: "refresh",
+      refresh_token,
+    });
+    // Install B, with B's own valid assertion, presents A's blob.
+    expect((await signed(refresh("inst-b", aBlob), KEY_B)).r.status).toBe(401);
+    // Google's raw refresh token.
+    expect((await signed(refresh("inst-a", "rt-1"))).r.status).toBe(401);
+    // A tampered blob.
+    expect((await signed(refresh("inst-a", `${aBlob}A`))).r.status).toBe(401);
+    expect(tokenCalls).toHaveLength(0);
+    // The right install succeeds.
+    expect((await signed(refresh("inst-a", aBlob))).r.status).toBe(200);
+  });
+
+  it("/start and /token charge separate per-install buckets", async () => {
+    const keys: string[] = [];
+    const rl = {
+      limit: async ({ key }: { key: string }) => (
+        keys.push(key), { success: true }
+      ),
+    };
+    const e = E({ RL_DIRECTORY_INSTALL: rl as never });
+    const st = await start("inst-a", e);
+    const text = JSON.stringify({
+      epk: (await boxKeyPair()).pub,
+      ...(await codeBody({ bstate: st.q?.get("state") ?? "" })),
+    });
+    const kid = await kidOf(KEY_A);
+    await call(
+      TOKEN,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-oa-kid": kid,
+          "x-oa-sig": await signRequest(KEY_A, TOKEN, kid, text),
+        },
+        body: text,
+      },
+      e,
+    );
+    expect(keys).toEqual(["start:install:inst-a", "token:install:inst-a"]);
   });
 
   it("refuses another install's state, a wrong verifier, a stale ts, another install's key and a missing box key", async () => {

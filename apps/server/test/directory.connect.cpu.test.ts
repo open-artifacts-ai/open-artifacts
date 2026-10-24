@@ -5,14 +5,16 @@ import { env } from "cloudflare:workers";
 import { R } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { bindPage, planPage } from "../src/directory/binding.js";
+import { seal } from "../src/directory/crypto.js";
 import type { GoogleUser } from "../src/directory/google.js";
 import { uniq } from "./auth-helpers.js";
-import { budget, medianMs as time } from "./cpu-time.js";
+import { budget, pairedMs, medianMs as time } from "./cpu-time.js";
 import {
   begin,
   DIR_CID,
   directEnv,
   get,
+  post,
   resetDirectory,
 } from "./directory-helpers.js";
 import { fakeDirectory } from "./fixtures/fake-directory.js";
@@ -33,7 +35,7 @@ describe("directory connect CPU (Free: 10 ms)", () => {
     expect(ms).toBeLessThan(50);
   });
 
-  it("the callback (checks, seal, binding, a small initial pass) fits the budget", async ({
+  it("the callback (checks, seal, count) and the confirm (refresh, binding pass) fit the budget", async ({
     annotate,
   }) => {
     const e = directEnv();
@@ -53,10 +55,46 @@ describe("directory connect CPU (Free: 10 ms)", () => {
         `${R.directoryCallback}?code=${code}&state=${encodeURIComponent(b.to?.searchParams.get("state") ?? "")}`,
         `${owner.cookie}; ${b.dirCookie}`,
       );
-      expect(r.headers.get("location")).toContain("connected=1");
+      expect(r.headers.get("location")).not.toContain("error");
     });
-    await budget(annotate, "directory callback", ms, 10);
+    await budget(annotate, "directory callback (consent + count)", ms, 10);
     expect(ms).toBeLessThan(200);
+
+    // Confirm alone: the pending rows seeded, then POST R.directoryConfirm
+    // (refresh at the fake Google, a small binding pass).
+    const sealed = await seal(e, `rt-${sub}`);
+    const binding = JSON.stringify({
+      provider: "google",
+      customerId: g.customerId,
+      domain: "a.com",
+      connectedBy: owner.userId,
+      connectedAt: new Date().toISOString(),
+    });
+    const seed = () =>
+      env.DB.prepare(
+        "insert or replace into directory_state (key, value) values ('binding', ?), ('refresh', ?), ('connect.confirm', ?)",
+      )
+        .bind(
+          binding,
+          sealed,
+          JSON.stringify({
+            u: owner.userId,
+            exp: Date.now() + 3600_000,
+            count: 1,
+            capped: false,
+          }),
+        )
+        .run();
+    // Seeding is the test's, not the request's: measured apart and taken off.
+    const t = await pairedMs(seed, async () => {
+      await seed();
+      expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(
+        200,
+      );
+    });
+    const confirmMs = Math.max(0, Math.round(t.delta));
+    await budget(annotate, "directory confirm", confirmMs, 10);
+    expect(confirmMs).toBeLessThan(200);
     g.restore();
   });
 

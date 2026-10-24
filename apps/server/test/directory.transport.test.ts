@@ -180,9 +180,9 @@ describe("direct", () => {
       ).first(),
     ).toBeNull();
     // The same grant with this install's client id connects.
-    expect(
-      (await connect(e, owner.cookie, g, { sub: adminSub })).ok,
-    ).toBe(true);
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
   });
 });
 
@@ -262,9 +262,9 @@ describe.each(["broker", "direct"] as const)("%s", (kind) => {
         })
       ).q.get("error"),
     ).toBe("scopes");
-    expect(
-      (await connect(e, owner.cookie, g, { sub: adminSub })).ok,
-    ).toBe(true);
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
     const foreign = g.addUser({
       id: `g-f-${crypto.randomUUID()}`,
       primaryEmail: uniq("f"),
@@ -294,9 +294,9 @@ describe("initial binding", () => {
       id: `g-bob-${crypto.randomUUID()}`,
       primaryEmail: first,
     });
-    expect(
-      (await connect(e, owner.cookie, g, { sub: adminSub })).ok,
-    ).toBe(true);
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
     expect(await ident(gBob.id)).toEqual({
       user_id: bobId,
       directory_bound: 1,
@@ -310,9 +310,9 @@ describe("initial binding", () => {
       id: `g-carol-${crypto.randomUUID()}`,
       primaryEmail: later,
     });
-    expect(
-      (await connect(e, owner.cookie, g, { sub: adminSub })).ok,
-    ).toBe(true);
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
     expect(await ident(gCarol.id)).toBeNull();
     const rows = await env.DB.prepare("select id from users where email = ?")
       .bind(later)

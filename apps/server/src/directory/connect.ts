@@ -376,13 +376,16 @@ export async function afterConsent(
     token = await client.accessToken(sealed);
   } catch (e) {
     logWarn("directory_confirm_token", e);
-    throw new ApiError("conflict", "Google refused the stored grant; connect again");
+    throw new ApiError(
+      "conflict",
+      "Google refused the stored grant; connect again",
+    );
   }
   const out = await env.DB.batch([
-    stmt(env.DB, "delete from directory_state where key = ? and json_extract(value, '$.u') = ?").bind(
-      K.confirm,
-      user.id,
-    ),
+    stmt(
+      env.DB,
+      "delete from directory_state where key = ? and json_extract(value, '$.u') = ?",
+    ).bind(K.confirm, user.id),
     audit(env, "directory.connect", AUDIT_TARGET, userActor(user.id), {
       detail: { outcome: "confirmed", transport: client.kind },
       when: { sql: "changes() > 0", args: [] },

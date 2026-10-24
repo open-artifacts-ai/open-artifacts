@@ -21,6 +21,7 @@ import {
   DIR_CID,
   directEnv,
   get,
+  post,
   resetDirectory,
 } from "./directory-helpers.js";
 import { fakeDirectory } from "./fixtures/fake-directory.js";
@@ -376,14 +377,17 @@ it("directory connect (P3 T12): the pending flow, then binding, sealed token, au
     `${R.directoryCallback}?code=${code}&state=${encodeURIComponent(b.to?.searchParams.get("state") ?? "")}`,
     `${owner.cookie}; ${b.dirCookie}`,
   );
-  expect(
-    new URL(r.headers.get("location") ?? "").searchParams.get("connected"),
-  ).toBe("1");
-  // pending delete 1 + binding 1 + refresh 1 + audit 2 (table,
-  // audit_events_at_idx) + binding.initial 1, plus 6 per created user (the
-  // super admin and the new user): users 2 (table, email unique), personal
-  // space 2 (table, spaces_kind_name_idx), identity 2 (table,
-  // identities_user_provider).
-  expect(w.n).toBe(18);
+  expect(new URL(r.headers.get("location") ?? "").search).toBe("");
+  // Consent only: pending delete 1 + binding 1 + refresh 1 + confirm row 1
+  // + audit 2 (table, audit_events_at_idx). No users, identities or spaces.
+  expect(w.n).toBe(6);
+  w.n = 0;
+  const c = await post(e, R.directoryConfirm, owner.cookie);
+  expect(c.status).toBe(200);
+  // Confirm: confirm row delete 1 + audit 2 + binding.initial 1, plus 6 per
+  // created user (the super admin and the new user): users 2 (table, email
+  // unique), personal space 2 (table, spaces_kind_name_idx), identity 2
+  // (table, identities_user_provider).
+  expect(w.n).toBe(16);
   g.restore();
 });
