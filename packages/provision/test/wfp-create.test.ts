@@ -616,8 +616,8 @@ describe("WfpProvisioner.create", () => {
       state: "active",
       test_hooks: 0,
       version: "0.23.0",
-      // The template's latest tag (v2 adds UserPresence, unbound, P3 T7a).
-      do_migration_tag: "v2",
+      // The template's latest tag, derived so a new server DO tag needs no edit.
+      do_migration_tag: loadTemplate().migrations?.at(-1)?.tag,
     });
     expect(
       s
@@ -1127,6 +1127,9 @@ describe("WfpProvisioner.create", () => {
       "ARTIFACT_RUNTIME",
       // P3 T7b: UserPresence, bound one release after its class tag (v2).
       "USER_PRESENCE",
+      // P3 T13: DirectorySync (v3) and the directory groups limiter.
+      "DIRECTORY_SYNC",
+      "RL_DIRECTORY",
       "RL_ANON",
       "RL_AUTH",
       "PLAN",
@@ -2362,9 +2365,12 @@ describe("account target is test-only (H-T4b L3)", () => {
 });
 
 describe("Durable Object migration safety (H-T4b L5)", () => {
+  // A step after the live template's own tags (derived, never a literal that
+  // a new server DO tag would collide with).
+  const STEP_TAG = `${loadTemplate().migrations?.at(-1)?.tag}-step`;
   const withStep = (step: Record<string, unknown>) => {
     const t = structuredClone(loadTemplate());
-    t.migrations = [...(t.migrations ?? []), { tag: "v2", ...step }];
+    t.migrations = [...(t.migrations ?? []), { tag: STEP_TAG, ...step }];
     return t;
   };
   it.each([
@@ -2423,7 +2429,7 @@ describe("Durable Object migration safety (H-T4b L5)", () => {
       }),
     });
     await s.p.create(input());
-    expect(s.rows()[0].do_migration_tag).toBe("v2");
+    expect(s.rows()[0].do_migration_tag).toBe(STEP_TAG);
   });
 });
 
