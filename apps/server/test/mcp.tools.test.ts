@@ -724,7 +724,13 @@ describe("content revocation (P3 T11)", () => {
     const get = () =>
       callWorker(new Request(`http://content.localhost${url.pathname}?dl=1`));
     expect((await get()).status).toBe(200);
-    await setUserStatus(env, u.userId, "suspended", "admin_suspend", SYSTEM_ACTOR);
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     expect((await get()).status).toBe(404);
   });
 });
