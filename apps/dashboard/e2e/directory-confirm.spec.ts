@@ -148,3 +148,23 @@ for (const scheme of ["light", "dark"] as const)
         await shot(page, "expired", (n) => info.outputPath(n));
       });
     });
+
+for (const scheme of ["light", "dark"] as const)
+  test(`a non-owner waits for the owner (${scheme} 390)`, async ({
+    page,
+  }, info) => {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.setViewportSize({ width: 390, height: 900 });
+    await pending(page, "pending");
+    await page.goto("/settings/directory?hosted=1,admin");
+    await expect(status(page).getByRole("heading", { level: 2 })).toHaveText(
+      "Waiting for the owner to confirm",
+    );
+    await expect(status(page)).toContainText("Nobody is added until then.");
+    await expect(status(page).getByRole("button")).toHaveCount(0);
+    await settle(page);
+    await page.screenshot({
+      path: info.outputPath(`dir-waiting-${scheme}-390.png`),
+      fullPage: true,
+    });
+  });

@@ -59,9 +59,15 @@ const serve = (first: object, nextBody?: object) => {
     ),
   };
 };
+// The row date rule: no year when it's this year.
 const expiryText = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
+  month: "short",
+  day: "numeric",
+  ...(new Date(EXPIRES).getFullYear() === new Date().getFullYear()
+    ? {}
+    : { year: "numeric" }),
+  hour: "numeric",
+  minute: "2-digit",
 }).format(new Date(EXPIRES));
 
 it("Connect opens the pre-Google dialog: no count, Cancel and Continue to Google", async () => {
@@ -102,6 +108,38 @@ it("pending_confirm: Add N people?, the domain, the expiry in your zone, Cancel 
   ).toBeVisible();
   // Cancel is the way out while pending: no Connection card or Disconnect.
   expect(screen.queryByRole("region", { name: "Connection" })).toBeNull();
+});
+
+it("one person: singular throughout", async () => {
+  const s = serve({ ...PENDING, pendingCount: 1 });
+  mountHosted("/settings/directory", true, undefined, [s.handler]);
+  const h = await status();
+  expect(within(h).getByRole("heading", { level: 2 })).toHaveTextContent(
+    "Add 1 person?",
+  );
+  expect(h).toHaveTextContent(
+    "This adds 1 person from example.com as a member. They can sign in with Google right away.",
+  );
+  expect(within(h).getByRole("button", { name: "Add 1 person" })).toBeVisible();
+});
+
+it("a non-owner waits for the owner: named, the expiry, no buttons", async () => {
+  const s = serve(PENDING);
+  mountHosted(
+    "/settings/directory",
+    true,
+    (m) => ({ ...m, user: { ...m.user, role: "admin" } }),
+    [s.handler],
+  );
+  const h = await status();
+  expect(within(h).getByRole("heading", { level: 2 })).toHaveTextContent(
+    "Waiting for the owner to confirm",
+  );
+  expect(h).toHaveTextContent(
+    "Ada Lovelace needs to confirm who to add. Nobody is added until then.",
+  );
+  expect(h).toHaveTextContent(`Confirm by ${expiryText}.`);
+  expect(within(h).queryByRole("button")).toBeNull();
 });
 
 it("capped: Add 500+ people?, more than 500 people, Add people", async () => {

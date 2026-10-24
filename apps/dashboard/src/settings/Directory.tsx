@@ -170,11 +170,19 @@ function ConnectLink({ label }: { label: string }) {
 type Outcome = "cancelled" | "expired" | null;
 
 const listFmt = new Intl.ListFormat("en", { type: "conjunction" });
-/** The viewer's zone, as Design asks for the expiry. */
-const expiryFmt = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
+/** The viewer's zone, as Design asks; no year when it's this year (the row date rule). */
+const expiry = (iso: string) => {
+  const d = new Date(iso);
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(d.getFullYear() === new Date().getFullYear()
+      ? {}
+      : { year: "numeric" }),
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(d);
+};
 
 /** The Google domains: the binding's once consented, else the sign-in config's. */
 function useGoogleDomains(sync: SyncStatus): string {
@@ -262,13 +270,13 @@ function PendingConfirm({
     >
       <p>
         This adds {capped ? "more than 500 people" : people(n)}
-        {domains ? ` from ${domains}` : ""} as members. They can sign in with
+        {domains ? ` from ${domains}` : ""} as{" "}
+        {!capped && n === 1 ? "a member" : "members"}. They can sign in with
         Google right away.
       </p>
       {sync.pendingExpiresAt && (
         <p className={muted}>
-          Confirm by {expiryFmt.format(new Date(sync.pendingExpiresAt))}, or
-          connect again.
+          Confirm by {expiry(sync.pendingExpiresAt)}, or connect again.
         </p>
       )}
       <DialogFooter className="mt-[var(--oa-space-2)]">
@@ -386,8 +394,14 @@ function StatusHeader({
     return owner ? (
       <PendingConfirm sync={sync} domains={domains} onOutcome={onOutcome} />
     ) : (
-      <Header tone="info" label="Waiting for confirmation">
-        {only("confirm who to add")}
+      <Header tone="info" label="Waiting for the owner to confirm">
+        <p>
+          {ownerName ?? "The owner"} needs to confirm who to add. Nobody is
+          added until then.
+        </p>
+        {sync.pendingExpiresAt && (
+          <p className={muted}>Confirm by {expiry(sync.pendingExpiresAt)}.</p>
+        )}
       </Header>
     );
 
