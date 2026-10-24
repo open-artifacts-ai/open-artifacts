@@ -15,7 +15,7 @@ import type { AppEnv } from "../http/middleware.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import { getSettings } from "../services/members.js";
-import { getUser } from "../services/users.js";
+import { getUser, getUserWithEpoch } from "../services/users.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
 import { CONSENT_TEMPLATE } from "./consent-template.js";
 import {
@@ -41,7 +41,12 @@ import { escapeHtml, fillTemplate } from "./template.js";
 export { OAUTH, oauthApi } from "./oauth-api.js";
 
 /** What a grant carries to the MCP handler (ctx.props) and in its metadata. */
-export type GrantProps = { userId: string; clientName: string };
+export type GrantProps = {
+  userId: string;
+  clientName: string;
+  /** When consent was approved (ms); compared with users.status_changed_at. */
+  issuedAt?: number;
+};
 
 const MAX_CLIENT_NAME = 64;
 /** Client registrations per IP (IPv6: per /64) per window of RL_ANON. */
@@ -79,8 +84,19 @@ const apiHandler = {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     const props = (ctx as ExecutionContext & { props?: Partial<GrantProps> })
       .props;
-    const user = props?.userId ? await getUser(env, props.userId) : null;
-    if (!user) return mcpUnauthorized(env);
+    const row = props?.userId
+      ? await getUserWithEpoch(env, props.userId)
+      : null;
+    // A grant issued at or before the user's last status change (or with no
+    // issuedAt, from before P3 T6) is refused: one minted during a
+    // suspension, or missed by the KV revocation, never outlives it.
+    if (
+      !row ||
+      (row.statusChangedAt !== null &&
+        !((props?.issuedAt ?? 0) > row.statusChangedAt))
+    )
+      return mcpUnauthorized(env);
+    const { user } = row;
     // A member demoted to guest loses agent access (grants are also revoked).
     if (!canConnect(user))
       return mcpUnauthorized(env, "Only members can connect agents");
@@ -439,7 +455,17 @@ async function decideConsent(c: Context<AppEnv>): Promise<Response> {
     const props: GrantProps = {
       userId: user.id,
       clientName: clientNameOf(client?.clientName, approved.request.clientId),
+      issuedAt: Date.now(),
     };
+    // Still active right before the grant is written. A status change that
+    // commits after this read is later than issuedAt, so the grant is
+    // refused at use (apiHandler).
+    if (!(await getUser(c.env, user.id)))
+      return messagePage(
+        "Signed out",
+        "Your session ended. Start connecting again from your agent.",
+        401,
+      );
     const { redirectTo } = await oauth.completeAuthorization({
       request: approved.request,
       userId: user.id,

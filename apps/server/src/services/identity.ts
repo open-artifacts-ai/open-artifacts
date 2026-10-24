@@ -2,7 +2,7 @@ import { inDomains, normalizeEmail } from "@oa/auth-core";
 import type { Member, Role } from "@oa/shared";
 import { logAuth } from "../auth/audit.js";
 import type { AuthConfig } from "../auth/config.js";
-import { isGuestRole, orgCan, promotedRole } from "../auth/policy.js";
+import { isGuestRole, orgCan } from "../auth/policy.js";
 import type { VerifiedIdentity } from "../auth/providers/types.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
@@ -53,23 +53,31 @@ async function touch(
   row: UserRow,
   id: VerifiedIdentity,
   now: number,
-): Promise<Member> {
+): Promise<Member | null> {
   const owner = normalizeEmail(env.OWNER_EMAIL ?? "");
-  const role = promotedRole(row.role as Role);
+  // The role is promoted from the row's CURRENT role, in SQL (promotedRole:
+  // guest becomes member, every other role is kept), never written back from
+  // the read above: an admin demotion racing this sign-in sticks (P3 T6).
   // OWNER_EMAIL becomes owner only while no owner row exists (one owner).
-  // The admission and its auth.signin audit row commit together.
+  // An active row only: a user who stopped being active mid-sign-in matches
+  // no row, gets no auth.signin row, and is refused (null). The admission
+  // and its audit row commit together.
   const [res] = await env.DB.batch<UserRow>([
     stmt(
       env.DB,
       `update users set last_seen_at = ?1, name = coalesce(?2, name),
-         role = case when ?5 = 1 and not exists (select 1 from users where role = 'owner') then 'owner' else ?3 end
-       where id = ?4
+         role = case when ?4 = 1 and not exists (select 1 from users where role = 'owner') then 'owner'
+                     when role = 'guest' then 'member' else role end
+       where id = ?3 and status = 'active'
        returning id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, status`,
-    ).bind(now, id.name, role, row.id, owner && row.email === owner ? 1 : 0),
-    signInAudit(env, row.id, id.provider, id.tenant),
+    ).bind(now, id.name, row.id, owner && row.email === owner ? 1 : 0),
+    signInAudit(env, row.id, id.provider, id.tenant, {
+      sql: "changes() > 0",
+      args: [],
+    }),
   ]);
   const out = res?.results[0];
-  return member(out ?? { ...row, role });
+  return out ? member(out) : null;
 }
 
 /** Moves a linked user to their new verified address when nobody else has it. */
@@ -127,10 +135,9 @@ export async function admit(
     .first<UserRow>();
   if (linked) {
     if (linked.status !== "active") return { ok: false, reason: "removed" };
-    return {
-      ok: true,
-      user: await touch(env, await followDrift(env, linked, email), id, now),
-    };
+    return admitted(
+      await touch(env, await followDrift(env, linked, email), id, now),
+    );
   }
 
   const existing = await stmt(env.DB, BY_EMAIL)
@@ -161,8 +168,12 @@ export async function admit(
   if (row.status !== "active") return { ok: false, reason: "removed" };
   if (row.subject !== id.subject)
     return { ok: false, reason: "identity_conflict" };
-  return { ok: true, user: await touch(env, row, id, now) };
+  return admitted(await touch(env, row, id, now));
 }
+
+/** touch's result: null (no longer active mid-sign-in) is refused, fail closed. */
+const admitted = (user: Member | null): AdmitResult =>
+  user ? { ok: true, user } : { ok: false, reason: "removed" };
 
 export type CodeEligibility =
   | { kind: "member"; userId: string | null; role: Role }

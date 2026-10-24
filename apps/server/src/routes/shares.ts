@@ -31,7 +31,7 @@ export function mountShares(app: AppType): void {
     const user = requireUser(c);
     const id = idParam(c);
     const input = await jsonBody(c, ShareInputSchema);
-    return c.json(await putShare(c.env, user, id, input));
+    return c.json(await putShare(c.env, user, id, input, execCtx(c)));
   });
 
   app.delete(SHARE, async (c) => {

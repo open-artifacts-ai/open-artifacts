@@ -53,6 +53,20 @@ export const users = sqliteTable(
      */
     restrictedManual: integer("restricted_manual").notNull().default(0),
     restrictedSync: integer("restricted_sync").notNull().default(0),
+    /**
+     * 1 only for a guest deactivated because their last share went (status
+     * 'removed'): the one removal a new share undoes (putShare). An admin or
+     * directory removal clears it, so that removal sticks (P3 T6). Its
+     * CHECK (0 or 1) is inline in the ADD COLUMN (hand-edited migration): a
+     * table-level check here would make drizzle-kit rebuild the table.
+     */
+    guestLapsed: integer("guest_lapsed").notNull().default(0),
+    /**
+     * When status last changed (ms; null = never). An OAuth grant issued at
+     * or before it is refused, so a grant minted during a suspension, or
+     * missed by the KV revocation, never survives an unsuspend (P3 T6).
+     */
+    statusChangedAt: integer("status_changed_at"),
   },
   () => [check("users_role_check", inList("role", RoleSchema.options))],
 );

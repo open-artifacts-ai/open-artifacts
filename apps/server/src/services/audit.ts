@@ -89,9 +89,11 @@ export const signInAudit = (
   userId: string,
   provider: string,
   tenant?: string | null,
+  when?: AuditExtra["when"],
 ): D1PreparedStatement =>
   audit(env, "auth.signin", { type: "user", id: userId }, userActor(userId), {
     detail: { provider, ...(tenant ? { tenant } : {}) },
+    ...(when ? { when } : {}),
   });
 
 /**

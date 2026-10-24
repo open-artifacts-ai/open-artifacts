@@ -88,7 +88,7 @@ every flag that is on.
 | `Me` | `auth?: MeAuth`, `personalSpaceId?` (= user.id), `spaces?: MySpace[]` (shared, by name, ≤ 200) |
 | `Settings` (so `SettingsPatch`) | `spaceManagerMappings?: boolean` (hosted; default true, absent self-hosted). PATCH needs `settings.manage` (org owner, admin); audited `settings.space_manager_mappings` |
 | `Space` | `can?: SpaceCan` (`{ manageMappings }`) |
-| `AuditActionSchema` | `settings.space_manager_mappings` |
+| `AuditActionSchema` | `settings.space_manager_mappings`, `user.role` (a member role change: `detail { from, to }`, written only when the role changes) |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
 
 ## Sign-in (`hosted/auth.ts`, P2)
@@ -183,6 +183,8 @@ line, never twice. A non-null `cap` still limits access to viewer.
 | `GET R.memberTransfer(id)` | → `TransferSummary {live, deleted}` | counts only; org owner, admin |
 | `POST R.memberTransfer(id)` | `TransferInput {to: user\|space, cursor?}` → `TransferResult {moved, remaining, nextCursor}` | 409 `member_active`; user target active, non-guest, non-restricted (400 `invalid_successor`); ≤ `TRANSFER_PAGE` (100) per call; repeat with `cursor` until `nextCursor` is null |
 
+Accepted disclosure: `scope=space` (or any `spaceId`) naming another user's personal space returns 400 `space_personal`, not 404, so it reveals that the id is a user's. Accepted because ids are random and already visible to members on Members (a personal space's id is its owner's user id).
+
 ## Directory and audit (`hosted/directory.ts`, P3)
 
 | Route | Response | Who |
@@ -208,7 +210,7 @@ sync routes, after a fresh Google sign-in (10 min); else 401 `reauth_required`.
 | `DirectoryGroupSchema` | `{ groupId, email, name, memberCount }` |
 | `DirectoryConnectErrorSchema` | `not_super_admin \| domain_mismatch \| customer_mismatch \| scopes \| denied \| expired \| failed` |
 | `AuditReasonSchema` | why a status changed: `directory_suspend \| directory_unsuspend \| directory_delete \| directory_new_id \| directory_stale \| admin_suspend \| admin_remove \| admin_restore` |
-| `AuditActionSchema`, `AuditEventSchema` | audited actions (incl. `auth.signin`, `artifact.share`/`unshare`/`visibility`, `space.public_links`, `space.admin_self_add`, `restricted.set`/`restricted.remove`, `directory.break_glass`) and the event row (target types add `group`, a Google group id) |
+| `AuditActionSchema`, `AuditEventSchema` | audited actions (incl. `auth.signin`, `artifact.share`/`unshare`/`visibility`, `space.public_links`, `space.admin_self_add`, `restricted.set`/`restricted.remove`, `directory.break_glass`, `user.status` with `reason` and `detail { status }`, written only when the status changes, `user.role`) and the event row (target types add `group`, a Google group id) |
 
 ## Error codes (appended to `ERROR_CODES`)
 
