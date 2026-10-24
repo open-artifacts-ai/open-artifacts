@@ -167,14 +167,10 @@ export async function patchMember(
   // Audited as user.role in the same batch, only when the role changes.
   const [res] = await env.DB.batch([
     stmt(env.DB, SET_ROLE).bind(id, patch.role),
-    ...(row.role === patch.role
-      ? []
-      : [
-          audit(env, "user.role", { type: "user", id }, by, {
-            detail: { from: row.role, to: patch.role },
-            when: { sql: "changes() > 0", args: [] },
-          }),
-        ]),
+    audit(env, "user.role", { type: "user", id }, by, {
+      detail: { from: row.role, to: patch.role },
+      when: { sql: "changes() > 0 and ? <> ?", args: [row.role, patch.role] },
+    }),
   ]);
   const out = res?.results[0] as Parameters<typeof toMember>[0] | undefined;
   if (!out) throw new ApiError("not_found", "Not found");
