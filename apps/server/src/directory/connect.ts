@@ -32,6 +32,7 @@ import {
 } from "./google.js";
 import {
   CONFIRM_TTL_MS,
+  CONFIRM_WON,
   dropPending,
   expirePending,
   K,
@@ -41,6 +42,7 @@ import {
   putState,
   readBinding,
   readPending,
+  readPendingRaw,
   revokeGrant,
 } from "./store.js";
 import {
@@ -387,12 +389,14 @@ export async function afterConsent(
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<SyncStatus> {
   const p = await ownPending(env, user);
-  const [{ binding, sealed }, { sealed: old }, oldSub] = await Promise.all([
-    readBinding(env, "pending"),
-    readBinding(env, "live"),
-    liveSub(env),
-  ]);
-  if (!binding || !sealed) throw notFound();
+  const [{ binding, sealed }, { sealed: old }, oldSub, seen] =
+    await Promise.all([
+      readBinding(env, "pending"),
+      readBinding(env, "live"),
+      liveSub(env),
+      readPendingRaw(env),
+    ]);
+  if (!binding || !sealed || !seen) throw notFound();
   let token: string;
   try {
     token = await client.accessToken(sealed);
@@ -403,7 +407,7 @@ export async function afterConsent(
       "Google refused the stored grant; connect again",
     );
   }
-  const swap = promotePending(env, user.id, Date.now());
+  const swap = promotePending(env, user.id, Date.now(), seen);
   const out = await env.DB.batch([
     ...swap,
     audit(env, "directory.connect", AUDIT_TARGET, userActor(user.id), {
@@ -411,12 +415,22 @@ export async function afterConsent(
       when: { sql: "changes() > 0", args: [] },
     }),
   ]);
-  // A racing confirm or cancel (or the expiry) took it first.
-  if (!out[swap.length - 1]?.meta.changes) throw notFound();
+  if (!out[CONFIRM_WON]?.meta.changes) {
+    // Still pending for this owner: a newer consent replaced what we read.
+    const now = await readPending(env);
+    if (now && now.u === user.id && now.exp > Date.now())
+      throw new ApiError(
+        "conflict",
+        "A newer directory consent arrived; review it and confirm again",
+      );
+    // A racing confirm or cancel (or the expiry) took it first.
+    throw notFound();
+  }
   logInfo("directory_connect", { outcome: "confirmed", kind: client.kind });
   if (old)
     await revokeGrant(env, old, userActor(user.id), "old", {
-      sub: oldSub,
+      // The new account unknown: it may be the same one, so never revoke.
+      sub: p.s ? oldSub : null,
       keep: [p.s ?? null],
     });
   const pass = await initialBinding(

@@ -253,7 +253,8 @@ describe.each(["broker", "direct"] as const)("%s", (kind) => {
       (await connect(e, owner.cookie, g, { sub: adminSub, hd: "b.com" })).q.get(
         "error",
       ),
-    ).toBe("domain_mismatch");
+      // The broker refuses an unlisted hd first, with the generic error.
+    ).toBe(kind === "broker" ? "failed" : "domain_mismatch");
     expect(
       (
         await connect(e, owner.cookie, g, {

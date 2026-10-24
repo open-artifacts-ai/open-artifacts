@@ -6,8 +6,11 @@ import { env } from "cloudflare:workers";
 import { R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { scheduled } from "../src/cron.js";
+import { directoryClient } from "../src/directory/client.js";
+import { afterConsent } from "../src/directory/connect.js";
 import { open, seal } from "../src/directory/crypto.js";
 import type { Env } from "../src/env.js";
+import { getUser } from "../src/services/users.js";
 import { seedUser, uniq } from "./auth-helpers.js";
 import {
   begin,
@@ -85,12 +88,15 @@ describe.each([
       sub: admin.sub,
       hd: "evil.com",
     });
-    expect(a.q.get("error")).toBe("domain_mismatch");
+    // The broker refuses an hd its registry doesn't list (generic: failed)
+    // before the install's own check (domain_mismatch) runs.
+    const hdRefusal = kind === "broker" ? "failed" : "domain_mismatch";
+    expect(a.q.get("error")).toBe(hdRefusal);
     const none = await connect(e, owner.cookie, g, {
       sub: admin.sub,
       hd: null,
     });
-    expect(none.q.get("error")).toBe("domain_mismatch");
+    expect(none.q.get("error")).toBe(hdRefusal);
     g.domains.set(g.customerId, [{ domainName: "other.com", verified: true }]);
     const b = await connect(e, owner.cookie, g, { sub: admin.sub });
     expect(b.q.get("error")).toBe("domain_mismatch");
@@ -635,5 +641,43 @@ describe.each([
     expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(200);
     expect(g.revoked).toEqual([]);
     expect(await outcomes()).toContain("revoke_skipped");
+  });
+
+  it("a second callback landing during confirm: 409 conflict, nothing promoted", async () => {
+    const before = await live();
+    await connect(e, owner.cookie, g, { sub: second }, { confirm: false });
+    const member = await getUser(e, owner.userId);
+    const real = directoryClient(e);
+    if (!member || !real) throw new Error("setup");
+    // The newer consent replaces the pending token after confirm read it.
+    const racing = {
+      ...real,
+      accessToken: async (s: string) => {
+        await env.DB.prepare(
+          "update directory_state set value = 'newer' where key = 'pending.refresh'",
+        ).run();
+        return real.accessToken(s);
+      },
+    };
+    await expect(afterConsent(e, racing, member)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect(await live()).toEqual(before);
+    expect(
+      (await state()).find((r) => r.key === "pending.refresh")?.value,
+    ).toBe("newer");
+    expect(g.revoked).toEqual([]);
+  });
+
+  it("a pending consent without a Google account clears grant.sub on confirm", async () => {
+    expect((await live())["grant.sub"]).toBe(admin.sub);
+    await connect(e, owner.cookie, g, { sub: second }, { confirm: false });
+    await env.DB.prepare(
+      "update directory_state set value = json_remove(value, '$.s') where key = 'connect.confirm'",
+    ).run();
+    expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(200);
+    expect((await live())["grant.sub"]).toBeUndefined();
+    // Unknown account: the old grant is not revoked (fail safe).
+    expect(g.revoked).toEqual([]);
   });
 });

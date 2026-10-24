@@ -15,7 +15,12 @@ export type RegistryEntry = {
   origin: string;
   /** At most 2 during rotation. */
   keys: RegistryKey[];
-  /** Verified domains, for the account chooser's hd hint only. */
+  /**
+   * The install's verified domains (its AUTH_DOMAINS: lowercase, no trailing
+   * dot, unique, sorted, at most MAX_DOMAINS). The sign-in broker uses the
+   * first as the hd hint; the directory broker requires the consent's hd to
+   * be one of them.
+   */
   domains?: string[];
   disabled?: boolean;
 };
@@ -24,6 +29,8 @@ const CACHE_MS = 60_000;
 const cache = new Map<string, { at: number; entry: RegistryEntry | null }>();
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
+/** Platform writes at most this many (lowercase, unique, sorted AUTH_DOMAINS). */
+export const MAX_DOMAINS = 50;
 
 function valid(e: unknown, id: string): e is RegistryEntry {
   const r = e as RegistryEntry | null;
@@ -34,7 +41,15 @@ function valid(e: unknown, id: string): e is RegistryEntry {
     /^https:\/\/[^/]+$/.test(r.origin) &&
     Array.isArray(r.keys) &&
     r.keys.length <= 2 &&
-    r.keys.every((k) => typeof k?.kid === "string" && typeof k?.x === "string")
+    r.keys.every(
+      (k) => typeof k?.kid === "string" && typeof k?.x === "string",
+    ) &&
+    // Optional; when present, at most MAX_DOMAINS strings (else the entry is
+    // refused). Absent stays valid, so sign-in entries without it still work.
+    (r.domains === undefined ||
+      (Array.isArray(r.domains) &&
+        r.domains.length <= MAX_DOMAINS &&
+        r.domains.every((d) => typeof d === "string")))
   );
 }
 

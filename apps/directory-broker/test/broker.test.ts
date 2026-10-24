@@ -56,7 +56,13 @@ const KEY_A = pk(1);
 const KEY_B = pk(2);
 
 /** Platform's write (the test's raw binding, not the Worker's). */
-async function register(id: string, origin: string, key: string) {
+async function register(
+  id: string,
+  origin: string,
+  key: string,
+  /** null: no domains field at all. */
+  domains: unknown = ["a.com"],
+) {
   const x = await publicFromPkcs8(key);
   await env.DIRECTORY_REGISTRY.put(
     `install:${id}`,
@@ -64,10 +70,19 @@ async function register(id: string, origin: string, key: string) {
       installId: id,
       origin,
       keys: [{ kid: await keyId(x), x }],
-      domains: ["a.com"],
+      ...(domains === null ? {} : { domains }),
     }),
   );
 }
+
+/** An ID token as Google's token endpoint returns it (claims only read). */
+const idToken = (claims: Record<string, unknown>) =>
+  [
+    Buffer.from('{"alg":"RS256"}').toString("base64url"),
+    Buffer.from(JSON.stringify(claims)).toString("base64url"),
+    "sig",
+  ].join(".");
+const ID_TOKEN = idToken({ sub: "g1", hd: "a.com" });
 
 const call = (path: string, init?: RequestInit, e: Env = E()) =>
   broker.fetch(new Request(`${ORIGIN}${path}`, init) as never, e);
@@ -129,7 +144,7 @@ beforeEach(async () => {
       refresh_token: "rt-1",
       access_token: "at-1",
       scope: GOOGLE_DIRECTORY_SCOPES.join(" "),
-      id_token: "raw.id.token",
+      id_token: ID_TOKEN,
       expires_in: 3599,
     });
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -268,7 +283,7 @@ describe("POST /google/directory/token", () => {
     const { r, box, kid } = await signed(await codeBody());
     expect(r.status).toBe(200);
     const text = await r.text();
-    for (const raw of ["rt-1", "at-1", "raw.id.token"])
+    for (const raw of ["rt-1", "at-1", ID_TOKEN])
       expect(text).not.toContain(raw);
     const out = JSON.parse(text) as { box: never };
     // Nothing but the box: the scope is sealed with the tokens.
@@ -279,7 +294,7 @@ describe("POST /google/directory/token", () => {
     expect(tokens).toEqual({
       refresh_token: expect.stringMatching(/^v1\./),
       access_token: "at-1",
-      id_token: "raw.id.token",
+      id_token: ID_TOKEN,
       scope: GOOGLE_DIRECTORY_SCOPES.join(" "),
     });
     // Google's refresh token never leaves raw, even inside the box.
@@ -432,6 +447,47 @@ describe("POST /google/directory/token", () => {
     expect(r.status).toBe(429);
     expect(keys).toEqual(["revoke:install:inst-a"]);
     expect(revoked).toEqual([]);
+  });
+
+  it("the consent's hd must be listed in the registry: unlisted, empty list, missing field refused; listed passes", async () => {
+    const code = async (install: string, key: string, hd: string) => {
+      tokenReply = () =>
+        Response.json({
+          refresh_token: "rt-1",
+          access_token: "at-1",
+          scope: GOOGLE_DIRECTORY_SCOPES.join(" "),
+          id_token: idToken({ sub: "g1", hd }),
+        });
+      const bstate = (await start(install)).q?.get("state") ?? "";
+      return (await signed(await codeBody({ install, bstate }), key)).r;
+    };
+    // Listed (case-insensitive) passes.
+    expect((await code("inst-a", KEY_A, "A.com")).status).toBe(200);
+    // Not listed.
+    expect((await code("inst-a", KEY_A, "evil.com")).status).toBe(400);
+    // An empty list, then no field at all.
+    for (const [id, domains] of [
+      ["inst-e", []],
+      ["inst-m", null],
+    ] as const) {
+      await register(id, `https://${id}.hosted.test`, KEY_A, domains);
+      clearRegistryCache();
+      const r = await code(id, KEY_A, "a.com");
+      expect(r.status, id).toBe(400);
+      expect(await r.json()).toEqual({ error: "exchange_failed" });
+    }
+  });
+
+  it("a malformed domains field rejects the whole entry", async () => {
+    for (const [id, domains] of [
+      ["inst-x1", "a.com"],
+      ["inst-x2", [1, 2]],
+      ["inst-x3", Array.from({ length: 51 }, (_, i) => `d${i}.com`)],
+    ] as const) {
+      await register(id, `https://${id}.hosted.test`, KEY_A, domains);
+      clearRegistryCache();
+      expect((await start(id)).r.status, id).toBe(404);
+    }
   });
 
   it("/start and /token charge separate per-install buckets", async () => {

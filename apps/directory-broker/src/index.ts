@@ -169,6 +169,22 @@ async function callback(
   });
 }
 
+/**
+ * The `hd` claim of the ID token Google just returned over TLS (read, not
+ * re-verified: it came straight from Google's token endpoint), lowercased.
+ */
+function hdOf(idToken: string): string | null {
+  try {
+    const part = idToken.split(".")[1] ?? "";
+    const c = JSON.parse(atob(part.replace(/-/g, "+").replace(/_/g, "/"))) as {
+      hd?: unknown;
+    };
+    return typeof c.hd === "string" && c.hd ? c.hd.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 type TokenBody =
   | {
       install: string;
@@ -328,6 +344,15 @@ async function token(req: Request, env: Env, now: number): Promise<Response> {
   )
     return (
       log("token", "incomplete_grant"), json({ error: "exchange_failed" }, 400)
+    );
+  // The consent's Workspace domain must be one the registry lists for this
+  // install (not only the install's own check). Missing or empty list, a
+  // missing hd or one not listed: the generic refusal.
+  const hd = hdOf(out.id_token);
+  const listed = (entry.domains ?? []).map((d) => d.toLowerCase());
+  if (!hd || !listed.includes(hd))
+    return (
+      log("token", "hd_not_listed"), json({ error: "exchange_failed" }, 400)
     );
   log("token", "code_ok");
   return json({

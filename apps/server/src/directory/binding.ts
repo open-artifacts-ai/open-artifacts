@@ -62,6 +62,9 @@ const LINK_BY_EMAIL = `insert or ignore into identities
  * New rows for unknown directory users (the trigger adds the personal
  * space). An existing address is never reused here: without the email pass,
  * T14's new-id rule decides what happens to it.
+ * Rows are created whatever AUTH_DOMAIN_JOIN says (invite-only included):
+ * the manager's ruling (#564). Connecting the directory is the owner's
+ * opt-in, and the confirm step shows how many members it will add.
  */
 const CREATE_USERS = `insert or ignore into users
   (id, email, name, role, created_at, status, restricted_sync)

@@ -141,43 +141,87 @@ export const dropPending = (env: Env) =>
 const OWNED = `exists (select 1 from directory_state where key = ?
   and json_extract(value, '$.u') = ? and json_extract(value, '$.exp') > ?)`;
 
-const PROMOTE = `insert into directory_state (key, value)
-  select ?, value from directory_state where key = ? and ${OWNED}
-  on conflict (key) do update set value = excluded.value`;
-
 /**
  * The confirm swap, in order for one D1 batch: the pending binding and
  * token become live, then the pending rows go, and last the confirmation
  * row (its `changes` says whether this confirm won). Every statement is
- * gated on the same owned, unexpired confirmation, so the batch swaps all
- * or nothing.
+ * gated on the same owned, unexpired confirmation AND on the pending rows
+ * still holding exactly the values confirm read (`seen`), so a second
+ * callback landing in between promotes nothing (D1 has no SHA function;
+ * exact equality is the stronger form of the hash check). The batch swaps
+ * all or nothing. A pending consent without a Google account clears
+ * grant.sub, so a later revoke never compares against a stale account.
  */
 export function promotePending(
   env: Env,
   uid: string,
   now: number,
+  seen: { binding: string; refresh: string },
 ): D1PreparedStatement[] {
-  const gate = [K.confirm, uid, now];
+  const gated = `${OWNED} and ${SEEN}`;
+  const gate = [
+    K.confirm,
+    uid,
+    now,
+    K.pendingBinding,
+    seen.binding,
+    K.pendingRefresh,
+    seen.refresh,
+  ];
+  const promote = `insert into directory_state (key, value)
+    select ?, value from directory_state where key = ? and ${gated}
+    on conflict (key) do update set value = excluded.value`;
   return [
+    stmt(
+      env.DB,
+      `delete from directory_state where key = ? and exists (
+        select 1 from directory_state where key = ?
+          and json_extract(value, '$.s') is null) and ${gated}`,
+    ).bind(K.grantSub, K.confirm, ...gate),
     stmt(
       env.DB,
       `insert into directory_state (key, value)
         select ?, json_extract(value, '$.s') from directory_state
-        where key = ? and json_extract(value, '$.s') is not null and ${OWNED}
+        where key = ? and json_extract(value, '$.s') is not null and ${gated}
         on conflict (key) do update set value = excluded.value`,
     ).bind(K.grantSub, K.confirm, ...gate),
-    stmt(env.DB, PROMOTE).bind(K.binding, K.pendingBinding, ...gate),
-    stmt(env.DB, PROMOTE).bind(K.refresh, K.pendingRefresh, ...gate),
-    stmt(
-      env.DB,
-      `delete from directory_state where key in (?, ?) and ${OWNED}`,
-    ).bind(K.pendingBinding, K.pendingRefresh, ...gate),
+    stmt(env.DB, promote).bind(K.binding, K.pendingBinding, ...gate),
+    stmt(env.DB, promote).bind(K.refresh, K.pendingRefresh, ...gate),
+    // The confirmation row goes last of the gated statements: its `changes`
+    // says whether this confirm won (CONFIRM_WON).
     stmt(
       env.DB,
       `delete from directory_state where key = ?
-        and json_extract(value, '$.u') = ? and json_extract(value, '$.exp') > ?`,
+        and json_extract(value, '$.u') = ? and json_extract(value, '$.exp') > ?
+        and ${SEEN}`,
     ).bind(...gate),
+    // Then the pending rows, only if it did (changes() of the statement just
+    // before; a gate re-reading the rows being deleted would see half gone).
+    stmt(
+      env.DB,
+      "delete from directory_state where key in (?, ?) and changes() > 0",
+    ).bind(K.pendingBinding, K.pendingRefresh),
   ];
+}
+
+/** Index in promotePending's statements of the confirmation-row delete. */
+export const CONFIRM_WON = 4;
+
+/** The pending rows still hold the values confirm read. */
+const SEEN = `exists (select 1 from directory_state where key = ? and value = ?)
+  and exists (select 1 from directory_state where key = ? and value = ?)`;
+
+/** The raw pending binding and token, as stored (the confirm gate's `seen`). */
+export async function readPendingRaw(
+  env: Env,
+): Promise<{ binding: string; refresh: string } | null> {
+  const { results } = await stmt(env.DB, READ)
+    .bind(K.pendingBinding, K.pendingRefresh)
+    .all<{ key: string; value: string }>();
+  const get = (k: string) => results.find((r) => r.key === k)?.value;
+  const binding = get(K.pendingBinding);
+  const refresh = get(K.pendingRefresh);
+  return binding && refresh ? { binding, refresh } : null;
 }
 
 const EXPIRED = `exists (select 1 from directory_state
