@@ -30,6 +30,8 @@ import { registerDataTools } from "./tools/data.js";
 export type McpContext = {
   env: Env;
   user: Member;
+  /** The user's session_epoch, read with the user row: download URLs bind it (P3 T11). */
+  sessionEpoch?: number;
   /** PAT: { label, null }. OAuth: { clientName, null } plus `clientVersion`. */
   agent: AgentRef | null;
   /** For waitUntil work (search indexing after publish). */

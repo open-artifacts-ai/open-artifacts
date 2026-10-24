@@ -5,8 +5,16 @@ import { R } from "@oa/shared";
 import { beforeAll, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { authConfig } from "../src/auth/config.js";
+import {
+  publicPrefix,
+  signContent,
+  signContentPrefix,
+} from "../src/content/signing.js";
+import { publish } from "../src/services/artifacts.js";
 import { admit } from "../src/services/identity.js";
 import { indexVersionOrThrow } from "../src/services/search.js";
+import { getUser, getUserWithEpoch } from "../src/services/users.js";
+import { contentCall, fakeAssets } from "./assets-stub.js";
 import { direct, seedUser, uniq } from "./auth-helpers.js";
 import { api, login } from "./helpers.js";
 
@@ -231,4 +239,72 @@ it("move and transfer (P3 T10): the row, its index entries and the audit row", a
   // Measured 8: the artifacts row and its owner and space index entries,
   // the editor share (table, shares_email_idx) and audit 2.
   expect(rows.n).toBe(8);
+});
+
+it("content host (P3 T11): one statement per file; the bound viewer adds one PK row", async () => {
+  // Every statement and the rows it read, through all() (first() has no meta).
+  const reads: number[] = [];
+  const wrap = (s: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(s, {
+      get(t, p) {
+        if (p === "bind") return (...a: unknown[]) => wrap(t.bind(...a));
+        if (p === "first")
+          return async (col?: string) => {
+            const r = await t.all<Record<string, unknown>>();
+            reads.push(r.meta.rows_read);
+            const row = r.results[0] ?? null;
+            return col ? (row?.[col] ?? null) : row;
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  const DB = new Proxy(env.DB, {
+    get(t, p) {
+      if (p === "prepare") return (q: string) => wrap(t.prepare(q));
+      const v = Reflect.get(t, p);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  const u = await login("rows-content@x.com");
+  const member = await getUser(env, u.userId);
+  if (!member) throw new Error("no user");
+  const mk = async (visibility: string) =>
+    (
+      await publish(
+        env,
+        member,
+        {
+          title: "c",
+          format: "html",
+          entry: "index.html",
+          files: { "index.html": "<p>c</p>", "a.css": "x{}" },
+          visibility,
+        } as never,
+        null,
+        undefined,
+        "create",
+      )
+    ).id;
+  const priv = await mk("private");
+  const pub = await mk("public");
+  const row = await getUserWithEpoch(env, u.userId);
+  const viewer = { uid: u.userId, epoch: row?.sessionEpoch ?? -1 };
+  const bound = (
+    await signContent(env, priv, 1, Date.now(), 600, "frame", viewer)
+  ).prefix;
+  const unbound = await signContentPrefix(env, priv, 1);
+  const read = async (path: string) => {
+    reads.length = 0;
+    const r = await contentCall(path, undefined, fakeAssets().fetcher, { DB });
+    expect(r.status, path).toBe(200);
+    return [...reads];
+  };
+  // Measured: artifacts PK 1, versions PK 1 on a manifest miss, users PK 1
+  // for a uid-bound token. The public-links toggle reads no spaces row.
+  expect(await read(`${bound}__view`)).toEqual([3]);
+  expect(await read(`${bound}a.css`)).toEqual([2]);
+  expect(await read(`${unbound}a.css`)).toEqual([1]);
+  expect(await read(`${publicPrefix(pub, 1)}__view`)).toEqual([2]);
+  expect(await read(`${publicPrefix(pub, 1)}a.css`)).toEqual([1]);
 });

@@ -104,7 +104,14 @@ const apiHandler = {
     if (capped instanceof Response) return capped;
     const agent = { name: props?.clientName || "unknown agent", version: null };
     return mcpHandler(env, () =>
-      createServer({ env, user, agent, exec: ctx, clientVersion: true }),
+      createServer({
+        env,
+        user,
+        sessionEpoch: row.sessionEpoch,
+        agent,
+        exec: ctx,
+        clientVersion: true,
+      }),
     )(capped, env, ctx);
   },
 };

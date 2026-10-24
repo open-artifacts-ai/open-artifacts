@@ -45,7 +45,8 @@ Suspending or removing a user (`setUserStatus`) writes the status, ends every se
 - **Guests.** A guest whose last share went comes back on a new share. A guest removed by an admin or by the directory stays removed.
 - **Still serving after a removal:**
   - Public `/p/` links on the removed user's artifacts keep serving. The artifacts belong to the organization (shared spaces) or to whoever they are transferred to, and only a visibility change or a delete ends a public link.
-  - A signed content URL minted before the removal stays valid until it expires (`LIMITS.signedUrlTtlSec`, up to 600 seconds). Content host revocation in D1 is P3 Task 11.
+  - Without `content_revocation` in `FEATURES`, a signed content URL minted before the removal stays valid until it expires (`LIMITS.signedUrlTtlSec`, up to 600 seconds).
+- **Signed content URLs (P3 T11).** With `content_revocation` (hosted sets it), every `/c/` URL minted for a signed-in user (the viewer's content-url, an agent's download URL) is `{exp}.{uid}.{epoch}.{sig}`, with the user id and their `session_epoch` in the MAC. The content host's one artifact statement joins that user's row by primary key and serves only while the user is active and still at that epoch, so a suspension or removal refuses the next file, and an unsuspend never revives a URL minted before it. No KV deny list. Two-part `{exp}.{sig}` tokens (thumbnail capture, installs without the flag) are unchanged; a bound token is checked whether or not the flag is still on. A browser may still show a file it already cached (`private, max-age=300`). Shares and space roles are not re-checked per file: a lost share, without a status change, keeps an already minted URL until it expires.
 
 ## Direct sign-in (hosted M1, P2)
 
