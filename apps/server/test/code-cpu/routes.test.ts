@@ -254,6 +254,7 @@ async function upload(env: BenchEnv, page: string, put = true) {
 
 function routes(): Scenario[] {
   const { env } = c;
+  const spacesOn = { ...env, FEATURES: "spaces" } as BenchEnv;
   const page = htmlDoc(250 * 1024);
   const inline = json({
     title: "Escape-heavy",
@@ -299,6 +300,13 @@ function routes(): Scenario[] {
     ),
     w("search", async () =>
       step(env, req("/api/v1/search?q=budget%20note"), "search"),
+    ),
+    // Spaces on: every row also carries `space` and `can` (P3 T10).
+    w("list 25 (spaces)", async () =>
+      step(spacesOn, req("/api/v1/artifacts?limit=25"), "list"),
+    ),
+    w("search (spaces)", async () =>
+      step(spacesOn, req("/api/v1/search?q=budget%20note"), "search"),
     ),
     w("inline publish 128 KB escape-heavy", async () =>
       step(env, req("/api/v1/artifacts", "POST", inline), "publish inline"),
@@ -496,6 +504,8 @@ describe(`code CPU ≤ ${BAR_MS} ms per route (p95, median of ${REPEATS})`, () =
     "GET /api/v1/me",
     "list 25",
     "search",
+    "list 25 (spaces)",
+    "search (spaces)",
     "inline publish 128 KB escape-heavy",
     "upload create",
     "upload PUT 250 KB",

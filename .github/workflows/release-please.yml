@@ -95,6 +95,12 @@ jobs:
       PROD_APP_HOST: artifacts.leourbina.com
       PROD_CONTENT_HOST: artifacts-content.leourbina.com
       PROD_OWNER_EMAIL: me@leourbina.com
+      # Direct sign-in (docs/self-hosting/direct-sign-in.md): repository
+      # variables, read by prod-setup.sh from env. Unset keeps the live value.
+      PROD_AUTH_PROVIDERS: ${{ vars.PROD_AUTH_PROVIDERS }}
+      PROD_AUTH_DOMAINS: ${{ vars.PROD_AUTH_DOMAINS }}
+      PROD_AUTH_DOMAIN_JOIN: ${{ vars.PROD_AUTH_DOMAIN_JOIN }}
+      PROD_GOOGLE_CLIENT_ID: ${{ vars.PROD_GOOGLE_CLIENT_ID }}
       TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
     steps:
       - id: guard
@@ -427,7 +433,7 @@ jobs:
     needs: [hosted-guard, hosted-build, hosted-check]
     if: ${{ !cancelled() && needs.hosted-guard.result == 'success' && needs.hosted-build.result == 'success' && needs.hosted-check.result == 'success' }}
     runs-on: ubuntu-latest
-    # The prod key lives only in this GitHub Environment (main only, no admin bypass, required reviewer).
+    # The prod key lives only in this GitHub Environment (main only, no admin bypass, no approval step for now; a reviewer comes back before FinQore go-live).
     environment: hosted-prod
     permissions:
       contents: read

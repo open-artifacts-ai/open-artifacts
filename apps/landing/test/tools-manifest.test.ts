@@ -22,6 +22,6 @@ describe("mcp-tools docs match the tool manifest", () => {
       [...doc.matchAll(/`([a-z]+(?:_[a-z]+)+)`/g)].map(([, n]) => n),
     );
     expect(named).toEqual(new Set(manifest.map((t) => t.name)));
-    expect(manifest).toHaveLength(17);
+    expect(manifest).toHaveLength(18);
   });
 });

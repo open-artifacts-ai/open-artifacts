@@ -1870,13 +1870,37 @@ describe("WfpProvisioner.create", () => {
       },
     );
 
-    it("warns when the token expires within 5 days, and never calls a zone, DNS or email API", async () => {
+    it.each([
+      ["2 days", 2 * 86_400_000],
+      ["exactly 5 days", 5 * 86_400_000],
+    ])(
+      "a token that expires within 5 days (%s) is refused before any write, naming the date and the fix",
+      async (_n, ms) => {
+        const s = setup();
+        const exp = new Date(NOW + ms).toISOString();
+        s.fake.tokenInfo.expires_on = exp;
+        const e = await fails(s.p.create(input()));
+        expect(e.message).toContain(exp.slice(0, 10));
+        expect(e.message).toMatch(/expires/);
+        expect(e.message).toMatch(/roll/i);
+        expect(e.message).toMatch(/My Profile > API Tokens/);
+        expect(s.fake.writes()).toEqual([]);
+        expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
+      },
+    );
+
+    it("a token with just over 5 days left is accepted, with no expiry note", async () => {
       const s = setup();
       s.fake.tokenInfo.expires_on = new Date(
-        NOW + 2 * 86_400_000,
+        NOW + 5 * 86_400_000 + 60_000,
       ).toISOString();
+      await s.p.create(input());
+      expect(s.p.notes.join("\n")).not.toMatch(/expires/);
+    });
+
+    it("never calls a zone, DNS or email API", async () => {
+      const s = setup();
       const inst = await s.p.create(input());
-      expect(s.p.notes.join("\n")).toMatch(/expires/);
       for (const e of s.fake.log)
         expect(e.path).not.toMatch(
           /\/zones|dns_records|custom_domains|\/workers\/domains|\/email\//,

@@ -201,19 +201,27 @@ const RESTORE_TRIES = 30;
 const RESTORE_EVERY_MS = 100;
 
 /**
- * Scrolls to where the previous version was: the same offset if the page can
- * scroll as far as before, else the same fraction. A page not laid out yet
- * (shorter than the offset) is retried every 100 ms for up to 3 s.
+ * Scrolls to where the previous version was: the same offset whenever the page
+ * can scroll that far (a longer version or a reflow doesn't move the reader),
+ * else the same fraction. A page not laid out yet (shorter than the offset) is
+ * retried every 100 ms for up to 3 s first. Calls `done` once scrolled.
  */
-function restoreScroll(top: number, max: number, tries = RESTORE_TRIES) {
+function restoreScroll(
+  top: number,
+  max: number,
+  done: () => void,
+  tries = RESTORE_TRIES,
+) {
   const now = maxScroll();
   if (now < top && tries > 0) {
-    setTimeout(() => restoreScroll(top, max, tries - 1), RESTORE_EVERY_MS);
+    setTimeout(
+      () => restoreScroll(top, max, done, tries - 1),
+      RESTORE_EVERY_MS,
+    );
     return;
   }
-  const y =
-    max > 0 && Math.abs(now - max) > 1 ? (top / max) * now : Math.min(top, now);
-  scrollTo(0, y);
+  scrollTo(0, now >= top ? top : max > 0 ? (top / max) * now : 0);
+  done();
 }
 
 /** Builds the SDK over a fresh bridge and announces it with `hello` (html pages). */
@@ -347,7 +355,7 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
       setTheme(m.theme);
       welcomed();
     } else if (m.type === "theme") setTheme(m.theme);
-    else if (m.type === "scroll.to") restoreScroll(m.top, m.max);
+    else if (m.type === "scroll.to") restoreScroll(m.top, m.max, onScroll);
     else if (m.type === "thumb.request") {
       if (kind === "html") void snapshot();
     } else if (m.type === "event") {
@@ -496,10 +504,16 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
       bridge.send({ oa: 1, type: "scroll", top: scrollY, max: maxScroll() });
     }, SCROLL_REPORT_MS);
   };
-  if (!bridge.raw) addEventListener("scroll", onScroll, { passive: true });
+  if (!bridge.raw) {
+    addEventListener("scroll", onScroll, { passive: true });
+    // A resize (the side panel opening narrows the frame) reflows the page:
+    // report the new max, so the next swap compares like with like.
+    addEventListener("resize", onScroll, { passive: true });
+  }
   opts.signal?.addEventListener("abort", () => {
     stopInteract();
     removeEventListener("scroll", onScroll);
+    removeEventListener("resize", onScroll);
     document.removeEventListener("selectionchange", onEngage);
     removeEventListener("focusin", onEngage, true);
     removeEventListener("focusout", onFocusOut, true);

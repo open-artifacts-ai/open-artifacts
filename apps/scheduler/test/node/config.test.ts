@@ -29,7 +29,14 @@ describe("wrangler.jsonc", () => {
       const e = cfg.env[env];
       expect(e.name).toBe(platformNames(env).scheduler);
       expect(e.main).toBe("src/index.ts");
-      expect(e.vars).toEqual({ OA_ENV: env });
+      // The quota config is per env, filled at deploy like PLATFORM_DB. The
+      // token is a secret (wrangler secret put), never a var.
+      expect(e.vars).toEqual({
+        OA_ENV: env,
+        EMAIL_QUOTA_ZONES: `{{EMAIL_ZONE_TAG_${env.toUpperCase()}}}`,
+        EMAIL_DAILY_LIMIT: `{{EMAIL_DAILY_LIMIT_${env.toUpperCase()}}}`,
+      });
+      expect(e.vars).not.toHaveProperty("EMAIL_QUOTA_TOKEN");
       expect(e.triggers).toEqual({ crons: ["17 3 * * *"] });
       expect(e.dispatch_namespaces).toEqual([
         { binding: "DISPATCHER", namespace: NAMESPACES[env] },
@@ -68,6 +75,8 @@ describe("wrangler.jsonc", () => {
       expect(c.preview_urls).toBe(false);
     }
     expect(JSON.stringify(cfg)).not.toMatch(/custom_domain|"pattern"|zone_/);
+    // The quota token is a secret, never in the repo config.
+    expect(JSON.stringify(cfg)).not.toContain("EMAIL_QUOTA_TOKEN");
   });
 
   it("has no top-level name, bindings, vars or cron (a deploy without --env can't run)", () => {

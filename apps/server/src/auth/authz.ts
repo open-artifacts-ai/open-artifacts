@@ -38,6 +38,7 @@ import {
   can,
   decide,
   isTeamRole,
+  orgCan,
   type PolicyAction,
   TEAM_ROLES,
 } from "./policy.js";
@@ -514,6 +515,84 @@ export async function checkListSpace(
     return;
   }
   if (!(row.rank > 0)) throw new ApiError("not_found", "Not found");
+}
+
+/**
+ * The caller's full role rank (0 to 3) in `spaceId` (roleRankSql, so
+ * allMembersRole only for uncapped members), as a scalar subquery and its
+ * parameters for a raw D1 statement: a write re-checks the role it was
+ * allowed under. Its placeholders are positional (`?`).
+ */
+export function roleRankQuery(
+  env: Env,
+  c: Caller,
+  spaceId: string,
+): { sql: string; params: unknown[] } {
+  const q = getDb(env)
+    .select({ r: roleRankSql(c, sql`${spaces.id}`) })
+    .from(spaces)
+    .where(and(eq(spaces.id, spaceId), isNull(spaces.deletedAt)))
+    .limit(1)
+    .toSQL();
+  return { sql: `coalesce((${q.sql}), 0)`, params: q.params };
+}
+
+/** A space an artifact is created in or moved to (publishTarget). */
+export type TargetSpace = {
+  id: string;
+  kind: "personal" | "shared";
+  publicLinks: boolean;
+};
+
+/**
+ * The space a create (`publish`, spaceId) or a move puts an artifact in, if
+ * the caller may: orgCan("space.publish") with their role there (editor or
+ * manager, uncapped). One statement. Errors, in order:
+ * - 404: unknown or deleted, or a shared space where the caller has no role
+ *   and is not an org admin (no existence oracle);
+ * - personal: someone else's is 404 (no user-id oracle); the caller's own
+ *   is 400 space_personal for a move (company artifacts stay
+ *   company-owned) and allowed for a create;
+ * - 403 space_forbidden: seen but not allowed (a viewer role, an org admin
+ *   without a role, a capped caller).
+ */
+export async function publishTarget(
+  env: Env,
+  c: Caller,
+  spaceId: string,
+  purpose: "create" | "move",
+): Promise<TargetSpace> {
+  if (c.kind !== "user") throw new ApiError("unauthorized", "Sign in required");
+  const [row] = await getDb(env)
+    .select({
+      kind: spaces.kind,
+      publicLinks: spaces.publicLinks,
+      rank: roleRankSql(c, sql`${spaces.id}`),
+    })
+    .from(spaces)
+    .where(and(eq(spaces.id, spaceId), isNull(spaces.deletedAt)))
+    .limit(1);
+  if (!row) throw new ApiError("not_found", "Not found");
+  const cap = capOfCaller(c);
+  const forbidden = () =>
+    new ApiError("space_forbidden", "You can't publish to this space");
+  if (row.kind !== "shared") {
+    // Someone else's personal space is 404 either way (no user-id oracle).
+    if (c.user.id !== spaceId) throw new ApiError("not_found", "Not found");
+    if (purpose === "move")
+      throw new ApiError(
+        "space_personal",
+        "Artifacts move into shared spaces only",
+      );
+    if (!orgCan(c.user, "artifact.create", { cap })) throw forbidden();
+    return { id: spaceId, kind: "personal", publicLinks: true };
+  }
+  const role = RANK_ROLE[row.rank] ?? null;
+  if (!role && !orgCan(c.user, "space.create", { cap }))
+    throw new ApiError("not_found", "Not found");
+  if (!orgCan(c.user, "space.publish", { spaceRole: role, cap }))
+    throw forbidden();
+  return { id: spaceId, kind: "shared", publicLinks: row.publicLinks === 1 };
 }
 
 /**

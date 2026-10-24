@@ -7,6 +7,7 @@ import {
   CapReasonSchema,
   GroupRefSchema,
   MemberStatusSchema,
+  MySpaceSchema,
   SpaceKindSchema,
   SpaceRefSchema,
   SpaceRoleSchema,
@@ -35,6 +36,22 @@ export const SpaceSchema = SpaceRefSchema.extend({
   can: SpaceCanSchema.optional(),
 });
 export type Space = z.infer<typeof SpaceSchema>;
+
+/** MCP list_spaces input: no arguments. */
+export const ListSpacesInputSchema = z.strictObject({});
+export type ListSpacesInput = z.infer<typeof ListSpacesInputSchema>;
+
+/**
+ * MCP list_spaces result: the spaces the caller can publish into
+ * (publish_artifact spaceId). Their personal space first (myRole
+ * "manager"), then shared spaces where they are editor or manager, by name;
+ * at most LIST_SPACES_MAX. Empty for a capped caller.
+ */
+export const ListSpacesResultSchema = z.object({
+  items: z.array(MySpaceSchema),
+});
+export type ListSpacesResult = z.infer<typeof ListSpacesResultSchema>;
+export const LIST_SPACES_MAX = 200;
 
 /** GET R.spaces query. Response: Page<Space>, by name. */
 export const SpacesQuerySchema = z.strictObject({

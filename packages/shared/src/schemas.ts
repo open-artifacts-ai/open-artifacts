@@ -95,6 +95,13 @@ const PublishShape = z.strictObject({
   visibility: VisibilitySchema.optional(),
   capabilities: CapabilitiesPatchSchema.optional(),
   allowAnonymousWrites: z.boolean().optional(),
+  /**
+   * Hosted M1: the space to create the artifact in (default: the caller's
+   * personal space). Create only: with the id of an existing artifact it is
+   * 400 use_move. A space the caller can't publish to is 403
+   * space_forbidden; so is any create by a capped caller.
+   */
+  spaceId: z.string().optional(),
 });
 
 const refinePublish =

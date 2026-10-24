@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { hostPairProblem } from "../hosts.ts";
+import { setOnly } from "../signin.ts";
 import type { State } from "../state.ts";
 import type { Ctx, Step } from "../step.ts";
 import { resolveVars } from "../tunables.ts";
@@ -153,12 +154,16 @@ export function renderedConfig(state: State, ctx: Ctx): string {
     ctx.opts.browser,
     ctx.opts.email,
     ctx.opts.planVar,
-    ctx.tunables ??
-      resolveVars({
-        flags: ctx.opts.varFlags,
-        state: state.vars ?? {},
-        live: {},
-      }).values,
+    {
+      ...(ctx.tunables ??
+        resolveVars({
+          flags: ctx.opts.varFlags,
+          state: state.vars ?? {},
+          live: {},
+        }).values),
+      // The template has no sign-in vars: only set ones are added.
+      ...(ctx.signin && setOnly(ctx.signin)),
+    },
   );
 }
 

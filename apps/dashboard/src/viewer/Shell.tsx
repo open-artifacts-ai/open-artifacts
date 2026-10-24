@@ -470,7 +470,6 @@ export function Shell(props: { id: string; v?: number; chromeless?: boolean }) {
   return <ArtifactShell key={props.id} {...props} />;
 }
 
-/** A menu, dialog or the side panel is open (the safe swap waits for it). */
 /** A menu or dialog is open (the side panel doesn't count: it sits beside the frame). */
 const chromeOpen = () =>
   document.querySelector(

@@ -148,6 +148,7 @@ const apiHandler = {
       server = createServer({
         env,
         user,
+        sessionEpoch: row.sessionEpoch,
         agent,
         exec: ctx,
         clientVersion: true,

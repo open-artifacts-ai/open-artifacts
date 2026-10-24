@@ -118,6 +118,27 @@ export interface Env {
   GOOGLE_CLIENT_SECRET?: string;
   /** Ed25519 private key, PKCS#8 DER base64url (broker transport). */
   BROKER_SIGNING_KEY?: string;
+  /**
+   * P3 directory sync (directory/transport.ts). The AES-GCM key sealing the
+   * Google refresh token at rest (32+ chars; HKDF "oa:directory-token").
+   * Hosted: P1 provisioning; self-host: setup generates it when the
+   * directory client is set. Unset: directory sync is off.
+   */
+  DIRECTORY_TOKEN_KEY?: string;
+  /**
+   * Hosted directory broker origin (https://directory.<app domain>); set, it
+   * selects the broker transport for directory sync. Never AUTH_BROKER_URL:
+   * the sign-in and directory brokers are separate Workers.
+   */
+  DIRECTORY_BROKER_URL?: string;
+  /** The sealing key's version, in the AD (install:version); default "1". */
+  DIRECTORY_TOKEN_KEY_VERSION?: string;
+  /**
+   * Self-host direct transport only: the install's own Google app for
+   * directory consent. HOSTED=1 with either set resolves to no directory.
+   */
+  GOOGLE_DIRECTORY_CLIENT_ID?: string;
+  GOOGLE_DIRECTORY_CLIENT_SECRET?: string;
   TURNSTILE_SECRET?: string;
   /** Bearer key for /__test/* (32+ chars). */
   TEST_HOOK_KEY?: string;

@@ -14,6 +14,7 @@ import {
   IdInputSchema,
   LIMITS,
   ListQuerySchema,
+  ListSpacesInputSchema,
   PublishToolInputSchema,
   RestoreVersionInputSchema,
   SearchQuerySchema,
@@ -36,7 +37,7 @@ export const TOOL_DEFS = [
       content: "# Q3\n\nRevenue is up.",
       message: "First draft",
     },
-    description: `Publish an artifact, or a new version when \`id\` is given. Pass \`content\` (one file, with \`format\`) or \`files\` (path → text, or { base64 } for binary, or { uploadId } from create_upload) plus \`entry\`. Inline content (content, text and base64 together) is limited to ${INLINE}; for more, call create_upload, PUT the bytes to its url, then pass { uploadId } in \`files\`. Returns id, version and view URL.`,
+    description: `Publish an artifact, or a new version when \`id\` is given. Pass \`content\` (one file, with \`format\`) or \`files\` (path → text, or { base64 } for binary, or { uploadId } from create_upload) plus \`entry\`. Inline content (content, text and base64 together) is limited to ${INLINE}; for more, call create_upload, PUT the bytes to its url, then pass { uploadId } in \`files\`. To create it in a shared space, pass \`spaceId\` from list_spaces (new artifacts only). Returns id, version and view URL.`,
   },
   {
     name: "create_upload",
@@ -49,7 +50,7 @@ export const TOOL_DEFS = [
     inputSchema: GetArtifactInputSchema,
     example: { id: ID, path: "index.html" },
     description:
-      "Read an artifact's metadata and one version (latest by default). Returns a file's text inline when it is text and at most 1 MB; otherwise a short-lived downloadUrl. Download URLs expire after 10 minutes; call get_artifact again for a fresh one.",
+      "Read an artifact's metadata (with its space and what you may do, when spaces are on) and one version (latest by default). Returns a file's text inline when it is text and at most 1 MB; otherwise a short-lived downloadUrl. Download URLs expire after 10 minutes; call get_artifact again for a fresh one.",
   },
   {
     name: "list_artifacts",
@@ -83,27 +84,28 @@ export const TOOL_DEFS = [
     inputSchema: ShareArtifactInputSchema,
     example: { id: ID, email: "sam@example.com", role: "viewer" },
     description:
-      "Share an artifact with an email address as viewer or editor. Owner only.",
+      "Share an artifact with an email address as viewer or editor. Owner or space manager only.",
   },
   {
     name: "unshare_artifact",
     inputSchema: UnshareInputSchema,
     example: { id: ID, email: "sam@example.com" },
-    description: "Remove an email address's share. Owner only.",
+    description:
+      "Remove an email address's share. Owner or space manager only.",
   },
   {
     name: "set_visibility",
     inputSchema: SetVisibilityInputSchema,
     example: { id: ID, visibility: "team" },
     description:
-      "Set who can open an artifact: private (you and shares), team (all members) or public (anyone with the link). Owner only.",
+      "Set who can open an artifact: private (you and shares), team (all members) or public (anyone with the link). Owner or space manager only.",
   },
   {
     name: "delete_artifact",
     inputSchema: IdInputSchema,
     example: { id: ID },
     description:
-      "Delete an artifact. It can be restored from the dashboard for 30 days. Owner only.",
+      "Delete an artifact. It can be restored from the dashboard for 30 days. Owner or space manager only.",
   },
   {
     name: "artifact_data_get",
@@ -160,6 +162,13 @@ export const TOOL_DEFS = [
     example: { id: ID, collection: "votes", docId: "sam" },
     description:
       "Delete a document from an artifact's live-page data collection. Anyone who can view the artifact may write (as on the page itself).",
+  },
+  {
+    name: "list_spaces",
+    inputSchema: ListSpacesInputSchema,
+    example: {},
+    description:
+      "List the spaces you can publish into: your personal space first, then shared spaces where you are an editor or manager. Pass a space's id as publish_artifact's spaceId.",
   },
 ] as const;
 

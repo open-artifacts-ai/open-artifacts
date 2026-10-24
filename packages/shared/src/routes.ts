@@ -177,8 +177,19 @@ export const R = {
   directoryGroups: "/api/v1/directory/groups",
   /** GET -> 302 to Google consent (org owner). */
   directoryConnect: "/api/v1/directory/connect",
-  /** GET (OAuth) -> 302 /settings/directory?connected=1 or ?error=DirectoryConnectError. */
+  /**
+   * GET (OAuth) -> 302 /settings/directory (consent stored, SyncStatus.state
+   * pending_confirm) or /settings/directory?error=DirectoryConnectError.
+   */
   directoryCallback: "/api/v1/directory/callback",
+  /**
+   * POST -> 200 SyncStatus: runs the binding pass for the pending connection.
+   * Only the owner who connected (still the org owner); anyone else 404; no
+   * pending connection 404; expired (24 h) 409 conflict, and it is dropped.
+   */
+  directoryConfirm: "/api/v1/directory/confirm",
+  /** POST -> 204: drops the pending connection (token and binding). Same callers as directoryConfirm. */
+  directoryCancel: "/api/v1/directory/cancel",
   /** POST -> 202 SyncStatus (org owner; "Sync now"). */
   directorySync: "/api/v1/directory/sync",
   /** POST -> 202 SyncStatus (org owner; apply a held sweep). */

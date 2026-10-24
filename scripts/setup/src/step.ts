@@ -1,5 +1,6 @@
 import type { Sources } from "./by-name.ts";
 import type { Api, Deps, Fs, Wrangler } from "./cf.ts";
+import type { Signin } from "./signin.ts";
 import type { State } from "./state.ts";
 import type { VersionInfo } from "./version-guard.ts";
 
@@ -46,6 +47,8 @@ export type Opts = {
   planVar: "free" | "paid";
   /** --var NAME=value flags, validated. */
   varFlags: Record<string, string>;
+  /** --auth-providers, --auth-domains, ...: the direct sign-in vars given this run ("" clears). */
+  signinFlags: Partial<Signin>;
   /** False under --yes or --json: never prompt. */
   interactive: boolean;
   json: boolean;
@@ -80,6 +83,8 @@ export type Ctx = {
   welcomeUrl?: string;
   /** The tunable vars to render (flag, state, live), settled by the deploy step. */
   tunables?: Record<string, string>;
+  /** The direct sign-in vars to render (flag, then live), settled by the deploy step. */
+  signin?: Signin;
   /** Where appHost, contentHost and ownerEmail came from (upgrade by name only). */
   sources?: Sources;
   /** Set by prereqs: this checkout against the deployed version. */

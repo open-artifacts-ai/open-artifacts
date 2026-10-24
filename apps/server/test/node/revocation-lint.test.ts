@@ -62,6 +62,15 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // Restricted flag or group set: the user, or the group's members.
   "services/spaces.ts:setMemberRestricted": "user",
   "services/spaces.ts:putRestrictedGroup": "user",
+  // P3 T10. A move: the source space's members, and public viewers when it
+  // becomes team, lose this one artifact.
+  "services/spaces.ts:moveArtifact": "artifact",
+  // A single transfer narrows the former owner to editor on this one
+  // artifact: the artifact guard, not their sockets everywhere.
+  "services/spaces.ts:transferArtifact": "artifact",
+  // A departed transfer narrows the (inactive) former owner on up to a page
+  // of artifacts: their presence again, plus the artifacts made team.
+  "services/spaces.ts:transferPersonal": "user",
 };
 
 /**
@@ -79,6 +88,8 @@ const WIDENS: Readonly<Record<string, string>> = {
   // Removing a restricted group only lifts caps (restricted_sync recomputed
   // from the groups that remain).
   "services/spaces.ts:deleteRestrictedGroup": "lifts a restriction only",
+  // P3 T10: the transfer successor predicate reads restricted_* (no write).
+  "services/spaces.ts:SUCCESSOR": "a read: the successor predicate",
 };
 
 /** Exempt from the scan: the primitives themselves. */

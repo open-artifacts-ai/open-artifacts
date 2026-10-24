@@ -14,7 +14,7 @@ import {
   mcpUnauthorized,
 } from "./mcp/server.js";
 import type { AgentAttr } from "./services/agent-usage.js";
-import { getUser } from "./services/users.js";
+import { getUserWithEpoch } from "./services/users.js";
 
 export type { Env } from "./env.js";
 export { ArtifactRuntime } from "./runtime/do.js";
@@ -53,8 +53,9 @@ async function mcpWithPat(
   token: string,
 ): Promise<Response> {
   const pat = await verifyPat(env, token, ctx);
-  const user = pat ? await getUser(env, pat.userId) : null;
-  if (!pat || !user) return mcpUnauthorized(env);
+  const row = pat ? await getUserWithEpoch(env, pat.userId) : null;
+  if (!pat || !row) return mcpUnauthorized(env);
+  const { user, sessionEpoch } = row;
   // Guests can't connect agents (they only see what's shared with them).
   if (!orgCan(user, "mcp.connect"))
     return mcpUnauthorized(env, "Only members can connect agents");
@@ -66,7 +67,7 @@ async function mcpWithPat(
     via: { kind: "token", id: pat.tokenId },
   };
   return mcpHandler(env, () =>
-    createServer({ env, user, agent, exec: ctx }),
+    createServer({ env, user, sessionEpoch, agent, exec: ctx }),
   ).fetch(capped, {
     // token is deliberately empty: tools never need it, and the SDK must not
     // be able to log or echo the PAT. clientId names the token row instead.

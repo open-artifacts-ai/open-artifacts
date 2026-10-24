@@ -15,6 +15,7 @@ afterEach(() => setEmbedForTests(false));
 const idOf = (t: string) =>
   (arts.find((a) => a.title === t) as { id: string }).id;
 const OWNED = idOf("Landing page"); // v2 current
+const SCRIPT = idOf("Parser script");
 const POLL = idOf("Team poll"); // public
 
 const frames = () => [...document.querySelectorAll("iframe")];
@@ -205,6 +206,42 @@ describe("live versions: the safe swap", () => {
       await screen.findByRole("button", { name: "View version 3" }, LONG),
     ).toBeTruthy();
     expect(frames()).toEqual([first]);
+  });
+
+  it("a first load never gets scroll.to, even after another artifact scrolled and swapped", async () => {
+    const first = await open(viewerPath(OWNED));
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: {
+            oa: 1,
+            type: "scroll",
+            top: 1900,
+            max: 2000,
+            nonce: nonceOf(first),
+          },
+          origin: "null",
+          source: first.contentWindow,
+        }),
+      );
+    });
+    await publish();
+    const next = await frame(first);
+    fireEvent.load(next);
+    post(next, "hello");
+    expect(await screen.findByText("Updated to v3")).toBeTruthy();
+    // Another artifact, first load: its frame says hello and gets no scroll.to.
+    const router = mount(viewerPath(SCRIPT));
+    void router;
+    const other = await frame(next);
+    fireEvent.load(other);
+    const sent = post(other, "hello");
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(
+      sent.mock.calls.filter(
+        (c) => (c[0] as { type: string }).type === "scroll.to",
+      ),
+    ).toEqual([]);
   });
 
   it("an open side panel doesn't block it: swaps", async () => {

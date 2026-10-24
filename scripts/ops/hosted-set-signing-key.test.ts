@@ -162,16 +162,24 @@ describe("hosted-set-signing-key.sh", () => {
     expect(r.out + r.err).not.toContain("PRIVATE KEY");
   });
 
-  // User ruling 2026-10-24: staging signs without an approval step (still
-  // main only, no admin bypass); prod keeps its required reviewer.
-  it("staging needs no required reviewer", () => {
-    const r = run({ envJson: env(MAIN_ONLY, [{ type: "branch_policy" }]) });
-    expect(r.code, r.err).toBe(0);
-    expect(r.calls).toContain(
-      "gh secret set RELEASE_SIGNING_KEY --env hosted-staging --repo o/r",
-    );
-    expect(r.out).not.toMatch(/required reviewer/);
-  });
+  // User rulings 2026-10-24: neither env needs an approval step for now
+  // (still main only, no admin bypass). A prod reviewer comes back before
+  // FinQore go-live (docs/ops/hosted.md, first-create checklist).
+  it.each(["staging", "prod"] as const)(
+    "%s needs no required reviewer",
+    (e) => {
+      const r = run({
+        env: e,
+        envJson: env(MAIN_ONLY, [{ type: "branch_policy" }]),
+      });
+      expect(r.code, r.err).toBe(0);
+      expect(r.calls).toContain(
+        `gh secret set RELEASE_SIGNING_KEY --env hosted-${e} --repo o/r`,
+      );
+      expect(r.out).toContain("no approval step");
+      expect(r.out).not.toMatch(/required reviewer/);
+    },
+  );
 
   it("checks the prod environment for prod", () => {
     const r = run({ env: "prod" });
@@ -210,10 +218,6 @@ describe("hosted-set-signing-key.sh", () => {
     ],
     ["a tag named main", { polJson: pol([{ name: "main", type: "tag" }]) }],
     ["no policies at all", { polJson: pol([]) }],
-    [
-      "no required reviewer on prod",
-      { env: "prod", envJson: env(MAIN_ONLY, [{ type: "branch_policy" }]) },
-    ],
     ["an environment read that is not JSON", { envJson: "not json" }],
     // Fix round 5 (1): admin bypass must be off.
     [

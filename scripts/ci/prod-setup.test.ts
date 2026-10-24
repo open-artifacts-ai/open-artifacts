@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -423,6 +423,66 @@ describe("prod-setup.sh preflight: not installed vs drifted (#172)", () => {
   });
 });
 
+describe("prod-setup.sh direct sign-in (PROD_AUTH_*, from repository variables)", () => {
+  const AUTH = {
+    PROD_AUTH_PROVIDERS: "access,google",
+    PROD_AUTH_DOMAINS: "leourbina.com",
+    PROD_AUTH_DOMAIN_JOIN: "invite",
+    PROD_GOOGLE_CLIENT_ID: "1-x.apps.googleusercontent.com",
+  };
+  const FLAGS = [
+    "--auth-providers=access,google",
+    "--auth-domains=leourbina.com",
+    "--auth-domain-join=invite",
+    "--google-client-id=1-x.apps.googleusercontent.com",
+  ];
+  it("install, preflight and upgrade pass each set value as one flag", () => {
+    for (const m of ["install", "preflight", "upgrade"]) {
+      const r = install([ok("a")], 0, m, AUTH);
+      expect(r.code, m).toBe(0);
+      for (const f of FLAGS) expect(r.calls[0], `${m} ${f}`).toContain(f);
+    }
+  });
+  it("an unset or empty variable passes no flag (setup keeps the live value)", () => {
+    const some = install([ok("a")], 0, "upgrade", {
+      PROD_AUTH_PROVIDERS: "access",
+      PROD_AUTH_DOMAINS: "",
+    });
+    expect(some.calls[0]).toContain("--auth-providers=access");
+    expect(some.calls[0]).not.toContain("--auth-domains");
+    expect(some.calls[0]).not.toContain("--auth-domain-join");
+    expect(some.calls[0]).not.toContain("--google-client-id");
+    const none = install([ok("a")], 0, "upgrade");
+    expect(none.calls[0]).not.toMatch(/--auth-|--google-client-id/);
+  });
+  it("a value is one argv element, never shell", () => {
+    const evil = "x; touch /tmp/oa-pwned $(id)";
+    const r = install([ok("a")], 0, "upgrade", { PROD_AUTH_DOMAINS: evil });
+    expect(r.code).toBe(0);
+    expect(r.calls[0]).toContain(`--auth-domains=${evil}`);
+  });
+  it("cleanup and the demo modes never pass them", () => {
+    expect(install([ok("a")], 0, "cleanup", AUTH).calls[0]).not.toMatch(
+      /--auth-|--google-client-id/,
+    );
+    const body = `cat <<'EOF_FIXTURE'\n${ok("a")}\nEOF_FIXTURE\nexit 0`;
+    for (const m of ["demo-install", "demo-upgrade", "demo-cleanup"]) {
+      const sb = sandbox({ pnpm: body });
+      sb.run(["bash", script("prod-setup.sh"), m], {
+        env: {
+          GITHUB_STEP_SUMMARY: join(sb.dir, "sum.md"),
+          DEMO_NAME: "open-artifacts-demo",
+          DEMO_APP_HOST: "demo.example.com",
+          DEMO_CONTENT_HOST: "demo-content.example.com",
+          DEMO_OWNER_EMAIL: "o@example.com",
+          ...AUTH,
+        },
+      });
+      expect(sb.log()[0], m).not.toMatch(/--auth-|--google-client-id/);
+    }
+  });
+});
+
 describe("release-please.yml deploy-prod invariants (#172)", () => {
   const yml = readFileSync(
     join(import.meta.dirname, "../../.github/workflows/release-please.yml"),
@@ -454,6 +514,55 @@ describe("release-please.yml deploy-prod invariants (#172)", () => {
     expect(v).toContain("deploy-prod");
     expect(v).toMatch(/if: \$\{\{ always\(\)/);
     expect(v).not.toMatch(/needs\.deploy-prod\.result/);
+  });
+  it("deploy-prod passes the sign-in repository variables through env, never inline in run:", () => {
+    for (const v of [
+      "PROD_AUTH_PROVIDERS",
+      "PROD_AUTH_DOMAINS",
+      "PROD_AUTH_DOMAIN_JOIN",
+      "PROD_GOOGLE_CLIENT_ID",
+    ])
+      expect(deploy, v).toMatch(
+        new RegExp(`\\n {6}${v}: \\$\\{\\{ vars\\.${v} \\}\\}\\n`),
+      );
+    let inRun = false;
+    let runIndent = 0;
+    for (const l of yml.split("\n")) {
+      const indent = l.length - l.trimStart().length;
+      if (/^(\s*)(?:- )?run:/.test(l)) {
+        inRun = true;
+        runIndent = indent;
+        expect(l).not.toMatch(/\$\{\{\s*vars\.PROD_/);
+      } else if (inRun && l.trim() && indent > runIndent)
+        expect(l).not.toMatch(/\$\{\{\s*vars\.PROD_/);
+      else if (l.trim()) inRun = false;
+    }
+  });
+  it("every workflow that runs prod-setup.sh install, preflight or upgrade forwards the sign-in variables through env", () => {
+    const dir = join(import.meta.dirname, "../../.github/workflows");
+    const files = readdirSync(dir).filter((f) => /\.ya?ml$/.test(f));
+    const users = files.filter((f) =>
+      /prod-setup\.sh (install|preflight|upgrade)\b/.test(
+        readFileSync(join(dir, f), "utf8"),
+      ),
+    );
+    expect(users.sort()).toEqual([
+      "ops-prod-install.yml",
+      "release-please.yml",
+    ]);
+    for (const f of users) {
+      const text = readFileSync(join(dir, f), "utf8");
+      for (const v of [
+        "PROD_AUTH_PROVIDERS",
+        "PROD_AUTH_DOMAINS",
+        "PROD_AUTH_DOMAIN_JOIN",
+        "PROD_GOOGLE_CLIENT_ID",
+      ])
+        expect(text, `${f} ${v}`).toMatch(
+          new RegExp(`\\n +${v}: \\$\\{\\{ vars\\.${v} \\}\\}\\n`),
+        );
+      expect(text, f).not.toMatch(/run:[^\n]*\$\{\{\s*vars\.PROD_/);
+    }
   });
   it("verify-release skips the prod check when prod is not installed", () => {
     const v = job("verify-release");

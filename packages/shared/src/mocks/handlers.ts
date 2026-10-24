@@ -469,7 +469,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       );
     }),
     http.post("*/api/v1/artifacts", async ({ request }) => {
-      const r = await body(request, h?.publishSchema ?? PublishInputSchema);
+      const r = await body(request, PublishInputSchema);
       if (r.error) return r.error;
       const existing = r.data.id
         ? artifacts.find((a) => a.id === r.data.id)
@@ -483,6 +483,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       const noPublic = h?.refusePublic(
         existing ? existing.space : placed?.space,
         r.data.visibility,
+        existing?.visibility,
       );
       if (noPublic) return noPublic;
       if (!existing && r.data.id && r.data.title === undefined)
@@ -529,7 +530,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         const r = await body(ctx.request, ArtifactPatchSchema);
         if (r.error) return r.error;
         if (r.data.visibility !== undefined && !full(a)) return notFound();
-        const noPublic = h?.refusePublic(a.space, r.data.visibility);
+        const noPublic = h?.refusePublic(
+          a.space,
+          r.data.visibility,
+          a.visibility,
+        );
         if (noPublic) return noPublic;
         const { capabilities, ...rest } = r.data;
         const gone =

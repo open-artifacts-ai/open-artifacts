@@ -1,10 +1,14 @@
+import { normalizeEmail } from "@oa/auth-core";
 import {
+  type ArtifactSummary,
   type CapReason,
   type DirectoryMode,
   type GroupMapping,
   type GroupRef,
+  LIST_SPACES_MAX,
   type Member,
   type MemberStatus,
+  type MySpace,
   newId,
   type Page,
   type RestrictedGroup,
@@ -20,9 +24,21 @@ import {
   type SpacePatch,
   type SpaceRole,
   type SpacesQuery,
+  TRANSFER_PAGE,
+  type TransferInput,
+  type TransferResult,
+  type TransferSummary,
 } from "@oa/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { type Caller, capOfCaller, roleRankSql } from "../auth/authz.js";
+import {
+  authorize,
+  type Caller,
+  callerOf,
+  capOfCaller,
+  publishTarget,
+  roleRankQuery,
+  roleRankSql,
+} from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { canBeRestricted, capOf, isGuestRole, orgCan } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
@@ -34,10 +50,13 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError } from "../log.js";
 import {
+  closeRuntimeSockets,
+  MAX_CLOSE,
   revokeFanoutCap,
   revokeUserLive,
   revokeUsersLive,
 } from "../runtime/revoke.js";
+import { getSummary } from "./artifacts.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
 import { getSettings } from "./members.js";
 import { RESTRICTED_SYNC_FOR_GROUP } from "./restriction.js";
@@ -1509,4 +1528,412 @@ export async function setMemberRestricted(
     status: statusOf(row.status),
     restriction: { manual: row.rm !== 0, groups },
   };
+}
+
+// ------------------------------------------------- move and transfer (T10)
+
+const conflict = () =>
+  new ApiError("conflict", "The artifact changed while moving; try again");
+const invalidSuccessor = () =>
+  new ApiError(
+    "invalid_successor",
+    "Pick an active member who isn't a guest or restricted",
+  );
+
+/**
+ * A valid successor (transfer target): an active member, admin or owner who
+ * is not restricted. Guests never are, whatever authConfig says. `?n` names
+ * the user id parameter.
+ */
+const SUCCESSOR = (n: number) =>
+  `exists (select 1 from users where id = ?${n} and status = 'active'
+    and role in ('owner', 'admin', 'member') and restricted_manual = 0 and restricted_sync = 0)`;
+
+async function isSuccessor(env: Env, userId: string): Promise<boolean> {
+  const r = await stmt(env.DB, `select ${SUCCESSOR(1)} as ok`)
+    .bind(userId)
+    .first<{ ok: number }>();
+  return r?.ok === 1;
+}
+
+const isLive = async (env: Env, id: string): Promise<boolean> =>
+  !!(await stmt(
+    env.DB,
+    "select 1 from artifacts where id = ? and deleted_at is null",
+  )
+    .bind(id)
+    .first());
+
+/**
+ * POST R.moveArtifact(id): `can(level, "move")` on the artifact (404) and
+ * orgCan("space.publish") in the target (publishTarget: 404, 400
+ * space_personal for any personal space, 403 space_forbidden). One batch:
+ * the compare-and-set move (#484: the space and visibility it was checked
+ * against, and the target's public-links value it read, else 409) and its
+ * artifact.move row. A public artifact moved into a space with public links
+ * off becomes team in the same write. Then the artifact's sockets close
+ * (anonymous data and events included): the source space's members and any
+ * public viewers may have lost it. owner_id and updated_at are kept.
+ */
+export async function moveArtifact(
+  env: Env,
+  user: Member,
+  id: string,
+  toSpaceId: string,
+  ctx?: Ctx,
+): Promise<ArtifactSummary> {
+  const who = callerOf(user);
+  const { artifact: a } = await authorize(env, who, id, "move");
+  const to = await publishTarget(env, who, toSpaceId, "move");
+  if (a.spaceId === to.id) return getSummary(env, who, id);
+  const rewrite = a.visibility === "public" && !to.publicLinks;
+  // The roles the move was allowed under, re-checked in the write: editor or
+  // manager in the target, and manager of a shared source (a personal source
+  // is the caller's own: the space_id check already pins it).
+  const target = roleRankQuery(env, who, to.id);
+  const source = roleRankQuery(env, who, a.spaceId ?? "");
+  const own = a.spaceId === user.id ? 1 : 0;
+  const out = await env.DB.batch([
+    env.DB.prepare(
+      `update artifacts set space_id = ?, visibility = ?
+        where id = ? and deleted_at is null and space_id is ? and visibility = ?
+          and exists (select 1 from spaces where id = ? and kind = 'shared'
+            and deleted_at is null and public_links = ?)
+          and ${target.sql} >= 2
+          and (? = 1 or ${source.sql} = 3)`,
+    ).bind(
+      to.id,
+      rewrite ? "team" : a.visibility,
+      id,
+      a.spaceId,
+      a.visibility,
+      to.id,
+      to.publicLinks ? 1 : 0,
+      ...target.params,
+      own,
+      ...source.params,
+    ),
+    audit(env, "artifact.move", { type: "artifact", id }, userActor(user.id), {
+      spaceId: to.id,
+      detail: {
+        from: a.spaceId,
+        to: to.id,
+        ...(rewrite ? { visibility: { from: "public", to: "team" } } : {}),
+      },
+      when: { sql: "changes() > 0", args: [] },
+    }),
+  ]);
+  if (!out[0]?.meta.changes)
+    throw (await isLive(env, id)) ? conflict() : notFound();
+  await closeRuntimeSockets(env, [id], "artifact moved", ctx);
+  return getSummary(env, who, id);
+}
+
+/**
+ * POST R.transferArtifact(id): the personal owner only (`can(level,
+ * "transfer")`: owner level, personal, uncapped; managers and everyone else
+ * 404). The successor must be an active, non-guest, non-restricted member
+ * other than the caller (400 invalid_successor). One batch: the
+ * compare-and-set move into the successor's personal space (owner_id and
+ * space_id; the successor re-checked in SQL), an editor share for the former
+ * owner, and the artifact.transfer row, each gated on the one before. The
+ * former owner drops from owner to editor on this one artifact, so its
+ * sockets close (closeRuntimeSockets; revoking the user would close their
+ * sockets on every other artifact too).
+ */
+export async function transferArtifact(
+  env: Env,
+  user: Member,
+  id: string,
+  toUserId: string,
+  ctx?: Ctx,
+): Promise<ArtifactSummary> {
+  const who = callerOf(user);
+  const { artifact: a } = await authorize(env, who, id, "transfer");
+  if (toUserId === user.id || !(await isSuccessor(env, toUserId)))
+    throw invalidSuccessor();
+  const email = normalizeEmail(user.email) ?? user.email;
+  // After the move, the share writes are gated on the artifact now being
+  // the successor's (only its owner could have put it there).
+  const theirs =
+    "exists (select 1 from artifacts where id = ?1 and owner_id = ?2 and space_id = ?2)";
+  const out = await env.DB.batch([
+    stmt(
+      env.DB,
+      `update artifacts set owner_id = ?1, space_id = ?1
+        where id = ?2 and deleted_at is null and space_id = ?3 and owner_id = ?3
+          and ${SUCCESSOR(1)}`,
+    ).bind(toUserId, id, user.id),
+    audit(
+      env,
+      "artifact.transfer",
+      { type: "artifact", id },
+      userActor(user.id),
+      {
+        spaceId: toUserId,
+        detail: { from: a.spaceId, to: toUserId },
+        when: { sql: "changes() > 0", args: [] },
+      },
+    ),
+    stmt(
+      env.DB,
+      `insert into shares (artifact_id, email, role, created_by, created_at)
+        select ?1, ?3, 'editor', ?4, ?5 where ${theirs}
+        on conflict (artifact_id, email) do update set role = 'editor'`,
+    ).bind(id, toUserId, email, user.id, Date.now()),
+    // The successor owns it now: their own share is redundant.
+    stmt(
+      env.DB,
+      `delete from shares where artifact_id = ?1
+        and email = (select email from users where id = ?2) and ${theirs}`,
+    ).bind(id, toUserId),
+  ]);
+  if (!out[0]?.meta.changes) {
+    if (!(await isSuccessor(env, toUserId))) throw invalidSuccessor();
+    throw (await isLive(env, id)) ? conflict() : notFound();
+  }
+  await closeRuntimeSockets(env, [id], "artifact transferred", ctx);
+  return getSummary(env, who, id);
+}
+
+// A departed person's artifacts: their personal space, live (on
+// artifacts_space_live_idx) and trash (on artifacts_owner_deleted_idx; a
+// personal space's artifacts are its owner's).
+const DEPARTED_COUNTS = `select
+    (select count(*) from artifacts where space_id = ?1 and deleted_at is null) as live,
+    (select count(*) from artifacts where owner_id = ?1 and deleted_at is not null and space_id = ?1) as deleted`;
+const DEPARTED_PAGE = `select id, visibility from artifacts where space_id = ?1 and deleted_at is null
+  union all select id, visibility from artifacts where owner_id = ?1 and deleted_at is not null and space_id = ?1
+  limit ?2`;
+type Counts = { live: number; deleted: number };
+
+/** GET R.memberTransfer(id) (org owner, admin): counts only, never titles. */
+export async function transferSummary(
+  env: Env,
+  fromUserId: string,
+): Promise<TransferSummary> {
+  const [u, c] = await env.DB.batch([
+    stmt(env.DB, "select 1 as ok from users where id = ?").bind(fromUserId),
+    stmt(env.DB, DEPARTED_COUNTS).bind(fromUserId),
+  ]);
+  if (!u?.results[0]) throw notFound();
+  const r = c?.results[0] as Counts | undefined;
+  return { live: r?.live ?? 0, deleted: r?.deleted ?? 0 };
+}
+
+/** A continuation marker (b64url); its content is never trusted. */
+const TRANSFER_CURSOR = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * POST R.memberTransfer(id) (org owner, admin): moves the next page of a
+ * suspended or removed member's personal artifacts (trash included) to a
+ * successor's personal space (owner_id too) or a shared space. 409
+ * member_active for an active source; 400 invalid_successor for a bad user
+ * target (the source included); 400 space_personal or 404 for a bad space
+ * target. Each call takes the next TRANSFER_PAGE rows still in the departed
+ * space, so the cursor is only a continuation marker and a forged one moves
+ * no more. Into a space with public links off, public artifacts become team
+ * in the same batch and their sockets close; such a page is at most
+ * MAX_CLOSE so every close fits the request.
+ *
+ * Revocation: the source is already inactive (setUserStatus revoked their
+ * live access), and this narrows it on up to a page of artifacts, so their
+ * presence is revoked again (one call, belt and braces); the artifacts
+ * rewritten to team close their sockets. One artifact.transfer row per call,
+ * on the user, gated on the move.
+ */
+export async function transferPersonal(
+  env: Env,
+  actor: Member,
+  fromUserId: string,
+  input: TransferInput,
+  ctx?: Ctx,
+): Promise<TransferResult> {
+  if (input.cursor !== undefined && !TRANSFER_CURSOR.test(input.cursor))
+    throw new ApiError("bad_request", "Invalid cursor", {
+      path: "cursor",
+      reason: "invalid",
+    });
+  const from = await stmt(env.DB, "select status from users where id = ?")
+    .bind(fromUserId)
+    .first<{ status: string }>();
+  if (!from) throw notFound();
+  if (statusOf(from.status) === "active")
+    throw new ApiError(
+      "member_active",
+      "Suspend or remove the member before transferring their artifacts",
+    );
+  let spaceId: string;
+  let ownerId: string;
+  let publicLinks = true;
+  if (input.to.kind === "user") {
+    const to = input.to.userId;
+    if (to === fromUserId || !(await isSuccessor(env, to)))
+      throw invalidSuccessor();
+    spaceId = to;
+    ownerId = to;
+  } else {
+    const s = await stmt(
+      env.DB,
+      "select kind, public_links as publicLinks from spaces where id = ? and deleted_at is null",
+    )
+      .bind(input.to.spaceId)
+      .first<{ kind: string; publicLinks: number }>();
+    if (!s) throw notFound();
+    if (s.kind !== "shared")
+      throw personalError("can't take a departed member's artifacts");
+    spaceId = input.to.spaceId;
+    ownerId = fromUserId;
+    publicLinks = s.publicLinks === 1;
+  }
+  const page = publicLinks ? TRANSFER_PAGE : Math.min(TRANSFER_PAGE, MAX_CLOSE);
+  const { results } = await stmt(env.DB, DEPARTED_PAGE)
+    .bind(fromUserId, page)
+    .all<{ id: string; visibility: string }>();
+  if (!results.length) return { moved: 0, remaining: 0, nextCursor: null };
+  const ids = JSON.stringify(results.map((r) => r.id));
+  const pub = JSON.stringify(
+    results.filter((r) => r.visibility === "public").map((r) => r.id),
+  );
+  // One statement, re-checking in SQL what was read: each row is still in
+  // the departed space (two admins racing move each artifact once), the
+  // target space still exists with the public-links value read (a personal
+  // one always qualifies), and a user target is still a valid successor.
+  // Into a space with public links off, public rows become team in the same
+  // write.
+  const move = stmt(
+    env.DB,
+    `update artifacts set space_id = ?3, owner_id = ?4,
+        visibility = case when ?5 = 0 and visibility = 'public' then 'team' else visibility end
+      where id in (select value from json_each(?1)) and space_id = ?2 and owner_id = ?2
+        and exists (select 1 from spaces where id = ?3 and deleted_at is null
+          and (kind = 'personal' or public_links = ?5))
+        and (?6 = 0 or ${SUCCESSOR(4)})
+        and exists (select 1 from users where id = ?2 and status <> 'active')
+      returning id`,
+  ).bind(
+    ids,
+    fromUserId,
+    spaceId,
+    ownerId,
+    publicLinks ? 1 : 0,
+    input.to.kind === "user" ? 1 : 0,
+  );
+  const out = await env.DB.batch([
+    move,
+    // Right after the move: moved is its changes(); teamed counts the rows
+    // read as public that are now team in the target.
+    audit(
+      env,
+      "artifact.transfer",
+      { type: "user", id: fromUserId },
+      userActor(actor.id),
+      {
+        spaceId,
+        detail: { to: { kind: input.to.kind, id: spaceId } },
+        detailSql: {
+          sql: `json_object('moved', changes(), 'teamed', (select count(*) from artifacts
+            where id in (select value from json_each(?)) and space_id = ? and visibility = 'team'))`,
+          args: [publicLinks ? "[]" : pub, spaceId],
+        },
+        when: { sql: "changes() > 0", args: [] },
+      },
+    ),
+    stmt(env.DB, DEPARTED_COUNTS).bind(fromUserId),
+  ]);
+  const moved = out[0]?.meta.changes ?? 0;
+  const counts = out[2]?.results[0] as Counts | undefined;
+  const remaining = (counts?.live ?? 0) + (counts?.deleted ?? 0);
+  // Nothing moved while rows remain: the target changed under us.
+  if (!moved && remaining > 0)
+    throw new ApiError(
+      "conflict",
+      "The transfer target changed; check it and try again",
+    );
+  if (moved) {
+    await revokeUserLive(env, fromUserId, "artifacts transferred", ctx);
+    // Public links off: every moved row may have been public (a page is at
+    // most MAX_CLOSE), so all of them close.
+    if (!publicLinks) {
+      const movedIds = ((out[0]?.results ?? []) as { id: string }[]).map(
+        (r) => r.id,
+      );
+      await closeRuntimeSockets(env, movedIds, "access changed", ctx);
+    }
+  }
+  return {
+    moved,
+    remaining,
+    nextCursor: remaining > 0 ? encodeCursor([remaining]) : null,
+  };
+}
+
+/**
+ * MCP list_spaces: the spaces the caller can publish into. Their personal
+ * space (orgCan artifact.create), then shared spaces where orgCan
+ * space.publish holds (editor or manager, uncapped), by name, at most
+ * LIST_SPACES_MAX. Empty for a capped caller. One batch of two statements.
+ */
+export async function publishableSpaces(
+  env: Env,
+  c: Caller,
+): Promise<MySpace[]> {
+  const u = me(c);
+  const cap = capOfCaller(c);
+  if (!orgCan(u, "artifact.create", { cap })) return [];
+  // Without the spaces feature only the personal space is offered.
+  const withShared = spacesOn(env);
+  const db = getDb(env);
+  const rank = roleRankSql(c, sql`${spaces.id}`);
+  const cols = {
+    id: spaces.id,
+    name: spaces.name,
+    publicLinks: spaces.publicLinks,
+    rank,
+  };
+  const [mine, shared] = await db.batch([
+    db
+      .select(cols)
+      .from(spaces)
+      .where(
+        and(
+          eq(spaces.id, u.id),
+          eq(spaces.kind, "personal"),
+          isNull(spaces.deletedAt),
+        ),
+      )
+      .limit(1),
+    db
+      .select(cols)
+      .from(spaces)
+      .where(
+        and(
+          eq(spaces.kind, "shared"),
+          isNull(spaces.deletedAt),
+          withShared ? undefined : sql`0`,
+          sql`${rank} >= 2`,
+        ),
+      )
+      .orderBy(spaces.kind, spaces.name, spaces.id)
+      .limit(LIST_SPACES_MAX),
+  ]);
+  const out: MySpace[] = mine.map((r) => ({
+    id: r.id,
+    kind: "personal",
+    name: r.name,
+    publicLinks: true,
+    myRole: "manager",
+  }));
+  for (const r of shared) {
+    const role = roleOf(r.rank);
+    if (role && orgCan(u, "space.publish", { spaceRole: role, cap }))
+      out.push({
+        id: r.id,
+        kind: "shared",
+        name: r.name,
+        publicLinks: r.publicLinks === 1,
+        myRole: role,
+      });
+  }
+  return out.slice(0, LIST_SPACES_MAX);
 }

@@ -89,11 +89,39 @@ describe("scroll position", () => {
     expect(scrolledTo.at(-1)).toBe(600);
   });
 
-  it("restores the same fraction when the height changed", async () => {
-    page(4800); // max 4000
+  it("keeps the same offset when it still fits, even if the page grew", async () => {
+    page(4800); // max 4000: a longer version, or a narrower frame
     fromShell({ oa: 1, type: "scroll.to", top: 500, max: 2000 });
     await flush();
-    expect(scrolledTo.at(-1)).toBe(1000);
+    expect(scrolledTo.at(-1)).toBe(500);
+  });
+
+  it("falls back to the same fraction when the offset no longer fits", async () => {
+    page(1200); // max 400 < 600, and it stays short
+    fromShell({ oa: 1, type: "scroll.to", top: 600, max: 2000 });
+    await vi.advanceTimersByTimeAsync(3_500);
+    expect(scrolledTo.at(-1)).toBe(120);
+  });
+
+  it("reports its position after restoring, even without a scroll event", async () => {
+    vi.mocked(window.scrollTo).mockImplementation(() => {}); // no scroll event
+    Object.defineProperty(window, "scrollY", {
+      value: 600,
+      configurable: true,
+    });
+    fromShell({ oa: 1, type: "scroll.to", top: 600, max: 2000 });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(scrolls().at(-1)).toMatchObject({ top: 600, max: 2000 });
+  });
+
+  it("reports again when the frame is resized (the max changes)", async () => {
+    page(2800, 600);
+    window.dispatchEvent(new Event("scroll"));
+    await vi.advanceTimersByTimeAsync(300);
+    page(3800, 600); // narrower: the page reflows taller
+    window.dispatchEvent(new Event("resize"));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(scrolls().at(-1)).toMatchObject({ top: 600, max: 3000 });
   });
 
   it("waits for late layout (rendered pages grow after hello), up to 3 s", async () => {

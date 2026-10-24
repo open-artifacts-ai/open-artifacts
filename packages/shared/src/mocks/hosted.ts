@@ -23,7 +23,6 @@ import { type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
 import type { ErrorCode } from "../errors.js";
 import {
-  HostedPublishInputSchema,
   MembersQuerySchema,
   MoveArtifactInputSchema,
   TRANSFER_PAGE,
@@ -378,6 +377,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     staleAt: null,
     alertedAt: null,
     customerMismatch: null,
+    pendingCount: null,
+    pendingCountCapped: false,
+    pendingExpiresAt: null,
     held:
       directoryMode === "google"
         ? [
@@ -643,7 +645,6 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const fails = new Map<string, number>();
 
   // ---- publish hook (used by POST R.artifacts) -----------------------------
-  const publishSchema = HostedPublishInputSchema;
   /** Checks spaceId; returns a refusal, or the space to place a new artifact in. */
   const checkPublish = (
     input: PublishInput & { spaceId?: string },
@@ -673,12 +674,20 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     a.access = levelIn(sp) ?? "owner";
     refresh();
   };
-  /** Making an artifact public in a space whose publicLinks is off: 403 public_links_off. */
+  /**
+   * Making an artifact public in a space whose publicLinks is off: 403
+   * public_links_off. Echoing "public" on an artifact that already is public
+   * passes, as on the server.
+   */
   const refusePublic = (
     space: { publicLinks: boolean } | null | undefined,
     visibility: string | undefined,
+    current?: string,
   ) =>
-    visibility === "public" && space && !space.publicLinks
+    visibility === "public" &&
+    current !== "public" &&
+    space &&
+    !space.publicLinks
       ? err("public_links_off", "Public links are off in this space")
       : null;
   /** A create by a capped caller (no spaceId) is refused too. */
@@ -996,6 +1005,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (r.error) return r.error;
         const s = findSpace(r.data.spaceId);
         if (!s) return notFound();
+        // Someone else's personal space is 404 (no user-id oracle); one's
+        // own is 400 space_personal.
+        if (s.kind === "personal" && s.id !== me.user.id) return notFound();
         if (s.kind === "personal")
           return err(
             "space_personal",
@@ -1559,6 +1571,37 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       }),
     ),
     http.post(
+      "*/api/v1/directory/confirm",
+      authed(() => {
+        if (me.user.role !== "owner" || sync.state !== "pending_confirm")
+          return notFound();
+        Object.assign(sync, {
+          state: "never",
+          pendingCount: null,
+          pendingCountCapped: false,
+          pendingExpiresAt: null,
+        });
+        log("directory.connect", { type: "directory", id: "google" });
+        return HttpResponse.json(sync);
+      }),
+    ),
+    http.post(
+      "*/api/v1/directory/cancel",
+      authed(() => {
+        if (me.user.role !== "owner" || sync.state !== "pending_confirm")
+          return notFound();
+        Object.assign(sync, {
+          state: "never",
+          binding: null,
+          pendingCount: null,
+          pendingCountCapped: false,
+          pendingExpiresAt: null,
+        });
+        log("directory.disconnect", { type: "directory", id: "google" });
+        return noContent();
+      }),
+    ),
+    http.post(
       "*/api/v1/directory/held/:groupId/confirm",
       authed(({ params }) => {
         if (me.user.role !== "owner") return notFound();
@@ -1615,7 +1658,6 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   return {
     handlers,
     refresh,
-    publishSchema,
     checkPublish,
     placeNew,
     refuseCappedCreate,

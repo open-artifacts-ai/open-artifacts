@@ -570,6 +570,28 @@ describe("round 1", () => {
     expect(text(m.bindings, "AUTH_DOMAINS")).toBe("finqore.com");
   });
 
+  // Manager ruling 2026-10-24 (#572): hosted AUTH_DOMAINS isn't verified as
+  // owned, so a hosted install never admits by domain until it is.
+  it("always renders AUTH_DOMAIN_JOIN=invite", () => {
+    const cases: Record<string, string>[] = [
+      {},
+      { AUTH_DOMAIN_JOIN: "invite" },
+    ];
+    for (const vars of cases) {
+      const m = userWorkerMetadata(inst({ vars }), res());
+      expect(text(m.bindings, "AUTH_DOMAIN_JOIN")).toBe("invite");
+    }
+  });
+
+  it.each(["member", "Member", "", " invite"])(
+    "refuses AUTH_DOMAIN_JOIN=%j",
+    (v) => {
+      expect(() =>
+        userWorkerMetadata(inst({ vars: { AUTH_DOMAIN_JOIN: v } }), res()),
+      ).toThrow(/AUTH_DOMAIN_JOIN.*invite/);
+    },
+  );
+
   it("two installs share no resource, host or ratelimit id", () => {
     const a = userWorkerMetadata(inst(), res({ rlNs: 2_000_000 }));
     const b = userWorkerMetadata(

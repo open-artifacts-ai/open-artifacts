@@ -4,15 +4,21 @@ import {
   isId,
   LIMITS,
   ListQuerySchema,
+  MoveArtifactInputSchema,
   type PublishInput,
   PublishInputSchema,
   R,
+  TransferArtifactInputSchema,
 } from "@oa/shared";
 import type { Context } from "hono";
 import { authorize, caller, callerOf, requireUser } from "../auth/authz.js";
 import { isPubliclyServable } from "../auth/policy.js";
-import { publicPrefix, signContent } from "../content/signing.js";
-import { readCapped } from "../http/body.js";
+import {
+  contentViewer,
+  publicPrefix,
+  signContent,
+} from "../content/signing.js";
+import { jsonBody, readCapped } from "../http/body.js";
 import { ApiError, contentOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import type { AgentAttr } from "../services/agent-usage.js";
@@ -31,6 +37,11 @@ import {
 } from "../services/artifacts.js";
 import { planFiles, RESERVED_KEYS } from "../services/manifest.js";
 import { putExtractedText } from "../services/search.js";
+import {
+  moveArtifact,
+  requireSpaces,
+  transferArtifact,
+} from "../services/spaces.js";
 import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
 
@@ -165,6 +176,23 @@ export function mountArtifacts(app: AppType): void {
     return c.body(null, 204);
   });
 
+  // Hosted M1 (P3 T10): 404 without the spaces feature.
+  app.post(`${ARTIFACT}/move`, async (c) => {
+    requireSpaces(c.env);
+    const user = requireUser(c);
+    const id = idParam(c);
+    const { spaceId } = await jsonBody(c, MoveArtifactInputSchema);
+    return c.json(await moveArtifact(c.env, user, id, spaceId, execCtx(c)));
+  });
+
+  app.post(`${ARTIFACT}/transfer`, async (c) => {
+    requireSpaces(c.env);
+    const user = requireUser(c);
+    const id = idParam(c);
+    const { userId } = await jsonBody(c, TransferArtifactInputSchema);
+    return c.json(await transferArtifact(c.env, user, id, userId, execCtx(c)));
+  });
+
   app.post(`${ARTIFACT}/undelete`, async (c) => {
     const user = requireUser(c);
     return c.json(await undelete(c.env, user, idParam(c), execCtx(c)));
@@ -201,7 +229,17 @@ export function mountArtifacts(app: AppType): void {
         url: `${origin}${publicPrefix(id, v)}__view`,
         expiresAt: null,
       });
-    const { prefix, exp } = await signContent(c.env, id, v);
+    // Bound to the viewer (content_revocation): the content host re-checks
+    // their status and epoch on every file (P3 T11).
+    const { prefix, exp } = await signContent(
+      c.env,
+      id,
+      v,
+      Date.now(),
+      LIMITS.signedUrlTtlSec,
+      "frame",
+      contentViewer(c.env, c.var.user?.id, c.var.sessionEpoch),
+    );
     return c.json({
       url: `${origin}${prefix}__view`,
       expiresAt: new Date(exp * 1000).toISOString(),

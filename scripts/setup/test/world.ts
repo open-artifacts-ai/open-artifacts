@@ -140,6 +140,8 @@ type World = {
   settingsForbidden?: boolean;
   /** GET worker settings answers 500. */
   settingsFail?: boolean;
+  /** GET worker settings answers 200 with no bindings (a partial response). */
+  settingsPartial?: boolean;
   /** Process env handed to the setup run. */
   env?: Record<string, string>;
   /** The live Worker's current version id before any deploy in this world. */
@@ -874,6 +876,7 @@ export function world(w: World = {}) {
         return envelope(null, 403, [{ message: "Authentication error" }]);
       if (settings && m === "GET" && w.settingsFail)
         return envelope(null, 500, [{ message: "internal error" }]);
+      if (settings && m === "GET" && w.settingsPartial) return envelope({});
       if (settings && m === "GET") {
         const full = deployedConfig
           ? JSON.parse(stripComments(deployedConfig))
