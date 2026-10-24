@@ -105,7 +105,7 @@ export const resetTouchMemo = () => touched.clear();
 /**
  * Records a grant's use: nothing when this isolate already sent one within
  * the minute with the same version, else the conditional upsert. Run it in
- * waitUntil, off the request.
+ * waitUntil, off the request. Returns D1 rows written (0 when skipped).
  */
 export async function touchGrant(
   env: Env,
@@ -113,22 +113,23 @@ export async function touchGrant(
   userId: string,
   clientVersion: string | null,
   now = Date.now(),
-): Promise<void> {
+): Promise<number> {
   const seen = touched.get(grantId);
   if (
     seen &&
     seen.at > now - USE_WRITE_MS &&
     (clientVersion === null || clientVersion === seen.version)
   )
-    return;
+    return 0;
   if (touched.size >= TOUCHED_MAX) touched.clear();
   touched.set(grantId, {
     at: seen && seen.at > now - USE_WRITE_MS ? seen.at : now,
     version: clientVersion ?? seen?.version ?? null,
   });
-  await stmt(env.DB, TOUCH_GRANT)
+  const res = await stmt(env.DB, TOUCH_GRANT)
     .bind(grantId, userId, now, clientVersion)
     .run();
+  return res.meta.rows_written;
 }
 
 /** The client version as stored (bounded, like AgentRef.version). */

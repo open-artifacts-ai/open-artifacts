@@ -143,7 +143,13 @@ const apiHandler = {
     };
     let server: ReturnType<typeof createServer> | undefined;
     const res = await mcpHandler(env, () => {
-      server = createServer({ env, user, agent, exec: ctx, clientVersion: true });
+      server = createServer({
+        env,
+        user,
+        agent,
+        exec: ctx,
+        clientVersion: true,
+      });
       return server;
     })(capped, env, ctx);
     if (grantId) {
@@ -574,7 +580,9 @@ async function listClients(env: Env, user: Member): Promise<OAuthClient[]> {
         ...(from.success ? { approvedFrom: from.data } : {}),
         ...(u?.lastUsedAt != null ? { lastUsedAt: iso(u.lastUsedAt) } : {}),
         ...(u?.clientVersion ? { clientVersion: u.clientVersion } : {}),
-        ...(kind.success ? { versionsPublished: u?.versionsPublished ?? 0 } : {}),
+        ...(kind.success
+          ? { versionsPublished: u?.versionsPublished ?? 0 }
+          : {}),
       };
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));

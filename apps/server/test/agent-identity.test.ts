@@ -141,9 +141,7 @@ async function grant(
   const html = await page.text();
   const field = (n: string) =>
     new RegExp(`name="${n}" value="([^"]*)"`).exec(html)?.[1] ?? "";
-  const cookies = page.headers
-    .getSetCookie()
-    .map((c) => c.split(";")[0] ?? "");
+  const cookies = page.headers.getSetCookie().map((c) => c.split(";")[0] ?? "");
   const body = new URLSearchParams({
     csrf: field("csrf"),
     request: field("request"),
@@ -409,9 +407,7 @@ describe("versions published", () => {
       body: { format: "markdown", content: "# t3" },
     });
     expect(await viaOf(id, 3)).toEqual({ via: null });
-    const list = (await (
-      await api(app, R.tokens, u.cookie)
-    ).json()) as Token[];
+    const list = (await (await api(app, R.tokens, u.cookie)).json()) as Token[];
     expect(TokenSchema.parse(list[0])).toMatchObject({
       id: tokenId,
       versionsPublished: 2,
@@ -430,9 +426,7 @@ describe("PATCH labels", () => {
       label: " \u202eWork\u200b laptop ",
     });
     expect(set.status).toBe(200);
-    expect(OAuthClientSchema.parse(await set.json()).label).toBe(
-      "Work laptop",
-    );
+    expect(OAuthClientSchema.parse(await set.json()).label).toBe("Work laptop");
     expect((await clients(member.cookie))[0]?.label).toBe("Work laptop");
     const other = await login(`card-lbl2-${tag}@x.com`);
     expect((await patch(other.cookie, { label: "mine" })).status).toBe(404);
@@ -481,9 +475,7 @@ describe("PATCH labels", () => {
       label: "y".repeat(80),
       versionsPublished: 0,
     });
-    expect((await patch(u.cookie, { label: "y".repeat(81) })).status).toBe(
-      400,
-    );
+    expect((await patch(u.cookie, { label: "y".repeat(81) })).status).toBe(400);
     expect((await patch(u.cookie, { label: null })).status).toBe(400);
     const other = await login(`card-tl2-${tag}@x.com`);
     expect((await patch(other.cookie, { label: "z" })).status).toBe(404);

@@ -15,6 +15,7 @@ import { publicPrefix, signContent } from "../content/signing.js";
 import { readCapped } from "../http/body.js";
 import { ApiError, contentOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
+import type { AgentAttr } from "../services/agent-usage.js";
 import {
   getSummary,
   list,
@@ -28,7 +29,6 @@ import {
   softDelete,
   undelete,
 } from "../services/artifacts.js";
-import type { AgentAttr } from "../services/agent-usage.js";
 import { planFiles, RESERVED_KEYS } from "../services/manifest.js";
 import { putExtractedText } from "../services/search.js";
 import { utf8Decoder } from "../util/text.js";
