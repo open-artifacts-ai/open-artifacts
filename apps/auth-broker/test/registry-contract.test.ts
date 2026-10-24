@@ -40,6 +40,25 @@ describe("registry contract with @oa/provision", () => {
     expect(await lookupInstall(env.BROKER_REGISTRY, ID)).toEqual(entry);
   });
 
+  it("returns both keys of a 2-key rotation entry from provision", async () => {
+    const keys = [];
+    for (const fill of [8, 9]) {
+      const x = await publicFromPkcs8(
+        Buffer.concat([
+          Buffer.from("302e020100300506032b657004220420", "hex"),
+          Buffer.alloc(32, fill),
+        ]).toString("base64url"),
+      );
+      keys.push({ kid: await keyId(x), x });
+    }
+    const entry = registryEntry({ installId: ID, origin: ORIGIN, keys });
+    await env.BROKER_REGISTRY.put(registryKey(ID), JSON.stringify(entry));
+    const got = await lookupInstall(env.BROKER_REGISTRY, ID);
+    expect(got).toEqual(entry);
+    expect(got?.keys).toEqual(keys);
+    expect(got?.keys).toHaveLength(2);
+  });
+
   it("a disabled entry from provision is not trusted", async () => {
     await provisioned(true);
     expect(await lookupInstall(env.BROKER_REGISTRY, ID)).toBeNull();
