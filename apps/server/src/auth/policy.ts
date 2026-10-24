@@ -280,6 +280,13 @@ const ORG_ADMINS: readonly Role[] = ["owner", "admin"];
 export const canBeRestricted = (role: Role): boolean =>
   !ORG_ADMINS.includes(role);
 
+/**
+ * An org owner or admin target: changing their role, removing or suspending
+ * them, or resetting their Google link needs members.manageAdmins (#475).
+ */
+export const isOrgAdmin = (role: string): boolean =>
+  (ORG_ADMINS as readonly string[]).includes(role);
+
 /** Instance and space administration (no artifact involved). */
 export function orgCan(
   m: Member,
@@ -307,7 +314,8 @@ export function orgCan(
     case "settings.read":
       return TEAM_ROLES.includes(m.role);
     case "directory.manage":
-    // Acting on a peer admin (e.g. resetting their Google link): owner only.
+    // Acting on an org owner or admin (role, removal, suspension, Google
+    // link reset): owner only (#475).
     case "members.manageAdmins":
       return m.role === "owner" && !capped;
     case "tokens.create":

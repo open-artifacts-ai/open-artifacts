@@ -1,7 +1,8 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import type { Member } from "@oa/shared";
+import type { CapReason, Member } from "@oa/shared";
 import { describe, expect, it } from "vitest";
+import { withCap } from "../src/auth/authz.js";
 import { authConfig } from "../src/auth/config.js";
 import { createPat } from "../src/auth/pat.js";
 import type { VerifiedIdentity } from "../src/auth/providers/types.js";
@@ -43,7 +44,11 @@ const g = (o: Partial<VerifiedIdentity> = {}): VerifiedIdentity => ({
   ...o,
 });
 const cfg = (over: Partial<Env> = {}) => authConfig(direct(over));
-const admin = { id: "x", role: "admin" } as Member;
+// Actors carry their cap (null = uncapped), as getUser sets it.
+const actor = (role: Member["role"], cap: CapReason | null = null) =>
+  withCap({ id: `actor-${role}`, role } as Member, cap);
+const admin = actor("admin");
+const ownerActor = actor("owner");
 
 describe("admit (Google)", () => {
   it("an admin demotion racing the sign-in sticks (role promoted in SQL)", async () => {
@@ -465,12 +470,12 @@ describe("resetIdentity", () => {
     await createPat(env, uid, "t");
     for (const role of ["member", "guest"] as const)
       await expect(
-        resetIdentity(env, { id: "m", role } as Member, uid),
+        resetIdentity(env, actor(role), uid),
       ).rejects.toMatchObject({ code: "not_found" });
     expect(await subjectOf(uid)).toBe(`V-${email}`);
     expect((await rowOf(uid)).e).toBe(0);
     expect(await pats(uid)).toBe(1);
-    await resetIdentity(env, { id: "o", role: "owner" } as Member, uid);
+    await resetIdentity(env, ownerActor, uid);
     expect(await subjectOf(uid)).toBeNull();
   });
 
@@ -492,7 +497,7 @@ describe("resetIdentity", () => {
     const email = uniq("adm");
     const uid = await seedUser(email, "admin", { googleSub: `A-${email}` });
     await createPat(env, uid, "t");
-    await resetIdentity(env, { id: "o", role: "owner" } as Member, uid);
+    await resetIdentity(env, ownerActor, uid);
     expect(await subjectOf(uid)).toBeNull();
     expect((await rowOf(uid)).e).toBe(1);
     expect(await pats(uid)).toBe(0);
@@ -512,7 +517,7 @@ describe("resetIdentity", () => {
     });
   });
 
-  it("target promoted to admin between the precheck and the batch: 404, D1 unchanged", async () => {
+  it("target promoted to admin between the precheck and the batch: 403 owner_only, D1 unchanged", async () => {
     const email = uniq("race");
     const uid = await seedUser(email, "member", { googleSub: `Q-${email}` });
     await createPat(env, uid, "t");
@@ -533,11 +538,38 @@ describe("resetIdentity", () => {
     });
     await expect(
       resetIdentity({ ...env, OAUTH_KV: kv } as Env, admin, uid),
-    ).rejects.toMatchObject({ code: "not_found" });
+    ).rejects.toMatchObject({ code: "owner_only" });
     expect((await rowOf(uid)).role).toBe("admin");
     expect(await subjectOf(uid)).toBe(`Q-${email}`);
     expect((await rowOf(uid)).e).toBe(0);
     expect(await pats(uid)).toBe(1);
+    expect(await count("audit_events where target_id = ?", uid)).toBe(0);
+  });
+
+  it("admin → owner: 403 owner_only; owner → self: 404 (never the owner's link)", async () => {
+    const email = uniq("own2");
+    const uid = await seedUser(email, "owner", { googleSub: `O2-${email}` });
+    await expect(resetIdentity(env, admin, uid)).rejects.toMatchObject({
+      code: "owner_only",
+    });
+    await expect(
+      resetIdentity(
+        env,
+        withCap({ id: uid, role: "owner" } as Member, null),
+        uid,
+      ),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(await subjectOf(uid)).toBe(`O2-${email}`);
+  });
+
+  it("a capped owner can't reset an admin (manageAdmins needs uncapped): 403 owner_only", async () => {
+    const email = uniq("capadm");
+    const uid = await seedUser(email, "admin", { googleSub: `C-${email}` });
+    await expect(
+      resetIdentity(env, actor("owner", "restricted"), uid),
+    ).rejects.toMatchObject({ code: "owner_only" });
+    expect(await subjectOf(uid)).toBe(`C-${email}`);
+    expect((await rowOf(uid)).e).toBe(0);
   });
 
   it("revokes the member's PATs", async () => {
@@ -554,8 +586,9 @@ describe("resetIdentity", () => {
     const uid = await seedUser(email, "owner", { googleSub: `O-${email}` });
     await createPat(env, uid, "t");
     await grant(uid);
+    // An admin acting on the owner: 403 owner_only (#475).
     await expect(resetIdentity(env, admin, uid)).rejects.toMatchObject({
-      code: "not_found",
+      code: "owner_only",
     });
     expect(await subjectOf(uid)).toBe(`O-${email}`);
     expect((await rowOf(uid)).e).toBe(0);

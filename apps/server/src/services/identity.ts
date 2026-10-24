@@ -1,6 +1,7 @@
 import { inDomains, normalizeEmail } from "@oa/auth-core";
 import type { Member, Role } from "@oa/shared";
 import { logAuth } from "../auth/audit.js";
+import { managesAdmins } from "../auth/authz.js";
 import type { AuthConfig } from "../auth/config.js";
 import { isGuestRole, orgCan } from "../auth/policy.js";
 import type { VerifiedIdentity } from "../auth/providers/types.js";
@@ -229,13 +230,18 @@ export async function codeEligibility(
 const TARGET_OK = `u.role <> 'owner' and (u.role <> 'admin' or ?3 = 1)`;
 const RESETTABLE = `exists (select 1 from identities i join users u on u.id = i.user_id
   where i.provider = 'google' and u.id = ?1 and ${TARGET_OK})`;
+/** A Google-linked owner or admin: only the owner may act on one (#475). */
+const LINKED_ADMIN = `select 1 from users u join identities i
+  on i.user_id = u.id and i.provider = 'google'
+  where u.id = ?1 and u.role in ('owner', 'admin')`;
 
 /**
  * Admin action (owner or admin; 404 for anyone else): removes a member's
  * Google link so their next Google sign-in links afresh (clears an
  * identity_conflict). Never the owner's link; 404 when there is none. An
- * admin's link only by the owner: 403 owner_only otherwise (it would sign a
- * peer admin out).
+ * admin's link only by the (uncapped) owner: an admin resetting an admin's or
+ * the owner's link gets 403 owner_only (it would sign a peer admin out, #475),
+ * also when the target was promoted between the check and the batch.
  * One D1 transaction revokes their PATs, ends their sessions and deletes the
  * link, each gated on the same predicate, so all happen or none do. OAuth
  * grants (KV) are revoked first, once the link is known to be resettable, so
@@ -250,24 +256,24 @@ export async function resetIdentity(
 ): Promise<void> {
   if (!orgCan(actor, "members.manage"))
     throw new ApiError("not_found", "Not found");
-  const owner = orgCan(actor, "members.manageAdmins") ? 1 : 0;
-  const row = await stmt(
-    env.DB,
-    `select ${RESETTABLE} as ok, exists (select 1 from users u join identities i
-       on i.user_id = u.id and i.provider = 'google'
-       where u.id = ?1 and u.role = 'admin') as linkedAdmin`,
-  )
-    .bind(userId, null, owner)
-    .first<{ ok: number; linkedAdmin: number }>();
-  if (!row?.ok) {
-    // A linked admin the actor may not reset; anything else stays a 404.
-    if (row?.linkedAdmin && !owner)
-      throw new ApiError(
-        "owner_only",
-        "Only the owner can reset an admin's Google link",
-      );
+  const owner = managesAdmins(actor) ? 1 : 0;
+  // A linked owner or admin the actor may not reset is 403 owner_only;
+  // anything else not resettable stays a 404.
+  const refuse = async (): Promise<never> => {
+    if (!owner) {
+      const linked = await stmt(env.DB, LINKED_ADMIN).bind(userId).first();
+      if (linked)
+        throw new ApiError(
+          "owner_only",
+          "Only the owner can reset an admin's Google link",
+        );
+    }
     throw new ApiError("not_found", "Not found");
-  }
+  };
+  const row = await stmt(env.DB, `select ${RESETTABLE} as ok`)
+    .bind(userId, null, owner)
+    .first<{ ok: number }>();
+  if (!row?.ok) await refuse();
   // Grants (KV) first: idempotent, and a failure leaves D1 untouched so the
   // admin can retry (as removeMember does).
   await revokeAllGrants(env, userId);
@@ -298,7 +304,7 @@ export async function resetIdentity(
        and user_id = (select u.id from users u where u.id = ?1 and ${TARGET_OK}) returning 1`,
     ).bind(userId, null, owner),
   ]);
-  if (!results[3]?.results.length) throw new ApiError("not_found", "Not found");
+  if (!results[3]?.results.length) await refuse();
   // Sessions and tokens are gone: their live sockets close now (P3 T7).
   await revokeUserLive(env, userId, "identity reset", ctx);
 }

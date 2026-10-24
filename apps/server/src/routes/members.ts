@@ -72,6 +72,7 @@ export function mountMembers(app: AppType): void {
         patch,
         execCtx(c),
         userActor(actor.id),
+        actor,
       ),
     );
   });
@@ -83,6 +84,7 @@ export function mountMembers(app: AppType): void {
       c.req.param("id"),
       execCtx(c),
       userActor(actor.id),
+      actor,
     );
     return c.body(null, 204);
   });

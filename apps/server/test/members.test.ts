@@ -139,7 +139,10 @@ describe("members API", () => {
       method: "PATCH",
       body: { role: "member" },
     });
-    expect(demote.status).toBe(400);
+    // An admin acting on the owner: owner_only (#475); the owner on
+    // themselves keeps the 400.
+    expect(demote.status).toBe(403);
+    expect(await errCode(demote)).toBe("owner_only");
     const self = await call(R.member(owner.userId), owner.cookie, {
       method: "PATCH",
       body: { role: "admin" },
@@ -166,7 +169,12 @@ describe("members API", () => {
     const r = await call(R.member(owner.userId), admin.cookie, {
       method: "DELETE",
     });
-    expect(r.status).toBe(400);
+    expect(r.status).toBe(403);
+    expect(await errCode(r)).toBe("owner_only");
+    const self = await call(R.member(owner.userId), owner.cookie, {
+      method: "DELETE",
+    });
+    expect(self.status).toBe(400);
     expect(
       (await call(R.member(newId()), admin.cookie, { method: "DELETE" }))
         .status,
