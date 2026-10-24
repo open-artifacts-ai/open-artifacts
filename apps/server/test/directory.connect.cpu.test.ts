@@ -61,6 +61,7 @@ describe("directory connect CPU (Free: 10 ms)", () => {
     expect(ms).toBeLessThan(200);
 
     // Confirm alone: the pending rows seeded, then POST R.directoryConfirm
+    // (the swap; the same Google account, so no revoke)
     // (refresh at the fake Google, a small binding pass).
     const sealed = await seal(e, `rt-${sub}`);
     const binding = JSON.stringify({
@@ -72,7 +73,7 @@ describe("directory connect CPU (Free: 10 ms)", () => {
     });
     const seed = () =>
       env.DB.prepare(
-        "insert or replace into directory_state (key, value) values ('binding', ?), ('refresh', ?), ('connect.confirm', ?)",
+        "insert or replace into directory_state (key, value) values ('pending.binding', ?), ('pending.refresh', ?), ('connect.confirm', ?)",
       )
         .bind(
           binding,
@@ -82,6 +83,7 @@ describe("directory connect CPU (Free: 10 ms)", () => {
             exp: Date.now() + 3600_000,
             count: 1,
             capped: false,
+            s: sub,
           }),
         )
         .run();
