@@ -1,6 +1,5 @@
 import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import {
-  type AgentRef,
   dataLimits,
   MCP_PATH,
   type Member,
@@ -20,6 +19,7 @@ import {
 } from "../http/errors.js";
 import { logError } from "../log.js";
 import { toRuntimeApiError } from "../runtime/do.js";
+import { type AgentAttr, clientVersionOf } from "../services/agent-usage.js";
 import { cpuNudge } from "../services/usage.js";
 import { VERSION } from "../version.gen.js";
 import { INSTRUCTIONS, RUNTIME_DOC_URI } from "./instructions.js";
@@ -32,8 +32,11 @@ export type McpContext = {
   user: Member;
   /** The user's session_epoch, read with the user row: download URLs bind it (P3 T11). */
   sessionEpoch: number;
-  /** PAT: { label, null }. OAuth: { clientName, null } plus `clientVersion`. */
-  agent: AgentRef | null;
+  /**
+   * PAT: { label, null }. OAuth: { clientName, null } plus `clientVersion`.
+   * `via` names the token or grant (publish attribution).
+   */
+  agent: AgentAttr | null;
   /** For waitUntil work (search indexing after publish). */
   exec?: Pick<ExecutionContext, "waitUntil">;
   /** Fill agent.version from the MCP clientInfo.version (OAuth clients). */
@@ -43,7 +46,7 @@ export type McpContext = {
 /** What the tool modules get: the context plus the per-call agent ref. */
 export type ToolEnv = McpContext & {
   caller: Caller;
-  agentNow: () => AgentRef | null;
+  agentNow: () => AgentAttr | null;
 };
 
 /** `{ content: [one-line summary], structuredContent }`. */
@@ -100,12 +103,11 @@ export function createServer(ctx: McpContext): McpServer {
     { name: "open-artifacts", version: VERSION },
     { instructions },
   );
-  const agentNow = (): AgentRef | null => {
+  const agentNow = (): AgentAttr | null => {
     if (!ctx.agent || !ctx.clientVersion) return ctx.agent;
-    const v = server.server.getClientVersion()?.version;
     return {
-      name: ctx.agent.name,
-      version: typeof v === "string" && v ? v.slice(0, 100) : null,
+      ...ctx.agent,
+      version: clientVersionOf(server.server.getClientVersion()?.version),
     };
   };
   const t: ToolEnv = {

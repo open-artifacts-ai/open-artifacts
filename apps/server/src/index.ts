@@ -13,6 +13,7 @@ import {
   mcpHandler,
   mcpUnauthorized,
 } from "./mcp/server.js";
+import type { AgentAttr } from "./services/agent-usage.js";
 import { getUserWithEpoch } from "./services/users.js";
 
 export { DirectorySync } from "./directory/sync-do.js";
@@ -61,7 +62,11 @@ async function mcpWithPat(
     return mcpUnauthorized(env, "Only members can connect agents");
   const capped = await capMcpBody(req, env);
   if (capped instanceof Response) return capped;
-  const agent = { name: pat.label, version: null };
+  const agent: AgentAttr = {
+    name: pat.label,
+    version: null,
+    via: { kind: "token", id: pat.tokenId },
+  };
   return mcpHandler(env, () =>
     createServer({ env, user, sessionEpoch, agent, exec: ctx }),
   ).fetch(capped, {
