@@ -292,12 +292,24 @@ export const useRestoreVersion = (id: string) =>
       api.send("POST", R.restoreVersion(id, v), undefined, PublishResultSchema),
     () => [...artifactKeys(id)(), qk.versions(id)],
   );
-export const usePatchArtifact = (id: string) =>
-  useInvalidating(
-    (patch: ArtifactPatch) =>
+export const usePatchArtifact = (id: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: ArtifactPatch) =>
       api.send("PATCH", R.artifact(id), patch, ArtifactSummarySchema),
-    artifactKeys(id),
-  );
+    onSuccess: () =>
+      Promise.all(
+        artifactKeys(id)().map((queryKey) =>
+          qc.invalidateQueries({ queryKey }),
+        ),
+      ),
+    // 409 conflict: it changed meanwhile; show the caller the current one.
+    onError: (e) => {
+      if (e instanceof ApiClientError && e.code === "conflict")
+        void qc.invalidateQueries({ queryKey: qk.artifact(id) });
+    },
+  });
+};
 /** The caller navigates away, then drops `qk.artifact(id)` once its observers unmount. */
 export const useDeleteArtifact = (id: string) =>
   useInvalidating(

@@ -20,7 +20,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useState } from "react";
 import { ApiClientError } from "../../api/client";
-import { errorCopy } from "../../api/errorCopy";
+import { errorCopy, isConflict } from "../../api/errorCopy";
 import {
   useDeleteShare,
   usePatchArtifact,
@@ -31,6 +31,7 @@ import { useSingleFlight } from "../../api/useSingleFlight";
 import { emailEnabled } from "../../auth/emailEnabled";
 import { useCan } from "../../auth/permissions";
 import { useMe } from "../../auth/useMe";
+import { ConflictNote } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
 import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
 import { Modal } from "../../layout/Modal";
@@ -140,8 +141,11 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     from: Visibility;
     to: Visibility;
   } | null>(null);
-  const setPending = (to: Visibility | null) =>
+  const [visConflict, setVisConflict] = useState(false);
+  const setPending = (to: Visibility | null) => {
+    if (to) setVisConflict(false);
     setStage(to && { from: artifact.visibility, to });
+  };
   const staged =
     stage?.from === artifact.visibility ? stage.to : artifact.visibility;
   const changed = staged !== artifact.visibility;
@@ -174,8 +178,10 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
         {
           onSettled: done,
           onError: (e) => {
+            // Back to the server's value; on a 409, say why under the toggle.
             setPending(null);
-            failVisibility(e);
+            if (isConflict(e)) setVisConflict(true);
+            else failVisibility(e);
           },
         },
       ),
@@ -263,6 +269,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
         ) : (
           <VisibilityBadge visibility={artifact.visibility} />
         )}
+        {visConflict && <ConflictNote className="mt-[var(--oa-space-2)]" />}
         <p className={`oa-vis-note mt-[var(--oa-space-2)] ${MUTED}`}>
           {/* Hosted: the help text names the space or the org (D6 section 9). */}
           {visibilityHint(staged, artifact.space, install) ?? NOTE[staged]}

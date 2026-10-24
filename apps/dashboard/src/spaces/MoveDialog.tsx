@@ -6,10 +6,11 @@
 import type { ArtifactSummary, MySpace } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useState } from "react";
-import { errorCopy } from "../api/errorCopy";
+import { errorCopy, isConflict } from "../api/errorCopy";
 import { useMoveArtifact, useSpaces } from "../api/queries";
 import { canPublishTo, useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
+import { ConflictNote } from "../layout/ConflictNote";
 import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
@@ -112,7 +113,10 @@ export function MoveDialog({
                   name="oa-move-to"
                   value={s.id}
                   checked={to === s.id}
-                  onChange={() => setTo(s.id)}
+                  onChange={() => {
+                    move.reset();
+                    setTo(s.id);
+                  }}
                 />
                 <span className="flex-1 font-medium">{s.name}</span>
                 <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
@@ -126,13 +130,20 @@ export function MoveDialog({
               {impact}
             </p>
           )}
-          {move.error && (
-            <p
-              role="alert"
-              className="m-0 text-[length:var(--oa-text-sm)] text-destructive"
-            >
-              {errorCopy(move.error, "Couldn't move the artifact. Try again.")}
-            </p>
+          {isConflict(move.error) ? (
+            <ConflictNote />
+          ) : (
+            move.error && (
+              <p
+                role="alert"
+                className="m-0 text-[length:var(--oa-text-sm)] text-destructive"
+              >
+                {errorCopy(
+                  move.error,
+                  "Couldn't move the artifact. Try again.",
+                )}
+              </p>
+            )
           )}
         </div>
       </Modal>

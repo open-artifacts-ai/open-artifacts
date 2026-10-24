@@ -26,6 +26,12 @@ const COPY: Partial<Record<ErrorCode, string>> = {
     "For your security, sign in with Google again to manage the directory.",
 };
 
+/** 409 conflict (compare-and-set, #534): Design's copy, shown inline. */
+export const CONFLICT_COPY =
+  "This artifact just changed. Check it and try again.";
+export const isConflict = (e: unknown) =>
+  e instanceof ApiClientError && e.code === "conflict";
+
 /** Asking a space manager can't help a guest or restricted member. */
 const CAPPED_FORBIDDEN = "Your account can only view, so you can't publish.";
 
