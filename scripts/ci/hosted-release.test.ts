@@ -90,7 +90,14 @@ function keyJobShape(job: Step, o: { download: boolean; script: string }) {
   expect(assert.uses).toBeUndefined();
   expect(assert.env).toBeUndefined();
   expect(String(assert.run).trim()).toBe(NODE22_ASSERT);
-  if (o.download) expect(st[3]?.uses).toMatch(/^actions\/download-artifact@/);
+  expect(Object.keys(st[0]?.with ?? {}).sort()).toEqual([
+    "persist-credentials",
+    "ref",
+  ]);
+  if (o.download) {
+    expect(st[3]?.uses).toMatch(/^actions\/download-artifact@/);
+    expect(Object.keys(st[3]?.with ?? {}).sort()).toEqual(["name", "path"]);
+  }
   // No cache action and no package-manager cache anywhere in the job.
   expect(JSON.stringify(st)).not.toMatch(/cache/i);
   const last = st.at(-1) as Step;
