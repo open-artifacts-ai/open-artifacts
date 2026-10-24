@@ -277,8 +277,14 @@ export async function resetIdentity(
     .bind(userId, null, owner)
     .first<{ ok: number }>();
   if (!row?.ok) await refuse();
-  // Grants (KV) first: idempotent, and a failure leaves D1 untouched so the
-  // admin can retry (as removeMember does).
+  // Grants (KV) BEFORE the batch, unlike removeMember and setUserStatus, and
+  // only once the role precheck above passed, so an owner or admin target
+  // is refused before KV is touched. Here the user stays active and nothing
+  // in D1 cuts off their grants, so a KV failure after the batch would leave
+  // live grants with no retry path (the link is already gone). Revoking first
+  // is idempotent and a failure leaves D1 untouched, so the admin can retry.
+  // The only race left (a promotion between the precheck and the batch)
+  // costs the target a forced reconnect, nothing more.
   await revokeAllGrants(env, userId);
   const results = await env.DB.batch([
     stmt(

@@ -10,6 +10,7 @@ import { withCap } from "../src/auth/authz.js";
 import { createPat } from "../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
+import { oauthApi } from "../src/mcp/oauth-api.js";
 import {
   patchMember,
   removeMember,
@@ -94,11 +95,36 @@ function promotingBefore(base: Env, id: string): Env {
   return { ...base, DB: db } as Env;
 }
 
-/** The target's row, PATs and audit trail, to compare before and after. */
+/** Gives `userId` one OAuth grant (KV), as an agent connection would. */
+async function grant(userId: string): Promise<void> {
+  const o = oauthApi(env);
+  const c = await o.createClient({
+    redirectUris: ["https://agent.example/cb"],
+    tokenEndpointAuthMethod: "none",
+  });
+  await o.completeAuthorization({
+    request: {
+      responseType: "code",
+      clientId: c.clientId,
+      redirectUri: "https://agent.example/cb",
+      scope: [],
+      state: "s",
+      codeChallenge: "c".repeat(43),
+      codeChallengeMethod: "S256",
+    },
+    userId,
+    metadata: {},
+    scope: [],
+    props: { userId },
+  });
+}
+
+/** The target's row, PATs, audit trail and OAuth grants, before and after. */
 const snapshot = async (id: string) => ({
   row: await rowOf(id),
   pats: await livePats(id),
   audits: await audits(id),
+  grants: (await oauthApi(env).listUserGrants(id)).items.length,
 });
 
 type Path = {
@@ -183,7 +209,10 @@ describe.each(PATHS)("$name", (p) => {
   it("target promoted to admin between the precheck and the batch: 403 owner_only, nothing written or audited", async () => {
     const t = await mk("oo-race", "member");
     await createPat(env, t.userId, "t");
+    // OAuth grants are revoked only after the gated batch (#553): untouched.
+    await grant(t.userId);
     const before = await snapshot(t.userId);
+    expect(before.grants).toBe(1);
     await expect(
       p.run(promotingBefore(p.env, t.userId), t.userId, adminA),
     ).rejects.toMatchObject({ code: "owner_only" });
@@ -192,6 +221,21 @@ describe.each(PATHS)("$name", (p) => {
       row: { ...before.row, role: "admin" },
     });
   });
+});
+
+describe("OAuth grants after the gated batch (#553)", () => {
+  it.each([
+    ["spaces off", env],
+    ["spaces on", SPACES],
+  ] as const)(
+    "a removal that goes through still revokes them (%s)",
+    async (_, e) => {
+      const t = await mk("oo-grant", "member");
+      await grant(t.userId);
+      await removeMember(e, t.userId, adminA, ctx);
+      expect((await oauthApi(env).listUserGrants(t.userId)).items).toEqual([]);
+    },
+  );
 });
 
 describe("routes (#475)", () => {

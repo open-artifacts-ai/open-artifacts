@@ -172,7 +172,8 @@ const STATUS_OF = "select status from users where id = ?1";
  * Sets a user's status (P3 T6). The write, the PAT revocation and the
  * user.status audit row (only when the status changed) commit in one D1
  * batch. When the user is now suspended or removed, their OAuth grants are
- * revoked (KV, outside the batch) and then their live sockets close
+ * revoked (KV, after the gated batch, so a refused target keeps them) and
+ * then their live sockets close
  * (revokeUserLive). Unsuspending sets the status back to active; the PATs
  * and sessions the suspension revoked stay revoked. A removed row stays
  * removed. getUser resolves only active rows, so every credential stops at
@@ -344,7 +345,8 @@ export async function removeMember(
  * audited as user.status (admin_remove) in the same batch. Every statement
  * is gated on the target still being one the actor may remove, so a target
  * promoted to admin before the batch is 403 owner_only and nothing in D1
- * changes (#475); their OAuth grants (KV, revoked first) stay revoked.
+ * changes (#475). Their OAuth grants (KV) are revoked after the batch, so a
+ * refused target keeps them (#553).
  */
 async function deleteMember(
   env: Env,
@@ -367,8 +369,6 @@ async function deleteMember(
       .limit(1)
   )[0];
   if (!owner) throw new ApiError("bad_request", "No owner to reassign to");
-  // OAuth grants live in KV, outside the batch: revoke them first.
-  await revokeAllGrants(env, id);
   const to = owner.id;
   // Personal-space artifacts (space_id = their id) move into the instance
   // owner's personal space; shared-space ones keep their space_id (#478).
@@ -438,9 +438,17 @@ async function deleteMember(
     raw(db.delete(users).where(and(eq(users.id, id), target))),
   ]);
   if (!out.at(-1)?.meta.changes) await raceCheck(env, id, admins);
-  // Every live socket the member holds (team artifacts included) closes
-  // through their UserPresence (P3 T7); it never throws.
-  await revokeUserLive(env, id, "member removed", ctx);
+  try {
+    // OAuth grants live in KV, outside the batch: revoked only once the
+    // gated batch went through, so a target refused mid-request (promoted
+    // to admin) keeps theirs (#553). One this misses is still refused: it
+    // names a user row that is gone (oauth.ts apiHandler).
+    await revokeAllGrants(env, id);
+  } finally {
+    // Every live socket the member holds (team artifacts included) closes
+    // through their UserPresence (P3 T7); it never throws.
+    await revokeUserLive(env, id, "member removed", ctx);
+  }
 }
 
 const DEFAULT_SETTINGS: Settings = {
