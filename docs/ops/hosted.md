@@ -316,7 +316,7 @@ Why a copy: Workers KV has no read-only binding, so a directory broker bound to 
 
 Fixing drift: for a `creating` install, rerun `create`; it finishes both writes. For a `deleting` install, rerun `delete`. There is no repair op for an `active` install yet: `create` refuses it, and nothing else writes the copy. That is fine for M1, because no env has a brokered install yet (T9 has not run).
 
-TODO (Platform): before directory sync is enabled on any env that already has brokered installs, ship a lease-held backfill op that copies each broker entry to the directory registry (one way only, never directory to broker).
+TODO (Platform): before directory sync is enabled on any env that already has brokered installs, ship a lease-held backfill op that copies each broker entry to the directory registry (one way only, never directory to broker). The repair op overwrites the directory copy from the broker entry, never the reverse.
 
 ### First-create checklist (per env)
 
