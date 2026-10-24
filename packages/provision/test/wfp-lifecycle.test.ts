@@ -332,6 +332,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
   const pdb = fake.seedD1(platformNames(env).db, PLATFORM_SQL);
   const hostsId = fake.seedKv(hostsKvTitle(env));
   const regId = fake.seedKv(platformNames(env).registry);
+  const dirId = fake.seedKv(platformNames(env).directoryRegistry);
   fake.turnstile.set(TS.sitekey, {
     sitekey: TS.sitekey,
     name: platformNames(env).turnstile,
@@ -426,6 +427,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     pdb,
     hostsId,
     regId,
+    dirId,
     rel,
     target,
     db,
@@ -649,6 +651,23 @@ describe("upgrade", () => {
     );
     expect(s.scriptOf(b.id)?.uploads).toBe(bUploads);
     expect(s.row(b.id)).toMatchObject({ version: "0.23.0", state: "active" });
+  });
+
+  it("H-DR: upgrade and rollback keep the broker and directory registry entries equal", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input()));
+    const raw = s.fake.kvValues(s.regId).get(inst.id) as string;
+    expect(raw).toBeTruthy();
+    const up = keep(await s.mk({ brokerEnabled: true }).upgrade(inst.id, "0.24.0"));
+    expect(up).toMatchObject({ ok: true });
+    expect(s.fake.kvValues(s.regId).get(inst.id)).toBe(raw);
+    expect(s.fake.kvValues(s.dirId).get(inst.id)).toBe(raw);
+    keep(await s.mk({ brokerEnabled: true }).rollback(inst.id));
+    expect(s.fake.kvValues(s.dirId).get(inst.id)).toBe(
+      s.fake.kvValues(s.regId).get(inst.id),
+    );
+    expect((await s.p.status(inst.id)).registryDrift).toBeNull();
   });
 
   it("upgrade to an older version, or to the installed one, is refused before any write", async () => {
@@ -1400,7 +1419,9 @@ describe("delete", () => {
       .map((p) =>
         p.includes(`/namespaces/${s.regId}/values/`)
           ? "registry"
-          : /\/scripts\//.test(p)
+          : p.includes(`/namespaces/${s.dirId}/values/`)
+            ? "directory"
+            : /\/scripts\//.test(p)
             ? "script"
             : /\/storage\/kv\/namespaces\/[^/]+$/.test(p)
               ? "kv"
@@ -1414,6 +1435,7 @@ describe("delete", () => {
       );
     expect(seq).toEqual([
       "registry",
+      "directory",
       "script",
       "kv",
       ...Array(5).fill("r2-object"),
@@ -1473,6 +1495,33 @@ describe("delete", () => {
       expect(r3, name).toEqual({ id: inst.id, ok: true, state: "deleted" });
       expect(s.fake.writes().length, name).toBe(n);
     }
+  });
+
+  it("H-DR: delete removes the entry from both registries and resumes after a failure between them", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input()));
+    expect(s.fake.kvValues(s.regId).has(inst.id)).toBe(true);
+    expect(s.fake.kvValues(s.dirId).get(inst.id)).toBe(
+      s.fake.kvValues(s.regId).get(inst.id),
+    );
+    s.fake.inject(
+      (m, q) => m === "DELETE" && q.includes(`/namespaces/${s.dirId}/values/`),
+      { status: 500, message: "boom directory" },
+    );
+    const e = await fails(s.mk({ brokerEnabled: true }).delete(inst.id, inst.id));
+    expect(e.message).toMatch(/boom directory/);
+    expect(s.row(inst.id)).toMatchObject({ state: "deleting", lease: null });
+    expect(s.fake.kvValues(s.regId).has(inst.id)).toBe(false);
+    expect(s.fake.kvValues(s.dirId).has(inst.id)).toBe(true);
+    expect(await s.p.status(inst.id)).toMatchObject({
+      registryDrift: { id: inst.id, kind: "missing_broker" },
+    });
+    const r = keep(await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id));
+    expect(r).toEqual({ id: inst.id, ok: true, state: "deleted" });
+    expect(s.fake.kvValues(s.regId).has(inst.id)).toBe(false);
+    expect(s.fake.kvValues(s.dirId).has(inst.id)).toBe(false);
+    expect((await s.p.status(inst.id)).registryDrift).toBeNull();
   });
 
   it("refuses to delete anything whose name isn't names(id)", async () => {
@@ -2027,6 +2076,7 @@ describe("fix round 3", () => {
       lease_until: null,
       leaseLive: false,
       sessionCut: null,
+      registryDrift: null,
     });
     s.db()
       .prepare(

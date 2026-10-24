@@ -80,6 +80,8 @@ export function platformNames(env: Env): {
   scheduler: string;
   inventory: string;
   broker: string;
+  directoryBroker: string;
+  directoryRegistry: string;
   dispatch: string;
   hosts: string;
   turnstile: string;
@@ -93,6 +95,11 @@ export function platformNames(env: Env): {
     scheduler: `${p}scheduler`,
     inventory: `${p}inventory`,
     broker: `${p}auth-broker`,
+    // P3 directory broker. It binds only directoryRegistry, a copy of the
+    // install registry that provision keeps: KV has no read-only binding, so
+    // it must never bind the sign-in registry above.
+    directoryBroker: `${p}directory-broker`,
+    directoryRegistry: `${p}directory-registry`,
     dispatch: `${p}dispatch`,
     // HOSTS KV (host -> install id): written by create/delete, read by dispatch.
     hosts: `${p}hosts`,
