@@ -83,8 +83,10 @@ const shareAudit = (
 const SAME_SHARE =
   "SELECT email, role, created_at AS createdAt FROM shares WHERE artifact_id = ? AND email = ? AND role = ?";
 const IS_USER = "select 1 as x from users where email = ? limit 1";
+// Only a lapsed guest (removed by the last-share cleanup): an admin or
+// directory removal clears guest_lapsed and stays removed (P3 T6).
 const REACTIVATE_GUEST =
-  "update users set status = 'active' where email = ? and role = 'guest' and status = 'removed'";
+  "update users set status = 'active', guest_lapsed = 0 where email = ? and role = 'guest' and status = 'removed' and guest_lapsed = 1";
 
 /**
  * Upsert (owner-only). Sharing only ever adds access; see accessLevel.
@@ -229,7 +231,7 @@ export async function deleteShare(
 // batch is atomic against a concurrent promotion or putShare.
 const UNSHARED_GUEST =
   "email = ?1 AND role = 'guest' AND NOT EXISTS (SELECT 1 FROM shares WHERE email = ?1)";
-const DEACTIVATE_GUEST = `UPDATE users SET status = 'removed', session_epoch = session_epoch + 1
+const DEACTIVATE_GUEST = `UPDATE users SET status = 'removed', guest_lapsed = 1, session_epoch = session_epoch + 1
    WHERE ${UNSHARED_GUEST} AND status = 'active' RETURNING id`;
 const DELETE_GUEST_TOKENS = `DELETE FROM tokens WHERE user_id IN
    (SELECT id FROM users WHERE ${UNSHARED_GUEST} AND status = 'removed')`;

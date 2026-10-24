@@ -59,6 +59,13 @@ const SHRINK: readonly RegExp[] = [
   /\.delete\((shares|identities)\)/,
   /delete from (shares|identities)\b/i,
   /status = 'removed'|status = 'suspended'|\bDEACTIVATE_GUEST\b/,
+  // Status writes, SQL or drizzle (the value may be bound). A bare
+  // `\bstatus\s*[:=]` flags every HTTP status, so it is scoped to a set.
+  /\bset\s+(?:[\w.]+\s*=\s*[^,;]*?,\s*)*status\s*=[^=]/i,
+  /\.set\(\{[^}]*\bstatus\s*:/,
+  // Token revocation, SQL or drizzle.
+  /update tokens set revoked_at/i,
+  /\.delete\(tokens\)/,
   // Role writes (a demotion narrows every space and agent grant).
   /\.set\(\{[^}]*\brole\s*:/,
   /\bset role = /i,
@@ -139,11 +146,34 @@ const isUnit = (n: ts.Node): n is ts.FunctionLikeDeclaration =>
 function unitsOf(rel: string, text: string): Map<string, string> {
   const out = new Map<string, string>();
   const src = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true);
+  // Module-level string constants (SQL kept outside the function): a unit
+  // that names one is scanned with its text appended.
+  const consts = new Map<string, string>();
+  for (const st of src.statements)
+    if (ts.isVariableStatement(st))
+      for (const d of st.declarationList.declarations)
+        if (
+          ts.isIdentifier(d.name) &&
+          d.initializer &&
+          (ts.isStringLiteral(d.initializer) ||
+            ts.isNoSubstitutionTemplateLiteral(d.initializer) ||
+            ts.isTemplateExpression(d.initializer))
+        )
+          consts.set(d.name.text, d.initializer.getText(src));
+  const withConsts = (code: string) => {
+    const used = [...consts].filter(([k]) =>
+      new RegExp(`\\b${k}\\b`).test(code),
+    );
+    return [code, ...used.map(([, v]) => v)].join("\n");
+  };
   const visit = (n: ts.Node): void => {
     if (isUnit(n) && n.body) {
       let key = `${rel}:${unitName(n, src)}`;
       while (out.has(key)) key += "'";
-      out.set(key, printer.printNode(ts.EmitHint.Unspecified, n, src));
+      out.set(
+        key,
+        withConsts(printer.printNode(ts.EmitHint.Unspecified, n, src)),
+      );
       // A nested function belongs to this unit: its code is in the text.
       return;
     }
@@ -221,6 +251,33 @@ describe("revocation lint (P3 T7)", () => {
     expect(check(unitsOf("y.ts", src), {}).missing).toEqual([
       "y.ts:Sync.apply",
       "y.ts:handler.run",
+    ]);
+  });
+
+  it("SQL in a module-level constant counts toward the function using it", () => {
+    const src = `
+      const SUSPEND = "update users set status = ?2 where id = ?1";
+      export async function quiet(env: Env, id: string) {
+        await env.DB.prepare(SUSPEND).bind(id, "suspended").run();
+      }`;
+    expect(check(unitsOf("c.ts", src), {}).missing).toEqual(["c.ts:quiet"]);
+  });
+
+  it("drizzle status writes and token deletes count", () => {
+    const src = `
+      export async function drop(id: string) {
+        await db.update(users).set({ status: "removed" }).where(eq(users.id, id));
+      }
+      export async function forget(id: string) {
+        await db.delete(tokens).where(eq(tokens.userId, id));
+      }
+      export async function revokeAll(env: Env, id: string) {
+        await env.DB.prepare("update tokens set revoked_at = ? where user_id = ?").bind(1, id).run();
+      }`;
+    expect(check(unitsOf("d.ts", src), {}).missing).toEqual([
+      "d.ts:drop",
+      "d.ts:forget",
+      "d.ts:revokeAll",
     ]);
   });
 

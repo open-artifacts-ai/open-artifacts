@@ -38,10 +38,12 @@ import {
 import { type AuditActor, audit } from "./audit.js";
 import { insertUser, toMember } from "./users.js";
 
+/** Active members only (the contract's default `status`). */
 export async function listMembers(env: Env): Promise<Member[]> {
   const rows = await getDb(env)
     .select()
     .from(users)
+    .where(eq(users.status, "active"))
     .orderBy(asc(users.createdAt), asc(users.id));
   return rows.map(toMember);
 }
@@ -104,11 +106,17 @@ const actorFor = (why: AuditReason): AuditActor =>
 // One statement per status change. A removed row stays removed, and the
 // instance owner is never deactivated. Any change ends every session
 // (session_epoch), so a cookie minted before a suspension never comes back.
-const SET_STATUS = `update users set status = ?2, session_epoch = session_epoch + 1
-  where id = ?1 and status <> ?2 and status <> 'removed' and role <> 'owner'`;
-// Only while the row now has the deactivated status (never the owner's PATs).
+// A lapsed guest (removed because their last share went, guest_lapsed = 1)
+// can still be removed for good: that clears guest_lapsed, so a later share
+// no longer revives them (putShare).
+const SET_STATUS = `update users set status = ?2, guest_lapsed = 0, session_epoch = session_epoch + 1
+  where id = ?1 and role <> 'owner'
+  and ((status <> ?2 and status <> 'removed')
+    or (?2 = 'removed' and status = 'removed' and guest_lapsed = 1))`;
+// Only for a deactivation, and only while the row now has that status (never
+// on an unsuspend or a no-op, never the owner's PATs).
 const REVOKE_PATS = `update tokens set revoked_at = ?2
-  where user_id = ?1 and revoked_at is null
+  where user_id = ?1 and revoked_at is null and ?3 <> 'active'
   and exists (select 1 from users where id = ?1 and status = ?3)`;
 const STATUS_OF = "select status from users where id = ?1";
 

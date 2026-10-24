@@ -5,6 +5,7 @@ import { newId, R } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
+import { mw } from "../src/auth/route-policy.js";
 import type { Env } from "../src/env.js";
 import { userActor } from "../src/services/audit.js";
 import {
@@ -12,6 +13,9 @@ import {
   removeMember,
   setUserStatus,
 } from "../src/services/members.js";
+import type { AppType } from "../src/routes/index.js";
+import { mountRoutes } from "../src/routes/index.js";
+import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser, getUserWithEpoch } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 import { callWorker, MCP_URL } from "./mcp-helpers.js";
@@ -364,5 +368,106 @@ describe("patchMember", () => {
       actor_kind: "user",
       actor_id: admin.userId,
     });
+  });
+});
+
+describe("review fixes (P3 T6)", () => {
+  it("a no-op unsuspend keeps the member's PAT; the owner's too", async () => {
+    const u = await mk("st-noop");
+    const { token } = await createPat(env, u.userId, "t");
+    await setUserStatus(env, u.userId, "active", "admin_restore");
+    expect((await api(app, R.me, token)).status).toBe(200);
+    const { token: ownerPat } = await createPat(env, owner.userId, "o");
+    await setUserStatus(env, owner.userId, "active", "admin_restore");
+    expect((await api(app, R.me, ownerPat)).status).toBe(200);
+  });
+
+  const asMember = async (id: string) => {
+    const m = await getUser(env, id);
+    if (!m) throw new Error("no member");
+    return m;
+  };
+
+  it("a guest removed by an admin stays removed when shared with again", async () => {
+    const sharer = await mk("st-g-sharer");
+    const by = await asMember(sharer.userId);
+    const g = await mk("st-g-rm", "guest");
+    const gEmail = (await asMember(g.userId)).email;
+    const art = newId();
+    await insertArtifact(art, sharer.userId, sharer.userId);
+    await putShare(env, by, art, { email: gEmail, role: "viewer" });
+    await removeMember(SPACES, g.userId, undefined, userActor(admin.userId));
+    const art2 = newId();
+    await insertArtifact(art2, sharer.userId, sharer.userId);
+    await putShare(env, by, art2, { email: gEmail, role: "viewer" });
+    expect(await status(g.userId)).toBe("removed");
+    expect(await getUser(env, g.userId)).toBeNull();
+    // Their cookie resolves to nobody: the private artifact is a 404.
+    expect((await api(app, R.artifact(art2), g.cookie)).status).toBe(404);
+    expect((await api(app, R.me, g.cookie)).status).toBe(401);
+  });
+
+  it("a lapsed guest comes back on a new share, unless an admin removes them", async () => {
+    const sharer = await mk("st-lapse-sharer");
+    const by = await asMember(sharer.userId);
+    const g = await mk("st-lapse", "guest");
+    const gEmail = (await asMember(g.userId)).email;
+    const a = newId();
+    await insertArtifact(a, sharer.userId, sharer.userId);
+    await putShare(env, by, a, { email: gEmail, role: "viewer" });
+    await deleteShare(env, by, a, gEmail);
+    expect(await status(g.userId)).toBe("removed");
+    await putShare(env, by, a, { email: gEmail, role: "viewer" });
+    expect(await status(g.userId)).toBe("active");
+    await deleteShare(env, by, a, gEmail);
+    // Lapsed, then removed for good by an admin: a share no longer revives.
+    await removeMember(SPACES, g.userId, undefined, userActor(admin.userId));
+    expect(await auditsFor(g.userId, "user.status")).toHaveLength(1);
+    await putShare(env, by, a, { email: gEmail, role: "viewer" });
+    expect(await status(g.userId)).toBe("removed");
+  });
+
+  it("no PAT is created for a user suspended after the request's user read", async () => {
+    const u = await mk("st-pat-race");
+    // After the policy gate's session read, before the handler's insert.
+    const suspendNow = mw(
+      async (c: { req: { method: string } }, next: () => Promise<void>) => {
+        if (c.req.method === "POST")
+          await setUserStatus(env, u.userId, "suspended", "admin_suspend");
+        await next();
+      },
+    );
+    const racing = createApp((a: AppType) => {
+      a.use(R.tokens, suspendNow);
+      mountRoutes(a);
+    });
+    const r = await api(racing, R.tokens, u.cookie, {
+      method: "POST",
+      body: { label: "late" },
+    });
+    expect(r.status).toBe(401);
+    expect(
+      await one<{ n: number }>(
+        "select count(*) n from tokens where user_id = ?",
+        u.userId,
+      ),
+    ).toEqual({ n: 0 });
+    await setUserStatus(env, u.userId, "active", "admin_restore");
+    await expect(createPat(env, u.userId, "x")).resolves.toBeDefined();
+    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
+    await expect(createPat(env, u.userId, "y")).rejects.toMatchObject({
+      code: "unauthorized",
+    });
+  });
+
+  it("GET members lists active members only", async () => {
+    const s = await mk("st-list-s");
+    const a = await mk("st-list-a");
+    await setUserStatus(env, s.userId, "suspended", "admin_suspend");
+    const r = await api(app, R.members, admin.cookie);
+    expect(r.status).toBe(200);
+    const ids = ((await r.json()) as { id: string }[]).map((m) => m.id);
+    expect(ids).toContain(a.userId);
+    expect(ids).not.toContain(s.userId);
   });
 });

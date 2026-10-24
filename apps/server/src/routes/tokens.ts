@@ -11,12 +11,20 @@ import { requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { tokens } from "../db/schema.js";
+import type { Env } from "../env.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { sha256Hex } from "../util/crypto.js";
 import type { AppType } from "./index.js";
 
 const MAX_ACTIVE = 50;
+
+const isActive = async (env: Env, id: string) =>
+  (await env.DB.prepare(
+    "select 1 as x from users where id = ? and status = 'active'",
+  )
+    .bind(id)
+    .first()) !== null;
 const iso = (ms: number) => new Date(ms).toISOString();
 
 export function mountTokens(app: AppType): void {
@@ -50,14 +58,20 @@ export function mountTokens(app: AppType): void {
     const id = newId();
     const token = newPat();
     const now = Date.now();
-    // Atomic cap: the count and the insert are one statement.
+    // Atomic cap: the count and the insert are one statement. Only while the
+    // user is still active: a suspension that committed after this request's
+    // user read already revoked their PATs, and this one must not outlive it
+    // into an unsuspend (P3 T6).
     const res = await c.env.DB.prepare(
       `insert into tokens (id, user_id, label, token_hash, created_at)
        select ?1, ?2, ?3, ?4, ?5
-       where (select count(*) from tokens where user_id = ?2 and revoked_at is null) < ?6`,
+       where (select count(*) from tokens where user_id = ?2 and revoked_at is null) < ?6
+         and exists (select 1 from users where id = ?2 and status = 'active')`,
     )
       .bind(id, user.id, label, await sha256Hex(token), now, MAX_ACTIVE)
       .run();
+    if (res.meta.changes === 0 && !(await isActive(c.env, user.id)))
+      throw new ApiError("unauthorized", "Sign in again");
     if (res.meta.changes === 0)
       throw new ApiError(
         "bad_request",
