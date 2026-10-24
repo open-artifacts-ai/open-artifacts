@@ -165,6 +165,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20261018.1
         version: 5.20261018.1
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
       '@types/node':
         specifier: ^20.19.43
         version: 20.19.43

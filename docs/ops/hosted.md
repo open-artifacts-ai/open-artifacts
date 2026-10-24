@@ -177,8 +177,38 @@ Public values only. The client secrets live in the user's password manager until
 | Env | Project | Client | Client id | Redirect URI |
 |---|---|---|---|---|
 | staging | `open-artifacts-staging` | Sign-in (used by the broker) | `1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com` | `https://auth.open-artifacts-staging.app/google/callback` |
-| staging | `open-artifacts-staging` | Directory (P3 directory sync; not on the broker, P3 T12 decides where it lives) | `1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com` | none |
+| staging | `open-artifacts-staging` | Directory (P3 directory sync; on `oa-<p>-directory-broker`, not on the auth broker) | `1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com` | `https://directory.open-artifacts-staging.app/google/directory/callback` |
 | prod | not created yet | | | |
+
+## Directory broker: one-time deploy per env (gated)
+
+`apps/directory-broker` is the hosted Google Directory consent broker on `directory.<app zone>`. It holds the Directory client secret; its registry (`DIRECTORY_REGISTRY`, public keys only) is read, never written, and it never binds the auth broker's `BROKER_REGISTRY`, so a compromised directory Worker can't plant sign-in trust anchors. Its config has no routes, custom domains or `workers.dev`, and no top-level name or `main`, so a deploy without `--env` is refused, even with `--name` (tests pin all of it). **Always deploy through the wrapper, and never pass an entry point.** Observability (Workers Logs) is off in each env and must stay off, because it records full URLs and the callback URL carries the OAuth code and state. **The Manager and the user run this by hand; CI never does.**
+
+| Env | Worker | Registry KV title | Config placeholder | Ratelimit ids |
+|---|---|---|---|---|
+| staging | `oa-s-directory-broker` | `oa-s-directory-registry` | `{{DIRECTORY_REGISTRY_ID_STAGING}}` | 1121, 1122 |
+| prod | `oa-p-directory-broker` | `oa-p-directory-registry` | `{{DIRECTORY_REGISTRY_ID_PROD}}` | 1131, 1132 |
+
+Prod's `GOOGLE_DIRECTORY_CLIENT_ID` is the placeholder `{{GOOGLE_DIRECTORY_CLIENT_ID_PROD}}` until a prod Directory client exists, so a prod deploy is refused by step 3 until then (pass the id as `GOOGLE_DIRECTORY_CLIENT_ID_PROD`). The Worker's vars are exactly `GOOGLE_DIRECTORY_CLIENT_ID` and `DIRECTORY_ORIGIN`.
+
+Set `ENV`, `P`, `APP` and `UP` as in the dispatch section. Then, per env:
+
+1. Create the registry KV if provisioning hasn't (`pnpm exec wrangler kv namespace create oa-$P-directory-registry`; skip if `wrangler kv namespace list` shows it).
+2. Build from a clean checkout of the reviewed commit, as in the dispatch section, and run `pnpm --filter @oa/directory-broker test`.
+3. Deploy with the provisioning token, through the wrapper (see the auth broker's step 3):
+   ```sh
+   REG_ID=$(pnpm exec wrangler kv namespace list | jq -r --arg t "oa-$P-directory-registry" '.[] | select(.title == $t) | .id')
+   DIRECTORY_REGISTRY_ID="$REG_ID" scripts/ops/deploy-platform-worker.sh directory-broker "$ENV"   # prod also needs GOOGLE_DIRECTORY_CLIENT_ID_PROD
+   ```
+   The deploy output must name `oa-$P-directory-broker` with `DIRECTORY_REGISTRY`, `RL_DIRECTORY_IP`, `RL_DIRECTORY_INSTALL` and the two vars, and no routes or workers.dev URL.
+4. Set the secrets **after** the Worker exists, never before (`wrangler secret put` on a missing Worker creates one). Never echo them:
+   ```sh
+   cd apps/directory-broker
+   pnpm exec wrangler secret put GOOGLE_DIRECTORY_CLIENT_SECRET --env "$ENV"   # paste from the password manager
+   openssl rand -base64 32 | pnpm exec wrangler secret put DIRECTORY_STATE_KEY --env "$ENV"
+   ```
+5. The route, added in the same gated zone-token step as the dispatch and auth broker routes, on the app zone only: `POST /zones/<zone_id>/workers/routes` with `{"pattern": "directory.$APP/*", "script": "oa-$P-directory-broker"}`. The most specific matching route wins, so this beats the `*.$APP/*` dispatch wildcard (see [How routes work](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior)). `directory.$APP` is covered by the wildcard DNS record from the dispatch step.
+6. Check: `curl -sS -o /dev/null -w '%{http_code}\n' "https://directory.$APP/"` must be the Directory broker's answer, not dispatch's plain `404 Not found` with body `Not found`.
 
 ## Nightly scheduler: one-time deploy per env (Task 7, gated)
 

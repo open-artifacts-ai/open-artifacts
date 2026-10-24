@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { root, sandbox } from "../ci/stubs.ts";
 
-// The platform Worker deploy wrapper: an allowlisted app and one env, always from apps/auth-broker,
+// The platform Worker deploy wrapper: an allowlisted app and one env, always from the app's dir,
 // this env's placeholders filled into a copy that is removed on exit, and
 // exactly `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env <env>`.
 const SCRIPT = join(root, "scripts/ops/deploy-platform-worker.sh");
@@ -102,5 +102,56 @@ describe("deploy-platform-worker.sh", () => {
     });
     expect(r.code).toBe(1);
     expect(r.log).toEqual([]);
+  });
+
+  describe("directory-broker", () => {
+    const DIR = join(root, "apps/directory-broker");
+    const DCLIENT = "654321-fedcba.apps.googleusercontent.com";
+
+    it("staging: deploys from apps/directory-broker with exact argv and fills its registry id", () => {
+      const r = run(["directory-broker", "staging"], {
+        DIRECTORY_REGISTRY_ID: REG,
+      });
+      expect(r.code).toBe(0);
+      expect(r.log).toEqual([
+        "pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env staging",
+        DIR,
+        "copy-present",
+      ]);
+      const snap = readFileSync(r.snap, "utf8");
+      expect(snap).toContain(`"id": "${REG}"`);
+      expect(snap).not.toContain("{{DIRECTORY_REGISTRY_ID_STAGING}}");
+      expect(existsSync(join(DIR, "wrangler.deploy.jsonc"))).toBe(false);
+    });
+
+    it("prod: fills the registry id and the Directory client id", () => {
+      const r = run(["directory-broker", "prod"], {
+        DIRECTORY_REGISTRY_ID: REG,
+        GOOGLE_DIRECTORY_CLIENT_ID_PROD: DCLIENT,
+      });
+      expect(r.code).toBe(0);
+      const snap = readFileSync(r.snap, "utf8");
+      expect(snap).toContain(DCLIENT);
+      expect(snap).not.toMatch(/\{\{[A-Z0-9_]*_PROD\}\}/);
+    });
+
+    it("refuses a missing registry id, the auth broker's variable and an unfilled prod client", () => {
+      for (const [args, env] of [
+        [["directory-broker", "staging"], {}],
+        [["directory-broker", "staging"], { BROKER_REGISTRY_ID: REG }],
+        [["directory-broker", "prod"], { DIRECTORY_REGISTRY_ID: REG }],
+        [
+          ["directory-broker", "prod"],
+          {
+            DIRECTORY_REGISTRY_ID: REG,
+            GOOGLE_DIRECTORY_CLIENT_ID_PROD: "x/y&z",
+          },
+        ],
+      ] as [string[], Record<string, string>][]) {
+        const r = run(args, env);
+        expect(r.code).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
   });
 });

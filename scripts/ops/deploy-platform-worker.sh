@@ -7,6 +7,7 @@
 # exit. Values are never echoed.
 # Usage: <PLACEHOLDER VARS> scripts/ops/deploy-platform-worker.sh <app> staging|prod
 #   auth-broker: BROKER_REGISTRY_ID=<32 hex> [GOOGLE_CLIENT_ID_PROD=<client id>, prod]
+#   directory-broker: DIRECTORY_REGISTRY_ID=<32 hex> [GOOGLE_DIRECTORY_CLIENT_ID_PROD=<client id>, prod]
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -30,6 +31,7 @@ google_id='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
 # The allowlist: app -> dir, plus the placeholders filled below.
 case "$app" in
   auth-broker) dir=apps/auth-broker ;;
+  directory-broker) dir=apps/directory-broker ;;
   *)
     echo "unknown app: not in the allowlist" >&2
     exit 2
@@ -59,6 +61,13 @@ case "$app" in
     # unset, the check below refuses.
     if [ "$env" = prod ] && [ -n "${GOOGLE_CLIENT_ID_PROD:-}" ]; then
       fill GOOGLE_CLIENT_ID_PROD "$GOOGLE_CLIENT_ID_PROD" "$google_id"
+    fi
+    ;;
+  directory-broker)
+    fill "DIRECTORY_REGISTRY_ID_${up}" "${DIRECTORY_REGISTRY_ID:-}" "$hex32"
+    # Same as the auth broker: no prod Directory client yet, so unset refuses.
+    if [ "$env" = prod ] && [ -n "${GOOGLE_DIRECTORY_CLIENT_ID_PROD:-}" ]; then
+      fill GOOGLE_DIRECTORY_CLIENT_ID_PROD "$GOOGLE_DIRECTORY_CLIENT_ID_PROD" "$google_id"
     fi
     ;;
 esac
