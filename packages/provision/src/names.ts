@@ -135,6 +135,8 @@ export interface RegistryEntry {
 
 /** The registry KV key of an install: exactly what the broker reads. */
 export function registryKey(id: string): string {
+  if (!isInstallId(id))
+    throw new Error(`registry key: ${JSON.stringify(id)} is not an install id`);
   return `install:${id}`;
 }
 
