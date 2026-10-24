@@ -659,7 +659,9 @@ describe("upgrade", () => {
     const inst = keep(await p.create(input()));
     const raw = s.fake.kvValues(s.regId).get(inst.id) as string;
     expect(raw).toBeTruthy();
-    const up = keep(await s.mk({ brokerEnabled: true }).upgrade(inst.id, "0.24.0"));
+    const up = keep(
+      await s.mk({ brokerEnabled: true }).upgrade(inst.id, "0.24.0"),
+    );
     expect(up).toMatchObject({ ok: true });
     expect(s.fake.kvValues(s.regId).get(inst.id)).toBe(raw);
     expect(s.fake.kvValues(s.dirId).get(inst.id)).toBe(raw);
@@ -1422,16 +1424,16 @@ describe("delete", () => {
           : p.includes(`/namespaces/${s.dirId}/values/`)
             ? "directory"
             : /\/scripts\//.test(p)
-            ? "script"
-            : /\/storage\/kv\/namespaces\/[^/]+$/.test(p)
-              ? "kv"
-              : /\/r2\/buckets\/[^/]+\/objects\//.test(p)
-                ? "r2-object"
-                : /\/r2\/buckets\/[^/]+$/.test(p)
-                  ? "r2"
-                  : /\/d1\/database\/[^/]+$/.test(p)
-                    ? "d1"
-                    : p,
+              ? "script"
+              : /\/storage\/kv\/namespaces\/[^/]+$/.test(p)
+                ? "kv"
+                : /\/r2\/buckets\/[^/]+\/objects\//.test(p)
+                  ? "r2-object"
+                  : /\/r2\/buckets\/[^/]+$/.test(p)
+                    ? "r2"
+                    : /\/d1\/database\/[^/]+$/.test(p)
+                      ? "d1"
+                      : p,
       );
     expect(seq).toEqual([
       "registry",
@@ -1507,9 +1509,11 @@ describe("delete", () => {
     );
     s.fake.inject(
       (m, q) => m === "DELETE" && q.includes(`/namespaces/${s.dirId}/values/`),
-      { status: 500, message: "boom directory" },
+      { status: 400, message: "boom directory" },
     );
-    const e = await fails(s.mk({ brokerEnabled: true }).delete(inst.id, inst.id));
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).delete(inst.id, inst.id),
+    );
     expect(e.message).toMatch(/boom directory/);
     expect(s.row(inst.id)).toMatchObject({ state: "deleting", lease: null });
     expect(s.fake.kvValues(s.regId).has(inst.id)).toBe(false);
@@ -1517,7 +1521,9 @@ describe("delete", () => {
     expect(await s.p.status(inst.id)).toMatchObject({
       registryDrift: { id: inst.id, kind: "missing_broker" },
     });
-    const r = keep(await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id));
+    const r = keep(
+      await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id),
+    );
     expect(r).toEqual({ id: inst.id, ok: true, state: "deleted" });
     expect(s.fake.kvValues(s.regId).has(inst.id)).toBe(false);
     expect(s.fake.kvValues(s.dirId).has(inst.id)).toBe(false);

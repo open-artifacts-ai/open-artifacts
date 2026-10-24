@@ -1063,21 +1063,29 @@ describe("WfpProvisioner.create", () => {
 
     it("H-DR: a failure between the broker and directory writes resumes to both", async () => {
       const s = setup({ brokerEnabled: true });
-      // The last directory put (after the final broker put) fails.
+      // The final directory put (right after the final broker put) fails.
       s.fake.inject(
         (m, p) => m === "PUT" && p.includes(`/namespaces/${s.dirId}/values/`),
-        { status: 500, skip: 1 },
+        { status: 400, skip: 1 },
       );
-      await fails(s.p.create(input()));
+      const e = await fails(s.p.create(input()));
+      expect(e.message).toContain(`/namespaces/${s.dirId}/values/`);
       const [row] = s.rows();
+      expect(row.state).toBe("creating");
+      expect(row.lease).toBeNull();
+      expect(row.broker_kid).toMatch(/^[A-Za-z0-9_-]{16}$/);
       const reg = s.fake.kvValues(s.regId).get(row.id) as string;
       expect(JSON.parse(reg).keys).toHaveLength(1);
-      expect(s.fake.kvValues(s.dirId).get(row.id)).not.toBe(reg);
+      // Stand in for a copy that kept an older value (e.g. mid-rotation).
+      s.fake
+        .kvValues(s.dirId)
+        .set(row.id, reg.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
       expect(await s.p.status(row.id)).toMatchObject({
         registryDrift: { id: row.id, kind: "mismatch" },
       });
       const inst = await s.p.create(input());
       expect(inst.id).toBe(row.id);
+      // The broker entry was healthy, so it stays; only the copy is rewritten.
       expect(s.fake.kvValues(s.regId).get(row.id)).toBe(reg);
       expect(s.fake.kvValues(s.dirId).get(row.id)).toBe(reg);
       expect(await s.p.status(row.id)).toMatchObject({ registryDrift: null });
@@ -1087,7 +1095,7 @@ describe("WfpProvisioner.create", () => {
       const s = setup({ brokerEnabled: true });
       s.fake.inject(
         (m, p) => m === "PUT" && p.includes(`/namespaces/${s.dirId}/values/`),
-        { status: 500 },
+        { status: 400 },
       );
       await fails(s.p.create(input()));
       const [row] = s.rows();

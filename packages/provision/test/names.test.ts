@@ -50,9 +50,7 @@ describe("provision names", () => {
     expect(platformNames("prod").turnstile).toBe("oa-p-turnstile");
     expect(platformNames("prod").db).toBe("oa-p-platform");
     expect(platformNames("prod").hosts).toBe("oa-p-hosts");
-    expect(platformNames("prod").directoryBroker).toBe(
-      "oa-p-directory-broker",
-    );
+    expect(platformNames("prod").directoryBroker).toBe("oa-p-directory-broker");
     expect(platformNames("prod").directoryRegistry).toBe(
       "oa-p-directory-registry",
     );

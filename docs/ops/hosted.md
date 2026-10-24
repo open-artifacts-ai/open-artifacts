@@ -294,13 +294,34 @@ A failed or skipped alert never changes the nightly lines above.
 2. Generate the Ed25519 keypair locally and pipe the private key straight into `RELEASE_APP_ID=<id> scripts/ops/hosted-set-signing-key.sh <env>` (never onto disk). The script runs the `gh api` reads above and refuses the upload unless every control holds; only then does it `gh secret set RELEASE_SIGNING_KEY --env hosted-<env>` from stdin.
 3. Put the public key (JWK `x`) in both `packages/provision/src/internal/gates.ts` and `scripts/ci/release-pubkeys.mjs` in one PR (a test pins them equal); flip `PROD_UNLOCKED` there for prod.
 
+### Platform resource names (per env)
+
+Every name carries the env prefix `oa-<p>-` (`oa-s-` staging, `oa-p-` prod), and provision refuses to touch a name without it. The source is `platformNames` in `packages/provision/src/names.ts`.
+
+| Name | What it is |
+| --- | --- |
+| `oa-<p>-platform` | Platform D1 (installs, hosts, audit, floor cache) |
+| `oa-<p>-releases` | R2 bucket of signed releases and floors |
+| `oa-<p>-hosts` | HOSTS KV (host to install id), read by dispatch |
+| `oa-<p>-broker-registry` | Install registry KV, bound only by the sign-in broker |
+| `oa-<p>-directory-registry` | Copy of the install registry, bound only by the directory broker (`DIRECTORY_REGISTRY`) |
+| `oa-<p>-auth-broker` | P2 sign-in broker Worker |
+| `oa-<p>-directory-broker` | P3 directory broker Worker |
+| `oa-<p>-dispatch` | Dispatch Worker |
+| `oa-<p>-scheduler` | Scheduler Worker |
+| `oa-<p>-inventory` | Inventory |
+| `oa-<p>-turnstile` | The env's one Turnstile widget |
+
+Why a copy: Workers KV has no read-only binding, so a directory broker bound to `oa-<p>-broker-registry` could plant a sign-in trust anchor if it were compromised. Provision writes each install's entry to the broker registry first, then the identical value to the directory registry, in the same step; delete removes both. `WfpProvisioner.status(id)` reports drift per install in `registryDrift` (`missing_broker`, `missing_directory` or `mismatch`) and never repairs it; rerun `create` (or `delete`) to finish.
+
 ### First-create checklist (per env)
 
-1. Apply every platform D1 migration to `oa-<p>-platform`, in order: `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write.
-2. Key ceremony done: `RELEASE_PUBKEY[env]` set in gates.ts (and `PROD_UNLOCKED` for prod).
+1. Create the KV namespaces `oa-<p>-broker-registry` and `oa-<p>-directory-registry` side by side. With the broker on, create refuses before any write if either is missing.
+2. Apply every platform D1 migration to `oa-<p>-platform`, in order: `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write.
+3. Key ceremony done: `RELEASE_PUBKEY[env]` set in gates.ts (and `PROD_UNLOCKED` for prod).
    - Prod, before FinQore go-live: add the user back as a required reviewer on `hosted-prod` (admin bypass stays off), so every prod signing run waits for approval again.
-3. Sign the env's first floor with the `hosted-floor` workflow (dispatch on `main`: `env`, `seq` >= `FLOOR_MIN_SEQ[env]`, `min_version`, `revoked`), download its `floor-<env>-<seq>` artifact, and `publishFloor` it.
-4. `publishRelease` the signed tar and `.sig.json` from the GitHub release for each variant the env takes.
+4. Sign the env's first floor with the `hosted-floor` workflow (dispatch on `main`: `env`, `seq` >= `FLOOR_MIN_SEQ[env]`, `min_version`, `revoked`), download its `floor-<env>-<seq>` artifact, and `publishFloor` it.
+5. `publishRelease` the signed tar and `.sig.json` from the GitHub release for each variant the env takes.
 
 ### Release checklist: revoking a version or raising the floor
 
