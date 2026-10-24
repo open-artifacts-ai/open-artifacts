@@ -15,6 +15,7 @@ import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import {
+  clientVersionOf,
   redirectInfo,
   resetTouchMemo,
   touchGrant,
@@ -38,13 +39,17 @@ describe("redirectInfo: from the redirect URI only", () => {
     ["http://127.0.0.1:8080/cb", { redirectKind: "computer" }],
     ["http://[::1]:9000/cb", { redirectKind: "computer" }],
     ["https://localhost/cb", { redirectKind: "computer" }],
-    ["http://app.localhost/cb", { redirectKind: "computer" }],
-    ["com.example.app:/oauth", { redirectKind: "computer" }],
+    ["http://127.9.8.7/cb", { redirectKind: "computer" }],
+    // Only loopback proves a local program: custom schemes and *.localhost
+    // names give neither field.
+    ["http://app.localhost/cb", {}],
+    ["com.example.app:/cb", {}],
+    ["myapp://cb", {}],
+    ["cursor://anysphere.cursor-mcp/oauth", {}],
     // Unparseable: neither field (a hosted host would be shown as verified).
     ["not a uri", {}],
     ["", {}],
     ["https://", {}],
-    ["cursor://anysphere.cursor-mcp/oauth", { redirectKind: "computer" }],
     [
       "https://Claude.AI/api/mcp/auth_callback",
       { redirectKind: "hosted", redirectHost: "claude.ai" },
@@ -355,6 +360,44 @@ describe("grant usage", () => {
       at: t0 + 70_000,
       v: "2.0.0",
     });
+  });
+
+  it("a clientInfo.version with a bidi override is stored and listed without it", async () => {
+    const { member, accessToken, card } = await grant(`card-bidi-${tag}@x.com`);
+    const c = await connect(accessToken, {
+      clientInfo: { name: "x", version: "1.0\u202e.9\u2066" },
+    });
+    await c.listTools();
+    await c.close();
+    expect((await usageRow(card.grantId))?.v).toBe("1.0.9");
+    // Even a row written before the strip is cleaned at the list boundary.
+    await env.DB.prepare(
+      "update agent_grants set client_version = ? where grant_id = ?",
+    )
+      .bind("2.0\u202e", card.grantId)
+      .run();
+    expect((await clients(member.cookie))[0]?.clientVersion).toBe("2.0");
+    expect(clientVersionOf("\u202e\u200b")).toBeNull();
+  });
+
+  it("listing deletes usage rows of grants no longer in KV", async () => {
+    const { member, card } = await grant(`card-orphan-${tag}@x.com`);
+    await touchGrant(env, card.grantId, member.userId, "1", Date.now());
+    await env.DB.prepare(
+      "insert into agent_grants (grant_id, user_id, label) values (?, ?, 'gone')",
+    )
+      .bind(`orphan-${tag}`, member.userId)
+      .run();
+    const other = await login(`card-orphan2-${tag}@x.com`);
+    await env.DB.prepare(
+      "insert into agent_grants (grant_id, user_id, label) values (?, ?, 'theirs')",
+    )
+      .bind(`other-${tag}`, other.userId)
+      .run();
+    expect(await clients(member.cookie)).toHaveLength(1);
+    expect(await usageRow(`orphan-${tag}`)).toBeNull();
+    expect(await usageRow(card.grantId)).not.toBeNull();
+    expect(await usageRow(`other-${tag}`)).not.toBeNull();
   });
 
   it("the per-isolate memo skips D1 within the minute", async () => {

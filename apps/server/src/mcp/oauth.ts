@@ -12,6 +12,7 @@ import {
   OAuthClientPatchSchema,
   R,
   RedirectKindSchema,
+  stripNameControls,
 } from "@oa/shared";
 import type { Context } from "hono";
 import { callerOf, capOfCaller, requireUser } from "../auth/authz.js";
@@ -30,6 +31,7 @@ import {
   dropGrantUsage,
   type GrantIdentity,
   grantUsage,
+  pruneGrantUsage,
   redirectInfo,
   setGrantLabel,
   touchGrant,
@@ -552,16 +554,27 @@ const notFound = () => new ApiError("not_found", "Not found");
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
-/** The caller's grants (KV), each with its usage row (D1), newest first. */
-async function listClients(env: Env, user: Member): Promise<OAuthClient[]> {
-  const { items } = await oauthApi(env).listUserGrants(user.id, {
+/**
+ * The caller's grants (KV), each with its usage row (D1), newest first. With
+ * `ctx`, and when the listing is complete (one page), usage rows of grants no
+ * longer in KV are deleted in waitUntil (pruneGrantUsage, one statement).
+ */
+async function listClients(
+  env: Env,
+  user: Member,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<OAuthClient[]> {
+  const { items, cursor } = await oauthApi(env).listUserGrants(user.id, {
     limit: MAX_GRANTS_LISTED,
   });
-  const usage = await grantUsage(
-    env,
-    user.id,
-    items.map((g) => g.id),
-  );
+  const ids = items.map((g) => g.id);
+  const usage = await grantUsage(env, user.id, ids);
+  if (ctx && !cursor && items.length < MAX_GRANTS_LISTED)
+    ctx.waitUntil(
+      pruneGrantUsage(env, user.id, ids).catch((e) =>
+        logError("grant_usage_prune_failed", e),
+      ),
+    );
   return items
     .map((g): OAuthClient => {
       const m = (g.metadata ?? {}) as GrantMetadata;
@@ -570,7 +583,7 @@ async function listClients(env: Env, user: Member): Promise<OAuthClient[]> {
       const u = usage.get(g.id);
       return {
         grantId: g.id,
-        clientName: clientNameOf(m.clientName, g.clientId),
+        clientName: stripNameControls(clientNameOf(m.clientName, g.clientId)),
         createdAt: iso(g.createdAt * 1000),
         ...(u?.label ? { label: u.label } : {}),
         ...(kind.success ? { redirectKind: kind.data } : {}),
@@ -579,7 +592,9 @@ async function listClients(env: Env, user: Member): Promise<OAuthClient[]> {
           : {}),
         ...(from.success ? { approvedFrom: from.data } : {}),
         ...(u?.lastUsedAt != null ? { lastUsedAt: iso(u.lastUsedAt) } : {}),
-        ...(u?.clientVersion ? { clientVersion: u.clientVersion } : {}),
+        ...(clientVersionOf(u?.clientVersion)
+          ? { clientVersion: clientVersionOf(u?.clientVersion) as string }
+          : {}),
         ...(from.success
           ? { versionsPublished: u?.versionsPublished ?? 0 }
           : {}),
@@ -607,7 +622,7 @@ export function mountOAuth(app: AppType): void {
   app.post(OAUTH.authorize, decideConsent);
 
   app.get(R.oauthClients, async (c) =>
-    c.json(await listClients(c.env, requireUser(c))),
+    c.json(await listClients(c.env, requireUser(c), c.executionCtx)),
   );
 
   // Not for a capped caller (404): DELETE stays open so they can revoke.

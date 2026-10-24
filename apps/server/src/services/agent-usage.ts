@@ -1,9 +1,10 @@
-import type {
-  AgentBrowser,
-  AgentOs,
-  AgentRef,
-  ApprovedFrom,
-  RedirectKind,
+import {
+  type AgentBrowser,
+  type AgentOs,
+  type AgentRef,
+  type ApprovedFrom,
+  type RedirectKind,
+  stripNameControls,
 } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
@@ -35,10 +36,14 @@ const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
 
 /**
  * Where a redirect URI points, from the validated redirect_uri of this
- * authorization (never client metadata such as client_uri or logo_uri):
- * a loopback host or a custom scheme is `computer`; https (or http to a
- * non-loopback host) is `hosted` with its host. An unparseable URI gives
- * neither field: a hosted host is shown as verified, so never claim one.
+ * authorization (never client metadata such as client_uri or logo_uri).
+ * The card shows both as verified, so each needs proof:
+ * - `computer` only for a loopback host (127.0.0.0/8, [::1], localhost):
+ *   only loopback proves a local program;
+ * - `hosted` with its host for https (or http) to any other host, except a
+ *   `*.localhost` name, which is neither;
+ * - neither field for a custom scheme (any app can claim one) or an
+ *   unparseable URI.
  */
 export function redirectInfo(
   uri: string,
@@ -49,10 +54,9 @@ export function redirectInfo(
   } catch {
     return {};
   }
-  if (u.protocol !== "https:" && u.protocol !== "http:")
-    return { redirectKind: "computer" };
-  if (LOOPBACK.test(u.hostname) || u.hostname.endsWith(".localhost"))
-    return { redirectKind: "computer" };
+  if (u.protocol !== "https:" && u.protocol !== "http:") return {};
+  if (LOOPBACK.test(u.hostname)) return { redirectKind: "computer" };
+  if (u.hostname.toLowerCase().endsWith(".localhost") || !u.hostname) return {};
   return { redirectKind: "hosted", redirectHost: u.hostname.toLowerCase() };
 }
 
@@ -132,9 +136,15 @@ export async function touchGrant(
   return res.meta.rows_written;
 }
 
-/** The client version as stored (bounded, like AgentRef.version). */
-export const clientVersionOf = (v: unknown): string | null =>
-  typeof v === "string" && v ? v.slice(0, 100) : null;
+/**
+ * The client version as stored and shown: control, bidi and zero-width
+ * characters stripped (a U+202E can't fake text on the card), trimmed,
+ * bounded like AgentRef.version.
+ */
+export const clientVersionOf = (v: unknown): string | null => {
+  if (typeof v !== "string") return null;
+  return stripNameControls(v).trim().slice(0, 100) || null;
+};
 
 // ---------------------------------------------------------- publish count
 
@@ -216,6 +226,25 @@ export async function setGrantLabel(
      where agent_grants.user_id = excluded.user_id`,
   )
     .bind(grantId, userId, label)
+    .run();
+}
+
+/**
+ * Deletes the user's usage rows whose grant is no longer in KV (revoked by
+ * revokeAllGrants, expired, or removed elsewhere): one statement. Only call
+ * it with the user's complete grant list.
+ */
+export async function pruneGrantUsage(
+  env: Env,
+  userId: string,
+  liveGrantIds: string[],
+): Promise<void> {
+  await stmt(
+    env.DB,
+    `delete from agent_grants where user_id = ?
+       and grant_id not in (select value from json_each(?))`,
+  )
+    .bind(userId, JSON.stringify(liveGrantIds))
     .run();
 }
 
