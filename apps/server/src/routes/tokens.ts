@@ -99,8 +99,12 @@ export function mountTokens(app: AppType): void {
   });
 
   // The caller's own live token only (else 404); a label of 1-80 characters.
+  // Not for a capped caller (404): DELETE stays open so they can revoke.
   app.patch("/api/v1/tokens/:id", async (c) => {
     const user = requireUser(c);
+    // Renaming is for callers who may hold tokens: a capped caller only revokes.
+    if (!orgCan(user, "tokens.create"))
+      throw new ApiError("not_found", "Not found");
     const { label } = await jsonBody(c, TokenPatchSchema);
     const [row] = await getDb(c.env)
       .update(tokens)

@@ -25,7 +25,8 @@ export const USE_WRITE_MS = 60_000;
 
 /** What the consent handler records in the grant's metadata. */
 export type GrantIdentity = {
-  redirectKind: RedirectKind;
+  /** Absent when the redirect URI can't be parsed. */
+  redirectKind?: RedirectKind;
   redirectHost?: string;
   approvedFrom: ApprovedFrom;
 };
@@ -36,7 +37,8 @@ const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
  * Where a redirect URI points, from the validated redirect_uri of this
  * authorization (never client metadata such as client_uri or logo_uri):
  * a loopback host or a custom scheme is `computer`; https (or http to a
- * non-loopback host) is `hosted` with its host.
+ * non-loopback host) is `hosted` with its host. An unparseable URI gives
+ * neither field: a hosted host is shown as verified, so never claim one.
  */
 export function redirectInfo(
   uri: string,
@@ -45,7 +47,7 @@ export function redirectInfo(
   try {
     u = new URL(uri);
   } catch {
-    return { redirectKind: "computer" };
+    return {};
   }
   if (u.protocol !== "https:" && u.protocol !== "http:")
     return { redirectKind: "computer" };
@@ -81,8 +83,8 @@ export function uaFamily(ua: string | null | undefined): ApprovedFrom {
 
 /**
  * Last use and client version, as one conditional upsert: it changes the row
- * only when the stored use is over a minute old or the version changed, so
- * a burst of requests writes at most once a minute.
+ * only when the stored use is over a minute old, so a burst of requests
+ * writes at most once a minute. A new client version rides on that write.
  */
 const TOUCH_GRANT = `insert into agent_grants (grant_id, user_id, last_used_at, client_version)
   values (?1, ?2, ?3, ?4)
@@ -91,11 +93,12 @@ const TOUCH_GRANT = `insert into agent_grants (grant_id, user_id, last_used_at, 
     client_version = coalesce(excluded.client_version, agent_grants.client_version)
   where agent_grants.user_id = excluded.user_id
     and (agent_grants.last_used_at is null
-      or agent_grants.last_used_at <= excluded.last_used_at - ${USE_WRITE_MS}
-      or (excluded.client_version is not null
-        and excluded.client_version is not agent_grants.client_version))`;
+      or agent_grants.last_used_at <= excluded.last_used_at - ${USE_WRITE_MS})`;
 
-/** Per isolate: the last touch sent per grant, so most requests skip D1 entirely. */
+/**
+ * Per isolate: when the last touch was sent per grant (so most requests skip
+ * D1 entirely) and the latest version seen since, sent with the next write.
+ */
 const touched = new Map<string, { at: number; version: string | null }>();
 const TOUCHED_MAX = 1000;
 
@@ -104,8 +107,9 @@ export const resetTouchMemo = () => touched.clear();
 
 /**
  * Records a grant's use: nothing when this isolate already sent one within
- * the minute with the same version, else the conditional upsert. Run it in
- * waitUntil, off the request. Returns D1 rows written (0 when skipped).
+ * the minute (a new version waits for the next minute's write), else the
+ * conditional upsert. Run it in waitUntil, off the request. Returns D1 rows
+ * written (0 when skipped).
  */
 export async function touchGrant(
   env: Env,
@@ -115,19 +119,15 @@ export async function touchGrant(
   now = Date.now(),
 ): Promise<number> {
   const seen = touched.get(grantId);
-  if (
-    seen &&
-    seen.at > now - USE_WRITE_MS &&
-    (clientVersion === null || clientVersion === seen.version)
-  )
+  const version = clientVersion ?? seen?.version ?? null;
+  if (seen && seen.at > now - USE_WRITE_MS) {
+    seen.version = version;
     return 0;
+  }
   if (touched.size >= TOUCHED_MAX) touched.clear();
-  touched.set(grantId, {
-    at: seen && seen.at > now - USE_WRITE_MS ? seen.at : now,
-    version: clientVersion ?? seen?.version ?? null,
-  });
+  touched.set(grantId, { at: now, version });
   const res = await stmt(env.DB, TOUCH_GRANT)
-    .bind(grantId, userId, now, clientVersion)
+    .bind(grantId, userId, now, version)
     .run();
   return res.meta.rows_written;
 }

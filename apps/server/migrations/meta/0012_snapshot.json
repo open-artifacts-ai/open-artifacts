@@ -51,7 +51,13 @@
           "default": 0
         }
       },
-      "indexes": {},
+      "indexes": {
+        "agent_grants_user_idx": {
+          "name": "agent_grants_user_idx",
+          "columns": ["user_id"],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {
         "agent_grants_user_id_users_id_fk": {
           "name": "agent_grants_user_id_users_id_fk",

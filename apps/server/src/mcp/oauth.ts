@@ -580,7 +580,7 @@ async function listClients(env: Env, user: Member): Promise<OAuthClient[]> {
         ...(from.success ? { approvedFrom: from.data } : {}),
         ...(u?.lastUsedAt != null ? { lastUsedAt: iso(u.lastUsedAt) } : {}),
         ...(u?.clientVersion ? { clientVersion: u.clientVersion } : {}),
-        ...(kind.success
+        ...(from.success
           ? { versionsPublished: u?.versionsPublished ?? 0 }
           : {}),
       };
@@ -610,7 +610,9 @@ export function mountOAuth(app: AppType): void {
     c.json(await listClients(c.env, requireUser(c))),
   );
 
+  // Not for a capped caller (404): DELETE stays open so they can revoke.
   app.patch(`${R.oauthClients}/:grantId`, async (c) => {
+    if (!canConnect(requireUser(c))) throw notFound();
     const { user, grant } = await ownGrant(c);
     const { label } = await jsonBody(c, OAuthClientPatchSchema);
     await setGrantLabel(c.env, grant.grantId, user.id, label);

@@ -383,17 +383,22 @@ export const tokens = sqliteTable("tokens", {
 // Per OAuth grant, what the grant record (OAUTH_KV) doesn't hold: the owner's
 // label and usage. Created on first use, label or publish (upserts); the KV
 // grant list stays the source of which grants exist.
-export const agentGrants = sqliteTable("agent_grants", {
-  grantId: text("grant_id").primaryKey(),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id),
-  label: text("label"),
-  // Written at most once a minute (conditional upsert, waitUntil).
-  lastUsedAt: integer("last_used_at"),
-  clientVersion: text("client_version"),
-  versionsPublished: integer("versions_published").notNull().default(0),
-});
+export const agentGrants = sqliteTable(
+  "agent_grants",
+  {
+    grantId: text("grant_id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    label: text("label"),
+    // Written at most once a minute (conditional upsert, waitUntil).
+    lastUsedAt: integer("last_used_at"),
+    clientVersion: text("client_version"),
+    versionsPublished: integer("versions_published").notNull().default(0),
+  },
+  // Member removal deletes by user_id.
+  (t) => [index("agent_grants_user_idx").on(t.userId)],
+);
 
 export const uploads = sqliteTable("uploads", {
   id: text("id").primaryKey(),

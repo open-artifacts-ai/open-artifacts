@@ -13,6 +13,7 @@ import {
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
+import { sessionCookieName, signSession } from "../src/auth/session.js";
 import {
   redirectInfo,
   resetTouchMemo,
@@ -39,6 +40,10 @@ describe("redirectInfo: from the redirect URI only", () => {
     ["https://localhost/cb", { redirectKind: "computer" }],
     ["http://app.localhost/cb", { redirectKind: "computer" }],
     ["com.example.app:/oauth", { redirectKind: "computer" }],
+    // Unparseable: neither field (a hosted host would be shown as verified).
+    ["not a uri", {}],
+    ["", {}],
+    ["https://", {}],
     ["cursor://anysphere.cursor-mcp/oauth", { redirectKind: "computer" }],
     [
       "https://Claude.AI/api/mcp/auth_callback",
@@ -275,7 +280,7 @@ describe("grant usage", () => {
     expect(listed?.lastUsedAt).toBe(new Date(row?.at ?? 0).toISOString());
   });
 
-  it("last use is written at most once a minute; a new version always", async () => {
+  it("last use is written at most once a minute; a new version waits for it", async () => {
     const { member, card } = await grant(`card-min-${tag}@x.com`);
     const t0 = Date.now();
     const write = async (at: number, v: string | null) => {
@@ -297,10 +302,58 @@ describe("grant usage", () => {
       at: t0 + 60_000,
       v: "1.0.0",
     });
-    // A version change within the minute: written.
+    // A version change within the minute: not written yet.
     expect((await write(t0 + 70_000, "1.1.0")).after).toMatchObject({
-      at: t0 + 70_000,
+      at: t0 + 60_000,
+      v: "1.0.0",
+    });
+    // It lands with the next minute's write.
+    expect((await write(t0 + 120_000, "1.1.0")).after).toMatchObject({
+      at: t0 + 120_000,
       v: "1.1.0",
+    });
+  });
+
+  it("alternating versions within a minute write at most once; the latest lands next minute", async () => {
+    const { member, card } = await grant(`card-alt-${tag}@x.com`);
+    resetTouchMemo();
+    const t0 = Date.now();
+    let written = 0;
+    let writes = 0;
+    for (let i = 0; i < 10; i++) {
+      const n = await touchGrant(
+        env,
+        card.grantId,
+        member.userId,
+        i % 2 ? "2.0.0" : "1.0.0",
+        t0 + i * 1000,
+      );
+      written += n;
+      if (n > 0) writes++;
+    }
+    expect(writes).toBe(1);
+    // Memo cleared too (another isolate): the SQL alone holds the minute.
+    for (let i = 0; i < 4; i++) {
+      resetTouchMemo();
+      expect(
+        await touchGrant(
+          env,
+          card.grantId,
+          member.userId,
+          i % 2 ? "1.0.0" : "2.0.0",
+          t0 + 20_000 + i * 1000,
+        ),
+      ).toBe(0);
+    }
+    expect(written).toBeGreaterThan(0);
+    // Same isolate: the last version seen (2.0.0) goes with the next write.
+    resetTouchMemo();
+    await touchGrant(env, card.grantId, member.userId, "1.0.0", t0 + 9000);
+    await touchGrant(env, card.grantId, member.userId, "2.0.0", t0 + 9500);
+    await touchGrant(env, card.grantId, member.userId, null, t0 + 70_000);
+    expect(await usageRow(card.grantId)).toMatchObject({
+      at: t0 + 70_000,
+      v: "2.0.0",
     });
   });
 
@@ -496,5 +549,41 @@ describe("member removal", () => {
     await login(`card-rm-owner-${tag}@x.com`, "owner");
     await removeMember(env, member.userId);
     expect(await usageRow(card.grantId)).toBeNull();
+  });
+});
+
+describe("capped callers", () => {
+  const codeCookie = async (userId: string) =>
+    `${sessionCookieName(env)}=${await signSession(env, userId, Date.now(), { provider: "code", epoch: 0 })}`;
+
+  it("can't rename a grant or a token (404), but can still revoke both", async () => {
+    const { member, card } = await grant(`card-cap-${tag}@x.com`);
+    const { id: tokenId } = await createPat(env, member.userId, "cap");
+    const capped = await codeCookie(member.userId);
+    const g = await api(app, R.oauthClient(card.grantId), capped, {
+      method: "PATCH",
+      body: { label: "x" },
+    });
+    expect(g.status).toBe(404);
+    const t = await api(app, R.token(tokenId), capped, {
+      method: "PATCH",
+      body: { label: "x" },
+    });
+    expect(t.status).toBe(404);
+    expect(await usageRow(card.grantId)).toBeNull();
+    const tok = await env.DB.prepare("select label from tokens where id = ?")
+      .bind(tokenId)
+      .first<{ label: string }>();
+    expect(tok?.label).toBe("cap");
+    expect(
+      (
+        await api(app, R.oauthClient(card.grantId), capped, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (await api(app, R.token(tokenId), capped, { method: "DELETE" })).status,
+    ).toBe(204);
   });
 });

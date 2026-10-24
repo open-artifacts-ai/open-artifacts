@@ -206,8 +206,9 @@ it("agent identity: a token publish adds its counter row; a grant's use writes a
   const grantId = `g-${u.userId}`;
   resetTouchMemo();
   const t0 = Date.now();
-  // First use: the agent_grants insert (table + its primary key index).
-  expect(await touchGrant(env, grantId, u.userId, "1.0", t0)).toBe(2);
+  // First use: the agent_grants insert (table, primary key index,
+  // agent_grants_user_idx).
+  expect(await touchGrant(env, grantId, u.userId, "1.0", t0)).toBe(3);
   resetTouchMemo();
   // Within the minute (memo cleared): the conditional upsert writes nothing.
   expect(await touchGrant(env, grantId, u.userId, "1.0", t0 + 59_000)).toBe(0);
