@@ -38,6 +38,7 @@ import {
   type Env,
   hosts as hostsOf0,
   platformNames,
+  registryKey,
 } from "../src/names.js";
 import { canonicalJson, inputsHash } from "../src/platform.js";
 import {
@@ -972,7 +973,9 @@ describe("WfpProvisioner.create", () => {
       await fails(s.p.create(input()));
       const [row1] = s.rows();
       const reg = () =>
-        JSON.parse(s.fake.kvValues(s.regId).get(row1.id) as string);
+        JSON.parse(
+          s.fake.kvValues(s.regId).get(registryKey(row1.id)) as string,
+        );
       expect(reg().keys).toHaveLength(1);
       expect(row1.broker_kid).toBeNull();
       const before = regPuts(s).length;
@@ -1020,8 +1023,9 @@ describe("WfpProvisioner.create", () => {
       const s = setup({ brokerEnabled: true });
       const inst = await s.p.create(input());
       const reg = s.fake.kvValues(s.regId);
-      expect(reg.size).toBe(1);
-      const raw = reg.get(inst.id) as string;
+      // The key the auth broker reads (apps/auth-broker/src/registry.ts).
+      expect([...reg.keys()]).toEqual([`install:${inst.id}`]);
+      const raw = reg.get(registryKey(inst.id)) as string;
       const entry = JSON.parse(raw);
       expect(Object.keys(entry).sort()).toEqual([
         "installId",
@@ -1039,10 +1043,13 @@ describe("WfpProvisioner.create", () => {
     it("H-DR: create writes the identical entry to the directory registry, after the broker registry", async () => {
       const s = setup({ brokerEnabled: true });
       const inst = await s.p.create(input());
-      const raw = s.fake.kvValues(s.regId).get(inst.id) as string;
+      const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
       expect(raw).toBeTruthy();
-      expect(s.fake.kvValues(s.dirId).get(inst.id)).toBe(raw);
-      expect(s.fake.kvValues(s.dirId).size).toBe(1);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
+      // The same key the broker reads: install:<id> (registryKey).
+      expect([...s.fake.kvValues(s.dirId).keys()]).toEqual([
+        `install:${inst.id}`,
+      ]);
       // Every directory put follows a broker put of the same body.
       const puts = s.fake.log
         .map((e, i) => ({ ...e, body: s.fake.raw[i]?.body ?? "" }))
@@ -1074,20 +1081,20 @@ describe("WfpProvisioner.create", () => {
       expect(row.state).toBe("creating");
       expect(row.lease).toBeNull();
       expect(row.broker_kid).toMatch(/^[A-Za-z0-9_-]{16}$/);
-      const reg = s.fake.kvValues(s.regId).get(row.id) as string;
+      const reg = s.fake.kvValues(s.regId).get(registryKey(row.id)) as string;
       expect(JSON.parse(reg).keys).toHaveLength(1);
       // Stand in for a copy that kept an older value (e.g. mid-rotation).
       s.fake
         .kvValues(s.dirId)
-        .set(row.id, reg.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
+        .set(registryKey(row.id), reg.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
       expect(await s.p.status(row.id)).toMatchObject({
         registryDrift: { id: row.id, kind: "mismatch" },
       });
       const inst = await s.p.create(input());
       expect(inst.id).toBe(row.id);
       // The broker entry was healthy, so it stays; only the copy is rewritten.
-      expect(s.fake.kvValues(s.regId).get(row.id)).toBe(reg);
-      expect(s.fake.kvValues(s.dirId).get(row.id)).toBe(reg);
+      expect(s.fake.kvValues(s.regId).get(registryKey(row.id))).toBe(reg);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(row.id))).toBe(reg);
       expect(await s.p.status(row.id)).toMatchObject({ registryDrift: null });
     });
 
@@ -1099,15 +1106,15 @@ describe("WfpProvisioner.create", () => {
       );
       await fails(s.p.create(input()));
       const [row] = s.rows();
-      expect(s.fake.kvValues(s.regId).has(row.id)).toBe(true);
-      expect(s.fake.kvValues(s.dirId).has(row.id)).toBe(false);
+      expect(s.fake.kvValues(s.regId).has(registryKey(row.id))).toBe(true);
+      expect(s.fake.kvValues(s.dirId).has(registryKey(row.id))).toBe(false);
       expect(await s.p.status(row.id)).toMatchObject({
         registryDrift: { id: row.id, kind: "missing_directory" },
       });
       await s.p.create(input());
-      const reg = s.fake.kvValues(s.regId).get(row.id) as string;
+      const reg = s.fake.kvValues(s.regId).get(registryKey(row.id)) as string;
       expect(JSON.parse(reg).keys).toHaveLength(1);
-      expect(s.fake.kvValues(s.dirId).get(row.id)).toBe(reg);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(row.id))).toBe(reg);
     });
 
     it("H-DR: status reports each drift kind with a data-free shape and never repairs", async () => {
@@ -1116,7 +1123,7 @@ describe("WfpProvisioner.create", () => {
       expect((await s.p.status(inst.id)).registryDrift).toBeNull();
       const reg = s.fake.kvValues(s.regId);
       const dir = s.fake.kvValues(s.dirId);
-      const raw = reg.get(inst.id) as string;
+      const raw = reg.get(registryKey(inst.id)) as string;
       const check = async (kind: string) => {
         const w = s.fake.writes().length;
         const st = await s.p.status(inst.id);
@@ -1124,37 +1131,45 @@ describe("WfpProvisioner.create", () => {
         expect(JSON.stringify(st)).not.toContain(JSON.parse(raw).keys[0].x);
         expect(s.fake.writes().length).toBe(w);
       };
-      dir.delete(inst.id);
+      dir.delete(registryKey(inst.id));
       await check("missing_directory");
-      dir.set(inst.id, raw);
-      reg.delete(inst.id);
+      dir.set(registryKey(inst.id), raw);
+      reg.delete(registryKey(inst.id));
       await check("missing_broker");
-      reg.set(inst.id, raw);
-      dir.set(inst.id, raw.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
+      reg.set(registryKey(inst.id), raw);
+      dir.set(registryKey(inst.id), raw.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
       await check("mismatch");
       // Report only: status left the drift in place.
-      expect(dir.get(inst.id)).not.toBe(raw);
+      expect(dir.get(registryKey(inst.id))).not.toBe(raw);
     });
 
     it("H-DR: an install that should have an entry and is in neither registry is missing_both", async () => {
       const s = setup({ brokerEnabled: true });
       const inst = await s.p.create(input());
-      s.fake.kvValues(s.regId).delete(inst.id);
-      s.fake.kvValues(s.dirId).delete(inst.id);
+      s.fake.kvValues(s.regId).delete(registryKey(inst.id));
+      s.fake.kvValues(s.dirId).delete(registryKey(inst.id));
       const w = s.fake.writes().length;
       expect((await s.p.status(inst.id)).registryDrift).toEqual({
         id: inst.id,
         kind: "missing_both",
       });
       expect(s.fake.writes().length).toBe(w);
+      // L2: an install mid-upgrade owes its entry like an active one.
+      s.db()
+        .prepare("UPDATE installs SET state = 'upgrading' WHERE id = ?")
+        .run(inst.id);
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "missing_both",
+      });
       // A creating row past the registry step (broker_kid recorded) too.
       const s2 = setup({ brokerEnabled: true });
       await failAtHealth(s2);
       const [row] = s2.rows();
       expect(row.state).toBe("creating");
       expect(row.broker_kid).toBeTruthy();
-      s2.fake.kvValues(s2.regId).delete(row.id);
-      s2.fake.kvValues(s2.dirId).delete(row.id);
+      s2.fake.kvValues(s2.regId).delete(registryKey(row.id));
+      s2.fake.kvValues(s2.dirId).delete(registryKey(row.id));
       expect((await s2.p.status(row.id)).registryDrift).toEqual({
         id: row.id,
         kind: "missing_both",
@@ -1172,8 +1187,8 @@ describe("WfpProvisioner.create", () => {
       const inst = await s.p.create(input());
       await s.p.delete(inst.id, inst.id);
       expect(s.rows()[0].state).toBe("deleted");
-      expect(s.fake.kvValues(s.regId).has(inst.id)).toBe(false);
-      expect(s.fake.kvValues(s.dirId).has(inst.id)).toBe(false);
+      expect(s.fake.kvValues(s.regId).has(registryKey(inst.id))).toBe(false);
+      expect(s.fake.kvValues(s.dirId).has(registryKey(inst.id))).toBe(false);
       expect((await s.p.status(inst.id)).registryDrift).toBeNull();
     });
 

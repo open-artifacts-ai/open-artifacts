@@ -312,11 +312,15 @@ Every name carries the env prefix `oa-<p>-` (`oa-s-` staging, `oa-p-` prod), and
 | `oa-<p>-inventory` | Inventory |
 | `oa-<p>-turnstile` | The env's one Turnstile widget |
 
-Why a copy: Workers KV has no read-only binding, so a directory broker bound to `oa-<p>-broker-registry` could plant a sign-in trust anchor if it were compromised. Provision writes each install's entry to the broker registry first, then the identical value to the directory registry, in the same step; delete removes both. `WfpProvisioner.status(id)` reports drift per install in `registryDrift` (`missing_broker`, `missing_directory`, `mismatch`, or `missing_both` for an install that should have an entry: active, or creating past the registry step) and never repairs it; rerun `create` (or `delete`) to finish.
+Why a copy: Workers KV has no read-only binding, so a directory broker bound to `oa-<p>-broker-registry` could plant a sign-in trust anchor if it were compromised. Both hold the same key, `install:<id>` (`registryKey` in `names.ts`, the key the auth broker reads). Provision writes each install's entry to the broker registry first, then the identical value to the directory registry, in the same step. Delete removes the directory copy first, then the broker entry, so the directory never trusts a key that sign-in has dropped. `WfpProvisioner.status(id)` reports drift per install in `registryDrift` (`missing_broker`, `missing_directory`, `mismatch`, or `missing_both` for an install that should have an entry: active, upgrading, or creating past the registry step) and never repairs it.
+
+Fixing drift: for a `creating` install, rerun `create`; it finishes both writes. For a `deleting` install, rerun `delete`. There is no repair op for an `active` install yet: `create` refuses it, and nothing else writes the copy. That is fine for M1, because no env has a brokered install yet (T9 has not run).
+
+TODO (Platform): before directory sync is enabled on any env that already has brokered installs, ship a lease-held backfill op that copies each broker entry to the directory registry (one way only, never directory to broker).
 
 ### First-create checklist (per env)
 
-1. Create the KV namespaces `oa-<p>-broker-registry` and `oa-<p>-directory-registry` side by side. With the broker on, create refuses before any write if either is missing.
+1. Create the KV namespaces `oa-<p>-broker-registry` and `oa-<p>-directory-registry` side by side, before any provision run on the env (any provision version that includes the directory copy). With the broker on, create and every lifecycle operation (status aside) refuse before any write if either is missing.
 2. Apply every platform D1 migration to `oa-<p>-platform`, in order: `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write.
 3. Key ceremony done: `RELEASE_PUBKEY[env]` set in gates.ts (and `PROD_UNLOCKED` for prod).
    - Prod, before FinQore go-live: add the user back as a required reviewer on `hosted-prod` (admin bypass stays off), so every prod signing run waits for approval again.

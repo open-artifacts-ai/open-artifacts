@@ -131,3 +131,31 @@ export function hosts(
   }
   return { appHost: `${slug}.${app}`, contentHost: `${slug}.${content}` };
 }
+
+// The install registry format, shared by provision (the writer) and the auth
+// broker (the reader, apps/auth-broker/src/registry.ts, which imports these
+// from @oa/provision/names in its contract test).
+export interface RegistryEntry {
+  installId: string;
+  origin: string;
+  keys: { kid: string; x: string }[];
+  disabled?: boolean;
+}
+
+/** The registry KV key of an install: exactly what the broker reads. */
+export function registryKey(id: string): string {
+  return `install:${id}`;
+}
+
+/** An entry in the broker's shape; `disabled` only when true. */
+export function registryEntry(e: RegistryEntry): RegistryEntry {
+  if (e.keys.length > 2)
+    throw new Error("broker registry entry would hold more than 2 keys");
+  const out: RegistryEntry = {
+    installId: e.installId,
+    origin: e.origin,
+    keys: e.keys.map(({ kid, x }) => ({ kid, x })),
+  };
+  if (e.disabled === true) out.disabled = true;
+  return out;
+}

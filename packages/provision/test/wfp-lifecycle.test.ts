@@ -9,7 +9,12 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cfClient, type Target } from "../src/cf.js";
 import { epochBumpSql, type Template } from "../src/metadata.js";
-import { ENV_PREFIX, type Env, platformNames } from "../src/names.js";
+import {
+  ENV_PREFIX,
+  type Env,
+  platformNames,
+  registryKey,
+} from "../src/names.js";
 import { canonicalJson } from "../src/platform.js";
 import {
   assetEntries,
@@ -657,17 +662,17 @@ describe("upgrade", () => {
     const s = setup();
     const p = s.mk({ brokerEnabled: true });
     const inst = keep(await p.create(input()));
-    const raw = s.fake.kvValues(s.regId).get(inst.id) as string;
+    const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
     expect(raw).toBeTruthy();
     const up = keep(
       await s.mk({ brokerEnabled: true }).upgrade(inst.id, "0.24.0"),
     );
     expect(up).toMatchObject({ ok: true });
-    expect(s.fake.kvValues(s.regId).get(inst.id)).toBe(raw);
-    expect(s.fake.kvValues(s.dirId).get(inst.id)).toBe(raw);
+    expect(s.fake.kvValues(s.regId).get(registryKey(inst.id))).toBe(raw);
+    expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
     keep(await s.mk({ brokerEnabled: true }).rollback(inst.id));
-    expect(s.fake.kvValues(s.dirId).get(inst.id)).toBe(
-      s.fake.kvValues(s.regId).get(inst.id),
+    expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(
+      s.fake.kvValues(s.regId).get(registryKey(inst.id)),
     );
     expect((await s.p.status(inst.id)).registryDrift).toBeNull();
   });
@@ -1436,8 +1441,8 @@ describe("delete", () => {
                       : p,
       );
     expect(seq).toEqual([
-      "registry",
       "directory",
+      "registry",
       "script",
       "kv",
       ...Array(5).fill("r2-object"),
@@ -1499,35 +1504,47 @@ describe("delete", () => {
     }
   });
 
-  it("H-DR: delete removes the entry from both registries and resumes after a failure between them", async () => {
+  it("H-DR: delete removes the directory copy, then the broker entry, and resumes after a failure between them", async () => {
     const s = setup();
     const p = s.mk({ brokerEnabled: true });
     const inst = keep(await p.create(input()));
-    expect(s.fake.kvValues(s.regId).has(inst.id)).toBe(true);
-    expect(s.fake.kvValues(s.dirId).get(inst.id)).toBe(
-      s.fake.kvValues(s.regId).get(inst.id),
+    const key = registryKey(inst.id);
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(true);
+    expect(s.fake.kvValues(s.dirId).get(key)).toBe(
+      s.fake.kvValues(s.regId).get(key),
     );
     s.fake.inject(
-      (m, q) => m === "DELETE" && q.includes(`/namespaces/${s.dirId}/values/`),
-      { status: 400, message: "boom directory" },
+      (m, q) => m === "DELETE" && q.includes(`/namespaces/${s.regId}/values/`),
+      { status: 400, message: "boom broker" },
     );
     const e = await fails(
       s.mk({ brokerEnabled: true }).delete(inst.id, inst.id),
     );
-    expect(e.message).toMatch(/boom directory/);
+    expect(e.message).toMatch(/boom broker/);
     expect(s.row(inst.id)).toMatchObject({ state: "deleting", lease: null });
-    expect(s.fake.kvValues(s.regId).has(inst.id)).toBe(false);
-    expect(s.fake.kvValues(s.dirId).has(inst.id)).toBe(true);
+    // L1: the directory is never ahead of sign-in.
+    expect(s.fake.kvValues(s.dirId).has(key)).toBe(false);
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(true);
     expect(await s.p.status(inst.id)).toMatchObject({
-      registryDrift: { id: inst.id, kind: "missing_broker" },
+      registryDrift: { id: inst.id, kind: "missing_directory" },
     });
     const r = keep(
       await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id),
     );
     expect(r).toEqual({ id: inst.id, ok: true, state: "deleted" });
-    expect(s.fake.kvValues(s.regId).has(inst.id)).toBe(false);
-    expect(s.fake.kvValues(s.dirId).has(inst.id)).toBe(false);
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(false);
+    expect(s.fake.kvValues(s.dirId).has(key)).toBe(false);
     expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+  });
+
+  it("delete removes the registry entry under install:<id>, the key the broker reads", async () => {
+    const s = setup();
+    const inst = keep(await s.mk({ brokerEnabled: true }).create(input()));
+    expect([...s.fake.kvValues(s.regId).keys()]).toEqual([
+      registryKey(inst.id),
+    ]);
+    keep(await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id));
+    expect(s.fake.kvValues(s.regId).size).toBe(0);
   });
 
   it("refuses to delete anything whose name isn't names(id)", async () => {
