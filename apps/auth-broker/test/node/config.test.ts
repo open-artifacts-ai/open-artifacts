@@ -26,11 +26,6 @@ const NS = {
   staging: { ip: "1101", install: "1102" },
   prod: { ip: "1111", install: "1112" },
 };
-const DIRECTORY_CLIENT_ID = {
-  staging:
-    "1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com",
-  prod: "{{GOOGLE_DIRECTORY_CLIENT_ID_PROD}}",
-};
 const CLIENT_ID = {
   staging:
     "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
@@ -65,9 +60,13 @@ describe("wrangler.jsonc", () => {
       ]);
       expect(e.vars).toEqual({
         GOOGLE_CLIENT_ID: CLIENT_ID[env],
-        GOOGLE_DIRECTORY_CLIENT_ID: DIRECTORY_CLIENT_ID[env],
         BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
       });
+      // The broker never reads the Directory client, so it isn't on the broker.
+      expect(Object.keys(e.vars).sort()).toEqual([
+        "BROKER_ORIGIN",
+        "GOOGLE_CLIENT_ID",
+      ]);
       // Workers Logs would record callback URLs carrying the code and state.
       expect(e.observability).toEqual({ enabled: false });
     }

@@ -150,27 +150,21 @@ Unmapping and slug purges: dispatch reads HOSTS with `cacheTtl: 60`, so an edge 
 | staging | `oa-s-auth-broker` | `oa-s-broker-registry` | `{{BROKER_REGISTRY_ID_STAGING}}` | 1101, 1102 |
 | prod | `oa-p-auth-broker` | `oa-p-broker-registry` | `{{BROKER_REGISTRY_ID_PROD}}` | 1111, 1112 |
 
-Prod's `GOOGLE_CLIENT_ID` and `GOOGLE_DIRECTORY_CLIENT_ID` are the placeholders `{{GOOGLE_CLIENT_ID_PROD}}` and `{{GOOGLE_DIRECTORY_CLIENT_ID_PROD}}` until prod clients exist, so a prod deploy fails the check in step 3 until then. The check strips whole-line `//` comments only: keep comments in `wrangler.jsonc` on their own lines.
+Prod's `GOOGLE_CLIENT_ID` is the placeholder `{{GOOGLE_CLIENT_ID_PROD}}` until a prod client exists, so a prod deploy is refused by step 3 until then (pass the id as `GOOGLE_CLIENT_ID_PROD`). The broker's vars are exactly `GOOGLE_CLIENT_ID` and `BROKER_ORIGIN`; it never holds the Directory client.
 
 Set `ENV`, `P`, `APP` and `UP` as in the dispatch section. Then, per env:
 
 1. Create the registry KV if provisioning hasn't (`pnpm exec wrangler kv namespace create oa-$P-broker-registry`; skip if `wrangler kv namespace list` shows it).
 2. Build from a clean checkout of the reviewed commit, as in the dispatch section, and run `pnpm --filter @oa/auth-broker test`.
-3. Deploy with the provisioning token. Fill only this env's placeholder into a gitignored copy of the config, deploy it, fail closed if any `{{` for this env remains, then remove the copy:
+3. Deploy with the provisioning token, through the wrapper. It runs from `apps/auth-broker`, fills this env's placeholders from the environment into a gitignored `wrangler.deploy.jsonc`, refuses if any `{{..._<ENV>}}` remains, runs `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env <env>` (never an entry point, never `--name`), and removes the copy on exit:
    ```sh
-   cd apps/auth-broker
    REG_ID=$(pnpm exec wrangler kv namespace list | jq -r --arg t "oa-$P-broker-registry" '.[] | select(.title == $t) | .id')
-   test -n "$REG_ID" \
-     && sed "s/{{BROKER_REGISTRY_ID_$UP}}/$REG_ID/" wrangler.jsonc > wrangler.deploy.jsonc \
-     && sed -E '/^[[:space:]]*\/\//d' wrangler.deploy.jsonc | jq -e --arg e "$ENV" '.env[$e] | tostring | contains("{{") | not' >/dev/null \
-     && pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env "$ENV" \
-     && rm wrangler.deploy.jsonc
+   BROKER_REGISTRY_ID="$REG_ID" scripts/ops/deploy-broker.sh "$ENV"   # prod also needs GOOGLE_CLIENT_ID_PROD
    ```
-   The deploy output must name `oa-$P-auth-broker` with `BROKER_REGISTRY`, `RL_BROKER_IP`, `RL_BROKER_INSTALL` and the three vars, and no routes or workers.dev URL.
+   The deploy output must name `oa-$P-auth-broker` with `BROKER_REGISTRY`, `RL_BROKER_IP`, `RL_BROKER_INSTALL` and the two vars, and no routes or workers.dev URL.
 4. Set the secrets **after** the Worker exists, never before (`wrangler secret put` on a missing Worker creates one). Never echo them:
    ```sh
-   pnpm exec wrangler secret put GOOGLE_CLIENT_SECRET --env "$ENV"             # paste from the password manager
-   pnpm exec wrangler secret put GOOGLE_DIRECTORY_CLIENT_SECRET --env "$ENV"   # paste from the password manager
+   pnpm exec wrangler secret put GOOGLE_CLIENT_SECRET --env "$ENV"   # paste from the password manager
    openssl rand -base64 32 | pnpm exec wrangler secret put BROKER_STATE_KEY --env "$ENV"
    ```
 5. The route, added in the same gated zone-token step as the dispatch routes (steps 4 to 7 of the dispatch section), on the app zone only: `POST /zones/<zone_id>/workers/routes` with `{"pattern": "auth.$APP/*", "script": "oa-$P-auth-broker"}`. The most specific matching route wins, so this beats the `*.$APP/*` dispatch wildcard (see [How routes work](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior)). `auth.$APP` is covered by the wildcard DNS record from the dispatch step.
@@ -183,7 +177,7 @@ Public values only. The client secrets live in the user's password manager until
 | Env | Project | Client | Client id | Redirect URI |
 |---|---|---|---|---|
 | staging | `open-artifacts-staging` | Sign-in (used by the broker) | `1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com` | `https://auth.open-artifacts-staging.app/google/callback` |
-| staging | `open-artifacts-staging` | Directory (P3 directory sync; the broker carries its id and secret but doesn't use them) | `1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com` | none |
+| staging | `open-artifacts-staging` | Directory (P3 directory sync; not on the broker, P3 T12 decides where it lives) | `1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com` | none |
 | prod | not created yet | | | |
 
 ## Nightly scheduler: one-time deploy per env (Task 7, gated)

@@ -13,7 +13,8 @@
 // The ratelimit namespace ids are distinct per env (both envs share one
 // Cloudflare account): staging 1101/1102, prod 1111/1112.
 // Secrets (set after the Worker exists): GOOGLE_CLIENT_SECRET,
-// GOOGLE_DIRECTORY_CLIENT_SECRET, BROKER_STATE_KEY (32+ random bytes).
+// BROKER_STATE_KEY (32+ random bytes). The Directory client (P3) is not on
+// the broker: it never reads it, so a broker compromise can't yield it.
 // BROKER_ORIGIN is the fixed public origin (https://auth.<app domain>); the
 // redirect_uri is built from it, never the request Host.
 {
@@ -49,9 +50,7 @@
       "vars": {
         // Public value: the sign-in client of the open-artifacts-staging project.
         "GOOGLE_CLIENT_ID": "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
-        "BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
-        // Public value: the Directory client (P3 directory sync, not used by the broker).
-        "GOOGLE_DIRECTORY_CLIENT_ID": "1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com"
+        "BROKER_ORIGIN": "https://auth.open-artifacts-staging.app"
       }
     },
     "prod": {
@@ -78,8 +77,7 @@
       "vars": {
         // No prod Google client yet: the placeholder makes the deploy gate fail closed.
         "GOOGLE_CLIENT_ID": "{{GOOGLE_CLIENT_ID_PROD}}",
-        "BROKER_ORIGIN": "https://auth.open-artifacts.app",
-        "GOOGLE_DIRECTORY_CLIENT_ID": "{{GOOGLE_DIRECTORY_CLIENT_ID_PROD}}"
+        "BROKER_ORIGIN": "https://auth.open-artifacts.app"
       }
     }
   }
