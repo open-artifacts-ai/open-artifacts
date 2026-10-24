@@ -240,7 +240,7 @@ const mayResetGoogle = (m: Member, you: boolean, owner: boolean) =>
   !you &&
   (m.role !== "admin" || owner);
 
-/** Placeholder until Design's copy (role change and Remove on an admin row). */
+/** Design's copy: role change and Remove on another admin's row. */
 const ADMIN_ONLY = "Only the owner can change another admin's access.";
 const RESET_ONLY = "Only the owner can reset another admin's Google link.";
 
@@ -541,6 +541,12 @@ export function Members() {
           </Button>
         }
       >
+        {/* Design: why some rows are read-only, for anyone but the owner. */}
+        {!owner &&
+          q.data?.some(
+            (m) =>
+              m.id !== me?.id && (m.role === "admin" || m.role === "owner"),
+          ) && <p className={`m-0 ${muted}`}>{ADMIN_ONLY}</p>}
         {q.isError ? (
           <p role="alert" className={errorText}>
             Couldn't load members.

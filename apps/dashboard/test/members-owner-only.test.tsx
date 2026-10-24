@@ -6,7 +6,7 @@ import type { Me } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { calls, installHarness, mountHosted } from "./harness";
 
 installHarness();
@@ -145,4 +145,40 @@ it("a stale owner_only on Reset Google link: inline on the row", async () => {
   expect(
     await within(await row(BOB.name)).findByText(RESET_COPY),
   ).toBeVisible();
+});
+
+describe("the muted line under Members", () => {
+  const LINE = "Only the owner can change another admin's access.";
+  const intro = () => screen.queryByText(LINE, { selector: "p:not([role])" });
+
+  it("shows for an admin when another admin or the owner is listed", async () => {
+    mountHosted("/settings/members", true, asAdmin, [withAdminBob]);
+    await row(BOB.name);
+    expect(intro()).toBeVisible();
+  });
+
+  it("shows for a capped owner too", async () => {
+    mountHosted("/settings/members", true, cappedOwner, [withAdminBob]);
+    await row(BOB.name);
+    expect(intro()).toBeVisible();
+  });
+
+  it("is hidden for the uncapped owner", async () => {
+    mountHosted("/settings/members", true, undefined, [withAdminBob]);
+    await row(BOB.name);
+    expect(intro()).toBeNull();
+  });
+
+  it("is hidden when no other admin or owner is listed", async () => {
+    mountHosted("/settings/members", true, asAdmin, [
+      http.get("*/api/v1/members", () =>
+        HttpResponse.json([
+          { ...fixtures.members[0], role: "admin", identities: ["google"] },
+          { ...BOB, role: "member", status: "active", restriction: null },
+        ]),
+      ),
+    ]);
+    await row(BOB.name);
+    expect(intro()).toBeNull();
+  });
 });

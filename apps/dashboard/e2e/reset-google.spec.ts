@@ -66,6 +66,12 @@ for (const scheme of ["light", "dark"] as const)
         await expect(
           erin.getByRole("button", { name: "More for Erin Admin" }),
         ).toHaveCount(0);
+        // And the muted line under Members says why.
+        await expect(
+          page.getByText("Only the owner can change another admin's access.", {
+            exact: true,
+          }),
+        ).toBeVisible();
         await settle(page);
         await shot(
           page,
