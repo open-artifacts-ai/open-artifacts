@@ -21,9 +21,13 @@ import {
 } from "../src/runtime/presence.js";
 import { REVOKE_RETRIES, revokeUserLive } from "../src/runtime/revoke.js";
 import { patch, publish } from "../src/services/artifacts.js";
-import { patchMember, removeMember } from "../src/services/members.js";
+import {
+  patchMember,
+  removeMember,
+  setUserStatus,
+} from "../src/services/members.js";
 import { deleteShare, putShare } from "../src/services/shares.js";
-import { getUser, setUserStatus } from "../src/services/users.js";
+import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 
 const app = createApp();

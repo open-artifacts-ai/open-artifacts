@@ -14,8 +14,11 @@ import {
   sweepUngrantedClients,
 } from "../src/mcp/registrations.js";
 import { stripTemplateComment } from "../src/mcp/template.js";
-import { patchMember, removeMember } from "../src/services/members.js";
-import { setUserStatus } from "../src/services/users.js";
+import {
+  patchMember,
+  removeMember,
+  setUserStatus,
+} from "../src/services/members.js";
 import { api, login } from "./helpers.js";
 import {
   APP,

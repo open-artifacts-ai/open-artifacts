@@ -7,12 +7,12 @@ import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { userActor } from "../src/services/audit.js";
-import { patchMember, removeMember } from "../src/services/members.js";
 import {
-  getUser,
-  getUserWithEpoch,
+  patchMember,
+  removeMember,
   setUserStatus,
-} from "../src/services/users.js";
+} from "../src/services/members.js";
+import { getUser, getUserWithEpoch } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 import { callWorker, MCP_URL } from "./mcp-helpers.js";
 

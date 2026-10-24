@@ -10,6 +10,7 @@ import { orgCan } from "../auth/policy.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
+import { userActor } from "../services/audit.js";
 import { resetIdentity } from "../services/identity.js";
 import {
   inviteMember,
@@ -47,16 +48,27 @@ export function mountMembers(app: AppType): void {
   });
 
   app.patch(MEMBER, async (c) => {
-    requireManager(c);
+    const actor = requireManager(c);
     const patch = await jsonBody(c, MemberPatchSchema);
     return c.json(
-      await patchMember(c.env, c.req.param("id"), patch, execCtx(c)),
+      await patchMember(
+        c.env,
+        c.req.param("id"),
+        patch,
+        execCtx(c),
+        userActor(actor.id),
+      ),
     );
   });
 
   app.delete(MEMBER, async (c) => {
-    requireManager(c);
-    await removeMember(c.env, c.req.param("id"), execCtx(c));
+    const actor = requireManager(c);
+    await removeMember(
+      c.env,
+      c.req.param("id"),
+      execCtx(c),
+      userActor(actor.id),
+    );
     return c.body(null, 204);
   });
 

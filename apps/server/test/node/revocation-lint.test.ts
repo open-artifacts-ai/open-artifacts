@@ -23,8 +23,14 @@ const SRC = join(import.meta.dirname, "../../src");
 
 type Guard = "user" | "artifact";
 const REGISTRY: Readonly<Record<string, Guard>> = {
-  // Removes the user: every socket they hold closes.
-  "services/members.ts:removeMember": "user",
+  // Removes the user: every socket they hold closes through setUserStatus
+  // (spaces on) or deleteMember (off), both "user" below; its own guard is
+  // the belt-and-braces close of the artifacts shared with them.
+  "services/members.ts:removeMember": "artifact",
+  // The spaces-off removal: the row is deleted.
+  "services/members.ts:deleteMember": "user",
+  // Suspend or remove (P3 T6): PATs, grants and sessions revoked.
+  "services/members.ts:setUserStatus": "user",
   // A role change ends their sessions; sockets were authorized under the old role.
   "services/members.ts:patchMember": "user",
   // A guest's last share went: the guest is deactivated.
