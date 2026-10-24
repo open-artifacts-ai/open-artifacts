@@ -191,7 +191,7 @@ describe("staging Durable Objects", () => {
     });
 });
 
-describe("staging UserPresence (P3 T7a, #502)", () => {
+describe("staging UserPresence (P3 T7a #502, T7b #503)", () => {
   it("adds UserPresence in migration v2, after v1 (ArtifactRuntime)", () => {
     // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
     const tags = env.migrations.map((m: any) => m.tag);
@@ -201,10 +201,10 @@ describe("staging UserPresence (P3 T7a, #502)", () => {
       new_sqlite_classes: ["UserPresence"],
     });
   });
-  it("does not bind it yet (T7b binds and uses it, one release later)", () => {
-    // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
-    expect(env.durable_objects.bindings.map((b: any) => b.name)).not.toContain(
-      "USER_PRESENCE",
-    );
+  it("binds USER_PRESENCE to UserPresence (T7b, #503), one release after v2", () => {
+    expect(env.durable_objects.bindings).toContainEqual({
+      name: "USER_PRESENCE",
+      class_name: "UserPresence",
+    });
   });
 });

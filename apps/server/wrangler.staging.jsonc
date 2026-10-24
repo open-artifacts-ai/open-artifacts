@@ -33,7 +33,9 @@
       ],
       "durable_objects": {
         "bindings": [
-          { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" }
+          { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" },
+          // P3 T7b (#503): bound with its first use, one release after its v2 tag.
+          { "name": "USER_PRESENCE", "class_name": "UserPresence" }
         ]
       },
       "migrations": [
