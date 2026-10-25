@@ -8,17 +8,20 @@ import {
 } from "@oa/shared";
 import type { Context } from "hono";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
+import { orgCan } from "../auth/policy.js";
 import {
   instanceFeatures,
   instanceSignIn,
   showsSignInFields,
 } from "../auth/sign-in.js";
+import { instanceDirectory, readHealth } from "../directory/health.js";
 import { emailEnabled } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
 import { appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
+import { directoryMode } from "../services/spaces.js";
 import { getProfile, type Profile, setDisplayName } from "../services/users.js";
 import type { AppType } from "./index.js";
 
@@ -51,6 +54,14 @@ async function toMe(
   me.instance.hosted = c.env.HOSTED === "1";
   me.instance.signIn = instanceSignIn(c.env);
   me.instance.features = instanceFeatures(c.env);
+  // P3 T13: only while a directory mode is on; health for owners and admins.
+  const mode = directoryMode(c.env);
+  if (mode !== "off")
+    me.instance.directory = instanceDirectory(
+      mode,
+      await readHealth(c.env),
+      orgCan(user, "members.manage", { cap }),
+    );
   me.auth = {
     method: c.var.authMethod ?? "access",
     readOnly: cap !== null,

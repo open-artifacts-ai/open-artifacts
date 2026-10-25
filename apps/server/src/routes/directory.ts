@@ -1,4 +1,4 @@
-import { R } from "@oa/shared";
+import { DirectoryGroupsQuerySchema, R } from "@oa/shared";
 import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
@@ -14,8 +14,13 @@ import {
   refuseConnect,
   startConnect,
 } from "../directory/connect.js";
+import { lookupGroups } from "../directory/groups.js";
+import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
+import { userActor } from "../services/audit.js";
+import { SYNC_DO_NAME } from "../services/directory.js";
+import { directoryMode } from "../services/spaces.js";
 import type { AppType } from "./index.js";
 
 // Directory connection routes (P3 T12). T13 adds sync, groups and held
@@ -102,4 +107,52 @@ export function mountDirectory(app: AppType): void {
     await cancelConnect(c.env, requireUser(c));
     return c.body(null, 204);
   });
+
+  // P3 T13. Live group lookup for the mapping pickers (org owner, admin),
+  // RL_DIRECTORY per caller (unbound: unlimited, as in the test pool).
+  app.get(R.directoryGroups, async (c) => {
+    const user = requireUser(c);
+    if (!orgCan(user, "org.mappings", { cap: capOfCaller(caller(c)) }))
+      throw notFound();
+    const rl = c.env.RL_DIRECTORY;
+    if (rl && !(await rl.limit({ key: `dir:${user.id}` })).success)
+      throw new ApiError(
+        "rate_limited",
+        "Too many group lookups; wait a minute",
+      );
+    const q = DirectoryGroupsQuerySchema.safeParse(c.req.query());
+    if (!q.success) throw new ApiError("bad_request", "Invalid query");
+    return c.json(await lookupGroups(c.env, q.data));
+  });
+
+  // "Sync now" and a held sweep's confirmation (org owner): 202 SyncStatus.
+  app.post(R.directorySync, async (c) => {
+    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    return c.json(await syncStub(c.env).kick("manual"), 202);
+  });
+
+  app.post("/api/v1/directory/held/:groupId/confirm", async (c) => {
+    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    // Frozen (or off): group sync is stopped, so a confirm can't apply.
+    if (directoryMode(c.env) !== "google")
+      throw new ApiError(
+        "directory_sync_off",
+        "Directory sync is off or frozen",
+      );
+    const status = await syncStub(c.env).confirmHeld(
+      c.req.param("groupId"),
+      userActor(requireUser(c).id),
+    );
+    if (!status)
+      throw new ApiError(
+        "conflict",
+        "This group has no held sweep to confirm; it can't be read from Google",
+      );
+    return c.json(status, 202);
+  });
 }
+
+const syncStub = (env: Env) => {
+  const ns = env.DIRECTORY_SYNC as NonNullable<Env["DIRECTORY_SYNC"]>;
+  return ns.get(ns.idFromName(SYNC_DO_NAME));
+};

@@ -71,6 +71,10 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // A departed transfer narrows the (inactive) former owner on up to a page
   // of artifacts: their presence again, plus the artifacts made team.
   "services/spaces.ts:transferPersonal": "user",
+  // P3 T13 DirectorySync: a synced group's diff removes members (their
+  // Every-space and mapped roles are read through directory_members) and
+  // caps the newly restricted: the removed and capped users.
+  "directory/sync.ts:SyncEngine.apply": "user",
 };
 
 /**
@@ -121,6 +125,8 @@ const SHRINK: readonly RegExp[] = [
   // Space membership and group mapping removals.
   /\.delete\((spaceMembers|groupMappings|orgGroupMappings)\)/,
   /delete from (space_members|group_mappings|org_group_mappings)\b/i,
+  // P3 T13: a synced group's membership rows (roles are read through them).
+  /delete from directory_members\b|\bREMOVE_MEMBERS\b/i,
   // P3 T9: allMembersRole and the restriction caps (manual flag, group).
   /\ball_members_role\s*=[^=]|\.set\(\{[^}]*\ballMembersRole\b/,
   /\brestricted_(manual|sync)\s*=[^=]|\.set\(\{[^}]*\brestricted(Manual|Sync)\b/,

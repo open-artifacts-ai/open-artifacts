@@ -152,6 +152,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // The service also requires the owner who started the connect (404).
   "POST /api/v1/directory/confirm": { org: "directory.manage" },
   "POST /api/v1/directory/cancel": { org: "directory.manage" },
+  // P3 T13: the live group lookup (owners and admins, RL_DIRECTORY), "Sync
+  // now" and a held sweep's confirmation (org owner).
+  "GET /api/v1/directory/groups": { org: "org.mappings" },
+  "POST /api/v1/directory/sync": { org: "directory.manage" },
+  "POST /api/v1/directory/held/:groupId/confirm": { org: "directory.manage" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },

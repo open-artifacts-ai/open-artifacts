@@ -58,6 +58,7 @@ import {
 } from "../runtime/revoke.js";
 import { getSummary } from "./artifacts.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
+import { kickSync } from "./directory.js";
 import { getSettings } from "./members.js";
 import { RESTRICTED_SYNC_FOR_GROUP } from "./restriction.js";
 import { toMember } from "./users.js";
@@ -1180,6 +1181,9 @@ export async function putSpaceMapping(
   if (after !== role) throw forbidden("mapping");
   if (rank(after) < rank(roleIn(out[0])))
     await revokeUsersLive(env, idsOf(out[5]), "space mapping lowered", ctx);
+  // A new or changed mapping reads the group's members now, not at the next
+  // reconcile; an unchanged PUT kicks nothing (no load from repeated writes).
+  if (roleIn(out[0]) !== after) await kickSync(env, "mapping", ctx);
   return mapping(groupId, g.email, after, g.n);
 }
 
@@ -1322,6 +1326,7 @@ export async function putOrgMapping(
       "every-space mapping lowered",
       ctx,
     );
+  if (roleIn(out[0]) !== roleIn(out[4])) await kickSync(env, "mapping", ctx);
   return mapping(groupId, g.email, role, g.n);
 }
 
@@ -1426,6 +1431,8 @@ export async function putRestrictedGroup(
     stmt(env.DB, RESTRICTED_LIST).bind(groupId),
   ]);
   await revokeUsersLive(env, idsOf(out[3]), "restricted", ctx);
+  // Only a newly restricted group needs its members read now.
+  if ((out[0]?.meta.changes ?? 0) > 0) await kickSync(env, "mapping", ctx);
   const row = out[4]?.results[0] as RestrictedRow | undefined;
   if (!row) throw notFound();
   return toRestricted(row);
