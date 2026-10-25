@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.50.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.49.0...v0.50.0) (2026-10-25)
+
+
+### Features
+
+* **server:** GET /me answers break_glass_required for the mismatch owner (P3 T18) ([#599](https://github.com/open-artifacts-ai/open-artifacts/issues/599)) ([6300906](https://github.com/open-artifacts-ai/open-artifacts/commit/63009062e79ec1a4e76687bacbd6556d187e350d))
+
 ## [0.49.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.48.0...v0.49.0) (2026-10-25)
 
 

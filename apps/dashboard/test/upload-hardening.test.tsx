@@ -205,9 +205,11 @@ describe("drag over the viewer", () => {
       });
       window.dispatchEvent(e);
     });
-    expect(
-      await screen.findByText("Finish the current upload first"),
-    ).toBeVisible();
+    // Sonner commits a toast at opacity 0 and fades it in from an effect, so
+    // wait for the visible state rather than the first match.
+    await waitFor(() =>
+      expect(screen.getByText("Finish the current upload first")).toBeVisible(),
+    );
     expect(screen.getByText("1 file selected")).toBeVisible();
   });
 
@@ -225,7 +227,9 @@ describe("drag over the viewer", () => {
       });
       window.dispatchEvent(e);
     });
-    expect(await screen.findByText("No files to upload")).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByText("No files to upload")).toBeVisible(),
+    );
   });
 
   it("clears a stuck overlay after 400 ms without dragover, or on pointer activity", async () => {
