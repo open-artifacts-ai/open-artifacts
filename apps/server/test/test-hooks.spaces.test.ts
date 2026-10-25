@@ -63,7 +63,8 @@ async function is404(r: Response) {
   expect(r.status).toBe(404);
   expect(await r.text()).toBe(await ref404());
 }
-const sid = () => `sp${crypto.randomUUID().replaceAll("-", "").slice(0, 14)}`;
+const sid = () =>
+  `test-${crypto.randomUUID().replaceAll("-", "").slice(0, 14)}`;
 async function myRole(e: Env, cookie: string, spaceId: string) {
   const r = await call(e, R.space(spaceId), { method: "GET", cookie });
   expect(r.status).toBe(200);
@@ -299,5 +300,111 @@ describe("session hook with spaces", () => {
       }),
     );
     expect(await memberRows(s)).toEqual([]);
+  });
+
+  const userRow = (email: string) =>
+    env.DB.prepare("select 1 from users where email = ?").bind(email).first();
+  const spaceRow = (id: string) =>
+    env.DB.prepare("select 1 from spaces where id = ?").bind(id).first();
+  const seedShared = (id: string) =>
+    env.DB.prepare(
+      "insert into spaces (id, kind, name, all_members_role, public_links, created_at) values (?, 'shared', 'Seeded', null, 0, ?)",
+    )
+      .bind(id, Date.now())
+      .run();
+
+  it("an id without the test- prefix → 404 and no write", async () => {
+    const real = `sp${crypto.randomUUID().replaceAll("-", "").slice(0, 14)}`;
+    await seedShared(real);
+    const missing = `sp${crypto.randomUUID().replaceAll("-", "").slice(0, 14)}`;
+    const email = tu("noprefix");
+    for (const spaceId of [real, missing, "Test-x", "xtest-y"]) {
+      const fresh = sid();
+      await is404(
+        await session(on(), {
+          email,
+          role: "member",
+          spaces: [
+            { spaceId: fresh, role: "viewer" },
+            { spaceId, role: "manager" },
+          ],
+        }),
+      );
+      expect(await spaceRow(fresh)).toBeNull();
+    }
+    expect(await memberRows(real)).toEqual([]);
+    expect(await spaceRow(missing)).toBeNull();
+    expect(await userRow(email)).toBeNull();
+  });
+
+  it("a prefixed space with a member outside TEST_DOMAIN → 404 and no write", async () => {
+    const s = sid();
+    await seedShared(s);
+    const realId = await seedUser(uniq("real", "a.com"), "member");
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'viewer', 'sync', ?)",
+    )
+      .bind(s, realId, Date.now())
+      .run();
+    const email = tu("foreign");
+    await is404(
+      await session(on(), {
+        email,
+        role: "member",
+        spaces: [{ spaceId: s, role: "manager" }],
+      }),
+    );
+    expect(await memberRows(s)).toEqual([{ role: "viewer", source: "sync" }]);
+    expect(await userRow(email)).toBeNull();
+  });
+
+  it("a real-domain member joining after the check → 404 (enforced in SQL)", async () => {
+    const s = sid();
+    await seedShared(s);
+    const realId = await seedUser(uniq("late", "a.com"), "member");
+    const db = env.DB;
+    const racing = new Proxy(db, {
+      get(t, k) {
+        if (k === "batch")
+          return async (stmts: D1PreparedStatement[]) => {
+            await db
+              .prepare(
+                "insert or ignore into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'viewer', 'manual', ?)",
+              )
+              .bind(s, realId, Date.now())
+              .run();
+            return db.batch(stmts);
+          };
+        const v = Reflect.get(t, k);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    await is404(
+      await session(on({ DB: racing }), {
+        email: tu("late"),
+        role: "member",
+        spaces: [{ spaceId: s, role: "manager" }],
+      }),
+    );
+    expect(await memberRows(s)).toEqual([{ role: "viewer", source: "manual" }]);
+  });
+
+  it("a prefixed space whose members are all under TEST_DOMAIN is granted", async () => {
+    const s = sid();
+    await seedShared(s);
+    const peer = await seedUser(tu("peer"), "member");
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'manual', ?)",
+    )
+      .bind(s, peer, Date.now())
+      .run();
+    const r = await session(on(), {
+      email: tu("joiner"),
+      role: "member",
+      spaces: [{ spaceId: s, role: "viewer" }],
+    });
+    expect(r.status).toBe(200);
+    const { cookie } = TestSessionResultSchema.parse(await r.json());
+    expect(await myRole(on(), cookie, s)).toBe("viewer");
   });
 });

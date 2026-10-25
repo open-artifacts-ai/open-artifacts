@@ -14,8 +14,9 @@ const ready =
   existsSync(join(root, "packages/provision/dist/index.js")) &&
   existsSync(join(root, "apps/server/dist-assets"));
 const MARKERS = [
-  "(kind <> 'shared' or deleted_at is not null)",
-  "where exists (select 1 from spaces where id = ?1 and kind = 'shared' and deleted_at is null)",
+  "substr(fu.email, length(fu.email) - length(?5)) <> '@' || ?5",
+  "where substr(?1, 1, 5) = 'test-'",
+  "and exists (select 1 from spaces where id = ?1 and kind = 'shared' and deleted_at is null)",
 ];
 
 function bundle(variant: "release" | "redline"): string {

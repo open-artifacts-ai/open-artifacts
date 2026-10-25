@@ -182,25 +182,45 @@ async function testUser(
 
 type SpaceGrant = { spaceId: string; role: SpaceRole };
 const MAX_SPACES = 20;
-const SPACE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+/**
+ * Hook spaces only: every id the hook may create or grant on carries this
+ * prefix (checked here and again in SQL). Personal space ids (newId) never do.
+ */
+const SPACE_ID = /^test-[A-Za-z0-9_-]{1,59}$/;
 
-/** At most 20 grants, safe ids, each space once. */
+/** At most 20 grants, prefixed safe ids, each space once. */
 const spacesValid = (spaces: SpaceGrant[]) =>
   spaces.length <= MAX_SPACES &&
   spaces.every((s) => SPACE_ID.test(s.spaceId)) &&
   new Set(spaces.map((s) => s.spaceId)).size === spaces.length;
 
-// Never a personal space, and never a deleted one: refused as a whole.
-const SPACES_BLOCKED =
-  "select 1 from spaces where id in (select value from json_each(?)) and (kind <> 'shared' or deleted_at is not null) limit 1";
-const SPACE_CREATE =
-  "insert into spaces (id, kind, name, all_members_role, public_links, created_at) values (?, 'shared', ?, null, 0, ?) on conflict (id) do nothing";
-// Conditional on a live shared space, so a racing personal or deleted row is
-// never joined. Always writes when the row exists, so changes = 0 means the
-// space was not live.
+// The SQL half of the rule, so a handler slip can't reach a real space:
+// substr(id, 1, 5) = 'test-' (no LIKE wildcards), and no member whose email
+// isn't exactly under TEST_DOMAIN. Plain literals (no calls), so the release
+// build drops them with the rest of this module.
+// Refused as a whole: an unprefixed id, a personal or deleted space, or a
+// shared space with any member outside TEST_DOMAIN. ?1 ids (JSON), ?2 domain.
+const SPACES_BLOCKED = `select 1 from json_each(?1) j
+  where substr(j.value, 1, 5) <> 'test-'
+    or exists (select 1 from spaces s where s.id = j.value
+      and (s.kind <> 'shared' or s.deleted_at is not null
+        or exists (select 1 from space_members fm join users fu on fu.id = fm.user_id
+          where fm.space_id = s.id
+            and substr(fu.email, length(fu.email) - length(?2)) <> '@' || ?2)))
+  limit 1`;
+const SPACE_CREATE = `insert into spaces (id, kind, name, all_members_role, public_links, created_at)
+  select ?1, 'shared', ?2, null, 0, ?3 where substr(?1, 1, 5) = 'test-'
+  on conflict (id) do nothing`;
+// Conditional on a live, prefixed shared space with no member outside
+// TEST_DOMAIN (?5), so a racing personal, deleted or real row is never
+// joined. Always writes when the row exists, so changes = 0 means refused.
 const MEMBER_UPSERT = `insert into space_members (space_id, user_id, role, source, created_at)
   select ?1, ?2, ?3, 'manual', ?4
-  where exists (select 1 from spaces where id = ?1 and kind = 'shared' and deleted_at is null)
+  where substr(?1, 1, 5) = 'test-'
+    and exists (select 1 from spaces where id = ?1 and kind = 'shared' and deleted_at is null)
+    and not exists (select 1 from space_members fm join users fu on fu.id = fm.user_id
+      where fm.space_id = ?1
+        and substr(fu.email, length(fu.email) - length(?5)) <> '@' || ?5)
   on conflict (space_id, user_id, source) do update set role = excluded.role`;
 
 const MANUAL_ROLES =
@@ -209,18 +229,20 @@ const RANK: Record<string, number> = { viewer: 1, editor: 2, manager: 3 };
 const idsOf = (spaces: SpaceGrant[]) =>
   JSON.stringify(spaces.map((s) => s.spaceId));
 
-/** True when an id names a personal or deleted space. Read-only: runs before the user is created. */
+/** True when a grant may not run (SPACES_BLOCKED). Read-only: runs before the user is created. */
 async function spacesBlocked(env: Env, spaces: SpaceGrant[]): Promise<boolean> {
   if (spaces.length === 0) return false;
-  return (
-    (await env.DB.prepare(SPACES_BLOCKED).bind(idsOf(spaces)).first()) !== null
-  );
+  const row = await env.DB.prepare(SPACES_BLOCKED)
+    .bind(idsOf(spaces), env.TEST_DOMAIN ?? "")
+    .first();
+  return row !== null;
 }
 
 /**
  * P3 T17: creates any missing shared space and upserts the user's manual
  * space_members rows, in one batch. False (refuse) when a grant row didn't
- * write (its space was deleted or turned out personal after the check). A
+ * write (after the check, its space was deleted, turned out personal, or
+ * gained a member outside TEST_DOMAIN). A
  * lowered row closes the user's sockets.
  */
 async function grantSpaces(
@@ -240,7 +262,13 @@ async function grantSpaces(
   const res = await env.DB.batch(
     spaces.flatMap((s) => [
       env.DB.prepare(SPACE_CREATE).bind(s.spaceId, `Test ${s.spaceId}`, now),
-      env.DB.prepare(MEMBER_UPSERT).bind(s.spaceId, userId, s.role, now),
+      env.DB.prepare(MEMBER_UPSERT).bind(
+        s.spaceId,
+        userId,
+        s.role,
+        now,
+        env.TEST_DOMAIN ?? "",
+      ),
     ]),
   );
   // Every second result is a grant row.
