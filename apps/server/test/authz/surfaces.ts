@@ -123,6 +123,11 @@ function classify(
   r: Answer,
   allow: (r: Answer) => boolean,
 ): Verdict {
+  // Rate limited: says nothing about access. Fail loudly, never a verdict.
+  if (r.status === 429)
+    throw new Unexpected(
+      `${what}: inconclusive (429 ${r.code || "rate_limited"})`,
+    );
   if (allow(r)) return "allow";
   if (DENY.has(r.status)) return "deny";
   throw new Unexpected(`${what}: ${r.status} ${r.body.slice(0, 200)}`);

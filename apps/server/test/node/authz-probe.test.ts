@@ -34,6 +34,21 @@ describe("authz-probe", () => {
   it("re-exports SURFACES", () => {
     expect(SURFACES).toBe(FROM_TEST);
   });
+  it("a 429 is inconclusive: never allow or deny", async () => {
+    const limited = async () =>
+      new Response(
+        '{"error":{"code":"rate_limited","message":"Too many subscriptions"}}',
+        { status: 429 },
+      );
+    for (const s of SURFACES.filter((x) => x.via === "rest" && !x.mutates))
+      await expect(
+        s.probe(u, { cookie: "c" }, "AAAAAAAAAAAAAAAA", {
+          fetch: limited,
+          contentBase: u,
+        }),
+        s.name,
+      ).rejects.toThrow(/inconclusive|429/);
+  });
   it("authz-probe refuses credentials in argv", async () => {
     expect((await runProbe(["--base", u, "--pat", "x"])).code).toBe(2);
     expect((await runProbe(["--base", u, "--token", "x"])).code).toBe(2);

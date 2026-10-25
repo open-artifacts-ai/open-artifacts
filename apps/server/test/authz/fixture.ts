@@ -30,20 +30,40 @@ const DAY = 86_400_000;
 /** Break-glass emails land here. */
 export const mail = mailer();
 
+/**
+ * Rate limits never decide a cell: the matrix's anonymous limiter (RL_ANON:
+ * sockets, data writes, anon ids) always admits, and every request carries
+ * its own client IP. A 429 that still shows up fails the cell as
+ * inconclusive (surfaces.ts), never allow or deny.
+ */
+const ADMIT = { limit: async () => ({ success: true }) };
+
 /** FinQore's flags, on the Paid plan (no fan-out caps in the way). */
 export const E: Env = directEnv({
   PLAN: "paid",
   FEATURES: "spaces,sync_google,content_revocation",
   ...mail.env,
+  RL_ANON: ADMIT as never,
 });
+
+let ipSeq = 0;
+/**
+ * A fresh documentation address (RFC 3849) per request, in its own /48, so
+ * even the /64 and /56 anonymous keys never repeat.
+ */
+const nextIp = () => {
+  ipSeq = (ipSeq + 1) & 0xffff;
+  return `2001:db8:${ipSeq.toString(16)}::1`;
+};
 
 /** The Worker as a remote target would be: both hosts, waitUntil awaited. */
 export const io: ProbeIO = {
   contentBase: CONTENT,
   fetch: (req) => {
     const h = new Headers(req.headers);
-    // The edge sets it on every real request (anonymous socket and write keys).
-    if (!h.has("cf-connecting-ip")) h.set("cf-connecting-ip", "203.0.113.7");
+    // The edge sets it on every real request (anonymous socket and write
+    // keys); one per request, so no limiter budget is shared across cells.
+    if (!h.has("cf-connecting-ip")) h.set("cf-connecting-ip", nextIp());
     return fetchAndWait(worker as never, new Request(req, { headers: h }), E);
   },
 };

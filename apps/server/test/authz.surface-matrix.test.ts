@@ -137,19 +137,10 @@ describe("coverage (derived from the router and the registries)", () => {
 
 /**
  * Known bugs, pinned so the suite stays green and fails once they are fixed
- * (then delete the entry). Reported, not fixed, by this task.
- *
- * B1: /mcp with a PAT checks orgCan(user, "mcp.connect") without the
- * caller's cap (src/index.ts:61), so a restricted member's PAT still reaches
- * the MCP tools (read-only: every tool applies the cap). The OAuth path
- * refuses capped callers (src/mcp/oauth.ts:134), as the policy says.
+ * (then delete the entry). None today (B1, a restricted member's PAT at
+ * /mcp, was fixed in #606).
  */
-const KNOWN: Partial<Record<CallerName, { via: string; traits: Traits }>> = {
-  restrictedContractor: {
-    via: "mcp",
-    traits: { ...TRAITS.restrictedContractor, mcp: true },
-  },
-};
+const KNOWN: Partial<Record<CallerName, { via: string; traits: Traits }>> = {};
 
 /** One caller's row on one surface: every artifact, probed. */
 async function row(
@@ -331,8 +322,6 @@ describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
     ...ORG_SURFACES.filter((s) => !s.mutates).map((s) => s.route),
     ...SPACE_SURFACES.filter((s) => !s.mutates).map((s) => s.name),
   ];
-  // B1 only: restrictedContractor's PAT on MCP surfaces.
-  const b1 = /^MISMATCH (mcp \S+|content \/c\/\?dl=1) restrictedContractor /;
   it.concurrent.each(names.map((n) => [n]))(
     "%s",
     async (name) => {
@@ -354,9 +343,8 @@ describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
             }),
         },
       );
-      const bad = lines.filter((l) => l.startsWith("MISMATCH"));
-      expect(bad.filter((l) => !b1.test(l))).toEqual([]);
-      expect(code).toBe(bad.length ? 1 : 0);
+      expect(lines.filter((l) => l.startsWith("MISMATCH"))).toEqual([]);
+      expect(code).toBe(0);
       expect(lines.at(-1)).toMatch(/^[1-9]\d* cells, \d+ mismatches$/);
     },
     SLOW,
