@@ -1,11 +1,12 @@
 import { MCP_PATH, normalizeHost as normHost } from "@oa/shared";
 import { app } from "./app.js";
+import { canConnect } from "./auth/agents.js";
 import { verifyPat } from "./auth/pat.js";
 import { contentApp } from "./content/app.js";
 import { scheduled } from "./cron.js";
 import type { Env } from "./env.js";
 import { appHostOpts, withSecurityHeaders } from "./http/middleware.js";
-import { canConnect, serveAppHost } from "./mcp/oauth.js";
+import { serveAppHost } from "./mcp/oauth.js";
 import {
   capMcpBody,
   createServer,
