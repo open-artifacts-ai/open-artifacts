@@ -14,7 +14,12 @@ import type { Env } from "../src/env.js";
 import { onGoogleSignIn, SYNC_DO_NAME } from "../src/services/directory.js";
 import { getUser } from "../src/services/users.js";
 import { mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
-import { connect, directEnv, registerInstall, resetDirectory } from "./directory-helpers.js";
+import {
+  connect,
+  directEnv,
+  registerInstall,
+  resetDirectory,
+} from "./directory-helpers.js";
 import {
   type FakeDirectory,
   fakeDirectory,
@@ -82,8 +87,12 @@ const syncRole = async (space: string, uid: string) =>
     )
   )?.role ?? null;
 const restrictedSync = async (uid: string) =>
-  (await one<{ r: number }>("select restricted_sync r from users where id = ?", uid))
-    ?.r;
+  (
+    await one<{ r: number }>(
+      "select restricted_sync r from users where id = ?",
+      uid,
+    )
+  )?.r;
 const statusOf = async (uid: string) =>
   (await one<{ status: string }>("select status from users where id = ?", uid))
     ?.status;
@@ -196,7 +205,11 @@ describe("applyGroupDiff", () => {
     const u = await seedUser(uniq("every"), "member");
     await applyGroupDiff(env, go, [u], [], SYNC);
     expect(
-      await all("select 1 from directory_members where group_id = ? and user_id = ?", go, u),
+      await all(
+        "select 1 from directory_members where group_id = ? and user_id = ?",
+        go,
+        u,
+      ),
     ).toHaveLength(1);
     expect(await spaceRolesOf(u)).toEqual([]);
   });
@@ -238,7 +251,9 @@ describe("applyGroupDiff", () => {
       a,
       owner.userId,
     );
-    expect(rows.map((r) => r.target_id).sort()).toEqual([a, owner.userId].sort());
+    expect(rows.map((r) => r.target_id).sort()).toEqual(
+      [a, owner.userId].sort(),
+    );
     expect(JSON.parse(rows[0]?.detail ?? "{}")).toMatchObject({
       skipped: "restrict_admin",
       groupId: gr,
@@ -290,9 +305,14 @@ describe("users by identity", () => {
     });
     expect(await spaceRolesOf(oldBob?.id as string)).toEqual([]);
     expect(
-      await one("select id from spaces where id = ? and kind = 'personal'", nb?.id),
+      await one(
+        "select id from spaces where id = ? and kind = 'personal'",
+        nb?.id,
+      ),
     ).not.toBeNull();
-    await env.DB.prepare("delete from identities where subject = 'g-new'").run();
+    await env.DB.prepare(
+      "delete from identities where subject = 'g-new'",
+    ).run();
   });
 
   it("DELETE_USER: removed, placeholder email, shares and memberships gone, never the owner", async () => {
@@ -330,28 +350,39 @@ describe("users by identity", () => {
     expect(await revokedAt(u)).toBeGreaterThan(0);
     expect(await statusOf(owner.userId)).toBe("active");
     expect(
-      (await one<{ email: string }>("select email from users where id = ?", owner.userId))
-        ?.email,
+      (
+        await one<{ email: string }>(
+          "select email from users where id = ?",
+          owner.userId,
+        )
+      )?.email,
     ).toBe(owner.email);
   });
 
   it("directory UNSUSPEND_USER sets status active, never revives a removed row", async () => {
     const [a, b] = [uniq("unsus"), uniq("unrem")];
-    const [sa, sb] = [`g-us-${crypto.randomUUID()}`, `g-ur-${crypto.randomUUID()}`];
-    g.addUser({ id: sa, primaryEmail: a, suspended: true });
+    const [sa, sb] = [
+      `g-us-${crypto.randomUUID()}`,
+      `g-ur-${crypto.randomUUID()}`,
+    ];
+    g.addUser({ id: sa, primaryEmail: a });
     g.addUser({ id: sb, primaryEmail: b });
     const t0 = Date.now();
     await connected(t0);
     const ua = (await userByIdentity(sa))?.id as string;
     const ub = (await userByIdentity(sb))?.id as string;
+    // Suspended in Google: the next reconcile applies it.
+    (g.users.get(sa) as { suspended?: boolean }).suspended = true;
+    await drain(t0 + 61 * MIN);
     expect(await statusOf(ua)).toBe("suspended");
     await env.DB.prepare("update users set status = 'removed' where id = ?")
       .bind(ub)
       .run();
     (g.users.get(sa) as { suspended?: boolean }).suspended = false;
-    g.activity("admin", "UNSUSPEND_USER", { USER_EMAIL: a });
-    g.activity("admin", "UNSUSPEND_USER", { USER_EMAIL: b });
-    await drain(t0 + 2 * MIN);
+    const at = t0 + 62 * MIN;
+    g.activity("admin", "UNSUSPEND_USER", { USER_EMAIL: a }, at);
+    g.activity("admin", "UNSUSPEND_USER", { USER_EMAIL: b }, at);
+    await drain(t0 + 63 * MIN);
     expect(await statusOf(ua)).toBe("active");
     expect(await statusOf(ub)).toBe("removed");
     const why = await one<{ detail: string }>(
@@ -365,15 +396,26 @@ describe("users by identity", () => {
   });
 
   it("RENAME_USER moves the address; shares follow only when the old address is an alias", async () => {
-    const [a1, a2, b1, b2] = [uniq("ren-a"), uniq("ren-a2"), uniq("ren-b"), uniq("ren-b2")];
-    const [sa, sb] = [`g-ra-${crypto.randomUUID()}`, `g-rb-${crypto.randomUUID()}`];
+    const [a1, a2, b1, b2] = [
+      uniq("ren-a"),
+      uniq("ren-a2"),
+      uniq("ren-b"),
+      uniq("ren-b2"),
+    ];
+    const [sa, sb] = [
+      `g-ra-${crypto.randomUUID()}`,
+      `g-rb-${crypto.randomUUID()}`,
+    ];
     g.addUser({ id: sa, primaryEmail: a1 });
     g.addUser({ id: sb, primaryEmail: b1 });
     const t0 = Date.now();
     await connected(t0);
     const artA = await seedShare(a1);
     const artB = await seedShare(b1);
-    Object.assign(g.users.get(sa) as object, { primaryEmail: a2, aliases: [a1] });
+    Object.assign(g.users.get(sa) as object, {
+      primaryEmail: a2,
+      aliases: [a1],
+    });
     Object.assign(g.users.get(sb) as object, { primaryEmail: b2 });
     g.activity("admin", "RENAME_USER", { USER_EMAIL: a1, NEW_VALUE: a2 });
     g.activity("admin", "RENAME_USER", { USER_EMAIL: b1, NEW_VALUE: b2 });
@@ -411,7 +453,11 @@ describe("onGoogleSignIn", () => {
       `grp-child-${crypto.randomUUID()}`,
     ];
     g.addGroup({ id: gAdd, email: `${gAdd}@a.com`, members: [other.sub] });
-    g.addGroup({ id: gDrop, email: `${gDrop}@a.com`, members: [me.sub, other.sub] });
+    g.addGroup({
+      id: gDrop,
+      email: `${gDrop}@a.com`,
+      members: [me.sub, other.sub],
+    });
     g.addGroup({ id: gChild, email: `${gChild}@a.com`, members: [] });
     for (const x of [gAdd, gDrop]) {
       await group(x);
@@ -434,16 +480,22 @@ describe("onGoogleSignIn", () => {
     g.removeMember(gDrop, other.sub);
     await onGoogleSignIn(e, u);
     expect(
-      (await all<{ group_id: string }>("select group_id from directory_members where user_id = ?", u.id)).map(
-        (r) => r.group_id,
-      ),
+      (
+        await all<{ group_id: string }>(
+          "select group_id from directory_members where user_id = ?",
+          u.id,
+        )
+      ).map((r) => r.group_id),
     ).toEqual([gAdd]);
     expect(await syncRole(s, u.id)).toBe("editor");
     // The other user's rows are untouched (only the reconcile changes them).
     expect(
-      (await all<{ group_id: string }>("select group_id from directory_members where user_id = ? order by group_id", o)).map(
-        (r) => r.group_id,
-      ),
+      (
+        await all<{ group_id: string }>(
+          "select group_id from directory_members where user_id = ? order by group_id",
+          o,
+        )
+      ).map((r) => r.group_id),
     ).toEqual([gAdd, gDrop].sort());
   });
 

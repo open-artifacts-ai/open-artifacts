@@ -1,14 +1,25 @@
 import type { Member } from "@oa/shared";
+import { directorySignIn, SignInRefused } from "../directory/signin.js";
 import type { KickReason } from "../directory/sync.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
 
 /**
- * P3 seam: called after every successful Google admission, before the
- * session is issued (P3 diffs groups.list for this user). P2 lands the
- * signature; P3 owns the body. A throw is logged and never blocks sign-in.
+ * Called after every successful Google admission, before the session is
+ * issued (P3 T14, directory/signin.ts): the user is re-read from the
+ * directory by their bound identity and their groups diffed. Throws
+ * SignInRefused when the directory refuses them (suspended, gone, another
+ * customer, or Google unreachable during customer_mismatch); any other
+ * failure is logged and the sign-in proceeds (fail static).
  */
-export async function onGoogleSignIn(_env: Env, _user: Member): Promise<void> {}
+export async function onGoogleSignIn(env: Env, user: Member): Promise<void> {
+  try {
+    await directorySignIn(env, user);
+  } catch (e) {
+    if (e instanceof SignInRefused) throw e;
+    logWarn("directory_signin", e);
+  }
+}
 
 /**
  * P3 T13 seam: called once the owner confirms a directory connect (its binding and
@@ -42,19 +53,6 @@ export async function resetSync(
     .reset()
     .catch((e) => logWarn("directory_reset", e));
 }
-
-/**
- * P3 T14 seam: a synced group's member diff (install user ids) was just
- * written to directory_members by DirectorySync, its members' restriction
- * flags recomputed and the removed users' sockets closed. T14 recomputes
- * space_members(source = 'sync') from it. A throw is logged.
- */
-export async function onGroupDiff(
-  _env: Env,
-  _groupId: string,
-  _added: string[],
-  _removed: string[],
-): Promise<void> {}
 
 /**
  * Asks the install's DirectorySync for a run (P3 T13). Without the

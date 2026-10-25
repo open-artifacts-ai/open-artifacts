@@ -18,6 +18,8 @@ export type GoogleUser = {
   /** Super admin only (delegated admins read false; isDelegatedAdmin is separate). */
   isAdmin: boolean;
   customerId: string | null;
+  /** The user's other addresses (a former primary stays one), lowercase. */
+  aliases?: string[];
 };
 
 /**
@@ -84,10 +86,16 @@ function userOf(raw: unknown): GoogleUser | null {
     deleted: false,
     isAdmin: u.isAdmin === true,
     customerId: str(u.customerId),
+    aliases: [u.aliases, u.nonEditableAliases].flatMap((l) =>
+      Array.isArray(l)
+        ? l.flatMap((a) => (typeof a === "string" ? [a.toLowerCase()] : []))
+        : [],
+    ),
   };
 }
 
-const USER_FIELDS = "id,primaryEmail,suspended,isAdmin,customerId";
+const USER_FIELDS =
+  "id,primaryEmail,suspended,isAdmin,customerId,aliases,nonEditableAliases";
 
 /** users.get(userKey): null when the response has no usable user. */
 export async function getUser(
@@ -350,4 +358,20 @@ export async function activities(
     }
   }
   return { events, nextPageToken: str(out?.nextPageToken) };
+}
+
+/**
+ * groups.hasMember(groupKey, memberKey): true when the user is a member,
+ * directly or through nested groups (sign-in confirms a removal with it).
+ */
+export async function hasMember(
+  token: string,
+  groupKey: string,
+  memberKey: string,
+): Promise<boolean> {
+  const out = (await get(
+    token,
+    `${ADMIN_API}/groups/${encodeURIComponent(groupKey)}/hasMember/${encodeURIComponent(memberKey)}`,
+  )) as { isMember?: unknown } | null;
+  return out?.isMember === true;
 }

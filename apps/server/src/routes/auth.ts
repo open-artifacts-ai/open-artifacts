@@ -27,6 +27,7 @@ import {
   signSession,
 } from "../auth/session.js";
 import { signInMode } from "../auth/sign-in.js";
+import { SignInRefused } from "../directory/signin.js";
 import { ApiError, toErrorResponse } from "../http/errors.js";
 import { FAVICON_TAGS } from "../http/head.js";
 import { onGoogleSignIn } from "../services/directory.js";
@@ -216,7 +217,20 @@ export function mountAuth(app: AppType): void {
       }
       try {
         await onGoogleSignIn(c.env, r.user);
-      } catch {
+      } catch (e) {
+        // The directory refused this user (P3 T14): no session.
+        if (e instanceof SignInRefused) {
+          logAuth({
+            provider: "google",
+            outcome: "refused",
+            stage: "directory",
+          });
+          return toSignIn(
+            e.why === "customer_mismatch" ? "failed" : "removed",
+            id.next,
+            clear,
+          );
+        }
         logAuth({ evt: "directory_sync_failed" });
       }
       const row = await getUserWithEpoch(c.env, r.user.id);

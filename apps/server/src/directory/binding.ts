@@ -129,14 +129,18 @@ export async function bindPage(
     tenant: string;
     allowEmail: boolean;
     ctx?: Pick<ExecutionContext, "waitUntil">;
+    /** Re-checked before every write (DirectorySync's reset epoch). */
+    guard?: () => void;
   },
 ): Promise<void> {
+  const guard = o.guard ?? (() => {});
   const domains = authConfig(env).domains;
   const { all, link, create, suspended } = planPage(new Set(domains), page);
   if (all.length === 0) return;
   const now = Date.now();
   const allJson = JSON.stringify(all);
   const createJson = JSON.stringify(create);
+  guard();
   await env.DB.batch([
     stmt(env.DB, MARK_BOUND).bind(allJson),
     ...(o.allowEmail && link.length
@@ -166,7 +170,8 @@ export async function bindPage(
       .bind(ids)
       .all<{ id: string }>();
     if (results.length === 0) return;
-    for (const r of results)
+    for (const r of results) {
+      guard();
       await setUserStatus(
         env,
         r.id,
@@ -175,6 +180,7 @@ export async function bindPage(
         o.ctx,
         SYNC,
       );
+    }
   }
 }
 

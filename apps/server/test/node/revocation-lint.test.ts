@@ -71,10 +71,17 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // A departed transfer narrows the (inactive) former owner on up to a page
   // of artifacts: their presence again, plus the artifacts made team.
   "services/spaces.ts:transferPersonal": "user",
-  // P3 T13 DirectorySync: a synced group's diff removes members (their
-  // Every-space and mapped roles are read through directory_members) and
-  // caps the newly restricted: the removed and capped users.
-  "directory/sync.ts:SyncEngine.apply": "user",
+  // P3 T13/T14 DirectorySync: a synced group's diff removes members (their
+  // Every-space and mapped roles are read through directory_members), drops
+  // or lowers synced space roles and caps the newly restricted: the
+  // narrowed and capped users.
+  "directory/apply.ts:applyGroupDiff": "user",
+  // P3 T14: a directory deletion (or a recycled address): removed, its
+  // address's shares and every membership gone.
+  "directory/apply.ts:deleteUser": "user",
+  // A new primary address: shares on an alias merge into the new address
+  // (a merged share may keep the lower role).
+  "directory/apply.ts:changeEmail": "user",
 };
 
 /**
