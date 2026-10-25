@@ -15,6 +15,7 @@ import {
   stripNameControls,
 } from "@oa/shared";
 import type { Context } from "hono";
+import { canConnect } from "../auth/agents.js";
 import { callerOf, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import type { Env } from "../env.js";
@@ -94,10 +95,6 @@ export const clientNameOf = (name: string | undefined, fallback: string) =>
   (name?.replace(HIDDEN_CHARS, "").trim() || fallback)
     .replace(HIDDEN_CHARS, "")
     .slice(0, MAX_CLIENT_NAME);
-
-/** Members only, and never a capped caller (a guest, a code session outside the domains, P3's restricted). */
-const canConnect = (user: Member) =>
-  orgCan(user, "mcp.connect", { cap: capOfCaller(callerOf(user)) });
 
 /** What the grant's KV metadata holds (identity fields absent on grants from before them). */
 type GrantMetadata = { clientName?: string } & Partial<GrantIdentity>;
