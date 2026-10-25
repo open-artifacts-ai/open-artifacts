@@ -355,6 +355,15 @@ it("content host (P3 T11): one statement per file; the bound viewer adds one PK 
   expect(await read(`${unbound}a.css`)).toEqual([1]);
   expect(await read(`${publicPrefix(pub, 1)}__view`)).toEqual([2]);
   expect(await read(`${publicPrefix(pub, 1)}a.css`)).toEqual([1]);
+  // P3 T18: with a directory connected, a bound token adds the sync.state
+  // PK row (the customer_mismatch check); unbound and public reads don't.
+  await env.DB.prepare(
+    "insert or replace into directory_state (key, value) values ('sync.state', 'ok')",
+  ).run();
+  expect(await read(`${bound}a.css`)).toEqual([3]);
+  expect(await read(`${unbound}a.css`)).toEqual([1]);
+  expect(await read(`${publicPrefix(pub, 1)}a.css`)).toEqual([1]);
+  await resetDirectory();
 });
 
 it("directory connect (P3 T12): the pending flow, then binding, sealed token, audit and the initial pass", async () => {
@@ -497,4 +506,78 @@ it("rows written equal changed rows only (P3 T14 applyGroupDiff)", async () => {
   await applyGroupDiff(counted, gb, [], [u], SYNC);
   // directory_members 1 + the role lowered in place 1.
   expect(rows.n).toBe(2);
+});
+
+it("getUser (P3 T18): one statement; the customer_mismatch denial is one directory_state PK probe", async () => {
+  const reads: number[] = [];
+  const wrap = (s: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(s, {
+      get(t, p) {
+        if (p === "bind") return (...a: unknown[]) => wrap(t.bind(...a));
+        if (p === "first")
+          return async () => {
+            const r = await t.all<Record<string, unknown>>();
+            reads.push(r.meta.rows_read);
+            return r.results[0] ?? null;
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  const DBr = new Proxy(env.DB, {
+    get(t, p) {
+      if (p === "prepare") return (q: string) => wrap(t.prepare(q));
+      const v = Reflect.get(t, p);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  const e = { ...(env as object), DB: DBr } as typeof env;
+  const plain = (await login("rows-t18-manual@x.com")).userId;
+  const synced = await seedUser(uniq("rows-t18"), "member", {
+    googleSub: `rows-t18-${crypto.randomUUID()}`,
+  });
+  await env.DB.prepare(
+    "update identities set directory_bound = 1 where user_id = ?",
+  )
+    .bind(synced)
+    .run();
+  const measure = async (id: string, cookie: boolean) => {
+    reads.length = 0;
+    const r = await getUserWithEpoch(e, id, { cookie });
+    expect(reads).toHaveLength(1);
+    return { n: reads[0], ok: r !== null };
+  };
+  const upsert = (k: string, v: string) =>
+    env.DB.prepare(
+      "insert or replace into directory_state (key, value) values (?, ?)",
+    )
+      .bind(k, v)
+      .run();
+  await resetDirectory();
+  // Measured: no directory, users PK 1 (the misses read no row).
+  expect(await measure(synced, false)).toEqual({ n: 1, ok: true });
+  expect(await measure(synced, true)).toEqual({ n: 1, ok: true });
+  // Healthy and connected: + the sync.state row; cookies + the health row.
+  await upsert("sync.state", "ok");
+  await upsert(
+    "sync.health",
+    JSON.stringify({ state: "ok", unhealthySince: null }),
+  );
+  expect(await measure(synced, false)).toEqual({ n: 2, ok: true });
+  expect(await measure(synced, true)).toEqual({ n: 3, ok: true });
+  // Unhealthy (an outage only): cookies also read the identity, and the
+  // health row once more for its value; PATs and grants are unchanged.
+  await upsert("sync.state", "backoff");
+  await upsert(
+    "sync.health",
+    JSON.stringify({ state: "backoff", unhealthySince: Date.now() }),
+  );
+  expect(await measure(synced, false)).toEqual({ n: 2, ok: true });
+  expect(await measure(synced, true)).toEqual({ n: 5, ok: true });
+  // customer_mismatch: the synced user is denied (+ their identity row);
+  // a manual member is not.
+  await upsert("sync.state", "customer_mismatch");
+  expect(await measure(synced, false)).toEqual({ n: 3, ok: false });
+  expect(await measure(plain, false)).toEqual({ n: 2, ok: true });
+  await resetDirectory();
 });

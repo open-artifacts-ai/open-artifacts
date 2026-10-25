@@ -180,9 +180,9 @@ type Row = {
 // Staleness is not checked.
 const VIEWER_COLS =
   "u.status as viewer_status, u.session_epoch as viewer_epoch";
-const VIEWER_JOIN = `left join users u on u.id = ?2 and not exists (
-    select 1 from directory_state ds where ds.key = 'sync.state' and ds.value = 'customer_mismatch'
-      and exists (select 1 from identities i where i.user_id = u.id and i.provider = 'google' and i.directory_bound = 1))`;
+const VIEWER_JOIN = `left join users u on u.id = ?2 and not (
+    coalesce((select ds.value from directory_state ds where ds.key = 'sync.state'), '') = 'customer_mismatch'
+    and exists (select 1 from identities i where i.user_id = u.id and i.provider = 'google' and i.directory_bound = 1))`;
 
 /**
  * One D1 read: the artifact's live state, the token's viewer (status and

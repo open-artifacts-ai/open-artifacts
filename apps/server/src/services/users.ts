@@ -237,15 +237,21 @@ const USER_COLS =
  */
 const SYNCED =
   "exists (select 1 from identities i where i.user_id = users.id and i.provider = 'google' and i.directory_bound = 1)";
-/** customer_mismatch fails closed for synced users: one directory_state PK probe, then the identity. */
-const MISMATCH = `exists (select 1 from directory_state ds where ds.key = 'sync.state' and ds.value = 'customer_mismatch' and ${SYNCED})`;
+/**
+ * customer_mismatch fails closed for synced users: one directory_state PK
+ * probe (an uncorrelated scalar, so it runs first), then the identity only
+ * during a mismatch. Pinned in d1-rows.
+ */
+const MISMATCH = `(coalesce((select ds.value from directory_state ds where ds.key = 'sync.state'), '') = 'customer_mismatch' and ${SYNCED})`;
+const UNHEALTHY_SINCE =
+  "(select json_extract(h.value, '$.unhealthySince') from directory_state h where h.key = 'sync.health')";
 /**
  * Cookie sessions only (?2 = 1): when sync went unhealthy, for a synced user
  * (the 24 h browser session cap); one PK probe of the health row, and the
  * identity only while unhealthy. PATs and OAuth grants never read it.
  */
-const CAP_SINCE = `case when ?2 = 1 then (select json_extract(h.value, '$.unhealthySince') from directory_state h
-  where h.key = 'sync.health' and json_extract(h.value, '$.unhealthySince') is not null and ${SYNCED}) end as capSince`;
+const CAP_SINCE = `case when ?2 = 1 and ${UNHEALTHY_SINCE} is not null and ${SYNCED}
+  then ${UNHEALTHY_SINCE} end as capSince`;
 
 const USER_BY_ID = `select ${USER_COLS}, ${CAP_SINCE} from users
   where id = ?1 and status = 'active' and not ${MISMATCH} limit 1`;
