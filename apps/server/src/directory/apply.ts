@@ -6,6 +6,7 @@ import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeUserLive, revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
+import { moveUserEmail } from "../services/email-move.js";
 import { setUserStatus } from "../services/members.js";
 import { RESTRICTED_SYNC_CASE } from "../services/restriction.js";
 import { bindPage } from "./binding.js";
@@ -98,10 +99,16 @@ export type GroupDiffOpts = {
   ctx?: Ctx;
 };
 
+/** Users per applyGroupDiff batch: a big diff never makes one huge batch. */
+export const DIFF_CHUNK = 200;
+
 /**
- * Applies one synced group's member diff (install user ids) in one D1 batch
- * and closes the sockets of everyone it narrowed or newly capped. Resolves
- * to the narrowed (a per-space or Every-space role dropped) and the capped.
+ * Applies one synced group's member diff (install user ids), DIFF_CHUNK
+ * users per D1 batch (`pre` joins the first), and closes the sockets of
+ * everyone each committed batch narrowed or newly capped. Resolves to the
+ * narrowed (a per-space or Every-space role dropped) and the capped. A
+ * failure after some batches committed leaves a smaller diff for the next
+ * sweep (each batch is idempotent).
  */
 export async function applyGroupDiff(
   env: Env,
@@ -111,16 +118,55 @@ export async function applyGroupDiff(
   actor: AuditActor,
   o: GroupDiffOpts = {},
 ): Promise<{ narrowed: string[]; capped: string[] }> {
-  const pre = o.pre ?? [];
   const guard = o.guard ?? noGuard;
   if (!added.length && !removed.length) {
-    if (pre.length) {
+    if (o.pre?.length) {
       guard();
-      await env.DB.batch(pre);
+      await env.DB.batch(o.pre);
     }
     return { narrowed: [], capped: [] };
   }
   const now = o.now ?? Date.now();
+  const narrowed: string[] = [];
+  const capped: string[] = [];
+  const all = [
+    ...added.map((id) => [id, true] as const),
+    ...removed.map((id) => [id, false] as const),
+  ];
+  for (let i = 0; i < all.length; i += DIFF_CHUNK) {
+    const part = all.slice(i, i + DIFF_CHUNK);
+    const out = await applyChunk(
+      env,
+      groupId,
+      part.filter((x) => x[1]).map((x) => x[0]),
+      part.filter((x) => !x[1]).map((x) => x[0]),
+      actor,
+      i === 0 ? (o.pre ?? []) : [],
+      guard,
+      now,
+      o.ctx,
+    );
+    narrowed.push(...out.narrowed);
+    capped.push(...out.capped);
+  }
+  return { narrowed, capped };
+}
+
+/**
+ * One batch of applyGroupDiff (at most DIFF_CHUNK users), then the sockets
+ * of the users it narrowed or capped close.
+ */
+async function applyChunk(
+  env: Env,
+  groupId: string,
+  added: string[],
+  removed: string[],
+  actor: AuditActor,
+  pre: D1PreparedStatement[],
+  guard: Guard,
+  now: number,
+  ctx?: Ctx,
+): Promise<{ narrowed: string[]; capped: string[] }> {
   const touched = JSON.stringify([...new Set([...added, ...removed])]);
   const addJson = JSON.stringify(added);
   const remJson = JSON.stringify(removed);
@@ -173,7 +219,7 @@ export async function applyGroupDiff(
     env,
     [...narrowed, ...capped],
     "directory group change",
-    o.ctx,
+    ctx,
   );
   return { narrowed: [...narrowed], capped };
 }
@@ -184,47 +230,38 @@ const placeholder = (id: string) => `removed+${id}@invalid`;
 
 /**
  * Each listed directory user's install row (by identity) and the row now
- * holding its primary address (with that row's Google subject, if any).
+ * holding its primary address: that row's Google subject, and whether it is
+ * a pure invite (active, never signed in, no identity of any provider).
  */
 const ROWS = `select json_extract(j.value, '$.id') as sub,
     u.id as uid, u.email, u.status, u.role = 'owner' as owner,
     h.id as hid, h.role = 'owner' as howner, h.status as hstatus,
-    (select hi.subject from identities hi where hi.provider = 'google' and hi.user_id = h.id) as hsub
+    (select hi.subject from identities hi where hi.provider = 'google' and hi.user_id = h.id) as hsub,
+    (h.status = 'active' and h.last_seen_at is null
+      and not exists (select 1 from identities hx where hx.user_id = h.id)) as hinvite
   from json_each(?1) j
   left join identities i on i.provider = 'google' and i.subject = json_extract(j.value, '$.id')
   left join users u on u.id = i.user_id
   left join users h on h.email = json_extract(j.value, '$.email')`;
 
 // The deletion treatment, gated on the row now being removed (never the
-// owner): that address's shares, the user's memberships, then the address.
+// owner): the shares the user holds, their memberships, then the address.
+// Shares are keyed by address only, and every address change re-keys them
+// (services/email-move.ts), so the shares a user holds are exactly those on
+// their current address.
 const GONE =
   "exists (select 1 from users where id = ?1 and status = 'removed' and role <> 'owner')";
 const DROP_SHARES = `delete from shares where ${GONE}
   and email = (select email from users where id = ?1)`;
 const DROP_MEMBERSHIPS = `delete from space_members where user_id = ?1 and ${GONE}`;
 const PLACEHOLDER = `update users set email = ?2 where id = ?1 and email <> ?2 and ${GONE}`;
-
-const MOVE_EMAIL = `update users set email = ?2
-  where id = ?1 and email = ?3 and status <> 'removed'
-    and not exists (select 1 from users where email = ?2)`;
-/**
- * The row moved to ?2 and nobody holds the old address ?3 (a stale page
- * snapshot never re-keys a new holder's shares onto the old user).
- */
-const MOVED = `exists (select 1 from users where id = ?1 and email = ?2)
-  and not exists (select 1 from users where email = ?3)`;
-/**
- * The old address's shares re-keyed to the new one (shares are keyed by
- * address only; there is no user_id column): on a conflict the higher role.
- */
-const COPY_SHARES = `insert into shares (artifact_id, email, role, created_by, created_at)
-  select artifact_id, ?2, role, created_by, created_at from shares
-  where email = ?3 and ${MOVED} and true
-  on conflict (artifact_id, email) do update set role =
-    case when shares.role = 'editor' or excluded.role = 'editor' then 'editor' else 'viewer' end
-  where shares.role <> excluded.role and excluded.role = 'editor'`;
-/** The old address's shares, once copied (the row moved). */
-const DROP_OLD_SHARES = `delete from shares where email = ?3 and ${MOVED}`;
+/** A pure invite at the address (?5) becomes the directory user's row. */
+const LINK_INVITE = `insert or ignore into identities
+  (provider, subject, tenant, user_id, created_at, directory_bound)
+  select 'google', ?2, ?3, ?1, ?4, 1
+  where exists (select 1 from users where id = ?1 and email = ?5
+      and status = 'active' and last_seen_at is null)
+    and not exists (select 1 from identities where user_id = ?1)`;
 
 export type ApplyUsersOpts = {
   /** The binding's domain (the identity tenant for created rows). */
@@ -249,6 +286,7 @@ type Row = {
   howner: number | null;
   hsub: string | null;
   hstatus: string | null;
+  hinvite: number | null;
 };
 
 /** One directory user (the plan's applyUser); `run` names the pass in logs. */
@@ -265,7 +303,8 @@ export function applyUser(
 /**
  * Applies a page of directory users by identity. Reads once; writes only
  * for the users whose install row has to change, so a steady listing writes
- * nothing. Suspensions and deletions are never held.
+ * nothing. Suspensions and deletions are never held, and apply by id even
+ * when the listed address is unusable.
  */
 export async function applyUsers(
   env: Env,
@@ -273,11 +312,11 @@ export async function applyUsers(
   o: ApplyUsersOpts,
 ): Promise<void> {
   const guard = o.guard ?? noGuard;
-  const list = page.flatMap((u) => {
-    const email = normalizeEmail(u.primaryEmail);
-    return email ? [{ u, email }] : [];
-  });
-  if (!list.length) return;
+  if (!page.length) return;
+  const list = page.map((u) => ({
+    u,
+    email: normalizeEmail(u.primaryEmail) || null,
+  }));
   const { results } = await stmt(env.DB, ROWS)
     .bind(JSON.stringify(list.map((x) => ({ id: x.u.id, email: x.email }))))
     .all<Row>();
@@ -290,30 +329,41 @@ export async function applyUsers(
       await applyLinked(env, u, email, r as Row & { uid: string }, guard, o);
       continue;
     }
-    // Unknown id. Only a recycled address is handled here: a free one is
-    // created by bindPage (listings), and an address held by a row without a
-    // Google link is left to sign-in (P2 links it after hd verification).
-    if (u.deleted || u.suspended || !r.hid || !r.hsub || r.hsub === u.id)
-      continue;
+    // Unknown id behind an address another row holds (a free address is
+    // created by bindPage in the listings).
+    if (!email || u.deleted || u.suspended || !r.hid) continue;
+    if (r.hsub === u.id) continue;
     if (!domains.has(email.slice(email.lastIndexOf("@") + 1))) continue;
     if (r.howner) {
       logWarn("directory_recycled_owner_address");
       continue;
     }
-    // A new directory id behind an address an old row holds: the old user
-    // renamed (their row follows them), or gone (deletion treatment, which
-    // also cuts that address's shares and memberships: decision 2).
-    // Without users.get (no lookup) nothing is removed on this signal.
-    if (!o.lookup) continue;
-    const old = await o.lookup(r.hsub);
-    const oldEmail =
-      old && !old.deleted ? normalizeEmail(old.primaryEmail) : null;
-    // Renamed and still active: the row follows its user (changeEmail cuts
-    // the shares on the address they left, in the same batch). Gone, or a
-    // removed row (never renamed): the deletion treatment frees the address.
-    if (oldEmail && oldEmail !== email && r.hstatus !== "removed")
-      await changeEmail(env, r.hid, email, oldEmail, guard);
-    else await deleteUser(env, r.hid, "directory_new_id", guard, o.ctx);
+    if (!r.hsub) {
+      // No Google link. A pure invite (never signed in) is this person's
+      // row: link it. A row with sign-in history is a recycled address:
+      // the deletion treatment, so nothing is inherited.
+      if (r.hinvite) {
+        guard();
+        await stmt(env.DB, LINK_INVITE)
+          .bind(r.hid, u.id, o.tenant, Date.now(), email)
+          .run();
+        continue;
+      }
+      await deleteUser(env, r.hid, "directory_new_id", guard, o.ctx);
+    } else {
+      // A new directory id behind an address an old Google-linked row holds:
+      // the old user renamed (their row and shares follow them), or gone
+      // (deletion treatment, which also cuts that address's shares and
+      // memberships: decision 2). Without users.get (no lookup) nothing is
+      // removed on this signal.
+      if (!o.lookup) continue;
+      const old = await o.lookup(r.hsub);
+      const oldEmail =
+        old && !old.deleted ? normalizeEmail(old.primaryEmail) : null;
+      if (oldEmail && oldEmail !== email && r.hstatus !== "removed")
+        await changeEmail(env, r.hid, email, oldEmail, guard);
+      else await deleteUser(env, r.hid, "directory_new_id", guard, o.ctx);
+    }
     // The address is free now: T12's bindPage creates the row (in domain,
     // active) and its identity; its personal space comes from the trigger.
     guard();
@@ -329,7 +379,7 @@ export async function applyUsers(
 async function applyLinked(
   env: Env,
   u: GoogleUser,
-  email: string,
+  email: string | null,
   r: Row & { uid: string },
   guard: Guard,
   o: ApplyUsersOpts,
@@ -363,15 +413,16 @@ async function applyLinked(
       SYNC,
     );
   }
-  if (r.email && r.email !== email)
+  if (email && r.email && r.email !== email)
     await changeEmail(env, r.uid, r.email, email, guard);
 }
 
 /**
- * The deletion treatment: removed (setUserStatus), then in one batch that
- * address's shares, every space membership (sync and manual) and the
- * address itself (a placeholder), then the sockets close. Never the owner
- * (setUserStatus and every statement exclude that row).
+ * The deletion treatment: removed (setUserStatus), then in one batch the
+ * shares the user holds (their current address's), every space membership
+ * (sync and manual) and the address itself (a placeholder), then the
+ * sockets close. Never the owner (setUserStatus and every statement exclude
+ * that row).
  */
 export async function deleteUser(
   env: Env,
@@ -391,14 +442,7 @@ export async function deleteUser(
   await revokeUserLive(env, uid, "directory delete", ctx);
 }
 
-/**
- * Moves user `uid` from address `from` to `to` (when nobody else holds it).
- * Shares follow the person: every share on `from` is re-keyed to `to` in
- * the same batch (the higher role on a conflict), every share write gated
- * on the row having moved, so they keep their access and a later holder of
- * `from` inherits nothing. Their access only stays or widens: no socket
- * needs to close.
- */
+/** A new primary address: the shared move (shares follow the person). */
 async function changeEmail(
   env: Env,
   uid: string,
@@ -406,12 +450,7 @@ async function changeEmail(
   to: string,
   guard: Guard,
 ): Promise<void> {
-  if (to === normalizeEmail(env.OWNER_EMAIL ?? "")) return;
   guard();
-  const out = await env.DB.batch([
-    stmt(env.DB, MOVE_EMAIL).bind(uid, to, from),
-    stmt(env.DB, COPY_SHARES).bind(uid, to, from),
-    stmt(env.DB, DROP_OLD_SHARES).bind(uid, to, from),
-  ]);
-  if (!out[0]?.meta.changes) logWarn("directory_email_taken");
+  if (!(await moveUserEmail(env, uid, from, to)))
+    logWarn("directory_email_taken");
 }

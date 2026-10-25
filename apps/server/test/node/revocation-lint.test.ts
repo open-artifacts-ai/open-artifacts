@@ -75,7 +75,7 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // Every-space and mapped roles are read through directory_members), drops
   // or lowers synced space roles and caps the newly restricted: the
   // narrowed and capped users.
-  "directory/apply.ts:applyGroupDiff": "user",
+  "directory/apply.ts:applyChunk": "user",
   // P3 T14: a directory deletion (or a recycled address): removed, its
   // address's shares and every membership gone.
   "directory/apply.ts:deleteUser": "user",
@@ -96,9 +96,9 @@ const WIDENS: Readonly<Record<string, string>> = {
   // Removing a restricted group only lifts caps (restricted_sync recomputed
   // from the groups that remain).
   "services/spaces.ts:deleteRestrictedGroup": "lifts a restriction only",
-  // P3 T14: a new primary address re-keys the person's shares to it (the
+  // P3 T14: every address change (sign-in drift, sync) re-keys the person's shares to it (the
   // higher role on a conflict): their access stays or widens.
-  "directory/apply.ts:changeEmail": "shares follow the person, max role",
+  "services/email-move.ts:moveUserEmail": "shares follow the person, max role",
   // P3 T10: the transfer successor predicate reads restricted_* (no write).
   "services/spaces.ts:SUCCESSOR": "a read: the successor predicate",
 };

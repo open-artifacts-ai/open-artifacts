@@ -6,15 +6,21 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { newId } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyGroupDiff, applyUsers } from "../src/directory/apply.js";
+import { authConfig } from "../src/auth/config.js";
+import {
+  applyGroupDiff,
+  applyUsers,
+  DIFF_CHUNK,
+} from "../src/directory/apply.js";
 import type { GoogleUser } from "../src/directory/google.js";
 import { SignInRefused } from "../src/directory/signin.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { onGoogleSignIn, SYNC_DO_NAME } from "../src/services/directory.js";
+import { admit } from "../src/services/identity.js";
 import { getUser } from "../src/services/users.js";
-import { mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
+import { direct, mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
 import {
   connect,
   directEnv,
@@ -800,5 +806,151 @@ describe("onGoogleSignIn", () => {
     await expect(onGoogleSignIn(e, u)).resolves.toBeUndefined();
     expect(await groupsOf(u.id)).toEqual([gid]);
     expect(await syncRole(s, u.id)).toBe("editor");
+  });
+});
+
+describe("T14 security review", () => {
+  const gu = (
+    id: string,
+    primaryEmail: string,
+    o: Partial<GoogleUser> = {},
+  ): GoogleUser => ({
+    id,
+    primaryEmail,
+    suspended: false,
+    deleted: false,
+    isAdmin: false,
+    customerId: "C0123",
+    ...o,
+  });
+
+  it("sign-in drift moves the shares: A drifts, then C gets A's old address with zero shares", async () => {
+    const [a1, a2] = [uniq("drift-a"), uniq("drift-a2")];
+    const sa = `g-drift-a-${crypto.randomUUID()}`;
+    const a = await seedUser(a1, "member", { googleSub: sa });
+    const art = await seedShare(a1);
+    const cfg = authConfig(direct());
+    const r = await admit(env, cfg, {
+      provider: "google",
+      subject: sa,
+      email: a2,
+      name: null,
+      tenant: "a.com",
+    });
+    expect(r.ok && r.user.id).toBe(a);
+    expect(r.ok && r.user.email).toBe(a2);
+    expect(await sharesFor(a2)).toEqual([{ artifact_id: art }]);
+    const c = await admit(env, cfg, {
+      provider: "google",
+      subject: `g-drift-c-${crypto.randomUUID()}`,
+      email: a1,
+      name: null,
+      tenant: "a.com",
+    });
+    expect(c.ok).toBe(true);
+    expect(c.ok && c.user.id).not.toBe(a);
+    expect(await sharesFor(a1)).toEqual([]);
+    expect(await sharesFor(a2)).toEqual([{ artifact_id: art }]);
+  });
+
+  it("a group diff above the chunk size applies in several batches, removals included", async () => {
+    const s = await sharedSpace();
+    const gid = await group();
+    await mapSpace(s, gid, "viewer");
+    const n = DIFF_CHUNK + 5;
+    const ids = Array.from({ length: n }, () => newId());
+    await env.DB.prepare(
+      `insert into users (id, email, name, role, created_at)
+       select value, value || '@chunk.a.com', 'c', 'member', 0 from json_each(?)`,
+    )
+      .bind(JSON.stringify(ids))
+      .run();
+    let batches = 0;
+    const DB = new Proxy(env.DB, {
+      get(t, p) {
+        if (p === "batch")
+          return (ss: D1PreparedStatement[]) => {
+            batches++;
+            return t.batch(ss);
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const en = { ...env, DB } as Env;
+    const count = async (q: string) =>
+      (await one<{ n: number }>(q, gid))?.n ?? 0;
+    const add = await applyGroupDiff(en, gid, ids, [], SYNC);
+    expect(add.narrowed).toEqual([]);
+    expect(batches).toBe(2);
+    expect(
+      await count(
+        "select count(*) n from directory_members where group_id = ?",
+      ),
+    ).toBe(n);
+    expect(
+      await count(
+        "select count(*) n from space_members sm join group_mappings gm on gm.space_id = sm.space_id where gm.group_id = ? and sm.source = 'sync'",
+      ),
+    ).toBe(n);
+    batches = 0;
+    const rem = await applyGroupDiff(en, gid, [], ids, SYNC);
+    expect(batches).toBe(2);
+    expect(rem.narrowed.sort()).toEqual([...ids].sort());
+    expect(
+      await count(
+        "select count(*) n from directory_members where group_id = ?",
+      ),
+    ).toBe(0);
+  });
+
+  it("deleted and suspended users apply by id even when their listed address is unusable", async () => {
+    const [sd, ss] = [
+      `g-bad-d-${crypto.randomUUID()}`,
+      `g-bad-s-${crypto.randomUUID()}`,
+    ];
+    const d = await seedUser(uniq("bad-d"), "member", { googleSub: sd });
+    const su = await seedUser(uniq("bad-s"), "member", { googleSub: ss });
+    await applyUsers(
+      e,
+      [
+        gu(sd, "not an address", { deleted: true }),
+        gu(ss, "", { suspended: true }),
+      ],
+      { tenant: "a.com" },
+    );
+    expect(await statusOf(d)).toBe("removed");
+    expect(await statusOf(su)).toBe("suspended");
+  });
+
+  it("an unlinked row at a new directory id's address: a pure invite is linked, a row with sign-in history is recycled", async () => {
+    const [inv, used] = [uniq("inv"), uniq("used")];
+    const invite = await seedUser(inv, "member");
+    const signedIn = await seedUser(used, "member");
+    await env.DB.prepare("update users set last_seen_at = ? where id = ?")
+      .bind(Date.now(), signedIn)
+      .run();
+    const usedArt = await seedShare(used);
+    const invArt = await seedShare(inv);
+    const [si, su] = [
+      `g-inv-${crypto.randomUUID()}`,
+      `g-used-${crypto.randomUUID()}`,
+    ];
+    await applyUsers(e, [gu(si, inv), gu(su, used)], { tenant: "a.com" });
+    // The invite became the directory user's row, with its invite.
+    expect((await userByIdentity(si))?.id).toBe(invite);
+    expect(await sharesFor(inv)).toEqual([{ artifact_id: invArt }]);
+    // The used row got the deletion treatment; a new row took the address.
+    expect(
+      await one<{ email: string; status: string }>(
+        "select email, status from users where id = ?",
+        signedIn,
+      ),
+    ).toEqual({ email: `removed+${signedIn}@invalid`, status: "removed" });
+    const nu = await userByIdentity(su);
+    expect(nu?.email).toBe(used);
+    expect(nu?.id).not.toBe(signedIn);
+    expect(await sharesFor(used)).toEqual([]);
+    expect(usedArt).toBeDefined();
   });
 });
