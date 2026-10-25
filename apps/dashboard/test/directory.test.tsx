@@ -273,7 +273,9 @@ it("admins see a customer mismatch without the ids", async () => {
   expect(s).not.toHaveTextContent("C01abc");
   expect(s).not.toHaveTextContent("C09xyz");
   expect(within(s).queryByRole("link", { name: "Reconnect" })).toBeNull();
-  expect(s).toHaveTextContent("Only the owner, Ada Lovelace, can reconnect.");
+  expect(s).toHaveTextContent(
+    "Only the owner, Ada Lovelace, can reconnect or disconnect.",
+  );
 });
 
 it("not synced yet", async () => {
