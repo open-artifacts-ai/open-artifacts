@@ -1,5 +1,5 @@
 import { normalizeEmail } from "@oa/auth-core";
-import { type AuditReason, newId } from "@oa/shared";
+import type { AuditReason } from "@oa/shared";
 import { authConfig } from "../auth/config.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
@@ -8,6 +8,7 @@ import { revokeUserLive, revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
 import { setUserStatus } from "../services/members.js";
 import { RESTRICTED_SYNC_CASE } from "../services/restriction.js";
+import { bindPage } from "./binding.js";
 import type { GoogleUser } from "./google.js";
 
 // Applying directory state (P3 T14). Everything here matches users through
@@ -209,15 +210,10 @@ const MOVED = "exists (select 1 from users where id = ?1 and email = ?2)";
 const COPY_SHARES = `insert or ignore into shares (artifact_id, email, role, created_by, created_at)
   select artifact_id, ?2, role, created_by, created_at from shares
   where email = ?3 and ${MOVED}`;
+/** Shares on an address nobody holds any more. */
+const CUT_ADDRESS = `delete from shares where email = ?1
+  and not exists (select 1 from users where email = ?1)`;
 const DROP_OLD_SHARES = `delete from shares where email = ?3 and ${MOVED}`;
-
-const CREATE_USER = `insert into users (id, email, name, role, created_at, status, restricted_sync)
-  select ?1, ?2, ?3, 'member', ?4, 'active', (select exists (select 1 from restricted_groups))
-  where not exists (select 1 from users where email = ?2)
-    and not exists (select 1 from identities where provider = 'google' and subject = ?5)`;
-const LINK_USER = `insert or ignore into identities
-  (provider, subject, tenant, user_id, created_at, directory_bound)
-  select 'google', ?5, ?6, ?1, ?4, 1 where exists (select 1 from users where id = ?1 and email = ?2)`;
 
 export type ApplyUsersOpts = {
   /** The binding's domain (the identity tenant for created rows). */
@@ -295,21 +291,34 @@ export async function applyUsers(
     // A new directory id behind an address an old row holds: the old user
     // renamed (their row follows them), or gone (deletion treatment, which
     // also cuts that address's shares and memberships: decision 2).
-    const old = o.lookup ? await o.lookup(r.hsub) : null;
+    // Without users.get (no lookup) nothing is removed on this signal.
+    if (!o.lookup) continue;
+    const old = await o.lookup(r.hsub);
     const oldEmail =
       old && !old.deleted ? normalizeEmail(old.primaryEmail) : null;
-    if (old && !old.deleted && oldEmail && oldEmail !== email) {
+    if (oldEmail && oldEmail !== email) {
+      // Renamed: the row follows its user, and the shares on the address
+      // they left stay with the address's past, never with the new holder.
       await changeEmail(
         env,
         r.hid,
         email,
         oldEmail,
-        old.aliases ?? [],
+        old?.aliases ?? [],
         guard,
         o.ctx,
       );
+      await cutAddress(env, r.hid, email, guard, o.ctx);
     } else await deleteUser(env, r.hid, "directory_new_id", guard, o.ctx);
-    await createLinked(env, u, email, o.tenant, guard);
+    // The address is free now: T12's bindPage creates the row (in domain,
+    // active) and its identity; its personal space comes from the trigger.
+    guard();
+    await bindPage(env, [u], {
+      tenant: o.tenant,
+      allowEmail: false,
+      ctx: o.ctx,
+      guard,
+    });
   }
 }
 
@@ -387,6 +396,22 @@ export async function deleteUser(
 }
 
 /**
+ * A recycled address's shares go before its new holder's row exists
+ * (decision 2); `uid`, who held it, loses them: their sockets close.
+ */
+async function cutAddress(
+  env: Env,
+  uid: string,
+  email: string,
+  guard: Guard,
+  ctx?: Ctx,
+): Promise<void> {
+  guard();
+  await stmt(env.DB, CUT_ADDRESS).bind(email).run();
+  await revokeUserLive(env, uid, "directory address recycled", ctx);
+}
+
+/**
  * Moves user `uid` from address `from` to `to` (when nobody else holds it).
  * The shares on `from` follow only when `from` is still one of this
  * identity's aliases; otherwise they stay on the old address.
@@ -418,26 +443,4 @@ async function changeEmail(
   }
   // A merged share may have kept the lower role: close their sockets.
   if (alias) await revokeUserLive(env, uid, "directory email change", ctx);
-}
-
-/** A new install row and its identity for an unknown directory id. */
-async function createLinked(
-  env: Env,
-  u: GoogleUser,
-  email: string,
-  tenant: string,
-  guard: Guard,
-): Promise<void> {
-  const id = newId();
-  guard();
-  await env.DB.batch([
-    stmt(env.DB, CREATE_USER).bind(
-      id,
-      email,
-      email.slice(0, email.indexOf("@")),
-      Date.now(),
-      u.id,
-    ),
-    stmt(env.DB, LINK_USER).bind(id, email, null, Date.now(), u.id, tenant),
-  ]);
 }

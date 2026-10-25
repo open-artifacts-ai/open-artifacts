@@ -315,6 +315,37 @@ describe("users by identity", () => {
     ).run();
   });
 
+  it("recycled email of a renamed user: the old row follows them, the address's shares are cut", async () => {
+    const [bob, bob2] = [uniq("rbob"), uniq("rbob2")];
+    const oldSub = `g-rbob-${crypto.randomUUID()}`;
+    const newSub = `g-rnew-${crypto.randomUUID()}`;
+    g.addUser({ id: oldSub, primaryEmail: bob });
+    const t0 = Date.now();
+    await connected(t0);
+    const oldBob = (await userByIdentity(oldSub))?.id as string;
+    const s = await sharedSpace();
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'viewer', 'manual', ?)",
+    )
+      .bind(s, oldBob, Date.now())
+      .run();
+    await seedShare(bob);
+    Object.assign(g.users.get(oldSub) as object, { primaryEmail: bob2 });
+    g.addUser({ id: newSub, primaryEmail: bob });
+    await drain(t0 + 61 * MIN);
+    expect(await userByIdentity(oldSub)).toEqual({
+      id: oldBob,
+      email: bob2,
+      status: "active",
+    });
+    const nb = await userByIdentity(newSub);
+    expect(nb?.email).toBe(bob);
+    expect(nb?.id).not.toBe(oldBob);
+    expect(await sharesFor(bob)).toEqual([]);
+    expect(await spaceRolesOf(nb?.id as string)).toEqual([]);
+    expect((await spaceRolesOf(oldBob)).map((r) => r.space_id)).toEqual([s]);
+  });
+
   it("DELETE_USER: removed, placeholder email, shares and memberships gone, never the owner", async () => {
     const del = uniq("deluser");
     const sub = `g-del-${crypto.randomUUID()}`;

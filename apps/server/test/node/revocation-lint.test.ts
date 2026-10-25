@@ -82,6 +82,8 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // A new primary address: shares on an alias merge into the new address
   // (a merged share may keep the lower role).
   "directory/apply.ts:changeEmail": "user",
+  // A recycled address's shares, cut from the renamed user who held it.
+  "directory/apply.ts:cutAddress": "user",
 };
 
 /**
