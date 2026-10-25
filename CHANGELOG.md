@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.51.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.50.0...v0.51.0) (2026-10-25)
+
+
+### Features
+
+* **server:** feature flags; frozen never widens (P3 T15) ([#596](https://github.com/open-artifacts-ai/open-artifacts/issues/596)) ([ead056a](https://github.com/open-artifacts-ai/open-artifacts/commit/ead056a3154a401fab3001d4d15ee827d32570e2))
+* **server:** usage_off feature flag (P3 T19) ([#603](https://github.com/open-artifacts-ai/open-artifacts/issues/603)) ([4d005a7](https://github.com/open-artifacts-ai/open-artifacts/commit/4d005a7830c558e27c1e2a30fa75d24e50255ef6))
+
+
+### Bug Fixes
+
+* **server:** a restricted member's PAT is refused at /mcp ([#606](https://github.com/open-artifacts-ai/open-artifacts/issues/606)) ([3ab8b1e](https://github.com/open-artifacts-ai/open-artifacts/commit/3ab8b1e162c18e02ca2aef300ea0105364d6f364))
+
 ## [0.50.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.49.0...v0.50.0) (2026-10-25)
 
 
