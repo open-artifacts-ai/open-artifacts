@@ -87,7 +87,21 @@ describe("deriveKey", () => {
       await expect(
         // Typed out; cast past it to check the runtime guard.
         deriveKey(secret, l as unknown as Parameters<typeof deriveKey>[1]),
-      ).rejects.toThrow(`${l} is a content key label; use contentKey`);
+      ).rejects.toThrow(`${l} is not a SESSION_SECRET label; use contentKey`);
+  });
+
+  test("refuses oa:directory-token, so its key only comes from directoryKey", async () => {
+    await expect(
+      deriveKey(
+        secret,
+        "oa:directory-token" as unknown as Parameters<typeof deriveKey>[1],
+      ),
+    ).rejects.toThrow(
+      "oa:directory-token is not a SESSION_SECRET label; use directoryKey",
+    );
+    await expect(
+      directoryKey({ DIRECTORY_TOKEN_KEY: "k".repeat(32) }),
+    ).resolves.toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
   test("session labels still derive and contentKey is unaffected", async () => {

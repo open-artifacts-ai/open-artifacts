@@ -2,17 +2,18 @@ import type { Env } from "../env.js";
 import { b64urlEncode } from "../util/crypto.js";
 
 /**
- * Per-purpose HMAC keys derived from SESSION_SECRET, so a key used for one
- * cookie or table can never verify another's values:
- * base64url(HKDF-SHA256(ikm = SESSION_SECRET, salt = HKDF_SALT, info = label, 32 bytes)).
- * The result is the `key` string for util/crypto's hmacSign/hmacVerify.
- */
-/**
  * The labels keyed by CONTENT_SIGNING_KEY (contentKey), so a content token
  * and an upload signature can never verify as each other. deriveKey refuses
  * every one of them, so a new content label is guarded by adding it here.
  */
 export const CONTENT_KEY_LABELS = ["oa:content-url", "oa:upload"] as const;
+
+/**
+ * Per-purpose HMAC keys derived from SESSION_SECRET, so a key used for one
+ * cookie or table can never verify another's values:
+ * base64url(HKDF-SHA256(ikm = SESSION_SECRET, salt = HKDF_SALT, info = label, 32 bytes)).
+ * The result is the `key` string for util/crypto's hmacSign/hmacVerify.
+ */
 export const KEY_LABELS = [
   "oa:session",
   "oa:oidc-state",
@@ -39,7 +40,11 @@ type SessionKeyLabel = Exclude<
 const HKDF_SALT = "open-artifacts/hkdf/v1";
 const enc = new TextEncoder();
 const cache = new Map<string, Promise<string>>();
-const contentLabels: ReadonlySet<string> = new Set(CONTENT_KEY_LABELS);
+/** The non-session labels deriveKey refuses, each with the function that owns it. */
+const NON_SESSION_LABELS: ReadonlyMap<string, string> = new Map([
+  ...CONTENT_KEY_LABELS.map((l) => [l, "contentKey"] as const),
+  ["oa:directory-token", "directoryKey"],
+]);
 
 async function derive(secret: string, label: KeyLabel): Promise<string> {
   const ikm = await crypto.subtle.importKey(
@@ -65,17 +70,18 @@ async function derive(secret: string, label: KeyLabel): Promise<string> {
 /**
  * HKDF accepts a secret of any length, so a short SESSION_SECRET still gets
  * derived keys (cookieKeys logs a one-time warning; it must not break
- * sign-in). Empty or missing is the error for the secret; a content label
- * (typed out, but checked at runtime too) rejects, so content subkeys only
- * ever come from CONTENT_SIGNING_KEY via contentKey.
+ * sign-in). Empty or missing is the error for the secret; a content or
+ * directory-token label (typed out, but checked at runtime too) rejects, so
+ * those keys only come from contentKey or directoryKey.
  */
 export function deriveKey(
   env: Pick<Env, "SESSION_SECRET">,
   label: SessionKeyLabel,
 ): Promise<string> {
-  if (contentLabels.has(label))
+  const owner = NON_SESSION_LABELS.get(label);
+  if (owner)
     return Promise.reject(
-      new Error(`${label} is a content key label; use contentKey`),
+      new Error(`${label} is not a SESSION_SECRET label; use ${owner}`),
     );
   const secret = env.SESSION_SECRET;
   if (typeof secret !== "string" || secret.length === 0)
