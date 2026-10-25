@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   R,
@@ -9,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import realWorker from "../src/index.js";
+import type { UserPresence } from "../src/runtime/presence.js";
 import { seedUser, uniq } from "./auth-helpers.js";
 
 // P3 T17: POST /__test/session seeds space roles (P5 contract).
@@ -67,6 +69,14 @@ async function myRole(e: Env, cookie: string, spaceId: string) {
   expect(r.status).toBe(200);
   return SpaceSchema.parse(await r.json()).myRole;
 }
+const revokedAt = (userId: string) => {
+  const ns = env.USER_PRESENCE;
+  if (!ns) throw new Error("USER_PRESENCE unbound");
+  const stub = ns.get(
+    ns.idFromName(userId),
+  ) as unknown as DurableObjectStub<UserPresence>;
+  return runInDurableObject(stub, (p) => p.revokedAt());
+};
 const memberRows = (spaceId: string) =>
   env.DB.prepare(
     "select role, source from space_members where space_id = ? order by role",
@@ -107,10 +117,10 @@ describe("session hook with spaces", () => {
     ).toEqual({ name: "Existing", public_links: 1 });
   });
 
-  it("a second session upserts the same user's manual row", async () => {
+  it("a second session upserts the manual row; only a lowering revokes live access", async () => {
     const s = sid();
     const email = tu("up");
-    for (const role of ["viewer", "editor"] as const)
+    const grant = async (role: "viewer" | "editor") =>
       expect(
         (
           await session(on(), {
@@ -120,7 +130,16 @@ describe("session hook with spaces", () => {
           })
         ).status,
       ).toBe(200);
+    await grant("viewer");
+    const userId = (await env.DB.prepare("select id from users where email = ?")
+      .bind(email)
+      .first("id")) as string;
+    await grant("editor");
     expect(await memberRows(s)).toEqual([{ role: "editor", source: "manual" }]);
+    expect(await revokedAt(userId)).toBeNull();
+    await grant("viewer");
+    expect(await memberRows(s)).toEqual([{ role: "viewer", source: "manual" }]);
+    expect(await revokedAt(userId)).not.toBeNull();
   });
 
   it("TEST_HOOKS unset → 404", async () => {

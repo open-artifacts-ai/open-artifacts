@@ -24,6 +24,7 @@ import { type GrantProps, oauthProvider } from "../mcp/oauth.js";
 import { oauthApi } from "../mcp/oauth-api.js";
 import { mcpResource } from "../mcp/server.js";
 import type { AppType } from "../routes/index.js";
+import { revokeUserLive } from "../runtime/revoke.js";
 import { getUserWithEpoch, insertUser, toMember } from "../services/users.js";
 import { b64urlEncode } from "../util/crypto.js";
 
@@ -201,10 +202,14 @@ const MEMBER_UPSERT = `insert into space_members (space_id, user_id, role, sourc
   on conflict (space_id, user_id, source) do update set role = excluded.role
   where space_members.role <> excluded.role`;
 
+const MANUAL_ROLES =
+  "select space_id, role from space_members where user_id = ? and source = 'manual' and space_id in (select value from json_each(?))";
+const RANK: Record<string, number> = { viewer: 1, editor: 2, manager: 3 };
+
 /**
  * P3 T17: creates any missing shared space and upserts the user's manual
  * space_members rows, in one batch. False (refuse) when an id names a
- * personal or deleted space.
+ * personal or deleted space. A lowered row closes the user's sockets.
  */
 async function grantSpaces(
   env: Env,
@@ -213,7 +218,18 @@ async function grantSpaces(
 ): Promise<boolean> {
   if (spaces.length === 0) return true;
   const ids = JSON.stringify(spaces.map((s) => s.spaceId));
-  if (await env.DB.prepare(SPACES_BLOCKED).bind(ids).first()) return false;
+  const [blocked, prior] = await env.DB.batch<{
+    space_id?: string;
+    role?: string;
+  }>([
+    env.DB.prepare(SPACES_BLOCKED).bind(ids),
+    env.DB.prepare(MANUAL_ROLES).bind(userId, ids),
+  ]);
+  if (blocked?.results.length) return false;
+  const was = new Map(prior?.results.map((r) => [r.space_id, r.role]));
+  const lowered = spaces.some(
+    (s) => (RANK[was.get(s.spaceId) ?? ""] ?? 0) > (RANK[s.role] ?? 0),
+  );
   const now = Date.now();
   await env.DB.batch(
     spaces.flatMap((s) => [
@@ -221,6 +237,7 @@ async function grantSpaces(
       env.DB.prepare(MEMBER_UPSERT).bind(s.spaceId, userId, s.role, now),
     ]),
   );
+  if (lowered) await revokeUserLive(env, userId, "space role lowered");
   return true;
 }
 
