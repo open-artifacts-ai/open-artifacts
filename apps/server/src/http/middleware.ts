@@ -22,6 +22,7 @@ import { BANNER_AFTER_MS } from "../directory/health.js";
 import { sendEmail } from "../email/send.js";
 import { directoryAlertEmail } from "../email/templates.js";
 import type { Env } from "../env.js";
+import { logError } from "../log.js";
 import { audit, userActor } from "../services/audit.js";
 import { getSettings } from "../services/members.js";
 import {
@@ -331,7 +332,7 @@ async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
         }),
       { kind: "directory" },
     );
-  })();
+  })().catch((e) => logError("break_glass_email", e));
   const ctx = execCtx(c);
   if (ctx) ctx.waitUntil(mail);
   else await mail;
