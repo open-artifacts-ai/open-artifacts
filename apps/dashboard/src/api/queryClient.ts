@@ -52,6 +52,17 @@ const roleGated = (e: ApiClientError) => {
 const isBreakGlass = (e: unknown) =>
   e instanceof ApiClientError && e.code === "break_glass_required";
 
+/** The calls the break-glass card makes, open to the locked-out owner. */
+const BREAK_GLASS_CALLS: ReadonlySet<string> = new Set([
+  R.directory,
+  R.directoryConfirm,
+  R.directoryCancel,
+  R.directorySync,
+]);
+/** A plain 401 from one of them: the session itself is gone (revoked). */
+const revokedInBreakGlass = (e: ApiClientError) =>
+  BREAK_GLASS_CALLS.has(e.path?.split("?")[0] ?? "");
+
 /**
  * Raises the quota flag on `quota_exceeded`, and refreshes `/me` on a 404 from
  * a role-gated endpoint. A 401 anywhere means the session is
@@ -60,7 +71,8 @@ const isBreakGlass = (e: unknown) =>
  * Except `reauth_required`: the session is valid, only the directory's
  * break-glass routes want a fresh Google sign-in; and `break_glass_required`
  * (GET /me only), which `useMe` turns into the break-glass card: a 401
- * never overwrites that answer, and one before /me's first answer waits for it.
+ * overwrites that answer only from the card's own calls (the session was
+ * revoked), and one before /me's first answer waits for it.
  */
 export const reportApiError = (client: QueryClient, error: unknown) => {
   if (!(error instanceof ApiClientError)) return;
@@ -78,7 +90,7 @@ export const reportApiError = (client: QueryClient, error: unknown) => {
   if (!me || me.state.error === error) return;
   // The locked-out owner gets a plain 401 from everything but /me.
   const markFailed = () => {
-    if (isBreakGlass(me.state.error)) return;
+    if (isBreakGlass(me.state.error) && !revokedInBreakGlass(error)) return;
     // An in-flight /me must not land afterwards and undo this.
     void client.cancelQueries({ queryKey: qk.me, exact: true }).then(() =>
       me.setState({

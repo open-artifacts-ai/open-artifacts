@@ -323,6 +323,42 @@ describe("fresh (fresh: true)", () => {
     await waitFor(() => expect(meCalls()).toBe(1));
   });
 
+  it("the session was revoked (a plain 401 from the directory): to sign-in", async () => {
+    mountHosted("/settings/directory", fresh, undefined, [
+      http.get("*/api/v1/directory", () =>
+        HttpResponse.json(
+          { error: { code: "unauthorized", message: "Sign in" } },
+          { status: 401 },
+        ),
+      ),
+    ]);
+    await waitFor(() =>
+      expect(lastRedirect).toHaveBeenCalledWith(
+        `${AUTH.login}?next=%2Fsettings%2Fdirectory`,
+      ),
+    );
+    expect(screen.queryByText(C.loadFailed)).toBeNull();
+  });
+
+  it("revoked mid-confirm (a plain 401 from R.directoryConfirm): to sign-in", async () => {
+    mountHosted("/", fresh, undefined, [
+      http.get("*/api/v1/directory", () => HttpResponse.json(PENDING)),
+      http.post("*/api/v1/directory/confirm", () =>
+        HttpResponse.json(
+          { error: { code: "unauthorized", message: "Sign in" } },
+          { status: 401 },
+        ),
+      ),
+    ]);
+    await openDirectory();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Add 12 people" }),
+    );
+    await waitFor(() =>
+      expect(lastRedirect).toHaveBeenCalledWith(`${AUTH.login}?next=%2F`),
+    );
+  });
+
   it("the fresh window lapsed (reauth_required): back to the sign-in step", async () => {
     mountHosted("/", fresh, undefined, [
       http.get("*/api/v1/directory", () =>
