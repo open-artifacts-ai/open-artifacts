@@ -77,13 +77,13 @@
 
 Backend's ruling (2026-10-21): P5 runs P2's `SIGNIN_NEGATIVE_CASES` catalog and its fake-Google fixture live, instead of a separate issuer. Real-tenant cases are added once the user creates the two test Workspace tenants (P2's user item 6).
 
-**Test tenants (fixtures, 2026-10-24).** Two Cloud Identity Free tenants on domains the user bought in the same Cloudflare account. Real-tenant cases use exactly these names:
+**Test tenants (fixtures, 2026-10-24; tenant B moved to `oa-redline-c.fyi` on 2026-10-25, replacing the stuck `oa-redline-b.fyi`).** Two Cloud Identity Free tenants on domains the user bought in the same Cloudflare account. Real-tenant cases use exactly these names:
 
 | | Tenant A | Tenant B |
 |---|---|---|
-| Domain (`hd`) | `oa-redline-a.fyi` | `oa-redline-b.fyi` |
-| Super admin | `admin@oa-redline-a.fyi` | `admin@oa-redline-b.fyi` |
-| Users | `alice@`, `bob@`, `carol@oa-redline-a.fyi` | `dave@`, `erin@`, `frank@oa-redline-b.fyi` |
+| Domain (`hd`) | `oa-redline-a.fyi` | `oa-redline-c.fyi` |
+| Super admin | `admin@oa-redline-a.fyi` | `admin@oa-redline-c.fyi` |
+| Users | `alice@`, `bob@`, `carol@oa-redline-a.fyi` | `dave@`, `erin@`, `frank@oa-redline-c.fyi` |
 | Groups | `eng@` (alice, bob), `restricted@` (carol) | `eng@` (dave, erin), `restricted@` (frank) |
 
 Mail for both domains is routed (Cloudflare Email Routing catch-all) to the user's inbox, which is the readable inbox for code sign-in. These domains are never under `open-artifacts-staging.app`. Credentials for these users stay in the user's password manager; CI reads them only from the 0600 files the xt suite already requires.
