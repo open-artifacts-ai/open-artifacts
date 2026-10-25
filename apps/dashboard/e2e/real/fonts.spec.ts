@@ -45,3 +45,33 @@ test("the dashboard and a Markdown artifact serve Geist from our hosts only", as
   const hosts = new Set(fonts.map((u) => new URL(u).hostname));
   for (const h of hosts) expect(h).toMatch(/(^|\.)localhost$/);
 });
+
+for (const scheme of ["light", "dark"] as const)
+  test(`shots: the viewer and a Markdown artifact in Geist, ${scheme} 1280`, async ({
+    page,
+    member,
+  }, info) => {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const { id } = await publishViaApi(member.pat, {
+      title: `Fonts ${uniq()}`,
+      format: "markdown",
+      content:
+        "# Quarterly report\n\nBody text in **Geist**, with `code in Geist Mono`.\n\n- one\n- two\n",
+    });
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    await page.screenshot({
+      path: info.outputPath(`fonts-dashboard-${scheme}-1280.png`),
+    });
+    await page.goto(`/a/${id}`);
+    const frame = artifactFrame(page);
+    await expect(
+      frame.getByRole("heading", { level: 1, name: "Quarterly report" }),
+    ).toBeVisible();
+    await frame.locator("body").evaluate(() => document.fonts.ready);
+    await page.screenshot({
+      path: info.outputPath(`fonts-markdown-${scheme}-1280.png`),
+    });
+  });
