@@ -96,7 +96,7 @@ export const clientNameOf = (name: string | undefined, fallback: string) =>
     .slice(0, MAX_CLIENT_NAME);
 
 /** Members only, and never a capped caller (a guest, a code session outside the domains, P3's restricted). */
-const canConnect = (user: Member) =>
+export const canConnect = (user: Member) =>
   orgCan(user, "mcp.connect", { cap: capOfCaller(callerOf(user)) });
 
 /** What the grant's KV metadata holds (identity fields absent on grants from before them). */
