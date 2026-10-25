@@ -166,9 +166,12 @@ it("owner_only: only the owner can reset another admin's link", async () => {
       name: "Reset link",
     }),
   );
-  await findVisibleToast(
-    "Only the owner can reset another admin's Google link.",
-  );
+  // An inline refusal on the row since #558, not a toast.
+  expect(
+    await screen.findByText(
+      "Only the owner can reset another admin's Google link.",
+    ),
+  ).toBeVisible();
   expect(screen.queryByText("server text")).toBeNull();
 });
 
