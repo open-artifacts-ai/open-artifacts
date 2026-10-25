@@ -151,9 +151,17 @@ test("hosted tab strip at 375 scrolls without clipping", async ({ page }) => {
   }));
   expect(g.overflowX).toBe("auto");
   expect(g.sideScroll).toBe(0);
-  // The last tab is reachable by scrolling the strip, not clipped off.
+  // The last tab is reachable by scrolling the strip, not clipped off. The
+  // attention dots on Members and Directory arrive with their queries and
+  // widen the strip after the first scroll, so scroll again on each look: the
+  // check settles on the final layout, and a tab that can't be scrolled into
+  // view still fails.
   const last = nav.getByRole("link", { name: "Instance" });
-  await last.scrollIntoViewIfNeeded();
-  const [n, l] = await Promise.all([nav.boundingBox(), last.boundingBox()]);
-  expect(l && n && l.x + l.width <= n.x + n.width + 0.5).toBe(true);
+  await expect
+    .poll(async () => {
+      await last.scrollIntoViewIfNeeded();
+      const [n, l] = await Promise.all([nav.boundingBox(), last.boundingBox()]);
+      return !!(l && n && l.x + l.width <= n.x + n.width + 0.5);
+    })
+    .toBe(true);
 });
