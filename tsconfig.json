@@ -8,6 +8,5 @@
     "checkJs": true
   },
   "include": ["scripts/**/*.ts", "scripts/**/*.mjs", "vitest.config.ts"],
-  // @oa/hosted typechecks itself (it needs @oa/provision built first).
   "exclude": ["scripts/hosted/**", "**/node_modules/**"]
 }
