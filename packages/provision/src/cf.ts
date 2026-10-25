@@ -123,7 +123,10 @@ export interface Cf {
   turnstileWidget(sitekey: string): Promise<TurnstileWidget | null>;
   /** Every Turnstile widget on the account (no secrets), paginated. */
   turnstileList(): Promise<TurnstileWidget[]>;
-  /** POST a widget (turnstile-init only); returns its sitekey and secret. */
+  /**
+   * POST a widget (turnstile-init only), one try: a lost reply may still have
+   * created it, so the caller lists by name before any retry.
+   */
   turnstileCreate(w: {
     name: string;
     domains: string[];
@@ -215,6 +218,8 @@ type CallInit = {
   binary?: boolean;
   /** With binary: abort (no retry) once the body exceeds this many bytes. */
   maxBytes?: number;
+  /** One try only: a create that is not idempotent (the caller re-lists first). */
+  once?: boolean;
 };
 
 /** The body, refused as soon as it passes `max` bytes (content-length or streamed). */
@@ -291,7 +296,7 @@ export function cfClient(o: {
       body = JSON.stringify(init.json);
     }
     let last: CfError | undefined;
-    for (let i = 0; i < TRIES; i++) {
+    for (let i = 0; i < (init.once ? 1 : TRIES); i++) {
       if (i > 0) await sleep(500 * 2 ** (i - 1));
       let res: Response;
       try {
@@ -735,6 +740,7 @@ export function cfClient(o: {
     async turnstileCreate(w) {
       const { body } = await call("POST", `${acct}/challenges/widgets`, {
         json: { name: w.name, domains: w.domains, mode: w.mode },
+        once: true,
       });
       const r = (body as { result?: { sitekey?: unknown; secret?: unknown } })
         ?.result;

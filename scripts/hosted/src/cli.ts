@@ -28,6 +28,7 @@ import {
   type Cf,
   cfClient,
   type Env,
+  googleNewlyEnabled,
   HOSTED_DOMAINS,
   HOSTED_VARS,
   isInstallId,
@@ -58,6 +59,28 @@ export const COMMANDS = [
   "turnstile-init",
 ] as const;
 type Command = (typeof COMMANDS)[number];
+
+export const HELP = `Usage: pnpm oa:hosted <command> --env staging|prod [flags]
+
+Commands:
+  create          --slug <s> --owner <email> --to <version> [--var K=V]... [--test-hooks] [--install <id>]
+                  --test-hooks: staging only (redline bundle); --install resumes that create
+  upgrade         --install <id> --to <version>
+  rollback        --install <id>
+  update-vars     --install <id> --var K=V... (the full set)
+  delete          --install <id> --confirm <the same id>
+  release-lease   --install <id> --confirm <the same id> [--force]
+                  --force: release a live lease; only when no operation is running
+  status          --install <id>
+  publish-release --tag v<version>  (gh release download of oa-release-<env>-*, verified, then uploaded)
+  publish-floor   --floor <path to floor-<env>-<seq>.sig.json>
+  turnstile-init  (the env's one Turnstile widget; idempotent)
+
+Flags:
+  --var K=V       repeatable; checked by provision's HOSTED_VARS. AUTH_PROVIDERS with
+                  google turns the sign-in broker on for the install.
+Token: keychain item oa-hosted-<env>. CI (staging only): a 0600 file at OA_HOSTED_TOKEN_FILE.
+Env: CLOUDFLARE_ACCOUNT_ID (the hosted account id). Output: one JSON line per step.`;
 
 /** The tenant domain pair per env: provision's table, never a flag. */
 export const DOMAINS = HOSTED_DOMAINS;
@@ -344,6 +367,10 @@ export async function main(argv: string[], d: Deps): Promise<number> {
     return 1;
   };
 
+  if (argv.includes("--help") || argv.includes("-h")) {
+    d.out(HELP);
+    return 0;
+  }
   let cmd: Command;
   let f: Flags;
   try {
@@ -371,18 +398,21 @@ export async function main(argv: string[], d: Deps): Promise<number> {
     return fail("token", e);
   }
 
-  const prov = new WfpProvisioner({
-    cf,
-    env,
-    target: { kind: "namespace", ns: NAMESPACES[env] },
-    domains: DOMAINS[env],
-    release: (d.release ?? r2ReleaseReader)(cf, env),
-    ...(turnstile ? { turnstile } : {}),
-    patDir: join(d.home, ".open-artifacts", `hosted-${env}`),
-    ...(d.fetch ? { fetch: d.fetch } : {}),
-    ...(d.now ? { now: d.now } : {}),
-    ...(d.sleep ? { sleep: d.sleep } : {}),
-  });
+  const mk = (brokerEnabled: boolean) =>
+    new WfpProvisioner({
+      cf,
+      env,
+      target: { kind: "namespace", ns: NAMESPACES[env] },
+      domains: DOMAINS[env],
+      release: (d.release ?? r2ReleaseReader)(cf, env),
+      ...(turnstile ? { turnstile } : {}),
+      patDir: join(d.home, ".open-artifacts", `hosted-${env}`),
+      brokerEnabled,
+      ...(d.fetch ? { fetch: d.fetch } : {}),
+      ...(d.now ? { now: d.now } : {}),
+      ...(d.sleep ? { sleep: d.sleep } : {}),
+    });
+  let prov = mk(false);
   const notes = () => {
     for (const n of prov.notes.splice(0))
       emit({ step: "note", status: "ok", message: n });
@@ -415,6 +445,8 @@ export async function main(argv: string[], d: Deps): Promise<number> {
   let code = 0;
   let after = subject;
   try {
+    notes();
+    prov = mk(await brokerOn(cmd, f, audit));
     const r = await run(cmd, f, d, { cf, env, prov, emit });
     notes();
     if (r.id) after = r.id;
@@ -439,6 +471,26 @@ export async function main(argv: string[], d: Deps): Promise<number> {
     return fail("audit", e);
   }
   return code;
+}
+
+/**
+ * The broker (P2) is on for an install whose vars turn google on: hosted
+ * Google sign-in works only once the install is in the broker registry.
+ * Provision then needs both registry KVs and derives the origin from the
+ * app host. create renders --var; update-vars renders --var and may be
+ * turning google off on an install that had it; the rest read the row.
+ */
+async function brokerOn(
+  cmd: Command,
+  f: Flags,
+  db: PlatformDb,
+): Promise<boolean> {
+  const google = (v: Record<string, string>) => googleNewlyEnabled({}, v);
+  if (cmd === "create") return google(f.vars);
+  if (!f.install) return false;
+  if (cmd === "update-vars" && google(f.vars)) return true;
+  const row = await db.byId(f.install);
+  return row?.vars ? google(JSON.parse(row.vars)) : false;
 }
 
 async function run(
