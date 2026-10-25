@@ -369,7 +369,36 @@ export class FakeCf {
       );
     }
 
-    // Turnstile widgets (read-only here; Task 8 creates the one per env)
+    // Turnstile widgets (create reads; turnstile-init lists and creates)
+    if (r === "/challenges/widgets" && req.method === "GET") {
+      const q = url.searchParams;
+      const per = Number(q.get("per_page") ?? 25);
+      const page = Number(q.get("page") ?? 1);
+      const all = [...this.turnstile.values()].map(
+        ({ secret: _s, ...w }) => w,
+      );
+      return new Response(
+        JSON.stringify({
+          success: true,
+          errors: [],
+          messages: [],
+          result: all.slice((page - 1) * per, page * per),
+          result_info: {
+            page,
+            per_page: per,
+            total_pages: Math.max(1, Math.ceil(all.length / per)),
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (r === "/challenges/widgets" && req.method === "POST") {
+      const { name, domains, mode } = json();
+      const sitekey = `0x4AAAAAAA${randomBytes(8).toString("hex")}`;
+      const secret = `0x4AAAAAAA-secret-${randomBytes(16).toString("hex")}`;
+      this.turnstile.set(sitekey, { sitekey, name, domains, mode, secret });
+      return env({ sitekey, secret, name, domains, mode });
+    }
     m = r.match(/^\/challenges\/widgets\/([^/]+)$/);
     if (m && req.method === "GET") {
       const w = this.turnstile.get(decodeURIComponent(m[1] as string));

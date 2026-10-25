@@ -525,6 +525,8 @@ export interface InstallStatus {
    */
   sessionCut: {
     pending: true;
+    /** A google-on upload may have gone live (session_cut_armed). */
+    armed: boolean;
     owedRelativeToRecordedVars: boolean;
   } | null;
   /**
@@ -2028,6 +2030,16 @@ export class WfpProvisioner {
   }
 
   /**
+   * The token checks every operation runs first (active, not_before, an
+   * expiry at most MAX_TOKEN_DAYS out, Workers Scripts Read), on their own
+   * and with no write, so a caller (the oa:hosted CLI) can refuse a token
+   * before its own first write. `nearExpiry` as in each operation.
+   */
+  async verifyToken(nearExpiry: "refuse" | "warn"): Promise<void> {
+    await this.checkToken(nearExpiry === "warn" ? "warn" : "refuse");
+  }
+
+  /**
    * R-N1: the row as an operator needs it, with no lease taken: state,
    * versions, the lock and any session cut still owed.
    */
@@ -2063,6 +2075,7 @@ export class WfpProvisioner {
             ? null
             : {
                 pending: true,
+                armed: cut.armed,
                 owedRelativeToRecordedVars:
                   row.vars !== null &&
                   googleNewlyEnabled(cut.base, JSON.parse(row.vars)),

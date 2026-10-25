@@ -8,3 +8,5 @@ export * from "./release.js";
 export * from "./tar.js";
 export * from "./types.js";
 export * from "./wfp.js";
+export * from "./setup-adapter.js";
+export * from "./turnstile.js";

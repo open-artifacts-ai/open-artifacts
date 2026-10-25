@@ -2191,6 +2191,7 @@ describe("fix round 3", () => {
     expect(s.audit(inst.id)).toContain("vars.session_cut_failed");
     expect((await s.p.status(inst.id)).sessionCut).toEqual({
       pending: true,
+      armed: false,
       owedRelativeToRecordedVars: true,
     });
     await s.p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" });
@@ -2320,6 +2321,7 @@ describe("fix round 4", () => {
       .run("aa".repeat(16), canonicalJson(CODES), inst.id);
     expect((await s.p.status(inst.id)).sessionCut).toEqual({
       pending: true,
+      armed: false,
       owedRelativeToRecordedVars: false,
     });
   });
@@ -2591,5 +2593,118 @@ describe("token within 5 days of expiry", () => {
     const e = await fails(s.p.rollback(inst.id));
     expect(e.message).toMatch(/expired/);
     expect(s.row(inst.id)).toMatchObject({ version: "0.24.0" });
+  });
+});
+
+describe("P1 Task 8 follow-ups", () => {
+  it("status reports sessionCut.armed as well as pending", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
+    s.db()
+      .prepare(
+        "UPDATE installs SET session_cut = ?, session_cut_base = ?, session_cut_armed = 1 WHERE id = ?",
+      )
+      .run("ab".repeat(16), canonicalJson(CODES), inst.id);
+    expect((await s.p.status(inst.id)).sessionCut).toEqual({
+      pending: true,
+      armed: true,
+      owedRelativeToRecordedVars: false,
+    });
+    s.db()
+      .prepare("UPDATE installs SET session_cut_armed = 0 WHERE id = ?")
+      .run(inst.id);
+    expect((await s.p.status(inst.id)).sessionCut).toMatchObject({
+      pending: true,
+      armed: false,
+    });
+  });
+
+  it("refuses a rollback whose stored metadata is not a render of that release, before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    // The stored 0.23.0 render names a bundle the signed 0.23.0 release does not have.
+    const st = s.stored(inst.id, "0.23.0");
+    const meta = JSON.parse(st?.metadata as string);
+    s.db()
+      .prepare(
+        "UPDATE install_versions SET metadata = ? WHERE install_id = ? AND version = ?",
+      )
+      .run(
+        JSON.stringify({ ...meta, main_module: "other.js" }),
+        inst.id,
+        "0.23.0",
+      );
+    const w = s.fake.writes().length;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/is not a render of that release/);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.24.0",
+      lease: null,
+    });
+  });
+
+  it("an upgrade whose auto-rollback meets a render that does not match the release stays forward, with the refusal", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const st = s.stored(inst.id, "0.23.0");
+    const meta = JSON.parse(st?.metadata as string);
+    s.db()
+      .prepare(
+        "UPDATE install_versions SET metadata = ? WHERE install_id = ? AND version = ?",
+      )
+      .run(
+        JSON.stringify({ ...meta, tags: [inst.id, "v0.22.0"] }),
+        inst.id,
+        "0.23.0",
+      );
+    unhealthyAt(s, "0.24.0");
+    const r = keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(r).toMatchObject({ ok: false, rolledBack: false, forwardFix: true });
+    expect(r.reason).toMatch(/is not a render of that release/);
+    expect(s.row(inst.id)).toMatchObject({ state: "active", version: "0.24.0" });
+  });
+
+  it("verifyToken runs the token checks with no write; near expiry refuses or warns", async () => {
+    const s = setup();
+    const w = s.fake.writes().length;
+    await s.p.verifyToken("refuse");
+    expect(s.fake.writes().length).toBe(w);
+    s.fake.tokenInfo.expires_on = new Date(NOW + 2 * 86_400_000).toISOString();
+    const p = s.mk();
+    await expect(p.verifyToken("refuse")).rejects.toThrow(/within 5 days/);
+    const q = s.mk();
+    await q.verifyToken("warn");
+    expect(q.notes.join("\n")).toMatch(/WARNING/);
+    s.fake.tokenInfo.status = "disabled";
+    await expect(s.mk().verifyToken("warn")).rejects.toThrow(/not active/);
+  });
+
+  it("an actor audit row lands in hosted_audit.actor, and the table refuses UPDATE and DELETE", async () => {
+    const s = setup();
+    const { PlatformDb } = await import("../src/platform.js");
+    const pdb = new PlatformDb(
+      s.cfWith(),
+      { id: s.pdb, name: platformNames("staging").db },
+      "staging",
+      () => NOW,
+    );
+    await pdb.auditAs("ops@example.com", "-", "cli.status.start", { cmd: "status" });
+    const rows = s
+      .db()
+      .prepare("SELECT actor, install_id, action FROM hosted_audit")
+      .all();
+    expect(rows).toEqual([
+      { actor: "ops@example.com", install_id: "-", action: "cli.status.start" },
+    ]);
+    expect(() =>
+      s.db().prepare("UPDATE hosted_audit SET action = 'x'").run(),
+    ).toThrow(/append-only/);
+    expect(() => s.db().prepare("DELETE FROM hosted_audit").run()).toThrow(
+      /append-only/,
+    );
   });
 });
