@@ -718,6 +718,12 @@ it("500-user page parse + diff under 10 ms CPU", async () => { /* cpu */ });
   - It checks `users.get` (suspended means refuse) and `userGroups`, then `applyGroupDiff` for that user only.
   - If Google is unreachable, the sign-in proceeds (fail static) unless the install is in `customer_mismatch`. Access unchanged when stale; `staleAt` is informational.
 - P2 verifies Google `sub == directory user id` on sign-in (the seam test lives in P2; this task asserts it).
+- Every `users.email` change goes through one function, `services/email-move.ts` `moveUserEmail` (sign-in drift in `followDrift` and sync alike): one batch, with the share re-key gated on the row having moved and nobody holding the old address. The only other `users.email` write is the deletion placeholder, which drops the shares the user holds (those on their current address, the only address that holds them because every move re-keys) in its own batch.
+- A new directory id at an address held by a row with no Google link: a pure invite (active, never signed in, no identity) is linked to that id; a row with sign-in history counts as recycled (deletion treatment, then a new row).
+- Group diffs are applied in batches of 200 users (`DIFF_CHUNK`), so a big group never builds one oversized batch.
+- **Accepted (manager, #592 security review):**
+  - L5, consistency lag: a sign-in diff and the DirectorySync reconcile can briefly disagree; the next reconcile recomputes the rows.
+  - L6, fail static at sign-in: with Google unreachable outside `customer_mismatch`, a synced user signs in on last-sync access.
 
 - [ ] **Step 1: Failing tests**
 
