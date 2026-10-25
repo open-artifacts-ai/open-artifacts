@@ -147,6 +147,10 @@ export class FakeCf {
       secret?: string;
     }
   >();
+  /** The next N widget creates store the widget, then answer 500 (a lost reply). */
+  turnstileCreateLandsThen500 = 0;
+  /** Edits a widget as it is created (e.g. Cloudflare normalizing it). */
+  onTurnstileCreate?: (w: { domains: string[]; mode: string }) => void;
   /** D1 list knobs: clamp per_page, or omit result_info. */
   d1PerPageCap?: number;
   d1ResultInfo = true;
@@ -394,7 +398,13 @@ export class FakeCf {
       const { name, domains, mode } = json();
       const sitekey = `0x4AAAAAAA${randomBytes(8).toString("hex")}`;
       const secret = `0x4AAAAAAA-secret-${randomBytes(16).toString("hex")}`;
-      this.turnstile.set(sitekey, { sitekey, name, domains, mode, secret });
+      const w = { sitekey, name, domains, mode, secret };
+      this.onTurnstileCreate?.(w);
+      this.turnstile.set(sitekey, w);
+      if (this.turnstileCreateLandsThen500 > 0) {
+        this.turnstileCreateLandsThen500--;
+        return fail(500, "internal error");
+      }
       return env({ sitekey, secret, name, domains, mode });
     }
     m = r.match(/^\/challenges\/widgets\/([^/]+)$/);

@@ -114,7 +114,7 @@ describe("turnstileInit", () => {
       });
     await expect(
       turnstileInit({ cf: s.cf, env: s.env, store: s.store }),
-    ).rejects.toThrow(/2 widgets/);
+    ).rejects.toThrow(/2 widgets .*0xA.*0xB/);
 
     const t = setup();
     await turnstileInit({ cf: t.cf, env: t.env, store: t.store });
@@ -149,5 +149,52 @@ describe("turnstileInit", () => {
       name: platformNames("prod").turnstile,
       domains: [HOSTED_DOMAINS.prod.app],
     });
+  });
+
+  it("a lost reply: the create landed but the client saw a 500; the retry adopts that widget instead of making another", async () => {
+    const s = setup();
+    s.fake.turnstileCreateLandsThen500 = 1;
+    const r = await turnstileInit({ cf: s.cf, env: s.env, store: s.store });
+    expect(r).toEqual({ created: false, stored: true });
+    expect(posts(s.fake)).toBe(1);
+    expect(s.fake.turnstile.size).toBe(1);
+    const [w] = [...s.fake.turnstile.values()];
+    expect(s.saved()).toEqual({ sitekey: w?.sitekey, secret: w?.secret });
+    // Every create attempt is preceded by a listing by the exact name.
+    const seq = s.fake.log
+      .filter((e) => /\/challenges\/widgets(\?|$)/.test(e.path))
+      .map((e) => e.method);
+    expect(seq).toEqual(["GET", "POST", "GET"]);
+  });
+
+  it("a lost reply whose widget then differs is refused, not recreated", async () => {
+    const s = setup();
+    s.fake.turnstileCreateLandsThen500 = 1;
+    s.fake.onTurnstileCreate = (w) => {
+      w.domains = ["example.com"];
+    };
+    await expect(
+      turnstileInit({ cf: s.cf, env: s.env, store: s.store }),
+    ).rejects.toThrow(/differs/);
+    expect(posts(s.fake)).toBe(1);
+    expect(s.writes).toEqual([]);
+  });
+
+  it("a create Cloudflare refuses outright is not retried past the listing", async () => {
+    const s = setup();
+    s.fake.inject((m, p) => m === "POST" && p.endsWith("/challenges/widgets"), {
+      status: 400,
+      message: "bad widget",
+      times: 5,
+    });
+    await expect(
+      turnstileInit({ cf: s.cf, env: s.env, store: s.store }),
+    ).rejects.toThrow(/bad widget/);
+    expect(
+      s.fake.log.filter(
+        (e) => e.method === "POST" && /\/challenges\/widgets$/.test(e.path),
+      ).length,
+    ).toBe(1);
+    expect(s.writes).toEqual([]);
   });
 });

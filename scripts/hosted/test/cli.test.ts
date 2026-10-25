@@ -3,7 +3,7 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { COMMANDS, DOMAINS, main } from "../src/cli.ts";
+import { COMMANDS, DOMAINS, HELP, main } from "../src/cli.ts";
 import { ACTOR, PUB, world } from "./world.ts";
 
 const G = vi.hoisted(() => ({
@@ -534,5 +534,101 @@ describe("commands", () => {
     expect(w.parsed().find((l) => l.step === "publish-floor")?.message).toMatch(
       /floor/,
     );
+  });
+});
+
+describe("broker: on exactly when the vars turn google on", () => {
+  const GOOGLE = [
+    "--var",
+    "AUTH_PROVIDERS=google",
+    "--var",
+    "AUTH_DOMAINS=finqore.test",
+    "--var",
+    "AUTH_BROKER_URL=https://auth.open-artifacts-staging.app",
+  ];
+  const entry = (w: W, kv: string, id: string) =>
+    w.fake.kvValues(kv).get(`install:${id}`);
+  const idOf = (w: W, step: string) =>
+    w.parsed().find((l) => l.step === step)?.data?.id as string;
+
+  it("create with google registers the install with the broker (both registry copies, the signing key)", async () => {
+    const w = world();
+    expect(await main([...CREATE(), ...GOOGLE], w.deps)).toBe(0);
+    const id = idOf(w, "create");
+    const reg = entry(w, w.regId, id);
+    expect(reg).toBeDefined();
+    expect(entry(w, w.dirId, id)).toBe(reg);
+    expect(JSON.parse(String(reg))).toMatchObject({
+      installId: id,
+      origin: "https://finqore.open-artifacts-staging.app",
+      domains: ["finqore.test"],
+    });
+    const script = [...w.fake.scripts.values()][0];
+    expect(script?.secrets.has("BROKER_SIGNING_KEY")).toBe(true);
+
+    // update-vars keeps the registry in step (the broker stays on).
+    w.lines.length = 0;
+    const next = GOOGLE.map((v) =>
+      v === "AUTH_DOMAINS=finqore.test" ? "AUTH_DOMAINS=finqore.test,fq.test" : v,
+    );
+    expect(
+      await main(["update-vars", "--env", "staging", "--install", id, ...next], w.deps),
+    ).toBe(0);
+    expect(JSON.parse(String(entry(w, w.regId, id))).domains).toEqual([
+      "finqore.test",
+      "fq.test",
+    ]);
+    expect(entry(w, w.dirId, id)).toBe(entry(w, w.regId, id));
+  });
+
+  it("status of a google install reads with the broker on: a missing entry is drift", async () => {
+    const w = world();
+    expect(await main([...CREATE(), ...GOOGLE], w.deps)).toBe(0);
+    const id = idOf(w, "create");
+    w.fake.kvValues(w.dirId).delete(`install:${id}`);
+    w.lines.length = 0;
+    expect(await main(["status", "--env", "staging", "--install", id], w.deps)).toBe(0);
+    expect(w.parsed().find((l) => l.step === "status")?.data.registryDrift).toEqual({
+      id,
+      kind: "missing_directory",
+    });
+  });
+
+  it("create without google leaves the broker off: no registry entry, no signing key", async () => {
+    const w = world();
+    expect(
+      await main([...CREATE(), "--var", "FEATURES=spaces"], w.deps),
+    ).toBe(0);
+    const id = idOf(w, "create");
+    expect(entry(w, w.regId, id)).toBeUndefined();
+    expect(entry(w, w.dirId, id)).toBeUndefined();
+    expect([...w.fake.scripts.values()][0]?.secrets.has("BROKER_SIGNING_KEY")).toBe(false);
+    w.lines.length = 0;
+    expect(await main(["status", "--env", "staging", "--install", id], w.deps)).toBe(0);
+    expect(w.parsed().find((l) => l.step === "status")?.data.registryDrift).toBeNull();
+  });
+
+  it("a google create needs both registry KVs, and refuses before any write without them", async () => {
+    const w = world();
+    w.fake.kv.delete(w.dirId);
+    expect(await main([...CREATE(), ...GOOGLE], w.deps)).toBe(1);
+    expect(w.parsed().find((l) => l.step === "create")?.message).toMatch(
+      /directory registry KV/,
+    );
+    expect(w.fake.scripts.size).toBe(0);
+  });
+});
+
+describe("--help", () => {
+  it("prints the usage, every command and the extra flags, and makes no call", async () => {
+    const w = world();
+    expect(await main(["--help"], w.deps)).toBe(0);
+    const out = w.lines.join("\n");
+    expect(out).toBe(HELP);
+    for (const c of COMMANDS) expect(out).toContain(c);
+    for (const f of ["--tag", "--floor", "--force", "--confirm", "--test-hooks", "--var"])
+      expect(out).toContain(f);
+    expect(out).toContain("CLOUDFLARE_ACCOUNT_ID");
+    noCalls(w);
   });
 });

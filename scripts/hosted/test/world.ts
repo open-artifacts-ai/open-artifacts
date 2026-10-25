@@ -123,8 +123,8 @@ export function world(o: { env?: Env; ci?: boolean } = {}) {
   const fake = new FakeCf({ now: NOW });
   const pdb = fake.seedD1(platformNames(env).db, PLATFORM_SQL);
   const hostsId = fake.seedKv(hostsKvTitle(env));
-  fake.seedKv(platformNames(env).registry);
-  fake.seedKv(platformNames(env).directoryRegistry);
+  const regId = fake.seedKv(platformNames(env).registry);
+  const dirId = fake.seedKv(platformNames(env).directoryRegistry);
   fake.r2.add(platformNames(env).releases);
   fake.dispatch = { hostsKvId: hostsId, ns: `oa-${env}` };
   const home = mkdtempSync(join(tmpdir(), "oa-hosted-home-"));
@@ -201,6 +201,8 @@ export function world(o: { env?: Env; ci?: boolean } = {}) {
     cfCalls,
     home,
     db,
+    regId,
+    dirId,
     parsed: () => lines.map((l) => JSON.parse(l)),
     audit: () =>
       db()
