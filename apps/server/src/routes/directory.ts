@@ -114,9 +114,7 @@ export function mountDirectory(app: AppType): void {
   // runs; the revoke is then audited revoke_failed).
   const disconnect = (c: Context<AppEnv>) => {
     const user = requireUser(c);
-    if (
-      !orgCan(user, "directory.disconnect", { cap: capOfCaller(caller(c)) })
-    )
+    if (!orgCan(user, "directory.disconnect", { cap: capOfCaller(caller(c)) }))
       throw notFound();
     return disconnectDirectory(c.env, userActor(user.id), {
       showProblem: manages(c),
