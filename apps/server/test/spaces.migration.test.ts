@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { type Member, newId, R } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { removeMember } from "../src/services/members.js";
+import { removeMember, SYSTEM_ACTOR } from "../src/services/members.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 
@@ -314,7 +314,7 @@ describe("migration spaces", () => {
     const { userId } = await login(`s4-rm-${tag}@a.com`);
     const id = newId();
     await insertArtifact(id, userId, userId);
-    await removeMember(env, userId);
+    await removeMember(env, userId, SYSTEM_ACTOR);
     const row = await one<{ owner_id: string; space_id: string }>(
       "select owner_id, space_id from artifacts where id = ?",
       id,

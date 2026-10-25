@@ -15,7 +15,7 @@ import {
 } from "../src/content/signing.js";
 import { appOrigin } from "../src/http/errors.js";
 import { patch, publish, softDelete } from "../src/services/artifacts.js";
-import { setUserStatus } from "../src/services/members.js";
+import { SYSTEM_ACTOR, setUserStatus } from "../src/services/members.js";
 import { getUser, getUserWithEpoch } from "../src/services/users.js";
 import {
   CHUNK_JS,
@@ -646,7 +646,13 @@ describe("content host revocation in D1 (P3 T11)", () => {
     const id = await site(u.member);
     const view = await mint(id, u.cookie);
     expect((await call(view)).status).toBe(200);
-    await setUserStatus(env, u.member.id, "suspended", "admin_suspend");
+    await setUserStatus(
+      env,
+      u.member.id,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     // The very next request is refused: no cache, no KV, the one statement.
     expect((await call(view.replace("__view", "a.css"))).status).toBe(404);
     expect((await call(view)).status).toBe(404);
@@ -656,8 +662,20 @@ describe("content host revocation in D1 (P3 T11)", () => {
     const u = await fresh("rev-react");
     const id = await site(u.member);
     const old = await mint(id, u.cookie);
-    await setUserStatus(env, u.member.id, "suspended", "admin_suspend");
-    await setUserStatus(env, u.member.id, "active", "admin_restore");
+    await setUserStatus(
+      env,
+      u.member.id,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
+    await setUserStatus(
+      env,
+      u.member.id,
+      "active",
+      "admin_restore",
+      SYSTEM_ACTOR,
+    );
     expect((await call(old)).status).toBe(404);
     // A fresh sign-in at the new epoch mints a URL that serves.
     const row = await getUserWithEpoch(env, u.member.id);
@@ -679,7 +697,13 @@ describe("content host revocation in D1 (P3 T11)", () => {
       epoch: row?.sessionEpoch ?? -1,
     });
     expect((await call(path)).status).toBe(200);
-    await setUserStatus(env, u.member.id, "removed", "admin_remove");
+    await setUserStatus(
+      env,
+      u.member.id,
+      "removed",
+      "admin_remove",
+      SYSTEM_ACTOR,
+    );
     expect((await call(path)).status).toBe(404);
   });
 
@@ -727,14 +751,26 @@ describe("content host revocation in D1 (P3 T11)", () => {
     const id = await site(u.member, "public");
     const p = `${publicPrefix(id, 1)}a.css`;
     expect((await call(p)).status).toBe(200);
-    await setUserStatus(env, u.member.id, "removed", "admin_remove");
+    await setUserStatus(
+      env,
+      u.member.id,
+      "removed",
+      "admin_remove",
+      SYSTEM_ACTOR,
+    );
     expect((await call(p)).status).toBe(200);
   });
 
   it("two-part tokens still verify for public and capture", async () => {
     const u = await fresh("rev-two");
     const id = await site(u.member);
-    await setUserStatus(env, u.member.id, "suspended", "admin_suspend");
+    await setUserStatus(
+      env,
+      u.member.id,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     // Unbound: tokens minted with the flag off, and thumbnails, carry no user.
     const prefix = await signContentPrefix(env, id, 1);
     expect((await call(`${prefix}a.css`)).status).toBe(200);

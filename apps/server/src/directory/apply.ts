@@ -7,7 +7,7 @@ import { logInfo, logWarn } from "../log.js";
 import { revokeUserLive, revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
 import { moveUserEmail } from "../services/email-move.js";
-import { setUserStatus } from "../services/members.js";
+import { SYSTEM_ACTOR, setUserStatus } from "../services/members.js";
 import { RESTRICTED_SYNC_CASE } from "../services/restriction.js";
 import { bindPage } from "./binding.js";
 import type { GoogleUser } from "./google.js";
@@ -33,7 +33,6 @@ import type { GoogleUser } from "./google.js";
 export type Guard = () => void;
 type Ctx = Pick<ExecutionContext, "waitUntil">;
 const noGuard: Guard = () => {};
-const SYNC: AuditActor = { kind: "sync", id: null };
 
 const rank = (c: string) =>
   `(case ${c} when 'manager' then 3 when 'editor' then 2 when 'viewer' then 1 else 0 end)`;
@@ -399,8 +398,8 @@ async function applyLinked(
       r.uid,
       "suspended",
       "directory_suspend",
+      SYSTEM_ACTOR,
       o.ctx,
-      SYNC,
     );
   } else if (!u.suspended && r.status === "suspended") {
     guard();
@@ -409,8 +408,8 @@ async function applyLinked(
       r.uid,
       "active",
       "directory_unsuspend",
+      SYSTEM_ACTOR,
       o.ctx,
-      SYNC,
     );
   }
   if (email && r.email && r.email !== email)
@@ -432,7 +431,7 @@ export async function deleteUser(
   ctx?: Ctx,
 ): Promise<void> {
   guard();
-  await setUserStatus(env, uid, "removed", why, ctx, SYNC);
+  await setUserStatus(env, uid, "removed", why, SYSTEM_ACTOR, ctx);
   // Not re-guarded: the removal committed, and deletions are never held.
   await env.DB.batch([
     stmt(env.DB, DROP_SHARES).bind(uid),

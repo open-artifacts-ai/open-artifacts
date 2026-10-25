@@ -3,7 +3,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
 import type { AuditActor } from "../services/audit.js";
-import { setUserStatus } from "../services/members.js";
+import { SYSTEM_ACTOR, setUserStatus } from "../services/members.js";
 import { directoryMode } from "../services/spaces.js";
 import { applyGroupDiff } from "./apply.js";
 import { directoryClient } from "./client.js";
@@ -167,8 +167,8 @@ export async function directorySignIn(
         user.id,
         "suspended",
         "directory_suspend",
+        SYSTEM_ACTOR,
         ctx,
-        SYNC,
       ).catch((e) => logWarn("directory_signin_suspend", e));
       throw new SignInRefused("suspended");
     }

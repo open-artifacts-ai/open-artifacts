@@ -35,7 +35,9 @@
         "bindings": [
           { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" },
           // P3 T7b (#503): bound with its first use, one release after its v2 tag.
-          { "name": "USER_PRESENCE", "class_name": "UserPresence" }
+          { "name": "USER_PRESENCE", "class_name": "UserPresence" },
+          // P3 T13 (#575): bound with its first use, one release after its v3 tag (0.46.0).
+          { "name": "DIRECTORY_SYNC", "class_name": "DirectorySync" }
         ]
       },
       "migrations": [
@@ -66,6 +68,11 @@
           "name": "RL_AUTH",
           "namespace_id": "1002",
           "simple": { "limit": 20, "period": 60 }
+        },
+        {
+          "name": "RL_DIRECTORY",
+          "namespace_id": "1003",
+          "simple": { "limit": 30, "period": 60 }
         }
       ],
       "triggers": { "crons": ["17 3 * * *"] },

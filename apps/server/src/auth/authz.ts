@@ -333,6 +333,14 @@ export function firstThumbnailEligible(
 export const capOfCaller = (c: Caller): CapReason | null =>
   c.kind === "user" ? (c.cap ?? null) : null;
 
+/**
+ * Whether `actor` may act on an org owner or admin: members.manageAdmins
+ * under the actor's cap (the uncapped owner only, #475). A member without a
+ * cap throws (callerOf), so it fails closed.
+ */
+export const managesAdmins = (actor: Member): boolean =>
+  orgCan(actor, "members.manageAdmins", { cap: capOfCaller(callerOf(actor)) });
+
 const VISIBILITIES: ReadonlySet<string> = new Set(VisibilitySchema.options);
 /** A stored visibility, or "private" when the row holds anything else (fail closed). */
 const visibilityOf = (v: string): Visibility =>

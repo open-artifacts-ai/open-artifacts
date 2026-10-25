@@ -4,8 +4,7 @@ import { authConfig } from "../auth/config.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
-import type { AuditActor } from "../services/audit.js";
-import { setUserStatus } from "../services/members.js";
+import { SYSTEM_ACTOR, setUserStatus } from "../services/members.js";
 import { type GoogleUser, listUsers } from "./google.js";
 import { putInitial, readInitial } from "./store.js";
 
@@ -32,7 +31,6 @@ import { putInitial, readInitial } from "./store.js";
 export const INITIAL_PAGES = 4;
 /** Suspended linked users read per statement; bindPage loops until none are left. */
 export const SUSPEND_BATCH = 25;
-const SYNC: AuditActor = { kind: "sync", id: null };
 
 const ID = "json_extract(j.value, '$.id')";
 const EMAIL = "json_extract(j.value, '$.email')";
@@ -177,8 +175,8 @@ export async function bindPage(
         r.id,
         "suspended",
         "directory_suspend",
+        SYSTEM_ACTOR,
         o.ctx,
-        SYNC,
       );
     }
   }

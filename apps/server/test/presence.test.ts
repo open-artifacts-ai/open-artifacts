@@ -24,6 +24,7 @@ import { patch, publish } from "../src/services/artifacts.js";
 import {
   patchMember,
   removeMember,
+  SYSTEM_ACTOR,
   setUserStatus,
 } from "../src/services/members.js";
 import { deleteShare, putShare } from "../src/services/shares.js";
@@ -323,7 +324,7 @@ describe("UserPresence", () => {
     const u = await mk(`pr-rm-${newId().slice(0, 4)}`, "member");
     const art = await pub();
     const ws = await openSockets(u, art);
-    await removeMember(env, u.userId);
+    await removeMember(env, u.userId, SYSTEM_ACTOR);
     expect(await ws.data.closed).toBe(4403);
     expect(await ws.events.closed).toBe(4403);
   });
@@ -332,7 +333,13 @@ describe("UserPresence", () => {
     const u = await mk(`pr-susp-${newId().slice(0, 4)}`, "member");
     const art = await pub();
     const ws = await openSockets(u, art);
-    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     expect(await ws.data.closed).toBe(4403);
     expect(await ws.events.closed).toBe(4403);
   });
@@ -341,7 +348,7 @@ describe("UserPresence", () => {
     const u = await mk(`pr-role-${newId().slice(0, 4)}`, "member");
     const art = await pub();
     const ws = await openSockets(u, art);
-    await patchMember(env, u.userId, { role: "admin" });
+    await patchMember(env, u.userId, { role: "admin" }, SYSTEM_ACTOR);
     expect(await ws.data.closed).toBe(4403);
     expect(await ws.events.closed).toBe(4403);
   });
@@ -356,7 +363,7 @@ describe("UserPresence", () => {
     );
     const e = { ...env, OAUTH_KV: down } as typeof env;
     await expect(
-      setUserStatus(e, u.userId, "suspended", "admin_suspend"),
+      setUserStatus(e, u.userId, "suspended", "admin_suspend", SYSTEM_ACTOR),
     ).rejects.toThrow(/kv down/);
     expect(await ws.data.closed).toBe(4403);
     expect(await ws.events.closed).toBe(4403);
