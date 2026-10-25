@@ -275,7 +275,9 @@ const UPSERT_CHILD = `insert into directory_groups (group_id, email, parent_ids)
 /** A page of active synced users after ?1, by id (T18's customer_mismatch socket close). */
 const SYNCED_PAGE = `select u.id from identities i join users u on u.id = i.user_id
   where i.provider = 'google' and i.directory_bound = 1 and u.status = 'active'
-    and u.id > ?1 order by u.id limit ?2`;
+    and u.id > ?1
+    and (select value from directory_state where key = 'sync.state') = 'customer_mismatch'
+  order by u.id limit ?2`;
 /** DO kv: the last user id whose sockets the customer_mismatch close signalled. */
 const CLOSE_KEY = "mismatch.close";
 const OWNERS = `select email from users where role = 'owner' and status = 'active'`;
@@ -539,13 +541,13 @@ export class SyncEngine {
       await this.applyReset(this.ep);
       if (!this.fresh()) return now;
     }
-    // A customer_mismatch close still paging (T18): one page per alarm, re-armed at once.
+    // A customer_mismatch close still paging (T18): one page per alarm,
+    // re-armed at once; a D1 error backs off. Once the state has left
+    // customer_mismatch the page is empty, the cursor drops and sync resumes.
     if (this.get<string>(CLOSE_KEY) !== null) {
-      await revokeUsersLive(
-        this.env,
-        await this.syncedPage(),
-        "directory customer_mismatch",
-      );
+      const ids = await this.syncedPage();
+      if (ids === null) return now + BACKOFF_MIN_MS;
+      await revokeUsersLive(this.env, ids, "directory customer_mismatch");
       return now;
     }
     const mode = directoryMode(this.env);
@@ -1514,24 +1516,25 @@ export class SyncEngine {
       // rest one page per alarm (tick) until every synced user is signalled.
       // Never guarded: the state committed.
       this.put(CLOSE_KEY, "");
-      await revokeUsersLive(
-        this.env,
-        await this.syncedPage(),
-        "directory customer_mismatch",
-      );
+      const ids = await this.syncedPage();
+      await revokeUsersLive(this.env, ids ?? [], "directory customer_mismatch");
       this.guard();
       await this.alertOwners("customer_mismatch");
+      // A D1 error: back off, then the tick retries the page.
+      if (ids === null) return now + BACKOFF_MIN_MS;
     }
     return this.get<string>(CLOSE_KEY) !== null ? now : retryAt;
   }
 
   /**
    * The next page (revokeFanoutCap, the invocation's subrequest share) of
-   * active synced users after the close cursor, advancing it; the cursor is
-   * dropped after the last page. Empty when no close is pending or on a D1
-   * error (the cursor stays, so the next alarm retries).
+   * active synced users after the close cursor, advancing it. The cursor is
+   * dropped after the last page, and as soon as the state is no longer
+   * customer_mismatch (a reconnect, a reset or a success: the query then
+   * returns nothing). Null on a D1 error (the cursor stays; the caller backs
+   * off and the next alarm retries).
    */
-  private async syncedPage(): Promise<string[]> {
+  private async syncedPage(): Promise<string[] | null> {
     const after = this.get<string>(CLOSE_KEY);
     if (after === null) return [];
     const cap = revokeFanoutCap(this.env);
@@ -1546,7 +1549,7 @@ export class SyncEngine {
       return ids;
     } catch (err) {
       logError("directory_mismatch_close", err);
-      return [];
+      return null;
     }
   }
 

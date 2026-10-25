@@ -11,7 +11,7 @@ import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { signContent } from "../src/content/signing.js";
 import { type Health, HK, NEVER } from "../src/directory/health.js";
 import { UPSERT } from "../src/directory/store.js";
-import { SyncEngine } from "../src/directory/sync.js";
+import { BACKOFF_MIN_MS, SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { revokeFanoutCap } from "../src/runtime/revoke.js";
@@ -85,7 +85,13 @@ async function synced(role: "owner" | "admin" | "member" = "member") {
 /** A session cookie for `uid`, issued `age` ms ago. */
 async function cookieFor(
   uid: string,
-  o: { age?: number; p?: "google" | "code" | "access"; t?: string } = {},
+  o: {
+    age?: number;
+    p?: "google" | "code" | "access";
+    t?: string;
+    /** Google sessions: a forced re-authentication at sign-in (default true). */
+    forced?: boolean;
+  } = {},
 ) {
   const ep =
     (
@@ -95,18 +101,15 @@ async function cookieFor(
       )
     )?.e ?? 0;
   const p = o.p ?? "google";
-  return `${sessionCookieName(env)}=${await signSession(
-    env,
-    uid,
-    Date.now() - (o.age ?? 0),
-    {
-      provider: p,
-      epoch: ep,
-      ...(p === "access" || ("t" in o && o.t === undefined)
-        ? {}
-        : { tenant: o.t ?? "a.com" }),
-    },
-  )}`;
+  const iat = Date.now() - (o.age ?? 0);
+  return `${sessionCookieName(env)}=${await signSession(env, uid, iat, {
+    provider: p,
+    epoch: ep,
+    ...(p === "google" && o.forced !== false ? { authAt: iat } : {}),
+    ...(p === "access" || ("t" in o && o.t === undefined)
+      ? {}
+      : { tenant: o.t ?? "a.com" }),
+  })}`;
 }
 
 /** Calls the app on `e` as a cookie or PAT (oa_pat_...). */
@@ -363,43 +366,95 @@ describe("customer_mismatch fails closed for synced users", () => {
 });
 
 describe("break-glass", () => {
-  it("break-glass: the mismatch owner's Google sign-in issues a session that opens only the break-glass routes", async () => {
+  /** A Google sign-in through the app as `owner`, optionally ?reauth=1. */
+  async function googleSignIn(
+    owner: { id: string; email: string },
+    o: { reauth: boolean; authTime?: number },
+  ) {
     const google = await fakeGoogle();
-    const owner = await synced("owner");
-    const sub = (
-      await one<{ s: string }>(
-        "select subject s from identities where user_id = ?",
-        owner.id,
-      )
-    )?.s;
-    await mismatch();
-    const start = await call(`${AUTH.loginGoogle}?next=%2F`, null);
-    const u = new URL(start.headers.get("location") ?? "");
-    const state =
-      start.headers
+    try {
+      const sub = (
+        await one<{ s: string }>(
+          "select subject s from identities where user_id = ?",
+          owner.id,
+        )
+      )?.s;
+      const start = await call(
+        `${AUTH.loginGoogle}?next=%2F${o.reauth ? "&reauth=1" : ""}`,
+        null,
+      );
+      const u = new URL(start.headers.get("location") ?? "");
+      const state =
+        start.headers
+          .getSetCookie()
+          .find((c) => /oa_oidc_/.test(c))
+          ?.split(";")[0] ?? "";
+      const code = google.issueCode(
+        {
+          nonce: u.searchParams.get("nonce"),
+          sub,
+          email: owner.email,
+          ...(o.authTime !== undefined
+            ? { auth_time: Math.floor(o.authTime / 1000) }
+            : {}),
+        },
+        u.searchParams.get("code_challenge") as string,
+      );
+      const back = await fetchAndWait(
+        app,
+        new Request(
+          `http://app.localhost${AUTH.callbackGoogle}?state=${u.searchParams.get("state")}&code=${code}`,
+          { headers: { cookie: state } },
+        ),
+        e,
+      );
+      const session = back.headers
         .getSetCookie()
-        .find((c) => /oa_oidc_/.test(c))
-        ?.split(";")[0] ?? "";
-    const code = google.issueCode(
-      { nonce: u.searchParams.get("nonce"), sub, email: owner.email },
-      u.searchParams.get("code_challenge") as string,
+        .find((c) => c.startsWith(`${sessionCookieName(env)}=`))
+        ?.split(";")[0];
+      if (!session) throw new Error("no session");
+      return { authorize: u, session };
+    } finally {
+      google.restore();
+    }
+  }
+
+  it("break-glass: the reauth sign-in asks Google for max_age=0; its session opens only the break-glass routes", async () => {
+    const owner = await synced("owner");
+    await mismatch();
+    const { authorize, session } = await googleSignIn(owner, {
+      reauth: true,
+      authTime: Date.now() - MIN,
+    });
+    expect(authorize.searchParams.get("max_age")).toBe("0");
+    expect((await call(R.directory, session)).status).toBe(200);
+    expect((await call(R.me, session)).status).toBe(401);
+  });
+
+  it("break-glass: a silent SSO is not enough (no reauth, or an old or missing auth_time)", async () => {
+    const owner = await synced("owner");
+    await mismatch();
+    const plain = await googleSignIn(owner, {
+      reauth: false,
+      authTime: Date.now(),
+    });
+    expect(plain.authorize.searchParams.get("max_age")).toBeNull();
+    const old = await googleSignIn(owner, {
+      reauth: true,
+      authTime: Date.now() - 2 * 3600_000,
+    });
+    const none = await googleSignIn(owner, { reauth: true });
+    for (const s of [plain.session, old.session, none.session]) {
+      const r = await call(R.directory, s);
+      expect(r.status).toBe(401);
+      expect((await errOf(r)).code).toBe("reauth_required");
+    }
+    // A cookie without the forced re-authentication mark: the same.
+    const unforced = await call(
+      R.directory,
+      await cookieFor(owner.id, { age: MIN, forced: false }),
     );
-    const back = await fetchAndWait(
-      app,
-      new Request(
-        `http://app.localhost${AUTH.callbackGoogle}?state=${u.searchParams.get("state")}&code=${code}`,
-        { headers: { cookie: state } },
-      ),
-      e,
-    );
-    const session = back.headers
-      .getSetCookie()
-      .find((c) => c.startsWith(`${sessionCookieName(env)}=`))
-      ?.split(";")[0];
-    expect(session).toBeDefined();
-    expect((await call(R.directory, session as string)).status).toBe(200);
-    expect((await call(R.me, session as string)).status).toBe(401);
-    google.restore();
+    expect((await errOf(unforced)).code).toBe("reauth_required");
   });
 
   it("break-glass: fresh Google sign-in (9 min) reaches R.directory; 11 min → 401 reauth_required", async () => {
@@ -443,7 +498,7 @@ describe("break-glass", () => {
     expect(await breakGlassAudits(owner.id)).toBe(0);
   });
 
-  it("break-glass: every use audits; one email per session, even for parallel first requests", async () => {
+  it("break-glass: one audit per route a minute, the first always; one email per session, even for parallel first requests", async () => {
     const owner = await synced("owner");
     await mismatch();
     const toOwner = () => mail.sent.filter((m) => m.to === owner.email);
@@ -452,20 +507,49 @@ describe("break-glass", () => {
       call(R.directory, fresh),
       call(R.directory, fresh),
       call(R.directory, fresh),
+      call(R.directory, fresh),
     ]);
-    expect(first.map((r) => r.status)).toEqual([200, 200, 200]);
+    expect(first.map((r) => r.status)).toEqual([200, 200, 200, 200]);
+    expect(await breakGlassAudits(owner.id)).toBe(1);
     expect(
       (await call(R.directorySync, fresh, { method: "POST" })).status,
     ).toBe(202);
-    expect(await breakGlassAudits(owner.id)).toBe(4);
+    expect(await breakGlassAudits(owner.id)).toBe(2);
     expect(toOwner()).toHaveLength(1);
     expect(toOwner()[0]?.text).toContain("Google Workspace mismatch");
-    expect(toOwner()[0]?.text).not.toContain("—");
-    // A new sign-in is a new session: one more email.
+    expect(toOwner()[0]?.text).not.toContain("\u2014");
+    // A minute later the same route is audited again.
+    await env.DB.prepare(
+      "update audit_events set at = at - 61000 where action = 'directory.break_glass' and actor_id = ?",
+    )
+      .bind(owner.id)
+      .run();
+    expect((await call(R.directory, fresh)).status).toBe(200);
+    expect(await breakGlassAudits(owner.id)).toBe(3);
+    // A new sign-in is a new session: audited and one more email.
     const again = await cookieFor(owner.id, { age: 2 * MIN });
     expect((await call(R.directory, again)).status).toBe(200);
-    expect(await breakGlassAudits(owner.id)).toBe(5);
+    expect(await breakGlassAudits(owner.id)).toBe(4);
     expect(toOwner()).toHaveLength(2);
+  });
+
+  it("break-glass: a failed email send gives the slot back; the next use retries", async () => {
+    const owner = await synced("owner");
+    await mismatch();
+    const fresh = await cookieFor(owner.id, { age: MIN });
+    const broken = mailer(true);
+    const errs = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(
+      (await call(R.directory, fresh, { env: directEnv(broken.env) })).status,
+    ).toBe(200);
+    expect(broken.sent).toHaveLength(0);
+    expect(
+      errs.mock.calls.some((c) =>
+        String(c[0]).includes("break_glass_email_unsent"),
+      ),
+    ).toBe(true);
+    expect((await call(R.directory, fresh)).status).toBe(200);
+    expect(mail.sent.filter((m) => m.to === owner.email)).toHaveLength(1);
   });
 
   it("break-glass: confirm and cancel resolve the owner (audited)", async () => {
@@ -620,5 +704,57 @@ describe("DirectorySync marks staleness (P3 T18)", () => {
     await drain(t0 + 2 * MIN);
     for (const id of [bound.id, ...extra])
       expect(await revokedAt(id), id).toBeGreaterThan(0);
+  });
+
+  /** Mismatch entered with cap + 5 extra synced users: the first page is done. */
+  async function mismatchPaging() {
+    const { adminSub, bound, t0 } = await connectedWithMember();
+    const all = [bound.id];
+    for (let i = 0; i < revokeFanoutCap(e) + 5; i++)
+      all.push((await synced()).id);
+    (g.users.get(adminSub) as { customerId?: string }).customerId = "C-OTHER";
+    const at = t0 + 2 * MIN;
+    await alarm(at);
+    expect(await inDo((s) => new SyncEngine(e, s.storage).due(at))).toBe(true);
+    return { all, at };
+  }
+  const signalled = async (ids: string[]) =>
+    (await Promise.all(ids.map(revokedAt))).filter((n) => n > 0).length;
+
+  it("a D1 error while paging the close backs off instead of re-arming at once", async () => {
+    const { at } = await mismatchPaging();
+    const DB = new Proxy(env.DB, {
+      get(t, p) {
+        if (p === "prepare")
+          return (q: string) => {
+            if (/u\.id > \?1/.test(q)) throw new Error("D1 down");
+            return t.prepare(q);
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const broken = { ...e, DB } as Env;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const next = await inDo(async (s) => {
+      await new SyncEngine(broken, s.storage).alarm(at + 1000);
+      return s.storage.getAlarm();
+    });
+    expect(next).toBe(at + 1000 + BACKOFF_MIN_MS);
+  });
+
+  it("the close stops paging once the state leaves customer_mismatch", async () => {
+    const { all, at } = await mismatchPaging();
+    const cap = revokeFanoutCap(e);
+    expect(await signalled(all)).toBeLessThanOrEqual(cap);
+    // A reconnect, reset or success moved the state on.
+    await env.DB.prepare(
+      "insert or replace into directory_state (key, value) values ('sync.state', 'ok')",
+    ).run();
+    await alarm(at + 1000);
+    const after = await signalled(all);
+    await alarm(at + 2000);
+    expect(await signalled(all)).toBe(after);
+    expect(after).toBeLessThan(all.length);
   });
 });

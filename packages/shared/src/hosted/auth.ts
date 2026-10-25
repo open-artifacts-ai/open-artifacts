@@ -153,4 +153,9 @@ export type SessionPayload = {
   p: "access" | "google" | "code" | "dev" | "test";
   t?: string;
   e: number;
+  /**
+   * Google auth_time (ms) of a forced re-authentication (max_age=0), set
+   * only when it was within 10 minutes at sign-in: P3 T18's break-glass.
+   */
+  a?: number;
 };

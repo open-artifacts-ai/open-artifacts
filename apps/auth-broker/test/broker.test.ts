@@ -170,6 +170,17 @@ describe("authorize", () => {
     });
     expect(u.searchParams.get("nonce")).not.toBe("n1");
     expect(u.searchParams.get("state")).not.toBe("s1");
+    expect(u.searchParams.get("max_age")).toBeNull();
+  });
+
+  it("reauth=1 (an install's break-glass sign-in) asks Google for max_age=0", async () => {
+    const r = await call(
+      `/google/authorize?install=inst-a&state=s1&nonce=n1&code_challenge=${CH}&reauth=1`,
+    );
+    expect(r.status).toBe(302);
+    const u = new URL(r.headers.get("location") ?? "");
+    expect(u.searchParams.get("max_age")).toBe("0");
+    expect(u.searchParams.get("prompt")).toBe("select_account");
   });
 
   it("redirect_uri comes from BROKER_ORIGIN, never from the request Host", async () => {

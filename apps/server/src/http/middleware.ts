@@ -19,7 +19,7 @@ import {
   sessionCookieName,
 } from "../auth/session.js";
 import { BANNER_AFTER_MS } from "../directory/health.js";
-import { sendEmail, takeAll } from "../email/send.js";
+import { type Cap, refundAll, sendEmail, takeAll } from "../email/send.js";
 import { directoryAlertEmail } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { logError } from "../log.js";
@@ -261,6 +261,8 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
 export const SESSION_CAP_MS = 24 * 3600_000;
 /** Break-glass needs a Google sign-in at most this old (T18). */
 export const BREAK_GLASS_MS = 10 * 60_000;
+/** Break-glass uses are audited at most once per this, per session and route. */
+const BREAK_GLASS_AUDIT_MS = 60_000;
 
 /**
  * The 24 h browser session cap (P3 T18): directory sync unhealthy for over
@@ -296,41 +298,61 @@ export const isBreakGlassRoute = (method: string, path: string) =>
 /**
  * Break-glass (T18), on BREAK_GLASS_ROUTES only, for a cookie that
  * getUserWithEpoch refused: an org owner refused for customer_mismatch is
- * resolved when the session is a verified-hd Google sign-in under 10 min old,
- * else 401 reauth_required. Every use is audited (directory.break_glass,
- * with the session's iat); that owner gets one email per break-glass session,
- * on its first use. Anyone else stays anonymous, as on every other route.
+ * resolved when the session is a verified-hd Google sign-in under 10 min old
+ * whose Google authentication was forced and is under 10 min old too
+ * (?reauth=1: max_age=0, auth_time checked at the callback); else 401
+ * reauth_required. Uses are audited (directory.break_glass, with the
+ * session's iat) at most once a minute per session and route, the first use
+ * always; that owner gets one email per break-glass session, on its first
+ * use. Anyone else stays anonymous, as on every other route.
  */
 async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
   const row = await getMismatchOwner(c.env, s.uid);
   if (!row || !sessionStillValid(c.env, s, row.sessionEpoch)) return;
   const now = Date.now();
-  if (s.p !== "google" || s.t === undefined || s.iat < now - BREAK_GLASS_MS)
+  if (
+    s.p !== "google" ||
+    s.t === undefined ||
+    s.iat < now - BREAK_GLASS_MS ||
+    s.a === undefined ||
+    s.a < now - BREAK_GLASS_MS
+  )
     throw new ApiError(
       "reauth_required",
       "Sign in with Google again to manage the directory",
     );
   setCookieUser(c, s, row);
+  const route = `${c.req.method} ${c.req.path}`;
+  // One statement (D1 runs them one at a time), so parallel uses in the same
+  // minute write one row.
   await audit(
     c.env,
     "directory.break_glass",
     { type: "directory", id: "google" },
     userActor(row.user.id),
-    { detail: { route: `${c.req.method} ${c.req.path}`, iat: s.iat } },
+    {
+      detail: { route, iat: s.iat },
+      when: {
+        sql: `not exists (select 1 from audit_events where at >= ? and action = 'directory.break_glass'
+          and actor_id = ? and json_extract(detail, '$.iat') = ? and json_extract(detail, '$.route') = ?)`,
+        args: [now - BREAK_GLASS_AUDIT_MS, row.user.id, s.iat, route],
+      },
+    },
   ).run();
   const mail = (async () => {
     // One email per session (keyed on its iat): an atomic counter upsert, so
-    // parallel first requests can't both send. Swept by the daily cron.
-    const first = await takeAll(c.env, [
+    // parallel first requests can't both send. Swept by the daily cron. A
+    // failed send gives the slot back, so the next use retries.
+    const caps: Cap[] = [
       [
         `email:bg:${row.user.id}:${s.iat}`,
         1,
         new Date(s.iat).toISOString().slice(0, 10),
       ],
-    ]);
-    if (first !== -1) return;
+    ];
+    if ((await takeAll(c.env, caps)) !== -1) return;
     const instance = (await getSettings(c.env)).name;
-    await sendEmail(
+    const sent = await sendEmail(
       c.env,
       null,
       row.user.email,
@@ -343,6 +365,10 @@ async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
         }),
       { kind: "directory" },
     );
+    if (!sent) {
+      logError("break_glass_email_unsent");
+      await refundAll(c.env, caps);
+    }
   })().catch((e) => logError("break_glass_email", e));
   const ctx = execCtx(c);
   if (ctx) ctx.waitUntil(mail);

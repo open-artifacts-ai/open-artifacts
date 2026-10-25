@@ -93,8 +93,8 @@ const get = (e: Env, path: string, cookie?: string) =>
 const loc = (r: Response) => r.headers.get("location") ?? "";
 
 /** Install login → broker authorize; returns the Google authorize params and the state cookie. */
-async function begin(e: Env) {
-  const start = await get(e, `${AUTH.loginGoogle}?next=/a/x`);
+async function begin(e: Env, extra = "") {
+  const start = await get(e, `${AUTH.loginGoogle}?next=/a/x${extra}`);
   const cookie =
     start.headers
       .getSetCookie()
@@ -115,6 +115,8 @@ async function begin(e: Env) {
     /** The install-derived nonce Google sees. */
     nonce: gq.get("nonce") as string,
     challenge: gq.get("code_challenge") as string,
+    toBroker,
+    google: gq,
   };
 }
 
@@ -158,6 +160,42 @@ describe("Google through the broker", () => {
     });
     // Google saw the broker's secret, never the install's.
     expect(g.tokenCalls.at(-1)?.get("client_secret")).toBe("broker-secret");
+  });
+
+  it("break-glass reauth (P3 T18) through the broker: max_age=0 at Google; a recent auth_time marks the session", async () => {
+    const e = installEnv();
+    const plain = await begin(e);
+    expect(plain.toBroker.searchParams.get("reauth")).toBeNull();
+    expect(plain.google.get("max_age")).toBeNull();
+    const b = await begin(e, "&reauth=1");
+    expect(b.toBroker.searchParams.get("reauth")).toBe("1");
+    expect(b.google.get("max_age")).toBe("0");
+    const email = uniq("bg");
+    const authTime = Math.floor(Date.now() / 1000) - 30;
+    const code = g.issueCode(
+      { nonce: b.nonce, email, sub: `bg-${email}`, auth_time: authTime },
+      b.challenge,
+    );
+    const back = await broker.fetch(
+      new Request(
+        `${BROKER}/google/callback?code=${code}&state=${encodeURIComponent(b.bstate)}`,
+      ) as never,
+      brokerEnv,
+    );
+    const r = await get(
+      e,
+      `${AUTH.callbackGoogle}${new URL(loc(back)).search}`,
+      b.cookie,
+    );
+    const sess = r.headers
+      .getSetCookie()
+      .find((c) => c.startsWith(`${SESSION}=`))
+      ?.split(";")[0]
+      ?.split("=")[1];
+    expect(await readSession(e, sess)).toMatchObject({
+      p: "google",
+      a: authTime * 1000,
+    });
   });
 
   /** The broker answers with `idToken`, whatever it was asked: a compromised broker. */
