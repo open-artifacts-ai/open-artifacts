@@ -62,4 +62,4 @@ A deployed instance sends nothing to the Open Artifacts project or anyone else.
 
 ## Fonts
 
-The dashboard and the Markdown renderer load the Geist fonts from Google Fonts, on both hosts. Each viewer's browser fetches them from `fonts.googleapis.com` and `fonts.gstatic.com`, so Google sees the viewer's IP address. To avoid this, block those two hosts in your network or browser; pages then fall back to system fonts and work the same.
+The dashboard and the Markdown renderer serve their Geist fonts from your own hosts: the app host and the content host. Nothing is fetched from a third party, so no outside service sees a viewer's IP address.

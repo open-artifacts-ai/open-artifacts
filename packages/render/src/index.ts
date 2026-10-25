@@ -16,6 +16,8 @@ import {
   onThemeChange,
   watchShellTheme,
 } from "./theme";
+// Built by Vite, so the fonts theme.css names are emitted next to it, hashed.
+import themeHref from "./theme.css?url";
 
 export { prepareMarkdown, renderCode, renderMarkdown, renderPdf };
 
@@ -38,7 +40,7 @@ export function entryUrl(entry: string, base: string): string {
 function injectTheme(): void {
   const link = document.createElement("link");
   link.rel = "stylesheet";
-  link.href = new URL("./theme.css", import.meta.url).href;
+  link.href = themeHref;
   document.head.appendChild(link);
 }
 
