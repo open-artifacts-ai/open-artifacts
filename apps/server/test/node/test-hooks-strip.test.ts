@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 // bundle (define __OA_TEST_HOOKS_ALLOWED__ false) holds none of its SQL; the
 // redline bundle (define true) does, so the check can't pass vacuously.
 // Needs `pnpm --filter @oa/provision build` and apps/server/dist-assets
-// (as scripts/ci/build-release-bundle.ts); skipped when they are missing.
+// (as scripts/ci/build-release-bundle.ts); skipped locally when missing.
 const root = join(import.meta.dirname, "../../../..");
 const ready =
   existsSync(join(root, "packages/provision/dist/index.js")) &&
@@ -34,13 +34,18 @@ function bundle(variant: "release" | "redline"): string {
   return readFileSync(join(out, "index.js"), "utf8");
 }
 
-describe.skipIf(!ready)("test session hook spaces (built bundles)", () => {
-  it("release holds none of the space seeding; redline does", () => {
-    const rel = bundle("release");
-    const red = bundle("redline");
-    for (const m of MARKERS) {
-      expect(rel.includes(m), m).toBe(false);
-      expect(red.includes(m), m).toBe(true);
-    }
-  }, 120_000);
-});
+// OA_REQUIRE_REAL_BUILD=1 (the no-test-hooks CI job) never skips: a missing
+// build then fails (as release-t3b).
+describe.skipIf(!ready && process.env.OA_REQUIRE_REAL_BUILD !== "1")(
+  "test session hook spaces (built bundles)",
+  () => {
+    it("release holds none of the space seeding; redline does", () => {
+      const rel = bundle("release");
+      const red = bundle("redline");
+      for (const m of MARKERS) {
+        expect(rel.includes(m), m).toBe(false);
+        expect(red.includes(m), m).toBe(true);
+      }
+    }, 120_000);
+  },
+);

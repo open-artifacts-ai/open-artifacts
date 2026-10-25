@@ -259,6 +259,45 @@ describe("session hook with spaces", () => {
           .bind(fresh)
           .first(),
       ).toBeNull();
+      // Checked before testUser: the refusal created no user either.
+      expect(
+        await env.DB.prepare("select 1 from users where email = ?")
+          .bind(email)
+          .first(),
+      ).toBeNull();
     }
+  });
+
+  it("a space deleted between the check and the batch → 404 (the grant row didn't write)", async () => {
+    const s = sid();
+    await env.DB.prepare(
+      "insert into spaces (id, kind, name, all_members_role, public_links, created_at) values (?, 'shared', 'Racing', null, 0, ?)",
+    )
+      .bind(s, Date.now())
+      .run();
+    // The hook's only DB.batch is the grant batch: delete the space first.
+    const db = env.DB;
+    const racing = new Proxy(db, {
+      get(t, k) {
+        if (k === "batch")
+          return async (stmts: D1PreparedStatement[]) => {
+            await db
+              .prepare("update spaces set deleted_at = ? where id = ?")
+              .bind(Date.now(), s)
+              .run();
+            return db.batch(stmts);
+          };
+        const v = Reflect.get(t, k);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    await is404(
+      await session(on({ DB: racing }), {
+        email: tu("race"),
+        role: "member",
+        spaces: [{ spaceId: s, role: "editor" }],
+      }),
+    );
+    expect(await memberRows(s)).toEqual([]);
   });
 });

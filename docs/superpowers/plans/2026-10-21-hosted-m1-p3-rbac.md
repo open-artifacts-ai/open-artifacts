@@ -815,7 +815,7 @@ describe.each(SURFACES)("$name", (s) => {
 
 **Interfaces:** The body is the contract's `TestSessionInput`: `spaces?: { spaceId: string; role: SpaceRole }[]` (max 20). It creates any missing shared space and upserts manual `space_members` rows for the session user, in the session batch. P2 mounts the route only when `TEST_HOOKS_ALLOWED && env.TEST_HOOKS === "1"`; this task only extends its body. The build-time const is `false` in the hosted prod build, so the code path is dead and stripped even if the env var is set; Platform's provisioner also refuses `testHooks` in `oa-prod`.
 
-- [ ] **Step 1: Failing tests:** `"session with spaces: the caller has that role"`, `"TEST_HOOKS unset → 404"`, `"TEST_HOOKS=1 but TEST_HOOKS_ALLOWED false → 404"`, `"unknown role → 400"`.
+- [ ] **Step 1: Failing tests:** `"session with spaces: the caller has that role"`, `"TEST_HOOKS unset → 404"`, `"TEST_HOOKS=1 but TEST_HOOKS_ALLOWED false → 404"`, `"unknown role → 404"` (the standard 404: P2's hook contract makes every refusal the 404).
 - [ ] **Step 2: Run.** Expected: 4 failed. **Step 3: Implement.** **Step 4: Run** `pnpm -F @oa/server test test-hooks`. Expected: passes. **Step 5: Commit** `test(server): test session hook seeds space roles (P3)`.
 
 ### Task 18: Informational staleness, the session cap and break-glass

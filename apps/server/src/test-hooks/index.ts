@@ -195,21 +195,33 @@ const SPACES_BLOCKED =
   "select 1 from spaces where id in (select value from json_each(?)) and (kind <> 'shared' or deleted_at is not null) limit 1";
 const SPACE_CREATE =
   "insert into spaces (id, kind, name, all_members_role, public_links, created_at) values (?, 'shared', ?, null, 0, ?) on conflict (id) do nothing";
-// Conditional on a live shared space, so a racing personal row is never joined.
+// Conditional on a live shared space, so a racing personal or deleted row is
+// never joined. Always writes when the row exists, so changes = 0 means the
+// space was not live.
 const MEMBER_UPSERT = `insert into space_members (space_id, user_id, role, source, created_at)
   select ?1, ?2, ?3, 'manual', ?4
   where exists (select 1 from spaces where id = ?1 and kind = 'shared' and deleted_at is null)
-  on conflict (space_id, user_id, source) do update set role = excluded.role
-  where space_members.role <> excluded.role`;
+  on conflict (space_id, user_id, source) do update set role = excluded.role`;
 
 const MANUAL_ROLES =
   "select space_id, role from space_members where user_id = ? and source = 'manual' and space_id in (select value from json_each(?))";
 const RANK: Record<string, number> = { viewer: 1, editor: 2, manager: 3 };
+const idsOf = (spaces: SpaceGrant[]) =>
+  JSON.stringify(spaces.map((s) => s.spaceId));
+
+/** True when an id names a personal or deleted space. Read-only: runs before the user is created. */
+async function spacesBlocked(env: Env, spaces: SpaceGrant[]): Promise<boolean> {
+  if (spaces.length === 0) return false;
+  return (
+    (await env.DB.prepare(SPACES_BLOCKED).bind(idsOf(spaces)).first()) !== null
+  );
+}
 
 /**
  * P3 T17: creates any missing shared space and upserts the user's manual
- * space_members rows, in one batch. False (refuse) when an id names a
- * personal or deleted space. A lowered row closes the user's sockets.
+ * space_members rows, in one batch. False (refuse) when a grant row didn't
+ * write (its space was deleted or turned out personal after the check). A
+ * lowered row closes the user's sockets.
  */
 async function grantSpaces(
   env: Env,
@@ -217,28 +229,24 @@ async function grantSpaces(
   spaces: SpaceGrant[],
 ): Promise<boolean> {
   if (spaces.length === 0) return true;
-  const ids = JSON.stringify(spaces.map((s) => s.spaceId));
-  const [blocked, prior] = await env.DB.batch<{
-    space_id?: string;
-    role?: string;
-  }>([
-    env.DB.prepare(SPACES_BLOCKED).bind(ids),
-    env.DB.prepare(MANUAL_ROLES).bind(userId, ids),
-  ]);
-  if (blocked?.results.length) return false;
-  const was = new Map(prior?.results.map((r) => [r.space_id, r.role]));
+  const prior = await env.DB.prepare(MANUAL_ROLES)
+    .bind(userId, idsOf(spaces))
+    .all<{ space_id: string; role: string }>();
+  const was = new Map(prior.results.map((r) => [r.space_id, r.role]));
   const lowered = spaces.some(
     (s) => (RANK[was.get(s.spaceId) ?? ""] ?? 0) > (RANK[s.role] ?? 0),
   );
   const now = Date.now();
-  await env.DB.batch(
+  const res = await env.DB.batch(
     spaces.flatMap((s) => [
       env.DB.prepare(SPACE_CREATE).bind(s.spaceId, `Test ${s.spaceId}`, now),
       env.DB.prepare(MEMBER_UPSERT).bind(s.spaceId, userId, s.role, now),
     ]),
   );
+  // Every second result is a grant row.
+  const allWritten = res.every((r, i) => i % 2 === 0 || r.meta.changes > 0);
   if (lowered) await revokeUserLive(env, userId, "space role lowered");
-  return true;
+  return allWritten;
 }
 
 // A loopback redirect: the grant is completed server-side, nothing follows it.
@@ -352,8 +360,11 @@ export function mountTestHooks(app: AppType): void {
       }
       const { email: raw, role, spaces = [] } = input.data;
       const email = normalizeEmail(raw);
-      const user =
-        email && spacesValid(spaces) ? await testUser(env, email, role) : null;
+      // Every input check, the spaces' kinds included, runs before
+      // testUser, so a refusal writes nothing.
+      const ok =
+        !!email && spacesValid(spaces) && !(await spacesBlocked(env, spaces));
+      const user = ok && email ? await testUser(env, email, role) : null;
       if (!user || !(await grantSpaces(env, user.id, spaces))) {
         await audit(env, hook, ip, "refused", email ? { email } : {});
         return notFound();
