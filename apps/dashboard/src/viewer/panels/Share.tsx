@@ -31,6 +31,7 @@ import { useSingleFlight } from "../../api/useSingleFlight";
 import { emailEnabled } from "../../auth/emailEnabled";
 import { useCan } from "../../auth/permissions";
 import { useMe } from "../../auth/useMe";
+import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
 import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
 import { Modal } from "../../layout/Modal";
@@ -134,14 +135,18 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const put = usePutShare(id);
   const del = useDeleteShare(id);
   const [confirmPublic, setConfirmPublic] = useState(false);
+  // A 409 on a visibility change: the choice reverts to the server's value.
+  const [conflict, setConflict] = useState(false);
   // The control only stages a choice; Save visibility commits it.
   // Tagged with the visibility it was staged from, so a server change drops it.
   const [stage, setStage] = useState<{
     from: Visibility;
     to: Visibility;
   } | null>(null);
-  const setPending = (to: Visibility | null) =>
+  const setPending = (to: Visibility | null) => {
     setStage(to && { from: artifact.visibility, to });
+    if (to) setConflict(false);
+  };
   const staged =
     stage?.from === artifact.visibility ? stage.to : artifact.visibility;
   const changed = staged !== artifact.visibility;
@@ -173,8 +178,10 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
         },
         {
           onSettled: done,
+          onSuccess: () => setConflict(false),
           onError: (e) => {
             setPending(null);
+            if (isConflict(e)) return setConflict(true);
             failVisibility(e);
           },
         },
@@ -267,6 +274,11 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           {/* Hosted: the help text names the space or the org (D6 section 9). */}
           {visibilityHint(staged, artifact.space, install) ?? NOTE[staged]}
         </p>
+        {conflict && (
+          <div className="mt-[var(--oa-space-2)]">
+            <ConflictNote />
+          </div>
+        )}
         {space?.publicLinks === false && (
           <p
             id="oa-share-public-off"

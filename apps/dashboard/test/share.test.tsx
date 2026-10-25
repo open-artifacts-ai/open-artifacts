@@ -208,6 +208,61 @@ describe("share panel", () => {
   });
 });
 
+const CONFLICT_COPY = "This artifact just changed. Check it and try again.";
+const conflictPatch = http.patch("*/api/v1/artifacts/:id", () =>
+  HttpResponse.json(
+    { error: { code: "conflict", message: "server text" } },
+    { status: 409 },
+  ),
+);
+
+describe("409 conflict", () => {
+  it("details: the edits stay, a status says so, Save is the retry, and the artifact reloads", async () => {
+    server.use(conflictPatch);
+    const gets = () =>
+      seen.filter((u) => u.pathname === R.artifact(EDITOR) && u.search === "")
+        .length;
+    mount(panel(EDITOR, "details"));
+    const title = await screen.findByRole("textbox", { name: "Title" });
+    const before = gets();
+    fireEvent.change(title, { target: { value: "Mine" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const note = await screen.findByText(CONFLICT_COPY);
+    expect(note).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("server text")).toBeNull();
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Mine");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    await waitFor(() => expect(gets()).toBeGreaterThan(before));
+    // The next edit clears it.
+    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
+      target: { value: "Mine again" },
+    });
+    expect(screen.queryByText(CONFLICT_COPY)).toBeNull();
+  });
+
+  it("visibility: the choice reverts to the server's value, with the status under it", async () => {
+    server.use(conflictPatch);
+    mount(panel(OWNED));
+    const group = await screen.findByRole("radiogroup", { name: "Visibility" });
+    fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
+    const note = await screen.findByText(CONFLICT_COPY);
+    expect(note).toHaveAttribute("role", "status");
+    await waitFor(() =>
+      expect(
+        within(group).getByRole("radio", { name: "Private" }),
+      ).toBeChecked(),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Save visibility" }),
+    ).toBeNull();
+    // Choosing again clears it.
+    fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
+    expect(screen.queryByText(CONFLICT_COPY)).toBeNull();
+  });
+});
+
 describe("details panel", () => {
   it("editors edit the title and description", async () => {
     const bodies = patches();

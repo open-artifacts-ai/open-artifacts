@@ -11,6 +11,7 @@ import {
 } from "../../api/queries";
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { useCan, useHosted } from "../../auth/permissions";
+import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { toast } from "../../layout/toast";
 import { ConfirmDialog } from "../../settings/ConfirmDialog";
 import { MoveDialog, useMoveTargets } from "../../spaces/MoveDialog";
@@ -45,6 +46,8 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
   const [title, setTitle] = useState(artifact.title);
   const [desc, setDesc] = useState(artifact.description ?? "");
   const [confirm, setConfirm] = useState(false);
+  // A 409: the artifact changed under the edit. The edits stay; Save is the retry.
+  const [conflict, setConflict] = useState(false);
   // Follow the server while a field is untouched (a rename elsewhere, a refetch).
   const synced = useRef({
     title: artifact.title,
@@ -68,7 +71,9 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
           ...(desc !== (artifact.description ?? "") && { description: desc }),
         },
         {
+          onSuccess: () => setConflict(false),
           onError: (e) => {
+            if (isConflict(e)) return setConflict(true);
             setTitle(artifact.title);
             setDesc(artifact.description ?? "");
             fail(e, "Couldn't save");
@@ -108,7 +113,10 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
               aria-labelledby="oa-d-title"
               value={title}
               maxLength={200}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                setConflict(false);
+              }}
             />
           </div>
           <div>
@@ -117,9 +125,13 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
               aria-labelledby="oa-d-desc"
               value={desc}
               maxLength={2000}
-              onChange={(e) => setDesc(e.target.value)}
+              onChange={(e) => {
+                setDesc(e.target.value);
+                setConflict(false);
+              }}
             />
           </div>
+          {conflict && <ConflictNote />}
           <Button
             type="submit"
             variant="default"

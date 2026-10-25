@@ -220,6 +220,47 @@ it("space_forbidden keeps the dialog open with the copy, and no toast", async ()
   expect(screen.queryByText("Couldn't move the artifact.")).toBeNull();
 });
 
+it("409 conflict: a status in the open dialog, no alert, no toast; Move is the retry, choosing again clears it", async () => {
+  // A second target, so there is something else to choose.
+  const withOpsAndDesign = (m: Me): Me => {
+    const two = withOps(m);
+    return {
+      ...two,
+      spaces: [
+        ...(two.spaces ?? []),
+        { ...OPS, id: "SpDesNpQrSt7uVwXy", name: "Design" },
+      ],
+    };
+  };
+  mountHosted(details(NOTES), true, withOpsAndDesign, [
+    http.post(`*${R.moveArtifact(NOTES)}`, () =>
+      HttpResponse.json(
+        { error: { code: "conflict", message: "server text" } },
+        { status: 409 },
+      ),
+    ),
+  ]);
+  const d = await openMove();
+  fireEvent.click(within(d).getByRole("radio", { name: /^Ops/ }));
+  fireEvent.click(within(d).getByRole("button", { name: "Move" }));
+  const note = await within(d).findByText(
+    "This artifact just changed. Check it and try again.",
+  );
+  expect(note).toHaveAttribute("role", "status");
+  expect(within(d).queryByRole("alert")).toBeNull();
+  expect(screen.queryByText("Couldn't move the artifact.")).toBeNull();
+  expect(screen.queryByText("server text")).toBeNull();
+  // The dialog stays open and Move is the retry.
+  expect(within(d).getByRole("button", { name: "Move" })).toBeEnabled();
+  // Choosing another space clears the line.
+  fireEvent.click(within(d).getByRole("radio", { name: /^Design/ }));
+  expect(
+    within(d).queryByText(
+      "This artifact just changed. Check it and try again.",
+    ),
+  ).toBeNull();
+});
+
 it("space_personal (defensive) shows its copy", async () => {
   mountHosted(details(NOTES), true, withOps, [
     http.post(`*${R.moveArtifact(NOTES)}`, () =>
