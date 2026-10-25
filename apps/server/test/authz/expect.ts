@@ -21,6 +21,8 @@ export const CALLERS = [
   "removedUser",
   "recycledEmailUser",
   "staleSynced",
+  "everySpaceMember",
+  "everySpaceGuest",
   "anonymous",
 ] as const;
 export type CallerName = (typeof CALLERS)[number];
@@ -54,6 +56,9 @@ export type ArtifactName = (typeof ARTIFACTS)[number];
  *   suspendedUser and removedUser held a manager role in S and an editor
  *   share on personalPrivate. recycledEmailUser's address belonged to a user
  *   removed by the directory (deletion treatment) who held the same.
+ * - Every-space mapping (org_group_mappings, editor) for a directory group
+ *   holding everySpaceMember and everySpaceGuest: every shared space (S and
+ *   L), never a personal one; the guest is capped to viewer.
  * - Directory connected, sync unhealthy for 8 days (staleAt reported):
  *   staleSynced keeps last-sync access (no stale cutoff).
  */
@@ -117,6 +122,13 @@ export const TRAITS: Record<CallerName, Traits> = {
   removedUser: NONE,
   recycledEmailUser: T("member"),
   staleSynced: T("member", { sRole: "editor" }),
+  everySpaceMember: T("member", { sRole: "editor" }),
+  everySpaceGuest: T("guest", {
+    capped: true,
+    mcp: false,
+    grants: ["spacePrivate", "spaceTeam", "spacePublic", "spaceLinksOff"],
+    sRole: "editor",
+  }),
   anonymous: NONE,
 };
 
@@ -150,6 +162,8 @@ const LEVELS: Record<CallerName, Row> = {
   removedUser:          [_,   _,    V,   _,    _,    V,   V,   _,   _],
   recycledEmailUser:    [_,   V,    V,   _,    V,    V,   E,   _,   _],
   staleSynced:          [_,   V,    V,   E,    E,    E,   E,   _,   _],
+  everySpaceMember:     [_,   V,    V,   E,    E,    E,   E,   _,   _],
+  everySpaceGuest:      [_,   _,    V,   V,    V,    V,   V,   _,   _],
   anonymous:            [_,   _,    V,   _,    _,    V,   V,   _,   _],
 };
 
@@ -244,8 +258,9 @@ export function expected(
   if (READS.includes(action)) return "allow";
   if (action === "data.write" || action === "storage") return yes(writer);
   if (action === "thumbnail.write")
-    // A viewer may set only the first thumbnail, through a share or a team
-    // role on a team artifact (never public visibility alone).
+    // A viewer is eligible for the first thumbnail only, through a share or
+    // a team role on a team artifact (never public visibility alone); the
+    // probe stops at eligibility (handler: a stored one is never replaced).
     return yes(
       writer && (isEditor(level) || (a.visibility === "team" && t.team)),
     );
@@ -298,4 +313,16 @@ export function orgExpected(
       return yes(!t.capped);
   }
   throw new Error(`no expectation for ${rule.org}`);
+}
+
+/** The space service's write rules (S and its clones; never a personal space). */
+export function spaceExpected(
+  who: CallerName,
+  rule: "admin" | "manager" | "none",
+): "allow" | "deny" {
+  const t = TRAITS[who];
+  if (!t.session || t.capped || rule === "none") return "deny";
+  const admin = t.role === "owner" || t.role === "admin";
+  if (rule === "admin") return admin ? "allow" : "deny";
+  return admin || t.sRole === "manager" ? "allow" : "deny";
 }

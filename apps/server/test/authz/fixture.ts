@@ -62,11 +62,17 @@ async function epoch(uid: string) {
     )?.e ?? 0
   );
 }
-async function cookieOf(uid: string) {
-  return `${sessionCookieName(E)}=${await signSession(E, uid, Date.now(), {
-    provider: "access",
-    epoch: await epoch(uid),
-  })}`;
+/** A session cookie for `uid`, issued `ageMs` ago. */
+export async function cookieOf(uid: string, ageMs = 0) {
+  return `${sessionCookieName(E)}=${await signSession(
+    E,
+    uid,
+    Date.now() - ageMs,
+    {
+      provider: "access",
+      epoch: await epoch(uid),
+    },
+  )}`;
 }
 
 /** A synced user: a Google identity bound to the connected directory. */
@@ -113,6 +119,9 @@ export type World = {
   googleSubs: { orgOwner: string; staleSynced: string };
   /** A throwaway copy of `art` (same space, visibility, trash and shares). */
   clone(art: ArtifactName): Promise<string>;
+  /** A throwaway copy of S: its members, plus viewer and manager mappings. */
+  cloneSpace(): Promise<string>;
+  groups: { every: string; viewer: string; manager: string; free: string };
 };
 
 const tag = newId().slice(0, 6).toLowerCase();
@@ -129,7 +138,9 @@ export async function buildWorld(): Promise<World> {
       ? "owner"
       : c === "orgAdmin"
         ? "admin"
-        : c === "guestShared" || c === "guestMappedEditor"
+        : c === "guestShared" ||
+            c === "guestMappedEditor" ||
+            c === "everySpaceGuest"
           ? "guest"
           : "member";
   for (const c of CALLERS) {
@@ -173,6 +184,29 @@ export async function buildWorld(): Promise<World> {
     member(S, "restrictedContractor", "editor"),
     member(S, "suspendedUser", "manager"),
     member(S, "removedUser", "manager"),
+  ]);
+  // Directory groups: the Every-space one (editor), and three for the
+  // mapping probes (viewer and manager mappings on space clones, one free).
+  const groups = {
+    every: `grp-every-${tag}`,
+    viewer: `grp-v-${tag}`,
+    manager: `grp-m-${tag}`,
+    free: `grp-f-${tag}`,
+  };
+  await env.DB.batch([
+    ...Object.values(groups).map((g) =>
+      env.DB.prepare(
+        "insert into directory_groups (group_id, email) values (?, ?)",
+      ).bind(g, `${g}@a.com`),
+    ),
+    ...(["everySpaceMember", "everySpaceGuest"] as const).map((c) =>
+      env.DB.prepare(
+        "insert into directory_members (group_id, user_id) values (?, ?)",
+      ).bind(groups.every, u(c)),
+    ),
+    env.DB.prepare(
+      "insert into org_group_mappings (group_id, group_email, role) values (?, ?, 'editor')",
+    ).bind(groups.every, `${groups.every}@a.com`),
   ]);
   // Artifacts: personal ones by personalOwner, space ones by spaceManager.
   const owner = await getUser(E, u("personalOwner"));
@@ -342,8 +376,33 @@ export async function buildWorld(): Promise<World> {
     return id;
   };
 
+  const cloneSpace = async () => {
+    const id = newId();
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into spaces (id, kind, name, owner_user_id, all_members_role, public_links, created_at) values (?, 'shared', ?, ?, null, 1, ?)",
+      ).bind(id, `C ${id}`, u("spaceManager"), Date.now()),
+      env.DB.prepare(
+        "insert into space_members (space_id, user_id, role, source, created_at) select ?, user_id, role, source, created_at from space_members where space_id = ?",
+      ).bind(id, S),
+      env.DB.prepare(
+        "insert into group_mappings (space_id, group_id, group_email, role) values (?, ?, ?, 'viewer'), (?, ?, ?, 'manager')",
+      ).bind(
+        id,
+        groups.viewer,
+        `${groups.viewer}@a.com`,
+        id,
+        groups.manager,
+        `${groups.manager}@a.com`,
+      ),
+    ]);
+    return id;
+  };
+
   return {
     ids,
+    cloneSpace,
+    groups,
     creds,
     users,
     spaces: { S, L, otherPersonal: u("otherMember") },

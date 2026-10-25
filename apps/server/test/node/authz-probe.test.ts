@@ -49,6 +49,8 @@ describe("authz-probe", () => {
       { OA_PAT: "x" } as Record<string, string>,
       { AUTHZ_PROBE_COOKIE: "x" },
       { SOMETHING: "oa_pat_abc" },
+      // An MCP OAuth access token ({userId}:{grantId}:{secret}).
+      { MCP: "AbCdEfGhJkLmNpQr:grant-1:s3cr3tvalue_xyz" },
     ]) {
       const r = await runProbe(["--base", u, "--creds", "f"], { env });
       expect(r.code).toBe(2);

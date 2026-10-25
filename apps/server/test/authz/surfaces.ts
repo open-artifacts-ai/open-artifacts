@@ -996,3 +996,287 @@ export function unlisted(
   ]);
   return Object.keys(routePolicy).filter((k) => !have.has(k));
 }
+
+/** Content-host routes nobody is scoped on (robots, the render bundles). */
+export const CONTENT_PUBLIC: readonly string[] = [
+  "GET /robots.txt",
+  "ALL /robots.txt",
+  "GET /_oa/*",
+];
+
+/** CONTENT_POLICY (or content route) keys neither probed nor CONTENT_PUBLIC. */
+export function contentUnlisted(keys: readonly string[]): string[] {
+  const probed = new Set(
+    SURFACES.flatMap((s) => s.routes)
+      .filter((r) => r.startsWith("content:"))
+      .map((r) => r.slice("content:".length)),
+  );
+  return keys.filter((k) => !probed.has(k) && !CONTENT_PUBLIC.includes(k));
+}
+
+// ---------------------------------------- space writes (the service rules)
+
+/** Who the space service lets through (after the gate's `{ user }`). */
+export type SpaceRule =
+  /** An uncapped org owner or admin. */
+  | "admin"
+  /** An org admin, or the space's uncapped manager. */
+  | "manager"
+  /** Nobody: the personal-space rule (400 space_personal, or 404). */
+  | "none";
+
+/** Ids the space probes need; `cloneId` is a throwaway copy of the space. */
+export type SpaceTarget = {
+  spaceId: string;
+  personalSpaceId: string;
+  /** A plain member, the space's editor and its manager. */
+  memberId: string;
+  editorId: string;
+  managerId: string;
+  /** Directory groups: mapped viewer and manager on the clone, and a free one. */
+  groups: { viewer: string; manager: string; free: string };
+  cloneId?: string;
+};
+
+export type SpaceSurface = {
+  name: string;
+  route: string;
+  rule: SpaceRule;
+  /** "access": runs on `cloneId` (the probe script skips it). */
+  mutates?: "access";
+  probe(
+    base: string,
+    cred: Cred,
+    t: SpaceTarget,
+    io?: ProbeIO,
+  ): Promise<Verdict>;
+};
+
+/**
+ * Allowed: any 2xx, or a 409 the service answers after its access rule
+ * (space_not_empty, sync off or frozen). Refused: 401/404, the contract's
+ * 403 space_forbidden (a manager past their ceiling), 400 space_personal.
+ */
+function spaceVerdict(what: string, r: Answer): Verdict {
+  if ((r.status >= 200 && r.status < 300) || r.status === 409) return "allow";
+  if (r.status === 403 && r.code === "space_forbidden") return "deny";
+  if (r.status === 400 && r.code === "space_personal") return "deny";
+  return classify(what, r, () => false);
+}
+
+const spaceProbe =
+  (
+    method: string,
+    path: (t: SpaceTarget, space: string) => string,
+    body: unknown,
+    on: "space" | "clone" | "personal",
+  ): SpaceSurface["probe"] =>
+  async (base, cred, t, io) => {
+    const space =
+      on === "personal"
+        ? t.personalSpaceId
+        : on === "clone"
+          ? t.cloneId
+          : t.spaceId;
+    if (!space) throw new Unexpected("this probe needs a space clone");
+    const p = path(t, space);
+    const r = await send(io, base, p, cred, {
+      method,
+      ...(body === undefined ? {} : { body }),
+    });
+    return spaceVerdict(`${method} ${p}`, r);
+  };
+
+const SP = "/api/v1/spaces";
+const sp = (
+  name: string,
+  route: string,
+  rule: SpaceRule,
+  method: string,
+  path: (t: SpaceTarget, space: string) => string,
+  body: unknown,
+  on: "space" | "clone" | "personal",
+): SpaceSurface => ({
+  name,
+  route,
+  rule,
+  ...(on === "clone" ? { mutates: "access" as const } : {}),
+  probe: spaceProbe(method, path, body, on),
+});
+const at = (_t: SpaceTarget, s: string) => `${SP}/${s}`;
+const memberAt =
+  (who: "memberId" | "editorId" | "managerId") => (t: SpaceTarget, s: string) =>
+    `${SP}/${s}/members/${t[who]}`;
+const mappingAt =
+  (g: "viewer" | "manager" | "free") => (t: SpaceTarget, s: string) =>
+    `${SP}/${s}/mappings/${t.groups[g]}`;
+
+/** The rules behind `{ user }` on the space write routes. */
+export const SPACE_SURFACES: readonly SpaceSurface[] = [
+  // An empty patch: the manager check, then nothing to write.
+  sp("patch {} (S)", `PATCH ${SP}/:id`, "manager", "PATCH", at, {}, "space"),
+  sp(
+    "patch name",
+    `PATCH ${SP}/:id`,
+    "manager",
+    "PATCH",
+    at,
+    { name: "x" },
+    "clone",
+  ),
+  // Past a manager's ceiling (SPACE_MANAGER_FIELDS): admins only.
+  sp(
+    "patch allMembersRole",
+    `PATCH ${SP}/:id`,
+    "admin",
+    "PATCH",
+    at,
+    { allMembersRole: "viewer" },
+    "clone",
+  ),
+  sp(
+    "patch {} (personal)",
+    `PATCH ${SP}/:id`,
+    "none",
+    "PATCH",
+    at,
+    {},
+    "personal",
+  ),
+  // S holds artifacts: an allowed delete answers 409 space_not_empty.
+  sp(
+    "delete (S)",
+    `DELETE ${SP}/:id`,
+    "admin",
+    "DELETE",
+    at,
+    undefined,
+    "space",
+  ),
+  sp(
+    "delete (personal)",
+    `DELETE ${SP}/:id`,
+    "none",
+    "DELETE",
+    at,
+    undefined,
+    "personal",
+  ),
+  sp(
+    "member put viewer",
+    `PUT ${SP}/:id/members/:userId`,
+    "manager",
+    "PUT",
+    memberAt("memberId"),
+    { role: "viewer" },
+    "clone",
+  ),
+  sp(
+    "member put manager (ceiling)",
+    `PUT ${SP}/:id/members/:userId`,
+    "admin",
+    "PUT",
+    memberAt("memberId"),
+    { role: "manager" },
+    "clone",
+  ),
+  sp(
+    "member put on a peer manager",
+    `PUT ${SP}/:id/members/:userId`,
+    "admin",
+    "PUT",
+    memberAt("managerId"),
+    { role: "viewer" },
+    "clone",
+  ),
+  sp(
+    "member put (personal)",
+    `PUT ${SP}/:id/members/:userId`,
+    "none",
+    "PUT",
+    memberAt("memberId"),
+    { role: "viewer" },
+    "personal",
+  ),
+  sp(
+    "member delete editor",
+    `DELETE ${SP}/:id/members/:userId`,
+    "manager",
+    "DELETE",
+    memberAt("editorId"),
+    undefined,
+    "clone",
+  ),
+  sp(
+    "member delete a peer manager",
+    `DELETE ${SP}/:id/members/:userId`,
+    "admin",
+    "DELETE",
+    memberAt("managerId"),
+    undefined,
+    "clone",
+  ),
+  sp(
+    "member delete (personal)",
+    `DELETE ${SP}/:id/members/:userId`,
+    "none",
+    "DELETE",
+    memberAt("memberId"),
+    undefined,
+    "personal",
+  ),
+  sp(
+    "mapping put viewer",
+    `PUT ${SP}/:id/mappings/:groupId`,
+    "manager",
+    "PUT",
+    mappingAt("free"),
+    { role: "viewer" },
+    "clone",
+  ),
+  sp(
+    "mapping put manager (ceiling)",
+    `PUT ${SP}/:id/mappings/:groupId`,
+    "admin",
+    "PUT",
+    mappingAt("free"),
+    { role: "manager" },
+    "clone",
+  ),
+  sp(
+    "mapping put (personal)",
+    `PUT ${SP}/:id/mappings/:groupId`,
+    "none",
+    "PUT",
+    mappingAt("free"),
+    { role: "viewer" },
+    "personal",
+  ),
+  sp(
+    "mapping delete viewer",
+    `DELETE ${SP}/:id/mappings/:groupId`,
+    "manager",
+    "DELETE",
+    mappingAt("viewer"),
+    undefined,
+    "clone",
+  ),
+  sp(
+    "mapping delete a manager mapping",
+    `DELETE ${SP}/:id/mappings/:groupId`,
+    "admin",
+    "DELETE",
+    mappingAt("manager"),
+    undefined,
+    "clone",
+  ),
+  sp(
+    "mapping delete (personal)",
+    `DELETE ${SP}/:id/mappings/:groupId`,
+    "none",
+    "DELETE",
+    mappingAt("viewer"),
+    undefined,
+    "personal",
+  ),
+];

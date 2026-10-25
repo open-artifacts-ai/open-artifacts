@@ -22,12 +22,14 @@ import {
   type CallerName,
   expected,
   orgExpected,
+  spaceExpected,
   TRAITS,
   type Traits,
 } from "./authz/expect.ts";
 import {
   BASE,
   buildWorld,
+  cookieOf,
   googleCookie,
   io,
   mismatchHealth,
@@ -36,8 +38,11 @@ import {
 } from "./authz/fixture.ts";
 import {
   type Cred,
+  contentUnlisted,
   ORG_SURFACES,
   type OrgTarget,
+  SPACE_SURFACES,
+  type SpaceTarget,
   SURFACES,
   type Surface,
   uncovered,
@@ -46,6 +51,7 @@ import {
 
 let w: World;
 let target: OrgTarget;
+let space: SpaceTarget;
 beforeAll(async () => {
   w = await buildWorld();
   target = {
@@ -53,7 +59,17 @@ beforeAll(async () => {
     memberId: w.users.otherMember as string,
     departedId: w.users.removedUser as string,
   };
+  space = {
+    spaceId: w.spaces.S,
+    personalSpaceId: w.spaces.otherPersonal,
+    memberId: w.users.otherMember as string,
+    editorId: w.users.spaceEditor as string,
+    managerId: w.users.spaceManager as string,
+    groups: w.groups,
+  };
 }, 120_000);
+/** Probe-heavy tests: rows of cells through the Worker, under suite load. */
+const SLOW = 120_000;
 
 type RouteDef = { method: string; path: string; handler: { length: number } };
 /** Answering routes only (middleware are ALL routes taking (c, next)). */
@@ -79,8 +95,10 @@ describe("coverage (derived from the router and the registries)", () => {
     );
     expect(unlisted(ROUTE_POLICY)).toEqual([]);
   });
-  it("the content host's catch-all is probed (/c/, ?dl=1, /p/)", () => {
+  it("every content-host route and CONTENT_POLICY key is probed or public", () => {
     const mounted = answering(contentApp.routes as RouteDef[]);
+    expect(contentUnlisted(mounted)).toEqual([]);
+    expect(contentUnlisted(Object.keys(CONTENT_POLICY))).toEqual([]);
     expect(mounted).toContain("GET /*");
     expect(
       SURFACES.filter((s) => s.routes.includes("content:GET /*")),
@@ -96,14 +114,24 @@ describe("coverage (derived from the router and the registries)", () => {
       [
         ...SURFACES.flatMap((s) => s.routes),
         ...ORG_SURFACES.map((s) => s.route),
+        ...SPACE_SURFACES.map((s) => s.route),
       ].filter((r) => !known.has(r)),
     ).toEqual([]);
   });
   it("ORG_SURFACES rules match ROUTE_POLICY", () => {
-    for (const s of ORG_SURFACES)
-      expect(ROUTE_POLICY[s.route], s.route).toEqual(
+    // offWhen (feature-off 404s, T19) is not an access rule.
+    for (const s of ORG_SURFACES) {
+      const { offWhen: _, ...p } = ROUTE_POLICY[s.route] as {
+        offWhen?: string;
+      };
+      expect(p, s.route).toEqual(
         "user" in s.rule ? { user: expect.any(String) } : s.rule,
       );
+    }
+    for (const s of SPACE_SURFACES)
+      expect(ROUTE_POLICY[s.route], s.route).toEqual({
+        user: expect.any(String),
+      });
   });
 });
 
@@ -156,33 +184,93 @@ const want = (who: CallerName, s: Surface) => (art: ArtifactName) => {
 
 describe("artifact surfaces (sync stale 8 days)", () => {
   describe.each(SURFACES.map((s) => ({ ...s })))("$name", (s) => {
-    it.concurrent.each(CALLERS.map((c) => [c]))("%s", async (who) => {
-      const { got, exp } = await row(s, w.creds[who], want(who, s));
-      expect(got).toEqual(exp);
-    });
-    it.concurrent("staleSynced's PAT (its grant runs above)", async () => {
-      const cred = { ...w.creds.staleSynced, token: w.staleSyncedPat };
-      const { got, exp } = await row(s, cred, want("staleSynced", s));
-      expect(got).toEqual(exp);
-    });
+    it.concurrent.each(CALLERS.map((c) => [c]))(
+      "%s",
+      async (who) => {
+        const { got, exp } = await row(s, w.creds[who], want(who, s));
+        expect(got).toEqual(exp);
+      },
+      SLOW,
+    );
+    it.concurrent(
+      "staleSynced's PAT (its grant runs above)",
+      async () => {
+        const cred = { ...w.creds.staleSynced, token: w.staleSyncedPat };
+        const { got, exp } = await row(s, cred, want("staleSynced", s));
+        expect(got).toEqual(exp);
+      },
+      SLOW,
+    );
+    // The 24 h browser-session cap while sync is unhealthy (T18): a synced
+    // user's 25 h old cookie resolves to no one; a 23 h one still works.
+    it.concurrent.each([
+      [25, "anonymous"],
+      [23, "staleSynced"],
+    ] as const)(
+      "staleSynced's %i h old cookie",
+      async (hours, as) => {
+        const cred = {
+          cookie: await cookieOf(
+            w.users.staleSynced as string,
+            hours * 3_600_000,
+          ),
+        };
+        const { got, exp } = await row(s, cred, (art) =>
+          s.via === "rest"
+            ? expected(as, art, s.action, s.via)
+            : expected("anonymous", art, s.action, s.via),
+        );
+        expect(got).toEqual(exp);
+      },
+      SLOW,
+    );
   });
 });
 
 describe("instance routes", () => {
   describe.each(ORG_SURFACES.map((s) => ({ ...s })))("$route", (s) => {
-    it.concurrent("every caller", async () => {
-      const got = {} as Record<CallerName, string>;
-      const exp = {} as Record<CallerName, string>;
-      await Promise.all(
-        CALLERS.map(async (who) => {
-          got[who] = await s
-            .probe(BASE, w.creds[who], target, io)
-            .catch((e: Error) => `error: ${e.message}`);
-          exp[who] = orgExpected(who, s.rule);
-        }),
-      );
-      expect(got).toEqual(exp);
-    });
+    it.concurrent(
+      "every caller",
+      async () => {
+        const got = {} as Record<CallerName, string>;
+        const exp = {} as Record<CallerName, string>;
+        await Promise.all(
+          CALLERS.map(async (who) => {
+            got[who] = await s
+              .probe(BASE, w.creds[who], target, io)
+              .catch((e: Error) => `error: ${e.message}`);
+            exp[who] = orgExpected(who, s.rule);
+          }),
+        );
+        expect(got).toEqual(exp);
+      },
+      SLOW,
+    );
+  });
+});
+
+describe("space writes (the service rules behind { user })", () => {
+  describe.each(SPACE_SURFACES.map((s) => ({ ...s })))("$name", (s) => {
+    it.concurrent(
+      "every caller",
+      async () => {
+        const got = {} as Record<CallerName, string>;
+        const exp = {} as Record<CallerName, string>;
+        await Promise.all(
+          CALLERS.map(async (who) => {
+            const t = s.mutates
+              ? { ...space, cloneId: await w.cloneSpace() }
+              : space;
+            got[who] = await s
+              .probe(BASE, w.creds[who], t, io)
+              .catch((e: Error) => `error: ${e.message}`);
+            exp[who] = spaceExpected(who, s.rule);
+          }),
+        );
+        expect(got).toEqual(exp);
+      },
+      SLOW,
+    );
   });
 });
 
@@ -238,37 +326,41 @@ describe("attack seeds: another member's personal space", () => {
 });
 
 describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
-  it("matches everywhere but the pinned bugs", async () => {
-    const lines: string[] = [];
-    const code = await main(
-      ["--base", BASE, "--creds", "world.json"],
-      {},
-      {
-        log: (l) => lines.push(l),
-        fetch: io.fetch,
-        readFile: async () =>
-          JSON.stringify({
-            callers: w.creds,
-            artifacts: w.ids,
-            org: target,
-            contentBase: io.contentBase,
-          }),
-      },
-    );
-    const bad = lines.filter((l) => l.startsWith("MISMATCH"));
-    // B1 only: restrictedContractor's PAT on MCP surfaces.
-    expect(
-      bad.filter(
-        (l) =>
-          !/^MISMATCH (mcp \S+|content \/c\/\?dl=1) restrictedContractor /.test(
-            l,
-          ),
-      ),
-    ).toEqual([]);
-    expect(bad.length).toBeGreaterThan(0);
-    expect(code).toBe(1);
-    expect(lines.at(-1)).toMatch(/^\d+ cells, \d+ mismatches$/);
-  });
+  const names = [
+    ...SURFACES.filter((s) => !s.mutates).map((s) => s.name),
+    ...ORG_SURFACES.filter((s) => !s.mutates).map((s) => s.route),
+    ...SPACE_SURFACES.filter((s) => !s.mutates).map((s) => s.name),
+  ];
+  // B1 only: restrictedContractor's PAT on MCP surfaces.
+  const b1 = /^MISMATCH (mcp \S+|content \/c\/\?dl=1) restrictedContractor /;
+  it.concurrent.each(names.map((n) => [n]))(
+    "%s",
+    async (name) => {
+      const lines: string[] = [];
+      const code = await main(
+        ["--base", BASE, "--creds", "world.json"],
+        {},
+        {
+          log: (l) => lines.push(l),
+          fetch: io.fetch,
+          only: (n) => n === name,
+          readFile: async () =>
+            JSON.stringify({
+              callers: w.creds,
+              artifacts: w.ids,
+              org: target,
+              space,
+              contentBase: io.contentBase,
+            }),
+        },
+      );
+      const bad = lines.filter((l) => l.startsWith("MISMATCH"));
+      expect(bad.filter((l) => !b1.test(l))).toEqual([]);
+      expect(code).toBe(bad.length ? 1 : 0);
+      expect(lines.at(-1)).toMatch(/^[1-9]\d* cells, \d+ mismatches$/);
+    },
+    SLOW,
+  );
 });
 
 // Last: it changes the instance's health for everything after it.
@@ -281,16 +373,20 @@ describe("customer_mismatch: synced callers resolve to no one", () => {
     it.concurrent.each([
       ...SYNCED.map((c) => [c, "cookie and token"] as const),
       ["staleSynced", "PAT"] as const,
-    ])("%s (%s)", async (who, kind) => {
-      const cred =
-        kind === "PAT"
-          ? { ...w.creds[who], token: w.staleSyncedPat }
-          : w.creds[who];
-      const { got, exp } = await row(s, cred, (art) =>
-        expected("anonymous", art, s.action, s.via),
-      );
-      expect(got).toEqual(exp);
-    });
+    ])(
+      "%s (%s)",
+      async (who, kind) => {
+        const cred =
+          kind === "PAT"
+            ? { ...w.creds[who], token: w.staleSyncedPat }
+            : w.creds[who];
+        const { got, exp } = await row(s, cred, (art) =>
+          expected("anonymous", art, s.action, s.via),
+        );
+        expect(got).toEqual(exp);
+      },
+      SLOW,
+    );
   });
 
   it("GET R.me: the org owner gets break_glass_required, a synced member a plain 401", async () => {
@@ -314,30 +410,55 @@ describe("customer_mismatch: synced callers resolve to no one", () => {
     ).toBe("unauthorized");
   });
 
-  it("break-glass: the owner's fresh forced Google session reaches R.directory only", async () => {
-    const cookie = await googleCookie(w.users.orgOwner as string);
-    const get = (path: string) =>
-      io.fetch?.(
-        new Request(`${BASE}${path}`, { headers: { cookie } }),
-      ) as Promise<Response>;
-    expect((await get(R.directory)).status).toBe(200);
-    // Every other route treats them as anonymous.
-    for (const path of [
-      R.members,
-      R.settings,
-      R.artifacts,
-      R.artifact(w.ids.personalTeam),
-      R.artifact(w.ids.spaceTeam),
-    ])
-      expect([401, 404], path).toContain((await get(path)).status);
-    // A public artifact still opens, as for anyone.
-    expect((await get(R.artifact(w.ids.spacePublic))).status).toBe(200);
-    const cred = { cookie };
-    for (const s of SURFACES.filter((x) => x.via === "rest")) {
-      const { got, exp } = await row(s, cred, (art) =>
-        expected("anonymous", art, s.action, s.via),
+  /** Directory routes break-glass opens (T18); the rest stay anonymous. */
+  const BREAK_GLASS = new Set([
+    "GET /api/v1/directory",
+    "GET /api/v1/directory/connect",
+    "GET /api/v1/directory/callback",
+    "POST /api/v1/directory/confirm",
+    "POST /api/v1/directory/cancel",
+    "POST /api/v1/directory/sync",
+  ]);
+  it(
+    "break-glass: the owner's fresh forced Google session reaches the directory routes only",
+    async () => {
+      const cred = { cookie: await googleCookie(w.users.orgOwner as string) };
+      const got: Record<string, string> = {};
+      const exp: Record<string, string> = {};
+      await Promise.all(
+        ORG_SURFACES.map(async (s) => {
+          got[s.route] = await s
+            .probe(BASE, cred, target, io)
+            .catch((e: Error) => `error: ${e.message}`);
+          exp[s.route] = BREAK_GLASS.has(s.route) ? "allow" : "deny";
+        }),
       );
-      expect(got, s.name).toEqual(exp);
-    }
+      expect(got).toEqual(exp);
+      // A public artifact still opens, as for anyone.
+      const pub = await io.fetch?.(
+        new Request(`${BASE}${R.artifact(w.ids.spacePublic)}`, {
+          headers: { cookie: cred.cookie },
+        }),
+      );
+      expect(pub?.status).toBe(200);
+    },
+    SLOW,
+  );
+  describe.each(
+    SURFACES.filter((x) => x.via === "rest").map((s) => ({ ...s })),
+  )("break-glass session on $name", (s) => {
+    it.concurrent(
+      "is anonymous",
+      async () => {
+        const cred = {
+          cookie: await googleCookie(w.users.orgOwner as string),
+        };
+        const { got, exp } = await row(s, cred, (art) =>
+          expected("anonymous", art, s.action, s.via),
+        );
+        expect(got).toEqual(exp);
+      },
+      SLOW,
+    );
   });
 });
