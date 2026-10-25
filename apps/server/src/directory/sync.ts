@@ -7,16 +7,10 @@ import {
 } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { logError, logInfo, logWarn } from "../log.js";
-import { revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
-import { onGroupDiff } from "../services/directory.js";
-import {
-  getSettings,
-  SYSTEM_ACTOR,
-  setUserStatus,
-} from "../services/members.js";
-import { RESTRICTED_SYNC_CASE } from "../services/restriction.js";
+import { getSettings, setUserStatus } from "../services/members.js";
 import { directoryMode } from "../services/spaces.js";
+import { applyGroupDiff, applyUsers } from "./apply.js";
 import { bindPage } from "./binding.js";
 import { directoryClient } from "./client.js";
 import { directoryStatus } from "./connect.js";
@@ -276,24 +270,6 @@ const UPSERT_CHILD = `insert into directory_groups (group_id, email, parent_ids)
       else json_insert(directory_groups.parent_ids, '$[#]', ?3) end
   where directory_groups.email <> excluded.email
     or not exists (select 1 from json_each(directory_groups.parent_ids) where value = ?3)`;
-const ADD_MEMBERS = `insert or ignore into directory_members (group_id, user_id, gen)
-  select ?1, value, ?3 from json_each(?2)
-  where exists (select 1 from users where id = value)`;
-const REMOVE_MEMBERS = `delete from directory_members
-  where group_id = ?1 and user_id in (select value from json_each(?2))`;
-/** restricted_sync recomputed for the listed users; returns those now capped. */
-const RESTRICTED_FOR_USERS = `update users set restricted_sync = ${RESTRICTED_SYNC_CASE}
-  where id in (select value from json_each(?1))
-    and restricted_sync <> ${RESTRICTED_SYNC_CASE}
-  returning id, restricted_sync as r`;
-const LINKED_NOT_REMOVED = `select i.user_id id from identities i
-  join users u on u.id = i.user_id
-  where i.provider = 'google' and i.directory_bound = 1 and u.status <> 'removed'
-    and i.subject in (select value from json_each(?1))`;
-const LINKED_ACTIVE = `select i.user_id id from identities i
-  join users u on u.id = i.user_id
-  where i.provider = 'google' and u.status = 'active'
-    and i.subject in (select value from json_each(?1))`;
 const OWNERS = `select email from users where role = 'owner' and status = 'active'`;
 
 /** A reset() landed since this alarm started: it writes nothing more. */
@@ -732,6 +708,7 @@ export class SyncEngine {
           tenant: b.domain,
           allowEmail: true,
           ctx: this.ctx,
+          guard: () => this.guard(),
         });
         const done = !page.nextPageToken;
         this.guard();
@@ -750,15 +727,17 @@ export class SyncEngine {
           pageToken: step.page ?? undefined,
         });
         this.checkCustomer(page.users, b);
-        if (step.which === "deleted") await this.removeDeleted(page.users);
-        else {
+        if (step.which !== "deleted") {
           this.guard();
           await bindPage(this.env, page.users, {
             tenant: b.domain,
             allowEmail: false,
             ctx: this.ctx,
+            guard: () => this.guard(),
           });
         }
+        // By identity: deletions, unsuspensions, new addresses, recycled ids.
+        await applyUsers(this.env, page.users, this.applyOpts(token, b));
         if (step.which === "active") run.active += page.users.length;
         step.page = page.nextPageToken;
         if (step.page) return { status: "more", called: true };
@@ -871,27 +850,25 @@ export class SyncEngine {
       run.queue.splice(1, 0, { kind: "users", which: "deleted", page: null });
   }
 
-  /** Deleted directory users: their linked rows become removed (never held). */
-  private async removeDeleted(users: GoogleUser[]) {
-    for (const ids of chunks(
-      users.map((u) => u.id),
-      ID_CHUNK,
-    )) {
-      const { results } = await stmt(this.env.DB, LINKED_NOT_REMOVED)
-        .bind(JSON.stringify(ids))
-        .all<{ id: string }>();
-      for (const r of results) {
-        this.guard();
-        await setUserStatus(
-          this.env,
-          r.id,
-          "removed",
-          "directory_delete",
-          SYSTEM_ACTOR,
-          this.ctx,
-        );
-      }
-    }
+  /** applyUsers' options: epoch-guarded, users.get for a recycled address. */
+  private applyOpts(token: string, b: DirectoryBinding) {
+    return {
+      tenant: b.domain,
+      ctx: this.ctx,
+      guard: () => this.guard(),
+      lookup: async (id: string) => {
+        let u: GoogleUser | null;
+        try {
+          u = await getUser(token, id);
+        } catch (e) {
+          if (e instanceof GoogleApiError && e.status === 404) return null;
+          throw e;
+        }
+        // Another customer's user (or none): customer_mismatch, fail closed.
+        if (u) this.checkCustomer([u], b);
+        return u;
+      },
+    };
   }
 
   /** One Reports page: the user addresses to re-read and the dirty groups. */
@@ -908,6 +885,15 @@ export class SyncEngine {
       if (app === "admin") {
         if (e.name === "SUSPEND_USER" || e.name === "UNSUSPEND_USER") {
           if (p.USER_EMAIL) keys.add(p.USER_EMAIL.toLowerCase());
+        } else if (
+          e.name === "RENAME_USER" ||
+          e.name === "CHANGE_PRIMARY_EMAIL"
+        ) {
+          // A new primary address: re-read by the new one (the old one is
+          // kept as an alias, or gone); applied by identity.
+          const to = p.NEW_VALUE?.toLowerCase();
+          if (to?.includes("@")) keys.add(to);
+          else if (p.USER_EMAIL) keys.add(p.USER_EMAIL.toLowerCase());
         } else if (e.name === "DELETE_USER") deleted = true;
         else if (
           e.name === "ADD_GROUP_MEMBER" ||
@@ -952,23 +938,8 @@ export class SyncEngine {
       }
     }
     this.checkCustomer(found, b);
-    const suspended = found.filter((u) => u.suspended).map((u) => u.id);
-    if (suspended.length) {
-      const { results } = await stmt(this.env.DB, LINKED_ACTIVE)
-        .bind(JSON.stringify(suspended))
-        .all<{ id: string }>();
-      for (const r of results) {
-        this.guard();
-        await setUserStatus(
-          this.env,
-          r.id,
-          "suspended",
-          "directory_suspend",
-          SYSTEM_ACTOR,
-          this.ctx,
-        );
-      }
-    }
+    // Suspensions, unsuspensions and address changes, by identity.
+    await applyUsers(this.env, found, this.applyOpts(token, b));
     if (deleted) this.queueDeleted(run);
     run.userKeys = run.userKeys.slice(batch.length);
   }
@@ -1325,11 +1296,9 @@ export class SyncEngine {
   }
 
   /**
-   * Writes a group's member diff (only changed rows), recomputes the
-   * restriction flag of everyone it touched, and closes the live sockets of
-   * those who lost access: the removed (their Every-space and mapped roles
-   * are read through these rows) and the newly restricted. T14 recomputes
-   * the synced space roles from the same diff (onGroupDiff).
+   * A group's member diff (applyGroupDiff, T14): directory_members, the
+   * restriction flags and the synced space roles in one batch gated on the
+   * epoch, then the sockets of the narrowed and newly capped close.
    */
   private async apply(
     groupId: string,
@@ -1337,39 +1306,12 @@ export class SyncEngine {
     removed: string[],
     pre: D1PreparedStatement[],
   ) {
-    if (!added.length && !removed.length) {
-      if (pre.length) {
-        this.guard();
-        await this.env.DB.batch(pre);
-      }
-      return;
-    }
-    const touched = JSON.stringify([...added, ...removed]);
-    this.guard();
-    const out = await this.env.DB.batch([
-      ...pre,
-      stmt(this.env.DB, ADD_MEMBERS).bind(
-        groupId,
-        JSON.stringify(added),
-        this.now,
-      ),
-      stmt(this.env.DB, REMOVE_MEMBERS).bind(groupId, JSON.stringify(removed)),
-      stmt(this.env.DB, RESTRICTED_FOR_USERS).bind(touched),
-    ]);
-    const capped = ((out.at(-1)?.results ?? []) as { id: string; r: number }[])
-      .filter((x) => x.r === 1)
-      .map((x) => x.id);
-    // Never guarded: the removals above are committed, so the socket closes
-    // (and T14's role recompute) must follow even if a reset landed meanwhile.
-    await revokeUsersLive(
-      this.env,
-      [...removed, ...capped],
-      "directory group change",
-      this.ctx,
-    );
-    await onGroupDiff(this.env, groupId, added, removed).catch((e) =>
-      logWarn("directory_group_diff", e),
-    );
+    await applyGroupDiff(this.env, groupId, added, removed, SYNC, {
+      pre,
+      guard: () => this.guard(),
+      now: this.now,
+      ctx: this.ctx,
+    });
   }
 
   // ------------------------------------------------------------ health

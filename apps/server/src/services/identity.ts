@@ -11,6 +11,7 @@ import { ApiError } from "../http/errors.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { revokeUserLive } from "../runtime/revoke.js";
 import { audit, signInAudit, userActor } from "./audit.js";
+import { moveUserEmail } from "./email-move.js";
 import { googleLinkStmts, toMember } from "./users.js";
 
 // Admission and account linking for direct sign-in (P2). identities
@@ -81,26 +82,20 @@ async function touch(
   return out ? member(out) : null;
 }
 
-/** Moves a linked user to their new verified address when nobody else has it. */
+/**
+ * Moves a linked user to their new verified address when nobody else has it,
+ * with their shares (moveUserEmail: a freed address inherits nothing).
+ */
 async function followDrift(
   env: Env,
   row: UserRow,
   email: string,
 ): Promise<UserRow> {
   if (email === row.email) return row;
-  // Never onto OWNER_EMAIL: drift must not hand anyone the owner address.
-  if (email === normalizeEmail(env.OWNER_EMAIL ?? "")) {
-    logDrift();
-    return row;
-  }
+  // Never onto OWNER_EMAIL: drift must not hand anyone the owner address
+  // (moveUserEmail refuses it too).
   try {
-    const out = await stmt(
-      env.DB,
-      `update users set email = ?1 where id = ?2 and not exists (select 1 from users where email = ?1)
-       returning id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, status`,
-    )
-      .bind(email, row.id)
-      .first<UserRow>();
+    const out = await moveUserEmail(env, row.id, row.email, email);
     if (out) return out;
   } catch {
     // A concurrent insert took the address: keep the old one.

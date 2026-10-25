@@ -713,11 +713,18 @@ it("500-user page parse + diff under 10 ms CPU", async () => { /* cpu */ });
   - Delete that address's shares and that user's sync and manual `space_members` rows, in one batch.
   - Then `revokeUserLive`.
 - New directory id for an email still held by an old row: the old row gets the deletion treatment first, then the new row is created (decision 2).
-- `CHANGE_PRIMARY_EMAIL`: update `users.email` for that identity. Shares on the old address move only if the old address is the same identity's alias (otherwise they stay).
+- `CHANGE_PRIMARY_EMAIL` (Google's `RENAME_USER`): update `users.email` for that identity. Shares follow the person (manager ruling, #592): in the same batch, gated on the row having moved, every share on the old address is re-keyed to the new address (`shares` is keyed by address only; no `user_id` column, and invites are shares), the higher role winning on a conflict, alias or not. The person keeps their access and the freed address inherits nothing.
 - `onGoogleSignIn(env, user: Member)` is called by P2 after admission (directory id from the user's bound Google identity):
   - It checks `users.get` (suspended means refuse) and `userGroups`, then `applyGroupDiff` for that user only.
   - If Google is unreachable, the sign-in proceeds (fail static) unless the install is in `customer_mismatch`. Access unchanged when stale; `staleAt` is informational.
 - P2 verifies Google `sub == directory user id` on sign-in (the seam test lives in P2; this task asserts it).
+- Every `users.email` change goes through one function, `services/email-move.ts` `moveUserEmail` (sign-in drift in `followDrift` and sync alike): one batch, with the share re-key gated on the row having moved and nobody holding the old address. The only other `users.email` write is the deletion placeholder, which drops the shares the user holds (those on their current address, the only address that holds them because every move re-keys) in its own batch.
+- A new directory id at an address held by a row with no Google link: a pure invite (active, never signed in, no identity) is linked to that id; a row with sign-in history counts as recycled (deletion treatment, then a new row).
+- Group diffs are applied in batches of 200 users (`DIFF_CHUNK`), so a big group never builds one oversized batch.
+- **Accepted (manager, #592 security review):**
+  - L5, consistency lag: a sign-in diff and the DirectorySync reconcile can briefly disagree; the next reconcile recomputes the rows.
+  - L6, fail static at sign-in: with Google unreachable outside `customer_mismatch`, a synced user signs in on last-sync access.
+  - No one-off cleanup for shares stranded on old addresses by email moves before #592: directory sync isn't live on any install, and the only direct-sign-in production install has one user.
 
 - [ ] **Step 1: Failing tests**
 

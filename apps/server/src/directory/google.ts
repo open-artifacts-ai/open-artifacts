@@ -351,3 +351,19 @@ export async function activities(
   }
   return { events, nextPageToken: str(out?.nextPageToken) };
 }
+
+/**
+ * groups.hasMember(groupKey, memberKey): true when the user is a member,
+ * directly or through nested groups (sign-in confirms a removal with it).
+ */
+export async function hasMember(
+  token: string,
+  groupKey: string,
+  memberKey: string,
+): Promise<boolean> {
+  const out = (await get(
+    token,
+    `${ADMIN_API}/groups/${encodeURIComponent(groupKey)}/hasMember/${encodeURIComponent(memberKey)}`,
+  )) as { isMember?: unknown } | null;
+  return out?.isMember === true;
+}

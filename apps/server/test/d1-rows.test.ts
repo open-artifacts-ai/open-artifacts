@@ -12,6 +12,7 @@ import {
   signContent,
   signContentPrefix,
 } from "../src/content/signing.js";
+import { applyGroupDiff } from "../src/directory/apply.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { Env } from "../src/env.js";
 import { resetTouchMemo, touchGrant } from "../src/services/agent-usage.js";
@@ -454,4 +455,46 @@ it("directory connect (P3 T12): the pending flow, then binding, sealed token, au
   // directory_state sync.health 1.
   expect(w.n).toBe(1);
   g.restore();
+});
+
+it("rows written equal changed rows only (P3 T14 applyGroupDiff)", async () => {
+  const SYNC = { kind: "sync", id: null } as const;
+  const space = `s-rows-${crypto.randomUUID()}`;
+  const [ga, gb] = [
+    `g-rows-a-${crypto.randomUUID()}`,
+    `g-rows-b-${crypto.randomUUID()}`,
+  ];
+  await env.DB.batch([
+    env.DB.prepare(
+      "insert into spaces (id, kind, name, public_links, created_at) values (?, 'shared', ?, 0, ?)",
+    ).bind(space, space, Date.now()),
+    ...[ga, gb].flatMap((gid) => [
+      env.DB.prepare(
+        "insert into directory_groups (group_id, email) values (?, ?)",
+      ).bind(gid, `${gid}@a.com`),
+      env.DB.prepare(
+        "insert into group_mappings (space_id, group_id, group_email, role) values (?, ?, ?, ?)",
+      ).bind(space, gid, `${gid}@a.com`, gid === ga ? "viewer" : "editor"),
+    ]),
+  ]);
+  const [u, v] = [
+    await seedUser(uniq("rows-ga"), "member"),
+    await seedUser(uniq("rows-gb"), "member"),
+  ];
+  rows.n = 0;
+  await applyGroupDiff(counted, ga, [u, v], [], SYNC);
+  // Per user: directory_members 1 + space_members 2 (table, user index).
+  expect(rows.n).toBe(6);
+  rows.n = 0;
+  await applyGroupDiff(counted, ga, [u, v], [], SYNC);
+  // Nothing changed: nothing written.
+  expect(rows.n).toBe(0);
+  rows.n = 0;
+  await applyGroupDiff(counted, gb, [u], [], SYNC);
+  // u only: directory_members 1 + the role raised in place 1; v untouched.
+  expect(rows.n).toBe(2);
+  rows.n = 0;
+  await applyGroupDiff(counted, gb, [], [u], SYNC);
+  // directory_members 1 + the role lowered in place 1.
+  expect(rows.n).toBe(2);
 });
