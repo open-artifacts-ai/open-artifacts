@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.54.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.53.0...v0.54.0) (2026-10-25)
+
+
+### Features
+
+* **server:** owner-only directory disconnect plus platform system job ([#616](https://github.com/open-artifacts-ai/open-artifacts/issues/616)) ([a4e1f2e](https://github.com/open-artifacts-ai/open-artifacts/commit/a4e1f2e027c443eee27f2716b71c41e877aed842))
+
 ## [0.53.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.52.0...v0.53.0) (2026-10-25)
 
 
