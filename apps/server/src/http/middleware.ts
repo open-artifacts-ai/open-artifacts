@@ -18,10 +18,10 @@ import {
   type Session,
   sessionCookieName,
 } from "../auth/session.js";
-import type { Env } from "../env.js";
 import { BANNER_AFTER_MS } from "../directory/health.js";
-import { directoryAlertEmail } from "../email/templates.js";
 import { sendEmail } from "../email/send.js";
+import { directoryAlertEmail } from "../email/templates.js";
+import type { Env } from "../env.js";
 import { audit, userActor } from "../services/audit.js";
 import { getSettings } from "../services/members.js";
 import {

@@ -7,8 +7,8 @@ import {
 } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { logError, logInfo, logWarn } from "../log.js";
-import { type AuditActor, audit } from "../services/audit.js";
 import { revokeUsersLive } from "../runtime/revoke.js";
+import { type AuditActor, audit } from "../services/audit.js";
 import { getSettings, setUserStatus } from "../services/members.js";
 import { directoryMode } from "../services/spaces.js";
 import { applyGroupDiff, applyUsers } from "./apply.js";
@@ -1412,16 +1412,16 @@ export class SyncEngine {
     if (why) alertedAt = now;
     const { h: next, became } = markStale(
       {
-      ...h,
-      state:
-        h.lastSuccessAt === null && e.state === "backoff" ? "never" : e.state,
-      unhealthySince: since,
-      lastError: { at: now, message: e.code },
-      nextRunAt: retryAt,
-      alertedAt,
-      backoffN: n,
-      failState: e.state,
-      lanes: { ...h.lanes, [lane]: e.state },
+        ...h,
+        state:
+          h.lastSuccessAt === null && e.state === "backoff" ? "never" : e.state,
+        unhealthySince: since,
+        lastError: { at: now, message: e.code },
+        nextRunAt: retryAt,
+        alertedAt,
+        backoffN: n,
+        failState: e.state,
+        lanes: { ...h.lanes, [lane]: e.state },
       },
       now,
     );
@@ -1467,15 +1467,15 @@ export class SyncEngine {
     });
     const { h: next, became } = markStale(
       {
-      ...h,
-      state: "customer_mismatch",
-      unhealthySince: h.unhealthySince ?? now,
-      lastError: { at: now, message: "customer_mismatch" },
-      nextRunAt: retryAt,
-      customerMismatch: { expected, actual },
-      alertedAt: entering ? now : h.alertedAt,
-      failState: "customer_mismatch",
-      lanes: { fast: "customer_mismatch", rec: "customer_mismatch" },
+        ...h,
+        state: "customer_mismatch",
+        unhealthySince: h.unhealthySince ?? now,
+        lastError: { at: now, message: "customer_mismatch" },
+        nextRunAt: retryAt,
+        customerMismatch: { expected, actual },
+        alertedAt: entering ? now : h.alertedAt,
+        failState: "customer_mismatch",
+        lanes: { fast: "customer_mismatch", rec: "customer_mismatch" },
       },
       now,
     );

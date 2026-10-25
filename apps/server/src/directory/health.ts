@@ -73,9 +73,12 @@ export function markStale(
   h: Health,
   now: number,
 ): { h: Health; became: boolean } {
-  if (h.staleAt !== null || h.lastSuccessAt === null) return { h, became: false };
+  if (h.staleAt !== null || h.lastSuccessAt === null)
+    return { h, became: false };
   const at = h.lastSuccessAt + STALE_MS;
-  return at <= now ? { h: { ...h, staleAt: at }, became: true } : { h, became: false };
+  return at <= now
+    ? { h: { ...h, staleAt: at }, became: true }
+    : { h, became: false };
 }
 
 /** When `h` is (or became) stale: the stored mark, else lastSuccessAt + STALE_MS once past. */
