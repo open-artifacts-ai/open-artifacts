@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.53.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.52.0...v0.53.0) (2026-10-25)
+
+
+### Features
+
+* **server:** delete audit events past 400 days in the daily cron ([#615](https://github.com/open-artifacts-ai/open-artifacts/issues/615)) ([17eac9f](https://github.com/open-artifacts-ai/open-artifacts/commit/17eac9fa41cd3cbaaab7f32ded124ab6158046eb))
+
+
+### Bug Fixes
+
+* **auth:** a revoked session on the break-glass card goes to sign-in ([#612](https://github.com/open-artifacts-ai/open-artifacts/issues/612)) ([5279834](https://github.com/open-artifacts-ai/open-artifacts/commit/52798342a8131d84b17017137bfeee5594f24b9d))
+
+## [0.52.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.51.0...v0.52.0) (2026-10-25)
+
+
+### Features
+
+* **auth:** directory break-glass card for the locked-out owner ([#611](https://github.com/open-artifacts-ai/open-artifacts/issues/611)) ([6b25371](https://github.com/open-artifacts-ai/open-artifacts/commit/6b2537184ce093e270163f917f696f2dd7979c37))
+
 ## [0.51.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.50.0...v0.51.0) (2026-10-25)
 
 

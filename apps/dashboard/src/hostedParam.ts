@@ -20,13 +20,24 @@ const TOKENS: Record<string, HostedMockOptions> = {
   frozen: { directory: "frozen" },
   "sync-off": { directory: "off" },
   admin: { actAs: "admin" },
+  "break-glass": {
+    breakGlass: "fresh",
+    unhealthy: true,
+    unhealthyState: "customer_mismatch",
+  },
+  "break-glass-stale": {
+    breakGlass: "stale",
+    unhealthy: true,
+    unhealthyState: "customer_mismatch",
+  },
 };
 
 /**
  * Mock-only: `?hosted=` turns on the hosted mocks. Comma tokens: 1 (defaults),
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
  * scope-missing, customer-mismatch, trial, team, business, frozen, sync-off,
- * admin (you are an admin, not the owner). Absent: the self-hosted mocks.
+ * admin (you are an admin, not the owner), break-glass and break-glass-stale
+ * (the owner locked out by customer-mismatch, signed in fresh or not). Absent: the self-hosted mocks.
  */
 export const parseHostedParam = (
   raw: string | null,

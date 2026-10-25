@@ -46,6 +46,12 @@ Cloudflare Access is the identity provider, using a one-time PIN by email, or Gi
 
 Personal access tokens look like `oa_pat_` followed by 32 characters. Only a SHA-256 hash is stored. Tokens belong to one user and can be revoked from **Settings → Agents**.
 
+## Audit log
+
+Admin actions, such as changes to members, roles, spaces and the Google directory, are recorded in an audit log. The owner and admins can read and export it. Each event records who did what using account ids, and emails are looked up only when the log is read.
+
+Events are kept for 400 days. A daily job then deletes older ones; a large backlog can take a few extra days to clear.
+
 ## Never indexed
 
 Public links are for sharing, not search. Both hosts send `X-Robots-Tag: noindex, nofollow` on every response, and their `robots.txt` disallows everything. Only public artifacts get their real title in link previews; private links show a generic title.
