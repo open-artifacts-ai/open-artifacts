@@ -7,6 +7,7 @@ import { beforeAll, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { authConfig } from "../src/auth/config.js";
 import { createPat } from "../src/auth/pat.js";
+import { sessionCookieName, signSession } from "../src/auth/session.js";
 import {
   publicPrefix,
   signContent,
@@ -580,5 +581,64 @@ it("getUser (P3 T18): one statement; the customer_mismatch denial is one directo
   expect(await measure(synced, false)).toEqual({ n: 2, ok: false });
   expect(await measure(synced, true)).toEqual({ n: 2, ok: false });
   expect(await measure(plain, false)).toEqual({ n: 2, ok: true });
+  await resetDirectory();
+});
+
+it("GET /me (P3 T18): one user statement; the break-glass owner read runs only after a refusal", async () => {
+  const userReads: number[] = [];
+  const wrap = (s: D1PreparedStatement, q: string): D1PreparedStatement =>
+    new Proxy(s, {
+      get(t, p) {
+        if (p === "bind") return (...a: unknown[]) => wrap(t.bind(...a), q);
+        if (p === "first" && /from \(select coalesce/.test(q))
+          return async () => {
+            const r = await t.all<Record<string, unknown>>();
+            userReads.push(r.meta.rows_read);
+            return r.results[0] ?? null;
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  const DBr = new Proxy(env.DB, {
+    get(t, p) {
+      if (p === "prepare") return (q: string) => wrap(t.prepare(q), q);
+      const v = Reflect.get(t, p);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  const e = { ...(env as object), DB: DBr } as typeof env;
+  const owner = await seedUser(uniq("rows-me"), "owner", {
+    googleSub: `rows-me-${crypto.randomUUID()}`,
+  });
+  await env.DB.prepare(
+    "update identities set directory_bound = 1 where user_id = ?",
+  )
+    .bind(owner)
+    .run();
+  const ck = `${sessionCookieName(env)}=${await signSession(env, owner, Date.now(), { provider: "google", epoch: 0, authAt: Date.now() })}`;
+  const getMe = () =>
+    app.fetch(
+      new Request(`http://app.localhost${R.me}`, { headers: { cookie: ck } }),
+      e,
+      { waitUntil() {}, passThroughOnException() {} } as never,
+    );
+  const put = (v: string) =>
+    env.DB.prepare(
+      "insert or replace into directory_state (key, value) values ('sync.state', ?)",
+    )
+      .bind(v)
+      .run();
+  await resetDirectory();
+  await put("ok");
+  userReads.length = 0;
+  expect((await getMe()).status).toBe(200);
+  // Measured: getUser only (users PK + sync.state).
+  expect(userReads).toEqual([2]);
+  await put("customer_mismatch");
+  userReads.length = 0;
+  expect((await getMe()).status).toBe(401);
+  // getUser refused, then the mismatch-owner read.
+  expect(userReads).toHaveLength(2);
   await resetDirectory();
 });

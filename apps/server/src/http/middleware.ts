@@ -3,6 +3,7 @@ import {
   ARTIFACT_SANDBOX_ATTR,
   AUTH,
   type AuthMethod,
+  type BreakGlassRequiredDetails,
   type Member,
   R,
   SIGN_IN_PAGE,
@@ -234,6 +235,8 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       : null;
     if (s && !row && isBreakGlassRoute(c.req.method, c.req.path))
       await breakGlass(c, s);
+    else if (s && !row && c.req.method === "GET" && c.req.path === R.me)
+      await meBreakGlass(c, s);
     else if (
       s &&
       row &&
@@ -296,6 +299,63 @@ export const isBreakGlassRoute = (method: string, path: string) =>
   BREAK_GLASS_ROUTES.has(`${method} ${path}`);
 
 /**
+ * The session meets break-glass: a verified-hd Google sign-in under 10 min
+ * old whose Google authentication was forced and is under 10 min old too.
+ */
+const breakGlassFresh = (s: Session, now: number): boolean =>
+  s.p === "google" &&
+  s.t !== undefined &&
+  s.iat >= now - BREAK_GLASS_MS &&
+  s.a !== undefined &&
+  s.a >= now - BREAK_GLASS_MS;
+
+/**
+ * directory.break_glass for this request's route, at most once a minute per
+ * session (iat) and route; the first use always. One statement (D1 runs them
+ * one at a time), so parallel uses in the same minute write one row.
+ */
+const auditBreakGlass = (
+  c: Context<AppEnv>,
+  uid: string,
+  s: Session,
+  now: number,
+) => {
+  const route = `${c.req.method} ${c.req.path}`;
+  return audit(
+    c.env,
+    "directory.break_glass",
+    { type: "directory", id: "google" },
+    userActor(uid),
+    {
+      detail: { route, iat: s.iat },
+      when: {
+        sql: `not exists (select 1 from audit_events where at >= ? and action = 'directory.break_glass'
+          and actor_id = ? and json_extract(detail, '$.iat') = ? and json_extract(detail, '$.route') = ?)`,
+        args: [now - BREAK_GLASS_AUDIT_MS, uid, s.iat, route],
+      },
+    },
+  ).run();
+};
+
+/**
+ * GET R.me for a cookie that getUserWithEpoch refused: when it is the org
+ * owner refused for customer_mismatch, 401 break_glass_required { fresh }
+ * (fresh: the session meets break-glass), audited as a break-glass use
+ * (throttled as above; no email). Anyone else falls through to a plain 401.
+ */
+async function meBreakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
+  const row = await getMismatchOwner(c.env, s.uid);
+  if (!row || !sessionStillValid(c.env, s, row.sessionEpoch)) return;
+  const now = Date.now();
+  await auditBreakGlass(c, row.user.id, s, now);
+  throw new ApiError(
+    "break_glass_required",
+    "Directory sync is blocked by a Google Workspace mismatch",
+    { fresh: breakGlassFresh(s, now) } satisfies BreakGlassRequiredDetails,
+  );
+}
+
+/**
  * Break-glass (T18), on BREAK_GLASS_ROUTES only, for a cookie that
  * getUserWithEpoch refused: an org owner refused for customer_mismatch is
  * resolved when the session is a verified-hd Google sign-in under 10 min old
@@ -310,35 +370,13 @@ async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
   const row = await getMismatchOwner(c.env, s.uid);
   if (!row || !sessionStillValid(c.env, s, row.sessionEpoch)) return;
   const now = Date.now();
-  if (
-    s.p !== "google" ||
-    s.t === undefined ||
-    s.iat < now - BREAK_GLASS_MS ||
-    s.a === undefined ||
-    s.a < now - BREAK_GLASS_MS
-  )
+  if (!breakGlassFresh(s, now))
     throw new ApiError(
       "reauth_required",
       "Sign in with Google again to manage the directory",
     );
   setCookieUser(c, s, row);
-  const route = `${c.req.method} ${c.req.path}`;
-  // One statement (D1 runs them one at a time), so parallel uses in the same
-  // minute write one row.
-  await audit(
-    c.env,
-    "directory.break_glass",
-    { type: "directory", id: "google" },
-    userActor(row.user.id),
-    {
-      detail: { route, iat: s.iat },
-      when: {
-        sql: `not exists (select 1 from audit_events where at >= ? and action = 'directory.break_glass'
-          and actor_id = ? and json_extract(detail, '$.iat') = ? and json_extract(detail, '$.route') = ?)`,
-        args: [now - BREAK_GLASS_AUDIT_MS, row.user.id, s.iat, route],
-      },
-    },
-  ).run();
+  await auditBreakGlass(c, row.user.id, s, now);
   const mail = (async () => {
     // One email per session (keyed on its iat): an atomic counter upsert, so
     // parallel first requests can't both send. Swept by the daily cron. A

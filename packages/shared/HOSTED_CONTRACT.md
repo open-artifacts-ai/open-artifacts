@@ -96,7 +96,8 @@ every flag that is on.
 | Route | Contract |
 |---|---|
 | `GET AUTH.providers` `/auth/providers` | `AuthProviders` (public, no-store, no D1) |
-| `GET AUTH.loginGoogle` `/auth/login/google?next` | 302 to Google or the broker; 404 when Google is off |
+| `GET AUTH.loginGoogle` `/auth/login/google?next&reauth` | 302 to Google or the broker; 404 when Google is off. `reauth=1` forces a fresh Google authentication (`max_age=0`) for break-glass |
+| `GET R.me` (break-glass) | 401 `break_glass_required` details `BreakGlassRequiredDetails { fresh }` when the session is the org owner's and a directory customer_mismatch refuses them. `fresh: true`: the session already meets break-glass, so open the directory settings; `false`: sign in with `AUTH.loginGoogle?reauth=1` first. Any other refusal stays a plain 401 `unauthorized` |
 | `GET AUTH.callbackGoogle` `/auth/callback/google` | 302 `next`; any refusal (incl. `no_access`) 302 `SIGN_IN_PAGE?error=SignInError&next` only |
 | `POST AUTH.codeRequest` `/auth/code/request` | `CodeRequest` → 202 `CodeRequested` |
 | `POST AUTH.codeVerify` `/auth/code/verify` | `CodeVerify` → 200 `CodeVerified` |
@@ -110,11 +111,12 @@ every flag that is on.
 | `CodeRequestSchema` | `{ email, next?, turnstileToken? }` |
 | `CodeRequestedSchema` | `{ maskedEmail, expiresIn, resendAfter, codeLength }`; same 202 for every well-formed address, and when the email pool is full (the pool never 429s) |
 | `TurnstileRequiredDetailsSchema` | 400 `turnstile_required` details `{ field: "turnstile", required: true }` |
+| `BreakGlassRequiredDetailsSchema` | 401 `break_glass_required` details `{ fresh: boolean }` (GET `R.me`) |
 | `CodeRateLimitedDetailsSchema` | 429 `rate_limited` details `{ retryAfter, scope: email \| ip }` |
 | `CodeVerifySchema`, `normalizeCode` | `{ code }`; whitespace and hyphens stripped, then 8 digits |
 | `CodeVerifiedSchema` | `{ next, user: Member, readOnly }` |
 | `CodeVerifyFailureDetailsSchema` | 401 details: `invalid_code{attemptsLeft} \| expired \| no_pending`; locked: 429 `{ retryAfter, scope: "ip" }` (a per-address lock would enable victim lockout) |
-| `SessionPayload` (type, reference) | `{ uid, exp, iat, p: access \| google \| code \| dev \| test, t?: tenant (verified Google hd, or the email domain of a domain-code session), e: session epoch }` |
+| `SessionPayload` (type, reference) | `{ uid, exp, iat, p: access \| google \| code \| dev \| test, t?: tenant (verified Google hd, or the email domain of a domain-code session), e: session epoch, a?: Google auth_time (ms) of a forced re-authentication within 10 min (break-glass) }` |
 
 ## Spaces (`hosted/spaces.ts`, P3)
 
@@ -238,6 +240,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `turnstile_failed` | 403 | Turnstile token rejected |
 | `code_unavailable` | 503 | code sign-in can't run: `SESSION_SECRET` is under 32 characters, so the code keys can't be derived, or the `RL_AUTH` rate-limit binding is missing |
 | `reauth_required` | 401 | break-glass routes need a fresh Google sign-in |
+| `break_glass_required` | 401 | `GET R.me` for the org owner refused by a directory customer_mismatch; details `{ fresh }` (see Sign-in) |
 | `restrict_admin` | 400 | `PUT R.memberRestricted(id)` on an org owner or admin |
 | `owner_only` | 403 | an admin (or a capped owner) acting on an org owner or admin: `PATCH`/`DELETE R.member(id)`, `DELETE R.memberIdentity(id, "google")` (#475). Admins keep managing members and guests |
 | `directory_mapping_off` | 403 | a space manager (not an org admin) adds or changes a space mapping (PUT) while `Settings.spaceManagerMappings` is off; list and DELETE stay allowed |
@@ -258,7 +261,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 
 `createHandlers({ hosted: true | HostedMockOptions })`, off by default (existing
 FE tests unchanged). Options: `mode`, `providers`, `turnstile`, `tier`,
-`directory`, `unhealthy`, `unhealthyState`, `features` (`guests_read_only` ignored). Store:
+`directory`, `unhealthy`, `unhealthyState`, `breakGlass` (`"fresh" | "stale"`: `GET R.me` answers 401 `break_glass_required`), `features` (`guests_read_only` ignored). Store:
 personal space per member, Engineering (caller manager, allMembersRole viewer,
 "Meeting notes" lives there), Exec (caller viewer, publicLinks off), Clients
 (admin view); groups `gEng01`, `gExec02`, `gSales03`, `gCon04` (restricted
