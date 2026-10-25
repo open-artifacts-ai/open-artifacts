@@ -552,6 +552,13 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "manual_role": {
+          "name": "manual_role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {},
@@ -582,7 +589,12 @@
         }
       },
       "uniqueConstraints": {},
-      "checkConstraints": {}
+      "checkConstraints": {
+        "frozen_edits_manual_role_check": {
+          "name": "frozen_edits_manual_role_check",
+          "value": "\"frozen_edits\".\"manual_role\" is null or \"frozen_edits\".\"manual_role\" in ('viewer', 'editor', 'manager')"
+        }
+      }
     },
     "group_mappings": {
       "name": "group_mappings",

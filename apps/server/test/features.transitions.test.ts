@@ -142,8 +142,8 @@ async function accessSet(
 const isSubset = (a: Set<string>, b: Set<string>) =>
   [...a].every((x) => b.has(x));
 
-/** A shared space, one artifact in it, and group `gid` mapped there as editor. */
-async function world(gid: string, members: string[]) {
+/** A shared space, one artifact in it, and group `gid` mapped there (editor). */
+async function world(gid: string, members: string[], role = "editor") {
   const space = `s-${newId()}`;
   const artifact = newId();
   const email = `${gid}@a.com`;
@@ -159,8 +159,8 @@ async function world(gid: string, members: string[]) {
       "insert or ignore into directory_groups (group_id, email) values (?, ?)",
     ).bind(gid, email),
     env.DB.prepare(
-      "insert into group_mappings (space_id, group_id, group_email, role) values (?, ?, ?, 'editor')",
-    ).bind(space, gid, email),
+      "insert into group_mappings (space_id, group_id, group_email, role) values (?, ?, ?, ?)",
+    ).bind(space, gid, email, role),
   ]);
   return { space, artifact };
 }
@@ -179,6 +179,16 @@ const rowsOf = async (space: string, uid: string) =>
       .bind(space, uid)
       .all<{ source: string; role: string }>()
   ).results;
+
+/** The sync actor's audit rows on (space, user), oldest first. */
+const thawAudits = async (space: string, uid: string) =>
+  (
+    await env.DB.prepare(
+      "select action, detail from audit_events where actor_kind = 'sync' and space_id = ? and target_id = ? order by at, id",
+    )
+      .bind(space, uid)
+      .all<{ action: string; detail: string }>()
+  ).results.map((r) => ({ action: r.action, detail: JSON.parse(r.detail) }));
 
 beforeEach(async () => {
   await resetDirectory();
@@ -309,6 +319,94 @@ describe("tier transitions", () => {
     expect(await one("select count(*) as n from frozen_edits")).toEqual({
       n: 0,
     });
+    // No manual row before the freeze: each one a frozen edit left is
+    // removed, audited as sync.
+    for (const uid of [lowered, raised] as string[])
+      expect(await thawAudits(space, uid)).toEqual([
+        { action: "space.member.remove", detail: { thaw: true } },
+      ]);
+    expect(await thawAudits(space, removed as string)).toEqual([]);
+  });
+
+  it("thaw restores the manual rows from before the freeze, never more", async () => {
+    const business = tierEnv("business");
+    const team = tierEnv("team");
+    const us = dirUsers(4, "rest");
+    const gid = `grp-rest-${crypto.randomUUID()}`;
+    const { space, artifact } = await world(
+      gid,
+      us.map((u) => u.id),
+      "viewer",
+    );
+    const t0 = Date.now();
+    await connected(business, t0);
+    const [a, b, c, d] = (await Promise.all(
+      us.map((u) => uidOf(u.id)),
+    )) as string[];
+    const put = (e: Env, uid: string, role: string) =>
+      call(e, R.spaceMember(space, uid), owner.cookie, "PUT", { role });
+    const del = (e: Env, uid: string) =>
+      call(e, R.spaceMember(space, uid), owner.cookie, "DELETE");
+    // Before the freeze: manual rows next to the synced viewer rows.
+    expect((await put(business, a, "editor")).status).toBe(200);
+    expect((await put(business, b, "viewer")).status).toBe(200);
+    expect((await put(business, c, "editor")).status).toBe(200);
+    // Team: a lowered, b raised, c removed, d (no manual row) made manager.
+    expect((await put(team, a, "viewer")).status).toBe(200);
+    expect((await put(team, b, "manager")).status).toBe(200);
+    expect((await del(team, c)).status).toBe(204);
+    expect((await put(team, d, "manager")).status).toBe(200);
+    // Later frozen edits keep the first one's record.
+    expect((await put(team, a, "manager")).status).toBe(200);
+    expect((await put(team, a, "viewer")).status).toBe(200);
+    const pre = {
+      b: Number((await revokedAt(b)) ?? 0),
+      d: Number((await revokedAt(d)) ?? 0),
+    };
+
+    await drain(t0 + 61 * MIN, business);
+    const sync = { source: "sync", role: "viewer" };
+    expect(await rowsOf(space, a)).toEqual([
+      { source: "manual", role: "editor" },
+      sync,
+    ]);
+    expect(await rowsOf(space, b)).toEqual([
+      { source: "manual", role: "viewer" },
+      sync,
+    ]);
+    expect(await rowsOf(space, c)).toEqual([
+      { source: "manual", role: "editor" },
+      sync,
+    ]);
+    expect(await rowsOf(space, d)).toEqual([sync]);
+    const lv = async (uid: string) => {
+      const u = await getUser(business, uid);
+      return u
+        ? (await accessLevel(business, callerOf(u), artifact))?.level
+        : null;
+    };
+    expect(await lv(a)).toBe("editor");
+    expect(await lv(b)).toBe("viewer");
+    expect(await lv(c)).toBe("editor");
+    expect(await lv(d)).toBe("viewer");
+    // The narrowed (b and d were managers) had their sockets closed.
+    expect(Number(await revokedAt(b))).toBeGreaterThan(pre.b);
+    expect(Number(await revokedAt(d))).toBeGreaterThan(pre.d);
+    expect(await thawAudits(space, a)).toEqual([
+      { action: "space.member.role", detail: { thaw: true, role: "editor" } },
+    ]);
+    expect(await thawAudits(space, b)).toEqual([
+      { action: "space.member.role", detail: { thaw: true, role: "viewer" } },
+    ]);
+    expect(await thawAudits(space, c)).toEqual([
+      { action: "space.member.add", detail: { thaw: true, role: "editor" } },
+    ]);
+    expect(await thawAudits(space, d)).toEqual([
+      { action: "space.member.remove", detail: { thaw: true } },
+    ]);
+    // The next reconcile has nothing to undo and audits nothing more.
+    await drain(t0 + 122 * MIN, business);
+    expect(await thawAudits(space, a)).toHaveLength(1);
   });
 
   it("frozen still suspends departed users", async () => {

@@ -201,8 +201,9 @@ it("frozen edits (P3 T15): an override records one row; the thaw writes only wha
   expect(rows.n).toBe(6);
   rows.n = 0;
   expect(await thawFrozenEdits(counted)).toBe(false);
-  // The manual row deleted 1 + the synced row added 2 + frozen_edits 1.
-  expect(rows.n).toBe(4);
+  // No manual row before the freeze: the manual row deleted 1 + its audit 2
+  // + the synced row added 2 + frozen_edits 1.
+  expect(rows.n).toBe(6);
   rows.n = 0;
   await thawFrozenEdits(counted);
   // Nothing left: one read, no batch.

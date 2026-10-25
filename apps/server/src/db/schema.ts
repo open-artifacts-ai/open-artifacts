@@ -178,8 +178,9 @@ export const orgGroupMappings = sqliteTable(
 );
 
 // A space member's synced row an admin changed or removed by hand while sync
-// was frozen (Team). The first reconcile after sync returns replaces each one
-// with the synced role and deletes the row (P3 T15).
+// was frozen (Team), with the pair's manual role from before the first such
+// edit. The first reconcile after sync returns restores that manual role,
+// derives the synced role again and deletes the row (P3 T15).
 export const frozenEdits = sqliteTable(
   "frozen_edits",
   {
@@ -190,8 +191,16 @@ export const frozenEdits = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     at: integer("at").notNull(),
+    /** The pair's manual role before the first frozen edit; null: none. Thaw puts it back. */
+    manualRole: text("manual_role"),
   },
-  (t) => [primaryKey({ columns: [t.spaceId, t.userId] })],
+  (t) => [
+    primaryKey({ columns: [t.spaceId, t.userId] }),
+    check(
+      "frozen_edits_manual_role_check",
+      sql`${t.manualRole} is null or ${t.manualRole} in ('viewer', 'editor', 'manager')`,
+    ),
+  ],
 );
 
 // Groups whose members are capped at viewer on every surface (P3 T14).

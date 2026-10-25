@@ -85,10 +85,13 @@ export const directoryMode = (env: Env): DirectoryMode =>
   directoryModeOf(authConfig(env).features);
 
 // A frozen edit of (space ?1, user ?2) at ?3, recorded once (the first edit
-// wins), when that user's synced row is there and goes now: ?4 = 1 for an org
-// admin, else never a manager row (the guarded writes skip it too).
-const RECORD_FROZEN_EDIT = `insert into frozen_edits (space_id, user_id, at)
-  select ?1, ?2, ?3 where exists (select 1 from space_members
+// wins, so manual_role is the manual row from before any frozen edit; null:
+// none), when that user's synced row is there and goes now: ?4 = 1 for an org
+// admin, else never a manager row (the guarded writes skip it too). Runs
+// before the batch's own writes. The thaw puts manual_role back.
+const RECORD_FROZEN_EDIT = `insert into frozen_edits (space_id, user_id, at, manual_role)
+  select ?1, ?2, ?3, (select role from space_members
+    where space_id = ?1 and user_id = ?2 and source = 'manual') where exists (select 1 from space_members
     where space_id = ?1 and user_id = ?2 and source = 'sync')
     and (?4 = 1 or not exists (select 1 from space_members
       where space_id = ?1 and user_id = ?2 and role = 'manager'))
