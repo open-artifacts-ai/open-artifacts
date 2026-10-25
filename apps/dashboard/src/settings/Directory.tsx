@@ -18,6 +18,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { TriangleAlertIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useAuthProviders } from "../api/auth";
 import { ApiClientError } from "../api/client";
@@ -264,11 +265,25 @@ function PendingConfirm({
   const busy = confirm.isPending || cancel.isPending;
   const capped = sync.pendingCountCapped;
   const n = sync.pendingCount ?? 0;
+  const change = sync.pendingCustomerChange;
   return (
     <Header
       tone="info"
       label={capped ? "Add 500+ people?" : `Add ${people(n)}?`}
     >
+      {/* Consent for a different Google customer (#616): who won't carry over. */}
+      {change && (
+        <Notice
+          tone="warning"
+          title="This is a different Google Workspace than before."
+          icon={<TriangleAlertIcon aria-hidden="true" />}
+        >
+          People who signed in through{" "}
+          {change.previous.domain ?? "the previous Workspace"} won't carry over
+          and stay signed out. People in {change.next.domain} are linked when
+          you confirm.
+        </Notice>
+      )}
       <p>
         This adds {capped ? "more than 500 people" : people(n)}
         {domains ? ` from ${domains}` : ""} as{" "}
@@ -359,6 +374,13 @@ function StatusHeader({
   const only = (what: string) => (
     <p className={muted}>
       Only the owner{ownerName ? `, ${ownerName},` : ""} can {what}.
+    </p>
+  );
+  // Where the owner's fix is Reconnect (or Disconnect), admins pass it on.
+  const askOwner = !owner && (
+    <p className={muted}>
+      Ask the owner{ownerName ? `, ${ownerName},` : ""} to reconnect or
+      disconnect.
     </p>
   );
   const syncNow = owner && (
@@ -555,7 +577,7 @@ function StatusHeader({
           </p>
           {owner && <p>Reconnect with a Google super admin account.</p>}
           {frozenUntilReconnect}
-          {!owner && only("reconnect")}
+          {askOwner}
         </Header>
       );
     case "scope_missing":
@@ -575,7 +597,7 @@ function StatusHeader({
             <p>Reconnect and allow every permission Google asks for.</p>
           )}
           {frozenUntilReconnect}
-          {!owner && only("reconnect")}
+          {askOwner}
         </Header>
       );
     case "customer_mismatch":
@@ -596,7 +618,7 @@ function StatusHeader({
             <p>Nothing was changed.</p>
           )}
           {frozenUntilReconnect}
-          {!owner && only("reconnect")}
+          {askOwner}
         </Header>
       );
   }
