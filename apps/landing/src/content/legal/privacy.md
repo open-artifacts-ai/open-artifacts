@@ -84,11 +84,11 @@ An admin who is a **Google Workspace super admin** can connect the organization'
 - **What we ask for:** read-only access, through these scopes:
   - `admin.directory.user.readonly`: each user's id, primary email, whether they're suspended or an admin, and the organization's customer id;
   - `admin.directory.group.readonly`: groups' ids, emails, names and member counts, and each group's members (id, email and type);
-  - `admin.directory.domain.readonly`: the organization's domains;
-  - `admin.reports.audit.readonly`: recent directory change events (such as a user suspended or added to a group), used only to know which users and groups to read again;
+  - `admin.directory.domain.readonly`: used once, when the directory is connected, to confirm the connecting admin's domain is a verified domain of their Google organization. Nothing from it is stored;
+  - `admin.reports.audit.readonly`: to notice user and group changes within minutes, such as someone suspended or added to a group. Nothing from it is stored;
   - plus `openid` and `email`, to confirm who connected it.
 - **Why:** to add and remove members, keep their access in step with Google groups, and remove access when someone leaves.
-- **What we store:** which Google user each member is, their status, group ids and emails, group memberships, the customer id and domain, and who connected the directory and when. We don't store the change events.
+- **What we store:** which Google user each member is, their status, group ids and emails, group memberships, the customer id and domain, and who connected the directory and when.
 - **How often:** we check for changes every 2 minutes and do a full check every hour.
 - **The refresh token:** encrypted (AES-GCM) with a key only that instance holds, and stored in the instance's database.
 - **We never change anything in Google.** Every scope is read-only.
