@@ -284,6 +284,7 @@ const ADMIN_ACTIONS = new Set([
   "settings.manage",
   "usage.read",
   "audit.read",
+  "directory.disconnect",
 ]);
 
 /** Whether `who` passes an instance route's guard (`{ org }` or `{ user }`). */
