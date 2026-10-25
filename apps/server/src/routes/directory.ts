@@ -109,12 +109,19 @@ export function mountDirectory(app: AppType): void {
     return c.body(null, 204);
   });
 
-  // Disconnect (org owner or admin): revoke, wipe, stop sync; memberships
-  // stay frozen. Idempotent. Works without a transport too (the wipe still
-  // runs; the revoke is then audited revoke_failed).
+  // Disconnect: the org owner in an interactive cookie session (CSRF-guarded
+  // by csrf()); a PAT or any bearer token is refused (404), whoever holds it.
+  // Revoke, wipe, stop sync; memberships stay frozen. Idempotent. The
+  // platform's install delete uses cron.ts DIRECTORY_DISCONNECT_CRON instead.
   const disconnect = (c: Context<AppEnv>) => {
     const user = requireUser(c);
-    if (!orgCan(user, "directory.disconnect", { cap: capOfCaller(caller(c)) }))
+    const m = c.get("authMethod");
+    if (
+      !m ||
+      m === "pat" ||
+      c.req.header("authorization") !== undefined ||
+      !orgCan(user, "directory.disconnect", { cap: capOfCaller(caller(c)) })
+    )
       throw notFound();
     return disconnectDirectory(c.env, userActor(user.id), {
       showProblem: manages(c),

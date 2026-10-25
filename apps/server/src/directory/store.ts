@@ -335,10 +335,17 @@ export async function revokeAtGoogle(
 
 /**
  * Every directory_state key (binding, tokens, pending consent, grant.sub,
- * the initial pass, health and sync.state): disconnect leaves none.
+ * the initial pass, health and sync.state), returning what it deleted. One
+ * exception: sync.state = customer_mismatch stays as a tombstone, so synced
+ * users stay denied after a disconnect (health.ts MISMATCH_TOMBSTONE).
  */
 export const wipeState = (env: Env) =>
-  stmt(env.DB, "delete from directory_state");
+  stmt(
+    env.DB,
+    `delete from directory_state
+      where not (key = 'sync.state' and value = 'customer_mismatch')
+      returning key, value`,
+  );
 
 /** The Google account behind the live token, or null. */
 export async function liveSub(env: Env): Promise<string | null> {

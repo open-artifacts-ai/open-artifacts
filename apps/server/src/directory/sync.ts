@@ -1,16 +1,13 @@
 import type { DirectoryBinding, HeldSweep, SyncStatus } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
-import { sendEmail } from "../email/send.js";
-import {
-  type DirectoryAlert,
-  directoryAlertEmail,
-} from "../email/templates.js";
+import type { DirectoryAlert } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { logError, logInfo, logWarn } from "../log.js";
 import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
-import { getSettings, setUserStatus } from "../services/members.js";
+import { setUserStatus } from "../services/members.js";
 import { directoryMode } from "../services/spaces.js";
+import { alertOwners } from "./alert.js";
 import { applyGroupDiff, applyUsers } from "./apply.js";
 import { bindPage } from "./binding.js";
 import { directoryClient } from "./client.js";
@@ -287,7 +284,6 @@ const SYNCED_PAGE = `select u.id from identities i join users u on u.id = i.user
   order by u.id limit ?2`;
 /** DO kv: the last user id whose sockets the customer_mismatch close signalled. */
 const CLOSE_KEY = "mismatch.close";
-const OWNERS = `select email from users where role = 'owner' and status = 'active'`;
 
 /** A reset() landed since this alarm started: it writes nothing more. */
 class StaleSignal extends Error {
@@ -1654,27 +1650,6 @@ export class SyncEngine {
   }
 
   private async alertOwners(why: DirectoryAlert) {
-    const { results } = await stmt(this.env.DB, OWNERS).all<{
-      email: string;
-    }>();
-    if (!results.length) return;
-    const instance = (await getSettings(this.env)).name;
-    await Promise.all(
-      results.map((o) =>
-        sendEmail(
-          this.env,
-          null,
-          o.email,
-          () =>
-            directoryAlertEmail({
-              instance,
-              recipient: o.email,
-              appHost: this.env.APP_HOST,
-              why,
-            }),
-          { kind: "directory" },
-        ),
-      ),
-    );
+    await alertOwners(this.env, why);
   }
 }

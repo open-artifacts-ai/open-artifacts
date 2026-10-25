@@ -21,6 +21,7 @@ import {
   hmacVerify,
   sha256Hex,
 } from "../util/crypto.js";
+import { alertOwners, ownerEmails } from "./alert.js";
 import { initialBinding, planPage } from "./binding.js";
 import { directoryClient } from "./client.js";
 import { seal } from "./crypto.js";
@@ -30,7 +31,13 @@ import {
   listUsers,
   verifiedDomains,
 } from "./google.js";
-import { healthFields, NEVER, readHealth } from "./health.js";
+import {
+  healthFields,
+  MISMATCH_TOMBSTONE,
+  NEVER,
+  readHealth,
+  readSyncState,
+} from "./health.js";
 import {
   CONFIRM_TTL_MS,
   CONFIRM_WON,
@@ -490,17 +497,37 @@ const CONNECTED_KEYS = [
   K.confirm,
 ];
 
+const revokeOutcome = async (
+  env: Env,
+  sealed: string | null,
+  which: "live" | "pending",
+): Promise<RevokeOutcome> =>
+  sealed
+    ? (await revokeAtGoogle(env, sealed, which))
+      ? "revoked"
+      : "revoke_failed"
+    : "none";
+
 /**
- * POST R.directoryDisconnect (org owner or admin; also provision before it
- * deletes a hosted install). Revokes the live grant at Google, and a pending
- * one on another account, best effort: a failure is audited (revoke_failed)
- * and logged, never an error. Then deletes every directory_state key in one
- * batch with the directory.disconnect audit row (gated, so a racing
- * disconnect writes one), and resets DirectorySync (its next alarm clears
- * its state and, with no binding, calls Google no more).
+ * The directory disconnect: POST R.directoryDisconnect and DELETE
+ * R.directory (an interactive org owner session), and the platform's
+ * install-delete job (cron.ts DIRECTORY_DISCONNECT_CRON, actor system).
+ * 1. Revokes the live grant at Google, and a pending one on another account,
+ *    best effort: a failure is audited (revoke_failed) and logged.
+ * 2. One batch: the directory.disconnect audit row (gated, so a racing
+ *    disconnect writes one) and the wipe of every directory_state key. The
+ *    wipe returns what it deleted: a token committed after step 1 read it (a
+ *    consent callback racing it) is revoked then (audited revoke_late), so
+ *    no live grant is left behind.
+ * 3. Resets DirectorySync (retried once): its next alarm clears its state
+ *    and, with no binding, calls Google no more.
+ * 4. Emails every active owner (the sync alert path).
+ * During customer_mismatch, sync.state stays as a tombstone (wipeState):
+ * synced users stay denied. Only an owner's break-glass reconnect and
+ * confirm lifts it (a new binding; its resetSync clears health).
  * Memberships stay as they are (frozen): directory_members, sync
  * space_members, restricted_sync, org-group roles and bound identities are
- * not touched. Nothing connected: a no-op (no revoke, audit or reset).
+ * not touched. Nothing connected: a no-op (no revoke, audit, reset or email).
  */
 export async function disconnectDirectory(
   env: Env,
@@ -515,32 +542,53 @@ export async function disconnectDirectory(
   ]);
   if (!live.binding && !live.sealed && !pend.binding && !pend.sealed && !p)
     return directoryStatus(env, o);
-  const revoke = async (
-    sealed: string | null,
-    which: "live" | "pending",
-  ): Promise<RevokeOutcome> =>
-    sealed
-      ? (await revokeAtGoogle(env, sealed, which))
-        ? "revoked"
-        : "revoke_failed"
-      : "none";
-  const revoked = await revoke(live.sealed, "live");
+  const revoked = await revokeOutcome(env, live.sealed, "live");
   // The same Google account as the live token: one grant, revoked above.
   const samePending = !!live.sealed && !!p?.s && p.s === sub;
-  const pending = samePending ? "none" : await revoke(pend.sealed, "pending");
-  await env.DB.batch([
+  const pending = samePending
+    ? "none"
+    : await revokeOutcome(env, pend.sealed, "pending");
+  const [owners, tomb] = await Promise.all([
+    ownerEmails(env),
+    readSyncState(env),
+  ]);
+  const out = await env.DB.batch([
     audit(env, "directory.disconnect", AUDIT_TARGET, actor, {
       detail: {
         outcome: "disconnected",
         revoke: revoked,
         ...(pending !== "none" ? { pendingRevoke: pending } : {}),
+        ...(tomb === MISMATCH_TOMBSTONE ? { mismatchKept: true } : {}),
+        notified: owners.length,
       },
       when: { sql: CONNECTED, args: CONNECTED_KEYS },
     }),
     wipeState(env),
   ]);
-  logInfo("directory_disconnect", { revoke: revoked, pending });
+  const won = (out[0]?.meta.changes ?? 0) > 0;
+  // Tokens the wipe removed that step 1 never saw.
+  const seen = new Set([live.sealed, pend.sealed]);
+  const late = ((out[1]?.results ?? []) as { key: string; value: string }[])
+    .filter(
+      (r) =>
+        (r.key === K.refresh || r.key === K.pendingRefresh) &&
+        !seen.has(r.value),
+    )
+    .map((r) => r.value);
+  for (const sealed of late) {
+    const r = await revokeOutcome(env, sealed, "pending");
+    await audit(env, "directory.disconnect", AUDIT_TARGET, actor, {
+      detail: { outcome: "revoke_late", revoke: r },
+    })
+      .run()
+      .catch((e) => logWarn("directory_revoke_audit", e));
+  }
+  logInfo("directory_disconnect", { revoke: revoked, pending, won });
   await resetSync(env);
+  if (won)
+    await alertOwners(env, "disconnected", owners).catch((e) =>
+      logWarn("directory_disconnect_alert", e),
+    );
   return directoryStatus(env, o);
 }
 
@@ -557,10 +605,11 @@ export async function directoryStatus(
   await expirePending(env);
   const t = directoryTransport(env);
   const mode = t.kind === "none" ? "off" : directoryMode(env);
-  const [{ binding }, pending, health] = await Promise.all([
+  const [{ binding }, pending, health, tomb] = await Promise.all([
     readBinding(env),
     readPending(env),
     readHealth(env),
+    readSyncState(env),
   ]);
   // T13: DirectorySync's health while a live binding exists.
   const h = healthFields(binding ? health : NEVER);
@@ -568,7 +617,14 @@ export async function directoryStatus(
     mode,
     binding,
     healthy: mode === "off" ? null : h.healthy,
-    state: pending ? "pending_confirm" : binding ? health.state : "never",
+    state: pending
+      ? "pending_confirm"
+      : binding
+        ? health.state
+        : // Disconnected during a mismatch: synced users stay denied.
+          tomb === MISMATCH_TOMBSTONE
+          ? "customer_mismatch"
+          : "never",
     unhealthySince: h.unhealthySince,
     lastSuccessAt: h.lastSuccessAt,
     lastError:

@@ -171,13 +171,15 @@ export const R = {
   /** PUT GroupMappingPut -> GroupMapping (upsert); DELETE -> 204 (org admin). 409 directory_sync_off when sync is off or frozen. Keyed by Google group id. Never applies to personal spaces. */
   orgMapping: (groupId: string) =>
     `/api/v1/directory/org-mappings/${seg(groupId)}`,
-  /** GET -> SyncStatus (org owner, admin); DELETE -> 204, the same disconnect as directoryDisconnect (org owner, admin). */
+  /** GET -> SyncStatus (org owner, admin); DELETE -> 204, the same disconnect as directoryDisconnect (org owner, cookie session). */
   directory: "/api/v1/directory",
   /**
-   * POST -> 200 SyncStatus (state never): revokes the Google grant (best
-   * effort), deletes the binding, tokens and any pending consent, and stops
-   * sync. Synced memberships stay as they are (frozen). Nothing connected:
-   * 200, no change. Org owner, admin. Audited directory.disconnect.
+   * POST -> 200 SyncStatus (state never; customer_mismatch when disconnected
+   * during one): revokes the Google grant (best effort), deletes the binding,
+   * tokens and any pending consent, and stops sync. Synced memberships stay
+   * as they are (frozen). Nothing connected: 200, no change. The org owner
+   * in a cookie session only (a PAT or grant: 404). Every owner is emailed.
+   * Audited directory.disconnect.
    */
   directoryDisconnect: "/api/v1/directory/disconnect",
   /** GET DirectoryGroupsQuery -> Page<DirectoryGroup> (org admin; group picker). */

@@ -415,7 +415,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     Object.assign(sync, {
       binding: null,
       healthy: sync.mode === "off" ? null : false,
-      state: "never",
+      // Disconnected during a mismatch: synced users stay denied.
+      state: sync.state === "customer_mismatch" ? "customer_mismatch" : "never",
       unhealthySince: null,
       lastSuccessAt: null,
       lastError: null,
@@ -1677,7 +1678,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     http.post(
       "*/api/v1/directory/disconnect",
       authed(() => {
-        if (!isAdmin()) return notFound();
+        if (me.user.role !== "owner") return notFound();
         disconnect();
         return HttpResponse.json(sync);
       }),
@@ -1685,7 +1686,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     http.delete(
       "*/api/v1/directory",
       authed(() => {
-        if (!isAdmin()) return notFound();
+        if (me.user.role !== "owner") return notFound();
         disconnect();
         return noContent();
       }),

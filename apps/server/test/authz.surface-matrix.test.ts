@@ -14,6 +14,7 @@ import {
   TOOL_POLICY,
 } from "../src/auth/route-policy.js";
 import { contentApp } from "../src/content/app.js";
+import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import manifest from "../src/mcp/tool-manifest.json";
 import {
   ARTIFACTS,
@@ -237,6 +238,44 @@ describe("instance routes", () => {
       },
       SLOW,
     );
+  });
+});
+
+describe("directory disconnect: cookie sessions only, plus the platform system job", () => {
+  it("no bearer token disconnects, the org owner's PAT included", async () => {
+    const got: Record<string, number> = {};
+    for (const who of CALLERS) {
+      const token = w.creds[who].token;
+      if (!token) continue;
+      for (const method of ["POST", "DELETE"] as const) {
+        const r = await createApp().fetch(
+          new Request(
+            `${BASE}${method === "POST" ? R.directoryDisconnect : R.directory}`,
+            { method, headers: { authorization: `Bearer ${token}` } },
+          ),
+          env as never,
+          { waitUntil: () => {}, passThroughOnException: () => {} } as never,
+        );
+        await r.body?.cancel();
+        got[`${who} ${method}`] = r.status;
+      }
+    }
+    expect(Object.keys(got)).toContain("orgOwner POST");
+    for (const [k, s] of Object.entries(got))
+      expect([401, 403, 404], k).toContain(s);
+  });
+
+  it("system jobs run only by scheduled() name; an unknown one is refused", async () => {
+    const ctx = {
+      waitUntil: () => {},
+      passThroughOnException: () => {},
+    } as unknown as ExecutionContext;
+    await expect(
+      scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, env as never, ctx),
+    ).resolves.toBeUndefined();
+    await expect(
+      scheduled({ cron: "oa:directory-disconnect-x" }, env as never, ctx),
+    ).rejects.toThrow("unknown system job");
   });
 });
 

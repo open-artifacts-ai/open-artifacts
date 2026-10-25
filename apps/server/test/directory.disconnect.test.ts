@@ -1,18 +1,25 @@
-// Directory disconnect (R.directoryDisconnect, DELETE R.directory): org owner
-// or admin. Revokes the live grant (best effort), deletes every
-// directory_state key, resets DirectorySync and audits directory.disconnect.
+// Directory disconnect (R.directoryDisconnect, DELETE R.directory): the org
+// owner in an interactive cookie session only (no PAT, no grant, no admin).
+// The platform's install delete runs the same operation through scheduled()
+// (DIRECTORY_DISCONNECT_CRON). Revokes the live grant (best effort), deletes
+// every directory_state key (a customer_mismatch tombstone excepted), resets
+// DirectorySync, audits directory.disconnect and emails every owner.
 // Synced memberships stay exactly as they were (frozen).
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { newId, R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
+import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import { applyGroupDiff } from "../src/directory/apply.js";
+import { seal } from "../src/directory/crypto.js";
+import { HK, NEVER } from "../src/directory/health.js";
+import { K, UPSERT } from "../src/directory/store.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
-import { SYNC_DO_NAME } from "../src/services/directory.js";
-import { mailer, seedUser, uniq } from "./auth-helpers.js";
+import { resetSync, SYNC_DO_NAME } from "../src/services/directory.js";
+import { mailer, type SentMail, seedUser, uniq } from "./auth-helpers.js";
 import {
   APP,
   app,
@@ -28,13 +35,19 @@ import {
   fakeDirectory,
 } from "./fixtures/fake-directory.js";
 import { fetchAndWait, login } from "./helpers.js";
+import { connect as mcpConnect, oauthToken } from "./mcp-helpers.js";
 
 const MIN = 60_000;
 const SYNC = { kind: "sync", id: null } as const;
 let g: FakeDirectory;
-let owner: { cookie: string; userId: string };
+let owner: { cookie: string; userId: string; email: string };
 let adminSub: string;
+let sent: SentMail[];
 
+const ctx = {
+  waitUntil: () => {},
+  passThroughOnException: () => {},
+} as unknown as ExecutionContext;
 const stub = () => {
   const ns = env.DIRECTORY_SYNC as NonNullable<Env["DIRECTORY_SYNC"]>;
   return ns.get(
@@ -59,21 +72,33 @@ const keys = async () =>
 const disconnects = async () =>
   (
     await env.DB.prepare(
-      "select actor_id, detail from audit_events where action = 'directory.disconnect' order by at",
-    ).all<{ actor_id: string; detail: string }>()
+      "select actor_id, detail from audit_events where action = 'directory.disconnect' order by at, json_extract(detail, '$.outcome')",
+    ).all<{ actor_id: string | null; detail: string }>()
   ).results.map((r) => ({
     actor: r.actor_id,
     detail: JSON.parse(r.detail) as Record<string, unknown>,
   }));
-const del = (e: Env, cookie: string) =>
+/** A request with `auth` (a cookie, or a Bearer token) and the CSRF header. */
+const call = (
+  e: Env,
+  method: "POST" | "DELETE",
+  auth: { cookie?: string; bearer?: string },
+  path: string = method === "POST" ? R.directoryDisconnect : R.directory,
+) =>
   fetchAndWait(
     app,
-    new Request(`${APP}${R.directory}`, {
-      method: "DELETE",
-      headers: { "x-oa-request": "1", cookie },
+    new Request(`${APP}${path}`, {
+      method,
+      headers: {
+        "x-oa-request": "1",
+        ...(auth.cookie ? { cookie: auth.cookie } : {}),
+        ...(auth.bearer ? { authorization: `Bearer ${auth.bearer}` } : {}),
+      },
     }),
     e,
   );
+const disconnectMails = () =>
+  sent.filter((m) => m.text.includes("Google Workspace was disconnected"));
 
 beforeEach(async () => {
   await resetDirectory();
@@ -84,6 +109,8 @@ beforeEach(async () => {
     env.DB.prepare("delete from directory_members"),
     env.DB.prepare("delete from directory_groups"),
     env.DB.prepare("delete from audit_events"),
+    // Owners from earlier tests would be emailed too.
+    env.DB.prepare("update users set role = 'member' where role = 'owner'"),
   ]);
   await inDo(async (s) => {
     for (const t of ["kv", "seen", "dirty", "held"])
@@ -92,19 +119,22 @@ beforeEach(async () => {
   });
   await registerInstall();
   g = fakeDirectory();
-  owner = await login(uniq("disc-owner"), "owner");
+  const email = uniq("disc-owner");
+  owner = { ...(await login(email, "owner")), email };
   adminSub = `g-admin-${crypto.randomUUID()}`;
   g.addUser({ id: adminSub, primaryEmail: uniq("super"), isAdmin: true });
 });
 afterEach(() => vi.restoreAllMocks());
 
 describe.each([
-  ["direct", () => directEnv(mailer().env)],
-  ["broker", () => hostedEnv(mailer().env)],
+  ["direct", directEnv],
+  ["broker", hostedEnv],
 ] as const)("%s transport", (_kind, mk) => {
   let e: Env;
   beforeEach(async () => {
-    e = mk();
+    const m = mailer();
+    sent = m.sent;
+    e = mk(m.env);
     expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
       true,
     );
@@ -113,9 +143,9 @@ describe.each([
     );
   });
 
-  it("an owner disconnects: the live grant is revoked, every key goes, the DO resets, audited", async () => {
+  it("an owner cookie with CSRF disconnects: revoked with the live blob, every key gone, the DO reset, audited", async () => {
     const before = await epoch();
-    const r = await post(e, R.directoryDisconnect, owner.cookie);
+    const r = await call(e, "POST", { cookie: owner.cookie });
     expect(r.status).toBe(200);
     const s = (await r.json()) as SyncStatus;
     expect(s.state).toBe("never");
@@ -126,86 +156,86 @@ describe.each([
     expect(await disconnects()).toEqual([
       {
         actor: owner.userId,
-        detail: { outcome: "disconnected", revoke: "revoked" },
+        detail: { outcome: "disconnected", revoke: "revoked", notified: 1 },
       },
     ]);
   });
 
   it("a failed revoke still wipes and audits revoke_failed", async () => {
     g.setRevokeStatus(500);
-    const r = await post(e, R.directoryDisconnect, owner.cookie);
-    expect(r.status).toBe(200);
+    expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
     expect(await keys()).toEqual([]);
-    expect(await disconnects()).toEqual([
-      {
-        actor: owner.userId,
-        detail: { outcome: "disconnected", revoke: "revoke_failed" },
-      },
-    ]);
+    expect((await disconnects())[0]?.detail).toMatchObject({
+      outcome: "disconnected",
+      revoke: "revoke_failed",
+    });
   });
 
   it("a pending reconnect on another account is revoked too", async () => {
     const second = `g-second-${crypto.randomUUID()}`;
     g.addUser({ id: second, primaryEmail: uniq("super2"), isAdmin: true });
     await connect(e, owner.cookie, g, { sub: second }, { confirm: false });
-    expect((await post(e, R.directoryDisconnect, owner.cookie)).status).toBe(
-      200,
-    );
+    expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
     expect([...g.revoked].sort()).toEqual(
       [`rt-${adminSub}`, `rt-${second}`].sort(),
     );
     expect(await keys()).toEqual([]);
-    expect((await disconnects())[0]?.detail).toEqual({
-      outcome: "disconnected",
+    expect((await disconnects())[0]?.detail).toMatchObject({
       revoke: "revoked",
       pendingRevoke: "revoked",
     });
   });
 
-  it("a member gets 404; an admin may disconnect", async () => {
+  it("refused (404, nothing changes): a member or admin cookie, the owner's PAT, the owner's MCP grant", async () => {
     const m = await login(uniq("disc-member"));
-    expect((await post(e, R.directoryDisconnect, m.cookie)).status).toBe(404);
-    expect((await del(e, m.cookie)).status).toBe(404);
+    const a = await login(uniq("disc-admin"), "admin");
+    const { token: pat } = await createPat(env, owner.userId, "pat");
+    const { accessToken } = await oauthToken(owner.email, "Agent", owner);
+    for (const method of ["POST", "DELETE"] as const) {
+      expect((await call(e, method, { cookie: m.cookie })).status).toBe(404);
+      expect((await call(e, method, { cookie: a.cookie })).status).toBe(404);
+      expect((await call(e, method, { bearer: pat })).status).toBe(404);
+      // An MCP grant is no /api/v1 credential at all: 401.
+      expect((await call(e, method, { bearer: accessToken })).status).toBe(401);
+      // A bearer next to the owner's own cookie is refused too.
+      expect(
+        (await call(e, method, { cookie: owner.cookie, bearer: pat })).status,
+      ).toBe(404);
+    }
     expect(await keys()).toContain("binding");
     expect(g.revoked).toEqual([]);
-    const a = await login(uniq("disc-admin"), "admin");
-    expect((await post(e, R.directoryDisconnect, a.cookie)).status).toBe(200);
-    expect(await keys()).toEqual([]);
-    expect((await disconnects())[0]?.actor).toBe(a.userId);
+    expect(await disconnects()).toEqual([]);
   });
 
   it("is idempotent: a second disconnect is 200 and changes nothing", async () => {
-    expect((await post(e, R.directoryDisconnect, owner.cookie)).status).toBe(
-      200,
-    );
+    expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
     const ep = await epoch();
-    const r = await post(e, R.directoryDisconnect, owner.cookie);
+    const r = await call(e, "POST", { cookie: owner.cookie });
     expect(r.status).toBe(200);
     expect(((await r.json()) as SyncStatus).state).toBe("never");
     expect(g.revoked).toHaveLength(1);
     expect(await disconnects()).toHaveLength(1);
     expect(await epoch()).toBe(ep);
+    expect(disconnectMails()).toHaveLength(1);
     // DELETE R.directory is the same operation (204).
-    expect((await del(e, owner.cookie)).status).toBe(204);
+    expect((await call(e, "DELETE", { cookie: owner.cookie })).status).toBe(
+      204,
+    );
     expect(await disconnects()).toHaveLength(1);
   });
 
-  it("provision's call: the owner PAT, no CSRF header, twice (idempotent)", async () => {
-    const { token } = await createPat(env, owner.userId, "provision");
-    const call = () =>
-      fetchAndWait(
-        app,
-        new Request(`${APP}${R.directoryDisconnect}`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-        }),
-        e,
-      );
-    expect((await call()).status).toBe(200);
-    expect(await keys()).toEqual([]);
-    expect(g.revoked).toEqual([`rt-${adminSub}`]);
-    expect((await call()).status).toBe(200);
-    expect(await disconnects()).toHaveLength(1);
+  it("every active owner is emailed once (no em dash); others are not", async () => {
+    const o2 = uniq("disc-owner2");
+    await login(o2, "owner");
+    const adm = uniq("disc-admin2");
+    await login(adm, "admin");
+    expect((await call(e, "DELETE", { cookie: owner.cookie })).status).toBe(
+      204,
+    );
+    const to = disconnectMails().map((x) => x.to);
+    expect(to.sort()).toEqual([owner.email, o2].sort());
+    for (const x of disconnectMails()) expect(x.text).not.toContain("—");
+    expect((await disconnects())[0]?.detail.notified).toBe(2);
   });
 
   it("needs the CSRF header on a cookie session", async () => {
@@ -220,12 +250,176 @@ describe.each([
     expect(r.status).toBe(403);
     expect(await keys()).toContain("binding");
   });
+
+  it("the platform system job (scheduled, DIRECTORY_DISCONNECT_CRON) disconnects, as system, idempotently", async () => {
+    await scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, e, ctx);
+    expect(await keys()).toEqual([]);
+    expect(g.revoked).toEqual([`rt-${adminSub}`]);
+    await scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, e, ctx);
+    expect(g.revoked).toHaveLength(1);
+    expect(await disconnects()).toEqual([
+      {
+        actor: null,
+        detail: { outcome: "disconnected", revoke: "revoked", notified: 1 },
+      },
+    ]);
+  });
+
+  it("no other way in: an unknown system job is refused, the nightly cron and an unauthenticated HTTP call do nothing", async () => {
+    await expect(
+      scheduled({ cron: "oa:directory-disconnect-now" }, e, ctx),
+    ).rejects.toThrow("unknown system job");
+    await scheduled({ cron: "17 3 * * *" }, e, ctx);
+    for (const path of [
+      R.directoryDisconnect,
+      "/api/v1/internal/directory/disconnect",
+    ])
+      expect([401, 404]).toContain((await call(e, "POST", {}, path)).status);
+    expect(await keys()).toContain("binding");
+    expect(g.revoked).toEqual([]);
+  });
+});
+
+describe("races and retries", () => {
+  let e: Env;
+  beforeEach(async () => {
+    const m = mailer();
+    sent = m.sent;
+    e = directEnv(m.env);
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
+  });
+
+  it("a consent committed between the reads and the wipe is revoked too (revoke_late)", async () => {
+    const fake = vi.mocked(globalThis.fetch);
+    const impl = fake.getMockImplementation() as typeof fetch;
+    const lateSealed = await seal(e, "rt-late");
+    // The first Google call (the live revoke) lands a racing callback's rows.
+    fake.mockImplementationOnce(async (input, init) => {
+      await env.DB.batch([
+        env.DB.prepare(UPSERT).bind(K.pendingRefresh, lateSealed),
+        env.DB.prepare(UPSERT).bind(
+          K.pendingBinding,
+          JSON.stringify({ provider: "google" }),
+        ),
+      ]);
+      return impl(input, init);
+    });
+    expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
+    expect(await keys()).toEqual([]);
+    expect(g.revoked.sort()).toEqual([`rt-${adminSub}`, "rt-late"].sort());
+    expect((await disconnects()).map((r) => r.detail.outcome)).toEqual([
+      "disconnected",
+      "revoke_late",
+    ]);
+  });
+
+  it("resetSync retries a failed reset once, and never throws", async () => {
+    let n = 0;
+    const fakeNs = (fails: number) =>
+      ({
+        idFromName: () => ({}),
+        get: () => ({
+          reset: async () => {
+            n++;
+            if (n <= fails) throw new Error("reset failed");
+          },
+        }),
+      }) as unknown as Env["DIRECTORY_SYNC"];
+    await resetSync({ DIRECTORY_SYNC: fakeNs(1) });
+    expect(n).toBe(2);
+    n = 0;
+    await expect(
+      resetSync({ DIRECTORY_SYNC: fakeNs(5) }),
+    ).resolves.toBeUndefined();
+    expect(n).toBe(2);
+  });
+});
+
+describe("during customer_mismatch", () => {
+  let e: Env;
+  beforeEach(async () => {
+    const m = mailer();
+    sent = m.sent;
+    e = directEnv(m.env);
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
+  });
+
+  it("keeps the tombstone: synced users stay denied on cookie, PAT and grant; the grant is revoked and the binding gone", async () => {
+    const email = uniq("mm-synced");
+    const u = await login(email);
+    await env.DB.prepare(
+      "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, ?, 1)",
+    )
+      .bind(`g-${crypto.randomUUID()}`, u.userId, Date.now())
+      .run();
+    const { token } = await createPat(env, u.userId, "mm");
+    const { accessToken } = await oauthToken(email, "MM Agent", u);
+    await env.DB.batch([
+      env.DB.prepare(UPSERT).bind(
+        HK.health,
+        JSON.stringify({
+          ...NEVER,
+          state: "customer_mismatch",
+          unhealthySince: Date.now() - MIN,
+        }),
+      ),
+      env.DB.prepare(UPSERT).bind(HK.state, "customer_mismatch"),
+    ]);
+    const me = (auth: { cookie?: string; bearer?: string }) =>
+      fetchAndWait(
+        app,
+        new Request(`${APP}${R.me}`, {
+          headers: {
+            ...(auth.cookie ? { cookie: auth.cookie } : {}),
+            ...(auth.bearer ? { authorization: `Bearer ${auth.bearer}` } : {}),
+          },
+        }),
+        e,
+      );
+    expect((await me({ cookie: u.cookie })).status).toBe(401);
+
+    // The owner (not directory-bound) disconnects.
+    const r = await call(e, "POST", { cookie: owner.cookie });
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as SyncStatus).state).toBe("customer_mismatch");
+    expect(g.revoked).toEqual([`rt-${adminSub}`]);
+    expect(await keys()).toEqual(["sync.state"]);
+    expect((await disconnects())[0]?.detail).toMatchObject({
+      mismatchKept: true,
+    });
+    // The DO applies its reset: the tombstone stays.
+    await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
+    expect(await keys()).toEqual(["sync.state"]);
+
+    expect((await me({ cookie: u.cookie })).status).toBe(401);
+    expect((await me({ bearer: token })).status).toBe(401);
+    await expect(mcpConnect(accessToken, { env: e })).rejects.toThrow();
+    // A manual user keeps access.
+    expect((await me({ cookie: owner.cookie })).status).toBe(200);
+    // A second disconnect is a no-op that keeps it too.
+    expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
+    expect(await keys()).toEqual(["sync.state"]);
+
+    // Only an owner's reconnect and confirm lifts it.
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
+    await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
+    expect(await keys()).not.toContain("sync.state");
+    expect((await me({ cookie: u.cookie })).status).toBe(200);
+  });
 });
 
 describe("after a disconnect", () => {
   let e: Env;
   beforeEach(async () => {
-    e = directEnv(mailer().env);
+    const m = mailer();
+    sent = m.sent;
+    e = directEnv(m.env);
     expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
       true,
     );
