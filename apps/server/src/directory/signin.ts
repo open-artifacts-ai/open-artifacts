@@ -65,6 +65,17 @@ const REACHED = `with recursive up(g) as (
     and g in (select group_id from directory_groups)`;
 const CURRENT = "select group_id from directory_members where user_id = ?1";
 
+/** sync.state (async: a failure is a rejection, never a sync throw). */
+async function readState(env: Env): Promise<string | null> {
+  const r = await stmt(env.DB, STATE).bind(HK.state).first<{ value: string }>();
+  return r?.value ?? null;
+}
+
+/** group_id rows of `sql` bound to `arg` (async, as readState). */
+async function groupRows(env: Env, sql: string, arg: string) {
+  return stmt(env.DB, sql).bind(arg).all<{ group_id: string }>();
+}
+
 /** The binding this sign-in read is still the live one, nothing pending. */
 async function sameBinding(env: Env, b: DirectoryBinding): Promise<boolean> {
   const [{ binding }, pending] = await Promise.all([
@@ -106,13 +117,12 @@ export async function directorySignIn(
   // customer_mismatch (fail static).
   let mismatch = false;
   try {
+    // Every read is an async call, so none throws while the array is built
+    // and leaves another's rejection unhandled.
     const [{ binding, sealed }, pending, state] = await Promise.all([
       readBinding(env),
       readPending(env),
-      stmt(env.DB, STATE)
-        .bind(HK.state)
-        .first<{ value: string }>()
-        .then((r) => r?.value ?? null),
+      readState(env),
     ]);
     if (!binding || !sealed || pending) return;
     mismatch = state === "customer_mismatch";
@@ -205,8 +215,8 @@ async function signInGroups(
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ) {
   const [reached, current] = await Promise.all([
-    stmt(env.DB, REACHED).bind(JSON.stringify(ids)).all<{ group_id: string }>(),
-    stmt(env.DB, CURRENT).bind(uid).all<{ group_id: string }>(),
+    groupRows(env, REACHED, JSON.stringify(ids)),
+    groupRows(env, CURRENT, uid),
   ]);
   const want = new Set(reached.results.map((r) => r.group_id));
   const have = new Set(current.results.map((r) => r.group_id));
