@@ -92,7 +92,7 @@ An admin who is a **Google Workspace super admin** can connect the organization'
 - **How often:** we check for changes every 2 minutes and do a full check every hour.
 - **The refresh token:** encrypted (AES-GCM) with a key only that instance holds, and stored in the instance's database.
 - **We never change anything in Google.** Every scope is read-only.
-- **Disconnecting:** an owner can choose **Disconnect directory** in Settings, Directory. That revokes our access at Google and deletes the stored token. Members stay, and are managed in Open Artifacts from then on. Deleting the instance also revokes our access at Google. You can also remove Open Artifacts at any time in your Google Admin console, under Security, API controls. **[TODO: confirm "Disconnect directory" and revoke on instance delete are built before publishing.]**
+- **Disconnecting:** the owner or an admin can choose **Disconnect directory** in Settings, Directory. That revokes our access at Google and deletes the stored token. Members stay, and are managed in Open Artifacts from then on. Deleting the instance also revokes our access at Google. You can also remove Open Artifacts at any time in your Google Admin console, under Security, API controls. **[TODO: confirm "Disconnect directory" and revoke on instance delete are built before publishing.]**
 
 ### What we never do with Google data
 
