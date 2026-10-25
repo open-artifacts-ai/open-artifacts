@@ -306,8 +306,12 @@ it("mode off: the owner connects through a full-page link", async () => {
   expect(s).toHaveTextContent(
     "The connecting account must be a Google super admin.",
   );
-  const link = within(s).getByRole("link", {
-    name: "Connect Google Workspace",
+  // Connect first explains (no count yet), then goes to Google (#564).
+  fireEvent.click(
+    within(s).getByRole("button", { name: "Connect Google Workspace" }),
+  );
+  const link = within(await screen.findByRole("dialog")).getByRole("link", {
+    name: "Continue to Google",
   });
   expect(link).toHaveAttribute("href", "/api/v1/directory/connect");
   fireEvent.click(link);

@@ -4,7 +4,11 @@ import {
   type GetArtifactResult,
   viewerPath,
 } from "@oa/shared";
-import { signDownload } from "../../content/signing.js";
+import {
+  type ContentViewer,
+  contentViewer,
+  signDownload,
+} from "../../content/signing.js";
 import type { Env } from "../../env.js";
 import { ApiError, appOrigin, contentOrigin } from "../../http/errors.js";
 import {
@@ -19,6 +23,7 @@ import {
 } from "../../services/artifacts.js";
 import { search } from "../../services/search.js";
 import { deleteShare, putShare } from "../../services/shares.js";
+import { publishableSpaces } from "../../services/spaces.js";
 import { createUpload } from "../../services/uploads.js";
 import { guard, ok, type ToolEnv } from "../server.js";
 import { toolConfig } from "../tool-defs.js";
@@ -38,15 +43,24 @@ const more = (cursor: string | null) => (cursor ? " (more: pass cursor)" : "");
 /**
  * Content-host download URL for one file, signed for 10 minutes: an explicit
  * download (attachment), so a browser that opens it saves the file rather
- * than rendering it.
+ * than rendering it. Bound to `viewer` when content_revocation is on (P3 T11).
  */
 async function downloadUrl(
   env: Env,
   a: ArtifactSummary,
   v: number,
   path: string,
+  viewer: ContentViewer | null,
 ): Promise<string> {
-  return `${contentOrigin(env)}${(await signDownload(env, a.id, v, path)).path}`;
+  const { path: p } = await signDownload(
+    env,
+    a.id,
+    v,
+    path,
+    Date.now(),
+    viewer,
+  );
+  return `${contentOrigin(env)}${p}`;
 }
 
 export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
@@ -93,7 +107,13 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
         const { body } = await readVersionFile(env, caller, input.id, v, path);
         out.content = await body.text();
       } else {
-        out.downloadUrl = await downloadUrl(env, artifact, v, path);
+        out.downloadUrl = await downloadUrl(
+          env,
+          artifact,
+          v,
+          path,
+          contentViewer(env, user.id, t.sessionEpoch),
+        );
       }
       const what =
         out.content !== undefined
@@ -197,6 +217,16 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
         visibility: input.visibility,
       });
       return ok(`${a.id} is now ${a.visibility}: ${viewUrl(env, a.id)}`, a);
+    }),
+  );
+
+  server.registerTool("list_spaces", toolConfig("list_spaces"), () =>
+    guard(async () => {
+      const items = await publishableSpaces(env, caller);
+      return ok(
+        `${plural(items.length, "space")} you can publish into: ${appOrigin(env)}/`,
+        { items },
+      );
     }),
   );
 

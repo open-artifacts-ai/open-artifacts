@@ -423,6 +423,8 @@ export const useCreateSpace = () =>
     (input: SpaceCreateInput) => api.send("POST", R.spaces, input, SpaceSchema),
     () => [["spaces"], qk.me],
     "Couldn't create the space.",
+    // A refused name shows under the field.
+    (e) => e.status === 400,
   );
 /** Turning public links off rewrites public artifacts to team, so the library refreshes. */
 export const usePatchSpace = (id: string) =>
@@ -431,6 +433,7 @@ export const usePatchSpace = (id: string) =>
       api.send("PATCH", R.space(id), patch, SpaceSchema),
     () => [["spaces"], qk.me, ["artifacts"]],
     "Couldn't save the space.",
+    (e) => e.status === 400,
   );
 /** The page shows space_not_empty itself (the server is the authority for delete). */
 export const useDeleteSpace = () =>
@@ -638,6 +641,52 @@ export const useDirectorySync = () =>
     () => [qk.directory],
     "Couldn't start a sync.",
     directoryInline,
+  );
+/**
+ * The connect confirm step (#564): Confirm runs the binding and answers the
+ * new status; Cancel drops the pending connection. 404 (nothing pending) and
+ * 409 (expired) are the caller's to show: both refetch the status.
+ */
+const usePendingDirectory = <T>(
+  fn: () => Promise<T>,
+  failure: string,
+  /** Hook-level, so they run even if the confirm screen is gone by then. */
+  on: { done?: () => void; expired?: () => void } = {},
+) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: (s) => {
+      if (s) qc.setQueryData(qk.directory, s);
+      on.done?.();
+    },
+    onError: (e) => {
+      if (e instanceof ApiClientError && e.status === 409)
+        return on.expired?.();
+      if (e instanceof ApiClientError && e.status === 404) return;
+      failureToast(qc, failure, e);
+    },
+    onSettled: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: qk.directory }),
+        qc.invalidateQueries({ queryKey: qk.me }),
+      ]),
+  });
+};
+export const useConfirmDirectory = (on?: { expired?: () => void }) =>
+  usePendingDirectory(
+    () => api.send("POST", R.directoryConfirm, undefined, SyncStatusSchema),
+    "Couldn't add the people.",
+    on,
+  );
+export const useCancelDirectory = (on?: {
+  done?: () => void;
+  expired?: () => void;
+}) =>
+  usePendingDirectory(
+    () => api.send("POST", R.directoryCancel, undefined).then(() => null),
+    "Couldn't cancel the connection.",
+    on,
   );
 export const useConfirmHeld = () =>
   useInvalidating(

@@ -1,0 +1,85 @@
+// Hosted directory broker (P3 T12): one Worker per env on
+// directory.<env's app domain>, deployed by Platform. It holds the Directory
+// client secret and nothing else secret; its registry (DIRECTORY_REGISTRY,
+// written by Platform) holds public keys only and is read, never written.
+// It never binds BROKER_REGISTRY: a compromised directory Worker must not be
+// able to plant sign-in trust anchors.
+//
+// Deploy with --env staging or --env prod only: the top level has no name and
+// no main. No routes, custom domains or workers.dev here. Placeholders
+// ({{...}}) are filled at deploy. Observability stays off: Workers Logs
+// records the full request URL, and the callback URL carries the OAuth code
+// and state in the query.
+// Ratelimit namespace ids: staging 1121/1122, prod 1131/1132.
+// Secrets (set after the Worker exists): GOOGLE_DIRECTORY_CLIENT_SECRET,
+// DIRECTORY_STATE_KEY (32+ random bytes).
+// DIRECTORY_ORIGIN is the fixed public origin; the redirect_uri is
+// DIRECTORY_ORIGIN + /google/directory/callback, never the request Host.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "compatibility_date": "2026-01-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "env": {
+    "staging": {
+      "name": "oa-s-directory-broker",
+      "main": "src/index.ts",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": false },
+      "kv_namespaces": [
+        {
+          "binding": "DIRECTORY_REGISTRY",
+          "id": "{{DIRECTORY_REGISTRY_ID_STAGING}}"
+        }
+      ],
+      "ratelimits": [
+        {
+          "name": "RL_DIRECTORY_IP",
+          "namespace_id": "1121",
+          "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          "name": "RL_DIRECTORY_INSTALL",
+          "namespace_id": "1122",
+          "simple": { "limit": 300, "period": 60 }
+        }
+      ],
+      "vars": {
+        // Public value: the Directory client of the open-artifacts-staging project.
+        "GOOGLE_DIRECTORY_CLIENT_ID": "1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com",
+        "DIRECTORY_ORIGIN": "https://directory.open-artifacts-staging.app"
+      }
+    },
+    "prod": {
+      "name": "oa-p-directory-broker",
+      "main": "src/index.ts",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": false },
+      "kv_namespaces": [
+        {
+          "binding": "DIRECTORY_REGISTRY",
+          "id": "{{DIRECTORY_REGISTRY_ID_PROD}}"
+        }
+      ],
+      "ratelimits": [
+        {
+          "name": "RL_DIRECTORY_IP",
+          "namespace_id": "1131",
+          "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          "name": "RL_DIRECTORY_INSTALL",
+          "namespace_id": "1132",
+          "simple": { "limit": 300, "period": 60 }
+        }
+      ],
+      "vars": {
+        // No prod Directory client yet: the placeholder keeps every route 404.
+        "GOOGLE_DIRECTORY_CLIENT_ID": "{{GOOGLE_DIRECTORY_CLIENT_ID_PROD}}",
+        "DIRECTORY_ORIGIN": "https://directory.open-artifacts.app"
+      }
+    }
+  }
+}

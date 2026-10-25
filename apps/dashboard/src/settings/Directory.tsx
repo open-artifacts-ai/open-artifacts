@@ -14,10 +14,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
+  DialogFooter,
 } from "@oa/ui/shadcn";
 import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useAuthProviders } from "../api/auth";
 import { ApiClientError } from "../api/client";
 import {
   DirectoryConnectErrorSchema,
@@ -28,6 +30,8 @@ import {
 import { errorCopy } from "../api/errorCopy";
 import {
   qk,
+  useCancelDirectory,
+  useConfirmDirectory,
   useConfirmHeld,
   useDeleteRestrictedGroup,
   useDirectory,
@@ -38,8 +42,9 @@ import {
   useRestrictedGroups,
 } from "../api/queries";
 import { useMe } from "../auth/useMe";
+import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
-import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { GroupPicker } from "./GroupPicker";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
@@ -159,6 +164,139 @@ function ConnectLink({ label }: { label: string }) {
   );
 }
 
+// -- the connect confirm step (#564)
+
+/** After a pending connection ends without Confirm. */
+type Outcome = "cancelled" | "expired" | null;
+
+const listFmt = new Intl.ListFormat("en", { type: "conjunction" });
+/** The viewer's zone, as Design asks; no year when it's this year (the row date rule). */
+const expiry = (iso: string) => {
+  const d = new Date(iso);
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(d.getFullYear() === new Date().getFullYear()
+      ? {}
+      : { year: "numeric" }),
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(d);
+};
+
+/** The Google domains: the binding's once consented, else the sign-in config's. */
+function useGoogleDomains(sync: SyncStatus): string {
+  const google = useAuthProviders().data?.providers.find(
+    (p) => p.id === "google",
+  ) as { domains?: string[] } | undefined;
+  const list = sync.binding?.domain
+    ? [sync.binding.domain]
+    : (google?.domains ?? []);
+  return list.length ? listFmt.format(list) : "";
+}
+
+/** Connect: first says what connecting does (no count yet), then Google. */
+function ConnectButton({ domains }: { domains: string }) {
+  const name = useInstanceName();
+  const [open, setOpen] = useState(false);
+  const [opening, setOpening] = useState(false);
+  // Back from Google's consent page restores this page from the bfcache: reset.
+  useEffect(() => {
+    const reset = () => setOpening(false);
+    window.addEventListener("pageshow", reset);
+    return () => window.removeEventListener("pageshow", reset);
+  }, []);
+  return (
+    <>
+      <Button
+        size="sm"
+        className="text-[length:var(--oa-text-sm)]"
+        onClick={() => setOpen(true)}
+      >
+        Connect Google Workspace
+      </Button>
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title="Connect Google Workspace"
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button asChild>
+              <a href={R.directoryConnect} onClick={() => setOpening(true)}>
+                {opening ? "Opening Google…" : "Continue to Google"}
+              </a>
+            </Button>
+          </>
+        }
+      >
+        <div className="grid gap-[var(--oa-space-2)] text-[length:var(--oa-text-sm)]">
+          <p className="m-0">
+            Connecting adds everyone active in your Google directory
+            {domains ? ` in ${domains}` : ""} as a member of {name}.
+          </p>
+          <p className={`m-0 ${muted}`}>
+            You'll see how many people before anything changes.
+          </p>
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+/** pending_confirm, for the owner who connected: nobody is added until Confirm. */
+function PendingConfirm({
+  sync,
+  domains,
+  confirm,
+  cancel,
+}: {
+  sync: SyncStatus;
+  domains: string;
+  confirm: ReturnType<typeof useConfirmDirectory>;
+  cancel: ReturnType<typeof useCancelDirectory>;
+}) {
+  const busy = confirm.isPending || cancel.isPending;
+  const capped = sync.pendingCountCapped;
+  const n = sync.pendingCount ?? 0;
+  return (
+    <Header
+      tone="info"
+      label={capped ? "Add 500+ people?" : `Add ${people(n)}?`}
+    >
+      <p>
+        This adds {capped ? "more than 500 people" : people(n)}
+        {domains ? ` from ${domains}` : ""} as{" "}
+        {!capped && n === 1 ? "a member" : "members"}. They can sign in with
+        Google right away.
+      </p>
+      {sync.pendingExpiresAt && (
+        <p className={muted}>
+          Confirm by {expiry(sync.pendingExpiresAt)}, or connect again.
+        </p>
+      )}
+      <DialogFooter className="mt-[var(--oa-space-2)]">
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => cancel.mutate()}
+        >
+          Cancel
+        </Button>
+        <Button
+          disabled={busy}
+          aria-busy={confirm.isPending || undefined}
+          onClick={() => confirm.mutate()}
+        >
+          {capped ? "Add people" : `Add ${people(n)}`}
+        </Button>
+      </DialogFooter>
+    </Header>
+  );
+}
+
 function Header({
   tone,
   label,
@@ -198,7 +336,13 @@ function StatusHeader({
   syncing,
   onSync,
   refusal,
+  outcome,
+  confirm,
+  cancel,
 }: {
+  outcome: Outcome;
+  confirm: ReturnType<typeof useConfirmDirectory>;
+  cancel: ReturnType<typeof useCancelDirectory>;
   sync: SyncStatus;
   owner: boolean;
   ownerName: string | null;
@@ -208,6 +352,7 @@ function StatusHeader({
   refusal: string | null;
 }) {
   const domain = sync.binding?.domain ?? "";
+  const domains = useGoogleDomains(sync);
   const only = (what: string) => (
     <p className={muted}>
       Only the owner{ownerName ? `, ${ownerName},` : ""} can {what}.
@@ -240,13 +385,41 @@ function StatusHeader({
   const adminNote =
     !owner && only("run a sync, apply held changes or disconnect");
 
-  if (sync.mode === "off")
+  if (sync.state === "pending_confirm")
+    return owner ? (
+      <PendingConfirm
+        sync={sync}
+        domains={domains}
+        confirm={confirm}
+        cancel={cancel}
+      />
+    ) : (
+      <Header tone="info" label="Waiting for the owner to confirm">
+        <p>
+          {ownerName ?? "The owner"} needs to confirm who to add. Nobody is
+          added until then.
+        </p>
+        {sync.pendingExpiresAt && (
+          <p className={muted}>Confirm by {expiry(sync.pendingExpiresAt)}.</p>
+        )}
+      </Header>
+    );
+
+  // Off, or a pending connection that was cancelled or expired (no binding).
+  if (sync.mode === "off" || (sync.state === "never" && !sync.binding))
     return (
       <Header
         tone="neutral"
         label="Not connected"
-        action={owner && <ConnectLink label="Connect Google Workspace" />}
+        action={owner && <ConnectButton domains={domains} />}
       >
+        {outcome === "cancelled" && <p>Not connected. Nobody was added.</p>}
+        {outcome === "expired" && (
+          <p className="text-[var(--oa-warning)]">
+            This confirmation expired after 24 hours. Connect again to see the
+            current count.
+          </p>
+        )}
         <p>
           Connect your Google Workspace so space access follows your Google
           groups.
@@ -781,6 +954,16 @@ export function Directory() {
     until: number;
   } | null>(null);
   const data = status.data;
+  // Here, not on the confirm screen: the outcome must outlive it (the status
+  // can move to "off" and unmount that screen before the 409 lands).
+  const [outcome, setOutcome] = useState<Outcome>(null);
+  const confirmDir = useConfirmDirectory({
+    expired: () => setOutcome("expired"),
+  });
+  const cancelDir = useCancelDirectory({
+    done: () => setOutcome("cancelled"),
+    expired: () => setOutcome("expired"),
+  });
   useEffect(() => {
     if (!syncing || !data) return;
     if (
@@ -855,6 +1038,9 @@ export function Directory() {
             tokensUnverified={me?.instance.directory?.tokensUnverified === true}
             syncing={syncing !== null}
             refusal={refusal}
+            outcome={outcome}
+            confirm={confirmDir}
+            cancel={cancelDir}
             onSync={() =>
               sync.mutate(undefined, {
                 onSuccess: () =>
@@ -876,7 +1062,10 @@ export function Directory() {
           {(data.mode !== "off" || (restricted.data?.length ?? 0) > 0) && (
             <RestrictedGroups groups={restricted.data ?? []} mode={data.mode} />
           )}
-          <Connection sync={data} owner={owner} />
+          {/* Pending, Cancel is the way out: no Disconnect yet. */}
+          {data.state !== "pending_confirm" && (
+            <Connection sync={data} owner={owner} />
+          )}
         </>
       )}
     </div>

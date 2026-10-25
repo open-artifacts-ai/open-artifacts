@@ -17,7 +17,6 @@ import {
   ERROR_CODES,
   GroupMappingSchema,
   HealthzSchema,
-  HostedPublishInputSchema,
   ListQuerySchema,
   MemberSchema,
   MembersQuerySchema,
@@ -200,18 +199,14 @@ describe("hosted contract schemas", () => {
     expect(TEST_HOOKS_ALLOWED).toBe(false);
   });
 
-  it("publish: spaceId is hosted-only and keeps the publish rules", () => {
+  it("publish: spaceId is folded into PublishInputSchema and keeps the publish rules", () => {
     const base = { title: "t", format: "html", content: "x" };
-    expect(
-      PublishInputSchema.safeParse({ ...base, spaceId: "s" }).success,
-    ).toBe(false);
-    expect(
-      HostedPublishInputSchema.parse({ ...base, spaceId: "s" }),
-    ).toMatchObject({
+    expect(PublishInputSchema.parse({ ...base, spaceId: "s" })).toMatchObject({
       spaceId: "s",
       title: "t",
     });
-    expect(HostedPublishInputSchema.safeParse({ spaceId: "s" }).success).toBe(
+    expect(PublishInputSchema.safeParse({ spaceId: "s" }).success).toBe(false);
+    expect(PublishInputSchema.safeParse({ ...base, spaceId: 1 }).success).toBe(
       false,
     );
   });
@@ -333,10 +328,15 @@ describe("hosted mocks", () => {
     );
     expect(hits.items[0]?.space?.name).toBe("Engineering");
 
-    // Move: a personal target is refused; a viewer-role space is forbidden; Engineering works.
+    // Move: one's own personal space is refused, someone else's is 404; a
+    // viewer-role space is forbidden; Engineering works.
     const bob = fixtures.members[1]?.id as string;
-    const toPersonal = await call("POST", R.moveArtifact(mine?.id as string), {
+    const toBob = await call("POST", R.moveArtifact(mine?.id as string), {
       spaceId: bob,
+    });
+    expect(toBob.status).toBe(404);
+    const toPersonal = await call("POST", R.moveArtifact(mine?.id as string), {
+      spaceId: me.user.id,
     });
     expect(toPersonal.status).toBe(400);
     expect((await errCode(toPersonal)).code).toBe("space_personal");
@@ -691,6 +691,20 @@ describe("hosted mocks: restriction, public links, admin self-add, audit", () =>
       visibility: "public",
       space: { id: eng, publicLinks: false },
     });
+    // Echoing "public" on it passes (agents resend it); only a change is refused.
+    expect(
+      (await call("PATCH", R.artifact(notes), { visibility: "public" })).status,
+    ).toBe(200);
+    expect(
+      (
+        await call("POST", R.artifacts, {
+          id: notes,
+          format: "html",
+          content: "y",
+          visibility: "public",
+        })
+      ).status,
+    ).toBe(201);
   });
 
   it("space members: personal space 400 space_personal; PUT needs an existing, active target", async () => {

@@ -3,17 +3,40 @@ import {
   CimdFetchError,
   OAuthProvider,
 } from "@cloudflare/workers-oauth-provider";
-import { AUTH, MCP_PATH, type Member, type OAuthClient, R } from "@oa/shared";
+import {
+  ApprovedFromSchema,
+  AUTH,
+  MCP_PATH,
+  type Member,
+  type OAuthClient,
+  OAuthClientPatchSchema,
+  R,
+  RedirectKindSchema,
+  stripNameControls,
+} from "@oa/shared";
 import type { Context } from "hono";
 import { callerOf, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import type { Env } from "../env.js";
-import { readCappedRequest } from "../http/body.js";
+import { jsonBody, readCappedRequest } from "../http/body.js";
 import { ApiError, errorJson } from "../http/errors.js";
 import { FAVICON_TAGS } from "../http/head.js";
 import type { AppEnv } from "../http/middleware.js";
+import { logError } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
+import {
+  type AgentAttr,
+  clientVersionOf,
+  dropGrantUsage,
+  type GrantIdentity,
+  grantUsage,
+  pruneGrantUsage,
+  redirectInfo,
+  setGrantLabel,
+  touchGrant,
+  uaFamily,
+} from "../services/agent-usage.js";
 import { getSettings } from "../services/members.js";
 import { getUser, getUserWithEpoch } from "../services/users.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
@@ -76,9 +99,19 @@ export const clientNameOf = (name: string | undefined, fallback: string) =>
 const canConnect = (user: Member) =>
   orgCan(user, "mcp.connect", { cap: capOfCaller(callerOf(user)) });
 
+/** What the grant's KV metadata holds (identity fields absent on grants from before them). */
+type GrantMetadata = { clientName?: string } & Partial<GrantIdentity>;
+
+/** The grant id of a provider access token (`{userId}:{grantId}:{secret}`). */
+const grantIdOf = (token: string | undefined): string | null => {
+  const id = token?.split(":")[1];
+  return id && GRANT_ID.test(id) ? id : null;
+};
+
 /**
  * Bearer OAuth access tokens at /mcp: the grant's user, attributed to the
- * registered client name and the MCP clientInfo.version.
+ * registered client name and the MCP clientInfo.version. Each request records
+ * the grant's use in waitUntil (touchGrant: at most one write a minute).
  */
 const apiHandler = {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
@@ -102,10 +135,37 @@ const apiHandler = {
       return mcpUnauthorized(env, "Only members can connect agents");
     const capped = await capMcpBody(req, env);
     if (capped instanceof Response) return capped;
-    const agent = { name: props?.clientName || "unknown agent", version: null };
-    return mcpHandler(env, () =>
-      createServer({ env, user, agent, exec: ctx, clientVersion: true }),
-    )(capped, env, ctx);
+    const grantId = grantIdOf(
+      (ctx as ExecutionContext & { auth?: { token?: string } }).auth?.token,
+    );
+    const agent: AgentAttr = {
+      name: props?.clientName || "unknown agent",
+      version: null,
+      ...(grantId ? { via: { kind: "grant" as const, id: grantId } } : {}),
+    };
+    let server: ReturnType<typeof createServer> | undefined;
+    const res = await mcpHandler(env, () => {
+      server = createServer({
+        env,
+        user,
+        sessionEpoch: row.sessionEpoch,
+        agent,
+        exec: ctx,
+        clientVersion: true,
+      });
+      return server;
+    })(capped, env, ctx);
+    if (grantId) {
+      const version = clientVersionOf(
+        server?.server.getClientVersion()?.version,
+      );
+      ctx.waitUntil(
+        touchGrant(env, grantId, user.id, version).catch((e) =>
+          logError("grant_touch_failed", e),
+        ),
+      );
+    }
+    return res;
   },
 };
 
@@ -466,10 +526,18 @@ async function decideConsent(c: Context<AppEnv>): Promise<Response> {
         "Your session ended. Start connecting again from your agent.",
         401,
       );
+    // Only the redirect_uri of this request (validated against the client's
+    // registered URIs), never client metadata such as client_uri; and only
+    // coarse browser and OS families, no raw User-Agent or IP.
+    const metadata: GrantMetadata = {
+      clientName: props.clientName,
+      ...redirectInfo(approved.request.redirectUri),
+      approvedFrom: uaFamily(c.req.header("user-agent")),
+    };
     const { redirectTo } = await oauth.completeAuthorization({
       request: approved.request,
       userId: user.id,
-      metadata: { clientName: props.clientName },
+      metadata,
       scope: approved.request.scope,
       props,
     });
@@ -485,20 +553,69 @@ async function decideConsent(c: Context<AppEnv>): Promise<Response> {
 
 const notFound = () => new ApiError("not_found", "Not found");
 
-async function listClients(env: Env, user: Member): Promise<OAuthClient[]> {
-  const { items } = await oauthApi(env).listUserGrants(user.id, {
+const iso = (ms: number) => new Date(ms).toISOString();
+
+/**
+ * The caller's grants (KV), each with its usage row (D1), newest first. With
+ * `ctx`, and when the listing is complete (one page), usage rows of grants no
+ * longer in KV are deleted in waitUntil (pruneGrantUsage, one statement).
+ */
+async function listClients(
+  env: Env,
+  user: Member,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<OAuthClient[]> {
+  const { items, cursor } = await oauthApi(env).listUserGrants(user.id, {
     limit: MAX_GRANTS_LISTED,
   });
-  return items
-    .map((g) => ({
-      grantId: g.id,
-      clientName: clientNameOf(
-        (g.metadata as { clientName?: string } | null)?.clientName,
-        g.clientId,
+  const ids = items.map((g) => g.id);
+  const usage = await grantUsage(env, user.id, ids);
+  if (ctx && !cursor && items.length < MAX_GRANTS_LISTED)
+    ctx.waitUntil(
+      pruneGrantUsage(env, user.id, ids).catch((e) =>
+        logError("grant_usage_prune_failed", e),
       ),
-      createdAt: new Date(g.createdAt * 1000).toISOString(),
-    }))
+    );
+  return items
+    .map((g): OAuthClient => {
+      const m = (g.metadata ?? {}) as GrantMetadata;
+      const kind = RedirectKindSchema.safeParse(m.redirectKind);
+      const from = ApprovedFromSchema.safeParse(m.approvedFrom);
+      const u = usage.get(g.id);
+      return {
+        grantId: g.id,
+        clientName: stripNameControls(clientNameOf(m.clientName, g.clientId)),
+        createdAt: iso(g.createdAt * 1000),
+        ...(u?.label ? { label: u.label } : {}),
+        ...(kind.success ? { redirectKind: kind.data } : {}),
+        ...(kind.data === "hosted" && typeof m.redirectHost === "string"
+          ? { redirectHost: m.redirectHost }
+          : {}),
+        ...(from.success ? { approvedFrom: from.data } : {}),
+        ...(u?.lastUsedAt != null ? { lastUsedAt: iso(u.lastUsedAt) } : {}),
+        ...(clientVersionOf(u?.clientVersion)
+          ? { clientVersion: clientVersionOf(u?.clientVersion) as string }
+          : {}),
+        ...(from.success
+          ? { versionsPublished: u?.versionsPublished ?? 0 }
+          : {}),
+      };
+    })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** The caller's grant named by :grantId, or 404. */
+async function ownGrant(
+  c: Context<AppEnv>,
+): Promise<{ user: Member; grant: OAuthClient }> {
+  const user = requireUser(c);
+  const grantId = c.req.param("grantId") ?? "";
+  if (!GRANT_ID.test(grantId)) throw notFound();
+  const grant = (await listClients(c.env, user)).find(
+    (g) => g.grantId === grantId,
+  );
+  if (!grant) throw notFound();
+  return { user, grant };
 }
 
 export function mountOAuth(app: AppType): void {
@@ -506,16 +623,23 @@ export function mountOAuth(app: AppType): void {
   app.post(OAUTH.authorize, decideConsent);
 
   app.get(R.oauthClients, async (c) =>
-    c.json(await listClients(c.env, requireUser(c))),
+    c.json(await listClients(c.env, requireUser(c), c.executionCtx)),
   );
 
+  // Not for a capped caller (404): DELETE stays open so they can revoke.
+  app.patch(`${R.oauthClients}/:grantId`, async (c) => {
+    if (!canConnect(requireUser(c))) throw notFound();
+    const { user, grant } = await ownGrant(c);
+    const { label } = await jsonBody(c, OAuthClientPatchSchema);
+    await setGrantLabel(c.env, grant.grantId, user.id, label);
+    const { label: _old, ...rest } = grant;
+    return c.json(label === null ? rest : { ...rest, label });
+  });
+
   app.delete(`${R.oauthClients}/:grantId`, async (c) => {
-    const user = requireUser(c);
-    const grantId = c.req.param("grantId") ?? "";
-    if (!GRANT_ID.test(grantId)) throw notFound();
-    const own = await listClients(c.env, user);
-    if (!own.some((g) => g.grantId === grantId)) throw notFound();
-    await oauthApi(c.env).revokeGrant(grantId, user.id);
+    const { user, grant } = await ownGrant(c);
+    await oauthApi(c.env).revokeGrant(grant.grantId, user.id);
+    await dropGrantUsage(c.env, grant.grantId, user.id);
     return c.body(null, 204);
   });
 }

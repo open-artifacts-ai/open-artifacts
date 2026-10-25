@@ -1,7 +1,7 @@
 [
   {
     "name": "publish_artifact",
-    "description": "Create an artifact, or publish a new version of one by id, from inline content or a map of files."
+    "description": "Create an artifact, or publish a new version of one by id, from inline content or a map of files. Pass spaceId to create it in a shared space."
   },
   {
     "name": "get_artifact",
@@ -66,5 +66,9 @@
   {
     "name": "artifact_data_delete",
     "description": "Delete a document from a collection."
+  },
+  {
+    "name": "list_spaces",
+    "description": "List the spaces you can publish into: your personal space first, then shared spaces where you are an editor or manager. Pass a space's id as publish_artifact's spaceId."
   }
 ]

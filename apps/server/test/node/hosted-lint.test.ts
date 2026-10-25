@@ -14,11 +14,15 @@ const SRC = join(import.meta.dirname, "../../src");
 const READS: Record<string, string> = {
   "auth/sign-in.ts: showsSignInFields":
     "reports: Me carries the hosted sign-in fields (shape only, no access)",
+  "auth/config.ts: domainJoin":
+    "fail closed: hosted installs admit by invite only, never by domain",
   "auth/config.ts: googleConfig":
     "fail closed: hosted Google sign-in requires the broker transport",
   "routes/codes.ts: (anonymous)":
     "fail closed: hosted code sign-in requires Turnstile",
   "routes/me.ts: toMe": "reports: Me.instance.hosted",
+  "directory/transport.ts: resolve":
+    "fail closed: hosted directory sync requires the broker; direct vars or no broker resolve to none",
 };
 
 function files(dir: string): string[] {

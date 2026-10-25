@@ -253,6 +253,37 @@ describe("ci.yml", () => {
       expect(raw).not.toMatch(/contains\(.*labels/);
     });
   });
+  // H-RD: provision's src and dist import @oa/auth-core/domains, which node
+  // resolves to auth-core's dist. A job that runs provision code must build it
+  // first (`pnpm --filter @oa/provision build` does, or build auth-core).
+  it("every job that runs provision tests or its dist builds @oa/auth-core first", () => {
+    const usesProvision =
+      /@oa\/provision (?:exec vitest|test)\b|scripts\/ci\/build-(?:release-bundle|hosted-release)\.ts/;
+    const builds =
+      /--filter @oa\/(?:provision|auth-core) build\b|--filter @oa\/auth-core\b[^\n]*\bbuild\b/;
+    const seen: string[] = [];
+    for (const name of readdirSync(join(root, ".github/workflows")).filter(
+      (f) => f.endsWith(".yml"),
+    ))
+      for (const [job, j] of Object.entries(wf(name).jobs ?? {}))
+        for (const [i, st] of (
+          (j as { steps?: { run?: string }[] }).steps ?? []
+        ).entries()) {
+          const run = st.run ?? "";
+          const at = run.search(usesProvision);
+          if (at < 0) continue;
+          seen.push(`${name}:${job}`);
+          const before = [
+            ...(j as { steps: { run?: string }[] }).steps
+              .slice(0, i)
+              .map((x) => x.run ?? ""),
+            run.slice(0, at),
+          ].join("\n");
+          expect(builds.test(before), `${name}:${job}`).toBe(true);
+        }
+    expect(seen.length).toBeGreaterThan(0);
+  });
+
   it("uses node from .nvmrc with pnpm cache", () => {
     const raw = read(".github/workflows/ci.yml");
     expect(raw).toContain("node-version-file: .nvmrc");

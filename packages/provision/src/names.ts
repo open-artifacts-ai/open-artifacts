@@ -1,3 +1,4 @@
+import { parseDomains } from "@oa/auth-core/domains";
 import type { InstallId } from "./types.js";
 
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
@@ -14,11 +15,13 @@ export const RESERVED_SLUGS: readonly string[] = [
   "docs",
   "staging",
   "content",
-  // Platform hosts on the tenant domains (P2 auth broker at auth.<app-domain>).
+  // Platform hosts on the tenant domains (P2 auth broker at auth.<app-domain>,
+  // P3 directory broker at directory.<app-domain>).
   "auth",
   "broker",
   "login",
   "sso",
+  "directory",
 ];
 
 export function isInstallId(s: string): s is InstallId {
@@ -78,6 +81,8 @@ export function platformNames(env: Env): {
   scheduler: string;
   inventory: string;
   broker: string;
+  directoryBroker: string;
+  directoryRegistry: string;
   dispatch: string;
   hosts: string;
   turnstile: string;
@@ -91,6 +96,11 @@ export function platformNames(env: Env): {
     scheduler: `${p}scheduler`,
     inventory: `${p}inventory`,
     broker: `${p}auth-broker`,
+    // P3 directory broker. It binds only directoryRegistry, a copy of the
+    // install registry that provision keeps: KV has no read-only binding, so
+    // it must never bind the sign-in registry above.
+    directoryBroker: `${p}directory-broker`,
+    directoryRegistry: `${p}directory-registry`,
     dispatch: `${p}dispatch`,
     // HOSTS KV (host -> install id): written by create/delete, read by dispatch.
     hosts: `${p}hosts`,
@@ -121,4 +131,79 @@ export function hosts(
     throw new Error("app and content domain must be distinct and not nested");
   }
   return { appHost: `${slug}.${app}`, contentHost: `${slug}.${content}` };
+}
+
+// The install registry format, shared by provision (the writer) and the auth
+// broker (the reader, apps/auth-broker/src/registry.ts, which imports these
+// from @oa/provision/names in its contract test).
+export interface RegistryEntry {
+  installId: string;
+  origin: string;
+  keys: { kid: string; x: string }[];
+  /** The install's AUTH_DOMAINS: lowercase A-labels, unique, sorted; [] when none. */
+  domains: string[];
+  disabled?: boolean;
+}
+
+/** The broker refuses an entry with more (#564). */
+export const REGISTRY_MAX_DOMAINS = 50;
+
+/**
+ * An install's registry domains from its AUTH_DOMAINS, through the parser the
+ * server and the broker use (@oa/auth-core), never a copy of it.
+ */
+export function registryDomains(authDomains: string | undefined): string[] {
+  const { domains, invalid } = parseDomains(authDomains ?? "");
+  if (invalid.length > 0)
+    throw new Error(
+      `AUTH_DOMAINS has an invalid domain (${invalid.length} invalid)`,
+    );
+  if (domains.length > REGISTRY_MAX_DOMAINS)
+    throw new Error(
+      `AUTH_DOMAINS has more than ${REGISTRY_MAX_DOMAINS} domains`,
+    );
+  return domains.sort();
+}
+
+/** The registry KV key of an install: exactly what the broker reads. */
+export function registryKey(id: string): string {
+  if (!isInstallId(id))
+    throw new Error(`registry key: ${JSON.stringify(id)} is not an install id`);
+  return `install:${id}`;
+}
+
+/**
+ * An entry in the broker's shape; `domains` always (sorted), `disabled` only
+ * when true. Each domain must already be in the shared parser's canonical
+ * form; anything else, a duplicate or more than 50, is refused.
+ */
+export function registryEntry(e: RegistryEntry): RegistryEntry {
+  if (e.keys.length > 2)
+    throw new Error("broker registry entry would hold more than 2 keys");
+  if (!Array.isArray(e.domains))
+    throw new Error("broker registry entry needs a domains array");
+  if (e.domains.length > REGISTRY_MAX_DOMAINS)
+    throw new Error(
+      `broker registry entry would hold more than ${REGISTRY_MAX_DOMAINS} domains`,
+    );
+  for (const d of e.domains) {
+    const p = typeof d === "string" ? parseDomains(d) : null;
+    if (
+      !p ||
+      p.invalid.length > 0 ||
+      p.domains.length !== 1 ||
+      p.domains[0] !== d
+    )
+      throw new Error("broker registry entry has an invalid domain");
+  }
+  if (new Set(e.domains).size !== e.domains.length)
+    throw new Error("broker registry entry has a duplicate domain");
+  const out: RegistryEntry = {
+    installId: e.installId,
+    origin: e.origin,
+    keys: e.keys.map(({ kid, x }) => ({ kid, x })),
+    domains: [...e.domains].sort(),
+  };
+  if (e.disabled === true) out.disabled = true;
+  return out;
 }

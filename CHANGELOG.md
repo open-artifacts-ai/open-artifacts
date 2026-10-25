@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.46.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.45.0...v0.46.0) (2026-10-24)
+
+
+### Features
+
+* **directory-broker:** per-env config test and deploy wiring ([#579](https://github.com/open-artifacts-ai/open-artifacts/issues/579)) ([bd4a784](https://github.com/open-artifacts-ai/open-artifacts/commit/bd4a784e08eb949b89e3c7b657f09e96e0770f22))
+* **server:** directory connection via a separate directory broker (P3 T12) ([#564](https://github.com/open-artifacts-ai/open-artifacts/issues/564)) ([45890f3](https://github.com/open-artifacts-ai/open-artifacts/commit/45890f35c9082ccc5fc6ee6c09cd6fbdb5e31fac))
+* **server:** DirectorySync DO class and binding, inert (P3 T13a) ([#571](https://github.com/open-artifacts-ai/open-artifacts/issues/571)) ([da64a86](https://github.com/open-artifacts-ai/open-artifacts/commit/da64a864df54a455ec3a274b6a9a998cb3d2186d))
+* **server:** identity cards for connected agents ([#559](https://github.com/open-artifacts-ai/open-artifacts/issues/559)) ([d4b509f](https://github.com/open-artifacts-ai/open-artifacts/commit/d4b509f2fc8f4633a0c864cc2bea088883902449))
+
+
+### Bug Fixes
+
+* **provision:** hosted installs always join by invite ([#573](https://github.com/open-artifacts-ai/open-artifacts/issues/573)) ([8a2b9f8](https://github.com/open-artifacts-ai/open-artifacts/commit/8a2b9f86233e987dfbcdecce72842d7440694631))
+* **provision:** refuse a Cloudflare token within 5 days of expiry ([#547](https://github.com/open-artifacts-ai/open-artifacts/issues/547)) ([e0691f4](https://github.com/open-artifacts-ai/open-artifacts/commit/e0691f44916cc3059bc14fab0d696b1a9b83d036))
+* **provision:** write the registry under install:&lt;id&gt;, the key the broker reads ([#566](https://github.com/open-artifacts-ai/open-artifacts/issues/566)) ([09f4855](https://github.com/open-artifacts-ai/open-artifacts/commit/09f48556dc41a94439cced0f0995bd7221cce0a0))
+* **server:** hosted installs admit by invite only ([#574](https://github.com/open-artifacts-ai/open-artifacts/issues/574)) ([e0c2386](https://github.com/open-artifacts-ai/open-artifacts/commit/e0c23860c29d62c45259417ff0d02c011afd0bb9))
+
+## [0.45.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.44.0...v0.45.0) (2026-10-24)
+
+
+### Features
+
+* **auth-broker:** per-env config for staging and prod ([#561](https://github.com/open-artifacts-ai/open-artifacts/issues/561)) ([3d97d90](https://github.com/open-artifacts-ai/open-artifacts/commit/3d97d904c0eb31a3b6ac48adf009f80135efccca))
+* **dashboard:** validate space names, say when a group's access just changed ([#550](https://github.com/open-artifacts-ai/open-artifacts/issues/550)) ([a3e5917](https://github.com/open-artifacts-ai/open-artifacts/commit/a3e5917fd7de58b4c219068ca96bb8e4ea2500e3))
+
+
+### Bug Fixes
+
+* **provision:** reserve the directory slug ([#562](https://github.com/open-artifacts-ai/open-artifacts/issues/562)) ([0edad66](https://github.com/open-artifacts-ai/open-artifacts/commit/0edad66a1d14d03bd20ecf96807073eae1467e1e))
+
+## [0.44.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.43.0...v0.44.0) (2026-10-24)
+
+
+### Features
+
+* **landing:** hero leads with Open Artifacts; Cloudflare only for self-host ([#421](https://github.com/open-artifacts-ai/open-artifacts/issues/421)) ([#554](https://github.com/open-artifacts-ai/open-artifacts/issues/554)) ([7d57ef5](https://github.com/open-artifacts-ai/open-artifacts/commit/7d57ef50bfb5cad12fa2377fe4b6adaa75b5d7f4))
+* **server:** content host revocation in D1 (P3 T11) ([#544](https://github.com/open-artifacts-ai/open-artifacts/issues/544)) ([b7720e7](https://github.com/open-artifacts-ai/open-artifacts/commit/b7720e70a2aaf8535aa8bdfd093444a0b71f8f96))
+* **server:** publish into spaces, move, transfer, MCP (P3 T10) ([#534](https://github.com/open-artifacts-ai/open-artifacts/issues/534)) ([13dc9d0](https://github.com/open-artifacts-ai/open-artifacts/commit/13dc9d0d9c65b1e77bd7fd5e8106dec0aa7739d7))
+
+
+### Bug Fixes
+
+* **ops:** the signing key script no longer requires a prod reviewer ([#545](https://github.com/open-artifacts-ai/open-artifacts/issues/545)) ([b507e93](https://github.com/open-artifacts-ai/open-artifacts/commit/b507e937f32bb8a6e2bddef1e0a8c9c673d6bff8))
+* **viewer:** a live swap keeps the exact offset when it fits; re-report after restore and on resize ([#546](https://github.com/open-artifacts-ai/open-artifacts/issues/546)) ([c3d4fc1](https://github.com/open-artifacts-ai/open-artifacts/commit/c3d4fc1fcc28cca1557f0c55bcaf7fa1d5c8ae28))
+
 ## [0.43.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.42.0...v0.43.0) (2026-10-24)
 
 

@@ -29,12 +29,11 @@ hosted off.
 - **Identity linking** is `identities(provider = "google", subject)`; the
   Google sign-in `sub` equals `DirUser.id`. No shape carries `users.directory_id`.
 - **`instance.hosted` exists once**, on `Me.instance`.
-- **The list and search extensions are folded in** (P3 T4): `ListQuerySchema`
-  and `SearchQuerySchema` carry the space scopes and `spaceId`, so the MCP
-  `list_artifacts` and `search_artifacts` inputs and the generated skill have
-  them too. **The publish extension is still separate** (`HostedPublishInputSchema`);
-  `PublishInputSchema` also defines the MCP tool input and the generated skill,
-  so P3 folds it in, and regenerates the skill, in the PR that implements it.
+- **The list, search and publish extensions are folded in** (P3 T4, T10):
+  `ListQuerySchema` and `SearchQuerySchema` carry the space scopes and
+  `spaceId`, and `PublishInputSchema` carries `spaceId` (create only), so the
+  MCP `list_artifacts`, `search_artifacts` and `publish_artifact` inputs and
+  the generated skill have them too. `HostedPublishInputSchema` is gone.
 
 ## FEATURES flags (`FeatureFlagSchema`, `Me.instance.features`)
 
@@ -82,7 +81,7 @@ every flag that is on.
 
 | Shape | Added |
 |---|---|
-| `ArtifactSummary` (so `SearchHit`) | `space?: SpaceRef`, `can?: ArtifactCan` |
+| `ArtifactSummary` (so `SearchHit`) | `space?: SpaceRef`, `can?: ArtifactCan`. Signed-in callers with spaces on. `space` is absent for a shared space where the caller has no role (a share or link alone), so its id and name never leak; `can` is always set |
 | `Member` | `status?: MemberStatus` (absent = active), `identities?: ("google")[]`, `restriction?: Restriction \| null` |
 | `Me.instance` | `hosted?`, `tier?`, `signIn?`, `features?: FeatureFlag[]`, `directory?: InstanceDirectory` |
 | `Me` | `auth?: MeAuth`, `personalSpaceId?` (= user.id), `spaces?: MySpace[]` (shared, by name, ≤ 200) |
@@ -175,13 +174,14 @@ line, never twice. A non-null `cap` still limits access to viewer.
 |---|---|---|
 | `GET R.artifacts` | `ListQuery` | `scope` adds `space` (needs `spaceId`) and `spaces`; `mine` = personal space; `spaceId` narrows any scope (another user's personal space: 400 `space_personal`; unknown, or a shared space where the caller has no role: 404, never an empty page) |
 | `GET R.search` | `SearchQuery` | optional `spaceId`, as the list's |
-| `POST R.artifacts` | `HostedPublishInput` | `spaceId` on create only (existing id: 400 `use_move`); default personal space; not allowed: 403 `space_forbidden` (also any create by a capped caller); `visibility: "public"` where the space's publicLinks is off: 403 `public_links_off` |
+| `POST R.artifacts` | `PublishInput` (`spaceId?`) | `spaceId` on create only (existing id: 400 `use_move`); default personal space; unknown, another user's personal space, or a shared space the caller can't see: 404; seen but not allowed: 403 `space_forbidden` (also any create by a capped caller); `visibility: "public"` where the space's publicLinks is off: 403 `public_links_off` (echoing it on an already public artifact passes). A visibility change is compare-and-set: a concurrent change or move is 409 `conflict` |
 | `PATCH R.artifact(id)` | `ArtifactPatch` | `visibility: "public"` where publicLinks is off: 403 `public_links_off` |
-| `POST R.moveArtifact(id)` | `MoveArtifactInput {spaceId}` → `ArtifactSummary` | manager/owner on the artifact (else 404); shared target only (400 `space_personal`); editor+ in target (else 403 `space_forbidden`). A public artifact moved into a space with publicLinks off becomes `team` in the same batch and its anonymous sockets close (the toggle itself never rewrites or revokes); the returned summary shows `visibility: "team"` |
-| `POST R.transferArtifact(id)` | `TransferArtifactInput {userId}` → `ArtifactSummary` | `level === "owner"` only, personal (else 404; a manager can't); successor active, non-guest, non-restricted (400 `invalid_successor`); former owner keeps an editor share |
+| `POST R.moveArtifact(id)` | `MoveArtifactInput {spaceId}` → `ArtifactSummary` | manager/owner on the artifact (else 404); shared target only (the caller's own personal space: 400 `space_personal`; anyone else's: 404); editor+ in target (else 403 `space_forbidden`). A public artifact moved into a space with publicLinks off becomes `team` in the same batch and its anonymous sockets close (the toggle itself never rewrites or revokes); the returned summary shows `visibility: "team"`. Compare-and-set on the space and visibility read: a concurrent change is 409 `conflict`. Audited `artifact.move` |
+| `POST R.transferArtifact(id)` | `TransferArtifactInput {userId}` → `ArtifactSummary` | `level === "owner"` only, personal (else 404; a manager can't); successor active, non-guest, non-restricted (400 `invalid_successor`); former owner keeps an editor share; audited `artifact.transfer` |
 | `GET R.members?status=` | `MembersQuery` → `Member[]` | comma list, default `active`; other statuses org owner/admin |
 | `GET R.memberTransfer(id)` | → `TransferSummary {live, deleted}` | counts only; org owner, admin |
-| `POST R.memberTransfer(id)` | `TransferInput {to: user\|space, cursor?}` → `TransferResult {moved, remaining, nextCursor}` | 409 `member_active`; user target active, non-guest, non-restricted (400 `invalid_successor`); ≤ `TRANSFER_PAGE` (100) per call; repeat with `cursor` until `nextCursor` is null |
+| `POST R.memberTransfer(id)` | `TransferInput {to: user\|space, cursor?}` → `TransferResult {moved, remaining, nextCursor}` | 409 `member_active`; user target active, non-guest, non-restricted (400 `invalid_successor`); ≤ `TRANSFER_PAGE` (100) per call; repeat with `cursor` until `nextCursor` is null (each call moves the next page still in the departed person's space; the cursor is a continuation marker only, so a forged one moves no more). Into a space with publicLinks off, public artifacts become `team` and their sockets close, and a page is at most 50 so the closes fit one request. The target (and a user target's eligibility) is re-checked in the write: if it changed, nothing moves and the call is 409 `conflict`. One `artifact.transfer` audit row per call (`detail: { moved, teamed, to }`) |
+| MCP `list_spaces` | → `{ items: MySpace[] }` | the spaces the caller can publish into: their personal space first, then shared spaces where they are editor or manager; empty for a capped caller |
 
 Accepted disclosure: `scope=space` (or any `spaceId`) naming another user's personal space returns 400 `space_personal`, not 404, so it reveals that the id is a user's. Accepted because ids are random and already visible to members on Members (a personal space's id is its owner's user id).
 
@@ -193,7 +193,9 @@ Accepted disclosure: `scope=space` (or any `spaceId`) naming another user's pers
 | `DELETE R.directory` | 204 (disconnect; memberships freeze) | org owner |
 | `GET R.directoryGroups` | `DirectoryGroupsQuery` → `Page<DirectoryGroup>` (group picker) | org admin |
 | `GET R.directoryConnect` | 302 to Google consent | org owner |
-| `GET R.directoryCallback` | 302 `/settings/directory?connected=1` or `?error=DirectoryConnectError` | OAuth |
+| `GET R.directoryCallback` | 302 `/settings/directory` (consent and binding stored, `SyncStatus.state` `pending_confirm`; nothing linked yet) or `?error=DirectoryConnectError` | OAuth |
+| `POST R.directoryConfirm` `/directory/confirm` | 200 `SyncStatus`: runs the binding pass (links and creates members). 404 when nothing is pending; 409 `conflict` when the confirmation expired (24 h after consent; the token and binding are then dropped) | the owner who connected, still org owner; anyone else 404. Audited `directory.connect` |
+| `POST R.directoryCancel` `/directory/cancel` | 204: drops the pending token and binding | same as confirm. Audited `directory.disconnect` |
 | `POST R.directorySync` | 202 `SyncStatus` ("Sync now") | org owner |
 | `POST R.directoryHeldConfirm(groupId)` | 202 `SyncStatus` | org owner |
 | `GET R.audit` / `R.auditExport` | `Page<AuditEvent>` / NDJSON | org owner, admin. Export takes `?cursor` and returns at most 5000 events (10 pages of 500) per request, newest first; when more remain, header `X-OA-Next-Cursor` (`AUDIT_NEXT_CURSOR_HEADER`) holds the cursor for the next request |
@@ -205,6 +207,7 @@ sync routes, after a fresh Google sign-in (10 min); else 401 `reauth_required`.
 |---|---|
 | `SyncStatusSchema` | `{ mode, binding, healthy, state, unhealthySince, lastSuccessAt, lastError, nextRunAt, staleAt, alertedAt, customerMismatch, held }` |
 | `DirectoryBindingSchema` | `{ provider, customerId, domain, connectedBy, connectedAt }` |
+| `SyncStatusSchema` pending fields | `pendingCount: number \| null` (active in-domain users the pass would link or create, over at most one page of 500), `pendingCountCapped: boolean` (true: show "500+"), `pendingExpiresAt: string \| null` (ISO, consent + 24 h). Set only while `state` is `pending_confirm` (`SyncState` gains `pending_confirm`). Defaults `null` / `false` / `null` when absent, so a payload from before the confirm step still parses |
 | `HeldSweepSchema` | `GroupRef + { wouldRemove, members, since }` |
 | `DirUserSchema` | `{ id (= Google sub), primaryEmail, suspended, deleted }` |
 | `DirectoryGroupSchema` | `{ groupId, email, name, memberCount }` |

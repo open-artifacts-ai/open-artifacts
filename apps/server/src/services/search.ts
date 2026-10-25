@@ -19,7 +19,13 @@ import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { redact, toSummary } from "./artifacts.js";
+import {
+  decorates,
+  redact,
+  spaceCols,
+  toSummary,
+  withSpace,
+} from "./artifacts.js";
 import type { ManifestEntry } from "./manifest.js";
 
 /**
@@ -515,6 +521,8 @@ export function searchQuery(
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller),
+      // The joined space, for `space` and `can` (withSpace).
+      space: spaceCols(caller, decorates(env, caller)),
       sb: snip(3),
       sd: snip(2),
       st: snip(1),
@@ -564,6 +572,7 @@ export async function search(
   const rows = await searchQuery(env, caller, m, offset, limit, spaceId);
   const page = rows.slice(0, limit);
   const next = offset + limit;
+  const dec = decorates(env, caller);
   return {
     // Built in SearchHitSchema's key order (summary fields, then snippet);
     // validated by the tests, not per hit in production.
@@ -571,22 +580,23 @@ export async function search(
     items: page.flatMap((r): SearchHit[] => {
       const { level } = r;
       if (!level) return [];
+      const out = toSummary(
+        env,
+        r.a,
+        redact(
+          {
+            id: r.a.ownerId,
+            email: r.ownerEmail,
+            name: r.ownerName,
+            displayName: r.ownerDisplayName,
+          },
+          caller,
+        ),
+        level,
+      );
       return [
         {
-          ...toSummary(
-            env,
-            r.a,
-            redact(
-              {
-                id: r.a.ownerId,
-                email: r.ownerEmail,
-                name: r.ownerName,
-                displayName: r.ownerDisplayName,
-              },
-              caller,
-            ),
-            level,
-          ),
+          ...(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out),
           snippet: pickSnippet(r.sb ?? "", r.sd ?? "", r.st ?? ""),
         },
       ];

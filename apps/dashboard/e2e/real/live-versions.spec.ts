@@ -202,3 +202,90 @@ test("clicked inside: still the chip", async ({ page, member }) => {
   });
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
 });
+
+// #542 follow-ups (prod 0.43.0): 80 rows of 60px, as the manager's repro.
+const ROWS = (n: number, rows = 80) =>
+  `<!doctype html><style>body{margin:0}.r{height:60px;box-sizing:border-box;border-bottom:1px solid #ccc}</style><h1 id="v" style="height:60px;margin:0">version ${n}</h1>${Array.from(
+    { length: rows },
+    (_, i) => `<div class="r" id="r${i}">row ${i} · v${n}</div>`,
+  ).join("")}`;
+const publishRows = (pat: string, id: string, n: number, rows = 80) =>
+  fetch(`${APP}${R.versions(id)}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${pat}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ id, format: "html", content: ROWS(n, rows) }),
+  }).then((r) => {
+    expect(r.ok).toBe(true);
+  });
+/** The swap to v<n> has settled: announced, and the old frame faded out. */
+const settled = async (page: import("@playwright/test").Page, n: number) => {
+  await expect(page.getByText(`Updated to v${n}`)).toBeVisible({
+    timeout: 8_000,
+  });
+  await expect(page.locator("iframe.oa-vframe")).toHaveCount(1, {
+    timeout: 5_000,
+  });
+};
+
+test("row 52, v2 swaps in, then the panel opens and v3 lands on row 52 too", async ({
+  page,
+  member,
+}) => {
+  const { id } = await publishViaApi(member.pat, {
+    title: `Rows ${uniq()}`,
+    format: "html",
+    content: ROWS(1),
+  });
+  await page.goto(`/a/${id}`);
+  await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
+  await page.waitForTimeout(500);
+  // Row 52 (60px rows under a 60px heading).
+  await artifactFrame(page)
+    .locator("body")
+    .evaluate(() => window.scrollTo(0, 60 + 52 * 60));
+  await page.waitForTimeout(400);
+  await publishRows(member.pat, id, 2);
+  await settled(page, 2);
+  await expect.poll(() => frameScroll(page)).toBe(60 + 52 * 60);
+  await page.getByRole("button", { name: /^Version: v2/ }).click();
+  await expect(
+    page.getByRole("complementary", { name: "Side panel" }),
+  ).toBeVisible();
+  await page.waitForTimeout(400);
+  await publishRows(member.pat, id, 3);
+  await settled(page, 3);
+  await expect.poll(() => frameScroll(page)).toBe(60 + 52 * 60);
+});
+
+test("a new artifact's first load starts at the top", async ({
+  page,
+  member,
+}) => {
+  // Another artifact scrolled to the bottom and live-swapped first, in this tab.
+  const { id: a } = await publishViaApi(member.pat, {
+    title: `Rows A ${uniq()}`,
+    format: "html",
+    content: ROWS(1),
+  });
+  await page.goto(`/a/${a}`);
+  await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
+  await page.waitForTimeout(500);
+  await artifactFrame(page)
+    .locator("body")
+    .evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(400);
+  await publishRows(member.pat, a, 2);
+  await settled(page, 2);
+  const { id: b } = await publishViaApi(member.pat, {
+    title: `Rows B ${uniq()}`,
+    format: "html",
+    content: ROWS(1),
+  });
+  await page.goto(`/a/${b}`);
+  await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
+  await page.waitForTimeout(1_500);
+  expect(await frameScroll(page)).toBe(0);
+});

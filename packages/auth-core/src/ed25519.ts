@@ -58,12 +58,35 @@ export async function keyId(x: string): Promise<string> {
  * broker will look up, then the body. Both sides build it from what they send.
  */
 export function redeemTranscript(kid: string, body: string): string {
-  return `oa-redeem-v1\nPOST\n/google/redeem\n${kid}\n${body}`;
+  return requestTranscript("/google/redeem", kid, body);
+}
+
+/**
+ * The same transcript for any signed broker POST: the path is covered, so a
+ * signature for one route (a sign-in redeem) never verifies on another (the
+ * directory token exchange), and vice versa.
+ */
+export function requestTranscript(
+  path: string,
+  kid: string,
+  body: string,
+): string {
+  return `oa-redeem-v1\nPOST\n${path}\n${kid}\n${body}`;
 }
 
 /** Signs the redeem transcript; base64url signature (X-OA-Sig). */
-export async function signRedeem(
+export function signRedeem(
   pkcs8: string,
+  kid: string,
+  body: string,
+): Promise<string> {
+  return signRequest(pkcs8, "/google/redeem", kid, body);
+}
+
+/** Signs requestTranscript(path, kid, body); base64url signature (X-OA-Sig). */
+export async function signRequest(
+  pkcs8: string,
+  path: string,
   kid: string,
   body: string,
 ): Promise<string> {
@@ -76,14 +99,29 @@ export async function signRedeem(
   );
   return b64.enc(
     new Uint8Array(
-      await crypto.subtle.sign(ED, k, enc.encode(redeemTranscript(kid, body))),
+      await crypto.subtle.sign(
+        ED,
+        k,
+        enc.encode(requestTranscript(path, kid, body)),
+      ),
     ),
   );
 }
 
 /** Verifies `sig` over the transcript for `kid`/`body`; false on any error. */
-export async function verifyRedeem(
+export function verifyRedeem(
   x: string,
+  kid: string,
+  body: string,
+  sig: string,
+): Promise<boolean> {
+  return verifyRequest(x, "/google/redeem", kid, body, sig);
+}
+
+/** Verifies `sig` over requestTranscript(path, kid, body); false on any error. */
+export async function verifyRequest(
+  x: string,
+  path: string,
   kid: string,
   body: string,
   sig: string,
@@ -97,7 +135,7 @@ export async function verifyRedeem(
       ED,
       k,
       s,
-      enc.encode(redeemTranscript(kid, body)),
+      enc.encode(requestTranscript(path, kid, body)),
     );
   } catch {
     return false;

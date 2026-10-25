@@ -6,6 +6,7 @@ import { mountArtifacts } from "./artifacts.js";
 import { mountAudit } from "./audit.js";
 import { mountAuth } from "./auth.js";
 import { mountCodes } from "./codes.js";
+import { mountDirectory } from "./directory.js";
 import { mountMe } from "./me.js";
 import { mountMembers } from "./members.js";
 import { mountSearch } from "./search.js";
@@ -28,6 +29,7 @@ export function mountRoutes(app: AppType): void {
   mountMembers(app);
   mountSettings(app);
   mountSpaces(app);
+  mountDirectory(app);
   mountArtifacts(app);
   mountUploads(app);
   mountShares(app);

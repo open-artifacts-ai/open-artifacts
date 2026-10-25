@@ -9,6 +9,10 @@
 // PLATFORM_DB id has its own placeholder, filled at deploy (the id of
 // oa-s-platform / oa-p-platform). Observability is on: no request URLs, and
 // the logs carry install ids, fixed categories and counts only.
+// The email-quota alert (src/quota.ts) reads Email Sending analytics: its
+// zone tags and the account's daily limit are per-env vars with placeholders
+// filled at deploy; its token is the secret EMAIL_QUOTA_TOKEN (wrangler secret
+// put, never a var).
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "compatibility_date": "2026-10-01",
@@ -20,7 +24,11 @@
       "main": "src/index.ts",
       "workers_dev": false,
       "preview_urls": false,
-      "vars": { "OA_ENV": "staging" },
+      "vars": {
+        "OA_ENV": "staging",
+        "EMAIL_QUOTA_ZONES": "{{EMAIL_ZONE_TAG_STAGING}}",
+        "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_STAGING}}"
+      },
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *"] },
       "dispatch_namespaces": [
@@ -39,7 +47,11 @@
       "main": "src/index.ts",
       "workers_dev": false,
       "preview_urls": false,
-      "vars": { "OA_ENV": "prod" },
+      "vars": {
+        "OA_ENV": "prod",
+        "EMAIL_QUOTA_ZONES": "{{EMAIL_ZONE_TAG_PROD}}",
+        "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_PROD}}"
+      },
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *"] },
       "dispatch_namespaces": [

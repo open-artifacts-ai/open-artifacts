@@ -1,13 +1,15 @@
 import { isPat, newId, newPat } from "@oa/shared";
-import { and, eq, isNull, lt, or } from "drizzle-orm";
+import { and, eq, isNull, lte, or } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import { tokens } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
+import { USE_WRITE_MS } from "../services/agent-usage.js";
 import { sha256Hex } from "../util/crypto.js";
 
-const HOUR = 3600 * 1000;
+/** last_used_at is written at most this often (USE_WRITE_MS). */
+const MINUTE = USE_WRITE_MS;
 
 type TokenRow = {
   id: string;
@@ -51,14 +53,14 @@ export async function verifyPat(
     .first<TokenRow>();
   if (!row || row.revokedAt != null) return null;
   const now = Date.now();
-  if (row.lastUsedAt == null || row.lastUsedAt < now - HOUR) {
+  if (row.lastUsedAt == null || row.lastUsedAt <= now - MINUTE) {
     const upd = getDb(env)
       .update(tokens)
       .set({ lastUsedAt: now })
       .where(
         and(
           eq(tokens.id, row.id),
-          or(isNull(tokens.lastUsedAt), lt(tokens.lastUsedAt, now - HOUR)),
+          or(isNull(tokens.lastUsedAt), lte(tokens.lastUsedAt, now - MINUTE)),
         ),
       )
       .then(() => undefined);

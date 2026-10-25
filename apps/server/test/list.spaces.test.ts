@@ -1,10 +1,12 @@
 import { env } from "cloudflare:workers";
 import {
   type AccessLevel,
+  type ArtifactSummary,
   type ListQueryInput,
   ListQuerySchema,
   type Member,
   newId,
+  type Page,
   R,
   type Role,
   type SpaceRole,
@@ -20,6 +22,7 @@ import {
   capOfCaller,
   withCap,
 } from "../src/auth/authz.js";
+import { createPat } from "../src/auth/pat.js";
 import { isTeamRole } from "../src/auth/policy.js";
 import { publicPrefix } from "../src/content/signing.js";
 import { getDb } from "../src/db/client.js";
@@ -33,12 +36,14 @@ import {
   spaces,
   users,
 } from "../src/db/schema.js";
+import type { Env } from "../src/env.js";
 import { ApiError } from "../src/http/errors.js";
-import { list, publish } from "../src/services/artifacts.js";
+import { getSummary, list, publish } from "../src/services/artifacts.js";
 import { search } from "../src/services/search.js";
 import { getUser } from "../src/services/users.js";
 import { contentCall } from "./assets-stub.js";
-import { api, errOf, login, runIndex } from "./helpers.js";
+import { api, errOf, fetchAndWait, login, runIndex } from "./helpers.js";
+import { connect, tool } from "./mcp-helpers.js";
 
 // P3 T4: list and search read the level from SQL (levelSql), and it must be
 // decide()'s. The matrix seeds every input decide reads (space kind, per-space
@@ -787,5 +792,169 @@ describe("public links off only refuses new public links (decided)", () => {
     });
     expect(fromPrivate.status).toBe(403);
     expect((await errOf(fromPrivate)).code).toBe("public_links_off");
+  });
+});
+
+// P3 T10 (manager ruling): every list row and search hit carries the same
+// `space` and `can` as getSummary for the same caller and artifact, with
+// spaces on, signed-in callers only, read from the query's own join.
+describe("space and can on list and search rows", () => {
+  const ON = { ...(env as object), FEATURES: "spaces" } as unknown as Env;
+  type Deco = Pick<ArtifactSummary, "space" | "can" | "access">;
+  const pick = (a: ArtifactSummary): Deco => ({
+    space: a.space,
+    can: a.can,
+    access: a.access,
+  });
+  const summaries = async (w: Who, ids: string[]) => {
+    const out: Record<string, Deco> = {};
+    for (const id of ids)
+      out[id] = pick(await getSummary(ON, who[w].caller, id));
+    return out;
+  };
+  const collect = async (
+    next: (cursor?: string) => Promise<Page<ArtifactSummary>>,
+  ) => {
+    const out: Record<string, Deco> = {};
+    let cursor: string | undefined;
+    do {
+      const page = await next(cursor);
+      for (const a of page.items) if (arts[a.id]) out[a.id] = pick(a);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    return out;
+  };
+
+  it("list(all) and search rows equal getSummary for every caller and artifact", async () => {
+    let decorated = 0;
+    let hidden = 0;
+    for (const w of CALLERS) {
+      const listed = await collect((cursor) =>
+        list(ON, who[w].caller, ListQuerySchema.parse({ limit: 100, cursor })),
+      );
+      const searched = await collect((cursor) =>
+        search(ON, who[w].caller, word, cursor, 100),
+      );
+      const want = await summaries(w, Object.keys(listed));
+      expect({ w, listed }).toEqual({ w, listed: want });
+      expect({ w, searched }).toEqual({
+        w,
+        searched: await summaries(w, Object.keys(searched)),
+      });
+      for (const d of Object.values(listed)) {
+        expect(d.can).toBeDefined();
+        if (d.space) decorated++;
+        else hidden++;
+      }
+    }
+    // Both happen across the matrix: a role shows the space, a share or a
+    // team or public link alone hides a shared one.
+    expect(decorated).toBeGreaterThan(0);
+    expect(hidden).toBeGreaterThan(0);
+  });
+
+  it("a share recipient with no role in the shared space gets no space on list, search and get", async () => {
+    const s = await getDb(env)
+      .insert(spaces)
+      .values({
+        id: newId(),
+        kind: "shared",
+        name: `Hidden ${tag}`,
+        publicLinks: 1,
+        createdAt: Date.now(),
+      })
+      .returning({ id: spaces.id });
+    const sid = s[0]?.id as string;
+    const id = newId();
+    const title = `hiddenspace${tag}`.replace(/\d/g, "q");
+    await env.DB.prepare(
+      "insert into artifacts (id, owner_id, space_id, title, format, visibility, created_at, updated_at) values (?, ?, ?, ?, 'html', 'private', 1, ?)",
+    )
+      .bind(id, who.owner.id, sid, title, Date.now())
+      .run();
+    await env.DB.prepare(
+      "insert into artifact_search (rowid, artifact_id, title, description, body) select rowid, id, title, '', '' from artifacts where id = ?",
+    )
+      .bind(id)
+      .run();
+    const m = await getUser(env, who.memberA.id);
+    await env.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, 1)",
+    )
+      .bind(id, m?.email, who.owner.id)
+      .run();
+    const c = who.memberA.caller;
+    const got = await getSummary(ON, c, id);
+    expect(got.access).toBe("viewer");
+    expect(got.space).toBeUndefined();
+    expect(got.can).toMatchObject({ edit: false });
+    const listed = await list(
+      ON,
+      c,
+      ListQuerySchema.parse({ scope: "shared", limit: 100 }),
+    );
+    const row = listed.items.find((a) => a.id === id);
+    expect(row?.space).toBeUndefined();
+    expect(row?.can).toEqual(got.can);
+    const hit = (await search(ON, c, title, undefined, 10)).items.find(
+      (a) => a.id === id,
+    );
+    expect(hit?.space).toBeUndefined();
+    expect(hit?.can).toEqual(got.can);
+  });
+
+  it("spaces off, or anonymous: no space or can on rows", async () => {
+    const page = await list(
+      env,
+      who.memberA.caller,
+      ListQuerySchema.parse({ limit: 100 }),
+    );
+    expect(page.items.length).toBeGreaterThan(0);
+    for (const a of page.items) {
+      expect(a.space).toBeUndefined();
+      expect(a.can).toBeUndefined();
+    }
+  });
+
+  it("REST list and search, and MCP list_artifacts and search_artifacts, carry them", async () => {
+    const rest = async (path: string) =>
+      (await (
+        await fetchAndWait(
+          app,
+          new Request(`http://app.localhost${path}`, {
+            headers: { "x-oa-request": "1", cookie: who.s1Viewer.cookie },
+          }),
+          ON,
+        )
+      ).json()) as Page<ArtifactSummary>;
+    const viaRest = {
+      list: await rest(`${R.artifacts}?limit=100`),
+      search: await rest(`${R.search}?q=${word}&limit=100`),
+    };
+    const c = await connect(
+      (await createPat(env, who.s1Viewer.id, "deco")).token,
+      { env: ON },
+    );
+    const viaMcp = {
+      list: (await tool(c, "list_artifacts", { limit: 100 }))
+        .structuredContent as unknown as Page<ArtifactSummary>,
+      search: (await tool(c, "search_artifacts", { q: word, limit: 100 }))
+        .structuredContent as unknown as Page<ArtifactSummary>,
+    };
+    await c.close();
+    for (const p of [
+      viaRest.list,
+      viaRest.search,
+      viaMcp.list,
+      viaMcp.search,
+    ]) {
+      const mine = p.items.filter((a) => arts[a.id]);
+      expect(mine.length).toBeGreaterThan(0);
+      const want = await summaries(
+        "s1Viewer",
+        mine.map((a) => a.id),
+      );
+      for (const a of mine) expect(pick(a)).toEqual(want[a.id]);
+    }
   });
 });

@@ -4,6 +4,7 @@ import {
   type AgentRef,
   type ArtifactPatch,
   type ArtifactSummary,
+  artifactCan,
   type Format,
   isId,
   LIMITS,
@@ -27,11 +28,16 @@ import {
   type Caller,
   callerOf,
   canCtx,
+  capOfCaller,
   checkListSpace,
   firstThumbnailEligible,
   levelSql,
   listFilterSql,
+  publishTarget,
+  roleRankQuery,
+  roleRankSql,
 } from "../auth/authz.js";
+import { authConfig } from "../auth/config.js";
 import { can } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
@@ -40,10 +46,12 @@ import { ApiError, appOrigin } from "../http/errors.js";
 import { logError, logWarn } from "../log.js";
 import { runtimeStub, type VersionEvent } from "../runtime/do.js";
 import { closeRuntimeSockets } from "../runtime/revoke.js";
+import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { audit, userActor } from "./audit.js";
 import { type ManifestEntry, materialize, planFiles } from "./manifest.js";
 import { getSettings } from "./members.js";
 import { ftsFilter, seedSearchStmt, syncTitleStmt } from "./search.js";
+import { requireSpaces } from "./spaces.js";
 import { writeThumbnail } from "./thumbs.js";
 import { toUserRef } from "./users.js";
 
@@ -114,7 +122,7 @@ export async function publish(
   env: Env,
   user: Member,
   input: PublishInput,
-  agent: AgentRef | null,
+  agent: AgentAttr | null,
   ctx?: Ctx,
   mode: PublishMode = "any",
 ): Promise<PublishResult> {
@@ -130,13 +138,23 @@ export async function publish(
   let accessChanged = false;
   /** A visibility change on an existing artifact: audited in the batch. */
   let visAudit: D1PreparedStatement | null = null;
+  /**
+   * Compare-and-set (#484) when the input sets visibility: the bump only
+   * applies while the row still has the visibility and space it was checked
+   * against (`before`), and every later statement only while it has the new
+   * visibility (`after`), so a stale resend never undoes a concurrent change.
+   */
+  let cas: { before: Guard; after: Guard } | null = null;
+  /** The new artifact's space (create): the caller's personal space by default. */
+  let spaceId = user.id;
   if (input.id === undefined) {
     if (mode === "version") throw notFound();
     id = newId();
   } else {
     id = input.id;
+    // spaceId with an existing artifact's id is 400 use_move, in any mode.
     const exists =
-      mode === "create"
+      mode === "create" && input.spaceId === undefined
         ? null
         : await db
             .prepare("select 1 from artifacts where id = ?")
@@ -145,6 +163,12 @@ export async function publish(
     if (exists) {
       const who = callerOf(user);
       const { level, artifact: a } = await authorize(env, who, id, "publish");
+      if (input.spaceId !== undefined)
+        throw new ApiError(
+          "use_move",
+          "spaceId is only for new artifacts; move an existing one with POST /move",
+          { path: "spaceId", reason: "use_move" },
+        );
       create = false;
       const sharing =
         input.visibility !== undefined ||
@@ -153,6 +177,21 @@ export async function publish(
       if (sharing && !can(level, "visibility", canCtx(who, a)))
         throw new ApiError("bad_request", "only the owner can change sharing");
       await refusePublicLinksOff(env, a, input.visibility);
+      if (input.visibility !== undefined)
+        cas = {
+          before: [
+            ` and visibility = ? and space_id is ?${
+              input.visibility === "public" && a.visibility !== "public"
+                ? LINKS_STILL_ON
+                : ""
+            }`,
+            [a.visibility, a.spaceId],
+          ],
+          after: [
+            " and visibility = ? and space_id is ?",
+            [input.visibility, a.spaceId],
+          ],
+        };
       capabilities = { ...CAPS, ...(JSON.parse(a.capabilities) as object) };
       if (input.visibility !== undefined && input.visibility !== a.visibility)
         visAudit = visibilityAudit(env, user, id, a, input.visibility);
@@ -192,6 +231,20 @@ export async function publish(
         reason: "missing",
       },
     );
+  // A shared space (or the caller's own personal one, by id): 404 when not
+  // theirs to see, 403 space_forbidden when seen but not allowed.
+  if (create && input.spaceId !== undefined && input.spaceId !== user.id) {
+    // Another space needs the spaces feature (404 without it).
+    requireSpaces(env);
+    spaceId = (
+      await publishTarget(env, callerOf(user), input.spaceId, "create")
+    ).id;
+    await refusePublicLinksOff(
+      env,
+      { spaceId, visibility: "" },
+      input.visibility,
+    );
+  }
   const caps = JSON.stringify({ ...capabilities, ...input.capabilities });
   const visibility =
     input.visibility ??
@@ -217,19 +270,33 @@ export async function publish(
 
   const stmts: D1PreparedStatement[] = [];
   if (create) {
+    // A public create into a shared space re-checks the space's public-links
+    // toggle in the insert itself, so a racing toggle-off writes nothing.
+    const links =
+      spaceId !== user.id && visibility === "public"
+        ? " and not exists (select 1 from spaces where id = ? and kind = 'shared' and public_links = 0)"
+        : "";
+    // Into a shared space: the caller's role there (editor or manager) is
+    // re-checked in the insert, so a role revoked mid-request writes nothing.
+    const role =
+      spaceId !== user.id
+        ? roleRankQuery(env, callerOf(user), spaceId)
+        : { sql: "", params: [] as unknown[] };
     stmts.push(
       db
         .prepare(
           `insert into artifacts (id, owner_id, space_id, title, description, format, visibility,
              current_version, capabilities, allow_anonymous_writes, created_at, updated_at)
-           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ? where 1${guard}`,
+           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ? where 1${links}${
+             role.sql ? ` and ${role.sql} >= 2` : ""
+           }${guard}`,
         )
         .bind(
           id,
           user.id,
-          // Every artifact lives in a space (P3 T1): the creator's personal
-          // space today; T10 reads input.spaceId for a shared space.
-          user.id,
+          // Every artifact lives in a space (P3 T1): the caller's personal
+          // space, or the shared one publishTarget allowed (T10).
+          spaceId,
           input.title,
           input.description ?? null,
           plan.format,
@@ -238,6 +305,8 @@ export async function publish(
           input.allowAnonymousWrites ? 1 : 0,
           now,
           now,
+          ...(links ? [spaceId] : []),
+          ...role.params,
           ...guardArgs,
         ),
     );
@@ -284,6 +353,7 @@ export async function publish(
       extra,
       guard,
       guardArgs,
+      cas,
     }),
   );
   // Title/description searchable now (a new row, or the existing row synced
@@ -299,9 +369,9 @@ export async function publish(
         .prepare(
           `update uploads set consumed = 1
            where id in (select value from json_each(?)) and consumed = 0
-             and exists (select 1 from artifacts where id = ? and deleted_at is null)${guard}`,
+             and exists (select 1 from artifacts where id = ? and deleted_at is null${cas ? cas.after[0] : ""})${guard}`,
         )
-        .bind(ids, id, ...guardArgs),
+        .bind(ids, id, ...(cas ? cas.after[1] : []), ...guardArgs),
     );
 
   const cleanup = () =>
@@ -312,22 +382,31 @@ export async function publish(
     version = res[bump]?.results[0]?.current_version;
   } catch (e) {
     await cleanup();
-    if (
-      String((e as Error)?.message).includes(
-        "UNIQUE constraint failed: artifacts.id",
-      )
-    )
+    const msg = String((e as Error)?.message);
+    if (msg.includes("UNIQUE constraint failed: artifacts.id"))
       throw new ApiError("conflict", "Artifact already exists");
+    // A lost compare-and-set whose row already had the new visibility: the
+    // version insert met the other writer's version row.
+    if (cas && msg.includes("UNIQUE constraint failed: versions"))
+      throw changed();
     throw e;
   }
   if (version === undefined) {
     await cleanup();
+    // A create writes nothing only when its space changed (the public-links
+    // re-check) or an upload was used.
+    if (create)
+      throw n
+        ? new ApiError("conflict", "An upload was already used")
+        : changed();
     const live = await db
       .prepare("select 1 from artifacts where id = ? and deleted_at is null")
       .bind(id)
       .first();
-    if (live || (create && n))
-      throw new ApiError("conflict", "An upload was already used");
+    if (live)
+      throw cas
+        ? changed()
+        : new ApiError("conflict", "An upload was already used");
     throw notFound();
   }
   // Access changed: close first (gone "changed"), awaited, so a socket that
@@ -338,6 +417,18 @@ export async function publish(
 }
 
 const notFound = () => new ApiError("not_found", "Not found");
+/**
+ * Appended to an artifacts UPDATE that makes the row public: the space's
+ * public-links toggle re-checked in the write, so a racing toggle-off never
+ * lets a new public link through (it loses as a 409).
+ */
+const LINKS_STILL_ON =
+  " and not exists (select 1 from spaces where id = artifacts.space_id and kind = 'shared' and public_links = 0)";
+/** A compare-and-set lost to a concurrent change (#484). */
+const changed = () =>
+  new ApiError("conflict", "The artifact changed while saving; try again");
+/** An SQL fragment appended to a WHERE, and its arguments. */
+type Guard = [string, unknown[]];
 const bad = (message: string, path?: string) =>
   new ApiError(
     "bad_request",
@@ -351,7 +442,8 @@ const asUser = (user: Member): Caller => callerOf(user);
 type Alloc = {
   id: string;
   now: number;
-  agent: AgentRef | null;
+  /** Its `via` (grant or token) is stored on the version and counted. */
+  agent: AgentAttr | null;
   userId: string;
   /** The new version's format; also becomes the artifact's format. */
   format: Format;
@@ -365,20 +457,26 @@ type Alloc = {
   /** Extra guard appended to both WHEREs (e.g. the publish uploads guard). */
   guard?: string;
   guardArgs?: unknown[];
+  /** Compare-and-set: `before` on the bump, `after` on the version insert. */
+  cas?: { before: Guard; after: Guard } | null;
 };
 
 /**
  * The race-safe version allocation shared by publish and restore: two
  * statements for one D1 batch. The first bumps `current_version` (RETURNING
  * it; no row → artifact gone), the second inserts the version row reading that
- * same number via INSERT … SELECT, so concurrent writers never collide.
+ * same number via INSERT … SELECT, so concurrent writers never collide. With
+ * a grant or token behind the agent, a third statement counts the version
+ * for it (countVersionStmt: only if the version row was written).
  */
 export function allocateVersion(
   db: D1Database,
   a: Alloc,
-): [D1PreparedStatement, D1PreparedStatement] {
+): [D1PreparedStatement, D1PreparedStatement, ...D1PreparedStatement[]] {
   const guard = a.guard ?? "";
   const guardArgs = a.guardArgs ?? [];
+  const [before, beforeArgs] = a.cas?.before ?? ["", []];
+  const [after, afterArgs] = a.cas?.after ?? ["", []];
   const sets = [
     "current_version = current_version + 1",
     "updated_at = ?",
@@ -395,19 +493,20 @@ export function allocateVersion(
     sets.push(`${col} = ?`);
     vals.push(v);
   }
+  const via = a.agent?.via;
   return [
     db
       .prepare(
         `update artifacts set ${sets.join(", ")}
-         where id = ? and deleted_at is null${guard} returning current_version`,
+         where id = ? and deleted_at is null${before}${guard} returning current_version`,
       )
-      .bind(...vals, a.id, ...guardArgs),
+      .bind(...vals, a.id, ...beforeArgs, ...guardArgs),
     db
       .prepare(
         `insert into versions (artifact_id, version, entry, manifest, language, message,
-           agent_name, agent_version, created_by, created_at, format)
-         select id, current_version, ?, ?, ?, ?, ?, ?, ?, ?, ? from artifacts
-         where id = ? and deleted_at is null${guard}`,
+           agent_name, agent_version, agent_via, created_by, created_at, format)
+         select id, current_version, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? from artifacts
+         where id = ? and deleted_at is null${after}${guard}`,
       )
       .bind(
         a.entry,
@@ -416,12 +515,15 @@ export function allocateVersion(
         a.message,
         a.agent?.name ?? null,
         a.agent?.version ?? null,
+        via ? viaKey(via) : null,
         a.userId,
         a.now,
         a.format,
         a.id,
+        ...afterArgs,
         ...guardArgs,
       ),
+    ...(via ? [countVersionStmt(db, via, a.userId, a.id, a.now)] : []),
   ];
 }
 
@@ -491,12 +593,78 @@ export async function getSummary(
 ): Promise<ArtifactSummary> {
   const r = await accessLevel(env, caller, id);
   if (!r) throw notFound();
-  return toSummary(
-    env,
-    r.artifact,
-    await ownerRef(env, r.artifact.ownerId, caller),
-    r.level,
-  );
+  const owner = await ownerRef(env, r.artifact.ownerId, caller);
+  const out = toSummary(env, r.artifact, owner, r.level);
+  if (!decorates(env, caller)) return out;
+  // One PK read for the space (lists and search read it from their join).
+  const [sp] = await getDb(env)
+    .select(spaceCols(caller, true, sql`${spaces.id}`))
+    .from(spaces)
+    .where(eq(spaces.id, r.artifact.spaceId ?? ""))
+    .limit(1);
+  return withSpace(caller, out, r.level, r.artifact.spaceId, sp);
+}
+
+/** The artifact's space row as withSpace reads it (null: no row). */
+export type SpaceCols = {
+  kind: string | null;
+  name: string | null;
+  publicLinks: number | null;
+  /** The caller's role rank in a shared space (roleRankSql); 0 = none. */
+  rank: number | null;
+};
+
+/**
+ * The joined space's columns for a list, search or get SELECT (no extra
+ * statement). `rank` is computed only when the row is decorated (`on`).
+ */
+export const spaceCols = (
+  c: Caller,
+  on: boolean,
+  spaceId: SQL = sql`${artifacts.spaceId}`,
+) => ({
+  kind: spaces.kind,
+  name: spaces.name,
+  publicLinks: spaces.publicLinks,
+  rank: on
+    ? sql<number>`case when ${spaces.kind} = 'shared' then ${roleRankSql(c, spaceId)} else 0 end`
+    : sql<number>`0`,
+});
+
+/**
+ * Hosted M1: `space` and `can` go on artifact responses for signed-in
+ * callers while spaces are on (getSummary, list, search; never anonymous).
+ */
+export const decorates = (env: Env, caller: Caller): boolean =>
+  caller.kind === "user" && authConfig(env).features.includes("spaces");
+
+/**
+ * Sets `out.space` (SpaceRef) and `out.can` (artifactCan of the caller's
+ * level, personal or not, with their cap) from the space row already read.
+ * A personal space is named for its owner as the caller may see them (the
+ * summary's owner ref), never by the stored name. A missing row reads as
+ * personal, as decide() does. A shared space is shown only to callers with
+ * a role there (space_members, Every-space, allMembersRole when uncapped:
+ * checkListSpace's rule); anyone else (a share recipient, say) gets no
+ * `space`, so its name and id never leak. Call only when `decorates`.
+ */
+export function withSpace<T extends ArtifactSummary>(
+  caller: Caller,
+  out: T,
+  level: AccessLevel,
+  spaceId: string | null,
+  sp: SpaceCols | null | undefined,
+): T {
+  const shared = sp?.kind === "shared";
+  if (sp?.kind && (!shared || (sp.rank ?? 0) > 0))
+    out.space = {
+      id: spaceId ?? "",
+      kind: shared ? "shared" : "personal",
+      name: shared ? (sp.name ?? "") : (out.owner.name ?? "Personal"),
+      publicLinks: shared ? sp.publicLinks === 1 : true,
+    };
+  out.can = artifactCan(level, { personal: !shared, cap: capOfCaller(caller) });
+  return out;
 }
 
 // --------------------------------------------------------------------- list
@@ -579,6 +747,8 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller, { allowDeleted: q.includeDeleted }),
+      // The joined space, for `space` and `can` (withSpace).
+      space: spaceCols(caller, decorates(env, caller)),
     })
     .from(artifacts)
     .innerJoin(users, eq(users.id, artifacts.ownerId))
@@ -611,25 +781,25 @@ export async function list(
   // listFilterSql: a row it denies is dropped, never shown with a guessed
   // level. The cursor still follows the SQL page.
   const items: ArtifactSummary[] = [];
+  const dec = decorates(env, caller);
   for (const r of page) {
     const { level } = r;
     if (!level) continue;
-    items.push(
-      toSummary(
-        env,
-        r.a,
-        redact(
-          {
-            id: r.a.ownerId,
-            email: r.ownerEmail,
-            name: r.ownerName,
-            displayName: r.ownerDisplayName,
-          },
-          caller,
-        ),
-        level,
+    const out = toSummary(
+      env,
+      r.a,
+      redact(
+        {
+          id: r.a.ownerId,
+          email: r.ownerEmail,
+          name: r.ownerName,
+          displayName: r.ownerDisplayName,
+        },
+        caller,
       ),
+      level,
     );
+    items.push(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out);
   }
   return {
     items,
@@ -848,7 +1018,7 @@ export async function restoreVersion(
   user: Member,
   id: string,
   v: number,
-  agent: AgentRef | null,
+  agent: AgentAttr | null,
   _ctx?: Ctx,
 ): Promise<PublishResult> {
   await authorize(env, asUser(user), id, "restore");
@@ -916,9 +1086,10 @@ async function refusePublicLinksOff(
 }
 
 /**
- * artifact.visibility for the change's batch, after the statement that sets
- * it: written only when the row now has the new visibility (a lost race or a
- * deleted artifact writes nothing).
+ * artifact.visibility for the change's batch, right after the statement that
+ * sets it (or, in publish, the version insert that follows it): written only
+ * when that statement changed a row and the row now has the new visibility
+ * (a lost compare-and-set or a deleted artifact writes nothing).
  */
 function visibilityAudit(
   env: Env,
@@ -936,7 +1107,7 @@ function visibilityAudit(
       spaceId: a.spaceId,
       detail: { from: a.visibility, to },
       when: {
-        sql: "exists (select 1 from artifacts where id = ? and visibility = ? and deleted_at is null)",
+        sql: "changes() > 0 and exists (select 1 from artifacts where id = ? and visibility = ? and deleted_at is null)",
         args: [id, to],
       },
     },
@@ -978,16 +1149,29 @@ export async function patch(
     set("allow_anonymous_writes = ?", p.allowAnonymousWrites ? 1 : 0);
   if (sets.length) {
     set("updated_at = ?", Date.now());
+    // Compare-and-set on the visibility and space checked above (#484).
+    const cas = p.visibility !== undefined;
+    const toPublic = p.visibility === "public" && a.visibility !== "public";
     const upd = env.DB.prepare(
-      `update artifacts set ${sets.join(", ")} where id = ? and deleted_at is null`,
-    ).bind(...vals, id);
+      `update artifacts set ${sets.join(", ")} where id = ? and deleted_at is null${
+        cas ? " and visibility = ? and space_id is ?" : ""
+      }${toPublic ? LINKS_STILL_ON : ""}`,
+    ).bind(...vals, id, ...(cas ? [a.visibility, a.spaceId] : []));
     const batch = [upd];
     if (p.visibility !== undefined && p.visibility !== a.visibility)
       batch.push(visibilityAudit(env, user, id, a, p.visibility));
     if (p.title !== undefined || p.description !== undefined)
       batch.push(syncTitleStmt(env, id));
-    if (batch.length > 1) await env.DB.batch(batch);
-    else await upd.run();
+    const res =
+      batch.length > 1 ? (await env.DB.batch(batch))[0] : await upd.run();
+    if (cas && !res?.meta.changes) {
+      const live = await env.DB.prepare(
+        "select 1 from artifacts where id = ? and deleted_at is null",
+      )
+        .bind(id)
+        .first();
+      if (live) throw changed();
+    }
   }
   if (
     (p.visibility !== undefined && p.visibility !== a.visibility) ||

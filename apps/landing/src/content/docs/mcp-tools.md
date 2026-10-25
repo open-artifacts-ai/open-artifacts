@@ -21,6 +21,7 @@ Tool inputs are JSON Schema. Each tool returns plain text plus structured output
 | `entry` | The file to open first. With `files`, it defaults to `index.html`, then `README.md`, then the first file. |
 | `language` | Optional, for `code`. Taken from the entry file's extension when it's left out. |
 | `message` | Optional change note for this version. Up to 500 characters. |
+| `spaceId` | Optional, new artifacts only. Publishes into a shared space where you're an editor or manager. Leave it out to publish to your personal space. On an existing artifact it fails with use_move; move it instead. |
 | `visibility` | `private`, `team`, or `public`. A new artifact without it gets the instance's default visibility, which is `private` unless an admin changed it. |
 | `capabilities` | The [runtime API](/docs/runtime-api/) features the page may use: `{ "db": true, "viewer": true, "storage": true }`. Each defaults to `false`. |
 | `allowAnonymousWrites` | Let anonymous viewers of a public artifact write shared data. Defaults to `false`. |
@@ -63,6 +64,7 @@ Search indexes each publish asynchronously, so a new version becomes searchable 
 - `get_artifact`: metadata plus the content of a version, the latest by default.
 - `list_artifacts`: filter by owner, format, visibility, agent, or updated-since. Paginated.
 - `search_artifacts`: full-text search over title, description, and extracted text. A PDF is searchable by its text once it has been viewed in the dashboard; before that, only by title and description.
+- `list_spaces`: lists the spaces you can publish into: your personal space first, then shared spaces where you're an editor or manager. Takes no input.
 
 ## Versions
 

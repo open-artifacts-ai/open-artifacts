@@ -39,11 +39,17 @@ export type AuditExtra = {
    * so a no-op or lost race writes no audit row.
    */
   when?: { sql: string; args: unknown[] };
+  /**
+   * Detail fields computed in SQL when the row is written (e.g. `changes()`
+   * of the statement just before), merged over `detail`: a JSON object
+   * expression such as `json_object('moved', changes())`.
+   */
+  detailSql?: { sql: string; args: unknown[] };
 };
 
-const INSERT = `insert into audit_events
+const insertSql = (detailSql?: string) => `insert into audit_events
   (id, at, actor_kind, actor_id, action, target_type, target_id, space_id, detail)
-  select ?, ?, ?, ?, ?, ?, ?, ?, ?`;
+  select ?, ?, ?, ?, ?, ?, ?, ?, ${detailSql ? `json_patch(?, ${detailSql})` : "?"}`;
 
 /** One audit row, as a statement for the caller's own batch. */
 export function audit(
@@ -60,7 +66,8 @@ export function audit(
     ...extra.detail,
     ...(extra.reason && { reason: extra.reason }),
   };
-  const sql = extra.when ? `${INSERT} where ${extra.when.sql}` : INSERT;
+  const insert = insertSql(extra.detailSql?.sql);
+  const sql = extra.when ? `${insert} where ${extra.when.sql}` : insert;
   return stmt(env.DB, sql).bind(
     newId(),
     Date.now(),
@@ -71,6 +78,7 @@ export function audit(
     target.id,
     extra.spaceId ?? null,
     JSON.stringify(detail),
+    ...(extra.detailSql?.args ?? []),
     ...(extra.when?.args ?? []),
   );
 }

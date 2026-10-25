@@ -49,6 +49,7 @@ import {
   MemberInviteSchema,
   MemberPatchSchema,
   MePatchSchema,
+  OAuthClientPatchSchema,
   PublishInputSchema,
   SettingsPatchSchema,
   type Share,
@@ -57,6 +58,7 @@ import {
   type StorageEntry,
   StorageSetBodySchema,
   TokenCreateInputSchema,
+  TokenPatchSchema,
   UploadCreateInputSchema,
   type UserRef,
 } from "../schemas.js";
@@ -467,7 +469,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       );
     }),
     http.post("*/api/v1/artifacts", async ({ request }) => {
-      const r = await body(request, h?.publishSchema ?? PublishInputSchema);
+      const r = await body(request, PublishInputSchema);
       if (r.error) return r.error;
       const existing = r.data.id
         ? artifacts.find((a) => a.id === r.data.id)
@@ -481,6 +483,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       const noPublic = h?.refusePublic(
         existing ? existing.space : placed?.space,
         r.data.visibility,
+        existing?.visibility,
       );
       if (noPublic) return noPublic;
       if (!existing && r.data.id && r.data.title === undefined)
@@ -527,7 +530,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         const r = await body(ctx.request, ArtifactPatchSchema);
         if (r.error) return r.error;
         if (r.data.visibility !== undefined && !full(a)) return notFound();
-        const noPublic = h?.refusePublic(a.space, r.data.visibility);
+        const noPublic = h?.refusePublic(
+          a.space,
+          r.data.visibility,
+          a.visibility,
+        );
         if (noPublic) return noPublic;
         const { capabilities, ...rest } = r.data;
         const gone =
@@ -781,9 +788,18 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         label: r.data.label,
         createdAt: iso(),
         lastUsedAt: null,
+        versionsPublished: 0,
       };
       tokens.push(t);
       return HttpResponse.json({ ...t, token: newPat() }, { status: 201 });
+    }),
+    http.patch("*/api/v1/tokens/:id", async ({ request, params }) => {
+      const t = tokens.find((x) => x.id === params.id);
+      if (!t) return notFound();
+      const r = await body(request, TokenPatchSchema);
+      if (r.error) return r.error;
+      t.label = r.data.label;
+      return HttpResponse.json(t);
     }),
     http.delete("*/api/v1/tokens/:id", ({ params }) => {
       const i = byId(tokens, (t) => t.id, params.id);
@@ -792,6 +808,18 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       return noContent();
     }),
     http.get("*/api/v1/oauth-clients", () => HttpResponse.json(clients)),
+    http.patch(
+      "*/api/v1/oauth-clients/:grantId",
+      async ({ request, params }) => {
+        const c = clients.find((x) => x.grantId === params.grantId);
+        if (!c) return notFound();
+        const r = await body(request, OAuthClientPatchSchema);
+        if (r.error) return r.error;
+        if (r.data.label === null) delete c.label;
+        else c.label = r.data.label;
+        return HttpResponse.json(c);
+      },
+    ),
     http.delete("*/api/v1/oauth-clients/:grantId", ({ params }) => {
       const i = byId(clients, (c) => c.grantId, params.grantId);
       if (i < 0) return notFound();

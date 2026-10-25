@@ -7,9 +7,16 @@
     "node": ">=22"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./domains": {
+      "types": "./src/domains.ts",
+      "workerd": "./src/domains.ts",
+      "import": "./dist/domains.js",
+      "default": "./dist/domains.js"
+    }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

@@ -3,9 +3,10 @@ import {
   MemberInviteSchema,
   MemberPatchSchema,
   R,
+  TransferInputSchema,
 } from "@oa/shared";
 import type { Context } from "hono";
-import { requireUser } from "../auth/authz.js";
+import { caller, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
@@ -18,12 +19,26 @@ import {
   patchMember,
   removeMember,
 } from "../services/members.js";
+import {
+  requireSpaces,
+  transferPersonal,
+  transferSummary,
+} from "../services/spaces.js";
 import type { AppType } from "./index.js";
 
 /** Owner/admin only: 401 anonymous, 404 for everyone else (route hidden). */
 export function requireManager(c: Context<AppEnv>): Member {
   const user = requireUser(c);
   if (!orgCan(user, "members.manage"))
+    throw new ApiError("not_found", "Not found");
+  return user;
+}
+
+/** An uncapped org owner or admin with spaces on (P3 T10), else 404. */
+function requireDeparted(c: Context<AppEnv>): Member {
+  requireSpaces(c.env);
+  const user = requireUser(c);
+  if (!orgCan(user, "transfer.departed", { cap: capOfCaller(caller(c)) }))
     throw new ApiError("not_found", "Not found");
   return user;
 }
@@ -70,6 +85,27 @@ export function mountMembers(app: AppType): void {
       userActor(actor.id),
     );
     return c.body(null, 204);
+  });
+
+  // A departed member's personal artifacts (P3 T10). Literal so Hono infers
+  // :id; must equal R.memberTransfer(id).
+  app.get("/api/v1/members/:id/transfer", async (c) => {
+    requireDeparted(c);
+    return c.json(await transferSummary(c.env, c.req.param("id")));
+  });
+
+  app.post("/api/v1/members/:id/transfer", async (c) => {
+    const actor = requireDeparted(c);
+    const input = await jsonBody(c, TransferInputSchema);
+    return c.json(
+      await transferPersonal(
+        c.env,
+        actor,
+        c.req.param("id"),
+        input,
+        execCtx(c),
+      ),
+    );
   });
 
   // Literal so Hono infers :id; must equal R.memberIdentity(id, "google").
