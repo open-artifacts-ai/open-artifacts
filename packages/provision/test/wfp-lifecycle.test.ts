@@ -389,8 +389,9 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     sleep: clock.sleep,
     healthTimeoutMs: 10_000,
     turnstile: TS,
-    // T8 M1: google needs the broker, so the lifecycle suite runs with it on.
-    brokerEnabled: true,
+    // T8 M1: google needs the broker, so the lifecycle suite runs with it on
+    // (staging only: prod has no broker Google client yet).
+    brokerEnabled: env === "staging",
     ...over,
   });
   const mk = (over: Partial<WfpOptions> = {}) => {
@@ -2869,13 +2870,11 @@ describe("fix round 3 (T8): the env's broker Google client id", () => {
       text: STAGING_CLIENT,
     });
     const b = keep(
-      await s
-        .mk({ brokerEnabled: true })
-        .create(
-          input("acme", {
-            vars: { ...GOOGLE, GOOGLE_CLIENT_ID: STAGING_CLIENT },
-          }),
-        ),
+      await s.mk({ brokerEnabled: true }).create(
+        input("acme", {
+          vars: { ...GOOGLE, GOOGLE_CLIENT_ID: STAGING_CLIENT },
+        }),
+      ),
     );
     expect(plainOf(s, b.id, "GOOGLE_CLIENT_ID")?.text).toBe(STAGING_CLIENT);
   });

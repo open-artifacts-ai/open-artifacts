@@ -81,6 +81,7 @@ export const HOSTED_ADDED = [
   "AUTH_DOMAINS",
   "AUTH_DOMAIN_JOIN",
   "AUTH_BROKER_URL",
+  "GOOGLE_CLIENT_ID",
   "NIGHTLY_PUBKEY",
   "TEST_HOOKS",
   "TEST_HOOK_KEY",
@@ -115,6 +116,12 @@ export const HOSTED_VARS: Record<string, (v: string) => string | undefined> = {
     v === "invite"
       ? undefined
       : 'hosted installs must use "invite" until domain ownership is proven (#572)',
+  // Hosted: only the env's broker sign-in client (wfp.ts brokerVars checks
+  // the exact value). Public; GOOGLE_CLIENT_SECRET is never a hosted var.
+  GOOGLE_CLIENT_ID: (v) =>
+    /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(v)
+      ? undefined
+      : "expected a Google OAuth client id",
   AUTH_BROKER_URL: (v) =>
     /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?(?:\/\S*)?$/i.test(v)
       ? undefined
@@ -152,6 +159,7 @@ export function hostedVarProblem(k: string, v: string): string | undefined {
 }
 
 const PASSTHROUGH = [
+  "GOOGLE_CLIENT_ID",
   "EMAIL_DAILY_CAP",
   "CODE_EMAILS_PER_DAY",
   "AUTH_PROVIDERS",

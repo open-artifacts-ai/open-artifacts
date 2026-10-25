@@ -713,6 +713,13 @@ describe("broker: on exactly when the vars turn google on", () => {
         (script?.metadata.bindings ?? []) as { name: string; text?: string }[]
       ).find((b) => b.name === "AUTH_BROKER_URL")?.text,
     ).toBe("https://auth.open-artifacts-staging.app");
+    expect(
+      (
+        (script?.metadata.bindings ?? []) as { name: string; text?: string }[]
+      ).find((b) => b.name === "GOOGLE_CLIENT_ID")?.text,
+    ).toBe(
+      "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
+    );
 
     // update-vars keeps the registry in step (the broker stays on).
     w.lines.length = 0;

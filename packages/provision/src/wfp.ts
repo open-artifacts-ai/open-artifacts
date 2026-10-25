@@ -144,6 +144,18 @@ export const HOSTED_DOMAINS: Readonly<
   }),
 });
 
+/**
+ * The env's broker Google sign-in client (public), equal to
+ * apps/auth-broker/wrangler.jsonc's env.<env>.vars.GOOGLE_CLIENT_ID (a test
+ * pins it). null: that env has no broker client yet.
+ */
+export const BROKER_GOOGLE_CLIENT_ID: Readonly<Record<Env, string | null>> =
+  Object.freeze({
+    staging:
+      "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
+    prod: null,
+  });
+
 /** The platform HOSTS KV namespace title (host -> install id). */
 export const hostsKvTitle = (env: Env): string => platformNames(env).hosts;
 
@@ -950,17 +962,29 @@ export class WfpProvisioner {
    */
   private brokerVars(vars: Record<string, string>): Record<string, string> {
     if (!this.o.brokerEnabled) return vars;
+    const client = BROKER_GOOGLE_CLIENT_ID[this.env];
+    if (!client)
+      throw new ProvisionRefused(
+        `the broker is on but there is no ${this.env} broker Google client: no prod Google client yet`,
+      );
     const want = `https://auth.${HOSTED_DOMAINS[this.env].app}`;
     if (vars.AUTH_BROKER_URL !== undefined && vars.AUTH_BROKER_URL !== want)
       throw new ProvisionRefused(
         `AUTH_BROKER_URL must be ${want}, the ${this.env} broker`,
       );
-    return { ...vars, AUTH_BROKER_URL: want };
+    if (vars.GOOGLE_CLIENT_ID !== undefined && vars.GOOGLE_CLIENT_ID !== client)
+      throw new ProvisionRefused(
+        `GOOGLE_CLIENT_ID must be ${client}, the ${this.env} broker's client`,
+      );
+    return { ...vars, AUTH_BROKER_URL: want, GOOGLE_CLIENT_ID: client };
   }
 
   /** M1: google with the broker off is refused (after the other var checks). */
   private checkGoogleBroker(vars: Record<string, string>): void {
-    if (!this.o.brokerEnabled && googleNewlyEnabled({}, vars))
+    if (
+      !this.o.brokerEnabled &&
+      (googleNewlyEnabled({}, vars) || vars.GOOGLE_CLIENT_ID !== undefined)
+    )
       throw new ProvisionRefused(
         "google sign-in on a hosted install needs the sign-in broker (brokerEnabled)",
       );
