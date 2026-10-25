@@ -14,7 +14,7 @@ import {
 } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { accessLevel, callerOf } from "../src/auth/authz.js";
-import { SyncEngine } from "../src/directory/sync.js";
+import { BACKOFF_MIN_MS, SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import {
   THAW_CHUNK,
@@ -737,6 +737,36 @@ describe("tier transitions", () => {
     await tick(at + 2 * MIN, business);
     expect(Number(await revokedAt(x))).toBeGreaterThan(pre);
     expect(await kv("revoke.pending")).toBeNull();
+  });
+
+  it("sync off: an owed close re-arms the alarm until it is done, then stops", async () => {
+    const off = { ...base, FEATURES: "spaces" } as Env;
+    const x = await seedUser(uniq("owed-off"), "member");
+    await inDo((s) =>
+      s.storage.sql.exec(
+        "insert into kv (k, v) values ('revoke.pending', ?)",
+        JSON.stringify([x]),
+      ),
+    );
+    const pre = Number((await revokedAt(x)) ?? 0);
+    const t = Date.now();
+    // Fails once: still owed, and the alarm re-arms (sync off or not).
+    await inDo(async (s) => {
+      const en = new SyncEngine(off, s.storage);
+      en.revokeLive = async () => {
+        throw new Error("presence down");
+      };
+      await en.alarm(t);
+    });
+    expect(await kv<string[]>("revoke.pending")).toEqual([x]);
+    expect(await inDo((s) => s.storage.getAlarm())).toBe(t + BACKOFF_MIN_MS);
+    // The next alarm revokes and clears it; nothing re-arms after.
+    await inDo((s) => s.storage.deleteAlarm());
+    await tick(t + BACKOFF_MIN_MS, off);
+    expect(Number(await revokedAt(x))).toBeGreaterThan(pre);
+    expect(await kv("revoke.pending")).toBeNull();
+    expect(await kv("revoke.tries")).toBeNull();
+    expect(await inDo((s) => s.storage.getAlarm())).toBeNull();
   });
 
   it("frozen still suspends departed users", async () => {

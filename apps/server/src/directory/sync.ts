@@ -339,8 +339,13 @@ export class SyncEngine {
   private owed(): PendingRevokes {
     const K = "revoke.pending";
     const cur = () => new Set(this.get<string[]>(K) ?? []);
-    const set = (s: Set<string>) =>
-      s.size ? this.put(K, [...s]) : this.del(K);
+    const set = (s: Set<string>) => {
+      if (s.size) this.put(K, [...s]);
+      else {
+        this.del(K);
+        this.del("revoke.tries");
+      }
+    };
     // Held by this thaw only: users already owed stay owed whatever it finds.
     let held = new Set<string>();
     return {
@@ -365,7 +370,10 @@ export class SyncEngine {
     try {
       await this.revokeLive(ids);
       this.owed().release(ids);
+      this.del("revoke.tries");
     } catch (e) {
+      // Retried by the re-armed alarm, each time later (backoffMs).
+      this.put("revoke.tries", (this.get<number>("revoke.tries") ?? 0) + 1);
       logError("directory_thaw_revoke", e);
     }
   }
@@ -545,7 +553,9 @@ export class SyncEngine {
   /**
    * One alarm: picks a lane (fast first when due), plans its run when none is
    * in flight, then works through steps until one Google call was made.
-   * Whatever happens, the next alarm is set (finally), unless sync is off.
+   * Whatever happens, the next alarm is set (finally), unless sync is off
+   * and no socket close is owed: owed closes re-arm it (backing off from
+   * BACKOFF_MIN_MS to BACKOFF_MAX_MS) in any mode until they are done.
    */
   async alarm(now = Date.now()): Promise<void> {
     let next: number | null = now + FAST_MS;
@@ -555,6 +565,14 @@ export class SyncEngine {
       logError("directory_sync_alarm", e);
       next = now + BACKOFF_MIN_MS;
     } finally {
+      try {
+        if (this.get<string[]>("revoke.pending")?.length) {
+          const retry = now + backoffMs(this.get<number>("revoke.tries") ?? 1);
+          next = next === null ? retry : Math.min(next, retry);
+        }
+      } catch (e) {
+        logError("directory_thaw_revoke", e);
+      }
       if (next !== null)
         await this.storage
           .setAlarm(next)
