@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.47.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.46.0...v0.47.0) (2026-10-25)
+
+
+### Features
+
+* **dashboard:** handle the 409 conflict on Details, Move and Share visibility ([#586](https://github.com/open-artifacts-ai/open-artifacts/issues/586)) ([44978df](https://github.com/open-artifacts-ai/open-artifacts/commit/44978dfabc30ee8a8bb10fea69676ee98cf81785))
+* **provision:** carry the install's domains into both registry copies ([#582](https://github.com/open-artifacts-ai/open-artifacts/issues/582)) ([c9d12f6](https://github.com/open-artifacts-ai/open-artifacts/commit/c9d12f6aafe791d1c507f1a217ad24df1372efa1))
+* **server:** DirectorySync polling, reconcile and health (P3 T13) ([#575](https://github.com/open-artifacts-ai/open-artifacts/issues/575)) ([f1180d3](https://github.com/open-artifacts-ai/open-artifacts/commit/f1180d3a174a4e7b225a64a7c94d0e89264e4c37))
+* **settings:** agent identity cards for connected agents ([#587](https://github.com/open-artifacts-ai/open-artifacts/issues/587)) ([d6847e5](https://github.com/open-artifacts-ai/open-artifacts/commit/d6847e5da47fc9b2979ee087eafdf3387e5fe94e))
+* **settings:** the directory connect confirm step ([#580](https://github.com/open-artifacts-ai/open-artifacts/issues/580)) ([4d76fe2](https://github.com/open-artifacts-ai/open-artifacts/commit/4d76fe253580d1814d4498ee4f92cfb28bf64fec))
+
+
+### Bug Fixes
+
+* **settings:** a non-owner's pending line reads "Expires", not "Confirm by" ([#588](https://github.com/open-artifacts-ai/open-artifacts/issues/588)) ([7f94aa8](https://github.com/open-artifacts-ai/open-artifacts/commit/7f94aa8a52cf7bbfc26484bebdb6a2710a8b6e9e))
+
 ## [0.46.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.45.0...v0.46.0) (2026-10-24)
 
 
