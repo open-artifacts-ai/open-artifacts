@@ -490,12 +490,15 @@ describe("break-glass", () => {
     const fresh = await cookieFor(owner.id, { age: MIN });
     expect((await call(R.artifacts, fresh)).status).toBe(401);
     expect((await call(R.members, fresh)).status).toBe(401);
-    expect((await call(R.me, fresh)).status).toBe(401);
+    const meR = await call(R.me, fresh);
+    expect(meR.status).toBe(401);
+    // Me tells the owner to use break-glass (and audits that use).
+    expect((await errOf(meR)).code).toBe("break_glass_required");
     expect((await call(R.artifact(art), fresh)).status).toBe(404);
     expect((await call(R.dataCollection(art, "notes"), fresh)).status).toBe(
       404,
     );
-    expect(await breakGlassAudits(owner.id)).toBe(0);
+    expect(await breakGlassAudits(owner.id)).toBe(1);
   });
 
   it("break-glass: one audit per route a minute, the first always; one email per session, even for parallel first requests", async () => {

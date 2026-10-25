@@ -28,6 +28,7 @@ export const ERROR_CODES = [
   "directory_mapping_off",
   "member_synced",
   "owner_only",
+  "break_glass_required",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -83,6 +84,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   member_synced: 409,
   /** Resetting or unlinking an org admin's Google identity: only the org owner may (it signs a peer admin out). */
   owner_only: 403,
+  /** GET R.me for the org owner refused by a directory customer_mismatch; details BreakGlassRequiredDetails { fresh }. */
+  break_glass_required: 401,
 };
 
 export const QUOTA_MESSAGE =
