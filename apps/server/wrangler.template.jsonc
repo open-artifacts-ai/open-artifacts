@@ -30,7 +30,8 @@
   "durable_objects": {
     "bindings": [
       { "name": "ARTIFACT_RUNTIME", "class_name": "ArtifactRuntime" },
-      { "name": "USER_PRESENCE", "class_name": "UserPresence" }
+      { "name": "USER_PRESENCE", "class_name": "UserPresence" },
+      { "name": "DIRECTORY_SYNC", "class_name": "DirectorySync" }
     ]
   },
   "migrations": [
@@ -48,6 +49,11 @@
       "name": "RL_AUTH",
       "namespace_id": "1002",
       "simple": { "limit": 20, "period": 60 }
+    },
+    {
+      "name": "RL_DIRECTORY",
+      "namespace_id": "1003",
+      "simple": { "limit": 30, "period": 60 }
     }
   ],
   "triggers": { "crons": ["17 3 * * *"] },

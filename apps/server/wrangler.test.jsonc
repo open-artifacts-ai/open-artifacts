@@ -35,6 +35,11 @@
       "name": "RL_AUTH",
       "namespace_id": "1002",
       "simple": { "limit": 20, "period": 60 }
+    },
+    {
+      "name": "RL_DIRECTORY",
+      "namespace_id": "1003",
+      "simple": { "limit": 30, "period": 60 }
     }
   ],
   "vars": {

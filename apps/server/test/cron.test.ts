@@ -108,6 +108,7 @@ describe("purgeDeleted", () => {
       "fulfilled", // sweepLoginCodes (P2)
       "fulfilled", // checkLatestRelease (B3)
       "fulfilled", // expirePending (P3 T12 directory confirm)
+      "fulfilled", // kickSync (P3 T13; a no-op with sync off)
     ]);
     expect(
       await count("select count(*) n from artifacts where id = ?", gone),

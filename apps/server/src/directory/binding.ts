@@ -195,7 +195,9 @@ export async function initialBinding(
   let done = false;
   try {
     for (let i = 0; i < INITIAL_PAGES; i++) {
-      const page = await listUsers(token, customerId, cursor ?? undefined);
+      const page = await listUsers(token, customerId, {
+        pageToken: cursor ?? undefined,
+      });
       await bindPage(env, page.users, { tenant, allowEmail, ctx });
       cursor = page.nextPageToken;
       if (!cursor) {
