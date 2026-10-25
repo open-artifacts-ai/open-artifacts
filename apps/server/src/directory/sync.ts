@@ -1383,7 +1383,11 @@ export class SyncEngine {
         unhealthySince: null,
         lastSuccessAt: stamp && groups ? now : h.lastSuccessAt,
         lastError: null,
-        nextRunAt: stamp ? Math.min(nextFast, nextRec) : h.nextRunAt,
+        // Frozen: no stamp, but each reconcile still moves the next run (hourly).
+        nextRunAt:
+          stamp || (!groups && lane === "rec")
+            ? Math.min(nextFast, nextRec)
+            : h.nextRunAt,
         alertedAt: null,
         customerMismatch: null,
         backoffN: 0,

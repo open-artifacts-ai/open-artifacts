@@ -117,6 +117,21 @@ const RECORD_FROZEN_DELETE = `insert into frozen_edits (space_id, user_id, at, m
   where exists (select 1 from space_members where space_id = ?1 and user_id = ?2
     and (source = 'manual' or ?5 = 1) and (?4 = 1 or role <> 'manager'))
   on conflict (space_id, user_id) do update set kind = 'delete'`;
+// - Sync live again (before the thaw ran): an admin's manual write or
+//   removal supersedes the pending outcome, so the thaw can't undo it. Only
+//   when the write applies (checked before it, as UPSERT_MANUAL / the delete
+//   decide). The record stays so the thaw still derives the synced row again
+//   (a frozen override deleted it).
+//   Write: role ?3, ?4 = 1 for an org admin; the manual row is kept.
+const SUPERSEDE_BY_WRITE = `update frozen_edits set kind = 'manual'
+  where space_id = ?1 and user_id = ?2 and kind <> 'manual'
+    and not exists (select 1 from space_members where space_id = ?1 and user_id = ?2
+      and source = 'manual' and (role = ?3 or (?4 = 0 and role = 'manager')))`;
+//   Removal: ?3 = 1 for an org admin; final.
+const SUPERSEDE_BY_DELETE = `update frozen_edits set kind = 'delete'
+  where space_id = ?1 and user_id = ?2 and kind <> 'delete'
+    and exists (select 1 from space_members where space_id = ?1 and user_id = ?2
+      and source = 'manual' and (?3 = 1 or role <> 'manager'))`;
 
 const notFound = () => new ApiError("not_found", "Not found");
 const personalError = (what: string) =>
@@ -879,7 +894,7 @@ export async function putSpaceMember(
                   role,
                 ),
               ]
-            : []),
+            : [stmt(env.DB, SUPERSEDE_BY_WRITE).bind(id, userId, role, a)]),
           stmt(env.DB, UPSERT_MANUAL).bind(id, userId, role, Date.now(), a),
         ]),
     stmt(env.DB, ROWS_OF).bind(id, userId),
@@ -963,7 +978,7 @@ export async function deleteSpaceMember(
             both ? 1 : 0,
           ),
         ]
-      : []),
+      : [stmt(env.DB, SUPERSEDE_BY_DELETE).bind(id, userId, a)]),
     stmt(env.DB, `delete from space_members where ${rows}`).bind(...args),
     stmt(env.DB, ROWS_OF).bind(id, userId),
   ]);

@@ -567,10 +567,55 @@ describe("tier transitions", () => {
     const after = await st(team);
     expect(after.lastSuccessAt).toBe(before.lastSuccessAt);
     expect(after.staleAt).toBe(before.staleAt);
+    // The next run still moves on while frozen.
+    expect(Date.parse(after.nextRunAt ?? "")).toBeGreaterThan(
+      Date.parse(before.nextRunAt ?? ""),
+    );
     // Back on: the next reconcile that reads groups stamps it.
     await drain(t0 + 183 * MIN, business);
     expect((await st(business)).lastSuccessAt).not.toBe(before.lastSuccessAt);
   });
+
+  it.each([
+    ["DELETE", null],
+    ["downgrade", "viewer"],
+  ] as const)(
+    "a live admin %s after sync returns, before the thaw, is not undone",
+    async (_what, role) => {
+      const business = tierEnv("business");
+      const team = tierEnv("team");
+      const us = dirUsers(1, "live");
+      const gid = `grp-live-${crypto.randomUUID()}`;
+      const { space } = await world(gid, [us[0]?.id as string], "viewer");
+      const t0 = Date.now();
+      await connected(business, t0);
+      const x = await uidOf(us[0]?.id as string);
+      const path = R.spaceMember(space, x);
+      // Pre-freeze manual editor; frozen override to manager.
+      expect(
+        (await call(business, path, owner.cookie, "PUT", { role: "editor" }))
+          .status,
+      ).toBe(200);
+      expect(
+        (await call(team, path, owner.cookie, "PUT", { role: "manager" }))
+          .status,
+      ).toBe(200);
+      // Sync back on; before the thaw, an admin removes or lowers by hand.
+      const r =
+        role === null
+          ? await call(business, path, owner.cookie, "DELETE")
+          : await call(business, path, owner.cookie, "PUT", { role });
+      expect(r.ok).toBe(true);
+      await drain(t0 + 61 * MIN, business);
+      const sync = { source: "sync", role: "viewer" };
+      expect(await rowsOf(space, x)).toEqual(
+        role === null ? [sync] : [{ source: "manual", role }, sync],
+      );
+      expect(await one("select count(*) as n from frozen_edits")).toEqual({
+        n: 0,
+      });
+    },
+  );
 
   it("frozen still suspends departed users", async () => {
     const business = tierEnv("business");
