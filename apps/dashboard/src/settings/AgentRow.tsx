@@ -39,15 +39,19 @@ const OS: Record<string, string> = {
 };
 const day = new Intl.DateTimeFormat("en", { month: "short", day: "numeric" });
 
-/** Rounded-square initials on the connection's own hue (presence palette). */
+/**
+ * Rounded-square initials of the agent's name (never the label) on the
+ * connection's own hue: installs of one agent differ by colour.
+ */
 function Face({ c }: { c: OAuthClient }) {
   return (
     <span
       aria-hidden="true"
+      data-face
       className="grid size-8 flex-none place-items-center rounded-md text-[12px] font-semibold text-white"
       style={{ backgroundColor: `hsl(${avatarHue(c.grantId)} 45% 30%)` }}
     >
-      {initials(c.label ?? c.clientName, "")}
+      {initials(c.clientName, "")}
     </span>
   );
 }
@@ -100,8 +104,14 @@ export function AgentRow({
       <div className="grid min-w-0 flex-1 gap-[2px] text-[length:var(--oa-text-sm)]">
         {editing ? (
           <div className="grid gap-[var(--oa-space-1)]">
+            <label
+              htmlFor={`${c.grantId}-label`}
+              className="text-[length:var(--oa-text-sm)] font-medium"
+            >
+              Your label
+            </label>
             <Input
-              aria-label="Your label"
+              id={`${c.grantId}-label`}
               autoFocus
               value={draft}
               aria-invalid={error ? true : undefined}
@@ -129,6 +139,32 @@ export function AgentRow({
                 {error}
               </p>
             )}
+            {/* Enter and Esc stay as shortcuts. */}
+            <div className="flex gap-[var(--oa-space-2)]">
+              <Button
+                size="sm"
+                disabled={label.isPending}
+                aria-busy={label.isPending || undefined}
+                onClick={save}
+              >
+                Save
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={label.isPending}
+                onClick={() => setEditing(false)}
+              >
+                Cancel
+              </Button>
+            </div>
+            {/* What the label is for stays in view while you type. */}
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-[var(--oa-space-2)] gap-y-[2px]">
+              <span className={`min-w-0 truncate ${muted}`} title={reported}>
+                {reported}
+              </span>
+              <Reported />
+            </div>
           </div>
         ) : (
           <div className="flex min-w-0 flex-wrap items-baseline gap-x-[var(--oa-space-2)] gap-y-[2px]">
@@ -229,7 +265,7 @@ export function AgentRow({
             {versions > 0 && (
               <DropdownMenuItem asChild>
                 <AppLink href={`/?agent=${encodeURIComponent(c.clientName)}`}>
-                  View published versions
+                  View versions from {c.clientName}
                 </AppLink>
               </DropdownMenuItem>
             )}

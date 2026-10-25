@@ -103,6 +103,14 @@ describe("labels", () => {
     fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
     const box = within(r).getByRole("textbox", { name: "Your label" });
     expect(r).toHaveTextContent("Only you see it. Up to 60 characters.");
+    // A visible field label, Save and Cancel, and the agent's line stays.
+    expect(
+      within(r).getByText("Your label", { selector: "label" }),
+    ).toBeVisible();
+    expect(within(r).getByRole("button", { name: "Save" })).toBeVisible();
+    expect(within(r).getByRole("button", { name: "Cancel" })).toBeVisible();
+    expect(within(r).getByText("Example MCP client 1.2.0")).toBeVisible();
+    expect(within(r).getByText("reported by the agent")).toBeVisible();
     fireEvent.change(box, { target: { value: "  Work laptop  " } });
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() =>
@@ -163,13 +171,55 @@ describe("labels", () => {
   });
 });
 
+describe("the face", () => {
+  it("initials come from the agent's name, not the label", async () => {
+    mount("/settings/agents");
+    const { server } = await import("./harness");
+    server.use(
+      serve([
+        { ...BASE, clientName: "Claude Code", label: "Studio work laptop" },
+      ]),
+    );
+    const r = await rowOf("Studio work laptop");
+    expect(r.querySelector("[data-face]")).toHaveTextContent("CC");
+  });
+});
+
+describe("labels, with the buttons", () => {
+  it("Save saves and Cancel cancels", async () => {
+    const patches = calls("PATCH");
+    mount("/settings/agents");
+    let r = await rowOf("Example MCP client 1.2.0");
+    fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
+    fireEvent.click(within(r).getByRole("button", { name: "Cancel" }));
+    expect(within(r).queryByRole("textbox")).toBeNull();
+    expect(patches).toEqual([]);
+    r = await rowOf("Example MCP client 1.2.0");
+    fireEvent.click(within(r).getByRole("button", { name: "Add label" }));
+    fireEvent.change(within(r).getByRole("textbox", { name: "Your label" }), {
+      target: { value: "Desk" },
+    });
+    fireEvent.click(within(r).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(
+        patches.find((c) => c.path === R.oauthClient(BASE.grantId))?.body,
+      ).toEqual({ label: "Desk" }),
+    );
+  });
+});
+
 describe("the menu and the empty state", () => {
   it("View published versions and Revoke… (the existing confirm)", async () => {
     mount("/settings/agents");
     const menu = await openMenu(await rowOf("Example MCP client 1.2.0"));
-    expect(
-      within(menu).getByRole("menuitem", { name: "View published versions" }),
-    ).toBeVisible();
+    // The server filters by agent name only (#589): the item says so.
+    const view = within(menu).getByRole("menuitem", {
+      name: "View versions from Example MCP client",
+    });
+    expect(view).toHaveAttribute(
+      "href",
+      `/?agent=${encodeURIComponent("Example MCP client")}`,
+    );
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Revoke…" }));
     expect(
       await screen.findByRole("alertdialog", {
