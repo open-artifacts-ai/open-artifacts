@@ -123,7 +123,7 @@ The providers that process data for us:
 | Google | Sign-in, and the Google Workspace directory if your organization connects it |
 | GitHub | Checking for new Open Artifacts releases; no personal data is sent |
 
-Fonts are served by us, not by a third party. **[TODO: confirm the self-hosted fonts have shipped before publishing. Add the entity's own processors, for example billing, once they exist.]**
+Fonts are served by us, not by a third party. **[TODO: add the entity's own processors, for example billing, once they exist.]**
 
 ## How long we keep it
 
