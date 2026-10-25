@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
+  CONTENT_KEY_LABELS,
+  type ContentKeyLabel,
   contentKey,
   deriveKey,
   directoryKey,
@@ -7,6 +9,8 @@ import {
 } from "../src/auth/keys.js";
 
 const secret = { SESSION_SECRET: "x".repeat(32) };
+const isContent = (l: string): l is ContentKeyLabel =>
+  (CONTENT_KEY_LABELS as readonly string[]).includes(l);
 
 describe("deriveKey", () => {
   test("is pinned: HKDF-SHA256, salt open-artifacts/hkdf/v1, 32 bytes", async () => {
@@ -25,7 +29,7 @@ describe("deriveKey", () => {
     };
     const ks = await Promise.all(
       KEY_LABELS.map((l) =>
-        l === "oa:content-url" || l === "oa:upload"
+        isContent(l)
           ? contentKey(both, l)
           : l === "oa:directory-token"
             ? directoryKey(both)
@@ -75,5 +79,24 @@ describe("deriveKey", () => {
     await expect(
       deriveKey({ SESSION_SECRET: "short" }, "oa:session"),
     ).resolves.toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
+  test("refuses every content label, so content subkeys only come from contentKey", async () => {
+    expect(CONTENT_KEY_LABELS).toEqual(["oa:content-url", "oa:upload"]);
+    for (const l of CONTENT_KEY_LABELS)
+      await expect(
+        // Typed out; cast past it to check the runtime guard.
+        deriveKey(secret, l as unknown as Parameters<typeof deriveKey>[1]),
+      ).rejects.toThrow(`${l} is a content key label; use contentKey`);
+  });
+
+  test("session labels still derive and contentKey is unaffected", async () => {
+    for (const l of KEY_LABELS) {
+      if (isContent(l) || l === "oa:directory-token") continue;
+      await expect(deriveKey(secret, l)).resolves.toMatch(/^[A-Za-z0-9_-]+$/);
+    }
+    const c = { CONTENT_SIGNING_KEY: "c".repeat(32) };
+    for (const l of CONTENT_KEY_LABELS)
+      await expect(contentKey(c, l)).resolves.toMatch(/^[A-Za-z0-9_-]+$/);
   });
 });

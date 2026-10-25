@@ -7,6 +7,12 @@ import { b64urlEncode } from "../util/crypto.js";
  * base64url(HKDF-SHA256(ikm = SESSION_SECRET, salt = HKDF_SALT, info = label, 32 bytes)).
  * The result is the `key` string for util/crypto's hmacSign/hmacVerify.
  */
+/**
+ * The labels keyed by CONTENT_SIGNING_KEY (contentKey), so a content token
+ * and an upload signature can never verify as each other. deriveKey refuses
+ * every one of them, so a new content label is guarded by adding it here.
+ */
+export const CONTENT_KEY_LABELS = ["oa:content-url", "oa:upload"] as const;
 export const KEY_LABELS = [
   "oa:session",
   "oa:oidc-state",
@@ -16,17 +22,15 @@ export const KEY_LABELS = [
   "oa:audit-cursor",
   // P3 directory connect: the state cookie binding a consent to its browser.
   "oa:directory-state",
-  // From CONTENT_SIGNING_KEY instead (contentKey below), so a content token
-  // and an upload signature can never verify as each other.
-  "oa:content-url",
-  "oa:upload",
+  // From CONTENT_SIGNING_KEY instead (contentKey below).
+  ...CONTENT_KEY_LABELS,
   // From DIRECTORY_TOKEN_KEY instead (directoryKey below): the AES-GCM key
   // sealing the directory refresh token at rest.
   "oa:directory-token",
 ] as const;
 export type KeyLabel = (typeof KEY_LABELS)[number];
 /** The labels keyed by CONTENT_SIGNING_KEY (contentKey); oa:directory-token is DIRECTORY_TOKEN_KEY's; every other label is SESSION_SECRET's. */
-export type ContentKeyLabel = "oa:content-url" | "oa:upload";
+export type ContentKeyLabel = (typeof CONTENT_KEY_LABELS)[number];
 type SessionKeyLabel = Exclude<
   KeyLabel,
   ContentKeyLabel | "oa:directory-token"
@@ -35,6 +39,7 @@ type SessionKeyLabel = Exclude<
 const HKDF_SALT = "open-artifacts/hkdf/v1";
 const enc = new TextEncoder();
 const cache = new Map<string, Promise<string>>();
+const contentLabels: ReadonlySet<string> = new Set(CONTENT_KEY_LABELS);
 
 async function derive(secret: string, label: KeyLabel): Promise<string> {
   const ikm = await crypto.subtle.importKey(
@@ -60,12 +65,18 @@ async function derive(secret: string, label: KeyLabel): Promise<string> {
 /**
  * HKDF accepts a secret of any length, so a short SESSION_SECRET still gets
  * derived keys (cookieKeys logs a one-time warning; it must not break
- * sign-in). Empty or missing is the only error.
+ * sign-in). Empty or missing is the error for the secret; a content label
+ * (typed out, but checked at runtime too) rejects, so content subkeys only
+ * ever come from CONTENT_SIGNING_KEY via contentKey.
  */
 export function deriveKey(
   env: Pick<Env, "SESSION_SECRET">,
   label: SessionKeyLabel,
 ): Promise<string> {
+  if (contentLabels.has(label))
+    return Promise.reject(
+      new Error(`${label} is a content key label; use contentKey`),
+    );
   const secret = env.SESSION_SECRET;
   if (typeof secret !== "string" || secret.length === 0)
     return Promise.reject(new Error("SESSION_SECRET is not set"));
