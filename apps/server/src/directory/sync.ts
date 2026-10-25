@@ -8,6 +8,7 @@ import {
 import type { Env } from "../env.js";
 import { logError, logInfo, logWarn } from "../log.js";
 import { type AuditActor, audit } from "../services/audit.js";
+import { revokeUsersLive } from "../runtime/revoke.js";
 import { getSettings, setUserStatus } from "../services/members.js";
 import { directoryMode } from "../services/spaces.js";
 import { applyGroupDiff, applyUsers } from "./apply.js";
@@ -271,6 +272,9 @@ const UPSERT_CHILD = `insert into directory_groups (group_id, email, parent_ids)
       else json_insert(directory_groups.parent_ids, '$[#]', ?3) end
   where directory_groups.email <> excluded.email
     or not exists (select 1 from json_each(directory_groups.parent_ids) where value = ?3)`;
+/** Every active synced user (T18's customer_mismatch socket close). */
+const SYNCED_ACTIVE = `select u.id from identities i join users u on u.id = i.user_id
+  where i.provider = 'google' and i.directory_bound = 1 and u.status = 'active'`;
 const OWNERS = `select email from users where role = 'owner' and status = 'active'`;
 
 /** A reset() landed since this alarm started: it writes nothing more. */
@@ -1493,6 +1497,21 @@ export class SyncEngine {
     ]);
     logWarn("directory_customer_mismatch");
     if (entering) {
+      // Synced users now fail closed (T18: getUser and the content load), so
+      // their live sockets close too. Never guarded: the state committed.
+      try {
+        const { results } = await stmt(this.env.DB, SYNCED_ACTIVE).all<{
+          id: string;
+        }>();
+        await revokeUsersLive(
+          this.env,
+          results.map((r) => r.id),
+          "directory customer_mismatch",
+          this.ctx,
+        );
+      } catch (err) {
+        logError("directory_mismatch_close", err);
+      }
       this.guard();
       await this.alertOwners("customer_mismatch");
     }

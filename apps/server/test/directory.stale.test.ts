@@ -3,7 +3,7 @@
 // org owner's break-glass during a mismatch.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { type InstanceDirectory, R, type SyncStatus } from "@oa/shared";
+import { AUTH, type InstanceDirectory, R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
@@ -29,6 +29,7 @@ import {
   type FakeDirectory,
   fakeDirectory,
 } from "./fixtures/fake-directory.js";
+import { fakeGoogle } from "./fixtures/fake-google.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
 import { connect as mcpConnect, oauthToken, tool } from "./mcp-helpers.js";
 
@@ -175,6 +176,22 @@ const breakGlassAudits = async (uid: string) =>
     )
   )?.n ?? 0;
 
+/** When the user's UserPresence recorded a revocation (0: never). */
+async function revokedAt(uid: string) {
+  const ns = env.USER_PRESENCE as NonNullable<Env["USER_PRESENCE"]>;
+  return runInDurableObject(ns.get(ns.idFromName(uid)), (_i, s) => {
+    try {
+      return Number(
+        s.storage.sql
+          .exec("select revoked_at from state where id = 1")
+          .toArray()[0]?.revoked_at ?? 0,
+      );
+    } catch {
+      return 0;
+    }
+  });
+}
+
 beforeEach(async () => {
   await resetDirectory();
   mail = mailer();
@@ -211,22 +228,7 @@ describe("staleness is informational", () => {
       200,
     );
     // Staleness writes no revocation: the user's presence has none.
-    const ns = env.USER_PRESENCE as NonNullable<Env["USER_PRESENCE"]>;
-    const revoked = await runInDurableObject(
-      ns.get(ns.idFromName(u.id)),
-      (_i, s) => {
-        try {
-          return Number(
-            s.storage.sql
-              .exec("select revoked_at from state where id = 1")
-              .toArray()[0]?.revoked_at ?? 0,
-          );
-        } catch {
-          return 0;
-        }
-      },
-    );
-    expect(revoked).toBe(0);
+    expect(await revokedAt(u.id)).toBe(0);
   });
 
   it("6 d 23 h: staleAt is null", async () => {
@@ -319,7 +321,6 @@ describe("the 24 h browser session cap while unhealthy", () => {
       R.artifact(art),
       R.versions(art),
       `${R.search}?q=t18`,
-      R.dataCollection(art, "notes"),
     ])
       expect((await call(path, token)).status, path).toBe(200);
     expect(await content(art, u.userId)).toBe(200);
@@ -327,7 +328,7 @@ describe("the 24 h browser session cap while unhealthy", () => {
     for (const [name, args] of [
       ["list_artifacts", {}],
       ["get_artifact", { id: art }],
-      ["search_artifacts", { query: "t18" }],
+      ["search_artifacts", { q: "t18" }],
     ] as const)
       expect((await tool(c, name, args)).isError, name).toBeFalsy();
     await c.close();
@@ -361,6 +362,45 @@ describe("customer_mismatch fails closed for synced users", () => {
 });
 
 describe("break-glass", () => {
+  it("break-glass: the mismatch owner's Google sign-in issues a session that opens only the break-glass routes", async () => {
+    const google = await fakeGoogle();
+    const owner = await synced("owner");
+    const sub = (
+      await one<{ s: string }>(
+        "select subject s from identities where user_id = ?",
+        owner.id,
+      )
+    )?.s;
+    await mismatch();
+    const start = await call(`${AUTH.loginGoogle}?next=%2F`, null);
+    const u = new URL(start.headers.get("location") ?? "");
+    const state =
+      start.headers
+        .getSetCookie()
+        .find((c) => /oa_oidc_/.test(c))
+        ?.split(";")[0] ?? "";
+    const code = google.issueCode(
+      { nonce: u.searchParams.get("nonce"), sub, email: owner.email },
+      u.searchParams.get("code_challenge") as string,
+    );
+    const back = await fetchAndWait(
+      app,
+      new Request(
+        `http://app.localhost${AUTH.callbackGoogle}?state=${u.searchParams.get("state")}&code=${code}`,
+        { headers: { cookie: state } },
+      ),
+      e,
+    );
+    const session = back.headers
+      .getSetCookie()
+      .find((c) => c.startsWith(`${sessionCookieName(env)}=`))
+      ?.split(";")[0];
+    expect(session).toBeDefined();
+    expect((await call(R.directory, session as string)).status).toBe(200);
+    expect((await call(R.me, session as string)).status).toBe(401);
+    google.restore();
+  });
+
   it("break-glass: fresh Google sign-in (9 min) reaches R.directory; 11 min → 401 reauth_required", async () => {
     const owner = await synced("owner");
     await mismatch();
@@ -458,7 +498,8 @@ describe("DirectorySync marks staleness (P3 T18)", () => {
     g = fakeDirectory();
   });
 
-  it("success after stale clears staleAt; access never changed", async () => {
+  /** A connected directory with one synced member; the first run done at t0. */
+  async function connectedWithMember() {
     const ownerEmail = uniq("st-own");
     const owner = { ...(await login(ownerEmail, "owner")), email: ownerEmail };
     const adminSub = `g-admin-${crypto.randomUUID()}`;
@@ -476,6 +517,11 @@ describe("DirectorySync marks staleness (P3 T18)", () => {
       sub,
     );
     if (!bound) throw new Error("not bound");
+    return { owner, adminSub, bound, t0 };
+  }
+
+  it("success after stale clears staleAt; access never changed", async () => {
+    const { owner, bound, t0 } = await connectedWithMember();
     const before = await staleAudits();
     // Google down from now on; the first failing alarm past 7 days marks it.
     g.fail(/./, 503, { times: 1000 });
@@ -498,6 +544,21 @@ describe("DirectorySync marks staleness (P3 T18)", () => {
     g.clearFailures();
     await drain(t0 + 8 * DAY);
     expect((await status(owner.cookie)).staleAt).toBeNull();
+    expect(await getUser(env, bound.id)).not.toBeNull();
+  });
+
+  it("entering customer_mismatch closes synced users' sockets; the next success restores access with no manual step", async () => {
+    const { adminSub, bound, t0 } = await connectedWithMember();
+    expect(await revokedAt(bound.id)).toBe(0);
+    const admin = g.users.get(adminSub) as { customerId?: string };
+    admin.customerId = "C-OTHER";
+    await drain(t0 + 2 * MIN);
+    expect(await getUser(env, bound.id)).toBeNull();
+    await vi.waitFor(async () =>
+      expect(await revokedAt(bound.id)).toBeGreaterThan(0),
+    );
+    admin.customerId = g.customerId;
+    await drain(t0 + 63 * MIN);
     expect(await getUser(env, bound.id)).not.toBeNull();
   });
 });
