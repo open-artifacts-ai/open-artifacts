@@ -7,7 +7,7 @@ import {
 } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { logError, logInfo, logWarn } from "../log.js";
-import { revokeUsersLive } from "../runtime/revoke.js";
+import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
 import { getSettings, setUserStatus } from "../services/members.js";
 import { directoryMode } from "../services/spaces.js";
@@ -272,9 +272,12 @@ const UPSERT_CHILD = `insert into directory_groups (group_id, email, parent_ids)
       else json_insert(directory_groups.parent_ids, '$[#]', ?3) end
   where directory_groups.email <> excluded.email
     or not exists (select 1 from json_each(directory_groups.parent_ids) where value = ?3)`;
-/** Every active synced user (T18's customer_mismatch socket close). */
-const SYNCED_ACTIVE = `select u.id from identities i join users u on u.id = i.user_id
-  where i.provider = 'google' and i.directory_bound = 1 and u.status = 'active'`;
+/** A page of active synced users after ?1, by id (T18's customer_mismatch socket close). */
+const SYNCED_PAGE = `select u.id from identities i join users u on u.id = i.user_id
+  where i.provider = 'google' and i.directory_bound = 1 and u.status = 'active'
+    and u.id > ?1 order by u.id limit ?2`;
+/** DO kv: the last user id whose sockets the customer_mismatch close signalled. */
+const CLOSE_KEY = "mismatch.close";
 const OWNERS = `select email from users where role = 'owner' and status = 'active'`;
 
 /** A reset() landed since this alarm started: it writes nothing more. */
@@ -349,7 +352,7 @@ export class SyncEngine {
 
   /** Work can run at `now` on some lane. */
   due(now: number): boolean {
-    return this.nextAt(now) <= now;
+    return this.get<string>(CLOSE_KEY) !== null || this.nextAt(now) <= now;
   }
 
   /** When `lane` may next run (its backoff respected, kicks and bypasses counted). */
@@ -535,6 +538,15 @@ export class SyncEngine {
     if (this.ep > (this.get<number>("epoch.applied") ?? 0)) {
       await this.applyReset(this.ep);
       if (!this.fresh()) return now;
+    }
+    // A customer_mismatch close still paging (T18): one page per alarm, re-armed at once.
+    if (this.get<string>(CLOSE_KEY) !== null) {
+      await revokeUsersLive(
+        this.env,
+        await this.syncedPage(),
+        "directory customer_mismatch",
+      );
+      return now;
     }
     const mode = directoryMode(this.env);
     const client = directoryClient(this.env);
@@ -1498,24 +1510,44 @@ export class SyncEngine {
     logWarn("directory_customer_mismatch");
     if (entering) {
       // Synced users now fail closed (T18: getUser and the content load), so
-      // their live sockets close too. Never guarded: the state committed.
-      try {
-        const { results } = await stmt(this.env.DB, SYNCED_ACTIVE).all<{
-          id: string;
-        }>();
-        await revokeUsersLive(
-          this.env,
-          results.map((r) => r.id),
-          "directory customer_mismatch",
-          this.ctx,
-        );
-      } catch (err) {
-        logError("directory_mismatch_close", err);
-      }
+      // their live sockets close too: one page of revokeFanoutCap here, the
+      // rest one page per alarm (tick) until every synced user is signalled.
+      // Never guarded: the state committed.
+      this.put(CLOSE_KEY, "");
+      await revokeUsersLive(
+        this.env,
+        await this.syncedPage(),
+        "directory customer_mismatch",
+      );
       this.guard();
       await this.alertOwners("customer_mismatch");
     }
-    return retryAt;
+    return this.get<string>(CLOSE_KEY) !== null ? now : retryAt;
+  }
+
+  /**
+   * The next page (revokeFanoutCap, the invocation's subrequest share) of
+   * active synced users after the close cursor, advancing it; the cursor is
+   * dropped after the last page. Empty when no close is pending or on a D1
+   * error (the cursor stays, so the next alarm retries).
+   */
+  private async syncedPage(): Promise<string[]> {
+    const after = this.get<string>(CLOSE_KEY);
+    if (after === null) return [];
+    const cap = revokeFanoutCap(this.env);
+    try {
+      const { results } = await stmt(this.env.DB, SYNCED_PAGE)
+        .bind(after, cap)
+        .all<{ id: string }>();
+      const ids = results.map((r) => r.id);
+      const last = ids[ids.length - 1];
+      if (ids.length < cap || last === undefined) this.del(CLOSE_KEY);
+      else this.put(CLOSE_KEY, last);
+      return ids;
+    } catch (err) {
+      logError("directory_mismatch_close", err);
+      return [];
+    }
   }
 
   private async alertOwners(why: DirectoryAlert) {

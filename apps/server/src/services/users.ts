@@ -238,25 +238,26 @@ const USER_COLS =
 const SYNCED =
   "exists (select 1 from identities i where i.user_id = users.id and i.provider = 'google' and i.directory_bound = 1)";
 /**
- * customer_mismatch fails closed for synced users: one directory_state PK
- * probe (an uncorrelated scalar, so it runs first), then the identity only
- * during a mismatch. Pinned in d1-rows.
+ * The sync state, read once per statement: one directory_state PK probe
+ * (no row, '' : no directory). Both checks below branch on it, so the
+ * identity is read only during a mismatch or an outage. Pinned in d1-rows.
  */
-const MISMATCH = `(coalesce((select ds.value from directory_state ds where ds.key = 'sync.state'), '') = 'customer_mismatch' and ${SYNCED})`;
-const UNHEALTHY_SINCE =
-  "(select json_extract(h.value, '$.unhealthySince') from directory_state h where h.key = 'sync.health')";
+const STATE = `(select coalesce((select ds.value from directory_state ds where ds.key = 'sync.state'), '') as st) d`;
+/** customer_mismatch fails closed for synced users. */
+const MISMATCH = `(d.st = 'customer_mismatch' and ${SYNCED})`;
 /**
- * Cookie sessions only (?2 = 1): when sync went unhealthy, for a synced user
- * (the 24 h browser session cap); one PK probe of the health row, and the
- * identity only while unhealthy. PATs and OAuth grants never read it.
+ * Cookie sessions only (?2 = 1) while sync is not ok: when it went
+ * unhealthy, for a synced user (the 24 h browser session cap), from the
+ * health row. PATs, OAuth grants and healthy installs never read it.
  */
-const CAP_SINCE = `case when ?2 = 1 and ${UNHEALTHY_SINCE} is not null and ${SYNCED}
-  then ${UNHEALTHY_SINCE} end as capSince`;
+const CAP_SINCE = `case when ?2 = 1 and d.st not in ('', 'ok') and ${SYNCED}
+  then (select json_extract(h.value, '$.unhealthySince') from directory_state h where h.key = 'sync.health')
+  end as capSince`;
 
-const USER_BY_ID = `select ${USER_COLS}, ${CAP_SINCE} from users
+const USER_BY_ID = `select ${USER_COLS}, ${CAP_SINCE} from ${STATE}, users
   where id = ?1 and status = 'active' and not ${MISMATCH} limit 1`;
 /** The org owner denied by customer_mismatch, for break-glass only (T18). */
-const MISMATCH_OWNER = `select ${USER_COLS}, null as capSince from users
+const MISMATCH_OWNER = `select ${USER_COLS}, null as capSince from ${STATE}, users
   where id = ?1 and status = 'active' and role = 'owner' and ${MISMATCH} limit 1`;
 
 type UserByIdRow = Pick<

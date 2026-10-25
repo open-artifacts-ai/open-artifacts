@@ -557,27 +557,28 @@ it("getUser (P3 T18): one statement; the customer_mismatch denial is one directo
   // Measured: no directory, users PK 1 (the misses read no row).
   expect(await measure(synced, false)).toEqual({ n: 1, ok: true });
   expect(await measure(synced, true)).toEqual({ n: 1, ok: true });
-  // Healthy and connected: + the sync.state row; cookies + the health row.
+  // Healthy and connected: + the sync.state row, cookies included (the
+  // health row is read only while sync is not ok).
   await upsert("sync.state", "ok");
   await upsert(
     "sync.health",
     JSON.stringify({ state: "ok", unhealthySince: null }),
   );
   expect(await measure(synced, false)).toEqual({ n: 2, ok: true });
-  expect(await measure(synced, true)).toEqual({ n: 3, ok: true });
-  // Unhealthy (an outage only): cookies also read the identity, and the
-  // health row once more for its value; PATs and grants are unchanged.
+  expect(await measure(synced, true)).toEqual({ n: 2, ok: true });
+  // Unhealthy (an outage only): cookies also read the identity and the
+  // health row; PATs and grants are unchanged.
   await upsert("sync.state", "backoff");
   await upsert(
     "sync.health",
     JSON.stringify({ state: "backoff", unhealthySince: Date.now() }),
   );
   expect(await measure(synced, false)).toEqual({ n: 2, ok: true });
-  expect(await measure(synced, true)).toEqual({ n: 5, ok: true });
-  // customer_mismatch: the synced user is denied (+ their identity row);
-  // a manual member is not.
+  expect(await measure(synced, true)).toEqual({ n: 4, ok: true });
+  // customer_mismatch: the synced user is denied; a manual member is not.
   await upsert("sync.state", "customer_mismatch");
-  expect(await measure(synced, false)).toEqual({ n: 3, ok: false });
+  expect(await measure(synced, false)).toEqual({ n: 2, ok: false });
+  expect(await measure(synced, true)).toEqual({ n: 2, ok: false });
   expect(await measure(plain, false)).toEqual({ n: 2, ok: true });
   await resetDirectory();
 });

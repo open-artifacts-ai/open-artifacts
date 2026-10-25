@@ -19,7 +19,7 @@ import {
   sessionCookieName,
 } from "../auth/session.js";
 import { BANNER_AFTER_MS } from "../directory/health.js";
-import { sendEmail } from "../email/send.js";
+import { sendEmail, takeAll } from "../email/send.js";
 import { directoryAlertEmail } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { logError } from "../log.js";
@@ -297,8 +297,9 @@ export const isBreakGlassRoute = (method: string, path: string) =>
  * Break-glass (T18), on BREAK_GLASS_ROUTES only, for a cookie that
  * getUserWithEpoch refused: an org owner refused for customer_mismatch is
  * resolved when the session is a verified-hd Google sign-in under 10 min old,
- * else 401 reauth_required. Every use is audited (directory.break_glass) and
- * emails that owner. Anyone else stays anonymous, as on every other route.
+ * else 401 reauth_required. Every use is audited (directory.break_glass,
+ * with the session's iat); that owner gets one email per break-glass session,
+ * on its first use. Anyone else stays anonymous, as on every other route.
  */
 async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
   const row = await getMismatchOwner(c.env, s.uid);
@@ -315,9 +316,19 @@ async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
     "directory.break_glass",
     { type: "directory", id: "google" },
     userActor(row.user.id),
-    { detail: { route: `${c.req.method} ${c.req.path}` } },
+    { detail: { route: `${c.req.method} ${c.req.path}`, iat: s.iat } },
   ).run();
   const mail = (async () => {
+    // One email per session (keyed on its iat): an atomic counter upsert, so
+    // parallel first requests can't both send. Swept by the daily cron.
+    const first = await takeAll(c.env, [
+      [
+        `email:bg:${row.user.id}:${s.iat}`,
+        1,
+        new Date(s.iat).toISOString().slice(0, 10),
+      ],
+    ]);
+    if (first !== -1) return;
     const instance = (await getSettings(c.env)).name;
     await sendEmail(
       c.env,

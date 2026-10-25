@@ -14,6 +14,7 @@ import { UPSERT } from "../src/directory/store.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
+import { revokeFanoutCap } from "../src/runtime/revoke.js";
 import { publish } from "../src/services/artifacts.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
 import { getUser } from "../src/services/users.js";
@@ -69,7 +70,7 @@ const mismatch = () =>
   });
 
 /** A user bound to the directory (identities.directory_bound = 1). */
-async function synced(role: "owner" | "member" = "member") {
+async function synced(role: "owner" | "admin" | "member" = "member") {
   const email = uniq(`st-${role}`);
   const sub = `g-${crypto.randomUUID()}`;
   const id = await seedUser(email, role, { googleSub: sub });
@@ -442,21 +443,63 @@ describe("break-glass", () => {
     expect(await breakGlassAudits(owner.id)).toBe(0);
   });
 
-  it("break-glass: each use audits and emails the owner", async () => {
+  it("break-glass: every use audits; one email per session, even for parallel first requests", async () => {
     const owner = await synced("owner");
     await mismatch();
+    const toOwner = () => mail.sent.filter((m) => m.to === owner.email);
     const fresh = await cookieFor(owner.id, { age: MIN });
-    expect((await call(R.directory, fresh)).status).toBe(200);
-    expect(await breakGlassAudits(owner.id)).toBe(1);
-    expect(mail.sent.filter((m) => m.to === owner.email)).toHaveLength(1);
+    const first = await Promise.all([
+      call(R.directory, fresh),
+      call(R.directory, fresh),
+      call(R.directory, fresh),
+    ]);
+    expect(first.map((r) => r.status)).toEqual([200, 200, 200]);
     expect(
       (await call(R.directorySync, fresh, { method: "POST" })).status,
     ).toBe(202);
+    expect(await breakGlassAudits(owner.id)).toBe(4);
+    expect(toOwner()).toHaveLength(1);
+    expect(toOwner()[0]?.text).toContain("Google Workspace mismatch");
+    expect(toOwner()[0]?.text).not.toContain("—");
+    // A new sign-in is a new session: one more email.
+    const again = await cookieFor(owner.id, { age: 2 * MIN });
+    expect((await call(R.directory, again)).status).toBe(200);
+    expect(await breakGlassAudits(owner.id)).toBe(5);
+    expect(toOwner()).toHaveLength(2);
+  });
+
+  it("break-glass: confirm and cancel resolve the owner (audited)", async () => {
+    const owner = await synced("owner");
+    await mismatch();
+    const fresh = await cookieFor(owner.id, { age: MIN });
+    const confirm = await call(R.directoryConfirm, fresh, { method: "POST" });
+    // Resolved: the route's own answer (nothing pending), never a 401.
+    expect(confirm.status).not.toBe(401);
+    expect(
+      (await call(R.directoryCancel, fresh, { method: "POST" })).status,
+    ).not.toBe(401);
     expect(await breakGlassAudits(owner.id)).toBe(2);
-    const sent = mail.sent.filter((m) => m.to === owner.email);
-    expect(sent).toHaveLength(2);
-    expect(sent[0]?.text).toContain("Google Workspace mismatch");
-    expect(sent[0]?.text).not.toContain("—");
+    // The same routes without break-glass (a stale sign-in): 401.
+    const old = await cookieFor(owner.id, { age: 11 * MIN });
+    for (const p of [R.directoryConfirm, R.directoryCancel])
+      expect((await call(p, old, { method: "POST" })).status, p).toBe(401);
+  });
+
+  it("break-glass: a synced org admin stays anonymous; a Google session without hd is refused", async () => {
+    const admin = await synced("admin");
+    await mismatch();
+    const r = await call(R.directory, await cookieFor(admin.id, { age: MIN }));
+    expect(r.status).toBe(401);
+    expect((await errOf(r)).code).not.toBe("reauth_required");
+    expect(await breakGlassAudits(admin.id)).toBe(0);
+    const owner = await synced("owner");
+    const noHd = await call(
+      R.directory,
+      await cookieFor(owner.id, { age: MIN, t: undefined }),
+    );
+    expect(noHd.status).toBe(401);
+    expect((await errOf(noHd)).code).toBe("reauth_required");
+    expect(await breakGlassAudits(owner.id)).toBe(0);
   });
 });
 
@@ -560,5 +603,22 @@ describe("DirectorySync marks staleness (P3 T18)", () => {
     admin.customerId = g.customerId;
     await drain(t0 + 63 * MIN);
     expect(await getUser(env, bound.id)).not.toBeNull();
+  });
+
+  it("the customer_mismatch close pages past revokeFanoutCap: every synced user is signalled", async () => {
+    const { adminSub, bound, t0 } = await connectedWithMember();
+    const cap = revokeFanoutCap(e);
+    const extra: string[] = [];
+    for (let i = 0; i < cap + 5; i++) extra.push((await synced()).id);
+    const admin = g.users.get(adminSub) as { customerId?: string };
+    admin.customerId = "C-OTHER";
+    // One page per alarm: the first in the mismatch run, the rest after.
+    await alarm(t0 + 2 * MIN);
+    expect(
+      await inDo((s) => new SyncEngine(e, s.storage).due(t0 + 2 * MIN)),
+    ).toBe(true);
+    await drain(t0 + 2 * MIN);
+    for (const id of [bound.id, ...extra])
+      expect(await revokedAt(id), id).toBeGreaterThan(0);
   });
 });
