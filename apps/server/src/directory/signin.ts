@@ -1,4 +1,4 @@
-import type { Member } from "@oa/shared";
+import type { DirectoryBinding, Member } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
@@ -23,8 +23,10 @@ import { readBinding, readPending } from "./store.js";
 // - Suspended, deleted or another customer's user in Google: refused (a
 //   suspension is applied at once).
 // - Google unreachable: the sign-in proceeds on last-sync access (fail
-//   static), unless the install is in customer_mismatch (fail closed; the
-//   org owner still gets through for break-glass, T18).
+//   static), unless the install is in customer_mismatch. Any other failure
+//   (a D1 read, a write) refuses, fail closed. The org owner is never
+//   refused (break-glass, T18 limits their routes); during a mismatch they
+//   get in without a group diff.
 // - Groups: the targets (mapped or restricted) the user belongs to, through
 //   nesting (directory_groups.parent_ids), against their directory_members
 //   rows. A removal is confirmed with groups.hasMember first, so a nested
@@ -36,7 +38,9 @@ const SIGNIN_GROUP_PAGES = 5;
 
 /** The sign-in is refused (P2's callback turns it into a sign-in error). */
 export class SignInRefused extends Error {
-  constructor(public why: "suspended" | "gone" | "customer_mismatch") {
+  constructor(
+    public why: "suspended" | "gone" | "customer_mismatch" | "unverified",
+  ) {
     super(`directory sign-in refused: ${why}`);
     this.name = "SignInRefused";
   }
@@ -61,6 +65,20 @@ const REACHED = `with recursive up(g) as (
     and g in (select group_id from directory_groups)`;
 const CURRENT = "select group_id from directory_members where user_id = ?1";
 
+/** The binding this sign-in read is still the live one, nothing pending. */
+async function sameBinding(env: Env, b: DirectoryBinding): Promise<boolean> {
+  const [{ binding }, pending] = await Promise.all([
+    readBinding(env),
+    readPending(env),
+  ]);
+  return (
+    !pending &&
+    !!binding &&
+    binding.customerId === b.customerId &&
+    binding.connectedAt === b.connectedAt
+  );
+}
+
 export async function directorySignIn(
   env: Env,
   user: Member,
@@ -70,69 +88,107 @@ export async function directorySignIn(
   if (mode === "off") return;
   const client = directoryClient(env);
   if (!client) return;
-  const [{ binding, sealed }, pending, bound, state] = await Promise.all([
-    readBinding(env),
-    readPending(env),
-    stmt(env.DB, SUBJECT_OF)
-      .bind(user.id)
-      .first<{ subject: string; owner: number }>(),
-    stmt(env.DB, STATE)
-      .bind(HK.state)
-      .first<{ value: string }>()
-      .then((r) => r?.value ?? null),
-  ]);
-  if (!binding || !sealed || pending || !bound) return;
-  const sub = bound.subject;
-  const mismatch = state === "customer_mismatch";
-  let u: GoogleUser | null = null;
-  let token = "";
-  let direct: string[] | null = null;
-  let partial = false;
+  // Fail closed: a D1 error reading who this is refuses the sign-in.
+  let bound: { subject: string; owner: number } | null;
   try {
-    token = await client.accessToken(sealed);
-    try {
-      u = await getUser(token, sub);
-    } catch (e) {
-      if (!(e instanceof GoogleApiError && e.status === 404)) throw e;
-    }
-    if (u && !u.suspended && mode === "google") {
-      direct = [];
-      let page: string | undefined;
-      for (let i = 0; i < SIGNIN_GROUP_PAGES; i++) {
-        const out = await userGroups(token, sub, page);
-        direct.push(...out.groups.map((x) => x.id));
-        page = out.nextPageToken ?? undefined;
-        if (!page) break;
-      }
-      // Too many groups to read whole: adds only.
-      partial = !!page;
-    }
+    bound = await stmt(env.DB, SUBJECT_OF)
+      .bind(user.id)
+      .first<{ subject: string; owner: number }>();
   } catch (e) {
-    if (mismatch && !bound.owner) throw new SignInRefused("customer_mismatch");
-    logWarn("directory_signin_unreachable", e);
-    return;
+    logWarn("directory_signin_read", e);
+    throw new SignInRefused("unverified");
   }
-  if (!u) throw new SignInRefused("gone");
-  // Google sub == directory user id, and the binding's customer only.
-  if (u.id !== sub || u.customerId !== binding.customerId)
-    throw new SignInRefused("customer_mismatch");
-  if (u.suspended) {
-    await setUserStatus(
-      env,
-      user.id,
-      "suspended",
-      "directory_suspend",
-      ctx,
-      SYNC,
-    );
-    throw new SignInRefused("suspended");
+  if (!bound) return;
+  const owner = !!bound.owner;
+  const sub = bound.subject;
+  // From here a failure refuses everyone but the org owner (break-glass,
+  // T18 limits their routes), except Google being unreachable outside
+  // customer_mismatch (fail static).
+  let mismatch = false;
+  try {
+    const [{ binding, sealed }, pending, state] = await Promise.all([
+      readBinding(env),
+      readPending(env),
+      stmt(env.DB, STATE)
+        .bind(HK.state)
+        .first<{ value: string }>()
+        .then((r) => r?.value ?? null),
+    ]);
+    if (!binding || !sealed || pending) return;
+    mismatch = state === "customer_mismatch";
+    let u: GoogleUser | null = null;
+    let token = "";
+    let direct: string[] | null = null;
+    let partial = false;
+    try {
+      token = await client.accessToken(sealed);
+      try {
+        u = await getUser(token, sub);
+      } catch (e) {
+        if (!(e instanceof GoogleApiError && e.status === 404)) throw e;
+      }
+      if (u && !u.suspended && mode === "google") {
+        direct = [];
+        let page: string | undefined;
+        for (let i = 0; i < SIGNIN_GROUP_PAGES; i++) {
+          const out = await userGroups(token, sub, page);
+          direct.push(...out.groups.map((x) => x.id));
+          page = out.nextPageToken ?? undefined;
+          if (!page) break;
+        }
+        // Too many groups to read whole: adds only.
+        partial = !!page;
+      }
+    } catch (e) {
+      if (mismatch) throw e;
+      logWarn("directory_signin_unreachable", e);
+      return;
+    }
+    // The owner is never suspended or removed; during a mismatch (or another
+    // customer's answer) they get in without a group diff.
+    if (owner && (mismatch || !u || u.customerId !== binding.customerId))
+      return;
+    if (!u) throw new SignInRefused("gone");
+    // Google sub == directory user id, and the binding's customer only.
+    if (u.id !== sub || u.customerId !== binding.customerId)
+      throw new SignInRefused("customer_mismatch");
+    if (u.suspended && !owner) {
+      // Refused even when the write fails (the next reconcile retries it).
+      await setUserStatus(
+        env,
+        user.id,
+        "suspended",
+        "directory_suspend",
+        ctx,
+        SYNC,
+      ).catch((e) => logWarn("directory_signin_suspend", e));
+      throw new SignInRefused("suspended");
+    }
+    if (mismatch || !direct) return;
+    await signInGroups(env, binding, user.id, sub, direct, partial, token, ctx);
+  } catch (e) {
+    if (e instanceof SignInRefused) throw e;
+    if (owner) {
+      logWarn("directory_signin_owner", e);
+      return;
+    }
+    if (mismatch) throw new SignInRefused("customer_mismatch");
+    logWarn("directory_signin_read", e);
+    throw new SignInRefused("unverified");
   }
-  if (direct)
-    await signInGroups(env, user.id, sub, direct, partial, token, ctx);
 }
 
+/**
+ * One user's group diff. Every removal is confirmed (hasMember) before any
+ * write, so a failure removes nobody. The DirectorySync epoch lives in its
+ * DO; a reset only follows a binding swap or disconnect, so each write is
+ * gated on the binding read at sign-in still being the live one (and no
+ * consent pending). A diff that races a swap anyway is swept by the next
+ * reconcile, which recomputes every row from the new binding.
+ */
 async function signInGroups(
   env: Env,
+  b: DirectoryBinding,
   uid: string,
   sub: string,
   ids: string[],
@@ -147,7 +203,6 @@ async function signInGroups(
   const want = new Set(reached.results.map((r) => r.group_id));
   const have = new Set(current.results.map((r) => r.group_id));
   const adds = [...want].filter((x) => !have.has(x));
-  // Every removal confirmed before any write: a failure removes nobody.
   const drops: string[] = [];
   if (!partial)
     for (const gid of [...have].filter((x) => !want.has(x))) {
@@ -159,8 +214,13 @@ async function signInGroups(
         break;
       }
     }
-  for (const gid of adds)
-    await applyGroupDiff(env, gid, [uid], [], SYNC, { ctx });
-  for (const gid of drops)
-    await applyGroupDiff(env, gid, [], [uid], SYNC, { ctx });
+  for (const [gid, add] of [
+    ...adds.map((g) => [g, true] as const),
+    ...drops.map((g) => [g, false] as const),
+  ]) {
+    if (!(await sameBinding(env, b))) return;
+    await applyGroupDiff(env, gid, add ? [uid] : [], add ? [] : [uid], SYNC, {
+      ctx,
+    });
+  }
 }

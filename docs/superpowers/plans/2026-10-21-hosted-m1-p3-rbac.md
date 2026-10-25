@@ -713,7 +713,7 @@ it("500-user page parse + diff under 10 ms CPU", async () => { /* cpu */ });
   - Delete that address's shares and that user's sync and manual `space_members` rows, in one batch.
   - Then `revokeUserLive`.
 - New directory id for an email still held by an old row: the old row gets the deletion treatment first, then the new row is created (decision 2).
-- `CHANGE_PRIMARY_EMAIL`: update `users.email` for that identity. Shares on the old address move only if the old address is the same identity's alias (otherwise they stay).
+- `CHANGE_PRIMARY_EMAIL` (Google's `RENAME_USER`): update `users.email` for that identity. Shares follow the person (manager ruling, #592): in the same batch, gated on the row having moved, every share on the old address is re-keyed to the new address (`shares` is keyed by address only; no `user_id` column, and invites are shares), the higher role winning on a conflict, alias or not. The person keeps their access and the freed address inherits nothing.
 - `onGoogleSignIn(env, user: Member)` is called by P2 after admission (directory id from the user's bound Google identity):
   - It checks `users.get` (suspended means refuse) and `userGroups`, then `applyGroupDiff` for that user only.
   - If Google is unreachable, the sign-in proceeds (fail static) unless the install is in `customer_mismatch`. Access unchanged when stale; `staleAt` is informational.

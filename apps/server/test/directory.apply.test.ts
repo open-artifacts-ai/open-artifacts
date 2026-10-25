@@ -426,37 +426,102 @@ describe("users by identity", () => {
     });
   });
 
-  it("RENAME_USER moves the address; shares follow only when the old address is an alias", async () => {
-    const [a1, a2, b1, b2] = [
-      uniq("ren-a"),
-      uniq("ren-a2"),
-      uniq("ren-b"),
-      uniq("ren-b2"),
-    ];
-    const [sa, sb] = [
-      `g-ra-${crypto.randomUUID()}`,
-      `g-rb-${crypto.randomUUID()}`,
-    ];
+  it("RENAME_USER: shares follow the person, alias or not (the higher role on a conflict); a later user at the old address gets none", async () => {
+    const [a1, a2] = [uniq("ren-a"), uniq("ren-a2")];
+    const sa = `g-ra-${crypto.randomUUID()}`;
     g.addUser({ id: sa, primaryEmail: a1 });
-    g.addUser({ id: sb, primaryEmail: b1 });
     const t0 = Date.now();
     await connected(t0);
+    const ua = (await userByIdentity(sa))?.id as string;
     const artA = await seedShare(a1);
-    const artB = await seedShare(b1);
-    Object.assign(g.users.get(sa) as object, {
-      primaryEmail: a2,
-      aliases: [a1],
-    });
-    Object.assign(g.users.get(sb) as object, { primaryEmail: b2 });
+    // One artifact shared to both addresses: editor on the old, viewer on the new.
+    const artX = await seedShare(a2);
+    await env.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) select artifact_id, ?, 'editor', created_by, created_at from shares where artifact_id = ?",
+    )
+      .bind(a1, artX)
+      .run();
+    // Renamed without keeping the old address as an alias.
+    Object.assign(g.users.get(sa) as object, { primaryEmail: a2 });
     g.activity("admin", "RENAME_USER", { USER_EMAIL: a1, NEW_VALUE: a2 });
-    g.activity("admin", "RENAME_USER", { USER_EMAIL: b1, NEW_VALUE: b2 });
     await drain(t0 + 2 * MIN);
     expect((await userByIdentity(sa))?.email).toBe(a2);
-    expect((await userByIdentity(sb))?.email).toBe(b2);
-    expect(await sharesFor(a2)).toEqual([{ artifact_id: artA }]);
     expect(await sharesFor(a1)).toEqual([]);
-    expect(await sharesFor(b1)).toEqual([{ artifact_id: artB }]);
-    expect(await sharesFor(b2)).toEqual([]);
+    expect((await sharesFor(a2)).map((r) => r.artifact_id).sort()).toEqual(
+      [artA, artX].sort(),
+    );
+    expect(
+      (
+        await one<{ role: string }>(
+          "select role from shares where artifact_id = ? and email = ?",
+          artX,
+          a2,
+        )
+      )?.role,
+    ).toBe("editor");
+    // A later pass: someone new gets the old address.
+    const nsub = `g-ren-new-${crypto.randomUUID()}`;
+    g.addUser({ id: nsub, primaryEmail: a1 });
+    await drain(t0 + 61 * MIN);
+    const nu = await userByIdentity(nsub);
+    expect(nu?.email).toBe(a1);
+    expect(nu?.id).not.toBe(ua);
+    expect(await sharesFor(a1)).toEqual([]);
+    expect(await sharesFor(a2)).toHaveLength(2);
+  });
+
+  it("a recycled address held by a removed row whose user was renamed: deletion treatment, then the new row", async () => {
+    const [x, x2] = [uniq("rmx"), uniq("rmx2")];
+    const oldSub = `g-rmx-${crypto.randomUUID()}`;
+    g.addUser({ id: oldSub, primaryEmail: x });
+    const t0 = Date.now();
+    await connected(t0);
+    const old = (await userByIdentity(oldSub))?.id as string;
+    await env.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(old)
+      .run();
+    await seedShare(x);
+    Object.assign(g.users.get(oldSub) as object, { primaryEmail: x2 });
+    const nsub = `g-rmx-new-${crypto.randomUUID()}`;
+    g.addUser({ id: nsub, primaryEmail: x });
+    await drain(t0 + 61 * MIN);
+    expect(await userByIdentity(oldSub)).toEqual({
+      id: old,
+      email: `removed+${old}@invalid`,
+      status: "removed",
+    });
+    expect((await userByIdentity(nsub))?.email).toBe(x);
+    expect(await sharesFor(x)).toEqual([]);
+  });
+
+  it("the recycled-address lookup checks the customer: another customer's user fails closed", async () => {
+    const y = uniq("cust");
+    const oldSub = `g-cust-${crypto.randomUUID()}`;
+    g.addUser({ id: oldSub, primaryEmail: y });
+    const t0 = Date.now();
+    await connected(t0);
+    const old = (await userByIdentity(oldSub))?.id as string;
+    // users.get on the old id now answers for another customer.
+    Object.assign(g.users.get(oldSub) as object, {
+      primaryEmail: uniq("cust2"),
+      customerId: "C-other",
+    });
+    const nsub = `g-cust-new-${crypto.randomUUID()}`;
+    g.addUser({ id: nsub, primaryEmail: y });
+    await drain(t0 + 61 * MIN);
+    expect(
+      (
+        await one<{ value: string }>(
+          "select value from directory_state where key = 'sync.state'",
+        )
+      )?.value,
+    ).toBe("customer_mismatch");
+    expect(await userByIdentity(oldSub)).toEqual({
+      id: old,
+      email: y,
+      status: "active",
+    });
+    expect(await userByIdentity(nsub)).toBeNull();
   });
 });
 
@@ -552,5 +617,132 @@ describe("onGoogleSignIn", () => {
       "insert or replace into directory_state (key, value) values ('sync.state', 'customer_mismatch')",
     ).run();
     await expect(onGoogleSignIn(e, u)).rejects.toBeInstanceOf(SignInRefused);
+  });
+  const setMismatch = () =>
+    env.DB.prepare(
+      "insert or replace into directory_state (key, value) values ('sync.state', 'customer_mismatch')",
+    ).run();
+  /** `e` with a DB whose batch, or prepare of matching SQL, throws. */
+  const brokenDb = (o: { batch?: boolean; sql?: RegExp }): Env => {
+    const DB = new Proxy(env.DB, {
+      get(t, p) {
+        if (p === "batch" && o.batch)
+          return async () => {
+            throw new Error("D1 down");
+          };
+        if (p === "prepare" && o.sql) {
+          const re = o.sql;
+          return (q: string) => {
+            if (re.test(q)) throw new Error("D1 down");
+            return t.prepare(q);
+          };
+        }
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    return { ...e, DB } as Env;
+  };
+  /** The owner, bound to a directory user in a mapped group they aren't synced into. */
+  async function boundOwner(customerId?: string) {
+    const ownerSub = `g-owner-${crypto.randomUUID()}`;
+    g.addUser({
+      id: ownerSub,
+      primaryEmail: owner.email,
+      ...(customerId ? { customerId } : {}),
+    });
+    await env.DB.prepare(
+      "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, ?, 1)",
+    )
+      .bind(ownerSub, owner.userId, Date.now())
+      .run();
+    const gid = `grp-own-${crypto.randomUUID()}`;
+    g.addGroup({ id: gid, email: `${gid}@a.com`, members: [ownerSub] });
+    await group(gid);
+    await mapOrg(gid, "viewer");
+    const m = await getUser(env, owner.userId);
+    if (!m) throw new Error("no owner");
+    return m;
+  }
+  const groupsOf = async (uid: string) =>
+    (
+      await all<{ group_id: string }>(
+        "select group_id from directory_members where user_id = ?",
+        uid,
+      )
+    ).map((r) => r.group_id);
+
+  it("the owner gets in during customer_mismatch with Google reachable, without a group diff", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    const m = await boundOwner();
+    await env.DB.prepare("delete from directory_members").run();
+    await setMismatch();
+    await expect(onGoogleSignIn(e, m)).resolves.toBeUndefined();
+    expect(await groupsOf(owner.userId)).toEqual([]);
+  });
+
+  it("the owner gets in when Google answers for another customer, without a group diff", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    const m = await boundOwner("C-other");
+    await env.DB.prepare("delete from directory_members").run();
+    await expect(onGoogleSignIn(e, m)).resolves.toBeUndefined();
+    expect(await groupsOf(owner.userId)).toEqual([]);
+  });
+
+  it("suspended in Google: refused even when the suspension write fails", async () => {
+    const me = await signedUp("si-suspfail");
+    const t0 = Date.now();
+    await connected(t0);
+    const u = await member(me.sub);
+    (g.users.get(me.sub) as { suspended?: boolean }).suspended = true;
+    await expect(
+      onGoogleSignIn(brokenDb({ batch: true }), u),
+    ).rejects.toBeInstanceOf(SignInRefused);
+    expect(await statusOf(u.id)).toBe("active");
+  });
+
+  it("during customer_mismatch any later failure refuses a non-owner", async () => {
+    const me = await signedUp("si-mmfail");
+    const t0 = Date.now();
+    await connected(t0);
+    const u = await member(me.sub);
+    await setMismatch();
+    g.fail(/\/groups\?userKey/, 503);
+    await expect(onGoogleSignIn(e, u)).rejects.toBeInstanceOf(SignInRefused);
+  });
+
+  it("a D1 error reading the binding or state refuses a non-owner; the owner proceeds", async () => {
+    const me = await signedUp("si-d1");
+    const t0 = Date.now();
+    await connected(t0);
+    const u = await member(me.sub);
+    const m = await boundOwner();
+    const bad = brokenDb({ sql: /directory_state/ });
+    await expect(onGoogleSignIn(bad, u)).rejects.toBeInstanceOf(SignInRefused);
+    await expect(onGoogleSignIn(bad, m)).resolves.toBeUndefined();
+    // Reading who this is fails too: refused.
+    await expect(
+      onGoogleSignIn(brokenDb({ sql: /from identities/ }), u),
+    ).rejects.toBeInstanceOf(SignInRefused);
+  });
+
+  it("hasMember failing writes no drops", async () => {
+    const me = await signedUp("si-hm");
+    const s = await sharedSpace();
+    const gid = `grp-hm-${crypto.randomUUID()}`;
+    g.addGroup({ id: gid, email: `${gid}@a.com`, members: [me.sub] });
+    await group(gid);
+    await mapSpace(s, gid, "editor");
+    const t0 = Date.now();
+    await connected(t0);
+    const u = await member(me.sub);
+    expect(await groupsOf(u.id)).toEqual([gid]);
+    g.removeMember(gid, me.sub);
+    g.fail(/\/hasMember\//, 503);
+    await expect(onGoogleSignIn(e, u)).resolves.toBeUndefined();
+    expect(await groupsOf(u.id)).toEqual([gid]);
+    expect(await syncRole(s, u.id)).toBe("editor");
   });
 });

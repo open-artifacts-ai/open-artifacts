@@ -857,12 +857,16 @@ export class SyncEngine {
       ctx: this.ctx,
       guard: () => this.guard(),
       lookup: async (id: string) => {
+        let u: GoogleUser | null;
         try {
-          return await getUser(token, id);
+          u = await getUser(token, id);
         } catch (e) {
           if (e instanceof GoogleApiError && e.status === 404) return null;
           throw e;
         }
+        // Another customer's user (or none): customer_mismatch, fail closed.
+        if (u) this.checkCustomer([u], b);
+        return u;
       },
     };
   }

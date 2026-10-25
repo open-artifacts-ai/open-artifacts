@@ -9,8 +9,10 @@ import { logWarn } from "../log.js";
  * issued (P3 T14, directory/signin.ts): the user is re-read from the
  * directory by their bound identity and their groups diffed. Throws
  * SignInRefused when the directory refuses them (suspended, gone, another
- * customer, or Google unreachable during customer_mismatch); any other
- * failure is logged and the sign-in proceeds (fail static).
+ * customer, Google unreachable during customer_mismatch, or a failure it
+ * can't rule on). Only Google being unreachable outside customer_mismatch
+ * lets the sign-in proceed (fail static, decided inside directorySignIn);
+ * anything unexpected that escapes it is a refusal (fail closed).
  */
 export async function onGoogleSignIn(env: Env, user: Member): Promise<void> {
   try {
@@ -18,6 +20,7 @@ export async function onGoogleSignIn(env: Env, user: Member): Promise<void> {
   } catch (e) {
     if (e instanceof SignInRefused) throw e;
     logWarn("directory_signin", e);
+    throw new SignInRefused("unverified");
   }
 }
 

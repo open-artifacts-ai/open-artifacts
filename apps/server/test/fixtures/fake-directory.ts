@@ -21,8 +21,6 @@ export type FakeDirUser = {
   deleted?: boolean;
   isAdmin?: boolean;
   customerId?: string;
-  /** Other addresses of this user (a former primary stays as an alias). */
-  aliases?: string[];
 };
 
 export type FakeGroup = {

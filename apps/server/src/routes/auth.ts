@@ -226,7 +226,7 @@ export function mountAuth(app: AppType): void {
             stage: "directory",
           });
           return toSignIn(
-            e.why === "customer_mismatch" ? "failed" : "removed",
+            e.why === "suspended" || e.why === "gone" ? "removed" : "failed",
             id.next,
             clear,
           );

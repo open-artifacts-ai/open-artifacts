@@ -79,11 +79,6 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // P3 T14: a directory deletion (or a recycled address): removed, its
   // address's shares and every membership gone.
   "directory/apply.ts:deleteUser": "user",
-  // A new primary address: shares on an alias merge into the new address
-  // (a merged share may keep the lower role).
-  "directory/apply.ts:changeEmail": "user",
-  // A recycled address's shares, cut from the renamed user who held it.
-  "directory/apply.ts:cutAddress": "user",
 };
 
 /**
@@ -101,6 +96,9 @@ const WIDENS: Readonly<Record<string, string>> = {
   // Removing a restricted group only lifts caps (restricted_sync recomputed
   // from the groups that remain).
   "services/spaces.ts:deleteRestrictedGroup": "lifts a restriction only",
+  // P3 T14: a new primary address re-keys the person's shares to it (the
+  // higher role on a conflict): their access stays or widens.
+  "directory/apply.ts:changeEmail": "shares follow the person, max role",
   // P3 T10: the transfer successor predicate reads restricted_* (no write).
   "services/spaces.ts:SUCCESSOR": "a read: the successor predicate",
 };

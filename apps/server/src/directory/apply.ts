@@ -23,7 +23,8 @@ import type { GoogleUser } from "./google.js";
 //   have their sockets closed, always, once the batch committed.
 // - applyUsers: a page of directory users (listing, Reports re-read or
 //   sign-in): deletion, suspension, unsuspension (never reviving a removed
-//   row), a new primary address, and a recycled address (a new directory id
+//   row), a new primary address (shares follow the person), and a recycled
+//   address (a new directory id
 //   behind an address an old row still holds: that row gets the deletion
 //   treatment first, then the new row is created).
 
@@ -187,7 +188,7 @@ const placeholder = (id: string) => `removed+${id}@invalid`;
  */
 const ROWS = `select json_extract(j.value, '$.id') as sub,
     u.id as uid, u.email, u.status, u.role = 'owner' as owner,
-    h.id as hid, h.role = 'owner' as howner,
+    h.id as hid, h.role = 'owner' as howner, h.status as hstatus,
     (select hi.subject from identities hi where hi.provider = 'google' and hi.user_id = h.id) as hsub
   from json_each(?1) j
   left join identities i on i.provider = 'google' and i.subject = json_extract(j.value, '$.id')
@@ -207,12 +208,17 @@ const MOVE_EMAIL = `update users set email = ?2
   where id = ?1 and email = ?3 and status <> 'removed'
     and not exists (select 1 from users where email = ?2)`;
 const MOVED = "exists (select 1 from users where id = ?1 and email = ?2)";
-const COPY_SHARES = `insert or ignore into shares (artifact_id, email, role, created_by, created_at)
+/**
+ * The old address's shares re-keyed to the new one (shares are keyed by
+ * address only; there is no user_id column): on a conflict the higher role.
+ */
+const COPY_SHARES = `insert into shares (artifact_id, email, role, created_by, created_at)
   select artifact_id, ?2, role, created_by, created_at from shares
-  where email = ?3 and ${MOVED}`;
-/** Shares on an address nobody holds any more. */
-const CUT_ADDRESS = `delete from shares where email = ?1
-  and not exists (select 1 from users where email = ?1)`;
+  where email = ?3 and ${MOVED} and true
+  on conflict (artifact_id, email) do update set role =
+    case when shares.role = 'editor' or excluded.role = 'editor' then 'editor' else 'viewer' end
+  where shares.role <> excluded.role and excluded.role = 'editor'`;
+/** The old address's shares, once copied (the row moved). */
 const DROP_OLD_SHARES = `delete from shares where email = ?3 and ${MOVED}`;
 
 export type ApplyUsersOpts = {
@@ -237,6 +243,7 @@ type Row = {
   hid: string | null;
   howner: number | null;
   hsub: string | null;
+  hstatus: string | null;
 };
 
 /** One directory user (the plan's applyUser); `run` names the pass in logs. */
@@ -296,20 +303,12 @@ export async function applyUsers(
     const old = await o.lookup(r.hsub);
     const oldEmail =
       old && !old.deleted ? normalizeEmail(old.primaryEmail) : null;
-    if (oldEmail && oldEmail !== email) {
-      // Renamed: the row follows its user, and the shares on the address
-      // they left stay with the address's past, never with the new holder.
-      await changeEmail(
-        env,
-        r.hid,
-        email,
-        oldEmail,
-        old?.aliases ?? [],
-        guard,
-        o.ctx,
-      );
-      await cutAddress(env, r.hid, email, guard, o.ctx);
-    } else await deleteUser(env, r.hid, "directory_new_id", guard, o.ctx);
+    // Renamed and still active: the row follows its user (changeEmail cuts
+    // the shares on the address they left, in the same batch). Gone, or a
+    // removed row (never renamed): the deletion treatment frees the address.
+    if (oldEmail && oldEmail !== email && r.hstatus !== "removed")
+      await changeEmail(env, r.hid, email, oldEmail, guard);
+    else await deleteUser(env, r.hid, "directory_new_id", guard, o.ctx);
     // The address is free now: T12's bindPage creates the row (in domain,
     // active) and its identity; its personal space comes from the trigger.
     guard();
@@ -360,15 +359,7 @@ async function applyLinked(
     );
   }
   if (r.email && r.email !== email)
-    await changeEmail(
-      env,
-      r.uid,
-      r.email,
-      email,
-      u.aliases ?? [],
-      guard,
-      o.ctx,
-    );
+    await changeEmail(env, r.uid, r.email, email, guard);
 }
 
 /**
@@ -386,7 +377,7 @@ export async function deleteUser(
 ): Promise<void> {
   guard();
   await setUserStatus(env, uid, "removed", why, ctx, SYNC);
-  guard();
+  // Not re-guarded: the removal committed, and deletions are never held.
   await env.DB.batch([
     stmt(env.DB, DROP_SHARES).bind(uid),
     stmt(env.DB, DROP_MEMBERSHIPS).bind(uid),
@@ -396,51 +387,26 @@ export async function deleteUser(
 }
 
 /**
- * A recycled address's shares go before its new holder's row exists
- * (decision 2); `uid`, who held it, loses them: their sockets close.
- */
-async function cutAddress(
-  env: Env,
-  uid: string,
-  email: string,
-  guard: Guard,
-  ctx?: Ctx,
-): Promise<void> {
-  guard();
-  await stmt(env.DB, CUT_ADDRESS).bind(email).run();
-  await revokeUserLive(env, uid, "directory address recycled", ctx);
-}
-
-/**
  * Moves user `uid` from address `from` to `to` (when nobody else holds it).
- * The shares on `from` follow only when `from` is still one of this
- * identity's aliases; otherwise they stay on the old address.
+ * Shares follow the person: every share on `from` is re-keyed to `to` in
+ * the same batch (the higher role on a conflict), every share write gated
+ * on the row having moved, so they keep their access and a later holder of
+ * `from` inherits nothing. Their access only stays or widens: no socket
+ * needs to close.
  */
 async function changeEmail(
   env: Env,
   uid: string,
   from: string,
   to: string,
-  aliases: string[],
   guard: Guard,
-  ctx?: Ctx,
 ): Promise<void> {
   if (to === normalizeEmail(env.OWNER_EMAIL ?? "")) return;
-  const alias = aliases.some((a) => normalizeEmail(a) === from);
   guard();
   const out = await env.DB.batch([
     stmt(env.DB, MOVE_EMAIL).bind(uid, to, from),
-    ...(alias
-      ? [
-          stmt(env.DB, COPY_SHARES).bind(uid, to, from),
-          stmt(env.DB, DROP_OLD_SHARES).bind(uid, to, from),
-        ]
-      : []),
+    stmt(env.DB, COPY_SHARES).bind(uid, to, from),
+    stmt(env.DB, DROP_OLD_SHARES).bind(uid, to, from),
   ]);
-  if (!out[0]?.meta.changes) {
-    logWarn("directory_email_taken");
-    return;
-  }
-  // A merged share may have kept the lower role: close their sockets.
-  if (alias) await revokeUserLive(env, uid, "directory email change", ctx);
+  if (!out[0]?.meta.changes) logWarn("directory_email_taken");
 }

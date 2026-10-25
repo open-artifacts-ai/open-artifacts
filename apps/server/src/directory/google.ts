@@ -18,8 +18,6 @@ export type GoogleUser = {
   /** Super admin only (delegated admins read false; isDelegatedAdmin is separate). */
   isAdmin: boolean;
   customerId: string | null;
-  /** The user's other addresses (a former primary stays one), lowercase. */
-  aliases?: string[];
 };
 
 /**
@@ -86,16 +84,10 @@ function userOf(raw: unknown): GoogleUser | null {
     deleted: false,
     isAdmin: u.isAdmin === true,
     customerId: str(u.customerId),
-    aliases: [u.aliases, u.nonEditableAliases].flatMap((l) =>
-      Array.isArray(l)
-        ? l.flatMap((a) => (typeof a === "string" ? [a.toLowerCase()] : []))
-        : [],
-    ),
   };
 }
 
-const USER_FIELDS =
-  "id,primaryEmail,suspended,isAdmin,customerId,aliases,nonEditableAliases";
+const USER_FIELDS = "id,primaryEmail,suspended,isAdmin,customerId";
 
 /** users.get(userKey): null when the response has no usable user. */
 export async function getUser(
