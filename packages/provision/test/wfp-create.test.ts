@@ -38,6 +38,7 @@ import {
   type Env,
   hosts as hostsOf0,
   platformNames,
+  registryKey,
 } from "../src/names.js";
 import { canonicalJson, inputsHash } from "../src/platform.js";
 import {
@@ -68,6 +69,7 @@ import {
   hostsKvTitle,
   NAMESPACES,
   ProdLocked,
+  ProvisionRefused,
   type WfpOptions,
   WfpProvisioner,
 } from "../src/wfp.js";
@@ -462,6 +464,7 @@ function setup(o: SetupOpts = {}) {
   const pdb = seed ? fake.seedD1(platformNames(env).db, PLATFORM_SQL) : "";
   const hostsId = seed ? fake.seedKv(hostsKvTitle(env)) : "";
   const regId = seed ? fake.seedKv(platformNames(env).registry) : "";
+  const dirId = seed ? fake.seedKv(platformNames(env).directoryRegistry) : "";
   // The one Turnstile widget of each env (Task 8 creates it once per env).
   for (const e of ["staging", "prod"] as const)
     fake.turnstile.set(TS[e].sitekey, {
@@ -528,6 +531,7 @@ function setup(o: SetupOpts = {}) {
     pdb,
     hostsId,
     regId,
+    dirId,
     patDir,
     release,
     target,
@@ -602,6 +606,16 @@ const seedRow = (
   h.run(r.content, r.id);
 };
 
+// The template's latest DO migration tag, derived so a new server DO tag needs
+// no edit here; pinned to the vN shape so a missing tag can't pass vacuously.
+const lastTag = loadTemplate().migrations?.at(-1)?.tag;
+
+describe("template DO migration tag", () => {
+  it("is a vN tag", () => {
+    expect(lastTag).toMatch(/^v\d+$/);
+  });
+});
+
 describe("WfpProvisioner.create", () => {
   it("creates every resource named by install id and maps both hosts", async () => {
     const s = setup();
@@ -616,8 +630,7 @@ describe("WfpProvisioner.create", () => {
       state: "active",
       test_hooks: 0,
       version: "0.23.0",
-      // The template's latest tag (v2 adds UserPresence, unbound, P3 T7a).
-      do_migration_tag: "v2",
+      do_migration_tag: lastTag,
     });
     expect(
       s
@@ -893,13 +906,28 @@ describe("WfpProvisioner.create", () => {
       expect(s.fake.writes()).toEqual([]);
     });
 
+    it("H-DR: a missing staging directory registry is refused with zero writes", async () => {
+      const s = setup({ seed: false, brokerEnabled: true });
+      s.fake.seedD1(platformNames("staging").db, PLATFORM_SQL);
+      s.fake.seedKv(hostsKvTitle("staging"));
+      s.fake.seedKv(platformNames("staging").registry);
+      s.fake.seedKv(platformNames("prod").directoryRegistry);
+      const e = await fails(s.p.create(input()));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(
+        /directory registry KV oa-s-directory-registry not found/,
+      );
+      expect(s.fake.writes()).toEqual([]);
+    });
+
     it("a staging create only ever touches the staging platform ids", async () => {
       const s = setup({ brokerEnabled: true });
       const prodDb = s.fake.seedD1(platformNames("prod").db, PLATFORM_SQL);
       const prodHosts = s.fake.seedKv(hostsKvTitle("prod"));
       const prodReg = s.fake.seedKv(platformNames("prod").registry);
+      const prodDir = s.fake.seedKv(platformNames("prod").directoryRegistry);
       await s.p.create(input());
-      for (const id of [prodDb, prodHosts, prodReg])
+      for (const id of [prodDb, prodHosts, prodReg, prodDir])
         expect(s.fake.log.some((e) => e.path.includes(id))).toBe(false);
     });
 
@@ -954,7 +982,9 @@ describe("WfpProvisioner.create", () => {
       await fails(s.p.create(input()));
       const [row1] = s.rows();
       const reg = () =>
-        JSON.parse(s.fake.kvValues(s.regId).get(row1.id) as string);
+        JSON.parse(
+          s.fake.kvValues(s.regId).get(registryKey(row1.id)) as string,
+        );
       expect(reg().keys).toHaveLength(1);
       expect(row1.broker_kid).toBeNull();
       const before = regPuts(s).length;
@@ -1002,20 +1032,240 @@ describe("WfpProvisioner.create", () => {
       const s = setup({ brokerEnabled: true });
       const inst = await s.p.create(input());
       const reg = s.fake.kvValues(s.regId);
-      expect(reg.size).toBe(1);
-      const raw = reg.get(inst.id) as string;
+      // The key the auth broker reads (apps/auth-broker/src/registry.ts).
+      expect([...reg.keys()]).toEqual([`install:${inst.id}`]);
+      const raw = reg.get(registryKey(inst.id)) as string;
       const entry = JSON.parse(raw);
       expect(Object.keys(entry).sort()).toEqual([
+        "domains",
         "installId",
         "keys",
         "origin",
       ]);
+      // No AUTH_DOMAINS: always written, empty.
+      expect(entry.domains).toEqual([]);
       expect(entry.installId).toBe(inst.id);
       expect(entry.origin).toBe("https://finqore.open-artifacts-staging.app");
       expect(Object.keys(entry.keys[0]).sort()).toEqual(["kid", "x"]);
       expect(raw).not.toContain(OWNER);
       for (const v of s.scriptOf(inst.id)?.secrets.values() ?? [])
         expect(raw).not.toContain(v);
+    });
+
+    it("H-DR: create writes the identical entry to the directory registry, after the broker registry", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(input());
+      const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
+      expect(raw).toBeTruthy();
+      expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
+      // The same key the broker reads: install:<id> (registryKey).
+      expect([...s.fake.kvValues(s.dirId).keys()]).toEqual([
+        `install:${inst.id}`,
+      ]);
+      // Every directory put follows a broker put of the same body.
+      const puts = s.fake.log
+        .map((e, i) => ({ ...e, body: s.fake.raw[i]?.body ?? "" }))
+        .filter(
+          (e) =>
+            e.method === "PUT" &&
+            (e.path.includes(`/namespaces/${s.regId}/values/`) ||
+              e.path.includes(`/namespaces/${s.dirId}/values/`)),
+        )
+        .map((e) => ({ dir: e.path.includes(s.dirId), body: e.body }));
+      expect(puts.length).toBe(4);
+      for (let k = 0; k < puts.length; k += 2) {
+        expect(puts[k]?.dir).toBe(false);
+        expect(puts[k + 1]).toEqual({ dir: true, body: puts[k]?.body });
+      }
+      expect(await s.p.status(inst.id)).toMatchObject({ registryDrift: null });
+    });
+
+    it("H-DR: a failure between the broker and directory writes resumes to both", async () => {
+      const s = setup({ brokerEnabled: true });
+      // The final directory put (right after the final broker put) fails.
+      s.fake.inject(
+        (m, p) => m === "PUT" && p.includes(`/namespaces/${s.dirId}/values/`),
+        { status: 400, skip: 1 },
+      );
+      const e = await fails(s.p.create(input()));
+      expect(e.message).toContain(`/namespaces/${s.dirId}/values/`);
+      const [row] = s.rows();
+      expect(row.state).toBe("creating");
+      expect(row.lease).toBeNull();
+      expect(row.broker_kid).toMatch(/^[A-Za-z0-9_-]{16}$/);
+      const reg = s.fake.kvValues(s.regId).get(registryKey(row.id)) as string;
+      expect(JSON.parse(reg).keys).toHaveLength(1);
+      // Stand in for a copy that kept an older value (e.g. mid-rotation).
+      s.fake
+        .kvValues(s.dirId)
+        .set(registryKey(row.id), reg.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
+      expect(await s.p.status(row.id)).toMatchObject({
+        registryDrift: { id: row.id, kind: "mismatch" },
+      });
+      const inst = await s.p.create(input());
+      expect(inst.id).toBe(row.id);
+      // The broker entry was healthy, so it stays; only the copy is rewritten.
+      expect(s.fake.kvValues(s.regId).get(registryKey(row.id))).toBe(reg);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(row.id))).toBe(reg);
+      expect(await s.p.status(row.id)).toMatchObject({ registryDrift: null });
+    });
+
+    it("H-DR: a failure of the first directory write resumes to both", async () => {
+      const s = setup({ brokerEnabled: true });
+      s.fake.inject(
+        (m, p) => m === "PUT" && p.includes(`/namespaces/${s.dirId}/values/`),
+        { status: 400 },
+      );
+      await fails(s.p.create(input()));
+      const [row] = s.rows();
+      expect(s.fake.kvValues(s.regId).has(registryKey(row.id))).toBe(true);
+      expect(s.fake.kvValues(s.dirId).has(registryKey(row.id))).toBe(false);
+      expect(await s.p.status(row.id)).toMatchObject({
+        registryDrift: { id: row.id, kind: "missing_directory" },
+      });
+      await s.p.create(input());
+      const reg = s.fake.kvValues(s.regId).get(registryKey(row.id)) as string;
+      expect(JSON.parse(reg).keys).toHaveLength(1);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(row.id))).toBe(reg);
+    });
+
+    it("H-DR: status reports each drift kind with a data-free shape and never repairs", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(input());
+      expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+      const reg = s.fake.kvValues(s.regId);
+      const dir = s.fake.kvValues(s.dirId);
+      const raw = reg.get(registryKey(inst.id)) as string;
+      const check = async (kind: string) => {
+        const w = s.fake.writes().length;
+        const st = await s.p.status(inst.id);
+        expect(st.registryDrift).toEqual({ id: inst.id, kind });
+        expect(JSON.stringify(st)).not.toContain(JSON.parse(raw).keys[0].x);
+        expect(s.fake.writes().length).toBe(w);
+      };
+      dir.delete(registryKey(inst.id));
+      await check("missing_directory");
+      dir.set(registryKey(inst.id), raw);
+      reg.delete(registryKey(inst.id));
+      await check("missing_broker");
+      reg.set(registryKey(inst.id), raw);
+      dir.set(registryKey(inst.id), raw.replace(/"x":"[^"]+"/, '"x":"AAAA"'));
+      await check("mismatch");
+      // Report only: status left the drift in place.
+      expect(dir.get(registryKey(inst.id))).not.toBe(raw);
+    });
+
+    it("H-DR: an install that should have an entry and is in neither registry is missing_both", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(input());
+      s.fake.kvValues(s.regId).delete(registryKey(inst.id));
+      s.fake.kvValues(s.dirId).delete(registryKey(inst.id));
+      const w = s.fake.writes().length;
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "missing_both",
+      });
+      expect(s.fake.writes().length).toBe(w);
+      // L2: an install mid-upgrade owes its entry like an active one.
+      s.db()
+        .prepare("UPDATE installs SET state = 'upgrading' WHERE id = ?")
+        .run(inst.id);
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "missing_both",
+      });
+      // A creating row past the registry step (broker_kid recorded) too.
+      const s2 = setup({ brokerEnabled: true });
+      await failAtHealth(s2);
+      const [row] = s2.rows();
+      expect(row.state).toBe("creating");
+      expect(row.broker_kid).toBeTruthy();
+      s2.fake.kvValues(s2.regId).delete(registryKey(row.id));
+      s2.fake.kvValues(s2.dirId).delete(registryKey(row.id));
+      expect((await s2.p.status(row.id)).registryDrift).toEqual({
+        id: row.id,
+        kind: "missing_both",
+      });
+    });
+
+    it("H-DR: no drift for a creating row before the registry step, or a deleted install", async () => {
+      const s = setup({ brokerEnabled: true });
+      s.fake.inject((m, p) => m === "POST" && p.endsWith("/r2/buckets"));
+      await fails(s.p.create(input()));
+      const [row] = s.rows();
+      expect(row.state).toBe("creating");
+      expect(row.broker_kid).toBeNull();
+      expect((await s.p.status(row.id)).registryDrift).toBeNull();
+      const inst = await s.p.create(input());
+      await s.p.delete(inst.id, inst.id);
+      expect(s.rows()[0].state).toBe("deleted");
+      expect(s.fake.kvValues(s.regId).has(registryKey(inst.id))).toBe(false);
+      expect(s.fake.kvValues(s.dirId).has(registryKey(inst.id))).toBe(false);
+      expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+    });
+
+    it("H-RD: both copies carry AUTH_DOMAINS as parsed by the shared parser", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(
+        input("finqore", {
+          vars: { AUTH_DOMAINS: "B.example, a.example,b.example" },
+        }),
+      );
+      const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
+      expect(JSON.parse(raw).domains).toEqual(["a.example", "b.example"]);
+      expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
+      expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+    });
+
+    it("H-RD: more than 50 domains, or an invalid one, is refused before any write", async () => {
+      for (const AUTH_DOMAINS of [
+        Array.from({ length: 51 }, (_, i) => `d${i}.example`).join(","),
+        `${"a".repeat(64)}.example`,
+      ]) {
+        const s = setup({ brokerEnabled: true });
+        const e = await fails(
+          s.p.create(input("finqore", { vars: { AUTH_DOMAINS } })),
+        );
+        expect(e).toBeInstanceOf(ProvisionRefused);
+        expect(e.message).toMatch(/domain/);
+        expect(s.fake.writes()).toEqual([]);
+      }
+    });
+
+    it("H-RD: status flags copies whose domains differ as a mismatch", async () => {
+      const s = setup({ brokerEnabled: true });
+      const inst = await s.p.create(
+        input("finqore", { vars: { AUTH_DOMAINS: "a.example" } }),
+      );
+      const key = registryKey(inst.id);
+      const raw = s.fake.kvValues(s.regId).get(key) as string;
+      s.fake
+        .kvValues(s.dirId)
+        .set(
+          key,
+          JSON.stringify({ ...JSON.parse(raw), domains: ["b.example"] }),
+        );
+      expect((await s.p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "mismatch",
+      });
+    });
+
+    it("H-RD: a resumed create rewrites both copies when the domains are stale, keeping the key", async () => {
+      const s = setup({ brokerEnabled: true });
+      const i = input("finqore", { vars: { AUTH_DOMAINS: "a.example" } });
+      await failAtHealth(s, i);
+      const [row] = s.rows();
+      const key = registryKey(row.id);
+      const before = JSON.parse(s.fake.kvValues(s.regId).get(key) as string);
+      // An entry written before domains existed.
+      const legacy = JSON.stringify({ ...before, domains: undefined });
+      s.fake.kvValues(s.regId).set(key, legacy);
+      s.fake.kvValues(s.dirId).set(key, legacy);
+      await s.p.create(i);
+      const raw = s.fake.kvValues(s.regId).get(key) as string;
+      expect(JSON.parse(raw)).toEqual({ ...before, domains: ["a.example"] });
+      expect(s.fake.kvValues(s.dirId).get(key)).toBe(raw);
     });
 
     it("is not written when brokerEnabled is false", async () => {
@@ -1127,6 +1377,9 @@ describe("WfpProvisioner.create", () => {
       "ARTIFACT_RUNTIME",
       // P3 T7b: UserPresence, bound one release after its class tag (v2).
       "USER_PRESENCE",
+      // P3 T13: DirectorySync (v3) and the directory groups limiter.
+      "DIRECTORY_SYNC",
+      "RL_DIRECTORY",
       "RL_ANON",
       "RL_AUTH",
       "PLAN",
@@ -1759,7 +2012,17 @@ describe("WfpProvisioner.create", () => {
   });
 
   describe("ratelimits (decision 12)", () => {
-    it("RL_ANON gets rlNs and RL_AUTH rlNs + 1; two installs never share an id", async () => {
+    it("each template ratelimit gets rlNs + its index (RL_ANON rlNs, RL_AUTH rlNs + 1); two installs never share an id", async () => {
+      // Derived from the live template, so a new server limiter (P3 T13's
+      // RL_DIRECTORY) needs no edit here.
+      const tplRl = (loadTemplate().ratelimits ?? []) as {
+        name: string;
+        namespace_id: string;
+      }[];
+      expect(tplRl.slice(0, 2).map((r) => r.name)).toEqual([
+        "RL_ANON",
+        "RL_AUTH",
+      ]);
       const s = setup();
       const a = await s.p.create(input("alpha"));
       const b = await s.p.create(input("beta"));
@@ -1780,15 +2043,15 @@ describe("WfpProvisioner.create", () => {
             x.namespace_id,
           ]),
         );
-        expect(by).toEqual({
-          RL_ANON: String(row.rl_ns),
-          RL_AUTH: String(row.rl_ns + 1),
-        });
+        expect(by).toEqual(
+          Object.fromEntries(
+            tplRl.map((r, k) => [r.name, String(row.rl_ns + k)]),
+          ),
+        );
         ids.push(...Object.values(by as Record<string, string>));
       }
-      expect(new Set(ids).size).toBe(4);
-      expect(ids).not.toContain("1001");
-      expect(ids).not.toContain("1002");
+      expect(new Set(ids).size).toBe(2 * tplRl.length);
+      for (const r of tplRl) expect(ids).not.toContain(r.namespace_id);
     });
 
     it.each([
@@ -2362,9 +2625,12 @@ describe("account target is test-only (H-T4b L3)", () => {
 });
 
 describe("Durable Object migration safety (H-T4b L5)", () => {
+  // A step after the live template's own tags (derived, never a literal that
+  // a new server DO tag would collide with).
+  const STEP_TAG = `${lastTag}-step`;
   const withStep = (step: Record<string, unknown>) => {
     const t = structuredClone(loadTemplate());
-    t.migrations = [...(t.migrations ?? []), { tag: "v2", ...step }];
+    t.migrations = [...(t.migrations ?? []), { tag: STEP_TAG, ...step }];
     return t;
   };
   it.each([
@@ -2423,7 +2689,7 @@ describe("Durable Object migration safety (H-T4b L5)", () => {
       }),
     });
     await s.p.create(input());
-    expect(s.rows()[0].do_migration_tag).toBe("v2");
+    expect(s.rows()[0].do_migration_tag).toBe(STEP_TAG);
   });
 });
 

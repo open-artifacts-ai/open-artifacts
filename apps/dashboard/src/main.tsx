@@ -111,6 +111,20 @@ async function startMocks() {
         ),
       ),
     );
+
+  // ?mock=conflict (with ?hosted=1): every artifact edit and move is refused as a
+  // compare-and-set conflict (409 conflict), as when it changed under the editor.
+  if (params.get("mock") === "conflict") {
+    const conflict = () =>
+      HttpResponse.json(
+        { error: { code: "conflict", message: "The artifact changed" } },
+        { status: 409 },
+      );
+    extra.push(
+      http.patch("*/api/v1/artifacts/:id", conflict),
+      http.post("*/api/v1/artifacts/:id/move", conflict),
+    );
+  }
   // ?mock=name: no display name yet (suggested "Ada Lovelace"); after a PATCH the shared mock answers.
   if (params.get("mock") === "name") {
     let named = false;

@@ -15,6 +15,7 @@ import {
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { accessLevel, callerOf } from "../src/auth/authz.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { getUser } from "../src/services/users.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
@@ -340,6 +341,83 @@ describe("patch compare-and-set (#484)", () => {
     expect(r.status).toBe(409);
     expect((await row(id))?.visibility).toBe("private");
     expect(await audits("artifact.visibility", id)).toHaveLength(0);
+  });
+});
+
+describe("publish compare-and-set with agent attribution (#559)", () => {
+  // The versions insert binds the CAS guard and agent_via positionally: a
+  // swapped bind would break one of these silently.
+  const versionsOf = async (id: string) =>
+    (
+      await one<{ n: number }>(
+        "select count(*) as n from versions where artifact_id = ?",
+        id,
+      )
+    )?.n;
+
+  it("a stale visibility change on publish: 409, no version written", async () => {
+    const u = await mk("vcas");
+    const id = await insertArtifact(u.userId, u.userId, "team");
+    const before = await versionsOf(id);
+    let fired = false;
+    const DB = new Proxy(env.DB, {
+      get(t, p) {
+        if (p === "batch")
+          return async (ss: D1PreparedStatement[]) => {
+            if (!fired) {
+              fired = true;
+              await t
+                .prepare(
+                  "update artifacts set visibility = 'private' where id = ?",
+                )
+                .bind(id)
+                .run();
+            }
+            return t.batch(ss);
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const r = await call(
+      R.versions(id),
+      u.cookie,
+      {
+        method: "POST",
+        body: { format: "markdown", content: "# 2", visibility: "public" },
+      },
+      { ...(ON as object), DB } as unknown as Env,
+    );
+    expect(r.status).toBe(409);
+    expect((await row(id))?.visibility).toBe("private");
+    expect(await versionsOf(id)).toBe(before);
+  });
+
+  it("an agent publish with a visibility change records agent_via and counts", async () => {
+    const u = await mk("vvia");
+    const id = await insertArtifact(u.userId, u.userId, "team");
+    const pat = await createPat(env, u.userId, "cas");
+    const r = await call(R.versions(id), null, {
+      method: "POST",
+      headers: { authorization: `Bearer ${pat.token}` },
+      body: { format: "markdown", content: "# 2", visibility: "private" },
+    });
+    expect(r.status).toBe(201);
+    const { version } = await json<{ version: number }>(r);
+    expect(
+      await one<{ via: string | null }>(
+        "select agent_via as via from versions where artifact_id = ? and version = ?",
+        id,
+        version,
+      ),
+    ).toEqual({ via: `t:${pat.id}` });
+    expect(
+      await one<{ n: number }>(
+        "select versions_published as n from tokens where id = ?",
+        pat.id,
+      ),
+    ).toEqual({ n: 1 });
+    expect((await row(id))?.visibility).toBe("private");
   });
 });
 

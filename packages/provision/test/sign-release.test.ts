@@ -5,7 +5,6 @@ import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import {
   copyFileSync,
-  existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -75,7 +74,7 @@ const pem = (env: "staging" | "prod") =>
   KEYS[env].privateKey.export({ format: "pem", type: "pkcs8" }).toString();
 
 /**
- * The key-job scripts (plain .mjs, run by the runner's own node) pin the real
+ * The key-job scripts (plain .mjs, run on Node 22 from .nvmrc) pin the real
  * release keys, so the CLI tests run the real scripts from a temp copy whose
  * release-pubkeys.mjs pins these test keys instead, or the placeholder. There
  * is no runtime override: the shipped scripts can only ever use the pinned keys.
@@ -170,32 +169,16 @@ async function artifact(over: Partial<typeof FIX> = {}) {
   return { dir, ...out };
 }
 
-/**
- * A Node 20 binary to run the key-job scripts under (the runner's preinstalled
- * major): OA_NODE20, else a known local install. Absent: those runs skip and
- * the static post-20 API check (hosted-release.test.ts) still holds.
- */
-const NODE20 = [
-  process.env.OA_NODE20,
-  join(process.env.HOME ?? "", "n/n/versions/node/20.10.0/bin/node"),
-  "/opt/homebrew/opt/node@20/bin/node",
-].find((p) => {
-  if (!p || !existsSync(p)) return false;
-  const v = spawnSync(p, ["--version"], { encoding: "utf8" });
-  return v.status === 0 && /^v20\./.test(v.stdout);
-});
-
 function run(
   script: string,
   args: string[],
   input = "",
-  node = process.execPath,
 ): { code: number | null; stdout: string; stderr: string } {
   // The .ts helpers (check-hosted-release) still need strip-types.
   const flags = script.endsWith(".ts")
     ? ["--experimental-strip-types", "--no-warnings"]
     : [];
-  const r = spawnSync(node, [...flags, script, ...args], {
+  const r = spawnSync(process.execPath, [...flags, script, ...args], {
     input,
     encoding: "utf8",
     timeout: SPAWN_MS,
@@ -1062,141 +1045,5 @@ describe("H1: sign-floor.ts", () => {
       1,
     );
     expect(run(SIGN_FLOOR, argv, "").code).toBe(1);
-  });
-});
-
-// Manager review: the key-job scripts must run on Node 20 (the runner's own
-// node, no setup-node). Run the real flows under a Node 20 binary.
-// R-L1: the signer-node20 CI job sets OA_REQUIRE_NODE20=1, so a missing
-// binary fails there instead of skipping.
-it("Node 20: a binary is found when OA_REQUIRE_NODE20=1", () => {
-  if (process.env.OA_REQUIRE_NODE20 === "1") expect(NODE20).toBeDefined();
-});
-
-describe.skipIf(!NODE20)(`under Node 20 (${NODE20 ?? "none found"})`, () => {
-  const n20 = NODE20 as string;
-  it("is really Node 20", () => {
-    expect(spawnSync(n20, ["--version"], { encoding: "utf8" }).stdout).toMatch(
-      /^v20\./,
-    );
-  });
-  it("sign-release.mjs signs staging and assemble-release.mjs rebuilds it", async () => {
-    const a = await artifact();
-    const c = outputs(run(CHECK, [a.dir]).stdout);
-    const out = mkdtempSync(join(tmpdir(), "oa-n20-"));
-    const args = [
-      "--dir",
-      a.dir,
-      "--env",
-      "staging",
-      "--version",
-      "0.34.0",
-      "--manifest-sha256",
-      c.manifest_sha256 as string,
-      "--bundle-sha256",
-      c.bundle_sha256 as string,
-      "--commit",
-      GUARD,
-      "--lockfile",
-      LOCK,
-      "--out",
-      out,
-    ];
-    const r = run(SIGN, args, pem("staging"), n20);
-    expect(r.code, r.stderr).toBe(0);
-    const o = outputs(r.stdout);
-    for (const v of ["release", "redline"] as const) {
-      const stored = JSON.parse(
-        readFileSync(
-          join(out, `oa-release-staging-${v}-0.34.0.sig.json`),
-          "utf8",
-        ),
-      );
-      expect(
-        openReleaseRecord(stored, pubX(KEYS.staging), "staging").variant,
-      ).toBe(v);
-    }
-    const asm = mkdtempSync(join(tmpdir(), "oa-n20-asm-"));
-    const pass = (v: string) =>
-      `${o[`staging_${v}_signature`]}:${o[`staging_${v}_tar_sha256`]}:${o[`staging_${v}_record_sha256`]}`;
-    const r2 = run(
-      ASSEMBLE,
-      [
-        ...swap(args, "--out", asm),
-        "--release",
-        pass("release"),
-        "--redline",
-        pass("redline"),
-      ],
-      "",
-      n20,
-    );
-    expect(r2.code, r2.stderr).toBe(0);
-    for (const f of readdirSync(out))
-      expect(readFileSync(join(asm, f)), f).toEqual(readFileSync(join(out, f)));
-  });
-  it("sign-floor.mjs signs and assembles a floor that opens with openFloor", () => {
-    const out = mkdtempSync(join(tmpdir(), "oa-n20-floor-"));
-    const argv = [
-      "--env",
-      "prod",
-      "--seq",
-      "2",
-      "--min-version",
-      "0.30.0",
-      "--revoked",
-      "0.31.0",
-      "--out",
-      out,
-    ];
-    const r = run(SIGN_FLOOR, argv, pem("prod"), n20);
-    expect(r.code, r.stderr).toBe(0);
-    const f = openFloor(
-      JSON.parse(readFileSync(join(out, "floor-prod-2.sig.json"), "utf8")),
-      pubX(KEYS.prod),
-      "prod",
-    );
-    expect(f.seq).toBe(2);
-    const o = outputs(r.stdout);
-    const out2 = mkdtempSync(join(tmpdir(), "oa-n20-floor-"));
-    const r2 = run(
-      SIGN_FLOOR,
-      [
-        ...swap(argv, "--out", out2),
-        "--assemble",
-        "--signature",
-        o.floor_signature as string,
-        "--record-sha256",
-        o.floor_record_sha256 as string,
-      ],
-      "",
-      n20,
-    );
-    expect(r2.code, r2.stderr).toBe(0);
-    expect(readFileSync(join(out2, "floor-prod-2.sig.json"))).toEqual(
-      readFileSync(join(out, "floor-prod-2.sig.json")),
-    );
-  });
-  it("refuses a bad input the same way under Node 20", () => {
-    const out = mkdtempSync(join(tmpdir(), "oa-n20-floor-"));
-    const r = run(
-      SIGN_FLOOR,
-      [
-        "--env",
-        "prod",
-        "--seq",
-        "0",
-        "--min-version",
-        "0.30.0",
-        "--revoked",
-        "",
-        "--out",
-        out,
-      ],
-      pem("prod"),
-      n20,
-    );
-    expect(r.code).toBe(1);
-    expect(readdirSync(out)).toEqual([]);
   });
 });

@@ -9,7 +9,12 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cfClient, type Target } from "../src/cf.js";
 import { epochBumpSql, type Template } from "../src/metadata.js";
-import { ENV_PREFIX, type Env, platformNames } from "../src/names.js";
+import {
+  ENV_PREFIX,
+  type Env,
+  platformNames,
+  registryKey,
+} from "../src/names.js";
 import { canonicalJson } from "../src/platform.js";
 import {
   assetEntries,
@@ -332,6 +337,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
   const pdb = fake.seedD1(platformNames(env).db, PLATFORM_SQL);
   const hostsId = fake.seedKv(hostsKvTitle(env));
   const regId = fake.seedKv(platformNames(env).registry);
+  const dirId = fake.seedKv(platformNames(env).directoryRegistry);
   fake.turnstile.set(TS.sitekey, {
     sitekey: TS.sitekey,
     name: platformNames(env).turnstile,
@@ -426,6 +432,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     pdb,
     hostsId,
     regId,
+    dirId,
     rel,
     target,
     db,
@@ -649,6 +656,25 @@ describe("upgrade", () => {
     );
     expect(s.scriptOf(b.id)?.uploads).toBe(bUploads);
     expect(s.row(b.id)).toMatchObject({ version: "0.23.0", state: "active" });
+  });
+
+  it("H-DR: upgrade and rollback keep the broker and directory registry entries equal", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input()));
+    const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
+    expect(raw).toBeTruthy();
+    const up = keep(
+      await s.mk({ brokerEnabled: true }).upgrade(inst.id, "0.24.0"),
+    );
+    expect(up).toMatchObject({ ok: true });
+    expect(s.fake.kvValues(s.regId).get(registryKey(inst.id))).toBe(raw);
+    expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
+    keep(await s.mk({ brokerEnabled: true }).rollback(inst.id));
+    expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(
+      s.fake.kvValues(s.regId).get(registryKey(inst.id)),
+    );
+    expect((await s.p.status(inst.id)).registryDrift).toBeNull();
   });
 
   it("upgrade to an older version, or to the installed one, is refused before any write", async () => {
@@ -1140,6 +1166,127 @@ describe("updateVars and the session cut", () => {
     expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
   });
 
+  describe("H-RD: the registry copies follow AUTH_DOMAINS and google on/off", () => {
+    const entries = (s: S, id: string) => {
+      const reg = s.fake.kvValues(s.regId).get(registryKey(id)) as string;
+      const dir = s.fake.kvValues(s.dirId).get(registryKey(id)) as string;
+      return { reg, dir, entry: JSON.parse(reg) };
+    };
+    const brokered = async () => {
+      const s = setup();
+      const p = s.mk({ brokerEnabled: true });
+      const inst = keep(
+        await p.create(
+          input("finqore", { vars: { AUTH_DOMAINS: "a.example" } }),
+        ),
+      );
+      return { s, p, inst };
+    };
+
+    it("updateVars rewrites both copies with the new domains, same keys, in the op's lease", async () => {
+      const { s, p, inst } = await brokered();
+      const keys = entries(s, inst.id).entry.keys;
+      const r = await p.updateVars(inst.id, {
+        AUTH_DOMAINS: "c.example,B.example",
+      });
+      expect(r).toMatchObject({ ok: true });
+      const { reg, dir, entry } = entries(s, inst.id);
+      expect(entry.domains).toEqual(["b.example", "c.example"]);
+      expect(entry.keys).toEqual(keys);
+      expect(dir).toBe(reg);
+      expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+      expect((await p.status(inst.id)).registryDrift).toBeNull();
+    });
+
+    it("google on, then off: both copies follow the domains each time", async () => {
+      const { s, p, inst } = await brokered();
+      await p.updateVars(inst.id, {
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "g.example",
+      });
+      let e = entries(s, inst.id);
+      expect(e.entry.domains).toEqual(["g.example"]);
+      expect(e.dir).toBe(e.reg);
+      await p.updateVars(inst.id, { AUTH_PROVIDERS: "email" });
+      e = entries(s, inst.id);
+      expect(e.entry.domains).toEqual([]);
+      expect(e.dir).toBe(e.reg);
+    });
+
+    it("updateVars refuses more than 50 domains before any write", async () => {
+      const { s, p, inst } = await brokered();
+      const w = s.fake.writes().length;
+      const e = await fails(
+        p.updateVars(inst.id, {
+          AUTH_DOMAINS: Array.from(
+            { length: 51 },
+            (_, i) => `d${i}.example`,
+          ).join(","),
+        }),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(/more than 50 domains/);
+      expect(s.fake.writes().length).toBe(w);
+    });
+
+    it("a failed directory write in updateVars is reported, and a rerun makes both equal", async () => {
+      const { s, p, inst } = await brokered();
+      s.fake.inject(
+        (m, q) => m === "PUT" && q.includes(`/namespaces/${s.dirId}/values/`),
+        { status: 400 },
+      );
+      const next = { AUTH_DOMAINS: "n.example" };
+      const r = await p.updateVars(inst.id, next);
+      expect(r).toMatchObject({ ok: false });
+      expect((await p.status(inst.id)).registryDrift).toEqual({
+        id: inst.id,
+        kind: "mismatch",
+      });
+      expect(await p.updateVars(inst.id, next)).toMatchObject({ ok: true });
+      const e = entries(s, inst.id);
+      expect(e.entry.domains).toEqual(["n.example"]);
+      expect(e.dir).toBe(e.reg);
+    });
+
+    it("upgrade and rollback never refuse on the registry domain check (they never write the registry)", async () => {
+      const { s, p, inst } = await brokered();
+      const before = entries(s, inst.id).reg;
+      // Passes HOSTED_VARS, fails the registry check (more than 50).
+      const bad = {
+        AUTH_DOMAINS: Array.from(
+          { length: 51 },
+          (_, i) => `d${i}.example`,
+        ).join(","),
+      };
+      s.db()
+        .prepare("UPDATE installs SET vars = ? WHERE id = ?")
+        .run(canonicalJson(bad), inst.id);
+      expect(keep(await p.upgrade(inst.id, "0.24.0"))).toMatchObject({
+        ok: true,
+      });
+      expect(keep(await p.rollback(inst.id))).toMatchObject({
+        ok: true,
+        rolledBack: true,
+      });
+      expect(entries(s, inst.id).reg).toBe(before);
+      expect(entries(s, inst.id).dir).toBe(before);
+      // updateVars does write the registry, so it still refuses.
+      expect((await fails(p.updateVars(inst.id, bad))).message).toMatch(
+        /more than 50 domains/,
+      );
+    });
+
+    it("upgrade and rollback keep the domains (they reuse the current vars)", async () => {
+      const { s, p, inst } = await brokered();
+      const before = entries(s, inst.id).reg;
+      keep(await p.upgrade(inst.id, "0.24.0"));
+      keep(await p.rollback(inst.id));
+      const e = entries(s, inst.id);
+      expect(e.reg).toBe(before);
+      expect(e.dir).toBe(before);
+    });
+  });
+
   it("turning google on bumps the epoch in the install's own D1 after the new vars are live, once per enablement", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
@@ -1400,19 +1547,22 @@ describe("delete", () => {
       .map((p) =>
         p.includes(`/namespaces/${s.regId}/values/`)
           ? "registry"
-          : /\/scripts\//.test(p)
-            ? "script"
-            : /\/storage\/kv\/namespaces\/[^/]+$/.test(p)
-              ? "kv"
-              : /\/r2\/buckets\/[^/]+\/objects\//.test(p)
-                ? "r2-object"
-                : /\/r2\/buckets\/[^/]+$/.test(p)
-                  ? "r2"
-                  : /\/d1\/database\/[^/]+$/.test(p)
-                    ? "d1"
-                    : p,
+          : p.includes(`/namespaces/${s.dirId}/values/`)
+            ? "directory"
+            : /\/scripts\//.test(p)
+              ? "script"
+              : /\/storage\/kv\/namespaces\/[^/]+$/.test(p)
+                ? "kv"
+                : /\/r2\/buckets\/[^/]+\/objects\//.test(p)
+                  ? "r2-object"
+                  : /\/r2\/buckets\/[^/]+$/.test(p)
+                    ? "r2"
+                    : /\/d1\/database\/[^/]+$/.test(p)
+                      ? "d1"
+                      : p,
       );
     expect(seq).toEqual([
+      "directory",
       "registry",
       "script",
       "kv",
@@ -1473,6 +1623,49 @@ describe("delete", () => {
       expect(r3, name).toEqual({ id: inst.id, ok: true, state: "deleted" });
       expect(s.fake.writes().length, name).toBe(n);
     }
+  });
+
+  it("H-DR: delete removes the directory copy, then the broker entry, and resumes after a failure between them", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input()));
+    const key = registryKey(inst.id);
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(true);
+    expect(s.fake.kvValues(s.dirId).get(key)).toBe(
+      s.fake.kvValues(s.regId).get(key),
+    );
+    s.fake.inject(
+      (m, q) => m === "DELETE" && q.includes(`/namespaces/${s.regId}/values/`),
+      { status: 400, message: "boom broker" },
+    );
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).delete(inst.id, inst.id),
+    );
+    expect(e.message).toMatch(/boom broker/);
+    expect(s.row(inst.id)).toMatchObject({ state: "deleting", lease: null });
+    // L1: the directory is never ahead of sign-in.
+    expect(s.fake.kvValues(s.dirId).has(key)).toBe(false);
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(true);
+    expect(await s.p.status(inst.id)).toMatchObject({
+      registryDrift: { id: inst.id, kind: "missing_directory" },
+    });
+    const r = keep(
+      await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id),
+    );
+    expect(r).toEqual({ id: inst.id, ok: true, state: "deleted" });
+    expect(s.fake.kvValues(s.regId).has(key)).toBe(false);
+    expect(s.fake.kvValues(s.dirId).has(key)).toBe(false);
+    expect((await s.p.status(inst.id)).registryDrift).toBeNull();
+  });
+
+  it("delete removes the registry entry under install:<id>, the key the broker reads", async () => {
+    const s = setup();
+    const inst = keep(await s.mk({ brokerEnabled: true }).create(input()));
+    expect([...s.fake.kvValues(s.regId).keys()]).toEqual([
+      registryKey(inst.id),
+    ]);
+    keep(await s.mk({ brokerEnabled: true }).delete(inst.id, inst.id));
+    expect(s.fake.kvValues(s.regId).size).toBe(0);
   });
 
   it("refuses to delete anything whose name isn't names(id)", async () => {
@@ -2027,6 +2220,7 @@ describe("fix round 3", () => {
       lease_until: null,
       leaseLive: false,
       sessionCut: null,
+      registryDrift: null,
     });
     s.db()
       .prepare(

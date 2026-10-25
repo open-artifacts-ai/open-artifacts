@@ -2,7 +2,7 @@
 // No access is 404 (never 403), except the explicit space_forbidden on
 // publish/move. Personal spaces are never targets of these routes (space_personal).
 import { z } from "zod";
-import { PageSchema, UserRefSchema } from "../schemas.js";
+import { PageSchema, stripNameControls, UserRefSchema } from "../schemas.js";
 import {
   CapReasonSchema,
   GroupRefSchema,
@@ -60,19 +60,6 @@ export const SpacesQuerySchema = z.strictObject({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 export type SpacesQuery = z.infer<typeof SpacesQuerySchema>;
-
-/**
- * C0 controls (U+0000-U+001F), DEL (U+007F), bidi controls (LRM/RLM,
- * ALM, LRE..RLO, LRI..PDI) and zero-width characters (ZWSP, ZWNJ, ZWJ,
- * BOM/ZWNBSP): stripped from space names.
- */
-const NAME_CONTROLS =
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-  /[\u0000-\u001F\u007F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
-
-/** A space name with control and bidi characters removed. */
-export const stripNameControls = (s: string): string =>
-  s.replace(NAME_CONTROLS, "");
 
 /**
  * A space name: control and bidi characters stripped, then trimmed, 1-80

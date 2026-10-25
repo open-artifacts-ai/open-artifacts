@@ -46,6 +46,7 @@ import { ApiError, appOrigin } from "../http/errors.js";
 import { logError, logWarn } from "../log.js";
 import { runtimeStub, type VersionEvent } from "../runtime/do.js";
 import { closeRuntimeSockets } from "../runtime/revoke.js";
+import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { audit, userActor } from "./audit.js";
 import { type ManifestEntry, materialize, planFiles } from "./manifest.js";
 import { getSettings } from "./members.js";
@@ -121,7 +122,7 @@ export async function publish(
   env: Env,
   user: Member,
   input: PublishInput,
-  agent: AgentRef | null,
+  agent: AgentAttr | null,
   ctx?: Ctx,
   mode: PublishMode = "any",
 ): Promise<PublishResult> {
@@ -441,7 +442,8 @@ const asUser = (user: Member): Caller => callerOf(user);
 type Alloc = {
   id: string;
   now: number;
-  agent: AgentRef | null;
+  /** Its `via` (grant or token) is stored on the version and counted. */
+  agent: AgentAttr | null;
   userId: string;
   /** The new version's format; also becomes the artifact's format. */
   format: Format;
@@ -463,12 +465,14 @@ type Alloc = {
  * The race-safe version allocation shared by publish and restore: two
  * statements for one D1 batch. The first bumps `current_version` (RETURNING
  * it; no row → artifact gone), the second inserts the version row reading that
- * same number via INSERT … SELECT, so concurrent writers never collide.
+ * same number via INSERT … SELECT, so concurrent writers never collide. With
+ * a grant or token behind the agent, a third statement counts the version
+ * for it (countVersionStmt: only if the version row was written).
  */
 export function allocateVersion(
   db: D1Database,
   a: Alloc,
-): [D1PreparedStatement, D1PreparedStatement] {
+): [D1PreparedStatement, D1PreparedStatement, ...D1PreparedStatement[]] {
   const guard = a.guard ?? "";
   const guardArgs = a.guardArgs ?? [];
   const [before, beforeArgs] = a.cas?.before ?? ["", []];
@@ -489,6 +493,7 @@ export function allocateVersion(
     sets.push(`${col} = ?`);
     vals.push(v);
   }
+  const via = a.agent?.via;
   return [
     db
       .prepare(
@@ -499,8 +504,8 @@ export function allocateVersion(
     db
       .prepare(
         `insert into versions (artifact_id, version, entry, manifest, language, message,
-           agent_name, agent_version, created_by, created_at, format)
-         select id, current_version, ?, ?, ?, ?, ?, ?, ?, ?, ? from artifacts
+           agent_name, agent_version, agent_via, created_by, created_at, format)
+         select id, current_version, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? from artifacts
          where id = ? and deleted_at is null${after}${guard}`,
       )
       .bind(
@@ -510,6 +515,7 @@ export function allocateVersion(
         a.message,
         a.agent?.name ?? null,
         a.agent?.version ?? null,
+        via ? viaKey(via) : null,
         a.userId,
         a.now,
         a.format,
@@ -517,6 +523,7 @@ export function allocateVersion(
         ...afterArgs,
         ...guardArgs,
       ),
+    ...(via ? [countVersionStmt(db, via, a.userId, a.id, a.now)] : []),
   ];
 }
 
@@ -1011,7 +1018,7 @@ export async function restoreVersion(
   user: Member,
   id: string,
   v: number,
-  agent: AgentRef | null,
+  agent: AgentAttr | null,
   _ctx?: Ctx,
 ): Promise<PublishResult> {
   await authorize(env, asUser(user), id, "restore");

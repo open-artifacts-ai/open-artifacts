@@ -226,35 +226,6 @@ jobs:
         env:
           OA_REQUIRE_REAL_BUILD: "1"
         run: pnpm --filter @oa/provision exec vitest run test/release-t3b.test.ts -t "real build"
-  # T3b R-L1: the key jobs sign on the runner's own node (20); this runs the
-  # signer scripts under an exact Node 20 so a change there fails CI, not a
-  # release. Not a required check (that is the user's call). No secrets.
-  signer-node20:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "20.20.2"
-      - name: Record the Node 20 binary
-        run: echo "OA_NODE20=$(command -v node)" >> "$GITHUB_ENV"
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-      - run: pnpm install --frozen-lockfile
-      - name: Signer tests under Node 20
-        env:
-          OA_REQUIRE_NODE20: "1"
-        run: |
-          "$OA_NODE20" --version
-          pnpm --filter @oa/shared build
-          pnpm --filter @oa/provision exec vitest run test/sign-release.test.ts -t "Node 20"
   # No secrets: the real suite runs a local `wrangler dev` (ENVIRONMENT=dev in a
   # generated temp config), never staging.
   e2e:

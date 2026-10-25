@@ -125,6 +125,16 @@ function googleConfig(
   };
 }
 
+/** Hosted installs never admit by domain: their AUTH_DOMAINS aren't proven owned (M1). */
+function domainJoin(env: Env, problems: string[]): AuthConfig["domainJoin"] {
+  const join = env.AUTH_DOMAIN_JOIN === "member" ? "member" : "invite";
+  if (env.HOSTED === "1" && join === "member") {
+    problems.push("AUTH_DOMAIN_JOIN: HOSTED=1 allows invite only");
+    return "invite";
+  }
+  return join;
+}
+
 function build(env: Env): AuthConfig {
   const problems: string[] = [];
   const providers = parseProviders(env.AUTH_PROVIDERS, problems);
@@ -152,7 +162,7 @@ function build(env: Env): AuthConfig {
   return {
     providers,
     domains,
-    domainJoin: env.AUTH_DOMAIN_JOIN === "member" ? "member" : "invite",
+    domainJoin: domainJoin(env, problems),
     domainCodes:
       env.EMAIL_CODE_DOMAIN === "on" &&
       providers.has("email") &&

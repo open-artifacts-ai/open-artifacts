@@ -29,6 +29,7 @@ import { useMe } from "../auth/useMe";
 import { Modal } from "../layout/Modal";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
+import { AgentRow } from "./AgentRow";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { saveTokenCommand, snippets, tokenFile } from "./snippets";
 import {
@@ -200,6 +201,9 @@ function Confirm({
 function OAuthClients() {
   const q = useOAuthClients();
   const revoke = useRevokeOAuthClient();
+  const state = useMe();
+  // Capped (guest, restricted): renaming answers 404, so no label controls.
+  const canLabel = state.status === "authed" && state.me.auth?.cap == null;
   const [target, setTarget] = useState<{
     grantId: string;
     clientName: string;
@@ -211,26 +215,22 @@ function OAuthClients() {
           Couldn't load connected agents.
         </p>
       ) : q.data?.length === 0 ? (
-        <p className={muted}>
-          No agents connected yet. They appear here after you approve them.
-        </p>
+        <div className="grid gap-[var(--oa-space-1)]">
+          <p className="m-0">No agents connected yet.</p>
+          <p className={`m-0 ${muted}`}>
+            Connect any AI agent with the MCP server above. It shows here once
+            you approve it.
+          </p>
+        </div>
       ) : (
-        <ul className={ROWS}>
+        <ul className="grid p-0">
           {q.data?.map((c) => (
-            <li key={c.grantId} className={ROW}>
-              <b className={NAME}>{c.clientName}</b>
-              <span className={muted}>Connected {when(c.createdAt)}</span>
-              <Button
-                className={ACTION}
-                variant="ghost"
-                size="sm"
-                aria-label={`Revoke ${c.clientName}`}
-                disabled={revoke.isPending && revoke.variables === c.grantId}
-                onClick={() => setTarget(c)}
-              >
-                Revoke
-              </Button>
-            </li>
+            <AgentRow
+              key={c.grantId}
+              c={c}
+              canLabel={canLabel}
+              onRevoke={() => setTarget(c)}
+            />
           ))}
         </ul>
       )}

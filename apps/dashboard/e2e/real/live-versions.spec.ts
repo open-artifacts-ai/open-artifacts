@@ -100,6 +100,21 @@ const frameScroll = (page: import("@playwright/test").Page) =>
   artifactFrame(page)
     .locator("body")
     .evaluate(() => Math.round(window.scrollY));
+/**
+ * The frame's scroll offset once it has stopped moving: WebKit on Linux (CI)
+ * animates a wheel scroll, so a read right after it can land mid-animation.
+ */
+const settledScroll = async (page: import("@playwright/test").Page) => {
+  let last = -1;
+  let same = 0;
+  for (let i = 0; i < 50 && same < 3; i++) {
+    const y = await frameScroll(page);
+    same = y === last ? same + 1 : 0;
+    last = y;
+    await page.waitForTimeout(100);
+  }
+  return last;
+};
 
 test("scrolled, then a new version: it swaps and keeps the place", async ({
   page,
@@ -118,15 +133,18 @@ test("scrolled, then a new version: it swaps and keeps the place", async ({
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.wheel(0, 1500);
   await expect.poll(() => frameScroll(page)).toBeGreaterThan(1000);
-  const before = await frameScroll(page);
+  // Where the wheel scroll ended, not a frame of its animation.
+  const before = await settledScroll(page);
   await page.waitForTimeout(400); // the throttled report reaches the shell
   await publishLong(member.pat, id, 2);
   await expect(page.getByText("Updated to v2")).toBeVisible({ timeout: 5_000 });
   await expect(artifactFrame(page).locator("#p0")).toHaveText(
     "paragraph 0 of version 2",
   );
-  await expect.poll(() => frameScroll(page)).toBeGreaterThanOrEqual(before - 2);
-  expect(Math.abs((await frameScroll(page)) - before)).toBeLessThanOrEqual(2);
+  // The restore may retry while the page lays out: wait until it lands.
+  await expect
+    .poll(async () => Math.abs((await settledScroll(page)) - before))
+    .toBeLessThanOrEqual(2);
   await expect(page.locator(".oa-lchip")).toHaveCount(0);
 });
 

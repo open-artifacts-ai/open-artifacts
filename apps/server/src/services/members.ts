@@ -15,6 +15,7 @@ import { authConfig } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import {
+  agentGrants,
   artifacts,
   identities,
   reservedArtifacts,
@@ -420,6 +421,8 @@ async function deleteMember(
       .set({ userId: to })
       .where(and(eq(reservedArtifacts.userId, id), target)),
     db.delete(tokens).where(and(eq(tokens.userId, id), target)),
+    // Grant usage rows reference the user (their grants are revoked above).
+    db.delete(agentGrants).where(and(eq(agentGrants.userId, id), target)),
     db.delete(identities).where(and(eq(identities.userId, id), target)),
   ];
   const out = await env.DB.batch([

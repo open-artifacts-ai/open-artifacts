@@ -40,22 +40,66 @@ const TAG = "${{ needs.hosted-guard.outputs.tag }}";
 // Any invocation (the lockfile path "pnpm-lock.yaml" is not one).
 const INSTALL = /(^|[\s;|&(`])(pnpm|npm|npx|corepack|yarn)(?=$|[\s;|&)`])/m;
 
+// The v22 assert step, verbatim (H-N22).
+const NODE22_ASSERT =
+  'v=$(node --version); case "$v" in v22.*) ;; *) echo "expected Node 22, got $v" >&2; exit 1;; esac';
+
 /**
- * Decision 4 (Manager's security review, fix round 2): a key job runs ONLY
- * actions/checkout and (for sign) actions/download-artifact, pinned by SHA,
- * and the runner's own node: no setup-node, no strip-types, plain .mjs.
+ * Decision 4 (Manager's security review, fix round 2), H-N22: a key job runs
+ * ONLY checkout, setup-node (Node 22 from .nvmrc, no cache), a v22 assert,
+ * download-artifact (for sign) and the sign step, every action pinned by SHA:
+ * no install, no strip-types, plain .mjs. The key and every other secret
+ * appear only in the sign step's env: never job-level env or defaults.
  */
-function keyJobShape(st: Step[], o: { download: boolean; script: string }) {
+function keyJobShape(job: Step, o: { download: boolean; script: string }) {
+  expect(job.env).toBeUndefined();
+  expect(job.defaults).toBeUndefined();
+  const st: Step[] = job.steps;
+  expect(JSON.stringify({ ...job, steps: undefined })).not.toContain(
+    "secrets.",
+  );
+  // Exact keys per step: no if, continue-on-error, shell or env sneaks in.
+  expect(st.map((s) => Object.keys(s).sort().join(","))).toEqual([
+    "uses,with",
+    "uses,with",
+    "name,run",
+    ...(o.download ? ["uses,with"] : []),
+    "env,id,name,run",
+  ]);
   const uses = st.map((s) => s.uses).filter(Boolean) as string[];
   expect(uses.map((u) => u.split("@")[0])).toEqual([
     "actions/checkout",
+    "actions/setup-node",
     ...(o.download ? ["actions/download-artifact"] : []),
   ]);
   for (const u of uses)
-    expect(u).toMatch(/^actions\/(checkout|download-artifact)@[0-9a-f]{40}$/);
-  expect(JSON.stringify(st)).not.toContain("setup-node");
-  expect(st).toHaveLength(uses.length + 1);
+    expect(u).toMatch(
+      /^actions\/(checkout|setup-node|download-artifact)@[0-9a-f]{40}$/,
+    );
+  expect(st).toHaveLength(uses.length + 2);
+  expect(st[0]?.uses).toMatch(/^actions\/checkout@/);
   expect(st[0]?.with?.["persist-credentials"]).toBe(false);
+  const setup = st[1] as Step;
+  expect(setup.uses).toBe(
+    "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+  );
+  expect(setup.with).toEqual({ "node-version-file": ".nvmrc" });
+  expect(setup.env).toBeUndefined();
+  expect(read(".nvmrc").trim()).toBe("22");
+  const assert = st[2] as Step;
+  expect(assert.uses).toBeUndefined();
+  expect(assert.env).toBeUndefined();
+  expect(String(assert.run).trim()).toBe(NODE22_ASSERT);
+  expect(Object.keys(st[0]?.with ?? {}).sort()).toEqual([
+    "persist-credentials",
+    "ref",
+  ]);
+  if (o.download) {
+    expect(st[3]?.uses).toMatch(/^actions\/download-artifact@/);
+    expect(Object.keys(st[3]?.with ?? {}).sort()).toEqual(["name", "path"]);
+  }
+  // No cache action and no package-manager cache anywhere in the job.
+  expect(JSON.stringify(st)).not.toMatch(/cache/i);
   const last = st.at(-1) as Step;
   expect(last.uses).toBeUndefined();
   for (const s of st) expect(s.run ?? "").not.toMatch(INSTALL);
@@ -77,6 +121,7 @@ function keyJobShape(st: Step[], o: { download: boolean; script: string }) {
   expect(run.match(/RELEASE_SIGNING_KEY/g)).toHaveLength(1);
   expect(run).not.toMatch(/set -x|set -o xtrace|--key/);
   expect(JSON.stringify(st.slice(0, -1))).not.toContain("secrets.");
+  expect(JSON.stringify(last).match(/secrets\./g)).toHaveLength(1);
   expect(JSON.stringify(st)).not.toMatch(/CLOUDFLARE_/);
 }
 
@@ -210,8 +255,8 @@ describe("release-please.yml hosted jobs", () => {
         });
         expect(job.env).toBeUndefined();
       });
-      it("has the key-job shape: checkout, download-artifact, the runner's node on sign-release.mjs", () => {
-        keyJobShape(st, { download: true, script: "sign-release.mjs" });
+      it("has the key-job shape: checkout, setup-node 22, the v22 assert, download-artifact, sign-release.mjs", () => {
+        keyJobShape(job, { download: true, script: "sign-release.mjs" });
       });
       it("signs only its own env and outputs only its own names", () => {
         const env2 = st.at(-1)?.env ?? {};
@@ -326,7 +371,7 @@ describe("hosted-floor.yml (H1)", () => {
     expect([job.needs].flat()).toEqual(["floor-guard"]);
     expect(job.permissions).toEqual({ contents: "read" });
     const st = stepsOf(fw, "hosted-floor");
-    keyJobShape(st, { download: false, script: "sign-floor.mjs" });
+    keyJobShape(job, { download: false, script: "sign-floor.mjs" });
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(st[0]?.with?.ref).toBe("${{ needs.floor-guard.outputs.sha }}");
     const run = String(st.at(-1)?.run);
@@ -367,12 +412,13 @@ describe("hosted-floor.yml (H1)", () => {
   });
 });
 
-describe("the key jobs' scripts: plain .mjs, node:* only, Node 20", () => {
+describe("the key jobs' scripts: plain .mjs, node:* only, Node 22", () => {
   const FORBIDDEN =
     /\bimport\s*\(\s*[^"'\s)]|\bcreateRequire\b|\brequire\s*\(|["']node:(child_process|module|worker_threads|vm)["']|\bprocess\.dlopen\b/;
-  // APIs and syntax newer than Node 20 (the runner's preinstalled major).
-  const POST_20 =
-    /\bimport\.meta\.(dirname|filename)\b|\bprocess\.getBuiltinModule\b|\bPromise\.withResolvers\b|\bArray\.fromAsync\b|\b(Object|Map)\.groupBy\b|\.(union|intersection|symmetricDifference|isSubsetOf|isSupersetOf|isDisjointFrom)\(|\bURL\.parse\b|\bprocess\.loadEnvFile\b|\bstyleText\b|\bparseEnv\b|\bcrypto\.hash\(|\bfromBase64\b|\btoBase64\b|\bnavigator\.|\bWebSocket\b|\bnode:sqlite\b|\bglob\(|\bIterator\.from\b|\.toArray\(\)|\busing\s+\w+\s*=|\bRegExp\.escape\b|\bError\.isError\b|\bFloat16Array\b/;
+  // APIs and syntax missing from some Node 22.x (the key jobs run any 22 from
+  // .nvmrc): added after 22.0, flagged in 22, or 23+.
+  const POST_22 =
+    /\bprocess\.getBuiltinModule\b|\bURL\.parse\b|\bWebSocket\b|\bnode:sqlite\b|\bglob\(|\bfromBase64\b|\btoBase64\b|\bPromise\.try\b|\busing\s+\w+\s*=|\bRegExp\.escape\b|\bError\.isError\b|\bFloat16Array\b|\bimport\.meta\.main\b|\bprocess\.features\.typescript\b|\bcrc32\b|\bmatchesGlob\b|\bduplexPair\b|\bgetCallSites\b/;
   const importsOf = (src: string): string[] =>
     [
       ...src.matchAll(
@@ -408,7 +454,7 @@ describe("the key jobs' scripts: plain .mjs, node:* only, Node 20", () => {
     "assemble-release.mjs",
   ];
   for (const entry of ENTRIES)
-    it(`${entry}: node:* only, every file plain .mjs with // @ts-check, no post-20 API`, () => {
+    it(`${entry}: node:* only, every file plain .mjs with // @ts-check, no post-22 API`, () => {
       const { seen, bad } = closure(join(root, "scripts/ci", entry));
       expect(bad).toEqual([]);
       expect(seen.length).toBeGreaterThan(1);
@@ -416,11 +462,11 @@ describe("the key jobs' scripts: plain .mjs, node:* only, Node 20", () => {
         expect(f.endsWith(".mjs"), f).toBe(true);
         const src = readFileSync(f, "utf8");
         expect(src.startsWith("// @ts-check\n"), f).toBe(true);
-        // Static Node 20 check (comments stripped so prose can't trip it).
+        // Static Node 22 check (comments stripped so prose can't trip it).
         const code = src
           .replace(/\/\*[\s\S]*?\*\//g, "")
           .replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
-        expect(POST_20.exec(code)?.[0], f).toBeUndefined();
+        expect(POST_22.exec(code)?.[0], f).toBeUndefined();
       }
     });
   it("no TypeScript copies of the key-job scripts remain", () => {
@@ -439,7 +485,7 @@ describe("the key jobs' scripts: plain .mjs, node:* only, Node 20", () => {
     expect(t.compilerOptions.checkJs).toBe(true);
     expect(t.include).toContain("scripts/**/*.mjs");
   });
-  it("the scan flags a package import, a dynamic import, require, child_process, a .ts import and post-20 APIs", () => {
+  it("the scan flags a package import, a dynamic import, require, child_process, a .ts import and post-22 APIs", () => {
     const d = mkdtempSync(join(tmpdir(), "oa-scan-"));
     for (const [n, src] of [
       ["pkg.mjs", 'import { parse } from "yaml";\n'],
@@ -459,20 +505,28 @@ describe("the key jobs' scripts: plain .mjs, node:* only, Node 20", () => {
     );
     expect(closure(join(d, "ok.mjs")).bad).toEqual([]);
     for (const x of [
+      "process.getBuiltinModule(m)",
+      "URL.parse(u)",
+      "using r = open();",
+      "RegExp.escape(s)",
+      "zlib.crc32(b)",
+      "path.matchesGlob(p, g)",
+      "duplexPair()",
+      "util.getCallSites()",
+    ])
+      expect(POST_22.test(x), x).toBe(true);
+    for (const x of [
+      "const a = b;",
       "import.meta.dirname",
       "Promise.withResolvers()",
       "Object.groupBy(a, f)",
       "a.union(b)",
-    ])
-      expect(POST_20.test(x), x).toBe(true);
-    for (const x of [
-      "const a = b;",
       "Object.hasOwn(o, k)",
       "x.at(-1)",
       "structuredClone(v)",
       "c ? a : b;",
     ])
-      expect(POST_20.test(x), x).toBe(false);
+      expect(POST_22.test(x), x).toBe(false);
   });
 });
 
@@ -538,44 +592,16 @@ describe("ci.yml no-test-hooks job", () => {
   });
 });
 
-describe("ci.yml signer-node20 job (R-L1)", () => {
-  // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
-  const ci: any = parse(read(".github/workflows/ci.yml"));
-  const job = ci.jobs["signer-node20"];
-  const st: Step[] = job?.steps ?? [];
-  it("exists alongside the required jobs", () => {
-    expect(job).toBeDefined();
-    expect(Object.keys(ci.jobs)).toEqual(
-      expect.arrayContaining([
-        "lint",
-        "typecheck",
-        "test",
-        "build",
-        "e2e",
-        "no-test-hooks",
-      ]),
-    );
-  });
-  it("has no secrets, read-only permissions and no persisted credentials", () => {
-    expect(JSON.stringify(job)).not.toContain("secrets.");
-    expect(job.permissions).toEqual({ contents: "read" });
-    for (const s of st)
-      if (String(s.uses ?? "").startsWith("actions/checkout"))
-        expect(s.with?.["persist-credentials"]).toBe(false);
-  });
-  it("installs Node 20 via setup-node pinned by SHA at an exact 20.x.y and runs the signer tests under it, required", () => {
-    const n20 = st.filter(
-      (s) =>
-        /^actions\/setup-node@[0-9a-f]{40}$/.test(String(s.uses ?? "")) &&
-        /^20\.\d+\.\d+$/.test(String(s.with?.["node-version"] ?? "")),
-    );
-    expect(n20).toHaveLength(1);
-    for (const s of st) if (s.uses) expect(s.uses).toMatch(SHA_PIN);
-    const run = runOf(st);
-    expect(run).toContain("OA_NODE20=");
-    const test = st.find((s) => (s.run ?? "").includes('-t "Node 20"'));
-    expect(test?.run).toContain("test/sign-release.test.ts");
-    expect(test?.env?.OA_REQUIRE_NODE20).toBe("1");
+describe("ci.yml: no signer-node20 job (H-N22)", () => {
+  // The key jobs sign on Node 22 (setup-node, .nvmrc), the same major as the
+  // normal CI run, so the separate Node 20 signer job is gone.
+  it("has no signer-node20 job, and nothing needs or names it", () => {
+    const src = read(".github/workflows/ci.yml");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const ci: any = parse(src);
+    expect(ci.jobs["signer-node20"]).toBeUndefined();
+    expect(src).not.toMatch(/signer-node20|OA_NODE20|OA_REQUIRE_NODE20/);
+    expect(read("docs/ops/hosted.md")).not.toContain("signer-node20");
   });
 });
 

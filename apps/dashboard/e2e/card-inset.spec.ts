@@ -99,13 +99,20 @@ for (const width of [1280, 390]) {
       page.getByText("Cursor signs in with OAuth, so it doesn't need a token."),
     ).toBeVisible();
     expect(await misaligned(page, inset(width))).toEqual([]);
-    for (const name of ["Example MCP client", "laptop"]) {
-      await page.getByRole("button", { name: `Revoke ${name}` }).click();
-      await page
-        .getByRole("alertdialog")
-        .getByRole("button", { name: "Revoke" })
-        .click();
-    }
+    // The agent's Revoke… is in its ••• menu; the token's is a button.
+    await page
+      .getByRole("button", { name: "More for Example MCP client" })
+      .click();
+    await page.getByRole("menuitem", { name: "Revoke…" }).click();
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Revoke" })
+      .click();
+    await page.getByRole("button", { name: "Revoke laptop" }).click();
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Revoke" })
+      .click();
     await expect(page.getByText(/No agents connected yet/)).toBeVisible();
     await expect(page.getByText(/^No tokens/)).toBeVisible();
     expect(await misaligned(page, inset(width))).toEqual([]);

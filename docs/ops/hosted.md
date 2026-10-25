@@ -58,6 +58,7 @@ Namespace `oa-spike-staging`, dispatch Worker `oa-s-spike-dispatch` (account scr
 - The provisioning token also needs **Account > Turnstile > Read**, so `create` can check the env's widget. **Turnstile > Edit** is needed only for the one-time `oa:hosted turnstile-init --env <env>` (Task 8).
 - Turnstile: one widget per env, not per install. It is named `oa-s-turnstile` or `oa-p-turnstile`, and its domains are exactly `[open-artifacts-staging.app]` or `[open-artifacts.app]` (a hostname covers its subdomains). Its sitekey and secret are kept in the keychain item `oa-hosted-<env>-turnstile`. When codes are on (`AUTH_PROVIDERS` includes `email`, or `EMAIL_CODE_DOMAIN=on`), `create` reads the widget (GET only) and uploads `TURNSTILE_SITE_KEY` as a var and `TURNSTILE_SECRET` as `secret_text`.
 - Release records: `create` uploads and applies only the release's own files, never the local checkout. Those files are the modules, the assets, the server template, the D1 migrations and the Welcome artifact text. Each one is checked against the release record. The record names its `env` and `version`, and is signed with Ed25519 over `"oa-release-v1\n" + env + "\n" + canonicalJson(record)`, then verified against `RELEASE_PUBKEY[env]`. A downgrade below an install's current version is refused.
+- Domain join: hosted installs always get `AUTH_DOMAIN_JOIN=invite`. Provision renders it and refuses `member`, because a tenant's `AUTH_DOMAINS` isn't verified as owned. Unlocking `member` after ownership is proven is #572.
 - Gates: `PROD_UNLOCKED`, `ALLOW_ACCOUNT_TARGET`, `RELEASE_PUBKEY` and `FLOOR_MIN_SEQ` are code constants in `packages/provision/src/internal/gates.ts`. The package does not export them, and no option can set them. Prod stays locked (`ProdLocked`) until a separate one-line PR, after the key ceremony, sets the real per-env public keys and flips `PROD_UNLOCKED`.
 
 ## Dispatch Worker: one-time deploy per env (Task 6, gated)
@@ -177,8 +178,38 @@ Public values only. The client secrets live in the user's password manager until
 | Env | Project | Client | Client id | Redirect URI |
 |---|---|---|---|---|
 | staging | `open-artifacts-staging` | Sign-in (used by the broker) | `1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com` | `https://auth.open-artifacts-staging.app/google/callback` |
-| staging | `open-artifacts-staging` | Directory (P3 directory sync; not on the broker, P3 T12 decides where it lives) | `1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com` | none |
+| staging | `open-artifacts-staging` | Directory (P3 directory sync; on `oa-<p>-directory-broker`, not on the auth broker) | `1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com` | `https://directory.open-artifacts-staging.app/google/directory/callback` |
 | prod | not created yet | | | |
+
+## Directory broker: one-time deploy per env (gated)
+
+`apps/directory-broker` is the hosted Google Directory consent broker on `directory.<app zone>`. It holds the Directory client secret; its registry (`DIRECTORY_REGISTRY`, public keys only) is read, never written, and it never binds the auth broker's `BROKER_REGISTRY`, so a compromised directory Worker can't plant sign-in trust anchors. Its config has no routes, custom domains or `workers.dev`, and no top-level name or `main`, so a deploy without `--env` is refused, even with `--name` (tests pin all of it). **Always deploy through the wrapper, and never pass an entry point.** Observability (Workers Logs) is off in each env and must stay off, because it records full URLs and the callback URL carries the OAuth code and state. **The Manager and the user run this by hand; CI never does.**
+
+| Env | Worker | Registry KV title | Config placeholder | Ratelimit ids |
+|---|---|---|---|---|
+| staging | `oa-s-directory-broker` | `oa-s-directory-registry` | `{{DIRECTORY_REGISTRY_ID_STAGING}}` | 1121, 1122 |
+| prod | `oa-p-directory-broker` | `oa-p-directory-registry` | `{{DIRECTORY_REGISTRY_ID_PROD}}` | 1131, 1132 |
+
+Prod's `GOOGLE_DIRECTORY_CLIENT_ID` is the placeholder `{{GOOGLE_DIRECTORY_CLIENT_ID_PROD}}` until a prod Directory client exists, so a prod deploy is refused by step 3 until then (pass the id as `GOOGLE_DIRECTORY_CLIENT_ID_PROD`). The Worker's vars are exactly `GOOGLE_DIRECTORY_CLIENT_ID` and `DIRECTORY_ORIGIN`.
+
+Set `ENV`, `P`, `APP` and `UP` as in the dispatch section. Then, per env:
+
+1. Create the registry KV if provisioning hasn't (`pnpm exec wrangler kv namespace create oa-$P-directory-registry`; skip if `wrangler kv namespace list` shows it).
+2. Build from a clean checkout of the reviewed commit, as in the dispatch section, and run `pnpm --filter @oa/directory-broker test`.
+3. Deploy with the provisioning token, through the wrapper (see the auth broker's step 3):
+   ```sh
+   REG_ID=$(pnpm exec wrangler kv namespace list | jq -r --arg t "oa-$P-directory-registry" '.[] | select(.title == $t) | .id')
+   DIRECTORY_REGISTRY_ID="$REG_ID" scripts/ops/deploy-platform-worker.sh directory-broker "$ENV"   # prod also needs GOOGLE_DIRECTORY_CLIENT_ID_PROD
+   ```
+   The deploy output must name `oa-$P-directory-broker` with `DIRECTORY_REGISTRY`, `RL_DIRECTORY_IP`, `RL_DIRECTORY_INSTALL` and the two vars, and no routes or workers.dev URL.
+4. Set the secrets **after** the Worker exists, never before (`wrangler secret put` on a missing Worker creates one). Never echo them:
+   ```sh
+   cd apps/directory-broker
+   pnpm exec wrangler secret put GOOGLE_DIRECTORY_CLIENT_SECRET --env "$ENV"   # paste from the password manager
+   openssl rand -base64 32 | pnpm exec wrangler secret put DIRECTORY_STATE_KEY --env "$ENV"
+   ```
+5. The route, added in the same gated zone-token step as the dispatch and auth broker routes, on the app zone only: `POST /zones/<zone_id>/workers/routes` with `{"pattern": "directory.$APP/*", "script": "oa-$P-directory-broker"}`. The most specific matching route wins, so this beats the `*.$APP/*` dispatch wildcard (see [How routes work](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior)). `directory.$APP` is covered by the wildcard DNS record from the dispatch step.
+6. Check: `curl -sS -o /dev/null -w '%{http_code}\n' "https://directory.$APP/"` must be the Directory broker's answer, not dispatch's plain `404 Not found` with body `Not found`.
 
 ## Nightly scheduler: one-time deploy per env (Task 7, gated)
 
@@ -319,7 +350,7 @@ A failed or skipped alert never changes the nightly lines above.
 ## Hosted release files (T3b)
 
 - The stored record is `{ "record": "<canonicalJson(record)>", "signature": "<base64url>" }`. The signature covers `"oa-release-v1\n" + env + "\n" + record` (the exact string). Readers verify that string, parse it refusing duplicate keys (objects built with a null prototype), and require it to re-serialize byte for byte.
-- CI signs and never uploads to Cloudflare. On a stable release, `release-please.yml` runs `hosted-guard` (tag to one commit on `main`, equal to `package.json`), `hosted-build` (both variants and the release files, `manifest.json`), `hosted-check` (every hash, `check-no-test-hooks` on the release bundle), `hosted-sign-staging` and `hosted-sign-prod` (environments `hosted-staging` and `hosted-prod`; checkout and download-artifact only, the runner's own node on plain `.mjs` (node:* imports, no install), key on stdin) and `hosted-attach-staging` / `hosted-attach-prod` (each rebuilds its env's tars and `.sig.json` files, verifies them and attaches them to the GitHub release; refused if that env's assets are already there).
+- CI signs and never uploads to Cloudflare. On a stable release, `release-please.yml` runs `hosted-guard` (tag to one commit on `main`, equal to `package.json`), `hosted-build` (both variants and the release files, `manifest.json`), `hosted-check` (every hash, `check-no-test-hooks` on the release bundle), `hosted-sign-staging` and `hosted-sign-prod` (environments `hosted-staging` and `hosted-prod`; checkout, `actions/setup-node` pinned by SHA with Node 22 from `.nvmrc` (no cache) and a v22 assert, then download-artifact and the sign step: plain `.mjs` (node:* imports, no install), key on stdin, in the sign step's env only) and `hosted-attach-staging` / `hosted-attach-prod` (each rebuilds its env's tars and `.sig.json` files, verifies them and attaches them to the GitHub release; refused if that env's assets are already there).
 - `publishRelease` (laptop, provisioning token; Task 8 wires the CLI) verifies a tar and its `.sig.json` against `RELEASE_PUBKEY[env]` and copies exactly those bytes to `oa-<p>-releases/releases/<version>/<variant>/`, every object `If-None-Match: *`. A version is never overwritten; a partial one (objects byte-identical to the tar, no record) is resumed. `publishRelease` and `publishFloor` first need `probeR2Conditionals(cf, env)` to pass in the same process (it proves the REST object routes enforce `If-None-Match` and `If-Match`).
 - The key ceremony's one-line PR sets the public keys in both `packages/provision/src/internal/gates.ts` and `scripts/ci/release-pubkeys.mjs` (a test pins them equal); the key jobs then refuse a signing key that is not the pinned one.
 - The signed floor `releases/floor.json` (`{ env, seq, minVersion, revoked }`, signed over `"oa-release-floor-v1\n" + env + "\n"` plus the record) gates `create`. The platform D1 `release_floor.floor_seq` is only a cache (raised with `MAX`); the anchor is `FLOOR_MIN_SEQ[env]`. `publishFloor` needs a higher `seq`, the same or a higher `minVersion` and a superset of `revoked`, and writes with `If-Match`.
@@ -333,13 +364,38 @@ A failed or skipped alert never changes the nightly lines above.
 2. Generate the Ed25519 keypair locally and pipe the private key straight into `RELEASE_APP_ID=<id> scripts/ops/hosted-set-signing-key.sh <env>` (never onto disk). The script runs the `gh api` reads above and refuses the upload unless every control holds; only then does it `gh secret set RELEASE_SIGNING_KEY --env hosted-<env>` from stdin.
 3. Put the public key (JWK `x`) in both `packages/provision/src/internal/gates.ts` and `scripts/ci/release-pubkeys.mjs` in one PR (a test pins them equal); flip `PROD_UNLOCKED` there for prod.
 
+### Platform resource names (per env)
+
+Every name carries the env prefix `oa-<p>-` (`oa-s-` staging, `oa-p-` prod), and provision refuses to touch a name without it. The source is `platformNames` in `packages/provision/src/names.ts`.
+
+| Name | What it is |
+| --- | --- |
+| `oa-<p>-platform` | Platform D1 (installs, hosts, audit, floor cache) |
+| `oa-<p>-releases` | R2 bucket of signed releases and floors |
+| `oa-<p>-hosts` | HOSTS KV (host to install id), read by dispatch |
+| `oa-<p>-broker-registry` | Install registry KV, bound only by the sign-in broker |
+| `oa-<p>-directory-registry` | Copy of the install registry, bound only by the directory broker (`DIRECTORY_REGISTRY`) |
+| `oa-<p>-auth-broker` | P2 sign-in broker Worker |
+| `oa-<p>-directory-broker` | P3 directory broker Worker |
+| `oa-<p>-dispatch` | Dispatch Worker |
+| `oa-<p>-scheduler` | Scheduler Worker |
+| `oa-<p>-inventory` | Inventory |
+| `oa-<p>-turnstile` | The env's one Turnstile widget |
+
+Why a copy: Workers KV has no read-only binding, so a directory broker bound to `oa-<p>-broker-registry` could plant a sign-in trust anchor if it were compromised. Both hold the same key, `install:<id>` (`registryKey` in `names.ts`, the key the auth broker reads). The entry also carries `domains`, the install's `AUTH_DOMAINS` parsed by `@oa/auth-core`'s `parseDomains` (lowercase A-labels, unique, sorted, at most 50, `[]` when none). `updateVars` rewrites both copies in its lease once the vars are live; if it returns `ok: false`, rerun it, because `registryDrift` compares the two copies with each other, not with the vars, so two copies that are equally stale don't show up. Only create and `updateVars` check the domains (more than 50, or invalid, is refused); upgrade and rollback never write the registry and never refuse on it. Provision writes each install's entry to the broker registry first, then the identical value to the directory registry, in the same step. Delete removes the directory copy first, then the broker entry, so the directory never trusts a key that sign-in has dropped. `WfpProvisioner.status(id)` reports drift per install in `registryDrift` (`missing_broker`, `missing_directory`, `mismatch`, or `missing_both` for an install that should have an entry: active, upgrading, or creating past the registry step) and never repairs it.
+
+Fixing drift: for a `creating` install, rerun `create`; it finishes both writes. For a `deleting` install, rerun `delete`. There is no repair op for an `active` install yet: `create` refuses it, and nothing else writes the copy. That is fine for M1, because no env has a brokered install yet (T9 has not run).
+
+TODO (Platform): before directory sync is enabled on any env that already has brokered installs, ship a lease-held backfill op that copies each broker entry to the directory registry (one way only, never directory to broker). The repair op overwrites the directory copy from the broker entry, never the reverse.
+
 ### First-create checklist (per env)
 
-1. Apply every platform D1 migration to `oa-<p>-platform`, in order: `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write.
-2. Key ceremony done: `RELEASE_PUBKEY[env]` set in gates.ts (and `PROD_UNLOCKED` for prod).
+1. Create the KV namespaces `oa-<p>-broker-registry` and `oa-<p>-directory-registry` side by side, before any provision run on the env (any provision version that includes the directory copy). With the broker on, create and every lifecycle operation (status aside) refuse before any write if either is missing.
+2. Apply every platform D1 migration to `oa-<p>-platform`, in order: `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write.
+3. Key ceremony done: `RELEASE_PUBKEY[env]` set in gates.ts (and `PROD_UNLOCKED` for prod).
    - Prod, before FinQore go-live: add the user back as a required reviewer on `hosted-prod` (admin bypass stays off), so every prod signing run waits for approval again.
-3. Sign the env's first floor with the `hosted-floor` workflow (dispatch on `main`: `env`, `seq` >= `FLOOR_MIN_SEQ[env]`, `min_version`, `revoked`), download its `floor-<env>-<seq>` artifact, and `publishFloor` it.
-4. `publishRelease` the signed tar and `.sig.json` from the GitHub release for each variant the env takes.
+4. Sign the env's first floor with the `hosted-floor` workflow (dispatch on `main`: `env`, `seq` >= `FLOOR_MIN_SEQ[env]`, `min_version`, `revoked`), download its `floor-<env>-<seq>` artifact, and `publishFloor` it.
+5. `publishRelease` the signed tar and `.sig.json` from the GitHub release for each variant the env takes.
 
 ### Release checklist: revoking a version or raising the floor
 
@@ -349,6 +405,7 @@ A failed or skipped alert never changes the nightly lines above.
 
 ### Leases and recovery (Task 5)
 
+- **Rollback barrier at Durable Object tag v3.** The release that adds tag v3 (`DirectorySync`, #571) is a rollback barrier for hosted installs. Provision refuses any rollback that crosses a Durable Object migration tag, so an install on that release or later can't roll back below it: fix forward instead. This is separate from the signed release floor (`releases/floor.json`, `minVersion`), which this doesn't raise.
 - Every create, upgrade, rollback, var change, Turnstile rotation and delete holds the install row's lease (`installs.lease`, `lease_until`, 30 minutes, renewed before each step). A second operation on the same install is refused while the lease is live. `status(id)` shows the state, the versions, `lease_until` and any pending session cut without taking the lease.
 - Use one `WfpProvisioner` per concurrent operation. A second operation started on an instance that is already running one is refused.
 - **After a `<op>.lost_lease` audit row** (the operation stopped with "lost the lease"), check `status(id)`. After `create.lost_lease`, re-run `delete(id, confirm: id)` if the install should go, or re-run create to resume it. Either one claims the row only once the other operation's lease has ended.

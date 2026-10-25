@@ -11,6 +11,7 @@ import {
   MemberSchema,
   type MePatch,
   MeSchema,
+  type OAuthClient,
   OAuthClientSchema,
   PageSchema,
   type PublishInput,
@@ -188,6 +189,24 @@ export const useRevokeToken = () =>
     () => [qk.tokens],
     "Couldn't revoke the token.",
   );
+/** PATCH a grant's label (null clears it); the list shows the answer. */
+export const useLabelOAuthClient = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { grantId: string; label: string | null }) =>
+      api.send(
+        "PATCH",
+        R.oauthClient(v.grantId),
+        { label: v.label },
+        OAuthClientSchema,
+      ),
+    onSuccess: (c) =>
+      qc.setQueryData<OAuthClient[]>(qk.oauthClients, (list) =>
+        list?.map((x) => (x.grantId === c.grantId ? c : x)),
+      ),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.oauthClients }),
+  });
+};
 export const useRevokeOAuthClient = () =>
   useInvalidating(
     (grantId: string) => api.send("DELETE", R.oauthClient(grantId), undefined),
@@ -265,14 +284,16 @@ const useInvalidating = <V, T>(
   return useMutation({
     mutationFn: fn,
     // Here, not at the call site: the row (and its component) may be gone by now.
-    ...(failure
-      ? {
-          onError: (e: unknown) => {
-            if (e instanceof ApiClientError && inline?.(e)) return;
-            failureToast(qc, failure, e);
-          },
-        }
-      : {}),
+    onError: (e: unknown) => {
+      // A 409 conflict means what we read is stale: reload it.
+      if (e instanceof ApiClientError && e.code === "conflict")
+        void Promise.all(
+          keys().map((queryKey) => qc.invalidateQueries({ queryKey })),
+        );
+      if (!failure) return;
+      if (e instanceof ApiClientError && inline?.(e)) return;
+      failureToast(qc, failure, e);
+    },
     onSuccess: () =>
       Promise.all(keys().map((queryKey) => qc.invalidateQueries({ queryKey }))),
   });
@@ -641,6 +662,52 @@ export const useDirectorySync = () =>
     () => [qk.directory],
     "Couldn't start a sync.",
     directoryInline,
+  );
+/**
+ * The connect confirm step (#564): Confirm runs the binding and answers the
+ * new status; Cancel drops the pending connection. 404 (nothing pending) and
+ * 409 (expired) are the caller's to show: both refetch the status.
+ */
+const usePendingDirectory = <T>(
+  fn: () => Promise<T>,
+  failure: string,
+  /** Hook-level, so they run even if the confirm screen is gone by then. */
+  on: { done?: () => void; expired?: () => void } = {},
+) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: (s) => {
+      if (s) qc.setQueryData(qk.directory, s);
+      on.done?.();
+    },
+    onError: (e) => {
+      if (e instanceof ApiClientError && e.status === 409)
+        return on.expired?.();
+      if (e instanceof ApiClientError && e.status === 404) return;
+      failureToast(qc, failure, e);
+    },
+    onSettled: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: qk.directory }),
+        qc.invalidateQueries({ queryKey: qk.me }),
+      ]),
+  });
+};
+export const useConfirmDirectory = (on?: { expired?: () => void }) =>
+  usePendingDirectory(
+    () => api.send("POST", R.directoryConfirm, undefined, SyncStatusSchema),
+    "Couldn't add the people.",
+    on,
+  );
+export const useCancelDirectory = (on?: {
+  done?: () => void;
+  expired?: () => void;
+}) =>
+  usePendingDirectory(
+    () => api.send("POST", R.directoryCancel, undefined).then(() => null),
+    "Couldn't cancel the connection.",
+    on,
   );
 export const useConfirmHeld = () =>
   useInvalidating(

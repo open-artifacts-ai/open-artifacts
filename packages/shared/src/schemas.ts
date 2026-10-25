@@ -333,8 +333,48 @@ export const ShareInputSchema = z.strictObject({
 });
 export type ShareInput = z.infer<typeof ShareInputSchema>;
 
+/**
+ * C0 controls (U+0000-U+001F), DEL (U+007F), bidi controls (LRM/RLM,
+ * ALM, LRE..RLO, LRI..PDI) and zero-width characters (ZWSP, ZWNJ, ZWJ,
+ * BOM/ZWNBSP): stripped from space names and agent labels.
+ */
+const NAME_CONTROLS =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  /[\u0000-\u001F\u007F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+
+/** A name with control and bidi characters removed. */
+export const stripNameControls = (s: string): string =>
+  s.replace(NAME_CONTROLS, "");
+
+/**
+ * A user label on a connected agent: control and bidi characters stripped
+ * (`stripNameControls`), then trimmed, 1-`max` characters (a label of only
+ * such characters is 400).
+ */
+const agentLabel = (max: number) =>
+  z
+    .string()
+    .transform(stripNameControls)
+    .pipe(
+      z
+        .string()
+        .trim()
+        .min(1, "Label must not be blank")
+        .refine(
+          (s) => [...s].length <= max,
+          `Label must be at most ${max} characters`,
+        ),
+    );
+
+/** An OAuth grant's label: 1-60 characters (see `agentLabel`). */
+export const AgentLabelSchema = agentLabel(60);
+
+/** A token's label on create and PATCH: 1-80 characters (see `agentLabel`). */
+export const TokenLabelSchema = agentLabel(80);
+
+/** POST R.tokens. The label is cleaned and counted as on PATCH (TokenLabelSchema). */
 export const TokenCreateInputSchema = z.strictObject({
-  label: z.string().trim().min(1).max(80),
+  label: TokenLabelSchema,
 });
 export type TokenCreateInput = z.infer<typeof TokenCreateInputSchema>;
 
@@ -454,19 +494,96 @@ export const TokenSchema = z.object({
   id: z.string(),
   label: z.string(),
   createdAt: z.string(),
+  /** Last authenticated request, up to a minute stale (null: never used). */
   lastUsedAt: z.string().nullable(),
+  /** Versions published with this token (absent on older servers). */
+  versionsPublished: z.number().int().nonnegative().optional(),
 });
 export type Token = z.infer<typeof TokenSchema>;
 
 export const TokenCreatedSchema = TokenSchema.extend({ token: z.string() });
 export type TokenCreated = z.infer<typeof TokenCreatedSchema>;
 
+/**
+ * PATCH R.token(id) -> Token. The caller's own tokens only (else 404). A
+ * token's label is required, so null is 400.
+ */
+export const TokenPatchSchema = z.strictObject({ label: TokenLabelSchema });
+export type TokenPatch = z.infer<typeof TokenPatchSchema>;
+export type TokenPatchInput = z.input<typeof TokenPatchSchema>;
+
+/**
+ * Coarse browser family of the request that approved a grant, parsed from
+ * its User-Agent. No raw User-Agent and no IP are stored.
+ */
+export const AgentBrowserSchema = z.enum([
+  "chrome",
+  "safari",
+  "firefox",
+  "edge",
+  "other",
+]);
+export type AgentBrowser = z.infer<typeof AgentBrowserSchema>;
+
+/** Coarse OS family of the request that approved a grant. */
+export const AgentOsSchema = z.enum([
+  "macos",
+  "windows",
+  "linux",
+  "ios",
+  "android",
+  "chromeos",
+  "other",
+]);
+export type AgentOs = z.infer<typeof AgentOsSchema>;
+
+export const ApprovedFromSchema = z.object({
+  browser: AgentBrowserSchema,
+  os: AgentOsSchema,
+});
+export type ApprovedFrom = z.infer<typeof ApprovedFromSchema>;
+
+/**
+ * Where a grant's redirect URI points: `computer` for a loopback host
+ * (127.0.0.1, [::1], localhost) or a custom scheme, `hosted` for https.
+ */
+export const RedirectKindSchema = z.enum(["computer", "hosted"]);
+export type RedirectKind = z.infer<typeof RedirectKindSchema>;
+
+/**
+ * A connected MCP client (one OAuth grant of the caller). Every field after
+ * createdAt is optional: grants approved before identity cards carry no
+ * approval fields, and the usage fields are absent until first use.
+ */
 export const OAuthClientSchema = z.object({
   grantId: z.string(),
+  /** Self-reported by the client at registration. */
   clientName: z.string(),
   createdAt: z.string(),
+  /** The owner's label (absent: none set). */
+  label: z.string().optional(),
+  redirectKind: RedirectKindSchema.optional(),
+  /** The redirect URI's https host (absent for a computer). */
+  redirectHost: z.string().optional(),
+  approvedFrom: ApprovedFromSchema.optional(),
+  /** Last authenticated MCP request, up to a minute stale. */
+  lastUsedAt: z.string().optional(),
+  /** MCP clientInfo.version, self-reported, as last seen. */
+  clientVersion: z.string().optional(),
+  /** Versions published through this grant. */
+  versionsPublished: z.number().int().nonnegative().optional(),
 });
 export type OAuthClient = z.infer<typeof OAuthClientSchema>;
+
+/**
+ * PATCH R.oauthClient(grantId) -> OAuthClient. The caller's own grants only
+ * (else 404); null clears the label.
+ */
+export const OAuthClientPatchSchema = z.strictObject({
+  label: AgentLabelSchema.nullable(),
+});
+export type OAuthClientPatch = z.infer<typeof OAuthClientPatchSchema>;
+export type OAuthClientPatchInput = z.input<typeof OAuthClientPatchSchema>;
 
 export const SettingsSchema = z.object({
   name: z.string().min(1).max(80),

@@ -67,11 +67,11 @@ export const R = {
   member: (id: string) => `/api/v1/members/${seg(id)}`,
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
   tokens: "/api/v1/tokens",
-  /** DELETE -> 204 */
+  /** PATCH TokenPatch -> Token; DELETE -> 204. Own tokens only (else 404). */
   token: (id: string) => `/api/v1/tokens/${seg(id)}`,
   /** GET -> OAuthClient[] */
   oauthClients: "/api/v1/oauth-clients",
-  /** DELETE -> 204 */
+  /** PATCH OAuthClientPatch -> OAuthClient; DELETE -> 204. Own grants only (else 404). */
   oauthClient: (grantId: string) => `/api/v1/oauth-clients/${seg(grantId)}`,
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",

@@ -41,6 +41,8 @@ describe("provision names", () => {
       scheduler: "oa-s-scheduler",
       inventory: "oa-s-inventory",
       broker: "oa-s-auth-broker",
+      directoryBroker: "oa-s-directory-broker",
+      directoryRegistry: "oa-s-directory-registry",
       dispatch: "oa-s-dispatch",
       hosts: "oa-s-hosts",
       turnstile: "oa-s-turnstile",
@@ -48,6 +50,15 @@ describe("provision names", () => {
     expect(platformNames("prod").turnstile).toBe("oa-p-turnstile");
     expect(platformNames("prod").db).toBe("oa-p-platform");
     expect(platformNames("prod").hosts).toBe("oa-p-hosts");
+    expect(platformNames("prod").directoryBroker).toBe("oa-p-directory-broker");
+    expect(platformNames("prod").directoryRegistry).toBe(
+      "oa-p-directory-registry",
+    );
+    // H-DR: the directory broker binds a copy, never the sign-in registry.
+    for (const env of ["staging", "prod"] as const)
+      expect(platformNames(env).directoryRegistry).not.toBe(
+        platformNames(env).registry,
+      );
     // Create and delete write HOSTS under the same title the dispatch Worker binds.
     expect(hostsKvTitle("staging")).toBe(platformNames("staging").hosts);
     expect(hostsKvTitle("prod")).toBe(platformNames("prod").hosts);

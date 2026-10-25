@@ -1,7 +1,7 @@
 // @ts-check
 // hosted-floor (T3b H1): signs the env's release floor (releases/floor.json)
 // with the env's release key, the only place that key exists. Plain .mjs run
-// by the runner's own node (no setup-node, no strip-types); node:* imports
+// on Node 22 (setup-node from .nvmrc, no strip-types); node:* imports
 // only (and the local .mjs it imports, likewise): the job installs nothing.
 // The key arrives on stdin only:
 //   printf '%s' "$RELEASE_SIGNING_KEY" | node scripts/ci/sign-floor.mjs \

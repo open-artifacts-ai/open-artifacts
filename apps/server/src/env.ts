@@ -1,3 +1,4 @@
+import type { DirectorySync } from "./directory/sync-do.js";
 import type { ArtifactRuntime } from "./runtime/do.js";
 import type { UserPresence } from "./runtime/presence.js";
 
@@ -12,6 +13,11 @@ export interface Env {
    * TTL ceiling (logged as presence_unbound).
    */
   USER_PRESENCE?: DurableObjectNamespace<UserPresence>;
+  /**
+   * One DirectorySync DO per install (directory/sync-do.ts): Google polling,
+   * reconcile and queued access jobs. Unbound, directory sync never runs.
+   */
+  DIRECTORY_SYNC?: DurableObjectNamespace<DirectorySync>;
   ASSETS: Fetcher;
   /** Anonymous-write limiter (per IP); unbound in the test pool. */
   RL_ANON?: RateLimit;

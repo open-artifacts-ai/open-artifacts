@@ -175,6 +175,14 @@ const rows: Row[] = [
   ["tokens", "POST", R.tokens, { label: "ci" }, 201, TokenCreatedSchema],
   [
     "token",
+    "PATCH",
+    R.token(fixtures.tokens[0]?.id as string),
+    { label: "work laptop" },
+    200,
+    TokenSchema,
+  ],
+  [
+    "token",
     "DELETE",
     R.token(fixtures.tokens[0]?.id as string),
     undefined,
@@ -188,6 +196,14 @@ const rows: Row[] = [
     undefined,
     200,
     z.array(OAuthClientSchema),
+  ],
+  [
+    "oauthClient",
+    "PATCH",
+    R.oauthClient(fixtures.oauthClients[0]?.grantId as string),
+    { label: "Claude on my laptop" },
+    200,
+    OAuthClientSchema,
   ],
   [
     "oauthClient",
@@ -391,6 +407,18 @@ describe("validation", () => {
     ["POST", R.members, { email: "a@b.co", role: "owner" }],
     ["PATCH", R.member(member), { role: "guest" }],
     ["POST", R.tokens, { label: "" }],
+    ["PATCH", R.token(fixtures.tokens[0]?.id as string), { label: null }],
+    ["PATCH", R.token(fixtures.tokens[0]?.id as string), { label: "\u202e" }],
+    [
+      "PATCH",
+      R.oauthClient(fixtures.oauthClients[0]?.grantId as string),
+      { label: "x".repeat(61) },
+    ],
+    [
+      "PATCH",
+      R.oauthClient(fixtures.oauthClients[0]?.grantId as string),
+      { label: "ok", clientName: "spoof" },
+    ],
     ["POST", R.versions(ID), {}],
   ])("%s %s bad body -> 400", async (m, p, b) => {
     fresh();
@@ -413,14 +441,46 @@ describe("not found", () => {
     ["PATCH", R.member(bad)],
     ["DELETE", R.member(bad)],
     ["DELETE", R.token(bad)],
+    ["PATCH", R.token(bad)],
     ["DELETE", R.oauthClient(bad)],
+    ["PATCH", R.oauthClient(bad)],
     ["DELETE", R.share(ID, "nobody@example.com")],
     ["GET", R.versions(bad)],
   ])("%s %s -> 404 not_found", async (m, p) => {
     fresh();
-    const r = await call(m, p, m === "PATCH" ? { role: "admin" } : undefined);
+    const patch = p.startsWith(R.members) ? { role: "admin" } : { label: "x" };
+    const r = await call(m, p, m === "PATCH" ? patch : undefined);
     expect(r.status).toBe(404);
     expect(Err.parse(await r.json()).error.code).toBe("not_found");
+  });
+});
+
+describe("agent labels", () => {
+  const grant = fixtures.oauthClients[0]?.grantId as string;
+  it("PATCH oauthClient strips controls, trims, lists it, and null clears it", async () => {
+    fresh();
+    const set = await json(
+      await call("PATCH", R.oauthClient(grant), {
+        label: " \u202eMy\u200b box ",
+      }),
+    );
+    expect(set.label).toBe("My box");
+    const listed = await json(await call("GET", R.oauthClients));
+    expect(listed[0].label).toBe("My box");
+    const cleared = await json(
+      await call("PATCH", R.oauthClient(grant), { label: null }),
+    );
+    expect(cleared).not.toHaveProperty("label");
+    expect(OAuthClientSchema.parse(cleared).clientName).toBe(
+      "Example MCP client",
+    );
+  });
+  it("PATCH token sets its label", async () => {
+    fresh();
+    const id = fixtures.tokens[0]?.id as string;
+    await call("PATCH", R.token(id), { label: "ci" });
+    const listed = await json(await call("GET", R.tokens));
+    expect(listed[0].label).toBe("ci");
   });
 });
 

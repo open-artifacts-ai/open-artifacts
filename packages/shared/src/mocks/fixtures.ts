@@ -189,6 +189,7 @@ export const fixtures: {
       label: "laptop",
       createdAt: "2026-01-02T10:00:00.000Z",
       lastUsedAt: null,
+      versionsPublished: 0,
     },
   ],
   oauthClients: [
@@ -196,6 +197,11 @@ export const fixtures: {
       grantId: "Km3nPqRsTu4vWxYz",
       clientName: "Example MCP client",
       createdAt: "2026-01-02T10:00:00.000Z",
+      redirectKind: "computer",
+      approvedFrom: { browser: "chrome", os: "macos" },
+      lastUsedAt: "2026-01-02T12:00:00.000Z",
+      clientVersion: "1.2.0",
+      versionsPublished: 3,
     },
   ],
   data: [

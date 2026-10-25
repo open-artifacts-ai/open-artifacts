@@ -5,11 +5,13 @@ import { R } from "@oa/shared";
 import { beforeAll, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { authConfig } from "../src/auth/config.js";
+import { createPat } from "../src/auth/pat.js";
 import {
   publicPrefix,
   signContent,
   signContentPrefix,
 } from "../src/content/signing.js";
+import { resetTouchMemo, touchGrant } from "../src/services/agent-usage.js";
 import { publish } from "../src/services/artifacts.js";
 import { admit } from "../src/services/identity.js";
 import { indexVersionOrThrow } from "../src/services/search.js";
@@ -199,6 +201,39 @@ it("spaces API reads (P3 T9): GET /spaces skips personal spaces; a member page d
   // Measured 37 to 40: the 5-member set and its users twice (page ids,
   // total), then only the 2-row page decorated (roles, groups).
   expect(rows.read).toBeLessThanOrEqual(44);
+});
+
+it("agent identity: a token publish adds its counter row; a grant's use writes at most once a minute", async () => {
+  const u = await login("rows-agent@x.com");
+  const { token } = await createPat(env, u.userId, "rows");
+  const r = await api(A as never, R.artifacts, token, {
+    method: "POST",
+    body: { title: "Rows", format: "markdown", content: "# a" },
+  });
+  const { id } = (await r.json()) as { id: string };
+  rows.n = 0;
+  const v = await api(A as never, R.versions(id), token, {
+    method: "POST",
+    body: { format: "markdown", content: "# b" },
+  });
+  expect(v.status).toBe(201);
+  // bump 3 + versions 2 (agent_via has no index) + tokens counter 1.
+  expect(rows.n).toBe(6);
+
+  const grantId = `g-${u.userId}`;
+  resetTouchMemo();
+  const t0 = Date.now();
+  // First use: the agent_grants insert (table, primary key index,
+  // agent_grants_user_idx).
+  expect(await touchGrant(env, grantId, u.userId, "1.0", t0)).toBe(3);
+  resetTouchMemo();
+  // Within the minute (memo cleared): the conditional upsert writes nothing.
+  expect(await touchGrant(env, grantId, u.userId, "1.0", t0 + 59_000)).toBe(0);
+  // Same isolate within the minute: no D1 call at all.
+  expect(await touchGrant(env, grantId, u.userId, null, t0 + 59_500)).toBe(0);
+  resetTouchMemo();
+  // A minute on: one row update.
+  expect(await touchGrant(env, grantId, u.userId, null, t0 + 60_000)).toBe(1);
 });
 
 it("move and transfer (P3 T10): the row, its index entries and the audit row", async () => {
