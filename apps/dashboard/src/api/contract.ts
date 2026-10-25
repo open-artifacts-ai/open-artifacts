@@ -21,6 +21,8 @@ export {
   type ArtifactCan,
   type AuthProviders,
   artifactCan,
+  type BreakGlassRequiredDetails,
+  BreakGlassRequiredDetailsSchema,
   type CapReason,
   CODE_POLICY,
   type CodeRateLimitedDetails,

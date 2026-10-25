@@ -11,7 +11,14 @@ import { act, render } from "@testing-library/react";
 import { getResponse, type HttpHandler, HttpResponse, http } from "msw";
 import { setupServer } from "msw/node";
 import type { ReactNode } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  type Mock,
+  vi,
+} from "vitest";
 import { resetCpuLimit } from "../src/api/client";
 import { makeQueryClient } from "../src/api/queryClient";
 import { RedirectProvider } from "../src/auth/redirect";
@@ -125,14 +132,18 @@ export const installHarness = () => {
 /** The QueryClient of the most recent `mount`. */
 export let lastClient: ReturnType<typeof makeQueryClient>;
 
+/** The redirect of the most recent `mount` (full-page navigations). */
+export let lastRedirect: Mock<(url: string) => void>;
+
 export const mount = (path: string) => {
   lastClient = makeQueryClient();
+  lastRedirect = vi.fn();
   const router = createAppRouter(
     createMemoryHistory({ initialEntries: [path] }),
   );
   render(
     <QueryClientProvider client={lastClient}>
-      <RedirectProvider value={vi.fn()}>
+      <RedirectProvider value={lastRedirect}>
         <RouterProvider router={router} />
       </RedirectProvider>
     </QueryClientProvider>,

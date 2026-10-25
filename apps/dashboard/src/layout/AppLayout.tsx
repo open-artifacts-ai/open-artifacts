@@ -28,10 +28,11 @@ import {
   useRouterState,
   useSearch,
 } from "@tanstack/react-router";
-import { type MouseEvent, type ReactNode, useEffect } from "react";
+import { type MouseEvent, type ReactNode, useEffect, useRef } from "react";
 import { ApiClientError } from "../api/client";
 import { hasFeature } from "../api/contract";
 import { qk } from "../api/queries";
+import { BreakGlass } from "../auth/BreakGlass";
 import { useRedirect } from "../auth/redirect";
 import { useSignOut } from "../auth/signOut";
 import { useMe } from "../auth/useMe";
@@ -107,6 +108,11 @@ function Layout() {
     useRouterState({ select: (s) => s.matches.at(-1)?.pathname }) ??
     loc.pathname;
   const embed = isEmbed();
+  // Break-glass outlives a /me refetch (pending, with no data), so the card
+  // isn't swapped for the shell while /me is asked again.
+  const breakGlass = useRef<boolean | null>(null);
+  if (state.status === "breakGlass") breakGlass.current = state.fresh;
+  else if (state.status !== "loading") breakGlass.current = null;
   const anonymous =
     !embed && state.status === "anonymous" && !publicRoute(path);
 
@@ -127,6 +133,17 @@ function Layout() {
   }, [guestHome, navigate]);
 
   if (anonymous || guestHome) return null;
+  // The owner locked out by a directory mismatch: the card, with no app shell.
+  if (!embed && breakGlass.current !== null)
+    return (
+      <main id="oa-main">
+        <BreakGlass
+          fresh={breakGlass.current}
+          path={path}
+          search={loc.searchStr}
+        />
+      </main>
+    );
   // Framed: /a/<id>/full alone, with no app chrome or banners.
   if (embed)
     return (
