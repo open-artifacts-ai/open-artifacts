@@ -257,6 +257,24 @@ it("a customer mismatch shows both ids to the owner", async () => {
   );
 });
 
+it.each(["auth_failed", "scope_missing"] as const)(
+  "admins in %s: ask the owner to reconnect or disconnect, no buttons",
+  async (state) => {
+    mountHosted(
+      "/settings/directory",
+      true,
+      asAdmin,
+      serveStatus({ healthy: false, state }),
+    );
+    const s = await status();
+    expect(s).toHaveTextContent(
+      "Ask the owner, Ada Lovelace, to reconnect or disconnect.",
+    );
+    expect(screen.queryByRole("link", { name: "Reconnect" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
+  },
+);
+
 it("admins see a customer mismatch without the ids", async () => {
   mountHosted(
     "/settings/directory",
@@ -274,7 +292,7 @@ it("admins see a customer mismatch without the ids", async () => {
   expect(s).not.toHaveTextContent("C09xyz");
   expect(within(s).queryByRole("link", { name: "Reconnect" })).toBeNull();
   expect(s).toHaveTextContent(
-    "Only the owner, Ada Lovelace, can reconnect or disconnect.",
+    "Ask the owner, Ada Lovelace, to reconnect or disconnect.",
   );
 });
 

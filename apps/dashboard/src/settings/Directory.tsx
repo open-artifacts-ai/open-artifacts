@@ -376,6 +376,13 @@ function StatusHeader({
       Only the owner{ownerName ? `, ${ownerName},` : ""} can {what}.
     </p>
   );
+  // Where the owner's fix is Reconnect (or Disconnect), admins pass it on.
+  const askOwner = !owner && (
+    <p className={muted}>
+      Ask the owner{ownerName ? `, ${ownerName},` : ""} to reconnect or
+      disconnect.
+    </p>
+  );
   const syncNow = owner && (
     <Button
       size="sm"
@@ -570,7 +577,7 @@ function StatusHeader({
           </p>
           {owner && <p>Reconnect with a Google super admin account.</p>}
           {frozenUntilReconnect}
-          {!owner && only("reconnect or disconnect")}
+          {askOwner}
         </Header>
       );
     case "scope_missing":
@@ -590,7 +597,7 @@ function StatusHeader({
             <p>Reconnect and allow every permission Google asks for.</p>
           )}
           {frozenUntilReconnect}
-          {!owner && only("reconnect or disconnect")}
+          {askOwner}
         </Header>
       );
     case "customer_mismatch":
@@ -611,7 +618,7 @@ function StatusHeader({
             <p>Nothing was changed.</p>
           )}
           {frozenUntilReconnect}
-          {!owner && only("reconnect or disconnect")}
+          {askOwner}
         </Header>
       );
   }
