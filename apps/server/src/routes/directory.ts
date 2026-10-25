@@ -10,6 +10,7 @@ import {
   connectClient,
   dirCookieName,
   directoryStatus,
+  disconnectDirectory,
   finishConnect,
   refuseConnect,
   startConnect,
@@ -105,6 +106,25 @@ export function mountDirectory(app: AppType): void {
   app.post(R.directoryCancel, async (c) => {
     if (!manages(c)) throw notFound();
     await cancelConnect(c.env, requireUser(c));
+    return c.body(null, 204);
+  });
+
+  // Disconnect (org owner or admin): revoke, wipe, stop sync; memberships
+  // stay frozen. Idempotent. Works without a transport too (the wipe still
+  // runs; the revoke is then audited revoke_failed).
+  const disconnect = (c: Context<AppEnv>) => {
+    const user = requireUser(c);
+    if (
+      !orgCan(user, "directory.disconnect", { cap: capOfCaller(caller(c)) })
+    )
+      throw notFound();
+    return disconnectDirectory(c.env, userActor(user.id), {
+      showProblem: manages(c),
+    });
+  };
+  app.post(R.directoryDisconnect, async (c) => c.json(await disconnect(c)));
+  app.delete(R.directory, async (c) => {
+    await disconnect(c);
     return c.body(null, 204);
   });
 

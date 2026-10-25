@@ -62,6 +62,8 @@ export type OrgAction =
   | "artifact.create"
   | "transfer.departed"
   | "directory.manage"
+  /** Disconnect the directory (R.directoryDisconnect): org owner or admin. */
+  | "directory.disconnect"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"

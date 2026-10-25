@@ -407,6 +407,30 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   // ---- derived views --------------------------------------------------------
   const isAdmin = () => me.user.role === "owner" || me.user.role === "admin";
   /**
+   * R.directoryDisconnect / DELETE R.directory: the binding and health go,
+   * memberships stay (frozen). Nothing connected: no change, no audit row.
+   */
+  const disconnect = () => {
+    if (!sync.binding && sync.state !== "pending_confirm") return;
+    Object.assign(sync, {
+      binding: null,
+      healthy: sync.mode === "off" ? null : false,
+      state: "never",
+      unhealthySince: null,
+      lastSuccessAt: null,
+      lastError: null,
+      nextRunAt: null,
+      staleAt: null,
+      alertedAt: null,
+      customerMismatch: null,
+      held: [],
+      pendingCount: null,
+      pendingCountCapped: false,
+      pendingExpiresAt: null,
+    } satisfies Partial<SyncStatus>);
+    log("directory.disconnect", { type: "directory", id: "google" });
+  };
+  /**
    * Changing an owner's or admin's role, removing them or resetting their
    * Google link needs the uncapped owner (#475): 403 owner_only otherwise.
    */
@@ -1650,9 +1674,21 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       "*/api/v1/directory",
       authed(() => (isAdmin() ? HttpResponse.json(sync) : notFound())),
     ),
+    http.post(
+      "*/api/v1/directory/disconnect",
+      authed(() => {
+        if (!isAdmin()) return notFound();
+        disconnect();
+        return HttpResponse.json(sync);
+      }),
+    ),
     http.delete(
       "*/api/v1/directory",
-      authed(() => (me.user.role === "owner" ? noContent() : notFound())),
+      authed(() => {
+        if (!isAdmin()) return notFound();
+        disconnect();
+        return noContent();
+      }),
     ),
     http.get(
       "*/api/v1/audit",

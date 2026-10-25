@@ -163,6 +163,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/directory/groups": { org: "org.mappings" },
   "POST /api/v1/directory/sync": { org: "directory.manage" },
   "POST /api/v1/directory/held/:groupId/confirm": { org: "directory.manage" },
+  // Disconnect (org owner or admin; provision with the owner PAT before a
+  // hosted install is deleted). DELETE R.directory is the same, answering 204.
+  "POST /api/v1/directory/disconnect": { org: "directory.disconnect" },
+  "DELETE /api/v1/directory": { org: "directory.disconnect" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },

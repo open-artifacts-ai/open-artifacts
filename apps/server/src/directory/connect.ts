@@ -11,8 +11,8 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logInfo, logWarn } from "../log.js";
-import { audit, userActor } from "../services/audit.js";
-import { afterDirectoryConnect } from "../services/directory.js";
+import { type AuditActor, audit, userActor } from "../services/audit.js";
+import { afterDirectoryConnect, resetSync } from "../services/directory.js";
 import { directoryMode } from "../services/spaces.js";
 import {
   b64urlDecode,
@@ -44,7 +44,9 @@ import {
   readBinding,
   readPending,
   readPendingRaw,
+  revokeAtGoogle,
   revokeGrant,
+  wipeState,
 } from "./store.js";
 import {
   type DirectoryClient,
@@ -473,6 +475,73 @@ export async function cancelConnect(env: Env, user: Member): Promise<void> {
       sub: p.s,
       keep: [live],
     });
+}
+
+/** What a disconnect did with a token at Google (directory.disconnect detail). */
+type RevokeOutcome = "revoked" | "revoke_failed" | "none";
+
+/** Any connection state: a live binding or token, or a pending consent. */
+const CONNECTED = `exists (select 1 from directory_state where key in (?, ?, ?, ?, ?))`;
+const CONNECTED_KEYS = [
+  K.binding,
+  K.refresh,
+  K.pendingBinding,
+  K.pendingRefresh,
+  K.confirm,
+];
+
+/**
+ * POST R.directoryDisconnect (org owner or admin; also provision before it
+ * deletes a hosted install). Revokes the live grant at Google, and a pending
+ * one on another account, best effort: a failure is audited (revoke_failed)
+ * and logged, never an error. Then deletes every directory_state key in one
+ * batch with the directory.disconnect audit row (gated, so a racing
+ * disconnect writes one), and resets DirectorySync (its next alarm clears
+ * its state and, with no binding, calls Google no more).
+ * Memberships stay as they are (frozen): directory_members, sync
+ * space_members, restricted_sync, org-group roles and bound identities are
+ * not touched. Nothing connected: a no-op (no revoke, audit or reset).
+ */
+export async function disconnectDirectory(
+  env: Env,
+  actor: AuditActor,
+  o: { showProblem: boolean },
+): Promise<SyncStatus> {
+  const [live, pend, sub, p] = await Promise.all([
+    readBinding(env, "live"),
+    readBinding(env, "pending"),
+    liveSub(env),
+    readPending(env),
+  ]);
+  if (!live.binding && !live.sealed && !pend.binding && !pend.sealed && !p)
+    return directoryStatus(env, o);
+  const revoke = async (
+    sealed: string | null,
+    which: "live" | "pending",
+  ): Promise<RevokeOutcome> =>
+    sealed
+      ? (await revokeAtGoogle(env, sealed, which))
+        ? "revoked"
+        : "revoke_failed"
+      : "none";
+  const revoked = await revoke(live.sealed, "live");
+  // The same Google account as the live token: one grant, revoked above.
+  const samePending = !!live.sealed && !!p?.s && p.s === sub;
+  const pending = samePending ? "none" : await revoke(pend.sealed, "pending");
+  await env.DB.batch([
+    audit(env, "directory.disconnect", AUDIT_TARGET, actor, {
+      detail: {
+        outcome: "disconnected",
+        revoke: revoked,
+        ...(pending !== "none" ? { pendingRevoke: pending } : {}),
+      },
+      when: { sql: CONNECTED, args: CONNECTED_KEYS },
+    }),
+    wipeState(env),
+  ]);
+  logInfo("directory_disconnect", { revoke: revoked, pending });
+  await resetSync(env);
+  return directoryStatus(env, o);
 }
 
 /**

@@ -299,16 +299,7 @@ export async function revokeGrant(
       .catch((e) => logWarn("directory_revoke_audit", e));
     return false;
   }
-  let ok = false;
-  try {
-    const c = directoryClient(env);
-    if (c) {
-      await c.revoke(sealed);
-      ok = true;
-    }
-  } catch (e) {
-    logWarn("directory_revoke", e, { which });
-  }
+  const ok = await revokeAtGoogle(env, sealed, which);
   await audit(
     env,
     "directory.connect",
@@ -320,6 +311,34 @@ export async function revokeGrant(
     .catch((e) => logWarn("directory_revoke_audit", e));
   return ok;
 }
+
+/**
+ * One revoke of the grant behind `sealed` at Google, through this install's
+ * transport (broker or direct). Never throws: false when it failed or no
+ * transport is configured (logged).
+ */
+export async function revokeAtGoogle(
+  env: Env,
+  sealed: string,
+  which: "old" | "pending" | "live",
+): Promise<boolean> {
+  try {
+    const c = directoryClient(env);
+    if (!c) return false;
+    await c.revoke(sealed);
+    return true;
+  } catch (e) {
+    logWarn("directory_revoke", e, { which });
+    return false;
+  }
+}
+
+/**
+ * Every directory_state key (binding, tokens, pending consent, grant.sub,
+ * the initial pass, health and sync.state): disconnect leaves none.
+ */
+export const wipeState = (env: Env) =>
+  stmt(env.DB, "delete from directory_state");
 
 /** The Google account behind the live token, or null. */
 export async function liveSub(env: Env): Promise<string | null> {
