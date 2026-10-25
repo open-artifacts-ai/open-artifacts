@@ -55,7 +55,7 @@ const REAUTH = `/auth/login/google?next=${encodeURIComponent(PAGE)}`;
 const SYNC_POLL_MS = 5_000;
 const SYNC_WINDOW_MS = 120_000;
 
-const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
+export const people = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
 
 // -- times: relative on screen, exact on hover and for screen readers
 
@@ -113,7 +113,10 @@ const At = ({ iso }: { iso: string }) => <When iso={iso} text={when(iso)} />;
 // -- connect errors (`?error=` after Google)
 
 /** The reason Google gave, or null when there is none to show. */
-const connectCopy = (raw: string, domain: string | null): string | null => {
+export const connectCopy = (
+  raw: string,
+  domain: string | null,
+): string | null => {
   const parsed = DirectoryConnectErrorSchema.safeParse(raw);
   switch (parsed.success ? parsed.data : "failed") {
     case "not_super_admin":
@@ -171,7 +174,7 @@ type Outcome = "cancelled" | "expired" | null;
 
 const listFmt = new Intl.ListFormat("en", { type: "conjunction" });
 /** The viewer's zone, as Design asks; no year when it's this year (the row date rule). */
-const expiry = (iso: string) => {
+export const expiry = (iso: string) => {
   const d = new Date(iso);
   return new Intl.DateTimeFormat(undefined, {
     month: "short",
