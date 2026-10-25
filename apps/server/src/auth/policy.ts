@@ -62,6 +62,8 @@ export type OrgAction =
   | "artifact.create"
   | "transfer.departed"
   | "directory.manage"
+  /** Disconnect the directory (R.directoryDisconnect): the org owner, in a cookie session (the handler refuses bearer auth). */
+  | "directory.disconnect"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"
@@ -314,6 +316,8 @@ export function orgCan(
     case "settings.read":
       return TEAM_ROLES.includes(m.role);
     case "directory.manage":
+    // Disconnect: owner only too (the route also needs a cookie session).
+    case "directory.disconnect":
     // Acting on an org owner or admin (role, removal, suspension, Google
     // link reset): owner only (#475).
     case "members.manageAdmins":

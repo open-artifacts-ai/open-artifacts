@@ -463,7 +463,9 @@ describe("break-glass", () => {
     const fresh = await cookieFor(owner.id, { age: 9 * MIN });
     const r = await call(R.directory, fresh);
     expect(r.status).toBe(200);
-    expect(((await r.json()) as SyncStatus).state).toBe("never");
+    // No binding with sync.state customer_mismatch (as after a disconnect
+    // during one): the status says why synced users are denied.
+    expect(((await r.json()) as SyncStatus).state).toBe("customer_mismatch");
     const old = await call(
       R.directory,
       await cookieFor(owner.id, { age: 11 * MIN }),

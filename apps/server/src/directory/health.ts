@@ -129,10 +129,32 @@ export const putHealth = (
 
 /** Drops the health rows (directory disconnected). */
 export const clearHealth = (env: Pick<Env, "DB">) =>
-  stmt(env.DB, "delete from directory_state where key in (?, ?)").bind(
-    HK.health,
-    HK.state,
-  );
+  stmt(
+    env.DB,
+    `delete from directory_state where key = ?1 or (key = ?2 and (
+      value <> 'customer_mismatch'
+      or exists (select 1 from directory_state where key = 'binding')))
+      or (key = 'binding.prior'
+        and exists (select 1 from directory_state where key = 'binding'))`,
+  ).bind(HK.health, HK.state);
+
+/**
+ * A disconnect during customer_mismatch keeps sync.state as this tombstone
+ * (no binding): synced users stay denied (fail closed). clearHealth keeps it
+ * too; only a new live binding (the owner's break-glass reconnect and
+ * confirm, whose resetSync clears health) lifts it.
+ */
+export const MISMATCH_TOMBSTONE = "customer_mismatch";
+
+/** The bare sync.state row, or null. */
+export async function readSyncState(
+  env: Pick<Env, "DB">,
+): Promise<string | null> {
+  const row = await stmt(env.DB, READ)
+    .bind(HK.state)
+    .first<{ value: string }>();
+  return row?.value ?? null;
+}
 
 const iso = (n: number | null) =>
   n === null ? null : new Date(n).toISOString();

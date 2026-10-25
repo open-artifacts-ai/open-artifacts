@@ -203,7 +203,8 @@ Accepted disclosure: `scope=space` (or any `spaceId`) naming another user's pers
 | Route | Response | Who |
 |---|---|---|
 | `GET R.directory` | `SyncStatus` | org owner, admin |
-| `DELETE R.directory` | 204 (disconnect; memberships freeze) | org owner |
+| `POST R.directoryDisconnect` `/directory/disconnect` | 200 `SyncStatus` (`binding` null, `state` `never`): revokes the Google grant (best effort; a failure is audited `revoke_failed` and the disconnect still completes), deletes the binding, tokens and any pending consent, and stops sync. Synced memberships stay exactly as they are (`directory_members`, `source: "sync"` space rows, `restricted_sync`, Every-space roles), as in frozen mode: nobody loses access. During a `customer_mismatch`, `state` stays `customer_mismatch` and synced users stay denied until an owner reconnects and confirms. Nothing connected: 200, no change (idempotent). Every active owner is emailed | the org owner in an interactive cookie session (CSRF): Cloudflare Access, Google or an email code; a member, an admin, any PAT or grant: 404. Late tokens (committed after the reads) are revoked too, audited `{ outcome: "revoke_late", token: "live" \| "pending", revoke }`. Audited `directory.disconnect` `{ outcome: "disconnected", revoke, pendingRevoke?, mismatchKept?, notified }` |
+| `DELETE R.directory` | 204: the same disconnect as `POST R.directoryDisconnect` | same |
 | `GET R.directoryGroups` | `DirectoryGroupsQuery` → `Page<DirectoryGroup>` (group picker) | org admin |
 | `GET R.directoryConnect` | 302 to Google consent | org owner |
 | `GET R.directoryCallback` | 302 `/settings/directory` (consent and binding stored, `SyncStatus.state` `pending_confirm`; nothing linked yet) or `?error=DirectoryConnectError` | OAuth |
@@ -229,6 +230,7 @@ sync routes, after a fresh Google sign-in (10 min); else 401 `reauth_required`.
 | `SyncStatusSchema` | `{ mode, binding, healthy, state, unhealthySince, lastSuccessAt, lastError, nextRunAt, staleAt, alertedAt, customerMismatch, held }` |
 | `DirectoryBindingSchema` | `{ provider, customerId, domain, connectedBy, connectedAt }` |
 | `SyncStatusSchema` pending fields | `pendingCount: number \| null` (active in-domain users the pass would link or create, over at most one page of 500), `pendingCountCapped: boolean` (true: show "500+"), `pendingExpiresAt: string \| null` (ISO, consent + 24 h). Set only while `state` is `pending_confirm` (`SyncState` gains `pending_confirm`). Defaults `null` / `false` / `null` when absent, so a payload from before the confirm step still parses |
+| `SyncStatusSchema.pendingCustomerChange` | `{ previous: { customerId, domain: string \| null }, next: { customerId, domain } } \| null`, optional (absent from older servers). Set only while `state` is `pending_confirm` and the consent is for a different Google Workspace than the one a disconnect during `customer_mismatch` removed (a tenant change). Show "This connects a different Google Workspace than before"; `previous.domain` null: say "the previous Workspace". Users bound to the previous Workspace don't carry over: they stay refused at Google sign-in (the directory check against the new binding) and stay signed out. The org owner is exempt from that check. Confirm audits `directory.connect` `{ outcome: "confirmed", customerId, previousCustomerId? }` |
 | `HeldSweepSchema` | `GroupRef + { wouldRemove, members, since }` |
 | `DirUserSchema` | `{ id (= Google sub), primaryEmail, suspended, deleted }` |
 | `DirectoryGroupSchema` | `{ groupId, email, name, memberCount }` |

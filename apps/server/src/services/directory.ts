@@ -45,16 +45,26 @@ export async function afterDirectoryConnect(
   await kickSync(env, "manual");
 }
 
-/** Clears DirectorySync's state for a new or removed binding; never throws. */
+/**
+ * Clears DirectorySync's state for a new or removed binding: one retry on a
+ * failure (a fresh stub), then logged; never throws.
+ */
 export async function resetSync(
   env: Pick<Env, "DIRECTORY_SYNC">,
 ): Promise<void> {
   const ns = env.DIRECTORY_SYNC;
   if (!ns) return;
-  await ns
-    .get(ns.idFromName(SYNC_DO_NAME))
-    .reset()
-    .catch((e) => logWarn("directory_reset", e));
+  for (let tries = 1; ; tries++) {
+    try {
+      await ns.get(ns.idFromName(SYNC_DO_NAME)).reset();
+      return;
+    } catch (e) {
+      if (tries >= 2) {
+        logWarn("directory_reset", e);
+        return;
+      }
+    }
+  }
 }
 
 /**
