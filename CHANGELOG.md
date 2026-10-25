@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.55.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.55.1...v0.55.2) (2026-10-25)
+
+
+### Bug Fixes
+
+* **setup:** no step requires Access vars or the Access secret when access isn't in AUTH_PROVIDERS ([#632](https://github.com/open-artifacts-ai/open-artifacts/issues/632)) ([7ffa990](https://github.com/open-artifacts-ai/open-artifacts/commit/7ffa990481bb29202bfbc9649757eaad0bd28853))
+
 ## [0.55.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.55.0...v0.55.1) (2026-10-25)
 
 
