@@ -27,6 +27,7 @@ import {
   TEST_HOOKS_DEFINE,
 } from "../src/release.js";
 import {
+  BROKER_GOOGLE_CLIENT_ID,
   HOSTED_DOMAINS,
   hostsKvTitle,
   NAMESPACES,
@@ -2738,10 +2739,7 @@ describe("fix round 2 (T8 review M1, M2): the broker URL and google", () => {
       }[]
     ).find((b) => b.name === "AUTH_BROKER_URL")?.text;
 
-  it.each([
-    ["staging", "https://auth.open-artifacts-staging.app"],
-    ["prod", "https://auth.open-artifacts.app"],
-  ] as const)(
+  it.each([["staging", "https://auth.open-artifacts-staging.app"]] as const)(
     "with the broker on, %s create renders AUTH_BROKER_URL as %s",
     async (env, want) => {
       const s = setup({ env });
@@ -2829,5 +2827,122 @@ describe("fix round 2 (T8 review M1, M2): the broker URL and google", () => {
     expect(s.fake.writes().length).toBe(w);
     expect(epoch()).toBe(0);
     expect(s.row(inst.id)).toMatchObject({ session_cut: null, lease: null });
+  });
+});
+
+describe("fix round 3 (T8): the env's broker Google client id", () => {
+  const GOOGLE = { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" };
+  const BROKER_WRANGLER = readFileSync(
+    new URL("apps/auth-broker/wrangler.jsonc", ROOT),
+    "utf8",
+  );
+  // The broker's own staging client, read from its config so the two can't drift.
+  const STAGING_CLIENT = JSON.parse(
+    BROKER_WRANGLER.replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[}\]])/g, "$1"),
+  ).env.staging.vars.GOOGLE_CLIENT_ID as string;
+  const plainOf = (s: S, id: string, name: string) =>
+    (
+      (s.scriptOf(id)?.metadata.bindings ?? []) as {
+        name: string;
+        type: string;
+        text?: string;
+      }[]
+    ).find((b) => b.name === name);
+
+  it("the pinned staging client is the broker's", () => {
+    expect(STAGING_CLIENT).toBe(
+      "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
+    );
+    expect(BROKER_GOOGLE_CLIENT_ID.staging).toBe(STAGING_CLIENT);
+    expect(BROKER_GOOGLE_CLIENT_ID.prod).toBeNull();
+  });
+
+  it("with the broker on, a staging create renders GOOGLE_CLIENT_ID as the broker's client; the same caller value is accepted", async () => {
+    const s = setup();
+    const a = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("finqore", { vars: GOOGLE })),
+    );
+    expect(plainOf(s, a.id, "GOOGLE_CLIENT_ID")).toMatchObject({
+      type: "plain_text",
+      text: STAGING_CLIENT,
+    });
+    const b = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(
+          input("acme", {
+            vars: { ...GOOGLE, GOOGLE_CLIENT_ID: STAGING_CLIENT },
+          }),
+        ),
+    );
+    expect(plainOf(s, b.id, "GOOGLE_CLIENT_ID")?.text).toBe(STAGING_CLIENT);
+  });
+
+  it("a caller GOOGLE_CLIENT_ID that differs is refused before any write, at create and updateVars", async () => {
+    const s = setup();
+    const other = "999-other.apps.googleusercontent.com";
+    let w = s.fake.writes().length;
+    const e = await fails(
+      s
+        .mk({ brokerEnabled: true })
+        .create(
+          input("finqore", { vars: { ...GOOGLE, GOOGLE_CLIENT_ID: other } }),
+        ),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toContain(STAGING_CLIENT);
+    expect(s.fake.writes().length).toBe(w);
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("acme", { vars: GOOGLE })),
+    );
+    w = s.fake.writes().length;
+    const u = await fails(
+      s
+        .mk({ brokerEnabled: true })
+        .updateVars(inst.id, { ...GOOGLE, GOOGLE_CLIENT_ID: other }),
+    );
+    expect(u.message).toContain(STAGING_CLIENT);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("prod with the broker on is refused before any write: no prod Google client yet", async () => {
+    const s = setup({ env: "prod" });
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).create(input("finqore", { vars: GOOGLE })),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/no prod Google client yet/);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("GOOGLE_CLIENT_SECRET is never rendered, and a caller one is refused before any write", async () => {
+    const s = setup();
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("finqore", { vars: GOOGLE })),
+    );
+    expect(plainOf(s, inst.id, "GOOGLE_CLIENT_SECRET")).toBeUndefined();
+    expect(s.scriptOf(inst.id)?.secrets.has("GOOGLE_CLIENT_SECRET")).toBe(
+      false,
+    );
+    for (const p of [
+      s.mk({ brokerEnabled: true }),
+      s.mk({ brokerEnabled: false }),
+    ]) {
+      const w = s.fake.writes().length;
+      const e = await fails(
+        p.create(
+          input("acme", { vars: { GOOGLE_CLIENT_SECRET: "GOCSPX-shh" } }),
+        ),
+      );
+      expect(e.message).toMatch(/GOOGLE_CLIENT_SECRET/);
+      expect(s.fake.writes().length).toBe(w);
+    }
   });
 });
