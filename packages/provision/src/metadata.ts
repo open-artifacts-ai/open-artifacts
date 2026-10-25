@@ -368,7 +368,8 @@ export function userWorkerMetadata(
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean)
-        .concat("usage_off"),
+        // Hosted M1 is the spaces product (Manager ruling 2026-10-26): always on.
+        .concat("spaces", "usage_off"),
     ),
   ].join(",");
 
