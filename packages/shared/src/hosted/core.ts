@@ -93,10 +93,11 @@ export const FeatureFlagSchema = z.enum(FEATURE_FLAGS);
 export type FeatureFlag = z.infer<typeof FeatureFlagSchema>;
 export const FeaturesSchema = z.array(FeatureFlagSchema);
 export type Features = z.infer<typeof FeaturesSchema>;
+/** A flag the FEATURES env may set. */
+export type EnvFeatureFlag = Exclude<FeatureFlag, "guests_read_only">;
 /** Flags the FEATURES env may set (every flag except guests_read_only). */
 export const ENV_FEATURE_FLAGS = FEATURE_FLAGS.filter(
-  (f): f is Exclude<FeatureFlag, "guests_read_only"> =>
-    f !== "guests_read_only",
+  (f): f is EnvFeatureFlag => f !== "guests_read_only",
 );
 /** Parse a FEATURES env value. Unknown entries and guests_read_only are dropped. The only parser: import it from here. */
 export const parseFeatures = (raw: string | undefined): FeatureFlag[] => [
@@ -109,6 +110,29 @@ export const parseFeatures = (raw: string | undefined): FeatureFlag[] => [
       ),
   ),
 ];
+
+/**
+ * The FEATURES each hosted tier sets (provisioning writes them; hosted adds
+ * usage_off on every tier). The trial is Business. Team freezes sync: a
+ * downgrade swaps sync_google for sync_frozen and keeps every other flag, so
+ * it never widens access (spec 4.5).
+ */
+export const TIER_FEATURES: Readonly<Record<Tier, readonly EnvFeatureFlag[]>> =
+  {
+    trial: ["spaces", "sync_google", "content_revocation"],
+    team: ["spaces", "sync_frozen", "content_revocation"],
+    business: ["spaces", "sync_google", "content_revocation"],
+  };
+
+/** Me.instance.directory.mode from the flags: sync_google wins, then sync_frozen, else off. */
+export const directoryModeOf = (
+  features: readonly FeatureFlag[],
+): DirectoryMode =>
+  features.includes("sync_google")
+    ? "google"
+    : features.includes("sync_frozen")
+      ? "frozen"
+      : "off";
 
 /**
  * Directory sync state (SyncStatus.state, Me.instance.directory.state).

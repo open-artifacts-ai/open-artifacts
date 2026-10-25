@@ -14,6 +14,8 @@ import {
   CodeVerifiedSchema,
   CodeVerifyFailureDetailsSchema,
   DirectoryGroupSchema,
+  directoryModeOf,
+  ENV_FEATURE_FLAGS,
   ERROR_CODES,
   GroupMappingSchema,
   HealthzSchema,
@@ -45,6 +47,7 @@ import {
   SyncStatusSchema,
   TEST_HOOKS_ALLOWED,
   TestSessionInputSchema,
+  TIER_FEATURES,
   TransferInputSchema,
   TransferResultSchema,
   TransferSummarySchema,
@@ -197,6 +200,23 @@ describe("hosted contract schemas", () => {
       "usage_off",
     ]);
     expect(TEST_HOOKS_ALLOWED).toBe(false);
+  });
+
+  it("TIER_FEATURES: settable flags only; Team swaps sync_google for sync_frozen; directoryModeOf", () => {
+    for (const fs of Object.values(TIER_FEATURES))
+      for (const f of fs) expect(ENV_FEATURE_FLAGS).toContain(f);
+    expect(TIER_FEATURES.trial).toEqual(TIER_FEATURES.business);
+    const team = new Set(TIER_FEATURES.team);
+    const business = new Set(TIER_FEATURES.business);
+    expect([...business].filter((f) => !team.has(f))).toEqual(["sync_google"]);
+    expect([...team].filter((f) => !business.has(f))).toEqual(["sync_frozen"]);
+    expect(parseFeatures(TIER_FEATURES.team.join(","))).toEqual([
+      ...TIER_FEATURES.team,
+    ]);
+    expect(directoryModeOf(TIER_FEATURES.business)).toBe("google");
+    expect(directoryModeOf(TIER_FEATURES.team)).toBe("frozen");
+    expect(directoryModeOf(["sync_frozen", "sync_google"])).toBe("google");
+    expect(directoryModeOf([])).toBe("off");
   });
 
   it("publish: spaceId is folded into PublishInputSchema and keeps the publish rules", () => {

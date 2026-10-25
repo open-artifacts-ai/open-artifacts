@@ -41,14 +41,22 @@ hosted off.
 `FEATURES` env: comma list set per tier by provisioning; self-hosted default
 empty = today's behaviour. `parseFeatures(raw)` (the only parser, in
 `hosted/core.ts`) drops unknown entries and `guests_read_only`;
-`ENV_FEATURE_FLAGS` lists the settable ones. `Me.instance.features` reports
-every flag that is on.
+`ENV_FEATURE_FLAGS` lists the settable ones (type `EnvFeatureFlag`).
+`Me.instance.features` reports every flag that is on.
+
+`TIER_FEATURES` (`Record<Tier, EnvFeatureFlag[]>`) is what each hosted tier
+sets: trial and business `spaces, sync_google, content_revocation`; team
+`spaces, sync_frozen, content_revocation`. Hosted adds `usage_off` on every
+tier. A downgrade only swaps `sync_google` for `sync_frozen`: it never
+widens access. `directoryModeOf(features)` gives `DirectoryMode`
+(`sync_google` → `google`, else `sync_frozen` → `frozen`, else `off`), as
+`Me.instance.directory.mode` reports it.
 
 | Flag | Source | Meaning |
 |---|---|---|
 | `spaces` | FEATURES | Spaces and roles on; space routes 404 without it (authz identical either way) |
 | `sync_google` | FEATURES | Directory sync running |
-| `sync_frozen` | FEATURES | Team after trial: synced rows kept (`source: "sync"`), edited by hand, replaced on return to Business |
+| `sync_frozen` | FEATURES | Team after trial: synced rows kept (`source: "sync"`), edited by hand (an edit becomes a manual override), user status still polled, no group reads. The first reconcile after return to Business replaces every frozen edit (override or removal) with the synced role |
 | `guests_read_only` | **reported only** | Guests capped at viewer, no data writes. One source: P2's `authConfig.guestsReadOnly`, true whenever the google or email provider is enabled (not configurable; no `GUEST_ACCESS` var). Access-only installs keep today's guest behaviour. FEATURES can't set it |
 | `content_revocation` | FEATURES | uid-bound `/c/` content tokens re-check the user's status. A space's `publicLinks` is never part of the `/p/` check: off only refuses new public links |
 | `usage_off` | FEATURES | Hosted: the Usage page and `R.usage` are 404 |
