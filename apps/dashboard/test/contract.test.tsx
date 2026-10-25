@@ -5,6 +5,7 @@ import { screen, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
 import {
   canOf,
+  directoryMode,
   features,
   hasFeature,
   readAuthProviders,
@@ -23,6 +24,20 @@ installHarness();
 test("me without hosted fields has no features", () => {
   expect(features(fixtures.me)).toEqual([]);
   expect(hasFeature(fixtures.me, "spaces")).toBe(false);
+});
+
+test("directoryMode is the server's rule on the flags: google wins, then frozen, else off", () => {
+  const withFlags = (...f: string[]) =>
+    ({
+      ...fixtures.me,
+      instance: { ...fixtures.me.instance, features: f },
+    }) as unknown as Me;
+  expect(directoryMode(fixtures.me)).toBe("off");
+  expect(directoryMode(undefined)).toBe("off");
+  expect(directoryMode(withFlags("spaces"))).toBe("off");
+  expect(directoryMode(withFlags("spaces", "sync_google"))).toBe("google");
+  expect(directoryMode(withFlags("spaces", "sync_frozen"))).toBe("frozen");
+  expect(directoryMode(withFlags("sync_frozen", "sync_google"))).toBe("google");
 });
 
 test("canOf derives the action table when the server omits can", () => {
