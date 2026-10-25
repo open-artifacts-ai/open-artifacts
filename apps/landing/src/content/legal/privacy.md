@@ -136,7 +136,7 @@ Fonts are served by us, not by a third party. **[TODO: add the entity's own proc
 | Sign-in abuse counters | 1 day |
 | Sessions | 7 days, or until you sign out or are removed |
 | A pending Google directory connection | 24 hours |
-| Audit log | 400 days **[TODO: confirm the purge is built before publishing.]** |
+| Audit log | 400 days, then deleted by a daily job |
 | Service logs | **[TODO: confirm Cloudflare Workers Logs retention for our plan and state it.]** |
 | Database backups | Cloudflare keeps a 30-day restore window for the database, so deleted database records can be restored for up to 30 days. Files and live data aren't backed up. |
 | The owner's email after an instance is deleted | 30 days **[TODO: confirm the purge is built before publishing.]** |
