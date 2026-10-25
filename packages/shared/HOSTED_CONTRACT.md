@@ -269,7 +269,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | Name | Meaning |
 |---|---|
 | `TEST_HOOKS` | paths `/__test/session`, `/__test/otp/latest`, `/__test/oauth-client` |
-| `TestSessionInputSchema` / `TestSessionResultSchema` | `{ email, role, spaces?: {spaceId, role}[] }` → `{ cookie }` (a real session, `p: "test"`) |
+| `TestSessionInputSchema` / `TestSessionResultSchema` | `{ email, role, spaces?: {spaceId, role}[] }` → `{ cookie }` (a real session, `p: "test"`). `spaces`: at most 20, each `spaceId` matching `test-[A-Za-z0-9_-]{1,59}`; a missing space is created (shared). Refused (404, nothing written): any other id, a personal or deleted space, or a space with a member outside `TEST_DOMAIN` |
 | `OtpLatestInputSchema` / `OtpLatestResultSchema` | `{ email }` → `{ code }` (404 when none) |
 | `OAuthClientHookResultSchema` | `{ clientId, accessToken }` |
 | `HealthzSchema` | `/healthz` `{ ok, plan, version, testHooks?, installId? }`: `installId` only when the hosted install has a non-empty trimmed `INSTALL_ID` (opaque, non-secret, last key; self-host omits it). It proves routing, not authenticity: never use it as an authorization signal. `testHooks`: true only on staging installs. Prod is built separately (the staging bundle is never promoted) and the release asserts `testHooks: false` |
