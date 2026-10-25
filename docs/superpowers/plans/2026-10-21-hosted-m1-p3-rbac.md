@@ -724,6 +724,7 @@ it("500-user page parse + diff under 10 ms CPU", async () => { /* cpu */ });
 - **Accepted (manager, #592 security review):**
   - L5, consistency lag: a sign-in diff and the DirectorySync reconcile can briefly disagree; the next reconcile recomputes the rows.
   - L6, fail static at sign-in: with Google unreachable outside `customer_mismatch`, a synced user signs in on last-sync access.
+  - No one-off cleanup for shares stranded on old addresses by email moves before #592: directory sync isn't live on any install, and the only direct-sign-in production install has one user.
 
 - [ ] **Step 1: Failing tests**
 
