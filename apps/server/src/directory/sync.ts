@@ -7,6 +7,7 @@ import {
 } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { logError, logInfo, logWarn } from "../log.js";
+import { revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
 import { getSettings, setUserStatus } from "../services/members.js";
 import { directoryMode } from "../services/spaces.js";
@@ -37,7 +38,7 @@ import {
   readInitial,
   readPending,
 } from "./store.js";
-import { thawFrozenEdits } from "./thaw.js";
+import { type PendingRevokes, thawFrozenEdits } from "./thaw.js";
 import { TransportError } from "./transport.js";
 
 // The DirectorySync engine (P3 T13). One DO per install runs it on its alarm;
@@ -328,6 +329,47 @@ export class SyncEngine {
     this.sql.exec("delete from kv where k = ?", k);
   }
 
+  // ------------------------------------------------------- owed revokes
+
+  /** Closes these users' sockets (the thaw's narrowed). Replaceable in tests. */
+  revokeLive = (ids: string[]): Promise<void> =>
+    revokeUsersLive(this.env, ids, "frozen edit undone", this.ctx);
+
+  /** The thaw's owed socket closes, kept in kv until revoked (P3 T15). */
+  private owed(): PendingRevokes {
+    const K = "revoke.pending";
+    const cur = () => new Set(this.get<string[]>(K) ?? []);
+    const set = (s: Set<string>) =>
+      s.size ? this.put(K, [...s]) : this.del(K);
+    // Held by this thaw only: users already owed stay owed whatever it finds.
+    let held = new Set<string>();
+    return {
+      hold: (ids) => {
+        const c = cur();
+        held = new Set(ids.filter((x) => !c.has(x)));
+        set(new Set([...c, ...ids]));
+      },
+      keep: (_ids, narrowed) => {
+        const keep = new Set(narrowed);
+        set(new Set([...cur()].filter((x) => keep.has(x) || !held.has(x))));
+      },
+      release: (ids) =>
+        set(new Set([...cur()].filter((x) => !ids.includes(x)))),
+    };
+  }
+
+  /** Retries socket closes a failed or interrupted thaw still owes. */
+  private async retryOwed(): Promise<void> {
+    const ids = this.get<string[]>("revoke.pending") ?? [];
+    if (!ids.length) return;
+    try {
+      await this.revokeLive(ids);
+      this.owed().release(ids);
+    } catch (e) {
+      logError("directory_thaw_revoke", e);
+    }
+  }
+
   private reasons(): KickReason[] {
     return this.get<KickReason[]>("reasons") ?? [];
   }
@@ -528,6 +570,8 @@ export class SyncEngine {
       await this.applyReset(this.ep);
       if (!this.fresh()) return now;
     }
+    // Socket closes a thaw still owes, first, in any mode.
+    await this.retryOwed();
     const mode = directoryMode(this.env);
     const client = directoryClient(this.env);
     const [{ binding, sealed }, pending] = await Promise.all([
@@ -848,6 +892,8 @@ export class SyncEngine {
           guard: () => this.guard(),
           now,
           ctx: this.ctx,
+          pending: this.owed(),
+          revoke: this.revokeLive,
         });
         // One chunk per alarm: a long list never runs past the alarm's
         // subrequest budget.

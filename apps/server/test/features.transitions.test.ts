@@ -16,7 +16,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { accessLevel, callerOf } from "../src/auth/authz.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
-import { THAW_CHUNK, validEdit } from "../src/directory/thaw.js";
+import {
+  THAW_CHUNK,
+  thawFrozenEdits,
+  validEdit,
+} from "../src/directory/thaw.js";
 import type { Env } from "../src/env.js";
 import type { UserPresence } from "../src/runtime/presence.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
@@ -182,14 +186,25 @@ const rowsOf = async (space: string, uid: string) =>
   ).results;
 
 /** The sync actor's audit rows on (space, user), oldest first. */
-const thawAudits = async (space: string, uid: string) =>
+const syncAuditRows = async (space: string, uid: string) =>
   (
     await env.DB.prepare(
       "select action, detail from audit_events where actor_kind = 'sync' and space_id = ? and target_id = ? order by at, id",
     )
       .bind(space, uid)
       .all<{ action: string; detail: string }>()
-  ).results.map((r) => ({ action: r.action, detail: JSON.parse(r.detail) }));
+  ).results.map((r) => ({
+    action: r.action,
+    detail: JSON.parse(r.detail) as Record<string, unknown>,
+  }));
+/** The thaw's outcome audits (not its synced-row ones). */
+const thawAudits = async (space: string, uid: string) =>
+  (await syncAuditRows(space, uid)).filter((r) => r.detail.thaw !== "sync");
+/** The thaw's synced-row audits. */
+const syncRowAudits = async (space: string, uid: string) =>
+  (await syncAuditRows(space, uid))
+    .filter((r) => r.detail.thaw === "sync")
+    .map((r) => r.detail);
 
 beforeEach(async () => {
   await resetDirectory();
@@ -331,6 +346,13 @@ describe("tier transitions", () => {
     expect(await thawAudits(space, removed as string)).toEqual([
       { action: "directory.sync", detail: { thaw: "removal_kept" } },
     ]);
+    // Each synced row the thaw derived again is audited too; kept had no
+    // frozen edit, so no thaw audit at all.
+    for (const uid of [lowered, raised, removed] as string[])
+      expect(await syncRowAudits(space, uid)).toEqual([
+        { thaw: "sync", to: "editor" },
+      ]);
+    expect(await syncAuditRows(space, kept as string)).toEqual([]);
   });
 
   it("thaw restores the manual rows from before the freeze, never more", async () => {
@@ -616,6 +638,106 @@ describe("tier transitions", () => {
       });
     },
   );
+
+  it.each([
+    ["DELETE", null],
+    ["demotion", "viewer"],
+  ] as const)(
+    "race: a live admin %s between the thaw's page read and its batch writes nothing back",
+    async (_what, role) => {
+      const business = tierEnv("business");
+      const team = tierEnv("team");
+      const us = dirUsers(1, "race");
+      const gid = `grp-race-${crypto.randomUUID()}`;
+      const { space } = await world(gid, [us[0]?.id as string], "viewer");
+      const t0 = Date.now();
+      await connected(business, t0);
+      const x = await uidOf(us[0]?.id as string);
+      const path = R.spaceMember(space, x);
+      const put = (e: Env, r: string) =>
+        call(e, path, owner.cookie, "PUT", { role: r });
+      // Pre-freeze manual manager; frozen override to editor.
+      expect((await put(business, "manager")).status).toBe(200);
+      expect((await put(team, "editor")).status).toBe(200);
+      // The live edit lands right before the thaw's batch (after its read).
+      let fired = false;
+      const DB = new Proxy(env.DB, {
+        get(t, p) {
+          if (p === "batch")
+            return async (ss: D1PreparedStatement[]) => {
+              if (!fired) {
+                fired = true;
+                const r =
+                  role === null
+                    ? await call(business, path, owner.cookie, "DELETE")
+                    : await put(business, role);
+                expect(r.ok).toBe(true);
+              }
+              return t.batch(ss);
+            };
+          const v = Reflect.get(t, p);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      });
+      await thawFrozenEdits({ ...business, DB } as Env);
+      expect(fired).toBe(true);
+      const manual =
+        role === null ? [] : [{ source: "manual", role: role as string }];
+      // Nothing written back: no manager restored over the live edit.
+      expect(await rowsOf(space, x)).toEqual(manual);
+      expect(await thawAudits(space, x)).toEqual([]);
+      // The superseded record waits; the next thaw applies it as it is now.
+      expect(
+        await one("select kind from frozen_edits where user_id = ?", x),
+      ).toEqual({ kind: role === null ? "delete" : "manual" });
+      await thawFrozenEdits(business);
+      expect(await rowsOf(space, x)).toEqual([
+        ...manual,
+        { source: "sync", role: "viewer" },
+      ]);
+    },
+  );
+
+  it("an owed socket close that throws is retried on the next alarm", async () => {
+    const business = tierEnv("business");
+    const team = tierEnv("team");
+    const us = dirUsers(1, "owed");
+    const gid = `grp-owed-${crypto.randomUUID()}`;
+    const { space } = await world(gid, [us[0]?.id as string], "viewer");
+    const t0 = Date.now();
+    await connected(business, t0);
+    const x = await uidOf(us[0]?.id as string);
+    expect(
+      (
+        await call(team, R.spaceMember(space, x), owner.cookie, "PUT", {
+          role: "manager",
+        })
+      ).status,
+    ).toBe(200);
+    const pre = Number((await revokedAt(x)) ?? 0);
+    // The thaw lowers x (manager override gone), but its close throws.
+    const at = t0 + 61 * MIN;
+    for (let i = 0; i < 80; i++) {
+      await inDo((s) => {
+        const en = new SyncEngine(business, s.storage);
+        en.revokeLive = async () => {
+          throw new Error("presence down");
+        };
+        return en.alarm(at);
+      });
+      if (!(await inDo((s) => new SyncEngine(business, s.storage).due(at))))
+        break;
+    }
+    expect(await rowsOf(space, x)).toEqual([
+      { source: "sync", role: "viewer" },
+    ]);
+    expect(await kv<string[]>("revoke.pending")).toEqual([x]);
+    expect(Number((await revokedAt(x)) ?? 0)).toBe(pre);
+    // The next alarm retries it, then clears it.
+    await tick(at + 2 * MIN, business);
+    expect(Number(await revokedAt(x))).toBeGreaterThan(pre);
+    expect(await kv("revoke.pending")).toBeNull();
+  });
 
   it("frozen still suspends departed users", async () => {
     const business = tierEnv("business");
