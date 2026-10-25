@@ -14,7 +14,13 @@ import {
   UploadValidationError,
   uploadArtifact,
 } from "../src/upload/uploadPipeline";
-import { installHarness, mount, seen, server } from "./harness";
+import {
+  findVisibleToast,
+  installHarness,
+  mount,
+  seen,
+  server,
+} from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
@@ -205,11 +211,7 @@ describe("drag over the viewer", () => {
       });
       window.dispatchEvent(e);
     });
-    // Sonner commits a toast at opacity 0 and fades it in from an effect, so
-    // wait for the visible state rather than the first match.
-    await waitFor(() =>
-      expect(screen.getByText("Finish the current upload first")).toBeVisible(),
-    );
+    await findVisibleToast("Finish the current upload first");
     expect(screen.getByText("1 file selected")).toBeVisible();
   });
 
@@ -227,9 +229,7 @@ describe("drag over the viewer", () => {
       });
       window.dispatchEvent(e);
     });
-    await waitFor(() =>
-      expect(screen.getByText("No files to upload")).toBeVisible(),
-    );
+    await findVisibleToast("No files to upload");
   });
 
   it("clears a stuck overlay after 400 ms without dragover, or on pointer activity", async () => {

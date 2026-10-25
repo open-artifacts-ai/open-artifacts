@@ -6,7 +6,13 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
 import { runAll } from "../src/settings/Transfer";
-import { calls, installHarness, mount, mountHosted } from "./harness";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  mount,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -119,11 +125,7 @@ it("to a person: the helper names both, and the transfer posts the user", async 
       to: { kind: "user", userId: "Bc4eFgHjKm5nPqRs" },
     }),
   );
-  expect(
-    await screen.findByText(
-      "Moved 2 artifacts (and 1 in trash) to Bob Builder.",
-    ),
-  ).toBeVisible();
+  await findVisibleToast("Moved 2 artifacts (and 1 in trash) to Bob Builder.");
 });
 
 it("to a space: the helper says who can open them, and it posts the space", async () => {
@@ -141,11 +143,7 @@ it("to a space: the helper says who can open them, and it posts the space", asyn
       to: { kind: "space", spaceId: ENG },
     }),
   );
-  expect(
-    await screen.findByText(
-      "Moved 2 artifacts (and 1 in trash) to Engineering.",
-    ),
-  ).toBeVisible();
+  await findVisibleToast("Moved 2 artifacts (and 1 in trash) to Engineering.");
 });
 
 it("the row menu's Transfer… opens the same dialog", async () => {
@@ -214,9 +212,7 @@ it("a partial failure shows inline with Retry, which moves only the rest", async
   expect(alert).toHaveTextContent("Moved 100 of 150. 50 didn't move.");
   expect(screen.queryByText("boom")).toBeNull();
   fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
-  expect(
-    await screen.findByText("Moved 150 artifacts to Bob Builder."),
-  ).toBeVisible();
+  await findVisibleToast("Moved 150 artifacts to Bob Builder.");
   // Retry starts over from what's left: no stale cursor.
   expect(bodies.at(-1)).toEqual({
     to: { kind: "user", userId: "Bc4eFgHjKm5nPqRs" },
@@ -325,7 +321,5 @@ it("no trash: plain progress and toast", async () => {
   fireEvent.click(await within(d).findByRole("button", { name: "Transfer 2" }));
   expect(await within(d).findByText("Transferring… 0 of 2")).toBeVisible();
   release();
-  expect(
-    await screen.findByText("Moved 2 artifacts to Bob Builder."),
-  ).toBeVisible();
+  await findVisibleToast("Moved 2 artifacts to Bob Builder.");
 });

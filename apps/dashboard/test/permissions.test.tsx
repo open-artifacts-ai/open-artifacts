@@ -3,7 +3,14 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
 import { accessLabel, canPublishTo } from "../src/auth/permissions";
-import { arts, installHarness, mount, mountHosted, server } from "./harness";
+import {
+  arts,
+  findVisibleToast,
+  installHarness,
+  mount,
+  mountHosted,
+  server,
+} from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
@@ -230,7 +237,7 @@ it("404 on rename toasts the server message and keeps the title", async () => {
   const box = screen.getByRole("textbox", { name: "Title" });
   fireEvent.change(box, { target: { value: "New" } });
   fireEvent.keyDown(box, { key: "Enter" });
-  expect(await screen.findByText("Not found")).toBeVisible();
+  await findVisibleToast("Not found");
   expect(screen.getByRole("heading", { name: arts[0].title })).toBeVisible();
 });
 
