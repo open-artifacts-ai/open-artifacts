@@ -1,6 +1,6 @@
 // @ts-check
 // hosted-sign (T3b): signs the hosted release artifact for one env. Plain
-// .mjs run by the runner's own node (no setup-node, no strip-types); node:*
+// .mjs run on Node 22 (setup-node from .nvmrc, no strip-types); node:*
 // imports only (and the local .mjs it imports, likewise): the job installs
 // nothing. The Ed25519 key (PKCS8 PEM) arrives on stdin only, never in argv,
 // a file or a log:

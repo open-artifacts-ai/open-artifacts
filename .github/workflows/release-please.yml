@@ -411,8 +411,14 @@ jobs:
         with:
           ref: ${{ needs.hosted-guard.outputs.sha }}
           persist-credentials: false
-      # Decision 4 (Manager review): checkout and download-artifact only, and
-      # the runner's own node (20) on plain .mjs: no setup-node, no strip-types.
+      # Decision 4 (Manager review), H-N22: Node 22 from .nvmrc via setup-node
+      # pinned by SHA, no cache; plain .mjs, no strip-types. The key is only in
+      # the sign step's env.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Assert Node 22
+        run: v=$(node --version); case "$v" in v22.*) ;; *) echo "expected Node 22, got $v" >&2; exit 1;; esac
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: hosted-release
@@ -451,8 +457,14 @@ jobs:
         with:
           ref: ${{ needs.hosted-guard.outputs.sha }}
           persist-credentials: false
-      # Decision 4 (Manager review): checkout and download-artifact only, and
-      # the runner's own node (20) on plain .mjs: no setup-node, no strip-types.
+      # Decision 4 (Manager review), H-N22: Node 22 from .nvmrc via setup-node
+      # pinned by SHA, no cache; plain .mjs, no strip-types. The key is only in
+      # the sign step's env.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - name: Assert Node 22
+        run: v=$(node --version); case "$v" in v22.*) ;; *) echo "expected Node 22, got $v" >&2; exit 1;; esac
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: hosted-release
