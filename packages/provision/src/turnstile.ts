@@ -8,7 +8,12 @@
 // duplicated. The secret is never returned,
 // printed or put in an error.
 import { type Cf, CfError, type TurnstileWidget } from "./cf.js";
-import { type Env, ForeignResource, platformNames } from "./names.js";
+import {
+  assertOwnResource,
+  type Env,
+  ForeignResource,
+  platformNames,
+} from "./names.js";
 import { HOSTED_DOMAINS } from "./wfp.js";
 
 export interface TurnstileKeys {
@@ -32,8 +37,12 @@ export async function turnstileInit(o: {
   cf: Cf;
   env: Env;
   store: TurnstileStore;
+  /** Backoff between create attempts (1 s, then 2 s). */
+  sleep?: (ms: number) => Promise<void>;
 }): Promise<{ created: boolean; stored: boolean }> {
   const { cf, env, store } = o;
+  const sleep =
+    o.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   if (env !== "staging" && env !== "prod") throw new ForeignResource("", env);
   const name = platformNames(env).turnstile;
   const domain = HOSTED_DOMAINS[env].app;
@@ -55,6 +64,7 @@ export async function turnstileInit(o: {
       );
     for (let i = 1; ; i++) {
       let made: TurnstileKeys;
+      assertOwnResource(name, env);
       try {
         made = await cf.turnstileCreate({
           name,
@@ -72,6 +82,7 @@ export async function turnstileInit(o: {
           e.status < 500 &&
           e.status !== 429;
         if (refused || i >= ATTEMPTS) throw e;
+        await sleep(1000 * i);
         continue;
       }
       await store.write(made);

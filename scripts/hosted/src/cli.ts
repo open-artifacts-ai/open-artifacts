@@ -30,7 +30,7 @@ import {
   type Env,
   googleNewlyEnabled,
   HOSTED_DOMAINS,
-  HOSTED_VARS,
+  hostedVarProblem,
   isInstallId,
   isReleaseVersion,
   NAMESPACES,
@@ -77,7 +77,7 @@ Commands:
   turnstile-init  (the env's one Turnstile widget; idempotent)
 
 Flags:
-  --var K=V       repeatable; checked by provision's HOSTED_VARS. AUTH_PROVIDERS with
+  --var K=V       repeatable; checked by provision's var allowlist. AUTH_PROVIDERS with
                   google turns the sign-in broker on for the install.
 Token: keychain item oa-hosted-<env>. CI (staging only): a 0600 file at OA_HOSTED_TOKEN_FILE.
 Env: CLOUDFLARE_ACCOUNT_ID (the hosted account id). Output: one JSON line per step.`;
@@ -124,6 +124,9 @@ export interface Deps {
 }
 
 class Refused extends Error {}
+
+/** Never a PATH lookup: node_modules/.bin comes first under pnpm. */
+const SECURITY = "/usr/bin/security";
 
 const PAT_RE = /oa_pat_[1-9A-HJ-NP-Za-km-z]+/g;
 const KEY_CHARS = /^[A-Za-z0-9._-]+$/;
@@ -187,10 +190,8 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
       throw new Refused("--var must be NAME=value with an uppercase NAME");
     if (Object.hasOwn(vars, k)) throw new Refused(`--var ${k} given twice`);
     const val = kv.slice(i + 1);
-    const why = Object.hasOwn(HOSTED_VARS, k)
-      ? HOSTED_VARS[k]?.(val)
-      : undefined;
-    if (why) throw new Refused(`--var ${k}: ${why}`);
+    const why = hostedVarProblem(k, val);
+    if (why) throw new Refused(`--var: ${why}`);
     vars[k] = val;
   }
   const f: Flags = {
@@ -219,6 +220,8 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
     "status",
   ];
   if (byInstall.includes(cmd)) need("install", "install");
+  else if (cmd !== "create" && f.install !== undefined)
+    throw new Refused(`${cmd} takes no --install`);
   if (f.install !== undefined && !isInstallId(f.install))
     throw new Refused("--install is not an install id");
   if (cmd === "create") {
@@ -276,7 +279,7 @@ async function readToken(d: Deps, env: Env): Promise<string> {
       throw new Refused("CI has no keychain; set OA_HOSTED_TOKEN_FILE");
     try {
       token = (
-        await d.execFile("security", [
+        await d.execFile(SECURITY, [
           "find-generic-password",
           "-w",
           "-s",
@@ -297,7 +300,7 @@ async function readTurnstile(d: Deps, env: Env): Promise<TurnstileKeys | null> {
   let raw: string;
   try {
     raw = (
-      await d.execFile("security", [
+      await d.execFile(SECURITY, [
         "find-generic-password",
         "-w",
         "-s",
@@ -321,9 +324,16 @@ async function readTurnstile(d: Deps, env: Env): Promise<TurnstileKeys | null> {
 async function writeTurnstile(d: Deps, env: Env, k: TurnstileKeys) {
   if (!KEY_CHARS.test(k.sitekey) || !KEY_CHARS.test(k.secret))
     throw new Error("the Turnstile keys have unexpected characters");
-  await d.execFile("security", ["-i"], {
+  await d.execFile(SECURITY, ["-i"], {
     input: `add-generic-password -U -a oa-hosted -s ${turnstileItem(env)} -w ${k.sitekey}:${k.secret}\n`,
   });
+  // `security -i` can exit 0 when the command inside it failed (a locked
+  // keychain, a denied prompt): read the item back.
+  const back = await readTurnstile(d, env);
+  if (back?.sitekey !== k.sitekey || back.secret !== k.secret)
+    throw new Error(
+      `keychain item ${turnstileItem(env)} did not store; unlock the keychain and rerun`,
+    );
 }
 
 async function actorOf(d: Deps): Promise<string> {
@@ -455,6 +465,11 @@ export async function main(argv: string[], d: Deps): Promise<number> {
   } catch (e) {
     notes();
     code = fail(cmd, e);
+    // A create that failed after minting its id: the after row names it.
+    if (cmd === "create" && after === "-")
+      after =
+        (await audit.bySlug(f.slug as string).catch(() => undefined))?.id ??
+        "-";
   }
   try {
     await audit.auditAs(
@@ -557,6 +572,7 @@ async function run(
           read: () => readTurnstile(d, env),
           write: (k) => writeTurnstile(d, env, k),
         },
+        ...(d.sleep ? { sleep: d.sleep } : {}),
       });
       return { ok: true, data: r };
     }

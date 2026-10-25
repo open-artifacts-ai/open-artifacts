@@ -939,6 +939,33 @@ export class WfpProvisioner {
     return { rec, mainModule, modules, assets, template, migrations, floor };
   }
 
+  /**
+   * T8 review M1: the broker transport, for every caller. With the broker
+   * on, AUTH_BROKER_URL is exactly https://auth.<the env's app domain>:
+   * every render (create, upgrade, rollback, var change) gets it, and a
+   * caller value that differs is refused at create and updateVars. The
+   * stored vars stay as the caller gave them. Google with the
+   * broker off is refused: the server would refuse google anyway, and a
+   * create must never succeed with sign-in silently off.
+   */
+  private brokerVars(vars: Record<string, string>): Record<string, string> {
+    if (!this.o.brokerEnabled) return vars;
+    const want = `https://auth.${HOSTED_DOMAINS[this.env].app}`;
+    if (vars.AUTH_BROKER_URL !== undefined && vars.AUTH_BROKER_URL !== want)
+      throw new ProvisionRefused(
+        `AUTH_BROKER_URL must be ${want}, the ${this.env} broker`,
+      );
+    return { ...vars, AUTH_BROKER_URL: want };
+  }
+
+  /** M1: google with the broker off is refused (after the other var checks). */
+  private checkGoogleBroker(vars: Record<string, string>): void {
+    if (!this.o.brokerEnabled && googleNewlyEnabled({}, vars))
+      throw new ProvisionRefused(
+        "google sign-in on a hosted install needs the sign-in broker (brokerEnabled)",
+      );
+  }
+
   /** Belt and braces before every upload: hooks only reach a staging test install. */
   private assertHooksAllowed(variant: BundleVariant, testHooks: boolean): void {
     if (variant === "release") return;
@@ -1040,10 +1067,12 @@ export class WfpProvisioner {
       throw new ProvisionRefused("resumeId is not an install id");
     const testHooks = i.testHooks === true;
     const vars = i.vars ?? {};
+    this.brokerVars(vars);
     this.checkVariant(i, vars);
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars);
     this.checkEmailCodeDomain(vars, "domains");
+    this.checkGoogleBroker(vars);
     if (this.o.brokerEnabled) this.registryDomainsOf(vars);
     const rel = await this.readRelease(i);
 
@@ -1298,7 +1327,7 @@ export class WfpProvisioner {
     );
     const { sitekey, ...install } = m;
     const meta = userWorkerMetadata(
-      { id, ...install },
+      { id, ...install, vars: this.brokerVars(install.vars) },
       {
         d1Id: r.d1Id,
         kvId: r.kvId,
@@ -2563,7 +2592,18 @@ export class WfpProvisioner {
       // H1: computed from the snapshot the claim pins.
       const prev = this.currentVars(row);
       const vars = { ...nextVars };
+      this.brokerVars(vars);
       const m = this.renderInputs(row, vars);
+      this.checkGoogleBroker(vars);
+      // T8 review M2: only create's broker step issues the signing key and
+      // the first registry entry. Without them google can't work, and the
+      // session cut would log everyone out for nothing.
+      // TODO(Platform): a lease-held broker-enrol op for active installs, so
+      // google can be turned on for an existing install.
+      if (googleNewlyEnabled(prev, vars) && row.broker_kid === null)
+        throw new ProvisionRefused(
+          `install ${id} has no broker key; the broker key is only issued at create, so turning google on for an existing install is a follow-up (Platform)`,
+        );
       // H-RD: only the paths that write the registry check its domains (here
       // and create); upgrade and rollback never do, so a rollback is never
       // blocked by them.

@@ -135,6 +135,22 @@ export const HOSTED_VARS: Record<string, (v: string) => string | undefined> = {
       : "expected base64url of exactly 32 bytes",
 };
 
+/**
+ * Why a caller var is refused (unknown name, or a value its check rejects),
+ * or undefined: the allowlist userWorkerMetadata applies, for callers (the
+ * oa:hosted CLI) that refuse before any call.
+ */
+export function hostedVarProblem(k: string, v: string): string | undefined {
+  const check = Object.hasOwn(HOSTED_VARS, k)
+    ? HOSTED_VARS[k]
+    : Object.hasOwn(TUNABLES, k)
+      ? (x: string) => (x === "" ? undefined : TUNABLES[k]?.check(x))
+      : undefined;
+  if (!check) return `unknown var ${JSON.stringify(k)}`;
+  const why = check(v);
+  return why ? `invalid var ${k}: ${why}` : undefined;
+}
+
 const PASSTHROUGH = [
   "EMAIL_DAILY_CAP",
   "CODE_EMAILS_PER_DAY",
@@ -344,14 +360,8 @@ export function userWorkerMetadata(
 
   // vars: allowlist first
   for (const [k, v] of Object.entries(i.vars)) {
-    const check = Object.hasOwn(HOSTED_VARS, k)
-      ? HOSTED_VARS[k]
-      : Object.hasOwn(TUNABLES, k)
-        ? (x: string) => (x === "" ? undefined : TUNABLES[k]?.check(x))
-        : undefined;
-    if (!check) throw new Error(`unknown var ${JSON.stringify(k)}`);
-    const why = check(v);
-    if (why) throw new Error(`invalid var ${k}: ${why}`);
+    const why = hostedVarProblem(k, v);
+    if (why) throw new Error(why);
   }
   if (i.vars.TEST_DOMAIN !== undefined && (!i.testHooks || r.env === "prod"))
     throw new Error(

@@ -388,6 +388,8 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     sleep: clock.sleep,
     healthTimeoutMs: 10_000,
     turnstile: TS,
+    // T8 M1: google needs the broker, so the lifecycle suite runs with it on.
+    brokerEnabled: true,
     ...over,
   });
   const mk = (over: Partial<WfpOptions> = {}) => {
@@ -2743,7 +2745,6 @@ describe("fix round 2 (T8 review M1, M2): the broker URL and google", () => {
       const p = s.mk({ brokerEnabled: true });
       const inst = keep(await p.create(input("finqore", { vars: GOOGLE })));
       expect(brokerUrlOf(s, inst.id)).toBe(want);
-      expect(JSON.parse(s.row(inst.id).vars).AUTH_BROKER_URL).toBe(want);
       // The same value from the caller is accepted.
       const q = s.mk({ brokerEnabled: true });
       const b = keep(
@@ -2780,7 +2781,9 @@ describe("fix round 2 (T8 review M1, M2): the broker URL and google", () => {
   it("a google create with the broker off is refused before any write", async () => {
     const s = setup();
     const w = s.fake.writes().length;
-    const e = await fails(s.p.create(input("finqore", { vars: GOOGLE })));
+    const e = await fails(
+      s.mk({ brokerEnabled: false }).create(input("finqore", { vars: GOOGLE })),
+    );
     expect(e).toBeInstanceOf(ProvisionRefused);
     expect(e.message).toMatch(/broker/);
     expect(s.fake.writes().length).toBe(w);
@@ -2803,7 +2806,11 @@ describe("fix round 2 (T8 review M1, M2): the broker URL and google", () => {
 
   it("turning google on for an install with no broker key is refused before any write, and no session is cut", async () => {
     const s = setup();
-    const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: false })
+        .create(input("finqore", { vars: CODES })),
+    );
     expect(s.row(inst.id).broker_kid).toBeNull();
     const epoch = epochOf(s, inst.id);
     const w = s.fake.writes().length;
