@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.47.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.47.0...v0.47.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **server:** actions on an org admin are owner-only ([#475](https://github.com/open-artifacts-ai/open-artifacts/issues/475)) ([#553](https://github.com/open-artifacts-ai/open-artifacts/issues/553)) ([75e9c8f](https://github.com/open-artifacts-ai/open-artifacts/commit/75e9c8f311acb6f455c1e4c5ecdcf3cf086aadf8))
+* **server:** deriveKey refuses content key labels at runtime ([#591](https://github.com/open-artifacts-ai/open-artifacts/issues/591)) ([977391c](https://github.com/open-artifacts-ai/open-artifacts/commit/977391cf63b6c3506f2ec2e11a666daf1a69e18b))
+
 ## [0.47.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.46.0...v0.47.0) (2026-10-25)
 
 
