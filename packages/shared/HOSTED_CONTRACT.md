@@ -41,14 +41,22 @@ hosted off.
 `FEATURES` env: comma list set per tier by provisioning; self-hosted default
 empty = today's behaviour. `parseFeatures(raw)` (the only parser, in
 `hosted/core.ts`) drops unknown entries and `guests_read_only`;
-`ENV_FEATURE_FLAGS` lists the settable ones. `Me.instance.features` reports
-every flag that is on.
+`ENV_FEATURE_FLAGS` lists the settable ones (type `EnvFeatureFlag`).
+`Me.instance.features` reports every flag that is on.
+
+`TIER_FEATURES` (`Record<Tier, EnvFeatureFlag[]>`) is what each hosted tier
+sets: trial and business `spaces, sync_google, content_revocation`; team
+`spaces, sync_frozen, content_revocation`. Hosted adds `usage_off` on every
+tier. A downgrade only swaps `sync_google` for `sync_frozen`: it never
+widens access. `directoryModeOf(features)` gives `DirectoryMode`
+(`sync_google` → `google`, else `sync_frozen` → `frozen`, else `off`), as
+`Me.instance.directory.mode` reports it.
 
 | Flag | Source | Meaning |
 |---|---|---|
 | `spaces` | FEATURES | Spaces and roles on; space routes 404 without it (authz identical either way) |
 | `sync_google` | FEATURES | Directory sync running |
-| `sync_frozen` | FEATURES | Team after trial: synced rows kept (`source: "sync"`), edited by hand, replaced on return to Business |
+| `sync_frozen` | FEATURES | Team after trial: synced rows kept (`source: "sync"`), edited by hand (an edit becomes a manual override), user status still polled, no group reads; `lastSuccessAt`/`staleAt` keep the last run that read groups. Each frozen hand edit is recorded in D1 `frozen_edits` (server migration `0013_frozen_edits`). The first reconcile after return to Business, after its walks: an override's pre-freeze manual row comes back exactly (none: removed); an explicit frozen DELETE is final; a frozen manual add (no synced row) is kept; then the synced role is derived again from fresh membership and the narrowed are revoked. Audited by `sync`: `space.member.role` / `.add` / `.remove` with `{ thaw: true, role? }`, or `directory.sync` with `{ thaw: "removal_kept" }` / `{ thaw: "manual_kept", role }`. A live admin edit after sync returns, before that reconcile, supersedes the pending outcome (never undone). Synced-row changes at the thaw: `directory.sync` `{ thaw: "sync", from?, to? }` |
 | `guests_read_only` | **reported only** | Guests capped at viewer, no data writes. One source: P2's `authConfig.guestsReadOnly`, true whenever the google or email provider is enabled (not configurable; no `GUEST_ACCESS` var). Access-only installs keep today's guest behaviour. FEATURES can't set it |
 | `content_revocation` | FEATURES | uid-bound `/c/` content tokens re-check the user's status. A space's `publicLinks` is never part of the `/p/` check: off only refuses new public links |
 | `usage_off` | FEATURES | Hosted: the Usage page and `R.usage` are 404 |
@@ -128,8 +136,8 @@ every flag that is on.
 | `PATCH R.space(id)` | `SpacePatch` → `Space` | `name`, `publicLinks`: space manager or org admin (`publicLinks` audited `space.public_links`; off blocks new public links only - existing links and sockets keep working, nothing is rewritten). `allMembersRole`: org admin |
 | `DELETE R.space(id)` | 204; 409 `space_not_empty` | org owner, admin |
 | `GET R.spaceMembers(id)` | `SpaceMembersQuery { q?, group?, cursor?, limit? }` → `SpaceMembersPage` (`Page<SpaceMember>` + `total`, the count matching `q`/`group`) | member, org admin; personal: 400 `space_personal`. `q`: case-insensitive prefix of the email or of any word of the name; `group`: a groupId (either `via`) |
-| `PUT R.spaceMember(id, userId)` | `SpaceMemberPut` → `SpaceMember` | space manager, org admin. The target must be an existing, active member (else 404). Only an org admin grants Manager or changes a peer manager (a member with a manager row, by hand or synced; the frozen override included): else 403 `space_forbidden` `{ target: "member" }`. **Sync frozen**, on a row with a `syncRole`: any role, raise or lower, is a manual grant under the rules above (admins any role; managers up to editor) and becomes a manual override (`source: "manual"`, `syncRole: null`, `groups: []`) that the next reconcile after unfreezing replaces. Audited `space.member.add` / `space.member.role` (frozen override: detail `{ syncFrozen: true, role }`) |
-| `DELETE R.spaceMember(id, userId)` | 204 | space manager, org admin. Removes the manual row. Only an org admin removes a peer manager (a manager row, by hand or synced, frozen included): else 403 `space_forbidden` `{ target: "member" }`, checked before `member_synced`. A synced-only row while sync is live: 409 `member_synced`. **Sync frozen**: also removes a synced row (removing access is always allowed). Audited `space.member.remove` (frozen: detail `{ syncFrozen: true }`) |
+| `PUT R.spaceMember(id, userId)` | `SpaceMemberPut` → `SpaceMember` | space manager, org admin. The target must be an existing, active member (else 404). Only an org admin grants Manager or changes a peer manager (a member with a manager row, by hand or synced; the frozen override included): else 403 `space_forbidden` `{ target: "member" }`. **Sync frozen**, on a row with a `syncRole`: any role, raise or lower, is a manual grant under the rules above (admins any role; managers up to editor) and becomes a manual override (`source: "manual"`, `syncRole: null`, `groups: []`) that the next reconcile after unfreezing undoes (the pre-freeze manual row restored exactly, see `sync_frozen`). Audited `space.member.add` / `space.member.role` (frozen override: detail `{ syncFrozen: true, role }`) |
+| `DELETE R.spaceMember(id, userId)` | 204 | space manager, org admin. Removes the manual row. Only an org admin removes a peer manager (a manager row, by hand or synced, frozen included): else 403 `space_forbidden` `{ target: "member" }`, checked before `member_synced`. A synced-only row while sync is live: 409 `member_synced`. **Sync frozen**: also removes a synced row (removing access is always allowed), and the removal is final: the thaw after unfreezing restores no manual row (fresh group membership can re-add the synced row). Audited `space.member.remove` (frozen: detail `{ syncFrozen: true }`) |
 | `POST R.spaceMemberSelf(id)` `/spaces/:id/members/self` | `SpaceMemberPut` → 201 `SpaceMember` | org admin adds themselves; shared spaces only (400 `space_personal`); audited `space.admin_self_add`; managers notified |
 | `GET R.spaceMappings(id)` | → `GroupMapping[]` (per-space rows only); personal: 400 `space_personal` | org admin; space manager (any setting). **Manager access pending server implementation (P3 T9/T14)** |
 | `PUT/DELETE R.spaceMapping(id, groupId)` | `GroupMappingPut` → `GroupMapping` / 204; 409 `directory_sync_off` when sync is off or frozen | org admin (any role); space manager for rows that are and stay `viewer \| editor` (`SPACE_MANAGER_MAPPING_ROLES`). Order: personal 400 `space_personal`; no role 404; manager PUT while `spaceManagerMappings` is off 403 `directory_mapping_off` (DELETE always allowed: removing access); a `manager` role (PUT body, or the existing row on PUT or DELETE) 403 `space_forbidden` `{ target: "mapping" }`; sync off 409. **Manager access pending server implementation (P3 T9/T14)** |

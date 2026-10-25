@@ -39,6 +39,7 @@ import {
   readInitial,
   readPending,
 } from "./store.js";
+import { type PendingRevokes, thawFrozenEdits } from "./thaw.js";
 import { TransportError } from "./transport.js";
 
 // The DirectorySync engine (P3 T13). One DO per install runs it on its alarm;
@@ -132,8 +133,14 @@ type Step =
   | { kind: "reports"; app: "admin" | "groups"; page: string | null }
   | { kind: "userkeys" }
   | { kind: "targets"; all: boolean }
+  | { kind: "thaw" }
   | Walk
   | { kind: "finish" };
+
+/** Steps that read groups or apply group-derived access: skipped while frozen. */
+const GROUP_STEPS = new Set(["targets", "thaw", "walk", "reports:groups"]);
+const stepGroup = (s: Step) =>
+  s.kind === "reports" ? `reports:${s.app}` : s.kind;
 
 type Run = {
   lane: Lane;
@@ -341,6 +348,55 @@ export class SyncEngine {
     this.sql.exec("delete from kv where k = ?", k);
   }
 
+  // ------------------------------------------------------- owed revokes
+
+  /** Closes these users' sockets (the thaw's narrowed). Replaceable in tests. */
+  revokeLive = (ids: string[]): Promise<void> =>
+    revokeUsersLive(this.env, ids, "frozen edit undone", this.ctx);
+
+  /** The thaw's owed socket closes, kept in kv until revoked (P3 T15). */
+  private owed(): PendingRevokes {
+    const K = "revoke.pending";
+    const cur = () => new Set(this.get<string[]>(K) ?? []);
+    const set = (s: Set<string>) => {
+      if (s.size) this.put(K, [...s]);
+      else {
+        this.del(K);
+        this.del("revoke.tries");
+      }
+    };
+    // Held by this thaw only: users already owed stay owed whatever it finds.
+    let held = new Set<string>();
+    return {
+      hold: (ids) => {
+        const c = cur();
+        held = new Set(ids.filter((x) => !c.has(x)));
+        set(new Set([...c, ...ids]));
+      },
+      keep: (_ids, narrowed) => {
+        const keep = new Set(narrowed);
+        set(new Set([...cur()].filter((x) => keep.has(x) || !held.has(x))));
+      },
+      release: (ids) =>
+        set(new Set([...cur()].filter((x) => !ids.includes(x)))),
+    };
+  }
+
+  /** Retries socket closes a failed or interrupted thaw still owes. */
+  private async retryOwed(): Promise<void> {
+    const ids = this.get<string[]>("revoke.pending") ?? [];
+    if (!ids.length) return;
+    try {
+      await this.revokeLive(ids);
+      this.owed().release(ids);
+      this.del("revoke.tries");
+    } catch (e) {
+      // Retried by the re-armed alarm, each time later (backoffMs).
+      this.put("revoke.tries", (this.get<number>("revoke.tries") ?? 0) + 1);
+      logError("directory_thaw_revoke", e);
+    }
+  }
+
   private reasons(): KickReason[] {
     return this.get<KickReason[]>("reasons") ?? [];
   }
@@ -516,7 +572,9 @@ export class SyncEngine {
   /**
    * One alarm: picks a lane (fast first when due), plans its run when none is
    * in flight, then works through steps until one Google call was made.
-   * Whatever happens, the next alarm is set (finally), unless sync is off.
+   * Whatever happens, the next alarm is set (finally), unless sync is off
+   * and no socket close is owed: owed closes re-arm it (backing off from
+   * BACKOFF_MIN_MS to BACKOFF_MAX_MS) in any mode until they are done.
    */
   async alarm(now = Date.now()): Promise<void> {
     let next: number | null = now + FAST_MS;
@@ -526,6 +584,14 @@ export class SyncEngine {
       logError("directory_sync_alarm", e);
       next = now + BACKOFF_MIN_MS;
     } finally {
+      try {
+        if (this.get<string[]>("revoke.pending")?.length) {
+          const retry = now + backoffMs(this.get<number>("revoke.tries") ?? 1);
+          next = next === null ? retry : Math.min(next, retry);
+        }
+      } catch (e) {
+        logError("directory_thaw_revoke", e);
+      }
       if (next !== null)
         await this.storage
           .setAlarm(next)
@@ -541,6 +607,8 @@ export class SyncEngine {
       await this.applyReset(this.ep);
       if (!this.fresh()) return now;
     }
+    // Socket closes a thaw still owes, first, in any mode.
+    await this.retryOwed();
     // A customer_mismatch close still paging (T18): one page per alarm,
     // re-armed at once; a D1 error backs off. Once the state has left
     // customer_mismatch the page is empty, the cursor drops and sync resumes.
@@ -624,7 +692,10 @@ export class SyncEngine {
         { kind: "users", which: "suspended", page: null },
         { kind: "users", which: "deleted", page: null },
       );
-      if (groups) queue.push({ kind: "targets", all: true });
+      // Sync back after a freeze: the walks (targets is replaced by them, in
+      // front of the thaw) refresh directory_members first, then frozen
+      // edits get their outcomes on fresh membership (P3 T15).
+      if (groups) queue.push({ kind: "targets", all: true }, { kind: "thaw" });
     } else {
       queue.push({ kind: "reports", app: "admin", page: null });
       if (groups) {
@@ -710,6 +781,10 @@ export class SyncEngine {
     groups: boolean,
     now: number,
   ): Promise<Done> {
+    // Frozen (Team): a run planned while sync was on reads no groups and
+    // changes no group-derived access; it never widens (P3 T15).
+    if (!groups && GROUP_STEPS.has(stepGroup(step)))
+      return { status: "done", called: false };
     switch (step.kind) {
       case "customer": {
         const sub = await liveSub(this.env);
@@ -858,10 +933,24 @@ export class SyncEngine {
           },
         };
       }
+      case "thaw": {
+        const more = await thawFrozenEdits(this.env, {
+          guard: () => this.guard(),
+          now,
+          ctx: this.ctx,
+          pending: this.owed(),
+          revoke: this.revokeLive,
+        });
+        // One chunk per alarm: a long list never runs past the alarm's
+        // subrequest budget.
+        return more
+          ? { status: "more", called: true }
+          : { status: "done", called: false };
+      }
       case "walk":
         return this.walk(run, step, token);
       case "finish": {
-        await this.succeed(run, now);
+        await this.succeed(run, now, groups);
         return { status: "done", called: false };
       }
     }
@@ -1355,7 +1444,13 @@ export class SyncEngine {
     }
   }
 
-  private async succeed(run: Run, now: number) {
+  /**
+   * A run finished. Frozen (`groups` false) it polled user status but read
+   * no group: lastSuccessAt (and staleAt from it) keeps the last run that
+   * read groups, and an install that never had one stays "never", not ok
+   * (P3 T15).
+   */
+  private async succeed(run: Run, now: number, groups: boolean) {
     this.guard();
     const lane = run.lane;
     const nextFast = now + FAST_MS;
@@ -1369,17 +1464,22 @@ export class SyncEngine {
       // The other lane still failing: stay unhealthy (banner, email, state).
       if (other !== null) return { ...h, lanes };
       // lastSuccessAt at most hourly while healthy: no write per fast tick.
+      const state = groups || h.lastSuccessAt !== null ? "ok" : "never";
       const stamp =
-        h.state !== "ok" ||
-        h.lastSuccessAt === null ||
-        now - h.lastSuccessAt >= RECONCILE_MS;
+        h.state !== state ||
+        (groups &&
+          (h.lastSuccessAt === null || now - h.lastSuccessAt >= RECONCILE_MS));
       return {
         ...h,
-        state: "ok",
+        state,
         unhealthySince: null,
-        lastSuccessAt: stamp ? now : h.lastSuccessAt,
+        lastSuccessAt: stamp && groups ? now : h.lastSuccessAt,
         lastError: null,
-        nextRunAt: stamp ? Math.min(nextFast, nextRec) : h.nextRunAt,
+        // Frozen: no stamp, but each reconcile still moves the next run (hourly).
+        nextRunAt:
+          stamp || (!groups && lane === "rec")
+            ? Math.min(nextFast, nextRec)
+            : h.nextRunAt,
         alertedAt: null,
         customerMismatch: null,
         backoffN: 0,
