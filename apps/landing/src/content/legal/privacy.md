@@ -92,7 +92,7 @@ An admin who is a **Google Workspace super admin** can connect the organization'
 - **How often:** we check for changes every 2 minutes and do a full check every hour.
 - **The refresh token:** encrypted (AES-GCM) with a key only that instance holds, and stored in the instance's database.
 - **We never change anything in Google.** Every scope is read-only.
-- **Disconnecting:** the owner or an admin can choose **Disconnect directory** in Settings, Directory. That revokes our access at Google and deletes the stored token. Members stay, and are managed in Open Artifacts from then on. Deleting the instance also revokes our access at Google. You can also remove Open Artifacts at any time in your Google Admin console, under Security, API controls. **[TODO: confirm "Disconnect directory" and revoke on instance delete are built before publishing.]**
+- **Disconnecting:** the owner can choose **Disconnect directory** in Settings, Directory, while signed in themselves (not through a token or an AI agent). That revokes our access at Google and deletes the stored token, and we email the owner to confirm. Members stay, and are managed in Open Artifacts from then on. Deleting the instance also revokes our access at Google. You can also remove Open Artifacts at any time in your Google Admin console, under Security, API controls. **[TODO: confirm "Disconnect directory" and revoke on instance delete are built before publishing.]**
 
 ### What we never do with Google data
 
@@ -149,7 +149,7 @@ Fonts are served by us, not by a third party. **[TODO: confirm the self-hosted f
 ## Your choices and rights
 
 - You can see and change your name in your profile, and delete your artifacts at any time.
-- Your organization's owner and admins can remove members, revoke agents and tokens, disconnect the directory, and delete the instance.
+- Your organization's owner and admins can remove members and revoke agents and tokens. The owner can also disconnect the directory and delete the instance.
 - To get a copy of your data, correct it, or delete your account, email **[TODO: privacy contact email]**. If your account belongs to an organization, we may need to involve its owner. We reply within **[TODO: for example 30 days]**. **[TODO: list the rights that apply where you operate (for example GDPR and UK GDPR, or CCPA), and how to complain to a regulator.]**
 - You can revoke Open Artifacts' access to your Google account at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
 
