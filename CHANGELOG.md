@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.55.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.55.0...v0.55.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **setup:** the access step is done (not needed) when access isn't in AUTH_PROVIDERS ([#629](https://github.com/open-artifacts-ai/open-artifacts/issues/629)) ([e2f83f3](https://github.com/open-artifacts-ai/open-artifacts/commit/e2f83f32fe4e31bafa858351ffd94b74ba79cd46))
+
 ## [0.55.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.54.0...v0.55.0) (2026-10-25)
 
 
