@@ -179,6 +179,10 @@ describe("stale (fresh: false)", () => {
     mountHosted("/settings/members?tab=x", stale);
     await card();
     expect(screen.getByText(C.body("Open Artifacts"))).toBeVisible();
+    // The instance's brand row sits above the card, as on sign-in.
+    const brand = screen.getByTestId("break-glass-brand");
+    expect(brand).toHaveTextContent("Open Artifacts");
+    expect(brand.closest(".oa-panel")).toBeNull();
     expect(screen.getByRole("link", { name: C.reauth })).toHaveAttribute(
       "href",
       `${AUTH.loginGoogle}?reauth=1&next=${encodeURIComponent("/settings/members?tab=x")}`,
@@ -253,6 +257,11 @@ describe("fresh (fresh: true)", () => {
         "That Google Workspace belongs to a different organization. Reconnect the one you connected before.",
       ),
     ).toBeVisible();
+    // The failure is the alert; the reason under it is plain text.
+    expect(screen.getByRole("alert")).toHaveTextContent(C.connectFailed);
+    expect(screen.getByRole("alert")).not.toHaveTextContent(
+      /different organization/,
+    );
     expect(meCalls()).toBe(1);
   });
 

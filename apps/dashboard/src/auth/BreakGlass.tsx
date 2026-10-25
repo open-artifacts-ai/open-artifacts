@@ -6,16 +6,15 @@
 // shell and calls only R.directory, R.directoryConfirm and R.directoryCancel
 // (R.directoryConnect is a full-page navigation to Google).
 import { AUTH, R } from "@oa/shared";
-import { Button } from "@oa/ui/shadcn";
+import { BrandMark, Button } from "@oa/ui/shadcn";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import { ApiClientError, api } from "../api/client";
 import { type SyncStatus, SyncStatusSchema } from "../api/contract";
 import { qk } from "../api/queries";
 import { metaInstanceName } from "../layout/useDocumentTitle";
-import { EdgePanel } from "../pages/Edge";
 import { connectCopy, expiry, people } from "../settings/Directory";
-import { errorText, muted } from "../settings/ui";
+import { muted } from "../settings/ui";
 import { safeNext } from "./safeNext";
 import { useSignOut } from "./signOut";
 
@@ -57,6 +56,9 @@ const C = BREAK_GLASS_COPY;
 /** The forced Google sign-in, back to `next` (same-origin only). */
 export const reauthHref = (next: string) =>
   `${AUTH.loginGoogle}?reauth=1&next=${encodeURIComponent(safeNext(next))}`;
+
+// `.oa-panel p` sets its own colour; these win over it.
+const danger = "text-[length:var(--oa-text-sm)] !text-[var(--oa-danger)]";
 
 const isReauth = (e: unknown) =>
   e instanceof ApiClientError && e.code === "reauth_required";
@@ -112,18 +114,35 @@ export function BreakGlass({
 /** One step of the card: content, then Sign out and the audit note. */
 function Step({ title, children }: { title: string; children: ReactNode }) {
   const signOut = useSignOut();
+  const name = metaInstanceName();
   // `.oa-panel p` sets paragraph margins; the gaps here come from the grids.
   return (
-    <EdgePanel>
-      <h1>{title}</h1>
-      <div className="grid gap-[var(--oa-space-3)] [&_p]:!m-0">{children}</div>
-      <div className="mt-[var(--oa-space-4)] grid gap-[var(--oa-space-3)] [&_p]:!m-0">
-        <Button variant="ghost" className="w-full" onClick={signOut}>
-          {C.signOut}
-        </Button>
-        <p className={muted}>{C.audit}</p>
+    <div className="oa-edge flex-col gap-[var(--oa-space-5)]">
+      {/* The brand row above the card, as on sign-in. */}
+      <div
+        data-testid="break-glass-brand"
+        className="flex items-center gap-[var(--oa-space-2)] text-[var(--oa-text)]"
+      >
+        <BrandMark className="size-6" />
+        <span className="text-base font-semibold tracking-tight">{name}</span>
       </div>
-    </EdgePanel>
+      <section className="oa-panel">
+        <h1>{title}</h1>
+        <div className="grid gap-[var(--oa-space-3)] [&_p]:!m-0">
+          {children}
+        </div>
+        <div className="mt-[var(--oa-space-4)] grid gap-[var(--oa-space-3)] [&_p]:!m-0">
+          <Button
+            variant="link"
+            className="w-full text-[var(--oa-text)]"
+            onClick={signOut}
+          >
+            {C.signOut}
+          </Button>
+          <p className={muted}>{C.audit}</p>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -211,7 +230,7 @@ function Minimal({
       <Step title={C.reconnectTitle}>
         {status.isError ? (
           <>
-            <p role="alert" className={errorText}>
+            <p role="alert" className={danger}>
               {C.loadFailed}
             </p>
             <Button
@@ -252,7 +271,7 @@ function Minimal({
           </p>
         )}
         {failed && (
-          <p role="alert" className={errorText}>
+          <p role="alert" className={danger}>
             {failed}
           </p>
         )}
@@ -282,14 +301,16 @@ function Minimal({
   return (
     <Step title={C.reconnectTitle}>
       {error !== null && (
-        <div role="alert" className="grid gap-[var(--oa-space-1)]">
-          <p className={`${errorText} font-medium`}>{C.connectFailed}</p>
-          {reason && <p className={errorText}>{reason}</p>}
+        <div className="grid gap-[var(--oa-space-1)]">
+          <p role="alert" className={`${danger} font-medium`}>
+            {C.connectFailed}
+          </p>
+          {reason && <p>{reason}</p>}
         </div>
       )}
       {outcome === "cancelled" && <p>{C.cancelled}</p>}
       {outcome === "expired" && (
-        <p className="text-[var(--oa-warning)]">{C.expired}</p>
+        <p className="!text-[var(--oa-warning)]">{C.expired}</p>
       )}
       <p>{C.reconnectBody(domain)}</p>
       <Reconnect />
