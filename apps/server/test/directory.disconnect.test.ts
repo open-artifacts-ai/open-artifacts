@@ -10,10 +10,12 @@ import { env } from "cloudflare:workers";
 import { newId, R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
+import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import { applyGroupDiff } from "../src/directory/apply.js";
 import { seal } from "../src/directory/crypto.js";
 import { HK, NEVER } from "../src/directory/health.js";
+import { directorySignIn } from "../src/directory/signin.js";
 import { K, UPSERT } from "../src/directory/store.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
@@ -309,10 +311,52 @@ describe("races and retries", () => {
     expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
     expect(await keys()).toEqual([]);
     expect(g.revoked.sort()).toEqual([`rt-${adminSub}`, "rt-late"].sort());
-    expect((await disconnects()).map((r) => r.detail.outcome)).toEqual([
-      "disconnected",
-      "revoke_late",
+    expect((await disconnects()).map((r) => r.detail)).toEqual([
+      expect.objectContaining({ outcome: "disconnected" }),
+      { outcome: "revoke_late", token: "pending", revoke: "revoked" },
     ]);
+  });
+
+  it("a live token swapped in between the reads and the wipe is revoked and labelled live", async () => {
+    const fake = vi.mocked(globalThis.fetch);
+    const impl = fake.getMockImplementation() as typeof fetch;
+    const swapped = await seal(e, "rt-swapped");
+    fake.mockImplementationOnce(async (input, init) => {
+      await env.DB.prepare(UPSERT).bind(K.refresh, swapped).run();
+      return impl(input, init);
+    });
+    expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
+    expect(g.revoked.sort()).toEqual([`rt-${adminSub}`, "rt-swapped"].sort());
+    expect((await disconnects())[1]?.detail).toEqual({
+      outcome: "revoke_late",
+      token: "live",
+      revoke: "revoked",
+    });
+  });
+
+  it("an owner signed in through Cloudflare Access (self-host) or Google disconnects; a bearer beside it is still refused", async () => {
+    // login() issues a real Access session cookie (p "access").
+    const { token: pat } = await createPat(env, owner.userId, "pat");
+    expect(
+      (await call(e, "POST", { cookie: owner.cookie, bearer: pat })).status,
+    ).toBe(404);
+    expect(await keys()).toContain("binding");
+    expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
+    expect(await keys()).toEqual([]);
+    // A Google session (another owner) is interactive too.
+    const o2 = await login(uniq("disc-google"), "owner");
+    const ep = await env.DB.prepare(
+      "select session_epoch e from users where id = ?",
+    )
+      .bind(o2.userId)
+      .first<{ e: number }>();
+    const google = `${sessionCookieName(env)}=${await signSession(
+      env,
+      o2.userId,
+      Date.now(),
+      { provider: "google", epoch: ep?.e ?? 0, tenant: "a.com" },
+    )}`;
+    expect((await call(e, "DELETE", { cookie: google })).status).toBe(204);
   });
 
   it("resetSync retries a failed reset once, and never throws", async () => {
@@ -387,13 +431,13 @@ describe("during customer_mismatch", () => {
     expect(r.status).toBe(200);
     expect(((await r.json()) as SyncStatus).state).toBe("customer_mismatch");
     expect(g.revoked).toEqual([`rt-${adminSub}`]);
-    expect(await keys()).toEqual(["sync.state"]);
+    expect(await keys()).toEqual(["binding.prior", "sync.state"]);
     expect((await disconnects())[0]?.detail).toMatchObject({
       mismatchKept: true,
     });
     // The DO applies its reset: the tombstone stays.
     await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
-    expect(await keys()).toEqual(["sync.state"]);
+    expect(await keys()).toEqual(["binding.prior", "sync.state"]);
 
     expect((await me({ cookie: u.cookie })).status).toBe(401);
     expect((await me({ bearer: token })).status).toBe(401);
@@ -402,15 +446,101 @@ describe("during customer_mismatch", () => {
     expect((await me({ cookie: owner.cookie })).status).toBe(200);
     // A second disconnect is a no-op that keeps it too.
     expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
-    expect(await keys()).toEqual(["sync.state"]);
+    expect(await keys()).toEqual(["binding.prior", "sync.state"]);
 
-    // Only an owner's reconnect and confirm lifts it.
-    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
-      true,
-    );
+    // Only an owner's reconnect and confirm lifts it. The same Workspace:
+    // no customer change to announce.
+    await connect(e, owner.cookie, g, { sub: adminSub }, { confirm: false });
+    const st = (await (
+      await fetchAndWait(
+        app,
+        new Request(`${APP}${R.directory}`, {
+          headers: { cookie: owner.cookie },
+        }),
+        e,
+      )
+    ).json()) as SyncStatus;
+    expect(st.state).toBe("pending_confirm");
+    expect(st.pendingCustomerChange).toBeNull();
+    expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(200);
     await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
     expect(await keys()).not.toContain("sync.state");
+    expect(await keys()).not.toContain("binding.prior");
     expect((await me({ cookie: u.cookie })).status).toBe(200);
+  });
+
+  it("a tenant change: the pending status names both Workspaces, confirm audits both ids, old users stay refused at sign-in", async () => {
+    // A directory user of the first Workspace, bound to it.
+    const oldSub = `g-old-${crypto.randomUUID()}`;
+    const oldEmail = uniq("old-ws");
+    g.addUser({ id: oldSub, primaryEmail: oldEmail });
+    const oldUid = await seedUser(oldEmail, "member", { googleSub: oldSub });
+    await env.DB.prepare(
+      "update identities set directory_bound = 1 where provider = 'google' and subject = ?",
+    )
+      .bind(oldSub)
+      .run();
+    const first = g.customerId;
+    await env.DB.prepare(UPSERT).bind(HK.state, "customer_mismatch").run();
+    expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
+    expect(await keys()).toEqual(["binding.prior", "sync.state"]);
+
+    // Consent from a super admin of another Workspace (same domain).
+    const other = g.addUser({
+      id: `g-other-${crypto.randomUUID()}`,
+      primaryEmail: uniq("other-ws"),
+      isAdmin: true,
+      customerId: "C9999",
+    });
+    g.users.set(other.id, { ...other });
+    g.domains.set("C9999", [{ domainName: "a.com", verified: true }]);
+    const r = await connect(
+      e,
+      owner.cookie,
+      g,
+      { sub: other.id },
+      {
+        confirm: false,
+      },
+    );
+    expect(r.consented).toBe(true);
+    const st = (await (
+      await fetchAndWait(
+        app,
+        new Request(`${APP}${R.directory}`, {
+          headers: { cookie: owner.cookie },
+        }),
+        e,
+      )
+    ).json()) as SyncStatus;
+    expect(st.state).toBe("pending_confirm");
+    expect(st.pendingCustomerChange).toEqual({
+      previous: { customerId: first, domain: "a.com" },
+      next: { customerId: "C9999", domain: "a.com" },
+    });
+
+    expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(200);
+    const confirmed = (
+      await env.DB.prepare(
+        "select detail from audit_events where action = 'directory.connect' and json_extract(detail, '$.outcome') = 'confirmed' order by at desc limit 1",
+      ).first<{ detail: string }>()
+    )?.detail;
+    expect(JSON.parse(confirmed ?? "{}")).toMatchObject({
+      customerId: "C9999",
+      previousCustomerId: first,
+    });
+    await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
+    expect(await keys()).not.toContain("binding.prior");
+
+    // Users bound to the old Workspace don't carry over: refused at sign-in.
+    const row = await env.DB.prepare(
+      "select id, email, name, role from users where id = ?",
+    )
+      .bind(oldUid)
+      .first<{ id: string; email: string; name: string; role: string }>();
+    await expect(
+      directorySignIn(e, { ...row, displayName: null } as never),
+    ).rejects.toMatchObject({ why: "customer_mismatch" });
   });
 });
 

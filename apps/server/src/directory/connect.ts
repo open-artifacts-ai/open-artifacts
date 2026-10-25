@@ -44,6 +44,7 @@ import {
   dropPending,
   expirePending,
   K,
+  keepPrior,
   liveSub,
   type PendingConfirm,
   promotePending,
@@ -51,6 +52,7 @@ import {
   readBinding,
   readPending,
   readPendingRaw,
+  readPrior,
   revokeAtGoogle,
   revokeGrant,
   wipeState,
@@ -399,13 +401,22 @@ export async function afterConsent(
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<SyncStatus> {
   const p = await ownPending(env, user);
-  const [{ binding, sealed }, { sealed: old }, oldSub, seen] =
-    await Promise.all([
-      readBinding(env, "pending"),
-      readBinding(env, "live"),
-      liveSub(env),
-      readPendingRaw(env),
-    ]);
+  const [
+    { binding, sealed },
+    { sealed: old, binding: was },
+    oldSub,
+    seen,
+    prior,
+  ] = await Promise.all([
+    readBinding(env, "pending"),
+    readBinding(env, "live"),
+    liveSub(env),
+    readPendingRaw(env),
+    readPrior(env),
+  ]);
+  // The Workspace this confirm replaces: the live one, or the one a
+  // disconnect during customer_mismatch removed.
+  const previous = was?.customerId ?? prior?.customerId;
   if (!binding || !sealed || !seen) throw notFound();
   let token: string;
   try {
@@ -421,7 +432,12 @@ export async function afterConsent(
   const out = await env.DB.batch([
     ...swap,
     audit(env, "directory.connect", AUDIT_TARGET, userActor(user.id), {
-      detail: { outcome: "confirmed", transport: client.kind },
+      detail: {
+        outcome: "confirmed",
+        transport: client.kind,
+        customerId: binding.customerId,
+        ...(previous ? { previousCustomerId: previous } : {}),
+      },
       when: { sql: "changes() > 0", args: [] },
     }),
   ]);
@@ -563,22 +579,28 @@ export async function disconnectDirectory(
       },
       when: { sql: CONNECTED, args: CONNECTED_KEYS },
     }),
+    // During customer_mismatch: the old Workspace is remembered first.
+    keepPrior(env),
     wipeState(env),
   ]);
   const won = (out[0]?.meta.changes ?? 0) > 0;
-  // Tokens the wipe removed that step 1 never saw.
+  // Tokens the wipe removed that step 1 never saw, by the grant they were.
   const seen = new Set([live.sealed, pend.sealed]);
-  const late = ((out[1]?.results ?? []) as { key: string; value: string }[])
+  const late = ((out[2]?.results ?? []) as { key: string; value: string }[])
     .filter(
       (r) =>
         (r.key === K.refresh || r.key === K.pendingRefresh) &&
         !seen.has(r.value),
     )
-    .map((r) => r.value);
-  for (const sealed of late) {
-    const r = await revokeOutcome(env, sealed, "pending");
+    .map((r) => ({
+      sealed: r.value,
+      token: r.key === K.refresh ? ("live" as const) : ("pending" as const),
+    }));
+  for (const { sealed, token } of late) {
+    const r = await revokeOutcome(env, sealed, token);
+    logInfo("directory_disconnect_late", { token, revoke: r });
     await audit(env, "directory.disconnect", AUDIT_TARGET, actor, {
-      detail: { outcome: "revoke_late", revoke: r },
+      detail: { outcome: "revoke_late", token, revoke: r },
     })
       .run()
       .catch((e) => logWarn("directory_revoke_audit", e));
@@ -605,12 +627,29 @@ export async function directoryStatus(
   await expirePending(env);
   const t = directoryTransport(env);
   const mode = t.kind === "none" ? "off" : directoryMode(env);
-  const [{ binding }, pending, health, tomb] = await Promise.all([
+  const [{ binding }, pending, health, tomb, prior, next] = await Promise.all([
     readBinding(env),
     readPending(env),
     readHealth(env),
     readSyncState(env),
+    readPrior(env),
+    readBinding(env, "pending"),
   ]);
+  // A consent for another Workspace than the one a disconnect during
+  // customer_mismatch removed: the confirm step says so.
+  const change =
+    pending &&
+    prior &&
+    next.binding &&
+    next.binding.customerId !== prior.customerId
+      ? {
+          previous: prior,
+          next: {
+            customerId: next.binding.customerId,
+            domain: next.binding.domain,
+          },
+        }
+      : null;
   // T13: DirectorySync's health while a live binding exists.
   const h = healthFields(binding ? health : NEVER);
   return {
@@ -639,5 +678,6 @@ export async function directoryStatus(
     pendingCount: pending ? pending.count : null,
     pendingCountCapped: pending ? pending.capped : false,
     pendingExpiresAt: pending ? new Date(pending.exp).toISOString() : null,
+    pendingCustomerChange: change,
   };
 }

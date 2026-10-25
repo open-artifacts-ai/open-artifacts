@@ -133,7 +133,9 @@ export const clearHealth = (env: Pick<Env, "DB">) =>
     env.DB,
     `delete from directory_state where key = ?1 or (key = ?2 and (
       value <> 'customer_mismatch'
-      or exists (select 1 from directory_state where key = 'binding')))`,
+      or exists (select 1 from directory_state where key = 'binding')))
+      or (key = 'binding.prior'
+        and exists (select 1 from directory_state where key = 'binding'))`,
   ).bind(HK.health, HK.state);
 
 /**

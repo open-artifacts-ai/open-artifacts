@@ -110,6 +110,12 @@ export type HostedMockOptions = {
   breakGlass?: "fresh" | "stale";
   /** Act as the owner (default) or as an admin, e.g. to test owner-only actions. */
   actAs?: "owner" | "admin";
+  /**
+   * Start in pending_confirm with SyncStatus.pendingCustomerChange set: a
+   * consent for another Google Workspace than the one a disconnect during
+   * customer_mismatch removed.
+   */
+  pendingCustomerChange?: NonNullable<SyncStatus["pendingCustomerChange"]>;
   /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on when google or email is enabled). */
   features?: FeatureFlag[];
 };
@@ -386,6 +392,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     pendingCount: null,
     pendingCountCapped: false,
     pendingExpiresAt: null,
+    pendingCustomerChange: null,
     held:
       directoryMode === "google"
         ? [
@@ -398,6 +405,21 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           ]
         : [],
   };
+
+  // A consent for another Workspace, after a disconnect during a mismatch:
+  // the confirm step's "different Google Workspace" notice.
+  if (o.pendingCustomerChange) {
+    Object.assign(sync, {
+      binding: null,
+      healthy: false,
+      state: "pending_confirm",
+      lastSuccessAt: null,
+      held: [],
+      pendingCount: 12,
+      pendingExpiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
+      pendingCustomerChange: o.pendingCustomerChange,
+    } satisfies Partial<SyncStatus>);
+  }
 
   if (sync.lastSuccessAt)
     sync.staleAt = new Date(
@@ -428,6 +450,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       pendingCount: null,
       pendingCountCapped: false,
       pendingExpiresAt: null,
+      pendingCustomerChange: null,
     } satisfies Partial<SyncStatus>);
     log("directory.disconnect", { type: "directory", id: "google" });
   };
@@ -1636,6 +1659,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           pendingCount: null,
           pendingCountCapped: false,
           pendingExpiresAt: null,
+          pendingCustomerChange: null,
         });
         log("directory.connect", { type: "directory", id: "google" });
         return HttpResponse.json(sync);
@@ -1652,6 +1676,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           pendingCount: null,
           pendingCountCapped: false,
           pendingExpiresAt: null,
+          pendingCustomerChange: null,
         });
         log("directory.disconnect", { type: "directory", id: "google" });
         return noContent();

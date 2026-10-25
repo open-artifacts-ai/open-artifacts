@@ -29,6 +29,12 @@ import type { AppType } from "./index.js";
 
 const notFound = () => new ApiError("not_found", "Not found");
 
+/**
+ * Interactive cookie sessions: a Cloudflare Access sign-in (self-host),
+ * Google or an email code. Never "pat" (or any bearer token).
+ */
+const INTERACTIVE: ReadonlySet<string> = new Set(["access", "google", "code"]);
+
 const redirect = (location: string, cookie?: string) =>
   new Response(null, {
     status: 302,
@@ -118,7 +124,7 @@ export function mountDirectory(app: AppType): void {
     const m = c.get("authMethod");
     if (
       !m ||
-      m === "pat" ||
+      !INTERACTIVE.has(m) ||
       c.req.header("authorization") !== undefined ||
       !orgCan(user, "directory.disconnect", { cap: capOfCaller(caller(c)) })
     )

@@ -195,6 +195,8 @@ export const R = {
    * POST -> 200 SyncStatus: runs the binding pass for the pending connection.
    * Only the owner who connected (still the org owner); anyone else 404; no
    * pending connection 404; expired (24 h) 409 conflict, and it is dropped.
+   * A tenant change (SyncStatus.pendingCustomerChange) confirms the same
+   * way; directory.connect records customerId and previousCustomerId.
    */
   directoryConfirm: "/api/v1/directory/confirm",
   /** POST -> 204: drops the pending connection (token and binding). Same callers as directoryConfirm. */
