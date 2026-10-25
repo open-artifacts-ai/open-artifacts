@@ -1,5 +1,6 @@
 import { type Api, makeApi } from "../cf.ts";
 import { decide, detectPlan, warnings } from "../plan.ts";
+import { providersOf, type Signin } from "../signin.ts";
 import type { State } from "../state.ts";
 import { type Ctx, NeedInput, type Step } from "../step.ts";
 import {
@@ -110,7 +111,15 @@ export async function tokenIssues(
 ): Promise<TokenIssue[]> {
   const quiet = ctx.opts.ci || ctx.opts.strict;
   const out: TokenIssue[] = [];
+  // --auth-providers without access: the Access token is neither needed nor
+  // probed. (Only the flag: prereqs reads nothing from the Worker; a missing
+  // or failing token is a note here, never a refusal.)
+  const flag = ctx.opts.signinFlags.AUTH_PROVIDERS;
+  const accessOff =
+    flag !== undefined &&
+    !providersOf({ AUTH_PROVIDERS: flag } as Signin).includes("access");
   for (const t of tokens({ name: ctx.opts.name })) {
+    if (t.id === "access" && accessOff) continue;
     const zoneScope = zoneScopeFor(t, ids.zones);
     const base = {
       id: t.id,

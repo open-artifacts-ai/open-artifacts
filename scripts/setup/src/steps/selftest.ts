@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { homeOf, patTokenFile } from "../secret-file.ts";
 import { type Ctx, NeedInput, type Step } from "../step.ts";
 import { workerBindings } from "../worker.ts";
+import { accessInUse } from "./access.ts";
 import { tokenHash } from "./owner-token.ts";
 
 const TITLE = "Welcome to Open Artifacts";
@@ -396,8 +397,11 @@ export const healthcheck: Step = {
           : `plan ${JSON.stringify(served)} but setup rendered PLAN ${JSON.stringify(ctx.opts.planVar)}; the deployed Worker does not match, rerun setup (or pass --plan paid|free)`;
       },
     );
-    const oidc = `https://${state.teamDomain}/cdn-cgi/access/sso/oidc/${state.accessClientId}/.well-known/openid-configuration`;
-    await until200(ctx, "OIDC discovery", oidc);
+    const accessOn = await accessInUse(ctx, state.accountId ?? "");
+    if (accessOn) {
+      const oidc = `https://${state.teamDomain}/cdn-cgi/access/sso/oidc/${state.accessClientId}/.well-known/openid-configuration`;
+      await until200(ctx, "OIDC discovery", oidc);
+    }
     if (ctx.opts.email) {
       const b = await workerBindings(ctx, state.accountId ?? "");
       if (!b?.some((x) => x.type === "send_email" && x.name === "EMAIL"))
@@ -406,7 +410,7 @@ export const healthcheck: Step = {
         );
       ctx.notes.push("EMAIL binding deployed");
     }
-    ctx.notes.push("healthz and OIDC discovery ok");
+    ctx.notes.push(accessOn ? "healthz and OIDC discovery ok" : "healthz ok");
     return undefined;
   },
 };
