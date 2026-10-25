@@ -569,10 +569,15 @@ describe("broker: on exactly when the vars turn google on", () => {
     // update-vars keeps the registry in step (the broker stays on).
     w.lines.length = 0;
     const next = GOOGLE.map((v) =>
-      v === "AUTH_DOMAINS=finqore.test" ? "AUTH_DOMAINS=finqore.test,fq.test" : v,
+      v === "AUTH_DOMAINS=finqore.test"
+        ? "AUTH_DOMAINS=finqore.test,fq.test"
+        : v,
     );
     expect(
-      await main(["update-vars", "--env", "staging", "--install", id, ...next], w.deps),
+      await main(
+        ["update-vars", "--env", "staging", "--install", id, ...next],
+        w.deps,
+      ),
     ).toBe(0);
     expect(JSON.parse(String(entry(w, w.regId, id))).domains).toEqual([
       "finqore.test",
@@ -587,8 +592,12 @@ describe("broker: on exactly when the vars turn google on", () => {
     const id = idOf(w, "create");
     w.fake.kvValues(w.dirId).delete(`install:${id}`);
     w.lines.length = 0;
-    expect(await main(["status", "--env", "staging", "--install", id], w.deps)).toBe(0);
-    expect(w.parsed().find((l) => l.step === "status")?.data.registryDrift).toEqual({
+    expect(
+      await main(["status", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    expect(
+      w.parsed().find((l) => l.step === "status")?.data.registryDrift,
+    ).toEqual({
       id,
       kind: "missing_directory",
     });
@@ -596,16 +605,22 @@ describe("broker: on exactly when the vars turn google on", () => {
 
   it("create without google leaves the broker off: no registry entry, no signing key", async () => {
     const w = world();
-    expect(
-      await main([...CREATE(), "--var", "FEATURES=spaces"], w.deps),
-    ).toBe(0);
+    expect(await main([...CREATE(), "--var", "FEATURES=spaces"], w.deps)).toBe(
+      0,
+    );
     const id = idOf(w, "create");
     expect(entry(w, w.regId, id)).toBeUndefined();
     expect(entry(w, w.dirId, id)).toBeUndefined();
-    expect([...w.fake.scripts.values()][0]?.secrets.has("BROKER_SIGNING_KEY")).toBe(false);
+    expect(
+      [...w.fake.scripts.values()][0]?.secrets.has("BROKER_SIGNING_KEY"),
+    ).toBe(false);
     w.lines.length = 0;
-    expect(await main(["status", "--env", "staging", "--install", id], w.deps)).toBe(0);
-    expect(w.parsed().find((l) => l.step === "status")?.data.registryDrift).toBeNull();
+    expect(
+      await main(["status", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    expect(
+      w.parsed().find((l) => l.step === "status")?.data.registryDrift,
+    ).toBeNull();
   });
 
   it("a google create needs both registry KVs, and refuses before any write without them", async () => {
@@ -626,7 +641,14 @@ describe("--help", () => {
     const out = w.lines.join("\n");
     expect(out).toBe(HELP);
     for (const c of COMMANDS) expect(out).toContain(c);
-    for (const f of ["--tag", "--floor", "--force", "--confirm", "--test-hooks", "--var"])
+    for (const f of [
+      "--tag",
+      "--floor",
+      "--force",
+      "--confirm",
+      "--test-hooks",
+      "--var",
+    ])
       expect(out).toContain(f);
     expect(out).toContain("CLOUDFLARE_ACCOUNT_ID");
     noCalls(w);

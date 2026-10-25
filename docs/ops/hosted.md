@@ -418,8 +418,10 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 | `status` | `--install` | `status` (state, versions, lease, `sessionCut.pending` and `sessionCut.armed`, registry drift) |
 | `publish-release` | `--tag v<version>` | `gh release download` of `oa-release-<env>-*` into a temp dir, then `probeR2Conditionals` and `publishRelease` per variant |
 | `publish-floor` | `--floor <path to floor-<env>-<seq>.sig.json>` | `probeR2Conditionals`, then `publishFloor` |
-| `turnstile-init` | none | `turnstileInit`: creates `oa-<p>-turnstile` once (managed, exactly the env's app domain); a same-named widget that differs is refused |
+| `turnstile-init` | none | `turnstileInit`: creates `oa-<p>-turnstile` once (managed, exactly the env's app domain). Every create attempt is preceded by a listing by that exact name, so a create whose reply was lost is adopted, not duplicated. A same-named widget that differs is refused, and two or more are refused with both ids |
 
+- `pnpm oa:hosted --help` prints every command and flag. The flags beyond the plan's list: `--tag` (publish-release), `--floor` (publish-floor) and `--force` (release-lease only: releases a live lease, only when no operation is running).
+- Sign-in broker: on for an install whose vars turn google on (`AUTH_PROVIDERS` includes `google`); there is no flag. `create` reads it from `--var`; `update-vars` from the new `--var` set or the install's current vars; the other commands from the install's current vars. With it on, provision requires both `oa-<p>-broker-registry` and `oa-<p>-directory-registry` and writes the entry with origin `https://<app host>`. The server also needs `AUTH_BROKER_URL` (`--var`), or it refuses google.
 - Refused before any call: `--test-hooks` with `--env prod`, `delete` or `release-lease` whose `--confirm` is not the `--install` id, a `--var` that `HOSTED_VARS` rejects, and any missing or malformed flag.
 - Token: the keychain item `oa-hosted-<env>` (`security find-generic-password -w -s oa-hosted-<env>`). CI is staging only and reads a 0600 file it owns, named by `OA_HOSTED_TOKEN_FILE`; prod refuses that variable and refuses to run in CI. Then the provisioner's own token checks run (`verifyToken`) before the CLI's first write.
 - `CLOUDFLARE_ACCOUNT_ID` must be the hosted account id.
