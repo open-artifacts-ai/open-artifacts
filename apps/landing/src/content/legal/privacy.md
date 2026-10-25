@@ -143,7 +143,7 @@ Fonts are served by us, not by a third party. **[TODO: add the entity's own proc
 
 ## Removing people, and deleting an instance
 
-- **When someone is removed** from an instance, by an admin or because they left the Google directory, their access ends at once, their tokens and agents are revoked, and they're signed out. Their name stays on work they published, so others can see who made it. If they were removed because they left the Google directory, their email is replaced with a placeholder. **[TODO: this depends on whether hosted instances run with spaces on (Manager ruling pending). With spaces off, a removed member's record is deleted and their artifacts and versions move to the owner. Also confirm what happens to their past live-data edits.]**
+- **When someone is removed** from an instance, by an admin or because they left the Google directory, their access ends at once, their tokens and agents are revoked, and they're signed out. Their name and email stay in the instance's member list, marked as removed, so work they published still shows who made it. If they were removed because they left the Google directory, their email is replaced with a placeholder. **[TODO: confirm what happens to their past live-data edits, and whether the removed record is ever deleted.]**
 - **When an owner deletes an instance**, we delete its artifacts, files, members, settings and database, and revoke our access to its Google directory. We keep the owner's email and the instance's address for 30 days, then delete them or replace them with a one-way hash.
 
 ## Your choices and rights
