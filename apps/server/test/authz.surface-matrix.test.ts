@@ -1,48 +1,114 @@
 // P3 T16: every caller on every artifact through every surface (REST, list
-// and search, data and storage, content, sockets, all MCP tools), against
-// the hand-written table in test/authz/expect.ts.
-import { beforeAll, describe, expect, it } from "vitest";
+// and search, data and storage, content, sockets, all MCP tools), and every
+// caller on every instance route, against the hand-written tables in
+// test/authz/expect.ts. Then the customer_mismatch world: synced callers
+// fail closed, and only the org owner's break-glass reaches the directory.
+import { env } from "cloudflare:workers";
+import { BreakGlassRequiredDetailsSchema, R } from "@oa/shared";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createApp } from "../src/app.js";
 import {
   CONTENT_POLICY,
   ROUTE_POLICY,
   TOOL_POLICY,
 } from "../src/auth/route-policy.js";
+import { contentApp } from "../src/content/app.js";
+import manifest from "../src/mcp/tool-manifest.json";
 import {
   ARTIFACTS,
   type ArtifactName,
   CALLERS,
   type CallerName,
   expected,
+  orgExpected,
   TRAITS,
   type Traits,
 } from "./authz/expect.ts";
-import { BASE, buildWorld, io, type World } from "./authz/fixture.ts";
-import { SURFACES, type Surface, uncovered } from "./authz/surfaces.ts";
+import {
+  BASE,
+  buildWorld,
+  googleCookie,
+  io,
+  mismatchHealth,
+  staleHealth,
+  type World,
+} from "./authz/fixture.ts";
+import {
+  type Cred,
+  ORG_SURFACES,
+  type OrgTarget,
+  SURFACES,
+  type Surface,
+  uncovered,
+  unlisted,
+} from "./authz/surfaces.ts";
 
 let w: World;
+let target: OrgTarget;
 beforeAll(async () => {
   w = await buildWorld();
+  target = {
+    spaceId: w.spaces.S,
+    memberId: w.users.otherMember as string,
+    departedId: w.users.removedUser as string,
+  };
 }, 120_000);
 
-describe("coverage", () => {
-  it("SURFACES cover every artifact entry in ROUTE_POLICY and every TOOL_POLICY tool", () => {
+type RouteDef = { method: string; path: string; handler: { length: number } };
+/** Answering routes only (middleware are ALL routes taking (c, next)). */
+const answering = (routes: readonly RouteDef[]) => [
+  ...new Set(
+    routes
+      .filter((r) => !(r.method === "ALL" && r.handler.length >= 2))
+      .map((r) => `${r.method} ${r.path}`),
+  ),
+];
+
+describe("coverage (derived from the router and the registries)", () => {
+  it("SURFACES cover every artifact entry in ROUTE_POLICY and every MCP tool", () => {
     expect(uncovered(SURFACES, ROUTE_POLICY, TOOL_POLICY)).toEqual([]);
+    expect(manifest.map((t) => t.name).sort()).toEqual(
+      Object.keys(TOOL_POLICY).sort(),
+    );
   });
-  it("every SURFACES route is a real registry entry", () => {
+  it("every mounted app route is listed (artifact surface, instance route or public)", () => {
+    const mounted = answering(createApp().routes as RouteDef[]);
+    expect(unlisted(Object.fromEntries(mounted.map((k) => [k, {}])))).toEqual(
+      [],
+    );
+    expect(unlisted(ROUTE_POLICY)).toEqual([]);
+  });
+  it("the content host's catch-all is probed (/c/, ?dl=1, /p/)", () => {
+    const mounted = answering(contentApp.routes as RouteDef[]);
+    expect(mounted).toContain("GET /*");
+    expect(
+      SURFACES.filter((s) => s.routes.includes("content:GET /*")),
+    ).toHaveLength(3);
+  });
+  it("every listed route is a real registry entry", () => {
     const known = new Set([
       ...Object.keys(ROUTE_POLICY),
       ...Object.keys(TOOL_POLICY).map((t) => `tool:${t}`),
       ...Object.keys(CONTENT_POLICY).map((k) => `content:${k}`),
     ]);
     expect(
-      SURFACES.flatMap((s) => s.routes).filter((r) => !known.has(r)),
+      [
+        ...SURFACES.flatMap((s) => s.routes),
+        ...ORG_SURFACES.map((s) => s.route),
+      ].filter((r) => !known.has(r)),
     ).toEqual([]);
+  });
+  it("ORG_SURFACES rules match ROUTE_POLICY", () => {
+    for (const s of ORG_SURFACES)
+      expect(ROUTE_POLICY[s.route], s.route).toEqual(
+        "user" in s.rule ? { user: expect.any(String) } : s.rule,
+      );
   });
 });
 
 /**
  * Known bugs, pinned so the suite stays green and fails once they are fixed
- * (then delete the entry). Each one is reported, not fixed, by this task.
+ * (then delete the entry). Reported, not fixed, by this task.
  *
  * B1: /mcp with a PAT checks orgCan(user, "mcp.connect") without the
  * caller's cap (src/index.ts:61), so a restricted member's PAT still reaches
@@ -57,31 +123,186 @@ const KNOWN: Partial<Record<CallerName, { via: string; traits: Traits }>> = {
 };
 
 /** One caller's row on one surface: every artifact, probed. */
-async function row(s: Surface, who: CallerName) {
+async function row(
+  s: Surface,
+  cred: Cred,
+  want: (art: ArtifactName) => string,
+) {
   const got = {} as Record<ArtifactName, string>;
-  const want = {} as Record<ArtifactName, string>;
+  const exp = {} as Record<ArtifactName, string>;
   await Promise.all(
     ARTIFACTS.map(async (art) => {
       const id = s.mutates === "access" ? await w.clone(art) : w.ids[art];
       got[art] = await s
-        .probe(BASE, w.creds[who], id, io)
+        .probe(BASE, cred, id, io)
         .catch((e: Error) => `error: ${e.message}`);
-      const bug = KNOWN[who];
-      want[art] = expected(
-        who,
-        art,
-        s.action,
-        s.via,
-        bug?.via === s.via ? bug.traits : TRAITS[who],
-      );
+      exp[art] = want(art);
     }),
   );
-  return { got, want };
+  return { got, exp };
 }
 
-describe.each(SURFACES.map((s) => ({ ...s })))("$name", (s) => {
-  it.concurrent.each(CALLERS.map((c) => [c]))("%s", async (who) => {
-    const { got, want } = await row(s, who);
-    expect(got).toEqual(want);
+const want = (who: CallerName, s: Surface) => (art: ArtifactName) => {
+  const bug = KNOWN[who];
+  return expected(
+    who,
+    art,
+    s.action,
+    s.via,
+    bug?.via === s.via ? bug.traits : TRAITS[who],
+  );
+};
+
+describe("artifact surfaces (sync stale 8 days)", () => {
+  describe.each(SURFACES.map((s) => ({ ...s })))("$name", (s) => {
+    it.concurrent.each(CALLERS.map((c) => [c]))("%s", async (who) => {
+      const { got, exp } = await row(s, w.creds[who], want(who, s));
+      expect(got).toEqual(exp);
+    });
+    it.concurrent("staleSynced's PAT (its grant runs above)", async () => {
+      const cred = { ...w.creds.staleSynced, token: w.staleSyncedPat };
+      const { got, exp } = await row(s, cred, want("staleSynced", s));
+      expect(got).toEqual(exp);
+    });
+  });
+});
+
+describe("instance routes", () => {
+  describe.each(ORG_SURFACES.map((s) => ({ ...s })))("$route", (s) => {
+    it.concurrent("every caller", async () => {
+      const got = {} as Record<CallerName, string>;
+      const exp = {} as Record<CallerName, string>;
+      await Promise.all(
+        CALLERS.map(async (who) => {
+          got[who] = await s
+            .probe(BASE, w.creds[who], target, io)
+            .catch((e: Error) => `error: ${e.message}`);
+          exp[who] = orgExpected(who, s.rule);
+        }),
+      );
+      expect(got).toEqual(exp);
+    });
+  });
+});
+
+describe("attack seeds: another member's personal space", () => {
+  const send = (path: string, cookie: string, method = "GET", body?: unknown) =>
+    io.fetch?.(
+      new Request(`${BASE}${path}`, {
+        method,
+        headers: {
+          cookie,
+          "x-oa-request": "1",
+          ...(body ? { "content-type": "application/json" } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      }),
+    ) as Promise<Response>;
+  const count = async (space: string) =>
+    (
+      await env.DB.prepare(
+        "select count(*) n from artifacts where space_id = ?",
+      )
+        .bind(space)
+        .first<{ n: number }>()
+    )?.n ?? 0;
+
+  it("publish into it, move into it and list it are refused for everyone else", async () => {
+    const other = w.spaces.otherPersonal;
+    const before = await count(other);
+    for (const who of ["orgOwner", "spaceManager", "personalOwner"] as const) {
+      const cookie = w.creds[who].cookie as string;
+      const pub = await send(R.artifacts, cookie, "POST", {
+        title: "x",
+        format: "html",
+        content: "<p>x</p>",
+        spaceId: other,
+      });
+      expect([400, 403, 404], `${who} publish`).toContain(pub.status);
+      const art = await w.clone(
+        who === "personalOwner" ? "personalPrivate" : "spacePrivate",
+      );
+      const mv = await send(`${R.artifact(art)}/move`, cookie, "POST", {
+        spaceId: other,
+      });
+      expect([400, 403, 404], `${who} move`).toContain(mv.status);
+      const ls = await send(
+        `${R.artifacts}?scope=space&spaceId=${other}`,
+        cookie,
+      );
+      expect([400, 403, 404], `${who} list`).toContain(ls.status);
+    }
+    expect(await count(other)).toBe(before);
+  });
+});
+
+// Last: it changes the instance's health for everything after it.
+describe("customer_mismatch: synced callers resolve to no one", () => {
+  beforeAll(mismatchHealth);
+  afterAll(staleHealth);
+  const SYNCED = ["orgOwner", "staleSynced"] as const;
+
+  describe.each(SURFACES.map((s) => ({ ...s })))("$name", (s) => {
+    it.concurrent.each([
+      ...SYNCED.map((c) => [c, "cookie and token"] as const),
+      ["staleSynced", "PAT"] as const,
+    ])("%s (%s)", async (who, kind) => {
+      const cred =
+        kind === "PAT"
+          ? { ...w.creds[who], token: w.staleSyncedPat }
+          : w.creds[who];
+      const { got, exp } = await row(s, cred, (art) =>
+        expected("anonymous", art, s.action, s.via),
+      );
+      expect(got).toEqual(exp);
+    });
+  });
+
+  it("GET R.me: the org owner gets break_glass_required, a synced member a plain 401", async () => {
+    const me = (cookie: string) =>
+      io.fetch?.(
+        new Request(`${BASE}${R.me}`, { headers: { cookie } }),
+      ) as Promise<Response>;
+    const owner = await me(await googleCookie(w.users.orgOwner as string));
+    expect(owner.status).toBe(401);
+    const e = (
+      (await owner.json()) as { error: { code: string; details: unknown } }
+    ).error;
+    expect(e.code).toBe("break_glass_required");
+    expect(BreakGlassRequiredDetailsSchema.parse(e.details)).toEqual({
+      fresh: true,
+    });
+    const member = await me(w.creds.staleSynced.cookie as string);
+    expect(member.status).toBe(401);
+    expect(
+      ((await member.json()) as { error: { code: string } }).error.code,
+    ).toBe("unauthorized");
+  });
+
+  it("break-glass: the owner's fresh forced Google session reaches R.directory only", async () => {
+    const cookie = await googleCookie(w.users.orgOwner as string);
+    const get = (path: string) =>
+      io.fetch?.(
+        new Request(`${BASE}${path}`, { headers: { cookie } }),
+      ) as Promise<Response>;
+    expect((await get(R.directory)).status).toBe(200);
+    // Every other route treats them as anonymous.
+    for (const path of [
+      R.members,
+      R.settings,
+      R.artifacts,
+      R.artifact(w.ids.personalTeam),
+      R.artifact(w.ids.spaceTeam),
+    ])
+      expect([401, 404], path).toContain((await get(path)).status);
+    // A public artifact still opens, as for anyone.
+    expect((await get(R.artifact(w.ids.spacePublic))).status).toBe(200);
+    const cred = { cookie };
+    for (const s of SURFACES.filter((x) => x.via === "rest")) {
+      const { got, exp } = await row(s, cred, (art) =>
+        expected("anonymous", art, s.action, s.via),
+      );
+      expect(got, s.name).toEqual(exp);
+    }
   });
 });

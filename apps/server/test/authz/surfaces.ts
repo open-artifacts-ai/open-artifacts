@@ -819,3 +819,179 @@ export function uncovered(
       .filter((k) => !have.has(k)),
   ];
 }
+
+// ------------------------------------------------- non-artifact routes
+
+/** The ids the instance routes need (a shared space, a member, a departed one). */
+export type OrgTarget = {
+  spaceId: string;
+  memberId: string;
+  departedId: string;
+};
+
+/**
+ * How a route is guarded: an org action, or any signed-in caller (`space`:
+ * the service then requires a member of the space, or its manager, or an
+ * org admin).
+ */
+export type OrgRule =
+  | { org: string }
+  | { user: true; space?: "member" | "manager" };
+
+export type OrgSurface = {
+  route: string;
+  rule: OrgRule;
+  /** Writes when allowed (the probe script skips it). */
+  mutates?: "data";
+  probe(base: string, cred: Cred, t: OrgTarget, io?: ProbeIO): Promise<Verdict>;
+};
+
+const fill = (path: string, t: OrgTarget) =>
+  path
+    .replace(/^\/api\/v1\/spaces\/:id/, `/api/v1/spaces/${t.spaceId}`)
+    .replace(/\/members\/:id\/transfer$/, `/members/${t.departedId}/transfer`)
+    .replace(":id", t.memberId)
+    .replace(":userId", t.memberId)
+    .replace(":groupId", "probe-group")
+    .replace(":grantId", "probe-grant")
+    // An unknown query key: 400 past the guard, before any Google call.
+    .replace(/\/directory\/groups$/, "/directory/groups?probe=1");
+
+/**
+ * Probes `route` (a ROUTE_POLICY key): writes with the CSRF probe (the gate
+ * only; nothing runs), reads by status (`ok`: the allowed answers).
+ */
+function orgProbe(route: string, ok: number[]): OrgSurface["probe"] {
+  const [method = "GET", path = ""] = route.split(" ");
+  return async (base, cred, t, io) => {
+    const p = fill(path, t);
+    if (method === "GET") {
+      const r = await send(io, base, p, cred);
+      return classify(route, r, status(...ok));
+    }
+    if (!cred.cookie && cred.token)
+      throw new Unexpected("the CSRF probe needs a session cookie");
+    const r = await send(io, base, p, cred, { method, noCsrf: true });
+    // A create by a capped caller: the contract's 403, a refusal.
+    if (r.status === 403 && r.code === "space_forbidden") return "deny";
+    return classify(route, r, (x) => x.status === 403 && x.code === "csrf");
+  };
+}
+
+const U = { user: true } as const;
+const org = (action: string) => ({ org: action });
+const ORG: [string, OrgRule, number[]?, "data"?][] = [
+  ["GET /api/v1/me", U, [200]],
+  ["PATCH /api/v1/me", U],
+  ["GET /api/v1/members", org("members.manage"), [200]],
+  ["POST /api/v1/members", org("members.manage")],
+  ["PATCH /api/v1/members/:id", org("members.manage")],
+  ["DELETE /api/v1/members/:id", org("members.manage")],
+  ["GET /api/v1/members/:id/transfer", org("transfer.departed"), [200]],
+  ["POST /api/v1/members/:id/transfer", org("transfer.departed")],
+  ["DELETE /api/v1/members/:id/identities/google", org("members.manage")],
+  ["PUT /api/v1/members/:id/restricted", org("restricted.member")],
+  ["DELETE /api/v1/members/:id/restricted", org("restricted.member")],
+  ["GET /api/v1/settings", org("settings.read"), [200]],
+  ["PATCH /api/v1/settings", org("settings.manage")],
+  ["GET /api/v1/spaces", U, [200]],
+  ["POST /api/v1/spaces", org("space.create")],
+  ["GET /api/v1/spaces/:id", { user: true, space: "member" }, [200]],
+  ["PATCH /api/v1/spaces/:id", U],
+  ["DELETE /api/v1/spaces/:id", U],
+  ["GET /api/v1/spaces/:id/members", { user: true, space: "member" }, [200]],
+  ["POST /api/v1/spaces/:id/members/self", org("space.adminSelfAdd")],
+  ["PUT /api/v1/spaces/:id/members/:userId", U],
+  ["DELETE /api/v1/spaces/:id/members/:userId", U],
+  ["GET /api/v1/spaces/:id/mappings", { user: true, space: "manager" }, [200]],
+  ["PUT /api/v1/spaces/:id/mappings/:groupId", U],
+  ["DELETE /api/v1/spaces/:id/mappings/:groupId", U],
+  ["GET /api/v1/directory/org-mappings", org("org.mappings"), [200]],
+  ["PUT /api/v1/directory/org-mappings/:groupId", org("org.mappings")],
+  ["DELETE /api/v1/directory/org-mappings/:groupId", org("org.mappings")],
+  ["GET /api/v1/directory/restricted-groups", org("restricted.groups"), [200]],
+  [
+    "PUT /api/v1/directory/restricted-groups/:groupId",
+    org("restricted.groups"),
+  ],
+  [
+    "DELETE /api/v1/directory/restricted-groups/:groupId",
+    org("restricted.groups"),
+  ],
+  ["GET /api/v1/directory", org("members.manage"), [200]],
+  // Starts a consent (a state cookie) and redirects.
+  ["GET /api/v1/directory/connect", org("directory.manage"), [302], "data"],
+  // A refusal redirects with ?error= and writes an audit row.
+  ["GET /api/v1/directory/callback", U, [302], "data"],
+  ["POST /api/v1/directory/confirm", org("directory.manage")],
+  ["POST /api/v1/directory/cancel", org("directory.manage")],
+  ["GET /api/v1/directory/groups", org("org.mappings"), [400]],
+  ["POST /api/v1/directory/sync", org("directory.manage")],
+  ["POST /api/v1/directory/held/:groupId/confirm", org("directory.manage")],
+  ["POST /api/v1/artifacts", org("artifact.create")],
+  ["GET /api/v1/tokens", U, [200]],
+  ["POST /api/v1/tokens", org("tokens.create")],
+  ["PATCH /api/v1/tokens/:id", U],
+  ["DELETE /api/v1/tokens/:id", U],
+  ["GET /api/v1/usage", org("usage.read"), [200]],
+  ["GET /api/v1/audit", org("audit.read"), [200]],
+  ["GET /api/v1/audit/export", org("audit.read"), [200]],
+  ["GET /api/v1/oauth-clients", U, [200]],
+  ["PATCH /api/v1/oauth-clients/:grantId", U],
+  ["DELETE /api/v1/oauth-clients/:grantId", U],
+];
+
+/** Every instance route (an org or user policy) not reached through an artifact. */
+export const ORG_SURFACES: readonly OrgSurface[] = ORG.map(
+  ([route, rule, ok = [], mutates]) => ({
+    route,
+    rule,
+    ...(mutates ? { mutates } : {}),
+    probe: orgProbe(route, ok),
+  }),
+);
+
+/**
+ * Routes no caller is scoped on (public or URL-signed policies): listed so
+ * a new route must be classified here, in SURFACES or in ORG_SURFACES.
+ */
+export const PUBLIC_ROUTES: readonly string[] = [
+  "GET /healthz",
+  "GET /robots.txt",
+  "GET /skill.md",
+  "GET /upgrade.md",
+  "ALL /healthz",
+  "ALL /robots.txt",
+  "ALL /skill.md",
+  "ALL /upgrade.md",
+  "GET /auth/providers",
+  "GET /auth/login",
+  "GET /auth/callback",
+  "GET /auth/login/google",
+  "GET /auth/callback/google",
+  "POST /auth/code/request",
+  "POST /auth/code/verify",
+  "POST /auth/logout",
+  "GET /auth/dev-login",
+  "ALL /__test/*",
+  "PUT /api/v1/uploads/:uploadId",
+  "GET /oauth/authorize",
+  "POST /oauth/authorize",
+  "GET /a/:id",
+  "GET /a/:id/full",
+  "GET /a/:id/v/:v",
+  "GET /*",
+  "HEAD /*",
+];
+
+/** ROUTE_POLICY keys that none of SURFACES, ORG_SURFACES or PUBLIC_ROUTES lists. */
+export function unlisted(
+  routePolicy: Readonly<Record<string, object>>,
+): string[] {
+  const have = new Set([
+    ...SURFACES.flatMap((s) => s.routes),
+    ...ORG_SURFACES.map((s) => s.route),
+    ...PUBLIC_ROUTES,
+  ]);
+  return Object.keys(routePolicy).filter((k) => !have.has(k));
+}

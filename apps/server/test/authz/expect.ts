@@ -72,6 +72,8 @@ export type Traits = {
   role: "owner" | "admin" | "member" | "guest" | null;
   /** Capped callers list only what they reach through a share or a space role. */
   grants?: readonly ArtifactName[];
+  /** Role in shared space S (manual or sync). */
+  sRole?: "viewer" | "editor" | "manager";
 };
 
 const T = (role: Traits["role"], o: Partial<Traits> = {}): Traits => ({
@@ -87,9 +89,9 @@ const NONE = T(null);
 export const TRAITS: Record<CallerName, Traits> = {
   orgOwner: T("owner"),
   orgAdmin: T("admin"),
-  spaceManager: T("member"),
-  spaceEditor: T("member"),
-  spaceViewer: T("member"),
+  spaceManager: T("member", { sRole: "manager" }),
+  spaceEditor: T("member", { sRole: "editor" }),
+  spaceViewer: T("member", { sRole: "viewer" }),
   allMembersOnly: T("member"),
   personalOwner: T("member"),
   otherMember: T("member"),
@@ -102,17 +104,19 @@ export const TRAITS: Record<CallerName, Traits> = {
     capped: true,
     mcp: false,
     grants: ["spacePrivate", "spaceTeam", "spacePublic"],
+    sRole: "editor",
   }),
   restrictedContractor: T("member", {
     capped: true,
     mcp: false,
     grants: ["personalPrivate", "spacePrivate", "spaceTeam", "spacePublic"],
+    sRole: "editor",
   }),
   // Inactive users resolve to no one: anonymous everywhere.
   suspendedUser: NONE,
   removedUser: NONE,
   recycledEmailUser: T("member"),
-  staleSynced: T("member"),
+  staleSynced: T("member", { sRole: "editor" }),
   anonymous: NONE,
 };
 
@@ -251,4 +255,47 @@ export function expected(
     return yes(writer && level === "owner" && a.personal);
   // anonId: anonymous writes only, and no fixture opts in.
   return "deny";
+}
+
+/** Instance actions that need an uncapped org owner or admin. */
+const ADMIN_ACTIONS = new Set([
+  "members.manage",
+  "transfer.departed",
+  "space.create",
+  "space.adminSelfAdd",
+  "org.mappings",
+  "restricted.groups",
+  "restricted.member",
+  "settings.manage",
+  "usage.read",
+  "audit.read",
+]);
+
+/** Whether `who` passes an instance route's guard (`{ org }` or `{ user }`). */
+export function orgExpected(
+  who: CallerName,
+  rule: { org: string } | { user: true; space?: "member" | "manager" },
+): "allow" | "deny" {
+  const t = TRAITS[who];
+  const yes = (b: boolean) => (b ? "allow" : "deny");
+  if (!t.session) return "deny";
+  const admin = (t.role === "owner" || t.role === "admin") && !t.capped;
+  if ("user" in rule) {
+    if (rule.space === "member") return yes(admin || t.sRole !== undefined);
+    if (rule.space === "manager") return yes(admin || t.sRole === "manager");
+    return "allow";
+  }
+  if (ADMIN_ACTIONS.has(rule.org)) return yes(admin);
+  switch (rule.org) {
+    // The cap doesn't hide settings from members (read only).
+    case "settings.read":
+      return yes(t.team);
+    case "directory.manage":
+      return yes(t.role === "owner" && !t.capped);
+    case "tokens.create":
+      return yes(t.team && !t.capped);
+    case "artifact.create":
+      return yes(!t.capped);
+  }
+  throw new Error(`no expectation for ${rule.org}`);
 }

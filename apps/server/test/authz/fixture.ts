@@ -11,7 +11,7 @@ import worker from "../../src/index.js";
 import { runtimeStub } from "../../src/runtime/do.js";
 import { publish } from "../../src/services/artifacts.js";
 import { getUser } from "../../src/services/users.js";
-import { seedUser, uniq } from "../auth-helpers.js";
+import { mailer, seedUser, uniq } from "../auth-helpers.js";
 import { directEnv } from "../directory-helpers.js";
 import { fetchAndWait } from "../helpers.js";
 import { oauthToken } from "../mcp-helpers.js";
@@ -27,10 +27,14 @@ export const BASE = "https://app.localhost";
 export const CONTENT = "http://content.localhost";
 const DAY = 86_400_000;
 
+/** Break-glass emails land here. */
+export const mail = mailer();
+
 /** FinQore's flags, on the Paid plan (no fan-out caps in the way). */
 export const E: Env = directEnv({
   PLAN: "paid",
   FEATURES: "spaces,sync_google,content_revocation",
+  ...mail.env,
 });
 
 /** The Worker as a remote target would be: both hosts, waitUntil awaited. */
@@ -103,6 +107,8 @@ export type World = {
   users: Partial<Record<CallerName, string>>;
   /** Shared space S, links-off space L, and another member's personal space. */
   spaces: { S: string; L: string; otherPersonal: string };
+  /** staleSynced's PAT (its creds carry the MCP OAuth grant). */
+  staleSyncedPat: string;
   /** orgOwner and staleSynced are bound to the directory. */
   googleSubs: { orgOwner: string; staleSynced: string };
   /** A throwaway copy of `art` (same space, visibility, trash and shares). */
@@ -287,6 +293,7 @@ export async function buildWorld(): Promise<World> {
     userId: u("staleSynced"),
   });
   // The grant drives MCP; its PAT is checked on its own (matrix test).
+  const staleSyncedPat = creds.staleSynced.token as string;
   creds.staleSynced = { ...creds.staleSynced, token: grant.accessToken };
   // Restricted after the PAT was minted (tokens.create refuses capped callers).
   await run(
@@ -341,6 +348,7 @@ export async function buildWorld(): Promise<World> {
     users,
     spaces: { S, L, otherPersonal: u("otherMember") },
     googleSubs: subs,
+    staleSyncedPat,
     clone,
   };
 }
