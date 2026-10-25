@@ -6,7 +6,8 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { newId } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyGroupDiff } from "../src/directory/apply.js";
+import { applyGroupDiff, applyUsers } from "../src/directory/apply.js";
+import type { GoogleUser } from "../src/directory/google.js";
 import { SignInRefused } from "../src/directory/signin.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
@@ -494,6 +495,50 @@ describe("users by identity", () => {
     expect(await sharesFor(x)).toEqual([]);
   });
 
+  it("same page, new holder listed before the renamed old user: the new holder's shares stay on the address", async () => {
+    const [bob, bob2] = [uniq("pg-bob"), uniq("pg-bob2")];
+    const oldSub = `g-pg-old-${crypto.randomUUID()}`;
+    const newSub = `g-pg-new-${crypto.randomUUID()}`;
+    const old = await seedUser(bob, "member", { googleSub: oldSub });
+    const oldArt = await seedShare(bob);
+    let newArt: string | null = null;
+    // Someone shares with the new holder once their row exists (mid-page).
+    const DB = new Proxy(env.DB, {
+      get(t, p) {
+        if (p === "batch")
+          return async (ss: D1PreparedStatement[]) => {
+            const out = await t.batch(ss);
+            if (!newArt && (await userByIdentity(newSub)))
+              newArt = await seedShare(bob);
+            return out;
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const en = { ...e, DB } as Env;
+    const gu = (id: string, primaryEmail: string): GoogleUser => ({
+      id,
+      primaryEmail,
+      suspended: false,
+      deleted: false,
+      isAdmin: false,
+      customerId: "C0123",
+    });
+    const renamed = gu(oldSub, bob2);
+    // One page, read once: new Bob first, then old Bob (stale address).
+    await applyUsers(en, [gu(newSub, bob), renamed], {
+      tenant: "a.com",
+      lookup: async () => renamed,
+    });
+    expect((await userByIdentity(oldSub))?.email).toBe(bob2);
+    expect((await userByIdentity(newSub))?.email).toBe(bob);
+    expect(newArt).not.toBeNull();
+    expect(await sharesFor(bob)).toEqual([{ artifact_id: newArt }]);
+    expect(await sharesFor(bob2)).toEqual([{ artifact_id: oldArt }]);
+    expect(old).toBe((await userByIdentity(oldSub))?.id);
+  });
+
   it("the recycled-address lookup checks the customer: another customer's user fails closed", async () => {
     const y = uniq("cust");
     const oldSub = `g-cust-${crypto.randomUUID()}`;
@@ -726,6 +771,17 @@ describe("onGoogleSignIn", () => {
     await expect(
       onGoogleSignIn(brokenDb({ sql: /from identities/ }), u),
     ).rejects.toBeInstanceOf(SignInRefused);
+  });
+
+  it("another customer's user in Google is refused even when userGroups would fail", async () => {
+    const me = await signedUp("si-cust");
+    const t0 = Date.now();
+    await connected(t0);
+    const u = await member(me.sub);
+    Object.assign(g.users.get(me.sub) as object, { customerId: "C-other" });
+    g.fail(/\/groups\?userKey/, 503);
+    await expect(onGoogleSignIn(e, u)).rejects.toBeInstanceOf(SignInRefused);
+    expect(g.adminCalls).not.toContain("/groups");
   });
 
   it("hasMember failing writes no drops", async () => {

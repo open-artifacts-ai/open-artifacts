@@ -207,7 +207,12 @@ const PLACEHOLDER = `update users set email = ?2 where id = ?1 and email <> ?2 a
 const MOVE_EMAIL = `update users set email = ?2
   where id = ?1 and email = ?3 and status <> 'removed'
     and not exists (select 1 from users where email = ?2)`;
-const MOVED = "exists (select 1 from users where id = ?1 and email = ?2)";
+/**
+ * The row moved to ?2 and nobody holds the old address ?3 (a stale page
+ * snapshot never re-keys a new holder's shares onto the old user).
+ */
+const MOVED = `exists (select 1 from users where id = ?1 and email = ?2)
+  and not exists (select 1 from users where email = ?3)`;
 /**
  * The old address's shares re-keyed to the new one (shares are keyed by
  * address only; there is no user_id column): on a conflict the higher role.

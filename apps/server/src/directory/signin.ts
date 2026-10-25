@@ -127,7 +127,15 @@ export async function directorySignIn(
       } catch (e) {
         if (!(e instanceof GoogleApiError && e.status === 404)) throw e;
       }
-      if (u && !u.suspended && mode === "google") {
+      // Groups only for this customer's active user: the gone, customer and
+      // suspended checks below never wait on (or get skipped by) userGroups.
+      if (
+        u &&
+        u.id === sub &&
+        u.customerId === binding.customerId &&
+        !u.suspended &&
+        mode === "google"
+      ) {
         direct = [];
         let page: string | undefined;
         for (let i = 0; i < SIGNIN_GROUP_PAGES; i++) {
