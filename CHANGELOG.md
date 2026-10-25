@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.52.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.51.0...v0.52.0) (2026-10-25)
+
+
+### Features
+
+* **auth:** directory break-glass card for the locked-out owner ([#611](https://github.com/open-artifacts-ai/open-artifacts/issues/611)) ([6b25371](https://github.com/open-artifacts-ai/open-artifacts/commit/6b2537184ce093e270163f917f696f2dd7979c37))
+
 ## [0.51.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.50.0...v0.51.0) (2026-10-25)
 
 
