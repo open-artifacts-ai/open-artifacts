@@ -2732,7 +2732,10 @@ describe("fix round 2 (T8 review M1, M2): the broker URL and google", () => {
   const GOOGLE = { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" };
   const brokerUrlOf = (s: S, id: string) =>
     (
-      s.scriptOf(id)?.metadata.bindings as { name: string; text?: string }[]
+      (s.scriptOf(id)?.metadata.bindings ?? []) as {
+        name: string;
+        text?: string;
+      }[]
     ).find((b) => b.name === "AUTH_BROKER_URL")?.text;
 
   it.each([
