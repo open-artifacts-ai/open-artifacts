@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
-import { newId, R, UsageSchema } from "@oa/shared";
+import { MeSchema, newId, R, UsageSchema } from "@oa/shared";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
+import { ROUTE_POLICY } from "../src/auth/route-policy.js";
 import { api, fetchAndWait, login } from "./helpers.js";
 import { connect, E, textOf, tool } from "./mcp-helpers.js";
 
@@ -304,6 +305,71 @@ describe("usage", () => {
     expect(u.metrics).toHaveLength(5);
     const init = graphqlCalls(spy)[0]?.[1] as RequestInit;
     expect(String(init.body)).not.toContain("cpuTimeP99");
+  });
+});
+
+// P3 T19: hosted sets FEATURES=usage_off; self-hosted default is unchanged.
+describe("usage_off", () => {
+  const withFeatures = (f: string) => ({ ...withToken("tok"), FEATURES: f });
+  const me = async (e: unknown) =>
+    MeSchema.parse(
+      await (
+        await fetchAndWait(
+          app,
+          new Request(`http://app.localhost${R.me}`, {
+            headers: { cookie: owner.cookie },
+          }),
+          e,
+        )
+      ).json(),
+    );
+  let owner: { cookie: string };
+  beforeAll(async () => {
+    owner = await login(
+      `us-o-${newId().slice(0, 6).toLowerCase()}@x.com`,
+      "owner",
+    );
+  });
+
+  it("usage_off → GET /api/v1/usage 404 for the owner", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    for (const who of [owner, admin, member])
+      expect((await call(who.cookie, withFeatures("usage_off"))).status).toBe(
+        404,
+      );
+    // Absent for everyone: no 401 hint, and no analytics call.
+    expect((await call(null, withFeatures("spaces,usage_off"))).status).toBe(
+      404,
+    );
+    expect(graphqlCalls(spy)).toHaveLength(0);
+  });
+
+  it('usage_off → me.instance.features contains "usage_off"', async () => {
+    // Me.instance.features appears on hosted (or direct sign-in) installs.
+    const hosted = (f: string) => ({ ...withFeatures(f), HOSTED: "1" });
+    expect((await me(hosted("usage_off"))).instance.features).toContain(
+      "usage_off",
+    );
+    expect((await me(hosted(""))).instance.features).not.toContain("usage_off");
+  });
+
+  it("no flag → owner still gets usage", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => gql());
+    for (const f of ["", "spaces,content_revocation"]) {
+      const r = await call(owner.cookie, {
+        ...withFeatures(f),
+        CF_ACCOUNT_ID: `acct-flag-${f.length}`,
+      });
+      expect(r.status).toBe(200);
+      expect(UsageSchema.parse(await r.json()).available).toBe(true);
+    }
+  });
+
+  it("the policy gate refuses on its own (offWhen)", () => {
+    expect(ROUTE_POLICY[`GET ${R.usage}`]).toEqual({
+      org: "usage.read",
+      offWhen: "usage_off",
+    });
   });
 });
 
