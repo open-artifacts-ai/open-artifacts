@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.55.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.54.0...v0.55.0) (2026-10-25)
+
+
+### Features
+
+* self-host Geist, no Google Fonts anywhere ([#625](https://github.com/open-artifacts-ai/open-artifacts/issues/625)) ([a670e16](https://github.com/open-artifacts-ai/open-artifacts/commit/a670e16d531a577662f36c6b22a1119553a2e13b))
+
 ## [0.54.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.53.0...v0.54.0) (2026-10-25)
 
 
