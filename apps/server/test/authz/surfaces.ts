@@ -117,10 +117,11 @@ async function send(
 }
 
 const DENY = new Set([401, 404]);
+type Answer = { status: number; code: string; message?: string; body: string };
 function classify(
   what: string,
-  r: { status: number; code: string; body: string },
-  allow: (r: { status: number; code: string }) => boolean,
+  r: Answer,
+  allow: (r: Answer) => boolean,
 ): Verdict {
   if (allow(r)) return "allow";
   if (DENY.has(r.status)) return "deny";
@@ -160,12 +161,8 @@ const exact =
     method: string,
     path: (id: string) => string,
     init: (id: string, cred: Cred) => Init,
-    allow: (r: { status: number; code: string; message: string }) => boolean,
-    deny: (r: {
-      status: number;
-      code: string;
-      message: string;
-    }) => boolean = () => false,
+    allow: (r: Answer) => boolean,
+    deny: (r: Answer) => boolean = () => false,
   ) =>
   async (base: string, cred: Cred, id: string, io?: ProbeIO) => {
     const r = await send(io, base, path(id), cred, {
@@ -537,7 +534,8 @@ export const SURFACES: readonly Surface[] = [
       () => ({ body: { visibility: "private" } }),
       status(200),
       (r) =>
-        r.status === 400 && /only the owner can change sharing/.test(r.message),
+        r.status === 400 &&
+        /only the owner can change sharing/.test(r.message ?? ""),
     ),
     "access",
   ),

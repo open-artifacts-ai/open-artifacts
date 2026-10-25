@@ -46,7 +46,7 @@ describe("authz-probe", () => {
   });
   it("refuses credentials in the environment", async () => {
     for (const env of [
-      { OA_PAT: "x" },
+      { OA_PAT: "x" } as Record<string, string>,
       { AUTHZ_PROBE_COOKIE: "x" },
       { SOMETHING: "oa_pat_abc" },
     ]) {
