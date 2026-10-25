@@ -140,11 +140,12 @@ Fonts are served by us, not by a third party. **[TODO: add the entity's own proc
 | Service logs | **[TODO: confirm Cloudflare Workers Logs retention for our plan and state it.]** |
 | Database backups | Cloudflare keeps a 30-day restore window for the database, so deleted database records can be restored for up to 30 days. Files and live data aren't backed up. |
 | The owner's email after an instance is deleted | 30 days **[TODO: confirm the purge is built before publishing.]** |
+| An instance's former address | Kept, reserved, so nobody else can reuse it |
 
 ## Removing people, and deleting an instance
 
 - **When someone is removed** from an instance, by an admin or because they left the Google directory, their access ends at once, their tokens and agents are revoked, and they're signed out. Their name and email stay in the instance's member list, marked as removed, so work they published still shows who made it. If they were removed because they left the Google directory, their email is replaced with a placeholder. **[TODO: confirm what happens to their past live-data edits, and whether the removed record is ever deleted.]**
-- **When an owner deletes an instance**, we delete its artifacts, files, members, settings and database, and revoke our access to its Google directory. We keep the owner's email and the instance's address for 30 days, then delete them.
+- **When an owner deletes an instance**, we delete its artifacts, files, members, settings and database, and revoke our access to its Google directory. We delete the owner's email 30 days after an instance is deleted. We keep the instance's former address reserved so it can't be reused by someone else.
 
 ## Your choices and rights
 
