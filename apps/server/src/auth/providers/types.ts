@@ -10,6 +10,8 @@ export type VerifiedIdentity = {
   name: string | null;
   /** Verified tenant (Google `hd`), or null when the provider has none. */
   tenant: string | null;
+  /** When the user last authenticated at the provider (ms), when it says. */
+  authTime?: number | null;
 };
 
 /**
@@ -22,7 +24,13 @@ export interface OidcProvider {
   callbackPath: string;
   authorizeUrl(
     env: Env,
-    a: { state: string; nonce: string; challenge: string },
+    a: {
+      state: string;
+      nonce: string;
+      challenge: string;
+      /** Force a fresh authentication at the provider (break-glass, P3 T18). */
+      reauth?: boolean;
+    },
   ): Promise<string> | string;
   /**
    * Exchanges the code and verifies the result (nonce included). Throws

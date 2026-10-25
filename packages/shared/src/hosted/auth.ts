@@ -95,6 +95,20 @@ export type TurnstileRequiredDetails = z.infer<
   typeof TurnstileRequiredDetailsSchema
 >;
 
+/**
+ * ApiError.details on 401 break_glass_required from GET R.me: the session is
+ * the org owner's, refused by a directory customer_mismatch (P3 T18).
+ * `fresh`: the session already meets break-glass (a forced Google sign-in
+ * within 10 min), so the directory settings open; false: sign in again with
+ * `AUTH.loginGoogle?reauth=1` first.
+ */
+export const BreakGlassRequiredDetailsSchema = z.object({
+  fresh: z.boolean(),
+});
+export type BreakGlassRequiredDetails = z.infer<
+  typeof BreakGlassRequiredDetailsSchema
+>;
+
 /** ApiError.details on 429 rate_limited from the code routes. */
 export const CodeRateLimitedDetailsSchema = z.object({
   retryAfter: z.number().int(),
@@ -153,4 +167,9 @@ export type SessionPayload = {
   p: "access" | "google" | "code" | "dev" | "test";
   t?: string;
   e: number;
+  /**
+   * Google auth_time (ms) of a forced re-authentication (max_age=0), set
+   * only when it was within 10 minutes at sign-in: P3 T18's break-glass.
+   */
+  a?: number;
 };

@@ -24,12 +24,19 @@ import {
 import { api, login } from "./helpers.js";
 import {
   APP,
+  authorizeUrl,
   callWorker,
   connect,
+  consentPage,
+  decide,
   E,
   limiter,
   MCP_URL,
   nextIp,
+  oauthToken,
+  pkce,
+  REDIRECT,
+  register,
   tool,
 } from "./mcp-helpers.js";
 
@@ -103,141 +110,6 @@ describe("MCP auth: PAT", () => {
 });
 
 // ------------------------------------------------------------------- OAuth
-
-const REDIRECT = "http://localhost:3333/cb";
-const b64url = (b: ArrayBuffer | Uint8Array) =>
-  btoa(String.fromCharCode(...new Uint8Array(b)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-
-async function register(name = "Test Agent"): Promise<string> {
-  const r = await callWorker(
-    new Request(`${APP}/oauth/register`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "cf-connecting-ip": nextIp(),
-      },
-      body: JSON.stringify({
-        client_name: name,
-        redirect_uris: [REDIRECT],
-        token_endpoint_auth_method: "none",
-        grant_types: ["authorization_code", "refresh_token"],
-        response_types: ["code"],
-      }),
-    }),
-  );
-  expect(r.status).toBe(201);
-  expect(r.headers.get("x-robots-tag")).toBe("noindex, nofollow");
-  return ((await r.json()) as { client_id: string }).client_id;
-}
-
-async function pkce() {
-  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = b64url(
-    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
-  );
-  return { verifier, challenge };
-}
-
-const authorizeUrl = (clientId: string, challenge: string) =>
-  `${APP}/oauth/authorize?${new URLSearchParams({
-    response_type: "code",
-    client_id: clientId,
-    redirect_uri: REDIRECT,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state: "st4te",
-    resource: `${APP}/mcp`,
-  })}`;
-
-const cookiePairs = (r: Response) =>
-  r.headers.getSetCookie().map((c) => c.split(";")[0] ?? "");
-
-/** GET the consent page as `cookie`; returns its form fields and binding cookies. */
-async function consentPage(url: string, cookie: string) {
-  const r = await callWorker(new Request(url, { headers: { cookie } }));
-  const body = await r.text();
-  const field = (n: string) =>
-    new RegExp(`name="${n}" value="([^"]*)"`).exec(body)?.[1] ?? "";
-  return {
-    r,
-    body,
-    csrf: field("csrf"),
-    request: field("request"),
-    cookies: cookiePairs(r),
-  };
-}
-
-const decide = (
-  cookie: string,
-  fields: Record<string, string>,
-  headers: Record<string, string> = {},
-) => {
-  const body = new URLSearchParams(fields).toString();
-  return callWorker(
-    new Request(`${APP}/oauth/authorize`, {
-      method: "POST",
-      headers: {
-        cookie,
-        "content-type": "application/x-www-form-urlencoded",
-        "content-length": String(body.length),
-        ...headers,
-      },
-      body,
-    }),
-  );
-};
-
-/** Full flow for `email` (member): register → consent approve → token. */
-async function oauthToken(
-  email: string,
-  clientName = "Test Agent",
-  existing?: { cookie: string; userId: string },
-) {
-  const member = existing ?? (await login(email));
-  const clientId = await register(clientName);
-  const { verifier, challenge } = await pkce();
-  const page = await consentPage(
-    authorizeUrl(clientId, challenge),
-    member.cookie,
-  );
-  expect(page.r.status).toBe(200);
-  expect(page.body).toContain(clientName);
-  expect(page.body).toContain(email);
-  const r = await decide([member.cookie, ...page.cookies].join("; "), {
-    csrf: page.csrf,
-    request: page.request,
-    decision: "approve",
-  });
-  expect(r.status).toBe(302);
-  const loc = new URL(r.headers.get("location") ?? "");
-  expect(`${loc.origin}${loc.pathname}`).toBe(REDIRECT);
-  expect(loc.searchParams.get("state")).toBe("st4te");
-  const code = loc.searchParams.get("code") ?? "";
-  const t = await callWorker(
-    new Request(`${APP}/oauth/token`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        "cf-connecting-ip": nextIp(),
-      },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: REDIRECT,
-        client_id: clientId,
-        code_verifier: verifier,
-        resource: `${APP}/mcp`,
-      }).toString(),
-    }),
-  );
-  expect(t.status).toBe(200);
-  expect(t.headers.get("x-robots-tag")).toBe("noindex, nofollow");
-  const { access_token } = (await t.json()) as { access_token: string };
-  return { member, accessToken: access_token, clientId };
-}
 
 describe("MCP auth: OAuth", () => {
   it("no auth → 401 with WWW-Authenticate pointing at the resource metadata", async () => {

@@ -102,6 +102,12 @@ export type HostedMockOptions = {
     | "scope_missing";
   /** Sync unhealthy for 2 h: banner and tokensUnverified (default false). */
   unhealthy?: boolean;
+  /**
+   * The caller is the org owner refused by a customer_mismatch: GET R.me
+   * answers 401 break_glass_required with details { fresh } ("fresh": the
+   * session meets break-glass; "stale": sign in again with reauth=1).
+   */
+  breakGlass?: "fresh" | "stale";
   /** Act as the owner (default) or as an admin, e.g. to test owner-only actions. */
   actAs?: "owner" | "admin";
   /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on when google or email is enabled). */
@@ -770,6 +776,18 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       refresh();
       return undefined;
     }),
+    // -- break-glass (P3 T18): the mismatch owner's Me
+    ...(o.breakGlass
+      ? [
+          http.get("*/api/v1/me", () =>
+            c.err(
+              "break_glass_required",
+              "Directory sync is blocked by a Google Workspace mismatch",
+              { fresh: o.breakGlass === "fresh" },
+            ),
+          ),
+        ]
+      : []),
     // -- sign-in
     http.get("*/auth/providers", () => HttpResponse.json(providers())),
     http.get("*/auth/login/google", ({ request }) => {

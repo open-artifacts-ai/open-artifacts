@@ -17,7 +17,11 @@ export const HK = { health: "sync.health", state: "sync.state" } as const;
 export const BANNER_AFTER_MS = 3600_000;
 /** Unhealthy this long: one email to the owners per outage. */
 export const ALERT_AFTER_MS = 24 * 3600_000;
-/** lastSuccessAt + this is staleAt (informational only; T18). */
+/**
+ * lastSuccessAt + this is staleAt (T18). Informational only: access is
+ * unchanged when stale (no stale cutoff); it only decides when staleAt is
+ * reported and the one directory.stale audit row.
+ */
 export const STALE_MS = 7 * 86_400_000;
 
 export type Health = {
@@ -38,6 +42,11 @@ export type Health = {
    * the fast lane's success never hides a failing reconcile.
    */
   lanes: { fast: SyncState | null; rec: SyncState | null };
+  /**
+   * lastSuccessAt + STALE_MS, set (and audited directory.stale) by the first
+   * failing alarm past it; null again on success. Informational (T18).
+   */
+  staleAt: number | null;
 };
 
 export const NEVER: Health = {
@@ -52,7 +61,33 @@ export const NEVER: Health = {
   backoffN: 0,
   failState: null,
   lanes: { fast: null, rec: null },
+  staleAt: null,
 };
+
+/**
+ * `h` with staleAt marked when it is past lastSuccessAt + STALE_MS and not
+ * yet marked; `became` is true exactly once per outage (the directory.stale
+ * audit row). It revokes nothing.
+ */
+export function markStale(
+  h: Health,
+  now: number,
+): { h: Health; became: boolean } {
+  if (h.staleAt !== null || h.lastSuccessAt === null)
+    return { h, became: false };
+  const at = h.lastSuccessAt + STALE_MS;
+  return at <= now
+    ? { h: { ...h, staleAt: at }, became: true }
+    : { h, became: false };
+}
+
+/** When `h` is (or became) stale: the stored mark, else lastSuccessAt + STALE_MS once past. */
+export function staleAtOf(h: Health, now = Date.now()): number | null {
+  if (h.staleAt !== null) return h.staleAt;
+  if (h.lastSuccessAt === null) return null;
+  const at = h.lastSuccessAt + STALE_MS;
+  return at <= now ? at : null;
+}
 
 const READ = "select value from directory_state where key = ?";
 
@@ -103,7 +138,7 @@ const iso = (n: number | null) =>
   n === null ? null : new Date(n).toISOString();
 
 /** The SyncStatus fields that come from health. */
-export function healthFields(h: Health) {
+export function healthFields(h: Health, now = Date.now()) {
   return {
     healthy: h.state === "ok",
     unhealthySince: iso(h.unhealthySince),
@@ -115,7 +150,7 @@ export function healthFields(h: Health) {
         }
       : null,
     nextRunAt: iso(h.nextRunAt),
-    staleAt: iso(h.lastSuccessAt === null ? null : h.lastSuccessAt + STALE_MS),
+    staleAt: iso(staleAtOf(h, now)),
     alertedAt: iso(h.alertedAt),
     customerMismatch: h.customerMismatch,
     held: h.held,
@@ -143,7 +178,7 @@ export function instanceDirectory(
       staleAt: null,
       heldSweeps: 0,
     };
-  const f = healthFields(h);
+  const f = healthFields(h, now);
   const unhealthy = h.unhealthySince !== null;
   return {
     mode,

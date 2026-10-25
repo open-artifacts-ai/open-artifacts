@@ -166,7 +166,7 @@ export const InstanceDirectorySchema = z.object({
   tokensUnverified: z.boolean(),
   /** Sync state for the banner. Org owner and admins only; null for others (members can't read health). */
   state: SyncStateSchema.nullable(),
-  /** lastSuccessAt + 7 days, when synced users fail closed. Org owner and admins only; null for others. */
+  /** lastSuccessAt + 7 days once that has passed, else null. Informational: access is unchanged when stale. Org owner and admins only; null for others. */
   staleAt: z.string().nullable(),
   /** Held sweeps waiting for the owner. 0 for non-admins. */
   heldSweeps: z.number().int(),

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.49.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.48.0...v0.49.0) (2026-10-25)
+
+
+### Features
+
+* **server:** informational staleAt, session cap, break-glass (P3 T18) ([#597](https://github.com/open-artifacts-ai/open-artifacts/issues/597)) ([3bdd08c](https://github.com/open-artifacts-ai/open-artifacts/commit/3bdd08ca81c6dc6dc5e1b9ebed5cde6f06f18318))
+
+## [0.48.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.47.1...v0.48.0) (2026-10-25)
+
+
+### Features
+
+* **server:** apply directory state by identity, never by email (P3 T14) ([#592](https://github.com/open-artifacts-ai/open-artifacts/issues/592)) ([60ba7df](https://github.com/open-artifacts-ai/open-artifacts/commit/60ba7df27cebf04047b2b2020016088f804841b5))
+
 ## [0.47.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.47.0...v0.47.1) (2026-10-25)
 
 

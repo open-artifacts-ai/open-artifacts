@@ -8,6 +8,7 @@ import {
   AuditEventSchema,
   AuthProvidersSchema,
   artifactCan,
+  BreakGlassRequiredDetailsSchema,
   CodeRateLimitedDetailsSchema,
   CodeRequestedSchema,
   CodeRequestSchema,
@@ -828,6 +829,26 @@ describe("hosted mocks: owners and admins can't be restricted", () => {
       .array(Strict.Member)
       .parse(await json(await call("GET", R.members)));
     expect(ms.find((m) => m.id === bob)?.restriction).toBeNull();
+  });
+});
+
+describe("hosted mocks: break-glass Me (P3 T18)", () => {
+  it("breakGlass answers GET R.me with 401 break_glass_required { fresh }", async () => {
+    for (const [mode, isFresh] of [
+      ["fresh", true],
+      ["stale", false],
+    ] as const) {
+      fresh({ hosted: { breakGlass: mode } });
+      const r = await call("GET", R.me);
+      expect(r.status).toBe(401);
+      const e = await errCode(r);
+      expect(e.code).toBe("break_glass_required");
+      expect(BreakGlassRequiredDetailsSchema.parse(e.details)).toEqual({
+        fresh: isFresh,
+      });
+    }
+    fresh({ hosted: true });
+    expect((await call("GET", R.me)).status).toBe(200);
   });
 });
 
