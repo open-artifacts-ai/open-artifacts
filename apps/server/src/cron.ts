@@ -5,6 +5,7 @@ import type { Env } from "./env.js";
 import { logError } from "./log.js";
 import { sweepUngrantedClients } from "./mcp/registrations.js";
 import { purgeDeleted, reindexStale } from "./services/artifacts.js";
+import { sweepAuditEvents } from "./services/audit.js";
 import { kickSync } from "./services/directory.js";
 import { checkLatestRelease } from "./services/release.js";
 import { directoryMode } from "./services/spaces.js";
@@ -14,8 +15,9 @@ import { sweepUploads } from "./services/uploads.js";
  * delete OAuth clients that never completed a grant, re-enqueue search
  * indexing that never completed (C3), drop past days' email counters and
  * expired sign-in codes, check the latest release (B3), and drop a directory
- * connection left unconfirmed past 24 h (P3 T12), and kick DirectorySync
- * (P3 T13). */
+ * connection left unconfirmed past 24 h (P3 T12), kick DirectorySync
+ * (P3 T13), and delete audit rows past AUDIT_RETENTION_MS (400 days), a
+ * bounded batch per run (sweepAuditEvents). */
 export async function scheduled(
   _event: ScheduledController,
   env: Env,
@@ -32,6 +34,7 @@ export async function scheduled(
       sweepLoginCodes(env, now),
       checkLatestRelease(env, now),
       expirePending(env, now),
+      sweepAuditEvents(env, now),
       // DirectorySync keeps its own 2 min alarm; the daily kick restarts a
       // lost one.
       directoryMode(env) === "off" ? null : kickSync(env, "cron"),

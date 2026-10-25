@@ -213,6 +213,14 @@ Accepted disclosure: `scope=space` (or any `spaceId`) naming another user's pers
 | `POST R.directoryHeldConfirm(groupId)` | 202 `SyncStatus` | org owner |
 | `GET R.audit` / `R.auditExport` | `Page<AuditEvent>` / NDJSON | org owner, admin. Export takes `?cursor` and returns at most 5000 events (10 pages of 500) per request, newest first; when more remain, header `X-OA-Next-Cursor` (`AUDIT_NEXT_CURSOR_HEADER`) holds the cursor for the next request |
 
+Audit retention: events are kept 400 days (`AUDIT_RETENTION_MS`), hosted and
+self-hosted alike. The daily cron deletes older rows, oldest first, at most
+5000 per run (5 statements of 1000 through `audit_events_at_idx`); a larger
+backlog finishes on later days, so an event can outlive 400 days until it
+does. `GET R.audit` and the export never return what was deleted; an export
+cursor stays valid (rows past it may be gone). The deletion itself is not
+audited; the cron logs `audit_swept` with the count only.
+
 Break-glass: a stale org owner reaches only the directory status, connect and
 sync routes, after a fresh Google sign-in (10 min); else 401 `reauth_required`.
 

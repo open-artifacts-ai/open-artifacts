@@ -108,6 +108,7 @@ describe("purgeDeleted", () => {
       "fulfilled", // sweepLoginCodes (P2)
       "fulfilled", // checkLatestRelease (B3)
       "fulfilled", // expirePending (P3 T12 directory confirm)
+      "fulfilled", // sweepAuditEvents (400-day audit retention)
       "fulfilled", // kickSync (P3 T13; a no-op with sync off)
     ]);
     expect(

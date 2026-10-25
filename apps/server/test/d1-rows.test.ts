@@ -2,7 +2,7 @@
 // Pins the per-publish costs measured there, after the cuts.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { R } from "@oa/shared";
+import { AUDIT_RETENTION_MS, R } from "@oa/shared";
 import { beforeAll, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { authConfig } from "../src/auth/config.js";
@@ -19,6 +19,7 @@ import { thawFrozenEdits } from "../src/directory/thaw.js";
 import type { Env } from "../src/env.js";
 import { resetTouchMemo, touchGrant } from "../src/services/agent-usage.js";
 import { publish } from "../src/services/artifacts.js";
+import { sweepAuditEvents } from "../src/services/audit.js";
 import { admit } from "../src/services/identity.js";
 import { indexVersionOrThrow } from "../src/services/search.js";
 import { getUser, getUserWithEpoch } from "../src/services/users.js";
@@ -696,4 +697,55 @@ it("GET /me (P3 T18): one user statement; the break-glass owner read runs only a
   // getUser refused, then the mismatch-owner read.
   expect(userReads).toHaveLength(2);
   await resetDirectory();
+});
+
+it("audit retention sweep: 1 row write per expired row; nothing expired writes nothing", async () => {
+  const written: number[] = [];
+  const read: number[] = [];
+  const wrap = (s: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(s, {
+      get(t, p) {
+        if (p === "bind") return (...a: unknown[]) => wrap(t.bind(...a));
+        if (p === "run")
+          return async () => {
+            const r = await t.run();
+            written.push(r.meta.rows_written);
+            read.push(r.meta.rows_read);
+            return r;
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  const DB = new Proxy(env.DB, {
+    get(t, p) {
+      if (p === "prepare") return (q: string) => wrap(t.prepare(q));
+      const v = Reflect.get(t, p);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  const e = { ...(env as object), DB } as Env;
+  const now = Date.now();
+  // Expired rows from earlier tests (none expected) are cleared first.
+  while ((await sweepAuditEvents(env, now)) > 0);
+  const old = now - AUDIT_RETENTION_MS - 86_400_000;
+  for (let i = 0; i < 3; i++)
+    await env.DB.prepare(
+      "insert into audit_events (id, at, actor_kind, action, target_type) values (?, ?, 'system', 'test.rows', 'artifact')",
+    )
+      .bind(crypto.randomUUID(), old + i)
+      .run();
+  // Batch 2: a full statement, then a short one ends the run.
+  expect(await sweepAuditEvents(e, now, 2, 5)).toBe(3);
+  // Measured: 1 row written and 4 read per deleted row (index range, PK
+  // lookup, delete), plus the range's one probe past the cutoff when newer
+  // rows exist: a full run (5000 rows) is 5000 written, about 20000 read.
+  expect(written).toEqual([2, 1]);
+  expect(read[0]).toBe(8);
+  expect(read[1]).toBeGreaterThanOrEqual(4);
+  expect(read[1]).toBeLessThanOrEqual(5);
+  written.length = 0;
+  read.length = 0;
+  expect(await sweepAuditEvents(e, now, 2, 5)).toBe(0);
+  expect(written).toEqual([0]);
 });
