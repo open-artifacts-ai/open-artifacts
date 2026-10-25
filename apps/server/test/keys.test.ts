@@ -104,6 +104,15 @@ describe("deriveKey", () => {
     ).resolves.toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
+  test("refuses a label it does not know (an allowlist)", async () => {
+    await expect(
+      deriveKey(
+        secret,
+        "oa:future" as unknown as Parameters<typeof deriveKey>[1],
+      ),
+    ).rejects.toThrow(/^oa:future is not a SESSION_SECRET label$/);
+  });
+
   test("session labels still derive and contentKey is unaffected", async () => {
     for (const l of KEY_LABELS) {
       if (isContent(l) || l === "oa:directory-token") continue;
