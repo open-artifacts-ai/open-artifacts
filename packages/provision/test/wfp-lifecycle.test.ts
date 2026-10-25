@@ -2713,3 +2713,15 @@ describe("P1 Task 8 follow-ups", () => {
     );
   });
 });
+
+describe("P1 Task 8: domains", () => {
+  it("DOMAINS[env] equals the decided suffixes", () => {
+    expect(HOSTED_DOMAINS).toEqual({
+      staging: {
+        app: "open-artifacts-staging.app",
+        content: "open-artifacts-staging.page",
+      },
+      prod: { app: "open-artifacts.app", content: "open-artifacts.page" },
+    });
+  });
+});
