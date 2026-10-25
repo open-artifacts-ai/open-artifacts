@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.49.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.48.0...v0.49.0) (2026-10-25)
+
+
+### Features
+
+* **server:** informational staleAt, session cap, break-glass (P3 T18) ([#597](https://github.com/open-artifacts-ai/open-artifacts/issues/597)) ([3bdd08c](https://github.com/open-artifacts-ai/open-artifacts/commit/3bdd08ca81c6dc6dc5e1b9ebed5cde6f06f18318))
+
 ## [0.48.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.47.1...v0.48.0) (2026-10-25)
 
 
