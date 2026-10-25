@@ -21,6 +21,8 @@ export type FakeDirUser = {
   deleted?: boolean;
   isAdmin?: boolean;
   customerId?: string;
+  /** Other addresses of this user (a former primary stays as an alias). */
+  aliases?: string[];
 };
 
 export type FakeGroup = {
@@ -213,6 +215,24 @@ export function fakeDirectory(o: { customerId?: string } = {}) {
         adminCalls.push(path);
         const f = failure(`${path}?${u.searchParams}`);
         if (f) return f;
+        const hm = /^\/groups\/([^/]+)\/hasMember\/([^/]+)$/.exec(path);
+        if (hm) {
+          const g = groupBy(decodeURIComponent(hm[1] as string));
+          if (!g)
+            return Response.json({ error: { code: 404 } }, { status: 404 });
+          const who = decodeURIComponent(hm[2] as string);
+          // Nested membership counts (as Google's hasMember).
+          const seen = new Set<string>();
+          const has = (x: FakeGroup): boolean =>
+            x.members.some((m) => {
+              if (m === who) return true;
+              const c = groups.get(m);
+              if (!c || seen.has(c.id)) return false;
+              seen.add(c.id);
+              return has(c);
+            });
+          return Response.json({ isMember: has(g) });
+        }
         const gm = /^\/groups\/([^/]+)\/members$/.exec(path);
         if (gm) {
           const g = groupBy(decodeURIComponent(gm[1] as string));
