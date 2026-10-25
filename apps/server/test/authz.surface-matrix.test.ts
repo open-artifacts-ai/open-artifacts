@@ -6,6 +6,7 @@
 import { env } from "cloudflare:workers";
 import { BreakGlassRequiredDetailsSchema, R } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { main } from "../scripts/authz-probe.ts";
 import { createApp } from "../src/app.js";
 import {
   CONTENT_POLICY,
@@ -233,6 +234,40 @@ describe("attack seeds: another member's personal space", () => {
       expect([400, 403, 404], `${who} list`).toContain(ls.status);
     }
     expect(await count(other)).toBe(before);
+  });
+});
+
+describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
+  it("matches everywhere but the pinned bugs", async () => {
+    const lines: string[] = [];
+    const code = await main(
+      ["--base", BASE, "--creds", "world.json"],
+      {},
+      {
+        log: (l) => lines.push(l),
+        fetch: io.fetch,
+        readFile: async () =>
+          JSON.stringify({
+            callers: w.creds,
+            artifacts: w.ids,
+            org: target,
+            contentBase: io.contentBase,
+          }),
+      },
+    );
+    const bad = lines.filter((l) => l.startsWith("MISMATCH"));
+    // B1 only: restrictedContractor's PAT on MCP surfaces.
+    expect(
+      bad.filter(
+        (l) =>
+          !/^MISMATCH (mcp \S+|content \/c\/\?dl=1) restrictedContractor /.test(
+            l,
+          ),
+      ),
+    ).toEqual([]);
+    expect(bad.length).toBeGreaterThan(0);
+    expect(code).toBe(1);
+    expect(lines.at(-1)).toMatch(/^\d+ cells, \d+ mismatches$/);
   });
 });
 

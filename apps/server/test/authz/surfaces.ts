@@ -280,6 +280,9 @@ export async function callTool(
   };
 }
 
+/** /mcp refusing the token (or a host that doesn't serve it). */
+const DENY_MCP = new Set([401, 403, 404]);
+
 /** Allowed when `allow(out)`; refused for a refused token or not_found. */
 const tool =
   (
@@ -290,7 +293,7 @@ const tool =
   async (base: string, cred: Cred, id: string, io?: ProbeIO) => {
     if (!cred.token) return "deny" as const;
     const o = await callTool(io, base, cred, name, args(id, cred));
-    if (o.http === 401 || o.http === 403) return "deny" as const;
+    if (DENY_MCP.has(o.http)) return "deny" as const;
     if (o.http === 200 && allow(o)) return "allow" as const;
     // 404, or the contract's 403 for a create by a capped caller.
     if (
@@ -311,7 +314,7 @@ const toolList =
         limit: 100,
         ...(cursor ? { cursor } : {}),
       });
-      if (o.http === 401 || o.http === 403) return "deny";
+      if (DENY_MCP.has(o.http)) return "deny";
       if (o.isError) throw new Unexpected(`${name}: ${o.text.slice(0, 200)}`);
       return o.structured as {
         items: { id: string }[];
@@ -352,7 +355,7 @@ async function download(
     id,
     includeContent: false,
   });
-  if (o.http === 401 || o.http === 403) return "deny";
+  if (DENY_MCP.has(o.http)) return "deny";
   if (o.isError) {
     if (/^not_found\b/.test(o.text)) return "deny";
     throw new Unexpected(`get_artifact: ${o.text.slice(0, 200)}`);
