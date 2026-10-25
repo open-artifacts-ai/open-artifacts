@@ -15,6 +15,7 @@ import {
 } from "../src/content/signing.js";
 import { applyGroupDiff } from "../src/directory/apply.js";
 import { SyncEngine } from "../src/directory/sync.js";
+import { thawFrozenEdits } from "../src/directory/thaw.js";
 import type { Env } from "../src/env.js";
 import { resetTouchMemo, touchGrant } from "../src/services/agent-usage.js";
 import { publish } from "../src/services/artifacts.js";
@@ -154,6 +155,60 @@ it("spaces API (P3 T9): create, member add, a no-op and a role change", async ()
   await put("editor");
   // space_members role update 1 + audit 2.
   expect(rows.n).toBe(3);
+});
+
+it("frozen edits (P3 T15): an override records one row; the thaw writes only what it replaces", async () => {
+  const frozenEnv = {
+    ...(counted as object),
+    FEATURES: "spaces,sync_frozen",
+  } as unknown as typeof env;
+  const S = {
+    fetch: (r: Request, _e: unknown, c: never) => app.fetch(r, frozenEnv, c),
+  };
+  const admin = await login("rows-frozen-admin@x.com", "admin");
+  const m = await login("rows-frozen-member@x.com");
+  const space = `s-rows-frozen-${crypto.randomUUID()}`;
+  const gid = `g-rows-frozen-${crypto.randomUUID()}`;
+  await env.DB.batch([
+    env.DB.prepare(
+      "insert into spaces (id, kind, name, public_links, created_at) values (?, 'shared', ?, 0, ?)",
+    ).bind(space, space, Date.now()),
+    env.DB.prepare(
+      "insert into directory_groups (group_id, email) values (?, ?)",
+    ).bind(gid, `${gid}@a.com`),
+    env.DB.prepare(
+      "insert into group_mappings (space_id, group_id, group_email, role) values (?, ?, ?, 'editor')",
+    ).bind(space, gid, `${gid}@a.com`),
+    env.DB.prepare(
+      "insert into directory_members (group_id, user_id) values (?, ?)",
+    ).bind(gid, m.userId),
+    env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'sync', 1)",
+    ).bind(space, m.userId),
+  ]);
+  rows.n = 0;
+  const r = await api(
+    S as never,
+    R.spaceMember(space, m.userId),
+    admin.cookie,
+    {
+      method: "PUT",
+      body: { role: "viewer" },
+    },
+  );
+  expect(r.status).toBe(200);
+  // audit 2 + frozen_edits 1 + the synced row deleted 1 + the manual row 2
+  // (table, user index).
+  expect(rows.n).toBe(6);
+  rows.n = 0;
+  expect(await thawFrozenEdits(counted)).toBe(false);
+  // No manual row before the freeze: the manual row deleted 1 + its audit 2
+  // + the synced row added 2 + its audit 2 + frozen_edits 1.
+  expect(rows.n).toBe(8);
+  rows.n = 0;
+  await thawFrozenEdits(counted);
+  // Nothing left: one read, no batch.
+  expect(rows.n).toBe(0);
 });
 
 it("spaces API reads (P3 T9): GET /spaces skips personal spaces; a member page decorates only its rows", async () => {
