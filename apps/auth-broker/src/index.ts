@@ -132,6 +132,9 @@ async function authorize(
     code_challenge_method: "S256",
     prompt: "select_account",
     ...(entry.domains?.[0] ? { hd: entry.domains[0] } : {}),
+    // The install's break-glass sign-in (P3 T18): Google must
+    // re-authenticate; the install checks auth_time.
+    ...(q.get("reauth") === "1" ? { max_age: "0" } : {}),
   }).toString();
   log("authorize", "ok");
   return Response.redirect(u.toString(), 302);

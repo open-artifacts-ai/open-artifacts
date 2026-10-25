@@ -62,6 +62,8 @@ export type GoogleIdentity = {
   name: string | null;
   /** The verified Workspace domain; always one of the caller's domains. */
   hd: string;
+  /** When the user last authenticated at Google (auth_time, ms), if sent. */
+  authTime: number | null;
 };
 
 export type GoogleTokenStage =
@@ -160,5 +162,8 @@ export async function verifyGoogleIdToken(
     typeof claims.name === "string" && claims.name.trim()
       ? claims.name.trim().slice(0, MAX_NAME)
       : null;
-  return { sub, email, name, hd: claims.hd as string };
+  const at = claims.auth_time;
+  const authTime =
+    typeof at === "number" && Number.isFinite(at) && at > 0 ? at * 1000 : null;
+  return { sub, email, name, hd: claims.hd as string, authTime };
 }

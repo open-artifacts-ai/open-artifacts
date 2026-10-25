@@ -75,6 +75,8 @@ type OidcState = {
   retry?: boolean;
   /** Provider; absent (cookies from before P2) reads as "access". */
   p?: ProviderId;
+  /** A forced re-authentication was asked for (break-glass, P3 T18). */
+  ra?: true;
 };
 
 type StateKeys = { key: string; legacy: string | null };
@@ -175,10 +177,16 @@ export async function buildAuthorizeRedirect(
   env: Env,
   provider: OidcProvider,
   next: string,
-  opts: { retry?: boolean; cookieHeader?: string | null } = {},
+  opts: {
+    retry?: boolean;
+    cookieHeader?: string | null;
+    /** Ask the provider to re-authenticate (P3 T18 break-glass). */
+    reauth?: boolean;
+  } = {},
 ): Promise<{ location: string; stateCookie: string; evict: string[] }> {
   const keys = await stateKeys(env);
   const retry = opts.retry === true;
+  const reauth = opts.reauth === true;
   const st: OidcState = {
     state: `${retry ? RETRY_MARK : ""}${randomB64(32)}`,
     nonce: randomB64(32),
@@ -187,6 +195,7 @@ export async function buildAuthorizeRedirect(
     exp: Date.now() + OIDC_MAX_AGE_S * 1000,
     ...(retry ? { retry: true } : {}),
     p: provider.id,
+    ...(reauth ? { ra: true as const } : {}),
   };
   const name = await stateCookieName(env, st.state);
   const sign = async () => {
@@ -210,6 +219,7 @@ export async function buildAuthorizeRedirect(
       state: st.state,
       nonce: st.nonce,
       challenge: await s256(st.verifier),
+      ...(reauth ? { reauth } : {}),
     }),
     stateCookie,
     evict: await evictions(env, keys, opts.cookieHeader),
@@ -368,7 +378,7 @@ export async function handleCallback(
   env: Env,
   provider: OidcProvider,
   req: Request,
-): Promise<VerifiedIdentity & { next: string }> {
+): Promise<VerifiedIdentity & { next: string; reauth: boolean }> {
   const keys = await stateKeys(env);
   const q = new URL(req.url).searchParams;
   const state = q.get("state") ?? "";
@@ -405,7 +415,7 @@ export async function handleCallback(
       nonce: st.nonce,
       bstate: q.get("bstate") ?? undefined,
     });
-    return { ...id, next };
+    return { ...id, next, reauth: st.ra === true };
   } catch (e) {
     if (e instanceof ApiError)
       throw new OidcRedeemError(

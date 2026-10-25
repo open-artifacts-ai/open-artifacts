@@ -135,6 +135,8 @@ export const googleProvider: OidcProvider = {
         state: a.state,
         nonce: a.nonce,
         code_challenge: a.challenge,
+        // The broker adds max_age=0 (T18 break-glass).
+        ...(a.reauth ? { reauth: "1" } : {}),
       }).toString();
       return u.toString();
     }
@@ -151,6 +153,9 @@ export const googleProvider: OidcProvider = {
       prompt: "select_account",
       // A hint for the account chooser only; the hd claim is what's checked.
       hd: g.domains[0] as string,
+      // Break-glass (T18): Google must re-authenticate; the callback checks
+      // auth_time, so a silent SSO can't stand in for it.
+      ...(a.reauth ? { max_age: "0" } : {}),
     }).toString();
     return u.toString();
   },
@@ -184,6 +189,7 @@ export const googleProvider: OidcProvider = {
         email: id.email,
         name: id.name,
         tenant: id.hd,
+        authTime: id.authTime,
       };
     } catch (e) {
       if (e instanceof GoogleTokenError) return fail(e.stage);

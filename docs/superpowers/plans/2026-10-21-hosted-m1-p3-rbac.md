@@ -39,9 +39,9 @@
   - Owners get an email at 24 h.
   - There is **no stale cutoff** (user decision, 2026-10-21 PM): while sync is unhealthy, synced people keep last-sync access indefinitely, PATs and MCP OAuth grants included. `staleAt` is informational only (Task 18).
 - **Break-glass for an org owner locked out by `customer_mismatch`** (a stale directory never locks anyone out):
-  - It needs a fresh Google sign-in (`hd` verified, within 10 min).
+  - It needs a fresh, forced Google sign-in: `hd` verified, within 10 min, and re-authenticated at Google (`?reauth=1` sends `max_age=0`, through the broker too, and the callback requires an `auth_time` within 10 min). A silent SSO is not enough.
   - It opens only the directory status, connect and sync routes.
-  - Every use is audited and emails the owner.
+  - Uses are audited at most once a minute per session and route (the first use always). The owner gets one email per break-glass session, on its first use.
 - **Reconcile:** hourly, and also at sign-in (that user only), on mapping changes and on "Sync now". Add Directory `users.watch` if the Reports lag measured on FinQore exceeds 15 min.
 - **Content URL revocation lives in D1.** The content host's existing artifact statement joins `users.status` (for user-bound tokens). No KV deny list. The space's public-links toggle is not part of it: it only blocks new public links, so an existing `/p/` link keeps working.
 - **The broker does the directory token exchange and refresh on hosted installs.** The install keeps only the AES-GCM-encrypted refresh token. **Self-hosted installs may use a direct transport** with their own Google app (decided by the manager and the user); `HOSTED=1` refuses it.
@@ -830,9 +830,10 @@ describe.each(SURFACES)("$name", (s) => {
 - **Break-glass:** a `customer_mismatch` org owner gets a restricted resolution only when all of these hold (otherwise 401 `reauth_required` on those routes):
   - The session's `p = 'google'`, with `hd` verified by P2.
   - `iat >= now - 10 min`.
-  - The route is one of `R.directory` (GET), `R.directoryConnect`, `R.directoryCallback` or `R.directorySync`.
+  - The sign-in was forced: `?reauth=1` on `AUTH.loginGoogle` sends Google `max_age=0` (the broker relays it), and the callback marks the session (`SessionPayload.a`) only when the ID token's `auth_time` is within 10 min.
+  - The route is one of `R.directory` (GET), `R.directoryConnect`, `R.directoryCallback`, `R.directoryConfirm`, `R.directoryCancel` or `R.directorySync`. Confirm and cancel are included because a reconnect can't finish without the confirm step (T12).
 
-  Every use writes `directory.break_glass` and emails the owner. Every other route treats them as anonymous.
+  Uses write `directory.break_glass` (with the session's `iat` and the route) at most once a minute per session and route; the first use is always audited. The insert is conditional in one statement, so it is race-safe. The owner gets one email per break-glass session, keyed on the session `iat` and sent on its first use. It is race-safe through an atomic counter upsert, so parallel first requests send one email (manager ruling on review L1). A failed send refunds the slot, so the next use retries. Every other route treats them as anonymous.
 - Access returns on the next successful sync with no manual step.
 
 - [ ] **Step 1: Failing tests**
@@ -847,7 +848,7 @@ it("unhealthy: a 30-day-old PAT and MCP grant still work; me.instance.directory.
 it("stale synced user's PAT and MCP OAuth grant keep access on every SURFACES entry", async () => { /* all allow */ });
 it("break-glass: fresh Google sign-in (9 min) reaches R.directory; 11 min → 401 reauth_required", async () => { /* 200; 401 */ });
 it("break-glass: OTP session refused; artifact, data and member routes refused", async () => { /* 401 x4 */ });
-it("break-glass: each use audits and emails the owner", async () => { /* 1 audit, 1 email per use */ });
+it("break-glass: one audit per route a minute; one email per session, even for parallel first requests", async () => { /* 4 parallel → 1 audit, 1 email; a new session audits and emails again */ });
 it("success after stale clears staleAt; access never changed", async () => { /* staleAt null; allow */ });
 ```
 

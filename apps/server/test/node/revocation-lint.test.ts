@@ -79,6 +79,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // P3 T14: a directory deletion (or a recycled address): removed, its
   // address's shares and every membership gone.
   "directory/apply.ts:deleteUser": "user",
+  // P3 T18: entering customer_mismatch denies every synced user (getUser and
+  // the content load): their sockets close.
+  "directory/sync.ts:SyncEngine.mismatch": "user",
 };
 
 /**
@@ -138,6 +141,8 @@ const SHRINK: readonly RegExp[] = [
   /\ball_members_role\s*=[^=]|\.set\(\{[^}]*\ballMembersRole\b/,
   /\brestricted_(manual|sync)\s*=[^=]|\.set\(\{[^}]*\brestricted(Manual|Sync)\b/,
   /\binto restricted_groups\b/i,
+  // P3 T18: the customer_mismatch state denies every synced user.
+  /\bstate: "customer_mismatch"/,
 ];
 const CALLS: Record<Guard, RegExp> = {
   // revokeUsersLive: revokeUserLive for many users (a group, every member).

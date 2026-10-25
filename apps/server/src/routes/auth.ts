@@ -30,9 +30,11 @@ import { signInMode } from "../auth/sign-in.js";
 import { SignInRefused } from "../directory/signin.js";
 import { ApiError, toErrorResponse } from "../http/errors.js";
 import { FAVICON_TAGS } from "../http/head.js";
+import { BREAK_GLASS_MS } from "../http/middleware.js";
 import { onGoogleSignIn } from "../services/directory.js";
 import { admit } from "../services/identity.js";
 import {
+  getMismatchOwner,
   getUserWithEpoch,
   upsertOnLogin,
   upsertWithRole,
@@ -192,6 +194,8 @@ export function mountAuth(app: AppType): void {
       {
         retry: c.req.query("retry") === "1",
         cookieHeader: c.req.header("cookie"),
+        // The owner's break-glass sign-in (P3 T18): Google re-authenticates.
+        reauth: c.req.query("reauth") === "1",
       },
     );
     return redirect(location, [...evict, stateCookie]);
@@ -233,16 +237,31 @@ export function mountAuth(app: AppType): void {
         }
         logAuth({ evt: "directory_sync_failed" });
       }
-      const row = await getUserWithEpoch(c.env, r.user.id);
+      // An org owner refused by customer_mismatch still gets a session: only
+      // the break-glass routes resolve it (P3 T18).
+      const row =
+        (await getUserWithEpoch(c.env, r.user.id)) ??
+        (await getMismatchOwner(c.env, r.user.id));
       if (!row) {
         logAuth({ provider: "google", outcome: "error", stage: "no_user" });
         return toSignIn("failed", id.next, clear);
       }
+      // Break-glass (T18) needs a forced re-authentication: asked for
+      // (?reauth=1, max_age=0) and confirmed by a recent auth_time.
+      const now = Date.now();
+      const authAt =
+        id.reauth &&
+        typeof id.authTime === "number" &&
+        id.authTime >= now - BREAK_GLASS_MS &&
+        id.authTime <= now + 60_000
+          ? id.authTime
+          : undefined;
       const sess = sessionCookie(
-        await signSession(c.env, r.user.id, Date.now(), {
+        await signSession(c.env, r.user.id, now, {
           provider: "google",
           tenant: id.tenant ?? undefined,
           epoch: row.sessionEpoch,
+          ...(authAt !== undefined ? { authAt } : {}),
         }),
         c.env,
       );

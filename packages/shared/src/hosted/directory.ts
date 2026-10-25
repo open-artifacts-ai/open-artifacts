@@ -43,7 +43,7 @@ export type HeldSweep = z.infer<typeof HeldSweepSchema>;
  * suspensions and deletions always apply, a partial read removes nobody, a
  * customer or domain mismatch fails closed. Unhealthy for 1 h: banner
  * (Me.instance.directory.banner); for 24 h: owner email and sessions capped
- * at 24 h. Synced users fail closed 7 days after lastSuccessAt (staleAt).
+ * at 24 h. No stale cutoff: staleAt (7 days after lastSuccessAt) is informational.
  */
 export const SyncStatusSchema = z.object({
   mode: DirectoryModeSchema,
@@ -57,7 +57,7 @@ export const SyncStatusSchema = z.object({
   lastSuccessAt: z.string().nullable(),
   lastError: z.object({ at: z.string(), message: z.string() }).nullable(),
   nextRunAt: z.string().nullable(),
-  /** lastSuccessAt + 7 days: synced users fail closed after this. */
+  /** lastSuccessAt + 7 days once that has passed, else null. Informational: access is unchanged when stale. */
   staleAt: z.string().nullable(),
   /** Owner alert sent for the current outage. */
   alertedAt: z.string().nullable(),

@@ -7,6 +7,7 @@ import {
 } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { logError, logInfo, logWarn } from "../log.js";
+import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
 import { getSettings, setUserStatus } from "../services/members.js";
 import { directoryMode } from "../services/spaces.js";
@@ -27,6 +28,7 @@ import {
   ALERT_AFTER_MS,
   clearHealth,
   type Health,
+  markStale,
   putHealth,
   readHealth,
 } from "./health.js";
@@ -270,6 +272,14 @@ const UPSERT_CHILD = `insert into directory_groups (group_id, email, parent_ids)
       else json_insert(directory_groups.parent_ids, '$[#]', ?3) end
   where directory_groups.email <> excluded.email
     or not exists (select 1 from json_each(directory_groups.parent_ids) where value = ?3)`;
+/** A page of active synced users after ?1, by id (T18's customer_mismatch socket close). */
+const SYNCED_PAGE = `select u.id from identities i join users u on u.id = i.user_id
+  where i.provider = 'google' and i.directory_bound = 1 and u.status = 'active'
+    and u.id > ?1
+    and (select value from directory_state where key = 'sync.state') = 'customer_mismatch'
+  order by u.id limit ?2`;
+/** DO kv: the last user id whose sockets the customer_mismatch close signalled. */
+const CLOSE_KEY = "mismatch.close";
 const OWNERS = `select email from users where role = 'owner' and status = 'active'`;
 
 /** A reset() landed since this alarm started: it writes nothing more. */
@@ -284,6 +294,16 @@ class MismatchSignal extends Error {
     super("directory sync: customer_mismatch");
   }
 }
+
+/** Informational (T18): sync has not succeeded for STALE_MS. Nothing is revoked. */
+const staleAudit = (env: Env, h: Health) =>
+  audit(env, "directory.stale", { type: "directory", id: "google" }, SYNC, {
+    detail: {
+      lastSuccessAt: h.lastSuccessAt,
+      staleAt: h.staleAt,
+      state: h.state,
+    },
+  });
 
 export class SyncEngine {
   private sql: SqlStorage;
@@ -334,7 +354,7 @@ export class SyncEngine {
 
   /** Work can run at `now` on some lane. */
   due(now: number): boolean {
-    return this.nextAt(now) <= now;
+    return this.get<string>(CLOSE_KEY) !== null || this.nextAt(now) <= now;
   }
 
   /** When `lane` may next run (its backoff respected, kicks and bypasses counted). */
@@ -520,6 +540,15 @@ export class SyncEngine {
     if (this.ep > (this.get<number>("epoch.applied") ?? 0)) {
       await this.applyReset(this.ep);
       if (!this.fresh()) return now;
+    }
+    // A customer_mismatch close still paging (T18): one page per alarm,
+    // re-armed at once; a D1 error backs off. Once the state has left
+    // customer_mismatch the page is empty, the cursor drops and sync resumes.
+    if (this.get<string>(CLOSE_KEY) !== null) {
+      const ids = await this.syncedPage();
+      if (ids === null) return now + BACKOFF_MIN_MS;
+      await revokeUsersLive(this.env, ids, "directory customer_mismatch");
+      return now;
     }
     const mode = directoryMode(this.env);
     const client = directoryClient(this.env);
@@ -1356,6 +1385,7 @@ export class SyncEngine {
         backoffN: 0,
         failState: null,
         lanes,
+        staleAt: null,
       };
     });
     this.storage.transactionSync(() => {
@@ -1394,21 +1424,25 @@ export class SyncEngine {
           ? "unhealthy"
           : null;
     if (why) alertedAt = now;
-    const next: Health = {
-      ...h,
-      state:
-        h.lastSuccessAt === null && e.state === "backoff" ? "never" : e.state,
-      unhealthySince: since,
-      lastError: { at: now, message: e.code },
-      nextRunAt: retryAt,
-      alertedAt,
-      backoffN: n,
-      failState: e.state,
-      lanes: { ...h.lanes, [lane]: e.state },
-    };
+    const { h: next, became } = markStale(
+      {
+        ...h,
+        state:
+          h.lastSuccessAt === null && e.state === "backoff" ? "never" : e.state,
+        unhealthySince: since,
+        lastError: { at: now, message: e.code },
+        nextRunAt: retryAt,
+        alertedAt,
+        backoffN: n,
+        failState: e.state,
+        lanes: { ...h.lanes, [lane]: e.state },
+      },
+      now,
+    );
     this.guard();
     await this.env.DB.batch([
       ...putHealth(this.env, h, next),
+      ...(became ? [staleAudit(this.env, next)] : []),
       ...(entering
         ? [
             audit(
@@ -1445,20 +1479,24 @@ export class SyncEngine {
       this.del("run.fast");
       this.del("run.rec");
     });
-    const next: Health = {
-      ...h,
-      state: "customer_mismatch",
-      unhealthySince: h.unhealthySince ?? now,
-      lastError: { at: now, message: "customer_mismatch" },
-      nextRunAt: retryAt,
-      customerMismatch: { expected, actual },
-      alertedAt: entering ? now : h.alertedAt,
-      failState: "customer_mismatch",
-      lanes: { fast: "customer_mismatch", rec: "customer_mismatch" },
-    };
+    const { h: next, became } = markStale(
+      {
+        ...h,
+        state: "customer_mismatch",
+        unhealthySince: h.unhealthySince ?? now,
+        lastError: { at: now, message: "customer_mismatch" },
+        nextRunAt: retryAt,
+        customerMismatch: { expected, actual },
+        alertedAt: entering ? now : h.alertedAt,
+        failState: "customer_mismatch",
+        lanes: { fast: "customer_mismatch", rec: "customer_mismatch" },
+      },
+      now,
+    );
     this.guard();
     await this.env.DB.batch([
       ...putHealth(this.env, h, next),
+      ...(became ? [staleAudit(this.env, next)] : []),
       ...(entering
         ? [
             audit(
@@ -1473,10 +1511,46 @@ export class SyncEngine {
     ]);
     logWarn("directory_customer_mismatch");
     if (entering) {
+      // Synced users now fail closed (T18: getUser and the content load), so
+      // their live sockets close too: one page of revokeFanoutCap here, the
+      // rest one page per alarm (tick) until every synced user is signalled.
+      // Never guarded: the state committed.
+      this.put(CLOSE_KEY, "");
+      const ids = await this.syncedPage();
+      await revokeUsersLive(this.env, ids ?? [], "directory customer_mismatch");
       this.guard();
       await this.alertOwners("customer_mismatch");
+      // A D1 error: back off, then the tick retries the page.
+      if (ids === null) return now + BACKOFF_MIN_MS;
     }
-    return retryAt;
+    return this.get<string>(CLOSE_KEY) !== null ? now : retryAt;
+  }
+
+  /**
+   * The next page (revokeFanoutCap, the invocation's subrequest share) of
+   * active synced users after the close cursor, advancing it. The cursor is
+   * dropped after the last page, and as soon as the state is no longer
+   * customer_mismatch (a reconnect, a reset or a success: the query then
+   * returns nothing). Null on a D1 error (the cursor stays; the caller backs
+   * off and the next alarm retries).
+   */
+  private async syncedPage(): Promise<string[] | null> {
+    const after = this.get<string>(CLOSE_KEY);
+    if (after === null) return [];
+    const cap = revokeFanoutCap(this.env);
+    try {
+      const { results } = await stmt(this.env.DB, SYNCED_PAGE)
+        .bind(after, cap)
+        .all<{ id: string }>();
+      const ids = results.map((r) => r.id);
+      const last = ids[ids.length - 1];
+      if (ids.length < cap || last === undefined) this.del(CLOSE_KEY);
+      else this.put(CLOSE_KEY, last);
+      return ids;
+    } catch (err) {
+      logError("directory_mismatch_close", err);
+      return null;
+    }
   }
 
   private async alertOwners(why: DirectoryAlert) {
