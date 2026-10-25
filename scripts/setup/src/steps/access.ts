@@ -438,7 +438,10 @@ async function create(
  * Whether sign-in uses Access: AUTH_PROVIDERS from the flag, else the live
  * Worker's. Unset, or unreadable, counts as access (the server's default).
  */
-async function accessInUse(ctx: Ctx, accountId: string): Promise<boolean> {
+export async function accessInUse(
+  ctx: Ctx,
+  accountId: string,
+): Promise<boolean> {
   const live = async () =>
     (await deployedVars(ctx, accountId).catch(() => undefined))?.get(
       "AUTH_PROVIDERS",

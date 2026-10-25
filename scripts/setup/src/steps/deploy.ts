@@ -25,7 +25,7 @@ const CONFIG = "apps/server/wrangler.jsonc";
 const REQUIRED = [ACCESS_SECRET, "SESSION_SECRET", "CONTENT_SIGNING_KEY"];
 
 /** The rendered config's vars, refusing anything that isn't a complete production config. */
-function renderedVars(ctx: Ctx): Record<string, string> {
+function renderedVars(ctx: Ctx, accessOn: boolean): Record<string, string> {
   const text = ctx.fs.read(join(ctx.root, CONFIG));
   if (text === null) throw new Error(`missing ${CONFIG}; rerun setup`);
   const vars = JSON.parse(stripComments(text)).vars ?? {};
@@ -33,9 +33,10 @@ function renderedVars(ctx: Ctx): Record<string, string> {
     throw new Error(
       `refusing to deploy: ${CONFIG} has ENVIRONMENT=${JSON.stringify(vars.ENVIRONMENT)}, expected "production"`,
     );
-  const empty = ["ACCESS_TEAM_DOMAIN", "ACCESS_CLIENT_ID"].filter(
-    (k) => !vars[k],
-  );
+  // Without access in AUTH_PROVIDERS, the Access vars stay empty.
+  const empty = accessOn
+    ? ["ACCESS_TEAM_DOMAIN", "ACCESS_CLIENT_ID"].filter((k) => !vars[k])
+    : [];
   if (empty.length)
     throw new Error(
       `refusing to deploy: ${CONFIG} has empty ${empty.join(", ")}; rerun setup without --upgrade so the access step fills them`,
@@ -387,7 +388,8 @@ export const deploy: Step = {
     const live = await readLive(ctx, state.accountId ?? "");
     const tuned = settleVars(state, ctx, live);
     const { values: signin, refuse } = await settleSignin(state, ctx, live);
-    const vars = renderedVars(ctx);
+    const accessOn = providersOf(signin).includes("access");
+    const vars = renderedVars(ctx, accessOn);
     const shown = Object.keys(tuned).length ? { vars: tuned } : {};
     // The version guard ran in prereqs, before anything had a side effect.
     const ver = ctx.version;
@@ -407,7 +409,9 @@ export const deploy: Step = {
     if (guard) return { status: "action_required", message: guard };
     if (refuse) return { status: "action_required", message: refuse };
     const have = await listSecrets(ctx);
-    const missing = REQUIRED.filter((n) => !have.has(n));
+    const missing = REQUIRED.filter(
+      (n) => !have.has(n) && (accessOn || n !== ACCESS_SECRET),
+    );
     if (missing.length)
       throw new Error(
         `refusing to deploy: Worker secrets missing: ${missing.join(", ")}; rerun setup without --upgrade`,
