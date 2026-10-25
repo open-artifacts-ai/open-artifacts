@@ -1,4 +1,4 @@
-import { isId } from "@oa/shared";
+import { type ENV_FEATURE_FLAGS, isId } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { matchedRoutes } from "hono/route";
 import { ApiError } from "../http/errors.js";
@@ -11,7 +11,11 @@ import {
   capOfCaller,
   withAccessCache,
 } from "./authz.js";
+import { authConfig } from "./config.js";
 import { type OrgAction, orgCan, type PolicyAction } from "./policy.js";
+
+/** A flag the FEATURES env may set (@oa/shared ENV_FEATURE_FLAGS). */
+type EnvFlag = (typeof ENV_FEATURE_FLAGS)[number];
 
 /**
  * Real middleware, tagged at registration (`mw`). The gate skips exactly
@@ -35,6 +39,8 @@ export const isMiddleware = (handler: object): boolean =>
  * - `artifact`: authorize(caller, :id, action) (404 otherwise); `signedIn`
  *   answers 401 first for anonymous callers, as the handler would.
  * - `org`: a signed-in user (401) allowed `orgCan(user, org)` (404).
+ *   `offWhen`: 404 for everyone while FEATURES has that flag (a feature
+ *   switched off; it can only narrow).
  * - `user`: any signed-in user (401); the handler scopes to the caller's own rows.
  * - `public` / `signed`: no session needed (signed: verified by the handler).
  */
@@ -48,7 +54,7 @@ export type Policy =
       /** Floor context for viewer thumbnails (the handler applies the exact rule). */
       ctx?: { firstThumbnail?: boolean };
     }
-  | { org: OrgAction }
+  | { org: OrgAction; offWhen?: EnvFlag }
   | { user: string }
   | { public: string }
   | { signed: string };
@@ -157,6 +163,12 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/directory/groups": { org: "org.mappings" },
   "POST /api/v1/directory/sync": { org: "directory.manage" },
   "POST /api/v1/directory/held/:groupId/confirm": { org: "directory.manage" },
+  // Disconnect: the org owner; the handler also refuses bearer auth (an
+  // interactive cookie session only). DELETE R.directory is the same,
+  // answering 204. The platform's install delete never uses these: it runs
+  // the same operation through scheduled() (cron.ts DIRECTORY_DISCONNECT_CRON).
+  "POST /api/v1/directory/disconnect": { org: "directory.disconnect" },
+  "DELETE /api/v1/directory": { org: "directory.disconnect" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
@@ -215,7 +227,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/tokens": { org: "tokens.create" },
   "PATCH /api/v1/tokens/:id": { user: "the caller's tokens" },
   "DELETE /api/v1/tokens/:id": { user: "the caller's tokens" },
-  "GET /api/v1/usage": { org: "usage.read" },
+  // P3 T19: hosted sets usage_off (no ANALYTICS_TOKEN there).
+  "GET /api/v1/usage": { org: "usage.read", offWhen: "usage_off" },
   "GET /api/v1/audit": { org: "audit.read" },
   "GET /api/v1/audit/export": { org: "audit.read" },
   "GET /oauth/authorize": {
@@ -340,6 +353,9 @@ export async function enforce(
     }
     return;
   }
+  // A switched-off feature is absent for everyone, signed in or not.
+  if ("org" in p && p.offWhen && authConfig(env).features.includes(p.offWhen))
+    throw notFound();
   if (who.kind !== "user")
     throw new ApiError("unauthorized", "Sign in required");
   if ("org" in p && !orgCan(who.user, p.org, { cap: capOfCaller(who) })) {

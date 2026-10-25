@@ -3,6 +3,7 @@ import {
   type ArtifactSummary,
   type CapReason,
   type DirectoryMode,
+  directoryModeOf,
   type GroupMapping,
   type GroupRef,
   LIST_SPACES_MAX,
@@ -80,12 +81,57 @@ export const spacesOn = (env: Env): boolean =>
   authConfig(env).features.includes("spaces");
 
 /** Directory sync mode from FEATURES: google (running), frozen (Team after trial) or off. */
-export function directoryMode(env: Env): DirectoryMode {
-  const f = authConfig(env).features;
-  if (f.includes("sync_google")) return "google";
-  if (f.includes("sync_frozen")) return "frozen";
-  return "off";
-}
+export const directoryMode = (env: Env): DirectoryMode =>
+  directoryModeOf(authConfig(env).features);
+
+// Frozen edits (P3 T15), each in the batch of the edit, before its writes:
+// (space ?1, user ?2) at ?3; ?4 = 1 for an org admin, else never a manager row
+// (the guarded writes skip it too). The first reconcile after sync returns
+// applies each (directory/thaw.ts).
+// - An override of a synced row, recorded once (first edit wins, so
+//   manual_role is the manual row from before any frozen edit; null: none):
+//   the thaw puts manual_role back.
+const RECORD_FROZEN_EDIT = `insert into frozen_edits (space_id, user_id, at, manual_role, kind)
+  select ?1, ?2, ?3, (select role from space_members
+    where space_id = ?1 and user_id = ?2 and source = 'manual'), 'override'
+  where exists (select 1 from space_members
+    where space_id = ?1 and user_id = ?2 and source = 'sync')
+    and (?4 = 1 or not exists (select 1 from space_members
+      where space_id = ?1 and user_id = ?2 and role = 'manager'))
+  on conflict (space_id, user_id) do nothing`;
+// - A manual write (role ?5) on a pair with no synced row, recorded once when
+//   it changes the row: the thaw keeps it (and audits that).
+const RECORD_FROZEN_MANUAL = `insert into frozen_edits (space_id, user_id, at, manual_role, kind)
+  select ?1, ?2, ?3, null, 'manual'
+  where not exists (select 1 from space_members
+    where space_id = ?1 and user_id = ?2 and source = 'sync')
+    and not exists (select 1 from space_members
+      where space_id = ?1 and user_id = ?2 and source = 'manual' and role = ?5)
+    and (?4 = 1 or not exists (select 1 from space_members
+      where space_id = ?1 and user_id = ?2 and role = 'manager'))
+  on conflict (space_id, user_id) do nothing`;
+// - An explicit removal (?5 = 1: the synced row goes too): final, whatever
+//   came before. The thaw restores no manual row for it.
+const RECORD_FROZEN_DELETE = `insert into frozen_edits (space_id, user_id, at, manual_role, kind)
+  select ?1, ?2, ?3, null, 'delete'
+  where exists (select 1 from space_members where space_id = ?1 and user_id = ?2
+    and (source = 'manual' or ?5 = 1) and (?4 = 1 or role <> 'manager'))
+  on conflict (space_id, user_id) do update set kind = 'delete'`;
+// - Sync live again (before the thaw ran): an admin's manual write or
+//   removal supersedes the pending outcome, so the thaw can't undo it. Only
+//   when the write applies (checked before it, as UPSERT_MANUAL / the delete
+//   decide). The record stays so the thaw still derives the synced row again
+//   (a frozen override deleted it).
+//   Write: role ?3, ?4 = 1 for an org admin; the manual row is kept.
+const SUPERSEDE_BY_WRITE = `update frozen_edits set kind = 'manual'
+  where space_id = ?1 and user_id = ?2 and kind <> 'manual'
+    and not exists (select 1 from space_members where space_id = ?1 and user_id = ?2
+      and source = 'manual' and (role = ?3 or (?4 = 0 and role = 'manager')))`;
+//   Removal: ?3 = 1 for an org admin; final.
+const SUPERSEDE_BY_DELETE = `update frozen_edits set kind = 'delete'
+  where space_id = ?1 and user_id = ?2 and kind <> 'delete'
+    and exists (select 1 from space_members where space_id = ?1 and user_id = ?2
+      and source = 'manual' and (?3 = 1 or role <> 'manager'))`;
 
 const notFound = () => new ApiError("not_found", "Not found");
 const personalError = (what: string) =>
@@ -813,6 +859,8 @@ export async function putSpaceMember(
               args: [id, userId, a, id, userId],
             },
           }),
+          // Replaced by the first reconcile after sync returns (P3 T15).
+          stmt(env.DB, RECORD_FROZEN_EDIT).bind(id, userId, Date.now(), a),
           stmt(
             env.DB,
             `delete from space_members where space_id = ?1 and user_id = ?2 and source = 'sync'
@@ -836,6 +884,17 @@ export async function putSpaceMember(
               args: [id, userId, role, a],
             },
           }),
+          ...(directoryMode(env) === "frozen"
+            ? [
+                stmt(env.DB, RECORD_FROZEN_MANUAL).bind(
+                  id,
+                  userId,
+                  Date.now(),
+                  a,
+                  role,
+                ),
+              ]
+            : [stmt(env.DB, SUPERSEDE_BY_WRITE).bind(id, userId, role, a)]),
           stmt(env.DB, UPSERT_MANUAL).bind(id, userId, role, Date.now(), a),
         ]),
     stmt(env.DB, ROWS_OF).bind(id, userId),
@@ -907,13 +966,26 @@ export async function deleteSpaceMember(
         },
       },
     ),
+    // Frozen: an explicit removal is final; the thaw only derives the synced
+    // row again from fresh membership (P3 T15).
+    ...(mode === "frozen"
+      ? [
+          stmt(env.DB, RECORD_FROZEN_DELETE).bind(
+            id,
+            userId,
+            Date.now(),
+            a,
+            both ? 1 : 0,
+          ),
+        ]
+      : [stmt(env.DB, SUPERSEDE_BY_DELETE).bind(id, userId, a)]),
     stmt(env.DB, `delete from space_members where ${rows}`).bind(...args),
     stmt(env.DB, ROWS_OF).bind(id, userId),
   ]);
-  if (!out[2]?.meta.changes) {
+  if (!out.at(-2)?.meta.changes) {
     // Refused (a racing manager row, non-admin): 403, as the check would
     // have said; else the rows were already gone.
-    const now = rowsIn(out[3]);
+    const now = rowsIn(out.at(-1));
     if (
       !admin &&
       (knownRole(now?.manual) === "manager" ||
@@ -922,7 +994,7 @@ export async function deleteSpaceMember(
       throw forbidden("member");
     throw notFound();
   }
-  if (rank(rowsRole(rowsIn(out[3]))) < rank(rowsRole(rowsIn(out[0]))))
+  if (rank(rowsRole(rowsIn(out.at(-1)))) < rank(rowsRole(rowsIn(out[0]))))
     await revokeUserLive(env, userId, "removed from space", ctx);
 }
 

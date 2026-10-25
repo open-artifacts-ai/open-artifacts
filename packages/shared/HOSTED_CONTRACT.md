@@ -41,14 +41,22 @@ hosted off.
 `FEATURES` env: comma list set per tier by provisioning; self-hosted default
 empty = today's behaviour. `parseFeatures(raw)` (the only parser, in
 `hosted/core.ts`) drops unknown entries and `guests_read_only`;
-`ENV_FEATURE_FLAGS` lists the settable ones. `Me.instance.features` reports
-every flag that is on.
+`ENV_FEATURE_FLAGS` lists the settable ones (type `EnvFeatureFlag`).
+`Me.instance.features` reports every flag that is on.
+
+`TIER_FEATURES` (`Record<Tier, EnvFeatureFlag[]>`) is what each hosted tier
+sets: trial and business `spaces, sync_google, content_revocation`; team
+`spaces, sync_frozen, content_revocation`. Hosted adds `usage_off` on every
+tier. A downgrade only swaps `sync_google` for `sync_frozen`: it never
+widens access. `directoryModeOf(features)` gives `DirectoryMode`
+(`sync_google` → `google`, else `sync_frozen` → `frozen`, else `off`), as
+`Me.instance.directory.mode` reports it.
 
 | Flag | Source | Meaning |
 |---|---|---|
 | `spaces` | FEATURES | Spaces and roles on; space routes 404 without it (authz identical either way) |
 | `sync_google` | FEATURES | Directory sync running |
-| `sync_frozen` | FEATURES | Team after trial: synced rows kept (`source: "sync"`), edited by hand, replaced on return to Business |
+| `sync_frozen` | FEATURES | Team after trial: synced rows kept (`source: "sync"`), edited by hand (an edit becomes a manual override), user status still polled, no group reads; `lastSuccessAt`/`staleAt` keep the last run that read groups. Each frozen hand edit is recorded in D1 `frozen_edits` (server migration `0013_frozen_edits`). The first reconcile after return to Business, after its walks: an override's pre-freeze manual row comes back exactly (none: removed); an explicit frozen DELETE is final; a frozen manual add (no synced row) is kept; then the synced role is derived again from fresh membership and the narrowed are revoked. Audited by `sync`: `space.member.role` / `.add` / `.remove` with `{ thaw: true, role? }`, or `directory.sync` with `{ thaw: "removal_kept" }` / `{ thaw: "manual_kept", role }`. A live admin edit after sync returns, before that reconcile, supersedes the pending outcome (never undone). Synced-row changes at the thaw: `directory.sync` `{ thaw: "sync", from?, to? }` |
 | `guests_read_only` | **reported only** | Guests capped at viewer, no data writes. One source: P2's `authConfig.guestsReadOnly`, true whenever the google or email provider is enabled (not configurable; no `GUEST_ACCESS` var). Access-only installs keep today's guest behaviour. FEATURES can't set it |
 | `content_revocation` | FEATURES | uid-bound `/c/` content tokens re-check the user's status. A space's `publicLinks` is never part of the `/p/` check: off only refuses new public links |
 | `usage_off` | FEATURES | Hosted: the Usage page and `R.usage` are 404 |
@@ -128,8 +136,8 @@ every flag that is on.
 | `PATCH R.space(id)` | `SpacePatch` → `Space` | `name`, `publicLinks`: space manager or org admin (`publicLinks` audited `space.public_links`; off blocks new public links only - existing links and sockets keep working, nothing is rewritten). `allMembersRole`: org admin |
 | `DELETE R.space(id)` | 204; 409 `space_not_empty` | org owner, admin |
 | `GET R.spaceMembers(id)` | `SpaceMembersQuery { q?, group?, cursor?, limit? }` → `SpaceMembersPage` (`Page<SpaceMember>` + `total`, the count matching `q`/`group`) | member, org admin; personal: 400 `space_personal`. `q`: case-insensitive prefix of the email or of any word of the name; `group`: a groupId (either `via`) |
-| `PUT R.spaceMember(id, userId)` | `SpaceMemberPut` → `SpaceMember` | space manager, org admin. The target must be an existing, active member (else 404). Only an org admin grants Manager or changes a peer manager (a member with a manager row, by hand or synced; the frozen override included): else 403 `space_forbidden` `{ target: "member" }`. **Sync frozen**, on a row with a `syncRole`: any role, raise or lower, is a manual grant under the rules above (admins any role; managers up to editor) and becomes a manual override (`source: "manual"`, `syncRole: null`, `groups: []`) that the next reconcile after unfreezing replaces. Audited `space.member.add` / `space.member.role` (frozen override: detail `{ syncFrozen: true, role }`) |
-| `DELETE R.spaceMember(id, userId)` | 204 | space manager, org admin. Removes the manual row. Only an org admin removes a peer manager (a manager row, by hand or synced, frozen included): else 403 `space_forbidden` `{ target: "member" }`, checked before `member_synced`. A synced-only row while sync is live: 409 `member_synced`. **Sync frozen**: also removes a synced row (removing access is always allowed). Audited `space.member.remove` (frozen: detail `{ syncFrozen: true }`) |
+| `PUT R.spaceMember(id, userId)` | `SpaceMemberPut` → `SpaceMember` | space manager, org admin. The target must be an existing, active member (else 404). Only an org admin grants Manager or changes a peer manager (a member with a manager row, by hand or synced; the frozen override included): else 403 `space_forbidden` `{ target: "member" }`. **Sync frozen**, on a row with a `syncRole`: any role, raise or lower, is a manual grant under the rules above (admins any role; managers up to editor) and becomes a manual override (`source: "manual"`, `syncRole: null`, `groups: []`) that the next reconcile after unfreezing undoes (the pre-freeze manual row restored exactly, see `sync_frozen`). Audited `space.member.add` / `space.member.role` (frozen override: detail `{ syncFrozen: true, role }`) |
+| `DELETE R.spaceMember(id, userId)` | 204 | space manager, org admin. Removes the manual row. Only an org admin removes a peer manager (a manager row, by hand or synced, frozen included): else 403 `space_forbidden` `{ target: "member" }`, checked before `member_synced`. A synced-only row while sync is live: 409 `member_synced`. **Sync frozen**: also removes a synced row (removing access is always allowed), and the removal is final: the thaw after unfreezing restores no manual row (fresh group membership can re-add the synced row). Audited `space.member.remove` (frozen: detail `{ syncFrozen: true }`) |
 | `POST R.spaceMemberSelf(id)` `/spaces/:id/members/self` | `SpaceMemberPut` → 201 `SpaceMember` | org admin adds themselves; shared spaces only (400 `space_personal`); audited `space.admin_self_add`; managers notified |
 | `GET R.spaceMappings(id)` | → `GroupMapping[]` (per-space rows only); personal: 400 `space_personal` | org admin; space manager (any setting). **Manager access pending server implementation (P3 T9/T14)** |
 | `PUT/DELETE R.spaceMapping(id, groupId)` | `GroupMappingPut` → `GroupMapping` / 204; 409 `directory_sync_off` when sync is off or frozen | org admin (any role); space manager for rows that are and stay `viewer \| editor` (`SPACE_MANAGER_MAPPING_ROLES`). Order: personal 400 `space_personal`; no role 404; manager PUT while `spaceManagerMappings` is off 403 `directory_mapping_off` (DELETE always allowed: removing access); a `manager` role (PUT body, or the existing row on PUT or DELETE) 403 `space_forbidden` `{ target: "mapping" }`; sync off 409. **Manager access pending server implementation (P3 T9/T14)** |
@@ -195,7 +203,8 @@ Accepted disclosure: `scope=space` (or any `spaceId`) naming another user's pers
 | Route | Response | Who |
 |---|---|---|
 | `GET R.directory` | `SyncStatus` | org owner, admin |
-| `DELETE R.directory` | 204 (disconnect; memberships freeze) | org owner |
+| `POST R.directoryDisconnect` `/directory/disconnect` | 200 `SyncStatus` (`binding` null, `state` `never`): revokes the Google grant (best effort; a failure is audited `revoke_failed` and the disconnect still completes), deletes the binding, tokens and any pending consent, and stops sync. Synced memberships stay exactly as they are (`directory_members`, `source: "sync"` space rows, `restricted_sync`, Every-space roles), as in frozen mode: nobody loses access. During a `customer_mismatch`, `state` stays `customer_mismatch` and synced users stay denied until an owner reconnects and confirms. Nothing connected: 200, no change (idempotent). Every active owner is emailed | the org owner in an interactive cookie session (CSRF): Cloudflare Access, Google or an email code; a member, an admin, any PAT or grant: 404. Late tokens (committed after the reads) are revoked too, audited `{ outcome: "revoke_late", token: "live" \| "pending", revoke }`. Audited `directory.disconnect` `{ outcome: "disconnected", revoke, pendingRevoke?, mismatchKept?, notified }` |
+| `DELETE R.directory` | 204: the same disconnect as `POST R.directoryDisconnect` | same |
 | `GET R.directoryGroups` | `DirectoryGroupsQuery` → `Page<DirectoryGroup>` (group picker) | org admin |
 | `GET R.directoryConnect` | 302 to Google consent | org owner |
 | `GET R.directoryCallback` | 302 `/settings/directory` (consent and binding stored, `SyncStatus.state` `pending_confirm`; nothing linked yet) or `?error=DirectoryConnectError` | OAuth |
@@ -205,6 +214,14 @@ Accepted disclosure: `scope=space` (or any `spaceId`) naming another user's pers
 | `POST R.directoryHeldConfirm(groupId)` | 202 `SyncStatus` | org owner |
 | `GET R.audit` / `R.auditExport` | `Page<AuditEvent>` / NDJSON | org owner, admin. Export takes `?cursor` and returns at most 5000 events (10 pages of 500) per request, newest first; when more remain, header `X-OA-Next-Cursor` (`AUDIT_NEXT_CURSOR_HEADER`) holds the cursor for the next request |
 
+Audit retention: events are kept 400 days (`AUDIT_RETENTION_MS`), hosted and
+self-hosted alike. The daily cron deletes older rows, oldest first, at most
+5000 per run (5 statements of 1000 through `audit_events_at_idx`); a larger
+backlog finishes on later days, so an event can outlive 400 days until it
+does. `GET R.audit` and the export never return what was deleted; an export
+cursor stays valid (rows past it may be gone). The deletion itself is not
+audited; the cron logs `audit_swept` with the count only.
+
 Break-glass: a stale org owner reaches only the directory status, connect and
 sync routes, after a fresh Google sign-in (10 min); else 401 `reauth_required`.
 
@@ -213,6 +230,7 @@ sync routes, after a fresh Google sign-in (10 min); else 401 `reauth_required`.
 | `SyncStatusSchema` | `{ mode, binding, healthy, state, unhealthySince, lastSuccessAt, lastError, nextRunAt, staleAt, alertedAt, customerMismatch, held }` |
 | `DirectoryBindingSchema` | `{ provider, customerId, domain, connectedBy, connectedAt }` |
 | `SyncStatusSchema` pending fields | `pendingCount: number \| null` (active in-domain users the pass would link or create, over at most one page of 500), `pendingCountCapped: boolean` (true: show "500+"), `pendingExpiresAt: string \| null` (ISO, consent + 24 h). Set only while `state` is `pending_confirm` (`SyncState` gains `pending_confirm`). Defaults `null` / `false` / `null` when absent, so a payload from before the confirm step still parses |
+| `SyncStatusSchema.pendingCustomerChange` | `{ previous: { customerId, domain: string \| null }, next: { customerId, domain } } \| null`, optional (absent from older servers). Set only while `state` is `pending_confirm` and the consent is for a different Google Workspace than the one a disconnect during `customer_mismatch` removed (a tenant change). Show "This connects a different Google Workspace than before"; `previous.domain` null: say "the previous Workspace". Users bound to the previous Workspace don't carry over: they stay refused at Google sign-in (the directory check against the new binding) and stay signed out. The org owner is exempt from that check. Confirm audits `directory.connect` `{ outcome: "confirmed", customerId, previousCustomerId? }` |
 | `HeldSweepSchema` | `GroupRef + { wouldRemove, members, since }` |
 | `DirUserSchema` | `{ id (= Google sub), primaryEmail, suspended, deleted }` |
 | `DirectoryGroupSchema` | `{ groupId, email, name, memberCount }` |

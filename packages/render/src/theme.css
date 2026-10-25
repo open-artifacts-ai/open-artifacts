@@ -14,7 +14,7 @@
  */
 /* biome-ignore-all lint/complexity/noImportantStyles: shiki writes inline colors and backgrounds that the theme must override */
 /* biome-ignore-all lint/style/noDescendingSpecificity: dark-mode rules repeat across @media and data-theme on purpose */
-@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap");
+@import "@oa/ui/fonts.css";
 
 /* ---------- Tokens ---------- */
 

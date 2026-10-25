@@ -11,8 +11,8 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logInfo, logWarn } from "../log.js";
-import { audit, userActor } from "../services/audit.js";
-import { afterDirectoryConnect } from "../services/directory.js";
+import { type AuditActor, audit, userActor } from "../services/audit.js";
+import { afterDirectoryConnect, resetSync } from "../services/directory.js";
 import { directoryMode } from "../services/spaces.js";
 import {
   b64urlDecode,
@@ -21,6 +21,7 @@ import {
   hmacVerify,
   sha256Hex,
 } from "../util/crypto.js";
+import { alertOwners, ownerEmails } from "./alert.js";
 import { initialBinding, planPage } from "./binding.js";
 import { directoryClient } from "./client.js";
 import { seal } from "./crypto.js";
@@ -30,13 +31,20 @@ import {
   listUsers,
   verifiedDomains,
 } from "./google.js";
-import { healthFields, NEVER, readHealth } from "./health.js";
+import {
+  healthFields,
+  MISMATCH_TOMBSTONE,
+  NEVER,
+  readHealth,
+  readSyncState,
+} from "./health.js";
 import {
   CONFIRM_TTL_MS,
   CONFIRM_WON,
   dropPending,
   expirePending,
   K,
+  keepPrior,
   liveSub,
   type PendingConfirm,
   promotePending,
@@ -44,7 +52,10 @@ import {
   readBinding,
   readPending,
   readPendingRaw,
+  readPrior,
+  revokeAtGoogle,
   revokeGrant,
+  wipeState,
 } from "./store.js";
 import {
   type DirectoryClient,
@@ -390,13 +401,22 @@ export async function afterConsent(
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<SyncStatus> {
   const p = await ownPending(env, user);
-  const [{ binding, sealed }, { sealed: old }, oldSub, seen] =
-    await Promise.all([
-      readBinding(env, "pending"),
-      readBinding(env, "live"),
-      liveSub(env),
-      readPendingRaw(env),
-    ]);
+  const [
+    { binding, sealed },
+    { sealed: old, binding: was },
+    oldSub,
+    seen,
+    prior,
+  ] = await Promise.all([
+    readBinding(env, "pending"),
+    readBinding(env, "live"),
+    liveSub(env),
+    readPendingRaw(env),
+    readPrior(env),
+  ]);
+  // The Workspace this confirm replaces: the live one, or the one a
+  // disconnect during customer_mismatch removed.
+  const previous = was?.customerId ?? prior?.customerId;
   if (!binding || !sealed || !seen) throw notFound();
   let token: string;
   try {
@@ -412,7 +432,12 @@ export async function afterConsent(
   const out = await env.DB.batch([
     ...swap,
     audit(env, "directory.connect", AUDIT_TARGET, userActor(user.id), {
-      detail: { outcome: "confirmed", transport: client.kind },
+      detail: {
+        outcome: "confirmed",
+        transport: client.kind,
+        customerId: binding.customerId,
+        ...(previous ? { previousCustomerId: previous } : {}),
+      },
       when: { sql: "changes() > 0", args: [] },
     }),
   ]);
@@ -475,6 +500,120 @@ export async function cancelConnect(env: Env, user: Member): Promise<void> {
     });
 }
 
+/** What a disconnect did with a token at Google (directory.disconnect detail). */
+type RevokeOutcome = "revoked" | "revoke_failed" | "none";
+
+/** Any connection state: a live binding or token, or a pending consent. */
+const CONNECTED = `exists (select 1 from directory_state where key in (?, ?, ?, ?, ?))`;
+const CONNECTED_KEYS = [
+  K.binding,
+  K.refresh,
+  K.pendingBinding,
+  K.pendingRefresh,
+  K.confirm,
+];
+
+const revokeOutcome = async (
+  env: Env,
+  sealed: string | null,
+  which: "live" | "pending",
+): Promise<RevokeOutcome> =>
+  sealed
+    ? (await revokeAtGoogle(env, sealed, which))
+      ? "revoked"
+      : "revoke_failed"
+    : "none";
+
+/**
+ * The directory disconnect: POST R.directoryDisconnect and DELETE
+ * R.directory (an interactive org owner session), and the platform's
+ * install-delete job (cron.ts DIRECTORY_DISCONNECT_CRON, actor system).
+ * 1. Revokes the live grant at Google, and a pending one on another account,
+ *    best effort: a failure is audited (revoke_failed) and logged.
+ * 2. One batch: the directory.disconnect audit row (gated, so a racing
+ *    disconnect writes one) and the wipe of every directory_state key. The
+ *    wipe returns what it deleted: a token committed after step 1 read it (a
+ *    consent callback racing it) is revoked then (audited revoke_late), so
+ *    no live grant is left behind.
+ * 3. Resets DirectorySync (retried once): its next alarm clears its state
+ *    and, with no binding, calls Google no more.
+ * 4. Emails every active owner (the sync alert path).
+ * During customer_mismatch, sync.state stays as a tombstone (wipeState):
+ * synced users stay denied. Only an owner's break-glass reconnect and
+ * confirm lifts it (a new binding; its resetSync clears health).
+ * Memberships stay as they are (frozen): directory_members, sync
+ * space_members, restricted_sync, org-group roles and bound identities are
+ * not touched. Nothing connected: a no-op (no revoke, audit, reset or email).
+ */
+export async function disconnectDirectory(
+  env: Env,
+  actor: AuditActor,
+  o: { showProblem: boolean },
+): Promise<SyncStatus> {
+  const [live, pend, sub, p] = await Promise.all([
+    readBinding(env, "live"),
+    readBinding(env, "pending"),
+    liveSub(env),
+    readPending(env),
+  ]);
+  if (!live.binding && !live.sealed && !pend.binding && !pend.sealed && !p)
+    return directoryStatus(env, o);
+  const revoked = await revokeOutcome(env, live.sealed, "live");
+  // The same Google account as the live token: one grant, revoked above.
+  const samePending = !!live.sealed && !!p?.s && p.s === sub;
+  const pending = samePending
+    ? "none"
+    : await revokeOutcome(env, pend.sealed, "pending");
+  const [owners, tomb] = await Promise.all([
+    ownerEmails(env),
+    readSyncState(env),
+  ]);
+  const out = await env.DB.batch([
+    audit(env, "directory.disconnect", AUDIT_TARGET, actor, {
+      detail: {
+        outcome: "disconnected",
+        revoke: revoked,
+        ...(pending !== "none" ? { pendingRevoke: pending } : {}),
+        ...(tomb === MISMATCH_TOMBSTONE ? { mismatchKept: true } : {}),
+        notified: owners.length,
+      },
+      when: { sql: CONNECTED, args: CONNECTED_KEYS },
+    }),
+    // During customer_mismatch: the old Workspace is remembered first.
+    keepPrior(env),
+    wipeState(env),
+  ]);
+  const won = (out[0]?.meta.changes ?? 0) > 0;
+  // Tokens the wipe removed that step 1 never saw, by the grant they were.
+  const seen = new Set([live.sealed, pend.sealed]);
+  const late = ((out[2]?.results ?? []) as { key: string; value: string }[])
+    .filter(
+      (r) =>
+        (r.key === K.refresh || r.key === K.pendingRefresh) &&
+        !seen.has(r.value),
+    )
+    .map((r) => ({
+      sealed: r.value,
+      token: r.key === K.refresh ? ("live" as const) : ("pending" as const),
+    }));
+  for (const { sealed, token } of late) {
+    const r = await revokeOutcome(env, sealed, token);
+    logInfo("directory_disconnect_late", { token, revoke: r });
+    await audit(env, "directory.disconnect", AUDIT_TARGET, actor, {
+      detail: { outcome: "revoke_late", token, revoke: r },
+    })
+      .run()
+      .catch((e) => logWarn("directory_revoke_audit", e));
+  }
+  logInfo("directory_disconnect", { revoke: revoked, pending, won });
+  await resetSync(env);
+  if (won)
+    await alertOwners(env, "disconnected", owners).catch((e) =>
+      logWarn("directory_disconnect_alert", e),
+    );
+  return directoryStatus(env, o);
+}
+
 /**
  * GET R.directory until T13's DirectorySync serves it. With no transport,
  * mode is "off" and, with `showProblem` (the org owner: directory.manage),
@@ -488,18 +627,43 @@ export async function directoryStatus(
   await expirePending(env);
   const t = directoryTransport(env);
   const mode = t.kind === "none" ? "off" : directoryMode(env);
-  const [{ binding }, pending, health] = await Promise.all([
+  const [{ binding }, pending, health, tomb, prior, next] = await Promise.all([
     readBinding(env),
     readPending(env),
     readHealth(env),
+    readSyncState(env),
+    readPrior(env),
+    readBinding(env, "pending"),
   ]);
+  // A consent for another Workspace than the one a disconnect during
+  // customer_mismatch removed: the confirm step says so.
+  const change =
+    pending &&
+    prior &&
+    next.binding &&
+    next.binding.customerId !== prior.customerId
+      ? {
+          previous: prior,
+          next: {
+            customerId: next.binding.customerId,
+            domain: next.binding.domain,
+          },
+        }
+      : null;
   // T13: DirectorySync's health while a live binding exists.
   const h = healthFields(binding ? health : NEVER);
   return {
     mode,
     binding,
     healthy: mode === "off" ? null : h.healthy,
-    state: pending ? "pending_confirm" : binding ? health.state : "never",
+    state: pending
+      ? "pending_confirm"
+      : binding
+        ? health.state
+        : // Disconnected during a mismatch: synced users stay denied.
+          tomb === MISMATCH_TOMBSTONE
+          ? "customer_mismatch"
+          : "never",
     unhealthySince: h.unhealthySince,
     lastSuccessAt: h.lastSuccessAt,
     lastError:
@@ -514,5 +678,6 @@ export async function directoryStatus(
     pendingCount: pending ? pending.count : null,
     pendingCountCapped: pending ? pending.capped : false,
     pendingExpiresAt: pending ? new Date(pending.exp).toISOString() : null,
+    pendingCustomerChange: change,
   };
 }

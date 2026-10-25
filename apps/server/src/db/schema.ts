@@ -177,6 +177,40 @@ export const orgGroupMappings = sqliteTable(
   ],
 );
 
+// A space member an admin edited by hand while sync was frozen (Team), first
+// edit wins. kind: override (a synced row changed; manual_role is the manual
+// row from before it, null: none, and the thaw puts it back), delete (an
+// explicit removal: final, the manual row stays as it is), manual (a manual
+// row on a pair with no synced row: kept). The first reconcile after sync
+// returns derives the synced role again, audits the outcome and deletes the
+// row (P3 T15).
+export const frozenEdits = sqliteTable(
+  "frozen_edits",
+  {
+    spaceId: text("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    at: integer("at").notNull(),
+    /** override: the pair's manual role before the first frozen edit; null: none. */
+    manualRole: text("manual_role"),
+    kind: text("kind").notNull().default("override"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.spaceId, t.userId] }),
+    check(
+      "frozen_edits_manual_role_check",
+      sql`${t.manualRole} is null or ${t.manualRole} in ('viewer', 'editor', 'manager')`,
+    ),
+    check(
+      "frozen_edits_kind_check",
+      sql`${t.kind} in ('override', 'delete', 'manual')`,
+    ),
+  ],
+);
+
 // Groups whose members are capped at viewer on every surface (P3 T14).
 export const restrictedGroups = sqliteTable("restricted_groups", {
   groupId: text("group_id").primaryKey(),

@@ -171,8 +171,17 @@ export const R = {
   /** PUT GroupMappingPut -> GroupMapping (upsert); DELETE -> 204 (org admin). 409 directory_sync_off when sync is off or frozen. Keyed by Google group id. Never applies to personal spaces. */
   orgMapping: (groupId: string) =>
     `/api/v1/directory/org-mappings/${seg(groupId)}`,
-  /** GET -> SyncStatus (org owner, admin); DELETE -> 204 disconnect (org owner; memberships freeze). */
+  /** GET -> SyncStatus (org owner, admin); DELETE -> 204, the same disconnect as directoryDisconnect (org owner, cookie session). */
   directory: "/api/v1/directory",
+  /**
+   * POST -> 200 SyncStatus (state never; customer_mismatch when disconnected
+   * during one): revokes the Google grant (best effort), deletes the binding,
+   * tokens and any pending consent, and stops sync. Synced memberships stay
+   * as they are (frozen). Nothing connected: 200, no change. The org owner
+   * in a cookie session only (a PAT or grant: 404). Every owner is emailed.
+   * Audited directory.disconnect.
+   */
+  directoryDisconnect: "/api/v1/directory/disconnect",
   /** GET DirectoryGroupsQuery -> Page<DirectoryGroup> (org admin; group picker). */
   directoryGroups: "/api/v1/directory/groups",
   /** GET -> 302 to Google consent (org owner). */
@@ -186,6 +195,8 @@ export const R = {
    * POST -> 200 SyncStatus: runs the binding pass for the pending connection.
    * Only the owner who connected (still the org owner); anyone else 404; no
    * pending connection 404; expired (24 h) 409 conflict, and it is dropped.
+   * A tenant change (SyncStatus.pendingCustomerChange) confirms the same
+   * way; directory.connect records customerId and previousCustomerId.
    */
   directoryConfirm: "/api/v1/directory/confirm",
   /** POST -> 204: drops the pending connection (token and binding). Same callers as directoryConfirm. */

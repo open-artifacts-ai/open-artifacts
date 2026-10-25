@@ -262,3 +262,52 @@ it("404: nothing pending any more, so the status is fetched again", async () => 
   expect(gets.filter((c) => c.path === R.directory).length).toBeGreaterThan(1);
   expect(screen.queryByText(/expired/)).toBeNull();
 });
+
+// A consent for a different Google customer (Backend #616): Design's
+// warning callout above the body; the rest of the step is unchanged.
+const CHANGE = {
+  previous: { customerId: "C01abc", domain: "old.example" },
+  next: { customerId: "C09xyz", domain: "example.com" },
+};
+const CALLOUT = "This is a different Google Workspace than before.";
+
+it("a different Workspace: the warning callout above the body", async () => {
+  mountHosted("/settings/directory", { pendingCustomerChange: CHANGE });
+  const h = await status();
+  // A warning is a polite status (Alert), not an interrupting alert.
+  const callout = within(h)
+    .getByText(CALLOUT)
+    .closest("[data-slot=alert]") as HTMLElement;
+  expect(callout).toHaveAttribute("role", "status");
+  expect(callout).toHaveTextContent(
+    "People who signed in through old.example won't carry over and stay signed out. People in example.com are linked when you confirm.",
+  );
+  const body = within(h).getByText(/^This adds 12 people/);
+  // Above the body.
+  expect(
+    callout.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(
+    within(h).getByRole("button", { name: "Add 12 people" }),
+  ).toBeVisible();
+});
+
+it("a different Workspace with no previous domain: 'the previous Workspace'", async () => {
+  mountHosted("/settings/directory", {
+    pendingCustomerChange: {
+      ...CHANGE,
+      previous: { customerId: "C01abc", domain: null },
+    },
+  });
+  expect(await status()).toHaveTextContent(
+    "People who signed in through the previous Workspace won't carry over and stay signed out. People in example.com are linked when you confirm.",
+  );
+});
+
+it("the same Workspace (no pendingCustomerChange): no callout", async () => {
+  const s = serve(PENDING);
+  mountHosted("/settings/directory", true, undefined, [s.handler]);
+  const h = await status();
+  await within(h).findByRole("button", { name: "Add 12 people" });
+  expect(within(h).queryByText(CALLOUT)).toBeNull();
+});

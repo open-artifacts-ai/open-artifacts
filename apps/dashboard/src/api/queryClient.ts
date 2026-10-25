@@ -49,13 +49,30 @@ const roleGated = (e: ApiClientError) => {
   );
 };
 
+const isBreakGlass = (e: unknown) =>
+  e instanceof ApiClientError && e.code === "break_glass_required";
+
+/** The calls the break-glass card makes, open to the locked-out owner. */
+const BREAK_GLASS_CALLS: ReadonlySet<string> = new Set([
+  R.directory,
+  R.directoryConfirm,
+  R.directoryCancel,
+  R.directorySync,
+]);
+/** A plain 401 from one of them: the session itself is gone (revoked). */
+const revokedInBreakGlass = (e: ApiClientError) =>
+  BREAK_GLASS_CALLS.has(e.path?.split("?")[0] ?? "");
+
 /**
  * Raises the quota flag on `quota_exceeded`, and refreshes `/me` on a 404 from
  * a role-gated endpoint. A 401 anywhere means the session is
  * gone: `/me` is marked failed with it, so `useMe` turns anonymous and the
  * sign-in redirects run without refetching a `/me` that may still be cached.
  * Except `reauth_required`: the session is valid, only the directory's
- * break-glass routes want a fresh Google sign-in.
+ * break-glass routes want a fresh Google sign-in; and `break_glass_required`
+ * (GET /me only), which `useMe` turns into the break-glass card: a 401
+ * overwrites that answer only from the card's own calls (the session was
+ * revoked), and one before /me's first answer waits for it.
  */
 export const reportApiError = (client: QueryClient, error: unknown) => {
   if (!(error instanceof ApiClientError)) return;
@@ -63,18 +80,33 @@ export const reportApiError = (client: QueryClient, error: unknown) => {
   // A demoted admin's role-gated calls 404: refresh /me so Gate and the nav follow.
   if (error.status === 404 && roleGated(error))
     void client.invalidateQueries({ queryKey: qk.me, exact: true });
-  if (error.status !== 401 || error.code === "reauth_required") return;
+  if (
+    error.status !== 401 ||
+    error.code === "reauth_required" ||
+    error.code === "break_glass_required"
+  )
+    return;
   const me = client.getQueryCache().find({ queryKey: qk.me, exact: true });
   if (!me || me.state.error === error) return;
-  // An in-flight /me must not land afterwards and undo this.
-  void client.cancelQueries({ queryKey: qk.me, exact: true }).then(() =>
-    me.setState({
-      status: "error",
-      error,
-      errorUpdatedAt: Date.now(),
-      fetchStatus: "idle",
-    }),
-  );
+  // The locked-out owner gets a plain 401 from everything but /me.
+  const markFailed = () => {
+    if (isBreakGlass(me.state.error) && !revokedInBreakGlass(error)) return;
+    // An in-flight /me must not land afterwards and undo this.
+    void client.cancelQueries({ queryKey: qk.me, exact: true }).then(() =>
+      me.setState({
+        status: "error",
+        error,
+        errorUpdatedAt: Date.now(),
+        fetchStatus: "idle",
+      }),
+    );
+  };
+  if (me.state.data === undefined && me.state.fetchStatus === "fetching")
+    void me
+      .fetch()
+      .catch(() => {})
+      .then(markFailed);
+  else markFailed();
 };
 
 /** Any success means the quota is available again. */

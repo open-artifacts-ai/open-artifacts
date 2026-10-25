@@ -118,7 +118,10 @@ export interface Env {
   EMAIL_DAILY_CAP?: string;
   /** "1" on hosted installs (Me.instance.hosted). */
   HOSTED?: string;
-  /** Comma list of FeatureFlag (@oa/shared parseFeatures). */
+  /**
+   * Comma list of FeatureFlag (@oa/shared parseFeatures). Unset (self-host
+   * default): today's behaviour. usage_off: R.usage is 404 (hosted, P3 T19).
+   */
   FEATURES?: string;
   // secrets
   ACCESS_CLIENT_SECRET: string;

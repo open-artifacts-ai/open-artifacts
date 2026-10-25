@@ -68,6 +68,13 @@ export const LIMITS = {
   indexDebounceMs: 10_000,
 } as const;
 
+/**
+ * Audit log retention: the daily cron deletes audit_events rows older than
+ * this (400 days, so a full year plus margin for annual reviews), in bounded
+ * batches. Beside LIMITS.softDeleteDays (30, trashed artifacts).
+ */
+export const AUDIT_RETENTION_MS = 400 * 86_400_000;
+
 /** The 413 too_large message for inline publish content over LIMITS.inlineBytes (REST and MCP). */
 export const INLINE_TOO_LARGE_MESSAGE = `Inline content is limited to ${LIMITS.inlineBytes / 1024} KB per publish. For larger files: create_upload({ path, size, contentType }), PUT the bytes to the returned url, then publish_artifact({ id: artifactId, title, files: { "<path>": { uploadId } } }).`;
 

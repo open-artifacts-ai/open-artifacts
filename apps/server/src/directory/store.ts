@@ -20,7 +20,10 @@ import { directoryClient } from "./client.js";
 // - "connect.confirm": a consent waiting for its owner, {u, exp, count,
 //   capped}; T13 must not sync while it exists;
 // - "binding.initial": the initial binding pass, {done, cursor} (T13
-//   continues a pass whose cursor is set).
+//   continues a pass whose cursor is set);
+// - "binding.prior": {customerId, domain} of the binding a disconnect
+//   during customer_mismatch removed, kept with the sync.state tombstone
+//   until a new binding replaces both (health.ts clearHealth).
 
 export const K = {
   binding: "binding",
@@ -31,6 +34,7 @@ export const K = {
   pending: "connect.pending",
   confirm: "connect.confirm",
   initial: "binding.initial",
+  prior: "binding.prior",
 } as const;
 
 export const UPSERT = `insert into directory_state (key, value) values (?, ?)
@@ -299,16 +303,7 @@ export async function revokeGrant(
       .catch((e) => logWarn("directory_revoke_audit", e));
     return false;
   }
-  let ok = false;
-  try {
-    const c = directoryClient(env);
-    if (c) {
-      await c.revoke(sealed);
-      ok = true;
-    }
-  } catch (e) {
-    logWarn("directory_revoke", e, { which });
-  }
+  const ok = await revokeAtGoogle(env, sealed, which);
   await audit(
     env,
     "directory.connect",
@@ -319,6 +314,88 @@ export async function revokeGrant(
     .run()
     .catch((e) => logWarn("directory_revoke_audit", e));
   return ok;
+}
+
+/**
+ * One revoke of the grant behind `sealed` at Google, through this install's
+ * transport (broker or direct). Never throws: false when it failed or no
+ * transport is configured (logged).
+ */
+export async function revokeAtGoogle(
+  env: Env,
+  sealed: string,
+  which: "old" | "pending" | "live",
+): Promise<boolean> {
+  try {
+    const c = directoryClient(env);
+    if (!c) return false;
+    await c.revoke(sealed);
+    return true;
+  } catch (e) {
+    logWarn("directory_revoke", e, { which });
+    return false;
+  }
+}
+
+/**
+ * Every directory_state key (binding, tokens, pending consent, grant.sub,
+ * the initial pass, health and sync.state), returning what it deleted. One
+ * exception: sync.state = customer_mismatch stays as a tombstone, so synced
+ * users stay denied after a disconnect (health.ts MISMATCH_TOMBSTONE).
+ */
+export const wipeState = (env: Env) =>
+  stmt(
+    env.DB,
+    `delete from directory_state
+      where not (
+        (key = 'sync.state' and value = 'customer_mismatch')
+        or (key = ?1 and ${TOMBSTONED}))
+      returning key, value`,
+  ).bind(K.prior);
+
+/** sync.state is the customer_mismatch tombstone. */
+const TOMBSTONED = `exists (select 1 from directory_state t
+  where t.key = 'sync.state' and t.value = 'customer_mismatch')`;
+
+/**
+ * Before wipeState, during customer_mismatch: the live binding's customer id
+ * and domain become binding.prior (kept with the tombstone), so a consent
+ * for a different Workspace says so (SyncStatus.pendingCustomerChange).
+ * Without a live binding an earlier prior stays.
+ */
+export const keepPrior = (env: Env) =>
+  stmt(
+    env.DB,
+    `insert into directory_state (key, value)
+      select ?1, json_object('customerId', json_extract(value, '$.customerId'),
+        'domain', json_extract(value, '$.domain'))
+      from directory_state where key = ?2 and ${TOMBSTONED}
+      on conflict (key) do update set value = excluded.value`,
+  ).bind(K.prior, K.binding);
+
+/** The Workspace bound before a disconnect during customer_mismatch. */
+export type PriorCustomer = { customerId: string; domain: string | null };
+
+export async function readPrior(env: Env): Promise<PriorCustomer | null> {
+  const row = await stmt(
+    env.DB,
+    "select value from directory_state where key = ?",
+  )
+    .bind(K.prior)
+    .first<{ value: string }>();
+  try {
+    const v = row
+      ? (JSON.parse(row.value) as Partial<Record<string, unknown>>)
+      : null;
+    return v && typeof v.customerId === "string"
+      ? {
+          customerId: v.customerId,
+          domain: typeof v.domain === "string" ? v.domain : null,
+        }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The Google account behind the live token, or null. */

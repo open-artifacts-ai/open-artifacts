@@ -3,15 +3,15 @@ import { REPO_URL } from "@oa/shared";
 import logo from "@oa/ui/brand/logo.svg";
 import logoDark from "@oa/ui/brand/logo-dark.svg";
 import tokensCss from "@oa/ui/tokens.css?raw";
+import "@oa/ui/fonts.css";
 import "../styles/site.css";
 import rootPackage from "../../../../package.json";
 import Todo from "../components/Todo.astro";
 import { GATES, type GateId, UNRELEASED } from "../lib/release";
 
-// Inline the Studio tokens without their font @import, which would block rendering.
-// The same Google Fonts stylesheet loads below without blocking.
-const fontImport = /^@import url\("([^"]+)"\);\n/m;
-const fontsHref = tokensCss.match(fontImport)?.[1];
+// Inline the Studio tokens without their font @import: the self-hosted Geist
+// faces come from the fonts.css import above, which Astro bundles with the page CSS.
+const fontImport = /^@import "\.\/fonts\.css";\n/m;
 const tokens = tokensCss.replace(fontImport, "");
 
 interface Props {
@@ -39,10 +39,6 @@ const ogImage = new URL("/og.png", Astro.site);
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    {fontsHref && <link rel="stylesheet" href={fontsHref} media="print" onload="this.media='all'" />}
-    {fontsHref && <noscript><link rel="stylesheet" href={fontsHref} /></noscript>}
     <style is:inline set:html={tokens} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />

@@ -1,4 +1,5 @@
 import {
+  AUDIT_RETENTION_MS,
   type AuditAction,
   AuditActionSchema,
   type AuditEvent,
@@ -15,12 +16,15 @@ import { auditEvents } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
+import { logInfo } from "../log.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
 
 // The audit log (P3 T8). audit() is a statement, never a write: callers put it
 // in the same D1 batch as the change it records, so both commit or neither
 // does. Rows hold ids and enums only; the actor's email is joined at read
 // time, never stored, and no code, token or other address is ever written.
+// Rows are never updated; the daily cron deletes those past 400 days
+// (AUDIT_RETENTION_MS, sweepAuditEvents below; HOSTED_CONTRACT.md).
 
 /** Who did it: a signed-in user, directory sync, or the system (cron, alarms). */
 export type AuditActor = {
@@ -429,4 +433,39 @@ export async function exportAudit(
     },
   });
   return { stream, nextCursor };
+}
+
+/** Rows one sweep statement deletes (D1 bills 1 row written, 4 read, per row; test/d1-rows). */
+export const AUDIT_SWEEP_BATCH = 1000;
+/** Sweep statements per cron run: at most 5000 rows a day. */
+export const AUDIT_SWEEP_STATEMENTS = 5;
+
+// Oldest first through audit_events_at_idx (the subquery is an index-only
+// range scan; each delete is a primary-key lookup). D1 has no DELETE ... LIMIT.
+const SWEEP_SQL = `delete from audit_events where id in
+  (select id from audit_events where at < ? order by at limit ?)`;
+
+/**
+ * Daily cron: deletes audit rows older than AUDIT_RETENTION_MS (400 days),
+ * oldest first, at most `statements` × `batch` rows per run so a large backlog
+ * can't exceed the invocation's query or CPU limits; the rest goes the next
+ * day. Logs the count only (no row content). Returns the rows deleted.
+ */
+export async function sweepAuditEvents(
+  env: Env,
+  now: number,
+  batch = AUDIT_SWEEP_BATCH,
+  statements = AUDIT_SWEEP_STATEMENTS,
+): Promise<number> {
+  const cutoff = now - AUDIT_RETENTION_MS;
+  let deleted = 0;
+  let more = false;
+  for (let i = 0; i < statements; i++) {
+    const r = await stmt(env.DB, SWEEP_SQL).bind(cutoff, batch).run();
+    deleted += r.meta.changes;
+    more = r.meta.changes >= batch;
+    if (!more) break;
+  }
+  if (deleted > 0) logInfo("audit_swept", { deleted, more });
+  return deleted;
 }

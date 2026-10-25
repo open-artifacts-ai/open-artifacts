@@ -46,6 +46,12 @@ Cloudflare Access is the identity provider, using a one-time PIN by email, or Gi
 
 Personal access tokens look like `oa_pat_` followed by 32 characters. Only a SHA-256 hash is stored. Tokens belong to one user and can be revoked from **Settings → Agents**.
 
+## Audit log
+
+Admin actions, such as changes to members, roles, spaces and the Google directory, are recorded in an audit log. The owner and admins can read and export it. Each event records who did what using account ids, and emails are looked up only when the log is read.
+
+Events are kept for 400 days. A daily job then deletes older ones; a large backlog can take a few extra days to clear.
+
 ## Never indexed
 
 Public links are for sharing, not search. Both hosts send `X-Robots-Tag: noindex, nofollow` on every response, and their `robots.txt` disallows everything. Only public artifacts get their real title in link previews; private links show a generic title.
@@ -56,4 +62,4 @@ A deployed instance sends nothing to the Open Artifacts project or anyone else.
 
 ## Fonts
 
-The dashboard and the Markdown renderer load the Geist fonts from Google Fonts, on both hosts. Each viewer's browser fetches them from `fonts.googleapis.com` and `fonts.gstatic.com`, so Google sees the viewer's IP address. To avoid this, block those two hosts in your network or browser; pages then fall back to system fonts and work the same.
+The dashboard and the Markdown renderer serve their Geist fonts from your own hosts: the app host and the content host. Nothing is fetched from a third party, so no outside service sees a viewer's IP address.

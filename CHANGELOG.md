@@ -1,5 +1,72 @@
 # Changelog
 
+## [0.55.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.55.1...v0.55.2) (2026-10-25)
+
+
+### Bug Fixes
+
+* **setup:** no step requires Access vars or the Access secret when access isn't in AUTH_PROVIDERS ([#632](https://github.com/open-artifacts-ai/open-artifacts/issues/632)) ([7ffa990](https://github.com/open-artifacts-ai/open-artifacts/commit/7ffa990481bb29202bfbc9649757eaad0bd28853))
+
+## [0.55.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.55.0...v0.55.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **setup:** the access step is done (not needed) when access isn't in AUTH_PROVIDERS ([#629](https://github.com/open-artifacts-ai/open-artifacts/issues/629)) ([e2f83f3](https://github.com/open-artifacts-ai/open-artifacts/commit/e2f83f32fe4e31bafa858351ffd94b74ba79cd46))
+
+## [0.55.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.54.0...v0.55.0) (2026-10-25)
+
+
+### Features
+
+* self-host Geist, no Google Fonts anywhere ([#625](https://github.com/open-artifacts-ai/open-artifacts/issues/625)) ([a670e16](https://github.com/open-artifacts-ai/open-artifacts/commit/a670e16d531a577662f36c6b22a1119553a2e13b))
+
+## [0.54.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.53.0...v0.54.0) (2026-10-25)
+
+
+### Features
+
+* **server:** owner-only directory disconnect plus platform system job ([#616](https://github.com/open-artifacts-ai/open-artifacts/issues/616)) ([a4e1f2e](https://github.com/open-artifacts-ai/open-artifacts/commit/a4e1f2e027c443eee27f2716b71c41e877aed842))
+
+## [0.53.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.52.0...v0.53.0) (2026-10-25)
+
+
+### Features
+
+* **server:** delete audit events past 400 days in the daily cron ([#615](https://github.com/open-artifacts-ai/open-artifacts/issues/615)) ([17eac9f](https://github.com/open-artifacts-ai/open-artifacts/commit/17eac9fa41cd3cbaaab7f32ded124ab6158046eb))
+
+
+### Bug Fixes
+
+* **auth:** a revoked session on the break-glass card goes to sign-in ([#612](https://github.com/open-artifacts-ai/open-artifacts/issues/612)) ([5279834](https://github.com/open-artifacts-ai/open-artifacts/commit/52798342a8131d84b17017137bfeee5594f24b9d))
+
+## [0.52.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.51.0...v0.52.0) (2026-10-25)
+
+
+### Features
+
+* **auth:** directory break-glass card for the locked-out owner ([#611](https://github.com/open-artifacts-ai/open-artifacts/issues/611)) ([6b25371](https://github.com/open-artifacts-ai/open-artifacts/commit/6b2537184ce093e270163f917f696f2dd7979c37))
+
+## [0.51.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.50.0...v0.51.0) (2026-10-25)
+
+
+### Features
+
+* **server:** feature flags; frozen never widens (P3 T15) ([#596](https://github.com/open-artifacts-ai/open-artifacts/issues/596)) ([ead056a](https://github.com/open-artifacts-ai/open-artifacts/commit/ead056a3154a401fab3001d4d15ee827d32570e2))
+* **server:** usage_off feature flag (P3 T19) ([#603](https://github.com/open-artifacts-ai/open-artifacts/issues/603)) ([4d005a7](https://github.com/open-artifacts-ai/open-artifacts/commit/4d005a7830c558e27c1e2a30fa75d24e50255ef6))
+
+
+### Bug Fixes
+
+* **server:** a restricted member's PAT is refused at /mcp ([#606](https://github.com/open-artifacts-ai/open-artifacts/issues/606)) ([3ab8b1e](https://github.com/open-artifacts-ai/open-artifacts/commit/3ab8b1e162c18e02ca2aef300ea0105364d6f364))
+
+## [0.50.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.49.0...v0.50.0) (2026-10-25)
+
+
+### Features
+
+* **server:** GET /me answers break_glass_required for the mismatch owner (P3 T18) ([#599](https://github.com/open-artifacts-ai/open-artifacts/issues/599)) ([6300906](https://github.com/open-artifacts-ai/open-artifacts/commit/63009062e79ec1a4e76687bacbd6556d187e350d))
+
 ## [0.49.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.48.0...v0.49.0) (2026-10-25)
 
 

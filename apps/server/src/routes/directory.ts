@@ -10,6 +10,7 @@ import {
   connectClient,
   dirCookieName,
   directoryStatus,
+  disconnectDirectory,
   finishConnect,
   refuseConnect,
   startConnect,
@@ -27,6 +28,12 @@ import type { AppType } from "./index.js";
 // sweeps, and serves R.directory from DirectorySync.
 
 const notFound = () => new ApiError("not_found", "Not found");
+
+/**
+ * Interactive cookie sessions: a Cloudflare Access sign-in (self-host),
+ * Google or an email code. Never "pat" (or any bearer token).
+ */
+const INTERACTIVE: ReadonlySet<string> = new Set(["access", "google", "code"]);
 
 const redirect = (location: string, cookie?: string) =>
   new Response(null, {
@@ -105,6 +112,30 @@ export function mountDirectory(app: AppType): void {
   app.post(R.directoryCancel, async (c) => {
     if (!manages(c)) throw notFound();
     await cancelConnect(c.env, requireUser(c));
+    return c.body(null, 204);
+  });
+
+  // Disconnect: the org owner in an interactive cookie session (CSRF-guarded
+  // by csrf()); a PAT or any bearer token is refused (404), whoever holds it.
+  // Revoke, wipe, stop sync; memberships stay frozen. Idempotent. The
+  // platform's install delete uses cron.ts DIRECTORY_DISCONNECT_CRON instead.
+  const disconnect = (c: Context<AppEnv>) => {
+    const user = requireUser(c);
+    const m = c.get("authMethod");
+    if (
+      !m ||
+      !INTERACTIVE.has(m) ||
+      c.req.header("authorization") !== undefined ||
+      !orgCan(user, "directory.disconnect", { cap: capOfCaller(caller(c)) })
+    )
+      throw notFound();
+    return disconnectDirectory(c.env, userActor(user.id), {
+      showProblem: manages(c),
+    });
+  };
+  app.post(R.directoryDisconnect, async (c) => c.json(await disconnect(c)));
+  app.delete(R.directory, async (c) => {
+    await disconnect(c);
     return c.body(null, 204);
   });
 

@@ -2,7 +2,7 @@
 // Pins the per-publish costs measured there, after the cuts.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { R } from "@oa/shared";
+import { AUDIT_RETENTION_MS, R } from "@oa/shared";
 import { beforeAll, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { authConfig } from "../src/auth/config.js";
@@ -15,9 +15,11 @@ import {
 } from "../src/content/signing.js";
 import { applyGroupDiff } from "../src/directory/apply.js";
 import { SyncEngine } from "../src/directory/sync.js";
+import { thawFrozenEdits } from "../src/directory/thaw.js";
 import type { Env } from "../src/env.js";
 import { resetTouchMemo, touchGrant } from "../src/services/agent-usage.js";
 import { publish } from "../src/services/artifacts.js";
+import { sweepAuditEvents } from "../src/services/audit.js";
 import { admit } from "../src/services/identity.js";
 import { indexVersionOrThrow } from "../src/services/search.js";
 import { getUser, getUserWithEpoch } from "../src/services/users.js";
@@ -154,6 +156,60 @@ it("spaces API (P3 T9): create, member add, a no-op and a role change", async ()
   await put("editor");
   // space_members role update 1 + audit 2.
   expect(rows.n).toBe(3);
+});
+
+it("frozen edits (P3 T15): an override records one row; the thaw writes only what it replaces", async () => {
+  const frozenEnv = {
+    ...(counted as object),
+    FEATURES: "spaces,sync_frozen",
+  } as unknown as typeof env;
+  const S = {
+    fetch: (r: Request, _e: unknown, c: never) => app.fetch(r, frozenEnv, c),
+  };
+  const admin = await login("rows-frozen-admin@x.com", "admin");
+  const m = await login("rows-frozen-member@x.com");
+  const space = `s-rows-frozen-${crypto.randomUUID()}`;
+  const gid = `g-rows-frozen-${crypto.randomUUID()}`;
+  await env.DB.batch([
+    env.DB.prepare(
+      "insert into spaces (id, kind, name, public_links, created_at) values (?, 'shared', ?, 0, ?)",
+    ).bind(space, space, Date.now()),
+    env.DB.prepare(
+      "insert into directory_groups (group_id, email) values (?, ?)",
+    ).bind(gid, `${gid}@a.com`),
+    env.DB.prepare(
+      "insert into group_mappings (space_id, group_id, group_email, role) values (?, ?, ?, 'editor')",
+    ).bind(space, gid, `${gid}@a.com`),
+    env.DB.prepare(
+      "insert into directory_members (group_id, user_id) values (?, ?)",
+    ).bind(gid, m.userId),
+    env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'sync', 1)",
+    ).bind(space, m.userId),
+  ]);
+  rows.n = 0;
+  const r = await api(
+    S as never,
+    R.spaceMember(space, m.userId),
+    admin.cookie,
+    {
+      method: "PUT",
+      body: { role: "viewer" },
+    },
+  );
+  expect(r.status).toBe(200);
+  // audit 2 + frozen_edits 1 + the synced row deleted 1 + the manual row 2
+  // (table, user index).
+  expect(rows.n).toBe(6);
+  rows.n = 0;
+  expect(await thawFrozenEdits(counted)).toBe(false);
+  // No manual row before the freeze: the manual row deleted 1 + its audit 2
+  // + the synced row added 2 + its audit 2 + frozen_edits 1.
+  expect(rows.n).toBe(8);
+  rows.n = 0;
+  await thawFrozenEdits(counted);
+  // Nothing left: one read, no batch.
+  expect(rows.n).toBe(0);
 });
 
 it("spaces API reads (P3 T9): GET /spaces skips personal spaces; a member page decorates only its rows", async () => {
@@ -641,4 +697,55 @@ it("GET /me (P3 T18): one user statement; the break-glass owner read runs only a
   // getUser refused, then the mismatch-owner read.
   expect(userReads).toHaveLength(2);
   await resetDirectory();
+});
+
+it("audit retention sweep: 1 row write per expired row; nothing expired writes nothing", async () => {
+  const written: number[] = [];
+  const read: number[] = [];
+  const wrap = (s: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(s, {
+      get(t, p) {
+        if (p === "bind") return (...a: unknown[]) => wrap(t.bind(...a));
+        if (p === "run")
+          return async () => {
+            const r = await t.run();
+            written.push(r.meta.rows_written);
+            read.push(r.meta.rows_read);
+            return r;
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  const DB = new Proxy(env.DB, {
+    get(t, p) {
+      if (p === "prepare") return (q: string) => wrap(t.prepare(q));
+      const v = Reflect.get(t, p);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  const e = { ...(env as object), DB } as Env;
+  const now = Date.now();
+  // Expired rows from earlier tests (none expected) are cleared first.
+  while ((await sweepAuditEvents(env, now)) > 0);
+  const old = now - AUDIT_RETENTION_MS - 86_400_000;
+  for (let i = 0; i < 3; i++)
+    await env.DB.prepare(
+      "insert into audit_events (id, at, actor_kind, action, target_type) values (?, ?, 'system', 'test.rows', 'artifact')",
+    )
+      .bind(crypto.randomUUID(), old + i)
+      .run();
+  // Batch 2: a full statement, then a short one ends the run.
+  expect(await sweepAuditEvents(e, now, 2, 5)).toBe(3);
+  // Measured: 1 row written and 4 read per deleted row (index range, PK
+  // lookup, delete), plus the range's one probe past the cutoff when newer
+  // rows exist: a full run (5000 rows) is 5000 written, about 20000 read.
+  expect(written).toEqual([2, 1]);
+  expect(read[0]).toBe(8);
+  expect(read[1]).toBeGreaterThanOrEqual(4);
+  expect(read[1]).toBeLessThanOrEqual(5);
+  written.length = 0;
+  read.length = 0;
+  expect(await sweepAuditEvents(e, now, 2, 5)).toBe(0);
+  expect(written).toEqual([0]);
 });

@@ -77,8 +77,15 @@ describe("the version chip", () => {
 
   it("says how old a pinned version is", async () => {
     mount(viewerPath(OWNED, 1));
+    // The chip exists before the version list arrives and says only "v1" until
+    // then: wait for the date, re-reading the chip each time.
     // The row rule: relative under a week, else "Jan 2" (plus a year if not this one).
-    expect(await chip()).toHaveTextContent(/^v1 · Jan 2(, 2026)?$/);
+    await chip();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^Version: v/ }),
+      ).toHaveTextContent(/^v1 · Jan 2(, 2026)?$/),
+    );
   });
 
   it("replaces the dropdown and the separate Versions button", async () => {

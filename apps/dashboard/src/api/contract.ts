@@ -10,6 +10,8 @@ import {
   type AuthProviders,
   AuthProvidersSchema,
   artifactCan,
+  type DirectoryMode,
+  directoryModeOf,
   type FeatureFlag,
   type Me,
   type SpaceCreateSchema,
@@ -21,6 +23,8 @@ export {
   type ArtifactCan,
   type AuthProviders,
   artifactCan,
+  type BreakGlassRequiredDetails,
+  BreakGlassRequiredDetailsSchema,
   type CapReason,
   CODE_POLICY,
   type CodeRateLimitedDetails,
@@ -35,6 +39,7 @@ export {
   type DirectoryGroup,
   DirectoryGroupSchema,
   type DirectoryMode,
+  directoryModeOf,
   type FeatureFlag,
   type GroupMapping,
   GroupMappingSchema,
@@ -87,6 +92,10 @@ export const features = (me: Me | null | undefined): FeatureFlag[] =>
 
 export const hasFeature = (me: Me | null | undefined, f: FeatureFlag) =>
   features(me).includes(f);
+
+/** The directory sync mode from the flags, the server's own rule (sync_google wins, then sync_frozen, else off). */
+export const directoryMode = (me: Me | null | undefined): DirectoryMode =>
+  directoryModeOf(features(me));
 
 /**
  * What the caller may do with `a`: the server's `can`, or (older server) the

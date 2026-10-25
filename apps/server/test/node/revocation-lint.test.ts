@@ -79,6 +79,10 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // P3 T14: a directory deletion (or a recycled address): removed, its
   // address's shares and every membership gone.
   "directory/apply.ts:deleteUser": "user",
+  // P3 T15: sync back after a freeze undoes frozen edits (a manager
+  // override lowered, a restore below the override): the users whose role
+  // dropped.
+  "directory/thaw.ts:thawFrozenEdits": "user",
   // P3 T18: entering customer_mismatch denies every synced user (getUser and
   // the content load): their sockets close.
   "directory/sync.ts:SyncEngine.mismatch": "user",

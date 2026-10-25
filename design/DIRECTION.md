@@ -6,7 +6,7 @@ Chosen by the user on 2026-10-18 from three options (Paper, Studio, Ink). The re
 
 | Role | Family | Weights |
 |---|---|---|
-| Everything (UI, headings, Markdown body) | **Geist** (Google Fonts), falling back to `ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif` | 400, 500, 600 |
+| Everything (UI, headings, Markdown body) | **Geist** (self-hosted, @fontsource, no third party), falling back to `ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif` | 400, 500, 600 |
 | Code, version numbers, keyboard hints | **Geist Mono**, falling back to `ui-monospace, "SF Mono", Menlo, monospace` | 400, 500 |
 
 One family carries the whole hierarchy through size and weight. There's no serif: D2's `--oa-font-serif` aliases the sans stack.

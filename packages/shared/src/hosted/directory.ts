@@ -76,6 +76,23 @@ export const SyncStatusSchema = z.object({
   pendingCountCapped: z.boolean().default(false),
   /** When the unconfirmed connection is dropped (24 h after consent). */
   pendingExpiresAt: z.string().nullable().default(null),
+  /**
+   * state pending_confirm only, else null: the consent is for a different
+   * Google Workspace than the one bound before a disconnect during
+   * customer_mismatch. `domain` null: unknown ("the previous Workspace").
+   * Users bound to the previous Workspace don't carry over: they stay
+   * refused at sign-in. Absent from servers before it shipped.
+   */
+  pendingCustomerChange: z
+    .object({
+      previous: z.object({
+        customerId: z.string(),
+        domain: z.string().nullable(),
+      }),
+      next: z.object({ customerId: z.string(), domain: z.string() }),
+    })
+    .nullable()
+    .optional(),
 });
 export type SyncStatus = z.infer<typeof SyncStatusSchema>;
 
