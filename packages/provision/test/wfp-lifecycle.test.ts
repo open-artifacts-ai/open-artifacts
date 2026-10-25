@@ -2725,3 +2725,99 @@ describe("P1 Task 8: domains", () => {
     });
   });
 });
+
+describe("fix round 2 (T8 review M1, M2): the broker URL and google", () => {
+  const GOOGLE = { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" };
+  const brokerUrlOf = (s: S, id: string) =>
+    (
+      s.scriptOf(id)?.metadata.bindings as { name: string; text?: string }[]
+    ).find((b) => b.name === "AUTH_BROKER_URL")?.text;
+
+  it.each([
+    ["staging", "https://auth.open-artifacts-staging.app"],
+    ["prod", "https://auth.open-artifacts.app"],
+  ] as const)(
+    "with the broker on, %s create renders AUTH_BROKER_URL as %s",
+    async (env, want) => {
+      const s = setup({ env });
+      const p = s.mk({ brokerEnabled: true });
+      const inst = keep(await p.create(input("finqore", { vars: GOOGLE })));
+      expect(brokerUrlOf(s, inst.id)).toBe(want);
+      expect(JSON.parse(s.row(inst.id).vars).AUTH_BROKER_URL).toBe(want);
+      // The same value from the caller is accepted.
+      const q = s.mk({ brokerEnabled: true });
+      const b = keep(
+        await q.create(
+          input("acme", { vars: { ...GOOGLE, AUTH_BROKER_URL: want } }),
+        ),
+      );
+      expect(brokerUrlOf(s, b.id)).toBe(want);
+    },
+  );
+
+  it.each([
+    ["the other env's broker", "https://auth.open-artifacts.app"],
+    ["a lookalike host", "https://auth.open-artifacts-staging.app.evil.test"],
+    ["a path", "https://auth.open-artifacts-staging.app/x"],
+  ])(
+    "a caller AUTH_BROKER_URL of %s is refused before any write, naming the expected value",
+    async (_n, url) => {
+      const s = setup();
+      const w = s.fake.writes().length;
+      const e = await fails(
+        s
+          .mk({ brokerEnabled: true })
+          .create(
+            input("finqore", { vars: { ...GOOGLE, AUTH_BROKER_URL: url } }),
+          ),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toContain("https://auth.open-artifacts-staging.app");
+      expect(s.fake.writes().length).toBe(w);
+    },
+  );
+
+  it("a google create with the broker off is refused before any write", async () => {
+    const s = setup();
+    const w = s.fake.writes().length;
+    const e = await fails(s.p.create(input("finqore", { vars: GOOGLE })));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/broker/);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("update-vars refuses a mismatching AUTH_BROKER_URL before any write", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input("finqore", { vars: GOOGLE })));
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).updateVars(inst.id, {
+        ...GOOGLE,
+        AUTH_BROKER_URL: "https://auth.open-artifacts.app",
+      }),
+    );
+    expect(e.message).toContain("https://auth.open-artifacts-staging.app");
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("turning google on for an install with no broker key is refused before any write, and no session is cut", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
+    expect(s.row(inst.id).broker_kid).toBeNull();
+    const epoch = epochOf(s, inst.id);
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).updateVars(inst.id, {
+        ...CODES,
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "finqore.test",
+      }),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/broker key is only issued at create/);
+    expect(s.fake.writes().length).toBe(w);
+    expect(epoch()).toBe(0);
+    expect(s.row(inst.id)).toMatchObject({ session_cut: null, lease: null });
+  });
+});

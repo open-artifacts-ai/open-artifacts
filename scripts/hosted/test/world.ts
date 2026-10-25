@@ -65,7 +65,9 @@ const bundleOf = (variant: "release" | "redline", version: string) => ({
 export const SIGNER = generateKeyPairSync("ed25519");
 export const PUB = SIGNER.publicKey.export({ format: "jwk" }).x as string;
 
-const signed = (domain: string, env: string, v: unknown) => {
+export const SECURITY = "/usr/bin/security";
+
+export const signed = (domain: string, env: string, v: unknown) => {
   const s = canonicalJson(v);
   return {
     record: s,
@@ -118,7 +120,9 @@ function releases(env: Env): ReleaseReader {
 
 export const ACTOR = "ops@example.com";
 
-export function world(o: { env?: Env; ci?: boolean } = {}) {
+export function world(
+  o: { env?: Env; ci?: boolean; keychainWriteNoop?: boolean } = {},
+) {
   const env = o.env ?? "staging";
   const fake = new FakeCf({ now: NOW });
   const pdb = fake.seedD1(platformNames(env).db, PLATFORM_SQL);
@@ -156,12 +160,13 @@ export function world(o: { env?: Env; ci?: boolean } = {}) {
     execFile: async (file, args, opt) => {
       execs.push({ file, args, ...(opt?.input ? { input: opt.input } : {}) });
       if (file === "git") return `${ACTOR}\n`;
-      if (file === "security" && args[0] === "find-generic-password") {
+      if (file === SECURITY && args[0] === "find-generic-password") {
         const v = keychain.get(args[args.indexOf("-s") + 1] as string);
         if (v === undefined) throw new Error("security exited 44");
         return `${v}\n`;
       }
-      if (file === "security" && args[0] === "-i") {
+      if (file === SECURITY && args[0] === "-i") {
+        if (o.keychainWriteNoop) return "";
         const m = opt?.input?.match(/-s (\S+) -w (\S+)\n$/);
         if (!m) throw new Error("bad security -i input");
         keychain.set(m[1] as string, m[2] as string);

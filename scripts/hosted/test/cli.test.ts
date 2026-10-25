@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { COMMANDS, DOMAINS, HELP, main } from "../src/cli.ts";
-import { ACTOR, PUB, world } from "./world.ts";
+import { ACTOR, PUB, SECURITY, signed, world } from "./world.ts";
 
 const G = vi.hoisted(() => ({
   RELEASE_PUBKEY: { staging: "", prod: "" } as Record<string, string>,
@@ -163,7 +163,7 @@ describe("token source", () => {
   it("prod reads only from the keychain, never a file", async () => {
     const w = world({ env: "prod" });
     const id = await created(w);
-    const sec = w.execs.filter((e) => e.file === "security");
+    const sec = w.execs.filter((e) => e.file === SECURITY);
     expect(sec.length).toBeGreaterThan(0);
     expect(sec[0]?.args).toEqual([
       "find-generic-password",
@@ -201,7 +201,7 @@ describe("token source", () => {
     expect(w.fake.log).toEqual([]);
     set(0o100600);
     expect(await main(CREATE(), w.deps)).toBe(0);
-    expect(w.execs.filter((e) => e.file === "security")).toEqual([]);
+    expect(w.execs.filter((e) => /security/.test(e.file))).toEqual([]);
     expect(w.audit()[0]?.actor).toBe(
       "https://github.com/open-artifacts-ai/open-artifacts/actions/runs/42",
     );
@@ -418,6 +418,11 @@ describe("commands", () => {
         w.deps,
       ),
     ).toBe(0);
+    const sc = [...w.fake.scripts.values()][0];
+    expect(
+      new TextDecoder().decode(sc?.modules.get("index.js")?.bytes),
+    ).toContain("hooksAllowed = true");
+    expect(sc?.secrets.has("TEST_HOOK_KEY")).toBe(true);
   });
 
   it("turnstile-init creates the env's widget once and stores it in the keychain over stdin", async () => {
@@ -430,10 +435,15 @@ describe("commands", () => {
     for (const e of w.execs)
       expect(e.args.join(" ")).not.toContain(String(wd?.secret));
     expect(w.lines.join("\n")).not.toContain(String(wd?.secret));
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
     expect(w.parsed().find((l) => l.step === "turnstile-init")?.data).toEqual({
       created: true,
       stored: true,
+    });
+    w.lines.length = 0;
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    expect(w.parsed().find((l) => l.step === "turnstile-init")?.data).toEqual({
+      created: false,
+      stored: false,
     });
     expect(lastLine(w)).toMatchObject({ step: "audit" });
     expect(w.fake.turnstile.size).toBe(1);
@@ -532,8 +542,142 @@ describe("commands", () => {
       ),
     ).toBe(1);
     expect(w.parsed().find((l) => l.step === "publish-floor")?.message).toMatch(
-      /floor/,
+      /^the new staging floor: /,
     );
+    expect(
+      w.fake.r2Objects.get("oa-s-releases")?.has("releases/floor.json"),
+    ).not.toBe(true);
+  });
+
+  it("publish-floor publishes a signed floor through publishFloor", async () => {
+    const w = world();
+    const floor = { env: "staging", seq: 2, minVersion: "0.20.0", revoked: [] };
+    w.files.set("/f/floor.sig.json", {
+      bytes: new TextEncoder().encode(
+        JSON.stringify(signed("oa-release-floor-v1", "staging", floor)),
+      ),
+      info: { mode: 0o100644, uid: 501, isFile: true },
+    });
+    expect(
+      await main(
+        ["publish-floor", "--env", "staging", "--floor", "/f/floor.sig.json"],
+        w.deps,
+      ),
+    ).toBe(0);
+    expect(w.parsed().find((l) => l.step === "publish-floor")?.data).toEqual(
+      floor,
+    );
+    expect(
+      w.fake.r2Objects.get("oa-s-releases")?.has("releases/floor.json"),
+    ).toBe(true);
+  });
+
+  it("release-lease --force releases a live lease; --force elsewhere is refused before any call", async () => {
+    const w = world();
+    const id = await created(w);
+    w.db()
+      .prepare("UPDATE installs SET lease = 'x', lease_until = ? WHERE id = ?")
+      .run(Date.parse("2026-10-27T00:00:00Z"), id);
+    const rl = [
+      "release-lease",
+      "--env",
+      "staging",
+      "--install",
+      id,
+      "--confirm",
+      id,
+    ];
+    expect(await main(rl, w.deps)).toBe(1);
+    expect(w.parsed().find((l) => l.step === "release-lease")?.message).toMatch(
+      /has not expired/,
+    );
+    w.lines.length = 0;
+    expect(await main([...rl, "--force"], w.deps)).toBe(0);
+    expect(
+      w.parsed().find((l) => l.step === "release-lease")?.data,
+    ).toMatchObject({
+      released: true,
+      forced: true,
+    });
+    const v = world();
+    expect(
+      await main(
+        ["status", "--env", "staging", "--install", id, "--force"],
+        v.deps,
+      ),
+    ).toBe(1);
+    expect(lastLine(v).message).toMatch(/--force is for release-lease only/);
+    noCalls(v);
+  });
+
+  it("keychain calls use /usr/bin/security, never a PATH lookup", async () => {
+    const w = world();
+    await created(w);
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    const sec = w.execs.filter((e) => /security/.test(e.file));
+    expect(sec.length).toBeGreaterThan(2);
+    for (const e of sec) expect(e.file).toBe("/usr/bin/security");
+  });
+
+  it("turnstile-init reads the keychain item back: a write that did not land is an error", async () => {
+    const w = world({ keychainWriteNoop: true });
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(1);
+    expect(
+      w.parsed().find((l) => l.step === "turnstile-init")?.message,
+    ).toMatch(/keychain item oa-hosted-staging-turnstile did not store/);
+  });
+
+  it("a create that fails after its id is minted writes the failed row under that id", async () => {
+    const w = world();
+    w.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-[^/]+$/.test(p), {
+      status: 400,
+      times: 5,
+    });
+    expect(await main(CREATE(), w.deps)).toBe(1);
+    const id = (
+      w
+        .db()
+        .prepare("SELECT id FROM installs WHERE slug = 'finqore'")
+        .get() as {
+        id: string;
+      }
+    ).id;
+    expect(w.audit().map((r) => [r.install_id, r.action])).toEqual([
+      ["-", "cli.create.start"],
+      [id, "cli.create.failed"],
+    ]);
+  });
+
+  it.each([
+    [
+      [
+        "publish-release",
+        "--env",
+        "staging",
+        "--tag",
+        "v1.0.0",
+        "--install",
+        "iaaaaaaaaaaa",
+      ],
+    ],
+    [
+      [
+        "publish-floor",
+        "--env",
+        "staging",
+        "--floor",
+        "/f",
+        "--install",
+        "iaaaaaaaaaaa",
+      ],
+    ],
+    [["turnstile-init", "--env", "staging", "--install", "iaaaaaaaaaaa"]],
+    [[...CREATE(), "--var", "NOT_A_VAR=1"]],
+  ])("refused at parse, before any call: %j", async (argv) => {
+    const w = world();
+    expect(await main(argv, w.deps)).toBe(1);
+    expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
+    noCalls(w);
   });
 });
 
@@ -543,8 +687,6 @@ describe("broker: on exactly when the vars turn google on", () => {
     "AUTH_PROVIDERS=google",
     "--var",
     "AUTH_DOMAINS=finqore.test",
-    "--var",
-    "AUTH_BROKER_URL=https://auth.open-artifacts-staging.app",
   ];
   const entry = (w: W, kv: string, id: string) =>
     w.fake.kvValues(kv).get(`install:${id}`);
@@ -565,6 +707,12 @@ describe("broker: on exactly when the vars turn google on", () => {
     });
     const script = [...w.fake.scripts.values()][0];
     expect(script?.secrets.has("BROKER_SIGNING_KEY")).toBe(true);
+    // provision derives the env's broker URL; the operator never types it.
+    expect(
+      (script?.metadata.bindings as { name: string; text?: string }[]).find(
+        (b) => b.name === "AUTH_BROKER_URL",
+      )?.text,
+    ).toBe("https://auth.open-artifacts-staging.app");
 
     // update-vars keeps the registry in step (the broker stays on).
     w.lines.length = 0;
@@ -652,5 +800,43 @@ describe("--help", () => {
       expect(out).toContain(f);
     expect(out).toContain("CLOUDFLARE_ACCOUNT_ID");
     noCalls(w);
+  });
+});
+
+describe("output, with every generated value in play", () => {
+  it("no secret, PAT or broker key appears in stdout for a google + codes create", async () => {
+    const w = world();
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    expect(
+      await main(
+        [
+          ...CREATE(),
+          "--var",
+          "AUTH_PROVIDERS=email,google",
+          "--var",
+          "AUTH_DOMAINS=finqore.test",
+        ],
+        w.deps,
+      ),
+    ).toBe(0);
+    const sc = [...w.fake.scripts.values()][0];
+    for (const k of [
+      "BROKER_SIGNING_KEY",
+      "TURNSTILE_SECRET",
+      "SESSION_SECRET",
+    ])
+      expect(sc?.secrets.has(k), k).toBe(true);
+    const generated = new Set<string>([
+      w.fake.token,
+      ...(sc?.secrets.values() ?? []),
+    ]);
+    const patDir = join(w.home, ".open-artifacts", "hosted-staging");
+    for (const f of readdirSync(patDir))
+      generated.add(readFileSync(join(patDir, f), "utf8").trim());
+    const out = w.lines.join("\n");
+    for (const v of generated) {
+      expect(v.length).toBeGreaterThan(8);
+      expect(out).not.toContain(v);
+    }
   });
 });
