@@ -191,7 +191,7 @@ describe("staging Durable Objects", () => {
     });
 });
 
-describe("staging DirectorySync (P3 T13a #571, unbound)", () => {
+describe("staging DirectorySync (P3 T13a #571 tag v3, bound with T13 #575)", () => {
   it("adds DirectorySync in migration v3, after v2 (UserPresence)", () => {
     // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
     const tags = env.migrations.map((m: any) => m.tag);
@@ -201,11 +201,24 @@ describe("staging DirectorySync (P3 T13a #571, unbound)", () => {
       new_sqlite_classes: ["DirectorySync"],
     });
   });
-  it("leaves DirectorySync unbound until its first user (#575), one release later", () => {
-    expect(
-      // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
-      env.durable_objects.bindings.map((b: any) => b.class_name),
-    ).not.toContain("DirectorySync");
+  it("binds DIRECTORY_SYNC to DirectorySync with its first user (#575), one release after v3 (0.46.0)", () => {
+    expect(env.durable_objects.bindings).toContainEqual({
+      name: "DIRECTORY_SYNC",
+      class_name: "DirectorySync",
+    });
+  });
+  it("binds RL_DIRECTORY (30/60 s) on its own namespace (#575)", () => {
+    const rl = by(env.ratelimits, "name", "RL_DIRECTORY") as {
+      namespace_id: string;
+      simple: unknown;
+    };
+    expect(rl).toBeDefined();
+    expect(rl.namespace_id).toBe("1003");
+    expect(rl.simple).toEqual({ limit: 30, period: 60 });
+    const ids = (env.ratelimits as { namespace_id: string }[]).map(
+      (r) => r.namespace_id,
+    );
+    expect(new Set(ids).size).toBe(ids.length);
   });
 });
 
