@@ -473,9 +473,10 @@ describe("DELETE R.memberIdentity", () => {
     const owner = await seedUser(uniq("own"), "owner", {
       googleSub: `o-${crypto.randomUUID()}`,
     });
+    // An admin acting on the owner: 403 owner_only (#475).
     expect(
       (await del(R.memberIdentity(owner, "google"), e, admin.cookie)).status,
-    ).toBe(404);
+    ).toBe(403);
   });
 
   it("ends the target's sessions (epoch bump) and revokes their PATs and OAuth grants", async () => {

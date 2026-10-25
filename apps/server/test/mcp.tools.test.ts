@@ -13,7 +13,7 @@ import { shares } from "../src/db/schema.js";
 import { INSTRUCTIONS } from "../src/mcp/instructions.js";
 import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
 import manifest from "../src/mcp/tool-manifest.json";
-import { setUserStatus } from "../src/services/members.js";
+import { SYSTEM_ACTOR, setUserStatus } from "../src/services/members.js";
 import { login } from "./helpers.js";
 import {
   APP,
@@ -724,7 +724,13 @@ describe("content revocation (P3 T11)", () => {
     const get = () =>
       callWorker(new Request(`http://content.localhost${url.pathname}?dl=1`));
     expect((await get()).status).toBe(200);
-    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     expect((await get()).status).toBe(404);
   });
 });

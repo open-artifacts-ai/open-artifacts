@@ -10,7 +10,11 @@ import { logError, logInfo, logWarn } from "../log.js";
 import { revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
 import { onGroupDiff } from "../services/directory.js";
-import { getSettings, setUserStatus } from "../services/members.js";
+import {
+  getSettings,
+  SYSTEM_ACTOR,
+  setUserStatus,
+} from "../services/members.js";
 import { RESTRICTED_SYNC_CASE } from "../services/restriction.js";
 import { directoryMode } from "../services/spaces.js";
 import { bindPage } from "./binding.js";
@@ -883,8 +887,8 @@ export class SyncEngine {
           r.id,
           "removed",
           "directory_delete",
+          SYSTEM_ACTOR,
           this.ctx,
-          SYNC,
         );
       }
     }
@@ -960,8 +964,8 @@ export class SyncEngine {
           r.id,
           "suspended",
           "directory_suspend",
+          SYSTEM_ACTOR,
           this.ctx,
-          SYNC,
         );
       }
     }

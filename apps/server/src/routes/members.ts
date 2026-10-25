@@ -11,7 +11,6 @@ import { orgCan } from "../auth/policy.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
-import { userActor } from "../services/audit.js";
 import { resetIdentity } from "../services/identity.js";
 import {
   inviteMember,
@@ -29,7 +28,8 @@ import type { AppType } from "./index.js";
 /** Owner/admin only: 401 anonymous, 404 for everyone else (route hidden). */
 export function requireManager(c: Context<AppEnv>): Member {
   const user = requireUser(c);
-  if (!orgCan(user, "members.manage"))
+  // Under the caller's cap: a capped admin (e.g. a code session) is 404.
+  if (!orgCan(user, "members.manage", { cap: capOfCaller(caller(c)) }))
     throw new ApiError("not_found", "Not found");
   return user;
 }
@@ -66,24 +66,13 @@ export function mountMembers(app: AppType): void {
     const actor = requireManager(c);
     const patch = await jsonBody(c, MemberPatchSchema);
     return c.json(
-      await patchMember(
-        c.env,
-        c.req.param("id"),
-        patch,
-        execCtx(c),
-        userActor(actor.id),
-      ),
+      await patchMember(c.env, c.req.param("id"), patch, actor, execCtx(c)),
     );
   });
 
   app.delete(MEMBER, async (c) => {
     const actor = requireManager(c);
-    await removeMember(
-      c.env,
-      c.req.param("id"),
-      execCtx(c),
-      userActor(actor.id),
-    );
+    await removeMember(c.env, c.req.param("id"), actor, execCtx(c));
     return c.body(null, 204);
   });
 

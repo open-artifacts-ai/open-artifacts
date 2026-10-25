@@ -1,18 +1,19 @@
 // P3 Task 6: user status (setUserStatus), the active-only user read, and
 // removeMember with and without the spaces flag (#478).
 import { env } from "cloudflare:workers";
-import { newId, R } from "@oa/shared";
+import { type Member, newId, R } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { withCap } from "../src/auth/authz.js";
 import { createPat } from "../src/auth/pat.js";
 import { mw } from "../src/auth/route-policy.js";
 import type { Env } from "../src/env.js";
 import type { AppType } from "../src/routes/index.js";
 import { mountRoutes } from "../src/routes/index.js";
-import { userActor } from "../src/services/audit.js";
 import {
   patchMember,
   removeMember,
+  SYSTEM_ACTOR,
   setUserStatus,
 } from "../src/services/members.js";
 import { deleteShare, putShare } from "../src/services/shares.js";
@@ -21,6 +22,9 @@ import { api, login } from "./helpers.js";
 import { callWorker, MCP_URL } from "./mcp-helpers.js";
 
 const app = createApp();
+/** A member actor as getUser loads it (uncapped). */
+const actorOf = (id: string, role: Member["role"]) =>
+  withCap({ id, role } as Member, null);
 const tag = newId().slice(0, 6).toLowerCase();
 const SPACES = { ...(env as object), FEATURES: "spaces" } as Env;
 
@@ -97,14 +101,26 @@ describe("setUserStatus", () => {
     const { token } = await createPat(env, u.userId, "t");
     const auth = cred === "cookie" ? u.cookie : token;
     expect((await api(app, R.me, auth)).status).toBe(200);
-    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     expect((await api(app, R.me, auth)).status).toBe(401);
   });
 
   it("suspended user → 401 via a PAT at /mcp", async () => {
     const u = await mk("st-401-mcp");
     const { token } = await createPat(env, u.userId, "t");
-    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     const r = await callWorker(
       new Request(MCP_URL, {
         method: "POST",
@@ -122,8 +138,14 @@ describe("setUserStatus", () => {
   it("reactivated user's PATs and old sessions stay revoked", async () => {
     const u = await mk("st-react");
     const { token } = await createPat(env, u.userId, "t");
-    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
-    await setUserStatus(env, u.userId, "active", "admin_restore");
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
+    await setUserStatus(env, u.userId, "active", "admin_restore", SYSTEM_ACTOR);
     expect(await status(u.userId)).toBe("active");
     expect(await getUser(env, u.userId)).not.toBeNull();
     expect((await api(app, R.me, token)).status).toBe(401);
@@ -139,7 +161,7 @@ describe("setUserStatus", () => {
   it("gatherer: a suspended or removed user resolves to nobody on every surface", async () => {
     for (const s of ["suspended", "removed"] as const) {
       const u = await mk(`st-gather-${s}`);
-      await setUserStatus(env, u.userId, s, "admin_suspend");
+      await setUserStatus(env, u.userId, s, "admin_suspend", SYSTEM_ACTOR);
       // Cookie (getUserWithEpoch), PAT and OAuth (getUser) all read this row.
       expect(await getUserWithEpoch(env, u.userId)).toBeNull();
       expect(await getUser(env, u.userId)).toBeNull();
@@ -148,19 +170,49 @@ describe("setUserStatus", () => {
 
   it("unsuspend sets status back to active; a removed row stays removed", async () => {
     const u = await mk("st-un");
-    await setUserStatus(env, u.userId, "suspended", "directory_suspend");
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "directory_suspend",
+      SYSTEM_ACTOR,
+    );
     expect(await status(u.userId)).toBe("suspended");
-    await setUserStatus(env, u.userId, "active", "directory_unsuspend");
+    await setUserStatus(
+      env,
+      u.userId,
+      "active",
+      "directory_unsuspend",
+      SYSTEM_ACTOR,
+    );
     expect(await status(u.userId)).toBe("active");
-    await setUserStatus(env, u.userId, "removed", "directory_delete");
+    await setUserStatus(
+      env,
+      u.userId,
+      "removed",
+      "directory_delete",
+      SYSTEM_ACTOR,
+    );
     expect(await status(u.userId)).toBe("removed");
-    await setUserStatus(env, u.userId, "active", "admin_restore");
-    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
+    await setUserStatus(env, u.userId, "active", "admin_restore", SYSTEM_ACTOR);
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     expect(await status(u.userId)).toBe("removed");
   });
 
   it("the instance owner is never deactivated", async () => {
-    await setUserStatus(env, owner.userId, "suspended", "directory_suspend");
+    await setUserStatus(
+      env,
+      owner.userId,
+      "suspended",
+      "directory_suspend",
+      SYSTEM_ACTOR,
+    );
     expect(await status(owner.userId)).toBe("active");
     expect(await auditsFor(owner.userId, "user.status")).toEqual([]);
   });
@@ -172,14 +224,31 @@ describe("setUserStatus", () => {
       u.userId,
       "suspended",
       "admin_suspend",
-      undefined,
-      userActor(admin.userId),
+      actorOf(admin.userId, "admin"),
     );
-    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
-    await setUserStatus(env, u.userId, "active", "directory_unsuspend");
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
+    await setUserStatus(
+      env,
+      u.userId,
+      "active",
+      "directory_unsuspend",
+      SYSTEM_ACTOR,
+    );
     // A removed row stays removed: the refused restore is not audited.
-    await setUserStatus(env, u.userId, "removed", "directory_delete");
-    await setUserStatus(env, u.userId, "active", "admin_restore");
+    await setUserStatus(
+      env,
+      u.userId,
+      "removed",
+      "directory_delete",
+      SYSTEM_ACTOR,
+    );
+    await setUserStatus(env, u.userId, "active", "admin_restore", SYSTEM_ACTOR);
     const rows = await auditsFor(u.userId, "user.status");
     // A set, not a sequence: rows written in the same millisecond tie on
     // `at`, and their random ids order them arbitrarily (audit_events is
@@ -225,7 +294,7 @@ describe("removeMember with the spaces flag on", () => {
     const inSpace = newId();
     await insertArtifact(inSpace, u.userId, space);
     const { token } = await createPat(env, u.userId, "t");
-    await removeMember(SPACES, u.userId, undefined, userActor(admin.userId));
+    await removeMember(SPACES, u.userId, actorOf(admin.userId, "admin"));
     expect(await status(u.userId)).toBe("removed");
     expect(
       await one("select id, kind from spaces where id = ?", u.userId),
@@ -253,12 +322,14 @@ describe("removeMember with the spaces flag on", () => {
     const u = await mk("st-rm-read");
     const mine = newId();
     await insertArtifact(mine, u.userId, u.userId);
-    await removeMember(SPACES, u.userId, undefined, userActor(owner.userId));
+    await removeMember(SPACES, u.userId, actorOf(owner.userId, "owner"));
     expect((await api(app, R.artifact(mine), owner.cookie)).status).toBe(404);
   });
 
   it("the owner still can't be removed", async () => {
-    await expect(removeMember(SPACES, ownerOfRecord)).rejects.toMatchObject({
+    await expect(
+      removeMember(SPACES, ownerOfRecord, SYSTEM_ACTOR),
+    ).rejects.toMatchObject({
       code: "bad_request",
     });
     expect(await status(ownerOfRecord)).toBe("active");
@@ -279,7 +350,7 @@ describe("removeMember with the spaces flag off (#478)", () => {
     await insertArtifact(mineGone, u.userId, u.userId, 5);
     await insertArtifact(inSpace, u.userId, space);
     await insertArtifact(inSpaceGone, u.userId, space, 5);
-    await removeMember(env, u.userId);
+    await removeMember(env, u.userId, SYSTEM_ACTOR);
     const to = ownerOfRecord;
     expect(await placement(mine)).toEqual({ owner_id: to, space_id: to });
     expect(await placement(mineGone)).toEqual({ owner_id: to, space_id: to });
@@ -295,7 +366,7 @@ describe("removeMember with the spaces flag off (#478)", () => {
 
   it("writes exactly one user.status row (admin_remove) with the removal", async () => {
     const u = await mk("st-rm-audit");
-    await removeMember(env, u.userId, undefined, userActor(admin.userId));
+    await removeMember(env, u.userId, actorOf(admin.userId, "admin"));
     const rows = await auditsFor(u.userId, "user.status");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -319,7 +390,9 @@ describe("removeMember with the spaces flag off (#478)", () => {
       "create trigger if not exists audit_fail_rm before insert on audit_events begin select raise(abort, 'audit down'); end",
     ).run();
     try {
-      await expect(removeMember(env, u.userId)).rejects.toThrow(/audit down/);
+      await expect(removeMember(env, u.userId, SYSTEM_ACTOR)).rejects.toThrow(
+        /audit down/,
+      );
     } finally {
       await env.DB.prepare("drop trigger if exists audit_fail_rm").run();
     }
@@ -345,10 +418,9 @@ describe("patchMember", () => {
       env,
       u.userId,
       { role: "admin" },
-      undefined,
-      userActor(owner.userId),
+      actorOf(owner.userId, "owner"),
     );
-    await patchMember(env, u.userId, { role: "admin" });
+    await patchMember(env, u.userId, { role: "admin" }, SYSTEM_ACTOR);
     const rows = await auditsFor(u.userId, "user.role");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -380,10 +452,16 @@ describe("review fixes (P3 T6)", () => {
   it("a no-op unsuspend keeps the member's PAT; the owner's too", async () => {
     const u = await mk("st-noop");
     const { token } = await createPat(env, u.userId, "t");
-    await setUserStatus(env, u.userId, "active", "admin_restore");
+    await setUserStatus(env, u.userId, "active", "admin_restore", SYSTEM_ACTOR);
     expect((await api(app, R.me, token)).status).toBe(200);
     const { token: ownerPat } = await createPat(env, owner.userId, "o");
-    await setUserStatus(env, owner.userId, "active", "admin_restore");
+    await setUserStatus(
+      env,
+      owner.userId,
+      "active",
+      "admin_restore",
+      SYSTEM_ACTOR,
+    );
     expect((await api(app, R.me, ownerPat)).status).toBe(200);
   });
 
@@ -401,7 +479,7 @@ describe("review fixes (P3 T6)", () => {
     const art = newId();
     await insertArtifact(art, sharer.userId, sharer.userId);
     await putShare(env, by, art, { email: gEmail, role: "viewer" });
-    await removeMember(SPACES, g.userId, undefined, userActor(admin.userId));
+    await removeMember(SPACES, g.userId, actorOf(admin.userId, "admin"));
     const art2 = newId();
     await insertArtifact(art2, sharer.userId, sharer.userId);
     await putShare(env, by, art2, { email: gEmail, role: "viewer" });
@@ -426,7 +504,7 @@ describe("review fixes (P3 T6)", () => {
     expect(await status(g.userId)).toBe("active");
     await deleteShare(env, by, a, gEmail);
     // Lapsed, then removed for good by an admin: a share no longer revives.
-    await removeMember(SPACES, g.userId, undefined, userActor(admin.userId));
+    await removeMember(SPACES, g.userId, actorOf(admin.userId, "admin"));
     await putShare(env, by, a, { email: gEmail, role: "viewer" });
     expect(await status(g.userId)).toBe("removed");
     // Each lapse and revive is audited with the change; the first share (an
@@ -446,7 +524,13 @@ describe("review fixes (P3 T6)", () => {
     const suspendNow = mw(
       async (c: { req: { method: string } }, next: () => Promise<void>) => {
         if (c.req.method === "POST")
-          await setUserStatus(env, u.userId, "suspended", "admin_suspend");
+          await setUserStatus(
+            env,
+            u.userId,
+            "suspended",
+            "admin_suspend",
+            SYSTEM_ACTOR,
+          );
         await next();
       },
     );
@@ -465,9 +549,15 @@ describe("review fixes (P3 T6)", () => {
         u.userId,
       ),
     ).toEqual({ n: 0 });
-    await setUserStatus(env, u.userId, "active", "admin_restore");
+    await setUserStatus(env, u.userId, "active", "admin_restore", SYSTEM_ACTOR);
     await expect(createPat(env, u.userId, "x")).resolves.toBeDefined();
-    await setUserStatus(env, u.userId, "suspended", "admin_suspend");
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     await expect(createPat(env, u.userId, "y")).rejects.toMatchObject({
       code: "unauthorized",
     });
@@ -476,7 +566,13 @@ describe("review fixes (P3 T6)", () => {
   it("GET members lists active members only", async () => {
     const s = await mk("st-list-s");
     const a = await mk("st-list-a");
-    await setUserStatus(env, s.userId, "suspended", "admin_suspend");
+    await setUserStatus(
+      env,
+      s.userId,
+      "suspended",
+      "admin_suspend",
+      SYSTEM_ACTOR,
+    );
     const r = await api(app, R.members, admin.cookie);
     expect(r.status).toBe(200);
     const ids = ((await r.json()) as { id: string }[]).map((m) => m.id);

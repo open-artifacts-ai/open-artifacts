@@ -21,7 +21,7 @@ import {
   touchGrant,
   uaFamily,
 } from "../src/services/agent-usage.js";
-import { removeMember } from "../src/services/members.js";
+import { removeMember, SYSTEM_ACTOR } from "../src/services/members.js";
 import { api, errOf, login } from "./helpers.js";
 import { APP, callWorker, connect, nextIp, tool } from "./mcp-helpers.js";
 
@@ -590,7 +590,7 @@ describe("member removal", () => {
     });
     expect(await usageRow(card.grantId)).not.toBeNull();
     await login(`card-rm-owner-${tag}@x.com`, "owner");
-    await removeMember(env, member.userId);
+    await removeMember(env, member.userId, SYSTEM_ACTOR);
     expect(await usageRow(card.grantId)).toBeNull();
   });
 });

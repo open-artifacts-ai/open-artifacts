@@ -19,7 +19,7 @@ import { readSession, sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import { FAVICON_TAGS } from "../src/http/head.js";
 import { type AppVariables, session } from "../src/http/middleware.js";
-import { patchMember } from "../src/services/members.js";
+import { patchMember, SYSTEM_ACTOR } from "../src/services/members.js";
 import { b64urlEncode } from "../src/util/crypto.js";
 import { login } from "./helpers.js";
 
@@ -952,7 +952,7 @@ describe("session epoch on the Access callback (#369)", () => {
     const first = await begin({ email });
     expect((await callback(first, first.oidc)).status).toBe(302);
     const before = (await epochOf(email))?.e ?? 0;
-    await patchMember(env, userId, { role: "admin" });
+    await patchMember(env, userId, { role: "admin" }, SYSTEM_ACTOR);
     const bumped = (await epochOf(email))?.e ?? 0;
     // The role change must have bumped the epoch, or this test proves nothing.
     expect(bumped).toBeGreaterThan(before);

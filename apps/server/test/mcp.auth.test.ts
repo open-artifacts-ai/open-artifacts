@@ -18,6 +18,7 @@ import { stripTemplateComment } from "../src/mcp/template.js";
 import {
   patchMember,
   removeMember,
+  SYSTEM_ACTOR,
   setUserStatus,
 } from "../src/services/members.js";
 import { api, login } from "./helpers.js";
@@ -308,7 +309,13 @@ describe("MCP auth: OAuth", () => {
         `oauth-susp-${tag}@x.com`,
       );
       expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
-      await setUserStatus(env, member.userId, "suspended", "admin_suspend");
+      await setUserStatus(
+        env,
+        member.userId,
+        "suspended",
+        "admin_suspend",
+        SYSTEM_ACTOR,
+      );
       expect((await listTools(`Bearer ${accessToken}`)).status).toBe(401);
     });
 
@@ -401,6 +408,7 @@ describe("MCP auth: OAuth", () => {
                     m.userId,
                     "suspended",
                     "admin_suspend",
+                    SYSTEM_ACTOR,
                   );
                   return t.approveConsent(...a);
                 };
@@ -707,7 +715,12 @@ describe("MCP auth: fix round 1", () => {
     const { token } = await createPat(env, member.userId, "p");
     expect(await grantsOf(member.userId)).toHaveLength(1);
     // MemberPatch allows admin|member only; exercise the guard directly.
-    await patchMember(env, member.userId, { role: "guest" } as never);
+    await patchMember(
+      env,
+      member.userId,
+      { role: "guest" } as never,
+      SYSTEM_ACTOR,
+    );
     expect(await grantsOf(member.userId)).toEqual([]);
     expect(await verifyPat(env, token)).toBeNull();
     expect((await listTools(`Bearer ${accessToken}`)).status).toBe(401);
@@ -717,7 +730,7 @@ describe("MCP auth: fix round 1", () => {
     await login(`oauth-rmv-owner-${tag}@x.com`, "owner");
     const { member } = await oauthToken(`oauth-rmv-${tag}@x.com`);
     expect(await grantsOf(member.userId)).toHaveLength(1);
-    await removeMember(env, member.userId);
+    await removeMember(env, member.userId, SYSTEM_ACTOR);
     expect(await grantsOf(member.userId)).toEqual([]);
   });
 
