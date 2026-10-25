@@ -35,6 +35,7 @@ import { UserAvatar } from "../layout/UserAvatar";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { clearDenied, denyMember, useDenied } from "./denied";
 import { type Departed, useDeparted } from "./departed";
 import { restrictionReason } from "./restriction";
 import { TransferDialog } from "./Transfer";
@@ -233,34 +234,43 @@ const firstName = (m: Member) =>
  * yourself. Only the owner resets another admin (the server enforces it too:
  * 403); that last rule is the one line to drop if it moves server-side only.
  */
-const mayResetGoogle = (m: Member, you: boolean, viewer: Role | undefined) =>
+const mayResetGoogle = (m: Member, you: boolean, owner: boolean) =>
   (m.identities ?? []).includes("google") &&
   m.role !== "owner" &&
   !you &&
-  (m.role !== "admin" || viewer === "owner");
+  (m.role !== "admin" || owner);
+
+/** Design's copy: role change and Remove on another admin's row. */
+const ADMIN_ONLY = "Only the owner can change another admin's access.";
+const RESET_ONLY = "Only the owner can reset another admin's Google link.";
 
 function Row({
   m,
   you,
   hosted,
-  viewer,
+  owner,
 }: {
   m: Member;
   you: boolean;
   hosted: boolean;
-  viewer: Role | undefined;
+  /** The viewer is the owner, uncapped: only they act on owner and admin rows. */
+  owner: boolean;
 }) {
-  const patch = usePatchMember();
+  const denyAdmin = (id: string) => denyMember(id, ADMIN_ONLY);
+  const patch = usePatchMember(denyAdmin);
   const [confirm, setConfirm] = useState(false);
   const [restricting, setRestricting] = useState(false);
   const [lifting, setLifting] = useState(false);
-  const remove = useRemoveMember();
+  const remove = useRemoveMember(denyAdmin);
+  const denied = useDenied(m.id);
   const setRestricted = useSetRestricted();
   const resetGoogle = useResetIdentity();
   const [resetting, setResetting] = useState(false);
-  const canResetGoogle = hosted && mayResetGoogle(m, you, viewer);
+  const canResetGoogle = hosted && mayResetGoogle(m, you, owner);
   const label = displayName(m);
-  const locked = m.role === "owner" || you;
+  // Another admin's (or the owner's) row, seen by anyone but the owner: read-only.
+  const readOnly = !owner && (m.role === "admin" || m.role === "owner");
+  const locked = m.role === "owner" || you || readOnly;
   const why = hosted ? restrictionReason(m.restriction) : null;
   const manual = m.restriction?.manual === true;
   const groups = m.restriction?.groups ?? [];
@@ -298,7 +308,7 @@ function Row({
           )}
         </div>
       </div>
-      {m.role === "owner" || you ? (
+      {locked ? (
         <Badge variant="outline" className="justify-self-start">
           {ROLE_LABEL[m.role]}
         </Badge>
@@ -307,7 +317,10 @@ function Row({
           label={`Role for ${label}`}
           value={m.role === "admin" || m.role === "member" ? m.role : undefined}
           placeholder="Guest"
-          onChange={(role) => patch.mutate({ id: m.id, role })}
+          onChange={(role) => {
+            clearDenied(m.id);
+            patch.mutate({ id: m.id, role });
+          }}
         />
       )}
       {/* Labelled inline: there is no column header at any width. */}
@@ -396,6 +409,14 @@ function Row({
           Remove
         </Button>
       )}
+      {denied && (
+        <p
+          role="status"
+          className="col-span-full m-0 text-[length:var(--oa-text-sm)] text-[var(--oa-warning)]"
+        >
+          {denied}
+        </p>
+      )}
       <ConfirmDialog
         open={resetting}
         onClose={() => setResetting(false)}
@@ -409,7 +430,8 @@ function Row({
           </p>
         }
         confirm="Reset link"
-        onConfirm={() =>
+        onConfirm={() => {
+          clearDenied(m.id);
           resetGoogle.mutate(m.id, {
             onSuccess: () =>
               toast({
@@ -424,15 +446,12 @@ function Row({
                   title: `No Google sign-in is linked to ${label}, so there's nothing to reset.`,
                   tone: "danger",
                 });
-              else if (code === "owner_only" || status === 403)
-                toast({
-                  title:
-                    "Only the owner can reset another admin's Google link.",
-                  tone: "danger",
-                });
+              else if (code === "owner_only") denyMember(m.id, RESET_ONLY);
+              else if (status === 403)
+                toast({ title: RESET_ONLY, tone: "danger" });
             },
-          })
-        }
+          });
+        }}
       />
       <ConfirmDialog
         open={restricting}
@@ -479,6 +498,7 @@ function Row({
             <Button
               onClick={() => {
                 setConfirm(false);
+                clearDenied(m.id);
                 remove.mutate(m.id);
               }}
             >
@@ -497,6 +517,11 @@ export function Members() {
   const q = useMembers();
   const [inviting, setInviting] = useState(false);
   const me = state.status === "authed" ? state.me.user : null;
+  // A capped owner (restricted) acts like an admin here, as the server does.
+  const owner =
+    state.status === "authed" &&
+    state.me.user.role === "owner" &&
+    state.me.auth?.cap == null;
   // Hosted (the spaces feature): restriction badges and the row's More menu.
   const hosted = state.status === "authed" && hasFeature(state.me, "spaces");
   const departed = useDeparted(state.status === "authed" ? state.me : null);
@@ -516,6 +541,12 @@ export function Members() {
           </Button>
         }
       >
+        {/* Design: why some rows are read-only, for anyone but the owner. */}
+        {!owner &&
+          q.data?.some(
+            (m) =>
+              m.id !== me?.id && (m.role === "admin" || m.role === "owner"),
+          ) && <p className={`m-0 ${muted}`}>{ADMIN_ONLY}</p>}
         {q.isError ? (
           <p role="alert" className={errorText}>
             Couldn't load members.
@@ -528,7 +559,7 @@ export function Members() {
                 m={m}
                 you={m.id === me?.id}
                 hosted={hosted}
-                viewer={me?.role}
+                owner={owner}
               />
             ))}
           </ul>

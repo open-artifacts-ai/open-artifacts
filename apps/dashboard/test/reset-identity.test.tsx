@@ -102,8 +102,11 @@ it("not offered without a Google link, on the owner, or on yourself", async () =
 
 it("an admin can't reset another admin (only the owner can)", async () => {
   mountHosted("/settings/members", true, asAdmin, [withAdminBob]);
-  const menu = await openMenu("Bob Builder");
-  expect(within(menu).queryByRole("menuitem", { name: ITEM })).toBeNull();
+  // Another admin's row is read-only for an admin (#475): no menu at all.
+  const r = await row("Bob Builder");
+  expect(
+    within(r).queryByRole("button", { name: "More for Bob Builder" }),
+  ).toBeNull();
 });
 
 it("the owner can reset an admin's link", async () => {
@@ -196,11 +199,14 @@ it("after owner_only, members and you refetch, so Reset leaves that row", async 
   await screen.findByText(
     "Only the owner can reset another admin's Google link.",
   );
-  await waitFor(async () => {
-    const menu = await openMenu("Bob Builder");
-    expect(within(menu).queryByRole("menuitem", { name: ITEM })).toBeNull();
-    fireEvent.keyDown(menu, { key: "Escape" });
-  });
+  // Now an admin: Bob's admin row turns read-only (no menu, so no Reset).
+  await waitFor(async () =>
+    expect(
+      within(await row("Bob Builder")).queryByRole("button", {
+        name: "More for Bob Builder",
+      }),
+    ).toBeNull(),
+  );
 });
 
 it("any other 403 falls back to the owner copy", async () => {
