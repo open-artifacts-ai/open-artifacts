@@ -7,7 +7,7 @@ import { Badge, Button, Input, Label } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useId, useState } from "react";
 import { ApiClientError } from "../../api/client";
-import { hasFeature, type Space, type SpaceRole } from "../../api/contract";
+import { directoryMode, type Space, type SpaceRole } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
   useAddSelfToSpace,
@@ -592,7 +592,7 @@ function SpaceDetail({
   useDocumentTitle(space.name);
   const state = useMe();
   const frozen =
-    state.status === "authed" && hasFeature(state.me, "sync_frozen");
+    state.status === "authed" && directoryMode(state.me) === "frozen";
   // A kept group's "Edit people" narrows People to it.
   const [group, setGroup] = useState("");
   return (
@@ -644,7 +644,7 @@ export function Spaces() {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const admin = isOrgAdmin(me);
-  const syncOn = !!me && hasFeature(me, "sync_google");
+  const syncOn = !!me && directoryMode(me) === "google";
   const orgName = me?.instance.name ?? "your organization";
   const { space: spaceId } = useSearch({ strict: false }) as { space?: string };
   const navigate = useNavigate();

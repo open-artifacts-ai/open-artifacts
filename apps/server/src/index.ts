@@ -1,7 +1,7 @@
 import { MCP_PATH, normalizeHost as normHost } from "@oa/shared";
 import { app } from "./app.js";
+import { canConnect } from "./auth/agents.js";
 import { verifyPat } from "./auth/pat.js";
-import { orgCan } from "./auth/policy.js";
 import { contentApp } from "./content/app.js";
 import { scheduled } from "./cron.js";
 import type { Env } from "./env.js";
@@ -57,8 +57,9 @@ async function mcpWithPat(
   const row = pat ? await getUserWithEpoch(env, pat.userId) : null;
   if (!pat || !row) return mcpUnauthorized(env);
   const { user, sessionEpoch } = row;
-  // Guests can't connect agents (they only see what's shared with them).
-  if (!orgCan(user, "mcp.connect"))
+  // Members only, never a capped caller (a guest, a restricted member): the
+  // same rule as an OAuth grant (canConnect).
+  if (!canConnect(user))
     return mcpUnauthorized(env, "Only members can connect agents");
   const capped = await capMcpBody(req, env);
   if (capped instanceof Response) return capped;
