@@ -142,7 +142,9 @@ describe("turnstileInit", () => {
     });
     const r = await turnstileInit({ cf: s.cf, env: "prod", store: s.store });
     expect(r.created).toBe(true);
-    const made = [...s.fake.turnstile.values()].find((w) => w.sitekey !== "0xSTG");
+    const made = [...s.fake.turnstile.values()].find(
+      (w) => w.sitekey !== "0xSTG",
+    );
     expect(made).toMatchObject({
       name: platformNames("prod").turnstile,
       domains: [HOSTED_DOMAINS.prod.app],

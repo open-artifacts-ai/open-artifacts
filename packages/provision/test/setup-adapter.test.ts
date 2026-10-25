@@ -51,7 +51,10 @@ const CREATED: Line[] = [
     step: "owner-token",
     status: "ok",
     message: "ok",
-    data: { tokenId: "t1", tokenFile: "/h/.open-artifacts/a.example-pat-token" },
+    data: {
+      tokenId: "t1",
+      tokenFile: "/h/.open-artifacts/a.example-pat-token",
+    },
   },
   {
     step: "state",
@@ -109,7 +112,12 @@ describe("SetupProvisioner", () => {
     });
     const q = new SetupProvisioner({ deps, root: "/repo", setup: bad.fns });
     const r = await q.upgrade("acme", { version: "0.56.0", bundleKey: "" });
-    expect(bad.calls[0]?.argv).toEqual(["--upgrade", "--json", "--name", "acme"]);
+    expect(bad.calls[0]?.argv).toEqual([
+      "--upgrade",
+      "--json",
+      "--name",
+      "acme",
+    ]);
     expect(r).toEqual({
       id: "acme",
       from: "",
@@ -136,9 +144,15 @@ describe("SetupProvisioner", () => {
       ],
     });
     const p = new SetupProvisioner({ deps, root: "/r", setup: s.fns });
-    expect(await p.upgrade("acme", { version: "0.56.0", bundleKey: "" })).toEqual(
-      { id: "acme", from: "0.55.2", to: "0.56.0", ok: true, rolledBack: false },
-    );
+    expect(
+      await p.upgrade("acme", { version: "0.56.0", bundleKey: "" }),
+    ).toEqual({
+      id: "acme",
+      from: "0.55.2",
+      to: "0.56.0",
+      ok: true,
+      rolledBack: false,
+    });
   });
 
   it("an upgrade that deploys another version than asked is ok:false", async () => {

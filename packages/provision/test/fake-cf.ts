@@ -374,9 +374,7 @@ export class FakeCf {
       const q = url.searchParams;
       const per = Number(q.get("per_page") ?? 25);
       const page = Number(q.get("page") ?? 1);
-      const all = [...this.turnstile.values()].map(
-        ({ secret: _s, ...w }) => w,
-      );
+      const all = [...this.turnstile.values()].map(({ secret: _s, ...w }) => w);
       return new Response(
         JSON.stringify({
           success: true,

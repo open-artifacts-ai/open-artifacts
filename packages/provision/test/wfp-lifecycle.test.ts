@@ -2665,7 +2665,10 @@ describe("P1 Task 8 follow-ups", () => {
     const r = keep(await s.p.upgrade(inst.id, "0.24.0"));
     expect(r).toMatchObject({ ok: false, rolledBack: false, forwardFix: true });
     expect(r.reason).toMatch(/is not a render of that release/);
-    expect(s.row(inst.id)).toMatchObject({ state: "active", version: "0.24.0" });
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.24.0",
+    });
   });
 
   it("verifyToken runs the token checks with no write; near expiry refuses or warns", async () => {
@@ -2692,7 +2695,9 @@ describe("P1 Task 8 follow-ups", () => {
       "staging",
       () => NOW,
     );
-    await pdb.auditAs("ops@example.com", "-", "cli.status.start", { cmd: "status" });
+    await pdb.auditAs("ops@example.com", "-", "cli.status.start", {
+      cmd: "status",
+    });
     const rows = s
       .db()
       .prepare("SELECT actor, install_id, action FROM hosted_audit")

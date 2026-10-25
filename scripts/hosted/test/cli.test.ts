@@ -1,0 +1,538 @@
+// P1 Task 8: the oa:hosted CLI against provision's in-memory Cloudflare.
+// No live call: the keychain, git and gh are stubs (world.ts).
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { COMMANDS, DOMAINS, main } from "../src/cli.ts";
+import { ACTOR, PUB, world } from "./world.ts";
+
+const G = vi.hoisted(() => ({
+  RELEASE_PUBKEY: { staging: "", prod: "" } as Record<string, string>,
+}));
+vi.mock("../../../packages/provision/src/internal/gates.ts", async (orig) => {
+  const m = (await orig()) as Record<string, unknown>;
+  return {
+    ...m,
+    PROD_UNLOCKED: true,
+    FLOOR_MIN_SEQ: { staging: 1, prod: 1 },
+    get RELEASE_PUBKEY() {
+      return G.RELEASE_PUBKEY;
+    },
+  };
+});
+G.RELEASE_PUBKEY = { staging: PUB, prod: PUB };
+
+type W = ReturnType<typeof world>;
+const CREATE = (env = "staging") => [
+  "create",
+  "--env",
+  env,
+  "--slug",
+  "finqore",
+  "--owner",
+  "owner@finqore.test",
+  "--to",
+  "0.23.0",
+];
+
+const noCalls = (w: W) => {
+  expect(w.cfCalls).toEqual([]);
+  expect(w.execs).toEqual([]);
+  expect(w.fake.log).toEqual([]);
+};
+const lastLine = (w: W) => w.parsed().at(-1);
+
+async function created(w: W) {
+  expect(await main(CREATE(w.env), w.deps)).toBe(0);
+  const id = w.parsed().find((l) => l.step === "create")?.data?.id as string;
+  expect(id).toMatch(/^i[a-z0-9]{11}$/);
+  w.lines.length = 0;
+  return id;
+}
+
+describe("domains", () => {
+  it("DOMAINS[env] equals the decided suffixes", () => {
+    expect(DOMAINS).toEqual({
+      staging: {
+        app: "open-artifacts-staging.app",
+        content: "open-artifacts-staging.page",
+      },
+      prod: { app: "open-artifacts.app", content: "open-artifacts.page" },
+    });
+  });
+});
+
+describe("refusals before any call", () => {
+  it("--test-hooks with --env prod exits 1 before any call", async () => {
+    const w = world({ env: "prod" });
+    expect(await main([...CREATE("prod"), "--test-hooks"], w.deps)).toBe(1);
+    expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
+    expect(lastLine(w).message).toMatch(/--test-hooks/);
+    noCalls(w);
+  });
+
+  it.each([
+    ["delete", []],
+    ["delete", ["--confirm", "iaaaaaaaaaab"]],
+    ["release-lease", []],
+    ["release-lease", ["--confirm", "iaaaaaaaaaab"]],
+  ])(
+    "%s without --confirm, or with a different id, exits 1 before any call",
+    async (cmd, extra) => {
+      const w = world();
+      const argv = [
+        cmd,
+        "--env",
+        "staging",
+        "--install",
+        "iaaaaaaaaaaa",
+        ...extra,
+      ];
+      expect(await main(argv, w.deps)).toBe(1);
+      expect(lastLine(w).message).toMatch(/--confirm/);
+      noCalls(w);
+    },
+  );
+
+  it.each([
+    [["status"]],
+    [["status", "--env", "dev", "--install", "iaaaaaaaaaaa"]],
+    [["nope", "--env", "staging"]],
+    [["upgrade", "--env", "staging", "--install", "iaaaaaaaaaaa"]],
+    [
+      [
+        "create",
+        "--env",
+        "staging",
+        "--slug",
+        "x",
+        "--owner",
+        "a@b.co",
+        "--to",
+        "latest",
+      ],
+    ],
+    [[...CREATE(), "--var", "AUTH_DOMAIN_JOIN=member"]],
+    [[...CREATE(), "--var", "lower=x"]],
+    [[...CREATE(), "--var", "FEATURES=spaces", "--var", "FEATURES=x"]],
+    [["publish-release", "--env", "staging", "--tag", "main"]],
+    [["status", "--env", "staging", "--install", "../etc"]],
+  ])("bad flags exit 1 before any call: %j", async (argv) => {
+    const w = world();
+    expect(await main(argv, w.deps)).toBe(1);
+    expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
+    noCalls(w);
+  });
+
+  it("every documented command is accepted", () => {
+    expect(COMMANDS).toEqual([
+      "create",
+      "upgrade",
+      "rollback",
+      "update-vars",
+      "delete",
+      "release-lease",
+      "status",
+      "publish-release",
+      "publish-floor",
+      "turnstile-init",
+    ]);
+  });
+});
+
+describe("token source", () => {
+  it("the CLI refuses prod with the staging token file", async () => {
+    const w = world({ env: "prod" });
+    w.files.set("/ci/token", {
+      bytes: new TextEncoder().encode(w.fake.token),
+      info: { mode: 0o100600, uid: 501, isFile: true },
+    });
+    w.deps.env.OA_HOSTED_TOKEN_FILE = "/ci/token";
+    expect(
+      await main(
+        ["status", "--env", "prod", "--install", "iaaaaaaaaaaa"],
+        w.deps,
+      ),
+    ).toBe(1);
+    expect(lastLine(w)).toMatchObject({ step: "token", status: "error" });
+    expect(lastLine(w).message).toMatch(/only from the keychain/);
+    expect(w.cfCalls).toEqual([]);
+    expect(w.fake.log).toEqual([]);
+  });
+
+  it("prod reads only from the keychain, never a file", async () => {
+    const w = world({ env: "prod" });
+    const id = await created(w);
+    const sec = w.execs.filter((e) => e.file === "security");
+    expect(sec.length).toBeGreaterThan(0);
+    expect(sec[0]?.args).toEqual([
+      "find-generic-password",
+      "-w",
+      "-s",
+      "oa-hosted-prod",
+    ]);
+    // CI is staging only: prod in CI is refused even with a keychain.
+    const c = world({ env: "prod", ci: true });
+    expect(
+      await main(["status", "--env", "prod", "--install", id], c.deps),
+    ).toBe(1);
+    expect(lastLine(c).message).toMatch(/staging only/);
+    expect(c.fake.log).toEqual([]);
+  });
+
+  it("staging in CI reads a 0600 file it owns, and refuses any other", async () => {
+    const w = world({ ci: true });
+    w.keychain.clear();
+    const set = (mode: number, uid = 501, isFile = true) =>
+      w.files.set("/ci/token", {
+        bytes: new TextEncoder().encode(`${w.fake.token}\n`),
+        info: { mode, uid, isFile },
+      });
+    w.deps.env.OA_HOSTED_TOKEN_FILE = "/ci/token";
+    for (const [mode, uid, isFile] of [
+      [0o100644, 501, true],
+      [0o100600, 0, true],
+      [0o120600, 501, false],
+    ] as const) {
+      set(mode, uid, isFile);
+      expect(await main(CREATE(), w.deps)).toBe(1);
+      expect(lastLine(w).step).toBe("token");
+    }
+    expect(w.fake.log).toEqual([]);
+    set(0o100600);
+    expect(await main(CREATE(), w.deps)).toBe(0);
+    expect(w.execs.filter((e) => e.file === "security")).toEqual([]);
+    expect(w.audit()[0]?.actor).toBe(
+      "https://github.com/open-artifacts-ai/open-artifacts/actions/runs/42",
+    );
+  });
+
+  it("an inactive or long-lived token is refused by the provisioner's checks before any write", async () => {
+    for (const bad of [
+      { status: "disabled" },
+      {
+        expires_on: new Date(Date.parse("2026-12-30T00:00:00Z")).toISOString(),
+      },
+    ]) {
+      const w = world();
+      Object.assign(w.fake.tokenInfo, bad);
+      expect(await main(CREATE(), w.deps)).toBe(1);
+      expect(lastLine(w)).toMatchObject({ step: "token", status: "error" });
+      expect(w.fake.writes()).toEqual([]);
+      expect(w.audit()).toEqual([]);
+    }
+  });
+});
+
+describe("audit", () => {
+  it("every command writes a before and after hosted_audit row, and the table refuses UPDATE and DELETE", async () => {
+    const w = world();
+    const id = await created(w);
+    expect(
+      await main(["status", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    expect(
+      await main(
+        ["upgrade", "--env", "staging", "--install", id, "--to", "0.22.0"],
+        w.deps,
+      ),
+    ).toBe(1);
+    expect(w.audit()).toEqual([
+      { actor: ACTOR, install_id: "-", action: "cli.create.start" },
+      { actor: ACTOR, install_id: id, action: "cli.create.done" },
+      { actor: ACTOR, install_id: id, action: "cli.status.start" },
+      { actor: ACTOR, install_id: id, action: "cli.status.done" },
+      { actor: ACTOR, install_id: id, action: "cli.upgrade.start" },
+      { actor: ACTOR, install_id: id, action: "cli.upgrade.failed" },
+    ]);
+    expect(() =>
+      w.db().prepare("UPDATE hosted_audit SET actor = 'x'").run(),
+    ).toThrow(/append-only/);
+    expect(() => w.db().prepare("DELETE FROM hosted_audit").run()).toThrow(
+      /append-only/,
+    );
+  });
+
+  it("no git email: refused before any Cloudflare call", async () => {
+    const w = world();
+    const exec = w.deps.execFile;
+    w.deps.execFile = async (f, a, o) => (f === "git" ? "" : exec(f, a, o));
+    expect(await main(CREATE(), w.deps)).toBe(1);
+    expect(lastLine(w).message).toMatch(/user\.email/);
+    expect(w.fake.log).toEqual([]);
+  });
+});
+
+describe("output", () => {
+  it("no secret or PAT value appears in stdout", async () => {
+    const w = world();
+    await created(w);
+    const id = await (async () => {
+      // A second create, with the full output kept this time.
+      expect(
+        await main(
+          [
+            "create",
+            "--env",
+            "staging",
+            "--slug",
+            "acme",
+            "--owner",
+            "owner@acme.test",
+            "--to",
+            "0.23.0",
+            "--var",
+            "FEATURES=spaces",
+          ],
+          w.deps,
+        ),
+      ).toBe(0);
+      return w.parsed().find((l) => l.step === "create")?.data?.id as string;
+    })();
+    const out = w.lines.join("\n");
+    for (const l of w.lines) expect(() => JSON.parse(l)).not.toThrow();
+    const generated = new Set<string>([w.fake.token]);
+    for (const s of w.fake.scripts.values())
+      for (const v of s.secrets.values()) generated.add(v);
+    const patDir = join(w.home, ".open-artifacts", "hosted-staging");
+    for (const f of readdirSync(patDir))
+      generated.add(readFileSync(join(patDir, f), "utf8").trim());
+    expect(generated.size).toBeGreaterThan(3);
+    for (const v of generated) {
+      expect(v.length).toBeGreaterThan(8);
+      expect(out).not.toContain(v);
+    }
+    expect(out).not.toMatch(/oa_pat_[1-9A-HJ-NP-Za-km-z]{8}/);
+    expect(w.parsed().find((l) => l.step === "create")?.data).toMatchObject({
+      id,
+      slug: "acme",
+      appHost: "acme.open-artifacts-staging.app",
+    });
+  });
+
+  it("a token Cloudflare echoes in an error is redacted", async () => {
+    const w = world();
+    w.fake.inject((_m, p) => p === "/user/tokens/verify", {
+      status: 400,
+      message: `bad token ${w.fake.token}`,
+      times: 1,
+    });
+    expect(await main(CREATE(), w.deps)).toBe(1);
+    expect(lastLine(w)).toMatchObject({ step: "token", status: "error" });
+    expect(lastLine(w).message).toContain("bad token [redacted]");
+    expect(w.lines.join("\n")).not.toContain(w.fake.token);
+  });
+});
+
+describe("commands", () => {
+  it("status reports sessionCut.armed as well as pending", async () => {
+    const w = world();
+    const id = await created(w);
+    w.db()
+      .prepare(
+        "UPDATE installs SET session_cut = ?, session_cut_base = '{}', session_cut_armed = 1 WHERE id = ?",
+      )
+      .run("ab".repeat(16), id);
+    expect(
+      await main(["status", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    expect(
+      w.parsed().find((l) => l.step === "status")?.data.sessionCut,
+    ).toEqual({
+      pending: true,
+      armed: true,
+      owedRelativeToRecordedVars: false,
+    });
+  });
+
+  it("upgrade, rollback, update-vars and release-lease go through the provisioner", async () => {
+    const w = world();
+    const id = await created(w);
+    expect(
+      await main(
+        ["upgrade", "--env", "staging", "--install", id, "--to", "0.24.0"],
+        w.deps,
+      ),
+    ).toBe(0);
+    expect(w.parsed().find((l) => l.step === "upgrade")?.data).toMatchObject({
+      from: "0.23.0",
+      to: "0.24.0",
+      ok: true,
+    });
+    expect(
+      await main(["rollback", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    expect(
+      await main(
+        [
+          "update-vars",
+          "--env",
+          "staging",
+          "--install",
+          id,
+          "--var",
+          "FEATURES=spaces",
+        ],
+        w.deps,
+      ),
+    ).toBe(0);
+    expect(
+      w.parsed().find((l) => l.step === "update-vars")?.data,
+    ).toMatchObject({
+      ok: true,
+    });
+    // No lease is held: release-lease is the provisioner's refusal.
+    expect(
+      await main(
+        ["release-lease", "--env", "staging", "--install", id, "--confirm", id],
+        w.deps,
+      ),
+    ).toBe(1);
+    expect(lastLine(w).message).toMatch(/after row/);
+    expect(w.parsed().find((l) => l.step === "release-lease")?.message).toMatch(
+      /holds no lease/,
+    );
+  });
+
+  it("delete with the matching --confirm deletes the install", async () => {
+    const w = world();
+    const id = await created(w);
+    expect(
+      await main(
+        ["delete", "--env", "staging", "--install", id, "--confirm", id],
+        w.deps,
+      ),
+    ).toBe(0);
+    expect(w.parsed().find((l) => l.step === "delete")?.data).toEqual({
+      id,
+      ok: true,
+      state: "deleted",
+    });
+  });
+
+  it("create with --test-hooks on staging uses the redline bundle", async () => {
+    const w = world();
+    expect(
+      await main(
+        [...CREATE(), "--test-hooks", "--var", "TEST_DOMAIN=redline.test"],
+        w.deps,
+      ),
+    ).toBe(0);
+  });
+
+  it("turnstile-init creates the env's widget once and stores it in the keychain over stdin", async () => {
+    const w = world();
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    const [wd] = [...w.fake.turnstile.values()];
+    expect(w.keychain.get("oa-hosted-staging-turnstile")).toBe(
+      `${wd?.sitekey}:${wd?.secret}`,
+    );
+    for (const e of w.execs)
+      expect(e.args.join(" ")).not.toContain(String(wd?.secret));
+    expect(w.lines.join("\n")).not.toContain(String(wd?.secret));
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    expect(w.parsed().find((l) => l.step === "turnstile-init")?.data).toEqual({
+      created: true,
+      stored: true,
+    });
+    expect(lastLine(w)).toMatchObject({ step: "audit" });
+    expect(w.fake.turnstile.size).toBe(1);
+  });
+
+  it("turnstile-init refuses a same-named widget that differs", async () => {
+    const w = world();
+    w.fake.turnstile.set("0xEXISTING", {
+      sitekey: "0xEXISTING",
+      name: "oa-s-turnstile",
+      domains: ["example.com"],
+      mode: "managed",
+      secret: "0xexisting-secret",
+    });
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(1);
+    expect(
+      w.parsed().find((l) => l.step === "turnstile-init")?.message,
+    ).toMatch(/differs/);
+    expect(w.fake.turnstile.size).toBe(1);
+  });
+
+  it("create with codes on reads the env's Turnstile keys from the keychain", async () => {
+    const w = world();
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    expect(
+      await main([...CREATE(), "--var", "AUTH_PROVIDERS=email"], w.deps),
+    ).toBe(0);
+    const [wd] = [...w.fake.turnstile.values()];
+    const s = [...w.fake.scripts.values()][0];
+    expect(s?.secrets.get("TURNSTILE_SECRET")).toBe(wd?.secret);
+    expect(w.lines.join("\n")).not.toContain(String(wd?.secret));
+  });
+
+  it("publish-release downloads the env's tar and .sig.json with gh, then hands them to publishRelease", async () => {
+    const w = world();
+    const exec = w.deps.execFile;
+    let dir = "";
+    w.deps.execFile = async (f, a, o) => {
+      if (f !== "gh") return exec(f, a, o);
+      w.execs.push({ file: f, args: a });
+      dir = a[a.indexOf("--dir") + 1] as string;
+      writeFileSync(
+        join(dir, "oa-release-staging-release-0.30.0.tar"),
+        "not a tar",
+      );
+      writeFileSync(
+        join(dir, "oa-release-staging-release-0.30.0.sig.json"),
+        "{}",
+      );
+      return "";
+    };
+    w.deps.readFile = (p) => new Uint8Array(readFileSync(p));
+    let removed = "";
+    w.deps.removeTree = (d) => {
+      removed = d;
+    };
+    expect(
+      await main(
+        ["publish-release", "--env", "staging", "--tag", "v0.30.0"],
+        w.deps,
+      ),
+    ).toBe(1);
+    const gh = w.execs.find((e) => e.file === "gh");
+    expect(gh?.args).toEqual([
+      "release",
+      "download",
+      "v0.30.0",
+      "--repo",
+      "open-artifacts-ai/open-artifacts",
+      "--pattern",
+      "oa-release-staging-*",
+      "--dir",
+      dir,
+    ]);
+    // The bytes are verified before any upload: a bad .sig.json is refused.
+    const msg = w.parsed().find((l) => l.step === "publish-release")?.message;
+    expect(msg).toMatch(/\.sig\.json/);
+    expect(
+      w.fake.r2Log.filter(
+        (e) => e.method === "PUT" && !e.key.startsWith("probe/"),
+      ),
+    ).toEqual([]);
+    expect(removed).toBe(dir);
+  });
+
+  it("publish-floor reads the floor file and hands it to publishFloor", async () => {
+    const w = world();
+    w.files.set("/f/floor.sig.json", {
+      bytes: new TextEncoder().encode("{}"),
+      info: { mode: 0o100644, uid: 501, isFile: true },
+    });
+    expect(
+      await main(
+        ["publish-floor", "--env", "staging", "--floor", "/f/floor.sig.json"],
+        w.deps,
+      ),
+    ).toBe(1);
+    expect(w.parsed().find((l) => l.step === "publish-floor")?.message).toMatch(
+      /floor/,
+    );
+  });
+});
