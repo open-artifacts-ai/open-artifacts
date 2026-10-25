@@ -37,6 +37,7 @@ import {
   readInitial,
   readPending,
 } from "./store.js";
+import { thawFrozenEdits } from "./thaw.js";
 import { TransportError } from "./transport.js";
 
 // The DirectorySync engine (P3 T13). One DO per install runs it on its alarm;
@@ -130,8 +131,14 @@ type Step =
   | { kind: "reports"; app: "admin" | "groups"; page: string | null }
   | { kind: "userkeys" }
   | { kind: "targets"; all: boolean }
+  | { kind: "thaw" }
   | Walk
   | { kind: "finish" };
+
+/** Steps that read groups or apply group-derived access: skipped while frozen. */
+const GROUP_STEPS = new Set(["targets", "thaw", "walk", "reports:groups"]);
+const stepGroup = (s: Step) =>
+  s.kind === "reports" ? `reports:${s.app}` : s.kind;
 
 type Run = {
   lane: Lane;
@@ -595,7 +602,9 @@ export class SyncEngine {
         { kind: "users", which: "suspended", page: null },
         { kind: "users", which: "deleted", page: null },
       );
-      if (groups) queue.push({ kind: "targets", all: true });
+      // Sync back after a freeze: frozen edits give way to the synced
+      // roles first, then the walks apply what changed in Google (P3 T15).
+      if (groups) queue.push({ kind: "thaw" }, { kind: "targets", all: true });
     } else {
       queue.push({ kind: "reports", app: "admin", page: null });
       if (groups) {
@@ -681,6 +690,10 @@ export class SyncEngine {
     groups: boolean,
     now: number,
   ): Promise<Done> {
+    // Frozen (Team): a run planned while sync was on reads no groups and
+    // changes no group-derived access; it never widens (P3 T15).
+    if (!groups && GROUP_STEPS.has(stepGroup(step)))
+      return { status: "done", called: false };
     switch (step.kind) {
       case "customer": {
         const sub = await liveSub(this.env);
@@ -828,6 +841,14 @@ export class SyncEngine {
               this.sql.exec("delete from dirty where group_id = ?", id);
           },
         };
+      }
+      case "thaw": {
+        const more = await thawFrozenEdits(this.env, {
+          guard: () => this.guard(),
+          now,
+          ctx: this.ctx,
+        });
+        return { status: more ? "more" : "done", called: false };
       }
       case "walk":
         return this.walk(run, step, token);

@@ -243,7 +243,9 @@ describe("tier transitions", () => {
       const after = await accessSet(to, uids, [artifact]);
       expect(isSubset(after, before)).toBe(true);
       // The same rows read under either tier's flags: flags never widen.
-      expect(isSubset(await accessSet(to, uids, [artifact]), after)).toBe(true);
+      expect(isSubset(after, await accessSet(from, uids, [artifact]))).toBe(
+        true,
+      );
     },
   );
 

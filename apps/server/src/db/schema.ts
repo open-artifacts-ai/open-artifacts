@@ -177,6 +177,23 @@ export const orgGroupMappings = sqliteTable(
   ],
 );
 
+// A space member's synced row an admin changed or removed by hand while sync
+// was frozen (Team). The first reconcile after sync returns replaces each one
+// with the synced role and deletes the row (P3 T15).
+export const frozenEdits = sqliteTable(
+  "frozen_edits",
+  {
+    spaceId: text("space_id")
+      .notNull()
+      .references(() => spaces.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    at: integer("at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.spaceId, t.userId] })],
+);
+
 // Groups whose members are capped at viewer on every surface (P3 T14).
 export const restrictedGroups = sqliteTable("restricted_groups", {
   groupId: text("group_id").primaryKey(),

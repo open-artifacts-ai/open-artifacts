@@ -3,6 +3,7 @@ import {
   type ArtifactSummary,
   type CapReason,
   type DirectoryMode,
+  directoryModeOf,
   type GroupMapping,
   type GroupRef,
   LIST_SPACES_MAX,
@@ -80,12 +81,18 @@ export const spacesOn = (env: Env): boolean =>
   authConfig(env).features.includes("spaces");
 
 /** Directory sync mode from FEATURES: google (running), frozen (Team after trial) or off. */
-export function directoryMode(env: Env): DirectoryMode {
-  const f = authConfig(env).features;
-  if (f.includes("sync_google")) return "google";
-  if (f.includes("sync_frozen")) return "frozen";
-  return "off";
-}
+export const directoryMode = (env: Env): DirectoryMode =>
+  directoryModeOf(authConfig(env).features);
+
+// A frozen edit of (space ?1, user ?2) at ?3, recorded once (the first edit
+// wins), when that user's synced row is there and goes now: ?4 = 1 for an org
+// admin, else never a manager row (the guarded writes skip it too).
+const RECORD_FROZEN_EDIT = `insert into frozen_edits (space_id, user_id, at)
+  select ?1, ?2, ?3 where exists (select 1 from space_members
+    where space_id = ?1 and user_id = ?2 and source = 'sync')
+    and (?4 = 1 or not exists (select 1 from space_members
+      where space_id = ?1 and user_id = ?2 and role = 'manager'))
+  on conflict (space_id, user_id) do nothing`;
 
 const notFound = () => new ApiError("not_found", "Not found");
 const personalError = (what: string) =>
@@ -813,6 +820,8 @@ export async function putSpaceMember(
               args: [id, userId, a, id, userId],
             },
           }),
+          // Replaced by the first reconcile after sync returns (P3 T15).
+          stmt(env.DB, RECORD_FROZEN_EDIT).bind(id, userId, Date.now(), a),
           stmt(
             env.DB,
             `delete from space_members where space_id = ?1 and user_id = ?2 and source = 'sync'
@@ -907,13 +916,17 @@ export async function deleteSpaceMember(
         },
       },
     ),
+    // Frozen: the synced row's removal is replaced when sync returns (P3 T15).
+    ...(both
+      ? [stmt(env.DB, RECORD_FROZEN_EDIT).bind(id, userId, Date.now(), a)]
+      : []),
     stmt(env.DB, `delete from space_members where ${rows}`).bind(...args),
     stmt(env.DB, ROWS_OF).bind(id, userId),
   ]);
-  if (!out[2]?.meta.changes) {
+  if (!out.at(-2)?.meta.changes) {
     // Refused (a racing manager row, non-admin): 403, as the check would
     // have said; else the rows were already gone.
-    const now = rowsIn(out[3]);
+    const now = rowsIn(out.at(-1));
     if (
       !admin &&
       (knownRole(now?.manual) === "manager" ||
@@ -922,7 +935,7 @@ export async function deleteSpaceMember(
       throw forbidden("member");
     throw notFound();
   }
-  if (rank(rowsRole(rowsIn(out[3]))) < rank(rowsRole(rowsIn(out[0]))))
+  if (rank(rowsRole(rowsIn(out.at(-1)))) < rank(rowsRole(rowsIn(out[0]))))
     await revokeUserLive(env, userId, "removed from space", ctx);
 }
 

@@ -92,6 +92,13 @@
       "when": 1792864757463,
       "tag": "0012_agent_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1792895958641,
+      "tag": "0013_frozen_edits",
+      "breakpoints": true
     }
   ]
 }
