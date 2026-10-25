@@ -16,11 +16,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { accessLevel, callerOf } from "../src/auth/authz.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
+import { THAW_CHUNK, validEdit } from "../src/directory/thaw.js";
 import type { Env } from "../src/env.js";
 import type { UserPresence } from "../src/runtime/presence.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
 import { getUser } from "../src/services/users.js";
-import { mailer, uniq } from "./auth-helpers.js";
+import { mailer, seedUser, uniq } from "./auth-helpers.js";
 import {
   app,
   connect,
@@ -325,7 +326,11 @@ describe("tier transitions", () => {
       expect(await thawAudits(space, uid)).toEqual([
         { action: "space.member.remove", detail: { thaw: true } },
       ]);
-    expect(await thawAudits(space, removed as string)).toEqual([]);
+    // The frozen delete is final; fresh membership (still in the group)
+    // re-adds the synced row only.
+    expect(await thawAudits(space, removed as string)).toEqual([
+      { action: "directory.sync", detail: { thaw: "removal_kept" } },
+    ]);
   });
 
   it("thaw restores the manual rows from before the freeze, never more", async () => {
@@ -374,10 +379,9 @@ describe("tier transitions", () => {
       { source: "manual", role: "viewer" },
       sync,
     ]);
-    expect(await rowsOf(space, c)).toEqual([
-      { source: "manual", role: "editor" },
-      sync,
-    ]);
+    // c's frozen delete is final: the pre-freeze manual editor stays gone;
+    // c is still in the group, so sync re-adds the synced viewer row.
+    expect(await rowsOf(space, c)).toEqual([sync]);
     expect(await rowsOf(space, d)).toEqual([sync]);
     const lv = async (uid: string) => {
       const u = await getUser(business, uid);
@@ -387,7 +391,7 @@ describe("tier transitions", () => {
     };
     expect(await lv(a)).toBe("editor");
     expect(await lv(b)).toBe("viewer");
-    expect(await lv(c)).toBe("editor");
+    expect(await lv(c)).toBe("viewer");
     expect(await lv(d)).toBe("viewer");
     // The narrowed (b and d were managers) had their sockets closed.
     expect(Number(await revokedAt(b))).toBeGreaterThan(pre.b);
@@ -399,7 +403,7 @@ describe("tier transitions", () => {
       { action: "space.member.role", detail: { thaw: true, role: "viewer" } },
     ]);
     expect(await thawAudits(space, c)).toEqual([
-      { action: "space.member.add", detail: { thaw: true, role: "editor" } },
+      { action: "directory.sync", detail: { thaw: "removal_kept" } },
     ]);
     expect(await thawAudits(space, d)).toEqual([
       { action: "space.member.remove", detail: { thaw: true } },
@@ -407,6 +411,165 @@ describe("tier transitions", () => {
     // The next reconcile has nothing to undo and audits nothing more.
     await drain(t0 + 122 * MIN, business);
     expect(await thawAudits(space, a)).toHaveLength(1);
+  });
+
+  it("left the group while frozen, then thaw: the frozen delete stays removed, at every alarm", async () => {
+    const business = tierEnv("business");
+    const team = tierEnv("team");
+    const us = dirUsers(3, "left");
+    const gid = `grp-left-${crypto.randomUUID()}`;
+    const { space } = await world(
+      gid,
+      us.map((u) => u.id),
+    );
+    const t0 = Date.now();
+    await connected(business, t0);
+    const x = await uidOf(us[0]?.id as string);
+    // Frozen: x leaves the group in Google, and an admin removes x by hand.
+    g.removeMember(gid, us[0]?.id as string);
+    const d = await call(team, R.spaceMember(space, x), owner.cookie, "DELETE");
+    expect(d.status).toBe(204);
+    g.setMemberPageSize(1);
+    // Back to Business: alarm by alarm, x never regains a row (the thaw
+    // runs after the walks, on fresh membership).
+    const at = t0 + 61 * MIN;
+    for (let i = 0; i < 80; i++) {
+      await tick(at, business);
+      expect(await rowsOf(space, x)).toEqual([]);
+      if (!(await inDo((s) => new SyncEngine(business, s.storage).due(at))))
+        break;
+    }
+    expect(await one("select count(*) as n from frozen_edits")).toEqual({
+      n: 0,
+    });
+    expect(await thawAudits(space, x)).toEqual([
+      { action: "directory.sync", detail: { thaw: "removal_kept" } },
+    ]);
+  });
+
+  it("a frozen manual add survives the thaw, audited", async () => {
+    const business = tierEnv("business");
+    const team = tierEnv("team");
+    const us = dirUsers(2, "add");
+    const gid = `grp-add-${crypto.randomUUID()}`;
+    const { space, artifact } = await world(gid, [us[0]?.id as string]);
+    const t0 = Date.now();
+    await connected(business, t0);
+    const outsider = await uidOf(us[1]?.id as string);
+    const r = await call(
+      team,
+      R.spaceMember(space, outsider),
+      owner.cookie,
+      "PUT",
+      { role: "editor" },
+    );
+    expect(r.status).toBe(200);
+    await drain(t0 + 61 * MIN, business);
+    expect(await rowsOf(space, outsider)).toEqual([
+      { source: "manual", role: "editor" },
+    ]);
+    const u = await getUser(business, outsider);
+    expect(
+      u ? (await accessLevel(business, callerOf(u), artifact))?.level : null,
+    ).toBe("editor");
+    expect(await thawAudits(space, outsider)).toEqual([
+      {
+        action: "directory.sync",
+        detail: { thaw: "manual_kept", role: "editor" },
+      },
+    ]);
+  });
+
+  it("first edit wins across a repeated freeze with the thaw unfinished", async () => {
+    const business = tierEnv("business");
+    const team = tierEnv("team");
+    const us = dirUsers(1, "again");
+    const gid = `grp-again-${crypto.randomUUID()}`;
+    const { space } = await world(gid, [us[0]?.id as string], "viewer");
+    const t0 = Date.now();
+    await connected(business, t0);
+    const x = await uidOf(us[0]?.id as string);
+    const put = (e: Env, role: string) =>
+      call(e, R.spaceMember(space, x), owner.cookie, "PUT", { role });
+    expect((await put(business, "editor")).status).toBe(200);
+    expect((await put(team, "viewer")).status).toBe(200);
+    const rec = () =>
+      one(
+        "select at, manual_role, kind from frozen_edits where user_id = ?",
+        x,
+      );
+    const first = await rec();
+    expect(first).toMatchObject({ manual_role: "editor", kind: "override" });
+    // Sync back on but no reconcile yet (the thaw hasn't run), then frozen
+    // again and edited again: the record is the first one, unchanged.
+    await drain(t0 + 2 * MIN, business);
+    expect((await put(business, "viewer")).status).toBe(200);
+    expect((await put(team, "manager")).status).toBe(200);
+    expect(await rec()).toEqual(first);
+    await drain(t0 + 61 * MIN, business);
+    expect(await rowsOf(space, x)).toEqual([
+      { source: "manual", role: "editor" },
+      { source: "sync", role: "viewer" },
+    ]);
+  });
+
+  it("the thaw applies one chunk per alarm", async () => {
+    const business = tierEnv("business");
+    const t0 = Date.now();
+    await connected(business, t0);
+    const space = `s-${newId()}`;
+    await env.DB.prepare(
+      "insert into spaces (id, kind, name, public_links, created_at) values (?, 'shared', ?, 0, 1)",
+    )
+      .bind(space, space)
+      .run();
+    for (let i = 0; i <= THAW_CHUNK; i++) {
+      const uid = await seedUser(uniq(`chunk${i}`), "member");
+      await env.DB.prepare(
+        "insert into frozen_edits (space_id, user_id, at, manual_role, kind) values (?, ?, ?, null, 'manual')",
+      )
+        .bind(space, uid, i)
+        .run();
+    }
+    const left = async () =>
+      (await one<{ n: number }>("select count(*) as n from frozen_edits"))?.n;
+    const at = t0 + 61 * MIN;
+    let n = THAW_CHUNK + 1;
+    for (let i = 0; i < 40 && n === THAW_CHUNK + 1; i++) {
+      await tick(at, business);
+      n = (await left()) as number;
+    }
+    // The alarm that ran the thaw did one chunk only.
+    expect(n).toBe(1);
+    await tick(at, business);
+    expect(await left()).toBe(0);
+  });
+
+  it("stored values outside the enums never grant", () => {
+    expect(
+      validEdit({ s: "s", u: "u", t: 1, m: "owner", k: "override" }),
+    ).toMatchObject({ m: null, k: "override" });
+    expect(
+      validEdit({ s: "s", u: "u", t: 1, m: "editor", k: "x" }),
+    ).toMatchObject({ m: "editor", k: "delete" });
+  });
+
+  it("frozen runs keep lastSuccessAt (no group read is reported fresh)", async () => {
+    const business = tierEnv("business");
+    const team = tierEnv("team");
+    const t0 = Date.now();
+    await connected(business, t0);
+    const st = (en: Env) => inDo((s) => new SyncEngine(en, s.storage).status());
+    const before = await st(business);
+    expect(before.state).toBe("ok");
+    await drain(t0 + 61 * MIN, team);
+    await drain(t0 + 122 * MIN, team);
+    const after = await st(team);
+    expect(after.lastSuccessAt).toBe(before.lastSuccessAt);
+    expect(after.staleAt).toBe(before.staleAt);
+    // Back on: the next reconcile that reads groups stamps it.
+    await drain(t0 + 183 * MIN, business);
+    expect((await st(business)).lastSuccessAt).not.toBe(before.lastSuccessAt);
   });
 
   it("frozen still suspends departed users", async () => {

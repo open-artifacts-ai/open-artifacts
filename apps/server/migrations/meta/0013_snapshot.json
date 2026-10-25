@@ -559,6 +559,14 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'override'"
         }
       },
       "indexes": {},
@@ -593,6 +601,10 @@
         "frozen_edits_manual_role_check": {
           "name": "frozen_edits_manual_role_check",
           "value": "\"frozen_edits\".\"manual_role\" is null or \"frozen_edits\".\"manual_role\" in ('viewer', 'editor', 'manager')"
+        },
+        "frozen_edits_kind_check": {
+          "name": "frozen_edits_kind_check",
+          "value": "\"frozen_edits\".\"kind\" in ('override', 'delete', 'manual')"
         }
       }
     },

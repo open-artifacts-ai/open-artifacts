@@ -602,9 +602,10 @@ export class SyncEngine {
         { kind: "users", which: "suspended", page: null },
         { kind: "users", which: "deleted", page: null },
       );
-      // Sync back after a freeze: frozen edits give way to the synced
-      // roles first, then the walks apply what changed in Google (P3 T15).
-      if (groups) queue.push({ kind: "thaw" }, { kind: "targets", all: true });
+      // Sync back after a freeze: the walks (targets is replaced by them, in
+      // front of the thaw) refresh directory_members first, then frozen
+      // edits get their outcomes on fresh membership (P3 T15).
+      if (groups) queue.push({ kind: "targets", all: true }, { kind: "thaw" });
     } else {
       queue.push({ kind: "reports", app: "admin", page: null });
       if (groups) {
@@ -848,12 +849,16 @@ export class SyncEngine {
           now,
           ctx: this.ctx,
         });
-        return { status: more ? "more" : "done", called: false };
+        // One chunk per alarm: a long list never runs past the alarm's
+        // subrequest budget.
+        return more
+          ? { status: "more", called: true }
+          : { status: "done", called: false };
       }
       case "walk":
         return this.walk(run, step, token);
       case "finish": {
-        await this.succeed(run, now);
+        await this.succeed(run, now, groups);
         return { status: "done", called: false };
       }
     }
@@ -1347,7 +1352,13 @@ export class SyncEngine {
     }
   }
 
-  private async succeed(run: Run, now: number) {
+  /**
+   * A run finished. Frozen (`groups` false) it polled user status but read
+   * no group: lastSuccessAt (and staleAt from it) keeps the last run that
+   * read groups, and an install that never had one stays "never", not ok
+   * (P3 T15).
+   */
+  private async succeed(run: Run, now: number, groups: boolean) {
     this.guard();
     const lane = run.lane;
     const nextFast = now + FAST_MS;
@@ -1361,15 +1372,16 @@ export class SyncEngine {
       // The other lane still failing: stay unhealthy (banner, email, state).
       if (other !== null) return { ...h, lanes };
       // lastSuccessAt at most hourly while healthy: no write per fast tick.
+      const state = groups || h.lastSuccessAt !== null ? "ok" : "never";
       const stamp =
-        h.state !== "ok" ||
-        h.lastSuccessAt === null ||
-        now - h.lastSuccessAt >= RECONCILE_MS;
+        h.state !== state ||
+        (groups &&
+          (h.lastSuccessAt === null || now - h.lastSuccessAt >= RECONCILE_MS));
       return {
         ...h,
-        state: "ok",
+        state,
         unhealthySince: null,
-        lastSuccessAt: stamp ? now : h.lastSuccessAt,
+        lastSuccessAt: stamp && groups ? now : h.lastSuccessAt,
         lastError: null,
         nextRunAt: stamp ? Math.min(nextFast, nextRec) : h.nextRunAt,
         alertedAt: null,
