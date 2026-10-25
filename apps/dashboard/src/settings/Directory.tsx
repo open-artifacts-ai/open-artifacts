@@ -400,7 +400,8 @@ function StatusHeader({
           added until then.
         </p>
         {sync.pendingExpiresAt && (
-          <p className={muted}>Confirm by {expiry(sync.pendingExpiresAt)}.</p>
+          // Not "Confirm by": a non-owner can't act on it.
+          <p className={muted}>Expires {expiry(sync.pendingExpiresAt)}.</p>
         )}
       </Header>
     );

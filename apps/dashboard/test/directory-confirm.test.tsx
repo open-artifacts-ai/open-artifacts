@@ -138,7 +138,8 @@ it("a non-owner waits for the owner: named, the expiry, no buttons", async () =>
   expect(h).toHaveTextContent(
     "Ada Lovelace needs to confirm who to add. Nobody is added until then.",
   );
-  expect(h).toHaveTextContent(`Confirm by ${expiryText}.`);
+  expect(h).toHaveTextContent(`Expires ${expiryText}.`);
+  expect(h.textContent).not.toMatch(/Confirm by/);
   expect(within(h).queryByRole("button")).toBeNull();
 });
 
