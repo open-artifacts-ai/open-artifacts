@@ -79,6 +79,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // P3 T14: a directory deletion (or a recycled address): removed, its
   // address's shares and every membership gone.
   "directory/apply.ts:deleteUser": "user",
+  // P3 T15: sync back after a freeze replaces frozen edits with the synced
+  // role (a manager override lowered, say): the users whose role dropped.
+  "directory/thaw.ts:thawFrozenEdits": "user",
 };
 
 /**
