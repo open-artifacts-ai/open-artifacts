@@ -5,6 +5,7 @@ import {
   type OAuthClientHookResult,
   OtpLatestInputSchema,
   type Role,
+  type SpaceRole,
   TEST_HOOKS,
   TEST_HOOKS_ALLOWED,
   TestSessionInputSchema,
@@ -178,8 +179,50 @@ async function testUser(
   return stored === role && status === "active" ? toMember(row) : null;
 }
 
-/** P3 owns space roles; until it lands, a session hook asking for them is refused. */
-const spacesSupported = (spaces: unknown[]) => spaces.length === 0;
+type SpaceGrant = { spaceId: string; role: SpaceRole };
+const MAX_SPACES = 20;
+const SPACE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** At most 20 grants, safe ids, each space once. */
+const spacesValid = (spaces: SpaceGrant[]) =>
+  spaces.length <= MAX_SPACES &&
+  spaces.every((s) => SPACE_ID.test(s.spaceId)) &&
+  new Set(spaces.map((s) => s.spaceId)).size === spaces.length;
+
+// Never a personal space, and never a deleted one: refused as a whole.
+const SPACES_BLOCKED =
+  "select 1 from spaces where id in (select value from json_each(?)) and (kind <> 'shared' or deleted_at is not null) limit 1";
+const SPACE_CREATE =
+  "insert into spaces (id, kind, name, all_members_role, public_links, created_at) values (?, 'shared', ?, null, 0, ?) on conflict (id) do nothing";
+// Conditional on a live shared space, so a racing personal row is never joined.
+const MEMBER_UPSERT = `insert into space_members (space_id, user_id, role, source, created_at)
+  select ?1, ?2, ?3, 'manual', ?4
+  where exists (select 1 from spaces where id = ?1 and kind = 'shared' and deleted_at is null)
+  on conflict (space_id, user_id, source) do update set role = excluded.role
+  where space_members.role <> excluded.role`;
+
+/**
+ * P3 T17: creates any missing shared space and upserts the user's manual
+ * space_members rows, in one batch. False (refuse) when an id names a
+ * personal or deleted space.
+ */
+async function grantSpaces(
+  env: Env,
+  userId: string,
+  spaces: SpaceGrant[],
+): Promise<boolean> {
+  if (spaces.length === 0) return true;
+  const ids = JSON.stringify(spaces.map((s) => s.spaceId));
+  if (await env.DB.prepare(SPACES_BLOCKED).bind(ids).first()) return false;
+  const now = Date.now();
+  await env.DB.batch(
+    spaces.flatMap((s) => [
+      env.DB.prepare(SPACE_CREATE).bind(s.spaceId, `Test ${s.spaceId}`, now),
+      env.DB.prepare(MEMBER_UPSERT).bind(s.spaceId, userId, s.role, now),
+    ]),
+  );
+  return true;
+}
 
 // A loopback redirect: the grant is completed server-side, nothing follows it.
 const HOOK_REDIRECT = "http://127.0.0.1/p5-oauth-callback";
@@ -293,10 +336,8 @@ export function mountTestHooks(app: AppType): void {
       const { email: raw, role, spaces = [] } = input.data;
       const email = normalizeEmail(raw);
       const user =
-        email && spacesSupported(spaces)
-          ? await testUser(env, email, role)
-          : null;
-      if (!user) {
+        email && spacesValid(spaces) ? await testUser(env, email, role) : null;
+      if (!user || !(await grantSpaces(env, user.id, spaces))) {
         await audit(env, hook, ip, "refused", email ? { email } : {});
         return notFound();
       }

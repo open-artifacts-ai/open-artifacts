@@ -405,16 +405,9 @@ describe("TEST_DOMAIN and refusals", () => {
     );
   });
 
-  it("session: bad input and spaces are the identical 404", async () => {
+  it("session: bad input is the identical 404", async () => {
     await same404(
       await hook(on(), TEST_HOOKS.session, { email: "nope", role: "member" }),
-    );
-    await same404(
-      await hook(on(), TEST_HOOKS.session, {
-        email: tu("sp"),
-        role: "member",
-        spaces: [{ spaceId: "s", role: "viewer" }],
-      }),
     );
     await same404(await call(on(), "/__test/x", { body: {}, key: KEY }));
     await same404(
