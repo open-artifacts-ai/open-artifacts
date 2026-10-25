@@ -227,41 +227,59 @@ export async function upsertWithRole(
   return toMember(await upsert(env, e, null, role, true));
 }
 
-const USER_BY_ID =
-  "select id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, session_epoch as sessionEpoch, restricted_manual as restrictedManual, restricted_sync as restrictedSync, status_changed_at as statusChangedAt from users where id = ? and status = 'active' limit 1";
+const USER_COLS =
+  "id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, session_epoch as sessionEpoch, restricted_manual as restrictedManual, restricted_sync as restrictedSync, status_changed_at as statusChangedAt";
 
 /**
- * Every authenticated request: one prepared D1 statement, no ORM mapping.
- * A deactivated user (status not 'active') resolves to null, so their session
- * cookie, PATs and OAuth tokens all stop working. `sessionEpoch` is what a
- * session cookie's `e` must equal.
+ * A synced user (P3 T18): a Google identity bound to the connected directory.
+ * directory_state is cleared on disconnect, so "while a directory is
+ * connected" needs no binding read.
  */
-export async function getUserWithEpoch(
-  env: Env,
-  id: string,
-): Promise<{
+const SYNCED =
+  "exists (select 1 from identities i where i.user_id = users.id and i.provider = 'google' and i.directory_bound = 1)";
+/** customer_mismatch fails closed for synced users: one directory_state PK probe, then the identity. */
+const MISMATCH = `exists (select 1 from directory_state ds where ds.key = 'sync.state' and ds.value = 'customer_mismatch' and ${SYNCED})`;
+/**
+ * Cookie sessions only (?2 = 1): when sync went unhealthy, for a synced user
+ * (the 24 h browser session cap); one PK probe of the health row, and the
+ * identity only while unhealthy. PATs and OAuth grants never read it.
+ */
+const CAP_SINCE = `case when ?2 = 1 then (select json_extract(h.value, '$.unhealthySince') from directory_state h
+  where h.key = 'sync.health' and json_extract(h.value, '$.unhealthySince') is not null and ${SYNCED}) end as capSince`;
+
+const USER_BY_ID = `select ${USER_COLS}, ${CAP_SINCE} from users
+  where id = ?1 and status = 'active' and not ${MISMATCH} limit 1`;
+/** The org owner denied by customer_mismatch, for break-glass only (T18). */
+const MISMATCH_OWNER = `select ${USER_COLS}, null as capSince from users
+  where id = ?1 and status = 'active' and role = 'owner' and ${MISMATCH} limit 1`;
+
+type UserByIdRow = Pick<
+  UserRow,
+  | "id"
+  | "email"
+  | "name"
+  | "displayName"
+  | "role"
+  | "lastSeenAt"
+  | "sessionEpoch"
+  | "restrictedManual"
+  | "restrictedSync"
+  | "statusChangedAt"
+> & { capSince: number | null };
+
+export type UserWithEpoch = {
   user: Member;
   sessionEpoch: number;
   /** When status last changed (ms) or null: OAuth grants issued at or before it are refused. */
   statusChangedAt: number | null;
-} | null> {
-  const row = await stmt(env.DB, USER_BY_ID)
-    .bind(id)
-    .first<
-      Pick<
-        UserRow,
-        | "id"
-        | "email"
-        | "name"
-        | "displayName"
-        | "role"
-        | "lastSeenAt"
-        | "sessionEpoch"
-        | "restrictedManual"
-        | "restrictedSync"
-        | "statusChangedAt"
-      >
-    >();
+  /**
+   * Cookie reads only: when directory sync went unhealthy (ms), for a synced
+   * user; null otherwise (the 24 h browser session cap, T18).
+   */
+  capSince: number | null;
+};
+
+function withEpoch(env: Env, row: UserByIdRow | null): UserWithEpoch | null {
   // Every request's user comes through here (session, PAT, OAuth), so the cap
   // is set once (P3's capOf: the one source authz's CAP reads). Sources: P2's
   // authConfig.guestsReadOnly and P3's restriction columns (0009).
@@ -281,7 +299,42 @@ export async function getUserWithEpoch(
     ),
     sessionEpoch: row.sessionEpoch,
     statusChangedAt: row.statusChangedAt ?? null,
+    capSince: typeof row.capSince === "number" ? row.capSince : null,
   };
+}
+
+/**
+ * Every authenticated request: one prepared D1 statement, no ORM mapping.
+ * A deactivated user (status not 'active') resolves to null, so their session
+ * cookie, PATs and OAuth tokens all stop working; so does a synced user while
+ * the directory is in customer_mismatch (P3 T18). `sessionEpoch` is what a
+ * session cookie's `e` must equal. `cookie` adds capSince.
+ */
+export async function getUserWithEpoch(
+  env: Env,
+  id: string,
+  o: { cookie?: boolean } = {},
+): Promise<UserWithEpoch | null> {
+  return withEpoch(
+    env,
+    await stmt(env.DB, USER_BY_ID)
+      .bind(id, o.cookie ? 1 : 0)
+      .first<UserByIdRow>(),
+  );
+}
+
+/**
+ * The org owner that getUserWithEpoch refused for customer_mismatch, else
+ * null. Only the break-glass routes and the Google sign-in read it (T18).
+ */
+export async function getMismatchOwner(
+  env: Env,
+  id: string,
+): Promise<UserWithEpoch | null> {
+  return withEpoch(
+    env,
+    await stmt(env.DB, MISMATCH_OWNER).bind(id).first<UserByIdRow>(),
+  );
 }
 
 export async function getUser(env: Env, id: string): Promise<Member | null> {

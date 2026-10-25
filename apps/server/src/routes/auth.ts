@@ -33,6 +33,7 @@ import { FAVICON_TAGS } from "../http/head.js";
 import { onGoogleSignIn } from "../services/directory.js";
 import { admit } from "../services/identity.js";
 import {
+  getMismatchOwner,
   getUserWithEpoch,
   upsertOnLogin,
   upsertWithRole,
@@ -233,7 +234,11 @@ export function mountAuth(app: AppType): void {
         }
         logAuth({ evt: "directory_sync_failed" });
       }
-      const row = await getUserWithEpoch(c.env, r.user.id);
+      // An org owner refused by customer_mismatch still gets a session: only
+      // the break-glass routes resolve it (P3 T18).
+      const row =
+        (await getUserWithEpoch(c.env, r.user.id)) ??
+        (await getMismatchOwner(c.env, r.user.id));
       if (!row) {
         logAuth({ provider: "google", outcome: "error", stage: "no_user" });
         return toSignIn("failed", id.next, clear);

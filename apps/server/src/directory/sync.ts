@@ -27,6 +27,7 @@ import {
   ALERT_AFTER_MS,
   clearHealth,
   type Health,
+  markStale,
   putHealth,
   readHealth,
 } from "./health.js";
@@ -284,6 +285,16 @@ class MismatchSignal extends Error {
     super("directory sync: customer_mismatch");
   }
 }
+
+/** Informational (T18): sync has not succeeded for STALE_MS. Nothing is revoked. */
+const staleAudit = (env: Env, h: Health) =>
+  audit(env, "directory.stale", { type: "directory", id: "google" }, SYNC, {
+    detail: {
+      lastSuccessAt: h.lastSuccessAt,
+      staleAt: h.staleAt,
+      state: h.state,
+    },
+  });
 
 export class SyncEngine {
   private sql: SqlStorage;
@@ -1356,6 +1367,7 @@ export class SyncEngine {
         backoffN: 0,
         failState: null,
         lanes,
+        staleAt: null,
       };
     });
     this.storage.transactionSync(() => {
@@ -1394,7 +1406,8 @@ export class SyncEngine {
           ? "unhealthy"
           : null;
     if (why) alertedAt = now;
-    const next: Health = {
+    const { h: next, became } = markStale(
+      {
       ...h,
       state:
         h.lastSuccessAt === null && e.state === "backoff" ? "never" : e.state,
@@ -1405,10 +1418,13 @@ export class SyncEngine {
       backoffN: n,
       failState: e.state,
       lanes: { ...h.lanes, [lane]: e.state },
-    };
+      },
+      now,
+    );
     this.guard();
     await this.env.DB.batch([
       ...putHealth(this.env, h, next),
+      ...(became ? [staleAudit(this.env, next)] : []),
       ...(entering
         ? [
             audit(
@@ -1445,7 +1461,8 @@ export class SyncEngine {
       this.del("run.fast");
       this.del("run.rec");
     });
-    const next: Health = {
+    const { h: next, became } = markStale(
+      {
       ...h,
       state: "customer_mismatch",
       unhealthySince: h.unhealthySince ?? now,
@@ -1455,10 +1472,13 @@ export class SyncEngine {
       alertedAt: entering ? now : h.alertedAt,
       failState: "customer_mismatch",
       lanes: { fast: "customer_mismatch", rec: "customer_mismatch" },
-    };
+      },
+      now,
+    );
     this.guard();
     await this.env.DB.batch([
       ...putHealth(this.env, h, next),
+      ...(became ? [staleAudit(this.env, next)] : []),
       ...(entering
         ? [
             audit(

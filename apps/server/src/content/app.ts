@@ -175,10 +175,14 @@ type Row = {
 // The bound viewer's row by primary key, in the same statement (P3 T11):
 // with no uid (?2 null) the join matches nothing. No KV deny list, and the
 // space's public-links toggle is deliberately absent (it only blocks new
-// public links).
+// public links). A synced viewer matches nothing while the directory is in
+// customer_mismatch (P3 T18, as getUser): one directory_state PK probe.
+// Staleness is not checked.
 const VIEWER_COLS =
   "u.status as viewer_status, u.session_epoch as viewer_epoch";
-const VIEWER_JOIN = "left join users u on u.id = ?2";
+const VIEWER_JOIN = `left join users u on u.id = ?2 and not exists (
+    select 1 from directory_state ds where ds.key = 'sync.state' and ds.value = 'customer_mismatch'
+      and exists (select 1 from identities i where i.user_id = u.id and i.provider = 'google' and i.directory_bound = 1))`;
 
 /**
  * One D1 read: the artifact's live state, the token's viewer (status and

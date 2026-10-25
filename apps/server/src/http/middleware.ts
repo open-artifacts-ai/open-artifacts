@@ -19,7 +19,16 @@ import {
   sessionCookieName,
 } from "../auth/session.js";
 import type { Env } from "../env.js";
-import { getUserWithEpoch } from "../services/users.js";
+import { BANNER_AFTER_MS } from "../directory/health.js";
+import { directoryAlertEmail } from "../email/templates.js";
+import { sendEmail } from "../email/send.js";
+import { audit, userActor } from "../services/audit.js";
+import { getSettings } from "../services/members.js";
+import {
+  getMismatchOwner,
+  getUserWithEpoch,
+  type UserWithEpoch,
+} from "../services/users.js";
 import { frameOpts, isEmbedRequest } from "./embed.js";
 import { ApiError, appOrigin, toErrorResponse } from "./errors.js";
 
@@ -219,8 +228,17 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
     }
   } else {
     const s = await readSession(c.env, getCookie(c, sessionCookieName(c.env)));
-    const row = s ? await getUserWithEpoch(c.env, s.uid) : null;
-    if (s && row && sessionStillValid(c.env, s, row.sessionEpoch)) {
+    const row = s
+      ? await getUserWithEpoch(c.env, s.uid, { cookie: true })
+      : null;
+    if (s && !row && isBreakGlassRoute(c.req.method, c.req.path))
+      await breakGlass(c, s);
+    else if (
+      s &&
+      row &&
+      sessionStillValid(c.env, s, row.sessionEpoch) &&
+      !sessionCapped(row.capSince, s.iat, Date.now())
+    ) {
       // The cap travels on the member itself (authz CAP, set once by getUser
       // from authConfig.guestsReadOnly and P3's restriction); a code session
       // outside the verified domains is capped on top, whatever the env says.
@@ -236,6 +254,94 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       c.set("sessionEpoch", row.sessionEpoch);
     }
   }
+}
+
+/** A browser session older than this is refused while sync is unhealthy over 1 h (T18). */
+export const SESSION_CAP_MS = 24 * 3600_000;
+/** Break-glass needs a Google sign-in at most this old (T18). */
+export const BREAK_GLASS_MS = 10 * 60_000;
+
+/**
+ * The 24 h browser session cap (P3 T18): directory sync unhealthy for over
+ * 1 h (capSince, set for synced users only) and a cookie session issued over
+ * 24 h ago. PATs and MCP OAuth grants are exempt (decided).
+ */
+export const sessionCapped = (
+  capSince: number | null,
+  iat: number,
+  now: number,
+): boolean =>
+  capSince !== null &&
+  capSince < now - BANNER_AFTER_MS &&
+  iat < now - SESSION_CAP_MS;
+
+/**
+ * The routes an org owner locked out by customer_mismatch may reach with a
+ * fresh Google sign-in (T18): directory status, connect (with its confirm
+ * and cancel steps) and sync. Exact method and path.
+ */
+const BREAK_GLASS_ROUTES: ReadonlySet<string> = new Set([
+  `GET ${R.directory}`,
+  `GET ${R.directoryConnect}`,
+  `GET ${R.directoryCallback}`,
+  `POST ${R.directoryConfirm}`,
+  `POST ${R.directoryCancel}`,
+  `POST ${R.directorySync}`,
+]);
+
+export const isBreakGlassRoute = (method: string, path: string) =>
+  BREAK_GLASS_ROUTES.has(`${method} ${path}`);
+
+/**
+ * Break-glass (T18), on BREAK_GLASS_ROUTES only, for a cookie that
+ * getUserWithEpoch refused: an org owner refused for customer_mismatch is
+ * resolved when the session is a verified-hd Google sign-in under 10 min old,
+ * else 401 reauth_required. Every use is audited (directory.break_glass) and
+ * emails that owner. Anyone else stays anonymous, as on every other route.
+ */
+async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
+  const row = await getMismatchOwner(c.env, s.uid);
+  if (!row || !sessionStillValid(c.env, s, row.sessionEpoch)) return;
+  const now = Date.now();
+  if (s.p !== "google" || s.t === undefined || s.iat < now - BREAK_GLASS_MS)
+    throw new ApiError(
+      "reauth_required",
+      "Sign in with Google again to manage the directory",
+    );
+  setCookieUser(c, s, row);
+  await audit(
+    c.env,
+    "directory.break_glass",
+    { type: "directory", id: "google" },
+    userActor(row.user.id),
+    { detail: { route: `${c.req.method} ${c.req.path}` } },
+  ).run();
+  const mail = (async () => {
+    const instance = (await getSettings(c.env)).name;
+    await sendEmail(
+      c.env,
+      null,
+      row.user.email,
+      () =>
+        directoryAlertEmail({
+          instance,
+          recipient: row.user.email,
+          appHost: c.env.APP_HOST,
+          why: "break_glass",
+        }),
+      { kind: "directory" },
+    );
+  })();
+  const ctx = execCtx(c);
+  if (ctx) ctx.waitUntil(mail);
+  else await mail;
+}
+
+function setCookieUser(c: Context<AppEnv>, s: Session, row: UserWithEpoch) {
+  c.set("user", row.user);
+  c.set("authMethod", s.p);
+  c.set("sessionExp", s.exp);
+  c.set("sessionEpoch", row.sessionEpoch);
 }
 
 export const CSRF_HEADER = "X-OA-Request";

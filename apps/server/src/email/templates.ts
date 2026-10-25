@@ -278,15 +278,18 @@ export function spaceSelfAddEmail(p: {
 export type DirectoryAlert =
   | "unhealthy"
   | "customer_mismatch"
-  | "scope_missing";
+  | "scope_missing"
+  | "break_glass";
 
 const DIRECTORY_ALERT_LINE: Record<DirectoryAlert, string> = {
   unhealthy:
     "Google directory sync has been failing for 24 hours. People keep the access they had at the last successful sync until it recovers.",
   customer_mismatch:
-    "Directory sync is paused: the connected Google account belongs to a different Google Workspace than the one this instance was connected to. Reconnect the directory to resume it.",
+    "Directory sync is paused and people synced from Google can't sign in: the connected Google account belongs to a different Google Workspace than the one this instance was connected to. Sign in with Google and reconnect the directory to restore their access.",
   scope_missing:
     "Google directory sync stopped: a permission it needs was removed. Reconnect the directory and grant every permission.",
+  break_glass:
+    "Your owner account just opened the directory settings while sync is blocked by a Google Workspace mismatch. Only the directory status, connect and sync pages are open to it until the directory is reconnected. If this wasn't you, secure your Google account and check the audit log.",
 };
 
 const DIRECTORY_TXT = `{{alertLine}}
