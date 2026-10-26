@@ -139,6 +139,8 @@ export type World = {
   googleSubs: { orgOwner: string; staleSynced: string };
   /** A throwaway copy of `art` (same space, visibility, trash and shares). */
   clone(art: ArtifactName): Promise<string>;
+  /** #681: a copy of each artifact with dataWriters "editors". */
+  editorsOnly: Record<ArtifactName, string>;
   /** A throwaway copy of S: its members, plus viewer and manager mappings. */
   cloneSpace(): Promise<string>;
   groups: { every: string; viewer: string; manager: string; free: string };
@@ -419,8 +421,18 @@ export async function buildWorld(): Promise<World> {
     return id;
   };
 
+  const editorsOnly = {} as Record<ArtifactName, string>;
+  for (const a of ARTIFACTS) {
+    editorsOnly[a] = await clone(a);
+    await run(
+      "update artifacts set data_writers = 'editors', allow_anonymous_writes = 0 where id = ?",
+      editorsOnly[a],
+    );
+  }
+
   return {
     ids,
+    editorsOnly,
     cloneSpace,
     groups,
     creds,

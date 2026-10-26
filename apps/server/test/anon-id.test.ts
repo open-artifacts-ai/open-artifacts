@@ -95,8 +95,8 @@ const shortOn = async (artifactId: string, token: string | null) => {
 };
 
 describe("anonId issuance", () => {
-  it("is never issued on an artifact without allowAnonymousWrites", async () => {
-    const id = await pub({ visibility: "public" });
+  it('is never issued on an artifact with dataWriters "editors"', async () => {
+    const id = await pub({ visibility: "public", dataWriters: "editors" });
     const r = await anon(R.dataCollection(id, "c"), null);
     expect(r.status).toBe(200);
     expect(r.headers.get(ANON_ID_HEADER)).toBeNull();

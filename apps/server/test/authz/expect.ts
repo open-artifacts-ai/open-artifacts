@@ -234,6 +234,13 @@ const isFull = (l: AccessLevel | null) => l === "manager" || l === "owner";
 
 export type Via = "rest" | "mcp" | "content";
 
+/**
+ * #681: who may change the artifact's live data. The fixture's artifacts
+ * keep the default "viewers"; the matrix probes data writes and anon ids
+ * again on "editors" clones.
+ */
+export type DataWritersCase = "viewers" | "editors";
+
 /** Whether `who` may take `action` on `art` through a `via` surface. */
 export function expected(
   who: CallerName,
@@ -241,6 +248,7 @@ export function expected(
   action: SurfaceAction,
   via: Via = "rest",
   traits: Traits = TRAITS[who],
+  dataWriters: DataWritersCase = "viewers",
 ): "allow" | "deny" {
   const t = traits;
   const a = ART[art];
@@ -256,7 +264,16 @@ export function expected(
   if (action === "list")
     return yes(t.session && (!t.capped || (t.grants ?? []).includes(art)));
   if (READS.includes(action)) return "allow";
-  if (action === "data.write" || action === "storage") return yes(writer);
+  // Data writes: "viewers" lets anyone who can view write (anonymous
+  // callers reach a level only on public artifacts); "editors" only uncapped
+  // editors and up. Storage is signed-in and uncapped only.
+  if (action === "data.write")
+    return yes(
+      dataWriters === "editors"
+        ? writer && isEditor(level)
+        : writer || !t.session,
+    );
+  if (action === "storage") return yes(writer);
   if (action === "thumbnail.write")
     // A viewer is eligible for the first thumbnail only, through a share or
     // a team role on a team artifact (never public visibility alone); the
@@ -268,7 +285,9 @@ export function expected(
   if (FULL.includes(action)) return yes(writer && isFull(level));
   if (action === "transfer")
     return yes(writer && level === "owner" && a.personal);
-  // anonId: anonymous writes only, and no fixture opts in.
+  // anonId: anonymous callers who may write ("viewers"), over REST.
+  if (action === "anonId")
+    return yes(!t.session && via === "rest" && dataWriters === "viewers");
   return "deny";
 }
 

@@ -22,15 +22,17 @@ describe("runtime-api docs", () => {
     expect(doc).toContain('e.code === "no_shell"');
   });
 
-  // #681: the server refuses an anonymous write the artifact doesn't allow
-  // with 403 anon_writes_disabled (STATUS_FOR in @oa/shared).
-  it("documents anon_writes_disabled with the server's status", () => {
+  // #681: a write refused by dataWriters "editors" is 403
+  // data_editors_only (STATUS_FOR in @oa/shared).
+  it("documents data_editors_only with the server's status", () => {
     const row = doc
       .split("\n")
-      .find((l) => l.startsWith("| `anon_writes_disabled`"));
-    expect(row).toBeDefined();
-    expect(row).toContain(`(${STATUS_FOR.anon_writes_disabled})`);
-    expect(STATUS_FOR.anon_writes_disabled).toBe(403);
+      .find((l) => l.startsWith("| `data_editors_only`"));
+    expect(row).toBe(
+      `| \`data_editors_only\` | (${STATUS_FOR.data_editors_only}) Only this artifact's editors can change its data. |`,
+    );
+    expect(STATUS_FOR.data_editors_only).toBe(403);
+    expect(doc).not.toContain("anon_writes_disabled");
     // capability_denied no longer claims anonymous writes.
     expect(doc).not.toMatch(/`capability_denied`.*anonymous write/);
   });

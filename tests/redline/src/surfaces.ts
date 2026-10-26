@@ -208,7 +208,7 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
   "GET /api/v1/directory/callback":
     "needs the Google directory connector (404 without it)",
   "GET /api/v1/artifacts/:id/anon-id":
-    "anonymous writes only, and no fixture opts in",
+    "anonymous callers only (signed-in callers get 401), so no tenant credential crosses",
   "GET /api/v1/usage": "off on every hosted install (usage_off)",
 };
 

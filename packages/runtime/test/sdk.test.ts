@@ -197,8 +197,8 @@ describe("bridge", () => {
     });
   });
 
-  // #681 E: one console.warn per page load on the first anon_writes_disabled.
-  it("warns once on anon_writes_disabled, never for other errors", async () => {
+  // #681 E: one console.warn per page load on the first data_editors_only.
+  it("warns once on data_editors_only, never for other errors", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const oa = start();
@@ -220,11 +220,11 @@ describe("bridge", () => {
       await fail("capability_denied");
       await fail("unauthorized");
       expect(warn).not.toHaveBeenCalled();
-      await fail("anon_writes_disabled");
-      await fail("anon_writes_disabled");
+      await fail("data_editors_only");
+      await fail("data_editors_only");
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]?.join(" "))).toContain(
-        "this artifact doesn't allow anonymous writes",
+        "this artifact only lets its editors change data",
       );
     } finally {
       warn.mockRestore();

@@ -104,7 +104,7 @@ Every call returns a promise. A failed call rejects with an error that has a `co
 |---|---|
 | `no_shell` | No viewer shell to reach the server. Outside the viewer (for example, the artifact's file opened directly), every call fails at once; in a frame, a call fails if no shell has answered within a few seconds. |
 | `capability_denied` | The artifact didn't declare that capability, or the viewer isn't allowed. |
-| `anon_writes_disabled` | (403) This artifact doesn't accept writes from anonymous viewers. |
+| `data_editors_only` | (403) Only this artifact's editors can change its data. |
 | `bad_request` | Invalid parameters, such as a bad collection name or a value that can't be sent. |
 | `rate_limited`, `too_large`, `quota_exceeded` | A limit was reached. |
 | `not_found`, `unauthorized`, `conflict`, `internal` | Other server errors. |
