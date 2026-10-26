@@ -102,6 +102,7 @@ describe("app host SPA fallback", () => {
       "/auth/x",
       "/oauth/x",
       "/.well-known/x",
+      "/__oa/nightly",
     ]) {
       const res = await call(`${APP}${p}`);
       expect(res.status).toBe(404);
