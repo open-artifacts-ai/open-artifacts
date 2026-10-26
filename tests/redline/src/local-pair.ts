@@ -37,6 +37,7 @@ const SECRET_NAMES = [
   "CONTENT_SIGNING_KEY",
   "TEST_HOOK_KEY",
   "ACCESS_CLIENT_SECRET",
+  "GOOGLE_CLIENT_SECRET",
 ] as const;
 
 export interface LocalInstall {
@@ -212,7 +213,16 @@ function wranglerConfig(
       // As every hosted install (provision userWorkerMetadata; HOSTED_FEATURES
       // in src/surfaces.ts).
       FEATURES: "spaces,usage_off",
+      // Sign-in (R6): codes, and Google on a client of its own (direct
+      // transport; Google itself is never called). AUTH_DOMAINS stays off
+      // TEST_DOMAIN so hook users sign in by code as guests.
+      AUTH_PROVIDERS: "access,google,email",
+      GOOGLE_CLIENT_ID: `${i.name}-local.apps.googleusercontent.com`,
+      AUTH_DOMAINS: `sso-${i.name}.example`,
+      EMAIL_FROM: `noreply@${i.name}.app.localhost`,
     },
+    // Miniflare keeps sent mail local (never delivered).
+    send_email: [{ name: "EMAIL" }],
   };
 }
 

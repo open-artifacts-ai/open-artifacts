@@ -88,37 +88,47 @@ export async function expectRefused(res: Response, b: Target): Promise<void> {
 export const defaultOk = (r: Response) =>
   (r.status >= 200 && r.status < 300) || r.status === 101;
 
-export interface CrossCheck {
+export interface CrossCheck<C = Cred> {
   a: Target;
   b: Target;
-  credA: Cred;
-  credB: Cred;
-  ok?: (r: Response) => boolean;
+  credA: C;
+  credB: C;
+  /** A success leg's verdict; `host` is the install the leg was sent to. */
+  ok?: (r: Response, host: Target) => boolean;
   /**
-   * What counts as B refusing, when a refusal isn't a 401/403/404 (an OAuth
-   * 400 invalid_grant or invalid_client). Default expectRefused.
+   * Judges the A-at-B leg: what counts as B refusing, when a refusal isn't a
+   * 401/403/404 (an OAuth 400 invalid_grant, a sign-in redirect). Default
+   * expectRefused.
    */
   refused?: (res: Response, b: Target) => Promise<void>;
+  /**
+   * Single-use credentials (a one-time code, a Google code): refuse A's at B
+   * before A's own success, so the success proves the refused value was still
+   * valid. Order: B at B, A at B (refused), A at A.
+   */
+  refuseFirst?: boolean;
 }
 
 /**
  * B's own credential succeeds at B, A's succeeds at A, then A's is refused at
  * B. A broken B (refusing everything) fails the first step, never passes.
  */
-export async function crossCheck(
-  req: (cred: Cred, host: Target) => Request,
-  o: CrossCheck,
+export async function crossCheck<C = Cred>(
+  req: (cred: C, host: Target) => Request,
+  o: CrossCheck<C>,
 ): Promise<void> {
   const ok = o.ok ?? defaultOk;
+  const refused = o.refused ?? expectRefused;
   const rb = await send(req(o.credB, o.b));
   const tb = await readBody(rb);
-  if (!ok(rb))
+  if (!ok(rb, o.b))
     throw new Error(`B's own credential failed at B (${describeRes(rb, tb)})`);
+  if (o.refuseFirst) await refused(await send(req(o.credA, o.b)), o.b);
   const ra = await send(req(o.credA, o.a));
   const ta = await readBody(ra);
-  if (!ok(ra))
+  if (!ok(ra, o.a))
     throw new Error(`A's credential failed at A (${describeRes(ra, ta)})`);
-  await (o.refused ?? expectRefused)(await send(req(o.credA, o.b)), o.b);
+  if (!o.refuseFirst) await refused(await send(req(o.credA, o.b)), o.b);
 }
 
 /** A Backend surface probe's answer (apps/server/test/authz/surfaces.ts). */
