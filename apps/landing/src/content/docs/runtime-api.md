@@ -47,16 +47,14 @@ If the live connection is refused or keeps failing, the callback gets `{ docs: [
 const votes = openArtifacts.db.collection("votes");
 const all = new Map();
 const refetch = async () => {
+  showPaused(false);
   all.clear();
   for (const doc of (await votes.list()).items) all.set(doc.id, doc);
   render([...all.values()]);
 };
 votes.subscribe((e) => {
   if (e.offline) return showPaused(true);
-  if (e.resync) {
-    showPaused(false);
-    return refetch();
-  }
+  if (e.resync) return refetch();
   for (const doc of e.docs) all.set(doc.id, doc);
   for (const id of e.deleted) all.delete(id);
   render([...all.values()]);
