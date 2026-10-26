@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { withCred } from "../src/http.ts";
 import {
   crossProbe,
   crossWrite,
@@ -7,7 +6,7 @@ import {
   type Side,
 } from "../src/refused.ts";
 import {
-  cleanWorld,
+  cleanup,
   coverageGaps,
   dispose,
   probeCases,
@@ -25,7 +24,8 @@ import { loadTargets, type Target, type Targets } from "../src/targets.ts";
 // P5 Task 3b: every Backend surface probe (apps/server/test/authz/surfaces.ts)
 // with A's credentials against B's ids. Read-only probes go through
 // crossProbe on a seeded world; mutating ones through crossWrite on
-// throwaways each install makes for itself, deleted even on failure.
+// throwaways each install makes for itself, deleted even on failure. The
+// world is fixed hook spaces and artifacts, reused every run.
 // Surfaces with no possible success leg are dropped through DROPPED (P5
 // plan, Task 3b). Each case is listed in live/manifest.json.
 
@@ -42,17 +42,19 @@ beforeAll(async () => {
   worlds.set(T.b, await seedWorld(B));
 });
 
+// Runs even when beforeAll throws partway (vitest runs afterAll then):
+// every cleanup is tried, and any unexpected status fails the file.
 afterAll(async () => {
+  const errors: unknown[] = [];
   for (const s of [A, B]) {
     if (!s) continue;
-    await sweep(s);
-    const w = worlds.get(s.t);
-    if (w) await cleanWorld(s, w);
-    await fetch(
-      `${s.t.app}/api/v1/artifacts/${encodeURIComponent(s.markerId)}`,
-      withCred(s.pat, { method: "DELETE" }),
-    ).then((r) => r.body?.cancel());
+    await sweep(s).catch((e) => errors.push(e));
+    await cleanup(
+      s,
+      `/api/v1/artifacts/${encodeURIComponent(s.markerId)}`,
+    ).catch((e) => errors.push(e));
   }
+  if (errors.length) throw errors[0];
 });
 
 const world = (t: Target): World => {

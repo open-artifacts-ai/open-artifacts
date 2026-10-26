@@ -15,7 +15,13 @@ import {
   type Verdict,
 } from "../src/refused.ts";
 import { parseManifest } from "../src/report.ts";
-import { coverageGaps, DROPPED, derive, viaTarget } from "../src/surfaces.ts";
+import {
+  coverageGaps,
+  DROPPED,
+  derive,
+  HOSTED_FEATURES,
+  viaTarget,
+} from "../src/surfaces.ts";
 import { loadTargets, type Target } from "../src/targets.ts";
 import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
 
@@ -46,7 +52,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
   it("flag a case list shorter than the policy manifest", () => {
     const gaps = coverageGaps({ cases: cases.slice(0, 10), dropped });
     expect(
-      gaps.some((g) => /cases and drops < \d+ scoped routes/.test(g)),
+      gaps.some((g) => /cases and exclusions < \d+ scoped routes/.test(g)),
     ).toBe(true);
   });
 
@@ -64,6 +70,42 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     expect(first).toBeDefined();
     expect(coverageGaps({ cases, dropped: rest })).toContain(
       `DROPPED lists a surface the rules don't drop: ${first?.name}`,
+    );
+  });
+
+  it("never count a route reached only by a drop as covered", () => {
+    // Dropping the only case for a route leaves a gap, not a pass.
+    const gaps = coverageGaps({
+      cases: cases.filter((c) => !c.routes.includes("GET /api/v1/settings")),
+      dropped: [
+        ...dropped,
+        {
+          name: "org GET /api/v1/settings",
+          routes: ["GET /api/v1/settings"],
+          why: "owner-only",
+          reason: "r",
+        },
+      ],
+    });
+    expect(gaps).toContain("no case: GET /api/v1/settings");
+  });
+
+  it("flag an exclusion a case reaches (stale)", () => {
+    const fake = {
+      name: "org GET /api/v1/usage [pat]",
+      routes: ["GET /api/v1/usage"],
+      variant: "pat" as const,
+      run: async () => "allow" as const,
+    };
+    expect(coverageGaps({ cases: [...cases, fake], dropped })).toContain(
+      "stale exclusion: GET /api/v1/usage",
+    );
+  });
+
+  it("drop a route a hosted FEATURES flag turns off (usage_off)", () => {
+    expect(HOSTED_FEATURES).toContain("usage_off");
+    expect(dropped.find((x) => x.name === "org GET /api/v1/usage")?.why).toBe(
+      "feature-off",
     );
   });
 
@@ -234,6 +276,21 @@ describe("crossProbe", () => {
     await expect(
       crossProbe(me, { a: T.a, b: T.b, credA: "ta", credB: "tb" }),
     ).rejects.toThrow(/seeded marker/);
+  });
+
+  it("fails when the cross leg's requests went elsewhere, not to B", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    // The cross leg asks A instead of B: B never saw A's credential.
+    const run = (cred: string, t: Target, f: ProbeFetch) =>
+      me(cred, t === T.b && cred === "ta" ? T.a : t, f).then((v) =>
+        t === T.b && cred === "ta" ? ("deny" as Verdict) : v,
+      );
+    await expect(
+      crossProbe(run, { a: T.a, b: T.b, credA: "ta", credB: "tb" }),
+    ).rejects.toThrow(/no request reached B/);
   });
 
   it("fails when no request reached B", async () => {

@@ -127,6 +127,18 @@ export interface CrossProbe<C> {
   credB: C;
 }
 
+/** True when at least one request went to B's app or content origin. */
+const reachedB = (urls: readonly string[], b: Target) => {
+  const own = new Set([new URL(b.app).origin, new URL(b.content).origin]);
+  return urls.some((u) => {
+    try {
+      return own.has(new URL(u).origin);
+    } catch {
+      return false;
+    }
+  });
+};
+
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
 const digest = (s: string) =>
   createHash("sha256").update(s).digest("hex").slice(0, 16);
@@ -135,11 +147,13 @@ const digest = (s: string) =>
 async function leg(
   what: string,
   run: (fetch: ProbeFetch) => Promise<Verdict>,
-): Promise<{ verdict: Verdict; seen: Response[] }> {
+): Promise<{ verdict: Verdict; seen: Response[]; urls: string[] }> {
   const seen: Response[] = [];
+  const urls: string[] = [];
   // Buffered, not clone(): a probe that cancels its body would wait on the
   // unread tee branch forever.
   const f: ProbeFetch = async (req) => {
+    urls.push(req.url);
     const r = await send(req);
     const buf = NULL_BODY.has(r.status) ? null : await r.arrayBuffer();
     const copy = () =>
@@ -152,7 +166,7 @@ async function leg(
     return copy();
   };
   try {
-    return { verdict: await run(f), seen };
+    return { verdict: await run(f), seen, urls };
   } catch (e) {
     // A probe error quotes the body: show its hash and the last status only.
     const last = seen.at(-1);
@@ -180,7 +194,7 @@ export async function crossProbe<C>(
   if (a.verdict !== "allow")
     throw new Error("A's credential failed at A (the probe said deny)");
   const x = await leg("A's credential at B", (f) => run(o.credA, o.b, f));
-  if (x.seen.length === 0)
+  if (!reachedB(x.urls, o.b))
     throw new NotRefused(`${o.b.name}: no request reached B`);
   for (const r of x.seen) await expectRefused(r, o.b);
   if (x.verdict !== "deny")
@@ -226,7 +240,7 @@ export async function crossWrite<C, X>(
     const xx = await fresh(o.b);
     const before = await o.snapshot(o.b, xx);
     const x = await leg("A's credential at B", (f) => run(o.credA, o.b, xx, f));
-    if (x.seen.length === 0)
+    if (!reachedB(x.urls, o.b))
       throw new NotRefused(`${o.b.name}: no request reached B`);
     for (const r of x.seen) await expectRefused(r, o.b);
     if (x.verdict !== "deny")
@@ -237,7 +251,13 @@ export async function crossWrite<C, X>(
         `${o.b.name}: the throwaway changed (sha256:${digest(before)} -> sha256:${digest(after)})`,
       );
   } finally {
-    for (const [t, x] of made) await o.dispose(t, x).catch(() => {});
+    // Every throwaway, even on failure; a failed cleanup fails the case.
+    let bad: unknown;
+    for (const [t, x] of made)
+      await o.dispose(t, x).catch((e) => {
+        bad ??= e;
+      });
+    if (bad) throw bad;
   }
 }
 

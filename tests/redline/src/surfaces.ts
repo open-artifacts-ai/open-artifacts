@@ -27,6 +27,7 @@ import {
   adminEmail,
   type Cred,
   HttpError,
+  hook,
   parseJson,
   readBody,
   sessionCred,
@@ -57,6 +58,8 @@ export interface World {
   users: { member: string; editor: string; manager: string };
   org: OrgTarget;
   space: SpaceTarget;
+  /** GUARD_SPACE: the read-only space probes' target ("delete (S)" answers 409). */
+  guard: SpaceTarget;
 }
 
 /** A throwaway a mutating probe writes to (made by the install's own admin). */
@@ -121,7 +124,14 @@ export type DropWhy =
   | "nobody"
   | "no-world-caller"
   | "credential-free"
-  | "no-directory";
+  | "no-directory"
+  | "feature-off";
+
+/**
+ * FEATURES every hosted install has (packages/provision/src/metadata.ts,
+ * userWorkerMetadata: always `spaces,usage_off`); the local pair sets the same.
+ */
+export const HOSTED_FEATURES: readonly string[] = ["spaces", "usage_off"];
 
 /**
  * Routes whose success leg needs a connected Google directory: the
@@ -144,6 +154,8 @@ const WHY: Record<DropWhy, string> = {
     "expect.ts allows no caller this action on any artifact (anonymous writes only), so crossCheck has no success leg",
   "credential-free":
     "credential-free: /p/ serves public artifacts to anyone, so no tenant credential crosses",
+  "feature-off":
+    "hidden on hosted installs (a FEATURES flag every hosted install sets turns it off: 404 for everyone), so crossCheck has no success leg",
   "no-directory":
     "needs a connected Google directory (the connector, or a mapping row only it creates); the red-line installs have none, so crossCheck has no success leg",
 };
@@ -160,6 +172,28 @@ const BY_PERSONAL = `${MATRIX} "space writes" and "attack seeds: another member'
  * each with the tests that cover it instead. The coverage check fails
  * unless this matches exactly the surfaces the rules drop.
  */
+/**
+ * Routes and tools no case reaches, each only through a recorded drop
+ * (DROPPED), with why. The coverage check fails on any other unreached
+ * route and on an exclusion a case now reaches.
+ */
+const OWNER_ONLY =
+  "owner-only (the directory connection): no admin success leg";
+export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
+  "GET /api/v1/directory/connect": OWNER_ONLY,
+  "POST /api/v1/directory/confirm": OWNER_ONLY,
+  "POST /api/v1/directory/cancel": OWNER_ONLY,
+  "POST /api/v1/directory/sync": OWNER_ONLY,
+  "POST /api/v1/directory/held/:groupId/confirm": OWNER_ONLY,
+  "POST /api/v1/directory/disconnect": OWNER_ONLY,
+  "DELETE /api/v1/directory": OWNER_ONLY,
+  "GET /api/v1/directory/callback":
+    "needs the Google directory connector (404 without it)",
+  "GET /api/v1/artifacts/:id/anon-id":
+    "anonymous writes only, and no fixture opts in",
+  "GET /api/v1/usage": "off on every hosted install (usage_off)",
+};
+
 export const DROPPED: Readonly<
   Record<string, { why: DropWhy; coveredBy: string }>
 > = {
@@ -207,6 +241,10 @@ export const DROPPED: Readonly<
   "space mapping delete a manager mapping": {
     why: "no-directory",
     coveredBy: BY_DIRECTORY,
+  },
+  "org GET /api/v1/usage": {
+    why: "feature-off",
+    coveredBy: `${MATRIX} "instance routes" (usage.read with the flag off) + apps/server/test/usage.test.ts (usage_off answers 404) + ${R4}`,
   },
   "space patch {} (personal)": { why: "nobody", coveredBy: BY_PERSONAL },
   "space delete (personal)": { why: "nobody", coveredBy: BY_PERSONAL },
@@ -283,6 +321,16 @@ export function derive(): Derived {
       drop(name, [s.route], "owner-only");
       continue;
     }
+    const p = ROUTE_POLICY[s.route];
+    if (
+      p &&
+      "offWhen" in p &&
+      p.offWhen &&
+      HOSTED_FEATURES.includes(p.offWhen)
+    ) {
+      drop(name, [s.route], "feature-off");
+      continue;
+    }
     if ((NO_DIRECTORY.org as readonly string[]).includes(s.route)) {
       drop(name, [s.route], "no-directory");
       continue;
@@ -335,8 +383,10 @@ export function derive(): Derived {
               },
             }
           : {
+              // The guard space, never the world's: a regression that lets
+              // "delete (S)" through deletes nothing the suite relies on.
               run: (cred, t, w, fetch) =>
-                s.probe(t.app, cred, w.space, { fetch }),
+                s.probe(t.app, cred, w.guard, { fetch }),
             }),
       });
   }
@@ -362,15 +412,20 @@ export const probeCases = (): ProbeCase[] => derive().cases;
 export function coverageGaps(d: Derived = derive()): string[] {
   const { cases, dropped } = d;
   const recorded = dropped.filter((x) => DROPPED[x.name]?.why === x.why);
-  const reached = new Set([
-    ...cases.flatMap((c) => c.routes),
-    ...recorded.flatMap((x) => x.routes),
-  ]);
+  // Only a case covers a route; a drop never does.
+  const reached = new Set(cases.flatMap((c) => c.routes));
+  const droppedRoutes = new Set(recorded.flatMap((x) => x.routes));
   const derivedNames = new Set(dropped.map((x) => x.name));
   const scoped = Object.keys(ROUTE_POLICY).filter(
     (k) => !PUBLIC_ROUTES.includes(k),
   );
-  const tools = Object.keys(TOOL_POLICY);
+  const tools = Object.keys(TOOL_POLICY).map((t) => `tool:${t}`);
+  const content = Object.keys(CONTENT_POLICY)
+    .filter((k) => !CONTENT_PUBLIC.includes(k))
+    .map((k) => `content:${k}`);
+  const missing = [...scoped, ...tools, ...content].filter(
+    (k) => !reached.has(k),
+  );
   const gaps = [
     ...unlisted(ROUTE_POLICY).map((k) => `unclassified route: ${k}`),
     ...uncovered(SURFACES, ROUTE_POLICY, TOOL_POLICY).map(
@@ -388,20 +443,20 @@ export function coverageGaps(d: Derived = derive()): string[] {
     ...Object.entries(DROPPED)
       .filter(([, v]) => !v.coveredBy.trim())
       .map(([n]) => `drop without a covering test: ${n}`),
-    ...scoped.filter((k) => !reached.has(k)).map((k) => `no case: ${k}`),
-    ...tools
-      .filter((t) => !reached.has(`tool:${t}`))
-      .map((t) => `no case: tool:${t}`),
-    ...Object.keys(CONTENT_POLICY)
-      .filter((k) => !CONTENT_PUBLIC.includes(k))
-      .filter((k) => !reached.has(`content:${k}`))
-      .map((k) => `no case: content:${k}`),
+    // A route no case reaches must be an explicit exclusion, reached by a
+    // recorded drop; an exclusion a case reaches (or no drop backs) is stale.
+    ...missing
+      .filter((k) => !(k in EXCLUDED_ROUTES))
+      .map((k) => `no case: ${k}`),
+    ...Object.keys(EXCLUDED_ROUTES)
+      .filter((k) => reached.has(k) || !droppedRoutes.has(k))
+      .map((k) => `stale exclusion: ${k}`),
   ];
   // The probe list is never shorter than the policy manifest it covers.
-  const n = cases.length + recorded.length;
+  const n = cases.length + Object.keys(EXCLUDED_ROUTES).length;
   if (n < scoped.length + tools.length)
     gaps.push(
-      `${n} cases and drops < ${scoped.length} scoped routes + ${tools.length} tools`,
+      `${n} cases and exclusions < ${scoped.length} scoped routes + ${tools.length} tools`,
     );
   return gaps;
 }
@@ -480,7 +535,14 @@ const WEBP = new Uint8Array([
   ...new TextEncoder().encode("WEBP"),
 ]);
 
-/** A member test user's id, created through the session hook when missing. */
+/** The fixed hook spaces (the test-hook `test-` prefix rule), reused across runs. */
+export const WORLD_SPACE = "test-redline-space";
+/** Holds one artifact so "space delete (S)" answers 409; never the world's space. */
+export const GUARD_SPACE = "test-redline-guard";
+const WORLD_TITLE = "test-redline-world";
+const GUARD_TITLE = "test-redline-guard";
+
+/** A member test user's id (fixed address; the session hook creates it once). */
 async function memberId(t: Target, pat: Cred, who: string): Promise<string> {
   const email = `redline-${who}@${t.testDomain}`;
   await sessionCred(t, email, "member");
@@ -493,20 +555,7 @@ async function memberId(t: Target, pat: Cred, who: string): Promise<string> {
   return m.id;
 }
 
-/** A shared space the admin manages (a new space has no members). */
-async function newSpace(side: Side, label: string): Promise<string> {
-  const { t, pat, marker } = side;
-  const space = (await api(t, pat, "POST", "/api/v1/spaces", {
-    json: { name: `redline ${label} ${marker.slice(-8)}` },
-  })) as { id?: string };
-  if (typeof space.id !== "string") throw new Error(`${t.name}: no space id`);
-  await api(t, pat, "POST", `/api/v1/spaces/${space.id}/members/self`, {
-    json: { role: "manager" },
-  });
-  return space.id;
-}
-
-/** A private html artifact (db, storage, viewer; doc "d" and "probe" in "c"). */
+/** A private html artifact (db, storage, viewer; docs "d" and "probe" in "c"). */
 async function newArtifact(
   side: Side,
   title: string,
@@ -524,47 +573,84 @@ async function newArtifact(
     },
   })) as { id?: string };
   if (typeof art.id !== "string") throw new Error(`${t.name}: no artifact id`);
-  const A = `/api/v1/artifacts/${art.id}`;
-  await api(t, pat, "PUT", `${A}/data/c/d`, { json: { v: 1 } });
-  await api(t, pat, "PUT", `${A}/data/c/probe`, { json: { p: 0 } });
+  await resetData(side, art.id);
   return art.id;
+}
+
+async function resetData(side: Side, id: string): Promise<void> {
+  const A = `/api/v1/artifacts/${id}`;
+  await api(side.t, side.pat, "PUT", `${A}/data/c/d`, { json: { v: 1 } });
+  await api(side.t, side.pat, "PUT", `${A}/data/c/probe`, { json: { p: 0 } });
+}
+
+/** The live artifact in `spaceId` whose title starts with `title`, made when missing. */
+async function fixedArtifact(
+  side: Side,
+  spaceId: string,
+  title: string,
+): Promise<string> {
+  const q = `/api/v1/artifacts?scope=space&spaceId=${encodeURIComponent(spaceId)}&limit=100`;
+  const page = (await api(side.t, side.pat, "GET", q)) as {
+    items?: { id: string; title?: string }[];
+  };
+  const hit = page.items?.find((a) => a.title?.startsWith(title));
+  return hit ? hit.id : newArtifact(side, title, spaceId);
 }
 
 /**
  * Seeds what the probes need on `side`'s install (the WORLD of
- * apps/server/test/authz/expect.ts, for the admin test user): a shared
- * space, an html artifact in it (title carries its id and the side's
- * marker; a thumbnail; doc "d" in collection "c"), and member test users
- * (the org probes' member and departed target, the space probes' member,
- * editor and peer manager).
+ * apps/server/test/authz/expect.ts, for the admin test user), reusing the
+ * same state every run:
+ * - two fixed hook spaces the admin manages (WORLD_SPACE, GUARD_SPACE);
+ * - one fixed html artifact in each, the world's reset per run (title
+ *   carries its id and this run's marker; a thumbnail; doc "d" in "c");
+ * - fixed member test users (the org probes' member and departed target,
+ *   the space probes' member, editor and peer manager).
+ * Nothing per-run is made here, so a failure partway leaves nothing behind.
  */
 export async function seedWorld(side: Side): Promise<World> {
   const { t, pat, marker } = side;
+  // The hook creates the prefixed spaces if missing and grants the admin.
+  await hook(t, "/__test/session", {
+    email: adminEmail(t),
+    role: "admin",
+    spaces: [
+      { spaceId: WORLD_SPACE, role: "manager" },
+      { spaceId: GUARD_SPACE, role: "manager" },
+    ],
+  });
   const users = {
     member: await memberId(t, pat, "member"),
     editor: await memberId(t, pat, "editor"),
     manager: await memberId(t, pat, "manager"),
   };
-  const spaceId = await newSpace(side, "world");
-  const id = await newArtifact(side, marker, spaceId);
+  const id = await fixedArtifact(side, WORLD_SPACE, WORLD_TITLE);
+  await fixedArtifact(side, GUARD_SPACE, GUARD_TITLE);
   const A = `/api/v1/artifacts/${id}`;
-  // Search probes look the artifact up by id.
-  await api(t, pat, "PATCH", A, { json: { title: `${marker} ${id}` } });
+  // Search probes look the artifact up by id; leaks are judged by the marker.
+  await api(t, pat, "PATCH", A, {
+    json: { title: `${WORLD_TITLE} ${marker} ${id}`, visibility: "private" },
+  });
   await api(t, pat, "PUT", `${A}/thumbnail`, {
     raw: WEBP,
     type: "image/webp",
   });
-  // "space delete (S)" is read-only only while S holds an artifact (409).
+  await resetData(side, id);
   const got = (await api(t, pat, "GET", A)) as { space?: { id?: unknown } };
-  if (got.space?.id !== spaceId)
-    throw new Error(`${t.name}: the probe artifact is not in the space`);
+  if (got.space?.id !== WORLD_SPACE)
+    throw new Error(`${t.name}: the probe artifact is not in the world space`);
   return {
     artifactId: id,
     personalId: side.markerId,
-    spaceId,
+    spaceId: WORLD_SPACE,
     users,
-    org: { spaceId, memberId: users.member, departedId: users.member },
-    space: spaceTarget(spaceId, users),
+    org: {
+      spaceId: WORLD_SPACE,
+      memberId: users.member,
+      departedId: users.member,
+    },
+    space: spaceTarget(WORLD_SPACE, users),
+    guard: spaceTarget(GUARD_SPACE, users),
   };
 }
 
@@ -579,7 +665,7 @@ const spaceTarget = (
   memberId: u.member,
   editorId: u.editor,
   managerId: u.manager,
-  // No directory on the red-line installs: the mapping probes answer the
+  // No directory on the red-line installs: the mapping put probes answer the
   // service's 409 (sync off) past the access rule, an allowed answer.
   groups: {
     viewer: "redline-viewer",
@@ -602,12 +688,21 @@ export async function throwaway(
   const set = LIVE.get(side.t) ?? new Set<Throwaway>();
   LIVE.set(side.t, set);
   set.add(x);
+  const { t, pat } = side;
   if (fresh === "org") x.org = w.org;
   else if (fresh === "space") {
-    const clone = await newSpace(side, "throwaway");
+    // A real (unprefixed) space: deleted after the case (it holds no artifact).
+    const space = (await api(t, pat, "POST", "/api/v1/spaces", {
+      json: { name: `test-redline-throwaway ${side.marker.slice(-8)}` },
+    })) as { id?: string };
+    if (typeof space.id !== "string") throw new Error(`${t.name}: no space id`);
+    const clone = space.id;
     x.space = spaceTarget(w.spaceId, w.users, clone);
+    await api(t, pat, "POST", `/api/v1/spaces/${clone}/members/self`, {
+      json: { role: "manager" },
+    });
     const put = (id: string, role: string) =>
-      api(side.t, side.pat, "PUT", `/api/v1/spaces/${clone}/members/${id}`, {
+      api(t, pat, "PUT", `/api/v1/spaces/${clone}/members/${id}`, {
         json: { role },
       });
     await put(w.users.member, "viewer");
@@ -616,24 +711,18 @@ export async function throwaway(
   } else {
     x.artifactId = await newArtifact(
       side,
-      `redline throwaway ${side.marker.slice(-8)}`,
+      `test-redline-throwaway ${side.marker.slice(-8)}`,
       fresh === "artifact-space" ? w.spaceId : undefined,
     );
     // The unshare probes remove this share (as the matrix seeds it).
-    await api(
-      side.t,
-      side.pat,
-      "PUT",
-      `/api/v1/artifacts/${x.artifactId}/shares`,
-      {
-        json: { email: PROBE_SHARE_EMAIL, role: "viewer" },
-      },
-    );
+    await api(t, pat, "PUT", `/api/v1/artifacts/${x.artifactId}/shares`, {
+      json: { email: PROBE_SHARE_EMAIL, role: "viewer" },
+    });
   }
   return x;
 }
 
-/** Status and body of each GET, as B's own admin sees them. */
+/** Status and body of each GET, as the install's own admin sees them. */
 async function reads(side: Side, paths: string[]): Promise<string> {
   const out: string[] = [];
   for (const p of paths) {
@@ -660,26 +749,42 @@ export function snapshot(side: Side, x: Throwaway): Promise<string> {
   return reads(side, ["/api/v1/audit"]);
 }
 
-/** Deletes a throwaway (an artifact goes to the trash). Never throws. */
+/** Answers a cleanup DELETE may give: done, or already gone (a delete probe). */
+const CLEANED = new Set([200, 204, 404]);
+
+/** DELETE `path` as `side`'s admin; throws on any other answer. */
+export async function cleanup(side: Side, path: string): Promise<void> {
+  const r = await fetch(
+    `${side.t.app}${path}`,
+    withCred(side.pat, { method: "DELETE" }),
+  );
+  const body = await readBody(r);
+  if (!CLEANED.has(r.status))
+    throw new HttpError(
+      `${side.t.name} cleanup DELETE ${path.replace(/[A-Za-z0-9_-]{16,}/g, ":id")}`,
+      r,
+      body,
+    );
+}
+
+/**
+ * Deletes a throwaway. Artifacts go to the trash: no API purges it, and the
+ * nightly purgeDeleted hard-deletes trash after LIMITS.softDeleteDays, so
+ * they stay bounded. Throwaway spaces hold no artifact and are deleted.
+ */
 export async function dispose(side: Side, x: Throwaway): Promise<void> {
   LIVE.get(side.t)?.delete(x);
-  const del = (p: string) =>
-    fetch(`${side.t.app}${p}`, withCred(side.pat, { method: "DELETE" }))
-      .then((r) => r.body?.cancel())
-      .catch(() => {});
-  if (x.artifactId) await del(`/api/v1/artifacts/${x.artifactId}`);
-  if (x.space?.cloneId) await del(`/api/v1/spaces/${x.space.cloneId}`);
+  if (x.artifactId) await cleanup(side, `/api/v1/artifacts/${x.artifactId}`);
+  if (x.space?.cloneId)
+    await cleanup(side, `/api/v1/spaces/${x.space.cloneId}`);
 }
 
-/** Disposes every throwaway still live on `side`'s install. */
+/** Disposes every throwaway still live on `side`'s install; throws the first failure after trying all. */
 export async function sweep(side: Side): Promise<void> {
-  for (const x of [...(LIVE.get(side.t) ?? [])]) await dispose(side, x);
-}
-
-/** Removes the probe artifact (the space keeps it in the trash). */
-export async function cleanWorld(side: Side, w: World): Promise<void> {
-  await fetch(
-    `${side.t.app}/api/v1/artifacts/${encodeURIComponent(w.artifactId)}`,
-    withCred(side.pat, { method: "DELETE" }),
-  ).then((r) => r.body?.cancel());
+  let first: unknown;
+  for (const x of [...(LIVE.get(side.t) ?? [])])
+    await dispose(side, x).catch((e) => {
+      first ??= e;
+    });
+  if (first) throw first;
 }

@@ -95,7 +95,13 @@ P3 ships `apps/server/test/authz/surfaces.ts` (every HTTP surface as a probe) an
 Built as `tests/redline/live/surfaces.test.ts`, with the case list derived in `src/surfaces.ts`:
 - Read-only probes run through `crossProbe` on a seeded world.
 - Mutating probes run through `crossWrite`. Each install's own admin writes to a throwaway on its own install. A's write at B is refused, and B's throwaway reads back unchanged. Every throwaway is deleted, even on failure.
-- Coverage of `ROUTE_POLICY`, `TOOL_POLICY` and `CONTENT_POLICY` is derived. A dropped surface counts only through `DROPPED`, an explicit list that the coverage check holds to the drop rules.
+- Coverage of `ROUTE_POLICY`, `TOOL_POLICY` and `CONTENT_POLICY` is derived. A dropped surface counts only through `DROPPED`, an explicit list that the coverage check holds to the drop rules. A route no case reaches must be in `EXCLUDED_ROUTES` and backed by a recorded drop; a drop never counts as coverage.
+- The world is reused on every run:
+  - two fixed hook spaces, `test-redline-space` and `test-redline-guard`. "space delete (S)" targets the guard space, never the world's.
+  - one fixed artifact in each space;
+  - fixed member users.
+- Throwaways are deleted, and every cleanup status is checked. No API purges the trash; the nightly `purgeDeleted` hard-deletes it after `LIMITS.softDeleteDays`, so the trash stays bounded.
+- Follow-up: `expectRefused` accepts a 403 whose body holds B data other than the markers (inherited from Task 2; unchanged here).
 
 **Dropped (2026-10-26):** each of these has no possible success leg cross-install.
 - **Owner-only** (hooks never mint the owner, and no owner credential is stored in CI): `GET /api/v1/directory/connect`; `POST /api/v1/directory/confirm`, `/cancel`, `/sync`, `/held/:groupId/confirm`, `/disconnect`; `DELETE /api/v1/directory`.
@@ -107,6 +113,8 @@ Built as `tests/redline/live/surfaces.test.ts`, with the case list derived in `s
   - Covered by the matrix's "artifact surfaces", plus R4.
 - **content /p/**: credential-free (public artifacts to anyone), so no tenant credential crosses.
   - Covered by the matrix's "artifact surfaces" (public.link), plus R4's "A's signed content URL at B's content host".
+- **Off on every hosted install**: `GET /api/v1/usage`. Its `offWhen: usage_off` flag is in the FEATURES that provision always sets, so it answers 404 for everyone.
+  - Covered by `apps/server/test/usage.test.ts` "usage_off" and the matrix's "instance routes", plus R4.
 - **Needs a connected Google directory**, which the red-line installs don't have: `GET /api/v1/directory/callback` (404 without the connector), and the two mutating space mapping deletes ("mapping delete viewer", "mapping delete a manager mapping"; only a connected directory creates a mapping row).
   - Covered by the matrix's "instance routes" and "space writes" (its fixture connects a directory), plus R4.
 
