@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.57.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.57.0...v0.57.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **server:** oa:directory-disconnect keeps state and rejects on a failed revoke ([#654](https://github.com/open-artifacts-ai/open-artifacts/issues/654)) ([d3c04ea](https://github.com/open-artifacts-ai/open-artifacts/commit/d3c04ea91ac692ded14104a912f1d52e6a24ffc8))
+
+## [0.57.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.56.0...v0.57.0) (2026-10-26)
+
+
+### Features
+
+* **inventory:** read-only HOSTS lookup for the red-line suite ([#652](https://github.com/open-artifacts-ai/open-artifacts/issues/652)) ([0f32319](https://github.com/open-artifacts-ai/open-artifacts/commit/0f32319803145e16829bc8eb69c3fa74a906006f))
+* **ui:** shadcn overlays and sidebar respect reduced motion ([#260](https://github.com/open-artifacts-ai/open-artifacts/issues/260)) ([354b938](https://github.com/open-artifacts-ai/open-artifacts/commit/354b9380bfee1772f82a3652332223b9c67eef31))
+
+
+### Bug Fixes
+
+* **provision:** publish through R2's S3 API so conditional writes are enforced ([#650](https://github.com/open-artifacts-ai/open-artifacts/issues/650)) ([5e38482](https://github.com/open-artifacts-ai/open-artifacts/commit/5e384823d3c6a081876322bfa78df8423dde7200))
+
 ## [0.56.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.55.2...v0.56.0) (2026-10-26)
 
 

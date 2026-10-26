@@ -6,7 +6,7 @@ import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { type HttpHandler, HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
-import { installHarness, mount, server } from "./harness";
+import { findVisibleToast, installHarness, mount, server } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
@@ -123,11 +123,9 @@ it("a 403 public_links_off from a stale tab shows the copy and keeps the old vis
       name: /public/i,
     }),
   );
-  expect(
-    await screen.findByText(
-      "Public links are off for this space. A space manager can turn them on.",
-    ),
-  ).toBeVisible();
+  await findVisibleToast(
+    "Public links are off for this space. A space manager can turn them on.",
+  );
   expect(screen.queryByText("server text")).toBeNull();
   await waitFor(() =>
     expect(within(g).getByRole("radio", { name: "Team" })).toBeChecked(),

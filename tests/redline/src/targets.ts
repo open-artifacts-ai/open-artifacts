@@ -23,6 +23,8 @@ export interface Target {
   /** Optional: an admin PAT (CI secret REDLINE_<NAME>_PAT). Minted via the hook when absent. */
   patFile?: string;
   hookKeyFile: string;
+  /** Optional: a Turnstile token the install accepts (hosted code sign-in needs one). */
+  turnstileFile?: string;
   /** Local mode only: how to read this install's local D1. */
   local?: { wrangler: string; config: string; persistTo: string; db: string };
 }
@@ -118,6 +120,7 @@ function parseDeletedHosts(v: unknown): string[] | undefined {
 interface Secrets {
   hookKey: string;
   pat?: string;
+  turnstile?: string;
 }
 
 const SECRETS = new WeakMap<object, Secrets>();
@@ -225,6 +228,9 @@ function parseTarget(
         : str(raw.cookieName, `${key}.cookieName`),
     hookKeyFile,
     ...(patFile ? { patFile } : {}),
+    ...(typeof raw.turnstileFile === "string" && raw.turnstileFile !== ""
+      ? { turnstileFile: raw.turnstileFile }
+      : {}),
   };
   if (mode === "local" && raw.local && typeof raw.local === "object") {
     const l = raw.local as Record<string, unknown>;
@@ -242,6 +248,11 @@ function parseTarget(
   // A PAT file named explicitly must exist; a derived one may be absent (minted).
   if (patFile && (typeof raw.patFile === "string" || exists(patFile)))
     secrets.pat = readSecretFile(patFile, `${name} PAT`);
+  if (t.turnstileFile)
+    secrets.turnstile = readSecretFile(
+      t.turnstileFile,
+      `${name} Turnstile token`,
+    );
   SECRETS.set(t, secrets);
   return t;
 }

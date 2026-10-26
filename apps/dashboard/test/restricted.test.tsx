@@ -9,7 +9,13 @@ import {
   restrictionLabel,
   restrictionReason,
 } from "../src/settings/restriction";
-import { calls, installHarness, mount, mountHosted } from "./harness";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  mount,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -253,11 +259,9 @@ it("a 400 restrict_admin (promoted in another tab) shows the copy and no badge",
       name: "Restrict",
     }),
   );
-  expect(
-    await screen.findByText(
-      "Owners and admins can't be restricted. Make them a member first.",
-    ),
-  ).toBeVisible();
+  await findVisibleToast(
+    "Owners and admins can't be restricted. Make them a member first.",
+  );
   expect(screen.queryByText("server text")).toBeNull();
   expect(
     within(await row("Bob Builder")).queryAllByText("Restricted"),

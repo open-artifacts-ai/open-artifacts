@@ -1,8 +1,11 @@
 // An in-memory Cloudflare for the provisioner tests: the REST routes cf.ts
 // calls, plus a dispatch emulation (Host -> HOSTS KV -> user Worker) that
-// answers /healthz and a minimal /mcp. Nothing here talks to the network.
+// answers /healthz and a minimal /mcp, and R2's S3 endpoint for the releases
+// bucket (SigV4 checked, conditionals enforced). Nothing here talks to the
+// network.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { AwsV4Signer } from "aws4fetch";
 
 const API = "https://api.cloudflare.com/client/v4";
 
@@ -109,8 +112,9 @@ export class FakeCf {
     string,
     Map<string, { bytes: Uint8Array; etag: string }>
   >();
-  /** Every R2 object call, with its conditional headers. */
+  /** Every R2 object call, with its conditional headers and API (REST or S3). */
   readonly r2Log: {
+    api: "rest" | "s3";
     method: string;
     bucket: string;
     key: string;
@@ -124,6 +128,10 @@ export class FakeCf {
   r2Serve?: (key: string, bytes: Uint8Array) => Uint8Array;
   /** An R2 that ignores If-None-Match / If-Match (M2: the probe must catch it). */
   r2IgnoreConditionals = false;
+  /** R2 API tokens (S3 credentials) by Access Key ID: the secret and the buckets it may touch. */
+  readonly r2Tokens = new Map<string, { secret: string; buckets: string[] }>();
+  /** Every S3 request's Authorization header was a valid SigV4 for its token (else 403). */
+  s3SignatureChecks = 0;
   /** The first PUT of each key stores the object, then answers 500 (a lost reply). */
   r2PutLandsThen500 = false;
   private r2Landed = new Set<string>();
@@ -223,6 +231,16 @@ export class FakeCf {
     }
     b.set(key, { bytes: bytes.slice(), etag: randomBytes(16).toString("hex") });
   }
+  /** Mint an R2 API token (Object Read & Write) scoped to `buckets`. */
+  r2Token(...buckets: string[]): {
+    accessKeyId: string;
+    secretAccessKey: string;
+  } {
+    const accessKeyId = randomBytes(16).toString("hex");
+    const secretAccessKey = randomBytes(32).toString("hex");
+    this.r2Tokens.set(accessKeyId, { secret: secretAccessKey, buckets });
+    return { accessKeyId, secretAccessKey };
+  }
   r2Object(bucket: string, key: string) {
     return this.r2Objects.get(bucket)?.get(key);
   }
@@ -276,6 +294,8 @@ export class FakeCf {
   };
 
   private async route(req: Request, url: URL, body: string): Promise<Response> {
+    if (url.host === `${this.accountId}.r2.cloudflarestorage.com`)
+      return this.s3(req, url);
     if (url.origin !== new URL(API).origin) return this.serve(req, url, body);
     const p = url.pathname.replace(/^\/client\/v4/, "");
     for (const f of this.faults) {
@@ -496,6 +516,7 @@ export class FakeCf {
       const ifMatch = req.headers.get("if-match") ?? undefined;
       const log = (status: number) => {
         this.r2Log.push({
+          api: "rest",
           method: req.method,
           bucket,
           key,
@@ -823,6 +844,126 @@ export class FakeCf {
       (b: { type: string; name: string }) =>
         b.type === "plain_text" && b.name === name,
     )?.text;
+  }
+
+  /** R2's S3 API on <account>.r2.cloudflarestorage.com: SigV4 (region auto) and conditional PutObject. */
+  private async s3(req: Request, url: URL): Promise<Response> {
+    const xml = (status: number, code: string, headers: HeadersInit = {}) =>
+      new Response(
+        `<?xml version="1.0" encoding="UTF-8"?><Error><Code>${code}</Code><Message>${code}</Message></Error>`,
+        { status, headers: { "content-type": "application/xml", ...headers } },
+      );
+    const m = url.pathname.match(/^\/([^/]+)\/(.+)$/);
+    if (!m) return xml(400, "InvalidRequest");
+    const bucket = decodeURIComponent(m[1] as string);
+    const key = m[2]
+      ?.split("/")
+      .map((x) => decodeURIComponent(x))
+      .join("/") as string;
+    for (const f of this.faults) {
+      if (f.times > 0 && f.when(req.method, `/r2s3/${bucket}/${key}`)) {
+        if (f.skip > 0) {
+          f.skip--;
+          continue;
+        }
+        f.times--;
+        return xml(f.status, "InjectedFailure");
+      }
+    }
+    // SigV4: recompute the signature with the token's secret and compare.
+    const auth = req.headers.get("authorization") ?? "";
+    const cred =
+      /Credential=([^/]+)\/(\d{8})\/([^/]+)\/([^/]+)\/aws4_request/.exec(auth);
+    const tok = cred ? this.r2Tokens.get(cred[1] as string) : undefined;
+    if (!cred || !tok || cred[3] !== "auto" || cred[4] !== "s3")
+      return xml(403, "InvalidAccessKeyId");
+    const bytes = new Uint8Array(await req.clone().arrayBuffer());
+    const headers = new Headers(req.headers);
+    headers.delete("authorization");
+    const want = await new AwsV4Signer({
+      method: req.method,
+      url: req.url,
+      headers,
+      accessKeyId: cred[1] as string,
+      secretAccessKey: tok.secret,
+      service: "s3",
+      region: "auto",
+      datetime: req.headers.get("x-amz-date") ?? "",
+    }).authHeader();
+    if (want !== auth) return xml(403, "SignatureDoesNotMatch");
+    if (
+      req.headers.get("x-amz-content-sha256") !==
+      createHash("sha256").update(bytes).digest("hex")
+    )
+      return xml(400, "XAmzContentSHA256Mismatch");
+    this.s3SignatureChecks++;
+    if (!tok.buckets.includes(bucket)) return xml(403, "AccessDenied");
+    if (!this.r2.has(bucket)) return xml(404, "NoSuchBucket");
+    const objs =
+      this.r2Objects.get(bucket) ??
+      this.r2Objects.set(bucket, new Map()).get(bucket);
+    if (!objs) throw new Error("unreachable");
+    const cur = objs.get(key);
+    const ifNoneMatch = req.headers.get("if-none-match") ?? undefined;
+    const ifMatch = req.headers.get("if-match") ?? undefined;
+    const log = (status: number) => {
+      this.r2Log.push({
+        api: "s3",
+        method: req.method,
+        bucket,
+        key,
+        ifNoneMatch,
+        ifMatch,
+        status,
+      });
+    };
+    if (req.method === "PUT") {
+      if (
+        !this.r2IgnoreConditionals &&
+        ((ifNoneMatch === "*" && cur) ||
+          (ifMatch !== undefined &&
+            cur?.etag !== ifMatch.replace(/^"(.*)"$/, "$1")))
+      ) {
+        log(412);
+        return xml(412, "PreconditionFailed");
+      }
+      const etag = randomBytes(16).toString("hex");
+      objs.set(key, { bytes, etag });
+      this.r2OnPut?.(key);
+      if (this.r2PutLandsThen500 && !this.r2Landed.has(`${bucket}/${key}`)) {
+        this.r2Landed.add(`${bucket}/${key}`);
+        log(500);
+        return xml(500, "InternalError");
+      }
+      log(200);
+      return new Response(null, {
+        status: 200,
+        headers: { etag: `"${etag}"` },
+      });
+    }
+    if (req.method === "DELETE") {
+      objs.delete(key);
+      log(204);
+      return new Response(null, { status: 204 });
+    }
+    if (req.method === "GET" || req.method === "HEAD") {
+      if (!cur) {
+        log(404);
+        return req.method === "HEAD"
+          ? new Response(null, { status: 404 })
+          : xml(404, "NoSuchKey");
+      }
+      log(200);
+      const out = this.r2Serve?.(key, cur.bytes) ?? cur.bytes;
+      return new Response(req.method === "HEAD" ? null : (out as BodyInit), {
+        status: 200,
+        headers: {
+          etag: `"${cur.etag}"`,
+          "content-length": String(cur.bytes.length),
+        },
+      });
+    }
+    return xml(405, "MethodNotAllowed");
   }
 
   private async serve(req: Request, url: URL, body: string): Promise<Response> {

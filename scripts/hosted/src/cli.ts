@@ -8,6 +8,11 @@
 //   file named by OA_HOSTED_TOKEN_FILE; prod never reads a file. The token
 //   lives only in this process: never in argv, a file, a child's environment
 //   or the output.
+// - R2 credentials (publish-release, publish-floor only): the env's R2 API
+//   token, keychain item oa-hosted-<env>-r2 holding <accessKeyId>:<secret>;
+//   staging CI may use a 0600 file named by OA_HOSTED_R2_FILE. Same rules as
+//   the token; both halves are redacted. Publish writes go through R2's S3 API
+//   with it, the only endpoint that enforces conditional writes.
 // - Before any write: flag refusals, then the provisioner's own token checks.
 // - Audit: a before row and an after row in hosted_audit, with the actor
 //   (git config user.email, or the CI run URL).
@@ -46,8 +51,11 @@ import {
   probeR2Conditionals,
   publishFloor,
   publishRelease,
+  type R2Credentials,
+  type R2Releases,
   type ReleaseReader,
   r2ReleaseReader,
+  r2S3Client,
   type TurnstileKeys,
   turnstileInit,
   WfpProvisioner,
@@ -87,6 +95,7 @@ Flags:
   --var K=V       repeatable; checked by provision's var allowlist. AUTH_PROVIDERS with
                   google turns the sign-in broker on for the install.
 Token: keychain item oa-hosted-<env> (account open-artifacts). CI (staging only): a 0600 file at OA_HOSTED_TOKEN_FILE.
+R2 (publish-release, publish-floor): keychain item oa-hosted-<env>-r2, <accessKeyId>:<secretAccessKey>. CI (staging only): a 0600 file at OA_HOSTED_R2_FILE.
 Exit 3: an AUDIT GAP (the after-row failed twice; recorded under ~/.config/oa-hosted/pending-audit).
 Env: CLOUDFLARE_ACCOUNT_ID (the hosted account id). Output: one JSON line per step.`;
 
@@ -98,6 +107,8 @@ export const REPO = "open-artifacts-ai/open-artifacts";
 
 export const keychainItem = (env: Env) => `oa-hosted-${env}`;
 export const turnstileItem = (env: Env) => `oa-hosted-${env}-turnstile`;
+/** The env's R2 API token (Object Read & Write on oa-<p>-releases only). */
+export const r2Item = (env: Env) => `oa-hosted-${env}-r2`;
 
 export interface FileInfo {
   mode: number;
@@ -149,6 +160,12 @@ export interface Deps {
   listDir: (dir: string) => string[];
   removeTree: (dir: string) => void;
   cf: (o: { accountId: string; token: string }) => Cf;
+  /** The env's releases bucket over R2's S3 API (publish writes). */
+  r2: (o: {
+    accountId: string;
+    env: Env;
+    credentials: R2Credentials;
+  }) => R2Releases;
   /** Test seam: the release store (R2 in production). */
   release?: (cf: Cf, env: Env) => ReleaseReader;
   /** Test seams for the provisioner (/healthz, clock). */
@@ -290,17 +307,26 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
 const inCi = (env: Deps["env"]) =>
   env.CI === "true" || env.GITHUB_ACTIONS === "true";
 
-/** The env's provisioning token, from the only source that env allows. */
-async function readToken(d: Deps, env: Env): Promise<string> {
-  const file = d.env.OA_HOSTED_TOKEN_FILE;
+/**
+ * A secret from the only source `env` allows: the keychain item `item`, or
+ * (staging CI only) a 0600 file of this user named by `$fileVar`, opened with
+ * O_NOFOLLOW and read through that fd. Prod reads only the keychain.
+ */
+async function readSecret(
+  d: Deps,
+  env: Env,
+  fileVar: "OA_HOSTED_TOKEN_FILE" | "OA_HOSTED_R2_FILE",
+  item: string,
+  what: string,
+): Promise<string> {
+  const file = d.env[fileVar];
   if (env === "prod") {
     if (file !== undefined)
       throw new Refused(
-        "prod reads its token only from the keychain; unset OA_HOSTED_TOKEN_FILE",
+        `prod reads its ${what} only from the keychain; unset ${fileVar}`,
       );
     if (inCi(d.env)) throw new Refused("CI is staging only; prod refused");
   }
-  let token: string;
   if (file !== undefined) {
     let o: OpenedFile;
     try {
@@ -309,43 +335,76 @@ async function readToken(d: Deps, env: Env): Promise<string> {
       const code = (e as { code?: string }).code;
       throw new Refused(
         code === "ELOOP"
-          ? "OA_HOSTED_TOKEN_FILE is a symlink"
-          : `OA_HOSTED_TOKEN_FILE can't be opened (${code ?? "error"})`,
+          ? `${fileVar} is a symlink`
+          : `${fileVar} can't be opened (${code ?? "error"})`,
       );
     }
     try {
       const st = o.info;
-      if (!st.isFile)
-        throw new Refused("OA_HOSTED_TOKEN_FILE is not a regular file");
+      if (!st.isFile) throw new Refused(`${fileVar} is not a regular file`);
       if ((st.mode & 0o777) !== 0o600)
-        throw new Refused("OA_HOSTED_TOKEN_FILE must be mode 0600");
+        throw new Refused(`${fileVar} must be mode 0600`);
       if (st.uid !== d.uid)
-        throw new Refused("OA_HOSTED_TOKEN_FILE must be owned by this user");
-      token = new TextDecoder().decode(o.read()).trim();
+        throw new Refused(`${fileVar} must be owned by this user`);
+      return new TextDecoder().decode(o.read()).trim();
     } finally {
       o.close();
     }
-  } else {
-    if (inCi(d.env))
-      throw new Refused("CI has no keychain; set OA_HOSTED_TOKEN_FILE");
-    try {
-      token = (
-        await d.execFile(SECURITY, [
-          "find-generic-password",
-          "-a",
-          KEYCHAIN_ACCOUNT,
-          "-s",
-          keychainItem(env),
-          "-w",
-        ])
-      ).trim();
-    } catch {
-      throw new Refused(`keychain item ${keychainItem(env)} not found`);
-    }
   }
+  if (inCi(d.env)) throw new Refused(`CI has no keychain; set ${fileVar}`);
+  try {
+    return (
+      await d.execFile(SECURITY, [
+        "find-generic-password",
+        "-a",
+        KEYCHAIN_ACCOUNT,
+        "-s",
+        item,
+        "-w",
+      ])
+    ).trim();
+  } catch {
+    throw new Refused(`keychain item ${item} not found`);
+  }
+}
+
+/** The env's provisioning token, from the only source that env allows. */
+async function readToken(d: Deps, env: Env): Promise<string> {
+  const token = await readSecret(
+    d,
+    env,
+    "OA_HOSTED_TOKEN_FILE",
+    keychainItem(env),
+    "token",
+  );
   if (!token || /\s/.test(token))
     throw new Refused("the token is empty or has whitespace in it");
   return token;
+}
+
+const R2_HALF = /^[A-Za-z0-9]{16,128}$/;
+
+/**
+ * The env's R2 API token as S3 credentials: oa-hosted-<env>-r2 (or
+ * OA_HOSTED_R2_FILE in staging CI) holding <accessKeyId>:<secretAccessKey>.
+ * The item name is env-specific, so another env's item is never read.
+ */
+async function readR2(d: Deps, env: Env): Promise<R2Credentials> {
+  const raw = await readSecret(
+    d,
+    env,
+    "OA_HOSTED_R2_FILE",
+    r2Item(env),
+    "R2 credentials",
+  );
+  const i = raw.indexOf(":");
+  const accessKeyId = raw.slice(0, i);
+  const secretAccessKey = raw.slice(i + 1);
+  if (i < 1 || !R2_HALF.test(accessKeyId) || !R2_HALF.test(secretAccessKey))
+    throw new Refused(
+      `the R2 credentials (${r2Item(env)}) are not <accessKeyId>:<secretAccessKey>`,
+    );
+  return { accessKeyId, secretAccessKey };
 }
 
 async function readTurnstile(d: Deps, env: Env): Promise<TurnstileKeys | null> {
@@ -446,6 +505,7 @@ export async function main(argv: string[], d: Deps): Promise<number> {
   const env = f.env;
 
   let cf: Cf;
+  let r2: R2Releases | undefined;
   let actor: string;
   let turnstile: TurnstileKeys | null = null;
   try {
@@ -456,6 +516,11 @@ export async function main(argv: string[], d: Deps): Promise<number> {
     if (!/^[0-9a-f]{32}$/.test(accountId))
       throw new Refused("set CLOUDFLARE_ACCOUNT_ID to the hosted account id");
     cf = d.cf({ accountId, token });
+    if (cmd === "publish-release" || cmd === "publish-floor") {
+      const credentials = await readR2(d, env);
+      secrets.push(credentials.accessKeyId, credentials.secretAccessKey);
+      r2 = d.r2({ accountId, env, credentials });
+    }
     if (cmd === "create" || cmd === "update-vars")
       turnstile = await readTurnstile(d, env);
     if (turnstile) secrets.push(turnstile.secret);
@@ -515,7 +580,7 @@ export async function main(argv: string[], d: Deps): Promise<number> {
   try {
     notes();
     prov = mk(await brokerOn(cmd, f, audit));
-    const r = await run(cmd, f, d, { cf, env, prov, emit });
+    const r = await run(cmd, f, d, { cf, r2, env, prov, emit });
     notes();
     if (r.id) after = r.id;
     code = r.ok ? 0 : 1;
@@ -634,12 +699,17 @@ async function run(
   d: Deps,
   c: {
     cf: Cf;
+    r2: R2Releases | undefined;
     env: Env;
     prov: WfpProvisioner;
     emit: (l: Record<string, unknown>) => void;
   },
 ): Promise<{ ok: boolean; id?: string; data: unknown }> {
   const { cf, env, prov } = c;
+  const s3 = () => {
+    if (!c.r2) throw new Refused("no R2 credentials were read");
+    return c.r2;
+  };
   const id = f.install as string;
   switch (cmd) {
     case "create": {
@@ -697,9 +767,10 @@ async function run(
       return { ok: true, data: r };
     }
     case "publish-floor": {
-      await probeR2Conditionals(cf, env);
+      const r2 = s3();
+      await probeR2Conditionals(r2, env);
       const floor = d.readFile(f.floor as string);
-      const r = await publishFloor({ cf, env, floor });
+      const r = await publishFloor({ r2, env, floor });
       return { ok: true, data: r };
     }
     case "publish-release": {
@@ -724,7 +795,8 @@ async function run(
         );
         if (variants.length === 0)
           throw new Refused(`release ${tag} has no ${env} tar`);
-        await probeR2Conditionals(cf, env);
+        const r2 = s3();
+        await probeR2Conditionals(r2, env);
         const out = [];
         for (const v of variants) {
           const base = join(dir, `oa-release-${env}-${v}-${version}`);
@@ -732,6 +804,7 @@ async function run(
             throw new Refused(`release ${tag}: ${v} has no .sig.json`);
           const r = await publishRelease({
             cf,
+            r2,
             env,
             version,
             files: {
@@ -790,6 +863,7 @@ export function realDeps(): Deps {
     listDir: (dir) => readdirSync(dir),
     removeTree: (dir) => rmSync(dir, { recursive: true, force: true }),
     cf: (o) => cfClient(o),
+    r2: (o) => r2S3Client(o),
   };
 }
 
