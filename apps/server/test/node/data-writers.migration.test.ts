@@ -25,10 +25,10 @@ type Who = "anonymous" | "viewer" | "editor";
 const WHO: readonly Who[] = ["anonymous", "viewer", "editor"];
 
 /** The writers before #681: signed-in viewers and up; anonymous only with the opt-in on a public artifact. */
-const before = (r: Row, who: Who) =>
+const writersBefore = (r: Row, who: Who) =>
   who === "anonymous" ? r.visibility === "public" && r.aaw === 1 : true;
 /** After, by the live policy. */
-const after = (r: Row, dataWriters: string, who: Who) =>
+const writersAfter = (r: Row, dataWriters: string, who: Who) =>
   can(
     who === "anonymous" ? (r.visibility === "public" ? "viewer" : null) : who,
     "data.write",
@@ -125,15 +125,15 @@ describe("migration data_writers", () => {
     for (const row of rows) {
       const dw = out.get(row.id)?.dw as string;
       for (const who of WHO)
-        if (after(row, dw, who) && !before(row, who))
+        if (writersAfter(row, dw, who) && !writersBefore(row, who))
           grew.push(`${row.id} ${row.visibility} aaw=${row.aaw} ${who}`);
     }
     expect(grew).toEqual([]);
     // Anonymous writers are exactly the opted-in public rows, before and after.
     for (const row of rows)
-      expect(after(row, out.get(row.id)?.dw as string, "anonymous")).toBe(
-        before(row, "anonymous"),
-      );
+      expect(
+        writersAfter(row, out.get(row.id)?.dw as string, "anonymous"),
+      ).toBe(writersBefore(row, "anonymous"));
   });
 
   it("the CHECK refuses other values", () => {
