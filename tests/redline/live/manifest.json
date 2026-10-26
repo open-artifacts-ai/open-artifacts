@@ -66,27 +66,11 @@
     },
     {
       "file": "live/signin.test.ts",
-      "name": "sign-in: ID tokens > an ID token with a B email domain but hd of A: no session"
-    },
-    {
-      "file": "live/signin.test.ts",
-      "name": "sign-in: ID tokens > an ID token with no hd and a B email: no session"
-    },
-    {
-      "file": "live/signin.test.ts",
       "name": "sign-in: ID tokens > an ID token minted for A's client (aud) replayed at B: no session"
     },
     {
       "file": "live/signin.test.ts",
       "name": "sign-in: broker > a tampered install id at the broker callback is refused"
-    },
-    {
-      "file": "live/signin.test.ts",
-      "name": "sign-in: broker > A's broker assertion at B is refused"
-    },
-    {
-      "file": "live/signin.test.ts",
-      "name": "sign-in: broker > B's broker assertion at A is refused"
     },
     {
       "file": "live/signin.test.ts",

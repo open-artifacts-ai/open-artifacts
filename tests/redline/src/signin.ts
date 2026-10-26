@@ -299,16 +299,16 @@ export const relayedTo = (res: Response, t: Target) => {
  * user of the named test tenant (P5 plan, Task 3).
  */
 export const CAPTURE_FLOWS = {
-  /** A's own success leg. */
+  /** "hd of A at B", A's success leg. */
   "a-alice": { at: "a", user: "alice@oa-redline-a.fyi" },
-  /** B's own success leg. */
-  "b-dave": { at: "b", user: "dave@oa-redline-c.fyi" },
-  /** Tenant A's user through B's flow: hd=oa-redline-a.fyi at B. */
+  /** "hd of A at B", the refused leg: tenant A's alice through B's flow. */
   "b-alice": { at: "b", user: "alice@oa-redline-a.fyi" },
-  /** A's Google code and broker state (A's client flow), replayed at B, then still valid at A. */
-  "a-replay": { at: "a", user: "bob@oa-redline-a.fyi" },
-  /** B's own success leg for the replay case (codes are single use). */
-  "b-erin": { at: "b", user: "erin@oa-redline-c.fyi" },
+  /** "A's aud at B": A's code and broker state refused at B, then valid at A. */
+  "a-alice-replay": { at: "a", user: "alice@oa-redline-a.fyi" },
+  /** "hd of A at B", B's success leg. */
+  "b-dave": { at: "b", user: "dave@oa-redline-c.fyi" },
+  /** "A's aud at B", B's success leg (Google codes are single use). */
+  "b-dave-2": { at: "b", user: "dave@oa-redline-c.fyi" },
 } as const;
 export type FlowName = keyof typeof CAPTURE_FLOWS;
 

@@ -174,20 +174,6 @@ describe("sign-in: ID tokens", () => {
     );
   });
 
-  it("an ID token with a B email domain but hd of A: no session", async (ctx) =>
-    proof(
-      ctx,
-      "unproven-live",
-      `${REAL}, and even real tenants can't produce it: oa-redline-c.fyi is verified to tenant B, so no tenant-A account carries a B address (fixture: ${FIXTURE})`,
-    ));
-
-  it("an ID token with no hd and a B email: no session", async (ctx) =>
-    proof(
-      ctx,
-      "unproven-live",
-      `${REAL}, and even real tenants can't produce it: a consumer (no hd) Google account can't use a Workspace-verified domain (fixture: ${FIXTURE})`,
-    ));
-
   it("an ID token minted for A's client (aud) replayed at B: no session", async (ctx) => {
     if (!captures)
       return proof(ctx, "unproven-live", `${REAL} (fixture: ${FIXTURE})`);
@@ -204,8 +190,8 @@ describe("sign-in: ID tokens", () => {
       {
         a: T.a,
         b: T.b,
-        credA: { a: c.get("a-replay") },
-        credB: { b: c.get("b-erin") },
+        credA: { a: c.get("a-alice-replay") },
+        credB: { b: c.get("b-dave-2") },
         ok: signedIn,
         refused: signInRefused("failed", "tenant"),
         refuseFirst: true,
@@ -255,19 +241,6 @@ describe("sign-in: broker", () => {
     }
   });
 
-  it("A's broker assertion at B is refused", async (ctx) =>
-    proof(
-      ctx,
-      "staging-only",
-      "the redeem assertion is Ed25519-signed by the install server-side and never leaves the install-broker channel: no real value to capture and replay (minting one would be forging). Fixture: apps/auth-broker/test/broker.test.ts; the real-tenant aud case replays A's code and broker state at B",
-    ));
-
-  it("B's broker assertion at A is refused", async (ctx) =>
-    proof(
-      ctx,
-      "staging-only",
-      "as A's at B: the signed redeem never leaves the install-broker channel. Fixture: apps/auth-broker/test/broker.test.ts",
-    ));
 });
 
 // --- one-time codes ---------------------------------------------------------
