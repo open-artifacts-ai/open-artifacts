@@ -169,8 +169,51 @@ const installBucket = (bucket: string) => {
 };
 
 /** Manifest hash: the first 32 hex characters of SHA-256 (64 is rejected). */
-export function assetHash(bytes: Uint8Array): string {
-  return createHash("sha256").update(bytes).digest("hex").slice(0, 32);
+/**
+ * The Content-Type an asset is served with: Cloudflare serves each asset with
+ * the type its upload part carried, so an untyped upload is served with none
+ * (and the browser, under nosniff, shows the HTML as text). These are the
+ * types Wrangler gives prod (measured 2026-10-26).
+ */
+const ASSET_TYPES: Record<string, string> = {
+  html: "text/html",
+  js: "text/javascript",
+  mjs: "text/javascript",
+  css: "text/css",
+  svg: "image/svg+xml",
+  ico: "image/vnd.microsoft.icon",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+  woff2: "font/woff2",
+  woff: "font/woff",
+  json: "application/json",
+  webmanifest: "application/manifest+json",
+  txt: "text/plain",
+  xml: "application/xml",
+};
+
+const extOf = (path: string) => {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const i = name.lastIndexOf(".");
+  return i > 0 ? name.slice(i + 1).toLowerCase() : "";
+};
+
+export function assetContentType(path: string): string {
+  return ASSET_TYPES[extOf(path)] ?? "application/octet-stream";
+}
+
+/**
+ * Over the base64 bytes and the extension, as Wrangler hashes: the same bytes
+ * under another type are another asset, so a type fix re-uploads the file.
+ */
+export function assetHash(bytes: Uint8Array, path: string): string {
+  return createHash("sha256")
+    .update(Buffer.from(bytes).toString("base64") + extOf(path))
+    .digest("hex")
+    .slice(0, 32);
 }
 
 const seg = (s: string) => encodeURIComponent(s);
@@ -500,7 +543,7 @@ export function cfClient(o: {
       });
     },
     async assetsUpload(t, script, list) {
-      const files = new Map<string, Uint8Array>();
+      const files = new Map<string, { bytes: Uint8Array; type: string }>();
       const manifest: Record<string, { hash: string; size: number }> = {};
       for (const f of list) {
         assertAssetPath(f?.path);
@@ -508,9 +551,9 @@ export function cfClient(o: {
         if (Object.hasOwn(manifest, key))
           throw new Error(`asset path ${f.path} appears twice`);
         const bytes = f.bytes;
-        const hash = assetHash(bytes);
+        const hash = assetHash(bytes, f.path);
         manifest[key] = { hash, size: bytes.byteLength };
-        files.set(hash, bytes);
+        files.set(hash, { bytes, type: assetContentType(f.path) });
       }
       const sess = await result<{ jwt: string; buckets?: string[][] }>(
         "POST",
@@ -525,10 +568,17 @@ export function cfClient(o: {
       for (const [i, bucket] of buckets.entries()) {
         const form = new FormData();
         for (const h of bucket) {
-          const bytes = files.get(h);
-          if (!bytes)
+          const file = files.get(h);
+          if (!file)
             throw new Error("assets session asked for an unknown file");
-          form.append(h, Buffer.from(bytes).toString("base64"));
+          // The part's Content-Type is what Cloudflare serves the asset with.
+          form.append(
+            h,
+            new Blob([Buffer.from(file.bytes).toString("base64")], {
+              type: file.type,
+            }),
+            h,
+          );
         }
         // Always the account route, even for a namespace script.
         const r = await call(
