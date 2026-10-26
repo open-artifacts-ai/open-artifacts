@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.56.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.55.2...v0.56.0) (2026-10-26)
+
+
+### Features
+
+* **hosted:** oa:hosted CLI and the self-hosted provisioner adapter ([#636](https://github.com/open-artifacts-ai/open-artifacts/issues/636)) ([0d178cf](https://github.com/open-artifacts-ai/open-artifacts/commit/0d178cff556c83cc2099579641b694679bcd6e49))
+* **provision:** hosted installs always have spaces on ([#634](https://github.com/open-artifacts-ai/open-artifacts/issues/634)) ([7a0dd62](https://github.com/open-artifacts-ai/open-artifacts/commit/7a0dd62771365370fb7a32bae4e82d8f751f5461))
+* **server:** read-only POST /__test/audit hook ([#642](https://github.com/open-artifacts-ai/open-artifacts/issues/642)) ([7df1171](https://github.com/open-artifacts-ai/open-artifacts/commit/7df1171c9831cfac9455018f7d3ab68afc940354))
+
 ## [0.55.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.55.1...v0.55.2) (2026-10-25)
 
 

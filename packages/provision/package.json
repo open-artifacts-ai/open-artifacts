@@ -34,6 +34,7 @@
   },
   "dependencies": {
     "@oa/auth-core": "workspace:*",
-    "@oa/shared": "workspace:*"
+    "@oa/shared": "workspace:*",
+    "aws4fetch": "1.0.20"
   }
 }

@@ -94,6 +94,11 @@ export interface CrossCheck {
   credA: Cred;
   credB: Cred;
   ok?: (r: Response) => boolean;
+  /**
+   * What counts as B refusing, when a refusal isn't a 401/403/404 (an OAuth
+   * 400 invalid_grant or invalid_client). Default expectRefused.
+   */
+  refused?: (res: Response, b: Target) => Promise<void>;
 }
 
 /**
@@ -113,7 +118,7 @@ export async function crossCheck(
   const ta = await readBody(ra);
   if (!ok(ra))
     throw new Error(`A's credential failed at A (${describeRes(ra, ta)})`);
-  await expectRefused(await send(req(o.credA, o.b)), o.b);
+  await (o.refused ?? expectRefused)(await send(req(o.credA, o.b)), o.b);
 }
 
 /** A Backend surface probe's answer (apps/server/test/authz/surfaces.ts). */

@@ -53,6 +53,78 @@
       "name": "credentials (harness smoke) > A's admin PAT at B: the host's own marker artifact"
     },
     {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's admin PAT at B: /api/v1/me"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's admin PAT at B: /api/v1/artifacts"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's admin PAT at B: /mcp tools/list"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's session cookie at B: replayed on B's app host"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's session cookie at B: replayed under the alternate cookie name"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > B's content host ignores cookies, A's included"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's MCP OAuth access token at B: /mcp tools/list"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A's OAuth client_id in B's /authorize: no auto-grant"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A's OAuth refresh token at B's /token (A's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > An unredeemed A authorization code at B's /token (A's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A's OAuth refresh token at B's /token (B's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > An unredeemed A authorization code at B's /token (B's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's signed content URL at B's content host"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's content signature with B's artifact id at B's content host"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's signed upload URL at B"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > B's private artifact id fetched with A's credentials at A: 404"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > links > A's invite link opened at B by a B member: no membership on B"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > links > A's share email link opened at B by a B member: no share on B"
+    },
+    {
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > every ROUTE_POLICY route, MCP tool and content route has a case"
     },
