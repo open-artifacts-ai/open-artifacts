@@ -60,6 +60,7 @@ import {
   isInstallId,
   names,
   newInstallId,
+  ownerEmailOf,
   platformNames,
   type RegistryEntry,
   registryDomains,
@@ -591,6 +592,8 @@ export interface InstallStatus {
     id: InstallId;
     kind: "missing_broker" | "missing_directory" | "mismatch" | "missing_both";
   } | null;
+  /** H-DV: whether the owner email is still held; never the address. */
+  owner: "(set)" | "(purged)";
   /** H-DV: the Google directory revoke a delete waits for. */
   directoryRevoke: {
     state: DirectoryRevoke | null;
@@ -1825,8 +1828,9 @@ export class WfpProvisioner {
       throw new ProvisionRefused(
         `install ${id} is ${row.state}; this operation needs ${states.join(" or ")}`,
       );
-    if (typeof row.owner_email === "string")
-      this.sensitive.add(row.owner_email);
+    // Never the purged '': splitting on it would shred every message.
+    const owner = ownerEmailOf(row);
+    if (owner !== null) this.sensitive.add(owner);
     return row;
   }
 
@@ -1949,7 +1953,12 @@ export class WfpProvisioner {
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars);
     this.checkEmailCodeDomain(vars, "domains");
-    const ownerEmail = normOwnerEmail(row.owner_email ?? "");
+    const raw = ownerEmailOf(row);
+    if (raw === null)
+      throw new ProvisionRefused(
+        `install ${row.id}: the owner email is purged (or missing); it is never rendered`,
+      );
+    const ownerEmail = normOwnerEmail(raw);
     if (!ownerEmail)
       throw new ProvisionRefused(`install ${row.id} has no valid owner email`);
     this.sensitive.add(ownerEmail);
@@ -2206,6 +2215,7 @@ export class WfpProvisioner {
                   googleNewlyEnabled(cut.base, JSON.parse(row.vars)),
               },
         registryDrift,
+        owner: ownerEmailOf(row) === null ? "(purged)" : "(set)",
         directoryRevoke: {
           state: row.directory_revoke ?? null,
           attempts: row.directory_revoke_attempts ?? 0,

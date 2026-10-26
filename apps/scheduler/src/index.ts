@@ -548,8 +548,9 @@ export async function revokeTick(
 
 /** Deleted installs keep their owner email this long, then it is purged. */
 export const OWNER_EMAIL_RETENTION_MS = 30 * DAY_MS;
-const PURGE_SQL =
-  "UPDATE installs SET owner_email = NULL WHERE state='deleted' AND updated_at < ?1 AND owner_email IS NOT NULL RETURNING id";
+/** owner_email stays NOT NULL: a purged email is '' (PURGED_EMAIL, names.ts). */
+export const PURGE_SQL =
+  "UPDATE installs SET owner_email = '' WHERE state='deleted' AND updated_at < ?1 AND owner_email <> '' RETURNING id";
 
 /** Idempotent; the install id, its row and its audit rows stay. */
 export async function purgeOwnerEmails(
