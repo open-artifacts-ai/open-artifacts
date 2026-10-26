@@ -1,6 +1,7 @@
 import { applyD1Migrations, createExecutionContext } from "cloudflare:test";
 import { env as testEnv } from "cloudflare:workers";
 import type { D1Migration } from "@cloudflare/vitest-plugin";
+import { isPurgedEmail } from "@oa/provision/names";
 import {
   afterEach,
   beforeAll,
@@ -14,6 +15,7 @@ import scheduler, {
   CRON,
   type Env,
   OWNER_EMAIL_RETENTION_MS,
+  PURGE_SQL,
   purgeOwnerEmails,
   REVOKE_CRON,
   REVOKE_JOB,
@@ -140,6 +142,12 @@ const controller = (cron: string, scheduledTime = NOW) =>
   ({ scheduledTime, cron, noRetry() {} }) as ScheduledController;
 
 describe("the */2 revoke tick", () => {
+  it("the purge SQL empties the email, never NULL (owner_email stays NOT NULL)", () => {
+    expect(PURGE_SQL).toBe(
+      "UPDATE installs SET owner_email = '' WHERE state='deleted' AND updated_at < ?1 AND owner_email <> '' RETURNING id",
+    );
+  });
+
   it("the crons and the job name", () => {
     expect(REVOKE_CRON).toBe("*/2 * * * *");
     expect(CRON).toBe("17 3 * * *");
@@ -344,7 +352,7 @@ describe("scheduled() branches on event.cron", () => {
           l.startsWith("owner-email"),
       ),
     ).toBe(false);
-    expect((await rowOf(idOf(2))).owner_email).not.toBeNull();
+    expect((await rowOf(idOf(2))).owner_email).toBe("owner2@customer.test");
   });
 
   it("the nightly cron never runs the revoke tick, and purges owner emails", async () => {
@@ -371,7 +379,7 @@ describe("scheduled() branches on event.cron", () => {
     expect((await rowOf(idOf(0))).directory_revoke).toBe("pending");
     expect(lines.some((l) => l.startsWith("directory-revoke"))).toBe(false);
     expect(lines).toContain("owner-email purged count=1");
-    expect((await rowOf(idOf(2))).owner_email).toBeNull();
+    expect((await rowOf(idOf(2))).owner_email).toBe("");
   });
 
   it("an unknown cron runs nothing", async () => {
@@ -387,7 +395,7 @@ describe("scheduled() branches on event.cron", () => {
 });
 
 describe("owner-email purge", () => {
-  it("nulls owner_email only on deleted installs older than 30 days; idempotent; the id stays", async () => {
+  it("empties owner_email ('') only on deleted installs older than 30 days; idempotent; the id stays", async () => {
     const edge = NOW - OWNER_EMAIL_RETENTION_MS;
     await seed([
       { id: idOf(0), state: "deleted", revoke: "done", updatedAt: edge - 1 },
@@ -400,17 +408,20 @@ describe("owner-email purge", () => {
         state: "deleted",
         revoke: "done",
         updatedAt: 0,
-        email: null,
+        // Already purged.
+        email: "",
       },
     ]);
     expect(OWNER_EMAIL_RETENTION_MS).toBe(30 * DAY);
     const lines = captureLogs();
     expect(await purgeOwnerEmails(db, NOW)).toBe(1);
-    expect((await rowOf(idOf(0))).owner_email).toBeNull();
-    expect((await rowOf(idOf(1))).owner_email).not.toBeNull();
-    expect((await rowOf(idOf(2))).owner_email).not.toBeNull();
-    expect((await rowOf(idOf(3))).owner_email).not.toBeNull();
-    expect((await rowOf(idOf(4))).owner_email).not.toBeNull();
+    expect((await rowOf(idOf(0))).owner_email).toBe("");
+    expect(isPurgedEmail((await rowOf(idOf(0))).owner_email)).toBe(true);
+    for (const k of [1, 2, 3, 4])
+      expect((await rowOf(idOf(k))).owner_email).toBe(
+        `owner${k}@customer.test`,
+      );
+    expect((await rowOf(idOf(5))).owner_email).toBe("");
     expect(await purgeOwnerEmails(db, NOW)).toBe(0);
     expect(lines).toEqual([
       "owner-email purged count=1",

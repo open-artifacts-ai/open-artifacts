@@ -12,6 +12,9 @@ import { epochBumpSql, type Template } from "../src/metadata.js";
 import {
   ENV_PREFIX,
   type Env,
+  isPurgedEmail,
+  ownerEmailOf,
+  PURGED_EMAIL,
   platformNames,
   registryKey,
 } from "../src/names.js";
@@ -2258,6 +2261,7 @@ describe("fix round 3", () => {
       sessionCut: null,
       registryDrift: null,
       directoryRevoke: { state: null, attempts: 0, revokedAt: null },
+      owner: "(set)",
     });
     s.db()
       .prepare(
@@ -3390,5 +3394,71 @@ describe("H-DV: delete revokes the directory grant first", () => {
     expect(polls.map((p) => p.waitedMs)).toEqual([0, POLL_MS, 2 * POLL_MS]);
     expect(polls[1]?.attempts).toBe(1);
     expect(mid).toEqual({ state: "pending", attempts: 1, revokedAt: null });
+  });
+});
+
+describe("H-DV: a purged owner email ('') is never used as an address", () => {
+  const purge = (s: S, id: string) =>
+    s.db().prepare("UPDATE installs SET owner_email = '' WHERE id = ?").run(id);
+
+  it("isPurgedEmail and ownerEmailOf", () => {
+    expect(PURGED_EMAIL).toBe("");
+    expect(isPurgedEmail("")).toBe(true);
+    for (const v of ["o@x.test", null, undefined, " "])
+      expect(isPurgedEmail(v)).toBe(false);
+    expect(ownerEmailOf({ owner_email: "o@x.test" })).toBe("o@x.test");
+    expect(ownerEmailOf({ owner_email: "" })).toBeNull();
+    expect(ownerEmailOf({ owner_email: null })).toBeNull();
+  });
+
+  it.each([
+    ["upgrade", (p: WfpProvisioner, id: string) => p.upgrade(id, "0.24.0")],
+    [
+      "updateVars",
+      (p: WfpProvisioner, id: string) =>
+        p.updateVars(id, { EMAIL_DAILY_CAP: "5" }),
+    ],
+  ] as const)(
+    "%s on an install whose owner email is purged refuses before any write, and never renders it",
+    async (_n, op) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input()));
+      purge(s, inst.id);
+      const ups = uploads(s.fake).length;
+      const w = s.fake.writes().length;
+      const e = await fails(op(s.mk(), inst.id));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(
+        new RegExp(`install ${inst.id}: the owner email is purged`),
+      );
+      expect(s.fake.writes().length).toBe(w);
+      expect(uploads(s.fake).length).toBe(ups);
+    },
+  );
+
+  it("a purged email never enters the redaction set (an error message stays readable)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    purge(s, inst.id);
+    const e = await fails(s.mk().upgrade(inst.id, "0.24.0"));
+    expect(e.message).not.toContain("[redacted]");
+    expect(e.message).toContain("purged");
+  });
+
+  it("status says owner (purged) or (set), never the address", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const st = await s.p.status(inst.id);
+    expect(st.owner).toBe("(set)");
+    expect(JSON.stringify(st)).not.toContain(OWNER);
+    purge(s, inst.id);
+    expect((await s.mk().status(inst.id)).owner).toBe("(purged)");
+  });
+
+  it("delete of an install whose email is purged still tears down (it needs no address)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    purge(s, inst.id);
+    expect(keep(await s.mk().delete(inst.id, inst.id)).state).toBe("deleted");
   });
 });

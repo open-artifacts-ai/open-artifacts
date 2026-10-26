@@ -3466,17 +3466,13 @@ describe("platform D1 migration (decisions 10, M1, M3)", () => {
     "content_host",
     "rl_ns",
     "state",
+    "owner_email",
     "created_at",
     "updated_at",
     "inputs_hash",
   ])("installs.%s is NOT NULL", (col) => {
     const d = db();
     expect(() => ins(d, row({ [col]: null }))).toThrow(/NOT NULL/);
-  });
-
-  it("installs.owner_email is nullable since 0005 (the 30-day purge of deleted installs)", () => {
-    const d = db();
-    ins(d, row({ owner_email: null }));
   });
 
   it.each([
