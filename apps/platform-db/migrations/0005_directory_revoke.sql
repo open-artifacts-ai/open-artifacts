@@ -8,6 +8,9 @@
 ALTER TABLE installs ADD COLUMN directory_revoke TEXT CHECK (directory_revoke IN ('pending', 'done', 'unsupported', 'skipped', 'failed'));
 ALTER TABLE installs ADD COLUMN directory_revoked_at INTEGER;
 ALTER TABLE installs ADD COLUMN directory_revoke_attempts INTEGER NOT NULL DEFAULT 0;
+-- When this delete attempt began: a done older than it is stale, so it
+-- never unlocks teardown (provision sets it, and compares directory_revoked_at).
+ALTER TABLE installs ADD COLUMN directory_revoke_requested_at INTEGER;
 
 -- The scheduler's */2 tick reads only these rows.
 CREATE INDEX installs_revoke_pending ON installs (id)

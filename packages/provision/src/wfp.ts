@@ -105,6 +105,7 @@ import type {
   InstallId,
   UpgradeResult,
 } from "./types.js";
+import { REVOKE_MIN_VERSION } from "./versions.js";
 
 /** Option names that look like a gate: refused, so no config or spread can try one. */
 const GATE_LIKE =
@@ -465,12 +466,19 @@ export interface RotationResult {
 export const DIRECTORY_REVOKE_SKIPPED_NOTE =
   "the Google grant stays live; revoke it in the customer's Google Admin console: Security > Access and data control > API controls > Manage Third-Party App Access (Manage App Access in newer consoles), find the Open Artifacts Directory app, then Change access to Blocked";
 
-/** The revoke states after which delete tears down. */
-const REVOKE_SETTLED: readonly DirectoryRevoke[] = [
-  "done",
-  "unsupported",
-  "skipped",
-];
+/**
+ * A done unlocks teardown only when it is fresh: confirmed at or after the
+ * start of this delete attempt (M1b). A skip unlocks it too (audited).
+ */
+const freshDone = (r: {
+  directory_revoke: DirectoryRevoke | null;
+  directory_revoked_at: number | null;
+  directory_revoke_requested_at: number | null;
+}): boolean =>
+  r.directory_revoke === "done" &&
+  r.directory_revoked_at !== null &&
+  r.directory_revoke_requested_at !== null &&
+  r.directory_revoked_at >= r.directory_revoke_requested_at;
 const REVOKE_POLL_MS = 15_000;
 const REVOKE_WAIT_MS = 10 * 60_000;
 
@@ -3017,14 +3025,14 @@ export class WfpProvisioner {
       // M1: a skipped row counts only with its reason in hosted_audit.
       const skipAudited =
         revoke === "skipped" && (await this.platform.hasSkipAudit(id));
-      const settled =
-        revoke !== null &&
-        REVOKE_SETTLED.includes(revoke) &&
-        (revoke !== "skipped" || skipAudited);
+      // M1b/M2: only a fresh done or an audited skip is settled; anything
+      // else (pending, failed, unsupported, a stale done) starts a new attempt.
+      const settled = freshDone(row) || (revoke === "skipped" && skipAudited);
       const phase1 =
         row.state !== "deleting" ||
-        revoke === null ||
-        (skip !== undefined && !settled);
+        (!settled && (revoke !== "skipped" || skip !== undefined));
+      // A skip replaces a pending/failed/unsupported attempt, never a done.
+      const useSkip = skip !== undefined && revoke !== "done";
       if (phase1) {
         await this.claim(
           row,
@@ -3033,14 +3041,24 @@ export class WfpProvisioner {
           "delete",
         );
         try {
-          if (skip !== undefined) {
+          if (useSkip) {
             // M1: the reason first; an orphan audit row is harmless, a
             // skipped row with no reason is not.
             await this.logged("delete.revoke_skipped", { reason: skip });
             await this.write({ directory_revoke: "skipped" });
           } else {
-            await this.write({ directory_revoke: "pending" });
+            // M1b: each attempt records its start and resets the count.
+            await this.write({
+              directory_revoke: "pending",
+              directory_revoke_attempts: 0,
+              directory_revoke_requested_at: this.now(),
+              directory_revoked_at: null,
+            });
             await this.logged("delete.revoke_pending", {});
+            // M1a: unmap now; the revoke job needs no HOSTS entry, and the
+            // dispatch Worker stops serving the install at once. Teardown's
+            // unmap is then an idempotent no-op.
+            await this.unmapHosts(row, id);
           }
           await this.release("deleting");
         } catch (e) {
@@ -3049,7 +3067,7 @@ export class WfpProvisioner {
           throw e;
         }
       }
-      const wroteSkip = phase1 && skip !== undefined;
+      const wroteSkip = phase1 && useSkip;
       if (wroteSkip) this.notes.push(DIRECTORY_REVOKE_SKIPPED_NOTE);
 
       // Phase 2: wait for the scheduler (every 15 s, up to 10 minutes).
@@ -3071,14 +3089,24 @@ export class WfpProvisioner {
             break;
           }
           if (st.state === "unsupported") {
-            // L1: the grant may be live; say so and record it.
+            // M2: it can't confirm the revoke, so it never auto-proceeds.
             await this.platform.audit(id, "delete.revoke_unsupported", {});
-            this.notes.push(
-              `the directory revoke is unsupported on this install (a release below 0.54.0, or no script): ${DIRECTORY_REVOKE_SKIPPED_NOTE}`,
+            throw new ProvisionRefused(
+              `install ${id} is below ${REVOKE_MIN_VERSION} and can't confirm the Google revoke; upgrade it or pass --skip-directory-revoke <reason>`,
             );
-            break;
           }
-          if (st.state === "done") break;
+          if (st.state === "done") {
+            if (
+              freshDone({
+                directory_revoke: "done",
+                directory_revoked_at: st.revokedAt,
+                directory_revoke_requested_at: st.requestedAt,
+              })
+            )
+              break;
+            // M1b: a done from an earlier attempt; dispatch a fresh one.
+            await this.platform.redispatchRevoke(id);
+          }
           if (st.state === "failed")
             throw new ProvisionRefused(
               `install ${id}: the directory revoke failed after ${st.attempts} attempts; the row stays deleting. Rerun delete with --skip-directory-revoke "<reason>" to tear down anyway (${DIRECTORY_REVOKE_SKIPPED_NOTE})`,
@@ -3096,11 +3124,14 @@ export class WfpProvisioner {
         throw new ProvisionRefused(
           `install ${id} is ${now?.state ?? "gone"}; it is no longer deleting`,
         );
-      // Defense in depth: the revoke must still be settled.
-      if (
-        now.directory_revoke === null ||
-        !REVOKE_SETTLED.includes(now.directory_revoke)
-      )
+      // Defense in depth: the revoke must still be settled, and fresh.
+      if (now.directory_revoke === "done" && !freshDone(now)) {
+        await this.platform.redispatchRevoke(id);
+        throw new ProvisionRefused(
+          `install ${id}: the directory revoke was not confirmed for this attempt; a fresh one is dispatched, rerun delete`,
+        );
+      }
+      if (now.directory_revoke !== "done" && now.directory_revoke !== "skipped")
         throw new ProvisionRefused(
           `install ${id}: the directory revoke is no longer settled (${now.directory_revoke ?? "none"}); rerun delete`,
         );
@@ -3116,19 +3147,7 @@ export class WfpProvisioner {
       await this.claim(row, ["deleting"], "deleting", "delete");
       try {
         await this.logged("delete.start", {});
-        for (const h of [row.app_host, row.content_host]) {
-          const cur = await cf.kvGet(this.hostsKv.id, h);
-          if (cur === null) continue;
-          if (cur !== id) {
-            this.notes.push(`HOSTS ${h} maps to ${cur}, not ${id}; left alone`);
-            continue;
-          }
-          assertOwnResource(this.hostsKv.title, env);
-          await this.hold();
-          await cf.kvDeleteKey(this.hostsKv.id, h);
-        }
-        await this.hold();
-        await this.platform.unmapHosts(id);
+        await this.unmapHosts(row, id);
         // L1: the directory copy first, then the broker entry, so the
         // directory never trusts a key that sign-in has dropped. A rerun
         // redoes both.
@@ -3184,6 +3203,26 @@ export class WfpProvisioner {
         throw e;
       }
     });
+  }
+
+  /** Unmaps the install's HOSTS keys and hosts rows; idempotent. */
+  private async unmapHosts(
+    row: { app_host: string; content_host: string },
+    id: InstallId,
+  ): Promise<void> {
+    for (const h of [row.app_host, row.content_host]) {
+      const cur = await this.cf.kvGet(this.hostsKv.id, h);
+      if (cur === null) continue;
+      if (cur !== id) {
+        this.notes.push(`HOSTS ${h} maps to ${cur}, not ${id}; left alone`);
+        continue;
+      }
+      assertOwnResource(this.hostsKv.title, this.env);
+      await this.hold();
+      await this.cf.kvDeleteKey(this.hostsKv.id, h);
+    }
+    await this.hold();
+    await this.platform.unmapHosts(id);
   }
 
   /** Deletes every object, a listing page at a time (lock renewed each page), until a listing comes back empty. */

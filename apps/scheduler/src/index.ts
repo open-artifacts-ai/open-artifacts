@@ -4,7 +4,11 @@ import {
   names,
   type Env as OaEnv,
 } from "@oa/provision/names";
-import { compareVersions, isReleaseVersion } from "@oa/provision/versions";
+import {
+  compareVersions,
+  isReleaseVersion,
+  REVOKE_MIN_VERSION,
+} from "@oa/provision/versions";
 import { emailQuota, type QuotaEnv } from "./quota.js";
 
 export interface Env extends QuotaEnv {
@@ -459,8 +463,6 @@ export async function nightly(
 export const REVOKE_CRON = "*/2 * * * *";
 /** The install's job (Backend #616): revokes its Google directory grant. */
 export const REVOKE_JOB = "oa:directory-disconnect";
-/** Releases before this ignore the cron and run the whole nightly set. */
-const REVOKE_MIN_VERSION = "0.54.0";
 export const REVOKE_MAX_ATTEMPTS = 5;
 /** One query, on the partial index installs_revoke_pending (0005). */
 export const REVOKE_SQL =
@@ -469,7 +471,7 @@ export const REVOKE_SQL =
 // revoke is still pending (L2: a late result never overwrites an operator's
 // skip, and never bumps row_version under a teardown).
 const REVOKE_DONE_SQL =
-  "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = ?2 WHERE id = ?1 AND state = 'deleting' AND directory_revoke = 'pending'";
+  "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = CASE WHEN directory_revoke_requested_at > ?2 THEN directory_revoke_requested_at ELSE ?2 END WHERE id = ?1 AND state = 'deleting' AND directory_revoke = 'pending'";
 const REVOKE_UNSUPPORTED_SQL =
   "UPDATE installs SET directory_revoke = 'unsupported' WHERE id = ?1 AND state = 'deleting' AND directory_revoke = 'pending'";
 const REVOKE_RETRY_SQL =
@@ -482,10 +484,10 @@ export interface RevokeOptions {
 
 /**
  * One tick: up to 10 pending revokes, 3 at a time (each bounded by
- * timeoutMs, so a tick ends inside the 2 minutes). Below 0.54.0, or no
+ * timeoutMs, so a tick ends inside the 2 minutes). Below REVOKE_MIN_VERSION, or no
  * release version, is unsupported with no call. A resolve is done; "Worker
- * not found" is unsupported; a rejection or timeout counts an attempt, and
- * the fifth is failed. Logs carry the install id and a fixed category only.
+ * not found" (outcome scriptNotFound) is unsupported; a rejection, timeout
+ * or any other outcome counts an attempt, and the fifth is failed. Logs carry the install id and a fixed category only.
  */
 export async function revokeTick(
   env: Env,
@@ -535,6 +537,7 @@ async function runRevokeTick(
       compareVersions(version, REVOKE_MIN_VERSION) < 0
     )
       return unsupported();
+    let missing = false;
     try {
       const r = await within(
         (
@@ -544,10 +547,16 @@ async function runRevokeTick(
         ).scheduled({ cron: REVOKE_JOB, scheduledTime: new Date(now) }),
         timeoutMs,
       );
-      checkOutcome(r);
-    } catch (e) {
-      if (!(e instanceof Stall) && category(e) === "not_found")
-        return unsupported();
+      // M2/L1: only a structured outcome decides; "ok" is done, a missing
+      // script is unsupported, anything else (a throw, even "Worker not
+      // found") counts an attempt.
+      const outcome =
+        typeof r === "object" && r !== null
+          ? (r as { outcome?: unknown }).outcome
+          : undefined;
+      if (outcome === "scriptNotFound") missing = true;
+      else if (outcome !== "ok") throw new Error("outcome");
+    } catch {
       const after = await db
         .prepare(REVOKE_RETRY_SQL)
         .bind(id, REVOKE_MAX_ATTEMPTS)
@@ -557,6 +566,7 @@ async function runRevokeTick(
       console.warn(`directory-revoke ${failed ? "failed" : "retry"}`, id);
       return;
     }
+    if (missing) return unsupported();
     await db.prepare(REVOKE_DONE_SQL).bind(id, now).run();
     console.log("directory-revoke done", id);
   };

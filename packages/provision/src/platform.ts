@@ -41,6 +41,8 @@ export interface InstallRow {
   directory_revoke: DirectoryRevoke | null;
   directory_revoked_at: number | null;
   directory_revoke_attempts: number;
+  /** When this delete attempt began; a done older than it is stale (0005). */
+  directory_revoke_requested_at: number | null;
 }
 
 /** pending: the scheduler's revoke tick owns it; the rest are final for delete. */
@@ -115,6 +117,9 @@ const UPDATABLE = new Set([
   "session_cut_base",
   "session_cut_armed",
   "directory_revoke",
+  "directory_revoke_attempts",
+  "directory_revoked_at",
+  "directory_revoke_requested_at",
 ]);
 
 export class PlatformDb {
@@ -422,11 +427,12 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
     state: DirectoryRevoke | null;
     attempts: number;
     revokedAt: number | null;
+    requestedAt: number | null;
   } | null> {
     const r = (
       await this.cf.d1Query(
         this.db.id,
-        "SELECT directory_revoke, directory_revoke_attempts, directory_revoked_at FROM installs WHERE id = ?1",
+        "SELECT directory_revoke, directory_revoke_attempts, directory_revoked_at, directory_revoke_requested_at FROM installs WHERE id = ?1",
         [id],
       )
     )[0]?.results?.[0];
@@ -438,7 +444,23 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
         r.directory_revoked_at === null || r.directory_revoked_at === undefined
           ? null
           : Number(r.directory_revoked_at),
+      requestedAt:
+        r.directory_revoke_requested_at === null ||
+        r.directory_revoke_requested_at === undefined
+          ? null
+          : Number(r.directory_revoke_requested_at),
     };
+  }
+
+  /**
+   * M1b: a stale done goes back to pending so the scheduler revokes afresh.
+   * Only a still-deleting row whose done predates this attempt's start.
+   */
+  async redispatchRevoke(id: InstallId): Promise<void> {
+    await this.write(
+      "UPDATE installs SET directory_revoke = 'pending', directory_revoke_attempts = 0 WHERE id = ?1 AND state = 'deleting' AND directory_revoke = 'done' AND (directory_revoked_at IS NULL OR directory_revoke_requested_at IS NULL OR directory_revoked_at < directory_revoke_requested_at)",
+      [id],
+    );
   }
 
   /** H-DV M1: whether a delete recorded its skip reason for this install. */

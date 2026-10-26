@@ -25,7 +25,6 @@ import {
   registryKey,
 } from "../src/names.js";
 import { canonicalJson } from "../src/platform.js";
-import { REVOKE_MIN_VERSION } from "../src/versions.js";
 import {
   assetEntries,
   bundleSha256,
@@ -36,6 +35,7 @@ import {
   type ReleaseRecord,
   TEST_HOOKS_DEFINE,
 } from "../src/release.js";
+import { REVOKE_MIN_VERSION } from "../src/versions.js";
 import {
   BROKER_GOOGLE_CLIENT_ID,
   DIRECTORY_REVOKE_SKIPPED_NOTE,
@@ -3727,7 +3727,9 @@ describe("H-DV review fixes", () => {
     const p = s.mk();
     expect(
       keep(
-        await p.delete(inst.id, inst.id, { skipDirectoryRevoke: "old release" }),
+        await p.delete(inst.id, inst.id, {
+          skipDirectoryRevoke: "old release",
+        }),
       ).state,
     ).toBe("deleted");
     expect(s.audit(inst.id)).toContain("delete.revoke_skipped");

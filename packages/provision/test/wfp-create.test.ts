@@ -3457,6 +3457,7 @@ describe("platform D1 migration (decisions 10, M1, M3)", () => {
       "directory_revoke",
       "directory_revoked_at",
       "directory_revoke_attempts",
+      "directory_revoke_requested_at",
     ]);
   });
 

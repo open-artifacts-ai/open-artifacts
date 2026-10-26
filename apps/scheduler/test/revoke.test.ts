@@ -2,6 +2,7 @@ import { applyD1Migrations, createExecutionContext } from "cloudflare:test";
 import { env as testEnv } from "cloudflare:workers";
 import type { D1Migration } from "@cloudflare/vitest-plugin";
 import { isPurgedEmail } from "@oa/provision/names";
+import { REVOKE_MIN_VERSION } from "@oa/provision/versions";
 import {
   afterEach,
   beforeAll,
@@ -77,7 +78,7 @@ async function seed(rows: Row[]) {
         (i + 1) * 8,
         r.state ?? "deleting",
         r.updatedAt ?? 0,
-        r.version === undefined ? "0.54.0" : r.version,
+        r.version === undefined ? REVOKE_MIN_VERSION : r.version,
         r.revoke === undefined ? "pending" : r.revoke,
         r.attempts ?? 0,
       ),
@@ -93,7 +94,14 @@ const rowOf = async (id: string) =>
     .bind(id)
     .first()) as Record<string, unknown>;
 
-type Behavior = "ok" | "throw" | "hang" | "missing";
+type Behavior =
+  | "ok"
+  | "throw"
+  | "hang"
+  | "missing"
+  | "missingThrows"
+  | "nonOk"
+  | "undefined";
 function fakes(
   behave: (script: string) => Behavior = () => "ok",
   onCall?: (script: string) => Promise<void>,
@@ -109,14 +117,17 @@ function fakes(
           async scheduled(opts: unknown) {
             calls.push({ script, opts });
             await onCall?.(script);
-            if (b === "missing")
+            if (b === "missing") return { outcome: "scriptNotFound" };
+            if (b === "nonOk") return { outcome: "exception" };
+            if (b === "undefined") return undefined;
+            if (b === "missingThrows")
               throw new Error(
                 `Worker not found: ${script} owner@customer.test`,
               );
             if (b === "throw")
               throw new Error("D1_ERROR owner@customer.test SECRET=x");
             if (b === "hang") await new Promise(() => {});
-            return undefined;
+            return { outcome: "ok" };
           },
         };
       },
@@ -179,10 +190,10 @@ describe("the */2 revoke tick", () => {
     expect(lines).toEqual([]);
   });
 
-  it("resolve is done (with directory_revoked_at), below 0.54.0 and Worker not found are unsupported, a rejection retries", async () => {
+  it("resolve is done (with directory_revoked_at), below REVOKE_MIN_VERSION and a scriptNotFound outcome are unsupported, a rejection retries", async () => {
     await seed([
       { id: idOf(0) },
-      { id: idOf(1), version: "0.53.9" },
+      { id: idOf(1), version: "0.55.9" },
       { id: idOf(2) },
       { id: idOf(3) },
       { id: idOf(4), version: null },
@@ -227,6 +238,35 @@ describe("the */2 revoke tick", () => {
     expect(lines.join("\n")).not.toMatch(
       /@|SECRET|D1_ERROR|Worker not found|oa-s-/,
     );
+  });
+
+  it("L1: a thrown Worker not found is an attempt, never unsupported; a non-ok or empty result is too", async () => {
+    await seed([{ id: idOf(0) }, { id: idOf(1) }, { id: idOf(2) }]);
+    captureLogs();
+    const by: Record<string, Behavior> = {
+      [`oa-s-${idOf(0)}`]: "missingThrows",
+      [`oa-s-${idOf(1)}`]: "nonOk",
+      [`oa-s-${idOf(2)}`]: "undefined",
+    };
+    const f = fakes((s) => by[s] ?? "ok");
+    await revokeTick(f.env, NOW);
+    for (const k of [0, 1, 2])
+      expect(await rowOf(idOf(k))).toMatchObject({
+        directory_revoke: "pending",
+        directory_revoke_attempts: 1,
+      });
+  });
+
+  it("M1b: done never predates this attempt's start", async () => {
+    await seed([{ id: idOf(0) }]);
+    await db
+      .prepare(
+        "UPDATE installs SET directory_revoke_requested_at = ?1 WHERE id = ?2",
+      )
+      .bind(NOW + 5000, idOf(0))
+      .run();
+    await revokeTick(fakes().env, NOW);
+    expect((await rowOf(idOf(0))).directory_revoked_at).toBe(NOW + 5000);
   });
 
   it("the fifth failure, a rejection or a timeout, is failed", async () => {
@@ -539,12 +579,12 @@ describe("H-DV review fixes", () => {
     expect(REVOKE_CONCURRENCY).toBe(3);
   });
 
-  it("L6: a prerelease of 0.54.0 or a malformed version is unsupported, with no call", async () => {
+  it("L6: a prerelease of REVOKE_MIN_VERSION or a malformed version is unsupported, with no call", async () => {
     await seed([
-      { id: idOf(0), version: "0.54.0-rc.1" },
-      { id: idOf(1), version: "v0.55.0" },
-      { id: idOf(2), version: "0.55" },
-      { id: idOf(3), version: "0.54.1-rc.1" },
+      { id: idOf(0), version: `${REVOKE_MIN_VERSION}-rc.1` },
+      { id: idOf(1), version: `v${REVOKE_MIN_VERSION}` },
+      { id: idOf(2), version: "0.56" },
+      { id: idOf(3), version: "0.56.1-rc.1" },
     ]);
     const f = fakes();
     await revokeTick(f.env, NOW);

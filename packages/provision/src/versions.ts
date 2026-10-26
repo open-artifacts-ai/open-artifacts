@@ -2,6 +2,13 @@
 // can share it (@oa/provision/versions).
 export const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 
+/**
+ * The first release whose `oa:directory-disconnect` keeps the tokens and
+ * rejects when the Google revoke fails (Backend's change). PROVISIONAL: the
+ * Manager sets the real release; below it an install is `unsupported`.
+ */
+export const REVOKE_MIN_VERSION = "0.56.0";
+
 /** Semver order (prerelease below its release); throws on a non-semver string. */
 export function compareVersions(a: string, b: string): number {
   const pa = SEMVER.exec(String(a));
