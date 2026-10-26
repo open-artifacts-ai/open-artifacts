@@ -24,7 +24,13 @@ import { DatabaseSync as Sqlite } from "node:sqlite";
 import { isPat } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { packUstar } from "../../../scripts/ci/release-artifact.mjs";
-import { assetHash, CfError, cfClient, type Target } from "../src/cf.js";
+import {
+  assetContentType,
+  assetHash,
+  CfError,
+  cfClient,
+  type Target,
+} from "../src/cf.js";
 import * as INDEX from "../src/index.js";
 import { RELEASE_PUBKEY_PLACEHOLDER } from "../src/internal/gates.js";
 import { loadTemplate } from "../src/internal/template.js";
@@ -1975,7 +1981,7 @@ describe("WfpProvisioner.create", () => {
       for (const v of Object.values(manifest) as { hash: string }[])
         expect(v.hash).toMatch(/^[0-9a-f]{32}$/);
       expect(manifest["/app.js"].hash).toBe(
-        assetHash(ASSETS[1]?.bytes as Uint8Array),
+        assetHash(ASSETS[1]?.bytes as Uint8Array, "app.js"),
       );
       const ups = s.fake.log.filter((e) =>
         e.path.includes("/workers/assets/upload"),
@@ -1990,6 +1996,47 @@ describe("WfpProvisioner.create", () => {
       expect(meta.keep_assets).toBeUndefined();
     });
 
+    it("every asset is uploaded with the Content-Type prod serves for its extension", async () => {
+      const fake = new FakeCf();
+      FAKES.push(fake);
+      SENSITIVE.add(fake.token);
+      const cf = cfClient({
+        accountId: fake.accountId,
+        token: fake.token,
+        fetch: fake.fetch,
+      });
+      // Measured on prod (Wrangler's types), 2026-10-26.
+      const want: Record<string, string> = {
+        "index.html": "text/html",
+        "assets/i.js": "text/javascript",
+        "assets/m.mjs": "text/javascript",
+        "assets/i.css": "text/css",
+        "favicon.svg": "image/svg+xml",
+        "favicon.ico": "image/vnd.microsoft.icon",
+        "apple-touch-icon.png": "image/png",
+        "assets/f.woff2": "font/woff2",
+        "manifest.json": "application/json",
+        "notes.bin": "application/octet-stream",
+      };
+      await cf.assetsUpload(
+        { kind: "namespace", ns: "oa-staging" },
+        "oa-s-iaaaaaaaaaaa",
+        Object.keys(want).map((path) => ({ path, bytes: enc(path) })),
+      );
+      expect(Object.fromEntries(fake.assetTypes)).toEqual(
+        Object.fromEntries(Object.entries(want).map(([p, t]) => [`/${p}`, t])),
+      );
+      for (const p of Object.keys(want))
+        expect(assetContentType(p)).toBe(want[p]);
+    });
+
+    it("the asset hash covers the extension, so a file re-uploads when its type changes", () => {
+      const b = enc("same bytes");
+      expect(assetHash(b, "a.js")).not.toBe(assetHash(b, "a.css"));
+      expect(assetHash(b, "a.js")).toMatch(/^[0-9a-f]{32}$/);
+      expect(assetHash(b, "x/a.js")).toBe(assetHash(b, "y/b.js"));
+    });
+
     it("cf.assetsUpload with nothing new returns the session jwt without an upload call", async () => {
       const fake = new FakeCf();
       FAKES.push(fake);
@@ -1999,7 +2046,7 @@ describe("WfpProvisioner.create", () => {
         token: fake.token,
         fetch: fake.fetch,
       });
-      fake.assetHashes.add(assetHash(enc("a")));
+      fake.assetHashes.add(assetHash(enc("a"), "a.txt"));
       const r = await cf.assetsUpload(
         { kind: "namespace", ns: "oa-staging" },
         "oa-s-iaaaaaaaaaaa",
