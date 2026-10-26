@@ -94,6 +94,28 @@ const shortOn = async (artifactId: string, token: string | null) => {
   };
 };
 
+/** GET anon-id from one IP with a limiter that counts and denies everything. */
+const viaDeny = async (id: string, token: string | null) => {
+  const keys: string[] = [];
+  const deny = {
+    async limit({ key }: { key: string }) {
+      keys.push(key);
+      return { success: false };
+    },
+  };
+  const r = await app.fetch(
+    new Request(`http://app.localhost${R.anonId(id)}`, {
+      headers: {
+        "cf-connecting-ip": "192.0.2.10",
+        ...(token ? { [ANON_ID_HEADER]: token } : {}),
+      },
+    }),
+    { ...env, RL_ANON: deny },
+    { waitUntil() {}, passThroughOnException() {} } as never,
+  );
+  return { r, keys };
+};
+
 describe("anonId issuance", () => {
   it("is never issued on an artifact without allowAnonymousWrites", async () => {
     const id = await pub({ visibility: "public" });
@@ -262,6 +284,38 @@ describe("anonId issuance", () => {
     expect(keys).toEqual(["anonid:ip:192.0.2.9"]);
   });
 
+  it("GET anon-id with a valid token never spends the per-IP limit", async () => {
+    const id = await optIn();
+    const token = await mintToken(id);
+    const { short } = await shortOn(id, token);
+    // Well past 30 a minute from one IP, with the limiter refusing everything.
+    for (let i = 0; i < 40; i++) {
+      const { r, keys } = await viaDeny(id, token);
+      expect(r.status).toBe(200);
+      expect(AnonViewerSchema.parse(await r.json()).anonId).toBe(short);
+      expect(r.headers.get(ANON_ID_HEADER)).toBeNull();
+      expect(keys).toEqual([]);
+    }
+  });
+
+  it("GET anon-id with a forged or expired token still counts against the limit", async () => {
+    const id = await optIn();
+    const good = await mintToken(id);
+    const [gid = "", giat = "", gsig = ""] = good.split(".");
+    const forged = `${gid}.${giat}.${gsig.slice(0, -2)}AA`;
+    const expired = await issueAnonToken(
+      env,
+      gid,
+      Math.floor(Date.now() / 1000) - ANON_TOKEN_MAX_AGE_S - 60,
+    );
+    for (const t of [forged, expired]) {
+      const { r, keys } = await viaDeny(id, t);
+      expect(r.status).toBe(429);
+      expect(r.headers.get(ANON_ID_HEADER)).toBeNull();
+      expect(keys).toEqual(["anonid:ip:192.0.2.10"]);
+    }
+  });
+
   it("embed mode (X-OA-Embed: 1) with a cookie runs anonymously and mints", async () => {
     const id = await optIn();
     const r = await api(app, R.anonId(id), owner.cookie, {
@@ -383,6 +437,13 @@ describe("anonId token expiry", () => {
     // A forged v1 token gets a new id.
     const w = await write(id, "f", `${freshId()}.${v1.split(".")[1]}`);
     expect(idOf(w.headers.get(ANON_ID_HEADER))).not.toBe(bid);
+  });
+
+  it("GET anon-id with a v1 token counts against the limit (it re-mints)", async () => {
+    const id = await optIn();
+    const { r, keys } = await viaDeny(id, await v1Token(freshId()));
+    expect(r.status).toBe(429);
+    expect(keys).toEqual(["anonid:ip:192.0.2.10"]);
   });
 
   it("a future iat (beyond 5 min of skew) is rejected: a new id is minted", async () => {

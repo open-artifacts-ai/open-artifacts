@@ -183,7 +183,8 @@ async function anonLimit(c: C, key: string, what: string): Promise<void> {
  *   "sub:ip:{key}" (anonIpKey: IPv4, or the IPv6 /56).
  * - data reads: anyone with view access (actor unused).
  * - anonId: anonymous writes, and "anonId" (GET anon-id, after RL_ANON
- *   "anonid:ip:{key}"), on an artifact with allowAnonymousWrites only: the
+ *   "anonid:ip:{key}" when it mints; a valid current token skips the limit),
+ *   on an artifact with allowAnonymousWrites only: the
  *   ANON_ID_HEADER token is verified, or a new one minted (returned by
  *   `withAnon`). `short` is per artifact; a write stores updatedBy
  *   "anon:{short}", and the DO still rate limits by "ip:{key}". Reads never
@@ -254,6 +255,16 @@ async function gate(
     return { artifactId, actor: `ip:${key}`, anon: null, authzAt };
   }
   if (kind === "anonId") {
+    // A valid, current token only reads back this artifact's short id (an
+    // HMAC check), so reloads never spend the per-IP budget. Minting a new id
+    // (none, forged, v1 or expired) stays limited.
+    const held = await resolveAnonId(
+      c.env,
+      artifactId,
+      c.req.header(ANON_ID_HEADER),
+      false,
+    );
+    if (held) return { artifactId, actor: "", anon: held, authzAt };
     await anonLimit(c, `anonid:ip:${key}`, "requests");
     return { artifactId, actor: "", anon: await anonId(), authzAt };
   }
