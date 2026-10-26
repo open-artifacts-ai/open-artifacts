@@ -313,7 +313,10 @@ describe("WebSocket at B with B's own session and A's Origin: refused", () => {
       it(`${what} with Origin = A's ${which} origin`, async () => {
         const hs = (l: Live, origin: string) =>
           wsHandshake(
-            new Request(url(l.s.t), withCred(l.s.cookie, { headers: { origin } })),
+            new Request(
+              url(l.s.t),
+              withCred(l.s.cookie, { headers: { origin } }),
+            ),
           );
         // Success legs: each side's own session from its own app origin.
         for (const l of [B, A]) {
@@ -330,15 +333,21 @@ describe("WebSocket at B with B's own session and A's Origin: refused", () => {
 });
 
 /** The stored doc's updatedBy (read with the artifact owner's PAT). */
-async function updatedBy(l: Live, doc: string): Promise<{ by: string; text: string }> {
+async function updatedBy(
+  l: Live,
+  doc: string,
+): Promise<{ by: string; text: string }> {
   const { res, text } = await call(
     apiReq(l.s.t, l.s.pat, "GET", dataPath(l.anon, "data", COL, doc)),
     `${l.s.t.name} read ${doc}`,
   );
-  const by = (parseJson(res, text, `${l.s.t.name} read ${doc}`) as {
-    updatedBy?: unknown;
-  }).updatedBy;
-  if (typeof by !== "string") throw new Error(`${l.s.t.name} ${doc}: no updatedBy`);
+  const by = (
+    parseJson(res, text, `${l.s.t.name} read ${doc}`) as {
+      updatedBy?: unknown;
+    }
+  ).updatedBy;
+  if (typeof by !== "string")
+    throw new Error(`${l.s.t.name} ${doc}: no updatedBy`);
   return { by, text };
 }
 
@@ -353,10 +362,14 @@ describe("anonymous writes on a B public artifact", () => {
       const res = await send(anonPut(l, { kind: "none" }, "anon"));
       const text = await readBody(res);
       if (!defaultOk(res))
-        throw new Error(`${l.s.t.name} anonymous write: ${describeRes(res, text)}`);
+        throw new Error(
+          `${l.s.t.name} anonymous write: ${describeRes(res, text)}`,
+        );
       const { by } = await updatedBy(l, "anon");
       if (!by.startsWith("anon"))
-        throw new Error(`${l.s.t.name} anonymous write: updatedBy is not anonymous`);
+        throw new Error(
+          `${l.s.t.name} anonymous write: updatedBy is not anonymous`,
+        );
     }
   });
 
@@ -372,7 +385,9 @@ describe("anonymous writes on a B public artifact", () => {
     const res = await send(anonPut(B, A.s.pat, "from-a"));
     const text = await readBody(res);
     if (!defaultOk(res))
-      throw new Error(`A's PAT anonymous write at B: ${describeRes(res, text)}`);
+      throw new Error(
+        `A's PAT anonymous write at B: ${describeRes(res, text)}`,
+      );
     const stored = await updatedBy(B, "from-a");
     if (!stored.by.startsWith("anon"))
       throw new Error("A's PAT at B: updatedBy is not anonymous");

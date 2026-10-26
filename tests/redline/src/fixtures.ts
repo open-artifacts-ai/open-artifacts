@@ -93,9 +93,11 @@ export async function createThrowaway(
     }),
     `${t.name} create throwaway`,
   );
-  const id = (parseJson(res, text, `${t.name} create throwaway`) as {
-    id?: unknown;
-  }).id;
+  const id = (
+    parseJson(res, text, `${t.name} create throwaway`) as {
+      id?: unknown;
+    }
+  ).id;
   if (typeof id !== "string") throw new Error(`${t.name} throwaway: no id`);
   return { id, marker };
 }
@@ -118,7 +120,10 @@ export async function deleteThrowaways(
 }
 
 export const dataPath = (id: string, ...rest: string[]) =>
-  [`/api/v1/artifacts/${encodeURIComponent(id)}`, ...rest.map(encodeURIComponent)]
+  [
+    `/api/v1/artifacts/${encodeURIComponent(id)}`,
+    ...rest.map(encodeURIComponent),
+  ]
     .join("/")
     .replace(/\/$/, "");
 

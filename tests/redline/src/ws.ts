@@ -17,10 +17,13 @@ function toResponse(res: IncomingMessage, body: Buffer): Response {
   }
   const status = res.statusCode ?? 0;
   if (status >= 200 && status <= 599)
-    return new Response(status === 204 || status === 304 ? null : body, {
-      status,
-      headers,
-    });
+    return new Response(
+      status === 204 || status === 304 ? null : new Uint8Array(body),
+      {
+        status,
+        headers,
+      },
+    );
   // Response can't carry a 1xx: keep the real status on a bodiless one.
   const r = new Response(null, { status: 200, headers });
   Object.defineProperty(r, "status", { value: status });
