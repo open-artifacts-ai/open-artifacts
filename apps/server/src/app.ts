@@ -40,8 +40,10 @@ export const methodNotAllowed = () =>
 
 // Paths owned by the Worker; never served by the SPA fallback.
 // (/a/*, /no-access and /search are SPA routes and fall through to ASSETS.)
-// /_oa/* (render bundles) is content-host only: a JSON 404 here.
-const WORKER_PREFIX = /^\/(api|auth|oauth|\.well-known|mcp|_oa|__test)(\/|$)/;
+// /_oa/* (render bundles) is content-host only: a JSON 404 here. /__oa/* is
+// reserved for platform internals (no route today): a JSON 404, never the SPA.
+const WORKER_PREFIX =
+  /^\/(api|auth|oauth|\.well-known|mcp|_oa|__oa|__test)(\/|$)/;
 
 // Decode, collapse slashes and resolve dot segments; null if malformed.
 function normalizedPath(url: string): string | null {
