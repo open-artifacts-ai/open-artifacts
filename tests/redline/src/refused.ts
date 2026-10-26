@@ -93,6 +93,8 @@ export interface CrossCheck {
   credA: Cred;
   credB: Cred;
   ok?: (r: Response) => boolean;
+  /** How each leg is sent (default: fetch, redirect manual); e.g. wsHandshake. */
+  send?: (r: Request) => Promise<Response>;
 }
 
 /**
@@ -104,15 +106,16 @@ export async function crossCheck(
   o: CrossCheck,
 ): Promise<void> {
   const ok = o.ok ?? defaultOk;
-  const rb = await send(req(o.credB, o.b));
+  const go = o.send ?? send;
+  const rb = await go(req(o.credB, o.b));
   const tb = await readBody(rb);
   if (!ok(rb))
     throw new Error(`B's own credential failed at B (${describeRes(rb, tb)})`);
-  const ra = await send(req(o.credA, o.a));
+  const ra = await go(req(o.credA, o.a));
   const ta = await readBody(ra);
   if (!ok(ra))
     throw new Error(`A's credential failed at A (${describeRes(ra, ta)})`);
-  await expectRefused(await send(req(o.credA, o.b)), o.b);
+  await expectRefused(await go(req(o.credA, o.b)), o.b);
 }
 
 export interface Side {
