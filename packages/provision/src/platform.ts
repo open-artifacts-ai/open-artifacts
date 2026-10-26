@@ -385,6 +385,25 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
     );
   }
 
+  /**
+   * Appends an audit row with its actor (the operator's git email, or the CI
+   * run URL): the oa:hosted CLI's before and after rows. `detail` must never
+   * carry a secret or an email.
+   */
+  async auditAs(
+    actor: string,
+    id: InstallId | "-",
+    action: string,
+    detail: Record<string, string | number> = {},
+  ): Promise<void> {
+    if (typeof actor !== "string" || actor === "" || actor.length > 300)
+      throw new Error("an audit actor is required");
+    await this.write(
+      "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
+      [this.now(), actor, id, action, canonicalJson(detail)],
+    );
+  }
+
   /** Appends an audit row; `detail` must never carry a secret or an email. */
   async audit(
     id: InstallId,

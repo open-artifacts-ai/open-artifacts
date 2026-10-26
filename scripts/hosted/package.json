@@ -1,0 +1,22 @@
+{
+  "name": "@oa/hosted",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "pnpm --silent --filter @oa/provision build >&2 && node src/cli.ts",
+    "test": "pnpm --filter @oa/provision build && vitest run",
+    "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit"
+  },
+  "dependencies": {
+    "@oa/provision": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  }
+}

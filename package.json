@@ -13,7 +13,8 @@
     "check-no-test-hooks": "node --experimental-strip-types scripts/ci/check-no-test-hooks.ts",
     "typecheck": "pnpm --filter @oa/shared build && tsc --noEmit -p tsconfig.json && pnpm -r --if-present typecheck",
     "dev": "pnpm --parallel --filter @oa/server --filter @oa/dashboard --if-present dev",
-    "oa:setup": "pnpm --filter @oa/setup start"
+    "oa:setup": "pnpm --filter @oa/setup start",
+    "oa:hosted": "pnpm --silent --filter @oa/hosted start"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
