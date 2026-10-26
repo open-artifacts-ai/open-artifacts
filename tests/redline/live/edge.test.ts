@@ -264,7 +264,8 @@ describe("mapping integrity", () => {
     const rows = (
       Array.isArray(raw) ? raw : (raw as { installs?: unknown }).installs
     ) as Record<string, unknown>[] | undefined;
-    if (!Array.isArray(rows)) throw new Error("inventory /installs: no list");
+    if (!Array.isArray(rows) || rows.length === 0)
+      throw new Error("inventory /installs: missing or empty");
     // No host in /hosts is claimed by two installs (app or content).
     const claims = new Map<string, Set<string>>();
     for (const row of rows)
@@ -587,110 +588,136 @@ describe("cross-site isolation", () => {
 
   it("state-changing app requests without X-OA-Request are refused, and accepted with it", async () => {
     for (const s of [A, B]) {
-      const t = s.t;
-      const w = await createThrowaway(t, s.pat, { capabilities: { db: true } });
-      made.set(s, [...(made.get(s) ?? []), w.id]);
-      const art = `/api/v1/artifacts/${encodeURIComponent(w.id)}`;
-      const read = async (path: string) => {
-        const r = await send(apiReq(t, s.pat, "GET", path));
-        return `${r.status}\n${await readBody(r)}`;
-      };
-      const writes: {
-        method: string;
-        path: string;
-        body?: unknown;
-        state: string;
-      }[] = [
-        {
-          method: "POST",
-          path: "/api/v1/artifacts",
-          body: { title: "redline-csrf", format: "html", content: "<p>x</p>" },
-          state: "/api/v1/artifacts",
-        },
-        {
-          method: "PATCH",
-          path: art,
-          body: { title: "redline-csrf-patched" },
-          state: art,
-        },
-        {
-          method: "PUT",
-          path: `${art}/data/c/csrf`,
-          body: { v: 1 },
-          state: `${art}/data/c/csrf`,
-        },
-        {
-          method: "POST",
-          path: "/api/v1/tokens",
-          body: { label: "redline-csrf" },
-          state: "/api/v1/tokens",
-        },
-        { method: "DELETE", path: art, state: art },
-      ];
-      for (const wr of writes) {
-        const init = (csrf: boolean) => {
-          const headers: Record<string, string> = {};
-          if (csrf) headers["x-oa-request"] = "1";
-          if (wr.body !== undefined)
-            headers["content-type"] = "application/json";
-          return new Request(
-            `${t.app}${wr.path}`,
-            withCred(s.cookie, {
-              method: wr.method,
-              headers,
-              ...(wr.body !== undefined
-                ? { body: JSON.stringify(wr.body) }
-                : {}),
-            }),
-          );
-        };
-        const before = await read(wr.state);
-        const r = await send(init(false));
-        const rb = await readBody(r);
-        let code: unknown;
-        try {
-          code = (JSON.parse(rb) as { error?: { code?: unknown } }).error?.code;
-        } catch {
-          code = undefined;
-        }
-        if (r.status !== 403 || code !== "csrf")
-          throw new Error(
-            `${t.name} ${wr.method} without X-OA-Request: ${describeRes(r, rb)}`,
-          );
-        if ((await read(wr.state)) !== before)
-          throw new Error(
-            `${t.name} ${wr.method} without X-OA-Request changed state`,
-          );
-        const ok = await send(init(true));
-        const ob = await readBody(ok);
-        if (ok.status < 200 || ok.status > 299)
-          throw new Error(
-            `${t.name} ${wr.method} with X-OA-Request: ${describeRes(ok, ob)}`,
-          );
-        if (wr.method === "POST" && wr.path === "/api/v1/artifacts") {
-          const id = (JSON.parse(ob) as { id?: unknown }).id;
-          if (typeof id === "string") made.set(s, [...(made.get(s) ?? []), id]);
-        }
+      let failure: unknown = null;
+      try {
+        await csrfWrites(s);
+      } catch (e) {
+        failure = e;
       }
-      // Revoke the token minted above.
-      const list = await send(apiReq(t, s.pat, "GET", "/api/v1/tokens"));
-      const lt = await readBody(list);
-      const raw = JSON.parse(lt) as unknown;
-      const tokens = (
-        Array.isArray(raw)
-          ? raw
-          : ((raw as { tokens?: unknown[] }).tokens ?? [])
-      ) as { id?: unknown; label?: unknown }[];
-      for (const tk of tokens)
-        if (tk.label === "redline-csrf" && typeof tk.id === "string")
-          await send(
-            apiReq(
-              t,
-              s.pat,
-              "DELETE",
-              `/api/v1/tokens/${encodeURIComponent(tk.id)}`,
-            ),
-          ).then((r) => r.body?.cancel());
+      // Always revoke the PAT minted by the tokens write; a live one left
+      // behind fails the case.
+      try {
+        await revokeTokens(s, "redline-csrf");
+      } catch (e) {
+        failure ??= e;
+      }
+      if (failure) throw failure;
     }
   });
 });
+
+async function csrfWrites(s: Side): Promise<void> {
+  const t = s.t;
+  const w = await createThrowaway(t, s.pat, { capabilities: { db: true } });
+  made.set(s, [...(made.get(s) ?? []), w.id]);
+  const art = `/api/v1/artifacts/${encodeURIComponent(w.id)}`;
+  const read = async (path: string) => {
+    const r = await send(apiReq(t, s.pat, "GET", path));
+    return `${r.status}\n${await readBody(r)}`;
+  };
+  const writes: {
+    method: string;
+    path: string;
+    body?: unknown;
+    state: string;
+  }[] = [
+    {
+      method: "POST",
+      path: "/api/v1/artifacts",
+      body: { title: "redline-csrf", format: "html", content: "<p>x</p>" },
+      state: "/api/v1/artifacts",
+    },
+    {
+      method: "PATCH",
+      path: art,
+      body: { title: "redline-csrf-patched" },
+      state: art,
+    },
+    {
+      method: "PUT",
+      path: `${art}/data/c/csrf`,
+      body: { v: 1 },
+      state: `${art}/data/c/csrf`,
+    },
+    {
+      method: "POST",
+      path: "/api/v1/tokens",
+      body: { label: "redline-csrf" },
+      state: "/api/v1/tokens",
+    },
+    { method: "DELETE", path: art, state: art },
+  ];
+  for (const wr of writes) {
+    const init = (csrf: boolean) => {
+      const headers: Record<string, string> = {};
+      if (csrf) headers["x-oa-request"] = "1";
+      if (wr.body !== undefined) headers["content-type"] = "application/json";
+      return new Request(
+        `${t.app}${wr.path}`,
+        withCred(s.cookie, {
+          method: wr.method,
+          headers,
+          ...(wr.body !== undefined ? { body: JSON.stringify(wr.body) } : {}),
+        }),
+      );
+    };
+    const before = await read(wr.state);
+    const r = await send(init(false));
+    const rb = await readBody(r);
+    let code: unknown;
+    try {
+      code = (JSON.parse(rb) as { error?: { code?: unknown } }).error?.code;
+    } catch {
+      code = undefined;
+    }
+    if (r.status !== 403 || code !== "csrf")
+      throw new Error(
+        `${t.name} ${wr.method} without X-OA-Request: ${describeRes(r, rb)}`,
+      );
+    if ((await read(wr.state)) !== before)
+      throw new Error(
+        `${t.name} ${wr.method} without X-OA-Request changed state`,
+      );
+    const ok = await send(init(true));
+    const ob = await readBody(ok);
+    if (ok.status < 200 || ok.status > 299)
+      throw new Error(
+        `${t.name} ${wr.method} with X-OA-Request: ${describeRes(ok, ob)}`,
+      );
+    if (wr.method === "POST" && wr.path === "/api/v1/artifacts") {
+      const id = (JSON.parse(ob) as { id?: unknown }).id;
+      if (typeof id === "string") made.set(s, [...(made.get(s) ?? []), id]);
+    }
+  }
+}
+
+/** Revokes every token of `s`'s user labelled `label`; throws unless all are gone. */
+async function revokeTokens(s: Side, label: string): Promise<void> {
+  const t = s.t;
+  const list = async () => {
+    const r = await send(apiReq(t, s.pat, "GET", "/api/v1/tokens"));
+    const b = await readBody(r);
+    if (r.status !== 200)
+      throw new Error(`${t.name} list tokens: ${describeRes(r, b)}`);
+    const raw = parseJson(r, b, `${t.name} list tokens`);
+    const all = Array.isArray(raw)
+      ? raw
+      : (raw as { tokens?: unknown } | null)?.tokens;
+    if (!Array.isArray(all)) throw new Error(`${t.name} list tokens: no list`);
+    return (all as { id?: unknown; label?: unknown }[]).filter(
+      (tk) => tk.label === label,
+    );
+  };
+  for (const tk of await list()) {
+    if (typeof tk.id !== "string")
+      throw new Error(`${t.name}: a ${label} token has no id`);
+    const r = await send(
+      apiReq(t, s.pat, "DELETE", `/api/v1/tokens/${encodeURIComponent(tk.id)}`),
+    );
+    const b = await readBody(r);
+    if (r.status < 200 || r.status > 299)
+      throw new Error(`${t.name} revoke ${label}: ${describeRes(r, b)}`);
+  }
+  if ((await list()).length)
+    throw new Error(`${t.name}: a ${label} token is still live`);
+}
