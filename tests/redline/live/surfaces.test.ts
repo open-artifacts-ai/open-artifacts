@@ -1,22 +1,33 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { withCred } from "../src/http.ts";
-import { crossProbe, prepareSide, type Side } from "../src/refused.ts";
-import { proof } from "../src/report.ts";
+import {
+  crossProbe,
+  crossWrite,
+  prepareSide,
+  type Side,
+} from "../src/refused.ts";
 import {
   cleanWorld,
   coverageGaps,
+  dispose,
   probeCases,
   probeCred,
   seedWorld,
+  snapshot,
+  sweep,
+  type Throwaway,
+  throwaway,
   viaTarget,
   type World,
 } from "../src/surfaces.ts";
 import { loadTargets, type Target, type Targets } from "../src/targets.ts";
 
 // P5 Task 3b: every Backend surface probe (apps/server/test/authz/surfaces.ts)
-// with A's credentials against B's ids, through crossProbe. Read-only probes
-// only; the rest report why they can't run, never pass. Each case is listed
-// in live/manifest.json.
+// with A's credentials against B's ids. Read-only probes go through
+// crossProbe on a seeded world; mutating ones through crossWrite on
+// throwaways each install makes for itself, deleted even on failure.
+// Surfaces with no possible success leg are dropped through DROPPED (P5
+// plan, Task 3b). Each case is listed in live/manifest.json.
 
 let T: Targets;
 let A: Side;
@@ -34,6 +45,7 @@ beforeAll(async () => {
 afterAll(async () => {
   for (const s of [A, B]) {
     if (!s) continue;
+    await sweep(s);
     const w = worlds.get(s.t);
     if (w) await cleanWorld(s, w);
     await fetch(
@@ -48,6 +60,7 @@ const world = (t: Target): World => {
   if (!w) throw new Error(`${t.name}: no probe world`);
   return w;
 };
+const side = (t: Target): Side => (t === T.a ? A : B);
 
 describe("surface probes (cross-install)", () => {
   it("every ROUTE_POLICY route, MCP tool and content route has a case", () => {
@@ -55,19 +68,31 @@ describe("surface probes (cross-install)", () => {
   });
 
   for (const c of probeCases())
-    it(c.name, async (ctx) => {
-      if (c.skip) return proof(ctx, c.skip.level, c.skip.reason);
-      const { run, variant } = c;
-      if (!run || !variant)
-        throw new Error("a runnable case needs run and variant");
+    it(c.name, async () => {
+      const pair = {
+        a: T.a,
+        b: T.b,
+        credA: probeCred(A, c.variant),
+        credB: probeCred(B, c.variant),
+      };
+      if (c.write) {
+        const { fresh, run } = c.write;
+        await crossWrite(
+          (cred, t, x: Throwaway, f) => run(cred, t, x, viaTarget(t, f)),
+          {
+            ...pair,
+            fresh: (t) => throwaway(side(t), world(t), fresh),
+            snapshot: (t, x) => snapshot(side(t), x),
+            dispose: (t, x) => dispose(side(t), x),
+          },
+        );
+        return;
+      }
+      const { run } = c;
+      if (!run) throw new Error("a case needs run or write");
       await crossProbe(
         (cred, t, f) => run(cred, t, world(t), viaTarget(t, f)),
-        {
-          a: T.a,
-          b: T.b,
-          credA: probeCred(A, variant),
-          credB: probeCred(B, variant),
-        },
+        pair,
       );
     });
 });

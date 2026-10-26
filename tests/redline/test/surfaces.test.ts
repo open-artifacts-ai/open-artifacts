@@ -8,13 +8,14 @@ import {
 } from "../../../apps/server/test/authz/surfaces.ts";
 import {
   crossProbe,
+  crossWrite,
   NotRefused,
   type ProbeFetch,
   registerMarker,
   type Verdict,
 } from "../src/refused.ts";
 import { parseManifest } from "../src/report.ts";
-import { coverageGaps, probeCases, viaTarget } from "../src/surfaces.ts";
+import { coverageGaps, DROPPED, derive, viaTarget } from "../src/surfaces.ts";
 import { loadTargets, type Target } from "../src/targets.ts";
 import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
 
@@ -24,26 +25,58 @@ afterEach(async () => {
 });
 
 describe("probe cases (derived from Backend's surfaces)", () => {
-  const cases = probeCases();
+  const d = derive();
+  const { cases, dropped } = d;
 
   it("cover every ROUTE_POLICY route, MCP tool and content route", () => {
-    expect(coverageGaps(cases)).toEqual([]);
+    expect(coverageGaps(d)).toEqual([]);
   });
 
   it("flag a route, a tool or a content route no case reaches", () => {
-    const drop = (r: string) =>
-      coverageGaps(cases.filter((c) => !c.routes.includes(r)));
-    expect(drop("GET /api/v1/me")).toContain("no case: GET /api/v1/me");
-    expect(drop("tool:list_spaces")).toContain("no case: tool:list_spaces");
-    expect(drop("content:GET /*")).toContain("no case: content:GET /*");
+    const without = (r: string) =>
+      coverageGaps({
+        cases: cases.filter((c) => !c.routes.includes(r)),
+        dropped: dropped.filter((x) => !x.routes.includes(r)),
+      });
+    expect(without("GET /api/v1/me")).toContain("no case: GET /api/v1/me");
+    expect(without("tool:list_spaces")).toContain("no case: tool:list_spaces");
+    expect(without("content:GET /*")).toContain("no case: content:GET /*");
   });
 
   it("flag a case list shorter than the policy manifest", () => {
-    const gaps = coverageGaps(cases.slice(0, 10));
-    expect(gaps.some((g) => / cases < \d+ scoped routes/.test(g))).toBe(true);
+    const gaps = coverageGaps({ cases: cases.slice(0, 10), dropped });
+    expect(
+      gaps.some((g) => /cases and drops < \d+ scoped routes/.test(g)),
+    ).toBe(true);
   });
 
-  it("have unique names, one or more per surface", () => {
+  it("flag a drop DROPPED doesn't record, and a recorded drop the rules don't make", () => {
+    const extra = {
+      name: "org GET /api/v1/new-owner-only",
+      routes: ["GET /api/v1/new-owner-only"],
+      why: "owner-only" as const,
+      reason: "r",
+    };
+    expect(coverageGaps({ cases, dropped: [...dropped, extra] })).toContain(
+      "drop not recorded in DROPPED: org GET /api/v1/new-owner-only (owner-only)",
+    );
+    const [first, ...rest] = dropped;
+    expect(first).toBeDefined();
+    expect(coverageGaps({ cases, dropped: rest })).toContain(
+      `DROPPED lists a surface the rules don't drop: ${first?.name}`,
+    );
+  });
+
+  it("record every drop with a reason and a covering test", () => {
+    expect(dropped.length).toBe(Object.keys(DROPPED).length);
+    for (const x of dropped) {
+      expect(DROPPED[x.name]?.why).toBe(x.why);
+      expect(DROPPED[x.name]?.coveredBy).not.toBe("");
+      expect(x.reason).not.toBe("");
+    }
+  });
+
+  it("have unique names; every surface is a case or a recorded drop", () => {
     expect(new Set(cases.map((c) => c.name)).size).toBe(cases.length);
     const prefixes = [
       ...SURFACES.map((s) => `artifact ${s.name}`),
@@ -52,11 +85,11 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     ];
     for (const p of prefixes)
       expect(
-        cases.some((c) => c.name === p || c.name.startsWith(`${p} [`)),
+        p in DROPPED || cases.some((c) => c.name.startsWith(`${p} [`)),
       ).toBe(true);
   });
 
-  it("never run a mutating probe; skipped cases carry a non-pass level and a reason", () => {
+  it("run every mutating probe through crossWrite on a throwaway, never on the world", () => {
     const mutating = new Set([
       ...SURFACES.filter((s) => s.mutates).map((s) => `artifact ${s.name}`),
       ...ORG_SURFACES.filter((s) => s.mutates).map((s) => `org ${s.route}`),
@@ -64,15 +97,18 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     ]);
     expect(mutating.size).toBeGreaterThan(0);
     for (const c of cases) {
-      if (mutating.has(c.name)) expect(c.skip).toBeDefined();
-      if (c.skip) {
+      const base = c.name.replace(/ \[(session|pat)\]$/, "");
+      if (mutating.has(base)) {
+        expect(c.write).toBeDefined();
         expect(c.run).toBeUndefined();
-        expect(c.skip.reason).not.toBe("");
-      } else expect(c.run && c.variant).toBeTruthy();
+      } else {
+        expect(c.run).toBeDefined();
+        expect(c.write).toBeUndefined();
+      }
     }
   });
 
-  it("are all in the required-case manifest", () => {
+  it("are all in the required-case manifest, and no drop is", () => {
     const m = parseManifest(
       readFileSync(join(import.meta.dirname, "../live/manifest.json"), "utf8"),
     );
@@ -246,6 +282,103 @@ describe("crossProbe", () => {
     await expect(
       crossProbe(run, { a: T.a, b: T.b, credA: "ta", credB: "tb" }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("crossWrite", () => {
+  /** Throwaways per install: id -> value; `write` sets one when the token is the install's own. */
+  async function world(leakB = false) {
+    const store = new Map<string, Map<string, string>>([
+      ["rl-a", new Map()],
+      ["rl-b", new Map()],
+    ]);
+    const handler = (name: string, installId: string, token: string) =>
+      ((req, res, body) => {
+        if (req.url === "/healthz")
+          return json(res, 200, { ok: true, testHooks: true, installId });
+        const id = req.url?.split("/").pop() ?? "";
+        const own = req.headers.authorization === `Bearer ${token}`;
+        if (req.method === "PUT" && (own || (leakB && name === "rl-b"))) {
+          store.get(name)?.set(id, body);
+          return res.writeHead(200).end("{}");
+        }
+        res.writeHead(401).end("{}");
+      }) as Parameters<typeof fakeServer>[0];
+    const T = await pair(
+      await fake(handler("rl-a", "rl-a-id", "ta")),
+      await fake(handler("rl-b", "rl-b-id", "tb")),
+    );
+    let n = 0;
+    const made: string[] = [];
+    const disposed: string[] = [];
+    const o = {
+      a: T.a,
+      b: T.b,
+      credA: "ta",
+      credB: "tb",
+      fresh: async (t: Target) => {
+        const id = `x${n++}`;
+        store.get(t.name)?.set(id, "orig");
+        made.push(`${t.name}/${id}`);
+        return id;
+      },
+      snapshot: async (t: Target, x: string) => store.get(t.name)?.get(x) ?? "",
+      dispose: async (t: Target, x: string) => {
+        disposed.push(`${t.name}/${x}`);
+      },
+    };
+    const write = async (
+      cred: string,
+      t: Target,
+      x: string,
+      f: ProbeFetch,
+    ): Promise<Verdict> => {
+      const r = await f(
+        new Request(`${t.app}/w/${x}`, {
+          method: "PUT",
+          headers: { authorization: `Bearer ${cred}` },
+          body: "changed",
+        }),
+      );
+      await r.body?.cancel();
+      return r.status === 200 ? "allow" : "deny";
+    };
+    return { o, write, made, disposed };
+  }
+
+  it("passes when each install writes only its own throwaways; disposes all three", async () => {
+    const w = await world();
+    await expect(crossWrite(w.write, w.o)).resolves.toBeUndefined();
+    expect(w.made).toHaveLength(3);
+    expect([...w.disposed].sort()).toEqual([...w.made].sort());
+  });
+
+  it("fails when B's throwaway changed, even though the probe saw a refusal", async () => {
+    const w = await world();
+    const sneaky = async (c: string, t: Target, x: string, f: ProbeFetch) => {
+      const v = await w.write(c, t, x, f);
+      // Something else changed B's throwaway during the cross leg.
+      if (c === "ta" && t === w.o.b) await w.write("tb", t, x, f);
+      return c === "ta" && t === w.o.b ? "deny" : v;
+    };
+    await expect(crossWrite(sneaky, w.o)).rejects.toThrow(NotRefused);
+    expect([...w.disposed].sort()).toEqual([...w.made].sort());
+  });
+
+  it("fails when B accepts A's write, and still disposes every throwaway", async () => {
+    const w = await world(true);
+    await expect(crossWrite(w.write, w.o)).rejects.toThrow(NotRefused);
+    expect(w.made).toHaveLength(3);
+    expect([...w.disposed].sort()).toEqual([...w.made].sort());
+  });
+
+  it("fails when B's own write is refused (a broken B)", async () => {
+    const w = await world();
+    const broken = { ...w.o, credB: "nope" };
+    await expect(crossWrite(w.write, broken)).rejects.toThrow(
+      /B's own credential failed at B/,
+    );
+    expect([...w.disposed].sort()).toEqual([...w.made].sort());
   });
 });
 

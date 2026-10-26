@@ -92,6 +92,24 @@ Mail for both domains is routed (Cloudflare Email Routing catch-all) to the user
 
 P3 ships `apps/server/test/authz/surfaces.ts` (every HTTP surface as a probe) and `scripts/authz-probe.ts`. Tasks 4 and 5 drive those probes with A's credentials against B and expect `expectRefused` on every surface, so a surface Backend adds is covered without a P5 change. A test fails if the probe list is shorter than the server's `ROUTE_POLICY` manifest.
 
+Built as `tests/redline/live/surfaces.test.ts`, with the case list derived in `src/surfaces.ts`:
+- Read-only probes run through `crossProbe` on a seeded world.
+- Mutating probes run through `crossWrite`. Each install's own admin writes to a throwaway on its own install. A's write at B is refused, and B's throwaway reads back unchanged. Every throwaway is deleted, even on failure.
+- Coverage of `ROUTE_POLICY`, `TOOL_POLICY` and `CONTENT_POLICY` is derived. A dropped surface counts only through `DROPPED`, an explicit list that the coverage check holds to the drop rules.
+
+**Dropped (2026-10-26):** each of these has no possible success leg cross-install.
+- **Owner-only** (hooks never mint the owner, and no owner credential is stored in CI): `GET /api/v1/directory/connect`; `POST /api/v1/directory/confirm`, `/cancel`, `/sync`, `/held/:groupId/confirm`, `/disconnect`; `DELETE /api/v1/directory`.
+  - Covered by `apps/server/test/authz.surface-matrix.test.ts` "instance routes" (orgOwner allowed, everyone else refused), plus R4's "A's admin PAT and session cookie at B".
+  - `/disconnect` and `DELETE /api/v1/directory` are also covered by the matrix's "directory disconnect: cookie sessions only".
+- **Nobody allowed** (personal-space rule): the six `(personal)` space probes (patch {}, delete, member put/delete, mapping put/delete).
+  - Covered by the matrix's "space writes" and "attack seeds: another member's personal space", plus R4.
+- **anon id**: anonymous writes only, and no fixture opts in.
+  - Covered by the matrix's "artifact surfaces", plus R4.
+- **content /p/**: credential-free (public artifacts to anyone), so no tenant credential crosses.
+  - Covered by the matrix's "artifact surfaces" (public.link), plus R4's "A's signed content URL at B's content host".
+- **Needs a connected Google directory**, which the red-line installs don't have: `GET /api/v1/directory/callback` (404 without the connector), and the two mutating space mapping deletes ("mapping delete viewer", "mapping delete a manager mapping"; only a connected directory creates a mapping row).
+  - Covered by the matrix's "instance routes" and "space writes" (its fixture connects a directory), plus R4.
+
 ### Task 4: Credential cases (available now)
 
 **Files:**

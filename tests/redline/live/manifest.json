@@ -122,7 +122,11 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact rest uploads"
+      "name": "surface probes (cross-install) > artifact rest uploads [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest uploads [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
@@ -142,7 +146,11 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact rest visibility"
+      "name": "surface probes (cross-install) > artifact rest visibility [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest visibility [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
@@ -270,10 +278,6 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact anon id"
-    },
-    {
-      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact content mint [session]"
     },
     {
@@ -291,10 +295,6 @@
     {
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact content /c/?dl=1 [pat]"
-    },
-    {
-      "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact content /p/"
     },
     {
       "file": "live/surfaces.test.ts",
@@ -330,7 +330,7 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact mcp restore_version"
+      "name": "surface probes (cross-install) > artifact mcp restore_version [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
@@ -338,15 +338,15 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact mcp unshare_artifact"
+      "name": "surface probes (cross-install) > artifact mcp unshare_artifact [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact mcp set_visibility"
+      "name": "surface probes (cross-install) > artifact mcp set_visibility [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact mcp delete_artifact"
+      "name": "surface probes (cross-install) > artifact mcp delete_artifact [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
@@ -362,15 +362,15 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact mcp artifact_data_set"
+      "name": "surface probes (cross-install) > artifact mcp artifact_data_set [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact mcp artifact_data_update"
+      "name": "surface probes (cross-install) > artifact mcp artifact_data_update [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact mcp artifact_data_delete"
+      "name": "surface probes (cross-install) > artifact mcp artifact_data_delete [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
@@ -378,7 +378,7 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > artifact mcp create_upload"
+      "name": "surface probes (cross-install) > artifact mcp create_upload [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
@@ -558,43 +558,11 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org GET /api/v1/directory/connect"
-    },
-    {
-      "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org GET /api/v1/directory/callback"
-    },
-    {
-      "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org POST /api/v1/directory/confirm"
-    },
-    {
-      "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org POST /api/v1/directory/cancel"
-    },
-    {
-      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > org GET /api/v1/directory/groups [session]"
     },
     {
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > org GET /api/v1/directory/groups [pat]"
-    },
-    {
-      "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org POST /api/v1/directory/sync"
-    },
-    {
-      "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org POST /api/v1/directory/held/:groupId/confirm"
-    },
-    {
-      "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org POST /api/v1/directory/disconnect"
-    },
-    {
-      "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org DELETE /api/v1/directory"
     },
     {
       "file": "live/surfaces.test.ts",
@@ -670,15 +638,19 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space patch name"
+      "name": "surface probes (cross-install) > space patch name [session]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space patch allMembersRole"
+      "name": "surface probes (cross-install) > space patch name [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space patch {} (personal)"
+      "name": "surface probes (cross-install) > space patch allMembersRole [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > space patch allMembersRole [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
@@ -690,59 +662,59 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space delete (personal)"
+      "name": "surface probes (cross-install) > space member put viewer [session]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space member put viewer"
+      "name": "surface probes (cross-install) > space member put viewer [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space member put manager (ceiling)"
+      "name": "surface probes (cross-install) > space member put manager (ceiling) [session]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space member put on a peer manager"
+      "name": "surface probes (cross-install) > space member put manager (ceiling) [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space member put (personal)"
+      "name": "surface probes (cross-install) > space member put on a peer manager [session]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space member delete editor"
+      "name": "surface probes (cross-install) > space member put on a peer manager [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space member delete a peer manager"
+      "name": "surface probes (cross-install) > space member delete editor [session]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space member delete (personal)"
+      "name": "surface probes (cross-install) > space member delete editor [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space mapping put viewer"
+      "name": "surface probes (cross-install) > space member delete a peer manager [session]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space mapping put manager (ceiling)"
+      "name": "surface probes (cross-install) > space member delete a peer manager [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space mapping put (personal)"
+      "name": "surface probes (cross-install) > space mapping put viewer [session]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space mapping delete viewer"
+      "name": "surface probes (cross-install) > space mapping put viewer [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space mapping delete a manager mapping"
+      "name": "surface probes (cross-install) > space mapping put manager (ceiling) [session]"
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > space mapping delete (personal)"
+      "name": "surface probes (cross-install) > space mapping put manager (ceiling) [pat]"
     }
   ]
 }

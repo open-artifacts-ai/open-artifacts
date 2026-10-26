@@ -187,6 +187,60 @@ export async function crossProbe<C>(
     throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);
 }
 
+export interface CrossWrite<C, X> extends CrossProbe<C> {
+  /** A throwaway on `host`, made with host's own credential. */
+  fresh: (host: Target) => Promise<X>;
+  /** What the write would change on a throwaway, as host's own credential reads it. */
+  snapshot: (host: Target, x: X) => Promise<string>;
+  /** Deletes a throwaway; called for every one made, even on failure. */
+  dispose: (host: Target, x: X) => Promise<void>;
+}
+
+/**
+ * crossProbe for a probe that writes when allowed. Each leg gets its own
+ * throwaway on the install it targets: B's own credential is allowed on B's,
+ * A's on A's, then A's is denied on a fresh one of B's, every response B gave
+ * passes expectRefused, and that throwaway reads back unchanged.
+ */
+export async function crossWrite<C, X>(
+  run: (cred: C, host: Target, x: X, fetch: ProbeFetch) => Promise<Verdict>,
+  o: CrossWrite<C, X>,
+): Promise<void> {
+  const made: [Target, X][] = [];
+  const fresh = async (t: Target) => {
+    const x = await o.fresh(t);
+    made.push([t, x]);
+    return x;
+  };
+  try {
+    const xb = await fresh(o.b);
+    const b = await leg("B's own credential at B", (f) =>
+      run(o.credB, o.b, xb, f),
+    );
+    if (b.verdict !== "allow")
+      throw new Error("B's own credential failed at B (the probe said deny)");
+    const xa = await fresh(o.a);
+    const a = await leg("A's credential at A", (f) => run(o.credA, o.a, xa, f));
+    if (a.verdict !== "allow")
+      throw new Error("A's credential failed at A (the probe said deny)");
+    const xx = await fresh(o.b);
+    const before = await o.snapshot(o.b, xx);
+    const x = await leg("A's credential at B", (f) => run(o.credA, o.b, xx, f));
+    if (x.seen.length === 0)
+      throw new NotRefused(`${o.b.name}: no request reached B`);
+    for (const r of x.seen) await expectRefused(r, o.b);
+    if (x.verdict !== "deny")
+      throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);
+    const after = await o.snapshot(o.b, xx);
+    if (after !== before)
+      throw new NotRefused(
+        `${o.b.name}: the throwaway changed (sha256:${digest(before)} -> sha256:${digest(after)})`,
+      );
+  } finally {
+    for (const [t, x] of made) await o.dispose(t, x).catch(() => {});
+  }
+}
+
 export interface Side {
   t: Target;
   cookie: Cred;
