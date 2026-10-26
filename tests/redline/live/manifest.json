@@ -146,6 +146,10 @@
     },
     {
       "file": "live/signin.test.ts",
+      "name": "sign-in: Turnstile > a code request with no Turnstile token is refused at each install (400 turnstile_required)"
+    },
+    {
+      "file": "live/signin.test.ts",
       "name": "sign-in: one-time codes > a code issued by A, entered at B with B's pending cookie: refused"
     },
     {

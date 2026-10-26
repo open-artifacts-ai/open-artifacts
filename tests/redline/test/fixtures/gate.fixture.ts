@@ -1,9 +1,10 @@
-import { beforeAll, describe, it } from "vitest";
-import { type ProofMeta, proof } from "../../src/report.ts";
+import { beforeAll, beforeEach, describe, it } from "vitest";
+import { label, type ProofMeta, proof } from "../../src/report.ts";
 
 // Driven by report.test.ts: FIXTURE_LEVEL picks the second case's level
 // ("setup-fail" fails the top beforeAll; "nested-setup-fail" fails the
-// beforeAll of an outer suite around a nested one).
+// beforeAll of an outer suite around a nested one; "labeled" labels the
+// nested case from a beforeEach, as live/signin.test.ts does).
 const LEVEL = process.env.FIXTURE_LEVEL ?? "pass";
 
 beforeAll(() => {
@@ -23,6 +24,9 @@ describe("outer", () => {
     if (LEVEL === "nested-setup-fail") throw new Error("fixture outer setup");
   });
   describe("inner", () => {
+    beforeEach((ctx) => {
+      if (LEVEL === "labeled") label(ctx, "Turnstile test key");
+    });
     it("fixture: a nested case", () => {});
   });
 });

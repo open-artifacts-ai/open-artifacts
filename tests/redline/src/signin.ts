@@ -9,6 +9,7 @@ import {
   send,
 } from "./http.ts";
 import { allMarkers, NotRefused } from "./refused.ts";
+import { label, type TaskLike } from "./report.ts";
 import { readSecretFile, secretsOf, type Target } from "./targets.ts";
 
 // Sign-in helpers for live/signin.test.ts (P5 R6). Only real values are ever
@@ -166,22 +167,28 @@ export interface CodeRequested {
   pending: CookiePair | null;
 }
 
-/** POST /auth/code/request at `t` for `email`. */
+/** A POST /auth/code/request at `t` for `email`, with `turnstileToken` only when given. */
+export function codeRequestReq(
+  t: Target,
+  email: string,
+  turnstileToken?: string,
+): Request {
+  return new Request(`${t.app}${CODE_REQUEST}`, {
+    method: "POST",
+    headers: sameOrigin(t),
+    body: JSON.stringify({
+      email,
+      ...(turnstileToken ? { turnstileToken } : {}),
+    }),
+  });
+}
+
+/** POST /auth/code/request at `t` for `email` (with the target's Turnstile token, if any). */
 export async function requestCode(
   t: Target,
   email: string,
 ): Promise<CodeRequested> {
-  const turnstile = secretsOf(t).turnstile;
-  const res = await send(
-    new Request(`${t.app}${CODE_REQUEST}`, {
-      method: "POST",
-      headers: sameOrigin(t),
-      body: JSON.stringify({
-        email,
-        ...(turnstile ? { turnstileToken: turnstile } : {}),
-      }),
-    }),
-  );
+  const res = await send(codeRequestReq(t, email, secretsOf(t).turnstile));
   const text = await readBody(res);
   let shape = "";
   if (res.status === 202) {
@@ -211,6 +218,43 @@ export function verifyReq(t: Target, code: string, pending: CookiePair) {
 /** A verified code: 200 and a session cookie. */
 export const codeAccepted = (res: Response) =>
   res.status === 200 && setsSession(res);
+
+/**
+ * The token Cloudflare's always-pass Turnstile test secret accepts. A target
+ * sending it proves the code flow, not real bot protection.
+ */
+export const TURNSTILE_DUMMY_TOKEN = "XXXX.DUMMY.TOKEN.XXXX";
+/** The report label of a code sign-in case run on the dummy token. */
+export const TURNSTILE_TEST_KEY = "Turnstile test key";
+
+export const usesTurnstileTestKey = (t: Target) =>
+  secretsOf(t).turnstile === TURNSTILE_DUMMY_TOKEN;
+
+/** Labels a code sign-in case "Turnstile test key" when any target sends the dummy token. */
+export function labelTurnstileTestKey(
+  ctx: TaskLike,
+  targets: readonly Target[],
+): void {
+  if (targets.some(usesTurnstileTestKey)) label(ctx, TURNSTILE_TEST_KEY);
+}
+
+/** Throws (status and body hash only) unless `res` is 400 turnstile_required. */
+export async function expectTurnstileRequired(
+  t: Target,
+  res: Response,
+): Promise<void> {
+  const text = await readBody(res);
+  let code: unknown;
+  try {
+    code = (JSON.parse(text) as { error?: { code?: unknown } }).error?.code;
+  } catch {
+    code = undefined;
+  }
+  if (res.status !== 400 || code !== "turnstile_required")
+    throw new Error(
+      `${t.name} code request without a Turnstile token: ${describeRes(res, text)}`,
+    );
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

@@ -12,6 +12,8 @@ import {
   gatePasses,
   LEVELS,
   type Level,
+  label,
+  labelOf,
   levelOf,
   proof,
   type Report,
@@ -127,6 +129,29 @@ describe("report", () => {
   });
 });
 
+describe("labels", () => {
+  it("label() writes the label on the task meta; labelOf reads it", () => {
+    const ctx = { task: { meta: {} as { redlineLabel?: string } } };
+    expect(labelOf(ctx.task.meta)).toBeUndefined();
+    label(ctx, "Turnstile test key");
+    expect(ctx.task.meta.redlineLabel).toBe("Turnstile test key");
+    expect(labelOf(ctx.task.meta)).toBe("Turnstile test key");
+    expect(labelOf({ redlineLabel: 3 })).toBeUndefined();
+    expect(labelOf(undefined)).toBeUndefined();
+  });
+
+  it("a labeled pass still passes, and the text names it under its label", () => {
+    const r = buildReport([
+      { ...c("code at B", "pass"), label: "Turnstile test key" },
+      c("A's PAT at B", "pass"),
+    ]);
+    expect(r.gate.passed).toBe(true);
+    const t = formatReport(r);
+    expect(t).toContain("Labeled:\n  [Turnstile test key] code at B\n");
+    expect(t).not.toContain("A's PAT at B");
+  });
+});
+
 describe("reporter and gate end to end (vitest on a fixture)", () => {
   const vitest = join(
     import.meta.dirname,
@@ -186,6 +211,16 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
       expect(on.report.gate.passed).toBe(false);
     }, 60_000);
   }
+
+  it("labeled: the report carries the case's label; it still passes the gate", () => {
+    const r = run("labeled", true);
+    expect(r.status).toBe(0);
+    expect(
+      r.report.cases.filter((c) => c.label).map((c) => [c.name, c.label]),
+    ).toEqual([
+      ["outer > inner > fixture: a nested case", "Turnstile test key"],
+    ]);
+  }, 60_000);
 
   it("setup failure: tests skipped by a failed beforeAll are fail, not not-applicable", () => {
     const r = run("setup-fail", false);

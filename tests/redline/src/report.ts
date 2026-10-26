@@ -18,6 +18,8 @@ export interface CaseResult {
   level: Level;
   /** Why a case isn't a pass (never a secret or a response body). */
   reason?: string;
+  /** What a pass rests on when it isn't the real thing, e.g. "Turnstile test key". */
+  label?: string;
 }
 
 export interface Report {
@@ -53,6 +55,21 @@ export function proof(
   reason: string,
 ): void {
   (ctx.task.meta as { redline?: ProofMeta }).redline = { level, reason };
+}
+
+/**
+ * Labels a running case (its level is unchanged), so the report says what its
+ * result rests on, e.g. "Turnstile test key" for code sign-in on installs
+ * running Cloudflare's always-pass test secret.
+ */
+export function label(ctx: TaskLike, text: string): void {
+  (ctx.task.meta as { redlineLabel?: string }).redlineLabel = text;
+}
+
+/** The label `label()` set on a task's meta, if any. */
+export function labelOf(meta: object | undefined): string | undefined {
+  const l = (meta as { redlineLabel?: unknown } | undefined)?.redlineLabel;
+  return typeof l === "string" && l !== "" ? l : undefined;
 }
 
 /** Maps a vitest outcome to a level. A failure always wins over a proof mark. */
@@ -189,6 +206,11 @@ export function formatReport(r: Report): string {
     lines.push("Not pass:");
     for (const c of r.nonPass)
       lines.push(`  [${c.level}] ${c.name}${c.reason ? ` (${c.reason})` : ""}`);
+  }
+  const labeled = r.cases.filter((c) => c.label);
+  if (labeled.length) {
+    lines.push("Labeled:");
+    for (const c of labeled) lines.push(`  [${c.label}] ${c.name}`);
   }
   lines.push(`Gate: ${r.gate.passed ? "PASS" : "FAIL"} (${r.gate.reason})`);
   return `${lines.join("\n")}\n`;
