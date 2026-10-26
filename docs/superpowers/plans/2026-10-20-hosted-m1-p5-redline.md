@@ -222,6 +222,7 @@ The migration skill itself is Backend's scope C and isn't on main yet. This task
 
 - [ ] **Step 1:** Ask the Manager to get the user to export their claude.ai data to a local folder and give the path. The export never leaves their machine.
 - [ ] **Step 2:** On `rl-a` (spaces from P3 created: `Engineering`, `Personal`), have an agent run the migration skill as the user, then run `checkImport` twice (after the first run and after a rerun).
+- [ ] **Step 2b: Second-PAT sweep.** `checkImport` sees only what the owner's PAT can see, so a copy leaked into another member's private space is invisible to it. Before the first run and after the rerun, snapshot `rl-a` with a second test member's PAT; that member's snapshot must gain no artifact carrying an import key. Run on a quiet `rl-a` (no other writers), since `unexpected` counts any new artifact the owner can see.
 - [ ] **Step 3:** Record counts and problems (no titles or content) in `docs/ops/hosted.md` and on the status page; file each problem with Backend.
 - [ ] **Step 4:** Delete the imported artifacts from `rl-a` with the owner's PAT.
 
