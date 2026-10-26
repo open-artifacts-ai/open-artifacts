@@ -17,6 +17,7 @@ import scheduler, {
   OWNER_EMAIL_RETENTION_MS,
   PURGE_SQL,
   purgeOwnerEmails,
+  REVOKE_CONCURRENCY,
   REVOKE_CRON,
   REVOKE_JOB,
   REVOKE_MAX_ATTEMPTS,
@@ -136,15 +137,16 @@ function captureLogs() {
 }
 
 const REVOKE_LINE =
-  /^(?:directory-revoke (?:done|unsupported|retry|failed|invalid) i[a-z0-9]{11}|directory-revoke invalid ids=\d+|owner-email purged count=\d+)$/;
+  /^(?:directory-revoke (?:done|unsupported|retry|failed|db_error) i[a-z0-9]{11}|directory-revoke invalid ids=\d+|directory-revoke aborted exception|owner-email purged count=\d+)$/;
 
 const controller = (cron: string, scheduledTime = NOW) =>
   ({ scheduledTime, cron, noRetry() {} }) as ScheduledController;
 
 describe("the */2 revoke tick", () => {
   it("the purge SQL empties the email, never NULL (owner_email stays NOT NULL)", () => {
+    // inputs_hash is an unsalted sha256 over the email (M3): blanked too.
     expect(PURGE_SQL).toBe(
-      "UPDATE installs SET owner_email = '' WHERE state='deleted' AND updated_at < ?1 AND owner_email <> '' RETURNING id",
+      "UPDATE installs SET owner_email = '', inputs_hash = '' WHERE state='deleted' AND updated_at < ?1 AND owner_email <> '' RETURNING id",
     );
   });
 
@@ -301,7 +303,7 @@ describe("the */2 revoke tick", () => {
         /^UPDATE installs SET (?:directory_revoke|directory_revoked_at|directory_revoke_attempts)\b/,
       );
       expect(w).toMatch(
-        /WHERE id = \?\d AND state = 'deleting'(?: RETURNING directory_revoke)?$/,
+        /WHERE id = \?\d AND state = 'deleting' AND directory_revoke = 'pending'(?: RETURNING directory_revoke)?$/,
       );
       const set = w.slice(w.indexOf("SET") + 3, w.indexOf("WHERE"));
       for (const col of set.split(",").map((x) => x.trim().split(/\s|=/)[0]))
@@ -428,5 +430,181 @@ describe("owner-email purge", () => {
       "owner-email purged count=0",
     ]);
     expect(await rowOf(idOf(0))).toMatchObject({ state: "deleted" });
+  });
+});
+
+describe("H-DV review fixes", () => {
+  /** PLATFORM_DB whose writes for one id throw (a D1 error with raw text). */
+  const failingWrites = (badId: string): D1Database =>
+    new Proxy(db, {
+      get(t, k) {
+        if (k !== "prepare") return Reflect.get(t, k);
+        return (sql: string) => {
+          const st = t.prepare(sql);
+          if (!/^UPDATE installs SET directory_revoke/.test(sql)) return st;
+          return new Proxy(st, {
+            get(s2, k2) {
+              if (k2 !== "bind") return Reflect.get(s2, k2);
+              return (...args: unknown[]) => {
+                const b = s2.bind(...args);
+                if (args[0] !== badId) return b;
+                const boom = async () => {
+                  throw new Error("D1_ERROR owner@customer.test SECRET");
+                };
+                return { ...b, run: boom, first: boom, all: boom };
+              };
+            },
+          });
+        };
+      },
+    }) as D1Database;
+
+  it("M2: one row's D1 error never stops the others; a fixed db_error line, no error text", async () => {
+    await seed([{ id: idOf(1) }, { id: idOf(2) }, { id: idOf(3) }]);
+    const lines = captureLogs();
+    const f = fakes();
+    const env = { ...f.env, PLATFORM_DB: failingWrites(idOf(2)) } as Env;
+    await expect(revokeTick(env, NOW)).resolves.toBeUndefined();
+    expect((await rowOf(idOf(1))).directory_revoke).toBe("done");
+    expect((await rowOf(idOf(3))).directory_revoke).toBe("done");
+    expect((await rowOf(idOf(2))).directory_revoke).toBe("pending");
+    expect(lines).toContain(`directory-revoke db_error ${idOf(2)}`);
+    for (const l of lines) expect(l).toMatch(REVOKE_LINE);
+    expect(lines.join("\n")).not.toMatch(/@|SECRET|D1_ERROR/);
+  });
+
+  it("M2: a failing select aborts the tick with a fixed line, and scheduled() does not throw raw text", async () => {
+    const lines = captureLogs();
+    const f = fakes();
+    const env = {
+      ...f.env,
+      PLATFORM_DB: new Proxy(db, {
+        get(t, k) {
+          if (k === "prepare")
+            return () => {
+              throw new Error("D1_ERROR no such column owner@customer.test");
+            };
+          return Reflect.get(t, k);
+        },
+      }),
+    } as Env;
+    await expect(
+      scheduler.scheduled(
+        controller(REVOKE_CRON),
+        env,
+        createExecutionContext(),
+      ),
+    ).resolves.toBeUndefined();
+    expect(lines).toEqual(["directory-revoke aborted exception"]);
+  });
+
+  it("L2: a late result never overwrites a revoke the operator settled meanwhile", async () => {
+    await seed([{ id: idOf(0), attempts: 4 }, { id: idOf(1) }]);
+    const f = fakes(
+      (s) => (s.endsWith(idOf(0)) ? "throw" : "ok"),
+      async () => {
+        await db
+          .prepare("UPDATE installs SET directory_revoke = 'skipped'")
+          .run();
+      },
+    );
+    await revokeTick(f.env, NOW);
+    expect(await rowOf(idOf(0))).toMatchObject({
+      directory_revoke: "skipped",
+      directory_revoke_attempts: 4,
+    });
+    expect(await rowOf(idOf(1))).toMatchObject({
+      directory_revoke: "skipped",
+      directory_revoked_at: null,
+    });
+  });
+
+  it("L4: at most 3 revoke calls in flight", async () => {
+    await seed(Array.from({ length: 10 }, (_, i) => ({ id: idOf(i) })));
+    let inFlight = 0;
+    let max = 0;
+    const f = fakes(
+      () => "ok",
+      async () => {
+        inFlight++;
+        max = Math.max(max, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight--;
+      },
+    );
+    await revokeTick(f.env, NOW);
+    expect(f.calls).toHaveLength(10);
+    expect(max).toBe(3);
+    expect(REVOKE_CONCURRENCY).toBe(3);
+  });
+
+  it("L6: a prerelease of 0.54.0 or a malformed version is unsupported, with no call", async () => {
+    await seed([
+      { id: idOf(0), version: "0.54.0-rc.1" },
+      { id: idOf(1), version: "v0.55.0" },
+      { id: idOf(2), version: "0.55" },
+      { id: idOf(3), version: "0.54.1-rc.1" },
+    ]);
+    const f = fakes();
+    await revokeTick(f.env, NOW);
+    expect(f.calls.map((c) => c.script)).toEqual([`oa-s-${idOf(3)}`]);
+    for (const k of [0, 1, 2])
+      expect((await rowOf(idOf(k))).directory_revoke).toBe("unsupported");
+  });
+
+  it("M3: after the purge no column of a deleted install holds the email or anything derived from it", async () => {
+    const email = "owner0@customer.test";
+    const hex = async (s: string) =>
+      [
+        ...new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)),
+        ),
+      ]
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
+    const inputsHash = await hex(
+      `{"ownerEmail":${JSON.stringify(email)},"testHooks":false,"vars":{}}`,
+    );
+    await seed([
+      { id: idOf(0), state: "deleted", revoke: "done", updatedAt: 0, email },
+      // An active install keeps its email and hash.
+      {
+        id: idOf(9),
+        state: "active",
+        revoke: null,
+        updatedAt: 0,
+        email: "keep@customer.test",
+      },
+    ]);
+    await db
+      .prepare("UPDATE installs SET inputs_hash = ?1 WHERE id = ?2")
+      .bind(inputsHash, idOf(0))
+      .run();
+    await db
+      .prepare(
+        "INSERT INTO install_versions (install_id, version, vars, metadata, updated_at) VALUES (?1, '0.54.0', '{}', '{}', 0)",
+      )
+      .bind(idOf(0))
+      .run();
+    captureLogs();
+    expect(await purgeOwnerEmails(db, NOW)).toBe(1);
+    const needles = [email, await hex(email), inputsHash];
+    for (const t of ["installs", "install_versions", "hosts", "hosted_audit"]) {
+      const col = t === "installs" ? "id" : "install_id";
+      const { results } = await db
+        .prepare(`SELECT * FROM ${t} WHERE ${col} = ?1`)
+        .bind(idOf(0))
+        .all();
+      const dump = JSON.stringify(results);
+      for (const n of needles) expect(dump, `${t} holds ${n}`).not.toContain(n);
+    }
+    const kept = (await db
+      .prepare("SELECT owner_email, inputs_hash FROM installs WHERE id = ?1")
+      .bind(idOf(9))
+      .first()) as { owner_email: string; inputs_hash: string };
+    expect(kept).toEqual({
+      owner_email: "keep@customer.test",
+      inputs_hash: "h",
+    });
   });
 });
