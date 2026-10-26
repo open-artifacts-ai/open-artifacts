@@ -3052,11 +3052,12 @@ export class WfpProvisioner {
         }
 
       // Teardown, unchanged and resumable, on the row as it is now.
-      row = (await this.platform.byId(id)) as InstallRow;
-      if (!row || row.state !== "deleting")
+      const now = await this.platform.byId(id);
+      if (now?.state !== "deleting")
         throw new ProvisionRefused(
-          `install ${id} is ${row?.state ?? "gone"}; it is no longer deleting`,
+          `install ${id} is ${now?.state ?? "gone"}; it is no longer deleting`,
         );
+      row = now;
       const { cf, env, target } = this;
       const n = names(id, env);
       const res = await this.resources(row, true);
