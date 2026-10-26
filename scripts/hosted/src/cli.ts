@@ -64,7 +64,7 @@ import {
   CredsRefused,
   REDLINE_ENVIRONMENT,
   redlineCreds,
-} from "./redline-creds.js";
+} from "./redline-creds.ts";
 
 export const COMMANDS = [
   "create",
