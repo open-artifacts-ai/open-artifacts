@@ -60,6 +60,11 @@ import {
   turnstileInit,
   WfpProvisioner,
 } from "@oa/provision";
+import {
+  CredsRefused,
+  REDLINE_ENVIRONMENT,
+  redlineCreds,
+} from "./redline-creds.js";
 
 export const COMMANDS = [
   "create",
@@ -72,6 +77,7 @@ export const COMMANDS = [
   "publish-release",
   "publish-floor",
   "turnstile-init",
+  "redline-creds",
 ] as const;
 type Command = (typeof COMMANDS)[number];
 
@@ -92,6 +98,9 @@ Commands:
   publish-release --tag v<version>  (gh release download of oa-release-<env>-*, verified, then uploaded)
   publish-floor   --floor <path to floor-<env>-<seq>.sig.json>
   turnstile-init  (the env's one Turnstile widget; idempotent)
+  redline-creds   --install <id> --confirm <the same id>  (staging, rl-a or rl-b only)
+                  mints the red-line admin PAT, sets it and the hook key in the
+                  redline-staging Environment over stdin, then revokes earlier ones
 
 Flags:
   --var K=V       repeatable; checked by provision's var allowlist. AUTH_PROVIDERS with
@@ -277,6 +286,7 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
     "delete",
     "release-lease",
     "status",
+    "redline-creds",
   ];
   if (byInstall.includes(cmd)) need("install", "install");
   else if (cmd !== "create" && f.install !== undefined)
@@ -291,7 +301,9 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
   if (cmd === "upgrade") need("to", "to");
   if (f.to !== undefined && !isReleaseVersion(f.to))
     throw new Refused("--to is not a release version");
-  if (cmd === "delete" || cmd === "release-lease") {
+  if (cmd === "redline-creds" && env !== "staging")
+    throw new Refused("redline-creds is for --env staging only");
+  if (cmd === "delete" || cmd === "release-lease" || cmd === "redline-creds") {
     if (f.confirm !== f.install)
       throw new Refused(
         `${cmd} needs --confirm to be exactly the install id (--install)`,
@@ -341,30 +353,7 @@ async function readSecret(
       );
     if (inCi(d.env)) throw new Refused("CI is staging only; prod refused");
   }
-  if (file !== undefined) {
-    let o: OpenedFile;
-    try {
-      o = d.openNoFollow(file);
-    } catch (e) {
-      const code = (e as { code?: string }).code;
-      throw new Refused(
-        code === "ELOOP"
-          ? `${fileVar} is a symlink`
-          : `${fileVar} can't be opened (${code ?? "error"})`,
-      );
-    }
-    try {
-      const st = o.info;
-      if (!st.isFile) throw new Refused(`${fileVar} is not a regular file`);
-      if ((st.mode & 0o777) !== 0o600)
-        throw new Refused(`${fileVar} must be mode 0600`);
-      if (st.uid !== d.uid)
-        throw new Refused(`${fileVar} must be owned by this user`);
-      return new TextDecoder().decode(o.read()).trim();
-    } finally {
-      o.close();
-    }
-  }
+  if (file !== undefined) return readPrivateFile(d, file, fileVar);
   if (inCi(d.env)) throw new Refused(`CI has no keychain; set ${fileVar}`);
   try {
     return (
@@ -379,6 +368,35 @@ async function readSecret(
     ).trim();
   } catch {
     throw new Refused(`keychain item ${item} not found`);
+  }
+}
+
+/**
+ * A 0600 regular file of this user, opened with O_NOFOLLOW and read through
+ * that fd; `what` names it in a refusal (never its contents).
+ */
+function readPrivateFile(d: Deps, path: string, what: string): string {
+  let o: OpenedFile;
+  try {
+    o = d.openNoFollow(path);
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    throw new Refused(
+      code === "ELOOP"
+        ? `${what} is a symlink`
+        : `${what} can't be opened (${code ?? "error"})`,
+    );
+  }
+  try {
+    const st = o.info;
+    if (!st.isFile) throw new Refused(`${what} is not a regular file`);
+    if ((st.mode & 0o777) !== 0o600)
+      throw new Refused(`${what} must be mode 0600`);
+    if (st.uid !== d.uid)
+      throw new Refused(`${what} must be owned by this user`);
+    return new TextDecoder().decode(o.read()).trim();
+  } finally {
+    o.close();
   }
 }
 
@@ -594,7 +612,15 @@ export async function main(argv: string[], d: Deps): Promise<number> {
   try {
     notes();
     prov = mk(await brokerOn(cmd, f, audit));
-    const r = await run(cmd, f, d, { cf, r2, env, prov, emit });
+    const r = await run(cmd, f, d, {
+      cf,
+      r2,
+      env,
+      prov,
+      emit,
+      db: audit,
+      hide: (x) => secrets.push(x),
+    });
     notes();
     if (r.id) after = r.id;
     code = r.ok ? 0 : 1;
@@ -717,6 +743,8 @@ async function run(
     env: Env;
     prov: WfpProvisioner;
     emit: (l: Record<string, unknown>) => void;
+    db: PlatformDb;
+    hide: (value: string) => void;
   },
 ): Promise<{ ok: boolean; id?: string; data: unknown }> {
   const { cf, env, prov } = c;
@@ -776,6 +804,29 @@ async function run(
     }
     case "status":
       return { ok: true, data: await prov.status(id) };
+    case "redline-creds": {
+      if (inCi(d.env)) throw new Refused("redline-creds runs on a laptop only");
+      try {
+        const r = await redlineCreds(id, await c.db.byId(id), {
+          fetch: d.fetch ?? fetch,
+          readHookKey: (p) => readPrivateFile(d, p, "the hook key file"),
+          setSecret: async (name, value) => {
+            await d.execFile(
+              "gh",
+              ["secret", "set", name, "--env", REDLINE_ENVIRONMENT, "-R", REPO],
+              { input: value },
+            );
+          },
+          hide: c.hide,
+          home: d.home,
+          now: (d.now ?? Date.now)(),
+        });
+        return { ok: true, id, data: r };
+      } catch (e) {
+        if (e instanceof CredsRefused) throw new Refused(e.message);
+        throw e;
+      }
+    }
     case "turnstile-init": {
       if (inCi(d.env))
         throw new Refused("turnstile-init runs on a laptop only");

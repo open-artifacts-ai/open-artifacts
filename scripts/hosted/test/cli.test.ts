@@ -146,6 +146,7 @@ describe("refusals before any call", () => {
       "publish-release",
       "publish-floor",
       "turnstile-init",
+      "redline-creds",
     ]);
   });
 });
