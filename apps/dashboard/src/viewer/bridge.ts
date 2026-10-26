@@ -22,7 +22,14 @@ import {
 import type { z } from "zod";
 import { ApiClientError, api, type RequestExtra } from "../api/client";
 import { isEmbed } from "../embed";
-import { isAnonToken, loadAnonToken, saveAnonToken } from "./anonId";
+import {
+  isAnonToken,
+  loadAnonShort,
+  loadAnonToken,
+  saveAnonShort,
+  saveAnonToken,
+  withMintLock,
+} from "./anonId";
 import { frameLoad, loadArtifactFrame } from "./frame";
 
 type Viewer = { email: string; name: string | null };
@@ -251,23 +258,25 @@ export function createBridge(opts: BridgeOptions) {
     // Re-check after each wait: a failed mint leaves no token, and only one
     // waiter may become the next minter.
     if (mints) while (!loadAnonToken() && minting) await minting;
-    const token = loadAnonToken();
-    const p = go({
-      ...(token ? { headers: { [ANON_ID_HEADER]: token } } : {}),
-      onResponse: (res) => {
-        const t = res.headers.get(ANON_ID_HEADER);
-        if (isAnonToken(t)) saveAnonToken(t);
-      },
-    });
-    if (mints && !token && !minting) {
-      const done: Promise<void> = p.then(
-        () => {},
-        () => {},
-      );
-      minting = done.then(() => {
-        minting = null;
+    const send = (token: string | null) =>
+      go({
+        ...(token ? { headers: { [ANON_ID_HEADER]: token } } : {}),
+        onResponse: (res) => {
+          const t = res.headers.get(ANON_ID_HEADER);
+          if (isAnonToken(t)) saveAnonToken(t);
+        },
       });
-    }
+    if (!mints || loadAnonToken()) return send(loadAnonToken());
+    // This call mints. Other tabs may be minting too: inside the browser-wide
+    // lock, re-read the token so the browser keeps one id (#681).
+    const p = withMintLock(() => send(loadAnonToken()), abort.signal);
+    const done: Promise<void> = p.then(
+      () => {},
+      () => {},
+    );
+    minting = done.then(() => {
+      minting = null;
+    });
     return p;
   };
 
@@ -340,9 +349,16 @@ export function createBridge(opts: BridgeOptions) {
         return viewer;
       case "viewer.anonId":
         // Only the per-artifact short id; the signed token stays here.
-        return anon
-          ? (await http.get(R.anonId(id), AnonViewerSchema)).anonId
-          : null;
+        // Cached per token id and artifact: the route is rate limited per IP,
+        // and a failed lookup would cost the page its id (#681).
+        if (!anon) return null;
+        {
+          const cached = loadAnonShort(loadAnonToken(), id);
+          if (cached) return cached;
+          const { anonId } = await http.get(R.anonId(id), AnonViewerSchema);
+          saveAnonShort(loadAnonToken(), id, anonId);
+          return anonId;
+        }
       case "storage.get": {
         const e = await nullIfNotFound(
           http.get(R.storageKey(id, p.key), StorageEntrySchema),
