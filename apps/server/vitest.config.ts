@@ -29,6 +29,9 @@ export default defineConfig({
       "test/node/**",
       // Node-only xt helpers (fs); run by vitest.xt.config.ts.
       "test/xt/*.node.test.ts",
+      // The authz matrix runs in its own required CI job (vitest.authz.config.ts).
+      "test/authz.surface-matrix.test.ts",
+      "test/authz/**",
       "**/node_modules/**",
     ],
     setupFiles: ["./test/setup.ts"],
