@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.58.3...v0.59.0) (2026-10-26)
+
+
+### Features
+
+* **hosted:** oa:hosted redline-creds sets the red-line suite's credentials ([#666](https://github.com/open-artifacts-ai/open-artifacts/issues/666)) ([43752e6](https://github.com/open-artifacts-ai/open-artifacts/commit/43752e622f1479017bc80d8b951865c7d84b2faa))
+
 ## [0.58.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.58.2...v0.58.3) (2026-10-26)
 
 
