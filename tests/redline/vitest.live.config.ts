@@ -7,9 +7,10 @@ export default defineConfig({
   test: {
     include: ["live/**/*.test.ts"],
     fileParallelism: false,
-    // A paced hook() (src/http.ts) can wait up to a minute inside a test.
+    // A paced hook() (src/http.ts) can wait up to a minute inside a test or a
+    // setup hook.
     testTimeout: 180_000,
-    hookTimeout: 120_000,
+    hookTimeout: 180_000,
     reporters: ["default", "./src/reporter.ts"],
   },
 });
