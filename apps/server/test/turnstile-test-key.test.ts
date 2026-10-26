@@ -65,6 +65,11 @@ describe("Turnstile test key on a live-hook test install", () => {
       { ...live, TURNSTILE_SECRET: "1x0000000000000000000000000000000AB" },
       true,
     ],
+    [
+      "secret lowercase",
+      { ...live, TURNSTILE_SECRET: "1x0000000000000000000000000000000aa" },
+      true,
+    ],
     ["secret padded", { ...live, TURNSTILE_SECRET: ` ${TEST_SECRET}` }, true],
   ];
   for (const [what, over, allowed] of missing)

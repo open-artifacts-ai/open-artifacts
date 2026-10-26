@@ -15,10 +15,7 @@ const testKeyPass =
   turnstileTestKeyPass;
 
 /** What the test-key check reads (test-hooks/ testHooksOn). */
-type HookVars = Pick<
-  Env,
-  "TEST_HOOKS" | "TEST_HOOK_KEY" | "TEST_DOMAIN" | "RL_ANON"
->;
+type HookVars = Pick<Env, "TEST_HOOKS" | "TEST_HOOK_KEY" | "TEST_DOMAIN">;
 
 /**
  * Turnstile siteverify for a code request. True only on success with
