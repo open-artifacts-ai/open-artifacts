@@ -63,7 +63,7 @@ await votes.set(crypto.randomUUID(), { option: "Lisbon" });
 
 `viewer.get()` returns `{ email, name }`, or `null` for an anonymous viewer of a public artifact.
 
-`viewer.anonId()` returns an anonymous viewer's id on an artifact anyone who can view may change (`dataWriters: "viewers"`), and `null` otherwise (signed-in viewers included).
+`viewer.anonId()` returns an anonymous viewer's id on an artifact whose viewers can change its data (`dataWriters: "viewers"`), and `null` otherwise (signed-in viewers included).
 
 ### Anonymous ids
 
