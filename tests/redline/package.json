@@ -14,6 +14,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "tldts": "7.4.18",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
   },

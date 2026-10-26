@@ -819,6 +819,146 @@
     {
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > space mapping put manager (ceiling) [pat]"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "content host > a: never serves app routes, with the install's own session or PAT"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "content host > a: ignores cookies"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "content host > b: never serves app routes, with the install's own session or PAT"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "content host > b: ignores cookies"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "mapping integrity > X-Forwarded-Host set to the other install is ignored"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "mapping integrity > a host that is neither APP_HOST nor CONTENT_HOST gets the server's own 404"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "mapping integrity > HOSTS maps each install's hosts to its own id, and no host to two"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "unmapped host > unmapped names get the generic 404, never an install"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "unmapped host > A's host spelled differently (case, trailing dot, :443) never reaches another install"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "unmapped host > a deleted install's old host gets the generic 404"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "scheduler > no /__oa/nightly route on either install"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > GET data/:col/:doc"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > GET data/:col (list)"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > POST data/:col/query"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > PUT data/:col/:doc: refused, and B's doc is unchanged"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > PATCH data/:col/:doc: refused, and B's doc is unchanged"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > DELETE data/:col/:doc: refused, and B's doc is unchanged"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > PUT data (reset): refused, and B's data is unchanged"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > GET storage (list)"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > GET storage/:key"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > PUT storage/:key: refused, and B's key is unchanged"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "data API at B with A's PAT > DELETE storage/:key: refused, and B's key is unchanged"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with A's credential: no 101 > data-subscribe with A's PAT"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with A's credential: no 101 > data-subscribe with A's session"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with A's credential: no 101 > events with A's PAT"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with A's credential: no 101 > events with A's session"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with B's own session and A's Origin: refused > data-subscribe with Origin = A's app origin"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with B's own session and A's Origin: refused > data-subscribe with Origin = A's content origin"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with B's own session and A's Origin: refused > events with Origin = A's app origin"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "WebSocket at B with B's own session and A's Origin: refused > events with Origin = A's content origin"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "anonymous writes on a B public artifact > the fixture accepts an anonymous write"
+    },
+    {
+      "file": "live/live.test.ts",
+      "name": "anonymous writes on a B public artifact > A's PAT sent along does not change the actor to A's user"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "cross-site isolation > artifact content is served on a registrable domain cross-site to every app host"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "cross-site isolation > every app-host Set-Cookie is __Host- (Secure, Path=/, no Domain), on hook and code sign-in"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "cross-site isolation > state-changing app requests without X-OA-Request are refused, and accepted with it"
     }
   ],
   "notes": [
