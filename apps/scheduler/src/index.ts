@@ -465,13 +465,15 @@ export const REVOKE_MAX_ATTEMPTS = 5;
 /** One query, on the partial index installs_revoke_pending (0005). */
 export const REVOKE_SQL =
   "SELECT id, version FROM installs WHERE state='deleting' AND directory_revoke='pending' LIMIT 10";
-// The only writes: the three revoke columns, on rows still deleting.
+// The only writes: the three revoke columns, on rows still deleting whose
+// revoke is still pending (L2: a late result never overwrites an operator's
+// skip, and never bumps row_version under a teardown).
 const REVOKE_DONE_SQL =
-  "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = ?2 WHERE id = ?1 AND state = 'deleting'";
+  "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = ?2 WHERE id = ?1 AND state = 'deleting' AND directory_revoke = 'pending'";
 const REVOKE_UNSUPPORTED_SQL =
-  "UPDATE installs SET directory_revoke = 'unsupported' WHERE id = ?1 AND state = 'deleting'";
+  "UPDATE installs SET directory_revoke = 'unsupported' WHERE id = ?1 AND state = 'deleting' AND directory_revoke = 'pending'";
 const REVOKE_RETRY_SQL =
-  "UPDATE installs SET directory_revoke_attempts = directory_revoke_attempts + 1, directory_revoke = CASE WHEN directory_revoke_attempts + 1 >= ?2 THEN 'failed' ELSE directory_revoke END WHERE id = ?1 AND state = 'deleting' RETURNING directory_revoke";
+  "UPDATE installs SET directory_revoke_attempts = directory_revoke_attempts + 1, directory_revoke = CASE WHEN directory_revoke_attempts + 1 >= ?2 THEN 'failed' ELSE directory_revoke END WHERE id = ?1 AND state = 'deleting' AND directory_revoke = 'pending' RETURNING directory_revoke";
 
 export interface RevokeOptions {
   /** Per call; the nightly call's default. */
@@ -479,8 +481,8 @@ export interface RevokeOptions {
 }
 
 /**
- * One tick: up to 10 pending revokes, called together (each bounded by
- * timeoutMs, so a tick ends well inside the 2 minutes). Below 0.54.0, or no
+ * One tick: up to 10 pending revokes, 3 at a time (each bounded by
+ * timeoutMs, so a tick ends inside the 2 minutes). Below 0.54.0, or no
  * release version, is unsupported with no call. A resolve is done; "Worker
  * not found" is unsupported; a rejection or timeout counts an attempt, and
  * the fifth is failed. Logs carry the install id and a fixed category only.
@@ -491,6 +493,22 @@ export async function revokeTick(
   { timeoutMs = 25_000 }: RevokeOptions = {},
 ): Promise<void> {
   positive("timeoutMs", timeoutMs, false);
+  try {
+    await runRevokeTick(env, now, timeoutMs);
+  } catch {
+    // M2: never the error text (it can carry a D1 message or the install's).
+    console.error("directory-revoke aborted", "exception");
+  }
+}
+
+/** L4: calls in flight per tick, so a tick never crowds a nightly run. */
+export const REVOKE_CONCURRENCY = 3;
+
+async function runRevokeTick(
+  env: Env,
+  now: number,
+  timeoutMs: number,
+): Promise<void> {
   const db = env.PLATFORM_DB;
   const { results } = await db
     .prepare(REVOKE_SQL)
@@ -507,50 +525,68 @@ export async function revokeTick(
     );
   // An unknown OA_ENV throws before any call.
   for (const r of rows) names(r.id, env.OA_ENV);
-  await Promise.all(
-    rows.map(async ({ id, version }) => {
-      const unsupported = async () => {
-        await db.prepare(REVOKE_UNSUPPORTED_SQL).bind(id).run();
-        console.log("directory-revoke unsupported", id);
-      };
-      if (
-        !isReleaseVersion(version) ||
-        compareVersions(version, REVOKE_MIN_VERSION) < 0
-      )
+  const one = async ({ id, version }: { id: string; version: unknown }) => {
+    const unsupported = async () => {
+      await db.prepare(REVOKE_UNSUPPORTED_SQL).bind(id).run();
+      console.log("directory-revoke unsupported", id);
+    };
+    if (
+      !isReleaseVersion(version) ||
+      compareVersions(version, REVOKE_MIN_VERSION) < 0
+    )
+      return unsupported();
+    try {
+      const r = await within(
+        (
+          env.DISPATCHER.get(
+            names(id, env.OA_ENV).script,
+          ) as unknown as ScheduledFetcher
+        ).scheduled({ cron: REVOKE_JOB, scheduledTime: new Date(now) }),
+        timeoutMs,
+      );
+      checkOutcome(r);
+    } catch (e) {
+      if (!(e instanceof Stall) && category(e) === "not_found")
         return unsupported();
+      const after = await db
+        .prepare(REVOKE_RETRY_SQL)
+        .bind(id, REVOKE_MAX_ATTEMPTS)
+        .first<{ directory_revoke: unknown }>();
+      if (after === null) return;
+      const failed = after.directory_revoke === "failed";
+      console.warn(`directory-revoke ${failed ? "failed" : "retry"}`, id);
+      return;
+    }
+    await db.prepare(REVOKE_DONE_SQL).bind(id, now).run();
+    console.log("directory-revoke done", id);
+  };
+  // M2: each row on its own: one row's D1 error never stops the others.
+  let next = 0;
+  const lane = async () => {
+    while (next < rows.length) {
+      const row = rows[next++] as { id: string; version: unknown };
       try {
-        const r = await within(
-          (
-            env.DISPATCHER.get(
-              names(id, env.OA_ENV).script,
-            ) as unknown as ScheduledFetcher
-          ).scheduled({ cron: REVOKE_JOB, scheduledTime: new Date(now) }),
-          timeoutMs,
-        );
-        checkOutcome(r);
-      } catch (e) {
-        if (!(e instanceof Stall) && category(e) === "not_found")
-          return unsupported();
-        const after = await db
-          .prepare(REVOKE_RETRY_SQL)
-          .bind(id, REVOKE_MAX_ATTEMPTS)
-          .first<{ directory_revoke: unknown }>();
-        if (after === null) return;
-        const failed = after.directory_revoke === "failed";
-        console.warn(`directory-revoke ${failed ? "failed" : "retry"}`, id);
-        return;
+        await one(row);
+      } catch {
+        console.error("directory-revoke db_error", row.id);
       }
-      await db.prepare(REVOKE_DONE_SQL).bind(id, now).run();
-      console.log("directory-revoke done", id);
-    }),
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(REVOKE_CONCURRENCY, rows.length) }, lane),
   );
 }
 
 /** Deleted installs keep their owner email this long, then it is purged. */
 export const OWNER_EMAIL_RETENTION_MS = 30 * DAY_MS;
-/** owner_email stays NOT NULL: a purged email is '' (PURGED_EMAIL, names.ts). */
+/**
+ * owner_email stays NOT NULL: a purged email is '' (PURGED_EMAIL, names.ts).
+ * inputs_hash is an unsalted sha256 over the email (inputsHash), so it is
+ * blanked in the same write; it is only compared on a creating row's resume.
+ * install_versions holds no email (storedMetadata drops OWNER_EMAIL).
+ */
 export const PURGE_SQL =
-  "UPDATE installs SET owner_email = '' WHERE state='deleted' AND updated_at < ?1 AND owner_email <> '' RETURNING id";
+  "UPDATE installs SET owner_email = '', inputs_hash = '' WHERE state='deleted' AND updated_at < ?1 AND owner_email <> '' RETURNING id";
 
 /** Idempotent; the install id, its row and its audit rows stay. */
 export async function purgeOwnerEmails(
