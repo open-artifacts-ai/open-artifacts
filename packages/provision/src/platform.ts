@@ -441,6 +441,16 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
     };
   }
 
+  /** H-DV M1: whether a delete recorded its skip reason for this install. */
+  async hasSkipAudit(id: InstallId): Promise<boolean> {
+    const r = await this.cf.d1Query(
+      this.db.id,
+      "SELECT 1 AS ok FROM hosted_audit WHERE install_id = ?1 AND action = 'delete.revoke_skipped' LIMIT 1",
+      [id],
+    );
+    return (r[0]?.results ?? []).length > 0;
+  }
+
   /** Appends an audit row; `detail` must never carry a secret or an email. */
   async audit(
     id: InstallId,

@@ -3014,11 +3014,18 @@ export class WfpProvisioner {
       // so a refused delete writes nothing, phase 1 included.
       await this.resources(row, true);
       const revoke = row.directory_revoke;
-      if (
+      // M1: a skipped row counts only with its reason in hosted_audit.
+      const skipAudited =
+        revoke === "skipped" && (await this.platform.hasSkipAudit(id));
+      const settled =
+        revoke !== null &&
+        REVOKE_SETTLED.includes(revoke) &&
+        (revoke !== "skipped" || skipAudited);
+      const phase1 =
         row.state !== "deleting" ||
         revoke === null ||
-        (skip !== undefined && !REVOKE_SETTLED.includes(revoke))
-      ) {
+        (skip !== undefined && !settled);
+      if (phase1) {
         await this.claim(
           row,
           ["creating", "active", "deleting"],
@@ -3026,10 +3033,15 @@ export class WfpProvisioner {
           "delete",
         );
         try {
-          await this.write({ directory_revoke: skip ? "skipped" : "pending" });
-          if (skip !== undefined)
+          if (skip !== undefined) {
+            // M1: the reason first; an orphan audit row is harmless, a
+            // skipped row with no reason is not.
             await this.logged("delete.revoke_skipped", { reason: skip });
-          else await this.logged("delete.revoke_pending", {});
+            await this.write({ directory_revoke: "skipped" });
+          } else {
+            await this.write({ directory_revoke: "pending" });
+            await this.logged("delete.revoke_pending", {});
+          }
           await this.release("deleting");
         } catch (e) {
           if (!(e instanceof LostLease))
@@ -3037,10 +3049,11 @@ export class WfpProvisioner {
           throw e;
         }
       }
-      if (skip !== undefined) this.notes.push(DIRECTORY_REVOKE_SKIPPED_NOTE);
+      const wroteSkip = phase1 && skip !== undefined;
+      if (wroteSkip) this.notes.push(DIRECTORY_REVOKE_SKIPPED_NOTE);
 
       // Phase 2: wait for the scheduler (every 15 s, up to 10 minutes).
-      if (skip === undefined)
+      if (!wroteSkip)
         for (let waited = 0; ; waited += REVOKE_POLL_MS) {
           const st = await this.platform.revokeState(id);
           if (!st) throw new ProvisionRefused(`install ${id} not found`);
@@ -3049,7 +3062,23 @@ export class WfpProvisioner {
             attempts: st.attempts,
             waitedMs: waited,
           });
-          if (st.state !== null && REVOKE_SETTLED.includes(st.state)) break;
+          if (st.state === "skipped") {
+            if (!(await this.platform.hasSkipAudit(id)))
+              throw new ProvisionRefused(
+                `install ${id}: the directory revoke was skipped with no recorded reason; rerun with --skip-directory-revoke "<reason>"`,
+              );
+            this.notes.push(DIRECTORY_REVOKE_SKIPPED_NOTE);
+            break;
+          }
+          if (st.state === "unsupported") {
+            // L1: the grant may be live; say so and record it.
+            await this.platform.audit(id, "delete.revoke_unsupported", {});
+            this.notes.push(
+              `the directory revoke is unsupported on this install (a release below 0.54.0, or no script): ${DIRECTORY_REVOKE_SKIPPED_NOTE}`,
+            );
+            break;
+          }
+          if (st.state === "done") break;
           if (st.state === "failed")
             throw new ProvisionRefused(
               `install ${id}: the directory revoke failed after ${st.attempts} attempts; the row stays deleting. Rerun delete with --skip-directory-revoke "<reason>" to tear down anyway (${DIRECTORY_REVOKE_SKIPPED_NOTE})`,
@@ -3066,6 +3095,14 @@ export class WfpProvisioner {
       if (now?.state !== "deleting")
         throw new ProvisionRefused(
           `install ${id} is ${now?.state ?? "gone"}; it is no longer deleting`,
+        );
+      // Defense in depth: the revoke must still be settled.
+      if (
+        now.directory_revoke === null ||
+        !REVOKE_SETTLED.includes(now.directory_revoke)
+      )
+        throw new ProvisionRefused(
+          `install ${id}: the directory revoke is no longer settled (${now.directory_revoke ?? "none"}); rerun delete`,
         );
       row = now;
       const { cf, env, target } = this;
