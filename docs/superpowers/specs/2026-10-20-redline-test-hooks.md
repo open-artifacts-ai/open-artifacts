@@ -60,7 +60,9 @@ Every call past the rate limit writes one D1 `audit_events` row:
 JSON `{ hook, ip, outcome, domain? }`. `outcome` is `ok`, `denied`, `refused`
 or `none` (otp/latest found nothing). `domain` is the email's domain, never
 the address. The audit DDL runs `IF NOT EXISTS` first, so installs that
-predate the `audit_events` migration log too. A log line
+predate the `audit_events` migration log too. `GET /api/v1/audit` and its
+export list only `user`, `sync` and `system` actors, so `test_hook` rows are
+readable through D1 only. A log line
 `{"evt":"test_hook.<hook or outcome>"}` goes to Workers Logs.
 
 ## Hooks
@@ -128,6 +130,8 @@ read this admin PAT.
 - A wrong key gets the 404.
 - Hooks on the content host get a 404.
 - A hook call shows up in `audit_events` (`action = 'test_hook.session'`).
+  Proven in local mode (D1 read); reported `unproven-live` on staging, which
+  has no D1 read in CI.
 
 ## Differences from the P5 plan's Task 1
 
