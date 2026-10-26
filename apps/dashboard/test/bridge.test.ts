@@ -501,6 +501,74 @@ describe("db.subscribe", () => {
   });
 });
 
+describe("db.offline", () => {
+  const sub = (id: string, collection = "c") =>
+    call("db.subscribe", { collection }, id);
+  const offlines = () =>
+    post.mock.calls.filter(([m]) => m?.event === "db.offline");
+  const resyncs = () =>
+    post.mock.calls.filter(([m]) => m?.event === "db.resync");
+  const close = (ws: FakeWS | undefined, code = 1006) =>
+    (ws?.onclose as ((e: { code: number }) => void) | null)?.({ code });
+
+  it("a refused first socket is offline at once, once, then resyncs on recovery", async () => {
+    vi.useFakeTimers();
+    mk();
+    sub("1");
+    await vi.advanceTimersByTimeAsync(0);
+    close(FakeWS.all[0]);
+    expect(offlines()).toEqual([
+      [{ oa: 1, type: "event", event: "db.offline", collection: "c" }, "*"],
+    ]);
+    await vi.advanceTimersByTimeAsync(1000);
+    close(FakeWS.all[1]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(FakeWS.all).toHaveLength(3);
+    expect(offlines()).toHaveLength(1);
+    FakeWS.all[2]?.onopen?.();
+    expect(resyncs()).toHaveLength(1);
+  });
+
+  it("a dropped socket is offline after 3 failed reconnects, and again for a new outage", async () => {
+    vi.useFakeTimers();
+    mk();
+    sub("1");
+    await vi.advanceTimersByTimeAsync(0);
+    FakeWS.all[0]?.onopen?.();
+    close(FakeWS.all[0]);
+    for (const [i, wait] of [
+      [1, 1000],
+      [2, 2000],
+      [3, 4000],
+    ] as const) {
+      await vi.advanceTimersByTimeAsync(wait);
+      expect(offlines()).toHaveLength(0);
+      close(FakeWS.all[i]);
+    }
+    expect(offlines()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(8000);
+    FakeWS.all[4]?.onopen?.();
+    expect(resyncs()).toHaveLength(2);
+    // A blip that recovers on the first retry stays silent.
+    close(FakeWS.all[4]);
+    await vi.advanceTimersByTimeAsync(1000);
+    FakeWS.all[5]?.onopen?.();
+    expect(offlines()).toHaveLength(1);
+  });
+
+  it("a dropped socket is offline once it has been down 30 s", async () => {
+    vi.useFakeTimers();
+    mk();
+    sub("1");
+    await vi.advanceTimersByTimeAsync(0);
+    FakeWS.all[0]?.onopen?.();
+    close(FakeWS.all[0]);
+    await vi.advanceTimersByTimeAsync(31_000);
+    close(FakeWS.all[1]);
+    expect(offlines()).toHaveLength(1);
+  });
+});
+
 describe("bridge limits", () => {
   it("caps subscribed collections at 32 and replies rate_limited", async () => {
     mk();

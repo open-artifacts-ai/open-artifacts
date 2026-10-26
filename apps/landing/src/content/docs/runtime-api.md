@@ -41,6 +41,8 @@ Each document is `{ id, data, updatedAt, updatedBy }`, with your value in `data`
 
 Each `subscribe` callback gets `{ docs, deleted }`: the documents that changed and the ids of those deleted. If the live connection drops and reconnects, changes may have been missed, so the callback gets `{ docs: [], deleted: [], resync: true }` instead. On `resync`, refetch with `list()` or `query()`.
 
+If the live connection is refused or keeps failing, the callback gets `{ docs: [], deleted: [], offline: true }`, once per outage: live changes are paused. Tell the viewer (for example, "Live updates paused. Reload to retry."). When the connection comes back, the callback gets `resync`.
+
 ```js
 const votes = openArtifacts.db.collection("votes");
 const all = new Map();
@@ -50,7 +52,11 @@ const refetch = async () => {
   render([...all.values()]);
 };
 votes.subscribe((e) => {
-  if (e.resync) return refetch();
+  if (e.offline) return showPaused(true);
+  if (e.resync) {
+    showPaused(false);
+    return refetch();
+  }
   for (const doc of e.docs) all.set(doc.id, doc);
   for (const id of e.deleted) all.delete(id);
   render([...all.values()]);

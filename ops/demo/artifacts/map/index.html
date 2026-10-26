@@ -332,7 +332,13 @@
     if (pending === null && !inFlight) mine = pins.has(me.id) ? pins.get(me.id) : null;
   }
 
+  const PAUSED = "Live updates paused. Reload to retry.";
+  let paused = false; // the live feed is down (subscribe's offline), until a resync
+
   function applyChange(e) {
+    // Never silently deaf: say so while the live feed is down; a resync clears it.
+    if (e.offline) { paused = true; showError(""); return; }
+    if (e.resync && paused) { paused = false; showError(""); }
     if (e.resync) { loadAll().then(render, () => {}); return; }
     let latest = null;
     for (const d of e.docs) {
@@ -637,7 +643,8 @@
   /* ---------- boot ---------- */
 
   function say(m) { el.announce.textContent = ""; requestAnimationFrame(() => { el.announce.textContent = m; }); }
-  function showError(m) { el.error.textContent = m; }
+  /** An empty message falls back to the paused notice while the live feed is down. */
+  function showError(m) { el.error.textContent = m || (paused ? PAUSED : ""); }
   function fail(msg = "Could not reach the map. Reload to try again.") {
     failText = msg;
     el.note.textContent = msg;

@@ -694,7 +694,13 @@
     setTable(next, true);
   }
 
+  const PAUSED = "Live updates paused. Reload to retry.";
+  let paused = false; // the live feed is down (subscribe's offline), until a resync
+
   function onTable(e) {
+    // Never silently deaf: say so while the live feed is down; a resync clears it.
+    if (e.offline) { paused = true; showError(""); return; }
+    if (e.resync && paused) { paused = false; showError(""); }
     if (!table) return; // load() has not finished; it reads the latest anyway
     if (e.resync) { load().catch(() => {}); return; }
     if (e.deleted.includes(TABLE_ID)) { load().catch(() => {}); return; }
@@ -702,6 +708,9 @@
   }
 
   function onMoves(e) {
+    // Never silently deaf: say so while the live feed is down; a resync clears it.
+    if (e.offline) { paused = true; showError(""); return; }
+    if (e.resync && paused) { paused = false; showError(""); }
     if (!game) return;
     if (e.resync) { load().catch(() => {}); return; }
     for (const d of e.docs) {
@@ -1197,7 +1206,8 @@
     else if (act === "leave") leave();
   });
 
-  function showError(m) { el.error.textContent = m; }
+  /** An empty message falls back to the paused notice while the live feed is down. */
+  function showError(m) { el.error.textContent = m || (paused ? PAUSED : ""); }
   function fail(msg = "Could not reach the board. Reload to try again.") {
     failText = msg;
     el.status.textContent = msg;

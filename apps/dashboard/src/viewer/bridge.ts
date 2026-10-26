@@ -64,6 +64,9 @@ export type ScrollPos = { top: number; max: number };
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 30_000;
+/** A dropped socket is reported offline after this many failed reconnects, or OFFLINE_AFTER_MS down. */
+const OFFLINE_AFTER_TRIES = 3;
+const OFFLINE_AFTER_MS = 30_000;
 const DocPage = PageSchema(DataDocSchema);
 const KeyPage = PageSchema(StorageKeySchema);
 
@@ -72,6 +75,12 @@ type Sub = {
   refs: number;
   attempt: number;
   timer?: ReturnType<typeof setTimeout>;
+  /** Ever opened: a first socket closed before opening was refused (e.g. the per-actor cap). */
+  connected: boolean;
+  /** db.offline sent for the current outage; cleared on open. */
+  offline: boolean;
+  /** When the open socket dropped (Date.now()). */
+  downSince?: number;
 };
 
 const MAX_SUBSCRIPTIONS = 32;
@@ -166,6 +175,9 @@ export function createBridge(opts: BridgeOptions) {
     s.ws = ws;
     ws.onopen = () => {
       s.attempt = 0;
+      s.connected = true;
+      s.offline = false;
+      s.downSince = undefined;
       lostFired = false;
       // Changes during a gap aren't replayed; tell the frame to refetch on every open.
       if (s.ws === ws && s.refs > 0)
@@ -198,6 +210,19 @@ export function createBridge(opts: BridgeOptions) {
         lostFired = true;
         onAccessLost?.();
       }
+      // Never silently deaf: a refused first socket is offline at once; a
+      // dropped one after a few failed reconnects. Once per outage; the next
+      // open sends db.resync.
+      s.downSince ??= Date.now();
+      if (
+        !s.offline &&
+        (!s.connected ||
+          s.attempt >= OFFLINE_AFTER_TRIES ||
+          Date.now() - s.downSince >= OFFLINE_AFTER_MS)
+      ) {
+        s.offline = true;
+        reply({ oa: 1, type: "event", event: "db.offline", collection: col });
+      }
       const delay = Math.min(
         BACKOFF_CAP_MS,
         BACKOFF_BASE_MS * 2 ** s.attempt++,
@@ -219,7 +244,7 @@ export function createBridge(opts: BridgeOptions) {
     let s = subs.get(col);
     if (!s) {
       if (subs.size >= MAX_SUBSCRIPTIONS) return false;
-      s = { ws: null, refs: 0, attempt: 0 };
+      s = { ws: null, refs: 0, attempt: 0, connected: false, offline: false };
       subs.set(col, s);
     }
     if (s.refs++ === 0) connect(col, s);
