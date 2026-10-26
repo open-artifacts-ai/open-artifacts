@@ -58,6 +58,8 @@ export interface TurnstileWidget {
   name: string;
   domains: string[];
   mode?: string;
+  /** Only on a single-widget GET; never printed. */
+  secret?: string;
 }
 
 export interface Cf {
@@ -119,6 +121,17 @@ export interface Cf {
   ): Promise<{ jwt: string }>;
   /** GET a Turnstile widget by sitekey (read-only); null when there is none. */
   turnstileWidget(sitekey: string): Promise<TurnstileWidget | null>;
+  /** Every Turnstile widget on the account (no secrets), paginated. */
+  turnstileList(): Promise<TurnstileWidget[]>;
+  /**
+   * POST a widget (turnstile-init only), one try: a lost reply may still have
+   * created it, so the caller lists by name before any retry.
+   */
+  turnstileCreate(w: {
+    name: string;
+    domains: string[];
+    mode: "managed";
+  }): Promise<{ sitekey: string; secret: string }>;
   /**
    * R2 objects in an env's releases bucket (platformNames(env).releases),
    * account-scoped REST routes only. null when the object does not exist.
@@ -205,6 +218,8 @@ type CallInit = {
   binary?: boolean;
   /** With binary: abort (no retry) once the body exceeds this many bytes. */
   maxBytes?: number;
+  /** One try only: a create that is not idempotent (the caller re-lists first). */
+  once?: boolean;
 };
 
 /** The body, refused as soon as it passes `max` bytes (content-length or streamed). */
@@ -281,7 +296,7 @@ export function cfClient(o: {
       body = JSON.stringify(init.json);
     }
     let last: CfError | undefined;
-    for (let i = 0; i < TRIES; i++) {
+    for (let i = 0; i < (init.once ? 1 : TRIES); i++) {
       if (i > 0) await sleep(500 * 2 ** (i - 1));
       let res: Response;
       try {
@@ -695,6 +710,43 @@ export function cfClient(o: {
       if (r.status === 404) return null;
       return ((r.body as { result?: TurnstileWidget })?.result ??
         null) as TurnstileWidget | null;
+    },
+    async turnstileList() {
+      const out: TurnstileWidget[] = [];
+      for (let page = 1; page <= 50; page++) {
+        const { body } = await call(
+          "GET",
+          `${acct}/challenges/widgets?per_page=50&page=${page}`,
+        );
+        const b = body as {
+          result?: TurnstileWidget[];
+          result_info?: { total_pages?: unknown };
+        };
+        for (const w of b?.result ?? []) {
+          if (typeof w?.sitekey !== "string" || typeof w?.name !== "string")
+            throw new Error("Turnstile listing has a malformed entry");
+          out.push({
+            sitekey: w.sitekey,
+            name: w.name,
+            domains: Array.isArray(w.domains) ? w.domains.map(String) : [],
+            ...(typeof w.mode === "string" ? { mode: w.mode } : {}),
+          });
+        }
+        const pages = Number(b?.result_info?.total_pages ?? 1);
+        if (!Number.isFinite(pages) || page >= pages) return out;
+      }
+      throw new Error("Turnstile listing did not end");
+    },
+    async turnstileCreate(w) {
+      const { body } = await call("POST", `${acct}/challenges/widgets`, {
+        json: { name: w.name, domains: w.domains, mode: w.mode },
+        once: true,
+      });
+      const r = (body as { result?: { sitekey?: unknown; secret?: unknown } })
+        ?.result;
+      if (typeof r?.sitekey !== "string" || typeof r?.secret !== "string")
+        throw new Error("Turnstile create returned no sitekey or secret");
+      return { sitekey: r.sitekey, secret: r.secret };
     },
   };
 }
