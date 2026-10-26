@@ -95,6 +95,11 @@ export interface CrossCheck {
   ok?: (r: Response) => boolean;
   /** How each leg is sent (default: fetch, redirect manual); e.g. wsHandshake. */
   send?: (r: Request) => Promise<Response>;
+  /**
+   * What counts as B refusing, when a refusal isn't a 401/403/404 (an OAuth
+   * 400 invalid_grant or invalid_client). Default expectRefused.
+   */
+  refused?: (res: Response, b: Target) => Promise<void>;
 }
 
 /**
@@ -115,7 +120,7 @@ export async function crossCheck(
   const ta = await readBody(ra);
   if (!ok(ra))
     throw new Error(`A's credential failed at A (${describeRes(ra, ta)})`);
-  await expectRefused(await go(req(o.credA, o.b)), o.b);
+  await (o.refused ?? expectRefused)(await go(req(o.credA, o.b)), o.b);
 }
 
 export interface Side {

@@ -100,14 +100,14 @@ P3 ships `apps/server/test/authz/surfaces.ts` (every HTTP surface as a probe) an
 Every case goes through `crossCheck` (B's credential succeeds at B, A's at A, then A's is refused at B).
 - [ ] **Step 1: Write the tests**
   - `A's owner PAT at B: /api/v1/me, /api/v1/artifacts, /mcp (tools/list)`.
-  - `A's session cookie at B`: the cookie value replayed on B's host (and with `Domain` stripped) is refused, because the two installs sign sessions with different `SESSION_SECRET`s, so B cannot verify A's signature. Same for A's cookie on B's content host, and a tampered cookie signed with a guessed key. The mechanism is pinned where it can be read: P1 Task 4 asserts that two creates generate different `SESSION_SECRET`s (secrets are write-only, so P5 proves the effect, not the value).
-  - `A's MCP OAuth access token at B /mcp`; `A's OAuth client_id in B's /authorize` (B must not know it: 400 or consent for an unknown client, never an auto-grant).
+  - `A's session cookie at B`: the cookie value replayed on B's host (also under the alternate cookie name) is refused, because the two installs sign sessions with different `SESSION_SECRET`s, so B cannot verify A's signature. B's content host ignores cookies, A's included: this is an invariant, not a crossCheck, since the content host reads no cookie and so has no same-request B baseline. **Dropped (2026-10-26):** a tampered cookie signed with a guessed key; covered by "A's real session cookie replayed at B" (B refuses any session not signed with its own key, and A's key is such a key). The mechanism is pinned where it can be read: P1 Task 4 asserts that two creates generate different `SESSION_SECRET`s (secrets are write-only, so P5 proves the effect, not the value).
+  - `A's MCP OAuth access token at B /mcp`; `A's OAuth client_id in B's /authorize` (B must not know it: a 400 (401/403/404 also ok) with no consent form, never a redirect with a code. A consent page would mean B resolved A's client, so it fails).
   - `A's signed content URL path (/c/<exp>.<sig>/<A artifact>/v1/) at B's content host`, and `A's signature with B's artifact id`.
-  - `A's capture token (X-OA-Capture) at B's content host`.
+  - **Dropped (2026-10-26):** `A's capture token (X-OA-Capture) at B's content host`. No route issues one (only the Worker's own thumbnail capture mints it), so it can't cross installs; covered by the server's content tests.
   - `A's signed upload URL at B`.
   - `B's private artifact id fetched with A's credentials at A` (404: ids don't cross installs).
   - `A's OAuth refresh token and an unredeemed A authorization code at B's /token` → `invalid_grant`, no token issued.
-  - `A's invite link and share email link opened at B` (signed in to B as a B member) → no membership or share created on B.
+  - `A's invite link and share email link opened at B` (signed in to B as a B member) → no membership or share created on B. Both links carry no secret (the invite links to `/sign-in`, the share to `/a/<id>`), so these cases prove only that A's ids and members don't resolve at B and that B's members and shares are unchanged.
 - [ ] **Step 2:** Run against `rl-a`/`rl-b`; expect PASS. Any FAIL is a red-line bug: stop, file it with the Manager as a blocker, don't weaken the test.
 - [ ] **Step 3:** Commit `test(redline): tokens, sessions, OAuth and signed URLs don't cross installs`.
 
