@@ -35,8 +35,7 @@ describe("redline-staging.yml", () => {
     expect(Object.keys(w.jobs)).toEqual(["redline"]);
     expect(job.environment).toBe("redline-staging");
     expect(job.permissions).toBeUndefined();
-    expect(job["timeout-minutes"]).toBeGreaterThan(0);
-    expect(job["timeout-minutes"]).toBeLessThanOrEqual(30);
+    expect(job["timeout-minutes"]).toBe(45);
     expect(w.concurrency).toEqual({
       group: "redline",
       "cancel-in-progress": false,
@@ -129,5 +128,13 @@ describe("redline-staging.yml", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(up[0]?.with?.path).toBe("${{ runner.temp }}/redline-report");
     expect(text).not.toMatch(/redline-secrets[^"\n]*\n[^\n]*upload/);
+  });
+
+  it("the live suite prints each case as it runs and still writes the report", () => {
+    const cfg = readFileSync(
+      join(root, "tests/redline/vitest.live.config.ts"),
+      "utf8",
+    );
+    expect(cfg).toContain('reporters: ["verbose", "./src/reporter.ts"],');
   });
 });
