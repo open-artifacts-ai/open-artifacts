@@ -46,6 +46,73 @@ export interface Targets {
   b: Target;
   /** Staging mode only: present when the prod credentials are configured. */
   prod?: ProdProbe;
+  /**
+   * Staging mode only: Platform's inventory Worker for this env (Bearer key):
+   * GET /hosts, GET /hosts?host=, GET /installs. From REDLINE_TARGETS.inventory,
+   * else env REDLINE_STG_INVENTORY_URL with <secretsDir>/REDLINE_STG_INVENTORY_KEY.
+   */
+  inventory?: Inventory;
+  /** Staging mode only: hosts of a deleted install (REDLINE_DELETED_HOSTS, a JSON list). */
+  deletedHosts?: string[];
+}
+
+export interface Inventory {
+  url: string;
+  keyFile: string;
+}
+
+const INVENTORY_SECRETS = new WeakMap<object, string>();
+
+/** @internal The inventory key of a loaded target set. */
+export function inventoryKeyOf(i: Inventory): string {
+  const k = INVENTORY_SECRETS.get(i);
+  if (!k) throw new Error("inventory was not loaded with loadTargets");
+  return k;
+}
+
+function parseInventory(
+  v: unknown,
+  secretsDir: string | undefined,
+  env: Record<string, string | undefined>,
+): Inventory | undefined {
+  let url: unknown;
+  let keyFile: unknown;
+  if (v !== undefined && v !== null) {
+    if (typeof v !== "object")
+      throw new Error("REDLINE_TARGETS: inventory must be an object");
+    ({ url, keyFile } = v as Record<string, unknown>);
+  } else {
+    url = env.REDLINE_STG_INVENTORY_URL;
+    if (!url) return undefined;
+    keyFile = secretsDir
+      ? join(secretsDir, "REDLINE_STG_INVENTORY_KEY")
+      : undefined;
+  }
+  const i: Inventory = {
+    url: origin(url, "inventory.url", "staging"),
+    keyFile: str(keyFile, "inventory.keyFile"),
+  };
+  INVENTORY_SECRETS.set(i, readSecretFile(i.keyFile, "inventory key"));
+  return i;
+}
+
+function parseDeletedHosts(v: unknown): string[] | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  let list = v;
+  if (typeof v === "string") {
+    try {
+      list = JSON.parse(v);
+    } catch {
+      throw new Error("REDLINE_DELETED_HOSTS is not JSON");
+    }
+  }
+  if (
+    !Array.isArray(list) ||
+    list.length === 0 ||
+    !list.every((h) => typeof h === "string" && h.trim())
+  )
+    throw new Error("deletedHosts must be a non-empty list of hosts");
+  return list.map((h: string) => h.trim());
 }
 
 interface Secrets {
@@ -299,7 +366,16 @@ export function parseTargets(
   if (mode === "staging") {
     const prod = parseProd(rawProd, secretsDir, env);
     if (prod) out.prod = prod;
-  }
+    const inv = parseInventory(raw.inventory, secretsDir, env);
+    if (inv) out.inventory = inv;
+    const del = parseDeletedHosts(
+      raw.deletedHosts ?? env.REDLINE_DELETED_HOSTS,
+    );
+    if (del) out.deletedHosts = del;
+  } else if (raw.inventory != null || raw.deletedHosts != null)
+    throw new Error(
+      "REDLINE_TARGETS: inventory and deletedHosts are staging mode only",
+    );
   return out;
 }
 

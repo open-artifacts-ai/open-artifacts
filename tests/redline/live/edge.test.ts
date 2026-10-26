@@ -11,9 +11,11 @@ import {
   type Cred,
   describeRes,
   fromContentApp,
+  hook,
+  send as httpSend,
   parseJson,
   readBody,
-  send,
+  sessionCred,
   withCred,
 } from "../src/http.ts";
 import {
@@ -24,7 +26,12 @@ import {
   type Side,
 } from "../src/refused.ts";
 import { proof } from "../src/report.ts";
-import { loadTargets, type Target, type Targets } from "../src/targets.ts";
+import {
+  inventoryKeyOf,
+  loadTargets,
+  type Target,
+  type Targets,
+} from "../src/targets.ts";
 import { rawRequest } from "../src/ws.ts";
 
 // P5 Task 5: the content host, and the dispatch edge. Cases that need the
@@ -35,25 +42,29 @@ let T: Targets;
 let A: Side;
 let B: Side;
 
+/** Every artifact a side created (marker first), recorded as it is made. */
+const made = new Map<Side, string[]>();
+
 beforeAll(async () => {
   T = await loadTargets();
   A = await prepareSide(T.a);
+  made.set(A, [A.markerId]);
   B = await prepareSide(T.b);
+  made.set(B, [B.markerId]);
 });
-
-const made = new Map<Side, string[]>();
 
 afterAll(async () => {
   let bad = 0;
-  for (const s of [A, B]) {
-    if (!s) continue;
-    bad += await deleteThrowaways(s.t, s.pat, [
-      ...(made.get(s) ?? []),
-      s.markerId,
-    ]);
-  }
+  for (const [s, ids] of made) bad += await deleteThrowaways(s.t, s.pat, ids);
   if (bad) throw new Error(`${bad} throwaway artifacts were not deleted`);
 });
+
+/** Per-request bound: a timeout is a FAIL (an abort error), never a refusal. */
+const TIMEOUT_MS = 15_000;
+const send = (r: Request) =>
+  httpSend(new Request(r, { signal: AbortSignal.timeout(TIMEOUT_MS) }));
+const fetchT = (url: string, init: RequestInit = {}) =>
+  fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
 
 const sideOf = (k: "a" | "b") => (k === "a" ? A : B);
 const hashOf = (s: string) =>
@@ -170,7 +181,7 @@ describe("mapping integrity", () => {
   it("X-Forwarded-Host set to the other install is ignored", async () => {
     const xfh = (t: Target) => hostOf((t === T.a ? T.b : T.a).app);
     for (const t of [T.a, T.b]) {
-      const r = await fetch(`${t.app}/healthz`, {
+      const r = await fetchT(`${t.app}/healthz`, {
         redirect: "manual",
         headers: { "x-forwarded-host": xfh(t) },
       });
@@ -219,25 +230,79 @@ describe("mapping integrity", () => {
   it("HOSTS maps each install's hosts to its own id, and no host to two", async (ctx) => {
     if (T.mode !== "staging") return proof(ctx, "staging-only", STAGING_ONLY);
     for (const t of [T.a, T.b]) {
-      const r = await fetch(`${t.app}/healthz`, { redirect: "manual" });
+      const r = await fetchT(`${t.app}/healthz`, { redirect: "manual" });
       if ((await healthzId(r)) !== t.installId)
         throw new Error(
           `${t.name}: the app host does not report its own installId`,
         );
-      const c = await fetch(`${t.content}/robots.txt`, { redirect: "manual" });
+      const c = await fetchT(`${t.content}/robots.txt`, { redirect: "manual" });
       await readBody(c);
       if (c.status !== 200 || !fromContentApp(c))
         throw new Error(
           `${t.name}: the content host is not served by a content app`,
         );
     }
-    return proof(
-      ctx,
-      "unproven-live",
-      "no read access to the platform HOSTS map in REDLINE_TARGETS",
-    );
+    if (!T.inventory)
+      return proof(
+        ctx,
+        "unproven-live",
+        "no inventory configured (REDLINE_STG_INVENTORY_URL and key)",
+      );
+    const listing = (await inventory("/hosts")) as {
+      hosts?: unknown;
+      complete?: unknown;
+    };
+    if (!Array.isArray(listing.hosts))
+      throw new Error("inventory /hosts: no hosts array");
+    // A truncated listing can't prove "every host": FAIL, never pass.
+    if (listing.complete !== true)
+      throw new Error("inventory /hosts: the listing is not complete");
+    const hosts = new Map<string, unknown>();
+    for (const h of listing.hosts as { host?: unknown; installId?: unknown }[])
+      if (typeof h?.host === "string") hosts.set(h.host, h.installId);
+    const raw = await inventory("/installs");
+    const rows = (
+      Array.isArray(raw) ? raw : (raw as { installs?: unknown }).installs
+    ) as Record<string, unknown>[] | undefined;
+    if (!Array.isArray(rows)) throw new Error("inventory /installs: no list");
+    // No host in /hosts is claimed by two installs (app or content).
+    const claims = new Map<string, Set<string>>();
+    for (const row of rows)
+      for (const h of [row?.appHost, row?.contentHost])
+        if (typeof h === "string" && typeof row.id === "string")
+          claims.set(h, (claims.get(h) ?? new Set()).add(row.id));
+    for (const h of hosts.keys())
+      if ((claims.get(h)?.size ?? 0) > 1)
+        throw new Error("inventory: a host is claimed by two installs");
+    // Every rl host is in /hosts, mapped to its own install.
+    for (const t of [T.a, T.b])
+      for (const o of [t.app, t.content]) {
+        const h = new URL(o).hostname;
+        if (!hosts.has(h))
+          throw new Error(`inventory: a ${t.name} host is missing from /hosts`);
+        if (hosts.get(h) !== t.installId)
+          throw new Error(
+            `inventory: a ${t.name} host maps to another install id`,
+          );
+      }
   });
 });
+
+/** GET <inventory><path> with its key; status and body hash on failure. */
+async function inventory(path: string): Promise<unknown> {
+  const inv = T.inventory;
+  if (!inv) throw new Error("no inventory configured");
+  const res = await fetchT(`${inv.url}${path}`, {
+    redirect: "manual",
+    headers: { authorization: `Bearer ${inventoryKeyOf(inv)}` },
+  });
+  const text = await readBody(res);
+  if (res.status !== 200)
+    throw new Error(
+      `inventory ${path.split("?")[0]}: ${describeRes(res, text)}`,
+    );
+  return parseJson(res, text, "inventory");
+}
 
 /** The zone of a tenant host: everything after the slug. */
 const zoneOf = (origin: string) =>
@@ -301,59 +366,27 @@ describe("unmapped host", () => {
 
   it("a deleted install's old host gets the generic 404", async (ctx) => {
     if (T.mode !== "staging") return proof(ctx, "staging-only", STAGING_ONLY);
-    const raw = process.env.REDLINE_DELETED_HOSTS;
-    if (!raw)
+    if (!T.deletedHosts)
       return proof(
         ctx,
         "unproven-live",
-        "REDLINE_DELETED_HOSTS not set (the job must delete an install first)",
+        "REDLINE_DELETED_HOSTS not set (Platform sets it once rl-del is deleted)",
       );
-    for (const n of raw
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean))
+    if (!T.inventory)
+      return proof(
+        ctx,
+        "unproven-live",
+        "no inventory configured (REDLINE_STG_INVENTORY_URL and key)",
+      );
+    for (const n of T.deletedHosts) {
       await expectGeneric404(await edge(n, n), "a deleted install's host");
-  });
-});
-
-describe("cross-site cookies (PSL)", () => {
-  it("app and content are different sites, and so are the two installs", async (ctx) => {
-    if (T.mode !== "staging")
-      return proof(
-        ctx,
-        "staging-only",
-        "local hosts are not on the public suffix list",
-      );
-    const site = (origin: string) =>
-      getDomain(new URL(origin).hostname, { allowPrivateDomains: true });
-    const prod = (slug: string, zone: string) => `https://${slug}.${zone}`;
-    const pairs: [string, string, string][] = [
-      ["staging", T.a.app, T.a.content],
-      ["staging", T.b.app, T.b.content],
-      [
-        "prod",
-        prod("x", "open-artifacts.app"),
-        prod("x", "open-artifacts.page"),
-      ],
-    ];
-    for (const [env, app, content] of pairs)
-      if (site(app) === site(content))
-        throw new Error(`${env}: the app and content hosts are the same site`);
-    const unlisted: string[] = [];
-    const tenants: [string, string][] = [
-      [T.a.app, T.b.app],
-      [T.a.content, T.b.content],
-      [prod("x", "open-artifacts.app"), prod("y", "open-artifacts.app")],
-      [prod("x", "open-artifacts.page"), prod("y", "open-artifacts.page")],
-    ];
-    for (const [x, y] of tenants)
-      if (site(x) === site(y)) unlisted.push(zoneOf(x));
-    if (unlisted.length)
-      return proof(
-        ctx,
-        "unproven-live",
-        `not yet in tldts's PSL snapshot: ${unlisted.join(", ")}`,
-      );
+      const h = (await inventory(`/hosts?host=${encodeURIComponent(n)}`)) as {
+        host?: unknown;
+        installId?: unknown;
+      };
+      if (h.host !== n || h.installId !== null)
+        throw new Error("a deleted install's host is still mapped in HOSTS");
+    }
   });
 });
 
@@ -361,7 +394,7 @@ describe("scheduler", () => {
   it("no /__oa/nightly route on either install", async () => {
     for (const t of [T.a, T.b])
       for (const method of ["GET", "POST"]) {
-        const r = await fetch(`${t.app}/__oa/nightly`, {
+        const r = await fetchT(`${t.app}/__oa/nightly`, {
           method,
           redirect: "manual",
         });
@@ -370,12 +403,294 @@ describe("scheduler", () => {
           throw new Error(`${t.name} ${method} /__oa/nightly: not a 404`);
       }
   });
+});
 
-  it("a /__oa/nightly signature replayed at B, stale or twice is refused", async (ctx) => {
-    return proof(
-      ctx,
-      "not-applicable",
-      "P1 Task 7 took no fallback: the scheduler calls scheduled() through the dispatch namespace; signed /__oa/nightly is parked for M2",
-    );
+// Cross-site isolation that holds without the PSL listing (the manager's
+// ruling on #649): the "rl-a and rl-b are different sites" check waits for the
+// PSL entries and runs as scripts/psl-listed.ts, outside the gate.
+
+/** eTLD+1 per the PSL snapshot tldts ships, private section included (as browsers). */
+const siteOf = (origin: string) =>
+  getDomain(new URL(origin).hostname, { allowPrivateDomains: true });
+
+interface SetCookie {
+  name: string;
+  attrs: Map<string, string>;
+}
+
+function parseSetCookie(line: string): SetCookie {
+  const [pair = "", ...rest] = line.split(";");
+  const eq = pair.indexOf("=");
+  const attrs = new Map<string, string>();
+  for (const a of rest) {
+    const i = a.indexOf("=");
+    const k = (i === -1 ? a : a.slice(0, i)).trim().toLowerCase();
+    if (k) attrs.set(k, i === -1 ? "" : a.slice(i + 1).trim());
+  }
+  return { name: pair.slice(0, eq).trim(), attrs };
+}
+
+/** Problems with one app-host Set-Cookie (names only, never values). */
+function cookieProblems(c: SetCookie, strict: boolean): string[] {
+  const out: string[] = [];
+  if (c.attrs.has("domain")) out.push(`${c.name} has a Domain`);
+  if (c.attrs.get("path") !== "/") out.push(`${c.name} Path is not /`);
+  if (strict) {
+    if (!c.name.startsWith("__Host-")) out.push(`${c.name} is not __Host-`);
+    if (!c.attrs.has("secure")) out.push(`${c.name} is not Secure`);
+  }
+  return out;
+}
+
+const sameOriginJson = (extra: Record<string, string> = {}) => ({
+  "content-type": "application/json",
+  "x-oa-request": "1",
+  "sec-fetch-site": "same-origin",
+  ...extra,
+});
+
+describe("cross-site isolation", () => {
+  it("artifact content is served on a registrable domain cross-site to every app host", async () => {
+    const apps = [T.a.app, T.b.app];
+    for (const s of [A, B]) {
+      const c = siteOf(s.t.content);
+      if (!c)
+        throw new Error(
+          `${s.t.name}: the content host has no registrable domain`,
+        );
+      for (const app of apps) {
+        const a = siteOf(app);
+        if (!a) throw new Error("an app host has no registrable domain");
+        if (a === c)
+          throw new Error(
+            `${s.t.name}'s content host is same-site with an app host`,
+          );
+      }
+      // Direct check: the content URL the install issues is on that host.
+      const w = await createThrowaway(s.t, s.pat);
+      made.set(s, [...(made.get(s) ?? []), w.id]);
+      const { res, text } = await call(
+        apiReq(
+          s.t,
+          s.pat,
+          "GET",
+          `/api/v1/artifacts/${encodeURIComponent(w.id)}/content-url`,
+        ),
+        `${s.t.name} content-url`,
+      );
+      const url = (parseJson(res, text, "content-url") as { url?: unknown })
+        .url;
+      if (
+        typeof url !== "string" ||
+        new URL(url).hostname !== new URL(s.t.content).hostname
+      )
+        throw new Error(`${s.t.name}: content-url is not on its content host`);
+      if (siteOf(url) !== c)
+        throw new Error(`${s.t.name}: content-url site differs`);
+    }
+  });
+
+  it("every app-host Set-Cookie is __Host- (Secure, Path=/, no Domain), on hook and code sign-in", async (ctx) => {
+    const strict = T.mode === "staging";
+    const notes: string[] = [];
+    for (const t of [T.a, T.b]) {
+      const email = `redline-cookies@${t.testDomain}`;
+      const seen: SetCookie[] = [];
+      const take = async (r: Response) => {
+        await readBody(r);
+        for (const l of r.headers.getSetCookie()) seen.push(parseSetCookie(l));
+        return r;
+      };
+      // Session hook sign-in, then app routes and sign-out with that cookie.
+      const cookie = await sessionCred(t, email, "member");
+      for (const path of ["/", "/sign-in", "/api/v1/me", "/auth/providers"])
+        await take(
+          await send(new Request(`${t.app}${path}`, withCred(cookie))),
+        );
+      const out = await take(
+        await send(
+          new Request(
+            `${t.app}/auth/logout`,
+            withCred(cookie, {
+              method: "POST",
+              headers: { "x-oa-request": "1" },
+            }),
+          ),
+        ),
+      );
+      if (!out.headers.getSetCookie().length)
+        throw new Error(
+          `${t.name} sign-out: no Set-Cookie (status ${out.status})`,
+        );
+      // Code sign-in: request, the code from the hook, verify.
+      const req = await take(
+        await send(
+          new Request(`${t.app}/auth/code/request`, {
+            method: "POST",
+            redirect: "manual",
+            headers: sameOriginJson(),
+            body: JSON.stringify({ email }),
+          }),
+        ),
+      );
+      const pending = req.headers
+        .getSetCookie()
+        .map((l) => l.split(";")[0] ?? "")
+        .filter((p) => p.includes("="));
+      let code: string | null = null;
+      if (req.status === 202 && pending.length) {
+        // Delivery runs after the response: poll the hook briefly.
+        for (let i = 0; i < 20 && !code; i++) {
+          code = await hook(t, "/__test/otp/latest", { email })
+            .then((o) => {
+              const c = (o as { code?: unknown }).code;
+              return typeof c === "string" ? c : null;
+            })
+            .catch(() => null);
+          if (!code) await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+      if (!code)
+        notes.push(
+          `${t.name}: code sign-in unavailable (request status ${req.status})`,
+        );
+      else {
+        const v = await take(
+          await send(
+            new Request(`${t.app}/auth/code/verify`, {
+              method: "POST",
+              redirect: "manual",
+              headers: sameOriginJson({ cookie: pending.join("; ") }),
+              body: JSON.stringify({ code }),
+            }),
+          ),
+        );
+        const names = v.headers
+          .getSetCookie()
+          .map((l) => parseSetCookie(l).name);
+        if (v.status !== 200 || !names.includes(t.cookieName))
+          throw new Error(
+            `${t.name} code verify: no session cookie (status ${v.status})`,
+          );
+      }
+      const bad = seen.flatMap((c) => cookieProblems(c, strict));
+      if (bad.length) throw new Error(`${t.name}: ${bad.join("; ")}`);
+    }
+    if (!strict)
+      return proof(
+        ctx,
+        "staging-only",
+        `ENVIRONMENT=dev sets unprefixed, non-Secure cookies; Path and Domain checked${notes.length ? `; ${notes.join("; ")}` : ""}`,
+      );
+    if (notes.length) return proof(ctx, "unproven-live", notes.join("; "));
+  });
+
+  it("state-changing app requests without X-OA-Request are refused, and accepted with it", async () => {
+    for (const s of [A, B]) {
+      const t = s.t;
+      const w = await createThrowaway(t, s.pat, { capabilities: { db: true } });
+      made.set(s, [...(made.get(s) ?? []), w.id]);
+      const art = `/api/v1/artifacts/${encodeURIComponent(w.id)}`;
+      const read = async (path: string) => {
+        const r = await send(apiReq(t, s.pat, "GET", path));
+        return `${r.status}\n${await readBody(r)}`;
+      };
+      const writes: {
+        method: string;
+        path: string;
+        body?: unknown;
+        state: string;
+      }[] = [
+        {
+          method: "POST",
+          path: "/api/v1/artifacts",
+          body: { title: "redline-csrf", format: "html", content: "<p>x</p>" },
+          state: "/api/v1/artifacts",
+        },
+        {
+          method: "PATCH",
+          path: art,
+          body: { title: "redline-csrf-patched" },
+          state: art,
+        },
+        {
+          method: "PUT",
+          path: `${art}/data/c/csrf`,
+          body: { v: 1 },
+          state: `${art}/data/c/csrf`,
+        },
+        {
+          method: "POST",
+          path: "/api/v1/tokens",
+          body: { label: "redline-csrf" },
+          state: "/api/v1/tokens",
+        },
+        { method: "DELETE", path: art, state: art },
+      ];
+      for (const wr of writes) {
+        const init = (csrf: boolean) => {
+          const headers: Record<string, string> = {};
+          if (csrf) headers["x-oa-request"] = "1";
+          if (wr.body !== undefined)
+            headers["content-type"] = "application/json";
+          return new Request(
+            `${t.app}${wr.path}`,
+            withCred(s.cookie, {
+              method: wr.method,
+              headers,
+              ...(wr.body !== undefined
+                ? { body: JSON.stringify(wr.body) }
+                : {}),
+            }),
+          );
+        };
+        const before = await read(wr.state);
+        const r = await send(init(false));
+        const rb = await readBody(r);
+        let code: unknown;
+        try {
+          code = (JSON.parse(rb) as { error?: { code?: unknown } }).error?.code;
+        } catch {
+          code = undefined;
+        }
+        if (r.status !== 403 || code !== "csrf")
+          throw new Error(
+            `${t.name} ${wr.method} without X-OA-Request: ${describeRes(r, rb)}`,
+          );
+        if ((await read(wr.state)) !== before)
+          throw new Error(
+            `${t.name} ${wr.method} without X-OA-Request changed state`,
+          );
+        const ok = await send(init(true));
+        const ob = await readBody(ok);
+        if (ok.status < 200 || ok.status > 299)
+          throw new Error(
+            `${t.name} ${wr.method} with X-OA-Request: ${describeRes(ok, ob)}`,
+          );
+        if (wr.method === "POST" && wr.path === "/api/v1/artifacts") {
+          const id = (JSON.parse(ob) as { id?: unknown }).id;
+          if (typeof id === "string") made.set(s, [...(made.get(s) ?? []), id]);
+        }
+      }
+      // Revoke the token minted above.
+      const list = await send(apiReq(t, s.pat, "GET", "/api/v1/tokens"));
+      const lt = await readBody(list);
+      const raw = JSON.parse(lt) as unknown;
+      const tokens = (
+        Array.isArray(raw)
+          ? raw
+          : ((raw as { tokens?: unknown[] }).tokens ?? [])
+      ) as { id?: unknown; label?: unknown }[];
+      for (const tk of tokens)
+        if (tk.label === "redline-csrf" && typeof tk.id === "string")
+          await send(
+            apiReq(
+              t,
+              s.pat,
+              "DELETE",
+              `/api/v1/tokens/${encodeURIComponent(tk.id)}`,
+            ),
+          ).then((r) => r.body?.cancel());
+    }
   });
 });

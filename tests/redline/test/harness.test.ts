@@ -262,6 +262,55 @@ describe("loadTargets", () => {
     expect(JSON.stringify(T)).not.toContain("oa_pat_a");
   });
 
+  it("parses inventory and deletedHosts in staging mode; the key stays off the object", () => {
+    const s = secrets({
+      k: KEY_A,
+      k2: KEY_B,
+      inv: "INVENTORY-KEY-VALUE-0123456789abcdef",
+      REDLINE_STG_INVENTORY_KEY: "INVENTORY-KEY-VALUE-0123456789abcdef",
+    });
+    const t = (n: string, f: string) => ({
+      name: n,
+      installId: n,
+      app: `https://${n}.x.app`,
+      content: `https://${n}.x.page`,
+      testDomain: `${n}.test`,
+      hookKeyFile: s.path(f),
+    });
+    const T = parseTargets({
+      REDLINE_TARGETS: JSON.stringify({
+        a: t("rl-a", "k"),
+        b: t("rl-b", "k2"),
+        inventory: { url: "https://inv.x.app", keyFile: s.path("inv") },
+        deletedHosts: ["Gone.x.app", "gone.x.page"],
+      }),
+    });
+    expect(T.inventory?.url).toBe("https://inv.x.app");
+    expect(T.deletedHosts).toEqual(["Gone.x.app", "gone.x.page"]);
+    expect(JSON.stringify(T)).not.toContain("INVENTORY-KEY-VALUE");
+    expect(() =>
+      parseTargets({
+        REDLINE_TARGETS: JSON.stringify({
+          a: t("rl-a", "k"),
+          b: t("rl-b", "k2"),
+          deletedHosts: [""],
+        }),
+      }),
+    ).toThrow(/deletedHosts/);
+    // The CI layout: env URL, key file in secretsDir, deleted hosts as JSON.
+    const T2 = parseTargets({
+      REDLINE_TARGETS: JSON.stringify({
+        secretsDir: s.dir,
+        a: t("rl-a", "k"),
+        b: t("rl-b", "k2"),
+      }),
+      REDLINE_STG_INVENTORY_URL: "https://inv.x.app",
+      REDLINE_DELETED_HOSTS: '["rl-del.x.app"]',
+    });
+    expect(T2.inventory?.keyFile).toBe(s.path("REDLINE_STG_INVENTORY_KEY"));
+    expect(T2.deletedHosts).toEqual(["rl-del.x.app"]);
+  });
+
   it("refuses a key file readable by others", () => {
     const s = secretDir({});
     toDispose.push(s.cleanup);

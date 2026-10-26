@@ -44,12 +44,16 @@ interface Live {
   reset: string;
   /** Public, db, allowAnonymousWrites. */
   anon: string;
+  /** Markers in the data and reset throwaways' seeded state. */
+  dataMarker: string;
+  resetMarker: string;
 }
 
 let T: Targets;
 let A: Live;
 let B: Live;
-const made = new Map<Target, string[]>();
+/** Every artifact a side created (marker first), recorded as it is made. */
+const made = new Map<Side, string[]>();
 
 const side = (t: Target): Live => (t === T.a ? A : B);
 const hashOf = (s: string) =>
@@ -64,9 +68,9 @@ async function putDoc(l: Live, art: string, doc: string, data: unknown) {
 
 async function setup(t: Target): Promise<Live> {
   const s = await prepareSide(t);
+  const ids: string[] = [s.markerId];
+  made.set(s, ids);
   const user = await whoami(t, s.pat);
-  const ids: string[] = [];
-  made.set(t, ids);
   const mk = async (o: Parameters<typeof createThrowaway>[2]) => {
     const w = await createThrowaway(t, s.pat, o);
     ids.push(w.id);
@@ -79,7 +83,15 @@ async function setup(t: Target): Promise<Live> {
     capabilities: { db: true },
     allowAnonymousWrites: true,
   });
-  const l: Live = { s, user, data: data.id, reset: reset.id, anon: anon.id };
+  const l: Live = {
+    s,
+    user,
+    data: data.id,
+    reset: reset.id,
+    anon: anon.id,
+    dataMarker: data.marker,
+    resetMarker: reset.marker,
+  };
   for (const doc of ["victim", "own-put", "own-patch", "own-del"])
     await putDoc(l, l.data, doc, { marker: data.marker, doc });
   await putDoc(l, l.reset, "victim", { marker: reset.marker });
@@ -101,12 +113,16 @@ beforeAll(async () => {
 
 afterAll(async () => {
   let bad = 0;
-  for (const [t, ids] of made) {
-    const l = t === T.a ? A : B;
-    if (!l) continue;
-    bad += await deleteThrowaways(t, l.s.pat, [...ids, l.s.markerId]);
+  let partial = 0;
+  for (const [s, ids] of made) {
+    // A side whose setup failed part way: still clean up, but fail the run.
+    if (s !== A?.s && s !== B?.s) partial++;
+    bad += await deleteThrowaways(s.t, s.pat, ids);
   }
-  if (bad) throw new Error(`${bad} throwaway artifacts were not deleted`);
+  if (bad || partial)
+    throw new Error(
+      `${bad} throwaway artifacts were not deleted; ${partial} side(s) failed setup`,
+    );
 });
 
 /** Status and body of a GET with B's PAT: the state A's attempt must not change. */
@@ -127,6 +143,7 @@ async function writeCase(
   req: (cred: Cred, t: Target) => Request,
   statePath: string,
   what: string,
+  marker: string,
 ): Promise<void> {
   const snap = snapshotBeforeAttack(stateOf(statePath));
   await crossCheck(req, {
@@ -136,7 +153,12 @@ async function writeCase(
     credB: B.s.pat,
     send: snap.send,
   });
-  expectSame(snap.before(), await stateOf(statePath)(), what);
+  const before = snap.before();
+  // The state A's attempt met must be B's real seeded state, so a 404 = 404
+  // match can't pass.
+  if (!before.startsWith("200\n") || !before.includes(marker))
+    throw new Error(`B's ${what} was not readable before A's attempt`);
+  expectSame(before, await stateOf(statePath)(), what);
 }
 
 /** The doc a leg writes: B's victim for A's attempt at B, else the side's own. */
@@ -183,6 +205,7 @@ describe("data API at B with A's PAT", () => {
         ),
       dataPath(B.data, "data", COL, "victim"),
       "victim doc",
+      B.dataMarker,
     );
   });
 
@@ -198,6 +221,7 @@ describe("data API at B with A's PAT", () => {
         ),
       dataPath(B.data, "data", COL, "victim"),
       "victim doc",
+      B.dataMarker,
     );
   });
 
@@ -212,6 +236,7 @@ describe("data API at B with A's PAT", () => {
         ),
       dataPath(B.data, "data", COL, "victim"),
       "victim doc",
+      B.dataMarker,
     );
   });
 
@@ -221,14 +246,15 @@ describe("data API at B with A's PAT", () => {
         apiReq(t, cred, "PUT", dataPath(side(t).reset, "data"), {
           collections: {
             [COL]: {
-              [cred === A.s.pat && t === T.b ? "from-a" : "own"]: {
-                by: cred === A.s.pat ? "a" : "b",
-              },
+              ...(cred === A.s.pat && t === T.b
+                ? { "from-a": { by: "a" } }
+                : { own: { by: t.name, marker: side(t).resetMarker } }),
             },
           },
         }),
       dataPath(B.reset, "data", COL),
       "reset artifact's data",
+      B.resetMarker,
     );
   });
 
@@ -259,6 +285,7 @@ describe("data API at B with A's PAT", () => {
         ),
       dataPath(B.data, "storage", "victim"),
       "victim storage key",
+      B.dataMarker,
     );
   });
 
@@ -273,6 +300,7 @@ describe("data API at B with A's PAT", () => {
         ),
       dataPath(B.data, "storage", "victim"),
       "victim storage key",
+      B.dataMarker,
     );
   });
 });

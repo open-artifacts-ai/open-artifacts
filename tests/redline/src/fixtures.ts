@@ -40,7 +40,10 @@ export async function call(
   req: Request,
   what: string,
 ): Promise<{ res: Response; text: string }> {
-  const res = await send(req);
+  // Bounded: a timeout is a FAIL (an abort error), never a refusal.
+  const res = await send(
+    new Request(req, { signal: AbortSignal.timeout(15_000) }),
+  );
   const text = await readBody(res);
   if (res.status < 200 || res.status > 299)
     throw new HttpError(what, res, text);

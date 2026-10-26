@@ -94,15 +94,7 @@
     },
     {
       "file": "live/edge.test.ts",
-      "name": "cross-site cookies (PSL) > app and content are different sites, and so are the two installs"
-    },
-    {
-      "file": "live/edge.test.ts",
       "name": "scheduler > no /__oa/nightly route on either install"
-    },
-    {
-      "file": "live/edge.test.ts",
-      "name": "scheduler > a /__oa/nightly signature replayed at B, stale or twice is refused"
     },
     {
       "file": "live/live.test.ts",
@@ -187,6 +179,18 @@
     {
       "file": "live/live.test.ts",
       "name": "anonymous writes on a B public artifact > A's PAT sent along does not change the actor to A's user"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "cross-site isolation > artifact content is served on a registrable domain cross-site to every app host"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "cross-site isolation > every app-host Set-Cookie is __Host- (Secure, Path=/, no Domain), on hook and code sign-in"
+    },
+    {
+      "file": "live/edge.test.ts",
+      "name": "cross-site isolation > state-changing app requests without X-OA-Request are refused, and accepted with it"
     }
   ]
 }
