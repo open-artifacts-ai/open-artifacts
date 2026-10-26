@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.58.3](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.58.2...v0.58.3) (2026-10-26)
+
+
+### Bug Fixes
+
+* **scheduler:** a revoke that resolves to undefined is done ([#663](https://github.com/open-artifacts-ai/open-artifacts/issues/663)) ([5111d9f](https://github.com/open-artifacts-ai/open-artifacts/commit/5111d9f0fc7ff2c2734dd3a088f3a5c3300f18a1))
+
 ## [0.58.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.58.1...v0.58.2) (2026-10-26)
 
 
