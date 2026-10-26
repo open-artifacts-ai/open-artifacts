@@ -123,6 +123,46 @@
     {
       "file": "live/credentials.test.ts",
       "name": "credentials > links > A's share email link opened at B by a B member: no share on B"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: OIDC state and nonce > A's OIDC state and state cookie (with its nonce) replayed at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: OIDC state and nonce > A's OIDC state with B's own state cookie at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: ID tokens > an ID token with hd of A at B's callback: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: ID tokens > A's code and broker state at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: broker > a tampered install id at the broker callback is refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code issued by A, entered at B with B's pending cookie: refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code issued by A, entered at B with A's pending cookie: refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code requested at B for an address not invited to B: no code sent, generic response"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: guests > a guest of A invited to B reads on B but can't publish via MCP or the data API there"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: guests > the guest's B session is refused at A"
     }
   ]
 }

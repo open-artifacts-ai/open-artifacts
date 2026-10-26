@@ -101,6 +101,8 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 
 ## Sign-in (`hosted/auth.ts`, P2)
 
+Installs in one environment share a single Google client through the auth broker, so `aud` is not an install boundary. Installs are separated by the broker state, which names the install, and by the nonce bound to the install.
+
 | Route | Contract |
 |---|---|
 | `GET AUTH.providers` `/auth/providers` | `AuthProviders` (public, no-store, no D1) |
