@@ -72,12 +72,20 @@ const kv = async <T>(k: string): Promise<T | null> => {
 };
 const tick = (now: number, en: Env) =>
   inDo((s) => new SyncEngine(en, s.storage).alarm(now));
+/**
+ * Alarms at `now` until no lane may run (done, or backing off). One DO call
+ * for the whole loop, a fresh engine per alarm (as the DO builds one): two
+ * round-trips per alarm made directory.sync time out under suite load (#617).
+ */
 async function drain(now: number, en: Env) {
-  for (let i = 0; i < 80; i++) {
-    await tick(now, en);
-    if (!(await inDo((s) => new SyncEngine(en, s.storage).due(now)))) return;
-  }
-  throw new Error("run never finished");
+  const done = await inDo(async (s) => {
+    for (let i = 0; i < 80; i++) {
+      await new SyncEngine(en, s.storage).alarm(now);
+      if (!new SyncEngine(en, s.storage).due(now)) return true;
+    }
+    return false;
+  });
+  if (!done) throw new Error("run never finished");
 }
 
 const one = <T>(sql: string, ...binds: unknown[]) =>

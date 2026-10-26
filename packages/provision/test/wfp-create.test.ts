@@ -3691,9 +3691,17 @@ describe("EMAIL_CODE_DOMAIN for the hosted trial (H-ECD)", () => {
       {} as Record<string, string>,
       { EMAIL_CODE_DOMAIN: "off" },
       { ...CODES, EMAIL_CODE_DOMAIN: "off" },
-      { ...CODES, AUTH_PROVIDERS: "google,email", EMAIL_CODE_DOMAIN: "off" },
+      {
+        ...CODES,
+        AUTH_PROVIDERS: "google,email",
+        AUTH_DOMAINS: "finqore.test",
+        EMAIL_CODE_DOMAIN: "off",
+      },
     ]) {
-      const s = setup();
+      // T8 M1: google needs the broker.
+      const s = setup({
+        brokerEnabled: vars.AUTH_PROVIDERS?.includes("google"),
+      });
       await s.p.create(input("finqore", { vars }));
       const meta = metaOf(uploads(s.fake)[0]?.body as string);
       expect(bindingOf(meta, "EMAIL_CODE_DOMAIN")).toBeUndefined();
