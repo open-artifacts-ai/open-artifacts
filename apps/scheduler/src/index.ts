@@ -485,9 +485,10 @@ export interface RevokeOptions {
 /**
  * One tick: up to 10 pending revokes, 3 at a time (each bounded by
  * timeoutMs, so a tick ends inside the 2 minutes). Below REVOKE_MIN_VERSION, or no
- * release version, is unsupported with no call. A resolve is done; "Worker
- * not found" (outcome scriptNotFound) is unsupported; a rejection, timeout
- * or any other outcome counts an attempt, and the fifth is failed. Logs carry the install id and a fixed category only.
+ * release version, is unsupported with no call. A resolve to undefined or
+ * outcome "ok" is done; outcome scriptNotFound is unsupported; a rejection,
+ * timeout or any other result counts an attempt, and the fifth is failed.
+ * Logs carry the install id and a fixed category (revokeCategory) only.
  */
 export async function revokeTick(
   env: Env,
@@ -501,6 +502,45 @@ export async function revokeTick(
     // M2: never the error text (it can carry a D1 message or the install's).
     console.error("directory-revoke aborted", "exception");
   }
+}
+
+/** What one revoke call came to; the retry and failed lines log it. */
+export type RevokeCategory =
+  | "ok"
+  | "scriptNotFound"
+  | "exception"
+  | "exceededCpu"
+  | "exceededMemory"
+  | "canceled"
+  | "unknown"
+  | "throw"
+  | "timeout";
+
+const OUTCOMES = new Set<RevokeCategory>([
+  "ok",
+  "scriptNotFound",
+  "exception",
+  "exceededCpu",
+  "exceededMemory",
+  "canceled",
+]);
+
+/**
+ * A resolved revoke call, from the result alone. Through a dispatch
+ * namespace scheduled() resolves to undefined when the install's handler
+ * succeeds (measured on staging, see ScheduledFetcher), so undefined is ok, as
+ * on the nightly path; a { outcome } result is read defensively. Only a
+ * known outcome string is kept; anything else is "unknown".
+ */
+export function revokeCategory(r: unknown): RevokeCategory {
+  if (r === undefined) return "ok";
+  const outcome =
+    typeof r === "object" && r !== null
+      ? (r as { outcome?: unknown }).outcome
+      : undefined;
+  return typeof outcome === "string" && OUTCOMES.has(outcome as RevokeCategory)
+    ? (outcome as RevokeCategory)
+    : "unknown";
 }
 
 /** L4: calls in flight per tick, so a tick never crowds a nightly run. */
@@ -537,35 +577,33 @@ async function runRevokeTick(
       compareVersions(version, REVOKE_MIN_VERSION) < 0
     )
       return unsupported();
-    let missing = false;
+    let cat: RevokeCategory;
     try {
-      const r = await within(
-        (
-          env.DISPATCHER.get(
-            names(id, env.OA_ENV).script,
-          ) as unknown as ScheduledFetcher
-        ).scheduled({ cron: REVOKE_JOB, scheduledTime: new Date(now) }),
-        timeoutMs,
+      cat = revokeCategory(
+        await within(
+          (
+            env.DISPATCHER.get(
+              names(id, env.OA_ENV).script,
+            ) as unknown as ScheduledFetcher
+          ).scheduled({ cron: REVOKE_JOB, scheduledTime: new Date(now) }),
+          timeoutMs,
+        ),
       );
-      // M2/L1: only a structured outcome decides; "ok" is done, a missing
-      // script is unsupported, anything else (a throw, even "Worker not
-      // found") counts an attempt.
-      const outcome =
-        typeof r === "object" && r !== null
-          ? (r as { outcome?: unknown }).outcome
-          : undefined;
-      if (outcome === "scriptNotFound") missing = true;
-      else if (outcome !== "ok") throw new Error("outcome");
-    } catch {
+    } catch (e) {
+      // Never the error text: it can carry the install's own message.
+      cat = e instanceof Stall ? "timeout" : "throw";
+    }
+    if (cat !== "ok" && cat !== "scriptNotFound") {
       const after = await db
         .prepare(REVOKE_RETRY_SQL)
         .bind(id, REVOKE_MAX_ATTEMPTS)
         .first<{ directory_revoke: unknown }>();
       if (after === null) return;
       const failed = after.directory_revoke === "failed";
-      console.warn(`directory-revoke ${failed ? "failed" : "retry"}`, id);
+      console.warn(`directory-revoke ${failed ? "failed" : "retry"}`, id, cat);
       return;
     }
+    const missing = cat === "scriptNotFound";
     if (missing) return unsupported();
     await db.prepare(REVOKE_DONE_SQL).bind(id, now).run();
     console.log("directory-revoke done", id);

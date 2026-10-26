@@ -24,6 +24,7 @@ import scheduler, {
   REVOKE_JOB,
   REVOKE_MAX_ATTEMPTS,
   REVOKE_SQL,
+  revokeCategory,
   revokeTick,
 } from "../src/index.js";
 
@@ -101,7 +102,8 @@ type Behavior =
   | "missing"
   | "missingThrows"
   | "nonOk"
-  | "undefined";
+  | "okObject"
+  | "weird";
 function fakes(
   behave: (script: string) => Behavior = () => "ok",
   onCall?: (script: string) => Promise<void>,
@@ -119,7 +121,9 @@ function fakes(
             await onCall?.(script);
             if (b === "missing") return { outcome: "scriptNotFound" };
             if (b === "nonOk") return { outcome: "exception" };
-            if (b === "undefined") return undefined;
+            if (b === "okObject") return { outcome: "ok" };
+            if (b === "weird")
+              return { outcome: "exception owner@customer.test" };
             if (b === "missingThrows")
               throw new Error(
                 `Worker not found: ${script} owner@customer.test`,
@@ -127,7 +131,9 @@ function fakes(
             if (b === "throw")
               throw new Error("D1_ERROR owner@customer.test SECRET=x");
             if (b === "hang") await new Promise(() => {});
-            return { outcome: "ok" };
+            // What a dispatch namespace really returns for a handler that
+            // succeeded (measured on staging, ScheduledFetcher).
+            return undefined;
           },
         };
       },
@@ -149,7 +155,7 @@ function captureLogs() {
 }
 
 const REVOKE_LINE =
-  /^(?:directory-revoke (?:done|unsupported|retry|failed|db_error) i[a-z0-9]{11}|directory-revoke invalid ids=\d+|directory-revoke aborted exception|owner-email purged count=\d+)$/;
+  /^(?:directory-revoke (?:done|unsupported|db_error) i[a-z0-9]{11}|directory-revoke (?:retry|failed) i[a-z0-9]{11} (?:exception|exceededCpu|exceededMemory|canceled|unknown|throw|timeout)|directory-revoke invalid ids=\d+|directory-revoke aborted exception|owner-email purged count=\d+)$/;
 
 const controller = (cron: string, scheduledTime = NOW) =>
   ({ scheduledTime, cron, noRetry() {} }) as ScheduledController;
@@ -230,7 +236,7 @@ describe("the */2 revoke tick", () => {
         `directory-revoke done ${idOf(0)}`,
         `directory-revoke unsupported ${idOf(1)}`,
         `directory-revoke unsupported ${idOf(2)}`,
-        `directory-revoke retry ${idOf(3)}`,
+        `directory-revoke retry ${idOf(3)} throw`,
         `directory-revoke unsupported ${idOf(4)}`,
       ].sort(),
     );
@@ -240,13 +246,13 @@ describe("the */2 revoke tick", () => {
     );
   });
 
-  it("L1: a thrown Worker not found is an attempt, never unsupported; a non-ok or empty result is too", async () => {
+  it("L1: a thrown Worker not found is an attempt, never unsupported; a non-ok or unknown result is too", async () => {
     await seed([{ id: idOf(0) }, { id: idOf(1) }, { id: idOf(2) }]);
-    captureLogs();
+    const lines = captureLogs();
     const by: Record<string, Behavior> = {
       [`oa-s-${idOf(0)}`]: "missingThrows",
       [`oa-s-${idOf(1)}`]: "nonOk",
-      [`oa-s-${idOf(2)}`]: "undefined",
+      [`oa-s-${idOf(2)}`]: "weird",
     };
     const f = fakes((s) => by[s] ?? "ok");
     await revokeTick(f.env, NOW);
@@ -255,6 +261,52 @@ describe("the */2 revoke tick", () => {
         directory_revoke: "pending",
         directory_revoke_attempts: 1,
       });
+    expect([...lines].sort()).toEqual(
+      [
+        `directory-revoke retry ${idOf(0)} throw`,
+        `directory-revoke retry ${idOf(1)} exception`,
+        `directory-revoke retry ${idOf(2)} unknown`,
+      ].sort(),
+    );
+    for (const l of lines) expect(l).toMatch(REVOKE_LINE);
+    expect(lines.join("\n")).not.toMatch(/@|Worker not found|oa-s-/);
+  });
+
+  it("a resolve to undefined (what a dispatch namespace returns) and outcome ok are both done", async () => {
+    await seed([{ id: idOf(0) }, { id: idOf(1) }]);
+    const by: Record<string, Behavior> = { [`oa-s-${idOf(1)}`]: "okObject" };
+    await revokeTick(fakes((s) => by[s] ?? "ok").env, NOW);
+    for (const k of [0, 1])
+      expect(await rowOf(idOf(k))).toMatchObject({
+        directory_revoke: "done",
+        directory_revoked_at: NOW,
+        directory_revoke_attempts: 0,
+      });
+  });
+
+  it("revokeCategory keeps only the fixed vocabulary; anything else is unknown", () => {
+    expect(revokeCategory(undefined)).toBe("ok");
+    for (const o of [
+      "ok",
+      "scriptNotFound",
+      "exception",
+      "exceededCpu",
+      "exceededMemory",
+      "canceled",
+    ])
+      expect(revokeCategory({ outcome: o })).toBe(o);
+    for (const r of [
+      null,
+      "ok",
+      5,
+      {},
+      { outcome: 5 },
+      { outcome: "OK" },
+      { outcome: "exception owner@customer.test" },
+      { outcome: "timeout" },
+      { outcome: "throw" },
+    ])
+      expect(revokeCategory(r)).toBe("unknown");
   });
 
   it("M1b: done never predates this attempt's start", async () => {
