@@ -155,7 +155,7 @@ const NOW = Date.UTC(2026, 9, 24, 3, 17);
 
 /** The whole log vocabulary: install ids, fixed categories and counts. */
 const LOG_LINE =
-  /^(?:nightly failed (?:timeout|not_found|canceled|exception) i[a-z0-9]{11}|nightly skipped (?:state|deadline|capped|recheck|db_error) i[a-z0-9]{11}|nightly db_error i[a-z0-9]{11}|nightly leaked i[a-z0-9]{11}|nightly summary active=\d+ ok=\d+ failed=\d+ skipped=\d+ capped=\d+ db_errors=\d+ leaked=\d+|nightly invalid ids=\d+|nightly scale active=\d+ over 300|nightly aborted (?:env|exception)|email-quota skipped (?:no_token|config)|email-quota failed (?:http|graphql|timeout|shape)|email-quota (?:ok|warn) sent=\d+ limit=\d+ pct=\d+|directory-revoke (?:done|unsupported|retry|failed|db_error) i[a-z0-9]{11}|directory-revoke invalid ids=\d+|directory-revoke aborted exception|owner-email purged count=\d+|owner-email failed db)$/;
+  /^(?:nightly failed (?:timeout|not_found|canceled|exception) i[a-z0-9]{11}|nightly skipped (?:state|deadline|capped|recheck|db_error) i[a-z0-9]{11}|nightly db_error i[a-z0-9]{11}|nightly leaked i[a-z0-9]{11}|nightly summary active=\d+ ok=\d+ failed=\d+ skipped=\d+ capped=\d+ db_errors=\d+ leaked=\d+|nightly invalid ids=\d+|nightly scale active=\d+ over 300|nightly aborted (?:env|exception)|email-quota skipped (?:no_token|config)|email-quota failed (?:http|graphql|timeout|shape)|email-quota (?:ok|warn) sent=\d+ limit=\d+ pct=\d+|directory-revoke (?:done|unsupported|db_error) i[a-z0-9]{11}|directory-revoke (?:retry|failed) i[a-z0-9]{11} (?:exception|exceededCpu|exceededMemory|canceled|unknown|throw|timeout)|directory-revoke invalid ids=\d+|directory-revoke aborted exception|owner-email purged count=\d+|owner-email failed db)$/;
 
 const DAY = 86_400_000;
 const GOLDEN = 0.3819660112501051;
