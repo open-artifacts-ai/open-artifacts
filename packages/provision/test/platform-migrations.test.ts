@@ -44,6 +44,8 @@ describe("0005_directory_revoke", () => {
     expect(by.owner_email?.notnull).toBe(1);
     expect(by.directory_revoke?.notnull).toBe(0);
     expect(by.directory_revoked_at?.notnull).toBe(0);
+    // H-DV fix 2 M1b: each delete attempt's start, on D1's clock.
+    expect(by.directory_revoke_requested_at?.notnull).toBe(0);
     expect(by.directory_revoke_attempts).toMatchObject({
       notnull: 1,
       dflt_value: "0",

@@ -1059,7 +1059,7 @@ describe("H-DV: delete waits for the directory revoke", () => {
     w.fake.revoker = (db, rid) => {
       if (++polls === 6)
         db.prepare(
-          "UPDATE installs SET directory_revoke = 'done' WHERE id = ?",
+          "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = directory_revoke_requested_at WHERE id = ?",
         ).run(rid);
     };
     expect(await main(DEL(id), w.deps)).toBe(0);

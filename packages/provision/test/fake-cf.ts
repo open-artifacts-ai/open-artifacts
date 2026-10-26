@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 const API = "https://api.cloudflare.com/client/v4";
 /** provision's poll of one install's revoke state (PlatformDb.revokeState). */
 const REVOKE_POLL_SQL_PREFIX =
-  "SELECT directory_revoke, directory_revoke_attempts, directory_revoked_at FROM installs WHERE id";
+  "SELECT directory_revoke, directory_revoke_attempts, directory_revoked_at, directory_revoke_requested_at FROM installs WHERE id";
 
 export interface LogEntry {
   method: string;
@@ -157,7 +157,7 @@ export class FakeCf {
    */
   revoker: ((db: DatabaseSync, id: string) => void) | null = (db, id) => {
     db.prepare(
-      "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = 1 WHERE id = ? AND state = 'deleting' AND directory_revoke = 'pending'",
+      "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = directory_revoke_requested_at WHERE id = ? AND state = 'deleting' AND directory_revoke = 'pending'",
     ).run(id);
   };
   /** The next N widget creates store the widget, then answer 500 (a lost reply). */
