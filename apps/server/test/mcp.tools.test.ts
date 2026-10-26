@@ -285,6 +285,50 @@ describe("MCP tools over PAT", () => {
     expect(textOf(gone)).toMatch(/^not_found/);
   });
 
+  // #681 C: making a db artifact public with anonymous writes off warns
+  // (naming allowAnonymousWrites) but still applies.
+  it.each([
+    ["public, db, anonymous writes off", "public", true, false, true],
+    ["public, db, anonymous writes on", "public", true, true, false],
+    ["public, no db", "public", false, false, false],
+    ["private, db, anonymous writes off", "private", true, false, false],
+  ] as const)("set_visibility warning: %s", async (_, visibility, db, allowAnonymousWrites, warns) => {
+    const pub = sc<{ id: string }>(
+      await tool(client, "publish_artifact", {
+        title: `warn ${tag}`,
+        format: "html",
+        content: "<p>hi</p>",
+        capabilities: { db },
+        allowAnonymousWrites,
+      }),
+    );
+    const r = await tool(client, "set_visibility", { id: pub.id, visibility });
+    const out = sc<{ visibility: string; warning?: string }>(r);
+    expect(out.visibility).toBe(visibility);
+    if (warns) {
+      expect(out.warning).toMatch(/allowAnonymousWrites/);
+      expect(out.warning).toMatch(/anon_writes_disabled/);
+      expect(out.warning).not.toMatch(/—/);
+      expect(textOf(r)).toContain(out.warning as string);
+    } else expect(out.warning).toBeUndefined();
+  });
+
+  // #681 B: say up front that anonymous writes fail on a public db artifact.
+  it("instructions and publish/visibility descriptions name anon_writes_disabled", () => {
+    const text = (n: string) =>
+      TOOL_DEFS.find((t) => t.name === n)?.description ?? "";
+    for (const s of [
+      INSTRUCTIONS("free"),
+      text("publish_artifact"),
+      text("set_visibility"),
+    ]) {
+      expect(s).toMatch(
+        /anon_writes_disabled unless allowAnonymousWrites is true/,
+      );
+      expect(s).not.toMatch(/—/);
+    }
+  });
+
   it("no tool result or description carries a raw view URL (#292)", async () => {
     const out: unknown[] = [];
     const run = async (name: string, args: Record<string, unknown>) => {

@@ -216,7 +216,8 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       const a = await patch(env, user, input.id, {
         visibility: input.visibility,
       });
-      return ok(`${a.id} is now ${a.visibility}: ${viewUrl(env, a.id)}`, a);
+      const line = `${a.id} is now ${a.visibility}: ${viewUrl(env, a.id)}`;
+      return ok(a.warning ? `${line} Warning: ${a.warning}` : line, a);
     }),
   );
 

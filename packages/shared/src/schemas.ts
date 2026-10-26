@@ -214,6 +214,16 @@ export const ArtifactSummarySchema = z.object({
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
 
+/**
+ * PATCH R.artifact / set_visibility result. `warning`: set when the artifact
+ * is made public with db declared and allowAnonymousWrites off (#681); the
+ * change still applies.
+ */
+export const ArtifactPatchResultSchema = ArtifactSummarySchema.extend({
+  warning: z.string().optional(),
+});
+export type ArtifactPatchResult = z.infer<typeof ArtifactPatchResultSchema>;
+
 export const VersionInfoSchema = z.object({
   version: z.number().int(),
   message: z.string().nullable(),

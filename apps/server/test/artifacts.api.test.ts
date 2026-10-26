@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { normalizeEmail } from "@oa/auth-core";
 import {
+  ArtifactPatchResultSchema,
   type ArtifactSummary,
   ArtifactSummarySchema,
   type Member,
@@ -249,6 +250,31 @@ describe("summary, patch, delete", () => {
       body: { title: "nope" },
     });
     expect(none.status).toBe(404);
+  });
+
+  // #681 C: the PATCH route shares set_visibility's service and its warning.
+  it.each([
+    ["public, db, anonymous writes off", "public", true, false, true],
+    ["public, db, anonymous writes on", "public", true, true, false],
+    ["public, no db", "public", false, false, false],
+    ["private, db, anonymous writes off", "private", true, false, false],
+  ] as const)("PATCH visibility warning: %s", async (_, visibility, db, allowAnonymousWrites, warns) => {
+    const a = await publish(env, owner.member, {
+      title: "warn",
+      format: "html",
+      content: "<p>x</p>",
+      capabilities: { db, viewer: false, storage: false },
+      allowAnonymousWrites,
+    } as never);
+    const r = await api(app, R.artifact(a.id), owner.cookie, {
+      method: "PATCH",
+      body: { visibility },
+    });
+    expect(r.status).toBe(200);
+    const body = ArtifactPatchResultSchema.parse(await r.json());
+    expect(body.visibility).toBe(visibility);
+    if (warns) expect(body.warning).toMatch(/allowAnonymousWrites/);
+    else expect(body.warning).toBeUndefined();
   });
 
   it("editor delete → 404; owner delete hides it; includeDeleted shows it; undelete restores", async () => {

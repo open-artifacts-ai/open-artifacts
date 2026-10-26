@@ -3,6 +3,7 @@ import {
   type AccessLevel,
   type AgentRef,
   type ArtifactPatch,
+  type ArtifactPatchResult,
   type ArtifactSummary,
   artifactCan,
   type Format,
@@ -1114,14 +1115,29 @@ function visibilityAudit(
   );
 }
 
-/** title/description: editor+; visibility/capabilities/allowAnonymousWrites: owner only. */
+/** #681: making a db artifact public while anonymous writes stay off. */
+export const ANON_WRITES_WARNING =
+  "Anonymous visitors can read this artifact, but their writes fail with anon_writes_disabled because allowAnonymousWrites is false. Publish a new version with allowAnonymousWrites: true if they should write.";
+
+/** `warning` when `a` is public, declares db and keeps anonymous writes off. */
+export const withAnonWritesWarning = (
+  a: ArtifactSummary,
+): ArtifactPatchResult =>
+  a.visibility === "public" && a.capabilities.db && !a.allowAnonymousWrites
+    ? { ...a, warning: ANON_WRITES_WARNING }
+    : a;
+
+/**
+ * title/description: editor+; visibility/capabilities/allowAnonymousWrites:
+ * owner only. Setting visibility "public" may add `warning` (#681).
+ */
 export async function patch(
   env: Env,
   user: Member,
   id: string,
   p: ArtifactPatch,
   ctx?: Ctx,
-): Promise<ArtifactSummary> {
+): Promise<ArtifactPatchResult> {
   const who = asUser(user);
   const { level, artifact: a } = await authorize(env, who, id, "publish");
   const sharing =
@@ -1178,7 +1194,8 @@ export async function patch(
     p.capabilities !== undefined
   )
     await closeRuntimeSockets(env, [id], "access changed", ctx);
-  return getSummary(env, asUser(user), id);
+  const out = await getSummary(env, asUser(user), id);
+  return p.visibility === "public" ? withAnonWritesWarning(out) : out;
 }
 
 /** Owner only (others 404). Sets deleted_at and drops the search row. */

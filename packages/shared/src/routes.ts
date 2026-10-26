@@ -12,7 +12,7 @@ export const R = {
   me: "/api/v1/me",
   /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. */
   artifacts: A,
-  /** GET -> ArtifactSummary; PATCH ArtifactPatch -> ArtifactSummary; DELETE soft-delete -> 204 */
+  /** GET -> ArtifactSummary; PATCH ArtifactPatch -> ArtifactPatchResult; DELETE soft-delete -> 204 */
   artifact: (id: string) => `${A}/${seg(id)}`,
   /** POST -> ArtifactSummary */
   restoreDeleted: (id: string) => `${A}/${seg(id)}/undelete`,
