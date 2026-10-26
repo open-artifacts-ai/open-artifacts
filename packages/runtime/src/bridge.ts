@@ -14,6 +14,9 @@ export const CALL_TIMEOUT_MS = 15_000;
 export const HANDSHAKE_MS = 3_000;
 export const RAW_VIEW_MESSAGE =
   "Open this artifact in Open Artifacts to use live data";
+/** console.warn text, once per load, on the first anon_writes_disabled (#681). */
+export const ANON_WRITES_WARN =
+  "this artifact doesn't allow anonymous writes; publish it with allowAnonymousWrites: true to let anonymous visitors write";
 
 /** API error codes, plus `no_shell`: no viewer shell to reach the server. */
 export type RuntimeErrorCode = ErrorCode | "no_shell";
@@ -84,6 +87,8 @@ export function createBridge(loadSchemas: () => Promise<Schemas>): Bridge {
   const nonce = shellNonce();
   /** Set by the first shell message; a late shell is still accepted. */
   let shell = false;
+  /** The first anon_writes_disabled refusal has been logged. */
+  let anonWarned = false;
   const noShell = () => new RuntimeError("no_shell", RAW_VIEW_MESSAGE);
   const pending = new Map<string, Pending>();
   const listeners = new Set<Listener>();
@@ -120,7 +125,14 @@ export function createBridge(loadSchemas: () => Promise<Schemas>): Bridge {
     }
     const p = settle(m.id);
     if (!p) return;
-    if (!m.ok) return p.reject(new RuntimeError(m.error.code, m.error.message));
+    if (!m.ok) {
+      // #681: tell the page's author once per load, not on every refusal.
+      if (m.error.code === "anon_writes_disabled" && !anonWarned) {
+        anonWarned = true;
+        console.warn(`openArtifacts: ${ANON_WRITES_WARN}`);
+      }
+      return p.reject(new RuntimeError(m.error.code, m.error.message));
+    }
     const r = s.RUNTIME_RESULTS[p.method].safeParse(m.value);
     if (r.success) p.resolve(r.data);
     else p.reject(new RuntimeError("internal", "invalid response from shell"));

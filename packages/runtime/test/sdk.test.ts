@@ -197,6 +197,40 @@ describe("bridge", () => {
     });
   });
 
+  // #681 E: one console.warn per page load on the first anon_writes_disabled.
+  it("warns once on anon_writes_disabled, never for other errors", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const oa = start();
+      await flush();
+      const fail = async (code: string) => {
+        const p = oa.db.collection("c").set("a", 1);
+        await flush();
+        const c = calls("db.set").at(-1);
+        fromShell({
+          oa: 1,
+          type: "result",
+          id: c?.id,
+          ok: false,
+          error: { code, message: "x" },
+        });
+        await expect(p).rejects.toMatchObject({ code });
+      };
+      await fail("rate_limited");
+      await fail("capability_denied");
+      await fail("unauthorized");
+      expect(warn).not.toHaveBeenCalled();
+      await fail("anon_writes_disabled");
+      await fail("anon_writes_disabled");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.join(" "))).toContain(
+        "this artifact doesn't allow anonymous writes",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("rejects a call with no reply after 15 s", async () => {
     vi.useFakeTimers();
     const oa = start();
