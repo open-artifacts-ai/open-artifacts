@@ -51,6 +51,62 @@
     {
       "file": "live/guard.test.ts",
       "name": "credentials (harness smoke) > A's admin PAT at B: the host's own marker artifact"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: OIDC state and nonce > A's OIDC state and state cookie (with its nonce) replayed at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: OIDC state and nonce > A's OIDC state with B's own state cookie at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: ID tokens > an ID token with hd of A at B's callback: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: ID tokens > an ID token with a B email domain but hd of A: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: ID tokens > an ID token with no hd and a B email: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: ID tokens > an ID token minted for A's client (aud) replayed at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: broker > a tampered install id at the broker callback is refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: broker > A's broker assertion at B is refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: broker > B's broker assertion at A is refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code issued by A, entered at B with B's pending cookie: refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code issued by A, entered at B with A's pending cookie: refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code requested at B for an address not invited to B: no code sent, generic response"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: guests > a guest of A invited to B reads on B but can't publish via MCP or the data API there"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: guests > the guest's B session is refused at A"
     }
   ]
 }

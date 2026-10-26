@@ -87,32 +87,42 @@ export async function expectRefused(res: Response, b: Target): Promise<void> {
 export const defaultOk = (r: Response) =>
   (r.status >= 200 && r.status < 300) || r.status === 101;
 
-export interface CrossCheck {
+export interface CrossCheck<C = Cred> {
   a: Target;
   b: Target;
-  credA: Cred;
-  credB: Cred;
+  credA: C;
+  credB: C;
   ok?: (r: Response) => boolean;
+  /** Judges the A-at-B leg (default expectRefused). */
+  refused?: (res: Response, b: Target) => Promise<void>;
+  /**
+   * Single-use credentials (a one-time code, a Google code): refuse A's at B
+   * before A's own success, so the success proves the refused value was still
+   * valid. Order: B at B, A at B (refused), A at A.
+   */
+  refuseFirst?: boolean;
 }
 
 /**
  * B's own credential succeeds at B, A's succeeds at A, then A's is refused at
  * B. A broken B (refusing everything) fails the first step, never passes.
  */
-export async function crossCheck(
-  req: (cred: Cred, host: Target) => Request,
-  o: CrossCheck,
+export async function crossCheck<C = Cred>(
+  req: (cred: C, host: Target) => Request,
+  o: CrossCheck<C>,
 ): Promise<void> {
   const ok = o.ok ?? defaultOk;
+  const refused = o.refused ?? expectRefused;
   const rb = await send(req(o.credB, o.b));
   const tb = await readBody(rb);
   if (!ok(rb))
     throw new Error(`B's own credential failed at B (${describeRes(rb, tb)})`);
+  if (o.refuseFirst) await refused(await send(req(o.credA, o.b)), o.b);
   const ra = await send(req(o.credA, o.a));
   const ta = await readBody(ra);
   if (!ok(ra))
     throw new Error(`A's credential failed at A (${describeRes(ra, ta)})`);
-  await expectRefused(await send(req(o.credA, o.b)), o.b);
+  if (!o.refuseFirst) await refused(await send(req(o.credA, o.b)), o.b);
 }
 
 export interface Side {
