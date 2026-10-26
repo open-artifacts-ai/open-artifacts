@@ -103,20 +103,24 @@ Built as `tests/redline/live/surfaces.test.ts`, with the case list derived in `s
 - Throwaways are deleted, and every cleanup status is checked. No API purges the trash; the nightly `purgeDeleted` hard-deletes it after `LIMITS.softDeleteDays`, so the trash stays bounded.
 - Follow-up: `expectRefused` accepts a 403 whose body holds B data other than the markers (inherited from Task 2; unchanged here).
 
-**Dropped (2026-10-26):** each of these has no possible success leg cross-install.
-- **Owner-only** (hooks never mint the owner, and no owner credential is stored in CI): `GET /api/v1/directory/connect`; `POST /api/v1/directory/confirm`, `/cancel`, `/sync`, `/held/:groupId/confirm`, `/disconnect`; `DELETE /api/v1/directory`.
-  - Covered by `apps/server/test/authz.surface-matrix.test.ts` "instance routes" (orgOwner allowed, everyone else refused), plus R4's "A's admin PAT and session cookie at B".
-  - `/disconnect` and `DELETE /api/v1/directory` are also covered by the matrix's "directory disconnect: cookie sessions only".
-- **Nobody allowed** (personal-space rule): the six `(personal)` space probes (patch {}, delete, member put/delete, mapping put/delete).
-  - Covered by the matrix's "space writes" and "attack seeds: another member's personal space", plus R4.
-- **anon id**: anonymous writes only, and no fixture opts in.
-  - Covered by the matrix's "artifact surfaces", plus R4.
-- **content /p/**: credential-free (public artifacts to anyone), so no tenant credential crosses.
-  - Covered by the matrix's "artifact surfaces" (public.link), plus R4's "A's signed content URL at B's content host".
-- **Off on every hosted install**: `GET /api/v1/usage`. Its `offWhen: usage_off` flag is in the FEATURES that provision always sets, so it answers 404 for everyone.
-  - Covered by `apps/server/test/usage.test.ts` "usage_off" and the matrix's "instance routes", plus R4.
-- **Needs a connected Google directory**, which the red-line installs don't have: `GET /api/v1/directory/callback` (404 without the connector), and the two mutating space mapping deletes ("mapping delete viewer", "mapping delete a manager mapping"; only a connected directory creates a mapping row).
-  - Covered by the matrix's "instance routes" and "space writes" (its fixture connects a directory), plus R4.
+**Dropped (2026-10-26, #655):** 19 surfaces have no possible success leg cross-install, so they are dropped. Each is in `DROPPED` (`tests/redline/src/surfaces.ts`) with its covering tests. The coverage check holds that list to the drop rules, and `citationGaps` checks that every cited file, describe and test exists. Short names below: M = `apps/server/test/authz.surface-matrix.test.ts`; F = `apps/server/test/redline.foreign-credential.test.ts` ("red line: another install's credential on the dropped directory surfaces").
+- **Owner-only (7).** Hooks never mint the owner, and no owner credential is stored in CI.
+  - Routes: `GET /api/v1/directory/connect`; `POST /api/v1/directory/confirm`, `/cancel`, `/sync`, `/held/:groupId/confirm`, `/disconnect`; `DELETE /api/v1/directory`.
+  - Covered by M "instance routes". `/disconnect` and `DELETE /api/v1/directory` are also covered by M "directory disconnect: cookie sessions only, plus the platform system job".
+- **Nobody allowed (6).** The personal-space rule allows no caller.
+  - The `(personal)` space probes: patch {}, delete, member put, member delete, mapping put, mapping delete.
+  - Covered by M "space writes (the service rules behind { user })" and M "attack seeds: another member's personal space".
+- **anon id (1).** Anonymous writes only, and no fixture opts in.
+  - Covered by M "artifact surfaces (sync stale 8 days)".
+- **content /p/ (1).** Credential-free (public artifacts to anyone), so no tenant credential crosses.
+  - Covered by M "artifact surfaces (sync stale 8 days)".
+- **Off on hosted (1): `GET /api/v1/usage`.** Its `offWhen: usage_off` flag is in the FEATURES provision always sets, so it answers 404 for everyone. It stays dropped while hosted sets `usage_off`.
+  - Covered by `apps/server/test/usage.test.ts` "usage_off → GET /api/v1/usage 404 for the owner", and M "instance routes".
+- **Needs a connected Google directory (3).** The red-line installs have none.
+  - `GET /api/v1/directory/callback`, which answers 404 without the connector. Covered by M "instance routes", and F "GET directory/callback: another install's session or PAT is refused with no audit row; this install's owner reaches the handler".
+  - The mutating mapping deletes, "mapping delete viewer" and "mapping delete a manager mapping". Only a connected directory creates a mapping row. Covered by M "space writes (the service rules behind { user })", and F "DELETE a space viewer mapping: …" and "DELETE a space manager mapping: …".
+  - #655 tracks running these on staging tenants with a connected directory.
+- F models another install's credential two ways: a session for this install's own user id signed with another `SESSION_SECRET`, and a well-formed PAT this install never issued. Each F case first proves this install's own credential succeeds on the same request.
 
 ### Task 4: Credential cases (available now)
 

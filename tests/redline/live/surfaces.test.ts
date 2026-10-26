@@ -6,11 +6,14 @@ import {
   type Side,
 } from "../src/refused.ts";
 import {
+  carries,
+  citationGaps,
   cleanup,
   coverageGaps,
   dispose,
   probeCases,
   probeCred,
+  readRepoFile,
   seedWorld,
   snapshot,
   sweep,
@@ -67,6 +70,8 @@ const side = (t: Target): Side => (t === T.a ? A : B);
 describe("surface probes (cross-install)", () => {
   it("every ROUTE_POLICY route, MCP tool and content route has a case", () => {
     expect(coverageGaps()).toEqual([]);
+    // Every drop's covering tests exist (file, describe and test names).
+    expect(citationGaps(readRepoFile)).toEqual([]);
   });
 
   for (const c of probeCases())
@@ -76,6 +81,7 @@ describe("surface probes (cross-install)", () => {
         b: T.b,
         credA: probeCred(A, c.variant),
         credB: probeCred(B, c.variant),
+        carries,
       };
       if (c.write) {
         const { fresh, run } = c.write;

@@ -780,5 +780,8 @@
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > space mapping put manager (ceiling) [pat]"
     }
+  ],
+  "notes": [
+    "live/surfaces.test.ts drops GET /api/v1/usage (org GET /api/v1/usage) while every hosted install sets FEATURES usage_off; DROPPED and EXCLUDED_ROUTES in src/surfaces.ts record it (P5 plan Task 3b, #655)."
   ]
 }

@@ -130,19 +130,21 @@ export interface CrossProbe<C> {
   b: Target;
   credA: C;
   credB: C;
+  /** True when `req` carries `cred` (its cookie or bearer token). */
+  carries: (req: Request, cred: C) => boolean;
 }
 
-/** True when at least one request went to B's app or content origin. */
-const reachedB = (urls: readonly string[], b: Target) => {
-  const own = new Set([new URL(b.app).origin, new URL(b.content).origin]);
-  return urls.some((u) => {
+/** True when a request carrying A's credential went to B's app or content origin. */
+function reachedB<C>(reqs: readonly Request[], o: CrossProbe<C>): boolean {
+  const own = new Set([new URL(o.b.app).origin, new URL(o.b.content).origin]);
+  return reqs.some((r) => {
     try {
-      return own.has(new URL(u).origin);
+      return own.has(new URL(r.url).origin) && o.carries(r, o.credA);
     } catch {
       return false;
     }
   });
-};
+}
 
 const NULL_BODY = new Set([101, 103, 204, 205, 304]);
 const digest = (s: string) =>
@@ -152,13 +154,14 @@ const digest = (s: string) =>
 async function leg(
   what: string,
   run: (fetch: ProbeFetch) => Promise<Verdict>,
-): Promise<{ verdict: Verdict; seen: Response[]; urls: string[] }> {
+): Promise<{ verdict: Verdict; seen: Response[]; reqs: Request[] }> {
   const seen: Response[] = [];
-  const urls: string[] = [];
+  const reqs: Request[] = [];
   // Buffered, not clone(): a probe that cancels its body would wait on the
   // unread tee branch forever.
   const f: ProbeFetch = async (req) => {
-    urls.push(req.url);
+    // URL and headers only: a clone would tee the body.
+    reqs.push(new Request(req.url, { headers: req.headers }));
     const r = await send(req);
     const buf = NULL_BODY.has(r.status) ? null : await r.arrayBuffer();
     const copy = () =>
@@ -171,7 +174,7 @@ async function leg(
     return copy();
   };
   try {
-    return { verdict: await run(f), seen, urls };
+    return { verdict: await run(f), seen, reqs };
   } catch (e) {
     // A probe error quotes the body: show its hash and the last status only.
     const last = seen.at(-1);
@@ -199,8 +202,10 @@ export async function crossProbe<C>(
   if (a.verdict !== "allow")
     throw new Error("A's credential failed at A (the probe said deny)");
   const x = await leg("A's credential at B", (f) => run(o.credA, o.b, f));
-  if (!reachedB(x.urls, o.b))
-    throw new NotRefused(`${o.b.name}: no request reached B`);
+  if (!reachedB(x.reqs, o))
+    throw new NotRefused(
+      `${o.b.name}: no request carrying A's credential reached B`,
+    );
   for (const r of x.seen) await expectRefused(r, o.b);
   if (x.verdict !== "deny")
     throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);
@@ -245,8 +250,10 @@ export async function crossWrite<C, X>(
     const xx = await fresh(o.b);
     const before = await o.snapshot(o.b, xx);
     const x = await leg("A's credential at B", (f) => run(o.credA, o.b, xx, f));
-    if (!reachedB(x.urls, o.b))
-      throw new NotRefused(`${o.b.name}: no request reached B`);
+    if (!reachedB(x.reqs, o))
+      throw new NotRefused(
+        `${o.b.name}: no request carrying A's credential reached B`,
+      );
     for (const r of x.seen) await expectRefused(r, o.b);
     if (x.verdict !== "deny")
       throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);

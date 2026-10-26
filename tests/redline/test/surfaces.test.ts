@@ -12,14 +12,18 @@ import {
   NotRefused,
   type ProbeFetch,
   registerMarker,
+  type Side,
   type Verdict,
 } from "../src/refused.ts";
 import { parseManifest } from "../src/report.ts";
 import {
+  citationGaps,
+  cleanup,
   coverageGaps,
   DROPPED,
   derive,
   HOSTED_FEATURES,
+  readRepoFile,
   viaTarget,
 } from "../src/surfaces.ts";
 import { loadTargets, type Target } from "../src/targets.ts";
@@ -208,6 +212,10 @@ async function pair(a: Fake, b: Fake) {
   });
 }
 
+/** The fakes' credentials are bearer tokens. */
+const bearer = (r: Request, c: string) =>
+  r.headers.get("authorization") === `Bearer ${c}`;
+
 /** A probe in Backend's shape: allow on 200, deny on 401/404, else throws (quoting the body). */
 const me = async (
   token: string,
@@ -232,7 +240,13 @@ describe("crossProbe", () => {
       await fake(install("rl-b-id", "tb")),
     );
     await expect(
-      crossProbe(me, { a: T.a, b: T.b, credA: "ta", credB: "tb" }),
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
     ).resolves.toBeUndefined();
   });
 
@@ -242,7 +256,13 @@ describe("crossProbe", () => {
       await fake(install("rl-b-id", "nothing")),
     );
     await expect(
-      crossProbe(me, { a: T.a, b: T.b, credA: "ta", credB: "tb" }),
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
     ).rejects.toThrow(/B's own credential failed at B/);
   });
 
@@ -252,7 +272,13 @@ describe("crossProbe", () => {
       await fake(install("rl-b-id", "tb")),
     );
     await expect(
-      crossProbe(me, { a: T.a, b: T.b, credA: "ta", credB: "tb" }),
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
     ).rejects.toThrow(/A's credential failed at A/);
   });
 
@@ -262,7 +288,13 @@ describe("crossProbe", () => {
       await fake(install("rl-b-id", "shared")),
     );
     await expect(
-      crossProbe(me, { a: T.a, b: T.b, credA: "shared", credB: "shared" }),
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "shared",
+        credB: "shared",
+        carries: bearer,
+      }),
     ).rejects.toThrow(NotRefused);
   });
 
@@ -274,7 +306,13 @@ describe("crossProbe", () => {
     );
     registerMarker(T.b, marker);
     await expect(
-      crossProbe(me, { a: T.a, b: T.b, credA: "ta", credB: "tb" }),
+      crossProbe(me, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
     ).rejects.toThrow(/seeded marker/);
   });
 
@@ -289,8 +327,33 @@ describe("crossProbe", () => {
         t === T.b && cred === "ta" ? ("deny" as Verdict) : v,
       );
     await expect(
-      crossProbe(run, { a: T.a, b: T.b, credA: "ta", credB: "tb" }),
-    ).rejects.toThrow(/no request reached B/);
+      crossProbe(run, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/no request carrying A's credential reached B/);
+  });
+
+  it("fails when B was reached only without A's credential", async () => {
+    const T = await pair(
+      await fake(install("rl-a-id", "ta")),
+      await fake(install("rl-b-id", "tb")),
+    );
+    // The cross leg asks B with no credential at all.
+    const run = (cred: string, t: Target, f: ProbeFetch) =>
+      t === T.b && cred === "ta" ? me("", t, f) : me(cred, t, f);
+    await expect(
+      crossProbe(run, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/no request carrying A's credential reached B/);
   });
 
   it("fails when no request reached B", async () => {
@@ -303,8 +366,14 @@ describe("crossProbe", () => {
         ? Promise.resolve<Verdict>("deny")
         : me(cred, t, f);
     await expect(
-      crossProbe(run, { a: T.a, b: T.b, credA: "ta", credB: "tb" }),
-    ).rejects.toThrow(/no request reached B/);
+      crossProbe(run, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
+    ).rejects.toThrow(/no request carrying A's credential reached B/);
   });
 
   it("a probe error shows status and hashes, never the body", async () => {
@@ -317,6 +386,7 @@ describe("crossProbe", () => {
       b: T.b,
       credA: "ta",
       credB: "nope",
+      carries: bearer,
     }).catch((e: Error) => e);
     expect(String(err)).toMatch(/status 500, body sha256:/);
     expect(String(err)).not.toContain("SECRET-BODY-TEXT");
@@ -337,7 +407,13 @@ describe("crossProbe", () => {
       return r.status === 200 ? "allow" : ("deny" as Verdict);
     };
     await expect(
-      crossProbe(run, { a: T.a, b: T.b, credA: "ta", credB: "tb" }),
+      crossProbe(run, {
+        a: T.a,
+        b: T.b,
+        credA: "ta",
+        credB: "tb",
+        carries: bearer,
+      }),
     ).resolves.toBeUndefined();
   });
 });
@@ -373,6 +449,7 @@ describe("crossWrite", () => {
       b: T.b,
       credA: "ta",
       credB: "tb",
+      carries: bearer,
       fresh: async (t: Target) => {
         const id = `x${n++}`;
         store.get(t.name)?.set(id, "orig");
@@ -436,6 +513,34 @@ describe("crossWrite", () => {
       /B's own credential failed at B/,
     );
     expect([...w.disposed].sort()).toEqual([...w.made].sort());
+  });
+});
+
+describe("citations and cleanup", () => {
+  it("every drop's covering tests exist (file, describe and test)", () => {
+    expect(citationGaps(readRepoFile)).toEqual([]);
+  });
+
+  it("flag a citation whose describe or test isn't in the file", () => {
+    const gaps = citationGaps(() => 'describe("something else")');
+    expect(gaps.length).toBeGreaterThan(0);
+    expect(gaps.some((g) => /no describe "instance routes"/.test(g))).toBe(
+      true,
+    );
+    expect(citationGaps(() => null).some((g) => /missing file/.test(g))).toBe(
+      true,
+    );
+  });
+
+  it("cleanup treats a 404 as a failure, not as clean", async () => {
+    const f = await fake((_q, res) => res.writeHead(404).end("{}"));
+    const side = {
+      t: { name: "rl-b", app: f.origin } as Target,
+      pat: { kind: "pat", token: "tb" },
+    } as unknown as Side;
+    await expect(cleanup(side, "/api/v1/artifacts/x")).rejects.toThrow(
+      /status 404/,
+    );
   });
 });
 
