@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.58.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.58.1...v0.58.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **release:** hosted bundles report the release version, not -dev+sha ([#660](https://github.com/open-artifacts-ai/open-artifacts/issues/660)) ([9e71e20](https://github.com/open-artifacts-ai/open-artifacts/commit/9e71e200d6e25c506acc923c50769869fabe524c))
+
 ## [0.58.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.58.0...v0.58.1) (2026-10-26)
 
 
