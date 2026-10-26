@@ -3462,3 +3462,167 @@ describe("H-DV: a purged owner email ('') is never used as an address", () => {
     expect(keep(await s.mk().delete(inst.id, inst.id)).state).toBe("deleted");
   });
 });
+
+describe("H-DV review fixes", () => {
+  const failNext = (s: S, match: (body: string) => boolean) => {
+    let armed = true;
+    return s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(u, init);
+      const body = req.method === "POST" ? await req.clone().text() : "";
+      if (armed && match(body)) {
+        armed = false;
+        return Response.json(
+          { success: false, errors: [{ code: 7500, message: "boom" }] },
+          { status: 400 },
+        );
+      }
+      return s.fake.fetch(u, init);
+    }) as typeof fetch);
+  };
+  const revokeOf = (s: S, id: string) =>
+    (
+      s
+        .db()
+        .prepare("SELECT directory_revoke FROM installs WHERE id = ?")
+        .get(id) as {
+        directory_revoke: string | null;
+      }
+    ).directory_revoke;
+
+  it("M1: the skip reason is audited before the row says skipped; a failed audit leaves no skipped row, and a plain rerun never tears down", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = null;
+    const p = s.mk({
+      cf: failNext(s, (b) => b.includes("delete.revoke_skipped")),
+    });
+    await fails(
+      p.delete(inst.id, inst.id, { skipDirectoryRevoke: "tenant closed" }),
+    );
+    expect(revokeOf(s, inst.id)).not.toBe("skipped");
+    expect(s.audit(inst.id)).not.toContain("delete.revoke_skipped");
+    // A rerun without the flag waits for the revoke: it never tears down.
+    const e = await fails(s.mk().delete(inst.id, inst.id));
+    expect(e.message).toMatch(/still pending/);
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("M1: a skipped row with no recorded reason refuses until the flag is given again", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'skipped' WHERE id = ?",
+      )
+      .run(inst.id);
+    const e = await fails(s.mk().delete(inst.id, inst.id));
+    expect(e.message).toMatch(
+      /skipped with no recorded reason; rerun with --skip-directory-revoke/,
+    );
+    expect(s.scriptOf(inst.id)).toBeDefined();
+    const r = keep(
+      await s
+        .mk()
+        .delete(inst.id, inst.id, { skipDirectoryRevoke: "tenant closed" }),
+    );
+    expect(r.state).toBe("deleted");
+    expect(s.audit(inst.id)).toContain("delete.revoke_skipped");
+  });
+
+  it("L6: skip from failed tears down; skip on an install already revoked prints no note and audits no reason", async () => {
+    const s = setup();
+    const a = keep(await s.p.create(input("alpha")));
+    s.fake.revoker = (db, id) => {
+      db.prepare(
+        "UPDATE installs SET directory_revoke = 'failed' WHERE id = ?",
+      ).run(id);
+    };
+    await fails(s.mk().delete(a.id, a.id));
+    const p = s.mk();
+    expect(
+      keep(
+        await p.delete(a.id, a.id, {
+          skipDirectoryRevoke: "grant revoked by hand",
+        }),
+      ).state,
+    ).toBe("deleted");
+    expect(p.notes).toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+    const b = keep(await s.mk().create(input("beta")));
+    s.fake.revoker = (db, id) => {
+      db.prepare(
+        "UPDATE installs SET directory_revoke = 'done' WHERE id = ?",
+      ).run(id);
+    };
+    // Phase 1 runs (pending), the revoke lands, so the skip is moot.
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'done' WHERE id = ?",
+      )
+      .run(b.id);
+    const q = s.mk();
+    expect(
+      keep(await q.delete(b.id, b.id, { skipDirectoryRevoke: "not needed" }))
+        .state,
+    ).toBe("deleted");
+    expect(q.notes).not.toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+    expect(s.audit(b.id)).not.toContain("delete.revoke_skipped");
+  });
+
+  it("L1: an unsupported revoke is audited and the operator is told the grant may stay live", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (db, id) => {
+      db.prepare(
+        "UPDATE installs SET directory_revoke = 'unsupported' WHERE id = ?",
+      ).run(id);
+    };
+    const p = s.mk();
+    expect(keep(await p.delete(inst.id, inst.id)).state).toBe("deleted");
+    expect(s.audit(inst.id)).toContain("delete.revoke_unsupported");
+    expect(p.notes.join("\n")).toMatch(
+      /directory revoke is unsupported .*the Google grant stays live/,
+    );
+  });
+
+  it("nit: teardown rechecks that the revoke is settled", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    // The poll sees done, then the row flips back before the teardown re-read.
+    let n = 0;
+    s.fake.revoker = (db, id) => {
+      if (++n === 1)
+        db.prepare(
+          "UPDATE installs SET directory_revoke = 'done' WHERE id = ?",
+        ).run(id);
+    };
+    const p = s.mk({
+      cf: s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+        const res = await s.fake.fetch(u, init);
+        const body = init?.body ? String(init.body) : "";
+        if (body.includes("SELECT directory_revoke"))
+          s.db()
+            .prepare(
+              "UPDATE installs SET directory_revoke = 'pending' WHERE id = ?",
+            )
+            .run(inst.id);
+        return res;
+      }) as typeof fetch),
+    });
+    const e = await fails(p.delete(inst.id, inst.id));
+    expect(e.message).toMatch(/no longer settled/);
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("L6: rollback on an install whose owner email is purged refuses before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    s.db()
+      .prepare("UPDATE installs SET owner_email = '' WHERE id = ?")
+      .run(inst.id);
+    const w = s.fake.writes().length;
+    const e = await fails(s.mk().rollback(inst.id));
+    expect(e.message).toMatch(/owner email is purged/);
+    expect(s.fake.writes().length).toBe(w);
+  });
+});
