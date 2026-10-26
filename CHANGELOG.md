@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.57.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.57.0...v0.57.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **server:** oa:directory-disconnect keeps state and rejects on a failed revoke ([#654](https://github.com/open-artifacts-ai/open-artifacts/issues/654)) ([d3c04ea](https://github.com/open-artifacts-ai/open-artifacts/commit/d3c04ea91ac692ded14104a912f1d52e6a24ffc8))
+
 ## [0.57.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.56.0...v0.57.0) (2026-10-26)
 
 
