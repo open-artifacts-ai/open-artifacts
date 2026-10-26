@@ -24,8 +24,12 @@ export const SYSTEM_JOB_PREFIX = "oa:";
 /**
  * Before a hosted install is deleted: the directory disconnect (revoke the
  * Google grant while this install still holds its keys, wipe, stop sync),
- * actor system. Idempotent; the mismatch tombstone rule applies. Rejects
- * when it could not run (a D1 error), so the platform can retry.
+ * actor system. Idempotent; the mismatch tombstone rule applies. Resolves
+ * when Google confirmed the revoke (or the grant was already invalid) and
+ * the state is wiped, or when nothing is connected. Rejects, keeping every
+ * key, when a revoke failed (transport error, 5xx, 429; audited
+ * revoke_failed), or when it could not run (a D1 error), so the platform
+ * retries.
  */
 export const DIRECTORY_DISCONNECT_CRON = "oa:directory-disconnect";
 
@@ -51,7 +55,7 @@ export async function scheduled(
     const s = await disconnectDirectory(
       env,
       { kind: "system", id: null },
-      { showProblem: false },
+      { showProblem: false, retry: true },
     );
     logInfo("system_job", { job: "directory-disconnect", state: s.state });
     return;

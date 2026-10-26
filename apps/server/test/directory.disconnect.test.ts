@@ -7,6 +7,7 @@
 // Synced memberships stay exactly as they were (frozen).
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { GOOGLE_REVOKE_URL } from "@oa/auth-core";
 import { newId, R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
@@ -265,6 +266,129 @@ describe.each([
         detail: { outcome: "disconnected", revoke: "revoked", notified: 1 },
       },
     ]);
+  });
+
+  it("the interactive disconnect (POST and DELETE) on a Google 5xx still wipes and audits revoke_failed", async () => {
+    g.setRevokeStatus(503);
+    expect((await call(e, "DELETE", { cookie: owner.cookie })).status).toBe(
+      204,
+    );
+    expect(await keys()).toEqual([]);
+    expect(await disconnects()).toEqual([
+      {
+        actor: owner.userId,
+        detail: {
+          outcome: "disconnected",
+          revoke: "revoke_failed",
+          notified: 1,
+        },
+      },
+    ]);
+  });
+
+  it.each([500, 503, 429])(
+    "the system job on a Google %i rejects and keeps every key, audited revoke_failed; a retry with Google OK wipes",
+    async (status) => {
+      const before = await keys();
+      const ep = await epoch();
+      g.setRevokeStatus(status);
+      await expect(
+        scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, e, ctx),
+      ).rejects.toThrow("revoke failed");
+      expect(await keys()).toEqual(before);
+      expect(await epoch()).toBe(ep);
+      expect(disconnectMails()).toEqual([]);
+      expect(await disconnects()).toEqual([
+        {
+          actor: null,
+          detail: { outcome: "revoke_failed", revoke: "revoke_failed" },
+        },
+      ]);
+      g.setRevokeStatus(200);
+      await scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, e, ctx);
+      expect(g.revoked).toEqual([`rt-${adminSub}`]);
+      expect(await keys()).toEqual([]);
+      expect((await disconnects())[1]).toEqual({
+        actor: null,
+        detail: { outcome: "disconnected", revoke: "revoked", notified: 1 },
+      });
+    },
+  );
+
+  it("the system job on a transport error (fetch throws) rejects and keeps every key", async () => {
+    const fake = vi.mocked(globalThis.fetch);
+    const impl = fake.getMockImplementation() as typeof fetch;
+    fake.mockImplementation(async (input, init) => {
+      const req = new Request(input, init);
+      if (req.url.includes("/revoke")) throw new TypeError("network down");
+      return impl(req);
+    });
+    const before = await keys();
+    await expect(
+      scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, e, ctx),
+    ).rejects.toThrow("revoke failed");
+    expect(await keys()).toEqual(before);
+    expect((await disconnects())[0]?.detail).toEqual({
+      outcome: "revoke_failed",
+      revoke: "revoke_failed",
+    });
+  });
+
+  it("the system job: Google's already-invalid answer (400 invalid_token) counts as revoked and wipes", async () => {
+    g.setRevokeStatus(400, "invalid_token");
+    await scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, e, ctx);
+    expect(await keys()).toEqual([]);
+    expect(await disconnects()).toEqual([
+      {
+        actor: null,
+        detail: { outcome: "disconnected", revoke: "revoked", notified: 1 },
+      },
+    ]);
+  });
+
+  it("the system job: any other 400 from Google is a failure", async () => {
+    g.setRevokeStatus(400, "invalid_request");
+    await expect(
+      scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, e, ctx),
+    ).rejects.toThrow("revoke failed");
+    expect(await keys()).toContain("refresh");
+  });
+
+  it("the system job with nothing connected resolves with no audit and no Google call", async () => {
+    await env.DB.prepare("delete from directory_state").run();
+    await scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, e, ctx);
+    expect(g.revoked).toEqual([]);
+    expect(await disconnects()).toEqual([]);
+  });
+
+  it("the system job: a pending grant on another account whose revoke fails is kept with the live one, and rejects", async () => {
+    const second = `g-second-${crypto.randomUUID()}`;
+    g.addUser({ id: second, primaryEmail: uniq("super2"), isAdmin: true });
+    await connect(e, owner.cookie, g, { sub: second }, { confirm: false });
+    const before = await keys();
+    expect(before).toEqual(expect.arrayContaining(["pending.refresh"]));
+    const fake = vi.mocked(globalThis.fetch);
+    const impl = fake.getMockImplementation() as typeof fetch;
+    // Google is unreachable for the pending token only (either transport).
+    fake.mockImplementation(async (input, init) => {
+      const req = new Request(input, init);
+      if (
+        req.url === GOOGLE_REVOKE_URL &&
+        new URLSearchParams(await req.clone().text()).get("token") ===
+          `rt-${second}`
+      )
+        throw new TypeError("down");
+      return impl(req);
+    });
+    await expect(
+      scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, e, ctx),
+    ).rejects.toThrow("revoke failed");
+    expect(await keys()).toEqual(before);
+    expect((await disconnects())[0]?.detail).toEqual({
+      outcome: "revoke_failed",
+      revoke: "revoked",
+      pendingRevoke: "revoke_failed",
+    });
   });
 
   it("no other way in: an unknown system job is refused, the nightly cron and an unauthenticated HTTP call do nothing", async () => {

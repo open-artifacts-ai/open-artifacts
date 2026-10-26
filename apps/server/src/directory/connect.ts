@@ -500,6 +500,14 @@ export async function cancelConnect(env: Env, user: Member): Promise<void> {
     });
 }
 
+/** The system job's disconnect kept the state: a revoke failed (retry). */
+export class DisconnectRetry extends Error {
+  constructor() {
+    super("directory disconnect: revoke failed, state kept");
+    this.name = "DisconnectRetry";
+  }
+}
+
 /** What a disconnect did with a token at Google (directory.disconnect detail). */
 type RevokeOutcome = "revoked" | "revoke_failed" | "none";
 
@@ -544,11 +552,15 @@ const revokeOutcome = async (
  * Memberships stay as they are (frozen): directory_members, sync
  * space_members, restricted_sync, org-group roles and bound identities are
  * not touched. Nothing connected: a no-op (no revoke, audit, reset or email).
+ * `retry` (the system job): a failed revoke (live or pending) keeps every
+ * key, audits directory.disconnect outcome revoke_failed and throws
+ * DisconnectRetry, so the platform retries. Google's "already invalid"
+ * answer counts as revoked (direct.ts, the broker), so a dead grant ends.
  */
 export async function disconnectDirectory(
   env: Env,
   actor: AuditActor,
-  o: { showProblem: boolean },
+  o: { showProblem: boolean; retry?: boolean },
 ): Promise<SyncStatus> {
   const [live, pend, sub, p] = await Promise.all([
     readBinding(env, "live"),
@@ -564,6 +576,20 @@ export async function disconnectDirectory(
   const pending = samePending
     ? "none"
     : await revokeOutcome(env, pend.sealed, "pending");
+  if (o.retry && (revoked === "revoke_failed" || pending === "revoke_failed")) {
+    // The grant may still be live at Google: keep everything for the retry.
+    await audit(env, "directory.disconnect", AUDIT_TARGET, actor, {
+      detail: {
+        outcome: "revoke_failed",
+        revoke: revoked,
+        ...(pending !== "none" ? { pendingRevoke: pending } : {}),
+      },
+    })
+      .run()
+      .catch((e) => logWarn("directory_revoke_audit", e));
+    logInfo("directory_disconnect", { revoke: revoked, pending, kept: true });
+    throw new DisconnectRetry();
+  }
   const [owners, tomb] = await Promise.all([
     ownerEmails(env),
     readSyncState(env),
