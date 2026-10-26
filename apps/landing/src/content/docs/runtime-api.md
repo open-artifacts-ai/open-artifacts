@@ -63,17 +63,17 @@ await votes.set(crypto.randomUUID(), { option: "Lisbon" });
 
 `viewer.get()` returns `{ email, name }`, or `null` for an anonymous viewer of a public artifact.
 
-`viewer.anonId()` returns an anonymous viewer's id on an artifact that allows anonymous writes, and `null` otherwise (signed-in viewers included).
+`viewer.anonId()` returns an anonymous viewer's id on an artifact anyone who can view may change (`dataWriters: "viewers"`), and `null` otherwise (signed-in viewers included).
 
 ### Anonymous ids
 
-On an artifact that allows anonymous writes, each anonymous browser gets an id from `viewer.anonId()`, so a game or poll can tell two anonymous players apart. Their documents carry `updatedBy: "anon:<anonId>"`. Only documents written before anonymous ids existed still say `"anon"`.
+On a public artifact that lets viewers change its data, each anonymous browser gets an id from `viewer.anonId()`, so a game or poll can tell two anonymous players apart. Their documents carry `updatedBy: "anon:<anonId>"`. Only documents written before anonymous ids existed still say `"anon"`.
 
 - It belongs to one browser on one device. Another browser or device gets a different id, and clearing site data resets it.
 - Each artifact sees a different id for the same browser, so ids can't be matched across artifacts.
 - It is not a person or an account, so don't treat it as proof of who someone is.
 - It is signed by the server: no one can forge someone else's id, but anyone can reset their own.
-- It is only issued on artifacts that allow anonymous writes. Signed-in viewers never get one.
+- It is only issued on artifacts with `dataWriters: "viewers"`. Signed-in viewers never get one.
 
 An `anonId` is a label, not a permission. Any anonymous viewer can still overwrite or delete any document, so use it to show who did what (for example, a seat claimed by `anonId`) and expect conflicts.
 
@@ -83,8 +83,9 @@ An `anonId` is a label, not a permission. Any anonymous viewer can still overwri
 
 ## Who can write
 
-- Signed-in viewers who can see the artifact can read and write.
-- Anonymous viewers of a public artifact can read. They can write only if the publisher turned on `allowAnonymousWrites`, and those writes are rate-limited per IP address.
+- Anyone who can view the artifact can read and change its live data.
+- Set `dataWriters: "editors"` to limit writes to its editors. Other viewers can still read, and their writes fail with `data_editors_only`.
+- Writes from anonymous viewers of a public artifact are rate-limited per IP address.
 
 ## Limits
 
