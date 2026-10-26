@@ -28,8 +28,14 @@ export const SYSTEM_JOB_PREFIX = "oa:";
  * when Google confirmed the revoke (or the grant was already invalid) and
  * the state is wiped, or when nothing is connected. Rejects, keeping every
  * key, when a revoke failed (transport error, 5xx, 429; audited
- * revoke_failed), or when it could not run (a D1 error), so the platform
- * retries.
+ * revoke_failed), when a consent landed after its reads (audited
+ * late_consent_kept), or when it could not run (a D1 error), so the
+ * platform retries.
+ * Order: run it before the install leaves DIRECTORY_REGISTRY. The broker
+ * answers an unknown install 401 for good, and the job then never resolves.
+ * Rejects on every retry (permanent, needs an operator): no transport
+ * configured, a token this install cannot decrypt, an install unknown to
+ * the broker.
  */
 export const DIRECTORY_DISCONNECT_CRON = "oa:directory-disconnect";
 

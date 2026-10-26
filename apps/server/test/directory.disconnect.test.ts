@@ -10,6 +10,7 @@ import { env } from "cloudflare:workers";
 import { GOOGLE_REVOKE_URL } from "@oa/auth-core";
 import { newId, R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearRegistryCache } from "../../../packages/broker-core/src/index.js";
 import { createPat } from "../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
@@ -502,6 +503,168 @@ describe("races and retries", () => {
       resetSync({ DIRECTORY_SYNC: fakeNs(5) }),
     ).resolves.toBeUndefined();
     expect(n).toBe(2);
+  });
+});
+
+describe("the system job: late consents and permanent failures", () => {
+  let e: Env;
+  let m: ReturnType<typeof mailer>;
+  const job = (x: Env = e) =>
+    scheduled({ cron: DIRECTORY_DISCONNECT_CRON }, x, ctx);
+  const outcomes = async () =>
+    (await disconnects()).map((r) => r.detail.outcome).sort();
+  /** The first Google revoke runs `f` (a racing callback) first. */
+  const onFirstRevoke = (f: () => Promise<unknown>) => {
+    const fake = vi.mocked(globalThis.fetch);
+    const impl = fake.getMockImplementation() as typeof fetch;
+    fake.mockImplementationOnce(async (input, init) => {
+      await f();
+      return impl(input, init);
+    });
+  };
+  beforeEach(async () => {
+    m = mailer();
+    sent = m.sent;
+    e = directEnv(m.env);
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
+  });
+
+  it("a consent landing between the reads and the batch (a new key) blocks the batch: rejects, nothing deleted; the next tick revokes it and resolves", async () => {
+    const lateSealed = await seal(e, "rt-late");
+    onFirstRevoke(() =>
+      env.DB.batch([
+        env.DB.prepare(UPSERT).bind(K.pendingRefresh, lateSealed),
+        env.DB.prepare(UPSERT).bind(
+          K.pendingBinding,
+          JSON.stringify({ provider: "google" }),
+        ),
+      ]),
+    );
+    const ep = await epoch();
+    await expect(job()).rejects.toThrow("revoke failed");
+    expect(await keys()).toEqual(
+      expect.arrayContaining([
+        "binding",
+        "refresh",
+        "pending.refresh",
+        "pending.binding",
+      ]),
+    );
+    expect(await epoch()).toBe(ep);
+    expect(disconnectMails()).toEqual([]);
+    expect(await disconnects()).toEqual([
+      { actor: null, detail: { outcome: "late_consent_kept" } },
+    ]);
+    expect(g.revoked).toEqual([`rt-${adminSub}`]);
+    await job();
+    expect(g.revoked).toContain("rt-late");
+    expect(await keys()).toEqual([]);
+    expect(await outcomes()).toEqual(["disconnected", "late_consent_kept"]);
+  });
+
+  it("a late consent replacing the read token (same key, new value) blocks the batch; the next tick revokes the new one and resolves", async () => {
+    const swapped = await seal(e, "rt-swapped");
+    onFirstRevoke(() => env.DB.prepare(UPSERT).bind(K.refresh, swapped).run());
+    await expect(job()).rejects.toThrow("revoke failed");
+    const row = await env.DB.prepare(
+      "select value from directory_state where key = ?",
+    )
+      .bind(K.refresh)
+      .first<{ value: string }>();
+    expect(row?.value).toBe(swapped);
+    expect(await keys()).toContain("binding");
+    expect(await outcomes()).toEqual(["late_consent_kept"]);
+    await job();
+    expect(g.revoked).toEqual([`rt-${adminSub}`, "rt-swapped"]);
+    expect(await keys()).toEqual([]);
+    expect(await outcomes()).toEqual(["disconnected", "late_consent_kept"]);
+  });
+
+  it("the interactive disconnect keeps revoke_late for the same race", async () => {
+    const swapped = await seal(e, "rt-swapped");
+    onFirstRevoke(() => env.DB.prepare(UPSERT).bind(K.refresh, swapped).run());
+    expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
+    expect(await keys()).toEqual([]);
+    expect(await outcomes()).toEqual(["disconnected", "revoke_late"]);
+  });
+
+  it("no transport configured rejects and keeps every key", async () => {
+    const none = directEnv({
+      ...m.env,
+      GOOGLE_DIRECTORY_CLIENT_ID: undefined,
+      GOOGLE_DIRECTORY_CLIENT_SECRET: undefined,
+    });
+    const before = await keys();
+    await expect(job(none)).rejects.toThrow("revoke failed");
+    expect(await keys()).toEqual(before);
+    expect(g.revoked).toEqual([]);
+    expect((await disconnects())[0]?.detail).toEqual({
+      outcome: "revoke_failed",
+      revoke: "revoke_failed",
+    });
+  });
+
+  it("the broker's own 401 (an install no longer in DIRECTORY_REGISTRY) rejects and keeps every key", async () => {
+    const h = hostedEnv(m.env);
+    await resetDirectory();
+    expect((await connect(h, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
+    await env.OAUTH_KV.delete("install:inst-a");
+    clearRegistryCache();
+    const before = await keys();
+    await expect(job(h)).rejects.toThrow("revoke failed");
+    expect(await keys()).toEqual(before);
+    expect(g.revoked).toEqual([]);
+    expect(await outcomes()).toEqual(["revoke_failed"]);
+  });
+
+  it("customer_mismatch: a failed pending revoke rejects; the second tick finishes and the tombstone stays", async () => {
+    const second = `g-second-${crypto.randomUUID()}`;
+    g.addUser({ id: second, primaryEmail: uniq("super2"), isAdmin: true });
+    await connect(e, owner.cookie, g, { sub: second }, { confirm: false });
+    await env.DB.prepare(UPSERT).bind(HK.state, "customer_mismatch").run();
+    const fake = vi.mocked(globalThis.fetch);
+    const impl = fake.getMockImplementation() as typeof fetch;
+    fake.mockImplementation(async (input, init) => {
+      const req = new Request(input, init);
+      if (
+        req.url === GOOGLE_REVOKE_URL &&
+        new URLSearchParams(await req.clone().text()).get("token") ===
+          `rt-${second}`
+      )
+        throw new TypeError("down");
+      return impl(req);
+    });
+    const before = await keys();
+    await expect(job()).rejects.toThrow("revoke failed");
+    expect(await keys()).toEqual(before);
+    fake.mockImplementation(impl);
+    await job();
+    expect(g.revoked).toContain(`rt-${second}`);
+    expect(await keys()).toEqual(expect.arrayContaining([HK.state, K.prior]));
+    expect(await keys()).not.toContain("refresh");
+    expect(await keys()).not.toContain("pending.refresh");
+    const done = (await disconnects()).find(
+      (r) => r.detail.outcome === "disconnected",
+    );
+    expect(done?.detail).toMatchObject({ mismatchKept: true });
+  });
+
+  it("customer_mismatch: a 5xx retry keeps the tombstone, and so does the tick that resolves", async () => {
+    await env.DB.prepare(UPSERT).bind(HK.state, "customer_mismatch").run();
+    g.setRevokeStatus(503);
+    await expect(job()).rejects.toThrow("revoke failed");
+    expect(await keys()).toEqual(
+      expect.arrayContaining([HK.state, "binding", "refresh"]),
+    );
+    g.setRevokeStatus(200);
+    await job();
+    expect(await keys()).toContain(HK.state);
+    expect(await keys()).not.toContain("refresh");
+    expect(await outcomes()).toEqual(["disconnected", "revoke_failed"]);
   });
 });
 

@@ -55,6 +55,7 @@ import {
   readPrior,
   revokeAtGoogle,
   revokeGrant,
+  type SqlGuard,
   wipeState,
 } from "./store.js";
 import {
@@ -521,6 +522,20 @@ const CONNECTED_KEYS = [
   K.confirm,
 ];
 
+/**
+ * True while every live and pending token row is one of `seen` (the values
+ * read before the revokes). A key empty at read time that now holds a row,
+ * or a read key now holding another value, makes it false.
+ */
+const unseenTokens = (seen: (string | null)[]): SqlGuard => {
+  const v = seen.filter((x): x is string => !!x);
+  return {
+    sql: `not exists (select 1 from directory_state
+      where key in (?, ?)${v.length ? ` and value not in (${v.map(() => "?").join(", ")})` : ""})`,
+    args: [K.refresh, K.pendingRefresh, ...v],
+  };
+};
+
 const revokeOutcome = async (
   env: Env,
   sealed: string | null,
@@ -554,7 +569,10 @@ const revokeOutcome = async (
  * not touched. Nothing connected: a no-op (no revoke, audit, reset or email).
  * `retry` (the system job): a failed revoke (live or pending) keeps every
  * key, audits directory.disconnect outcome revoke_failed and throws
- * DisconnectRetry, so the platform retries. Google's "already invalid"
+ * DisconnectRetry, so the platform retries. A token row step 1 did not read
+ * (a late consent) blocks the step 2 batch instead of a revoke_late: nothing
+ * is deleted, one late_consent_kept row is audited, DisconnectRetry; the
+ * next run revokes it. Google's "already invalid"
  * answer counts as revoked (direct.ts, the broker), so a dead grant ends.
  */
 export async function disconnectDirectory(
@@ -594,7 +612,15 @@ export async function disconnectDirectory(
     ownerEmails(env),
     readSyncState(env),
   ]);
-  const out = await env.DB.batch([
+  // The system job: a token row other than the ones read above (a consent
+  // landing after the reads: a new key, or a new value under a read key)
+  // blocks the whole batch (one transaction), so the job never resolves
+  // with a grant it did not revoke. The interactive path revokes it late.
+  const guard = o.retry ? unseenTokens([live.sealed, pend.sealed]) : undefined;
+  const [blocked, ...out] = await env.DB.batch([
+    env.DB.prepare(`select ${guard ? `not ${guard.sql}` : "0"} as late`).bind(
+      ...(guard?.args ?? []),
+    ),
     audit(env, "directory.disconnect", AUDIT_TARGET, actor, {
       detail: {
         outcome: "disconnected",
@@ -603,12 +629,24 @@ export async function disconnectDirectory(
         ...(tomb === MISMATCH_TOMBSTONE ? { mismatchKept: true } : {}),
         notified: owners.length,
       },
-      when: { sql: CONNECTED, args: CONNECTED_KEYS },
+      when: {
+        sql: guard ? `${CONNECTED} and ${guard.sql}` : CONNECTED,
+        args: [...CONNECTED_KEYS, ...(guard?.args ?? [])],
+      },
     }),
     // During customer_mismatch: the old Workspace is remembered first.
-    keepPrior(env),
-    wipeState(env),
+    keepPrior(env, guard),
+    wipeState(env, guard),
   ]);
+  if ((blocked?.results?.[0] as { late?: number } | undefined)?.late) {
+    await audit(env, "directory.disconnect", AUDIT_TARGET, actor, {
+      detail: { outcome: "late_consent_kept" },
+    })
+      .run()
+      .catch((e) => logWarn("directory_revoke_audit", e));
+    logInfo("directory_disconnect", { revoke: revoked, pending, late: true });
+    throw new DisconnectRetry();
+  }
   const won = (out[0]?.meta.changes ?? 0) > 0;
   // Tokens the wipe removed that step 1 never saw, by the grant they were.
   const seen = new Set([live.sealed, pend.sealed]);
