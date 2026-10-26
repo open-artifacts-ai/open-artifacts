@@ -2,7 +2,13 @@
 // against the in-memory Cloudflare (fake-cf.ts). Harness pieces mirror
 // wfp-create.test.ts (gates mocked, every generated secret captured).
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -3624,5 +3630,47 @@ describe("H-DV review fixes", () => {
     const e = await fails(s.mk().rollback(inst.id));
     expect(e.message).toMatch(/owner email is purged/);
     expect(s.fake.writes().length).toBe(w);
+  });
+});
+
+describe("H-DV: the stored row a create writes (the scheduler's purge fixture)", () => {
+  // apps/scheduler/test/revoke.test.ts seeds install_versions and
+  // inputs_hash from this file, so its "nothing holds the email" check runs
+  // on what create really stores. Regenerate with UPDATE_FIXTURES=1.
+  const FIXTURE = new URL("./fixtures/stored-install.json", import.meta.url);
+  it("matches a fresh google create (ids normalized)", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("finqore", {
+          vars: { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" },
+        }),
+      ),
+    );
+    const row = s.row(inst.id);
+    const st = s.stored(inst.id, "0.23.0") as {
+      metadata: string;
+      vars: string;
+    };
+    const norm = (t: string) =>
+      t
+        .split(inst.id)
+        .join("{{INSTALL_ID}}")
+        .split(String(row.d1_id))
+        .join("{{D1_ID}}")
+        .split(String(row.kv_id))
+        .join("{{KV_ID}}");
+    const got = {
+      ownerEmail: OWNER,
+      inputsHash: row.inputs_hash,
+      version: "0.23.0",
+      vars: JSON.parse(norm(st.vars)),
+      metadata: JSON.parse(norm(st.metadata)),
+    };
+    // The stored copy holds no email, by construction.
+    expect(st.metadata + st.vars).not.toContain(OWNER);
+    if (process.env.UPDATE_FIXTURES === "1")
+      writeFileSync(FIXTURE, `${JSON.stringify(got, null, 2)}\n`);
+    expect(JSON.parse(readFileSync(FIXTURE, "utf8"))).toEqual(got);
   });
 });

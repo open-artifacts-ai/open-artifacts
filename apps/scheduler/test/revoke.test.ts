@@ -11,6 +11,7 @@ import {
   it,
   vi,
 } from "vitest";
+import STORED from "../../../packages/provision/test/fixtures/stored-install.json";
 import scheduler, {
   CRON,
   type Env,
@@ -553,7 +554,10 @@ describe("H-DV review fixes", () => {
   });
 
   it("M3: after the purge no column of a deleted install holds the email or anything derived from it", async () => {
-    const email = "owner0@customer.test";
+    // What create really stores (provision's fixture, pinned there against
+    // a fresh create): the owner email, its inputs_hash, vars and metadata.
+    const fx = STORED;
+    const email = fx.ownerEmail;
     const hex = async (s: string) =>
       [
         ...new Uint8Array(
@@ -562,9 +566,15 @@ describe("H-DV review fixes", () => {
       ]
         .map((b) => b.toString(16).padStart(2, "0"))
         .join("");
-    const inputsHash = await hex(
-      `{"ownerEmail":${JSON.stringify(email)},"testHooks":false,"vars":{}}`,
-    );
+    const inputsHash = fx.inputsHash;
+    const real = (v: unknown) =>
+      JSON.stringify(v)
+        .split("{{INSTALL_ID}}")
+        .join(idOf(0))
+        .split("{{D1_ID}}")
+        .join("00000000-0000-4000-8000-000000000000")
+        .split("{{KV_ID}}")
+        .join("0".repeat(32));
     await seed([
       { id: idOf(0), state: "deleted", revoke: "done", updatedAt: 0, email },
       // An active install keeps its email and hash.
@@ -582,10 +592,13 @@ describe("H-DV review fixes", () => {
       .run();
     await db
       .prepare(
-        "INSERT INTO install_versions (install_id, version, vars, metadata, updated_at) VALUES (?1, '0.54.0', '{}', '{}', 0)",
+        "INSERT INTO install_versions (install_id, version, vars, metadata, updated_at) VALUES (?1, ?2, ?3, ?4, 0)",
       )
-      .bind(idOf(0))
+      .bind(idOf(0), fx.version, real(fx.vars), real(fx.metadata))
       .run();
+    // The seeded copy is the real one (bindings, tags, the broker URL).
+    expect(real(fx.metadata)).toContain(`"INSTALL_ID"`);
+    expect(real(fx.metadata)).toContain(idOf(0));
     captureLogs();
     expect(await purgeOwnerEmails(db, NOW)).toBe(1);
     const needles = [email, await hex(email), inputsHash];
