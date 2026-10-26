@@ -4,6 +4,7 @@ export * from "./metadata.js";
 export * from "./names.js";
 export * from "./platform.js";
 export * from "./publish.js";
+export * from "./r2s3.js";
 export * from "./release.js";
 export * from "./setup-adapter.js";
 export * from "./tar.js";

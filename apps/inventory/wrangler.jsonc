@@ -7,12 +7,19 @@
   "workers_dev": true,
   "preview_urls": false,
   // INVENTORY_KEY is a secret (wrangler secret put INVENTORY_KEY), so it is not listed here.
-  // PLATFORM_DB is the only binding. database_id is filled at deploy.
+  // Two bindings, both read-only in code: PLATFORM_DB and HOSTS. database_id and the
+  // HOSTS id are filled at deploy (oa-<p>-platform, oa-<p>-hosts).
   "d1_databases": [
     {
       "binding": "PLATFORM_DB",
       "database_name": "oa-platform",
       "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "HOSTS",
+      "id": "00000000000000000000000000000000"
     }
   ]
 }
