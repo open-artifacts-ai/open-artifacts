@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["ES2022", "DOM"],
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "live/**/*.ts",
+    "scripts/**/*.ts",
+    "vitest.config.ts",
+    "vitest.live.config.ts"
+  ]
+}
