@@ -1139,3 +1139,25 @@ describe("H-DV: delete waits for the directory revoke", () => {
     });
   });
 });
+
+describe("H-DV: a purged owner email", () => {
+  it("status prints owner (purged), never an address", async () => {
+    const w = world();
+    const id = await created(w);
+    expect(
+      await main(["status", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    expect(w.parsed().find((l) => l.step === "status")?.data.owner).toBe(
+      "(set)",
+    );
+    expect(w.lines.join("\n")).not.toContain("owner@finqore.test");
+    w.db().prepare("UPDATE installs SET owner_email = '' WHERE id = ?").run(id);
+    w.lines.length = 0;
+    expect(
+      await main(["status", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    expect(w.parsed().find((l) => l.step === "status")?.data.owner).toBe(
+      "(purged)",
+    );
+  });
+});
