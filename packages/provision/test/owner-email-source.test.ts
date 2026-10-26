@@ -5,7 +5,7 @@
 // template); every `owner_email` left must be one of the allowlisted lines.
 // Conservative on purpose: anything new fails, and the fix is ownerEmailOf.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -105,6 +105,7 @@ describe("owner_email is read only through ownerEmailOf", () => {
     for (const src of [
       'const e = row["owner_email"];',
       'db.prepare("SELECT owner_email FROM installs")',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the source under test
       "const t = `${row.owner_email}`;",
       "const { owner_email } = row;",
     ])
