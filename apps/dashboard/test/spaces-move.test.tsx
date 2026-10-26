@@ -8,7 +8,14 @@ import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
-import { calls, installHarness, mount, mountHosted, server } from "./harness";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  mount,
+  mountHosted,
+  server,
+} from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
@@ -150,7 +157,7 @@ it("Move sends the target and the panel shows the new space, with a toast", asyn
     }),
   );
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  expect(await screen.findByText("Moved to Engineering.")).toBeVisible();
+  await findVisibleToast("Moved to Engineering.");
   await waitFor(() => expect(spaceValue()).toHaveTextContent("Engineering"));
 });
 
