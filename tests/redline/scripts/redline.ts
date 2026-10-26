@@ -10,8 +10,9 @@ import { exitCode, formatReport, gateOn, type Report } from "../src/report.ts";
 
 const pkg = join(import.meta.dirname, "..");
 const gate = gateOn(process.argv.slice(2), process.env);
-const dir = mkdtempSync(join(tmpdir(), "oa-redline-report-"));
-const reportFile = process.env.REDLINE_REPORT || join(dir, "report.json");
+const reportFile =
+  process.env.REDLINE_REPORT ||
+  join(mkdtempSync(join(tmpdir(), "oa-redline-report-")), "report.json");
 
 const vitest = join(pkg, "node_modules", ".bin", "vitest");
 const child = spawn(vitest, ["run", "-c", "vitest.live.config.ts"], {

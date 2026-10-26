@@ -34,8 +34,17 @@ export function collect(
   const cases: CaseResult[] = [];
   for (const m of modules) {
     const file = relative(root, m.moduleId);
+    const broken = m.errors().length > 0;
     for (const t of m.children.allTests()) {
-      const { level, reason } = levelOf(t.result().state, t.meta());
+      const state = t.result().state;
+      // A test skipped because its module or suite setup failed is a failure.
+      const setupFailed =
+        state === "skipped" &&
+        (broken ||
+          (t.parent.type === "suite" && t.parent.state() === "failed"));
+      const { level, reason } = setupFailed
+        ? { level: "fail" as const, reason: "setup failed" }
+        : levelOf(state, t.meta());
       cases.push({
         name: t.fullName,
         file,

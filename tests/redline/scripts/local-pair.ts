@@ -27,13 +27,26 @@ const cmd =
 const timeoutMs = Number(process.env.REDLINE_LOCAL_TIMEOUT_MS) || 15 * 60_000;
 
 let pair: LocalPair | null = null;
+let booting: Promise<LocalPair> | null = null;
 let runPid: number | undefined;
-let finishing = false;
+let finishing: Promise<never> | null = null;
+const spawnedPids: number[] = [];
+const abort = new AbortController();
 
-async function finish(code: number, why?: string): Promise<never> {
-  if (!finishing) {
-    finishing = true;
+/** Idempotent: the first caller tears down and exits; later callers wait. */
+function finish(code: number, why?: string): Promise<never> {
+  finishing ??= teardown(code, why);
+  return finishing;
+}
+
+async function teardown(code: number, why?: string): Promise<never> {
+  {
     if (why) console.error(`local-pair: ${why}`);
+    if (!pair && booting) {
+      // Mid-boot: abort, and startLocalPair stops and removes what it made.
+      abort.abort();
+      pair = await booting.catch(() => null);
+    }
     if (runPid) {
       try {
         process.kill(-runPid, "SIGTERM");
@@ -41,8 +54,8 @@ async function finish(code: number, why?: string): Promise<never> {
       for (let i = 0; i < 30 && groupMembers(runPid).length; i++)
         await new Promise((r) => setTimeout(r, 100));
     }
-    const spawned = [...(pair?.pids ?? []), ...(runPid ? [runPid] : [])];
-    const left = pair ? await pair.stop() : [];
+    const spawned = [...spawnedPids, ...(runPid ? [runPid] : [])];
+    const left = pair ? await pair.stop() : spawnedPids.flatMap(groupMembers);
     const runLeft = runPid ? groupMembers(runPid) : [];
     console.log(
       `local-pair: spawned groups ${spawned.join(" ") || "none"}; left after teardown: ${[...left, ...runLeft].join(" ") || "none"}`,
@@ -54,7 +67,7 @@ async function finish(code: number, why?: string): Promise<never> {
 
 // Last resort if the loop dies without finish(): SIGKILL our groups, synchronously.
 process.on("exit", () => {
-  for (const p of [...(pair?.pids ?? []), ...(runPid ? [runPid] : [])]) {
+  for (const p of [...spawnedPids, ...(runPid ? [runPid] : [])]) {
     try {
       process.kill(-p, "SIGKILL");
     } catch {}
@@ -65,7 +78,12 @@ process.on("SIGTERM", () => void finish(143, "SIGTERM"));
 const timer = setTimeout(() => void finish(124, "timed out"), timeoutMs);
 
 try {
-  pair = await startLocalPair();
+  booting = startLocalPair({
+    signal: abort.signal,
+    onSpawn: (p) => spawnedPids.push(p),
+  });
+  pair = await booting;
+  if (finishing) await finishing;
   console.log(
     `local-pair: ${pair.installs.map((i) => `${i.name} app ${i.app} content ${i.content}`).join("; ")}`,
   );
@@ -80,9 +98,9 @@ try {
       ...(process.env.REDLINE_GATE
         ? { REDLINE_GATE: process.env.REDLINE_GATE }
         : {}),
-      ...(process.env.REDLINE_REPORT
-        ? { REDLINE_REPORT: process.env.REDLINE_REPORT }
-        : {}),
+      // Inside the pair's temp dir unless given, so teardown removes it too.
+      REDLINE_REPORT:
+        process.env.REDLINE_REPORT || join(pair.dir, "report.json"),
     },
   });
   runPid = child.pid;

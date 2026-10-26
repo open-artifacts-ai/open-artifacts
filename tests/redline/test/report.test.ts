@@ -181,6 +181,13 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     }, 60_000);
   }
 
+  it("setup failure: tests skipped by a failed beforeAll are fail, not not-applicable", () => {
+    const r = run("setup-fail", false);
+    expect(r.status).not.toBe(0);
+    expect(r.report.counts["not-applicable"]).toBe(0);
+    expect(r.report.counts.fail).toBeGreaterThanOrEqual(2);
+  }, 60_000);
+
   it("fail: non-zero without the gate", () => {
     const r = run("fail", false);
     expect(r.status).not.toBe(0);

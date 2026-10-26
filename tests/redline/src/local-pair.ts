@@ -215,8 +215,13 @@ export function redact(s: string, secrets: readonly string[]): string {
   return out;
 }
 
-async function waitHealthy(i: LocalInstall, deadline: number): Promise<void> {
+async function waitHealthy(
+  i: LocalInstall,
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<void> {
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw new Error("aborted");
     try {
       const r = await fetch(`${i.app}/healthz`, { redirect: "manual" });
       if (r.status === 200) {
@@ -239,6 +244,10 @@ async function waitHealthy(i: LocalInstall, deadline: number): Promise<void> {
 export interface StartOpts {
   /** Per-install boot deadline (default 180 s). */
   bootMs?: number;
+  /** Aborting stops everything spawned so far; startLocalPair then rejects. */
+  signal?: AbortSignal;
+  /** Called with each spawned process (group) id, as it is spawned. */
+  onSpawn?: (pid: number) => void;
 }
 
 /** Boots the pair. On any failure, everything spawned is stopped and removed before it throws. */
@@ -253,7 +262,10 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
   const secrets: string[] = [];
   const installs: LocalInstall[] = [];
   const track = (c: ChildProcess) => {
-    if (c.pid) pids.push(c.pid);
+    if (!c.pid) return;
+    pids.push(c.pid);
+    o.onSpawn?.(c.pid);
+    if (o.signal?.aborted) void killGroup(c.pid);
   };
   let stopped = false;
   const stop = async (): Promise<number[]> => {
@@ -265,7 +277,11 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
     return pids.flatMap(groupMembers);
   };
   try {
+    o.signal?.addEventListener("abort", () => {
+      for (const p of pids) void killGroup(p);
+    });
     for (const spec of LOCAL_INSTALLS) {
+      if (o.signal?.aborted) throw new Error("aborted");
       const sub = join(dir, spec.name);
       mkdirSync(sub, { mode: 0o700 });
       const port = await freePort();
@@ -341,7 +357,7 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
       });
     }
     const deadline = Date.now() + (o.bootMs ?? 180_000);
-    await Promise.all(installs.map((i) => waitHealthy(i, deadline)));
+    await Promise.all(installs.map((i) => waitHealthy(i, deadline, o.signal)));
     const [a, b] = installs.map((i) => ({
       name: i.name,
       installId: i.installId,

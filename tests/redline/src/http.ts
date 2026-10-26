@@ -136,7 +136,8 @@ export async function adminCreds(t: Target): Promise<AdminCreds> {
   const text = await readBody(res);
   if (res.status !== 200)
     throw new HttpError(`${t.name} PAT /api/v1/me`, res, text);
-  const email = (JSON.parse(text) as { email?: unknown }).email;
+  const email = (JSON.parse(text) as { user?: { email?: unknown } }).user
+    ?.email;
   if (email !== adminEmail(t))
     throw new Error(`${t.name}: the PAT is not the admin test user's`);
   return { cookie, pat };
