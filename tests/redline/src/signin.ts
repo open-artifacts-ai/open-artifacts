@@ -183,12 +183,16 @@ export function codeRequestReq(
   });
 }
 
+/** codeRequestReq with the target's Turnstile token, if it has one. */
+export const ownCodeRequestReq = (t: Target, email: string) =>
+  codeRequestReq(t, email, secretsOf(t).turnstile);
+
 /** POST /auth/code/request at `t` for `email` (with the target's Turnstile token, if any). */
 export async function requestCode(
   t: Target,
   email: string,
 ): Promise<CodeRequested> {
-  const res = await send(codeRequestReq(t, email, secretsOf(t).turnstile));
+  const res = await send(ownCodeRequestReq(t, email));
   const text = await readBody(res);
   let shape = "";
   if (res.status === 202) {

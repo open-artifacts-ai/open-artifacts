@@ -10,6 +10,7 @@ import {
   expectStateRefused,
   expectTurnstileRequired,
   labelTurnstileTestKey,
+  ownCodeRequestReq,
   parseCaptures,
   signInRefused,
   stateAccepted,
@@ -255,6 +256,17 @@ describe("Turnstile test key label", () => {
       labelTurnstileTestKey(c, [T.a, T.b]);
       expect(c.task.meta.redlineLabel).toBe("Turnstile test key");
     }
+  });
+
+  it("ownCodeRequestReq sends the target's token, and none without one", async () => {
+    const T = targetsWith(TURNSTILE_DUMMY_TOKEN, undefined);
+    expect(await ownCodeRequestReq(T.a, "x@rl-a.test").json()).toEqual({
+      email: "x@rl-a.test",
+      turnstileToken: TURNSTILE_DUMMY_TOKEN,
+    });
+    expect(await ownCodeRequestReq(T.b, "x@rl-b.test").json()).toEqual({
+      email: "x@rl-b.test",
+    });
   });
 
   it("a real token, or none, leaves the case unlabeled", () => {
