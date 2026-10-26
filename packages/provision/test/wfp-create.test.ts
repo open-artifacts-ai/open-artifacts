@@ -47,6 +47,7 @@ import {
   publishRelease,
   r2ReleaseReader,
 } from "../src/publish.js";
+import { r2S3Client } from "../src/r2s3.js";
 import {
   assetEntries,
   bundleSha256,
@@ -3864,9 +3865,17 @@ describe("T3b E: the signed floor gates create", () => {
       })),
       { path: "welcome/welcome.md", bytes: WELCOME_BYTES },
     ];
-    await probeR2Conditionals(cf, "staging");
+    const r2 = r2S3Client({
+      accountId: s.fake.accountId,
+      env: "staging",
+      credentials: s.fake.r2Token(platformNames("staging").releases),
+      fetch: s.fake.fetch,
+      sleep: async () => {},
+    });
+    await probeR2Conditionals(r2, "staging");
     await publishRelease({
       cf,
+      r2,
       env: "staging",
       version: "0.23.0",
       files: {

@@ -343,15 +343,18 @@ export async function revokeAtGoogle(
  * exception: sync.state = customer_mismatch stays as a tombstone, so synced
  * users stay denied after a disconnect (health.ts MISMATCH_TOMBSTONE).
  */
-export const wipeState = (env: Env) =>
+export const wipeState = (env: Env, guard?: SqlGuard) =>
   stmt(
     env.DB,
     `delete from directory_state
       where not (
         (key = 'sync.state' and value = 'customer_mismatch')
-        or (key = ?1 and ${TOMBSTONED}))
+        or (key = ?1 and ${TOMBSTONED}))${guard ? ` and ${guard.sql}` : ""}
       returning key, value`,
-  ).bind(K.prior);
+  ).bind(K.prior, ...(guard?.args ?? []));
+
+/** An extra condition (plain `?` parameters) a statement runs only under. */
+export type SqlGuard = { sql: string; args: unknown[] };
 
 /** sync.state is the customer_mismatch tombstone. */
 const TOMBSTONED = `exists (select 1 from directory_state t
@@ -363,15 +366,15 @@ const TOMBSTONED = `exists (select 1 from directory_state t
  * for a different Workspace says so (SyncStatus.pendingCustomerChange).
  * Without a live binding an earlier prior stays.
  */
-export const keepPrior = (env: Env) =>
+export const keepPrior = (env: Env, guard?: SqlGuard) =>
   stmt(
     env.DB,
     `insert into directory_state (key, value)
       select ?1, json_object('customerId', json_extract(value, '$.customerId'),
         'domain', json_extract(value, '$.domain'))
-      from directory_state where key = ?2 and ${TOMBSTONED}
+      from directory_state where key = ?2 and ${TOMBSTONED}${guard ? ` and ${guard.sql}` : ""}
       on conflict (key) do update set value = excluded.value`,
-  ).bind(K.prior, K.binding);
+  ).bind(K.prior, K.binding, ...(guard?.args ?? []));
 
 /** The Workspace bound before a disconnect during customer_mismatch. */
 export type PriorCustomer = { customerId: string; domain: string | null };

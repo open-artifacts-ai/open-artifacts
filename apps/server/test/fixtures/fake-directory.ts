@@ -117,6 +117,7 @@ export function fakeDirectory(o: { customerId?: string } = {}) {
   let pageSize = 500;
   let refreshStatus = 200;
   let revokeStatus = 200;
+  let revokeError = "server_error";
   /** Raw refresh tokens Google was asked to revoke. */
   const revoked: string[] = [];
   const realFetch = globalThis.fetch;
@@ -139,7 +140,7 @@ export function fakeDirectory(o: { customerId?: string } = {}) {
       if (req.url === GOOGLE_REVOKE_URL && req.method === "POST") {
         if (revokeStatus !== 200)
           return Response.json(
-            { error: "server_error" },
+            { error: revokeError },
             { status: revokeStatus },
           );
         revoked.push(new URLSearchParams(await req.text()).get("token") ?? "");
@@ -430,8 +431,10 @@ export function fakeDirectory(o: { customerId?: string } = {}) {
       refreshStatus = s;
     },
     revoked,
-    setRevokeStatus(s: number) {
+    /** Google's revoke answer: `s` with `{ error }` (400 invalid_token: already revoked). */
+    setRevokeStatus(s: number, error = "server_error") {
       revokeStatus = s;
+      revokeError = error;
     },
     restore: () => spy.mockRestore(),
   };

@@ -359,9 +359,29 @@ A failed or skipped alert never changes the nightly lines above.
 
 - The stored record is `{ "record": "<canonicalJson(record)>", "signature": "<base64url>" }`. The signature covers `"oa-release-v1\n" + env + "\n" + record` (the exact string). Readers verify that string, parse it refusing duplicate keys (objects built with a null prototype), and require it to re-serialize byte for byte.
 - CI signs and never uploads to Cloudflare. On a stable release, `release-please.yml` runs `hosted-guard` (tag to one commit on `main`, equal to `package.json`), `hosted-build` (both variants and the release files, `manifest.json`), `hosted-check` (every hash, `check-no-test-hooks` on the release bundle), `hosted-sign-staging` and `hosted-sign-prod` (environments `hosted-staging` and `hosted-prod`; checkout, `actions/setup-node` pinned by SHA with Node 22 from `.nvmrc` (no cache) and a v22 assert, then download-artifact and the sign step: plain `.mjs` (node:* imports, no install), key on stdin, in the sign step's env only) and `hosted-attach-staging` / `hosted-attach-prod` (each rebuilds its env's tars and `.sig.json` files, verifies them and attaches them to the GitHub release; refused if that env's assets are already there).
-- `publishRelease` (laptop, provisioning token; Task 8 wires the CLI) verifies a tar and its `.sig.json` against `RELEASE_PUBKEY[env]` and copies exactly those bytes to `oa-<p>-releases/releases/<version>/<variant>/`, every object `If-None-Match: *`. A version is never overwritten; a partial one (objects byte-identical to the tar, no record) is resumed. `publishRelease` and `publishFloor` first need `probeR2Conditionals(cf, env)` to pass in the same process (it proves the REST object routes enforce `If-None-Match` and `If-Match`).
+- `publishRelease` (laptop; Task 8 wires the CLI) verifies a tar and its `.sig.json` against `RELEASE_PUBKEY[env]` and copies exactly those bytes to `oa-<p>-releases/releases/<version>/<variant>/`, every object `If-None-Match: *`. A version is never overwritten; a partial one (objects byte-identical to the tar, no record) is resumed, and a create-once PUT that answers 412 is accepted only when the object already holds exactly those bytes.
+- Writes go through R2's S3 API (`https://<account id>.r2.cloudflarestorage.com/oa-<p>-releases/<key>`, SigV4 via `aws4fetch`, region `auto`) with the env's R2 API token. Cloudflare documents atomic conditional PutObject (`If-None-Match`, `If-Match`) only there ([consistency: conditional writes](https://developers.cloudflare.com/r2/reference/consistency/#conditional-writes), [S3 API compatibility](https://developers.cloudflare.com/r2/api/s3/api/)); a staging run showed the `api.cloudflare.com` object routes ignore `If-None-Match: *`. The reads a write depends on (the floor and its etag, resume byte checks) use S3 too, so the etag is the one S3 checks. Listings and the `create` release reader stay on the REST routes with the provisioning token: they never write, and `create` needs no R2 write credential.
+- `publishRelease` and `publishFloor` first need `probeR2Conditionals(r2, env)` to pass in the same process, on the same S3 client: on a throwaway `probe/` key, an `If-None-Match: *` PUT must land, a second must answer 412, an `If-Match` with a wrong etag must answer 412, and one with the current etag must land. A 2xx where 412 is expected refuses publishing.
 - The key ceremony's one-line PR sets the public keys in both `packages/provision/src/internal/gates.ts` and `scripts/ci/release-pubkeys.mjs` (a test pins them equal); the key jobs then refuse a signing key that is not the pinned one.
-- The signed floor `releases/floor.json` (`{ env, seq, minVersion, revoked }`, signed over `"oa-release-floor-v1\n" + env + "\n"` plus the record) gates `create`. The platform D1 `release_floor.floor_seq` is only a cache (raised with `MAX`); the anchor is `FLOOR_MIN_SEQ[env]`. `publishFloor` needs a higher `seq`, the same or a higher `minVersion` and a superset of `revoked`, and writes with `If-Match`.
+- The signed floor `releases/floor.json` (`{ env, seq, minVersion, revoked }`, signed over `"oa-release-floor-v1\n" + env + "\n"` plus the record) gates `create`. The platform D1 `release_floor.floor_seq` is only a cache (raised with `MAX`); the anchor is `FLOOR_MIN_SEQ[env]`. `publishFloor` needs a higher `seq`, the same or a higher `minVersion` and a superset of `revoked`, and writes with `If-Match` (or `If-None-Match: *` for the first floor). A 412 refuses with "floor seq exists": the floor changed meanwhile; check it and re-run. It is never retried as success.
+
+### R2 API token (per env, the user, once)
+
+`publish-release` and `publish-floor` need an R2 API token per env, scoped to that env's releases bucket only. R2 tokens can't be prefilled by URL; create each by hand ([R2 API tokens](https://developers.cloudflare.com/r2/api/tokens/)):
+
+1. In the Cloudflare dashboard of the hosted account, open R2 Object Storage, then Overview, and select Manage next to API Tokens (under Account Details).
+2. Select Create Account API token (an account token keeps working if a user leaves the account).
+3. Name it `oa-hosted-<env>-r2`. Permissions: Object Read & Write.
+4. Scope it to specific buckets only: `oa-s-releases` for staging, `oa-p-releases` for prod. Never both.
+5. If an expiry (TTL) is offered, set it short, and roll the token before it ends.
+6. Create it. Copy the Access Key ID and the Secret Access Key now: the secret is shown once.
+7. Store both in the keychain, as `<accessKeyId>:<secretAccessKey>`, pasted at the prompt (never on the command line):
+
+   ```sh
+   security add-generic-password -U -s oa-hosted-<env>-r2 -a open-artifacts -w
+   ```
+
+Staging CI may instead use a 0600 file named by `OA_HOSTED_R2_FILE`, with the same rules as `OA_HOSTED_TOKEN_FILE`. Prod reads only the keychain.
 
 ### Key-ceremony checklist (per env, with the user's OK)
 
@@ -396,14 +416,19 @@ Fixing drift: for a `creating` install, rerun `create`; it finishes both writes.
 
 TODO (Platform): before directory sync is enabled on any env that already has brokered installs, ship a lease-held backfill op that copies each broker entry to the directory registry (one way only, never directory to broker). The repair op overwrites the directory copy from the broker entry, never the reverse.
 
+### Inventory `GET /hosts` (read-only, for the red-line suite)
+
+`apps/inventory` binds `HOSTS` (`oa-<p>-hosts`) next to `PLATFORM_DB`; the Worker only reads both (a source test forbids KV and D1 writes). Same `Authorization: Bearer <INVENTORY_KEY>` as `/installs`, and the same plain 404 for anything else. `GET /hosts` returns `{"hosts":[{"host","installId"}],"complete":true}`, sorted by host, paged through every KV cursor, capped at 10,000 keys (`complete:false` past it). `GET /hosts?host=<h>` returns `{"host","installId"}` for that exact key (nothing is normalized). `installId` is `null` for a miss or a value that isn't an install id; raw values are never returned. Fill the `HOSTS` id in `wrangler.jsonc` at deploy, as for `PLATFORM_DB`. The red-line env reads the endpoint through `REDLINE_STG_INVENTORY_URL` (variable) and `REDLINE_STG_INVENTORY_KEY` (secret).
+
 ### First-create checklist (per env)
 
 1. Create the KV namespaces `oa-<p>-broker-registry` and `oa-<p>-directory-registry` side by side, before any provision run on the env (any provision version that includes the directory copy). With the broker on, create and every lifecycle operation (status aside) refuse before any write if either is missing.
 2. Apply every platform D1 migration to `oa-<p>-platform` that it does not have yet, in order, before deploying the scheduler or running a CLI that needs it (0005 before the H-DV scheduler, whose 2-minute tick otherwise logs `directory-revoke aborted exception` every time; a delete run before 0005 moves the row to `deleting` and then fails on its first revoke write, so rerun it once 0005 is applied) (0004 adds a column, so it can't be re-run; check with `PRAGMA table_info(hosted_audit)` before applying it): `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal), then `0004_audit_actor.sql` (the `hosted_audit.actor` column the CLI writes), then `0005_directory_revoke.sql` (the four directory revoke columns and the `installs_revoke_pending` index; `owner_email` is unchanged; not re-runnable, so check `PRAGMA table_info(installs)` for `directory_revoke` first). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write; without 0004, every `oa:hosted` command fails closed on its first audit row; without 0005, delete stops at its first revoke write with the row already `deleting` (rerun after applying it).
 3. Key ceremony done: `RELEASE_PUBKEY[env]` set in gates.ts (and `PROD_UNLOCKED` for prod).
    - Prod, before FinQore go-live: add the user back as a required reviewer on `hosted-prod` (admin bypass stays off), so every prod signing run waits for approval again.
-4. Sign the env's first floor with the `hosted-floor` workflow (dispatch on `main`: `env`, `seq` >= `FLOOR_MIN_SEQ[env]`, `min_version`, `revoked`), download its `floor-<env>-<seq>` artifact, and `publishFloor` it.
-5. `publishRelease` the signed tar and `.sig.json` from the GitHub release for each variant the env takes.
+4. Create the env's R2 API token and keychain item `oa-hosted-<env>-r2` (see "R2 API token").
+5. Sign the env's first floor with the `hosted-floor` workflow (dispatch on `main`: `env`, `seq` >= `FLOOR_MIN_SEQ[env]`, `min_version`, `revoked`), download its `floor-<env>-<seq>` artifact, and `publishFloor` it.
+6. `publishRelease` the signed tar and `.sig.json` from the GitHub release for each variant the env takes.
 
 ### Release checklist: revoking a version or raising the floor
 
@@ -435,7 +460,8 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 - Google off: `update-vars` that turns google off keeps the install's registry entry (still trusted, its domains still synced) until a broker-disable op exists.
 - Refused before any call: `--test-hooks` with `--env prod`, `delete` or `release-lease` whose `--confirm` is not the `--install` id, a `--var` that `HOSTED_VARS` rejects, and any missing or malformed flag.
 - Token: the keychain item `oa-hosted-<env>` with account `open-artifacts` (`/usr/bin/security find-generic-password -a open-artifacts -s oa-hosted-<env> -w`, never a PATH lookup). Every keychain read and write the CLI does uses that account, the Turnstile item included. CI is staging only and reads a 0600 file it owns, named by `OA_HOSTED_TOKEN_FILE`, opened with `O_NOFOLLOW` (a symlink is refused) and checked and read through that one fd (`fstat`), never by path again; prod refuses that variable and refuses to run in CI. Then the provisioner's own token checks run (`verifyToken`) before the CLI's first write.
-- `CLOUDFLARE_ACCOUNT_ID` must be the hosted account id.
+- R2 credentials (`publish-release` and `publish-floor` only): the keychain item `oa-hosted-<env>-r2`, account `open-artifacts`, holding `<accessKeyId>:<secretAccessKey>` (see "R2 API token" above). The item name is per env, so another env's token is never read; R2 also denies a token outside its one bucket. Staging CI may use a 0600 file named by `OA_HOSTED_R2_FILE` (same `O_NOFOLLOW` and `fstat` rules as the token file); prod refuses it. Both halves are redacted from every output line and never reach argv, a child's environment, an error or the audit.
+- `CLOUDFLARE_ACCOUNT_ID` must be the hosted account id; it also names the S3 endpoint.
 - Turnstile keys: the keychain item `oa-hosted-<env>-turnstile` holds `<sitekey>:<secret>`. `turnstile-init` writes it through `/usr/bin/security -i` on stdin (never argv) and reads it back; `create` and `update-vars` read it.
 - Audit: every command writes `cli.<command>.start` before it acts and `cli.<command>.done` or `.failed` after, with `actor` set to `git config user.email` (or the CI run URL).
   - The actor is attribution, not authentication: anyone can set `git config user.email`, and the row records what the operator's machine claimed.

@@ -1161,3 +1161,206 @@ describe("H-DV: a purged owner email", () => {
     );
   });
 });
+
+describe("H-S3: R2 credentials for publish", () => {
+  const FLOOR = { env: "staging", seq: 2, minVersion: "0.20.0", revoked: [] };
+  const floorFile = (w: W, env = "staging") =>
+    w.files.set("/f/floor.sig.json", {
+      bytes: new TextEncoder().encode(
+        JSON.stringify(signed("oa-release-floor-v1", env, { ...FLOOR, env })),
+      ),
+      info: { mode: 0o100644, uid: 501, isFile: true },
+    });
+  const PUBLISH = (env = "staging") => [
+    "publish-floor",
+    "--env",
+    env,
+    "--floor",
+    "/f/floor.sig.json",
+  ];
+  const halves = (w: W) => [w.r2Creds.accessKeyId, w.r2Creds.secretAccessKey];
+  const r2Reads = (w: W) =>
+    w.execs.filter(
+      (e) =>
+        e.file === SECURITY &&
+        e.args[0] === "find-generic-password" &&
+        /-r2$/.test(e.args[e.args.indexOf("-s") + 1] as string),
+    );
+
+  it("publish reads oa-hosted-<env>-r2 from the keychain and writes through S3 only", async () => {
+    for (const env of ["staging", "prod"] as const) {
+      const w = world({ env });
+      floorFile(w, env);
+      expect(await main(PUBLISH(env), w.deps), env).toBe(0);
+      expect(r2Reads(w).map((e) => e.args)).toEqual([
+        [
+          "find-generic-password",
+          "-a",
+          "open-artifacts",
+          "-s",
+          `oa-hosted-${env}-r2`,
+          "-w",
+        ],
+      ]);
+      const puts = w.fake.r2Log.filter((e) => e.method === "PUT");
+      expect(puts.length).toBeGreaterThan(0);
+      expect(puts.every((e) => e.api === "s3")).toBe(true);
+      expect(
+        w.fake.log.filter(
+          (e) => e.method === "PUT" && e.path.includes("/r2/buckets/"),
+        ),
+      ).toEqual([]);
+      expect(w.fake.s3SignatureChecks).toBeGreaterThan(0);
+    }
+  });
+
+  it("only publish commands read the R2 item", async () => {
+    const w = world();
+    await created(w);
+    expect(r2Reads(w)).toEqual([]);
+  });
+
+  it("refuses the other env's R2 item: the service name is env-specific", async () => {
+    for (const [env, other] of [
+      ["staging", "prod"],
+      ["prod", "staging"],
+    ] as const) {
+      const w = world({ env });
+      floorFile(w, env);
+      const v = w.keychain.get(`oa-hosted-${env}-r2`) as string;
+      w.keychain.delete(`oa-hosted-${env}-r2`);
+      w.keychain.set(`oa-hosted-${other}-r2`, v);
+      expect(await main(PUBLISH(env), w.deps)).toBe(1);
+      expect(lastLine(w)).toMatchObject({ step: "token", status: "error" });
+      expect(lastLine(w).message).toBe(
+        `keychain item oa-hosted-${env}-r2 not found`,
+      );
+      expect(r2Reads(w).map((e) => e.args[e.args.indexOf("-s") + 1])).toEqual([
+        `oa-hosted-${env}-r2`,
+      ]);
+      expect(w.fake.r2Log).toEqual([]);
+      expect(w.fake.writes()).toEqual([]);
+    }
+  });
+
+  it("a staging client holding the prod R2 token is denied by R2's bucket scope", async () => {
+    const w = world();
+    floorFile(w);
+    const prod = w.fake.r2Token("oa-p-releases");
+    w.keychain.set(
+      "oa-hosted-staging-r2",
+      `${prod.accessKeyId}:${prod.secretAccessKey}`,
+    );
+    expect(await main(PUBLISH(), w.deps)).toBe(1);
+    expect(lastLine(w).step).toBe("audit");
+    const line = w.parsed().find((l) => l.step === "publish-floor");
+    expect(line?.message).toMatch(/AccessDenied/);
+    expect(w.fake.r2Objects.get("oa-s-releases")?.size ?? 0).toBe(0);
+    expect(w.lines.join("\n")).not.toContain(prod.secretAccessKey);
+    expect(w.lines.join("\n")).not.toContain(prod.accessKeyId);
+  });
+
+  it("a malformed R2 item is refused before any call", async () => {
+    for (const bad of ["nocolon", ":secret", "key:", "a b:c", "k:s"]) {
+      const w = world();
+      floorFile(w);
+      w.keychain.set("oa-hosted-staging-r2", bad);
+      expect(await main(PUBLISH(), w.deps), bad).toBe(1);
+      expect(lastLine(w).message).toMatch(
+        /oa-hosted-staging-r2\) are not <accessKeyId>:<secretAccessKey>/,
+      );
+      expect(w.fake.r2Log).toEqual([]);
+    }
+  });
+
+  it("prod reads R2 only from the keychain; staging CI reads a 0600 file it owns via OA_HOSTED_R2_FILE", async () => {
+    const p = world({ env: "prod" });
+    floorFile(p, "prod");
+    p.files.set("/ci/r2", {
+      bytes: new TextEncoder().encode(
+        p.keychain.get("oa-hosted-prod-r2") as string,
+      ),
+      info: { mode: 0o100600, uid: 501, isFile: true },
+    });
+    p.deps.env.OA_HOSTED_R2_FILE = "/ci/r2";
+    expect(await main(PUBLISH("prod"), p.deps)).toBe(1);
+    expect(lastLine(p).message).toMatch(
+      /prod reads its R2 credentials only from the keychain; unset OA_HOSTED_R2_FILE/,
+    );
+    expect(p.fake.r2Log).toEqual([]);
+
+    const w = world({ ci: true });
+    floorFile(w);
+    const r2 = w.keychain.get("oa-hosted-staging-r2") as string;
+    w.keychain.clear();
+    w.files.set("/ci/token", {
+      bytes: new TextEncoder().encode(w.fake.token),
+      info: { mode: 0o100600, uid: 501, isFile: true },
+    });
+    w.deps.env.OA_HOSTED_TOKEN_FILE = "/ci/token";
+    // CI without the R2 file: no keychain to fall back to.
+    expect(await main(PUBLISH(), w.deps)).toBe(1);
+    expect(lastLine(w).message).toMatch(/set OA_HOSTED_R2_FILE/);
+    w.deps.env.OA_HOSTED_R2_FILE = "/ci/r2";
+    for (const f of [
+      { info: { mode: 0o100644, uid: 501, isFile: true }, re: /0600/ },
+      { info: { mode: 0o100600, uid: 0, isFile: true }, re: /owned/ },
+      {
+        info: { mode: 0o100600, uid: 501, isFile: true },
+        symlink: true,
+        re: /symlink/,
+      },
+    ]) {
+      w.files.set("/ci/r2", {
+        bytes: new TextEncoder().encode(r2),
+        info: f.info,
+        ...(f.symlink ? { symlink: true } : {}),
+      });
+      expect(await main(PUBLISH(), w.deps)).toBe(1);
+      expect(lastLine(w).message).toMatch(f.re);
+      expect(lastLine(w).message).toMatch(/OA_HOSTED_R2_FILE/);
+    }
+    expect(w.fake.r2Log).toEqual([]);
+    w.files.set("/ci/r2", {
+      bytes: new TextEncoder().encode(`${r2}\n`),
+      info: { mode: 0o100600, uid: 501, isFile: true },
+    });
+    expect(await main(PUBLISH(), w.deps)).toBe(0);
+    expect(w.execs.filter((e) => e.file === SECURITY)).toEqual([]);
+  });
+
+  it("neither half appears in stdout, stderr, argv, stdin or the audit, even when an error echoes them", async () => {
+    const w = world();
+    floorFile(w);
+    expect(await main(PUBLISH(), w.deps)).toBe(0);
+    const first = [...w.lines];
+    w.lines.length = 0;
+    // An R2 error that echoes both halves is redacted.
+    const real = w.deps.r2;
+    w.deps.r2 = (o) => {
+      const c = real(o);
+      return {
+        ...c,
+        put: async () => {
+          throw new Error(
+            `denied for ${o.credentials.accessKeyId} / ${o.credentials.secretAccessKey}`,
+          );
+        },
+      };
+    };
+    expect(await main(PUBLISH(), w.deps)).toBe(1);
+    const msg = w.parsed().find((l) => l.step === "publish-floor")?.message;
+    expect(msg).toBe("denied for [redacted] / [redacted]");
+    const seen = [
+      ...first,
+      ...w.lines,
+      ...w.errLines,
+      ...w.execs.flatMap((e) => [...e.args, e.input ?? ""]),
+      JSON.stringify(w.db().prepare("SELECT * FROM hosted_audit").all()),
+    ].join("\n");
+    for (const v of halves(w)) {
+      expect(v.length).toBeGreaterThan(8);
+      expect(seen).not.toContain(v);
+    }
+  });
+});

@@ -1,8 +1,14 @@
 // The release files in R2 (oa-<p>-releases), T3b. CI signs and never
-// uploads: publishRelease runs on the laptop with the provisioning token,
-// verifies the signed tar from the GitHub release against RELEASE_PUBKEY[env]
-// and copies exactly the verified bytes, create-only. r2ReleaseReader is the
-// ReleaseReader create uses; it never reads the local checkout.
+// uploads: publishRelease runs on the laptop, verifies the signed tar from the
+// GitHub release against RELEASE_PUBKEY[env] and copies exactly the verified
+// bytes, create-only. r2ReleaseReader is the ReleaseReader create uses; it
+// never reads the local checkout.
+//
+// H-S3: every write, and every read whose etag or bytes decide a write, goes
+// through R2's S3 API (r2s3.ts, the env's R2 API token): only that endpoint
+// enforces conditional PutObject. Listings and r2ReleaseReader stay on the
+// REST routes with the provisioning token: they never write, and create needs
+// no R2 write credential.
 //
 // Layout, per version and variant:
 //   releases/<version>/<variant>/record.sig.json      (written last)
@@ -28,6 +34,7 @@ import {
   platformNames,
 } from "./names.js";
 import { canonicalJson } from "./platform.js";
+import type { R2Releases } from "./r2s3.js";
 import {
   ASSET_LIMITS,
   assertAssetLimits,
@@ -118,6 +125,18 @@ function bucketOf(env: Env): string {
   return bucket;
 }
 
+/** The S3 client must be bound to this env's releases bucket. */
+function r2Of(r2: R2Releases, env: Env): R2Releases {
+  const bucket = bucketOf(env);
+  if (r2?.env !== env || r2.bucket !== bucket)
+    throw new PublishRefused(
+      `the R2 S3 client is for ${String(r2?.env)} (${String(r2?.bucket)}), not ${env} (${bucket})`,
+    );
+  return r2;
+}
+
+const is412 = (e: unknown) => e instanceof CfError && e.status === 412;
+
 const same = (a: Uint8Array, b: Uint8Array) =>
   Buffer.from(a).equals(Buffer.from(b));
 
@@ -140,27 +159,32 @@ async function listAll(cf: Cf, bucket: string, prefix: string, max: number) {
   throw new Error(`R2 listing for ${prefix} did not end`);
 }
 
-/** cf objects whose R2 conditionals passed probeR2Conditionals, per env (this process only). */
-const PROBED = new WeakMap<Cf, Set<Env>>();
+/** S3 clients whose R2 conditionals passed probeR2Conditionals, per env (this process only). */
+const PROBED = new WeakMap<R2Releases, Set<Env>>();
 
 /**
- * M2: the api.cloudflare.com R2 object routes are not the documented S3 API,
- * so prove the conditional headers are enforced before relying on them: on a
- * throwaway key, a second If-None-Match: * PUT and a stale If-Match PUT must
- * both answer 412, and a current If-Match PUT must land. Cleans up the key.
- * publishRelease and publishFloor refuse to run unless this passed for the
- * same cf and env in this process.
+ * M2 / H-S3: prove R2's S3 endpoint enforces the conditional headers before
+ * relying on them. On a throwaway key: an If-None-Match: * PUT lands, a second
+ * one answers 412, an If-Match PUT with a wrong etag answers 412, and one with
+ * the current etag lands. Any other answer (a 2xx where 412 is expected
+ * above all) refuses. Cleans up the key. publishRelease and publishFloor
+ * refuse to run unless this passed for the same client and env in this
+ * process.
  */
-export async function probeR2Conditionals(cf: Cf, env: Env): Promise<void> {
-  const bucket = bucketOf(env);
+export async function probeR2Conditionals(
+  r2: R2Releases,
+  env: Env,
+): Promise<void> {
+  const s3 = r2Of(r2, env);
+  const bucket = s3.bucket;
   const key = `probe/${randomBytes(16).toString("hex")}`;
   const one = new TextEncoder().encode("oa-probe-1");
   const two = new TextEncoder().encode("oa-probe-2");
-  const must412 = async (what: string, put: () => Promise<void>) => {
+  const must412 = async (what: string, put: () => Promise<unknown>) => {
     try {
       await put();
     } catch (e) {
-      if (e instanceof CfError && e.status === 412) return;
+      if (is412(e)) return;
       throw e;
     }
     throw new PublishRefused(
@@ -168,44 +192,44 @@ export async function probeR2Conditionals(cf: Cf, env: Env): Promise<void> {
     );
   };
   try {
-    await cf.r2ObjectPut(bucket, key, one, { ifNoneMatch: "*" });
+    const first = await s3.put(key, one, { ifNoneMatch: "*" });
     await must412("If-None-Match: *", () =>
-      cf.r2ObjectPut(bucket, key, two, { ifNoneMatch: "*" }),
+      s3.put(key, two, { ifNoneMatch: "*" }),
     );
-    const head = await cf.r2ObjectHead(bucket, key);
-    if (!head?.etag) throw new PublishRefused(`R2 probe: ${key} has no etag`);
-    const stale =
-      head.etag === "0".repeat(32) ? "1".repeat(32) : "0".repeat(32);
-    await must412("a stale If-Match", () =>
-      cf.r2ObjectPut(bucket, key, two, { ifMatch: stale }),
+    const etag = first.etag || (await s3.head(key))?.etag;
+    if (!etag) throw new PublishRefused(`R2 probe: ${key} has no etag`);
+    const wrong = etag === "0".repeat(32) ? "1".repeat(32) : "0".repeat(32);
+    await must412("a wrong If-Match", () =>
+      s3.put(key, two, { ifMatch: wrong }),
     );
-    await cf.r2ObjectPut(bucket, key, two, { ifMatch: head.etag });
-    const got = await cf.r2ObjectGet(bucket, key, { maxBytes: 64 });
+    await s3.put(key, two, { ifMatch: etag });
+    const got = await s3.get(key, { maxBytes: 64 });
     if (!got || !same(got.bytes, two))
       throw new PublishRefused("R2 probe: the If-Match write did not land");
   } finally {
-    await cf.r2ObjectDelete(bucket, key).catch(() => {});
+    await s3.deleteProbe(key).catch(() => {});
   }
-  const s = PROBED.get(cf) ?? new Set<Env>();
+  const s = PROBED.get(s3) ?? new Set<Env>();
   s.add(env);
-  PROBED.set(cf, s);
+  PROBED.set(s3, s);
 }
 
-function assertProbed(cf: Cf, env: Env): void {
-  if (!PROBED.get(cf)?.has(env))
+function assertProbed(r2: R2Releases, env: Env): R2Releases {
+  const s3 = r2Of(r2, env);
+  if (!PROBED.get(s3)?.has(env))
     throw new PublishRefused(
-      `run probeR2Conditionals(cf, "${env}") first: R2 conditional writes must be proven in this process before publishing`,
+      `run probeR2Conditionals(r2, "${env}") first: R2 conditional writes must be proven in this process before publishing`,
     );
+  return s3;
 }
 
 /** The env's floor, verified, checked against FLOOR_MIN_SEQ and for `version`. */
 async function checkFloor(
-  cf: Cf,
+  r2: R2Releases,
   env: Env,
-  bucket: string,
   version: string,
 ): Promise<FloorRecord> {
-  const got = await cf.r2ObjectGet(bucket, FLOOR_KEY, { maxBytes: SMALL_MAX });
+  const got = await r2.get(FLOOR_KEY, { maxBytes: SMALL_MAX });
   if (!got)
     throw new PublishRefused(
       `the ${env} release floor (${FLOOR_KEY}) is missing; publishFloor first`,
@@ -234,17 +258,22 @@ async function checkFloor(
  * exactly the record's, a version under the floor, and a version that is
  * already published (its record exists). A partial version (objects present
  * and byte-identical to the tar, no record) is resumed; any other object
- * there is refused. Needs probeR2Conditionals first.
+ * there is refused. A 412 on a create-once PUT (the object appeared since the
+ * listing, or a lost reply of our own write) is accepted only when the object
+ * now holds exactly the tar's bytes; otherwise it refuses. Writes and the
+ * reads they rest on go through `r2` (S3); `cf` only lists. Needs
+ * probeR2Conditionals(r2, env) first.
  */
 export async function publishRelease(o: {
   cf: Cf;
+  r2: R2Releases;
   env: Env;
   version: string;
   files: { tar: Uint8Array; sig: Uint8Array };
 }): Promise<{ variant: BundleVariant; keys: string[] }> {
   const { cf, env, version } = o;
   const bucket = bucketOf(env);
-  assertProbed(cf, env);
+  const r2 = assertProbed(o.r2, env);
   if (!isReleaseVersion(version))
     throw new PublishRefused(`version ${version} is not a release version`);
   const pubkey = pubkeyOf(env);
@@ -347,7 +376,7 @@ export async function publishRelease(o: {
   if (got !== canonicalJson(rec.assets))
     refuse("assets (an extra, missing or changed file)");
 
-  await checkFloor(cf, env, bucket, version);
+  await checkFloor(r2, env, version);
 
   // Never overwrite. A record means published; anything else present must be
   // a byte-identical object of this tar (a resumed partial publish).
@@ -367,27 +396,40 @@ export async function publishRelease(o: {
       );
     let cur: { bytes: Uint8Array } | null = null;
     if (x.size === f.bytes.length)
-      cur = await cf
-        .r2ObjectGet(bucket, x.key, { maxBytes: f.bytes.length })
-        .catch(() => null);
+      cur = await r2.get(x.key, { maxBytes: f.bytes.length }).catch(() => null);
     if (!cur || !same(cur.bytes, f.bytes))
       throw new PublishRefused(
         `release ${version} (${variant}): ${x.key} differs from the tar; refusing to resume`,
       );
     done.add(f.path);
   }
+  /** Create-once; a 412 is "already exists": byte-identical resumes, else refuse. */
+  const createOnce = async (key: string, bytes: Uint8Array, what: string) => {
+    try {
+      await r2.put(key, bytes, { ifNoneMatch: "*" });
+    } catch (e) {
+      if (!is412(e)) throw e;
+      const cur = await r2
+        .get(key, { maxBytes: bytes.length })
+        .catch(() => null);
+      if (cur && same(cur.bytes, bytes)) return;
+      throw new PublishRefused(
+        `release ${version} (${variant}): ${key} already exists in ${bucket} ${what}; a version is never overwritten`,
+      );
+    }
+  };
   const keys: string[] = [];
   for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : 1))) {
     if (!done.has(f.path))
-      await cf.r2ObjectPut(bucket, prefix + f.path, f.bytes, {
-        ifNoneMatch: "*",
-      });
+      await createOnce(prefix + f.path, f.bytes, "and differs from the tar");
     keys.push(prefix + f.path);
   }
   // The record last: a reader that finds it finds every file.
-  await cf.r2ObjectPut(bucket, prefix + RECORD_FILE, o.files.sig, {
-    ifNoneMatch: "*",
-  });
+  await createOnce(
+    prefix + RECORD_FILE,
+    o.files.sig,
+    "with another record (already published)",
+  );
   keys.push(prefix + RECORD_FILE);
   return { variant, keys };
 }
@@ -397,16 +439,17 @@ export async function publishRelease(o: {
  * there is none, else If-Match on the current etag). The new floor must
  * verify for `env`, have seq >= FLOOR_MIN_SEQ[env] and above the current
  * seq, a minVersion the same or higher, and keep every revoked version.
- * Needs probeR2Conditionals first.
+ * Reads and writes go through `r2` (S3), so the etag is the one S3 checks. A
+ * 412 refuses ("floor seq exists"): someone else wrote the floor meanwhile;
+ * it is never retried as success. Needs probeR2Conditionals(r2, env) first.
  */
 export async function publishFloor(o: {
-  cf: Cf;
+  r2: R2Releases;
   env: Env;
   floor: Uint8Array;
 }): Promise<FloorRecord> {
-  const { cf, env } = o;
-  const bucket = bucketOf(env);
-  assertProbed(cf, env);
+  const { env } = o;
+  const r2 = assertProbed(o.r2, env);
   const pubkey = pubkeyOf(env);
   let next: FloorRecord;
   try {
@@ -420,9 +463,19 @@ export async function publishFloor(o: {
     throw new PublishRefused(
       `the new ${env} floor seq ${next.seq} is below FLOOR_MIN_SEQ ${FLOOR_MIN_SEQ[env]}`,
     );
-  const cur = await cf.r2ObjectGet(bucket, FLOOR_KEY, { maxBytes: SMALL_MAX });
+  const write = async (cond: { ifNoneMatch: "*" } | { ifMatch: string }) => {
+    try {
+      await r2.put(FLOOR_KEY, o.floor, cond);
+    } catch (e) {
+      if (!is412(e)) throw e;
+      throw new PublishRefused(
+        `floor seq exists: the ${env} floor (${FLOOR_KEY}) changed while seq ${next.seq} was being published (HTTP 412); check it and re-run`,
+      );
+    }
+  };
+  const cur = await r2.get(FLOOR_KEY, { maxBytes: SMALL_MAX });
   if (!cur) {
-    await cf.r2ObjectPut(bucket, FLOOR_KEY, o.floor, { ifNoneMatch: "*" });
+    await write({ ifNoneMatch: "*" });
     return next;
   }
   let old: FloorRecord;
@@ -446,7 +499,9 @@ export async function publishFloor(o: {
     throw new PublishRefused(
       `the new floor must keep every revoked version (dropped ${missing.join(", ")})`,
     );
-  await cf.r2ObjectPut(bucket, FLOOR_KEY, o.floor, { ifMatch: cur.etag });
+  if (!cur.etag)
+    throw new PublishRefused(`the current ${env} floor has no etag`);
+  await write({ ifMatch: cur.etag });
   return next;
 }
 

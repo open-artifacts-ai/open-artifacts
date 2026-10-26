@@ -7,7 +7,12 @@ import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
-import { calls, installHarness, mountHosted } from "./harness";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -79,11 +84,9 @@ it("offered on a member linked to Google: confirm, then DELETE, then the toast",
       `/api/v1/members/${CAROL}/identities/google`,
     ),
   );
-  expect(
-    await screen.findByText(
-      "Google link reset for Carol Departed. They're signed out and link again at their next Google sign-in.",
-    ),
-  ).toBeVisible();
+  await findVisibleToast(
+    "Google link reset for Carol Departed. They're signed out and link again at their next Google sign-in.",
+  );
 });
 
 it("not offered without a Google link, on the owner, or on yourself", async () => {
@@ -137,11 +140,9 @@ it("404: nothing to reset, named", async () => {
       name: "Reset link",
     }),
   );
-  expect(
-    await screen.findByText(
-      "No Google sign-in is linked to Bob Builder, so there's nothing to reset.",
-    ),
-  ).toBeVisible();
+  await findVisibleToast(
+    "No Google sign-in is linked to Bob Builder, so there's nothing to reset.",
+  );
   expect(screen.queryByText("Not found")).toBeNull();
 });
 
@@ -165,6 +166,7 @@ it("owner_only: only the owner can reset another admin's link", async () => {
       name: "Reset link",
     }),
   );
+  // An inline refusal on the row since #558, not a toast.
   expect(
     await screen.findByText(
       "Only the owner can reset another admin's Google link.",
@@ -229,10 +231,8 @@ it("any other 403 falls back to the owner copy", async () => {
       name: "Reset link",
     }),
   );
-  expect(
-    await screen.findByText(
-      "Only the owner can reset another admin's Google link.",
-    ),
-  ).toBeVisible();
+  await findVisibleToast(
+    "Only the owner can reset another admin's Google link.",
+  );
   expect(screen.queryByText("server text")).toBeNull();
 });
