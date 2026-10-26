@@ -2,7 +2,9 @@ import { ANON_ID_HEADER, type ArtifactSummary, LIMITS, R } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ANON_ID_KEY,
+  ANON_SHORT_KEY,
   isAnonToken,
+  MINT_LOCK,
   resetAnonMemory,
 } from "../src/viewer/anonId";
 import { createBridge } from "../src/viewer/bridge";
@@ -588,6 +590,8 @@ describe("anonymous id", () => {
   beforeEach(() => {
     store = new Map();
     resetAnonMemory();
+    // Node has Web Locks; the lock tests stub their own.
+    vi.stubGlobal("navigator", { ...navigator, locks: undefined });
   });
 
   it("stores a minted token under one key and sends it on later calls", async () => {
@@ -724,6 +728,46 @@ describe("anonymous id", () => {
     expect(resultOf("a")).toMatchObject({ ok: false });
   });
 
+  it("a mint waits on the browser-wide lock and reuses a token another tab minted meanwhile", async () => {
+    vi.stubGlobal("localStorage", okStorage);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const request = vi.fn(
+      async (_n: string, _o: unknown, fn: () => Promise<unknown>) => {
+        await held;
+        return fn();
+      },
+    );
+    vi.stubGlobal("navigator", { ...navigator, locks: { request } });
+    fetchMock.mockImplementation(async () => json(DOC));
+    mkAnon(OPT_IN);
+    call("db.set", { collection: "c", id: "d1", data: 1 }, "a");
+    await flush();
+    expect(request).toHaveBeenCalledWith(
+      MINT_LOCK,
+      expect.anything(),
+      expect.any(Function),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Another tab minted while this one waited for the lock.
+    store.set(ANON_ID_KEY, TOKEN);
+    release();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(headerOf(0)).toBe(TOKEN);
+    expect(resultOf("a")).toMatchObject({ ok: true });
+  });
+
+  it("mints without the lock when Web Locks are missing", async () => {
+    vi.stubGlobal("localStorage", okStorage);
+    vi.stubGlobal("navigator", { ...navigator, locks: undefined });
+    fetchMock.mockImplementationOnce(async () => withToken(TOKEN));
+    mkAnon(OPT_IN);
+    call("db.set", { collection: "c", id: "d1", data: 1 }, "a");
+    await flush();
+    expect(headerOf(0)).toBeNull();
+    expect(store.get(ANON_ID_KEY)).toBe(TOKEN);
+  });
+
   it("write methods: db writes are never POST (POST is only db.query)", async () => {
     vi.stubGlobal("localStorage", okStorage);
     fetchMock.mockImplementation(async (url: string) =>
@@ -807,6 +851,33 @@ describe("anonymous id", () => {
     expect(headerOf(0)).toBe(TOKEN);
     expect(resultOf("v")).toMatchObject({ ok: true, value: "aaaaaaaa" });
     expect(JSON.stringify(post.mock.calls)).not.toContain(TOKEN.slice(0, 22));
+  });
+
+  it("viewer.anonId is cached per token id and artifact, so a reload doesn't refetch it", async () => {
+    vi.stubGlobal("localStorage", okStorage);
+    store.set(ANON_ID_KEY, TOKEN);
+    fetchMock.mockImplementation(async () => json({ anonId: "aaaaaaaa" }));
+    mkAnon(OPT_IN);
+    call("viewer.anonId", {}, "v1");
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // A reload: a new bridge, same browser.
+    mkAnon(OPT_IN);
+    call("viewer.anonId", {}, "v2");
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(resultOf("v2")).toMatchObject({ ok: true, value: "aaaaaaaa" });
+    // Another artifact, or another id in the token, asks the server.
+    mkAnon({ ...OPT_IN, id: "art2" } as ArtifactSummary);
+    call("viewer.anonId", {}, "v3");
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    store.set(ANON_ID_KEY, TOKEN2);
+    mkAnon(OPT_IN);
+    call("viewer.anonId", {}, "v4");
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(store.get(ANON_SHORT_KEY)).not.toContain(TOKEN.slice(22));
   });
 
   it("viewer.anonId needs the viewer capability", async () => {

@@ -272,10 +272,14 @@
     try { viewer = await OA.viewer.get(); } catch { viewer = null; }
     if (viewer && viewer.email) return { id: `u-${await hash(viewer.email)}`, signedIn: true };
     // viewer.anonId(), else the { anonId } that viewer.get() returns on servers before it.
+    // Retried: a failed lookup (rate limited, offline) would leave a per-tab id, and a reload would lose a seat or a vote.
     let anon = null;
-    try {
-      if (OA.viewer && typeof OA.viewer.anonId === "function") anon = await OA.viewer.anonId();
-    } catch { anon = null; }
+    for (let i = 0; i < 3; i += 1) {
+      try {
+        if (OA.viewer && typeof OA.viewer.anonId === "function") anon = await OA.viewer.anonId();
+        break;
+      } catch { await new Promise((r) => setTimeout(r, 1500 * (i + 1))); }
+    }
     if (!anon && viewer && typeof viewer.anonId === "string") anon = viewer.anonId;
     if (anon && safeId(anon)) return { id: safeId(anon), signedIn: false };
     return { id: localId(), signedIn: false };
@@ -516,7 +520,7 @@
       closed = true;
       showError("The board is done for today. It resets at 00:00 UTC.");
     } else if (code === "rate_limited") showError("Too many moves from your network. Try again in a minute.");
-    else if (code === "unauthorized") { readOnly = true; showError("This demo isn't accepting moves from signed-out visitors right now."); }
+    else if (code === "unauthorized" || code === "data_editors_only") { readOnly = true; showError("This demo isn't accepting moves right now."); }
     else if (code === "capability_denied") { readOnly = true; showError("This board can't save moves."); }
     else showError("That move didn't save. Try again.");
     if (readOnly || closed) stopHeartbeat();

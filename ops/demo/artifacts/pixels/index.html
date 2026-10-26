@@ -463,7 +463,7 @@
       el.board.dataset.off = "true";
       showError("Canvas is full for today. A fresh one opens at 00:00 UTC.");
     } else if (code === "rate_limited") showError(`${where} Too many pixels from your network. Try again in a minute.`);
-    else if (code === "unauthorized") { readOnly = true; showError("This demo isn't accepting pixels from signed-out visitors right now."); }
+    else if (code === "unauthorized" || code === "data_editors_only") { readOnly = true; showError("This demo isn't accepting pixels right now."); }
     else if (code === "capability_denied") { readOnly = true; showError("This canvas can't save pixels."); }
     else showError(`${where} Try again.`);
     if (readOnly) el.board.dataset.off = "true";
