@@ -2257,6 +2257,7 @@ describe("fix round 3", () => {
       leaseLive: false,
       sessionCut: null,
       registryDrift: null,
+      directoryRevoke: { state: null, attempts: 0, revokedAt: null },
     });
     s.db()
       .prepare(

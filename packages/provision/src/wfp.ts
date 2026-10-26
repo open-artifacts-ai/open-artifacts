@@ -68,6 +68,7 @@ import {
 } from "./names.js";
 import {
   canonicalJson,
+  type DirectoryRevoke,
   type InstallRow,
   type InstallState,
   inputsHash,
@@ -459,6 +460,43 @@ export interface RotationResult {
   reason?: string;
 }
 
+/** H-DV: what delete prints when the directory revoke is skipped. */
+export const DIRECTORY_REVOKE_SKIPPED_NOTE =
+  "the Google grant stays live; revoke it in the customer's Google Admin console: Security > Access and data control > API controls > Manage Third-Party App Access (Manage App Access in newer consoles), find the Open Artifacts Directory app, then Change access to Blocked";
+
+/** The revoke states after which delete tears down. */
+const REVOKE_SETTLED: readonly DirectoryRevoke[] = [
+  "done",
+  "unsupported",
+  "skipped",
+];
+const REVOKE_POLL_MS = 15_000;
+const REVOKE_WAIT_MS = 10 * 60_000;
+
+export interface DeleteOptions {
+  /** Skip the Google directory revoke; the reason goes to hosted_audit. */
+  skipDirectoryRevoke?: string;
+  /** Called on each phase-2 poll. */
+  onPoll?: (p: {
+    state: DirectoryRevoke | null;
+    attempts: number;
+    waitedMs: number;
+  }) => void | Promise<void>;
+}
+
+/** A skip reason: non-empty, one line, at most 200 characters, no email. */
+function skipReason(v: unknown): string | undefined {
+  if (v === undefined) return undefined;
+  const r = typeof v === "string" ? v.trim() : "";
+  if (r === "")
+    throw new ProvisionRefused("skipDirectoryRevoke needs a non-empty reason");
+  if (r.length > 200 || /[\r\n@]/.test(r))
+    throw new ProvisionRefused(
+      "the skip reason must be one line, at most 200 characters, with no email (it goes to hosted_audit)",
+    );
+  return r;
+}
+
 export interface DeleteResult {
   id: InstallId;
   ok: true;
@@ -553,6 +591,12 @@ export interface InstallStatus {
     id: InstallId;
     kind: "missing_broker" | "missing_directory" | "mismatch" | "missing_both";
   } | null;
+  /** H-DV: the Google directory revoke a delete waits for. */
+  directoryRevoke: {
+    state: DirectoryRevoke | null;
+    attempts: number;
+    revokedAt: number | null;
+  };
 }
 
 /**
@@ -2162,6 +2206,11 @@ export class WfpProvisioner {
                   googleNewlyEnabled(cut.base, JSON.parse(row.vars)),
               },
         registryDrift,
+        directoryRevoke: {
+          state: row.directory_revoke ?? null,
+          attempts: row.directory_revoke_attempts ?? 0,
+          revokedAt: row.directory_revoked_at ?? null,
+        },
       };
     }
   }
@@ -2905,13 +2954,18 @@ export class WfpProvisioner {
    * The row ends deleted and stays, holding the slug. Each step checks first
    * and renews the lock, so a rerun after a partial failure finishes the job.
    */
-  async delete(id: InstallId, confirm: string): Promise<DeleteResult> {
+  async delete(
+    id: InstallId,
+    confirm: string,
+    o: DeleteOptions = {},
+  ): Promise<DeleteResult> {
     return this.guarded(async () => {
       if (typeof confirm !== "string" || confirm !== id)
         throw new ProvisionRefused(
           "delete needs confirm to be exactly the install id",
         );
-      const row = await this.openInstall(
+      const skip = skipReason(o?.skipDirectoryRevoke);
+      let row = await this.openInstall(
         id,
         ["creating", "active", "deleting", "deleted"],
         "warn",
@@ -2941,6 +2995,68 @@ export class WfpProvisioner {
         throw new ProvisionRefused(
           `install ${id} is creating and its create still holds the lease; retry once it ends or the lease expires`,
         );
+
+      // H-DV phase 1: deleting + pending (or skipped), hosts still mapped,
+      // so the install can still run the scheduler's revoke job; the lease
+      // is released while the scheduler works. A rerun skips this unless
+      // the revoke was never started, or a skip replaces a pending/failed one.
+      // Every read-only refusal first (a D1 or KV id that isn't names(id)'s),
+      // so a refused delete writes nothing, phase 1 included.
+      await this.resources(row, true);
+      const revoke = row.directory_revoke;
+      if (
+        row.state !== "deleting" ||
+        revoke === null ||
+        (skip !== undefined && !REVOKE_SETTLED.includes(revoke))
+      ) {
+        await this.claim(
+          row,
+          ["creating", "active", "deleting"],
+          "deleting",
+          "delete",
+        );
+        try {
+          await this.write({ directory_revoke: skip ? "skipped" : "pending" });
+          if (skip !== undefined)
+            await this.logged("delete.revoke_skipped", { reason: skip });
+          else await this.logged("delete.revoke_pending", {});
+          await this.release("deleting");
+        } catch (e) {
+          if (!(e instanceof LostLease))
+            await this.releaseQuietly("deleting", e);
+          throw e;
+        }
+      }
+      if (skip !== undefined) this.notes.push(DIRECTORY_REVOKE_SKIPPED_NOTE);
+
+      // Phase 2: wait for the scheduler (every 15 s, up to 10 minutes).
+      if (skip === undefined)
+        for (let waited = 0; ; waited += REVOKE_POLL_MS) {
+          const st = await this.platform.revokeState(id);
+          if (!st) throw new ProvisionRefused(`install ${id} not found`);
+          await o?.onPoll?.({
+            state: st.state,
+            attempts: st.attempts,
+            waitedMs: waited,
+          });
+          if (st.state !== null && REVOKE_SETTLED.includes(st.state)) break;
+          if (st.state === "failed")
+            throw new ProvisionRefused(
+              `install ${id}: the directory revoke failed after ${st.attempts} attempts; the row stays deleting. Rerun delete with --skip-directory-revoke "<reason>" to tear down anyway (${DIRECTORY_REVOKE_SKIPPED_NOTE})`,
+            );
+          if (waited >= REVOKE_WAIT_MS)
+            throw new ProvisionRefused(
+              `install ${id}: the directory revoke is still pending after 10 minutes; rerun delete to resume (the scheduler retries every 2 minutes)`,
+            );
+          await this.sleep(REVOKE_POLL_MS);
+        }
+
+      // Teardown, unchanged and resumable, on the row as it is now.
+      row = (await this.platform.byId(id)) as InstallRow;
+      if (!row || row.state !== "deleting")
+        throw new ProvisionRefused(
+          `install ${id} is ${row?.state ?? "gone"}; it is no longer deleting`,
+        );
       const { cf, env, target } = this;
       const n = names(id, env);
       const res = await this.resources(row, true);
@@ -2949,12 +3065,7 @@ export class WfpProvisioner {
       const dirTitle = platformNames(env).directoryRegistry;
       const dirId = await cf.kvFind(dirTitle);
 
-      await this.claim(
-        row,
-        ["creating", "active", "deleting"],
-        "deleting",
-        "delete",
-      );
+      await this.claim(row, ["deleting"], "deleting", "delete");
       try {
         await this.logged("delete.start", {});
         for (const h of [row.app_host, row.content_host]) {
