@@ -68,7 +68,7 @@ describe("redline-staging.yml", () => {
   it("the suite gets the secrets dir by path, runs live without the gate, and the files are removed", () => {
     const run = steps.find((s) => (s.run ?? "").includes("@oa/redline live"));
     expect(run?.run).toContain(
-      `jq -c --arg d "$RUNNER_TEMP/redline-secrets" '. + {secretsDir: $d}'`,
+      `jq -c --arg d "$RUNNER_TEMP/redline-secrets" --arg t "$t" '. + {secretsDir: $d} | .a.turnstileFile = $t | .b.turnstileFile = $t'`,
     );
     expect(run?.run).not.toMatch(/--gate|REDLINE_GATE/);
     expect(JSON.stringify(run)).not.toContain("secrets.");
@@ -136,5 +136,14 @@ describe("redline-staging.yml", () => {
       "utf8",
     );
     expect(cfg).toContain('reporters: ["verbose", "./src/reporter.ts"],');
+  });
+
+  it("both targets send Cloudflare's dummy Turnstile token from a 0600 file outside the secrets dir", () => {
+    const run = steps.find((s) => (s.run ?? "").includes("@oa/redline live"));
+    expect(run?.run).toContain('t="$RUNNER_TEMP/redline-turnstile-token"');
+    expect(run?.run).toContain(
+      `(umask 077 && printf '%s' 'XXXX.DUMMY.TOKEN.XXXX' > "$t")`,
+    );
+    expect(run?.run).not.toContain("redline-secrets/redline-turnstile");
   });
 });
