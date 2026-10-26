@@ -231,7 +231,7 @@ export async function crossWrite<C, X>(
     made.push([t, x]);
     return x;
   };
-  try {
+  const body = async () => {
     const xb = await fresh(o.b);
     const b = await leg("B's own credential at B", (f) =>
       run(o.credB, o.b, xb, f),
@@ -255,15 +255,19 @@ export async function crossWrite<C, X>(
       throw new NotRefused(
         `${o.b.name}: the throwaway changed (sha256:${digest(before)} -> sha256:${digest(after)})`,
       );
-  } finally {
-    // Every throwaway, even on failure; a failed cleanup fails the case.
-    let bad: unknown;
-    for (const [t, x] of made)
-      await o.dispose(t, x).catch((e) => {
-        bad ??= e;
-      });
-    if (bad) throw bad;
-  }
+  };
+  let failed: { e: unknown } | undefined;
+  await body().catch((e) => {
+    failed = { e };
+  });
+  // Every throwaway, even on failure; a failed cleanup fails the case.
+  let bad: { e: unknown } | undefined;
+  for (const [t, x] of made)
+    await o.dispose(t, x).catch((e) => {
+      bad ??= { e };
+    });
+  if (failed) throw failed.e;
+  if (bad) throw bad.e;
 }
 
 export interface Side {
