@@ -262,13 +262,18 @@ describe("summary, patch, delete", () => {
   ] as const)(
     "PATCH visibility warning: %s",
     async (_, visibility, db, allowAnonymousWrites, warns) => {
-      const a = await publish(env, owner.member, {
-        title: "warn",
-        format: "html",
-        content: "<p>x</p>",
-        capabilities: { db, viewer: false, storage: false },
-        allowAnonymousWrites,
-      } as never);
+      const a = await publish(
+        env,
+        owner.member,
+        {
+          title: "warn",
+          format: "html",
+          content: "<p>x</p>",
+          capabilities: { db, viewer: false, storage: false },
+          allowAnonymousWrites,
+        } as never,
+        null,
+      );
       const r = await api(app, R.artifact(a.id), owner.cookie, {
         method: "PATCH",
         body: { visibility },
