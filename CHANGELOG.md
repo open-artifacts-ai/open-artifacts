@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.59.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.59.0...v0.59.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **hosted:** the CLI imports redline-creds by its .ts name, so node can load it ([#668](https://github.com/open-artifacts-ai/open-artifacts/issues/668)) ([5b5e641](https://github.com/open-artifacts-ai/open-artifacts/commit/5b5e641793106f15d1e19b9aa9533ff21372bdde))
+
 ## [0.59.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.58.3...v0.59.0) (2026-10-26)
 
 
