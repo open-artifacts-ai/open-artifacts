@@ -875,30 +875,6 @@ export async function cleanup(side: Side, path: string): Promise<void> {
 }
 
 /**
- * True when `id` is in `side`'s trash already (a delete probe trashed it):
- * the only case where a cleanup DELETE's 404 is clean.
- */
-async function inTrash(side: Side, x: Throwaway, id: string): Promise<boolean> {
-  const scope =
-    x.fresh === "artifact-space"
-      ? `scope=space&spaceId=${encodeURIComponent(WORLD_SPACE)}`
-      : "scope=mine";
-  let cursor: string | null = null;
-  for (let i = 0; i < 50; i++) {
-    const q = `/api/v1/artifacts?${scope}&includeDeleted=true&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
-    const page = (await api(side.t, side.pat, "GET", q, undefined, [200])) as {
-      items: { id: string; deletedAt: string | null }[];
-      nextCursor: string | null;
-    };
-    const hit = page.items.find((a) => a.id === id);
-    if (hit) return hit.deletedAt !== null;
-    cursor = page.nextCursor;
-    if (!cursor) return false;
-  }
-  return false;
-}
-
-/**
  * Deletes a throwaway. Artifacts go to the trash: no API purges it, and the
  * nightly purgeDeleted hard-deletes trash after LIMITS.softDeleteDays, so
  * they stay bounded. Throwaway spaces hold no artifact and are deleted.
@@ -907,13 +883,14 @@ export async function dispose(side: Side, x: Throwaway): Promise<void> {
   LIVE.get(side.t)?.delete(x);
   if (x.artifactId) {
     const id = x.artifactId;
-    await cleanup(side, `/api/v1/artifacts/${id}`).catch(async (e) => {
-      // A delete probe may have trashed it: clean only if it is in the trash.
-      const trashed =
-        e instanceof HttpError &&
-        e.status === 404 &&
-        (await inTrash(side, x, id));
-      if (!trashed) throw e;
+    const A = `/api/v1/artifacts/${id}`;
+    await cleanup(side, A).catch(async (e) => {
+      // A 404 is clean only when a delete probe already trashed it. Shared
+      // space trash isn't listable, so prove it: undelete must answer 200
+      // (it was in the trash), then the delete must answer 200 or 204.
+      if (!(e instanceof HttpError && e.status === 404)) throw e;
+      await api(side.t, side.pat, "POST", `${A}/undelete`, undefined, [200]);
+      await cleanup(side, A);
     });
   }
   if (x.space?.cloneId)
