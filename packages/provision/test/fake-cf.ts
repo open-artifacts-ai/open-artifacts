@@ -662,10 +662,16 @@ export class FakeCf {
     const stmts = splitSql(sql);
     return stmts.map((s) => {
       const st = db.prepare(s);
+      const total = () =>
+        Number(
+          (db.prepare("SELECT total_changes() AS c").get() as { c: number }).c,
+        );
+      const before = total();
       const rows = st.all(...(stmts.length === 1 ? params : []));
-      const changes = Number(
-        (db.prepare("SELECT changes() AS c").get() as { c: number }).c,
-      );
+      // Real D1 counts rows a trigger writes too (measured on staging: a
+      // one-row UPDATE of installs reports 2, from installs_row_version), so
+      // the fake reports total_changes(), not SQLite's changes().
+      const changes = total() - before;
       return {
         results: rows,
         success: true,
