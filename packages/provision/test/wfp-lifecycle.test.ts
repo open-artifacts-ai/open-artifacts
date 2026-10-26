@@ -44,6 +44,7 @@ import {
   NAMESPACES,
   ProdLocked,
   ProvisionRefused,
+  TURNSTILE_TEST_KEYS,
   type WfpOptions,
   WfpProvisioner,
 } from "../src/wfp.js";
@@ -3846,5 +3847,100 @@ describe("H-DV: the stored row a create writes (the scheduler's purge fixture)",
     if (process.env.UPDATE_FIXTURES === "1")
       writeFileSync(FIXTURE, `${JSON.stringify(got, null, 2)}\n`);
     expect(JSON.parse(readFileSync(FIXTURE, "utf8"))).toEqual(got);
+  });
+});
+
+describe("Turnstile test keys (red-line installs only)", () => {
+  const RL_VARS = { ...HOOK_VARS, ...CODES };
+  const siteKeyOf = (meta: { bindings: { name: string; text?: string }[] }) =>
+    meta.bindings.find((b) => b.name === "TURNSTILE_SITE_KEY")?.text;
+
+  it("are Cloudflare's always-pass pair", () => {
+    expect(TURNSTILE_TEST_KEYS).toEqual({
+      sitekey: "1x00000000000000000000AA",
+      secret: "1x0000000000000000000000000000000AA",
+    });
+  });
+
+  it("a test-hooks install with codes on gets the test pair, never the env widget", async () => {
+    const s = setup();
+    const from = s.fake.log.length;
+    const inst = keep(
+      await s.p.create(
+        input("rl-a", { testHooks: true, bundle: "redline", vars: RL_VARS }),
+      ),
+    );
+    const meta = metaOf(uploads(s.fake, from)[0]?.body as string);
+    expect(siteKeyOf(meta)).toBe(TURNSTILE_TEST_KEYS.sitekey);
+    expect(s.scriptOf(inst.id)?.secrets.get("TURNSTILE_SECRET")).toBe(
+      TURNSTILE_TEST_KEYS.secret,
+    );
+    expect(JSON.stringify(s.fake.raw)).not.toContain(TS.secret);
+    // No widget lookup: the test sitekey is not an account widget.
+    expect(
+      s.fake.log
+        .slice(from)
+        .some((l) => String(l.path).includes("/challenges/widgets/")),
+    ).toBe(false);
+  });
+
+  it("an install without test hooks refuses a test key as the env's widget, before any write", async () => {
+    for (const k of [
+      TURNSTILE_TEST_KEYS,
+      { sitekey: "2x00000000000000000000AB", secret: TS.secret },
+      { sitekey: TS.sitekey, secret: "3x0000000000000000000000000000000AA" },
+    ]) {
+      const s = setup();
+      const p = s.mk({ turnstile: k });
+      const n = s.fake.writes().length;
+      const e = await fails(p.create(input("acme", { vars: CODES })));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(/test Turnstile key/);
+      expect(s.fake.writes().length).toBe(n);
+    }
+  });
+
+  it("prod refuses a test key as its widget", async () => {
+    const s = setup({ env: "prod" });
+    const p = s.mk({ turnstile: TURNSTILE_TEST_KEYS });
+    const e = await fails(p.create(input("acme", { vars: CODES })));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/test Turnstile key/);
+  });
+
+  it("updateVars on a test-hooks install re-sends the test secret even when one is set, and renders the test sitekey", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("rl-a", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
+      ),
+    );
+    // As on staging today: the env's real secret is already on the install.
+    s.scriptOf(inst.id)?.secrets.set("TURNSTILE_SECRET", TS.secret);
+    const from = s.fake.log.length;
+    keep(await s.p.updateVars(inst.id, RL_VARS));
+    const meta = metaOf(uploads(s.fake, from)[0]?.body as string);
+    expect(siteKeyOf(meta)).toBe(TURNSTILE_TEST_KEYS.sitekey);
+    expect(s.scriptOf(inst.id)?.secrets.get("TURNSTILE_SECRET")).toBe(
+      TURNSTILE_TEST_KEYS.secret,
+    );
+  });
+
+  it("rotation never touches a test-hooks install", async () => {
+    const s = setup();
+    const rl = keep(
+      await s.p.create(
+        input("rl-a", { testHooks: true, bundle: "redline", vars: RL_VARS }),
+      ),
+    );
+    const a = keep(await s.p.create(input("alpha", { vars: CODES })));
+    const p = s.mk({ turnstile: { sitekey: TS.sitekey, secret: TS_NEXT } });
+    const out = keep(await p.rotateTurnstileSecret("staging"));
+    const byId = Object.fromEntries(out.map((x) => [x.id, x]));
+    expect(byId[rl.id]).toMatchObject({ ok: true, rotated: false });
+    expect(byId[a.id]).toMatchObject({ ok: true, rotated: true });
+    expect(s.scriptOf(rl.id)?.secrets.get("TURNSTILE_SECRET")).toBe(
+      TURNSTILE_TEST_KEYS.secret,
+    );
   });
 });
