@@ -144,6 +144,18 @@ export const HOSTED_DOMAINS: Readonly<
   }),
 });
 
+/**
+ * The env's broker Google sign-in client (public), equal to
+ * apps/auth-broker/wrangler.jsonc's env.<env>.vars.GOOGLE_CLIENT_ID (a test
+ * pins it). null: that env has no broker client yet.
+ */
+export const BROKER_GOOGLE_CLIENT_ID: Readonly<Record<Env, string | null>> =
+  Object.freeze({
+    staging:
+      "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
+    prod: null,
+  });
+
 /** The platform HOSTS KV namespace title (host -> install id). */
 export const hostsKvTitle = (env: Env): string => platformNames(env).hosts;
 
@@ -525,6 +537,8 @@ export interface InstallStatus {
    */
   sessionCut: {
     pending: true;
+    /** A google-on upload may have gone live (session_cut_armed). */
+    armed: boolean;
     owedRelativeToRecordedVars: boolean;
   } | null;
   /**
@@ -937,6 +951,73 @@ export class WfpProvisioner {
     return { rec, mainModule, modules, assets, template, migrations, floor };
   }
 
+  /**
+   * T8 review M1: the broker transport, for every caller. With the broker
+   * on, AUTH_BROKER_URL is exactly https://auth.<the env's app domain>:
+   * every render (create, upgrade, rollback, var change) gets it, and a
+   * caller value that differs is refused at create and updateVars. The
+   * stored vars stay as the caller gave them. Google with the
+   * broker off is refused: the server would refuse google anyway, and a
+   * create must never succeed with sign-in silently off.
+   */
+  private brokerVars(
+    vars: Record<string, string>,
+    mode: "check" | "render" = "check",
+  ): Record<string, string> {
+    if (!this.o.brokerEnabled) return vars;
+    const client = BROKER_GOOGLE_CLIENT_ID[this.env];
+    const want = `https://auth.${HOSTED_DOMAINS[this.env].app}`;
+    // L7: only create and updateVars refuse; a render (upgrade, rollback)
+    // replaces a stale stored value with the derived one, noted.
+    const refuse = (why: string) => {
+      if (mode === "check") throw new ProvisionRefused(why);
+      this.notes.push(`render: ${why}; rendering the derived value`);
+    };
+    if (!client)
+      refuse(
+        `the broker is on but there is no ${this.env} broker Google client: no prod Google client yet`,
+      );
+    if (vars.AUTH_BROKER_URL !== undefined && vars.AUTH_BROKER_URL !== want)
+      refuse(`AUTH_BROKER_URL must be ${want}, the ${this.env} broker`);
+    if (
+      client &&
+      vars.GOOGLE_CLIENT_ID !== undefined &&
+      vars.GOOGLE_CLIENT_ID !== client
+    )
+      refuse(
+        `GOOGLE_CLIENT_ID must be ${client}, the ${this.env} broker's client`,
+      );
+    const { GOOGLE_CLIENT_ID: _old, ...rest } = vars;
+    return {
+      ...rest,
+      AUTH_BROKER_URL: want,
+      ...(client ? { GOOGLE_CLIENT_ID: client } : {}),
+    };
+  }
+
+  /** M1: google with the broker off is refused (after the other var checks). */
+  /**
+   * Every google precondition the server checks (apps/server/src/auth/
+   * config.ts googleConfig) that provision does not render itself, in one
+   * place: the broker on, and AUTH_DOMAINS non-empty after the server's own
+   * parse (@oa/auth-core). The rest (client id, HOSTED, AUTH_BROKER_URL,
+   * INSTALL_ID, BROKER_SIGNING_KEY) are rendered; a test pins the list.
+   */
+  private checkGoogleBroker(vars: Record<string, string>): void {
+    const google = googleNewlyEnabled({}, vars);
+    if (
+      !this.o.brokerEnabled &&
+      (google || vars.GOOGLE_CLIENT_ID !== undefined)
+    )
+      throw new ProvisionRefused(
+        "google sign-in on a hosted install needs the sign-in broker (brokerEnabled)",
+      );
+    if (google && this.registryDomainsOf(vars).length === 0)
+      throw new ProvisionRefused(
+        "google needs AUTH_DOMAINS: the server refuses google when it is empty",
+      );
+  }
+
   /** Belt and braces before every upload: hooks only reach a staging test install. */
   private assertHooksAllowed(variant: BundleVariant, testHooks: boolean): void {
     if (variant === "release") return;
@@ -1038,10 +1119,12 @@ export class WfpProvisioner {
       throw new ProvisionRefused("resumeId is not an install id");
     const testHooks = i.testHooks === true;
     const vars = i.vars ?? {};
+    this.brokerVars(vars);
     this.checkVariant(i, vars);
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars);
     this.checkEmailCodeDomain(vars, "domains");
+    this.checkGoogleBroker(vars);
     if (this.o.brokerEnabled) this.registryDomainsOf(vars);
     const rel = await this.readRelease(i);
 
@@ -1296,7 +1379,7 @@ export class WfpProvisioner {
     );
     const { sitekey, ...install } = m;
     const meta = userWorkerMetadata(
-      { id, ...install },
+      { id, ...install, vars: this.brokerVars(install.vars, "render") },
       {
         d1Id: r.d1Id,
         kvId: r.kvId,
@@ -2028,6 +2111,16 @@ export class WfpProvisioner {
   }
 
   /**
+   * The token checks every operation runs first (active, not_before, an
+   * expiry at most MAX_TOKEN_DAYS out, Workers Scripts Read), on their own
+   * and with no write, so a caller (the oa:hosted CLI) can refuse a token
+   * before its own first write. `nearExpiry` as in each operation.
+   */
+  async verifyToken(nearExpiry: "refuse" | "warn"): Promise<void> {
+    await this.checkToken(nearExpiry === "warn" ? "warn" : "refuse");
+  }
+
+  /**
    * R-N1: the row as an operator needs it, with no lease taken: state,
    * versions, the lock and any session cut still owed.
    */
@@ -2063,6 +2156,7 @@ export class WfpProvisioner {
             ? null
             : {
                 pending: true,
+                armed: cut.armed,
                 owedRelativeToRecordedVars:
                   row.vars !== null &&
                   googleNewlyEnabled(cut.base, JSON.parse(row.vars)),
@@ -2550,7 +2644,18 @@ export class WfpProvisioner {
       // H1: computed from the snapshot the claim pins.
       const prev = this.currentVars(row);
       const vars = { ...nextVars };
+      this.brokerVars(vars);
       const m = this.renderInputs(row, vars);
+      this.checkGoogleBroker(vars);
+      // T8 review M2: only create's broker step issues the signing key and
+      // the first registry entry. Without them google can't work, and the
+      // session cut would log everyone out for nothing.
+      // TODO(Platform): a lease-held broker-enrol op for active installs, so
+      // google can be turned on for an existing install.
+      if (googleNewlyEnabled(prev, vars) && row.broker_kid === null)
+        throw new ProvisionRefused(
+          `install ${id} has no broker key; the broker key is only issued at create, so turning google on for an existing install is a follow-up (Platform)`,
+        );
       // H-RD: only the paths that write the registry check its domains (here
       // and create); upgrade and rollback never do, so a rollback is never
       // blocked by them.

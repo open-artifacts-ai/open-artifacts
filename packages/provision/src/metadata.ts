@@ -81,6 +81,7 @@ export const HOSTED_ADDED = [
   "AUTH_DOMAINS",
   "AUTH_DOMAIN_JOIN",
   "AUTH_BROKER_URL",
+  "GOOGLE_CLIENT_ID",
   "NIGHTLY_PUBKEY",
   "TEST_HOOKS",
   "TEST_HOOK_KEY",
@@ -115,6 +116,12 @@ export const HOSTED_VARS: Record<string, (v: string) => string | undefined> = {
     v === "invite"
       ? undefined
       : 'hosted installs must use "invite" until domain ownership is proven (#572)',
+  // Hosted: only the env's broker sign-in client (wfp.ts brokerVars checks
+  // the exact value). Public; GOOGLE_CLIENT_SECRET is never a hosted var.
+  GOOGLE_CLIENT_ID: (v) =>
+    /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(v)
+      ? undefined
+      : "expected a Google OAuth client id",
   AUTH_BROKER_URL: (v) =>
     /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?(?:\/\S*)?$/i.test(v)
       ? undefined
@@ -135,7 +142,24 @@ export const HOSTED_VARS: Record<string, (v: string) => string | undefined> = {
       : "expected base64url of exactly 32 bytes",
 };
 
+/**
+ * Why a caller var is refused (unknown name, or a value its check rejects),
+ * or undefined: the allowlist userWorkerMetadata applies, for callers (the
+ * oa:hosted CLI) that refuse before any call.
+ */
+export function hostedVarProblem(k: string, v: string): string | undefined {
+  const check = Object.hasOwn(HOSTED_VARS, k)
+    ? HOSTED_VARS[k]
+    : Object.hasOwn(TUNABLES, k)
+      ? (x: string) => (x === "" ? undefined : TUNABLES[k]?.check(x))
+      : undefined;
+  if (!check) return `unknown var ${JSON.stringify(k)}`;
+  const why = check(v);
+  return why ? `invalid var ${k}: ${why}` : undefined;
+}
+
 const PASSTHROUGH = [
+  "GOOGLE_CLIENT_ID",
   "EMAIL_DAILY_CAP",
   "CODE_EMAILS_PER_DAY",
   "AUTH_PROVIDERS",
@@ -344,14 +368,8 @@ export function userWorkerMetadata(
 
   // vars: allowlist first
   for (const [k, v] of Object.entries(i.vars)) {
-    const check = Object.hasOwn(HOSTED_VARS, k)
-      ? HOSTED_VARS[k]
-      : Object.hasOwn(TUNABLES, k)
-        ? (x: string) => (x === "" ? undefined : TUNABLES[k]?.check(x))
-        : undefined;
-    if (!check) throw new Error(`unknown var ${JSON.stringify(k)}`);
-    const why = check(v);
-    if (why) throw new Error(`invalid var ${k}: ${why}`);
+    const why = hostedVarProblem(k, v);
+    if (why) throw new Error(why);
   }
   if (i.vars.TEST_DOMAIN !== undefined && (!i.testHooks || r.env === "prod"))
     throw new Error(
@@ -368,7 +386,8 @@ export function userWorkerMetadata(
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean)
-        .concat("usage_off"),
+        // Hosted M1 is the spaces product (Manager ruling 2026-10-26): always on.
+        .concat("spaces", "usage_off"),
     ),
   ].join(",");
 

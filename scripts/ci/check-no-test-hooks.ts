@@ -16,6 +16,7 @@ const HOOK_PATHS = [
   "/__test/session",
   "/__test/otp/latest",
   "/__test/oauth-client",
+  "/__test/audit",
   "/__test/x",
 ];
 const METHODS = ["GET", "POST"];

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// P3 T17: the session hook's space seeding is test-build only. The release
+// P3 T17: the session hook's space seeding (and the audit hook's read) is
+// test-build only. The release
 // bundle (define __OA_TEST_HOOKS_ALLOWED__ false) holds none of its SQL; the
 // redline bundle (define true) does, so the check can't pass vacuously.
 // Needs `pnpm --filter @oa/provision build` and apps/server/dist-assets
@@ -17,6 +18,8 @@ const MARKERS = [
   "substr(fu.email, length(fu.email) - length(?5)) <> '@' || ?5",
   "where substr(?1, 1, 5) = 'test-'",
   "and exists (select 1 from spaces where id = ?1 and kind = 'shared' and deleted_at is null)",
+  // The audit hook's read (test_hook rows only).
+  "where actor_kind = 'test_hook' and substr(action, 1, 10) = 'test_hook.' and at >= ?1",
 ];
 
 function bundle(variant: "release" | "redline"): string {
