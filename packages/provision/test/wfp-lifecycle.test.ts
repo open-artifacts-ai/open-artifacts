@@ -3454,6 +3454,37 @@ describe("H-DV fix 2: delete unmaps first and needs a fresh confirmed revoke", (
     expect(row(s, inst.id).directory_revoke).toBe("pending");
   });
 
+  it("ordering: the DIRECTORY_REGISTRY entry stays until the revoke is done, and goes only after", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const inDir = () => s.fake.kvValues(s.dirId).has(registryKey(inst.id));
+    expect(inDir()).toBe(true);
+    const seen: boolean[] = [];
+    let n = 0;
+    s.fake.revoker = (_db, id) => {
+      // The broker's /revoke resolves the install through this entry.
+      seen.push(inDir());
+      if (++n === 3) setRevoke(s, id, "done");
+    };
+    expect(keep(await s.p.delete(inst.id, inst.id)).state).toBe("deleted");
+    expect(seen).toEqual([true, true, true]);
+    expect(inDir()).toBe(false);
+  });
+
+  it("ordering: a failed or still-pending revoke never removes the DIRECTORY_REGISTRY entry", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const inDir = () => s.fake.kvValues(s.dirId).has(registryKey(inst.id));
+    s.fake.revoker = null;
+    await fails(s.p.delete(inst.id, inst.id));
+    expect(row(s, inst.id).directory_revoke).toBe("pending");
+    expect(inDir()).toBe(true);
+    setRevoke(s, inst.id, "failed");
+    await fails(s.mk().delete(inst.id, inst.id));
+    expect(inDir()).toBe(true);
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
   it("M1b: a stale done from an earlier attempt does not unlock teardown", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
