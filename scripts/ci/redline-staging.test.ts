@@ -81,6 +81,46 @@ describe("redline-staging.yml", () => {
     );
   });
 
+  it("order: install, build, write the secrets, run the suite, scan, remove", () => {
+    const at = (pred: (s: Record<string, any>) => boolean) =>
+      steps.findIndex(pred);
+    const install = at((s) => s.run === "pnpm install --frozen-lockfile");
+    const build = at((s) => s.run === "pnpm --filter @oa/provision build");
+    const write = at((s) => JSON.stringify(s).includes("secrets."));
+    const suite = at((s) => (s.run ?? "").includes("@oa/redline live"));
+    const scan = at((s) => s.id === "scan");
+    const rm = at((s) => (s.run ?? "").includes("rm -rf"));
+    expect(install).toBeGreaterThan(-1);
+    expect([install, build, write, suite, scan, rm]).toEqual(
+      [install, build, write, suite, scan, rm].slice().sort((x, y) => x - y),
+    );
+    expect(new Set([install, build, write, suite, scan, rm]).size).toBe(6);
+    // Nothing but the suite runs code while the secret files exist.
+    expect(steps.slice(write + 1, rm).map((s) => s.id ?? s.name)).toEqual([
+      "Run the suite",
+      "scan",
+    ]);
+    expect(
+      steps.filter((s) => (s.run ?? "").includes("@oa/provision build")),
+    ).toHaveLength(1);
+  });
+
+  it("a secret file's contents anywhere in the report fails the job and stops the upload", () => {
+    const scan = steps.find((s) => s.id === "scan");
+    expect(scan?.if).toBe("always()");
+    expect(scan?.run).toContain('[ -d "$d" ] && [ -d "$r" ] || exit 0');
+    expect(scan?.run).toContain(
+      'if grep -rqF -- "$(cat "$f")" "$r"; then echo "secret in report: ${f##*/}"; exit 1; fi',
+    );
+    const up = steps.find((s) =>
+      String(s.uses ?? "").startsWith("actions/upload-artifact"),
+    );
+    expect(up?.if).toBe("always() && steps.scan.outcome == 'success'");
+    expect(steps.indexOf(up as object)).toBeGreaterThan(
+      steps.indexOf(scan as object),
+    );
+  });
+
   it("uploads only the report directory", () => {
     const up = steps.filter((s) =>
       String(s.uses ?? "").startsWith("actions/upload-artifact"),

@@ -29,6 +29,8 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: pnpm install --frozen-lockfile
+      # Before any secret file exists: only the suite runs while they do.
+      - run: pnpm --filter @oa/provision build
       - name: Write the suite's secrets as 0600 files
         env:
           RL_A_PAT: ${{ secrets.REDLINE_RL_A_PAT }}
@@ -58,13 +60,24 @@ jobs:
           export REDLINE_TARGETS
           export REDLINE_REPORT="$RUNNER_TEMP/redline-report/report.json"
           mkdir -p "$RUNNER_TEMP/redline-report"
-          pnpm --filter @oa/provision build
           pnpm --filter @oa/redline live
+      # Artifacts are not masked: a secret echoed into the report stops the upload.
+      - id: scan
+        name: No secret in the report
+        if: always()
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/redline-secrets"
+          r="$RUNNER_TEMP/redline-report"
+          [ -d "$d" ] && [ -d "$r" ] || exit 0
+          for f in "$d"/*; do
+            if grep -rqF -- "$(cat "$f")" "$r"; then echo "secret in report: ${f##*/}"; exit 1; fi
+          done
       - name: Remove the secret files
         if: always()
         run: rm -rf "$RUNNER_TEMP/redline-secrets"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
+        if: always() && steps.scan.outcome == 'success'
         with:
           name: redline-report
           path: ${{ runner.temp }}/redline-report
