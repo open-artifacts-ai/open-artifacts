@@ -1,0 +1,201 @@
+{
+  "ownerEmail": "owner@finqore.test",
+  "inputsHash": "813a4989a0ae625335a38e0bf23a0b861eb1edb5350680b49bcb5247a9a0e6e9",
+  "version": "0.23.0",
+  "vars": {
+    "AUTH_DOMAINS": "finqore.test",
+    "AUTH_PROVIDERS": "google"
+  },
+  "metadata": {
+    "assets": {
+      "config": {
+        "not_found_handling": "single-page-application",
+        "run_worker_first": true
+      }
+    },
+    "bindings": [
+      {
+        "name": "APP_HOST",
+        "text": "finqore.open-artifacts-staging.app",
+        "type": "plain_text"
+      },
+      {
+        "name": "CONTENT_HOST",
+        "text": "finqore.open-artifacts-staging.page",
+        "type": "plain_text"
+      },
+      {
+        "name": "EMAIL_FROM",
+        "text": "noreply@finqore.mail.open-artifacts-staging.app",
+        "type": "plain_text"
+      },
+      {
+        "name": "SERVER_THUMBNAILS",
+        "text": "on",
+        "type": "plain_text"
+      },
+      {
+        "name": "ENVIRONMENT",
+        "text": "production",
+        "type": "plain_text"
+      },
+      {
+        "name": "PLAN",
+        "text": "paid",
+        "type": "plain_text"
+      },
+      {
+        "name": "PUBLIC_HOME",
+        "text": "",
+        "type": "plain_text"
+      },
+      {
+        "name": "DATA_DOC_BYTES",
+        "text": "",
+        "type": "plain_text"
+      },
+      {
+        "name": "DATA_DAILY_WRITES",
+        "text": "",
+        "type": "plain_text"
+      },
+      {
+        "name": "EMBED_ORIGINS",
+        "text": "",
+        "type": "plain_text"
+      },
+      {
+        "name": "EMBED_ALLOW_SAME_SITE",
+        "text": "",
+        "type": "plain_text"
+      },
+      {
+        "name": "WORKER_NAME",
+        "text": "oa-s-{{INSTALL_ID}}",
+        "type": "plain_text"
+      },
+      {
+        "name": "HOSTED",
+        "text": "1",
+        "type": "plain_text"
+      },
+      {
+        "name": "INSTALL_ID",
+        "text": "{{INSTALL_ID}}",
+        "type": "plain_text"
+      },
+      {
+        "name": "FEATURES",
+        "text": "spaces,usage_off",
+        "type": "plain_text"
+      },
+      {
+        "name": "AUTH_DOMAIN_JOIN",
+        "text": "invite",
+        "type": "plain_text"
+      },
+      {
+        "name": "GOOGLE_CLIENT_ID",
+        "text": "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
+        "type": "plain_text"
+      },
+      {
+        "name": "AUTH_PROVIDERS",
+        "text": "google",
+        "type": "plain_text"
+      },
+      {
+        "name": "AUTH_DOMAINS",
+        "text": "finqore.test",
+        "type": "plain_text"
+      },
+      {
+        "name": "AUTH_BROKER_URL",
+        "text": "https://auth.open-artifacts-staging.app",
+        "type": "plain_text"
+      },
+      {
+        "name": "BROWSER",
+        "type": "browser"
+      },
+      {
+        "name": "EMAIL",
+        "type": "send_email"
+      },
+      {
+        "name": "ASSETS",
+        "type": "assets"
+      },
+      {
+        "id": "{{D1_ID}}",
+        "name": "DB",
+        "type": "d1"
+      },
+      {
+        "bucket_name": "oa-s-{{INSTALL_ID}}",
+        "name": "FILES",
+        "type": "r2_bucket"
+      },
+      {
+        "name": "OAUTH_KV",
+        "namespace_id": "{{KV_ID}}",
+        "type": "kv_namespace"
+      },
+      {
+        "class_name": "ArtifactRuntime",
+        "name": "ARTIFACT_RUNTIME",
+        "type": "durable_object_namespace"
+      },
+      {
+        "class_name": "UserPresence",
+        "name": "USER_PRESENCE",
+        "type": "durable_object_namespace"
+      },
+      {
+        "class_name": "DirectorySync",
+        "name": "DIRECTORY_SYNC",
+        "type": "durable_object_namespace"
+      },
+      {
+        "name": "RL_ANON",
+        "namespace_id": "1000000",
+        "simple": {
+          "limit": 30,
+          "period": 60
+        },
+        "type": "ratelimit"
+      },
+      {
+        "name": "RL_AUTH",
+        "namespace_id": "1000001",
+        "simple": {
+          "limit": 20,
+          "period": 60
+        },
+        "type": "ratelimit"
+      },
+      {
+        "name": "RL_DIRECTORY",
+        "namespace_id": "1000002",
+        "simple": {
+          "limit": 30,
+          "period": 60
+        },
+        "type": "ratelimit"
+      }
+    ],
+    "compatibility_date": "2026-01-01",
+    "compatibility_flags": ["nodejs_compat"],
+    "keep_bindings": ["secret_text", "secret_key"],
+    "main_module": "index.js",
+    "observability": {
+      "enabled": true,
+      "logs": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "invocation_logs": false
+      }
+    },
+    "tags": ["{{INSTALL_ID}}", "v0.23.0"]
+  }
+}

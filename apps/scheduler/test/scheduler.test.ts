@@ -155,7 +155,7 @@ const NOW = Date.UTC(2026, 9, 24, 3, 17);
 
 /** The whole log vocabulary: install ids, fixed categories and counts. */
 const LOG_LINE =
-  /^(?:nightly failed (?:timeout|not_found|canceled|exception) i[a-z0-9]{11}|nightly skipped (?:state|deadline|capped|recheck|db_error) i[a-z0-9]{11}|nightly db_error i[a-z0-9]{11}|nightly leaked i[a-z0-9]{11}|nightly summary active=\d+ ok=\d+ failed=\d+ skipped=\d+ capped=\d+ db_errors=\d+ leaked=\d+|nightly invalid ids=\d+|nightly scale active=\d+ over 300|nightly aborted (?:env|exception)|email-quota skipped (?:no_token|config)|email-quota failed (?:http|graphql|timeout|shape)|email-quota (?:ok|warn) sent=\d+ limit=\d+ pct=\d+)$/;
+  /^(?:nightly failed (?:timeout|not_found|canceled|exception) i[a-z0-9]{11}|nightly skipped (?:state|deadline|capped|recheck|db_error) i[a-z0-9]{11}|nightly db_error i[a-z0-9]{11}|nightly leaked i[a-z0-9]{11}|nightly summary active=\d+ ok=\d+ failed=\d+ skipped=\d+ capped=\d+ db_errors=\d+ leaked=\d+|nightly invalid ids=\d+|nightly scale active=\d+ over 300|nightly aborted (?:env|exception)|email-quota skipped (?:no_token|config)|email-quota failed (?:http|graphql|timeout|shape)|email-quota (?:ok|warn) sent=\d+ limit=\d+ pct=\d+|directory-revoke (?:done|unsupported|retry|failed|db_error) i[a-z0-9]{11}|directory-revoke invalid ids=\d+|directory-revoke aborted exception|owner-email purged count=\d+|owner-email failed db)$/;
 
 const DAY = 86_400_000;
 const GOLDEN = 0.3819660112501051;
@@ -1052,6 +1052,8 @@ describe("scheduled", () => {
         "nightly summary active=3 ok=1 failed=2 skipped=0 capped=0 db_errors=0 leaked=0",
         // No EMAIL_QUOTA_TOKEN in the test env: the quota alert skips.
         "email-quota skipped no_token",
+        // H-DV: the owner-email purge runs last on the nightly cron.
+        "owner-email purged count=0",
       ].sort(),
     );
     // Every line is ids, fixed categories and counts only.
@@ -1105,6 +1107,7 @@ describe("scheduled", () => {
     expect(lines).toEqual([
       "nightly summary active=0 ok=0 failed=0 skipped=0 capped=0 db_errors=0 leaked=0",
       "email-quota skipped no_token",
+      "owner-email purged count=0",
     ]);
     expect(f.scripts).toEqual([]);
   });
@@ -1160,6 +1163,7 @@ describe("scheduled: the email-quota alert", () => {
     expect(lines).toEqual([
       "nightly summary active=2 ok=2 failed=0 skipped=0 capped=0 db_errors=0 leaked=0",
       "email-quota warn sent=85 limit=100 pct=85",
+      "owner-email purged count=0",
     ]);
     for (const l of lines) expect(l).toMatch(LOG_LINE);
   });
@@ -1188,6 +1192,7 @@ describe("scheduled: the email-quota alert", () => {
         `nightly failed exception ${idOf(1)}`,
         "nightly summary active=2 ok=1 failed=1 skipped=0 capped=0 db_errors=0 leaked=0",
         "email-quota failed http",
+        "owner-email purged count=0",
       ].sort(),
     );
     for (const l of lines) expect(l).toMatch(LOG_LINE);

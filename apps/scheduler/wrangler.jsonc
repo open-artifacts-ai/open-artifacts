@@ -1,6 +1,8 @@
 // Hosted nightly scheduler (P1 Task 7): user Workers in a dispatch namespace
-// get no cron triggers, so this Worker's one cron calls scheduled() on every
-// active install's script (platform D1 `installs`), 6 at a time, 25 s each.
+// get no cron triggers, so this Worker's nightly cron calls scheduled() on
+// every active install's script (platform D1 `installs`), 6 at a time, 25 s
+// each. Its second cron, every 2 minutes (H-DV), calls a deleting install's
+// directory-disconnect job so delete can revoke the Google grant first.
 //
 // Deploy with --env staging or --env prod only (docs/ops/hosted.md): the top
 // level has no name and no main, so a deploy without --env is refused, even
@@ -30,7 +32,7 @@
         "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_STAGING}}"
       },
       "observability": { "enabled": true },
-      "triggers": { "crons": ["17 3 * * *"] },
+      "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [
         { "binding": "DISPATCHER", "namespace": "oa-staging" }
       ],
@@ -53,7 +55,7 @@
         "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_PROD}}"
       },
       "observability": { "enabled": true },
-      "triggers": { "crons": ["17 3 * * *"] },
+      "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [
         { "binding": "DISPATCHER", "namespace": "oa-prod" }
       ],

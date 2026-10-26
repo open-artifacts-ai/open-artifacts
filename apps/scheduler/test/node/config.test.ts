@@ -37,7 +37,8 @@ describe("wrangler.jsonc", () => {
         EMAIL_DAILY_LIMIT: `{{EMAIL_DAILY_LIMIT_${env.toUpperCase()}}}`,
       });
       expect(e.vars).not.toHaveProperty("EMAIL_QUOTA_TOKEN");
-      expect(e.triggers).toEqual({ crons: ["17 3 * * *"] });
+      // The nightly run, and H-DV's directory revoke tick every 2 minutes.
+      expect(e.triggers).toEqual({ crons: ["17 3 * * *", "*/2 * * * *"] });
       expect(e.dispatch_namespaces).toEqual([
         { binding: "DISPATCHER", namespace: NAMESPACES[env] },
       ]);
