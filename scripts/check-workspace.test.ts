@@ -26,12 +26,18 @@ const packages: Record<string, string> = {
   "packages/runtime": "@oa/runtime",
   "packages/render": "@oa/render",
   "scripts/setup": "@oa/setup",
+  "tests/redline": "@oa/redline",
 };
 
 describe("workspace", () => {
   it("declares exactly the globs", () => {
     const ws = parse(read("pnpm-workspace.yaml"));
-    expect(ws.packages).toEqual(["apps/*", "packages/*", "scripts/*"]);
+    expect(ws.packages).toEqual([
+      "apps/*",
+      "packages/*",
+      "scripts/*",
+      "tests/*",
+    ]);
   });
 
   it.each(Object.entries(packages))("%s is %s", (dir, name) => {

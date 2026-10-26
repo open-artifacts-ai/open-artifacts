@@ -262,7 +262,7 @@ jobs:
   # ---------- hosted release files (T3b) ----------
   # Stable releases only. CI signs and never uploads to Cloudflare: the signed
   # tars and .sig.json files are attached to the GitHub release, and
-  # publishRelease (on a laptop, provisioning token) verifies them and copies
+  # publishRelease (on a laptop, the env's R2 API token) verifies them and copies
   # them to R2. The signing key never shares a job with installed code.
   hosted-guard:
     needs: [release-please]

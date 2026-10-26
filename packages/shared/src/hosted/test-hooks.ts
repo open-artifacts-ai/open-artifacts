@@ -22,6 +22,7 @@ export const TEST_HOOKS = {
   session: "/__test/session",
   otpLatest: "/__test/otp/latest",
   oauthClient: "/__test/oauth-client",
+  audit: "/__test/audit",
 } as const;
 
 /** POST TEST_HOOKS.session -> TestSessionResult (a real __Host-oa_session value, p: "test"). */
@@ -54,6 +55,29 @@ export const OAuthClientHookResultSchema = z.object({
   accessToken: z.string(),
 });
 export type OAuthClientHookResult = z.infer<typeof OAuthClientHookResultSchema>;
+
+/** Most rows POST TEST_HOOKS.audit returns. */
+export const TEST_AUDIT_LIMIT = 200;
+
+/** POST TEST_HOOKS.audit: `since` is ms since the epoch (rows with at >= since). */
+export const TestAuditInputSchema = z.strictObject({
+  since: z.number().int().nonnegative(),
+});
+export type TestAuditInput = z.infer<typeof TestAuditInputSchema>;
+/** One `test_hook.*` audit row. Never any other event. */
+export const TestAuditEventSchema = z.object({
+  action: z.string().startsWith("test_hook."),
+  at: z.number(),
+  actorId: z.string().nullable(),
+  targetId: z.string().nullable(),
+  detail: z.record(z.string(), z.unknown()),
+});
+export type TestAuditEvent = z.infer<typeof TestAuditEventSchema>;
+/** Newest first, at most TEST_AUDIT_LIMIT. */
+export const TestAuditResultSchema = z.object({
+  events: z.array(TestAuditEventSchema),
+});
+export type TestAuditResult = z.infer<typeof TestAuditResultSchema>;
 
 /**
  * GET /healthz. testHooks: true only on staging installs (hooks mounted);

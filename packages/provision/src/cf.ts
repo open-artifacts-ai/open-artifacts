@@ -58,6 +58,8 @@ export interface TurnstileWidget {
   name: string;
   domains: string[];
   mode?: string;
+  /** Only on a single-widget GET; never printed. */
+  secret?: string;
 }
 
 export interface Cf {
@@ -119,31 +121,28 @@ export interface Cf {
   ): Promise<{ jwt: string }>;
   /** GET a Turnstile widget by sitekey (read-only); null when there is none. */
   turnstileWidget(sitekey: string): Promise<TurnstileWidget | null>;
+  /** Every Turnstile widget on the account (no secrets), paginated. */
+  turnstileList(): Promise<TurnstileWidget[]>;
   /**
-   * R2 objects in an env's releases bucket (platformNames(env).releases),
+   * POST a widget (turnstile-init only), one try: a lost reply may still have
+   * created it, so the caller lists by name before any retry.
+   */
+  turnstileCreate(w: {
+    name: string;
+    domains: string[];
+    mode: "managed";
+  }): Promise<{ sitekey: string; secret: string }>;
+  /**
+   * Reads of an env's releases bucket (platformNames(env).releases),
    * account-scoped REST routes only. null when the object does not exist.
+   * H-S3: there is no REST write here; publish writes go through R2's S3 API
+   * (r2s3.ts), the only endpoint that enforces conditional PutObject.
    */
   r2ObjectGet(
     bucket: string,
     key: string,
     opts?: { maxBytes?: number },
   ): Promise<{ bytes: Uint8Array; etag: string } | null>;
-  /** Deletes a probe/<32 hex> key only (probeR2Conditionals); any other key is refused. */
-  r2ObjectDelete(bucket: string, key: string): Promise<void>;
-  r2ObjectHead(
-    bucket: string,
-    key: string,
-  ): Promise<{ size: number; etag: string } | null>;
-  /**
-   * A conditional PUT; a failed condition is a CfError with status 412. A
-   * 412 on a retry is accepted only when the object holds exactly `bytes`.
-   */
-  r2ObjectPut(
-    bucket: string,
-    key: string,
-    bytes: Uint8Array,
-    cond: R2PutCondition,
-  ): Promise<void>;
   /** One page of keys under `prefix`; pass `cursor` back for the next page. */
   r2ObjectList(
     bucket: string,
@@ -155,9 +154,6 @@ export interface Cf {
   /** Deletes one object from an install's own bucket; any other bucket is refused. */
   r2InstallDeleteObject(bucket: string, key: string): Promise<void>;
 }
-
-/** The only keys r2ObjectDelete may delete: probeR2Conditionals' throwaway keys. */
-const PROBE_KEY = /^probe\/[0-9a-f]{32}$/;
 
 /** The only buckets the R2 object calls touch: the releases bucket of an env. */
 const RELEASES_BUCKET = /^oa-[sp]-releases$/;
@@ -205,10 +201,12 @@ type CallInit = {
   binary?: boolean;
   /** With binary: abort (no retry) once the body exceeds this many bytes. */
   maxBytes?: number;
+  /** One try only: a create that is not idempotent (the caller re-lists first). */
+  once?: boolean;
 };
 
 /** The body, refused as soon as it passes `max` bytes (content-length or streamed). */
-async function readCapped(
+export async function readCapped(
   res: Response,
   max: number,
   route: string,
@@ -281,7 +279,7 @@ export function cfClient(o: {
       body = JSON.stringify(init.json);
     }
     let last: CfError | undefined;
-    for (let i = 0; i < TRIES; i++) {
+    for (let i = 0; i < (init.once ? 1 : TRIES); i++) {
       if (i > 0) await sleep(500 * 2 ** (i - 1));
       let res: Response;
       try {
@@ -562,68 +560,6 @@ export function cfClient(o: {
       if (r.status === 404) return null;
       return { bytes: r.bytes ?? new Uint8Array(), etag: etagOf(r.headers) };
     },
-    async r2ObjectDelete(bucket, key) {
-      // R-N1: only probeR2Conditionals' throwaway keys; a release object or
-      // floor.json is never deleted through this client.
-      if (typeof key !== "string" || !PROBE_KEY.test(key))
-        throw new Error(
-          "r2ObjectDelete only deletes the R2 probe's throwaway keys (probe/<32 hex>)",
-        );
-      await call("DELETE", r2Path(bucket, key), {}, [404]);
-    },
-    async r2ObjectHead(bucket, key) {
-      const r = await call("HEAD", r2Path(bucket, key), {}, [404]);
-      if (r.status === 404) return null;
-      const size = Number(r.headers.get("content-length"));
-      if (!Number.isSafeInteger(size) || size < 0)
-        throw new CfError("HEAD", r2Path(bucket, key), r.status, "no size");
-      return { size, etag: etagOf(r.headers) };
-    },
-    async r2ObjectPut(bucket, key, bytes, cond) {
-      const headers: Record<string, string> =
-        "ifNoneMatch" in cond && cond.ifNoneMatch === "*"
-          ? { "if-none-match": "*" }
-          : "ifMatch" in cond &&
-              typeof cond.ifMatch === "string" &&
-              cond.ifMatch !== ""
-            ? { "if-match": `"${cond.ifMatch}"` }
-            : (() => {
-                throw new Error("an R2 put needs If-None-Match: * or If-Match");
-              })();
-      const path = r2Path(bucket, key);
-      const r = await call(
-        "PUT",
-        path,
-        {
-          body: bytes as BodyInit,
-          headers: { ...headers, "content-type": "application/octet-stream" },
-        },
-        [412],
-      );
-      if (r.status !== 412) return;
-      // M2: a 412 on a retry may be our own lost write. Accept it only when
-      // the object now holds exactly these bytes; a first-try 412 never is.
-      if (r.attempt > 0) {
-        const cur = await call(
-          "GET",
-          path,
-          { binary: true, maxBytes: bytes.length },
-          [404],
-        ).catch(() => null);
-        if (
-          cur?.status === 200 &&
-          cur.bytes &&
-          Buffer.from(cur.bytes).equals(Buffer.from(bytes))
-        )
-          return;
-      }
-      throw new CfError(
-        "PUT",
-        path.split("?")[0] as string,
-        412,
-        "precondition failed",
-      );
-    },
     async r2ObjectList(bucket, prefix, cursor) {
       if (!RELEASES_BUCKET.test(bucket))
         throw new Error(
@@ -695,6 +631,43 @@ export function cfClient(o: {
       if (r.status === 404) return null;
       return ((r.body as { result?: TurnstileWidget })?.result ??
         null) as TurnstileWidget | null;
+    },
+    async turnstileList() {
+      const out: TurnstileWidget[] = [];
+      for (let page = 1; page <= 50; page++) {
+        const { body } = await call(
+          "GET",
+          `${acct}/challenges/widgets?per_page=50&page=${page}`,
+        );
+        const b = body as {
+          result?: TurnstileWidget[];
+          result_info?: { total_pages?: unknown };
+        };
+        for (const w of b?.result ?? []) {
+          if (typeof w?.sitekey !== "string" || typeof w?.name !== "string")
+            throw new Error("Turnstile listing has a malformed entry");
+          out.push({
+            sitekey: w.sitekey,
+            name: w.name,
+            domains: Array.isArray(w.domains) ? w.domains.map(String) : [],
+            ...(typeof w.mode === "string" ? { mode: w.mode } : {}),
+          });
+        }
+        const pages = Number(b?.result_info?.total_pages ?? 1);
+        if (!Number.isFinite(pages) || page >= pages) return out;
+      }
+      throw new Error("Turnstile listing did not end");
+    },
+    async turnstileCreate(w) {
+      const { body } = await call("POST", `${acct}/challenges/widgets`, {
+        json: { name: w.name, domains: w.domains, mode: w.mode },
+        once: true,
+      });
+      const r = (body as { result?: { sitekey?: unknown; secret?: unknown } })
+        ?.result;
+      if (typeof r?.sitekey !== "string" || typeof r?.secret !== "string")
+        throw new Error("Turnstile create returned no sitekey or secret");
+      return { sitekey: r.sitekey, secret: r.secret };
     },
   };
 }

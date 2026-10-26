@@ -27,6 +27,7 @@ import {
   TEST_HOOKS_DEFINE,
 } from "../src/release.js";
 import {
+  BROKER_GOOGLE_CLIENT_ID,
   HOSTED_DOMAINS,
   hostsKvTitle,
   NAMESPACES,
@@ -388,6 +389,9 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     sleep: clock.sleep,
     healthTimeoutMs: 10_000,
     turnstile: TS,
+    // T8 M1: google needs the broker, so the lifecycle suite runs with it on
+    // (staging only: prod has no broker Google client yet).
+    brokerEnabled: env === "staging",
     ...over,
   });
   const mk = (over: Partial<WfpOptions> = {}) => {
@@ -925,7 +929,11 @@ describe("fix round 1: rollback keeps the current vars", () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     await s.p.upgrade(inst.id, "0.24.0");
-    const next = { AUTH_PROVIDERS: "email,google", EMAIL_DAILY_CAP: "50" };
+    const next = {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+      EMAIL_DAILY_CAP: "50",
+    };
     await s.p.updateVars(inst.id, next);
     const epoch = () =>
       (
@@ -951,9 +959,12 @@ describe("fix round 1: rollback keeps the current vars", () => {
       assets: { config: m.assets.config },
       bindings: m.bindings.filter(
         (b: { name: string }) =>
-          !["AUTH_PROVIDERS", "EMAIL_DAILY_CAP", "OWNER_EMAIL"].includes(
-            b.name,
-          ),
+          ![
+            "AUTH_PROVIDERS",
+            "AUTH_DOMAINS",
+            "EMAIL_DAILY_CAP",
+            "OWNER_EMAIL",
+          ].includes(b.name),
       ),
     });
     expect(notVars(meta)).toEqual(notVars(stored));
@@ -1298,7 +1309,10 @@ describe("updateVars and the session cut", () => {
           .get(OWNER) as { session_epoch: number }
       ).session_epoch;
     expect(epoch()).toBe(0);
-    const next = { AUTH_PROVIDERS: "email,google" };
+    const next = {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    };
     const from = s.fake.log.length;
     keep(await s.p.updateVars(inst.id, next));
     expect(epoch()).toBe(1);
@@ -1356,7 +1370,10 @@ describe("updateVars and the session cut", () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
-    const next = { AUTH_PROVIDERS: "email,google" };
+    const next = {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    };
     s.fake.health = () => ({ ok: false });
     const r = keep(await s.p.updateVars(inst.id, next));
     expect(r).toMatchObject({ ok: false, sessionCut: true });
@@ -1379,7 +1396,10 @@ describe("updateVars and the session cut", () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
-    const next = { AUTH_PROVIDERS: "email,google" };
+    const next = {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    };
     s.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-/.test(p));
     await fails(s.p.updateVars(inst.id, next));
     expect(epoch()).toBe(0);
@@ -1398,7 +1418,12 @@ describe("updateVars and the session cut", () => {
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
     s.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-/.test(p));
-    await fails(s.p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" }));
+    await fails(
+      s.p.updateVars(inst.id, {
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "finqore.test",
+      }),
+    );
     expect(s.row(inst.id).session_cut).not.toBeNull();
     const r = keep(
       await s.p.updateVars(inst.id, { ...CODES, FEATURES: "beta" }),
@@ -1413,7 +1438,10 @@ describe("updateVars and the session cut", () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
-    const next = { AUTH_PROVIDERS: "email,google" };
+    const next = {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    };
     await s.p.updateVars(inst.id, next);
     expect(epoch()).toBe(1);
     // A cut owed for vars that are live (a crash after the upload).
@@ -2161,7 +2189,10 @@ describe("fix round 3", () => {
     const s = setup();
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
-    await s.p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" });
+    await s.p.updateVars(inst.id, {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    });
     s.db()
       .prepare(
         "UPDATE installs SET session_cut = ?, session_cut_base = ? WHERE id = ?",
@@ -2191,9 +2222,13 @@ describe("fix round 3", () => {
     expect(s.audit(inst.id)).toContain("vars.session_cut_failed");
     expect((await s.p.status(inst.id)).sessionCut).toEqual({
       pending: true,
+      armed: false,
       owedRelativeToRecordedVars: true,
     });
-    await s.p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" });
+    await s.p.updateVars(inst.id, {
+      AUTH_PROVIDERS: "email,google",
+      AUTH_DOMAINS: "finqore.test",
+    });
     expect(epoch()).toBe(2);
   });
 
@@ -2320,6 +2355,7 @@ describe("fix round 4", () => {
       .run("aa".repeat(16), canonicalJson(CODES), inst.id);
     expect((await s.p.status(inst.id)).sessionCut).toEqual({
       pending: true,
+      armed: false,
       owedRelativeToRecordedVars: false,
     });
   });
@@ -2443,7 +2479,10 @@ describe("fix round 5 (security review)", () => {
       cf: failOnce(s, (body) => body.includes("UPDATE installs SET vars")),
     });
     const r = keep(
-      await p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" }),
+      await p.updateVars(inst.id, {
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "finqore.test",
+      }),
     );
     expect(r.ok).toBe(false);
     expect(s.row(inst.id).session_cut).not.toBeNull();
@@ -2469,7 +2508,12 @@ describe("fix round 5 (security review)", () => {
     const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
     const epoch = epochOf(s, inst.id);
     s.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-/.test(p));
-    await fails(s.p.updateVars(inst.id, { AUTH_PROVIDERS: "email,google" }));
+    await fails(
+      s.p.updateVars(inst.id, {
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "finqore.test",
+      }),
+    );
     expect(s.row(inst.id)).toMatchObject({ session_cut_armed: 0 });
     expect(s.row(inst.id).session_cut).not.toBeNull();
     const r = keep(
@@ -2591,5 +2635,568 @@ describe("token within 5 days of expiry", () => {
     const e = await fails(s.p.rollback(inst.id));
     expect(e.message).toMatch(/expired/);
     expect(s.row(inst.id)).toMatchObject({ version: "0.24.0" });
+  });
+});
+
+describe("P1 Task 8 follow-ups", () => {
+  it("status reports sessionCut.armed as well as pending", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
+    s.db()
+      .prepare(
+        "UPDATE installs SET session_cut = ?, session_cut_base = ?, session_cut_armed = 1 WHERE id = ?",
+      )
+      .run("ab".repeat(16), canonicalJson(CODES), inst.id);
+    expect((await s.p.status(inst.id)).sessionCut).toEqual({
+      pending: true,
+      armed: true,
+      owedRelativeToRecordedVars: false,
+    });
+    s.db()
+      .prepare("UPDATE installs SET session_cut_armed = 0 WHERE id = ?")
+      .run(inst.id);
+    expect((await s.p.status(inst.id)).sessionCut).toMatchObject({
+      pending: true,
+      armed: false,
+    });
+  });
+
+  it("refuses a rollback whose stored metadata is not a render of that release, before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    // The stored 0.23.0 render names a bundle the signed 0.23.0 release does not have.
+    const st = s.stored(inst.id, "0.23.0");
+    const meta = JSON.parse(st?.metadata as string);
+    s.db()
+      .prepare(
+        "UPDATE install_versions SET metadata = ? WHERE install_id = ? AND version = ?",
+      )
+      .run(
+        JSON.stringify({ ...meta, main_module: "other.js" }),
+        inst.id,
+        "0.23.0",
+      );
+    const w = s.fake.writes().length;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/is not a render of that release/);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.24.0",
+      lease: null,
+    });
+  });
+
+  it("an upgrade whose auto-rollback meets a render that does not match the release stays forward, with the refusal", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const st = s.stored(inst.id, "0.23.0");
+    const meta = JSON.parse(st?.metadata as string);
+    s.db()
+      .prepare(
+        "UPDATE install_versions SET metadata = ? WHERE install_id = ? AND version = ?",
+      )
+      .run(
+        JSON.stringify({ ...meta, tags: [inst.id, "v0.22.0"] }),
+        inst.id,
+        "0.23.0",
+      );
+    unhealthyAt(s, "0.24.0");
+    const r = keep(await s.p.upgrade(inst.id, "0.24.0"));
+    expect(r).toMatchObject({ ok: false, rolledBack: false, forwardFix: true });
+    expect(r.reason).toMatch(/is not a render of that release/);
+    expect(s.row(inst.id)).toMatchObject({
+      state: "active",
+      version: "0.24.0",
+    });
+  });
+
+  it("verifyToken runs the token checks with no write; near expiry refuses or warns", async () => {
+    const s = setup();
+    const w = s.fake.writes().length;
+    await s.p.verifyToken("refuse");
+    expect(s.fake.writes().length).toBe(w);
+    s.fake.tokenInfo.expires_on = new Date(NOW + 2 * 86_400_000).toISOString();
+    const p = s.mk();
+    await expect(p.verifyToken("refuse")).rejects.toThrow(/within 5 days/);
+    const q = s.mk();
+    await q.verifyToken("warn");
+    expect(q.notes.join("\n")).toMatch(/WARNING/);
+    s.fake.tokenInfo.status = "disabled";
+    await expect(s.mk().verifyToken("warn")).rejects.toThrow(/not active/);
+  });
+
+  it("an actor audit row lands in hosted_audit.actor, and the table refuses UPDATE and DELETE", async () => {
+    const s = setup();
+    const { PlatformDb } = await import("../src/platform.js");
+    const pdb = new PlatformDb(
+      s.cfWith(),
+      { id: s.pdb, name: platformNames("staging").db },
+      "staging",
+      () => NOW,
+    );
+    await pdb.auditAs("ops@example.com", "-", "cli.status.start", {
+      cmd: "status",
+    });
+    const rows = s
+      .db()
+      .prepare("SELECT actor, install_id, action FROM hosted_audit")
+      .all();
+    expect(rows).toEqual([
+      { actor: "ops@example.com", install_id: "-", action: "cli.status.start" },
+    ]);
+    expect(() =>
+      s.db().prepare("UPDATE hosted_audit SET action = 'x'").run(),
+    ).toThrow(/append-only/);
+    expect(() => s.db().prepare("DELETE FROM hosted_audit").run()).toThrow(
+      /append-only/,
+    );
+  });
+});
+
+describe("P1 Task 8: domains", () => {
+  it("DOMAINS[env] equals the decided suffixes", () => {
+    expect(HOSTED_DOMAINS).toEqual({
+      staging: {
+        app: "open-artifacts-staging.app",
+        content: "open-artifacts-staging.page",
+      },
+      prod: { app: "open-artifacts.app", content: "open-artifacts.page" },
+    });
+  });
+});
+
+describe("fix round 2 (T8 review M1, M2): the broker URL and google", () => {
+  const GOOGLE = { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" };
+  const brokerUrlOf = (s: S, id: string) =>
+    (
+      (s.scriptOf(id)?.metadata.bindings ?? []) as {
+        name: string;
+        text?: string;
+      }[]
+    ).find((b) => b.name === "AUTH_BROKER_URL")?.text;
+
+  it.each([["staging", "https://auth.open-artifacts-staging.app"]] as const)(
+    "with the broker on, %s create renders AUTH_BROKER_URL as %s",
+    async (env, want) => {
+      const s = setup({ env });
+      const p = s.mk({ brokerEnabled: true });
+      const inst = keep(await p.create(input("finqore", { vars: GOOGLE })));
+      expect(brokerUrlOf(s, inst.id)).toBe(want);
+      // The same value from the caller is accepted.
+      const q = s.mk({ brokerEnabled: true });
+      const b = keep(
+        await q.create(
+          input("acme", { vars: { ...GOOGLE, AUTH_BROKER_URL: want } }),
+        ),
+      );
+      expect(brokerUrlOf(s, b.id)).toBe(want);
+    },
+  );
+
+  it.each([
+    ["the other env's broker", "https://auth.open-artifacts.app"],
+    ["a lookalike host", "https://auth.open-artifacts-staging.app.evil.test"],
+    ["a path", "https://auth.open-artifacts-staging.app/x"],
+  ])(
+    "a caller AUTH_BROKER_URL of %s is refused before any write, naming the expected value",
+    async (_n, url) => {
+      const s = setup();
+      const w = s.fake.writes().length;
+      const e = await fails(
+        s
+          .mk({ brokerEnabled: true })
+          .create(
+            input("finqore", { vars: { ...GOOGLE, AUTH_BROKER_URL: url } }),
+          ),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toContain("https://auth.open-artifacts-staging.app");
+      expect(s.fake.writes().length).toBe(w);
+    },
+  );
+
+  it("a google create with the broker off is refused before any write", async () => {
+    const s = setup();
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: false }).create(input("finqore", { vars: GOOGLE })),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/broker/);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("update-vars refuses a mismatching AUTH_BROKER_URL before any write", async () => {
+    const s = setup();
+    const p = s.mk({ brokerEnabled: true });
+    const inst = keep(await p.create(input("finqore", { vars: GOOGLE })));
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).updateVars(inst.id, {
+        ...GOOGLE,
+        AUTH_BROKER_URL: "https://auth.open-artifacts.app",
+      }),
+    );
+    expect(e.message).toContain("https://auth.open-artifacts-staging.app");
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("turning google on for an install with no broker key is refused before any write, and no session is cut", async () => {
+    const s = setup();
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: false })
+        .create(input("finqore", { vars: CODES })),
+    );
+    expect(s.row(inst.id).broker_kid).toBeNull();
+    const epoch = epochOf(s, inst.id);
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).updateVars(inst.id, {
+        ...CODES,
+        AUTH_PROVIDERS: "email,google",
+        AUTH_DOMAINS: "finqore.test",
+      }),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/broker key is only issued at create/);
+    expect(s.fake.writes().length).toBe(w);
+    expect(epoch()).toBe(0);
+    expect(s.row(inst.id)).toMatchObject({ session_cut: null, lease: null });
+  });
+});
+
+describe("fix round 3 (T8): the env's broker Google client id", () => {
+  const GOOGLE = { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" };
+  const BROKER_WRANGLER = readFileSync(
+    new URL("apps/auth-broker/wrangler.jsonc", ROOT),
+    "utf8",
+  );
+  // The broker's own staging client, read from its config so the two can't drift.
+  const STAGING_CLIENT = JSON.parse(
+    BROKER_WRANGLER.replace(/^\s*\/\/.*$/gm, "").replace(/,(\s*[}\]])/g, "$1"),
+  ).env.staging.vars.GOOGLE_CLIENT_ID as string;
+  const plainOf = (s: S, id: string, name: string) =>
+    (
+      (s.scriptOf(id)?.metadata.bindings ?? []) as {
+        name: string;
+        type: string;
+        text?: string;
+      }[]
+    ).find((b) => b.name === name);
+
+  it("the pinned staging client is the broker's", () => {
+    expect(STAGING_CLIENT).toBe(
+      "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
+    );
+    expect(BROKER_GOOGLE_CLIENT_ID.staging).toBe(STAGING_CLIENT);
+    expect(BROKER_GOOGLE_CLIENT_ID.prod).toBeNull();
+  });
+
+  it("with the broker on, a staging create renders GOOGLE_CLIENT_ID as the broker's client; the same caller value is accepted", async () => {
+    const s = setup();
+    const a = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("finqore", { vars: GOOGLE })),
+    );
+    expect(plainOf(s, a.id, "GOOGLE_CLIENT_ID")).toMatchObject({
+      type: "plain_text",
+      text: STAGING_CLIENT,
+    });
+    const b = keep(
+      await s.mk({ brokerEnabled: true }).create(
+        input("acme", {
+          vars: { ...GOOGLE, GOOGLE_CLIENT_ID: STAGING_CLIENT },
+        }),
+      ),
+    );
+    expect(plainOf(s, b.id, "GOOGLE_CLIENT_ID")?.text).toBe(STAGING_CLIENT);
+  });
+
+  it("a caller GOOGLE_CLIENT_ID that differs is refused before any write, at create and updateVars", async () => {
+    const s = setup();
+    const other = "999-other.apps.googleusercontent.com";
+    let w = s.fake.writes().length;
+    const e = await fails(
+      s
+        .mk({ brokerEnabled: true })
+        .create(
+          input("finqore", { vars: { ...GOOGLE, GOOGLE_CLIENT_ID: other } }),
+        ),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toContain(STAGING_CLIENT);
+    expect(s.fake.writes().length).toBe(w);
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("acme", { vars: GOOGLE })),
+    );
+    w = s.fake.writes().length;
+    const u = await fails(
+      s
+        .mk({ brokerEnabled: true })
+        .updateVars(inst.id, { ...GOOGLE, GOOGLE_CLIENT_ID: other }),
+    );
+    expect(u.message).toContain(STAGING_CLIENT);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("prod with the broker on is refused before any write: no prod Google client yet", async () => {
+    const s = setup({ env: "prod" });
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.mk({ brokerEnabled: true }).create(input("finqore", { vars: GOOGLE })),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/no prod Google client yet/);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it("GOOGLE_CLIENT_SECRET is never rendered, and a caller one is refused before any write", async () => {
+    const s = setup();
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("finqore", { vars: GOOGLE })),
+    );
+    expect(plainOf(s, inst.id, "GOOGLE_CLIENT_SECRET")).toBeUndefined();
+    expect(s.scriptOf(inst.id)?.secrets.has("GOOGLE_CLIENT_SECRET")).toBe(
+      false,
+    );
+    for (const p of [
+      s.mk({ brokerEnabled: true }),
+      s.mk({ brokerEnabled: false }),
+    ]) {
+      const w = s.fake.writes().length;
+      const e = await fails(
+        p.create(
+          input("acme", { vars: { GOOGLE_CLIENT_SECRET: "GOCSPX-shh" } }),
+        ),
+      );
+      expect(e.message).toMatch(/GOOGLE_CLIENT_SECRET/);
+      expect(s.fake.writes().length).toBe(w);
+    }
+  });
+});
+
+describe("fix round 4 (T8): every server precondition for hosted google", () => {
+  const GOOGLE = { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" };
+  const STAGING_CLIENT = BROKER_GOOGLE_CLIENT_ID.staging as string;
+  const regEntry = (s: S, id: string) =>
+    s.fake.kvValues(s.regId).get(registryKey(id));
+
+  // An empty or separator-only AUTH_DOMAINS was already refused by its
+  // HOSTED_VARS list check; an absent one reached the server until M3.
+  it.each([
+    [
+      "no AUTH_DOMAINS",
+      { AUTH_PROVIDERS: "google" },
+      /google needs AUTH_DOMAINS/,
+    ],
+    [
+      "no AUTH_DOMAINS (email, google)",
+      { AUTH_PROVIDERS: "email, google" },
+      /google needs AUTH_DOMAINS/,
+    ],
+    [
+      "an empty AUTH_DOMAINS",
+      { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "" },
+      /AUTH_DOMAINS/,
+    ],
+    [
+      "only separators",
+      { AUTH_PROVIDERS: "google", AUTH_DOMAINS: " , ," },
+      /AUTH_DOMAINS/,
+    ],
+  ])(
+    "M3: a google create with %s is refused before any write (no entry, no key)",
+    async (_n, vars, why) => {
+      const s = setup();
+      const w = s.fake.writes().length;
+      const e = await fails(s.p.create(input("finqore", { vars })));
+      expect(e.message).toMatch(why);
+      expect(s.fake.writes().length).toBe(w);
+      expect([...s.fake.kvValues(s.regId).keys()]).toEqual([]);
+      expect(s.fake.scripts.size).toBe(0);
+    },
+  );
+
+  it.each([
+    [
+      "keeps google and drops AUTH_DOMAINS",
+      { AUTH_PROVIDERS: "google" },
+      /google needs AUTH_DOMAINS/,
+    ],
+    [
+      "keeps google and empties AUTH_DOMAINS",
+      { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "" },
+      /AUTH_DOMAINS/,
+    ],
+  ])(
+    "M3: an update-vars that %s is refused before any write, with no session cut",
+    async (_n, next, why) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+      const before = regEntry(s, inst.id);
+      const epoch = epochOf(s, inst.id);
+      const w = s.fake.writes().length;
+      const e = await fails(s.p.updateVars(inst.id, next));
+      expect(e.message).toMatch(why);
+      expect(s.fake.writes().length).toBe(w);
+      expect(regEntry(s, inst.id)).toBe(before);
+      expect(epoch()).toBe(0);
+      expect(s.row(inst.id)).toMatchObject({ session_cut: null, lease: null });
+    },
+  );
+
+  it("M3: an update-vars that adds google with no AUTH_DOMAINS is refused before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.p.updateVars(inst.id, { ...CODES, AUTH_PROVIDERS: "email,google" }),
+    );
+    expect(e.message).toMatch(/google needs AUTH_DOMAINS/);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.row(inst.id).session_cut).toBeNull();
+  });
+
+  // apps/server/src/auth/config.ts googleConfig, precondition by precondition:
+  // each is either rendered by provision (removing it from the rendered env
+  // makes the server refuse google) or refused by provision before any write.
+  type Server = {
+    authConfig(env: Record<string, unknown>): {
+      google: {
+        clientId: string;
+        transport: { kind: string; url?: string };
+      } | null;
+      problems: string[];
+    };
+  };
+  const server = async (): Promise<Server> =>
+    (await import(
+      /* @vite-ignore */ new URL("apps/server/src/auth/config.ts", ROOT).href
+    )) as Server;
+  const renderedEnv = (s: S, id: string) => {
+    const sc = s.scriptOf(id);
+    const env: Record<string, unknown> = {};
+    for (const b of (sc?.metadata.bindings ?? []) as {
+      name: string;
+      type: string;
+      text?: string;
+    }[])
+      if (b.type === "plain_text") env[b.name] = b.text;
+    for (const [k, v] of sc?.secrets ?? []) env[k] = v;
+    return env;
+  };
+
+  const RENDERED: [string, string, RegExp][] = [
+    ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID", /GOOGLE_CLIENT_ID is empty/],
+    [
+      "HOSTED=1 needs the broker transport",
+      "AUTH_BROKER_URL",
+      /requires the broker transport/,
+    ],
+    ["INSTALL_ID", "INSTALL_ID", /INSTALL_ID is empty/],
+    [
+      "BROKER_SIGNING_KEY (PKCS#8 Ed25519)",
+      "BROKER_SIGNING_KEY",
+      /BROKER_SIGNING_KEY is not/,
+    ],
+    ["AUTH_DOMAINS non-empty", "AUTH_DOMAINS", /AUTH_DOMAINS is empty/],
+  ];
+  it.each(RENDERED)(
+    "rendered by provision: %s (without %s the server refuses google)",
+    async (_n, key, why) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+      const { authConfig } = await server();
+      const env = renderedEnv(s, inst.id);
+      const ok = authConfig({ ...env });
+      expect(ok.problems).toEqual([]);
+      expect(ok.google).toEqual({
+        clientId: STAGING_CLIENT,
+        transport: expect.objectContaining({
+          kind: "broker",
+          url: "https://auth.open-artifacts-staging.app",
+        }),
+      });
+      expect(env.HOSTED).toBe("1");
+      expect(env.GOOGLE_CLIENT_SECRET).toBeUndefined();
+      const { [key]: _gone, ...without } = env;
+      const bad = authConfig(without);
+      expect(bad.google).toBeNull();
+      expect(bad.problems.join("\n")).toMatch(why);
+    },
+  );
+
+  const REFUSED: [string, Record<string, string>, RegExp][] = [
+    [
+      "AUTH_DOMAINS empty",
+      { AUTH_PROVIDERS: "google" },
+      /google needs AUTH_DOMAINS/,
+    ],
+    [
+      "an invalid AUTH_DOMAINS entry",
+      { ...GOOGLE, AUTH_DOMAINS: "finqore.test,not a domain" },
+      /AUTH_DOMAINS/,
+    ],
+    [
+      "AUTH_BROKER_URL not the env's broker",
+      { ...GOOGLE, AUTH_BROKER_URL: "http://auth.open-artifacts-staging.app" },
+      /AUTH_BROKER_URL/,
+    ],
+    [
+      "GOOGLE_CLIENT_ID not the broker's",
+      { ...GOOGLE, GOOGLE_CLIENT_ID: "1-x.apps.googleusercontent.com" },
+      /GOOGLE_CLIENT_ID must be/,
+    ],
+    [
+      "the direct transport (GOOGLE_CLIENT_SECRET)",
+      { ...GOOGLE, GOOGLE_CLIENT_SECRET: "GOCSPX-x" },
+      /GOOGLE_CLIENT_SECRET/,
+    ],
+    [
+      "AUTH_DOMAIN_JOIN=member",
+      { ...GOOGLE, AUTH_DOMAIN_JOIN: "member" },
+      /invite/,
+    ],
+  ];
+  it.each(REFUSED)(
+    "refused by provision before any write: %s",
+    async (_n, vars, why) => {
+      const s = setup();
+      const w = s.fake.writes().length;
+      const e = await fails(s.p.create(input("finqore", { vars })));
+      expect(e.message).toMatch(why);
+      expect(s.fake.writes().length).toBe(w);
+    },
+  );
+
+  it("L7: upgrade and rollback re-render a stale stored broker URL or client id, never refuse on it", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+    const stale = {
+      ...GOOGLE,
+      AUTH_BROKER_URL: "https://auth.old.example",
+      GOOGLE_CLIENT_ID: "1-old.apps.googleusercontent.com",
+    };
+    s.db()
+      .prepare("UPDATE installs SET vars = ? WHERE id = ?")
+      .run(canonicalJson(stale), inst.id);
+    const up = keep(await s.mk().upgrade(inst.id, "0.24.0"));
+    expect(up.ok).toBe(true);
+    const env = renderedEnv(s, inst.id);
+    expect(env.AUTH_BROKER_URL).toBe("https://auth.open-artifacts-staging.app");
+    expect(env.GOOGLE_CLIENT_ID).toBe(STAGING_CLIENT);
+    const p = s.mk();
+    const rb = keep(await p.rollback(inst.id));
+    expect(rb).toMatchObject({ ok: true, rolledBack: true });
+    expect(renderedEnv(s, inst.id).GOOGLE_CLIENT_ID).toBe(STAGING_CLIENT);
   });
 });

@@ -165,6 +165,26 @@ describe("ci.yml no-test-hooks job", () => {
       ),
     ).toBe(true);
   });
+  // P3 T17 (#602): the test-hook strip test builds both variants and must
+  // run here, where the builds work, and never skip.
+  it("runs the test-hook strip test after the real-build pin, required and gated", () => {
+    expect(job).toBeDefined();
+    const names = steps.map((st) => (st as { name?: string }).name ?? "");
+    const pin = names.indexOf("Real-build pin test");
+    const strip = names.indexOf("Test-hook strip test");
+    expect(pin).toBeGreaterThan(-1);
+    expect(strip).toBeGreaterThan(pin);
+    const st = steps[strip] as {
+      run?: string;
+      if?: string;
+      env?: Record<string, string>;
+    };
+    expect(st.run).toBe(
+      "pnpm --filter @oa/server exec vitest run -c vitest.node.config.ts test/node/test-hooks-strip.test.ts",
+    );
+    expect(st.env).toEqual({ OA_REQUIRE_REAL_BUILD: "1" });
+    expect(st.if).toContain("steps.ro.outputs.release_only != 'true'");
+  });
   it("uses the same checkout, pnpm and node setup as the other jobs", () => {
     expect(job).toBeDefined();
     expect(s).toContain("actions/checkout@v4");

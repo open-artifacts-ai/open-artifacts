@@ -1,0 +1,168 @@
+{
+  "cases": [
+    {
+      "file": "live/guard.test.ts",
+      "name": "guard > both targets report ok, testHooks: true and their own installId"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "guard > prod is clean (no test hooks on any prod install)"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: a wrong hook key gets the 404"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: the content host is served by the content app"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: the content host has no hooks"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: a hook call is audited"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: a wrong hook key gets the 404"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: the content host is served by the content app"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: the content host has no hooks"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: a hook call is audited"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "credentials (harness smoke) > A's admin PAT at B: /api/v1/me"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "credentials (harness smoke) > A's session cookie at B: /api/v1/me"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "credentials (harness smoke) > A's admin PAT at B: the host's own marker artifact"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's admin PAT at B: /api/v1/me"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's admin PAT at B: /api/v1/artifacts"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's admin PAT at B: /mcp tools/list"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's session cookie at B: replayed on B's app host"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's session cookie at B: replayed under the alternate cookie name"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > B's content host ignores cookies, A's included"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's MCP OAuth access token at B: /mcp tools/list"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A's OAuth client_id in B's /authorize: no auto-grant"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A's OAuth refresh token at B's /token (A's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > An unredeemed A authorization code at B's /token (A's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > A's OAuth refresh token at B's /token (B's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > OAuth endpoints > An unredeemed A authorization code at B's /token (B's client_id): no token"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's signed content URL at B's content host"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's content signature with B's artifact id at B's content host"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > A's signed upload URL at B"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > B's private artifact id fetched with A's credentials at A: 404"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > links > A's invite link opened at B by a B member: no membership on B"
+    },
+    {
+      "file": "live/credentials.test.ts",
+      "name": "credentials > links > A's share email link opened at B by a B member: no share on B"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: OIDC state and nonce > A's OIDC state and state cookie (with its nonce) replayed at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: OIDC state and nonce > A's OIDC state with B's own state cookie at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: ID tokens > an ID token with hd of A at B's callback: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: ID tokens > A's code and broker state at B: no session"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: broker > a tampered install id at the broker callback is refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code issued by A, entered at B with B's pending cookie: refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code issued by A, entered at B with A's pending cookie: refused"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: one-time codes > a code requested at B for an address not invited to B: no code sent, generic response"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: guests > a guest of A invited to B reads on B but can't publish via MCP or the data API there"
+    },
+    {
+      "file": "live/signin.test.ts",
+      "name": "sign-in: guests > the guest's B session is refused at A"
+    }
+  ]
+}

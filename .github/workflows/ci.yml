@@ -265,6 +265,14 @@ jobs:
         env:
           OA_REQUIRE_REAL_BUILD: "1"
         run: pnpm --filter @oa/provision exec vitest run test/release-t3b.test.ts -t "real build"
+      # P3 T17 (#602): builds the release and redline bundles itself and checks
+      # the test-hook seeding is absent from release. OA_REQUIRE_REAL_BUILD
+      # makes a missing build fail, never skip.
+      - name: Test-hook strip test
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        env:
+          OA_REQUIRE_REAL_BUILD: "1"
+        run: pnpm --filter @oa/server exec vitest run -c vitest.node.config.ts test/node/test-hooks-strip.test.ts
   # No secrets: the real suite runs a local `wrangler dev` (ENVIRONMENT=dev in a
   # generated temp config), never staging.
   e2e:

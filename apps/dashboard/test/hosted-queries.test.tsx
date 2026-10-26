@@ -12,6 +12,7 @@ import {
 } from "../src/api/queries";
 import {
   calls,
+  findVisibleToast,
   installHarness,
   lastClient,
   mountHosted,
@@ -86,7 +87,7 @@ it("a mapping failure the page doesn't handle still toasts", async () => {
   await result.current
     .mutateAsync({ groupId: "gEng01", role: "viewer" })
     .catch(() => {});
-  expect(await screen.findByText("Couldn't change access.")).toBeVisible();
+  await findVisibleToast("Couldn't change access.");
 });
 
 it("a capped caller's refused move says their account can only view", async () => {
@@ -104,7 +105,7 @@ it("a capped caller's refused move says their account can only view", async () =
     wrapper,
   });
   await result.current.mutateAsync("SpExcNpQrSt3uVwX").catch(() => {});
-  expect(await screen.findByText("Couldn't move the artifact.")).toBeVisible();
+  await findVisibleToast("Couldn't move the artifact.");
   expect(
     screen.getByText("Your account can only view, so you can't publish."),
   ).toBeVisible();

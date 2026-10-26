@@ -47,6 +47,7 @@ import {
   publishRelease,
   r2ReleaseReader,
 } from "../src/publish.js";
+import { r2S3Client } from "../src/r2s3.js";
 import {
   assetEntries,
   bundleSha256,
@@ -3691,9 +3692,17 @@ describe("EMAIL_CODE_DOMAIN for the hosted trial (H-ECD)", () => {
       {} as Record<string, string>,
       { EMAIL_CODE_DOMAIN: "off" },
       { ...CODES, EMAIL_CODE_DOMAIN: "off" },
-      { ...CODES, AUTH_PROVIDERS: "google,email", EMAIL_CODE_DOMAIN: "off" },
+      {
+        ...CODES,
+        AUTH_PROVIDERS: "google,email",
+        AUTH_DOMAINS: "finqore.test",
+        EMAIL_CODE_DOMAIN: "off",
+      },
     ]) {
-      const s = setup();
+      // T8 M1: google needs the broker.
+      const s = setup({
+        brokerEnabled: vars.AUTH_PROVIDERS?.includes("google"),
+      });
       await s.p.create(input("finqore", { vars }));
       const meta = metaOf(uploads(s.fake)[0]?.body as string);
       expect(bindingOf(meta, "EMAIL_CODE_DOMAIN")).toBeUndefined();
@@ -3849,9 +3858,17 @@ describe("T3b E: the signed floor gates create", () => {
       })),
       { path: "welcome/welcome.md", bytes: WELCOME_BYTES },
     ];
-    await probeR2Conditionals(cf, "staging");
+    const r2 = r2S3Client({
+      accountId: s.fake.accountId,
+      env: "staging",
+      credentials: s.fake.r2Token(platformNames("staging").releases),
+      fetch: s.fake.fetch,
+      sleep: async () => {},
+    });
+    await probeR2Conditionals(r2, "staging");
     await publishRelease({
       cf,
+      r2,
       env: "staging",
       version: "0.23.0",
       files: {

@@ -5,8 +5,12 @@ import {
   type OAuthClientHookResult,
   OtpLatestInputSchema,
   type Role,
+  type SpaceRole,
+  TEST_AUDIT_LIMIT,
   TEST_HOOKS,
   TEST_HOOKS_ALLOWED,
+  TestAuditInputSchema,
+  type TestAuditResult,
   TestSessionInputSchema,
 } from "@oa/shared";
 import { eq } from "drizzle-orm";
@@ -23,6 +27,7 @@ import { type GrantProps, oauthProvider } from "../mcp/oauth.js";
 import { oauthApi } from "../mcp/oauth-api.js";
 import { mcpResource } from "../mcp/server.js";
 import type { AppType } from "../routes/index.js";
+import { revokeUserLive } from "../runtime/revoke.js";
 import { getUserWithEpoch, insertUser, toMember } from "../services/users.js";
 import { b64urlEncode } from "../util/crypto.js";
 
@@ -30,7 +35,8 @@ import { b64urlEncode } from "../util/crypto.js";
 // stg-b. Release builds drop this module (`hooks` in app.ts folds to
 // false). At runtime it is on only when the build allows it
 // (TEST_HOOKS_ALLOWED) AND TEST_HOOKS=1 AND a 32+ char TEST_HOOK_KEY AND a
-// TEST_DOMAIN. Order per request: rate limit (RL_ANON; unbound is a refusal),
+// TEST_DOMAIN. POST /__test/audit reads back test_hook.* audit rows only
+// (never any other event). Order per request: rate limit (RL_ANON; unbound is a refusal),
 // then the key, then the input. Every refusal is the standard 404, and every
 // call past the rate limit writes one audit_events row.
 
@@ -100,7 +106,7 @@ const log = (evt: string) =>
   console.log(JSON.stringify({ evt: `test_hook.${evt}` }));
 const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
 
-type HookName = "session" | "otp_latest" | "oauth_client" | "unknown";
+type HookName = "session" | "otp_latest" | "oauth_client" | "audit" | "unknown";
 type Outcome = "ok" | "denied" | "refused" | "none" | "error";
 
 const hookName = (path: string): HookName =>
@@ -110,7 +116,9 @@ const hookName = (path: string): HookName =>
       ? "otp_latest"
       : path === TEST_HOOKS.oauthClient
         ? "oauth_client"
-        : "unknown";
+        : path === TEST_HOOKS.audit
+          ? "audit"
+          : "unknown";
 
 // Same DDL as P3's audit_events (0009_spaces, also IF NOT EXISTS), so the
 // rows land in the audit log on installs that predate that migration.
@@ -120,6 +128,44 @@ const AUDIT_DDL = [
 ];
 const AUDIT_INSERT =
   "insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id, detail) values (?, ?, 'test_hook', ?, ?, 'test_hook', ?, ?)";
+
+// The audit hook's read: test_hook rows only, enforced here in SQL (both the
+// actor kind and the action prefix, no LIKE wildcards), so no other audit
+// event can ever leave through it. ?1 since (ms), ?2 the cap.
+const TEST_AUDIT_READ = `select action, at, actor_id as actorId, target_id as targetId, detail
+  from audit_events
+  where actor_kind = 'test_hook' and substr(action, 1, 10) = 'test_hook.' and at >= ?1
+  order by at desc, id desc limit ?2`;
+
+const parseDetail = (s: string): Record<string, unknown> => {
+  try {
+    const v: unknown = JSON.parse(s);
+    return v && typeof v === "object" && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+};
+
+/** test_hook.* rows at or after `since`, newest first, at most TEST_AUDIT_LIMIT. */
+async function readTestAudit(
+  env: Env,
+  since: number,
+): Promise<TestAuditResult> {
+  const res = await env.DB.batch([
+    ...AUDIT_DDL.map((s) => env.DB.prepare(s)),
+    env.DB.prepare(TEST_AUDIT_READ).bind(since, TEST_AUDIT_LIMIT),
+  ]);
+  const rows = (res.at(-1)?.results ?? []) as {
+    action: string;
+    at: number;
+    actorId: string | null;
+    targetId: string | null;
+    detail: string;
+  }[];
+  return { events: rows.map((r) => ({ ...r, detail: parseDetail(r.detail) })) };
+}
 
 /** One audit row per hook call: hook, IP, outcome, and the email's domain (never the address). */
 async function audit(
@@ -178,8 +224,102 @@ async function testUser(
   return stored === role && status === "active" ? toMember(row) : null;
 }
 
-/** P3 owns space roles; until it lands, a session hook asking for them is refused. */
-const spacesSupported = (spaces: unknown[]) => spaces.length === 0;
+type SpaceGrant = { spaceId: string; role: SpaceRole };
+const MAX_SPACES = 20;
+/**
+ * Hook spaces only: every id the hook may create or grant on carries this
+ * prefix (checked here and again in SQL). Personal space ids (newId) never do.
+ */
+const SPACE_ID = /^test-[A-Za-z0-9_-]{1,59}$/;
+
+/** At most 20 grants, prefixed safe ids, each space once. */
+const spacesValid = (spaces: SpaceGrant[]) =>
+  spaces.length <= MAX_SPACES &&
+  spaces.every((s) => SPACE_ID.test(s.spaceId)) &&
+  new Set(spaces.map((s) => s.spaceId)).size === spaces.length;
+
+// The SQL half of the rule, so a handler slip can't reach a real space:
+// substr(id, 1, 5) = 'test-' (no LIKE wildcards), and no member whose email
+// isn't exactly under TEST_DOMAIN. Plain literals (no calls), so the release
+// build drops them with the rest of this module.
+// Refused as a whole: an unprefixed id, a personal or deleted space, or a
+// shared space with any member outside TEST_DOMAIN. ?1 ids (JSON), ?2 domain.
+const SPACES_BLOCKED = `select 1 from json_each(?1) j
+  where substr(j.value, 1, 5) <> 'test-'
+    or exists (select 1 from spaces s where s.id = j.value
+      and (s.kind <> 'shared' or s.deleted_at is not null
+        or exists (select 1 from space_members fm join users fu on fu.id = fm.user_id
+          where fm.space_id = s.id
+            and substr(fu.email, length(fu.email) - length(?2)) <> '@' || ?2)))
+  limit 1`;
+const SPACE_CREATE = `insert into spaces (id, kind, name, all_members_role, public_links, created_at)
+  select ?1, 'shared', ?2, null, 0, ?3 where substr(?1, 1, 5) = 'test-'
+  on conflict (id) do nothing`;
+// Conditional on a live, prefixed shared space with no member outside
+// TEST_DOMAIN (?5), so a racing personal, deleted or real row is never
+// joined. Always writes when the row exists, so changes = 0 means refused.
+const MEMBER_UPSERT = `insert into space_members (space_id, user_id, role, source, created_at)
+  select ?1, ?2, ?3, 'manual', ?4
+  where substr(?1, 1, 5) = 'test-'
+    and exists (select 1 from spaces where id = ?1 and kind = 'shared' and deleted_at is null)
+    and not exists (select 1 from space_members fm join users fu on fu.id = fm.user_id
+      where fm.space_id = ?1
+        and substr(fu.email, length(fu.email) - length(?5)) <> '@' || ?5)
+  on conflict (space_id, user_id, source) do update set role = excluded.role`;
+
+const MANUAL_ROLES =
+  "select space_id, role from space_members where user_id = ? and source = 'manual' and space_id in (select value from json_each(?))";
+const RANK: Record<string, number> = { viewer: 1, editor: 2, manager: 3 };
+const idsOf = (spaces: SpaceGrant[]) =>
+  JSON.stringify(spaces.map((s) => s.spaceId));
+
+/** True when a grant may not run (SPACES_BLOCKED). Read-only: runs before the user is created. */
+async function spacesBlocked(env: Env, spaces: SpaceGrant[]): Promise<boolean> {
+  if (spaces.length === 0) return false;
+  const row = await env.DB.prepare(SPACES_BLOCKED)
+    .bind(idsOf(spaces), env.TEST_DOMAIN ?? "")
+    .first();
+  return row !== null;
+}
+
+/**
+ * P3 T17: creates any missing shared space and upserts the user's manual
+ * space_members rows, in one batch. False (refuse) when a grant row didn't
+ * write (after the check, its space was deleted, turned out personal, or
+ * gained a member outside TEST_DOMAIN). A
+ * lowered row closes the user's sockets.
+ */
+async function grantSpaces(
+  env: Env,
+  userId: string,
+  spaces: SpaceGrant[],
+): Promise<boolean> {
+  if (spaces.length === 0) return true;
+  const prior = await env.DB.prepare(MANUAL_ROLES)
+    .bind(userId, idsOf(spaces))
+    .all<{ space_id: string; role: string }>();
+  const was = new Map(prior.results.map((r) => [r.space_id, r.role]));
+  const lowered = spaces.some(
+    (s) => (RANK[was.get(s.spaceId) ?? ""] ?? 0) > (RANK[s.role] ?? 0),
+  );
+  const now = Date.now();
+  const res = await env.DB.batch(
+    spaces.flatMap((s) => [
+      env.DB.prepare(SPACE_CREATE).bind(s.spaceId, `Test ${s.spaceId}`, now),
+      env.DB.prepare(MEMBER_UPSERT).bind(
+        s.spaceId,
+        userId,
+        s.role,
+        now,
+        env.TEST_DOMAIN ?? "",
+      ),
+    ]),
+  );
+  // Every second result is a grant row.
+  const allWritten = res.every((r, i) => i % 2 === 0 || r.meta.changes > 0);
+  if (lowered) await revokeUserLive(env, userId, "space role lowered");
+  return allWritten;
+}
 
 // A loopback redirect: the grant is completed server-side, nothing follows it.
 const HOOK_REDIRECT = "http://127.0.0.1/p5-oauth-callback";
@@ -292,11 +432,12 @@ export function mountTestHooks(app: AppType): void {
       }
       const { email: raw, role, spaces = [] } = input.data;
       const email = normalizeEmail(raw);
-      const user =
-        email && spacesSupported(spaces)
-          ? await testUser(env, email, role)
-          : null;
-      if (!user) {
+      // Every input check, the spaces' kinds included, runs before
+      // testUser, so a refusal writes nothing.
+      const ok =
+        !!email && spacesValid(spaces) && !(await spacesBlocked(env, spaces));
+      const user = ok && email ? await testUser(env, email, role) : null;
+      if (!user || !(await grantSpaces(env, user.id, spaces))) {
         await audit(env, hook, ip, "refused", email ? { email } : {});
         return notFound();
       }
@@ -322,6 +463,19 @@ export function mountTestHooks(app: AppType): void {
       );
       await audit(env, hook, ip, code ? "ok" : "none", { email });
       return code ? c.json({ code }) : notFound();
+    }
+
+    if (hook === "audit") {
+      const input = TestAuditInputSchema.safeParse(body);
+      if (!input.success) {
+        await audit(env, hook, ip, "refused");
+        return notFound();
+      }
+      // Read first, then audit this call like any other hook: the response
+      // is the log as it stood, and this call's own row shows up next time.
+      const out = await readTestAudit(env, input.data.since);
+      await audit(env, hook, ip, "ok");
+      return c.json(out);
     }
 
     const email = oauthHookEmail(env);
