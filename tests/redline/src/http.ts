@@ -48,6 +48,15 @@ export function asPair(credA: Cred, credB: Cred) {
 export const send = (req: Request): Promise<Response> =>
   fetch(req, { redirect: "manual" });
 
+/** JSON.parse that never puts body text in an error: status and hash only. */
+export function parseJson(res: Response, text: string, what: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new HttpError(`${what}: not JSON`, res, text);
+  }
+}
+
 export class HttpError extends Error {
   readonly status: number;
   constructor(what: string, res: Response, body: string) {
@@ -76,7 +85,7 @@ export async function hook(
   const text = await readBody(res);
   if (res.status < 200 || res.status > 299)
     throw new HttpError(`${t.name} hook ${path}`, res, text);
-  return JSON.parse(text);
+  return parseJson(res, text, `${t.name} hook ${path}`);
 }
 
 /** The suite's admin test user: hooks never act on the owner. */
@@ -108,7 +117,9 @@ export async function mintPat(t: Target, cookie: Cred): Promise<Cred> {
   );
   const text = await readBody(res);
   if (res.status !== 201) throw new HttpError(`${t.name} mint PAT`, res, text);
-  const token = (JSON.parse(text) as { token?: unknown }).token;
+  const token = (
+    parseJson(res, text, `${t.name} mint PAT`) as { token?: unknown }
+  ).token;
   if (typeof token !== "string" || !token)
     throw new Error(`${t.name} mint PAT: no token`);
   return { kind: "pat", token };
@@ -136,8 +147,11 @@ export async function adminCreds(t: Target): Promise<AdminCreds> {
   const text = await readBody(res);
   if (res.status !== 200)
     throw new HttpError(`${t.name} PAT /api/v1/me`, res, text);
-  const email = (JSON.parse(text) as { user?: { email?: unknown } }).user
-    ?.email;
+  const email = (
+    parseJson(res, text, `${t.name} /api/v1/me`) as {
+      user?: { email?: unknown };
+    }
+  ).user?.email;
   if (email !== adminEmail(t))
     throw new Error(`${t.name}: the PAT is not the admin test user's`);
   return { cookie, pat };
@@ -168,7 +182,17 @@ export async function publishMarker(
   const text = await readBody(res);
   if (res.status < 200 || res.status > 299)
     throw new HttpError(`${t.name} seed marker`, res, text);
-  const id = (JSON.parse(text) as { id?: unknown }).id;
+  const id = (parseJson(res, text, `${t.name} seed marker`) as { id?: unknown })
+    .id;
   if (typeof id !== "string") throw new Error(`${t.name} seed marker: no id`);
   return id;
 }
+
+/**
+ * True when a response came from the content app: it alone sets
+ * Cross-Origin-Resource-Policy: cross-origin with Access-Control-Allow-Origin: *
+ * on every response (apps/server/src/content/app.ts).
+ */
+export const fromContentApp = (res: Response): boolean =>
+  res.headers.get("cross-origin-resource-policy") === "cross-origin" &&
+  res.headers.get("access-control-allow-origin") === "*";

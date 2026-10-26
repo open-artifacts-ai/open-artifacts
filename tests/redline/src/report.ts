@@ -73,6 +73,80 @@ export function levelOf(
   return { level: "pass" };
 }
 
+/**
+ * The required-case manifest (live/manifest.json): every case the suite must
+ * run, by file and full name. Adding a case is a manifest edit.
+ */
+export interface Manifest {
+  cases: { file: string; name: string }[];
+}
+
+/** Parses a manifest; throws on any other shape. */
+export function parseManifest(text: string): Manifest {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    throw new Error("the required-case manifest is not JSON");
+  }
+  const cases = (v as { cases?: unknown } | null)?.cases;
+  if (
+    !Array.isArray(cases) ||
+    cases.length === 0 ||
+    !cases.every(
+      (c) =>
+        c &&
+        typeof c.file === "string" &&
+        c.file !== "" &&
+        typeof c.name === "string" &&
+        c.name !== "",
+    )
+  )
+    throw new Error("the required-case manifest has no valid cases list");
+  return { cases: cases as Manifest["cases"] };
+}
+
+const caseKey = (file: string, name: string) => `${file}\u0000${name}`;
+
+/**
+ * A required case that didn't run (a missing or renamed file or test) is a
+ * FAIL, and so is a case the manifest doesn't list. Cases without a file
+ * (module or unhandled errors) pass through.
+ */
+export function applyManifest(
+  cases: readonly CaseResult[],
+  m: Manifest | null,
+): CaseResult[] {
+  if (!m)
+    return [
+      ...cases,
+      {
+        name: "required-case manifest",
+        level: "fail",
+        reason: "missing or invalid",
+      },
+    ];
+  const required = new Set(m.cases.map((c) => caseKey(c.file, c.name)));
+  const seen = new Set<string>();
+  const out: CaseResult[] = cases.map((c) => {
+    if (!c.file) return c;
+    const k = caseKey(c.file, c.name);
+    seen.add(k);
+    return required.has(k)
+      ? c
+      : { ...c, level: "fail", reason: "not in the required-case manifest" };
+  });
+  for (const r of m.cases)
+    if (!seen.has(caseKey(r.file, r.name)))
+      out.push({
+        name: r.name,
+        file: r.file,
+        level: "fail",
+        reason: "required case did not run",
+      });
+  return out;
+}
+
 export function gatePasses(cases: readonly CaseResult[]): boolean {
   return cases.length > 0 && cases.every((c) => c.level === "pass");
 }

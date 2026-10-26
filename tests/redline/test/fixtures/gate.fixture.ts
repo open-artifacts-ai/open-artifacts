@@ -1,17 +1,28 @@
-import { beforeAll, it } from "vitest";
+import { beforeAll, describe, it } from "vitest";
 import { type ProofMeta, proof } from "../../src/report.ts";
 
 // Driven by report.test.ts: FIXTURE_LEVEL picks the second case's level
-// ("setup-fail" fails beforeAll instead).
+// ("setup-fail" fails the top beforeAll; "nested-setup-fail" fails the
+// beforeAll of an outer suite around a nested one).
+const LEVEL = process.env.FIXTURE_LEVEL ?? "pass";
+
 beforeAll(() => {
-  if (process.env.FIXTURE_LEVEL === "setup-fail")
-    throw new Error("fixture setup");
+  if (LEVEL === "setup-fail") throw new Error("fixture setup");
 });
 
 it("fixture: a passing case", () => {});
 
 it("fixture: the case under test", (ctx) => {
-  const level = process.env.FIXTURE_LEVEL ?? "pass";
-  if (level === "fail") throw new Error("fixture failure");
-  if (level !== "pass") proof(ctx, level as ProofMeta["level"], "fixture");
+  if (LEVEL === "fail") throw new Error("fixture failure");
+  if (["staging-only", "not-applicable", "unproven-live"].includes(LEVEL))
+    proof(ctx, LEVEL as ProofMeta["level"], "fixture");
+});
+
+describe("outer", () => {
+  beforeAll(() => {
+    if (LEVEL === "nested-setup-fail") throw new Error("fixture outer setup");
+  });
+  describe("inner", () => {
+    it("fixture: a nested case", () => {});
+  });
 });

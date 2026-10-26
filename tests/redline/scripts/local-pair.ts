@@ -28,9 +28,13 @@ const timeoutMs = Number(process.env.REDLINE_LOCAL_TIMEOUT_MS) || 15 * 60_000;
 
 let pair: LocalPair | null = null;
 let booting: Promise<LocalPair> | null = null;
-let runPid: number | undefined;
 let finishing: Promise<never> | null = null;
+/** Every group spawned (for the report). */
 const spawnedPids: number[] = [];
+/** Groups not yet confirmed empty: the only ones ever signalled. */
+const live = new Set<number>();
+/** The command's group, while live. */
+let runPid: number | undefined;
 const abort = new AbortController();
 
 /** Idempotent: the first caller tears down and exits; later callers wait. */
@@ -39,35 +43,42 @@ function finish(code: number, why?: string): Promise<never> {
   return finishing;
 }
 
+const groupGone = (pg: number) => groupMembers(pg).length === 0;
+
 async function teardown(code: number, why?: string): Promise<never> {
-  {
-    if (why) console.error(`local-pair: ${why}`);
-    if (!pair && booting) {
-      // Mid-boot: abort, and startLocalPair stops and removes what it made.
-      abort.abort();
-      pair = await booting.catch(() => null);
-    }
-    if (runPid) {
+  if (why) console.error(`local-pair: ${why}`);
+  if (!pair && booting) {
+    // Mid-boot: abort, and startLocalPair stops and removes what it made.
+    abort.abort();
+    pair = await booting.catch(() => null);
+  }
+  if (runPid && live.has(runPid)) {
+    if (!groupGone(runPid)) {
       try {
         process.kill(-runPid, "SIGTERM");
       } catch {}
-      for (let i = 0; i < 30 && groupMembers(runPid).length; i++)
+      for (let i = 0; i < 30 && !groupGone(runPid); i++)
         await new Promise((r) => setTimeout(r, 100));
+      if (!groupGone(runPid))
+        try {
+          process.kill(-runPid, "SIGKILL");
+        } catch {}
     }
-    const spawned = [...spawnedPids, ...(runPid ? [runPid] : [])];
-    const left = pair ? await pair.stop() : spawnedPids.flatMap(groupMembers);
-    const runLeft = runPid ? groupMembers(runPid) : [];
-    console.log(
-      `local-pair: spawned groups ${spawned.join(" ") || "none"}; left after teardown: ${[...left, ...runLeft].join(" ") || "none"}`,
-    );
-    if (left.length || runLeft.length) code = code || 1;
+    if (groupGone(runPid)) live.delete(runPid);
   }
+  const left = pair ? await pair.stop() : [];
+  for (const p of [...live]) if (groupGone(p)) live.delete(p);
+  const all = [...spawnedPids, ...(runPid ? [runPid] : [])];
+  console.log(
+    `local-pair: spawned groups ${all.join(" ") || "none"}; left after teardown: ${[...new Set([...left, ...[...live].flatMap(groupMembers)])].join(" ") || "none"}`,
+  );
+  if (left.length || live.size) code = code || 1;
   process.exit(code);
 }
 
-// Last resort if the loop dies without finish(): SIGKILL our groups, synchronously.
+// Last resort if the loop dies without finish(): SIGKILL still-live groups only.
 process.on("exit", () => {
-  for (const p of [...spawnedPids, ...(runPid ? [runPid] : [])]) {
+  for (const p of live) {
     try {
       process.kill(-p, "SIGKILL");
     } catch {}
@@ -75,12 +86,17 @@ process.on("exit", () => {
 });
 process.on("SIGINT", () => void finish(130, "SIGINT"));
 process.on("SIGTERM", () => void finish(143, "SIGTERM"));
+process.on("SIGHUP", () => void finish(129, "SIGHUP"));
 const timer = setTimeout(() => void finish(124, "timed out"), timeoutMs);
 
 try {
   booting = startLocalPair({
     signal: abort.signal,
-    onSpawn: (p) => spawnedPids.push(p),
+    onSpawn: (p) => {
+      spawnedPids.push(p);
+      live.add(p);
+    },
+    onReap: (p) => live.delete(p),
   });
   pair = await booting;
   if (finishing) await finishing;
@@ -104,6 +120,7 @@ try {
     },
   });
   runPid = child.pid;
+  if (runPid) live.add(runPid);
   const code: number = await new Promise((res) =>
     child.on("exit", (c, s) => res(c ?? (s ? 1 : 0))),
   );

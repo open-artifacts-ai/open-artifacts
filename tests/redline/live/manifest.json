@@ -1,0 +1,56 @@
+{
+  "cases": [
+    {
+      "file": "live/guard.test.ts",
+      "name": "guard > both targets report ok, testHooks: true and their own installId"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "guard > prod is clean (no test hooks on any prod install)"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: a wrong hook key gets the 404"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: the content host is served by the content app"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: the content host has no hooks"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > a: a hook call is audited"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: a wrong hook key gets the 404"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: the content host is served by the content app"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: the content host has no hooks"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "hooks > b: a hook call is audited"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "credentials (harness smoke) > A's admin PAT at B: /api/v1/me"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "credentials (harness smoke) > A's session cookie at B: /api/v1/me"
+    },
+    {
+      "file": "live/guard.test.ts",
+      "name": "credentials (harness smoke) > A's admin PAT at B: the host's own marker artifact"
+    }
+  ]
+}

@@ -36,12 +36,15 @@ describe.skipIf(!on)("local pair smoke", () => {
       left = await pair.stop();
     }
     expect(left).toEqual([]);
-    for (const p of pair.pids) expect(groupMembers(p)).toEqual([]);
+    expect(pair.spawned.length).toBeGreaterThanOrEqual(4);
+    // Every group was confirmed empty and dropped from the live list.
+    expect(pair.pids).toEqual([]);
+    for (const p of pair.spawned) expect(groupMembers(p)).toEqual([]);
     const kids = ownChildren();
-    for (const p of pair.pids) expect(kids).not.toContain(p);
+    for (const p of pair.spawned) expect(kids).not.toContain(p);
     expect(existsSync(pair.dir)).toBe(false);
     console.log(
-      `smoke: spawned groups ${pair.pids.join(" ")}; after teardown: group members ${pair.pids.flatMap(groupMembers).join(" ") || "none"}, own children ${kids.join(" ") || "none"}`,
+      `smoke: spawned groups ${pair.spawned.join(" ")}; after teardown: group members ${pair.spawned.flatMap(groupMembers).join(" ") || "none"}, own children ${kids.join(" ") || "none"}`,
     );
   }, 300_000);
 
@@ -81,37 +84,46 @@ describe.skipIf(!on)("local pair smoke", () => {
     );
   }, 120_000);
 
-  it("SIGINT to scripts/local-pair.ts stops every group it spawned", async () => {
-    const script = join(import.meta.dirname, "..", "scripts", "local-pair.ts");
-    const child = spawn(
-      process.execPath,
-      ["--experimental-strip-types", script, "--", "sleep", "600"],
-      {
-        env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
-    let out = "";
-    child.stdout.on("data", (d) => {
-      out += d;
-    });
-    child.stderr.on("data", (d) => {
-      out += d;
-    });
-    const deadline = Date.now() + 240_000;
-    while (!out.includes("local-pair: rl-a app") && Date.now() < deadline)
-      await new Promise((r) => setTimeout(r, 250));
-    expect(out).toContain("local-pair: rl-a app");
-    child.kill("SIGINT");
-    const code = await new Promise<number | null>((r) =>
-      child.on("exit", (c) => r(c)),
-    );
-    expect(code).toBe(130);
-    const m = /spawned groups ([\d ]+); left after teardown: (.+)/.exec(out);
-    expect(m?.[2]).toBe("none");
-    const groups = (m?.[1] ?? "").trim().split(" ").map(Number);
-    expect(groups.length).toBeGreaterThanOrEqual(3);
-    for (const g of groups) expect(groupMembers(g)).toEqual([]);
-    console.log(`sigint: spawned groups ${groups.join(" ")}; left: none`);
-  }, 300_000);
+  for (const [sig, want] of [
+    ["SIGINT", 130],
+    ["SIGHUP", 129],
+  ] as const)
+    it(`${sig} to scripts/local-pair.ts stops every group it spawned`, async () => {
+      const script = join(
+        import.meta.dirname,
+        "..",
+        "scripts",
+        "local-pair.ts",
+      );
+      const child = spawn(
+        process.execPath,
+        ["--experimental-strip-types", script, "--", "sleep", "600"],
+        {
+          env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let out = "";
+      child.stdout.on("data", (d) => {
+        out += d;
+      });
+      child.stderr.on("data", (d) => {
+        out += d;
+      });
+      const deadline = Date.now() + 240_000;
+      while (!out.includes("local-pair: rl-a app") && Date.now() < deadline)
+        await new Promise((r) => setTimeout(r, 250));
+      expect(out).toContain("local-pair: rl-a app");
+      child.kill(sig);
+      const code = await new Promise<number | null>((r) =>
+        child.on("exit", (c) => r(c)),
+      );
+      expect(code).toBe(want);
+      const m = /spawned groups ([\d ]+); left after teardown: (.+)/.exec(out);
+      expect(m?.[2]).toBe("none");
+      const groups = (m?.[1] ?? "").trim().split(" ").map(Number);
+      expect(groups.length).toBeGreaterThanOrEqual(3);
+      for (const g of groups) expect(groupMembers(g)).toEqual([]);
+      console.log(`${sig}: spawned groups ${groups.join(" ")}; left: none`);
+    }, 300_000);
 });

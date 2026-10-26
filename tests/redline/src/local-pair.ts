@@ -59,8 +59,10 @@ export interface LocalPair {
   /** REDLINE_TARGETS JSON (paths only, no secrets). */
   targets: string;
   targetsFile: string;
-  /** Spawned process (group) ids. */
+  /** Groups still live: one is dropped once confirmed empty and never signalled again. */
   pids: number[];
+  /** Every process group spawned, live or finished (for reporting). */
+  spawned: number[];
   /** Stops every spawned group, removes the temp dir; returns leftover pids (must be empty). */
   stop(): Promise<number[]>;
 }
@@ -152,6 +154,7 @@ function runWrangler(
   log: string,
   timeoutMs: number,
   track: (c: ChildProcess) => void,
+  exited: (pid: number) => void,
 ): Promise<void> {
   return new Promise((res, rej) => {
     const fd = openSync(log, "a", 0o600);
@@ -164,11 +167,13 @@ function runWrangler(
     closeSync(fd);
     track(c);
     const t = setTimeout(() => {
-      if (c.pid) killGroup(c.pid);
+      // The exit handler below reaps the group once it is gone.
+      if (c.pid) void killGroup(c.pid);
       rej(new Error(`wrangler ${args[0]} timed out`));
     }, timeoutMs);
     c.on("exit", (code) => {
       clearTimeout(t);
+      if (c.pid) exited(c.pid);
       code === 0 ? res() : rej(new Error(`wrangler ${args[0]} exited ${code}`));
     });
     c.on("error", (e) => {
@@ -248,6 +253,8 @@ export interface StartOpts {
   signal?: AbortSignal;
   /** Called with each spawned process (group) id, as it is spawned. */
   onSpawn?: (pid: number) => void;
+  /** Called once a spawned group is confirmed empty (never signal it after). */
+  onReap?: (pid: number) => void;
 }
 
 /** Boots the pair. On any failure, everything spawned is stopped and removed before it throws. */
@@ -259,26 +266,47 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
   const dir = mkdtempSync(join(tmpdir(), "oa-redline-"));
   chmodSync(dir, 0o700);
   const pids: number[] = [];
+  const spawned: number[] = [];
   const secrets: string[] = [];
   const installs: LocalInstall[] = [];
+  /** Drops a group once it is confirmed empty; true when it is gone. */
+  const reap = (pg: number): boolean => {
+    if (!pids.includes(pg)) return true;
+    if (alive(pg) || groupMembers(pg).length > 0) return false;
+    pids.splice(pids.indexOf(pg), 1);
+    o.onReap?.(pg);
+    return true;
+  };
+  /** Signals a tracked, still-live group only. */
+  const stopGroup = async (pg: number): Promise<void> => {
+    if (reap(pg)) return;
+    await killGroup(pg);
+    reap(pg);
+  };
   const track = (c: ChildProcess) => {
     if (!c.pid) return;
     pids.push(c.pid);
+    spawned.push(c.pid);
     o.onSpawn?.(c.pid);
-    if (o.signal?.aborted) void killGroup(c.pid);
+    if (o.signal?.aborted) void stopGroup(c.pid);
+  };
+  const exited = (pg: number) => {
+    // The leader exited; the group may linger briefly (workerd children).
+    if (!reap(pg)) setTimeout(() => reap(pg), 500).unref();
   };
   let stopped = false;
   const stop = async (): Promise<number[]> => {
     if (!stopped) {
       stopped = true;
-      await Promise.all(pids.map(killGroup));
+      await Promise.all([...pids].map(stopGroup));
       rmSync(dir, { recursive: true, force: true });
     }
-    return pids.flatMap(groupMembers);
+    // Only groups that refused to die stay tracked.
+    return [...pids].flatMap(groupMembers);
   };
   try {
     o.signal?.addEventListener("abort", () => {
-      for (const p of pids) void killGroup(p);
+      for (const p of [...pids]) void stopGroup(p);
     });
     for (const spec of LOCAL_INSTALLS) {
       if (o.signal?.aborted) throw new Error("aborted");
@@ -318,6 +346,7 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
         log,
         120_000,
         track,
+        exited,
       );
       const fd = openSync(log, "a", 0o600);
       const child = spawn(
@@ -340,6 +369,7 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
       );
       closeSync(fd);
       track(child);
+      child.on("exit", () => child.pid && exited(child.pid));
       if (!child.pid)
         throw new Error(`${spec.name}: wrangler dev did not start`);
       installs.push({
@@ -376,7 +406,7 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
     const targets = JSON.stringify({ mode: "local", a, b });
     const targetsFile = join(dir, "targets.json");
     writeFileSync(targetsFile, targets, { mode: 0o600 });
-    return { dir, installs, targets, targetsFile, pids, stop };
+    return { dir, installs, targets, targetsFile, pids, spawned, stop };
   } catch (e) {
     // Failure output: the last log lines, secrets redacted; never env.
     for (const i of LOCAL_INSTALLS) {

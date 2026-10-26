@@ -1,18 +1,20 @@
 import { writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { type Cred, HttpError, hook, withCred } from "../src/http.ts";
+import { auditCheck } from "../src/audit.ts";
+import {
+  type Cred,
+  fromContentApp,
+  HttpError,
+  hook,
+  withCred,
+} from "../src/http.ts";
 import {
   crossCheck,
   expectRefused,
   NotRefused,
   registerMarker,
 } from "../src/refused.ts";
-import {
-  loadTargets,
-  parseTargets,
-  prodClean,
-  type Target,
-} from "../src/targets.ts";
+import { loadTargets, parseTargets, type Target } from "../src/targets.ts";
 import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
 
 const KEY_A = "a".repeat(40);
@@ -215,129 +217,6 @@ describe("crossCheck", () => {
   });
 });
 
-describe("prodClean", () => {
-  /** A fake inventory + CF API + healthz in one server. */
-  async function prod(
-    o: {
-      secretNames?: string[];
-      bindings?: string[];
-      testHooks?: boolean;
-      rowHooks?: boolean;
-    } = {},
-  ) {
-    const f = await fake((req, res) => {
-      const u = req.url ?? "";
-      if (u === "/installs") {
-        if (
-          req.headers.authorization !==
-          "Bearer inv-key-0123456789abcdef0123456789"
-        )
-          return res.writeHead(404).end();
-        return json(res, 200, {
-          installs: [
-            {
-              id: "acme",
-              appHost: "acme.example",
-              contentHost: "c",
-              state: "live",
-              testHooks: o.rowHooks ?? false,
-            },
-          ],
-        });
-      }
-      if (u === "/healthz")
-        return json(res, 200, {
-          ok: true,
-          installId: "acme",
-          ...(o.testHooks ? { testHooks: true } : {}),
-        });
-      if (
-        u.endsWith(
-          "/workers/dispatch/namespaces/oa-prod/scripts/oa-p-acme/secrets",
-        )
-      )
-        return json(res, 200, {
-          result: (o.secretNames ?? ["SESSION_SECRET"]).map((name) => ({
-            name,
-            type: "secret_text",
-          })),
-        });
-      if (
-        u.endsWith(
-          "/workers/dispatch/namespaces/oa-prod/scripts/oa-p-acme/settings",
-        )
-      )
-        return json(res, 200, {
-          result: {
-            bindings: (o.bindings ?? ["DB"]).map((name) => ({ name })),
-          },
-        });
-      res.writeHead(404).end();
-    });
-    const s = secrets({
-      inv: "inv-key-0123456789abcdef0123456789",
-      tok: "scripts-token",
-    });
-    const a = await fake(healthy("rl-a-id"));
-    const b = await fake(healthy("rl-b-id"));
-    const env = targetsEnv(a, b);
-    const raw = JSON.parse(env.REDLINE_TARGETS);
-    raw.mode = "staging";
-    for (const k of ["a", "b"]) {
-      raw[k].app = `https://${raw[k].name}.example`;
-      raw[k].content = `https://${raw[k].name}.example-content`;
-    }
-    raw.prod = {
-      inventoryUrl: "https://inventory.example",
-      inventoryKeyFile: s.path("inv"),
-      scriptsTokenFile: s.path("tok"),
-      accountId: "acct",
-      apiBase: `${f.origin}/client/v4`,
-    };
-    const T = parseTargets({ REDLINE_TARGETS: JSON.stringify(raw) });
-    // The fake answers inventory, healthz and the API on one origin.
-    return {
-      T,
-      run: () =>
-        prodClean(T.prod as NonNullable<typeof T.prod>, {
-          appOrigin: () => f.origin,
-        }),
-      f,
-    };
-  }
-
-  it("passes on a clean prod", async () => {
-    const p = await prod();
-    // inventoryUrl must be https in the JSON; point it at the fake after parsing.
-    Object.assign(p.T.prod as object, { inventoryUrl: p.f.origin });
-    await expect(p.run()).resolves.toEqual({ installs: 1 });
-  });
-
-  it("fails on a prod script that lists TEST_HOOK_KEY", async () => {
-    const p = await prod({ secretNames: ["SESSION_SECRET", "TEST_HOOK_KEY"] });
-    Object.assign(p.T.prod as object, { inventoryUrl: p.f.origin });
-    await expect(p.run()).rejects.toThrow(/lists TEST_HOOK_KEY/);
-  });
-
-  it("fails on a prod script whose settings bind TEST_HOOKS", async () => {
-    const p = await prod({ bindings: ["DB", "TEST_HOOKS"] });
-    Object.assign(p.T.prod as object, { inventoryUrl: p.f.origin });
-    await expect(p.run()).rejects.toThrow(/lists TEST_HOOKS/);
-  });
-
-  it("fails on healthz testHooks: true", async () => {
-    const p = await prod({ testHooks: true });
-    Object.assign(p.T.prod as object, { inventoryUrl: p.f.origin });
-    await expect(p.run()).rejects.toThrow(/testHooks is true/);
-  });
-
-  it("fails on an inventory row with testHooks", async () => {
-    const p = await prod({ rowHooks: true });
-    Object.assign(p.T.prod as object, { inventoryUrl: p.f.origin });
-    await expect(p.run()).rejects.toThrow(/inventory testHooks is not false/);
-  });
-});
-
 describe("loadTargets", () => {
   it("refuses a target without testHooks", async () => {
     const a = await fake(healthy("rl-a-id"));
@@ -464,6 +343,121 @@ describe("hook()", () => {
   it("withCred always sets redirect: manual", () => {
     expect(withCred({ kind: "none" }, { redirect: "follow" }).redirect).toBe(
       "manual",
+    );
+  });
+});
+
+describe("guarded JSON (no body text in messages)", () => {
+  it("a 200 hook answer that isn't JSON shows status and hash only", async () => {
+    const a = await fake((req, res, body) => {
+      if (req.url === "/healthz") return healthy("rl-a-id")?.(req, res, body);
+      res
+        .writeHead(200, { "content-type": "text/plain" })
+        .end("SECRET-NOT-JSON");
+    });
+    const b = await fake(healthy("rl-b-id"));
+    const T = await loadTargets(targetsEnv(a, b));
+    const err = await hook(T.a, "/__test/session", {}).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as Error).message).toMatch(
+      /not JSON: status 200, body sha256:/,
+    );
+    expect((err as Error).message).not.toContain("SECRET-NOT-JSON");
+  });
+});
+
+describe("fromContentApp", () => {
+  it("needs CORP cross-origin and ACAO *", () => {
+    const h = (o: Record<string, string>) => new Response("", { headers: o });
+    expect(
+      fromContentApp(
+        h({
+          "cross-origin-resource-policy": "cross-origin",
+          "access-control-allow-origin": "*",
+        }),
+      ),
+    ).toBe(true);
+    expect(fromContentApp(h({ "access-control-allow-origin": "*" }))).toBe(
+      false,
+    );
+    expect(fromContentApp(new Response("", { status: 404 }))).toBe(false);
+  });
+});
+
+describe("auditCheck (staging path, POST /__test/audit)", () => {
+  /** A fake install with the session hook, /api/v1/me and an optional audit hook. */
+  const auditInstall = (o: {
+    audit: "absent" | "hit" | "miss" | "other-actor";
+  }) => {
+    let lastUser = "";
+    let n = 0;
+    let auditBody: unknown = null;
+    const handler: Parameters<typeof fakeServer>[0] = (req, res, body) => {
+      if (req.url === "/healthz") return healthy("rl-a-id")?.(req, res, body);
+      if (req.url === "/__test/session") {
+        lastUser = `u${++n}`;
+        return json(res, 200, { cookie: `c-${lastUser}` });
+      }
+      if (req.url === "/api/v1/me") {
+        const id = String(req.headers.cookie ?? "").replace(/^.*=c-/, "");
+        return json(res, 200, { user: { id, email: "x@oa-redline-a.fyi" } });
+      }
+      if (req.url === "/__test/audit") {
+        auditBody = JSON.parse(body);
+        if (o.audit === "absent")
+          return json(res, 404, { error: { code: "not_found" } });
+        const actorId = o.audit === "other-actor" ? "someone-else" : lastUser;
+        const action =
+          o.audit === "miss" ? "test_hook.otp_latest" : "test_hook.session";
+        return json(res, 200, {
+          events: [
+            {
+              action,
+              at: Date.now(),
+              actorId,
+              targetId: "session",
+              detail: {},
+            },
+          ],
+        });
+      }
+      res.writeHead(404).end();
+    };
+    return { handler, auditBody: () => auditBody };
+  };
+
+  async function run(kind: "absent" | "hit" | "miss" | "other-actor") {
+    const f = auditInstall({ audit: kind });
+    const a = await fake(f.handler);
+    const b = await fake(healthy("rl-b-id"));
+    const T = await loadTargets(targetsEnv(a, b));
+    // targetsEnv is local mode; drop `local` so the staging (hook) path runs.
+    delete (T.a as { local?: unknown }).local;
+    return { r: auditCheck(T.a), body: f.auditBody };
+  }
+
+  it("the hook absent (404) is unproven-live, never pass", async () => {
+    const { r } = await run("absent");
+    expect(await r).toEqual({
+      level: "unproven-live",
+      reason: expect.stringMatching(/404/),
+    });
+  });
+
+  it("a test_hook.session row for the fresh user is a pass; since is integer ms", async () => {
+    const { r, body } = await run("hit");
+    expect(await r).toEqual({ level: "pass", via: "hook" });
+    const since = (body() as { since: unknown }).since;
+    expect(Number.isInteger(since)).toBe(true);
+    expect(since as number).toBeGreaterThanOrEqual(0);
+  });
+
+  it("no matching row, or a row for another actor, fails", async () => {
+    await expect((await run("miss")).r).rejects.toThrow(
+      /no test_hook.session audit row/,
+    );
+    await expect((await run("other-actor")).r).rejects.toThrow(
+      /no test_hook.session audit row/,
     );
   });
 });

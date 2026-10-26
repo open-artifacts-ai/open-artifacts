@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -135,7 +135,12 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     ".bin",
     "vitest",
   );
-  const run = (level: string, gate: boolean) => {
+  const fixtureManifest = join(
+    import.meta.dirname,
+    "fixtures",
+    "gate.manifest.json",
+  );
+  const run = (level: string, gate: boolean, manifest = fixtureManifest) => {
     const dir = mkdtempSync(join(tmpdir(), "oa-redline-gate-"));
     try {
       const p = spawnSync(
@@ -151,6 +156,7 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
             FIXTURE_LEVEL: level,
             REDLINE_REPORT: join(dir, "report.json"),
             REDLINE_GATE: gate ? "1" : "0",
+            REDLINE_MANIFEST: manifest,
           },
         },
       );
@@ -186,6 +192,66 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     expect(r.status).not.toBe(0);
     expect(r.report.counts["not-applicable"]).toBe(0);
     expect(r.report.counts.fail).toBeGreaterThanOrEqual(2);
+  }, 60_000);
+
+  it("nested setup failure: a test under a failed outer beforeAll is fail", () => {
+    const r = run("nested-setup-fail", false);
+    expect(r.status).not.toBe(0);
+    const nested = r.report.cases.find(
+      (c) => c.name === "outer > inner > fixture: a nested case",
+    );
+    expect(nested?.level).toBe("fail");
+  }, 60_000);
+
+  it("a required case that didn't run is fail (missing or renamed)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "oa-redline-manifest-"));
+    try {
+      const m = JSON.parse(readFileSync(fixtureManifest, "utf8"));
+      m.cases.push({
+        file: "test/fixtures/gone.fixture.ts",
+        name: "a case from a deleted file",
+      });
+      const path = join(dir, "manifest.json");
+      writeFileSync(path, JSON.stringify(m));
+      const r = run("pass", true, path);
+      expect(r.status).not.toBe(0);
+      expect(r.report.nonPass).toEqual([
+        {
+          name: "a case from a deleted file",
+          file: "test/fixtures/gone.fixture.ts",
+          level: "fail",
+          reason: "required case did not run",
+        },
+      ]);
+      // Also non-zero without the gate: it is a FAIL, not a soft level.
+      expect(run("pass", false, path).status).not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("a case missing from the manifest is fail; no manifest at all is fail", () => {
+    const dir = mkdtempSync(join(tmpdir(), "oa-redline-manifest-"));
+    try {
+      const m = JSON.parse(readFileSync(fixtureManifest, "utf8"));
+      m.cases = m.cases.filter(
+        (c: { name: string }) => c.name !== "fixture: a passing case",
+      );
+      const path = join(dir, "manifest.json");
+      writeFileSync(path, JSON.stringify(m));
+      const r = run("pass", false, path);
+      expect(r.status).not.toBe(0);
+      expect(r.report.nonPass.map((c) => [c.name, c.reason])).toEqual([
+        ["fixture: a passing case", "not in the required-case manifest"],
+      ]);
+      const none = run("pass", false, join(dir, "absent.json"));
+      expect(none.status).not.toBe(0);
+      expect(none.report.nonPass.map((c) => c.name)).toEqual([
+        "required-case manifest",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 60_000);
 
   it("fail: non-zero without the gate", () => {

@@ -4,6 +4,7 @@
     "types": ["node"],
     "lib": ["ES2022", "DOM"],
     "allowImportingTsExtensions": true,
+    "allowJs": true,
     "erasableSyntaxOnly": true
   },
   "include": [

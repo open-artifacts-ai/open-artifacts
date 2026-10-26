@@ -28,25 +28,23 @@ export interface Target {
 }
 
 export interface ProdProbe {
-  /** The P1 inventory Worker origin (GET /installs). */
-  inventoryUrl: string;
-  inventoryKeyFile: string;
-  /** A token with Workers Scripts Read only. */
-  scriptsTokenFile: string;
+  /** REDLINE_PROD_ACCOUNT_ID (a var, not a secret): 32 hex. */
   accountId: string;
-  /** Dispatch namespace of prod user Workers (default oa-prod). */
-  namespace?: string;
-  /** Script name prefix (default oa-p-). */
-  scriptPrefix?: string;
-  /** Cloudflare API base (default https://api.cloudflare.com/client/v4). */
-  apiBase?: string;
+  /** REDLINE_PROD_R2_TOKEN: R2 read-only, scoped to the prod releases bucket. */
+  r2TokenFile: string;
+  /** REDLINE_PROD_SCRIPTS_TOKEN: Workers Scripts Read for the prod namespace. */
+  scriptsTokenFile: string;
+  /** The P1 inventory Worker origin (GET /installs); absent until deployed. */
+  inventoryUrl?: string;
+  /** REDLINE_PROD_INVENTORY_KEY. */
+  inventoryKeyFile?: string;
 }
 
 export interface Targets {
   mode: Mode;
   a: Target;
   b: Target;
-  /** Staging mode only, once the inventory is deployed. */
+  /** Staging mode only: present when the prod credentials are configured. */
   prod?: ProdProbe;
 }
 
@@ -58,7 +56,7 @@ interface Secrets {
 const SECRETS = new WeakMap<object, Secrets>();
 const PROD_SECRETS = new WeakMap<
   object,
-  { inventoryKey: string; scriptsToken: string }
+  { r2Token: string; scriptsToken: string; inventoryKey?: string }
 >();
 
 /** @internal Secrets of a loaded target (http.ts only). */
@@ -190,22 +188,62 @@ function exists(p: string): boolean {
   }
 }
 
-function parseProd(raw: Record<string, unknown>): ProdProbe {
-  const p: ProdProbe = {
-    inventoryUrl: origin(raw.inventoryUrl, "prod.inventoryUrl", "staging"),
-    inventoryKeyFile: str(raw.inventoryKeyFile, "prod.inventoryKeyFile"),
-    scriptsTokenFile: str(raw.scriptsTokenFile, "prod.scriptsTokenFile"),
-    accountId: str(raw.accountId, "prod.accountId"),
+const PROD_FILES = {
+  r2TokenFile: "REDLINE_PROD_R2_TOKEN",
+  scriptsTokenFile: "REDLINE_PROD_SCRIPTS_TOKEN",
+  inventoryKeyFile: "REDLINE_PROD_INVENTORY_KEY",
+} as const;
+
+/**
+ * The prod probe: from REDLINE_TARGETS.prod, else the CI layout
+ * (<secretsDir>/REDLINE_PROD_R2_TOKEN, _SCRIPTS_TOKEN, optional
+ * _INVENTORY_KEY, and env REDLINE_PROD_ACCOUNT_ID). Undefined when neither
+ * is configured.
+ */
+function parseProd(
+  raw: Record<string, unknown> | undefined,
+  secretsDir: string | undefined,
+  env: Record<string, string | undefined>,
+): ProdProbe | undefined {
+  const r = raw ?? {};
+  const file = (k: keyof typeof PROD_FILES): string | undefined =>
+    typeof r[k] === "string" && r[k] !== ""
+      ? (r[k] as string)
+      : secretsDir
+        ? join(secretsDir, PROD_FILES[k])
+        : undefined;
+  const accountId =
+    typeof r.accountId === "string" && r.accountId !== ""
+      ? r.accountId
+      : env.REDLINE_PROD_ACCOUNT_ID;
+  const r2TokenFile = file("r2TokenFile");
+  const scriptsTokenFile = file("scriptsTokenFile");
+  if (!raw && (!accountId || !r2TokenFile || !exists(r2TokenFile)))
+    return undefined;
+  if (!accountId || !/^[0-9a-f]{32}$/.test(accountId))
+    throw new Error("prod: REDLINE_PROD_ACCOUNT_ID must be 32 hex characters");
+  if (!r2TokenFile || !scriptsTokenFile)
+    throw new Error("prod: the R2 and scripts token files are required");
+  const p: ProdProbe = { accountId, r2TokenFile, scriptsTokenFile };
+  const secrets: {
+    r2Token: string;
+    scriptsToken: string;
+    inventoryKey?: string;
+  } = {
+    r2Token: readSecretFile(r2TokenFile, "REDLINE_PROD_R2_TOKEN"),
+    scriptsToken: readSecretFile(
+      scriptsTokenFile,
+      "REDLINE_PROD_SCRIPTS_TOKEN",
+    ),
   };
-  if (raw.namespace !== undefined)
-    p.namespace = str(raw.namespace, "prod.namespace");
-  if (raw.scriptPrefix !== undefined)
-    p.scriptPrefix = str(raw.scriptPrefix, "prod.scriptPrefix");
-  if (raw.apiBase !== undefined) p.apiBase = str(raw.apiBase, "prod.apiBase");
-  PROD_SECRETS.set(p, {
-    inventoryKey: readSecretFile(p.inventoryKeyFile, "inventory key"),
-    scriptsToken: readSecretFile(p.scriptsTokenFile, "scripts token"),
-  });
+  if (r.inventoryUrl !== undefined) {
+    p.inventoryUrl = origin(r.inventoryUrl, "prod.inventoryUrl", "staging");
+    const kf = file("inventoryKeyFile");
+    if (!kf) throw new Error("prod: the inventory key file is required");
+    p.inventoryKeyFile = kf;
+    secrets.inventoryKey = readSecretFile(kf, "REDLINE_PROD_INVENTORY_KEY");
+  }
+  PROD_SECRETS.set(p, secrets);
   return p;
 }
 
@@ -252,10 +290,15 @@ export function parseTargets(
       "REDLINE_TARGETS: every app and content origin must differ",
     );
   const out: Targets = { mode, a, b };
-  if (raw.prod !== undefined && raw.prod !== null) {
-    if (mode !== "staging")
-      throw new Error("REDLINE_TARGETS: prod is staging mode only");
-    out.prod = parseProd(obj(raw.prod, "prod"));
+  const rawProd =
+    raw.prod === undefined || raw.prod === null
+      ? undefined
+      : obj(raw.prod, "prod");
+  if (rawProd && mode !== "staging")
+    throw new Error("REDLINE_TARGETS: prod is staging mode only");
+  if (mode === "staging") {
+    const prod = parseProd(rawProd, secretsDir, env);
+    if (prod) out.prod = prod;
   }
   return out;
 }
@@ -285,92 +328,6 @@ export async function verifyTarget(t: Target): Promise<void> {
     );
   if (h.installId !== t.installId)
     throw new Error(`${t.name} /healthz: installId is not ${t.installId}`);
-}
-
-const HOOK_NAMES = ["TEST_HOOK_KEY", "TEST_HOOKS"];
-
-export interface ProdCleanOpts {
-  /** App origin for an inventory host (tests point it at a fake server). */
-  appOrigin?: (host: string) => string;
-}
-
-/**
- * The positive prod check. For every install the prod inventory lists: the
- * row's testHooks is false; /healthz has no testHooks: true and reports the
- * row's id; the script's secrets and settings bindings name neither
- * TEST_HOOK_KEY nor TEST_HOOKS. Throws on the first problem.
- */
-export async function prodClean(
-  p: ProdProbe,
-  o: ProdCleanOpts = {},
-): Promise<{ installs: number }> {
-  const s = prodSecretsOf(p);
-  const appOrigin = o.appOrigin ?? ((h: string) => `https://${h}`);
-  const api = p.apiBase ?? "https://api.cloudflare.com/client/v4";
-  const ns = p.namespace ?? "oa-prod";
-  const prefix = p.scriptPrefix ?? "oa-p-";
-  const getJson = async (url: string, token: string | null, what: string) => {
-    const res = await fetch(url, {
-      redirect: "manual",
-      ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
-    });
-    const text = await readBody(res);
-    if (res.status !== 200)
-      throw new Error(`prodClean ${what}: ${describeRes(res, text)}`);
-    try {
-      return JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      throw new Error(`prodClean ${what}: not JSON`);
-    }
-  };
-  const inv = await getJson(
-    `${p.inventoryUrl}/installs`,
-    s.inventoryKey,
-    "inventory",
-  );
-  const rows = inv.installs;
-  if (!Array.isArray(rows))
-    throw new Error("prodClean inventory: no installs array");
-  for (const r of rows as Record<string, unknown>[]) {
-    const id = String(r.id ?? "");
-    if (!/^[a-z0-9-]{1,64}$/.test(id))
-      throw new Error("prodClean: an inventory row has a bad id");
-    if (r.testHooks !== false)
-      throw new Error(`prodClean ${id}: inventory testHooks is not false`);
-    const h = await getJson(
-      `${appOrigin(String(r.appHost))}/healthz`,
-      null,
-      `${id} /healthz`,
-    );
-    if (h.testHooks === true)
-      throw new Error(`prodClean ${id}: /healthz testHooks is true`);
-    if (h.installId !== id)
-      throw new Error(`prodClean ${id}: /healthz installId differs`);
-    const base = `${api}/accounts/${encodeURIComponent(p.accountId)}/workers/dispatch/namespaces/${encodeURIComponent(ns)}/scripts/${encodeURIComponent(prefix + id)}`;
-    const sec = await getJson(
-      `${base}/secrets`,
-      s.scriptsToken,
-      `${id} secrets`,
-    );
-    const names = Array.isArray(sec.result)
-      ? (sec.result as { name?: unknown }[]).map((x) => x.name)
-      : null;
-    if (!names) throw new Error(`prodClean ${id}: secrets list unreadable`);
-    const set = await getJson(
-      `${base}/settings`,
-      s.scriptsToken,
-      `${id} settings`,
-    );
-    const bindings = (
-      set.result as { bindings?: { name?: unknown }[] } | undefined
-    )?.bindings;
-    if (!Array.isArray(bindings))
-      throw new Error(`prodClean ${id}: settings unreadable`);
-    for (const n of [...names, ...bindings.map((b) => b.name)])
-      if (HOOK_NAMES.includes(String(n)))
-        throw new Error(`prodClean ${id}: script lists ${String(n)}`);
-  }
-  return { installs: rows.length };
 }
 
 /** parseTargets, then the /healthz guard on both installs. */

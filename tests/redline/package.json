@@ -7,14 +7,17 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "pnpm --filter @oa/provision build && vitest run",
     "live": "node --experimental-strip-types scripts/redline.ts",
     "local": "node --experimental-strip-types scripts/local-pair.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
+  },
+  "dependencies": {
+    "@oa/provision": "workspace:*"
   }
 }

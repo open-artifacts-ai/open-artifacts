@@ -3,7 +3,7 @@
 // (or REDLINE_GATE=1). Needs REDLINE_TARGETS. Exits non-zero on any failed
 // case, and with the gate unless EVERY case is "pass".
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exitCode, formatReport, gateOn, type Report } from "../src/report.ts";
@@ -13,6 +13,10 @@ const gate = gateOn(process.argv.slice(2), process.env);
 const reportFile =
   process.env.REDLINE_REPORT ||
   join(mkdtempSync(join(tmpdir(), "oa-redline-report-")), "report.json");
+
+// A stale report must never stand in for this run's.
+rmSync(reportFile, { force: true });
+rmSync(reportFile.replace(/\.json$/, ".txt"), { force: true });
 
 const vitest = join(pkg, "node_modules", ".bin", "vitest");
 const child = spawn(vitest, ["run", "-c", "vitest.live.config.ts"], {
@@ -24,6 +28,7 @@ const child = spawn(vitest, ["run", "-c", "vitest.live.config.ts"], {
 const forward = (sig: NodeJS.Signals) => () => child.kill(sig);
 process.on("SIGINT", forward("SIGINT"));
 process.on("SIGTERM", forward("SIGTERM"));
+process.on("SIGHUP", forward("SIGHUP"));
 
 const runExit: number = await new Promise((res) =>
   child.on("exit", (code, sig) => res(code ?? (sig ? 1 : 0))),

@@ -1,11 +1,14 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import type { Reporter, TestModule } from "vitest/node";
+import type { Reporter, TestCase, TestModule } from "vitest/node";
 import {
+  applyManifest,
   buildReport,
   type CaseResult,
   formatReport,
   levelOf,
+  type Manifest,
+  parseManifest,
 } from "./report.ts";
 
 // Vitest reporter: one CaseResult per test (its proof level), plus a "fail"
@@ -26,6 +29,26 @@ const modeOf = (env = process.env) => {
   }
 };
 
+export const manifestPath = (env = process.env) =>
+  env.REDLINE_MANIFEST ||
+  join(import.meta.dirname, "..", "live", "manifest.json");
+
+/** The manifest, or null when missing or invalid (that is a FAIL case). */
+export function loadManifest(path = manifestPath()): Manifest | null {
+  try {
+    return existsSync(path) ? parseManifest(readFileSync(path, "utf8")) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when any ancestor suite of `t` failed (its beforeAll, say). */
+function ancestorFailed(t: TestCase): boolean {
+  for (let p = t.parent; p.type === "suite"; p = p.parent)
+    if (p.state() === "failed") return true;
+  return false;
+}
+
 export function collect(
   modules: ReadonlyArray<TestModule>,
   unhandled: ReadonlyArray<unknown>,
@@ -38,10 +61,7 @@ export function collect(
     for (const t of m.children.allTests()) {
       const state = t.result().state;
       // A test skipped because its module or suite setup failed is a failure.
-      const setupFailed =
-        state === "skipped" &&
-        (broken ||
-          (t.parent.type === "suite" && t.parent.state() === "failed"));
+      const setupFailed = state === "skipped" && (broken || ancestorFailed(t));
       const { level, reason } = setupFailed
         ? { level: "fail" as const, reason: "setup failed" }
         : levelOf(state, t.meta());
@@ -74,8 +94,9 @@ export default class RedlineReporter implements Reporter {
     modules: ReadonlyArray<TestModule>,
     unhandled: ReadonlyArray<unknown>,
   ): void {
+    const root = join(import.meta.dirname, "..");
     const report = buildReport(
-      collect(modules, unhandled, join(import.meta.dirname, "..")),
+      applyManifest(collect(modules, unhandled, root), loadManifest()),
       modeOf(),
     );
     const out = reportPath();
@@ -84,7 +105,11 @@ export default class RedlineReporter implements Reporter {
     const text = formatReport(report);
     writeFileSync(out.replace(/\.json$/, "") + ".txt", text, { mode: 0o600 });
     process.stdout.write(`\n${text}`);
-    if (process.env.REDLINE_GATE === "1" && !report.gate.passed)
+    // A FAIL always fails the run; with the gate, so does any non-pass.
+    if (
+      report.counts.fail > 0 ||
+      (process.env.REDLINE_GATE === "1" && !report.gate.passed)
+    )
       process.exitCode = 1;
   }
 }
