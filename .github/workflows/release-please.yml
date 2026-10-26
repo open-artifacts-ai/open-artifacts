@@ -338,6 +338,16 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: pnpm install --frozen-lockfile
+      # The server reports <version> only when v<version> points at HEAD, and a
+      # checkout by SHA has no tags: fetch this one and check it is this commit.
+      - name: Fetch the release tag
+        env:
+          TAG: ${{ needs.hosted-guard.outputs.tag }}
+          GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git rev-parse "$TAG^{commit}")" = "$GUARD_SHA"
       - name: Build both variants and the release files, with manifest.json
         env:
           GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
@@ -345,6 +355,10 @@ jobs:
           pnpm --filter @oa/provision build
           pnpm --filter @oa/server build
           node --experimental-strip-types scripts/ci/build-hosted-release.ts "$RUNNER_TEMP/hosted" --commit "$GUARD_SHA"
+      - name: The built server reports exactly the release version
+        env:
+          VERSION: ${{ needs.hosted-guard.outputs.version }}
+        run: grep -Fqx "export const VERSION = \"$VERSION\";" apps/server/src/version.gen.ts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hosted-release

@@ -218,6 +218,42 @@ describe("release-please.yml hosted jobs", () => {
     expect(up[0]?.with?.name).toBe("hosted-release");
   });
 
+  it("hosted-build fetches the guard's tag and checks it is the guard's commit, before building", () => {
+    // emit-version reports <version> only when v<version> points at HEAD; a
+    // checkout by SHA has no tags, so without this the bundle says -dev+<sha>.
+    const st = steps("hosted-build");
+    const i = st.findIndex((x) => (x.run ?? "").includes("refs/tags/$TAG"));
+    const b = st.findIndex((x) =>
+      (x.run ?? "").includes("build-hosted-release"),
+    );
+    expect(i).toBeGreaterThan(-1);
+    expect(i).toBeLessThan(b);
+    expect(st[i]?.env?.TAG).toBe(TAG);
+    expect(st[i]?.env?.GUARD_SHA).toBe(GUARD_SHA);
+    expect(st[i]?.run).toContain(
+      'git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"',
+    );
+    expect(st[i]?.run).toContain(
+      'test "$(git rev-parse "$TAG^{commit}")" = "$GUARD_SHA"',
+    );
+  });
+
+  it("hosted-build fails unless the built server reports exactly the guard's version", () => {
+    const st = steps("hosted-build");
+    const b = st.findIndex((x) =>
+      (x.run ?? "").includes("build-hosted-release"),
+    );
+    const v = st.findIndex((x) => (x.run ?? "").includes("version.gen.ts"));
+    expect(v).toBeGreaterThan(b);
+    expect(st[v]?.env?.VERSION).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ needs.hosted-guard.outputs.version }}",
+    );
+    expect(st[v]?.run).toContain(
+      'grep -Fqx "export const VERSION = \\"$VERSION\\";" apps/server/src/version.gen.ts',
+    );
+  });
+
   it("hosted-check has no secrets, verifies the manifest, runs check-no-test-hooks on the artifact and outputs the hashes", () => {
     const job = w.jobs["hosted-check"];
     expect(JSON.stringify(job)).not.toContain("secrets.");
