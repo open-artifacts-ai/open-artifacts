@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.58.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.58.0...v0.58.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **provision:** install CAS writes read RETURNING, not D1's meta.changes ([#658](https://github.com/open-artifacts-ai/open-artifacts/issues/658)) ([16a6c04](https://github.com/open-artifacts-ai/open-artifacts/commit/16a6c04b80f08a7eb61645dd8fcea482ce26cee9))
+
 ## [0.58.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.57.1...v0.58.0) (2026-10-26)
 
 
