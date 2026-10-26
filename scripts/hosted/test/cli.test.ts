@@ -1039,3 +1039,103 @@ describe("final round: token file, audit gap, keychain account", () => {
     expect(sec.some((e) => e.args[0] === "-i")).toBe(true);
   });
 });
+
+describe("H-DV: delete waits for the directory revoke", () => {
+  const DEL = (id: string, ...extra: string[]) => [
+    "delete",
+    "--env",
+    "staging",
+    "--install",
+    id,
+    "--confirm",
+    id,
+    ...extra,
+  ];
+
+  it("prints phase-2 progress, one line per poll at most every 60 s", async () => {
+    const w = world();
+    const id = await created(w);
+    let polls = 0;
+    w.fake.revoker = (db, rid) => {
+      if (++polls === 6)
+        db.prepare(
+          "UPDATE installs SET directory_revoke = 'done' WHERE id = ?",
+        ).run(rid);
+    };
+    expect(await main(DEL(id), w.deps)).toBe(0);
+    const prog = w.parsed().filter((l) => l.step === "directory-revoke");
+    expect(prog.map((l) => l.data)).toEqual([
+      { state: "pending", attempts: 0, waitedMs: 0 },
+      { state: "pending", attempts: 0, waitedMs: 60_000 },
+    ]);
+    expect(w.parsed().find((l) => l.step === "delete")?.data).toMatchObject({
+      state: "deleted",
+    });
+  });
+
+  it("--skip-directory-revoke <reason> skips the wait and prints that the grant stays live", async () => {
+    const w = world();
+    const id = await created(w);
+    w.fake.revoker = null;
+    expect(
+      await main(DEL(id, "--skip-directory-revoke", "tenant closed"), w.deps),
+    ).toBe(0);
+    const out = w.lines.join("\n");
+    expect(out).toContain(
+      "the Google grant stays live; revoke it in the customer's Google Admin console",
+    );
+    expect(w.parsed().filter((l) => l.step === "directory-revoke")).toEqual([]);
+  });
+
+  it.each([
+    [["--skip-directory-revoke", ""]],
+    [["--skip-directory-revoke", "   "]],
+  ])("an empty skip reason is refused before any call: %j", async (extra) => {
+    const w = world();
+    expect(await main(DEL("iaaaaaaaaaaa", ...extra), w.deps)).toBe(1);
+    expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
+    noCalls(w);
+  });
+
+  it("--skip-directory-revoke on another command is refused before any call", async () => {
+    const w = world();
+    expect(
+      await main(
+        [
+          "status",
+          "--env",
+          "staging",
+          "--install",
+          "iaaaaaaaaaaa",
+          "--skip-directory-revoke",
+          "x",
+        ],
+        w.deps,
+      ),
+    ).toBe(1);
+    expect(lastLine(w).message).toMatch(
+      /--skip-directory-revoke is for delete only/,
+    );
+    noCalls(w);
+  });
+
+  it("status shows directory_revoke", async () => {
+    const w = world();
+    const id = await created(w);
+    w.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'pending', directory_revoke_attempts = 2 WHERE id = ?",
+      )
+      .run(id);
+    expect(
+      await main(["status", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    expect(
+      w.parsed().find((l) => l.step === "status")?.data.directoryRevoke,
+    ).toEqual({
+      state: "pending",
+      attempts: 2,
+      revokedAt: null,
+    });
+  });
+});
