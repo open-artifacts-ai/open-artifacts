@@ -93,7 +93,11 @@ export interface CrossCheck<C = Cred> {
   credA: C;
   credB: C;
   ok?: (r: Response) => boolean;
-  /** Judges the A-at-B leg (default expectRefused). */
+  /**
+   * Judges the A-at-B leg: what counts as B refusing, when a refusal isn't a
+   * 401/403/404 (an OAuth 400 invalid_grant, a sign-in redirect). Default
+   * expectRefused.
+   */
   refused?: (res: Response, b: Target) => Promise<void>;
   /**
    * Single-use credentials (a one-time code, a Google code): refuse A's at B

@@ -111,6 +111,20 @@ provider, an authorization completed server-side with PKCE S256 for the
 `/mcp` resource, and the code exchanged at `/oauth/token`. The grant is for
 the fixed member `p5-oauth@<TEST_DOMAIN>` (created as `member` if absent).
 
+### `POST /__test/audit`
+
+Read-only (added in #642). Body (`TestAuditInputSchema`, strict): `{ since }`,
+ms since the epoch, integer ≥ 0; anything else is audited `refused` and gets
+the 404. Returns `200 { events }`, each `{ action, at, actorId, targetId,
+detail }` with `at >= since`, newest first, at most `TEST_AUDIT_LIMIT` (200).
+Only `test_hook.*` rows, enforced in SQL (`actor_kind = 'test_hook'` and
+`substr(action, 1, 10) = 'test_hook.'`, no `LIKE` wildcards), so no other audit
+event leaves through it. Audited like every hook (`test_hook.audit`), written
+after the read, so a response never contains its own call. `GET /api/v1/audit`
+and its export are unchanged and still list no `test_hook` rows. Release
+builds drop it with the rest of `test-hooks/` (a strip-test marker and the
+`check-no-test-hooks` path list).
+
 ## `/healthz`
 
 `{ ok: true, plan, version, testHooks?: true, installId? }`. `testHooks` is
@@ -130,8 +144,9 @@ read this admin PAT.
 - A wrong key gets the 404.
 - Hooks on the content host get a 404.
 - A hook call shows up in `audit_events` (`action = 'test_hook.session'`).
-  Proven in local mode (D1 read); reported `unproven-live` on staging, which
-  has no D1 read in CI.
+  Local mode reads D1. Staging takes `since = Date.now()`, calls
+  `/__test/session`, then `/__test/audit { since }` and expects that row; a 404
+  from the audit hook reports `unproven-live`, never pass.
 
 ## Differences from the P5 plan's Task 1
 
