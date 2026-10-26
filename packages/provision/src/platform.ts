@@ -2,7 +2,7 @@
 // audit trail. Schema: apps/platform-db/migrations/0001_installs.sql. Holds no
 // customer data and no secret; every write checks the env prefix first.
 import { createHash } from "node:crypto";
-import type { Cf } from "./cf.js";
+import type { Cf, D1Result } from "./cf.js";
 import { assertOwnResource, type Env } from "./names.js";
 import type { InstallId } from "./types.js";
 
@@ -103,6 +103,13 @@ export const RL_BASE: Record<Env, number> = {
   staging: 1_000_000,
   prod: 2_000_000,
 };
+
+/**
+ * A CAS write won when its `RETURNING id` gave back exactly one row. Not
+ * meta.changes: D1 counts rows a trigger writes too, so a one-row UPDATE of
+ * installs reports 2 (installs_row_version, 0003_lifecycle.sql).
+ */
+const one = (r: D1Result[]): boolean => r[0]?.results?.length === 1;
 
 const UPDATABLE = new Set([
   "d1_id",
@@ -232,7 +239,7 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
     if (keys.length === 0) return true;
     const set = keys.map((k, i) => `${k} = ?${i + 1}`).join(", ");
     const r = await this.write(
-      `UPDATE installs SET ${set}, updated_at = ?${keys.length + 1} WHERE id = ?${keys.length + 2}${lease === undefined ? "" : ` AND lease = ?${keys.length + 3}`}`,
+      `UPDATE installs SET ${set}, updated_at = ?${keys.length + 1} WHERE id = ?${keys.length + 2}${lease === undefined ? "" : ` AND lease = ?${keys.length + 3}`} RETURNING id`,
       [
         ...keys.map((k) => (fields as Record<string, unknown>)[k] ?? null),
         this.now(),
@@ -240,7 +247,7 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
         ...(lease === undefined ? [] : [lease]),
       ],
     );
-    return lease === undefined || r[0]?.meta?.changes === 1;
+    return lease === undefined || one(r);
   }
 
   /** Hosts rows held by another install (any state). */
@@ -304,19 +311,19 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
   ): Promise<boolean> {
     const now = this.now();
     const r = await this.write(
-      `UPDATE installs SET state = ?1, lease = ?2, lease_until = ?3, updated_at = ?4 WHERE id = ?5 AND row_version = ?6 AND state IN (${from.map((_, i) => `?${i + 7}`).join(", ")}) AND (lease_until IS NULL OR lease_until <= ?4)`,
+      `UPDATE installs SET state = ?1, lease = ?2, lease_until = ?3, updated_at = ?4 WHERE id = ?5 AND row_version = ?6 AND state IN (${from.map((_, i) => `?${i + 7}`).join(", ")}) AND (lease_until IS NULL OR lease_until <= ?4) RETURNING id`,
       [to, lease, until, now, id, rowVersion, ...from],
     );
-    return r[0]?.meta?.changes === 1;
+    return one(r);
   }
 
   /** Renews the lock, a CAS on its value; false when another holds the row now. */
   async renew(id: InstallId, lease: string, until: number): Promise<boolean> {
     const r = await this.write(
-      "UPDATE installs SET lease_until = ?1 WHERE id = ?2 AND lease = ?3",
+      "UPDATE installs SET lease_until = ?1 WHERE id = ?2 AND lease = ?3 RETURNING id",
       [until, id, lease],
     );
-    return r[0]?.meta?.changes === 1;
+    return one(r);
   }
 
   /** Sets the final state and drops the lock, if this lease still holds it. */
@@ -326,10 +333,10 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
     state: InstallState,
   ): Promise<boolean> {
     const r = await this.write(
-      "UPDATE installs SET state = ?1, lease = NULL, lease_until = NULL, updated_at = ?2 WHERE id = ?3 AND lease = ?4",
+      "UPDATE installs SET state = ?1, lease = NULL, lease_until = NULL, updated_at = ?2 WHERE id = ?3 AND lease = ?4 RETURNING id",
       [state, this.now(), id, lease],
     );
-    return r[0]?.meta?.changes === 1;
+    return one(r);
   }
 
   /** The stored render of one version, or undefined. */
