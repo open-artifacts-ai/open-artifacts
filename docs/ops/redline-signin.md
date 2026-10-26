@@ -15,8 +15,13 @@ the clipboard into a 0600 file the suite reads, and the clipboard is cleared.
   secret files (as for any staging red-line run).
 - The passwords of `alice@oa-redline-a.fyi` and `dave@oa-redline-c.fyi`
   (password manager).
-- Once, by an admin: `rl-a` has Google sign-in on and alice invited;
-  `rl-b` has Google sign-in on and dave invited.
+- Once, by an admin: `rl-a` has Google sign-in on, `AUTH_DOMAINS=oa-redline-a.fyi`
+  and alice invited; `rl-b` has Google sign-in on, `AUTH_DOMAINS=oa-redline-c.fyi`
+  and dave invited; the broker registry lists each install with its own domain.
+- The one-time-code cases (no human step) need a Turnstile token when the
+  installs enforce hosted Turnstile: put one the installs' Turnstile secret
+  accepts in a 0600 file and set `turnstileFile` on each target in
+  `REDLINE_TARGETS`. Without it those cases fail at the code request.
 
 ## Steps
 

@@ -92,7 +92,8 @@ export interface CrossCheck<C = Cred> {
   b: Target;
   credA: C;
   credB: C;
-  ok?: (r: Response) => boolean;
+  /** A success leg's verdict; `host` is the install the leg was sent to. */
+  ok?: (r: Response, host: Target) => boolean;
   /**
    * Judges the A-at-B leg: what counts as B refusing, when a refusal isn't a
    * 401/403/404 (an OAuth 400 invalid_grant, a sign-in redirect). Default
@@ -119,12 +120,12 @@ export async function crossCheck<C = Cred>(
   const refused = o.refused ?? expectRefused;
   const rb = await send(req(o.credB, o.b));
   const tb = await readBody(rb);
-  if (!ok(rb))
+  if (!ok(rb, o.b))
     throw new Error(`B's own credential failed at B (${describeRes(rb, tb)})`);
   if (o.refuseFirst) await refused(await send(req(o.credA, o.b)), o.b);
   const ra = await send(req(o.credA, o.a));
   const ta = await readBody(ra);
-  if (!ok(ra))
+  if (!ok(ra, o.a))
     throw new Error(`A's credential failed at A (${describeRes(ra, ta)})`);
   if (!o.refuseFirst) await refused(await send(req(o.credA, o.b)), o.b);
 }

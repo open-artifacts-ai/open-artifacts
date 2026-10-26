@@ -8,7 +8,7 @@
 // 0600 file and clears the clipboard. Nothing is printed but flow names,
 // users and verdicts. Then runs the live suite with REDLINE_SIGNIN_CAPTURES
 // and removes the directory.
-import { execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +32,26 @@ const paste = () => execFileSync("pbpaste", { encoding: "utf8" }).trim();
 
 const dir = mkdtempSync(join(tmpdir(), "oa-redline-signin-"));
 const rl = createInterface({ input: process.stdin, output: process.stdout });
+let child: ChildProcess | null = null;
+
+/** Clears the clipboard and removes the captures; safe to call twice. */
+function scrub(): void {
+  try {
+    copy("");
+  } catch {}
+  rmSync(dir, { recursive: true, force: true });
+}
+
+// Ctrl-C (or a kill) at any point, prompts or the suite run after them:
+// forward to the suite, scrub, exit. Registered before anything is captured.
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
+  process.on(sig, () => {
+    if (child?.exitCode === null) child.kill(sig);
+    scrub();
+    process.exit(130);
+  });
+// readline turns Ctrl-C at a prompt into its own SIGINT event.
+rl.on("SIGINT", () => process.kill(process.pid, "SIGINT"));
 const flows: StartedFlow[] = [];
 let code = 1;
 try {
@@ -79,7 +99,7 @@ try {
   });
   rl.close();
   const gate = process.argv.includes("--gate") ? ["--gate"] : [];
-  const child = spawn(
+  child = spawn(
     process.execPath,
     [
       "--experimental-strip-types",
@@ -91,14 +111,12 @@ try {
       env: { ...process.env, REDLINE_SIGNIN_CAPTURES: dir },
     },
   );
-  code = await new Promise((r) => child.on("exit", (c) => r(c ?? 1)));
+  const run = child;
+  code = await new Promise((r) => run.on("exit", (c) => r(c ?? 1)));
 } catch (e) {
   console.error(`signin-capture: ${e instanceof Error ? e.message : "failed"}`);
 } finally {
   rl.close();
-  try {
-    copy("");
-  } catch {}
-  rmSync(dir, { recursive: true, force: true });
+  scrub();
 }
 process.exit(code);

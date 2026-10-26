@@ -81,9 +81,6 @@ afterAll(async () => {
 
 const rand = () => randomBytes(5).toString("hex");
 const sideOf = (host: Target): "a" | "b" => (host === T.a ? "a" : "b");
-/** The target a response came from (fetch keeps the request URL). */
-const fromHost = (r: Response): Target =>
-  r.url.startsWith(T.a.app) ? T.a : T.b;
 
 async function mustStart(t: Target): Promise<GoogleStart> {
   const s = await startGoogle(t);
@@ -106,7 +103,7 @@ describe("sign-in: OIDC state and nonce", () => {
         b: T.b,
         credA: sa,
         credB: sb,
-        ok: (r) => stateAccepted(r, fromHost(r)),
+        ok: stateAccepted,
         refused: expectStateRefused,
         refuseFirst: true,
       },
@@ -135,7 +132,7 @@ describe("sign-in: OIDC state and nonce", () => {
         b: T.b,
         credA: { state: sa.state, cookie: { a: sa.cookie, b: atB } },
         credB: { state: sb.state, cookie: { a: sb.cookie, b: sb.cookie } },
-        ok: (r) => stateAccepted(r, fromHost(r)),
+        ok: stateAccepted,
         refused: expectStateRefused,
         refuseFirst: true,
       },
@@ -174,13 +171,15 @@ describe("sign-in: ID tokens", () => {
     );
   });
 
-  it("an ID token minted for A's client (aud) replayed at B: no session", async (ctx) => {
+  it("A's code and broker state at B: no session", async (ctx) => {
     if (!captures)
       return proof(ctx, "unproven-live", `${REAL} (fixture: ${FIXTURE})`);
     const c = captures;
-    // A's real Google code and broker state, completed at B on B's own fresh
-    // flow (B redeems it under its own client and install), refused; then the
-    // same capture still signs in at A.
+    // Staging's broker uses one Google client for every install, so A's and
+    // B's tokens share an aud by design; the binding is the broker state (and
+    // the install-derived nonce). A's real code and broker state, completed at
+    // B on B's own fresh flow, are refused by the broker (error=failed, never
+    // tenant); then the same capture still signs in at A.
     const fresh = await mustStart(T.b);
     await crossCheck<Partial<Record<"a" | "b", Capture>>>(
       (x, host) =>
@@ -193,7 +192,7 @@ describe("sign-in: ID tokens", () => {
         credA: { a: c.get("a-alice-replay") },
         credB: { b: c.get("b-dave-2") },
         ok: signedIn,
-        refused: signInRefused("failed", "tenant"),
+        refused: signInRefused("failed"),
         refuseFirst: true,
       },
     );
@@ -216,7 +215,6 @@ describe("sign-in: broker", () => {
       throw new Error("the two targets use different brokers");
     // Real broker states (each relays to its own install); x's with y's
     // install id swapped in, signature kept, is refused. Both directions.
-    const relayed = (r: Response) => relayedTo(r, T.a) || relayedTo(r, T.b);
     for (const [x, y] of [
       [T.a, T.b],
       [T.b, T.a],
@@ -235,7 +233,7 @@ describe("sign-in: broker", () => {
           b: y,
           credA: byHost(fx.bstate, tamperInstall(fx.bstate, y.installId)),
           credB: byHost(fy.bstate, fy.bstate),
-          ok: relayed,
+          ok: relayedTo,
         },
       );
     }
@@ -271,10 +269,13 @@ const verifyAt = (c: CodeCred, host: Target) =>
 describe("sign-in: one-time codes", () => {
   it("a code issued by A, entered at B with B's pending cookie: refused", async () => {
     const ea = await guestOn(T.a, "rl-otp");
+    // A's guest is also B's guest (B shares with it), so B sends it a code of
+    // its own: a code store shared by address would let A's code through.
+    await share(B, ea);
     const eb = await guestOn(T.b, "rl-otp");
     const ca = await codeFor(T.a, ea);
     const cb = await codeFor(T.b, eb);
-    // B's own pending cookie for A's address (B answers every address alike).
+    // B's own pending cookie for A's address.
     const atB = await requestCode(T.b, ea);
     if (!atB.pending) throw new Error("B gave no pending cookie");
     await crossCheck<CodeCred>(verifyAt, {
@@ -382,7 +383,17 @@ async function publishDb(s: Side): Promise<string> {
 describe("sign-in: guests", () => {
   let guest: string;
   let gB: Cred;
+  let mB: Cred;
   let dbArt: string;
+
+  /** A cookie session at B for `email` (the session hook). */
+  async function sessionAtB(email: string, role: "member" | "guest") {
+    const out = (await hook(T.b, "/__test/session", { email, role })) as {
+      cookie?: unknown;
+    };
+    if (typeof out.cookie !== "string") throw new Error(`no ${role} cookie`);
+    return { kind: "cookie", name: T.b.cookieName, value: out.cookie } as Cred;
+  }
 
   beforeAll(async () => {
     // One address: a guest of A (A shares with it) who is invited to B.
@@ -390,26 +401,98 @@ describe("sign-in: guests", () => {
     await share(A, guest);
     dbArt = await publishDb(B);
     await share(B, guest, dbArt);
-    const out = (await hook(T.b, "/__test/session", {
-      email: guest,
-      role: "guest",
-    })) as { cookie?: unknown };
-    if (typeof out.cookie !== "string") throw new Error("no guest cookie");
-    gB = { kind: "cookie", name: T.b.cookieName, value: out.cookie };
+    gB = await sessionAtB(guest, "guest");
+    // The control: a B member with the same access to the artifact.
+    const member = `rl-member-${rand()}@${T.b.testDomain}`;
+    await share(B, member, dbArt);
+    mB = await sessionAtB(member, "member");
   });
 
   it("a guest of A invited to B reads on B but can't publish via MCP or the data API there", async () => {
     const b = T.b;
     const art = `${b.app}/api/v1/artifacts/${encodeURIComponent(dbArt)}`;
     const csrf = { "x-oa-request": "1", "content-type": "application/json" };
+
+    // Precondition: B caps guests read-only (guestsReadOnly), members not.
+    const auth = async (cred: Cred) => {
+      const r = await send(new Request(`${b.app}/api/v1/me`, withCred(cred)));
+      const t = await readBody(r);
+      if (r.status !== 200) throw new Error(`/me at B: ${describeRes(r, t)}`);
+      return (JSON.parse(t) as { auth?: { readOnly?: unknown; cap?: unknown } })
+        .auth;
+    };
+    const ga = await auth(gB);
+    if (ga?.readOnly !== true || ga.cap !== "guest")
+      throw new Error("precondition: B doesn't cap the guest read-only");
+    if ((await auth(mB))?.readOnly !== false)
+      throw new Error("precondition: B caps its member too");
+
     // Reads what B shared with it.
     const read = await send(new Request(art, withCred(gB)));
     const rb = await readBody(read);
     if (read.status !== 200)
       throw new Error(`guest read at B: ${describeRes(read, rb)}`);
 
-    // MCP: B's admin publishes; the guest gets no bearer (no PAT) and its
-    // session is no MCP credential.
+    // Each write: the member's identical request succeeds, the guest's is refused.
+    const writes: [string, (cred: Cred) => Request][] = [
+      [
+        "mint a PAT (the guest's way to MCP)",
+        (cred) =>
+          new Request(
+            `${b.app}/api/v1/tokens`,
+            withCred(cred, {
+              method: "POST",
+              headers: csrf,
+              body: JSON.stringify({ label: "rl-guest" }),
+            }),
+          ),
+      ],
+      [
+        "publish (POST /api/v1/artifacts)",
+        (cred) =>
+          new Request(
+            `${b.app}/api/v1/artifacts`,
+            withCred(cred, {
+              method: "POST",
+              headers: csrf,
+              body: JSON.stringify({
+                title: `rl-guest-${rand()}`,
+                format: "markdown",
+                content: "x",
+              }),
+            }),
+          ),
+      ],
+      [
+        "data PUT",
+        (cred) =>
+          new Request(
+            `${art}/data/redline/${rand()}`,
+            withCred(cred, {
+              method: "PUT",
+              headers: csrf,
+              body: JSON.stringify({ v: 1 }),
+            }),
+          ),
+      ],
+    ];
+    for (const [what, req] of writes) {
+      const ok = await send(req(mB));
+      const okText = await readBody(ok);
+      if (ok.status < 200 || ok.status > 299)
+        throw new Error(`B member ${what}: ${describeRes(ok, okText)}`);
+      const made = (JSON.parse(okText || "{}") as { id?: unknown }).id;
+      if (typeof made === "string" && what.startsWith("publish"))
+        cleanup.push({ t: b, pat: B.pat, id: made });
+      if (typeof made === "string" && what.startsWith("mint"))
+        await fetch(
+          `${b.app}/api/v1/tokens/${encodeURIComponent(made)}`,
+          withCred(mB, { method: "DELETE", headers: csrf }),
+        ).then((r) => r.body?.cancel());
+      await expectRefused(await send(req(gB)), b);
+    }
+
+    // MCP: B's admin publishes through /mcp with its PAT.
     const pub = await send(
       new Request(
         `${b.app}/mcp`,
@@ -421,59 +504,14 @@ describe("sign-in: guests", () => {
       throw new Error(`admin MCP publish at B: ${describeRes(pub, pubText)}`);
     const id = /"id"\s*:\s*\\?"([A-Za-z0-9_-]{8,})\\?"/.exec(pubText)?.[1];
     if (id) cleanup.push({ t: b, pat: B.pat, id });
-    await expectRefused(
-      await send(
-        new Request(
-          `${b.app}/api/v1/tokens`,
-          withCred(gB, {
-            method: "POST",
-            headers: csrf,
-            body: JSON.stringify({ label: "rl-guest" }),
-          }),
-        ),
-      ),
-      b,
-    );
+    // Invariant, not a crossCheck: /mcp takes no session cookie from anyone
+    // (bearer only), so the guest's cookie there is refused.
     await expectRefused(
       await send(
         new Request(`${b.app}/mcp`, withCred(gB, publishCall("rl-guest"))),
       ),
       b,
     );
-    await expectRefused(
-      await send(
-        new Request(
-          `${b.app}/api/v1/artifacts`,
-          withCred(gB, {
-            method: "POST",
-            headers: csrf,
-            body: JSON.stringify({
-              title: "rl-guest",
-              format: "markdown",
-              content: "x",
-            }),
-          }),
-        ),
-      ),
-      b,
-    );
-
-    // Data API: B's admin writes a doc on the shared artifact; the guest can't.
-    const doc = `${art}/data/redline/${rand()}`;
-    const put = (cred: Cred, extra: Record<string, string> = {}) =>
-      new Request(
-        doc,
-        withCred(cred, {
-          method: "PUT",
-          headers: { "content-type": "application/json", ...extra },
-          body: JSON.stringify({ v: 1 }),
-        }),
-      );
-    const ok = await send(put(B.pat));
-    const okText = await readBody(ok);
-    if (ok.status < 200 || ok.status > 299)
-      throw new Error(`admin data PUT at B: ${describeRes(ok, okText)}`);
-    await expectRefused(await send(put(gB, { "x-oa-request": "1" })), b);
   });
 
   it("the guest's B session is refused at A", async () => {
