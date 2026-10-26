@@ -490,6 +490,27 @@ describe("commands", () => {
     expect(w.lines.join("\n")).not.toContain(String(wd?.secret));
   });
 
+  it("upgrade and rollback of a codes-on install read the env's Turnstile keys too", async () => {
+    const w = world();
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    expect(
+      await main([...CREATE(), "--var", "AUTH_PROVIDERS=email"], w.deps),
+    ).toBe(0);
+    const id = w.parsed().find((l) => l.step === "create")?.data?.id as string;
+    const [wd] = [...w.fake.turnstile.values()];
+    w.lines.length = 0;
+    expect(
+      await main(
+        ["upgrade", "--env", "staging", "--install", id, "--to", "0.24.0"],
+        w.deps,
+      ),
+    ).toBe(0);
+    expect(
+      await main(["rollback", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    expect(w.lines.join("\n")).not.toContain(String(wd?.secret));
+  });
+
   it("publish-release downloads the env's tar and .sig.json with gh, then hands them to publishRelease", async () => {
     const w = world();
     const exec = w.deps.execFile;
