@@ -553,7 +553,8 @@ export async function main(argv: string[], d: Deps): Promise<number> {
       secrets.push(credentials.accessKeyId, credentials.secretAccessKey);
       r2 = d.r2({ accountId, env, credentials });
     }
-    if (cmd === "create" || cmd === "update-vars")
+    // Every command that renders an install's vars: codes on needs the pair.
+    if (["create", "update-vars", "upgrade", "rollback"].includes(cmd))
       turnstile = await readTurnstile(d, env);
     if (turnstile) secrets.push(turnstile.secret);
   } catch (e) {
