@@ -28,6 +28,7 @@ import {
 } from "../src/release.js";
 import {
   BROKER_GOOGLE_CLIENT_ID,
+  DIRECTORY_REVOKE_SKIPPED_NOTE,
   HOSTED_DOMAINS,
   hostsKvTitle,
   NAMESPACES,
@@ -3198,5 +3199,195 @@ describe("fix round 4 (T8): every server precondition for hosted google", () => 
     const rb = keep(await p.rollback(inst.id));
     expect(rb).toMatchObject({ ok: true, rolledBack: true });
     expect(renderedEnv(s, inst.id).GOOGLE_CLIENT_ID).toBe(STAGING_CLIENT);
+  });
+});
+
+describe("H-DV: delete revokes the directory grant first", () => {
+  const POLL_MS = 15_000;
+  const revokeRow = (s: S, id: string) =>
+    s
+      .db()
+      .prepare(
+        "SELECT state, directory_revoke, directory_revoked_at, directory_revoke_attempts, lease FROM installs WHERE id = ?",
+      )
+      .get(id) as {
+      state: string;
+      directory_revoke: string | null;
+      directory_revoked_at: number | null;
+      directory_revoke_attempts: number;
+      lease: string | null;
+    };
+  const setRevoke = (s: S, id: string, v: string) =>
+    s
+      .db()
+      .prepare("UPDATE installs SET directory_revoke = ? WHERE id = ?")
+      .run(v, id);
+
+  it("phase 1 marks the row deleting + pending with the hosts still mapped and no lease; phase 2 waits, then tears down", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const seen: unknown[] = [];
+    s.fake.revoker = (_db, id) => {
+      seen.push({
+        ...revokeRow(s, id),
+        mapped: s.fake.kvValues(s.hostsId).get(inst.appHost),
+        script: s.scriptOf(id) !== undefined,
+      });
+      if (seen.length === 3) setRevoke(s, id, "done");
+    };
+    const t0 = s.clock.now();
+    const r = keep(await s.p.delete(inst.id, inst.id));
+    expect(r).toEqual({ id: inst.id, ok: true, state: "deleted" });
+    expect(seen[0]).toEqual({
+      state: "deleting",
+      directory_revoke: "pending",
+      directory_revoked_at: null,
+      directory_revoke_attempts: 0,
+      lease: null,
+      mapped: inst.id,
+      script: true,
+    });
+    expect(seen).toHaveLength(3);
+    // Polled every 15 s on the injected clock.
+    expect(s.clock.now() - t0).toBeGreaterThanOrEqual(2 * POLL_MS);
+    expect(s.fake.kvValues(s.hostsId).has(inst.appHost)).toBe(false);
+    expect(s.scriptOf(inst.id)).toBeUndefined();
+    const a = s.audit(inst.id);
+    expect(a.indexOf("delete.revoke_pending")).toBeLessThan(
+      a.indexOf("delete.done"),
+    );
+  });
+
+  it("an unsupported revoke goes on to teardown", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "unsupported");
+    expect(keep(await s.p.delete(inst.id, inst.id)).state).toBe("deleted");
+  });
+
+  it("times out after 10 minutes with the row left deleting, then a rerun resumes at phase 2", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let polls = 0;
+    s.fake.revoker = () => {
+      polls++;
+    };
+    const t0 = s.clock.now();
+    const e = await fails(s.p.delete(inst.id, inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(
+      /still pending after 10 minutes; rerun delete to resume/,
+    );
+    expect(s.clock.now() - t0).toBeGreaterThanOrEqual(10 * 60_000);
+    expect(polls).toBe(41);
+    expect(revokeRow(s, inst.id)).toMatchObject({
+      state: "deleting",
+      directory_revoke: "pending",
+      lease: null,
+    });
+    expect(s.scriptOf(inst.id)).toBeDefined();
+    expect(s.fake.kvValues(s.hostsId).get(inst.appHost)).toBe(inst.id);
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "done");
+    expect(keep(await s.mk().delete(inst.id, inst.id)).state).toBe("deleted");
+    expect(
+      s.audit(inst.id).filter((x) => x === "delete.revoke_pending"),
+    ).toHaveLength(1);
+  });
+
+  it("a failed revoke refuses, leaving the row deleting and everything in place", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "failed");
+    const e = await fails(s.p.delete(inst.id, inst.id));
+    expect(e.message).toMatch(/directory revoke failed/);
+    expect(e.message).toMatch(/--skip-directory-revoke/);
+    expect(revokeRow(s, inst.id).state).toBe("deleting");
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("skipDirectoryRevoke needs a reason, records it, says the grant stays live, and tears down without waiting", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let polls = 0;
+    s.fake.revoker = () => {
+      polls++;
+    };
+    for (const bad of ["", "   ", "mail ops@example.com", "x".repeat(201)]) {
+      const w = s.fake.writes().length;
+      const e = await fails(
+        s.mk().delete(inst.id, inst.id, { skipDirectoryRevoke: bad }),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(s.fake.writes().length).toBe(w);
+    }
+    const p = s.mk();
+    const r = keep(
+      await p.delete(inst.id, inst.id, {
+        skipDirectoryRevoke: "customer Google tenant closed",
+      }),
+    );
+    expect(r.state).toBe("deleted");
+    expect(polls).toBe(0);
+    expect(revokeRow(s, inst.id).directory_revoke).toBe("skipped");
+    expect(p.notes).toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+    expect(DIRECTORY_REVOKE_SKIPPED_NOTE).toMatch(
+      /^the Google grant stays live; revoke it in the customer's Google Admin console: Security > Access and data control > API controls > /,
+    );
+    const row = s
+      .db()
+      .prepare(
+        "SELECT detail FROM hosted_audit WHERE install_id = ? AND action = 'delete.revoke_skipped'",
+      )
+      .get(inst.id) as { detail: string };
+    expect(JSON.parse(row.detail)).toEqual({
+      reason: "customer Google tenant closed",
+    });
+  });
+
+  it("a rerun with skipDirectoryRevoke while pending skips and tears down", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = null;
+    await fails(s.p.delete(inst.id, inst.id));
+    const r = keep(
+      await s
+        .mk()
+        .delete(inst.id, inst.id, { skipDirectoryRevoke: "broker down" }),
+    );
+    expect(r.state).toBe("deleted");
+    expect(revokeRow(s, inst.id).directory_revoke).toBe("skipped");
+  });
+
+  it("onPoll reports each poll; status shows the revoke state", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let n = 0;
+    s.fake.revoker = (_db, id) => {
+      if (++n === 2) {
+        s.db()
+          .prepare(
+            "UPDATE installs SET directory_revoke_attempts = 1 WHERE id = ?",
+          )
+          .run(id);
+      }
+      if (n === 3) setRevoke(s, id, "done");
+    };
+    const polls: {
+      state: string | null;
+      attempts: number;
+      waitedMs: number;
+    }[] = [];
+    let mid: unknown;
+    await s.p.delete(inst.id, inst.id, {
+      onPoll: async (p) => {
+        polls.push(p);
+        if (polls.length === 2)
+          mid = (await s.mk().status(inst.id)).directoryRevoke;
+      },
+    });
+    expect(polls.map((p) => p.state)).toEqual(["pending", "pending", "done"]);
+    expect(polls.map((p) => p.waitedMs)).toEqual([0, POLL_MS, 2 * POLL_MS]);
+    expect(polls[1]?.attempts).toBe(1);
+    expect(mid).toEqual({ state: "pending", attempts: 1, revokedAt: null });
   });
 });

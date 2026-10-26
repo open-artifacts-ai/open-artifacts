@@ -5,6 +5,9 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 const API = "https://api.cloudflare.com/client/v4";
+/** provision's poll of one install's revoke state (PlatformDb.revokeState). */
+const REVOKE_POLL_SQL_PREFIX =
+  "SELECT directory_revoke, directory_revoke_attempts, directory_revoked_at FROM installs WHERE id";
 
 export interface LogEntry {
   method: string;
@@ -147,6 +150,16 @@ export class FakeCf {
       secret?: string;
     }
   >();
+  /**
+   * The scheduler's 2-minute revoke cron, emulated: runs on a D1 right before
+   * provision polls an install's revoke state. Default: a pending revoke on
+   * a deleting row is done at once. null: never (a stuck scheduler).
+   */
+  revoker: ((db: DatabaseSync, id: string) => void) | null = (db, id) => {
+    db.prepare(
+      "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = 1 WHERE id = ? AND state = 'deleting' AND directory_revoke = 'pending'",
+    ).run(id);
+  };
   /** The next N widget creates store the widget, then answer 500 (a lost reply). */
   turnstileCreateLandsThen500 = 0;
   /** Edits a widget as it is created (e.g. Cloudflare normalizing it). */
@@ -434,6 +447,12 @@ export class FakeCf {
             throw e;
           }
         }
+        if (
+          typeof sql === "string" &&
+          sql.startsWith(REVOKE_POLL_SQL_PREFIX) &&
+          this.revoker
+        )
+          this.revoker(d.db, String((params ?? [])[0]));
         return env(this.exec(d.db, sql, params ?? []));
       } catch (e) {
         return fail(400, `${(e as Error).message}: SQLITE_ERROR`, 7500);
