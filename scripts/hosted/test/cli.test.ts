@@ -847,3 +847,30 @@ describe("output, with every generated value in play", () => {
     }
   });
 });
+
+describe("L8: a failed create's after row", () => {
+  it("never names another install that holds the slug", async () => {
+    const w = world();
+    const id = await created(w);
+    await w.deps.sleep?.(1000);
+    expect(await main(CREATE(), w.deps)).toBe(1);
+    expect(w.parsed().find((l) => l.step === "create")?.message).toMatch(
+      /already exists as active install/,
+    );
+    expect(
+      w
+        .audit()
+        .slice(-2)
+        .map((r) => [r.install_id, r.action]),
+    ).toEqual([
+      ["-", "cli.create.start"],
+      ["-", "cli.create.failed"],
+    ]);
+    expect(
+      w
+        .audit()
+        .filter((r) => r.install_id === id)
+        .map((r) => r.action),
+    ).toEqual(["cli.create.done"]);
+  });
+});

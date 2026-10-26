@@ -3691,7 +3691,12 @@ describe("EMAIL_CODE_DOMAIN for the hosted trial (H-ECD)", () => {
       {} as Record<string, string>,
       { EMAIL_CODE_DOMAIN: "off" },
       { ...CODES, EMAIL_CODE_DOMAIN: "off" },
-      { ...CODES, AUTH_PROVIDERS: "google,email", EMAIL_CODE_DOMAIN: "off" },
+      {
+        ...CODES,
+        AUTH_PROVIDERS: "google,email",
+        AUTH_DOMAINS: "finqore.test",
+        EMAIL_CODE_DOMAIN: "off",
+      },
     ]) {
       // T8 M1: google needs the broker.
       const s = setup({

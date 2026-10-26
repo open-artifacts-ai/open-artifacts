@@ -440,12 +440,14 @@ export async function main(argv: string[], d: Deps): Promise<number> {
   }
 
   let audit: PlatformDb;
+  let startedAt = 0;
   const subject = f.install ?? "-";
   try {
     const db = platformNames(env).db;
     const id = await cf.d1Get(db);
     if (!id) throw new Refused(`platform D1 ${db} not found`);
     audit = new PlatformDb(cf, { id, name: db }, env, d.now ?? Date.now);
+    startedAt = (d.now ?? Date.now)();
     await audit.auditAs(actor, subject, `cli.${cmd}.start`, { cmd });
     emit({ step: "audit", status: "ok", message: "before row written" });
   } catch (e) {
@@ -465,11 +467,12 @@ export async function main(argv: string[], d: Deps): Promise<number> {
   } catch (e) {
     notes();
     code = fail(cmd, e);
-    // A create that failed after minting its id: the after row names it.
-    if (cmd === "create" && after === "-")
-      after =
-        (await audit.bySlug(f.slug as string).catch(() => undefined))?.id ??
-        "-";
+    // A create that failed after minting its id: the after row names it,
+    // but only a row this run made (L8: never another install on the slug).
+    if (cmd === "create" && after === "-") {
+      const row = await audit.bySlug(f.slug as string).catch(() => undefined);
+      if (row && row.created_at >= startedAt) after = row.id;
+    }
   }
   try {
     await audit.auditAs(

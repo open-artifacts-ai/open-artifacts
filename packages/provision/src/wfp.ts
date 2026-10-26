@@ -960,33 +960,61 @@ export class WfpProvisioner {
    * broker off is refused: the server would refuse google anyway, and a
    * create must never succeed with sign-in silently off.
    */
-  private brokerVars(vars: Record<string, string>): Record<string, string> {
+  private brokerVars(
+    vars: Record<string, string>,
+    mode: "check" | "render" = "check",
+  ): Record<string, string> {
     if (!this.o.brokerEnabled) return vars;
     const client = BROKER_GOOGLE_CLIENT_ID[this.env];
+    const want = `https://auth.${HOSTED_DOMAINS[this.env].app}`;
+    // L7: only create and updateVars refuse; a render (upgrade, rollback)
+    // replaces a stale stored value with the derived one, noted.
+    const refuse = (why: string) => {
+      if (mode === "check") throw new ProvisionRefused(why);
+      this.notes.push(`render: ${why}; rendering the derived value`);
+    };
     if (!client)
-      throw new ProvisionRefused(
+      refuse(
         `the broker is on but there is no ${this.env} broker Google client: no prod Google client yet`,
       );
-    const want = `https://auth.${HOSTED_DOMAINS[this.env].app}`;
     if (vars.AUTH_BROKER_URL !== undefined && vars.AUTH_BROKER_URL !== want)
-      throw new ProvisionRefused(
-        `AUTH_BROKER_URL must be ${want}, the ${this.env} broker`,
-      );
-    if (vars.GOOGLE_CLIENT_ID !== undefined && vars.GOOGLE_CLIENT_ID !== client)
-      throw new ProvisionRefused(
+      refuse(`AUTH_BROKER_URL must be ${want}, the ${this.env} broker`);
+    if (
+      client &&
+      vars.GOOGLE_CLIENT_ID !== undefined &&
+      vars.GOOGLE_CLIENT_ID !== client
+    )
+      refuse(
         `GOOGLE_CLIENT_ID must be ${client}, the ${this.env} broker's client`,
       );
-    return { ...vars, AUTH_BROKER_URL: want, GOOGLE_CLIENT_ID: client };
+    const { GOOGLE_CLIENT_ID: _old, ...rest } = vars;
+    return {
+      ...rest,
+      AUTH_BROKER_URL: want,
+      ...(client ? { GOOGLE_CLIENT_ID: client } : {}),
+    };
   }
 
   /** M1: google with the broker off is refused (after the other var checks). */
+  /**
+   * Every google precondition the server checks (apps/server/src/auth/
+   * config.ts googleConfig) that provision does not render itself, in one
+   * place: the broker on, and AUTH_DOMAINS non-empty after the server's own
+   * parse (@oa/auth-core). The rest (client id, HOSTED, AUTH_BROKER_URL,
+   * INSTALL_ID, BROKER_SIGNING_KEY) are rendered; a test pins the list.
+   */
   private checkGoogleBroker(vars: Record<string, string>): void {
+    const google = googleNewlyEnabled({}, vars);
     if (
       !this.o.brokerEnabled &&
-      (googleNewlyEnabled({}, vars) || vars.GOOGLE_CLIENT_ID !== undefined)
+      (google || vars.GOOGLE_CLIENT_ID !== undefined)
     )
       throw new ProvisionRefused(
         "google sign-in on a hosted install needs the sign-in broker (brokerEnabled)",
+      );
+    if (google && this.registryDomainsOf(vars).length === 0)
+      throw new ProvisionRefused(
+        "google needs AUTH_DOMAINS: the server refuses google when it is empty",
       );
   }
 
@@ -1351,7 +1379,7 @@ export class WfpProvisioner {
     );
     const { sitekey, ...install } = m;
     const meta = userWorkerMetadata(
-      { id, ...install, vars: this.brokerVars(install.vars) },
+      { id, ...install, vars: this.brokerVars(install.vars, "render") },
       {
         d1Id: r.d1Id,
         kvId: r.kvId,
