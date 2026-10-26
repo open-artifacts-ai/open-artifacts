@@ -580,11 +580,13 @@ describe("H-DV review fixes", () => {
   });
 
   it("L6: a prerelease of REVOKE_MIN_VERSION or a malformed version is unsupported, with no call", async () => {
+    // A prerelease of the next patch sits above the minimum, so it is called.
+    const [maj, min, pat] = REVOKE_MIN_VERSION.split(".").map(Number);
     await seed([
       { id: idOf(0), version: `${REVOKE_MIN_VERSION}-rc.1` },
       { id: idOf(1), version: `v${REVOKE_MIN_VERSION}` },
-      { id: idOf(2), version: "0.56" },
-      { id: idOf(3), version: "0.56.1-rc.1" },
+      { id: idOf(2), version: `${maj}.${min}` },
+      { id: idOf(3), version: `${maj}.${min}.${pat + 1}-rc.1` },
     ]);
     const f = fakes();
     await revokeTick(f.env, NOW);
