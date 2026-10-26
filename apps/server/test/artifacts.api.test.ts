@@ -1,10 +1,10 @@
 import { env } from "cloudflare:workers";
 import { normalizeEmail } from "@oa/auth-core";
 import {
-  ANON_WRITES_WARNING,
   ArtifactPatchResultSchema,
   type ArtifactSummary,
   ArtifactSummarySchema,
+  DATA_WRITERS_WARNING,
   type Member,
   newId,
   PageSchema,
@@ -205,7 +205,8 @@ describe("summary, patch, delete", () => {
       deletedAt: null,
       currentVersion: 1,
       capabilities: { db: false, viewer: false, storage: false },
-      allowAnonymousWrites: false,
+      dataWriters: "viewers",
+      allowAnonymousWrites: true,
     });
     const e = await api(app, R.artifact(id), editor.cookie);
     expect(ArtifactSummarySchema.parse(await e.json()).access).toBe("editor");
@@ -252,64 +253,6 @@ describe("summary, patch, delete", () => {
     });
     expect(none.status).toBe(404);
   });
-
-  // #681 C: the PATCH route shares set_visibility's service and its warning.
-  it.each([
-    ["public, db, anonymous writes off", "public", true, false, true],
-    ["public, db, anonymous writes on", "public", true, true, false],
-    ["public, no db", "public", false, false, false],
-    ["private, db, anonymous writes off", "private", true, false, false],
-  ] as const)(
-    "PATCH visibility warning: %s",
-    async (_, visibility, db, allowAnonymousWrites, warns) => {
-      const a = await publish(
-        env,
-        owner.member,
-        {
-          title: "warn",
-          format: "html",
-          content: "<p>x</p>",
-          capabilities: { db, viewer: false, storage: false },
-          allowAnonymousWrites,
-        } as never,
-        null,
-      );
-      const r = await api(app, R.artifact(a.id), owner.cookie, {
-        method: "PATCH",
-        body: { visibility },
-      });
-      expect(r.status).toBe(200);
-      const body = ArtifactPatchResultSchema.parse(await r.json());
-      expect(body.visibility).toBe(visibility);
-      if (warns) expect(body.warning).toMatch(/allowAnonymousWrites/);
-      else expect(body.warning).toBeUndefined();
-    },
-  );
-
-  it.each([
-    ["public, db, anonymous writes off", "public", true, false, true],
-    ["public, db, anonymous writes on", "public", true, true, false],
-    ["public, no db", "public", false, false, false],
-    ["private, db, anonymous writes off", "private", true, false, false],
-  ] as const)(
-    "POST publish warning: %s",
-    async (_, visibility, db, allowAnonymousWrites, warns) => {
-      const r = await api(app, R.artifacts, owner.cookie, {
-        method: "POST",
-        body: {
-          title: "warn",
-          format: "html",
-          content: "<p>x</p>",
-          visibility,
-          capabilities: { db },
-          allowAnonymousWrites,
-        },
-      });
-      expect(r.status).toBe(201);
-      const body = PublishResultSchema.parse(await r.json());
-      expect(body.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
-    },
-  );
 
   it("editor delete → 404; owner delete hides it; includeDeleted shows it; undelete restores", async () => {
     const del = (u: U) =>
@@ -465,5 +408,183 @@ describe("versions and restore", () => {
       method: "POST",
     });
     expect(r.status).toBe(404);
+  });
+});
+
+// #681: who can change live data (dataWriters), its warnings and the
+// allowAnonymousWrites input mapping. Own describe: these create many
+// artifacts, which would page the listings above.
+describe("dataWriters (#681)", () => {
+  // #681: PATCH and POST publish warn when the result is public, declares
+  // db and lets viewers write data.
+  const WARN = [
+    ["public, db, viewers", "public", true, "viewers", true],
+    ["public, db, editors", "public", true, "editors", false],
+    ["public, no db", "public", false, "viewers", false],
+    ["private, db, viewers", "private", true, "viewers", false],
+  ] as const;
+  it.each(WARN)(
+    "PATCH warning: %s",
+    async (_, visibility, db, dataWriters, warns) => {
+      const a = await publish(
+        env,
+        owner.member,
+        {
+          title: "warn",
+          format: "html",
+          content: "<p>x</p>",
+          capabilities: { db, viewer: false, storage: false },
+        } as never,
+        null,
+      );
+      const r = await api(app, R.artifact(a.id), owner.cookie, {
+        method: "PATCH",
+        body: { visibility, dataWriters },
+      });
+      expect(r.status).toBe(200);
+      const body = ArtifactPatchResultSchema.parse(await r.json());
+      expect(body.visibility).toBe(visibility);
+      expect(body.dataWriters).toBe(dataWriters);
+      expect(body.allowAnonymousWrites).toBe(dataWriters === "viewers");
+      expect(body.warning).toBe(warns ? DATA_WRITERS_WARNING : undefined);
+    },
+  );
+
+  it.each(WARN)(
+    "POST publish warning: %s",
+    async (_, visibility, db, dataWriters, warns) => {
+      const r = await api(app, R.artifacts, owner.cookie, {
+        method: "POST",
+        body: {
+          title: "warn",
+          format: "html",
+          content: "<p>x</p>",
+          visibility,
+          capabilities: { db },
+          dataWriters,
+        },
+      });
+      expect(r.status).toBe(201);
+      const body = PublishResultSchema.parse(await r.json());
+      expect(body.warning).toBe(warns ? DATA_WRITERS_WARNING : undefined);
+    },
+  );
+
+  // #681 input compatibility, at each resulting visibility: dataWriters
+  // wins; allowAnonymousWrites true is viewers, false is editors on a
+  // public result (ignored otherwise). The old column stays in step.
+  const row = (id: string) =>
+    env.DB.prepare(
+      "select data_writers dw, allow_anonymous_writes aaw from artifacts where id = ?",
+    )
+      .bind(id)
+      .first<{ dw: string; aaw: number }>();
+  const COMPAT = [
+    // [visibility, input, start -> want]
+    ["public", { allowAnonymousWrites: true }, "editors", "viewers"],
+    ["public", { allowAnonymousWrites: false }, "viewers", "editors"],
+    ["team", { allowAnonymousWrites: false }, "viewers", "viewers"],
+    ["private", { allowAnonymousWrites: false }, "viewers", "viewers"],
+    ["team", { allowAnonymousWrites: true }, "editors", "viewers"],
+    [
+      "public",
+      { allowAnonymousWrites: false, dataWriters: "viewers" },
+      "editors",
+      "viewers",
+    ],
+    [
+      "private",
+      { allowAnonymousWrites: true, dataWriters: "editors" },
+      "viewers",
+      "editors",
+    ],
+    ["private", { dataWriters: "editors" }, "viewers", "editors"],
+    ["public", {}, "editors", "editors"],
+  ] as const;
+  it.each(COMPAT)(
+    "PATCH and publish map input: %s %o",
+    async (visibility, input, start, want) => {
+      const base = {
+        title: "compat",
+        format: "html",
+        content: "<p>x</p>",
+        capabilities: { db: true },
+      };
+      // PATCH
+      const a = await publish(
+        env,
+        owner.member,
+        { ...base, dataWriters: start } as never,
+        null,
+      );
+      const r = await api(app, R.artifact(a.id), owner.cookie, {
+        method: "PATCH",
+        body: { visibility, ...input },
+      });
+      expect(r.status).toBe(200);
+      const body = ArtifactSummarySchema.parse(await r.json());
+      expect(body.dataWriters).toBe(want);
+      expect(body.allowAnonymousWrites).toBe(want === "viewers");
+      expect(await row(a.id)).toEqual({
+        dw: want,
+        aaw: want === "viewers" ? 1 : 0,
+      });
+      // A new version through POST /artifacts with an id.
+      const b = await publish(
+        env,
+        owner.member,
+        { ...base, dataWriters: start } as never,
+        null,
+      );
+      const v = await api(app, R.versions(b.id), owner.cookie, {
+        method: "POST",
+        body: { ...base, visibility, ...input },
+      });
+      expect(v.status).toBe(201);
+      expect((await row(b.id))?.dw).toBe(want);
+      // A create starts from the default (viewers).
+      const c = await api(app, R.artifacts, owner.cookie, {
+        method: "POST",
+        body: { ...base, visibility, ...input },
+      });
+      const created = PublishResultSchema.parse(await c.json());
+      const fromCreate =
+        "dataWriters" in input
+          ? input.dataWriters
+          : "allowAnonymousWrites" in input &&
+              input.allowAnonymousWrites === false &&
+              visibility === "public"
+            ? "editors"
+            : "viewers";
+      expect(await row(created.id)).toEqual({
+        dw: fromCreate,
+        aaw: fromCreate === "viewers" ? 1 : 0,
+      });
+    },
+  );
+
+  it("only those who may change capabilities may change dataWriters", async () => {
+    const a = await publish(
+      env,
+      owner.member,
+      { title: "dw", format: "html", content: "<p>x</p>" } as never,
+      null,
+    );
+    await api(app, R.shares(a.id), owner.cookie, {
+      method: "PUT",
+      body: { email: editor.email, role: "editor" },
+    });
+    for (const body of [
+      { dataWriters: "editors" },
+      { allowAnonymousWrites: false },
+      { capabilities: { db: true } },
+    ]) {
+      const r = await api(app, R.artifact(a.id), editor.cookie, {
+        method: "PATCH",
+        body,
+      });
+      expect(r.status, JSON.stringify(body)).toBe(400);
+    }
+    expect((await row(a.id))?.dw).toBe("viewers");
   });
 });

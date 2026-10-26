@@ -3,6 +3,7 @@ import {
   type Capabilities,
   CapabilitiesSchema,
   type CapReason,
+  type DataWriters,
   type Member,
   type Role,
   type SpaceKind,
@@ -20,19 +21,6 @@ export function capsOf(json: string): Capabilities {
     return NO_CAPS;
   }
 }
-
-/** 403 anon_writes_disabled message (#681). */
-export const ANON_WRITES_DISABLED =
-  "This artifact doesn't accept writes from anonymous viewers";
-
-/**
- * The artifact declares db but keeps allowAnonymousWrites off: an anonymous
- * viewer who may read it is refused writes with anon_writes_disabled.
- */
-export const anonWritesOff = (a: {
-  capabilities: string;
-  allowAnonymousWrites: number;
-}): boolean => capsOf(a.capabilities).db && a.allowAnonymousWrites !== 1;
 
 /**
  * The hosted access policy (P3): pure functions, no I/O. authz.ts gathers a
@@ -125,7 +113,12 @@ export type CanCtx = {
   /** The artifact is in a personal space. */
   personal: boolean;
   anonymous?: boolean;
-  allowAnonymousWrites?: boolean;
+  /**
+   * #681: who may change live data. "editors" limits data.write to editor
+   * level and up; anything else is "viewers" for signed-in callers, while an
+   * anonymous write (and anonId) needs an explicit "viewers" (fail closed).
+   */
+  dataWriters?: DataWriters;
   /** Viewer-only first thumbnail: via a share or team access, and none stored yet. */
   firstThumbnail?: boolean;
 };
@@ -281,10 +274,13 @@ export function can(
   if (READ.has(action)) return true;
   switch (action) {
     case "anonId":
-      return ctx.anonymous === true && ctx.allowAnonymousWrites === true;
+      return ctx.anonymous === true && ctx.dataWriters === "viewers";
     case "data.write":
       if (capped) return false;
-      return ctx.anonymous ? ctx.allowAnonymousWrites === true : true;
+      if (ctx.dataWriters === "editors")
+        return !ctx.anonymous && level !== "viewer";
+      // Anonymous callers only reach a level on a public artifact.
+      return ctx.anonymous ? ctx.dataWriters === "viewers" : true;
     case "storage":
       return !capped && !ctx.anonymous;
     case "thumbnail.write":
@@ -301,6 +297,19 @@ export function can(
   if (FULL.has(action)) return full;
   return false;
 }
+
+/**
+ * #681: a data.write refusal caused by dataWriters "editors" alone (the
+ * caller could write if viewers could): 403 data_editors_only, for anonymous
+ * and signed-in viewers alike. Any other refusal keeps its code.
+ */
+export const editorsOnlyRefusal = (
+  level: AccessLevel | null,
+  ctx: CanCtx,
+): boolean =>
+  ctx.dataWriters === "editors" &&
+  !can(level, "data.write", ctx) &&
+  can(level, "data.write", { ...ctx, dataWriters: "viewers" });
 
 const ORG_ADMINS: readonly Role[] = ["owner", "admin"];
 

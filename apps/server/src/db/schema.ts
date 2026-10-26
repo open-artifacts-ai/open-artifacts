@@ -297,6 +297,13 @@ export const artifacts = sqliteTable(
     allowAnonymousWrites: integer("allow_anonymous_writes")
       .notNull()
       .default(0),
+    /**
+     * #681: who may change live data, "viewers" (anyone who can view) or
+     * "editors" (editor level and up). The CHECK is inline in 0014's ADD
+     * COLUMN. allow_anonymous_writes is kept in step (viewers 1, editors 0)
+     * for one release, so a rollback keeps public pages as they were.
+     */
+    dataWriters: text("data_writers").notNull().default("viewers"),
     hasThumbnail: integer("has_thumbnail").notNull().default(0),
     /** The version thumbs/{id}.webp depicts; null = unknown (pre-0005) or none. */
     thumbnailVersion: integer("thumbnail_version"),

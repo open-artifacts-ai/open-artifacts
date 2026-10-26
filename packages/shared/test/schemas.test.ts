@@ -2,16 +2,17 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { newId } from "../src/ids.js";
 import {
-  ANON_WRITES_NOTE,
-  ANON_WRITES_WARNING,
   ApiErrorSchema,
   ArtifactPatchSchema,
-  anonWritesWarning,
+  ArtifactSummarySchema,
   CapabilitiesPatchSchema,
+  DATA_WRITERS_NOTE,
+  DATA_WRITERS_WARNING,
   DataQuerySchema,
   DisplayNameSchema,
   dataDocLimit,
   dataDocTooLargeMessage,
+  dataWritersWarning,
   ERROR_CODES,
   INLINE_TOO_LARGE_MESSAGE,
   LIMITS,
@@ -23,6 +24,8 @@ import {
   PublishToolInputSchema,
   planOf,
   R,
+  resolveDataWriters,
+  SetVisibilityInputSchema,
   STATUS_FOR,
   USAGE_LIMITS,
   UsageSchema,
@@ -66,29 +69,30 @@ describe("misc", () => {
   });
   it("errors", () => {
     expect(Object.keys(STATUS_FOR).sort()).toEqual([...ERROR_CODES].sort());
-    // #681: an anonymous write the artifact doesn't allow.
-    expect(STATUS_FOR.anon_writes_disabled).toBe(403);
+    // #681: a write refused because only editors may change data.
+    expect(STATUS_FOR.data_editors_only).toBe(403);
+    expect(ERROR_CODES).not.toContain("anon_writes_disabled");
     const art = (
       visibility: string,
       db: boolean,
-      allowAnonymousWrites: boolean,
-    ) =>
-      anonWritesWarning({
-        visibility,
-        capabilities: { db },
-        allowAnonymousWrites,
-      });
-    expect(art("public", true, false)).toBe(ANON_WRITES_WARNING);
-    expect(ANON_WRITES_WARNING).toMatch(/allowAnonymousWrites/);
-    expect(art("public", true, true)).toBeUndefined();
-    expect(art("public", false, false)).toBeUndefined();
-    expect(art("private", true, false)).toBeUndefined();
-    expect(art("team", true, false)).toBeUndefined();
-    for (const s of [ANON_WRITES_NOTE, ANON_WRITES_WARNING])
+      dataWriters: "viewers" | "editors",
+    ) => dataWritersWarning({ visibility, capabilities: { db }, dataWriters });
+    expect(art("public", true, "viewers")).toBe(DATA_WRITERS_WARNING);
+    expect(DATA_WRITERS_WARNING).toBe(
+      'This page is public and lets anyone change its data. Set dataWriters to "editors" to limit that.',
+    );
+    expect(art("public", true, "editors")).toBeUndefined();
+    expect(art("public", false, "viewers")).toBeUndefined();
+    expect(art("private", true, "viewers")).toBeUndefined();
+    expect(art("team", true, "viewers")).toBeUndefined();
+    expect(DATA_WRITERS_NOTE).toBe(
+      'Anyone who can view an artifact can change its live data; on a public artifact that includes anonymous visitors. Set dataWriters: "editors" to limit writes to editors (refusals get data_editors_only).',
+    );
+    for (const s of [DATA_WRITERS_NOTE, DATA_WRITERS_WARNING])
       expect(s).not.toMatch(/—/);
     expect(
       ApiErrorSchema.safeParse({
-        error: { code: "anon_writes_disabled", message: "x" },
+        error: { code: "data_editors_only", message: "x" },
       }).success,
     ).toBe(true);
     expect(
@@ -545,5 +549,53 @@ describe("DisplayNameSchema", () => {
       null,
     ])
       expect(ok(v), JSON.stringify(v)).toBe(false);
+  });
+});
+
+// #681: allowAnonymousWrites is still accepted on input and maps onto
+// dataWriters; dataWriters wins when both are sent.
+describe("resolveDataWriters", () => {
+  const VIS = ["private", "team", "public"] as const;
+  const DW = [undefined, "viewers", "editors"] as const;
+  const AAW = [undefined, true, false] as const;
+  for (const vis of VIS)
+    for (const dataWriters of DW)
+      for (const allowAnonymousWrites of AAW) {
+        const want =
+          dataWriters ??
+          (allowAnonymousWrites === true
+            ? "viewers"
+            : allowAnonymousWrites === false && vis === "public"
+              ? "editors"
+              : undefined);
+        it(`${vis} dataWriters=${dataWriters} allowAnonymousWrites=${allowAnonymousWrites} -> ${want}`, () => {
+          expect(
+            resolveDataWriters({ dataWriters, allowAnonymousWrites }, vis),
+          ).toBe(want);
+        });
+      }
+
+  it("publish, PATCH and set_visibility accept both fields", () => {
+    const both = { dataWriters: "editors", allowAnonymousWrites: true };
+    expect(
+      PublishInputSchema.safeParse({
+        title: "t",
+        format: "html",
+        content: "x",
+        ...both,
+      }).success,
+    ).toBe(true);
+    expect(ArtifactPatchSchema.safeParse(both).success).toBe(true);
+    expect(
+      SetVisibilityInputSchema.safeParse({
+        id: newId(),
+        visibility: "public",
+        ...both,
+      }).success,
+    ).toBe(true);
+    expect(
+      ArtifactPatchSchema.safeParse({ dataWriters: "anyone" }).success,
+    ).toBe(false);
+    expect(ArtifactSummarySchema.shape.dataWriters).toBeDefined();
   });
 });

@@ -410,7 +410,12 @@ describe("embed-mode hints (enforcement is client-side; these are hints)", () =>
 
   it("anonymous write rules apply under X-OA-Embed", async () => {
     const ip = { "cf-connecting-ip": `198.51.100.${(Date.now() % 250) + 1}` };
-    const closed = await pubArt({ visibility: "public" });
+    // #681: an editors-only page refuses an embed write (it runs
+    // anonymously) with data_editors_only, even with the owner's cookie.
+    const closed = await pubArt({
+      visibility: "public",
+      dataWriters: "editors",
+    });
     const put = (art: string, headers: Record<string, string>) =>
       api(inner, R.dataDoc(art, "c", "a"), cookie, {
         method: "PUT",
@@ -420,11 +425,8 @@ describe("embed-mode hints (enforcement is client-side; these are hints)", () =>
     expect((await put(closed, {})).status).toBe(200);
     const refused = await put(closed, EMBED);
     expect(refused.status).toBe(403);
-    expect((await errOf(refused)).code).toBe("anon_writes_disabled");
-    const open = await pubArt({
-      visibility: "public",
-      allowAnonymousWrites: true,
-    });
+    expect((await errOf(refused)).code).toBe("data_editors_only");
+    const open = await pubArt({ visibility: "public" });
     const w = await put(open, EMBED);
     expect(w.status).toBe(200);
     expect(((await w.json()) as { updatedBy: string }).updatedBy).toMatch(

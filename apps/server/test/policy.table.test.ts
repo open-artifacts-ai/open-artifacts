@@ -14,6 +14,7 @@ import {
   capOf,
   type DecisionInput,
   decide,
+  editorsOnlyRefusal,
   namedEvents,
   type OrgAction,
   orgCan,
@@ -337,21 +338,78 @@ describe("can", () => {
       }),
     ).toBe(false);
   });
-  it("anonymous: data writes only with allowAnonymousWrites; never storage", () => {
+  it("anonymous: data writes only with dataWriters viewers; never storage", () => {
     const anon = { ...ctx, anonymous: true };
+    // Fail closed: an anonymous write needs the row's explicit "viewers".
     expect(can("viewer", "data.write", anon)).toBe(false);
-    expect(
-      can("viewer", "data.write", { ...anon, allowAnonymousWrites: true }),
-    ).toBe(true);
-    expect(
-      can("viewer", "storage", { ...anon, allowAnonymousWrites: true }),
-    ).toBe(false);
-    expect(
-      can("viewer", "anonId", { ...anon, allowAnonymousWrites: true }),
-    ).toBe(true);
-    expect(
-      can("viewer", "anonId", { ...ctx, allowAnonymousWrites: true }),
-    ).toBe(false);
+    const viewers = { ...anon, dataWriters: "viewers" as const };
+    expect(can("viewer", "data.write", viewers)).toBe(true);
+    expect(can("viewer", "storage", viewers)).toBe(false);
+    expect(can("viewer", "anonId", viewers)).toBe(true);
+    expect(can("viewer", "anonId", { ...ctx, dataWriters: "viewers" })).toBe(
+      false,
+    );
+  });
+
+  // #681: level x dataWriters x visibility, for data.write and anonId. An
+  // anonymous caller reaches a level only on a public artifact (decide()).
+  describe("dataWriters (#681)", () => {
+    type Who = "anonymous" | "capped" | AccessLevel;
+    const WHO: readonly Who[] = [
+      "anonymous",
+      "capped",
+      "viewer",
+      "editor",
+      "manager",
+      "owner",
+    ];
+    const VIS = ["private", "team", "public"] as const;
+    for (const who of WHO)
+      for (const dataWriters of ["viewers", "editors"] as const)
+        for (const vis of VIS) {
+          const level: AccessLevel | null =
+            who === "anonymous"
+              ? vis === "public"
+                ? "viewer"
+                : null
+              : who === "capped"
+                ? "viewer"
+                : who;
+          const c: CanCtx = {
+            cap: who === "capped" ? "restricted" : null,
+            personal: true,
+            anonymous: who === "anonymous",
+            dataWriters,
+          };
+          const editorUp =
+            who === "editor" || who === "manager" || who === "owner";
+          const write =
+            level !== null &&
+            who !== "capped" &&
+            (dataWriters === "viewers" || editorUp);
+          const anonId =
+            who === "anonymous" && level !== null && dataWriters === "viewers";
+          it(`${who} ${dataWriters} ${vis}: data.write ${write}, anonId ${anonId}`, () => {
+            expect(can(level, "data.write", c)).toBe(write);
+            expect(can(level, "anonId", c)).toBe(anonId);
+            // A refusal caused by "editors" alone is data_editors_only.
+            expect(editorsOnlyRefusal(level, c)).toBe(
+              !write &&
+                dataWriters === "editors" &&
+                level !== null &&
+                who !== "capped",
+            );
+          });
+        }
+    it("a capped caller's refusal is never data_editors_only", () => {
+      expect(
+        editorsOnlyRefusal("viewer", {
+          cap: "guest",
+          personal: true,
+          dataWriters: "editors",
+        }),
+      ).toBe(false);
+    });
   });
 
   const SEVEN: Record<ArtifactAction, PolicyAction> = {

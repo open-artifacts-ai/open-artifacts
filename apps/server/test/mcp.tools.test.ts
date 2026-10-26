@@ -1,8 +1,8 @@
 import { env } from "cloudflare:workers";
 import type { Client } from "@modelcontextprotocol/client";
 import {
-  ANON_WRITES_NOTE,
-  ANON_WRITES_WARNING,
+  DATA_WRITERS_NOTE,
+  DATA_WRITERS_WARNING,
   INLINE_TOO_LARGE_MESSAGE,
   LIMITS,
   newId,
@@ -287,42 +287,79 @@ describe("MCP tools over PAT", () => {
     expect(textOf(gone)).toMatch(/^not_found/);
   });
 
-  // #681 C: making a db artifact public with anonymous writes off warns
-  // (naming allowAnonymousWrites) but still applies.
-  it.each([
-    ["public, db, anonymous writes off", "public", true, false, true],
-    ["public, db, anonymous writes on", "public", true, true, false],
-    ["public, no db", "public", false, false, false],
-    ["private, db, anonymous writes off", "private", true, false, false],
-  ] as const)(
+  // #681: set_visibility and publish_artifact warn when the result is
+  // public, declares db and lets viewers write data; the change applies.
+  const WARN = [
+    ["public, db, viewers", "public", true, "viewers", true],
+    ["public, db, editors", "public", true, "editors", false],
+    ["public, no db", "public", false, "viewers", false],
+    ["private, db, viewers", "private", true, "viewers", false],
+  ] as const;
+  it.each(WARN)(
     "set_visibility warning: %s",
-    async (_, visibility, db, allowAnonymousWrites, warns) => {
+    async (_, visibility, db, dataWriters, warns) => {
       const pub = sc<{ id: string }>(
         await tool(client, "publish_artifact", {
           title: `warn ${tag}`,
           format: "html",
           content: "<p>hi</p>",
           capabilities: { db },
-          allowAnonymousWrites,
         }),
       );
       const r = await tool(client, "set_visibility", {
         id: pub.id,
         visibility,
+        dataWriters,
       });
-      const out = sc<{ visibility: string; warning?: string }>(r);
+      const out = sc<{
+        visibility: string;
+        dataWriters: string;
+        allowAnonymousWrites: boolean;
+        warning?: string;
+      }>(r);
       expect(out.visibility).toBe(visibility);
-      if (warns) {
-        expect(out.warning).toMatch(/allowAnonymousWrites/);
-        expect(out.warning).toMatch(/anon_writes_disabled/);
-        expect(out.warning).not.toMatch(/—/);
-        expect(textOf(r)).toContain(out.warning as string);
-      } else expect(out.warning).toBeUndefined();
+      expect(out.dataWriters).toBe(dataWriters);
+      expect(out.allowAnonymousWrites).toBe(dataWriters === "viewers");
+      expect(out.warning).toBe(warns ? DATA_WRITERS_WARNING : undefined);
+      if (warns) expect(textOf(r)).toContain(DATA_WRITERS_WARNING);
     },
   );
 
-  // #681 B: say up front that anonymous writes fail on a public db artifact.
-  it("instructions and publish/visibility descriptions name anon_writes_disabled", () => {
+  it("set_visibility maps allowAnonymousWrites (dataWriters wins)", async () => {
+    const id = sc<{ id: string }>(
+      await tool(client, "publish_artifact", {
+        title: `compat ${tag}`,
+        format: "html",
+        content: "<p>hi</p>",
+        capabilities: { db: true },
+      }),
+    ).id;
+    const set = async (args: Record<string, unknown>) =>
+      sc<{ dataWriters: string }>(
+        await tool(client, "set_visibility", { id, ...args }),
+      ).dataWriters;
+    expect(await set({ visibility: "team", allowAnonymousWrites: false })).toBe(
+      "viewers",
+    );
+    expect(
+      await set({ visibility: "public", allowAnonymousWrites: false }),
+    ).toBe("editors");
+    expect(
+      await set({ visibility: "public", allowAnonymousWrites: true }),
+    ).toBe("viewers");
+    expect(
+      await set({
+        visibility: "public",
+        allowAnonymousWrites: true,
+        dataWriters: "editors",
+      }),
+    ).toBe("editors");
+    // Visibility alone keeps the setting.
+    expect(await set({ visibility: "private" })).toBe("editors");
+  });
+
+  // #681 B: one sentence, in the instructions and both descriptions.
+  it("instructions and publish/visibility descriptions carry DATA_WRITERS_NOTE", () => {
     const text = (n: string) =>
       TOOL_DEFS.find((t) => t.name === n)?.description ?? "";
     for (const s of [
@@ -330,39 +367,31 @@ describe("MCP tools over PAT", () => {
       text("publish_artifact"),
       text("set_visibility"),
     ]) {
-      expect(s).toContain(ANON_WRITES_NOTE);
+      expect(s).toContain(DATA_WRITERS_NOTE);
       expect(s).not.toMatch(/—/);
+      expect(s).not.toMatch(/allowAnonymousWrites/);
     }
-    expect(ANON_WRITES_NOTE).toMatch(
-      /anon_writes_disabled unless allowAnonymousWrites is true/,
-    );
   });
 
-  // #681: publish_artifact carries the same warning as set_visibility.
-  it.each([
-    ["public, db, anonymous writes off", "public", true, false, true],
-    ["public, db, anonymous writes on", "public", true, true, false],
-    ["public, no db", "public", false, false, false],
-    ["private, db, anonymous writes off", "private", true, false, false],
-  ] as const)(
+  it.each(WARN)(
     "publish_artifact warning: %s",
-    async (_, visibility, db, allowAnonymousWrites, warns) => {
+    async (_, visibility, db, dataWriters, warns) => {
       const html = { format: "html", content: "<p>hi</p>" };
       const r = await tool(client, "publish_artifact", {
         title: `pubwarn ${tag}`,
         ...html,
         visibility,
         capabilities: { db },
-        allowAnonymousWrites,
+        dataWriters,
       });
       const out = sc<{ id: string; warning?: string }>(r);
-      expect(out.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
-      if (warns) expect(textOf(r)).toContain(ANON_WRITES_WARNING);
+      expect(out.warning).toBe(warns ? DATA_WRITERS_WARNING : undefined);
+      if (warns) expect(textOf(r)).toContain(DATA_WRITERS_WARNING);
       // A new version that changes nothing keeps the artifact's settings.
       const v2 = sc<{ warning?: string }>(
         await tool(client, "publish_artifact", { id: out.id, ...html }),
       );
-      expect(v2.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
+      expect(v2.warning).toBe(warns ? DATA_WRITERS_WARNING : undefined);
     },
   );
 
@@ -553,6 +582,47 @@ describe("MCP artifact data tools", () => {
       /^not_found/,
     );
     await Promise.all([vc.close(), ec.close(), sc2.close()]);
+  });
+
+  // #681: the data tools obey dataWriters as the REST runtime routes do.
+  it('dataWriters "editors": a viewer\'s writes → data_editors_only; editors and the owner write', async () => {
+    const dw = sc<{ id: string }>(
+      await tool(client, "publish_artifact", {
+        title: `dw ${tag}`,
+        format: "html",
+        content: "<p>dw</p>",
+        capabilities: { db: true },
+        dataWriters: "editors",
+      }),
+    ).id;
+    const viewer = await login(`mcp-dwv-${tag}@x.com`);
+    const editor = await login(`mcp-dwe-${tag}@x.com`);
+    await shareWith(dw, `mcp-dwv-${tag}@x.com`, "viewer");
+    await shareWith(dw, `mcp-dwe-${tag}@x.com`, "editor");
+    const vc = await connect((await createPat(env, viewer.userId, "v")).token);
+    const ec = await connect((await createPat(env, editor.userId, "e")).token);
+    const get = { id: dw, collection: "votes", docId: "a" };
+    for (const [name, args] of [
+      ["artifact_data_set", { ...get, data: { x: 1 } }],
+      ["artifact_data_update", { ...get, patch: { x: 2 } }],
+      ["artifact_data_delete", get],
+    ] as const)
+      expect(textOf(await tool(vc, name, args)), name).toMatch(
+        /^data_editors_only/,
+      );
+    sc(await tool(vc, "artifact_data_get", get));
+    sc(await tool(ec, "artifact_data_set", { ...get, data: { x: 1 } }));
+    sc(await tool(client, "artifact_data_set", { ...get, data: { x: 2 } }));
+    // Back to viewers: the viewer writes again.
+    sc(
+      await tool(client, "set_visibility", {
+        id: dw,
+        visibility: "private",
+        dataWriters: "viewers",
+      }),
+    );
+    sc(await tool(vc, "artifact_data_set", { ...get, data: { x: 3 } }));
+    await Promise.all([vc.close(), ec.close()]);
   });
 });
 

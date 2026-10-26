@@ -45,7 +45,7 @@ const THUMB_RE = /^data:image\/webp;base64,[A-Za-z0-9+/]*={0,2}$/;
 const Theme = ThemeSchema;
 
 /**
- * Anonymous id (artifacts with allowAnonymousWrites): the shell sends its
+ * Anonymous id (artifacts with dataWriters "viewers"): the shell sends its
  * signed token "<id>.<iat>.<sig>" (legacy v1: "<id>.<sig>") in this request
  * header on anonymous runtime calls, and the server returns a new one in the
  * same response header whenever it mints one (anonymous writes and R.anonId

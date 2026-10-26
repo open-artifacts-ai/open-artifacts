@@ -204,7 +204,7 @@ describe("data routes", () => {
 });
 
 describe("anonymous access", () => {
-  it("reads a public artifact; writes → 403 anon_writes_disabled unless allowAnonymousWrites", async () => {
+  it("reads and writes a public artifact (dataWriters viewers, the default)", async () => {
     const id = await pub({ visibility: "public" });
     await put(id, owner, "a", { v: 1 });
     const g = await anon(R.dataCollection(id, "c"));
@@ -213,35 +213,91 @@ describe("anonymous access", () => {
       1,
     );
     expect((await anon(R.dataDoc(id, "c", "a"))).status).toBe(200);
-    const w = await put(id, null, "b", 1);
-    expect(w.status).toBe(403);
-    expect((await errOf(w)).code).toBe("anon_writes_disabled");
-    for (const method of ["PATCH", "DELETE"]) {
-      const r = await anon(R.dataDoc(id, "c", "a"), {
-        method,
-        body: method === "PATCH" ? { v: 2 } : undefined,
+    expect((await put(id, null, "b", 1)).status).toBe(200);
+  });
+
+  // #681: a write refused by dataWriters "editors" is 403
+  // data_editors_only, for anonymous and signed-in viewers alike (never 401).
+  it('dataWriters "editors": anonymous and viewer writes → 403 data_editors_only', async () => {
+    const id = await pub({ visibility: "public", dataWriters: "editors" });
+    expect((await put(id, owner, "a", { v: 1 })).status).toBe(200);
+    const anonWrites = [
+      await put(id, null, "b", 1),
+      await anon(R.dataDoc(id, "c", "a"), { method: "PATCH", body: { v: 2 } }),
+      await anon(R.dataDoc(id, "c", "a"), { method: "DELETE" }),
+    ];
+    for (const r of anonWrites) {
+      expect(r.status).toBe(403);
+      expect((await errOf(r)).code).toBe("data_editors_only");
+    }
+    // A signed-in viewer (public link, or a Viewer share) is refused alike.
+    for (const u of [viewer, guest]) {
+      const r = await put(id, u, "c", 1);
+      expect(r.status).toBe(403);
+      expect((await errOf(r)).code).toBe("data_editors_only");
+    }
+    const share = await api(app, R.shares(id), owner.cookie, {
+      method: "PUT",
+      body: { email: viewer.email, role: "viewer" },
+    });
+    expect(share.status).toBe(200);
+    const v = await put(id, viewer, "c", 1);
+    expect(v.status).toBe(403);
+    expect((await errOf(v)).code).toBe("data_editors_only");
+    // An Editor share writes.
+    await api(app, R.shares(id), owner.cookie, {
+      method: "PUT",
+      body: { email: viewer.email, role: "editor" },
+    });
+    expect((await put(id, viewer, "c", 1)).status).toBe(200);
+    // Reads stay open; no anonymous id is issued.
+    expect((await anon(R.dataDoc(id, "c", "a"))).status).toBe(200);
+    expect((await anon(R.anonId(id))).status).toBe(401);
+  });
+
+  it('dataWriters "editors" at every visibility', async () => {
+    for (const visibility of ["private", "team"] as const) {
+      const id = await pub({ visibility, dataWriters: "editors" });
+      await api(app, R.shares(id), owner.cookie, {
+        method: "PUT",
+        body: { email: guest.email, role: "viewer" },
       });
-      expect(r.status, method).toBe(403);
-      expect((await errOf(r)).code, method).toBe("anon_writes_disabled");
+      const r = await put(id, guest, "a", 1);
+      expect(r.status, visibility).toBe(403);
+      expect((await errOf(r)).code, visibility).toBe("data_editors_only");
+      if (visibility === "team") {
+        const t = await put(id, viewer, "a", 1);
+        expect((await errOf(t)).code).toBe("data_editors_only");
+      }
+      expect((await put(id, owner, "a", 1)).status, visibility).toBe(200);
     }
   });
 
-  it("other anonymous refusals keep their codes", async () => {
-    // No db declared: still 401 unauthorized, not anon_writes_disabled.
-    const noDb = await pub({
-      visibility: "public",
-      capabilities: { db: false, viewer: true, storage: true },
-    });
-    const w = await put(noDb, null, "a", 1);
-    expect(w.status).toBe(401);
-    expect((await errOf(w)).code).toBe("unauthorized");
-    // Storage is signed-in only, whatever allowAnonymousWrites says.
-    for (const allowAnonymousWrites of [false, true]) {
-      const id = await pub({ visibility: "public", allowAnonymousWrites });
+  it("other refusals keep their codes", async () => {
+    // No db declared: capability_denied, whatever dataWriters says.
+    for (const dataWriters of ["viewers", "editors"]) {
+      const noDb = await pub({
+        visibility: "public",
+        dataWriters,
+        capabilities: { db: false, viewer: true, storage: true },
+      });
+      for (const u of [null, viewer]) {
+        const w = await put(noDb, u, "a", 1);
+        expect(w.status, dataWriters).toBe(403);
+        expect((await errOf(w)).code, dataWriters).toBe("capability_denied");
+      }
+    }
+    // Storage is signed-in only, whatever dataWriters says.
+    for (const dataWriters of ["viewers", "editors"]) {
+      const id = await pub({ visibility: "public", dataWriters });
       const s = await anon(R.storageKey(id, "k"), { method: "PUT", body: 1 });
       expect(s.status).toBe(401);
       expect((await errOf(s)).code).toBe("unauthorized");
     }
+    // No access is still 404.
+    const priv = await pub({ dataWriters: "editors" });
+    expect((await put(priv, viewer, "a", 1)).status).toBe(404);
+    expect((await put(priv, null, "a", 1)).status).toBe(404);
   });
 
   it("private artifact → 404 for anonymous reads and writes", async () => {
@@ -599,7 +655,7 @@ describe("fix round 1", () => {
       { ...env, RL_ANON: undefined, ENVIRONMENT: "production" } as never,
       ctx,
     );
-    expect(w.status).toBe(403); // allowAnonymousWrites is off: anon_writes_disabled before the limiter
+    expect(w.status).toBe(503); // anonymous writes allowed (viewers): the unbound limiter refuses
   });
 
   const closed = async (ws: WebSocket) =>

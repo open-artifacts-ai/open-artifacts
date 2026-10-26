@@ -3,6 +3,7 @@ import { normalizeEmail } from "@oa/auth-core";
 import {
   type AccessLevel,
   type CapReason,
+  DATA_EDITORS_ONLY_MESSAGE,
   type ListQuery,
   type Member,
   type SpaceRole,
@@ -36,7 +37,9 @@ import type { AppEnv } from "../http/middleware.js";
 import {
   type CanCtx,
   can,
+  capsOf,
   decide,
+  editorsOnlyRefusal,
   isTeamRole,
   orgCan,
   type PolicyAction,
@@ -352,8 +355,29 @@ export function canCtx(c: Caller, a: ArtifactRow): CanCtx {
     cap: capOfCaller(c),
     personal: true,
     anonymous: c.kind !== "user",
-    allowAnonymousWrites: a.allowAnonymousWrites === 1,
+    // Anything but "viewers" reads as "editors" (fail closed).
+    dataWriters: a.dataWriters === "viewers" ? "viewers" : "editors",
   };
+}
+
+/**
+ * #681: the error for a data.write `can` refused. A refusal caused by
+ * dataWriters "editors" alone is 403 data_editors_only, unless the artifact
+ * lacks db (capability_denied, the runtime gate's order); anything else is
+ * null (the caller's usual 404 or 401).
+ */
+export function dataWriteRefusal(
+  level: AccessLevel | null,
+  ctx: CanCtx,
+  a: Pick<ArtifactRow, "capabilities">,
+): ApiError | null {
+  if (!editorsOnlyRefusal(level, ctx)) return null;
+  if (!capsOf(a.capabilities).db)
+    return new ApiError(
+      "capability_denied",
+      'This artifact did not declare the "db" capability',
+    );
+  return new ApiError("data_editors_only", DATA_EDITORS_ONLY_MESSAGE);
 }
 
 /**
@@ -378,15 +402,15 @@ export async function authorize(
     r = await loadAccess(env, c, artifactId, opts);
     prefetched.getStore()?.set(accessKey(c, artifactId, opts), r);
   } else r = await accessLevel(env, c, artifactId, opts);
-  if (
-    !r ||
-    !can(r.level, action, {
-      ...canCtx(c, r.artifact),
-      personal: r.personal,
-      ...opts.ctx,
-    })
-  )
-    throw new ApiError("not_found", "Not found");
+  if (!r) throw new ApiError("not_found", "Not found");
+  const ctx = { ...canCtx(c, r.artifact), personal: r.personal, ...opts.ctx };
+  if (!can(r.level, action, ctx)) {
+    const e =
+      action === "data.write"
+        ? dataWriteRefusal(r.level, ctx, r.artifact)
+        : null;
+    throw e ?? new ApiError("not_found", "Not found");
+  }
   return r;
 }
 

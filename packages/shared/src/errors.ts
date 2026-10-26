@@ -10,7 +10,7 @@ export const ERROR_CODES = [
   "rate_limited",
   "quota_exceeded",
   "capability_denied",
-  "anon_writes_disabled",
+  "data_editors_only",
   "internal",
   // Hosted M1 (packages/shared/HOSTED_CONTRACT.md).
   "space_forbidden",
@@ -52,8 +52,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   rate_limited: 429,
   quota_exceeded: 503,
   capability_denied: 403,
-  /** An anonymous data write on a public artifact (db declared) whose allowAnonymousWrites is off. */
-  anon_writes_disabled: 403,
+  /** A data write by a caller below editor on an artifact whose dataWriters is "editors" (#681). */
+  data_editors_only: 403,
   internal: 500,
   /** Publish or move into a space the caller may not publish to (also capped callers creating). */
   space_forbidden: 403,
@@ -93,24 +93,28 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
 
 /**
  * #681: the one sentence MCP instructions and the publish_artifact /
- * set_visibility descriptions use for anonymous writes.
+ * set_visibility descriptions use for who can change live data.
  */
-export const ANON_WRITES_NOTE =
-  "On a public artifact that declares db, anonymous visitors' writes fail with anon_writes_disabled unless allowAnonymousWrites is true.";
+export const DATA_WRITERS_NOTE =
+  'Anyone who can view an artifact can change its live data; on a public artifact that includes anonymous visitors. Set dataWriters: "editors" to limit writes to editors (refusals get data_editors_only).';
 
 /** #681: publish / set_visibility / PATCH result `warning`; the change still applies. */
-export const ANON_WRITES_WARNING =
-  "Anonymous visitors can read this artifact, but their writes fail with anon_writes_disabled because allowAnonymousWrites is false. Publish a new version with allowAnonymousWrites: true if they should write.";
+export const DATA_WRITERS_WARNING =
+  'This page is public and lets anyone change its data. Set dataWriters to "editors" to limit that.';
 
-/** ANON_WRITES_WARNING when the artifact is public, declares db and keeps anonymous writes off. */
-export const anonWritesWarning = (a: {
+/** DATA_WRITERS_WARNING when the artifact is public, declares db and lets viewers write. */
+export const dataWritersWarning = (a: {
   visibility: string;
   capabilities: { db: boolean };
-  allowAnonymousWrites: boolean;
+  dataWriters: string;
 }): string | undefined =>
-  a.visibility === "public" && a.capabilities.db && !a.allowAnonymousWrites
-    ? ANON_WRITES_WARNING
+  a.visibility === "public" && a.capabilities.db && a.dataWriters === "viewers"
+    ? DATA_WRITERS_WARNING
     : undefined;
+
+/** 403 data_editors_only message (#681). */
+export const DATA_EDITORS_ONLY_MESSAGE =
+  "Only this artifact's editors can change its data";
 
 export const QUOTA_MESSAGE =
   "Daily free-plan limit reached; resets at 00:00 UTC";

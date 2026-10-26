@@ -12,7 +12,7 @@ import {
   withAccessCache,
 } from "./authz.js";
 import { authConfig } from "./config.js";
-import { ANON_WRITES_DISABLED, anonWritesOff, orgCan } from "./policy.js";
+import { orgCan } from "./policy.js";
 import {
   CONTENT_POLICY,
   type Policy,
@@ -91,19 +91,17 @@ export async function enforce(
         ctx: p.ctx,
       });
     } catch (e) {
-      // Keep the handler's order: an anonymous caller who may view gets 401,
-      // or 403 anon_writes_disabled for a data write on a db artifact.
+      // Keep the handler's order: an anonymous caller who may view gets 401.
+      // A data write refused by dataWriters "editors" already threw 403
+      // data_editors_only (authorize, #681).
       if (
         p.anon401 &&
         who.kind !== "user" &&
         e instanceof ApiError &&
-        e.code === "not_found"
-      ) {
-        const r = await accessLevel(env, who, id);
-        if (r && p.artifact === "data.write" && anonWritesOff(r.artifact))
-          throw new ApiError("anon_writes_disabled", ANON_WRITES_DISABLED);
-        if (r) throw new ApiError("unauthorized", p.anon401);
-      }
+        e.code === "not_found" &&
+        (await accessLevel(env, who, id))
+      )
+        throw new ApiError("unauthorized", p.anon401);
       throw e;
     }
     return;

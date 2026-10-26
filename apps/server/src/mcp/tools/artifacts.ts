@@ -211,9 +211,8 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
 
   server.registerTool("set_visibility", toolConfig("set_visibility"), (input) =>
     guard(async () => {
-      const a = await patch(env, user, input.id, {
-        visibility: input.visibility,
-      });
+      const { id: _, ...p } = input;
+      const a = await patch(env, user, input.id, p);
       const line = `${a.id} is now ${a.visibility}: ${viewUrl(env, a.id)}`;
       return ok(a.warning ? `${line} Warning: ${a.warning}` : line, a);
     }),
