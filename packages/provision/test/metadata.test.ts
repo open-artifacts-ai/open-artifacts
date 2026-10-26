@@ -186,10 +186,21 @@ describe("userWorkerMetadata", () => {
     );
   });
 
-  it("FEATURES gets usage_off", () => {
+  // Manager ruling 2026-10-26: hosted M1 is the spaces product, so every
+  // hosted install gets spaces, whatever the caller passes.
+  it("FEATURES always gets spaces and usage_off", () => {
     expect(text(userWorkerMetadata(inst(), res()).bindings, "FEATURES")).toBe(
-      "usage_off",
+      "spaces,usage_off",
     );
+    for (const f of ["x", "directory_sync", "usage_off"])
+      expect(
+        String(
+          text(
+            userWorkerMetadata(inst({ vars: { FEATURES: f } }), res()).bindings,
+            "FEATURES",
+          ),
+        ).split(","),
+      ).toEqual(expect.arrayContaining(["spaces", "usage_off", f]));
     const m = userWorkerMetadata(
       inst({
         vars: {
@@ -199,7 +210,7 @@ describe("userWorkerMetadata", () => {
       }),
       res(),
     );
-    expect(text(m.bindings, "FEATURES")).toBe("usage_off,x");
+    expect(text(m.bindings, "FEATURES")).toBe("usage_off,x,spaces");
   });
 
   it("unknown or invalid var throws", () => {

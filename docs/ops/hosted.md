@@ -391,7 +391,7 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 ### First-create checklist (per env)
 
 1. Create the KV namespaces `oa-<p>-broker-registry` and `oa-<p>-directory-registry` side by side, before any provision run on the env (any provision version that includes the directory copy). With the broker on, create and every lifecycle operation (status aside) refuse before any write if either is missing.
-2. Apply every platform D1 migration to `oa-<p>-platform`, in order: `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write.
+2. Apply every platform D1 migration to `oa-<p>-platform` that it does not have yet, in order (0004 adds a column, so it can't be re-run; check with `PRAGMA table_info(hosted_audit)` before applying it): `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal), then `0004_audit_actor.sql` (the `hosted_audit.actor` column the CLI writes). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write; without 0004, every `oa:hosted` command fails closed on its first audit row.
 3. Key ceremony done: `RELEASE_PUBKEY[env]` set in gates.ts (and `PROD_UNLOCKED` for prod).
    - Prod, before FinQore go-live: add the user back as a required reviewer on `hosted-prod` (admin bypass stays off), so every prod signing run waits for approval again.
 4. Sign the env's first floor with the `hosted-floor` workflow (dispatch on `main`: `env`, `seq` >= `FLOOR_MIN_SEQ[env]`, `min_version`, `revoked`), download its `floor-<env>-<seq>` artifact, and `publishFloor` it.
@@ -402,6 +402,39 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 1. For each env, dispatch the `hosted-floor` workflow on `main` (next `seq`, `min_version`, `revoked` keeping every earlier entry), download the `floor-<env>-<seq>` artifact and run `publishFloor` with it.
 2. In the same change, bump `FLOOR_MIN_SEQ[env]` in `packages/provision/src/internal/gates.ts` to the new `seq`, so a replayed older floor is refused even if the D1 cache was reset.
 3. Merge and release; creates refuse any floor below the new anchor.
+
+### The `oa:hosted` CLI (Task 8)
+
+`pnpm oa:hosted <command> --env staging|prod [flags]` wraps `@oa/provision` (`scripts/hosted/src/cli.ts`); it holds no provisioning logic of its own. It prints one JSON line per step and never a token, PAT, secret or generated key.
+
+| Command | Flags | Wraps |
+| --- | --- | --- |
+| `create` | `--slug`, `--owner`, `--to <version>`, `--var K=V`..., `--test-hooks` (staging only), `--install <id>` to resume | `create` (bundle `redline` with `--test-hooks`, else `release`) |
+| `upgrade` | `--install`, `--to` | `upgrade` |
+| `rollback` | `--install` | `rollback` |
+| `update-vars` | `--install`, the full set of `--var K=V` | `updateVars` |
+| `delete` | `--install`, `--confirm <same id>` | `delete` |
+| `release-lease` | `--install`, `--confirm <same id>`, `--force` | `releaseLease` |
+| `status` | `--install` | `status` (state, versions, lease, `sessionCut.pending` and `sessionCut.armed`, registry drift) |
+| `publish-release` | `--tag v<version>` | `gh release download` of `oa-release-<env>-*` into a temp dir, then `probeR2Conditionals` and `publishRelease` per variant |
+| `publish-floor` | `--floor <path to floor-<env>-<seq>.sig.json>` | `probeR2Conditionals`, then `publishFloor` |
+| `turnstile-init` | none | `turnstileInit`: creates `oa-<p>-turnstile` once (managed, exactly the env's app domain). Every create attempt is preceded by a listing by that exact name, so a create whose reply was lost is adopted, not duplicated. A same-named widget that differs is refused, and two or more are refused with both ids |
+
+- `pnpm oa:hosted --help` prints every command and flag. The flags beyond the plan's list: `--tag` (publish-release), `--floor` (publish-floor) and `--force` (release-lease only: releases a live lease, only when no operation is running).
+- Sign-in broker: on for an install whose vars turn google on (`AUTH_PROVIDERS` includes `google`); there is no flag. `create` reads it from `--var`; `update-vars` from the new `--var` set or the install's current vars; the other commands from the install's current vars. With it on, provision requires both `oa-<p>-broker-registry` and `oa-<p>-directory-registry`, writes the entry with origin `https://<app host>`, and renders `AUTH_BROKER_URL` as exactly `https://auth.<the env's app domain>` and `GOOGLE_CLIENT_ID` as the env's broker client (`BROKER_GOOGLE_CLIENT_ID`, equal to `apps/auth-broker/wrangler.jsonc`, pinned by a test) on every upload. Prod has no broker client yet, so the broker on prod is refused ("no prod Google client yet"). A caller `AUTH_BROKER_URL` or `GOOGLE_CLIENT_ID` that differs is refused, `GOOGLE_CLIENT_SECRET` is never a hosted var, google with no `AUTH_DOMAINS` (after the server's own parse) is refused, and google with the broker off is refused, both before any write.
+- Google on an existing install is not supported yet: the broker key and the first registry entry are only issued at create, so `update-vars` that turns google on for an install with no broker key is refused before any write (no session cut). TODO (Platform): a broker-enrol op for active installs.
+- Upgrade and rollback never refuse on these: a stale stored `AUTH_BROKER_URL` or `GOOGLE_CLIENT_ID` is re-rendered as the derived value, with a note.
+- Google off: `update-vars` that turns google off keeps the install's registry entry (still trusted, its domains still synced) until a broker-disable op exists.
+- Refused before any call: `--test-hooks` with `--env prod`, `delete` or `release-lease` whose `--confirm` is not the `--install` id, a `--var` that `HOSTED_VARS` rejects, and any missing or malformed flag.
+- Token: the keychain item `oa-hosted-<env>` with account `open-artifacts` (`/usr/bin/security find-generic-password -a open-artifacts -s oa-hosted-<env> -w`, never a PATH lookup). Every keychain read and write the CLI does uses that account, the Turnstile item included. CI is staging only and reads a 0600 file it owns, named by `OA_HOSTED_TOKEN_FILE`, opened with `O_NOFOLLOW` (a symlink is refused) and checked and read through that one fd (`fstat`), never by path again; prod refuses that variable and refuses to run in CI. Then the provisioner's own token checks run (`verifyToken`) before the CLI's first write.
+- `CLOUDFLARE_ACCOUNT_ID` must be the hosted account id.
+- Turnstile keys: the keychain item `oa-hosted-<env>-turnstile` holds `<sitekey>:<secret>`. `turnstile-init` writes it through `/usr/bin/security -i` on stdin (never argv) and reads it back; `create` and `update-vars` read it.
+- Audit: every command writes `cli.<command>.start` before it acts and `cli.<command>.done` or `.failed` after, with `actor` set to `git config user.email` (or the CI run URL).
+  - The actor is attribution, not authentication: anyone can set `git config user.email`, and the row records what the operator's machine claimed.
+  - `hosted_audit` is append-only by convention: triggers refuse UPDATE and DELETE. That is not a security boundary against someone holding the D1 (provisioning) token, who can drop the triggers or the table.
+  - Audit gap: a failed after-row is retried once. If the retry fails too, the CLI prints `AUDIT GAP: <command> <install> took effect, after-row not written` on stderr, exits 3, and records the gap in a 0600 file under `~/.config/oa-hosted/pending-audit/` (directory 0700), named `<env>-<install>-<time>.json`, holding only env, install id, action, command, exit code and actor. The next command for that install (same env) writes the recovered after-row first (detail `recovered: 1`), then removes the file. If even the file can't be written, stderr says to add the row by hand.
+- PAT files go to `~/.open-artifacts/hosted-<env>/`.
+- `delete` is provision's current delete. TODO: the delete state machine that waits for the directory broker's revoke (design with the Manager).
 
 ### Leases and recovery (Task 5)
 

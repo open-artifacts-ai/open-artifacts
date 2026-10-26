@@ -38,7 +38,7 @@ describe("check-no-test-hooks.ts", () => {
         return new Response("nf", { status: 404 });`),
     );
     expect(r.lines).toEqual([
-      "check-no-test-hooks: ok: 8 /__test/* requests all 404 with TEST_HOOKS=1",
+      "check-no-test-hooks: ok: 10 /__test/* requests all 404 with TEST_HOOKS=1",
     ]);
     expect(r.code).toBe(0);
   }, 60_000);

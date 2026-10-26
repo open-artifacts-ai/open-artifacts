@@ -5,6 +5,8 @@ export * from "./names.js";
 export * from "./platform.js";
 export * from "./publish.js";
 export * from "./release.js";
+export * from "./setup-adapter.js";
 export * from "./tar.js";
+export * from "./turnstile.js";
 export * from "./types.js";
 export * from "./wfp.js";
