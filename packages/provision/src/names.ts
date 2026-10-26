@@ -207,3 +207,18 @@ export function registryEntry(e: RegistryEntry): RegistryEntry {
   if (e.disabled === true) out.disabled = true;
   return out;
 }
+
+/** H-DV: a deleted install's owner email is purged to this after 30 days. */
+export const PURGED_EMAIL = "";
+
+/** True for a purged installs.owner_email; never use it as an address. */
+export const isPurgedEmail = (v: unknown): boolean => v === PURGED_EMAIL;
+
+/**
+ * The only way to read installs.owner_email (a source test pins it): the
+ * address, or null when it is purged or absent.
+ */
+export function ownerEmailOf(row: { owner_email?: unknown }): string | null {
+  const v = row.owner_email;
+  return typeof v === "string" && !isPurgedEmail(v) ? v : null;
+}
