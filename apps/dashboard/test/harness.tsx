@@ -7,7 +7,14 @@ import {
 } from "@oa/shared/mocks";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { act, render } from "@testing-library/react";
+import {
+  act,
+  type Matcher,
+  render,
+  screen,
+  waitFor,
+  type waitForOptions,
+} from "@testing-library/react";
 import { getResponse, type HttpHandler, HttpResponse, http } from "msw";
 import { setupServer } from "msw/node";
 import type { ReactNode } from "react";
@@ -16,6 +23,7 @@ import {
   afterEach,
   beforeAll,
   beforeEach,
+  expect,
   type Mock,
   vi,
 } from "vitest";
@@ -181,6 +189,16 @@ export const wrapper = ({ children }: { children: ReactNode }) => (
   <QueryClientProvider client={lastClient}>{children}</QueryClientProvider>
 );
 
+/** A toast's text, once the toast shows. Sonner commits a toast at opacity 0
+    and fades it in from an effect, so findByText can resolve while it's
+    still invisible: assert toasts through this, not findBy + toBeVisible. */
+export const findVisibleToast = (text: Matcher, options?: waitForOptions) =>
+  waitFor(() => {
+    const el = screen.getByText(text);
+    expect(el.closest("[data-sonner-toast]")).not.toBeNull();
+    expect(el).toBeVisible();
+    return el;
+  }, options);
 export const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export const page = (items: unknown[], nextCursor: string | null) =>
   HttpResponse.json({ items, nextCursor });
