@@ -92,6 +92,36 @@ Mail for both domains is routed (Cloudflare Email Routing catch-all) to the user
 
 P3 ships `apps/server/test/authz/surfaces.ts` (every HTTP surface as a probe) and `scripts/authz-probe.ts`. Tasks 4 and 5 drive those probes with A's credentials against B and expect `expectRefused` on every surface, so a surface Backend adds is covered without a P5 change. A test fails if the probe list is shorter than the server's `ROUTE_POLICY` manifest.
 
+Built as `tests/redline/live/surfaces.test.ts`, with the case list derived in `src/surfaces.ts`:
+- Read-only probes run through `crossProbe` on a seeded world.
+- Mutating probes run through `crossWrite`. Each install's own admin writes to a throwaway on its own install. A's write at B is refused, and B's throwaway reads back unchanged. Every throwaway is deleted, even on failure.
+- Coverage of `ROUTE_POLICY`, `TOOL_POLICY` and `CONTENT_POLICY` is derived. A dropped surface counts only through `DROPPED`, an explicit list that the coverage check holds to the drop rules. A route no case reaches must be in `EXCLUDED_ROUTES` and backed by a recorded drop; a drop never counts as coverage.
+- The world is reused on every run:
+  - two fixed hook spaces, `test-redline-space` and `test-redline-guard`. "space delete (S)" targets the guard space, never the world's.
+  - one fixed artifact in each space;
+  - fixed member users.
+- Throwaways are deleted, and every cleanup status is checked. No API purges the trash; the nightly `purgeDeleted` hard-deletes it after `LIMITS.softDeleteDays`, so the trash stays bounded.
+- Follow-up: `expectRefused` accepts a 403 whose body holds B data other than the markers (inherited from Task 2; unchanged here).
+
+**Dropped (2026-10-26, #655):** 19 surfaces have no possible success leg cross-install, so they are dropped. Each is in `DROPPED` (`tests/redline/src/surfaces.ts`) with its covering tests. The coverage check holds that list to the drop rules, and `citationGaps` checks that every cited file, describe and test exists. Short names below: M = `apps/server/test/authz.surface-matrix.test.ts`; F = `apps/server/test/redline.foreign-credential.test.ts` ("red line: another install's credential on the dropped directory surfaces").
+- **Owner-only (7).** Hooks never mint the owner, and no owner credential is stored in CI.
+  - Routes: `GET /api/v1/directory/connect`; `POST /api/v1/directory/confirm`, `/cancel`, `/sync`, `/held/:groupId/confirm`, `/disconnect`; `DELETE /api/v1/directory`.
+  - Covered by M "instance routes". `/disconnect` and `DELETE /api/v1/directory` are also covered by M "directory disconnect: cookie sessions only, plus the platform system job".
+- **Nobody allowed (6).** The personal-space rule allows no caller.
+  - The `(personal)` space probes: patch {}, delete, member put, member delete, mapping put, mapping delete.
+  - Covered by M "space writes (the service rules behind { user })" and M "attack seeds: another member's personal space".
+- **anon id (1).** Anonymous writes only, and no fixture opts in.
+  - Covered by M "artifact surfaces (sync stale 8 days)".
+- **content /p/ (1).** Credential-free (public artifacts to anyone), so no tenant credential crosses.
+  - Covered by M "artifact surfaces (sync stale 8 days)".
+- **Off on hosted (1): `GET /api/v1/usage`.** Its `offWhen: usage_off` flag is in the FEATURES provision always sets, so it answers 404 for everyone. It stays dropped while hosted sets `usage_off`.
+  - Covered by `apps/server/test/usage.test.ts` "usage_off → GET /api/v1/usage 404 for the owner", and M "instance routes".
+- **Needs a connected Google directory (3).** The red-line installs have none.
+  - `GET /api/v1/directory/callback`, which answers 404 without the connector. Covered by M "instance routes", and F "GET directory/callback: another install's session or PAT is refused with no audit row; this install's owner reaches the handler".
+  - The mutating mapping deletes, "mapping delete viewer" and "mapping delete a manager mapping". Only a connected directory creates a mapping row. Covered by M "space writes (the service rules behind { user })", and F "DELETE a space viewer mapping: …" and "DELETE a space manager mapping: …".
+  - #655 tracks running these on staging tenants with a connected directory.
+- F models another install's credential two ways: a session for this install's own user id signed with another `SESSION_SECRET`, and a well-formed PAT this install never issued. Each F case first proves this install's own credential succeeds on the same request.
+
 ### Task 4: Credential cases (available now)
 
 **Files:**

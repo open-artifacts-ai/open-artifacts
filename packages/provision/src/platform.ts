@@ -37,7 +37,21 @@ export interface InstallRow {
   session_cut_base: string | null;
   /** 1 once an upload turning google on may have gone live (0003). */
   session_cut_armed: number;
+  /** H-DV (0005): the Google directory revoke a delete waits for. */
+  directory_revoke: DirectoryRevoke | null;
+  directory_revoked_at: number | null;
+  directory_revoke_attempts: number;
+  /** When this delete attempt began; a done older than it is stale (0005). */
+  directory_revoke_requested_at: number | null;
 }
+
+/** pending: the scheduler's revoke tick owns it; the rest are final for delete. */
+export type DirectoryRevoke =
+  | "pending"
+  | "done"
+  | "unsupported"
+  | "skipped"
+  | "failed";
 
 export type InstallState =
   | "creating"
@@ -102,6 +116,10 @@ const UPDATABLE = new Set([
   "vars",
   "session_cut_base",
   "session_cut_armed",
+  "directory_revoke",
+  "directory_revoke_attempts",
+  "directory_revoked_at",
+  "directory_revoke_requested_at",
 ]);
 
 export class PlatformDb {
@@ -402,6 +420,57 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
       "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
       [this.now(), actor, id, action, canonicalJson(detail)],
     );
+  }
+
+  /** H-DV: one install's revoke state, read only (delete's phase-2 poll). */
+  async revokeState(id: InstallId): Promise<{
+    state: DirectoryRevoke | null;
+    attempts: number;
+    revokedAt: number | null;
+    requestedAt: number | null;
+  } | null> {
+    const r = (
+      await this.cf.d1Query(
+        this.db.id,
+        "SELECT directory_revoke, directory_revoke_attempts, directory_revoked_at, directory_revoke_requested_at FROM installs WHERE id = ?1",
+        [id],
+      )
+    )[0]?.results?.[0];
+    if (!r) return null;
+    return {
+      state: (r.directory_revoke ?? null) as DirectoryRevoke | null,
+      attempts: Number(r.directory_revoke_attempts ?? 0),
+      revokedAt:
+        r.directory_revoked_at === null || r.directory_revoked_at === undefined
+          ? null
+          : Number(r.directory_revoked_at),
+      requestedAt:
+        r.directory_revoke_requested_at === null ||
+        r.directory_revoke_requested_at === undefined
+          ? null
+          : Number(r.directory_revoke_requested_at),
+    };
+  }
+
+  /**
+   * M1b: a stale done goes back to pending so the scheduler revokes afresh.
+   * Only a still-deleting row whose done predates this attempt's start.
+   */
+  async redispatchRevoke(id: InstallId): Promise<void> {
+    await this.write(
+      "UPDATE installs SET directory_revoke = 'pending', directory_revoke_attempts = 0 WHERE id = ?1 AND state = 'deleting' AND directory_revoke = 'done' AND (directory_revoked_at IS NULL OR directory_revoke_requested_at IS NULL OR directory_revoked_at < directory_revoke_requested_at)",
+      [id],
+    );
+  }
+
+  /** H-DV M1: whether a delete recorded its skip reason for this install. */
+  async hasSkipAudit(id: InstallId): Promise<boolean> {
+    const r = await this.cf.d1Query(
+      this.db.id,
+      "SELECT 1 AS ok FROM hosted_audit WHERE install_id = ?1 AND action = 'delete.revoke_skipped' LIMIT 1",
+      [id],
+    );
+    return (r[0]?.results ?? []).length > 0;
   }
 
   /** Appends an audit row; `detail` must never carry a secret or an email. */

@@ -2,7 +2,13 @@
 // against the in-memory Cloudflare (fake-cf.ts). Harness pieces mirror
 // wfp-create.test.ts (gates mocked, every generated secret captured).
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -12,6 +18,9 @@ import { epochBumpSql, type Template } from "../src/metadata.js";
 import {
   ENV_PREFIX,
   type Env,
+  isPurgedEmail,
+  ownerEmailOf,
+  PURGED_EMAIL,
   platformNames,
   registryKey,
 } from "../src/names.js";
@@ -26,8 +35,10 @@ import {
   type ReleaseRecord,
   TEST_HOOKS_DEFINE,
 } from "../src/release.js";
+import { REVOKE_MIN_VERSION } from "../src/versions.js";
 import {
   BROKER_GOOGLE_CLIENT_ID,
+  DIRECTORY_REVOKE_SKIPPED_NOTE,
   HOSTED_DOMAINS,
   hostsKvTitle,
   NAMESPACES,
@@ -2256,6 +2267,8 @@ describe("fix round 3", () => {
       leaseLive: false,
       sessionCut: null,
       registryDrift: null,
+      directoryRevoke: { state: null, attempts: 0, revokedAt: null },
+      owner: "(set)",
     });
     s.db()
       .prepare(
@@ -3198,5 +3211,640 @@ describe("fix round 4 (T8): every server precondition for hosted google", () => 
     const rb = keep(await p.rollback(inst.id));
     expect(rb).toMatchObject({ ok: true, rolledBack: true });
     expect(renderedEnv(s, inst.id).GOOGLE_CLIENT_ID).toBe(STAGING_CLIENT);
+  });
+});
+
+// A done is fresh: confirmed at this attempt's start (M1b).
+const setRevoke = (s: S, id: string, v: string) =>
+  s
+    .db()
+    .prepare(
+      "UPDATE installs SET directory_revoke = ?1, directory_revoked_at = CASE WHEN ?1 = 'done' THEN directory_revoke_requested_at ELSE directory_revoked_at END WHERE id = ?2",
+    )
+    .run(v, id);
+
+describe("H-DV: delete revokes the directory grant first", () => {
+  const POLL_MS = 15_000;
+  const revokeRow = (s: S, id: string) =>
+    s
+      .db()
+      .prepare(
+        "SELECT state, directory_revoke, directory_revoked_at, directory_revoke_attempts, directory_revoke_requested_at, lease FROM installs WHERE id = ?",
+      )
+      .get(id) as {
+      state: string;
+      directory_revoke: string | null;
+      directory_revoked_at: number | null;
+      directory_revoke_attempts: number;
+      directory_revoke_requested_at: number | null;
+      lease: string | null;
+    };
+
+  it("phase 1 marks the row deleting + pending, unmaps the hosts and drops the lease; phase 2 waits, then tears down", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const seen: unknown[] = [];
+    s.fake.revoker = (_db, id) => {
+      seen.push({
+        ...revokeRow(s, id),
+        mapped: [inst.appHost, inst.contentHost].filter((h) =>
+          s.fake.kvValues(s.hostsId).has(h),
+        ),
+        script: s.scriptOf(id) !== undefined,
+      });
+      if (seen.length === 3) setRevoke(s, id, "done");
+    };
+    const t0 = s.clock.now();
+    const r = keep(await s.p.delete(inst.id, inst.id));
+    expect(r).toEqual({ id: inst.id, ok: true, state: "deleted" });
+    expect(seen[0]).toEqual({
+      state: "deleting",
+      directory_revoke: "pending",
+      directory_revoked_at: null,
+      directory_revoke_attempts: 0,
+      directory_revoke_requested_at: expect.any(Number),
+      lease: null,
+      // M1a: unmapped before any revoke resolves (the job needs no HOSTS).
+      mapped: [],
+      script: true,
+    });
+    expect(seen).toHaveLength(3);
+    // Polled every 15 s on the injected clock.
+    expect(s.clock.now() - t0).toBeGreaterThanOrEqual(2 * POLL_MS);
+    expect(s.fake.kvValues(s.hostsId).has(inst.appHost)).toBe(false);
+    expect(s.scriptOf(inst.id)).toBeUndefined();
+    const a = s.audit(inst.id);
+    expect(a.indexOf("delete.revoke_pending")).toBeLessThan(
+      a.indexOf("delete.done"),
+    );
+  });
+
+  it("M2: an unsupported revoke refuses (it never tears down) and names the skip flag", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "unsupported");
+    const e = await fails(s.p.delete(inst.id, inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toBe(
+      `install ${inst.id} is below ${REVOKE_MIN_VERSION} and can't confirm the Google revoke; upgrade it or pass --skip-directory-revoke <reason>`,
+    );
+    expect(revokeRow(s, inst.id).state).toBe("deleting");
+    expect(s.scriptOf(inst.id)).toBeDefined();
+    expect(s.audit(inst.id)).not.toContain("delete.done");
+  });
+
+  it("times out after 10 minutes with the row left deleting, then a rerun resumes at phase 2", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let polls = 0;
+    s.fake.revoker = () => {
+      polls++;
+    };
+    const t0 = s.clock.now();
+    const e = await fails(s.p.delete(inst.id, inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(
+      /still pending after 10 minutes; rerun delete to resume/,
+    );
+    expect(s.clock.now() - t0).toBeGreaterThanOrEqual(10 * 60_000);
+    expect(polls).toBe(41);
+    expect(revokeRow(s, inst.id)).toMatchObject({
+      state: "deleting",
+      directory_revoke: "pending",
+      lease: null,
+    });
+    expect(s.scriptOf(inst.id)).toBeDefined();
+    expect(s.fake.kvValues(s.hostsId).has(inst.appHost)).toBe(false);
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "done");
+    expect(keep(await s.mk().delete(inst.id, inst.id)).state).toBe("deleted");
+    // M1b: each attempt records its own start.
+    expect(
+      s.audit(inst.id).filter((x) => x === "delete.revoke_pending"),
+    ).toHaveLength(2);
+  });
+
+  it("a failed revoke refuses, leaving the row deleting and everything in place", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "failed");
+    const e = await fails(s.p.delete(inst.id, inst.id));
+    expect(e.message).toMatch(/directory revoke failed/);
+    expect(e.message).toMatch(/--skip-directory-revoke/);
+    expect(revokeRow(s, inst.id).state).toBe("deleting");
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("skipDirectoryRevoke needs a reason, records it, says the grant stays live, and tears down without waiting", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let polls = 0;
+    s.fake.revoker = () => {
+      polls++;
+    };
+    for (const bad of ["", "   ", "mail ops@example.com", "x".repeat(201)]) {
+      const w = s.fake.writes().length;
+      const e = await fails(
+        s.mk().delete(inst.id, inst.id, { skipDirectoryRevoke: bad }),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(s.fake.writes().length).toBe(w);
+    }
+    const p = s.mk();
+    const r = keep(
+      await p.delete(inst.id, inst.id, {
+        skipDirectoryRevoke: "customer Google tenant closed",
+      }),
+    );
+    expect(r.state).toBe("deleted");
+    expect(polls).toBe(0);
+    expect(revokeRow(s, inst.id).directory_revoke).toBe("skipped");
+    expect(p.notes).toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+    expect(DIRECTORY_REVOKE_SKIPPED_NOTE).toMatch(
+      /^the Google grant stays live; revoke it in the customer's Google Admin console: Security > Access and data control > API controls > /,
+    );
+    const row = s
+      .db()
+      .prepare(
+        "SELECT detail FROM hosted_audit WHERE install_id = ? AND action = 'delete.revoke_skipped'",
+      )
+      .get(inst.id) as { detail: string };
+    expect(JSON.parse(row.detail)).toEqual({
+      reason: "customer Google tenant closed",
+    });
+  });
+
+  it("a rerun with skipDirectoryRevoke while pending skips and tears down", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = null;
+    await fails(s.p.delete(inst.id, inst.id));
+    const r = keep(
+      await s
+        .mk()
+        .delete(inst.id, inst.id, { skipDirectoryRevoke: "broker down" }),
+    );
+    expect(r.state).toBe("deleted");
+    expect(revokeRow(s, inst.id).directory_revoke).toBe("skipped");
+  });
+
+  it("onPoll reports each poll; status shows the revoke state", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    let n = 0;
+    s.fake.revoker = (_db, id) => {
+      if (++n === 2) {
+        s.db()
+          .prepare(
+            "UPDATE installs SET directory_revoke_attempts = 1 WHERE id = ?",
+          )
+          .run(id);
+      }
+      if (n === 3) setRevoke(s, id, "done");
+    };
+    const polls: {
+      state: string | null;
+      attempts: number;
+      waitedMs: number;
+    }[] = [];
+    let mid: unknown;
+    await s.p.delete(inst.id, inst.id, {
+      onPoll: async (p) => {
+        polls.push(p);
+        if (polls.length === 2)
+          mid = (await s.mk().status(inst.id)).directoryRevoke;
+      },
+    });
+    expect(polls.map((p) => p.state)).toEqual(["pending", "pending", "done"]);
+    expect(polls.map((p) => p.waitedMs)).toEqual([0, POLL_MS, 2 * POLL_MS]);
+    expect(polls[1]?.attempts).toBe(1);
+    expect(mid).toEqual({ state: "pending", attempts: 1, revokedAt: null });
+  });
+});
+
+describe("H-DV fix 2: delete unmaps first and needs a fresh confirmed revoke", () => {
+  const row = (s: S, id: string) =>
+    s
+      .db()
+      .prepare(
+        "SELECT state, directory_revoke, directory_revoked_at, directory_revoke_requested_at, directory_revoke_attempts FROM installs WHERE id = ?",
+      )
+      .get(id) as {
+      state: string;
+      directory_revoke: string | null;
+      directory_revoked_at: number | null;
+      directory_revoke_requested_at: number | null;
+      directory_revoke_attempts: number;
+    };
+  const mapped = (s: S, i: { appHost: string; contentHost: string }) =>
+    [i.appHost, i.contentHost].filter((h) => s.fake.kvValues(s.hostsId).has(h));
+  const pendingAudits = (s: S, id: string) =>
+    s.audit(id).filter((x) => x === "delete.revoke_pending").length;
+
+  it("M1a: after phase 1, before any revoke resolves, no HOSTS key maps to the install", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    expect(mapped(s, inst)).toHaveLength(2);
+    const seen: string[][] = [];
+    s.fake.revoker = () => {
+      seen.push(mapped(s, inst));
+    };
+    await fails(s.p.delete(inst.id, inst.id));
+    expect(seen.length).toBeGreaterThan(0);
+    for (const m of seen) expect(m).toEqual([]);
+    expect(row(s, inst.id).directory_revoke).toBe("pending");
+  });
+
+  it("ordering: the DIRECTORY_REGISTRY entry stays until the revoke is done, and goes only after", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const inDir = () => s.fake.kvValues(s.dirId).has(registryKey(inst.id));
+    expect(inDir()).toBe(true);
+    const seen: boolean[] = [];
+    let n = 0;
+    s.fake.revoker = (_db, id) => {
+      // The broker's /revoke resolves the install through this entry.
+      seen.push(inDir());
+      if (++n === 3) setRevoke(s, id, "done");
+    };
+    expect(keep(await s.p.delete(inst.id, inst.id)).state).toBe("deleted");
+    expect(seen).toEqual([true, true, true]);
+    expect(inDir()).toBe(false);
+  });
+
+  it("ordering: a failed or still-pending revoke never removes the DIRECTORY_REGISTRY entry", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const inDir = () => s.fake.kvValues(s.dirId).has(registryKey(inst.id));
+    s.fake.revoker = null;
+    await fails(s.p.delete(inst.id, inst.id));
+    expect(row(s, inst.id).directory_revoke).toBe("pending");
+    expect(inDir()).toBe(true);
+    setRevoke(s, inst.id, "failed");
+    await fails(s.mk().delete(inst.id, inst.id));
+    expect(inDir()).toBe(true);
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("M1b: a stale done from an earlier attempt does not unlock teardown", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'done', directory_revoke_requested_at = 1000, directory_revoked_at = 500 WHERE id = ?",
+      )
+      .run(inst.id);
+    s.fake.revoker = null;
+    const e = await fails(s.mk().delete(inst.id, inst.id));
+    expect(e.message).toMatch(/still pending/);
+    const r = row(s, inst.id);
+    expect(r.directory_revoke).toBe("pending");
+    expect(r.directory_revoke_requested_at).toBeGreaterThan(1000);
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("M1b: a done newer than the attempt's start unlocks teardown, with no new attempt", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'done', directory_revoke_requested_at = 1000, directory_revoked_at = 1001 WHERE id = ?",
+      )
+      .run(inst.id);
+    s.fake.revoker = null;
+    expect(keep(await s.mk().delete(inst.id, inst.id)).state).toBe("deleted");
+    expect(pendingAudits(s, inst.id)).toBe(0);
+  });
+
+  it("M1b: a stale done seen on a poll re-dispatches (pending) and waits for a fresh one", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const states: (string | null)[] = [];
+    let n = 0;
+    s.fake.revoker = (db, id) => {
+      states.push(row(s, id).directory_revoke);
+      n++;
+      if (n === 1)
+        db.prepare(
+          "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = directory_revoke_requested_at - 1 WHERE id = ?",
+        ).run(id);
+      if (n === 3) setRevoke(s, id, "done");
+    };
+    expect(keep(await s.p.delete(inst.id, inst.id)).state).toBe("deleted");
+    // The poll after the stale done finds it re-dispatched.
+    expect(states).toEqual(["pending", "pending", "pending"]);
+  });
+
+  it("M1b: teardown refuses and re-dispatches when the done is stale at its re-read", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "done");
+    let armed = true;
+    const p = s.mk({
+      cf: s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+        const res = await s.fake.fetch(u, init);
+        const body = init?.body ? String(init.body) : "";
+        if (armed && body.includes("SELECT directory_revoke")) {
+          armed = false;
+          s.db()
+            .prepare(
+              "UPDATE installs SET directory_revoked_at = directory_revoke_requested_at - 1 WHERE id = ?",
+            )
+            .run(inst.id);
+        }
+        return res;
+      }) as typeof fetch),
+    });
+    const e = await fails(p.delete(inst.id, inst.id));
+    expect(e.message).toMatch(/not confirmed for this attempt/);
+    expect(row(s, inst.id).directory_revoke).toBe("pending");
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("M2: a rerun after failed starts a fresh attempt (attempts reset, pending)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => {
+      s.db()
+        .prepare(
+          "UPDATE installs SET directory_revoke = 'failed', directory_revoke_attempts = 5 WHERE id = ?",
+        )
+        .run(id);
+    };
+    const e = await fails(s.p.delete(inst.id, inst.id));
+    expect(e.message).toMatch(/directory revoke failed after 5 attempts/);
+    expect(e.message).toMatch(/--skip-directory-revoke/);
+    s.fake.revoker = null;
+    await fails(s.mk().delete(inst.id, inst.id));
+    expect(row(s, inst.id)).toMatchObject({
+      directory_revoke: "pending",
+      directory_revoke_attempts: 0,
+    });
+  });
+});
+
+describe("H-DV: a purged owner email ('') is never used as an address", () => {
+  const purge = (s: S, id: string) =>
+    s.db().prepare("UPDATE installs SET owner_email = '' WHERE id = ?").run(id);
+
+  it("isPurgedEmail and ownerEmailOf", () => {
+    expect(PURGED_EMAIL).toBe("");
+    expect(isPurgedEmail("")).toBe(true);
+    for (const v of ["o@x.test", null, undefined, " "])
+      expect(isPurgedEmail(v)).toBe(false);
+    expect(ownerEmailOf({ owner_email: "o@x.test" })).toBe("o@x.test");
+    expect(ownerEmailOf({ owner_email: "" })).toBeNull();
+    expect(ownerEmailOf({ owner_email: null })).toBeNull();
+  });
+
+  it.each([
+    ["upgrade", (p: WfpProvisioner, id: string) => p.upgrade(id, "0.24.0")],
+    [
+      "updateVars",
+      (p: WfpProvisioner, id: string) =>
+        p.updateVars(id, { EMAIL_DAILY_CAP: "5" }),
+    ],
+  ] as const)(
+    "%s on an install whose owner email is purged refuses before any write, and never renders it",
+    async (_n, op) => {
+      const s = setup();
+      const inst = keep(await s.p.create(input()));
+      purge(s, inst.id);
+      const ups = uploads(s.fake).length;
+      const w = s.fake.writes().length;
+      const e = await fails(op(s.mk(), inst.id));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(
+        new RegExp(`install ${inst.id}: the owner email is purged`),
+      );
+      expect(s.fake.writes().length).toBe(w);
+      expect(uploads(s.fake).length).toBe(ups);
+    },
+  );
+
+  it("a purged email never enters the redaction set (an error message stays readable)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    purge(s, inst.id);
+    const e = await fails(s.mk().upgrade(inst.id, "0.24.0"));
+    expect(e.message).not.toContain("[redacted]");
+    expect(e.message).toContain("purged");
+  });
+
+  it("status says owner (purged) or (set), never the address", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const st = await s.p.status(inst.id);
+    expect(st.owner).toBe("(set)");
+    expect(JSON.stringify(st)).not.toContain(OWNER);
+    purge(s, inst.id);
+    expect((await s.mk().status(inst.id)).owner).toBe("(purged)");
+  });
+
+  it("delete of an install whose email is purged still tears down (it needs no address)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    purge(s, inst.id);
+    expect(keep(await s.mk().delete(inst.id, inst.id)).state).toBe("deleted");
+  });
+});
+
+describe("H-DV review fixes", () => {
+  const failNext = (s: S, match: (body: string) => boolean) => {
+    let armed = true;
+    return s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(u, init);
+      const body = req.method === "POST" ? await req.clone().text() : "";
+      if (armed && match(body)) {
+        armed = false;
+        return Response.json(
+          { success: false, errors: [{ code: 7500, message: "boom" }] },
+          { status: 400 },
+        );
+      }
+      return s.fake.fetch(u, init);
+    }) as typeof fetch);
+  };
+  const revokeOf = (s: S, id: string) =>
+    (
+      s
+        .db()
+        .prepare("SELECT directory_revoke FROM installs WHERE id = ?")
+        .get(id) as {
+        directory_revoke: string | null;
+      }
+    ).directory_revoke;
+
+  it("M1: the skip reason is audited before the row says skipped; a failed audit leaves no skipped row, and a plain rerun never tears down", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = null;
+    const p = s.mk({
+      cf: failNext(s, (b) => b.includes("delete.revoke_skipped")),
+    });
+    await fails(
+      p.delete(inst.id, inst.id, { skipDirectoryRevoke: "tenant closed" }),
+    );
+    expect(revokeOf(s, inst.id)).not.toBe("skipped");
+    expect(s.audit(inst.id)).not.toContain("delete.revoke_skipped");
+    // A rerun without the flag waits for the revoke: it never tears down.
+    const e = await fails(s.mk().delete(inst.id, inst.id));
+    expect(e.message).toMatch(/still pending/);
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("M1: a skipped row with no recorded reason refuses until the flag is given again", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'skipped' WHERE id = ?",
+      )
+      .run(inst.id);
+    const e = await fails(s.mk().delete(inst.id, inst.id));
+    expect(e.message).toMatch(
+      /skipped with no recorded reason; rerun with --skip-directory-revoke/,
+    );
+    expect(s.scriptOf(inst.id)).toBeDefined();
+    const r = keep(
+      await s
+        .mk()
+        .delete(inst.id, inst.id, { skipDirectoryRevoke: "tenant closed" }),
+    );
+    expect(r.state).toBe("deleted");
+    expect(s.audit(inst.id)).toContain("delete.revoke_skipped");
+  });
+
+  it("L6: skip from failed tears down; skip on an install already revoked prints no note and audits no reason", async () => {
+    const s = setup();
+    const a = keep(await s.p.create(input("alpha")));
+    s.fake.revoker = (db, id) => {
+      db.prepare(
+        "UPDATE installs SET directory_revoke = 'failed' WHERE id = ?",
+      ).run(id);
+    };
+    await fails(s.mk().delete(a.id, a.id));
+    const p = s.mk();
+    expect(
+      keep(
+        await p.delete(a.id, a.id, {
+          skipDirectoryRevoke: "grant revoked by hand",
+        }),
+      ).state,
+    ).toBe("deleted");
+    expect(p.notes).toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+    const b = keep(await s.mk().create(input("beta")));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "done");
+    // A done with no attempt start is stale: phase 1 runs (pending), the
+    // revoke lands, so the skip is moot.
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'deleting', directory_revoke = 'done' WHERE id = ?",
+      )
+      .run(b.id);
+    const q = s.mk();
+    expect(
+      keep(await q.delete(b.id, b.id, { skipDirectoryRevoke: "not needed" }))
+        .state,
+    ).toBe("deleted");
+    expect(q.notes).not.toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+    expect(s.audit(b.id)).not.toContain("delete.revoke_skipped");
+  });
+
+  it("M2: unsupported, then skip with a reason, tears down with the audited note", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.fake.revoker = (_db, id) => setRevoke(s, id, "unsupported");
+    await fails(s.p.delete(inst.id, inst.id));
+    const p = s.mk();
+    expect(
+      keep(
+        await p.delete(inst.id, inst.id, {
+          skipDirectoryRevoke: "old release",
+        }),
+      ).state,
+    ).toBe("deleted");
+    expect(s.audit(inst.id)).toContain("delete.revoke_skipped");
+    expect(p.notes).toContain(DIRECTORY_REVOKE_SKIPPED_NOTE);
+  });
+
+  it("nit: teardown rechecks that the revoke is settled", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    // The poll sees done, then the row flips back before the teardown re-read.
+    let n = 0;
+    s.fake.revoker = (_db, id) => {
+      if (++n === 1) setRevoke(s, id, "done");
+    };
+    const p = s.mk({
+      cf: s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+        const res = await s.fake.fetch(u, init);
+        const body = init?.body ? String(init.body) : "";
+        if (body.includes("SELECT directory_revoke"))
+          s.db()
+            .prepare(
+              "UPDATE installs SET directory_revoke = 'pending' WHERE id = ?",
+            )
+            .run(inst.id);
+        return res;
+      }) as typeof fetch),
+    });
+    const e = await fails(p.delete(inst.id, inst.id));
+    expect(e.message).toMatch(/no longer settled/);
+    expect(s.scriptOf(inst.id)).toBeDefined();
+  });
+
+  it("L6: rollback on an install whose owner email is purged refuses before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    s.db()
+      .prepare("UPDATE installs SET owner_email = '' WHERE id = ?")
+      .run(inst.id);
+    const w = s.fake.writes().length;
+    const e = await fails(s.mk().rollback(inst.id));
+    expect(e.message).toMatch(/owner email is purged/);
+    expect(s.fake.writes().length).toBe(w);
+  });
+});
+
+describe("H-DV: the stored row a create writes (the scheduler's purge fixture)", () => {
+  // apps/scheduler/test/revoke.test.ts seeds install_versions and
+  // inputs_hash from this file, so its "nothing holds the email" check runs
+  // on what create really stores. Regenerate with UPDATE_FIXTURES=1.
+  const FIXTURE = new URL("./fixtures/stored-install.json", import.meta.url);
+  it("matches a fresh google create (ids normalized)", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("finqore", {
+          vars: { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test" },
+        }),
+      ),
+    );
+    const row = s.row(inst.id);
+    const st = s.stored(inst.id, "0.23.0") as {
+      metadata: string;
+      vars: string;
+    };
+    const norm = (t: string) =>
+      t
+        .split(inst.id)
+        .join("{{INSTALL_ID}}")
+        .split(String(row.d1_id))
+        .join("{{D1_ID}}")
+        .split(String(row.kv_id))
+        .join("{{KV_ID}}");
+    const got = {
+      ownerEmail: OWNER,
+      inputsHash: row.inputs_hash,
+      version: "0.23.0",
+      vars: JSON.parse(norm(st.vars)),
+      metadata: JSON.parse(norm(st.metadata)),
+    };
+    // The stored copy holds no email, by construction.
+    expect(st.metadata + st.vars).not.toContain(OWNER);
+    if (process.env.UPDATE_FIXTURES === "1")
+      writeFileSync(FIXTURE, `${JSON.stringify(got, null, 2)}\n`);
+    expect(JSON.parse(readFileSync(FIXTURE, "utf8"))).toEqual(got);
   });
 });

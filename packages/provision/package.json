@@ -19,6 +19,12 @@
       "workerd": "./src/names.ts",
       "import": "./dist/names.js",
       "default": "./dist/names.js"
+    },
+    "./versions": {
+      "types": "./dist/versions.d.ts",
+      "workerd": "./src/versions.ts",
+      "import": "./dist/versions.js",
+      "default": "./dist/versions.js"
     }
   },
   "files": [

@@ -81,6 +81,20 @@ describe("ci.yml", () => {
       expect.arrayContaining(["build", "e2e", "lint", "test", "typecheck"]),
     );
   });
+  // P3 T16 (#605): the authz matrix runs in its own job, in parallel, so the
+  // main test job's wall time drops. Required check (repo setting).
+  it("authz-matrix job runs the server authz matrix, gated and unskippable", () => {
+    const job = w.jobs["authz-matrix"];
+    expect(job).toBeDefined();
+    expect(job.if).toBeUndefined();
+    expect(job.needs).toBeUndefined();
+    expect(JSON.stringify(job)).not.toContain("continue-on-error");
+    expect(JSON.stringify(job)).not.toContain("secrets.");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const runs = job.steps.map((s: any) => s.run ?? "");
+    expect(runs).toContain("pnpm install --frozen-lockfile");
+    expect(runs).toContain("pnpm --filter @oa/server test:authz");
+  });
   it("lint job runs actionlint at a pinned version with checksum", () => {
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const step = w.jobs.lint.steps.find((s: any) =>
@@ -144,8 +158,15 @@ describe("ci.yml", () => {
     expect(ci("e2e.sh")).toContain("PLAYWRIGHT_IMAGE_VERSION");
   });
   describe("release-only fast path", () => {
-    const REQUIRED = ["lint", "typecheck", "test", "build", "e2e"];
-    const HEAVY = ["typecheck", "test", "build", "e2e"];
+    const REQUIRED = [
+      "lint",
+      "typecheck",
+      "test",
+      "build",
+      "e2e",
+      "authz-matrix",
+    ];
+    const HEAVY = ["typecheck", "test", "build", "e2e", "authz-matrix"];
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     type Step = any;
     const raw = read(".github/workflows/ci.yml");

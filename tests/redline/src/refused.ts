@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   adminCreds,
   type Cred,
@@ -131,6 +132,162 @@ export async function crossCheck<C = Cred>(
   if (!ok(ra, o.a))
     throw new Error(`A's credential failed at A (${describeRes(ra, ta)})`);
   if (!o.refuseFirst) await refused(await go(req(o.credA, o.b)), o.b);
+}
+
+/** A Backend surface probe's answer (apps/server/test/authz/surfaces.ts). */
+export type Verdict = "allow" | "deny";
+export type ProbeFetch = (req: Request) => Promise<Response>;
+
+export interface CrossProbe<C> {
+  a: Target;
+  b: Target;
+  credA: C;
+  credB: C;
+  /** True when `req` carries `cred` (its cookie or bearer token). */
+  carries: (req: Request, cred: C) => boolean;
+}
+
+/** True when a request carrying A's credential went to B's app or content origin. */
+function reachedB<C>(reqs: readonly Request[], o: CrossProbe<C>): boolean {
+  const own = new Set([new URL(o.b.app).origin, new URL(o.b.content).origin]);
+  return reqs.some((r) => {
+    try {
+      return own.has(new URL(r.url).origin) && o.carries(r, o.credA);
+    } catch {
+      return false;
+    }
+  });
+}
+
+const NULL_BODY = new Set([101, 103, 204, 205, 304]);
+const digest = (s: string) =>
+  createHash("sha256").update(s).digest("hex").slice(0, 16);
+
+/** Runs one leg, recording every response the probe got (redirect: "manual"). */
+async function leg(
+  what: string,
+  run: (fetch: ProbeFetch) => Promise<Verdict>,
+): Promise<{ verdict: Verdict; seen: Response[]; reqs: Request[] }> {
+  const seen: Response[] = [];
+  const reqs: Request[] = [];
+  // Buffered, not clone(): a probe that cancels its body would wait on the
+  // unread tee branch forever.
+  const f: ProbeFetch = async (req) => {
+    // URL and headers only: a clone would tee the body.
+    reqs.push(new Request(req.url, { headers: req.headers }));
+    const r = await send(req);
+    const buf = NULL_BODY.has(r.status) ? null : await r.arrayBuffer();
+    const copy = () =>
+      new Response(buf, {
+        status: r.status,
+        statusText: r.statusText,
+        headers: r.headers,
+      });
+    seen.push(copy());
+    return copy();
+  };
+  try {
+    return { verdict: await run(f), seen, reqs };
+  } catch (e) {
+    // A probe error quotes the body: show its hash and the last status only.
+    const last = seen.at(-1);
+    const at = last ? describeRes(last, await readBody(last)) : "no response";
+    throw new Error(
+      `${what}: the probe failed (${at}; error sha256:${digest(String((e as Error)?.message ?? e))})`,
+    );
+  }
+}
+
+/**
+ * crossCheck for a Backend surface probe (many requests, one verdict): B's
+ * own credential is allowed at B, A's at A, then A's is denied at B and
+ * every response B gave passes expectRefused. A probe that sends nothing to
+ * B proves nothing and fails.
+ */
+export async function crossProbe<C>(
+  run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
+  o: CrossProbe<C>,
+): Promise<void> {
+  const b = await leg("B's own credential at B", (f) => run(o.credB, o.b, f));
+  if (b.verdict !== "allow")
+    throw new Error("B's own credential failed at B (the probe said deny)");
+  const a = await leg("A's credential at A", (f) => run(o.credA, o.a, f));
+  if (a.verdict !== "allow")
+    throw new Error("A's credential failed at A (the probe said deny)");
+  const x = await leg("A's credential at B", (f) => run(o.credA, o.b, f));
+  if (!reachedB(x.reqs, o))
+    throw new NotRefused(
+      `${o.b.name}: no request carrying A's credential reached B`,
+    );
+  for (const r of x.seen) await expectRefused(r, o.b);
+  if (x.verdict !== "deny")
+    throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);
+}
+
+export interface CrossWrite<C, X> extends CrossProbe<C> {
+  /** A throwaway on `host`, made with host's own credential. */
+  fresh: (host: Target) => Promise<X>;
+  /** What the write would change on a throwaway, as host's own credential reads it. */
+  snapshot: (host: Target, x: X) => Promise<string>;
+  /** Deletes a throwaway; called for every one made, even on failure. */
+  dispose: (host: Target, x: X) => Promise<void>;
+}
+
+/**
+ * crossProbe for a probe that writes when allowed. Each leg gets its own
+ * throwaway on the install it targets: B's own credential is allowed on B's,
+ * A's on A's, then A's is denied on a fresh one of B's, every response B gave
+ * passes expectRefused, and that throwaway reads back unchanged.
+ */
+export async function crossWrite<C, X>(
+  run: (cred: C, host: Target, x: X, fetch: ProbeFetch) => Promise<Verdict>,
+  o: CrossWrite<C, X>,
+): Promise<void> {
+  const made: [Target, X][] = [];
+  const fresh = async (t: Target) => {
+    const x = await o.fresh(t);
+    made.push([t, x]);
+    return x;
+  };
+  const body = async () => {
+    const xb = await fresh(o.b);
+    const b = await leg("B's own credential at B", (f) =>
+      run(o.credB, o.b, xb, f),
+    );
+    if (b.verdict !== "allow")
+      throw new Error("B's own credential failed at B (the probe said deny)");
+    const xa = await fresh(o.a);
+    const a = await leg("A's credential at A", (f) => run(o.credA, o.a, xa, f));
+    if (a.verdict !== "allow")
+      throw new Error("A's credential failed at A (the probe said deny)");
+    const xx = await fresh(o.b);
+    const before = await o.snapshot(o.b, xx);
+    const x = await leg("A's credential at B", (f) => run(o.credA, o.b, xx, f));
+    if (!reachedB(x.reqs, o))
+      throw new NotRefused(
+        `${o.b.name}: no request carrying A's credential reached B`,
+      );
+    for (const r of x.seen) await expectRefused(r, o.b);
+    if (x.verdict !== "deny")
+      throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);
+    const after = await o.snapshot(o.b, xx);
+    if (after !== before)
+      throw new NotRefused(
+        `${o.b.name}: the throwaway changed (sha256:${digest(before)} -> sha256:${digest(after)})`,
+      );
+  };
+  let failed: { e: unknown } | undefined;
+  await body().catch((e) => {
+    failed = { e };
+  });
+  // Every throwaway, even on failure; a failed cleanup fails the case.
+  let bad: { e: unknown } | undefined;
+  for (const [t, x] of made)
+    await o.dispose(t, x).catch((e) => {
+      bad ??= { e };
+    });
+  if (failed) throw failed.e;
+  if (bad) throw bad.e;
 }
 
 export interface Side {

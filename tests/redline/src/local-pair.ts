@@ -210,6 +210,9 @@ function wranglerConfig(
       INSTALL_ID: i.installId,
       TEST_HOOKS: "1",
       TEST_DOMAIN: i.testDomain,
+      // As every hosted install (provision userWorkerMetadata; HOSTED_FEATURES
+      // in src/surfaces.ts).
+      FEATURES: "spaces,usage_off",
       // Sign-in (R6): codes, and Google on a client of its own (direct
       // transport; Google itself is never called). AUTH_DOMAINS stays off
       // TEST_DOMAIN so hook users sign in by code as guests.

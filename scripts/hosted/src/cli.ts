@@ -83,7 +83,9 @@ Commands:
   upgrade         --install <id> --to <version>
   rollback        --install <id>
   update-vars     --install <id> --var K=V... (the full set)
-  delete          --install <id> --confirm <the same id>
+  delete          --install <id> --confirm <the same id> [--skip-directory-revoke "<reason>"]
+                  waits (up to 10 min) for the scheduler to revoke the Google directory
+                  grant; the skip leaves the grant live (revoke it in Google Admin)
   release-lease   --install <id> --confirm <the same id> [--force]
                   --force: release a live lease; only when no operation is running
   status          --install <id>
@@ -195,6 +197,8 @@ interface Flags {
   floor?: string;
   testHooks: boolean;
   force: boolean;
+  /** delete only: skip the Google directory revoke, with this reason. */
+  skipRevoke?: string;
   vars: Record<string, string>;
 }
 
@@ -217,6 +221,7 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
         floor: { type: "string" },
         "test-hooks": { type: "boolean" },
         force: { type: "boolean" },
+        "skip-directory-revoke": { type: "string" },
         var: { type: "string", multiple: true },
       },
     });
@@ -258,6 +263,7 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
     floor: v.floor as string | undefined,
     testHooks,
     force: v.force === true,
+    skipRevoke: v["skip-directory-revoke"] as string | undefined,
     vars,
   };
   const need = (k: keyof Flags, flag: string) => {
@@ -293,6 +299,14 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
   }
   if (f.force && cmd !== "release-lease")
     throw new Refused("--force is for release-lease only");
+  if (f.skipRevoke !== undefined) {
+    if (cmd !== "delete")
+      throw new Refused("--skip-directory-revoke is for delete only");
+    if (f.skipRevoke.trim() === "")
+      throw new Refused(
+        '--skip-directory-revoke needs a reason: --skip-directory-revoke "<reason>"',
+      );
+  }
   if (cmd === "update-vars" && Object.keys(vars).length === 0)
     throw new Refused("update-vars needs the full set of --var NAME=value");
   if (cmd === "publish-release") {
@@ -738,10 +752,20 @@ async function run(
       return { ok: r.ok, data: r };
     }
     case "delete": {
-      // TODO(Manager): the delete state machine that waits for the directory
-      // broker's revoke before removing resources. Until its design lands,
-      // this is provision's current delete().
-      const r = await prov.delete(id, f.confirm as string);
+      // H-DV: provision waits for the scheduler to revoke the install's
+      // Google directory grant (or skips it with a reason), then tears down.
+      // Progress: one line per poll, at most every 60 s.
+      let last = Number.NEGATIVE_INFINITY;
+      const r = await prov.delete(id, f.confirm as string, {
+        ...(f.skipRevoke !== undefined
+          ? { skipDirectoryRevoke: f.skipRevoke }
+          : {}),
+        onPoll: (p) => {
+          if (p.waitedMs - last < 60_000) return;
+          last = p.waitedMs;
+          c.emit({ step: "directory-revoke", status: "ok", data: p });
+        },
+      });
       return { ok: true, data: r };
     }
     case "release-lease": {
