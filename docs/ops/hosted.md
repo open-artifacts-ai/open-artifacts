@@ -388,6 +388,10 @@ Fixing drift: for a `creating` install, rerun `create`; it finishes both writes.
 
 TODO (Platform): before directory sync is enabled on any env that already has brokered installs, ship a lease-held backfill op that copies each broker entry to the directory registry (one way only, never directory to broker). The repair op overwrites the directory copy from the broker entry, never the reverse.
 
+### Inventory `GET /hosts` (read-only, for the red-line suite)
+
+`apps/inventory` binds `HOSTS` (`oa-<p>-hosts`) next to `PLATFORM_DB`; the Worker only reads both (a source test forbids KV and D1 writes). Same `Authorization: Bearer <INVENTORY_KEY>` as `/installs`, and the same plain 404 for anything else. `GET /hosts` returns `{"hosts":[{"host","installId"}],"complete":true}`, sorted by host, paged through every KV cursor, capped at 10,000 keys (`complete:false` past it). `GET /hosts?host=<h>` returns `{"host","installId"}` for that exact key (nothing is normalized). `installId` is `null` for a miss or a value that isn't an install id; raw values are never returned. Fill the `HOSTS` id in `wrangler.jsonc` at deploy, as for `PLATFORM_DB`. The red-line env reads the endpoint through `REDLINE_STG_INVENTORY_URL` (variable) and `REDLINE_STG_INVENTORY_KEY` (secret).
+
 ### First-create checklist (per env)
 
 1. Create the KV namespaces `oa-<p>-broker-registry` and `oa-<p>-directory-registry` side by side, before any provision run on the env (any provision version that includes the directory copy). With the broker on, create and every lifecycle operation (status aside) refuse before any write if either is missing.
