@@ -1,7 +1,5 @@
 import {
   ANON_ID_HEADER,
-  type Capabilities,
-  CapabilitiesSchema,
   DataNameSchema,
   DataQuerySchema,
   dataDocTooLargeMessage,
@@ -26,7 +24,13 @@ import {
   canCtx,
   requireAccess,
 } from "../auth/authz.js";
-import { can, namedEvents, type PolicyAction } from "../auth/policy.js";
+import {
+  ANON_WRITES_DISABLED,
+  can,
+  capsOf,
+  namedEvents,
+  type PolicyAction,
+} from "../auth/policy.js";
 import { cappedJson, readCapped } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
@@ -92,16 +96,7 @@ function authzAtOf(c: C): number {
   return t;
 }
 
-const NO_CAPS: Capabilities = { db: false, viewer: false, storage: false };
-/** Declared capabilities; malformed JSON means none (capability_denied, never 500). */
-export function capsOf(json: string): Capabilities {
-  try {
-    const r = CapabilitiesSchema.safeParse(JSON.parse(json));
-    return r.success ? r.data : NO_CAPS;
-  } catch {
-    return NO_CAPS;
-  }
-}
+export { capsOf };
 
 function name(v: string | undefined, what: string): string {
   const r = DataNameSchema.safeParse(v);
@@ -177,7 +172,7 @@ async function anonLimit(c: C, key: string, what: string): Promise<void> {
  * (403 capability_denied: access is already proven), then the caller's actor:
  * - storage: signed-in only (401), actor "u:{id}" (the storage owner).
  * - data writes: signed-in "u:{id}"; anonymous only with allowAnonymousWrites
- *   (else 401), after RL_ANON "ip:{key}" (429; 503 if unbound outside dev),
+ *   (else 403 anon_writes_disabled), after RL_ANON "ip:{key}" (429; 503 if unbound outside dev),
  *   as "ip:{key}|{short}" (ipKey: IPv4, or the IPv6 /64).
  * - subscribe: signed-in "u:{id}"; anonymous "ip:{key}" after RL_ANON
  *   "sub:ip:{key}" (anonIpKey: IPv4, or the IPv6 /56).
@@ -230,8 +225,10 @@ async function gate(
   }
   if (kind === "read") return { artifactId, actor: "", anon: null, authzAt };
   const optIn = a.allowAnonymousWrites === 1;
-  if (kind === "storage" || (kind === "write" && !optIn))
+  if (kind === "storage")
     throw new ApiError("unauthorized", "Sign in to save changes");
+  if (kind === "write" && !optIn)
+    throw new ApiError("anon_writes_disabled", ANON_WRITES_DISABLED);
   if (kind === "anonId" && !optIn)
     throw new ApiError("unauthorized", "No anonymous id here");
   if (!allowed()) throw new ApiError("not_found", "Not found");

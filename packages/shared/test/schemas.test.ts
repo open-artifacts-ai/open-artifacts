@@ -63,6 +63,13 @@ describe("misc", () => {
   });
   it("errors", () => {
     expect(Object.keys(STATUS_FOR).sort()).toEqual([...ERROR_CODES].sort());
+    // #681: an anonymous write the artifact doesn't allow.
+    expect(STATUS_FOR.anon_writes_disabled).toBe(403);
+    expect(
+      ApiErrorSchema.safeParse({
+        error: { code: "anon_writes_disabled", message: "x" },
+      }).success,
+    ).toBe(true);
     expect(
       ApiErrorSchema.safeParse({ error: { code: "nope", message: "x" } })
         .success,

@@ -15,7 +15,7 @@ import worker from "../src/index.js";
 import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { ctx, fakeAssets } from "./assets-stub.js";
-import { api, login } from "./helpers.js";
+import { api, errOf, login } from "./helpers.js";
 
 const G = "https://open-artifacts.com";
 const CONTENT_CSP =
@@ -418,7 +418,9 @@ describe("embed-mode hints (enforcement is client-side; these are hints)", () =>
         headers: { ...ip, ...headers },
       });
     expect((await put(closed, {})).status).toBe(200);
-    expect((await put(closed, EMBED)).status).toBe(401);
+    const refused = await put(closed, EMBED);
+    expect(refused.status).toBe(403);
+    expect((await errOf(refused)).code).toBe("anon_writes_disabled");
     const open = await pubArt({
       visibility: "public",
       allowAnonymousWrites: true,

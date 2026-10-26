@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { STATUS_FOR } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 
 const doc = readFileSync(
@@ -19,5 +20,18 @@ describe("runtime-api docs", () => {
   it("documents the no_shell error", () => {
     expect(doc).toMatch(/\| `no_shell` \|/);
     expect(doc).toContain('e.code === "no_shell"');
+  });
+
+  // #681: the server refuses an anonymous write the artifact doesn't allow
+  // with 403 anon_writes_disabled (STATUS_FOR in @oa/shared).
+  it("documents anon_writes_disabled with the server's status", () => {
+    const row = doc
+      .split("\n")
+      .find((l) => l.startsWith("| `anon_writes_disabled`"));
+    expect(row).toBeDefined();
+    expect(row).toContain(`(${STATUS_FOR.anon_writes_disabled})`);
+    expect(STATUS_FOR.anon_writes_disabled).toBe(403);
+    // capability_denied no longer claims anonymous writes.
+    expect(doc).not.toMatch(/`capability_denied`.*anonymous write/);
   });
 });

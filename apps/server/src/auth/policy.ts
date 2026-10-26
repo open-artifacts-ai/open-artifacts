@@ -1,12 +1,38 @@
-import type {
-  AccessLevel,
-  CapReason,
-  Member,
-  Role,
-  SpaceKind,
-  SpaceRole,
-  Visibility,
+import {
+  type AccessLevel,
+  type CapReason,
+  type Capabilities,
+  CapabilitiesSchema,
+  type Member,
+  type Role,
+  type SpaceKind,
+  type SpaceRole,
+  type Visibility,
 } from "@oa/shared";
+
+const NO_CAPS: Capabilities = { db: false, viewer: false, storage: false };
+/** Declared capabilities; malformed JSON means none (capability_denied, never 500). */
+export function capsOf(json: string): Capabilities {
+  try {
+    const r = CapabilitiesSchema.safeParse(JSON.parse(json));
+    return r.success ? r.data : NO_CAPS;
+  } catch {
+    return NO_CAPS;
+  }
+}
+
+/** 403 anon_writes_disabled message (#681). */
+export const ANON_WRITES_DISABLED =
+  "This artifact doesn't accept writes from anonymous viewers";
+
+/**
+ * The artifact declares db but keeps allowAnonymousWrites off: an anonymous
+ * viewer who may read it is refused writes with anon_writes_disabled.
+ */
+export const anonWritesOff = (a: {
+  capabilities: string;
+  allowAnonymousWrites: number;
+}): boolean => capsOf(a.capabilities).db && a.allowAnonymousWrites !== 1;
 
 /**
  * The hosted access policy (P3): pure functions, no I/O. authz.ts gathers a

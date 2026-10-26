@@ -10,6 +10,7 @@ export const ERROR_CODES = [
   "rate_limited",
   "quota_exceeded",
   "capability_denied",
+  "anon_writes_disabled",
   "internal",
   // Hosted M1 (packages/shared/HOSTED_CONTRACT.md).
   "space_forbidden",
@@ -51,6 +52,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   rate_limited: 429,
   quota_exceeded: 503,
   capability_denied: 403,
+  /** An anonymous data write on a public artifact (db declared) whose allowAnonymousWrites is off. */
+  anon_writes_disabled: 403,
   internal: 500,
   /** Publish or move into a space the caller may not publish to (also capped callers creating). */
   space_forbidden: 403,

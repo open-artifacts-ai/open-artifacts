@@ -204,7 +204,7 @@ describe("data routes", () => {
 });
 
 describe("anonymous access", () => {
-  it("reads a public artifact; writes → 401 unless allowAnonymousWrites", async () => {
+  it("reads a public artifact; writes → 403 anon_writes_disabled unless allowAnonymousWrites", async () => {
     const id = await pub({ visibility: "public" });
     await put(id, owner, "a", { v: 1 });
     const g = await anon(R.dataCollection(id, "c"));
@@ -214,10 +214,34 @@ describe("anonymous access", () => {
     );
     expect((await anon(R.dataDoc(id, "c", "a"))).status).toBe(200);
     const w = await put(id, null, "b", 1);
+    expect(w.status).toBe(403);
+    expect((await errOf(w)).code).toBe("anon_writes_disabled");
+    for (const method of ["PATCH", "DELETE"]) {
+      const r = await anon(R.dataDoc(id, "c", "a"), {
+        method,
+        body: method === "PATCH" ? { v: 2 } : undefined,
+      });
+      expect(r.status, method).toBe(403);
+      expect((await errOf(r)).code, method).toBe("anon_writes_disabled");
+    }
+  });
+
+  it("other anonymous refusals keep their codes", async () => {
+    // No db declared: still 401 unauthorized, not anon_writes_disabled.
+    const noDb = await pub({
+      visibility: "public",
+      capabilities: { db: false, viewer: true, storage: true },
+    });
+    const w = await put(noDb, null, "a", 1);
     expect(w.status).toBe(401);
     expect((await errOf(w)).code).toBe("unauthorized");
-    const del = await anon(R.dataDoc(id, "c", "a"), { method: "DELETE" });
-    expect(del.status).toBe(401);
+    // Storage is signed-in only, whatever allowAnonymousWrites says.
+    for (const allowAnonymousWrites of [false, true]) {
+      const id = await pub({ visibility: "public", allowAnonymousWrites });
+      const s = await anon(R.storageKey(id, "k"), { method: "PUT", body: 1 });
+      expect(s.status).toBe(401);
+      expect((await errOf(s)).code).toBe("unauthorized");
+    }
   });
 
   it("private artifact → 404 for anonymous reads and writes", async () => {
@@ -575,7 +599,7 @@ describe("fix round 1", () => {
       { ...env, RL_ANON: undefined, ENVIRONMENT: "production" } as never,
       ctx,
     );
-    expect(w.status).toBe(401); // allowAnonymousWrites is off: 401 before the limiter
+    expect(w.status).toBe(403); // allowAnonymousWrites is off: anon_writes_disabled before the limiter
   });
 
   const closed = async (ws: WebSocket) =>
