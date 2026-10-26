@@ -2918,9 +2918,11 @@ describe("H-T4b round 1", () => {
       const pkg = JSON.parse(
         readFileSync(new URL("../package.json", import.meta.url), "utf8"),
       );
-      // "./names" is the Worker-safe entry (no node:*, no gates) the dispatch
-      // Worker bundles; nothing else is reachable by subpath.
-      expect(Object.keys(pkg.exports)).toEqual([".", "./names"]);
+      // "./names" and "./versions" (H-DV: the scheduler's version order) are
+      // the Worker-safe entries (no node:*, no gates); nothing else is
+      // reachable by subpath.
+      expect(Object.keys(pkg.exports)).toEqual([".", "./names", "./versions"]);
+      expect(pkg.exports["./versions"].import).toBe("./dist/versions.js");
       expect(pkg.exports["./names"].import).toBe("./dist/names.js");
     });
 
@@ -3451,6 +3453,10 @@ describe("platform D1 migration (decisions 10, M1, M3)", () => {
       "row_version",
       "session_cut_base",
       "session_cut_armed",
+      // 0005 (H-DV): the directory revoke a delete waits for.
+      "directory_revoke",
+      "directory_revoked_at",
+      "directory_revoke_attempts",
     ]);
   });
 
@@ -3460,13 +3466,17 @@ describe("platform D1 migration (decisions 10, M1, M3)", () => {
     "content_host",
     "rl_ns",
     "state",
-    "owner_email",
     "created_at",
     "updated_at",
     "inputs_hash",
   ])("installs.%s is NOT NULL", (col) => {
     const d = db();
     expect(() => ins(d, row({ [col]: null }))).toThrow(/NOT NULL/);
+  });
+
+  it("installs.owner_email is nullable since 0005 (the 30-day purge of deleted installs)", () => {
+    const d = db();
+    ins(d, row({ owner_email: null }));
   });
 
   it.each([
