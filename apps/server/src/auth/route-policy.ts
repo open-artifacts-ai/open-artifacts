@@ -40,7 +40,6 @@ export function mw<T extends object>(handler: T): T {
 export const isMiddleware = (handler: object): boolean =>
   MIDDLEWARE.has(handler);
 
-
 type Target = { method: string; path: string; index: number };
 
 /**

@@ -14,8 +14,8 @@ import {
   needsCookie,
   ORG_SURFACES,
   type OrgTarget,
-  PUBLIC_ROUTES,
   type Cred as ProbeCred,
+  PUBLIC_ROUTES,
   SPACE_SURFACES,
   type SpaceTarget,
   SURFACES,
@@ -245,7 +245,10 @@ export function viaTarget(t: Target, f: ProbeFetch): ProbeFetch {
         u.origin !== to.origin
       )
         return f(
-          new Request(`${to.origin}${u.pathname}${u.search}`, req as RequestInit),
+          new Request(
+            `${to.origin}${u.pathname}${u.search}`,
+            req as RequestInit,
+          ),
         );
     }
     return f(req);

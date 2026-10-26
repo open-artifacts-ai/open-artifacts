@@ -58,12 +58,16 @@ describe("surface probes (cross-install)", () => {
     it(c.name, async (ctx) => {
       if (c.skip) return proof(ctx, c.skip.level, c.skip.reason);
       const { run, variant } = c;
-      if (!run || !variant) throw new Error("a runnable case needs run and variant");
-      await crossProbe((cred, t, f) => run(cred, t, world(t), viaTarget(t, f)), {
-        a: T.a,
-        b: T.b,
-        credA: probeCred(A, variant),
-        credB: probeCred(B, variant),
-      });
+      if (!run || !variant)
+        throw new Error("a runnable case needs run and variant");
+      await crossProbe(
+        (cred, t, f) => run(cred, t, world(t), viaTarget(t, f)),
+        {
+          a: T.a,
+          b: T.b,
+          credA: probeCred(A, variant),
+          credB: probeCred(B, variant),
+        },
+      );
     });
 });
