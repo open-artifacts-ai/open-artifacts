@@ -14,11 +14,18 @@
 // - Output: one JSON line per step, redacted; no secret, PAT or key is printed.
 import { execFile as execFileCb, spawn } from "node:child_process";
 import {
-  lstatSync,
+  chmodSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,7 +86,8 @@ Commands:
 Flags:
   --var K=V       repeatable; checked by provision's var allowlist. AUTH_PROVIDERS with
                   google turns the sign-in broker on for the install.
-Token: keychain item oa-hosted-<env>. CI (staging only): a 0600 file at OA_HOSTED_TOKEN_FILE.
+Token: keychain item oa-hosted-<env> (account open-artifacts). CI (staging only): a 0600 file at OA_HOSTED_TOKEN_FILE.
+Exit 3: an AUDIT GAP (the after-row failed twice; recorded under ~/.config/oa-hosted/pending-audit).
 Env: CLOUDFLARE_ACCOUNT_ID (the hosted account id). Output: one JSON line per step.`;
 
 /** The tenant domain pair per env: provision's table, never a flag. */
@@ -97,6 +105,30 @@ export interface FileInfo {
   isFile: boolean;
 }
 
+export interface OpenedFile {
+  /** fstat of the opened fd. */
+  info: FileInfo;
+  /** Reads that same fd, so a swap of the path after the open is not seen. */
+  read: () => Uint8Array;
+  close: () => void;
+}
+
+/** O_NOFOLLOW: a symlink at `path` fails the open (ELOOP); nothing is read by path. */
+export function openNoFollow(path: string): OpenedFile {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const st = fstatSync(fd);
+    return {
+      info: { mode: st.mode, uid: st.uid, isFile: st.isFile() },
+      read: () => new Uint8Array(readFileSync(fd)),
+      close: () => closeSync(fd),
+    };
+  } catch (e) {
+    closeSync(fd);
+    throw e;
+  }
+}
+
 export interface Deps {
   out: (line: string) => void;
   env: Record<string, string | undefined>;
@@ -108,8 +140,10 @@ export interface Deps {
     args: string[],
     o?: { input?: string },
   ) => Promise<string>;
-  /** lstat (a symlink is not a file). */
-  stat: (path: string) => FileInfo | null;
+  /** stderr: only the AUDIT GAP line. */
+  err: (line: string) => void;
+  /** The token file: opened with O_NOFOLLOW, then fstat and read on that fd. */
+  openNoFollow: (path: string) => OpenedFile;
   readFile: (path: string) => Uint8Array;
   tempDir: () => string;
   listDir: (dir: string) => string[];
@@ -127,6 +161,8 @@ class Refused extends Error {}
 
 /** Never a PATH lookup: node_modules/.bin comes first under pnpm. */
 const SECURITY = "/usr/bin/security";
+/** The account every oa-hosted keychain item carries (reads and writes). */
+const KEYCHAIN_ACCOUNT = "open-artifacts";
 
 const PAT_RE = /oa_pat_[1-9A-HJ-NP-Za-km-z]+/g;
 const KEY_CHARS = /^[A-Za-z0-9._-]+$/;
@@ -266,14 +302,29 @@ async function readToken(d: Deps, env: Env): Promise<string> {
   }
   let token: string;
   if (file !== undefined) {
-    const st = d.stat(file);
-    if (!st?.isFile)
-      throw new Refused("OA_HOSTED_TOKEN_FILE is not a regular file");
-    if ((st.mode & 0o777) !== 0o600)
-      throw new Refused("OA_HOSTED_TOKEN_FILE must be mode 0600");
-    if (st.uid !== d.uid)
-      throw new Refused("OA_HOSTED_TOKEN_FILE must be owned by this user");
-    token = new TextDecoder().decode(d.readFile(file)).trim();
+    let o: OpenedFile;
+    try {
+      o = d.openNoFollow(file);
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      throw new Refused(
+        code === "ELOOP"
+          ? "OA_HOSTED_TOKEN_FILE is a symlink"
+          : `OA_HOSTED_TOKEN_FILE can't be opened (${code ?? "error"})`,
+      );
+    }
+    try {
+      const st = o.info;
+      if (!st.isFile)
+        throw new Refused("OA_HOSTED_TOKEN_FILE is not a regular file");
+      if ((st.mode & 0o777) !== 0o600)
+        throw new Refused("OA_HOSTED_TOKEN_FILE must be mode 0600");
+      if (st.uid !== d.uid)
+        throw new Refused("OA_HOSTED_TOKEN_FILE must be owned by this user");
+      token = new TextDecoder().decode(o.read()).trim();
+    } finally {
+      o.close();
+    }
   } else {
     if (inCi(d.env))
       throw new Refused("CI has no keychain; set OA_HOSTED_TOKEN_FILE");
@@ -281,9 +332,11 @@ async function readToken(d: Deps, env: Env): Promise<string> {
       token = (
         await d.execFile(SECURITY, [
           "find-generic-password",
-          "-w",
+          "-a",
+          KEYCHAIN_ACCOUNT,
           "-s",
           keychainItem(env),
+          "-w",
         ])
       ).trim();
     } catch {
@@ -302,9 +355,11 @@ async function readTurnstile(d: Deps, env: Env): Promise<TurnstileKeys | null> {
     raw = (
       await d.execFile(SECURITY, [
         "find-generic-password",
-        "-w",
+        "-a",
+        KEYCHAIN_ACCOUNT,
         "-s",
         turnstileItem(env),
+        "-w",
       ])
     ).trim();
   } catch {
@@ -325,7 +380,7 @@ async function writeTurnstile(d: Deps, env: Env, k: TurnstileKeys) {
   if (!KEY_CHARS.test(k.sitekey) || !KEY_CHARS.test(k.secret))
     throw new Error("the Turnstile keys have unexpected characters");
   await d.execFile(SECURITY, ["-i"], {
-    input: `add-generic-password -U -a oa-hosted -s ${turnstileItem(env)} -w ${k.sitekey}:${k.secret}\n`,
+    input: `add-generic-password -U -a ${KEYCHAIN_ACCOUNT} -s ${turnstileItem(env)} -w ${k.sitekey}:${k.secret}\n`,
   });
   // `security -i` can exit 0 when the command inside it failed (a locked
   // keychain, a denied prompt): read the item back.
@@ -448,6 +503,7 @@ export async function main(argv: string[], d: Deps): Promise<number> {
     if (!id) throw new Refused(`platform D1 ${db} not found`);
     audit = new PlatformDb(cf, { id, name: db }, env, d.now ?? Date.now);
     startedAt = (d.now ?? Date.now)();
+    await recoverGaps(d, env, subject, audit, emit);
     await audit.auditAs(actor, subject, `cli.${cmd}.start`, { cmd });
     emit({ step: "audit", status: "ok", message: "before row written" });
   } catch (e) {
@@ -474,21 +530,82 @@ export async function main(argv: string[], d: Deps): Promise<number> {
       if (row && (row.created_at ?? 0) >= startedAt) after = row.id;
     }
   }
+  const action = `cli.${cmd}.${code === 0 ? "done" : "failed"}`;
+  const write = () => audit.auditAs(actor, after, action, { cmd, exit: code });
   try {
-    await audit.auditAs(
-      actor,
-      after,
-      `cli.${cmd}.${code === 0 ? "done" : "failed"}`,
-      {
-        cmd,
-        exit: code,
-      },
-    );
+    await write().catch(write);
     emit({ step: "audit", status: "ok", message: "after row written" });
   } catch (e) {
-    return fail("audit", e);
+    fail("audit", e);
+    d.err(`AUDIT GAP: ${cmd} ${after} took effect, after-row not written`);
+    recordGap(d, { env, install: after, action, cmd, exit: code, actor });
+    return AUDIT_GAP_EXIT;
   }
   return code;
+}
+
+/** Exit code of a command whose after-row could not be written. */
+export const AUDIT_GAP_EXIT = 3;
+
+interface Gap {
+  env: Env;
+  install: string;
+  action: string;
+  cmd: string;
+  exit: number;
+  actor: string;
+  at?: number;
+}
+
+/**
+ * Audit gaps (an after-row that failed twice): one 0600 JSON file each under
+ * ~/.config/oa-hosted/pending-audit (0700), named <env>-<install>-<at>.json.
+ * No secret: env, install id, action, command, exit code and actor only.
+ */
+const gapDir = (d: Deps) =>
+  join(d.home, ".config", "oa-hosted", "pending-audit");
+
+function recordGap(d: Deps, g: Gap): void {
+  try {
+    const dir = gapDir(d);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
+    const at = (d.now ?? Date.now)();
+    writeFileSync(
+      join(dir, `${g.env}-${g.install}-${at}.json`),
+      JSON.stringify({ ...g, at }),
+      { mode: 0o600, flag: "wx" },
+    );
+  } catch {
+    d.err("AUDIT GAP: could not record it locally either; add the row by hand");
+  }
+}
+
+/** Before a command's own start row: the after-rows its install still owes. */
+async function recoverGaps(
+  d: Deps,
+  env: Env,
+  install: string,
+  audit: PlatformDb,
+  emit: (l: Record<string, unknown>) => void,
+): Promise<void> {
+  const dir = gapDir(d);
+  if (!existsSync(dir)) return;
+  const prefix = `${env}-${install}-`;
+  for (const f of readdirSync(dir)
+    .filter((n) => n.startsWith(prefix))
+    .sort()) {
+    const g = JSON.parse(readFileSync(join(dir, f), "utf8")) as Gap;
+    if (g.env !== env || g.install !== install) continue;
+    await audit.auditAs(g.actor, g.install, g.action, {
+      cmd: g.cmd,
+      exit: g.exit,
+      recovered: 1,
+      at: g.at ?? 0,
+    });
+    rmSync(join(dir, f), { force: true });
+    emit({ step: "audit", status: "ok", message: `recovered ${g.action}` });
+  }
 }
 
 /**
@@ -666,14 +783,8 @@ export function realDeps(): Deps {
         );
         p.stdin.end(o.input);
       }),
-    stat: (p) => {
-      try {
-        const s = lstatSync(p);
-        return { mode: s.mode, uid: s.uid, isFile: s.isFile() };
-      } catch {
-        return null;
-      }
-    },
+    err: (l) => process.stderr.write(`${l}\n`),
+    openNoFollow,
     readFile: (p) => new Uint8Array(readFileSync(p)),
     tempDir: () => mkdtempSync(join(tmpdir(), "oa-hosted-")),
     listDir: (dir) => readdirSync(dir),
