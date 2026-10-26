@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.60.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.59.1...v0.60.0) (2026-10-26)
+
+
+### Features
+
+* **provision:** red-line installs get Turnstile's always-pass test pair; nothing else may ([#676](https://github.com/open-artifacts-ai/open-artifacts/issues/676)) ([b8d3014](https://github.com/open-artifacts-ai/open-artifacts/commit/b8d30144cb128afd5f2a4b07d5bec335eac5de47))
+* **runtime:** subscribe says when live updates are paused (offline) ([#688](https://github.com/open-artifacts-ai/open-artifacts/issues/688)) ([1d9fcea](https://github.com/open-artifacts-ai/open-artifacts/commit/1d9fceaf743cb25004863755f7648ca52546fcc9))
+* **server:** test builds accept Turnstile's test-key answer on live-hook installs only ([#677](https://github.com/open-artifacts-ai/open-artifacts/issues/677)) ([22d06d7](https://github.com/open-artifacts-ai/open-artifacts/commit/22d06d710878eaed9e8709db781bb597a83ed407))
+
+
+### Bug Fixes
+
+* **hosted:** upgrade and rollback read the env's Turnstile keys ([#683](https://github.com/open-artifacts-ai/open-artifacts/issues/683)) ([9cd19f7](https://github.com/open-artifacts-ai/open-artifacts/commit/9cd19f72420409010905bf510e31b85e13a95a34))
+* **provision:** hosted assets upload with their Content-Type ([#678](https://github.com/open-artifacts-ai/open-artifacts/issues/678)) ([d505d71](https://github.com/open-artifacts-ai/open-artifacts/commit/d505d71049194e5c0e2a99f9f29ac2bcb608949b))
+* **runtime:** a valid anon-id token doesn't spend the per-IP limit ([#685](https://github.com/open-artifacts-ai/open-artifacts/issues/685)) ([22f31a3](https://github.com/open-artifacts-ai/open-artifacts/commit/22f31a3fa54b811c9df53a8a94ee04e665220d36))
+* **server:** /__oa/* is a JSON 404 on the app host, never the SPA shell ([#674](https://github.com/open-artifacts-ai/open-artifacts/issues/674)) ([a3283ab](https://github.com/open-artifacts-ai/open-artifacts/commit/a3283ab33723f2bef1be22aa00c010a6d3b4c561))
+* **viewer:** tabs opened at once keep one anonymous id; demos handle refused writes ([#686](https://github.com/open-artifacts-ai/open-artifacts/issues/686)) ([fe30a5c](https://github.com/open-artifacts-ai/open-artifacts/commit/fe30a5cc328542aa5dac8c0e5744d8c7271d9bf8))
+
 ## [0.59.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.59.0...v0.59.1) (2026-10-26)
 
 
