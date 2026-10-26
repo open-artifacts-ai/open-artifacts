@@ -1,0 +1,71 @@
+# The red-line suite (P5) against the staging test installs rl-a and rl-b, on
+# demand. Secrets come only from the redline-staging Environment (main only,
+# no admin bypass), are written as 0600 files under RUNNER_TEMP in one step,
+# and reach the suite by path (REDLINE_TARGETS.secretsDir), never as env.
+# Cases that need prod credentials report not-applicable, never a pass.
+name: redline-staging
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: redline
+  cancel-in-progress: false
+
+jobs:
+  redline:
+    runs-on: ubuntu-latest
+    environment: redline-staging
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - run: pnpm install --frozen-lockfile
+      - name: Write the suite's secrets as 0600 files
+        env:
+          RL_A_PAT: ${{ secrets.REDLINE_RL_A_PAT }}
+          RL_A_HOOK_KEY: ${{ secrets.REDLINE_RL_A_HOOK_KEY }}
+          RL_B_PAT: ${{ secrets.REDLINE_RL_B_PAT }}
+          RL_B_HOOK_KEY: ${{ secrets.REDLINE_RL_B_HOOK_KEY }}
+          STG_INVENTORY_KEY: ${{ secrets.REDLINE_STG_INVENTORY_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          d="$RUNNER_TEMP/redline-secrets"
+          mkdir -p "$d"
+          printf '%s' "$RL_A_PAT" > "$d/REDLINE_RL_A_PAT"
+          printf '%s' "$RL_A_HOOK_KEY" > "$d/REDLINE_RL_A_HOOK_KEY"
+          printf '%s' "$RL_B_PAT" > "$d/REDLINE_RL_B_PAT"
+          printf '%s' "$RL_B_HOOK_KEY" > "$d/REDLINE_RL_B_HOOK_KEY"
+          printf '%s' "$STG_INVENTORY_KEY" > "$d/REDLINE_STG_INVENTORY_KEY"
+          for f in "$d"/*; do test -s "$f" || { echo "empty secret file: ${f##*/}"; exit 1; }; done
+      - name: Run the suite
+        env:
+          REDLINE_TARGETS_BASE: ${{ vars.REDLINE_TARGETS }}
+          REDLINE_STG_INVENTORY_URL: ${{ vars.REDLINE_STG_INVENTORY_URL }}
+          REDLINE_DELETED_HOSTS: ${{ vars.REDLINE_DELETED_HOSTS }}
+        run: |
+          set -euo pipefail
+          REDLINE_TARGETS=$(jq -c --arg d "$RUNNER_TEMP/redline-secrets" '. + {secretsDir: $d}' <<< "$REDLINE_TARGETS_BASE")
+          export REDLINE_TARGETS
+          export REDLINE_REPORT="$RUNNER_TEMP/redline-report/report.json"
+          mkdir -p "$RUNNER_TEMP/redline-report"
+          pnpm --filter @oa/provision build
+          pnpm --filter @oa/redline live
+      - name: Remove the secret files
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/redline-secrets"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: redline-report
+          path: ${{ runner.temp }}/redline-report
+          if-no-files-found: warn
