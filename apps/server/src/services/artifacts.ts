@@ -5,6 +5,7 @@ import {
   type ArtifactPatch,
   type ArtifactPatchResult,
   type ArtifactSummary,
+  anonWritesWarning,
   artifactCan,
   type Format,
   isId,
@@ -135,6 +136,8 @@ export async function publish(
   let create = true;
   let reserved = false;
   let capabilities = CAPS;
+  /** An existing artifact's sharing before this publish (for `warning`). */
+  let prior = { visibility: "", allowAnonymousWrites: false };
   /** Sharing fields changed on an existing artifact: live sockets must reconnect. */
   let accessChanged = false;
   /** A visibility change on an existing artifact: audited in the batch. */
@@ -194,6 +197,10 @@ export async function publish(
           ],
         };
       capabilities = { ...CAPS, ...(JSON.parse(a.capabilities) as object) };
+      prior = {
+        visibility: a.visibility,
+        allowAnonymousWrites: a.allowAnonymousWrites === 1,
+      };
       if (input.visibility !== undefined && input.visibility !== a.visibility)
         visAudit = visibilityAudit(env, user, id, a, input.visibility);
       accessChanged =
@@ -414,7 +421,18 @@ export async function publish(
   // may have lost access never sees this version; reconnects get hello.
   if (accessChanged) await closeRuntimeSockets(env, [id], "access changed");
   await enqueueIndex(env, id, version, true, versionEvent(user, agent, now));
-  return { id, version, url: appOrigin(env) + viewerPath(id) };
+  const warning = anonWritesWarning({
+    visibility: visibility ?? prior.visibility,
+    capabilities: JSON.parse(caps) as { db: boolean },
+    allowAnonymousWrites:
+      input.allowAnonymousWrites ?? prior.allowAnonymousWrites,
+  });
+  return {
+    id,
+    version,
+    url: appOrigin(env) + viewerPath(id),
+    ...(warning ? { warning } : {}),
+  };
 }
 
 const notFound = () => new ApiError("not_found", "Not found");
@@ -1115,18 +1133,6 @@ function visibilityAudit(
   );
 }
 
-/** #681: making a db artifact public while anonymous writes stay off. */
-export const ANON_WRITES_WARNING =
-  "Anonymous visitors can read this artifact, but their writes fail with anon_writes_disabled because allowAnonymousWrites is false. Publish a new version with allowAnonymousWrites: true if they should write.";
-
-/** `warning` when `a` is public, declares db and keeps anonymous writes off. */
-export const withAnonWritesWarning = (
-  a: ArtifactSummary,
-): ArtifactPatchResult =>
-  a.visibility === "public" && a.capabilities.db && !a.allowAnonymousWrites
-    ? { ...a, warning: ANON_WRITES_WARNING }
-    : a;
-
 /**
  * title/description: editor+; visibility/capabilities/allowAnonymousWrites:
  * owner only. Setting visibility "public" may add `warning` (#681).
@@ -1195,7 +1201,9 @@ export async function patch(
   )
     await closeRuntimeSockets(env, [id], "access changed", ctx);
   const out = await getSummary(env, asUser(user), id);
-  return p.visibility === "public" ? withAnonWritesWarning(out) : out;
+  const warning =
+    p.visibility === "public" ? anonWritesWarning(out) : undefined;
+  return warning ? { ...out, warning } : out;
 }
 
 /** Owner only (others 404). Sets deleted_at and drops the search row. */

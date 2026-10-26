@@ -91,5 +91,26 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   break_glass_required: 401,
 };
 
+/**
+ * #681: the one sentence MCP instructions and the publish_artifact /
+ * set_visibility descriptions use for anonymous writes.
+ */
+export const ANON_WRITES_NOTE =
+  "On a public artifact that declares db, anonymous visitors' writes fail with anon_writes_disabled unless allowAnonymousWrites is true.";
+
+/** #681: publish / set_visibility / PATCH result `warning`; the change still applies. */
+export const ANON_WRITES_WARNING =
+  "Anonymous visitors can read this artifact, but their writes fail with anon_writes_disabled because allowAnonymousWrites is false. Publish a new version with allowAnonymousWrites: true if they should write.";
+
+/** ANON_WRITES_WARNING when the artifact is public, declares db and keeps anonymous writes off. */
+export const anonWritesWarning = (a: {
+  visibility: string;
+  capabilities: { db: boolean };
+  allowAnonymousWrites: boolean;
+}): string | undefined =>
+  a.visibility === "public" && a.capabilities.db && !a.allowAnonymousWrites
+    ? ANON_WRITES_WARNING
+    : undefined;
+
 export const QUOTA_MESSAGE =
   "Daily free-plan limit reached; resets at 00:00 UTC";

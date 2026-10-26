@@ -182,6 +182,8 @@ export const PublishResultSchema = z.object({
   id: z.string(),
   version: z.number().int(),
   url: z.string().url(),
+  /** Set when the artifact ends up public with db declared and allowAnonymousWrites off (#681). */
+  warning: z.string().optional(),
 });
 export type PublishResult = z.infer<typeof PublishResultSchema>;
 

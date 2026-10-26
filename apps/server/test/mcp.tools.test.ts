@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import type { Client } from "@modelcontextprotocol/client";
 import {
+  ANON_WRITES_NOTE,
+  ANON_WRITES_WARNING,
   INLINE_TOO_LARGE_MESSAGE,
   LIMITS,
   newId,
@@ -322,11 +324,37 @@ describe("MCP tools over PAT", () => {
       text("publish_artifact"),
       text("set_visibility"),
     ]) {
-      expect(s).toMatch(
-        /anon_writes_disabled unless allowAnonymousWrites is true/,
-      );
+      expect(s).toContain(ANON_WRITES_NOTE);
       expect(s).not.toMatch(/—/);
     }
+    expect(ANON_WRITES_NOTE).toMatch(
+      /anon_writes_disabled unless allowAnonymousWrites is true/,
+    );
+  });
+
+  // #681: publish_artifact carries the same warning as set_visibility.
+  it.each([
+    ["public, db, anonymous writes off", "public", true, false, true],
+    ["public, db, anonymous writes on", "public", true, true, false],
+    ["public, no db", "public", false, false, false],
+    ["private, db, anonymous writes off", "private", true, false, false],
+  ] as const)("publish_artifact warning: %s", async (_, visibility, db, allowAnonymousWrites, warns) => {
+    const html = { format: "html", content: "<p>hi</p>" };
+    const r = await tool(client, "publish_artifact", {
+      title: `pubwarn ${tag}`,
+      ...html,
+      visibility,
+      capabilities: { db },
+      allowAnonymousWrites,
+    });
+    const out = sc<{ id: string; warning?: string }>(r);
+    expect(out.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
+    if (warns) expect(textOf(r)).toContain(ANON_WRITES_WARNING);
+    // A new version that changes nothing keeps the artifact's settings.
+    const v2 = sc<{ warning?: string }>(
+      await tool(client, "publish_artifact", { id: out.id, ...html }),
+    );
+    expect(v2.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
   });
 
   it("no tool result or description carries a raw view URL (#292)", async () => {

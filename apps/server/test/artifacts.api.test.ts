@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { normalizeEmail } from "@oa/auth-core";
 import {
+  ANON_WRITES_WARNING,
   ArtifactPatchResultSchema,
   type ArtifactSummary,
   ArtifactSummarySchema,
@@ -275,6 +276,28 @@ describe("summary, patch, delete", () => {
     expect(body.visibility).toBe(visibility);
     if (warns) expect(body.warning).toMatch(/allowAnonymousWrites/);
     else expect(body.warning).toBeUndefined();
+  });
+
+  it.each([
+    ["public, db, anonymous writes off", "public", true, false, true],
+    ["public, db, anonymous writes on", "public", true, true, false],
+    ["public, no db", "public", false, false, false],
+    ["private, db, anonymous writes off", "private", true, false, false],
+  ] as const)("POST publish warning: %s", async (_, visibility, db, allowAnonymousWrites, warns) => {
+    const r = await api(app, R.artifacts, owner.cookie, {
+      method: "POST",
+      body: {
+        title: "warn",
+        format: "html",
+        content: "<p>x</p>",
+        visibility,
+        capabilities: { db },
+        allowAnonymousWrites,
+      },
+    });
+    expect(r.status).toBe(201);
+    const body = PublishResultSchema.parse(await r.json());
+    expect(body.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
   });
 
   it("editor delete → 404; owner delete hides it; includeDeleted shows it; undelete restores", async () => {

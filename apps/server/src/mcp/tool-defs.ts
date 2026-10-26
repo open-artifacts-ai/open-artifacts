@@ -3,6 +3,7 @@
 // and the skill (scripts/emit-skill.ts). Data plus @oa/shared (built, so the
 // build scripts can load it in plain Node). Keep them vendor-neutral.
 import {
+  ANON_WRITES_NOTE,
   ArtifactDataDeleteInputSchema,
   ArtifactDataGetInputSchema,
   ArtifactDataListInputSchema,
@@ -37,7 +38,7 @@ export const TOOL_DEFS = [
       content: "# Q3\n\nRevenue is up.",
       message: "First draft",
     },
-    description: `Publish an artifact, or a new version when \`id\` is given. Pass \`content\` (one file, with \`format\`) or \`files\` (path → text, or { base64 } for binary, or { uploadId } from create_upload) plus \`entry\`. Inline content (content, text and base64 together) is limited to ${INLINE}; for more, call create_upload, PUT the bytes to its url, then pass { uploadId } in \`files\`. To create it in a shared space, pass \`spaceId\` from list_spaces (new artifacts only). On a public artifact that declares db, anonymous visitors' writes fail with anon_writes_disabled unless allowAnonymousWrites is true. Returns id, version and view URL.`,
+    description: `Publish an artifact, or a new version when \`id\` is given. Pass \`content\` (one file, with \`format\`) or \`files\` (path → text, or { base64 } for binary, or { uploadId } from create_upload) plus \`entry\`. Inline content (content, text and base64 together) is limited to ${INLINE}; for more, call create_upload, PUT the bytes to its url, then pass { uploadId } in \`files\`. To create it in a shared space, pass \`spaceId\` from list_spaces (new artifacts only). ${ANON_WRITES_NOTE} Returns id, version and view URL.`,
   },
   {
     name: "create_upload",
@@ -97,8 +98,7 @@ export const TOOL_DEFS = [
     name: "set_visibility",
     inputSchema: SetVisibilityInputSchema,
     example: { id: ID, visibility: "team" },
-    description:
-      "Set who can open an artifact: private (you and shares), team (all members) or public (anyone with the link). Owner or space manager only. On a public artifact that declares db, anonymous visitors' writes fail with anon_writes_disabled unless allowAnonymousWrites is true; the result then carries a warning.",
+    description: `Set who can open an artifact: private (you and shares), team (all members) or public (anyone with the link). Owner or space manager only. ${ANON_WRITES_NOTE}`,
   },
   {
     name: "delete_artifact",

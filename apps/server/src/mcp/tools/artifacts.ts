@@ -72,10 +72,8 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
     (input) =>
       guard(async () => {
         const r = await publish(env, user, input, t.agentNow(), t.exec, "any");
-        return ok(
-          `Published ${input.title ? `"${input.title}" ` : ""}${r.id} v${r.version}: ${r.url}`,
-          r,
-        );
+        const line = `Published ${input.title ? `"${input.title}" ` : ""}${r.id} v${r.version}: ${r.url}`;
+        return ok(r.warning ? `${line} Warning: ${r.warning}` : line, r);
       }),
   );
 

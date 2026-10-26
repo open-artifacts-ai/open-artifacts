@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { newId } from "../src/ids.js";
 import {
+  ANON_WRITES_NOTE,
+  ANON_WRITES_WARNING,
   ApiErrorSchema,
   ArtifactPatchSchema,
+  anonWritesWarning,
   CapabilitiesPatchSchema,
   DataQuerySchema,
   DisplayNameSchema,
@@ -65,6 +68,16 @@ describe("misc", () => {
     expect(Object.keys(STATUS_FOR).sort()).toEqual([...ERROR_CODES].sort());
     // #681: an anonymous write the artifact doesn't allow.
     expect(STATUS_FOR.anon_writes_disabled).toBe(403);
+    const art = (visibility: string, db: boolean, allowAnonymousWrites: boolean) =>
+      anonWritesWarning({ visibility, capabilities: { db }, allowAnonymousWrites });
+    expect(art("public", true, false)).toBe(ANON_WRITES_WARNING);
+    expect(ANON_WRITES_WARNING).toMatch(/allowAnonymousWrites/);
+    expect(art("public", true, true)).toBeUndefined();
+    expect(art("public", false, false)).toBeUndefined();
+    expect(art("private", true, false)).toBeUndefined();
+    expect(art("team", true, false)).toBeUndefined();
+    for (const s of [ANON_WRITES_NOTE, ANON_WRITES_WARNING])
+      expect(s).not.toMatch(/—/);
     expect(
       ApiErrorSchema.safeParse({
         error: { code: "anon_writes_disabled", message: "x" },
