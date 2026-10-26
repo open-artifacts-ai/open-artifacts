@@ -147,9 +147,9 @@ const read =
  * A gate-guarded write, probed read-only: the cookie without X-OA-Request.
  * Allowed → 403 csrf (no handler ran); refused → 401 or 404.
  */
-const csrf =
-  (method: string, path: (id: string) => string) =>
-  async (base: string, cred: Cred, id: string, io?: ProbeIO) => {
+const CSRF_PROBES = new WeakSet<object>();
+const csrf = (method: string, path: (id: string) => string) => {
+  const p = async (base: string, cred: Cred, id: string, io?: ProbeIO) => {
     if (!cred.cookie && cred.token)
       throw new Unexpected("the CSRF probe needs a session cookie");
     const r = await send(io, base, path(id), cred, { method, noCsrf: true });
@@ -159,6 +159,12 @@ const csrf =
       (x) => x.status === 403 && x.code === "csrf",
     );
   };
+  CSRF_PROBES.add(p);
+  return p;
+};
+/** True for a CSRF probe: it needs a session cookie (a token alone can't run it). */
+export const needsCookie = (s: Pick<Surface, "probe">): boolean =>
+  CSRF_PROBES.has(s.probe);
 
 /** A write whose request fails validation once access is proven. */
 const exact =

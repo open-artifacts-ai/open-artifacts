@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   adminCreds,
   type Cred,
@@ -113,6 +114,77 @@ export async function crossCheck(
   if (!ok(ra))
     throw new Error(`A's credential failed at A (${describeRes(ra, ta)})`);
   await expectRefused(await send(req(o.credA, o.b)), o.b);
+}
+
+/** A Backend surface probe's answer (apps/server/test/authz/surfaces.ts). */
+export type Verdict = "allow" | "deny";
+export type ProbeFetch = (req: Request) => Promise<Response>;
+
+export interface CrossProbe<C> {
+  a: Target;
+  b: Target;
+  credA: C;
+  credB: C;
+}
+
+const NULL_BODY = new Set([101, 103, 204, 205, 304]);
+const digest = (s: string) =>
+  createHash("sha256").update(s).digest("hex").slice(0, 16);
+
+/** Runs one leg, recording every response the probe got (redirect: "manual"). */
+async function leg(
+  what: string,
+  run: (fetch: ProbeFetch) => Promise<Verdict>,
+): Promise<{ verdict: Verdict; seen: Response[] }> {
+  const seen: Response[] = [];
+  // Buffered, not clone(): a probe that cancels its body would wait on the
+  // unread tee branch forever.
+  const f: ProbeFetch = async (req) => {
+    const r = await send(req);
+    const buf = NULL_BODY.has(r.status) ? null : await r.arrayBuffer();
+    const copy = () =>
+      new Response(buf, {
+        status: r.status,
+        statusText: r.statusText,
+        headers: r.headers,
+      });
+    seen.push(copy());
+    return copy();
+  };
+  try {
+    return { verdict: await run(f), seen };
+  } catch (e) {
+    // A probe error quotes the body: show its hash and the last status only.
+    const last = seen.at(-1);
+    const at = last ? describeRes(last, await readBody(last)) : "no response";
+    throw new Error(
+      `${what}: the probe failed (${at}; error sha256:${digest(String((e as Error)?.message ?? e))})`,
+    );
+  }
+}
+
+/**
+ * crossCheck for a Backend surface probe (many requests, one verdict): B's
+ * own credential is allowed at B, A's at A, then A's is denied at B and
+ * every response B gave passes expectRefused. A probe that sends nothing to
+ * B proves nothing and fails.
+ */
+export async function crossProbe<C>(
+  run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
+  o: CrossProbe<C>,
+): Promise<void> {
+  const b = await leg("B's own credential at B", (f) => run(o.credB, o.b, f));
+  if (b.verdict !== "allow")
+    throw new Error("B's own credential failed at B (the probe said deny)");
+  const a = await leg("A's credential at A", (f) => run(o.credA, o.a, f));
+  if (a.verdict !== "allow")
+    throw new Error("A's credential failed at A (the probe said deny)");
+  const x = await leg("A's credential at B", (f) => run(o.credA, o.b, f));
+  if (x.seen.length === 0)
+    throw new NotRefused(`${o.b.name}: no request reached B`);
+  for (const r of x.seen) await expectRefused(r, o.b);
+  if (x.verdict !== "deny")
+    throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);
 }
 
 export interface Side {

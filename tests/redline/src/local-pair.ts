@@ -209,6 +209,8 @@ function wranglerConfig(
       INSTALL_ID: i.installId,
       TEST_HOOKS: "1",
       TEST_DOMAIN: i.testDomain,
+      // Hosted installs always have spaces on (#634).
+      FEATURES: "spaces",
     },
   };
 }
