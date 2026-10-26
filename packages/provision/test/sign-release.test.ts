@@ -25,6 +25,7 @@ import {
   publishRelease,
   r2ReleaseReader,
 } from "../src/publish.js";
+import { r2S3Client } from "../src/r2s3.js";
 import {
   assetEntries,
   buildReleaseRecord,
@@ -420,10 +421,18 @@ describe("sign-release.ts", () => {
       fetch: fake.fetch,
       sleep: async () => {},
     });
-    await probeR2Conditionals(cf, "staging");
+    const r2 = r2S3Client({
+      accountId: fake.accountId,
+      env: "staging",
+      credentials: fake.r2Token(platformNames("staging").releases),
+      fetch: fake.fetch,
+      sleep: async () => {},
+    });
+    await probeR2Conditionals(r2, "staging");
     for (const v of ["release", "redline"] as const)
       await publishRelease({
         cf,
+        r2,
         env: "staging",
         version: "0.34.0",
         files: {

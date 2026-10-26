@@ -17,6 +17,7 @@ import {
   platformNames,
   type ReleaseReader,
   type ReleaseRecord,
+  r2S3Client,
   TEST_HOOKS_DEFINE,
 } from "@oa/provision";
 import { FakeCf } from "../../../packages/provision/test/fake-cf.ts";
@@ -131,13 +132,21 @@ export function world(
   const regId = fake.seedKv(platformNames(env).registry);
   const dirId = fake.seedKv(platformNames(env).directoryRegistry);
   fake.r2.add(platformNames(env).releases);
+  /** The env's R2 API token, scoped to its releases bucket. */
+  const r2Creds = fake.r2Token(platformNames(env).releases);
   fake.dispatch = { hostsKvId: hostsId, ns: `oa-${env}` };
   const home = mkdtempSync(join(tmpdir(), "oa-hosted-home-"));
   const lines: string[] = [];
   const errLines: string[] = [];
   const execs: { file: string; args: string[]; input?: string }[] = [];
   /** Keychain items by service name. */
-  const keychain = new Map<string, string>([[`oa-hosted-${env}`, fake.token]]);
+  const keychain = new Map<string, string>([
+    [`oa-hosted-${env}`, fake.token],
+    [
+      `oa-hosted-${env}-r2`,
+      `${r2Creds.accessKeyId}:${r2Creds.secretAccessKey}`,
+    ],
+  ]);
   const files = new Map<
     string,
     {
@@ -206,6 +215,7 @@ export function world(
       cfCalls.push({ accountId: c.accountId });
       return cfClient({ ...c, fetch: fake.fetch, sleep: async () => {} });
     },
+    r2: (c) => r2S3Client({ ...c, fetch: fake.fetch, sleep: async () => {} }),
     release: (_cf, e) => releases(e),
     fetch: fake.fetch,
     now: () => t,
@@ -222,6 +232,7 @@ export function world(
     errLines,
     execs,
     keychain,
+    r2Creds,
     files,
     cfCalls,
     home,
