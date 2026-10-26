@@ -158,7 +158,14 @@ describe("ci.yml", () => {
     expect(ci("e2e.sh")).toContain("PLAYWRIGHT_IMAGE_VERSION");
   });
   describe("release-only fast path", () => {
-    const REQUIRED = ["lint", "typecheck", "test", "build", "e2e", "authz-matrix"];
+    const REQUIRED = [
+      "lint",
+      "typecheck",
+      "test",
+      "build",
+      "e2e",
+      "authz-matrix",
+    ];
     const HEAVY = ["typecheck", "test", "build", "e2e", "authz-matrix"];
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     type Step = any;
