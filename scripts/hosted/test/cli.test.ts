@@ -1,9 +1,19 @@
 // P1 Task 8: the oa:hosted CLI against provision's in-memory Cloudflare.
 // No live call: the keychain, git and gh are stubs (world.ts).
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { cfClient } from "@oa/provision";
 import { describe, expect, it, vi } from "vitest";
-import { COMMANDS, DOMAINS, HELP, main } from "../src/cli.ts";
+import { COMMANDS, DOMAINS, HELP, main, openNoFollow } from "../src/cli.ts";
 import { ACTOR, PUB, SECURITY, signed, world } from "./world.ts";
 
 const G = vi.hoisted(() => ({
@@ -167,9 +177,11 @@ describe("token source", () => {
     expect(sec.length).toBeGreaterThan(0);
     expect(sec[0]?.args).toEqual([
       "find-generic-password",
-      "-w",
+      "-a",
+      "open-artifacts",
       "-s",
       "oa-hosted-prod",
+      "-w",
     ]);
     // CI is staging only: prod in CI is refused even with a keychain.
     const c = world({ env: "prod", ci: true });
@@ -872,5 +884,158 @@ describe("L8: a failed create's after row", () => {
         .filter((r) => r.install_id === id)
         .map((r) => r.action),
     ).toEqual(["cli.create.done"]);
+  });
+});
+
+describe("final round: token file, audit gap, keychain account", () => {
+  it("openNoFollow refuses a symlink and reads the opened file even after a swap", () => {
+    const d = mkdtempSync(join(tmpdir(), "oa-nofollow-"));
+    const real = join(d, "token");
+    writeFileSync(real, "first-token\n", { mode: 0o600 });
+    const link = join(d, "link");
+    symlinkSync(real, link);
+    expect(() => openNoFollow(link)).toThrow(/ELOOP|symbolic link/i);
+    const o = openNoFollow(real);
+    expect(o.info.isFile).toBe(true);
+    expect(o.info.mode & 0o777).toBe(0o600);
+    // Swapped after the open: the fd still reads the file that was opened.
+    writeFileSync(join(d, "other"), "swapped-in\n", { mode: 0o600 });
+    renameSync(join(d, "other"), real);
+    expect(new TextDecoder().decode(o.read())).toBe("first-token\n");
+    o.close();
+  });
+
+  it("a symlinked or 0644 token file is refused before any call", async () => {
+    for (const f of [
+      { symlink: true, info: { mode: 0o100600, uid: 501, isFile: true } },
+      { info: { mode: 0o100644, uid: 501, isFile: true } },
+    ]) {
+      const w = world({ ci: true });
+      w.files.set("/ci/token", {
+        bytes: new TextEncoder().encode(w.fake.token),
+        ...f,
+      });
+      w.deps.env.OA_HOSTED_TOKEN_FILE = "/ci/token";
+      expect(await main(CREATE(), w.deps)).toBe(1);
+      expect(lastLine(w)).toMatchObject({ step: "token", status: "error" });
+      expect(w.fake.log).toEqual([]);
+    }
+  });
+
+  /** Fails the next `n` D1 writes whose body holds `marker`. */
+  const failAudit = (w: W, marker: string, n: number) => {
+    let left = n;
+    w.deps.cf = (c) =>
+      cfClient({
+        ...c,
+        sleep: async () => {},
+        fetch: (async (u: RequestInfo | URL, init?: RequestInit) => {
+          const body = typeof init?.body === "string" ? init.body : "";
+          if (left > 0 && body.includes(marker)) {
+            left--;
+            return Response.json(
+              { success: false, errors: [{ code: 7500, message: "d1 down" }] },
+              { status: 400 },
+            );
+          }
+          return w.fake.fetch(u, init);
+        }) as typeof fetch,
+      });
+  };
+  const pendingDir = (w: W) =>
+    join(w.home, ".config", "oa-hosted", "pending-audit");
+
+  it("a failed after-row is retried once", async () => {
+    const w = world();
+    const id = await created(w);
+    failAudit(w, "cli.status.done", 1);
+    expect(
+      await main(["status", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    expect(
+      w.audit().filter((r) => r.action === "cli.status.done"),
+    ).toHaveLength(1);
+    expect(w.errLines).toEqual([]);
+  });
+
+  it("an after-row that fails twice is an AUDIT GAP on stderr, recorded locally, and the next command for that install writes it first", async () => {
+    const w = world();
+    const id = await created(w);
+    failAudit(w, "cli.status.done", 2);
+    const code = await main(
+      ["status", "--env", "staging", "--install", id],
+      w.deps,
+    );
+    expect(code).not.toBe(0);
+    expect(w.errLines).toEqual([
+      `AUDIT GAP: status ${id} took effect, after-row not written`,
+    ]);
+    const files = readdirSync(pendingDir(w));
+    expect(files).toHaveLength(1);
+    const f = join(pendingDir(w), files[0] as string);
+    expect(statSync(f).mode & 0o777).toBe(0o600);
+    expect(statSync(pendingDir(w)).mode & 0o777).toBe(0o700);
+    const text = readFileSync(f, "utf8");
+    expect(text).not.toContain(w.fake.token);
+    expect(JSON.parse(text)).toMatchObject({
+      env: "staging",
+      install: id,
+      action: "cli.status.done",
+      exit: 0,
+    });
+    // The next command for that install writes the recovery row first.
+    w.deps.cf = (c) =>
+      cfClient({ ...c, fetch: w.fake.fetch, sleep: async () => {} });
+    expect(
+      await main(["status", "--env", "staging", "--install", id], w.deps),
+    ).toBe(0);
+    // The gap run's start, its recovered after-row, then this run's pair.
+    expect(
+      w
+        .audit()
+        .slice(-4)
+        .map((r) => r.action),
+    ).toEqual([
+      "cli.status.start",
+      "cli.status.done",
+      "cli.status.start",
+      "cli.status.done",
+    ]);
+    const rec = w
+      .db()
+      .prepare(
+        "SELECT detail FROM hosted_audit WHERE install_id = ? AND action = 'cli.status.done' ORDER BY id",
+      )
+      .all(id) as { detail: string }[];
+    expect(JSON.parse(rec[0]?.detail as string)).toMatchObject({
+      recovered: 1,
+    });
+    expect(readdirSync(pendingDir(w))).toEqual([]);
+  });
+
+  it("another install's gap is left for that install", async () => {
+    const w = world();
+    const id = await created(w);
+    failAudit(w, "cli.status.done", 2);
+    await main(["status", "--env", "staging", "--install", id], w.deps);
+    w.deps.cf = (c) =>
+      cfClient({ ...c, fetch: w.fake.fetch, sleep: async () => {} });
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    expect(readdirSync(pendingDir(w))).toHaveLength(1);
+  });
+
+  it("every keychain read and write uses the account open-artifacts", async () => {
+    const w = world();
+    await created(w);
+    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    const sec = w.execs.filter((e) => e.file === SECURITY);
+    for (const e of sec)
+      if (e.args[0] === "find-generic-password")
+        expect(e.args.slice(1, 3)).toEqual(["-a", "open-artifacts"]);
+      else
+        expect(e.input).toMatch(
+          /^add-generic-password -U -a open-artifacts -s /,
+        );
+    expect(sec.some((e) => e.args[0] === "-i")).toBe(true);
   });
 });

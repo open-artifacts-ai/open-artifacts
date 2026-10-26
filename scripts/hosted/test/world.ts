@@ -66,6 +66,7 @@ export const SIGNER = generateKeyPairSync("ed25519");
 export const PUB = SIGNER.publicKey.export({ format: "jwk" }).x as string;
 
 export const SECURITY = "/usr/bin/security";
+export const KEYCHAIN_ACCOUNT = "open-artifacts";
 
 export const signed = (domain: string, env: string, v: unknown) => {
   const s = canonicalJson(v);
@@ -133,17 +134,23 @@ export function world(
   fake.dispatch = { hostsKvId: hostsId, ns: `oa-${env}` };
   const home = mkdtempSync(join(tmpdir(), "oa-hosted-home-"));
   const lines: string[] = [];
+  const errLines: string[] = [];
   const execs: { file: string; args: string[]; input?: string }[] = [];
   /** Keychain items by service name. */
   const keychain = new Map<string, string>([[`oa-hosted-${env}`, fake.token]]);
   const files = new Map<
     string,
-    { bytes: Uint8Array; info: { mode: number; uid: number; isFile: boolean } }
+    {
+      bytes: Uint8Array;
+      info: { mode: number; uid: number; isFile: boolean };
+      symlink?: boolean;
+    }
   >();
   const cfCalls: { accountId: string }[] = [];
   let t = NOW;
   const deps: Deps = {
     out: (l) => lines.push(l),
+    err: (l) => errLines.push(l),
     env: {
       CLOUDFLARE_ACCOUNT_ID: fake.accountId,
       ...(o.ci
@@ -161,20 +168,32 @@ export function world(
       execs.push({ file, args, ...(opt?.input ? { input: opt.input } : {}) });
       if (file === "git") return `${ACTOR}\n`;
       if (file === SECURITY && args[0] === "find-generic-password") {
+        // The real items carry the account open-artifacts; another misses.
+        if (
+          args[args.indexOf("-a") + 1] !== KEYCHAIN_ACCOUNT ||
+          !args.includes("-a")
+        )
+          throw new Error("security exited 44");
         const v = keychain.get(args[args.indexOf("-s") + 1] as string);
         if (v === undefined) throw new Error("security exited 44");
         return `${v}\n`;
       }
       if (file === SECURITY && args[0] === "-i") {
         if (o.keychainWriteNoop) return "";
-        const m = opt?.input?.match(/-s (\S+) -w (\S+)\n$/);
+        const m = opt?.input?.match(/-a (\S+) -s (\S+) -w (\S+)\n$/);
         if (!m) throw new Error("bad security -i input");
-        keychain.set(m[1] as string, m[2] as string);
+        if (m[1] !== KEYCHAIN_ACCOUNT) throw new Error("wrong account");
+        keychain.set(m[2] as string, m[3] as string);
         return "";
       }
       throw new Error(`unexpected exec ${file}`);
     },
-    stat: (p) => files.get(p)?.info ?? null,
+    openNoFollow: (p) => {
+      const f = files.get(p);
+      if (!f) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      if (f.symlink) throw Object.assign(new Error("ELOOP"), { code: "ELOOP" });
+      return { info: f.info, read: () => f.bytes, close: () => {} };
+    },
     readFile: (p) => {
       const f = files.get(p);
       if (!f) throw new Error(`no file ${p}`);
@@ -200,6 +219,7 @@ export function world(
     fake,
     deps,
     lines,
+    errLines,
     execs,
     keychain,
     files,
