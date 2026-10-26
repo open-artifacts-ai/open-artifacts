@@ -95,7 +95,7 @@ export interface CrossCheck {
   ok?: (r: Response) => boolean;
   /**
    * What counts as B refusing, when a refusal isn't a 401/403/404 (an OAuth
-   * 400 invalid_grant, a content-host 303 to B's viewer). Default expectRefused.
+   * 400 invalid_grant or invalid_client). Default expectRefused.
    */
   refused?: (res: Response, b: Target) => Promise<void>;
 }

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   authorizeCode,
@@ -160,8 +160,8 @@ describe("credentials", () => {
     await crossCheck(me, pair(A.cookie, B.cookie));
   });
 
-  it("A's session cookie at B: replayed with Domain stripped", async () => {
-    // The bare name=value (no attributes), under both cookie names.
+  it("A's session cookie at B: replayed under the alternate cookie name", async () => {
+    // A's value under both names (__Host-oa_session and oa_session) at B.
     const bare = (c: Cred) => (c.kind === "cookie" ? c.value : "");
     const req = (c: Cred, t: Target) =>
       new Request(`${t.app}/api/v1/me`, {
@@ -176,21 +176,30 @@ describe("credentials", () => {
     await crossCheck(req, pair(A.cookie, B.cookie));
   });
 
-  it("A's session cookie at B: on B's content host", async () => {
-    // Baselines on each app host, then A's cookie on B's content host for
-    // B's private marker (the content host reads no cookie).
-    const req = (c: Cred, t: Target) =>
-      c === A.cookie && t === T.b
-        ? new Request(
-            `${T.b.content}/p/${encodeURIComponent(B.markerId)}/v1/__view`,
-            withCred(c),
-          )
-        : me(c, t);
-    await crossCheck(req, pair(A.cookie, B.cookie));
-    await expectRefused(
-      await fetch(`${T.b.content}/api/v1/me`, withCred(A.cookie)),
-      T.b,
-    );
+  it("B's content host ignores cookies, A's included", async () => {
+    // An invariant, not a crossCheck: the content host reads no cookie, so no
+    // B cookie can succeed there to give a same-request baseline. A's cookie
+    // is live (it works at A); on B's content host, B's private marker gets
+    // the same refusal with A's cookie, B's cookie or none.
+    const live = await fetch(`${T.a.app}/api/v1/me`, withCred(A.cookie));
+    await live.body?.cancel();
+    expect(live.status).toBe(200);
+    const url = `${T.b.content}/p/${encodeURIComponent(B.markerId)}/v1/README.md`;
+    const seen: string[] = [];
+    for (const c of [A.cookie, B.cookie, { kind: "none" } as Cred]) {
+      const res = await fetch(url, withCred(c));
+      const body = await readBody(res.clone());
+      seen.push(
+        `${res.status}:${createHash("sha256").update(body).digest("hex")}`,
+      );
+      await expectRefused(res, T.b);
+    }
+    expect(new Set(seen).size).toBe(1);
+    for (const c of [A.cookie, B.cookie])
+      await expectRefused(
+        await fetch(`${T.b.content}/api/v1/me`, withCred(c)),
+        T.b,
+      );
   });
 
   // ------------------------------------------------------------------ OAuth
@@ -392,6 +401,15 @@ describe("credentials", () => {
         slot(() => uB),
       ),
     );
+    // The URL B refused was live: A still accepts it.
+    const r = await fetch(`${T.a.app}${uAatB}`, {
+      method: "PUT",
+      redirect: "manual",
+      headers: { "content-type": "text/plain" },
+      body,
+    });
+    await r.body?.cancel();
+    expect(r.status).toBe(204);
   });
 
   // -------------------------------------------------------------------- ids

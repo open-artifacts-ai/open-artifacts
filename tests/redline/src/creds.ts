@@ -270,8 +270,10 @@ export function tokenRefused(errors: readonly string[]) {
 }
 
 /**
- * /oauth/authorize with an unknown client: a 400 (or 401/403/404), or a
- * consent page. Never a redirect carrying a code (an auto-grant).
+ * /oauth/authorize with an unknown client: a 400 (401/403/404 also ok) with
+ * no consent form, and never a redirect carrying a code. B can show consent
+ * for A's opaque client_id only if it resolves A's client, so a consent page
+ * fails too.
  */
 export async function authorizeRefused(
   res: Response,
@@ -282,37 +284,9 @@ export async function authorizeRefused(
   const loc = res.headers.get("location");
   if (loc && /[?&#]code=/.test(loc))
     throw new NotRefused(`${what}: redirected with a code`);
-  const consent = res.status === 200 && hidden(body, "request") !== null;
-  if (![400, 401, 403, 404].includes(res.status) && !consent)
-    throw new NotRefused(what);
+  if (![400, 401, 403, 404].includes(res.status)) throw new NotRefused(what);
+  if (hidden(body, "request") !== null || hidden(body, "csrf") !== null)
+    throw new NotRefused(`${what}: a consent form`);
   noSetCookie(res, what);
   noMarker(body, what);
-}
-
-/**
- * The content host refusing a capture header: it doesn't render top level
- * and sends the 303 to B's own viewer for `id` (content/app.ts toViewer).
- */
-export function captureRefused(id: string) {
-  return async (res: Response, b: Target): Promise<void> => {
-    const body = await readBody(res);
-    const what = `${b.name} content host rendered (${describeRes(res, body)})`;
-    if (res.status !== 303) throw new NotRefused(what);
-    let to: URL | null = null;
-    try {
-      to = new URL(res.headers.get("location") ?? "");
-    } catch {}
-    const viewer = `/a/${id}`;
-    if (
-      !to ||
-      to.hostname !== new URL(b.app).hostname ||
-      !(
-        to.pathname === `${viewer}/full` ||
-        to.pathname.startsWith(`${viewer}/v/`)
-      )
-    )
-      throw new NotRefused(`${what}: not a redirect to B's own viewer`);
-    noSetCookie(res, what);
-    noMarker(body, what);
-  };
 }

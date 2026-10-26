@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   authorizeRefused,
-  captureRefused,
   once,
   slot,
   slotValue,
@@ -69,10 +68,23 @@ describe("authorizeRefused", () => {
     });
     await expect(authorizeRefused(res, B)).rejects.toThrow(/with a code/);
   });
-  it("rejects a 200 that isn't a consent page", async () => {
+  it("rejects a 200", async () => {
     await expect(
       authorizeRefused(new Response("<p>hi</p>", { status: 200 }), B),
     ).rejects.toThrow(NotRefused);
+  });
+  const consentPage =
+    '<form><input type="hidden" name="csrf" value="1.x">' +
+    '<input type="hidden" name="request" value="h"></form>';
+  it("rejects a consent page (B resolved A's client)", async () => {
+    await expect(
+      authorizeRefused(new Response(consentPage, { status: 200 }), B),
+    ).rejects.toThrow(NotRefused);
+  });
+  it("rejects a 400 that still carries a consent form", async () => {
+    await expect(
+      authorizeRefused(new Response(consentPage, { status: 400 }), B),
+    ).rejects.toThrow(/consent form/);
   });
   it("rejects a body holding a seeded marker", async () => {
     registerMarker(B, "REDLINE-rl-b-authz");
@@ -82,30 +94,6 @@ describe("authorizeRefused", () => {
         B,
       ),
     ).rejects.toThrow(/marker/);
-  });
-});
-
-describe("captureRefused", () => {
-  const r = captureRefused("abc");
-  const to = (location: string, headers: HeadersInit = {}) =>
-    new Response(null, { status: 303, headers: { location, ...headers } });
-  it("accepts a 303 to B's own viewer", async () => {
-    await expect(
-      r(to("https://rl-b.example.app/a/abc/full"), B),
-    ).resolves.toBeUndefined();
-  });
-  it("rejects a 303 to another host", async () => {
-    await expect(
-      r(to("https://rl-a.example.app/a/abc/full"), B),
-    ).rejects.toThrow(/own viewer/);
-  });
-  it("rejects a 303 that sets a cookie", async () => {
-    await expect(
-      r(to("https://rl-b.example.app/a/abc/full", { "set-cookie": "x=1" }), B),
-    ).rejects.toThrow(/sets a cookie/);
-  });
-  it("rejects a 200", async () => {
-    await expect(r(new Response("ok"), B)).rejects.toThrow(NotRefused);
   });
 });
 

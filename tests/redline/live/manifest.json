@@ -70,11 +70,11 @@
     },
     {
       "file": "live/credentials.test.ts",
-      "name": "credentials > A's session cookie at B: replayed with Domain stripped"
+      "name": "credentials > A's session cookie at B: replayed under the alternate cookie name"
     },
     {
       "file": "live/credentials.test.ts",
-      "name": "credentials > A's session cookie at B: on B's content host"
+      "name": "credentials > B's content host ignores cookies, A's included"
     },
     {
       "file": "live/credentials.test.ts",
