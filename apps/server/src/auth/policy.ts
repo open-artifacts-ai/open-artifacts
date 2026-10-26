@@ -1,8 +1,8 @@
 import {
   type AccessLevel,
-  type CapReason,
   type Capabilities,
   CapabilitiesSchema,
+  type CapReason,
   type Member,
   type Role,
   type SpaceKind,

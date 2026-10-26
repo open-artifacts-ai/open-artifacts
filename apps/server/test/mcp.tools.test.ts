@@ -294,26 +294,32 @@ describe("MCP tools over PAT", () => {
     ["public, db, anonymous writes on", "public", true, true, false],
     ["public, no db", "public", false, false, false],
     ["private, db, anonymous writes off", "private", true, false, false],
-  ] as const)("set_visibility warning: %s", async (_, visibility, db, allowAnonymousWrites, warns) => {
-    const pub = sc<{ id: string }>(
-      await tool(client, "publish_artifact", {
-        title: `warn ${tag}`,
-        format: "html",
-        content: "<p>hi</p>",
-        capabilities: { db },
-        allowAnonymousWrites,
-      }),
-    );
-    const r = await tool(client, "set_visibility", { id: pub.id, visibility });
-    const out = sc<{ visibility: string; warning?: string }>(r);
-    expect(out.visibility).toBe(visibility);
-    if (warns) {
-      expect(out.warning).toMatch(/allowAnonymousWrites/);
-      expect(out.warning).toMatch(/anon_writes_disabled/);
-      expect(out.warning).not.toMatch(/—/);
-      expect(textOf(r)).toContain(out.warning as string);
-    } else expect(out.warning).toBeUndefined();
-  });
+  ] as const)(
+    "set_visibility warning: %s",
+    async (_, visibility, db, allowAnonymousWrites, warns) => {
+      const pub = sc<{ id: string }>(
+        await tool(client, "publish_artifact", {
+          title: `warn ${tag}`,
+          format: "html",
+          content: "<p>hi</p>",
+          capabilities: { db },
+          allowAnonymousWrites,
+        }),
+      );
+      const r = await tool(client, "set_visibility", {
+        id: pub.id,
+        visibility,
+      });
+      const out = sc<{ visibility: string; warning?: string }>(r);
+      expect(out.visibility).toBe(visibility);
+      if (warns) {
+        expect(out.warning).toMatch(/allowAnonymousWrites/);
+        expect(out.warning).toMatch(/anon_writes_disabled/);
+        expect(out.warning).not.toMatch(/—/);
+        expect(textOf(r)).toContain(out.warning as string);
+      } else expect(out.warning).toBeUndefined();
+    },
+  );
 
   // #681 B: say up front that anonymous writes fail on a public db artifact.
   it("instructions and publish/visibility descriptions name anon_writes_disabled", () => {
@@ -338,24 +344,27 @@ describe("MCP tools over PAT", () => {
     ["public, db, anonymous writes on", "public", true, true, false],
     ["public, no db", "public", false, false, false],
     ["private, db, anonymous writes off", "private", true, false, false],
-  ] as const)("publish_artifact warning: %s", async (_, visibility, db, allowAnonymousWrites, warns) => {
-    const html = { format: "html", content: "<p>hi</p>" };
-    const r = await tool(client, "publish_artifact", {
-      title: `pubwarn ${tag}`,
-      ...html,
-      visibility,
-      capabilities: { db },
-      allowAnonymousWrites,
-    });
-    const out = sc<{ id: string; warning?: string }>(r);
-    expect(out.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
-    if (warns) expect(textOf(r)).toContain(ANON_WRITES_WARNING);
-    // A new version that changes nothing keeps the artifact's settings.
-    const v2 = sc<{ warning?: string }>(
-      await tool(client, "publish_artifact", { id: out.id, ...html }),
-    );
-    expect(v2.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
-  });
+  ] as const)(
+    "publish_artifact warning: %s",
+    async (_, visibility, db, allowAnonymousWrites, warns) => {
+      const html = { format: "html", content: "<p>hi</p>" };
+      const r = await tool(client, "publish_artifact", {
+        title: `pubwarn ${tag}`,
+        ...html,
+        visibility,
+        capabilities: { db },
+        allowAnonymousWrites,
+      });
+      const out = sc<{ id: string; warning?: string }>(r);
+      expect(out.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
+      if (warns) expect(textOf(r)).toContain(ANON_WRITES_WARNING);
+      // A new version that changes nothing keeps the artifact's settings.
+      const v2 = sc<{ warning?: string }>(
+        await tool(client, "publish_artifact", { id: out.id, ...html }),
+      );
+      expect(v2.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
+    },
+  );
 
   it("no tool result or description carries a raw view URL (#292)", async () => {
     const out: unknown[] = [];

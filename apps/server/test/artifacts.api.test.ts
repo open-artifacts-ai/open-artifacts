@@ -259,46 +259,52 @@ describe("summary, patch, delete", () => {
     ["public, db, anonymous writes on", "public", true, true, false],
     ["public, no db", "public", false, false, false],
     ["private, db, anonymous writes off", "private", true, false, false],
-  ] as const)("PATCH visibility warning: %s", async (_, visibility, db, allowAnonymousWrites, warns) => {
-    const a = await publish(env, owner.member, {
-      title: "warn",
-      format: "html",
-      content: "<p>x</p>",
-      capabilities: { db, viewer: false, storage: false },
-      allowAnonymousWrites,
-    } as never);
-    const r = await api(app, R.artifact(a.id), owner.cookie, {
-      method: "PATCH",
-      body: { visibility },
-    });
-    expect(r.status).toBe(200);
-    const body = ArtifactPatchResultSchema.parse(await r.json());
-    expect(body.visibility).toBe(visibility);
-    if (warns) expect(body.warning).toMatch(/allowAnonymousWrites/);
-    else expect(body.warning).toBeUndefined();
-  });
+  ] as const)(
+    "PATCH visibility warning: %s",
+    async (_, visibility, db, allowAnonymousWrites, warns) => {
+      const a = await publish(env, owner.member, {
+        title: "warn",
+        format: "html",
+        content: "<p>x</p>",
+        capabilities: { db, viewer: false, storage: false },
+        allowAnonymousWrites,
+      } as never);
+      const r = await api(app, R.artifact(a.id), owner.cookie, {
+        method: "PATCH",
+        body: { visibility },
+      });
+      expect(r.status).toBe(200);
+      const body = ArtifactPatchResultSchema.parse(await r.json());
+      expect(body.visibility).toBe(visibility);
+      if (warns) expect(body.warning).toMatch(/allowAnonymousWrites/);
+      else expect(body.warning).toBeUndefined();
+    },
+  );
 
   it.each([
     ["public, db, anonymous writes off", "public", true, false, true],
     ["public, db, anonymous writes on", "public", true, true, false],
     ["public, no db", "public", false, false, false],
     ["private, db, anonymous writes off", "private", true, false, false],
-  ] as const)("POST publish warning: %s", async (_, visibility, db, allowAnonymousWrites, warns) => {
-    const r = await api(app, R.artifacts, owner.cookie, {
-      method: "POST",
-      body: {
-        title: "warn",
-        format: "html",
-        content: "<p>x</p>",
-        visibility,
-        capabilities: { db },
-        allowAnonymousWrites,
-      },
-    });
-    expect(r.status).toBe(201);
-    const body = PublishResultSchema.parse(await r.json());
-    expect(body.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
-  });
+  ] as const)(
+    "POST publish warning: %s",
+    async (_, visibility, db, allowAnonymousWrites, warns) => {
+      const r = await api(app, R.artifacts, owner.cookie, {
+        method: "POST",
+        body: {
+          title: "warn",
+          format: "html",
+          content: "<p>x</p>",
+          visibility,
+          capabilities: { db },
+          allowAnonymousWrites,
+        },
+      });
+      expect(r.status).toBe(201);
+      const body = PublishResultSchema.parse(await r.json());
+      expect(body.warning).toBe(warns ? ANON_WRITES_WARNING : undefined);
+    },
+  );
 
   it("editor delete → 404; owner delete hides it; includeDeleted shows it; undelete restores", async () => {
     const del = (u: U) =>
