@@ -115,7 +115,9 @@ export const SECTIONS = {
 - openArtifacts.db.collection(name): get(id), list({ cursor, limit }), query({ where, orderBy, order, limit }),
   set(id, data), update(id, patch), delete(id), subscribe(cb) → unsubscribe
   subscribe(cb) gets { docs, deleted, resync? }: after a reconnect it gets { docs: [], deleted: [], resync: true };
-  refetch your data when resync is true.
+  refetch your data when resync is true. If the live connection is refused or keeps failing it gets
+  { docs: [], deleted: [], offline: true }, once per outage: show the viewer that live updates are paused
+  (for example, "Live updates paused. Reload to retry.") until the next resync.
 - openArtifacts.storage: get(key), set(key, value), delete(key), list()
 - openArtifacts.theme ("light" | "dark") and onTheme(cb)
 

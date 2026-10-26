@@ -214,6 +214,16 @@ export const ShellToArtifactSchema = z.union([
     event: z.literal("db.resync"),
     collection: DataNameSchema,
   }),
+  /**
+   * The shell's socket for `collection` is down (refused, or failing to
+   * reconnect): live changes are paused until a db.resync. Once per outage.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    type: z.literal("event"),
+    event: z.literal("db.offline"),
+    collection: DataNameSchema,
+  }),
   z.strictObject({ oa: z.literal(1), type: z.literal("thumb.request") }),
   z.strictObject({ oa: z.literal(1), type: z.literal("theme"), theme: Theme }),
   /** After a live swap: scroll to where the previous version's frame was. */

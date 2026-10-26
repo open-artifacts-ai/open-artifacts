@@ -207,6 +207,7 @@ Use this when anyone with the link should be able to vote, play or add to a page
 - Budget writes. Each artifact has a daily write limit and anonymous writes are rate-limited per network, so never write on a timer (no heartbeats). Write only on a user action, and use a day-keyed collection (e.g. \`votes-20261020\`) instead of deleting old data. When \`rate_limited\` mentions the daily limit, show "done for today".
 - Handle rejected writes: roll back anything you showed optimistically, then reload from the server. Codes: \`unauthorized\`, \`rate_limited\`, \`capability_denied\`, and \`no_shell\` when the page is opened outside the viewer.
 - Don't claim presence ("3 people here", "watching now"); there is no presence API.
+- Never be silently deaf: when a subscribe callback gets \`offline: true\`, show that live updates are paused (for example, "Live updates paused. Reload to retry.") until it gets \`resync: true\`.
 
 ## What to tell the user
 

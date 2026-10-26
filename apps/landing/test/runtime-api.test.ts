@@ -15,6 +15,11 @@ describe("runtime-api docs", () => {
     expect(doc).toMatch(/if \(e\.resync\) return refetch\(\);/);
   });
 
+  it("explains offline and handles it in the example", () => {
+    expect(doc).toContain("{ docs: [], deleted: [], offline: true }");
+    expect(doc).toMatch(/if \(e\.offline\) return showPaused\(true\);/);
+  });
+
   // packages/runtime rejects every call with code "no_shell" outside the viewer.
   it("documents the no_shell error", () => {
     expect(doc).toMatch(/\| `no_shell` \|/);

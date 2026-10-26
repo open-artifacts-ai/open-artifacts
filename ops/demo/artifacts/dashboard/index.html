@@ -254,6 +254,7 @@
   let today = null;      // the stats/today doc's data, normalized
   let hourly = null;     // 24 ints, or null
   let hourlyDay = "";
+  let paused = false;    // the live feed is down (subscribe's offline), until a resync
   let active = -1;       // chart hour under the pointer or keyboard
   let wasStale = false;
   const shown = {};      // tile key -> number on screen
@@ -429,9 +430,9 @@
     const now = Date.now();
     const age = now - today.updatedAt;
     el.updated.textContent = today.updatedAt ? `Updated ${ago(age)}` : "Waiting for the first update";
-    const stale = !today.updatedAt || age > STALE_MS;
+    const stale = paused || !today.updatedAt || age > STALE_MS;
     el.stale.hidden = !stale;
-    if (stale) el.staleText.textContent = "Not updating. Numbers may be behind.";
+    if (stale) el.staleText.textContent = paused ? "Live updates paused. Reload to retry." : "Not updating. Numbers may be behind.";
     if (stale !== wasStale) {
       wasStale = stale;
       say(stale ? "The numbers have not updated for a few minutes and may be behind." : "The numbers are updating again.");
@@ -617,7 +618,9 @@
   }
 
   function onChange(e) {
-    if (e.resync) { loadAll().catch(() => {}); return; }
+    // Never silently deaf: say so while the live feed is down.
+    if (e.offline) { paused = true; renderFresh(); return; }
+    if (e.resync) { paused = false; loadAll().catch(() => {}); return; }
     for (const d of e.docs) {
       if (d.id === "today") applyToday(d.data);
       else if (today && d.id === "hourly-" + today.day) applyHourly(d.data);
