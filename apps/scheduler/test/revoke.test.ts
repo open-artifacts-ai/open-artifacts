@@ -284,13 +284,17 @@ describe("the */2 revoke tick", () => {
     await revokeTick(f.env, NOW);
     const writes = spy.mock.calls
       .map((c) => String(c[0]))
-      .filter((s) => /^\s*(?:UPDATE|INSERT|DELETE)/i.test(s));
+      .filter((s) => /^\s*(?:UPDATE|INSERT|DELETE)/i.test(s))
+      // The test's own write (the row leaving deleting) is not the scheduler's.
+      .filter((s) => !s.includes("SET state = 'deleted'"));
     expect(writes.length).toBeGreaterThan(0);
     for (const w of writes) {
       expect(w).toMatch(
         /^UPDATE installs SET (?:directory_revoke|directory_revoked_at|directory_revoke_attempts)\b/,
       );
-      expect(w).toMatch(/WHERE id = \?\d AND state = 'deleting'$/);
+      expect(w).toMatch(
+        /WHERE id = \?\d AND state = 'deleting'(?: RETURNING directory_revoke)?$/,
+      );
       const set = w.slice(w.indexOf("SET") + 3, w.indexOf("WHERE"));
       for (const col of set.split(",").map((x) => x.trim().split(/\s|=/)[0]))
         expect([

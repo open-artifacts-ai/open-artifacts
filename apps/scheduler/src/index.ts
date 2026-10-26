@@ -4,6 +4,7 @@ import {
   names,
   type Env as OaEnv,
 } from "@oa/provision/names";
+import { compareVersions, isReleaseVersion } from "@oa/provision/versions";
 import { emailQuota, type QuotaEnv } from "./quota.js";
 
 export interface Env extends QuotaEnv {
@@ -452,8 +453,127 @@ export async function nightly(
   return r;
 }
 
+// ---------- H-DV: the directory revoke a delete waits for ----------
+
+/** Every 2 minutes: move deleting installs' directory_revoke on from pending. */
+export const REVOKE_CRON = "*/2 * * * *";
+/** The install's job (Backend #616): revokes its Google directory grant. */
+export const REVOKE_JOB = "oa:directory-disconnect";
+/** Releases before this ignore the cron and run the whole nightly set. */
+const REVOKE_MIN_VERSION = "0.54.0";
+export const REVOKE_MAX_ATTEMPTS = 5;
+/** One query, on the partial index installs_revoke_pending (0005). */
+export const REVOKE_SQL =
+  "SELECT id, version FROM installs WHERE state='deleting' AND directory_revoke='pending' LIMIT 10";
+// The only writes: the three revoke columns, on rows still deleting.
+const REVOKE_DONE_SQL =
+  "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = ?2 WHERE id = ?1 AND state = 'deleting'";
+const REVOKE_UNSUPPORTED_SQL =
+  "UPDATE installs SET directory_revoke = 'unsupported' WHERE id = ?1 AND state = 'deleting'";
+const REVOKE_RETRY_SQL =
+  "UPDATE installs SET directory_revoke_attempts = directory_revoke_attempts + 1, directory_revoke = CASE WHEN directory_revoke_attempts + 1 >= ?2 THEN 'failed' ELSE directory_revoke END WHERE id = ?1 AND state = 'deleting' RETURNING directory_revoke";
+
+export interface RevokeOptions {
+  /** Per call; the nightly call's default. */
+  timeoutMs?: number;
+}
+
+/**
+ * One tick: up to 10 pending revokes, called together (each bounded by
+ * timeoutMs, so a tick ends well inside the 2 minutes). Below 0.54.0, or no
+ * release version, is unsupported with no call. A resolve is done; "Worker
+ * not found" is unsupported; a rejection or timeout counts an attempt, and
+ * the fifth is failed. Logs carry the install id and a fixed category only.
+ */
+export async function revokeTick(
+  env: Env,
+  now: number,
+  { timeoutMs = 25_000 }: RevokeOptions = {},
+): Promise<void> {
+  positive("timeoutMs", timeoutMs, false);
+  const db = env.PLATFORM_DB;
+  const { results } = await db
+    .prepare(REVOKE_SQL)
+    .all<{ id: unknown; version: unknown }>();
+  if (results.length === 0) return;
+  const rows = results.filter(
+    (r): r is { id: string; version: unknown } =>
+      typeof r.id === "string" && isInstallId(r.id),
+  );
+  if (rows.length < results.length)
+    console.warn(
+      "directory-revoke invalid",
+      `ids=${results.length - rows.length}`,
+    );
+  // An unknown OA_ENV throws before any call.
+  for (const r of rows) names(r.id, env.OA_ENV);
+  await Promise.all(
+    rows.map(async ({ id, version }) => {
+      const unsupported = async () => {
+        await db.prepare(REVOKE_UNSUPPORTED_SQL).bind(id).run();
+        console.log("directory-revoke unsupported", id);
+      };
+      if (
+        !isReleaseVersion(version) ||
+        compareVersions(version, REVOKE_MIN_VERSION) < 0
+      )
+        return unsupported();
+      try {
+        const r = await within(
+          (
+            env.DISPATCHER.get(
+              names(id, env.OA_ENV).script,
+            ) as unknown as ScheduledFetcher
+          ).scheduled({ cron: REVOKE_JOB, scheduledTime: new Date(now) }),
+          timeoutMs,
+        );
+        checkOutcome(r);
+      } catch (e) {
+        if (!(e instanceof Stall) && category(e) === "not_found")
+          return unsupported();
+        const after = await db
+          .prepare(REVOKE_RETRY_SQL)
+          .bind(id, REVOKE_MAX_ATTEMPTS)
+          .first<{ directory_revoke: unknown }>();
+        if (after === null) return;
+        const failed = after.directory_revoke === "failed";
+        console.warn(`directory-revoke ${failed ? "failed" : "retry"}`, id);
+        return;
+      }
+      await db.prepare(REVOKE_DONE_SQL).bind(id, now).run();
+      console.log("directory-revoke done", id);
+    }),
+  );
+}
+
+/** Deleted installs keep their owner email this long, then it is purged. */
+export const OWNER_EMAIL_RETENTION_MS = 30 * DAY_MS;
+const PURGE_SQL =
+  "UPDATE installs SET owner_email = NULL WHERE state='deleted' AND updated_at < ?1 AND owner_email IS NOT NULL RETURNING id";
+
+/** Idempotent; the install id, its row and its audit rows stay. */
+export async function purgeOwnerEmails(
+  db: D1Database,
+  now: number,
+): Promise<number> {
+  // Counted from RETURNING: meta.changes also counts the row_version
+  // trigger's own updates.
+  const { results } = await db
+    .prepare(PURGE_SQL)
+    .bind(now - OWNER_EMAIL_RETENTION_MS)
+    .all();
+  const n = results.length;
+  console.log("owner-email purged", `count=${n}`);
+  return n;
+}
+
 export default {
   async scheduled(event, env, _ctx) {
+    if (event.cron === REVOKE_CRON) {
+      await revokeTick(env, event.scheduledTime);
+      return;
+    }
+    if (event.cron !== CRON) return;
     await nightly(env, event.scheduledTime);
     // Own try, after the nightly result is settled: it never changes it
     // (emailQuota logs one fixed line and doesn't throw; this catch is
@@ -462,6 +582,12 @@ export default {
       await emailQuota(env, event.scheduledTime);
     } catch {
       console.error("email-quota failed http");
+    }
+    // H-DV: own try too; a D1 error here never changes the nightly result.
+    try {
+      await purgeOwnerEmails(env.PLATFORM_DB, event.scheduledTime);
+    } catch {
+      console.error("owner-email failed db");
     }
   },
 } satisfies ExportedHandler<Env>;
