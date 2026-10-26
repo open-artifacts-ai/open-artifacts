@@ -232,7 +232,10 @@ export class FakeCf {
     b.set(key, { bytes: bytes.slice(), etag: randomBytes(16).toString("hex") });
   }
   /** Mint an R2 API token (Object Read & Write) scoped to `buckets`. */
-  r2Token(...buckets: string[]): { accessKeyId: string; secretAccessKey: string } {
+  r2Token(...buckets: string[]): {
+    accessKeyId: string;
+    secretAccessKey: string;
+  } {
     const accessKeyId = randomBytes(16).toString("hex");
     const secretAccessKey = randomBytes(32).toString("hex");
     this.r2Tokens.set(accessKeyId, { secret: secretAccessKey, buckets });
@@ -869,9 +872,8 @@ export class FakeCf {
     }
     // SigV4: recompute the signature with the token's secret and compare.
     const auth = req.headers.get("authorization") ?? "";
-    const cred = /Credential=([^/]+)\/(\d{8})\/([^/]+)\/([^/]+)\/aws4_request/.exec(
-      auth,
-    );
+    const cred =
+      /Credential=([^/]+)\/(\d{8})\/([^/]+)\/([^/]+)\/aws4_request/.exec(auth);
     const tok = cred ? this.r2Tokens.get(cred[1] as string) : undefined;
     if (!cred || !tok || cred[3] !== "auto" || cred[4] !== "s3")
       return xml(403, "InvalidAccessKeyId");
@@ -934,7 +936,10 @@ export class FakeCf {
         return xml(500, "InternalError");
       }
       log(200);
-      return new Response(null, { status: 200, headers: { etag: `"${etag}"` } });
+      return new Response(null, {
+        status: 200,
+        headers: { etag: `"${etag}"` },
+      });
     }
     if (req.method === "DELETE") {
       objs.delete(key);

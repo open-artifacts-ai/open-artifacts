@@ -25,10 +25,9 @@ import {
   packUstar,
 } from "../../../scripts/ci/release-artifact.mjs";
 import { buildBundle } from "../src/bundle.js";
-import { CfError, cfClient } from "../src/cf.js";
+import { type CfError, cfClient } from "../src/cf.js";
 import { platformNames } from "../src/names.js";
 import { canonicalJson } from "../src/platform.js";
-import { r2S3Client } from "../src/r2s3.js";
 import {
   FLOOR_KEY,
   PublishRefused,
@@ -38,6 +37,7 @@ import {
   r2ReleaseReader,
   releaseKey,
 } from "../src/publish.js";
+import { r2S3Client } from "../src/r2s3.js";
 import {
   ASSET_LIMITS,
   buildReleaseRecord,
@@ -960,7 +960,7 @@ describe("D: publishRelease", () => {
     const e = await fails(
       publishRelease({
         cf: s.cf,
-      r2: s.r2.staging,
+        r2: s.r2.staging,
         env: "staging",
         version: "0.34.0",
         files: good(),
@@ -1028,7 +1028,7 @@ describe("D: publishRelease", () => {
     const e = await fails(
       publishRelease({
         cf: s.cf,
-      r2: s.r2.prod,
+        r2: s.r2.prod,
         env: "prod",
         version: "0.34.0",
         files: {
@@ -1273,7 +1273,7 @@ describe("D: publishRelease", () => {
     const e = await fails(
       publishRelease({
         cf: s.cf,
-      r2: s.r2.staging,
+        r2: s.r2.staging,
         env: "staging",
         version: "0.34.0",
         files: { tar: new Uint8Array(1024), sig: sigBytes(signRec(rec)) },
@@ -1295,7 +1295,7 @@ describe("D: publishRelease", () => {
       const e = await fails(
         publishRelease({
           cf: s.cf,
-      r2: s.r2.staging,
+          r2: s.r2.staging,
           env: "staging",
           version: "0.34.0",
           files: good(),
@@ -1340,7 +1340,7 @@ describe("D: publishRelease", () => {
     const e = await fails(
       publishRelease({
         cf: s.cf,
-      r2: s.r2.staging,
+        r2: s.r2.staging,
         env: "staging",
         version: "0.34.0",
         files: good(),
@@ -1358,7 +1358,7 @@ describe("D: publishRelease", () => {
       const e = await fails(
         publishRelease({
           cf: s.cf,
-      r2: s.r2.staging,
+          r2: s.r2.staging,
           env: "staging",
           version: "0.34.0",
           files: good(),
@@ -1739,7 +1739,9 @@ describe("F: r2ReleaseReader", () => {
     const head = await r2.head(k);
     expect(head?.size).toBe(1);
     await r2.put(k, enc("3"), { ifMatch: head?.etag as string });
-    const e2 = await fails(r2.put(k, enc("4"), { ifMatch: head?.etag as string }));
+    const e2 = await fails(
+      r2.put(k, enc("4"), { ifMatch: head?.etag as string }),
+    );
     expect((e2 as CfError).status).toBe(412);
     expect((await r2.get(k))?.bytes).toEqual(enc("3"));
     expect(await r2.head("releases/missing")).toBeNull();
