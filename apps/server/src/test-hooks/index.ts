@@ -6,8 +6,11 @@ import {
   OtpLatestInputSchema,
   type Role,
   type SpaceRole,
+  TEST_AUDIT_LIMIT,
   TEST_HOOKS,
   TEST_HOOKS_ALLOWED,
+  TestAuditInputSchema,
+  type TestAuditResult,
   TestSessionInputSchema,
 } from "@oa/shared";
 import { eq } from "drizzle-orm";
@@ -32,7 +35,8 @@ import { b64urlEncode } from "../util/crypto.js";
 // stg-b. Release builds drop this module (`hooks` in app.ts folds to
 // false). At runtime it is on only when the build allows it
 // (TEST_HOOKS_ALLOWED) AND TEST_HOOKS=1 AND a 32+ char TEST_HOOK_KEY AND a
-// TEST_DOMAIN. Order per request: rate limit (RL_ANON; unbound is a refusal),
+// TEST_DOMAIN. POST /__test/audit reads back test_hook.* audit rows only
+// (never any other event). Order per request: rate limit (RL_ANON; unbound is a refusal),
 // then the key, then the input. Every refusal is the standard 404, and every
 // call past the rate limit writes one audit_events row.
 
@@ -102,7 +106,7 @@ const log = (evt: string) =>
   console.log(JSON.stringify({ evt: `test_hook.${evt}` }));
 const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
 
-type HookName = "session" | "otp_latest" | "oauth_client" | "unknown";
+type HookName = "session" | "otp_latest" | "oauth_client" | "audit" | "unknown";
 type Outcome = "ok" | "denied" | "refused" | "none" | "error";
 
 const hookName = (path: string): HookName =>
@@ -112,7 +116,9 @@ const hookName = (path: string): HookName =>
       ? "otp_latest"
       : path === TEST_HOOKS.oauthClient
         ? "oauth_client"
-        : "unknown";
+        : path === TEST_HOOKS.audit
+          ? "audit"
+          : "unknown";
 
 // Same DDL as P3's audit_events (0009_spaces, also IF NOT EXISTS), so the
 // rows land in the audit log on installs that predate that migration.
@@ -122,6 +128,44 @@ const AUDIT_DDL = [
 ];
 const AUDIT_INSERT =
   "insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id, detail) values (?, ?, 'test_hook', ?, ?, 'test_hook', ?, ?)";
+
+// The audit hook's read: test_hook rows only, enforced here in SQL (both the
+// actor kind and the action prefix, no LIKE wildcards), so no other audit
+// event can ever leave through it. ?1 since (ms), ?2 the cap.
+const TEST_AUDIT_READ = `select action, at, actor_id as actorId, target_id as targetId, detail
+  from audit_events
+  where actor_kind = 'test_hook' and substr(action, 1, 10) = 'test_hook.' and at >= ?1
+  order by at desc, id desc limit ?2`;
+
+const parseDetail = (s: string): Record<string, unknown> => {
+  try {
+    const v: unknown = JSON.parse(s);
+    return v && typeof v === "object" && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+};
+
+/** test_hook.* rows at or after `since`, newest first, at most TEST_AUDIT_LIMIT. */
+async function readTestAudit(
+  env: Env,
+  since: number,
+): Promise<TestAuditResult> {
+  const res = await env.DB.batch([
+    ...AUDIT_DDL.map((s) => env.DB.prepare(s)),
+    env.DB.prepare(TEST_AUDIT_READ).bind(since, TEST_AUDIT_LIMIT),
+  ]);
+  const rows = (res.at(-1)?.results ?? []) as {
+    action: string;
+    at: number;
+    actorId: string | null;
+    targetId: string | null;
+    detail: string;
+  }[];
+  return { events: rows.map((r) => ({ ...r, detail: parseDetail(r.detail) })) };
+}
 
 /** One audit row per hook call: hook, IP, outcome, and the email's domain (never the address). */
 async function audit(
@@ -419,6 +463,19 @@ export function mountTestHooks(app: AppType): void {
       );
       await audit(env, hook, ip, code ? "ok" : "none", { email });
       return code ? c.json({ code }) : notFound();
+    }
+
+    if (hook === "audit") {
+      const input = TestAuditInputSchema.safeParse(body);
+      if (!input.success) {
+        await audit(env, hook, ip, "refused");
+        return notFound();
+      }
+      // Read first, then audit this call like any other hook: the response
+      // is the log as it stood, and this call's own row shows up next time.
+      const out = await readTestAudit(env, input.data.since);
+      await audit(env, hook, ip, "ok");
+      return c.json(out);
     }
 
     const email = oauthHookEmail(env);

@@ -268,10 +268,11 @@ These are the names P2 and P3 use; the contract wins. There is no
 
 | Name | Meaning |
 |---|---|
-| `TEST_HOOKS` | paths `/__test/session`, `/__test/otp/latest`, `/__test/oauth-client` |
+| `TEST_HOOKS` | paths `/__test/session`, `/__test/otp/latest`, `/__test/oauth-client`, `/__test/audit` |
 | `TestSessionInputSchema` / `TestSessionResultSchema` | `{ email, role, spaces?: {spaceId, role}[] }` → `{ cookie }` (a real session, `p: "test"`). `spaces`: at most 20, each `spaceId` matching `test-[A-Za-z0-9_-]{1,59}`; a missing space is created (shared). Refused (404, nothing written): any other id, a personal or deleted space, or a space with a member outside `TEST_DOMAIN` |
 | `OtpLatestInputSchema` / `OtpLatestResultSchema` | `{ email }` → `{ code }` (404 when none) |
 | `OAuthClientHookResultSchema` | `{ clientId, accessToken }` |
+| `TestAuditInputSchema` / `TestAuditResultSchema` | `{ since }` (ms epoch, integer ≥ 0) → `{ events: { action, at, actorId, targetId, detail }[] }`: `test_hook.*` audit rows only (enforced in SQL: `actor_kind = 'test_hook'` and the `test_hook.` action prefix), `at >= since`, newest first, at most `TEST_AUDIT_LIMIT` (200). Read-only; the call is audited `test_hook.audit` after the read, so it appears in the next read. `GET R.audit` is unchanged and still lists no `test_hook` row |
 | `HealthzSchema` | `/healthz` `{ ok, plan, version, testHooks?, installId? }`: `installId` only when the hosted install has a non-empty trimmed `INSTALL_ID` (opaque, non-secret, last key; self-host omits it). It proves routing, not authenticity: never use it as an authorization signal. `testHooks`: true only on staging installs. Prod is built separately (the staging bundle is never promoted) and the release asserts `testHooks: false` |
 | `TEST_HOOKS_ALLOWED` | **build-time guard**: false unless the bundler defines `__OA_TEST_HOOKS_ALLOWED__` as true (test and staging wrangler `define` only). The release template defines it as `false` explicitly, so hooks need this AND `TEST_HOOKS=1` with a 32+ char key. The release check is behavioural: the release bundle with `TEST_HOOKS=1` plus a key answers 404 on every hook path |
 
