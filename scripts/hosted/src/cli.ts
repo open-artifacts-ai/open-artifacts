@@ -471,7 +471,7 @@ export async function main(argv: string[], d: Deps): Promise<number> {
     // but only a row this run made (L8: never another install on the slug).
     if (cmd === "create" && after === "-") {
       const row = await audit.bySlug(f.slug as string).catch(() => undefined);
-      if (row && row.created_at >= startedAt) after = row.id;
+      if (row && (row.created_at ?? 0) >= startedAt) after = row.id;
     }
   }
   try {

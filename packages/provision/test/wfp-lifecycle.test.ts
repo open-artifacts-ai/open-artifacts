@@ -3085,7 +3085,7 @@ describe("fix round 4 (T8): every server precondition for hosted google", () => 
   const renderedEnv = (s: S, id: string) => {
     const sc = s.scriptOf(id);
     const env: Record<string, unknown> = {};
-    for (const b of sc?.metadata.bindings as {
+    for (const b of (sc?.metadata.bindings ?? []) as {
       name: string;
       type: string;
       text?: string;
