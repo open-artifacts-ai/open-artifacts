@@ -11,6 +11,9 @@ export default defineConfig({
     // setup hook.
     testTimeout: 180_000,
     hookTimeout: 180_000,
+    // Bounds every fetch (src/fetch-timeout.ts): a stalled request fails its
+    // case instead of holding the run.
+    setupFiles: ["./live/setup.ts"],
     reporters: ["default", "./src/reporter.ts"],
   },
 });
