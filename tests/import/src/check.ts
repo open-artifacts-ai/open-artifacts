@@ -461,6 +461,8 @@ export async function checkImport(o: {
 /** Everything in a report that is a problem; [] for a clean import. */
 export function problems(r: Report): string[] {
   return [
+    // An empty or misread export has nothing to check, so it can't be clean.
+    ...(r.expected === 0 ? ["export has no artifacts"] : []),
     ...r.skipped
       .filter((s) => !s.reason.startsWith(UNSUPPORTED))
       .map((s) => `skipped ${s.ref}: ${s.reason || "(no reason)"}`),

@@ -378,6 +378,19 @@ describe("checkImport", () => {
       }),
     ).rejects.toThrow(/spaceMap/);
   });
+  it("an export with no artifacts is a problem, never clean", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oa-import-empty-"));
+    try {
+      for (const convs of [[], [{ uuid: "c-empty", chat_messages: [] }]]) {
+        writeFileSync(join(dir, "conversations.json"), JSON.stringify(convs));
+        const r = await check(await snapshot(target), dir);
+        expect(r.expected).toBe(0);
+        expect(problems(r)).toContain("export has no artifacts");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("safety", () => {
