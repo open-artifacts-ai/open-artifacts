@@ -9,10 +9,19 @@
 // field on each artifact summary the REST list returns; that read is isolated
 // in importKeyOf, the one place to change once the real field ships.
 //
+// ASSUMPTION: the skill publishes an artifact's export content verbatim as
+// one file of the version (wrongContent compares bytes).
+//
 // `expected` comes from parsing the export here, independently of the skill.
 // snapshot uses only existing REST endpoints: GET /api/v1/me (owner),
-// /api/v1/spaces, /api/v1/artifacts and /api/v1/artifacts/:id/versions (plus
-// a version's files, to tell an unchanged republish from a real edit).
+// /api/v1/spaces (the personal space is its kind "personal" row),
+// /api/v1/artifacts and /api/v1/artifacts/:id/versions, plus a version's
+// files to compare content with the export.
+//
+// LIMIT: the checker sees only what the owner's PAT can list (the real list's
+// visibility rules). wrongOwner and unexpected cover artifacts visible to the
+// owner; a copy published into another user's private space is out of scope.
+//
 // Failures show status and a body hash, never a body or the PAT.
 
 import { createHash } from "node:crypto";
@@ -63,6 +72,10 @@ export interface Report {
   wrongOwner: string[];
   duplicates: string[];
   extraVersions: string[];
+  /** New since `before` and not the first artifact for an export item: its importKey, or its id when keyless. */
+  unexpected: string[];
+  /** The latest version has no file equal to the export content. */
+  wrongContent: string[];
 }
 
 export interface ExportItem {
@@ -174,6 +187,8 @@ function readPat(path: string): string {
     throw new Error("patFile: file missing");
   }
   if (!st.isFile()) throw new Error("patFile: not a regular file");
+  if (typeof process.getuid === "function" && st.uid !== process.getuid())
+    throw new Error("patFile: not owned by the current user");
   if (process.platform !== "win32" && (st.mode & 0o077) !== 0)
     throw new Error("patFile: file mode must be 0600");
   const v = readFileSync(path, "utf8").trim();
@@ -256,13 +271,12 @@ export async function snapshot(target: Target): Promise<Snapshot> {
 }
 
 async function snap(api: Api): Promise<Snapshot> {
-  const me = await api.json<{
-    user: { id: string; email: string | null };
-    personalSpaceId?: string;
-  }>("/api/v1/me");
+  const me = await api.json<{ user: { id: string; email: string | null } }>(
+    "/api/v1/me",
+  );
   if (!me) throw new Error("GET /api/v1/me: empty");
   // Spaces off: the route is absent (404) and no artifact carries a space.
-  const spaces = await api.pages<{ id: string; name: string }>(
+  const spaces = await api.pages<{ id: string; name: string; kind: string }>(
     "/api/v1/spaces",
     true,
   );
@@ -298,8 +312,10 @@ async function snap(api: Api): Promise<Snapshot> {
   }
   return {
     me: { id: me.user.id, email: me.user.email },
-    personalSpaceId: me.personalSpaceId ?? null,
-    spaces: spaces.map((x) => ({ id: x.id, name: x.name })),
+    personalSpaceId: spaces.find((x) => x.kind === "personal")?.id ?? null,
+    spaces: spaces
+      .filter((x) => x.kind !== "personal")
+      .map((x) => ({ id: x.id, name: x.name })),
     artifacts,
   };
 }
@@ -321,45 +337,45 @@ function resolveSpace(s: Snapshot, v: string): string | null {
   );
 }
 
-async function sameContent(
+const fileUrl = (id: string, v: number, path: string) =>
+  `/api/v1/artifacts/${seg(id)}/versions/${v}/files/${path.split("/").map(seg).join("/")}`;
+
+/** Whether a version has a file whose bytes equal `content`. */
+async function holds(
   api: Api,
   id: string,
-  a: SnapVersion,
-  b: SnapVersion,
+  v: SnapVersion,
+  content: string,
 ): Promise<boolean> {
-  const key = (v: SnapVersion) =>
-    JSON.stringify([...v.files].sort((x, y) => x.path.localeCompare(y.path)));
-  if (key(a) !== key(b)) return false;
-  for (const f of a.files) {
-    const file = (v: number) =>
-      `/api/v1/artifacts/${seg(id)}/versions/${v}/files/${f.path.split("/").map(seg).join("/")}`;
-    const [x, y] = await Promise.all([
-      api.bytes(file(a.version)),
-      api.bytes(file(b.version)),
-    ]);
-    if (!x || !y || !Buffer.from(x).equals(Buffer.from(y))) return false;
+  const want = Buffer.from(content, "utf8");
+  for (const f of v.files) {
+    if (f.size !== want.byteLength) continue;
+    const got = await api.bytes(fileUrl(id, v.version, f.path));
+    if (got && Buffer.from(got).equals(want)) return true;
   }
-  return true;
+  return false;
 }
 
 /**
- * Versions this run added that it shouldn't have. An artifact that existed
- * before may gain at most one version (changed content); any added version
- * whose content equals the one before it is an unchanged republish.
+ * Versions this run added that it shouldn't have. A first import makes one
+ * version. On a rerun, an artifact whose export content is unchanged since
+ * `before` gains none, whatever their content; a changed one gains exactly one.
  */
 async function hasExtraVersions(
   api: Api,
   art: SnapArtifact,
   prev: SnapArtifact | undefined,
+  content: string,
 ): Promise<boolean> {
-  const since = prev ? Math.max(0, ...prev.versions.map((v) => v.version)) : 0;
-  const added = art.versions.filter((v) => v.version > since);
-  if (prev && added.length > 1) return true;
-  for (const v of added) {
-    const before = art.versions.filter((x) => x.version < v.version).at(-1);
-    if (before && (await sameContent(api, art.id, before, v))) return true;
-  }
-  return false;
+  const prevLatest = prev?.versions.at(-1);
+  const added = art.versions.filter(
+    (v) => v.version > (prevLatest?.version ?? 0),
+  );
+  if (!prevLatest) return added.length > 1;
+  if (added.length === 0) return false;
+  if (added.length > 1) return true;
+  // Unchanged since `before` (versions are immutable, so read it now).
+  return holds(api, art.id, prevLatest, content);
 }
 
 export async function checkImport(o: {
@@ -372,12 +388,16 @@ export async function checkImport(o: {
   const items = parseExport(o.exportDir);
   const api = new Api(o.target);
   const after = await snap(api);
+  if (o.before.me.id !== after.me.id)
+    throw new Error("checkImport: before and after come from different PATs");
   if (!isOwner(o.owner, after.me.id, after.me.email))
     throw new Error("checkImport: run it with the owner's PAT");
   const mapped = new Map<string, string | null>();
   for (const [k, v] of Object.entries(o.spaceMap))
     mapped.set(k, resolveSpace(after, v));
   const prevById = new Map(o.before.artifacts.map((a) => [a.id, a]));
+  const keysBefore = new Set(o.before.artifacts.map((a) => a.importKey));
+  const exportKeys = new Set(items.map((i) => i.importKey));
   const byKey = new Map<string, SnapArtifact[]>();
   for (const a of after.artifacts)
     if (a.importKey)
@@ -391,7 +411,16 @@ export async function checkImport(o: {
     wrongOwner: [],
     duplicates: [],
     extraVersions: [],
+    unexpected: [],
+    wrongContent: [],
   };
+  // A new artifact is fine only as the first one for an export item.
+  for (const a of after.artifacts) {
+    if (prevById.has(a.id)) continue;
+    if (!a.importKey) r.unexpected.push(a.id);
+    else if (!exportKeys.has(a.importKey) || keysBefore.has(a.importKey))
+      r.unexpected.push(a.importKey);
+  }
   for (const it of items) {
     const key = it.importKey;
     const arts = byKey.get(key) ?? [];
@@ -414,11 +443,17 @@ export async function checkImport(o: {
     if (arts.some((a) => a.spaceId !== want)) r.wrongSpace.push(key);
     if (arts.some((a) => !isOwner(o.owner, a.ownerId, a.ownerEmail)))
       r.wrongOwner.push(key);
-    for (const a of arts)
-      if (await hasExtraVersions(api, a, prevById.get(a.id))) {
-        r.extraVersions.push(key);
-        break;
-      }
+    let extra = false;
+    let wrong = false;
+    for (const a of arts) {
+      if (await hasExtraVersions(api, a, prevById.get(a.id), it.content))
+        extra = true;
+      const latest = a.versions.at(-1);
+      if (!latest || !(await holds(api, a.id, latest, it.content)))
+        wrong = true;
+    }
+    if (extra) r.extraVersions.push(key);
+    if (wrong) r.wrongContent.push(key);
   }
   return r;
 }
@@ -433,5 +468,7 @@ export function problems(r: Report): string[] {
     ...r.wrongOwner.map((k) => `wrong owner ${k}`),
     ...r.duplicates.map((k) => `duplicate ${k}`),
     ...r.extraVersions.map((k) => `extra versions ${k}`),
+    ...r.unexpected.map((k) => `unexpected artifact ${k}`),
+    ...r.wrongContent.map((k) => `wrong content ${k}`),
   ];
 }

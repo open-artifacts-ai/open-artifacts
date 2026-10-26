@@ -77,6 +77,22 @@ export class FakeInstall {
     a.versions.push({ version: a.versions.length + 1, files });
   }
 
+  /** Deletes an artifact (the list omits deleted ones). */
+  remove(id: string): void {
+    this.artifacts = this.artifacts.filter((a) => a.id !== id);
+  }
+
+  /**
+   * The real list's rule as far as this fake models it (private artifacts, no
+   * shares): the caller's own artifacts, anything in the caller's personal
+   * space, and anything in a shared space (every user here has a role in
+   * every shared space). Another user's personal space is invisible.
+   */
+  private visible(a: FakeArtifact, userId: string): boolean {
+    if (a.ownerId === userId || a.spaceId === userId) return true;
+    return this.spaces.some((s) => s.id === a.spaceId && s.kind === "shared");
+  }
+
   mustGet(id: string): FakeArtifact {
     const a = this.artifacts.find((x) => x.id === id);
     if (!a) throw new Error(`no artifact ${id}`);
@@ -146,14 +162,18 @@ export class FakeInstall {
     };
 
     if (p === "/api/v1/me")
+      // MeSchema as apps/server returns it: no personalSpaceId.
       return Response.json({
         user: { ...this.user(me.id), role: "member" },
-        personalSpaceId: me.id,
-        spaces: [],
       });
     if (p === "/api/v1/spaces")
+      // listSpaces: the caller's personal space (kind "personal", id = user
+      // id) first, then shared spaces.
       return page(
-        this.spaces.filter((s) => s.kind === "shared"),
+        [
+          ...this.spaces.filter((s) => s.kind === "personal" && s.id === me.id),
+          ...this.spaces.filter((s) => s.kind === "shared"),
+        ].map((s) => this.spaceRef(s.id)),
         this.listPage,
       );
     if (p === "/api/v1/artifacts") {
@@ -163,7 +183,9 @@ export class FakeInstall {
           { status: 400 },
         );
       return page(
-        this.artifacts.map((a) => this.summary(a)),
+        this.artifacts
+          .filter((a) => this.visible(a, me.id))
+          .map((a) => this.summary(a)),
         this.listPage,
       );
     }
@@ -172,7 +194,8 @@ export class FakeInstall {
     );
     if (m) {
       const a = this.artifacts.find((x) => x.id === decodeURIComponent(m[1]));
-      if (!a) return Response.json({ error: "not_found" }, { status: 404 });
+      if (!a || !this.visible(a, me.id))
+        return Response.json({ error: "not_found" }, { status: 404 });
       if (m[2]) {
         const v = a.versions.find((x) => x.version === Number(m[2]));
         const path = m[3].split("/").map(decodeURIComponent).join("/");

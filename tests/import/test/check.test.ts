@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   checkImport,
   importKeyOf,
@@ -77,6 +77,8 @@ const clean = (r: Report) => {
   expect(r.wrongOwner).toEqual([]);
   expect(r.duplicates).toEqual([]);
   expect(r.extraVersions).toEqual([]);
+  expect(r.unexpected).toEqual([]);
+  expect(r.wrongContent).toEqual([]);
   expect(problems(r)).toEqual([]);
 };
 
@@ -136,12 +138,27 @@ describe("checkImport", () => {
     const before = await snapshot(target);
     skill({
       wrongSpace: { [K.notes]: alice.id },
-      wrongOwner: { [K.greet]: bob.id },
+      wrongOwner: { [K.planner]: bob.id },
     });
     const r = await check(before);
     expect(r.wrongSpace).toEqual([K.notes]);
-    expect(r.wrongOwner).toEqual([K.greet]);
+    expect(r.wrongOwner).toEqual([K.planner]);
     expect(problems(r)).toHaveLength(2);
+  });
+
+  // The limit: the checker sees what the owner's PAT can list. A copy owned
+  // by someone else in their private space is invisible: it shows only as
+  // not imported, never as wrongOwner.
+  it("wrongOwner covers only artifacts visible to the owner's PAT", async () => {
+    const before = await snapshot(target);
+    skill({
+      wrongOwner: { [K.greet]: bob.id },
+      wrongSpace: { [K.greet]: bob.id },
+    });
+    const r = await check(before);
+    expect(fake.artifacts.some((a) => a.importKey === K.greet)).toBe(true);
+    expect(r.wrongOwner).toEqual([]);
+    expect(r.skipped).toContainEqual({ ref: K.greet, reason: "not imported" });
   });
 
   it("skipped items must carry a reason", async () => {
@@ -150,8 +167,96 @@ describe("checkImport", () => {
     const r = await check(before);
     expect(r.imported).toBe(4);
     for (const s of r.skipped) expect(s.reason.trim()).not.toBe("");
+    // A supported item missing from the install is a problem...
     expect(r.skipped).toContainEqual({ ref: K.big, reason: "not imported" });
+    // ...an unsupported one is skipped with its reason and isn't.
+    expect(r.skipped).toContainEqual({
+      ref: K.widget,
+      reason: "unsupported type: application/vnd.ant.unsupported-widget",
+    });
     expect(problems(r)).toEqual([`skipped ${K.big}: not imported`]);
+  });
+
+  it("new keyless artifacts are unexpected, by id", async () => {
+    const before = await snapshot(target);
+    skill();
+    const ids = Array.from({ length: 5 }, (_, i) =>
+      fake.create({
+        ownerId: alice.id,
+        spaceId: alice.id,
+        importKey: null,
+        files: { "index.html": `extra ${i}` },
+      }),
+    );
+    const r = await check(before);
+    expect(r.unexpected.sort()).toEqual(ids.sort());
+    expect(problems(r)).toHaveLength(5);
+  });
+
+  it("new artifacts with malformed or unknown keys are unexpected", async () => {
+    const before = await snapshot(target);
+    skill();
+    const bad = fake.create({
+      ownerId: alice.id,
+      spaceId: alice.id,
+      importKey: "claude:no-artifact-id",
+      files: { "index.html": "x" },
+    });
+    const unknown = `claude:${C1}:not-in-export`;
+    fake.create({
+      ownerId: alice.id,
+      spaceId: alice.id,
+      importKey: unknown,
+      files: { "index.html": "y" },
+    });
+    const r = await check(before);
+    expect(r.unexpected.sort()).toEqual([bad, unknown].sort());
+  });
+
+  it("a rerun that deletes and recreates an artifact under a new id is unexpected", async () => {
+    skill();
+    const before = await snapshot(target);
+    const old = fake.artifacts.find((a) => a.importKey === K.notes);
+    fake.remove(old?.id ?? "");
+    skill();
+    const r = await check(before);
+    expect(r.duplicates).toEqual([]);
+    expect(r.unexpected).toEqual([K.notes]);
+  });
+
+  it("a rerun adding a version with content plus a newline is extra and wrong content", async () => {
+    skill();
+    const before = await snapshot(target);
+    const a = fake.artifacts.find((x) => x.importKey === K.notes);
+    const files = a?.versions[0].files ?? {};
+    fake.addVersion(a?.id ?? "", { "README.md": `${files["README.md"]}\n` });
+    const r = await check(before);
+    expect(r.extraVersions).toEqual([K.notes]);
+    expect(r.wrongContent).toEqual([K.notes]);
+  });
+
+  it("a first import with emptied files is wrong content", async () => {
+    const before = await snapshot(target);
+    skill();
+    const a = fake.artifacts.find((x) => x.importKey === K.planner);
+    if (a) a.versions[0].files = { "index.html": "" };
+    const r = await check(before);
+    expect(r.wrongContent).toEqual([K.planner]);
+    expect(r.extraVersions).toEqual([]);
+  });
+
+  it("a first import with two versions of distinct content is an extra version", async () => {
+    const before = await snapshot(target);
+    skill();
+    const a = fake.artifacts.find((x) => x.importKey === K.greet);
+    const files = a?.versions[0].files ?? {};
+    if (a) {
+      a.versions[0].files = { "index.html": "draft" };
+      fake.addVersion(a.id, files);
+    }
+    const r = await check(before);
+    expect(r.extraVersions).toEqual([K.greet]);
+    expect(r.wrongContent).toEqual([]);
   });
 
   // Review Focus 5, pinned: a rerun must not duplicate.
@@ -198,6 +303,19 @@ describe("checkImport", () => {
     skill({ doubleVersion: true }, edited);
     const r = await check(before, edited);
     expect(r.extraVersions).toEqual([K.notes]);
+  });
+
+  it("a rerun adding two versions of distinct content to a changed artifact is extra", async () => {
+    skill();
+    const before = await snapshot(target);
+    const edited = editedExport();
+    const a = fake.artifacts.find((x) => x.importKey === K.notes);
+    fake.addVersion(a?.id ?? "", { "README.md": "an interim draft\n" });
+    skill(undefined, edited);
+    expect(a?.versions).toHaveLength(3);
+    const r = await check(before, edited);
+    expect(r.extraVersions).toEqual([K.notes]);
+    expect(r.wrongContent).toEqual([]);
   });
 
   it("a first run that publishes the same content twice is an extra version", async () => {
@@ -277,6 +395,22 @@ describe("safety", () => {
   it("refuses a PAT file readable by group or others", async () => {
     chmodSync(target.patFile, 0o644);
     await expect(snapshot(target)).rejects.toThrow(/0600/);
+  });
+
+  it("refuses a PAT file not owned by the current user", async () => {
+    const uid = vi.spyOn(process, "getuid").mockReturnValue(424242);
+    try {
+      await expect(snapshot(target)).rejects.toThrow(/not owned/);
+    } finally {
+      uid.mockRestore();
+    }
+  });
+
+  it("refuses a before snapshot taken with another PAT", async () => {
+    const bobPat = join(dir, "bob-pat");
+    writeFileSync(bobPat, bob.token, { mode: 0o600 });
+    const before = await snapshot({ ...target, patFile: bobPat });
+    await expect(check(before)).rejects.toThrow(/different PATs/);
   });
 
   it("reads importKey only through importKeyOf", () => {
