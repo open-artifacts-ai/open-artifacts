@@ -68,7 +68,6 @@ export class HttpError extends Error {
   }
 }
 
-/** POST a /__test/* hook with the target's key. Throws HttpError unless 2xx. */
 // RL_ANON allows 30 hook calls a minute per install and IP, and its refusal is
 // the same 404 as every other. Stay under it: at most HOOK_LIMIT calls in any
 // HOOK_WINDOW_MS per install. Each live file runs in its own process, so the
@@ -107,6 +106,7 @@ async function paceHook(t: Target): Promise<void> {
   }
 }
 
+/** POST a /__test/* hook with the target's key. Throws HttpError unless 2xx. */
 export async function hook(
   t: Target,
   path: string,
