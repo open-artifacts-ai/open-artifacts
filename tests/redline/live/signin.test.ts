@@ -369,9 +369,9 @@ const publishCall = (title: string) =>
     },
   });
 
-async function share(s: Side, email: string) {
+async function share(s: Side, email: string, id = s.markerId) {
   const res = await fetch(
-    `${s.t.app}/api/v1/artifacts/${encodeURIComponent(s.markerId)}/shares`,
+    `${s.t.app}/api/v1/artifacts/${encodeURIComponent(id)}/shares`,
     withCred(s.pat, {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -383,15 +383,41 @@ async function share(s: Side, email: string) {
     throw new HttpError(`${s.t.name} share`, res, text);
 }
 
+/** A private html artifact on `s` that declares the db capability (data API). */
+async function publishDb(s: Side): Promise<string> {
+  const res = await fetch(
+    `${s.t.app}/api/v1/artifacts`,
+    withCred(s.pat, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title: `rl-db-${rand()}`,
+        format: "html",
+        content: "<p>red-line data artifact</p>",
+        capabilities: { db: true },
+      }),
+    }),
+  );
+  const text = await readBody(res);
+  if (res.status < 200 || res.status > 299)
+    throw new HttpError(`${s.t.name} publish db artifact`, res, text);
+  const id = (JSON.parse(text) as { id?: unknown }).id;
+  if (typeof id !== "string") throw new Error("db artifact: no id");
+  cleanup.push({ t: s.t, pat: s.pat, id });
+  return id;
+}
+
 describe("sign-in: guests", () => {
   let guest: string;
   let gB: Cred;
+  let dbArt: string;
 
   beforeAll(async () => {
     // One address: a guest of A (A shares with it) who is invited to B.
     guest = `rl-guest-${rand()}@${T.b.testDomain}`;
     await share(A, guest);
-    await share(B, guest);
+    dbArt = await publishDb(B);
+    await share(B, guest, dbArt);
     const out = (await hook(T.b, "/__test/session", {
       email: guest,
       role: "guest",
@@ -402,7 +428,7 @@ describe("sign-in: guests", () => {
 
   it("a guest of A invited to B reads on B but can't publish via MCP or the data API there", async () => {
     const b = T.b;
-    const art = `${b.app}/api/v1/artifacts/${encodeURIComponent(B.markerId)}`;
+    const art = `${b.app}/api/v1/artifacts/${encodeURIComponent(dbArt)}`;
     const csrf = { "x-oa-request": "1", "content-type": "application/json" };
     // Reads what B shared with it.
     const read = await send(new Request(art, withCred(gB)));
