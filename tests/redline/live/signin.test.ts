@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { afterAll, beforeAll, describe, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
 import {
   type Cred,
   describeRes,
@@ -23,9 +23,12 @@ import {
   type CookiePair,
   callbackReq,
   codeAccepted,
+  codeRequestReq,
   expectStateRefused,
+  expectTurnstileRequired,
   type FlowName,
   type GoogleStart,
+  labelTurnstileTestKey,
   latestOtp,
   parseCaptures,
   relayedTo,
@@ -266,7 +269,26 @@ type CodeCred = {
 const verifyAt = (c: CodeCred, host: Target) =>
   verifyReq(host, c.code, c.pending[sideOf(host)] as CookiePair);
 
+describe("sign-in: Turnstile", () => {
+  it("a code request with no Turnstile token is refused at each install (400 turnstile_required)", async (ctx) => {
+    // The server's own check still runs on the red-line installs, whatever
+    // token the other code cases send (rl-a and rl-b run the test secret).
+    if (T.mode !== "staging")
+      return proof(ctx, "staging-only", "local installs run without Turnstile");
+    for (const t of [T.a, T.b])
+      await expectTurnstileRequired(
+        t,
+        await send(
+          codeRequestReq(t, `rl-noturnstile-${rand()}@${t.testDomain}`),
+        ),
+      );
+  });
+});
+
 describe("sign-in: one-time codes", () => {
+  // On the dummy token these prove the code flow, not real bot protection.
+  beforeEach((ctx) => labelTurnstileTestKey(ctx, [T.a, T.b]));
+
   it("a code issued by A, entered at B with B's pending cookie: refused", async () => {
     const ea = await guestOn(T.a, "rl-otp");
     // A's guest is also B's guest (B shares with it), so B sends it a code of

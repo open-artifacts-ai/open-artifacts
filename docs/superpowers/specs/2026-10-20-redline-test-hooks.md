@@ -125,6 +125,30 @@ and its export are unchanged and still list no `test_hook` rows. Release
 builds drop it with the rest of `test-hooks/` (a strip-test marker and the
 `check-no-test-hooks` path list).
 
+## Turnstile test key (`POST /auth/code/request`)
+
+Hook installs change one non-hook route. With Cloudflare's always-pass
+Turnstile TEST secret, siteverify answers `{ success: true, hostname:
+"localhost", action: "test" }`, which the strict check (hostname = the app
+host, action `code_request`) refuses. `turnstileTestKeyPass`
+(`test-hooks/index.ts`) also accepts that exact answer when ALL hold:
+
+- the build allows hooks (`__OA_TEST_HOOKS_ALLOWED__` true);
+- `TEST_HOOKS` is `"1"`;
+- `TEST_HOOK_KEY` is 32+ chars;
+- `TEST_DOMAIN` is non-empty;
+- `TURNSTILE_SECRET` is exactly `1x0000000000000000000000000000000AA` (no
+  trimming, case-sensitive).
+
+Otherwise the strict check is unchanged, and a request with no token is still
+`400 turnstile_required`. It applies to every email, not only `TEST_DOMAIN`:
+on rl-a and rl-b, Turnstile is effectively off. The suite labels code
+sign-in cases run on the dummy token "Turnstile test key", and one live case
+checks the no-token 400 on each install. Release builds drop it with the rest
+of `test-hooks/` (`auth/turnstile.ts` reaches it only behind the build flag);
+the strip test asserts a marker and the secret literal are absent from the
+release bundle.
+
 ## `/healthz`
 
 `{ ok: true, plan, version, testHooks?: true, installId? }`. `testHooks` is

@@ -258,6 +258,7 @@ export function mountCodes(app: AppType): void {
       parsed.data.turnstileToken,
       ip,
       c.env.APP_HOST ?? new URL(c.req.url).hostname,
+      c.env,
     );
     if (!(await authLimit(c, cfg.installKey, ip))) return rateLimited(60, "ip");
     const ek = await emailKey(c.env, email);

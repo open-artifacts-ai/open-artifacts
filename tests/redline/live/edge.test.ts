@@ -26,6 +26,7 @@ import {
   type Side,
 } from "../src/refused.ts";
 import { proof } from "../src/report.ts";
+import { labelTurnstileTestKey, ownCodeRequestReq } from "../src/signin.ts";
 import {
   inventoryKeyOf,
   loadTargets,
@@ -492,6 +493,7 @@ describe("cross-site isolation", () => {
   });
 
   it("every app-host Set-Cookie is __Host- (Secure, Path=/, no Domain), on hook and code sign-in", async (ctx) => {
+    labelTurnstileTestKey(ctx, [T.a, T.b]);
     const strict = T.mode === "staging";
     const notes: string[] = [];
     for (const t of [T.a, T.b]) {
@@ -523,17 +525,9 @@ describe("cross-site isolation", () => {
         throw new Error(
           `${t.name} sign-out: no Set-Cookie (status ${out.status})`,
         );
-      // Code sign-in: request, the code from the hook, verify.
-      const req = await take(
-        await send(
-          new Request(`${t.app}/auth/code/request`, {
-            method: "POST",
-            redirect: "manual",
-            headers: sameOriginJson(),
-            body: JSON.stringify({ email }),
-          }),
-        ),
-      );
+      // Code sign-in: request (with the target's Turnstile token), the code
+      // from the hook, verify.
+      const req = await take(await send(ownCodeRequestReq(t, email)));
       const pending = req.headers
         .getSetCookie()
         .map((l) => l.split(";")[0] ?? "")

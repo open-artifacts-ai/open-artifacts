@@ -6,6 +6,7 @@ import {
   buildReport,
   type CaseResult,
   formatReport,
+  labelOf,
   levelOf,
   type Manifest,
   parseManifest,
@@ -65,11 +66,13 @@ export function collect(
       const { level, reason } = setupFailed
         ? { level: "fail" as const, reason: "setup failed" }
         : levelOf(state, t.meta());
+      const label = labelOf(t.meta());
       cases.push({
         name: t.fullName,
         file,
         level,
         ...(reason ? { reason } : {}),
+        ...(label ? { label } : {}),
       });
     }
     if (m.errors().length > 0)

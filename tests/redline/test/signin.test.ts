@@ -6,14 +6,21 @@ import { crossCheck, NotRefused } from "../src/refused.ts";
 import {
   CALLBACK_GOOGLE,
   CAPTURE_FLOWS,
+  codeRequestReq,
   expectStateRefused,
+  expectTurnstileRequired,
+  labelTurnstileTestKey,
+  ownCodeRequestReq,
   parseCaptures,
   signInRefused,
   stateAccepted,
+  TURNSTILE_DUMMY_TOKEN,
+  TURNSTILE_TEST_KEY,
   tamperInstall,
+  usesTurnstileTestKey,
 } from "../src/signin.ts";
-import type { Target } from "../src/targets.ts";
-import { type Fake, fakeServer } from "./fake.ts";
+import { parseTargets, type Target } from "../src/targets.ts";
+import { type Fake, fakeServer, secretDir } from "./fake.ts";
 
 const t = (name: string, app: string): Target => ({
   name,
@@ -207,5 +214,102 @@ describe("parseCaptures", () => {
     expect(() => parseCaptures(capDir({ mode: 0o644 }), T, started)).toThrow(
       /0600/,
     );
+  });
+});
+
+describe("Turnstile test key label", () => {
+  const targetsWith = (tokA?: string, tokB?: string) => {
+    const s = secretDir({
+      key: "k".repeat(40),
+      ...(tokA ? { "a-ts": tokA } : {}),
+      ...(tokB ? { "b-ts": tokB } : {}),
+    });
+    dirs.push(s.dir);
+    const tgt = (name: string, tsFile?: string) => ({
+      name,
+      installId: `${name}-id`,
+      app: `http://${name}.app.localhost:1`,
+      content: `http://${name}.content.localhost:1`,
+      testDomain: `${name}.test`,
+      hookKeyFile: s.path("key"),
+      ...(tsFile ? { turnstileFile: s.path(tsFile) } : {}),
+    });
+    return parseTargets({
+      REDLINE_TARGETS: JSON.stringify({
+        mode: "local",
+        a: tgt("rl-a", tokA ? "a-ts" : undefined),
+        b: tgt("rl-b", tokB ? "b-ts" : undefined),
+      }),
+    });
+  };
+  const ctx = () => ({ task: { meta: {} as { redlineLabel?: string } } });
+
+  it("the dummy token on either target labels the case", () => {
+    expect(TURNSTILE_TEST_KEY).toBe("Turnstile test key");
+    for (const [a, b] of [
+      [TURNSTILE_DUMMY_TOKEN, TURNSTILE_DUMMY_TOKEN],
+      [TURNSTILE_DUMMY_TOKEN, undefined],
+      [undefined, TURNSTILE_DUMMY_TOKEN],
+    ] as const) {
+      const T = targetsWith(a, b);
+      const c = ctx();
+      labelTurnstileTestKey(c, [T.a, T.b]);
+      expect(c.task.meta.redlineLabel).toBe("Turnstile test key");
+    }
+  });
+
+  it("ownCodeRequestReq sends the target's token, and none without one", async () => {
+    const T = targetsWith(TURNSTILE_DUMMY_TOKEN, undefined);
+    expect(await ownCodeRequestReq(T.a, "x@rl-a.test").json()).toEqual({
+      email: "x@rl-a.test",
+      turnstileToken: TURNSTILE_DUMMY_TOKEN,
+    });
+    expect(await ownCodeRequestReq(T.b, "x@rl-b.test").json()).toEqual({
+      email: "x@rl-b.test",
+    });
+  });
+
+  it("a real token, or none, leaves the case unlabeled", () => {
+    for (const [a, b] of [
+      ["0.real-token", "0.real-token"],
+      [undefined, undefined],
+    ] as const) {
+      const T = targetsWith(a, b);
+      const c = ctx();
+      labelTurnstileTestKey(c, [T.a, T.b]);
+      expect(c.task.meta.redlineLabel).toBeUndefined();
+      expect(usesTurnstileTestKey(T.a)).toBe(false);
+    }
+  });
+});
+
+describe("expectTurnstileRequired", () => {
+  const err = (status: number, code: string) =>
+    new Response(JSON.stringify({ error: { code, message: "m" } }), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+
+  it("passes only on 400 turnstile_required", async () => {
+    await expect(
+      expectTurnstileRequired(A, err(400, "turnstile_required")),
+    ).resolves.toBeUndefined();
+    for (const r of [
+      new Response("{}", { status: 202 }),
+      err(403, "turnstile_failed"),
+      err(400, "bad_request"),
+      err(503, "code_unavailable"),
+      new Response("not json", { status: 400 }),
+    ])
+      await expect(expectTurnstileRequired(A, r)).rejects.toThrow(
+        /rl-a code request without a Turnstile token: status \d+, body sha256:[0-9a-f]{16}/,
+      );
+  });
+
+  it("the request carries no turnstileToken", async () => {
+    const req = codeRequestReq(A, "x@rl-a.test");
+    expect(req.method).toBe("POST");
+    expect(new URL(req.url).pathname).toBe("/auth/code/request");
+    expect(await req.json()).toEqual({ email: "x@rl-a.test" });
   });
 });
