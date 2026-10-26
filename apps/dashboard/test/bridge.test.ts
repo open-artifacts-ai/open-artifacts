@@ -19,6 +19,8 @@ const DOC = { id: "d1", data: { x: 1 }, updatedAt: "now", updatedBy: null };
 
 class FakeWS {
   static all: FakeWS[] = [];
+  static CONNECTING = 0;
+  readyState = 0;
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -554,6 +556,29 @@ describe("db.offline", () => {
     await vi.advanceTimersByTimeAsync(1000);
     FakeWS.all[5]?.onopen?.();
     expect(offlines()).toHaveLength(1);
+  });
+
+  it("a handshake that hangs is closed after 10 s and counts as a failure", async () => {
+    vi.useFakeTimers();
+    mk();
+    sub("1");
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(FakeWS.all[0]?.closed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(FakeWS.all[0]?.closed).toBe(true);
+    // The browser then fires close: a first socket that never opened is offline.
+    close(FakeWS.all[0]);
+    expect(offlines()).toHaveLength(1);
+  });
+
+  it("an open socket is never closed by the connect timeout", async () => {
+    vi.useFakeTimers();
+    mk();
+    sub("1");
+    await vi.advanceTimersByTimeAsync(0);
+    FakeWS.all[0]?.onopen?.();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(FakeWS.all[0]?.closed).toBe(false);
   });
 
   it("a dropped socket is offline once it has been down 30 s", async () => {

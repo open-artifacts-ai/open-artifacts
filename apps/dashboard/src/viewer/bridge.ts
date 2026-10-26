@@ -67,6 +67,8 @@ const BACKOFF_CAP_MS = 30_000;
 /** A dropped socket is reported offline after this many failed reconnects, or OFFLINE_AFTER_MS down. */
 const OFFLINE_AFTER_TRIES = 3;
 const OFFLINE_AFTER_MS = 30_000;
+/** A socket still connecting after this long is closed and counts as a failed attempt. */
+const CONNECT_TIMEOUT_MS = 10_000;
 const DocPage = PageSchema(DataDocSchema);
 const KeyPage = PageSchema(StorageKeySchema);
 
@@ -173,7 +175,12 @@ export function createBridge(opts: BridgeOptions) {
     const hint = isEmbed() ? `${path.includes("?") ? "&" : "?"}embed=1` : "";
     const ws = new WebSocket(`${proto}//${location.host}${path}${hint}`);
     s.ws = ws;
+    // A hung handshake never fires close: give up on it so it counts as a failure.
+    const hung = setTimeout(() => {
+      if (ws.readyState === WebSocket.CONNECTING) ws.close();
+    }, CONNECT_TIMEOUT_MS);
     ws.onopen = () => {
+      clearTimeout(hung);
       s.attempt = 0;
       s.connected = true;
       s.offline = false;
@@ -203,6 +210,7 @@ export function createBridge(opts: BridgeOptions) {
       });
     };
     ws.onclose = (e) => {
+      clearTimeout(hung);
       if (disposed || s.ws !== ws || s.refs <= 0) return;
       s.ws = null;
       // 4403 hits every socket on any access change; tell the shell once, then retry as usual.
