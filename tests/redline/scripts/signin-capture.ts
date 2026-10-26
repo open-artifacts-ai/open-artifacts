@@ -1,14 +1,20 @@
-// Starts the real-tenant sign-in flows (P5 R6, staging only).
-//   REDLINE_TARGETS=... node --experimental-strip-types scripts/signin-capture.ts <dir>
-// Creates <dir> (0700) with flows.json (each start's state and the install's
-// state cookie) and urls.txt (the URL to open per flow, and the user to sign
-// in as), both 0600. Nothing is printed but the paths. Then, within 9 minutes,
-// for each flow a real tenant user completes Google sign-in in a browser and
-// the callback URL is saved to <dir>/<flow>.url (0600), and the suite runs
-// with REDLINE_SIGNIN_CAPTURES=<dir>. See docs/ops/redline-signin.md.
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+// The real-tenant sign-in step (P5 R6, staging, macOS). Runbook:
+// docs/ops/redline-signin.md.
+//   REDLINE_TARGETS=... node --experimental-strip-types scripts/signin-capture.ts [--gate]
+// For each flow in CAPTURE_FLOWS: starts a sign-in at the install (the state
+// cookie stays in a 0700 temp dir, never the browser), puts the sign-in URL on
+// the clipboard, waits while the user signs in as the named test user and
+// copies the callback request URL, then reads it from the clipboard into a
+// 0600 file and clears the clipboard. Nothing is printed but flow names,
+// users and verdicts. Then runs the live suite with REDLINE_SIGNIN_CAPTURES
+// and removes the directory.
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import {
+  CALLBACK_GOOGLE,
   CAPTURE_FLOWS,
   type FlowName,
   type StartedFlow,
@@ -16,37 +22,83 @@ import {
 } from "../src/signin.ts";
 import { loadTargets } from "../src/targets.ts";
 
-const dir = process.argv[2];
-if (!dir) {
-  console.error("usage: signin-capture.ts <dir>");
-  process.exit(2);
-}
 const T = await loadTargets();
 if (T.mode !== "staging") {
   console.error("signin-capture: staging targets only");
   process.exit(2);
 }
-mkdirSync(dir, { recursive: true, mode: 0o700 });
-chmodSync(dir, 0o700);
+const copy = (s: string) => execFileSync("pbcopy", { input: s });
+const paste = () => execFileSync("pbpaste", { encoding: "utf8" }).trim();
+
+const dir = mkdtempSync(join(tmpdir(), "oa-redline-signin-"));
+const rl = createInterface({ input: process.stdin, output: process.stdout });
 const flows: StartedFlow[] = [];
-const urls: string[] = [];
-for (const [flow, spec] of Object.entries(CAPTURE_FLOWS)) {
-  const s = await startGoogle(T[spec.at]);
-  if (!s) {
-    console.error(
-      `signin-capture: Google sign-in is off on ${T[spec.at].name}`,
-    );
-    process.exit(1);
+let code = 1;
+try {
+  for (const [flow, spec] of Object.entries(CAPTURE_FLOWS)) {
+    const t = T[spec.at];
+    const s = await startGoogle(t);
+    if (!s) throw new Error(`Google sign-in is off on ${t.name}`);
+    flows.push({
+      flow: flow as FlowName,
+      at: spec.at,
+      state: s.state,
+      cookie: s.cookie,
+      startedAt: Date.now(),
+    });
+    copy(s.location.toString());
+    for (;;) {
+      await rl.question(
+        `\n[${flows.length}/${Object.keys(CAPTURE_FLOWS).length}] Sign in as ${spec.user}.\n` +
+          "  The sign-in URL is on the clipboard: paste it into the address bar of the\n" +
+          "  window with DevTools open, sign in, then copy the callback request URL.\n" +
+          "  Press Enter when it is copied. ",
+      );
+      let u: URL | null = null;
+      try {
+        u = new URL(paste());
+      } catch {}
+      if (
+        u?.origin === t.app &&
+        u.pathname === CALLBACK_GOOGLE &&
+        u.searchParams.get("state") === s.state &&
+        u.searchParams.get("code")
+      ) {
+        writeFileSync(join(dir, `${flow}.url`), u.toString(), { mode: 0o600 });
+        copy("");
+        console.log(`  ${flow}: captured.`);
+        break;
+      }
+      console.log(
+        `  ${flow}: the clipboard isn't this flow's ${t.name} callback URL (with a code). Copy it again.`,
+      );
+    }
   }
-  flows.push({
-    flow: flow as FlowName,
-    at: spec.at,
-    state: s.state,
-    cookie: s.cookie,
-    startedAt: Date.now(),
+  writeFileSync(join(dir, "flows.json"), JSON.stringify(flows), {
+    mode: 0o600,
   });
-  urls.push(`${flow}\t${spec.user}\t${s.location.toString()}`);
+  rl.close();
+  const gate = process.argv.includes("--gate") ? ["--gate"] : [];
+  const child = spawn(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      join(import.meta.dirname, "redline.ts"),
+      ...gate,
+    ],
+    {
+      stdio: "inherit",
+      env: { ...process.env, REDLINE_SIGNIN_CAPTURES: dir },
+    },
+  );
+  code = await new Promise((r) => child.on("exit", (c) => r(c ?? 1)));
+} catch (e) {
+  console.error(`signin-capture: ${e instanceof Error ? e.message : "failed"}`);
+} finally {
+  rl.close();
+  try {
+    copy("");
+  } catch {}
+  rmSync(dir, { recursive: true, force: true });
 }
-writeFileSync(join(dir, "flows.json"), JSON.stringify(flows), { mode: 0o600 });
-writeFileSync(join(dir, "urls.txt"), `${urls.join("\n")}\n`, { mode: 0o600 });
-console.log(`signin-capture: wrote ${join(dir, "flows.json")} and urls.txt`);
+process.exit(code);
