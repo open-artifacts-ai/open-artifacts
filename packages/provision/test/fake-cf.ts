@@ -177,8 +177,16 @@ export class FakeCf {
   d1ResultInfo = true;
   private sessions = new Map<
     string,
-    { buckets: string[][]; done: number; completion: string }
+    {
+      buckets: string[][];
+      done: number;
+      completion: string;
+      /** Manifest path per hash, as Cloudflare knows it from the session. */
+      paths: Map<string, string>;
+    }
   >();
+  /** The Content-Type each uploaded asset will be served with, by path. */
+  readonly assetTypes = new Map<string, string>();
   private bucketJwts = new Map<string, string>();
   private completions = new Set<string>();
   readonly artifacts = new Map<string, { title: string; content: string }>();
@@ -736,7 +744,10 @@ export class FakeCf {
         return env({ jwt, buckets: [] });
       }
       const buckets = missing.map((h) => [h]);
-      this.sessions.set(jwt, { buckets, done: 0, completion });
+      const paths = new Map(
+        Object.entries(manifest).map(([p, v]) => [v.hash, p] as const),
+      );
+      this.sessions.set(jwt, { buckets, done: 0, completion, paths });
       return env({ jwt, buckets });
     }
     if (!s)
@@ -836,12 +847,21 @@ export class FakeCf {
     if (!s || !sessJwt) return fail(401, "invalid assets session");
     const form = await req.formData();
     for (const [hash, v] of formEntries(form)) {
-      if (typeof v !== "string")
-        return fail(400, "parts must be base64 strings");
-      const bytes = Buffer.from(v, "base64");
-      const h = createHash("sha256").update(bytes).digest("hex").slice(0, 32);
+      // Cloudflare serves each asset with its part's Content-Type, so an
+      // untyped part (a plain string field) would be served with none.
+      if (typeof v === "string" || !v.type)
+        return fail(400, "each part needs its Content-Type");
+      const b64 = await v.text();
+      const path = s.paths.get(hash);
+      if (!path) return fail(400, "part not in the session manifest");
+      const ext = path.includes(".") ? (path.split(".").pop() as string) : "";
+      const h = createHash("sha256")
+        .update(b64 + ext)
+        .digest("hex")
+        .slice(0, 32);
       if (h !== hash) return fail(400, "hash mismatch");
       this.assetHashes.add(hash);
+      this.assetTypes.set(path, v.type);
     }
     s.done++;
     if (s.done < s.buckets.length) {

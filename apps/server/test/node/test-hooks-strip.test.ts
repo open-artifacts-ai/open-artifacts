@@ -20,7 +20,11 @@ const MARKERS = [
   "and exists (select 1 from spaces where id = ?1 and kind = 'shared' and deleted_at is null)",
   // The audit hook's read (test_hook rows only).
   "where actor_kind = 'test_hook' and substr(action, 1, 10) = 'test_hook.' and at >= ?1",
+  // The Turnstile test-key acceptance (turnstileTestKeyPass).
+  'out.hostname === "localhost"',
 ];
+// Cloudflare's always-pass Turnstile TEST secret: never in a release bundle.
+const TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA";
 
 function bundle(variant: "release" | "redline"): string {
   const out = mkdtempSync(join(tmpdir(), `oa-${variant}-`));
@@ -50,6 +54,8 @@ describe.skipIf(!ready && process.env.OA_REQUIRE_REAL_BUILD !== "1")(
         expect(rel.includes(m), m).toBe(false);
         expect(red.includes(m), m).toBe(true);
       }
+      expect(rel.includes(TURNSTILE_TEST_SECRET), "test secret").toBe(false);
+      expect(red.includes(TURNSTILE_TEST_SECRET), "test secret").toBe(true);
     }, 120_000);
   },
 );

@@ -35,8 +35,7 @@ describe("redline-staging.yml", () => {
     expect(Object.keys(w.jobs)).toEqual(["redline"]);
     expect(job.environment).toBe("redline-staging");
     expect(job.permissions).toBeUndefined();
-    expect(job["timeout-minutes"]).toBeGreaterThan(0);
-    expect(job["timeout-minutes"]).toBeLessThanOrEqual(30);
+    expect(job["timeout-minutes"]).toBe(45);
     expect(w.concurrency).toEqual({
       group: "redline",
       "cancel-in-progress": false,
@@ -69,7 +68,7 @@ describe("redline-staging.yml", () => {
   it("the suite gets the secrets dir by path, runs live without the gate, and the files are removed", () => {
     const run = steps.find((s) => (s.run ?? "").includes("@oa/redline live"));
     expect(run?.run).toContain(
-      `jq -c --arg d "$RUNNER_TEMP/redline-secrets" '. + {secretsDir: $d}'`,
+      `jq -c --arg d "$RUNNER_TEMP/redline-secrets" --arg t "$t" '. + {secretsDir: $d} | .a.turnstileFile = $t | .b.turnstileFile = $t'`,
     );
     expect(run?.run).not.toMatch(/--gate|REDLINE_GATE/);
     expect(JSON.stringify(run)).not.toContain("secrets.");
@@ -129,5 +128,22 @@ describe("redline-staging.yml", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(up[0]?.with?.path).toBe("${{ runner.temp }}/redline-report");
     expect(text).not.toMatch(/redline-secrets[^"\n]*\n[^\n]*upload/);
+  });
+
+  it("the live suite prints each case as it runs and still writes the report", () => {
+    const cfg = readFileSync(
+      join(root, "tests/redline/vitest.live.config.ts"),
+      "utf8",
+    );
+    expect(cfg).toContain('reporters: ["verbose", "./src/reporter.ts"],');
+  });
+
+  it("both targets send Cloudflare's dummy Turnstile token from a 0600 file outside the secrets dir", () => {
+    const run = steps.find((s) => (s.run ?? "").includes("@oa/redline live"));
+    expect(run?.run).toContain('t="$RUNNER_TEMP/redline-turnstile-token"');
+    expect(run?.run).toContain(
+      `(umask 077 && printf '%s' 'XXXX.DUMMY.TOKEN.XXXX' > "$t")`,
+    );
+    expect(run?.run).not.toContain("redline-secrets/redline-turnstile");
   });
 });

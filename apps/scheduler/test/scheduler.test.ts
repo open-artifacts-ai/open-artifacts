@@ -633,7 +633,13 @@ describe("runNightly", () => {
       timeoutMs: 10,
       leakMs: 10,
     });
-    await realSleep(150);
+    // Wait for the cap to fill (a deadline, not a fixed sleep: a slow
+    // runner takes longer to time out and leak the first two calls).
+    for (const t0 = Date.now(); f.calls.length < 4 && Date.now() - t0 < 5_000; )
+      await realSleep(5);
+    expect(f.calls).toHaveLength(4);
+    // Held at the cap: no fifth call while all four are unsettled.
+    await realSleep(100);
     expect(f.calls).toHaveLength(4);
     release();
     const r = await p;
