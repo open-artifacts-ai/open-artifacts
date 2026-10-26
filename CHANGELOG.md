@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.58.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.57.1...v0.58.0) (2026-10-26)
+
+
+### Features
+
+* **hosted:** delete revokes the directory grant first; purge owner email after 30 days ([#648](https://github.com/open-artifacts-ai/open-artifacts/issues/648)) ([b9f2598](https://github.com/open-artifacts-ai/open-artifacts/commit/b9f25983fa80f538bb3a123843153d0a981416e8))
+
 ## [0.57.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.57.0...v0.57.1) (2026-10-26)
 
 
