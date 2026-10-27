@@ -50,6 +50,7 @@ only, and nothing secret is printed.
 | `TEST_DOMAIN` is not in `AUTH_DOMAINS`, and each install's tenant domain is | in-domain addresses never get codes on a google+email install |
 | alice is invited to (or a member of) `rl-a`, dave of `rl-b` (`GET /api/v1/members`, admin PAT) | invite them |
 | Each install's sign-in start reaches Google through the broker | the broker or its registry is down |
+| Each install's server reaches its broker (`POST /__test/broker-probe`: a signed redeem with a junk code; green only on the broker's own 401) | "rl-x: install can't reach the auth broker (status N)", e.g. 522. Until the server ships the hook this reads "unchecked (hook not deployed)" and refuses, unless `REDLINE_ALLOW_UNCHECKED_BROKER=1` |
 
 The inventory key is a GitHub secret only, so on a laptop the inventory check
 says **CI-only (not-local)** instead of refusing: the inventory cases then
@@ -140,8 +141,13 @@ start and end of a run; it is a no-op until that server hook exists.)
 `report.json` (and the printed summary) records, for every case that isn't a
 pass, a redacted reason: the error message with codes, states, cookies, tokens
 and emails replaced, plus the leg (for example "A's credential at B"), the
-install, and the expected and actual verdict. A capture problem (missing, too
-old, for other installs) is `unproven-live` with its reason, never a bare fail.
+install, and the expected and actual verdict. Each capture leg also records
+what the install itself logged for that sign-in (its `test_hook.signin` audit
+row, through `POST /__test/audit`), verbatim as
+`[install: refused: stage broker_http status 522]`, or
+`[install: (stage unavailable)]` until the server ships those rows. A capture
+problem (missing, too old, for other installs, not from this run) is
+`unproven-live` with its reason, never a bare fail.
 
 ## The rehearsal (no human)
 

@@ -1,7 +1,9 @@
 import { chmodSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { HttpError } from "../src/http.ts";
 import {
+  brokerProbeCheck,
   compareVersions,
   fileChecks,
   formatPreflight,
@@ -183,5 +185,72 @@ describe("preflight network checks (read-only)", () => {
       "ok",
     );
     expect(formatPreflight(c)).not.toContain(SECRET);
+  });
+});
+
+describe("preflight: the install's own path to its broker (POST /__test/broker-probe)", () => {
+  const t = {
+    name: "rl-a",
+    installId: "ia",
+    app: "https://rl-a.example.test",
+    content: "https://rl-a.content.test",
+    testDomain: "a.test",
+    cookieName: "__Host-oa_session",
+    hookKeyFile: "/dev/null",
+  };
+  const answer = (v: unknown) => async () => v;
+  const http = (status: number) => async (): Promise<unknown> => {
+    throw new HttpError("rl-a hook", new Response(null, { status }), "");
+  };
+
+  it("green only on the broker's own refusal (401)", async () => {
+    expect(
+      await brokerProbeCheck(t, { call: answer({ status: 401 }) }),
+    ).toEqual({
+      name: "rl-a broker from the install",
+      status: "ok",
+      detail: "the broker refused a junk redeem (401): reachable",
+    });
+  });
+
+  it("names a 522, a 5xx, a broker 404, a hook error and a timeout", async () => {
+    const detail = async (o: Parameters<typeof brokerProbeCheck>[1]) => {
+      const c = await brokerProbeCheck(t, o);
+      expect(c.status).toBe("gap");
+      return c.detail;
+    };
+    expect(await detail({ call: answer({ status: 522 }) })).toBe(
+      "rl-a: install can't reach the auth broker (status 522)",
+    );
+    expect(await detail({ call: answer({ status: 503 }) })).toMatch(
+      /status 503\)$/,
+    );
+    expect(await detail({ call: answer({ status: 404 }) })).toMatch(
+      /status 404\)$/,
+    );
+    expect(await detail({ call: answer({}) })).toMatch(/status unknown\)$/);
+    expect(await detail({ call: http(500) })).toMatch(/status hook 500\)$/);
+    expect(
+      await detail({ call: () => new Promise(() => {}), timeoutMs: 20 }),
+    ).toMatch(/status timeout\)$/);
+  });
+
+  it("the hook not deployed (404 on its route) refuses, unless explicitly allowed", async () => {
+    const off = await brokerProbeCheck(t, { call: http(404) });
+    expect(off).toMatchObject({
+      status: "gap",
+      detail: expect.stringMatching(
+        /^broker reachability from the install: unchecked \(hook not deployed\); set REDLINE_ALLOW_UNCHECKED_BROKER=1/,
+      ),
+    });
+    const allowed = await brokerProbeCheck(t, {
+      call: http(404),
+      allowUnchecked: true,
+    });
+    expect(allowed.status).toBe("unchecked");
+    expect(gaps([allowed])).toEqual([]);
+    expect(formatPreflight([allowed])).toMatch(
+      /SKIP rl-a broker from the install: broker reachability from the install: unchecked/,
+    );
   });
 });

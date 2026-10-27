@@ -130,7 +130,12 @@ describe.skipIf(!on)(
       expect(left).toEqual([]);
     }, 120_000);
 
-    const preflightOpts = () => ({ idp: idp.origin, map: loopbackHttp });
+    // The broker-probe hook isn't deployed yet (next server PR): allowed here.
+    const preflightOpts = () => ({
+      idp: idp.origin,
+      map: loopbackHttp,
+      allowUncheckedBroker: true,
+    });
 
     it("preflight names each gap (users not invited), then is green once they are", async () => {
       // Local mode: no PAT, Turnstile, inventory or strayHost files to check.
@@ -316,7 +321,7 @@ describe.skipIf(!on)(
       const a = v.legs.find((l) => l.flow === "a-alice");
       expect(a).toMatchObject({ verdict: "fail", leg: "A's credential at A" });
       expect(a?.reason).toMatch(
-        /^A's credential at A \(rl-a; expected signed in \(302 with a session cookie\)\): A's credential failed at A \(status 302, .*; to \/sign-in\?error=failed\)$/,
+        /^A's credential at A \(rl-a; expected signed in \(302 with a session cookie\)\): A's credential failed at A \(status 302, .*; to \/sign-in\?error=failed\) \[install: \(stage unavailable\)\]$/,
       );
 
       const r = await runSuite({

@@ -18,7 +18,9 @@ import {
   type LegVerdict,
   redeemCapture,
   runCaptures,
+  STAGE_UNAVAILABLE,
   type StartedFlow,
+  signinStage,
   VERDICTS_FILE,
   type Verdicts,
 } from "../src/capture.ts";
@@ -478,5 +480,92 @@ describe("runCaptures (the script's loop, driven programmatically)", () => {
     expect(lstatSync(f).mode & 0o777).toBe(0o600);
     const text = readFileSync(f, "utf8");
     expect(text).not.toMatch(/cookie-|ok:|-st-/);
+  });
+});
+
+describe("the install's own stage per leg (POST /__test/audit, test_hook.signin rows)", () => {
+  const rows =
+    (...events: unknown[]) =>
+    async () => ({ events });
+  const signin = (o: Record<string, unknown>) => ({
+    action: "test_hook.signin",
+    at: Date.now(),
+    ...o,
+  });
+
+  it("formats the last signin row: outcome, stage, status", async () => {
+    expect(
+      await signinStage(
+        A,
+        0,
+        rows(
+          { action: "test_hook.session" },
+          signin({ outcome: "ok", stage: "ok", provider: "google" }),
+          signin({
+            outcome: "refused",
+            stage: "broker_http",
+            status: 522,
+            provider: "google",
+            domain: "oa-redline-c.fyi",
+          }),
+        ),
+      ),
+    ).toBe("refused: stage broker_http status 522");
+    // Fields nested under meta, no status.
+    expect(
+      await signinStage(
+        A,
+        0,
+        rows({
+          action: "test_hook.signin",
+          meta: { outcome: "refused", stage: "tenant" },
+        }),
+      ),
+    ).toBe("refused: stage tenant");
+  });
+
+  it("(stage unavailable) without the hook, the rows or a safe stage", async () => {
+    const http404 = async (): Promise<unknown> => {
+      throw new Error("hook 404");
+    };
+    expect(await signinStage(A, 0, http404)).toBe(STAGE_UNAVAILABLE);
+    expect(await signinStage(A, 0, rows())).toBe(STAGE_UNAVAILABLE);
+    expect(await signinStage(A, 0, async () => ({}))).toBe(STAGE_UNAVAILABLE);
+    expect(
+      await signinStage(A, 0, rows(signin({ stage: "alice@x.test" }))),
+    ).toBe(STAGE_UNAVAILABLE);
+  });
+
+  it("each leg records it; a failed leg's reason carries it verbatim", async () => {
+    const T = { a: await fakeInstall("rl-a"), b: await fakeInstall("rl-b") };
+    const asked: [string, number][] = [];
+    const v = await redeemCapture(
+      T,
+      {
+        flow: "a-alice-replay",
+        at: "a",
+        cookie: { name: "oa_oidc_1", value: "cookie-1" },
+        query: { state: "a-st", code: "failed:x" },
+        startedAt: Date.now() - 1000,
+        expiresAt: Date.now() + 60_000,
+      },
+      Date.now,
+      async (t, since) => {
+        asked.push([t.name, since]);
+        return t.name === "rl-a"
+          ? "refused: stage broker_http status 522"
+          : STAGE_UNAVAILABLE;
+      },
+    );
+    expect(asked.map(([n]) => n)).toEqual(["rl-b", "rl-a"]);
+    expect(v[0]).toMatchObject({ verdict: "pass", stage: STAGE_UNAVAILABLE });
+    expect(v[0]?.reason).toBeUndefined();
+    expect(v[1]).toMatchObject({
+      verdict: "fail",
+      stage: "refused: stage broker_http status 522",
+    });
+    expect(v[1]?.reason).toMatch(
+      /error=failed\) \[install: refused: stage broker_http status 522\]$/,
+    );
   });
 });

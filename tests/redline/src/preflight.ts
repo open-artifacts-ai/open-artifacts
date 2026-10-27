@@ -1,6 +1,13 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { adminCreds, type Cred, readBody, withCred } from "./http.ts";
+import {
+  adminCreds,
+  type Cred,
+  HttpError,
+  hook,
+  readBody,
+  withCred,
+} from "./http.ts";
 import { CAPTURE_FLOWS, googleUrlOf, startGoogle } from "./signin.ts";
 import {
   loadTargets,
@@ -16,7 +23,8 @@ import {
 // sign-ins are left to the human. Secret files are checked by existence and
 // mode only here; values are never printed.
 
-export type CheckStatus = "ok" | "gap" | "ci-only";
+/** "unchecked": not verifiable yet, explicitly allowed (never green by itself). */
+export type CheckStatus = "ok" | "gap" | "ci-only" | "unchecked";
 
 export interface Check {
   name: string;
@@ -222,7 +230,80 @@ async function adminPat(T: Targets, t: Target): Promise<Cred | null> {
   return null;
 }
 
+export const BROKER_PROBE_HOOK = "/__test/broker-probe";
+export const UNCHECKED_BROKER =
+  "broker reachability from the install: unchecked (hook not deployed)";
+
+/**
+ * The install's own server-side path to its broker: POST /__test/broker-probe
+ * makes the install send a signed redeem with a junk code to its broker and
+ * answer {status} (the hook comes with the next server PR). Green only on
+ * the broker's own refusal, 401. Any other status, a timeout or an error is
+ * "<install>: install can't reach the auth broker (status N)". A 404 from the
+ * hook route means the hook isn't deployed: a gap, unless `allowUnchecked`.
+ */
+export async function brokerProbeCheck(
+  t: Target,
+  o: { allowUnchecked?: boolean; call?: typeof hook; timeoutMs?: number } = {},
+): Promise<Check> {
+  const name = `${t.name} broker from the install`;
+  const cant = (s: string): Check => ({
+    name,
+    status: "gap",
+    detail: `${t.name}: install can't reach the auth broker (status ${s})`,
+  });
+  let out: unknown;
+  try {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    out = await Promise.race([
+      (o.call ?? hook)(t, BROKER_PROBE_HOOK, {}),
+      new Promise<never>((_, rej) => {
+        timer = setTimeout(
+          () => rej(new Error("broker probe timeout")),
+          o.timeoutMs ?? 30_000,
+        );
+      }),
+    ]).finally(() => clearTimeout(timer));
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 404)
+      return o.allowUnchecked
+        ? {
+            name,
+            status: "unchecked",
+            detail: `${UNCHECKED_BROKER}; allowed by REDLINE_ALLOW_UNCHECKED_BROKER=1`,
+          }
+        : {
+            name,
+            status: "gap",
+            detail: `${UNCHECKED_BROKER}; set REDLINE_ALLOW_UNCHECKED_BROKER=1 to start anyway`,
+          };
+    if (e instanceof HttpError) return cant(`hook ${e.status}`);
+    return cant(
+      e instanceof Error && /abort|timeout/i.test(`${e.name} ${e.message}`)
+        ? "timeout"
+        : "error",
+    );
+  }
+  const st = (out as { status?: unknown } | null)?.status;
+  if (st === 401)
+    return {
+      name,
+      status: "ok",
+      detail: "the broker refused a junk redeem (401): reachable",
+    };
+  return cant(
+    typeof st === "number" ||
+      (typeof st === "string" && /^[a-z0-9_]{1,20}$/i.test(st))
+      ? String(st)
+      : "unknown",
+  );
+}
+
 export interface PreflightOpts {
+  /** Accept an undeployed broker-probe hook (REDLINE_ALLOW_UNCHECKED_BROKER=1). */
+  allowUncheckedBroker?: boolean;
+  /** The hook caller (tests). */
+  call?: typeof hook;
   /** The suite's release (default the repo's). */
   expectVersion?: string;
   /** The IdP's authorize origin (the rehearsal's fake IdP). */
@@ -380,6 +461,14 @@ export async function networkChecks(
           ? "reachable, redirects to the IdP"
           : "direct to the IdP",
       });
+      // The browser reaches the broker; can the install's server reach it?
+      if (viaBroker)
+        out.push(
+          await brokerProbeCheck(t, {
+            ...(o.allowUncheckedBroker ? { allowUnchecked: true } : {}),
+            ...(o.call ? { call: o.call } : {}),
+          }),
+        );
     } catch (e) {
       out.push({
         name: `${t.name} broker`,
@@ -407,7 +496,13 @@ export async function preflight(
       detail: `REDLINE_TARGETS doesn't load: ${e instanceof Error ? e.message : "error"}`,
     });
   }
-  if (T) checks.push(...(await networkChecks(T, o)));
+  if (T)
+    checks.push(
+      ...(await networkChecks(T, {
+        allowUncheckedBroker: env.REDLINE_ALLOW_UNCHECKED_BROKER === "1",
+        ...o,
+      })),
+    );
   return { checks, targets: T };
 }
 
@@ -415,7 +510,12 @@ export const gaps = (c: readonly Check[]) =>
   c.filter((x) => x.status === "gap");
 
 export function formatPreflight(c: readonly Check[]): string {
-  const tag = { ok: "ok  ", gap: "GAP ", "ci-only": "CI  " } as const;
+  const tag = {
+    ok: "ok  ",
+    gap: "GAP ",
+    "ci-only": "CI  ",
+    unchecked: "SKIP",
+  } as const;
   const lines = c.map((x) => `  ${tag[x.status]} ${x.name}: ${x.detail}`);
   const g = gaps(c).length;
   lines.push(

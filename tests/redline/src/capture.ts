@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { send } from "./http.ts";
+import { hook, send } from "./http.ts";
 import {
   atLeg,
   type LegInfo,
@@ -271,6 +271,8 @@ export interface LegVerdict {
   /** Redacted; set on a fail. */
   reason?: string;
   actual?: string;
+  /** What the install recorded (signinStage), or STAGE_UNAVAILABLE. */
+  stage?: string;
   startedAt: number;
   redeemedAt: number;
 }
@@ -344,13 +346,67 @@ const expectOf = (l: CaptureLeg) =>
  * or refusedLeg, the same verdicts crossCheck applies. A leg that throws
  * before any response (a fresh start that fails) is a fail with its reason.
  */
+export const AUDIT_HOOK = "/__test/audit";
+export const STAGE_UNAVAILABLE = "(stage unavailable)";
+
+/** A hook caller (http.ts hook, or a test's mock). */
+export type HookFn = (
+  t: Target,
+  path: string,
+  body?: unknown,
+) => Promise<unknown>;
+
+/**
+ * What the install itself recorded for the sign-in a leg sent: the last
+ * test_hook.signin audit row since `since` (POST /__test/audit; the rows
+ * come with the next server PR), as "<outcome>: stage <stage>[ status N]",
+ * e.g. "refused: stage broker_http status 522". STAGE_UNAVAILABLE when the
+ * hook or the rows are absent. Only safe tokens are kept (no ids, no emails).
+ */
+export async function signinStage(
+  t: Target,
+  since: number,
+  call: HookFn = hook,
+): Promise<string> {
+  let out: unknown;
+  try {
+    out = await call(t, AUDIT_HOOK, { since });
+  } catch {
+    return STAGE_UNAVAILABLE;
+  }
+  const events = (out as { events?: unknown } | null)?.events;
+  if (!Array.isArray(events)) return STAGE_UNAVAILABLE;
+  const rows = events.filter(
+    (e) => (e as { action?: unknown } | null)?.action === "test_hook.signin",
+  ) as Record<string, unknown>[];
+  const r = rows.at(-1);
+  if (!r) return STAGE_UNAVAILABLE;
+  const meta = (r.meta ?? r.detail ?? {}) as Record<string, unknown>;
+  const f = (k: string) => r[k] ?? meta[k];
+  const word = (v: unknown) =>
+    typeof v === "string" && /^[a-z0-9_.-]{1,64}$/i.test(v) ? v : null;
+  const stage = word(f("stage"));
+  if (!stage) return STAGE_UNAVAILABLE;
+  const outcome = word(f("outcome"));
+  const st = f("status");
+  const status =
+    typeof st === "number" || (typeof st === "string" && /^\d{3}$/.test(st))
+      ? ` status ${st}`
+      : "";
+  return `${outcome ? `${outcome}: ` : ""}stage ${stage}${status}`;
+}
+
 export async function redeemCapture(
   T: Pick<Targets, "a" | "b">,
   c: Capture,
   now: () => number = Date.now,
+  stageOf: (t: Target, since: number) => Promise<string> = signinStage,
 ): Promise<LegVerdict[]> {
   const out: LegVerdict[] = [];
+  const starts: number[] = [];
   for (const l of CAPTURE_LEGS[c.flow]) {
+    // A little before: the install's clock may run behind this one.
+    starts.push(Date.now() - 2_000);
     const host = T[l.host];
     const info: LegInfo = {
       leg: l.leg,
@@ -396,6 +452,13 @@ export async function redeemCapture(
       });
     }
   }
+  // The install's own stage per leg, read after every leg of this flow ran
+  // (a paced hook call never delays a redeem).
+  for (const [i, l] of CAPTURE_LEGS[c.flow].entries()) {
+    const v = out[i] as LegVerdict;
+    v.stage = await stageOf(T[l.host], starts[i] as number);
+    if (v.verdict === "fail") v.reason = `${v.reason} [install: ${v.stage}]`;
+  }
   return out;
 }
 
@@ -439,6 +502,8 @@ export interface CaptureOpts {
   flows?: readonly FlowName[];
   /** The suite's commit (default git HEAD). */
   suiteSha?: string;
+  /** Reads a leg's stage at its install (default signinStage). */
+  stageOf?: (t: Target, since: number) => Promise<string>;
 }
 
 /**
@@ -519,7 +584,7 @@ export async function runCaptures(
     io.say(
       `  ${flow}: captured, ${p.n} of ${p.total}. Time left before the first capture expires: ${mmss(firstExpires - now())}. Redeeming it now.`,
     );
-    const legs = await redeemCapture(T, capture, now);
+    const legs = await redeemCapture(T, capture, now, o.stageOf);
     verdicts.legs.push(...legs);
     verdicts.finishedAt = now();
     writeVerdicts(dir, verdicts);
