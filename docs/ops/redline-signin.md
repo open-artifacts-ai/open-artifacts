@@ -5,14 +5,24 @@ aud at B** (`tests/redline/live/signin.test.ts`). Without this step they report
 `unproven-live` and the gate fails. The step is **5 Google sign-ins** with two
 test users, then the suite runs. The suite never mints or signs a token.
 
-The callback URL you copy is a live credential for a few minutes: it goes from
-the clipboard into a 0600 file the suite reads, and the clipboard is cleared.
-**Never paste it into chat, an issue or a terminal.**
+The callback URL you copy is a live credential for a few minutes. The script
+reads it from the clipboard, clears the clipboard and redeems it **at once**
+(it never goes to disk): it runs that sign-in's legs right after its own
+prompt (the same checks the suite's `crossCheck` makes) and writes each leg's
+verdict, with a redacted reason, to a 0600 verdicts file. The suite's two
+ID-token cases then report from those verdicts. **Never paste the URL into
+chat, an issue or a terminal.**
+
+The whole path is rehearsed with no human against a fake Google on the local
+pair (`tests/redline/test/rehearsal.test.ts`, below), so a green rehearsal and
+a green preflight leave only the Google sign-ins to you.
 
 ## Before you start
 
-- A Mac with this repo, `REDLINE_TARGETS` for `rl-a`/`rl-b` and its 0600
-  secret files (as for any staging red-line run).
+- A Mac with this repo, `REDLINE_TARGETS` for `rl-a`/`rl-b` (the kit's
+  `targets.json`, with `strayHost`) and its 0600 secret files. The admin PAT
+  copies come from `pnpm oa:hosted redline-creds --install <id> --confirm <id>`
+  (one run per install; it writes `~/.open-artifacts/redline-capture/secrets/`).
 - The passwords of `alice@oa-redline-a.fyi` and `dave@oa-redline-c.fyi`
   (password manager).
 - Once, by an admin: `rl-a` has Google sign-in on, `AUTH_DOMAINS=oa-redline-a.fyi`
@@ -22,6 +32,30 @@ the clipboard into a 0600 file the suite reads, and the clipboard is cleared.
   installs enforce hosted Turnstile: put one the installs' Turnstile secret
   accepts in a 0600 file and set `turnstileFile` on each target in
   `REDLINE_TARGETS`. Without it those cases fail at the code request.
+
+## The preflight
+
+The script checks everything else first and **refuses to start**, naming each
+gap, if anything would leave a case unproven or failing for setup reasons. All
+checks are read-only; secret files are checked for existence and mode 0600
+only, and nothing secret is printed.
+
+| Check | Gap means |
+|---|---|
+| Each install's admin PAT file exists, mode 0600 | run the `redline-creds` command it prints |
+| Each install's Turnstile token file exists, mode 0600 | set `turnstileFile` on that target |
+| `strayHost` is set in `REDLINE_TARGETS` | add it to the kit's `targets.json` |
+| Both `/healthz` versions are equal and at least the suite's release | upgrade the installs first |
+| Google sign-in is on at each install (`/auth/providers`) | turn it on |
+| `TEST_DOMAIN` is not in `AUTH_DOMAINS`, and each install's tenant domain is | in-domain addresses never get codes on a google+email install |
+| alice is invited to (or a member of) `rl-a`, dave of `rl-b` (`GET /api/v1/members`, admin PAT) | invite them |
+| Each install's sign-in start reaches Google through the broker | the broker or its registry is down |
+
+The inventory key is a GitHub secret only, so on a laptop the inventory check
+says **CI-only (not-local)** instead of refusing: the inventory cases then
+report unproven (their reason says CI-only) and never count as a pass.
+
+"Preflight green: only the Google sign-ins are left to you." means go.
 
 ## Steps
 
@@ -51,11 +85,16 @@ the clipboard into a 0600 file the suite reads, and the clipboard is cleared.
       fails, the browser retries with its own new sign-in, and that retry's
       callback (`state=r1.…`) can't be used. Click Clear (the ⊘ button) in
       DevTools before each prompt so the first one is easy to find.
-   5. Back in the terminal, press Enter. The script checks it, saves it and
-      clears the clipboard. If it says the URL is wrong, copy it again.
-5. After prompt 5 the suite runs on its own and prints the gate result. Do all
-   5 sign-ins within about 8 minutes (Google codes expire). If you run out of
-   time, start again from step 3.
+   5. Back in the terminal, press Enter. The script checks it locally (this
+      install's callback, this prompt's state, the broker state naming this
+      install, the age), clears the clipboard and prints
+      `captured, N of 5` with the time left, then redeems it and prints each
+      leg's verdict (`pass`, or `fail` with the reason). If it says the URL
+      is wrong, copy it again; if the capture is too old, it starts that
+      sign-in again.
+5. After prompt 5 the suite runs on its own and prints the gate result. Each
+   code is redeemed right after its own prompt, so only that prompt is timed:
+   copy the callback URL and press Enter within a few minutes of signing in.
 
 ## What each sign-in proves
 
@@ -83,3 +122,44 @@ Other sign-in cases need no human: OIDC state replay, one-time codes and
 guests run live; the tampered broker install id runs on staging from a real
 broker state. The cases Google can't produce and the broker's signed redeem
 assertion are covered by fixtures (see the P5 plan, Task 6).
+
+## If a case fails
+
+`report.json` (and the printed summary) records, for every case that isn't a
+pass, a redacted reason: the error message with codes, states, cookies, tokens
+and emails replaced, plus the leg (for example "A's credential at B"), the
+install, and the expected and actual verdict. A capture problem (missing, too
+old, for other installs) is `unproven-live` with its reason, never a bare fail.
+
+## The rehearsal (no human)
+
+```sh
+cd tests/redline && REDLINE_REHEARSAL=1 pnpm exec vitest run test/rehearsal.test.ts
+```
+
+It boots the local pair with a local auth broker (`apps/auth-broker` under
+`wrangler dev`, bound to the installs as `BROKER` through a shared dev
+registry) and a fake Google on 127.0.0.1 whose key is made per run. The local
+builds alias `@oa/auth-core` to `tests/redline/src/fake-idp/auth-core-shim.ts`,
+which swaps Google's authorize, token and JWKS URLs and key for the fake's;
+no release config does (a test checks), and the shim refuses to load without
+its build-time defines. A fake browser plays you. It proves, through the real
+capture code (`src/capture.ts`, `src/preflight.ts`) and the real suite cases:
+
+- the preflight names the gaps (users not invited) and turns green after;
+- each prompt's first, cookieless callback is refused by the install, the
+  install's `r1.` retry follows, and the script refuses the retry's URL and
+  takes the first;
+- the foreign flow drops `hd` (with it, the IdP refuses tenant A's user);
+- the broker relays every code (authorize, callback, signed redeem);
+- the replay leg: A's code and broker state refused at B, then signed in at A;
+- codes that die 30 s after issue still pass when each is redeemed after its
+  own prompt (20 s of simulated human time each), and a redeem past expiry
+  is a fail with its reason (`error=failed`), never a pass.
+
+What it can't prove: Google itself (its account chooser, its code lifetime,
+real Workspace tenants), TLS (the registry and `AUTH_BROKER_URL` say https,
+the local servers speak http, so the fake browser rewrites `https://*.localhost`
+to http), the hosted dispatch Worker in front of the installs, and Chrome's
+own behaviour (cookies, DevTools copying).
+

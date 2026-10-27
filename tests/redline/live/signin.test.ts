@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
+import { ID_TOKEN_CASES, idTokenOutcome } from "../src/capture.ts";
 import { setupFetch } from "../src/fetch-timeout.ts";
 import {
   type Cred,
@@ -16,7 +17,6 @@ import {
   prepareSide,
   type Side,
 } from "../src/refused.ts";
-import { ID_TOKEN_CASES, idTokenOutcome } from "../src/capture.ts";
 import { proof } from "../src/report.ts";
 import {
   brokerCallbackReq,

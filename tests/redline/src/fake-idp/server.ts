@@ -119,7 +119,7 @@ export async function startFakeIdp(o: FakeIdpOpts): Promise<FakeIdp> {
   function authorize(q: URLSearchParams): Reply {
     const client = o.clients[q.get("client_id") ?? ""];
     const redirectUri = q.get("redirect_uri") ?? "";
-    if (!client || !client.redirectUris.includes(redirectUri))
+    if (!client?.redirectUris.includes(redirectUri))
       return refuse("authorize", "redirect_uri_mismatch");
     if (
       q.get("response_type") !== "code" ||
