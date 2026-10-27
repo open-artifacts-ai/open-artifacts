@@ -1570,6 +1570,73 @@ describe("P2.5 scenarios: admin actions chained with a sync", () => {
     await run;
     expect(await membersOf(gid)).toEqual([]);
   });
+
+  it("reset a member's Google link, then sync: the same user is relinked and keeps restriction and group roles; nobody is held", async () => {
+    const us = dirUsers(5, "reset");
+    const [target] = us;
+    const mapped = `grp-reset-map-${crypto.randomUUID()}`;
+    const restricted = `grp-reset-rs-${crypto.randomUUID()}`;
+    await mappedGroup(
+      mapped,
+      us.map((u) => u.id),
+    );
+    await mappedGroup(restricted, [target?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    const uid = await uidOf(target?.id as string);
+    expect((await membersOf(mapped)).includes(uid)).toBe(true);
+    expect((await send("DELETE", R.memberIdentity(uid, "google"))).status).toBe(
+      204,
+    );
+    expect(await uidOf(target?.id as string)).toBeUndefined();
+    await drain(nextRec(t0));
+    // Relinked by email: the same row, still in both groups, still capped.
+    expect(await uidOf(target?.id as string)).toBe(uid);
+    expect(await statusOf(uid)).toBe("active");
+    expect((await membersOf(mapped)).includes(uid)).toBe(true);
+    expect(await membersOf(restricted)).toEqual([uid]);
+    const r = await env.DB.prepare(
+      "select restricted_sync as r from users where id = ?",
+    )
+      .bind(uid)
+      .first<{ r: number }>();
+    expect(r?.r).toBe(1);
+    expect((await status()).held).toEqual([]);
+  });
+
+  it("reconnect (same Workspace) then confirm: one reset, then sync resumes on the new grant and keeps everyone", async () => {
+    const us = dirUsers(3, "reconf");
+    const gid = `grp-reconf-${crypto.randomUUID()}`;
+    await mappedGroup(
+      gid,
+      us.map((u) => u.id),
+    );
+    const t0 = Date.now();
+    await connected(t0);
+    const before = await membersOf(gid);
+    expect(before).toHaveLength(3);
+    const r = await connect(
+      e,
+      owner.cookie,
+      g,
+      { sub: adminSub },
+      {
+        confirm: false,
+      },
+    );
+    expect(r.consented).toBe(true);
+    // Pending: the live binding keeps syncing; a removal in Google applies.
+    g.removeMember(gid, us[0]?.id as string);
+    await drain(nextRec(t0));
+    const removed = await uidOf(us[0]?.id as string);
+    expect(await membersOf(gid)).toEqual(before.filter((x) => x !== removed));
+    expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(200);
+    await drain(nextRec(nextRec(t0)));
+    expect((await status()).state).toBe("ok");
+    expect(await membersOf(gid)).toEqual(before.filter((x) => x !== removed));
+    for (const u of us)
+      expect(await statusOf(await uidOf(u.id))).toBe("active");
+  });
 });
 
 describe("P2.5 #15: a pending reconnect keeps the live binding synced and enforced", () => {
