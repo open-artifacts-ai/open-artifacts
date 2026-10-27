@@ -43,8 +43,12 @@ the clipboard into a 0600 file the suite reads, and the clipboard is cleared.
       new Incognito window and repeat step 2.)
    3. The page ends on a sign-in error or retry page. That is expected: the
       browser doesn't hold the install's sign-in cookie, so nothing is used.
-   4. In DevTools, right-click the newest `callback/google?…code=…` request,
-      choose **Copy**, then **Copy URL**.
+   4. In DevTools, right-click the FIRST `callback/google?…code=…` request
+      for this prompt (its `state=` doesn't start with `r1.`), choose
+      **Copy**, then **Copy URL**. Not the newest: after the first callback
+      fails, the browser retries with its own new sign-in, and that retry's
+      callback (`state=r1.…`) can't be used. Click Clear (the ⊘ button) in
+      DevTools before each prompt so the first one is easy to find.
    5. Back in the terminal, press Enter. The script checks it, saves it and
       clears the clipboard. If it says the URL is wrong, copy it again.
 5. After prompt 5 the suite runs on its own and prints the gate result. Do all
