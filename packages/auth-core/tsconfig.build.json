@@ -3,6 +3,8 @@
   "compilerOptions": {
     "noEmit": false,
     "declaration": true,
+    "composite": true,
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
     "rootDir": "src",
     "outDir": "dist",
     "types": []
