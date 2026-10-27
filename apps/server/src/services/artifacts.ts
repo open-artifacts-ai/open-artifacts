@@ -1226,6 +1226,77 @@ export async function patch(
   return warning ? { ...out, warning } : out;
 }
 
+/** True when publish input names an artifact and carries no content or files (#681 D). */
+export const isSettingsOnly = (input: PublishInput): boolean =>
+  input.id !== undefined &&
+  input.content === undefined &&
+  input.files === undefined;
+
+/**
+ * MCP publish_artifact with `id` and no content or files (#681 D): updates
+ * the settings in place through `patch` (the REST PATCH path: same access
+ * checks, warning, audit and socket closing) and creates no version.
+ * `message` is ignored. format, language and entry belong to a version (400);
+ * so does nothing to change (400); spaceId is 400 use_move, as on publish.
+ */
+export async function publishSettings(
+  env: Env,
+  user: Member,
+  input: PublishInput,
+  ctx?: Ctx,
+): Promise<PublishResult> {
+  const id = input.id as string;
+  for (const k of ["format", "language", "entry"] as const)
+    if (input[k] !== undefined)
+      throw bad(
+        `${k} belongs to a version: pass content or files to publish one`,
+        k,
+      );
+  const {
+    title,
+    description,
+    visibility,
+    capabilities,
+    dataWriters,
+    allowAnonymousWrites,
+  } = input;
+  const p: ArtifactPatch = Object.fromEntries(
+    Object.entries({
+      title,
+      description,
+      visibility,
+      capabilities:
+        capabilities && Object.keys(capabilities).length
+          ? capabilities
+          : undefined,
+      dataWriters,
+      allowAnonymousWrites,
+    }).filter(([, v]) => v !== undefined),
+  );
+  if (input.spaceId !== undefined) {
+    // After the access check, as publish does: 404 before use_move.
+    await authorize(env, asUser(user), id, "publish");
+    throw new ApiError(
+      "use_move",
+      "spaceId is only for new artifacts; move an existing one with POST /move",
+      { path: "spaceId", reason: "use_move" },
+    );
+  }
+  if (Object.keys(p).length === 0)
+    throw new ApiError(
+      "bad_request",
+      "Nothing to change: pass content or files to publish a version, or title, description, visibility, capabilities or dataWriters to update the artifact in place",
+      { path: "id", reason: "missing" },
+    );
+  const a = await patch(env, user, id, p, ctx);
+  return {
+    id: a.id,
+    version: a.currentVersion,
+    url: appOrigin(env) + viewerPath(a.id),
+    ...(a.warning ? { warning: a.warning } : {}),
+  };
+}
+
 /** Owner only (others 404). Sets deleted_at and drops the search row. */
 export async function softDelete(
   env: Env,

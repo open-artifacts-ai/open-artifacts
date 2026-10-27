@@ -300,12 +300,15 @@ const tool =
     name: string,
     args: (id: string, cred: Cred) => Record<string, unknown>,
     allow: (o: ToolOut) => boolean = (o) => !o.isError,
+    /** A tool error that is a refusal too (e.g. the sharing check). */
+    deny: (o: ToolOut) => boolean = () => false,
   ) =>
   async (base: string, cred: Cred, id: string, io?: ProbeIO) => {
     if (!cred.token) return "deny" as const;
     const o = await callTool(io, base, cred, name, args(id, cred));
     if (DENY_MCP.has(o.http)) return "deny" as const;
     if (o.http === 200 && allow(o)) return "allow" as const;
+    if (o.http === 200 && o.isError && deny(o)) return "deny" as const;
     // 404, or the contract's 403 for a create by a capped caller.
     if (
       o.http === 200 &&
@@ -797,6 +800,21 @@ export const SURFACES: readonly Surface[] = [
       (o) => o.isError && /^use_move\b/.test(o.text),
     ),
   ),
+  // #681 D: id and only settings: the PATCH path, owner or manager.
+  {
+    ...mcp(
+      "publish_artifact",
+      "visibility",
+      tool(
+        "publish_artifact",
+        (id) => ({ id, visibility: "private" }),
+        undefined,
+        (o) => /only the owner can change sharing/.test(o.text),
+      ),
+      "access",
+    ),
+    name: "mcp publish_artifact (settings only)",
+  },
   mcp(
     "create_upload",
     "upload",

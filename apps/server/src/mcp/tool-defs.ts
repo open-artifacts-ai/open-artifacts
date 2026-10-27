@@ -38,7 +38,7 @@ export const TOOL_DEFS = [
       content: "# Q3\n\nRevenue is up.",
       message: "First draft",
     },
-    description: `Publish an artifact, or a new version when \`id\` is given. Pass \`content\` (one file, with \`format\`) or \`files\` (path → text, or { base64 } for binary, or { uploadId } from create_upload) plus \`entry\`. Inline content (content, text and base64 together) is limited to ${INLINE}; for more, call create_upload, PUT the bytes to its url, then pass { uploadId } in \`files\`. To create it in a shared space, pass \`spaceId\` from list_spaces (new artifacts only). ${DATA_WRITERS_NOTE} Returns id, version and view URL.`,
+    description: `Publish an artifact, or a new version when \`id\` is given. Pass \`content\` (one file, with \`format\`) or \`files\` (path → text, or { base64 } for binary, or { uploadId } from create_upload) plus \`entry\`. Inline content (content, text and base64 together) is limited to ${INLINE}; for more, call create_upload, PUT the bytes to its url, then pass { uploadId } in \`files\`. To create it in a shared space, pass \`spaceId\` from list_spaces (new artifacts only). To change only settings (title, description, visibility, capabilities, dataWriters), pass \`id\` with those and no content or files: they update in place and no version is created. ${DATA_WRITERS_NOTE} Returns id, version and view URL.`,
   },
   {
     name: "create_upload",

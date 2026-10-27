@@ -132,13 +132,16 @@ const PublishShape = z.strictObject({
 });
 
 const refinePublish =
-  (inlineCheck: boolean) =>
+  (tool: boolean) =>
   (v: z.infer<typeof PublishShape>, ctx: z.RefinementCtx) => {
     const issue = (message: string, path: (string | number)[]) =>
       ctx.addIssue({ code: "custom", message, path });
     const hasContent = v.content !== undefined;
     const hasFiles = v.files !== undefined;
-    if (hasContent === hasFiles) {
+    // The MCP tool takes neither with an id: a settings-only update (#681 D),
+    // checked by the server (publishSettings).
+    const settingsOnly = tool && v.id !== undefined && !hasContent && !hasFiles;
+    if (hasContent === hasFiles && !settingsOnly) {
       issue("Provide exactly one of content or files", [
         hasContent ? "files" : "content",
       ]);
@@ -152,7 +155,7 @@ const refinePublish =
       issue("content requires format or entry", ["format"]);
     }
     if (
-      inlineCheck &&
+      !tool &&
       v.content !== undefined &&
       utf8Exceeds(v.content, LIMITS.inlineBytes)
     ) {
@@ -194,14 +197,17 @@ const refinePublish =
     }
   };
 
-export const PublishInputSchema = PublishShape.superRefine(refinePublish(true));
+export const PublishInputSchema = PublishShape.superRefine(
+  refinePublish(false),
+);
 /**
- * PublishInputSchema without the inline-size check, for the MCP tool: the SDK
- * turns schema failures into InvalidParams, so oversize content is left to
- * the server's planFiles (413 too_large, INLINE_TOO_LARGE_MESSAGE).
+ * PublishInputSchema for the MCP tool: no inline-size check (the SDK turns
+ * schema failures into InvalidParams, so oversize content is left to the
+ * server's planFiles: 413 too_large, INLINE_TOO_LARGE_MESSAGE), and `id`
+ * with neither content nor files passes (a settings-only update, #681 D).
  */
 export const PublishToolInputSchema = PublishShape.superRefine(
-  refinePublish(false),
+  refinePublish(true),
 );
 export type PublishInput = z.infer<typeof PublishInputSchema>;
 
