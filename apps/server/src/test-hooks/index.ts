@@ -9,9 +9,11 @@ import {
   TEST_AUDIT_LIMIT,
   TEST_HOOKS,
   TEST_HOOKS_ALLOWED,
+  TEST_OTP_OUTCOMES,
   TestAuditInputSchema,
   type TestAuditResult,
   type TestHookRefusal,
+  type TestOtpOutcome,
   TestSessionInputSchema,
 } from "@oa/shared";
 import { eq } from "drizzle-orm";
@@ -90,33 +92,100 @@ export function turnstileTestKeyPass(
   );
 }
 
-/** KV key of the plaintext OTP copy: never the address itself. */
-export const otpKvKey = (installKey: string, ek: string) =>
-  `test:otp:${installKey}:${ek}`;
-
 const domainOf = (email: string) => email.split("@")[1];
 
 /** True only for a normalized address exactly under TEST_DOMAIN. */
 const inTestDomain = (env: Env, email: string) =>
   domainOf(email) === env.TEST_DOMAIN;
 
-/** While hooks are on only: a plaintext copy of a TEST_DOMAIN code P5 can read back. */
-export async function recordTestOtp(
+// The plaintext copy of a TEST_DOMAIN code, and the last code-send outcome
+// for that address, in D1 (strongly consistent: a KV miss is cached at the
+// PoP, so a poll before the send kept missing after it). One row per
+// address, keyed by its HMAC (never the address). `code` is set only with
+// outcome "sent", after the email went out, so a code read back proves the
+// send. Created on first use like AUDIT_DDL, so no migration (and the release
+// build, which drops this module, never has the table). Rows past OTP_TTL_S
+// are swept on every write.
+const OTP_DDL =
+  "CREATE TABLE IF NOT EXISTS `test_otps` (`ek` text PRIMARY KEY NOT NULL, `code` text, `outcome` text NOT NULL, `at` integer NOT NULL) WITHOUT ROWID";
+// One row per address: a second request nulls the earlier sent code (pending,
+// then e.g. resend_wait), so red-line never re-requests one address within 60 s.
+const OTP_UPSERT = `insert into test_otps (ek, code, outcome, at) values (?1, ?2, ?3, ?4)
+  on conflict (ek) do update set code = excluded.code, outcome = excluded.outcome, at = excluded.at`;
+const OTP_SWEEP = "delete from test_otps where at < ?1";
+const OTP_USED =
+  "update test_otps set code = null, outcome = 'used', at = ?2 where ek = ?1";
+const OTP_READ = "select code, outcome, at from test_otps where ek = ?1";
+
+/**
+ * While hooks are on, for TEST_DOMAIN only: records `outcome` for the
+ * address, with the plaintext code only when it is "sent". Never throws (a
+ * failed write logs test_hook.otp_note_failed and leaves delivery alone).
+ */
+export async function noteTestOtp(
   env: Env,
   email: string,
   ek: string,
-  code: string,
-) {
-  if (!testHooksOn(env) || !inTestDomain(env, email)) return;
-  await env.OAUTH_KV.put(otpKvKey(authConfig(env).installKey, ek), code, {
-    expirationTtl: OTP_TTL_S,
-  });
+  outcome: TestOtpOutcome,
+  code?: string,
+): Promise<void> {
+  const to = normalizeEmail(email);
+  if (!testHooksOn(env) || !to || !inTestDomain(env, to)) return;
+  const now = Date.now();
+  try {
+    await env.DB.batch([
+      env.DB.prepare(OTP_DDL),
+      env.DB.prepare(OTP_SWEEP).bind(now - OTP_TTL_S * 1000),
+      env.DB.prepare(OTP_UPSERT).bind(
+        ek,
+        outcome === "sent" ? (code ?? null) : null,
+        outcome,
+        now,
+      ),
+    ]);
+  } catch {
+    log("otp_note_failed");
+  }
 }
 
-/** Drops the plaintext copy once the code is used. */
-export async function forgetTestOtp(env: Env, ek: string) {
-  if (!testHooksOn(env)) return;
-  await env.OAUTH_KV.delete(otpKvKey(authConfig(env).installKey, ek));
+/**
+ * Drops the plaintext copy once the code is used (the outcome becomes
+ * "used"). TEST_DOMAIN only. Never throws, so a D1 failure can't fail the
+ * verify that called it.
+ */
+export async function forgetTestOtp(env: Env, email: string, ek: string) {
+  const to = normalizeEmail(email);
+  if (!testHooksOn(env) || !to || !inTestDomain(env, to)) return;
+  try {
+    await env.DB.batch([
+      env.DB.prepare(OTP_DDL),
+      env.DB.prepare(OTP_USED).bind(ek, Date.now()),
+    ]);
+  } catch {
+    log("otp_note_failed");
+  }
+}
+
+/** The sent code for `ek`, or why there is none. */
+async function readTestOtp(
+  env: Env,
+  ek: string,
+): Promise<{ code: string } | { outcome: TestOtpOutcome }> {
+  const res = await env.DB.batch([
+    env.DB.prepare(OTP_DDL),
+    env.DB.prepare(OTP_READ).bind(ek),
+  ]);
+  const row = res.at(-1)?.results[0] as
+    | { code: string | null; outcome: string; at: number }
+    | undefined;
+  if (!row) return { outcome: "none" };
+  if (row.outcome === "sent" && row.code) {
+    return Date.now() - row.at < OTP_TTL_S * 1000
+      ? { code: row.code }
+      : { outcome: "expired" };
+  }
+  const known = TEST_OTP_OUTCOMES.find((o) => o === row.outcome);
+  return { outcome: known && known !== "sent" ? known : "none" };
 }
 
 async function sameKey(a: string, b: string): Promise<boolean> {
@@ -134,8 +203,11 @@ async function sameKey(a: string, b: string): Promise<boolean> {
 
 const notFound = () => toErrorResponse(new ApiError("not_found", "Not found"));
 /** A refusal after the key verified: the same 404, plus a fixed-enum reason. */
-const refused = (reason: TestHookRefusal) =>
-  toErrorResponse(new ApiError("not_found", "Not found", { reason }));
+const refused = (
+  reason: TestHookRefusal,
+  extra: { outcome?: TestOtpOutcome } = {},
+) =>
+  toErrorResponse(new ApiError("not_found", "Not found", { reason, ...extra }));
 const log = (evt: string) =>
   console.log(JSON.stringify({ evt: `test_hook.${evt}` }));
 const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
@@ -494,12 +566,11 @@ export function mountTestHooks(app: AppType): void {
         await audit(env, hook, ip, "refused", email ? { email } : {});
         return refused("bad_input");
       }
-      const ek = await emailKey(env, email);
-      const code = await env.OAUTH_KV.get(
-        otpKvKey(authConfig(env).installKey, ek),
-      );
-      await audit(env, hook, ip, code ? "ok" : "none", { email });
-      return code ? c.json({ code }) : refused("no_code");
+      const got = await readTestOtp(env, await emailKey(env, email));
+      await audit(env, hook, ip, "code" in got ? "ok" : "none", { email });
+      return "code" in got
+        ? c.json({ code: got.code })
+        : refused("no_code", { outcome: got.outcome });
     }
 
     if (hook === "audit") {

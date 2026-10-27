@@ -317,16 +317,29 @@ export async function expectTurnstileRequired(
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * How long to wait for an emailed code: well past the server's 3 s email
+ * timeout (EMAIL_TIMEOUT_MS), since the send starts after the response and
+ * its D1 row can land 1.5 s later (run 7b).
+ */
+export const OTP_WAIT_MS = 10_000;
+/** Between polls: at most ~10 hook calls a wait, well under the hook pacing. */
+const OTP_POLL_MS = 1000;
+
+/**
  * The last code sent to `email` at `t` (the otp/latest hook), polled for up
- * to `waitMs` (the code is mailed after the response); null when none.
- * Retries only the hook's "no code yet" (a 404 whose reason is no_code). Any
- * other answer throws with its status and body hash: the rate limit, a wrong
- * key and hooks off are all the reasonless 404, never "no code".
+ * to `waitMs` (the code is mailed after the response); null when it is still
+ * pending at the end. Retries only the hook's "no code yet" (a 404 no_code
+ * whose outcome is pending). A no_code with any other outcome throws
+ * "<install>: no code (<outcome>)"; any other answer throws with its status
+ * and body hash: the rate limit, a wrong key and hooks off are all the
+ * reasonless 404, never "no code". The server keeps one outcome per address,
+ * so a second request inside the 60 s resend window nulls the earlier code:
+ * the suite must never re-request the same address within 60 s.
  */
 export async function latestOtp(
   t: Target,
   email: string,
-  waitMs = 3000,
+  waitMs = OTP_WAIT_MS,
 ): Promise<string | null> {
   const end = Date.now() + waitMs;
   for (;;) {
@@ -341,20 +354,22 @@ export async function latestOtp(
         e.reason !== "no_code"
       )
         throw e;
+      if (e.outcome !== "pending")
+        throw new Error(`${t.name}: no code (${e.outcome ?? "no_outcome"})`);
     }
     if (Date.now() >= end) return null;
-    await sleep(500);
+    await sleep(Math.min(OTP_POLL_MS, Math.max(0, end - Date.now())));
   }
 }
 
 /** How long the __Host- cookie case waits for its emailed code. */
-export const COOKIE_CASE_OTP_MS = 5000;
+export const COOKIE_CASE_OTP_MS = OTP_WAIT_MS;
 
 /**
  * The code for a code request the cookie case just made: `status` and the
  * pending cookies it set. Unproven (with why) when the request set no pending
  * cookie, or no code arrived within `waitMs` (the hook kept answering 404
- * no_code). Any other hook answer throws, so the case fails with its status
+ * no_code, pending). A final no_code outcome or any other hook answer throws, so the case fails with its status
  * and body hash: the hook's rate limit is the reasonless 404 (as are a wrong
  * key and hooks off), never "no code yet".
  */

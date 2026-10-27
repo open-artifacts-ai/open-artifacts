@@ -121,6 +121,38 @@ export const HOOK_REFUSALS = [
 ] as const;
 export type HookRefusal = (typeof HOOK_REFUSALS)[number];
 
+// otp/latest's no_code 404 also carries error.details.outcome, the last
+// code-send outcome for that address (keep in sync with @oa/shared
+// TEST_OTP_OUTCOMES; test/surfaces.test.ts asserts they match). Only
+// "pending" means "no code yet".
+export const HOOK_OTP_OUTCOMES = [
+  "pending",
+  "sent",
+  "used",
+  "expired",
+  "none",
+  "email_off",
+  "ineligible",
+  "pool_full",
+  "capped",
+  "resend_wait",
+  "send_failed",
+  "error",
+] as const;
+export type HookOtpOutcome = (typeof HOOK_OTP_OUTCOMES)[number];
+
+/** The otp outcome in a hook's 404 body, when it is one of HOOK_OTP_OUTCOMES. */
+export function hookOutcome(text: string): HookOtpOutcome | undefined {
+  let o: unknown;
+  try {
+    o = (JSON.parse(text) as { error?: { details?: { outcome?: unknown } } })
+      ?.error?.details?.outcome;
+  } catch {
+    return undefined;
+  }
+  return HOOK_OTP_OUTCOMES.find((x) => x === o);
+}
+
 /**
  * The refusal reason in a hook's body, when it is one of HOOK_REFUSALS;
  * "no_reason" otherwise (a refusal before the key, an older server, not JSON).
@@ -161,10 +193,13 @@ export class SetupHookError extends InfraError {
  */
 export class HookError extends HttpError {
   readonly reason: HookRefusal | "no_reason";
+  /** otp/latest's no_code only: the last code-send outcome. */
+  readonly outcome: HookOtpOutcome | undefined;
   constructor(t: Target, path: string, res: Response, text: string) {
     const reason = hookReason(text);
     super(`${t.name} hook ${path} (${reason})`, res, text);
     this.reason = reason;
+    this.outcome = hookOutcome(text);
   }
 }
 

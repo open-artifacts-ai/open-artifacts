@@ -13,7 +13,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { codeEligibility } from "../services/identity.js";
 import { getSettings } from "../services/members.js";
-import { recordTestOtp } from "../test-hooks/index.js";
+import { noteTestOtp } from "../test-hooks/index.js";
 import { b64urlDecode, hmacSign } from "../util/crypto.js";
 import { logAuth } from "./audit.js";
 import type { AuthConfig } from "./config.js";
@@ -56,10 +56,10 @@ export const CODE_LIMITS = {
 } as const;
 
 // `false` in release builds (build-flags.d.ts): no reference to test-hooks/.
-const recordOtp =
+const noteOtp =
   typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
   __OA_TEST_HOOKS_ALLOWED__ === true &&
-  recordTestOtp;
+  noteTestOtp;
 
 const TTL_MS = CODE_POLICY.ttlSec * 1000;
 const MAX_U32_UNBIASED = 4_200_000_000; // largest multiple of 10^8 below 2^32
@@ -279,11 +279,34 @@ export async function createCode(
   return code;
 }
 
-/** Logs why nothing (or something) was sent; null for "nothing sent". */
-const logSend = (outcome: string): null => {
-  console.log(JSON.stringify({ evt: "code_send", outcome }));
-  return null;
-};
+/** Every way one deliverCode call ends; "error" is it throwing (the route logs that). */
+export type CodeSendOutcome =
+  | "sent"
+  | "email_off"
+  | "ineligible"
+  | "pool_full"
+  | "capped"
+  | "resend_wait"
+  | "send_failed"
+  | "error";
+
+const CLASS_NAME = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
+/** An exception's class name only (never its message), or "unknown". */
+export function errorClass(e: unknown): string {
+  const name =
+    typeof e === "object" && e !== null
+      ? (e as { constructor?: { name?: unknown } }).constructor?.name
+      : undefined;
+  return typeof name === "string" && CLASS_NAME.test(name) ? name : "unknown";
+}
+
+/**
+ * The one code_send line per deliverCode call: the outcome, and for "error"
+ * the exception's class. Never the address, its key or the code.
+ */
+export function logCodeSend(outcome: CodeSendOutcome, error?: string): void {
+  console.log(JSON.stringify({ evt: "code_send", outcome, error }));
+}
 
 // One real send per (address, network) per resendSec, sliding: n holds the last send's
 // time (ms); day is the UTC day, so the daily sweep drops old rows.
@@ -311,11 +334,17 @@ export async function deliverCode(
   ip: string,
   now = Date.now(),
 ): Promise<{ requestId: string } | null> {
-  if (!emailEnabled(env)) return logSend("email_off");
+  /** Logs (and, in test builds, records) why nothing was sent. */
+  const none = async (outcome: CodeSendOutcome): Promise<null> => {
+    logCodeSend(outcome);
+    if (noteOtp) await noteOtp(env, email, ek, outcome);
+    return null;
+  };
+  if (!emailEnabled(env)) return none("email_off");
   const to = normalizeEmail(email);
-  if (!to) return logSend("ineligible");
+  if (!to) return none("ineligible");
   if ((await codeEligibility(env, cfg, to)).kind === "none")
-    return logSend("ineligible");
+    return none("ineligible");
   const day = counterBucket("day", now);
   const nk = await netKey(env, ip);
   const caps: Cap[] = [
@@ -328,14 +357,14 @@ export async function deliverCode(
     ["code:*", cfg.codeEmailsPerDay, day],
   ];
   const refused = await takeAll(env, caps);
-  if (refused === caps.length - 1) return logSend("pool_full");
-  if (refused !== -1) return logSend("capped");
+  if (refused === caps.length - 1) return none("pool_full");
+  if (refused !== -1) return none("capped");
   const gate = await stmt(env.DB, RESEND)
     .bind(`code:rs:${ek}:${nk}`, now, day, CODE_LIMITS.resendSec * 1000)
     .first();
   if (!gate) {
     await refundAll(env, caps);
-    return logSend("resend_wait");
+    return none("resend_wait");
   }
   if (
     (await bump(env, `code:sentd:${ek}`, day)) ===
@@ -357,7 +386,6 @@ export async function deliverCode(
       }),
     { kind: "code", now, caps: [], instance },
   );
-  if (recordOtp && sent) await recordOtp(env, to, ek, code);
   if (!sent) {
     await stmt(
       env.DB,
@@ -365,8 +393,11 @@ export async function deliverCode(
     )
       .bind(ek, requestId)
       .run();
-    return logSend("send_failed");
+    return none("send_failed");
   }
+  logCodeSend("sent");
+  // Test builds: the plaintext copy exists only once the email went out.
+  if (noteOtp) await noteOtp(env, to, ek, "sent", code);
   return { requestId };
 }
 
