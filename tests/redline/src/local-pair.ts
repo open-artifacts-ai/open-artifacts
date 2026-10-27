@@ -98,16 +98,48 @@ export interface LocalPair {
 
 const rand = () => randomBytes(32).toString("base64url");
 
-function freePort(): Promise<number> {
+/** A loopback port, held (listening) until `release`, so nothing else takes it meanwhile. */
+export interface Reserved {
+  port: number;
+  release(): Promise<void>;
+}
+
+/**
+ * Reserves a free loopback port and keeps it bound until released, right
+ * before the process that needs it starts: a port picked long before wrangler
+ * binds it (migrations, the broker's boot) could be taken in between.
+ */
+export function reservePort(): Promise<Reserved> {
   return new Promise((res, rej) => {
     const s = createServer();
     s.once("error", rej);
     s.listen(0, "127.0.0.1", () => {
+      s.unref();
       const a = s.address();
-      const p = typeof a === "object" && a ? a.port : 0;
-      s.close(() => res(p));
+      let done: Promise<void> | undefined;
+      res({
+        port: typeof a === "object" && a ? a.port : 0,
+        release: () => (done ??= new Promise<void>((r) => s.close(() => r()))),
+      });
     });
   });
+}
+
+/** Why a spawned wrangler is gone, or undefined while it runs (log: its output). */
+export function exitReason(
+  what: string,
+  code: number | null | undefined,
+  log: string,
+): string | undefined {
+  if (code === undefined) return undefined;
+  let tail = "";
+  try {
+    tail = readFileSync(log, "utf8");
+  } catch {}
+  const port = /EADDRINUSE|address already in use/i.test(tail)
+    ? " (its port was taken: EADDRINUSE)"
+    : "";
+  return `${what}: wrangler dev exited early (code ${code})${port}; see ${log}`;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -300,13 +332,20 @@ export function redact(s: string, secrets: readonly string[]): string {
   return out;
 }
 
-async function waitHealthy(
-  i: LocalInstall,
+/**
+ * Until the install answers as itself (its random installId, test hooks on).
+ * `gone` reports a wrangler that already exited: fail now, not at the deadline.
+ */
+export async function waitHealthy(
+  i: Pick<LocalInstall, "name" | "app" | "installId">,
   deadline: number,
   signal?: AbortSignal,
+  gone: () => string | undefined = () => undefined,
 ): Promise<void> {
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new Error("aborted");
+    const why = gone();
+    if (why) throw new Error(why);
     try {
       const r = await fetch(`${i.app}/healthz`, { redirect: "manual" });
       if (r.status === 200) {
@@ -326,21 +365,45 @@ async function waitHealthy(
   throw new Error(`${i.name} did not become healthy in time`);
 }
 
-/** The broker answers (any HTTP response; a bare GET is its 404). */
-async function waitBroker(
+/**
+ * Until our broker answers: a well-formed authorize for one of our installs
+ * redirects to the fake IdP with our client id (only a broker holding our
+ * registry and config can). A redirect anywhere else is another process on
+ * the port: fail now. `gone` reports a wrangler that already exited.
+ */
+export async function waitBroker(
   b: { url: string },
+  probe: { installId: string; clientId: string },
   deadline: number,
   signal?: AbortSignal,
+  gone: () => string | undefined = () => undefined,
 ): Promise<void> {
+  const q = new URLSearchParams({
+    install: probe.installId,
+    state: "redline-probe",
+    nonce: "redline-probe",
+    code_challenge: "A".repeat(43),
+  });
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new Error("aborted");
+    const why = gone();
+    if (why) throw new Error(why);
     try {
-      const r = await fetch(`${b.url}/google/authorize`, {
+      const r = await fetch(`${b.url}/google/authorize?${q}`, {
         redirect: "manual",
       });
       await r.body?.cancel();
-      return;
-    } catch {}
+      if (r.status === 302) {
+        const to = new URL(r.headers.get("location") ?? "", b.url);
+        if (to.searchParams.get("client_id") === probe.clientId) return;
+        throw new Error(
+          `the local broker port answers as something else (a redirect to ${to.origin})`,
+        );
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("the local broker port"))
+        throw e;
+    }
     await sleep(500);
   }
   throw new Error("the local broker did not come up in time");
@@ -427,8 +490,22 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
     // The leader exited; the group may linger briefly (workerd children).
     if (!reap(pg)) setTimeout(() => reap(pg), 500).unref();
   };
+  /** Ports still held for a process that hasn't started (released on any exit). */
+  const held: Reserved[] = [];
+  const hold = async (): Promise<number> => {
+    const r = await reservePort();
+    held.push(r);
+    return r.port;
+  };
+  const releaseHeld = (ports: number[]) =>
+    Promise.all(
+      held.filter((r) => ports.includes(r.port)).map((r) => r.release()),
+    );
+  /** Each spawned wrangler dev's exit code once it exited (null: by signal). */
+  const exits = new Map<number, number | null>();
   let stopped = false;
   const stop = async (): Promise<number[]> => {
+    await Promise.all(held.map((r) => r.release()));
     if (!stopped) {
       stopped = true;
       await Promise.all([...pids].map(stopGroup));
@@ -437,8 +514,11 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
     // Only groups that refused to die stay tracked.
     return [...pids].flatMap(groupMembers);
   };
-  /** wrangler dev in its own process group, output to `log`. */
-  const dev = (
+  /**
+   * wrangler dev in its own process group, output to `log`. Its two ports are
+   * released from their reservation only now, right before it binds them.
+   */
+  const dev = async (
     what: string,
     config: string,
     port: number,
@@ -447,7 +527,8 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
     log: string,
     inspector: number,
     cwd = SERVER,
-  ): number => {
+  ): Promise<{ pid: number; gone: () => string | undefined }> => {
+    await releaseHeld([port, inspector]);
     const fd = openSync(log, "a", 0o600);
     const child = spawn(
       WRANGLER,
@@ -469,10 +550,20 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
     );
     closeSync(fd);
     track(child);
-    child.on("exit", () => child.pid && exited(child.pid));
+    child.on("exit", (code) => {
+      if (!child.pid) return;
+      exits.set(child.pid, code);
+      exited(child.pid);
+    });
     if (!child.pid) throw new Error(`${what}: wrangler dev did not start`);
-    return child.pid;
+    const pid = child.pid;
+    return {
+      pid,
+      gone: () =>
+        exits.has(pid) ? exitReason(what, exits.get(pid), log) : undefined,
+    };
   };
+  const gone = new Map<number, () => string | undefined>();
   let broker: LocalBroker | undefined;
   try {
     o.signal?.addEventListener("abort", () => {
@@ -491,8 +582,8 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
     for (const spec of LOCAL_INSTALLS)
       plan.push({
         spec,
-        port: await freePort(),
-        inspector: await freePort(),
+        port: await hold(),
+        inspector: await hold(),
         installId: `${spec.name}-local-${randomBytes(3).toString("hex")}`,
         ...(o.idp ? { key: brokerKey() } : {}),
       });
@@ -555,7 +646,16 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
         track,
         exited,
       );
-      const pid = dev(spec.name, config, port, persistTo, env, log, inspector);
+      const { pid, gone: g } = await dev(
+        spec.name,
+        config,
+        port,
+        persistTo,
+        env,
+        log,
+        inspector,
+      );
+      gone.set(pid, g);
       installs.push({
         name: spec.name,
         testDomain,
@@ -572,8 +672,23 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
     }
     const deadline = Date.now() + (o.bootMs ?? 180_000);
     await Promise.all([
-      ...installs.map((i) => waitHealthy(i, deadline, o.signal)),
-      ...(broker ? [waitBroker(broker, deadline, o.signal)] : []),
+      ...installs.map((i) =>
+        waitHealthy(i, deadline, o.signal, gone.get(i.pid)),
+      ),
+      ...(broker && o.idp
+        ? [
+            waitBroker(
+              broker,
+              {
+                installId: (plan[0] as (typeof plan)[number]).installId,
+                clientId: o.idp.clientId,
+              },
+              deadline,
+              o.signal,
+              gone.get(broker.pid),
+            ),
+          ]
+        : []),
     ]);
     const [a, b] = installs.map((i) => ({
       name: i.name,
@@ -611,8 +726,8 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
     ): Promise<LocalBroker> {
       const sub = join(dir, "broker");
       mkdirSync(sub, { mode: 0o700 });
-      const port = await freePort();
-      const inspector = await freePort();
+      const port = await hold();
+      const inspector = await hold();
       const origin = `https://auth.localhost:${port}`;
       idp.redirectUris.push(`${origin}/google/callback`);
       const values = {
@@ -681,7 +796,7 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
           BROKER_APP,
         );
       }
-      const pid = dev(
+      const { pid, gone: g } = await dev(
         "broker",
         config,
         port,
@@ -691,6 +806,7 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
         inspector,
         BROKER_APP,
       );
+      gone.set(pid, g);
       return { origin, url: `http://127.0.0.1:${port}`, pid };
     }
   } catch (e) {
