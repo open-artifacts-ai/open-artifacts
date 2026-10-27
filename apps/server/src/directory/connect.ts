@@ -470,21 +470,28 @@ export async function afterConsent(
     throw notFound();
   }
   logInfo("directory_connect", { outcome: "confirmed", kind: client.kind });
-  // Before the binding pass links anyone to the new Workspace.
-  if (change) await retireTenant(env, previous as string, ctx);
+  // Before the binding pass links anyone to the new Workspace. A failure
+  // leaves it owed (tenant.retire, the tombstone kept): the binding pass is
+  // skipped, and DirectorySync, kicked below, retires them before it binds
+  // or syncs anything.
+  let retired = true;
+  if (change)
+    retired = await retireTenant(env, previous as string, ctx).then(
+      () => true,
+      (e) => {
+        logWarn("directory_tenant_retire", e);
+        return false;
+      },
+    );
   if (old)
     await revokeGrant(env, old, userActor(user.id), "old", {
       // The new account unknown: it may be the same one, so never revoke.
       sub: p.s ? oldSub : null,
       keep: [p.s ?? null],
     });
-  const pass = await initialBinding(
-    env,
-    token,
-    binding.customerId,
-    binding.domain,
-    ctx,
-  );
+  const pass = retired
+    ? await initialBinding(env, token, binding.customerId, binding.domain, ctx)
+    : { done: false };
   await afterDirectoryConnect(env, { initialDone: pass.done }).catch((e) =>
     logWarn("directory_after_connect", e),
   );

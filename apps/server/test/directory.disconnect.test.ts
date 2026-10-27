@@ -991,24 +991,35 @@ describe("during customer_mismatch", () => {
         },
       }),
     } as Env;
+    // The connection stands; the binding pass waits for the retire.
     expect((await post(failing, R.directoryConfirm, owner.cookie)).status).toBe(
-      500,
+      200,
     );
-    expect(batches).toBe(2);
-    expect(await keys()).toEqual(
-      expect.arrayContaining(["binding", "sync.state", "tenant.retire"]),
-    );
-    expect(await statusOf(a.userId)).toBe("active");
-    // Still denied, and a reset keeps the tombstone while it is owed.
-    await clearHealth(env).run();
-    expect(await syncState()).toBe("customer_mismatch");
+    expect(batches).toBeGreaterThanOrEqual(2);
+    // The connection stands, with the retire owed: whichever alarm runs
+    // next (the confirm kicked one) retires them before syncing anything.
+    expect(await keys()).toEqual(expect.arrayContaining(["binding"]));
     expect((await meAs(e, { cookie: a.cookie })).status).toBe(401);
-    // The next alarm retires them first; only then does B's sync lift it.
     await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
     expect(await keys()).not.toContain("tenant.retire");
     expect(await statusOf(a.userId)).toBe("suspended");
     expect(await boundOf(a.sub)).toBe(0);
     expect((await meAs(e, { cookie: a.cookie })).status).toBe(401);
+  });
+
+  it("P2.5 #16: a reset keeps the customer_mismatch tombstone while a retire is owed, even with a live binding", async () => {
+    await env.DB.batch([
+      env.DB.prepare(UPSERT).bind(HK.state, "customer_mismatch"),
+      env.DB.prepare(UPSERT).bind(K.retire, "C-old"),
+    ]);
+    expect(await keys()).toContain("binding");
+    await clearHealth(env).run();
+    expect(await syncState()).toBe("customer_mismatch");
+    await env.DB.prepare("delete from directory_state where key = ?")
+      .bind(K.retire)
+      .run();
+    await clearHealth(env).run();
+    expect(await syncState()).toBeNull();
   });
 });
 
