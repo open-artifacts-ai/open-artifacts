@@ -145,6 +145,10 @@ export async function publish(
   const plan = planFiles(input);
   const db = env.DB;
   const now = Date.now();
+  // Wall ms per step (D1 checks, R2, the batch, the DO calls): hosted
+  // publishes stall at low CPU and the step must be visible. Ids and ms only.
+  const at: number[] = [now];
+  const mark = () => at.push(Date.now());
   const notFound = () => new ApiError("not_found", "Not found");
   let id: string;
   let create = true;
@@ -276,12 +280,14 @@ export async function publish(
     (create ? (await getSettings(env)).defaultVisibility : undefined);
   if (create) dataWriters = resolveDataWriters(input, visibility) ?? "viewers";
 
+  mark();
   const { manifest, written, uploadIds } = await materialize(
     env,
     id,
     user.id,
     plan,
   );
+  mark();
   // The inline content is in R2 now: drop the plan's copies so they don't
   // stay reachable through the D1 batch and enqueue awaits below.
   plan.files.length = 0;
@@ -421,6 +427,7 @@ export async function publish(
       throw changed();
     throw e;
   }
+  mark();
   if (version === undefined) {
     await cleanup();
     // A create writes nothing only when its space changed (the public-links
@@ -442,7 +449,10 @@ export async function publish(
   // Access changed: close first (gone "changed"), awaited, so a socket that
   // may have lost access never sees this version; reconnects get hello.
   if (accessChanged) await closeRuntimeSockets(env, [id], "access changed");
+  mark();
   await enqueueIndex(env, id, version, true, versionEvent(user, agent, now));
+  mark();
+  logPublishTiming(env, id, create, at);
   const warning = dataWritersWarning({
     visibility: visibility ?? prior.visibility,
     capabilities: JSON.parse(caps) as { db: boolean },
@@ -454,6 +464,41 @@ export async function publish(
     url: appOrigin(env) + viewerPath(id),
     ...(warning ? { warning } : {}),
   };
+}
+
+/**
+ * One line per successful publish: wall ms of the D1 checks, the R2 writes,
+ * the D1 batch, the socket close and the index enqueue (marks taken in
+ * publish). Install and artifact ids and numbers only.
+ */
+export function logPublishTiming(
+  env: Pick<Env, "INSTALL_ID">,
+  artifactId: string,
+  create: boolean,
+  at: readonly number[],
+): void {
+  const [
+    start = 0,
+    checks = start,
+    r2 = checks,
+    batch = r2,
+    close = batch,
+    enq = close,
+  ] = at;
+  console.log(
+    JSON.stringify({
+      evt: "publish_timing",
+      install: env.INSTALL_ID?.trim() || undefined,
+      artifactId,
+      create,
+      checks_ms: checks - start,
+      r2_ms: r2 - checks,
+      batch_ms: batch - r2,
+      close_ms: close - batch,
+      enqueue_ms: enq - close,
+      total_ms: enq - start,
+    }),
+  );
 }
 
 const notFound = () => new ApiError("not_found", "Not found");
