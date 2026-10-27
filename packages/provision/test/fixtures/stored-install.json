@@ -26,7 +26,7 @@
       },
       {
         "name": "EMAIL_FROM",
-        "text": "noreply@finqore.mail.open-artifacts-staging.app",
+        "text": "noreply@mail.open-artifacts-staging.app",
         "type": "plain_text"
       },
       {
