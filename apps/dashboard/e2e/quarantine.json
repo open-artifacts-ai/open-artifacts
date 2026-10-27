@@ -1,0 +1,4 @@
+{
+  "$comment": "Quarantined e2e tests: they still run (shard 1, never failing the build) but are left out of the gating suites. Every entry needs an owner. A test that passes all 10 runs of the nightly repeat comes out. See e2e/quarantine.ts.",
+  "tests": []
+}

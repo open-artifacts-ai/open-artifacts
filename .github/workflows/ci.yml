@@ -309,6 +309,9 @@ jobs:
       # Pull requests run the real suite in Chromium only; the merge queue, pushes
       # to main and the nightly run add WebKit.
       E2E_PROJECTS: ${{ github.event_name == 'pull_request' && 'chromium' || '' }}
+      # Quarantined tests: once per run; 10 times nightly (10 straight passes
+      # and a test comes out).
+      E2E_QUARANTINE_REPEAT: ${{ github.event_name == 'schedule' && '10' || '1' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -369,6 +372,10 @@ jobs:
       - name: Landing real-browser checks (no horizontal overflow)
         if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh landing
+      # Never gating: a quarantined test's failure is reported, not failed.
+      - name: Quarantined tests (reported, never gating)
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        run: bash scripts/ci/e2e.sh quarantine
       - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' }}
         uses: actions/upload-artifact@v4
         with:
@@ -426,6 +433,11 @@ jobs:
       - name: Merge the shards' reports
         if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
         run: bash scripts/ci/e2e.sh merge
+      # Flaky tests (passed on their retry) as annotations, and the quarantine
+      # verdicts, in the run summary.
+      - name: Flaky and quarantined tests
+        if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+        run: bash scripts/ci/e2e.sh report
       - if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
         uses: actions/upload-artifact@v4
         with:

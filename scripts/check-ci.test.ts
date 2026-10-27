@@ -76,6 +76,31 @@ describe("ci.yml", () => {
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
   });
+  it("e2e: one retry in CI, flaky tests reported, quarantined tests run apart and never gate", () => {
+    for (const c of ["playwright.config.ts", "playwright.real.config.ts"]) {
+      const src = read(`apps/dashboard/${c}`);
+      expect(src, c).toContain("retries: process.env.CI ? 1 : 0");
+      expect(src, c).toMatch(/\.\.\.quarantineOptions\("(mock|real)"\)/);
+    }
+    const shard = w.jobs["e2e-shard"];
+    expect(shard.env.E2E_QUARANTINE_REPEAT).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ github.event_name == 'schedule' && '10' || '1' }}",
+    );
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const q = shard.steps.find(
+      (s: any) => s.run === "bash scripts/ci/e2e.sh quarantine",
+    );
+    expect(q.if).toContain("matrix.shard == 1");
+    expect(q["continue-on-error"]).toBeUndefined();
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const runs = w.jobs.e2e.steps.map((s: any) => s.run ?? "");
+    const merge = runs.indexOf("bash scripts/ci/e2e.sh merge");
+    expect(merge).toBeGreaterThan(-1);
+    expect(runs.indexOf("bash scripts/ci/e2e.sh report")).toBeGreaterThan(
+      merge,
+    );
+  });
   it("runs nightly (the full suite, WebKit included), in its own concurrency group", () => {
     expect(w.on.schedule).toEqual([
       { cron: expect.stringMatching(/^\d+ \d+ \* \* \*$/) },
