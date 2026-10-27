@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { run } from "../src/index.ts";
 import { ROOT, STATE } from "./fakes.ts";
-import { app, onboarded, POLICY, world } from "./world.ts";
+import { app, HOSTS, onboarded, POLICY, world } from "./world.ts";
 
 type Opts = NonNullable<Parameters<typeof world>[0]>;
 type W = ReturnType<typeof world>;
@@ -268,5 +268,22 @@ describe("HELP", () => {
   it("says --upgrade needs only --name without state", async () => {
     const { HELP } = await import("../src/index.ts");
     expect(HELP).toMatch(/--upgrade.*no saved state.*only --name/s);
+  });
+});
+
+describe("item 44: a by-name --upgrade from a fresh clone", () => {
+  it("reuses the owner's Welcome page by title instead of publishing a duplicate", async () => {
+    const w = ok(world({ env: { HOME: "/home/test" } }));
+    expect(await run(HOSTS, w.deps, ROOT)).toBe(0);
+    const id = w.state().welcomeArtifactId;
+    w.files.delete(STATE);
+    w.mcpCalls.length = 0;
+    w.lines.length = 0;
+    expect(await run(ONLY, w.deps, ROOT)).toBe(0);
+    const pubs = w.mcpCalls.filter((c) => c.name === "publish_artifact");
+    expect(pubs.filter((c) => c.arguments.id !== id)).toEqual([]);
+    expect(w.mcpCalls.some((c) => c.name === "search_artifacts")).toBe(true);
+    expect(w.state().welcomeArtifactId).toBe(id);
+    expect(line(w, "selftest").message).toContain("Welcome page unchanged");
   });
 });

@@ -253,3 +253,45 @@ describe("--rollback", () => {
     },
   );
 });
+
+describe("item 44: --rollback reads the deploy token files", () => {
+  const HOME = "/home/t";
+  /** Records the deploy token each wrangler child gets (env only, never argv). */
+  const spy = (w: W) => {
+    const seen: (string | undefined)[] = [];
+    const exec = w.deps.exec;
+    w.deps.exec = async (cmd, args, opts) => {
+      if (args.includes("rollback")) seen.push(opts?.env?.CLOUDFLARE_API_TOKEN);
+      return exec(cmd, args, opts);
+    };
+    return seen;
+  };
+
+  it("uses the saved ~/.open-artifacts/<name>-cloudflare-token", async () => {
+    const w = await twice({ env: { HOME } });
+    w.files.set(
+      `${HOME}/.open-artifacts/open-artifacts-cloudflare-token`,
+      "saved-tok\n",
+    );
+    const seen = spy(w);
+    expect(await run(ROLLBACK, w.deps, ROOT)).toBe(0);
+    expect(seen).toEqual(["saved-tok"]);
+    expect(w.auths.some((a) => a.endsWith("Bearer saved-tok"))).toBe(true);
+  });
+
+  it("accepts --token-file, and a missing one is an error that runs nothing", async () => {
+    const w = await twice({ env: { HOME }, files: { "/t/cf": "flag-tok\n" } });
+    const seen = spy(w);
+    expect(
+      await run([...ROLLBACK, "--token-file", "/t/cf"], w.deps, ROOT),
+    ).toBe(0);
+    expect(seen).toEqual(["flag-tok"]);
+    w.lines.length = 0;
+    w.ops.length = 0;
+    expect(
+      await run([...ROLLBACK, "--token-file", "/t/none"], w.deps, ROOT),
+    ).toBe(1);
+    expect(last(w)).toMatchObject({ step: "args", status: "error" });
+    expect(w.ops).toEqual([]);
+  });
+});

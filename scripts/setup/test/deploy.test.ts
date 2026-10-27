@@ -6,7 +6,12 @@ import { sha256Hex } from "../../../apps/server/src/util/crypto.ts";
 import { isId, isPat } from "../../../packages/shared/src/ids.ts";
 import { run } from "../src/index.ts";
 import { deploy } from "../src/steps/deploy.ts";
-import { newPat, ownerSql, tokenHash } from "../src/steps/owner-token.ts";
+import {
+  demoteStatements,
+  newPat,
+  ownerSql,
+  tokenHash,
+} from "../src/steps/owner-token.ts";
 import { ROOT, STATE } from "./fakes.ts";
 import { HOSTS, world } from "./world.ts";
 
@@ -123,12 +128,17 @@ describe("deploy, owner-token, selftest, agent-config", () => {
       "mcp initialize",
       "mcp notifications/initialized",
       "mcp tools/list",
+      "mcp tools/call", // no saved id: look the Welcome page up by title first
       "mcp tools/call",
       "GET content-url",
       "GET content no auth",
       "GET content no auth",
     ]);
-    expect(w.mcpCalls[0]).toEqual({
+    expect(w.mcpCalls.map((c) => c.name)).toEqual([
+      "search_artifacts",
+      "publish_artifact",
+    ]);
+    expect(w.mcpCalls[1]).toEqual({
       name: "publish_artifact",
       arguments: {
         title: "Welcome to Open Artifacts",
@@ -561,7 +571,9 @@ describe("deploy, owner-token, selftest, agent-config", () => {
     const sql = ownerSql("o'brien@example.com", "tid", "ab".repeat(32), 1);
     expect(sql).toContain("'o''brien@example.com'");
     expect(sql).not.toMatch(/oa_pat_/);
-    expect(sql).toContain("ON CONFLICT(email) DO UPDATE SET role = 'owner'");
+    expect(sql).toContain(
+      "ON CONFLICT(email) DO UPDATE SET role = 'owner' WHERE users.status = 'active'",
+    );
   });
 });
 
@@ -709,6 +721,38 @@ describe("B16-6 owner token hardening", () => {
     );
     // A count, not the email: CI logs may be public.
     expect(line(w, "owner-token").message).not.toContain("old@example.com");
+  });
+
+  for (const status of ["suspended", "removed"])
+    it(`refuses a ${status} new owner: no demote, no token, the old owner stays`, async () => {
+      const w = world({
+        seed: {
+          users: [
+            { id: "u0", email: "old@example.com", role: "owner" },
+            { id: "u1", email: "owner@example.com", role: "member", status },
+          ],
+        },
+      });
+      expect(await run(HOSTS, w.deps, ROOT)).toBe(1);
+      const l = line(w, "owner-token");
+      expect(l.message).toContain(
+        `setup won't make a ${status} user the owner: nothing was changed`,
+      );
+      expect(l.message).not.toContain("owner@example.com");
+      expect(role(w, "u0")).toBe("owner");
+      expect(role(w, "u1")).toBe("member");
+      expect(w.db.tokens).toHaveLength(0);
+      expect(w.sqls.join("; ")).not.toContain("SET role = 'admin'");
+      expect(w.state().ownerTokenId).toBeUndefined();
+      expect(w.secretWrites).toHaveLength(0);
+    });
+
+  it("the demote only runs once the target is an active owner", () => {
+    const [sel, upd] = demoteStatements("o@example.com");
+    const guard =
+      "EXISTS (SELECT 1 FROM users WHERE email = 'o@example.com' AND role = 'owner' AND status = 'active')";
+    expect(sel).toContain(guard);
+    expect(upd).toContain(guard);
   });
 
   it("the same owner is not demoted", async () => {
