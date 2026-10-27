@@ -1086,7 +1086,7 @@ async function notifyManagers(
               space: spaceName,
               role,
             }),
-          { kind: "space" },
+          { kind: "space", instance },
         ),
       ),
     );

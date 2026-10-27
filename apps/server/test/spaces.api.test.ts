@@ -33,11 +33,11 @@ import { errOf, fetchAndWait, login } from "./helpers.js";
 const app = createApp();
 const tag = newId().slice(0, 6).toLowerCase();
 
-const sent: { to: string; subject: string }[] = [];
+const sent: { to: string; subject: string; from: unknown }[] = [];
 const MAIL = {
   EMAIL: {
-    send: async (m: { to: string; subject: string }) => {
-      sent.push({ to: m.to, subject: m.subject });
+    send: async (m: { to: string; subject: string; from: unknown }) => {
+      sent.push({ to: m.to, subject: m.subject, from: m.from });
       return { messageId: "m" };
     },
   },
@@ -706,10 +706,15 @@ describe("space members", () => {
   it("admin self-add: 201, audited space.admin_self_add, managers emailed; personal 400; members 404", async () => {
     const { s, mgr, ed } = await staffed();
     sent.length = 0;
+    await env.DB.prepare(
+      "insert or replace into settings (key, value) values ('name', 'Acme')",
+    ).run();
     const r = await call(GOOGLE, R.spaceMemberSelf(s.id), owner.cookie, {
       method: "POST",
       body: { role: "manager" },
-    });
+    }).finally(() =>
+      env.DB.prepare("delete from settings where key = 'name'").run(),
+    );
     expect(r.status).toBe(201);
     expect(await json<SpaceMember>(r)).toMatchObject({
       userId: owner.userId,
@@ -726,6 +731,10 @@ describe("space members", () => {
     )?.email;
     expect(sent.map((m) => m.to)).toEqual([mgrEmail]);
     for (const m of sent) expect(m.subject).not.toContain("—");
+    // The shared sender names the install (the space kind).
+    expect(sent.map((m) => m.from)).toEqual([
+      { email: "oa@example.com", name: "Acme via Open Artifacts" },
+    ]);
     expect(
       await code(
         await call(GOOGLE, R.spaceMemberSelf(ed.userId), owner.cookie, {

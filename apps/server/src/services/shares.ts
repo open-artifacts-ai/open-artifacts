@@ -213,6 +213,7 @@ async function emailShare(
       {
         kind: "share",
         artifactId: artifact.id,
+        instance: settings.name,
         replyTo: normalizeEmail(user.email) ?? undefined,
       },
     );

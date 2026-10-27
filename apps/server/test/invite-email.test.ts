@@ -441,13 +441,17 @@ describe("one recipient per send", () => {
     const content = () => ({ subject: "s", text: "t", html: "h" });
     for (const addr of SPECIAL)
       expect(
-        await sendEmail(e, "u-special", addr, content, { kind: "invite" }),
+        await sendEmail(e, "u-special", addr, content, {
+          kind: "invite",
+          instance: null,
+        }),
         addr,
       ).toBe(false);
     expect(m.sent).toHaveLength(0);
     expect(
       await sendEmail(e, "u-special", "a+b@x.com", content, {
         kind: "invite",
+        instance: null,
       }),
     ).toBe(true);
     expect(m.sent.map((s) => s.to)).toEqual(["a+b@x.com"]);
@@ -486,7 +490,10 @@ describe("email logs", () => {
       EMAIL: { send: async () => ({ messageId: "msg-123abc" }) },
     } as never;
     const lines = await captured(() =>
-      sendEmail(e, "u-log1", "victim@example.com", content, { kind: "share" }),
+      sendEmail(e, "u-log1", "victim@example.com", content, {
+        kind: "share",
+        instance: null,
+      }),
     );
     const sent = lines.find((l) => l.includes('"email_sent"'));
     expect(sent).toBeDefined();
@@ -513,7 +520,10 @@ describe("email logs", () => {
       },
     } as never;
     const lines = await captured(() =>
-      sendEmail(e, "u-log2", "victim@example.com", content, { kind: "invite" }),
+      sendEmail(e, "u-log2", "victim@example.com", content, {
+        kind: "invite",
+        instance: null,
+      }),
     );
     const failed = lines.find((l) => l.includes('"email_failed"'));
     expect(JSON.parse(failed as string)).toEqual({
@@ -535,6 +545,7 @@ describe("email logs", () => {
     const lines2 = await captured(() =>
       sendEmail(e2, "u-log3", "victim@example.com", content, {
         kind: "invite",
+        instance: null,
       }),
     );
     expect(lines2.some((l) => l.includes('"reason":"send_error"'))).toBe(true);
@@ -645,10 +656,12 @@ describe("deliverability headers (#213)", () => {
     const content = () => ({ subject: "s", text: "t", html: "h" });
     await sendEmail(e, "u-rt1", "a@x.com", content, {
       kind: "invite",
+      instance: null,
       replyTo: "x@y.com, evil@z.com",
     });
     await sendEmail(e, "u-rt2", "b@x.com", content, {
       kind: "invite",
+      instance: null,
       replyTo: "ok@y.com",
     });
     expect(m.sent.map((s) => s.replyTo)).toEqual([undefined, "ok@y.com"]);
@@ -666,6 +679,7 @@ describe("deliverability headers (#213)", () => {
       () => ({ subject: "s", text: "t", html: "h" }),
       {
         kind: "invite",
+        instance: null,
       },
     );
     expect(m.sent[0]?.from).toBe(from);
