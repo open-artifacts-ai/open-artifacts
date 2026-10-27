@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.67.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.66.2...v0.67.0) (2026-10-27)
+
+
+### Features
+
+* **brokers:** refusals after the signature verifies say stale or bad_flow ([#732](https://github.com/open-artifacts-ai/open-artifacts/issues/732)) ([a60394a](https://github.com/open-artifacts-ai/open-artifacts/commit/a60394aaaf8dff88d20166e4f80d1156d4f02ee0))
+
 ## [0.66.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.66.1...v0.66.2) (2026-10-27)
 
 
