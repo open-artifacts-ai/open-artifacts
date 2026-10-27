@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.63.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.62.2...v0.63.0) (2026-10-27)
+
+
+### Features
+
+* dataWriters replaces allowAnonymousWrites; data_editors_only ([#681](https://github.com/open-artifacts-ai/open-artifacts/issues/681)) ([#689](https://github.com/open-artifacts-ai/open-artifacts/issues/689)) ([af92db4](https://github.com/open-artifacts-ai/open-artifacts/commit/af92db49e0af6a1d1ef5fc82531b3bad91c54206))
+
 ## [0.62.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.62.1...v0.62.2) (2026-10-27)
 
 
