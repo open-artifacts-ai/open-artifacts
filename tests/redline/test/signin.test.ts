@@ -1,6 +1,6 @@
 import { rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { HttpError } from "../src/http.ts";
+import { HookError, HttpError } from "../src/http.ts";
 import { crossCheck, NotRefused } from "../src/refused.ts";
 import {
   codeRequestReq,
@@ -266,6 +266,13 @@ describe("pendingCode (the __Host- cookie case's code)", () => {
     return T.a;
   }
   const ok = { status: 202, pending: ["oa_code=x"] };
+  const NO_CODE = {
+    error: {
+      code: "not_found",
+      message: "Not found",
+      details: { reason: "no_code" },
+    },
+  };
 
   it("no pending cookie: unproven with why, no hook call", async () => {
     let calls = 0;
@@ -288,25 +295,54 @@ describe("pendingCode (the __Host- cookie case's code)", () => {
     expect(calls).toBe(0);
   });
 
-  it("only 404s within the wait: unproven, no code within the wait", async () => {
-    const t = await hooked((_q, r) => json(r, 404, { error: {} }));
+  it("only no_code 404s within the wait: unproven, no code within the wait", async () => {
+    let calls = 0;
+    const t = await hooked((_q, r) => {
+      calls++;
+      json(r, 404, NO_CODE);
+    });
     expect(await pendingCode(t, "g@rl-a.test", ok, 600)).toEqual({
       unproven: "rl-a: code sign-in unavailable (no code within 0.6 s)",
     });
+    expect(calls).toBeGreaterThan(1);
   });
 
-  it("a hook error other than 404 (a 429 from the hook rate limit) fails with its status", async () => {
-    const t = await hooked((_q, r) => r.writeHead(429).end());
+  it("a reasonless 404 (rate limited, wrong key, hooks off) throws at once with status and body hash", async () => {
+    let calls = 0;
+    const t = await hooked((_q, r) => {
+      calls++;
+      json(r, 404, { error: { code: "not_found", message: "Not found" } });
+    });
+    const e = await pendingCode(t, "g@rl-a.test", ok).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(HookError);
+    expect((e as HookError).reason).toBe("no_reason");
+    expect((e as Error).message).toMatch(
+      /^rl-a hook \/__test\/otp\/latest \(no_reason\): status 404, body sha256:[0-9a-f]{16} /,
+    );
+    expect(calls).toBe(1);
+  });
+
+  it("a 404 with another reason throws too (bad_input is not no code)", async () => {
+    const t = await hooked((_q, r) =>
+      json(r, 404, { error: { details: { reason: "bad_input" } } }),
+    );
+    await expect(pendingCode(t, "g@rl-a.test", ok)).rejects.toThrow(
+      /\(bad_input\): status 404/,
+    );
+  });
+
+  it("any other status fails with it", async () => {
+    const t = await hooked((_q, r) => r.writeHead(500).end());
     const e = await pendingCode(t, "g@rl-a.test", ok).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(HttpError);
-    expect((e as HttpError).status).toBe(429);
-    expect((e as Error).message).toMatch(/status 429/);
+    expect((e as HttpError).status).toBe(500);
+    expect((e as Error).message).toMatch(/status 500/);
   });
 
   it("the code once the hook has it", async () => {
     let n = 0;
     const t = await hooked((_q, r) =>
-      ++n < 2 ? json(r, 404, {}) : json(r, 200, { code: "123456" }),
+      ++n < 2 ? json(r, 404, NO_CODE) : json(r, 200, { code: "123456" }),
     );
     expect(await pendingCode(t, "g@rl-a.test", ok)).toEqual({ code: "123456" });
   });

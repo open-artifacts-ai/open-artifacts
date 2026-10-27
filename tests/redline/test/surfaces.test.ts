@@ -6,7 +6,14 @@ import {
   SPACE_SURFACES,
   SURFACES,
 } from "../../../apps/server/test/authz/surfaces.ts";
-import { HttpError, hook, hookReason, SetupHookError } from "../src/http.ts";
+import { TEST_HOOK_REFUSALS } from "../../../packages/shared/src/hosted/test-hooks.ts";
+import {
+  HOOK_REFUSALS,
+  HttpError,
+  hook,
+  hookReason,
+  SetupHookError,
+} from "../src/http.ts";
 import {
   crossProbe,
   crossWrite,
@@ -604,6 +611,10 @@ describe("setup hooks", () => {
       req.url === "/healthz"
         ? json(res, 200, { ok: true, testHooks: true, installId })
         : res.writeHead(404).end(body);
+
+  it("HOOK_REFUSALS is @oa/shared's TEST_HOOK_REFUSALS", () => {
+    expect([...HOOK_REFUSALS]).toEqual([...TEST_HOOK_REFUSALS]);
+  });
 
   it("hookReason reads only the fixed enum word", () => {
     expect(hookReason(body404("spaces_blocked"))).toBe("spaces_blocked");

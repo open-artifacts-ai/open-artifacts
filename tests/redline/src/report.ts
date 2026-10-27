@@ -223,14 +223,16 @@ export function setupHookName(infra: string | undefined): string | undefined {
  */
 export function setupHookCase(
   name: string,
-  infra: string,
+  infras: readonly string[],
   file: string,
   cases: string[],
 ): CaseResult {
+  // Every distinct infra message behind it, the hook's first.
+  const all = [...new Set(infras)].join("; ");
   return {
     name,
     level: "infra",
-    reason: `${redactReason(infra)}; ${cases.length} case(s) in ${file} did not run`,
+    reason: `${redactReason(all)}; ${cases.length} case(s) in ${file} did not run`,
     blocked: { file, cases: [...cases] },
   };
 }

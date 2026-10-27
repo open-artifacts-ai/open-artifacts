@@ -2,7 +2,8 @@
 // bundle (the --outdir of `wrangler deploy --dry-run`) in Miniflare with the
 // hooks' runtime switches all on (TEST_HOOKS=1, a valid 48-char key, a
 // TEST_DOMAIN, RL_ANON bound) and asserts every /__test/* path answers 404
-// while /healthz answers 200 without testHooks. Prints one line; exits 0 or 1.
+// (none with a hook refusal reason in error.details) while /healthz answers
+// 200 without testHooks. Prints one line; exits 0 or 1.
 // Usage: node --experimental-strip-types scripts/ci/check-no-test-hooks.ts <bundle-dir>
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
@@ -28,6 +29,16 @@ const files = (d: string): string[] =>
   );
 
 type Result = [ok: boolean, msg: string];
+
+/** error.details.reason in a JSON error body, if any. */
+function refusalReason(text: string): unknown {
+  try {
+    return (JSON.parse(text) as { error?: { details?: { reason?: unknown } } })
+      ?.error?.details?.reason;
+  } catch {
+    return undefined;
+  }
+}
 const done = (ok: boolean, msg: string): Result => [ok, msg];
 
 // The slice of the Miniflare API used here (it ships with apps/server's
@@ -133,9 +144,16 @@ async function main(): Promise<Result> {
               ? undefined
               : JSON.stringify({ email: "a@p5.test", role: "member" }),
         });
-        await r.arrayBuffer();
+        const text = await r.text();
         if (r.status !== 404)
           return done(false, `${method} ${path} -> ${r.status} (want 404)`);
+        // A hook refusal past the key carries error.details.reason; the
+        // release build has no hook, so no 404 may carry one.
+        if (refusalReason(text) !== undefined)
+          return done(
+            false,
+            `${method} ${path} -> 404 with a hook refusal reason`,
+          );
         n++;
       }
     return done(true, `${n} /__test/* requests all 404 with TEST_HOOKS=1`);

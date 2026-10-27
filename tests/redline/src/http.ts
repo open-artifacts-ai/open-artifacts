@@ -109,7 +109,8 @@ async function paceHook(t: Target): Promise<void> {
 
 // Why a hook refused after its key verified: the 404 body's
 // error.details.reason, a fixed enum (keep in sync with @oa/shared
-// TEST_HOOK_REFUSALS). Only these words are ever read from a hook body.
+// TEST_HOOK_REFUSALS; test/surfaces.test.ts asserts they match). Only these
+// words are ever read from a hook body.
 export const HOOK_REFUSALS = [
   "bad_route",
   "bad_input",
@@ -155,7 +156,20 @@ export class SetupHookError extends InfraError {
 }
 
 /**
- * POST a /__test/* hook with the target's key. Throws HttpError unless 2xx;
+ * A hook's non-2xx answer: an HttpError (status, body hash) plus the refusal
+ * reason read from the body (hookReason: the enum word or "no_reason").
+ */
+export class HookError extends HttpError {
+  readonly reason: HookRefusal | "no_reason";
+  constructor(t: Target, path: string, res: Response, text: string) {
+    const reason = hookReason(text);
+    super(`${t.name} hook ${path} (${reason})`, res, text);
+    this.reason = reason;
+  }
+}
+
+/**
+ * POST a /__test/* hook with the target's key. Throws HookError unless 2xx;
  * with `setup`, a SetupHookError (infra) instead.
  */
 export async function hook(
@@ -180,7 +194,7 @@ export async function hook(
   if (res.status < 200 || res.status > 299)
     throw o.setup
       ? new SetupHookError(t, path, res, text)
-      : new HttpError(`${t.name} hook ${path}`, res, text);
+      : new HookError(t, path, res, text);
   return parseJson(res, text, `${t.name} hook ${path}`);
 }
 

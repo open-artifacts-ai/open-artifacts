@@ -77,7 +77,7 @@ export function collect(
     const broken = m.errors().length > 0;
     // A setup hook's refusal (seeding, the admin session): one infra result
     // per file and hook refusal, not one per case it kept from running.
-    const hooked = new Map<string, { infra: string; names: string[] }>();
+    const hooked = new Map<string, { infras: string[]; names: string[] }>();
     for (const t of m.children.allTests()) {
       const result = t.result();
       const state = result.state;
@@ -88,7 +88,9 @@ export function collect(
       const infra = setupFailed ? infraOf(setup) : undefined;
       const hookName = setupHookName(infra);
       if (infra && hookName) {
-        const h = hooked.get(hookName) ?? { infra, names: [] };
+        const h = hooked.get(hookName) ?? { infras: [], names: [] };
+        // infraOf names only the first; keep every infra message.
+        for (const e of setup) h.infras.push(String(e?.message ?? ""));
         h.names.push(t.fullName);
         hooked.set(hookName, h);
         continue;
@@ -115,7 +117,7 @@ export function collect(
       });
     }
     for (const [name, h] of hooked)
-      cases.push(setupHookCase(name, h.infra, file, h.names));
+      cases.push(setupHookCase(name, h.infras, file, h.names));
     // The module's own error, unless it is the setup hook refusal just reported.
     if (
       m.errors().length > 0 &&
