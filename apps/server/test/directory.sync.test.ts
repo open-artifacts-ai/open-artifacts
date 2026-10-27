@@ -11,7 +11,7 @@ import {
   parseUsersPage,
 } from "../src/directory/google.js";
 import { instanceDirectory, readHealth } from "../src/directory/health.js";
-import { SyncEngine } from "../src/directory/sync.js";
+import { FAST_MS, RECONCILE_MS, SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
@@ -1424,5 +1424,85 @@ describe("kicks and the group lookup", () => {
     expect(JSON.parse(String(await reasons()))).toContain("manual");
     const member = await login(uniq("sync-now-member"), "member");
     expect((await post(e, R.directorySync, member.cookie)).status).toBe(404);
+  });
+});
+
+describe("P2.5 #5: restricted_sync is recomputed for everyone on each reconcile", () => {
+  const restrictedOf = async (sub: string) =>
+    (
+      await env.DB.prepare(
+        "select u.restricted_sync as r from users u join identities i on i.user_id = u.id where i.provider = 'google' and i.subject = ?",
+      )
+        .bind(sub)
+        .first<{ r: number }>()
+    )?.r;
+  /** The next reconcile is due (its own interval past t). */
+  const nextRec = (t: number) => t + RECONCILE_MS + FAST_MS;
+
+  it("a new hire outside any restricted group is not restricted; one inside is", async () => {
+    const [inGroup, outside] = dirUsers(2, "rs");
+    const gid = `grp-rs-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    expect(await restrictedOf(inGroup?.id as string)).toBe(1);
+    expect(await restrictedOf(outside?.id as string)).toBe(0);
+    // Hired later: created by the reconcile's listing (fail closed), lifted
+    // by its finish.
+    const [later] = dirUsers(1, "rs-later");
+    await drain(nextRec(t0));
+    expect(await restrictedOf(later?.id as string)).toBe(0);
+    expect(await restrictedOf(inGroup?.id as string)).toBe(1);
+  });
+
+  it("a restricted group that could not be read keeps new hires restricted (fail closed)", async () => {
+    const [inGroup] = dirUsers(1, "rs-ref");
+    const gid = `grp-rs-ref-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    g.fail(new RegExp(`/groups/${gid}/members`), 403, { times: 1000 });
+    const [later] = dirUsers(1, "rs-ref-later");
+    await drain(nextRec(t0));
+    expect(await uidOf(later?.id as string)).toBeTruthy();
+    expect(await restrictedOf(later?.id as string)).toBe(1);
+    // Readable again: the next reconcile lifts them.
+    g.clearFailures();
+    await drain(nextRec(nextRec(t0)));
+    expect(await restrictedOf(later?.id as string)).toBe(0);
+    expect(await restrictedOf(inGroup?.id as string)).toBe(1);
+  });
+
+  it("a user who left every restricted group outside any diff is lifted; one who joined is capped and loses live sockets", async () => {
+    const [stays, left] = dirUsers(2, "rs-drift");
+    const gid = `grp-rs-drift-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [stays?.id ?? "", left?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    const leftUid = await uidOf(left?.id as string);
+    const staysUid = await uidOf(stays?.id as string);
+    // Drift no diff touches: flags written behind sync's back.
+    await env.DB.batch([
+      env.DB.prepare("update users set restricted_sync = 0 where id = ?").bind(
+        staysUid,
+      ),
+      env.DB.prepare(
+        "delete from directory_members where group_id = ? and user_id = ?",
+      ).bind(gid, leftUid),
+    ]);
+    g.removeMember(gid, left?.id as string);
+    await drain(nextRec(t0));
+    expect(await restrictedOf(left?.id as string)).toBe(0);
+    expect(await restrictedOf(stays?.id as string)).toBe(1);
+    // Newly capped: their UserPresence recorded the revocation.
+    const ns = env.USER_PRESENCE as NonNullable<Env["USER_PRESENCE"]>;
+    const revoked = await runInDurableObject(
+      ns.get(ns.idFromName(staysUid)),
+      (_i, s) =>
+        s.storage.sql
+          .exec("select revoked_at from state where id = 1")
+          .toArray()[0]?.revoked_at,
+    );
+    expect(Number(revoked)).toBeGreaterThan(0);
   });
 });

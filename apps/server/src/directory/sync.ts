@@ -10,6 +10,7 @@ import { logError, logInfo, logWarn } from "../log.js";
 import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
 import { setUserStatus } from "../services/members.js";
+import { RESTRICTED_SYNC_CASE } from "../services/restriction.js";
 import { directoryMode } from "../services/spaces.js";
 import { alertOwners } from "./alert.js";
 import { applyGroupDiff, applyUsers } from "./apply.js";
@@ -209,6 +210,11 @@ type Run = {
   reasons: KickReason[];
   /** User-event addresses still to re-read (past USER_EVENTS_PER_PAGE). */
   userKeys: string[];
+  /**
+   * Targets this run could not read whole (partial, missing or refused):
+   * restricted_sync is never lowered from their stale rows (finish).
+   */
+  incomplete?: string[];
 };
 
 /** What a step did: its status, whether it called Google, its commit. */
@@ -342,6 +348,20 @@ const SYNCED_PAGE = `select u.id from identities i join users u on u.id = i.user
   order by u.id limit ?2`;
 /** DO kv: the last user id whose sockets the customer_mismatch close signalled. */
 const CLOSE_KEY = "mismatch.close";
+/**
+ * restricted_sync recomputed for every user after a reconcile read the
+ * groups (P2.5 #5): derived state follows directory_members and
+ * restricted_groups, whoever the diffs touched, so a new hire created
+ * restricted (fail closed, binding.ts CREATE_USERS) and in no restricted
+ * group is lifted. A flag is never lowered while a restricted group was not
+ * read whole this run (?1: those targets), so a stale row can't lift it.
+ * Returns the users whose flag changed.
+ */
+const RESTRICTED_ALL = `update users set restricted_sync = ${RESTRICTED_SYNC_CASE}
+  where restricted_sync <> ${RESTRICTED_SYNC_CASE}
+    and (${RESTRICTED_SYNC_CASE} = 1 or not exists (select 1 from restricted_groups
+      where group_id in (select value from json_each(?1))))
+  returning id, restricted_sync as r`;
 
 /** A reset() landed since this alarm started: it writes nothing more. */
 class StaleSignal extends Error {
@@ -1115,6 +1135,7 @@ export class SyncEngine {
       case "walk":
         return this.walk(run, step, token);
       case "finish": {
+        if (run.lane === "rec" && groups) await this.recomputeRestricted(run);
         await this.succeed(run, now, groups);
         return { status: "done", called: false };
       }
@@ -1507,6 +1528,13 @@ export class SyncEngine {
     }
     const wouldRemove = removed.length;
     if (hold) removed = [];
+    // Not read whole (a deleted group whose removals applied was): its rows
+    // may be stale, so the finish recompute lowers no flag from them.
+    if (
+      (w.partial || (w.missing && hold)) &&
+      !run.incomplete?.includes(w.target)
+    )
+      run.incomplete = [...(run.incomplete ?? []), w.target];
     await this.apply(w.target, added, removed, pre);
     // Released: a sweep that read the whole group and held nothing (or a
     // readable group that was surfaced as unreadable).
@@ -1595,6 +1623,30 @@ export class SyncEngine {
       now: this.now,
       ctx: this.ctx,
     });
+  }
+
+  /**
+   * The reconcile's full restricted_sync recompute (RESTRICTED_ALL); the
+   * newly capped lose their live sockets.
+   */
+  private async recomputeRestricted(run: Run) {
+    this.guard();
+    const { results } = await stmt(this.env.DB, RESTRICTED_ALL)
+      .bind(JSON.stringify(run.incomplete ?? []))
+      .all<{ id: string; r: number }>();
+    const capped = results.filter((x) => x.r === 1).map((x) => x.id);
+    if (results.length)
+      logInfo("directory_restricted_recomputed", {
+        changed: results.length,
+        capped: capped.length,
+      });
+    // Never guarded: the update committed.
+    await revokeUsersLive(
+      this.env,
+      capped,
+      "directory restriction recomputed",
+      this.ctx,
+    );
   }
 
   // ------------------------------------------------------------ health

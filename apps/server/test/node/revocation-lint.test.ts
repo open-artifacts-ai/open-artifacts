@@ -89,6 +89,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // P2.5 #16: a confirm that swaps in another Workspace suspends and
   // unbinds the previous one's users (sessions, PATs and grants end).
   "directory/binding.ts:retireTenant": "user",
+  // P2.5 #5: the reconcile's full restricted_sync recompute caps whoever a
+  // restricted group now holds.
+  "directory/sync.ts:SyncEngine.recomputeRestricted": "user",
   // P3 T17 (test builds only): the session hook may lower the user's manual
   // space row.
   "test-hooks/index.ts:grantSpaces": "user",

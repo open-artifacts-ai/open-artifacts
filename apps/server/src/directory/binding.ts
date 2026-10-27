@@ -23,8 +23,9 @@ import { K, putInitial, readInitial } from "./store.js";
 //   An out-of-domain row (a guest's secondary address, say) is never linked.
 // - New rows are created only for active users whose address is in
 //   AUTH_DOMAINS (the sign-in allow-list), as members. While any restricted
-//   group exists they start restricted (fail closed); T13's first reconcile
-//   recomputes restricted_sync from the groups.
+//   group exists they start restricted (fail closed) until a reconcile has
+//   read the groups: its finish recomputes restricted_sync for everyone
+//   (sync.ts RESTRICTED_ALL), lifting those in no restricted group.
 // - A linked user who is suspended in Google is suspended here
 //   (suspensions always apply), through setUserStatus (sessions, tokens,
 //   grants and sockets revoked).
