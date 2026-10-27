@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.68.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.67.0...v0.68.0) (2026-10-27)
+
+
+### Features
+
+* **server:** POST /api/v1/admin/broker-check proves the install reaches its brokers ([#730](https://github.com/open-artifacts-ai/open-artifacts/issues/730)) ([87f1ec0](https://github.com/open-artifacts-ai/open-artifacts/commit/87f1ec07b77eddafe35d6c9c7c7637a600e2ca57))
+
+
+### Bug Fixes
+
+* **auth-broker:** separate per-install buckets for authorize and redeem ([#744](https://github.com/open-artifacts-ai/open-artifacts/issues/744)) ([37ef090](https://github.com/open-artifacts-ai/open-artifacts/commit/37ef0904b270ecaecd35ff4eb88e03d0f438943f))
+* **dashboard:** a query error never renders as no results ([#747](https://github.com/open-artifacts-ai/open-artifacts/issues/747)) ([4954fa4](https://github.com/open-artifacts-ai/open-artifacts/commit/4954fa460e6347b9d76a0da3b6d58057df7ea0ad))
+* **dashboard:** Departed lists only suspended or removed members ([#736](https://github.com/open-artifacts-ai/open-artifacts/issues/736)) ([802a890](https://github.com/open-artifacts-ai/open-artifacts/commit/802a8906174162fc9ac8125cb6903cb49f9a01be))
+* **dashboard:** space managers can Restore a deleted artifact; truthful space-delete copy ([#743](https://github.com/open-artifacts-ai/open-artifacts/issues/743)) ([9dffd3b](https://github.com/open-artifacts-ai/open-artifacts/commit/9dffd3b97ce9ed1b80e3d62c4f9d413e7d97a907))
+* **hosted:** health checks require /healthz to report this install's id ([#746](https://github.com/open-artifacts-ai/open-artifacts/issues/746)) ([027e35b](https://github.com/open-artifacts-ai/open-artifacts/commit/027e35bd7dbbf6a5029cf74dc615ce7811f9931f))
+* **provision:** render DIRECTORY_BROKER_URL so hosted directory sync isn't dead ([#742](https://github.com/open-artifacts-ai/open-artifacts/issues/742)) ([1e6d945](https://github.com/open-artifacts-ai/open-artifacts/commit/1e6d945180145d0d2fd34dd9f161d29b1f1b00b7))
+* **redline:** fixed spaces are per test domain; setup hook refusals give a reason after the key ([#738](https://github.com/open-artifacts-ai/open-artifacts/issues/738)) ([7f48733](https://github.com/open-artifacts-ai/open-artifacts/commit/7f487339b94cd7e197ea2d17066dd9f3b1614adf))
+* **server:** GET /members honours ?status=, so Departed lists only suspended and removed members ([#737](https://github.com/open-artifacts-ai/open-artifacts/issues/737)) ([7416417](https://github.com/open-artifacts-ai/open-artifacts/commit/7416417eca17ee824cd3b5d95a28eebf0573ca6c))
+* **setup:** six self-host setup fixes from review item 44 ([#750](https://github.com/open-artifacts-ai/open-artifacts/issues/750)) ([8388f79](https://github.com/open-artifacts-ai/open-artifacts/commit/8388f790c84594960a0006aba8d8261effae11d5))
+
 ## [0.67.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.66.2...v0.67.0) (2026-10-27)
 
 
