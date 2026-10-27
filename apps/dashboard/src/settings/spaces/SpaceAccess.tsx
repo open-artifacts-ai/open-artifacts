@@ -25,6 +25,7 @@ import {
   usePutMapping,
   useSpaceMappings,
 } from "../../api/queries";
+import { LoadError } from "../../layout/LoadError";
 import { AppLink } from "../../library/AppLink";
 import { GroupPicker } from "../GroupPicker";
 import { errorText, muted, SettingsCard } from "../ui";
@@ -362,6 +363,20 @@ export function SpaceAccess({
           ))}
         </tbody>
       </table>
+      {mappings.isError && (
+        <LoadError
+          title="Couldn't load this space's groups."
+          error={mappings.error}
+          onRetry={() => void mappings.refetch()}
+        />
+      )}
+      {org.isError && (
+        <LoadError
+          title="Couldn't load the groups for every space."
+          error={org.error}
+          onRetry={() => void org.refetch()}
+        />
+      )}
       {mapper && (
         <GroupPicker
           label="Add a group"
