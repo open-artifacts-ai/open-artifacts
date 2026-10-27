@@ -2,7 +2,7 @@ import { applyD1Migrations, createExecutionContext } from "cloudflare:test";
 import { env as testEnv } from "cloudflare:workers";
 import type { D1Migration } from "@cloudflare/vitest-plugin";
 import { isPurgedEmail } from "@oa/provision/names";
-import { REVOKE_MIN_VERSION } from "@oa/provision/versions";
+import { REVOKE_MIN_VERSION, SYNC_MIN_VERSION } from "@oa/provision/versions";
 import {
   afterEach,
   beforeAll,
@@ -423,7 +423,7 @@ describe("the */2 revoke tick", () => {
 });
 
 describe("scheduled() branches on event.cron", () => {
-  it("the */2 cron runs the revoke tick, then the directory sync of active installs: no nightly job, no purge", async () => {
+  it("the */2 cron runs only the revoke tick while no release has the sync job: no nightly job, no purge", async () => {
     await seed([
       { id: idOf(0) },
       { id: idOf(1), state: "active", revoke: null },
@@ -446,14 +446,10 @@ describe("scheduled() branches on event.cron", () => {
         script: `oa-s-${idOf(0)}`,
         opts: { cron: REVOKE_JOB, scheduledTime: new Date(NOW) },
       },
-      {
-        script: `oa-s-${idOf(1)}`,
-        opts: { cron: SYNC_JOB, scheduledTime: new Date(NOW) },
-      },
     ]);
-    expect(lines).toContain(
-      "directory-sync summary active=1 ok=1 failed=0 skipped=0 capped=0 db_errors=0 leaked=0",
-    );
+    // SYNC_MIN_VERSION is null: no install is sent the job, and no line.
+    expect(SYNC_MIN_VERSION).toBeNull();
+    expect(lines.some((l) => l.startsWith("directory-sync"))).toBe(false);
     expect(
       lines.some(
         (l) =>
@@ -603,11 +599,7 @@ describe("H-DV review fixes", () => {
         createExecutionContext(),
       ),
     ).resolves.toBeUndefined();
-    // The sync run after it aborts on its own fixed line, never raw text.
-    expect(lines).toEqual([
-      "directory-revoke aborted exception",
-      "directory-sync aborted exception",
-    ]);
+    expect(lines).toEqual(["directory-revoke aborted exception"]);
   });
 
   it("L2: a late result never overwrites a revoke the operator settled meanwhile", async () => {
@@ -757,15 +749,15 @@ describe("broker gates on every install call", () => {
     ]);
   });
 
-  it("the directory sync calls every active install once with SYNC_JOB and its own gates, inside the tick", async () => {
+  it("the directory sync calls each active install at or above the minimum once, with SYNC_JOB and its own gates, inside the tick", async () => {
     await seed([
-      { id: idOf(0), state: "active", revoke: null },
-      { id: idOf(1), state: "active", revoke: null },
+      { id: idOf(0), state: "active", revoke: null, version: "0.66.0" },
+      { id: idOf(1), state: "active", revoke: null, version: "0.67.1" },
       { id: idOf(2) },
     ]);
     const f = fakes();
-    const r = await directorySync(f.env, NOW, gates);
-    expect(r.ok.sort()).toEqual([idOf(0), idOf(1)]);
+    const r = await directorySync(f.env, NOW, gates, "0.66.0");
+    expect(r?.ok.sort()).toEqual([idOf(0), idOf(1)]);
     expect(f.calls.map((c) => c.opts)).toEqual([
       { cron: SYNC_JOB, scheduledTime: new Date(NOW) },
       { cron: SYNC_JOB, scheduledTime: new Date(NOW) },
@@ -783,5 +775,51 @@ describe("broker gates on every install call", () => {
     const f = fakes();
     await revokeTick(f.env, NOW);
     expect(f.args).toEqual([{ script: `oa-s-${idOf(0)}`, args: undefined }]);
+  });
+});
+
+describe("directory sync: only releases that know the job", () => {
+  it("installs below the minimum, or with no or a bad version, are never called and never counted", async () => {
+    await seed([
+      { id: idOf(0), state: "active", revoke: null, version: "0.66.0" },
+      { id: idOf(1), state: "active", revoke: null, version: "0.65.9" },
+      { id: idOf(2), state: "active", revoke: null, version: "0.66.0-rc.1" },
+      { id: idOf(3), state: "active", revoke: null, version: null },
+      { id: idOf(4), state: "active", revoke: null, version: "junk" },
+    ]);
+    const lines = captureLogs();
+    const f = fakes();
+    const r = await directorySync(f.env, NOW, undefined, "0.66.0");
+    expect(f.calls.map((c) => c.script)).toEqual([`oa-s-${idOf(0)}`]);
+    expect(r?.ok).toEqual([idOf(0)]);
+    expect(lines).toEqual([
+      "directory-sync summary active=1 ok=1 failed=0 skipped=0 capped=0 db_errors=0 leaked=0",
+    ]);
+  });
+
+  it("with no minimum (null) there is no call and no line at all", async () => {
+    await seed([{ id: idOf(0), state: "active", revoke: null }]);
+    const lines = captureLogs();
+    const f = fakes();
+    expect(await directorySync(f.env, NOW, undefined, null)).toBeNull();
+    expect(f.calls).toEqual([]);
+    expect(lines).toEqual([]);
+  });
+
+  it("the nightly run still calls every active install whatever its version", async () => {
+    await seed([
+      { id: idOf(0), state: "active", revoke: null, version: "0.1.0" },
+      { id: idOf(1), state: "active", revoke: null, version: null },
+    ]);
+    const f = fakes();
+    await scheduler.scheduled(
+      controller(CRON),
+      f.env,
+      createExecutionContext(),
+    );
+    expect(f.calls.map((c) => c.script).sort()).toEqual([
+      `oa-s-${idOf(0)}`,
+      `oa-s-${idOf(1)}`,
+    ]);
   });
 });

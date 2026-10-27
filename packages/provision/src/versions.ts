@@ -9,6 +9,14 @@ export const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
  */
 export const REVOKE_MIN_VERSION = "0.57.1";
 
+/**
+ * The first release whose scheduled() knows the `oa:directory-sync` job and
+ * reaches the brokers through the props gates (Backend #722). The scheduler
+ * sends that job only to installs at or above it; older ones reject it as an
+ * unknown job. null until #722 ships: no install gets the job.
+ */
+export const SYNC_MIN_VERSION: string | null = null;
+
 /** Semver order (prerelease below its release); throws on a non-semver string. */
 export function compareVersions(a: string, b: string): number {
   const pa = SEMVER.exec(String(a));

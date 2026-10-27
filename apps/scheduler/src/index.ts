@@ -13,6 +13,7 @@ import {
   compareVersions,
   isReleaseVersion,
   REVOKE_MIN_VERSION,
+  SYNC_MIN_VERSION,
 } from "@oa/provision/versions";
 import { emailQuota, type QuotaEnv } from "./quota.js";
 
@@ -96,6 +97,8 @@ export interface NightlyOptions {
   label?: string;
   /** ctx.exports of this run, so each call carries the install's broker gates. */
   gates?: GateExports;
+  /** Only installs at or above this release are called (the job is new to them). */
+  minVersion?: string;
 }
 
 /** Consecutive re-check D1 errors or stalls that stop the run (a platform D1 outage). */
@@ -106,7 +109,7 @@ const GOLDEN = 0.3819660112501051;
 
 // Keyset pages, so a large table is never one result set.
 const PAGE_SQL =
-  "SELECT id FROM installs WHERE state = 'active' AND id > ?1 ORDER BY id LIMIT ?2";
+  "SELECT id, version FROM installs WHERE state = 'active' AND id > ?1 ORDER BY id LIMIT ?2";
 
 // Right before each call: still active, and no live lifecycle lease
 // (provision holds one through upgrade, rollback and delete).
@@ -153,9 +156,15 @@ function checkOutcome(r: unknown): void {
   throw new Error("outcome");
 }
 
+/** At or above `min`, or any install when `min` is undefined; a missing or bad version is below. */
+const atLeast = (version: unknown, min: string | undefined) =>
+  min === undefined ||
+  (isReleaseVersion(version) && compareVersions(version, min) >= 0);
+
 async function activeIds(
   db: D1Database,
   pageSize: number,
+  minVersion?: string,
 ): Promise<{ ids: string[]; invalid: number }> {
   const ids: string[] = [];
   let invalid = 0;
@@ -164,10 +173,11 @@ async function activeIds(
     const { results } = await db
       .prepare(PAGE_SQL)
       .bind(after, pageSize)
-      .all<{ id: unknown }>();
+      .all<{ id: unknown; version: unknown }>();
     for (const r of results)
-      if (typeof r.id === "string") ids.push(r.id);
-      else invalid++;
+      if (typeof r.id !== "string") invalid++;
+      // Below the job's minimum: not this run's to call (not a skip or failure).
+      else if (atLeast(r.version, minVersion)) ids.push(r.id);
     if (results.length < pageSize) return { ids, invalid };
     const last = results.at(-1)?.id;
     // TEXT affinity makes this near-impossible; never drop the later pages.
@@ -266,6 +276,7 @@ export async function runNightly(
     job = CRON,
     label = "nightly",
     gates,
+    minVersion,
   }: NightlyOptions = {},
 ): Promise<NightlyResult> {
   positive("concurrency", concurrency, true);
@@ -277,7 +288,7 @@ export async function runNightly(
   positive("pageSize", pageSize, true);
   const start = Date.now();
 
-  const rows = await activeIds(env.PLATFORM_DB, pageSize);
+  const rows = await activeIds(env.PLATFORM_DB, pageSize, minVersion);
   const valid = rows.ids.filter((id) => isInstallId(id));
   // Resolve every script name first: an unknown OA_ENV throws before any call.
   for (const id of valid) names(id, env.OA_ENV);
@@ -679,15 +690,23 @@ export const SYNC_OPTIONS = {
   leakMs: 15_000,
 } as const satisfies NightlyOptions;
 
-export function directorySync(
+/**
+ * Only installs at or above `minVersion` (SYNC_MIN_VERSION) get the job, so
+ * an older release never sees it (it would reject an unknown job every tick).
+ * null: no release has it yet, so no query, no call and no line.
+ */
+export async function directorySync(
   env: Env,
   now: number,
   gates: GateExports | undefined,
-): Promise<NightlyResult> {
+  minVersion: string | null = SYNC_MIN_VERSION,
+): Promise<NightlyResult | null> {
+  if (minVersion === null) return null;
   return nightly(env, now, {
     ...SYNC_OPTIONS,
     job: SYNC_JOB,
     label: "directory-sync",
+    minVersion,
     ...(gates ? { gates } : {}),
   });
 }
