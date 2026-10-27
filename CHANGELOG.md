@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.68.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.68.0...v0.68.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **dashboard:** Access on direct sign-in, no Mine in shared spaces, live reconnects, truthful copy ([#749](https://github.com/open-artifacts-ai/open-artifacts/issues/749)) ([f78e362](https://github.com/open-artifacts-ai/open-artifacts/commit/f78e36279585536f9dd60de39c145786f8c551c1))
+
 ## [0.68.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.67.0...v0.68.0) (2026-10-27)
 
 
