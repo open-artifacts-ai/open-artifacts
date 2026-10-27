@@ -339,6 +339,9 @@ jobs:
       - name: Real-server suite (local wrangler dev)
         if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh real
+      - name: Real-server suite with spaces on (local wrangler dev)
+        if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        run: bash scripts/ci/e2e.sh spaces
       - name: UI real-browser checks (axe contrast, focus)
         if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh ui

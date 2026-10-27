@@ -9,6 +9,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:real": "playwright test -c playwright.real.config.ts",
+    "test:e2e:spaces": "OA_E2E_FEATURES=spaces OA_E2E_PORT=8797 playwright test -c playwright.spaces.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "engines": {

@@ -98,6 +98,11 @@ export function devConfig(): Record<string, unknown> {
     // A test-only page that frames /a/<id>/full (artifact-links.spec, embed mode).
     EMBED_ORIGINS: EMBEDDER,
     EMBED_ALLOW_SAME_SITE: "1",
+    // The spaces suite (playwright.spaces.config.ts): a direct-sign-in install
+    // (only those report features in Me) with hosted features on.
+    ...(process.env.OA_E2E_FEATURES
+      ? { FEATURES: process.env.OA_E2E_FEATURES, AUTH_PROVIDERS: "email" }
+      : {}),
     ACCESS_CLIENT_SECRET: secret(),
     SESSION_SECRET: secret(),
     CONTENT_SIGNING_KEY: secret(),
