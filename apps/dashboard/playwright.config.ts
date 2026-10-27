@@ -7,6 +7,11 @@ export default defineConfig({
   testDir: "e2e",
   // e2e/real runs against wrangler dev: playwright.real.config.ts.
   testIgnore: "real/**",
+  // Tests, not files, are the unit of parallelism and of CI's --shard split:
+  // by file, the two a11y specs (a quarter of the suite's time) landed in one
+  // shard. Safe here: no mock spec shares state across its tests (no serial
+  // describes, no beforeAll).
+  fullyParallel: true,
   use: { baseURL: `http://localhost:${port}`, browserName: "chromium" },
   webServer: {
     command: `pnpm exec vite --port ${port} --strictPort`,
