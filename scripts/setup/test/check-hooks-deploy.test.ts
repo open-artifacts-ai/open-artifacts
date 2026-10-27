@@ -24,6 +24,11 @@ describe("deploy: check-no-test-hooks on the bundle to deploy", () => {
     expect(at).toBeGreaterThan(-1);
     expect(w.ops.indexOf("deploy")).toBeGreaterThan(at);
     const dir = dryRunDir(w.ops) as string;
+    // check-no-fake-idp runs on the same bundle, after the hooks check.
+    const fake = w.ops.findIndex((o) => o.startsWith("check-no-fake-idp "));
+    expect(fake).toBeGreaterThan(at);
+    expect(w.ops.indexOf("deploy")).toBeGreaterThan(fake);
+    expect(w.ops[fake]).toBe(`check-no-fake-idp ${dir}`);
     expect(
       w.argv.some((a) => a.includes(`deploy --dry-run --outdir ${dir}`)),
     ).toBe(true);
@@ -50,6 +55,18 @@ describe("deploy: check-no-test-hooks on the bundle to deploy", () => {
     expect(w.ops).not.toContain("deploy");
     expect(w.execOut.join("\n") + w.lines.join("\n")).toMatch(
       /check-no-test-hooks/,
+    );
+  });
+
+  it("a failing fake-IdP check refuses the deploy too", async () => {
+    const w = world({
+      env: { OA_CHECK_NO_TEST_HOOKS: "1" },
+      checkFakeIdpFails: true,
+    });
+    expect(await run(HOSTS, w.deps, ROOT)).not.toBe(0);
+    expect(w.ops).not.toContain("deploy");
+    expect(w.execOut.join("\n") + w.lines.join("\n")).toMatch(
+      /check-no-fake-idp failed on the bundle to deploy/,
     );
   });
 });

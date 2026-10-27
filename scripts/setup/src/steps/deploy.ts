@@ -315,11 +315,15 @@ async function deployHash(ctx: Ctx): Promise<string | undefined> {
   }
 }
 
+/** The release guards run on the bundle to deploy, in order (scripts/ci). */
+const DEPLOY_GUARDS = ["check-no-test-hooks", "check-no-fake-idp"] as const;
+
 /**
  * OA_CHECK_NO_TEST_HOOKS=1 (deploy-prod's upgrade, T3b L10): a dry-run build
  * of exactly the config and sources about to be deployed, checked by
- * scripts/ci/check-no-test-hooks.ts right before `wrangler deploy` (deployHash
- * already requires that build to be deterministic). A failure refuses the deploy.
+ * scripts/ci/check-no-test-hooks.ts and then scripts/ci/check-no-fake-idp.ts
+ * right before `wrangler deploy` (deployHash already requires that build to be
+ * deterministic). Either failing refuses the deploy.
  */
 async function checkNoTestHooks(ctx: Ctx): Promise<void> {
   if (ctx.deps.env.OA_CHECK_NO_TEST_HOOKS !== "1") return;
@@ -328,18 +332,20 @@ async function checkNoTestHooks(ctx: Ctx): Promise<void> {
     throw new Error("refusing to deploy: no temp dir for the test-hooks check");
   try {
     await ctx.wrangler(["deploy", "--dry-run", "--outdir", dir]);
-    const script = join(ctx.root, "scripts/ci/check-no-test-hooks.ts");
-    const r = await ctx.deps.exec("node", [
-      "--experimental-strip-types",
-      "--no-warnings",
-      script,
-      dir,
-    ]);
-    if (r.code !== 0)
-      throw new Error(
-        `refusing to deploy: check-no-test-hooks failed on the bundle to deploy: ${(r.stdout || r.stderr).trim()}`,
-      );
-    ctx.notes.push((r.stdout || "check-no-test-hooks: ok").trim());
+    for (const guard of DEPLOY_GUARDS) {
+      const script = join(ctx.root, `scripts/ci/${guard}.ts`);
+      const r = await ctx.deps.exec("node", [
+        "--experimental-strip-types",
+        "--no-warnings",
+        script,
+        dir,
+      ]);
+      if (r.code !== 0)
+        throw new Error(
+          `refusing to deploy: ${guard} failed on the bundle to deploy: ${(r.stdout || r.stderr).trim()}`,
+        );
+      ctx.notes.push((r.stdout || `${guard}: ok`).trim());
+    }
   } finally {
     ctx.fs.removeTree?.(dir);
   }
