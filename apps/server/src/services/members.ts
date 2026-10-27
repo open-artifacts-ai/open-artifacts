@@ -49,7 +49,15 @@ import {
   revokeUserLive,
 } from "../runtime/revoke.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
-import { RESTRICTED_SYNC_FOR_USER } from "./restriction.js";
+import {
+  IDENTITIES_SQL,
+  identitiesOf,
+  MEMBER_EXTRAS_COLS,
+  type MemberExtrasRow,
+  RESTRICTED_GROUPS_SQL,
+  RESTRICTED_SYNC_FOR_USER,
+  restrictionOf,
+} from "./restriction.js";
 import { insertUser, toMember } from "./users.js";
 
 const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
@@ -59,26 +67,73 @@ export const statusOf = (v: unknown): MemberStatus =>
 
 /**
  * GET R.members?status= : members whose status (as statusOf reads it) is one
- * of `statuses`, default active. Non-active rows carry their status.
+ * of `statuses`, default active. Non-active rows carry their status. With
+ * `hosted` (hosted or direct sign-in installs, as for Me's hosted fields)
+ * every row carries status, identities and restriction, read in the same
+ * query (no per-member round trip).
  */
 export async function listMembers(
   env: Env,
   statuses: readonly MemberStatus[] = ["active"],
+  hosted = false,
 ): Promise<Member[]> {
   if (!statuses.length) return [];
   const conds: SQL[] = [inArray(users.status, [...statuses])];
   // An unknown stored value reads as suspended (statusOf).
   if (statuses.includes("suspended"))
     conds.push(notInArray(users.status, [...STATUSES]));
+  const where = or(...conds);
+  const order = [asc(users.createdAt), asc(users.id)] as const;
+  if (!hosted) {
+    const rows = await getDb(env)
+      .select()
+      .from(users)
+      .where(where)
+      .orderBy(...order);
+    return rows.map((r) => {
+      const status = statusOf(r.status);
+      return status === "active" ? toMember(r) : { ...toMember(r), status };
+    });
+  }
   const rows = await getDb(env)
-    .select()
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      displayName: users.displayName,
+      role: users.role,
+      lastSeenAt: users.lastSeenAt,
+      status: users.status,
+      rm: users.restrictedManual,
+      groups: sql<string | null>`${sql.raw(RESTRICTED_GROUPS_SQL)}`,
+      idents: sql<string | null>`${sql.raw(IDENTITIES_SQL)}`,
+    })
     .from(users)
-    .where(or(...conds))
-    .orderBy(asc(users.createdAt), asc(users.id));
-  return rows.map((r) => {
-    const status = statusOf(r.status);
-    return status === "active" ? toMember(r) : { ...toMember(r), status };
-  });
+    .where(where)
+    .orderBy(...order);
+  return rows.map((r) => ({
+    ...toMember(r),
+    status: statusOf(r.status),
+    identities: identitiesOf(r),
+    restriction: restrictionOf(r),
+  }));
+}
+
+/** One user's hosted Member fields by id (?1): read back with hostedFields. */
+export const HOSTED_FIELDS = `select users.status, ${MEMBER_EXTRAS_COLS} from users where users.id = ?1`;
+
+/** `m` with status, identities and restriction from a HOSTED_FIELDS row (as GET R.members rows carry them). */
+export function hostedFields(
+  m: Member,
+  r: ({ status: string } & MemberExtrasRow) | undefined,
+): Member {
+  if (!r) return m;
+  return {
+    ...m,
+    status: statusOf(r.status),
+    identities: identitiesOf(r),
+    restriction: restrictionOf(r),
+  };
 }
 
 /**

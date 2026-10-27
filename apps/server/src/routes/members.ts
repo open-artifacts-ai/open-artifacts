@@ -9,6 +9,7 @@ import {
 import type { Context } from "hono";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
+import { showsSignInFields } from "../auth/sign-in.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
@@ -53,7 +54,9 @@ export function mountMembers(app: AppType): void {
     const q = MembersQuerySchema.safeParse(c.req.query());
     if (!q.success)
       throw new ApiError("bad_request", "Invalid query", q.error.issues);
-    return c.json(await listMembers(c.env, q.data.status));
+    return c.json(
+      await listMembers(c.env, q.data.status, showsSignInFields(c.env)),
+    );
   });
 
   /**

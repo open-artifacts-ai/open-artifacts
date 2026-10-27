@@ -295,7 +295,10 @@ describe("hosted contract schemas", () => {
     });
     expect(ERROR_CODES).toContain("member_synced");
     expect(STATUS_FOR.member_synced).toBe(409);
-    expect(Object.keys(SpaceMemberSchema.shape).at(-1)).toBe("allMembers");
+    expect(Object.keys(SpaceMemberSchema.shape).slice(-2)).toEqual([
+      "allMembers",
+      "restriction",
+    ]);
     expect(Object.keys(SpaceMemberSchema.shape)).not.toContain("lastSeenAt");
   });
 });

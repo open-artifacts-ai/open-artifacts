@@ -61,7 +61,7 @@ export const R = {
    * document's entry file is indexed: text past that never matches.
    */
   search: "/api/v1/search",
-  /** GET -> Member[]; POST MemberInvite -> Member */
+  /** GET -> Member[]; POST MemberInvite -> Member. Uncapped org owner or admin only (anyone else 404); space managers use spaceCandidates. */
   members: "/api/v1/members",
   /** PATCH MemberPatch -> Member; DELETE -> 204 */
   member: (id: string) => `/api/v1/members/${seg(id)}`,
@@ -152,6 +152,13 @@ export const R = {
    * the space's managers are notified.
    */
   spaceMemberSelf: (id: string) => `/api/v1/spaces/${seg(id)}/members/self`,
+  /**
+   * GET SpaceCandidatesQuery -> Page<SpaceCandidate>: the people a caller
+   * who can manage this space may add (active org members, never guests).
+   * Uncapped org admin or uncapped space manager; anyone else 404.
+   * Personal: 400 space_personal.
+   */
+  spaceCandidates: (id: string) => `/api/v1/spaces/${seg(id)}/candidates`,
   /** GET -> GroupMapping[] (org admin, space manager; personal: 400 space_personal). Manager access pending server implementation (P3 T9/T14). */
   spaceMappings: (id: string) => `/api/v1/spaces/${seg(id)}/mappings`,
   /** PUT GroupMappingPut -> GroupMapping; DELETE -> 204. 409 directory_sync_off when sync is off or frozen. Keyed by Google group id. Org admin: any role; space manager: viewer|editor rows only (a manager role in the body or the existing row: 403 space_forbidden); manager PUT while Settings.spaceManagerMappings is off: 403 directory_mapping_off (DELETE always allowed). Manager access pending server implementation (P3 T9/T14). */

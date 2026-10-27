@@ -1,6 +1,7 @@
 import {
   GroupMappingPutSchema,
   R,
+  SpaceCandidatesQuerySchema,
   SpaceCreateSchema,
   SpaceMemberPutSchema,
   SpaceMembersQuerySchema,
@@ -23,6 +24,7 @@ import {
   getSpace,
   listOrgMappings,
   listRestrictedGroups,
+  listSpaceCandidates,
   listSpaceMappings,
   listSpaceMembers,
   listSpaces,
@@ -133,6 +135,19 @@ export function mountSpaces(app: AppType): void {
         who,
         c.req.param("id"),
         query(c, SpaceMembersQuerySchema),
+      ),
+    );
+  });
+
+  // The add-people search: the space's uncapped managers and org admins.
+  app.get(`${SPACE}/candidates`, async (c) => {
+    const who = spacesCaller(c);
+    return c.json(
+      await listSpaceCandidates(
+        c.env,
+        who,
+        c.req.param("id"),
+        query(c, SpaceCandidatesQuerySchema),
       ),
     );
   });

@@ -244,7 +244,9 @@ const ADMIN_TARGET =
  * link, each gated on the same predicate, so all happen or none do. OAuth
  * grants (KV) are revoked first, once the link is known to be resettable, so
  * a KV failure leaves nothing half done. A recycled address
- * that re-links inherits no credential.
+ * that re-links inherits no credential. The row is marked google_relink, so
+ * directory sync relinks this same user by email (applyUsers) rather than
+ * deleting it as a recycled address.
  */
 export async function resetIdentity(
   env: Env,
@@ -288,7 +290,9 @@ export async function resetIdentity(
     ).bind(userId, Date.now(), owner),
     stmt(
       env.DB,
-      `update users set session_epoch = session_epoch + 1 where id = ?1 and ${RESETTABLE}`,
+      // google_relink: the next directory users page relinks this row by
+      // email (applyUsers), never deleting it as a recycled address.
+      `update users set session_epoch = session_epoch + 1, google_relink = 1 where id = ?1 and ${RESETTABLE}`,
     ).bind(userId, null, owner),
     // Directly after the session_epoch update (gated on RESETTABLE): audited
     // only when that update changed the row, i.e. the reset happens.

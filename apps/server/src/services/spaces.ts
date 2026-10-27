@@ -5,7 +5,6 @@ import {
   type DirectoryMode,
   directoryModeOf,
   type GroupMapping,
-  type GroupRef,
   LIST_SPACES_MAX,
   type Member,
   type MySpace,
@@ -16,6 +15,8 @@ import {
   SPACE_MANAGER_FIELDS,
   SPACE_MANAGER_MAPPING_ROLES,
   type Space,
+  type SpaceCandidate,
+  type SpaceCandidatesQuery,
   type SpaceCreate,
   type SpaceMember,
   type SpaceMemberGroup,
@@ -60,7 +61,14 @@ import { getSummary } from "./artifacts.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
 import { kickSync } from "./directory.js";
 import { getSettings, statusOf } from "./members.js";
-import { RESTRICTED_SYNC_FOR_GROUP } from "./restriction.js";
+import {
+  identitiesOf,
+  MEMBER_EXTRAS_COLS,
+  type MemberExtrasRow,
+  RESTRICTED_SYNC_FOR_GROUP,
+  restrictedGroupsSql,
+  restrictionOf,
+} from "./restriction.js";
 import { toMember } from "./users.js";
 
 // The spaces API (P3 T9): shared spaces, their members and group mappings,
@@ -593,6 +601,7 @@ const MEMBER_PAGE = `${MEMBER_SET},
     order by u.email, u.id limit ?2)
   select u.id, u.email, u.name, u.display_name as displayName, u.role, u.status,
     u.last_seen_at as lastSeenAt, u.restricted_manual as rm, u.restricted_sync as rs,
+    ${restrictedGroupsSql("u")} as groups,
     (select sm.role from space_members sm where sm.space_id = ?1 and sm.user_id = u.id and sm.source = 'manual') as manualRole,
     (select sm.role from space_members sm where sm.space_id = ?1 and sm.user_id = u.id and sm.source = 'sync') as syncRow,
     (select json_group_array(json_object('groupId', gm.group_id, 'email', gm.group_email, 'role', gm.role))
@@ -616,6 +625,7 @@ type MemberRowSql = {
   lastSeenAt: number | null;
   rm: number;
   rs: number;
+  groups: string | null;
   manualRole: string | null;
   syncRow: string | null;
   spaceGroups: string | null;
@@ -658,10 +668,23 @@ const capFor = (
     authConfig(env),
   );
 
+/**
+ * The caller may manage this space's people (an uncapped org admin, or an
+ * uncapped manager of it): only they see SpaceMember.restriction's detail.
+ */
+const managesSpace = (c: Caller, r: ViewRow): boolean =>
+  c.kind === "user" &&
+  orgCan(c.user, "space.members", {
+    spaceRole: roleOf(r.rank),
+    cap: capOfCaller(c),
+  });
+
 function toSpaceMember(
   env: Env,
   allMembersRole: string | null,
   r: MemberRowSql,
+  /** managesSpace: the restriction's detail; anyone else gets null (cap only). */
+  detail: boolean,
 ): SpaceMember | null {
   const manualRole = knownRole(r.manualRole);
   const groups = [
@@ -693,6 +716,7 @@ function toSpaceMember(
       !isGuestRole(r.role as Role) && cap === null
         ? knownRole(allMembersRole)
         : null,
+    restriction: detail ? restrictionOf(r) : null,
   };
 }
 
@@ -734,10 +758,95 @@ export async function listSpaceMembers(
   const last = shown[shown.length - 1];
   return {
     items: shown
-      .map((x) => toSpaceMember(env, r.allMembersRole, x))
+      .map((x) => toSpaceMember(env, r.allMembersRole, x, managesSpace(c, r)))
       .filter((x): x is SpaceMember => x !== null),
     nextCursor: more && last ? encodeCursor([last.email, last.id]) : null,
     total: (total?.results[0] as { n: number } | undefined)?.n ?? 0,
+  };
+}
+
+// The add-people search (R.spaceCandidates): active org members (never
+// guests), keyset (email, id). ?1 space, ?2/?3 the q patterns, ?4/?5 the
+// cursor, ?6 limit. The space's rows and Every-space roles give spaceRole,
+// as toSpaceMember resolves SpaceMember.role.
+const CANDIDATES = `select u.id, u.email, u.name, u.display_name as displayName, u.role,
+    u.last_seen_at as lastSeenAt, u.restricted_manual as rm,
+    ${restrictedGroupsSql("u")} as groups,
+    (select json_group_array(sm.role) from space_members sm
+      where sm.space_id = ?1 and sm.user_id = u.id) as rowRoles,
+    (select json_group_array(ogm.role) from org_group_mappings ogm
+      join directory_members dm on dm.group_id = ogm.group_id and dm.user_id = u.id) as everyRoles
+  from users u
+  where u.status = 'active' and u.role in ('owner', 'admin', 'member')
+    and (?2 is null or u.email like ?2 escape '\\'
+      or (' ' || lower(coalesce(nullif(u.display_name, ''), u.name))) like ?3 escape '\\')
+    and (?4 is null or u.email > ?4 or (u.email = ?4 and u.id > ?5))
+  order by u.email, u.id limit ?6`;
+type CandidateRow = {
+  id: string;
+  email: string;
+  name: string;
+  displayName: string | null;
+  role: string;
+  lastSeenAt: number | null;
+  rm: number;
+  groups: string | null;
+  rowRoles: string | null;
+  everyRoles: string | null;
+};
+
+const rolesIn = (raw: string | null): (SpaceRole | null)[] => {
+  try {
+    const v = JSON.parse(raw ?? "[]") as unknown;
+    return Array.isArray(v) ? v.map(knownRole) : [];
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * GET R.spaceCandidates(id): who a caller able to manage this space may add.
+ * An uncapped org admin or an uncapped manager of the space; anyone else
+ * 404 (seeSpace, then requireSpaceManager). Personal: 400 space_personal.
+ * One statement, bounded by the query's limit.
+ */
+export async function listSpaceCandidates(
+  env: Env,
+  c: Caller,
+  id: string,
+  q: SpaceCandidatesQuery,
+): Promise<Page<SpaceCandidate>> {
+  const r = await seeSpace(env, c, id);
+  if (r.kind !== "shared") throw personalError("have no members");
+  requireSpaceManager(c, r);
+  const after = decodeCursor(q.cursor, ["string", "string"]);
+  const needle = q.q ? likeEscape(q.q.toLowerCase()) : null;
+  const { results } = await stmt(env.DB, CANDIDATES)
+    .bind(
+      id,
+      needle === null ? null : `${needle}%`,
+      needle === null ? null : `% ${needle}%`,
+      after?.[0] ?? null,
+      after?.[1] ?? null,
+      q.limit + 1,
+    )
+    .all<CandidateRow>();
+  const more = results.length > q.limit;
+  const shown = more ? results.slice(0, q.limit) : results;
+  const last = shown[shown.length - 1];
+  return {
+    items: shown.map((x) => {
+      const m = toMember(x);
+      return {
+        id: m.id,
+        email: m.email,
+        name: m.name,
+        role: m.role,
+        restriction: restrictionOf(x),
+        spaceRole: maxRole(...rolesIn(x.rowRoles), ...rolesIn(x.everyRoles)),
+      };
+    }),
+    nextCursor: more && last ? encodeCursor([last.email, last.id]) : null,
   };
 }
 
@@ -750,7 +859,8 @@ async function memberView(
   const row = await stmt(env.DB, MEMBER_PAGE)
     .bind(spaceId, 1, userId, null, null, null, null, null)
     .first<MemberRowSql>();
-  const m = row && toSpaceMember(env, allMembersRole, row);
+  // Its callers (PUT a member, an admin's self-add) manage the space.
+  const m = row && toSpaceMember(env, allMembersRole, row, true);
   if (!m) throw notFound();
   return m;
 }
@@ -1537,11 +1647,10 @@ export async function deleteRestrictedGroup(
   if (!out[1]?.meta.changes) throw notFound();
 }
 
-const MEMBER_WITH_RESTRICTION = `select u.id, u.email, u.name, u.display_name as displayName, u.role,
-    u.status, u.last_seen_at as lastSeenAt, u.restricted_manual as rm,
-    (select json_group_array(json_object('groupId', rg.group_id, 'email', rg.group_email))
-      from restricted_groups rg join directory_members dm on dm.group_id = rg.group_id and dm.user_id = u.id) as groups
-  from users u where u.id = ?`;
+const MEMBER_WITH_RESTRICTION = `select users.id, users.email, users.name,
+    users.display_name as displayName, users.role, users.status,
+    users.last_seen_at as lastSeenAt, ${MEMBER_EXTRAS_COLS}
+  from users where users.id = ?`;
 
 /**
  * PUT/DELETE R.memberRestricted(id) (org owner, admin): the manual flag, in
@@ -1583,25 +1692,15 @@ export async function setMemberRestricted(
   ]);
   if (on) await revokeUserLive(env, userId, "restricted", ctx);
   const row = out[2]?.results[0] as
-    | (Parameters<typeof toMember>[0] & {
-        status: string;
-        rm: number;
-        groups: string | null;
-      })
+    | (Parameters<typeof toMember>[0] & { status: string } & MemberExtrasRow)
     | undefined;
   if (!row) throw notFound();
-  let groups: GroupRef[] = [];
-  try {
-    const v = JSON.parse(row.groups ?? "[]") as {
-      groupId: string;
-      email: string;
-    }[];
-    groups = v.map((g) => ({ groupId: g.groupId, email: g.email, name: null }));
-  } catch {}
+  // As GET R.members reads it: null when neither the flag nor a group applies.
   return {
     ...toMember(row),
     status: statusOf(row.status),
-    restriction: { manual: row.rm !== 0, groups },
+    identities: identitiesOf(row),
+    restriction: restrictionOf(row),
   };
 }
 

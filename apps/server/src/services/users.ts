@@ -123,6 +123,13 @@ export function googleLinkStmts(
        from users u left join identities i on i.user_id = u.id and i.provider = 'google'
        where u.email = ?1`,
     ).bind(p.email),
+    // A sign-in that linked after an admin's reset consumes google_relink
+    // (directory sync then finds the row by its identity).
+    stmt(
+      env.DB,
+      `update users set google_relink = 0 where email = ?1 and google_relink = 1
+       and exists (select 1 from identities i where i.provider = 'google' and i.user_id = users.id)`,
+    ).bind(p.email),
   ];
 }
 

@@ -432,6 +432,26 @@ describe("resetIdentity", () => {
     expect(await grants(uid)).toBe(0);
   });
 
+  it("marks the row google_relink; the user's own Google sign-in that links next clears it", async () => {
+    const email = uniq("relink");
+    const uid = await seedUser(email, "member", { googleSub: `RL-${email}` });
+    const flag = async () =>
+      (
+        await one<{ f: number }>(
+          "select google_relink f from users where id = ?",
+          uid,
+        )
+      ).f;
+    expect(await flag()).toBe(0);
+    await resetIdentity(env, admin, uid);
+    expect(await flag()).toBe(1);
+    const sub = `RL2-${email}`;
+    const r = await admit(env, cfg(), g({ email, subject: sub }));
+    expect(r).toMatchObject({ ok: true, user: { id: uid } });
+    expect(await subjectOf(uid)).toBe(sub);
+    expect(await flag()).toBe(0);
+  });
+
   it("revokes the user's live sockets (UserPresence revokedAt set, P3 T7)", async () => {
     const email = uniq("live");
     const uid = await seedUser(email, "member", { googleSub: `L-${email}` });

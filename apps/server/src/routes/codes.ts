@@ -11,6 +11,7 @@ import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
 import { HTTPException } from "hono/http-exception";
 import { logAuth } from "../auth/audit.js";
+import { callerOf, capOfCaller } from "../auth/authz.js";
 import {
   codesKey,
   deliverCode,
@@ -29,6 +30,7 @@ import { ApiError, appOrigin, errorJson } from "../http/errors.js";
 import { type AppEnv, CSRF_HEADER, execCtx } from "../http/middleware.js";
 import { signInAudit } from "../services/audit.js";
 import { codeEligibility } from "../services/identity.js";
+import { HOSTED_FIELDS, hostedFields } from "../services/members.js";
 import { getUserWithEpoch, insertUser } from "../services/users.js";
 import { forgetTestOtp, noteTestOtp } from "../test-hooks/index.js";
 import {
@@ -372,13 +374,15 @@ export function mountCodes(app: AppType): void {
       epoch: row.sessionEpoch,
       maxAgeS,
     });
-    // The sign-in and its auth.signin audit row commit together.
-    await c.env.DB.batch([
+    // The sign-in and its auth.signin audit row commit together; the last
+    // statement reads the member's hosted fields (restriction included).
+    const out = await c.env.DB.batch([
       stmt(c.env.DB, "update users set last_seen_at = ?1 where id = ?2").bind(
         Date.now(),
         user.id,
       ),
       signInAudit(c.env, user.id, "code", guest ? undefined : domain),
+      stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
     ]);
     logAuth({
       provider: "code",
@@ -386,10 +390,17 @@ export function mountCodes(app: AppType): void {
       uid: user.id,
       tenant: guest ? undefined : domain,
     });
+    // As the session's next request will see it (middleware; GET /me's
+    // auth.cap): the member's own cap (guest, or restricted by the manual
+    // flag or a restricted group), and a guest code session is capped too.
+    const cap = capOfCaller(callerOf(user)) ?? (guest ? "guest" : null);
     const res = c.json({
       next: p.next,
-      user,
-      readOnly: guest,
+      user: hostedFields(
+        user,
+        out[2]?.results[0] as Parameters<typeof hostedFields>[1],
+      ),
+      readOnly: cap !== null,
     });
     res.headers.append("set-cookie", clearPending(c));
     if (forgetOtp) await forgetOtp(c.env, email, p.ek);
