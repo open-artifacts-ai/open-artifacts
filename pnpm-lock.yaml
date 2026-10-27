@@ -183,6 +183,9 @@ importers:
 
   apps/dispatch:
     dependencies:
+      '@oa/broker-core':
+        specifier: workspace:*
+        version: link:../../packages/broker-core
       '@oa/provision':
         specifier: workspace:*
         version: link:../../packages/provision
@@ -245,6 +248,9 @@ importers:
 
   apps/scheduler:
     dependencies:
+      '@oa/broker-core':
+        specifier: workspace:*
+        version: link:../../packages/broker-core
       '@oa/provision':
         specifier: workspace:*
         version: link:../../packages/provision

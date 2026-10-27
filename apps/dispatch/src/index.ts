@@ -1,6 +1,14 @@
+import {
+  type BrokerGateEnv,
+  type BrokerGateProps,
+  brokerProps,
+} from "@oa/broker-core/gate";
 import { isInstallId, names, type Env as OaEnv } from "@oa/provision/names";
 
-export interface Env {
+// The install's only path to the brokers (see @oa/broker-core/gate).
+export { BrokerGate } from "@oa/broker-core/gate";
+
+export interface Env extends BrokerGateEnv {
   DISPATCHER: DispatchNamespace;
   /** host -> install id, written by provisioning (create and delete). */
   HOSTS: KVNamespace;
@@ -41,8 +49,13 @@ const category = (e: unknown) =>
     ? "not_found"
     : "exception";
 
+/** What ctx.exports holds for this Worker's own BrokerGate export. */
+interface GateExports {
+  BrokerGate: (o: { props: BrokerGateProps }) => Fetcher;
+}
+
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const host = hostOf(req);
     if (!host) return notFound();
     let id: string | null;
@@ -54,8 +67,12 @@ export default {
     }
     if (typeof id !== "string" || !isInstallId(id)) return notFound();
     try {
-      // The original Request, unread and unchanged (body, Upgrade, Cookie).
-      return await env.DISPATCHER.get(names(id, env.OA_ENV).script).fetch(req);
+      // The original Request, unread and unchanged (body, Upgrade, Cookie),
+      // with this install's broker gates in ctx.props for this request only.
+      const props = brokerProps(ctx.exports as unknown as GateExports, id);
+      return await env.DISPATCHER.get(names(id, env.OA_ENV).script, {
+        props,
+      }).fetch(req);
     } catch (e) {
       // A deleted script, a crashing install or a binding error: still the
       // one 404, with only the host and a fixed category logged.

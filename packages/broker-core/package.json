@@ -12,6 +12,12 @@
       "workerd": "./src/index.ts",
       "import": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./gate": {
+      "types": "./src/gate.ts",
+      "workerd": "./src/gate.ts",
+      "import": "./src/gate.ts",
+      "default": "./src/gate.ts"
     }
   },
   "scripts": {

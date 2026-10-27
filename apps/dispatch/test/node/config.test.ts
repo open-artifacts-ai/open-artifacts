@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NAMESPACES, platformNames } from "@oa/provision";
+import { HOSTED_DOMAINS, NAMESPACES, platformNames } from "@oa/provision";
 import { describe, expect, it } from "vitest";
 
 const app = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -29,7 +29,20 @@ describe("wrangler.jsonc", () => {
       const e = cfg.env[env];
       expect(e.name).toBe(platformNames(env).dispatch);
       expect(e.main).toBe("src/index.ts");
-      expect(e.vars).toEqual({ OA_ENV: env });
+      const zone = HOSTED_DOMAINS[env].app;
+      expect(e.vars).toEqual({
+        OA_ENV: env,
+        AUTH_BROKER_ORIGIN: `https://auth.${zone}`,
+        DIRECTORY_BROKER_ORIGIN: `https://directory.${zone}`,
+      });
+      // The gate's bindings: this env's two brokers, never the other env's.
+      expect(e.services).toEqual([
+        { binding: "AUTH_BROKER", service: platformNames(env).broker },
+        {
+          binding: "DIRECTORY_BROKER",
+          service: platformNames(env).directoryBroker,
+        },
+      ]);
       expect(e.dispatch_namespaces).toEqual([
         { binding: "DISPATCHER", namespace: NAMESPACES[env] },
       ]);

@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NAMESPACES, platformNames } from "@oa/provision";
+import { HOSTED_DOMAINS, NAMESPACES, platformNames } from "@oa/provision";
 import { describe, expect, it } from "vitest";
 
 const app = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -35,7 +35,17 @@ describe("wrangler.jsonc", () => {
         OA_ENV: env,
         EMAIL_QUOTA_ZONES: `{{EMAIL_ZONE_TAG_${env.toUpperCase()}}}`,
         EMAIL_DAILY_LIMIT: `{{EMAIL_DAILY_LIMIT_${env.toUpperCase()}}}`,
+        AUTH_BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
+        DIRECTORY_BROKER_ORIGIN: `https://directory.${HOSTED_DOMAINS[env].app}`,
       });
+      // BrokerGate's bindings: this env's two brokers, never the other env's.
+      expect(e.services).toEqual([
+        { binding: "AUTH_BROKER", service: platformNames(env).broker },
+        {
+          binding: "DIRECTORY_BROKER",
+          service: platformNames(env).directoryBroker,
+        },
+      ]);
       expect(e.vars).not.toHaveProperty("EMAIL_QUOTA_TOKEN");
       // The nightly run, and H-DV's directory revoke tick every 2 minutes.
       expect(e.triggers).toEqual({ crons: ["17 3 * * *", "*/2 * * * *"] });
@@ -50,13 +60,13 @@ describe("wrangler.jsonc", () => {
           database_id: `{{PLATFORM_DB_ID_${env.toUpperCase()}}}`,
         },
       ]);
-      // On for this Worker only: it serves no requests, and its logs carry
+      // On for this Worker only: it serves no public requests (only its own
+      // BrokerGate calls, whose bodies are never logged), and its logs carry
       // install ids, fixed categories and counts (pinned in scheduler.test.ts).
       expect(e.observability).toEqual({ enabled: true });
-      // Only what the brief lists: no KV, services, R2 or other bindings.
+      // Only what the brief lists: no KV, R2 or other bindings.
       for (const k of [
         "kv_namespaces",
-        "services",
         "r2_buckets",
         "durable_objects",
         "queues",
