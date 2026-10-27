@@ -224,11 +224,93 @@ export async function crossProbe<C>(
     throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);
 }
 
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+const same = (x: unknown, y: unknown) =>
+  JSON.stringify(x) === JSON.stringify(y);
+const parse = (s: string): unknown => {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return undefined;
+  }
+};
+
+/** Keys of two objects whose values differ (names only, sorted). */
+const keysDiffering = (
+  x: Record<string, unknown>,
+  y: Record<string, unknown>,
+): string[] =>
+  [...new Set([...Object.keys(x), ...Object.keys(y)])]
+    .filter((k) => !same(x[k], y[k]))
+    .sort();
+
+/** A snapshot's "<path> <body>" lines, by path. */
+function byPath(s: string): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const l of s.split("\n")) {
+    const sp = l.indexOf(" ");
+    if (sp > 0 && l.startsWith("/")) m.set(l.slice(0, sp), l.slice(sp + 1));
+  }
+  return m;
+}
+
+/** What differs in one path's body, by name: keys, or per-entry keys of a list. */
+function bodyDiff(x: string, y: string): string[] {
+  const jx = parse(x);
+  const jy = parse(y);
+  if (isObj(jx) && isObj(jy)) return keysDiffering(jx, jy);
+  if (!Array.isArray(jx) || !Array.isArray(jy)) return [];
+  const out: string[] = [];
+  for (let i = 0; i < Math.max(jx.length, jy.length); i++) {
+    const ex: unknown = jx[i];
+    const ey: unknown = jy[i];
+    if (i >= jx.length) out.push(`[${i}] added`);
+    else if (i >= jy.length) out.push(`[${i}] removed`);
+    else if (isObj(ex) && isObj(ey))
+      out.push(...keysDiffering(ex, ey).map((k) => `[${i}].${k}`));
+    else if (!same(ex, ey)) out.push(`[${i}]`);
+  }
+  return out;
+}
+
+/**
+ * What differs between two snapshots (lines of "<path> <body>"), by name only:
+ * each path whose body differs, with the top-level JSON keys that differ, or
+ * for a list (/versions) the per-entry keys ("[0].textIndexed"). Never a
+ * value (ids in paths redacted). Empty when nothing can be named.
+ */
+export function snapshotDiff(before: string, after: string): string {
+  const b = byPath(before);
+  const a = byPath(after);
+  const parts: string[] = [];
+  for (const p of new Set([...b.keys(), ...a.keys()])) {
+    const x = b.get(p);
+    const y = a.get(p);
+    if (x === y) continue;
+    const at = p.replace(/[A-Za-z0-9_-]{16,}/g, ":id");
+    if (x === undefined || y === undefined) {
+      parts.push(`${at} ${x === undefined ? "added" : "missing"}`);
+      continue;
+    }
+    const keys = bodyDiff(x, y);
+    parts.push(
+      keys.length ? `${at} keys ${keys.join(", ")}` : `${at} body differs`,
+    );
+  }
+  return parts.length ? `; differs: ${parts.join("; ")}` : "";
+}
+
 export interface CrossWrite<C, X> extends CrossProbe<C> {
   /** A throwaway on `host`, made with host's own credential. */
   fresh: (host: Target) => Promise<X>;
   /** What the write would change on a throwaway, as host's own credential reads it. */
   snapshot: (host: Target, x: X) => Promise<string>;
+  /**
+   * Settles what the server changes on its own (indexing, thumbnails) on the
+   * throwaway A's credential targets, before its "before" snapshot.
+   */
+  settle?: (host: Target, x: X) => Promise<void>;
   /** Deletes a throwaway; called for every one made, even on failure. */
   dispose: (host: Target, x: X) => Promise<void>;
 }
@@ -261,6 +343,7 @@ export async function crossWrite<C, X>(
     if (a.verdict !== "allow")
       throw new Error("A's credential failed at A (the probe said deny)");
     const xx = await fresh(o.b);
+    await o.settle?.(o.b, xx);
     const before = await o.snapshot(o.b, xx);
     const x = await leg("A's credential at B", (f) => run(o.credA, o.b, xx, f));
     if (!reachedB(x.reqs, o))
@@ -273,7 +356,7 @@ export async function crossWrite<C, X>(
     const after = await o.snapshot(o.b, xx);
     if (after !== before)
       throw new NotRefused(
-        `${o.b.name}: the throwaway changed (sha256:${digest(before)} -> sha256:${digest(after)})`,
+        `${o.b.name}: the throwaway changed (sha256:${digest(before)} -> sha256:${digest(after)})${snapshotDiff(before, after)}`,
       );
   };
   let failed: { e: unknown } | undefined;

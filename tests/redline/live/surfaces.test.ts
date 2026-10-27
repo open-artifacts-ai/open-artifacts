@@ -15,6 +15,7 @@ import {
   probeCred,
   readRepoFile,
   seedWorld,
+  settle,
   snapshot,
   sweep,
   type Throwaway,
@@ -90,6 +91,7 @@ describe("surface probes (cross-install)", () => {
           {
             ...pair,
             fresh: (t) => throwaway(side(t), world(t), fresh),
+            settle: (t, x) => settle(side(t), x),
             snapshot: (t, x) => snapshot(side(t), x),
             dispose: (t, x) => dispose(side(t), x),
           },
