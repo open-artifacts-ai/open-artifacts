@@ -209,6 +209,18 @@ Use this when anyone with the link should be able to vote, play or add to a page
 - Don't claim presence ("3 people here", "watching now"); there is no presence API.
 - Never be silently deaf: when a subscribe callback gets \`offline: true\`, show that live updates are paused (for example, "Live updates paused. Reload to retry.") until it gets \`resync: true\`.
 
+### Public live pages checklist
+
+Check every item before telling the user a public live page is ready:
+
+1. Published public with every capability the page calls (\`db\`, \`viewer\`). Anyone who can see it can change its data by default; a page only its editors or the owner's agent should change (a dashboard, a scoreboard fed by an agent) gets \`dataWriters: "editors"\`.
+2. Every write has a rejection path the visitor can see: \`data_editors_only\` or \`unauthorized\` (show the page as read-only), \`capability_denied\`, \`rate_limited\`, \`quota_exceeded\`, \`no_shell\`, and a generic "didn't save" for anything else. Never catch and ignore a write.
+3. The visitor's id comes from \`viewer.anonId()\`, read once at start and retried a few times if it rejects. A made-up fallback id changes on reload, so the visitor loses their vote or seat.
+4. Two tabs of one browser share one \`anonId\`: treat them as the same visitor.
+5. Anonymous writes are limited per network, shared by everyone behind it (an office, a classroom). Write on user actions only.
+6. The page subscribes, refetches when \`resync\` is true, shows that live updates are paused when \`offline\` is true, and adopts the doc its own write returns.
+7. Tested as an anonymous visitor in two separate browsers (not two tabs): writes show up in both, a refused write shows its message, and the page works at phone width.
+
 ## What to tell the user
 
 - After a publish: the view URL from the result, the version, and who can open it. New artifacts are private (or team, if an admin changed the default); offer share_artifact or set_visibility.

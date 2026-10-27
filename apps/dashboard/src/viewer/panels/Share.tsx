@@ -62,7 +62,7 @@ const WRITERS: { value: DataWriters; label: string }[] = [
 ];
 const writersHint = (w: DataWriters, v: Visibility) =>
   w === "editors"
-    ? "Only you and people who can edit."
+    ? "Only you and people who can edit it."
     : v === "public"
       ? "Anyone with the link, signed in or not."
       : "Anyone who can view it.";
