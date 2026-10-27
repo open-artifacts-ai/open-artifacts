@@ -27,11 +27,20 @@ const RULES: [RegExp, string | ((m: string, ...g: string[]) => string)][] = [
   [/[A-Za-z0-9_\-+/]{24,}={0,2}/g, "<token>"],
 ];
 
+/** The runtime's "internal error; reference = <id>": a support id, not a secret. */
+const CF_REFERENCE = /internal error; reference = ([a-z0-9]{8,48})\b/;
+
 export function redact(s: string): string {
+  const ref = CF_REFERENCE.exec(s)?.[1];
   let out = s;
   for (const [re, to] of RULES)
     out = out.replace(re, to as (m: string, ...g: string[]) => string);
-  return out;
+  return ref
+    ? out.replace(
+        /internal error; reference = \S+/,
+        `internal error; reference = ${ref}`,
+      )
+    : out;
 }
 
 function errParts(err: unknown): { name: string; message: string } {
