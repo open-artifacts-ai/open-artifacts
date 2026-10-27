@@ -42,6 +42,11 @@ case "${1:-}" in
     PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/real \
       pnpm --filter @oa/dashboard exec playwright test -c playwright.real.config.ts
     ;;
+  spaces)
+    # Its own server (port 8797, FEATURES=spaces): hosted screens on the real server.
+    PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/spaces \
+      pnpm --filter @oa/dashboard test:e2e:spaces
+    ;;
   ui)
     pnpm --filter @oa/ui test:browser
     ;;
@@ -49,7 +54,7 @@ case "${1:-}" in
     pnpm --filter @oa/landing test:browser
     ;;
   *)
-    echo "usage: e2e.sh version|install|hosts|mock|real|ui|landing" >&2
+    echo "usage: e2e.sh version|install|hosts|mock|real|spaces|ui|landing" >&2
     exit 2
     ;;
 esac
