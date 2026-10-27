@@ -62,9 +62,9 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
     why: `${MEMBER_FIELDS}: restriction is undefined, not null`,
   },
   "frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)":
-    { item: "new", m1: false, why: FROZEN_GROUPS },
+    { item: "new", m1: true, why: FROZEN_GROUPS },
   "frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited":
-    { item: "new", m1: false, why: FROZEN_GROUPS },
+    { item: "new", m1: true, why: FROZEN_GROUPS },
   "scope=space lists one space; scope=spaces lists shared spaces; scope=space without spaceId is 400":
     { item: "2", m1: true, why: ME_SPACES },
   "the owner resets an active member's and an admin's link": {
@@ -98,4 +98,6 @@ export const M1_OPEN: readonly string[] = [
   "2: transfer of a personal artifact and spaceId on publish",
   "new, 2: a restricted-group member is capped and gets no allMembersRole",
   "new, 2: providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal",
+  "new: frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited",
+  "new: frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)",
 ];
