@@ -86,8 +86,10 @@ export async function enqueueIndex(
   // Wall time of the stub call (placement, cold start, round trip): publish
   // awaits it, and slow hosted installs need it measured.
   const t0 = Date.now();
+  let doMs: number | undefined;
   try {
-    await runtimeStub(env, id).scheduleIndex(id, version, thumb, event);
+    doMs = (await runtimeStub(env, id).scheduleIndex(id, version, thumb, event))
+      .ms;
   } catch (e) {
     logError("index_enqueue_failed", e, { artifactId: id, version });
   } finally {
@@ -97,6 +99,8 @@ export async function enqueueIndex(
         install: env.INSTALL_ID?.trim() || undefined,
         artifactId: id,
         ms: Date.now() - t0,
+        // The object's own share; the rest is placement and the round trip.
+        doMs,
       }),
     );
   }
