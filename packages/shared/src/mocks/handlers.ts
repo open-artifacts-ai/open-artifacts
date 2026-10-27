@@ -651,10 +651,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     ),
     http.get(
       `${A}/content-url`,
-      withArt((a) =>
+      withArt((a, { request }) =>
         HttpResponse.json({
           url: `https://content.example.com/c/${a.id}/index.html?sig=mock`,
-          version: a.currentVersion,
+          version:
+            Number(new URL(request.url).searchParams.get("v")) ||
+            a.currentVersion,
           expiresAt:
             a.visibility === "public"
               ? null

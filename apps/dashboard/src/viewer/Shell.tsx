@@ -36,7 +36,7 @@ import { RenavNotice } from "./RenavNotice";
 import { SlowNotice } from "./SlowNotice";
 import { TitleBar } from "./TitleBar";
 import { useArtifactSideEffects } from "./useArtifactSideEffects";
-import { useContentUrl } from "./useContentUrl";
+import { prefetchContentUrl, useContentUrl } from "./useContentUrl";
 import { type FrameState, type Gone, useLiveVersions } from "./useLiveVersions";
 import { useTheme } from "./useTheme";
 import "./viewer.css";
@@ -536,6 +536,13 @@ function ArtifactShell({
   chromeless?: boolean;
 }) {
   const q = useArtifact(id);
+  // In render, not an effect: child effects run first, and the viewer may
+  // mount in this same commit when the info is cached.
+  const prefetched = useRef(false);
+  if (!prefetched.current) {
+    prefetched.current = true;
+    prefetchContentUrl(id, v);
+  }
   const me = useMe();
   const navigate = useNavigate();
   const embed = isEmbed();

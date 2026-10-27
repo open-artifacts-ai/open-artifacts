@@ -113,6 +113,7 @@ describe("M1 signed URL staleness", () => {
         new Response(
           JSON.stringify({
             url: `https://c.test/u${++n}`,
+            version: 1,
             expiresAt: new Date(Date.now() + 600_000).toISOString(),
           }),
         ),
