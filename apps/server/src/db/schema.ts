@@ -376,6 +376,13 @@ export const versions = sqliteTable(
       .references(() => users.id),
     createdAt: integer("created_at").notNull(),
     textIndexed: integer("text_indexed").notNull().default(0),
+    /**
+     * 1: the DO dropped this version's index job after INDEX_MAX_ATTEMPTS
+     * (index_failed), so the lost-job sweep skips it. Undelete resets it.
+     */
+    indexFailed: integer("index_failed").notNull().default(0),
+    /** 1: this version's server thumbnail job ended no_thumb; the pdf sweep skips it. */
+    thumbFailed: integer("thumb_failed").notNull().default(0),
     // NULL only on rows written before 0002 (or by pre-0002 code): readers fall
     // back to artifacts.format.
     format: text("format"),
