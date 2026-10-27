@@ -411,7 +411,7 @@ describe("redeem", () => {
   it("redeem charges the IP and install buckets, before any Google call", async () => {
     await redeem(KEY_A, {}, { ip: "203.0.113.9" });
     expect(ipLimit.keys).toEqual(["ip:203.0.113.9"]);
-    expect(installLimit.keys).toEqual(["install:inst-a"]);
+    expect(installLimit.keys).toEqual(["redeem:install:inst-a"]);
   });
 
   it("a deny in either bucket is 429 and no Google call", async () => {
@@ -477,7 +477,7 @@ describe("rate limits", () => {
     );
     expect(r.status).toBe(302);
     expect(ipLimit.keys).toEqual(["ip:203.0.113.9"]);
-    expect(installLimit.keys).toEqual(["install:inst-a"]);
+    expect(installLimit.keys).toEqual(["authorize:install:inst-a"]);
   });
 
   it("a deny in either bucket is 429", async () => {
@@ -503,7 +503,28 @@ describe("install buckets are charged only after auth", () => {
     expect(installLimit.keys).toEqual([]);
     expect(ipLimit.keys).toHaveLength(100);
     expect((await redeem(KEY_B, { install: "inst-b" })).status).toBe(200);
-    expect(installLimit.keys).toEqual(["install:inst-b"]);
+    expect(installLimit.keys).toEqual(["redeem:install:inst-b"]);
+  });
+
+  it("authorize and redeem have separate per-install buckets: draining authorize doesn't block a signed redeem (review item 24)", async () => {
+    // One charge allowed per key: authorize spends only its own bucket.
+    const keys: string[] = [];
+    installLimit = {
+      keys,
+      limit: async ({ key }: { key: string }) => {
+        keys.push(key);
+        return { success: keys.filter((k) => k === key).length <= 1 };
+      },
+    };
+    const AUTHZ = `/google/authorize?install=inst-a&state=s&nonce=n&code_challenge=${CH}`;
+    expect((await call(AUTHZ)).status).toBe(302);
+    expect((await call(AUTHZ)).status).toBe(429);
+    expect((await redeem(KEY_A, {})).status).toBe(200);
+    expect(installLimit.keys).toEqual([
+      "authorize:install:inst-a",
+      "authorize:install:inst-a",
+      "redeem:install:inst-a",
+    ]);
   });
 
   it("unknown-install authorizes don't touch any install bucket", async () => {
@@ -521,7 +542,7 @@ describe("install buckets are charged only after auth", () => {
       `/google/authorize?install=inst-b&state=s&nonce=n&code_challenge=${CH}`,
     );
     expect(r.status).toBe(302);
-    expect(installLimit.keys).toEqual(["install:inst-b"]);
+    expect(installLimit.keys).toEqual(["authorize:install:inst-b"]);
   });
 });
 
