@@ -159,6 +159,62 @@ it.each([
   expect(await screen.findByRole("alert")).toHaveTextContent(copy); // Design D8, 2026-10-21
 });
 
+const providersWith = (providers: unknown[]) =>
+  http.get("*/auth/providers", () =>
+    HttpResponse.json({ mode: "direct", providers }),
+  );
+const ACCESS = { id: "access", start: "/auth/login?via=access" };
+
+it("direct: no hosting line (self-hosted installs run direct too)", async () => {
+  mountHosted("/sign-in");
+  await screen.findByRole("link", { name: "Continue with Google" });
+  expect(screen.queryByText("Hosted by Open Artifacts")).toBeNull();
+  expect(screen.queryByText("Self-hosted on Cloudflare")).toBeNull();
+});
+
+it("direct with Access and Google: an Access button keeps via and adds next", async () => {
+  mountHosted("/sign-in?next=%2Fmine", true, undefined, [
+    providersWith([
+      { id: "google", start: "/auth/login/google", domains: ["example.com"] },
+      ACCESS,
+    ]),
+  ]);
+  expect(
+    await screen.findByRole("link", {
+      name: "Continue with Cloudflare Access",
+    }),
+  ).toHaveAttribute("href", "/auth/login?via=access&next=%2Fmine");
+  expect(
+    screen.getByRole("link", { name: "Continue with Google" }),
+  ).toHaveAttribute("href", "/auth/login/google?next=%2Fmine");
+});
+
+it("direct with Access and an unusable Google: Access, not 'isn't set up'", async () => {
+  mountHosted("/sign-in?next=%2Fmine", true, undefined, [
+    providersWith([
+      { id: "google", start: "https://evil.example/login", domains: [] },
+      ACCESS,
+    ]),
+  ]);
+  expect(
+    await screen.findByRole("link", {
+      name: "Continue with Cloudflare Access",
+    }),
+  ).toHaveAttribute("href", "/auth/login?via=access&next=%2Fmine");
+  expect(screen.queryByText(/isn't set up yet/)).toBeNull();
+  expect(screen.queryByText("Continue with Google")).toBeNull();
+});
+
+it("direct with a hostile Access start: dropped", async () => {
+  mountHosted("/sign-in", true, undefined, [
+    providersWith([{ id: "access", start: "//evil.example/login?via=access" }]),
+  ]);
+  expect(
+    await screen.findByText("Sign-in isn't set up yet. Ask your admin."),
+  ).toBeVisible();
+  expect(screen.queryByText(/Cloudflare Access/)).toBeNull();
+});
+
 it("empty providers says sign-in is not set up", async () => {
   server.use(
     http.get("*/auth/providers", () =>

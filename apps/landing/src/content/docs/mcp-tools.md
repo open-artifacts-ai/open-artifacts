@@ -64,7 +64,7 @@ Search indexes each publish asynchronously, so a new version becomes searchable 
 
 - `get_artifact`: metadata plus the content of a version, the latest by default.
 - `list_artifacts`: filter by owner, format, visibility, agent, or updated-since. Paginated.
-- `search_artifacts`: full-text search over title, description, and extracted text. A PDF is searchable by its text once it has been viewed in the dashboard; before that, only by title and description.
+- `search_artifacts`: full-text search over title, description, and extracted text. A PDF is searchable by its text once someone who can edit it has opened it in the dashboard; before that, only by title and description.
 - `list_spaces`: lists the spaces you can publish into: your personal space first, then shared spaces where you're an editor or manager. Takes no input.
 
 ## Versions

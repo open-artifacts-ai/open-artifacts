@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiClientError, api } from "../api/client";
 import { qk } from "../api/queries";
-import { connectArtifactEvents, type GoneReason } from "./liveEvents";
+import { connectArtifactEvents, type GoneReason, onWake } from "./liveEvents";
 
 /** Design's "Spec for B": act this long after the last event of a burst. */
 export const DEBOUNCE_MS = 1_000;
@@ -314,9 +314,9 @@ export function useLiveVersions(o: {
       void check();
       s.retry();
     };
-    window.addEventListener("focus", onFocus);
+    const offWake = onWake(onFocus);
     return () => {
-      window.removeEventListener("focus", onFocus);
+      offWake();
       s.close();
       sock.current = null;
       clearTimeout(debounce.current);
