@@ -28,6 +28,7 @@ import {
   useSpaceMembers,
 } from "../../api/queries";
 import { useMe } from "../../auth/useMe";
+import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
 import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
@@ -457,7 +458,10 @@ function AddPeople({
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={busy} onClick={() => void submit()}>
+          <Button
+            disabled={busy || members.isError}
+            onClick={() => void submit()}
+          >
             {picked.length === 0 ? "Add" : `Add ${people(picked.length)}`}
           </Button>
         </>
@@ -488,79 +492,87 @@ function AddPeople({
               ))}
             </ul>
           )}
-          <div className="relative">
-            <Input
-              role="combobox"
-              aria-labelledby={`${id}-people`}
-              aria-expanded={found.length > 0}
-              aria-controls={`${id}-list`}
-              aria-autocomplete="list"
-              aria-activedescendant={
-                active >= 0 && found[active] ? `${id}-o${active}` : undefined
-              }
-              placeholder={`Search people at ${orgName}`}
-              value={q}
-              autoComplete="off"
-              onChange={(e) => {
-                setQ(e.target.value);
-                setActive(-1);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                  e.preventDefault();
-                  if (!found.length) return;
-                  const step = e.key === "ArrowDown" ? 1 : -1;
-                  setActive((i) => (i + step + found.length) % found.length);
-                } else if (e.key === "Enter" && found[active]) {
-                  e.preventDefault();
-                  pick(found[active]);
-                }
-              }}
+          {members.isError ? (
+            <LoadError
+              title="Couldn't load the people you can add."
+              error={members.error}
+              onRetry={() => void members.refetch()}
             />
-            {found.length > 0 && (
-              <div
-                id={`${id}-list`}
-                role="listbox"
+          ) : (
+            <div className="relative">
+              <Input
+                role="combobox"
                 aria-labelledby={`${id}-people`}
-                className="absolute inset-x-0 top-[calc(100%+4px)] z-20 max-h-[220px] overflow-y-auto rounded-md border border-border bg-popover p-[var(--oa-space-1)] shadow-md"
-              >
-                {found.map((m, i) => {
-                  const h = already(m);
-                  return (
-                    // Keyboard lives on the combobox (aria-activedescendant).
-                    // biome-ignore lint/a11y/useKeyWithClickEvents: see above
-                    <div
-                      key={m.id}
-                      id={`${id}-o${i}`}
-                      role="option"
-                      tabIndex={-1}
-                      aria-selected={i === active}
-                      aria-disabled={h ? true : undefined}
-                      className="flex cursor-pointer items-center gap-[var(--oa-space-2)] rounded-sm px-[var(--oa-space-2)] py-[6px] aria-disabled:cursor-default aria-disabled:opacity-60 aria-selected:bg-accent hover:bg-accent"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => pick(m)}
-                    >
-                      <span className="min-w-0 flex-1">
-                        <b className="block font-medium">{displayName(m)}</b>
-                        <small className={`block ${muted}`}>
-                          {m.email}
-                          {h && ` · Already here as ${ROLE_LABEL[h.role]}`}
-                        </small>
-                      </span>
-                      {m.restriction && (
-                        <Badge
-                          variant="outline"
-                          className="border-transparent bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]"
-                        >
-                          Restricted
-                        </Badge>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+                aria-expanded={found.length > 0}
+                aria-controls={`${id}-list`}
+                aria-autocomplete="list"
+                aria-activedescendant={
+                  active >= 0 && found[active] ? `${id}-o${active}` : undefined
+                }
+                placeholder={`Search people at ${orgName}`}
+                value={q}
+                autoComplete="off"
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  setActive(-1);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                    e.preventDefault();
+                    if (!found.length) return;
+                    const step = e.key === "ArrowDown" ? 1 : -1;
+                    setActive((i) => (i + step + found.length) % found.length);
+                  } else if (e.key === "Enter" && found[active]) {
+                    e.preventDefault();
+                    pick(found[active]);
+                  }
+                }}
+              />
+              {found.length > 0 && (
+                <div
+                  id={`${id}-list`}
+                  role="listbox"
+                  aria-labelledby={`${id}-people`}
+                  className="absolute inset-x-0 top-[calc(100%+4px)] z-20 max-h-[220px] overflow-y-auto rounded-md border border-border bg-popover p-[var(--oa-space-1)] shadow-md"
+                >
+                  {found.map((m, i) => {
+                    const h = already(m);
+                    return (
+                      // Keyboard lives on the combobox (aria-activedescendant).
+                      // biome-ignore lint/a11y/useKeyWithClickEvents: see above
+                      <div
+                        key={m.id}
+                        id={`${id}-o${i}`}
+                        role="option"
+                        tabIndex={-1}
+                        aria-selected={i === active}
+                        aria-disabled={h ? true : undefined}
+                        className="flex cursor-pointer items-center gap-[var(--oa-space-2)] rounded-sm px-[var(--oa-space-2)] py-[6px] aria-disabled:cursor-default aria-disabled:opacity-60 aria-selected:bg-accent hover:bg-accent"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => pick(m)}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <b className="block font-medium">{displayName(m)}</b>
+                          <small className={`block ${muted}`}>
+                            {m.email}
+                            {h && ` · Already here as ${ROLE_LABEL[h.role]}`}
+                          </small>
+                        </span>
+                        {m.restriction && (
+                          <Badge
+                            variant="outline"
+                            className="border-transparent bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]"
+                          >
+                            Restricted
+                          </Badge>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <fieldset className="grid gap-[var(--oa-space-2)] border-0 p-0">
           <legend className="mb-[6px] font-medium">Role</legend>
@@ -707,6 +719,13 @@ export function SpacePeople({
         <p role="alert" className={errorText}>
           Couldn't load people. Try again.
         </p>
+      )}
+      {members.isError && (
+        <LoadError
+          title="Couldn't check who is restricted."
+          error={members.error}
+          onRetry={() => void members.refetch()}
+        />
       )}
       <ul className="grid p-0">
         {rows.map((m) => (
