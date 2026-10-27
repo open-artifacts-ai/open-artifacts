@@ -2,6 +2,7 @@
 // D7, answers of 2026-10-22). A "Departed" card above Members and a
 // "Transfer…" row-menu item open the same dialog; counts only, never titles.
 import { type Me, R } from "@oa/shared";
+import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
@@ -67,6 +68,33 @@ it("the Departed card lists Carol with counts, never titles", async () => {
         c.search.get("spaceId") === CAROL,
     ),
   ).toBe(false);
+});
+
+it("active people are never departed, even if the server ignores ?status", async () => {
+  // The bug on leo: GET /members?status=suspended,removed returned everyone.
+  const all = [
+    ...fixtures.members.map((m) => ({ ...m, status: "active" as const })),
+    {
+      id: CAROL,
+      email: "carol@example.com",
+      name: "Carol Departed",
+      role: "member" as const,
+      lastSeenAt: null,
+      status: "suspended" as const,
+    },
+  ];
+  mountHosted("/settings/members", true, undefined, [
+    http.get(`*${R.members}`, () => HttpResponse.json(all)),
+    http.get("*/api/v1/members/:id/transfer", () =>
+      HttpResponse.json({ live: 1, deleted: 0 }),
+    ),
+  ]);
+  const card = await departed();
+  await carolRow();
+  expect(card).toHaveTextContent(
+    "1 person left with personal artifacts to transfer.",
+  );
+  expect(within(card).queryByText("Ada Lovelace")).toBeNull();
 });
 
 it("departed people with nothing to transfer are hidden (and so is the card)", async () => {

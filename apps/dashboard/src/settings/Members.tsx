@@ -601,7 +601,7 @@ function DepartedRow({ d: { member: m, summary } }: { d: Departed }) {
         <b className="flex min-w-0 flex-wrap items-center gap-x-[6px] gap-y-[2px] font-medium">
           <span className="min-w-0 break-words">{label}</span>
           <Badge variant="outline" className="flex-none">
-            {STATUS[m.status === "removed" ? "removed" : "suspended"]}
+            {STATUS[m.status]}
           </Badge>
         </b>
         <small className={`block ${muted}`}>
