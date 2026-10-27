@@ -438,6 +438,7 @@ function Viewer({
             <GoneBanner
               gone={gone}
               owner={artifact.access === "owner"}
+              canRestore={artifact.can?.delete ?? artifact.access === "owner"}
               onRestore={onUndelete ?? (async () => {})}
               authed={authed}
               next={viewerPath(artifact.id)}

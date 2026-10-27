@@ -301,24 +301,29 @@ const WarnIcon = svg("M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 4.8v3.7M8 11v.2");
 
 /**
  * Deleted or no longer available while open: the last frame stays, its
- * bridge and sockets stopped; a warning banner. The owner of a deleted
- * artifact can Restore it (the 30-day window starts now).
+ * bridge and sockets stopped; a warning banner. Whoever may undelete a
+ * deleted artifact (its owner, or a space manager) can Restore it within
+ * the 30-day window.
  */
 export function GoneBanner({
   gone,
   owner,
+  canRestore,
   authed,
   next,
   onRestore,
 }: {
   gone: Gone;
+  /** The caller owns it: "You deleted" copy. */
   owner: boolean;
+  /** The caller may undelete it (`can.delete`). */
+  canRestore: boolean;
   authed: boolean;
   next: string;
   onRestore: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
-  const mine = gone === "deleted" && owner;
+  const restorable = gone === "deleted" && canRestore;
   const btn = `${SM} text-foreground hover:text-foreground`;
   return (
     <div className="oa-lgone flex items-center gap-2 border-0 border-b border-border bg-[var(--oa-warning-soft)] px-5 py-[5px] text-[length:var(--oa-text-sm)] leading-[1.45] text-foreground max-[600px]:flex-wrap max-[600px]:px-4">
@@ -329,11 +334,13 @@ export function GoneBanner({
         {WarnIcon}
       </span>
       <span className="min-w-0 flex-1">
-        {mine
-          ? "You deleted this artifact."
+        {restorable
+          ? owner
+            ? "You deleted this artifact."
+            : "This artifact was deleted."
           : "This artifact is no longer available to you."}
       </span>
-      {mine ? (
+      {restorable ? (
         <Button
           variant="outline"
           size="xs"
