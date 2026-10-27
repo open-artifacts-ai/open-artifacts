@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.62.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.61.0...v0.62.0) (2026-10-27)
+
+
+### Features
+
+* **api:** content-url names the version it serves ([#696](https://github.com/open-artifacts-ai/open-artifacts/issues/696)) ([dc3749b](https://github.com/open-artifacts-ai/open-artifacts/commit/dc3749b4bade2c20202ed9b9a9067d29aff91465))
+* **viewer:** quiet loader and a timeout with Retry while an artifact opens ([#693](https://github.com/open-artifacts-ai/open-artifacts/issues/693)) ([#700](https://github.com/open-artifacts-ai/open-artifacts/issues/700)) ([f1434d2](https://github.com/open-artifacts-ai/open-artifacts/commit/f1434d2e5b743df095721d2d49daf0109048ac12))
+
+
+### Bug Fixes
+
+* **server:** accept the Turnstile test key by its own marker ([#697](https://github.com/open-artifacts-ai/open-artifacts/issues/697)) ([74586fe](https://github.com/open-artifacts-ai/open-artifacts/commit/74586fe92f1dd6a70b89286fdf06be9d8186ae57))
+* **viewer:** never flash white while an artifact opens ([#693](https://github.com/open-artifacts-ai/open-artifacts/issues/693)) ([#695](https://github.com/open-artifacts-ai/open-artifacts/issues/695)) ([a231d68](https://github.com/open-artifacts-ai/open-artifacts/commit/a231d683f6b1d75dad967c43314269a240e7c29c))
+
 ## [0.61.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.60.0...v0.61.0) (2026-10-27)
 
 
