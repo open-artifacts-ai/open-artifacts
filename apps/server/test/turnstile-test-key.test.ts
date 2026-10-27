@@ -4,12 +4,19 @@ import type { Env } from "../src/env.js";
 import { trial } from "./auth-helpers.js";
 
 // Red-line installs (rl-a, rl-b) run Cloudflare's always-pass Turnstile TEST
-// secret; siteverify then answers { success, hostname: "localhost", action:
-// "test" }. That answer is accepted only on a test build with live hooks AND
-// exactly the test secret; anything else keeps the strict check.
+// secret; siteverify then answers { success, hostname: "example.com",
+// metadata: { result_with_testing_key: true } } with no action (captured from
+// the live API, 2026-10-27). That answer is accepted only on a test build with
+// live hooks AND exactly the test secret; anything else keeps the strict check.
 const HOST = "app.example.com";
 const TEST_SECRET = "1x0000000000000000000000000000000AA";
-const testAnswer = { success: true, hostname: "localhost", action: "test" };
+const testAnswer = {
+  challenge_ts: "2026-10-27T01:41:07.205Z",
+  "error-codes": [],
+  hostname: "example.com",
+  metadata: { result_with_testing_key: true },
+  success: true,
+};
 const live: Partial<Env> = {
   TURNSTILE_SECRET: TEST_SECRET,
   TEST_HOOKS: "1",
@@ -51,7 +58,7 @@ async function check(over: Partial<Env>, answer: object, allowed = true) {
 }
 
 describe("Turnstile test key on a live-hook test install", () => {
-  it("accepts { localhost, test } with live hooks and exactly the test secret", async () => {
+  it("accepts the test-key answer with live hooks and exactly the test secret", async () => {
     await expect(check(live, testAnswer)).resolves.toBeUndefined();
   });
 
@@ -73,13 +80,13 @@ describe("Turnstile test key on a live-hook test install", () => {
     ["secret padded", { ...live, TURNSTILE_SECRET: ` ${TEST_SECRET}` }, true],
   ];
   for (const [what, over, allowed] of missing)
-    it(`${what}: { localhost, test } is turnstile_failed`, async () => {
+    it(`${what}: the test-key answer is turnstile_failed`, async () => {
       await expect(check(over, testAnswer, allowed)).rejects.toMatchObject({
         code: "turnstile_failed",
       });
     });
 
-  it("a real secret: { localhost, test } is refused even with hooks live", async () => {
+  it("a real secret: the test-key answer is refused even with hooks live", async () => {
     await expect(
       check(
         { ...live, TURNSTILE_SECRET: "0x4AAAAAAA-real-secret" },
@@ -91,11 +98,32 @@ describe("Turnstile test key on a live-hook test install", () => {
   it("the test secret never widens anything else: a failed or partial test answer is refused", async () => {
     for (const a of [
       { ...testAnswer, success: false },
-      { ...testAnswer, hostname: HOST },
-      { ...testAnswer, action: "code_request" },
-      { success: true, hostname: "localhost" },
+      { ...testAnswer, metadata: undefined },
+      { ...testAnswer, metadata: {} },
+      { ...testAnswer, metadata: { result_with_testing_key: false } },
+      { ...testAnswer, metadata: { result_with_testing_key: "true" } },
+      { ...testAnswer, metadata: "result_with_testing_key" },
+      { success: true, hostname: "localhost", action: "test" },
     ])
       await expect(check(live, a)).rejects.toMatchObject({
+        code: "turnstile_failed",
+      });
+  });
+
+  it("a real secret: an answer carrying result_with_testing_key is still judged strictly", async () => {
+    const real = { ...live, TURNSTILE_SECRET: "0x4AAAAAAA-real-secret" };
+    const marker = { metadata: { result_with_testing_key: true } };
+    for (const a of [
+      { ...marker, success: true, hostname: HOST, action: "test" },
+      {
+        ...marker,
+        success: true,
+        hostname: "example.com",
+        action: "code_request",
+      },
+      { ...marker, success: true, hostname: "example.com" },
+    ])
+      await expect(check(real, a)).rejects.toMatchObject({
         code: "turnstile_failed",
       });
   });
