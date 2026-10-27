@@ -255,7 +255,8 @@ async function mcp(ctx: Ctx, token: string, prev?: string, prevHash?: string) {
     return typeof hit?.id === "string" ? hit.id : undefined;
   };
   /**
-   * --ci keeps no state: find the owner's page by exact title, never a fixed
+   * No saved id (--ci, or a by-name --upgrade from a fresh clone): find the
+   * owner's page by exact title, never a fixed
    * page of the list (a 100-item page can hide it and publish a duplicate).
    * search_artifacts when the server has it, otherwise every page of
    * list_artifacts.
@@ -294,7 +295,7 @@ async function mcp(ctx: Ctx, token: string, prev?: string, prevHash?: string) {
       typeof text_ === "string" && tokenHash(`${TITLE}\n${text_}`) === hash
     );
   };
-  if (!prev && ctx.opts.ci) {
+  if (!prev) {
     const found = await findWelcome();
     if (found) {
       if (await latestIsCurrent(found))

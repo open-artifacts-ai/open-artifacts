@@ -105,7 +105,7 @@ type World = {
   shortResult?: boolean;
   /** Preloaded users and tokens (token user_id refers to a seeded user id). */
   seed?: {
-    users?: { id: string; email: string; role: string }[];
+    users?: { id: string; email: string; role: string; status?: string }[];
     tokens?: Obj[];
   };
   /** The signed content URL serves this body instead of the published content. */
@@ -284,6 +284,8 @@ export function world(w: World = {}) {
       id: string;
       email: string;
       role: string;
+      /** Absent means 'active' (the column default). */
+      status?: string;
     }[],
     tokens: [...(w.seed?.tokens ?? [])] as Obj[],
   };
@@ -291,6 +293,12 @@ export function world(w: World = {}) {
   let discoveryFails = w.discoveryFails ?? 0;
   const sha = (s: string) => createHash("sha256").update(s).digest("hex");
   const unq = (x: string) => x.replaceAll("''", "'");
+  const isActive = (u?: { status?: string }) =>
+    !!u && (u.status ?? "active") === "active";
+  /** demoteStatements' guard: the target is an active owner. */
+  const ready = (st: string, me: string) =>
+    !st.includes(" AND EXISTS (") ||
+    db.users.some((u) => u.email === me && u.role === "owner" && isActive(u));
   /** Runs each statement in order (a failure keeps earlier effects, as D1 does without a transaction). */
   const d1 = (sql: string) => {
     sqls.push(sql);
@@ -322,9 +330,11 @@ export function world(w: World = {}) {
         )
       ) {
         const me = unq(m[1]).toLowerCase();
-        results = db.users
-          .filter((u) => u.role === "owner" && u.email !== me)
-          .map((u) => ({ email: u.email }));
+        results = ready(st, me)
+          ? db.users
+              .filter((u) => u.role === "owner" && u.email !== me)
+              .map((u) => ({ email: u.email }))
+          : [];
       } else if (
         is(
           /^SELECT email FROM users WHERE role = 'owner' AND email = '((?:[^']|'')*)'$/,
@@ -339,7 +349,7 @@ export function world(w: World = {}) {
       ) {
         const me = unq(m[1]).toLowerCase();
         for (const u of db.users)
-          if (u.role === "owner" && u.email !== me) {
+          if (u.role === "owner" && u.email !== me && ready(st, me)) {
             u.role = "admin";
             changes++;
           }
@@ -356,8 +366,16 @@ export function world(w: World = {}) {
         } else {
           const user = existing ?? { id: m[1], email, role: "owner" };
           if (!db.users.includes(user)) db.users.push(user);
-          user.role = "owner";
+          // DO UPDATE ... WHERE users.status = 'active'
+          if (isActive(user)) user.role = "owner";
         }
+      } else if (
+        is(/^SELECT status FROM users WHERE email = '((?:[^']|'')*)'$/)
+      ) {
+        const email = unq(m[1]).toLowerCase();
+        results = db.users
+          .filter((u) => u.email === email)
+          .map((u) => ({ status: u.status ?? "active" }));
       } else if (is(/^SELECT id FROM users WHERE email = '((?:[^']|'')*)'$/)) {
         const email = unq(m[1]).toLowerCase();
         results = db.users.filter((u) => u.email === email);
@@ -404,11 +422,12 @@ export function world(w: World = {}) {
           }
       } else if (
         is(
-          /^INSERT INTO tokens \(id, user_id, label, token_hash, created_at\) SELECT '(\w+)', id, '(setup(?:-ci)?)', '([0-9a-f]{64})', \d+ FROM users WHERE email = '((?:[^']|'')*)' AND \(SELECT count\(\*\) FROM tokens WHERE user_id = users\.id AND revoked_at IS NULL\) < (\d+)$/,
+          /^INSERT INTO tokens \(id, user_id, label, token_hash, created_at\) SELECT '(\w+)', id, '(setup(?:-ci)?)', '([0-9a-f]{64})', \d+ FROM users WHERE email = '((?:[^']|'')*)'( AND status = 'active')? AND \(SELECT count\(\*\) FROM tokens WHERE user_id = users\.id AND revoked_at IS NULL\) < (\d+)$/,
         )
       ) {
-        const [, id, label, hash, em, cap] = m;
-        const user = db.users.find((x) => x.email === unq(em).toLowerCase());
+        const [, id, label, hash, em, onlyActive, cap] = m;
+        const found = db.users.find((x) => x.email === unq(em).toLowerCase());
+        const user = !onlyActive || isActive(found) ? found : undefined;
         const active = db.tokens.filter(
           (x) => x.user_id === user?.id && !x.revoked_at,
         ).length;

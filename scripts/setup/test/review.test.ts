@@ -355,3 +355,40 @@ describe("rule #70: --json never guesses team", () => {
     expect(await run(check, c.deps, ROOT)).toBe(0);
   });
 });
+
+describe("item 44: upgrades keep saved choices", () => {
+  it("an --upgrade from v0.2.1 state (no team, no browser) is solo and keeps thumbnails", async () => {
+    const w = world({ subscriptions: PAID });
+    expect(await run(HOSTS, w.deps, ROOT)).toBe(0);
+    const {
+      team: _t,
+      browser: _b,
+      email: _e,
+      emailDomain: _d,
+      plan: _p,
+      ...old
+    } = w.state();
+    // planVar stays: the fake's live Worker has a PLAN var, which v0.2.1 didn't render.
+    w.files.set(STATE, `${JSON.stringify(old, null, 2)}\n`);
+    w.setSubscriptions(undefined); // wrangler login: the plan reads unknown
+    w.lines.length = 0;
+    expect(await run([...BASE, "--upgrade"], w.deps, ROOT)).toBe(0);
+    expect(w.state()).toMatchObject({ team: false, browser: true });
+    expect(cfg(w).browser).toEqual({ binding: "BROWSER" });
+  });
+
+  it("a saved --no-email holds on Paid until --team is passed again", async () => {
+    const w = world({ subscriptions: PAID });
+    expect(await run([...BASE, "--team", "--no-email"], w.deps, ROOT)).toBe(0);
+    w.lines.length = 0;
+    expect(await run([...BASE, "--upgrade"], w.deps, ROOT)).toBe(0);
+    expect(cfg(w)).not.toHaveProperty("send_email");
+    expect(w.state()).toMatchObject({ team: true, email: false });
+    expect(line(w, "prereqs").data.notes.join("; ")).toContain(
+      "rerun with --team to turn invites on",
+    );
+    // --team again re-decides: Paid turns email on, so the domain is needed.
+    expect(await run([...BASE, "--upgrade", "--team"], w.deps, ROOT)).toBe(2);
+    expect(parse(w).at(-1)).toMatchObject({ step: "email" });
+  });
+});

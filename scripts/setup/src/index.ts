@@ -221,7 +221,14 @@ async function resolve(
       deployed?.accountId ??
       deps.env.CLOUDFLARE_ACCOUNT_ID,
     // Flag, then saved state; undefined is decided (asked) in prereqs once the plan is known.
-    teamChoice: v.team ? true : v.solo ? false : state.team,
+    // --upgrade from saved state: v0.1.0-v0.2.1 has no `team`, and absent means solo.
+    teamChoice: v.team
+      ? true
+      : v.solo
+        ? false
+        : v.upgrade && state.name
+          ? (state.team ?? false)
+          : state.team,
     teamFlag: v.team,
     emailDomainFlag: v["email-domain"] !== undefined,
     team: false,
@@ -346,7 +353,7 @@ export const HELP = `Usage: pnpm oa:setup [options]
   --name <n>  --app-host <h>  --content-host <h>  --owner-email <e>  --account-id <id>
   --yes  --upgrade  --check [--strict]  --json  --ci [--revoke-ci-tokens]  --new-owner-token  --print-token
   --print-token  Also report the minted owner token as data.token (and in human output).
-                Without it setup saves the token to ~/.open-artifacts/<app-host>-pat-token
+                Without it setup saves the token to ~/.open-artifacts/<host-slug>-pat-token
                 (0600) and reports only data.tokenFile. Not used with --ci, whose token
                 is revoked at the end of the run.
   --allow-downgrade  Deploy a checkout older than the deployed version (from /healthz
@@ -438,6 +445,8 @@ export const HELP = `Usage: pnpm oa:setup [options]
                 version: exit 2 (roll back in the dashboard: Workers → <name> →
                 Deployments). Never touches D1: migrations are additive, so the code
                 rolls back and the data stays. Not with --upgrade, --check or --ci.
+                Reads the deploy token like setup (env, --token-file, then the
+                saved file).
   -h, --help`;
 
 /** Runs setup; resolves to the exit code (0 ok, 2 action_required, 1 error). */

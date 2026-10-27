@@ -1,6 +1,8 @@
 import { parseArgs } from "node:util";
 import { type Deps, makeApi, makeWrangler, realFs } from "./cf.ts";
 import { readState, writeState } from "./state.ts";
+import { NeedInput } from "./step.ts";
+import { withTokenFiles } from "./token-files.ts";
 import { currentVersion } from "./worker.ts";
 
 const PAT_RE = /oa_pat_[1-9A-HJ-NP-Za-km-z]+/g;
@@ -17,6 +19,7 @@ export async function rollbackCommand(
     options: {
       name: { type: "string" },
       "account-id": { type: "string" },
+      "token-file": { type: "string" },
       json: { type: "boolean" },
     },
   });
@@ -69,6 +72,14 @@ export async function rollbackCommand(
   if (v["account-id"] !== undefined && v["account-id"] !== accountId) {
     report("error", "args", "--account-id differs from the saved account");
     return 1;
+  }
+  // The same deploy token as setup: env, --token-file, then the saved file.
+  try {
+    deps = withTokenFiles(argv, deps, state);
+  } catch (e) {
+    const ar = e instanceof NeedInput;
+    report(ar ? "action_required" : "error", "args", (e as Error).message);
+    return ar ? 2 : 1;
   }
   const to = state.previousWorkerVersion;
   const dashboard = `roll back in the dashboard: Workers → ${name} → Deployments`;

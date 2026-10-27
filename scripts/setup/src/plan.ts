@@ -88,8 +88,9 @@ const yes = (a: string) => /^y(es)?$/i.test(a);
  * Team: flag, then saved state, then the question; never guessed when setup
  * can't ask (except --check, which only reports). Team on Free (or unknown)
  * needs a confirmation; email needs Paid, --yes-paid, or (plan unknown only)
- * a saved yes. Thumbnails (BROWSER + SERVER_THUMBNAILS): flag, then Paid, then
- * saved state only when the plan is unknown.
+ * a saved yes, and a saved no holds until --team. Thumbnails (BROWSER +
+ * SERVER_THUMBNAILS): flag, then Paid, then saved state only when the plan is
+ * unknown.
  */
 export async function decide(
   state: State,
@@ -113,15 +114,22 @@ export async function decide(
         ),
       );
   }
+  // A saved --no-email (email off) holds on any plan until --team is passed again.
+  const keptOff = !o.noEmail && !o.teamFlag && state.email === false;
   const email =
     Boolean(team) &&
     !o.noEmail &&
+    !keptOff &&
     (plan === "paid" ||
       o.yesPaid ||
       (plan === "unknown" && state.email === true));
-  if (team && !email && !o.noEmail)
+  if (team && !email && !o.noEmail && !keptOff)
     ctx.notes.push(
       `email off: Workers Paid not detected, so invites can't be sent. If the account is on Workers Paid (${DASH_PLANS}), rerun with --team --yes-paid`,
+    );
+  if (team && keptOff)
+    ctx.notes.push(
+      "email off (saved in state.json); rerun with --team to turn invites on",
     );
   if (team)
     ctx.notes.push(
@@ -133,7 +141,8 @@ export async function decide(
       ? true
       : plan === "free"
         ? false
-        : (state.browser ?? false));
+        : // Saved state: absent means on (state.ts), so an upgrade keeps it.
+          (state.browser ?? (o.upgrade && !ctx.noState)));
   const planVar: "free" | "paid" =
     o.planFlag ??
     (plan === "paid" || o.yesPaid
