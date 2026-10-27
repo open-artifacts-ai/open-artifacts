@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.66.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.66.0...v0.66.1) (2026-10-27)
+
+
+### Performance Improvements
+
+* **server:** publish doesn't wait on the artifact DO; the sweep recovers lost index and thumbnail jobs ([#728](https://github.com/open-artifacts-ai/open-artifacts/issues/728)) ([e3f4e99](https://github.com/open-artifacts-ai/open-artifacts/commit/e3f4e9921ab45641354317e739a21adbcfd93dc4))
+
+## [0.66.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.65.0...v0.66.0) (2026-10-27)
+
+
+### Features
+
+* **broker-core:** gate refusals carry x-oa-gate: 1; doc codes and version skew ([#725](https://github.com/open-artifacts-ai/open-artifacts/issues/725)) ([c732aa4](https://github.com/open-artifacts-ai/open-artifacts/commit/c732aa4beacff7be67373dc9c2e493ad166ad203))
+* **platform:** BrokerGate: installs reach the brokers through dispatch and scheduler props ([#720](https://github.com/open-artifacts-ai/open-artifacts/issues/720)) ([5d2162d](https://github.com/open-artifacts-ai/open-artifacts/commit/5d2162d9b5751cd6222da664fced018981921640))
+* **server:** index_enqueue carries the DO's own ms (doMs) ([#727](https://github.com/open-artifacts-ai/open-artifacts/issues/727)) ([d3b6150](https://github.com/open-artifacts-ai/open-artifacts/commit/d3b6150cbb8bb5edc476956a0abdd807b78843a0))
+* **server:** per-step publish timing; logs keep the runtime's support reference ([#723](https://github.com/open-artifacts-ai/open-artifacts/issues/723)) ([341f5bd](https://github.com/open-artifacts-ai/open-artifacts/commit/341f5bdf8fe36cce5ee82439ce24271e5099b055))
+* **server:** reach the brokers through dispatch-props capabilities; directory sync driven by the scheduler ([#722](https://github.com/open-artifacts-ai/open-artifacts/issues/722)) ([cc1904c](https://github.com/open-artifacts-ai/open-artifacts/commit/cc1904c66baa8590c3e8ad26edd408ce26373878))
+
 ## [0.65.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.64.0...v0.65.0) (2026-10-27)
 
 

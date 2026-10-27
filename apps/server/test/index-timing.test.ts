@@ -3,7 +3,7 @@ import { newId } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { enqueueIndex } from "../src/services/artifacts.js";
 
-// Publish awaits the artifact DO's scheduleIndex; slow hosted installs need
+// Publish enqueues on the artifact DO in waitUntil; slow hosted installs need
 // its wall time in the logs (no content, only ids and ms).
 afterEach(() => vi.restoreAllMocks());
 

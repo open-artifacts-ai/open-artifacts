@@ -721,7 +721,7 @@ describe("captureThumbnail", () => {
 
     const id2 = await pub();
     const never = fake({ sizes: Array(10).fill(big) });
-    expect(await capture(id2, 1, never)).toBe("failed");
+    expect(await capture(id2, 1, never)).toBe("too_large");
     expect(never.shots.length).toBe(THUMB.qualities.length);
     expect(await env.FILES.head(key(id2))).toBeNull();
   });
@@ -900,7 +900,7 @@ describe("thumbnail job on the artifact DO", () => {
     expect(
       await inDo(id, (i) => i.pendingThumbnail(), withBrowser),
     ).toMatchObject({ artifactId: id, version: 3, attempts: 0 });
-    // Index-only enqueues (undelete, reindexStale) never add one.
+    // An index-only enqueue never adds one.
     const other = await pub();
     await inDo(other, (i) => i.scheduleIndex(other, 1), withBrowser);
     expect(await inDo(other, (i) => i.pendingThumbnail())).toBeNull();
@@ -1053,6 +1053,23 @@ describe("thumbnail job on the artifact DO", () => {
   it("a failed capture is not retried; a deferral uses the one retry", async () => {
     const id = await pub();
     const results: ThumbResult[] = ["failed"];
+    const err = vi.spyOn(console, "error");
+    const noThumb = () =>
+      err.mock.calls
+        .map((c) => {
+          try {
+            return JSON.parse(String(c[0])) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .filter((e) => e?.evt === "thumbnail_no_thumb");
+    const failed = (v: number) =>
+      env.DB.prepare(
+        "select thumb_failed f from versions where artifact_id = ? and version = ?",
+      )
+        .bind(id, v)
+        .first("f");
     await inDo(
       id,
       async (i) => {
@@ -1067,6 +1084,16 @@ describe("thumbnail job on the artifact DO", () => {
         await i.alarm();
         expect(calls).toBe(1);
         expect(i.thumbnailJob()).toMatchObject({ state: "no_thumb" });
+        expect(noThumb()).toEqual([
+          {
+            evt: "thumbnail_no_thumb",
+            artifactId: id,
+            version: 1,
+            result: "failed",
+            attempts: 1,
+          },
+        ]);
+        expect(await failed(1)).toBe(1);
 
         await i.scheduleIndex(id, 2, true);
         await i.alarm(); // indexes v2
@@ -1081,9 +1108,15 @@ describe("thumbnail job on the artifact DO", () => {
           state: "no_thumb",
           attempts: 2,
         });
+        expect(noThumb()[1]).toMatchObject({
+          version: 2,
+          result: "deferred",
+          attempts: 2,
+        });
       },
       withBrowser,
     );
+    err.mockRestore();
   });
 
   it("a non-quota launch error backs off an hour, retries once, then gives up", async () => {
