@@ -133,9 +133,9 @@ Installs in one environment share a single Google client through the auth broker
 | Route | Body → response | Who |
 |---|---|---|
 | `GET R.spaces` | `SpacesQuery` → `Page<Space>` | signed in (org admins also see every shared space, `myRole: null`) |
-| `POST R.spaces` | `SpaceCreate` → 201 `Space` | org owner, admin |
+| `POST R.spaces` | `SpaceCreate` → 201 `Space`; 400 `space_name_reserved` | org owner, admin |
 | `GET R.space(id)` | → `Space` | member, org admin |
-| `PATCH R.space(id)` | `SpacePatch` → `Space` | `name`, `publicLinks`: space manager or org admin (`publicLinks` audited `space.public_links`; off blocks new public links only - existing links and sockets keep working, nothing is rewritten). `allMembersRole`: org admin |
+| `PATCH R.space(id)` | `SpacePatch` → `Space`; 400 `space_name_reserved` | `name`, `publicLinks`: space manager or org admin (`publicLinks` audited `space.public_links`; off blocks new public links only - existing links and sockets keep working, nothing is rewritten). `allMembersRole`: org admin |
 | `DELETE R.space(id)` | 204; 409 `space_not_empty` | org owner, admin |
 | `GET R.spaceMembers(id)` | `SpaceMembersQuery { q?, group?, cursor?, limit? }` → `SpaceMembersPage` (`Page<SpaceMember>` + `total`, the count matching `q`/`group`) | member, org admin; personal: 400 `space_personal`. `q`: case-insensitive prefix of the email or of any word of the name; `group`: a groupId (either `via`) |
 | `GET R.spaceCandidates(id)` `/spaces/:id/candidates` | `SpaceCandidatesQuery { q?, cursor?, limit? }` (limit 1 to `SPACE_CANDIDATES_MAX` (50), default 20) → `Page<SpaceCandidate>` by email, then id | the "Add people" search: an uncapped org admin, or an uncapped manager of this space; anyone else 404 (as a space they can't see). Personal: 400 `space_personal`. Active org members (owner, admin, member; never guests) of the whole org; `q` as `R.spaceMembers`'s. Each row: `{ id, email, name, role, restriction, spaceRole }`; `spaceRole` is their `SpaceMember.role` here (null when not in the space) |
@@ -165,7 +165,7 @@ only per-space rows.
 |---|---|
 | `SpaceSchema` | `SpaceRef + { owner, allMembersRole, myRole, memberCount, artifactCount, createdAt }` (`outsideSharing` dropped until M4) |
 | `SpacesQuerySchema` | `{ kind?, cursor?, limit? }` |
-| `SpaceCreateSchema` / `SpacePatchSchema` | `{ name, allMembersRole, publicLinks }` (patch: partial); `SPACE_MANAGER_FIELDS` = name, publicLinks. `name` is `SpaceNameSchema`: C0 controls, DEL, bidi controls (U+061C, U+200E/F, U+202A-U+202E, U+2066-U+2069) and zero-width characters (U+200B-U+200D, U+FEFF) are stripped, then trimmed, 1-80 characters (only such characters: 400); `stripNameControls` is the same rule |
+| `SpaceCreateSchema` / `SpacePatchSchema` | `{ name, allMembersRole, publicLinks }` (patch: partial); `SPACE_MANAGER_FIELDS` = name, publicLinks. `name` is `SpaceNameSchema`: C0 controls, DEL, bidi controls (U+061C, U+200E/F, U+202A-U+202E, U+2066-U+2069) and zero-width characters (U+200B-U+200D, U+FEFF) are stripped, then trimmed, 1-80 characters (only such characters: 400), and not "Personal" (trimmed, any case: 400 `space_name_reserved`; `isReservedSpaceName`, `spaceNameReserved(issues)`); `stripNameControls` is the same rule |
 | `SpaceMemberSchema` | userId-keyed: `{ userId, user, status, role, source: manual \| sync, manualRole, syncRole, groups: SpaceMemberGroup[], cap, allMembers, restriction }` (`restriction` as `Member.restriction`, null when unrestricted; the detail only for a caller who can manage the space, an uncapped manager or org admin: anyone else gets null and reads `cap`). `allMembers`: the space's `allMembersRole` when it applies to this person, null for guests and capped users (or when none is set) |
 | `SpaceMemberGroupSchema` | `GroupRef + { role, via: space \| every }`: one entry per mapping granting `syncRole` (`every` = an Every-space org mapping); a group mapped both ways appears twice |
 | `SpaceMembersQuerySchema` / `SpaceMembersPageSchema` | `{ q?, group?, cursor?, limit? }` (strict) / `Page<SpaceMember> + { total }` |
@@ -263,6 +263,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `code_unavailable` | 503 | code sign-in can't run: `SESSION_SECRET` is under 32 characters, so the code keys can't be derived, or the `RL_AUTH` rate-limit binding is missing |
 | `reauth_required` | 401 | break-glass routes need a fresh Google sign-in |
 | `break_glass_required` | 401 | `GET R.me` for the org owner refused by a directory customer_mismatch; details `{ fresh }` (see Sign-in) |
+| `space_name_reserved` | 400 | `POST R.spaces` or a `PATCH R.space(id)` rename to "Personal" (trimmed, any case); details `{ field: "name" }`, message `SPACE_NAME_RESERVED_MESSAGE`. Existing spaces with that name are left alone |
 | `restrict_admin` | 400 | `PUT R.memberRestricted(id)` on an org owner or admin |
 | `owner_only` | 403 | an admin (or a capped owner) acting on an org owner or admin: `PATCH`/`DELETE R.member(id)`, `DELETE R.memberIdentity(id, "google")` (#475). Admins keep managing members and guests |
 | `directory_mapping_off` | 403 | a space manager (not an org admin) adds or changes a space mapping (PUT) while `Settings.spaceManagerMappings` is off; list and DELETE stay allowed |

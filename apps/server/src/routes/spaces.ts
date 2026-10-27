@@ -1,17 +1,19 @@
 import {
   GroupMappingPutSchema,
   R,
+  SPACE_NAME_RESERVED_MESSAGE,
   SpaceCandidatesQuerySchema,
   SpaceCreateSchema,
   SpaceMemberPutSchema,
   SpaceMembersQuerySchema,
   SpacePatchSchema,
   SpacesQuerySchema,
+  spaceNameReserved,
 } from "@oa/shared";
 import type { Context } from "hono";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
 import { type OrgAction, orgCan } from "../auth/policy.js";
-import { jsonBody } from "../http/body.js";
+import { jsonBody, type Parser } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import {
@@ -96,6 +98,24 @@ function pageOf(c: Context<AppEnv>): { cursor?: string; limit: number } {
   return { cursor: c.req.query("cursor"), limit };
 }
 
+/** A space create/patch body; a "Personal" name is 400 space_name_reserved. */
+async function spaceBody<T>(c: Context<AppEnv>, schema: Parser<T>): Promise<T> {
+  try {
+    return await jsonBody(c, schema);
+  } catch (e) {
+    if (
+      e instanceof ApiError &&
+      e.code === "bad_request" &&
+      Array.isArray(e.details) &&
+      spaceNameReserved(e.details)
+    )
+      throw new ApiError("space_name_reserved", SPACE_NAME_RESERVED_MESSAGE, {
+        field: "name",
+      });
+    throw e;
+  }
+}
+
 export function mountSpaces(app: AppType): void {
   app.get(R.spaces, async (c) => {
     const who = spacesCaller(c);
@@ -104,7 +124,7 @@ export function mountSpaces(app: AppType): void {
 
   app.post(R.spaces, async (c) => {
     const who = spacesCaller(c);
-    const input = await jsonBody(c, SpaceCreateSchema);
+    const input = await spaceBody(c, SpaceCreateSchema);
     return c.json(await createSpace(c.env, who, input), 201);
   });
 
@@ -115,7 +135,7 @@ export function mountSpaces(app: AppType): void {
 
   app.patch(SPACE, async (c) => {
     const who = spacesCaller(c);
-    const patch = await jsonBody(c, SpacePatchSchema);
+    const patch = await spaceBody(c, SpacePatchSchema);
     return c.json(
       await patchSpace(c.env, who, c.req.param("id"), patch, execCtx(c)),
     );

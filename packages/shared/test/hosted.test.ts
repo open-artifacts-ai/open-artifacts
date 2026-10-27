@@ -29,6 +29,7 @@ import {
   SettingsPatchSchema,
   SettingsSchema,
   SPACE_MANAGER_MAPPING_ROLES,
+  SPACE_NAME_RESERVED_MESSAGE,
   SpaceCanSchema,
   SpaceCreateSchema,
   SpaceForbiddenDetailsSchema,
@@ -36,8 +37,10 @@ import {
   SpaceMemberSchema,
   SpaceMembersPageSchema,
   SpaceMembersQuerySchema,
+  SpaceNameSchema,
   SpacePatchSchema,
   STATUS_FOR,
+  spaceNameReserved,
   TEST_HOOKS_ALLOWED,
   TestSessionInputSchema,
   TIER_FEATURES,
@@ -157,6 +160,33 @@ describe("hosted contract schemas", () => {
     expect(SpaceCreateSchema.parse({ name: "Café 東京" }).name).toBe(
       "Café 東京",
     );
+    // "Personal" is reserved for the personal space: trimmed, any case, and
+    // after controls are stripped; only the whole name.
+    for (const name of [
+      "Personal",
+      " personal ",
+      "PERSONAL",
+      "Pers\u200Bonal",
+    ]) {
+      const r = SpaceCreateSchema.safeParse({ name });
+      expect(r.success).toBe(false);
+      expect(r.error?.issues.map((i) => i.message)).toEqual([
+        SPACE_NAME_RESERVED_MESSAGE,
+      ]);
+      expect(spaceNameReserved(r.error?.issues ?? [])).toBe(true);
+      expect(
+        spaceNameReserved(
+          SpacePatchSchema.safeParse({ name }).error?.issues ?? [],
+        ),
+      ).toBe(true);
+    }
+    expect(SpaceNameSchema.parse("Personal finance")).toBe("Personal finance");
+    expect(SPACE_NAME_RESERVED_MESSAGE).not.toMatch(/\u2014/);
+    expect(
+      spaceNameReserved(
+        SpaceCreateSchema.safeParse({ name: "" }).error?.issues ?? [],
+      ),
+    ).toBe(false);
     expect(
       TransferInputSchema.parse({
         to: { kind: "space", spaceId: "s" },
