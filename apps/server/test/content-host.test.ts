@@ -110,6 +110,33 @@ describe("signing", () => {
 });
 
 describe("content url route", () => {
+  it("names the version it serves: current by default, ?v= when given", async () => {
+    const id = await pubSite();
+    await publish(
+      env,
+      owner.member,
+      { id, format: "html", content: "<p>v2</p>" } as never,
+      null,
+      undefined,
+      "version",
+    );
+    const at = async (v?: number) =>
+      ContentUrlSchema.parse(
+        await (await api(app, R.contentUrl(id, v), owner.cookie)).json(),
+      );
+    const cur = await at();
+    expect(cur.version).toBe(2);
+    expect(cur.url).toContain(`/${id}/v2/`);
+    const v1 = await at(1);
+    expect(v1.version).toBe(1);
+    expect(v1.url).toContain(`/${id}/v1/`);
+    const pub = await pubSite({ visibility: "public" });
+    const p = ContentUrlSchema.parse(
+      await (await api(app, R.contentUrl(pub), null)).json(),
+    );
+    expect(p).toMatchObject({ expiresAt: null, version: 1 });
+  });
+
   it("returns a signed __view URL for viewers, 404 for others and bad v", async () => {
     const id = await pubSite();
     const r = await api(app, R.contentUrl(id), owner.cookie);
@@ -142,6 +169,7 @@ describe("content url route", () => {
     expect(ContentUrlSchema.parse(await r.json())).toEqual({
       url: `${CONTENT}/p/${id}/v1/__view`,
       expiresAt: null,
+      version: 1,
     });
   });
 });

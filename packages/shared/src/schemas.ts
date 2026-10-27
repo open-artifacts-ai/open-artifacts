@@ -619,6 +619,11 @@ export type UploadCreated = z.infer<typeof UploadCreatedSchema>;
 export const ContentUrlSchema = z.object({
   url: z.string().url(),
   expiresAt: z.string().nullable(),
+  /**
+   * The version this URL serves: `?v=` when given, else the current one at
+   * mint time. Always sent by the server; optional for older servers and mocks.
+   */
+  version: z.number().int().positive().optional(),
 });
 export type ContentUrl = z.infer<typeof ContentUrlSchema>;
 

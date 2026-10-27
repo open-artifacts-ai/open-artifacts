@@ -654,6 +654,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       withArt((a) =>
         HttpResponse.json({
           url: `https://content.example.com/c/${a.id}/index.html?sig=mock`,
+          version: a.currentVersion,
           expiresAt:
             a.visibility === "public"
               ? null
