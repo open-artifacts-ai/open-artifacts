@@ -363,6 +363,14 @@ describe("runCaptures (the script's loop, driven programmatically)", () => {
       { flows: ["a-alice", "b-alice"] },
     );
     expect(asks).toBe(3);
+    // Bound to its run: nonce, install ids, versions, suite commit, times.
+    expect(v.runNonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(v.installs).toEqual({ a: T.a.installId, b: T.b.installId });
+    expect(v.versions).toEqual({ a: "unknown", b: "unknown" });
+    expect(v.suiteSha).toMatch(/^[0-9a-f]{40}$|^unknown$/);
+    expect(v.finishedAt).toBeGreaterThanOrEqual(v.startedAt);
+    for (const l of v.legs)
+      expect(l.redeemedAt).toBeGreaterThanOrEqual(v.startedAt);
     expect(said.join("\n")).toMatch(/retry callback \(state r1\.\)/);
     expect(said.join("\n")).toMatch(
       /a-alice: captured, 1 of 2\. Time left before the first capture expires: \d+:\d\d/,

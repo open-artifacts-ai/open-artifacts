@@ -1,6 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
-import { ID_TOKEN_CASES, idTokenOutcome } from "../src/capture.ts";
+import {
+  ID_TOKEN_CASES,
+  idTokenOutcome,
+  NEEDS_CAPTURE,
+} from "../src/capture.ts";
 import { setupFetch } from "../src/fetch-timeout.ts";
 import {
   type Cred,
@@ -52,9 +56,6 @@ import { loadTargets, type Target, type Targets } from "../src/targets.ts";
 //   verdicts of a capture run (docs/ops/redline-signin.md; rehearsed with no
 //   human against a fake IdP in test/rehearsal.test.ts).
 // - Broker: staging only (there is no broker locally).
-
-const FIXTURE = "apps/server/test/xt-google.local.test.ts";
-const REAL = "needs real-tenant tokens";
 
 let T: Targets;
 let A: Side;
@@ -148,8 +149,9 @@ describe("sign-in: ID tokens", () => {
   for (const which of ["hd", "aud"] as const)
     it(ID_TOKEN_CASES[which], (ctx) => {
       const out = idTokenOutcome(process.env.REDLINE_SIGNIN_CAPTURES, T, which);
+      // The gate's combine() (src/combine.ts) replaces exactly this reason.
       if (out.kind === "none")
-        return proof(ctx, "unproven-live", `${REAL} (fixture: ${FIXTURE})`);
+        return proof(ctx, "unproven-live", NEEDS_CAPTURE);
       if (out.kind === "unproven")
         return proof(ctx, "unproven-live", `unproven: ${out.reason}`);
       if (out.kind === "fail") throw out.error;

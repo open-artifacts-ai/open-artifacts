@@ -123,6 +123,18 @@ guests run live; the tampered broker install id runs on staging from a real
 broker state. The cases Google can't produce and the broker's signed redeem
 assertion are covered by fixtures (see the P5 plan, Task 6).
 
+## The gate binding
+
+`verdicts.json` records what the capture ran against: a random `runNonce`,
+both install ids, their `/healthz` versions, the suite's commit (`suiteSha`),
+`startedAt`, `finishedAt` and a timestamp per leg. In CI (no capture) the two
+ID-token cases report `unproven: needs capture`. `combine(ciReport, verdicts)`
+in `tests/redline/src/combine.ts` (for R7) replaces exactly those two cases,
+and only when the install ids, versions and commit match the CI report's
+`binding` and the verdicts are at most 24 h old; otherwise it refuses with the
+reason. (`markRun` will send the `runNonce` to a `POST /__test/mark` hook at the
+start and end of a run; it is a no-op until that server hook exists.)
+
 ## If a case fails
 
 `report.json` (and the printed summary) records, for every case that isn't a

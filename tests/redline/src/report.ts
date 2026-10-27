@@ -104,6 +104,16 @@ export interface Report {
   nonPass: CaseResult[];
   cases: CaseResult[];
   gate: { passed: boolean; reason: string };
+  /** What this run ran against (the reporter): what combine() matches verdicts to. */
+  binding?: RunBinding;
+  /** Set by combine(): the capture run whose verdicts replaced the ID-token cases. */
+  combined?: { runNonce: string; verdictsFinishedAt: number };
+}
+
+export interface RunBinding {
+  installs: { a: string; b: string };
+  versions: { a: string; b: string };
+  suiteSha: string;
 }
 
 /** What a live case attaches to its task meta to report a non-pass level. */

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { Reporter, TestCase, TestModule } from "vitest/node";
+import { suiteSha } from "./capture.ts";
 import {
   applyManifest,
   buildReport,
@@ -13,6 +14,7 @@ import {
   levelOf,
   type Manifest,
   parseManifest,
+  type RunBinding,
 } from "./report.ts";
 
 // Vitest reporter: one CaseResult per test (its proof level), plus a "fail"
@@ -122,16 +124,56 @@ export function collect(
   return cases;
 }
 
+/**
+ * The run's binding: REDLINE_TARGETS' install ids, their /healthz versions
+ * now, and the suite's commit (GITHUB_SHA, else git HEAD). Undefined without
+ * targets.
+ */
+export async function bindingOf(
+  env: Record<string, string | undefined> = process.env,
+): Promise<RunBinding | undefined> {
+  let raw: { a?: { installId?: unknown; app?: unknown }; b?: typeof raw.a };
+  try {
+    raw = JSON.parse(env.REDLINE_TARGETS ?? "");
+  } catch {
+    return undefined;
+  }
+  const side = async (t: typeof raw.a) => {
+    const id = typeof t?.installId === "string" ? t.installId : "";
+    let version = "unknown";
+    try {
+      const r = await fetch(`${String(t?.app)}/healthz`, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      });
+      const v = ((await r.json()) as { version?: unknown }).version;
+      if (typeof v === "string") version = v;
+    } catch {}
+    return { id, version };
+  };
+  const [a, b] = await Promise.all([side(raw.a), side(raw.b)]);
+  if (!a.id || !b.id) return undefined;
+  return {
+    installs: { a: a.id, b: b.id },
+    versions: { a: a.version, b: b.version },
+    suiteSha: env.GITHUB_SHA || suiteSha(),
+  };
+}
+
 export default class RedlineReporter implements Reporter {
-  onTestRunEnd(
+  async onTestRunEnd(
     modules: ReadonlyArray<TestModule>,
     unhandled: ReadonlyArray<unknown>,
-  ): void {
+  ): Promise<void> {
     const root = join(import.meta.dirname, "..");
-    const report = buildReport(
-      applyManifest(collect(modules, unhandled, root), loadManifest()),
-      modeOf(),
-    );
+    const binding = await bindingOf();
+    const report = {
+      ...buildReport(
+        applyManifest(collect(modules, unhandled, root), loadManifest()),
+        modeOf(),
+      ),
+      ...(binding ? { binding } : {}),
+    };
     const out = reportPath();
     mkdirSync(dirname(out), { recursive: true, mode: 0o700 });
     writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });

@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { send } from "./http.ts";
@@ -46,6 +48,14 @@ export const ID_TOKEN_CASES = {
   aud: "A's code and broker state at B: no session",
 } as const;
 export type IdTokenCase = keyof typeof ID_TOKEN_CASES;
+/** The suite's file and describe for those cases (report names: "<describe> > <case>"). */
+export const ID_TOKEN_FILE = "live/signin.test.ts";
+export const ID_TOKEN_DESCRIBE = "sign-in: ID tokens";
+/**
+ * The ID-token cases' reason when no capture ran (CI). Distinct on purpose:
+ * the gate's combine() replaces exactly the cases carrying it.
+ */
+export const NEEDS_CAPTURE = "unproven: needs capture";
 
 export interface CaptureLeg {
   case: IdTokenCase;
@@ -265,10 +275,63 @@ export interface LegVerdict {
   redeemedAt: number;
 }
 
+/**
+ * The capture run's record: its verdicts, bound to what they were taken
+ * against (install ids, their /healthz versions, the suite's commit) so the
+ * gate (src/combine.ts) can refuse to apply them to any other run.
+ */
 export interface Verdicts {
   v: 1;
+  /** 32 random bytes, base64url: this capture run (POST /__test/mark, later). */
+  runNonce: string;
   installs: { a: string; b: string };
+  versions: { a: string; b: string };
+  /** The commit the capture's suite code is at (git HEAD of the checkout). */
+  suiteSha: string;
+  startedAt: number;
+  /** Updated on every write; the last write is the run's end. */
+  finishedAt: number;
   legs: LegVerdict[];
+}
+
+/** A runNonce's shape. */
+export const RUN_NONCE_RE = /^[A-Za-z0-9_-]{16,64}$/;
+
+/**
+ * Marks the start and end of a capture run at an install, so the install's
+ * own log ties its callbacks to this run. TODO(POST /__test/mark): a no-op
+ * until the server's POST /__test/mark {nonce} hook exists (a separate
+ * server PR); then send it through hook(t, "/__test/mark", { nonce }).
+ */
+export async function markRun(
+  _t: Target,
+  _nonce: string,
+  _at: "start" | "end",
+): Promise<void> {}
+
+/** The checkout's commit (git HEAD), or "unknown". */
+export function suiteSha(): string {
+  try {
+    return execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: import.meta.dirname,
+      encoding: "utf8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+
+/** An install's /healthz version, or "unknown". */
+export async function versionOf(t: Target): Promise<string> {
+  try {
+    const r = await fetch(`${t.app}/healthz`, { redirect: "manual" });
+    const v = ((await r.json()) as { version?: unknown }).version;
+    return typeof v === "string" ? v : "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 const expectOf = (l: CaptureLeg) =>
@@ -372,6 +435,8 @@ export interface CaptureOpts {
   maxTries?: number;
   /** Only these flows (default all, in order). */
   flows?: readonly FlowName[];
+  /** The suite's commit (default git HEAD). */
+  suiteSha?: string;
 }
 
 /**
@@ -388,11 +453,18 @@ export async function runCaptures(
 ): Promise<Verdicts> {
   const now = o.now ?? Date.now;
   const flows = o.flows ?? (Object.keys(CAPTURE_FLOWS) as FlowName[]);
+  const runNonce = randomBytes(32).toString("base64url");
   const verdicts: Verdicts = {
     v: 1,
+    runNonce,
     installs: { a: T.a.installId, b: T.b.installId },
+    versions: { a: await versionOf(T.a), b: await versionOf(T.b) },
+    suiteSha: o.suiteSha ?? suiteSha(),
+    startedAt: now(),
+    finishedAt: now(),
     legs: [],
   };
+  for (const t of [T.a, T.b]) await markRun(t, runNonce, "start");
   let firstExpires: number | undefined;
   for (const [i, flow] of flows.entries()) {
     const spec = CAPTURE_FLOWS[flow];
@@ -446,12 +518,16 @@ export async function runCaptures(
     );
     const legs = await redeemCapture(T, capture, now);
     verdicts.legs.push(...legs);
+    verdicts.finishedAt = now();
     writeVerdicts(dir, verdicts);
     for (const l of legs)
       io.say(
         `  ${flow}: ${l.leg} (${l.host}): ${l.verdict}${l.reason ? ` (${l.reason})` : ""}`,
       );
   }
+  for (const t of [T.a, T.b]) await markRun(t, runNonce, "end");
+  verdicts.finishedAt = now();
+  writeVerdicts(dir, verdicts);
   return verdicts;
 }
 
@@ -494,9 +570,27 @@ export function idTokenOutcome(
   } catch {
     return un("no capture verdicts (verdicts.json missing or unreadable)");
   }
+  return verdictsOutcome(
+    v,
+    { a: T.a.installId, b: T.b.installId },
+    which,
+    now,
+    VERDICTS_MAX_AGE_MS,
+  );
+}
+
+/** idTokenOutcome on verdicts already read (src/combine.ts uses it with 24 h). */
+export function verdictsOutcome(
+  v: Verdicts,
+  installs: { a: string; b: string },
+  which: IdTokenCase,
+  now: number,
+  maxAgeMs: number,
+): CaseOutcome {
+  const un = (reason: string): CaseOutcome => ({ kind: "unproven", reason });
   if (v?.v !== 1 || !Array.isArray(v.legs))
     return un("capture verdicts file has an unknown shape");
-  if (v.installs?.a !== T.a.installId || v.installs?.b !== T.b.installId)
+  if (v.installs?.a !== installs.a || v.installs?.b !== installs.b)
     return un("capture verdicts are for other installs");
   const fails: LegVerdict[] = [];
   for (const [flow, legs] of Object.entries(CAPTURE_LEGS) as [
@@ -510,7 +604,7 @@ export function idTokenOutcome(
       const age = got.redeemedAt - got.startedAt;
       if (!(age <= CAPTURE_MAX_AGE_MS))
         return un(`capture too old (${flow}, ${ageText(age)})`);
-      if (!(now - got.redeemedAt <= VERDICTS_MAX_AGE_MS))
+      if (!(now - got.redeemedAt <= maxAgeMs))
         return un(
           `capture too old (${flow}, redeemed ${ageText(now - got.redeemedAt)} ago)`,
         );

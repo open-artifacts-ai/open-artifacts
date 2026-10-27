@@ -262,6 +262,10 @@ describe.skipIf(!on)(
         ["b-dave-2", "B's own credential at B", "pass"],
       ]);
       expect(Object.keys(h.seen)).toEqual(Object.keys(CAPTURE_FLOWS));
+      // Bound to this pair: its install ids and /healthz versions.
+      expect(v.installs).toEqual({ a: T.a.installId, b: T.b.installId });
+      expect(v.versions.a).not.toBe("unknown");
+      expect(v.versions.b).toBe(v.versions.a);
 
       const r = await runSuite({
         REDLINE_TARGETS: pair.targets,
