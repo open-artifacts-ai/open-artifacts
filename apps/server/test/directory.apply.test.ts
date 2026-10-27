@@ -4,8 +4,9 @@
 // anything; sign-in refreshes one user's groups.
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { newId } from "@oa/shared";
+import { type Member, newId } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withCap } from "../src/auth/authz.js";
 import { authConfig } from "../src/auth/config.js";
 import {
   applyGroupDiff,
@@ -18,7 +19,7 @@ import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { onGoogleSignIn, SYNC_DO_NAME } from "../src/services/directory.js";
-import { admit } from "../src/services/identity.js";
+import { admit, resetIdentity } from "../src/services/identity.js";
 import { getUser } from "../src/services/users.js";
 import { direct, mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
 import {
@@ -960,5 +961,128 @@ describe("T14 security review", () => {
     expect(nu?.id).not.toBe(signedIn);
     expect(await sharesFor(used)).toEqual([]);
     expect(usedArt).toBeDefined();
+  });
+});
+
+describe("P2 item 4: an admin's link reset is never a recycled address", () => {
+  const gu = (id: string, primaryEmail: string): GoogleUser => ({
+    id,
+    primaryEmail,
+    suspended: false,
+    deleted: false,
+    isAdmin: false,
+    customerId: "C0123",
+  });
+  const actor = async () =>
+    withCap((await getUser(e, owner.userId)) as Member, null);
+  const relinkFlag = async (uid: string) =>
+    (
+      await one<{ f: number }>(
+        "select google_relink f from users where id = ?",
+        uid,
+      )
+    )?.f;
+
+  it("reset, then sync: the same user is relinked by email and keeps their id, shares, spaces and artifacts", async () => {
+    const bob = uniq("rsbob");
+    const sub = `g-rsbob-${crypto.randomUUID()}`;
+    g.addUser({ id: sub, primaryEmail: bob });
+    const s = await sharedSpace();
+    const gid = `grp-rs-${crypto.randomUUID()}`;
+    g.addGroup({ id: gid, email: `${gid}@a.com`, members: [sub] });
+    await group(gid);
+    await mapSpace(s, gid, "editor");
+    const t0 = Date.now();
+    await connected(t0);
+    const before = await userByIdentity(sub);
+    const uid = before?.id as string;
+    expect(uid).toBeDefined();
+    // Signed in before (sign-in history: a recycled address without the fix).
+    await env.DB.prepare("update users set last_seen_at = ? where id = ?")
+      .bind(Date.now(), uid)
+      .run();
+    const manual = await sharedSpace();
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'viewer', 'manual', ?)",
+    )
+      .bind(manual, uid, Date.now())
+      .run();
+    const art = await seedShare(bob);
+    const mine = newId();
+    await env.DB.prepare(
+      "insert into artifacts (id, owner_id, space_id, title, format, visibility, created_at, updated_at) values (?, ?, ?, 't', 'html', 'private', 1, 1)",
+    )
+      .bind(mine, uid, uid)
+      .run();
+    const roles = await spaceRolesOf(uid);
+    expect(roles).toHaveLength(2);
+
+    await resetIdentity(e, await actor(), uid);
+    expect(await userByIdentity(sub)).toBeNull();
+    expect(await relinkFlag(uid)).toBe(1);
+
+    // The next listing (Google still has the same person at the address).
+    await drain(t0 + 61 * MIN);
+    const after = await userByIdentity(sub);
+    expect(after).toEqual({ id: uid, email: bob, status: "active" });
+    expect(await relinkFlag(uid)).toBe(0);
+    expect(await sharesFor(bob)).toEqual([{ artifact_id: art }]);
+    expect(await spaceRolesOf(uid)).toEqual(roles);
+    expect(await listMine(uid)).toEqual([{ id: mine }]);
+    expect(
+      await one<{ n: number }>(
+        "select count(*) n from users where email = ?",
+        bob,
+      ),
+    ).toEqual({ n: 1 });
+  });
+
+  it("a reset row is relinked to a new directory id at its address too (applyUsers), once", async () => {
+    const addr = uniq("rsnew");
+    const uid = await seedUser(addr, "member", { googleSub: `old-${newId()}` });
+    await env.DB.prepare("update users set last_seen_at = ? where id = ?")
+      .bind(Date.now(), uid)
+      .run();
+    const art = await seedShare(addr);
+    await resetIdentity(e, await actor(), uid);
+    const sub = `g-rsnew-${crypto.randomUUID()}`;
+    await applyUsers(e, [gu(sub, addr)], { tenant: "a.com" });
+    expect(await userByIdentity(sub)).toEqual({
+      id: uid,
+      email: addr,
+      status: "active",
+    });
+    expect(await sharesFor(addr)).toEqual([{ artifact_id: art }]);
+    expect(await relinkFlag(uid)).toBe(0);
+  });
+
+  it("never onto a row that has a Google identity again, nor a removed row", async () => {
+    // Re-linked by a Google sign-in after the reset: another subject now.
+    const addr = uniq("rsheld");
+    const uid = await seedUser(addr, "member", { googleSub: `old-${newId()}` });
+    await resetIdentity(e, await actor(), uid);
+    const signedIn = `g-signin-${newId()}`;
+    await env.DB.prepare(
+      "insert into identities (provider, subject, tenant, user_id, created_at) values ('google', ?, 'a.com', ?, ?)",
+    )
+      .bind(signedIn, uid, Date.now())
+      .run();
+    const other = `g-other-${crypto.randomUUID()}`;
+    // No lookup: the new-id signal on a Google-linked row changes nothing.
+    await applyUsers(e, [gu(other, addr)], { tenant: "a.com" });
+    expect(await userByIdentity(other)).toBeNull();
+    expect((await userByIdentity(signedIn))?.id).toBe(uid);
+
+    // A removed row is never relinked (nor revived).
+    const gone = uniq("rsgone");
+    const gid = await seedUser(gone, "member", { googleSub: `old-${newId()}` });
+    await resetIdentity(e, await actor(), gid);
+    await env.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(gid)
+      .run();
+    const fresh = `g-fresh-${crypto.randomUUID()}`;
+    await applyUsers(e, [gu(fresh, gone)], { tenant: "a.com" });
+    expect((await userByIdentity(fresh))?.id).not.toBe(gid);
+    expect(await statusOf(gid)).toBe("removed");
   });
 });

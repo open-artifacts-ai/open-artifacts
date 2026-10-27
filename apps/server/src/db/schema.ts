@@ -67,6 +67,13 @@ export const users = sqliteTable(
      * missed by the KV revocation, never survives an unsuspend (P3 T6).
      */
     statusChangedAt: integer("status_changed_at"),
+    /**
+     * 1 after an admin reset the user's Google link (resetIdentity): the next
+     * directory users page that lists a Google user at this address relinks
+     * this same row (applyUsers) instead of treating the address as recycled.
+     * Cleared by that relink. Read only while the row has no Google identity.
+     */
+    googleRelink: integer("google_relink").notNull().default(0),
   },
   () => [check("users_role_check", inList("role", RoleSchema.options))],
 );
