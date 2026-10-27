@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.62.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.62.1...v0.62.2) (2026-10-27)
+
+
+### Performance Improvements
+
+* **viewer:** content link loads alongside the artifact's info; preconnect ([#693](https://github.com/open-artifacts-ai/open-artifacts/issues/693) part 2) ([#701](https://github.com/open-artifacts-ai/open-artifacts/issues/701)) ([698f377](https://github.com/open-artifacts-ai/open-artifacts/commit/698f3775b70496ff1850d70340ec2cc8ca2354d2))
+
 ## [0.62.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.62.0...v0.62.1) (2026-10-27)
 
 
