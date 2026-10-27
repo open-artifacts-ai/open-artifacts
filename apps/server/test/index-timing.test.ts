@@ -19,16 +19,20 @@ const events = (spy: { mock: { calls: unknown[][] } }, evt: string) =>
     .filter((e) => e?.evt === evt);
 
 describe("index enqueue timing", () => {
-  it("logs index_enqueue with the artifact id and wall ms", async () => {
+  it("logs index_enqueue with the artifact id, wall ms and the DO's own ms", async () => {
     const spy = vi.spyOn(console, "log");
     const id = newId();
     await enqueueIndex(env, id, 1);
     const [e] = events(spy, "index_enqueue");
     expect(e).toMatchObject({ evt: "index_enqueue", artifactId: id });
     expect(Number.isInteger(e?.ms) && (e?.ms as number) >= 0).toBe(true);
+    // The DO's share comes back over RPC (its console never reaches the tail).
+    expect(Number.isInteger(e?.doMs) && (e?.doMs as number) >= 0).toBe(true);
+    expect(e?.doMs as number).toBeLessThanOrEqual(e?.ms as number);
     expect(Object.keys(e ?? {}).sort()).toEqual(
       [
         "artifactId",
+        "doMs",
         "evt",
         "ms",
         ...(env.INSTALL_ID?.trim() ? ["install"] : []),
