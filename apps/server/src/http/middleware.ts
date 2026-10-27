@@ -401,7 +401,7 @@ async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
           appHost: c.env.APP_HOST,
           why: "break_glass",
         }),
-      { kind: "directory" },
+      { kind: "directory", instance },
     );
     if (!sent) {
       logError("break_glass_email_unsent");

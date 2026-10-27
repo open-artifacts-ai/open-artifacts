@@ -41,7 +41,7 @@ export async function alertOwners(
             appHost: env.APP_HOST,
             why,
           }),
-        { kind: "directory" },
+        { kind: "directory", instance },
       ),
     ),
   );
