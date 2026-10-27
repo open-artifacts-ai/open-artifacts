@@ -39,7 +39,6 @@ import {
   putInitial,
   readBinding,
   readInitial,
-  readPending,
   readRetire,
 } from "./store.js";
 import { type PendingRevokes, thawFrozenEdits } from "./thaw.js";
@@ -749,15 +748,13 @@ export class SyncEngine {
     }
     const mode = directoryMode(this.env);
     const client = directoryClient(this.env);
-    const [{ binding, sealed }, pending] = await Promise.all([
-      readBinding(this.env),
-      readPending(this.env),
-    ]);
+    const { binding, sealed } = await readBinding(this.env);
     // Nothing to sync (off, unbound, no transport): stop until kicked. Runs
-    // in flight are kept; they resume when sync is back.
+    // in flight are kept; they resume when sync is back. A first connect
+    // waiting for its owner has no live binding, so nothing syncs until the
+    // confirm; a reconnect waiting for one keeps syncing (and enforcing) the
+    // live binding until the confirm swaps it (P2.5 #15).
     if (mode === "off" || !client || !binding || !sealed) return null;
-    // A consent waiting for its owner: nothing syncs until confirm or cancel.
-    if (pending) return now + FAST_MS;
     if (!this.fresh()) return now;
     const groups = mode === "google";
     // Hosted with no token in hand: stop cleanly before planning anything

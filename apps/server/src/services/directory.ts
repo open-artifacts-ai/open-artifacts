@@ -2,7 +2,7 @@ import type { Member } from "@oa/shared";
 import { brokerTransportKind } from "../auth/broker-transport.js";
 import { directoryClient } from "../directory/client.js";
 import { directorySignIn, SignInRefused } from "../directory/signin.js";
-import { readBinding, readPending } from "../directory/store.js";
+import { readBinding } from "../directory/store.js";
 import { type KickReason, tokenFor } from "../directory/sync.js";
 import { TransportError } from "../directory/transport.js";
 import type { Env } from "../env.js";
@@ -129,13 +129,11 @@ export async function feedSync(env: Env): Promise<FeedOutcome> {
     return "no_props";
   }
   if (kind !== "props") return "self";
-  // The binding first: a never-connected install doesn't wake its DO.
-  const [{ binding, sealed }, pending] = await Promise.all([
-    readBinding(env),
-    readPending(env),
-  ]);
-  // The alarm syncs nothing in these states either.
-  if (!binding || !sealed || pending) return "unbound";
+  // The binding first: a never-connected install doesn't wake its DO. A
+  // reconnect waiting for confirm keeps feeding the live binding (P2.5 #15).
+  const { binding, sealed } = await readBinding(env);
+  // The alarm syncs nothing in this state either (a first connect too).
+  if (!binding || !sealed) return "unbound";
   const stub = ns.get(ns.idFromName(SYNC_DO_NAME));
   if (!(await stub.wantsToken())) return "not_due";
   const key = tokenFor(binding);

@@ -51,6 +51,7 @@ import {
   putState,
   readBinding,
   readPending,
+  readPendingAny,
   readPendingRaw,
   readPrior,
   revokeAtGoogle,
@@ -308,7 +309,7 @@ export async function finishConnect(
     // its grant revoked.
     const [{ sealed: replaced }, before, live] = await Promise.all([
       readBinding(env, "pending"),
-      readPending(env),
+      readPendingAny(env),
       liveSub(env),
     ]);
     await env.DB.batch([
@@ -375,7 +376,7 @@ const notFound = () => new ApiError("not_found", "Not found");
  * and answers 409 conflict.
  */
 async function ownPending(env: Env, user: Member): Promise<PendingConfirm> {
-  const p = await readPending(env);
+  const p = await readPendingAny(env);
   if (!p || p.u !== user.id) throw notFound();
   if (p.exp <= Date.now()) {
     await expirePending(env);
@@ -601,7 +602,7 @@ export async function disconnectDirectory(
     readBinding(env, "live"),
     readBinding(env, "pending"),
     liveSub(env),
-    readPending(env),
+    readPendingAny(env),
   ]);
   if (!live.binding && !live.sealed && !pend.binding && !pend.sealed && !p)
     return directoryStatus(env, o);

@@ -15,7 +15,7 @@ import {
   userGroups,
 } from "./google.js";
 import { HK } from "./health.js";
-import { readBinding, readPending } from "./store.js";
+import { readBinding } from "./store.js";
 
 // The sign-in refresh (P3 T14): after P2 admits a Google sign-in, that one
 // user is re-read from the directory by their bound identity (Google `sub`
@@ -76,14 +76,14 @@ async function groupRows(env: Env, sql: string, arg: string) {
   return stmt(env.DB, sql).bind(arg).all<{ group_id: string }>();
 }
 
-/** The binding this sign-in read is still the live one, nothing pending. */
+/**
+ * The binding this sign-in read is still the live one. A reconnect waiting
+ * for confirm doesn't matter: the live binding is enforced until the swap
+ * (P2.5 #15), which changes connectedAt.
+ */
 async function sameBinding(env: Env, b: DirectoryBinding): Promise<boolean> {
-  const [{ binding }, pending] = await Promise.all([
-    readBinding(env),
-    readPending(env),
-  ]);
+  const { binding } = await readBinding(env);
   return (
-    !pending &&
     !!binding &&
     binding.customerId === b.customerId &&
     binding.connectedAt === b.connectedAt
@@ -119,12 +119,14 @@ export async function directorySignIn(
   try {
     // Every read is an async call, so none throws while the array is built
     // and leaves another's rejection unhandled.
-    const [{ binding, sealed }, pending, state] = await Promise.all([
+    const [{ binding, sealed }, state] = await Promise.all([
       readBinding(env),
-      readPending(env),
       readState(env),
     ]);
-    if (!binding || !sealed || pending) return;
+    // No live binding (never connected, or a first connect waiting for its
+    // owner): nothing to check against. A reconnect waiting for confirm
+    // keeps the live binding enforced (P2.5 #15).
+    if (!binding || !sealed) return;
     mismatch = state === "customer_mismatch";
     let u: GoogleUser | null = null;
     let token = "";

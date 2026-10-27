@@ -11,6 +11,8 @@ import {
   parseUsersPage,
 } from "../src/directory/google.js";
 import { instanceDirectory, readHealth } from "../src/directory/health.js";
+import { directorySignIn } from "../src/directory/signin.js";
+import { readPending, readPendingAny } from "../src/directory/store.js";
 import { FAST_MS, RECONCILE_MS, SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
@@ -1165,7 +1167,7 @@ describe("review fixes (P3 T13)", () => {
     await connected(t0);
     g.fail(/\/reports\/admin/, 503, { times: 1 });
     const flaky = { ...e, DB: flakyDb } as Env;
-    // readPending (tick), then fail()'s readHealth: the second such read.
+    // The alarm's second directory_state read (readRetire is its first).
     const gate = d1Gate(
       /^select value from directory_state where key = \?$/,
       1,
@@ -1567,5 +1569,86 @@ describe("P2.5 scenarios: admin actions chained with a sync", () => {
     gate.release();
     await run;
     expect(await membersOf(gid)).toEqual([]);
+  });
+});
+
+describe("P2.5 #15: a pending reconnect keeps the live binding synced and enforced", () => {
+  /** Same Workspace, same super admin: a reconnect waiting for confirm. */
+  async function reconnectPending() {
+    const r = await connect(
+      e,
+      owner.cookie,
+      g,
+      { sub: adminSub },
+      {
+        confirm: false,
+      },
+    );
+    expect(r.consented).toBe(true);
+    expect((await status()).state).toBe("pending_confirm");
+  }
+  const suspendInGoogle = (
+    u: { id: string; primaryEmail: string },
+    at: number,
+  ) => {
+    (g.users.get(u.id) as { suspended?: boolean }).suspended = true;
+    g.activity("admin", "SUSPEND_USER", { USER_EMAIL: u.primaryEmail }, at);
+  };
+
+  it("a Google suspension still applies on the next fast tick", async () => {
+    const [u] = dirUsers(1, "pend-susp");
+    const t0 = Date.now();
+    await connected(t0);
+    const uid = await uidOf(u?.id as string);
+    await reconnectPending();
+    suspendInGoogle(u as { id: string; primaryEmail: string }, t0 + FAST_MS);
+    await drain(t0 + FAST_MS);
+    expect(await statusOf(uid)).toBe("suspended");
+  });
+
+  it("sign-in still checks the directory: a user suspended in Google is refused", async () => {
+    const [u] = dirUsers(1, "pend-signin");
+    const t0 = Date.now();
+    await connected(t0);
+    const uid = await uidOf(u?.id as string);
+    await reconnectPending();
+    (g.users.get(u?.id as string) as { suspended?: boolean }).suspended = true;
+    const row = await env.DB.prepare(
+      "select id, email, name, role from users where id = ?",
+    )
+      .bind(uid)
+      .first<{ id: string; email: string; name: string; role: string }>();
+    await expect(
+      directorySignIn(e, { ...row, displayName: null } as never),
+    ).rejects.toMatchObject({ why: "suspended" });
+    expect(await statusOf(uid)).toBe("suspended");
+  });
+
+  it("a first connect waiting for its owner syncs nothing", async () => {
+    const [u] = dirUsers(1, "first-pend");
+    const r = await connect(
+      e,
+      owner.cookie,
+      g,
+      { sub: adminSub },
+      {
+        confirm: false,
+      },
+    );
+    expect(r.consented).toBe(true);
+    const calls = g.adminCalls.length;
+    await tick(Date.now());
+    expect(g.adminCalls.length).toBe(calls);
+    expect(await uidOf(u?.id as string)).toBeUndefined();
+  });
+
+  it("readPending ignores a consent past its exp; readPendingAny still returns it", async () => {
+    await connect(e, owner.cookie, g, { sub: adminSub }, { confirm: false });
+    const p = await readPendingAny(e);
+    expect(p).not.toBeNull();
+    const exp = p?.exp as number;
+    expect(await readPending(e, exp - 1)).toMatchObject({ exp });
+    expect(await readPending(e, exp)).toBeNull();
+    expect(await readPendingAny(e)).toMatchObject({ exp });
   });
 });

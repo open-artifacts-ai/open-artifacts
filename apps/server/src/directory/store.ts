@@ -18,7 +18,9 @@ import { directoryClient } from "./client.js";
 // - "connect.pending": the one connect in flight, {h: sha256(state), u, exp},
 //   consumed by its callback (single use);
 // - "connect.confirm": a consent waiting for its owner, {u, exp, count,
-//   capped}; T13 must not sync while it exists;
+//   capped}. While it exists with no live binding (a first connect),
+//   nothing syncs; a reconnect keeps syncing and enforcing the live binding
+//   until confirm swaps it (P2.5 #15);
 // - "binding.initial": the initial binding pass, {done, cursor} (T13
 //   continues a pass whose cursor is set);
 // - "binding.prior": {customerId, domain} of the binding a disconnect
@@ -113,7 +115,23 @@ export type PendingConfirm = {
   s?: string;
 };
 
-export async function readPending(env: Env): Promise<PendingConfirm | null> {
+/**
+ * The consent waiting for confirmation, or null when there is none or it is
+ * past its exp (lazily deleted by expirePending, the daily cron, or the
+ * next status read). readPendingAny also returns an expired one.
+ */
+export async function readPending(
+  env: Env,
+  now = Date.now(),
+): Promise<PendingConfirm | null> {
+  const p = await readPendingAny(env);
+  return p && p.exp > now ? p : null;
+}
+
+/** The consent row as stored, expired or not (expiry and revokes need it). */
+export async function readPendingAny(
+  env: Env,
+): Promise<PendingConfirm | null> {
   const row = await stmt(
     env.DB,
     "select value from directory_state where key = ?",
@@ -248,7 +266,7 @@ export async function expirePending(
 ): Promise<boolean> {
   const [{ sealed }, p] = await Promise.all([
     readBinding(env, "pending"),
-    readPending(env),
+    readPendingAny(env),
   ]);
   const out = await env.DB.batch([
     audit(
