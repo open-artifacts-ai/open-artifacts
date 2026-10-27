@@ -311,6 +311,41 @@ describe("loadTargets", () => {
     expect(T2.deletedHosts).toEqual(["rl-del.x.app"]);
   });
 
+  it("parses strayHost in staging mode only, as a bare host no target owns", () => {
+    const s = secrets({ k: KEY_A, k2: KEY_B });
+    const t = (n: string, f: string) => ({
+      name: n,
+      installId: n,
+      app: `https://${n}.x.app`,
+      content: `https://${n}.x.page`,
+      testDomain: `${n}.test`,
+      hookKeyFile: s.path(f),
+    });
+    const parse = (extra: Record<string, unknown>) =>
+      parseTargets({
+        REDLINE_TARGETS: JSON.stringify({
+          a: t("rl-a", "k"),
+          b: t("rl-b", "k2"),
+          ...extra,
+        }),
+      });
+    expect(parse({ strayHost: "rl-stray.x.app" }).strayHost).toBe(
+      "rl-stray.x.app",
+    );
+    expect(parse({}).strayHost).toBeUndefined();
+    for (const bad of [
+      "https://rl-stray.x.app",
+      "rl-stray.x.app:443",
+      "rl-stray.x.app/",
+      "RL-STRAY.x.app",
+      "stray",
+      42,
+    ])
+      expect(() => parse({ strayHost: bad })).toThrow(/bare hostname/);
+    expect(() => parse({ strayHost: "rl-a.x.app" })).toThrow(/own host/);
+    expect(() => parse({ strayHost: "rl-b.x.page" })).toThrow(/own host/);
+  });
+
   it("refuses a key file readable by others", () => {
     const s = secretDir({});
     toDispose.push(s.cleanup);
