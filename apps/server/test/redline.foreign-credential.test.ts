@@ -176,7 +176,7 @@ describe("red line: another install's credential on the broker check", () => {
       fetch: (req: Request) => {
         calls.push(new URL(req.url).pathname);
         return Promise.resolve(
-          Response.json({ error: "unauthorized" }, { status: 401 }),
+          Response.json({ error: "bad_flow" }, { status: 401 }),
         );
       },
     } as unknown as Fetcher;

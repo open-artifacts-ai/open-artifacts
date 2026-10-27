@@ -219,11 +219,12 @@ export const R = {
   memberIdentity: (id: string, provider: "google") =>
     `/api/v1/members/${seg(id)}/identities/${seg(provider)}`,
   /**
-   * POST -> 200 { auth, directory }, each { ok, status, ms, transport,
-   * skipped?, error? }: proves the install reaches its brokers through its
-   * real transport (a signed junk request the broker must refuse with 401).
-   * The org owner only (anyone else 404); about 10 a minute (429). Audited
-   * auth.broker_check.
+   * POST -> 200 { auth, directory }, each { ok, reached, status, ms,
+   * transport, skipped?, error?, cached? }: the install's transport reached
+   * broker-core and was refused as expected (a signed junk request; the
+   * 401 doesn't prove the signing key is registered). The org owner only
+   * (anyone else 404). Within 30 s of the last check its result again
+   * (cached); else 2 a minute (429). Audited auth.broker_check.
    */
   adminBrokerCheck: "/api/v1/admin/broker-check",
   /** GET ?cursor&limit -> Page<AuditEvent> (org owner, admin). */

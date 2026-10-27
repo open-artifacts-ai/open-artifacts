@@ -328,6 +328,8 @@ export function orgExpected(
     // Cookie sessions only: the handler refuses a PAT or grant (tested in
     // directory.disconnect.test.ts; the matrix probes writes by cookie).
     case "directory.disconnect":
+      return yes(t.role === "owner" && !t.capped);
+    // Any /api/v1 credential (session or PAT), the uncapped owner's only.
     case "broker.check":
       return yes(t.role === "owner" && !t.capped);
     case "tokens.create":
