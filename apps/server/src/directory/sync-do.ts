@@ -2,8 +2,13 @@ import { DurableObject } from "cloudflare:workers";
 import type { SyncStatus } from "@oa/shared";
 import type { Env } from "../env.js";
 import type { AuditActor } from "../services/audit.js";
-import { type KickReason, SyncEngine, type SyncJob, TokenBox } from "./sync.js";
-import type { TransportError } from "./transport.js";
+import {
+  type KickReason,
+  type MintFault,
+  SyncEngine,
+  type SyncJob,
+  TokenBox,
+} from "./sync.js";
 
 export type { KickReason, SyncJob } from "./sync.js";
 
@@ -38,7 +43,7 @@ export class DirectorySync extends DurableObject<Env> {
   /** The caller's freshly minted token (never its capability), or why it failed. */
   handToken(
     forKey: string,
-    h: { token: string } | { error: TransportError["stage"] },
+    h: { token: string } | { error: MintFault },
   ): Promise<void> {
     return this.engine.handToken(forKey, h);
   }

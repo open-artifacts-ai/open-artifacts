@@ -96,11 +96,13 @@ export async function kickSync(
 /** What one feedSync did (logged by the scheduler tick, asserted by tests). */
 export type FeedOutcome =
   | "self"
+  | "no_props"
   | "off"
   | "not_due"
   | "unbound"
   | "fed"
-  | "mint_failed";
+  | "mint_failed"
+  | "stale_props";
 
 /**
  * Hosted directory sync (oa:directory-sync, request kicks): DirectorySync
@@ -116,26 +118,44 @@ export async function feedSync(env: Env): Promise<FeedOutcome> {
   const ns = env.DIRECTORY_SYNC;
   const client = directoryClient(env);
   if (!ns || !client || directoryMode(env) === "off") return "off";
-  if (
-    client.kind !== "broker" ||
-    brokerTransportKind(env, "directory") !== "props"
-  )
-    return "self";
-  const stub = ns.get(ns.idFromName(SYNC_DO_NAME));
-  if (!(await stub.wantsToken())) return "not_due";
+  if (client.kind !== "broker") return "self";
+  const kind = brokerTransportKind(env, "directory");
+  // Hosted without the capability: nothing can feed the DO from here (its
+  // alarm fails the lane as transport_no_feed after NO_FEED_MS).
+  if (kind === null) {
+    logWarn("directory_feed", new Error("no DIRECTORY_BROKER props"), {
+      outcome: "no_props",
+    });
+    return "no_props";
+  }
+  if (kind !== "props") return "self";
+  // The binding first: a never-connected install doesn't wake its DO.
   const [{ binding, sealed }, pending] = await Promise.all([
     readBinding(env),
     readPending(env),
   ]);
   // The alarm syncs nothing in these states either.
   if (!binding || !sealed || pending) return "unbound";
+  const stub = ns.get(ns.idFromName(SYNC_DO_NAME));
+  if (!(await stub.wantsToken())) return "not_due";
   const key = tokenFor(binding);
   let token: string;
   try {
     token = await client.accessToken(sealed);
   } catch (e) {
-    if (!(e instanceof TransportError)) throw e;
-    await stub.handToken(key, { error: e.stage });
+    // A capability past its invocation: nothing was sent and nothing is
+    // handed over; the next tick brings a fresh one.
+    if (e instanceof TransportError && e.stage === "gate_stale") {
+      logWarn("directory_feed", e, { outcome: "stale_props" });
+      return "stale_props";
+    }
+    // Anything else (a decrypt failure included) is a failed mint: the DO's
+    // next alarm fails the lane with it, as a mint there would have
+    // (classify: transport_<stage>, or backoff "internal" for the rest).
+    if (!(e instanceof TransportError)) logWarn("directory_feed_mint", e);
+    await stub.handToken(key, {
+      error: e instanceof TransportError ? e.stage : "internal",
+    });
     return "mint_failed";
   }
   await stub.handToken(key, { token });

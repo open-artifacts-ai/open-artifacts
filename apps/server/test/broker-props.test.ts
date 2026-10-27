@@ -9,6 +9,7 @@ import { R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BrokerGateRefusedError,
+  BrokerGateStaleError,
   BrokerUnavailableError,
   brokerFetch,
   brokerTransportKind,
@@ -21,11 +22,13 @@ import {
   scheduled,
 } from "../src/cron.js";
 import { directoryClient } from "../src/directory/client.js";
+import { STALE_MS } from "../src/directory/health.js";
 import {
   BACKOFF_MAX_MS,
   BACKOFF_MIN_MS,
   backoffMs,
   FAST_MS,
+  NO_FEED_MS,
   RECONCILE_MS,
   RETRY_HOURLY_MS,
   SyncEngine,
@@ -156,38 +159,76 @@ describe("transport precedence", () => {
     });
   }
 
-  it("a gate refusal is BrokerGateRefusedError; the broker's own 401 and errors pass through", async () => {
+  it("a gate refusal (x-oa-gate: 1) is BrokerGateRefusedError; every broker answer passes through", async () => {
     const hosted = { HOSTED: "1" } as unknown as Env;
-    const answer = (status: number, error: string) => ({
+    const answer = (status: number, error: string, gate: boolean) => ({
       DIRECTORY_BROKER: {
-        fetch: async () => Response.json({ error }, { status }),
+        fetch: async () =>
+          Response.json(
+            { error },
+            { status, headers: gate ? { "x-oa-gate": "1" } : {} },
+          ),
       },
     });
-    for (const [s, e] of [
-      [403, "install_mismatch"],
-      [404, "not_found"],
-      [415, "json_only"],
-      [413, "too_large"],
-      [400, "bad_json"],
-      [500, "gate_misconfigured"],
+    for (const [s, e, code] of [
+      [403, "install_mismatch", "install_mismatch"],
+      [404, "not_found", "not_found"],
+      [415, "json_only", "json_only"],
+      [413, "too_large", "too_large"],
+      [400, "bad_json", "bad_json"],
+      [400, "bad_body", "bad_body"],
+      [500, "gate_misconfigured", "gate_misconfigured"],
+      // a future gate code: still the gate's (the header decides)
+      [400, "something_new", "gate"],
     ] as const)
-      await withBrokerProps({ props: answer(s, e) }, async () => {
+      await withBrokerProps({ props: answer(s, e, true) }, async () => {
         await expect(
           brokerFetch(hosted, "directory", req("/p")),
-        ).rejects.toMatchObject({ status: s, error: e });
+        ).rejects.toMatchObject({ status: s, error: code });
         await expect(
           brokerFetch(hosted, "directory", req("/p")),
         ).rejects.toBeInstanceOf(BrokerGateRefusedError);
       });
+    // No header: the broker's own answer, whatever its code (its 404
+    // not_found and a gate-looking code included).
     for (const [s, e] of [
       [401, "unauthorized"],
+      [404, "not_found"],
+      [400, "bad_json"],
+      [500, "server_error"],
       [400, "invalid_grant"],
       [429, "rate_limited"],
     ] as const)
-      await withBrokerProps({ props: answer(s, e) }, async () => {
+      await withBrokerProps({ props: answer(s, e, false) }, async () => {
         const r = await brokerFetch(hosted, "directory", req("/p"));
         expect(r.status).toBe(s);
       });
+  });
+
+  it("a capability used past its invocation is BrokerGateStaleError; other throws pass through", async () => {
+    const hosted = { HOSTED: "1" } as unknown as Env;
+    const throwing = (message: string) => ({
+      DIRECTORY_BROKER: {
+        fetch: async () => {
+          throw new Error(message);
+        },
+      },
+    });
+    for (const m of [
+      "Cannot perform I/O on behalf of a different request. I/O objects (such as streams, request/response bodies, and others) created in the context of one request handler cannot be accessed from a different request's handler.",
+      "Attempted to use RPC stub after it has been disposed.",
+      "Network connection lost.",
+    ])
+      await withBrokerProps({ props: throwing(m) }, () =>
+        expect(
+          brokerFetch(hosted, "directory", req("/p")),
+        ).rejects.toBeInstanceOf(BrokerGateStaleError),
+      );
+    await withBrokerProps({ props: throwing("boom") }, async () => {
+      const p = brokerFetch(hosted, "directory", req("/p"));
+      await expect(p).rejects.toThrow("boom");
+      await expect(p).rejects.not.toBeInstanceOf(BrokerGateStaleError);
+    });
   });
 });
 
@@ -218,13 +259,20 @@ let box: TokenBox;
 let e: Env;
 const engine = (s: DurableObjectState) =>
   new SyncEngine(e, s.storage, undefined, box);
+/** DirectorySync RPCs made through fakeNs, by name. */
+const rpcs: string[] = [];
 const fakeNs = {
   idFromName: () => ({}),
   get: () => ({
     kick: (r: never) => inDo((s) => engine(s).kick(r, clock)),
-    wantsToken: () => inDo((s) => engine(s).wantsToken(clock)),
-    handToken: (k: string, h: never) =>
-      inDo((s) => engine(s).handToken(k, h, clock)),
+    wantsToken: () => {
+      rpcs.push("wantsToken");
+      return inDo((s) => engine(s).wantsToken(clock));
+    },
+    handToken: (k: string, h: never) => {
+      rpcs.push("handToken");
+      return inDo((s) => engine(s).handToken(k, h, clock));
+    },
     reset: () => inDo((s) => engine(s).reset(clock)),
     confirmHeld: (id: string, by: never) =>
       inDo((s) => engine(s).confirmHeld(id, by, clock)),
@@ -408,7 +456,14 @@ describe("directory routes through props", () => {
         {
           props: {
             DIRECTORY_BROKER: {
-              fetch: async () => Response.json({ error }, { status }),
+              fetch: async () =>
+                Response.json(
+                  { error },
+                  {
+                    status,
+                    headers: status === 401 ? {} : { "x-oa-gate": "1" },
+                  },
+                ),
             },
           },
         },
@@ -420,6 +475,20 @@ describe("directory routes through props", () => {
     await expect(via(401, "unauthorized")).rejects.toMatchObject({
       stage: "refused",
     });
+    // The broker's own 404 not_found (no x-oa-gate): not a gate refusal.
+    await expect(
+      withBrokerProps(
+        {
+          props: {
+            DIRECTORY_BROKER: {
+              fetch: async () =>
+                Response.json({ error: "not_found" }, { status: 404 }),
+            },
+          },
+        },
+        () => c?.accessToken(sealed),
+      ),
+    ).rejects.toMatchObject({ stage: "exchange" });
   });
 });
 
@@ -694,5 +763,207 @@ describe("cadence", () => {
     expect(nr).toBe(t0 + RECONCILE_MS);
     expect(await due(nr)).toBe(true);
     expect(await wants(nr)).toBe(true);
+  });
+});
+
+describe("review fixes", () => {
+  const audits = async (action: string) =>
+    (
+      await env.DB.prepare(
+        "select count(*) n from audit_events where action = ?",
+      )
+        .bind(action)
+        .first<{ n: number }>()
+    )?.n ?? 0;
+
+  it("M1: a lane due past NO_FEED_MS with no token fails as transport_no_feed (audited, and stale past STALE_MS)", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    box = new TokenBox();
+    const failed0 = await audits("directory.sync.failed");
+    // Starved under NO_FEED_MS: no failure.
+    const t1 = t0 + 2 * MIN;
+    expect(await alarms(t1)).toBe("starved");
+    expect(await alarms(t1 + NO_FEED_MS - 1)).toBe("starved");
+    expect(await kv("retryAt.fast")).toBeNull();
+    expect((await status()).state).toBe("ok");
+    // Past it: the lane fails like any other failure.
+    const t2 = t1 + NO_FEED_MS + MIN;
+    await alarms(t2);
+    expect(await kv("retryAt.fast")).toBe(t2 + BACKOFF_MIN_MS);
+    const s = await status();
+    expect(s.state).toBe("backoff");
+    expect(s.lastError?.message).toBe("transport_no_feed");
+    expect(await audits("directory.sync.failed")).toBe(failed0 + 1);
+    // Still no feed a week later: stale, audited once.
+    const stale0 = await audits("directory.stale");
+    const late = t0 + STALE_MS + 16 * MIN;
+    await alarms(late);
+    await alarms(late + NO_FEED_MS + MIN);
+    expect(await audits("directory.stale")).toBe(stale0 + 1);
+    // A feed clears it: the next tick mints and the lane succeeds.
+    const back = late + NO_FEED_MS + MIN + BACKOFF_MAX_MS;
+    expect(await period(back)).toBe("done");
+    expect((await status()).state).toBe("ok");
+    expect(await kv("nofeed.since")).toBeNull();
+  });
+
+  it("M1: a hosted feed without props is no_props (logged), not self", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const n = rpcs.length;
+    expect(await feedSync(e)).toBe("no_props");
+    expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "directory_feed",
+    );
+    expect(rpcs.length).toBe(n);
+  });
+
+  it("M2: a mint failing outside the transport (an undecryptable token) fails the lane as the self-host alarm does", async () => {
+    const outcome = async (hosted: boolean) => {
+      await resetDirectory();
+      await inDo(async (s) => {
+        for (const t of ["kv", "seen", "dirty", "held"])
+          s.storage.sql.exec(`delete from ${t}`);
+        await s.storage.deleteAlarm();
+      });
+      box = new TokenBox();
+      e = hostedEnv({
+        DIRECTORY_SYNC: fakeNs,
+        ...(hosted
+          ? {}
+          : { DIRECTORY_BROKER: brokerGate() as unknown as Fetcher }),
+      });
+      const t0 = Date.now();
+      await connected(t0);
+      box = new TokenBox();
+      // A sealed token this install can't open.
+      await env.DB.prepare(
+        "update directory_state set value = 'not-a-sealed-token' where key = 'refresh'",
+      ).run();
+      const t1 = t0 + 2 * MIN;
+      if (hosted) await cronTick(t1);
+      await alarms(t1);
+      return {
+        retry: ((await kv<number>("retryAt.fast")) as number) - t1,
+        state: (await status()).state,
+        code: (await status()).lastError?.message,
+      };
+    };
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const before = await outcome(false);
+    const after = await outcome(true);
+    expect(after).toEqual(before);
+    expect(before).toEqual({
+      retry: BACKOFF_MIN_MS,
+      state: "backoff",
+      code: "internal",
+    });
+  });
+
+  it("L2: a capability used past its invocation hands nothing over; the next tick retries", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    box = new TokenBox();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    clock = t0 + 2 * MIN;
+    const stale = {
+      DIRECTORY_BROKER: {
+        fetch: async () => {
+          throw new Error(
+            "Cannot perform I/O on behalf of a different request. I/O objects (such as streams, request/response bodies, and others) created in the context of one request handler cannot be accessed from a different request's handler.",
+          );
+        },
+      },
+    };
+    const hands = () => rpcs.filter((r) => r === "handToken").length;
+    const n = hands();
+    expect(await withBrokerProps({ props: stale }, () => feedSync(e))).toBe(
+      "stale_props",
+    );
+    expect(hands()).toBe(n);
+    expect(box.fault).toBeNull();
+    expect(await alarms(t0 + 2 * MIN)).toBe("starved");
+    expect(await kv("retryAt.fast")).toBeNull();
+    // The next tick, with a live capability, runs it.
+    expect(await period(t0 + 3 * MIN)).toBe("done");
+    expect((await status()).state).toBe("ok");
+  });
+
+  it("L3: a never-connected install doesn't wake its DO", async () => {
+    const n = rpcs.length;
+    clock = Date.now();
+    expect(
+      await withBrokerProps({ props: hostedProps() }, () => feedSync(e)),
+    ).toBe("unbound");
+    await cronTick(clock);
+    expect(rpcs.length).toBe(n);
+    expect(await inDo((s) => s.storage.getAlarm())).toBeNull();
+  });
+
+  it("L5: a token or fault held for another binding is never used", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    const google0 = g.adminCalls.length;
+    box = new TokenBox();
+    box.tok = { token: "at-other", exp: t0 + TOKEN_TTL_MS, for: "C-other:1" };
+    expect(await alarms(t0 + 2 * MIN)).toBe("starved");
+    expect(box.tok).toBeNull();
+    expect(g.adminCalls.length).toBe(google0);
+    expect(await kv("retryAt.fast")).toBeNull();
+    box.fault = { stage: "invalid_grant", for: "C-other:1" };
+    expect(await alarms(t0 + 2 * MIN)).toBe("starved");
+    expect(box.fault).toBeNull();
+    expect((await status()).state).toBe("ok");
+  });
+
+  it("L5: an alarm reached inside a props scope still never uses the capability", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    box = new TokenBox();
+    const calls: GateCall[] = [];
+    await inDo((s) =>
+      withBrokerProps({ props: { DIRECTORY_BROKER: brokerGate(calls) } }, () =>
+        engine(s).alarm(t0 + 2 * MIN),
+      ),
+    );
+    expect(calls).toEqual([]);
+    expect(box.tok).toBeNull();
+    expect(await kv("run.fast")).toBeNull();
+  });
+
+  it("L5: reset() drops the token at once, before the alarm applies it", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    expect(box.tok).not.toBeNull();
+    await inDo((s) => engine(s).reset(t0 + MIN));
+    expect(box.tok).toBeNull();
+    expect(box.fault).toBeNull();
+  });
+
+  it("L5: a customer swap while a token is held, then a late hand-over for the old binding, is refused", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    const old = box.tok?.for as string;
+    expect(old).toBeTruthy();
+    // Reconnect (a new binding): the confirm resets, then feeds the new one.
+    clock = t0 + MIN;
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
+    const fresh = box.tok?.for as string;
+    expect(fresh).toBeTruthy();
+    expect(fresh).not.toBe(old);
+    expect(await alarms(t0 + MIN)).toBe("done");
+    // A late hand-over minted for the old binding.
+    await inDo((s) =>
+      engine(s).handToken(old, { token: "at-late" }, t0 + 3 * MIN),
+    );
+    const google0 = g.adminCalls.length;
+    expect(await alarms(t0 + 3 * MIN)).toBe("starved");
+    expect(box.tok).toBeNull();
+    expect(g.adminCalls.length).toBe(google0);
   });
 });

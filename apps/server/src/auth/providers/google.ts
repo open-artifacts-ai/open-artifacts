@@ -15,6 +15,7 @@ import { ApiError, appOrigin } from "../../http/errors.js";
 import { b64urlEncode } from "../../util/crypto.js";
 import {
   BrokerGateRefusedError,
+  BrokerGateStaleError,
   BrokerUnavailableError,
   brokerFetch,
 } from "../broker-transport.js";
@@ -112,7 +113,11 @@ async function exchange(
     try {
       res = await brokerFetch(env, "auth", req);
     } catch (e) {
-      if (e instanceof BrokerUnavailableError)
+      // No usable capability (none, or one past its invocation).
+      if (
+        e instanceof BrokerUnavailableError ||
+        e instanceof BrokerGateStaleError
+      )
         return fail("broker_unavailable");
       // The platform's gate refused it (never the broker's own 401).
       if (e instanceof BrokerGateRefusedError)

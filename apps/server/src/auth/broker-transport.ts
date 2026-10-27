@@ -101,9 +101,9 @@ export class BrokerUnavailableError extends Error {
 }
 
 /**
- * The platform's gate refused the request before the broker saw it (its own
- * JSON `error`: 404, 415, 413, 400, 403, or 500 when props are
- * misconfigured). Never a 401: that is always the broker's own refusal.
+ * The platform's gate refused the request before the broker saw it: marked
+ * `x-oa-gate: 1`, with its own JSON `error` (404, 415, 413, 400, 403, or 500
+ * when props are misconfigured). Never a 401: that is always the broker's.
  */
 export class BrokerGateRefusedError extends Error {
   constructor(
@@ -116,33 +116,62 @@ export class BrokerGateRefusedError extends Error {
   }
 }
 
-/** The gate's refusal codes (platform BrokerGate, #720); none is a broker's. */
+/** The header the gate sets on its own refusals (never on a broker answer). */
+export const GATE_HEADER = "x-oa-gate";
+
+/** The gate's refusal codes (platform BrokerGate, #720), read only under GATE_HEADER. */
 export const GATE_ERRORS: ReadonlySet<string> = new Set([
   "gate_misconfigured",
   "not_found",
   "install_mismatch",
   "json_only",
   "bad_json",
+  "bad_body",
   "too_large",
 ]);
 
-/** A props-transport answer that is the gate's refusal, not the broker's. */
+/**
+ * A props-transport answer that is the gate's refusal, not the broker's:
+ * keyed on GATE_HEADER only, so a broker's own error (its 404 not_found
+ * included) always passes through. The code names the refusal ("gate" when
+ * it isn't one of GATE_ERRORS).
+ */
 async function gateRefusal(res: Response): Promise<string | null> {
-  if (res.ok || res.status === 401) return null;
+  if (res.ok || res.headers.get(GATE_HEADER) !== "1") return null;
   try {
     const out = (await res.clone().json()) as { error?: unknown } | null;
     const e = out?.error;
-    return typeof e === "string" && GATE_ERRORS.has(e) ? e : null;
+    return typeof e === "string" && GATE_ERRORS.has(e) ? e : "gate";
   } catch {
-    return null;
+    return "gate";
   }
 }
 
 /**
+ * The runtime refused the capability itself: a stub used outside the
+ * invocation that received it (cross-request I/O) or disconnected. Nothing
+ * reached the broker; the next invocation brings a fresh one.
+ */
+export class BrokerGateStaleError extends Error {
+  constructor(public broker: BrokerName) {
+    super(`${broker} broker capability is stale`);
+    this.name = "BrokerGateStaleError";
+  }
+}
+
+/** workerd's errors for an I/O object or RPC stub used past its request. */
+const STALE_STUB =
+  /different request|after (it has been|being) disposed|stub (was |has been )?(disposed|disconnected)|RPC (stub|receiver) .*disconnected|disconnected .*RPC|Network connection lost/i;
+
+export const isStaleStubError = (e: unknown): boolean =>
+  e instanceof Error && STALE_STUB.test(e.message);
+
+/**
  * Sends `req` (already addressed to the broker's configured URL and signed)
  * by the first available transport. Throws BrokerUnavailableError when none
- * is (HOSTED=1 never falls back to HTTPS), and BrokerGateRefusedError when the
- * platform's gate (props) refused it.
+ * is (HOSTED=1 never falls back to HTTPS), BrokerGateRefusedError when the
+ * platform's gate (props) refused it, and BrokerGateStaleError when the
+ * runtime refused a capability used past its invocation.
  */
 export async function brokerFetch(
   env: Env,
@@ -153,7 +182,13 @@ export async function brokerFetch(
   if (binding) return binding.fetch(req);
   const gate = invocation.getStore()?.[which];
   if (gate) {
-    const res = await gate.fetch(req);
+    let res: Response;
+    try {
+      res = await gate.fetch(req);
+    } catch (e) {
+      if (isStaleStubError(e)) throw new BrokerGateStaleError(which);
+      throw e;
+    }
     const refused = await gateRefusal(res);
     if (refused === null) return res;
     await res.body?.cancel();

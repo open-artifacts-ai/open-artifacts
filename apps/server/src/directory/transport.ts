@@ -126,6 +126,8 @@ export type ConsentCallback = {
  * a hosted install with no binding and no DIRECTORY_BROKER capability in this
  * invocation (auth/broker-transport.ts); `gate_refused`: the platform's
  * BrokerGate refused the request before the broker saw it (never a 401);
+ * `gate_stale`: the runtime refused a capability used past its invocation
+ * (nothing sent; feedSync hands nothing over and the next tick retries);
  * `exchange`: anything else.
  */
 export class TransportError extends Error {
@@ -135,7 +137,8 @@ export class TransportError extends Error {
       | "invalid_grant"
       | "exchange"
       | "broker_unavailable"
-      | "gate_refused",
+      | "gate_refused"
+      | "gate_stale",
   ) {
     super(`directory transport: ${stage}`);
     this.name = "TransportError";

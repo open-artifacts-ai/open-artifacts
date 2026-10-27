@@ -8,6 +8,7 @@ import {
 } from "@oa/auth-core";
 import {
   BrokerGateRefusedError,
+  BrokerGateStaleError,
   BrokerUnavailableError,
   brokerFetch,
 } from "../auth/broker-transport.js";
@@ -79,6 +80,9 @@ async function signedPost(
     // The platform's gate refused it; the broker's own 401 is "refused".
     if (e instanceof BrokerGateRefusedError)
       throw new TransportError("gate_refused");
+    // A capability used past its invocation: nothing was sent.
+    if (e instanceof BrokerGateStaleError)
+      throw new TransportError("gate_stale");
     throw new TransportError("exchange");
   }
 }

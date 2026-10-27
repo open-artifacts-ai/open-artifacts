@@ -525,7 +525,14 @@ describe("hosted: the redeem through the dispatch props (AUTH_BROKER)", () => {
       const cap = capture();
       await callback(e, b, search, {
         AUTH_BROKER: {
-          fetch: async () => Response.json({ error }, { status }),
+          fetch: async () =>
+            Response.json(
+              { error },
+              {
+                status,
+                headers: status === 401 ? {} : { "x-oa-gate": "1" },
+              },
+            ),
         },
       });
       cap.done();

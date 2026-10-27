@@ -32,6 +32,8 @@ const FETCHES: Record<string, string> = {
     "Google's revoke endpoint (direct directory transport)",
   "directory/google.ts: get: url": "the Admin SDK and Reports API",
   "services/usage.ts: query: GRAPHQL": "Cloudflare GraphQL analytics",
+  "services/release.ts: checkLatestRelease: alias":
+    "the default fetcher for the GitHub releases API and latest-release page",
 };
 
 /** Identifiers only the helper (and env.ts, the declaration) may name. */
@@ -73,17 +75,39 @@ function enclosing(n: ts.Node): string {
   return "(module)";
 }
 
-/** A call of the global fetch: fetch(...), globalThis.fetch(...), self.fetch(...). */
-const isGlobalFetch = (c: ts.CallExpression) => {
-  const f = c.expression;
-  if (ts.isIdentifier(f)) return f.text === "fetch";
-  return (
-    ts.isPropertyAccessExpression(f) &&
-    f.name.text === "fetch" &&
-    ts.isIdentifier(f.expression) &&
-    ["globalThis", "self", "window"].includes(f.expression.text)
-  );
-};
+const GLOBALS = ["globalThis", "self", "window"];
+
+/**
+ * A reference to the global fetch: `fetch`, `globalThis.fetch` or
+ * `globalThis["fetch"]` (self, window too), used as a value. Not a property
+ * of something else (`env.ASSETS.fetch`) or a declared name (a `fetch()`
+ * method, a `fetch:` key).
+ */
+function globalFetchRef(n: ts.Node): boolean {
+  if (
+    (ts.isPropertyAccessExpression(n) && n.name.text === "fetch") ||
+    (ts.isElementAccessExpression(n) &&
+      ts.isStringLiteralLike(n.argumentExpression) &&
+      n.argumentExpression.text === "fetch")
+  )
+    return ts.isIdentifier(n.expression) && GLOBALS.includes(n.expression.text);
+  if (!ts.isIdentifier(n) || n.text !== "fetch") return false;
+  const p = n.parent;
+  if (ts.isPropertyAccessExpression(p) && p.name === n) return false;
+  // `typeof fetch`: a type, not a value.
+  if (ts.isTypeQueryNode(p)) return false;
+  if (
+    (ts.isMethodDeclaration(p) ||
+      ts.isMethodSignature(p) ||
+      ts.isPropertySignature(p) ||
+      ts.isPropertyDeclaration(p) ||
+      ts.isPropertyAssignment(p) ||
+      ts.isFunctionDeclaration(p)) &&
+    p.name === n
+  )
+    return false;
+  return true;
+}
 
 function scan(root: string) {
   const fetches: string[] = [];
@@ -98,10 +122,17 @@ function scan(root: string) {
       true,
     );
     const visit = (n: ts.Node) => {
-      if (ts.isCallExpression(n) && isGlobalFetch(n))
+      // A call records what it fetches; any other use (an alias, a
+      // destructure, an argument) records "alias" and needs a reason too.
+      if (globalFetchRef(n)) {
+        const call =
+          ts.isCallExpression(n.parent) && n.parent.expression === n
+            ? n.parent
+            : null;
         fetches.push(
-          `${rel}: ${enclosing(n)}: ${n.arguments[0]?.getText() ?? ""}`,
+          `${rel}: ${enclosing(n)}: ${call ? (call.arguments[0]?.getText() ?? "") : "alias"}`,
         );
+      }
       const name =
         ts.isIdentifier(n) ||
         ts.isStringLiteral(n) ||
@@ -163,8 +194,11 @@ describe("broker transport coverage", () => {
   it("the scan catches every fetch form and a stray binding or URL read", () => {
     const got = scan(join(import.meta.dirname, "fixtures/broker"));
     expect(got.fetches).toEqual([
+      "probe.ts: (module): alias",
       "probe.ts: direct: `${env.AUTH_BROKER_URL}/google/redeem`",
+      "probe.ts: elementCall: env.AUTH_BROKER_URL",
       "probe.ts: later: u",
+      "probe.ts: viaAlias: alias",
       "probe.ts: viaGlobal: env.DIRECTORY_BROKER_URL",
     ]);
     expect(got.helperOnly).toEqual([
@@ -176,6 +210,8 @@ describe("broker transport coverage", () => {
       "probe.ts: (module): AUTH_BROKER_URL",
       "probe.ts: (module): DIRECTORY_BROKER_URL",
       "probe.ts: direct: AUTH_BROKER_URL",
+      "probe.ts: elementCall: AUTH_BROKER_URL",
+      "probe.ts: viaAlias: DIRECTORY_BROKER_URL",
       "probe.ts: viaGlobal: DIRECTORY_BROKER_URL",
     ]);
   });

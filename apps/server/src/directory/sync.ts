@@ -109,6 +109,14 @@ export const CONSECUTIVE_REFUSALS = 3;
 export const MANUAL_BYPASS_MS = 10 * 60_000;
 /** How long an access token is used after it reached this DO (Google's last 1 h). */
 export const TOKEN_TTL_MS = 45 * 60_000;
+/**
+ * Hosted: a lane due this long with no token handed over (the scheduler's
+ * oa:directory-sync feed is down) fails as transport_no_feed, so health,
+ * the stale mark and the owner alert work as for any failure.
+ */
+export const NO_FEED_MS = 15 * 60_000;
+/** DO kv: when a due lane first found no token in hand (cleared once one is). */
+const NOFEED_KEY = "nofeed.since";
 
 /**
  * The directory access token, in memory only: never written to DO storage,
@@ -126,11 +134,17 @@ export const TOKEN_TTL_MS = 45 * 60_000;
  * A hosted alarm never calls the broker: without a token in hand it stops
  * cleanly (the run stays) until the next tick hands one over.
  */
+/**
+ * Why a handed-over mint failed: a transport stage, or "internal" (anything
+ * else, a decrypt failure included), classified as a mint in the alarm was.
+ */
+export type MintFault = TransportError["stage"] | "internal";
+
 export class TokenBox {
   /** `for`: the binding it was minted for (tokenFor). */
   tok: { token: string; exp: number; for: string } | null = null;
   /** A failed mint (feedSync), raised once by the next alarm as before. */
-  fault: { stage: TransportError["stage"]; for: string } | null = null;
+  fault: { stage: MintFault; for: string } | null = null;
 }
 
 /** Which binding a token belongs to: a reset to another one drops it. */
@@ -540,7 +554,7 @@ export class SyncEngine {
    */
   async handToken(
     forKey: string,
-    h: { token: string } | { error: TransportError["stage"] },
+    h: { token: string } | { error: MintFault },
     now = Date.now(),
   ): Promise<void> {
     if ("token" in h) {
@@ -615,10 +629,13 @@ export class SyncEngine {
         `delete from kv where k in ('run.fast', 'run.rec', 'lastActive',
           'cursor.admin', 'cursor.groups', 'retryAt.fast', 'retryAt.rec',
           'backoff.fast', 'backoff.rec', 'failAt.fast', 'failAt.rec',
-          'bypass.rec', 'next.fast', 'next.reconcile', 'lastLane')`,
+          'bypass.rec', 'next.fast', 'next.reconcile', 'lastLane',
+          '${NOFEED_KEY}')`,
       );
     });
-    this.dropToken();
+    // No dropToken here: reset() already dropped the old binding's token,
+    // and one handed over since is keyed to the new binding (inHand), so a
+    // confirm's feed survives the clearing.
     await clearHealth(this.env).run();
     // Recorded last: a failure above retries the clearing next alarm.
     this.put("epoch.applied", ep);
@@ -710,11 +727,25 @@ export class SyncEngine {
     // Hosted with no token in hand: stop cleanly before planning anything
     // (no lane, run or bypass is touched); the run in flight stays and the
     // next oa:directory-sync tick (or a request's kick) hands a token over.
-    if (
-      LANES.some((l) => this.laneAt(l, now) <= now) &&
-      !this.canToken(client, binding, now)
-    )
-      return now + FAST_MS;
+    // Due past NO_FEED_MS with none: that lane fails (transport_no_feed).
+    const dueLane = LANES.find((l) => this.laneAt(l, now) <= now);
+    if (dueLane && !this.canToken(client, binding, now)) {
+      const since = this.get<number>(NOFEED_KEY);
+      if (since === null) this.put(NOFEED_KEY, now);
+      if (since === null || now - since < NO_FEED_MS) return now + FAST_MS;
+      try {
+        await this.fail(
+          dueLane,
+          new SyncError("backoff", "transport_no_feed"),
+          now,
+        );
+      } catch (f) {
+        if (f instanceof StaleSignal) return now;
+        throw f;
+      }
+      return this.nextAt(now);
+    }
+    if (dueLane) this.del(NOFEED_KEY);
     const lane = this.pickLane(now, groups);
     if (!lane) return this.nextAt(now);
     const run = this.get<Run>(`run.${lane}`) as Run;
@@ -807,17 +838,28 @@ export class SyncEngine {
     this.box.fault = null;
   }
 
+  /**
+   * What is in hand for binding `b` at `now`: a token minted for another
+   * binding (a reset or customer swap, a late hand-over) or expired is
+   * dropped, as is another binding's mint failure. The one check both
+   * canToken and token() use.
+   */
+  private inHand(b: DirectoryBinding, now: number) {
+    const key = tokenFor(b);
+    const t = this.box.tok;
+    if (t && (t.for !== key || t.exp <= now)) this.box.tok = null;
+    if (this.box.fault && this.box.fault.for !== key) this.box.fault = null;
+    return { tok: this.box.tok, fault: this.box.fault };
+  }
+
   /** An unexpired token for `b`, a failed mint to report, or self-minting. */
   private canToken(
     client: DirectoryClient,
     b: DirectoryBinding,
     now: number,
   ): boolean {
-    const key = tokenFor(b);
-    const t = this.box.tok;
-    if (t && (t.for !== key || t.exp <= now)) this.box.tok = null;
-    if (this.box.fault && this.box.fault.for !== key) this.box.fault = null;
-    return !!this.box.tok || !!this.box.fault || selfMints(this.env, client);
+    const h = this.inHand(b, now);
+    return !!h.tok || !!h.fault || selfMints(this.env, client);
   }
 
   /**
@@ -831,17 +873,17 @@ export class SyncEngine {
     sealed: string,
     now: number,
   ): Promise<string> {
-    const key = tokenFor(b);
-    const t = this.box.tok;
-    if (t && t.for === key && t.exp > now) return t.token;
-    this.box.tok = null;
-    const f = this.box.fault;
+    const h = this.inHand(b, now);
+    if (h.tok) return h.tok.token;
     this.box.fault = null;
-    if (f && f.for === key) throw new TransportError(f.stage);
+    if (h.fault)
+      throw h.fault.stage === "internal"
+        ? new Error("directory token mint failed")
+        : new TransportError(h.fault.stage);
     if (!selfMints(this.env, client))
       throw new TransportError("broker_unavailable");
     const token = await client.accessToken(sealed);
-    this.box.tok = { token, exp: now + TOKEN_TTL_MS, for: key };
+    this.box.tok = { token, exp: now + TOKEN_TTL_MS, for: tokenFor(b) };
     return token;
   }
 

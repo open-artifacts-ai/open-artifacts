@@ -23,3 +23,22 @@ export async function viaProps(ctx: { props: Record<string, never> }) {
 }
 
 export const later = (u: string) => self.fetch(u);
+
+export async function elementCall(env: E) {
+  return globalThis["fetch"](env.AUTH_BROKER_URL);
+}
+
+export async function viaAlias(env: E) {
+  const f = fetch;
+  return f(env.DIRECTORY_BROKER_URL);
+}
+
+export const { fetch: g } = { fetch: window.fetch };
+
+// Not the global fetch: a method, a key, another object's property.
+export const notGlobal = {
+  fetch(r: Request) {
+    return r;
+  },
+  other: (o: { fetch(): void }) => o.fetch(),
+};
