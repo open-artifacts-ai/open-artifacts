@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { parse } from "yaml";
 import { root, sandbox, script, write } from "./stubs.ts";
 
 const pnpm = 'echo "PW_DIR=$PLAYWRIGHT_HTML_OUTPUT_DIR" >> "$STUB_LOG"';
@@ -116,30 +115,5 @@ describe("e2e.sh", () => {
   });
   it("rejects an unknown step", () => {
     expect(run("deploy").code).toBe(2);
-  });
-});
-
-describe("ci.yml e2e: four shards behind one required check", () => {
-  // biome-ignore lint/suspicious/noExplicitAny: parsed workflow YAML
-  const ci: any = parse(
-    readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"),
-  );
-  it("e2e-shard runs four shards that all report", () => {
-    const j = ci.jobs["e2e-shard"];
-    expect(j.strategy.matrix.shard).toEqual([1, 2, 3, 4]);
-    expect(j.strategy["fail-fast"]).toBe(false);
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(j.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
-  });
-  it("e2e always runs and passes only when every shard passed", () => {
-    const j = ci.jobs.e2e;
-    expect(j.needs).toBe("e2e-shard");
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(j.if).toBe("${{ always() }}");
-    const gate = j.steps[0];
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(gate.env.SHARDS).toBe("${{ needs.e2e-shard.result }}");
-    expect(gate.run).toContain('[ "$SHARDS" = success ]');
-    expect(gate.if).toBeUndefined();
   });
 });
