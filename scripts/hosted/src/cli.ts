@@ -18,6 +18,7 @@
 //   (git config user.email, or the CI run URL).
 // - Output: one JSON line per step, redacted; no secret, PAT or key is printed.
 import { execFile as execFileCb, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -25,12 +26,16 @@ import {
   existsSync,
   fchmodSync,
   fstatSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
+  type Stats,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -159,8 +164,10 @@ export function openNoFollow(path: string): OpenedFile {
 }
 
 /**
- * `<dir>/<name>` as a 0600 file of this user (dir 0700, made if missing),
- * opened with O_NOFOLLOW and written through that fd.
+ * `<dir>/<name>` as a 0600 file of this user (dir 0700, made if missing).
+ * Written to a fresh O_EXCL temp file in the same dir, then renamed over the
+ * name, so nothing already at the name (a hardlink, a FIFO) is opened. A
+ * symlink or non-file at the name is refused.
  */
 export function writePrivateFile(
   dir: string,
@@ -169,21 +176,35 @@ export function writePrivateFile(
 ): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
+  const path = join(dir, name);
+  let st: Stats | undefined;
+  try {
+    st = lstatSync(path);
+  } catch (e) {
+    if ((e as { code?: string }).code !== "ENOENT") throw e;
+  }
+  if (st && !st.isFile()) throw new Refused(`${name} is not a regular file`);
+  const tmp = join(dir, `.${name}.${randomBytes(8).toString("hex")}`);
   const fd = openSync(
-    join(dir, name),
+    tmp,
     constants.O_WRONLY |
       constants.O_CREAT |
-      constants.O_TRUNC |
+      constants.O_EXCL |
       constants.O_NOFOLLOW,
     0o600,
   );
   try {
-    if (!fstatSync(fd).isFile())
-      throw new Refused(`${name} is not a regular file`);
-    fchmodSync(fd, 0o600);
-    writeSync(fd, `${value}\n`);
-  } finally {
-    closeSync(fd);
+    try {
+      fchmodSync(fd, 0o600);
+      writeSync(fd, `${value}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
   }
 }
 

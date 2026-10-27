@@ -2,8 +2,11 @@
 // into the redline-staging Environment over stdin only; earlier redline-*
 // PATs are revoked after the new one is set. The install's API is a stub
 // here (sessions, tokens, /healthz); Cloudflare is provision's fake.
+import { execFileSync } from "node:child_process";
 import {
+  linkSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   statSync,
   symlinkSync,
@@ -408,6 +411,38 @@ describe("redline-creds", () => {
     symlinkSync(decoy, join(dir, "REDLINE_RL_A_PAT"));
     expect(await main(CREDS(id), w.deps)).toBe(1);
     expect(readFileSync(decoy, "utf8")).toBe("untouched");
+    expect(a.tokens.find((t) => t.id === "told1")?.revoked).toBe(false);
+  });
+
+  it("replaces a hardlink at a local file by name, leaving the other link's file alone", async () => {
+    const w = world();
+    const id = await install(w);
+    const a = api(w, id, hookFile(w));
+    const dir = join(w.home, ".open-artifacts", "redline-capture", "secrets");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const other = join(w.home, "other");
+    writeFileSync(other, "untouched", { mode: 0o600 });
+    linkSync(other, join(dir, "REDLINE_RL_A_PAT"));
+    expect(await main(CREDS(id), w.deps)).toBe(0);
+    expect(readFileSync(other, "utf8")).toBe("untouched");
+    const pat = a.tokens.find((t) => t.id === "tnew1")?.token;
+    expect(readFileSync(join(dir, "REDLINE_RL_A_PAT"), "utf8")).toBe(
+      `${pat}\n`,
+    );
+    expect(readdirSync(dir).sort()).toEqual([
+      "REDLINE_RL_A_HOOK_KEY",
+      "REDLINE_RL_A_PAT",
+    ]);
+  });
+
+  it("refuses a FIFO at a local file without opening it, and revokes nothing", async () => {
+    const w = world();
+    const id = await install(w);
+    const a = api(w, id, hookFile(w));
+    const dir = join(w.home, ".open-artifacts", "redline-capture", "secrets");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    execFileSync("mkfifo", [join(dir, "REDLINE_RL_A_PAT")]);
+    expect(await main(CREDS(id), w.deps)).toBe(1);
     expect(a.tokens.find((t) => t.id === "told1")?.revoked).toBe(false);
   });
 });
