@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getDomain } from "tldts";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import {
@@ -521,7 +521,9 @@ describe("cross-site isolation", () => {
     const strict = T.mode === "staging";
     const notes: string[] = [];
     for (const t of [T.a, T.b]) {
-      const email = `redline-cookies@${t.testDomain}`;
+      // A fresh guest: outside AUTH_DOMAINS only guests get emailed codes,
+      // and an earlier run's row would keep its role.
+      const email = `redline-cookies-${randomUUID().slice(0, 8)}@${t.testDomain}`;
       const seen: SetCookie[] = [];
       const take = async (r: Response) => {
         await readBody(r);
@@ -529,7 +531,7 @@ describe("cross-site isolation", () => {
         return r;
       };
       // Session hook sign-in, then app routes and sign-out with that cookie.
-      const cookie = await sessionCred(t, email, "member");
+      const cookie = await sessionCred(t, email, "guest");
       for (const path of ["/", "/sign-in", "/api/v1/me", "/auth/providers"])
         await take(
           await send(new Request(`${t.app}${path}`, withCred(cookie))),
