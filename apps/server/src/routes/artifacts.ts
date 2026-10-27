@@ -199,6 +199,8 @@ export function mountArtifacts(app: AppType): void {
   });
 
   // Viewer+. Defaults to the current version; ?v= must exist (else 404).
+  // `version` names the one served, so a caller fetching this in parallel
+  // with the artifact keeps its version consistent across a publish.
   app.get(`${ARTIFACT}/content-url`, async (c) => {
     const id = idParam(c);
     const { artifact: a } = await authorize(
@@ -228,6 +230,7 @@ export function mountArtifacts(app: AppType): void {
       return c.json({
         url: `${origin}${publicPrefix(id, v)}__view`,
         expiresAt: null,
+        version: v,
       });
     // Bound to the viewer (content_revocation): the content host re-checks
     // their status and epoch on every file (P3 T11).
@@ -243,6 +246,7 @@ export function mountArtifacts(app: AppType): void {
     return c.json({
       url: `${origin}${prefix}__view`,
       expiresAt: new Date(exp * 1000).toISOString(),
+      version: v,
     });
   });
 
