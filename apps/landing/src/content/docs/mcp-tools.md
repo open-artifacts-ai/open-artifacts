@@ -24,9 +24,10 @@ Tool inputs are JSON Schema. Each tool returns plain text plus structured output
 | `spaceId` | Optional, new artifacts only. Publishes into a shared space where you're an editor or manager. Leave it out to publish to your personal space. On an existing artifact it fails with use_move; move it instead. |
 | `visibility` | `private`, `team`, or `public`. A new artifact without it gets the instance's default visibility, which is `private` unless an admin changed it. |
 | `capabilities` | The [runtime API](/docs/runtime-api/) features the page may use: `{ "db": true, "viewer": true, "storage": true }`. Each defaults to `false`. |
-| `allowAnonymousWrites` | Let anonymous viewers of a public artifact write shared data. Defaults to `false`. |
+| `dataWriters` | Who can change the page's live data: `viewers` (anyone who can view it) or `editors`. Defaults to `viewers`. |
+| `allowAnonymousWrites` | Deprecated; use `dataWriters`. `true` sets `viewers`; `false` on a public artifact sets `editors`. |
 
-Only the artifact's creator can change `visibility`, `capabilities`, or `allowAnonymousWrites` when publishing a new version; editors can publish the rest.
+Only the artifact's creator can change `visibility`, `capabilities`, or `dataWriters` when publishing a new version; editors can publish the rest.
 
 It returns the artifact's `id`, the new `version`, and its view URL.
 

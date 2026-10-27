@@ -59,6 +59,11 @@ const art = (
   access: "owner",
   capabilities: caps(),
   allowAnonymousWrites: false,
+  // #681: as the 0014 backfill maps rows.
+  dataWriters:
+    o.visibility === "public" && !o.allowAnonymousWrites
+      ? "editors"
+      : "viewers",
   ...o,
 });
 

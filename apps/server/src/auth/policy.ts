@@ -1,12 +1,26 @@
-import type {
-  AccessLevel,
-  CapReason,
-  Member,
-  Role,
-  SpaceKind,
-  SpaceRole,
-  Visibility,
+import {
+  type AccessLevel,
+  type Capabilities,
+  CapabilitiesSchema,
+  type CapReason,
+  type DataWriters,
+  type Member,
+  type Role,
+  type SpaceKind,
+  type SpaceRole,
+  type Visibility,
 } from "@oa/shared";
+
+const NO_CAPS: Capabilities = { db: false, viewer: false, storage: false };
+/** Declared capabilities; malformed JSON means none (capability_denied, never 500). */
+export function capsOf(json: string): Capabilities {
+  try {
+    const r = CapabilitiesSchema.safeParse(JSON.parse(json));
+    return r.success ? r.data : NO_CAPS;
+  } catch {
+    return NO_CAPS;
+  }
+}
 
 /**
  * The hosted access policy (P3): pure functions, no I/O. authz.ts gathers a
@@ -99,7 +113,12 @@ export type CanCtx = {
   /** The artifact is in a personal space. */
   personal: boolean;
   anonymous?: boolean;
-  allowAnonymousWrites?: boolean;
+  /**
+   * #681: who may change live data. Only an explicit "viewers" lets viewers
+   * (and anonymous visitors) write; "editors" or undefined limits data.write
+   * to editor level and up (fail closed).
+   */
+  dataWriters?: DataWriters;
   /** Viewer-only first thumbnail: via a share or team access, and none stored yet. */
   firstThumbnail?: boolean;
 };
@@ -255,10 +274,13 @@ export function can(
   if (READ.has(action)) return true;
   switch (action) {
     case "anonId":
-      return ctx.anonymous === true && ctx.allowAnonymousWrites === true;
+      return ctx.anonymous === true && ctx.dataWriters === "viewers";
     case "data.write":
       if (capped) return false;
-      return ctx.anonymous ? ctx.allowAnonymousWrites === true : true;
+      if (ctx.dataWriters !== "viewers")
+        return !ctx.anonymous && level !== "viewer";
+      // Anonymous callers only reach a level on a public artifact.
+      return true;
     case "storage":
       return !capped && !ctx.anonymous;
     case "thumbnail.write":
@@ -275,6 +297,34 @@ export function can(
   if (FULL.has(action)) return full;
   return false;
 }
+
+/**
+ * #681: a data.write refusal caused by dataWriters "editors" alone (the
+ * caller could write if viewers could): 403 data_editors_only, for anonymous
+ * and signed-in viewers alike. Any other refusal keeps its code.
+ */
+export const editorsOnlyRefusal = (
+  level: AccessLevel | null,
+  ctx: CanCtx,
+): boolean =>
+  ctx.dataWriters !== "viewers" &&
+  !can(level, "data.write", ctx) &&
+  can(level, "data.write", { ...ctx, dataWriters: "viewers" });
+
+/**
+ * #681: a row's effective dataWriters. "viewers" only when data_writers is
+ * "viewers" and allow_anonymous_writes is 1 (new code keeps them in step);
+ * anything else is "editors" (fail closed). A row written by the previous
+ * release during a rollback (the toggle switched off, or created with it off)
+ * so reads as "editors" after the roll forward, with no release step.
+ */
+export const dataWritersOf = (a: {
+  dataWriters: string;
+  allowAnonymousWrites: number;
+}): DataWriters =>
+  a.dataWriters === "viewers" && a.allowAnonymousWrites === 1
+    ? "viewers"
+    : "editors";
 
 const ORG_ADMINS: readonly Role[] = ["owner", "admin"];
 

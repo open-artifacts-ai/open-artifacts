@@ -20,6 +20,30 @@ import { utf8Exceeds } from "./utf8.js";
 
 export const VisibilitySchema = z.enum(["private", "team", "public"]);
 export type Visibility = z.infer<typeof VisibilitySchema>;
+/**
+ * #681: who may change an artifact's live data. "viewers" (default): anyone
+ * who can view it, anonymous visitors of a public artifact included.
+ * "editors": editor level and up (owner, Editor shares, space editors and
+ * managers); others get 403 data_editors_only.
+ */
+export const DataWritersSchema = z.enum(["viewers", "editors"]);
+export type DataWriters = z.infer<typeof DataWritersSchema>;
+
+/**
+ * #681 input compatibility: `dataWriters` wins; else allowAnonymousWrites
+ * true is "viewers", false is "editors" when the resulting visibility is
+ * public (ignored otherwise). Undefined: leave the setting as it is.
+ */
+export function resolveDataWriters(
+  i: { dataWriters?: DataWriters; allowAnonymousWrites?: boolean },
+  visibility: string | undefined,
+): DataWriters | undefined {
+  if (i.dataWriters !== undefined) return i.dataWriters;
+  if (i.allowAnonymousWrites === true) return "viewers";
+  if (i.allowAnonymousWrites === false && visibility === "public")
+    return "editors";
+  return undefined;
+}
 export const RoleSchema = z.enum(["owner", "admin", "member", "guest"]);
 export type Role = z.infer<typeof RoleSchema>;
 export const ShareRoleSchema = z.enum(["viewer", "editor"]);
@@ -94,6 +118,9 @@ const PublishShape = z.strictObject({
   message: z.string().max(500).optional(),
   visibility: VisibilitySchema.optional(),
   capabilities: CapabilitiesPatchSchema.optional(),
+  /** #681: who may change live data. Wins over allowAnonymousWrites. */
+  dataWriters: DataWritersSchema.optional(),
+  /** Deprecated (#681): true means dataWriters "viewers"; false, "editors" on a public artifact. */
   allowAnonymousWrites: z.boolean().optional(),
   /**
    * Hosted M1: the space to create the artifact in (default: the caller's
@@ -182,6 +209,8 @@ export const PublishResultSchema = z.object({
   id: z.string(),
   version: z.number().int(),
   url: z.string().url(),
+  /** Set when the artifact ends up public, declares db and lets viewers write data (#681). */
+  warning: z.string().optional(),
 });
 export type PublishResult = z.infer<typeof PublishResultSchema>;
 
@@ -206,6 +235,9 @@ export const ArtifactSummarySchema = z.object({
   thumbnailVersion: z.number().int().positive().nullable(),
   access: AccessLevelSchema,
   capabilities: CapabilitiesSchema,
+  /** #681: who may change live data. */
+  dataWriters: DataWritersSchema,
+  /** Deprecated (#681): derived, dataWriters === "viewers". */
   allowAnonymousWrites: z.boolean(),
   /** Hosted M1: the artifact's space. Optional: absent unless spaces are on. */
   space: SpaceRefSchema.optional(),
@@ -213,6 +245,16 @@ export const ArtifactSummarySchema = z.object({
   can: ArtifactCanSchema.optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
+
+/**
+ * PATCH R.artifact / set_visibility result. `warning`: set when the result is
+ * public, declares db and has dataWriters "viewers" (#681); the change still
+ * applies.
+ */
+export const ArtifactPatchResultSchema = ArtifactSummarySchema.extend({
+  warning: z.string().optional(),
+});
+export type ArtifactPatchResult = z.infer<typeof ArtifactPatchResultSchema>;
 
 export const VersionInfoSchema = z.object({
   version: z.number().int(),
@@ -287,6 +329,9 @@ export const ArtifactPatchSchema = z
     description: z.string().max(2000),
     visibility: VisibilitySchema,
     capabilities: CapabilitiesPatchSchema,
+    /** #681: wins over allowAnonymousWrites. */
+    dataWriters: DataWritersSchema,
+    /** Deprecated (#681): see resolveDataWriters. */
     allowAnonymousWrites: z.boolean(),
   })
   .partial();
@@ -912,6 +957,10 @@ export type UnshareInput = z.infer<typeof UnshareInputSchema>;
 export const SetVisibilityInputSchema = z.strictObject({
   id: IdSchema,
   visibility: VisibilitySchema,
+  /** #681: who may change live data. Wins over allowAnonymousWrites. */
+  dataWriters: DataWritersSchema.optional(),
+  /** Deprecated (#681): see resolveDataWriters. */
+  allowAnonymousWrites: z.boolean().optional(),
 });
 export type SetVisibilityInput = z.infer<typeof SetVisibilityInputSchema>;
 

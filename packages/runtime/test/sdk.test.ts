@@ -197,6 +197,40 @@ describe("bridge", () => {
     });
   });
 
+  // #681 E: one console.warn per page load on the first data_editors_only.
+  it("warns once on data_editors_only, never for other errors", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const oa = start();
+      await flush();
+      const fail = async (code: string) => {
+        const p = oa.db.collection("c").set("a", 1);
+        await flush();
+        const c = calls("db.set").at(-1);
+        fromShell({
+          oa: 1,
+          type: "result",
+          id: c?.id,
+          ok: false,
+          error: { code, message: "x" },
+        });
+        await expect(p).rejects.toMatchObject({ code });
+      };
+      await fail("rate_limited");
+      await fail("capability_denied");
+      await fail("unauthorized");
+      expect(warn).not.toHaveBeenCalled();
+      await fail("data_editors_only");
+      await fail("data_editors_only");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.join(" "))).toContain(
+        "this artifact only lets its editors change data",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("rejects a call with no reply after 15 s", async () => {
     vi.useFakeTimers();
     const oa = start();

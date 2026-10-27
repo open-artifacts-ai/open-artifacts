@@ -186,6 +186,9 @@ const exact =
 
 const badRequest = (r: { status: number; code: string }) =>
   r.status === 400 && r.code === "bad_request";
+/** #681: a data write refused by dataWriters "editors". */
+const editorsOnly = (r: { status: number; code: string }) =>
+  r.status === 403 && r.code === "data_editors_only";
 
 /** Pages a listing until `id` shows up. */
 async function listed(
@@ -307,7 +310,7 @@ const tool =
     if (
       o.http === 200 &&
       o.isError &&
-      /^(not_found|space_forbidden)\b/.test(o.text)
+      /^(not_found|space_forbidden|data_editors_only)\b/.test(o.text)
     )
       return "deny" as const;
     throw new Unexpected(`${name}: ${o.http} ${o.text.slice(0, 200)}`);
@@ -629,6 +632,7 @@ export const SURFACES: readonly Surface[] = [
         (id) => `${A(id)}/data/c/${BAD}`,
         () => (m === "DELETE" ? {} : { body: {} }),
         badRequest,
+        editorsOnly,
       ),
     ),
   ),

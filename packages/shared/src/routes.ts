@@ -12,7 +12,7 @@ export const R = {
   me: "/api/v1/me",
   /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. */
   artifacts: A,
-  /** GET -> ArtifactSummary; PATCH ArtifactPatch -> ArtifactSummary; DELETE soft-delete -> 204 */
+  /** GET -> ArtifactSummary; PATCH ArtifactPatch -> ArtifactPatchResult; DELETE soft-delete -> 204 */
   artifact: (id: string) => `${A}/${seg(id)}`,
   /** POST -> ArtifactSummary */
   restoreDeleted: (id: string) => `${A}/${seg(id)}/undelete`,
@@ -124,7 +124,7 @@ export const R = {
   /** GET Upgrade: websocket; frames are DataChange */
   dataSubscribe: (id: string, col: string) =>
     `${A}/${seg(id)}/data-subscribe?collection=${seg(col)}`,
-  /** GET -> AnonViewer ({ anonId }): an anonymous viewer's public id (runtime viewer.anonId()); artifacts with allowAnonymousWrites and the viewer capability only (401 signed in or otherwise). Verifies the ANON_ID_HEADER token or mints one (returned in that header), like anonymous writes; RL_ANON per IP. The id is per artifact. */
+  /** GET -> AnonViewer ({ anonId }): an anonymous viewer's public id (runtime viewer.anonId()); artifacts with dataWriters "viewers" and the viewer capability only (401 signed in or otherwise). Verifies the ANON_ID_HEADER token or mints one (returned in that header), like anonymous writes; RL_ANON per IP. The id is per artifact. */
   anonId: (id: string) => `${A}/${seg(id)}/anon-id`,
   /** GET -> Page<StorageKey> */
   storage: (id: string) => `${A}/${seg(id)}/storage`,

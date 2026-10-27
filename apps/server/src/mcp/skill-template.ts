@@ -200,12 +200,12 @@ ${renderSections(plan, (t) => `## ${t}\n`)}
 
 Use this when anyone with the link should be able to vote, play or add to a page without signing in.
 
-- Publish with \`visibility: "public"\`, \`allowAnonymousWrites: true\`, and the capabilities the page uses (\`db\`, usually \`viewer\`). Without allowAnonymousWrites, anonymous viewers can read but every write fails with \`unauthorized\`. Make an artifact public only when the user asks, and tell them that anyone with the link can change its data.
+- Publish with \`visibility: "public"\` and the capabilities the page uses (\`db\`, usually \`viewer\`). Anyone who can view an artifact can change its live data, anonymous visitors included; with \`dataWriters: "editors"\` only editors can, and other writes fail with \`data_editors_only\`. Make an artifact public only when the user asks, and tell them that anyone with the link can change its data.
 - Treat all data as shared and editable by anyone. Any visitor can write any document, so don't build anything that depends on keeping someone out.
 - \`viewer.anonId()\` returns a per-artifact id for an anonymous visitor (null when signed in). Use it to label things ("your vote", "X: you") and to key one document per browser, not to grant or deny anything.
 - Design for griefing: first-come seats or slots, a visible reset that anyone can use, and state that is easy to rebuild. Prefer choices, emoji and presets over free text. If you need text, cap its length and expire it.
 - Budget writes. Each artifact has a daily write limit and anonymous writes are rate-limited per network, so never write on a timer (no heartbeats). Write only on a user action, and use a day-keyed collection (e.g. \`votes-20261020\`) instead of deleting old data. When \`rate_limited\` mentions the daily limit, show "done for today".
-- Handle rejected writes: roll back anything you showed optimistically, then reload from the server. Codes: \`unauthorized\`, \`rate_limited\`, \`capability_denied\`, and \`no_shell\` when the page is opened outside the viewer.
+- Handle rejected writes: roll back anything you showed optimistically, then reload from the server. Codes: \`data_editors_only\`, \`unauthorized\`, \`rate_limited\`, \`capability_denied\`, and \`no_shell\` when the page is opened outside the viewer.
 - Don't claim presence ("3 people here", "watching now"); there is no presence API.
 - Never be silently deaf: when a subscribe callback gets \`offline: true\`, show that live updates are paused (for example, "Live updates paused. Reload to retry.") until it gets \`resync: true\`.
 
