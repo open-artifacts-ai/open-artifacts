@@ -255,7 +255,18 @@ describe("decide: decision table rows", () => {
 });
 
 describe("can", () => {
-  const ctx: CanCtx = { cap: null, personal: false };
+  // The default dataWriters; "editors" and undefined are covered below.
+  const ctx: CanCtx = { cap: null, personal: false, dataWriters: "viewers" };
+  it("data.write with dataWriters undefined fails closed for everyone", () => {
+    const none: CanCtx = { cap: null, personal: false };
+    expect(can("viewer", "data.write", none)).toBe(false);
+    expect(can("viewer", "data.write", { ...none, anonymous: true })).toBe(
+      false,
+    );
+    expect(can("viewer", "anonId", { ...none, anonymous: true })).toBe(false);
+    for (const l of ["editor", "manager", "owner"] as const)
+      expect(can(l, "data.write", none), l).toBe(true);
+  });
   const LEVELS: AccessLevel[] = ["viewer", "editor", "manager", "owner"];
   // [action, viewer, editor, manager, owner]
   const table: [PolicyAction, boolean, boolean, boolean, boolean][] = [
@@ -339,7 +350,7 @@ describe("can", () => {
     ).toBe(false);
   });
   it("anonymous: data writes only with dataWriters viewers; never storage", () => {
-    const anon = { ...ctx, anonymous: true };
+    const anon = { ...ctx, anonymous: true, dataWriters: undefined };
     // Fail closed: an anonymous write needs the row's explicit "viewers".
     expect(can("viewer", "data.write", anon)).toBe(false);
     const viewers = { ...anon, dataWriters: "viewers" as const };
@@ -429,7 +440,8 @@ describe("can", () => {
           const mine = Object.fromEntries(
             ARTIFACT_ACTIONS.map((a) => [
               a,
-              can(level, SEVEN[a], { cap, personal }),
+              // artifactCan describes the default, dataWriters "viewers".
+              can(level, SEVEN[a], { cap, personal, dataWriters: "viewers" }),
             ]),
           );
           expect(mine, `${level} personal=${personal} cap=${cap}`).toEqual(
