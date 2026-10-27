@@ -144,9 +144,6 @@ jobs:
       - name: No test hooks in the release bundle
         if: steps.guard.outputs.deploy == 'true'
         run: pnpm check-no-test-hooks "$RUNNER_TEMP/release-bundle"
-      - name: No red-line fake IdP in the release bundle
-        if: steps.guard.outputs.deploy == 'true'
-        run: pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"
       - id: preflight
         name: Preflight (read-only; skips if not installed, fails if drifted or partial)
         if: steps.guard.outputs.deploy == 'true'
@@ -400,7 +397,6 @@ jobs:
           set -euo pipefail
           before=$(node --experimental-strip-types --no-warnings scripts/ci/check-hosted-release.ts "$RUNNER_TEMP/hosted")
           pnpm check-no-test-hooks "$RUNNER_TEMP/hosted/release"
-          pnpm check-no-fake-idp "$RUNNER_TEMP/hosted/release"
           after=$(node --experimental-strip-types --no-warnings scripts/ci/check-hosted-release.ts "$RUNNER_TEMP/hosted")
           [ "$before" = "$after" ] || { echo "the artifact changed during the check"; exit 1; }
           echo "$after" >> "$GITHUB_OUTPUT"

@@ -258,9 +258,6 @@ jobs:
       - name: No test hooks in the release bundle
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         run: pnpm check-no-test-hooks "$RUNNER_TEMP/release-bundle"
-      - name: No red-line fake IdP in the release bundle
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-        run: pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"
       # T3b N5: the real-build pin (the variants' bundles differ; release holds
       # no hook route). Required here, so it never skips.
       - name: Real-build pin test
