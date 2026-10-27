@@ -149,9 +149,21 @@ describe("POST /__test/audit", () => {
     expect(events[0]?.at).toBe(far + TEST_AUDIT_LIMIT + 5);
   });
 
-  it("bad input is the identical 404", async () => {
-    for (const body of [{}, { since: "1" }, { since: -1 }, { since: 1, x: 1 }])
-      await same404(await call(on(), TEST_HOOKS.audit, body, { key: KEY }));
+  it("bad input is the 404 with bad_input (after the key)", async () => {
+    const ref = await call(env, TEST_HOOKS.session, {});
+    const { error } = (await ref.json()) as { error: object };
+    for (const body of [
+      {},
+      { since: "1" },
+      { since: -1 },
+      { since: 1, x: 1 },
+    ]) {
+      const r = await call(on(), TEST_HOOKS.audit, body, { key: KEY });
+      expect(r.status).toBe(404);
+      expect(await r.json()).toEqual({
+        error: { ...error, details: { reason: "bad_input" } },
+      });
+    }
   });
 
   it("every gate is the identical 404", async () => {

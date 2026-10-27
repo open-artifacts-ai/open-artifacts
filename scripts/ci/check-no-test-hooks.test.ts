@@ -55,6 +55,18 @@ describe("check-no-test-hooks.ts", () => {
     expect(r.code).toBe(1);
   }, 60_000);
 
+  it("a 404 carrying a hook refusal reason: exit 1 naming it", () => {
+    const r = run(
+      bundle(`${healthy}
+        if (req.method === "GET" && p === "/__test/audit") return Response.json({ error: { code: "not_found", message: "Not found", details: { reason: "bad_route" } } }, { status: 404 });
+        return Response.json({ error: { code: "not_found", message: "Not found" } }, { status: 404 });`),
+    );
+    expect(r.lines).toEqual([
+      "check-no-test-hooks: FAIL: GET /__test/audit -> 404 with a hook refusal reason",
+    ]);
+    expect(r.code).toBe(1);
+  }, 60_000);
+
   it("/healthz reporting testHooks, or not serving: exit 1", () => {
     const hooks = run(
       bundle(

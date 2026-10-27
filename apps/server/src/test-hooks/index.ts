@@ -11,6 +11,7 @@ import {
   TEST_HOOKS_ALLOWED,
   TestAuditInputSchema,
   type TestAuditResult,
+  type TestHookRefusal,
   TestSessionInputSchema,
 } from "@oa/shared";
 import { eq } from "drizzle-orm";
@@ -38,7 +39,9 @@ import { b64urlEncode } from "../util/crypto.js";
 // TEST_DOMAIN. POST /__test/audit reads back test_hook.* audit rows only
 // (never any other event). Order per request: rate limit (RL_ANON; unbound is a refusal),
 // then the key, then the input. Every refusal is the standard 404, and every
-// call past the rate limit writes one audit_events row.
+// call past the rate limit writes one audit_events row. Before the key
+// verifies the 404 is uniform (no reason); after it, the 404 body's
+// error.details.reason says why (TEST_HOOK_REFUSALS, a fixed enum).
 
 const MIN_KEY = 32;
 const OTP_TTL_S = 600;
@@ -130,6 +133,9 @@ async function sameKey(a: string, b: string): Promise<boolean> {
 }
 
 const notFound = () => toErrorResponse(new ApiError("not_found", "Not found"));
+/** A refusal after the key verified: the same 404, plus a fixed-enum reason. */
+const refused = (reason: TestHookRefusal) =>
+  toErrorResponse(new ApiError("not_found", "Not found", { reason }));
 const log = (evt: string) =>
   console.log(JSON.stringify({ evt: `test_hook.${evt}` }));
 const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
@@ -448,7 +454,7 @@ export function mountTestHooks(app: AppType): void {
     }
     if (c.req.method !== "POST" || hook === "unknown") {
       await audit(env, hook, ip, "refused");
-      return notFound();
+      return refused("bad_route");
     }
     const body = await c.req.json().catch(() => ({}));
 
@@ -456,19 +462,22 @@ export function mountTestHooks(app: AppType): void {
       const input = TestSessionInputSchema.safeParse(body);
       if (!input.success) {
         await audit(env, hook, ip, "refused");
-        return notFound();
+        return refused("bad_input");
       }
       const { email: raw, role, spaces = [] } = input.data;
       const email = normalizeEmail(raw);
+      const no = async (reason: TestHookRefusal) => {
+        await audit(env, hook, ip, "refused", email ? { email } : {});
+        return refused(reason);
+      };
       // Every input check, the spaces' kinds included, runs before
       // testUser, so a refusal writes nothing.
-      const ok =
-        !!email && spacesValid(spaces) && !(await spacesBlocked(env, spaces));
-      const user = ok && email ? await testUser(env, email, role) : null;
-      if (!user || !(await grantSpaces(env, user.id, spaces))) {
-        await audit(env, hook, ip, "refused", email ? { email } : {});
-        return notFound();
-      }
+      if (!email || !spacesValid(spaces)) return no("bad_input");
+      if (await spacesBlocked(env, spaces)) return no("spaces_blocked");
+      const user = await testUser(env, email, role);
+      if (!user) return no("user_refused");
+      if (!(await grantSpaces(env, user.id, spaces)))
+        return no("grant_refused");
       const row = await getUserWithEpoch(env, user.id);
       const cookie = await signSession(env, user.id, Date.now(), {
         provider: "test",
@@ -483,21 +492,21 @@ export function mountTestHooks(app: AppType): void {
       const email = input.success ? normalizeEmail(input.data.email) : null;
       if (!email || !inTestDomain(env, email)) {
         await audit(env, hook, ip, "refused", email ? { email } : {});
-        return notFound();
+        return refused("bad_input");
       }
       const ek = await emailKey(env, email);
       const code = await env.OAUTH_KV.get(
         otpKvKey(authConfig(env).installKey, ek),
       );
       await audit(env, hook, ip, code ? "ok" : "none", { email });
-      return code ? c.json({ code }) : notFound();
+      return code ? c.json({ code }) : refused("no_code");
     }
 
     if (hook === "audit") {
       const input = TestAuditInputSchema.safeParse(body);
       if (!input.success) {
         await audit(env, hook, ip, "refused");
-        return notFound();
+        return refused("bad_input");
       }
       // Read first, then audit this call like any other hook: the response
       // is the log as it stood, and this call's own row shows up next time.
@@ -512,7 +521,7 @@ export function mountTestHooks(app: AppType): void {
       : null;
     if (!user) {
       await audit(env, hook, ip, "refused", { email });
-      return notFound();
+      return refused("user_refused");
     }
     const out = await oauthClientFor(c, user);
     await audit(env, hook, ip, "ok", { email, userId: user.id });

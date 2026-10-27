@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setupFetch } from "./fetch-timeout.ts";
+import { InfraError, setupFetch } from "./fetch-timeout.ts";
 import { secretsOf, setPat, type Target } from "./targets.ts";
 
 // Fetch helpers. Every request uses redirect: "manual" (a 3xx is judged, never
@@ -107,11 +107,76 @@ async function paceHook(t: Target): Promise<void> {
   }
 }
 
-/** POST a /__test/* hook with the target's key. Throws HttpError unless 2xx. */
+// Why a hook refused after its key verified: the 404 body's
+// error.details.reason, a fixed enum (keep in sync with @oa/shared
+// TEST_HOOK_REFUSALS; test/surfaces.test.ts asserts they match). Only these
+// words are ever read from a hook body.
+export const HOOK_REFUSALS = [
+  "bad_route",
+  "bad_input",
+  "spaces_blocked",
+  "user_refused",
+  "grant_refused",
+  "no_code",
+] as const;
+export type HookRefusal = (typeof HOOK_REFUSALS)[number];
+
+/**
+ * The refusal reason in a hook's body, when it is one of HOOK_REFUSALS;
+ * "no_reason" otherwise (a refusal before the key, an older server, not JSON).
+ * Never returns any other body text.
+ */
+export function hookReason(text: string): HookRefusal | "no_reason" {
+  let r: unknown;
+  try {
+    r = (JSON.parse(text) as { error?: { details?: { reason?: unknown } } })
+      ?.error?.details?.reason;
+  } catch {
+    return "no_reason";
+  }
+  return HOOK_REFUSALS.find((x) => x === r) ?? "no_reason";
+}
+
+/**
+ * A setup hook (the world's seeding, the admin's session) answered an
+ * unexpected status: no red-line verdict, so infra. Its message is
+ * "infra: setup <hook> <reason> on <install> (<status, body sha256>)"; the
+ * reporter folds every case it blocked into one infra result (SETUP_HOOK_RE
+ * in report.ts).
+ */
+export class SetupHookError extends InfraError {
+  readonly status: number;
+  constructor(t: Target, path: string, res: Response, text: string) {
+    super(
+      `setup ${path} ${hookReason(text)} on ${t.name} (${describeRes(res, text)})`,
+    );
+    this.name = "SetupHookError";
+    this.status = res.status;
+  }
+}
+
+/**
+ * A hook's non-2xx answer: an HttpError (status, body hash) plus the refusal
+ * reason read from the body (hookReason: the enum word or "no_reason").
+ */
+export class HookError extends HttpError {
+  readonly reason: HookRefusal | "no_reason";
+  constructor(t: Target, path: string, res: Response, text: string) {
+    const reason = hookReason(text);
+    super(`${t.name} hook ${path} (${reason})`, res, text);
+    this.reason = reason;
+  }
+}
+
+/**
+ * POST a /__test/* hook with the target's key. Throws HookError unless 2xx;
+ * with `setup`, a SetupHookError (infra) instead.
+ */
 export async function hook(
   t: Target,
   path: string,
   body?: unknown,
+  o: { setup?: boolean } = {},
 ): Promise<unknown> {
   if (!path.startsWith("/__test/"))
     throw new Error("hook paths start with /__test/");
@@ -127,7 +192,9 @@ export async function hook(
   });
   const text = await readBody(res);
   if (res.status < 200 || res.status > 299)
-    throw new HttpError(`${t.name} hook ${path}`, res, text);
+    throw o.setup
+      ? new SetupHookError(t, path, res, text)
+      : new HookError(t, path, res, text);
   return parseJson(res, text, `${t.name} hook ${path}`);
 }
 
@@ -139,8 +206,9 @@ export async function sessionCred(
   t: Target,
   email: string = adminEmail(t),
   role: "admin" | "member" | "guest" = "admin",
+  o: { setup?: boolean } = {},
 ): Promise<Cred> {
-  const out = (await hook(t, "/__test/session", { email, role })) as {
+  const out = (await hook(t, "/__test/session", { email, role }, o)) as {
     cookie?: unknown;
   };
   if (typeof out.cookie !== "string" || !out.cookie)
@@ -178,7 +246,8 @@ export interface AdminCreds {
  * CI secret when given, else minted). The PAT must belong to that user.
  */
 export async function adminCreds(t: Target): Promise<AdminCreds> {
-  const cookie = await sessionCred(t);
+  // Setup: a refused admin session is infra, not a verdict.
+  const cookie = await sessionCred(t, adminEmail(t), "admin", { setup: true });
   const s = secretsOf(t);
   let pat: Cred;
   if (s.pat) pat = { kind: "pat", token: s.pat };

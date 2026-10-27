@@ -1,5 +1,6 @@
 import {
   describeRes,
+  HookError,
   HttpError,
   hook,
   parseJson,
@@ -318,6 +319,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /**
  * The last code sent to `email` at `t` (the otp/latest hook), polled for up
  * to `waitMs` (the code is mailed after the response); null when none.
+ * Retries only the hook's "no code yet" (a 404 whose reason is no_code). Any
+ * other answer throws with its status and body hash: the rate limit, a wrong
+ * key and hooks off are all the reasonless 404, never "no code".
  */
 export async function latestOtp(
   t: Target,
@@ -331,11 +335,45 @@ export async function latestOtp(
       if (typeof out.code === "string" && out.code) return out.code;
       throw new Error(`${t.name} otp hook: no code in the body`);
     } catch (e) {
-      if (!(e instanceof HttpError) || e.status !== 404) throw e;
+      if (
+        !(e instanceof HookError) ||
+        e.status !== 404 ||
+        e.reason !== "no_code"
+      )
+        throw e;
     }
     if (Date.now() >= end) return null;
     await sleep(500);
   }
+}
+
+/** How long the __Host- cookie case waits for its emailed code. */
+export const COOKIE_CASE_OTP_MS = 5000;
+
+/**
+ * The code for a code request the cookie case just made: `status` and the
+ * pending cookies it set. Unproven (with why) when the request set no pending
+ * cookie, or no code arrived within `waitMs` (the hook kept answering 404
+ * no_code). Any other hook answer throws, so the case fails with its status
+ * and body hash: the hook's rate limit is the reasonless 404 (as are a wrong
+ * key and hooks off), never "no code yet".
+ */
+export async function pendingCode(
+  t: Target,
+  email: string,
+  req: { status: number; pending: readonly string[] },
+  waitMs = COOKIE_CASE_OTP_MS,
+): Promise<{ code: string } | { unproven: string }> {
+  if (req.status !== 202 || req.pending.length === 0)
+    return {
+      unproven: `${t.name}: code sign-in unavailable (no pending code cookie; request status ${req.status})`,
+    };
+  const code = await latestOtp(t, email, waitMs);
+  return code
+    ? { code }
+    : {
+        unproven: `${t.name}: code sign-in unavailable (no code within ${waitMs / 1000} s)`,
+      };
 }
 
 // --- the auth broker (staging) ---------------------------------------------

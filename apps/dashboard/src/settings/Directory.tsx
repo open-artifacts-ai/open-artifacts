@@ -43,6 +43,7 @@ import {
   useRestrictedGroups,
 } from "../api/queries";
 import { useMe } from "../auth/useMe";
+import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
 import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
@@ -823,9 +824,14 @@ function RestrictedRow({ g }: { g: RestrictedGroup }) {
 function RestrictedGroups({
   groups,
   mode,
+  error,
+  onRetry,
 }: {
   groups: RestrictedGroup[];
   mode: SyncStatus["mode"];
+  /** The list failed to load: said instead of the rows. */
+  error: unknown;
+  onRetry: () => void;
 }) {
   const add = usePutRestrictedGroup();
   const refusal =
@@ -839,6 +845,13 @@ function RestrictedGroups({
         People in these groups can only view, everywhere: no publishing, editing
         or live-data writes.
       </p>
+      {!!error && (
+        <LoadError
+          title="Couldn't load restricted groups."
+          error={error}
+          onRetry={onRetry}
+        />
+      )}
       {groups.length > 0 && (
         <table className="w-full border-collapse">
           <tbody>
@@ -1085,8 +1098,15 @@ export function Directory() {
               restricted={restricted.data ?? []}
             />
           )}
-          {(data.mode !== "off" || (restricted.data?.length ?? 0) > 0) && (
-            <RestrictedGroups groups={restricted.data ?? []} mode={data.mode} />
+          {(data.mode !== "off" ||
+            restricted.isError ||
+            (restricted.data?.length ?? 0) > 0) && (
+            <RestrictedGroups
+              groups={restricted.data ?? []}
+              mode={data.mode}
+              error={restricted.isError ? restricted.error : null}
+              onRetry={() => void restricted.refetch()}
+            />
           )}
           {/* Pending, Cancel is the way out: no Disconnect yet. */}
           {data.state !== "pending_confirm" && (

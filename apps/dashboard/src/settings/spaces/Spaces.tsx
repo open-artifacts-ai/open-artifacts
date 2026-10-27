@@ -22,6 +22,7 @@ import {
   useUpdateSettings,
 } from "../../api/queries";
 import { useMe } from "../../auth/useMe";
+import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
 import { useDocumentTitle } from "../../layout/useDocumentTitle";
 import { AppLink } from "../../library/AppLink";
@@ -214,6 +215,13 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
         Groups here get their role in every shared space, including ones created
         later. Never in anyone's Personal space.
       </p>
+      {org.isError && (
+        <LoadError
+          title="Couldn't load the groups for every space."
+          error={org.error}
+          onRetry={() => void org.refetch()}
+        />
+      )}
       {rows.length > 0 && (
         <table
           aria-label="Every space groups"
@@ -288,10 +296,15 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
 function SpaceList({
   spaces,
   admin,
+  error,
+  onRetry,
   onNew,
 }: {
   spaces: Space[];
   admin: boolean;
+  /** The list failed to load: said instead of the count and rows. */
+  error: unknown;
+  onRetry: () => void;
   onNew: () => void;
 }) {
   return (
@@ -310,11 +323,19 @@ function SpaceList({
         )
       }
     >
-      {admin && (
-        <p className={muted}>
-          {spaces.length} shared {spaces.length === 1 ? "space" : "spaces"}.
-          Personal spaces aren't listed.
-        </p>
+      {error ? (
+        <LoadError
+          title="Couldn't load spaces."
+          error={error}
+          onRetry={onRetry}
+        />
+      ) : (
+        admin && (
+          <p className={muted}>
+            {spaces.length} shared {spaces.length === 1 ? "space" : "spaces"}.
+            Personal spaces aren't listed.
+          </p>
+        )
       )}
       <ul aria-label="Spaces" className="grid p-0">
         {spaces.map((s) => (
@@ -533,7 +554,8 @@ function DeleteSpace({
   return (
     <SettingsCard id="oa-space-delete" title="Delete space">
       <p className={muted}>
-        Only an empty space can be deleted, trash included.
+        Only an empty space can be deleted. Deleted artifacts still count until
+        they're permanently removed, 30 days after deletion.
       </p>
       <div className="flex flex-wrap items-center gap-[var(--oa-space-3)]">
         <Button
@@ -548,8 +570,7 @@ function DeleteSpace({
         </Button>
         {n > 0 && (
           <small id={reason} className={muted}>
-            Move or delete its {n} {n === 1 ? "artifact" : "artifacts"} first
-            (trash included).
+            Move or delete its {n} {n === 1 ? "artifact" : "artifacts"} first.
           </small>
         )}
       </div>
@@ -666,7 +687,9 @@ export function Spaces() {
     if (refused) toList();
   });
   useEffect(() => {
-    if (list.hasNextPage && !list.isFetchingNextPage) void list.fetchNextPage();
+    // A failed page stops here: Retry refetches.
+    if (list.hasNextPage && !list.isFetching && !list.isError)
+      void list.fetchNextPage();
   }, [list]);
 
   if (space)
@@ -682,7 +705,13 @@ export function Spaces() {
   return (
     <div className={STACK}>
       {admin && <EverySpace syncOn={syncOn} />}
-      <SpaceList spaces={all} admin={admin} onNew={() => setCreating(true)} />
+      <SpaceList
+        spaces={all}
+        admin={admin}
+        error={list.isError ? list.error : null}
+        onRetry={() => void list.refetch()}
+        onNew={() => setCreating(true)}
+      />
       {admin && <AccessSwitch />}
       {creating && (
         <NewSpace orgName={orgName} onClose={() => setCreating(false)} />

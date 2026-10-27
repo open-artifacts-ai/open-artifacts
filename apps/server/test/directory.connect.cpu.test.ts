@@ -101,10 +101,12 @@ describe("directory connect CPU (Free: 10 ms)", () => {
   });
 
   let n = 0;
-  const page = (): GoogleUser[] =>
+  // Full-UUID addresses: uniq's 8-hex tag collides about once in 500 runs
+  // over 4000 addresses, and binding rightly skips a taken address.
+  const page = (tag = "x"): GoogleUser[] =>
     Array.from({ length: 500 }, () => ({
-      id: `g-cpu-p-${n++}-${crypto.randomUUID()}`,
-      primaryEmail: uniq("cpu-p"),
+      id: `g-cpu-p-${tag}-${n++}-${crypto.randomUUID()}`,
+      primaryEmail: `cpu-p-${crypto.randomUUID()}@a.com`,
       suspended: false,
       deleted: false,
       isAdmin: false,
@@ -129,9 +131,13 @@ describe("directory connect CPU (Free: 10 ms)", () => {
     annotate,
   }) => {
     const e = directEnv();
-    const ms = await time(() =>
-      bindPage(e, page(), { tenant: "a.com", allowEmail: true }),
-    );
+    // Per attempt, so a retry counts only its own rows.
+    const tag = crypto.randomUUID().slice(0, 8);
+    let pages = 0;
+    const ms = await time(() => {
+      pages++;
+      return bindPage(e, page(tag), { tenant: "a.com", allowEmail: true });
+    });
     // D1 executes the set-based statements on its side in production; the
     // local wall clock includes it, so this is reported, not budgeted.
     await annotate(`initial binding 500-user page incl. D1: ${ms} ms`);
@@ -139,9 +145,11 @@ describe("directory connect CPU (Free: 10 ms)", () => {
     expect(
       (
         await env.DB.prepare(
-          "select count(*) n from identities where subject like 'g-cpu-p-%'",
-        ).first<{ n: number }>()
+          "select count(*) n from identities where subject like ?",
+        )
+          .bind(`g-cpu-p-${tag}-%`)
+          .first<{ n: number }>()
       )?.n,
-    ).toBe(500 * 8);
+    ).toBe(500 * pages);
   });
 });

@@ -97,7 +97,7 @@ Built as `tests/redline/live/surfaces.test.ts`, with the case list derived in `s
 - Mutating probes run through `crossWrite`. Each install's own admin writes to a throwaway on its own install. A's write at B is refused, and B's throwaway reads back unchanged. Every throwaway is deleted, even on failure.
 - Coverage of `ROUTE_POLICY`, `TOOL_POLICY` and `CONTENT_POLICY` is derived. A dropped surface counts only through `DROPPED`, an explicit list that the coverage check holds to the drop rules. A route no case reaches must be in `EXCLUDED_ROUTES` and backed by a recorded drop; a drop never counts as coverage.
 - The world is reused on every run:
-  - two fixed hook spaces, `test-redline-space` and `test-redline-guard`. "space delete (S)" targets the guard space, never the world's.
+  - two fixed hook spaces per TEST_DOMAIN, `test-redline-space-<tag>` and `test-redline-guard-<tag>` (tag: the first 8 hex of sha256(testDomain), so a domain move starts clean). "space delete (S)" targets the guard space, never the world's.
   - one fixed artifact in each space;
   - fixed member users.
 - Throwaways are deleted, and every cleanup status is checked. No API purges the trash; the nightly `purgeDeleted` hard-deletes it after `LIMITS.softDeleteDays`, so the trash stays bounded.

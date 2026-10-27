@@ -1,4 +1,4 @@
-// P5 Task 3b (#655): the three directory surfaces the cross-install red-line
+// P5 Task 3b (#655): the three directory surfaces (and the broker check) the cross-install red-line
 // suite drops (its installs have no connected directory) get the same
 // proof here, in-server. Another install's credential is modelled two ways:
 // a session for this install's own user id signed with another
@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
+import { TEST_BROKER_KEY } from "./auth-helpers.js";
 import { directEnv } from "./directory-helpers.js";
 import { fetchAndWait, login } from "./helpers.js";
 
@@ -164,6 +165,52 @@ describe("red line: another install's credential on the dropped directory surfac
     await own.body?.cancel();
     expect(own.status).toBe(302);
     expect(own.headers.get("location") ?? "").toMatch(/[?&]error=/);
+    expect(await audits()).toBe(before + 1);
+  });
+});
+
+describe("red line: another install's credential on the broker check", () => {
+  it("POST admin/broker-check: another install's owner session or PAT is refused with no audit row and no broker call; this install's owner runs it", async () => {
+    const calls: string[] = [];
+    const broker = {
+      fetch: (req: Request) => {
+        calls.push(new URL(req.url).pathname);
+        return Promise.resolve(
+          Response.json({ error: "bad_flow" }, { status: 401 }),
+        );
+      },
+    } as unknown as Fetcher;
+    const e = {
+      ...(env as object),
+      AUTH_PROVIDERS: "google,email",
+      AUTH_DOMAINS: "a.com",
+      GOOGLE_CLIENT_ID: "cid.apps.googleusercontent.com",
+      INSTALL_ID: "inst-a",
+      AUTH_BROKER_URL: "https://auth.hosted.test",
+      BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+      BROKER: broker,
+    } as unknown as Env;
+    const audits = async () =>
+      (
+        await one<{ n: number }>(
+          "select count(*) n from audit_events where action = 'auth.broker_check'",
+        )
+      )?.n ?? 0;
+    const before = await audits();
+    for (const c of [
+      { cookie: await foreignSession(owner.userId) },
+      { token: newPat() },
+    ]) {
+      await refused(await call(e, "POST", R.adminBrokerCheck, c));
+      expect(await audits()).toBe(before);
+    }
+    expect(calls).toEqual([]);
+    const own = await call(e, "POST", R.adminBrokerCheck, owner);
+    expect(own.status).toBe(200);
+    expect(((await own.json()) as { auth: { ok: boolean } }).auth.ok).toBe(
+      true,
+    );
+    expect(calls).toEqual(["/google/redeem"]);
     expect(await audits()).toBe(before + 1);
   });
 });

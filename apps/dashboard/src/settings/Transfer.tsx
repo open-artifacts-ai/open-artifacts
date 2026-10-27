@@ -6,7 +6,7 @@
 import type { Member, TransferInput, TransferResult } from "@oa/shared";
 import { displayName } from "@oa/ui";
 import { Button, Label } from "@oa/ui/shadcn";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { errorCopy } from "../api/errorCopy";
 import {
   useMembers,
@@ -14,6 +14,7 @@ import {
   useSpaces,
   useTransferSummary,
 } from "../api/queries";
+import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
 import { OptionSelect } from "./OptionSelect";
@@ -72,6 +73,11 @@ export function TransferDialog({
     why: string;
   } | null>(null);
   const radios = useId();
+  // Every shared space, not only the first page (a failed page stops here).
+  useEffect(() => {
+    if (spaces.hasNextPage && !spaces.isFetching && !spaces.isError)
+      void spaces.fetchNextPage();
+  }, [spaces]);
   /** The first run's totals: a Retry continues them. */
   const first = useRef<{ live: number; of: number; done: number } | null>(null);
 
@@ -188,17 +194,25 @@ export function TransferDialog({
         {kind === "user" ? (
           <div className="grid gap-[6px]">
             <Label>Give them to</Label>
-            <OptionSelect
-              label="Give them to"
-              value={userId}
-              options={successors.map((m) => ({
-                value: m.id,
-                label: displayName(m),
-              }))}
-              placeholder="Choose a person"
-              disabled={busy}
-              onChange={setUserId}
-            />
+            {members.isError ? (
+              <LoadError
+                title="Couldn't load people."
+                error={members.error}
+                onRetry={() => void members.refetch()}
+              />
+            ) : (
+              <OptionSelect
+                label="Give them to"
+                value={userId}
+                options={successors.map((m) => ({
+                  value: m.id,
+                  label: displayName(m),
+                }))}
+                placeholder="Choose a person"
+                disabled={busy}
+                onChange={setUserId}
+              />
+            )}
             {person && (
               <p className={muted}>
                 You won't see titles or contents. {displayName(person)} gets
@@ -209,14 +223,22 @@ export function TransferDialog({
         ) : (
           <div className="grid gap-[6px]">
             <Label>Space</Label>
-            <OptionSelect
-              label="Space"
-              value={spaceId}
-              options={shared.map((s) => ({ value: s.id, label: s.name }))}
-              placeholder="Choose a space"
-              disabled={busy}
-              onChange={setSpaceId}
-            />
+            {spaces.isError ? (
+              <LoadError
+                title="Couldn't load spaces."
+                error={spaces.error}
+                onRetry={() => void spaces.refetch()}
+              />
+            ) : (
+              <OptionSelect
+                label="Space"
+                value={spaceId}
+                options={shared.map((s) => ({ value: s.id, label: s.name }))}
+                placeholder="Choose a space"
+                disabled={busy}
+                onChange={setSpaceId}
+              />
+            )}
             {space && (
               <p className={muted}>
                 Everyone with access to {space.name} can open them, by their

@@ -6,6 +6,14 @@ import {
   SPACE_SURFACES,
   SURFACES,
 } from "../../../apps/server/test/authz/surfaces.ts";
+import { TEST_HOOK_REFUSALS } from "../../../packages/shared/src/hosted/test-hooks.ts";
+import {
+  HOOK_REFUSALS,
+  HttpError,
+  hook,
+  hookReason,
+  SetupHookError,
+} from "../src/http.ts";
 import {
   crossProbe,
   crossWrite,
@@ -22,9 +30,11 @@ import {
   coverageGaps,
   DROPPED,
   derive,
+  HOOK_SPACE_ID,
   HOSTED_FEATURES,
   readRepoFile,
   viaTarget,
+  worldSpaces,
 } from "../src/surfaces.ts";
 import { loadTargets, type Target } from "../src/targets.ts";
 import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
@@ -565,5 +575,80 @@ describe("viaTarget", () => {
   it("never rewrites a non-loopback host", async () => {
     await f(new Request("https://rl-b.open-artifacts-staging.page/c/x"));
     expect(seen.at(-1)).toBe("https://rl-b.open-artifacts-staging.page/c/x");
+  });
+});
+
+describe("worldSpaces (fixed hook spaces per TEST_DOMAIN)", () => {
+  it("ids carry 8 hex of sha256(testDomain) and match the hook's SPACE_ID rule", () => {
+    const a = worldSpaces("guests.oa-redline-a.fyi");
+    expect(a).toEqual({
+      world: expect.stringMatching(/^test-redline-space-[0-9a-f]{8}$/),
+      guard: expect.stringMatching(/^test-redline-guard-[0-9a-f]{8}$/),
+    });
+    expect(a.world.slice(-8)).toBe(a.guard.slice(-8));
+    for (const id of Object.values(a))
+      expect(HOOK_SPACE_ID.test(id)).toBe(true);
+    // Stable per domain (case-insensitive), different for another domain.
+    expect(worldSpaces("GUESTS.oa-redline-a.fyi")).toEqual(a);
+    expect(worldSpaces("oa-redline-a.fyi").world).not.toBe(a.world);
+  });
+});
+
+describe("setup hooks", () => {
+  const body404 = (reason?: unknown) =>
+    JSON.stringify({
+      error: {
+        code: "not_found",
+        message: "Not found secret-body-text",
+        ...(reason === undefined ? {} : { details: { reason } }),
+      },
+    });
+
+  /** /healthz for loadTargets; every hook a 404 with `body`. */
+  const refusing =
+    (installId: string, body: string): Parameters<typeof fakeServer>[0] =>
+    (req, res) =>
+      req.url === "/healthz"
+        ? json(res, 200, { ok: true, testHooks: true, installId })
+        : res.writeHead(404).end(body);
+
+  it("HOOK_REFUSALS is @oa/shared's TEST_HOOK_REFUSALS", () => {
+    expect([...HOOK_REFUSALS]).toEqual([...TEST_HOOK_REFUSALS]);
+  });
+
+  it("hookReason reads only the fixed enum word", () => {
+    expect(hookReason(body404("spaces_blocked"))).toBe("spaces_blocked");
+    expect(hookReason(body404("grant_refused"))).toBe("grant_refused");
+    expect(hookReason(body404())).toBe("no_reason");
+    expect(hookReason(body404("anything else"))).toBe("no_reason");
+    expect(hookReason("not json")).toBe("no_reason");
+    expect(hookReason("null")).toBe("no_reason");
+  });
+
+  it("a setup hook's refusal is infra with the reason and a body hash, never body text", async () => {
+    const a = await fake(refusing("rl-a-id", body404("spaces_blocked")));
+    const b = await fake(install("rl-b-id", "x"));
+    const T = await pair(a, b);
+    const e = await hook(T.a, "/__test/session", {}, { setup: true }).catch(
+      (x: unknown) => x,
+    );
+    expect(e).toBeInstanceOf(SetupHookError);
+    const m = (e as Error).message;
+    expect(m).toMatch(
+      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\)\)$/,
+    );
+    expect(m).not.toContain("secret-body-text");
+    // Outside setup, the same answer stays an HttpError (a verdict).
+    const v = await hook(T.a, "/__test/session", {}).catch((x: unknown) => x);
+    expect(v).toBeInstanceOf(HttpError);
+    expect(v).not.toBeInstanceOf(SetupHookError);
+  });
+
+  it("a refusal before the key (no reason in the body) says no_reason", async () => {
+    const a = await fake(refusing("rl-a-id", body404()));
+    const T = await pair(a, await fake(install("rl-b-id", "x")));
+    await expect(
+      hook(T.a, "/__test/session", {}, { setup: true }),
+    ).rejects.toThrow(/^infra: setup \/__test\/session no_reason on rl-a /);
   });
 });

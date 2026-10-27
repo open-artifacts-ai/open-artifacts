@@ -1034,6 +1034,10 @@ export class WfpProvisioner {
     if (!this.o.brokerEnabled) return vars;
     const client = BROKER_GOOGLE_CLIENT_ID[this.env];
     const want = `https://auth.${HOSTED_DOMAINS[this.env].app}`;
+    // The directory broker rides the same switch: its signing key and
+    // registry entry are the sign-in broker's, and on HOSTED=1 the server's
+    // directory transport is "none" without this URL (review item 6).
+    const wantDir = `https://directory.${HOSTED_DOMAINS[this.env].app}`;
     // L7: only create and updateVars refuse; a render (upgrade, rollback)
     // replaces a stale stored value with the derived one, noted.
     const refuse = (why: string) => {
@@ -1047,6 +1051,13 @@ export class WfpProvisioner {
     if (vars.AUTH_BROKER_URL !== undefined && vars.AUTH_BROKER_URL !== want)
       refuse(`AUTH_BROKER_URL must be ${want}, the ${this.env} broker`);
     if (
+      vars.DIRECTORY_BROKER_URL !== undefined &&
+      vars.DIRECTORY_BROKER_URL !== wantDir
+    )
+      refuse(
+        `DIRECTORY_BROKER_URL must be ${wantDir}, the ${this.env} directory broker`,
+      );
+    if (
       client &&
       vars.GOOGLE_CLIENT_ID !== undefined &&
       vars.GOOGLE_CLIENT_ID !== client
@@ -1058,6 +1069,7 @@ export class WfpProvisioner {
     return {
       ...rest,
       AUTH_BROKER_URL: want,
+      DIRECTORY_BROKER_URL: wantDir,
       ...(client ? { GOOGLE_CLIENT_ID: client } : {}),
     };
   }

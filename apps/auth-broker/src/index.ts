@@ -82,8 +82,17 @@ const limits = (env: Env) => ({
   install: env.RL_BROKER_INSTALL,
 });
 const ipLimited = (env: Env, req: Request) => limitIp(limits(env), req, log);
-const installLimited = (env: Env, install: string) =>
-  limitInstall(limits(env), install, log);
+/**
+ * Per-install buckets, one per route (review item 24): the unauthenticated
+ * authorize can't drain the signed redeem's bucket, so a few IPs naming an
+ * install (its id is public in /healthz) can't block its sign-ins. The
+ * directory broker scopes its routes the same way.
+ */
+const installLimited = (
+  env: Env,
+  install: string,
+  scope: "authorize" | "redeem",
+) => limitInstall(limits(env), install, log, scope);
 
 async function authorize(
   req: Request,
@@ -112,7 +121,7 @@ async function authorize(
   if (limited) return limited;
   const entry = await lookupInstall(env.BROKER_REGISTRY, install, now);
   if (!entry) return log("authorize", "unknown_install"), notFound();
-  const busy = await installLimited(env, install);
+  const busy = await installLimited(env, install, "authorize");
   if (busy) return busy;
   const u = new URL(GOOGLE_AUTHORIZE_URL);
   u.search = new URLSearchParams({
@@ -221,7 +230,7 @@ async function redeem(req: Request, env: Env, now: number): Promise<Response> {
     return log("redeem", "bad_signature"), refused();
   if (Math.abs(now - body.ts) > ASSERTION_SKEW_MS)
     return log("redeem", "stale"), staleAssertion();
-  const busy = await installLimited(env, body.install);
+  const busy = await installLimited(env, body.install, "redeem");
   if (busy) return busy;
   // The broker state must be this install's, unexpired, and bind the flow
   // the install holds: H(client nonce || challenge), compared in constant time.

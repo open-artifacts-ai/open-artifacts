@@ -131,6 +131,17 @@ describe("ci.yml no-test-hooks job", () => {
       /pnpm check-no-test-hooks "\$RUNNER_TEMP\/release-bundle"/,
     );
   });
+  it("runs check-no-fake-idp on the same bundle, after the hooks check, behind the same gate", () => {
+    const i = steps.findIndex((st) =>
+      (st.run ?? "").includes("pnpm check-no-test-hooks"),
+    );
+    const j = steps.findIndex(
+      (st) => st.run === 'pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"',
+    );
+    expect(i).toBeGreaterThan(-1);
+    expect(j).toBeGreaterThan(i);
+    expect(steps[j]?.if).toBe(steps[i]?.if);
+  });
   it("cannot be skipped: no continue-on-error, job-level if or needs", () => {
     expect(job).toBeDefined();
     expect(job["continue-on-error"]).toBeUndefined();

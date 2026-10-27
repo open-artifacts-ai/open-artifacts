@@ -81,6 +81,7 @@ export const HOSTED_ADDED = [
   "AUTH_DOMAINS",
   "AUTH_DOMAIN_JOIN",
   "AUTH_BROKER_URL",
+  "DIRECTORY_BROKER_URL",
   "GOOGLE_CLIENT_ID",
   "NIGHTLY_PUBKEY",
   "TEST_HOOKS",
@@ -126,6 +127,12 @@ export const HOSTED_VARS: Record<string, (v: string) => string | undefined> = {
     /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?(?:\/\S*)?$/i.test(v)
       ? undefined
       : "expected an https URL",
+  // Hosted: the env's directory broker (wfp.ts brokerVars checks the exact
+  // value). The server's directory transport needs it on HOSTED=1.
+  DIRECTORY_BROKER_URL: (v) =>
+    /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?(?:\/\S*)?$/i.test(v)
+      ? undefined
+      : "expected an https URL",
   EMAIL_FROM: (v) => (EMAIL_RE.test(v) ? undefined : "expected an email"),
   // Test-hook installs only (checked in userWorkerMetadata): hooks act only
   // on emails @TEST_DOMAIN.
@@ -165,6 +172,7 @@ const PASSTHROUGH = [
   "AUTH_PROVIDERS",
   "AUTH_DOMAINS",
   "AUTH_BROKER_URL",
+  "DIRECTORY_BROKER_URL",
   "NIGHTLY_PUBKEY",
 ];
 

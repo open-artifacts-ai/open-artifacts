@@ -543,16 +543,17 @@ describe("orgCan", () => {
     ).toBe(false);
     expect(orgCan(member("member"), "artifact.create")).toBe(true);
   });
-  it.each(["directory.manage", "members.manageAdmins"] as OrgAction[])(
-    "%s: the org owner only",
-    (action) => {
-      expect(
-        (["owner", "admin", "member", "guest"] as Role[]).map((r) =>
-          orgCan(member(r), action),
-        ),
-      ).toEqual([true, false, false, false]);
-    },
-  );
+  it.each([
+    "directory.manage",
+    "members.manageAdmins",
+    "broker.check",
+  ] as OrgAction[])("%s: the org owner only", (action) => {
+    expect(
+      (["owner", "admin", "member", "guest"] as Role[]).map((r) =>
+        orgCan(member(r), action),
+      ),
+    ).toEqual([true, false, false, false]);
+  });
   it("tokens and MCP: non-guest, uncapped", () => {
     expect(orgCan(member("member"), "tokens.create")).toBe(true);
     expect(orgCan(member("guest"), "mcp.connect")).toBe(false);

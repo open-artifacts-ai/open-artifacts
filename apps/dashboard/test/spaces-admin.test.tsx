@@ -376,12 +376,12 @@ it("a space with artifacts can't be deleted: the button is disabled, with the re
   const del = await screen.findByRole("button", { name: "Delete space" });
   expect(del).toBeDisabled();
   expect(
-    screen.getByText("Move or delete its 1 artifact first (trash included)."),
+    screen.getByText("Move or delete its 1 artifact first."),
   ).toBeVisible();
   expect(del).toHaveAttribute("aria-describedby");
   expect(
     document.getElementById(del.getAttribute("aria-describedby") as string),
-  ).toHaveTextContent("Move or delete its 1 artifact first (trash included).");
+  ).toHaveTextContent("Move or delete its 1 artifact first.");
 });
 
 it("the reason pluralizes", async () => {
@@ -407,9 +407,7 @@ it("the reason pluralizes", async () => {
     ),
   ]);
   expect(
-    await screen.findByText(
-      "Move or delete its 3 artifacts first (trash included).",
-    ),
+    await screen.findByText("Move or delete its 3 artifacts first."),
   ).toBeVisible();
 });
 
@@ -429,11 +427,11 @@ it("an empty space whose trash still holds artifacts: the 409 shows inline, once
     }),
   );
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "This space still has artifacts. Move or delete them first. Artifacts in the trash count too.",
+    "This space still has artifacts. Move or delete them first. Deleted artifacts count until they're permanently removed, 30 days after deletion.",
   );
   expect(
     screen.getAllByText(
-      "This space still has artifacts. Move or delete them first. Artifacts in the trash count too.",
+      "This space still has artifacts. Move or delete them first. Deleted artifacts count until they're permanently removed, 30 days after deletion.",
     ),
   ).toHaveLength(1);
 });

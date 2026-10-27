@@ -35,6 +35,7 @@ import { useMe } from "../../auth/useMe";
 import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
 import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
+import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
 import { Notice } from "../../layout/Notice";
 import { toast } from "../../layout/toast";
@@ -445,6 +446,13 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             </li>
           ))}
         </ul>
+        {shares.isError && (
+          <LoadError
+            title="Couldn't load who it's shared with."
+            error={shares.error}
+            onRetry={() => void shares.refetch()}
+          />
+        )}
         {!people && (
           <p className="oa-muted">
             Only people who can share this artifact see who else has access.
