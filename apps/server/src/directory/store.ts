@@ -129,9 +129,7 @@ export async function readPending(
 }
 
 /** The consent row as stored, expired or not (expiry and revokes need it). */
-export async function readPendingAny(
-  env: Env,
-): Promise<PendingConfirm | null> {
+export async function readPendingAny(env: Env): Promise<PendingConfirm | null> {
   const row = await stmt(
     env.DB,
     "select value from directory_state where key = ?",
