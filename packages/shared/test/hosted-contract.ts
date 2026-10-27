@@ -131,6 +131,9 @@ export function hostedContract(d: ContractDriver): ContractCases {
     else it(name, fn);
   };
 
+  /** The Engineering space's fixture id (mocks/hosted.ts). */
+  const ENG = "SpEngNpQrSt2uVwX";
+
   describe("hosted off: responses are byte-identical", () => {
     t(
       "me, list, members, search carry no hosted fields",
@@ -159,12 +162,13 @@ export function hostedContract(d: ContractDriver): ContractCases {
     t(
       "providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal",
       async () => {
-        await d.fresh({ hosted: true });
+        // Email only: with Google on, a domain member gets no code (domainCodes).
+        await d.fresh({ hosted: { providers: ["email"] } });
         const p = Strict.AuthProviders.parse(
           await json(await d.call("GET", AUTH.providers)),
         );
         expect(p.mode).toBe("direct");
-        expect(p.providers.map((x) => x.id)).toEqual(["google", "email"]);
+        expect(p.providers).toMatchObject([{ id: "email", domainCodes: true }]);
 
         const rq = await d.call("POST", AUTH.codeRequest, {
           email: "Ada@example.com",
@@ -436,27 +440,28 @@ export function hostedContract(d: ContractDriver): ContractCases {
       expect((await d.call("GET", R.usage)).status).toBe(404);
     });
 
-    t(
-      "frozen sync refuses mapping changes; unhealthy shows the banner",
-      async () => {
-        await d.fresh({ hosted: { directory: "frozen", unhealthy: true } });
-        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
-        expect(me.instance.directory).toMatchObject({
-          mode: "frozen",
-          healthy: false,
-          banner: true,
-          tokensUnverified: true,
-        });
-        const eng = me.spaces?.find((s) => s.name === "Engineering")
-          ?.id as string;
-        const r = await d.call("PUT", R.spaceMapping(eng, "x@example.com"), {
-          role: "viewer",
-        });
-        expect(r.status).toBe(409);
-        expect((await errCode(r)).code).toBe("directory_sync_off");
-      },
-      "the mock's unhealthy mode (a 2 h sync outage)",
-    );
+    t("frozen sync refuses mapping changes", async () => {
+      await d.fresh({ hosted: { directory: "frozen" } });
+      const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+      expect(me.instance.directory?.mode).toBe("frozen");
+      // Engineering's fixture id: the server's Me has no spaces yet (item 2).
+      const r = await d.call("PUT", R.spaceMapping(ENG, "x@example.com"), {
+        role: "viewer",
+      });
+      expect(r.status).toBe(409);
+      expect((await errCode(r)).code).toBe("directory_sync_off");
+    });
+
+    t("frozen sync, unhealthy for 2 h: the banner", async () => {
+      await d.fresh({ hosted: { directory: "frozen", unhealthy: true } });
+      const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+      expect(me.instance.directory).toMatchObject({
+        mode: "frozen",
+        healthy: false,
+        banner: true,
+        tokensUnverified: true,
+      });
+    });
 
     t("transfer of a personal artifact and spaceId on publish", async () => {
       await d.fresh({ hosted: true });
@@ -512,7 +517,7 @@ export function hostedContract(d: ContractDriver): ContractCases {
     t(
       "a restricted-group member is capped and gets no allMembersRole",
       async () => {
-        await d.fresh({ hosted: true });
+        await d.fresh({ hosted: { providers: ["email"] } });
         const v = await signIn("dan@example.com");
         expect(v.readOnly).toBe(true);
         expect(v.user.restriction?.groups.map((g) => g.groupId)).toEqual([
@@ -818,58 +823,48 @@ export function hostedContract(d: ContractDriver): ContractCases {
         await d.fresh({ hosted: true });
         expect((await d.call("GET", R.me)).status).toBe(200);
       },
-      "the mock's breakGlass mode",
     );
   });
 
   describe("hosted mocks: sync banner fields", () => {
-    t(
-      "admins see state, staleAt and held sweeps",
-      async () => {
-        await d.fresh({
-          hosted: { unhealthy: true, unhealthyState: "scope_missing" },
-        });
-        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
-        const dir = me.instance.directory;
-        expect(dir).toMatchObject({
-          state: "scope_missing",
-          heldSweeps: 1,
-          banner: true,
-        });
-        const st = Strict.SyncStatus.parse(
-          await json(await d.call("GET", R.directory)),
-        );
-        expect(st.state).toBe("scope_missing");
-        expect(dir?.staleAt).toBe(st.staleAt);
-        expect(
-          Date.parse(dir?.staleAt as string) -
-            Date.parse(st.lastSuccessAt as string),
-        ).toBe(7 * 24 * 3600_000);
-      },
-      "the mock's unhealthy mode (sync state, held sweeps)",
-    );
+    t("admins see state, staleAt and held sweeps", async () => {
+      await d.fresh({
+        hosted: { unhealthy: true, unhealthyState: "scope_missing" },
+      });
+      const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+      const dir = me.instance.directory;
+      expect(dir).toMatchObject({
+        state: "scope_missing",
+        heldSweeps: 1,
+        banner: true,
+      });
+      const st = Strict.SyncStatus.parse(
+        await json(await d.call("GET", R.directory)),
+      );
+      expect(st.state).toBe("scope_missing");
+      expect(dir?.staleAt).toBe(st.staleAt);
+      expect(
+        Date.parse(dir?.staleAt as string) -
+          Date.parse(st.lastSuccessAt as string),
+      ).toBe(7 * 24 * 3600_000);
+    });
 
-    t(
-      "members can't read health",
-      async () => {
-        await d.fresh({ hosted: { unhealthy: true } });
-        await d.signIn("bob@example.com");
-        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
-        expect(me.instance.directory).toMatchObject({
-          state: null,
-          staleAt: null,
-          heldSweeps: 0,
-          banner: false,
-          tokensUnverified: false,
-        });
-      },
-      "the mock's unhealthy mode",
-    );
+    t("members can't read health", async () => {
+      await d.fresh({ hosted: { unhealthy: true } });
+      await d.signIn("bob@example.com");
+      const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+      expect(me.instance.directory).toMatchObject({
+        state: null,
+        staleAt: null,
+        heldSweeps: 0,
+        banner: false,
+        tokensUnverified: false,
+      });
+    });
   });
 
   describe("hosted contract: space-manager and Every-space mappings", () => {
     const signIn = d.signIn;
-    const ENG = "SpEngNpQrSt2uVwX";
     const CLIENTS = "SpCliNpQrSt4uVwX";
     const ada = fixtures.members[0]?.id as string;
     const bob = fixtures.members[1]?.id as string;
@@ -1087,7 +1082,6 @@ export function hostedContract(d: ContractDriver): ContractCases {
 
   describe("hosted contract: space People", () => {
     const signIn = d.signIn;
-    const ENG = "SpEngNpQrSt2uVwX";
     const EXEC = "SpExcNpQrSt3uVwX";
     const ada = fixtures.members[0]?.id as string;
     const bob = fixtures.members[1]?.id as string;

@@ -9,14 +9,16 @@ const ME_SPACES =
   "GET /me has no spaces (item 2), so the case can't find its space ids";
 const MEMBER_FIELDS =
   "GET /members has no identities/restriction/status (item 1)";
-const CODE_DOMAIN =
-  "the mock signs a domain member in by code although providers say domainCodes:false; the server sends no code (new: fix the mock or the contract)";
 const FROZEN_GROUPS =
   "frozen sync: a manual override keeps the synced row's groups in the response (syncRole null, groups [gEng01]); the contract says groups [] (new)";
 
 export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
   "providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal":
-    { item: "new, 2", m1: true, why: `${CODE_DOMAIN}; then ${ME_SPACES}` },
+    {
+      item: "new, 2",
+      m1: true,
+      why: "GET /me has no instance.tier (hosted billing tier, new); the case reads me.spaces after it (item 2)",
+    },
   "spaces, members, mappings, directory, transfer": {
     item: "31",
     m1: false,
@@ -30,7 +32,7 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
   "a restricted-group member is capped and gets no allMembersRole": {
     item: "new, 2",
     m1: true,
-    why: `${CODE_DOMAIN} (Dan); then ${ME_SPACES}`,
+    why: "code verify answers readOnly false for restricted Dan: the server sets readOnly for guests only (new); the case reads me.spaces after it (item 2)",
   },
   "manual restricted flag: cap on space members, no successor, audited": {
     item: "2, 1b",
@@ -58,6 +60,11 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
     item: "1",
     m1: true,
     why: `${MEMBER_FIELDS}: restriction is undefined, not null`,
+  },
+  "admins see state, staleAt and held sweeps": {
+    item: "new",
+    m1: false,
+    why: "staleAt is null until lastSuccessAt + 7 d has passed (staleAtOf); the contract has it from the first unhealthy read (lastSuccessAt + 7 d)",
   },
   "frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)":
     { item: "new", m1: false, why: FROZEN_GROUPS },

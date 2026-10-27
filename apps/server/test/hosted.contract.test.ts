@@ -7,6 +7,7 @@ import { env } from "cloudflare:workers";
 import { AUTH, R } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  type ContractHosted,
   type ContractSetup,
   hostedContract,
 } from "../../../packages/shared/test/hosted-contract.js";
@@ -19,7 +20,6 @@ import { KNOWN_GAPS, M1_OPEN } from "./hosted.contract.gaps.js";
 
 const app = createApp();
 const APP = "http://app.localhost";
-const SESSION = sessionCookieName(env);
 
 // Hosted installs always run Turnstile on code requests (codes.ts). Siteverify,
 // faked: any token passes except "fail" (the mock's refused token).
@@ -95,8 +95,29 @@ const FIXTURE_ART: Record<string, string> = {
 
 // ---- env: a hosted install as provision renders it, sign-in direct --------
 const mail = mailer();
-const hostedEnv = (o: ContractSetup["hosted"]): Env => {
+/** The ContractHosted options this driver implements; any other throws. */
+const SUPPORTED: readonly (keyof ContractHosted)[] = [
+  "mode",
+  "providers",
+  "turnstile",
+  "directory",
+  "unhealthy",
+  "unhealthyState",
+  "breakGlass",
+  "actAs",
+  "features",
+];
+const hostedOpts = (o: ContractSetup["hosted"]): ContractHosted => {
   const h = typeof o === "object" ? o : {};
+  const bad = Object.keys(h).filter(
+    (k) => !SUPPORTED.includes(k as keyof ContractHosted),
+  );
+  if (bad.length)
+    throw new Error(`server driver: unsupported hosted option(s) ${bad}`);
+  return h;
+};
+const hostedEnv = (o: ContractSetup["hosted"]): Env => {
+  const h = hostedOpts(o);
   const sync =
     h.directory === "off"
       ? []
@@ -108,6 +129,7 @@ const hostedEnv = (o: ContractSetup["hosted"]): Env => {
   return {
     ...(env as object),
     ...mail.env,
+    ENVIRONMENT: "production",
     PLAN: "paid",
     HOSTED: "1",
     INSTALL_ID: "inst-a",
@@ -120,6 +142,10 @@ const hostedEnv = (o: ContractSetup["hosted"]): Env => {
       ...(h.features ?? []),
     ].join(","),
     AUTH_PROVIDERS: providers,
+    // As the mock: domain codes exactly when email is on and Google is off.
+    ...(providers.includes("email") && !providers.includes("google")
+      ? { EMAIL_CODE_DOMAIN: "on" }
+      : {}),
     AUTH_DOMAINS: "example.com",
     AUTH_DOMAIN_JOIN: "invite",
     GOOGLE_CLIENT_ID: CID,
@@ -141,6 +167,8 @@ const offEnv = (): Env =>
 
 // ---- state ----------------------------------------------------------------
 let E: Env = offEnv();
+/** The session cookie's name in E (__Host-oa_session outside dev). */
+const SESSION = () => sessionCookieName(E);
 /** The caller's cookies (a browser jar: Set-Cookie updates it). */
 const jar = new Map<string, string>();
 /** Fixture artifact id -> the id the server gave it. */
@@ -181,12 +209,16 @@ async function raw(
  * code requests, as the sign-in page does.
  */
 let widget = false;
+/** The address of the last AUTH.codeRequest, which code() reads the mail of. */
+let codeTo: string | null = null;
 
 async function call(method: string, path: string, body?: unknown) {
   let b =
     body === undefined ? undefined : JSON.parse(mapIds(JSON.stringify(body)));
   if (widget && path === AUTH.codeRequest && b && !("turnstileToken" in b))
     b = { ...b, turnstileToken: "widget-token" };
+  if (path === AUTH.codeRequest)
+    codeTo = typeof b?.email === "string" ? b.email.toLowerCase() : null;
   const r = await raw(
     method,
     mapIds(path),
@@ -194,6 +226,7 @@ async function call(method: string, path: string, body?: unknown) {
     [...jar].map(([k, v]) => `${k}=${v}`).join("; "),
   );
   for (const line of r.headers.getSetCookie()) {
+    // Names may carry a __Host- prefix: split at the first "=" only.
     const [pair = "", ...attrs] = line.split(";");
     const i = pair.indexOf("=");
     const name = pair.slice(0, i).trim();
@@ -205,7 +238,7 @@ async function call(method: string, path: string, body?: unknown) {
   return r;
 }
 
-async function sessionFor(userId: string): Promise<string> {
+async function sessionFor(userId: string, authAt?: number): Promise<string> {
   const row = await env.DB.prepare(
     "select session_epoch e from users where id = ?",
   )
@@ -218,6 +251,8 @@ async function sessionFor(userId: string): Promise<string> {
     provider: access ? "access" : "google",
     tenant: access ? undefined : "example.com",
     epoch: row?.e ?? 0,
+    // A forced Google re-authentication just now (break-glass fresh).
+    ...(authAt !== undefined ? { authAt } : {}),
   });
 }
 async function signIn(email: string) {
@@ -226,7 +261,7 @@ async function signIn(email: string) {
     .first<{ id: string }>();
   if (!row) throw new Error(`no fixture user ${email}`);
   jar.clear();
-  jar.set(SESSION, await sessionFor(row.id));
+  jar.set(SESSION(), await sessionFor(row.id));
 }
 
 const run = (sql: string, ...binds: unknown[]) =>
@@ -255,7 +290,7 @@ async function publishAs(
   title: string,
   extra: Record<string, unknown> = {},
 ) {
-  const cookie = `${SESSION}=${await sessionFor(U[who].id)}`;
+  const cookie = `${SESSION()}=${await sessionFor(U[who].id)}`;
   const r = await raw(
     "POST",
     R.artifacts,
@@ -268,8 +303,58 @@ async function publishAs(
   return { id, cookie };
 }
 
+/**
+ * Directory health as the mock has it (mocks/hosted.ts `sync`): healthy, or
+ * unhealthy for 2 h in unhealthyState (default backoff); held Sales sweep on
+ * google only. breakGlass: a Workspace mismatch, which locks the synced owner
+ * out of everything but break-glass.
+ */
+function health(h: ContractHosted, now: number) {
+  const mismatch = h.breakGlass !== undefined;
+  const state = mismatch
+    ? "customer_mismatch"
+    : h.unhealthy
+      ? (h.unhealthyState ?? "backoff")
+      : "ok";
+  const since = state === "ok" ? null : now - 2 * 3600_000;
+  return {
+    state,
+    value: JSON.stringify({
+      state,
+      unhealthySince: since,
+      lastSuccessAt: since ?? now,
+      lastError:
+        since === null ? null : { at: now, message: "Google returned 503" },
+      nextRunAt: null,
+      alertedAt: null,
+      customerMismatch: mismatch
+        ? { expected: "C01mock", actual: "C02other" }
+        : null,
+      held:
+        (h.directory ?? "google") === "google"
+          ? [
+              {
+                groupId: G.sales.id,
+                email: G.sales.email,
+                name: "Sales",
+                wouldRemove: 4,
+                members: 4,
+                since: new Date(
+                  Date.parse("2026-01-01T00:00:00.000Z"),
+                ).toISOString(),
+              },
+            ]
+          : [],
+      backoffN: 0,
+      failState: since === null ? null : state,
+      lanes: { fast: since === null ? null : state, rec: null },
+      staleAt: null,
+    }),
+  };
+}
+
 /** The mock's hosted world (mocks/hosted.ts createHostedMock), in D1. */
-async function seed(hosted: boolean) {
+async function seed(hosted: boolean, h: ContractHosted = {}) {
   const now = Date.now();
   const users = hosted ? Object.values(U) : [U.ada, U.bob];
   await env.DB.batch(
@@ -297,14 +382,21 @@ async function seed(hosted: boolean) {
     return;
   }
   const T0 = Date.parse("2026-01-01T00:00:00.000Z");
+  const google =
+    h.mode !== "access" && (h.providers ?? ["google"]).includes("google");
+  const dir = h.directory ?? "google";
+  const hs = health(h, now);
   await env.DB.batch([
-    // Owners and active members are Google-linked; Dan never signed in.
-    ...[U.ada, U.bob, U.carol, U.erin].map((u) =>
+    // Owners and active members are Google-linked (when Google is on; an
+    // email-only install has no Google links), bound to the connected
+    // directory; Dan never signed in.
+    ...(google ? [U.ada, U.bob, U.carol, U.erin] : []).map((u) =>
       run(
-        "insert into identities (provider, subject, tenant, user_id, created_at) values ('google', ?, 'example.com', ?, ?)",
+        "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'example.com', ?, ?, ?)",
         `sub-${u.id}`,
         u.id,
         now,
+        dir === "google" ? 1 : 0,
       ),
     ),
     run(
@@ -381,44 +473,29 @@ async function seed(hosted: boolean) {
       T0,
     ),
     run("update users set restricted_sync = 1 where id = ?", U.dan.id),
-    // A connected, healthy Google binding with one held sweep (Sales).
-    run(
-      "insert into directory_state (key, value) values ('binding', ?)",
-      JSON.stringify({
-        provider: "google",
-        customerId: "C01mock",
-        domain: "example.com",
-        connectedBy: U.ada.email,
-        connectedAt: new Date(T0).toISOString(),
-      }),
-    ),
-    run("insert into directory_state (key, value) values ('sync.state', 'ok')"),
-    run(
-      "insert into directory_state (key, value) values ('sync.health', ?)",
-      JSON.stringify({
-        state: "ok",
-        unhealthySince: null,
-        lastSuccessAt: now,
-        lastError: null,
-        nextRunAt: null,
-        alertedAt: null,
-        customerMismatch: null,
-        held: [
-          {
-            groupId: G.sales.id,
-            email: G.sales.email,
-            name: "Sales",
-            wouldRemove: 4,
-            members: 4,
-            since: new Date(T0).toISOString(),
-          },
-        ],
-        backoffN: 0,
-        failState: null,
-        lanes: { fast: null, rec: null },
-        staleAt: null,
-      }),
-    ),
+    // A connected Google binding (none when the directory is off) and its health.
+    ...(dir === "off"
+      ? []
+      : [
+          run(
+            "insert into directory_state (key, value) values ('binding', ?)",
+            JSON.stringify({
+              provider: "google",
+              customerId: "C01mock",
+              domain: "example.com",
+              connectedBy: U.ada.email,
+              connectedAt: new Date(T0).toISOString(),
+            }),
+          ),
+          run(
+            "insert into directory_state (key, value) values ('sync.state', ?)",
+            hs.state,
+          ),
+          run(
+            "insert into directory_state (key, value) values ('sync.health', ?)",
+            hs.value,
+          ),
+        ]),
   ]);
   // Artifacts (fixtures.ts), published for real; "Meeting notes" lives in
   // Engineering. Bob's "Shared draft" is shared with Ada as an editor.
@@ -464,7 +541,7 @@ async function seed(hosted: boolean) {
     "PUT",
     R.shares(ids.get(FIXTURE_ART["Landing page"] as string) as string),
     { email: "guest@outside.org", role: "viewer" },
-    `${SESSION}=${await sessionFor(U.ada.id)}`,
+    `${SESSION()}=${await sessionFor(U.ada.id)}`,
   );
   if (!guestShare.ok) throw new Error(`seed guest share: ${guestShare.status}`);
   // Carol (suspended): two live personal artifacts and one deleted.
@@ -486,16 +563,38 @@ async function seed(hosted: boolean) {
 }
 
 async function fresh(o: ContractSetup = {}) {
+  const extra = Object.keys(o).filter((k) => k !== "hosted");
+  if (extra.length)
+    throw new Error(`server driver: unsupported setup option(s) ${extra}`);
+  const hosted = o.hosted !== undefined && o.hosted !== false;
+  const h = hostedOpts(o.hosted);
   ids.clear();
   jar.clear();
+  mail.sent.length = 0;
+  codeTo = null;
   await wipe();
-  const hosted = o.hosted !== undefined && o.hosted !== false;
   E = hosted ? hostedEnv(o.hosted) : offEnv();
-  await seed(hosted);
-  const h = typeof o.hosted === "object" ? o.hosted : {};
+  // Seeding publishes as the fixture users, which a Workspace mismatch would
+  // refuse: the mismatch lands after the world is seeded.
+  await seed(hosted, { ...h, breakGlass: undefined });
+  if (h.breakGlass) {
+    const hs = health(h, Date.now());
+    await env.DB.batch([
+      run(
+        "update directory_state set value = ? where key = 'sync.state'",
+        hs.state,
+      ),
+      run(
+        "update directory_state set value = ? where key = 'sync.health'",
+        hs.value,
+      ),
+    ]);
+  }
   widget = hosted && !h.turnstile;
-  const actAs = h.actAs;
-  await signIn(actAs === "admin" ? U.erin.email : U.ada.email);
+  await signIn(h.actAs === "admin" ? U.erin.email : U.ada.email);
+  // Break-glass "fresh": a forced Google re-authentication just now.
+  if (h.breakGlass === "fresh")
+    jar.set(SESSION(), await sessionFor(U.ada.id, Date.now()));
 }
 
 const cases = hostedContract({
@@ -504,9 +603,8 @@ const cases = hostedContract({
   call,
   signIn,
   code: async () => {
-    const to = [...mail.sent].reverse()[0]?.to;
-    if (!to) throw new Error("no code sent");
-    return mail.codeFor(to);
+    if (!codeTo) throw new Error("no code requested");
+    return mail.codeFor(codeTo);
   },
   knownGaps: KNOWN_GAPS,
 });
@@ -537,5 +635,10 @@ describe("server driver", () => {
       user: { id: string };
     };
     expect(me.user.id).toBe(U.ada.id);
+  });
+
+  it("throws on a setup option it doesn't implement", async () => {
+    const tier = { hosted: { tier: "team" } } as unknown as ContractSetup;
+    await expect(fresh(tier)).rejects.toThrow(/unsupported hosted option/);
   });
 });
