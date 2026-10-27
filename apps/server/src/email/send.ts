@@ -54,6 +54,8 @@ const PHRASE_SPECIALS = /["\\<>@()[\]:;,.]/g;
 export function cleanInstanceName(raw: string | null | undefined): string {
   if (typeof raw !== "string") return "";
   const s = raw
+    // Line breaks and tabs separate words; the rest of UNSAFE_CHARS goes.
+    .replace(/[\t\n\v\f\r\u0085\u2028\u2029]/gu, " ")
     .replace(UNSAFE_CHARS, "")
     .replace(PHRASE_SPECIALS, "")
     .replace(/\s+/gu, " ")
