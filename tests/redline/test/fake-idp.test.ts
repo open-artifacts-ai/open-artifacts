@@ -49,9 +49,16 @@ describe("the fake IdP is trusted by local fake-IdP builds only", () => {
   });
 
   it("the shim refuses to load without the build-time defines", async () => {
-    await expect(import("../src/fake-idp/auth-core-shim.ts")).rejects.toThrow(
-      /not a local fake-IdP build/,
+    // A computed specifier: tsc must not pull the shim (and auth-core's
+    // source) into this package's typecheck.
+    const shim = join(
+      import.meta.dirname,
+      "..",
+      "src",
+      "fake-idp",
+      "auth-core-shim.ts",
     );
+    await expect(import(shim)).rejects.toThrow(/not a local fake-IdP build/);
   });
 });
 
