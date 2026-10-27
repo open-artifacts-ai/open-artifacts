@@ -1,4 +1,9 @@
 import {
+  type BrokerGateEnv,
+  type BrokerGateProps,
+  brokerProps,
+} from "@oa/broker-core/gate";
+import {
   ForeignResource,
   isInstallId,
   names,
@@ -11,7 +16,19 @@ import {
 } from "@oa/provision/versions";
 import { emailQuota, type QuotaEnv } from "./quota.js";
 
-export interface Env extends QuotaEnv {
+// Installs reach the brokers only through these stubs (see @oa/broker-core/gate).
+export { BrokerGate } from "@oa/broker-core/gate";
+
+/** ctx.exports for this Worker's own BrokerGate export. */
+export interface GateExports {
+  BrokerGate: (o: { props: BrokerGateProps }) => Fetcher;
+}
+
+/** A call's args: the install's broker gates in props when this run has them. */
+const withGates = (gates: GateExports | undefined, id: string) =>
+  gates ? { props: brokerProps(gates, id) } : undefined;
+
+export interface Env extends QuotaEnv, BrokerGateEnv {
   DISPATCHER: DispatchNamespace;
   /** Platform D1 (installs metadata only; no customer data). */
   PLATFORM_DB: D1Database;
@@ -73,6 +90,12 @@ export interface NightlyOptions {
   /** With less than this left before the deadline, no re-check starts. */
   recheckFloorMs?: number;
   pageSize?: number;
+  /** The job the install's scheduled() sees as cron (default CRON). */
+  job?: string;
+  /** The log line prefix (default "nightly"). */
+  label?: string;
+  /** ctx.exports of this run, so each call carries the install's broker gates. */
+  gates?: GateExports;
 }
 
 /** Consecutive re-check D1 errors or stalls that stop the run (a platform D1 outage). */
@@ -200,8 +223,8 @@ export async function nightOrder(
   return [...cycle.slice(off), ...cycle.slice(0, off)];
 }
 
-const logFailed = (reason: Reason, id: string) =>
-  console.error("nightly failed", reason, id);
+const logFailed = (label: string, reason: Reason, id: string) =>
+  console.error(`${label} failed`, reason, id);
 
 class Stall extends Error {}
 
@@ -240,6 +263,9 @@ export async function runNightly(
     recheckMs = 5_000,
     recheckFloorMs = 1_000,
     pageSize = 500,
+    job = CRON,
+    label = "nightly",
+    gates,
   }: NightlyOptions = {},
 ): Promise<NightlyResult> {
   positive("concurrency", concurrency, true);
@@ -256,9 +282,9 @@ export async function runNightly(
   // Resolve every script name first: an unknown OA_ENV throws before any call.
   for (const id of valid) names(id, env.OA_ENV);
   const invalid = rows.invalid + rows.ids.length - valid.length;
-  if (invalid > 0) console.warn("nightly invalid", `ids=${invalid}`);
+  if (invalid > 0) console.warn(`${label} invalid`, `ids=${invalid}`);
   if (valid.length > SCALE_WARN)
-    console.warn("nightly scale", `active=${valid.length} over ${SCALE_WARN}`);
+    console.warn(`${label} scale`, `active=${valid.length} over ${SCALE_WARN}`);
   // Tonight's tail is near the head on a later night (nightOrder).
   const ids = await nightOrder(valid, now);
 
@@ -270,12 +296,12 @@ export async function runNightly(
   const capped: string[] = [];
   const fail = (id: string, reason: Reason) => {
     failed.push({ id, reason });
-    logFailed(reason, id);
+    logFailed(label, reason, id);
   };
   const skip = (id: string, reason: SkipReason) => {
     skipped.push(id);
     if (reason === "capped") capped.push(id);
-    console.warn("nightly skipped", reason, id);
+    console.warn(`${label} skipped`, reason, id);
   };
 
   let next = 0;
@@ -291,7 +317,7 @@ export async function runNightly(
   const leak = (id: string) => {
     if (!stuck.delete(id)) return;
     leaked.push(id);
-    console.warn("nightly leaked", id);
+    console.warn(`${label} leaked`, id);
   };
 
   await new Promise<void>((resolve) => {
@@ -374,7 +400,7 @@ export async function runNightly(
             // The platform D1, not the install: never a failure of the install.
             decide(() => {
               dbErrors.push(id);
-              console.error("nightly db_error", id);
+              console.error(`${label} db_error`, id);
             });
           }
           // A stall counts like an error: a hanging D1 stops the run too.
@@ -402,8 +428,9 @@ export async function runNightly(
         const r = await (
           env.DISPATCHER.get(
             names(id, env.OA_ENV).script,
+            withGates(gates, id),
           ) as unknown as ScheduledFetcher
-        ).scheduled({ cron: CRON, scheduledTime: new Date(now) });
+        ).scheduled({ cron: job, scheduledTime: new Date(now) });
         checkOutcome(r);
         decide(() => ok.push(id));
       } catch (e) {
@@ -438,12 +465,13 @@ export async function nightly(
   now: number,
   o?: NightlyOptions,
 ): Promise<NightlyResult> {
+  const label = o?.label ?? "nightly";
   let r: NightlyResult;
   try {
     r = await runNightly(env, now, o);
   } catch (e) {
     console.error(
-      "nightly aborted",
+      `${label} aborted`,
       e instanceof ForeignResource ? "env" : "exception",
     );
     throw e;
@@ -451,7 +479,7 @@ export async function nightly(
   const { ok, failed, skipped, dbErrors, leaked, capped } = r;
   const active = ok.length + failed.length + skipped.length + dbErrors.length;
   console.log(
-    "nightly summary",
+    `${label} summary`,
     `active=${active} ok=${ok.length} failed=${failed.length} skipped=${skipped.length} capped=${capped.length} db_errors=${dbErrors.length} leaked=${leaked.length}`,
   );
   return r;
@@ -480,6 +508,8 @@ const REVOKE_RETRY_SQL =
 export interface RevokeOptions {
   /** Per call; the nightly call's default. */
   timeoutMs?: number;
+  /** ctx.exports of this tick: the revoke reaches the directory broker through it. */
+  gates?: GateExports;
 }
 
 /**
@@ -493,11 +523,11 @@ export interface RevokeOptions {
 export async function revokeTick(
   env: Env,
   now: number,
-  { timeoutMs = 25_000 }: RevokeOptions = {},
+  { timeoutMs = 25_000, gates }: RevokeOptions = {},
 ): Promise<void> {
   positive("timeoutMs", timeoutMs, false);
   try {
-    await runRevokeTick(env, now, timeoutMs);
+    await runRevokeTick(env, now, timeoutMs, gates);
   } catch {
     // M2: never the error text (it can carry a D1 message or the install's).
     console.error("directory-revoke aborted", "exception");
@@ -550,6 +580,7 @@ async function runRevokeTick(
   env: Env,
   now: number,
   timeoutMs: number,
+  gates: GateExports | undefined,
 ): Promise<void> {
   const db = env.PLATFORM_DB;
   const { results } = await db
@@ -584,6 +615,7 @@ async function runRevokeTick(
           (
             env.DISPATCHER.get(
               names(id, env.OA_ENV).script,
+              withGates(gates, id),
             ) as unknown as ScheduledFetcher
           ).scheduled({ cron: REVOKE_JOB, scheduledTime: new Date(now) }),
           timeoutMs,
@@ -625,6 +657,41 @@ async function runRevokeTick(
   );
 }
 
+// ---------- Directory sync: the install's broker calls, from here ----------
+
+/**
+ * The install's job (Backend): run the directory sync if SyncDO says one is
+ * due, minting the directory token through the props gate. The SyncDO alarm
+ * makes no broker call: a props stub is valid only for the request that got
+ * it, so the broker is reached only inside this call.
+ */
+export const SYNC_JOB = "oa:directory-sync";
+
+/**
+ * Every REVOKE_CRON tick, after the revoke tick: every active install, quick
+ * calls only (an install with no directory returns at once), all done well
+ * inside the 2 minutes so ticks never overlap.
+ */
+export const SYNC_OPTIONS = {
+  concurrency: 6,
+  timeoutMs: 20_000,
+  deadlineMs: 80_000,
+  leakMs: 15_000,
+} as const satisfies NightlyOptions;
+
+export function directorySync(
+  env: Env,
+  now: number,
+  gates: GateExports | undefined,
+): Promise<NightlyResult> {
+  return nightly(env, now, {
+    ...SYNC_OPTIONS,
+    job: SYNC_JOB,
+    label: "directory-sync",
+    ...(gates ? { gates } : {}),
+  });
+}
+
 /** Deleted installs keep their owner email this long, then it is purged. */
 export const OWNER_EMAIL_RETENTION_MS = 30 * DAY_MS;
 /**
@@ -653,13 +720,20 @@ export async function purgeOwnerEmails(
 }
 
 export default {
-  async scheduled(event, env, _ctx) {
+  async scheduled(event, env, ctx) {
+    const gates = ctx.exports as unknown as GateExports;
     if (event.cron === REVOKE_CRON) {
-      await revokeTick(env, event.scheduledTime);
+      await revokeTick(env, event.scheduledTime, { gates });
+      // Own try: a sync run that aborts (D1, env) never fails the revoke tick.
+      try {
+        await directorySync(env, event.scheduledTime, gates);
+      } catch {
+        // directorySync's nightly() already logged a fixed line.
+      }
       return;
     }
     if (event.cron !== CRON) return;
-    await nightly(env, event.scheduledTime);
+    await nightly(env, event.scheduledTime, { gates });
     // Own try, after the nightly result is settled: it never changes it
     // (emailQuota logs one fixed line and doesn't throw; this catch is
     // defense only, unreachable today).

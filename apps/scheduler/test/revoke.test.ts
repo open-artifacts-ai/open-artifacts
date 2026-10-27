@@ -15,7 +15,9 @@ import {
 import STORED from "../../../packages/provision/test/fixtures/stored-install.json";
 import scheduler, {
   CRON,
+  directorySync,
   type Env,
+  type GateExports,
   OWNER_EMAIL_RETENTION_MS,
   PURGE_SQL,
   purgeOwnerEmails,
@@ -26,6 +28,8 @@ import scheduler, {
   REVOKE_SQL,
   revokeCategory,
   revokeTick,
+  SYNC_JOB,
+  SYNC_OPTIONS,
 } from "../src/index.js";
 
 // H-DV: the */2 cron moves `deleting` installs' directory_revoke from
@@ -42,6 +46,8 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  // install_versions first: it references installs (one test seeds it).
+  await db.prepare("DELETE FROM install_versions").run();
   await db.prepare("DELETE FROM installs").run();
 });
 
@@ -109,11 +115,13 @@ function fakes(
   onCall?: (script: string) => Promise<void>,
 ) {
   const calls: { script: string; opts: unknown }[] = [];
+  const args: { script: string; args: unknown }[] = [];
   const env = {
     OA_ENV: "staging",
     PLATFORM_DB: db,
     DISPATCHER: {
-      get(script: string) {
+      get(script: string, a?: unknown) {
+        args.push({ script, args: a });
         const b = behave(script);
         return {
           async scheduled(opts: unknown) {
@@ -139,7 +147,7 @@ function fakes(
       },
     },
   } as unknown as Env;
-  return { env, calls };
+  return { env, calls, args };
 }
 
 function captureLogs() {
@@ -415,7 +423,7 @@ describe("the */2 revoke tick", () => {
 });
 
 describe("scheduled() branches on event.cron", () => {
-  it("the */2 cron runs only the revoke tick: no nightly call, no purge", async () => {
+  it("the */2 cron runs the revoke tick, then the directory sync of active installs: no nightly job, no purge", async () => {
     await seed([
       { id: idOf(0) },
       { id: idOf(1), state: "active", revoke: null },
@@ -438,7 +446,14 @@ describe("scheduled() branches on event.cron", () => {
         script: `oa-s-${idOf(0)}`,
         opts: { cron: REVOKE_JOB, scheduledTime: new Date(NOW) },
       },
+      {
+        script: `oa-s-${idOf(1)}`,
+        opts: { cron: SYNC_JOB, scheduledTime: new Date(NOW) },
+      },
     ]);
+    expect(lines).toContain(
+      "directory-sync summary active=1 ok=1 failed=0 skipped=0 capped=0 db_errors=0 leaked=0",
+    );
     expect(
       lines.some(
         (l) =>
@@ -588,7 +603,11 @@ describe("H-DV review fixes", () => {
         createExecutionContext(),
       ),
     ).resolves.toBeUndefined();
-    expect(lines).toEqual(["directory-revoke aborted exception"]);
+    // The sync run after it aborts on its own fixed line, never raw text.
+    expect(lines).toEqual([
+      "directory-revoke aborted exception",
+      "directory-sync aborted exception",
+    ]);
   });
 
   it("L2: a late result never overwrites a revoke the operator settled meanwhile", async () => {
@@ -713,5 +732,56 @@ describe("H-DV review fixes", () => {
       owner_email: "keep@customer.test",
       inputs_hash: "h",
     });
+  });
+});
+
+describe("broker gates on every install call", () => {
+  /** ctx.exports.BrokerGate as the runtime gives it: one stub per call, with its props. */
+  const gates = {
+    BrokerGate: (o: { props: unknown }) => ({ gate: o.props }),
+  } as unknown as GateExports;
+  const props = (id: string) => ({
+    props: {
+      AUTH_BROKER: { gate: { installId: id, kind: "auth" } },
+      DIRECTORY_BROKER: { gate: { installId: id, kind: "directory" } },
+    },
+  });
+
+  it("the revoke call carries that install's gates, and only its own", async () => {
+    await seed([{ id: idOf(0) }, { id: idOf(1) }]);
+    const f = fakes();
+    await revokeTick(f.env, NOW, { gates });
+    expect(f.args.sort((a, b) => a.script.localeCompare(b.script))).toEqual([
+      { script: `oa-s-${idOf(0)}`, args: props(idOf(0)) },
+      { script: `oa-s-${idOf(1)}`, args: props(idOf(1)) },
+    ]);
+  });
+
+  it("the directory sync calls every active install once with SYNC_JOB and its own gates, inside the tick", async () => {
+    await seed([
+      { id: idOf(0), state: "active", revoke: null },
+      { id: idOf(1), state: "active", revoke: null },
+      { id: idOf(2) },
+    ]);
+    const f = fakes();
+    const r = await directorySync(f.env, NOW, gates);
+    expect(r.ok.sort()).toEqual([idOf(0), idOf(1)]);
+    expect(f.calls.map((c) => c.opts)).toEqual([
+      { cron: SYNC_JOB, scheduledTime: new Date(NOW) },
+      { cron: SYNC_JOB, scheduledTime: new Date(NOW) },
+    ]);
+    for (const a of f.args)
+      expect(a.args).toEqual(props(a.script.replace("oa-s-", "")));
+    // Bounded well inside the 2-minute tick, so ticks never overlap.
+    expect(SYNC_OPTIONS.deadlineMs + SYNC_OPTIONS.timeoutMs).toBeLessThan(
+      120_000,
+    );
+  });
+
+  it("without ctx.exports a call carries no props (the install then fails closed)", async () => {
+    await seed([{ id: idOf(0) }]);
+    const f = fakes();
+    await revokeTick(f.env, NOW);
+    expect(f.args).toEqual([{ script: `oa-s-${idOf(0)}`, args: undefined }]);
   });
 });

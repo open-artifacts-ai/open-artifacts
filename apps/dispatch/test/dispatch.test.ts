@@ -17,6 +17,7 @@ function fakes(
 ) {
   const reads: { key: string; opts: unknown }[] = [];
   const scripts: string[] = [];
+  const args: unknown[] = [];
   const seen: Request[] = [];
   const env = {
     OA_ENV: "staging",
@@ -28,8 +29,9 @@ function fakes(
       },
     },
     DISPATCHER: {
-      get: (name: string) => {
+      get: (name: string, a?: unknown) => {
         scripts.push(name);
+        args.push(a);
         if (opts.get) opts.get();
         return {
           fetch: async (req: Request) => {
@@ -42,8 +44,19 @@ function fakes(
       },
     },
   } as unknown as Env;
-  return { env, reads, scripts, seen };
+  return { env, reads, scripts, seen, args };
 }
+
+/** ctx.exports.BrokerGate as the runtime gives it: each call is one stub with its props. */
+const gates: { props: unknown }[] = [];
+const ctx = {
+  exports: {
+    BrokerGate: (o: { props: unknown }) => {
+      gates.push(o);
+      return { gate: o.props };
+    },
+  },
+} as unknown as ExecutionContext;
 
 const MAP = {
   "acme.open-artifacts-staging.app": A,
@@ -58,6 +71,7 @@ const call = (env: Env, input: string | Request, init?: RequestInit) =>
   dispatch.fetch(
     (typeof input === "string" ? new Request(input, init) : input) as In,
     env,
+    ctx,
   );
 
 /** Status, every header and the body bytes: what the client can observe. */
@@ -462,4 +476,39 @@ describe("host normalization matches @oa/shared normalizeHost", () => {
     it(u, () => {
       expect(hostOf(new Request(u))).toBe(normalizeHost(new URL(u).host));
     });
+});
+
+describe("broker gates in props", () => {
+  it("a mapped host gets one auth and one directory gate, for that install only", async () => {
+    const f = fakes(MAP);
+    gates.length = 0;
+    expect(
+      (await call(f.env, "https://beta.open-artifacts-staging.app/x")).status,
+    ).toBe(200);
+    expect(f.args).toEqual([
+      {
+        props: {
+          AUTH_BROKER: { gate: { installId: B, kind: "auth" } },
+          DIRECTORY_BROKER: { gate: { installId: B, kind: "directory" } },
+        },
+      },
+    ]);
+    expect(gates.map((g) => g.props)).toEqual([
+      { installId: B, kind: "auth" },
+      { installId: B, kind: "directory" },
+    ]);
+  });
+
+  it("an unmapped host or a bad HOSTS value gets no gate and no dispatch", async () => {
+    const f = fakes({ "evil.open-artifacts-staging.app": "../iabc123def45" });
+    gates.length = 0;
+    for (const u of [
+      "https://nobody.open-artifacts-staging.app/",
+      "https://evil.open-artifacts-staging.app/",
+      "https://open-artifacts-staging.app/",
+    ])
+      expect((await call(f.env, u)).status).toBe(404);
+    expect(gates).toEqual([]);
+    expect(f.args).toEqual([]);
+  });
 });

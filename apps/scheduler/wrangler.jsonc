@@ -29,8 +29,15 @@
       "vars": {
         "OA_ENV": "staging",
         "EMAIL_QUOTA_ZONES": "{{EMAIL_ZONE_TAG_STAGING}}",
-        "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_STAGING}}"
+        "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_STAGING}}",
+        "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
+        "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },
+      // The BrokerGate stubs each install call carries (see the gate).
+      "services": [
+        { "binding": "AUTH_BROKER", "service": "oa-s-auth-broker" },
+        { "binding": "DIRECTORY_BROKER", "service": "oa-s-directory-broker" }
+      ],
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [
@@ -52,8 +59,15 @@
       "vars": {
         "OA_ENV": "prod",
         "EMAIL_QUOTA_ZONES": "{{EMAIL_ZONE_TAG_PROD}}",
-        "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_PROD}}"
+        "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_PROD}}",
+        "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
+        "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
       },
+      // The BrokerGate stubs each install call carries (see the gate).
+      "services": [
+        { "binding": "AUTH_BROKER", "service": "oa-p-auth-broker" },
+        { "binding": "DIRECTORY_BROKER", "service": "oa-p-directory-broker" }
+      ],
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [
