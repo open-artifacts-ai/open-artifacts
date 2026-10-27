@@ -338,6 +338,33 @@ export async function latestOtp(
   }
 }
 
+/** How long the __Host- cookie case waits for its emailed code. */
+export const COOKIE_CASE_OTP_MS = 5000;
+
+/**
+ * The code for a code request the cookie case just made: `status` and the
+ * pending cookies it set. Unproven (with why) when the request set no pending
+ * cookie, or no code arrived within `waitMs`. Any other hook answer (a 429
+ * from the hook rate limit, say) throws, so the case fails with its status.
+ */
+export async function pendingCode(
+  t: Target,
+  email: string,
+  req: { status: number; pending: readonly string[] },
+  waitMs = COOKIE_CASE_OTP_MS,
+): Promise<{ code: string } | { unproven: string }> {
+  if (req.status !== 202 || req.pending.length === 0)
+    return {
+      unproven: `${t.name}: code sign-in unavailable (no pending code cookie; request status ${req.status})`,
+    };
+  const code = await latestOtp(t, email, waitMs);
+  return code
+    ? { code }
+    : {
+        unproven: `${t.name}: code sign-in unavailable (no code within ${waitMs / 1000} s)`,
+      };
+}
+
 // --- the auth broker (staging) ---------------------------------------------
 
 /**

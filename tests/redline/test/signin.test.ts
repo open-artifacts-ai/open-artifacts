@@ -1,5 +1,6 @@
 import { rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
+import { HttpError } from "../src/http.ts";
 import { crossCheck, NotRefused } from "../src/refused.ts";
 import {
   codeRequestReq,
@@ -7,6 +8,7 @@ import {
   expectTurnstileRequired,
   labelTurnstileTestKey,
   ownCodeRequestReq,
+  pendingCode,
   signInRefused,
   stateAccepted,
   TURNSTILE_DUMMY_TOKEN,
@@ -14,8 +16,8 @@ import {
   tamperInstall,
   usesTurnstileTestKey,
 } from "../src/signin.ts";
-import { parseTargets, type Target } from "../src/targets.ts";
-import { type Fake, fakeServer, secretDir } from "./fake.ts";
+import { loadTargets, parseTargets, type Target } from "../src/targets.ts";
+import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
 
 const t = (name: string, app: string): Target => ({
   name,
@@ -225,5 +227,87 @@ describe("expectTurnstileRequired", () => {
     expect(req.method).toBe("POST");
     expect(new URL(req.url).pathname).toBe("/auth/code/request");
     expect(await req.json()).toEqual({ email: "x@rl-a.test" });
+  });
+});
+
+describe("pendingCode (the __Host- cookie case's code)", () => {
+  /** rl-a on a fake whose otp/latest hook answers with `h`. */
+  async function hooked(h: NonNullable<Parameters<typeof fakeServer>[0]>) {
+    // loadTargets checks each install's /healthz (testHooks, installId).
+    const withHealthz =
+      (id: string, next?: typeof h): typeof h =>
+      (q, r, b) =>
+        q.url === "/healthz"
+          ? json(r, 200, { ok: true, testHooks: true, installId: id })
+          : next
+            ? next(q, r, b)
+            : r.writeHead(404).end();
+    const f = await fakeServer(withHealthz("rl-a-id", h));
+    fakes.push(f);
+    const other = await fakeServer(withHealthz("rl-b-id"));
+    fakes.push(other);
+    const s = secretDir({ k: "k".repeat(40) });
+    dirs.push(s.dir);
+    const tg = (name: string, o: Fake) => ({
+      name,
+      installId: `${name}-id`,
+      app: o.origin,
+      content: `http://${name}.content.localhost:1`,
+      testDomain: `${name}.test`,
+      hookKeyFile: s.path("k"),
+    });
+    const T = await loadTargets({
+      REDLINE_TARGETS: JSON.stringify({
+        mode: "local",
+        a: tg("rl-a", f),
+        b: tg("rl-b", other),
+      }),
+    });
+    return T.a;
+  }
+  const ok = { status: 202, pending: ["oa_code=x"] };
+
+  it("no pending cookie: unproven with why, no hook call", async () => {
+    let calls = 0;
+    const t = await hooked((_q, r) => {
+      calls++;
+      r.writeHead(500).end();
+    });
+    expect(
+      await pendingCode(t, "g@rl-a.test", { status: 202, pending: [] }),
+    ).toEqual({
+      unproven:
+        "rl-a: code sign-in unavailable (no pending code cookie; request status 202)",
+    });
+    expect(
+      await pendingCode(t, "g@rl-a.test", { status: 429, pending: ["x=1"] }),
+    ).toEqual({
+      unproven:
+        "rl-a: code sign-in unavailable (no pending code cookie; request status 429)",
+    });
+    expect(calls).toBe(0);
+  });
+
+  it("only 404s within the wait: unproven, no code within the wait", async () => {
+    const t = await hooked((_q, r) => json(r, 404, { error: {} }));
+    expect(await pendingCode(t, "g@rl-a.test", ok, 600)).toEqual({
+      unproven: "rl-a: code sign-in unavailable (no code within 0.6 s)",
+    });
+  });
+
+  it("a hook error other than 404 (a 429 from the hook rate limit) fails with its status", async () => {
+    const t = await hooked((_q, r) => r.writeHead(429).end());
+    const e = await pendingCode(t, "g@rl-a.test", ok).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(HttpError);
+    expect((e as HttpError).status).toBe(429);
+    expect((e as Error).message).toMatch(/status 429/);
+  });
+
+  it("the code once the hook has it", async () => {
+    let n = 0;
+    const t = await hooked((_q, r) =>
+      ++n < 2 ? json(r, 404, {}) : json(r, 200, { code: "123456" }),
+    );
+    expect(await pendingCode(t, "g@rl-a.test", ok)).toEqual({ code: "123456" });
   });
 });

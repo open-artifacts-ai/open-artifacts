@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, it } from "vitest";
 import { InfraError, setupTimeout } from "../../src/fetch-timeout.ts";
+import { SetupHookError } from "../../src/http.ts";
 import { NotRefused, tagLeg } from "../../src/refused.ts";
 import { label, type ProofMeta, proof } from "../../src/report.ts";
 
@@ -8,13 +9,30 @@ import { label, type ProofMeta, proof } from "../../src/report.ts";
 // beforeAll of an outer suite around a nested one; "labeled" labels the
 // nested case from a beforeEach, as live/signin.test.ts does; "infra" and
 // "setup-infra" throw a setup-publish timeout from the case or the top
-// beforeAll).
+// beforeAll; "setup-hook" refuses the top beforeAll's session hook with a
+// reason, as the seeding's hook did in staging run 6).
 const LEVEL = process.env.FIXTURE_LEVEL ?? "pass";
 
 beforeAll(() => {
   if (LEVEL === "setup-fail") throw new Error("fixture setup");
   if (LEVEL === "setup-infra")
     throw new InfraError(setupTimeout("rl-b", 60_000));
+  if (LEVEL === "setup-hook") {
+    // The body also carries text that must never reach the report.
+    const body = JSON.stringify({
+      error: {
+        code: "not_found",
+        message: "Not found leaked-body-text",
+        details: { reason: "spaces_blocked" },
+      },
+    });
+    throw new SetupHookError(
+      { name: "rl-a" } as never,
+      "/__test/session",
+      new Response(body, { status: 404 }),
+      body,
+    );
+  }
 });
 
 it("fixture: a passing case", () => {});

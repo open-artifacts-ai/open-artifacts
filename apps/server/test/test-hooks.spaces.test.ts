@@ -63,6 +63,12 @@ async function is404(r: Response) {
   expect(r.status).toBe(404);
   expect(await r.text()).toBe(await ref404());
 }
+/** A refusal after the key: the standard 404 plus error.details.reason. */
+async function refused(r: Response, reason: string) {
+  expect(r.status).toBe(404);
+  const { error } = JSON.parse(await ref404()) as { error: object };
+  expect(await r.json()).toEqual({ error: { ...error, details: { reason } } });
+}
 const sid = () =>
   `test-${crypto.randomUUID().replaceAll("-", "").slice(0, 14)}`;
 async function myRole(e: Env, cookie: string, spaceId: string) {
@@ -181,13 +187,14 @@ describe("session hook with spaces", () => {
   });
 
   // Plan says 400; P2's hook contract makes every refusal the standard 404.
-  it("unknown role → the standard 404 (P2: every refusal is the 404)", async () => {
-    await is404(
+  it("unknown role → the standard 404 with bad_input (P2: every refusal is the 404)", async () => {
+    await refused(
       await session(on(), {
         email: tu("bad"),
         role: "member",
         spaces: [{ spaceId: sid(), role: "owner" }],
       }),
+      "bad_input",
     );
   });
 
@@ -206,8 +213,9 @@ describe("session hook with spaces", () => {
       [{ spaceId: "a/b", role: "viewer" }],
       [{ spaceId: "", role: "viewer" }],
     ])
-      await is404(
+      await refused(
         await session(on(), { email: tu("lim"), role: "member", spaces }),
+        "bad_input",
       );
     expect(
       (
@@ -235,9 +243,14 @@ describe("session hook with spaces", () => {
       .bind(gone, Date.now(), Date.now())
       .run();
     const email = tu("intruder");
-    for (const spaceId of [personal, gone]) {
+    // A personal id never carries the test- prefix (bad_input); the deleted
+    // prefixed space is caught by SPACES_BLOCKED.
+    for (const [spaceId, reason] of [
+      [personal, "bad_input"],
+      [gone, "spaces_blocked"],
+    ] as const) {
       const fresh = sid();
-      await is404(
+      await refused(
         await session(on(), {
           email,
           role: "member",
@@ -246,6 +259,7 @@ describe("session hook with spaces", () => {
             { spaceId, role: "manager" },
           ],
         }),
+        reason,
       );
       // Refused as a whole: no rows anywhere, the fresh space not created.
       expect(
@@ -292,12 +306,13 @@ describe("session hook with spaces", () => {
         return typeof v === "function" ? v.bind(t) : v;
       },
     });
-    await is404(
+    await refused(
       await session(on({ DB: racing }), {
         email: tu("race"),
         role: "member",
         spaces: [{ spaceId: s, role: "editor" }],
       }),
+      "grant_refused",
     );
     expect(await memberRows(s)).toEqual([]);
   });
@@ -320,7 +335,7 @@ describe("session hook with spaces", () => {
     const email = tu("noprefix");
     for (const spaceId of [real, missing, "Test-x", "xtest-y"]) {
       const fresh = sid();
-      await is404(
+      await refused(
         await session(on(), {
           email,
           role: "member",
@@ -329,6 +344,7 @@ describe("session hook with spaces", () => {
             { spaceId, role: "manager" },
           ],
         }),
+        "bad_input",
       );
       expect(await spaceRow(fresh)).toBeNull();
     }
@@ -347,12 +363,13 @@ describe("session hook with spaces", () => {
       .bind(s, realId, Date.now())
       .run();
     const email = tu("foreign");
-    await is404(
+    await refused(
       await session(on(), {
         email,
         role: "member",
         spaces: [{ spaceId: s, role: "manager" }],
       }),
+      "spaces_blocked",
     );
     expect(await memberRows(s)).toEqual([{ role: "viewer", source: "sync" }]);
     expect(await userRow(email)).toBeNull();
@@ -379,12 +396,13 @@ describe("session hook with spaces", () => {
         return typeof v === "function" ? v.bind(t) : v;
       },
     });
-    await is404(
+    await refused(
       await session(on({ DB: racing }), {
         email: tu("late"),
         role: "member",
         spaces: [{ spaceId: s, role: "manager" }],
       }),
+      "grant_refused",
     );
     expect(await memberRows(s)).toEqual([{ role: "viewer", source: "manual" }]);
   });

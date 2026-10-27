@@ -16,6 +16,8 @@ import {
   parseManifest,
   type RunBinding,
   redactReason,
+  setupHookCase,
+  setupHookName,
 } from "./report.ts";
 
 // Vitest reporter: one CaseResult per test (its proof level), plus a "fail"
@@ -73,6 +75,9 @@ export function collect(
   for (const m of modules) {
     const file = relative(root, m.moduleId);
     const broken = m.errors().length > 0;
+    // A setup hook's refusal (seeding, the admin session): one infra result
+    // per file and hook refusal, not one per case it kept from running.
+    const hooked = new Map<string, { infra: string; names: string[] }>();
     for (const t of m.children.allTests()) {
       const result = t.result();
       const state = result.state;
@@ -81,6 +86,13 @@ export function collect(
       const setupFailed = state === "skipped" && (broken || ancestorFailed(t));
       const setup = setupFailed ? setupErrors(t, m) : [];
       const infra = setupFailed ? infraOf(setup) : undefined;
+      const hookName = setupHookName(infra);
+      if (infra && hookName) {
+        const h = hooked.get(hookName) ?? { infra, names: [] };
+        h.names.push(t.fullName);
+        hooked.set(hookName, h);
+        continue;
+      }
       const errors = result.state === "failed" ? result.errors : [];
       // Every non-pass carries a reason: a setup error (beforeAll, module)
       // or the test's own, redacted, plus its leg where crossCheck knew it.
@@ -102,7 +114,13 @@ export function collect(
         ...(level === "pass" ? {} : legOf(setupFailed ? setup : errors)),
       });
     }
-    if (m.errors().length > 0) {
+    for (const [name, h] of hooked)
+      cases.push(setupHookCase(name, h.infra, file, h.names));
+    // The module's own error, unless it is the setup hook refusal just reported.
+    if (
+      m.errors().length > 0 &&
+      !hooked.has(setupHookName(infraOf(m.errors())) ?? "")
+    ) {
       const infra = infraOf(m.errors());
       cases.push({
         name: `${file}: module error`,

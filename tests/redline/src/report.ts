@@ -28,6 +28,11 @@ export interface CaseResult {
   host?: string;
   expected?: string;
   actual?: string;
+  /**
+   * A setup hook's infra result (setupHookCase): the file and the cases its
+   * refusal kept from running, which the manifest then counts as run.
+   */
+  blocked?: { file: string; cases: string[] };
 }
 
 /**
@@ -200,6 +205,37 @@ export function labelOf(meta: object | undefined): string | undefined {
 export const INFRA_PREFIX = "infra: ";
 
 /**
+ * The start of a setup hook's InfraError (src/http.ts SetupHookError):
+ * "infra: setup <hook> <reason>", the reason a fixed enum word.
+ */
+export const SETUP_HOOK_RE =
+  /^infra: setup (\/__test\/[\w/-]+) ([a-z_]+)(?=\s|$)/;
+
+/** "infra: setup <hook> <reason>" when `infra` is a setup hook's error, else undefined. */
+export function setupHookName(infra: string | undefined): string | undefined {
+  const m = infra ? SETUP_HOOK_RE.exec(infra) : null;
+  return m ? `infra: setup ${m[1]} ${m[2]}` : undefined;
+}
+
+/**
+ * The one infra result for every case of `file` a setup hook's refusal kept
+ * from running (instead of one result per case).
+ */
+export function setupHookCase(
+  name: string,
+  infra: string,
+  file: string,
+  cases: string[],
+): CaseResult {
+  return {
+    name,
+    level: "infra",
+    reason: `${redactReason(infra)}; ${cases.length} case(s) in ${file} did not run`,
+    blocked: { file, cases: [...cases] },
+  };
+}
+
+/**
  * The first message when there is at least one error and every one is infra
  * (it names a phase, a duration and an install, never a secret).
  */
@@ -294,6 +330,10 @@ export function applyManifest(
     ];
   const required = new Set(m.cases.map((c) => caseKey(c.file, c.name)));
   const seen = new Set<string>();
+  // A setup hook's infra result stands for the cases it kept from running.
+  for (const c of cases)
+    if (c.level === "infra" && c.blocked)
+      for (const n of c.blocked.cases) seen.add(caseKey(c.blocked.file, n));
   const out: CaseResult[] = cases.map((c) => {
     if (!c.file) return c;
     const k = caseKey(c.file, c.name);
