@@ -12,6 +12,7 @@ import {
   directoryTransport,
   HOSTED_NEEDS_BROKER,
 } from "../src/directory/transport.js";
+import type { Env } from "../src/env.js";
 import { seedUser, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
 import {
   BROKER,
