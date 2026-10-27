@@ -16,6 +16,8 @@ export const OIDC_STAGES = [
   "token_http",
   "token_fetch",
   "token_bad_json",
+  "broker_unavailable",
+  "broker_gate_refused",
   "no_id_token",
   "jwt_verify",
   "aud",

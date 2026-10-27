@@ -418,3 +418,125 @@ describe("Google through the broker", () => {
     expect(g.tokenCalls.length).toBe(calls);
   });
 });
+
+describe("hosted: the redeem through the dispatch props (AUTH_BROKER)", () => {
+  /** A hosted install: no BROKER binding, no client secret. */
+  const hosted = () => {
+    const e = installEnv(undefined, { HOSTED: "1" });
+    delete (e as Partial<Env>).BROKER;
+    delete (e as Partial<Env>).GOOGLE_CLIENT_SECRET;
+    return e;
+  };
+  const callback = (
+    e: Env,
+    b: Awaited<ReturnType<typeof begin>>,
+    search: string,
+    props?: Record<string, unknown>,
+  ) =>
+    app.fetch(
+      new Request(`${APP}${AUTH.callbackGoogle}${search}`, {
+        headers: { cookie: b.cookie },
+      }),
+      e,
+      { waitUntil() {}, passThroughOnException() {}, props } as never,
+    );
+  const toInstall = async (b: Awaited<ReturnType<typeof begin>>) => {
+    const email = uniq("hp");
+    const code = g.issueCode(
+      { nonce: b.nonce, email, sub: `hp-${email}` },
+      b.challenge,
+    );
+    const back = await broker.fetch(
+      new Request(
+        `${BROKER}/google/callback?code=${code}&state=${encodeURIComponent(b.bstate)}`,
+      ) as never,
+      brokerEnv,
+    );
+    return new URL(loc(back)).search;
+  };
+  const capture = () => {
+    const lines: string[] = [];
+    const spies = (["log", "warn", "error"] as const).map((k) =>
+      vi.spyOn(console, k).mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(" "));
+      }),
+    );
+    return {
+      stages: () =>
+        lines
+          .filter((l) => l.startsWith("{"))
+          .map((l) => JSON.parse(l) as Record<string, unknown>)
+          .filter((l) => l.evt === "auth")
+          .map((l) => l.stage),
+      done: () => {
+        for (const s of spies) s.mockRestore();
+      },
+    };
+  };
+  const brokerUrls = (from: number) =>
+    vi
+      .mocked(globalThis.fetch)
+      .mock.calls.slice(from)
+      .map((c) => new Request(c[0] as RequestInfo, c[1]).url)
+      .filter((u) => u.startsWith(BROKER));
+
+  it("signs in with only POST /google/redeem through the capability, never HTTPS", async () => {
+    const e = hosted();
+    const b = await begin(e);
+    const search = await toInstall(b);
+    const calls: string[] = [];
+    const n = vi.mocked(globalThis.fetch).mock.calls.length;
+    const r = await callback(e, b, search, {
+      AUTH_BROKER: {
+        fetch: (req: Request) => {
+          calls.push(`${req.method} ${new URL(req.url).pathname}`);
+          return broker.fetch(req as never, brokerEnv);
+        },
+      },
+    });
+    // Redeemed and verified; a hosted install then admits by invite only.
+    expect(loc(r)).toBe(`${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx`);
+    expect(calls).toEqual(["POST /google/redeem"]);
+    expect(brokerUrls(n)).toEqual([]);
+  });
+
+  it("without props a hosted install fails closed: stage broker_unavailable, no HTTPS", async () => {
+    const e = hosted();
+    const b = await begin(e);
+    const search = await toInstall(b);
+    const n = vi.mocked(globalThis.fetch).mock.calls.length;
+    const cap = capture();
+    const r = await callback(e, b, search);
+    cap.done();
+    expect(loc(r)).toBe(`${SIGN_IN_PAGE}?error=failed&next=%2Fa%2Fx`);
+    expect(cap.stages()).toEqual(["broker_unavailable"]);
+    expect(brokerUrls(n)).toEqual([]);
+  });
+
+  it("a gate refusal is stage broker_gate_refused; the broker's own 401 is not", async () => {
+    const e = hosted();
+    for (const [status, error, stage] of [
+      [403, "install_mismatch", "broker_gate_refused"],
+      [500, "gate_misconfigured", "broker_gate_refused"],
+      [401, "unauthorized", "failed"],
+    ] as const) {
+      const b = await begin(e);
+      const search = await toInstall(b);
+      const cap = capture();
+      await callback(e, b, search, {
+        AUTH_BROKER: {
+          fetch: async () =>
+            Response.json(
+              { error },
+              {
+                status,
+                headers: status === 401 ? {} : { "x-oa-gate": "1" },
+              },
+            ),
+        },
+      });
+      cap.done();
+      expect(cap.stages()).toEqual([stage]);
+    }
+  });
+});

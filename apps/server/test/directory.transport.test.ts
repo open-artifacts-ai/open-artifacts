@@ -4,13 +4,15 @@
 import { env } from "cloudflare:workers";
 import { R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withBrokerProps } from "../src/auth/broker-transport.js";
 import { INITIAL_PAGES, initialBinding } from "../src/directory/binding.js";
-import { directoryClient } from "../src/directory/client.js";
+import { directoryClient as clientOf } from "../src/directory/client.js";
 import { seal } from "../src/directory/crypto.js";
 import {
   directoryTransport,
   HOSTED_NEEDS_BROKER,
 } from "../src/directory/transport.js";
+import type { Env } from "../src/env.js";
 import { seedUser, TEST_BROKER_KEY, uniq } from "./auth-helpers.js";
 import {
   BROKER,
@@ -20,6 +22,7 @@ import {
   directEnv,
   get,
   hostedEnv,
+  hostedProps,
   registerInstall,
   resetDirectory,
 } from "./directory-helpers.js";
@@ -185,6 +188,26 @@ describe("direct", () => {
     );
   });
 });
+
+/**
+ * The resolved client, each call inside a hosted invocation (the platform's
+ * DIRECTORY_BROKER capability in ctx.props), as a request or the scheduler
+ * would make it.
+ */
+const directoryClient = (e: Env) => {
+  const c = clientOf(e);
+  if (!c) return c;
+  const inv =
+    <A extends unknown[], R>(f: (...a: A) => Promise<R>) =>
+    (...a: A) =>
+      withBrokerProps({ props: hostedProps() }, () => f(...a));
+  return {
+    ...c,
+    completeConsent: inv(c.completeConsent),
+    accessToken: inv(c.accessToken),
+    revoke: inv(c.revoke),
+  };
+};
 
 describe("broker", () => {
   it("broker: the install signs the token call and never sees a client secret", async () => {

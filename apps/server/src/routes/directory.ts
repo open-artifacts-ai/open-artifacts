@@ -19,8 +19,9 @@ import { lookupGroups } from "../directory/groups.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
+import { logWarn } from "../log.js";
 import { userActor } from "../services/audit.js";
-import { SYNC_DO_NAME } from "../services/directory.js";
+import { feedSync, SYNC_DO_NAME } from "../services/directory.js";
 import { directoryMode } from "../services/spaces.js";
 import type { AppType } from "./index.js";
 
@@ -159,7 +160,9 @@ export function mountDirectory(app: AppType): void {
   // "Sync now" and a held sweep's confirmation (org owner): 202 SyncStatus.
   app.post(R.directorySync, async (c) => {
     if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
-    return c.json(await syncStub(c.env).kick("manual"), 202);
+    const status = await syncStub(c.env).kick("manual");
+    await feedAfter(c);
+    return c.json(status, 202);
   });
 
   app.post("/api/v1/directory/held/:groupId/confirm", async (c) => {
@@ -179,9 +182,18 @@ export function mountDirectory(app: AppType): void {
         "conflict",
         "This group has no held sweep to confirm; it can't be read from Google",
       );
+    await feedAfter(c);
     return c.json(status, 202);
   });
 }
+
+/** After a kick: hands DirectorySync a token minted with this request's props. */
+const feedAfter = async (c: Context<AppEnv>) => {
+  const run = feedSync(c.env).catch((e) => logWarn("directory_feed", e));
+  const ctx = execCtx(c);
+  if (ctx) ctx.waitUntil(run);
+  else await run;
+};
 
 const syncStub = (env: Env) => {
   const ns = env.DIRECTORY_SYNC as NonNullable<Env["DIRECTORY_SYNC"]>;

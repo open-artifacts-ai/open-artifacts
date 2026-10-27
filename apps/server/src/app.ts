@@ -1,6 +1,7 @@
 import { AUTH, planOf } from "@oa/shared";
 import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
+import { withBrokerProps } from "./auth/broker-transport.js";
 import {
   enforcePolicy,
   mw,
@@ -85,6 +86,19 @@ export function createApp(
   extraPolicy: Readonly<Record<string, Policy>> = {},
 ) {
   const app: AppType = new Hono<AppEnv>();
+  // This invocation's broker capabilities (ctx.props) for the whole request,
+  // waitUntil work included (auth/broker-transport.ts).
+  app.use(
+    mw(async (c, next) => {
+      let ctx: { props?: unknown } | undefined;
+      try {
+        ctx = c.executionCtx;
+      } catch {
+        ctx = undefined;
+      }
+      return withBrokerProps(ctx, next);
+    }),
+  );
   app.use(mw(securityHeaders()));
   // Every route's access rule (auth/route-policy.ts), before any other
   // middleware or handler: an unlisted route is 404 before anything runs.

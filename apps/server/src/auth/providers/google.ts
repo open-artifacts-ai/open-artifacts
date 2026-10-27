@@ -13,6 +13,12 @@ import { AUTH } from "@oa/shared";
 import type { Env } from "../../env.js";
 import { ApiError, appOrigin } from "../../http/errors.js";
 import { b64urlEncode } from "../../util/crypto.js";
+import {
+  BrokerGateRefusedError,
+  BrokerGateStaleError,
+  BrokerUnavailableError,
+  brokerFetch,
+} from "../broker-transport.js";
 import { authConfig, type GoogleTransport } from "../config.js";
 import { fail } from "../oidc.js";
 import type { OidcProvider, VerifiedIdentity } from "./types.js";
@@ -102,9 +108,22 @@ async function exchange(
       body,
       redirect: "manual",
     });
-    // A service binding when bound (same account), else public HTTPS; the
-    // request is signed either way.
-    res = await (env.BROKER ? env.BROKER.fetch(req) : fetch(req));
+    // A service binding, else the invocation's AUTH_BROKER capability, else
+    // public HTTPS (never hosted); the request is signed either way.
+    try {
+      res = await brokerFetch(env, "auth", req);
+    } catch (e) {
+      // No usable capability (none, or one past its invocation).
+      if (
+        e instanceof BrokerUnavailableError ||
+        e instanceof BrokerGateStaleError
+      )
+        return fail("broker_unavailable");
+      // The platform's gate refused it (never the broker's own 401).
+      if (e instanceof BrokerGateRefusedError)
+        return fail("broker_gate_refused");
+      throw e;
+    }
   }
   if (!res.ok) {
     await res.body?.cancel();
