@@ -206,6 +206,8 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
   "POST /api/v1/directory/held/:groupId/confirm": OWNER_ONLY,
   "POST /api/v1/directory/disconnect": OWNER_ONLY,
   "DELETE /api/v1/directory": OWNER_ONLY,
+  "POST /api/v1/admin/broker-check":
+    "owner-only (the broker check): no admin success leg",
   "GET /api/v1/directory/callback":
     "needs the Google directory connector (404 without it)",
   "GET /api/v1/artifacts/:id/anon-id":
@@ -251,6 +253,21 @@ export const DROPPED: Readonly<
   "org DELETE /api/v1/directory": {
     why: "owner-only",
     coveredBy: [INSTANCE, DISCONNECT],
+  },
+  "org POST /api/v1/admin/broker-check": {
+    why: "owner-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: FOREIGN,
+        describe: "red line: another install's credential on the broker check",
+        test: "POST admin/broker-check: another install's owner session or PAT is refused with no audit row and no broker call; this install's owner runs it",
+      },
+      {
+        file: "apps/server/test/broker-check.test.ts",
+        describe: "who may run it",
+      },
+    ],
   },
   "org GET /api/v1/directory/callback": {
     why: "no-directory",
