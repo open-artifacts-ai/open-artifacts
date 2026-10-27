@@ -76,6 +76,12 @@ describe("ci.yml", () => {
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
   });
+  it("runs nightly (the full suite, WebKit included), in its own concurrency group", () => {
+    expect(w.on.schedule).toEqual([
+      { cron: expect.stringMatching(/^\d+ \d+ \* \* \*$/) },
+    ]);
+    expect(w.concurrency.group).toContain("github.event_name == 'schedule'");
+  });
   it("defines at least the five required jobs", () => {
     expect(Object.keys(w.jobs)).toEqual(
       expect.arrayContaining(["build", "e2e", "lint", "test", "typecheck"]),
@@ -114,6 +120,15 @@ describe("ci.yml", () => {
     expect(job.strategy["fail-fast"]).toBe(false);
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(job.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
+    // Pull requests: Chromium only. Every other event (the merge queue, main,
+    // nightly) leaves it empty, which runs every project, WebKit included.
+    expect(job.env.E2E_PROJECTS).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ github.event_name == 'pull_request' && 'chromium' || '' }}",
+    );
+    expect(read("apps/dashboard/playwright.real.config.ts")).toMatch(
+      /name: "webkit"/,
+    );
     // Browsers and their OS deps come baked into the image, pinned by digest:
     // no apt step, so a slow Ubuntu mirror can't eat the job's budget (#462).
     expect(job.container.image).toMatch(

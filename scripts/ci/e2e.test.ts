@@ -89,6 +89,17 @@ describe("e2e.sh", () => {
       ]);
     }
   });
+  it("E2E_PROJECTS limits the real suite to those projects; the mock suite ignores it", () => {
+    const real = run("real", { E2E_PROJECTS: "chromium" });
+    expect(real.code).toBe(0);
+    expect(real.sb.log()[0]).toBe(
+      "pnpm --filter @oa/dashboard exec playwright test -c playwright.real.config.ts --project=chromium",
+    );
+    const both = run("real", { E2E_PROJECTS: "chromium,webkit" });
+    expect(both.sb.log()[0]).toContain("--project=chromium --project=webkit");
+    const mock = run("mock", { E2E_PROJECTS: "chromium" });
+    expect(mock.sb.log()[0]).not.toContain("--project");
+  });
   it("merge builds one html report per suite that has blobs, and nothing without any", () => {
     const none = run("merge", { E2E_BLOB_DIR: "/nonexistent/blobs" });
     expect(none.code).toBe(0);
