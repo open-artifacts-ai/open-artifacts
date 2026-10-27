@@ -13,6 +13,7 @@ import { AUTH } from "@oa/shared";
 import type { Env } from "../../env.js";
 import { ApiError, appOrigin } from "../../http/errors.js";
 import { b64urlEncode } from "../../util/crypto.js";
+import { BrokerUnavailableError, brokerFetch } from "../broker-transport.js";
 import { authConfig, type GoogleTransport } from "../config.js";
 import { fail } from "../oidc.js";
 import type { OidcProvider, VerifiedIdentity } from "./types.js";
@@ -102,9 +103,15 @@ async function exchange(
       body,
       redirect: "manual",
     });
-    // A service binding when bound (same account), else public HTTPS; the
-    // request is signed either way.
-    res = await (env.BROKER ? env.BROKER.fetch(req) : fetch(req));
+    // A service binding, else the invocation's AUTH_BROKER capability, else
+    // public HTTPS (never hosted); the request is signed either way.
+    try {
+      res = await brokerFetch(env, "auth", req);
+    } catch (e) {
+      if (e instanceof BrokerUnavailableError)
+        return fail("broker_unavailable");
+      throw e;
+    }
   }
   if (!res.ok) {
     await res.body?.cancel();

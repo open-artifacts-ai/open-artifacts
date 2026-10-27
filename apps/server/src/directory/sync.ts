@@ -1,4 +1,8 @@
 import type { DirectoryBinding, HeldSweep, SyncStatus } from "@oa/shared";
+import {
+  brokerTransportKind,
+  withoutBrokerProps,
+} from "../auth/broker-transport.js";
 import { stmt } from "../db/stmt.js";
 import type { DirectoryAlert } from "../email/templates.js";
 import type { Env } from "../env.js";
@@ -37,7 +41,7 @@ import {
   readPending,
 } from "./store.js";
 import { type PendingRevokes, thawFrozenEdits } from "./thaw.js";
-import { TransportError } from "./transport.js";
+import { type DirectoryClient, TransportError } from "./transport.js";
 
 // The DirectorySync engine (P3 T13). One DO per install runs it on its alarm;
 // everything here takes the env and the DO's SQLite explicitly, so tests can
@@ -103,6 +107,44 @@ export const CONFIRM_TTL_MS = 24 * 3600_000;
 export const CONSECUTIVE_REFUSALS = 3;
 /** "Sync now" may run during a backoff at most this often. */
 export const MANUAL_BYPASS_MS = 10 * 60_000;
+/** How long an access token is used after it reached this DO (Google's last 1 h). */
+export const TOKEN_TTL_MS = 45 * 60_000;
+
+/**
+ * The directory access token, in memory only: never written to DO storage,
+ * never logged, dropped at expiry, on a reset and on a 401. One per DO
+ * instance (sync-do.ts), so an evicted DO starts empty.
+ *
+ * Where it comes from:
+ * - handed in (handToken) by an invocation that holds the platform's
+ *   DIRECTORY_BROKER capability: the scheduler's oa:directory-sync tick or a
+ *   request's kick (services/directory.ts feedSync). The capability itself
+ *   never reaches the DO, only the token (or why minting failed).
+ * - minted here (self-host): when this install reaches its broker without
+ *   props (a binding, or HTTPS off HOSTED) or holds its own Google app
+ *   (direct), exactly as before.
+ * A hosted alarm never calls the broker: without a token in hand it stops
+ * cleanly (the run stays) until the next tick hands one over.
+ */
+export class TokenBox {
+  /** `for`: the binding it was minted for (tokenFor). */
+  tok: { token: string; exp: number; for: string } | null = null;
+  /** A failed mint (feedSync), raised once by the next alarm as before. */
+  fault: { stage: TransportError["stage"]; for: string } | null = null;
+}
+
+/** Which binding a token belongs to: a reset to another one drops it. */
+export const tokenFor = (b: Pick<DirectoryBinding, "customerId" | "connectedAt">) =>
+  `${b.customerId}:${b.connectedAt}`;
+
+/**
+ * This DO may mint its own access token (self-host): a direct client, or a
+ * broker reachable without props (binding, or HTTPS off HOSTED). Read under
+ * withoutBrokerProps, so a hosted install answers false.
+ */
+const selfMints = (env: Env, client: DirectoryClient) =>
+  client.kind === "direct" ||
+  withoutBrokerProps(() => brokerTransportKind(env, "directory")) !== null;
 
 const SYNC: AuditActor = { kind: "sync", id: null };
 
@@ -315,6 +357,7 @@ export class SyncEngine {
     private env: Env,
     private storage: DurableObjectStorage,
     private ctx?: Pick<ExecutionContext, "waitUntil">,
+    private box: TokenBox = new TokenBox(),
   ) {
     this.sql = storage.sql;
     this.sql.exec(SCHEMA);
@@ -476,6 +519,37 @@ export class SyncEngine {
   }
 
   /**
+   * A lane is due (the same timing the alarm uses: laneAt) and no unexpired
+   * token is in hand: the caller should mint one and handToken it. Restarts
+   * a lost alarm (like a cron kick). Reads only this DO's storage.
+   */
+  async wantsToken(now = Date.now()): Promise<boolean> {
+    if ((await this.storage.getAlarm()) === null)
+      await this.storage.setAlarm(now);
+    const t = this.box.tok;
+    if (t && t.exp > now) return false;
+    if (this.get<string>(CLOSE_KEY) !== null) return false;
+    return LANES.some((l) => this.laneAt(l, now) <= now);
+  }
+
+  /**
+   * Takes an access token minted by the caller for binding `forKey`
+   * (tokenFor), or why minting failed, and runs the due step now: the alarm,
+   * at once. The token stays in memory only (TokenBox).
+   */
+  async handToken(
+    forKey: string,
+    h: { token: string } | { error: TransportError["stage"] },
+    now = Date.now(),
+  ): Promise<void> {
+    if ("token" in h) {
+      this.box.tok = { token: h.token, exp: now + TOKEN_TTL_MS, for: forKey };
+      this.box.fault = null;
+    } else this.box.fault = { stage: h.error, for: forKey };
+    await this.storage.setAlarm(now);
+  }
+
+  /**
    * The org owner confirmed a held sweep: the group is re-read now and its
    * removals then apply once, at most the count the owner was shown and
    * within CONFIRM_TTL_MS (the next sweep consumes the click whatever its
@@ -527,7 +601,7 @@ export class SyncEngine {
     // Only the epoch moves here; the next alarm does the clearing, serialized
     // with every other write (an alarm in flight then writes nothing more).
     this.put("epoch", (this.get<number>("epoch") ?? 0) + 1);
-    this.cached = null;
+    this.dropToken();
     await this.storage.setAlarm(now);
   }
 
@@ -543,7 +617,7 @@ export class SyncEngine {
           'bypass.rec', 'next.fast', 'next.reconcile', 'lastLane')`,
       );
     });
-    this.cached = null;
+    this.dropToken();
     await clearHealth(this.env).run();
     // Recorded last: a failure above retries the clearing next alarm.
     this.put("epoch.applied", ep);
@@ -572,7 +646,12 @@ export class SyncEngine {
    * and no socket close is owed: owed closes re-arm it (backing off from
    * BACKOFF_MIN_MS to BACKOFF_MAX_MS) in any mode until they are done.
    */
-  async alarm(now = Date.now()): Promise<void> {
+  alarm(now = Date.now()): Promise<void> {
+    // An alarm never holds a broker capability, whatever reached this DO.
+    return withoutBrokerProps(() => this.alarmIn(now));
+  }
+
+  private async alarmIn(now: number): Promise<void> {
     let next: number | null = now + FAST_MS;
     try {
       next = await this.tick(now);
@@ -627,11 +706,19 @@ export class SyncEngine {
     if (pending) return now + FAST_MS;
     if (!this.fresh()) return now;
     const groups = mode === "google";
+    // Hosted with no token in hand: stop cleanly before planning anything
+    // (no lane, run or bypass is touched); the run in flight stays and the
+    // next oa:directory-sync tick (or a request's kick) hands a token over.
+    if (
+      LANES.some((l) => this.laneAt(l, now) <= now) &&
+      !this.canToken(client, binding, now)
+    )
+      return now + FAST_MS;
     const lane = this.pickLane(now, groups);
     if (!lane) return this.nextAt(now);
     const run = this.get<Run>(`run.${lane}`) as Run;
     try {
-      const token = await this.token(client, sealed, now);
+      const token = await this.token(client, binding, sealed, now);
       await this.work(run, token, binding, groups, now);
     } catch (e) {
       if (e instanceof StaleSignal || !this.fresh()) return now;
@@ -714,16 +801,45 @@ export class SyncEngine {
     this.put(`run.${lane}`, run);
   }
 
-  /** Access token from the transport, cached in memory only (never stored). */
-  private cached: { token: string; exp: number } | null = null;
+  private dropToken() {
+    this.box.tok = null;
+    this.box.fault = null;
+  }
+
+  /** An unexpired token for `b`, a failed mint to report, or self-minting. */
+  private canToken(
+    client: DirectoryClient,
+    b: DirectoryBinding,
+    now: number,
+  ): boolean {
+    const key = tokenFor(b);
+    const t = this.box.tok;
+    if (t && (t.for !== key || t.exp <= now)) this.box.tok = null;
+    if (this.box.fault && this.box.fault.for !== key) this.box.fault = null;
+    return !!this.box.tok || !!this.box.fault || selfMints(this.env, client);
+  }
+
+  /**
+   * The access token for `b` (TokenBox): the one in hand, else a handed-in
+   * mint failure (thrown once, so it backs off or marks auth_failed as a
+   * mint here did), else minted here (self-host only; canToken checked).
+   */
   private async token(
-    client: NonNullable<ReturnType<typeof directoryClient>>,
+    client: DirectoryClient,
+    b: DirectoryBinding,
     sealed: string,
     now: number,
   ): Promise<string> {
-    if (this.cached && this.cached.exp > now) return this.cached.token;
+    const key = tokenFor(b);
+    const t = this.box.tok;
+    if (t && t.for === key && t.exp > now) return t.token;
+    this.box.tok = null;
+    const f = this.box.fault;
+    this.box.fault = null;
+    if (f && f.for === key) throw new TransportError(f.stage);
+    if (!selfMints(this.env, client)) throw new TransportError("broker_unavailable");
     const token = await client.accessToken(sealed);
-    this.cached = { token, exp: now + 45 * 60_000 };
+    this.box.tok = { token, exp: now + TOKEN_TTL_MS, for: key };
     return token;
   }
 
@@ -1505,7 +1621,7 @@ export class SyncEngine {
     const delay = e.state === "backoff" ? backoffMs(n) : RETRY_HOURLY_MS;
     const retryAt = now + delay;
     if (e.state !== "backoff" || e.code === "google_http_401")
-      this.cached = null;
+      this.dropToken();
     this.put(`retryAt.${lane}`, retryAt);
     this.put(`backoff.${lane}`, n);
     this.put(`failAt.${lane}`, now);

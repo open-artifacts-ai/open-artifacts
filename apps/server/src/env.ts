@@ -25,8 +25,17 @@ export interface Env {
   RL_AUTH?: RateLimit;
   /** GET R.directoryGroups limiter, keyed per caller (P3 T13); unbound: unlimited. */
   RL_DIRECTORY?: RateLimit;
-  /** Optional service binding to the hosted auth broker (else AUTH_BROKER_URL over HTTPS). */
+  /**
+   * Optional service binding to the auth broker (self-host on the broker's
+   * account). Else the invocation's ctx.props.AUTH_BROKER (hosted), else
+   * AUTH_BROKER_URL over HTTPS (never on HOSTED=1); auth/broker-transport.ts.
+   */
   BROKER?: Fetcher;
+  /**
+   * Optional service binding to the directory broker; the same precedence as
+   * BROKER, with ctx.props.DIRECTORY_BROKER and DIRECTORY_BROKER_URL.
+   */
+  DIRECTORY_BROKER?: Fetcher;
   /** Browser Run, for server-side thumbnails (services/thumbs.ts); optional. */
   BROWSER?: Fetcher;
   /** Optional Email Service send binding; invite/share emails are off without it. */

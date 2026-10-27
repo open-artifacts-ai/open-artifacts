@@ -36,6 +36,32 @@ export const brokerEnv = {
 // Every fakeDirectory() spy sends DIRECTORY_BROKER_URL requests here.
 routeOrigin(BROKER, (req) => broker.fetch(req as never, brokerEnv));
 
+/** Requests a fake DIRECTORY_BROKER capability forwarded (path and method). */
+export type GateCall = { method: string; path: string };
+
+/**
+ * The platform's DIRECTORY_BROKER capability, faked: forwards to the real
+ * directory broker module (as the platform's stub forwards to its fixed
+ * origin) and records each call in `calls`.
+ */
+export function brokerGate(calls: GateCall[] = []) {
+  return {
+    calls,
+    fetch: (req: Request) => {
+      const u = new URL(req.url);
+      calls.push({ method: req.method, path: u.pathname });
+      return broker.fetch(req as never, brokerEnv) as unknown as Promise<Response>;
+    },
+  };
+}
+
+/** ctx.props for a hosted invocation: the directory capability (shared calls log). */
+export const gateCalls: GateCall[] = [];
+export const hostedProps = (): Record<string, unknown> => ({
+  DIRECTORY_BROKER: brokerGate(gateCalls),
+});
+const propsFor = (e: Env) => (e.HOSTED === "1" ? hostedProps() : undefined);
+
 /** Self-host with its own Google app (direct transport). */
 export const directEnv = (over: Partial<Env> = {}): Env =>
   direct({
@@ -93,6 +119,7 @@ export const get = (e: Env, path: string, cookie?: string) =>
     app,
     new Request(`${APP}${path}`, cookie ? { headers: { cookie } } : {}),
     e,
+    propsFor(e),
   );
 export const loc = (r: Response) => r.headers.get("location") ?? "";
 
@@ -188,6 +215,7 @@ export const post = (e: Env, path: string, cookie?: string) =>
       headers: { "x-oa-request": "1", ...(cookie ? { cookie } : {}) },
     }),
     e,
+    propsFor(e),
   );
 
 /** Wipes the directory connection between tests (one D1 per file). */

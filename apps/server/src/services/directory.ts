@@ -1,8 +1,13 @@
 import type { Member } from "@oa/shared";
+import { brokerTransportKind } from "../auth/broker-transport.js";
+import { directoryClient } from "../directory/client.js";
 import { directorySignIn, SignInRefused } from "../directory/signin.js";
-import type { KickReason } from "../directory/sync.js";
+import { readBinding, readPending } from "../directory/store.js";
+import { type KickReason, tokenFor } from "../directory/sync.js";
+import { TransportError } from "../directory/transport.js";
 import type { Env } from "../env.js";
 import { logWarn } from "../log.js";
+import { directoryMode } from "./spaces.js";
 
 /**
  * Called after every successful Google admission, before the session is
@@ -68,12 +73,13 @@ export async function resetSync(
 }
 
 /**
- * Asks the install's DirectorySync for a run (P3 T13). Without the
- * DIRECTORY_SYNC binding it is a no-op. With a context it runs in waitUntil;
- * it never throws.
+ * Asks the install's DirectorySync for a run (P3 T13), then hands it an
+ * access token when it needs one (feedSync). Without the DIRECTORY_SYNC
+ * binding it is a no-op. With a context it runs in waitUntil (still this
+ * invocation, so its broker capability holds); it never throws.
  */
 export async function kickSync(
-  env: Pick<Env, "DIRECTORY_SYNC">,
+  env: Env,
   reason: KickReason,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
@@ -81,9 +87,56 @@ export async function kickSync(
   if (!ns) return;
   const run = (async () => {
     await ns.get(ns.idFromName(SYNC_DO_NAME)).kick(reason);
+    await feedSync(env);
   })().catch((e) => logWarn("directory_kick", e, { reason }));
   if (ctx) ctx.waitUntil(run);
   else await run;
+}
+
+/** What one feedSync did (logged by the scheduler tick, asserted by tests). */
+export type FeedOutcome =
+  | "self"
+  | "off"
+  | "not_due"
+  | "unbound"
+  | "fed"
+  | "mint_failed";
+
+/**
+ * Hosted directory sync (oa:directory-sync, request kicks): DirectorySync
+ * can't reach the broker from its alarm, so an invocation holding the
+ * platform's DIRECTORY_BROKER capability asks it whether a run is due
+ * (wantsToken: its own stored timing), and if so mints the access token here
+ * and hands over the token (or the mint's failure stage), never the
+ * capability. A self-hosted install (a binding, HTTPS, or its own Google
+ * app) mints in the alarm as before: "self", nothing done. Throws only on a
+ * D1 or DO error.
+ */
+export async function feedSync(env: Env): Promise<FeedOutcome> {
+  const ns = env.DIRECTORY_SYNC;
+  const client = directoryClient(env);
+  if (!ns || !client || directoryMode(env) === "off") return "off";
+  if (client.kind !== "broker" || brokerTransportKind(env, "directory") !== "props")
+    return "self";
+  const stub = ns.get(ns.idFromName(SYNC_DO_NAME));
+  if (!(await stub.wantsToken())) return "not_due";
+  const [{ binding, sealed }, pending] = await Promise.all([
+    readBinding(env),
+    readPending(env),
+  ]);
+  // The alarm syncs nothing in these states either.
+  if (!binding || !sealed || pending) return "unbound";
+  const key = tokenFor(binding);
+  let token: string;
+  try {
+    token = await client.accessToken(sealed);
+  } catch (e) {
+    if (!(e instanceof TransportError)) throw e;
+    await stub.handToken(key, { error: e.stage });
+    return "mint_failed";
+  }
+  await stub.handToken(key, { token });
+  return "fed";
 }
 
 /** The one DirectorySync per install. */
