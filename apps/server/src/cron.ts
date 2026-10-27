@@ -5,7 +5,11 @@ import { sweepEmailCounters } from "./email/send.js";
 import type { Env } from "./env.js";
 import { logError, logInfo, logWarn } from "./log.js";
 import { sweepUngrantedClients } from "./mcp/registrations.js";
-import { purgeDeleted, reindexStale } from "./services/artifacts.js";
+import {
+  purgeDeleted,
+  reindexStale,
+  sweepLostIndexJobs,
+} from "./services/artifacts.js";
 import { sweepAuditEvents } from "./services/audit.js";
 import { kickSync } from "./services/directory.js";
 import { checkLatestRelease } from "./services/release.js";
@@ -39,9 +43,17 @@ export const SYSTEM_JOB_PREFIX = "oa:";
  */
 export const DIRECTORY_DISCONNECT_CRON = "oa:directory-disconnect";
 
+/**
+ * Every 2 min (hosted; the scheduler calls every active install): the
+ * bounded, windowed sweep for index and thumbnail jobs a publish lost
+ * (sweepLostIndexJobs "tick"), in waitUntil so the scheduler's lane is
+ * freed at once. Resolves; the sweep logs its own failure.
+ */
+export const DIRECTORY_SYNC_CRON = "oa:directory-sync";
+
 /** Daily cron: purge soft-deleted artifacts past 30 days, sweep stale uploads,
  * delete OAuth clients that never completed a grant, re-enqueue search
- * indexing that never completed (C3), drop past days' email counters and
+ * indexing or a thumbnail job that never landed (C3), drop past days' email counters and
  * expired sign-in codes, check the latest release (B3), and drop a directory
  * connection left unconfirmed past 24 h (P3 T12), kick DirectorySync
  * (P3 T13), and delete audit rows past AUDIT_RETENTION_MS (400 days), a
@@ -54,6 +66,14 @@ export async function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   if (event.cron?.startsWith(SYSTEM_JOB_PREFIX)) {
+    if (event.cron === DIRECTORY_SYNC_CRON) {
+      ctx.waitUntil(
+        sweepLostIndexJobs(env, Date.now(), "tick").catch((e) =>
+          logError("cron_task_failed", e),
+        ),
+      );
+      return;
+    }
     if (event.cron !== DIRECTORY_DISCONNECT_CRON) {
       logWarn("system_job_unknown", new Error("unknown system job"));
       throw new Error("unknown system job");

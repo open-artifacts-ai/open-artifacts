@@ -22,6 +22,7 @@ import {
   type UserRef,
   VERSIONS_PAGE_SIZE,
   type VersionInfo,
+  VisibilitySchema,
   viewerPath,
 } from "@oa/shared";
 import { and, desc, eq, gte, type SQL, sql } from "drizzle-orm";
@@ -47,7 +48,7 @@ import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
-import { logError, logWarn } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
 import { runtimeStub, type VersionEvent } from "../runtime/do.js";
 import { closeRuntimeSockets } from "../runtime/revoke.js";
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
@@ -56,7 +57,7 @@ import { type ManifestEntry, materialize, planFiles } from "./manifest.js";
 import { getSettings } from "./members.js";
 import { ftsFilter, seedSearchStmt, syncTitleStmt } from "./search.js";
 import { requireSpaces } from "./spaces.js";
-import { writeThumbnail } from "./thumbs.js";
+import { serverThumbnails, writeThumbnail } from "./thumbs.js";
 import { toUserRef } from "./users.js";
 
 type Ctx = Pick<ExecutionContext, "waitUntil">;
@@ -71,10 +72,11 @@ const later = async (ctx: Ctx | undefined, p: Promise<unknown>) => {
 /**
  * Queues search indexing of `version` on the artifact's DO (C3): one cheap
  * RPC, so extraction never runs on the request's CPU. Never throws: a lost
- * enqueue leaves the artifact searchable by title/description. With `event`
- * (publish, restore) the same RPC pushes the `version` frame to the
- * artifact's R.events sockets (best effort: a lost one is caught up by the
- * client's next hello).
+ * enqueue leaves the artifact searchable by title/description until
+ * sweepLostIndexJobs re-enqueues it. With `event` (publish, restore) the same
+ * RPC pushes the `version` frame to the artifact's R.events sockets (best
+ * effort: a lost one is caught up by the client's next hello). Request paths
+ * run it in waitUntil (`later`): the RPC takes 0.5-1.2 s on hosted installs.
  */
 export async function enqueueIndex(
   env: Env,
@@ -83,8 +85,8 @@ export async function enqueueIndex(
   thumb = false,
   event?: VersionEvent,
 ): Promise<void> {
-  // Wall time of the stub call (placement, cold start, round trip): publish
-  // awaits it, and slow hosted installs need it measured.
+  // Wall time of the stub call (placement, cold start, round trip): slow
+  // hosted installs need it measured.
   const t0 = Date.now();
   try {
     await runtimeStub(env, id).scheduleIndex(id, version, thumb, event);
@@ -442,7 +444,12 @@ export async function publish(
   // Access changed: close first (gone "changed"), awaited, so a socket that
   // may have lost access never sees this version; reconnects get hello.
   if (accessChanged) await closeRuntimeSockets(env, [id], "access changed");
-  await enqueueIndex(env, id, version, true, versionEvent(user, agent, now));
+  // After the response (waitUntil): the index job, thumbnail job and version
+  // frame. A lost one is recovered by sweepLostIndexJobs.
+  await later(
+    ctx,
+    enqueueIndex(env, id, version, true, versionEvent(user, agent, now)),
+  );
   const warning = dataWritersWarning({
     visibility: visibility ?? prior.visibility,
     capabilities: JSON.parse(caps) as { db: boolean },
@@ -1063,7 +1070,7 @@ export async function restoreVersion(
   id: string,
   v: number,
   agent: AgentAttr | null,
-  _ctx?: Ctx,
+  ctx?: Ctx,
 ): Promise<PublishResult> {
   await authorize(env, asUser(user), id, "restore");
   const src = await env.DB.prepare(
@@ -1096,7 +1103,10 @@ export async function restoreVersion(
   ]);
   const version = res[0]?.results[0]?.current_version;
   if (version === undefined) throw notFound();
-  await enqueueIndex(env, id, version, true, versionEvent(user, agent, now, v));
+  await later(
+    ctx,
+    enqueueIndex(env, id, version, true, versionEvent(user, agent, now, v)),
+  );
   return { id, version, url: appOrigin(env) + viewerPath(id) };
 }
 
@@ -1344,7 +1354,7 @@ export async function undelete(
   env: Env,
   user: Member,
   id: string,
-  _ctx?: Ctx,
+  ctx?: Ctx,
 ): Promise<ArtifactSummary> {
   const { artifact: a } = await authorize(env, asUser(user), id, "undelete", {
     allowDeleted: true,
@@ -1358,35 +1368,89 @@ export async function undelete(
       seedSearchStmt(env.DB, id),
     ]);
     if (!r?.meta.changes) throw notFound();
-    await enqueueIndex(env, id, a.currentVersion);
+    // thumb: every enqueue carries the thumbnail job, so text_indexed = 1
+    // proves a non-pdf version's thumbnail job landed (sweepLostIndexJobs).
+    await later(ctx, enqueueIndex(env, id, a.currentVersion, true));
   }
   return getSummary(env, asUser(user), id);
 }
 
 // ------------------------------------------------------------ re-indexing
 
-/** Current versions re-enqueued per cron run. */
+/** Current versions re-enqueued per sweep, per kind (text, thumbnail). */
 export const REINDEX_BATCH = 20;
 /** Leaves fresh publishes to their own pending job. */
-const REINDEX_MIN_AGE_MS = 10 * 60_000;
+export const REINDEX_MIN_AGE_MS = 10 * 60_000;
+/**
+ * The frequent sweep's look-back past REINDEX_MIN_AGE_MS: five 2-min ticks,
+ * so a missed tick or two still sees each publish; anything older is the
+ * daily sweep's.
+ */
+export const SWEEP_TICK_SPAN_MS = 10 * 60_000;
+/** The daily sweep's pdf thumbnail look-back: one missed daily run still recovers. */
+export const THUMB_SWEEP_SPAN_MS = 2 * DAY;
+
+const LIVE_VIS = VisibilitySchema.options.map((v) => `'${v}'`).join(", ");
+// The visibility list lets the (visibility, updated_at) partial live index
+// serve the updated_at range, so a tick reads only its window's rows.
+const sweepSql = (kind: "text" | "thumb") =>
+  `select a.id, a.current_version as v from artifacts a
+   join versions v on v.artifact_id = a.id and v.version = a.current_version
+   where a.deleted_at is null and a.visibility in (${LIVE_VIS})
+     and a.updated_at >= ?1 and a.updated_at < ?2 and ${
+       kind === "text"
+         ? "v.text_indexed = 0 and coalesce(v.format, a.format) <> 'pdf'"
+         : "coalesce(v.format, a.format) = 'pdf' and coalesce(a.thumbnail_version, 0) < a.current_version"
+     }
+   order by a.updated_at limit ?3`;
 
 /**
- * Cron safety net for lost enqueues (C3): re-enqueues up to REINDEX_BATCH
- * live artifacts whose current non-pdf version is still text_indexed = 0
- * (oldest first) and returns how many. A pdf's text comes from its viewer.
+ * Safety net for lost enqueues (C3; publish and restore enqueue after the
+ * response): re-enqueues, with the thumbnail job, live artifacts (oldest
+ * first, up to REINDEX_BATCH per kind, past REINDEX_MIN_AGE_MS) whose
+ * - current non-pdf version is still text_indexed = 0. Every enqueue carries
+ *   the thumbnail job, so this also recovers a non-pdf thumbnail; a non-pdf
+ *   version that is text_indexed got its thumbnail job, and a missing
+ *   thumbnail there is the capture's own (logged) outcome.
+ * - current pdf version has no thumbnail of it, with server thumbnails on (a
+ *   pdf's text comes from its viewer, so text_indexed proves nothing).
+ * `tick` (the hosted 2-min system job) looks back SWEEP_TICK_SPAN_MS; the
+ * daily cron looks back without bound for text and THUMB_SWEEP_SPAN_MS for
+ * pdf thumbnails (a pdf whose capture failed stays without one; bounding
+ * keeps those from holding the batch forever). Re-enqueueing a job that did
+ * land is a no-op in the DO (same version; the thumbnail job only moves
+ * forward). Logs one index_sweep line with counts.
  */
+export async function sweepLostIndexJobs(
+  env: Env,
+  now: number,
+  mode: "tick" | "daily",
+): Promise<{ text: number; thumb: number }> {
+  const hi = now - REINDEX_MIN_AGE_MS;
+  const tickLo = hi - SWEEP_TICK_SPAN_MS;
+  const pick = (kind: "text" | "thumb", lo: number) =>
+    env.DB.prepare(sweepSql(kind))
+      .bind(lo, hi, REINDEX_BATCH)
+      .all<{ id: string; v: number }>()
+      .then((r) => r.results);
+  const [text, thumb] = await Promise.all([
+    pick("text", mode === "tick" ? tickLo : 0),
+    serverThumbnails(env)
+      ? pick("thumb", mode === "tick" ? tickLo : now - THUMB_SWEEP_SPAN_MS)
+      : [],
+  ]);
+  await Promise.all(
+    [...text, ...thumb].map((r) => enqueueIndex(env, r.id, r.v, true)),
+  );
+  const counts = { text: text.length, thumb: thumb.length };
+  logInfo("index_sweep", { mode, ...counts });
+  return counts;
+}
+
+/** The daily cron's sweepLostIndexJobs; returns how many it re-enqueued. */
 export async function reindexStale(env: Env, now: number): Promise<number> {
-  const { results } = await env.DB.prepare(
-    `select a.id, a.current_version as v from artifacts a
-     join versions v on v.artifact_id = a.id and v.version = a.current_version
-     where a.deleted_at is null and v.text_indexed = 0
-       and coalesce(v.format, a.format) <> 'pdf' and a.updated_at < ?
-     order by a.updated_at limit ?`,
-  )
-    .bind(now - REINDEX_MIN_AGE_MS, REINDEX_BATCH)
-    .all<{ id: string; v: number }>();
-  await Promise.all(results.map((r) => enqueueIndex(env, r.id, r.v)));
-  return results.length;
+  const r = await sweepLostIndexJobs(env, now, "daily");
+  return r.text + r.thumb;
 }
 
 // -------------------------------------------------------------------- purge

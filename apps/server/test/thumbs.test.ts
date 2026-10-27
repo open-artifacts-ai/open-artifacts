@@ -900,7 +900,7 @@ describe("thumbnail job on the artifact DO", () => {
     expect(
       await inDo(id, (i) => i.pendingThumbnail(), withBrowser),
     ).toMatchObject({ artifactId: id, version: 3, attempts: 0 });
-    // Index-only enqueues (undelete, reindexStale) never add one.
+    // An index-only enqueue never adds one.
     const other = await pub();
     await inDo(other, (i) => i.scheduleIndex(other, 1), withBrowser);
     expect(await inDo(other, (i) => i.pendingThumbnail())).toBeNull();
