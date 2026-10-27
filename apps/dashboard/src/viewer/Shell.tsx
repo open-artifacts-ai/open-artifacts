@@ -243,6 +243,10 @@ function Viewer({
     key: 0,
     src: null,
   });
+  // Never white (#693): the frame stays hidden over the theme background until
+  // its artifact has loaded (or said hello); a reload hides the new frame again.
+  const [paintedKey, setPaintedKey] = useState(-1);
+  const painted = paintedKey === frame.key;
   // The renavigation notice: the frame left the page we loaded, so its bridge
   // is gone. Only artifacts with live data lose anything. Each later load in
   // that frame is another navigation and brings a dismissed notice back.
@@ -260,12 +264,14 @@ function Viewer({
     setSlow(false);
     setRenav(live);
   }, [live, touch]);
+  const frameKey = frame.key;
   const onHello = useCallback(() => {
+    setPaintedKey(frameKey);
     helloSeen.current = true;
     fs.current.hello = true;
     clearTimeout(slowTimer.current);
     setSlow(false);
-  }, []);
+  }, [frameKey]);
   const contentLoaded = content.onLoad;
   const onFrameLoad = useCallback(
     (e: SyntheticEvent<HTMLIFrameElement>) => {
@@ -273,6 +279,7 @@ function Viewer({
       // calls loadArtifactFrame. That load isn't the artifact: it must neither
       // freeze the content URL nor arm the slow timer.
       if (!frameLoad(e.currentTarget)) return;
+      setPaintedKey(frameKey);
       if (renavigated.current) {
         setRenav(live);
         return;
@@ -286,7 +293,7 @@ function Viewer({
         if (!helloSeen.current) setSlow(true);
       }, SLOW_MS);
     },
-    [contentLoaded, live],
+    [contentLoaded, live, frameKey],
   );
   useEffect(() => () => clearTimeout(slowTimer.current), []);
   const reload = () => {
@@ -433,6 +440,7 @@ function Viewer({
               key={frame.key}
               ref={setEl}
               className="oa-vframe"
+              data-painted={painted ? "" : undefined}
               onLoad={onFrameLoad}
               title={artifact.title}
               sandbox={SANDBOX}
