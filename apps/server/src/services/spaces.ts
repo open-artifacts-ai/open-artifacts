@@ -668,10 +668,23 @@ const capFor = (
     authConfig(env),
   );
 
+/**
+ * The caller may manage this space's people (an uncapped org admin, or an
+ * uncapped manager of it): only they see SpaceMember.restriction's detail.
+ */
+const managesSpace = (c: Caller, r: ViewRow): boolean =>
+  c.kind === "user" &&
+  orgCan(c.user, "space.members", {
+    spaceRole: roleOf(r.rank),
+    cap: capOfCaller(c),
+  });
+
 function toSpaceMember(
   env: Env,
   allMembersRole: string | null,
   r: MemberRowSql,
+  /** managesSpace: the restriction's detail; anyone else gets null (cap only). */
+  detail: boolean,
 ): SpaceMember | null {
   const manualRole = knownRole(r.manualRole);
   const groups = [
@@ -703,7 +716,7 @@ function toSpaceMember(
       !isGuestRole(r.role as Role) && cap === null
         ? knownRole(allMembersRole)
         : null,
-    restriction: restrictionOf(r),
+    restriction: detail ? restrictionOf(r) : null,
   };
 }
 
@@ -745,7 +758,7 @@ export async function listSpaceMembers(
   const last = shown[shown.length - 1];
   return {
     items: shown
-      .map((x) => toSpaceMember(env, r.allMembersRole, x))
+      .map((x) => toSpaceMember(env, r.allMembersRole, x, managesSpace(c, r)))
       .filter((x): x is SpaceMember => x !== null),
     nextCursor: more && last ? encodeCursor([last.email, last.id]) : null,
     total: (total?.results[0] as { n: number } | undefined)?.n ?? 0,
@@ -846,7 +859,8 @@ async function memberView(
   const row = await stmt(env.DB, MEMBER_PAGE)
     .bind(spaceId, 1, userId, null, null, null, null, null)
     .first<MemberRowSql>();
-  const m = row && toSpaceMember(env, allMembersRole, row);
+  // Its callers (PUT a member, an admin's self-add) manage the space.
+  const m = row && toSpaceMember(env, allMembersRole, row, true);
   if (!m) throw notFound();
   return m;
 }

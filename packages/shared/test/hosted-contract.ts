@@ -1543,6 +1543,54 @@ export function hostedContract(d: ContractDriver): ContractCases {
         ]);
       },
     );
+
+    t(
+      "space people: restriction's detail only for a caller who can manage the space; others read null and the cap",
+      async () => {
+        await d.fresh({ hosted: true });
+        const dan = "Dn8uPqRsTu9vWxYz";
+        expect(
+          (await d.call("PUT", R.spaceMember(ENG, dan), { role: "editor" }))
+            .status,
+        ).toBe(200);
+        const danRow = async () => {
+          const r = await d.call("GET", R.spaceMembers(ENG));
+          expect(r.status).toBe(200);
+          return PageSchema(Strict.SpaceMember)
+            .extend({ total: z.number() })
+            .parse(await json(r))
+            .items.find((m) => m.userId === dan);
+        };
+        // The owner (org admin) sees the detail.
+        const asOwner = await danRow();
+        expect(asOwner?.cap).toBe("restricted");
+        expect(asOwner?.restriction?.groups.map((g) => g.groupId)).toEqual([
+          "gCon04",
+        ]);
+        // Bob, an editor: the cap only.
+        await d.signIn("bob@example.com");
+        expect(await danRow()).toMatchObject({
+          cap: "restricted",
+          restriction: null,
+        });
+        // Dan himself (capped): the cap only.
+        await d.signIn("dan@example.com");
+        expect(await danRow()).toMatchObject({
+          cap: "restricted",
+          restriction: null,
+        });
+        // Bob made a manager: the detail.
+        await d.signIn("ada@example.com");
+        expect(
+          (await d.call("PUT", R.spaceMember(ENG, bob), { role: "manager" }))
+            .status,
+        ).toBe(200);
+        await d.signIn("bob@example.com");
+        expect(
+          (await danRow())?.restriction?.groups.map((g) => g.groupId),
+        ).toEqual(["gCon04"]);
+      },
+    );
   });
 
   describe("hosted mocks: reset a Google link", () => {

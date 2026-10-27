@@ -229,4 +229,27 @@ describe("GET /spaces/:id/candidates", () => {
       groups: [],
     });
   });
+
+  it("restriction's detail only for those who manage the space; a viewer, an editor, a guest and a capped manager see null and the cap", async () => {
+    const viewer = await mk("v-viewer", "member");
+    await row(space, viewer.userId, "viewer");
+    const people = async (as: U) => {
+      const r = await get(ON, `${R.spaceMembers(space)}?q=${PRE}`, as.cookie);
+      expect(r.status).toBe(200);
+      const page = (await r.json()) as {
+        items: { userId: string; restriction: unknown; cap: unknown }[];
+      };
+      return page.items.find((m) => m.userId === cappedMgr.userId);
+    };
+    for (const u of [mgr, admin])
+      expect(await people(u)).toMatchObject({
+        cap: "restricted",
+        restriction: { manual: true, groups: [] },
+      });
+    for (const u of [viewer, ed, guest, cappedMgr])
+      expect(await people(u)).toMatchObject({
+        cap: "restricted",
+        restriction: null,
+      });
+  });
 });

@@ -592,7 +592,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         s.kind === "shared" && u.role !== "guest" && !restrictionOf(u.id)
           ? s.allMembersRole
           : null,
-      restriction: restrictionOf(u.id),
+      // The detail only for a caller who can manage the space (cap still says restricted).
+      restriction:
+        cap() === null && (isAdmin() || roleIn(s) === "manager")
+          ? restrictionOf(u.id)
+          : null,
     };
   };
   /** Can the caller see this shared space (member or org admin)? */

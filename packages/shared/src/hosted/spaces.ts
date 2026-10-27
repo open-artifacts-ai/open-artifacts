@@ -141,7 +141,12 @@ export const SpaceMemberSchema = z.object({
   cap: CapReasonSchema.nullable(),
   /** The space's allMembersRole when it applies to this person; null for guests, capped users, or when none is set. */
   allMembers: SpaceRoleSchema.nullable(),
-  /** As Member.restriction: the manual flag and/or restricted groups; null when unrestricted (optional: older servers omit it). */
+  /**
+   * As Member.restriction (the manual flag and/or restricted groups), only
+   * for a caller who can manage the space (uncapped manager, org admin);
+   * null for everyone else (cap still says restricted) and when
+   * unrestricted. Optional: older servers omit it.
+   */
   restriction: RestrictionSchema.nullable().optional(),
 });
 export type SpaceMember = z.infer<typeof SpaceMemberSchema>;
