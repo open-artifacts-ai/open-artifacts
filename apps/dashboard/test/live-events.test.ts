@@ -1,7 +1,7 @@
 // Live versions: the R.events client (one socket, never sends, reconnects)
 // and Design's safe-swap decision table (option B).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { connectArtifactEvents } from "../src/viewer/liveEvents";
+import { connectArtifactEvents, onWake } from "../src/viewer/liveEvents";
 import { isSafeSwap } from "../src/viewer/useLiveVersions";
 
 class FakeWS {
@@ -122,10 +122,35 @@ describe("events socket", () => {
     expect(FakeWS.all).toHaveLength(1);
     vi.advanceTimersByTime(1);
     expect(FakeWS.all).toHaveLength(2);
-    // That reconnect fails: no storm, wait for focus.
+  });
+
+  it("a reconnect that fails before hello keeps backing off, capped", () => {
+    const { onDown } = mk();
+    last().frame({ type: "hello", version: 1 });
     last().closed(1006);
-    vi.advanceTimersByTime(120_000);
+    vi.advanceTimersByTime(1_000);
     expect(FakeWS.all).toHaveLength(2);
+    // That reconnect fails before its hello: retry after 2s, then 4s.
+    last().closed(1006);
+    vi.advanceTimersByTime(1_999);
+    expect(FakeWS.all).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(FakeWS.all).toHaveLength(3);
+    last().closed(1006);
+    vi.advanceTimersByTime(4_000);
+    expect(FakeWS.all).toHaveLength(4);
+    // Keep failing: the delay stops growing at 30s.
+    for (let i = 0; i < 6; i++) {
+      last().closed(1006);
+      vi.advanceTimersByTime(30_000);
+    }
+    expect(FakeWS.all).toHaveLength(10);
+    expect(onDown).toHaveBeenCalledTimes(9);
+    // A hello resets the backoff to 1s.
+    last().frame({ type: "hello", version: 2 });
+    last().closed(1006);
+    vi.advanceTimersByTime(1_000);
+    expect(FakeWS.all).toHaveLength(11);
   });
 
   it.each(["deleted", "changed"] as const)(
@@ -184,5 +209,31 @@ describe("safe swap (Design's Spec for B)", () => {
     [{ following: false, chromeOpen: true }, false],
   ])("%o → swap %s", (patch, swap) => {
     expect(isSafeSwap({ ...all, ...patch })).toBe(swap);
+  });
+});
+
+describe("onWake (the viewer's retry trigger)", () => {
+  it("fires on focus, online and visibilitychange to visible; stops after off", () => {
+    const win = new EventTarget();
+    const doc = Object.assign(new EventTarget(), {
+      visibilityState: "visible",
+    });
+    vi.stubGlobal("window", win);
+    vi.stubGlobal("document", doc);
+    const cb = vi.fn();
+    const off = onWake(cb);
+    win.dispatchEvent(new Event("focus"));
+    win.dispatchEvent(new Event("online"));
+    doc.dispatchEvent(new Event("visibilitychange"));
+    expect(cb).toHaveBeenCalledTimes(3);
+    doc.visibilityState = "hidden";
+    doc.dispatchEvent(new Event("visibilitychange"));
+    expect(cb).toHaveBeenCalledTimes(3);
+    off();
+    win.dispatchEvent(new Event("focus"));
+    win.dispatchEvent(new Event("online"));
+    doc.visibilityState = "visible";
+    doc.dispatchEvent(new Event("visibilitychange"));
+    expect(cb).toHaveBeenCalledTimes(3);
   });
 });

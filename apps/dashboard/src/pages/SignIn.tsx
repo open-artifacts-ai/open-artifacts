@@ -126,6 +126,34 @@ const errorCopy = (error: SignInError, name: string, domain?: string) => {
   }
 };
 
+/** The key glyph on the Cloudflare Access button. */
+function KeyIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="7.5" cy="15.5" r="4.5" />
+      <path d="m10.7 12.3 9.3-9.3M16 7l3 3M14 9l2 2" />
+    </svg>
+  );
+}
+
+/**
+ * A provider's start with `next` added to whatever query it already has
+ * ("/auth/login?via=access" keeps `via`). Same-origin path out.
+ */
+const startHref = (start: string, next: string) => {
+  const u = new URL(start, "https://oa.invalid");
+  u.searchParams.set("next", next);
+  return `${u.pathname}${u.search}`;
+};
+
 /**
  * Today's page: the self-hosted install and every Access-mode instance. An
  * older server (or one that cannot answer) lands here too.
@@ -143,18 +171,7 @@ function AccessSignIn({ failed }: { failed: boolean }) {
       )}
       <Button asChild className="oa-split-btn">
         <a href={AUTH.login}>
-          <svg
-            aria-hidden="true"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <circle cx="7.5" cy="15.5" r="4.5" />
-            <path d="m10.7 12.3 9.3-9.3M16 7l3 3M14 9l2 2" />
-          </svg>
+          <KeyIcon />
           Continue with Cloudflare Access
         </a>
       </Button>
@@ -192,19 +209,46 @@ function HostedSignIn({
   const name = useInstanceName();
   const [step, setStep] = useState<"email" | "code">("email");
   const onStep = useCallback((next: "email" | "code") => setStep(next), []);
-  // The provider's start must be a same-origin path: a hostile one drops Google.
+  // A provider's start must be a same-origin path: a hostile one is dropped.
   const google = providers.providers.find(
     (p): p is Extract<typeof p, { id: "google" }> =>
       p.id === "google" && safeNext(p.start) === p.start,
   );
+  const access = providers.providers.find(
+    (p): p is Extract<typeof p, { id: "access" }> =>
+      p.id === "access" && safeNext(p.start) === p.start,
+  );
   const email = providers.providers.find((p) => p.id === "email");
   const domain = google?.domains[0];
-  const googleHref = google
-    ? `${google.start}?next=${encodeURIComponent(next)}`
-    : undefined;
+  const googleHref = google ? startHref(google.start, next) : undefined;
   const banner = error && (
     <Notice tone="danger">{errorCopy(error, name, domain)}</Notice>
   );
+  const secondary = Boolean(google || email);
+  const accessButton = access && (
+    <Button
+      asChild
+      variant={secondary ? "outline" : "default"}
+      className="oa-split-btn"
+      style={secondary ? { marginTop: 12 } : undefined}
+    >
+      <a href={startHref(access.start, next)}>
+        <KeyIcon />
+        Continue with Cloudflare Access
+      </a>
+    </Button>
+  );
+
+  // Access only: one button.
+  if (!google && !email && accessButton)
+    return (
+      <>
+        <h1>Sign in to {name}</h1>
+        {banner}
+        <p className="oa-split-sub">Use your work email to open {name}.</p>
+        {accessButton}
+      </>
+    );
 
   if (!google && !email)
     return (
@@ -232,6 +276,7 @@ function HostedSignIn({
           turnstileSiteKey={email.turnstileSiteKey}
           onStep={onStep}
         />
+        {step === "email" && accessButton}
         {step === "email" && (
           <p className="oa-note">
             {name} is trying Open Artifacts. Codes go to work addresses and
@@ -298,6 +343,7 @@ function HostedSignIn({
       <Button asChild className="oa-split-btn">
         <a href={googleHref}>Continue with Google</a>
       </Button>
+      {accessButton}
       {guests && (
         <div
           style={{
@@ -358,8 +404,10 @@ export function SignIn({
         <AccessSignIn failed={error !== undefined} />
       </Shell>
     );
+  // Direct mode covers hosted and self-hosted installs alike; until the
+  // server says which, claim neither.
   return (
-    <Shell hosted>
+    <Shell hosted={null}>
       <HostedSignIn
         providers={data}
         error={shownError}

@@ -187,6 +187,16 @@ describe("members", () => {
     );
   });
 
+  it("an admin's remove dialog says the artifacts go to the instance owner", async () => {
+    as(admin);
+    mount("/settings/members");
+    const row = await rowOf(other.email);
+    fireEvent.click(within(row).getByRole("button", { name: /remove/i }));
+    expect(
+      await screen.findByText("Their artifacts move to the instance owner."),
+    ).toBeTruthy();
+  });
+
   it("remove confirms with the transfer copy, then DELETEs", async () => {
     const dels = bodies("DELETE");
     as(owner);
@@ -194,9 +204,7 @@ describe("members", () => {
     const row = await rowOf(other.email);
     fireEvent.click(within(row).getByRole("button", { name: /remove/i }));
     expect(
-      await screen.findByText(
-        "Their artifacts will be transferred to you (owner).",
-      ),
+      await screen.findByText("Their artifacts move to you."),
     ).toBeTruthy();
     expect(dels.length).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Remove member" }));

@@ -151,11 +151,13 @@ export const useVersionInfo = (id: string, v: number, enabled = true) =>
         await api.get(R.versions(id, v + 1), z.array(VersionInfoSchema), signal)
       ).find((x) => x.version === v) ?? null,
   });
-export const useShares = (id: string) =>
+/** `enabled` false for anyone who can't share: the server answers them 404. */
+export const useShares = (id: string, enabled = true) =>
   useQuery({
     queryKey: qk.shares(id),
     queryFn: ({ signal }) =>
       api.get(R.shares(id), z.array(ShareSchema), signal),
+    enabled,
   });
 export const useSearch = (q: SearchQuery) =>
   useQuery({

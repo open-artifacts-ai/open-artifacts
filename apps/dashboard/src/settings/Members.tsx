@@ -489,7 +489,13 @@ function Row({
         open={confirm}
         onClose={() => setConfirm(false)}
         title={`Remove ${label}?`}
-        description="Their artifacts will be transferred to you (owner)."
+        description={
+          hosted
+            ? "Their artifacts stay where they are. You can transfer their personal artifacts later under Departed."
+            : owner
+              ? "Their artifacts move to you."
+              : "Their artifacts move to the instance owner."
+        }
         footer={
           <>
             <Button variant="ghost" onClick={() => setConfirm(false)}>

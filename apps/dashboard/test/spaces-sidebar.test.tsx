@@ -5,7 +5,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
 import { visibilityHint } from "../src/spaces/SpaceMarker";
-import { installHarness, mount, mountHosted } from "./harness";
+import { calls, installHarness, mount, mountHosted } from "./harness";
 
 installHarness();
 
@@ -161,7 +161,7 @@ it("inside a space: its name and your role; tabs and format filter stay; no chip
     await screen.findByRole("heading", { level: 1, name: "Engineering" }),
   ).toBeVisible();
   expect(screen.getByText("You're a manager")).toBeVisible();
-  expect(screen.getByRole("tab", { name: "Mine" })).toBeVisible();
+  expect(screen.getByRole("tab", { name: "Shared with me" })).toBeVisible();
   const c = await card("Meeting notes");
   expect(within(c).queryByText("Engineering")).toBeNull();
   // Task 7: a manager can publish here, so the Upload pair shows.
@@ -239,10 +239,7 @@ it("inside a space the search reads Search Engineering with a chip; removing it 
     expect(router.state.location.search).toEqual({ q: "notes" }),
   );
   expect(screen.queryByText("in Engineering")).toBeNull();
-  expect(box).toHaveAttribute(
-    "placeholder",
-    "Search titles, content, and agents",
-  );
+  expect(box).toHaveAttribute("placeholder", "Search titles and content");
   expect(box).toHaveAccessibleName("Search artifacts");
 });
 
@@ -254,10 +251,7 @@ it("Backspace on an empty scoped search removes the chip", async () => {
   await screen.findByText("in Engineering");
   fireEvent.keyDown(box, { key: "Backspace" });
   expect(screen.queryByText("in Engineering")).toBeNull();
-  expect(box).toHaveAttribute(
-    "placeholder",
-    "Search titles, content, and agents",
-  );
+  expect(box).toHaveAttribute("placeholder", "Search titles and content");
   expect(box).toHaveAccessibleName("Search artifacts");
 });
 
@@ -266,10 +260,7 @@ it("across spaces there is no chip", async () => {
   const box = await screen.findByRole("searchbox", {
     name: "Search artifacts",
   });
-  expect(box).toHaveAttribute(
-    "placeholder",
-    "Search titles, content, and agents",
-  );
+  expect(box).toHaveAttribute("placeholder", "Search titles and content");
   expect(
     screen.queryByRole("button", { name: "Search everywhere" }),
   ).toBeNull();
@@ -308,13 +299,37 @@ it("inside a space, the tabs keep the space; there is no Team tab", async () => 
   const router = mountHosted(`/?space=${ENG}`);
   await screen.findByRole("heading", { level: 1, name: "Engineering" });
   expect(screen.queryByRole("tab", { name: "Team" })).toBeNull();
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "Mine" }));
-  fireEvent.click(screen.getByRole("tab", { name: "Mine" }));
-  await waitFor(() => expect(router.state.location.pathname).toBe("/mine"));
+  const tab = screen.getByRole("tab", { name: "Shared with me" });
+  fireEvent.mouseDown(tab);
+  fireEvent.click(tab);
+  await waitFor(() => expect(router.state.location.pathname).toBe("/shared"));
   expect(router.state.location.search).toEqual({ space: ENG });
   expect(
     screen.getByRole("heading", { level: 1, name: "Engineering" }),
   ).toBeVisible();
+});
+
+it("a shared space has no Mine tab, and /mine?space=<shared> falls back to All", async () => {
+  const list = calls("GET");
+  const router = mountHosted(`/mine?space=${ENG}`);
+  await screen.findByRole("heading", { level: 1, name: "Engineering" });
+  expect(screen.queryByRole("tab", { name: "Mine" })).toBeNull();
+  expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+  expect(router.state.location.search).toEqual({ space: ENG });
+  const scoped = list.filter(
+    (c) => c.path === "/api/v1/artifacts" && c.search.get("spaceId") === ENG,
+  );
+  expect(scoped.length).toBeGreaterThan(0);
+  for (const c of scoped) expect(c.search.get("scope")).toBe("space");
+});
+
+it("the personal space keeps its Mine tab", async () => {
+  mountHosted(`/?space=${PERSONAL}`);
+  expect(await screen.findByRole("tab", { name: "Mine" })).toBeVisible();
 });
 
 it("below 640px the chip drops 'in' and the placeholder is just Search", async () => {

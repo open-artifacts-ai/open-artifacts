@@ -398,6 +398,24 @@ describe("share panel review fixes", () => {
     mount(panel(EDITOR));
     await screen.findByText("Bob Builder");
   });
+
+  it("someone who can't share sees the owner and why, and never asks for the list", async () => {
+    mount(panel(EDITOR));
+    await screen.findByText("Bob Builder");
+    expect(
+      screen.getByText(
+        "Only people who can share this artifact see who else has access.",
+      ),
+    ).toBeVisible();
+    await wait(50);
+    expect(seen.some((u) => u.pathname === R.shares(EDITOR))).toBe(false);
+  });
+
+  it("someone who can share sees no such note", async () => {
+    mount(panel(OWNED));
+    await screen.findByRole("heading", { name: "People" });
+    expect(screen.queryByText(/see who else has access/)).toBeNull();
+  });
 });
 
 describe("details review fixes", () => {

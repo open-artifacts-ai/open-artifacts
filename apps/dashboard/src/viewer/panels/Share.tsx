@@ -144,7 +144,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const space = artifact.space;
   const publicOff =
     space?.publicLinks === false && artifact.visibility !== "public";
-  const shares = useShares(id);
+  const shares = useShares(id, people);
   const patch = usePatchArtifact(id);
   const put = usePutShare(id);
   const del = useDeleteShare(id);
@@ -405,7 +405,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             </span>
             <span className="text-muted-foreground">Owner</span>
           </li>
-          {(shares.data ?? []).map((s) => (
+          {(people ? (shares.data ?? []) : []).map((s) => (
             <li key={s.email} className={PERSON}>
               <UserAvatar name={null} email={s.email} />
               <span className={NAME} title={s.email}>
@@ -452,6 +452,11 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             error={shares.error}
             onRetry={() => void shares.refetch()}
           />
+        )}
+        {!people && (
+          <p className="oa-muted">
+            Only people who can share this artifact see who else has access.
+          </p>
         )}
       </section>
 
