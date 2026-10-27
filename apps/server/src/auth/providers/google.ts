@@ -62,6 +62,37 @@ const s256 = async (verifier: string) =>
     ),
   );
 
+/**
+ * The signed redeem request for the auth broker (POST /google/redeem). The
+ * broker check (services/broker-check.ts) builds it too, with junk values,
+ * so that probe signs exactly as a real sign-in does.
+ */
+export async function brokerRedeemRequest(
+  t: Extract<GoogleTransport, { kind: "broker" }>,
+  a: { code: string; verifier: string; nonce: string; bstate?: string },
+): Promise<Request> {
+  const body = JSON.stringify({
+    install: t.installId,
+    code: a.code,
+    verifier: a.verifier,
+    ts: Date.now(),
+    // The broker refuses unless its state binds this exact flow.
+    bstate: a.bstate ?? "",
+    h: await flowHash(a.nonce, await s256(a.verifier)),
+  });
+  const kid = await kidOf(t.signingKey);
+  return new Request(`${t.url}/google/redeem`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-oa-kid": kid,
+      "x-oa-sig": await signRedeem(t.signingKey, kid, body),
+    },
+    body,
+    redirect: "manual",
+  });
+}
+
 /** Google's raw ID token for `code`, by this install's transport. */
 async function exchange(
   env: Env,
@@ -88,26 +119,7 @@ async function exchange(
       redirect: "manual",
     });
   } else {
-    const body = JSON.stringify({
-      install: t.installId,
-      code: a.code,
-      verifier: a.verifier,
-      ts: Date.now(),
-      // The broker refuses unless its state binds this exact flow.
-      bstate: a.bstate ?? "",
-      h: await flowHash(a.nonce, await s256(a.verifier)),
-    });
-    const kid = await kidOf(t.signingKey);
-    const req = new Request(`${t.url}/google/redeem`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-oa-kid": kid,
-        "x-oa-sig": await signRedeem(t.signingKey, kid, body),
-      },
-      body,
-      redirect: "manual",
-    });
+    const req = await brokerRedeemRequest(t, a);
     // A service binding, else the invocation's AUTH_BROKER capability, else
     // public HTTPS (never hosted); the request is signed either way.
     try {

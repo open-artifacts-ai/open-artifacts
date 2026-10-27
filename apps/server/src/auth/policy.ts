@@ -78,6 +78,8 @@ export type OrgAction =
   | "directory.manage"
   /** Disconnect the directory (R.directoryDisconnect): the org owner, in a cookie session (the handler refuses bearer auth). */
   | "directory.disconnect"
+  /** Probe the auth and directory brokers (R.adminBrokerCheck): the org owner. */
+  | "broker.check"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"
@@ -368,6 +370,8 @@ export function orgCan(
     case "directory.manage":
     // Disconnect: owner only too (the route also needs a cookie session).
     case "directory.disconnect":
+    // The broker check: owner only (it spends broker rate limit).
+    case "broker.check":
     // Acting on an org owner or admin (role, removal, suspension, Google
     // link reset): owner only (#475).
     case "members.manageAdmins":
