@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.66.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.66.1...v0.66.2) (2026-10-27)
+
+
+### Bug Fixes
+
+* **broker-core:** rate-limit gate traffic per install, not one shared ip:unknown bucket ([#731](https://github.com/open-artifacts-ai/open-artifacts/issues/731)) ([8c89730](https://github.com/open-artifacts-ai/open-artifacts/commit/8c8973023b3dadbf6ae334b7476ebe56269c73d0))
+
 ## [0.66.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.66.0...v0.66.1) (2026-10-27)
 
 
