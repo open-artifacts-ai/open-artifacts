@@ -13,7 +13,6 @@ import {
   it,
   vi,
 } from "vitest";
-import * as brokerCore from "../../../packages/broker-core/src/index.js";
 import authBroker, {
   type Env as AuthBrokerEnv,
 } from "../../auth-broker/src/index.js";
@@ -57,8 +56,6 @@ const json =
       status,
       headers: { "content-type": "application/json", ...headers },
     });
-/** broker-core answers 401 bad_flow / stale after verification (#732). */
-const POST_VERIFY_CODES = "badFlow" in brokerCore;
 /** broker-core's refusal after verifying the install: ok. */
 const REFUSED = json({ error: "bad_flow" }, 401);
 /** broker-core's refusal before verifying (unknown install, bad signature). */
@@ -270,9 +267,7 @@ describe("what counts as verified", () => {
       return { out, lines, gate };
     };
 
-    // Needs broker-core's post-verification codes (badFlow, staleAssertion:
-    // #732): skipped until main has them. #730 merges and deploys after #732.
-    it.skipIf(!POST_VERIFY_CODES)(
+    it(
       "a correctly signed check is verified and refused as bad_flow: ok",
       async () => {
         const { out, lines, gate } = await run();
