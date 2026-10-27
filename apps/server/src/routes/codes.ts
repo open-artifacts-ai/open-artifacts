@@ -392,7 +392,7 @@ export function mountCodes(app: AppType): void {
       readOnly: guest,
     });
     res.headers.append("set-cookie", clearPending(c));
-    if (forgetOtp) await forgetOtp(c.env, p.ek);
+    if (forgetOtp) await forgetOtp(c.env, email, p.ek);
     res.headers.append("set-cookie", sessionCookie(sess, c.env, maxAgeS));
     res.headers.set("cache-control", "no-store");
     return res;

@@ -108,6 +108,8 @@ const inTestDomain = (env: Env, email: string) =>
 // are swept on every write.
 const OTP_DDL =
   "CREATE TABLE IF NOT EXISTS `test_otps` (`ek` text PRIMARY KEY NOT NULL, `code` text, `outcome` text NOT NULL, `at` integer NOT NULL) WITHOUT ROWID";
+// One row per address: a second request nulls the earlier sent code (pending,
+// then e.g. resend_wait), so red-line never re-requests one address within 60 s.
 const OTP_UPSERT = `insert into test_otps (ek, code, outcome, at) values (?1, ?2, ?3, ?4)
   on conflict (ek) do update set code = excluded.code, outcome = excluded.outcome, at = excluded.at`;
 const OTP_SWEEP = "delete from test_otps where at < ?1";
@@ -146,13 +148,22 @@ export async function noteTestOtp(
   }
 }
 
-/** Drops the plaintext copy once the code is used (the outcome becomes "used"). */
-export async function forgetTestOtp(env: Env, ek: string) {
-  if (!testHooksOn(env)) return;
-  await env.DB.batch([
-    env.DB.prepare(OTP_DDL),
-    env.DB.prepare(OTP_USED).bind(ek, Date.now()),
-  ]);
+/**
+ * Drops the plaintext copy once the code is used (the outcome becomes
+ * "used"). TEST_DOMAIN only. Never throws, so a D1 failure can't fail the
+ * verify that called it.
+ */
+export async function forgetTestOtp(env: Env, email: string, ek: string) {
+  const to = normalizeEmail(email);
+  if (!testHooksOn(env) || !to || !inTestDomain(env, to)) return;
+  try {
+    await env.DB.batch([
+      env.DB.prepare(OTP_DDL),
+      env.DB.prepare(OTP_USED).bind(ek, Date.now()),
+    ]);
+  } catch {
+    log("otp_note_failed");
+  }
 }
 
 /** The sent code for `ek`, or why there is none. */

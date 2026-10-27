@@ -332,7 +332,9 @@ const OTP_POLL_MS = 1000;
  * whose outcome is pending). A no_code with any other outcome throws
  * "<install>: no code (<outcome>)"; any other answer throws with its status
  * and body hash: the rate limit, a wrong key and hooks off are all the
- * reasonless 404, never "no code".
+ * reasonless 404, never "no code". The server keeps one outcome per address,
+ * so a second request inside the 60 s resend window nulls the earlier code:
+ * the suite must never re-request the same address within 60 s.
  */
 export async function latestOtp(
   t: Target,

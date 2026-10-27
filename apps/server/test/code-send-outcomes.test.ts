@@ -10,6 +10,7 @@ import {
   netKey,
 } from "../src/auth/codes.js";
 import { authConfig } from "../src/auth/config.js";
+import { sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import { noteTestOtp } from "../src/test-hooks/index.js";
@@ -57,16 +58,23 @@ async function captured(fn: () => Promise<unknown>) {
   return { text: lines.join("\n"), sends };
 }
 
-/** A D1 whose deliverCode resend gate throws (after eligibility and caps). */
+/**
+ * A D1 whose statements containing `match` throw on prepare (default: the
+ * deliverCode resend gate, after eligibility and caps). `seen` gets every SQL.
+ */
 class BoomError extends Error {}
-function throwingDb(msg: string): D1Database {
+function throwingDb(
+  msg: string,
+  match = "where counters.n <= excluded.n - ?4",
+  seen: string[] = [],
+): D1Database {
   const db = env.DB;
   return new Proxy(db, {
     get(t, k) {
       if (k === "prepare")
         return (sql: string) => {
-          if (sql.includes("where counters.n <= excluded.n - ?4"))
-            throw new BoomError(msg);
+          seen.push(sql);
+          if (sql.includes(match)) throw new BoomError(msg);
           return t.prepare(sql);
         };
       const v = Reflect.get(t, k);
@@ -361,6 +369,71 @@ describe("otp/latest reports the last outcome after the key", () => {
     const ek = await emailKey(e, email);
     await noteTestOtp(e, email, ek, "send_failed", "12345678");
     expect(await copyOf(e, email)).toBeNull();
+  });
+
+  it("a D1 failure clearing the copy still returns the session", async () => {
+    const email = uniq("f", TD);
+    await seedUser(email, "guest");
+    const m = mailer();
+    const e = on(withMail(direct(), m));
+    const req = await requestCode(e, email);
+    const pending =
+      req.headers
+        .getSetCookie()
+        .find((c) => c.startsWith("oa_code="))
+        ?.split(";")[0] ?? "";
+    const bad = {
+      ...e,
+      DB: throwingDb("boom", "update test_otps set code = null"),
+    } as Env;
+    const { text } = await captured(async () => {
+      const v = await call(
+        bad,
+        AUTH.codeVerify,
+        { code: m.codeFor(email) },
+        {
+          "x-oa-request": "1",
+          "sec-fetch-site": "same-origin",
+          cookie: pending,
+        },
+      );
+      expect(v.status).toBe(200);
+      expect(
+        v.headers
+          .getSetCookie()
+          .some((c) => c.startsWith(`${sessionCookieName(bad)}=`)),
+      ).toBe(true);
+    });
+    expect(text).toContain('"evt":"test_hook.otp_note_failed"');
+  });
+
+  it("verify outside TEST_DOMAIN never touches test_otps", async () => {
+    const email = uniq("v", "y.com");
+    await seedUser(email, "guest");
+    const m = mailer();
+    const seen: string[] = [];
+    const e = on(
+      withMail(direct({ DB: throwingDb("never", "\u0000", seen) }), m),
+    );
+    const req = await requestCode(e, email);
+    const pending =
+      req.headers
+        .getSetCookie()
+        .find((c) => c.startsWith("oa_code="))
+        ?.split(";")[0] ?? "";
+    const v = await call(
+      e,
+      AUTH.codeVerify,
+      { code: m.codeFor(email) },
+      {
+        "x-oa-request": "1",
+        "sec-fetch-site": "same-origin",
+        cookie: pending,
+      },
+    );
+    expect(v.status).toBe(200);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.filter((q) => q.includes("test_otps"))).toEqual([]);
   });
 
   it("before the key verifies: the uniform 404, no outcome", async () => {

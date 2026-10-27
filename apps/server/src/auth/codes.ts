@@ -56,7 +56,7 @@ export const CODE_LIMITS = {
 } as const;
 
 // `false` in release builds (build-flags.d.ts): no reference to test-hooks/.
-export const noteOtp =
+const noteOtp =
   typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
   __OA_TEST_HOOKS_ALLOWED__ === true &&
   noteTestOtp;
