@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { can } from "../../src/auth/policy.ts";
+import { can, dataWritersOf } from "../../src/auth/policy.ts";
 
 // #681: migration NNNN_data_writers (found by suffix, never by number),
 // before and after on a seeded table. The migrations before it build the
@@ -27,8 +27,12 @@ const WHO: readonly Who[] = ["anonymous", "viewer", "editor"];
 /** The writers before #681: signed-in viewers and up; anonymous only with the opt-in on a public artifact. */
 const writersBefore = (r: Row, who: Who) =>
   who === "anonymous" ? r.visibility === "public" && r.aaw === 1 : true;
-/** After, by the live policy. */
-const writersAfter = (r: Row, dataWriters: string, who: Who) =>
+/** After, by the live policy and the live read of both columns. */
+const writersAfter = (
+  r: Row,
+  after: { dw: string; aaw: number },
+  who: Who,
+) =>
   can(
     who === "anonymous" ? (r.visibility === "public" ? "viewer" : null) : who,
     "data.write",
@@ -36,9 +40,17 @@ const writersAfter = (r: Row, dataWriters: string, who: Who) =>
       cap: null,
       personal: true,
       anonymous: who === "anonymous",
-      dataWriters: dataWriters as "viewers" | "editors",
+      dataWriters: dataWritersOf({
+        dataWriters: after.dw,
+        allowAnonymousWrites: after.aaw,
+      }),
     },
   );
+/** The statements after the ADD COLUMN (backfill and alignment). */
+const updates = () =>
+  (sql(files[at] as string).split("--> statement-breakpoint") as string[])
+    .slice(1)
+    .join("\n");
 
 /** A deterministic PRNG (mulberry32), so a failure reproduces. */
 function rng(seed: number) {
@@ -84,6 +96,9 @@ describe("migration data_writers", () => {
     expect(m).toMatch(
       /UPDATE `artifacts` SET `data_writers` = 'editors' WHERE `visibility` = 'public' AND `allow_anonymous_writes` = 0/,
     );
+    expect(m).toMatch(
+      /UPDATE `artifacts` SET `allow_anonymous_writes` = CASE WHEN `data_writers` = 'viewers' THEN 1 ELSE 0 END/,
+    );
     // Additive: allow_anonymous_writes stays (release-before-use).
     expect(m).not.toMatch(/DROP|RENAME/i);
   });
@@ -106,9 +121,46 @@ describe("migration data_writers", () => {
     const { out } = migrated(rows);
     cases.forEach(([v, aaw, want], i) => {
       expect(out.get(`c${i}`)?.dw, `${v} ${aaw}`).toBe(want);
-      // The old column is untouched.
-      expect(out.get(`c${i}`)?.aaw).toBe(aaw);
+      // Aligned on every row, private and team included.
+      expect(out.get(`c${i}`)?.aaw, `${v} ${aaw}`).toBe(
+        want === "viewers" ? 1 : 0,
+      );
     });
+  });
+
+  it("private and team viewers rows get allow_anonymous_writes 1", () => {
+    const rows: Row[] = ["private", "team"].flatMap((visibility) => [
+      { id: `${visibility}0`, visibility, aaw: 0, deleted: false },
+      { id: `${visibility}0d`, visibility, aaw: 0, deleted: true },
+    ]);
+    const { out } = migrated(rows);
+    for (const r of rows)
+      expect(out.get(r.id), r.id).toEqual({ dw: "viewers", aaw: 1 });
+  });
+
+  it("is idempotent: rerunning the backfill and alignment changes nothing", () => {
+    const r = rng(682);
+    const VIS = ["private", "team", "public"];
+    const rows: Row[] = Array.from({ length: 200 }, (_, i) => ({
+      id: `i${i}`,
+      visibility: VIS[Math.floor(r() * 3)] as string,
+      aaw: r() < 0.5 ? 1 : 0,
+      deleted: r() < 0.1,
+    }));
+    const { db, out } = migrated(rows);
+    const snap = () =>
+      db
+        .prepare(
+          "select id, visibility, data_writers, allow_anonymous_writes, updated_at, deleted_at from artifacts order by id",
+        )
+        .all();
+    const once = snap();
+    db.exec(updates());
+    expect(snap()).toEqual(once);
+    db.exec(updates());
+    expect(snap()).toEqual(once);
+    // And the columns agree on every row.
+    for (const [, x] of out) expect(x.aaw).toBe(x.dw === "viewers" ? 1 : 0);
   });
 
   it("never grows the set of writers on any row (seeded table)", () => {
@@ -123,16 +175,20 @@ describe("migration data_writers", () => {
     const { out } = migrated(rows);
     const grew: string[] = [];
     for (const row of rows) {
-      const dw = out.get(row.id)?.dw as string;
+      const after = out.get(row.id) as { dw: string; aaw: number };
       for (const who of WHO)
-        if (writersAfter(row, dw, who) && !writersBefore(row, who))
+        if (writersAfter(row, after, who) && !writersBefore(row, who))
           grew.push(`${row.id} ${row.visibility} aaw=${row.aaw} ${who}`);
     }
     expect(grew).toEqual([]);
     // Anonymous writers are exactly the opted-in public rows, before and after.
     for (const row of rows)
       expect(
-        writersAfter(row, out.get(row.id)?.dw as string, "anonymous"),
+        writersAfter(
+          row,
+          out.get(row.id) as { dw: string; aaw: number },
+          "anonymous",
+        ),
       ).toBe(writersBefore(row, "anonymous"));
   });
 
