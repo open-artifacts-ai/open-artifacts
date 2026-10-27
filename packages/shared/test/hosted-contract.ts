@@ -48,6 +48,11 @@ export type ContractHosted = {
   turnstile?: boolean;
   directory?: DirectoryMode;
   unhealthy?: boolean;
+  /**
+   * With unhealthy: the outage began, and the last success was, over 7 d
+   * ago, so staleAt is set. Contract only: the mock reports staleAt anyway.
+   */
+  stale?: boolean;
   unhealthyState?:
     | "backoff"
     | "auth_failed"
@@ -159,6 +164,26 @@ export function hostedContract(d: ContractDriver): ContractCases {
   });
 
   describe("hosted mocks", () => {
+    t("providers with Google on: no domain codes", async () => {
+      await d.fresh({ hosted: true });
+      const p = Strict.AuthProviders.parse(
+        await json(await d.call("GET", AUTH.providers)),
+      );
+      expect(p.mode).toBe("direct");
+      // turnstileSiteKey is the driver's own config, not the contract's.
+      expect(
+        p.providers.map((x) => {
+          const { turnstileSiteKey: _, ...rest } = x as typeof x & {
+            turnstileSiteKey?: string;
+          };
+          return rest;
+        }),
+      ).toEqual([
+        { id: "google", start: AUTH.loginGoogle, domains: ["example.com"] },
+        { id: "email", domainCodes: false, guests: true },
+      ]);
+    });
+
     t(
       "providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal",
       async () => {
@@ -829,7 +854,11 @@ export function hostedContract(d: ContractDriver): ContractCases {
   describe("hosted mocks: sync banner fields", () => {
     t("admins see state, staleAt and held sweeps", async () => {
       await d.fresh({
-        hosted: { unhealthy: true, unhealthyState: "scope_missing" },
+        hosted: {
+          unhealthy: true,
+          unhealthyState: "scope_missing",
+          stale: true,
+        },
       });
       const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
       const dir = me.instance.directory;

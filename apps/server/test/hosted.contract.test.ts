@@ -102,6 +102,7 @@ const SUPPORTED: readonly (keyof ContractHosted)[] = [
   "turnstile",
   "directory",
   "unhealthy",
+  "stale",
   "unhealthyState",
   "breakGlass",
   "actAs",
@@ -316,7 +317,8 @@ function health(h: ContractHosted, now: number) {
     : h.unhealthy
       ? (h.unhealthyState ?? "backoff")
       : "ok";
-  const since = state === "ok" ? null : now - 2 * 3600_000;
+  // A 2 h outage; stale: one that began 8 d ago, past staleAt.
+  const since = state === "ok" ? null : now - (h.stale ? 8 * 24 : 2) * 3600_000;
   return {
     state,
     value: JSON.stringify({

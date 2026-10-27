@@ -61,11 +61,6 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
     m1: true,
     why: `${MEMBER_FIELDS}: restriction is undefined, not null`,
   },
-  "admins see state, staleAt and held sweeps": {
-    item: "new",
-    m1: false,
-    why: "staleAt is null until lastSuccessAt + 7 d has passed (staleAtOf); the contract has it from the first unhealthy read (lastSuccessAt + 7 d)",
-  },
   "frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)":
     { item: "new", m1: false, why: FROZEN_GROUPS },
   "frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited":
