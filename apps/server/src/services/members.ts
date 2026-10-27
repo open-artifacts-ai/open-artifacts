@@ -52,6 +52,8 @@ import { type AuditActor, audit, userActor } from "./audit.js";
 import {
   IDENTITIES_SQL,
   identitiesOf,
+  MEMBER_EXTRAS_COLS,
+  type MemberExtrasRow,
   RESTRICTED_GROUPS_SQL,
   RESTRICTED_SYNC_FOR_USER,
   restrictionOf,
@@ -115,6 +117,23 @@ export async function listMembers(
     identities: identitiesOf(r),
     restriction: restrictionOf(r),
   }));
+}
+
+/** One user's hosted Member fields by id (?1): read back with hostedFields. */
+export const HOSTED_FIELDS = `select users.status, ${MEMBER_EXTRAS_COLS} from users where users.id = ?1`;
+
+/** `m` with status, identities and restriction from a HOSTED_FIELDS row (as GET R.members rows carry them). */
+export function hostedFields(
+  m: Member,
+  r: ({ status: string } & MemberExtrasRow) | undefined,
+): Member {
+  if (!r) return m;
+  return {
+    ...m,
+    status: statusOf(r.status),
+    identities: identitiesOf(r),
+    restriction: restrictionOf(r),
+  };
 }
 
 /**

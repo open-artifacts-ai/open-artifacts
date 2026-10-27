@@ -5,6 +5,7 @@ import {
   CodeRequestedSchema,
   CodeVerifiedSchema,
   CodeVerifyFailureDetailsSchema,
+  R,
   TurnstileRequiredDetailsSchema,
 } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +21,7 @@ import {
   trial,
   uniq,
 } from "./auth-helpers.js";
+import { fetchAndWait } from "./helpers.js";
 import { callWorker, nextIp } from "./mcp-helpers.js";
 
 // P2 Task 8: code sign-in routes.
@@ -355,6 +357,69 @@ describe("POST AUTH.codeVerify", () => {
       p: "code",
       t: "a.com",
     });
+  });
+
+  it("a restricted domain member is readOnly (the member's cap, as GET /me says), with restriction", async () => {
+    // A fresh siteverify answer per request (a Response body reads once).
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json(TURNSTILE_OK),
+    );
+    for (const how of ["manual", "group"] as const) {
+      const who = uniq(`rst-${how}`);
+      const id = await seedUser(who, "member");
+      const gid = `g-rst-${crypto.randomUUID()}`;
+      if (how === "manual")
+        await env.DB.prepare(
+          "update users set restricted_manual = 1 where id = ?",
+        )
+          .bind(id)
+          .run();
+      else
+        await env.DB.batch([
+          env.DB.prepare(
+            "insert into directory_groups (group_id, email) values (?, ?)",
+          ).bind(gid, `${gid}@a.com`),
+          env.DB.prepare(
+            "insert into restricted_groups (group_id, group_email) values (?, ?)",
+          ).bind(gid, `${gid}@a.com`),
+          env.DB.prepare(
+            "insert into directory_members (group_id, user_id) values (?, ?)",
+          ).bind(gid, id),
+          env.DB.prepare(
+            "update users set restricted_sync = 1 where id = ?",
+          ).bind(id),
+        ]);
+      const m = mailer();
+      const e = withMail(trial(), m);
+      const r1 = await request(e, who, { token: "ok" });
+      const r = await verify(e, m.codeFor(who), cookieOf(r1, CODE_COOKIE));
+      expect(r.status).toBe(200);
+      const body = CodeVerifiedSchema.parse(await r.json());
+      expect(body.readOnly, how).toBe(true);
+      expect(body.user.restriction, how).toEqual(
+        how === "manual"
+          ? { manual: true, groups: [] }
+          : {
+              manual: false,
+              groups: [{ groupId: gid, email: `${gid}@a.com`, name: null }],
+            },
+      );
+      // The domain session itself isn't a guest one (t = domain).
+      expect(
+        await readSession(e, cookieOf(r, SESSION)?.split("=")[1]),
+      ).toMatchObject({ p: "code", t: "a.com" });
+      const me = await fetchAndWait(
+        app,
+        new Request(`${APP}${R.me}`, {
+          headers: { cookie: cookieOf(r, SESSION) as string },
+        }),
+        e,
+      );
+      expect(((await me.json()) as { auth: unknown }).auth).toMatchObject({
+        readOnly: true,
+        cap: "restricted",
+      });
+    }
   });
 
   it("reasons come from the cookie: invalid_code 4..1, then expired", async () => {

@@ -28,9 +28,9 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
     why: `${ME_SPACES}: the Exec publish goes to Personal (201, not space_forbidden)`,
   },
   "a restricted-group member is capped and gets no allMembersRole": {
-    item: "new, 2",
+    item: "2",
     m1: true,
-    why: "code verify answers readOnly false for restricted Dan: the server sets readOnly for guests only (new); the case reads me.spaces after it (item 2)",
+    why: ME_SPACES,
   },
   "manual restricted flag: cap on space members, no successor, audited": {
     item: "2",
@@ -68,6 +68,7 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
  * KNOWN_GAPS disagree, so closing an M1 gap edits both.
  */
 export const M1_OPEN: readonly string[] = [
+  "2: a restricted-group member is capped and gets no allMembersRole",
   "2: manual restricted flag: cap on space members, no successor, audited",
   "2: moving a public artifact into a space with publicLinks off makes it team",
   "2: public in a space with publicLinks off is 403 public_links_off",
@@ -75,7 +76,6 @@ export const M1_OPEN: readonly string[] = [
   "2: scope=space lists one space; scope=spaces lists shared spaces; scope=space without spaceId is 400",
   "2: space members: personal space 400 space_personal; PUT needs an existing, active target",
   "2: transfer of a personal artifact and spaceId on publish",
-  "new, 2: a restricted-group member is capped and gets no allMembersRole",
   "new, 2: providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal",
   "new: frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited",
   "new: frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)",
