@@ -7,8 +7,6 @@ import type { KnownGap } from "../../../packages/shared/test/hosted-contract.js"
 
 const ME_SPACES =
   "GET /me has no spaces (item 2), so the case can't find its space ids";
-const MEMBER_FIELDS =
-  "GET /members has no identities/restriction/status (item 1)";
 const FROZEN_GROUPS =
   "frozen sync: a manual override keeps the synced row's groups in the response (syncRole null, groups [gEng01]); the contract says groups [] (new)";
 
@@ -56,28 +54,12 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
     m1: true,
     why: ME_SPACES,
   },
-  "PUT memberRestricted on the owner or an admin is 400 restrict_admin": {
-    item: "1",
-    m1: true,
-    why: `${MEMBER_FIELDS}: restriction is undefined, not null`,
-  },
   "frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)":
     { item: "new", m1: true, why: FROZEN_GROUPS },
   "frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited":
     { item: "new", m1: true, why: FROZEN_GROUPS },
   "scope=space lists one space; scope=spaces lists shared spaces; scope=space without spaceId is 400":
     { item: "2", m1: true, why: ME_SPACES },
-  "the owner resets an active member's and an admin's link": {
-    item: "1",
-    m1: true,
-    why: `${MEMBER_FIELDS}: identities is undefined`,
-  },
-  "an admin resetting an unlinked admin gets owner_only too (by role, not link)":
-    {
-      item: "1",
-      m1: true,
-      why: `${MEMBER_FIELDS}: identities is undefined`,
-    },
 };
 
 /**
@@ -86,9 +68,6 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
  * KNOWN_GAPS disagree, so closing an M1 gap edits both.
  */
 export const M1_OPEN: readonly string[] = [
-  "1: PUT memberRestricted on the owner or an admin is 400 restrict_admin",
-  "1: an admin resetting an unlinked admin gets owner_only too (by role, not link)",
-  "1: the owner resets an active member's and an admin's link",
   "2, 1b: manual restricted flag: cap on space members, no successor, audited",
   "2: moving a public artifact into a space with publicLinks off makes it team",
   "2: public in a space with publicLinks off is 403 public_links_off",
