@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.61.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.60.0...v0.61.0) (2026-10-27)
+
+
+### Features
+
+* **hosted:** oa:hosted owner-token re-mints an install's owner PAT file ([#692](https://github.com/open-artifacts-ai/open-artifacts/issues/692)) ([714c336](https://github.com/open-artifacts-ai/open-artifacts/commit/714c336122adf94b663df716502e4a51d38c656e))
+
 ## [0.60.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.59.1...v0.60.0) (2026-10-26)
 
 
