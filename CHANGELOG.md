@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.68.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.68.1...v0.68.2) (2026-10-27)
+
+
+### Bug Fixes
+
+* **auth:** log every code_send outcome; test OTP copy and outcome in D1 ([#754](https://github.com/open-artifacts-ai/open-artifacts/issues/754)) ([785e943](https://github.com/open-artifacts-ai/open-artifacts/commit/785e9433c7501d46821c7e31361d4c5d3138be7f))
+
 ## [0.68.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.68.0...v0.68.1) (2026-10-27)
 
 
