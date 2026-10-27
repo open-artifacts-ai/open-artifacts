@@ -2,6 +2,7 @@ export {
   ASSERTION_SKEW_MS,
   type BrokerState,
   b64,
+  badFlow,
   fixedOrigin,
   hmac,
   installLimited,
@@ -17,6 +18,7 @@ export {
   s256,
   same,
   signState,
+  staleAssertion,
   unb64,
   verifyAssertion,
 } from "./core.js";

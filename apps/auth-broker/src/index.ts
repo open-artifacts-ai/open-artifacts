@@ -18,6 +18,7 @@ import {
 import {
   ASSERTION_SKEW_MS,
   type BrokerState,
+  badFlow,
   json,
   installLimited as limitInstall,
   ipLimited as limitIp,
@@ -29,6 +30,7 @@ import {
   refused,
   same,
   signState as signSigned,
+  staleAssertion,
   verifyAssertion,
 } from "@oa/broker-core";
 import { lookupInstall } from "./registry.js";
@@ -218,7 +220,7 @@ async function redeem(req: Request, env: Env, now: number): Promise<Response> {
   if (!(await verifyAssertion(entry, REDEEM_PATH, kid, text, sig)))
     return log("redeem", "bad_signature"), refused();
   if (Math.abs(now - body.ts) > ASSERTION_SKEW_MS)
-    return log("redeem", "stale"), refused();
+    return log("redeem", "stale"), staleAssertion();
   const busy = await installLimited(env, body.install);
   if (busy) return busy;
   // The broker state must be this install's, unexpired, and bind the flow
@@ -229,7 +231,7 @@ async function redeem(req: Request, env: Env, now: number): Promise<Response> {
     st.i !== body.install ||
     !same(enc.encode(st.h), enc.encode(body.h))
   )
-    return log("redeem", "bad_flow"), refused();
+    return log("redeem", "bad_flow"), badFlow();
 
   const res = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",

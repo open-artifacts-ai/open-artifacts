@@ -27,6 +27,7 @@ import {
 } from "@oa/auth-core";
 import {
   ASSERTION_SKEW_MS,
+  badFlow,
   fixedOrigin,
   installLimited,
   ipLimited,
@@ -40,6 +41,7 @@ import {
   s256,
   same,
   signState,
+  staleAssertion,
   verifyAssertion,
 } from "@oa/broker-core";
 import { unwrapRefresh, wrapRefresh } from "./wrap.js";
@@ -258,7 +260,7 @@ async function token(req: Request, env: Env, now: number): Promise<Response> {
   if (!(await verifyAssertion(entry, TOKEN_PATH, kid, text, sig)))
     return log("token", "bad_signature"), refused();
   if (Math.abs(now - body.ts) > ASSERTION_SKEW_MS)
-    return log("token", "stale"), refused();
+    return log("token", "stale"), staleAssertion();
   const busy = await installLimited(limits(env), body.install, log, "token");
   if (busy) return busy;
 
@@ -277,7 +279,7 @@ async function token(req: Request, env: Env, now: number): Promise<Response> {
       st.i !== body.install ||
       !same(enc.encode(st.h), enc.encode(await s256(body.verifier)))
     )
-      return log("token", "bad_flow"), refused();
+      return log("token", "bad_flow"), badFlow();
     form = {
       grant_type: "authorization_code",
       code: body.code,
@@ -292,7 +294,7 @@ async function token(req: Request, env: Env, now: number): Promise<Response> {
       body.install,
       body.refresh_token,
     );
-    if (!rt) return log("token", "bad_refresh"), refused();
+    if (!rt) return log("token", "bad_refresh"), badFlow();
     form = { grant_type: "refresh_token", refresh_token: rt };
   }
 
@@ -402,7 +404,7 @@ async function revoke(req: Request, env: Env, now: number): Promise<Response> {
   if (!(await verifyAssertion(entry, REVOKE_PATH, kid, text, sig)))
     return log("revoke", "bad_signature"), refused();
   if (Math.abs(now - body.ts) > ASSERTION_SKEW_MS)
-    return log("revoke", "stale"), refused();
+    return log("revoke", "stale"), staleAssertion();
   const busy = await installLimited(limits(env), body.install, log, "revoke");
   if (busy) return busy;
   const rt = await unwrapRefresh(
@@ -410,7 +412,7 @@ async function revoke(req: Request, env: Env, now: number): Promise<Response> {
     body.install,
     body.refresh_token,
   );
-  if (!rt) return log("revoke", "bad_refresh"), refused();
+  if (!rt) return log("revoke", "bad_refresh"), badFlow();
   const res = await fetch(GOOGLE_REVOKE_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
