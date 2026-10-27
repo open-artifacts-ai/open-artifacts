@@ -10,10 +10,18 @@
   flex: 1;
   min-height: 0;
 }
+/* Never white (#693): until the artifact loads, the frame is invisible over
+   the theme background; once painted, pages without a background of their own
+   get the white canvas they were written for. */
 .oa-vframe {
   flex: 1;
   border: 0;
+  background: var(--oa-bg);
+  opacity: 0;
+}
+.oa-vframe[data-painted] {
   background: #fff;
+  opacity: 1;
 }
 .oa-muted {
   color: var(--oa-text-muted);
