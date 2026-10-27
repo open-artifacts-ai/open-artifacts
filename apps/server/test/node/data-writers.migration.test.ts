@@ -28,11 +28,7 @@ const WHO: readonly Who[] = ["anonymous", "viewer", "editor"];
 const writersBefore = (r: Row, who: Who) =>
   who === "anonymous" ? r.visibility === "public" && r.aaw === 1 : true;
 /** After, by the live policy and the live read of both columns. */
-const writersAfter = (
-  r: Row,
-  after: { dw: string; aaw: number },
-  who: Who,
-) =>
+const writersAfter = (r: Row, after: { dw: string; aaw: number }, who: Who) =>
   can(
     who === "anonymous" ? (r.visibility === "public" ? "viewer" : null) : who,
     "data.write",
