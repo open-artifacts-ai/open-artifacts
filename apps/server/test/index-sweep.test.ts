@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type Member, newId } from "@oa/shared";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { callerOf } from "../src/auth/authz.js";
 import { DIRECTORY_SYNC_CRON, scheduled } from "../src/cron.js";
 import type { Env } from "../src/env.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
@@ -16,6 +17,7 @@ import {
   sweepLostIndexJobs,
   undelete,
 } from "../src/services/artifacts.js";
+import { putExtractedText } from "../src/services/search.js";
 import { getUser } from "../src/services/users.js";
 import { login, runIndex } from "./helpers.js";
 
@@ -292,6 +294,8 @@ describe("sweepLostIndexJobs", () => {
   });
 
   it("oa:directory-sync runs the tick sweep in waitUntil and resolves", async () => {
+    const id = await lost();
+    await age(id, Date.now() - REINDEX_MIN_AGE_MS - 60_000);
     const c = ctxOf();
     const spy = vi.spyOn(console, "log");
     await expect(
@@ -304,5 +308,96 @@ describe("sweepLostIndexJobs", () => {
     expect(c.pending).toHaveLength(1);
     await c.drain();
     expect(sweepLog(spy)).toMatchObject([{ mode: "tick" }]);
+    expect(await pending(id)).toMatchObject({ version: 1 });
+  });
+
+  it("logs nothing when there is nothing to re-enqueue", async () => {
+    const spy = vi.spyOn(console, "log");
+    expect(
+      await sweepLostIndexJobs(
+        withBrowser,
+        Date.now() + 5000 * SWEEP_TICK_SPAN_MS,
+        "tick",
+      ),
+    ).toEqual({ text: 0, thumb: 0 });
+    expect(sweepLog(spy)).toEqual([]);
+  });
+
+  it("permanently failed versions don't hold the daily batch (text and pdf thumbnails)", async () => {
+    const now = Date.now() + 1040 * SWEEP_TICK_SPAN_MS;
+    const sixDays = now - 6 * 86_400_000;
+    for (let k = 0; k < 25; k++) {
+      const t = await lost();
+      const p = await lost("pdf", "%PDF-1.4");
+      await env.DB.batch([
+        env.DB.prepare(
+          "update versions set index_failed = 1 where artifact_id = ?",
+        ).bind(t),
+        env.DB.prepare(
+          "update versions set thumb_failed = 1 where artifact_id = ?",
+        ).bind(p),
+      ]);
+      await age(t, 1 + k);
+      await age(p, sixDays + k);
+    }
+    const t = await lost();
+    const p = await lost("pdf", "%PDF-1.4");
+    await age(t, 1000);
+    await age(p, sixDays + 1000);
+    await inDo(p, () => {}, withBrowser);
+    const n = await sweepLostIndexJobs(withBrowser, now, "daily");
+    expect(n.text).toBeLessThanOrEqual(REINDEX_BATCH);
+    expect(await pending(t)).toMatchObject({ version: 1 });
+    expect(await pendingThumb(p)).toMatchObject({ version: 1 });
+  });
+});
+
+describe("undelete with a lost enqueue (B1)", () => {
+  const bodyOf = (id: string) =>
+    env.DB.prepare("select body from artifact_search where artifact_id = ?")
+      .bind(id)
+      .first<string>("body");
+
+  it("a non-pdf is unindexed again and the next tick recovers its body", async () => {
+    const word = `undel${tag}`;
+    const r = await publish(
+      env as Env,
+      owner,
+      input("html", `<p>${word}</p>`),
+      null,
+    );
+    await runIndex(r.id);
+    expect(await bodyOf(r.id)).toContain(word);
+    await softDelete(env as Env, owner, r.id);
+    expect(await bodyOf(r.id)).toBeNull();
+    const c = ctxOf();
+    await undelete(dropping, owner, r.id, c.ctx);
+    await c.drain();
+    expect(await pending(r.id)).toBeNull();
+    const u = await env.DB.prepare(
+      "select updated_at u from artifacts where id = ?",
+    )
+      .bind(r.id)
+      .first<number>("u");
+    const n = await sweepLostIndexJobs(
+      env as Env,
+      (u ?? 0) + REINDEX_MIN_AGE_MS + 1,
+      "tick",
+    );
+    expect(n.text).toBeGreaterThanOrEqual(1);
+    expect(await pending(r.id)).toMatchObject({ version: 1 });
+    await runIndex(r.id);
+    expect(await bodyOf(r.id)).toContain(word);
+  });
+
+  it("a pdf takes a viewer's text again", async () => {
+    const r = await publish(env as Env, owner, input("pdf", "%PDF-1.4"), null);
+    const caller = callerOf(owner);
+    await putExtractedText(env as Env, caller, r.id, 1, `first${tag}`);
+    expect(await bodyOf(r.id)).toContain(`first${tag}`);
+    await softDelete(env as Env, owner, r.id);
+    await undelete(dropping, owner, r.id);
+    await putExtractedText(env as Env, caller, r.id, 1, `again${tag}`);
+    expect(await bodyOf(r.id)).toContain(`again${tag}`);
   });
 });

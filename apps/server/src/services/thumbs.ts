@@ -53,7 +53,8 @@ export type ThumbResult =
   | "stopped"
   | "deferred"
   | "launch_failed"
-  | "failed";
+  | "failed"
+  | "too_large";
 
 const STOP_KEY = "browser_stop";
 const SLOT_KEY = "browser_slot";
@@ -201,7 +202,8 @@ export async function captureThumbnail(
     logError(`thumbnail_${result}`, e, { artifactId: id, version });
     return result;
   }
-  if (!bytes) return "failed";
+  // No quality step fit LIMITS.thumbnailBytes.
+  if (!bytes) return "too_large";
   return (await writeThumbnail(env, id, version, bytes, "server")) === "stored"
     ? "stored"
     : "skipped";

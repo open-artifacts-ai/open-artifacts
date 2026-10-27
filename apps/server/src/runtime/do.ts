@@ -1452,6 +1452,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
             attempts,
           });
           this.sql.exec(`delete from index_job ${same}`, ...key);
+          await this.markFailed("index_failed", job.artifactId, job.version);
         } else
           this.sql.exec(
             `update index_job set attempts = ?, due = ? ${same}`,
@@ -1498,6 +1499,21 @@ export class ArtifactRuntime extends DurableObject<Env> {
         state,
         job.version,
       );
+    // Every no-thumbnail outcome: one log line, and the D1 marker the pdf
+    // sweep skips (sweepLostIndexJobs).
+    const noThumb = async (result: string, attempts: number) => {
+      end("no_thumb");
+      console.error(
+        JSON.stringify({
+          evt: "thumbnail_no_thumb",
+          artifactId: job.artifactId,
+          version: job.version,
+          result,
+          attempts,
+        }),
+      );
+      await this.markFailed("thumb_failed", job.artifactId, job.version);
+    };
     if (job.attempts >= THUMB_MAX_ATTEMPTS) {
       console.error(
         JSON.stringify({
@@ -1507,7 +1523,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           attempts: job.attempts,
         }),
       );
-      end("no_thumb");
+      await noThumb("abandoned", job.attempts);
       return;
     }
     const retryAt = this.now() + THUMB_RETRY_MS;
@@ -1540,7 +1556,29 @@ export class ArtifactRuntime extends DurableObject<Env> {
         this.now() + retryIn,
         job.version,
       );
-    else end(result === "stored" || result === "skipped" ? "done" : "no_thumb");
+    else if (result === "stored" || result === "skipped") end("done");
+    else await noThumb(result, job.attempts + 1);
+  }
+
+  /**
+   * Marks `version` permanently failed (versions.index_failed or
+   * thumb_failed) so the lost-job sweep skips it. Best effort: a lost write
+   * only means the sweep retries it.
+   */
+  private async markFailed(
+    col: "index_failed" | "thumb_failed",
+    artifactId: string,
+    version: number,
+  ): Promise<void> {
+    try {
+      await this.env.DB.prepare(
+        `update versions set ${col} = 1 where artifact_id = ? and version = ?`,
+      )
+        .bind(artifactId, version)
+        .run();
+    } catch (e) {
+      logError("sweep_mark_failed", e, { artifactId, version });
+    }
   }
 
   /** Subscribe-only feed: any client message closes the socket (1008 policy violation). */

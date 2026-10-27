@@ -1361,10 +1361,17 @@ export async function undelete(
   });
   if (a.deletedAt != null) {
     const cutoff = Date.now() - LIMITS.softDeleteDays * DAY;
+    // The search row went with the delete: the current version is unindexed
+    // again (a pdf takes a viewer's text again) and updated_at moves, so a
+    // lost enqueue below is the sweeps' (tick and daily) to recover.
     const [r] = await env.DB.batch([
       env.DB.prepare(
-        "update artifacts set deleted_at = null where id = ? and deleted_at >= ?",
-      ).bind(id, cutoff),
+        "update artifacts set deleted_at = null, updated_at = ? where id = ? and deleted_at >= ?",
+      ).bind(Date.now(), id, cutoff),
+      env.DB.prepare(
+        `update versions set text_indexed = 0, index_failed = 0
+         where artifact_id = ?1 and version = (select current_version from artifacts where id = ?1 and deleted_at is null)`,
+      ).bind(id),
       seedSearchStmt(env.DB, id),
     ]);
     if (!r?.meta.changes) throw notFound();
@@ -1387,8 +1394,11 @@ export const REINDEX_MIN_AGE_MS = 10 * 60_000;
  * daily sweep's.
  */
 export const SWEEP_TICK_SPAN_MS = 10 * 60_000;
-/** The daily sweep's pdf thumbnail look-back: one missed daily run still recovers. */
-export const THUMB_SWEEP_SPAN_MS = 2 * DAY;
+/**
+ * The daily sweep's pdf thumbnail look-back: hosted installs can miss several
+ * nightly runs, and a tick tail can miss a whole day.
+ */
+export const THUMB_SWEEP_SPAN_MS = 7 * DAY;
 
 const LIVE_VIS = VisibilitySchema.options.map((v) => `'${v}'`).join(", ");
 // The visibility list lets the (visibility, updated_at) partial live index
@@ -1399,8 +1409,8 @@ const sweepSql = (kind: "text" | "thumb") =>
    where a.deleted_at is null and a.visibility in (${LIVE_VIS})
      and a.updated_at >= ?1 and a.updated_at < ?2 and ${
        kind === "text"
-         ? "v.text_indexed = 0 and coalesce(v.format, a.format) <> 'pdf'"
-         : "coalesce(v.format, a.format) = 'pdf' and coalesce(a.thumbnail_version, 0) < a.current_version"
+         ? "v.text_indexed = 0 and v.index_failed = 0 and coalesce(v.format, a.format) <> 'pdf'"
+         : "v.thumb_failed = 0 and coalesce(v.format, a.format) = 'pdf' and coalesce(a.thumbnail_version, 0) < a.current_version"
      }
    order by a.updated_at limit ?3`;
 
@@ -1416,10 +1426,11 @@ const sweepSql = (kind: "text" | "thumb") =>
  *   pdf's text comes from its viewer, so text_indexed proves nothing).
  * `tick` (the hosted 2-min system job) looks back SWEEP_TICK_SPAN_MS; the
  * daily cron looks back without bound for text and THUMB_SWEEP_SPAN_MS for
- * pdf thumbnails (a pdf whose capture failed stays without one; bounding
- * keeps those from holding the batch forever). Re-enqueueing a job that did
- * land is a no-op in the DO (same version; the thumbnail job only moves
- * forward). Logs one index_sweep line with counts.
+ * pdf thumbnails. Versions the DO marked permanently failed (index_failed,
+ * thumb_failed) are skipped, so they never hold the batch. Re-enqueueing a
+ * job that did land is a no-op in the DO (same version; the thumbnail job
+ * only moves forward). Logs one index_sweep line with counts when either is
+ * non-zero.
  */
 export async function sweepLostIndexJobs(
   env: Env,
@@ -1443,7 +1454,7 @@ export async function sweepLostIndexJobs(
     [...text, ...thumb].map((r) => enqueueIndex(env, r.id, r.v, true)),
   );
   const counts = { text: text.length, thumb: thumb.length };
-  logInfo("index_sweep", { mode, ...counts });
+  if (counts.text || counts.thumb) logInfo("index_sweep", { mode, ...counts });
   return counts;
 }
 
