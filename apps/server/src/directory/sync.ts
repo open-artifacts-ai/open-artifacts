@@ -154,12 +154,12 @@ export const tokenFor = (
 
 /**
  * This DO may mint its own access token (self-host): a direct client, or a
- * broker reachable without props (binding, or HTTPS off HOSTED). Read under
- * withoutBrokerProps, so a hosted install answers false.
+ * broker reachable without props (binding, or HTTPS off HOSTED). Only called
+ * from the alarm, which runs under withoutBrokerProps, so a hosted install
+ * answers false whatever scope reached the DO.
  */
 const selfMints = (env: Env, client: DirectoryClient) =>
-  client.kind === "direct" ||
-  withoutBrokerProps(() => brokerTransportKind(env, "directory")) !== null;
+  client.kind === "direct" || brokerTransportKind(env, "directory") !== null;
 
 const SYNC: AuditActor = { kind: "sync", id: null };
 
