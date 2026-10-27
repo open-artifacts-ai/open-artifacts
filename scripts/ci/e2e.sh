@@ -10,12 +10,18 @@
 #                      E2E_PROJECTS=chromium (pull requests) limits the real suite to
 #                      those projects; unset runs every project (Chromium and WebKit)
 #   e2e.sh merge     -> merges the shards' blob reports into playwright-report/<suite>
+#                      (html) and playwright-report/<suite>.json
+#   e2e.sh quarantine -> only the quarantined tests (e2e/quarantine.json), no retry,
+#                      E2E_QUARANTINE_REPEAT times each (default 1), into
+#                      blob-report/quarantine/<suite>.json; their failures never fail it
+#   e2e.sh report    -> flaky-test annotations and the quarantine summary
 #   e2e.sh ui       -> @oa/ui real-browser checks (axe contrast, focus outlines)
 #   e2e.sh landing  -> landing real-browser checks (no horizontal overflow)
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 hosts_file="${HOSTS_FILE:-/etc/hosts}"
 blob_dir="${E2E_BLOB_DIR:-$root/apps/dashboard/blob-report}"
+report_dir="${E2E_REPORT_DIR:-$root/apps/dashboard/playwright-report}"
 
 case "${1:-}" in
   version)
@@ -65,9 +71,40 @@ case "${1:-}" in
     for suite in mock real; do
       dir="$blob_dir/$suite"
       [ -d "$dir" ] || continue
-      PLAYWRIGHT_HTML_OUTPUT_DIR="playwright-report/$suite" \
-        pnpm --filter @oa/dashboard exec playwright merge-reports --reporter=html "$dir"
+      PLAYWRIGHT_HTML_OUTPUT_DIR="$report_dir/$suite" \
+        PLAYWRIGHT_JSON_OUTPUT_FILE="$report_dir/$suite.json" \
+        pnpm --filter @oa/dashboard exec playwright merge-reports --reporter=html,json "$dir"
     done
+    ;;
+  quarantine)
+    for suite in mock real; do
+      n="$(node --experimental-strip-types --no-warnings "$root/scripts/ci/e2e-report.ts" count "$suite")"
+      if [ "$n" = 0 ]; then
+        echo "quarantine: no $suite tests"
+        continue
+      fi
+      args=()
+      if [ "$suite" = real ]; then
+        args+=(-c playwright.real.config.ts)
+        for p in ${E2E_PROJECTS//,/ }; do args+=("--project=$p"); done
+      fi
+      out="$blob_dir/quarantine/$suite.json"
+      mkdir -p "$(dirname "$out")"
+      # Their failures are expected (that's why they're here): only a missing
+      # report (the run itself broke) fails this step.
+      OA_E2E_QUARANTINE=only PLAYWRIGHT_JSON_OUTPUT_FILE="$out" \
+        pnpm --filter @oa/dashboard exec playwright test ${args[@]+"${args[@]}"} \
+        --retries=0 --repeat-each="${E2E_QUARANTINE_REPEAT:-1}" --reporter=list,json ||
+        echo "quarantine: $suite had failures (not gating)"
+      [ -s "$out" ] || {
+        echo "quarantine: no $suite report" >&2
+        exit 1
+      }
+    done
+    ;;
+  report)
+    node --experimental-strip-types --no-warnings "$root/scripts/ci/e2e-report.ts" \
+      summary "$report_dir" "$blob_dir/quarantine"
     ;;
   ui)
     pnpm --filter @oa/ui test:browser
@@ -76,7 +113,7 @@ case "${1:-}" in
     pnpm --filter @oa/landing test:browser
     ;;
   *)
-    echo "usage: e2e.sh version|install|hosts|mock|real|merge|ui|landing" >&2
+    echo "usage: e2e.sh version|install|hosts|mock|real|merge|quarantine|report|ui|landing" >&2
     exit 2
     ;;
 esac

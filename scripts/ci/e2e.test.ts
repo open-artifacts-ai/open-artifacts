@@ -107,14 +107,33 @@ describe("e2e.sh", () => {
     const sb = sandbox({ pnpm });
     const blobs = join(sb.dir, "blobs");
     write(join(blobs, "real", "shard-1.zip"), "");
+    const reports = join(sb.dir, "reports");
     const r = sb.run(["bash", script("e2e.sh"), "merge"], {
-      env: { E2E_BLOB_DIR: blobs },
+      env: { E2E_BLOB_DIR: blobs, E2E_REPORT_DIR: reports },
     });
     expect(r.code).toBe(0);
     expect(sb.log()).toEqual([
-      `pnpm --filter @oa/dashboard exec playwright merge-reports --reporter=html ${join(blobs, "real")}`,
-      "PW_DIR=playwright-report/real",
+      `pnpm --filter @oa/dashboard exec playwright merge-reports --reporter=html,json ${join(blobs, "real")}`,
+      `PW_DIR=${join(reports, "real")}`,
     ]);
+  });
+  it("quarantine with nothing quarantined runs no tests", () => {
+    const r = run("quarantine", { E2E_BLOB_DIR: "/nonexistent/blobs" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("quarantine: no mock tests");
+    expect(r.out).toContain("quarantine: no real tests");
+    expect(r.sb.log()).toEqual([]);
+  });
+  it("report summarizes even with no reports at all, and exits 0", () => {
+    const sb = sandbox({});
+    const r = sb.run(["bash", script("e2e.sh"), "report"], {
+      env: {
+        E2E_BLOB_DIR: join(sb.dir, "blobs"),
+        E2E_REPORT_DIR: join(sb.dir, "reports"),
+      },
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("No flaky tests");
   });
   it("ui runs the @oa/ui real-browser checks (axe contrast, focus)", () => {
     const r = run("ui");
