@@ -42,7 +42,7 @@ import {
   roleRankSql,
 } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { can } from "../auth/policy.js";
+import { can, dataWritersOf } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -592,9 +592,7 @@ export function toSummary(
   };
 }
 
-/** The row's dataWriters; anything but "viewers" reads as "editors" (fail closed). */
-export const dataWritersOf = (a: { dataWriters: string }): DataWriters =>
-  a.dataWriters === "viewers" ? "viewers" : "editors";
+export { dataWritersOf };
 
 /** Anonymous callers never see member emails (not even as a name fallback). */
 export function redact(

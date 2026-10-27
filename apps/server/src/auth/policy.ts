@@ -114,9 +114,9 @@ export type CanCtx = {
   personal: boolean;
   anonymous?: boolean;
   /**
-   * #681: who may change live data. "editors" limits data.write to editor
-   * level and up; anything else is "viewers" for signed-in callers, while an
-   * anonymous write (and anonId) needs an explicit "viewers" (fail closed).
+   * #681: who may change live data. Only an explicit "viewers" lets viewers
+   * (and anonymous visitors) write; "editors" or undefined limits data.write
+   * to editor level and up (fail closed).
    */
   dataWriters?: DataWriters;
   /** Viewer-only first thumbnail: via a share or team access, and none stored yet. */
@@ -277,10 +277,10 @@ export function can(
       return ctx.anonymous === true && ctx.dataWriters === "viewers";
     case "data.write":
       if (capped) return false;
-      if (ctx.dataWriters === "editors")
+      if (ctx.dataWriters !== "viewers")
         return !ctx.anonymous && level !== "viewer";
       // Anonymous callers only reach a level on a public artifact.
-      return ctx.anonymous ? ctx.dataWriters === "viewers" : true;
+      return true;
     case "storage":
       return !capped && !ctx.anonymous;
     case "thumbnail.write":
@@ -307,9 +307,24 @@ export const editorsOnlyRefusal = (
   level: AccessLevel | null,
   ctx: CanCtx,
 ): boolean =>
-  ctx.dataWriters === "editors" &&
+  ctx.dataWriters !== "viewers" &&
   !can(level, "data.write", ctx) &&
   can(level, "data.write", { ...ctx, dataWriters: "viewers" });
+
+/**
+ * #681: a row's effective dataWriters. "viewers" only when data_writers is
+ * "viewers" and allow_anonymous_writes is 1 (new code keeps them in step);
+ * anything else is "editors" (fail closed). A row written by the previous
+ * release during a rollback (the toggle switched off, or created with it off)
+ * so reads as "editors" after the roll forward, with no release step.
+ */
+export const dataWritersOf = (a: {
+  dataWriters: string;
+  allowAnonymousWrites: number;
+}): DataWriters =>
+  a.dataWriters === "viewers" && a.allowAnonymousWrites === 1
+    ? "viewers"
+    : "editors";
 
 const ORG_ADMINS: readonly Role[] = ["owner", "admin"];
 

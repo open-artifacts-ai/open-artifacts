@@ -38,6 +38,7 @@ import {
   type CanCtx,
   can,
   capsOf,
+  dataWritersOf,
   decide,
   editorsOnlyRefusal,
   isTeamRole,
@@ -355,8 +356,8 @@ export function canCtx(c: Caller, a: ArtifactRow): CanCtx {
     cap: capOfCaller(c),
     personal: true,
     anonymous: c.kind !== "user",
-    // Anything but "viewers" reads as "editors" (fail closed).
-    dataWriters: a.dataWriters === "viewers" ? "viewers" : "editors",
+    // The one read of the stored columns (fail closed, #681).
+    dataWriters: dataWritersOf(a),
   };
 }
 
@@ -403,7 +404,16 @@ export async function authorize(
     prefetched.getStore()?.set(accessKey(c, artifactId, opts), r);
   } else r = await accessLevel(env, c, artifactId, opts);
   if (!r) throw new ApiError("not_found", "Not found");
-  const ctx = { ...canCtx(c, r.artifact), personal: r.personal, ...opts.ctx };
+  const base = canCtx(c, r.artifact);
+  // opts.ctx only adds the thumbnail floor: who the caller is and who may
+  // write data always come from the row.
+  const ctx: CanCtx = {
+    ...base,
+    personal: r.personal,
+    ...opts.ctx,
+    anonymous: base.anonymous,
+    dataWriters: base.dataWriters,
+  };
   if (!can(r.level, action, ctx)) {
     const e =
       action === "data.write"
