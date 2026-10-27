@@ -993,6 +993,37 @@ describe("space mappings", () => {
       ).results.map((x) => x.user_id);
     expect(await rows(s2.id)).toEqual([b.userId]);
   });
+
+  it("P2.5 #17: deleting a space drops the rows of groups only it mapped; mapping one elsewhere grants nothing from them", async () => {
+    const gone = await createSpace();
+    const other = await createSpace();
+    const keep = await createSpace();
+    const a = await mk("delsp");
+    const g = await group([a.userId]);
+    const shared = await group([a.userId]);
+    expect((await putMap(GOOGLE, admin, gone.id, g, "editor")).status).toBe(
+      200,
+    );
+    expect(
+      (await putMap(GOOGLE, admin, gone.id, shared, "viewer")).status,
+    ).toBe(200);
+    expect(
+      (await putMap(GOOGLE, admin, keep.id, shared, "viewer")).status,
+    ).toBe(200);
+    expect(
+      (await call(GOOGLE, R.space(gone.id), admin.cookie, { method: "DELETE" }))
+        .status,
+    ).toBe(204);
+    expect(await dmCount(g)).toBe(0);
+    // Still mapped in another space: its rows stay.
+    expect(await dmCount(shared)).toBe(1);
+    // a leaves g in Google meanwhile; g mapped elsewhere grants nothing yet.
+    const art = await insertArtifact(admin.userId, other.id);
+    expect((await putMap(GOOGLE, admin, other.id, g, "editor")).status).toBe(
+      200,
+    );
+    expect(await level(GOOGLE, a.userId, art)).toBeNull();
+  });
 });
 
 describe("Every-space mappings", () => {

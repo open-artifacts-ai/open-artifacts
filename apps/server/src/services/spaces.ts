@@ -554,12 +554,28 @@ export async function deleteSpace(
         args: [id, id, id],
       },
     }),
+    // Gated as the delete below, before its cascade drops the mappings:
+    // the rows of groups only this space maps go (as DROP_UNTARGETED), so
+    // mapping one elsewhere never grants from frozen rows (P2.5 #17).
+    stmt(
+      env.DB,
+      `delete from directory_members
+        where group_id in (select group_id from group_mappings where space_id = ?)
+          and not exists (select 1 from group_mappings gm
+            where gm.group_id = directory_members.group_id and gm.space_id <> ?)
+          and not exists (select 1 from org_group_mappings o
+            where o.group_id = directory_members.group_id)
+          and not exists (select 1 from restricted_groups rg
+            where rg.group_id = directory_members.group_id)
+          and exists (select 1 from spaces where id = ? and kind = 'shared')
+          and ${empty}`,
+    ).bind(id, id, id, id, id),
     stmt(
       env.DB,
       `delete from spaces where id = ? and kind = 'shared' and ${empty}`,
     ).bind(id, id, id),
   ]);
-  if (!out[1]?.meta.changes) {
+  if (!out[2]?.meta.changes) {
     // Gone meanwhile (a concurrent delete): 404, not 409.
     const still = await stmt(
       env.DB,
