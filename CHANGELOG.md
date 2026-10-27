@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.65.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.64.0...v0.65.0) (2026-10-27)
+
+
+### Features
+
+* **hosted:** redline-creds writes 0600 local copies for a local red-line run ([#711](https://github.com/open-artifacts-ai/open-artifacts/issues/711)) ([e88def5](https://github.com/open-artifacts-ai/open-artifacts/commit/e88def5f43279ff24c187bae610174d9097ded72))
+* **mcp:** publish_artifact with only settings updates in place, no new version ([#681](https://github.com/open-artifacts-ai/open-artifacts/issues/681) D) ([#709](https://github.com/open-artifacts-ai/open-artifacts/issues/709)) ([1c72649](https://github.com/open-artifacts-ai/open-artifacts/commit/1c72649154c71904125efdc6356573beaf02c0f5))
+* **server:** log wall ms of the publish-time index enqueue ([#717](https://github.com/open-artifacts-ai/open-artifacts/issues/717)) ([07c2fdc](https://github.com/open-artifacts-ai/open-artifacts/commit/07c2fdcbe5337c40c0da08b806f1614d18fdfdf5))
+
+
+### Bug Fixes
+
+* **redline:** sign-in capture asks for the first callback, names the r1. retry ([#713](https://github.com/open-artifacts-ai/open-artifacts/issues/713)) ([c780f98](https://github.com/open-artifacts-ai/open-artifacts/commit/c780f983912823a304a668b37ea20415b8b2d09d))
+
 ## [0.64.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.63.0...v0.64.0) (2026-10-27)
 
 
