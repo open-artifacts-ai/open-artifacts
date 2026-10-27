@@ -2237,6 +2237,16 @@ describe("WfpProvisioner.create", () => {
     it("requireInstallId makes the check insist on installId (Task 6b)", async () => {
       const s = setup();
       const p = s.mk({ requireInstallId: true });
+      // An install that doesn't report installId (an older server), or
+      // reports another install's, never passes.
+      s.fake.health = () => ({ ok: true, plan: "paid", version: "0.23.0" });
+      await fails(p.create(input()));
+      s.fake.health = () => ({
+        ok: true,
+        plan: "paid",
+        version: "0.23.0",
+        installId: "izzzzzzzzzzz",
+      });
       await fails(p.create(input()));
       s.fake.health = (sc) => ({
         ok: true,
