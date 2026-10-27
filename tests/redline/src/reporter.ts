@@ -6,8 +6,10 @@ import {
   buildReport,
   type CaseResult,
   formatReport,
+  failReason,
   infraOf,
   labelOf,
+  legOf,
   levelOf,
   type Manifest,
   parseManifest,
@@ -74,16 +76,19 @@ export function collect(
       // A test skipped because its module or suite setup failed is a failure
       // (infra when every setup error is infra; never a pass either way).
       const setupFailed = state === "skipped" && (broken || ancestorFailed(t));
-      const infra = setupFailed ? infraOf(setupErrors(t, m)) : undefined;
+      const setup = setupFailed ? setupErrors(t, m) : [];
+      const infra = setupFailed ? infraOf(setup) : undefined;
+      const errors = result.state === "failed" ? result.errors : [];
+      // Every non-pass carries a reason: a setup error (beforeAll, module)
+      // or the test's own, redacted, plus its leg where crossCheck knew it.
       const { level, reason } = setupFailed
         ? infra
           ? { level: "infra" as const, reason: infra }
-          : { level: "fail" as const, reason: "setup failed" }
-        : levelOf(
-            state,
-            t.meta(),
-            result.state === "failed" ? result.errors : [],
-          );
+          : {
+              level: "fail" as const,
+              reason: `setup failed: ${failReason(setup)}`,
+            }
+        : levelOf(state, t.meta(), errors);
       const label = labelOf(t.meta());
       cases.push({
         name: t.fullName,
@@ -91,6 +96,7 @@ export function collect(
         level,
         ...(reason ? { reason } : {}),
         ...(label ? { label } : {}),
+        ...(level === "pass" ? {} : legOf(setupFailed ? setup : errors)),
       });
     }
     if (m.errors().length > 0) {
@@ -99,7 +105,7 @@ export function collect(
         name: `${file}: module error`,
         file,
         level: infra ? "infra" : "fail",
-        reason: infra ?? "error outside a test",
+        reason: infra ?? `error outside a test: ${failReason(m.errors())}`,
       });
     }
   }
@@ -107,7 +113,11 @@ export function collect(
     cases.push({
       name: "unhandled errors",
       level: "fail",
-      reason: `${unhandled.length} unhandled`,
+      reason: `${unhandled.length} unhandled: ${failReason(
+        unhandled.map((e) => ({
+          message: (e as { message?: unknown } | null)?.message ?? String(e),
+        })),
+      )}`,
     });
   return cases;
 }

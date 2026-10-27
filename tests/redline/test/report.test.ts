@@ -239,6 +239,52 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     }, 60_000);
   }
 
+  it("fail: the report records the error message as the reason", () => {
+    const r = run("fail", false);
+    expect(r.status).not.toBe(0);
+    expect(r.report.nonPass).toEqual([
+      {
+        name: "fixture: the case under test",
+        file: "test/fixtures/gate.fixture.ts",
+        level: "fail",
+        reason: "fixture failure",
+      },
+    ]);
+  }, 60_000);
+
+  it("fail: codes, states, cookies, tokens and emails are redacted from the reason", () => {
+    const r = run("secret-fail", false);
+    const reason = r.report.nonPass[0]?.reason ?? "";
+    expect(reason).toMatch(
+      /^rl-b callback http:\/\/rl-b\.app\.localhost:8787\/auth\/callback\/google\?state=\[redacted\]&code=\[redacted\]&bstate=\[redacted\] for \[email\] with cookie oa_oidc_ab12=\[redacted\]; Bearer \[redacted\] token \[token\]$/,
+    );
+    for (const s of [
+      "st0123456789",
+      "4/0AeanS",
+      "eyJ",
+      "alice",
+      "v4lu3s3cr3t",
+      "oa_pat_0123",
+    ])
+      expect(JSON.stringify(r.report)).not.toContain(s);
+  }, 60_000);
+
+  it("leg-fail: the report records the leg, host, expected and actual", () => {
+    const r = run("leg-fail", false);
+    expect(r.report.nonPass).toHaveLength(1);
+    expect(r.report.nonPass[0]).toMatchObject({
+      level: "fail",
+      leg: "A's credential at B",
+      host: "rl-b",
+      expected: "refused at sign-in (error=tenant, no session)",
+      actual:
+        "rl-b did not refuse the sign-in (status 302, body sha256:0011223344556677 (0 bytes); to /)",
+    });
+    expect(r.report.nonPass[0]?.reason).toMatch(
+      /^A's credential at B \(rl-b; expected refused at sign-in \(error=tenant, no session\)\): rl-b did not refuse/,
+    );
+  }, 60_000);
+
   it("labeled: the report carries the case's label; it still passes the gate", () => {
     const r = run("labeled", true);
     expect(r.status).toBe(0);
@@ -254,6 +300,15 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     expect(r.status).not.toBe(0);
     expect(r.report.counts["not-applicable"]).toBe(0);
     expect(r.report.counts.fail).toBeGreaterThanOrEqual(2);
+    // A throw before any request (the beforeAll) is recorded with its reason.
+    // (The file-level beforeAll also shows as a module error, which the
+    // manifest doesn't list.)
+    const skipped = r.report.nonPass.filter((c) =>
+      c.name.startsWith("fixture: "),
+    );
+    expect(skipped.length).toBeGreaterThanOrEqual(2);
+    for (const c of skipped)
+      expect(c.reason).toBe("setup failed: fixture setup");
   }, 60_000);
 
   it("nested setup failure: a test under a failed outer beforeAll is fail", () => {

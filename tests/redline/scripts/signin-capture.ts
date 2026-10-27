@@ -1,41 +1,40 @@
 // The real-tenant sign-in step (P5 R6, staging, macOS). Runbook:
 // docs/ops/redline-signin.md.
 //   REDLINE_TARGETS=... node --experimental-strip-types scripts/signin-capture.ts [--gate]
-// For each flow in CAPTURE_FLOWS: starts a sign-in at the install (the state
-// cookie stays in a 0700 temp dir, never the browser), puts the sign-in URL on
-// the clipboard, waits while the user signs in as the named test user and
-// copies the callback request URL, then reads it from the clipboard into a
-// 0600 file and clears the clipboard. Nothing is printed but flow names,
-// users and verdicts. Then runs the live suite with REDLINE_SIGNIN_CAPTURES
-// and removes the directory.
+// The interactive shell of src/capture.ts (the rehearsal drives the same code
+// against a fake IdP: test/rehearsal.test.ts). First the preflight
+// (src/preflight.ts): it refuses to start and names each gap. Then for each
+// flow: the sign-in URL goes on the clipboard, the user signs in as the named
+// test user and copies the FIRST callback URL; the script checks it, clears
+// the clipboard and redeems it at once, recording each leg's verdict (with a
+// redacted reason) in a 0600 verdicts file in a 0700 temp dir. Then it runs
+// the live suite with REDLINE_SIGNIN_CAPTURES and removes the directory.
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import {
-  CALLBACK_GOOGLE,
-  CAPTURE_FLOWS,
-  type FlowName,
-  googleUrlOf,
-  type StartedFlow,
-  startGoogle,
-} from "../src/signin.ts";
-import { loadTargets } from "../src/targets.ts";
+import { runCaptures } from "../src/capture.ts";
+import { formatPreflight, gaps, preflight } from "../src/preflight.ts";
 
-const T = await loadTargets();
+const copy = (s: string): void => {
+  execFileSync("pbcopy", { input: s });
+};
+const paste = () => execFileSync("pbpaste", { encoding: "utf8" }).trim();
+
+const { checks, targets: T } = await preflight(process.env);
+process.stdout.write(`Preflight:\n${formatPreflight(checks)}`);
+if (!T || gaps(checks).length > 0) process.exit(2);
 if (T.mode !== "staging") {
   console.error("signin-capture: staging targets only");
   process.exit(2);
 }
-const copy = (s: string) => execFileSync("pbcopy", { input: s });
-const paste = () => execFileSync("pbpaste", { encoding: "utf8" }).trim();
 
 const dir = mkdtempSync(join(tmpdir(), "oa-redline-signin-"));
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 let child: ChildProcess | null = null;
 
-/** Clears the clipboard and removes the captures; safe to call twice. */
+/** Clears the clipboard and removes the verdicts; safe to call twice. */
 function scrub(): void {
   try {
     copy("");
@@ -53,64 +52,25 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   });
 // readline turns Ctrl-C at a prompt into its own SIGINT event.
 rl.on("SIGINT", () => process.kill(process.pid, "SIGINT"));
-const flows: StartedFlow[] = [];
 let code = 1;
 try {
-  for (const [flow, spec] of Object.entries(CAPTURE_FLOWS)) {
-    const t = T[spec.at];
-    const s = await startGoogle(t);
-    if (!s) throw new Error(`Google sign-in is off on ${t.name}`);
-    flows.push({
-      flow: flow as FlowName,
-      at: spec.at,
-      state: s.state,
-      cookie: s.cookie,
-      startedAt: Date.now(),
-    });
-    // Google's own URL (the broker's 302 resolved here); the foreign-tenant
-    // flow drops Google's hd hint so tenant A's user can sign in at all.
-    copy(
-      (
-        await googleUrlOf(s, { dropHd: "foreign" in spec && spec.foreign })
-      ).toString(),
-    );
-    for (;;) {
+  await runCaptures(T, dir, {
+    offer: (url) => copy(url.toString()),
+    async ask(p) {
       await rl.question(
-        `\n[${flows.length}/${Object.keys(CAPTURE_FLOWS).length}] Sign in as ${spec.user}.\n` +
-          `  ${spec.why}\n` +
+        `\n[${p.n}/${p.total}] ${p.install}: sign in as ${p.user}.\n` +
+          `  ${p.why}\n` +
+          (p.retry ? `  (Again: ${p.retry}.)\n` : "") +
           "  The sign-in URL is on the clipboard: paste it into the address bar of the\n" +
           "  window with DevTools open, sign in, then copy the FIRST callback request URL\n" +
           "  (its state doesn't start with r1.). The browser then retries on its own and\n" +
           "  may show a second Google screen or sign in: close or ignore it.\n" +
           "  Press Enter when it is copied. ",
       );
-      let u: URL | null = null;
-      try {
-        u = new URL(paste());
-      } catch {}
-      if (
-        u?.origin === t.app &&
-        u.pathname === CALLBACK_GOOGLE &&
-        u.searchParams.get("state") === s.state &&
-        u.searchParams.get("code")
-      ) {
-        writeFileSync(join(dir, `${flow}.url`), u.toString(), { mode: 0o600 });
-        copy("");
-        console.log(`  ${flow}: captured.`);
-        break;
-      }
-      // The browser lacks the state cookie, so the install refuses the first
-      // callback and retries with its own flow (state "r1.…"): that callback
-      // belongs to the browser, never to this flow.
-      console.log(
-        u?.searchParams.get("state")?.startsWith("r1.")
-          ? `  ${flow}: that's the browser's retry callback (state r1.). Copy the FIRST callback/google request for this prompt.`
-          : `  ${flow}: the clipboard isn't this flow's ${t.name} callback URL (with a code). Copy the FIRST callback/google request for this prompt.`,
-      );
-    }
-  }
-  writeFileSync(join(dir, "flows.json"), JSON.stringify(flows), {
-    mode: 0o600,
+      return paste();
+    },
+    taken: () => copy(""),
+    say: (l) => console.log(l),
   });
   rl.close();
   const gate = process.argv.includes("--gate") ? ["--gate"] : [];
@@ -123,7 +83,11 @@ try {
     ],
     {
       stdio: "inherit",
-      env: { ...process.env, REDLINE_SIGNIN_CAPTURES: dir },
+      env: {
+        ...process.env,
+        REDLINE_SIGNIN_CAPTURES: dir,
+        REDLINE_CAPTURE_RUN: "1",
+      },
     },
   );
   const run = child;

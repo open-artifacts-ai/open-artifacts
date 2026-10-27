@@ -25,7 +25,7 @@ import {
   prepareSide,
   type Side,
 } from "../src/refused.ts";
-import { proof } from "../src/report.ts";
+import { noInventoryReason, proof } from "../src/report.ts";
 import { labelTurnstileTestKey, ownCodeRequestReq } from "../src/signin.ts";
 import {
   inventoryKeyOf,
@@ -211,7 +211,9 @@ describe("mapping integrity", () => {
         return proof(
           ctx,
           "unproven-live",
-          "needs strayHost and the inventory in REDLINE_TARGETS",
+          stray
+            ? noInventoryReason()
+            : "needs strayHost and the inventory in REDLINE_TARGETS",
         );
       const mapped = (await inventory(
         `/hosts?host=${encodeURIComponent(stray)}`,
@@ -267,12 +269,7 @@ describe("mapping integrity", () => {
           `${t.name}: the content host is not served by a content app`,
         );
     }
-    if (!T.inventory)
-      return proof(
-        ctx,
-        "unproven-live",
-        "no inventory configured (REDLINE_STG_INVENTORY_URL and key)",
-      );
+    if (!T.inventory) return proof(ctx, "unproven-live", noInventoryReason());
     const listing = (await inventory("/hosts")) as {
       hosts?: unknown;
       complete?: unknown;
@@ -398,12 +395,7 @@ describe("unmapped host", () => {
         "unproven-live",
         "REDLINE_DELETED_HOSTS not set (Platform sets it once rl-del is deleted)",
       );
-    if (!T.inventory)
-      return proof(
-        ctx,
-        "unproven-live",
-        "no inventory configured (REDLINE_STG_INVENTORY_URL and key)",
-      );
+    if (!T.inventory) return proof(ctx, "unproven-live", noInventoryReason());
     for (const n of T.deletedHosts) {
       await expectGeneric404(await edge(n, n), "a deleted install's host");
       const h = (await inventory(`/hosts?host=${encodeURIComponent(n)}`)) as {

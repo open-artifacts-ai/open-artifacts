@@ -1,5 +1,3 @@
-import { lstatSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 import {
   describeRes,
   HttpError,
@@ -10,7 +8,7 @@ import {
 } from "./http.ts";
 import { allMarkers, NotRefused } from "./refused.ts";
 import { label, type TaskLike } from "./report.ts";
-import { readSecretFile, secretsOf, type Target } from "./targets.ts";
+import { secretsOf, type Target } from "./targets.ts";
 
 // Sign-in helpers for live/signin.test.ts (P5 R6). Only real values are ever
 // replayed: state, cookies and codes the installs (or Google, through a real
@@ -66,7 +64,8 @@ export async function startGoogle(t: Target): Promise<GoogleStart | null> {
   return { location, state, cookie };
 }
 
-const GOOGLE_AUTH = "https://accounts.google.com";
+/** Google's authorize origin (the fake IdP's in the rehearsal). */
+export const GOOGLE_AUTH = "https://accounts.google.com";
 
 /**
  * The Google authorize URL a start leads to: follows the broker's 302 (it
@@ -77,12 +76,21 @@ const GOOGLE_AUTH = "https://accounts.google.com";
  */
 export async function googleUrlOf(
   start: GoogleStart,
-  opts: { dropHd?: boolean } = {},
+  opts: {
+    dropHd?: boolean;
+    /** The IdP's authorize origin (default Google's). */
+    idp?: string;
+    /** Rewrites each hop before it is fetched (the rehearsal's loopback http). */
+    map?: (u: URL) => URL;
+  } = {},
 ): Promise<URL> {
+  const idp = opts.idp ?? GOOGLE_AUTH;
   let u = start.location;
-  for (let hop = 0; u.origin !== GOOGLE_AUTH; hop++) {
+  for (let hop = 0; u.origin !== idp; hop++) {
     if (hop >= 3) throw new Error("sign-in start: too many redirects");
-    const res = await fetch(u, { redirect: "manual" });
+    const res = await fetch(opts.map ? opts.map(u) : u, {
+      redirect: "manual",
+    });
     await readBody(res);
     const l = res.headers.get("location");
     if (res.status !== 302 || !l)
@@ -105,6 +113,19 @@ export function callbackReq(
     redirect: "manual",
     headers: cookie ? { cookie: cookieHeader(cookie) } : {},
   });
+}
+
+/** "; to /path?error=x" for a redirect: its path and error code only. */
+export function whereTo(res: Response): string {
+  const l = res.headers.get("location");
+  if (!l) return "";
+  try {
+    const u = new URL(l, "http://x.invalid");
+    const err = u.searchParams.get("error");
+    return `; to ${u.pathname}${err ? `?error=${err}` : ""}`;
+  } catch {
+    return "; to an unparseable location";
+  }
 }
 
 const locationOf = (res: Response, t: Target): URL | null => {
@@ -157,9 +178,9 @@ export async function expectStateRefused(
 
 /** A redirect sign-in refused after the state check: /sign-in?error=<one of>, no session. */
 export function signInRefused(...errors: string[]) {
-  return async (res: Response, t: Target): Promise<void> => {
+  const judge = async (res: Response, t: Target): Promise<void> => {
     const body = await readBody(res);
-    const what = `${t.name} did not refuse the sign-in (${describeRes(res, body)})`;
+    const what = `${t.name} did not refuse the sign-in (${describeRes(res, body)}${whereTo(res)})`;
     const to = locationOf(res, t);
     if (
       res.status !== 302 ||
@@ -172,11 +193,16 @@ export function signInRefused(...errors: string[]) {
     for (const m of allMarkers())
       if (body.includes(m)) throw new NotRefused(`${what}: holds a marker`);
   };
+  return Object.assign(judge, {
+    expects: `refused at sign-in (error=${errors.join(" or ")}, no session)`,
+  });
 }
 
 /** A completed redirect sign-in: 302 with a session cookie. */
-export const signedIn = (res: Response) =>
-  res.status === 302 && setsSession(res);
+export const signedIn = Object.assign(
+  (res: Response) => res.status === 302 && setsSession(res),
+  { expects: "signed in (302 with a session cookie)" },
+);
 
 // --- one-time codes -------------------------------------------------------
 
@@ -407,79 +433,3 @@ export const CAPTURE_FLOWS = {
   },
 } as const;
 export type FlowName = keyof typeof CAPTURE_FLOWS;
-
-/** Google codes and broker states live about 10 minutes; the suite allows 9. */
-export const CAPTURE_MAX_AGE_MS = 9 * 60_000;
-
-export interface Capture {
-  flow: FlowName;
-  at: "a" | "b";
-  /** The install's own state cookie from the start (the browser never had it). */
-  cookie: CookiePair;
-  /** The callback query Google (through the broker) sent the browser to. */
-  query: { state: string; code: string; bstate?: string };
-}
-
-export interface StartedFlow {
-  flow: FlowName;
-  at: "a" | "b";
-  state: string;
-  cookie: CookiePair;
-  startedAt: number;
-}
-
-/**
- * Reads REDLINE_SIGNIN_CAPTURES: `flows.json` (from signin-capture.ts start)
- * and one `<flow>.url` per flow (the callback URL the browser was sent to).
- * Every file is 0600. A missing, stale or mismatched capture throws; the
- * caller turns an absent directory into unproven-live.
- */
-export function parseCaptures(
-  dir: string,
-  t: { a: Target; b: Target },
-  now = Date.now(),
-): Map<FlowName, Capture> {
-  const st = lstatSync(dir);
-  if (!st.isDirectory() || (st.mode & 0o077) !== 0)
-    throw new Error("captures: the directory must be mode 0700");
-  const started = JSON.parse(
-    readSecretFile(join(dir, "flows.json"), "captures flows.json"),
-  ) as StartedFlow[];
-  if (!Array.isArray(started))
-    throw new Error("captures: flows.json is not a list");
-  const out = new Map<FlowName, Capture>();
-  const files = new Set(readdirSync(dir));
-  for (const f of started) {
-    const spec = CAPTURE_FLOWS[f.flow as FlowName];
-    if (!spec || spec.at !== f.at)
-      throw new Error(`captures: unknown flow ${String(f.flow)}`);
-    if (!(now - f.startedAt <= CAPTURE_MAX_AGE_MS))
-      throw new Error(`captures: ${f.flow} is older than 9 minutes`);
-    if (!files.has(`${f.flow}.url`))
-      throw new Error(`captures: ${f.flow}.url is missing`);
-    const u = new URL(
-      readSecretFile(join(dir, `${f.flow}.url`), `captures ${f.flow}.url`),
-    );
-    const target = t[f.at];
-    if (u.origin !== target.app || u.pathname !== CALLBACK_GOOGLE)
-      throw new Error(
-        `captures: ${f.flow}.url is not ${target.name}'s callback`,
-      );
-    const q = u.searchParams;
-    const code = q.get("code") ?? "";
-    if (!code) throw new Error(`captures: ${f.flow}.url has no code`);
-    if (q.get("state") !== f.state)
-      throw new Error(`captures: ${f.flow}.url is from another start`);
-    const bstate = q.get("bstate");
-    out.set(f.flow as FlowName, {
-      flow: f.flow as FlowName,
-      at: f.at,
-      cookie: f.cookie,
-      query: { state: f.state, code, ...(bstate ? { bstate } : {}) },
-    });
-  }
-  for (const k of Object.keys(CAPTURE_FLOWS))
-    if (!out.has(k as FlowName))
-      throw new Error(`captures: ${k} was not started`);
-  return out;
-}

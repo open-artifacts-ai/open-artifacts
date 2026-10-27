@@ -23,6 +23,76 @@ export interface CaseResult {
   reason?: string;
   /** What a pass rests on when it isn't the real thing, e.g. "Turnstile test key". */
   label?: string;
+  /** Where crossCheck/crossWrite failed, when they know (src/refused.ts LegInfo). */
+  leg?: string;
+  host?: string;
+  expected?: string;
+  actual?: string;
+}
+
+/**
+ * Why an inventory case is unproven. In a laptop capture run
+ * (REDLINE_CAPTURE_RUN=1, scripts/signin-capture.ts) the inventory key is a
+ * GitHub secret only, so the case is CI-only; never a pass either way.
+ */
+export function noInventoryReason(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  return env.REDLINE_CAPTURE_RUN === "1"
+    ? "CI-only (not-local): the inventory key is a GitHub secret, so a laptop capture run can't prove this case"
+    : "no inventory configured (REDLINE_STG_INVENTORY_URL and key)";
+}
+
+/** Longest reason kept in the report (redacted first, then cut). */
+export const MAX_REASON = 600;
+
+/**
+ * An error message made safe for the report: OAuth codes, states, nonces,
+ * cookies, bearer and ID tokens, emails and any long opaque value are
+ * replaced; what's left names the leg, the install, statuses and paths.
+ */
+export function redactReason(s: string, max = MAX_REASON): string {
+  let out = s
+    .replace(
+      /([?&;\s](?:code|state|bstate|nonce|code_challenge|code_verifier|id_token|access_token|refresh_token|token|key|sig|as)=)[^&\s)"',;]*/gi,
+      "$1[redacted]",
+    )
+    .replace(/\b((?:__Host-)?oa_[A-Za-z0-9_]*)=[^;\s,)"']*/g, "$1=[redacted]")
+    .replace(/\b(Bearer|Basic)\s+[^\s,;)"']+/gi, "$1 [redacted]")
+    .replace(
+      /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?/g,
+      "[token]",
+    )
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[email]")
+    .replace(/\b4\/[A-Za-z0-9_-]{6,}/g, "[code]")
+    .replace(/\br1\.[A-Za-z0-9_.-]+/g, "r1.[redacted]")
+    .replace(/[A-Za-z0-9_-]{24,}/g, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (out.length > max) out = `${out.slice(0, max - 1)}…`;
+  return out;
+}
+
+/** What a failure records: its first error, redacted (plus how many more). */
+export function failReason(errors: readonly { message?: unknown }[]): string {
+  const msgs = errors
+    .map((e) => String(e?.message ?? "").trim())
+    .filter((m) => m !== "");
+  if (msgs.length === 0) return "failed (no error message)";
+  const more = msgs.length > 1 ? ` (+${msgs.length - 1} more errors)` : "";
+  return `${redactReason(msgs[0] as string)}${more}`;
+}
+
+/** The leg fields src/refused.ts attaches to an error, redacted, if any. */
+export function legOf(errors: readonly unknown[]): Partial<CaseResult> {
+  const r = (errors[0] as { redline?: Record<string, unknown> } | undefined)
+    ?.redline;
+  if (!r || typeof r !== "object") return {};
+  const out: Partial<CaseResult> = {};
+  for (const k of ["leg", "host", "expected", "actual"] as const)
+    if (typeof r[k] === "string" && r[k] !== "")
+      out[k] = redactReason(r[k] as string, 300);
+  return out;
 }
 
 export interface Report {
@@ -102,7 +172,9 @@ export function levelOf(
 ): { level: Level; reason?: string } {
   if (state === "failed") {
     const infra = infraOf(errors);
-    return infra ? { level: "infra", reason: infra } : { level: "fail" };
+    return infra
+      ? { level: "infra", reason: redactReason(infra) }
+      : { level: "fail", reason: failReason(errors) };
   }
   if (state === "skipped")
     return { level: "not-applicable", reason: "skipped" };
@@ -230,8 +302,13 @@ export function formatReport(r: Report): string {
   ];
   if (r.nonPass.length) {
     lines.push("Not pass:");
-    for (const c of r.nonPass)
+    for (const c of r.nonPass) {
       lines.push(`  [${c.level}] ${c.name}${c.reason ? ` (${c.reason})` : ""}`);
+      if (c.leg || c.host || c.expected)
+        lines.push(
+          `      leg: ${c.leg ?? "?"} at ${c.host ?? "?"}; expected ${c.expected ?? "?"}${c.actual ? `; got ${c.actual}` : ""}`,
+        );
+    }
   }
   const labeled = r.cases.filter((c) => c.label);
   if (labeled.length) {

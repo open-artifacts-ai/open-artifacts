@@ -14,5 +14,8 @@
     "scripts/**/*.ts",
     "vitest.config.ts",
     "vitest.live.config.ts"
-  ]
+  ],
+  // Compiled by wrangler (esbuild) into fake-IdP builds only; it re-exports
+  // @oa/auth-core's source, which this package's erasableSyntaxOnly rejects.
+  "exclude": ["src/fake-idp/auth-core-shim.ts"]
 }
