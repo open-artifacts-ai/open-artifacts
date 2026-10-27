@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import { LOAD_TIMEOUT_MS } from "../../src/viewer/FrameLoader";
 import {
   APP,
   artifactFrame,
@@ -111,7 +112,8 @@ test("the loader shows after a delay, hides when the artifact is ready, and a st
   const alert = page
     .getByRole("alert")
     .filter({ hasText: "Taking longer than usual" });
-  await expect(alert).toBeVisible({ timeout: 15_000 });
+  // LOAD_TIMEOUT_MS starts once the shell has booted: a deadline on top of it.
+  await expect(alert).toBeVisible({ timeout: LOAD_TIMEOUT_MS + 15_000 });
   await expect(alert).toContainText("This artifact hasn't finished loading.");
   stuck = false;
   hold = 0;
