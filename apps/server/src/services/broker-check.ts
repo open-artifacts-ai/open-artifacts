@@ -38,7 +38,8 @@ export const BROKER_CHECK_COOLDOWN_MS = 30_000;
 
 /**
  * Why a check isn't ok: the broker refused before verifying (unverified),
- * the assertion or the capability was stale, or (status 0) nothing came
+ * the assertion was stale (stale), or (status 0) the props capability was
+ * past its invocation (stale_props) or nothing came
  * back: no transport, the gate refused it, a timeout or a network error.
  */
 export type BrokerCheckError =
@@ -46,6 +47,7 @@ export type BrokerCheckError =
   | "unavailable"
   | "gate"
   | "stale"
+  | "stale_props"
   | "timeout"
   | "network";
 
@@ -87,7 +89,7 @@ const errorOf = (e: unknown): BrokerCheckError =>
     : e instanceof BrokerGateRefusedError
       ? "gate"
       : e instanceof BrokerGateStaleError
-        ? "stale"
+        ? "stale_props"
         : e instanceof Timeout
           ? "timeout"
           : "network";

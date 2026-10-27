@@ -433,7 +433,7 @@ describe("what counts as verified", () => {
     expect(net).not.toHaveBeenCalled();
   });
 
-  it("a stale capability is status 0, stale", async () => {
+  it("a stale capability is status 0, stale_props", async () => {
     const stale = {
       fetch: async () => {
         throw new Error("Cannot perform I/O on behalf of a different request.");
@@ -442,7 +442,11 @@ describe("what counts as verified", () => {
     const out = await withBrokerProps({ props: { AUTH_BROKER: stale } }, () =>
       checkBrokers(hosted()),
     );
-    expect(out.auth).toMatchObject({ ok: false, status: 0, error: "stale" });
+    expect(out.auth).toMatchObject({
+      ok: false,
+      status: 0,
+      error: "stale_props",
+    });
   });
 
   it("the props transport is reported as props", async () => {
