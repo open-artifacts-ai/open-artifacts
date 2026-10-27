@@ -21,6 +21,7 @@ import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
+import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
 import { FullLive, GoneBanner, LiveAnnouncer, TitleLive } from "./LiveChip";
@@ -35,7 +36,7 @@ import { RenavNotice } from "./RenavNotice";
 import { SlowNotice } from "./SlowNotice";
 import { TitleBar } from "./TitleBar";
 import { useArtifactSideEffects } from "./useArtifactSideEffects";
-import { useContentUrl } from "./useContentUrl";
+import { prefetchContentUrl, useContentUrl } from "./useContentUrl";
 import { type FrameState, type Gone, useLiveVersions } from "./useLiveVersions";
 import { useTheme } from "./useTheme";
 import "./viewer.css";
@@ -243,6 +244,33 @@ function Viewer({
     key: 0,
     src: null,
   });
+  // Never white (#693): the frame stays hidden over the theme background until
+  // its artifact has loaded (or said hello); a reload hides the new frame again.
+  const [paintedKey, setPaintedKey] = useState(-1);
+  const painted = paintedKey === frame.key;
+  // The loader (#693): ready once this frame painted (its load event or hello;
+  // hello follows load within milliseconds, and a page that never says hello
+  // gets the slow notice, not an endless loader). It fades in after
+  // LOADER_DELAY_MS; a frame still not loaded after LOAD_TIMEOUT_MS gets the
+  // timeout message instead.
+  const ready = painted;
+  const [waitedKey, setWaitedKey] = useState(-1);
+  const [timedOutKey, setTimedOutKey] = useState(-1);
+  const paintedRef = useRef(painted);
+  paintedRef.current = painted;
+  useEffect(() => {
+    if (ready) return;
+    const key = frame.key;
+    const t1 = setTimeout(() => setWaitedKey(key), LOADER_DELAY_MS);
+    const t2 = setTimeout(() => {
+      if (!paintedRef.current) setTimedOutKey(key);
+    }, LOAD_TIMEOUT_MS);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [frame.key, ready]);
+  const timedOut = timedOutKey === frame.key && !painted;
   // The renavigation notice: the frame left the page we loaded, so its bridge
   // is gone. Only artifacts with live data lose anything. Each later load in
   // that frame is another navigation and brings a dismissed notice back.
@@ -260,12 +288,14 @@ function Viewer({
     setSlow(false);
     setRenav(live);
   }, [live, touch]);
+  const frameKey = frame.key;
   const onHello = useCallback(() => {
+    setPaintedKey(frameKey);
     helloSeen.current = true;
     fs.current.hello = true;
     clearTimeout(slowTimer.current);
     setSlow(false);
-  }, []);
+  }, [frameKey]);
   const contentLoaded = content.onLoad;
   const onFrameLoad = useCallback(
     (e: SyntheticEvent<HTMLIFrameElement>) => {
@@ -273,6 +303,7 @@ function Viewer({
       // calls loadArtifactFrame. That load isn't the artifact: it must neither
       // freeze the content URL nor arm the slow timer.
       if (!frameLoad(e.currentTarget)) return;
+      setPaintedKey(frameKey);
       if (renavigated.current) {
         setRenav(live);
         return;
@@ -286,7 +317,7 @@ function Viewer({
         if (!helloSeen.current) setSlow(true);
       }, SLOW_MS);
     },
-    [contentLoaded, live],
+    [contentLoaded, live, frameKey],
   );
   useEffect(() => () => clearTimeout(slowTimer.current), []);
   const reload = () => {
@@ -372,6 +403,18 @@ function Viewer({
     return <NotPublic id={artifact.id} />;
   if (content.notFound) return <NotFound />;
   if (signedOut) return null;
+  const loader = (
+    <FrameLoader
+      show={!ready && waitedKey === frame.key && !slow && !renav}
+      timedOut={timedOut}
+      embed={isEmbed()}
+      onRetry={() => {
+        // A frame that never loaded never cleared the reload guard.
+        reloading.current = false;
+        reload();
+      }}
+    />
+  );
   return (
     <div className="oa-viewer">
       {!chromeless && (
@@ -406,8 +449,14 @@ function Viewer({
         {!url && (content.current || content.error) ? (
           <ErrorPanel onRetry={() => void content.refresh()} />
         ) : null}
+        {!url && !content.current && !content.error && (
+          <div className="oa-vmain" aria-busy="true">
+            {loader}
+          </div>
+        )}
         {url && (
-          <div className="oa-vmain">
+          <div className="oa-vmain" aria-busy={ready ? undefined : true}>
+            {loader}
             {renav && (
               <RenavNotice
                 onReload={reload}
@@ -433,6 +482,7 @@ function Viewer({
               key={frame.key}
               ref={setEl}
               className="oa-vframe"
+              data-painted={painted ? "" : undefined}
               onLoad={onFrameLoad}
               title={artifact.title}
               sandbox={SANDBOX}
@@ -486,6 +536,13 @@ function ArtifactShell({
   chromeless?: boolean;
 }) {
   const q = useArtifact(id);
+  // In render, not an effect: child effects run first, and the viewer may
+  // mount in this same commit when the info is cached.
+  const prefetched = useRef(false);
+  if (!prefetched.current) {
+    prefetched.current = true;
+    prefetchContentUrl(id, v);
+  }
   const me = useMe();
   const navigate = useNavigate();
   const embed = isEmbed();

@@ -240,6 +240,18 @@ export const CREATE_SECRETS = [
 /** Secrets metadata.ts does not know; appended to its bindings here. */
 const EXTRA_SECRETS = ["DIRECTORY_TOKEN_KEY", "TURNSTILE_SECRET"];
 const SITEKEY_RE = /^[0-9A-Za-z_-]{8,64}$/;
+
+/**
+ * Cloudflare's always-pass Turnstile pair. Only a test-hooks install (rl-a,
+ * rl-b on staging) gets it, so the red-line suite can sign in by code; every
+ * other install, and prod always, refuses any test key.
+ */
+export const TURNSTILE_TEST_KEYS = {
+  sitekey: "1x00000000000000000000AA",
+  secret: "1x0000000000000000000000000000000AA",
+} as const;
+/** Every Cloudflare Turnstile test sitekey or secret (1x, 2x, 3x). */
+const TURNSTILE_TEST_KEY = /^[123]x0{20,}[A-Z]{2}$/;
 /** An old_tag no script can have: the 412 it draws names the live tag. */
 const PROBE_TAG = "__oa_probe__";
 const HEALTH_TIMEOUT_MS = 120_000;
@@ -1116,11 +1128,21 @@ export class WfpProvisioner {
       throw new ProvisionRefused("EMAIL_CODE_DOMAIN=on needs AUTH_DOMAINS");
   }
 
-  /** Codes on needs the env's Turnstile sitekey and secret; checked before any call. */
+  /**
+   * Codes on needs a Turnstile pair; checked before any call. A test-hooks
+   * install gets Cloudflare's always-pass pair; any other install takes the
+   * env's widget, and refuses it if it is a test key.
+   */
   private turnstileInput(
     vars: Record<string, string>,
+    testHooks: boolean,
   ): { sitekey: string; secret: string } | null {
     if (!codesOn(vars)) return null;
+    if (testHooks) {
+      if (this.env === "prod")
+        throw new ProvisionRefused("a test Turnstile key is refused on prod");
+      return { ...TURNSTILE_TEST_KEYS };
+    }
     const ts = this.o.turnstile;
     if (
       !ts ||
@@ -1134,12 +1156,36 @@ export class WfpProvisioner {
       );
     if (!SITEKEY_RE.test(ts.sitekey))
       throw new ProvisionRefused("the Turnstile sitekey is malformed");
+    if (
+      TURNSTILE_TEST_KEY.test(ts.sitekey) ||
+      TURNSTILE_TEST_KEY.test(ts.secret)
+    )
+      throw new ProvisionRefused(
+        `a test Turnstile key is refused for the ${this.env} widget: only a test-hooks install gets one`,
+      );
     this.sensitive.add(ts.secret);
     return { sitekey: ts.sitekey, secret: ts.secret };
   }
 
-  /** Read-only: the widget is the env's one, with exactly the env's app domain. */
-  private async checkWidget(sitekey: string): Promise<void> {
+  /**
+   * Read-only: the widget is the env's one, with exactly the env's app domain.
+   * A test-hooks install's sitekey is the test pair's, which is no widget.
+   */
+  private async checkWidget(
+    sitekey: string,
+    testHooks: boolean,
+  ): Promise<void> {
+    if (testHooks) {
+      if (sitekey !== TURNSTILE_TEST_KEYS.sitekey)
+        throw new ProvisionRefused(
+          "a test-hooks install's Turnstile sitekey must be the test key",
+        );
+      return;
+    }
+    if (TURNSTILE_TEST_KEY.test(sitekey))
+      throw new ProvisionRefused(
+        "a test Turnstile key is refused: only a test-hooks install gets one",
+      );
     const name = platformNames(this.env).turnstile;
     const domain = HOSTED_DOMAINS[this.env].app;
     const w = await this.cf.turnstileWidget(sitekey);
@@ -1177,7 +1223,7 @@ export class WfpProvisioner {
     this.brokerVars(vars);
     this.checkVariant(i, vars);
     this.checkEmailCodeDomain(vars, "providers");
-    const ts = this.turnstileInput(vars);
+    const ts = this.turnstileInput(vars, testHooks);
     this.checkEmailCodeDomain(vars, "domains");
     this.checkGoogleBroker(vars);
     if (this.o.brokerEnabled) this.registryDomainsOf(vars);
@@ -1221,7 +1267,7 @@ export class WfpProvisioner {
     await this.checkToken();
     await this.resolvePlatform();
     const raiseFloor = await this.checkFloorSeq(rel.floor);
-    if (ts) await this.checkWidget(ts.sitekey);
+    if (ts) await this.checkWidget(ts.sitekey, testHooks);
 
     // ---------- platform row ----------
     const hash = inputsHash({ ownerEmail, vars, testHooks });
@@ -1959,7 +2005,7 @@ export class WfpProvisioner {
       vars,
     );
     this.checkEmailCodeDomain(vars, "providers");
-    const ts = this.turnstileInput(vars);
+    const ts = this.turnstileInput(vars, testHooks);
     this.checkEmailCodeDomain(vars, "domains");
     const raw = ownerEmailOf(row);
     if (raw === null)
@@ -2066,6 +2112,50 @@ export class WfpProvisioner {
       await this.logged("vars.session_cut_failed", { version });
       return false;
     }
+  }
+
+  /**
+   * Mints a fresh owner PAT (label `provision`) into an active install's D1
+   * and writes it to the 0600 PAT file, under the lease; the earlier
+   * provision tokens are retired once it is saved (mintPat). Every lifecycle
+   * operation's pre-flight and selftest use that file, so an install whose
+   * file is lost or whose token was revoked is recovered this way.
+   */
+  async reissueOwnerToken(
+    id: InstallId,
+    confirm: string,
+  ): Promise<{ id: InstallId; patFile: string }> {
+    return this.guarded(async () => {
+      if (typeof confirm !== "string" || confirm !== id)
+        throw new ProvisionRefused(
+          "reissueOwnerToken needs confirm to be exactly the install id",
+        );
+      const row = await this.openInstall(id, ["active"]);
+      const raw = ownerEmailOf(row);
+      const ownerEmail = raw === null ? null : normOwnerEmail(raw);
+      if (!ownerEmail)
+        throw new ProvisionRefused(
+          `install ${id} has no valid owner email (purged or missing)`,
+        );
+      const { d1 } = await this.resources(row);
+      if (!d1) throw new ProvisionRefused(`install ${id} has no D1`);
+      await this.claim(row, ["active"], "active", "owner-token");
+      try {
+        await this.hold();
+        const patFile = await this.mintPat(
+          d1,
+          names(id, this.env).d1,
+          ownerEmail,
+          row.app_host,
+        );
+        await this.logged("owner_token.reissue", {});
+        await this.release("active");
+        return { id, patFile };
+      } catch (e) {
+        if (!(e instanceof LostLease)) await this.releaseQuietly("active", e);
+        throw e;
+      }
+    });
   }
 
   /**
@@ -2349,7 +2439,7 @@ export class WfpProvisioner {
       assetsJwt: "dry-run",
     });
     const raiseFloor = await this.checkFloorSeq(rel.floor);
-    if (m.sitekey !== null) await this.checkWidget(m.sitekey);
+    if (m.sitekey !== null) await this.checkWidget(m.sitekey, m.testHooks);
     const cut = this.pendingCut(row);
 
     await this.claim(row, ["active"], "upgrading", "upgrade");
@@ -2599,7 +2689,7 @@ export class WfpProvisioner {
     const { jwt: _j, ...assets } = fresh.assets;
     const { migrations: _m, ...upload } = { ...fresh, assets };
     const raiseFloor = await this.checkFloorSeq(rel.floor);
-    if (m.sitekey !== null) await this.checkWidget(m.sitekey);
+    if (m.sitekey !== null) await this.checkWidget(m.sitekey, m.testHooks);
     return {
       row,
       from,
@@ -2737,13 +2827,20 @@ export class WfpProvisioner {
       const own = await this.ownerToken(row, m.appHost);
       const n = names(id, this.env);
       const have = await this.cf.secretList(this.target, n.script);
-      // Codes newly on: the env's widget secret goes up with the vars.
+      // Codes newly on: the env's widget secret goes up with the vars. A
+      // test-hooks install always gets the test secret, so one that holds the
+      // env's secret is moved to the test pair.
       const send: Record<string, string> =
-        m.sitekey !== null && !have.includes("TURNSTILE_SECRET")
-          ? {
-              TURNSTILE_SECRET: (this.o.turnstile as { secret: string }).secret,
-            }
-          : {};
+        m.sitekey === null
+          ? {}
+          : m.testHooks
+            ? { TURNSTILE_SECRET: TURNSTILE_TEST_KEYS.secret }
+            : !have.includes("TURNSTILE_SECRET")
+              ? {
+                  TURNSTILE_SECRET: (this.o.turnstile as { secret: string })
+                    .secret,
+                }
+              : {};
       this.metadata(id, m, rel, {
         d1Id,
         kvId,
@@ -2754,7 +2851,7 @@ export class WfpProvisioner {
         assetsJwt: "dry-run",
       });
       const raiseFloor = await this.checkFloorSeq(rel.floor);
-      if (m.sitekey !== null) await this.checkWidget(m.sitekey);
+      if (m.sitekey !== null) await this.checkWidget(m.sitekey, m.testHooks);
       let cut = this.pendingCut(row);
 
       await this.claim(row, ["active"], "upgrading", "vars");
@@ -2893,11 +2990,11 @@ export class WfpProvisioner {
           `this provisioner is for ${this.env}, not ${String(env)}`,
         );
       // The pair codes-on needs, checked as create checks it.
-      const ts = this.turnstileInput({ AUTH_PROVIDERS: "email" });
+      const ts = this.turnstileInput({ AUTH_PROVIDERS: "email" }, false);
       if (!ts) throw new Error("unreachable");
       await this.checkToken();
       await this.resolvePlatform();
-      await this.checkWidget(ts.sitekey);
+      await this.checkWidget(ts.sitekey, false);
       const out: RotationResult[] = [];
       for (const row of await this.platform.inStates([
         "creating",
@@ -2905,8 +3002,12 @@ export class WfpProvisioner {
         "upgrading",
       ])) {
         try {
-          // N2: codes off is nothing to rotate, whatever the state.
-          if (row.vars !== null && !codesOn(this.currentVars(row))) {
+          // N2: codes off is nothing to rotate, whatever the state; a
+          // test-hooks install keeps the test pair.
+          if (
+            row.test_hooks === 1 ||
+            (row.vars !== null && !codesOn(this.currentVars(row)))
+          ) {
             out.push({ id: row.id, ok: true, rotated: false });
             continue;
           }

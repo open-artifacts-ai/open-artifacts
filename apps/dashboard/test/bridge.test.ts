@@ -2,7 +2,9 @@ import { ANON_ID_HEADER, type ArtifactSummary, LIMITS, R } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ANON_ID_KEY,
+  ANON_SHORT_KEY,
   isAnonToken,
+  MINT_LOCK,
   resetAnonMemory,
 } from "../src/viewer/anonId";
 import { createBridge } from "../src/viewer/bridge";
@@ -19,6 +21,8 @@ const DOC = { id: "d1", data: { x: 1 }, updatedAt: "now", updatedBy: null };
 
 class FakeWS {
   static all: FakeWS[] = [];
+  static CONNECTING = 0;
+  readyState = 0;
   onopen: (() => void) | null = null;
   onmessage: ((e: { data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -501,6 +505,97 @@ describe("db.subscribe", () => {
   });
 });
 
+describe("db.offline", () => {
+  const sub = (id: string, collection = "c") =>
+    call("db.subscribe", { collection }, id);
+  const offlines = () =>
+    post.mock.calls.filter(([m]) => m?.event === "db.offline");
+  const resyncs = () =>
+    post.mock.calls.filter(([m]) => m?.event === "db.resync");
+  const close = (ws: FakeWS | undefined, code = 1006) =>
+    (ws?.onclose as ((e: { code: number }) => void) | null)?.({ code });
+
+  it("a refused first socket is offline at once, once, then resyncs on recovery", async () => {
+    vi.useFakeTimers();
+    mk();
+    sub("1");
+    await vi.advanceTimersByTimeAsync(0);
+    close(FakeWS.all[0]);
+    expect(offlines()).toEqual([
+      [{ oa: 1, type: "event", event: "db.offline", collection: "c" }, "*"],
+    ]);
+    await vi.advanceTimersByTimeAsync(1000);
+    close(FakeWS.all[1]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(FakeWS.all).toHaveLength(3);
+    expect(offlines()).toHaveLength(1);
+    FakeWS.all[2]?.onopen?.();
+    expect(resyncs()).toHaveLength(1);
+  });
+
+  it("a dropped socket is offline after 3 failed reconnects, and again for a new outage", async () => {
+    vi.useFakeTimers();
+    mk();
+    sub("1");
+    await vi.advanceTimersByTimeAsync(0);
+    FakeWS.all[0]?.onopen?.();
+    close(FakeWS.all[0]);
+    for (const [i, wait] of [
+      [1, 1000],
+      [2, 2000],
+      [3, 4000],
+    ] as const) {
+      await vi.advanceTimersByTimeAsync(wait);
+      expect(offlines()).toHaveLength(0);
+      close(FakeWS.all[i]);
+    }
+    expect(offlines()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(8000);
+    FakeWS.all[4]?.onopen?.();
+    expect(resyncs()).toHaveLength(2);
+    // A blip that recovers on the first retry stays silent.
+    close(FakeWS.all[4]);
+    await vi.advanceTimersByTimeAsync(1000);
+    FakeWS.all[5]?.onopen?.();
+    expect(offlines()).toHaveLength(1);
+  });
+
+  it("a handshake that hangs is closed after 10 s and counts as a failure", async () => {
+    vi.useFakeTimers();
+    mk();
+    sub("1");
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(FakeWS.all[0]?.closed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(FakeWS.all[0]?.closed).toBe(true);
+    // The browser then fires close: a first socket that never opened is offline.
+    close(FakeWS.all[0]);
+    expect(offlines()).toHaveLength(1);
+  });
+
+  it("an open socket is never closed by the connect timeout", async () => {
+    vi.useFakeTimers();
+    mk();
+    sub("1");
+    await vi.advanceTimersByTimeAsync(0);
+    FakeWS.all[0]?.onopen?.();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(FakeWS.all[0]?.closed).toBe(false);
+  });
+
+  it("a dropped socket is offline once it has been down 30 s", async () => {
+    vi.useFakeTimers();
+    mk();
+    sub("1");
+    await vi.advanceTimersByTimeAsync(0);
+    FakeWS.all[0]?.onopen?.();
+    close(FakeWS.all[0]);
+    await vi.advanceTimersByTimeAsync(31_000);
+    close(FakeWS.all[1]);
+    expect(offlines()).toHaveLength(1);
+  });
+});
+
 describe("bridge limits", () => {
   it("caps subscribed collections at 32 and replies rate_limited", async () => {
     mk();
@@ -588,6 +683,8 @@ describe("anonymous id", () => {
   beforeEach(() => {
     store = new Map();
     resetAnonMemory();
+    // Node has Web Locks; the lock tests stub their own.
+    vi.stubGlobal("navigator", { ...navigator, locks: undefined });
   });
 
   it("stores a minted token under one key and sends it on later calls", async () => {
@@ -724,6 +821,46 @@ describe("anonymous id", () => {
     expect(resultOf("a")).toMatchObject({ ok: false });
   });
 
+  it("a mint waits on the browser-wide lock and reuses a token another tab minted meanwhile", async () => {
+    vi.stubGlobal("localStorage", okStorage);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const request = vi.fn(
+      async (_n: string, _o: unknown, fn: () => Promise<unknown>) => {
+        await held;
+        return fn();
+      },
+    );
+    vi.stubGlobal("navigator", { ...navigator, locks: { request } });
+    fetchMock.mockImplementation(async () => json(DOC));
+    mkAnon(OPT_IN);
+    call("db.set", { collection: "c", id: "d1", data: 1 }, "a");
+    await flush();
+    expect(request).toHaveBeenCalledWith(
+      MINT_LOCK,
+      expect.anything(),
+      expect.any(Function),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Another tab minted while this one waited for the lock.
+    store.set(ANON_ID_KEY, TOKEN);
+    release();
+    for (let i = 0; i < 4; i++) await flush();
+    expect(headerOf(0)).toBe(TOKEN);
+    expect(resultOf("a")).toMatchObject({ ok: true });
+  });
+
+  it("mints without the lock when Web Locks are missing", async () => {
+    vi.stubGlobal("localStorage", okStorage);
+    vi.stubGlobal("navigator", { ...navigator, locks: undefined });
+    fetchMock.mockImplementationOnce(async () => withToken(TOKEN));
+    mkAnon(OPT_IN);
+    call("db.set", { collection: "c", id: "d1", data: 1 }, "a");
+    await flush();
+    expect(headerOf(0)).toBeNull();
+    expect(store.get(ANON_ID_KEY)).toBe(TOKEN);
+  });
+
   it("write methods: db writes are never POST (POST is only db.query)", async () => {
     vi.stubGlobal("localStorage", okStorage);
     fetchMock.mockImplementation(async (url: string) =>
@@ -807,6 +944,33 @@ describe("anonymous id", () => {
     expect(headerOf(0)).toBe(TOKEN);
     expect(resultOf("v")).toMatchObject({ ok: true, value: "aaaaaaaa" });
     expect(JSON.stringify(post.mock.calls)).not.toContain(TOKEN.slice(0, 22));
+  });
+
+  it("viewer.anonId is cached per token id and artifact, so a reload doesn't refetch it", async () => {
+    vi.stubGlobal("localStorage", okStorage);
+    store.set(ANON_ID_KEY, TOKEN);
+    fetchMock.mockImplementation(async () => json({ anonId: "aaaaaaaa" }));
+    mkAnon(OPT_IN);
+    call("viewer.anonId", {}, "v1");
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // A reload: a new bridge, same browser.
+    mkAnon(OPT_IN);
+    call("viewer.anonId", {}, "v2");
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(resultOf("v2")).toMatchObject({ ok: true, value: "aaaaaaaa" });
+    // Another artifact, or another id in the token, asks the server.
+    mkAnon({ ...OPT_IN, id: "art2" } as ArtifactSummary);
+    call("viewer.anonId", {}, "v3");
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    store.set(ANON_ID_KEY, TOKEN2);
+    mkAnon(OPT_IN);
+    call("viewer.anonId", {}, "v4");
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(store.get(ANON_SHORT_KEY)).not.toContain(TOKEN.slice(22));
   });
 
   it("viewer.anonId needs the viewer capability", async () => {

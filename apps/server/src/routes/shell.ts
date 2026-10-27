@@ -5,7 +5,7 @@ import { getDb } from "../db/client.js";
 import { artifacts } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { isFramedFetch } from "../http/embed.js";
-import { appOrigin } from "../http/errors.js";
+import { appOrigin, contentOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import { getSettings } from "../services/members.js";
 import type { AppType } from "./index.js";
@@ -201,7 +201,11 @@ export function mountShell(app: AppType): void {
       .on("head", {
         element(e) {
           e.append(
-            (embed ? EMBED_META : "") + meta + (og ? metaTags(og) : ""),
+            (embed ? EMBED_META : "") +
+              // The artifact frame loads from here: open the connection early (#693).
+              `<link rel="preconnect" href="${esc(contentOrigin(c.env))}">` +
+              meta +
+              (og ? metaTags(og) : ""),
             { html: true },
           );
         },

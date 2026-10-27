@@ -362,9 +362,10 @@ export function userWorkerMetadata(
         `template has more than one ${k} entry; hosted provisions one`,
       );
 
-  // EMAIL_FROM is always noreply@<slug>.mail.<app-domain>
-  const dot = i.appHost.indexOf(".");
-  const emailFrom = `noreply@${i.appHost.slice(0, dot)}.mail.${i.appHost.slice(dot + 1)}`;
+  // EMAIL_FROM is the env's one sender, noreply@mail.<app-domain>, for every
+  // install: Email Sending onboards each (sub)domain by hand and allows 30
+  // per zone. The server names each install in the From display name.
+  const emailFrom = `noreply@mail.${i.appHost.slice(i.appHost.indexOf(".") + 1)}`;
 
   // vars: allowlist first
   for (const [k, v] of Object.entries(i.vars)) {

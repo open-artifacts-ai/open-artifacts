@@ -129,9 +129,11 @@ builds drop it with the rest of `test-hooks/` (a strip-test marker and the
 
 Hook installs change one non-hook route. With Cloudflare's always-pass
 Turnstile TEST secret, siteverify answers `{ success: true, hostname:
-"localhost", action: "test" }`, which the strict check (hostname = the app
-host, action `code_request`) refuses. `turnstileTestKeyPass`
-(`test-hooks/index.ts`) also accepts that exact answer when ALL hold:
+"example.com", metadata: { result_with_testing_key: true } }` with no
+`action` (the live API; Cloudflare's docs show `localhost` and `test`), which
+the strict check (hostname = the app host, action `code_request`) refuses.
+`turnstileTestKeyPass` (`test-hooks/index.ts`) also accepts a successful
+answer carrying `metadata.result_with_testing_key === true` when ALL hold:
 
 - the build allows hooks (`__OA_TEST_HOOKS_ALLOWED__` true);
 - `TEST_HOOKS` is `"1"`;

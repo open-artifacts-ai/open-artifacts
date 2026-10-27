@@ -7,6 +7,8 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,6 +46,7 @@ import {
   NAMESPACES,
   ProdLocked,
   ProvisionRefused,
+  TURNSTILE_TEST_KEYS,
   type WfpOptions,
   WfpProvisioner,
 } from "../src/wfp.js";
@@ -3846,5 +3849,183 @@ describe("H-DV: the stored row a create writes (the scheduler's purge fixture)",
     if (process.env.UPDATE_FIXTURES === "1")
       writeFileSync(FIXTURE, `${JSON.stringify(got, null, 2)}\n`);
     expect(JSON.parse(readFileSync(FIXTURE, "utf8"))).toEqual(got);
+  });
+});
+
+describe("Turnstile test keys (red-line installs only)", () => {
+  const RL_VARS = { ...HOOK_VARS, ...CODES };
+  const siteKeyOf = (meta: { bindings: { name: string; text?: string }[] }) =>
+    meta.bindings.find((b) => b.name === "TURNSTILE_SITE_KEY")?.text;
+
+  it("are Cloudflare's always-pass pair", () => {
+    expect(TURNSTILE_TEST_KEYS).toEqual({
+      sitekey: "1x00000000000000000000AA",
+      secret: "1x0000000000000000000000000000000AA",
+    });
+  });
+
+  it("a test-hooks install with codes on gets the test pair, never the env widget", async () => {
+    const s = setup();
+    const from = s.fake.log.length;
+    const inst = keep(
+      await s.p.create(
+        input("rl-a", { testHooks: true, bundle: "redline", vars: RL_VARS }),
+      ),
+    );
+    const meta = metaOf(uploads(s.fake, from)[0]?.body as string);
+    expect(siteKeyOf(meta)).toBe(TURNSTILE_TEST_KEYS.sitekey);
+    expect(s.scriptOf(inst.id)?.secrets.get("TURNSTILE_SECRET")).toBe(
+      TURNSTILE_TEST_KEYS.secret,
+    );
+    expect(JSON.stringify(s.fake.raw)).not.toContain(TS.secret);
+    // No widget lookup: the test sitekey is not an account widget.
+    expect(
+      s.fake.log
+        .slice(from)
+        .some((l) => String(l.path).includes("/challenges/widgets/")),
+    ).toBe(false);
+  });
+
+  it("an install without test hooks refuses a test key as the env's widget, before any write", async () => {
+    for (const k of [
+      TURNSTILE_TEST_KEYS,
+      { sitekey: "2x00000000000000000000AB", secret: TS.secret },
+      { sitekey: TS.sitekey, secret: "3x0000000000000000000000000000000AA" },
+    ]) {
+      const s = setup();
+      const p = s.mk({ turnstile: k });
+      const n = s.fake.writes().length;
+      const e = await fails(p.create(input("acme", { vars: CODES })));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(/test Turnstile key/);
+      expect(s.fake.writes().length).toBe(n);
+    }
+  });
+
+  it("prod refuses a test key as its widget", async () => {
+    const s = setup({ env: "prod" });
+    const p = s.mk({ turnstile: TURNSTILE_TEST_KEYS });
+    const e = await fails(p.create(input("acme", { vars: CODES })));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/test Turnstile key/);
+  });
+
+  it("updateVars on a test-hooks install re-sends the test secret even when one is set, and renders the test sitekey", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("rl-a", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
+      ),
+    );
+    // As on staging today: the env's real secret is already on the install.
+    s.scriptOf(inst.id)?.secrets.set("TURNSTILE_SECRET", TS.secret);
+    const from = s.fake.log.length;
+    keep(await s.p.updateVars(inst.id, RL_VARS));
+    const meta = metaOf(uploads(s.fake, from)[0]?.body as string);
+    expect(siteKeyOf(meta)).toBe(TURNSTILE_TEST_KEYS.sitekey);
+    expect(s.scriptOf(inst.id)?.secrets.get("TURNSTILE_SECRET")).toBe(
+      TURNSTILE_TEST_KEYS.secret,
+    );
+  });
+
+  it("rotation never touches a test-hooks install", async () => {
+    const s = setup();
+    const rl = keep(
+      await s.p.create(
+        input("rl-a", { testHooks: true, bundle: "redline", vars: RL_VARS }),
+      ),
+    );
+    const a = keep(await s.p.create(input("alpha", { vars: CODES })));
+    const p = s.mk({ turnstile: { sitekey: TS.sitekey, secret: TS_NEXT } });
+    const out = keep(await p.rotateTurnstileSecret("staging"));
+    const byId = Object.fromEntries(out.map((x) => [x.id, x]));
+    expect(byId[rl.id]).toMatchObject({ ok: true, rotated: false });
+    expect(byId[a.id]).toMatchObject({ ok: true, rotated: true });
+    expect(s.scriptOf(rl.id)?.secrets.get("TURNSTILE_SECRET")).toBe(
+      TURNSTILE_TEST_KEYS.secret,
+    );
+  });
+});
+
+describe("reissueOwnerToken", () => {
+  const patPath = (s: ReturnType<typeof setup>, appHost: string) =>
+    join(s.opts().patDir, `${appHost}-pat-token`);
+
+  it("mints a fresh provision PAT under the lease, writes it 0600, and retires the earlier provision ones only", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const idb = s.installDb(inst.id);
+    // A token the owner made by hand stays; the revoked provision one is the old state.
+    idb
+      .prepare(
+        "INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tmine', id, 'my laptop', 'h', 1 FROM users WHERE role = 'owner'",
+      )
+      .run();
+    idb
+      .prepare("UPDATE tokens SET revoked_at = 1 WHERE label = 'provision'")
+      .run();
+    rmSync(patPath(s, inst.appHost));
+    const r = keep(await s.p.reissueOwnerToken(inst.id, inst.id));
+    expect(r).toEqual({ id: inst.id, patFile: patPath(s, inst.appHost) });
+    expect(statSync(r.patFile).mode & 0o777).toBe(0o600);
+    const live = idb
+      .prepare(
+        "SELECT label FROM tokens WHERE revoked_at IS NULL ORDER BY label",
+      )
+      .all() as { label: string }[];
+    expect(live.map((t) => t.label)).toEqual(["my laptop", "provision"]);
+    expect(s.audit(inst.id)).toContain("owner_token.reissue");
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    // The install is upgradable again (the pre-flight uses the new token).
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    const pat = readFileSync(r.patFile, "utf8").trim();
+    expect(JSON.stringify(s.p.notes)).not.toContain(pat);
+    expect(
+      JSON.stringify(s.db().prepare("SELECT * FROM hosted_audit").all()),
+    ).not.toContain(pat);
+  });
+
+  it("a second reissue retires the first", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.reissueOwnerToken(inst.id, inst.id));
+    keep(await s.p.reissueOwnerToken(inst.id, inst.id));
+    const n = s
+      .installDb(inst.id)
+      .prepare(
+        "SELECT count(*) AS n FROM tokens WHERE label = 'provision' AND revoked_at IS NULL",
+      )
+      .get() as { n: number };
+    expect(n.n).toBe(1);
+  });
+
+  it("refuses a wrong confirm or an install that is not active with no write, and a held lease with no token minted", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const w = s.fake.writes().length;
+    expect(
+      (await fails(s.p.reissueOwnerToken(inst.id, "ibbbbbbbbbbb"))).message,
+    ).toMatch(/confirm/);
+    s.db()
+      .prepare("UPDATE installs SET state = 'upgrading' WHERE id = ?")
+      .run(inst.id);
+    expect(await fails(s.p.reissueOwnerToken(inst.id, inst.id))).toBeInstanceOf(
+      ProvisionRefused,
+    );
+    expect(s.fake.writes().length).toBe(w);
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'active', lease = 'x', lease_until = ? WHERE id = ?",
+      )
+      .run(Date.now() + 1e12, inst.id);
+    const tokens = () =>
+      s.installDb(inst.id).prepare("SELECT id, revoked_at FROM tokens").all();
+    const before = tokens();
+    // Busy is the claim's compare-and-swap losing: it changes nothing.
+    expect(
+      (await fails(s.p.reissueOwnerToken(inst.id, inst.id))).message,
+    ).toMatch(/busy/);
+    expect(tokens()).toEqual(before);
+    expect(s.row(inst.id).lease).toBe("x");
   });
 });

@@ -163,7 +163,7 @@ describe("userWorkerMetadata", () => {
     const m = userWorkerMetadata(
       inst({
         vars: {
-          EMAIL_FROM: "noreply@a.mail.app.test",
+          EMAIL_FROM: "noreply@mail.app.test",
           FEATURES: "spaces,directory_sync",
           EMAIL_DAILY_CAP: "50",
           CODE_EMAILS_PER_DAY: "200",
@@ -204,7 +204,7 @@ describe("userWorkerMetadata", () => {
     const m = userWorkerMetadata(
       inst({
         vars: {
-          EMAIL_FROM: "noreply@a.mail.app.test",
+          EMAIL_FROM: "noreply@mail.app.test",
           FEATURES: "usage_off,x",
         },
       }),
@@ -216,20 +216,20 @@ describe("userWorkerMetadata", () => {
   it("unknown or invalid var throws", () => {
     expect(() =>
       userWorkerMetadata(
-        inst({ vars: { EMAIL_FROM: "noreply@a.mail.app.test", NOPE: "1" } }),
+        inst({ vars: { EMAIL_FROM: "noreply@mail.app.test", NOPE: "1" } }),
         res(),
       ),
     ).toThrow(/unknown var/);
     expect(() =>
       userWorkerMetadata(
-        inst({ vars: { EMAIL_FROM: "noreply@a.mail.app.test", HOSTED: "0" } }),
+        inst({ vars: { EMAIL_FROM: "noreply@mail.app.test", HOSTED: "0" } }),
         res(),
       ),
     ).toThrow(/unknown var/);
     expect(() =>
       userWorkerMetadata(
         inst({
-          vars: { EMAIL_FROM: "noreply@a.mail.app.test", EMAIL_DAILY_CAP: "x" },
+          vars: { EMAIL_FROM: "noreply@mail.app.test", EMAIL_DAILY_CAP: "x" },
         }),
         res(),
       ),
@@ -238,7 +238,7 @@ describe("userWorkerMetadata", () => {
       userWorkerMetadata(
         inst({
           vars: {
-            EMAIL_FROM: "noreply@a.mail.app.test",
+            EMAIL_FROM: "noreply@mail.app.test",
             INSTALL_ID: "iaaaaaaaaaaa",
           },
         }),
@@ -554,15 +554,24 @@ describe("round 1", () => {
     );
   });
 
-  it("EMAIL_FROM is tied to the install", () => {
-    const m = userWorkerMetadata(inst(), res());
-    expect(text(m.bindings, "EMAIL_FROM")).toBe("noreply@a.mail.app.test");
-    expect(() =>
-      userWorkerMetadata(
-        inst({ vars: { EMAIL_FROM: "noreply@b.mail.app.test" } }),
-        res(),
-      ),
-    ).toThrow(/EMAIL_FROM/);
+  it("EMAIL_FROM is the env's one sender, noreply@mail.<app-zone>, for every install", () => {
+    // Cloudflare Email Sending onboards each (sub)domain separately and allows
+    // 30 per zone, so a per-install sender subdomain can't scale.
+    const a = userWorkerMetadata(inst(), res());
+    expect(text(a.bindings, "EMAIL_FROM")).toBe("noreply@mail.app.test");
+    const b = userWorkerMetadata(
+      inst({ appHost: "b.app.test", contentHost: "b.page.test" }),
+      res(),
+    );
+    expect(text(b.bindings, "EMAIL_FROM")).toBe("noreply@mail.app.test");
+    for (const other of [
+      "noreply@a.mail.app.test",
+      "noreply@b.mail.app.test",
+      "owner@mail.app.test",
+    ])
+      expect(() =>
+        userWorkerMetadata(inst({ vars: { EMAIL_FROM: other } }), res()),
+      ).toThrow(/EMAIL_FROM/);
   });
 
   it("asserts values for AUTH_* and CODE_EMAILS_PER_DAY", () => {

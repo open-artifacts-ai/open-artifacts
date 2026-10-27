@@ -20,12 +20,15 @@ export type Viewer = { email: string; name: string | null };
 /**
  * A subscribe() delivery. `resync: true` (with empty docs/deleted) means the
  * live connection was re-established and changes may have been missed:
- * refetch your data when resync is true.
+ * refetch your data when resync is true. `offline: true` (with empty
+ * docs/deleted) means live changes are paused (the connection was refused or
+ * keeps failing); tell the viewer, and expect a resync when it recovers.
  */
 export type ChangeEvent = {
   docs: DataDoc[];
   deleted: string[];
   resync?: true;
+  offline?: true;
 };
 
 export interface Collection {
@@ -35,7 +38,8 @@ export interface Collection {
   set(id: string, data: unknown): Promise<DataDoc>;
   update(id: string, patch: Record<string, unknown>): Promise<DataDoc>;
   delete(id: string): Promise<void>;
-  /** Live changes; refetch your data when `e.resync` is true (after a reconnect).
+  /** Live changes; refetch your data when `e.resync` is true (after a reconnect);
+   *  `e.offline` means live changes are paused until the next resync.
    *  `onReady` runs once the shell has acknowledged the subscription, so callers
    *  can wait for live delivery to be armed before depending on it. */
   subscribe(
@@ -365,7 +369,9 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
       const next =
         m.event === "db.resync"
           ? () => emit(m.collection, { docs: [], deleted: [], resync: true })
-          : () => deliver(m);
+          : m.event === "db.offline"
+            ? () => emit(m.collection, { docs: [], deleted: [], offline: true })
+            : () => deliver(m);
       queues.set(m.collection, prev.then(next).catch(ignore));
     }
   });

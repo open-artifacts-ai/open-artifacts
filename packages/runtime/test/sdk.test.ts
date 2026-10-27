@@ -514,6 +514,42 @@ describe("subscribe", () => {
   });
 });
 
+describe("db.offline", () => {
+  it("calls the collection's callbacks with { docs: [], deleted: [], offline: true }, then resync on recovery", async () => {
+    const oa = start();
+    const cb = vi.fn();
+    const other = vi.fn();
+    oa.db.collection("votes").subscribe(cb);
+    oa.db.collection("other").subscribe(other);
+    await flush();
+    fromShell({
+      oa: 1,
+      type: "event",
+      event: "db.offline",
+      collection: "votes",
+    });
+    await flush();
+    expect(cb).toHaveBeenLastCalledWith({
+      docs: [],
+      deleted: [],
+      offline: true,
+    });
+    expect(other).not.toHaveBeenCalled();
+    fromShell({
+      oa: 1,
+      type: "event",
+      event: "db.resync",
+      collection: "votes",
+    });
+    await flush();
+    expect(cb).toHaveBeenLastCalledWith({
+      docs: [],
+      deleted: [],
+      resync: true,
+    });
+  });
+});
+
 describe("C4: db.resync", () => {
   it("calls each callback of the collection with { docs: [], deleted: [], resync: true }", async () => {
     const oa = start();

@@ -48,6 +48,7 @@ export async function verifyTurnstile(
       success?: unknown;
       hostname?: unknown;
       action?: unknown;
+      metadata?: unknown;
     };
     if (
       out.success === true &&

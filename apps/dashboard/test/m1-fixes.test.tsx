@@ -171,6 +171,7 @@ describe("M1 content URL errors and freshness", () => {
       const { result } = hook(() =>
         Response.json({
           url: `https://c.test/u${++i}`,
+          version: 1,
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
         }),
       );
@@ -281,7 +282,10 @@ describe("M1 versions paging (contract C2)", () => {
     await waitFor(() => expect(befores).toContain("1"));
     await waitFor(() =>
       expect(
-        document.querySelector("[aria-busy]:not([aria-busy=false])"),
+        // The versions list's busy state; the frame area stays busy in jsdom (no hello).
+        document.querySelector(
+          "[aria-busy]:not([aria-busy=false]):not(.oa-vmain)",
+        ),
       ).toBeNull(),
     );
     expect(befores).toContain("1");

@@ -56,6 +56,12 @@ export interface Targets {
   inventory?: Inventory;
   /** Staging mode only: hosts of a deleted install (REDLINE_DELETED_HOSTS, a JSON list). */
   deletedHosts?: string[];
+  /**
+   * Staging mode only: a hostname HOSTS maps to an install that serves neither
+   * its APP_HOST nor its CONTENT_HOST (Platform's test mapping), so the
+   * request reaches the install and must get the server's own 404.
+   */
+  strayHost?: string;
 }
 
 export interface Inventory {
@@ -96,6 +102,19 @@ function parseInventory(
   };
   INVENTORY_SECRETS.set(i, readSecretFile(i.keyFile, "inventory key"));
   return i;
+}
+
+/** A bare lowercase hostname (no scheme, port or path), or undefined when unset. */
+function parseStrayHost(v: unknown, taken: Set<string>): string | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  if (
+    typeof v !== "string" ||
+    !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(v)
+  )
+    throw new Error("REDLINE_TARGETS: strayHost must be a bare hostname");
+  if (taken.has(v))
+    throw new Error("REDLINE_TARGETS: strayHost is a target's own host");
+  return v;
 }
 
 function parseDeletedHosts(v: unknown): string[] | undefined {
@@ -383,9 +402,18 @@ export function parseTargets(
       raw.deletedHosts ?? env.REDLINE_DELETED_HOSTS,
     );
     if (del) out.deletedHosts = del;
-  } else if (raw.inventory != null || raw.deletedHosts != null)
+    const stray = parseStrayHost(
+      raw.strayHost,
+      new Set([...hosts].map((o) => new URL(o).hostname)),
+    );
+    if (stray) out.strayHost = stray;
+  } else if (
+    raw.inventory != null ||
+    raw.deletedHosts != null ||
+    raw.strayHost != null
+  )
     throw new Error(
-      "REDLINE_TARGETS: inventory and deletedHosts are staging mode only",
+      "REDLINE_TARGETS: inventory, deletedHosts and strayHost are staging mode only",
     );
   return out;
 }

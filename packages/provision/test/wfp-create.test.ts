@@ -2221,7 +2221,7 @@ describe("WfpProvisioner.create", () => {
         ?.metadata.bindings.find(
           (b: { name: string }) => b.name === "EMAIL_FROM",
         );
-      expect(from.text).toBe("noreply@finqore.mail.open-artifacts-staging.app");
+      expect(from.text).toBe("noreply@mail.open-artifacts-staging.app");
     });
   });
 

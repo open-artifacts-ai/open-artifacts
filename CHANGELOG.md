@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.62.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.62.1...v0.62.2) (2026-10-27)
+
+
+### Performance Improvements
+
+* **viewer:** content link loads alongside the artifact's info; preconnect ([#693](https://github.com/open-artifacts-ai/open-artifacts/issues/693) part 2) ([#701](https://github.com/open-artifacts-ai/open-artifacts/issues/701)) ([698f377](https://github.com/open-artifacts-ai/open-artifacts/commit/698f3775b70496ff1850d70340ec2cc8ca2354d2))
+
+## [0.62.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.62.0...v0.62.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **provision:** hosted installs send from the env's one sender, noreply@mail.&lt;app-zone&gt; ([#702](https://github.com/open-artifacts-ai/open-artifacts/issues/702)) ([bbb3402](https://github.com/open-artifacts-ai/open-artifacts/commit/bbb340263012f188a648856617132a35ddd06fc5))
+
+## [0.62.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.61.0...v0.62.0) (2026-10-27)
+
+
+### Features
+
+* **api:** content-url names the version it serves ([#696](https://github.com/open-artifacts-ai/open-artifacts/issues/696)) ([dc3749b](https://github.com/open-artifacts-ai/open-artifacts/commit/dc3749b4bade2c20202ed9b9a9067d29aff91465))
+* **viewer:** quiet loader and a timeout with Retry while an artifact opens ([#693](https://github.com/open-artifacts-ai/open-artifacts/issues/693)) ([#700](https://github.com/open-artifacts-ai/open-artifacts/issues/700)) ([f1434d2](https://github.com/open-artifacts-ai/open-artifacts/commit/f1434d2e5b743df095721d2d49daf0109048ac12))
+
+
+### Bug Fixes
+
+* **server:** accept the Turnstile test key by its own marker ([#697](https://github.com/open-artifacts-ai/open-artifacts/issues/697)) ([74586fe](https://github.com/open-artifacts-ai/open-artifacts/commit/74586fe92f1dd6a70b89286fdf06be9d8186ae57))
+* **viewer:** never flash white while an artifact opens ([#693](https://github.com/open-artifacts-ai/open-artifacts/issues/693)) ([#695](https://github.com/open-artifacts-ai/open-artifacts/issues/695)) ([a231d68](https://github.com/open-artifacts-ai/open-artifacts/commit/a231d683f6b1d75dad967c43314269a240e7c29c))
+
+## [0.61.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.60.0...v0.61.0) (2026-10-27)
+
+
+### Features
+
+* **hosted:** oa:hosted owner-token re-mints an install's owner PAT file ([#692](https://github.com/open-artifacts-ai/open-artifacts/issues/692)) ([714c336](https://github.com/open-artifacts-ai/open-artifacts/commit/714c336122adf94b663df716502e4a51d38c656e))
+
+## [0.60.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.59.1...v0.60.0) (2026-10-26)
+
+
+### Features
+
+* **provision:** red-line installs get Turnstile's always-pass test pair; nothing else may ([#676](https://github.com/open-artifacts-ai/open-artifacts/issues/676)) ([b8d3014](https://github.com/open-artifacts-ai/open-artifacts/commit/b8d30144cb128afd5f2a4b07d5bec335eac5de47))
+* **runtime:** subscribe says when live updates are paused (offline) ([#688](https://github.com/open-artifacts-ai/open-artifacts/issues/688)) ([1d9fcea](https://github.com/open-artifacts-ai/open-artifacts/commit/1d9fceaf743cb25004863755f7648ca52546fcc9))
+* **server:** test builds accept Turnstile's test-key answer on live-hook installs only ([#677](https://github.com/open-artifacts-ai/open-artifacts/issues/677)) ([22d06d7](https://github.com/open-artifacts-ai/open-artifacts/commit/22d06d710878eaed9e8709db781bb597a83ed407))
+
+
+### Bug Fixes
+
+* **hosted:** upgrade and rollback read the env's Turnstile keys ([#683](https://github.com/open-artifacts-ai/open-artifacts/issues/683)) ([9cd19f7](https://github.com/open-artifacts-ai/open-artifacts/commit/9cd19f72420409010905bf510e31b85e13a95a34))
+* **provision:** hosted assets upload with their Content-Type ([#678](https://github.com/open-artifacts-ai/open-artifacts/issues/678)) ([d505d71](https://github.com/open-artifacts-ai/open-artifacts/commit/d505d71049194e5c0e2a99f9f29ac2bcb608949b))
+* **runtime:** a valid anon-id token doesn't spend the per-IP limit ([#685](https://github.com/open-artifacts-ai/open-artifacts/issues/685)) ([22f31a3](https://github.com/open-artifacts-ai/open-artifacts/commit/22f31a3fa54b811c9df53a8a94ee04e665220d36))
+* **server:** /__oa/* is a JSON 404 on the app host, never the SPA shell ([#674](https://github.com/open-artifacts-ai/open-artifacts/issues/674)) ([a3283ab](https://github.com/open-artifacts-ai/open-artifacts/commit/a3283ab33723f2bef1be22aa00c010a6d3b4c561))
+* **viewer:** tabs opened at once keep one anonymous id; demos handle refused writes ([#686](https://github.com/open-artifacts-ai/open-artifacts/issues/686)) ([fe30a5c](https://github.com/open-artifacts-ai/open-artifacts/commit/fe30a5cc328542aa5dac8c0e5744d8c7271d9bf8))
+
 ## [0.59.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.59.0...v0.59.1) (2026-10-26)
 
 

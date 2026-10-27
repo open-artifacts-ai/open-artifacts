@@ -202,12 +202,36 @@ describe("mapping integrity", () => {
   });
 
   it("a host that is neither APP_HOST nor CONTENT_HOST gets the server's own 404", async (ctx) => {
-    if (T.mode !== "local")
-      return proof(
-        ctx,
-        "unproven-live",
-        "needs a test mapping to a stray host on stg (not configured)",
-      );
+    if (T.mode === "staging") {
+      // Platform's test mapping: HOSTS sends strayHost to an rl install that
+      // serves neither name. The inventory proves the request reaches that
+      // install, so the 404 is the server's, not the dispatch Worker's.
+      const stray = T.strayHost;
+      if (!stray || !T.inventory)
+        return proof(
+          ctx,
+          "unproven-live",
+          "needs strayHost and the inventory in REDLINE_TARGETS",
+        );
+      const mapped = (await inventory(
+        `/hosts?host=${encodeURIComponent(stray)}`,
+      )) as { installId?: unknown };
+      const t = [T.a, T.b].find((x) => x.installId === mapped.installId);
+      if (!t)
+        throw new Error("strayHost: HOSTS doesn't map it to rl-a or rl-b");
+      const cred = t === T.a ? A.cookie : B.cookie;
+      for (const [path, c] of [
+        ["/healthz", null],
+        ["/api/v1/me", cred],
+      ] as const) {
+        const r = await fetchT(
+          `https://${stray}${path}`,
+          c ? withCred(c) : { redirect: "manual" },
+        );
+        await expectGeneric404(r, `${t.name} via strayHost ${path}`);
+      }
+      return;
+    }
     // Local mode reaches each server directly: a stray name, and the other
     // install's hosts, sent to this install's port.
     for (const t of [T.a, T.b]) {

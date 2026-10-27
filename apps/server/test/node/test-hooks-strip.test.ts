@@ -21,7 +21,7 @@ const MARKERS = [
   // The audit hook's read (test_hook rows only).
   "where actor_kind = 'test_hook' and substr(action, 1, 10) = 'test_hook.' and at >= ?1",
   // The Turnstile test-key acceptance (turnstileTestKeyPass).
-  'out.hostname === "localhost"',
+  "result_with_testing_key",
 ];
 // Cloudflare's always-pass Turnstile TEST secret: never in a release bundle.
 const TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA";

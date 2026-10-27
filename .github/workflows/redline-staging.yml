@@ -56,7 +56,11 @@ jobs:
           REDLINE_DELETED_HOSTS: ${{ vars.REDLINE_DELETED_HOSTS }}
         run: |
           set -euo pipefail
-          REDLINE_TARGETS=$(jq -c --arg d "$RUNNER_TEMP/redline-secrets" '. + {secretsDir: $d}' <<< "$REDLINE_TARGETS_BASE")
+          # Cloudflare's dummy Turnstile token, which the always-pass test
+          # secret on rl-a and rl-b accepts (#676, #677). Public, not a secret.
+          t="$RUNNER_TEMP/redline-turnstile-token"
+          (umask 077 && printf '%s' 'XXXX.DUMMY.TOKEN.XXXX' > "$t")
+          REDLINE_TARGETS=$(jq -c --arg d "$RUNNER_TEMP/redline-secrets" --arg t "$t" '. + {secretsDir: $d} | .a.turnstileFile = $t | .b.turnstileFile = $t' <<< "$REDLINE_TARGETS_BASE")
           export REDLINE_TARGETS
           export REDLINE_REPORT="$RUNNER_TEMP/redline-report/report.json"
           mkdir -p "$RUNNER_TEMP/redline-report"

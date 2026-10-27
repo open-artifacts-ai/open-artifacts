@@ -78,6 +78,7 @@ export const COMMANDS = [
   "publish-floor",
   "turnstile-init",
   "redline-creds",
+  "owner-token",
 ] as const;
 type Command = (typeof COMMANDS)[number];
 
@@ -98,6 +99,9 @@ Commands:
   publish-release --tag v<version>  (gh release download of oa-release-<env>-*, verified, then uploaded)
   publish-floor   --floor <path to floor-<env>-<seq>.sig.json>
   turnstile-init  (the env's one Turnstile widget; idempotent)
+  owner-token     --install <id> --confirm <the same id>  (laptop only)
+                  mints a fresh owner PAT into the install's 0600 PAT file, retiring
+                  the earlier provision ones; lifecycle operations need that file
   redline-creds   --install <id> --confirm <the same id>  (staging, rl-a or rl-b only)
                   mints the red-line admin PAT, sets it and the hook key in the
                   redline-staging Environment over stdin, then revokes earlier ones
@@ -287,6 +291,7 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
     "release-lease",
     "status",
     "redline-creds",
+    "owner-token",
   ];
   if (byInstall.includes(cmd)) need("install", "install");
   else if (cmd !== "create" && f.install !== undefined)
@@ -303,7 +308,12 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
     throw new Refused("--to is not a release version");
   if (cmd === "redline-creds" && env !== "staging")
     throw new Refused("redline-creds is for --env staging only");
-  if (cmd === "delete" || cmd === "release-lease" || cmd === "redline-creds") {
+  if (
+    cmd === "delete" ||
+    cmd === "release-lease" ||
+    cmd === "redline-creds" ||
+    cmd === "owner-token"
+  ) {
     if (f.confirm !== f.install)
       throw new Refused(
         `${cmd} needs --confirm to be exactly the install id (--install)`,
@@ -805,6 +815,14 @@ async function run(
     }
     case "status":
       return { ok: true, data: await prov.status(id) };
+    case "owner-token": {
+      if (inCi(d.env)) throw new Refused("owner-token runs on a laptop only");
+      return {
+        ok: true,
+        id,
+        data: await prov.reissueOwnerToken(id, f.confirm as string),
+      };
+    }
     case "redline-creds": {
       if (inCi(d.env)) throw new Refused("redline-creds runs on a laptop only");
       try {
