@@ -99,6 +99,9 @@ describe("OG shell", () => {
     expect(t).toContain(`content="http://app.localhost${viewerPath(id)}"`);
     expect(t).toContain("Plan &amp; more");
     expect(t).toContain("· Open Artifacts</title>");
+    expect(t).toContain(
+      '<link rel="preconnect" href="http://content.localhost">',
+    );
     const v = await (await get(viewerPath(id, 1))).text();
     expect(v).toContain('property="og:title"');
   });
@@ -115,6 +118,9 @@ describe("OG shell", () => {
     expect(a).toBe(b);
     expect(a).toBe(c);
     expect(a).toContain("<title>Open Artifacts</title>");
+    expect(a).toContain(
+      '<link rel="preconnect" href="http://content.localhost">',
+    );
     expect(a).not.toContain("og:");
     expect(a).not.toContain("SecretTitleXyz");
     expect(a).not.toContain("SecretDescXyz");

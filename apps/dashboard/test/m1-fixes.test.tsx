@@ -171,6 +171,7 @@ describe("M1 content URL errors and freshness", () => {
       const { result } = hook(() =>
         Response.json({
           url: `https://c.test/u${++i}`,
+          version: 1,
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
         }),
       );
