@@ -533,7 +533,8 @@ function DeleteSpace({
   return (
     <SettingsCard id="oa-space-delete" title="Delete space">
       <p className={muted}>
-        Only an empty space can be deleted, trash included.
+        Only an empty space can be deleted. Deleted artifacts still count until
+        they're permanently removed, 30 days after deletion.
       </p>
       <div className="flex flex-wrap items-center gap-[var(--oa-space-3)]">
         <Button
@@ -548,8 +549,7 @@ function DeleteSpace({
         </Button>
         {n > 0 && (
           <small id={reason} className={muted}>
-            Move or delete its {n} {n === 1 ? "artifact" : "artifacts"} first
-            (trash included).
+            Move or delete its {n} {n === 1 ? "artifact" : "artifacts"} first.
           </small>
         )}
       </div>

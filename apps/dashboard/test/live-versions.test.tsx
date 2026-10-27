@@ -1,7 +1,7 @@
 // Live version updates through the real router, Shell and bridge, with the
 // R.events mock: swap when provably safe, otherwise the chip; restore; gone;
 // a hello that is ahead of the shown version; embeds never show names.
-import { R, viewerPath } from "@oa/shared";
+import { type ArtifactSummary, R, viewerPath } from "@oa/shared";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -405,6 +405,62 @@ describe("live versions: gone", () => {
     expect(await screen.findByText(NEUTRAL, BANNER)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
     expect(screen.queryByText("You deleted this artifact.", BANNER)).toBeNull();
+  });
+
+  it("deleted, a space manager (can.delete, not the owner): Restore", async () => {
+    const guide = arts.find((a) => a.id === GUIDE) as ArtifactSummary;
+    server.use(
+      http.get(`*${R.artifact(GUIDE)}`, () =>
+        HttpResponse.json({
+          ...guide,
+          access: "editor",
+          can: {
+            edit: true,
+            share: true,
+            setVisibility: true,
+            delete: true,
+            transfer: false,
+            move: true,
+            dataWrite: true,
+          },
+        }),
+      ),
+    );
+    await open(viewerPath(GUIDE), GUIDE);
+    act(() => {
+      events.emitGone(GUIDE, "deleted");
+    });
+    expect(
+      await screen.findByText("This artifact was deleted.", BANNER),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
+  });
+
+  it("deleted, the owner with can.delete false: no Restore", async () => {
+    const guide = arts.find((a) => a.id === OWNED) as ArtifactSummary;
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...guide,
+          access: "owner",
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: false,
+          },
+        }),
+      ),
+    );
+    await open(viewerPath(OWNED));
+    act(() => {
+      events.emitGone(OWNED, "deleted");
+    });
+    expect(await screen.findByText(NEUTRAL, BANNER)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
   });
 
   it("changed, then 404: the neutral copy", async () => {
