@@ -1,5 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
+import {
+  ID_TOKEN_CASES,
+  idTokenOutcome,
+  NEEDS_CAPTURE,
+} from "../src/capture.ts";
 import { setupFetch } from "../src/fetch-timeout.ts";
 import {
   type Cred,
@@ -16,26 +21,21 @@ import {
   prepareSide,
   type Side,
 } from "../src/refused.ts";
-import { proof } from "../src/report.ts";
+import { label, proof } from "../src/report.ts";
 import {
   brokerCallbackReq,
   brokerState,
-  type Capture,
   type CookiePair,
   callbackReq,
   codeAccepted,
   codeRequestReq,
   expectStateRefused,
   expectTurnstileRequired,
-  type FlowName,
   type GoogleStart,
   labelTurnstileTestKey,
   latestOtp,
-  parseCaptures,
   relayedTo,
   requestCode,
-  signedIn,
-  signInRefused,
   startGoogle,
   stateAccepted,
   tamperInstall,
@@ -52,24 +52,19 @@ import { loadTargets, type Target, type Targets } from "../src/targets.ts";
 // - ID-token cases: a validly signed Google token with a chosen hd/aud can't
 //   be produced against a live install without real tenant users, so they
 //   run on P2's fake-Google fixture (apps/server/test/xt-google.local.test.ts)
-//   and report unproven-live here, unless REDLINE_SIGNIN_CAPTURES holds real
-//   captures (docs/ops/redline-signin.md).
+//   and report unproven-live here, unless REDLINE_SIGNIN_CAPTURES holds the
+//   verdicts of a capture run (docs/ops/redline-signin.md; rehearsed with no
+//   human against a fake IdP in test/rehearsal.test.ts).
 // - Broker: staging only (there is no broker locally).
-
-const FIXTURE = "apps/server/test/xt-google.local.test.ts";
-const REAL = "needs real-tenant tokens";
 
 let T: Targets;
 let A: Side;
 let B: Side;
-let captures: Map<FlowName, Capture> | null = null;
 
 beforeAll(async () => {
   T = await loadTargets();
   A = await prepareSide(T.a);
   B = await prepareSide(T.b);
-  const dir = process.env.REDLINE_SIGNIN_CAPTURES;
-  if (dir && T.mode === "staging") captures = parseCaptures(dir, T);
 });
 
 const cleanup: { t: Target; pat: Cred; id: string }[] = [];
@@ -144,63 +139,24 @@ describe("sign-in: OIDC state and nonce", () => {
   });
 });
 
-/** One captured flow, completed at `host` (its own state and cookie unless `as` is given). */
-const completeAt = (c: Capture, host: Target, as?: GoogleStart) =>
-  callbackReq(
-    host,
-    {
-      state: as?.state ?? c.query.state,
-      code: c.query.code,
-      ...(c.query.bstate ? { bstate: c.query.bstate } : {}),
-    },
-    as?.cookie ?? c.cookie,
-  );
-
 describe("sign-in: ID tokens", () => {
-  it("an ID token with hd of A at B's callback: no session", async (ctx) => {
-    if (!captures)
-      return proof(ctx, "unproven-live", `${REAL} (fixture: ${FIXTURE})`);
-    const c = captures;
-    // Tenant A's alice through B's own flow: Google's token says hd=A.
-    await crossCheck<Partial<Record<"a" | "b", Capture>>>(
-      (x, host) => completeAt(x[sideOf(host)] as Capture, host),
-      {
-        a: T.a,
-        b: T.b,
-        credA: { a: c.get("a-alice"), b: c.get("b-alice") },
-        credB: { b: c.get("b-dave") },
-        ok: signedIn,
-        refused: signInRefused("tenant"),
-      },
-    );
-  });
-
-  it("A's code and broker state at B: no session", async (ctx) => {
-    if (!captures)
-      return proof(ctx, "unproven-live", `${REAL} (fixture: ${FIXTURE})`);
-    const c = captures;
-    // Staging's broker uses one Google client for every install, so A's and
-    // B's tokens share an aud by design; the binding is the broker state (and
-    // the install-derived nonce). A's real code and broker state, completed at
-    // B on B's own fresh flow, are refused by the broker (error=failed, never
-    // tenant); then the same capture still signs in at A.
-    const fresh = await mustStart(T.b);
-    await crossCheck<Partial<Record<"a" | "b", Capture>>>(
-      (x, host) =>
-        x.b
-          ? completeAt(x.b, host)
-          : completeAt(x.a as Capture, host, host === T.b ? fresh : undefined),
-      {
-        a: T.a,
-        b: T.b,
-        credA: { a: c.get("a-alice-replay") },
-        credB: { b: c.get("b-dave-2") },
-        ok: signedIn,
-        refused: signInRefused("failed"),
-        refuseFirst: true,
-      },
-    );
-  });
+  // Each capture was redeemed right after its own prompt by
+  // scripts/signin-capture.ts (src/capture.ts: the crossCheck legs, run with
+  // okLeg/refusedLeg), and its verdicts written to REDLINE_SIGNIN_CAPTURES.
+  // A capture-file problem (missing, too old, other installs) is
+  // unproven-live with its reason, never a bare fail; a failed leg fails the
+  // case with each leg's redacted reason.
+  for (const which of ["hd", "aud"] as const)
+    it(ID_TOKEN_CASES[which], (ctx) => {
+      const out = idTokenOutcome(process.env.REDLINE_SIGNIN_CAPTURES, T, which);
+      // The gate's combine() (src/combine.ts) replaces exactly this reason.
+      if (out.kind === "none")
+        return proof(ctx, "unproven-live", NEEDS_CAPTURE);
+      if (out.kind === "unproven")
+        return proof(ctx, "unproven-live", `unproven: ${out.reason}`);
+      if (out.kind === "fail") throw out.error;
+      label(ctx, out.label);
+    });
 });
 
 describe("sign-in: broker", () => {

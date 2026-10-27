@@ -1,17 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { crossCheck, NotRefused } from "../src/refused.ts";
 import {
-  CALLBACK_GOOGLE,
-  CAPTURE_FLOWS,
   codeRequestReq,
   expectStateRefused,
   expectTurnstileRequired,
   labelTurnstileTestKey,
   ownCodeRequestReq,
-  parseCaptures,
   signInRefused,
   stateAccepted,
   TURNSTILE_DUMMY_TOKEN,
@@ -133,87 +128,6 @@ describe("crossCheck refuseFirst", () => {
       { a: fa, b: fb, credA: "A", credB: "B", refuseFirst: true },
     );
     expect(order).toEqual(["/b/B", "/b/A", "/a/A"]);
-  });
-});
-
-describe("parseCaptures", () => {
-  const started = Date.now();
-  function capDir(
-    over: {
-      url?: (flow: string, state: string) => string;
-      mode?: number;
-      age?: number;
-    } = {},
-  ) {
-    const dir = mkdtempSync(join(tmpdir(), "oa-redline-cap-"));
-    dirs.push(dir);
-    const flows = Object.entries(CAPTURE_FLOWS).map(([flow, s]) => ({
-      flow,
-      at: s.at,
-      state: `st-${flow}`,
-      cookie: { name: "__Host-oa_oidc_x", value: "v" },
-      startedAt: started - (over.age ?? 0),
-    }));
-    writeFileSync(join(dir, "flows.json"), JSON.stringify(flows), {
-      mode: 0o600,
-    });
-    for (const f of flows) {
-      const app = f.at === "a" ? A.app : B.app;
-      writeFileSync(
-        join(dir, `${f.flow}.url`),
-        over.url?.(f.flow, f.state) ??
-          `${app}${CALLBACK_GOOGLE}?code=c-${f.flow}&state=${f.state}&bstate=bs`,
-        { mode: over.mode ?? 0o600 },
-      );
-    }
-    return dir;
-  }
-
-  it("reads every flow", () => {
-    const m = parseCaptures(capDir(), { a: A, b: B }, started);
-    expect(m.size).toBe(Object.keys(CAPTURE_FLOWS).length);
-    expect(m.get("b-alice")?.query).toEqual({
-      state: "st-b-alice",
-      code: "c-b-alice",
-      bstate: "bs",
-    });
-  });
-
-  it("refuses stale captures, another start's state, another host, no code and loose modes", () => {
-    const T = { a: A, b: B };
-    expect(() =>
-      parseCaptures(capDir({ age: 10 * 60_000 }), T, started),
-    ).toThrow(/older/);
-    expect(() =>
-      parseCaptures(
-        capDir({ url: () => `${A.app}${CALLBACK_GOOGLE}?code=x&state=other` }),
-        T,
-        started,
-      ),
-    ).toThrow();
-    expect(() =>
-      parseCaptures(
-        capDir({
-          url: (_f, s) =>
-            `https://evil.test${CALLBACK_GOOGLE}?code=x&state=${s}`,
-        }),
-        T,
-        started,
-      ),
-    ).toThrow(/callback/);
-    expect(() =>
-      parseCaptures(
-        capDir({
-          url: (f, s) =>
-            `${CAPTURE_FLOWS[f as keyof typeof CAPTURE_FLOWS].at === "a" ? A.app : B.app}${CALLBACK_GOOGLE}?error=access_denied&state=${s}`,
-        }),
-        T,
-        started,
-      ),
-    ).toThrow(/no code/);
-    expect(() => parseCaptures(capDir({ mode: 0o644 }), T, started)).toThrow(
-      /0600/,
-    );
   });
 });
 

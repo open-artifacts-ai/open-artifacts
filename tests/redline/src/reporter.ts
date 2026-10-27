@@ -1,16 +1,21 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { Reporter, TestCase, TestModule } from "vitest/node";
+import { suiteSha } from "./capture.ts";
 import {
   applyManifest,
   buildReport,
   type CaseResult,
+  failReason,
   formatReport,
   infraOf,
   labelOf,
+  legOf,
   levelOf,
   type Manifest,
   parseManifest,
+  type RunBinding,
+  redactReason,
 } from "./report.ts";
 
 // Vitest reporter: one CaseResult per test (its proof level), plus a "fail"
@@ -74,16 +79,19 @@ export function collect(
       // A test skipped because its module or suite setup failed is a failure
       // (infra when every setup error is infra; never a pass either way).
       const setupFailed = state === "skipped" && (broken || ancestorFailed(t));
-      const infra = setupFailed ? infraOf(setupErrors(t, m)) : undefined;
+      const setup = setupFailed ? setupErrors(t, m) : [];
+      const infra = setupFailed ? infraOf(setup) : undefined;
+      const errors = result.state === "failed" ? result.errors : [];
+      // Every non-pass carries a reason: a setup error (beforeAll, module)
+      // or the test's own, redacted, plus its leg where crossCheck knew it.
       const { level, reason } = setupFailed
         ? infra
-          ? { level: "infra" as const, reason: infra }
-          : { level: "fail" as const, reason: "setup failed" }
-        : levelOf(
-            state,
-            t.meta(),
-            result.state === "failed" ? result.errors : [],
-          );
+          ? { level: "infra" as const, reason: redactReason(infra) }
+          : {
+              level: "fail" as const,
+              reason: `setup failed: ${failReason(setup)}`,
+            }
+        : levelOf(state, t.meta(), errors);
       const label = labelOf(t.meta());
       cases.push({
         name: t.fullName,
@@ -91,6 +99,7 @@ export function collect(
         level,
         ...(reason ? { reason } : {}),
         ...(label ? { label } : {}),
+        ...(level === "pass" ? {} : legOf(setupFailed ? setup : errors)),
       });
     }
     if (m.errors().length > 0) {
@@ -99,7 +108,9 @@ export function collect(
         name: `${file}: module error`,
         file,
         level: infra ? "infra" : "fail",
-        reason: infra ?? "error outside a test",
+        reason: infra
+          ? redactReason(infra)
+          : `error outside a test: ${failReason(m.errors())}`,
       });
     }
   }
@@ -107,21 +118,65 @@ export function collect(
     cases.push({
       name: "unhandled errors",
       level: "fail",
-      reason: `${unhandled.length} unhandled`,
+      reason: `${unhandled.length} unhandled: ${failReason(
+        unhandled.map((e) => ({
+          message: (e as { message?: unknown } | null)?.message ?? String(e),
+        })),
+      )}`,
     });
   return cases;
 }
 
+/**
+ * The run's binding: REDLINE_TARGETS' install ids, their /healthz versions
+ * now, and the suite's commit (GITHUB_SHA, else git HEAD). Undefined without
+ * targets.
+ */
+export async function bindingOf(
+  env: Record<string, string | undefined> = process.env,
+): Promise<RunBinding | undefined> {
+  let raw: { a?: { installId?: unknown; app?: unknown }; b?: typeof raw.a };
+  try {
+    raw = JSON.parse(env.REDLINE_TARGETS ?? "");
+  } catch {
+    return undefined;
+  }
+  const side = async (t: typeof raw.a) => {
+    const id = typeof t?.installId === "string" ? t.installId : "";
+    let version = "unknown";
+    try {
+      const r = await fetch(`${String(t?.app)}/healthz`, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      });
+      const v = ((await r.json()) as { version?: unknown }).version;
+      if (typeof v === "string") version = v;
+    } catch {}
+    return { id, version };
+  };
+  const [a, b] = await Promise.all([side(raw.a), side(raw.b)]);
+  if (!a.id || !b.id) return undefined;
+  return {
+    installs: { a: a.id, b: b.id },
+    versions: { a: a.version, b: b.version },
+    suiteSha: env.GITHUB_SHA || suiteSha(),
+  };
+}
+
 export default class RedlineReporter implements Reporter {
-  onTestRunEnd(
+  async onTestRunEnd(
     modules: ReadonlyArray<TestModule>,
     unhandled: ReadonlyArray<unknown>,
-  ): void {
+  ): Promise<void> {
     const root = join(import.meta.dirname, "..");
-    const report = buildReport(
-      applyManifest(collect(modules, unhandled, root), loadManifest()),
-      modeOf(),
-    );
+    const binding = await bindingOf();
+    const report = {
+      ...buildReport(
+        applyManifest(collect(modules, unhandled, root), loadManifest()),
+        modeOf(),
+      ),
+      ...(binding ? { binding } : {}),
+    };
     const out = reportPath();
     mkdirSync(dirname(out), { recursive: true, mode: 0o700 });
     writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });

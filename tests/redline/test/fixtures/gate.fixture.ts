@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, it } from "vitest";
 import { InfraError, setupTimeout } from "../../src/fetch-timeout.ts";
+import { NotRefused, tagLeg } from "../../src/refused.ts";
 import { label, type ProofMeta, proof } from "../../src/report.ts";
 
 // Driven by report.test.ts: FIXTURE_LEVEL picks the second case's level
@@ -20,6 +21,23 @@ it("fixture: a passing case", () => {});
 
 it("fixture: the case under test", (ctx) => {
   if (LEVEL === "fail") throw new Error("fixture failure");
+  // A failure whose message carries every kind of secret (redacted in the report).
+  if (LEVEL === "secret-fail")
+    throw new Error(
+      "rl-b callback http://rl-b.app.localhost:8787/auth/callback/google?state=st0123456789abcdefghij&code=4/0AeanS0123456789abcdef&bstate=eyJpIjoicmwtYSJ9.SIGsig for alice@oa-redline-a.fyi with cookie oa_oidc_ab12=v4lu3s3cr3t; Bearer oa_pat_0123456789abcdefghijklmn token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+    );
+  // crossCheck's refused leg failing: the report gets leg, host, expected, actual.
+  if (LEVEL === "leg-fail")
+    throw tagLeg(
+      new NotRefused(
+        "rl-b did not refuse the sign-in (status 302, body sha256:0011223344556677 (0 bytes); to /)",
+      ),
+      {
+        leg: "A's credential at B",
+        host: "rl-b",
+        expected: "refused at sign-in (error=tenant, no session)",
+      },
+    );
   if (LEVEL === "infra") throw new InfraError(setupTimeout("rl-b", 60_000));
   if (["staging-only", "not-applicable", "unproven-live"].includes(LEVEL))
     proof(ctx, LEVEL as ProofMeta["level"], "fixture");
