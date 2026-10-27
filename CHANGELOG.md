@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.62.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.62.0...v0.62.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **provision:** hosted installs send from the env's one sender, noreply@mail.&lt;app-zone&gt; ([#702](https://github.com/open-artifacts-ai/open-artifacts/issues/702)) ([bbb3402](https://github.com/open-artifacts-ai/open-artifacts/commit/bbb340263012f188a648856617132a35ddd06fc5))
+
 ## [0.62.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.61.0...v0.62.0) (2026-10-27)
 
 
