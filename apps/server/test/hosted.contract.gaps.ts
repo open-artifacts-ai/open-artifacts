@@ -33,9 +33,9 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
     why: "code verify answers readOnly false for restricted Dan: the server sets readOnly for guests only (new); the case reads me.spaces after it (item 2)",
   },
   "manual restricted flag: cap on space members, no successor, audited": {
-    item: "2, 1b",
+    item: "2",
     m1: true,
-    why: `${ME_SPACES}; then DELETE /restricted returns an object, not restriction null (1b)`,
+    why: ME_SPACES,
   },
   "public in a space with publicLinks off is 403 public_links_off": {
     item: "2",
@@ -68,7 +68,7 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
  * KNOWN_GAPS disagree, so closing an M1 gap edits both.
  */
 export const M1_OPEN: readonly string[] = [
-  "2, 1b: manual restricted flag: cap on space members, no successor, audited",
+  "2: manual restricted flag: cap on space members, no successor, audited",
   "2: moving a public artifact into a space with publicLinks off makes it team",
   "2: public in a space with publicLinks off is 403 public_links_off",
   "2: public links off keeps an existing public artifact public (no rewrite)",

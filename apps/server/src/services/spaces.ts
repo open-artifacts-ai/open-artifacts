@@ -5,7 +5,6 @@ import {
   type DirectoryMode,
   directoryModeOf,
   type GroupMapping,
-  type GroupRef,
   LIST_SPACES_MAX,
   type Member,
   type MySpace,
@@ -60,7 +59,13 @@ import { getSummary } from "./artifacts.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
 import { kickSync } from "./directory.js";
 import { getSettings, statusOf } from "./members.js";
-import { RESTRICTED_SYNC_FOR_GROUP } from "./restriction.js";
+import {
+  identitiesOf,
+  MEMBER_EXTRAS_COLS,
+  type MemberExtrasRow,
+  RESTRICTED_SYNC_FOR_GROUP,
+  restrictionOf,
+} from "./restriction.js";
 import { toMember } from "./users.js";
 
 // The spaces API (P3 T9): shared spaces, their members and group mappings,
@@ -1537,11 +1542,10 @@ export async function deleteRestrictedGroup(
   if (!out[1]?.meta.changes) throw notFound();
 }
 
-const MEMBER_WITH_RESTRICTION = `select u.id, u.email, u.name, u.display_name as displayName, u.role,
-    u.status, u.last_seen_at as lastSeenAt, u.restricted_manual as rm,
-    (select json_group_array(json_object('groupId', rg.group_id, 'email', rg.group_email))
-      from restricted_groups rg join directory_members dm on dm.group_id = rg.group_id and dm.user_id = u.id) as groups
-  from users u where u.id = ?`;
+const MEMBER_WITH_RESTRICTION = `select users.id, users.email, users.name,
+    users.display_name as displayName, users.role, users.status,
+    users.last_seen_at as lastSeenAt, ${MEMBER_EXTRAS_COLS}
+  from users where users.id = ?`;
 
 /**
  * PUT/DELETE R.memberRestricted(id) (org owner, admin): the manual flag, in
@@ -1583,25 +1587,15 @@ export async function setMemberRestricted(
   ]);
   if (on) await revokeUserLive(env, userId, "restricted", ctx);
   const row = out[2]?.results[0] as
-    | (Parameters<typeof toMember>[0] & {
-        status: string;
-        rm: number;
-        groups: string | null;
-      })
+    | (Parameters<typeof toMember>[0] & { status: string } & MemberExtrasRow)
     | undefined;
   if (!row) throw notFound();
-  let groups: GroupRef[] = [];
-  try {
-    const v = JSON.parse(row.groups ?? "[]") as {
-      groupId: string;
-      email: string;
-    }[];
-    groups = v.map((g) => ({ groupId: g.groupId, email: g.email, name: null }));
-  } catch {}
+  // As GET R.members reads it: null when neither the flag nor a group applies.
   return {
     ...toMember(row),
     status: statusOf(row.status),
-    restriction: { manual: row.rm !== 0, groups },
+    identities: identitiesOf(row),
+    restriction: restrictionOf(row),
   };
 }
 

@@ -1008,7 +1008,23 @@ describe("restrictions", () => {
       method: "DELETE",
     });
     expect(d.status).toBe(200);
+    // Unrestricted reads as null (MemberSchema), not { manual: false, groups: [] }.
+    const cleared = await json<Record<string, unknown>>(d);
+    expect(cleared).toHaveProperty("restriction", null);
+    expect(cleared).toHaveProperty("status", "active");
     expect(await level(GOOGLE, ed.userId, art)).toBe("editor");
+    expect(await audits("restricted.remove", ed.userId)).toHaveLength(1);
+    // A repeated DELETE (no change) answers the same, with no second audit.
+    const again = await call(
+      GOOGLE,
+      R.memberRestricted(ed.userId),
+      admin.cookie,
+      { method: "DELETE" },
+    );
+    expect(await json<Record<string, unknown>>(again)).toHaveProperty(
+      "restriction",
+      null,
+    );
     expect(await audits("restricted.remove", ed.userId)).toHaveLength(1);
   });
 
