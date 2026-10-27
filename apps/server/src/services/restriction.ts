@@ -30,6 +30,18 @@ export const RESTRICTED_SYNC_FOR_USER = `update users set restricted_sync = ${RE
   where id = ?1 and restricted_sync <> ${RESTRICTED_SYNC_CASE}
   returning restricted_sync as restrictedSync`;
 
+/** The `groups` column of MEMBER_EXTRAS_COLS for the users row aliased `u`. */
+export const restrictedGroupsSql = (
+  u: string,
+) => `(case when ${u}.restricted_sync <> 0 then (
+    select json_group_array(json_object('groupId', rg.group_id, 'email', rg.group_email))
+    from restricted_groups rg join directory_members dm
+      on dm.group_id = rg.group_id and dm.user_id = ${u}.id) end)`;
+/** The `idents` column of MEMBER_EXTRAS_COLS for the users row aliased `u`. */
+export const identitiesSql = (u: string) =>
+  `(select json_group_array(i.provider) from identities i where i.user_id = ${u}.id)`;
+export const RESTRICTED_GROUPS_SQL = restrictedGroupsSql("users");
+export const IDENTITIES_SQL = identitiesSql("users");
 /**
  * Member.restriction and Member.identities as columns of the `users` row in
  * scope, in the same query (no per-member round trip): `rm` (the manual
@@ -37,11 +49,6 @@ export const RESTRICTED_SYNC_FOR_USER = `update users set restricted_sync = ${RE
  * restricted_sync is on, so owners and admins never list one) and `idents`
  * (JSON provider list). Read them back with restrictionOf / identitiesOf.
  */
-export const RESTRICTED_GROUPS_SQL = `(case when users.restricted_sync <> 0 then (
-    select json_group_array(json_object('groupId', rg.group_id, 'email', rg.group_email))
-    from restricted_groups rg join directory_members dm
-      on dm.group_id = rg.group_id and dm.user_id = users.id) end)`;
-export const IDENTITIES_SQL = `(select json_group_array(i.provider) from identities i where i.user_id = users.id)`;
 export const MEMBER_EXTRAS_COLS = `users.restricted_manual as rm,
   ${RESTRICTED_GROUPS_SQL} as groups, ${IDENTITIES_SQL} as idents`;
 

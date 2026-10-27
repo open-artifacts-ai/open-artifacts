@@ -951,6 +951,11 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["DELETE /api/v1/spaces/:id", U],
   ["GET /api/v1/spaces/:id/members", { user: true, space: "member" }, [200]],
   ["POST /api/v1/spaces/:id/members/self", org("space.adminSelfAdd")],
+  [
+    "GET /api/v1/spaces/:id/candidates",
+    { user: true, space: "manager" },
+    [200],
+  ],
   ["PUT /api/v1/spaces/:id/members/:userId", U],
   ["DELETE /api/v1/spaces/:id/members/:userId", U],
   ["GET /api/v1/spaces/:id/mappings", { user: true, space: "manager" }, [200]],

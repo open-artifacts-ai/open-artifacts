@@ -27,6 +27,7 @@ import {
   RestrictedGroupSchema,
   SearchHitSchema,
   SettingsSchema,
+  SpaceCandidateSchema,
   SpaceForbiddenDetailsSchema,
   SpaceMemberGroupSchema,
   SpaceMemberSchema,
@@ -105,6 +106,7 @@ const Strict = {
   SearchHit: SearchHitSchema.strict(),
   Space: SpaceSchema.strict(),
   SpaceMember: SpaceMemberSchema.strict(),
+  SpaceCandidate: SpaceCandidateSchema.strict(),
   GroupMapping: GroupMappingSchema.strict(),
   SyncStatus: SyncStatusSchema.strict(),
   TransferSummary: TransferSummarySchema.strict(),
@@ -1411,6 +1413,134 @@ export function hostedContract(d: ContractDriver): ContractCases {
         expect((await d.call("GET", `${R.artifacts}?scope=space`)).status).toBe(
           400,
         );
+      },
+    );
+  });
+
+  describe("hosted contract: add-people candidates", () => {
+    const EXEC = "SpExcNpQrSt3uVwX";
+    const ada = fixtures.members[0]?.id as string;
+    const bob = fixtures.members[1]?.id as string;
+    const Page = PageSchema(Strict.SpaceCandidate).strict();
+    const search = async (space: string, qs = "") => {
+      const r = await d.call("GET", `${R.spaceCandidates(space)}${qs}`);
+      expect(r.status).toBe(200);
+      return Page.parse(await json(r));
+    };
+    const emails = (p: { items: { email: string }[] }) =>
+      p.items.map((m) => m.email);
+
+    t(
+      "candidates: active org members by email, with restriction and spaceRole; q and paging",
+      async () => {
+        await d.fresh({ hosted: true });
+        const all = await search(ENG);
+        // Carol is suspended: never a candidate. Guests never are either.
+        expect(emails(all)).toEqual([
+          "ada@example.com",
+          "bob@example.com",
+          "dan@example.com",
+          "erin@example.com",
+        ]);
+        expect(all.nextCursor).toBeNull();
+        const by = (email: string) => all.items.find((m) => m.email === email);
+        expect(by("ada@example.com")).toMatchObject({
+          id: ada,
+          role: "owner",
+          restriction: null,
+          spaceRole: "manager",
+        });
+        expect(by("bob@example.com")).toMatchObject({
+          id: bob,
+          name: "Bob Builder",
+          role: "member",
+          restriction: null,
+          spaceRole: "editor",
+        });
+        expect(by("erin@example.com")).toMatchObject({
+          role: "admin",
+          restriction: null,
+          spaceRole: null,
+        });
+        const dan = by("dan@example.com");
+        expect(dan?.spaceRole).toBeNull();
+        expect(dan?.restriction?.manual).toBe(false);
+        expect(dan?.restriction?.groups.map((g) => g.groupId)).toEqual([
+          "gCon04",
+        ]);
+        // q: email or any word of the name, by prefix, case-insensitive.
+        expect(emails(await search(ENG, "?q=BO"))).toEqual(["bob@example.com"]);
+        expect(emails(await search(ENG, "?q=build"))).toEqual([
+          "bob@example.com",
+        ]);
+        expect(emails(await search(ENG, "?q=uilder"))).toEqual([]);
+        // Paged by email, then id.
+        const p1 = await search(ENG, "?limit=3");
+        expect(emails(p1)).toEqual(emails(all).slice(0, 3));
+        expect(p1.nextCursor).not.toBeNull();
+        const p2 = await search(
+          ENG,
+          `?limit=3&cursor=${encodeURIComponent(p1.nextCursor as string)}`,
+        );
+        expect(emails(p2)).toEqual(emails(all).slice(3));
+        expect(p2.nextCursor).toBeNull();
+        // Bounded: SPACE_CANDIDATES_MAX (50).
+        const big = await d.call("GET", `${R.spaceCandidates(ENG)}?limit=51`);
+        expect((await errCode(big)).code).toBe("bad_request");
+        // A personal space has no members.
+        const own = await d.call("GET", R.spaceCandidates(ada));
+        expect((await errCode(own)).code).toBe("space_personal");
+      },
+    );
+
+    t(
+      "candidates: the space's uncapped manager may search it; a member, another space and a capped manager get 404; GET /members stays admin-only",
+      async () => {
+        await d.fresh({ hosted: true });
+        // Dan (restricted) as a manager: the cap makes him a viewer.
+        const dan = "Dn8uPqRsTu9vWxYz";
+        expect(
+          (await d.call("PUT", R.spaceMember(ENG, dan), { role: "manager" }))
+            .status,
+        ).toBe(200);
+        // The people list carries restriction too.
+        const people = PageSchema(Strict.SpaceMember)
+          .extend({ total: z.number() })
+          .parse(await json(await d.call("GET", R.spaceMembers(ENG))));
+        const row = (id: string) => people.items.find((m) => m.userId === id);
+        expect(row(bob)?.restriction).toBeNull();
+        expect(row(dan)?.restriction?.groups.map((g) => g.groupId)).toEqual([
+          "gCon04",
+        ]);
+
+        // Bob is an editor in Engineering: no search, no member list.
+        await d.signIn("bob@example.com");
+        const asEditor = await d.call("GET", R.spaceCandidates(ENG));
+        expect(asEditor.status).toBe(404);
+        expect((await d.call("GET", R.members)).status).toBe(404);
+
+        // Made a manager, he searches Engineering (only).
+        await d.signIn("ada@example.com");
+        expect(
+          (await d.call("PUT", R.spaceMember(ENG, bob), { role: "manager" }))
+            .status,
+        ).toBe(200);
+        await d.signIn("bob@example.com");
+        expect(emails(await search(ENG, "?q=erin"))).toEqual([
+          "erin@example.com",
+        ]);
+        expect((await d.call("GET", R.spaceCandidates(EXEC))).status).toBe(404);
+        // GET /members stays org-admin only, for a space manager too.
+        expect((await d.call("GET", R.members)).status).toBe(404);
+
+        await d.signIn("dan@example.com");
+        expect((await d.call("GET", R.spaceCandidates(ENG))).status).toBe(404);
+
+        // An org admin with no role in the space may search it.
+        await d.signIn("erin@example.com");
+        expect(emails(await search(ENG, "?q=dan"))).toEqual([
+          "dan@example.com",
+        ]);
       },
     );
   });

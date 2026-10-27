@@ -2,12 +2,18 @@
 // No access is 404 (never 403), except the explicit space_forbidden on
 // publish/move. Personal spaces are never targets of these routes (space_personal).
 import { z } from "zod";
-import { PageSchema, stripNameControls, UserRefSchema } from "../schemas.js";
+import {
+  PageSchema,
+  RoleSchema,
+  stripNameControls,
+  UserRefSchema,
+} from "../schemas.js";
 import {
   CapReasonSchema,
   GroupRefSchema,
   MemberStatusSchema,
   MySpaceSchema,
+  RestrictionSchema,
   SpaceKindSchema,
   SpaceRefSchema,
   SpaceRoleSchema,
@@ -135,6 +141,8 @@ export const SpaceMemberSchema = z.object({
   cap: CapReasonSchema.nullable(),
   /** The space's allMembersRole when it applies to this person; null for guests, capped users, or when none is set. */
   allMembers: SpaceRoleSchema.nullable(),
+  /** As Member.restriction: the manual flag and/or restricted groups; null when unrestricted (optional: older servers omit it). */
+  restriction: RestrictionSchema.nullable().optional(),
 });
 export type SpaceMember = z.infer<typeof SpaceMemberSchema>;
 
@@ -156,6 +164,49 @@ export const SpaceMembersPageSchema = PageSchema(SpaceMemberSchema).extend({
   total: z.number().int(),
 });
 export type SpaceMembersPage = z.infer<typeof SpaceMembersPageSchema>;
+
+/** The largest page R.spaceCandidates returns. */
+export const SPACE_CANDIDATES_MAX = 50;
+
+/**
+ * GET R.spaceCandidates(id) query: the "Add people" search. q, as
+ * SpaceMembersQuery's: a case-insensitive prefix of the email or of any word
+ * of the name; absent lists every candidate (paged).
+ */
+export const SpaceCandidatesQuerySchema = z.strictObject({
+  q: z.string().trim().min(1).max(200).optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(SPACE_CANDIDATES_MAX).default(20),
+});
+export type SpaceCandidatesQuery = z.infer<typeof SpaceCandidatesQuerySchema>;
+export type SpaceCandidatesQueryInput = z.input<
+  typeof SpaceCandidatesQuerySchema
+>;
+
+/**
+ * GET R.spaceCandidates(id) -> Page<SpaceCandidate>, by email then id: the
+ * people a caller who can manage the space may add to it. Active org
+ * members (owner, admin, member; never a guest, who comes in by link) of the
+ * whole org, those already in the space included (`spaceRole` says so). For
+ * an uncapped org admin, or an uncapped manager of that space; anyone else
+ * 404, as for a space they can't see. Personal: 400 space_personal.
+ */
+export const SpaceCandidateSchema = z.object({
+  id: z.string(),
+  email: z.string().email(),
+  name: z.string().nullable(),
+  /** Org role (owner, admin or member). */
+  role: RoleSchema,
+  /** As Member.restriction; null when unrestricted. A restricted person is viewer whatever role they get. */
+  restriction: RestrictionSchema.nullable(),
+  /**
+   * Their role in this space now (by hand, synced, or Every space: the
+   * SpaceMember.role they'd show in R.spaceMembers); null when they aren't
+   * in it. allMembersRole doesn't count.
+   */
+  spaceRole: SpaceRoleSchema.nullable(),
+});
+export type SpaceCandidate = z.infer<typeof SpaceCandidateSchema>;
 
 /** What a 403 space_forbidden on a member or mapping route refused (the UI picks its copy). */
 export const SpaceForbiddenTargetSchema = z.enum(["member", "mapping"]);

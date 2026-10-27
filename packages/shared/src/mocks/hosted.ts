@@ -60,6 +60,8 @@ import {
   SPACE_MANAGER_FIELDS,
   SPACE_MANAGER_MAPPING_ROLES,
   type Space,
+  type SpaceCandidate,
+  SpaceCandidatesQuerySchema,
   SpaceCreateSchema,
   type SpaceMember,
   type SpaceMemberGroup,
@@ -590,6 +592,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         s.kind === "shared" && u.role !== "guest" && !restrictionOf(u.id)
           ? s.allMembersRole
           : null,
+      restriction: restrictionOf(u.id),
     };
   };
   /** Can the caller see this shared space (member or org admin)? */
@@ -978,8 +981,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         );
         if (!r.success)
           return err("bad_request", "Invalid query", r.error.issues);
-        if (!r.data.status.every((s) => s === "active") && !isAdmin())
-          return notFound();
+        // Org owners and admins only, as the server (members.manage): space
+        // managers search R.spaceCandidates instead.
+        if (!isAdmin()) return notFound();
         return HttpResponse.json(
           members.filter((m) => r.data.status.includes(m.status ?? "active")),
         );
@@ -1276,6 +1280,61 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         const res = page(list, qs);
         // Page<SpaceMember> plus the filtered total.
         return HttpResponse.json({ ...(await res.json()), total: list.length });
+      }),
+    ),
+    http.get(
+      `${sp}/candidates`,
+      authed(({ request, params }) => {
+        const s = sharedSpace(params.id);
+        if (s instanceof Response) return s;
+        if (s.kind === "personal")
+          return err("space_personal", "Personal spaces have no members");
+        // An uncapped org admin or an uncapped manager of this space.
+        if (!isAdmin() && (roleIn(s) !== "manager" || cap() !== null))
+          return notFound();
+        const qs = new URL(request.url).searchParams;
+        const raw: Record<string, string> = {};
+        qs.forEach((v, k) => {
+          raw[k] = v;
+        });
+        const q = SpaceCandidatesQuerySchema.safeParse(raw);
+        if (!q.success)
+          return err("bad_request", "Invalid query", q.error.issues);
+        const needle = q.data.q?.toLowerCase();
+        const here = rowsOf(s);
+        const list = members
+          .filter(
+            (m) =>
+              m.role !== "guest" &&
+              (m.status ?? "active") === "active" &&
+              (!needle ||
+                m.email.toLowerCase().startsWith(needle) ||
+                (m.name ?? "")
+                  .toLowerCase()
+                  .split(/\s+/)
+                  .some((w) => w.startsWith(needle))),
+          )
+          .sort((a, b) =>
+            a.email === b.email
+              ? a.id < b.id
+                ? -1
+                : 1
+              : a.email < b.email
+                ? -1
+                : 1,
+          )
+          .map((m): SpaceCandidate => {
+            const r = here.find((x) => x.userId === m.id);
+            return {
+              id: m.id,
+              email: m.email,
+              name: m.name,
+              role: m.role,
+              restriction: restrictionOf(m.id),
+              spaceRole: r ? maxRole(r.manualRole, r.syncRole) : null,
+            };
+          });
+        return page(list, qs, 20);
       }),
     ),
     http.post(
