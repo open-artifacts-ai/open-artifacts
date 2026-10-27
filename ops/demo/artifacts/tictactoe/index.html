@@ -213,8 +213,8 @@
   const COLLECTION = "game";
   const DOC_ID = "game";
   /* A seated window checks in every 15 seconds; a seat that misses 90 seconds of check-ins is away, and free to take. */
-  const HEARTBEAT_MS = 15 * 1000;
-  const SEAT_TTL_MS = 90 * 1000;
+  const HEARTBEAT_MS = 60 * 1000;
+  const SEAT_TTL_MS = 150 * 1000;
   const LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
   const MARKS = ["X", "O"];
   const slot = (m) => (m === "X" ? "x" : "o");
