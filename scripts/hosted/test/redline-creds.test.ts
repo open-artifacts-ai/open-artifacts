@@ -2,7 +2,13 @@
 // into the redline-staging Environment over stdin only; earlier redline-*
 // PATs are revoked after the new one is set. The install's API is a stub
 // here (sessions, tokens, /healthz); Cloudflare is provision's fake.
-import { readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.ts";
@@ -209,6 +215,7 @@ describe("redline-creds", () => {
     expect(w.parsed().find((l) => l.step === "redline-creds")?.data).toEqual({
       slug: "rl-a",
       secrets: ["REDLINE_RL_A_PAT", "REDLINE_RL_A_HOOK_KEY"],
+      localDir: join(w.home, ".open-artifacts", "redline-capture", "secrets"),
       revoked: 1,
     });
     expect(w.audit().map((r) => r.action)).toContain("cli.redline-creds.done");
@@ -368,5 +375,39 @@ describe("redline-creds", () => {
     const msg = w.parsed().find((l) => l.step === "redline-creds")?.message;
     expect(msg).toBe("revoke earlier token told1: HTTP 500");
     expect(w.lines.join("\n")).not.toContain("owner@x.test");
+  });
+
+  it("writes the same values as 0600 files in a 0700 dir for a local run, before the revoke", async () => {
+    const w = world();
+    const id = await install(w);
+    const key = hookFile(w);
+    const a = api(w, id, key);
+    a.failDelete = true;
+    expect(await main(CREDS(id), w.deps)).toBe(1);
+    const dir = join(w.home, ".open-artifacts", "redline-capture", "secrets");
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    const pat = a.tokens.find((t) => t.id === "tnew1")?.token;
+    for (const [name, value] of [
+      ["REDLINE_RL_A_PAT", pat],
+      ["REDLINE_RL_A_HOOK_KEY", key],
+    ] as const) {
+      const f = join(dir, name);
+      expect(statSync(f).mode & 0o777).toBe(0o600);
+      expect(readFileSync(f, "utf8")).toBe(`${value}\n`);
+    }
+  });
+
+  it("refuses a symlink at a local file, revokes nothing and leaves the link's target alone", async () => {
+    const w = world();
+    const id = await install(w);
+    const a = api(w, id, hookFile(w));
+    const dir = join(w.home, ".open-artifacts", "redline-capture", "secrets");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const decoy = join(w.home, "decoy");
+    writeFileSync(decoy, "untouched");
+    symlinkSync(decoy, join(dir, "REDLINE_RL_A_PAT"));
+    expect(await main(CREDS(id), w.deps)).toBe(1);
+    expect(readFileSync(decoy, "utf8")).toBe("untouched");
+    expect(a.tokens.find((t) => t.id === "told1")?.revoked).toBe(false);
   });
 });

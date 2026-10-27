@@ -23,6 +23,7 @@ import {
   closeSync,
   constants,
   existsSync,
+  fchmodSync,
   fstatSync,
   mkdirSync,
   mkdtempSync,
@@ -31,6 +32,7 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -104,7 +106,8 @@ Commands:
                   the earlier provision ones; lifecycle operations need that file
   redline-creds   --install <id> --confirm <the same id>  (staging, rl-a or rl-b only)
                   mints the red-line admin PAT, sets it and the hook key in the
-                  redline-staging Environment over stdin, then revokes earlier ones
+                  redline-staging Environment over stdin and in 0600 files under
+                  ~/.open-artifacts/redline-capture/secrets, then revokes earlier ones
 
 Flags:
   --var K=V       repeatable; checked by provision's var allowlist. AUTH_PROVIDERS with
@@ -152,6 +155,35 @@ export function openNoFollow(path: string): OpenedFile {
   } catch (e) {
     closeSync(fd);
     throw e;
+  }
+}
+
+/**
+ * `<dir>/<name>` as a 0600 file of this user (dir 0700, made if missing),
+ * opened with O_NOFOLLOW and written through that fd.
+ */
+export function writePrivateFile(
+  dir: string,
+  name: string,
+  value: string,
+): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodSync(dir, 0o700);
+  const fd = openSync(
+    join(dir, name),
+    constants.O_WRONLY |
+      constants.O_CREAT |
+      constants.O_TRUNC |
+      constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    if (!fstatSync(fd).isFile())
+      throw new Refused(`${name} is not a regular file`);
+    fchmodSync(fd, 0o600);
+    writeSync(fd, `${value}\n`);
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -836,6 +868,7 @@ async function run(
               { input: value },
             );
           },
+          writeLocal: writePrivateFile,
           hide: c.hide,
           home: d.home,
           now: (d.now ?? Date.now)(),
