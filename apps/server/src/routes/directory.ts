@@ -18,8 +18,8 @@ import {
 import { lookupGroups } from "../directory/groups.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logWarn } from "../log.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
+import { logWarn } from "../log.js";
 import { userActor } from "../services/audit.js";
 import { feedSync, SYNC_DO_NAME } from "../services/directory.js";
 import { directoryMode } from "../services/spaces.js";

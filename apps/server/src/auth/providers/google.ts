@@ -13,7 +13,11 @@ import { AUTH } from "@oa/shared";
 import type { Env } from "../../env.js";
 import { ApiError, appOrigin } from "../../http/errors.js";
 import { b64urlEncode } from "../../util/crypto.js";
-import { BrokerUnavailableError, brokerFetch } from "../broker-transport.js";
+import {
+  BrokerGateRefusedError,
+  BrokerUnavailableError,
+  brokerFetch,
+} from "../broker-transport.js";
 import { authConfig, type GoogleTransport } from "../config.js";
 import { fail } from "../oidc.js";
 import type { OidcProvider, VerifiedIdentity } from "./types.js";
@@ -110,6 +114,9 @@ async function exchange(
     } catch (e) {
       if (e instanceof BrokerUnavailableError)
         return fail("broker_unavailable");
+      // The platform's gate refused it (never the broker's own 401).
+      if (e instanceof BrokerGateRefusedError)
+        return fail("broker_gate_refused");
       throw e;
     }
   }

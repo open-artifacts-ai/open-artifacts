@@ -2,12 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import type { SyncStatus } from "@oa/shared";
 import type { Env } from "../env.js";
 import type { AuditActor } from "../services/audit.js";
-import {
-  type KickReason,
-  SyncEngine,
-  type SyncJob,
-  TokenBox,
-} from "./sync.js";
+import { type KickReason, SyncEngine, type SyncJob, TokenBox } from "./sync.js";
 import type { TransportError } from "./transport.js";
 
 export type { KickReason, SyncJob } from "./sync.js";

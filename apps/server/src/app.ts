@@ -1,13 +1,13 @@
 import { AUTH, planOf } from "@oa/shared";
 import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
+import { withBrokerProps } from "./auth/broker-transport.js";
 import {
   enforcePolicy,
   mw,
   type Policy,
   ROUTE_POLICY,
 } from "./auth/route-policy.js";
-import { withBrokerProps } from "./auth/broker-transport.js";
 import { readSession, sessionCookieName } from "./auth/session.js";
 import { authProviders } from "./auth/sign-in.js";
 import { ApiError, errorJson, toErrorResponse } from "./http/errors.js";

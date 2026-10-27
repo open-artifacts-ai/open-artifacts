@@ -7,6 +7,7 @@ import {
   signRequest,
 } from "@oa/auth-core";
 import {
+  BrokerGateRefusedError,
   BrokerUnavailableError,
   brokerFetch,
 } from "../auth/broker-transport.js";
@@ -75,6 +76,9 @@ async function signedPost(
   } catch (e) {
     if (e instanceof BrokerUnavailableError)
       throw new TransportError("broker_unavailable");
+    // The platform's gate refused it; the broker's own 401 is "refused".
+    if (e instanceof BrokerGateRefusedError)
+      throw new TransportError("gate_refused");
     throw new TransportError("exchange");
   }
 }

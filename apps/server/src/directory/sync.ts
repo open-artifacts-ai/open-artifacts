@@ -134,8 +134,9 @@ export class TokenBox {
 }
 
 /** Which binding a token belongs to: a reset to another one drops it. */
-export const tokenFor = (b: Pick<DirectoryBinding, "customerId" | "connectedAt">) =>
-  `${b.customerId}:${b.connectedAt}`;
+export const tokenFor = (
+  b: Pick<DirectoryBinding, "customerId" | "connectedAt">,
+) => `${b.customerId}:${b.connectedAt}`;
 
 /**
  * This DO may mint its own access token (self-host): a direct client, or a
@@ -837,7 +838,8 @@ export class SyncEngine {
     const f = this.box.fault;
     this.box.fault = null;
     if (f && f.for === key) throw new TransportError(f.stage);
-    if (!selfMints(this.env, client)) throw new TransportError("broker_unavailable");
+    if (!selfMints(this.env, client))
+      throw new TransportError("broker_unavailable");
     const token = await client.accessToken(sealed);
     this.box.tok = { token, exp: now + TOKEN_TTL_MS, for: key };
     return token;
@@ -1620,8 +1622,7 @@ export class SyncEngine {
         : 0;
     const delay = e.state === "backoff" ? backoffMs(n) : RETRY_HOURLY_MS;
     const retryAt = now + delay;
-    if (e.state !== "backoff" || e.code === "google_http_401")
-      this.dropToken();
+    if (e.state !== "backoff" || e.code === "google_http_401") this.dropToken();
     this.put(`retryAt.${lane}`, retryAt);
     this.put(`backoff.${lane}`, n);
     this.put(`failAt.${lane}`, now);

@@ -101,9 +101,48 @@ export class BrokerUnavailableError extends Error {
 }
 
 /**
+ * The platform's gate refused the request before the broker saw it (its own
+ * JSON `error`: 404, 415, 413, 400, 403, or 500 when props are
+ * misconfigured). Never a 401: that is always the broker's own refusal.
+ */
+export class BrokerGateRefusedError extends Error {
+  constructor(
+    public broker: BrokerName,
+    public status: number,
+    public error: string,
+  ) {
+    super(`${broker} broker gate refused: ${status} ${error}`);
+    this.name = "BrokerGateRefusedError";
+  }
+}
+
+/** The gate's refusal codes (platform BrokerGate, #720); none is a broker's. */
+export const GATE_ERRORS: ReadonlySet<string> = new Set([
+  "gate_misconfigured",
+  "not_found",
+  "install_mismatch",
+  "json_only",
+  "bad_json",
+  "too_large",
+]);
+
+/** A props-transport answer that is the gate's refusal, not the broker's. */
+async function gateRefusal(res: Response): Promise<string | null> {
+  if (res.ok || res.status === 401) return null;
+  try {
+    const out = (await res.clone().json()) as { error?: unknown } | null;
+    const e = out?.error;
+    return typeof e === "string" && GATE_ERRORS.has(e) ? e : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Sends `req` (already addressed to the broker's configured URL and signed)
  * by the first available transport. Throws BrokerUnavailableError when none
- * is (HOSTED=1 never falls back to HTTPS).
+ * is (HOSTED=1 never falls back to HTTPS), and BrokerGateRefusedError when the
+ * platform's gate (props) refused it.
  */
 export async function brokerFetch(
   env: Env,
@@ -113,7 +152,13 @@ export async function brokerFetch(
   const binding = bindingOf(env, which);
   if (binding) return binding.fetch(req);
   const gate = invocation.getStore()?.[which];
-  if (gate) return gate.fetch(req);
+  if (gate) {
+    const res = await gate.fetch(req);
+    const refused = await gateRefusal(res);
+    if (refused === null) return res;
+    await res.body?.cancel();
+    throw new BrokerGateRefusedError(which, res.status, refused);
+  }
   if (env.HOSTED === "1") throw new BrokerUnavailableError(which);
   // Self-host only (unreachable on HOSTED=1, above): public HTTPS.
   return fetch(req);

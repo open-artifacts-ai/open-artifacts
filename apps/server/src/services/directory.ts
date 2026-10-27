@@ -116,7 +116,10 @@ export async function feedSync(env: Env): Promise<FeedOutcome> {
   const ns = env.DIRECTORY_SYNC;
   const client = directoryClient(env);
   if (!ns || !client || directoryMode(env) === "off") return "off";
-  if (client.kind !== "broker" || brokerTransportKind(env, "directory") !== "props")
+  if (
+    client.kind !== "broker" ||
+    brokerTransportKind(env, "directory") !== "props"
+  )
     return "self";
   const stub = ns.get(ns.idFromName(SYNC_DO_NAME));
   if (!(await stub.wantsToken())) return "not_due";

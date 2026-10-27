@@ -50,7 +50,10 @@ export function brokerGate(calls: GateCall[] = []) {
     fetch: (req: Request) => {
       const u = new URL(req.url);
       calls.push({ method: req.method, path: u.pathname });
-      return broker.fetch(req as never, brokerEnv) as unknown as Promise<Response>;
+      return broker.fetch(
+        req as never,
+        brokerEnv,
+      ) as unknown as Promise<Response>;
     },
   };
 }
