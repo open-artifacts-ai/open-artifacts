@@ -13,10 +13,12 @@ import type { Env } from "../../env.js";
 import { ApiError, appOrigin, contentOrigin } from "../../http/errors.js";
 import {
   getSummary,
+  isSettingsOnly,
   list,
   listVersions,
   patch,
   publish,
+  publishSettings,
   readVersionFile,
   restoreVersion,
   softDelete,
@@ -71,6 +73,12 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
     toolConfig("publish_artifact"),
     (input) =>
       guard(async () => {
+        // An id with neither content nor files: settings only, no version (#681 D).
+        if (isSettingsOnly(input)) {
+          const r = await publishSettings(env, user, input, t.exec);
+          const line = `Updated the settings of ${r.id} in place (still v${r.version}, no new version): ${r.url}`;
+          return ok(r.warning ? `${line} Warning: ${r.warning}` : line, r);
+        }
         const r = await publish(env, user, input, t.agentNow(), t.exec, "any");
         const line = `Published ${input.title ? `"${input.title}" ` : ""}${r.id} v${r.version}: ${r.url}`;
         return ok(r.warning ? `${line} Warning: ${r.warning}` : line, r);

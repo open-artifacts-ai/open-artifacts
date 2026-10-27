@@ -490,6 +490,14 @@
     },
     {
       "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp publish_artifact (settings only) [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp publish_artifact (settings only, description) [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact mcp publish_artifact [pat]"
     },
     {

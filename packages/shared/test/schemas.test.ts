@@ -241,6 +241,27 @@ describe("fix round 1: PublishInput refinements", () => {
     expect(PublishToolInputSchema.safeParse(big).success).toBe(true);
     expect(PublishToolInputSchema.safeParse({ ...base }).success).toBe(false);
   });
+
+  it("#681 D: the MCP schema takes an id with only settings; REST does not", () => {
+    const id = "7Hq2mXc9KpR4tWbZ";
+    const settings = { id, visibility: "team" };
+    expect(PublishToolInputSchema.safeParse(settings).success).toBe(true);
+    expect(PublishToolInputSchema.safeParse({ id }).success).toBe(true);
+    expect(ok(settings)).toBe(false);
+    // Without an id, content or files are still required.
+    expect(PublishToolInputSchema.safeParse({ title: "t" }).success).toBe(
+      false,
+    );
+    // Both at once stays an error.
+    expect(
+      PublishToolInputSchema.safeParse({
+        id,
+        format: "html",
+        content: "x",
+        files: { "a.html": "x" },
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("fix round 1: DataQuery", () => {

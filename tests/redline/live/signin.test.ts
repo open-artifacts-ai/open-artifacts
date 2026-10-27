@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
+import { setupFetch } from "../src/fetch-timeout.ts";
 import {
   ID_TOKEN_CASES,
   idTokenOutcome,

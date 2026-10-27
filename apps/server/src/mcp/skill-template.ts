@@ -161,7 +161,7 @@ Skill version ${T("version")} for ${T("origin")} (${T("plan")} plan). If the ser
 
 To upgrade this instance to the latest release: ${T("origin")}/upgrade.md.
 
-Open Artifacts hosts the pages, documents and code you publish, with versions, sharing and live data. Each artifact gets a stable URL on ${T("origin")}; every publish adds a version.
+Open Artifacts hosts the pages, documents and code you publish, with versions, sharing and live data. Each artifact gets a stable URL on ${T("origin")}; every publish with content adds a version; a publish with only settings updates them in place.
 
 ## Connect
 
