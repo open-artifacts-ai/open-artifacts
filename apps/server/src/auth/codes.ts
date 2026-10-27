@@ -343,8 +343,7 @@ export async function deliverCode(
   )
     logAuth({ evt: "code_abuse", scope: "send" });
   const code = await createCode(env, ek, requestId, now);
-  const instance =
-    (await getSettings(env).catch(() => null))?.name ?? "Open Artifacts";
+  const instance = (await getSettings(env).catch(() => null))?.name ?? null;
   const sent = await sendEmail(
     env,
     null,
@@ -352,11 +351,11 @@ export async function deliverCode(
     () =>
       loginCodeEmail({
         code,
-        instance,
+        instance: instance ?? "Open Artifacts",
         appHost: env.APP_HOST,
         minutes: CODE_POLICY.ttlSec / 60,
       }),
-    { kind: "code", now, caps: [] },
+    { kind: "code", now, caps: [], instance },
   );
   if (recordOtp && sent) await recordOtp(env, to, ek, code);
   if (!sent) {

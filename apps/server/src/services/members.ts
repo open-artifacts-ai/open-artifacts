@@ -86,7 +86,11 @@ export async function inviteMember(
           recipient: email,
           appHost: env.APP_HOST,
         }),
-      { kind: "invite", replyTo: normalizeEmail(inviter.email) ?? undefined },
+      {
+        kind: "invite",
+        replyTo: normalizeEmail(inviter.email) ?? undefined,
+        instance,
+      },
     );
   }
   return { ...toMember(row), emailed };

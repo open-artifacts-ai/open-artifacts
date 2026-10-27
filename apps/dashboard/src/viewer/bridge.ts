@@ -147,7 +147,9 @@ export function createBridge(opts: BridgeOptions) {
   // reason: signed out, or embed mode) to artifacts that allow anonymous
   // writes; never signed in, never into the frame.
   const anon =
-    (opts.viewer === null || embed) && artifact.allowAnonymousWrites === true;
+    (opts.viewer === null || embed) &&
+    artifact.visibility === "public" &&
+    artifact.dataWriters === "viewers";
   /** The first token-less call that mints (writes, anon-id); others wait so one id is minted. */
   let minting: Promise<void> | null = null;
   const subs = new Map<string, Sub>();

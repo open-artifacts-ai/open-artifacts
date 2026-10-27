@@ -508,6 +508,9 @@ describe("break-glass", () => {
     await mismatch();
     const toOwner = () => mail.sent.filter((m) => m.to === owner.email);
     const fresh = await cookieFor(owner.id, { age: MIN });
+    await env.DB.prepare(
+      "insert or replace into settings (key, value) values ('name', 'Acme')",
+    ).run();
     const first = await Promise.all([
       call(R.directory, fresh),
       call(R.directory, fresh),
@@ -523,6 +526,12 @@ describe("break-glass", () => {
     expect(toOwner()).toHaveLength(1);
     expect(toOwner()[0]?.text).toContain("Google Workspace mismatch");
     expect(toOwner()[0]?.text).not.toContain("\u2014");
+    // The shared sender names the install.
+    expect(toOwner()[0]?.from).toEqual({
+      email: "noreply@mail.example.com",
+      name: "Acme via Open Artifacts",
+    });
+    await env.DB.prepare("delete from settings where key = 'name'").run();
     // A minute later the same route is audited again.
     await env.DB.prepare(
       "update audit_events set at = at - 61000 where action = 'directory.break_glass' and actor_id = ?",

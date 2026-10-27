@@ -71,7 +71,8 @@ try {
       await rl.question(
         `\n[${flows.length}/${Object.keys(CAPTURE_FLOWS).length}] Sign in as ${spec.user}.\n` +
           "  The sign-in URL is on the clipboard: paste it into the address bar of the\n" +
-          "  window with DevTools open, sign in, then copy the callback request URL.\n" +
+          "  window with DevTools open, sign in, then copy the FIRST callback request URL\n" +
+          "  (its state doesn't start with r1.).\n" +
           "  Press Enter when it is copied. ",
       );
       let u: URL | null = null;
@@ -89,8 +90,13 @@ try {
         console.log(`  ${flow}: captured.`);
         break;
       }
+      // The browser lacks the state cookie, so the install refuses the first
+      // callback and retries with its own flow (state "r1.…"): that callback
+      // belongs to the browser, never to this flow.
       console.log(
-        `  ${flow}: the clipboard isn't this flow's ${t.name} callback URL (with a code). Copy it again.`,
+        u?.searchParams.get("state")?.startsWith("r1.")
+          ? `  ${flow}: that's the browser's retry callback (state r1.). Copy the FIRST callback/google request for this prompt.`
+          : `  ${flow}: the clipboard isn't this flow's ${t.name} callback URL (with a code). Copy the FIRST callback/google request for this prompt.`,
       );
     }
   }
