@@ -115,6 +115,11 @@
         "type": "plain_text"
       },
       {
+        "name": "DIRECTORY_BROKER_URL",
+        "text": "https://directory.open-artifacts-staging.app",
+        "type": "plain_text"
+      },
+      {
         "name": "BROWSER",
         "type": "browser"
       },

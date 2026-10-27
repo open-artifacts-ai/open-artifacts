@@ -3151,6 +3151,84 @@ describe("fix round 4 (T8): every server precondition for hosted google", () => 
     },
   );
 
+  // Review item 6: on HOSTED=1 the server's directory transport is "none"
+  // unless DIRECTORY_BROKER_URL is set. Provision renders it with the broker,
+  // so a hosted google install resolves to the broker transport.
+  it("the rendered env resolves the server's directory transport to the env's directory broker", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+    const env = renderedEnv(s, inst.id);
+    expect(env.DIRECTORY_BROKER_URL).toBe(
+      "https://directory.open-artifacts-staging.app",
+    );
+    const { directoryTransport, HOSTED_NEEDS_BROKER } = (await import(
+      /* @vite-ignore */ new URL("apps/server/src/directory/transport.ts", ROOT)
+        .href
+    )) as {
+      directoryTransport(env: Record<string, unknown>): {
+        kind: string;
+        brokerUrl?: string;
+        installId?: string;
+        problem?: string;
+      };
+      HOSTED_NEEDS_BROKER: string;
+    };
+    expect(directoryTransport({ ...env })).toMatchObject({
+      kind: "broker",
+      brokerUrl: "https://directory.open-artifacts-staging.app",
+      installId: inst.id,
+    });
+    // Without it (every hosted install before this fix): none, by design.
+    const { DIRECTORY_BROKER_URL: _gone, ...without } = env;
+    expect(directoryTransport(without)).toEqual({
+      kind: "none",
+      problem: HOSTED_NEEDS_BROKER,
+    });
+  });
+
+  it.each([
+    [
+      "the other env's directory broker",
+      "https://directory.open-artifacts.app",
+    ],
+    ["the sign-in broker", "https://auth.open-artifacts-staging.app"],
+    [
+      "a lookalike host",
+      "https://directory.open-artifacts-staging.app.evil.test",
+    ],
+  ])(
+    "a caller DIRECTORY_BROKER_URL of %s is refused before any write, naming the expected value",
+    async (_n, url) => {
+      const s = setup();
+      const w = s.fake.writes().length;
+      const e = await fails(
+        s.mk({ brokerEnabled: true }).create(
+          input("finqore", {
+            vars: { ...GOOGLE, DIRECTORY_BROKER_URL: url },
+          }),
+        ),
+      );
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toContain(
+        "https://directory.open-artifacts-staging.app",
+      );
+      expect(s.fake.writes().length).toBe(w);
+    },
+  );
+
+  it("upgrade adds DIRECTORY_BROKER_URL to an install created before it (re-render, no refusal)", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: GOOGLE })));
+    s.db()
+      .prepare("UPDATE installs SET vars = ? WHERE id = ?")
+      .run(canonicalJson(GOOGLE), inst.id);
+    const up = keep(await s.mk().upgrade(inst.id, "0.24.0"));
+    expect(up.ok).toBe(true);
+    expect(renderedEnv(s, inst.id).DIRECTORY_BROKER_URL).toBe(
+      "https://directory.open-artifacts-staging.app",
+    );
+  });
+
   const REFUSED: [string, Record<string, string>, RegExp][] = [
     [
       "AUTH_DOMAINS empty",
