@@ -7,6 +7,8 @@
 #   e2e.sh mock|real -> one suite, html report in playwright-report/<suite>; with
 #                      E2E_SHARD=i/n (CI matrix) only that shard, as a blob report in
 #                      blob-report/<suite>/ for the e2e job's merge
+#                      E2E_PROJECTS=chromium (pull requests) limits the real suite to
+#                      those projects; unset runs every project (Chromium and WebKit)
 #   e2e.sh merge     -> merges the shards' blob reports into playwright-report/<suite>
 #   e2e.sh ui       -> @oa/ui real-browser checks (axe contrast, focus outlines)
 #   e2e.sh landing  -> landing real-browser checks (no horizontal overflow)
@@ -41,7 +43,10 @@ case "${1:-}" in
   mock | real)
     suite=$1
     args=()
-    [ "$suite" = real ] && args+=(-c playwright.real.config.ts)
+    if [ "$suite" = real ]; then
+      args+=(-c playwright.real.config.ts)
+      for p in ${E2E_PROJECTS//,/ }; do args+=("--project=$p"); done
+    fi
     if [ -n "${E2E_SHARD:-}" ]; then
       # One file per shard and suite, so the merge sees every shard.
       PLAYWRIGHT_BLOB_OUTPUT_FILE="$blob_dir/$suite/shard-${E2E_SHARD%/*}.zip" \
