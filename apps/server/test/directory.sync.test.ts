@@ -1506,3 +1506,66 @@ describe("P2.5 #5: restricted_sync is recomputed for everyone on each reconcile"
     expect(Number(revoked)).toBeGreaterThan(0);
   });
 });
+
+describe("P2.5 scenarios: admin actions chained with a sync", () => {
+  const send = (method: "PUT" | "DELETE", path: string, body?: unknown) =>
+    fetchAndWait(
+      app,
+      new Request(`${APP}${path}`, {
+        method,
+        headers: {
+          "x-oa-request": "1",
+          "content-type": "application/json",
+          cookie: owner.cookie,
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      }),
+      e,
+    );
+  const nextRec = (t: number) => t + RECONCILE_MS + FAST_MS;
+
+  it("unmap, remove members in Google, remap: no access from the old rows, no over_half hold", async () => {
+    const us = dirUsers(6, "remap");
+    const gid = `grp-remap-${crypto.randomUUID()}`;
+    await mappedGroup(
+      gid,
+      us.map((u) => u.id),
+    );
+    const t0 = Date.now();
+    await connected(t0);
+    expect(await membersOf(gid)).toHaveLength(6);
+    expect((await send("DELETE", R.orgMapping(gid))).status).toBe(204);
+    expect(await membersOf(gid)).toEqual([]);
+    // Four leave in Google while nothing reads the group.
+    for (const u of us.slice(0, 4)) g.removeMember(gid, u.id);
+    expect(
+      (await send("PUT", R.orgMapping(gid), { role: "viewer" })).status,
+    ).toBe(200);
+    // Nobody is granted anything before sync reads the group.
+    expect(await membersOf(gid)).toEqual([]);
+    await drain(nextRec(t0));
+    const kept = await Promise.all(us.slice(4).map((u) => uidOf(u.id)));
+    expect(await membersOf(gid)).toEqual([...kept].sort());
+    expect((await status()).held).toEqual([]);
+  });
+
+  it("a walk that outlived an unmapping never brings the rows back", async () => {
+    const us = dirUsers(2, "outlive");
+    const gid = `grp-outlive-${crypto.randomUUID()}`;
+    await mappedGroup(
+      gid,
+      us.map((u) => u.id),
+    );
+    const t0 = Date.now();
+    await connected(t0);
+    // The next reconcile is planned and has its targets; the unmapping lands
+    // before its sweep.
+    const gate = g.gate(new RegExp(`/groups/${gid}/members`));
+    const run = drain(nextRec(t0));
+    await gate.hit;
+    expect((await send("DELETE", R.orgMapping(gid))).status).toBe(204);
+    gate.release();
+    await run;
+    expect(await membersOf(gid)).toEqual([]);
+  });
+});

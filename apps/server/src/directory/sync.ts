@@ -307,6 +307,13 @@ const chunks = <T>(xs: T[], n: number): T[][] => {
 const TARGETS = `select group_id from group_mappings
   union select group_id from org_group_mappings
   union select group_id from restricted_groups`;
+/**
+ * Rows of groups that are no longer targets (an unmapping the route's own
+ * DROP_UNTARGETED missed, a space deleted with its mappings): nothing reads
+ * them for access, and a later mapping must not start from them.
+ */
+const PRUNE_UNTARGETED = `delete from directory_members
+  where group_id not in (${TARGETS})`;
 const GROUP_IDS_BY_EMAIL = `select group_id from directory_groups
   where email in (select value from json_each(?1))`;
 /**
@@ -1266,9 +1273,11 @@ export class SyncEngine {
     pairs: { origin: string; target: string }[];
   }> {
     if (all) {
-      const { results } = await stmt(this.env.DB, TARGETS).all<{
-        group_id: string;
-      }>();
+      this.guard();
+      const [, { results }] = await this.env.DB.batch<{ group_id: string }>([
+        stmt(this.env.DB, PRUNE_UNTARGETED),
+        stmt(this.env.DB, TARGETS),
+      ]);
       return { ids: results.map((r) => r.group_id), dirty: [], pairs: [] };
     }
     const dirty = this.sql

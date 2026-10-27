@@ -115,6 +115,9 @@ const WIDENS: Readonly<Record<string, string>> = {
   // P3 T14: every address change (sign-in drift, sync) re-keys the person's shares to it (the
   // higher role on a conflict): their access stays or widens.
   "services/email-move.ts:moveUserEmail": "shares follow the person, max role",
+  // P2.5 #17: the reconcile drops directory_members rows of groups that are
+  // no longer targets; no mapping or restriction reads them.
+  "directory/sync.ts:SyncEngine.targets": "rows nothing reads for access",
   // P3 T10: the transfer successor predicate reads restricted_* (no write).
   "services/spaces.ts:SUCCESSOR": "a read: the successor predicate",
 };
