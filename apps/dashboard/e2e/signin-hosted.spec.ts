@@ -192,7 +192,7 @@ test("guest link to code page; a typed code opens the server's next", async ({
     .getByRole("link", { name: "Get a sign-in code", exact: true })
     .click();
   await page.getByRole("heading", { name: GUEST }).waitFor();
-  await page.getByRole("textbox", { name: "Email" }).fill("bob@example.com");
+  await page.getByRole("textbox", { name: "Email" }).fill("guest@outside.org");
   await page.getByRole("button", { name: "Send code" }).click();
   await page
     .getByRole("textbox", { name: "Code", exact: true })

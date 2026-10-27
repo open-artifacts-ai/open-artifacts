@@ -51,7 +51,7 @@ export type ContractHosted = {
   unhealthy?: boolean;
   /**
    * With unhealthy: the outage began, and the last success was, over 7 d
-   * ago, so staleAt is set. Contract only: the mock reports staleAt anyway.
+   * ago, so staleAt (lastSuccessAt + 7 d, once passed) is set.
    */
   stale?: boolean;
   unhealthyState?:

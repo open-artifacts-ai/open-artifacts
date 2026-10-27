@@ -404,7 +404,7 @@ it.each(["2468-1357", "2468 1357", " 24681357 "])(
   async (typed) => {
     const assign = vi.fn();
     vi.stubGlobal("location", { ...location, assign });
-    mountHosted("/sign-in?method=code&next=%2Fmine");
+    mountHosted("/sign-in?method=code&next=%2Fmine", { providers: ["email"] });
     await requestThroughUi("bob@example.com");
     await typeCode(typed);
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/mine"));
@@ -422,7 +422,7 @@ it("a short code is refused before sending", async () => {
 });
 
 it("invalid_code says so, with no try count, and clears the code", async () => {
-  mountHosted("/sign-in?method=code");
+  mountHosted("/sign-in?method=code", { providers: ["email"] });
   await requestThroughUi("bob@example.com");
   await typeCode("11111111");
   expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -436,7 +436,7 @@ it("invalid_code says so, with no try count, and clears the code", async () => {
 });
 
 it("the fifth wrong code expires it", async () => {
-  mountHosted("/sign-in?method=code");
+  mountHosted("/sign-in?method=code", { providers: ["email"] });
   await requestThroughUi("bob@example.com");
   for (let i = 0; i < 5; i++) await typeCode("11111111");
   expect(await screen.findByRole("alert")).toHaveTextContent(
