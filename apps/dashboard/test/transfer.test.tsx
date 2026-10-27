@@ -2,10 +2,10 @@
 // D7, answers of 2026-10-22). A "Departed" card above Members and a
 // "Transfer…" row-menu item open the same dialog; counts only, never titles.
 import { type Me, R } from "@oa/shared";
+import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
-import { fixtures } from "@oa/shared/mocks";
 import { runAll } from "../src/settings/Transfer";
 import {
   calls,
