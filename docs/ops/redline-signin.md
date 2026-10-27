@@ -41,8 +41,10 @@ the clipboard into a 0600 file the suite reads, and the clipboard is cleared.
       (Prompts 1 to 3 are alice, 4 and 5 are dave. For prompt 4, sign alice
       out first: avatar, top right, **Sign out of all accounts**, or open a
       new Incognito window and repeat step 2.)
-   3. The page ends on a sign-in error or retry page. That is expected: the
-      browser doesn't hold the install's sign-in cookie, so nothing is used.
+   3. The page ends on a sign-in error or retry page, or a second Google
+      screen from the automatic retry. That is expected: the browser doesn't
+      hold the install's sign-in cookie, so nothing is used. Close or ignore
+      the second screen.
    4. In DevTools, right-click the FIRST `callback/google?…code=…` request
       for this prompt (its `state=` doesn't start with `r1.`), choose
       **Copy**, then **Copy URL**. Not the newest: after the first callback
@@ -57,13 +59,21 @@ the clipboard into a 0600 file the suite reads, and the clipboard is cleared.
 
 ## What each sign-in proves
 
-| Prompt | Started at | User | Used for |
-|---|---|---|---|
-| 1 | rl-a | alice | hd of A at B: A's own sign-in works |
-| 2 | rl-b | alice | hd of A at B: refused at B (tenant) |
-| 3 | rl-a | alice | A's aud at B: refused at B, then still signs in at A |
-| 4 | rl-b | dave | hd of A at B: B's own sign-in works |
-| 5 | rl-b | dave | A's aud at B: B's own sign-in works |
+| Prompt | Install (tenant) | Google offers | Sign in as | Expected | Used for |
+|---|---|---|---|---|---|
+| 1 | rl-a (A) | oa-redline-a.fyi | alice@oa-redline-a.fyi | succeeds | hd of A at B: A's own sign-in works |
+| 2 | rl-b (C) | any account (the script removed the hint) | alice@oa-redline-a.fyi | refused, on purpose | hd of A at B: B refuses tenant A's user |
+| 3 | rl-a (A) | oa-redline-a.fyi | alice@oa-redline-a.fyi | refused at rl-b, then succeeds at rl-a | A's aud at B |
+| 4 | rl-b (C) | oa-redline-c.fyi | dave@oa-redline-c.fyi (sign alice out first) | succeeds | hd of A at B: B's own sign-in works |
+| 5 | rl-b (C) | oa-redline-c.fyi | dave@oa-redline-c.fyi | succeeds | A's aud at B: B's own sign-in works |
+
+Prompt 2's mismatch is the test. The broker asks Google to offer only the
+install's tenant (`hd`), so for prompt 2 the script removes that hint from the
+URL it copies, as someone from another tenant would, and rl-b must still refuse
+alice on her token's tenant. The script follows the broker's redirect itself,
+so the URL you paste is Google's own. After each callback the browser retries
+on its own and may show a second Google screen or sign in;
+close or ignore it. The script prints the same line for each prompt.
 
 Codes are single use, so each of the 3 legs per case (B's own success, A's own
 success, A's value refused at B) needs its own sign-in; the aud case gets two

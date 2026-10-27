@@ -17,6 +17,7 @@ import {
   CALLBACK_GOOGLE,
   CAPTURE_FLOWS,
   type FlowName,
+  googleUrlOf,
   type StartedFlow,
   startGoogle,
 } from "../src/signin.ts";
@@ -66,13 +67,21 @@ try {
       cookie: s.cookie,
       startedAt: Date.now(),
     });
-    copy(s.location.toString());
+    // Google's own URL (the broker's 302 resolved here); the foreign-tenant
+    // flow drops Google's hd hint so tenant A's user can sign in at all.
+    copy(
+      (
+        await googleUrlOf(s, { dropHd: "foreign" in spec && spec.foreign })
+      ).toString(),
+    );
     for (;;) {
       await rl.question(
         `\n[${flows.length}/${Object.keys(CAPTURE_FLOWS).length}] Sign in as ${spec.user}.\n` +
+          `  ${spec.why}\n` +
           "  The sign-in URL is on the clipboard: paste it into the address bar of the\n" +
           "  window with DevTools open, sign in, then copy the FIRST callback request URL\n" +
-          "  (its state doesn't start with r1.).\n" +
+          "  (its state doesn't start with r1.). The browser then retries on its own and\n" +
+          "  may show a second Google screen or sign in: close or ignore it.\n" +
           "  Press Enter when it is copied. ",
       );
       let u: URL | null = null;

@@ -66,6 +66,33 @@ export async function startGoogle(t: Target): Promise<GoogleStart | null> {
   return { location, state, cookie };
 }
 
+const GOOGLE_AUTH = "https://accounts.google.com";
+
+/**
+ * The Google authorize URL a start leads to: follows the broker's 302 (it
+ * sets no cookie) without a browser, so the user pastes Google's own URL.
+ * `dropHd` removes Google's hd hint, as a foreign-tenant user would: Google
+ * then lets any account sign in, and the install must still refuse on the
+ * token's hd. The broker state and PKCE challenge in the URL are unchanged.
+ */
+export async function googleUrlOf(
+  start: GoogleStart,
+  opts: { dropHd?: boolean } = {},
+): Promise<URL> {
+  let u = start.location;
+  for (let hop = 0; u.origin !== GOOGLE_AUTH; hop++) {
+    if (hop >= 3) throw new Error("sign-in start: too many redirects");
+    const res = await fetch(u, { redirect: "manual" });
+    await readBody(res);
+    const l = res.headers.get("location");
+    if (res.status !== 302 || !l)
+      throw new HttpError("sign-in start: broker authorize", res, "");
+    u = new URL(l, u);
+  }
+  if (opts.dropHd) u.searchParams.delete("hd");
+  return u;
+}
+
 /** GET B's (or A's) Google callback with these query params and cookie. */
 export function callbackReq(
   t: Target,
@@ -348,15 +375,36 @@ export const relayedTo = (res: Response, t: Target) => {
  */
 export const CAPTURE_FLOWS = {
   /** "hd of A at B", A's success leg. */
-  "a-alice": { at: "a", user: "alice@oa-redline-a.fyi" },
+  "a-alice": {
+    at: "a",
+    user: "alice@oa-redline-a.fyi",
+    why: "rl-a (tenant A). Google only offers oa-redline-a.fyi accounts: sign in as alice. This one should succeed.",
+  },
   /** "hd of A at B", the refused leg: tenant A's alice through B's flow. */
-  "b-alice": { at: "b", user: "alice@oa-redline-a.fyi" },
+  "b-alice": {
+    at: "b",
+    user: "alice@oa-redline-a.fyi",
+    foreign: true,
+    why: "rl-b (tenant C), as tenant A's alice. The script removed Google's tenant C hint, so Google shows the normal account chooser: pick or enter alice@oa-redline-a.fyi. The mismatch is the point: rl-b must refuse her.",
+  },
   /** "A's aud at B": A's code and broker state refused at B, then valid at A. */
-  "a-alice-replay": { at: "a", user: "alice@oa-redline-a.fyi" },
+  "a-alice-replay": {
+    at: "a",
+    user: "alice@oa-redline-a.fyi",
+    why: "rl-a (tenant A) again, as alice (Google only offers oa-redline-a.fyi accounts). The suite replays this code at rl-b (refused), then at rl-a (accepted).",
+  },
   /** "hd of A at B", B's success leg. */
-  "b-dave": { at: "b", user: "dave@oa-redline-c.fyi" },
+  "b-dave": {
+    at: "b",
+    user: "dave@oa-redline-c.fyi",
+    why: "rl-b (tenant C). Google only offers oa-redline-c.fyi accounts: sign in as dave (sign alice out first if Google picks her). This one should succeed.",
+  },
   /** "A's aud at B", B's success leg (Google codes are single use). */
-  "b-dave-2": { at: "b", user: "dave@oa-redline-c.fyi" },
+  "b-dave-2": {
+    at: "b",
+    user: "dave@oa-redline-c.fyi",
+    why: "rl-b (tenant C) again, as dave (Google only offers oa-redline-c.fyi accounts; each code works once). This one should succeed.",
+  },
 } as const;
 export type FlowName = keyof typeof CAPTURE_FLOWS;
 
