@@ -4,8 +4,9 @@
 // session for the suite's ADMIN test user (never the owner), and that session
 // mints one PAT. The token API has no scope or expiry, so each run mints a
 // fresh PAT, sets it, then revokes every earlier redline-* PAT of that user:
-// at most one is live. Values go to `gh secret set` on stdin only; they are
-// never in argv, a child's environment, a file or the output.
+// at most one is live. Values go to `gh secret set` on stdin and to the
+// laptop's 0600 copies for a local suite run (REDLINE_TARGETS.secretsDir);
+// they are never in argv, a child's environment or the output.
 import { join } from "node:path";
 import type { InstallRow } from "@oa/provision";
 
@@ -16,6 +17,12 @@ export const REDLINE_SLUGS: Record<string, string> = {
 };
 export const REDLINE_ENVIRONMENT = "redline-staging";
 export const REDLINE_LABEL_PREFIX = "redline-";
+/** The laptop's copies, named as the suite's secretsDir layout reads them. */
+export const LOCAL_SECRETS_DIR = [
+  ".open-artifacts",
+  "redline-capture",
+  "secrets",
+];
 /** The install's session cookie (never the dev name: staging is not dev). */
 const SESSION_COOKIE = "__Host-oa_session";
 
@@ -27,6 +34,8 @@ export interface CredsDeps {
   readHookKey: (path: string) => string;
   /** `gh secret set <name> --env redline-staging`, the value on stdin. */
   setSecret: (name: string, value: string) => Promise<void>;
+  /** A 0600 file `<dir>/<name>` (dir 0700), refusing to follow a symlink. */
+  writeLocal: (dir: string, name: string, value: string) => void;
   /** Registers a value for redaction before it can reach any output. */
   hide: (value: string) => void;
   home: string;
@@ -36,6 +45,8 @@ export interface CredsDeps {
 export interface CredsResult {
   slug: string;
   secrets: string[];
+  /** Where the same values were written for a local run. */
+  localDir: string;
   revoked: number;
 }
 
@@ -192,8 +203,12 @@ export async function redlineCreds(
   const names = [`${stem}_PAT`, `${stem}_HOOK_KEY`];
   await d.setSecret(names[0] as string, pat);
   await d.setSecret(names[1] as string, hookKey);
+  const localDir = join(d.home, ...LOCAL_SECRETS_DIR);
+  d.writeLocal(localDir, names[0] as string, pat);
+  d.writeLocal(localDir, names[1] as string, hookKey);
 
-  // Only now: the earlier redline-* PATs, so CI never holds a dead one.
+  // Only now: the earlier redline-* PATs, so neither CI nor the laptop holds
+  // a dead one.
   let revoked = 0;
   for (const t of prior) {
     await call(
@@ -205,5 +220,5 @@ export async function redlineCreds(
     );
     revoked++;
   }
-  return { slug: row.slug, secrets: names, revoked };
+  return { slug: row.slug, secrets: names, localDir, revoked };
 }
