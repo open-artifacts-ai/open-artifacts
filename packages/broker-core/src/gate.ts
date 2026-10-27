@@ -10,6 +10,7 @@
 // routes. It never forwards a caller-chosen host, path, query or header that
 // could steer routing; the broker still verifies the install's signature.
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { GATE_INSTALL_HEADER } from "./gate-header.js";
 
 export type BrokerKind = "auth" | "directory";
 
@@ -153,6 +154,9 @@ export async function passGate(
     const v = req.headers.get(h);
     if (v !== null) headers.set(h, v);
   }
+  // The broker's rate-limit key for gate traffic (core.ts rateKeyOf): this
+  // gate's install, never a caller's value.
+  headers.set(GATE_INSTALL_HEADER, props.installId);
   const auth = props.kind === "auth";
   const origin = auth ? env.AUTH_BROKER_ORIGIN : env.DIRECTORY_BROKER_ORIGIN;
   const target = auth ? env.AUTH_BROKER : env.DIRECTORY_BROKER;

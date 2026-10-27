@@ -417,6 +417,29 @@ describe("redeem", () => {
 });
 
 describe("rate limits", () => {
+  const AUTHZ = `/google/authorize?install=inst-a&state=s&nonce=n&code_challenge=${CH}`;
+  it("gate traffic (no cf-connecting-ip) is charged per install, never one shared bucket", async () => {
+    await call(AUTHZ, { headers: { "x-oa-gate-install": "iabc123def45" } });
+    await call(AUTHZ, { headers: { "x-oa-gate-install": "izzz999yyy88" } });
+    expect(ipLimit.keys).toEqual(["gate:iabc123def45", "gate:izzz999yyy88"]);
+  });
+
+  it("a public caller can't pick its bucket: with cf-connecting-ip the gate header is ignored", async () => {
+    await call(AUTHZ, {
+      headers: {
+        "cf-connecting-ip": "203.0.113.9",
+        "x-oa-gate-install": "iabc123def45",
+      },
+    });
+    expect(ipLimit.keys).toEqual(["ip:203.0.113.9"]);
+  });
+
+  it("no cf-connecting-ip and no valid gate header is the shared unknown bucket", async () => {
+    await call(AUTHZ, {});
+    await call(AUTHZ, { headers: { "x-oa-gate-install": "../evil" } });
+    expect(ipLimit.keys).toEqual(["ip:unknown", "ip:unknown"]);
+  });
+
   it("authorize charges the IP and install buckets", async () => {
     const r = await call(
       `/google/authorize?install=inst-a&state=s&nonce=n&code_challenge=${CH}`,
