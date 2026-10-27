@@ -687,8 +687,11 @@ function toSpaceMember(
   detail: boolean,
 ): SpaceMember | null {
   const manualRole = knownRole(r.manualRole);
+  // Only the groups that grant syncRole (contract): a per-space mapping
+  // grants through the sync row, so with none (a frozen override removed
+  // or replaced it) its groups grant nothing here.
   const groups = [
-    ...groupsOf(r.spaceGroups, "space"),
+    ...groupsOf(r.syncRow === null ? null : r.spaceGroups, "space"),
     ...groupsOf(r.everyGroups, "every"),
   ];
   // Per-space groups are expanded into the sync row; Every-space ones are

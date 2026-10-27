@@ -641,6 +641,13 @@ describe("space members", () => {
       g,
       `${g.toLowerCase()}@x.com`,
     );
+    // The synced row the mapping grants through (as the route or sync writes
+    // it): a per-space group is listed only behind one.
+    await run(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'sync', 1)",
+      s.id,
+      ed.userId,
+    );
     await run(
       "insert into org_group_mappings (group_id, group_email, role) values (?, ?, 'editor')",
       every,

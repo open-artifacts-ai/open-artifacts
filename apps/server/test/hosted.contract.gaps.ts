@@ -7,8 +7,6 @@ import type { KnownGap } from "../../../packages/shared/test/hosted-contract.js"
 
 const ME_SPACES =
   "GET /me has no spaces (item 2), so the case can't find its space ids";
-const FROZEN_GROUPS =
-  "frozen sync: a manual override keeps the synced row's groups in the response (syncRole null, groups [gEng01]); the contract says groups [] (new)";
 
 export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
   "providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal":
@@ -54,10 +52,6 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
     m1: true,
     why: ME_SPACES,
   },
-  "frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)":
-    { item: "new", m1: true, why: FROZEN_GROUPS },
-  "frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited":
-    { item: "new", m1: true, why: FROZEN_GROUPS },
   "scope=space lists one space; scope=spaces lists shared spaces; scope=space without spaceId is 400":
     { item: "2", m1: true, why: ME_SPACES },
 };
@@ -77,6 +71,4 @@ export const M1_OPEN: readonly string[] = [
   "2: space members: personal space 400 space_personal; PUT needs an existing, active target",
   "2: transfer of a personal artifact and spaceId on publish",
   "new, 2: providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal",
-  "new: frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited",
-  "new: frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)",
 ];
