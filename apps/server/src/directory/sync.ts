@@ -13,7 +13,7 @@ import { setUserStatus } from "../services/members.js";
 import { directoryMode } from "../services/spaces.js";
 import { alertOwners } from "./alert.js";
 import { applyGroupDiff, applyUsers } from "./apply.js";
-import { bindPage } from "./binding.js";
+import { bindPage, retireTenant } from "./binding.js";
 import { directoryClient } from "./client.js";
 import { directoryStatus } from "./connect.js";
 import {
@@ -39,6 +39,7 @@ import {
   readBinding,
   readInitial,
   readPending,
+  readRetire,
 } from "./store.js";
 import { type PendingRevokes, thawFrozenEdits } from "./thaw.js";
 import { type DirectoryClient, TransportError } from "./transport.js";
@@ -698,6 +699,14 @@ export class SyncEngine {
     this.now = now;
     if (this.ep > (this.get<number>("epoch.applied") ?? 0)) {
       await this.applyReset(this.ep);
+      if (!this.fresh()) return now;
+    }
+    // A tenant change a confirm didn't finish (binding.ts retireTenant):
+    // before anything syncs, in any mode, so no success lifts the
+    // customer_mismatch tombstone while the old users are still bound.
+    const retire = await readRetire(this.env);
+    if (retire) {
+      await retireTenant(this.env, retire, this.ctx);
       if (!this.fresh()) return now;
     }
     // Socket closes a thaw still owes, first, in any mode.

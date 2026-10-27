@@ -22,7 +22,7 @@ import {
   sha256Hex,
 } from "../util/crypto.js";
 import { alertOwners, ownerEmails } from "./alert.js";
-import { initialBinding, planPage } from "./binding.js";
+import { initialBinding, planPage, retireTenant } from "./binding.js";
 import { directoryClient } from "./client.js";
 import { seal } from "./crypto.js";
 import {
@@ -430,6 +430,8 @@ export async function afterConsent(
     );
   }
   const swap = promotePending(env, user.id, Date.now(), seen);
+  // Another Workspace than before: its users are retired (retireTenant).
+  const change = !!previous && previous !== binding.customerId;
   const out = await env.DB.batch([
     ...swap,
     audit(env, "directory.connect", AUDIT_TARGET, userActor(user.id), {
@@ -441,6 +443,19 @@ export async function afterConsent(
       },
       when: { sql: "changes() > 0", args: [] },
     }),
+    // Owed with the swap itself: a confirm that fails before retiring them
+    // leaves this for DirectorySync, and the tombstone stays meanwhile.
+    ...(change
+      ? [
+          stmt(
+            env.DB,
+            `insert into directory_state (key, value) select ?, ?
+              where exists (select 1 from directory_state where key = ?
+                and value = ?)
+              on conflict (key) do update set value = excluded.value`,
+          ).bind(K.retire, previous, K.binding, seen.binding),
+        ]
+      : []),
   ]);
   if (!out[CONFIRM_WON]?.meta.changes) {
     // Still pending for this owner: a newer consent replaced what we read.
@@ -454,6 +469,8 @@ export async function afterConsent(
     throw notFound();
   }
   logInfo("directory_connect", { outcome: "confirmed", kind: client.kind });
+  // Before the binding pass links anyone to the new Workspace.
+  if (change) await retireTenant(env, previous as string, ctx);
   if (old)
     await revokeGrant(env, old, userActor(user.id), "old", {
       // The new account unknown: it may be the same one, so never revoke.

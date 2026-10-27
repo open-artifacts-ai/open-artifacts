@@ -23,7 +23,10 @@ import { directoryClient } from "./client.js";
 //   continues a pass whose cursor is set);
 // - "binding.prior": {customerId, domain} of the binding a disconnect
 //   during customer_mismatch removed, kept with the sync.state tombstone
-//   until a new binding replaces both (health.ts clearHealth).
+//   until a new binding replaces both (health.ts clearHealth);
+// - "tenant.retire": the previous customer id while a confirm that swapped
+//   in another Workspace still owes retiring its users (binding.ts
+//   retireTenant); the sync.state tombstone stays until it is done.
 
 export const K = {
   binding: "binding",
@@ -35,6 +38,7 @@ export const K = {
   confirm: "connect.confirm",
   initial: "binding.initial",
   prior: "binding.prior",
+  retire: "tenant.retire",
 } as const;
 
 export const UPSERT = `insert into directory_state (key, value) values (?, ?)
@@ -339,9 +343,10 @@ export async function revokeAtGoogle(
 
 /**
  * Every directory_state key (binding, tokens, pending consent, grant.sub,
- * the initial pass, health and sync.state), returning what it deleted. One
- * exception: sync.state = customer_mismatch stays as a tombstone, so synced
- * users stay denied after a disconnect (health.ts MISMATCH_TOMBSTONE).
+ * the initial pass, health and sync.state), returning what it deleted. Two
+ * exceptions: sync.state = customer_mismatch stays as a tombstone, so synced
+ * users stay denied after a disconnect (health.ts MISMATCH_TOMBSTONE), and
+ * an unfinished tenant.retire stays until the old users are retired.
  */
 export const wipeState = (env: Env, guard?: SqlGuard) =>
   stmt(
@@ -349,6 +354,7 @@ export const wipeState = (env: Env, guard?: SqlGuard) =>
     `delete from directory_state
       where not (
         (key = 'sync.state' and value = 'customer_mismatch')
+        or key = '${K.retire}'
         or (key = ?1 and ${TOMBSTONED}))${guard ? ` and ${guard.sql}` : ""}
       returning key, value`,
   ).bind(K.prior, ...(guard?.args ?? []));
@@ -408,6 +414,17 @@ export async function liveSub(env: Env): Promise<string | null> {
     "select value from directory_state where key = ?",
   )
     .bind(K.grantSub)
+    .first<{ value: string }>();
+  return row?.value ?? null;
+}
+
+/** The previous customer id a tenant change still owes retiring, or null. */
+export async function readRetire(env: Env): Promise<string | null> {
+  const row = await stmt(
+    env.DB,
+    "select value from directory_state where key = ?",
+  )
+    .bind(K.retire)
     .first<{ value: string }>();
   return row?.value ?? null;
 }

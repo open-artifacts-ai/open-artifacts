@@ -86,6 +86,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // P3 T18: entering customer_mismatch denies every synced user (getUser and
   // the content load): their sockets close.
   "directory/sync.ts:SyncEngine.mismatch": "user",
+  // P2.5 #16: a confirm that swaps in another Workspace suspends and
+  // unbinds the previous one's users (sessions, PATs and grants end).
+  "directory/binding.ts:retireTenant": "user",
   // P3 T17 (test builds only): the session hook may lower the user's manual
   // space row.
   "test-hooks/index.ts:grantSpaces": "user",

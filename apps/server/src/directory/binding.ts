@@ -4,9 +4,12 @@ import { authConfig } from "../auth/config.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
+import { revokeAllGrants } from "../mcp/oauth-api.js";
+import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
+import { audit } from "../services/audit.js";
 import { SYSTEM_ACTOR, setUserStatus } from "../services/members.js";
 import { type GoogleUser, listUsers } from "./google.js";
-import { putInitial, readInitial } from "./store.js";
+import { K, putInitial, readInitial } from "./store.js";
 
 // The initial binding (P3 T12): once the owner confirms the connect (R.directoryConfirm), a full users.list links
 // every directory user to an install user through identities('google', id)
@@ -218,4 +221,107 @@ export async function initialBinding(
   await putInitial(env, state).run();
   logInfo("directory_initial_binding", { done: state.done });
   return state;
+}
+
+// ------------------------------------------------- tenant change (P2.5)
+
+/** Old-tenant bound users retired per D1 batch. */
+export const RETIRE_BATCH = 50;
+
+/** The next directory-bound users (the previous Workspace's, at confirm). */
+const BOUND_PAGE = `select i.user_id as id, u.status, u.role from identities i
+  join users u on u.id = i.user_id
+  where i.provider = 'google' and i.directory_bound = 1
+  order by i.user_id limit ${RETIRE_BATCH}`;
+/**
+ * Suspends the listed users (never the owner): their sessions end
+ * (session_epoch), and a grant issued before status_changed_at is refused
+ * (mcp/oauth.ts).
+ */
+const RETIRE_SUSPEND = `update users set status = 'suspended', guest_lapsed = 0,
+  status_changed_at = ?2, session_epoch = session_epoch + 1
+  where id in (select value from json_each(?1)) and role <> 'owner'
+    and status = 'active'`;
+const RETIRE_PATS = `update tokens set revoked_at = ?2
+  where revoked_at is null and user_id in (select value from json_each(?1))
+    and exists (select 1 from users u where u.id = tokens.user_id
+      and u.role <> 'owner' and u.status <> 'active')`;
+/** Last in each batch: unbound only together with the suspension. */
+const UNBIND = `update identities set directory_bound = 0
+  where provider = 'google' and directory_bound = 1
+    and user_id in (select value from json_each(?1))`;
+const SYNC_ACTOR = { kind: "sync", id: null } as const;
+
+/**
+ * A confirm swapped in a different Google Workspace (customer) than the one
+ * bound before (HOSTED_CONTRACT pendingCustomerChange): every user bound to
+ * the previous one is retired for good, before the new binding pass links
+ * anyone. Each batch suspends them (the org owner exempt: break-glass),
+ * ends their sessions, revokes their PATs and unbinds their Google
+ * identity, in one D1 batch, so the denial no longer rests on the
+ * customer_mismatch sync.state the new binding clears. The new binding
+ * never binds them again (another customer's directory ids), so only a
+ * person restores them. Grants are refused from status_changed_at, then
+ * revoked; live sockets close (both bounded by revokeFanoutCap). Resolves
+ * to the users it suspended.
+ */
+export async function retireTenant(
+  env: Env,
+  previousCustomerId: string,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<string[]> {
+  const suspended: string[] = [];
+  let unbound = 0;
+  // Each batch unbinds the rows it read, so the next read moves on; bounded
+  // anyway, so a row that fails to change can't loop forever.
+  for (let i = 0; i < 10_000; i++) {
+    const { results } = await stmt(env.DB, BOUND_PAGE).all<{
+      id: string;
+      status: string;
+      role: string;
+    }>();
+    if (results.length === 0) break;
+    const now = Date.now();
+    const ids = JSON.stringify(results.map((r) => r.id));
+    const active = results.filter(
+      (r) => r.status === "active" && r.role !== "owner",
+    );
+    await env.DB.batch([
+      stmt(env.DB, RETIRE_SUSPEND).bind(ids, now),
+      ...active.map((r) =>
+        audit(env, "user.status", { type: "user", id: r.id }, SYNC_ACTOR, {
+          reason: "directory_suspend",
+          detail: { status: "suspended", previousCustomerId },
+          when: {
+            sql: "exists (select 1 from users where id = ? and status = 'suspended' and status_changed_at = ?)",
+            args: [r.id, now],
+          },
+        }),
+      ),
+      stmt(env.DB, RETIRE_PATS).bind(ids, now),
+      stmt(env.DB, UNBIND).bind(ids),
+    ]);
+    unbound += results.length;
+    suspended.push(...active.map((r) => r.id));
+  }
+  // Done: the sync.state tombstone may go (health.ts clearHealth).
+  await stmt(env.DB, "delete from directory_state where key = ? and value = ?")
+    .bind(K.retire, previousCustomerId)
+    .run();
+  logInfo("directory_tenant_retired", {
+    unbound,
+    suspended: suspended.length,
+  });
+  // Already refused (status, epoch, status_changed_at): the stored grants
+  // and the sockets are cleanup, bounded like every fan-out.
+  const grants = (async () => {
+    for (const id of suspended.slice(0, revokeFanoutCap(env)))
+      await revokeAllGrants(env, id).catch((e) =>
+        logWarn("directory_tenant_grants", e),
+      );
+  })();
+  if (ctx) ctx.waitUntil(grants);
+  else await grants;
+  await revokeUsersLive(env, suspended, "directory tenant changed", ctx);
+  return suspended;
 }
