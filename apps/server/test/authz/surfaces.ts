@@ -815,6 +815,16 @@ export const SURFACES: readonly Surface[] = [
     ),
     name: "mcp publish_artifact (settings only)",
   },
+  // #681 D: id and only a description: editor+, as PATCH title/description.
+  {
+    ...mcp(
+      "publish_artifact",
+      "publish",
+      tool("publish_artifact", (id) => ({ id, description: "probe" })),
+      "data",
+    ),
+    name: "mcp publish_artifact (settings only, description)",
+  },
   mcp(
     "create_upload",
     "upload",

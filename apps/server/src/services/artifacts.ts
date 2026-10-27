@@ -1265,10 +1265,8 @@ export async function publishSettings(
       title,
       description,
       visibility,
-      capabilities:
-        capabilities && Object.keys(capabilities).length
-          ? capabilities
-          : undefined,
+      // As in PATCH, any capabilities (even {}) is a sharing field.
+      capabilities,
       dataWriters,
       allowAnonymousWrites,
     }).filter(([, v]) => v !== undefined),
@@ -1287,6 +1285,19 @@ export async function publishSettings(
       "bad_request",
       "Nothing to change: pass content or files to publish a version, or title, description, visibility, capabilities or dataWriters to update the artifact in place",
       { path: "id", reason: "missing" },
+    );
+  // An id the caller reserved (create_upload) with no artifact yet: only the
+  // reserving user learns it exists; anyone else gets patch's 404.
+  const reserved = await env.DB.prepare(
+    "select 1 from reserved_artifacts r where r.id = ? and r.user_id = ? and not exists (select 1 from artifacts a where a.id = r.id)",
+  )
+    .bind(id, user.id)
+    .first();
+  if (reserved)
+    throw new ApiError(
+      "bad_request",
+      "This artifact has no version yet: publish content or files first, then change its settings",
+      { path: "id", reason: "no_version" },
     );
   const a = await patch(env, user, id, p, ctx);
   return {

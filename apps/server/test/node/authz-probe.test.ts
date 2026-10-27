@@ -140,6 +140,7 @@ describe("authz-probe", () => {
       "mcp artifact_data_update",
       "mcp artifact_data_delete",
       "mcp publish_artifact (settings only)",
+      "mcp publish_artifact (settings only, description)",
       "mcp create_upload",
     ]);
   });

@@ -188,6 +188,21 @@ describe("publish_artifact with only settings (#681 D)", () => {
       .error;
     expect(textOf(mcp)).toBe(`bad_request: ${restErr.message}`);
     expect((await summary(id)).visibility).toBe("private");
+    // capabilities: {} is a sharing field too, as in PATCH.
+    const emptyCaps = { title: "Sneaky", capabilities: {} };
+    const mcp2 = await tool(ed.client, "publish_artifact", {
+      id,
+      ...emptyCaps,
+    });
+    const rest2 = await api(app, R.artifact(id), ed.cookie, {
+      method: "PATCH",
+      body: emptyCaps,
+    });
+    expect(rest2.status).toBe(400);
+    expect(textOf(mcp2)).toBe(
+      `bad_request: ${((await rest2.json()) as { error: { message: string } }).error.message}`,
+    );
+    expect((await summary(id)).title).toBe(`so ${tag}`);
     sc(await tool(ed.client, "publish_artifact", { id, title: "By editor" }));
     expect((await summary(id)).title).toBe("By editor");
     expect(await versions(id)).toBe(1);
@@ -206,7 +221,7 @@ describe("publish_artifact with only settings (#681 D)", () => {
 
   it("nothing to change → 400 bad_request", async () => {
     const id = await html();
-    for (const args of [{}, { message: "only a note" }, { capabilities: {} }]) {
+    for (const args of [{}, { message: "only a note" }]) {
       const r = await tool(client, "publish_artifact", { id, ...args });
       expect(r.isError).toBe(true);
       expect(textOf(r)).toMatch(/^bad_request: Nothing to change/);
@@ -241,6 +256,31 @@ describe("publish_artifact with only settings (#681 D)", () => {
       spaceId: owner.userId,
     });
     expect(textOf(r)).toMatch(/^use_move/);
+  });
+
+  it("a reserved id with no version: 400 for its reserver, not_found for anyone else", async () => {
+    const up = sc<{ artifactId: string }>(
+      await tool(client, "create_upload", {
+        path: "a.txt",
+        size: 3,
+        contentType: "text/plain",
+      }),
+    );
+    const r = await tool(client, "publish_artifact", {
+      id: up.artifactId,
+      visibility: "team",
+    });
+    expect(textOf(r)).toMatch(
+      /^bad_request: This artifact has no version yet: publish content or files first/,
+    );
+    const other = await login(`so-other-${tag}@x.com`);
+    const oc = await connect((await createPat(env, other.userId, "o")).token);
+    open.push(oc);
+    const r2 = await tool(oc, "publish_artifact", {
+      id: up.artifactId,
+      visibility: "team",
+    });
+    expect(textOf(r2)).toMatch(/^not_found/);
   });
 
   it("an unknown id is not_found; without an id content is still required", async () => {
