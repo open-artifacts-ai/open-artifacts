@@ -2115,12 +2115,6 @@ export class WfpProvisioner {
   }
 
   /**
-   * Drops the operation lock a dead process left. Refused while the lease is
-   * live unless `force` (the operator is sure nothing runs); both audited. An
-   * upgrading row goes back to active; a deleting one stays deleting (rerun
-   * delete to resume).
-   */
-  /**
    * Mints a fresh owner PAT (label `provision`) into an active install's D1
    * and writes it to the 0600 PAT file, under the lease; the earlier
    * provision tokens are retired once it is saved (mintPat). Every lifecycle
@@ -2164,6 +2158,12 @@ export class WfpProvisioner {
     });
   }
 
+  /**
+   * Drops the operation lock a dead process left. Refused while the lease is
+   * live unless `force` (the operator is sure nothing runs); both audited. An
+   * upgrading row goes back to active; a deleting one stays deleting (rerun
+   * delete to resume).
+   */
   async releaseLease(
     id: InstallId,
     confirm: string,
