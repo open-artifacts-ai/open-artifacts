@@ -3202,13 +3202,11 @@ describe("fix round 4 (T8): every server precondition for hosted google", () => 
       const s = setup();
       const w = s.fake.writes().length;
       const e = await fails(
-        s
-          .mk({ brokerEnabled: true })
-          .create(
-            input("finqore", {
-              vars: { ...GOOGLE, DIRECTORY_BROKER_URL: url },
-            }),
-          ),
+        s.mk({ brokerEnabled: true }).create(
+          input("finqore", {
+            vars: { ...GOOGLE, DIRECTORY_BROKER_URL: url },
+          }),
+        ),
       );
       expect(e).toBeInstanceOf(ProvisionRefused);
       expect(e.message).toContain(
