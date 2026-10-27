@@ -275,7 +275,7 @@ export async function brokerProbeCheck(
         : {
             name,
             status: "gap",
-            detail: `${UNCHECKED_BROKER}; set REDLINE_ALLOW_UNCHECKED_BROKER=1 to start anyway`,
+            detail: `${UNCHECKED_BROKER}; upgrade the installs to a release with the broker-probe hook first`,
           };
     if (e instanceof HttpError) return cant(`hook ${e.status}`);
     return cant(

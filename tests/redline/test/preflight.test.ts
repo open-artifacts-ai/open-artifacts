@@ -240,9 +240,13 @@ describe("preflight: the install's own path to its broker (POST /__test/broker-p
     expect(off).toMatchObject({
       status: "gap",
       detail: expect.stringMatching(
-        /^broker reachability from the install: unchecked \(hook not deployed\); set REDLINE_ALLOW_UNCHECKED_BROKER=1/,
+        /^broker reachability from the install: unchecked \(hook not deployed\); upgrade the installs/,
       ),
     });
+    // The user's run never gets told how to skip the probe.
+    expect((off as { detail: string }).detail).not.toMatch(
+      /REDLINE_ALLOW_UNCHECKED_BROKER/,
+    );
     const allowed = await brokerProbeCheck(t, {
       call: http(404),
       allowUnchecked: true,
