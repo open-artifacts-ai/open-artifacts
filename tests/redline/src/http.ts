@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setupFetch } from "./fetch-timeout.ts";
 import { secretsOf, setPat, type Target } from "./targets.ts";
 
 // Fetch helpers. Every request uses redirect: "manual" (a 3xx is judged, never
@@ -209,19 +210,22 @@ export async function publishMarker(
   pat: Cred,
   marker: string,
 ): Promise<string> {
-  const res = await fetch(
-    `${t.app}/api/v1/artifacts`,
-    withCred(pat, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: marker,
-        format: "markdown",
-        content: `# ${marker}\n\nRed-line marker. Never visible outside ${t.name}.\n`,
+  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra (never retried).
+  const { res, text } = await setupFetch(
+    t.name,
+    new Request(
+      `${t.app}/api/v1/artifacts`,
+      withCred(pat, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: marker,
+          format: "markdown",
+          content: `# ${marker}\n\nRed-line marker. Never visible outside ${t.name}.\n`,
+        }),
       }),
-    }),
+    ),
   );
-  const text = await readBody(res);
   if (res.status < 200 || res.status > 299)
     throw new HttpError(`${t.name} seed marker`, res, text);
   const id = (parseJson(res, text, `${t.name} seed marker`) as { id?: unknown })

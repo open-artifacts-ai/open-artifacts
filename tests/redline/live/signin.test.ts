@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, it } from "vitest";
+import { setupFetch } from "../src/fetch-timeout.ts";
 import {
   type Cred,
   describeRes,
@@ -380,20 +381,23 @@ async function share(s: Side, email: string, id = s.markerId) {
 
 /** A private html artifact on `s` that declares the db capability (data API). */
 async function publishDb(s: Side): Promise<string> {
-  const res = await fetch(
-    `${s.t.app}/api/v1/artifacts`,
-    withCred(s.pat, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        title: `rl-db-${rand()}`,
-        format: "html",
-        content: "<p>red-line data artifact</p>",
-        capabilities: { db: true },
+  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra (never retried).
+  const { res, text } = await setupFetch(
+    s.t.name,
+    new Request(
+      `${s.t.app}/api/v1/artifacts`,
+      withCred(s.pat, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          title: `rl-db-${rand()}`,
+          format: "html",
+          content: "<p>red-line data artifact</p>",
+          capabilities: { db: true },
+        }),
       }),
-    }),
+    ),
   );
-  const text = await readBody(res);
   if (res.status < 200 || res.status > 299)
     throw new HttpError(`${s.t.name} publish db artifact`, res, text);
   const id = (JSON.parse(text) as { id?: unknown }).id;

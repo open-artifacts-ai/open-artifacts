@@ -47,6 +47,32 @@ describe("levelOf", () => {
     expect(levelOf("pending", {}).level).toBe("fail");
   });
 
+  it("a failure on infra errors only is infra; any other error makes it fail", () => {
+    const t = { message: "infra: setup publish timed out after 60s on rl-b" };
+    expect(levelOf("failed", {}, [t])).toEqual({
+      level: "infra",
+      reason: t.message,
+    });
+    expect(levelOf("failed", {}, [t, { message: "boom" }]).level).toBe("fail");
+    expect(levelOf("failed", {}, []).level).toBe("fail");
+  });
+
+  it("one infra case with every other case passing fails the gate", () => {
+    const r = buildReport([
+      c("a", "pass"),
+      c("b", "pass"),
+      c("c", "infra", "infra: setup publish timed out after 60s on rl-b"),
+    ]);
+    expect(r.gate.passed).toBe(false);
+    expect(r.counts.infra).toBe(1);
+    expect(r.gate.reason).toBe('1 of 3 cases are not "pass" (1 infra)');
+    expect(formatReport(r)).toContain(
+      "[infra] c (infra: setup publish timed out after 60s on rl-b)",
+    );
+    expect(exitCode(r, true)).toBe(1);
+    expect(exitCode(r, false)).toBe(1);
+  });
+
   it("proof() writes the mark on the task meta", () => {
     const ctx = {
       task: {
@@ -111,6 +137,7 @@ describe("report", () => {
       "staging-only": 1,
       "not-applicable": 1,
       "unproven-live": 1,
+      infra: 0,
     });
     expect(r.nonPass.map((x) => x.name)).toEqual([
       "prodClean",
@@ -287,6 +314,35 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  }, 60_000);
+
+  it("infra: one setup timeout, everything else passing, fails the gate and the run", () => {
+    const msg = "infra: setup publish timed out after 60s on rl-b";
+    for (const gate of [true, false]) {
+      const r = run("infra", gate);
+      expect(r.status).not.toBe(0);
+      expect(r.report.gate.passed).toBe(false);
+      expect(r.report.counts.infra).toBe(1);
+      expect(r.report.counts.pass).toBe(r.report.total - 1);
+      expect(r.report.nonPass).toEqual([
+        {
+          name: "fixture: the case under test",
+          file: "test/fixtures/gate.fixture.ts",
+          level: "infra",
+          reason: msg,
+        },
+      ]);
+    }
+  }, 60_000);
+
+  it("setup infra: tests skipped by a beforeAll setup timeout are infra, never pass or n/a", () => {
+    const r = run("setup-infra", true);
+    expect(r.status).not.toBe(0);
+    expect(r.report.gate.passed).toBe(false);
+    expect(r.report.counts["not-applicable"]).toBe(0);
+    expect(r.report.counts.infra).toBeGreaterThanOrEqual(2);
+    for (const c of r.report.cases.filter((x) => x.level === "infra"))
+      expect(c.reason).toBe("infra: setup publish timed out after 60s on rl-b");
   }, 60_000);
 
   it("fail: non-zero without the gate", () => {

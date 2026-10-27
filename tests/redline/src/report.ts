@@ -1,7 +1,9 @@
 // Proof levels and the gate rule (the Manager's): every case reports exactly
 // one level, and the gate passes only when EVERY case is "pass". staging-only,
-// not-applicable and unproven-live never count as a pass, and neither do a
-// skipped test, an empty run or an error outside a test.
+// not-applicable, unproven-live and infra never count as a pass, and neither
+// do a skipped test, an empty run or an error outside a test. "infra" is a
+// case (or its setup) that failed only on "infra: " errors (a setup publish or
+// a settle wait that ran out of time): no red-line verdict, never green.
 
 export const LEVELS = [
   "pass",
@@ -9,6 +11,7 @@ export const LEVELS = [
   "staging-only",
   "not-applicable",
   "unproven-live",
+  "infra",
 ] as const;
 export type Level = (typeof LEVELS)[number];
 
@@ -35,7 +38,7 @@ export interface Report {
 
 /** What a live case attaches to its task meta to report a non-pass level. */
 export interface ProofMeta {
-  level: Exclude<Level, "pass" | "fail">;
+  level: Exclude<Level, "pass" | "fail" | "infra">;
   reason: string;
 }
 
@@ -72,12 +75,35 @@ export function labelOf(meta: object | undefined): string | undefined {
   return typeof l === "string" && l !== "" ? l : undefined;
 }
 
-/** Maps a vitest outcome to a level. A failure always wins over a proof mark. */
+/** The prefix of an error that is infra, not a red-line verdict (InfraError). */
+export const INFRA_PREFIX = "infra: ";
+
+/**
+ * The first message when there is at least one error and every one is infra
+ * (it names a phase, a duration and an install, never a secret).
+ */
+export function infraOf(
+  errors: readonly { message?: unknown }[],
+): string | undefined {
+  const msgs = errors.map((e) => String(e?.message ?? ""));
+  return msgs.length > 0 && msgs.every((m) => m.startsWith(INFRA_PREFIX))
+    ? msgs[0]
+    : undefined;
+}
+
+/**
+ * Maps a vitest outcome to a level. A failure always wins over a proof mark;
+ * a failure whose errors are all infra is "infra" (still never a pass).
+ */
 export function levelOf(
   state: "passed" | "failed" | "skipped" | "pending",
   meta: object | undefined,
+  errors: readonly { message?: unknown }[] = [],
 ): { level: Level; reason?: string } {
-  if (state === "failed") return { level: "fail" };
+  if (state === "failed") {
+    const infra = infraOf(errors);
+    return infra ? { level: "infra", reason: infra } : { level: "fail" };
+  }
   if (state === "skipped")
     return { level: "not-applicable", reason: "skipped" };
   if (state === "pending") return { level: "fail", reason: "did not finish" };
@@ -192,7 +218,7 @@ export function buildReport(
         ? "every case passed"
         : cases.length === 0
           ? "no cases ran"
-          : `${nonPass.length} of ${cases.length} cases are not "pass"`,
+          : `${nonPass.length} of ${cases.length} cases are not "pass"${counts.infra ? ` (${counts.infra} infra)` : ""}`,
     },
   };
 }
@@ -216,10 +242,14 @@ export function formatReport(r: Report): string {
   return `${lines.join("\n")}\n`;
 }
 
-/** Exit code: a failed run is 1 whatever the mode; with the gate, any non-pass is 1. */
+/**
+ * Exit code: a failed run is 1 whatever the mode, and so is an infra case
+ * (it failed its test); with the gate, any non-pass is 1.
+ */
 export function exitCode(r: Report | null, gate: boolean, runExit = 0): number {
   if (!r) return 1;
-  if (runExit !== 0 || r.counts.fail > 0) return runExit || 1;
+  if (runExit !== 0 || r.counts.fail > 0 || r.counts.infra > 0)
+    return runExit || 1;
   return gate && !r.gate.passed ? 1 : 0;
 }
 
