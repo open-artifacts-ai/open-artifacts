@@ -70,9 +70,11 @@ try {
     for (;;) {
       await rl.question(
         `\n[${flows.length}/${Object.keys(CAPTURE_FLOWS).length}] Sign in as ${spec.user}.\n` +
+          `  ${spec.why}\n` +
           "  The sign-in URL is on the clipboard: paste it into the address bar of the\n" +
           "  window with DevTools open, sign in, then copy the FIRST callback request URL\n" +
-          "  (its state doesn't start with r1.).\n" +
+          "  (its state doesn't start with r1.). The browser then retries on its own and\n" +
+          "  may show a second Google screen or sign in: close or ignore it.\n" +
           "  Press Enter when it is copied. ",
       );
       let u: URL | null = null;

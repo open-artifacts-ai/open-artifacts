@@ -348,15 +348,35 @@ export const relayedTo = (res: Response, t: Target) => {
  */
 export const CAPTURE_FLOWS = {
   /** "hd of A at B", A's success leg. */
-  "a-alice": { at: "a", user: "alice@oa-redline-a.fyi" },
+  "a-alice": {
+    at: "a",
+    user: "alice@oa-redline-a.fyi",
+    why: "rl-a (tenant A). Google suggests oa-redline-a.fyi: sign in as alice. This one should succeed.",
+  },
   /** "hd of A at B", the refused leg: tenant A's alice through B's flow. */
-  "b-alice": { at: "b", user: "alice@oa-redline-a.fyi" },
+  "b-alice": {
+    at: "b",
+    user: "alice@oa-redline-a.fyi",
+    why: "rl-b (tenant C). Google suggests oa-redline-c.fyi: choose Use another account and sign in as alice@oa-redline-a.fyi. The mismatch is the point: rl-b must refuse her.",
+  },
   /** "A's aud at B": A's code and broker state refused at B, then valid at A. */
-  "a-alice-replay": { at: "a", user: "alice@oa-redline-a.fyi" },
+  "a-alice-replay": {
+    at: "a",
+    user: "alice@oa-redline-a.fyi",
+    why: "rl-a (tenant A) again, as alice. The suite replays this code at rl-b (refused), then at rl-a (accepted).",
+  },
   /** "hd of A at B", B's success leg. */
-  "b-dave": { at: "b", user: "dave@oa-redline-c.fyi" },
+  "b-dave": {
+    at: "b",
+    user: "dave@oa-redline-c.fyi",
+    why: "rl-b (tenant C). Sign alice out first, then sign in as dave. This one should succeed.",
+  },
   /** "A's aud at B", B's success leg (Google codes are single use). */
-  "b-dave-2": { at: "b", user: "dave@oa-redline-c.fyi" },
+  "b-dave-2": {
+    at: "b",
+    user: "dave@oa-redline-c.fyi",
+    why: "rl-b (tenant C) again, as dave (each code works once). This one should succeed.",
+  },
 } as const;
 export type FlowName = keyof typeof CAPTURE_FLOWS;
 
