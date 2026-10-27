@@ -20,6 +20,9 @@ const MARKERS = [
   "and exists (select 1 from spaces where id = ?1 and kind = 'shared' and deleted_at is null)",
   // The audit hook's read (test_hook rows only).
   "where actor_kind = 'test_hook' and substr(action, 1, 10) = 'test_hook.' and at >= ?1",
+  // The otp/latest plaintext copy and code-send outcomes (test_otps).
+  "CREATE TABLE IF NOT EXISTS `test_otps`",
+  "update test_otps set code = null, outcome = 'used'",
   // The Turnstile test-key acceptance (turnstileTestKeyPass).
   "result_with_testing_key",
   // The refusal reasons the hooks give after the key verifies.

@@ -15,6 +15,8 @@ import {
   codesKey,
   deliverCode,
   emailKey,
+  errorClass,
+  logCodeSend,
   takeRequestSlot,
   verifyCode,
 } from "../auth/codes.js";
@@ -28,7 +30,7 @@ import { type AppEnv, CSRF_HEADER, execCtx } from "../http/middleware.js";
 import { signInAudit } from "../services/audit.js";
 import { codeEligibility } from "../services/identity.js";
 import { getUserWithEpoch, insertUser } from "../services/users.js";
-import { forgetTestOtp } from "../test-hooks/index.js";
+import { forgetTestOtp, noteTestOtp } from "../test-hooks/index.js";
 import {
   b64urlDecode,
   b64urlEncode,
@@ -46,6 +48,10 @@ const forgetOtp =
   typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
   __OA_TEST_HOOKS_ALLOWED__ === true &&
   forgetTestOtp;
+const noteOtp =
+  typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
+  __OA_TEST_HOOKS_ALLOWED__ === true &&
+  noteTestOtp;
 
 const GUEST_MAX_AGE_S = 86_400;
 const MAX_COOKIE_LEN = 1024;
@@ -275,9 +281,19 @@ export function mountCodes(app: AppType): void {
       exp: Date.now() + CODE_POLICY.ttlSec * 1000,
       f: 0,
     };
+    // Test builds, TEST_DOMAIN only: "pending" before the 202, so the
+    // otp/latest hook never reads an older request's outcome for this one.
+    if (noteOtp) await noteOtp(c.env, email, ek, "pending");
     // Eligibility, the row and the email happen after the response, so its
-    // timing says nothing about the address.
-    const work = deliverCode(c.env, cfg, email, ek, rid, ip).catch(() => null);
+    // timing says nothing about the address. A throw is the "error" outcome:
+    // its class only, never the message (it may carry the address).
+    const work = deliverCode(c.env, cfg, email, ek, rid, ip).catch(
+      async (e: unknown) => {
+        logCodeSend("error", errorClass(e));
+        if (noteOtp) await noteOtp(c.env, email, ek, "error");
+        return null;
+      },
+    );
     const ctx = execCtx(c);
     if (ctx) ctx.waitUntil(work);
     else await work;
