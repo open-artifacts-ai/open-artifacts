@@ -242,8 +242,17 @@ describe("redeemCapture (each capture redeemed right after its prompt)", () => {
 });
 
 describe("idTokenOutcome (the suite reads the verdicts)", () => {
-  const T = { a: A, b: B };
+  const T = { a: A, b: B, mode: "staging" as const };
   const now = Date.now();
+  const NONCE = "N".repeat(43);
+  /** The capture script's suite child: its run flag and nonce. */
+  const ENV = { REDLINE_CAPTURE_RUN: "1", REDLINE_CAPTURE_NONCE: NONCE };
+  const out = (
+    d: string | undefined,
+    which: "hd" | "aud" = "hd",
+    env: Record<string, string | undefined> = ENV,
+    t: typeof T | (Omit<typeof T, "mode"> & { mode: "local" }) = T,
+  ) => idTokenOutcome(d, t, which, now, env);
   const verdicts = (over: Partial<LegVerdict> = {}, flows?: FlowName[]) => {
     const legs: LegVerdict[] = [];
     for (const [flow, ls] of Object.entries(CAPTURE_LEGS))
@@ -260,7 +269,18 @@ describe("idTokenOutcome (the suite reads the verdicts)", () => {
             redeemedAt: now - 60_000,
             ...over,
           });
-    return { v: 1, installs: { a: A.installId, b: B.installId }, legs };
+    const v: Verdicts = {
+      v: 1,
+      mode: "staging",
+      runNonce: NONCE,
+      installs: { a: A.installId, b: B.installId },
+      versions: { a: "0.64.0", b: "0.64.0" },
+      suiteSha: "a".repeat(40),
+      startedAt: now - 11 * 60_000,
+      finishedAt: now - 30_000,
+      legs,
+    };
+    return v;
   };
   const dirWith = (v: unknown, mode = 0o600) => {
     const d = tmp();
@@ -268,74 +288,146 @@ describe("idTokenOutcome (the suite reads the verdicts)", () => {
     return d;
   };
 
-  it("none without a directory; pass when every leg passed", () => {
-    expect(idTokenOutcome(undefined, T, "hd", now)).toEqual({ kind: "none" });
-    expect(idTokenOutcome(dirWith(verdicts()), T, "hd", now)).toEqual({
+  it("none without a directory; the happy path passes, labeled with the capture run", () => {
+    expect(out(undefined)).toEqual({ kind: "none" });
+    expect(out(dirWith(verdicts()))).toEqual({
       kind: "pass",
+      label: "redeemed by capture run NNNNNN",
+    });
+  });
+
+  it("refuses a forged or leftover verdicts file: no run flag, no nonce, a wrong nonce", () => {
+    const d = dirWith(verdicts());
+    const not = {
+      kind: "unproven",
+      reason: "verdicts not from this capture run",
+    };
+    // A hand-written file with the right public install ids, read by a suite
+    // the capture script didn't start.
+    expect(out(d, "hd", {})).toEqual(not);
+    expect(out(d, "hd", { REDLINE_CAPTURE_RUN: "1" })).toEqual(not);
+    expect(out(d, "hd", { REDLINE_CAPTURE_NONCE: NONCE })).toEqual(not);
+    // A forged file without a nonce, even with the env set.
+    const { runNonce: _drop, ...noNonce } = verdicts();
+    expect(out(dirWith(noNonce))).toEqual(not);
+    // A leftover dir from a killed run: its nonce isn't this run's.
+    const leftover = dirWith({ ...verdicts(), runNonce: "L".repeat(43) });
+    expect(out(leftover)).toEqual(not);
+    expect(
+      out(d, "hd", { ...ENV, REDLINE_CAPTURE_NONCE: "M".repeat(43) }),
+    ).toEqual(not);
+  });
+
+  it("refuses impossible times: a redeem in the future, a start after its redeem, a run ending before it starts", () => {
+    const un = (reason: string) => ({ kind: "unproven", reason });
+    // A redeem in the future (the run's end in the past: a hand-edited file).
+    expect(out(dirWith(verdicts({ redeemedAt: now + 60_000 })))).toEqual(
+      un("capture redeemed in the future (a-alice)"),
+    );
+    // Within the 5 s skew is fine.
+    expect(
+      out(
+        dirWith({
+          ...verdicts({ redeemedAt: now + 4_000 }),
+          finishedAt: now + 4_000,
+        }),
+      ).kind,
+    ).toBe("pass");
+    // A start after its redeem (a negative age), inside the run.
+    expect(
+      out(
+        dirWith({
+          ...verdicts({ startedAt: now - 1_000, redeemedAt: now - 2_000 }),
+          finishedAt: now,
+        }),
+      ),
+    ).toEqual(un("capture started after its redeem (a-alice)"));
+    expect(
+      out(dirWith({ ...verdicts(), finishedAt: now - 12 * 60_000 })),
+    ).toEqual(un("capture run ends before it starts"));
+    expect(out(dirWith({ ...verdicts(), finishedAt: now + 60_000 }))).toEqual(
+      un("capture run ends in the future"),
+    );
+    // A leg outside its run's window.
+    expect(
+      out(
+        dirWith({
+          ...verdicts(),
+          startedAt: now - 30_000 - 1,
+          finishedAt: now,
+        }),
+      ),
+    ).toEqual(un("capture outside its run (a-alice)"));
+  });
+
+  it("local verdicts: labeled fake IdP (local) in local mode, unproven against staging targets", () => {
+    const local = { ...verdicts(), mode: "local" };
+    expect(out(dirWith(local), "hd", ENV, { ...T, mode: "local" })).toEqual({
+      kind: "pass",
+      label: "fake IdP (local); redeemed by capture run NNNNNN",
+    });
+    expect(out(dirWith(local))).toEqual({
+      kind: "unproven",
+      reason: "capture verdicts are from local mode, this run is staging",
     });
   });
 
   it("capture-file problems are unproven with the reason, never a bare fail", () => {
-    const d = tmp();
-    expect(idTokenOutcome(d, T, "hd", now)).toMatchObject({
+    expect(out(tmp())).toMatchObject({
       kind: "unproven",
       reason: /no capture verdicts/,
     });
     expect(
-      idTokenOutcome(
-        dirWith(verdicts({ startedAt: now - 11 * 60_000 })),
-        T,
-        "hd",
-        now,
-      ),
+      out(dirWith(verdicts({ startedAt: now - 11 * 60_000 }))),
     ).toMatchObject({
       kind: "unproven",
       reason: /^capture too old \(a-alice, 10m 0s\)$/,
     });
+    expect(out(dirWith(verdicts({}, ["a-alice"])))).toMatchObject({
+      kind: "unproven",
+      reason: "not captured (b-alice)",
+    });
     expect(
-      idTokenOutcome(dirWith(verdicts({}, ["a-alice"])), T, "hd", now),
-    ).toMatchObject({ kind: "unproven", reason: "not captured (b-alice)" });
-    expect(
-      idTokenOutcome(
-        dirWith({ ...verdicts(), installs: { a: "x", b: "y" } }),
-        T,
-        "aud",
-        now,
-      ),
+      out(dirWith({ ...verdicts(), installs: { a: "x", b: "y" } }), "aud"),
     ).toMatchObject({ kind: "unproven", reason: /other installs/ });
-    expect(
-      idTokenOutcome(dirWith(verdicts(), 0o644), T, "hd", now),
-    ).toMatchObject({ kind: "unproven", reason: /0600/ });
+    expect(out(dirWith(verdicts(), 0o644))).toMatchObject({
+      kind: "unproven",
+      reason: /0600/,
+    });
   });
 
   it("a failed leg fails the case with every failed leg's reason and the first leg's fields", () => {
-    const v = verdicts() as Verdicts;
+    const v = verdicts();
     for (const l of v.legs)
       if (l.flow === "b-alice") {
         l.verdict = "fail";
         l.reason = "A's credential at B (rl-b; expected refused): not refused";
         l.actual = "status 302; to /";
       }
-    const out = idTokenOutcome(dirWith(v), T, "hd", now);
-    expect(out.kind).toBe("fail");
-    if (out.kind !== "fail") return;
-    expect(out.error.message).toBe(
+    const o = out(dirWith(v));
+    expect(o.kind).toBe("fail");
+    if (o.kind !== "fail") return;
+    expect(o.error.message).toBe(
       "[b-alice] A's credential at B (rl-b; expected refused): not refused",
     );
-    expect((out.error as { redline?: unknown }).redline).toEqual({
+    expect((o.error as { redline?: unknown }).redline).toEqual({
       leg: "A's credential at B",
       host: "rl-b",
       expected: "x",
       actual: "status 302; to /",
     });
     // The other case is unaffected.
-    expect(idTokenOutcome(dirWith(v), T, "aud", now)).toEqual({ kind: "pass" });
+    expect(out(dirWith(v), "aud").kind).toBe("pass");
   });
 });
 
 describe("runCaptures (the script's loop, driven programmatically)", () => {
   it("rejects the r1 retry paste, takes the first callback, redeems at once and writes 0600 verdicts", async () => {
-    const T = { a: await fakeInstall("rl-a"), b: await fakeInstall("rl-b") };
+    const T = {
+      a: await fakeInstall("rl-a"),
+      b: await fakeInstall("rl-b"),
+      mode: "local" as const,
+    };
     const dir = tmp();
     const said: string[] = [];
     const offered: URL[] = [];

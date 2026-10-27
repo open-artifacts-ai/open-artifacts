@@ -17,12 +17,54 @@ import {
   levelOf,
   proof,
   type Report,
+  redactReason,
 } from "../src/report.ts";
 
 const c = (name: string, level: Level, reason?: string): CaseResult => ({
   name,
   level,
   ...(reason ? { reason } : {}),
+});
+
+describe("redactReason", () => {
+  // Every input the review found leaking, with the secret that must go and
+  // what must stay readable.
+  const cases: [input: string, secret: string, keeps: string][] = [
+    ["code 4%2F0AeanS0aXyz at B", "0AeanS0aXyz", "at B"],
+    ["code=4%2F0AeanS0aXyz&state=x refused", "0AeanS0aXyz", "refused"],
+    ["signed in as alice%40tenant.com", "alice", "signed in as [email]"],
+    ["?login_hint=alice%40tenant.com&hd=x", "alice", "login_hint=[redacted]"],
+    ["(state=Zq3kL9aBxYzQ)", "Zq3kL9aBxYzQ", "(state=[redacted])"],
+    ["state:Zq3kL9aBxYzQ wrong", "Zq3kL9aBxYzQ", "state:[redacted] wrong"],
+    ['{"state":"Zq3kL9aBxYzQ"}', "Zq3kL9aBxYzQ", '"state":"[redacted]"'],
+    [
+      "Cookie: session=s3cr3tv4l; other=zz9q",
+      "s3cr3tv4l",
+      "Cookie: session=[redacted]; other=[redacted]",
+    ],
+    ["Set-Cookie: sid=s3cr3tv4l; Path=/", "s3cr3tv4l", "sid=[redacted]"],
+    [
+      "sent __Secure-x=s3cr3tv4l to B",
+      "s3cr3tv4l",
+      "__Secure-x=[redacted] to B",
+    ],
+    ["token ya29.short at B", "ya29.short", "token [token] at B"],
+    ["refresh 1//0gshort at B", "0gshort", "refresh [token] at B"],
+    ["nonce 9fK2_aB3cD mismatch", "9fK2_aB3cD", "nonce [redacted] mismatch"],
+    ['"id_token": "abc.def.ghi"', "abc.def", '"id_token": "[redacted]"'],
+  ];
+  for (const [input, secret, keeps] of cases)
+    it(`redacts ${JSON.stringify(input)}`, () => {
+      const out = redactReason(input);
+      expect(out).not.toContain(secret);
+      expect(out).toContain(keeps);
+    });
+
+  it("leaves a plain leg reason readable", () => {
+    const r =
+      "A's credential at B (rl-b; expected refused at sign-in (error=tenant, no session)): rl-b did not refuse the sign-in (status 302, body sha256:0011223344556677 (0 bytes); to /sign-in?error=failed)";
+    expect(redactReason(r)).toBe(r);
+  });
 });
 
 describe("levelOf", () => {

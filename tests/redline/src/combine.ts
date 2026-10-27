@@ -43,6 +43,10 @@ export function combine(ci: Report, v: Verdicts, now = Date.now()): Combined {
     !v.versions
   )
     return no("the verdicts file has an unknown shape");
+  if (v.mode !== "staging" || ci.mode !== "staging")
+    return no(
+      `only staging verdicts combine into a staging report (verdicts ${String(v.mode)}, CI ${ci.mode})`,
+    );
   if (typeof v.runNonce !== "string" || !RUN_NONCE_RE.test(v.runNonce))
     return no("the verdicts have no valid runNonce");
   for (const k of ["a", "b"] as const) {
@@ -85,7 +89,8 @@ export function combine(ci: Report, v: Verdicts, now = Date.now()): Combined {
     if (!k) return c;
     const out = verdictsOutcome(v, b.installs, k, now, COMBINE_MAX_AGE_MS);
     const base = { name: c.name, file: c.file };
-    if (out.kind === "pass") return { ...base, level: "pass" };
+    if (out.kind === "pass")
+      return { ...base, level: "pass", label: out.label };
     if (out.kind === "fail")
       return {
         ...base,

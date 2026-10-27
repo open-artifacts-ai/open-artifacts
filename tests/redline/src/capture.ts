@@ -24,7 +24,7 @@ import {
   signInRefused,
   startGoogle,
 } from "./signin.ts";
-import type { Target, Targets } from "./targets.ts";
+import type { Mode, Target, Targets } from "./targets.ts";
 
 // The real-tenant sign-in capture (P5 R6) as a library: scripts/signin-capture.ts
 // is its interactive shell (clipboard and prompts), test/rehearsal.test.ts
@@ -282,6 +282,8 @@ export interface LegVerdict {
  */
 export interface Verdicts {
   v: 1;
+  /** The targets' mode: "local" verdicts come from a fake IdP, never a staging pass. */
+  mode: Mode;
   /** 32 random bytes, base64url: this capture run (POST /__test/mark, later). */
   runNonce: string;
   installs: { a: string; b: string };
@@ -446,7 +448,7 @@ export interface CaptureOpts {
  * broker that won't redirect, too many bad pastes).
  */
 export async function runCaptures(
-  T: Pick<Targets, "a" | "b">,
+  T: Pick<Targets, "a" | "b" | "mode">,
   dir: string,
   io: CaptureIO,
   o: CaptureOpts = {},
@@ -456,6 +458,7 @@ export async function runCaptures(
   const runNonce = randomBytes(32).toString("base64url");
   const verdicts: Verdicts = {
     v: 1,
+    mode: T.mode,
     runNonce,
     installs: { a: T.a.installId, b: T.b.installId },
     versions: { a: await versionOf(T.a), b: await versionOf(T.b) },
@@ -534,8 +537,16 @@ export async function runCaptures(
 export type CaseOutcome =
   | { kind: "none" }
   | { kind: "unproven"; reason: string }
-  | { kind: "pass" }
+  /** `label`: what the pass rests on (the capture run; a fake IdP in local mode). */
+  | { kind: "pass"; label: string }
   | { kind: "fail"; error: Error };
+
+/** Clock skew allowed on a verdict's timestamps. */
+export const CLOCK_SKEW_MS = 5_000;
+/** The suite's env: set by scripts/signin-capture.ts for its own suite child only. */
+export const CAPTURE_RUN_ENV = "REDLINE_CAPTURE_RUN";
+export const CAPTURE_NONCE_ENV = "REDLINE_CAPTURE_NONCE";
+export const NOT_THIS_RUN = "verdicts not from this capture run";
 
 const ageText = (ms: number) => {
   const s = Math.round(ms / 1000);
@@ -551,12 +562,18 @@ const ageText = (ms: number) => {
  */
 export function idTokenOutcome(
   dir: string | undefined,
-  T: Pick<Targets, "a" | "b">,
+  T: Pick<Targets, "a" | "b" | "mode">,
   which: IdTokenCase,
   now = Date.now(),
+  env: Record<string, string | undefined> = process.env,
 ): CaseOutcome {
   if (!dir) return { kind: "none" };
   const un = (reason: string): CaseOutcome => ({ kind: "unproven", reason });
+  // Only the capture script's own suite child may read verdicts: it passes
+  // the run's nonce, which a hand-written or leftover file can't match.
+  const nonce = env[CAPTURE_NONCE_ENV];
+  if (env[CAPTURE_RUN_ENV] !== "1" || !nonce || !RUN_NONCE_RE.test(nonce))
+    return un(NOT_THIS_RUN);
   let v: Verdicts;
   try {
     const st = lstatSync(dir);
@@ -570,6 +587,11 @@ export function idTokenOutcome(
   } catch {
     return un("no capture verdicts (verdicts.json missing or unreadable)");
   }
+  if (v?.runNonce !== nonce) return un(NOT_THIS_RUN);
+  if (v.mode !== T.mode)
+    return un(
+      `capture verdicts are from ${String(v.mode)} mode, this run is ${T.mode}`,
+    );
   return verdictsOutcome(
     v,
     { a: T.a.installId, b: T.b.installId },
@@ -592,6 +614,14 @@ export function verdictsOutcome(
     return un("capture verdicts file has an unknown shape");
   if (v.installs?.a !== installs.a || v.installs?.b !== installs.b)
     return un("capture verdicts are for other installs");
+  if (typeof v.runNonce !== "string" || !RUN_NONCE_RE.test(v.runNonce))
+    return un("capture verdicts have no valid runNonce");
+  if (typeof v.startedAt !== "number" || typeof v.finishedAt !== "number")
+    return un("capture verdicts have no run times");
+  if (v.finishedAt < v.startedAt)
+    return un("capture run ends before it starts");
+  if (v.finishedAt > now + CLOCK_SKEW_MS)
+    return un("capture run ends in the future");
   const fails: LegVerdict[] = [];
   for (const [flow, legs] of Object.entries(CAPTURE_LEGS) as [
     FlowName,
@@ -601,6 +631,20 @@ export function verdictsOutcome(
       if (l.case !== which) continue;
       const got = v.legs.find((x) => x.flow === flow && x.leg === l.leg);
       if (!got) return un(`not captured (${flow})`);
+      if (
+        typeof got.redeemedAt !== "number" ||
+        typeof got.startedAt !== "number"
+      )
+        return un(`capture has no times (${flow})`);
+      if (got.redeemedAt > now + CLOCK_SKEW_MS)
+        return un(`capture redeemed in the future (${flow})`);
+      if (got.startedAt > got.redeemedAt)
+        return un(`capture started after its redeem (${flow})`);
+      if (
+        got.startedAt < v.startedAt - CLOCK_SKEW_MS ||
+        got.redeemedAt > v.finishedAt + CLOCK_SKEW_MS
+      )
+        return un(`capture outside its run (${flow})`);
       const age = got.redeemedAt - got.startedAt;
       if (!(age <= CAPTURE_MAX_AGE_MS))
         return un(`capture too old (${flow}, ${ageText(age)})`);
@@ -610,7 +654,11 @@ export function verdictsOutcome(
         );
       if (got.verdict !== "pass") fails.push(got);
     }
-  if (fails.length === 0) return { kind: "pass" };
+  if (fails.length === 0)
+    return {
+      kind: "pass",
+      label: `${v.mode === "local" ? "fake IdP (local); " : ""}redeemed by capture run ${v.runNonce.slice(0, 6)}`,
+    };
   const first = fails[0] as LegVerdict;
   // Each reason already names its leg, install and expectation.
   const error = new Error(

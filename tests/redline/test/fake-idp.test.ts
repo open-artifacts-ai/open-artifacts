@@ -1,5 +1,5 @@
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -12,40 +12,47 @@ import {
 const ROOT = join(import.meta.dirname, "..", "..", "..");
 
 describe("the fake IdP is trusted by local fake-IdP builds only", () => {
-  it("no app's wrangler config aliases modules or names the shim", () => {
-    const apps = join(ROOT, "apps");
-    for (const app of readdirSync(apps))
-      for (const f of readdirSync(join(apps, app)))
-        if (/^wrangler.*\.jsonc?$/.test(f)) {
-          const text = readFileSync(join(apps, app, f), "utf8");
-          expect(text, `${app}/${f}`).not.toMatch(
-            /"alias"|fake-idp|__OA_FAKE_IDP/,
-          );
-        }
+  const SKIP = new Set([
+    "node_modules",
+    ".git",
+    "dist",
+    "dist-assets",
+    ".wrangler",
+    ".turbo",
+    ".claude",
+    "coverage",
+  ]);
+  const walk = (d: string): string[] =>
+    readdirSync(d, { withFileTypes: true }).flatMap((e) => {
+      if (SKIP.has(e.name)) return [];
+      const p = join(d, e.name);
+      return e.isDirectory() ? walk(p) : e.isFile() ? [p] : [];
+    });
+
+  it("no wrangler config under apps/ or packages/ (any depth, jsonc/json/toml) aliases modules or names the shim", () => {
+    const configs = ["apps", "packages"]
+      .flatMap((r) => walk(join(ROOT, r)))
+      .filter((f) => /(^|\/)wrangler[^/]*\.(jsonc|json|toml)$/.test(f));
+    expect(configs.length).toBeGreaterThan(3);
+    for (const f of configs)
+      expect(readFileSync(f, "utf8"), f).not.toMatch(
+        /"alias"|\[alias\]|^\s*alias\s*=|fake-idp|auth-core-shim|__OA_FAKE_IDP/m,
+      );
   });
 
-  it("no shipped source imports the shim or reads its defines", () => {
-    const walk = (d: string): string[] =>
-      readdirSync(d).flatMap((n) => {
-        const p = join(d, n);
-        if (n === "node_modules" || n === "dist") return [];
-        return statSync(p).isDirectory() ? walk(p) : [p];
-      });
-    const roots = ["apps", "packages"].flatMap((r) =>
-      readdirSync(join(ROOT, r)).map((n) => join(ROOT, r, n, "src")),
+  it("nothing outside tests/redline imports, requires or aliases the shim, or reads its defines", () => {
+    const own = join(ROOT, "tests", "redline");
+    const files = walk(ROOT).filter(
+      (f) =>
+        !f.startsWith(`${own}/`) &&
+        // The release guard names the markers it hunts for.
+        !/scripts\/ci\/check-no-fake-idp(\.test)?\.ts$/.test(f) &&
+        /\.([cm]?[jt]sx?|jsonc?|toml)$/.test(f),
     );
-    for (const r of roots) {
-      let files: string[];
-      try {
-        files = walk(r);
-      } catch {
-        continue;
-      }
-      for (const f of files.filter((x) => /\.[cm]?[jt]sx?$/.test(x)))
-        expect(readFileSync(f, "utf8"), f).not.toMatch(
-          /fake-idp|__OA_FAKE_IDP/,
-        );
-    }
+    expect(files.length).toBeGreaterThan(100);
+    const use =
+      /(from\s*["'][^"']*auth-core-shim|import\(\s*["'][^"']*auth-core-shim|require\(\s*["'][^"']*auth-core-shim|alias[\s\S]{0,300}auth-core-shim|__OA_FAKE_IDP)/;
+    for (const f of files) expect(readFileSync(f, "utf8"), f).not.toMatch(use);
   });
 
   it("the shim refuses to load without the build-time defines", async () => {

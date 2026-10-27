@@ -137,8 +137,8 @@ describe.skipIf(!on)(
       expect(fileChecks({ REDLINE_TARGETS: pair.targets })).toEqual([]);
       const before = gaps(await networkChecks(T, preflightOpts()));
       expect(before.map((g) => g.name).sort()).toEqual([
-        `${T.a.name} alice@oa-redline-a.fyi`,
-        `${T.b.name} dave@oa-redline-c.fyi`,
+        `${T.a.name} alice (tenant A user)`,
+        `${T.b.name} dave (tenant C user)`,
       ]);
       // Invite them (admin PAT), as the one-time admin step does on staging.
       for (const [t, email] of [
@@ -270,17 +270,34 @@ describe.skipIf(!on)(
       const r = await runSuite({
         REDLINE_TARGETS: pair.targets,
         REDLINE_SIGNIN_CAPTURES: dir,
+        // As scripts/signin-capture.ts starts its suite child.
+        REDLINE_CAPTURE_RUN: "1",
+        REDLINE_CAPTURE_NONCE: v.runNonce,
       });
       const level = (n: string) =>
         r.cases.find((c) => c.name === `sign-in: ID tokens > ${n}`);
+      // A pass from local verdicts says so (never a staging pass).
+      const label = `fake IdP (local); redeemed by capture run ${v.runNonce.slice(0, 6)}`;
       expect(
         level("an ID token with hd of A at B's callback: no session"),
-      ).toMatchObject({ level: "pass" });
+      ).toMatchObject({ level: "pass", label });
       expect(level("A's code and broker state at B: no session")).toMatchObject(
-        {
-          level: "pass",
-        },
+        { level: "pass", label },
       );
+
+      // The same verdicts read by a suite the capture didn't start (no run
+      // flag or nonce, as a forged or leftover file would be): unproven.
+      const forged = await runSuite({
+        REDLINE_TARGETS: pair.targets,
+        REDLINE_SIGNIN_CAPTURES: dir,
+      });
+      for (const c of forged.cases.filter((x) =>
+        x.name.startsWith("sign-in: ID tokens > "),
+      ))
+        expect(c).toMatchObject({
+          level: "unproven-live",
+          reason: "unproven: verdicts not from this capture run",
+        });
     }, 300_000);
 
     it("an expired code (a delayed redeem) is a fail with its reason, never a pass", async () => {
@@ -305,6 +322,9 @@ describe.skipIf(!on)(
       const r = await runSuite({
         REDLINE_TARGETS: pair.targets,
         REDLINE_SIGNIN_CAPTURES: dir,
+        // As scripts/signin-capture.ts starts its suite child.
+        REDLINE_CAPTURE_RUN: "1",
+        REDLINE_CAPTURE_NONCE: v.runNonce,
       });
       const hd = r.cases.find(
         (c) =>

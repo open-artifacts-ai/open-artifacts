@@ -176,10 +176,12 @@ describe("preflight network checks (read-only)", () => {
     expect(g["same version"]).toMatch(/rl-a runs 0\.1\.0, rl-b runs 999\.0\.0/);
     expect(g["rl-b Google sign-in"]).toMatch(/off/);
     expect(g["rl-a TEST_DOMAIN"]).toMatch(/a\.test is in AUTH_DOMAINS/);
-    expect(g["rl-b dave@oa-redline-c.fyi"]).toMatch(/not invited/);
-    expect(
-      c.find((x) => x.name === "rl-a alice@oa-redline-a.fyi")?.status,
-    ).toBe("ok");
+    expect(g["rl-b dave (tenant C user)"]).toBe(
+      "rl-b: dave (tenant C user) not invited: invite them (Members) first",
+    );
+    expect(c.find((x) => x.name === "rl-a alice (tenant A user)")?.status).toBe(
+      "ok",
+    );
     expect(formatPreflight(c)).not.toContain(SECRET);
   });
 });

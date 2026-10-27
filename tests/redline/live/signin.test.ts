@@ -21,7 +21,7 @@ import {
   prepareSide,
   type Side,
 } from "../src/refused.ts";
-import { proof } from "../src/report.ts";
+import { label, proof } from "../src/report.ts";
 import {
   brokerCallbackReq,
   brokerState,
@@ -155,6 +155,7 @@ describe("sign-in: ID tokens", () => {
       if (out.kind === "unproven")
         return proof(ctx, "unproven-live", `unproven: ${out.reason}`);
       if (out.kind === "fail") throw out.error;
+      label(ctx, out.label);
     });
 });
 

@@ -71,6 +71,9 @@ export function fileGap(path: string | undefined, what: string): string | null {
   return null;
 }
 
+/** The red-line tenants' letters (docs/ops/redline-signin.md): rl-a is A, rl-b is C. */
+const TENANT = { a: "A", b: "C" } as const;
+
 const CREDS_CMD = (installId: string) =>
   `pnpm oa:hosted redline-creds --install ${installId} --confirm ${installId}`;
 
@@ -341,20 +344,23 @@ export async function networkChecks(
         String(x?.email ?? "").toLowerCase(),
       ),
     );
-    for (const u of users[k])
+    for (const u of users[k]) {
+      // The role, not the address: "alice (tenant A user)".
+      const who = `${u.split("@")[0]} (tenant ${TENANT[k]} user)`;
       out.push(
         emails.has(u)
           ? {
-              name: `${t.name} ${u}`,
+              name: `${t.name} ${who}`,
               status: "ok",
               detail: "invited or member",
             }
           : {
-              name: `${t.name} ${u}`,
+              name: `${t.name} ${who}`,
               status: "gap",
-              detail: `${u} is not invited to ${t.name}: invite them (Members) first`,
+              detail: `${t.name}: ${who} not invited: invite them (Members) first`,
             },
       );
+    }
   }
 
   // The broker: each install's start reaches the IdP through it.

@@ -54,7 +54,7 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
 rl.on("SIGINT", () => process.kill(process.pid, "SIGINT"));
 let code = 1;
 try {
-  await runCaptures(T, dir, {
+  const verdicts = await runCaptures(T, dir, {
     offer: (url) => copy(url.toString()),
     async ask(p) {
       await rl.question(
@@ -87,6 +87,8 @@ try {
         ...process.env,
         REDLINE_SIGNIN_CAPTURES: dir,
         REDLINE_CAPTURE_RUN: "1",
+        // The suite takes only verdicts carrying this run's nonce.
+        REDLINE_CAPTURE_NONCE: verdicts.runNonce,
       },
     },
   );

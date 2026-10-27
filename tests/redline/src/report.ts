@@ -51,20 +51,61 @@ export const MAX_REASON = 600;
  * cookies, bearer and ID tokens, emails and any long opaque value are
  * replaced; what's left names the leg, the install, statuses and paths.
  */
+/** Secret-bearing parameter names, after `=` (and, for the OAuth ones, `:`). */
+const EQ_KEYS =
+  "code|state|bstate|nonce|login_hint|code_challenge|code_verifier|id_token|access_token|refresh_token|client_secret|token|key|sig|as";
+const COLON_KEYS =
+  "code|state|bstate|nonce|login_hint|code_challenge|code_verifier|id_token|access_token|refresh_token|client_secret";
+const VALUE = `[^&\\s)"',;}\\]]+`;
+
 export function redactReason(s: string, max = MAX_REASON): string {
   let out = s
+    // Percent-encoded separators first, so encoded values match below.
+    .replace(/%40/gi, "@")
+    .replace(/%2F/gi, "/")
+    .replace(/%3A/gi, ":")
+    .replace(/%3D/gi, "=")
+    .replace(/%22/gi, '"')
+    .replace(/%2B/gi, "+")
+    // Every Cookie / Set-Cookie value (names kept).
     .replace(
-      /([?&;\s](?:code|state|bstate|nonce|code_challenge|code_verifier|id_token|access_token|refresh_token|token|key|sig|as)=)[^&\s)"',;]*/gi,
+      /\b(set-cookie|cookie)(\s*:\s*)([^\n|]*)/gi,
+      (_m, h, sep, v) =>
+        `${h}${sep}${String(v).replace(/([^=;\s,]+)=([^;,]*)/g, "$1=[redacted]")}`,
+    )
+    .replace(
+      /\b((?:__Host-|__Secure-)[A-Za-z0-9_.-]*|oa_[A-Za-z0-9_]*)=[^;\s,)"']*/g,
+      "$1=[redacted]",
+    )
+    .replace(
+      new RegExp(
+        `((?:^|[?&;\\s(",{'\\[])"?(?:${EQ_KEYS})"?\\s*=\\s*"?)${VALUE}`,
+        "gi",
+      ),
       "$1[redacted]",
     )
-    .replace(/\b((?:__Host-)?oa_[A-Za-z0-9_]*)=[^;\s,)"']*/g, "$1=[redacted]")
+    .replace(
+      new RegExp(
+        `((?:^|[?&;\\s(",{'\\[])"?(?:${COLON_KEYS})"?\\s*:\\s*"?)${VALUE}`,
+        "gi",
+      ),
+      "$1[redacted]",
+    )
+    // "nonce 9fK2_aB3cD": a key, a space, then a token-like value (has a digit).
+    .replace(
+      /\b(nonce|state|bstate|code|login_hint)\s+(?=[A-Za-z0-9_./-]*\d)[A-Za-z0-9_./-]{8,}/gi,
+      "$1 [redacted]",
+    )
     .replace(/\b(Bearer|Basic)\s+[^\s,;)"']+/gi, "$1 [redacted]")
     .replace(
       /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*)?/g,
       "[token]",
     )
+    // Google access and refresh tokens, at any length.
+    .replace(/\bya29\.[A-Za-z0-9_.-]*/g, "[token]")
+    .replace(/(^|[^A-Za-z0-9/])1\/\/[A-Za-z0-9_.-]*/g, "$1[token]")
     .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[email]")
-    .replace(/\b4\/[A-Za-z0-9_-]{6,}/g, "[code]")
+    .replace(/\b4\/[A-Za-z0-9_-]{4,}/g, "[code]")
     .replace(/\br1\.[A-Za-z0-9_.-]+/g, "r1.[redacted]")
     .replace(/[A-Za-z0-9_-]{24,}/g, "[redacted]")
     .replace(/\s+/g, " ")

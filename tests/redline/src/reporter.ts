@@ -15,6 +15,7 @@ import {
   type Manifest,
   parseManifest,
   type RunBinding,
+  redactReason,
 } from "./report.ts";
 
 // Vitest reporter: one CaseResult per test (its proof level), plus a "fail"
@@ -85,7 +86,7 @@ export function collect(
       // or the test's own, redacted, plus its leg where crossCheck knew it.
       const { level, reason } = setupFailed
         ? infra
-          ? { level: "infra" as const, reason: infra }
+          ? { level: "infra" as const, reason: redactReason(infra) }
           : {
               level: "fail" as const,
               reason: `setup failed: ${failReason(setup)}`,
@@ -107,7 +108,9 @@ export function collect(
         name: `${file}: module error`,
         file,
         level: infra ? "infra" : "fail",
-        reason: infra ?? `error outside a test: ${failReason(m.errors())}`,
+        reason: infra
+          ? redactReason(infra)
+          : `error outside a test: ${failReason(m.errors())}`,
       });
     }
   }

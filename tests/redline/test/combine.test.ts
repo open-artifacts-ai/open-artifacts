@@ -45,6 +45,7 @@ function verdicts(edit: (v: Verdicts) => void = () => {}): Verdicts {
       });
   const v: Verdicts = {
     v: 1,
+    mode: "staging",
     runNonce: "n".repeat(43),
     installs: { ...binding.installs },
     versions: { ...binding.versions },
@@ -64,8 +65,18 @@ describe("combine (the gate binding)", () => {
     if (!r.ok) return;
     expect(r.report.cases).toEqual([
       { name: "other > a case", file: "live/edge.test.ts", level: "pass" },
-      { name: HD, file: FILE, level: "pass" },
-      { name: AUD, file: FILE, level: "pass" },
+      {
+        name: HD,
+        file: FILE,
+        level: "pass",
+        label: "redeemed by capture run nnnnnn",
+      },
+      {
+        name: AUD,
+        file: FILE,
+        level: "pass",
+        label: "redeemed by capture run nnnnnn",
+      },
     ]);
     expect(r.report.gate.passed).toBe(true);
     expect(r.report.binding).toEqual(binding);
@@ -111,6 +122,16 @@ describe("combine (the gate binding)", () => {
       "a verdicts file of another shape",
       () => [ciReport(), { v: 2 } as unknown as Verdicts],
       /unknown shape/,
+    ],
+    [
+      "verdicts made in local mode (a fake IdP)",
+      () => [ciReport(), verdicts((v) => (v.mode = "local"))],
+      /only staging verdicts combine into a staging report \(verdicts local, CI staging\)/,
+    ],
+    [
+      "a local CI report",
+      () => [{ ...ciReport(), mode: "local" }, verdicts()],
+      /verdicts staging, CI local/,
     ],
     [
       "no valid runNonce",
