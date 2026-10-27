@@ -21,6 +21,7 @@ import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
+import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
 import { FullLive, GoneBanner, LiveAnnouncer, TitleLive } from "./LiveChip";
@@ -247,6 +248,29 @@ function Viewer({
   // its artifact has loaded (or said hello); a reload hides the new frame again.
   const [paintedKey, setPaintedKey] = useState(-1);
   const painted = paintedKey === frame.key;
+  // The loader (#693): ready once this frame painted (its load event or hello;
+  // hello follows load within milliseconds, and a page that never says hello
+  // gets the slow notice, not an endless loader). It fades in after
+  // LOADER_DELAY_MS; a frame still not loaded after LOAD_TIMEOUT_MS gets the
+  // timeout message instead.
+  const ready = painted;
+  const [waitedKey, setWaitedKey] = useState(-1);
+  const [timedOutKey, setTimedOutKey] = useState(-1);
+  const paintedRef = useRef(painted);
+  paintedRef.current = painted;
+  useEffect(() => {
+    if (ready) return;
+    const key = frame.key;
+    const t1 = setTimeout(() => setWaitedKey(key), LOADER_DELAY_MS);
+    const t2 = setTimeout(() => {
+      if (!paintedRef.current) setTimedOutKey(key);
+    }, LOAD_TIMEOUT_MS);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [frame.key, ready]);
+  const timedOut = timedOutKey === frame.key && !painted;
   // The renavigation notice: the frame left the page we loaded, so its bridge
   // is gone. Only artifacts with live data lose anything. Each later load in
   // that frame is another navigation and brings a dismissed notice back.
@@ -379,6 +403,18 @@ function Viewer({
     return <NotPublic id={artifact.id} />;
   if (content.notFound) return <NotFound />;
   if (signedOut) return null;
+  const loader = (
+    <FrameLoader
+      show={!ready && waitedKey === frame.key && !slow && !renav}
+      timedOut={timedOut}
+      embed={isEmbed()}
+      onRetry={() => {
+        // A frame that never loaded never cleared the reload guard.
+        reloading.current = false;
+        reload();
+      }}
+    />
+  );
   return (
     <div className="oa-viewer">
       {!chromeless && (
@@ -413,8 +449,14 @@ function Viewer({
         {!url && (content.current || content.error) ? (
           <ErrorPanel onRetry={() => void content.refresh()} />
         ) : null}
+        {!url && !content.current && !content.error && (
+          <div className="oa-vmain" aria-busy="true">
+            {loader}
+          </div>
+        )}
         {url && (
-          <div className="oa-vmain">
+          <div className="oa-vmain" aria-busy={ready ? undefined : true}>
+            {loader}
             {renav && (
               <RenavNotice
                 onReload={reload}

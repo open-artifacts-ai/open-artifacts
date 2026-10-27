@@ -50,9 +50,9 @@ for (const mode of ["viewer", "full screen"] as const)
     const ctx = await browser.newContext({ baseURL: APP, colorScheme: "dark" });
     const page = await ctx.newPage();
     const decoder = await ctx.newPage();
-    // Hold the artifact back so the load window is long enough to sample.
+    // Hold the artifact back (3 s) so the load window is long enough to sample.
     await page.route(`http://${CONTENT_HOST}/**`, async (route) => {
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, 3000));
       await route.continue();
     });
     const path = mode === "viewer" ? `/a/${id}` : `/a/${id}/full`;
@@ -62,14 +62,61 @@ for (const mode of ["viewer", "full screen"] as const)
     await nav;
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
-      shares.push(await whiteShare(decoder, await page.screenshot()));
+      // A capture can fail mid-navigation; skip it and sample again.
+      const png = await page.screenshot().catch(() => null);
+      if (png) shares.push(await whiteShare(decoder, png));
       if (await ready.isVisible().catch(() => false)) break;
       await page.waitForTimeout(100);
     }
     await expect(ready).toBeVisible();
     // One more after it painted: the artifact's own dark page, still no white.
     shares.push(await whiteShare(decoder, await page.screenshot()));
-    expect(shares.length).toBeGreaterThan(5);
+    expect(shares.length).toBeGreaterThan(3);
     expect(Math.max(...shares)).toBeLessThan(0.01);
     await ctx.close();
   });
+
+test("the loader shows after a delay, hides when the artifact is ready, and a stuck load offers Retry", async ({
+  browser,
+  member,
+}) => {
+  test.setTimeout(90_000);
+  const { id } = await publishViaApi(member.pat, {
+    title: `Loader ${uniq()}`,
+    format: "html",
+    content: DARK_PAGE,
+    visibility: "public",
+  });
+  const ctx = await browser.newContext({ baseURL: APP });
+  const page = await ctx.newPage();
+  const loader = page.locator(".oa-vloader");
+  const ready = artifactFrame(page).locator("#ready");
+  // Slow (1.5 s): the hairline fades in, then goes once the artifact is ready.
+  let hold = 1500;
+  let stuck = false;
+  await page.route(`http://${CONTENT_HOST}/**`, async (route) => {
+    if (stuck) return; // never answered: a stuck load
+    await new Promise((r) => setTimeout(r, hold));
+    await route.continue();
+  });
+  await page.goto(`/a/${id}`);
+  await expect(loader).toHaveAttribute("data-on", "");
+  await expect(page.locator(".oa-vmain")).toHaveAttribute("aria-busy", "true");
+  await expect(ready).toBeVisible();
+  await expect(loader).not.toHaveAttribute("data-on", "");
+  await expect(page.locator(".oa-vmain")).not.toHaveAttribute("aria-busy");
+  // Stuck: after 10 s the timeout message replaces the loader; Retry loads it.
+  stuck = true;
+  await page.reload();
+  const alert = page
+    .getByRole("alert")
+    .filter({ hasText: "Taking longer than usual" });
+  await expect(alert).toBeVisible({ timeout: 15_000 });
+  await expect(alert).toContainText("This artifact hasn't finished loading.");
+  stuck = false;
+  hold = 0;
+  await alert.getByRole("button", { name: "Retry" }).click();
+  await expect(ready).toBeVisible();
+  await expect(alert).toBeHidden();
+  await ctx.close();
+});

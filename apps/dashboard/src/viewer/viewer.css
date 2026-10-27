@@ -86,6 +86,7 @@
 }
 /* Slow-frame notice: above the frame, never in place of it. */
 .oa-vmain {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -429,4 +430,82 @@ a.oa-lpill-gone {
     gap: 4px;
     padding-left: 8px;
   }
+}
+
+/* Loading state (#693, Design option A): a 2px accent hairline at the frame
+   area's top edge, fading in at 300 ms and out when the artifact is ready. */
+.oa-vloader {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 150ms;
+}
+.oa-vloader[data-on] {
+  opacity: 1;
+  transition-duration: 200ms;
+}
+.oa-vloader::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -30%;
+  width: 30%;
+  border-radius: 2px;
+  background: var(--oa-accent);
+}
+/* Animated only while shown, so a hidden loader never keeps an animation running. */
+.oa-vloader[data-on]::after {
+  animation: oa-vloader-slide 1.3s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes oa-vloader-slide {
+  to {
+    left: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oa-vloader[data-on]::after,
+  .oa-vloader::after {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+/* Not loaded after 10 s: the message replaces the loader, centred in the frame area. */
+.oa-vtimeout {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  text-align: center;
+  background: var(--oa-bg);
+}
+.oa-vtimeout-box {
+  max-width: 300px;
+}
+.oa-vtimeout-h {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--oa-text);
+}
+.oa-vtimeout-p {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--oa-text-muted);
+}
+.oa-vtimeout[data-embed] .oa-vtimeout-h {
+  font-size: 13px;
+}
+.oa-vtimeout[data-embed] .oa-vtimeout-p {
+  font-size: 12px;
+  margin-bottom: 8px;
 }
