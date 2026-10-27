@@ -200,7 +200,7 @@
   <div class="board" id="board" role="grid" aria-labelledby="title" aria-describedby="status"></div>
   <p class="status" id="status">Connecting…</p>
   <div class="actions" id="actions"></div>
-  <p class="note" id="note">A seat frees up 90 seconds after its player leaves.</p>
+  <p class="note" id="note">A seat frees up after 5 minutes without a move.</p>
   <p class="error" id="error" role="alert"></p>
   <p class="sr" id="announce" aria-live="polite"></p>
 </main>
@@ -212,9 +212,8 @@
 
   const COLLECTION = "game";
   const DOC_ID = "game";
-  /* A seated window checks in every 15 seconds; a seat that misses 90 seconds of check-ins is away, and free to take. */
-  const HEARTBEAT_MS = 15 * 1000;
-  const SEAT_TTL_MS = 90 * 1000;
+  /* No heartbeat: a seat the game is waiting on is away after 5 minutes without a move, and free to take. */
+  const SEAT_TTL_MS = 5 * 60 * 1000;
   const LINES = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]];
   const MARKS = ["X", "O"];
   const slot = (m) => (m === "X" ? "x" : "o");
@@ -235,7 +234,6 @@
   let closed = false;
   let focusIndex = 4;
   let freshCell = -1;  // the cell to animate
-  let heartbeat = null;
 
   /* ---------- identity (as in the poll); used only for seat labels ---------- */
 
@@ -326,7 +324,14 @@
     }
     return board.every(Boolean) ? { draw: true } : null;
   }
-  const live = (seat) => Boolean(seat) && Date.now() - seat.at < SEAT_TTL_MS;
+  /** The game is waiting on the other player: this seat can't be away meanwhile. */
+  function waitingOnOther(seat) {
+    if (!game || !game.x || !game.o || outcome(game.board)) return false;
+    const m = seat === game.x ? "X" : seat === game.o ? "O" : null;
+    return Boolean(m) && turnOf(game.board) === other(m);
+  }
+  /** A seat's clock is its last move or claim; a move also restarts the opponent's (their turn starts). */
+  const live = (seat) => Boolean(seat) && (Date.now() - seat.at < SEAT_TTL_MS || waitingOnOther(seat));
   const away = (seat) => Boolean(seat) && !live(seat);
   const isEmpty = (board) => board.every((c) => !c);
 
@@ -379,7 +384,6 @@
     const prev = game;
     game = next;
     if (announceIt && prev) announce(prev, next);
-    if (myMark()) startHeartbeat(); else stopHeartbeat();
     render();
   }
 
@@ -397,7 +401,7 @@
   }
 
   /**
-   * Patches only the fields that change, so a concurrent heartbeat is never
+   * Patches only the fields that change, so a concurrent seat change is never
    * clobbered, and adopts the doc the server returns. `decide` runs on the
    * latest state and returns the patch, or a hint when the action no longer applies.
    */
@@ -428,6 +432,7 @@
     if (notReady()) return;
     write(() => {
       const mine = myMark();
+      if (mine === m) return { [slot(m)]: seatFor() }; // back from away: keep it
       if (mine) return `You already play ${mine}.`;
       if (live(game[slot(m)])) return `Seat ${m} was just taken by ${nameFor(game[slot(m)].id)}.`;
       return { [slot(m)]: seatFor() };
@@ -455,7 +460,8 @@
       const board = game.board.slice();
       board[i] = mark;
       freshCell = i;
-      return { board, [slot(mark)]: seatFor() };
+      const them = game[slot(other(mark))];
+      return { board, [slot(mark)]: seatFor(), [slot(other(mark))]: { id: them.id, at: Date.now() } };
     });
   }
   /** Clears the board. A player keeps their seat and frees an away opponent's. */
@@ -472,31 +478,6 @@
     });
   }
 
-  /* ---------- heartbeat ---------- */
-
-  function startHeartbeat() {
-    if (heartbeat) return;
-    heartbeat = setInterval(touchSeat, HEARTBEAT_MS);
-    // A seat just claimed was written now; one found on load may be away: check in at once.
-    const m = myMark();
-    if (m && Date.now() - game[slot(m)].at > HEARTBEAT_MS) touchSeat();
-  }
-  function stopHeartbeat() {
-    clearInterval(heartbeat);
-    heartbeat = null;
-  }
-  /** Keeps this window's seat live. Never revives a seat it no longer holds. */
-  async function touchSeat() {
-    const m = myMark();
-    if (!m) { stopHeartbeat(); return; }
-    if (busy || readOnly || closed || !hasId()) return;
-    try {
-      adopt(await col.update(DOC_ID, { [slot(m)]: seatFor() }), true);
-    } catch (err) {
-      handleWriteError(err);
-    }
-  }
-
   /** Why a click on the board did nothing for a window without a seat. */
   function whyWatching() {
     return MARKS.some((m) => !live(game[slot(m)])) ? "Take a seat to play." : "You are watching. Both seats are taken.";
@@ -510,7 +491,8 @@
   }
 
   const bothSeated = () => MARKS.every((m) => live(game[slot(m)]));
-  const canMove = (m) => Boolean(game) && bothSeated() && !outcome(game.board) && turnOf(game.board) === m;
+  // Away but still holding the seat: a move keeps it (the opponent can't be away while it waits).
+  const canMove = (m) => Boolean(game) && Boolean(game.x && game.o) && !outcome(game.board) && turnOf(game.board) === m && myMark() === m;
   /* A player can always start over (to free an away opponent); a watcher only when nobody is live. */
   const canStartOver = () => {
     if (!game) return false;
@@ -529,7 +511,6 @@
     else if (code === "unauthorized" || code === "data_editors_only") { readOnly = true; showError("This demo isn't accepting moves right now."); }
     else if (code === "capability_denied") { readOnly = true; showError("This board can't save moves."); }
     else showError("That move didn't save. Try again.");
-    if (readOnly || closed) stopHeartbeat();
   }
 
   /* ---------- render ---------- */
@@ -550,7 +531,8 @@
     const end = outcome(game.board);
     if (end && end.winner) return end.winner === mine ? "You win." : `${end.winner} wins.`;
     if (end) return "Draw.";
-    if (mine && !live(game[slot(mine)])) return "Reconnecting your seat…";
+    if (mine && !live(game[slot(mine)]))
+      return canMove(mine) ? "You were away. Move to keep your seat." : "You were away. Keep your seat, or someone else can take it.";
     const open = MARKS.filter((m) => !live(game[slot(m)]));
     if (open.length) {
       if (mine) {
@@ -672,13 +654,14 @@
     });
 
     el.status.textContent = statusText();
-    el.note.textContent = `${me ? `You're ${nameFor(me.id)}. ` : ""}A seat frees up 90 seconds after its player leaves.`;
+    el.note.textContent = `${me ? `You're ${nameFor(me.id)}. ` : ""}A seat frees up after 5 minutes without a move.`;
     renderActions(mine);
   }
 
   function renderActions(mine) {
     const want = [];
     if (!mine) for (const m of MARKS) if (!live(game[slot(m)])) want.push(["claim-" + m, `Play as ${m}`, true]);
+    if (mine && !live(game[slot(mine)]) && !canMove(mine)) want.push(["claim-" + mine, "Keep my seat", true]);
     if (canStartOver()) want.push(["reset", "Start over", Boolean(outcome(game.board))]);
     if (mine) want.push(["leave", "Leave seat", false]);
     const key = want.map((w) => w.join("|")).join(",");
@@ -762,9 +745,6 @@
     render();
     // Seats go away on the clock, not on a write: re-render so labels stay honest.
     setInterval(() => { if (Date.now() - lastHint > 4000) render(); }, 5000);
-    // Back from a hidden tab (timers throttled): check in now.
-    document.addEventListener("visibilitychange", () => { if (!document.hidden && myMark()) touchSeat(); });
-    window.addEventListener("pagehide", stopHeartbeat);
   }
   setTimeout(() => { if (!ready && !failText) fail("Could not connect. Reload to try again."); }, 10000);
   boot().catch(() => fail());

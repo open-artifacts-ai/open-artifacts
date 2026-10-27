@@ -167,7 +167,7 @@ describe("share panel", () => {
     await waitFor(() => expect(bodies).toEqual([{ dataWriters: "editors" }]));
     await waitFor(() =>
       expect(group).toHaveAccessibleDescription(
-        "Only you and people who can edit.",
+        "Only you and people who can edit it.",
       ),
     );
   });
