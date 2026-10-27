@@ -267,27 +267,24 @@ describe("what counts as verified", () => {
       return { out, lines, gate };
     };
 
-    it(
-      "a correctly signed check is verified and refused as bad_flow: ok",
-      async () => {
-        const { out, lines, gate } = await run();
-        expect(out.auth).toMatchObject({
-          ok: true,
-          status: 401,
-          transport: "binding",
-        });
-        expect(out.directory).toMatchObject({
-          ok: true,
-          status: 401,
-          transport: "props",
-        });
-        expect(gate.calls).toEqual([
-          { method: "POST", path: "/google/directory/token" },
-        ]);
-        expect(lines).toMatch(/"route":"redeem","outcome":"bad_flow"/);
-        expect(lines).toMatch(/"route":"token","outcome":"bad_refresh"/);
-      },
-    );
+    it("a correctly signed check is verified and refused as bad_flow: ok", async () => {
+      const { out, lines, gate } = await run();
+      expect(out.auth).toMatchObject({
+        ok: true,
+        status: 401,
+        transport: "binding",
+      });
+      expect(out.directory).toMatchObject({
+        ok: true,
+        status: 401,
+        transport: "props",
+      });
+      expect(gate.calls).toEqual([
+        { method: "POST", path: "/google/directory/token" },
+      ]);
+      expect(lines).toMatch(/"route":"redeem","outcome":"bad_flow"/);
+      expect(lines).toMatch(/"route":"token","outcome":"bad_refresh"/);
+    });
 
     it("another signing key: unverified (bad_signature)", async () => {
       const { out, lines } = await run({ BROKER_SIGNING_KEY: OTHER_KEY });
