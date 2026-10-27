@@ -204,7 +204,7 @@ Use this when anyone with the link should be able to vote, play or add to a page
 - Treat all data as shared and editable by anyone. Any visitor can write any document, so don't build anything that depends on keeping someone out.
 - \`viewer.anonId()\` returns a per-artifact id for an anonymous visitor (null when signed in). Use it to label things ("your vote", "X: you") and to key one document per browser, not to grant or deny anything.
 - Design for griefing: first-come seats or slots, a visible reset that anyone can use, and state that is easy to rebuild. Prefer choices, emoji and presets over free text. If you need text, cap its length and expire it.
-- Budget writes. Each artifact has a daily write limit and anonymous writes are rate-limited per network, so never write on a timer, except one seat heartbeat at most once a minute while a visitor holds a seat (built-in presence replaces it later). Otherwise write only on a user action, and use a day-keyed collection (e.g. \`votes-20261020\`) instead of deleting old data. When \`rate_limited\` mentions the daily limit, show "done for today".
+- Budget writes. Each artifact has a daily write limit and anonymous writes are rate-limited per network, so never write on a timer (no heartbeats). Write only on a user action, and use a day-keyed collection (e.g. \`votes-20261020\`) instead of deleting old data. When \`rate_limited\` mentions the daily limit, show "done for today".
 - Handle rejected writes: roll back anything you showed optimistically, then reload from the server. Codes: \`data_editors_only\`, \`unauthorized\`, \`rate_limited\`, \`capability_denied\`, and \`no_shell\` when the page is opened outside the viewer.
 - Don't claim presence ("3 people here", "watching now"); there is no presence API.
 - Never be silently deaf: when a subscribe callback gets \`offline: true\`, show that live updates are paused (for example, "Live updates paused. Reload to retry.") until it gets \`resync: true\`.
@@ -217,7 +217,7 @@ Check every item before telling the user a public live page is ready:
 2. Every write has a rejection path the visitor can see: \`data_editors_only\` or \`unauthorized\` (show the page as read-only), \`capability_denied\`, \`rate_limited\`, \`quota_exceeded\`, \`no_shell\`, and a generic "didn't save" for anything else. Never catch and ignore a write.
 3. The visitor's id comes from \`viewer.anonId()\`, read once at start and retried a few times if it rejects. A made-up fallback id changes on reload, so the visitor loses their vote or seat.
 4. Two tabs of one browser share one \`anonId\`: treat them as the same visitor.
-5. Anonymous writes are limited per network, shared by everyone behind it (an office, a classroom). Write on user actions only, plus at most one seat heartbeat a minute while seated; built-in presence replaces it later.
+5. Anonymous writes are limited per network, shared by everyone behind it (an office, a classroom). Write on user actions only.
 6. The page subscribes, refetches when \`resync\` is true, shows that live updates are paused when \`offline\` is true, and adopts the doc its own write returns.
 7. Tested as an anonymous visitor in two separate browsers (not two tabs): writes show up in both, a refused write shows its message, and the page works at phone width.
 

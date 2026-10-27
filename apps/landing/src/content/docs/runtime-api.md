@@ -99,7 +99,7 @@ Before you share a public page that writes data, check each item:
 2. Every write has a rejection path the visitor can see: `data_editors_only` or `unauthorized` (show the page as read-only), `capability_denied`, `rate_limited`, `quota_exceeded`, `no_shell`, and a generic "didn't save" for anything else. Never catch and ignore a write.
 3. The visitor's id comes from `viewer.anonId()`, read once at start and retried a few times if it rejects. A made-up fallback id changes on reload, so the visitor loses their vote or seat.
 4. Two tabs of one browser share one `anonId`: treat them as the same visitor.
-5. Anonymous writes are limited per network, shared by everyone behind it (an office, a classroom). Write on user actions only, plus at most one seat heartbeat a minute while seated; built-in presence replaces it later.
+5. Anonymous writes are limited per network, shared by everyone behind it (an office, a classroom). Write on user actions only.
 6. The page subscribes, refetches when `resync` is true, shows that live updates are paused when `offline` is true, and adopts the doc its own write returns.
 7. Tested as an anonymous visitor in two separate browsers (not two tabs): writes show up in both, a refused write shows its message, and the page works at phone width.
 
