@@ -230,7 +230,8 @@ export async function initialBinding(
 export const RETIRE_BATCH = 50;
 
 /** The next directory-bound users (the previous Workspace's, at confirm). */
-const BOUND_PAGE = `select i.user_id as id, u.status, u.role from identities i
+const BOUND_PAGE = `select i.user_id as id,
+    (u.status = 'active' and u.role <> 'owner') as suspend from identities i
   join users u on u.id = i.user_id
   where i.provider = 'google' and i.directory_bound = 1
   order by i.user_id limit ${RETIRE_BATCH}`;
@@ -278,15 +279,13 @@ export async function retireTenant(
   for (let i = 0; i < 10_000; i++) {
     const { results } = await stmt(env.DB, BOUND_PAGE).all<{
       id: string;
-      status: string;
-      role: string;
+      suspend: number;
     }>();
     if (results.length === 0) break;
     const now = Date.now();
     const ids = JSON.stringify(results.map((r) => r.id));
-    const active = results.filter(
-      (r) => r.status === "active" && r.role !== "owner",
-    );
+    // The rows RETIRE_SUSPEND changes (the owner is exempt): audited.
+    const active = results.filter((r) => r.suspend === 1);
     await env.DB.batch([
       stmt(env.DB, RETIRE_SUSPEND).bind(ids, now),
       ...active.map((r) =>
