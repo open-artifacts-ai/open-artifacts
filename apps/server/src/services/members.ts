@@ -9,7 +9,18 @@ import type {
   Settings,
   SettingsPatch,
 } from "@oa/shared";
-import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  notInArray,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { managesAdmins } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
@@ -41,14 +52,33 @@ import { type AuditActor, audit, userActor } from "./audit.js";
 import { RESTRICTED_SYNC_FOR_USER } from "./restriction.js";
 import { insertUser, toMember } from "./users.js";
 
-/** Active members only (the contract's default `status`). */
-export async function listMembers(env: Env): Promise<Member[]> {
+const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
+/** A stored status; anything unknown reads as suspended (fail closed). */
+export const statusOf = (v: unknown): MemberStatus =>
+  STATUSES.includes(v as MemberStatus) ? (v as MemberStatus) : "suspended";
+
+/**
+ * GET R.members?status= : members whose status (as statusOf reads it) is one
+ * of `statuses`, default active. Non-active rows carry their status.
+ */
+export async function listMembers(
+  env: Env,
+  statuses: readonly MemberStatus[] = ["active"],
+): Promise<Member[]> {
+  if (!statuses.length) return [];
+  const conds: SQL[] = [inArray(users.status, [...statuses])];
+  // An unknown stored value reads as suspended (statusOf).
+  if (statuses.includes("suspended"))
+    conds.push(notInArray(users.status, [...STATUSES]));
   const rows = await getDb(env)
     .select()
     .from(users)
-    .where(eq(users.status, "active"))
+    .where(or(...conds))
     .orderBy(asc(users.createdAt), asc(users.id));
-  return rows.map(toMember);
+  return rows.map((r) => {
+    const status = statusOf(r.status);
+    return status === "active" ? toMember(r) : { ...toMember(r), status };
+  });
 }
 
 /**

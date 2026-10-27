@@ -911,7 +911,12 @@ function orgProbe(route: string, ok: number[]): OrgSurface["probe"] {
     const p = fill(path, t);
     if (method === "GET") {
       const r = await send(io, base, p, cred);
-      return classify(route, r, status(...ok));
+      // A 409 is allowed only as member_active (past the transfer guard).
+      return classify(route, r, (x) =>
+        x.status === 409
+          ? ok.includes(409) && x.code === "member_active"
+          : status(...ok)(x),
+      );
     }
     if (!cred.cookie && cred.token)
       throw new Unexpected("the CSRF probe needs a session cookie");
@@ -931,7 +936,8 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["POST /api/v1/members", org("members.manage")],
   ["PATCH /api/v1/members/:id", org("members.manage")],
   ["DELETE /api/v1/members/:id", org("members.manage")],
-  ["GET /api/v1/members/:id/transfer", org("transfer.departed"), [200]],
+  // 409 member_active is past the guard: redline's target is an active member.
+  ["GET /api/v1/members/:id/transfer", org("transfer.departed"), [200, 409]],
   ["POST /api/v1/members/:id/transfer", org("transfer.departed")],
   ["DELETE /api/v1/members/:id/identities/google", org("members.manage")],
   ["PUT /api/v1/members/:id/restricted", org("restricted.member")],

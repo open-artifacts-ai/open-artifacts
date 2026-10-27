@@ -8,7 +8,6 @@ import {
   type GroupRef,
   LIST_SPACES_MAX,
   type Member,
-  type MemberStatus,
   type MySpace,
   newId,
   type Page,
@@ -60,7 +59,7 @@ import {
 import { getSummary } from "./artifacts.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
 import { kickSync } from "./directory.js";
-import { getSettings } from "./members.js";
+import { getSettings, statusOf } from "./members.js";
 import { RESTRICTED_SYNC_FOR_GROUP } from "./restriction.js";
 import { toMember } from "./users.js";
 
@@ -169,9 +168,6 @@ const rank = (r: SpaceRole | null | undefined): number => (r ? RANK[r] : 0);
 const roleOf = (n: number): SpaceRole | null => ROLES[n - 1] ?? null;
 const maxRole = (...rs: (SpaceRole | null | undefined)[]): SpaceRole | null =>
   roleOf(Math.max(0, ...rs.map(rank)));
-const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
-const statusOf = (v: unknown): MemberStatus =>
-  STATUSES.includes(v as MemberStatus) ? (v as MemberStatus) : "suspended";
 
 // ------------------------------------------------------------- cursors
 
@@ -1786,16 +1782,27 @@ const DEPARTED_PAGE = `select id, visibility from artifacts where space_id = ?1 
   limit ?2`;
 type Counts = { live: number; deleted: number };
 
-/** GET R.memberTransfer(id) (org owner, admin): counts only, never titles. */
+const memberActive = () =>
+  new ApiError(
+    "member_active",
+    "Suspend or remove the member before transferring their artifacts",
+  );
+
+/**
+ * GET R.memberTransfer(id) (org owner, admin): counts only, never titles.
+ * 409 member_active for an active member, like transferPersonal.
+ */
 export async function transferSummary(
   env: Env,
   fromUserId: string,
 ): Promise<TransferSummary> {
   const [u, c] = await env.DB.batch([
-    stmt(env.DB, "select 1 as ok from users where id = ?").bind(fromUserId),
+    stmt(env.DB, "select status from users where id = ?").bind(fromUserId),
     stmt(env.DB, DEPARTED_COUNTS).bind(fromUserId),
   ]);
-  if (!u?.results[0]) throw notFound();
+  const from = u?.results[0] as { status: string } | undefined;
+  if (!from) throw notFound();
+  if (statusOf(from.status) === "active") throw memberActive();
   const r = c?.results[0] as Counts | undefined;
   return { live: r?.live ?? 0, deleted: r?.deleted ?? 0 };
 }
@@ -1837,11 +1844,7 @@ export async function transferPersonal(
     .bind(fromUserId)
     .first<{ status: string }>();
   if (!from) throw notFound();
-  if (statusOf(from.status) === "active")
-    throw new ApiError(
-      "member_active",
-      "Suspend or remove the member before transferring their artifacts",
-    );
+  if (statusOf(from.status) === "active") throw memberActive();
   let spaceId: string;
   let ownerId: string;
   let publicLinks = true;
