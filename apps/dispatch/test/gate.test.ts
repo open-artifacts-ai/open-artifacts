@@ -63,10 +63,11 @@ const post = (
     body: typeof body === "string" ? body : JSON.stringify(body),
   });
 
-const err = async (r: Response) => ({
-  status: r.status,
-  ...((await r.json()) as object),
-});
+/** A gate refusal: its status and body, and it carries the gate's marker. */
+const err = async (r: Response) => {
+  expect(r.headers.get("x-oa-gate")).toBe("1");
+  return { status: r.status, ...((await r.json()) as object) };
+};
 
 describe("BrokerGate: allowed calls", () => {
   it("redeem goes to the auth broker at its fixed origin, body unchanged, three headers only", async () => {
@@ -237,7 +238,10 @@ describe("BrokerGate: refusals (nothing reaches a broker)", () => {
       headers: { "content-type": "application/json" },
       body: new Uint8Array([0x7b, 0xff, 0x7d]),
     });
-    expect((await passGate(req, auth, w.env)).status).toBe(400);
+    expect(await err(await passGate(req, auth, w.env))).toEqual({
+      status: 400,
+      error: "bad_body",
+    });
     expect(w.auth).toEqual([]);
   });
 
@@ -250,14 +254,28 @@ describe("BrokerGate: refusals (nothing reaches a broker)", () => {
       { installId: A, kind: "__proto__" },
     ] as unknown as BrokerGateProps[])
       expect(
-        (
+        await err(
           await passGate(
             post(`${AUTH}/google/redeem`, { install: A }),
             p,
             w.env,
-          )
-        ).status,
-      ).toBe(500);
+          ),
+        ),
+      ).toEqual({ status: 500, error: "gate_misconfigured" });
     expect([...w.auth, ...w.dir]).toEqual([]);
+  });
+
+  it("the broker's own response passes through without the gate's marker", async () => {
+    const w = world();
+    w.env.AUTH_BROKER = {
+      fetch: async () => Response.json({ error: "not_found" }, { status: 404 }),
+    } as unknown as Fetcher;
+    const r = await passGate(
+      post(`${AUTH}/google/redeem`, { install: A }),
+      auth,
+      w.env,
+    );
+    expect(r.status).toBe(404);
+    expect(r.headers.get("x-oa-gate")).toBeNull();
   });
 });
