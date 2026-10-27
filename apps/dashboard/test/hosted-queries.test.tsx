@@ -164,7 +164,7 @@ it("requestCode returns the server's policy", async () => {
 });
 
 it("verifyCode keeps 401 details", async () => {
-  mountHosted("/sign-in");
+  mountHosted("/sign-in", { providers: ["email"] });
   await requestCode({ email: "bob@example.com" });
   const e = await verifyCode("11111111").catch((x) => x);
   expect([e.status, e.details]).toEqual([

@@ -121,7 +121,7 @@ test("a hostile next never leaves the app", async ({ page }) => {
   });
   await expect(guest).toHaveAttribute("href", "/sign-in?method=code&next=%2F");
   await guest.click();
-  await page.getByRole("textbox", { name: "Email" }).fill("bob@example.com");
+  await page.getByRole("textbox", { name: "Email" }).fill("guest@outside.org");
   await page.getByRole("button", { name: "Send code" }).click();
   await page
     .getByRole("textbox", { name: "Code", exact: true })

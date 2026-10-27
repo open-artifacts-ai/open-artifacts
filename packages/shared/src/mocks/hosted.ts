@@ -103,6 +103,11 @@ export type HostedMockOptions = {
   /** Sync unhealthy for 2 h: banner and tokensUnverified (default false). */
   unhealthy?: boolean;
   /**
+   * With unhealthy: the outage began, and the last success was, 8 d ago, so
+   * staleAt (lastSuccessAt + 7 d) has passed and is reported (default false).
+   */
+  stale?: boolean;
+  /**
    * The caller is the org owner refused by a customer_mismatch: GET R.me
    * answers 401 break_glass_required with details { fresh } ("fresh": the
    * session meets break-glass; "stale": sign in again with reauth=1).
@@ -359,7 +364,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     });
 
   const unhealthySince = o.unhealthy
-    ? new Date(Date.now() - 2 * 3600_000).toISOString()
+    ? new Date(Date.now() - (o.stale ? 8 * 24 : 2) * 3600_000).toISOString()
     : null;
   const sync: SyncStatus = {
     mode: directoryMode,
@@ -421,10 +426,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     } satisfies Partial<SyncStatus>);
   }
 
-  if (sync.lastSuccessAt)
-    sync.staleAt = new Date(
-      Date.parse(sync.lastSuccessAt) + 7 * 24 * 3600_000,
-    ).toISOString();
+  // staleAt: lastSuccessAt + 7 d once that has passed, else null.
+  if (sync.lastSuccessAt) {
+    const at = Date.parse(sync.lastSuccessAt) + 7 * 24 * 3600_000;
+    if (at <= Date.now()) sync.staleAt = new Date(at).toISOString();
+  }
 
   // ---- derived views --------------------------------------------------------
   const isAdmin = () => me.user.role === "owner" || me.user.role === "admin";
@@ -849,6 +855,35 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         },
       });
     }),
+    // Mock only: the Google round trip, done. ?mock_email signs that active
+    // member in (method google) and 302s to /; anyone else to SIGN_IN_PAGE.
+    http.get("*/auth/callback/google", ({ request }) => {
+      if (mode !== "direct" || !providerIds.includes("google"))
+        return notFound();
+      const email = new URL(request.url).searchParams
+        .get("mock_email")
+        ?.toLowerCase();
+      const u = members.find(
+        (m) => m.email === email && m.status === "active" && m.role !== "guest",
+      );
+      if (!u)
+        return new HttpResponse(null, {
+          status: 302,
+          headers: { location: "/sign-in?error=no_access" },
+        });
+      me.user = u;
+      me.auth = {
+        method: "google",
+        readOnly: false,
+        cap: null,
+        expiresAt: new Date(Date.now() + 168 * 3600_000).toISOString(),
+      };
+      refresh();
+      return new HttpResponse(null, {
+        status: 302,
+        headers: { location: "/" },
+      });
+    }),
     http.post("*/auth/code/request", async ({ request }) => {
       if (mode !== "direct" || !providerIds.includes("email"))
         return notFound();
@@ -869,7 +904,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           retryAfter: 3600,
           scope: "email",
         });
-      pending = { email, attempts: 0, next: r.data.next ?? "/" };
+      // A domain member with domainCodes off signs in with Google: the same
+      // 202, but no code is sent (as the server).
+      const domainCodes = !providerIds.includes("google");
+      pending =
+        !domainCodes && email.endsWith(`@${MOCK_DOMAIN}`)
+          ? null
+          : { email, attempts: 0, next: r.data.next ?? "/" };
       return HttpResponse.json(
         {
           maskedEmail: mask(email),

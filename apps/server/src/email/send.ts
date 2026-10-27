@@ -3,6 +3,9 @@ import type { Env } from "../env.js";
 import { getSettings } from "../services/members.js";
 import { sha256Hex } from "../util/crypto.js";
 import type { EmailContent } from "./templates.js";
+import { EMAIL_TIMEOUT_MS } from "./timeout.js";
+
+export { EMAIL_TIMEOUT_MS };
 
 // Optional notification email via a Cloudflare Email Service `send_email`
 // binding (EMAIL) and sender (EMAIL_FROM). Best effort: never throws, and
@@ -26,7 +29,6 @@ export function emailDailyCap(env: Pick<Env, "EMAIL_DAILY_CAP">): number {
 }
 /** Emails one recipient address may receive per UTC day, instance-wide. */
 export const MAX_EMAILS_PER_RECIPIENT_PER_DAY = 5;
-export const EMAIL_TIMEOUT_MS = 3000;
 const ALL_KEY = "email:*";
 
 // One plain addr-spec: no quotes, commas, semicolons, angle brackets, comments
