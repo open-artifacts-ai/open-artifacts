@@ -5,11 +5,15 @@ on:
   merge_group:
   push:
     branches: [main]
+  # Nightly on main: the full suite, WebKit included (pull requests skip it).
+  schedule:
+    - cron: "23 7 * * *"
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.ref }}
+  # The nightly run never cancels (or is cancelled by) a push run on main.
+  group: ci-${{ github.ref }}-${{ github.event_name == 'schedule' && 'nightly' || 'run' }}
   cancel-in-progress: true
 jobs:
   lint:
@@ -302,6 +306,9 @@ jobs:
     env:
       PLAYWRIGHT_IMAGE_VERSION: 1.64.1
       E2E_SHARD: ${{ matrix.shard }}/4
+      # Pull requests run the real suite in Chromium only; the merge queue, pushes
+      # to main and the nightly run add WebKit.
+      E2E_PROJECTS: ${{ github.event_name == 'pull_request' && 'chromium' || '' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
