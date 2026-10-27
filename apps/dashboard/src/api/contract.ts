@@ -60,6 +60,8 @@ export {
   SPACE_MANAGER_MAPPING_ROLES,
   type Space,
   type SpaceCan,
+  type SpaceCandidate,
+  SpaceCandidateSchema,
   type SpaceKind,
   type SpaceMember,
   type SpaceMemberGroup,

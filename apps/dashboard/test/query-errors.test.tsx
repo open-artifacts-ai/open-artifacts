@@ -37,28 +37,23 @@ const region = (name: string) => screen.findByRole("region", { name });
 
 // -- Part 1: Add people
 
-it("Add people: a failed member lookup shows the error with Retry, not an empty list", async () => {
-  mountHosted(ENG_PAGE, true, undefined, [notFound(R.members)]);
+it("Add people: a failed search shows the error with Retry, not No one found", async () => {
+  mountHosted(ENG_PAGE, true, undefined, [notFound(R.spaceCandidates(ENG))]);
   fireEvent.click(
     within(await region("People")).getByRole("button", { name: "Add people" }),
   );
   const d = await screen.findByRole("dialog", {
     name: "Add people to Engineering",
   });
+  const box = within(d).getByRole("combobox", { name: "People" });
+  fireEvent.change(box, { target: { value: "da" } });
   const alert = await within(d).findByRole("alert");
   expect(alert).toHaveTextContent("Couldn't load the people you can add.");
   expect(within(alert).getByRole("button", { name: "Retry" })).toBeVisible();
-  expect(within(d).queryByRole("combobox")).toBeNull();
-  expect(within(d).getByRole("button", { name: "Add" })).toBeDisabled();
+  // The search stays, so Retry runs it again.
+  expect(box).toHaveValue("da");
+  expect(within(d).queryByRole("option")).toBeNull();
   expect(d).not.toHaveTextContent("Pick at least one person.");
-});
-
-it("People: a failed restriction lookup says so in the card", async () => {
-  mountHosted(ENG_PAGE, true, undefined, [notFound(R.members)]);
-  const card = await region("People");
-  const alert = await within(card).findByRole("alert");
-  expect(alert).toHaveTextContent("Couldn't check who is restricted.");
-  expect(within(alert).getByRole("button", { name: "Retry" })).toBeVisible();
 });
 
 // -- Part 2: GroupPicker
