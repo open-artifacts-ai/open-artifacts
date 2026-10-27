@@ -1,5 +1,3 @@
-import { lstatSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 import {
   describeRes,
   HttpError,
@@ -10,7 +8,7 @@ import {
 } from "./http.ts";
 import { allMarkers, NotRefused } from "./refused.ts";
 import { label, type TaskLike } from "./report.ts";
-import { readSecretFile, secretsOf, type Target } from "./targets.ts";
+import { secretsOf, type Target } from "./targets.ts";
 
 // Sign-in helpers for live/signin.test.ts (P5 R6). Only real values are ever
 // replayed: state, cookies and codes the installs (or Google, through a real
@@ -66,6 +64,43 @@ export async function startGoogle(t: Target): Promise<GoogleStart | null> {
   return { location, state, cookie };
 }
 
+/** Google's authorize origin (the fake IdP's in the rehearsal). */
+export const GOOGLE_AUTH = "https://accounts.google.com";
+
+/**
+ * The Google authorize URL a start leads to: follows the broker's 302 (it
+ * sets no cookie) without a browser, so the user pastes Google's own URL.
+ * `dropHd` removes Google's hd hint, as a foreign-tenant user would: Google
+ * then lets any account sign in, and the install must still refuse on the
+ * token's hd. The broker state and PKCE challenge in the URL are unchanged.
+ */
+export async function googleUrlOf(
+  start: GoogleStart,
+  opts: {
+    dropHd?: boolean;
+    /** The IdP's authorize origin (default Google's). */
+    idp?: string;
+    /** Rewrites each hop before it is fetched (the rehearsal's loopback http). */
+    map?: (u: URL) => URL;
+  } = {},
+): Promise<URL> {
+  const idp = opts.idp ?? GOOGLE_AUTH;
+  let u = start.location;
+  for (let hop = 0; u.origin !== idp; hop++) {
+    if (hop >= 3) throw new Error("sign-in start: too many redirects");
+    const res = await fetch(opts.map ? opts.map(u) : u, {
+      redirect: "manual",
+    });
+    await readBody(res);
+    const l = res.headers.get("location");
+    if (res.status !== 302 || !l)
+      throw new HttpError("sign-in start: broker authorize", res, "");
+    u = new URL(l, u);
+  }
+  if (opts.dropHd) u.searchParams.delete("hd");
+  return u;
+}
+
 /** GET B's (or A's) Google callback with these query params and cookie. */
 export function callbackReq(
   t: Target,
@@ -78,6 +113,19 @@ export function callbackReq(
     redirect: "manual",
     headers: cookie ? { cookie: cookieHeader(cookie) } : {},
   });
+}
+
+/** "; to /path?error=x" for a redirect: its path and error code only. */
+export function whereTo(res: Response): string {
+  const l = res.headers.get("location");
+  if (!l) return "";
+  try {
+    const u = new URL(l, "http://x.invalid");
+    const err = u.searchParams.get("error");
+    return `; to ${u.pathname}${err ? `?error=${err}` : ""}`;
+  } catch {
+    return "; to an unparseable location";
+  }
 }
 
 const locationOf = (res: Response, t: Target): URL | null => {
@@ -130,9 +178,9 @@ export async function expectStateRefused(
 
 /** A redirect sign-in refused after the state check: /sign-in?error=<one of>, no session. */
 export function signInRefused(...errors: string[]) {
-  return async (res: Response, t: Target): Promise<void> => {
+  const judge = async (res: Response, t: Target): Promise<void> => {
     const body = await readBody(res);
-    const what = `${t.name} did not refuse the sign-in (${describeRes(res, body)})`;
+    const what = `${t.name} did not refuse the sign-in (${describeRes(res, body)}${whereTo(res)})`;
     const to = locationOf(res, t);
     if (
       res.status !== 302 ||
@@ -145,11 +193,16 @@ export function signInRefused(...errors: string[]) {
     for (const m of allMarkers())
       if (body.includes(m)) throw new NotRefused(`${what}: holds a marker`);
   };
+  return Object.assign(judge, {
+    expects: `refused at sign-in (error=${errors.join(" or ")}, no session)`,
+  });
 }
 
 /** A completed redirect sign-in: 302 with a session cookie. */
-export const signedIn = (res: Response) =>
-  res.status === 302 && setsSession(res);
+export const signedIn = Object.assign(
+  (res: Response) => res.status === 302 && setsSession(res),
+  { expects: "signed in (302 with a session cookie)" },
+);
 
 // --- one-time codes -------------------------------------------------------
 
@@ -348,90 +401,35 @@ export const relayedTo = (res: Response, t: Target) => {
  */
 export const CAPTURE_FLOWS = {
   /** "hd of A at B", A's success leg. */
-  "a-alice": { at: "a", user: "alice@oa-redline-a.fyi" },
+  "a-alice": {
+    at: "a",
+    user: "alice@oa-redline-a.fyi",
+    why: "rl-a (tenant A). Google only offers oa-redline-a.fyi accounts: sign in as alice. This one should succeed.",
+  },
   /** "hd of A at B", the refused leg: tenant A's alice through B's flow. */
-  "b-alice": { at: "b", user: "alice@oa-redline-a.fyi" },
+  "b-alice": {
+    at: "b",
+    user: "alice@oa-redline-a.fyi",
+    foreign: true,
+    why: "rl-b (tenant C), as tenant A's alice. The script removed Google's tenant C hint, so Google shows the normal account chooser: pick or enter alice@oa-redline-a.fyi. The mismatch is the point: rl-b must refuse her.",
+  },
   /** "A's aud at B": A's code and broker state refused at B, then valid at A. */
-  "a-alice-replay": { at: "a", user: "alice@oa-redline-a.fyi" },
+  "a-alice-replay": {
+    at: "a",
+    user: "alice@oa-redline-a.fyi",
+    why: "rl-a (tenant A) again, as alice (Google only offers oa-redline-a.fyi accounts). The suite replays this code at rl-b (refused), then at rl-a (accepted).",
+  },
   /** "hd of A at B", B's success leg. */
-  "b-dave": { at: "b", user: "dave@oa-redline-c.fyi" },
+  "b-dave": {
+    at: "b",
+    user: "dave@oa-redline-c.fyi",
+    why: "rl-b (tenant C). Google only offers oa-redline-c.fyi accounts: sign in as dave (sign alice out first if Google picks her). This one should succeed.",
+  },
   /** "A's aud at B", B's success leg (Google codes are single use). */
-  "b-dave-2": { at: "b", user: "dave@oa-redline-c.fyi" },
+  "b-dave-2": {
+    at: "b",
+    user: "dave@oa-redline-c.fyi",
+    why: "rl-b (tenant C) again, as dave (Google only offers oa-redline-c.fyi accounts; each code works once). This one should succeed.",
+  },
 } as const;
 export type FlowName = keyof typeof CAPTURE_FLOWS;
-
-/** Google codes and broker states live about 10 minutes; the suite allows 9. */
-export const CAPTURE_MAX_AGE_MS = 9 * 60_000;
-
-export interface Capture {
-  flow: FlowName;
-  at: "a" | "b";
-  /** The install's own state cookie from the start (the browser never had it). */
-  cookie: CookiePair;
-  /** The callback query Google (through the broker) sent the browser to. */
-  query: { state: string; code: string; bstate?: string };
-}
-
-export interface StartedFlow {
-  flow: FlowName;
-  at: "a" | "b";
-  state: string;
-  cookie: CookiePair;
-  startedAt: number;
-}
-
-/**
- * Reads REDLINE_SIGNIN_CAPTURES: `flows.json` (from signin-capture.ts start)
- * and one `<flow>.url` per flow (the callback URL the browser was sent to).
- * Every file is 0600. A missing, stale or mismatched capture throws; the
- * caller turns an absent directory into unproven-live.
- */
-export function parseCaptures(
-  dir: string,
-  t: { a: Target; b: Target },
-  now = Date.now(),
-): Map<FlowName, Capture> {
-  const st = lstatSync(dir);
-  if (!st.isDirectory() || (st.mode & 0o077) !== 0)
-    throw new Error("captures: the directory must be mode 0700");
-  const started = JSON.parse(
-    readSecretFile(join(dir, "flows.json"), "captures flows.json"),
-  ) as StartedFlow[];
-  if (!Array.isArray(started))
-    throw new Error("captures: flows.json is not a list");
-  const out = new Map<FlowName, Capture>();
-  const files = new Set(readdirSync(dir));
-  for (const f of started) {
-    const spec = CAPTURE_FLOWS[f.flow as FlowName];
-    if (!spec || spec.at !== f.at)
-      throw new Error(`captures: unknown flow ${String(f.flow)}`);
-    if (!(now - f.startedAt <= CAPTURE_MAX_AGE_MS))
-      throw new Error(`captures: ${f.flow} is older than 9 minutes`);
-    if (!files.has(`${f.flow}.url`))
-      throw new Error(`captures: ${f.flow}.url is missing`);
-    const u = new URL(
-      readSecretFile(join(dir, `${f.flow}.url`), `captures ${f.flow}.url`),
-    );
-    const target = t[f.at];
-    if (u.origin !== target.app || u.pathname !== CALLBACK_GOOGLE)
-      throw new Error(
-        `captures: ${f.flow}.url is not ${target.name}'s callback`,
-      );
-    const q = u.searchParams;
-    const code = q.get("code") ?? "";
-    if (!code) throw new Error(`captures: ${f.flow}.url has no code`);
-    if (q.get("state") !== f.state)
-      throw new Error(`captures: ${f.flow}.url is from another start`);
-    const bstate = q.get("bstate");
-    out.set(f.flow as FlowName, {
-      flow: f.flow as FlowName,
-      at: f.at,
-      cookie: f.cookie,
-      query: { state: f.state, code, ...(bstate ? { bstate } : {}) },
-    });
-  }
-  for (const k of Object.keys(CAPTURE_FLOWS))
-    if (!out.has(k as FlowName))
-      throw new Error(`captures: ${k} was not started`);
-  return out;
-}

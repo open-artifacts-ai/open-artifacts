@@ -6,6 +6,12 @@ import {
   publicFromPkcs8,
   signRequest,
 } from "@oa/auth-core";
+import {
+  BrokerGateRefusedError,
+  BrokerGateStaleError,
+  BrokerUnavailableError,
+  brokerFetch,
+} from "../auth/broker-transport.js";
 import type { Env } from "../env.js";
 import { open } from "./crypto.js";
 import {
@@ -17,7 +23,7 @@ import {
 } from "./transport.js";
 
 // The broker transport (hosted): the directory broker (apps/directory-broker,
-// its own Worker on DIRECTORY_BROKER_URL) holds the Directory client secret.
+// its own Worker on directory.<zone>) holds the Directory client secret.
 // This install signs every token request with its own Ed25519 key
 // (BROKER_SIGNING_KEY, the P2 install assertion) over a path-bound
 // transcript, so a sign-in redeem signature never works here. Each request
@@ -43,6 +49,7 @@ const kidOf = (signingKey: string) => {
 
 /** One POST to a broker route, signed with the install assertion for `path`. */
 async function signedPost(
+  env: Env,
   t: Broker,
   path: string,
   body: Record<string, unknown>,
@@ -64,9 +71,18 @@ async function signedPost(
     redirect: "manual",
   });
   try {
-    // Public HTTPS to DIRECTORY_BROKER_URL; the request is signed.
-    return { res: await fetch(req), kid };
-  } catch {
+    // A binding, the invocation's DIRECTORY_BROKER capability, or (never
+    // hosted) public HTTPS to DIRECTORY_BROKER_URL; the request is signed.
+    return { res: await brokerFetch(env, "directory", req), kid };
+  } catch (e) {
+    if (e instanceof BrokerUnavailableError)
+      throw new TransportError("broker_unavailable");
+    // The platform's gate refused it; the broker's own 401 is "refused".
+    if (e instanceof BrokerGateRefusedError)
+      throw new TransportError("gate_refused");
+    // A capability used past its invocation: nothing was sent.
+    if (e instanceof BrokerGateStaleError)
+      throw new TransportError("gate_stale");
     throw new TransportError("exchange");
   }
 }
@@ -76,12 +92,12 @@ async function signedPost(
  * and the opened box (the tokens), or throws a TransportError.
  */
 async function post(
-  _env: Env,
+  env: Env,
   t: Broker,
   body: Record<string, unknown>,
 ): Promise<{ out: Record<string, unknown>; tokens: Record<string, unknown> }> {
   const self = await boxKeyPair();
-  const { res, kid } = await signedPost(t, DIRECTORY_TOKEN, {
+  const { res, kid } = await signedPost(env, t, DIRECTORY_TOKEN, {
     epk: self.pub,
     ...body,
   });
@@ -141,7 +157,7 @@ export function brokerClient(env: Env, t: Broker): DirectoryClient {
       return tokens.access_token;
     },
     async revoke(sealedRefresh) {
-      const { res } = await signedPost(t, DIRECTORY_REVOKE, {
+      const { res } = await signedPost(env, t, DIRECTORY_REVOKE, {
         refresh_token: await open(env, sealedRefresh),
       });
       await res.body?.cancel();

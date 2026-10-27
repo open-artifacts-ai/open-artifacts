@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getDomain } from "tldts";
 import { afterAll, beforeAll, describe, it } from "vitest";
 import {
@@ -25,7 +25,7 @@ import {
   prepareSide,
   type Side,
 } from "../src/refused.ts";
-import { proof } from "../src/report.ts";
+import { noInventoryReason, proof } from "../src/report.ts";
 import { labelTurnstileTestKey, ownCodeRequestReq } from "../src/signin.ts";
 import {
   inventoryKeyOf,
@@ -211,7 +211,9 @@ describe("mapping integrity", () => {
         return proof(
           ctx,
           "unproven-live",
-          "needs strayHost and the inventory in REDLINE_TARGETS",
+          stray
+            ? noInventoryReason()
+            : "needs strayHost and the inventory in REDLINE_TARGETS",
         );
       const mapped = (await inventory(
         `/hosts?host=${encodeURIComponent(stray)}`,
@@ -267,12 +269,7 @@ describe("mapping integrity", () => {
           `${t.name}: the content host is not served by a content app`,
         );
     }
-    if (!T.inventory)
-      return proof(
-        ctx,
-        "unproven-live",
-        "no inventory configured (REDLINE_STG_INVENTORY_URL and key)",
-      );
+    if (!T.inventory) return proof(ctx, "unproven-live", noInventoryReason());
     const listing = (await inventory("/hosts")) as {
       hosts?: unknown;
       complete?: unknown;
@@ -398,12 +395,7 @@ describe("unmapped host", () => {
         "unproven-live",
         "REDLINE_DELETED_HOSTS not set (Platform sets it once rl-del is deleted)",
       );
-    if (!T.inventory)
-      return proof(
-        ctx,
-        "unproven-live",
-        "no inventory configured (REDLINE_STG_INVENTORY_URL and key)",
-      );
+    if (!T.inventory) return proof(ctx, "unproven-live", noInventoryReason());
     for (const n of T.deletedHosts) {
       await expectGeneric404(await edge(n, n), "a deleted install's host");
       const h = (await inventory(`/hosts?host=${encodeURIComponent(n)}`)) as {
@@ -521,7 +513,9 @@ describe("cross-site isolation", () => {
     const strict = T.mode === "staging";
     const notes: string[] = [];
     for (const t of [T.a, T.b]) {
-      const email = `redline-cookies@${t.testDomain}`;
+      // A fresh guest: outside AUTH_DOMAINS only guests get emailed codes,
+      // and an earlier run's row would keep its role.
+      const email = `redline-cookies-${randomUUID().slice(0, 8)}@${t.testDomain}`;
       const seen: SetCookie[] = [];
       const take = async (r: Response) => {
         await readBody(r);
@@ -529,7 +523,7 @@ describe("cross-site isolation", () => {
         return r;
       };
       // Session hook sign-in, then app routes and sign-out with that cookie.
-      const cookie = await sessionCred(t, email, "member");
+      const cookie = await sessionCred(t, email, "guest");
       for (const path of ["/", "/sign-in", "/api/v1/me", "/auth/providers"])
         await take(
           await send(new Request(`${t.app}${path}`, withCred(cookie))),

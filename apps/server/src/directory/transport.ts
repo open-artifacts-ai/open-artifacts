@@ -122,10 +122,24 @@ export type ConsentCallback = {
 /**
  * Why a transport call failed; `stage` is safe to log. `refused`: the
  * broker refused the request (signature, state, flow); `invalid_grant`:
- * Google revoked the grant (T13 marks auth_failed); `exchange`: anything else.
+ * Google revoked the grant (T13 marks auth_failed); `broker_unavailable`:
+ * a hosted install with no binding and no DIRECTORY_BROKER capability in this
+ * invocation (auth/broker-transport.ts); `gate_refused`: the platform's
+ * BrokerGate refused the request before the broker saw it (never a 401);
+ * `gate_stale`: the runtime refused a capability used past its invocation
+ * (nothing sent; feedSync hands nothing over and the next tick retries);
+ * `exchange`: anything else.
  */
 export class TransportError extends Error {
-  constructor(public stage: "refused" | "invalid_grant" | "exchange") {
+  constructor(
+    public stage:
+      | "refused"
+      | "invalid_grant"
+      | "exchange"
+      | "broker_unavailable"
+      | "gate_refused"
+      | "gate_stale",
+  ) {
     super(`directory transport: ${stage}`);
     this.name = "TransportError";
   }

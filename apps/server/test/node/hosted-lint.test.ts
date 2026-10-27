@@ -12,6 +12,10 @@ const SRC = join(import.meta.dirname, "../../src");
 
 /** `file: enclosing function` → why this read only tightens or reports. */
 const READS: Record<string, string> = {
+  "auth/broker-transport.ts: brokerFetch":
+    "fail closed: a hosted install never reaches a broker over HTTPS (no binding, no props: broker_unavailable)",
+  "auth/broker-transport.ts: brokerTransportKind":
+    "fail closed: reports no transport for a hosted install without a binding or props",
   "auth/sign-in.ts: showsSignInFields":
     "reports: Me carries the hosted sign-in fields (shape only, no access)",
   "auth/config.ts: domainJoin":

@@ -30,6 +30,7 @@ import {
   connect,
   directEnv,
   hostedEnv,
+  hostedProps,
   post,
   registerInstall,
   resetDirectory,
@@ -48,9 +49,11 @@ let owner: { cookie: string; userId: string; email: string };
 let adminSub: string;
 let sent: SentMail[];
 
+// The scheduler's props: a hosted job reaches the broker through them.
 const ctx = {
   waitUntil: () => {},
   passThroughOnException: () => {},
+  props: hostedProps(),
 } as unknown as ExecutionContext;
 const stub = () => {
   const ns = env.DIRECTORY_SYNC as NonNullable<Env["DIRECTORY_SYNC"]>;
@@ -100,6 +103,7 @@ const call = (
       },
     }),
     e,
+    e.HOSTED === "1" ? hostedProps() : undefined,
   );
 const disconnectMails = () =>
   sent.filter((m) => m.text.includes("Google Workspace was disconnected"));

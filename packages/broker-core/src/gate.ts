@@ -41,8 +41,24 @@ const FORWARD = ["content-type", "x-oa-kid", "x-oa-sig"] as const;
 
 const INSTALL_ID = /^i[a-z0-9]{11}$/;
 
-const refuse = (status: number, error: string) =>
-  Response.json({ error }, { status });
+/**
+ * Set on every refusal by the gate itself, never on a broker's response, so a
+ * caller can tell "the gate refused" from the broker's own 404 or 4xx.
+ */
+export const GATE_HEADER = "x-oa-gate";
+
+/** The gate's refusal codes, as the `error` of the JSON body. */
+export type GateRefusal =
+  | "gate_misconfigured"
+  | "not_found"
+  | "json_only"
+  | "bad_body"
+  | "too_large"
+  | "bad_json"
+  | "install_mismatch";
+
+const refuse = (status: number, error: GateRefusal) =>
+  Response.json({ error }, { status, headers: { [GATE_HEADER]: "1" } });
 
 /** The body as text, or null when it is larger than `max` bytes. */
 async function boundedText(req: Request, max: number): Promise<string | null> {
@@ -77,8 +93,10 @@ async function boundedText(req: Request, max: number): Promise<string | null> {
 /**
  * One request through the gate. 404 for any method or route the broker kind
  * doesn't allow (or a query string), 415 for a body that isn't JSON, 413 over
- * GATE_MAX_BODY, 400 for JSON that doesn't parse to an object, 403 when the
- * body names another install. Otherwise the same body, the allowed headers
+ * GATE_MAX_BODY, 400 for a body that can't be read or isn't UTF-8 (bad_body)
+ * or JSON that doesn't parse to an object (bad_json), 403 when the body names
+ * another install, 500 for missing or malformed props. Every refusal carries
+ * `x-oa-gate: 1`. Otherwise the same body, the allowed headers
  * only, to the fixed origin over the service binding.
  */
 export async function passGate(

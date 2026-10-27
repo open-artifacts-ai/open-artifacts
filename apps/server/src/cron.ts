@@ -1,3 +1,4 @@
+import { withBrokerProps } from "./auth/broker-transport.js";
 import { sweepLoginCodes } from "./auth/codes.js";
 import { disconnectDirectory } from "./directory/connect.js";
 import { expirePending } from "./directory/store.js";
@@ -11,7 +12,7 @@ import {
   sweepLostIndexJobs,
 } from "./services/artifacts.js";
 import { sweepAuditEvents } from "./services/audit.js";
-import { kickSync } from "./services/directory.js";
+import { feedSync, kickSync } from "./services/directory.js";
 import { checkLatestRelease } from "./services/release.js";
 import { directoryMode } from "./services/spaces.js";
 import { sweepUploads } from "./services/uploads.js";
@@ -44,10 +45,15 @@ export const SYSTEM_JOB_PREFIX = "oa:";
 export const DIRECTORY_DISCONNECT_CRON = "oa:directory-disconnect";
 
 /**
- * Every 2 min (hosted; the scheduler calls every active install): the
- * bounded, windowed sweep for index and thumbnail jobs a publish lost
- * (sweepLostIndexJobs "tick"), in waitUntil so the scheduler's lane is
- * freed at once. Resolves; the sweep logs its own failure.
+ * Every 2 min (hosted): DirectorySync's alarm can't reach the directory
+ * broker, so this tick asks it whether a run is due (its own stored timing)
+ * and, if so, mints the access token through this invocation's
+ * DIRECTORY_BROKER capability and hands over the token (services/directory.ts
+ * feedSync). Resolves with nothing to do on a self-hosted install. Rejects
+ * on a D1 or DO error.
+ * The same tick also runs the bounded, windowed sweep for index and
+ * thumbnail jobs a publish lost (sweepLostIndexJobs "tick"), in waitUntil
+ * and registered first, so a feedSync rejection never skips it.
  */
 export const DIRECTORY_SYNC_CRON = "oa:directory-sync";
 
@@ -60,7 +66,16 @@ export const DIRECTORY_SYNC_CRON = "oa:directory-sync";
  * bounded batch per run (sweepAuditEvents). An `oa:` cron is a platform
  * system job instead (above); an unknown one is refused (rejects, runs
  * nothing). */
-export async function scheduled(
+export function scheduled(
+  event: Pick<ScheduledController, "cron">,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<void> {
+  // The scheduler's broker capabilities (ctx.props) for this invocation.
+  return withBrokerProps(ctx, () => run(event, env, ctx));
+}
+
+async function run(
   event: Pick<ScheduledController, "cron">,
   env: Env,
   ctx: ExecutionContext,
@@ -72,6 +87,9 @@ export async function scheduled(
           logError("cron_task_failed", e),
         ),
       );
+      const fed = await feedSync(env);
+      if (fed === "fed" || fed === "mint_failed")
+        logInfo("system_job", { job: "directory-sync", state: fed });
       return;
     }
     if (event.cron !== DIRECTORY_DISCONNECT_CRON) {

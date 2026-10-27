@@ -169,7 +169,7 @@ describe("snapshot diff (key names only)", () => {
     const msg = (err as Error).message;
     expect(settled).toEqual(["rl-b"]);
     expect(msg).toMatch(
-      /^rl-b: the throwaway changed \(sha256:[0-9a-f]{16} -> sha256:[0-9a-f]{16}\); differs: /,
+      /^A's credential at B \(rl-b; expected denied, throwaway unchanged\): rl-b: the throwaway changed \(sha256:[0-9a-f]{16} -> sha256:[0-9a-f]{16}\); differs: /,
     );
     expect(msg).toContain("/versions keys [0].textIndexed, [1] added");
     expect(msg).not.toMatch(/SECRET|x{20}/);

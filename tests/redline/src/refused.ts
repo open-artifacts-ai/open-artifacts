@@ -88,6 +88,108 @@ export async function expectRefused(res: Response, b: Target): Promise<void> {
 export const defaultOk = (r: Response) =>
   (r.status >= 200 && r.status < 300) || r.status === 101;
 
+/** The three legs of every cross-install check. */
+export type LegName =
+  | "B's own credential at B"
+  | "A's credential at A"
+  | "A's credential at B";
+
+/** Where a cross-install check failed: the report's leg, host, expected and actual. */
+export interface LegInfo {
+  leg: LegName;
+  /** The install the leg was sent to (its name). */
+  host: string;
+  expected: string;
+  actual?: string;
+}
+
+/** What a verdict function expects, for the report ("signed in", "refused (error=tenant)"). */
+export type Expects = { expects?: string };
+const expectsOf = (f: unknown, dflt: string) =>
+  (f as Expects | undefined)?.expects ?? dflt;
+
+/**
+ * `e` with its leg attached (`redline` on the error, read by the reporter) and
+ * named in the message. NotRefused stays NotRefused; an "infra: " message
+ * keeps its prefix (the report's infra level reads it).
+ */
+export function tagLeg(e: unknown, info: LegInfo): Error {
+  const err = e instanceof Error ? e : new Error(String(e));
+  if ((err as { redline?: unknown }).redline) return err;
+  const at = `${info.leg} (${info.host}; expected ${info.expected})`;
+  let out: Error;
+  if (err.message.startsWith("infra: ")) out = err;
+  else if (err instanceof NotRefused)
+    out = new NotRefused(`${at}: ${err.message}`, { cause: err });
+  else {
+    out = new Error(`${at}: ${err.message}`, { cause: err });
+    out.name = err.name;
+  }
+  (out as { redline?: LegInfo }).redline = {
+    ...info,
+    actual: info.actual ?? err.message,
+  };
+  return out;
+}
+
+/** Runs one leg; any error it throws is tagged with the leg. */
+export async function atLeg<T>(
+  info: LegInfo,
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (e) {
+    throw tagLeg(e, info);
+  }
+}
+
+const FAILED_AT: Record<Exclude<LegName, "A's credential at B">, string> = {
+  "B's own credential at B": "B's own credential failed at B",
+  "A's credential at A": "A's credential failed at A",
+};
+
+/** A success leg's verdict: `ok` holds, else a tagged error with the status. */
+export async function okLeg(
+  leg: Exclude<LegName, "A's credential at B">,
+  res: Response,
+  host: Target,
+  ok: (r: Response, host: Target) => boolean = defaultOk,
+): Promise<void> {
+  const body = await readBody(res);
+  if (ok(res, host)) return;
+  const l = res.headers.get("location");
+  let to = "";
+  try {
+    const u = l ? new URL(l, host.app) : null;
+    const err = u?.searchParams.get("error");
+    if (u) to = `; to ${u.pathname}${err ? `?error=${err}` : ""}`;
+  } catch {}
+  const actual = `${describeRes(res, body)}${to}`;
+  throw tagLeg(new Error(`${FAILED_AT[leg]} (${actual})`), {
+    leg,
+    host: host.name,
+    expected: expectsOf(ok, "allowed"),
+    actual,
+  });
+}
+
+/** The refused leg's verdict: `refused` passes, else its error, tagged. */
+export async function refusedLeg(
+  res: Response,
+  host: Target,
+  refused: (res: Response, b: Target) => Promise<void> = expectRefused,
+): Promise<void> {
+  await atLeg(
+    {
+      leg: "A's credential at B",
+      host: host.name,
+      expected: expectsOf(refused, "refused"),
+    },
+    () => refused(res, host),
+  );
+}
+
 export interface CrossCheck<C = Cred> {
   a: Target;
   b: Target;
@@ -122,16 +224,39 @@ export async function crossCheck<C = Cred>(
   const ok = o.ok ?? defaultOk;
   const go = o.send ?? send;
   const refused = o.refused ?? expectRefused;
-  const rb = await go(req(o.credB, o.b));
-  const tb = await readBody(rb);
-  if (!ok(rb, o.b))
-    throw new Error(`B's own credential failed at B (${describeRes(rb, tb)})`);
-  if (o.refuseFirst) await refused(await go(req(o.credA, o.b)), o.b);
-  const ra = await go(req(o.credA, o.a));
-  const ta = await readBody(ra);
-  if (!ok(ra, o.a))
-    throw new Error(`A's credential failed at A (${describeRes(ra, ta)})`);
-  if (!o.refuseFirst) await refused(await go(req(o.credA, o.b)), o.b);
+  // A send that throws (before any response) is tagged with its leg too.
+  const sent = (leg: LegName, host: Target, r: () => Request) =>
+    atLeg(
+      {
+        leg,
+        host: host.name,
+        expected:
+          leg === "A's credential at B"
+            ? expectsOf(refused, "refused")
+            : expectsOf(ok, "allowed"),
+      },
+      () => go(r()),
+    );
+  const atB = async () =>
+    refusedLeg(
+      await sent("A's credential at B", o.b, () => req(o.credA, o.b)),
+      o.b,
+      refused,
+    );
+  await okLeg(
+    "B's own credential at B",
+    await sent("B's own credential at B", o.b, () => req(o.credB, o.b)),
+    o.b,
+    ok,
+  );
+  if (o.refuseFirst) await atB();
+  await okLeg(
+    "A's credential at A",
+    await sent("A's credential at A", o.a, () => req(o.credA, o.a)),
+    o.a,
+    ok,
+  );
+  if (!o.refuseFirst) await atB();
 }
 
 /** A Backend surface probe's answer (apps/server/test/authz/surfaces.ts). */
@@ -208,20 +333,38 @@ export async function crossProbe<C>(
   run: (cred: C, host: Target, fetch: ProbeFetch) => Promise<Verdict>,
   o: CrossProbe<C>,
 ): Promise<void> {
-  const b = await leg("B's own credential at B", (f) => run(o.credB, o.b, f));
-  if (b.verdict !== "allow")
-    throw new Error("B's own credential failed at B (the probe said deny)");
-  const a = await leg("A's credential at A", (f) => run(o.credA, o.a, f));
-  if (a.verdict !== "allow")
-    throw new Error("A's credential failed at A (the probe said deny)");
-  const x = await leg("A's credential at B", (f) => run(o.credA, o.b, f));
-  if (!reachedB(x.reqs, o))
-    throw new NotRefused(
-      `${o.b.name}: no request carrying A's credential reached B`,
-    );
-  for (const r of x.seen) await expectRefused(r, o.b);
-  if (x.verdict !== "deny")
-    throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);
+  const ok = (l: LegName, h: Target) => ({
+    leg: l,
+    host: h.name,
+    expected: "allowed (the probe)",
+  });
+  await atLeg(ok("B's own credential at B", o.b), async () => {
+    const b = await leg("B's own credential at B", (f) => run(o.credB, o.b, f));
+    if (b.verdict !== "allow")
+      throw new Error("B's own credential failed at B (the probe said deny)");
+  });
+  await atLeg(ok("A's credential at A", o.a), async () => {
+    const a = await leg("A's credential at A", (f) => run(o.credA, o.a, f));
+    if (a.verdict !== "allow")
+      throw new Error("A's credential failed at A (the probe said deny)");
+  });
+  await atLeg(
+    {
+      leg: "A's credential at B",
+      host: o.b.name,
+      expected: "denied (the probe)",
+    },
+    async () => {
+      const x = await leg("A's credential at B", (f) => run(o.credA, o.b, f));
+      if (!reachedB(x.reqs, o))
+        throw new NotRefused(
+          `${o.b.name}: no request carrying A's credential reached B`,
+        );
+      for (const r of x.seen) await expectRefused(r, o.b);
+      if (x.verdict !== "deny")
+        throw new NotRefused(`${o.b.name} allowed A's credential (the probe)`);
+    },
+  );
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -331,17 +474,38 @@ export async function crossWrite<C, X>(
     made.push([t, x]);
     return x;
   };
+  const okAt = (l: LegName, h: Target) => ({
+    leg: l,
+    host: h.name,
+    expected: "allowed (the probe)",
+  });
   const body = async () => {
-    const xb = await fresh(o.b);
-    const b = await leg("B's own credential at B", (f) =>
-      run(o.credB, o.b, xb, f),
+    await atLeg(okAt("B's own credential at B", o.b), async () => {
+      const xb = await fresh(o.b);
+      const b = await leg("B's own credential at B", (f) =>
+        run(o.credB, o.b, xb, f),
+      );
+      if (b.verdict !== "allow")
+        throw new Error("B's own credential failed at B (the probe said deny)");
+    });
+    await atLeg(okAt("A's credential at A", o.a), async () => {
+      const xa = await fresh(o.a);
+      const a = await leg("A's credential at A", (f) =>
+        run(o.credA, o.a, xa, f),
+      );
+      if (a.verdict !== "allow")
+        throw new Error("A's credential failed at A (the probe said deny)");
+    });
+    await atLeg(
+      {
+        leg: "A's credential at B",
+        host: o.b.name,
+        expected: "denied, throwaway unchanged",
+      },
+      () => refusedWrite(),
     );
-    if (b.verdict !== "allow")
-      throw new Error("B's own credential failed at B (the probe said deny)");
-    const xa = await fresh(o.a);
-    const a = await leg("A's credential at A", (f) => run(o.credA, o.a, xa, f));
-    if (a.verdict !== "allow")
-      throw new Error("A's credential failed at A (the probe said deny)");
+  };
+  const refusedWrite = async () => {
     const xx = await fresh(o.b);
     await o.settle?.(o.b, xx);
     const before = await o.snapshot(o.b, xx);

@@ -28,6 +28,24 @@ describe("redact", () => {
     expect(redact("GET /c/abc123/v1/index.html 404")).toBe("GET <path> 404");
     expect(redact("at /p/xyz")).toBe("at <path>");
   });
+  it("keeps the runtime's support reference, and only that", () => {
+    const id = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4";
+    expect(redact(`internal error; reference = ${id}`)).toBe(
+      `internal error; reference = ${id}`,
+    );
+    // Anything else in the same message is still redacted.
+    expect(
+      redact(
+        `internal error; reference = ${id} at https://x.test/c/secret?t=1 for a@b.test`,
+      ),
+    ).toBe(`internal error; reference = ${id} at <url:x.test> for <email>`);
+    // A long run elsewhere is still a token; an odd reference shape is not kept.
+    expect(redact(`reference = ${id}`)).toBe("reference = <token>");
+    expect(
+      redact("internal error; reference = Bearer_ABCDEFGHIJKLMNOPQRSTUVWX"),
+    ).toBe("internal error; reference = <token>");
+  });
+
   it("leaves ids, enums and plain text alone", () => {
     for (const s of [
       "LxTbjr9wyc6M8o1Y",

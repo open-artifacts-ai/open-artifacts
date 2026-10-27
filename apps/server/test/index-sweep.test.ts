@@ -40,7 +40,9 @@ const withBrowser = {
 } as Env;
 
 type Hooks = {
-  scheduleIndex?: (real: () => Promise<void>) => Promise<void>;
+  scheduleIndex?: (
+    real: () => Promise<{ ms: number }>,
+  ) => Promise<{ ms: number }>;
   closeSockets?: (real: () => Promise<void>) => Promise<void>;
 };
 /** env whose artifact DO stubs run `hooks` around the real RPCs. */
@@ -187,7 +189,7 @@ describe("enqueue after the response", () => {
       },
       scheduleIndex: async (real) => {
         order.push("enqueue");
-        await real();
+        return real();
       },
     });
     const c = ctxOf();

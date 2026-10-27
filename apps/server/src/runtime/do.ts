@@ -1238,12 +1238,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     version: number,
     thumb = false,
     event?: VersionEvent,
-  ): Promise<void> {
+  ): Promise<{ ms: number }> {
     if (typeof artifactId !== "string" || artifactId.length > 64)
       fail("bad_request", "invalid artifact id");
     if (!Number.isSafeInteger(version) || version < 1)
       fail("bad_request", "invalid version");
-    // The object's own share of index_enqueue's wall time.
+    // The object's own share of index_enqueue's wall time (returned).
     const t0 = Date.now();
     if (event) this.broadcastVersion(version, event);
     const due = this.now() + INDEX_DELAY_MS;
@@ -1272,13 +1272,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
         due,
       );
     await this.armAt(due);
-    console.log(
-      JSON.stringify({
-        evt: "index_schedule",
-        artifactId,
-        ms: Date.now() - t0,
-      }),
-    );
+    // Returned, not logged: a DO's console doesn't reach the dispatch tail.
+    return { ms: Date.now() - t0 };
   }
 
   /**

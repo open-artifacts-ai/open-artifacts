@@ -1,6 +1,7 @@
 import { MCP_PATH, normalizeHost as normHost } from "@oa/shared";
 import { app } from "./app.js";
 import { canConnect } from "./auth/agents.js";
+import { withBrokerProps } from "./auth/broker-transport.js";
 import { verifyPat } from "./auth/pat.js";
 import { contentApp } from "./content/app.js";
 import { scheduled } from "./cron.js";
@@ -78,25 +79,34 @@ async function mcpWithPat(
 }
 
 export default {
-  async fetch(req, env, ctx) {
-    // URL.hostname only: port stripped; X-Forwarded-Host is ignored.
-    const url = new URL(req.url);
-    if (normHost(url.hostname) === normHost(env.CONTENT_HOST ?? ""))
-      return contentApp.fetch(req, env, ctx);
-    // Another install's hostname (WfP wildcard) or a stray alias: 404 before
-    // auth, OAuth, the route policy or D1. Plain body, no other headers.
-    if (isForeignHost(env, url.hostname))
-      return new Response("Not found", { status: 404 });
-    const pat =
-      url.pathname === MCP_PATH
-        ? PAT_BEARER.exec(req.headers.get("authorization") ?? "")
-        : null;
-    // PATs at /mcp; everything else through the OAuth provider: OAuth bearer
-    // at /mcp, its token/register/metadata endpoints, then the app.
-    const res = pat?.[1]
-      ? await mcpWithPat(req, env, ctx, pat[1])
-      : await serveAppHost(req, env, ctx, app);
-    return withSecurityHeaders(res, appHostOpts(env, req.method, url.pathname));
+  fetch(req, env, ctx) {
+    // The platform's broker capabilities (ctx.props) for this invocation.
+    return withBrokerProps(ctx, () => serve(req, env, ctx));
   },
   scheduled,
 } satisfies ExportedHandler<Env>;
+
+async function serve(
+  req: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  // URL.hostname only: port stripped; X-Forwarded-Host is ignored.
+  const url = new URL(req.url);
+  if (normHost(url.hostname) === normHost(env.CONTENT_HOST ?? ""))
+    return contentApp.fetch(req, env, ctx);
+  // Another install's hostname (WfP wildcard) or a stray alias: 404 before
+  // auth, OAuth, the route policy or D1. Plain body, no other headers.
+  if (isForeignHost(env, url.hostname))
+    return new Response("Not found", { status: 404 });
+  const pat =
+    url.pathname === MCP_PATH
+      ? PAT_BEARER.exec(req.headers.get("authorization") ?? "")
+      : null;
+  // PATs at /mcp; everything else through the OAuth provider: OAuth bearer
+  // at /mcp, its token/register/metadata endpoints, then the app.
+  const res = pat?.[1]
+    ? await mcpWithPat(req, env, ctx, pat[1])
+    : await serveAppHost(req, env, ctx, app);
+  return withSecurityHeaders(res, appHostOpts(env, req.method, url.pathname));
+}
