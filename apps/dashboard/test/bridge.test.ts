@@ -640,7 +640,11 @@ describe("bridge limits", () => {
 describe("anonymous id", () => {
   const TOKEN = `${"a".repeat(21)}A.${"b".repeat(42)}A`;
   const TOKEN2 = `${"c".repeat(21)}A.${"d".repeat(42)}A`;
-  const OPT_IN = { ...ART, allowAnonymousWrites: true } as ArtifactSummary;
+  const OPT_IN = {
+    ...ART,
+    visibility: "public",
+    dataWriters: "viewers",
+  } as ArtifactSummary;
   const mkAnon = (
     art: ArtifactSummary,
     viewer: typeof VIEWER | null = null,
@@ -904,7 +908,7 @@ describe("anonymous id", () => {
     expect(resultOf("c")).toMatchObject({ ok: true, value: null });
   });
 
-  it("no header on an artifact without allowAnonymousWrites", async () => {
+  it("no header unless public with dataWriters viewers", async () => {
     vi.stubGlobal("localStorage", okStorage);
     store.set(ANON_ID_KEY, TOKEN);
     mkAnon(ART);

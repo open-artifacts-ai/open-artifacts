@@ -1,6 +1,7 @@
 import {
   type ArtifactPatch,
   type ArtifactSummary,
+  type DataWriters,
   type ShareRole,
   ShareSchema,
   type Visibility,
@@ -54,6 +55,18 @@ const NOTE: Record<Visibility, string> = {
   team: "Everyone in the workspace can open it.",
   public: "Anyone with the link can view. It won't appear in search engines.",
 };
+/** #681: who may change the page's live data. */
+const WRITERS: { value: DataWriters; label: string }[] = [
+  { value: "viewers", label: "Everyone who can see it" },
+  { value: "editors", label: "Only editors" },
+];
+const writersHint = (w: DataWriters, v: Visibility) =>
+  w === "editors"
+    ? "Only you and people who can edit."
+    : v === "public"
+      ? "Anyone with the link, signed in or not."
+      : "Anyone who can view it.";
+
 const CAPS = [
   ["db", "Database", "Lets the page store shared data."],
   ["viewer", "Viewer identity", "Lets the page see who is viewing."],
@@ -170,12 +183,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const commitVisibility = (v: Visibility) =>
     visOnce((done) =>
       patch.mutate(
-        {
-          visibility: v,
-          // Anonymous writes need public links: turn them off only when leaving public.
-          ...(v !== "public" &&
-            artifact.allowAnonymousWrites && { allowAnonymousWrites: false }),
-        },
+        { visibility: v },
         {
           onSettled: done,
           onSuccess: () => setConflict(false),
@@ -187,13 +195,9 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
         },
       ),
     );
+  // Turning db off keeps dataWriters as set: it shows again when db is back.
   const setCap = (k: (typeof CAPS)[number][0], on: boolean) =>
-    save({
-      capabilities: { [k]: on },
-      ...(k === "db" && !on && artifact.allowAnonymousWrites
-        ? { allowAnonymousWrites: false }
-        : {}),
-    });
+    save({ capabilities: { [k]: on } });
   const invite = () => {
     const e = parseEmail(email);
     setInvalid(!e);
@@ -460,24 +464,47 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             </small>
           </div>
         ))}
-        <div className="oa-cap">
-          <LabelledCheckbox
-            id="oa-cap-anon"
-            describedBy="oa-cap-anon-hint"
-            label="Allow anonymous writes"
-            checked={artifact.allowAnonymousWrites}
-            disabled={
-              !vis ||
-              patch.isPending ||
-              artifact.visibility !== "public" ||
-              !artifact.capabilities.db
-            }
-            onCheckedChange={(on) => save({ allowAnonymousWrites: on })}
-          />
-          <small id="oa-cap-anon-hint" className="oa-muted">
-            Public and database only.
-          </small>
-        </div>
+        {artifact.capabilities.db && (
+          <div className="oa-cap">
+            <p id="oa-share-writers" className="font-medium">
+              Who can change the live data
+            </p>
+            {vis ? (
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                size="sm"
+                aria-labelledby="oa-share-writers"
+                aria-describedby="oa-share-writers-hint"
+                value={artifact.dataWriters}
+                onValueChange={(w) =>
+                  w &&
+                  w !== artifact.dataWriters &&
+                  !patch.isPending &&
+                  save({ dataWriters: w as DataWriters })
+                }
+              >
+                {WRITERS.map((o) => (
+                  <ToggleGroupItem
+                    key={o.value}
+                    value={o.value}
+                    disabled={patch.isPending}
+                    className={`px-[var(--oa-space-3)] ${CONTROL}`}
+                  >
+                    {o.label}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+            ) : (
+              <p>
+                {WRITERS.find((o) => o.value === artifact.dataWriters)?.label}
+              </p>
+            )}
+            <small id="oa-share-writers-hint" className="oa-muted">
+              {writersHint(artifact.dataWriters, artifact.visibility)}
+            </small>
+          </div>
+        )}
       </section>
 
       <Button
