@@ -3,8 +3,11 @@ import {
   type AccessLevel,
   type AgentRef,
   type ArtifactPatch,
+  type ArtifactPatchResult,
   type ArtifactSummary,
   artifactCan,
+  type DataWriters,
+  dataWritersWarning,
   type Format,
   isId,
   LIMITS,
@@ -15,6 +18,7 @@ import {
   type PublishInput,
   type PublishResult,
   R,
+  resolveDataWriters,
   type UserRef,
   VERSIONS_PAGE_SIZE,
   type VersionInfo,
@@ -38,7 +42,7 @@ import {
   roleRankSql,
 } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { can } from "../auth/policy.js";
+import { can, dataWritersOf } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -134,6 +138,13 @@ export async function publish(
   let create = true;
   let reserved = false;
   let capabilities = CAPS;
+  /** An existing artifact's sharing before this publish (#681). */
+  let prior: { visibility: string; dataWriters: DataWriters } = {
+    visibility: "",
+    dataWriters: "viewers",
+  };
+  /** The dataWriters this publish writes (#681); undefined: unchanged. */
+  let dataWriters: DataWriters | undefined;
   /** Sharing fields changed on an existing artifact: live sockets must reconnect. */
   let accessChanged = false;
   /** A visibility change on an existing artifact: audited in the batch. */
@@ -173,6 +184,7 @@ export async function publish(
       const sharing =
         input.visibility !== undefined ||
         input.capabilities !== undefined ||
+        input.dataWriters !== undefined ||
         input.allowAnonymousWrites !== undefined;
       if (sharing && !can(level, "visibility", canCtx(who, a)))
         throw new ApiError("bad_request", "only the owner can change sharing");
@@ -193,6 +205,8 @@ export async function publish(
           ],
         };
       capabilities = { ...CAPS, ...(JSON.parse(a.capabilities) as object) };
+      prior = { visibility: a.visibility, dataWriters: dataWritersOf(a) };
+      dataWriters = resolveDataWriters(input, input.visibility ?? a.visibility);
       if (input.visibility !== undefined && input.visibility !== a.visibility)
         visAudit = visibilityAudit(env, user, id, a, input.visibility);
       accessChanged =
@@ -200,8 +214,7 @@ export async function publish(
         (input.capabilities !== undefined &&
           JSON.stringify({ ...capabilities, ...input.capabilities }) !==
             JSON.stringify(capabilities)) ||
-        (input.allowAnonymousWrites !== undefined &&
-          (input.allowAnonymousWrites ? 1 : 0) !== a.allowAnonymousWrites);
+        (dataWriters !== undefined && dataWriters !== prior.dataWriters);
     } else {
       if (mode === "version") throw notFound();
       const r = await db
@@ -249,6 +262,7 @@ export async function publish(
   const visibility =
     input.visibility ??
     (create ? (await getSettings(env)).defaultVisibility : undefined);
+  if (create) dataWriters = resolveDataWriters(input, visibility) ?? "viewers";
 
   const { manifest, written, uploadIds } = await materialize(
     env,
@@ -286,8 +300,8 @@ export async function publish(
       db
         .prepare(
           `insert into artifacts (id, owner_id, space_id, title, description, format, visibility,
-             current_version, capabilities, allow_anonymous_writes, created_at, updated_at)
-           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ? where 1${links}${
+             current_version, capabilities, data_writers, allow_anonymous_writes, created_at, updated_at)
+           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ? where 1${links}${
              role.sql ? ` and ${role.sql} >= 2` : ""
            }${guard}`,
         )
@@ -302,7 +316,9 @@ export async function publish(
           plan.format,
           visibility,
           caps,
-          input.allowAnonymousWrites ? 1 : 0,
+          dataWriters,
+          // Kept in step for one release (#681): a rollback reads it.
+          dataWriters === "viewers" ? 1 : 0,
           now,
           now,
           ...(links ? [spaceId] : []),
@@ -327,11 +343,13 @@ export async function publish(
       ["description", input.description],
       ["visibility", input.visibility],
       ["capabilities", input.capabilities && caps],
+      ["data_writers", dataWriters],
+      // Kept in step for one release (#681): a rollback reads it.
       [
         "allow_anonymous_writes",
-        input.allowAnonymousWrites === undefined
+        dataWriters === undefined
           ? undefined
-          : input.allowAnonymousWrites
+          : dataWriters === "viewers"
             ? 1
             : 0,
       ],
@@ -413,7 +431,17 @@ export async function publish(
   // may have lost access never sees this version; reconnects get hello.
   if (accessChanged) await closeRuntimeSockets(env, [id], "access changed");
   await enqueueIndex(env, id, version, true, versionEvent(user, agent, now));
-  return { id, version, url: appOrigin(env) + viewerPath(id) };
+  const warning = dataWritersWarning({
+    visibility: visibility ?? prior.visibility,
+    capabilities: JSON.parse(caps) as { db: boolean },
+    dataWriters: dataWriters ?? prior.dataWriters,
+  });
+  return {
+    id,
+    version,
+    url: appOrigin(env) + viewerPath(id),
+    ...(warning ? { warning } : {}),
+  };
 }
 
 const notFound = () => new ApiError("not_found", "Not found");
@@ -558,9 +586,13 @@ export function toSummary(
     thumbnailVersion: a.hasThumbnail ? (a.thumbnailVersion ?? null) : null,
     access,
     capabilities: { ...CAPS, ...(JSON.parse(a.capabilities) as object) },
-    allowAnonymousWrites: a.allowAnonymousWrites === 1,
+    dataWriters: dataWritersOf(a),
+    // Deprecated (#681): derived for one release.
+    allowAnonymousWrites: dataWritersOf(a) === "viewers",
   };
 }
+
+export { dataWritersOf };
 
 /** Anonymous callers never see member emails (not even as a name fallback). */
 export function redact(
@@ -1114,23 +1146,30 @@ function visibilityAudit(
   );
 }
 
-/** title/description: editor+; visibility/capabilities/allowAnonymousWrites: owner only. */
+/**
+ * title/description: editor+; visibility/capabilities/dataWriters (and the
+ * deprecated allowAnonymousWrites, mapped by resolveDataWriters): owner or
+ * manager. A result that is public, declares db and lets viewers write data
+ * carries `warning` (#681).
+ */
 export async function patch(
   env: Env,
   user: Member,
   id: string,
   p: ArtifactPatch,
   ctx?: Ctx,
-): Promise<ArtifactSummary> {
+): Promise<ArtifactPatchResult> {
   const who = asUser(user);
   const { level, artifact: a } = await authorize(env, who, id, "publish");
   const sharing =
     p.visibility !== undefined ||
     p.capabilities !== undefined ||
+    p.dataWriters !== undefined ||
     p.allowAnonymousWrites !== undefined;
   if (sharing && !can(level, "visibility", canCtx(who, a)))
     throw new ApiError("bad_request", "only the owner can change sharing");
   await refusePublicLinksOff(env, a, p.visibility);
+  const dataWriters = resolveDataWriters(p, p.visibility ?? a.visibility);
   const sets: string[] = [];
   const vals: unknown[] = [];
   const set = (col: string, v: unknown) => {
@@ -1145,8 +1184,11 @@ export async function patch(
       "capabilities = json_patch(capabilities, ?)",
       JSON.stringify(p.capabilities),
     );
-  if (p.allowAnonymousWrites !== undefined)
-    set("allow_anonymous_writes = ?", p.allowAnonymousWrites ? 1 : 0);
+  if (dataWriters !== undefined) {
+    set("data_writers = ?", dataWriters);
+    // Kept in step for one release (#681): a rollback reads it.
+    set("allow_anonymous_writes = ?", dataWriters === "viewers" ? 1 : 0);
+  }
   if (sets.length) {
     set("updated_at = ?", Date.now());
     // Compare-and-set on the visibility and space checked above (#484).
@@ -1175,10 +1217,13 @@ export async function patch(
   }
   if (
     (p.visibility !== undefined && p.visibility !== a.visibility) ||
-    p.capabilities !== undefined
+    p.capabilities !== undefined ||
+    (dataWriters !== undefined && dataWriters !== dataWritersOf(a))
   )
     await closeRuntimeSockets(env, [id], "access changed", ctx);
-  return getSummary(env, asUser(user), id);
+  const out = await getSummary(env, asUser(user), id);
+  const warning = dataWritersWarning(out);
+  return warning ? { ...out, warning } : out;
 }
 
 /** Owner only (others 404). Sets deleted_at and drops the search row. */

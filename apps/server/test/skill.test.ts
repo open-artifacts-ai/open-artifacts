@@ -161,7 +161,8 @@ describe("skill.md drift", () => {
     expect(at).toBeGreaterThan(md.indexOf("\n## Live data (html artifacts)\n"));
     const section = md.slice(at).split("\n## ")[1] ?? "";
     for (const phrase of [
-      "`allowAnonymousWrites: true`",
+      '`dataWriters: "editors"`',
+      "`data_editors_only`",
       "`viewer.anonId()`",
       "`no_shell`",
       "no presence API",

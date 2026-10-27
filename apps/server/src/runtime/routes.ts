@@ -1,7 +1,5 @@
 import {
   ANON_ID_HEADER,
-  type Capabilities,
-  CapabilitiesSchema,
   DataNameSchema,
   DataQuerySchema,
   dataDocTooLargeMessage,
@@ -24,9 +22,10 @@ import {
   type Caller,
   caller,
   canCtx,
+  dataWriteRefusal,
   requireAccess,
 } from "../auth/authz.js";
-import { can, namedEvents, type PolicyAction } from "../auth/policy.js";
+import { can, capsOf, namedEvents, type PolicyAction } from "../auth/policy.js";
 import { cappedJson, readCapped } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
@@ -92,16 +91,7 @@ function authzAtOf(c: C): number {
   return t;
 }
 
-const NO_CAPS: Capabilities = { db: false, viewer: false, storage: false };
-/** Declared capabilities; malformed JSON means none (capability_denied, never 500). */
-export function capsOf(json: string): Capabilities {
-  try {
-    const r = CapabilitiesSchema.safeParse(JSON.parse(json));
-    return r.success ? r.data : NO_CAPS;
-  } catch {
-    return NO_CAPS;
-  }
-}
+export { capsOf };
 
 function name(v: string | undefined, what: string): string {
   const r = DataNameSchema.safeParse(v);
@@ -176,15 +166,16 @@ async function anonLimit(c: C, key: string, what: string): Promise<void> {
  * Access (404 for no access, never 403), then the declared capability
  * (403 capability_denied: access is already proven), then the caller's actor:
  * - storage: signed-in only (401), actor "u:{id}" (the storage owner).
- * - data writes: signed-in "u:{id}"; anonymous only with allowAnonymousWrites
- *   (else 401), after RL_ANON "ip:{key}" (429; 503 if unbound outside dev),
- *   as "ip:{key}|{short}" (ipKey: IPv4, or the IPv6 /64).
+ * - data writes: signed-in "u:{id}"; anonymous only with dataWriters
+ *   "viewers", after RL_ANON "ip:{key}" (429; 503 if unbound outside dev),
+ *   as "ip:{key}|{short}" (ipKey: IPv4, or the IPv6 /64). A write refused by
+ *   dataWriters "editors" is 403 data_editors_only, signed in or not (#681).
  * - subscribe: signed-in "u:{id}"; anonymous "ip:{key}" after RL_ANON
  *   "sub:ip:{key}" (anonIpKey: IPv4, or the IPv6 /56).
  * - data reads: anyone with view access (actor unused).
  * - anonId: anonymous writes, and "anonId" (GET anon-id, after RL_ANON
  *   "anonid:ip:{key}" when it mints; a valid current token skips the limit),
- *   on an artifact with allowAnonymousWrites only: the
+ *   on an artifact with dataWriters "viewers" only: the
  *   ANON_ID_HEADER token is verified, or a new one minted (returned by
  *   `withAnon`). `short` is per artifact; a write stores updatedBy
  *   "anon:{short}", and the DO still rate limits by "ip:{key}". Reads never
@@ -216,7 +207,12 @@ async function gate(
   const a = r.artifact;
   // Each gate kind is one policy action; checked after the anonymous 401s
   // below so their messages keep their order.
-  const allowed = () => can(r.level, GATE_ACTION[kind], canCtx(who, a));
+  const ctx = canCtx(who, a);
+  const allowed = () => can(r.level, GATE_ACTION[kind], ctx);
+  /** A refused data write: data_editors_only when "editors" caused it, else 404. */
+  const refused = () =>
+    (kind === "write" ? dataWriteRefusal(r.level, ctx, a) : null) ??
+    new ApiError("not_found", "Not found");
   const cap = METHOD_CAPABILITY[method];
   if (!capsOf(a.capabilities)[cap])
     throw new ApiError(
@@ -225,17 +221,15 @@ async function gate(
     );
   if (who.kind === "user") {
     // Signed-in callers asking for an anonId get the route's own 401 below.
-    if (kind !== "anonId" && !allowed())
-      throw new ApiError("not_found", "Not found");
+    if (kind !== "anonId" && !allowed()) throw refused();
     return { artifactId, actor: `u:${who.user.id}`, anon: null, authzAt };
   }
   if (kind === "read") return { artifactId, actor: "", anon: null, authzAt };
-  const optIn = a.allowAnonymousWrites === 1;
-  if (kind === "storage" || (kind === "write" && !optIn))
+  if (kind === "storage")
     throw new ApiError("unauthorized", "Sign in to save changes");
-  if (kind === "anonId" && !optIn)
+  if (kind === "anonId" && ctx.dataWriters !== "viewers")
     throw new ApiError("unauthorized", "No anonymous id here");
-  if (!allowed()) throw new ApiError("not_found", "Not found");
+  if (!allowed()) throw refused();
   const anonId = async (): Promise<AnonId> => {
     const r = await resolveAnonId(
       c.env,

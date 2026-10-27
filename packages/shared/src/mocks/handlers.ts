@@ -51,6 +51,7 @@ import {
   MePatchSchema,
   OAuthClientPatchSchema,
   PublishInputSchema,
+  resolveDataWriters,
   SettingsPatchSchema,
   type Share,
   ShareInputSchema,
@@ -515,6 +516,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           ...r.data.capabilities,
         },
         allowAnonymousWrites: r.data.allowAnonymousWrites ?? false,
+        dataWriters:
+          resolveDataWriters(
+            r.data,
+            r.data.visibility ?? me.instance.defaultVisibility,
+          ) ?? "viewers",
       };
       artifacts.unshift(a);
       h?.placeNew(a, placed?.space ?? null);
@@ -540,7 +546,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         const gone =
           (rest.visibility !== undefined && rest.visibility !== a.visibility) ||
           capabilities !== undefined;
+        const dataWriters = resolveDataWriters(
+          rest,
+          rest.visibility ?? a.visibility,
+        );
         Object.assign(a, rest, { updatedAt: iso() });
+        if (dataWriters) a.dataWriters = dataWriters;
         if (capabilities) Object.assign(a.capabilities, capabilities);
         if (gone) opts.events?.emitGone(a.id, "changed");
         return HttpResponse.json(a);

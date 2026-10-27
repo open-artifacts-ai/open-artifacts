@@ -72,10 +72,8 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
     (input) =>
       guard(async () => {
         const r = await publish(env, user, input, t.agentNow(), t.exec, "any");
-        return ok(
-          `Published ${input.title ? `"${input.title}" ` : ""}${r.id} v${r.version}: ${r.url}`,
-          r,
-        );
+        const line = `Published ${input.title ? `"${input.title}" ` : ""}${r.id} v${r.version}: ${r.url}`;
+        return ok(r.warning ? `${line} Warning: ${r.warning}` : line, r);
       }),
   );
 
@@ -213,10 +211,10 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
 
   server.registerTool("set_visibility", toolConfig("set_visibility"), (input) =>
     guard(async () => {
-      const a = await patch(env, user, input.id, {
-        visibility: input.visibility,
-      });
-      return ok(`${a.id} is now ${a.visibility}: ${viewUrl(env, a.id)}`, a);
+      const { id: _, ...p } = input;
+      const a = await patch(env, user, input.id, p);
+      const line = `${a.id} is now ${a.visibility}: ${viewUrl(env, a.id)}`;
+      return ok(a.warning ? `${line} Warning: ${a.warning}` : line, a);
     }),
   );
 

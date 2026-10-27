@@ -92,6 +92,8 @@ export async function enforce(
       });
     } catch (e) {
       // Keep the handler's order: an anonymous caller who may view gets 401.
+      // A data write refused by dataWriters "editors" already threw 403
+      // data_editors_only (authorize, #681).
       if (
         p.anon401 &&
         who.kind !== "user" &&

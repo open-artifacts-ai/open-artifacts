@@ -54,6 +54,9 @@ beforeAll(async () => {
         format: "html",
         visibility,
         capabilities: '{"db":true,"viewer":false,"storage":true}',
+        // #681: "viewers" needs both columns, as publish writes them.
+        dataWriters: "viewers",
+        allowAnonymousWrites: 1,
         createdAt: now,
         updatedAt: now,
       });

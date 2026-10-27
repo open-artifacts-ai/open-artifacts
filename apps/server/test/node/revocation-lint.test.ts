@@ -116,6 +116,13 @@ const WIDENS: Readonly<Record<string, string>> = {
 /** Exempt from the scan: the primitives themselves. */
 const SKIP_FILES = new Set(["runtime/revoke.ts", "mcp/oauth-api.ts"]);
 
+/**
+ * #681: a dataWriters write ("editors" cuts every viewer's data writes),
+ * SQL or a [column, value] pair.
+ */
+const DATA_WRITERS_WRITE =
+  /\bdata_writers\s*=\s*\?|"data_writers",|\.set\(\{[^}]*\bdataWriters\b/;
+
 /** Access-shrinking markers in a unit's code. */
 const SHRINK: readonly RegExp[] = [
   /\brevokeAllGrants\(/,
@@ -150,6 +157,7 @@ const SHRINK: readonly RegExp[] = [
   /\binto restricted_groups\b/i,
   // P3 T18: the customer_mismatch state denies every synced user.
   /\bstate: "customer_mismatch"/,
+  DATA_WRITERS_WRITE,
 ];
 const CALLS: Record<Guard, RegExp> = {
   // revokeUsersLive: revokeUserLive for many users (a group, every member).
@@ -377,6 +385,24 @@ describe("revocation lint (P3 T7)", () => {
       return body === undefined || !SHRINK.some((re) => re.test(body));
     });
     expect(stale).toEqual([]);
+  });
+
+  // #681: switching dataWriters to "editors" shrinks access; both writers
+  // of the column are registered with the artifact guard.
+  it("registers every dataWriters write (patch, publish)", () => {
+    const writers = [...fns]
+      .filter(([, body]) => DATA_WRITERS_WRITE.test(body))
+      .map(([k]) => k)
+      .sort();
+    expect(writers).toEqual([
+      "services/artifacts.ts:patch",
+      "services/artifacts.ts:publish",
+    ]);
+    for (const k of writers) expect(REGISTRY[k]).toBe("artifact");
+    const src = `export async function f(env: Env) {
+      await env.DB.prepare("update artifacts set data_writers = ? where id = ?").run();
+    }`;
+    expect(check(unitsOf("x.ts", src), {}).missing).toEqual(["x.ts:f"]);
   });
 
   it("finds a shrinking function that skips the guard (self-test)", () => {

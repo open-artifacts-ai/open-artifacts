@@ -148,12 +148,13 @@ async function row(
   s: Surface,
   cred: Cred,
   want: (art: ArtifactName) => string,
+  ids: Record<ArtifactName, string> = w.ids,
 ) {
   const got = {} as Record<ArtifactName, string>;
   const exp = {} as Record<ArtifactName, string>;
   await Promise.all(
     ARTIFACTS.map(async (art) => {
-      const id = s.mutates === "access" ? await w.clone(art) : w.ids[art];
+      const id = s.mutates === "access" ? await w.clone(art) : ids[art];
       got[art] = await s
         .probe(BASE, cred, id, io)
         .catch((e: Error) => `error: ${e.message}`);
@@ -211,6 +212,29 @@ describe("artifact surfaces (sync stale 8 days)", () => {
           s.via === "rest"
             ? expected(as, art, s.action, s.via)
             : expected("anonymous", art, s.action, s.via),
+        );
+        expect(got).toEqual(exp);
+      },
+      SLOW,
+    );
+  });
+});
+
+// #681: the same data-write and anon-id surfaces on copies of every artifact
+// with dataWriters "editors": only uncapped editors and up write; nobody
+// gets an anon id.
+describe("artifact surfaces, dataWriters editors (#681)", () => {
+  describe.each(
+    SURFACES.filter((s) => s.action === "data.write" || s.action === "anonId"),
+  )("$name", (s) => {
+    it.concurrent.each(CALLERS.map((c) => [c]))(
+      "%s",
+      async (who) => {
+        const { got, exp } = await row(
+          s,
+          w.creds[who],
+          (art) => expected(who, art, s.action, s.via, TRAITS[who], "editors"),
+          w.editorsOnly,
         );
         expect(got).toEqual(exp);
       },
