@@ -10,6 +10,7 @@ import {
   type EmailKind,
   FROM_NAME_MAX,
   fromName,
+  SETTINGS_READ_MS,
   sendEmail,
 } from "../src/email/send.js";
 import type { Env } from "../src/env.js";
@@ -140,6 +141,32 @@ describe("cleanInstanceName", () => {
     expect(cleanInstanceName(undefined)).toBe("");
     expect(cleanInstanceName(' "<>@\\\r\n‮ ')).toBe("");
   });
+
+  it("NFKC turns fullwidth lookalikes into ASCII before the specials strip", () => {
+    const c = cleanInstanceName("Google ＜security＠google．com＞");
+    expect(c).not.toMatch(/[<>@.＜＞＠．]/);
+    expect(c).toBe("Google securitygooglecom");
+  });
+
+  it("invisible padding is stripped", () => {
+    for (const pad of ["ㅤ", "​", "⠀", "ᅟ", "ﾠ"])
+      expect(fromName(`PayPal${pad.repeat(56)}`)).toBe(
+        "PayPal via Open Artifacts",
+      );
+  });
+
+  it("soft hyphen, word joiner and tag characters are stripped", () => {
+    expect(cleanInstanceName("Ac­me⁠ \u{E0041}\u{E007F}Labs")).toBe("Acme Labs");
+  });
+
+  it("space separators become one space", () => {
+    expect(cleanInstanceName("Acme　  Labs")).toBe("Acme Labs");
+  });
+
+  it("a ZWJ emoji family survives", () => {
+    const fam = "\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}";
+    expect(cleanInstanceName(`Acme ${fam}`)).toBe(`Acme ${fam}`);
+  });
 });
 
 describe("fromName", () => {
@@ -159,6 +186,18 @@ describe("fromName", () => {
       "Open Artifacts",
     ])
       expect(fromName(v)).toBe("Open Artifacts");
+  });
+
+  it("a name that claims the product falls back to the product name", () => {
+    for (const v of [
+      "Open Artifacts Security",
+      "OPENARTIFACTS",
+      "Team Open  Artifacts",
+      "Ｏpen Ａrtifacts",
+      "Open​Artifacts",
+    ])
+      expect(fromName(v)).toBe("Open Artifacts");
+    expect(fromName("Open Art")).toBe("Open Art via Open Artifacts");
   });
 
   it("RFC 2047-encodes non-ASCII in words of at most 75 chars", () => {
@@ -245,40 +284,96 @@ describe("sendEmail From", () => {
     ]);
   });
 
+  /**
+   * env.DB with the settings read counted, and made to fail or hang; every
+   * other statement (the counters) goes to the real D1.
+   */
+  function settingsDb(mode: "ok" | "fail" | "hang") {
+    const reads = { n: 0 };
+    const real = env.DB;
+    const DB = new Proxy(real, {
+      get(t, p) {
+        if (p === "prepare")
+          return (sql: string) => {
+            if (!sql.includes("from settings")) return t.prepare(sql);
+            const s = t.prepare(sql);
+            return {
+              all: () => {
+                reads.n++;
+                if (mode === "fail")
+                  return Promise.reject(new Error("D1_ERROR"));
+                if (mode === "hang") return new Promise(() => {});
+                return s.all();
+              },
+              bind() {
+                return this;
+              },
+            };
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    return { DB, reads };
+  }
+
   it("without a passed name, reads the settings name", async () => {
     await setName("Globex");
     const m = mailer();
-    await sendEmail(e(m), null, "f@x.test", content, { kind: "invite" });
+    const { DB, reads } = settingsDb("ok");
+    await sendEmail(e(m, { DB }), null, "f@x.test", content, {
+      kind: "invite",
+      instance: undefined,
+    });
+    expect(reads.n).toBe(1);
     expect((m.sent[0] as Msg).from).toEqual({
       email: FROM,
       name: "Globex via Open Artifacts",
     });
   });
 
-  it("a settings read failure falls back to the product name and still sends", async () => {
+  it("a passed name means no settings read in sendEmail", async () => {
+    await setName("Globex");
     const m = mailer();
-    const realDb = env.DB;
-    // The counters statements go to the real D1; only the settings read fails.
-    const DB = new Proxy(realDb, {
-      get(t, p) {
-        if (p === "prepare")
-          return (sql: string) =>
-            sql.includes("from settings")
-              ? {
-                  all: () => Promise.reject(new Error("D1_ERROR")),
-                  bind() {
-                    return this;
-                  },
-                }
-              : t.prepare(sql);
-        const v = Reflect.get(t, p);
-        return typeof v === "function" ? v.bind(t) : v;
-      },
+    const { DB, reads } = settingsDb("ok");
+    await sendEmail(e(m, { DB }), null, "f2@x.test", content, {
+      kind: "invite",
+      instance: "Acme",
     });
+    expect(reads.n).toBe(0);
+    expect((m.sent[0] as Msg).from).toEqual({
+      email: FROM,
+      name: "Acme via Open Artifacts",
+    });
+  });
+
+  it("a settings read failure falls back to the product name and still sends", async () => {
+    await setName("Globex");
+    const m = mailer();
+    const { DB } = settingsDb("fail");
     const ok = await sendEmail(e(m, { DB }), null, "g@x.test", content, {
       kind: "directory",
+      instance: undefined,
     });
     expect(ok).toBe(true);
+    expect((m.sent[0] as Msg).from).toEqual({
+      email: FROM,
+      name: "Open Artifacts",
+    });
+  });
+
+  it(`a hanging settings read gives up after ${SETTINGS_READ_MS} ms and sends with the product name`, async () => {
+    await setName("Globex");
+    const m = mailer();
+    const { DB, reads } = settingsDb("hang");
+    const t0 = Date.now();
+    const ok = await sendEmail(e(m, { DB }), null, "g2@x.test", content, {
+      kind: "directory",
+      instance: undefined,
+    });
+    expect(ok).toBe(true);
+    expect(reads.n).toBe(1);
+    expect(Date.now() - t0).toBeLessThan(SETTINGS_READ_MS + 1500);
     expect((m.sent[0] as Msg).from).toEqual({
       email: FROM,
       name: "Open Artifacts",

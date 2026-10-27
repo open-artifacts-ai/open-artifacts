@@ -38,29 +38,60 @@ export const PRODUCT_NAME = "Open Artifacts";
 /** Longest install name kept in the From display name, in code points. */
 export const FROM_NAME_MAX = 64;
 
-// Control characters (C0, DEL, C1), line and paragraph separators, bidi
-// marks, embeddings, overrides and isolates, and lone surrogates.
+// Control characters (C0, DEL, C1), line and paragraph separators, lone
+// surrogates, every format character (bidi controls, zero-width spaces, soft
+// hyphen, word joiner, tag characters, ...) except U+200D (ZWJ, which emoji
+// sequences need), and blank lookalikes (Hangul fillers, braille blank).
 const UNSAFE_CHARS =
-  /[\p{Cc}\p{Cs}\u061C\u200E\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069]/gu;
+  /[\p{Cc}\p{Cs}\u2028\u2029\u115F\u1160\u3164\uFFA0\u2800]|(?!\u200D)\p{Cf}/gu;
 // RFC 5322 specials (and backslash) that would force the phrase to be quoted.
 const PHRASE_SPECIALS = /["\\<>@()[\]:;,.]/g;
 
 /**
- * The install name made safe for a From display name: no control, line
- * break or bidi characters, no RFC 5322 specials, whitespace collapsed, at
- * most FROM_NAME_MAX code points (a surrogate pair is never split). May be
- * empty.
+ * The install name made safe for a From display name: NFKC first (fullwidth
+ * lookalikes become ASCII), then no control, format, line break or blank
+ * lookalike characters, no RFC 5322 specials, whitespace collapsed, at most
+ * FROM_NAME_MAX code points (a surrogate pair is never split). May be empty.
  */
 export function cleanInstanceName(raw: string | null | undefined): string {
   if (typeof raw !== "string") return "";
   const s = raw
-    // Line breaks and tabs separate words; the rest of UNSAFE_CHARS goes.
-    .replace(/[\t\n\v\f\r\u0085\u2028\u2029]/gu, " ")
+    .normalize("NFKC")
+    // Line breaks, tabs and space separators separate words.
+    .replace(/[\t\n\v\f\r\u0085\u2028\u2029\p{Zs}]/gu, " ")
     .replace(UNSAFE_CHARS, "")
     .replace(PHRASE_SPECIALS, "")
     .replace(/\s+/gu, " ")
     .trim();
   return Array.from(s).slice(0, FROM_NAME_MAX).join("").trim();
+}
+
+/** True if the cleaned name claims to be the product itself. */
+const namesProduct = (name: string) =>
+  name
+    .replace(/[\s‍]/gu, "")
+    .toLowerCase()
+    .includes(PRODUCT_NAME.replace(/\s/g, "").toLowerCase());
+
+/** Longest wait for the settings read in sendEmail before the default name. */
+export const SETTINGS_READ_MS = 1000;
+
+/** The settings name, or null on failure or after SETTINGS_READ_MS. */
+async function settingsName(env: Env): Promise<string | null> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      getSettings(env).then(
+        (s) => s.name,
+        () => null,
+      ),
+      new Promise<null>((resolve) => {
+        t = setTimeout(() => resolve(null), SETTINGS_READ_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 // Bytes of UTF-8 per encoded word: 45 bytes is 60 base64 characters, so
@@ -88,16 +119,15 @@ function encodeWords(s: string): string {
 
 /**
  * The From display name: "<install> via Open Artifacts", or just the
- * product name when the install name is unset or cleans to nothing.
+ * product name when the install name is unset, cleans to nothing, or
+ * itself names the product ("Open Artifacts Security").
  * Non-ASCII (or anything a client could read as an encoded word) is RFC
  * 2047-encoded here, since the binding's docs don't say it encodes names.
  */
 export function fromName(instance: string | null | undefined): string {
   const name = cleanInstanceName(instance);
   const phrase =
-    !name || name.toLowerCase() === PRODUCT_NAME.toLowerCase()
-      ? PRODUCT_NAME
-      : `${name} via ${PRODUCT_NAME}`;
+    !name || namesProduct(name) ? PRODUCT_NAME : `${name} via ${PRODUCT_NAME}`;
   return /^[\x20-\x7e]*$/.test(phrase) && !phrase.includes("=?")
     ? phrase
     : encodeWords(phrase);
@@ -201,8 +231,11 @@ export async function sendEmail(
     now?: number;
     /** Replaces the invite/share caps (sign-in codes). */
     caps?: Cap[];
-    /** The install name, when the caller already read it; else read here. */
-    instance?: string | null;
+    /**
+     * The install name (settings name) the caller already read; required so
+     * no caller forgets it. `undefined` reads settings here (bounded).
+     */
+    instance: string | null | undefined;
   },
 ): Promise<boolean> {
   const now = opts.now ?? Date.now();
@@ -235,12 +268,7 @@ export async function sendEmail(
       return false;
     }
     const instance =
-      opts.instance !== undefined
-        ? opts.instance
-        : await getSettings(env).then(
-            (s) => s.name,
-            () => null,
-          );
+      opts.instance !== undefined ? opts.instance : await settingsName(env);
     // On timeout we report false, but delivery is only unconfirmed: the
     // email may still arrive.
     const { messageId } = await Promise.race([

@@ -86,6 +86,7 @@ export async function seedShare(email: string): Promise<string> {
 }
 
 export type SentMail = {
+  from?: unknown;
   to: string;
   subject: string;
   text: string;
