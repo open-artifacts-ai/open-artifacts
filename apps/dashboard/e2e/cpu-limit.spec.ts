@@ -61,6 +61,10 @@ const silentFrame = async (page: Page) => {
 test("owner: the CPU banner shows today's hits and stays dismissed for the day", async ({
   page,
 }) => {
+  // Midday UTC, so the dismissed day can't roll over before the reload. Timers stay real.
+  const noon = new Date();
+  noon.setUTCHours(12, 0, 0, 0);
+  await page.clock.setFixedTime(noon);
   await open(page, "/?mock=cpu", "free");
   await expect(banner(page)).toBeVisible();
   await expect(banner(page)).toContainText(
