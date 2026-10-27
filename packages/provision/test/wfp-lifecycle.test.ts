@@ -7,6 +7,8 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -3942,5 +3944,88 @@ describe("Turnstile test keys (red-line installs only)", () => {
     expect(s.scriptOf(rl.id)?.secrets.get("TURNSTILE_SECRET")).toBe(
       TURNSTILE_TEST_KEYS.secret,
     );
+  });
+});
+
+describe("reissueOwnerToken", () => {
+  const patPath = (s: ReturnType<typeof setup>, appHost: string) =>
+    join(s.opts().patDir, `${appHost}-pat-token`);
+
+  it("mints a fresh provision PAT under the lease, writes it 0600, and retires the earlier provision ones only", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const idb = s.installDb(inst.id);
+    // A token the owner made by hand stays; the revoked provision one is the old state.
+    idb
+      .prepare(
+        "INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tmine', id, 'my laptop', 'h', 1 FROM users WHERE role = 'owner'",
+      )
+      .run();
+    idb
+      .prepare("UPDATE tokens SET revoked_at = 1 WHERE label = 'provision'")
+      .run();
+    rmSync(patPath(s, inst.appHost));
+    const r = keep(await s.p.reissueOwnerToken(inst.id, inst.id));
+    expect(r).toEqual({ id: inst.id, patFile: patPath(s, inst.appHost) });
+    expect(statSync(r.patFile).mode & 0o777).toBe(0o600);
+    const live = idb
+      .prepare(
+        "SELECT label FROM tokens WHERE revoked_at IS NULL ORDER BY label",
+      )
+      .all() as { label: string }[];
+    expect(live.map((t) => t.label)).toEqual(["my laptop", "provision"]);
+    expect(s.audit(inst.id)).toContain("owner_token.reissue");
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    // The install is upgradable again (the pre-flight uses the new token).
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    const pat = readFileSync(r.patFile, "utf8").trim();
+    expect(JSON.stringify(s.p.notes)).not.toContain(pat);
+    expect(
+      JSON.stringify(s.db().prepare("SELECT * FROM hosted_audit").all()),
+    ).not.toContain(pat);
+  });
+
+  it("a second reissue retires the first", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.reissueOwnerToken(inst.id, inst.id));
+    keep(await s.p.reissueOwnerToken(inst.id, inst.id));
+    const n = s
+      .installDb(inst.id)
+      .prepare(
+        "SELECT count(*) AS n FROM tokens WHERE label = 'provision' AND revoked_at IS NULL",
+      )
+      .get() as { n: number };
+    expect(n.n).toBe(1);
+  });
+
+  it("refuses a wrong confirm or an install that is not active with no write, and a held lease with no token minted", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const w = s.fake.writes().length;
+    expect(
+      (await fails(s.p.reissueOwnerToken(inst.id, "ibbbbbbbbbbb"))).message,
+    ).toMatch(/confirm/);
+    s.db()
+      .prepare("UPDATE installs SET state = 'upgrading' WHERE id = ?")
+      .run(inst.id);
+    expect(await fails(s.p.reissueOwnerToken(inst.id, inst.id))).toBeInstanceOf(
+      ProvisionRefused,
+    );
+    expect(s.fake.writes().length).toBe(w);
+    s.db()
+      .prepare(
+        "UPDATE installs SET state = 'active', lease = 'x', lease_until = ? WHERE id = ?",
+      )
+      .run(Date.now() + 1e12, inst.id);
+    const tokens = () =>
+      s.installDb(inst.id).prepare("SELECT id, revoked_at FROM tokens").all();
+    const before = tokens();
+    // Busy is the claim's compare-and-swap losing: it changes nothing.
+    expect(
+      (await fails(s.p.reissueOwnerToken(inst.id, inst.id))).message,
+    ).toMatch(/busy/);
+    expect(tokens()).toEqual(before);
+    expect(s.row(inst.id).lease).toBe("x");
   });
 });

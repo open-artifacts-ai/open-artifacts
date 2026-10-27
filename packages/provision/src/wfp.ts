@@ -2120,6 +2120,50 @@ export class WfpProvisioner {
    * upgrading row goes back to active; a deleting one stays deleting (rerun
    * delete to resume).
    */
+  /**
+   * Mints a fresh owner PAT (label `provision`) into an active install's D1
+   * and writes it to the 0600 PAT file, under the lease; the earlier
+   * provision tokens are retired once it is saved (mintPat). Every lifecycle
+   * operation's pre-flight and selftest use that file, so an install whose
+   * file is lost or whose token was revoked is recovered this way.
+   */
+  async reissueOwnerToken(
+    id: InstallId,
+    confirm: string,
+  ): Promise<{ id: InstallId; patFile: string }> {
+    return this.guarded(async () => {
+      if (typeof confirm !== "string" || confirm !== id)
+        throw new ProvisionRefused(
+          "reissueOwnerToken needs confirm to be exactly the install id",
+        );
+      const row = await this.openInstall(id, ["active"]);
+      const raw = ownerEmailOf(row);
+      const ownerEmail = raw === null ? null : normOwnerEmail(raw);
+      if (!ownerEmail)
+        throw new ProvisionRefused(
+          `install ${id} has no valid owner email (purged or missing)`,
+        );
+      const { d1 } = await this.resources(row);
+      if (!d1) throw new ProvisionRefused(`install ${id} has no D1`);
+      await this.claim(row, ["active"], "active", "owner-token");
+      try {
+        await this.hold();
+        const patFile = await this.mintPat(
+          d1,
+          names(id, this.env).d1,
+          ownerEmail,
+          row.app_host,
+        );
+        await this.logged("owner_token.reissue", {});
+        await this.release("active");
+        return { id, patFile };
+      } catch (e) {
+        if (!(e instanceof LostLease)) await this.releaseQuietly("active", e);
+        throw e;
+      }
+    });
+  }
+
   async releaseLease(
     id: InstallId,
     confirm: string,

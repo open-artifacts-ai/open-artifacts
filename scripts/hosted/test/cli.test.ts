@@ -147,6 +147,7 @@ describe("refusals before any call", () => {
       "publish-floor",
       "turnstile-init",
       "redline-creds",
+      "owner-token",
     ]);
   });
 });
@@ -509,6 +510,66 @@ describe("commands", () => {
       await main(["rollback", "--env", "staging", "--install", id], w.deps),
     ).toBe(0);
     expect(w.lines.join("\n")).not.toContain(String(wd?.secret));
+  });
+
+  it("owner-token re-mints the owner PAT file without printing it; refused in CI and without --confirm", async () => {
+    const w = world();
+    const id = await created(w);
+    const file = join(
+      w.home,
+      ".open-artifacts",
+      "hosted-staging",
+      "finqore.open-artifacts-staging.app-pat-token",
+    );
+    const before = readFileSync(file, "utf8").trim();
+    expect(
+      await main(
+        ["owner-token", "--env", "staging", "--install", id, "--confirm", id],
+        w.deps,
+      ),
+    ).toBe(0);
+    const after = readFileSync(file, "utf8").trim();
+    expect(after).toMatch(/^oa_pat_/);
+    expect(after).not.toBe(before);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expect(w.parsed().find((l) => l.step === "owner-token")?.data).toEqual({
+      id,
+      patFile: file,
+    });
+    const seen = [...w.lines, ...w.errLines, ...w.execs.flatMap((e) => e.args)];
+    expect(seen.join("\n")).not.toContain(after);
+    expect(w.audit().map((r) => r.action)).toContain("cli.owner-token.done");
+
+    const n = w.lines.length;
+    expect(
+      await main(["owner-token", "--env", "staging", "--install", id], w.deps),
+    ).toBe(1);
+    expect(w.parsed().at(-1)).toMatchObject({ step: "args", status: "error" });
+    expect(w.lines.length).toBe(n + 1);
+
+    const ci = world({ ci: true });
+    ci.files.set("/ci/token", {
+      bytes: new TextEncoder().encode(ci.fake.token),
+      info: { mode: 0o100600, uid: 501, isFile: true },
+    });
+    ci.deps.env.OA_HOSTED_TOKEN_FILE = "/ci/token";
+    expect(
+      await main(
+        [
+          "owner-token",
+          "--env",
+          "staging",
+          "--install",
+          "iaaaaaaaaaaa",
+          "--confirm",
+          "iaaaaaaaaaaa",
+        ],
+        ci.deps,
+      ),
+    ).toBe(1);
+    expect(ci.parsed().find((l) => l.step === "owner-token")?.message).toBe(
+      "owner-token runs on a laptop only",
+    );
   });
 
   it("publish-release downloads the env's tar and .sig.json with gh, then hands them to publishRelease", async () => {
