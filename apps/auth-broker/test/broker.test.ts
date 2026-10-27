@@ -315,6 +315,36 @@ describe("redeem", () => {
     expect(tokenCalls).toHaveLength(0);
   });
 
+  it("refusal bodies: unauthorized before the signature verifies, stale or bad_flow after (broker-check)", async () => {
+    const body = async (r: Response) => ({
+      status: r.status,
+      ...((await r.json()) as object),
+    });
+    const unauth = { status: 401, error: "unauthorized" };
+    // Before verification: one body for everything, so nothing leaks.
+    for (const r of [
+      await redeem(KEY_A, {}, { kid: "nope" }),
+      await redeem(KEY_A, {}, { tamper: true }),
+      await redeem(KEY_A, { install: "inst-off" }),
+      await redeem(KEY_A, { install: "inst-b" }),
+      await call("/google/redeem", { method: "POST", body: "{" }),
+    ])
+      expect(await body(r)).toEqual(unauth);
+    // After verification: stale, and a flow that doesn't bind.
+    expect(
+      await body(await redeem(KEY_A, { ts: Date.now() - 61_000 })),
+    ).toEqual({ status: 401, error: "stale" });
+    expect(await body(await redeem(KEY_A, { bstate: "junk" }))).toEqual({
+      status: 401,
+      error: "bad_flow",
+    });
+    expect(await body(await redeem(KEY_A, { h: "junk" }))).toEqual({
+      status: 401,
+      error: "bad_flow",
+    });
+    expect(tokenCalls).toHaveLength(0);
+  });
+
   it("a stored kid that doesn't derive from its key (N3) is refused", async () => {
     const e = await entryFor("inst-a", "https://a.hosted.test", KEY_A);
     await put({

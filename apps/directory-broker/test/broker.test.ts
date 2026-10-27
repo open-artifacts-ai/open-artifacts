@@ -536,6 +536,43 @@ describe("POST /google/directory/token", () => {
     expect(tokenCalls).toHaveLength(0);
   });
 
+  it("refusal bodies: unauthorized before the signature verifies, stale or bad_flow after (broker-check)", async () => {
+    const body = async (r: Response) => ({
+      status: r.status,
+      ...((await r.json()) as object),
+    });
+    const other = (await start("inst-b")).q?.get("state") ?? "";
+    // Before verification: another install's key.
+    expect(await body((await signed(await codeBody(), KEY_B)).r)).toEqual({
+      status: 401,
+      error: "unauthorized",
+    });
+    // After verification: a stale assertion, and grants that don't bind.
+    expect(
+      await body(
+        (await signed(await codeBody({ ts: Date.now() - 120_000 }))).r,
+      ),
+    ).toEqual({ status: 401, error: "stale" });
+    expect(
+      await body((await signed(await codeBody({ bstate: other }))).r),
+    ).toEqual({ status: 401, error: "bad_flow" });
+    const raw = {
+      install: "inst-a",
+      ts: Date.now(),
+      grant: "refresh",
+      refresh_token: "rt-1",
+    };
+    expect(await body((await signed(raw)).r)).toEqual({
+      status: 401,
+      error: "bad_flow",
+    });
+    expect(await body(await revokeCall("inst-a", "rt-1"))).toEqual({
+      status: 401,
+      error: "bad_flow",
+    });
+    expect(tokenCalls).toHaveLength(0);
+  });
+
   it("refuses a sign-in redeem signature (path-bound)", async () => {
     expect(
       (await signed(await codeBody(), KEY_A, "/google/redeem")).r.status,

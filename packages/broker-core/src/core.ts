@@ -28,6 +28,18 @@ export const json = (body: unknown, status = 200) =>
   });
 export const notFound = () => json({ error: "not_found" }, 404);
 export const refused = () => json({ error: "unauthorized" }, 401);
+/**
+ * Refusals AFTER the install's signature and registered key verified. Still
+ * 401, but the caller learns its key works, and why it was refused: `stale`
+ * (the assertion's ts is outside the skew: the install's clock or signing path
+ * is off) or `bad_flow` (the flow, grant or code doesn't bind). Only a holder
+ * of the install's signing key can get here, so neither tells an outsider
+ * anything; every refusal before verification (size, body, unknown install,
+ * bad signature) stays `refused()` ("unauthorized"). broker-check (#730)
+ * counts ok only on `bad_flow`.
+ */
+export const staleAssertion = () => json({ error: "stale" }, 401);
+export const badFlow = () => json({ error: "bad_flow" }, 401);
 
 export type Log = (route: string, outcome: string) => void;
 /** One line per outcome; never a code, verifier, token, email or key. */
