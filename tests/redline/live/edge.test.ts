@@ -11,7 +11,6 @@ import {
   type Cred,
   describeRes,
   fromContentApp,
-  hook,
   send as httpSend,
   parseJson,
   readBody,
@@ -26,7 +25,11 @@ import {
   type Side,
 } from "../src/refused.ts";
 import { noInventoryReason, proof } from "../src/report.ts";
-import { labelTurnstileTestKey, ownCodeRequestReq } from "../src/signin.ts";
+import {
+  labelTurnstileTestKey,
+  ownCodeRequestReq,
+  pendingCode,
+} from "../src/signin.ts";
 import {
   inventoryKeyOf,
   loadTargets,
@@ -550,24 +553,15 @@ describe("cross-site isolation", () => {
         .getSetCookie()
         .map((l) => l.split(";")[0] ?? "")
         .filter((p) => p.includes("="));
-      let code: string | null = null;
-      if (req.status === 202 && pending.length) {
-        // Delivery runs after the response: poll the hook briefly.
-        for (let i = 0; i < 20 && !code; i++) {
-          code = await hook(t, "/__test/otp/latest", { email })
-            .then((o) => {
-              const c = (o as { code?: unknown }).code;
-              return typeof c === "string" ? c : null;
-            })
-            .catch(() => null);
-          if (!code) await new Promise((r) => setTimeout(r, 250));
-        }
-      }
-      if (!code)
-        notes.push(
-          `${t.name}: code sign-in unavailable (request status ${req.status})`,
-        );
+      // Delivery runs after the response: latestOtp polls the hook (404
+      // only) for 5 s; any other hook answer throws and fails the case.
+      const got = await pendingCode(t, email, {
+        status: req.status,
+        pending,
+      });
+      if ("unproven" in got) notes.push(got.unproven);
       else {
+        const { code } = got;
         const v = await take(
           await send(
             new Request(`${t.app}/auth/code/verify`, {

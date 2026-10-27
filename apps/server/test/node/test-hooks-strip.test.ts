@@ -22,6 +22,9 @@ const MARKERS = [
   "where actor_kind = 'test_hook' and substr(action, 1, 10) = 'test_hook.' and at >= ?1",
   // The Turnstile test-key acceptance (turnstileTestKeyPass).
   "result_with_testing_key",
+  // The refusal reasons the hooks give after the key verifies.
+  '"spaces_blocked"',
+  '"grant_refused"',
 ];
 // Cloudflare's always-pass Turnstile TEST secret: never in a release bundle.
 const TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA";

@@ -56,6 +56,14 @@ async function same404(r: Response) {
   expect(await r.text()).toBe(await ref.text());
   expect(r.headers.get("content-type")).toBe(ref.headers.get("content-type"));
 }
+/** A refusal after the key: the same 404, plus error.details.reason. */
+async function refused404(r: Response, reason: string) {
+  const ref = await call(env, TEST_HOOKS.session, { body: {} });
+  expect(r.status).toBe(404);
+  expect(r.headers.get("content-type")).toBe(ref.headers.get("content-type"));
+  const { error } = (await ref.json()) as { error: object };
+  expect(await r.json()).toEqual({ error: { ...error, details: { reason } } });
+}
 afterEach(() => vi.restoreAllMocks());
 
 async function call(
@@ -315,15 +323,16 @@ describe("audit", () => {
 });
 
 describe("TEST_DOMAIN and refusals", () => {
-  it("session: only an exact TEST_DOMAIN address; everything else the identical 404", async () => {
+  it("session: only an exact TEST_DOMAIN address; everything else the 404 (user_refused)", async () => {
     for (const email of [
       uniq("x", "a.com"),
       uniq("x", `sub.${TD}`),
       uniq("x", `${TD}.evil.com`),
       uniq("x", `evil${TD}`),
     ])
-      await same404(
+      await refused404(
         await hook(on(), TEST_HOOKS.session, { email, role: "member" }),
+        "user_refused",
       );
     expect(
       (
@@ -337,11 +346,12 @@ describe("TEST_DOMAIN and refusals", () => {
 
   it("session: the owner email is refused", async () => {
     const owner = tu("owner");
-    await same404(
+    await refused404(
       await hook(on({ OWNER_EMAIL: owner }), TEST_HOOKS.session, {
         email: owner.toUpperCase(),
         role: "owner",
       }),
+      "user_refused",
     );
     expect(
       await env.DB.prepare("select id from users where email = ?")
@@ -353,8 +363,9 @@ describe("TEST_DOMAIN and refusals", () => {
   it("session: an existing user's role is never changed; the same role is fine", async () => {
     const email = tu("exist");
     await seedUser(email, "member");
-    await same404(
+    await refused404(
       await hook(on(), TEST_HOOKS.session, { email, role: "admin" }),
+      "user_refused",
     );
     expect(
       await env.DB.prepare("select role from users where email = ?")
@@ -368,8 +379,9 @@ describe("TEST_DOMAIN and refusals", () => {
 
   it("session: role owner is refused outright (new users cap at admin)", async () => {
     const email = tu("own");
-    await same404(
+    await refused404(
       await hook(on(), TEST_HOOKS.session, { email, role: "owner" }),
+      "user_refused",
     );
     expect(
       await env.DB.prepare("select id from users where email = ?")
@@ -389,7 +401,8 @@ describe("TEST_DOMAIN and refusals", () => {
     );
     const ok = rs.flatMap((r, i) => (r.status === 200 ? [roles[i]] : []));
     expect(ok).toHaveLength(1);
-    for (const r of rs) if (r.status !== 200) await same404(r);
+    for (const r of rs)
+      if (r.status !== 200) await refused404(r, "user_refused");
     expect(
       await env.DB.prepare("select role from users where email = ?")
         .bind(email)
@@ -400,24 +413,52 @@ describe("TEST_DOMAIN and refusals", () => {
   it("session: a suspended user is refused, not revived", async () => {
     const email = tu("susp");
     await seedUser(email, "member", { status: "suspended" });
-    await same404(
+    await refused404(
       await hook(on(), TEST_HOOKS.session, { email, role: "member" }),
+      "user_refused",
     );
   });
 
-  it("session: bad input is the identical 404", async () => {
-    await same404(
+  it("session: bad input is the 404 with bad_input; a bad route says bad_route", async () => {
+    await refused404(
       await hook(on(), TEST_HOOKS.session, { email: "nope", role: "member" }),
+      "bad_input",
     );
-    await same404(await call(on(), "/__test/x", { body: {}, key: KEY }));
-    await same404(
+    await refused404(
+      await call(on(), "/__test/x", { body: {}, key: KEY }),
+      "bad_route",
+    );
+    await refused404(
       await call(on(), TEST_HOOKS.session, { method: "GET", key: KEY }),
+      "bad_route",
     );
   });
 
-  it("otp/latest: an address outside TEST_DOMAIN is the identical 404", async () => {
-    await same404(
+  it("before the key verifies, a refusal has no reason (the uniform 404)", async () => {
+    // Wrong key, missing key, rate limited, limiter unbound, hooks off: the
+    // body is exactly the standard 404, with no details.
+    const noRl = {
+      limit: async () => ({ success: false }),
+    } as unknown as RateLimit;
+    const rs = [
+      await call(on(), "/__test/x", { body: {}, key: "x".repeat(32) }),
+      await call(on(), TEST_HOOKS.session, { body: { email: "nope" } }),
+      await hook(on({ RL_ANON: noRl }), TEST_HOOKS.session, { email: "nope" }),
+      await hook(on({ RL_ANON: undefined }), TEST_HOOKS.session, {}),
+      await hook(env, TEST_HOOKS.session, { email: "nope" }),
+    ];
+    for (const r of rs) {
+      expect(r.status).toBe(404);
+      expect(await r.json()).toEqual({
+        error: { code: "not_found", message: "Not found" },
+      });
+    }
+  });
+
+  it("otp/latest: an address outside TEST_DOMAIN is the 404 with bad_input", async () => {
+    await refused404(
       await hook(on(), TEST_HOOKS.otpLatest, { email: uniq("o", "a.com") }),
+      "bad_input",
     );
   });
 });
@@ -481,8 +522,9 @@ describe("hooks", () => {
       },
     });
     expect(v.status).toBe(200);
-    expect((await hook(e, TEST_HOOKS.otpLatest, { email: guest })).status).toBe(
-      404,
+    await refused404(
+      await hook(e, TEST_HOOKS.otpLatest, { email: guest }),
+      "no_code",
     );
   });
 

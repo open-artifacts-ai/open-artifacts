@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -638,17 +639,40 @@ const WEBP = new Uint8Array([
   ...new TextEncoder().encode("WEBP"),
 ]);
 
-/** The fixed hook spaces (the test-hook `test-` prefix rule), reused across runs. */
-export const WORLD_SPACE = "test-redline-space";
-/** Holds one artifact so "space delete (S)" answers 409; never the world's space. */
-export const GUARD_SPACE = "test-redline-guard";
+/** The hook's space id rule (apps/server/src/test-hooks SPACE_ID). */
+export const HOOK_SPACE_ID = /^test-[A-Za-z0-9_-]{1,59}$/;
+
+/**
+ * The fixed hook spaces (the test-hook `test-` prefix rule), reused across
+ * runs, per TEST_DOMAIN: the id ends in the first 8 hex of
+ * sha256(testDomain). The hook refuses a grant on a space with any member
+ * outside TEST_DOMAIN, so a domain move starts on fresh spaces instead of
+ * the old domain's. `world` is the probes' space; `guard` holds one artifact
+ * so "space delete (S)" answers 409, never the world's space.
+ */
+export function worldSpaces(testDomain: string): {
+  world: string;
+  guard: string;
+} {
+  const tag = createHash("sha256")
+    .update(testDomain.toLowerCase())
+    .digest("hex")
+    .slice(0, 8);
+  const out = {
+    world: `test-redline-space-${tag}`,
+    guard: `test-redline-guard-${tag}`,
+  };
+  for (const id of Object.values(out))
+    if (!HOOK_SPACE_ID.test(id)) throw new Error(`bad hook space id ${id}`);
+  return out;
+}
 const WORLD_TITLE = "test-redline-world";
 const GUARD_TITLE = "test-redline-guard";
 
 /** A member test user's id (fixed address; the session hook creates it once). */
 async function memberId(t: Target, pat: Cred, who: string): Promise<string> {
   const email = `redline-${who}@${t.testDomain}`;
-  await sessionCred(t, email, "member");
+  await sessionCred(t, email, "member", { setup: true });
   const members = (await api(t, pat, "GET", "/api/v1/members")) as {
     id: string;
     email: string;
@@ -715,7 +739,7 @@ async function fixedArtifact(
  * Seeds what the probes need on `side`'s install (the WORLD of
  * apps/server/test/authz/expect.ts, for the admin test user), reusing the
  * same state every run:
- * - two fixed hook spaces the admin manages (WORLD_SPACE, GUARD_SPACE);
+ * - two fixed hook spaces the admin manages (worldSpaces(testDomain));
  * - one fixed html artifact in each, the world's reset per run (title
  *   carries its id and this run's marker; a thumbnail; doc "d" in "c");
  * - fixed member test users (the org probes' member and departed target,
@@ -725,15 +749,21 @@ async function fixedArtifact(
  */
 export async function seedWorld(side: Side): Promise<World> {
   const { t, pat, marker } = side;
+  const { world: WORLD_SPACE, guard: GUARD_SPACE } = worldSpaces(t.testDomain);
   // The hook creates the prefixed spaces if missing and grants the admin.
-  await hook(t, "/__test/session", {
-    email: adminEmail(t),
-    role: "admin",
-    spaces: [
-      { spaceId: WORLD_SPACE, role: "manager" },
-      { spaceId: GUARD_SPACE, role: "manager" },
-    ],
-  });
+  await hook(
+    t,
+    "/__test/session",
+    {
+      email: adminEmail(t),
+      role: "admin",
+      spaces: [
+        { spaceId: WORLD_SPACE, role: "manager" },
+        { spaceId: GUARD_SPACE, role: "manager" },
+      ],
+    },
+    { setup: true },
+  );
   const users = {
     member: await memberId(t, pat, "member"),
     editor: await memberId(t, pat, "editor"),

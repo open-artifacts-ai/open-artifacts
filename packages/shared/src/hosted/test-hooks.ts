@@ -25,6 +25,27 @@ export const TEST_HOOKS = {
   audit: "/__test/audit",
 } as const;
 
+/**
+ * Why a hook refused, AFTER the key verified: the 404 body's
+ * error.details.reason. Refusals before the key (hooks off, rate limit,
+ * wrong key) stay the uniform 404 with no reason.
+ */
+export const TEST_HOOK_REFUSALS = [
+  /** Not a POST, or not a known hook path. */
+  "bad_route",
+  /** The body failed its schema, or a bad email or spaces list. */
+  "bad_input",
+  /** A granted space is unprefixed, personal, deleted, or has a member outside TEST_DOMAIN. */
+  "spaces_blocked",
+  /** The user can't be acted on (owner, outside TEST_DOMAIN, another role, suspended). */
+  "user_refused",
+  /** A grant row didn't write (the space changed after the check). */
+  "grant_refused",
+  /** otp/latest: no code pending for that address. */
+  "no_code",
+] as const;
+export type TestHookRefusal = (typeof TEST_HOOK_REFUSALS)[number];
+
 /** POST TEST_HOOKS.session -> TestSessionResult (a real __Host-oa_session value, p: "test"). */
 export const TestSessionInputSchema = z.strictObject({
   email: z.email(),

@@ -442,6 +442,42 @@ describe("reporter and gate end to end (vitest on a fixture)", () => {
       expect(c.reason).toBe("infra: setup publish timed out after 60s on rl-b");
   }, 60_000);
 
+  it("setup hook refused: one infra result for the whole file, not one per case", () => {
+    const r = run("setup-hook", false);
+    expect(r.status).not.toBe(0);
+    expect(r.report.gate.passed).toBe(false);
+    expect(r.report.counts).toMatchObject({ pass: 0, fail: 0, infra: 1 });
+    expect(r.report.total).toBe(1);
+    const [only] = r.report.cases;
+    expect(only?.name).toBe("infra: setup /__test/session spaces_blocked");
+    expect(only?.level).toBe("infra");
+    expect(only?.reason).toMatch(
+      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, body sha256:[0-9a-f]{16} \(\d+ bytes\)\); 3 case\(s\) in test\/fixtures\/gate\.fixture\.ts did not run$/,
+    );
+    // The manifest counts the blocked cases as run (no "did not run" fails).
+    expect(only?.blocked).toEqual({
+      file: "test/fixtures/gate.fixture.ts",
+      cases: [
+        "fixture: a passing case",
+        "fixture: the case under test",
+        "outer > inner > fixture: a nested case",
+      ],
+    });
+    // Only the reason word leaves the body.
+    expect(JSON.stringify(r.report)).not.toContain("leaked-body-text");
+  }, 60_000);
+
+  it("setup hook refused plus another infra error: the folded reason names both", () => {
+    const r = run("setup-hook-more", false);
+    expect(r.status).not.toBe(0);
+    expect(r.report.counts).toMatchObject({ pass: 0, fail: 0, infra: 1 });
+    const [only] = r.report.cases;
+    expect(only?.name).toBe("infra: setup /__test/session spaces_blocked");
+    expect(only?.reason).toMatch(
+      /^infra: setup \/__test\/session spaces_blocked on rl-a \(status 404, [^)]+\)\); infra: setup publish timed out after 60s on rl-b; 3 case\(s\) in test\/fixtures\/gate\.fixture\.ts did not run$/,
+    );
+  }, 60_000);
+
   it("fail: non-zero without the gate", () => {
     const r = run("fail", false);
     expect(r.status).not.toBe(0);
