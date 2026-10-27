@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.66.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.66.0...v0.66.1) (2026-10-27)
+
+
+### Performance Improvements
+
+* **server:** publish doesn't wait on the artifact DO; the sweep recovers lost index and thumbnail jobs ([#728](https://github.com/open-artifacts-ai/open-artifacts/issues/728)) ([e3f4e99](https://github.com/open-artifacts-ai/open-artifacts/commit/e3f4e9921ab45641354317e739a21adbcfd93dc4))
+
 ## [0.66.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.65.0...v0.66.0) (2026-10-27)
 
 
