@@ -156,6 +156,8 @@ type World = {
   dryRunFails?: boolean;
   /** scripts/ci/check-no-test-hooks.ts fails on the bundle (OA_CHECK_NO_TEST_HOOKS=1). */
   checkHooksFails?: boolean;
+  /** scripts/ci/check-no-fake-idp.ts fails on the bundle (OA_CHECK_NO_TEST_HOOKS=1). */
+  checkFakeIdpFails?: boolean;
   /** `wrangler rollback` fails with this stderr. */
   rollbackFails?: string;
   /** /healthz reports this `version` (absent: an install without it). */
@@ -465,6 +467,24 @@ export function world(w: World = {}) {
               code: 0,
               stdout:
                 "check-no-test-hooks: ok: 8 /__test/* requests all 404 with TEST_HOOKS=1\n",
+              stderr: "",
+            };
+      }
+      if (
+        cmd === "node" &&
+        args.some((x) => x.endsWith("check-no-fake-idp.ts"))
+      ) {
+        ops.push(`check-no-fake-idp ${args.at(-1)}`);
+        return w.checkFakeIdpFails
+          ? {
+              code: 1,
+              stdout:
+                "check-no-fake-idp: FAIL: index.js holds the shim's file name\n",
+              stderr: "",
+            }
+          : {
+              code: 0,
+              stdout: "check-no-fake-idp: ok: no fake IdP in 1 file\n",
               stderr: "",
             };
       }

@@ -262,7 +262,7 @@ describe("release-please.yml hosted jobs", () => {
     const run = runOf(steps("hosted-check"));
     expect(run).toContain("scripts/ci/check-hosted-release.ts");
     expect(run).toMatch(
-      /pnpm check-no-test-hooks "\$RUNNER_TEMP\/hosted\/release"/,
+      /pnpm check-no-test-hooks "\$RUNNER_TEMP\/hosted\/release"\n\s*pnpm check-no-fake-idp "\$RUNNER_TEMP\/hosted\/release"/,
     );
     expect(Object.keys(job.outputs).sort()).toEqual([
       "bundle_sha256",
@@ -594,6 +594,14 @@ describe("deploy-prod checks the release bundle before Upgrade", () => {
     }
     expect(st[build]?.run).toContain("--variant release");
   });
+  it("runs check-no-fake-idp on the same bundle after the hooks check, before the upgrade", () => {
+    const check = at("pnpm check-no-test-hooks");
+    const fake = at('pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"');
+    expect(fake).toBeGreaterThan(check);
+    expect(at("prod-setup.sh upgrade")).toBeGreaterThan(fake);
+    expect(st[fake]?.if).toBe("steps.guard.outputs.deploy == 'true'");
+    expect(st[fake]?.["continue-on-error"]).toBeUndefined();
+  });
   it("L10: the upgrade itself runs check-no-test-hooks on the bundle it deploys", () => {
     const up = st[at("prod-setup.sh upgrade")];
     expect(up?.env?.OA_CHECK_NO_TEST_HOOKS).toBe("1");
@@ -611,6 +619,9 @@ describe("ci.yml no-test-hooks job", () => {
     );
     expect(runs).toContain(
       'pnpm check-no-test-hooks "$RUNNER_TEMP/release-bundle"',
+    );
+    expect(runs).toContain(
+      'pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"',
     );
   });
   it("N5: runs the real-build pin test, required (never skipped), behind the same release-only gate", () => {
