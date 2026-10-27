@@ -119,6 +119,13 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
         if: ${{ steps.ro.outputs.release_only != 'true' }}
+      # The server's B11/B13 dist integration tests serve the real render and
+      # runtime builds; without them they skip (review item 45).
+      - name: Build render and runtime for the dist integration tests
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+        # @oa/shared first: both bundle it from its dist (`pnpm test` builds
+        # it too, but only after this step).
+        run: pnpm --filter @oa/shared build && pnpm --filter @oa/render --filter @oa/runtime build
       - run: pnpm test
         if: ${{ steps.ro.outputs.release_only != 'true' }}
       # Wall-clock CPU budgets, serial (not under the parallel suite's load).
