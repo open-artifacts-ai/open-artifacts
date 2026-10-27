@@ -217,10 +217,10 @@ test("5. public with anonymous writes; the anon write limit is enforced", async 
   await owner.getByRole("button", { name: "Save visibility" }).click();
   await owner.getByRole("button", { name: "Make public" }).click();
   // The checkbox unlocks only once the artifact state refetches as public.
+  // Anyone who can view may write by default (#681), so making it public
+  // already lets anonymous visitors write; clicking would turn that off.
   const anonBox = owner.getByLabel("Allow anonymous writes");
   await expect(anonBox).toBeEnabled();
-  await anonBox.click();
-  // Server-controlled state: checked once the patch lands.
   await expect(anonBox).toBeChecked();
   await ctx.close();
 
