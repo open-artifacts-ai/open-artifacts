@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.64.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.63.0...v0.64.0) (2026-10-27)
+
+
+### Features
+
+* **email:** From name is '&lt;install&gt; via Open Artifacts' on the shared sender ([#705](https://github.com/open-artifacts-ai/open-artifacts/issues/705)) ([bfea646](https://github.com/open-artifacts-ai/open-artifacts/commit/bfea646c9dad579bf1105f3ed291cb864e0c9b0a))
+* **share:** "Who can change the live data" replaces Allow anonymous writes ([#681](https://github.com/open-artifacts-ai/open-artifacts/issues/681)) ([#707](https://github.com/open-artifacts-ai/open-artifacts/issues/707)) ([f59282a](https://github.com/open-artifacts-ai/open-artifacts/commit/f59282acd92a8fefe6bbeee8250a93ebb2682c21))
+
 ## [0.63.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.62.2...v0.63.0) (2026-10-27)
 
 
