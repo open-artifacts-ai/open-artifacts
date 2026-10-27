@@ -974,6 +974,7 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["POST /api/v1/directory/held/:groupId/confirm", org("directory.manage")],
   ["POST /api/v1/directory/disconnect", org("directory.disconnect")],
   ["DELETE /api/v1/directory", org("directory.disconnect")],
+  ["POST /api/v1/admin/broker-check", org("broker.check")],
   ["POST /api/v1/artifacts", org("artifact.create")],
   ["GET /api/v1/tokens", U, [200]],
   ["POST /api/v1/tokens", org("tokens.create")],

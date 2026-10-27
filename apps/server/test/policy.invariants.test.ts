@@ -290,6 +290,8 @@ describe("orgCan with a cap", () => {
     "artifact.create",
     "transfer.departed",
     "directory.manage",
+    "directory.disconnect",
+    "broker.check",
     "audit.read",
     "members.manage",
     "members.manageAdmins",

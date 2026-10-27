@@ -146,6 +146,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // the same operation through scheduled() (cron.ts DIRECTORY_DISCONNECT_CRON).
   "POST /api/v1/directory/disconnect": { org: "directory.disconnect" },
   "DELETE /api/v1/directory": { org: "directory.disconnect" },
+  // Probes the auth and directory brokers through the real transport: the
+  // org owner only (admins too get 404).
+  "POST /api/v1/admin/broker-check": { org: "broker.check" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },

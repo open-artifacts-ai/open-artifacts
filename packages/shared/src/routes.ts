@@ -218,6 +218,14 @@ export const R = {
   /** DELETE -> 204: reset a member's Google link (owner, admin; never the owner's link). */
   memberIdentity: (id: string, provider: "google") =>
     `/api/v1/members/${seg(id)}/identities/${seg(provider)}`,
+  /**
+   * POST -> 200 { auth, directory }, each { ok, status, ms, transport,
+   * skipped?, error? }: proves the install reaches its brokers through its
+   * real transport (a signed junk request the broker must refuse with 401).
+   * The org owner only (anyone else 404); about 10 a minute (429). Audited
+   * auth.broker_check.
+   */
+  adminBrokerCheck: "/api/v1/admin/broker-check",
   /** GET ?cursor&limit -> Page<AuditEvent> (org owner, admin). */
   audit: "/api/v1/audit",
   /**

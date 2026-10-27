@@ -144,6 +144,7 @@ export type AuditReason = z.infer<typeof AuditReasonSchema>;
 
 export const AuditActionSchema = z.enum([
   "auth.signin",
+  "auth.broker_check",
   "space.create",
   "space.update",
   "space.public_links",

@@ -47,13 +47,15 @@ const kidOf = (signingKey: string) => {
   return k;
 };
 
-/** One POST to a broker route, signed with the install assertion for `path`. */
-async function signedPost(
-  env: Env,
+/**
+ * A POST to a broker route, signed with the install assertion for `path`.
+ * The broker check (services/broker-check.ts) builds it too.
+ */
+export async function signedRequest(
   t: Broker,
   path: string,
   body: Record<string, unknown>,
-): Promise<{ res: Response; kid: string }> {
+): Promise<{ req: Request; kid: string }> {
   const text = JSON.stringify({
     install: t.installId,
     ts: Date.now(),
@@ -70,6 +72,17 @@ async function signedPost(
     body: text,
     redirect: "manual",
   });
+  return { req, kid };
+}
+
+/** One POST to a broker route, signed with the install assertion for `path`. */
+async function signedPost(
+  env: Env,
+  t: Broker,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<{ res: Response; kid: string }> {
+  const { req, kid } = await signedRequest(t, path, body);
   try {
     // A binding, the invocation's DIRECTORY_BROKER capability, or (never
     // hosted) public HTTPS to DIRECTORY_BROKER_URL; the request is signed.
