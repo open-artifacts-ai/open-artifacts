@@ -613,6 +613,10 @@ export async function main(argv: string[], d: Deps): Promise<number> {
       ...(turnstile ? { turnstile } : {}),
       patDir: join(d.home, ".open-artifacts", `hosted-${env}`),
       brokerEnabled,
+      // Health must come from this install, not just any install that
+      // answers on its host (review item 43). Every hosted release reports
+      // installId in /healthz.
+      requireInstallId: true,
       ...(d.fetch ? { fetch: d.fetch } : {}),
       ...(d.now ? { now: d.now } : {}),
       ...(d.sleep ? { sleep: d.sleep } : {}),

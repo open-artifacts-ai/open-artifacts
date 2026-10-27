@@ -1447,3 +1447,22 @@ describe("H-S3: R2 credentials for publish", () => {
     }
   });
 });
+
+describe("health is this install's (review item 43)", () => {
+  it("a create whose /healthz reports another install's id fails at the health check", async () => {
+    const w = world();
+    w.fake.health = () => ({
+      ok: true,
+      plan: "paid",
+      version: "0.23.0",
+      installId: "izzzzzzzzzzz",
+    });
+    expect(await main(CREATE(), w.deps)).not.toBe(0);
+    expect(w.parsed().some((l) => l.status === "error")).toBe(true);
+  });
+
+  it("the same create passes when /healthz reports this install", async () => {
+    const w = world();
+    expect(await main(CREATE(), w.deps)).toBe(0);
+  });
+});

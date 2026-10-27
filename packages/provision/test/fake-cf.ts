@@ -1021,7 +1021,13 @@ export class FakeCf {
         .find((t) => /^v\d/.test(t))
         ?.slice(1);
       return Response.json(
-        custom ?? { ok: true, plan: this.plain(s, "PLAN"), version },
+        // installId as the real server reports it (from INSTALL_ID).
+        custom ?? {
+          ok: true,
+          plan: this.plain(s, "PLAN"),
+          version,
+          installId: this.plain(s, "INSTALL_ID"),
+        },
       );
     }
     if (url.pathname === "/mcp" && req.method === "POST") {
