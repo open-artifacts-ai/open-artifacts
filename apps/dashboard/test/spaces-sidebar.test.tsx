@@ -310,22 +310,35 @@ it("inside a space, the tabs keep the space; there is no Team tab", async () => 
   ).toBeVisible();
 });
 
-it("a shared space has no Mine tab, and /mine?space=<shared> falls back to All", async () => {
+// Review item 20: the server's scope=mine is the personal space, so Mine in a
+// shared space is scope=space&spaceId=<id>&owner=me (P3).
+it("a shared space's Mine tab lists the caller's artifacts there (scope=space, owner=me)", async () => {
   const list = calls("GET");
-  const router = mountHosted(`/mine?space=${ENG}`);
+  mountHosted(`/?space=${ENG}`);
   await screen.findByRole("heading", { level: 1, name: "Engineering" });
-  expect(screen.queryByRole("tab", { name: "Mine" })).toBeNull();
-  expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute(
-    "aria-selected",
-    "true",
+  const tab = screen.getByRole("tab", { name: "Mine" });
+  fireEvent.mouseDown(tab);
+  fireEvent.click(tab);
+  await waitFor(() =>
+    expect(
+      list.some(
+        (c) =>
+          c.path === "/api/v1/artifacts" &&
+          c.search.get("scope") === "space" &&
+          c.search.get("spaceId") === ENG &&
+          c.search.get("owner") === "me",
+      ),
+    ).toBe(true),
   );
-  await waitFor(() => expect(router.state.location.pathname).toBe("/"));
-  expect(router.state.location.search).toEqual({ space: ENG });
-  const scoped = list.filter(
-    (c) => c.path === "/api/v1/artifacts" && c.search.get("spaceId") === ENG,
-  );
-  expect(scoped.length).toBeGreaterThan(0);
-  for (const c of scoped) expect(c.search.get("scope")).toBe("space");
+  // Never scope=mine with a shared spaceId: P3 refuses it (400).
+  expect(
+    list.some(
+      (c) =>
+        c.path === "/api/v1/artifacts" &&
+        c.search.get("scope") === "mine" &&
+        c.search.get("spaceId") === ENG,
+    ),
+  ).toBe(false);
 });
 
 it("the personal space keeps its Mine tab", async () => {

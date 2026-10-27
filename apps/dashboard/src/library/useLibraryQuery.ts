@@ -23,17 +23,21 @@ export const useLibraryQuery = (f: LibraryFilters) => {
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) => {
       const mine = f.space !== undefined && f.space === personalSpaceId;
+      // Inside a shared space, Mine is "in this space, owned by me" (P3's
+      // owner=me): the server's scope=mine means the personal space.
+      const ownMine = f.space !== undefined && !mine && f.scope === "mine";
       // Inside a space the tabs still apply: spaceId narrows any scope.
       const scope =
         f.space === undefined
           ? f.scope
-          : f.scope === "all"
+          : f.scope === "all" || ownMine
             ? mine
               ? "mine"
               : "space"
             : f.scope;
       const p = new URLSearchParams({ scope });
       if (f.space && !(mine && scope === "mine")) p.set("spaceId", f.space);
+      if (ownMine) p.set("owner", "me");
       if (f.format) p.set("format", f.format);
       if (f.agent) p.set("agent", f.agent);
       if (pageParam) p.set("cursor", pageParam);
