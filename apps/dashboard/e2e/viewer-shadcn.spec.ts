@@ -99,7 +99,7 @@ for (const scheme of ["light", "dark"] as const)
         ).toHaveText("BO");
         // Live data: shadcn Checkboxes named by their Labels.
         await expect(
-          page.getByRole("checkbox", { name: "Allow anonymous writes" }),
+          page.getByRole("checkbox", { name: "Database" }),
         ).toBeVisible();
         await clean(page);
         await shot(page, "share", (n) => info.outputPath(n));

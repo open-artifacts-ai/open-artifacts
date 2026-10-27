@@ -137,34 +137,58 @@ describe("share panel", () => {
     );
   });
 
-  it("allowAnonymousWrites is disabled unless public and db, and says why", async () => {
+  it("who can change the live data: shown only with db, and says who", async () => {
     mount(panel(OWNED));
-    const anon = await screen.findByRole("checkbox", {
-      name: "Allow anonymous writes",
-    });
-    expect(anon).toBeDisabled();
-    expect(anon).toHaveAccessibleDescription("Public and database only.");
+    await screen.findByRole("checkbox", { name: "Database" });
+    expect(
+      screen.queryByRole("radiogroup", {
+        name: "Who can change the live data",
+      }),
+    ).toBeNull();
     expect(
       screen.getByRole("checkbox", { name: "Database" }),
     ).toHaveAccessibleDescription(/./);
   });
 
-  it("turning db off also unsets allowAnonymousWrites in the same PATCH", async () => {
+  it("choosing Only editors sends dataWriters, never allowAnonymousWrites", async () => {
     const bodies = patches();
     mount(panel(POLL));
-    const anon = await screen.findByRole("checkbox", {
-      name: "Allow anonymous writes",
+    const group = await screen.findByRole("radiogroup", {
+      name: "Who can change the live data",
     });
-    await waitFor(() => expect(anon).toBeEnabled());
-    expect(anon).toBeChecked();
+    const everyone = within(group).getByRole("radio", {
+      name: "Everyone who can see it",
+    });
+    await waitFor(() => expect(everyone).toBeChecked());
+    expect(group).toHaveAccessibleDescription(
+      "Anyone with the link, signed in or not.",
+    );
+    fireEvent.click(within(group).getByRole("radio", { name: "Only editors" }));
+    await waitFor(() => expect(bodies).toEqual([{ dataWriters: "editors" }]));
+    await waitFor(() =>
+      expect(group).toHaveAccessibleDescription(
+        "Only you and people who can edit.",
+      ),
+    );
+  });
+
+  it("turning db off leaves dataWriters as set", async () => {
+    const bodies = patches();
+    mount(panel(POLL));
+    await screen.findByRole("radiogroup", {
+      name: "Who can change the live data",
+    });
     fireEvent.click(screen.getByRole("checkbox", { name: "Database" }));
     await waitFor(() =>
-      expect(bodies).toEqual([
-        { capabilities: { db: false }, allowAnonymousWrites: false },
-      ]),
+      expect(bodies).toEqual([{ capabilities: { db: false } }]),
     );
-    await waitFor(() => expect(anon).toBeDisabled());
-    expect(anon).not.toBeChecked();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("radiogroup", {
+          name: "Who can change the live data",
+        }),
+      ).toBeNull(),
+    );
   });
 
   it("a failed save toasts and leaves the UI as the server has it", async () => {
@@ -338,7 +362,7 @@ describe("share panel review fixes", () => {
     const owned = fixtures.artifacts.find((a) => a.id === OWNED);
     server.use(
       http.get(`*${R.artifact(OWNED)}`, () =>
-        HttpResponse.json({ ...owned, allowAnonymousWrites: true }),
+        HttpResponse.json({ ...owned, dataWriters: "viewers" }),
       ),
     );
     const bodies = patches();
@@ -350,22 +374,13 @@ describe("share panel review fixes", () => {
     await waitFor(() => expect(bodies).toEqual([{ visibility: "public" }]));
   });
 
-  it("leaving public still turns anonymous writes off", async () => {
+  it("leaving public sends only the visibility (#681)", async () => {
     const bodies = patches();
     mount(panel(POLL));
     const group = await screen.findByRole("radiogroup", { name: "Visibility" });
-    await waitFor(() =>
-      expect(
-        screen.getByRole("checkbox", { name: "Allow anonymous writes" }),
-      ).toBeChecked(),
-    );
     fireEvent.click(within(group).getByRole("radio", { name: "Team" }));
     fireEvent.click(screen.getByRole("button", { name: "Save visibility" }));
-    await waitFor(() =>
-      expect(bodies).toEqual([
-        { visibility: "team", allowAnonymousWrites: false },
-      ]),
-    );
+    await waitFor(() => expect(bodies).toEqual([{ visibility: "team" }]));
   });
 
   it("a denied or missing clipboard toasts Couldn't copy with the link", async () => {

@@ -5,7 +5,7 @@
 // 2. The owner's library lists it with the agent's client name.
 // 3. Owner and member vote; each sees the other's vote live (≤ 2 s).
 // 4. v2 with a changed label; the diff shows it; the votes survive.
-// 5. Public + allowAnonymousWrites; the 31st anonymous write is rejected.
+// 5. Public, anyone who can see it may write; the 31st anonymous write is rejected.
 // 6. A 5 MB PDF via create_upload; the owner views it; search finds a
 //    page-2 phrase (the extracted text came from the browser).
 // 7. Delete → the agent gets not_found; Undo restores it.
@@ -216,12 +216,17 @@ test("5. public with anonymous writes; the anon write limit is enforced", async 
     .check();
   await owner.getByRole("button", { name: "Save visibility" }).click();
   await owner.getByRole("button", { name: "Make public" }).click();
-  // The checkbox unlocks only once the artifact state refetches as public.
   // Anyone who can view may write by default (#681), so making it public
-  // already lets anonymous visitors write; clicking would turn that off.
-  const anonBox = owner.getByLabel("Allow anonymous writes");
-  await expect(anonBox).toBeEnabled();
-  await expect(anonBox).toBeChecked();
+  // already lets anonymous visitors write.
+  const writers = owner.getByRole("radiogroup", {
+    name: "Who can change the live data",
+  });
+  await expect(
+    writers.getByRole("radio", { name: "Everyone who can see it" }),
+  ).toBeChecked();
+  await expect(writers).toHaveAccessibleDescription(
+    "Anyone with the link, signed in or not.",
+  );
   await ctx.close();
 
   const anonCtx = await browser.newContext({ baseURL: APP });
