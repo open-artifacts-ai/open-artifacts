@@ -2,6 +2,7 @@ import {
   type Member,
   MemberInviteSchema,
   MemberPatchSchema,
+  MembersQuerySchema,
   R,
   TransferInputSchema,
 } from "@oa/shared";
@@ -49,7 +50,10 @@ const MEMBER = "/api/v1/members/:id";
 export function mountMembers(app: AppType): void {
   app.get(R.members, async (c) => {
     requireManager(c);
-    return c.json(await listMembers(c.env));
+    const q = MembersQuerySchema.safeParse(c.req.query());
+    if (!q.success)
+      throw new ApiError("bad_request", "Invalid query", q.error.issues);
+    return c.json(await listMembers(c.env, q.data.status));
   });
 
   /**
