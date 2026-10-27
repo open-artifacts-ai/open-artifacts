@@ -60,24 +60,30 @@ export function testHooksOn(env: HookEnv): boolean {
 }
 
 // Cloudflare's always-pass Turnstile TEST secret. With it, siteverify
-// answers { success: true, hostname: "localhost", action: "test" } for the
-// dummy token, which the strict check refuses. The red-line installs run it,
-// so this module (dropped from release builds) accepts that exact answer
-// only while hooks are live AND the configured secret is exactly this one.
+// answers { success: true, hostname: "example.com", metadata:
+// { result_with_testing_key: true } } (no action) for the dummy token, which
+// the strict check refuses. (Cloudflare's docs show hostname "localhost" and
+// action "test"; the live API doesn't.) The red-line installs run it, so this
+// module (dropped from release builds) accepts an answer carrying Cloudflare's
+// own test-key marker only while hooks are live AND the configured secret is
+// exactly this one.
 const TURNSTILE_TEST_SECRET = "1x0000000000000000000000000000000AA";
 
 /** True only for the test secret's answer on a live-hook install configured with exactly that secret. */
 export function turnstileTestKeyPass(
   env: HookEnv,
   secret: string,
-  out: { success?: unknown; hostname?: unknown; action?: unknown },
+  out: { success?: unknown; metadata?: unknown },
 ): boolean {
+  const meta = out.metadata;
   return (
     testHooksOn(env) &&
     secret === TURNSTILE_TEST_SECRET &&
     out.success === true &&
-    out.hostname === "localhost" &&
-    out.action === "test"
+    typeof meta === "object" &&
+    meta !== null &&
+    (meta as { result_with_testing_key?: unknown }).result_with_testing_key ===
+      true
   );
 }
 
