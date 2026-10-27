@@ -25,6 +25,7 @@ import {
   uncovered,
   unlisted,
 } from "../../../apps/server/test/authz/surfaces.ts";
+import { InfraError, setupFetch } from "./fetch-timeout.ts";
 import {
   adminEmail,
   type Cred,
@@ -603,6 +604,7 @@ async function api(
   path: string,
   body?: { json: unknown } | { raw: Uint8Array<ArrayBuffer>; type: string },
   ok: number[] = [200, 201, 204],
+  o: { setup?: boolean } = {},
 ): Promise<unknown> {
   const headers: Record<string, string> = {};
   let b: BodyInit | undefined;
@@ -613,11 +615,14 @@ async function api(
     headers["content-type"] = body.type;
     b = body.raw;
   }
-  const res = await fetch(
+  const req = new Request(
     `${t.app}${path}`,
     withCred(pat, { method, headers, body: b }),
   );
-  const text = await readBody(res);
+  // A setup publish: SETUP_PUBLISH_MS, a timeout is infra (never retried).
+  const { res, text } = o.setup
+    ? await setupFetch(t.name, req)
+    : await fetch(req).then(async (r) => ({ res: r, text: await readBody(r) }));
   const what = `${t.name} seed ${method} ${path.replace(/[A-Za-z0-9_-]{16,}/g, ":id")}`;
   if (!ok.includes(res.status)) throw new HttpError(what, res, text);
   return text ? parseJson(res, text, what) : null;
@@ -661,16 +666,24 @@ async function newArtifact(
   made?: (id: string) => void,
 ): Promise<string> {
   const { t, pat } = side;
-  const art = (await api(t, pat, "POST", "/api/v1/artifacts", {
-    json: {
-      title,
-      format: "html",
-      content: `<p>${title}</p>`,
-      capabilities: { db: true, storage: true, viewer: true },
-      visibility: "private",
-      ...(spaceId ? { spaceId } : {}),
+  const art = (await api(
+    t,
+    pat,
+    "POST",
+    "/api/v1/artifacts",
+    {
+      json: {
+        title,
+        format: "html",
+        content: `<p>${title}</p>`,
+        capabilities: { db: true, storage: true, viewer: true },
+        visibility: "private",
+        ...(spaceId ? { spaceId } : {}),
+      },
     },
-  })) as { id?: string };
+    undefined,
+    { setup: true },
+  )) as { id?: string };
   if (typeof art.id !== "string") throw new Error(`${t.name}: no artifact id`);
   // Tracked before anything else can fail, so cleanup still finds it.
   made?.(art.id);
@@ -855,6 +868,58 @@ export function snapshot(side: Side, x: Throwaway): Promise<string> {
     return reads(side, [S, `${S}/members`, `${S}/mappings`]);
   }
   throw new Error(`${side.t.name}: an empty throwaway has no snapshot`);
+}
+
+/** How long `settle` waits for indexing, and how often it looks. */
+export const SETTLE_MS = 30_000;
+export const SETTLE_POLL_MS = 500;
+
+/**
+ * Settles what the server changes on its own after a publish, so the
+ * snapshots before and after A's attempt see only what a write could change
+ * (call it before the "before" snapshot of an artifact throwaway):
+ * - thumbnailUrl/thumbnailVersion: with server thumbnails on, a capture of
+ *   the current version runs after indexing (and may defer or retry for a
+ *   minute or more). A client thumbnail of the current version, stored here
+ *   first, makes that capture a skip (or a same-version rewrite), so neither
+ *   field moves. A's write is refused before any thumbnail rule (A is
+ *   unknown to B), so this can't hide a thumbnail write.
+ * - versions[].textIndexed: the index alarm flips it to true about
+ *   LIMITS.indexDebounceMs after a publish. Waits until every entry is true,
+ *   polling every `pollMs`, at most `ms`; a timeout is an InfraError.
+ * Spaces have neither, so a space throwaway settles at once.
+ */
+export async function settle(
+  side: Side,
+  x: Throwaway,
+  o: { ms?: number; pollMs?: number } = {},
+): Promise<void> {
+  if (!x.artifactId) return;
+  const { t, pat } = side;
+  const A = `/api/v1/artifacts/${x.artifactId}`;
+  await api(t, pat, "PUT", `${A}/thumbnail`, { raw: WEBP, type: "image/webp" });
+  const ms = o.ms ?? SETTLE_MS;
+  const pollMs = o.pollMs ?? SETTLE_POLL_MS;
+  const end = Date.now() + ms;
+  for (;;) {
+    const v = (await api(t, pat, "GET", `${A}/versions`)) as unknown;
+    const list = Array.isArray(v)
+      ? v
+      : ((v as { items?: unknown } | null)?.items ?? null);
+    if (!Array.isArray(list))
+      throw new Error(`${t.name} settle: /versions is not a list`);
+    if (
+      list.every(
+        (e) => (e as { textIndexed?: unknown } | null)?.textIndexed === true,
+      )
+    )
+      return;
+    if (Date.now() + pollMs > end)
+      throw new InfraError(
+        `${t.name}: the throwaway's versions were not text-indexed within ${Math.round(ms / 1000)}s`,
+      );
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
 }
 
 const redact = (path: string) => path.replace(/[A-Za-z0-9_-]{16,}/g, ":id");

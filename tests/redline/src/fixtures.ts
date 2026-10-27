@@ -1,3 +1,4 @@
+import { setupFetch } from "./fetch-timeout.ts";
 import {
   type Cred,
   HttpError,
@@ -35,11 +36,22 @@ export function apiReq(
   );
 }
 
-/** Sends and reads the body; throws HttpError (status, body hash) unless 2xx. */
+/**
+ * Sends and reads the body; throws HttpError (status, body hash) unless 2xx.
+ * With `setupOn` (the install's name), a setup publish: bounded at
+ * SETUP_PUBLISH_MS, and a timeout is an InfraError, never retried.
+ */
 export async function call(
   req: Request,
   what: string,
+  o: { setupOn?: string } = {},
 ): Promise<{ res: Response; text: string }> {
+  if (o.setupOn !== undefined) {
+    const { res, text } = await setupFetch(o.setupOn, req);
+    if (res.status < 200 || res.status > 299)
+      throw new HttpError(what, res, text);
+    return { res, text };
+  }
   // Bounded: a timeout is a FAIL (an abort error), never a refusal.
   const res = await send(
     new Request(req, { signal: AbortSignal.timeout(15_000) }),
@@ -95,6 +107,7 @@ export async function createThrowaway(
         : {}),
     }),
     `${t.name} create throwaway`,
+    { setupOn: t.name },
   );
   const id = (
     parseJson(res, text, `${t.name} create throwaway`) as {

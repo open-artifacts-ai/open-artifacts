@@ -6,6 +6,7 @@ import {
   buildReport,
   type CaseResult,
   formatReport,
+  infraOf,
   labelOf,
   levelOf,
   type Manifest,
@@ -50,6 +51,14 @@ function ancestorFailed(t: TestCase): boolean {
   return false;
 }
 
+/** The setup errors behind a skipped test: its failed suites' and module's. */
+function setupErrors(t: TestCase, m: TestModule): { message?: unknown }[] {
+  const out: { message?: unknown }[] = [...m.errors()];
+  for (let p = t.parent; p.type === "suite"; p = p.parent)
+    if (p.state() === "failed") out.push(...p.errors());
+  return out;
+}
+
 export function collect(
   modules: ReadonlyArray<TestModule>,
   unhandled: ReadonlyArray<unknown>,
@@ -60,12 +69,21 @@ export function collect(
     const file = relative(root, m.moduleId);
     const broken = m.errors().length > 0;
     for (const t of m.children.allTests()) {
-      const state = t.result().state;
-      // A test skipped because its module or suite setup failed is a failure.
+      const result = t.result();
+      const state = result.state;
+      // A test skipped because its module or suite setup failed is a failure
+      // (infra when every setup error is infra; never a pass either way).
       const setupFailed = state === "skipped" && (broken || ancestorFailed(t));
+      const infra = setupFailed ? infraOf(setupErrors(t, m)) : undefined;
       const { level, reason } = setupFailed
-        ? { level: "fail" as const, reason: "setup failed" }
-        : levelOf(state, t.meta());
+        ? infra
+          ? { level: "infra" as const, reason: infra }
+          : { level: "fail" as const, reason: "setup failed" }
+        : levelOf(
+            state,
+            t.meta(),
+            result.state === "failed" ? result.errors : [],
+          );
       const label = labelOf(t.meta());
       cases.push({
         name: t.fullName,
@@ -75,13 +93,15 @@ export function collect(
         ...(label ? { label } : {}),
       });
     }
-    if (m.errors().length > 0)
+    if (m.errors().length > 0) {
+      const infra = infraOf(m.errors());
       cases.push({
         name: `${file}: module error`,
         file,
-        level: "fail",
-        reason: "error outside a test",
+        level: infra ? "infra" : "fail",
+        reason: infra ?? "error outside a test",
       });
+    }
   }
   if (unhandled.length > 0)
     cases.push({
@@ -108,9 +128,10 @@ export default class RedlineReporter implements Reporter {
     const text = formatReport(report);
     writeFileSync(out.replace(/\.json$/, "") + ".txt", text, { mode: 0o600 });
     process.stdout.write(`\n${text}`);
-    // A FAIL always fails the run; with the gate, so does any non-pass.
+    // A FAIL or infra always fails the run; with the gate, so does any non-pass.
     if (
       report.counts.fail > 0 ||
+      report.counts.infra > 0 ||
       (process.env.REDLINE_GATE === "1" && !report.gate.passed)
     )
       process.exitCode = 1;
