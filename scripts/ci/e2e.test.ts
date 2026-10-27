@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { root, sandbox, script, write } from "./stubs.ts";
 
 const pnpm = 'echo "PW_DIR=$PLAYWRIGHT_HTML_OUTPUT_DIR" >> "$STUB_LOG"';
@@ -73,6 +74,38 @@ describe("e2e.sh", () => {
       "PW_DIR=playwright-report/real",
     ]);
   });
+  it("with E2E_SHARD, mock and real run only that shard, as one blob per suite and shard", () => {
+    const blob =
+      'echo "BLOB=$PLAYWRIGHT_BLOB_OUTPUT_FILE PW_DIR=$PLAYWRIGHT_HTML_OUTPUT_DIR" >> "$STUB_LOG"';
+    for (const suite of ["mock", "real"]) {
+      const sb = sandbox({ pnpm: blob });
+      const r = sb.run(["bash", script("e2e.sh"), suite], {
+        env: { E2E_SHARD: "3/4", E2E_BLOB_DIR: join(sb.dir, "blobs") },
+      });
+      expect(r.code).toBe(0);
+      const config = suite === "real" ? " -c playwright.real.config.ts" : "";
+      expect(sb.log()).toEqual([
+        `pnpm --filter @oa/dashboard exec playwright test${config} --shard=3/4 --reporter=list,blob`,
+        `BLOB=${join(sb.dir, "blobs", suite, "shard-3.zip")} PW_DIR=`,
+      ]);
+    }
+  });
+  it("merge builds one html report per suite that has blobs, and nothing without any", () => {
+    const none = run("merge", { E2E_BLOB_DIR: "/nonexistent/blobs" });
+    expect(none.code).toBe(0);
+    expect(none.sb.log()).toEqual([]);
+    const sb = sandbox({ pnpm });
+    const blobs = join(sb.dir, "blobs");
+    write(join(blobs, "real", "shard-1.zip"), "");
+    const r = sb.run(["bash", script("e2e.sh"), "merge"], {
+      env: { E2E_BLOB_DIR: blobs },
+    });
+    expect(r.code).toBe(0);
+    expect(sb.log()).toEqual([
+      `pnpm --filter @oa/dashboard exec playwright merge-reports --reporter=html ${join(blobs, "real")}`,
+      "PW_DIR=playwright-report/real",
+    ]);
+  });
   it("ui runs the @oa/ui real-browser checks (axe contrast, focus)", () => {
     const r = run("ui");
     expect(r.code).toBe(0);
@@ -83,5 +116,30 @@ describe("e2e.sh", () => {
   });
   it("rejects an unknown step", () => {
     expect(run("deploy").code).toBe(2);
+  });
+});
+
+describe("ci.yml e2e: four shards behind one required check", () => {
+  // biome-ignore lint/suspicious/noExplicitAny: parsed workflow YAML
+  const ci: any = parse(
+    readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"),
+  );
+  it("e2e-shard runs four shards that all report", () => {
+    const j = ci.jobs["e2e-shard"];
+    expect(j.strategy.matrix.shard).toEqual([1, 2, 3, 4]);
+    expect(j.strategy["fail-fast"]).toBe(false);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(j.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
+  });
+  it("e2e always runs and passes only when every shard passed", () => {
+    const j = ci.jobs.e2e;
+    expect(j.needs).toBe("e2e-shard");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(j.if).toBe("${{ always() }}");
+    const gate = j.steps[0];
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(gate.env.SHARDS).toBe("${{ needs.e2e-shard.result }}");
+    expect(gate.run).toContain('[ "$SHARDS" = success ]');
+    expect(gate.if).toBeUndefined();
   });
 });

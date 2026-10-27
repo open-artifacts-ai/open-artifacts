@@ -13,6 +13,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 hosts_file="${HOSTS_FILE:-/etc/hosts}"
+blob_dir="${E2E_BLOB_DIR:-$root/apps/dashboard/blob-report}"
 
 case "${1:-}" in
   version)
@@ -43,7 +44,7 @@ case "${1:-}" in
     [ "$suite" = real ] && args+=(-c playwright.real.config.ts)
     if [ -n "${E2E_SHARD:-}" ]; then
       # One file per shard and suite, so the merge sees every shard.
-      PLAYWRIGHT_BLOB_OUTPUT_FILE="$root/apps/dashboard/blob-report/$suite/shard-${E2E_SHARD%/*}.zip" \
+      PLAYWRIGHT_BLOB_OUTPUT_FILE="$blob_dir/$suite/shard-${E2E_SHARD%/*}.zip" \
         pnpm --filter @oa/dashboard exec playwright test ${args[@]+"${args[@]}"} \
         --shard="$E2E_SHARD" --reporter=list,blob
     elif [ "$suite" = mock ]; then
@@ -57,7 +58,7 @@ case "${1:-}" in
   merge)
     # Each suite's shards, from the e2e job's downloaded artifacts.
     for suite in mock real; do
-      dir="$root/apps/dashboard/blob-report/$suite"
+      dir="$blob_dir/$suite"
       [ -d "$dir" ] || continue
       PLAYWRIGHT_HTML_OUTPUT_DIR="playwright-report/$suite" \
         pnpm --filter @oa/dashboard exec playwright merge-reports --reporter=html "$dir"
