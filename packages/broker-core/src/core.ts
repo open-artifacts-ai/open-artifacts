@@ -3,6 +3,7 @@
 // fail-closed rate limits, and the install assertion check. Each broker keeps
 // its own Env, keys and routes; nothing here holds a secret.
 import { keyId, verifyRequest } from "@oa/auth-core";
+import { GATE_INSTALL_HEADER } from "./gate-header.js";
 import type { RegistryEntry } from "./registry.js";
 
 const enc = new TextEncoder();
@@ -121,8 +122,25 @@ export function fixedOrigin(raw: string | undefined): string | null {
   }
 }
 
-const ipOf = (req: Request) =>
-  req.headers.get("cf-connecting-ip")?.trim() || "unknown";
+export { GATE_INSTALL_HEADER };
+
+const GATE_INSTALL = /^i[a-z0-9]{11}$/;
+
+/**
+ * The "per-IP" bucket key. Cloudflare sets cf-connecting-ip on every request
+ * from the internet (a client's own value is overwritten), so a request
+ * without it came over a service binding, i.e. through BrokerGate. Gate
+ * traffic is charged per install (`gate:<id>`), so one install's sign-ins
+ * never share a bucket with every other hosted install. The gate header is
+ * ignored whenever cf-connecting-ip is present, so a public caller can't pick
+ * its bucket.
+ */
+export function rateKeyOf(req: Request): string {
+  const ip = req.headers.get("cf-connecting-ip")?.trim();
+  if (ip) return `ip:${ip}`;
+  const gate = req.headers.get(GATE_INSTALL_HEADER)?.trim() ?? "";
+  return GATE_INSTALL.test(gate) ? `gate:${gate}` : "ip:unknown";
+}
 
 export type Limits = { ip?: RateLimit; install?: RateLimit };
 
@@ -137,7 +155,7 @@ export async function ipLimited(
 ): Promise<Response | null> {
   if (!rl.ip || !rl.install)
     return log("rate_limit", "unbound"), json({ error: "unavailable" }, 503);
-  if (!(await rl.ip.limit({ key: `ip:${ipOf(req)}` })).success)
+  if (!(await rl.ip.limit({ key: rateKeyOf(req) })).success)
     return log("rate_limit", "ip"), json({ error: "rate_limited" }, 429);
   return null;
 }

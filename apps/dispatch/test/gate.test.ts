@@ -82,6 +82,7 @@ describe("BrokerGate: allowed calls", () => {
         "cf-connecting-ip": "1.2.3.4",
         cookie: "a=b",
         authorization: "Bearer x",
+        "x-oa-gate-install": B,
       }),
       auth,
       w.env,
@@ -97,6 +98,8 @@ describe("BrokerGate: allowed calls", () => {
       "content-type": "application/json",
       "x-oa-kid": "k1",
       "x-oa-sig": "s1",
+      // The broker's rate key for gate traffic: this gate's install only.
+      "x-oa-gate-install": A,
     });
   });
 
