@@ -112,7 +112,7 @@ export const TOOL_DEFS = [
     inputSchema: IdInputSchema,
     example: { id: ID },
     description:
-      "Restore a deleted artifact from the trash, within 30 days of its deletion. Its personal owner, or in a shared space a space manager or org admin.",
+      "Restore a deleted artifact from the trash, within 30 days of its deletion. Its personal owner, or in a shared space that space's manager.",
   },
   {
     name: "artifact_data_get",

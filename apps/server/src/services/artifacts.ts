@@ -1424,6 +1424,18 @@ export async function undelete(
     allowDeleted: true,
   });
   if (a.deletedAt != null) {
+    // A shared space's trash restores only into a live space, with spaces
+    // on (#792 D); 404 otherwise, as for no access. Personal trash always.
+    const sp = await env.DB.prepare(
+      "select kind, deleted_at from spaces where id = ?",
+    )
+      .bind(a.spaceId ?? "")
+      .first<{ kind: string; deleted_at: number | null }>();
+    if (
+      sp?.kind === "shared" &&
+      (sp.deleted_at !== null || !authConfig(env).features.includes("spaces"))
+    )
+      throw notFound();
     const cutoff = Date.now() - LIMITS.softDeleteDays * DAY;
     // The search row went with the delete: the current version is unindexed
     // again (a pdf takes a viewer's text again) and updated_at moves, so a

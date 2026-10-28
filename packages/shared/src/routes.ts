@@ -14,13 +14,13 @@ export const R = {
   artifacts: A,
   /** GET -> ArtifactSummary; PATCH ArtifactPatch -> ArtifactPatchResult; DELETE soft-delete -> 204 */
   artifact: (id: string) => `${A}/${seg(id)}`,
-  /** POST -> ArtifactSummary. The personal owner, or (shared space) an uncapped space manager or org admin, within LIMITS.softDeleteDays; anyone else 404. */
+  /** POST -> ArtifactSummary. The personal owner, or (shared space) an uncapped manager of that space by space role (an org admin only after self-adding as manager), within LIMITS.softDeleteDays. A shared space's trash restores only while the space is live and spaces are on. Anyone else, or otherwise, 404. */
   restoreDeleted: (id: string) => `${A}/${seg(id)}/undelete`,
   /**
    * GET TrashQuery (?spaceId=&cursor=&limit=) -> Page<TrashItem>, newest
    * deletedAt first. The caller's personal trash plus, with spaces on, the
-   * trash of every shared space they manage (an uncapped space manager or
-   * org admin). spaceId narrows it: a shared space the caller doesn't manage,
+   * trash of every shared space where their space role is manager (uncapped;
+   * no org-admin shortcut). spaceId narrows it: a shared space the caller doesn't manage,
    * or can't see, is 404; another person's personal space is 404. With
    * spaces off, any spaceId but the caller's own id is 400. Capped callers
    * get an empty page (they can't restore).

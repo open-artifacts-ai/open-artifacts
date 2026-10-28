@@ -454,8 +454,8 @@ describe("can", () => {
   };
   it("agrees with the contract's artifactCan on its seven actions", () => {
     const caps: (CapReason | null)[] = [null, "guest", "restricted"];
+    // Undefined dataWriters: "editors" on both sides (fail closed).
     for (const level of LEVELS)
-      // Undefined dataWriters: "editors" on both sides (fail closed).
       for (const personal of [true, false])
         for (const cap of caps)
           for (const dataWriters of [
