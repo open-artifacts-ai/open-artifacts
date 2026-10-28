@@ -297,9 +297,10 @@ jobs:
   # `blocker` issue is opened and this job fails. Skipped for pre-release tags.
   verify-release:
     needs: [release-please, deploy-prod, deploy-landing, deploy-demo]
-    # A new stable release, or a dispatch whose prod deploy succeeded (the guarded
-    # deploy of a held release): prod is verified live on that tag either way.
-    if: ${{ always() && ((needs.release-please.outputs.release_created == 'true' && !contains(needs.release-please.outputs.tag_name, '-')) || (github.event_name == 'workflow_dispatch' && inputs.tag != '' && !contains(inputs.tag, '-') && needs.deploy-prod.result == 'success')) }}
+    # A new stable release, or a dispatch whose prod deploy ran (the guarded deploy
+    # of a held release). A failed or restored dispatch leaves prod on the old
+    # version, so the check opens the "Release vX not live" blocker: the alert.
+    if: ${{ always() && ((needs.release-please.outputs.release_created == 'true' && !contains(needs.release-please.outputs.tag_name, '-')) || (github.event_name == 'workflow_dispatch' && inputs.tag != '' && !contains(inputs.tag, '-') && (needs.deploy-prod.result == 'success' || needs.deploy-prod.result == 'failure'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

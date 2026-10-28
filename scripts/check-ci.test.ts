@@ -1269,7 +1269,7 @@ describe("release cadence", () => {
       // And after a dispatch whose prod deploy succeeded (a held release's
       // guarded deploy), on the dispatched tag.
       expect(String(v.if)).toContain(
-        "github.event_name == 'workflow_dispatch' && inputs.tag != '' && !contains(inputs.tag, '-') && needs.deploy-prod.result == 'success'",
+        "github.event_name == 'workflow_dispatch' && inputs.tag != '' && !contains(inputs.tag, '-') && (needs.deploy-prod.result == 'success' || needs.deploy-prod.result == 'failure')",
       );
       expect(v.env.TAG).toBe(
         // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
