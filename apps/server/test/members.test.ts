@@ -181,7 +181,7 @@ describe("members API", () => {
     ).toBe(404);
   });
 
-  it("delete reassigns artifacts to the owner, removes tokens, keeps shares", async () => {
+  it("delete reassigns artifacts to the owner, removes tokens and the shares to their email", async () => {
     const v = await login(`del-${tag}@x.com`, "member");
     const db = getDb(env);
     const aid = newId();
@@ -241,7 +241,8 @@ describe("members API", () => {
     )
       .bind(aid)
       .first<{ n: number }>();
-    expect(s?.n).toBe(1);
+    // A leftover share would re-admit them as a guest (review item 7).
+    expect(s?.n).toBe(0);
     // Their session/PAT now resolve to anonymous.
     expect((await call(R.me, v.cookie)).status).toBe(401);
   });

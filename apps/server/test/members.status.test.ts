@@ -278,7 +278,10 @@ describe("setUserStatus", () => {
           kind: "sync",
           actor: null,
           target: "user",
-          detail: { status: "removed", reason: "directory_delete" },
+          detail: {
+            status: "removed",
+            reason: "directory_delete",
+          },
         },
       ]),
     );
@@ -378,6 +381,7 @@ describe("removeMember with the spaces flag off (#478)", () => {
     expect(JSON.parse(rows[0]?.detail ?? "{}")).toEqual({
       status: "removed",
       reason: "admin_remove",
+      sharesDropped: 0,
     });
   });
 

@@ -27,7 +27,8 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // (spaces on) or deleteMember (off), both "user" below; its own guard is
   // the belt-and-braces close of the artifacts shared with them.
   "services/members.ts:removeMember": "artifact",
-  // The spaces-off removal: the row is deleted.
+  // The spaces-off removal: the row is deleted, and the shares addressed to
+  // their email go in the same batch (a leftover share re-admitted them).
   "services/members.ts:deleteMember": "user",
   // Suspend or remove (P3 T6): PATs, grants and sessions revoked.
   "services/members.ts:setUserStatus": "user",
@@ -415,6 +416,17 @@ describe("revocation lint (P3 T7)", () => {
       await env.DB.prepare("update artifacts set data_writers = ? where id = ?").run();
     }`;
     expect(check(unitsOf("x.ts", src), {}).missing).toEqual(["x.ts:f"]);
+  });
+
+  // The spaces-off removal drops the shares addressed to the removed email
+  // (a leftover share re-admitted it), a marker that keeps it registered.
+  // The spaces-on removal keeps them: the removed row refuses every sign-in.
+  it("the spaces-off removal drops shares and is registered with the user guard", () => {
+    const drop = /\.delete\(shares\)|delete from shares\b/i;
+    expect(fns.get("services/members.ts:deleteMember")).toMatch(drop);
+    expect(REGISTRY["services/members.ts:deleteMember"]).toBe("user");
+    expect(fns.get("services/members.ts:setUserStatus")).not.toMatch(drop);
+    expect(REGISTRY["services/members.ts:setUserStatus"]).toBe("user");
   });
 
   it("finds a shrinking function that skips the guard (self-test)", () => {
