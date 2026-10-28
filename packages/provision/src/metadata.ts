@@ -3,7 +3,7 @@
 // Bindings: https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/configuration/bindings/
 // The same metadata works for `/workers/scripts/{name}` (account) and the
 // dispatch-namespace endpoint; only the target URL differs (not decided here).
-import { normalizeVar, TUNABLES } from "@oa/shared";
+import { normalizeVar, parseTier, TIER_FEATURES, TUNABLES } from "@oa/shared";
 import { assertOwnResource, isInstallId, names } from "./names.js";
 import type { InstallId } from "./types.js";
 
@@ -75,6 +75,7 @@ export const HOSTED_ADDED = [
   "HOSTED",
   "INSTALL_ID",
   "FEATURES",
+  "TIER",
   "EMAIL_DAILY_CAP",
   "CODE_EMAILS_PER_DAY",
   "AUTH_PROVIDERS",
@@ -107,6 +108,10 @@ const EMAIL_RE = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
 export const HOSTED_VARS: Record<string, (v: string) => string | undefined> = {
   INSTALL_ID: (v) => (isInstallId(v) ? undefined : "bad install id"),
   FEATURES: list(/^[a-z][a-z0-9_]*$/),
+  // The hosted billing tier: FEATURES is derived from it (TIER_FEATURES), so
+  // the two are never passed together (userWorkerMetadata refuses).
+  TIER: (v) =>
+    parseTier(v) === v ? undefined : 'expected "trial", "team" or "business"',
   EMAIL_DAILY_CAP: posInt,
   CODE_EMAILS_PER_DAY: posInt,
   AUTH_PROVIDERS: list(/^[a-z][a-z0-9_-]*$/),
@@ -166,6 +171,7 @@ export function hostedVarProblem(k: string, v: string): string | undefined {
 }
 
 const PASSTHROUGH = [
+  "TIER",
   "GOOGLE_CLIENT_ID",
   "EMAIL_DAILY_CAP",
   "CODE_EMAILS_PER_DAY",
@@ -389,9 +395,17 @@ export function userWorkerMetadata(
   if (i.vars.EMAIL_FROM !== undefined && i.vars.EMAIL_FROM !== emailFrom)
     throw new Error(`EMAIL_FROM must be ${emailFrom}`);
 
+  // A tier sets the features (the single source: a caller can't widen past
+  // it), on every install, test installs included: a test install behaves
+  // exactly like the tier it reports. Without TIER, the explicit FEATURES.
+  const tier = parseTier(i.vars.TIER);
+  if (tier && i.vars.FEATURES !== undefined)
+    throw new Error(
+      "FEATURES is derived from TIER: pass one or the other, never both",
+    );
   const features = [
     ...new Set(
-      (i.vars.FEATURES ?? "")
+      (tier ? TIER_FEATURES[tier].join(",") : (i.vars.FEATURES ?? ""))
         .split(",")
         .map((x) => x.trim())
         .filter(Boolean)
