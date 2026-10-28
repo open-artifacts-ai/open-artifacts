@@ -302,7 +302,9 @@ describe("anonId issuance", () => {
     const id = await optIn();
     const good = await mintToken(id);
     const [gid = "", giat = "", gsig = ""] = good.split(".");
-    const forged = `${gid}.${giat}.${gsig.slice(0, -2)}AA`;
+    // Flip the first character: all 6 of its bits count, so the forgery can
+    // never equal the real signature (the last ones carry padding bits).
+    const forged = `${gid}.${giat}.${gsig[0] === "A" ? "B" : "A"}${gsig.slice(1)}`;
     const expired = await issueAnonToken(
       env,
       gid,
