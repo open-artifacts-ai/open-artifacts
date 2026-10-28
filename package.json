@@ -8,7 +8,8 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present build",
-    "test": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provision build && vitest run && pnpm -r --if-present test",
+    "test": "pnpm run test:prep && vitest run && pnpm -r --if-present test",
+    "test:prep": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provision build",
     "lint": "biome check .",
     "check-no-test-hooks": "node --experimental-strip-types scripts/ci/check-no-test-hooks.ts",
     "check-no-fake-idp": "node --experimental-strip-types scripts/ci/check-no-fake-idp.ts",

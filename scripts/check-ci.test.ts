@@ -73,6 +73,25 @@ describe("ci.yml", () => {
     expect(w.on.push.branches).toContain("main");
     expect("workflow_dispatch" in w.on).toBe(true);
   });
+  it("test: pull requests run the affected packages; everything else runs the full suite", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = w.jobs.test.steps;
+    const suite = steps.find((s) => s.id === "suite");
+    expect(suite.run).toBe("bash scripts/ci/test-affected.sh");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(suite.env.BASE_SHA).toBe(
+      "${{ github.event.pull_request.base.sha }}",
+    );
+    expect(suite.if).toContain("steps.ro.outputs.release_only != 'true'");
+    expect(steps.some((s) => s.run === "pnpm test")).toBe(false);
+    const cpu = steps.find((s) => (s.run ?? "").includes("test:cpu"));
+    expect(cpu.if).toContain("steps.suite.outputs.server == 'true'");
+    const sh = ci("test-affected.sh");
+    expect(sh).toContain(
+      '[ "${GITHUB_EVENT_NAME:-}" = pull_request ] || everything',
+    );
+    expect(sh).toContain('--filter "...[$BASE_SHA]"');
+  });
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
   });
