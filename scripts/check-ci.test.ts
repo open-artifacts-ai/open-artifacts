@@ -1266,6 +1266,15 @@ describe("release cadence", () => {
         "needs.release-please.outputs.release_created == 'true'",
       );
       expect(String(v.if)).toContain("always()");
+      // And after a dispatch whose prod deploy succeeded (a held release's
+      // guarded deploy), on the dispatched tag.
+      expect(String(v.if)).toContain(
+        "github.event_name == 'workflow_dispatch' && inputs.tag != '' && !contains(inputs.tag, '-') && needs.deploy-prod.result == 'success'",
+      );
+      expect(v.env.TAG).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ needs.release-please.outputs.tag_name || inputs.tag }}",
+      );
     });
     it("can only write issues, and runs the tested script on the new tag", () => {
       expect(v.permissions).toEqual({ contents: "read", issues: "write" });
