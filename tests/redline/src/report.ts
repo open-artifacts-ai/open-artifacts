@@ -23,6 +23,8 @@ export interface CaseResult {
   reason?: string;
   /** What a pass rests on when it isn't the real thing, e.g. "Turnstile test key". */
   label?: string;
+  /** What happened on the way, level unchanged, e.g. a retried setup GET (src/notes.ts). */
+  notes?: string[];
   /** Where crossCheck/crossWrite failed, when they know (src/refused.ts LegInfo). */
   leg?: string;
   host?: string;
@@ -154,6 +156,8 @@ export interface Report {
   binding?: RunBinding;
   /** Set by combine(): the capture run whose verdicts replaced the ID-token cases. */
   combined?: { runNonce: string; verdictsFinishedAt: number };
+  /** Notes recorded outside any test (beforeAll), by file. */
+  fileNotes?: { file: string; note: string }[];
 }
 
 export interface RunBinding {
@@ -193,6 +197,16 @@ export function proof(
  */
 export function label(ctx: TaskLike, text: string): void {
   (ctx.task.meta as { redlineLabel?: string }).redlineLabel = text;
+}
+
+/** The notes src/notes.ts put on a task's (or a file's) meta, redacted. */
+export function notesOf(meta: object | undefined): string[] {
+  const n = (meta as { redlineNotes?: unknown } | undefined)?.redlineNotes;
+  return Array.isArray(n)
+    ? n
+        .filter((x): x is string => typeof x === "string" && x !== "")
+        .map((x) => redactReason(x, 300))
+    : [];
 }
 
 /** The label `label()` set on a task's meta, if any. */
@@ -407,6 +421,13 @@ export function formatReport(r: Report): string {
   if (labeled.length) {
     lines.push("Labeled:");
     for (const c of labeled) lines.push(`  [${c.label}] ${c.name}`);
+  }
+  const noted = r.cases.filter((c) => c.notes?.length);
+  if (noted.length || r.fileNotes?.length) {
+    lines.push("Notes:");
+    for (const n of r.fileNotes ?? []) lines.push(`  [${n.file}] ${n.note}`);
+    for (const c of noted)
+      for (const n of c.notes ?? []) lines.push(`  ${c.name}: ${n}`);
   }
   lines.push(`Gate: ${r.gate.passed ? "PASS" : "FAIL"} (${r.gate.reason})`);
   return `${lines.join("\n")}\n`;

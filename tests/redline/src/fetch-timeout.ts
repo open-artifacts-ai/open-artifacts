@@ -81,6 +81,54 @@ export async function setupFetch(
   } catch (e) {
     if (timeout.aborted && !req.signal.aborted)
       throw new InfraError(setupTimeout(install, ms), { cause: e });
+    // No answer at all (reset, "fetch failed"): infra, never retried (a
+    // retry could publish a duplicate).
+    if (isNetworkError(e) && !req.signal.aborted)
+      throw new InfraError(setupNetwork(install, e), { cause: e });
     throw e;
   }
+}
+
+/** What a setup publish that got no answer fails with (after "infra: "). */
+export const setupNetwork = (install: string, e: unknown) =>
+  `setup publish got no response on ${install} (${networkCode(e)})`;
+
+const NET_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "EPIPE",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CLOSED",
+]);
+
+/** The error code (or name) behind a network error, for reports. */
+export function networkCode(e: unknown): string {
+  const c = (e as { cause?: { code?: unknown } })?.cause?.code;
+  if (typeof c === "string") return c;
+  const own = (e as { code?: unknown })?.code;
+  if (typeof own === "string") return own;
+  return (e as Error)?.name ?? "error";
+}
+
+/**
+ * True when `e` means the request got no response at all: undici's
+ * TypeError "fetch failed" (any cause), a socket code (ECONNRESET, ...), or
+ * an abort/timeout. Never an HTTP status or an assertion.
+ */
+export function isNetworkError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  if (e instanceof TypeError && e.message === "fetch failed") return true;
+  if (e.name === "AbortError" || e.name === "TimeoutError") return true;
+  const code = (e as { code?: unknown }).code;
+  const cause = (e as { cause?: { code?: unknown } }).cause?.code;
+  return (
+    (typeof code === "string" && NET_CODES.has(code)) ||
+    (typeof cause === "string" && NET_CODES.has(cause))
+  );
 }
