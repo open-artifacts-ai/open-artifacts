@@ -56,6 +56,7 @@ echo "wrangler $*" >> "${log}"
 case "$1 $2" in
   "deployments list") echo '[{"versions":[{"version_id":"old-1","percentage":100}]},{"versions":[{"version_id":"live-2","percentage":100}]}]' ;;
   "d1 time-travel") [ "$3" = info ] && echo '{"bookmark":"bm-123"}' ;;
+  "d1 info") echo '{"database_size":'"\${DB_SIZE:-1000}"'}' ;;
 esac
 exit 0
 `,
@@ -161,11 +162,23 @@ describe("prod-migration-guard.sh record, verify, restore", () => {
     expect(d.code).toBe(0);
     expect(d.out).toBe("worker_version=live-2\nbookmark=bm-123\n");
     expect(d.calls).toEqual([
+      "wrangler d1 info open-artifacts-prod --json",
       "wrangler deployments list --name open-artifacts-prod --json",
       "wrangler d1 time-travel info open-artifacts-prod --json",
       "verifier capture open-artifacts-prod",
     ]);
     expect(d.summary).toContain("`bm-123`");
+  });
+  it("record refuses when a rebuild could double the database past its limit", () => {
+    const r = repo();
+    const ok = r.run("record", { DB_SIZE: "5000", D1_LIMIT_BYTES: "10000" });
+    expect(ok.code).toBe(0);
+    const big = r.run("record", { DB_SIZE: "5001", D1_LIMIT_BYTES: "10000" });
+    expect(big.code).toBe(1);
+    expect(big.stderr).toContain("not migrating");
+    // Nothing recorded, nothing captured.
+    expect(big.out).toBe("");
+    expect(big.calls).toEqual(["wrangler d1 info open-artifacts-prod --json"]);
   });
   it("verify: the migration's verifier decides; missing verifier refuses", () => {
     const r = repo();
@@ -190,6 +203,9 @@ describe("prod-migration-guard.sh record, verify, restore", () => {
       "verifier capture open-artifacts-prod",
     ]);
     expect(ok.summary).toContain("matches its pre-migration capture");
+    expect(ok.summary).toContain(
+      "discards every write made to open-artifacts-prod since bookmark",
+    );
     // The restored database differs from the capture: fail loudly.
     const bad = r.run("restore", { ...env, CAPTURE: "counts-v2" });
     expect(bad.code).toBe(1);
