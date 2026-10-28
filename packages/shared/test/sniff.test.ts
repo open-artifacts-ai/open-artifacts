@@ -227,6 +227,10 @@ describe("sniff: images", () => {
       "",
       `<!DOCTYPE svg [ <!ENTITY a "b>"> ]><svg>`,
       `<!DOCTYPE svg [<!entity lol "lol"><!ENTITY lol2 "&lol;&lol;">]>\n<svg>&lol2;</svg>`,
+      // A quoted SYSTEM id that hides the internal subset from the DOCTYPE scan.
+      `<!DOCTYPE svg SYSTEM "x>]" [<!ENTITY a "b">]><svg>`,
+      `<!DOCTYPE svg SYSTEM "a]"><!ENTITY b "c"><svg>`,
+      `<svg><!ENTITY a "b"></svg>`,
     ];
     for (const t of bad)
       expect(checkEntry("a.svg", "image", s(t), false)?.reason, t).toBe(
