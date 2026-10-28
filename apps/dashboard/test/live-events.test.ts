@@ -171,6 +171,31 @@ describe("events socket", () => {
     },
   );
 
+  // #816: a socket opened just as access changed gets retryAfterMs; resume
+  // waits that long instead of reconnecting into another gone (the ~2 s loop).
+  it("gone with retryAfterMs: resume reconnects only after the wait", () => {
+    const { c } = mk();
+    const w = last();
+    w.frame({ type: "gone", reason: "changed", retryAfterMs: 2_000 });
+    w.closed(4403);
+    c.resume();
+    expect(FakeWS.all).toHaveLength(1);
+    vi.advanceTimersByTime(1_999);
+    expect(FakeWS.all).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeWS.all).toHaveLength(2);
+  });
+
+  it("a resume after the wait has passed reconnects at once", () => {
+    const { c } = mk();
+    const w = last();
+    w.frame({ type: "gone", reason: "changed", retryAfterMs: 500 });
+    w.closed(4403);
+    vi.advanceTimersByTime(600);
+    c.resume();
+    expect(FakeWS.all).toHaveLength(2);
+  });
+
   it("a bare 4403 close reads as changed", () => {
     const { onGone } = mk();
     last().closed(4403);
