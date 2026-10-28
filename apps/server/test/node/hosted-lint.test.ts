@@ -26,6 +26,8 @@ const READS: Record<string, string> = {
     "fail closed: hosted code sign-in requires Turnstile",
   "routes/me.ts: toMe":
     "reports: Me.instance.hosted; tightens: Me.instance.update is null (no self-host upgrade nudge, review item 39)",
+  "services/notices.ts: ownerNotices":
+    "tightens: no owner notice of guest shares on hosted (guests there were always capped)",
   "runtime/routes.ts: gate":
     "tightens: RL_ANON still applies to anonymous data writes when RL_ANON_WRITES is bound (review item 38)",
   "auth/sign-in.ts: authProviders":

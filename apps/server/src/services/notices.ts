@@ -50,10 +50,8 @@ export async function guestSharesNotice(
   const { results } = await stmt(env.DB, GUEST_SHARES)
     .bind(GUEST_SHARES_NOTICE_LIMIT + 1)
     .all<Row>();
-  // Only the roles above viewer the contract names (fail closed on others).
-  const rows = results.filter(
-    (r): r is Row & { role: "editor" } => r.role === "editor",
-  );
+  // The query keeps roles above viewer; shares_role_check allows only editor.
+  const rows = results as (Row & { role: "editor" })[];
   if (rows.length === 0) return null;
   return {
     items: rows.slice(0, GUEST_SHARES_NOTICE_LIMIT).map((r) => ({
