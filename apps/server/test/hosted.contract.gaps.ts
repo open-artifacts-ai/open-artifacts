@@ -18,5 +18,4 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
  * requires this list to be empty; hosted.contract.test.ts fails when it and
  * KNOWN_GAPS disagree, so closing an M1 gap edits both.
  */
-export const M1_OPEN: readonly string[] = [
-];
+export const M1_OPEN: readonly string[] = [];

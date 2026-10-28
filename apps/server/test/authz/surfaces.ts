@@ -595,6 +595,16 @@ export const SURFACES: readonly Surface[] = [
         `/api/v1/search?q=${id}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
     ),
   ),
+  // P4 item 9: the trash lists exactly what the caller may restore.
+  rest(
+    "rest trash",
+    "trash",
+    ["GET /api/v1/trash"],
+    restList(
+      (_id, cursor) =>
+        `/api/v1/trash?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    ),
+  ),
   // Data and storage
   rest(
     "data GET list",
