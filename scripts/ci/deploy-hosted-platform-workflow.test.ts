@@ -87,7 +87,18 @@ describe("deploy-hosted-platform.yml", () => {
     const withSecrets = steps.filter((s) =>
       JSON.stringify(s).includes("secrets."),
     );
-    expect(withSecrets.map((s) => s.name)).toEqual(["Deploy and verify"]);
+    expect(withSecrets.map((s) => s.name)).toEqual([
+      "Deploy and verify",
+      "Zones",
+    ]);
+    // The zone token is in the Zones step only.
+    expect(JSON.stringify(named("Deploy and verify"))).not.toContain(
+      "ZONE_TOKEN",
+    );
+    expect(named("Zones").env.ZONE_TOKEN).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ secrets.ZONE_TOKEN }}",
+    );
     const env = named("Deploy and verify").env as Record<string, string>;
     const secrets = Object.entries(env)
       .filter(([, v]) => v.includes("secrets."))
@@ -109,6 +120,34 @@ describe("deploy-hosted-platform.yml", () => {
     );
   });
 
+  it("zones plan by default; apply only with apply_zones and never with verify_only", () => {
+    expect(w.on.workflow_dispatch.inputs.apply_zones).toMatchObject({
+      type: "boolean",
+      default: false,
+    });
+    const z = named("Zones");
+    expect(z.env.ZONE_MODE).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ inputs.apply_zones && !inputs.verify_only && 'apply' || 'plan' }}",
+    );
+    expect(z.run).toBe(
+      'bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" "$ZONE_MODE"',
+    );
+    expect(steps.indexOf(z)).toBeGreaterThan(
+      steps.indexOf(named("Deploy and verify")),
+    );
+  });
+
+  it("prod runs only from main, checked in the workflow and again in the script", () => {
+    const s = named("Prod runs only from main");
+    expect(s.if).toBe("${{ inputs.env == 'prod' }}");
+    expect(s.run).toBe('test "$REF" = refs/heads/main');
+    expect(named("Deploy and verify").env.DEPLOY_ENVIRONMENT).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}",
+    );
+  });
+
   it("the input check accepts known targets in order and refuses anything else", () => {
     const check = named("Check the inputs").run as string;
     const go = (TAG: string, TARGETS: string) =>
@@ -120,6 +159,8 @@ describe("deploy-hosted-platform.yml", () => {
       go("v0.74.1", "auth-broker,directory-broker,dispatch,scheduler"),
     ).toBe(0);
     expect(go("v0.74.1", "inventory-key")).toBe(0);
+    expect(go("v0.74.1", "inventory,inventory-key,zones")).toBe(0);
+    expect(go("v0.74.1", "zones,dispatch")).toBe(1);
     expect(go("v0.74.1", "dispatch,scheduler")).toBe(0);
     for (const [tag, t] of [
       ["0.74.1", "dispatch"],
@@ -127,7 +168,7 @@ describe("deploy-hosted-platform.yml", () => {
       ["main", "dispatch"],
       ["v0.74.1", "scheduler,dispatch"],
       ["v0.74.1", "dispatch,dispatch"],
-      ["v0.74.1", "inventory"],
+      ["v0.74.1", "bogus"],
       ["v0.74.1", "dispatch;rm -rf /"],
       ["v0.74.1", ""],
     ])

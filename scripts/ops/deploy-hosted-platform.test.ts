@@ -110,6 +110,11 @@ const NEXT: Record<string, string> = {
     },
     { type: "plain_text", name: "OA_ENV", text: "prod" },
   ]),
+  "oa-p-inventory": settings([
+    { type: "d1", name: "PLATFORM_DB", id: DB },
+    { type: "kv_namespace", name: "HOSTS", namespace_id: HOSTS },
+    { type: "secret_text", name: "INVENTORY_KEY" },
+  ]),
   "oa-p-scheduler": settings(
     [
       { type: "d1", name: "PLATFORM_DB", id: DB },
@@ -123,6 +128,10 @@ const NEXT: Record<string, string> = {
 };
 
 const ENV = {
+  // Not in CI by default (CI sets these, and prod there needs main).
+  GITHUB_ACTIONS: "",
+  GITHUB_REF: "",
+  DEPLOY_ENVIRONMENT: "",
   CLOUDFLARE_API_TOKEN: TOKEN,
   EXPECT_TOKEN: TOKEN,
   CLOUDFLARE_ACCOUNT_ID: ACCT,
@@ -280,7 +289,7 @@ describe("deploy-hosted-platform.sh", () => {
     const ok = setup({ exists: ["oa-p-inventory"] }).run("inventory-key");
     expect(ok.code).toBe(0);
     expect(ok.log).toContain(
-      "pnpm exec wrangler secret put INVENTORY_KEY --name oa-p-inventory",
+      "pnpm exec wrangler secret put INVENTORY_KEY --env prod",
     );
     expect(puts(ok.log)).toEqual(["INVENTORY_KEY"]);
     clean(ok);
@@ -296,7 +305,7 @@ describe("deploy-hosted-platform.sh", () => {
       ["auth-broker", { GOOGLE_CLIENT_SECRET: "" }],
       ["auth-broker", { CLOUDFLARE_ACCOUNT_ID: "nope" }],
       ["dispatch", { HOSTS_KV_ID: "" }],
-      ["inventory", {}],
+      ["bogus", {}],
     ] as const) {
       const r = setup().run(t, env);
       expect(r.code, `${t} ${JSON.stringify(env)}`).toBe(2);
@@ -359,6 +368,45 @@ describe("deploy-hosted-platform.sh", () => {
       (NEXT["oa-p-auth-broker"] as string).replace(REG, "f".repeat(32)),
     );
     expect(bad.run("auth-broker", { VERIFY_ONLY: "1" }).code).toBe(1);
+  });
+  it("inventory: deploys through the wrapper with its two ids and verifies exactly two bindings", () => {
+    const r = setup().run("inventory");
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    const w = r.log.find((l) => l.startsWith("wrapper inventory prod "));
+    expect(w).toContain(`hosts=${HOSTS}`);
+    expect(w).toContain(`db=${DB}`);
+    const extra = setup({
+      next: {
+        "oa-p-inventory": settings([
+          { type: "d1", name: "PLATFORM_DB", id: DB },
+          { type: "kv_namespace", name: "HOSTS", namespace_id: HOSTS },
+          { type: "r2_bucket", name: "EXTRA", bucket_name: "x" },
+        ]),
+      },
+    }).run("inventory");
+    expect(extra.code).toBe(1);
+    expect(extra.err).toContain("bindings: got 'EXTRA,HOSTS,PLATFORM_DB'");
+  });
+  it("in CI, prod runs only from main in hosted-prod-deploy; staging is not held to that", () => {
+    const ci = {
+      GITHUB_ACTIONS: "true",
+      DEPLOY_ENVIRONMENT: "hosted-prod-deploy",
+    };
+    expect(
+      setup().run("auth-broker", { ...ci, GITHUB_REF: "refs/heads/feature" })
+        .code,
+    ).toBe(2);
+    expect(
+      setup().run("auth-broker", {
+        ...ci,
+        GITHUB_REF: "refs/heads/main",
+        DEPLOY_ENVIRONMENT: "hosted-staging-deploy",
+      }).code,
+    ).toBe(2);
+    expect(
+      setup().run("auth-broker", { ...ci, GITHUB_REF: "refs/heads/main" }).code,
+    ).toBe(0);
   });
   it("refuses an env other than staging or prod", () => {
     expect(setup().run("auth-broker", {}, "dev").code).toBe(2);

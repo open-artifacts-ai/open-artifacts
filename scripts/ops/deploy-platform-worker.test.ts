@@ -72,7 +72,7 @@ describe("deploy-platform-worker.sh", () => {
   });
 
   it("refuses an app that isn't in the allowlist", () => {
-    for (const a of ["inventory", "../auth-broker", "apps/auth-broker", ""]) {
+    for (const a of ["landing", "../auth-broker", "apps/auth-broker", ""]) {
       const r = run([a, "staging"], { BROKER_REGISTRY_ID: REG });
       expect(r.code).toBe(2);
       expect(r.log).toEqual([]);

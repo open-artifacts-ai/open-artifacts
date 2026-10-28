@@ -17,12 +17,13 @@
 #   directory-broker DIRECTORY_REGISTRY_ID GOOGLE_DIRECTORY_CLIENT_ID GOOGLE_DIRECTORY_CLIENT_SECRET
 #   dispatch         HOSTS_KV_ID (both brokers must exist)
 #   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT (both brokers must exist)
+#   inventory        PLATFORM_DB_ID HOSTS_KV_ID
 #   inventory-key    INVENTORY_KEY (sets oa-<p>-inventory's key; the Worker must exist)
 # Always: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
-  echo "usage: $0 staging|prod auth-broker|directory-broker|dispatch|scheduler|inventory-key" >&2
+  echo "usage: $0 staging|prod auth-broker|directory-broker|dispatch|scheduler|inventory|inventory-key" >&2
   exit 2
 fi
 env="$1"
@@ -33,6 +34,11 @@ case "$env" in
   *) echo "env must be staging or prod" >&2; exit 2 ;;
 esac
 NS="oa-$env"
+# In CI, prod runs only from main, in the prod deploy Environment.
+if [ "${GITHUB_ACTIONS:-}" = true ] && [ "$env" = prod ]; then
+  [ "${GITHUB_REF:-}" = refs/heads/main ] || { echo "prod deploys run only from main (GITHUB_REF is ${GITHUB_REF:-unset})" >&2; exit 2; }
+  [ "${DEPLOY_ENVIRONMENT:-}" = hosted-prod-deploy ] || { echo "prod deploys run only in hosted-prod-deploy" >&2; exit 2; }
+fi
 VERIFY_ONLY="${VERIFY_ONLY:-}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # The allowlisted deploy wrapper (tests swap in a stub).
@@ -153,13 +159,21 @@ case "$target" in
     crons="$(cf_get /workers/scripts/oa-$P-scheduler/schedules | must "read oa-$P-scheduler schedules" | jq -r '[.result.schedules[].cron] | sort | join(",")')"
     [ "$crons" = "*/2 * * * *,17 3 * * *" ] || { echo "oa-$P-scheduler schedules are '$crons'" >&2; exit 1; }
     ;;
+  inventory)
+    need PLATFORM_DB_ID; need HOSTS_KV_ID
+    PLATFORM_DB_ID="$PLATFORM_DB_ID" HOSTS_KV_ID="$HOSTS_KV_ID" deploy inventory
+    S="$(settings oa-$P-inventory)"
+    expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
+    expect "$S" '.result.bindings[] | select(.name == "HOSTS") | .namespace_id' "$HOSTS_KV_ID" "HOSTS"
+    expect "$S" '[.result.bindings[] | select(.type != "secret_text") | .name] | sort | join(",")' "HOSTS,PLATFORM_DB" "bindings"
+    ;;
   inventory-key)
     need_workers oa-$P-inventory
     if [ -z "$VERIFY_ONLY" ]; then
       need INVENTORY_KEY
       [ "${#INVENTORY_KEY}" -ge 32 ] || { echo "INVENTORY_KEY must be at least 32 characters" >&2; exit 2; }
-      (cd "$root/apps/inventory" && printf '%s' "$INVENTORY_KEY" | pnpm exec wrangler secret put INVENTORY_KEY --name "oa-$P-inventory" > /dev/null)
     fi
+    printf '%s' "${INVENTORY_KEY:-}" | put_secret "oa-$P-inventory" inventory INVENTORY_KEY
     have="$(secret_names oa-$P-inventory)"
     grep -qx INVENTORY_KEY <<< "$have" || { echo "oa-$P-inventory has no INVENTORY_KEY" >&2; exit 1; }
     echo "oa-$P-inventory: INVENTORY_KEY present"
