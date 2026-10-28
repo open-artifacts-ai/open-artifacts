@@ -48,9 +48,17 @@ const WANT = `(select max(${rank("gm.role")}) from group_mappings gm
   join directory_members dm on dm.group_id = gm.group_id
   where gm.space_id = space_members.space_id and dm.user_id = space_members.user_id)`;
 
+/**
+ * Only while the group is still a target: a walk or sign-in diff that
+ * outlived an unmapping never brings its rows back (spaces.ts
+ * DROP_UNTARGETED).
+ */
 export const ADD_MEMBERS = `insert or ignore into directory_members (group_id, user_id, gen)
   select ?1, value, ?3 from json_each(?2)
-  where exists (select 1 from users where id = value)`;
+  where exists (select 1 from users where id = value)
+    and (exists (select 1 from group_mappings where group_id = ?1)
+      or exists (select 1 from org_group_mappings where group_id = ?1)
+      or exists (select 1 from restricted_groups where group_id = ?1))`;
 export const REMOVE_MEMBERS = `delete from directory_members
   where group_id = ?1 and user_id in (select value from json_each(?2))`;
 /** restricted_sync recomputed for the listed users; returns those that changed. */

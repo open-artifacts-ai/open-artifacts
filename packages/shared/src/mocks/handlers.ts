@@ -23,8 +23,13 @@
  */
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
-import { type ErrorCode, QUOTA_MESSAGE, STATUS_FOR } from "../errors.js";
-import type { Format } from "../formats.js";
+import {
+  type ErrorCode,
+  QUOTA_MESSAGE,
+  STATUS_FOR,
+  UNSUPPORTED_FORMAT_MESSAGE,
+} from "../errors.js";
+import { type Format, inferFormat } from "../formats.js";
 import {
   SPACE_NAME_RESERVED_MESSAGE,
   spaceNameReserved,
@@ -67,6 +72,7 @@ import {
   UploadCreateInputSchema,
   type UserRef,
 } from "../schemas.js";
+import { bytesHead, checkEntry, textHead } from "../sniff.js";
 import type { ArtifactEventsMock } from "./events.js";
 import { fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
@@ -120,6 +126,54 @@ const DEFAULT_ENTRY = {
   code: "file.txt",
   pdf: "document.pdf",
 } as const;
+
+/**
+ * The server's format guard (manifest.ts): with no `format` and a name that
+ * implies none, inline text publishes as code and anything else is 400
+ * unsupported_format; an inline entry whose content doesn't fit its format is
+ * 400 binary_entry. Uploaded entries pass (the mock keeps no upload bytes).
+ * Null when the publish may go ahead.
+ */
+function formatRefusal(
+  input: z.infer<typeof PublishInputSchema>,
+): Response | null {
+  let entry: string;
+  let src: string | { base64: string } | { uploadId: string } | undefined;
+  if (input.content !== undefined) {
+    if (!input.format && input.entry === undefined) return null;
+    entry =
+      input.entry ??
+      DEFAULT_ENTRY[input.format as keyof typeof DEFAULT_ENTRY] ??
+      "index.html";
+    src = input.content;
+  } else if (input.files) {
+    const keys = Object.keys(input.files);
+    entry =
+      input.entry ??
+      (keys.includes("index.html")
+        ? "index.html"
+        : keys.includes("README.md")
+          ? "README.md"
+          : (keys[0] ?? ""));
+    src = input.files[entry];
+  } else return null;
+  const inferred = input.format ?? inferFormat(entry);
+  if (src === undefined || (typeof src === "object" && "uploadId" in src))
+    return null;
+  const { head, truncated } =
+    typeof src === "string"
+      ? textHead(src)
+      : bytesHead(Uint8Array.from(atob(src.base64), (c) => c.charCodeAt(0)));
+  // No format implied by the name: the bytes decide (text is code).
+  const r = checkEntry(entry, inferred ?? "code", head, truncated);
+  if (!r) return null;
+  return inferred
+    ? err("binary_entry", r.message, { path: entry, reason: r.reason })
+    : err("unsupported_format", UNSUPPORTED_FORMAT_MESSAGE, {
+        path: entry,
+        reason: "no_viewer",
+      });
+}
 
 /**
  * Anonymous = no cookie and no Bearer token, or the embed-mode hint
@@ -341,7 +395,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     }
     if (input.title) a.title = input.title;
     if (input.description !== undefined) a.description = input.description;
-    if (input.format) a.format = input.format;
+    // As the server: the given format, else the entry's (formatRefusal ran).
+    a.format = input.format ?? inferFormat(entry) ?? "code";
     a.lastAgent = null;
     return addVersion(a, {
       message: input.message ?? null,
@@ -483,6 +538,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     http.post("*/api/v1/artifacts", async ({ request }) => {
       const r = await body(request, PublishInputSchema);
       if (r.error) return r.error;
+      const refused = formatRefusal(r.data);
+      if (refused) return refused;
       const existing = r.data.id
         ? artifacts.find((a) => a.id === r.data.id)
         : undefined;
@@ -605,7 +662,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       `${A}/versions`,
       withArt(async (a, { request }) => {
         const r = await body(request, PublishInputSchema);
-        return r.error ?? publishTo(a, r.data);
+        return r.error ?? formatRefusal(r.data) ?? publishTo(a, r.data);
       }, "write"),
     ),
     http.get(

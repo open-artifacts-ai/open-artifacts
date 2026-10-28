@@ -157,7 +157,9 @@ describe("deliverCode: one code_send line per outcome", () => {
   });
 
   it("email_off", async () => {
-    const e = direct();
+    // Defence in depth: the route isn't offered without email (emailCodes),
+    // and deliverCode still refuses to send.
+    const e = direct({ EMAIL: undefined, EMAIL_FROM: undefined });
     expect(
       await outcome(async (to) =>
         deliverCode(e, authConfig(e), to, await emailKey(e, to), "o", IP),
@@ -312,15 +314,14 @@ describe("otp/latest reports the last outcome after the key", () => {
     expect(await copyOf(e, email)).toBeNull();
   });
 
-  it("email_off", async () => {
+  // Review item 35: an install that can't send email doesn't offer codes, so
+  // a request is a 404, never a 202 that sends nothing.
+  it("email off: codes aren't offered (404), and no code is ever pending", async () => {
     const email = uniq("off", TD);
     await seedUser(email, "guest");
-    const e = on(direct());
-    expect((await requestCode(e, email)).status).toBe(202);
-    expect(await reason(e, email)).toEqual({
-      reason: "no_code",
-      outcome: "email_off",
-    });
+    const e = on(direct({ EMAIL: undefined, EMAIL_FROM: undefined }));
+    expect((await requestCode(e, email)).status).toBe(404);
+    expect((await copyOf(e, email)) ?? null).toBeNull();
   });
 
   it("error (deliverCode threw)", async () => {

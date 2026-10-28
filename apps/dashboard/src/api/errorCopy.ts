@@ -1,4 +1,5 @@
 import type { ErrorCode } from "@oa/shared";
+import { heicCopy, KINDS } from "../upload/openable";
 import { ApiClientError } from "./client";
 
 /** The UI's own copy for the hosted error codes (Design's final strings, 2026-10-21). */
@@ -22,6 +23,9 @@ const COPY: Partial<Record<ErrorCode, string>> = {
     "An admin has turned off group mapping by space managers. Ask an admin to add or change groups.",
   restrict_admin:
     "Owners and admins can't be restricted. Make them a member first.",
+  unsupported_format: `This type of file can't be opened yet. Upload ${KINDS}.`,
+  binary_entry:
+    "This file isn't text, so it can't open as a web page, Markdown or code. Check that its file extension matches what it is.",
   reauth_required:
     "For your security, sign in with Google again to manage the directory.",
 };
@@ -51,6 +55,13 @@ export const errorCopy = (
 ): string => {
   if (!(e instanceof ApiClientError)) return fallback;
   if (e.code === "space_forbidden" && ctx?.capped) return CAPPED_FORBIDDEN;
+  const d = e.details as { reason?: unknown; path?: unknown } | undefined;
+  if (e.code === "unsupported_format" && d?.reason === "heic")
+    return heicCopy(
+      typeof d.path === "string"
+        ? d.path.slice(d.path.lastIndexOf("/") + 1)
+        : "This photo",
+    );
   return (e.code !== "cpu_limit" && COPY[e.code]) || e.message || fallback;
 };
 

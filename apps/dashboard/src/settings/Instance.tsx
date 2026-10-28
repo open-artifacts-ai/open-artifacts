@@ -31,9 +31,22 @@ const HELP = {
 export function Instance() {
   useDocumentTitle("Instance");
   const state = useMe();
-  const latest = instanceUpdate(state.status === "authed" ? state.me : null);
+  const me = state.status === "authed" ? state.me : null;
+  const latest = instanceUpdate(me);
+  // Owners only (absent for everyone else): why a configured sign-in method
+  // is off, as the server's own full sentences (review item 35).
+  const problems = me?.instance.signIn?.problems ?? [];
   return (
     <div className={STACK}>
+      {problems.length > 0 && (
+        <Notice tone="warning" title="Some sign-in methods are off.">
+          <ul className="m-0 grid gap-[var(--oa-space-1)] pl-[18px]">
+            {problems.map((p) => (
+              <li key={p}>{p}</li>
+            ))}
+          </ul>
+        </Notice>
+      )}
       {latest && <VersionCard update={latest} />}
       <InstanceSettings />
     </div>

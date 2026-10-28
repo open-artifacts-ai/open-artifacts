@@ -45,6 +45,11 @@
   color: var(--oa-accent-fg);
   margin-bottom: 6px;
 }
+.up-kinds {
+  margin-top: 4px;
+  color: var(--oa-text-muted);
+  font-size: var(--oa-text-sm);
+}
 .up-foot {
   margin-top: 6px;
   color: var(--oa-text-muted);

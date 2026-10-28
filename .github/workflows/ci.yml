@@ -293,8 +293,9 @@ jobs:
           OA_REQUIRE_REAL_BUILD: "1"
         run: pnpm --filter @oa/server exec vitest run -c vitest.node.config.ts test/node/test-hooks-strip.test.ts
   # No secrets: the real suite runs a local `wrangler dev` (ENVIRONMENT=dev in a
-  # generated temp config), never staging.
-  e2e:
+  # generated temp config), never staging. Four shards (one runner each, by spec
+  # file); the `e2e` job below is the required check and merges their reports.
+  e2e-shard:
     runs-on: ubuntu-latest
     # Browsers and their OS deps are baked into the image (no apt step: a slow
     # Ubuntu mirror cost three queue runs, #462). The tag must match
@@ -302,10 +303,15 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
       options: --ipc=host
+    strategy:
+      # Every shard reports, so one failure never hides another.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
       PLAYWRIGHT_IMAGE_VERSION: 1.64.1
-    # Queue runs take 10.5 to 13.5 min, and 15 cancelled passing suites. Sharding is the real fix.
-    timeout-minutes: 25
+      E2E_SHARD: ${{ matrix.shard }}/4
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -358,22 +364,79 @@ jobs:
       - name: Real-server suite (local wrangler dev)
         if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh real
+      # One spec on its own server: whole, in shard 3 (the lightest real share).
       - name: Real-server suite with spaces on (local wrangler dev)
-        if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 3 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh spaces
+      # Not sharded (about a minute together): shard 1 only.
       - name: UI real-browser checks (axe contrast, focus)
-        if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh ui
       - name: Landing real-browser checks (no horizontal overflow)
-        if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh landing
+      - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shard }}
+          path: apps/dashboard/blob-report
+          if-no-files-found: ignore
+          retention-days: 3
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
+          name: test-results-${{ matrix.shard }}
+          path: apps/dashboard/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+  # The required check (its name is branch protection's). Always runs, and passes
+  # only when every shard passed: a skipped, cancelled or failed shard fails it.
+  e2e:
+    needs: e2e-shard
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Every shard passed
+        env:
+          SHARDS: ${{ needs.e2e-shard.result }}
+        run: |
+          echo "e2e-shard: $SHARDS"
+          [ "$SHARDS" = success ]
+      # The merged html report, also when a shard failed (that's when it's read).
+      - uses: actions/checkout@v4
+        if: ${{ !cancelled() }}
+      - uses: actions/download-artifact@v4
+        if: ${{ !cancelled() }}
+        id: blobs
+        continue-on-error: true
+        with:
+          pattern: blob-report-*
+          path: apps/dashboard/blob-report
+          merge-multiple: true
+      - id: any
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -n "$(find apps/dashboard/blob-report -name '*.zip' 2> /dev/null)" ]; then
+            echo "blobs=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: pnpm/action-setup@v4
+        if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+      - uses: actions/setup-node@v4
+        if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+        run: pnpm install --frozen-lockfile --filter @oa/dashboard...
+      - name: Merge the shards' reports
+        if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+        run: bash scripts/ci/e2e.sh merge
+      - if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
           name: playwright-report
-          path: |
-            apps/dashboard/playwright-report
-            apps/dashboard/test-results
+          path: apps/dashboard/playwright-report
           retention-days: 14
   # Not a required check: skipped unless a release-config file changed.
   release-dry-run:
