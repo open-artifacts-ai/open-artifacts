@@ -30,6 +30,8 @@ export const ERROR_CODES = [
   "member_synced",
   "owner_only",
   "break_glass_required",
+  // Publish format guard.
+  "unsupported_format",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -89,7 +91,13 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   owner_only: 403,
   /** GET R.me for the org owner refused by a directory customer_mismatch; details BreakGlassRequiredDetails { fresh }. */
   break_glass_required: 401,
+  /** Publish with no `format` whose entry name implies none (inferFormat null); details { path, reason: "no_viewer" }. */
+  unsupported_format: 400,
 };
+
+/** 400 unsupported_format message. */
+export const UNSUPPORTED_FORMAT_MESSAGE =
+  "This file type can't be shown yet. Publish HTML, Markdown, code or PDF.";
 
 /**
  * #681: the one sentence MCP instructions and the publish_artifact /

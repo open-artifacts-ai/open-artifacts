@@ -1,7 +1,7 @@
 // Publishing a file no viewer can show (a phone JPEG became a `code`
 // artifact and the viewer hung): inference, content checks, nothing written.
 import { env } from "cloudflare:workers";
-import { newId, R } from "@oa/shared";
+import { newId, R, UNSUPPORTED_FORMAT_MESSAGE } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { api, errOf, login } from "./helpers.js";
@@ -38,9 +38,10 @@ describe("inferred format", () => {
       files: { "IMG_0042.JPG": { base64: b64(JPEG) } },
     });
     expect(r.status).toBe(400);
-    expect((await errOf(r)).details).toEqual({
-      path: "IMG_0042.JPG",
-      reason: "no_viewer",
+    expect(await errOf(r)).toEqual({
+      code: "unsupported_format",
+      message: UNSUPPORTED_FORMAT_MESSAGE,
+      details: { path: "IMG_0042.JPG", reason: "no_viewer" },
     });
     expect((await env.FILES.list()).objects.length).toBe(before);
     await nothingWritten(title);
@@ -49,10 +50,28 @@ describe("inferred format", () => {
   it("inline content with an unknown entry is refused", async () => {
     const r = await post({ title: "t", entry: "data.bin", content: "x" });
     expect(r.status).toBe(400);
-    expect((await errOf(r)).details).toEqual({
-      path: "data.bin",
-      reason: "no_viewer",
+    expect(await errOf(r)).toEqual({
+      code: "unsupported_format",
+      message: UNSUPPORTED_FORMAT_MESSAGE,
+      details: { path: "data.bin", reason: "no_viewer" },
     });
+  });
+
+  it("an explicit format skips inference", async () => {
+    const r = await post({
+      title: "t",
+      entry: "data.bin",
+      format: "code",
+      content: "plain text",
+    });
+    expect(r.status).toBe(201);
+  });
+
+  it("the message names what can be published, with no em dash", () => {
+    expect(UNSUPPORTED_FORMAT_MESSAGE).toBe(
+      "This file type can't be shown yet. Publish HTML, Markdown, code or PDF.",
+    );
+    expect(UNSUPPORTED_FORMAT_MESSAGE).not.toMatch(/—/);
   });
 
   it("known text still infers code", async () => {

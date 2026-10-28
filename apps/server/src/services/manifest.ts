@@ -9,6 +9,7 @@ import {
   newId,
   normalizePath,
   type PublishInput,
+  UNSUPPORTED_FORMAT_MESSAGE,
 } from "@oa/shared";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
@@ -54,9 +55,12 @@ const inlineTooLarge = (path: string) =>
     path,
     reason: "too_large",
   });
-/** No `format` and the entry's name implies none (inferFormat null). */
+/** No `format` and the entry's name implies none (inferFormat null): 400 unsupported_format. */
 const noViewer = (path: string) =>
-  bad(path, "no_viewer", `"${path}" has no viewer; pass format`);
+  new ApiError("unsupported_format", UNSUPPORTED_FORMAT_MESSAGE, {
+    path,
+    reason: "no_viewer",
+  });
 
 function norm(p: unknown): string {
   if (typeof p !== "string") throw bad(String(p), "invalid");
