@@ -171,3 +171,61 @@ describe("invite reachability (review item 11)", () => {
     expect(sent[0]?.text).not.toContain("one-time code");
   });
 });
+
+/** The email names exactly `methods` (#799: signInMethods and the email agree). */
+function namesExactly(text: string | undefined, methods: readonly string[]) {
+  const PHRASE: Record<string, string> = {
+    google: "your Google account",
+    access: "your organization's single sign-on",
+    email: "a one-time code sent to",
+  };
+  for (const [m, phrase] of Object.entries(PHRASE))
+    expect(text ?? "", m).toSatisfy(
+      (t: string) => t.includes(phrase) === methods.includes(m),
+    );
+  expect(text ?? "").toSatisfy(
+    (t: string) => t.includes("can't sign in") === (methods.length === 0),
+  );
+}
+
+describe("MemberInviteResult.signInMethods (#799)", () => {
+  it.each([
+    ["trial, in-domain", trial, {}, "a.com", ["email"]],
+    ["Google and email, in-domain", direct, {}, "a.com", ["google"]],
+    [
+      "Google and email, outside (uncertain)",
+      direct,
+      {},
+      "out.com",
+      ["google"],
+    ],
+    [
+      "Access and Google, in-domain",
+      direct,
+      { AUTH_PROVIDERS: "access,google,email" },
+      "a.com",
+      ["google", "access"],
+    ],
+    [
+      "Access only",
+      (o: Partial<Env>) => ({ ...env, ...o }) as Env,
+      {},
+      "any.com",
+      ["access"],
+    ],
+  ] as const)(
+    "%s: %j, the list the email names",
+    async (_, make, over, domain, want) => {
+      const { e, sent } = install(make, over as Partial<Env>);
+      const email = uniq("m", domain);
+      const r = await invite(e, await owner(), email);
+      expect(r.status).toBe(201);
+      const body = MemberInviteResultSchema.parse(await r.json());
+      expect(body.signInMethods).toEqual(want);
+      namesExactly(
+        sent.find((x) => x.to === email)?.text,
+        body.signInMethods ?? [],
+      );
+    },
+  );
+});

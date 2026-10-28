@@ -186,6 +186,8 @@ export async function putShare(
     emailed:
       created && (await emailShare(env, user, artifact, email, s.role, reach)),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
+    // The list the share email names (reach.ts), so the UI and email agree.
+    signInMethods: reach.methods,
   };
 }
 

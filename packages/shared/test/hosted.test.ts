@@ -123,6 +123,34 @@ describe("mock ShareResult.recipient (review item 37)", () => {
   });
 });
 
+describe("mock signInMethods (#799)", () => {
+  const use = (providers?: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: providers ? { providers } : {} }));
+  };
+  const shareTo = async (email: string) => {
+    const id = fixtures.artifacts.find((a) => a.access === "owner")?.id;
+    const r = await call("PUT", R.shares(id ?? ""), { email, role: "viewer" });
+    return ShareResultSchema.parse(await r.json()).signInMethods;
+  };
+  const inviteTo = async (email: string) => {
+    const r = await call("POST", R.members, { email, role: "member" });
+    return MemberInviteResultSchema.parse(await r.json()).signInMethods;
+  };
+
+  it("matches the server's reach for each case, in SIGN_IN_METHOD_ORDER", async () => {
+    use();
+    expect(await shareTo("new@example.com")).toEqual([]);
+    expect(await shareTo("guest@elsewhere.com")).toEqual(["email"]);
+    expect(await inviteTo("in@example.com")).toEqual(["google"]);
+    expect(await inviteTo("sec@secondary.com")).toEqual(["google"]);
+    use(["email"]);
+    expect(await inviteTo("in2@example.com")).toEqual(["email"]);
+    use(["google"]);
+    expect(await shareTo("guest@elsewhere.com")).toEqual([]);
+  });
+});
+
 describe("mock invite reachability (review item 11)", () => {
   const use = (providers: ("google" | "email")[]) => {
     server.resetHandlers();

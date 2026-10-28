@@ -156,3 +156,73 @@ describe("share recipient reach (review item 37)", () => {
     ).toBeUndefined();
   });
 });
+
+/** The email names exactly `methods` (#799: signInMethods and the email agree). */
+function namesExactly(text: string | undefined, methods: readonly string[]) {
+  const PHRASE: Record<string, string> = {
+    google: "your Google account",
+    access: "your organization's single sign-on",
+    email: "a one-time code sent to",
+  };
+  for (const [m, phrase] of Object.entries(PHRASE))
+    expect(text ?? "", m).toSatisfy(
+      (t: string) => t.includes(phrase) === methods.includes(m),
+    );
+  expect(text ?? "").toSatisfy(
+    (t: string) => t.includes("can't sign in") === (methods.length === 0),
+  );
+}
+
+describe("ShareResult.signInMethods (#799)", () => {
+  it.each([
+    ["hosted, in-domain non-member", direct, HOSTED, "a.com", []],
+    ["hosted, outside guest", direct, HOSTED, "out.com", ["email"]],
+    [
+      "Google only, outside",
+      direct,
+      { ...HOSTED, AUTH_PROVIDERS: "google" },
+      "out.com",
+      [],
+    ],
+    [
+      "email only, domain codes off, in-domain",
+      direct,
+      { AUTH_PROVIDERS: "email", AUTH_DOMAIN_JOIN: "invite" },
+      "a.com",
+      [],
+    ],
+    [
+      "only Google might admit (no row)",
+      direct,
+      { AUTH_PROVIDERS: "google", AUTH_DOMAIN_JOIN: "member" },
+      "secondary.com",
+      ["google"],
+    ],
+    [
+      "self-hosted direct, domain join, in-domain",
+      direct,
+      {},
+      "a.com",
+      ["google"],
+    ],
+    [
+      "Access only",
+      (o: Partial<Env>) => ({ ...env, ...o }) as Env,
+      {},
+      "any.com",
+      ["access"],
+    ],
+  ] as const)(
+    "%s: %j, the list the email names",
+    async (_, make, over, domain, want) => {
+      const { share, sent } = await setup(make, over as Partial<Env>);
+      const email = uniq("r", domain);
+      const s = await share(email);
+      expect(s.signInMethods).toEqual(want);
+      namesExactly(
+        sent.find((x) => x.to === email)?.text,
+        s.signInMethods ?? [],
+      );
+    },
+  );
+});

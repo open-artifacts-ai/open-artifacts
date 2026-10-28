@@ -10,6 +10,7 @@ import {
   MemberStatusSchema,
   MySpaceSchema,
   RestrictionSchema,
+  SignInProviderIdSchema,
   SpaceRefSchema,
   TierSchema,
 } from "./hosted/core.js";
@@ -341,6 +342,12 @@ export const ShareResultSchema = ShareSchema.extend({
   emailed: z.boolean(),
   /** Absent when the recipient can sign in; see ShareRecipientSchema. */
   recipient: ShareRecipientSchema.optional(),
+  /**
+   * The sign-in methods that admit the recipient, in SIGN_IN_METHOD_ORDER;
+   * [] when they can't sign in. The same list the share email names, so UI
+   * copy and the email agree. Sent by direct-sign-in and Access installs.
+   */
+  signInMethods: z.array(SignInProviderIdSchema).optional(),
 });
 export type ShareResult = z.infer<typeof ShareResultSchema>;
 
@@ -400,6 +407,11 @@ export const MemberInviteResultSchema = MemberSchema.extend({
   emailed: z.boolean(),
   /** Absent when the invitee can sign in; see InviteSignInSchema. */
   signIn: InviteSignInSchema.optional(),
+  /**
+   * The sign-in methods the invite email names, in SIGN_IN_METHOD_ORDER
+   * (["google"] when signIn is uncertain). The same list the email uses.
+   */
+  signInMethods: z.array(SignInProviderIdSchema).optional(),
 });
 export type MemberInviteResult = z.infer<typeof MemberInviteResultSchema>;
 

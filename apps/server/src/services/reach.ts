@@ -8,7 +8,7 @@
 // - codes: codeRule, the rule codeEligibility applies.
 // One D1 read at most (the share lookup codeRule may ask for).
 import { inDomains } from "@oa/auth-core";
-import type { ShareRecipient } from "@oa/shared";
+import { orderSignInMethods, type ShareRecipient } from "@oa/shared";
 import {
   type AuthConfig,
   authConfig,
@@ -74,7 +74,7 @@ export async function reachOf(
   )
     methods.push("email");
   return {
-    methods,
+    methods: orderSignInMethods(methods),
     googleUncertain,
     inDomain: inDomains(cfg.domains, domain),
   };

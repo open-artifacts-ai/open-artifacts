@@ -2,7 +2,12 @@
 // by scripts/emit-email-templates.ts). Every value is untrusted: stripped of
 // control characters (CR/LF included) and length-capped everywhere, then
 // HTML-escaped for the .html part, so nothing can inject headers or markup.
-import type { Format, ShareRecipient, ShareRole } from "@oa/shared";
+import {
+  type Format,
+  orderSignInMethods,
+  type ShareRecipient,
+  type ShareRole,
+} from "@oa/shared";
 import type { SignInProvider } from "../auth/config.js";
 import { escapeHtml } from "../mcp/template.js";
 import { effectiveName } from "../services/users.js";
@@ -106,7 +111,6 @@ const METHOD_PHRASE: Record<SignInProvider, (to: string) => string> = {
   access: () => "your organization's single sign-on",
   email: (to) => `a one-time code sent to ${to}`,
 };
-const METHOD_ORDER: readonly SignInProvider[] = ["google", "access", "email"];
 
 /**
  * How `to` signs in, from the sign-in methods that can admit that address
@@ -123,9 +127,7 @@ export function signInSentence(
     cantSignIn?: ShareRecipient["reason"];
   },
 ): string {
-  const parts = METHOD_ORDER.filter((m) => methods.includes(m)).map((m) =>
-    METHOD_PHRASE[m](to),
-  );
+  const parts = orderSignInMethods(methods).map((m) => METHOD_PHRASE[m](to));
   if (parts.length > 0) return `You'll sign in with ${parts.join(" or ")}.`;
   const instance = oneLine(p.instance, NAME_MAX);
   // Design's final copy (review #799).

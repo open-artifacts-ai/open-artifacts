@@ -24,7 +24,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { managesAdmins } from "../auth/authz.js";
-import { authConfig } from "../auth/config.js";
+import { authConfig, type SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import {
@@ -181,6 +181,11 @@ export async function inviteMember(
     .onConflictDoNothing({ target: users.email })
     .returning();
   if (!row) throw new ApiError("conflict", "Already a member");
+  // What the email names, and the result reports: uncertain Google is still
+  // the only way in, so it is named.
+  const signInMethods: SignInProvider[] = reach.methods.length
+    ? reach.methods
+    : ["google"];
   let emailed = false;
   if (emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))
@@ -195,8 +200,7 @@ export async function inviteMember(
           instance,
           recipient: email,
           appHost: env.APP_HOST,
-          // Uncertain Google is still the only way in: name it.
-          signIn: reach.methods.length ? reach.methods : ["google"],
+          signIn: signInMethods,
         }),
       {
         kind: "invite",
@@ -208,6 +212,7 @@ export async function inviteMember(
   return {
     ...toMember(row),
     emailed,
+    signInMethods,
     ...(reach.methods.length === 0
       ? { signIn: { status: "uncertain", reason: "outside_domains" } as const }
       : {}),

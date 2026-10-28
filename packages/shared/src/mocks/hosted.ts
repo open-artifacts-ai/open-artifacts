@@ -43,6 +43,8 @@ import {
   type FeatureFlag,
   type GroupRef,
   type MySpace,
+  orderSignInMethods,
+  type SignInProviderId,
   type SpaceRef,
   type SpaceRole,
   type Tier,
@@ -1061,6 +1063,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           ...m,
           emailed: false,
           signIn: { status: "uncertain", reason: "outside_domains" },
+          signInMethods: ["google"],
         },
         { status: 201 },
       );
@@ -1916,10 +1919,36 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       : { canSignIn: false, reason: "outside_domains" };
   };
 
+  /**
+   * signInMethods (#799) for an invite (a member row about to exist) or a
+   * share, the server's reach rules for the mock's providers, in
+   * SIGN_IN_METHOD_ORDER; [] when they can't sign in. An uncertain Google
+   * invite (outside the domain) names Google.
+   */
+  const signInMethods = (
+    email: string,
+    kind: "invite" | "share",
+  ): SignInProviderId[] => {
+    if (mode === "access") return ["access"];
+    const google = providerIds.includes("google");
+    const codes = providerIds.includes("email");
+    const inDomain = email.endsWith(`@${MOCK_DOMAIN}`);
+    const member =
+      kind === "invite" ||
+      members.some((m) => m.email === email && m.role !== "guest");
+    const guest = !member;
+    const out: SignInProviderId[] = [];
+    if (google && (inDomain ? member : kind === "invite")) out.push("google");
+    // Codes: domain codes (Google off) in the domain; guests outside it.
+    if (codes && (inDomain ? !google && member : guest)) out.push("email");
+    return orderSignInMethods(out);
+  };
+
   return {
     handlers,
     refresh,
     shareRecipient,
+    signInMethods,
     checkPublish,
     placeNew,
     refuseCappedCreate,
