@@ -174,6 +174,8 @@ export function hostedContract(d: ContractDriver): ContractCases {
         await json(await d.call("GET", AUTH.providers)),
       );
       expect(p.mode).toBe("direct");
+      // Review item 36c: HOSTED=1 only.
+      expect(p.hosted).toBe(true);
       // turnstileSiteKey is the driver's own config, not the contract's.
       expect(
         p.providers.map((x) => {

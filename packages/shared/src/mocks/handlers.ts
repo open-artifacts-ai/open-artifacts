@@ -795,7 +795,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         };
         if (i >= 0) list[i] = share;
         else list.push(share);
-        return HttpResponse.json({ ...share, emailed: false });
+        const recipient = h?.shareRecipient(email);
+        return HttpResponse.json({
+          ...share,
+          emailed: false,
+          ...(recipient ? { recipient } : {}),
+          ...(h ? { signInMethods: h.signInMethods(email, "share") } : {}),
+        });
       }, "owner"),
     ),
     http.delete(
@@ -870,7 +876,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         lastSeenAt: null,
       };
       members.push(m);
-      return HttpResponse.json({ ...m, emailed: false }, { status: 201 });
+      return HttpResponse.json(
+        {
+          ...m,
+          emailed: false,
+          ...(h ? { signInMethods: h.signInMethods(email, "invite") } : {}),
+        },
+        { status: 201 },
+      );
     }),
     http.patch("*/api/v1/members/:id", async ({ request, params }) => {
       const m = members.find((x) => x.id === params.id);

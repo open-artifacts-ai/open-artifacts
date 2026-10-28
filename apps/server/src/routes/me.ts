@@ -43,7 +43,12 @@ async function toMe(
       mcpUrl: appUrl + MCP_PATH,
       emailEnabled: emailEnabled(c.env),
       plan: planOf(c.env.PLAN),
-      update: instanceUpdate(user.role, kv.get(RELEASE_KEY)),
+      // Hosted tenants are upgraded by the platform: no self-host nudge
+      // (review item 39).
+      update:
+        c.env.HOSTED === "1"
+          ? null
+          : instanceUpdate(user.role, kv.get(RELEASE_KEY)),
     },
     ...profile,
   };

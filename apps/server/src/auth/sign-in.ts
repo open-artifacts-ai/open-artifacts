@@ -55,7 +55,7 @@ export function authProviders(env: Env): AuthProviders {
       guests: true,
       ...(cfg.turnstile ? { turnstileSiteKey: cfg.turnstile.siteKey } : {}),
     });
-  return { mode, providers };
+  return { mode, providers, hosted: env.HOSTED === "1" };
 }
 
 /** Me.instance.signIn; with `owner`, also why configured sign-in is off (problems). */

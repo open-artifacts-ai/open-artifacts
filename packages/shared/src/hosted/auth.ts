@@ -30,6 +30,13 @@ export type AuthProvider = z.infer<typeof AuthProviderSchema>;
 export const AuthProvidersSchema = z.object({
   mode: SignInModeSchema,
   providers: z.array(AuthProviderSchema),
+  /**
+   * True only on an install Open Artifacts hosts (HOSTED=1), for "Hosted by
+   * Open Artifacts" copy; false on every self-hosted install, direct sign-in
+   * included. The server always sends it; absent (an older server) reads as
+   * false.
+   */
+  hosted: z.boolean().optional(),
 });
 export type AuthProviders = z.infer<typeof AuthProvidersSchema>;
 
@@ -50,6 +57,15 @@ export const SignInErrorSchema = z.enum([
   "failed",
 ]);
 export type SignInError = z.infer<typeof SignInErrorSchema>;
+
+/**
+ * `?via=` next to `?error=no_access` on SIGN_IN_PAGE: the provider whose
+ * valid identity wasn't admitted (access: the Access callback; google: the
+ * Google callback). Present on every no_access redirect, absent otherwise.
+ * Params: `error` (SignInError), `next` (a safe same-origin path), `via`.
+ */
+export const SignInViaSchema = z.enum(["access", "google"]);
+export type SignInVia = z.infer<typeof SignInViaSchema>;
 
 /** Code policy, as the server applies it and the UI shows it. */
 export const CODE_POLICY = {

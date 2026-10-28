@@ -5,6 +5,7 @@
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  ApiErrorSchema,
   ArtifactSummarySchema,
   AUTH,
   AuditEventSchema,
@@ -17,7 +18,10 @@ import {
   ENV_FEATURE_FLAGS,
   ERROR_CODES,
   HealthzSchema,
+  INVITE_UNREACHABLE_MESSAGE,
+  InviteUnreachableDetailsSchema,
   ListQuerySchema,
+  MemberInviteResultSchema,
   MemberSchema,
   MembersQuerySchema,
   MeSchema,
@@ -29,6 +33,7 @@ import {
   SearchQuerySchema,
   SettingsPatchSchema,
   SettingsSchema,
+  ShareResultSchema,
   SPACE_MANAGER_MAPPING_ROLES,
   SPACE_NAME_RESERVED_MESSAGE,
   SpaceCanSchema,
@@ -92,6 +97,119 @@ const msw: ContractDriver = {
 
 hostedContract(msw);
 
+describe("mock ShareResult.recipient (review item 37)", () => {
+  const share = async (email: string, providers?: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: providers ? { providers } : {} }));
+    const id = fixtures.artifacts.find((a) => a.access === "owner")?.id;
+    const r = await call("PUT", R.shares(id ?? ""), {
+      email,
+      role: "viewer",
+    });
+    expect(r.status).toBe(200);
+    return ShareResultSchema.parse(await r.json());
+  };
+
+  it("in-domain non-member: needs_invite; a member or an outside guest: none", async () => {
+    expect((await share("new@example.com")).recipient).toEqual({
+      canSignIn: false,
+      reason: "needs_invite",
+    });
+    expect((await share("guest@elsewhere.com")).recipient).toBeUndefined();
+    expect((await share("guest@elsewhere.com", ["google"])).recipient).toEqual({
+      canSignIn: false,
+      reason: "outside_domains",
+    });
+  });
+});
+
+describe("mock signInMethods (#799)", () => {
+  const use = (providers?: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: providers ? { providers } : {} }));
+  };
+  const shareTo = async (email: string) => {
+    const id = fixtures.artifacts.find((a) => a.access === "owner")?.id;
+    const r = await call("PUT", R.shares(id ?? ""), { email, role: "viewer" });
+    return ShareResultSchema.parse(await r.json()).signInMethods;
+  };
+  const inviteTo = async (email: string) => {
+    const r = await call("POST", R.members, { email, role: "member" });
+    return MemberInviteResultSchema.parse(await r.json()).signInMethods;
+  };
+
+  it("matches the server's reach for each case, in SIGN_IN_METHOD_ORDER", async () => {
+    use();
+    expect(await shareTo("new@example.com")).toEqual([]);
+    expect(await shareTo("guest@elsewhere.com")).toEqual(["email"]);
+    expect(await inviteTo("in@example.com")).toEqual(["google"]);
+    expect(await inviteTo("sec@secondary.com")).toEqual(["google"]);
+    use(["email"]);
+    expect(await inviteTo("in2@example.com")).toEqual(["email"]);
+    use(["google"]);
+    expect(await shareTo("guest@elsewhere.com")).toEqual([]);
+  });
+});
+
+describe("mock invite reachability (review item 11)", () => {
+  const use = (providers: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { providers } }));
+  };
+  const invite = (email: string) =>
+    call("POST", R.members, { email, role: "member" });
+
+  it("email only, outside the domain: 400 invite_unreachable", async () => {
+    use(["email"]);
+    const r = await invite("out@elsewhere.com");
+    expect(r.status).toBe(400);
+    const { error } = ApiErrorSchema.parse(await r.json());
+    expect(error.code).toBe("invite_unreachable");
+    expect(InviteUnreachableDetailsSchema.parse(error.details)).toEqual({
+      field: "email",
+      reason: "outside_domains",
+    });
+    expect(error.message).toBe(INVITE_UNREACHABLE_MESSAGE.outside_domains);
+  });
+
+  it("Google on, outside the domain: 201 with signIn uncertain", async () => {
+    use(["google", "email"]);
+    const r = await invite("sec@secondary.com");
+    expect(r.status).toBe(201);
+    expect(MemberInviteResultSchema.parse(await r.json()).signIn).toEqual({
+      status: "uncertain",
+      reason: "outside_domains",
+    });
+  });
+
+  it("in the domain: 201, no flag", async () => {
+    use(["email"]);
+    const r = await invite("new@example.com");
+    expect(r.status).toBe(201);
+    expect(
+      MemberInviteResultSchema.parse(await r.json()).signIn,
+    ).toBeUndefined();
+  });
+});
+
+describe("mock AuthProviders.hosted (review item 36c)", () => {
+  it("true by default; false with selfHosted, and Me agrees", async () => {
+    for (const [selfHosted, hosted] of [
+      [false, true],
+      [true, false],
+    ] as const) {
+      server.resetHandlers();
+      server.use(...createHandlers({ hosted: { selfHosted } }));
+      const p = AuthProvidersSchema.parse(
+        await (await call("GET", AUTH.providers)).json(),
+      );
+      expect(p.hosted).toBe(hosted);
+      const me = MeSchema.parse(await (await call("GET", R.me)).json());
+      expect(me.instance.hosted).toBe(hosted);
+    }
+  });
+});
+
 describe("hosted contract schemas", () => {
   it("every new error code has a status", () => {
     expect(Object.keys(STATUS_FOR).sort()).toEqual([...ERROR_CODES].sort());
@@ -123,6 +241,7 @@ describe("hosted contract schemas", () => {
           turnstileSiteKey: "k",
         },
       ],
+      hosted: true,
     };
     expect(AuthProvidersSchema.parse(providers)).toEqual(providers);
     expect(

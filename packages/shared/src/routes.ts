@@ -249,6 +249,7 @@ export const AUDIT_NEXT_CURSOR_HEADER = "X-OA-Next-Cursor";
 
 export const AUTH = {
   login: "/auth/login",
+  /** GET (Access OIDC) -> 302 next; a refusal goes to PAGES.noAccess on Access-only installs, else (direct mode) SIGN_IN_PAGE?error=no_access&next&via=access. */
   callback: "/auth/callback",
   logout: "/auth/logout",
   devLogin: "/auth/dev-login",
@@ -257,7 +258,7 @@ export const AUTH = {
   providers: "/auth/providers",
   /** GET ?next -> 302 to Google (404 when Google is off). */
   loginGoogle: "/auth/login/google",
-  /** GET (OAuth) -> 302 next, or (any refusal, no_access included) SIGN_IN_PAGE?error=SignInError&next. */
+  /** GET (OAuth) -> 302 next, or (any refusal) SIGN_IN_PAGE?error=SignInError&next; no_access adds &via=google (SignInVia). */
   callbackGoogle: "/auth/callback/google",
   /** POST CodeRequest -> 202 CodeRequested. */
   codeRequest: "/auth/code/request",

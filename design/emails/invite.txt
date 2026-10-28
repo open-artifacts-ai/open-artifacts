@@ -2,7 +2,7 @@
 
 {{introLine}}
 
-There's no password to set up. You'll sign in with a one-time code sent to {{recipientEmail}}.
+{{signInLine}}
 
 Go to {{instanceName}}:
 {{signInUrl}}

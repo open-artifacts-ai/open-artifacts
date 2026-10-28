@@ -60,7 +60,7 @@ export const DIRECTORY_SYNC_CRON = "oa:directory-sync";
 /** Daily cron: purge soft-deleted artifacts past 30 days, sweep stale uploads,
  * delete OAuth clients that never completed a grant, re-enqueue search
  * indexing or a thumbnail job that never landed (C3), drop past days' email counters and
- * expired sign-in codes, check the latest release (B3), and drop a directory
+ * expired sign-in codes, check the latest release (B3; never on HOSTED=1), and drop a directory
  * connection left unconfirmed past 24 h (P3 T12), kick DirectorySync
  * (P3 T13), and delete audit rows past AUDIT_RETENTION_MS (400 days), a
  * bounded batch per run (sweepAuditEvents). An `oa:` cron is a platform
@@ -113,7 +113,8 @@ async function run(
       reindexStale(env, now),
       sweepEmailCounters(env, now),
       sweepLoginCodes(env, now),
-      checkLatestRelease(env, now),
+      // Hosted: the platform upgrades tenants; no GitHub call (review item 39).
+      env.HOSTED === "1" ? null : checkLatestRelease(env, now),
       expirePending(env, now),
       sweepAuditEvents(env, now),
       // DirectorySync keeps its own 2 min alarm; the daily kick restarts a

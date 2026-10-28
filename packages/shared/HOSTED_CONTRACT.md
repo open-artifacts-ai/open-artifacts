@@ -12,7 +12,8 @@ hosted off.
 - **The SPA owns sign-in.** The chooser and code forms live at `SIGN_IN_PAGE`
   (`/sign-in`). The server is JSON-only; every refused redirect sign-in
   (`no_access` included) lands on `/sign-in?error=<SignInError>&next=…`, never
-  `PAGES.noAccess`.
+  `PAGES.noAccess`. A `no_access` redirect also carries `via=access|google`
+  (`SignInVia`): the provider whose identity wasn't admitted.
 - **No access is 404**, never 403. The exceptions are explicit codes:
   `space_forbidden` (403) on publish or move into a space the caller can't
   publish to, or on a member or mapping change the caller's role can't make
@@ -97,6 +98,9 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `Me` | `auth?: MeAuth`, `personalSpaceId?` (= user.id), `spaces?: MySpace[]` (shared, by name, ≤ 200) |
 | `Settings` (so `SettingsPatch`) | `spaceManagerMappings?: boolean` (hosted; default true, absent self-hosted). PATCH needs `settings.manage` (org owner, admin); audited `settings.space_manager_mappings` |
 | `Space` | `can?: SpaceCan` (`{ manageMappings }`) |
+| `ShareResult` (PUT shares, MCP share_artifact) | `recipient?: ShareRecipient` = `{ canSignIn: false, reason: "needs_invite" \| "outside_domains" \| "no_sign_in_method" }`: the share applied, but the recipient can't sign in yet. `needs_invite`: in a verified domain on an invite-only install (hosted, or AUTH_DOMAIN_JOIN=invite): an admin must invite them as a member. Absent when they can sign in (or only Google might admit them). The share email says they need an invite instead of promising a sign-in |
+| `ShareResult`, `MemberInviteResult` | `signInMethods?: ("access" \| "google" \| "email")[]`: the sign-in methods that admit the person, in `SIGN_IN_METHOD_ORDER` (google, access, email; `orderSignInMethods`), `[]` when they can't sign in; an uncertain invite lists `["google"]`. Exactly the list the share or invite email names, so UI copy and the email agree |
+| `MemberInviteResult` | `signIn?: InviteSignIn` = `{ status: "uncertain", reason: "outside_domains" }`: the invite stands, but only Google might admit the address (outside AUTH_DOMAINS: works only for a Workspace account whose primary domain is verified). Absent when an offered method admits it. Warn the inviter |
 | `AuditActionSchema` | `settings.space_manager_mappings`, `user.role` (a member role change: `detail { from, to }`, written only when the role changes) |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
 
@@ -109,15 +113,16 @@ Installs in one environment share a single Google client through the auth broker
 | `GET AUTH.providers` `/auth/providers` | `AuthProviders` (public, no-store, no D1) |
 | `GET AUTH.loginGoogle` `/auth/login/google?next&reauth` | 302 to Google or the broker; 404 when Google is off. `reauth=1` forces a fresh Google authentication (`max_age=0`) for break-glass |
 | `GET R.me` (break-glass) | 401 `break_glass_required` details `BreakGlassRequiredDetails { fresh }` when the session is the org owner's and a directory customer_mismatch refuses them. `fresh: true`: the session already meets break-glass, so open the directory settings; `false`: sign in with `AUTH.loginGoogle?reauth=1` first. Any other refusal stays a plain 401 `unauthorized` |
-| `GET AUTH.callbackGoogle` `/auth/callback/google` | 302 `next`; any refusal (incl. `no_access`) 302 `SIGN_IN_PAGE?error=SignInError&next` only |
+| `GET AUTH.callbackGoogle` `/auth/callback/google` | 302 `next`; any refusal (incl. `no_access`) 302 `SIGN_IN_PAGE?error=SignInError&next` only; `no_access` adds `&via=google` |
 | `POST AUTH.codeRequest` `/auth/code/request` | `CodeRequest` → 202 `CodeRequested` |
 | `POST AUTH.codeVerify` `/auth/code/verify` | `CodeVerify` → 200 `CodeVerified` |
 | `DELETE R.memberIdentity(id, "google")` | 204; owner/admin reset a member's Google link (never the owner's: the owner on themselves is 404). An admin or owner target needs the uncapped OWNER: an admin acting on an admin or the owner gets 403 `owner_only` whether or not they are linked (checked by role before the link, so it reveals no link), also when the target is promoted to admin mid-request (enforced in the write; nothing changes). For any other target, no link is 404. A capped admin gets 404, as on every members route. |
 
 | Schema | Meaning |
 |---|---|
-| `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[] }`; only fully configured providers; `turnstileSiteKey` whenever Turnstile is configured |
+| `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[], hosted? }`; only fully configured providers; `turnstileSiteKey` whenever Turnstile is configured; `hosted` true only on HOSTED=1 (the server always sends it; absent reads as false) |
 | `SignInErrorSchema` | `tenant \| identity_conflict \| removed \| no_access \| expired \| failed` |
+| `SignInViaSchema` | `access \| google`: `?via=` on every `error=no_access` redirect (Access callback in direct mode: access; Google callback: google); absent on other errors |
 | `CODE_POLICY` | `{ length: 8, ttlSec: 600, resendAfterSec: 60, maxAttempts: 5 }` |
 | `CodeRequestSchema` | `{ email, next?, turnstileToken? }` |
 | `CodeRequestedSchema` | `{ maskedEmail, expiresIn, resendAfter, codeLength }`; same 202 for every well-formed address, and when the email pool is full (the pool never 429s) |
@@ -265,6 +270,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `reauth_required` | 401 | break-glass routes need a fresh Google sign-in |
 | `break_glass_required` | 401 | `GET R.me` for the org owner refused by a directory customer_mismatch; details `{ fresh }` (see Sign-in) |
 | `space_name_reserved` | 400 | `POST R.spaces` or a `PATCH R.space(id)` rename to "Personal" (trimmed, any case); details `{ field: "name" }`, message `SPACE_NAME_RESERVED_MESSAGE`. Existing spaces with that name are left alone |
+| `invite_unreachable` | 400 | `POST R.members` for an address no offered sign-in method could ever admit (e.g. outside AUTH_DOMAINS with email codes only, or Google off and codes off); nothing is created. Details `InviteUnreachableDetails` `{ field: "email", reason: "outside_domains" \| "no_sign_in_method" }`, message `INVITE_UNREACHABLE_MESSAGE[reason]` (outside_domains: "This address can't sign in to this workspace. Share artifacts with them as a guest instead."). An existing row is still 409. Access installs never refuse |
 | `restrict_admin` | 400 | `PUT R.memberRestricted(id)` on an org owner or admin |
 | `owner_only` | 403 | an admin (or a capped owner) acting on an org owner or admin: `PATCH`/`DELETE R.member(id)`, `DELETE R.memberIdentity(id, "google")` (#475). Admins keep managing members and guests |
 | `directory_mapping_off` | 403 | a space manager (not an org admin) adds or changes a space mapping (PUT) while `Settings.spaceManagerMappings` is off; list and DELETE stay allowed |
