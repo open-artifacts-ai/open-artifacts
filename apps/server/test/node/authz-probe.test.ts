@@ -115,8 +115,11 @@ describe("authz-probe", () => {
         log: () => {},
         fetch: async (req) => {
           methods.add(
-            req.headers.get("x-oa-request") === null && req.method !== "GET"
-              ? "csrf-probe"
+            // A cookie write without the header (bearer ones are exempt).
+            req.headers.get("x-oa-request") === null &&
+              req.headers.has("cookie") &&
+              req.method !== "GET"
+              ? "no-csrf-header"
               : req.method,
           );
           return nothing();
@@ -124,14 +127,19 @@ describe("authz-probe", () => {
         readFile: async () => JSON.stringify(FILE),
       },
     );
-    // Writes only as CSRF probes (no X-OA-Request: refused before any
-    // handler), or bodies that fail validation after the access check.
+    // #839: every write carries X-OA-Request (it reaches the route's rules)
+    // and is the refusal mode: refused after the access rules, or a no-op.
+    // Real writes (the `mutates` ones, realOnly routes) are skipped.
     expect([...methods].sort()).toEqual(
-      ["GET", "POST", "PATCH", "PUT", "DELETE", "csrf-probe"].sort(),
+      ["GET", "POST", "PATCH", "PUT", "DELETE"].sort(),
     );
     expect(SURFACES.filter((s) => s.mutates).map((s) => s.name)).toEqual([
+      "rest restore_version",
       "rest uploads",
+      "rest unshare",
       "rest visibility",
+      "rest delete",
+      "rest undelete",
       "mcp restore_version",
       "mcp unshare_artifact",
       "mcp set_visibility",

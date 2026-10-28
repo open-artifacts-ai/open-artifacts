@@ -5,9 +5,10 @@ import { createPat } from "../../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../../src/auth/session.js";
 import { deleteUser } from "../../src/directory/apply.js";
 import { type Health, HK, NEVER } from "../../src/directory/health.js";
-import { UPSERT } from "../../src/directory/store.js";
+import { K, UPSERT } from "../../src/directory/store.js";
 import type { Env } from "../../src/env.js";
 import worker from "../../src/index.js";
+import { oauthApi } from "../../src/mcp/oauth-api.js";
 import { runtimeStub } from "../../src/runtime/do.js";
 import { publish } from "../../src/services/artifacts.js";
 import { getUser } from "../../src/services/users.js";
@@ -20,8 +21,15 @@ import {
   type ArtifactName,
   CALLERS,
   type CallerName,
+  TRAITS,
 } from "./expect.ts";
-import { type Cred, PROBE_SHARE_EMAIL, type ProbeIO } from "./surfaces.ts";
+import {
+  type ArtifactReal,
+  type Cred,
+  type OrgReal,
+  PROBE_SHARE_EMAIL,
+  type ProbeIO,
+} from "./surfaces.ts";
 
 export const BASE = "https://app.localhost";
 export const CONTENT = "http://content.localhost";
@@ -137,8 +145,20 @@ export type World = {
   staleSyncedPat: string;
   /** orgOwner and staleSynced are bound to the directory. */
   googleSubs: { orgOwner: string; staleSynced: string };
-  /** A throwaway copy of `art` (same space, visibility, trash and shares). */
-  clone(art: ArtifactName): Promise<string>;
+  /**
+   * A throwaway copy of `art` (same space, visibility, trash and shares).
+   * `noThumbnail`: none stored yet; `editorsOnly`: dataWriters "editors".
+   */
+  clone(art: ArtifactName, o?: CloneOpts): Promise<string>;
+  /** The artifact surfaces' real-mode targets (ProbeIO.real). */
+  artReal: ArtifactReal;
+  /** Fresh throwaways for one real instance write by `who` (OrgReal). */
+  orgReal(
+    who: CallerName,
+    needs: readonly (keyof OrgReal)[],
+  ): Promise<Partial<OrgReal>>;
+  /** The org owner's directory consent: live or already expired. */
+  seedConsent(expired: boolean): Promise<void>;
   /** #681: a copy of each artifact with dataWriters "editors". */
   editorsOnly: Record<ArtifactName, string>;
   /** A throwaway copy of S: its members, plus viewer and manager mappings. */
@@ -147,6 +167,8 @@ export type World = {
 };
 
 const tag = newId().slice(0, 6).toLowerCase();
+
+export type CloneOpts = { noThumbnail?: boolean; editorsOnly?: boolean };
 
 export async function buildWorld(): Promise<World> {
   const users: Partial<Record<CallerName, string>> = {};
@@ -378,7 +400,7 @@ export async function buildWorld(): Promise<World> {
   const artCols = (await cols("artifacts")).filter((c) => c !== "id");
   const verCols = (await cols("versions")).filter((c) => c !== "artifact_id");
   const shareCols = (await cols("shares")).filter((c) => c !== "artifact_id");
-  const clone = async (art: ArtifactName) => {
+  const clone = async (art: ArtifactName, o: CloneOpts = {}) => {
     const id = newId();
     const src = ids[art];
     await env.DB.batch([
@@ -395,6 +417,16 @@ export async function buildWorld(): Promise<World> {
         "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
       ).bind(id, PROBE_SHARE_EMAIL, u("personalOwner"), Date.now()),
     ]);
+    if (o.noThumbnail)
+      await run(
+        "update artifacts set has_thumbnail = 0, thumbnail_version = null where id = ?",
+        id,
+      );
+    if (o.editorsOnly)
+      await run(
+        "update artifacts set data_writers = 'editors', allow_anonymous_writes = 0 where id = ?",
+        id,
+      );
     return id;
   };
 
@@ -422,17 +454,131 @@ export async function buildWorld(): Promise<World> {
   };
 
   const editorsOnly = {} as Record<ArtifactName, string>;
-  for (const a of ARTIFACTS) {
-    editorsOnly[a] = await clone(a);
+  for (const a of ARTIFACTS)
+    editorsOnly[a] = await clone(a, { editorsOnly: true });
+
+  // The refusal-mode space mapping probe re-puts this one at its role.
+  await run(
+    "insert into group_mappings (space_id, group_id, group_email, role) values (?, ?, ?, 'viewer')",
+    S,
+    groups.viewer,
+    `${groups.viewer}@a.com`,
+  );
+
+  const group = async () => {
+    const g = `grp-x-${newId().slice(0, 8)}`;
     await run(
-      "update artifacts set data_writers = 'editors', allow_anonymous_writes = 0 where id = ?",
-      editorsOnly[a],
+      "insert into directory_groups (group_id, email) values (?, ?)",
+      g,
+      `${g}@a.com`,
     );
-  }
+    return g;
+  };
+  /** A grant of `uid`'s, made as the consent page makes one. */
+  const newGrant = async (uid: string) => {
+    const api = oauthApi(E);
+    const client = await api.createClient({
+      redirectUris: ["https://agent.example/cb"],
+      clientName: "Matrix Probe",
+      tokenEndpointAuthMethod: "none",
+    });
+    const { redirectTo } = await api.completeAuthorization({
+      request: {
+        responseType: "code",
+        clientId: client.clientId,
+        redirectUri: "https://agent.example/cb",
+        scope: [],
+        state: "s",
+        // Public clients need PKCE; nothing redeems this code.
+        codeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+        codeChallengeMethod: "S256",
+      },
+      userId: uid,
+      metadata: { clientName: "Matrix Probe" },
+      scope: [],
+      props: { userId: uid, clientName: "Matrix Probe", issuedAt: Date.now() },
+    });
+    const code = new URL(redirectTo).searchParams.get("code") ?? "";
+    const grantId = code.split(":")[1];
+    if (!grantId) throw new Error("no grant id");
+    return grantId;
+  };
+  const makers: {
+    [K in keyof OrgReal]: (who: CallerName) => Promise<OrgReal[K]>;
+  } = {
+    memberId: () => seedUser(uniq("mx-real"), "member"),
+    linkedId: (_who) =>
+      seedUser(uniq("mx-linked"), "member", {
+        googleSub: `g-mx-l-${newId().slice(0, 8)}`,
+      }),
+    restrictedId: async () => {
+      const id = await seedUser(uniq("mx-restricted"), "member");
+      await run("update users set restricted_manual = 1 where id = ?", id);
+      return id;
+    },
+    groupId: group,
+    restrictedGroupId: async () => {
+      const g = await group();
+      await run(
+        "insert into restricted_groups (group_id, group_email, created_at) values (?, ?, ?)",
+        g,
+        `${g}@a.com`,
+        Date.now(),
+      );
+      return g;
+    },
+    orgMappingGroupId: async () => {
+      const g = await group();
+      await run(
+        "insert into org_group_mappings (group_id, group_email, role) values (?, ?, 'viewer')",
+        g,
+        `${g}@a.com`,
+      );
+      return g;
+    },
+    spaceId: () => cloneSpace(),
+    spaceEditorId: async () => u("spaceEditor"),
+    spaceGroupId: async () => groups.viewer,
+    // Callers who resolve to no one (anonymous, suspended, removed) hold
+    // none: a placeholder (their writes stop at the sign-in check).
+    tokenId: async (who) =>
+      TRAITS[who].session
+        ? (await createPat(E, u(who), "mx-real")).id
+        : "AAAAAAAAAAAAAAAA",
+    grantId: async (who) =>
+      TRAITS[who].session ? newGrant(u(who)) : "probe-grant",
+    email: async () => uniq("mx-invite"),
+    successorId: async () => u("otherMember"),
+  };
+  const orgReal = async (
+    who: CallerName,
+    needs: readonly (keyof OrgReal)[],
+  ) => {
+    const out: Partial<OrgReal> = {};
+    for (const k of needs)
+      (out as Record<string, string>)[k] = await makers[k](who);
+    return out;
+  };
+  const seedConsent = async (expired: boolean) => {
+    await env.DB.prepare(UPSERT)
+      .bind(
+        K.confirm,
+        JSON.stringify({
+          u: u("orgOwner"),
+          exp: expired ? Date.now() - 60_000 : Date.now() + DAY,
+          count: 0,
+          capped: false,
+        }),
+      )
+      .run();
+  };
 
   return {
     ids,
     editorsOnly,
+    artReal: { successorId: u("otherMember"), moveSpaceId: L },
+    orgReal,
+    seedConsent,
     cloneSpace,
     groups,
     creds,
