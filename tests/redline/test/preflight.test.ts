@@ -46,7 +46,7 @@ describe("preflight file checks (existence and mode only)", () => {
     expect(by["rl-b PAT file"]).toMatchObject({
       status: "gap",
       detail: expect.stringMatching(
-        /must be mode 0600.*pnpm oa:hosted redline-creds --install ib --confirm ib/,
+        /must be mode 0600.*pnpm oa:hosted redline-creds --env staging --install ib --confirm ib/,
       ),
     });
     expect(by["rl-a Turnstile token"]?.status).toBe("ok");
@@ -88,7 +88,7 @@ describe("preflight file checks (existence and mode only)", () => {
     });
     const by = Object.fromEntries(c.map((x) => [x.name, x]));
     expect(by["rl-b PAT file"]?.detail).toMatch(
-      /is missing; run `pnpm oa:hosted redline-creds/,
+      /is missing; run `CLOUDFLARE_ACCOUNT_ID=<hosted account id> pnpm oa:hosted redline-creds --env staging/,
     );
     expect(by.inventory?.status).toBe("ok");
     expect(by.strayHost?.status).toBe("ok");
