@@ -10,10 +10,10 @@ globalThis.fetch = boundFetch(globalThis.fetch);
 // Notes (a retried setup GET, say): on the running test's meta, else on the
 // file's, where src/reporter.ts finds them.
 setCurrentTest(() => getCurrentTest());
-afterAll((file) => {
+// vitest parses the first argument as a fixture pattern; the file is second.
+// biome-ignore lint/correctness/noEmptyPattern: required by vitest's fixture parser
+afterAll(({}, file) => {
   const notes = takeFileNotes();
   if (notes.length)
-    (
-      (file as { meta: object }).meta as { redlineNotes?: string[] }
-    ).redlineNotes = notes;
+    (file.meta as { redlineNotes?: string[] }).redlineNotes = notes;
 });
