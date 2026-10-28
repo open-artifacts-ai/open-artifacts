@@ -10,6 +10,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useId } from "react";
 import { canPublishTo, useHosted } from "../auth/permissions";
+import { sharedSpaceName } from "./label";
 
 export function SpacePicker({
   value,
@@ -29,7 +30,7 @@ export function SpacePicker({
     ...spaces
       .filter((s) => canPublishTo(s, cap))
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((s) => ({ value: s.id, label: s.name })),
+      .map((s) => ({ value: s.id, label: sharedSpaceName(s.name) })),
   ];
   return (
     <div>

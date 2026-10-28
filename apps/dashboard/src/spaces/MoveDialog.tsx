@@ -14,6 +14,7 @@ import { ConflictNote, isConflict } from "../layout/ConflictNote";
 import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
+import { sharedSpaceName } from "./label";
 
 const ROLE = {
   viewer: "Viewer",
@@ -118,7 +119,9 @@ export function MoveDialog({
                     move.reset();
                   }}
                 />
-                <span className="flex-1 font-medium">{s.name}</span>
+                <span className="flex-1 font-medium">
+                  {sharedSpaceName(s.name)}
+                </span>
                 <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
                   {ROLE[s.myRole]}
                 </span>

@@ -17,6 +17,7 @@ import {
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
+import { sharedSpaceName } from "../spaces/label";
 import { OptionSelect } from "./OptionSelect";
 import { errorText, muted } from "./ui";
 
@@ -105,7 +106,7 @@ export function TransferDialog({
         }
       : space && {
           to: { kind, spaceId: space.id } as const,
-          label: space.name,
+          label: sharedSpaceName(space.name),
         };
   const busy = progress !== null;
 
@@ -233,7 +234,10 @@ export function TransferDialog({
               <OptionSelect
                 label="Space"
                 value={spaceId}
-                options={shared.map((s) => ({ value: s.id, label: s.name }))}
+                options={shared.map((s) => ({
+                  value: s.id,
+                  label: sharedSpaceName(s.name),
+                }))}
                 placeholder="Choose a space"
                 disabled={busy}
                 onChange={setSpaceId}
