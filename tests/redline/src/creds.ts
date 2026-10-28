@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { InfraError, isNetworkError, networkCode } from "./fetch-timeout.ts";
 import {
   type Cred,
   describeRes,
@@ -7,6 +8,7 @@ import {
   readBody,
   withCred,
 } from "./http.ts";
+import { note } from "./notes.ts";
 import { allMarkers, NotRefused } from "./refused.ts";
 import type { Target } from "./targets.ts";
 
@@ -124,9 +126,38 @@ const hidden = (html: string, name: string): string | null =>
 
 /**
  * The browser consent flow with `cookie` (a session): GET /oauth/authorize,
- * then POST approve. Returns an unredeemed authorization code.
+ * then POST approve. Returns an unredeemed authorization code. Setup, not a
+ * verdict: a network error (no response) re-runs the whole flow once, so a
+ * fresh code is minted and a code is never resent; a second one is infra.
  */
 export async function authorizeCode(
+  t: Target,
+  cookie: Cred,
+  clientId: string,
+  p: Pkce,
+  resource: string,
+): Promise<string> {
+  try {
+    return await authorizeOnce(t, cookie, clientId, p, resource);
+  } catch (e) {
+    if (!isNetworkError(e)) throw e;
+    note(
+      `${t.name} OAuth code flow re-run once (no response: ${networkCode(e)})`,
+    );
+  }
+  try {
+    return await authorizeOnce(t, cookie, clientId, p, resource);
+  } catch (e) {
+    if (isNetworkError(e))
+      throw new InfraError(
+        `setup OAuth code flow got no response on ${t.name} (${networkCode(e)})`,
+        { cause: e },
+      );
+    throw e;
+  }
+}
+
+async function authorizeOnce(
   t: Target,
   cookie: Cred,
   clientId: string,

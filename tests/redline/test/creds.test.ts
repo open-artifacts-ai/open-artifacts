@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  authorizeCode,
   authorizeRefused,
   KV_CACHE_TTL_MS,
   KV_SETTLE_SLACK_MS,
@@ -141,5 +142,74 @@ describe("untilKvSettled (#769)", () => {
     const t0 = Date.now();
     await untilKvSettled(t0 - KV_CACHE_TTL_MS - KV_SETTLE_SLACK_MS - 1);
     expect(Date.now() - t0).toBeLessThan(50);
+  });
+});
+
+describe("authorizeCode", () => {
+  const cookie = { kind: "cookie", name: "oa_session", value: "v" } as const;
+  const pkce = { verifier: "v", challenge: "c" };
+  const form = () =>
+    new Response(
+      '<input name="csrf" value="x"><input name="request" value="r">',
+      { status: 200 },
+    );
+  const approved = () =>
+    new Response(null, {
+      status: 302,
+      headers: { location: "http://127.0.0.1/p5-redline-callback?code=fresh" },
+    });
+  const reset = () =>
+    Object.assign(new TypeError("fetch failed"), {
+      cause: { code: "ECONNRESET" },
+    });
+
+  it("re-runs the whole flow once after no response, minting a fresh code", async () => {
+    const calls: string[] = [];
+    const f = vi.fn(async (u: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(init?.method ?? "GET");
+      if (calls.length === 2) throw reset();
+      return (init?.method ?? "GET") === "POST" ? approved() : form();
+    });
+    vi.stubGlobal("fetch", f);
+    try {
+      await expect(
+        authorizeCode(B, cookie as never, "client", pkce as never, "res"),
+      ).resolves.toBe("fresh");
+      // GET, POST (reset), then a fresh GET and POST: never a resent code.
+      expect(calls).toEqual(["GET", "POST", "GET", "POST"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("a second no-response is infra, never a fail or a pass", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw reset();
+      }),
+    );
+    try {
+      await expect(
+        authorizeCode(B, cookie as never, "client", pkce as never, "res"),
+      ).rejects.toThrow(
+        /^infra: setup OAuth code flow got no response on rl-b/,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("an HTTP refusal is not retried", async () => {
+    const f = vi.fn(async () => new Response("no", { status: 403 }));
+    vi.stubGlobal("fetch", f);
+    try {
+      await expect(
+        authorizeCode(B, cookie as never, "client", pkce as never, "res"),
+      ).rejects.not.toThrow(/^infra/);
+      expect(f).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
