@@ -215,7 +215,8 @@ describe("publish into a space", () => {
   });
 
   it("an unknown space, or a shared one with no role → 404; a view-only one → 403 space_forbidden", async () => {
-    const s = await createSpace();
+    // addMe false: the org admin holds no role in it (checked last).
+    const s = await createSpace({ addMe: false });
     const vw = await mk("vw");
     expect((await publishTo(vw, { spaceId: s.id })).status).toBe(404);
     expect((await publishTo(vw, { spaceId: newId() })).status).toBe(404);

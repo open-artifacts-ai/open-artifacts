@@ -407,6 +407,59 @@ export function hostedContract(d: ContractDriver): ContractCases {
       },
     );
 
+    t(
+      "create adds the creator as a manual manager unless addMe is false",
+      async () => {
+        await d.fresh({ hosted: true });
+        const me0 = Strict.Me.parse(await json(await d.call("GET", R.me)));
+        const create = async (body: Record<string, unknown>) =>
+          Strict.Space.parse(await json(await d.call("POST", R.spaces, body)));
+        const omitted = await create({ name: "Sales" });
+        const yes = await create({ name: "Ops", addMe: true });
+        const no = await create({ name: "Legal", addMe: false });
+        expect([omitted.myRole, yes.myRole, no.myRole]).toEqual([
+          "manager",
+          "manager",
+          null,
+        ]);
+        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+        const mine = new Map(me.spaces?.map((s) => [s.id, s.myRole]));
+        expect(mine.get(omitted.id)).toBe("manager");
+        expect(mine.get(yes.id)).toBe("manager");
+        expect(mine.has(no.id)).toBe(false);
+        for (const s of [omitted, yes]) {
+          const ms = PageSchema(Strict.SpaceMember).parse(
+            await json(await d.call("GET", R.spaceMembers(s.id))),
+          );
+          expect(
+            ms.items.map((m) => ({
+              userId: m.userId,
+              role: m.role,
+              source: m.source,
+            })),
+          ).toEqual([
+            { userId: me0.user.id, role: "manager", source: "manual" },
+          ]);
+        }
+        const none = PageSchema(Strict.SpaceMember).parse(
+          await json(await d.call("GET", R.spaceMembers(no.id))),
+        );
+        expect(none.items).toEqual([]);
+        const audit = PageSchema(Strict.AuditEvent).parse(
+          await json(await d.call("GET", R.audit)),
+        );
+        const adds = audit.items.filter((e) => e.action === "space.member.add");
+        expect(
+          adds.map((e) => [e.spaceId, e.target.id, e.detail?.role]).sort(),
+        ).toEqual(
+          [
+            [omitted.id, me0.user.id, "manager"],
+            [yes.id, me0.user.id, "manager"],
+          ].sort(),
+        );
+      },
+    );
+
     t("spaces, members, mappings, directory, transfer", async () => {
       await d.fresh({ hosted: true });
       const spaces = PageSchema(Strict.Space).parse(
@@ -418,10 +471,11 @@ export function hostedContract(d: ContractDriver): ContractCases {
       const created = Strict.Space.parse(
         await json(await d.call("POST", R.spaces, { name: "Sales" })),
       );
+      // addMe defaults to true: the creator manages the new space.
       expect(created).toMatchObject({
         kind: "shared",
         publicLinks: true,
-        myRole: null,
+        myRole: "manager",
       });
       const bob = fixtures.members[1]?.id as string;
       const m = Strict.SpaceMember.parse(

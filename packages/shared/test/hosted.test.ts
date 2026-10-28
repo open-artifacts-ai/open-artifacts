@@ -97,6 +97,97 @@ const msw: ContractDriver = {
 
 hostedContract(msw);
 
+describe("mock move after losing the space role (review of #792)", () => {
+  it("a stale manager level can't move the artifact out", async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: true }));
+    const me = (await (await call("GET", R.me)).json()) as {
+      user: { id: string };
+      spaces: { id: string; name: string }[];
+    };
+    const eng = me.spaces.find((s) => s.name === "Engineering")?.id as string;
+    const notes = fixtures.artifacts.find((a) => a.title === "Meeting notes")
+      ?.id as string;
+    const to = (await (
+      await call("POST", R.spaces, { name: "Sales" })
+    ).json()) as { id: string };
+    // Still a manager of Engineering: the move works, and back again.
+    expect(
+      (await call("POST", R.moveArtifact(notes), { spaceId: to.id })).status,
+    ).toBe(200);
+    expect(
+      (await call("POST", R.moveArtifact(notes), { spaceId: eng })).status,
+    ).toBe(200);
+    // Removed from Engineering (allMembersRole viewer remains): 404.
+    expect((await call("DELETE", R.spaceMember(eng, me.user.id))).status).toBe(
+      204,
+    );
+    const r = await call("POST", R.moveArtifact(notes), { spaceId: to.id });
+    expect(r.status).toBe(404);
+  });
+
+  // refresh() leaves a hidden artifact's last level (and so its can) as it
+  // was: only the handlers' own checks refuse it.
+  it("a hidden artifact (no role, share or visibility left) can't move", async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: true }));
+    const me = (await (await call("GET", R.me)).json()) as {
+      user: { id: string };
+      spaces: { id: string; name: string }[];
+    };
+    const eng = me.spaces.find((s) => s.name === "Engineering")?.id as string;
+    const sales = (await (
+      await call("POST", R.spaces, { name: "Sales" })
+    ).json()) as { id: string };
+    const pub = await call("POST", R.artifacts, {
+      title: "Plan",
+      format: "html",
+      content: "x",
+      visibility: "private",
+      spaceId: sales.id,
+    });
+    expect(pub.status).toBe(201);
+    const { id } = (await pub.json()) as { id: string };
+    expect(
+      (await call("DELETE", R.spaceMember(sales.id, me.user.id))).status,
+    ).toBe(204);
+    const r = await call("POST", R.moveArtifact(id), { spaceId: eng });
+    expect(r.status).toBe(404);
+  });
+
+  // A personal level isn't recomputed per caller: after signing in as Bob,
+  // Ada's personal artifact still says owner (can.move, can.transfer).
+  const asBob = async () => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: true }));
+    await msw.signIn("bob@example.com");
+    const me = (await (await call("GET", R.me)).json()) as {
+      user: { email: string };
+      spaces: { id: string; name: string }[];
+    };
+    expect(me.user.email).toBe("bob@example.com");
+    const adas = fixtures.artifacts.find(
+      (a) => a.access === "owner" && a.owner.id === fixtures.members[0]?.id,
+    )?.id as string;
+    return { me, adas };
+  };
+
+  it("someone else's personal artifact can't move, whatever its last can", async () => {
+    const { me, adas } = await asBob();
+    const eng = me.spaces.find((s) => s.name === "Engineering")?.id as string;
+    const r = await call("POST", R.moveArtifact(adas), { spaceId: eng });
+    expect(r.status).toBe(404);
+  });
+
+  it("someone else's personal artifact can't be transferred, whatever its last can", async () => {
+    const { adas } = await asBob();
+    const r = await call("POST", R.transferArtifact(adas), {
+      userId: fixtures.members[0]?.id as string,
+    });
+    expect(r.status).toBe(404);
+  });
+});
+
 describe("mock ShareResult.recipient (review item 37)", () => {
   const share = async (email: string, providers?: ("google" | "email")[]) => {
     server.resetHandlers();
