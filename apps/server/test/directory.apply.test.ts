@@ -13,6 +13,7 @@ import {
   applyUsers,
   DIFF_CHUNK,
 } from "../src/directory/apply.js";
+import { bindPage } from "../src/directory/binding.js";
 import type { GoogleUser } from "../src/directory/google.js";
 import { SignInRefused } from "../src/directory/signin.js";
 import { SyncEngine } from "../src/directory/sync.js";
@@ -20,6 +21,7 @@ import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { onGoogleSignIn, SYNC_DO_NAME } from "../src/services/directory.js";
 import { admit, resetIdentity } from "../src/services/identity.js";
+import { SYSTEM_ACTOR, setUserStatus } from "../src/services/members.js";
 import { getUser } from "../src/services/users.js";
 import { direct, mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
 import {
@@ -1084,5 +1086,156 @@ describe("P2 item 4: an admin's link reset is never a recycled address", () => {
     await applyUsers(e, [gu(fresh, gone)], { tenant: "a.com" });
     expect((await userByIdentity(fresh))?.id).not.toBe(gid);
     expect(await statusOf(gid)).toBe("removed");
+  });
+});
+
+describe("parity 1 round 2: sync revives a row it removed (same directory id only)", () => {
+  const gu = (
+    id: string,
+    primaryEmail: string,
+    o: Partial<GoogleUser> = {},
+  ): GoogleUser => ({
+    id,
+    primaryEmail,
+    suspended: false,
+    deleted: false,
+    isAdmin: false,
+    customerId: "C0123",
+    ...o,
+  });
+  /** One listing page, as DirectorySync applies it (bindPage, then applyUsers). */
+  const list = async (...page: GoogleUser[]) => {
+    const live = page.filter((u) => !u.deleted);
+    if (live.length)
+      await bindPage(e, live, { tenant: "a.com", allowEmail: false });
+    await applyUsers(e, page, { tenant: "a.com" });
+  };
+  const row = (id: string) =>
+    one<{
+      email: string;
+      status: string;
+      role: string;
+      rm: number;
+      bySync: number;
+      e: number;
+      sc: number | null;
+    }>(
+      "select email, status, role, restricted_manual rm, removed_by_sync bySync, session_epoch e, status_changed_at sc from users where id = ?",
+      id,
+    );
+  const statusAudits = (id: string) =>
+    all<{ actor_kind: string; actor_id: string | null; detail: string }>(
+      "select actor_kind, actor_id, detail from audit_events where target_id = ? and action = 'user.status' order by at, id",
+      id,
+    );
+
+  it("the same directory id active again: revived under the restore rules (an admin as a member, manual restriction kept, sessions end), address back, audited sync_revive; never while suspended", async () => {
+    const addr = uniq("rv-same");
+    const sub = `g-rv-${crypto.randomUUID()}`;
+    const uid = await seedUser(addr, "admin", { googleSub: sub });
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(uid)
+      .run();
+    await list(gu(sub, addr, { deleted: true }));
+    const gone = await row(uid);
+    expect(gone).toMatchObject({
+      status: "removed",
+      bySync: 1,
+      email: `removed+${uid}@invalid`,
+    });
+    // Suspended in Google: not active, so not revived.
+    await list(gu(sub, addr, { suspended: true }));
+    expect(await row(uid)).toEqual(gone);
+    await list(gu(sub, addr));
+    const now = await row(uid);
+    expect(now).toMatchObject({
+      email: addr,
+      status: "active",
+      role: "member",
+      rm: 1,
+      bySync: 0,
+    });
+    expect(now?.e).toBe((gone?.e ?? 0) + 1);
+    expect(now?.sc).toBeGreaterThanOrEqual(gone?.sc ?? 0);
+    expect(await userByIdentity(sub)).toEqual({
+      id: uid,
+      email: addr,
+      status: "active",
+    });
+    const audits = await statusAudits(uid);
+    expect(audits.at(-1)).toMatchObject({ actor_kind: "sync", actor_id: null });
+    expect(JSON.parse(audits.at(-1)?.detail ?? "{}")).toEqual({
+      status: "active",
+      reason: "sync_revive",
+    });
+    // Steady: a later listing writes nothing more.
+    await list(gu(sub, addr));
+    expect(await statusAudits(uid)).toHaveLength(audits.length);
+    expect(await revokedAt(uid)).toBeGreaterThan(0);
+  });
+
+  it("a guest sync removed comes back as a guest", async () => {
+    const addr = uniq("rv-guest");
+    const sub = `g-rvg-${crypto.randomUUID()}`;
+    const uid = await seedUser(addr, "guest", { googleSub: sub });
+    await list(gu(sub, addr, { deleted: true }));
+    expect((await row(uid))?.status).toBe("removed");
+    await list(gu(sub, addr));
+    expect(await row(uid)).toMatchObject({ status: "active", role: "guest" });
+  });
+
+  it("a new Workspace account reusing the address (another id) gets a fresh row; the old row stays removed, and its id coming back later never takes the address", async () => {
+    const addr = uniq("rv-reuse");
+    const [oldSub, newSub] = [
+      `g-rvo-${crypto.randomUUID()}`,
+      `g-rvn-${crypto.randomUUID()}`,
+    ];
+    const old = await seedUser(addr, "member", { googleSub: oldSub });
+    await env.DB.prepare("update users set last_seen_at = ? where id = ?")
+      .bind(Date.now(), old)
+      .run();
+    await list(gu(oldSub, addr, { deleted: true }));
+    // deleteUser freed the address (placeholder), so the new account's row
+    // can be created.
+    const gone = await row(old);
+    expect(gone).toMatchObject({
+      status: "removed",
+      bySync: 1,
+      email: `removed+${old}@invalid`,
+    });
+    await list(gu(newSub, addr));
+    const fresh = await userByIdentity(newSub);
+    expect(fresh).toMatchObject({ email: addr, status: "active" });
+    expect(fresh?.id).not.toBe(old);
+    expect(await row(old)).toEqual(gone);
+    expect((await userByIdentity(oldSub))?.id).toBe(old);
+    // The old id listed active again while the fresh row holds the address:
+    // the old row stays removed, the fresh row keeps it.
+    await list(gu(oldSub, addr));
+    expect(await row(old)).toEqual(gone);
+    expect(await userByIdentity(newSub)).toEqual(fresh);
+    expect(
+      (await statusAudits(old)).map((a) => JSON.parse(a.detail).reason),
+    ).not.toContain("sync_revive");
+  });
+
+  it("an admin removal (removed_by_sync = 0) is never revived by sync", async () => {
+    const addr = uniq("rv-admin");
+    const sub = `g-rva-${crypto.randomUUID()}`;
+    const uid = await seedUser(addr, "member", { googleSub: sub });
+    await setUserStatus(e, uid, "removed", "admin_remove", SYSTEM_ACTOR);
+    const gone = await row(uid);
+    expect(gone).toMatchObject({ status: "removed", bySync: 0, email: addr });
+    await list(gu(sub, addr));
+    expect(await row(uid)).toEqual(gone);
+    // A directory suspension, then an admin removal: still never revived.
+    const addr2 = uniq("rv-admin2");
+    const sub2 = `g-rva2-${crypto.randomUUID()}`;
+    const u2 = await seedUser(addr2, "member", { googleSub: sub2 });
+    await list(gu(sub2, addr2, { suspended: true }));
+    expect((await row(u2))?.status).toBe("suspended");
+    await setUserStatus(e, u2, "removed", "admin_remove", SYSTEM_ACTOR);
+    await list(gu(sub2, addr2));
+    expect(await row(u2)).toMatchObject({ status: "removed", bySync: 0 });
   });
 });

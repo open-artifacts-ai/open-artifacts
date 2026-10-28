@@ -164,6 +164,7 @@ export const AuditReasonSchema = z.enum([
   "admin_suspend",
   "admin_remove",
   "admin_restore",
+  "sync_revive",
 ]);
 export type AuditReason = z.infer<typeof AuditReasonSchema>;
 

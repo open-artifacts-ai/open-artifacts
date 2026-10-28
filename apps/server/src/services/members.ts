@@ -117,8 +117,13 @@ export function hostedFields(
 }
 
 const EXISTING =
-  "select id, status, guest_lapsed as guestLapsed from users where email = ?1 limit 1";
+  "select id, status, guest_lapsed as guestLapsed, removed_by_sync as removedBySync from users where email = ?1 limit 1";
 
+const directoryManaged = () =>
+  new ApiError(
+    "directory_managed",
+    "Directory sync removed this member; restore them in Google Workspace",
+  );
 const guestLapsed = () =>
   new ApiError(
     "guest_lapsed",
@@ -127,16 +132,27 @@ const guestLapsed = () =>
 
 /**
  * The 409 for an address that already has a row: guest_lapsed for a lapsed
- * guest (a new share brings them back; restore would refuse), member_removed
+ * guest (a new share brings them back; restore would refuse),
+ * directory_managed for a directory removal while Google sync is on (sync
+ * revives them when their Workspace account is restored), member_removed
  * (details { userId }, so the caller can offer R.memberRestore) when that
  * row is otherwise removed, else conflict "Already a member".
  */
 async function existingConflict(env: Env, email: string): Promise<never> {
-  const r = await stmt(env.DB, EXISTING)
-    .bind(email)
-    .first<{ id: string; status: string; guestLapsed: number }>();
+  const r = await stmt(env.DB, EXISTING).bind(email).first<{
+    id: string;
+    status: string;
+    guestLapsed: number;
+    removedBySync: number;
+  }>();
   if (r && statusOf(r.status) === "removed") {
     if (r.guestLapsed !== 0) throw guestLapsed();
+    // Restore would refuse it too: Google Workspace brings them back.
+    if (
+      r.removedBySync &&
+      directoryModeOf(authConfig(env).features) === "google"
+    )
+      throw directoryManaged();
     const details: MemberRemovedDetails = { userId: r.id };
     throw new ApiError(
       "member_removed",
@@ -280,7 +296,9 @@ async function raceCheck(env: Env, id: string, admins: 0 | 1): Promise<void> {
 
 /** A system change's audit actor: sync for directory reasons. */
 function actorFor(why: AuditReason): AuditActor {
-  return why.startsWith("directory_") ? { kind: "sync", id: null } : SYSTEM;
+  return why.startsWith("directory_") || why.startsWith("sync_")
+    ? { kind: "sync", id: null }
+    : SYSTEM;
 }
 
 // One statement per status change. A removed row stays removed, and the
@@ -478,28 +496,35 @@ export async function removeMember(
   );
 }
 
-// removed -> active: a member or admin comes back as a member (never an
+// removed -> active, the restore rules (an admin's restore and directory
+// sync's revive): a member or admin comes back as a member (never an
 // admin), a guest as a guest (restricted_manual and restricted_sync kept).
 // Never the owner, an admin only when ?3 = 1 (#475), never a lapsed guest (a
-// share revives those), never a directory removal while Google sync is on
-// (?4 = 1). Ends every session minted before (session_epoch) and moves
-// status_changed_at, so OAuth grants issued before the removal stay refused;
-// their PATs were revoked at the removal and stay revoked.
-const RESTORE = `update users set status = 'active',
+// share revives those). Ends every session minted before (session_epoch) and
+// moves status_changed_at, so OAuth grants issued before the removal stay
+// refused; their PATs were revoked at the removal and stay revoked.
+const RESTORE_SET = `update users set status = 'active',
   role = case when role = 'guest' then 'guest' else 'member' end,
   guest_lapsed = 0, removed_by_sync = 0,
-  status_changed_at = ?2, session_epoch = session_epoch + 1
-  where id = ?1 and status = 'removed' and guest_lapsed = 0
-  and (removed_by_sync = 0 or ?4 = 0)
+  status_changed_at = ?2, session_epoch = session_epoch + 1`;
+const RESTORE_TARGET = `id = ?1 and status = 'removed' and guest_lapsed = 0
   and role <> 'owner' and (role <> 'admin' or ?3 = 1)`;
+// An admin's restore: never a directory removal while Google sync is on
+// (?4 = 1).
+const RESTORE = `${RESTORE_SET}
+  where ${RESTORE_TARGET} and (removed_by_sync = 0 or ?4 = 0)`;
+// Directory sync's revive: only a directory removal (removed_by_sync = 1),
+// only while the row still holds Google subject ?5 (the same person, never a
+// new account at a reused address), taking back its address ?4 only while no
+// other row holds it.
+const SYNC_REVIVE = `${RESTORE_SET}, email = ?4
+  where ${RESTORE_TARGET} and removed_by_sync = 1
+  and exists (select 1 from identities
+    where provider = 'google' and subject = ?5 and user_id = ?1)
+  and not exists (select 1 from users x where x.email = ?4 and x.id <> ?1)`;
 const RESTORED = `select id, email, name, display_name as displayName, role,
   last_seen_at as lastSeenAt, users.status, ${MEMBER_EXTRAS_COLS}
   from users where users.id = ?1`;
-const directoryManaged = () =>
-  new ApiError(
-    "directory_managed",
-    "Directory sync removed this member; restore them in Google Workspace",
-  );
 
 /**
  * POST R.memberRestore(id): a removed member or admin comes back active as a
@@ -551,6 +576,36 @@ export async function restoreMember(
   // Belt and braces: nothing they held before survives the epoch bump.
   await revokeUserLive(env, id, "member restored", ctx);
   return hostedFields(toMember(r), r);
+}
+
+/**
+ * Directory sync revives a row it removed (users.removed_by_sync): Google
+ * lists the same directory user (subject `sub`) active again. The restore
+ * rules (SYNC_REVIVE, the same target and SET as RESTORE): never admin,
+ * restricted_manual kept, sessions minted before end, old PATs and grants
+ * stay refused, and the row takes back its address. Audited user.status
+ * (sync_revive, actor sync) in the same batch, only when the row changed.
+ * Resolves to whether it did.
+ */
+export async function reviveFromSync(
+  env: Env,
+  id: string,
+  sub: string,
+  email: string,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<boolean> {
+  const out = await env.DB.batch([
+    stmt(env.DB, SYNC_REVIVE).bind(id, Date.now(), 1, email, sub),
+    audit(env, "user.status", { type: "user", id }, actorFor("sync_revive"), {
+      reason: "sync_revive",
+      detail: { status: "active" },
+      when: { sql: "changes() > 0", args: [] },
+    }),
+  ]);
+  if (!out[0]?.meta.changes) return false;
+  // Belt and braces: nothing they held before survives the epoch bump.
+  await revokeUserLive(env, id, "member revived", ctx);
+  return true;
 }
 
 const DEFAULT_SETTINGS: Settings = {

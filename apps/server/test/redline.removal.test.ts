@@ -6,6 +6,9 @@
 //   remain, with spaces off and on.
 // - A restored member's old PAT and OAuth grant stay refused (even when the
 //   KV grant revocation missed the grant).
+// - Directory sync revives only the same directory id: a revived member's
+//   old PAT and grant stay refused; a new account reusing the address gets
+//   a fresh row and nothing of the old one's.
 // - Transfer all moves only that person's personal artifacts.
 import { env } from "cloudflare:workers";
 import { AUTH, newId, PAGES, R } from "@oa/shared";
@@ -14,6 +17,9 @@ import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { getDb } from "../src/db/client.js";
+import { applyUsers } from "../src/directory/apply.js";
+import { bindPage } from "../src/directory/binding.js";
+import type { GoogleUser } from "../src/directory/google.js";
 import { artifacts } from "../src/db/schema.js";
 import type { Env } from "../src/env.js";
 import * as oauthApiModule from "../src/mcp/oauth-api.js";
@@ -374,5 +380,152 @@ describe("red-line: transfer all moves only that person's personal artifacts (sp
     });
     expect(r.status).toBe(409);
     expect((await errOf(r)).code).toBe("member_active");
+  });
+});
+
+describe("red-line: directory sync revive (parity 1 round 2)", () => {
+  /** Directory sync's listing of one page (bindPage, then applyUsers). */
+  const D = direct();
+  const gu = (
+    id: string,
+    primaryEmail: string,
+    o: Partial<GoogleUser> = {},
+  ): GoogleUser => ({
+    id,
+    primaryEmail,
+    suspended: false,
+    deleted: false,
+    isAdmin: false,
+    customerId: "C0123",
+    ...o,
+  });
+  const list = async (u: GoogleUser) => {
+    if (!u.deleted)
+      await bindPage(D, [u], { tenant: "a.com", allowEmail: false });
+    await applyUsers(D, [u], { tenant: "a.com" });
+  };
+  const link = (sub: string, uid: string) =>
+    env.DB.prepare(
+      "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, ?, 1)",
+    )
+      .bind(sub, uid, Date.now())
+      .run();
+  /** A session at the row's current epoch (a fresh sign-in). */
+  const freshCookie = async (uid: string) => {
+    const e = (
+      await env.DB.prepare("select session_epoch e from users where id = ?")
+        .bind(uid)
+        .first<{ e: number }>()
+    )?.e;
+    return `${SESSION}=${await signSession(env, uid, Date.now(), {
+      provider: "access",
+      epoch: e ?? -1,
+    })}`;
+  };
+  const listTools = (token: string) =>
+    callWorker(
+      new Request(MCP_URL, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+
+  it("a revived member's PAT and OAuth grant from before the directory removal stay refused (KV revocation missed too); a fresh sign-in works", async () => {
+    const email = uniq("rl-revive", "a.com");
+    const sub = `g-rl-rv-${crypto.randomUUID()}`;
+    const m = await login(email, "member");
+    await link(sub, m.userId);
+    const { token: pat } = await createPat(env, m.userId, "old");
+    const { accessToken } = await oauthToken(email, "Old Agent", m);
+    expect((await call(env as Env, R.me, null, { bearer: pat })).status).toBe(
+      200,
+    );
+    expect((await listTools(accessToken)).status).toBe(200);
+    vi.spyOn(oauthApiModule, "revokeAllGrants").mockResolvedValue(undefined);
+    await list(gu(sub, email, { deleted: true }));
+    expect((await listTools(accessToken)).status).toBe(401);
+    vi.restoreAllMocks();
+    await list(gu(sub, email));
+    const now = await env.DB.prepare(
+      "select status, email from users where id = ?",
+    )
+      .bind(m.userId)
+      .first<{ status: string; email: string }>();
+    expect(now).toEqual({ status: "active", email });
+    expect((await call(env as Env, R.me, null, { bearer: pat })).status).toBe(
+      401,
+    );
+    expect((await listTools(accessToken)).status).toBe(401);
+    expect((await call(env as Env, R.me, m.cookie)).status).toBe(401);
+    // The path admits: a fresh sign-in and a new PAT work.
+    const cookie = await freshCookie(m.userId);
+    expect((await call(env as Env, R.me, cookie)).status).toBe(200);
+    const { token: fresh } = await createPat(env, m.userId, "new");
+    expect((await call(env as Env, R.me, null, { bearer: fresh })).status).toBe(
+      200,
+    );
+  });
+
+  it("a new Workspace account reusing a removed member's address gets a fresh row: none of the old row's artifacts, shares or credentials", async () => {
+    const email = uniq("rl-reuse", "a.com");
+    const [oldSub, newSub] = [
+      `g-rl-old-${crypto.randomUUID()}`,
+      `g-rl-new-${crypto.randomUUID()}`,
+    ];
+    const old = await login(email, "member");
+    await link(oldSub, old.userId);
+    const mine = await art(old.userId, old.userId);
+    const { token: pat } = await createPat(env, old.userId, "old");
+    await shareTo(email);
+    expect((await call(env as Env, R.artifact(mine), old.cookie)).status).toBe(
+      200,
+    );
+    await list(gu(oldSub, email, { deleted: true }));
+    await list(gu(newSub, email));
+    const fresh = await idOf(email);
+    expect(fresh).not.toBe("");
+    expect(fresh).not.toBe(old.userId);
+    // The old row stays removed under its placeholder.
+    expect(
+      await env.DB.prepare(
+        "select status, email, removed_by_sync bySync from users where id = ?",
+      )
+        .bind(old.userId)
+        .first(),
+    ).toEqual({
+      status: "removed",
+      email: `removed+${old.userId}@invalid`,
+      bySync: 1,
+    });
+    // The fresh row is admitted (the path works) as itself, and gets
+    // nothing of the old row's.
+    const cookie = await freshCookie(fresh);
+    const me = await call(env as Env, R.me, cookie);
+    expect(me.status).toBe(200);
+    expect(((await me.json()) as { user: { id: string } }).user.id).toBe(fresh);
+    expect((await call(env as Env, R.artifact(mine), cookie)).status).toBe(404);
+    expect(
+      await env.DB.prepare("select count(*) n from shares where email = ?")
+        .bind(email)
+        .first(),
+    ).toEqual({ n: 0 });
+    expect((await call(env as Env, R.me, null, { bearer: pat })).status).toBe(
+      401,
+    );
+    // The old id listed active again never takes the row or the address.
+    await list(gu(oldSub, email));
+    expect(await idOf(email)).toBe(fresh);
+    expect(
+      (
+        await env.DB.prepare("select status from users where id = ?")
+          .bind(old.userId)
+          .first<{ status: string }>()
+      )?.status,
+    ).toBe("removed");
   });
 });

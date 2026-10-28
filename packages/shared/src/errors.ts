@@ -114,7 +114,7 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   invite_unreachable: 400,
   /** POST R.members (invite) for an address whose member was removed; details MemberRemovedDetails { userId }: offer R.memberRestore(userId). Nothing is created. */
   member_removed: 409,
-  /** POST R.memberRestore(id) on a member the directory removed while Google sync is on: sync would remove them again. */
+  /** POST R.memberRestore(id) on a member the directory removed while Google sync is on (sync would remove them again), or POST R.members (invite) for that member's address: sync revives them when their Workspace account is restored. Nothing is created. */
   directory_managed: 409,
   /** POST R.memberRestore(id) on a lapsed guest, or POST R.members (invite) for a lapsed guest's address (removed when their last share went): a new share brings them back instead. */
   guest_lapsed: 409,

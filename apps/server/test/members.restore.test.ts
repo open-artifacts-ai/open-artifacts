@@ -354,6 +354,43 @@ describe("invite of a removed address", () => {
     },
   );
 
+  it("a directory removal's address under Google sync → 409 directory_managed (no Restore offered); member_removed when sync is off; nothing created", async () => {
+    const u = await login(uniq("rs-inv-dir", "a.com"), "member");
+    await setUserStatus(
+      env,
+      u.userId,
+      "removed",
+      "directory_delete",
+      SYSTEM_ACTOR,
+    );
+    const email = (
+      await env.DB.prepare("select email from users where id = ?")
+        .bind(u.userId)
+        .first<{ email: string }>()
+    )?.email;
+    const invite = (e: Env) =>
+      call(e, R.members, admin.cookie, {
+        method: "POST",
+        body: { email, role: "member" },
+      });
+    const GOOGLE = { ...(env as object), FEATURES: "sync_google" } as Env;
+    const r = await invite(GOOGLE);
+    expect(r.status).toBe(409);
+    const body = await errOf(r);
+    expect(body.code).toBe("directory_managed");
+    expect(body.details).toBeUndefined();
+    const off = await invite(OFF);
+    expect(off.status).toBe(409);
+    expect(await errOf(off)).toMatchObject({
+      code: "member_removed",
+      details: { userId: u.userId },
+    });
+    expect(await row(u.userId)).toMatchObject({
+      status: "removed",
+      bySync: 1,
+    });
+  });
+
   it("an active address is still 409 conflict", async () => {
     const email = (
       await env.DB.prepare("select email from users where id = ?")

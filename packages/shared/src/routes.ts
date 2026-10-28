@@ -233,7 +233,9 @@ export const R = {
    * connections stay revoked; they sign in again. Audited user.status
    * (reason admin_restore). 404 unknown; 409 member_active (not removed),
    * directory_managed (removed by directory sync while Google sync is on),
-   * guest_lapsed (a lapsed guest: a new share brings them back).
+   * guest_lapsed (a lapsed guest: a new share brings them back). Directory
+   * sync revives a member it removed by itself (reason sync_revive) when
+   * Google lists the same directory user active again.
    */
   memberRestore: (id: string) => `/api/v1/members/${seg(id)}/restore`,
   /**
