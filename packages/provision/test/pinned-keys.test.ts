@@ -29,8 +29,8 @@ describe("pinned release public keys", () => {
   it("the node:* copy pins the same keys", () => {
     expect({ ...PUBKEYS.RELEASE_PUBKEY }).toEqual({ ...RELEASE_PUBKEY });
   });
-  // Prod unlocks in its own PR, after the red-line suite passes on staging.
-  it("prod stays locked in this change", () => {
-    expect(PROD_UNLOCKED).toBe(false);
+  // Prod unlocked in its own PR, after the red-line suite passed on staging.
+  it("prod is unlocked", () => {
+    expect(PROD_UNLOCKED).toBe(true);
   });
 });
