@@ -841,10 +841,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (lv !== null && typeof lv !== "number" && typeof lv !== "string")
         fail("internal", "unexpected sort value");
       const base = { i: last.id, o: orderBy ?? "", d: order };
-      nextCursor =
+      // Judged on the encoded cursor, not the value's bytes: JSON escapes a
+      // control character to 6 bytes, so a short value can still overflow
+      // MAX_CURSOR and be refused when it comes back.
+      const inline =
         typeof lv === "string" && enc.encode(lv).length > MAX_CURSOR_SORT_BYTES
-          ? encodeCursor({ ...base, u: last.updated_at, h: sortHash(lv) })
+          ? null
           : encodeCursor({ ...base, ...sortTag(lv) });
+      nextCursor =
+        inline !== null && inline.length <= MAX_CURSOR
+          ? inline
+          : encodeCursor({ ...base, u: last.updated_at, h: sortHash(lv) });
     }
     return { items: items.map(toDoc), nextCursor };
   }

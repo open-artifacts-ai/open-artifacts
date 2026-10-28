@@ -267,7 +267,7 @@ async function gate(
     return { artifactId, actor: "", anon: await anonId(), authzAt };
   }
   // RL_ANON (30 per IP across the instance) would cap ANON_WRITES_PER_MIN at
-  // 30; an operator who raises it binds RL_ANON_WRITES with a matching limit,
+  // 30; RL_ANON_WRITES (not yet in setup's template), bound with a matching limit,
   // which then replaces RL_ANON for writes. Unbound: RL_ANON, as before.
   // HOSTED=1 only tightens: RL_ANON still applies there.
   const writes = c.env.RL_ANON_WRITES;

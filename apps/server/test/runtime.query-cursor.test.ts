@@ -161,6 +161,18 @@ describe("db.query cursor carries the anchor's sort value", () => {
     ).toBe("cursor_stale");
   });
 
+  it("a short sort value that escapes long (900 x \\u0001) still yields a cursor that comes back", async () => {
+    const s = stubFor();
+    for (const id of ["a", "b", "c"])
+      await s.set("v", id, { t: id + "\u0001".repeat(900) }, "u:1");
+    const p1 = await s.query("v", { orderBy: "t", limit: 1 });
+    expect(p1.nextCursor!.length).toBeLessThanOrEqual(4096);
+    const p2 = await runtimeCall(() =>
+      s.query("v", { orderBy: "t", limit: 1, cursor: p1.nextCursor! }),
+    );
+    expect(p2.items[0]?.id).toBe("b");
+  });
+
   it("a forged cursor only moves the start inside the where filter", async () => {
     const s = stubFor();
     for (let k = 0; k < 6; k++)
