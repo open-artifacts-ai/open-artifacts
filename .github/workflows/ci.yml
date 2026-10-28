@@ -89,7 +89,9 @@ jobs:
       # Every shard reports, so one failure never hides another.
       fail-fast: false
       matrix:
-        shard: [server, dashboard, rest, cpu]
+        # Free plan: 20 concurrent jobs. Pull requests run one job (pr); the
+        # merge queue and main, where the wait matters most, run four shards.
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '["pr"]' || '["server","dashboard","rest","cpu"]') }}
     steps:
       - uses: actions/checkout@v4
         with:

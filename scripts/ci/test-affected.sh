@@ -5,6 +5,9 @@
 #   rest       the root scripts suite and every other package
 #   cpu        the server's wall-clock CPU budgets (alone on its runner, so
 #              never under another suite's load)
+#   pr         one job for a pull request: everything above, in turn (the
+#              Free plan's 20 concurrent jobs: shards only on the merge queue
+#              and main, where waits matter most)
 # Pull requests run only the shard's share of the packages their diff can
 # affect: pnpm's own `--filter ...[base]` (changed packages and their
 # dependents; complete because every cross-package import is declared, which
@@ -15,7 +18,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 shard="${TEST_SHARD:-}"
-case "$shard" in "" | server | dashboard | rest | cpu) ;; *)
+case "$shard" in "" | server | dashboard | rest | cpu | pr) ;; *)
   echo "unknown TEST_SHARD ${shard}" >&2
   exit 2
   ;;
@@ -26,6 +29,10 @@ everything() {
   echo "test scope: everything ($1)"
   case "$shard" in
     "") exec pnpm test ;;
+    pr)
+      pnpm test
+      exec pnpm --filter @oa/server test:cpu
+      ;;
     server | dashboard)
       pnpm run test:prep
       exec pnpm --filter "@oa/$shard" test
@@ -45,7 +52,7 @@ everything() {
 # Is package $1 in this shard?
 mine() {
   case "$shard" in
-    "") return 0 ;;
+    "" | pr) return 0 ;;
     server | cpu) [ "$1" = @oa/server ] ;;
     dashboard) [ "$1" = @oa/dashboard ] ;;
     rest) [ "$1" != @oa/server ] && [ "$1" != @oa/dashboard ] ;;
@@ -88,7 +95,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 
-case "$shard" in "" | rest) run_root=true ;; *) run_root=false ;; esac
+case "$shard" in "" | rest | pr) run_root=true ;; *) run_root=false ;; esac
 if [ "$run_root" = false ] && [ ${#picked[@]} -eq 0 ]; then exit 0; fi
 pnpm run test:prep
 if [ "$run_root" = true ]; then pnpm exec vitest run; fi
@@ -96,4 +103,8 @@ if [ "$run_root" = true ]; then pnpm exec vitest run; fi
 if [ "$shard" = cpu ]; then
   exec pnpm --filter @oa/server test:cpu
 fi
-exec pnpm -r --if-present "${filters[@]}" test
+pnpm -r --if-present "${filters[@]}" test
+# The pr shard also runs the CPU budgets, after the suite, when the server is affected.
+if [ "$shard" = pr ] && printf '%s\n' "${picked[@]}" | grep -qx @oa/server; then
+  exec pnpm --filter @oa/server test:cpu
+fi

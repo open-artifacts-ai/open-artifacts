@@ -75,12 +75,12 @@ describe("ci.yml", () => {
   });
   it("test shards: server, dashboard, rest, cpu; pull requests run the affected packages, everything else the full suite", () => {
     const job = w.jobs["test-shard"];
-    expect(job.strategy.matrix.shard).toEqual([
-      "server",
-      "dashboard",
-      "rest",
-      "cpu",
-    ]);
+    // Free plan (20 concurrent jobs): one `pr` job for pull requests, four
+    // shards on the merge queue and main.
+    expect(job.strategy.matrix.shard).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      `\${{ fromJSON(github.event_name == 'pull_request' && '["pr"]' || '["server","dashboard","rest","cpu"]') }}`,
+    );
     expect(job.strategy["fail-fast"]).toBe(false);
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const steps: any[] = job.steps;

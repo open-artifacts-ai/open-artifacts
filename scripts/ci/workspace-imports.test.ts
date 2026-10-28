@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { root, sandbox, script } from "./stubs.ts";
 import {
@@ -135,6 +133,7 @@ describe("test-affected.sh", () => {
         "pnpm -r --if-present --filter !@oa/server --filter !@oa/dashboard test",
       ],
       cpu: ["pnpm run test:prep", "pnpm --filter @oa/server test:cpu"],
+      pr: ["pnpm test", "pnpm --filter @oa/server test:cpu"],
     };
     for (const e of ["merge_group", "push", "schedule"])
       for (const [shard, log] of Object.entries(full)) {
@@ -178,6 +177,14 @@ describe("test-affected.sh", () => {
     ]);
     // Not affected: the shard does nothing at all.
     expect(pr("dashboard")).toEqual([LS]);
+    // The single pull-request job: all of them, then the CPU budgets.
+    expect(pr("pr")).toEqual([
+      LS,
+      "pnpm run test:prep",
+      "pnpm exec vitest run",
+      "pnpm -r --if-present --filter @oa/server --filter @oa/landing --filter @oa/redline test",
+      "pnpm --filter @oa/server test:cpu",
+    ]);
   });
   it("a pull request with nothing affected: the root suite only (rest), nothing elsewhere", () => {
     const pr = (TEST_SHARD: string) =>
@@ -190,6 +197,12 @@ describe("test-affected.sh", () => {
     ]);
     for (const s of ["server", "dashboard", "cpu"])
       expect(pr(s), s).toEqual([LS]);
+    // The single pull-request job: the root suite only, no CPU budgets.
+    expect(pr("pr")).toEqual([
+      LS,
+      "pnpm run test:prep",
+      "pnpm exec vitest run",
+    ]);
   });
   it("no base, a scope error or an unknown shard never means nothing", () => {
     expect(
