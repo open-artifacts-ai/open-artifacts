@@ -43,6 +43,12 @@ export type Plan = {
   entry: string;
   format: Format;
   language: string | null;
+  /**
+   * No `format` and the entry's name implies none: the bytes decide. Text is
+   * `code` (language "text"); anything else is unsupported_format. An
+   * uploaded entry is checked in materialize.
+   */
+  byBytes?: true;
 };
 
 const bad = (path: string, reason: string, message?: string) =>
@@ -61,7 +67,7 @@ const inlineTooLarge = (path: string) =>
     path,
     reason: "too_large",
   });
-/** No `format` and the entry's name implies none (inferFormat null): 400 unsupported_format. */
+/** No `format`, the entry's name implies none and its bytes aren't text: 400 unsupported_format. */
 const noViewer = (path: string) =>
   new ApiError("unsupported_format", UNSUPPORTED_FORMAT_MESSAGE, {
     path,
@@ -72,16 +78,21 @@ const noViewer = (path: string) =>
 const refuse = (path: string, r: EntryRefusal) =>
   new ApiError("binary_entry", r.message, { path, reason: r.reason });
 
-/** Checks an inline entry's first SNIFF_BYTES against its format. */
+/**
+ * Checks an inline entry's first SNIFF_BYTES against its format. With
+ * `byBytes` (format inferred from the bytes as code), a refusal is
+ * unsupported_format rather than binary_entry.
+ */
 function checkInline(
   path: string,
   format: Format,
-  s: { bytes: Uint8Array } | { text: string; size: number },
+  s: InlineSource,
+  byBytes: boolean,
 ): void {
   const { head, truncated } =
     "text" in s ? textHead(s.text) : bytesHead(s.bytes);
   const r = checkEntry(path, format, head, truncated);
-  if (r) throw refuse(path, r);
+  if (r) throw byBytes ? noViewer(path) : refuse(path, r);
 }
 
 function norm(p: unknown): string {
@@ -187,8 +198,10 @@ export function planFiles(input: PublishInput): Plan {
     const entryIn = input.entry === undefined ? undefined : norm(input.entry);
     if (!input.format && entryIn === undefined)
       throw bad("format", "missing", "content requires format or entry");
-    const format = input.format ?? inferFormat(entryIn as string);
-    if (!format) throw noViewer(entryIn as string);
+    const inferred = input.format ?? inferFormat(entryIn as string);
+    const byBytes = !inferred;
+    const format = inferred ?? "code";
+    // inferLanguage is "text" for a name that implies no format.
     const language =
       input.language ??
       (format === "code" ? (entryIn ? inferLanguage(entryIn) : "text") : null);
@@ -196,7 +209,7 @@ export function planFiles(input: PublishInput): Plan {
     // UTF-8 is ≥ 1 byte per UTF-16 unit: reject before encoding when obviously too big.
     if (content.length > budget) throw inlineTooLarge(entry);
     const source = textSource(entry, content);
-    checkInline(entry, format, source);
+    checkInline(entry, format, source, byBytes);
     return {
       files: [{ path: entry, source }],
       entry,
@@ -280,14 +293,21 @@ export function planFiles(input: PublishInput): Plan {
       });
     } else throw bad(key, "invalid");
   }
-  const format = input.format ?? inferFormat(entry);
-  if (!format) throw noViewer(entry);
+  const inferred = input.format ?? inferFormat(entry);
+  const byBytes = !inferred;
+  const format = inferred ?? "code";
   const head = out.find((f) => f.path === entry)?.source;
   // An uploaded entry is checked in materialize (one R2 range read).
-  if (head && !("uploadId" in head)) checkInline(entry, format, head);
+  if (head && !("uploadId" in head)) checkInline(entry, format, head, byBytes);
   const language =
     input.language ?? (format === "code" ? inferLanguage(entry) : null);
-  return { files: out, entry, format, language };
+  return {
+    files: out,
+    entry,
+    format,
+    language,
+    ...(byBytes ? { byBytes: true as const } : {}),
+  };
 }
 
 const inlineSize = (
@@ -308,8 +328,8 @@ type UploadRow = {
 
 /**
  * An uploaded entry's first SNIFF_BYTES (one R2 range read, the entry only)
- * and declared content type against the plan's format: 400 binary_entry.
- * Runs before anything is written or consumed.
+ * against the plan's format: 400 binary_entry (unsupported_format when the
+ * format came from the bytes). Runs before anything is written or consumed.
  */
 async function checkUploadedEntry(
   env: Env,
@@ -331,7 +351,7 @@ async function checkUploadedEntry(
     row.size > head.length,
     row.content_type,
   );
-  if (r) throw refuse(f.path, r);
+  if (r) throw plan.byBytes ? noViewer(f.path) : refuse(f.path, r);
 }
 
 /**

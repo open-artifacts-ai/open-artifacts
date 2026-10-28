@@ -26,13 +26,19 @@ export const PLAIN_TEXT_EXTENSIONS: readonly string[] = [
   "properties",
   "rst",
   "adoc",
+  "jsonl",
+  "ndjson",
+  "srt",
+  "vtt",
+  "lock",
 ];
 
 /**
- * The format an entry's name implies, or null when no viewer shows it (a
- * photo, an archive, any other binary): a publish without `format` is then
- * refused with unsupported_format. `code` only for known text: a LANGUAGES
+ * The format an entry's name implies, or null when the name implies none
+ * (LICENSE, .gitignore, a photo). `code` only for known text: a LANGUAGES
  * key, a PLAIN_TEXT_EXTENSIONS entry, or a file named Makefile or Dockerfile.
+ * On null, a publish without `format` lets the bytes decide: UTF-8 text
+ * publishes as code (language "text"), anything else is unsupported_format.
  */
 export function inferFormat(entry: string): Format | null {
   switch (ext(entry)) {
@@ -115,6 +121,14 @@ const LANGUAGES: Record<string, string> = {
   ex: "elixir",
   exs: "elixir",
   zig: "zig",
+  scala: "scala",
+  hs: "haskell",
+  pl: "perl",
+  ps1: "powershell",
+  bat: "bat",
+  nix: "nix",
+  proto: "proto",
+  tex: "latex",
   dockerfile: "dockerfile",
   makefile: "makefile",
   mk: "makefile",

@@ -1820,6 +1820,30 @@ export function hostedContract(d: ContractDriver): ContractCases {
       expect(await titles()).not.toContain("guard-code");
     });
 
+    t(
+      "text under a name that implies no format publishes as code",
+      async () => {
+        await d.fresh();
+        for (const name of ["LICENSE", ".gitignore", "notes.foo"]) {
+          const r = await d.call("POST", R.artifacts, {
+            title: `guard-${name}`,
+            files: { [name]: "plain text\n" },
+          });
+          expect(r.status, name).toBe(201);
+          const { id } = await json(r);
+          expect(
+            (await json(await d.call("GET", R.artifact(id)))).format,
+            name,
+          ).toBe("code");
+        }
+        const gif = await d.call("POST", R.artifacts, {
+          title: "guard-gif",
+          files: { "gif.md": "GIF89a is a GIF header." },
+        });
+        expect(gif.status).toBe(201);
+      },
+    );
+
     t("known text infers code", async () => {
       await d.fresh();
       const r = await d.call("POST", R.artifacts, {

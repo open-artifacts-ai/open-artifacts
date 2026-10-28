@@ -124,10 +124,11 @@ const DEFAULT_ENTRY = {
 } as const;
 
 /**
- * The server's format guard (manifest.ts): a publish with no `format` whose
- * entry implies none is 400 unsupported_format; an inline entry whose content
- * doesn't fit its format is 400 binary_entry. Uploaded entries pass (the mock
- * keeps no upload bytes). Null when the publish may go ahead.
+ * The server's format guard (manifest.ts): with no `format` and a name that
+ * implies none, inline text publishes as code and anything else is 400
+ * unsupported_format; an inline entry whose content doesn't fit its format is
+ * 400 binary_entry. Uploaded entries pass (the mock keeps no upload bytes).
+ * Null when the publish may go ahead.
  */
 function formatRefusal(
   input: z.infer<typeof PublishInputSchema>,
@@ -152,22 +153,22 @@ function formatRefusal(
           : (keys[0] ?? ""));
     src = input.files[entry];
   } else return null;
-  const format = input.format ?? inferFormat(entry);
-  if (!format)
-    return err("unsupported_format", UNSUPPORTED_FORMAT_MESSAGE, {
-      path: entry,
-      reason: "no_viewer",
-    });
+  const inferred = input.format ?? inferFormat(entry);
   if (src === undefined || (typeof src === "object" && "uploadId" in src))
     return null;
   const { head, truncated } =
     typeof src === "string"
       ? textHead(src)
       : bytesHead(Uint8Array.from(atob(src.base64), (c) => c.charCodeAt(0)));
-  const r = checkEntry(entry, format, head, truncated);
-  return r
+  // No format implied by the name: the bytes decide (text is code).
+  const r = checkEntry(entry, inferred ?? "code", head, truncated);
+  if (!r) return null;
+  return inferred
     ? err("binary_entry", r.message, { path: entry, reason: r.reason })
-    : null;
+    : err("unsupported_format", UNSUPPORTED_FORMAT_MESSAGE, {
+        path: entry,
+        reason: "no_viewer",
+      });
 }
 
 /**
@@ -384,7 +385,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     if (input.title) a.title = input.title;
     if (input.description !== undefined) a.description = input.description;
     // As the server: the given format, else the entry's (formatRefusal ran).
-    a.format = input.format ?? inferFormat(entry) ?? a.format;
+    a.format = input.format ?? inferFormat(entry) ?? "code";
     a.lastAgent = null;
     return addVersion(a, {
       message: input.message ?? null,
