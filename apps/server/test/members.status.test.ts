@@ -281,7 +281,6 @@ describe("setUserStatus", () => {
           detail: {
             status: "removed",
             reason: "directory_delete",
-            sharesDropped: 0,
           },
         },
       ]),
@@ -319,7 +318,6 @@ describe("removeMember with the spaces flag on", () => {
     expect(JSON.parse(row?.detail ?? "{}")).toEqual({
       status: "removed",
       reason: "admin_remove",
-      sharesDropped: 0,
     });
   });
 
@@ -520,10 +518,7 @@ describe("review fixes (P3 T6)", () => {
       [sharer.userId, { status: "removed", cause: "last_share" }],
       [sharer.userId, { status: "active", cause: "share" }],
       [sharer.userId, { status: "removed", cause: "last_share" }],
-      [
-        admin.userId,
-        { status: "removed", reason: "admin_remove", sharesDropped: 0 },
-      ],
+      [admin.userId, { status: "removed", reason: "admin_remove" }],
     ]);
   });
 

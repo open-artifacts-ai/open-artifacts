@@ -1,7 +1,8 @@
-// Review item 7: a removed member or guest stays removed. The removal drops
-// the shares addressed to their email in the same batch, so no leftover
-// share re-admits the address at the next code or Access sign-in. A share
-// made after the removal is a fresh grant.
+// Review item 7: a removed member or guest stays removed. Without spaces the
+// removal drops the shares addressed to their email in the same batch, so no
+// leftover share re-admits the address at the next code or Access sign-in; a
+// share made after the removal is a fresh grant. With spaces the removed row
+// refuses every sign-in and keeps its shares.
 import { env } from "cloudflare:workers";
 import { AUTH, type Member, PAGES, R } from "@oa/shared";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -209,8 +210,8 @@ describe("removal sticks without spaces (row deleted)", () => {
   });
 });
 
-describe("removal with spaces on (hosted): unchanged or stricter", () => {
-  it("the row stays removed, its shares go, and a re-share never revives it", async () => {
+describe("removal with spaces on (hosted): unchanged", () => {
+  it("the removed row is refused at every sign-in, its shares are kept, and a re-share never revives it", async () => {
     const s = await sharer();
     const [old, fresh] = [await s.pub(), await s.pub()];
     const email = uniq("g", "x.com");
@@ -218,16 +219,18 @@ describe("removal with spaces on (hosted): unchanged or stricter", () => {
     expect((await s.share(old, email)).status).toBe(200);
     await removeMember(SPACES, g.userId, actorOf(s.userId, "admin"));
     expect((await userRow(email))?.status).toBe("removed");
-    expect(await sharesTo(email)).toBe(0);
+    // Kept with the row: the removed row is what refuses them.
+    expect(await sharesTo(email)).toBe(1);
     expect(await removalAudit(g.userId)).toEqual({
       status: "removed",
       reason: "admin_remove",
-      sharesDropped: 1,
     });
     const e = direct({ FEATURES: "spaces" });
     await expectRefused(e, email);
-    // A re-share is a new row, but the removed row stays removed.
+    expect((await call(e, R.artifact(old), g.cookie)).status).toBe(404);
+    // A re-share adds a share, but the removed row stays removed.
     expect((await s.share(fresh, email)).status).toBe(200);
+    expect(await sharesTo(email)).toBe(2);
     await expectRefused(e, email);
     expect((await userRow(email))?.status).toBe("removed");
     expect((await call(e, R.artifact(fresh), g.cookie)).status).toBe(404);

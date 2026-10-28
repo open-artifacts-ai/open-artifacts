@@ -257,17 +257,6 @@ const REVOKE_PATS = `update tokens set revoked_at = ?2
   and exists (select 1 from users where id = ?1 and status = ?3
     and (role <> 'admin' or ?4 = 1))`;
 const STATUS_OF = "select status from users where id = ?1";
-/**
- * A removal drops the shares addressed to the user's email, only when this
- * call's SET_STATUS just removed the row (status_changed_at = ?2, the value
- * it wrote), so a share made after an earlier removal is left alone. With
- * them gone no leftover share re-admits the address (codeEligibility,
- * upsertOnLogin); a later share is a fresh, deliberate grant.
- */
-const JUST_REMOVED =
-  "exists (select 1 from users where id = ? and status = 'removed' and status_changed_at = ?)";
-const DROP_REMOVED_SHARES = `delete from shares where email = (select email from users
-  where id = ?1 and status = 'removed' and status_changed_at = ?2)`;
 
 /**
  * Sets a user's status (P3 T6). The write, the PAT revocation and the
@@ -278,9 +267,9 @@ const DROP_REMOVED_SHARES = `delete from shares where email = (select email from
  * (revokeUserLive). Unsuspending sets the status back to active; the PATs
  * and sessions the suspension revoked stay revoked. A removed row stays
  * removed. getUser resolves only active rows, so every credential stops at
- * the next request. A removal also drops the shares addressed to their
- * email in the same batch (audited as sharesDropped, a count), so no
- * leftover share re-admits them.
+ * the next request. A removal keeps the shares addressed to their email:
+ * the removed row refuses every sign-in, so none re-admits them, and they
+ * stay with the row should a removal ever be restored.
  *
  * `actor` is the member acting (routes; audited as them) or SYSTEM_ACTOR
  * (system and directory sync). An admin may not suspend or remove an owner
@@ -297,42 +286,19 @@ export async function setUserStatus(
 ): Promise<void> {
   const admins = adminsOk(actor);
   const by = auditActor(actor, why);
-  const at = Date.now();
-  const target = { type: "user", id: userId } as const;
-  const record =
-    status === "removed"
-      ? [
-          // A removal drops the address's shares in the same batch; the
-          // audit row counts them (never the addresses): changes() of the
-          // delete just before it. Both only when this call removed the row.
-          stmt(env.DB, DROP_REMOVED_SHARES).bind(userId, at),
-          audit(env, "user.status", target, by, {
-            reason: why,
-            detail: { status },
-            detailSql: {
-              sql: "json_object('sharesDropped', changes())",
-              args: [],
-            },
-            when: { sql: JUST_REMOVED, args: [userId, at] },
-          }),
-        ]
-      : [
-          // Directly after the update: audited only when it changed the row.
-          audit(env, "user.status", target, by, {
-            reason: why,
-            detail: { status },
-            when: { sql: "changes() > 0", args: [] },
-          }),
-        ];
   const out = await env.DB.batch([
-    stmt(env.DB, SET_STATUS).bind(userId, status, at, admins),
-    ...record,
-    stmt(env.DB, REVOKE_PATS).bind(userId, at, status, admins),
+    stmt(env.DB, SET_STATUS).bind(userId, status, Date.now(), admins),
+    // Directly after the update: audited only when it changed the row.
+    audit(env, "user.status", { type: "user", id: userId }, by, {
+      reason: why,
+      detail: { status },
+      when: { sql: "changes() > 0", args: [] },
+    }),
+    stmt(env.DB, REVOKE_PATS).bind(userId, Date.now(), status, admins),
     stmt(env.DB, STATUS_OF).bind(userId),
   ]);
   if (!out[0]?.meta.changes) await raceCheck(env, userId, admins);
-  const now = (out.at(-1)?.results[0] as { status?: string } | undefined)
-    ?.status;
+  const now = (out[3]?.results[0] as { status?: string } | undefined)?.status;
   if (status === "active" || now !== status) return;
   try {
     // A grant this misses (KV listing lag) is still refused: it was issued
@@ -434,10 +400,11 @@ export async function patchMember(
  * deleted (tokens.user_id has no cascade, so revoked rows would block the
  * delete).
  *
- * Either way the shares addressed to their email are dropped in the same
- * batch as the removal (audited as a count, sharesDropped), so no leftover
- * share re-admits them as a guest at their next sign-in. A share made
- * afterwards is a fresh grant.
+ * Without spaces the shares addressed to their email are dropped in the
+ * same batch (audited as a count, sharesDropped): with the row gone, a
+ * leftover share would re-admit them as a guest at their next sign-in. A
+ * share made afterwards is a fresh grant. With spaces on the removed row
+ * refuses every sign-in, so its shares are kept with it.
  *
  * `actor` is the member acting (routes; audited as them) or SYSTEM_ACTOR. An
  * admin may not remove an owner or admin, 403 owner_only, enforced in the
@@ -455,7 +422,7 @@ export async function removeMember(
     throw new ApiError("bad_request", "The owner cannot be removed");
   const db = getDb(env);
   // Belt and braces for the artifacts shared with them (best effort,
-  // capped), read before the removal drops those shares.
+  // capped), read before a spaces-off removal drops those shares.
   const shared = await db
     .select({ id: shares.artifactId })
     .from(shares)

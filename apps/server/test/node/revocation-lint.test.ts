@@ -30,8 +30,7 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // The spaces-off removal: the row is deleted, and the shares addressed to
   // their email go in the same batch (a leftover share re-admitted them).
   "services/members.ts:deleteMember": "user",
-  // Suspend or remove (P3 T6): PATs, grants and sessions revoked; a removal
-  // also drops the shares addressed to their email in the same batch.
+  // Suspend or remove (P3 T6): PATs, grants and sessions revoked.
   "services/members.ts:setUserStatus": "user",
   // A role change ends their sessions; sockets were authorized under the old role.
   "services/members.ts:patchMember": "user",
@@ -419,17 +418,15 @@ describe("revocation lint (P3 T7)", () => {
     expect(check(unitsOf("x.ts", src), {}).missing).toEqual(["x.ts:f"]);
   });
 
-  // A removal's share drop (a leftover share re-admitted the address) is a
-  // marker in both removal units, so each stays registered with its guard.
-  it("both removals drop shares and are registered with the user guard", () => {
+  // The spaces-off removal drops the shares addressed to the removed email
+  // (a leftover share re-admitted it), a marker that keeps it registered.
+  // The spaces-on removal keeps them: the removed row refuses every sign-in.
+  it("the spaces-off removal drops shares and is registered with the user guard", () => {
     const drop = /\.delete\(shares\)|delete from shares\b/i;
-    for (const k of [
-      "services/members.ts:setUserStatus",
-      "services/members.ts:deleteMember",
-    ]) {
-      expect(fns.get(k)).toMatch(drop);
-      expect(REGISTRY[k]).toBe("user");
-    }
+    expect(fns.get("services/members.ts:deleteMember")).toMatch(drop);
+    expect(REGISTRY["services/members.ts:deleteMember"]).toBe("user");
+    expect(fns.get("services/members.ts:setUserStatus")).not.toMatch(drop);
+    expect(REGISTRY["services/members.ts:setUserStatus"]).toBe("user");
   });
 
   it("finds a shrinking function that skips the guard (self-test)", () => {
