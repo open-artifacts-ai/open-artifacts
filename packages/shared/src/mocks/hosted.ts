@@ -21,7 +21,7 @@
  */
 import { type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
-import type { ErrorCode } from "../errors.js";
+import { type ErrorCode, INVITE_UNREACHABLE_MESSAGE } from "../errors.js";
 import {
   MembersQuerySchema,
   MoveArtifactInputSchema,
@@ -79,7 +79,7 @@ import type {
   PublishInput,
   Share,
 } from "../schemas.js";
-import { SettingsPatchSchema } from "../schemas.js";
+import { MemberInviteSchema, SettingsPatchSchema } from "../schemas.js";
 
 /** The code the mock accepts (any address). */
 export const HOSTED_MOCK_CODE = "24681357";
@@ -1023,6 +1023,47 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         return err("owner_only", "Only the owner can manage an owner or admin");
       }),
     ),
+    // -- invite reachability (review item 11), the server's rules for the
+    // mock's providers: Google admits MOCK_DOMAIN (outside it, only maybe: a
+    // Workspace secondary domain, so signIn "uncertain"); codes admit
+    // MOCK_DOMAIN only while Google is off (domainCodes). Reachable invites
+    // fall through to the base handler.
+    http.post("*/api/v1/members", async ({ request }) => {
+      if (mode === "access" || c.isAnon(request)) return undefined;
+      const r = await c.body(request.clone(), MemberInviteSchema);
+      if (r.error) return undefined;
+      const email = r.data.email.toLowerCase();
+      const inDomain = email.endsWith(`@${MOCK_DOMAIN}`);
+      const google = providerIds.includes("google");
+      if (inDomain && (google || providerIds.includes("email")))
+        return undefined;
+      if (!google) {
+        const reason = inDomain ? "no_sign_in_method" : "outside_domains";
+        return err("invite_unreachable", INVITE_UNREACHABLE_MESSAGE[reason], {
+          field: "email",
+          reason,
+        });
+      }
+      if (members.some((m) => m.email === email))
+        return err("conflict", "Already a member");
+      const m: Member = {
+        id: newId(),
+        email,
+        name: null,
+        role: r.data.role,
+        lastSeenAt: null,
+        status: "active",
+      };
+      members.push(m);
+      return HttpResponse.json(
+        {
+          ...m,
+          emailed: false,
+          signIn: { status: "uncertain", reason: "outside_domains" },
+        },
+        { status: 201 },
+      );
+    }),
     // -- members (status filter), departed transfer, identity reset
     http.get(
       "*/api/v1/members",

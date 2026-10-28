@@ -96,6 +96,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `Me` | `auth?: MeAuth`, `personalSpaceId?` (= user.id), `spaces?: MySpace[]` (shared, by name, ≤ 200) |
 | `Settings` (so `SettingsPatch`) | `spaceManagerMappings?: boolean` (hosted; default true, absent self-hosted). PATCH needs `settings.manage` (org owner, admin); audited `settings.space_manager_mappings` |
 | `Space` | `can?: SpaceCan` (`{ manageMappings }`) |
+| `MemberInviteResult` | `signIn?: InviteSignIn` = `{ status: "uncertain", reason: "outside_domains" }`: the invite stands, but only Google might admit the address (outside AUTH_DOMAINS: works only for a Workspace account whose primary domain is verified). Absent when an offered method admits it. Warn the inviter |
 | `AuditActionSchema` | `settings.space_manager_mappings`, `user.role` (a member role change: `detail { from, to }`, written only when the role changes) |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
 
@@ -264,6 +265,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `reauth_required` | 401 | break-glass routes need a fresh Google sign-in |
 | `break_glass_required` | 401 | `GET R.me` for the org owner refused by a directory customer_mismatch; details `{ fresh }` (see Sign-in) |
 | `space_name_reserved` | 400 | `POST R.spaces` or a `PATCH R.space(id)` rename to "Personal" (trimmed, any case); details `{ field: "name" }`, message `SPACE_NAME_RESERVED_MESSAGE`. Existing spaces with that name are left alone |
+| `invite_unreachable` | 400 | `POST R.members` for an address no offered sign-in method could ever admit (e.g. outside AUTH_DOMAINS with email codes only, or Google off and codes off); nothing is created. Details `InviteUnreachableDetails` `{ field: "email", reason: "outside_domains" \| "no_sign_in_method" }`, message `INVITE_UNREACHABLE_MESSAGE[reason]` (outside_domains: "This address can't sign in to this workspace. Share artifacts with them as a guest instead."). An existing row is still 409. Access installs never refuse |
 | `restrict_admin` | 400 | `PUT R.memberRestricted(id)` on an org owner or admin |
 | `owner_only` | 403 | an admin (or a capped owner) acting on an org owner or admin: `PATCH`/`DELETE R.member(id)`, `DELETE R.memberIdentity(id, "google")` (#475). Admins keep managing members and guests |
 | `directory_mapping_off` | 403 | a space manager (not an org admin) adds or changes a space mapping (PUT) while `Settings.spaceManagerMappings` is off; list and DELETE stay allowed |

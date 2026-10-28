@@ -366,10 +366,25 @@ export const MemberInviteSchema = z.strictObject({
 });
 export type MemberInvite = z.infer<typeof MemberInviteSchema>;
 
+/**
+ * MemberInviteResult.signIn: present only when the server can't tell whether
+ * the invitee can sign in. outside_domains: the address is outside
+ * AUTH_DOMAINS and only Google could admit it, which works only if it is a
+ * Google Workspace account whose primary domain is verified (a secondary
+ * domain). The invite still stands; warn the inviter.
+ */
+export const InviteSignInSchema = z.object({
+  status: z.literal("uncertain"),
+  reason: z.literal("outside_domains"),
+});
+export type InviteSignIn = z.infer<typeof InviteSignInSchema>;
+
 /** POST members (invite) response. */
 export const MemberInviteResultSchema = MemberSchema.extend({
   /** True if an invite email was sent (best effort). */
   emailed: z.boolean(),
+  /** Absent when the invitee can sign in; see InviteSignInSchema. */
+  signIn: InviteSignInSchema.optional(),
 });
 export type MemberInviteResult = z.infer<typeof MemberInviteResultSchema>;
 

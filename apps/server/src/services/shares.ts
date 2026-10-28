@@ -21,6 +21,7 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { getSettings } from "./members.js";
+import { reachOf } from "./reach.js";
 
 export const MAX_SHARES = 200;
 
@@ -195,6 +196,8 @@ async function emailShare(
       getSettings(env),
     ]);
     if (member) return false;
+    // No user row: the share is what admits them (reach.ts).
+    const { methods } = await reachOf(env, email, null, async () => true);
     return await sendEmail(
       env,
       user.id,
@@ -209,6 +212,7 @@ async function emailShare(
           path: viewerPath(artifact.id),
           format: artifact.format as Format,
           role,
+          signIn: methods,
         }),
       {
         kind: "share",

@@ -5,6 +5,7 @@
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  ApiErrorSchema,
   ArtifactSummarySchema,
   AUTH,
   AuditEventSchema,
@@ -17,7 +18,10 @@ import {
   ENV_FEATURE_FLAGS,
   ERROR_CODES,
   HealthzSchema,
+  INVITE_UNREACHABLE_MESSAGE,
+  InviteUnreachableDetailsSchema,
   ListQuerySchema,
+  MemberInviteResultSchema,
   MemberSchema,
   MembersQuerySchema,
   MeSchema,
@@ -91,6 +95,47 @@ const msw: ContractDriver = {
 };
 
 hostedContract(msw);
+
+describe("mock invite reachability (review item 11)", () => {
+  const use = (providers: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { providers } }));
+  };
+  const invite = (email: string) =>
+    call("POST", R.members, { email, role: "member" });
+
+  it("email only, outside the domain: 400 invite_unreachable", async () => {
+    use(["email"]);
+    const r = await invite("out@elsewhere.com");
+    expect(r.status).toBe(400);
+    const { error } = ApiErrorSchema.parse(await r.json());
+    expect(error.code).toBe("invite_unreachable");
+    expect(InviteUnreachableDetailsSchema.parse(error.details)).toEqual({
+      field: "email",
+      reason: "outside_domains",
+    });
+    expect(error.message).toBe(INVITE_UNREACHABLE_MESSAGE.outside_domains);
+  });
+
+  it("Google on, outside the domain: 201 with signIn uncertain", async () => {
+    use(["google", "email"]);
+    const r = await invite("sec@secondary.com");
+    expect(r.status).toBe(201);
+    expect(MemberInviteResultSchema.parse(await r.json()).signIn).toEqual({
+      status: "uncertain",
+      reason: "outside_domains",
+    });
+  });
+
+  it("in the domain: 201, no flag", async () => {
+    use(["email"]);
+    const r = await invite("new@example.com");
+    expect(r.status).toBe(201);
+    expect(
+      MemberInviteResultSchema.parse(await r.json()).signIn,
+    ).toBeUndefined();
+  });
+});
 
 describe("mock AuthProviders.hosted (review item 36c)", () => {
   it("true by default; false with selfHosted, and Me agrees", async () => {

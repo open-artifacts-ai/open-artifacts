@@ -15,6 +15,7 @@ import {
   inviteEmail,
   senderName,
   shareEmail,
+  signInSentence,
 } from "../src/email/templates.js";
 
 const EVIL = '"><script>alert(1)</script>\r\nBcc: evil@x.com {{logoUrl}} &amp;';
@@ -23,6 +24,7 @@ const common = {
   instance: `Acme${EVIL}`,
   recipient: "new@x.com",
   appHost: "app.example.com",
+  signIn: ["email"] as ("access" | "google" | "email")[],
 };
 
 /** Asserts a rendered email is clean, whatever the input. */
@@ -148,5 +150,80 @@ describe("copy (#213)", () => {
     const inviter = senderName({ name: "me", email: "me@leourbina.com" });
     const m = inviteEmail({ ...common, inviter, instance: "Open Artifacts" });
     expect(m.subject).toBe("me@leourbina.com added you to Open Artifacts");
+  });
+});
+
+// Review item 11: the sign-in copy names only the methods that admit the
+// recipient; never "a one-time code" when codes aren't offered to them.
+describe("sign-in copy (review item 11)", () => {
+  const share = (signIn: typeof common.signIn) =>
+    shareEmail({
+      ...common,
+      inviter: "Ada",
+      instance: "Acme",
+      title: "Plan",
+      path: "/a/abc",
+      format: "pdf",
+      role: "viewer",
+      signIn,
+    });
+  const invite = (signIn: typeof common.signIn) =>
+    inviteEmail({ ...common, inviter: "Ada", instance: "Acme", signIn });
+
+  it.each([
+    [["email"], "You'll sign in with a one-time code sent to new@x.com."],
+    [["google"], "You'll sign in with your Google account."],
+    [["access"], "You'll sign in with your organization's single sign-on."],
+    [
+      ["email", "google"],
+      "You'll sign in with your Google account or a one-time code sent to new@x.com.",
+    ],
+  ] as const)("%j: %s", (signIn, line) => {
+    const inv = invite([...signIn]);
+    for (const part of [inv.text, inv.html.replaceAll("&#39;", "'")])
+      expect(part).toContain(`There's no password to set up. ${line}`);
+    const sh = share([...signIn]);
+    for (const part of [sh.text, sh.html.replaceAll("&#39;", "'")])
+      expect(part).toContain(line);
+    if (!(signIn as readonly string[]).includes("email"))
+      for (const m of [inv, sh])
+        for (const part of [m.subject, m.text, m.html])
+          expect(part).not.toContain("one-time code");
+  });
+
+  it("the invite preheader follows the methods too", () => {
+    const pre = (signIn: typeof common.signIn) =>
+      invite(signIn).html.replaceAll("&#39;", "'");
+    expect(pre(["google"])).toContain(
+      ">You'll sign in with your Google account.&#8199;",
+    );
+    expect(pre(["email"])).toContain(
+      ">You'll sign in with a one-time code sent to this address.&#8199;",
+    );
+  });
+
+  it("no method: says they need an invite, promises nothing", () => {
+    expect(
+      signInSentence([], "x@y.com", { instance: "Acme", inviter: "Ada" }),
+    ).toBe(
+      "You can't sign in to Acme yet. Ask Ada to invite you as a member first.",
+    );
+    const m = share([]);
+    expect(m.text).toContain("You can't sign in to Acme yet.");
+    for (const part of [m.text, m.html]) {
+      expect(part).not.toContain("one-time code");
+      expect(part).not.toContain("sign in with");
+    }
+  });
+
+  it("no em dashes in the sign-in copy", () => {
+    for (const signIn of [
+      [],
+      ["email"],
+      ["google", "access", "email"],
+    ] as const)
+      for (const m of [invite([...signIn]), share([...signIn])])
+        for (const part of [m.subject, m.text, m.html])
+          expect(part).not.toContain("\u2014");
   });
 });

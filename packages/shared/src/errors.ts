@@ -34,6 +34,7 @@ export const ERROR_CODES = [
   "unsupported_format",
   "binary_entry",
   "space_name_reserved",
+  "invite_unreachable",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -99,6 +100,47 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   binary_entry: 400,
   /** POST R.spaces or a PATCH R.space rename to "Personal" (trimmed, any case); details { field: "name" }, message SPACE_NAME_RESERVED_MESSAGE. */
   space_name_reserved: 400,
+  /** POST R.members (invite) for an address no sign-in method this install offers could ever admit; details InviteUnreachableDetails, message INVITE_UNREACHABLE_MESSAGE[reason]. Nothing is created. */
+  invite_unreachable: 400,
+};
+
+/**
+ * Why an invite is refused (400 invite_unreachable), or why a share's
+ * recipient can't sign in (ShareResult.recipient):
+ * - outside_domains: the address is outside AUTH_DOMAINS and no offered
+ *   method admits it there (Google needs a verified domain; codes outside it
+ *   are for guests only);
+ * - no_sign_in_method: inside the domains, but no offered method admits it
+ *   (e.g. email codes only, with domain codes off);
+ * - needs_invite: (shares only) inside the domains on an invite-only
+ *   install: an admin must invite them as a member before they can sign in.
+ */
+export const InviteUnreachableReasonSchema = z.enum([
+  "outside_domains",
+  "no_sign_in_method",
+]);
+export type InviteUnreachableReason = z.infer<
+  typeof InviteUnreachableReasonSchema
+>;
+
+/** 400 invite_unreachable details. */
+export const InviteUnreachableDetailsSchema = z.object({
+  field: z.literal("email"),
+  reason: InviteUnreachableReasonSchema,
+});
+export type InviteUnreachableDetails = z.infer<
+  typeof InviteUnreachableDetailsSchema
+>;
+
+/** 400 invite_unreachable message, per reason. */
+export const INVITE_UNREACHABLE_MESSAGE: Record<
+  InviteUnreachableReason,
+  string
+> = {
+  outside_domains:
+    "This address can't sign in to this workspace. Share artifacts with them as a guest instead.",
+  no_sign_in_method:
+    "This address can't sign in to this workspace with the sign-in methods it offers. Ask the owner to turn on one that admits it.",
 };
 
 /** 400 unsupported_format message. */

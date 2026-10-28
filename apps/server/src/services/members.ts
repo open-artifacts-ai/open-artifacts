@@ -1,13 +1,15 @@
 import { normalizeEmail } from "@oa/auth-core";
-import type {
-  AuditReason,
-  Member,
-  MemberInvite,
-  MemberInviteResult,
-  MemberPatch,
-  MemberStatus,
-  Settings,
-  SettingsPatch,
+import {
+  type AuditReason,
+  INVITE_UNREACHABLE_MESSAGE,
+  type InviteUnreachableDetails,
+  type Member,
+  type MemberInvite,
+  type MemberInviteResult,
+  type MemberPatch,
+  type MemberStatus,
+  type Settings,
+  type SettingsPatch,
 } from "@oa/shared";
 import {
   and,
@@ -49,6 +51,7 @@ import {
   revokeUserLive,
 } from "../runtime/revoke.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
+import { inviteReach } from "./reach.js";
 import {
   IDENTITIES_SQL,
   identitiesOf,
@@ -136,9 +139,16 @@ export function hostedFields(
   };
 }
 
+const EXISTS = "select 1 as x from users where email = ?1 limit 1";
+
 /**
  * Pre-creates the user row, then emails the invitee (best effort).
- * 400 on an invalid (non-ASCII) email, 409 if it exists.
+ * 400 on an invalid (non-ASCII) email, 409 if it exists, 400
+ * invite_unreachable (nothing created) when no sign-in method this install
+ * offers could ever admit the address (review item 11). When only Google
+ * might (an address outside AUTH_DOMAINS), the invite stands and the result
+ * carries signIn { status: "uncertain" }. The email names only the methods
+ * that admit the address.
  */
 export async function inviteMember(
   env: Env,
@@ -147,6 +157,21 @@ export async function inviteMember(
 ): Promise<MemberInviteResult> {
   const email = normalizeEmail(input.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
+  const reach = await inviteReach(env, email, input.role);
+  if (reach.methods.length === 0 && !reach.googleUncertain) {
+    // An existing row is still "Already a member" (409), not a 400.
+    if (await stmt(env.DB, EXISTS).bind(email).first())
+      throw new ApiError("conflict", "Already a member");
+    const details: InviteUnreachableDetails = {
+      field: "email",
+      reason: reach.inDomain ? "no_sign_in_method" : "outside_domains",
+    };
+    throw new ApiError(
+      "invite_unreachable",
+      INVITE_UNREACHABLE_MESSAGE[details.reason],
+      details,
+    );
+  }
   const [row] = await insertUser(env, {
     email,
     name: "",
@@ -170,6 +195,8 @@ export async function inviteMember(
           instance,
           recipient: email,
           appHost: env.APP_HOST,
+          // Uncertain Google is still the only way in: name it.
+          signIn: reach.methods.length ? reach.methods : ["google"],
         }),
       {
         kind: "invite",
@@ -178,7 +205,13 @@ export async function inviteMember(
       },
     );
   }
-  return { ...toMember(row), emailed };
+  return {
+    ...toMember(row),
+    emailed,
+    ...(reach.methods.length === 0
+      ? { signIn: { status: "uncertain", reason: "outside_domains" } as const }
+      : {}),
+  };
 }
 
 async function getRow(env: Env, id: string) {

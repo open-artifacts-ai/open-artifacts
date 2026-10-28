@@ -3,6 +3,7 @@
 // control characters (CR/LF included) and length-capped everywhere, then
 // HTML-escaped for the .html part, so nothing can inject headers or markup.
 import type { Format, ShareRole } from "@oa/shared";
+import type { SignInProvider } from "../auth/config.js";
 import { escapeHtml } from "../mcp/template.js";
 import { effectiveName } from "../services/users.js";
 import {
@@ -100,6 +101,31 @@ const ROLE_LABEL: Record<ShareRole, string> = {
   editor: "Editor",
 };
 
+const METHOD_PHRASE: Record<SignInProvider, (to: string) => string> = {
+  google: () => "your Google account",
+  access: () => "your organization's single sign-on",
+  email: (to) => `a one-time code sent to ${to}`,
+};
+const METHOD_ORDER: readonly SignInProvider[] = ["google", "access", "email"];
+
+/**
+ * How `to` signs in, from the sign-in methods that can admit that address
+ * (services/reach.ts), never a method this install doesn't offer it. Empty:
+ * they can't sign in yet and need an invite.
+ */
+export function signInSentence(
+  methods: readonly SignInProvider[],
+  to: string,
+  p: { instance: string; inviter: string },
+): string {
+  const parts = METHOD_ORDER.filter((m) => methods.includes(m)).map((m) =>
+    METHOD_PHRASE[m](to),
+  );
+  if (parts.length === 0)
+    return `You can't sign in to ${oneLine(p.instance, NAME_MAX)} yet. Ask ${oneLine(p.inviter, NAME_MAX)} to invite you as a member first.`;
+  return `You'll sign in with ${parts.join(" or ")}.`;
+}
+
 type Common = {
   inviter: string;
   instance: string;
@@ -139,26 +165,35 @@ function render(
   };
 }
 
+/** How the recipient can sign in: the methods that admit their address. */
+type SignIn = { signIn: readonly SignInProvider[] };
+
 /** A member invite, linking to the instance's sign-in page. */
-export function inviteEmail(p: Common): EmailContent {
+export function inviteEmail(p: Common & SignIn): EmailContent {
   const { origin, values } = common(p);
   return render(
     INVITE_HTML,
     INVITE_TXT,
     "{{inviterName}} added you to {{instanceName}}",
-    { ...values, signInUrl: linkOn(origin, "/sign-in") },
+    {
+      ...values,
+      signInUrl: linkOn(origin, "/sign-in"),
+      signInLine: `There's no password to set up. ${signInSentence(p.signIn, values.recipientEmail, p)}`,
+      signInPreheader: signInSentence(p.signIn, "this address", p),
+    },
   );
 }
 
 /** An artifact shared with a non-member, linking to its viewer URL. */
 export function shareEmail(
-  p: Common & {
-    title: string;
-    /** Viewer path on the app host, e.g. `/a/<id>`. */
-    path: string;
-    format: Format;
-    role: ShareRole;
-  },
+  p: Common &
+    SignIn & {
+      title: string;
+      /** Viewer path on the app host, e.g. `/a/<id>`. */
+      path: string;
+      format: Format;
+      role: ShareRole;
+    },
 ): EmailContent {
   const { origin, values } = common(p);
   return render(
@@ -171,6 +206,7 @@ export function shareEmail(
       artifactUrl: linkOn(origin, p.path),
       artifactFormat: FORMAT_LABEL[p.format],
       role: ROLE_LABEL[p.role],
+      signInLine: signInSentence(p.signIn, values.recipientEmail, p),
     },
   );
 }

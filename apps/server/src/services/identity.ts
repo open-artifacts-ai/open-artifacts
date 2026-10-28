@@ -121,8 +121,7 @@ export async function admit(
   id: VerifiedIdentity,
   now = Date.now(),
 ): Promise<AdmitResult> {
-  if (!inDomains(cfg.domains, id.tenant))
-    return { ok: false, reason: "tenant" };
+  if (!googleTenantOk(cfg, id.tenant)) return { ok: false, reason: "tenant" };
   const email = normalizeEmail(id.email);
   if (!email) return { ok: false, reason: "no_access" };
 
@@ -146,7 +145,7 @@ export async function admit(
   const isOwner =
     email === normalizeEmail(env.OWNER_EMAIL ?? "") &&
     !(await stmt(env.DB, AN_OWNER).first());
-  if (!existing && !isOwner && cfg.domainJoin !== "member")
+  if (!existing && !googleNewRowOk(cfg, isOwner))
     return { ok: false, reason: "no_access" };
 
   const results = await env.DB.batch<UserRow & { subject: string | null }>(
@@ -166,6 +165,16 @@ export async function admit(
     return { ok: false, reason: "identity_conflict" };
   return admitted(await touch(env, row, id, now));
 }
+
+/** Google admission rule 1: the tenant (hd) is a verified domain. */
+export const googleTenantOk = (
+  cfg: AuthConfig,
+  tenant: string | null | undefined,
+): boolean => inDomains(cfg.domains, tenant);
+
+/** Google admission rule 3: a verified identity with no user row gets one (join = member, or OWNER_EMAIL). */
+export const googleNewRowOk = (cfg: AuthConfig, isOwner: boolean): boolean =>
+  isOwner || cfg.domainJoin === "member";
 
 /** touch's result: null (no longer active mid-sign-in) is refused, fail closed. */
 const admitted = (user: Member | null): AdmitResult =>
@@ -197,9 +206,32 @@ export async function codeEligibility(
 ): Promise<CodeEligibility> {
   const email = normalizeEmail(rawEmail);
   if (!email) return { kind: "none" };
-  const row = await stmt(env.DB, ELIGIBILITY)
-    .bind(email)
-    .first<{ id: string; role: Role; status: string; linked: number }>();
+  const row = await stmt(env.DB, ELIGIBILITY).bind(email).first<CodeRow>();
+  return codeRule(cfg, email, row, async () =>
+    Boolean(await stmt(env.DB, SHARED).bind(email).first()),
+  );
+}
+
+/** The user row codeRule reads: role, status, and whether any identity is linked. */
+export type CodeRow = {
+  id: string | null;
+  role: Role;
+  status: string;
+  linked: number | boolean;
+};
+
+/**
+ * codeEligibility's rule for a normalized `email` and its row (null: none);
+ * `shared` is asked only for an address outside the domains with no row.
+ * Also judges a row about to exist (an invite) in services/reach.ts, so the
+ * rule lives in one place.
+ */
+export async function codeRule(
+  cfg: AuthConfig,
+  email: string,
+  row: CodeRow | null,
+  shared: () => Promise<boolean>,
+): Promise<CodeEligibility> {
   if (row && (row.status !== "active" || row.linked)) return { kind: "none" };
   const domain = email.slice(email.lastIndexOf("@") + 1);
   if (inDomains(cfg.domains, domain)) {
@@ -213,8 +245,7 @@ export async function codeEligibility(
     return isGuestRole(row.role)
       ? { kind: "guest", userId: row.id }
       : { kind: "none" };
-  const shared = await stmt(env.DB, SHARED).bind(email).first();
-  return shared ? { kind: "guest", userId: null } : { kind: "none" };
+  return (await shared()) ? { kind: "guest", userId: null } : { kind: "none" };
 }
 
 /**
