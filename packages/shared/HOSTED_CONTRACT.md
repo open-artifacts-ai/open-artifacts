@@ -102,6 +102,9 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `ShareResult`, `MemberInviteResult` | `signInMethods?: ("access" \| "google" \| "email")[]`: the sign-in methods that admit the person, in `SIGN_IN_METHOD_ORDER` (google, access, email; `orderSignInMethods`), `[]` when they can't sign in; an uncertain invite lists `["google"]`. Exactly the list the share or invite email names, so UI copy and the email agree |
 | `MemberInviteResult` | `signIn?: InviteSignIn` = `{ status: "uncertain", reason: "outside_domains" }`: the invite stands, but only Google might admit the address (outside AUTH_DOMAINS: works only for a Workspace account whose primary domain is verified). Absent when an offered method admits it. Warn the inviter |
 | `AuditActionSchema` | `settings.space_manager_mappings`, `user.role` (a member role change: `detail { from, to }`, written only when the role changes) |
+| `ArtifactEvent.hello` | `you?: PresenceKey`: this socket's own presence key (the entry to mark "you"); absent on sockets not counted (embeds) and on older servers |
+| `ArtifactEventSchema` | a `presence` frame, appended after `gone` (`PresenceFrameSchema`); see "Presence (both tiers)" |
+| `GetArtifactInput`, `ArtifactData{Get,List,Query,Set,Update,Delete}Input` | `activity?: string` (max 80): the agent's own note shown on its presence card |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
 
 ## Sign-in (`hosted/auth.ts`, P2)
@@ -290,6 +293,19 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `TestAuditInputSchema` / `TestAuditResultSchema` | `{ since }` (ms epoch, integer ≥ 0) → `{ events: { action, at, actorId, targetId, detail }[] }`: `test_hook.*` audit rows only (enforced in SQL: `actor_kind = 'test_hook'` and the `test_hook.` action prefix), `at >= since`, newest first, at most `TEST_AUDIT_LIMIT` (200). Read-only; the call is audited `test_hook.audit` after the read, so it appears in the next read. `GET R.audit` is unchanged and still lists no `test_hook` row |
 | `HealthzSchema` | `/healthz` `{ ok, plan, version, testHooks?, installId? }`: `installId` only when the hosted install has a non-empty trimmed `INSTALL_ID` (opaque, non-secret, last key; self-host omits it). It proves routing, not authenticity: never use it as an authorization signal. `testHooks`: true only on staging installs. Prod is built separately (the staging bundle is never promoted) and the release asserts `testHooks: false` |
 | `TEST_HOOKS_ALLOWED` | **build-time guard**: false unless the bundler defines `__OA_TEST_HOOKS_ALLOWED__` as true (test and staging wrangler `define` only). The release template defines it as `false` explicitly, so hooks need this AND `TEST_HOOKS=1` with a 32+ char key. The release check is behavioural: the release bundle with `TEST_HOOKS=1` plus a key answers 404 on every hook path |
+
+## Presence (both tiers) (`viewer-presence.ts`)
+
+Who has an artifact open, shown in the viewer header. It rides the `R.events` socket; no new route.
+
+- **Frame** `PresenceFrame` = `{ type: "presence", viewers: PresenceEntry[] (max 100, most recent arrival first), total }`. Sent on join and whenever the roster changes (coalesced, `PRESENCE_COALESCE_MS`). `hello.you` is the receiving socket's own key.
+- **Entry** `PresenceEntry` = `{ key, kind: "person" | "anon" | "agent", name (max 80), named, color 0-8, animal?, agent? }`. `key` is opaque and per artifact (16 chars of an HMAC), so it can't link a viewer across artifacts. `named: false` means `name` is a placeholder ("Member", "Guest", "Anonymous Duck", "Agent"). `color` indexes the 9-color palette (`PRESENCE_PALETTE_SIZE`); `animal` is an `ANIMALS` id (anonymous viewers). `agent` = `{ owner, product?, label?, state: "viewing" | "editing", activity? }`.
+- **Trust.** Names come from the server (user display name, never the email); an anonymous viewer can never claim a name. `agent.activity` is the agent's own text (max 80, shown as "In the agent's own words"). `agent.label` (a token's label) goes only to the token's owner. No email, user id, token id, IP or anonId appears in any entry or frame.
+- **Cookie** `oa_pid` (`PRESENCE_COOKIE`): a session cookie on the app origin holding the anonymous presence id (`PRESENCE_ID_RE`); the server treats it as opaque and ignores a malformed one.
+- **Ping/pong.** A client that connects with `?ping=1` on `R.events` sends the text `"ping"` (`PRESENCE_PING`) every `PRESENCE_PING_MS` (30 s); the server answers `"pong"` (`PRESENCE_PONG`) without waking. `"ping"` is the only client message allowed; anything else closes the socket with 1008. Only `?ping=1` sockets are swept: no pong for `PRESENCE_STALE_MS` (60 s) closes them (swept every `PRESENCE_SWEEP_MS`, 30 s). Older clients that never ping are not swept.
+- **Timings.** Clean close leaves after `PRESENCE_GRACE_MS` (5 s, so a reload doesn't flicker); an agent stays for `AGENT_PRESENT_MS` (120 s) after its last call.
+- **Agents** have no socket. Their key is per MCP session where one exists: the server issues `Mcp-Session-Id` only to 2025-03-26 through 2025-11-25 clients at `initialize` and never mints or echoes it for 2026-07-28 requests; otherwise the key is per connection.
+- **Embeds** (`?embed=1`, `x-oa-embed`) are not counted and get no presence frames.
 
 ## Mocks (`@oa/shared/mocks`)
 

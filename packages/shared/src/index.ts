@@ -15,3 +15,4 @@ export * from "./schemas.js";
 export * from "./secrets.js";
 export * from "./sniff.js";
 export * from "./tunables.js";
+export * from "./viewer-presence.js";

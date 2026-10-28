@@ -80,6 +80,34 @@ describe("R.events mock", () => {
     expect(await s.closed).toBe(EVENTS_GONE_CLOSE);
   });
 
+  it("emitPresence sends one presence frame to each open socket", async () => {
+    const events = createArtifactEvents();
+    server.use(...events.handlers);
+    const a = open(R.events("p1"));
+    const b = open(R.events("p1"));
+    await Promise.all([a.count(1), b.count(1)]);
+    const viewers = [
+      {
+        key: "aaaaaaaaaaaaaaaa",
+        kind: "person" as const,
+        name: "Ada",
+        named: true,
+        color: 1,
+      },
+    ];
+    expect(events.emitPresence("p1", viewers, "aaaaaaaaaaaaaaaa")).toBe(2);
+    await Promise.all([a.count(2), b.count(2)]);
+    for (const s of [a, b])
+      expect(s.frames[1]).toEqual({ type: "presence", viewers, total: 1 });
+    const c = open(R.events("p1"));
+    await c.count(1);
+    expect(c.frames[0]).toEqual({
+      type: "hello",
+      version: 1,
+      you: "aaaaaaaaaaaaaaaa",
+    });
+  });
+
   it("wired through createHandlers: publish, restore and delete emit", async () => {
     const events = createArtifactEvents();
     server.use(...createHandlers({ events }), ...events.handlers);
