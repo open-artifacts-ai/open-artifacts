@@ -1,6 +1,7 @@
 import { Button } from "@oa/ui/shadcn";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { filesFromDrop, filterIgnored } from "./collect";
+import { KINDS_LINE } from "./openable";
 import { UploadDialog } from "./UploadDialog";
 import "./upload.css";
 import { toast } from "../layout/toast";
@@ -161,6 +162,7 @@ export function DropZone({
               One file makes one artifact; several files dropped together make
               one multi-file artifact.
             </p>
+            <p className="up-kinds">{KINDS_LINE}</p>
             <div className="up-foot">
               Up to 25 MB per file and 100 MB per drop · Visibility starts as
               Private
