@@ -1,4 +1,10 @@
-import { Button } from "@oa/ui/shadcn";
+import {
+  Button,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@oa/ui/shadcn";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { filesFromDrop, filterIgnored } from "./collect";
 import { KINDS_LINE } from "./openable";
@@ -126,9 +132,21 @@ export function DropZone({
     <>
       {button && (
         <span className="up-buttons">
-          <Button variant="outline" onClick={() => filePicker.current?.click()}>
-            Upload files
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="outline"
+                  onClick={() => filePicker.current?.click()}
+                >
+                  Upload files
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" collisionPadding={8}>
+                {KINDS_LINE}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <Button variant="ghost" onClick={() => folderPicker.current?.click()}>
             Upload folder
           </Button>
