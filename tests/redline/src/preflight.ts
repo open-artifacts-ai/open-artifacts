@@ -83,7 +83,7 @@ export function fileGap(path: string | undefined, what: string): string | null {
 const TENANT = { a: "A", b: "C" } as const;
 
 const CREDS_CMD = (installId: string) =>
-  `pnpm oa:hosted redline-creds --install ${installId} --confirm ${installId}`;
+  `pnpm oa:hosted redline-creds --env staging --install ${installId} --confirm ${installId}`;
 
 interface RawTarget {
   name?: unknown;

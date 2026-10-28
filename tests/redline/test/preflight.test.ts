@@ -46,7 +46,7 @@ describe("preflight file checks (existence and mode only)", () => {
     expect(by["rl-b PAT file"]).toMatchObject({
       status: "gap",
       detail: expect.stringMatching(
-        /must be mode 0600.*pnpm oa:hosted redline-creds --install ib --confirm ib/,
+        /must be mode 0600.*pnpm oa:hosted redline-creds --env staging --install ib --confirm ib/,
       ),
     });
     expect(by["rl-a Turnstile token"]?.status).toBe("ok");

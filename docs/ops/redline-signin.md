@@ -21,7 +21,7 @@ a green preflight leave only the Google sign-ins to you.
 
 - A Mac with this repo, `REDLINE_TARGETS` for `rl-a`/`rl-b` (the kit's
   `targets.json`, with `strayHost`) and its 0600 secret files. The admin PAT
-  copies come from `pnpm oa:hosted redline-creds --install <id> --confirm <id>`
+  copies come from `pnpm oa:hosted redline-creds --env staging --install <id> --confirm <id>`
   (one run per install; it writes `~/.open-artifacts/redline-capture/secrets/`).
 - The passwords of `alice@oa-redline-a.fyi` and `dave@oa-redline-c.fyi`
   (password manager).
