@@ -67,14 +67,46 @@ export const SpacesQuerySchema = z.strictObject({
 });
 export type SpacesQuery = z.infer<typeof SpacesQuerySchema>;
 
+/** 400 space_name_reserved message: a shared space can't be named "Personal". */
+export const SPACE_NAME_RESERVED_MESSAGE =
+  "That name is reserved for your personal space.";
+
+/** "Personal", trimmed and case-insensitive: refused on create and rename. */
+export const isReservedSpaceName = (name: string): boolean =>
+  name.trim().toLowerCase() === "personal";
+
 /**
  * A space name: control and bidi characters stripped, then trimmed, 1-80
- * characters (a name of only such characters is 400).
+ * characters (a name of only such characters is 400), and not "Personal"
+ * (trimmed, any case; SPACE_NAME_RESERVED_MESSAGE).
  */
 export const SpaceNameSchema = z
   .string()
   .transform(stripNameControls)
-  .pipe(z.string().trim().min(1).max(80));
+  .pipe(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(80)
+      .refine((n) => !isReservedSpaceName(n), {
+        message: SPACE_NAME_RESERVED_MESSAGE,
+      }),
+  );
+
+/**
+ * A SpaceCreate/SpacePatch parse failed on the reserved name: answer 400
+ * space_name_reserved (details { field: "name" }), not bad_request.
+ */
+export const spaceNameReserved = (issues: readonly unknown[]): boolean =>
+  issues.some((i) => {
+    const x = i as { message?: unknown; path?: unknown };
+    return (
+      x.message === SPACE_NAME_RESERVED_MESSAGE &&
+      Array.isArray(x.path) &&
+      x.path[0] === "name"
+    );
+  });
 
 /** POST R.spaces (org owner, admin) -> 201 Space. */
 export const SpaceCreateSchema = z.strictObject({
