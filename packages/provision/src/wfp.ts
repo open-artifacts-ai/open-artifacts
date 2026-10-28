@@ -769,6 +769,8 @@ export class WfpProvisioner {
       throw new ProvisionRefused(
         `RELEASE_PUBKEY.${env} is still the placeholder; T3b must set the release signing key before any create`,
       );
+    // A malformed CI label is refused before any call, not at the mint.
+    this.ciLabel();
     const d = HOSTED_DOMAINS[env];
     if (o.domains?.app !== d.app || o.domains?.content !== d.content)
       throw new ProvisionRefused(
