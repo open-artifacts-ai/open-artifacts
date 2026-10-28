@@ -325,16 +325,15 @@ export const localOAuthStoreVars = (
 ): Record<string, string> => (store === "kv" ? {} : { OAUTH_STORE: store });
 
 /**
- * SQL run on a fresh install's local D1 before it boots, or null. d1 serves
- * only once a KV -> D1 copy is recorded (oauth_store_backfilled); a fresh
- * install's KV is empty, so that copy is trivially complete.
+ * The installs' KV bindings: d1 drops OAUTH_KV, as a fresh install
+ * provisioned straight into d1 (with OAUTH_KV bound and no copy recorded,
+ * d1 is refused); kv and dual keep every binding.
  */
-export const localOAuthStoreSeedSql = (
+export const localKvNamespaces = <T extends { binding: string }>(
+  kv: readonly T[],
   store: LocalOAuthStore = "kv",
-): string | null =>
-  store === "d1"
-    ? "insert into settings (key, value) values ('oauth_store_backfilled', '0') on conflict(key) do nothing"
-    : null;
+): T[] =>
+  store === "d1" ? kv.filter((k) => k.binding !== "OAUTH_KV") : [...kv];
 
 function wranglerConfig(
   i: { name: string; testDomain: string; installId: string },
@@ -352,6 +351,7 @@ function wranglerConfig(
   base.d1_databases[0].database_name = `oa-redline-${i.name}`;
   return {
     ...base,
+    kv_namespaces: localKvNamespaces(base.kv_namespaces ?? [], oauthStore),
     name: `oa-redline-local-${i.name}`,
     main: join(SERVER, "src", "index.ts"),
     define: {
@@ -726,27 +726,6 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
         track,
         exited,
       );
-      const seed = localOAuthStoreSeedSql(o.oauthStore);
-      if (seed)
-        await runWrangler(
-          [
-            "d1",
-            "execute",
-            cfg.d1_databases[0].database_name,
-            "--local",
-            "--config",
-            config,
-            "--persist-to",
-            persistTo,
-            "--command",
-            seed,
-          ],
-          env,
-          log,
-          120_000,
-          track,
-          exited,
-        );
       const { pid, gone: g } = await dev(
         spec.name,
         config,

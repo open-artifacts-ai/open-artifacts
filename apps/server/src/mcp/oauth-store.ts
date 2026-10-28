@@ -31,8 +31,11 @@ import { logError, logWarn } from "../log.js";
 // one statement, so the provider's list-then-get-each and delete-each stay
 // under D1's 50 queries per invocation on Workers Free.
 //
-// Forward: kv -> dual -> the copy (copyKvToD1) -> d1. d1 is refused (503
-// oauth_store_misconfigured) until a copy completed since the last kv run.
+// Forward: kv -> dual -> the copy (copyKvToD1) -> d1. With OAUTH_KV bound,
+// d1 is refused (503 oauth_store_misconfigured) until a copy completed since
+// the last kv run or the install already served in d1. With no binding
+// (a fresh install provisioned straight into d1) there is nothing to copy,
+// so d1 serves.
 //
 // Rollback: dual -> kv loses nothing (KV took every write). KV stays
 // authoritative in kv mode, and D1 never contradicts it: every kv put drops
@@ -48,6 +51,15 @@ import { logError, logWarn } from "../log.js";
 
 export type OAuthStoreMode = "kv" | "dual" | "d1";
 const MODES: readonly OAuthStoreMode[] = ["kv", "dual", "d1"];
+
+/**
+ * A dual list past DUAL_LIST_KV_PAGES KV pages. Not the KV 429 the library
+ * retries: a retry walks the same pages and fails the same, so it surfaces
+ * as a server error (mapStoreError passes it through).
+ */
+export class DualListTooLongError extends Error {
+  override name = "DualListTooLongError";
+}
 
 /**
  * A broken OAUTH_STORE setting, a missing binding, or leaving d1 without
@@ -646,7 +658,7 @@ export class D1KvStore extends StoreBase {
  * or deleted) hides KV's copy. KV lists can't start after a key, so a dual
  * list walks KV's pages from the start of the prefix to its cursor (a
  * user's grants and tokens: one page), DUAL_LIST_KV_PAGES at most (past it,
- * the KV 429 the library retries, never an unbounded walk). Writes check
+ * DualListTooLongError, never an unbounded walk or a retryable 429). Writes check
  * the markers first (checkMarkers: leaving d1 is refused).
  */
 export class DualKvStore extends StoreBase {
@@ -707,8 +719,8 @@ export class DualKvStore extends StoreBase {
 
   /**
    * Up to `n` KV keys under `prefix` after `after`, in key order, within
-   * DUAL_LIST_KV_PAGES KV lists; past them, the KV 429 (mapStoreError's
-   * shape) the library answers as temporarily_unavailable.
+   * DUAL_LIST_KV_PAGES KV lists; past them, DualListTooLongError (a retry
+   * fails the same, so never the KV 429 the library retries).
    */
   private async kvAfter(
     prefix: string,
@@ -719,8 +731,8 @@ export class DualKvStore extends StoreBase {
     let cursor: string | undefined;
     for (let page = 0; ; page++) {
       if (page >= DUAL_LIST_KV_PAGES)
-        throw new Error(
-          `oauth_kv dual list: 429 Too Many Requests (KV walk past ${DUAL_LIST_KV_PAGES} pages)`,
+        throw new DualListTooLongError(
+          `oauth_kv dual list: the KV walk passed ${DUAL_LIST_KV_PAGES} pages`,
         );
       const r = await this.kv.list({
         prefix,
@@ -833,8 +845,11 @@ const rollbackOn = (env: Pick<Env, "OAUTH_STORE_ROLLBACK">) =>
  *   oauth_store_misconfigured) unless OAUTH_STORE_ROLLBACK=1, which clears
  *   the stamp. The stamp is read before any write, so no write of this
  *   mode clears it first.
- * - d1 without BACKFILLED: OAuthStoreConfigError (503), so kv -> d1 can't
- *   skip dual and the copy (a fresh install too: dual, then one copy call);
+ * - d1 with OAUTH_KV bound, without BACKFILLED and before any d1 serve
+ *   (KV_WRITES_OFF unset): OAuthStoreConfigError (503), so kv -> d1 can't
+ *   skip dual and the copy. With no binding there is nothing to copy (a
+ *   fresh install provisioned straight into d1): d1 serves, and BACKFILLED
+ *   stays unset. Once KV_WRITES_OFF is set, binding KV later still serves;
  * - d1 stamps KV_WRITES_OFF unless set (STAMP: only ever earlier);
  * - kv clears BACKFILLED and retires the copy's generation (COPY_GEN_KEY):
  *   D1 misses KV's new keys from here, so going forward again needs a
@@ -852,7 +867,7 @@ async function syncMarkers(
     throw new OAuthStoreConfigError(
       `OAUTH_STORE=${mode} is refused: this install has served in d1 mode since ${new Date(m.off).toISOString()}, so KV is stale. Set OAUTH_STORE back to d1, or roll back with OAUTH_STORE_ROLLBACK=1 after emptying the OAuth keys from KV (every agent reconnects).`,
     );
-  if (mode === "d1" && !m.backfilled)
+  if (mode === "d1" && env.OAUTH_KV && !m.backfilled && m.off === null)
     throw new OAuthStoreConfigError(
       "OAUTH_STORE=d1 is refused: no complete KV -> D1 copy is recorded. Serve with OAUTH_STORE=dual, run the copy to completion, then switch to d1.",
     );

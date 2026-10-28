@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   exitReason,
   localFeatures,
+  localKvNamespaces,
   localModeOf,
   localOAuthStoreOf,
-  localOAuthStoreSeedSql,
   localOAuthStoreVars,
   reservePort,
   waitBroker,
@@ -200,12 +200,16 @@ describe("local pair OAuth store", () => {
     expect(localOAuthStoreVars("d1")).toEqual({ OAUTH_STORE: "d1" });
     expect(localOAuthStoreVars("dual")).toEqual({ OAUTH_STORE: "dual" });
   });
-  it("d1 seeds the completed-copy marker (d1 is refused without it); kv and dual seed nothing", () => {
-    expect(localOAuthStoreSeedSql()).toBeNull();
-    expect(localOAuthStoreSeedSql("kv")).toBeNull();
-    expect(localOAuthStoreSeedSql("dual")).toBeNull();
-    expect(localOAuthStoreSeedSql("d1")).toMatch(
-      /^insert into settings \(key, value\) values \('oauth_store_backfilled', /,
-    );
+  it("d1 unbinds OAUTH_KV (a fresh d1 install); kv and dual keep it", () => {
+    const kv = [
+      { binding: "OAUTH_KV", id: "oa-kv-test" },
+      { binding: "OTHER", id: "x" },
+    ];
+    expect(localKvNamespaces(kv)).toEqual(kv);
+    expect(localKvNamespaces(kv, "kv")).toEqual(kv);
+    expect(localKvNamespaces(kv, "dual")).toEqual(kv);
+    expect(localKvNamespaces(kv, "d1")).toEqual([
+      { binding: "OTHER", id: "x" },
+    ]);
   });
 });

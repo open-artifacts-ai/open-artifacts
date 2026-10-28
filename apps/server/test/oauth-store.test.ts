@@ -11,6 +11,7 @@ import {
   D1KvStore,
   DUAL_LIST_KV_PAGES,
   DualKvStore,
+  DualListTooLongError,
   KV_WRITES_OFF_KEY,
   keyCompare,
   mapStoreError,
@@ -582,7 +583,7 @@ describe("#769 and revocation", () => {
     expect((await rowOf(key))?.expires_at).toBeLessThan(0);
   });
 
-  it("dual list: the KV walk stops at DUAL_LIST_KV_PAGES with the KV 429 the library retries", async () => {
+  it("dual list: the KV walk stops at DUAL_LIST_KV_PAGES with a non-retryable error, never the KV 429", async () => {
     // A full listing of P pages walks P(P+1)/2 KV lists: within half of
     // KV's 1,000 operations per invocation.
     expect(DUAL_LIST_KV_PAGES).toBe(31);
@@ -615,7 +616,9 @@ describe("#769 and revocation", () => {
     });
     expect(r.keys.length).toBe(DUAL_LIST_KV_PAGES);
     expect(ok.o.lists).toBe(DUAL_LIST_KV_PAGES);
-    // Past it: the KV 429, after DUAL_LIST_KV_PAGES lists.
+    // Past it: DualListTooLongError after DUAL_LIST_KV_PAGES lists. A retry
+    // walks the same pages, so never the 429 the provider retries, and
+    // mapStoreError passes it through unchanged.
     const endless = kvOf(Number.POSITIVE_INFINITY);
     const err = await new DualKvStore(new D1KvStore(env.DB), endless.kv)
       .list({ prefix: p })
@@ -623,7 +626,9 @@ describe("#769 and revocation", () => {
         () => null,
         (e: unknown) => e,
       );
-    expect(String(err)).toMatch(/429 Too Many Requests/);
+    expect(err).toBeInstanceOf(DualListTooLongError);
+    expect(String(err)).not.toMatch(/429|Too Many Requests/i);
+    expect(mapStoreError(err)).toBe(err);
     expect(endless.o.lists).toBe(DUAL_LIST_KV_PAGES);
   });
 
@@ -1072,11 +1077,37 @@ describe("leaving d1 is refused", () => {
   });
 });
 
-describe("d1 needs a completed copy", () => {
-  it("d1 without backfilled: 503 oauth_store_misconfigured, nothing stamped; once recorded, it serves", async () => {
-    await env.DB.prepare("delete from settings where key = ?")
+describe("d1 needs a completed copy only while OAUTH_KV is bound", () => {
+  const unmarkBackfilled = () =>
+    env.DB.prepare("delete from settings where key = ?")
       .bind(BACKFILLED_KEY)
       .run();
+
+  it("a fresh database in d1 with no OAUTH_KV serves an OAuth flow, stamps the switch, and records no copy", async () => {
+    await unmarkBackfilled();
+    const e = noKv();
+    const a = await connectAgent(e);
+    expect((await mcp(e, a.access_token)).status).toBe(200);
+    expect((await refresh(e, a.clientId, a.refresh_token)).status).toBe(200);
+    expect(await offSince()).not.toBeNull();
+    expect(await isBackfilled()).toBe(false);
+  });
+
+  it("binding OAUTH_KV later on an install that already served d1 (stamp set) still serves", async () => {
+    await unmarkBackfilled();
+    expect((await robots(noKv())).status).toBe(200);
+    expect(await offSince()).not.toBeNull();
+    // A new isolate, now with OAUTH_KV bound: the stamp lets it serve.
+    resetOAuthStoreMarkers();
+    const e = inMode("d1");
+    expect((await robots(e)).status).toBe(200);
+    const a = await connectAgent(e);
+    expect((await mcp(e, a.access_token)).status).toBe(200);
+    expect(await isBackfilled()).toBe(false);
+  });
+
+  it("d1 with OAUTH_KV bound, without backfilled: 503 oauth_store_misconfigured, nothing stamped; once recorded, it serves", async () => {
+    await unmarkBackfilled();
     const r = await robots(inMode("d1"));
     expect(r.status).toBe(503);
     const body = (await r.json()) as { error: string; message: string };
