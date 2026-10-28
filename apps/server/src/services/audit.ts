@@ -122,6 +122,8 @@ export const userActor = (id: string): AuditActor => ({ kind: "user", id });
  * tenant domain. Never the address. It records the admission (the user row
  * touched on sign-in) and commits with it; the session cookie is issued after
  * the batch, so a sign-in that never reaches the browser can still have a row.
+ * Its credential is null (#803): /auth/* reads any session cookie sent along,
+ * which may be another user's, and the new session doesn't exist yet.
  */
 export const signInAudit = (
   env: Env,
@@ -130,31 +132,31 @@ export const signInAudit = (
   tenant?: string | null,
   when?: AuditExtra["when"],
 ): D1PreparedStatement =>
-  audit(env, "auth.signin", { type: "user", id: userId }, userActor(userId), {
-    detail: { provider, ...(tenant ? { tenant } : {}) },
-    ...(when ? { when } : {}),
-  });
+  audit(
+    env,
+    "auth.signin",
+    { type: "user", id: userId },
+    { ...userActor(userId), cred: null },
+    {
+      detail: { provider, ...(tenant ? { tenant } : {}) },
+      ...(when ? { when } : {}),
+    },
+  );
 
 /**
  * signInAudit keyed by the (normalized) email, for an admission that writes
  * the user row in the same batch and so has no id yet (Access's
  * upsertOnLogin): the subselect reads the row the batch just wrote. A drizzle
  * insert (drizzle's raw `run` can't join a D1 batch with parameters), in the
- * table's column order.
+ * table's column order. Credential null, as in signInAudit.
  */
-export const signInAuditByEmail = (
-  env: Env,
-  email: string,
-  provider: string,
-) => {
-  const cred = currentCred();
-  return getDb(env)
+export const signInAuditByEmail = (env: Env, email: string, provider: string) =>
+  getDb(env)
     .insert(auditEvents)
     .select(
-      sql`select ${newId()}, ${Date.now()}, 'user', u.id, 'auth.signin', 'user', u.id, null, ${JSON.stringify({ provider })}, ${cred?.kind ?? null}, ${cred?.id ?? null}
+      sql`select ${newId()}, ${Date.now()}, 'user', u.id, 'auth.signin', 'user', u.id, null, ${JSON.stringify({ provider })}, null, null
         from users u where u.email = ${email}`,
     );
-};
 
 // ------------------------------------------------------------------- read
 

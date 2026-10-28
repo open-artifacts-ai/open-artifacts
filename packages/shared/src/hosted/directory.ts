@@ -206,7 +206,9 @@ export type AuditAction = z.infer<typeof AuditActionSchema>;
 /**
  * The credential behind an audited action (#803): a browser session, a
  * personal access token, an MCP OAuth grant, or the system (sync, cron).
- * `test_hook` is reserved for the test hooks' own rows.
+ * `test_hook` is reserved: nothing writes it today (the test hooks' own rows
+ * leave the credential null, and the audit API never returns them), so a
+ * client sees only the other four.
  */
 export const AuditCredKindSchema = z.enum([
   "session",

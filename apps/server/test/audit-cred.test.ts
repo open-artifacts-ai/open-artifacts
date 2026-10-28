@@ -18,6 +18,8 @@ import { type AppType, mountRoutes } from "../src/routes/index.js";
 import {
   audit,
   listAudit,
+  signInAudit,
+  signInAuditByEmail,
   userActor,
   withRequestCred,
 } from "../src/services/audit.js";
@@ -264,7 +266,9 @@ describe("the store never bleeds between requests", () => {
     });
     const pat = { kind: "pat" as const, id: bobPat.id };
     // A bare user actor, called from inside a request holding a PAT: the DO
-    // sees no credential and records none.
+    // sees no credential and records none. The RPC boundary already drops
+    // the caller's store (this passes without withoutCred too); DirectorySync's
+    // withoutCred is defence in depth.
     await withCred(pat, () =>
       stub.confirmHeld(g1, userActor(bob.userId)),
     ).catch(() => undefined);
@@ -278,6 +282,19 @@ describe("the store never bleeds between requests", () => {
     expect(
       await credOfRows(g2, "action = 'directory.sweep.confirmed'"),
     ).toEqual([pat]);
+  });
+
+  it("sign-in rows record no credential, even inside a request holding one", async () => {
+    const email = uniq("signin");
+    const u = await login(email);
+    await withCred({ kind: "session", id: "access:1" }, async () => {
+      await signInAudit(env, u.userId, "code").run();
+      await signInAuditByEmail(env, email, "access");
+    });
+    expect(await credOfRows(u.userId, "action = 'auth.signin'")).toEqual([
+      { kind: null, id: null },
+      { kind: null, id: null },
+    ]);
   });
 
   it("cron, sync and alarm writes have no request credential", async () => {
