@@ -1,14 +1,17 @@
 import { env } from "cloudflare:workers";
 import { newId, R } from "@oa/shared";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { scheduled } from "../src/cron.js";
 import { revokeAllGrants } from "../src/mcp/oauth-api.js";
 import {
   BACKFILLED_KEY,
+  COPY_PAGE,
   copyKvToD1,
   D1KvStore,
   KV_WRITES_OFF_KEY,
   keyCompare,
   mapStoreError,
+  OAUTH_SWEEP_QUERIES,
   type OAuthStoreMode,
   oauthEnv,
   resetOAuthStoreMarkers,
@@ -268,7 +271,32 @@ const grantKeyFor = async (userId: string) => {
   return r?.key ?? "";
 };
 
-beforeEach(() => resetOAuthStoreMarkers());
+/** KV_WRITES_OFF's stamp (epoch ms text), or null. */
+const offSince = async () =>
+  (
+    await env.DB.prepare("select value from settings where key = ?")
+      .bind(KV_WRITES_OFF_KEY)
+      .first<{ value: string }>()
+  )?.value ?? null;
+
+// Each test starts as if this install never served in d1 mode (leaving d1
+// is refused otherwise), with no isolate's markers checked.
+beforeEach(async () => {
+  resetOAuthStoreMarkers();
+  await env.DB.prepare("delete from settings where key = ?")
+    .bind(KV_WRITES_OFF_KEY)
+    .run();
+});
+
+/** Any app-host request: a serve, which checks and writes the markers. */
+const robots = (e: unknown) => callWorker(new Request(`${APP}/robots.txt`), e);
+
+/** Every D1 query of one nightly cron run here (d1 mode, OAuth backlog). */
+const NIGHTLY_QUERIES = 18;
+
+/** Another isolate: its own marker check (keyed by the DB binding). */
+const isolate = (mode: OAuthStoreMode, over: Record<string, unknown> = {}) =>
+  inMode(mode, { DB: countingDb(env.DB).db, ...over });
 
 // ------------------------------------------------------------ contract
 
@@ -439,6 +467,71 @@ describe("#769 and revocation", () => {
     expect((await refresh(kv, a.clientId, t.refresh_token)).status).toBe(200);
   });
 
+  it("dual -> kv (revoke in kv) -> dual: the revoked grant stays dead", async () => {
+    const dual = inMode("dual");
+    const a = await connectAgent(dual);
+    expect(await grantKeyFor(a.member.userId)).not.toBe("");
+    const kv = inMode("kv");
+    const [g] = await grants(kv, a.member.cookie);
+    expect(
+      (
+        await appCall(
+          kv,
+          R.oauthClient(g?.grantId ?? ""),
+          a.member.cookie,
+          "DELETE",
+        )
+      ).status,
+    ).toBe(204);
+    expect((await mcp(kv, a.access_token)).status).toBe(401);
+    // Back to dual: D1 still held the grant's rows from the first dual run.
+    expect((await mcp(dual, a.access_token)).status).toBe(401);
+    const rr = await refresh(dual, a.clientId, a.refresh_token);
+    expect(rr.status).toBe(400);
+    expect(await grants(dual, a.member.cookie)).toEqual([]);
+  });
+
+  it("kv and dual isolates overlapping: a revoke in either kills the grant in both", async () => {
+    // kv isolate revokes a grant a dual isolate wrote (its markers already
+    // checked by an earlier write, as a long-lived isolate's would be).
+    const kvIso = isolate("kv");
+    await connectAgent(kvIso);
+    const dualIso = isolate("dual");
+    const a = await connectAgent(dualIso);
+    expect(await grantKeyFor(a.member.userId)).not.toBe("");
+    await revokeAllGrants(kvIso as never, a.member.userId);
+    expect((await mcp(kvIso, a.access_token)).status).toBe(401);
+    expect((await mcp(dualIso, a.access_token)).status).toBe(401);
+    expect((await refresh(dualIso, a.clientId, a.refresh_token)).status).toBe(
+      400,
+    );
+    expect(await grants(dualIso, a.member.cookie)).toEqual([]);
+    // dual isolate revokes a grant a kv isolate wrote.
+    const b = await connectAgent(kvIso);
+    expect(await grantKeyFor(b.member.userId)).toBe("");
+    await revokeAllGrants(dualIso as never, b.member.userId);
+    expect((await mcp(dualIso, b.access_token)).status).toBe(401);
+    expect((await mcp(kvIso, b.access_token)).status).toBe(401);
+    expect((await refresh(kvIso, b.clientId, b.refresh_token)).status).toBe(
+      400,
+    );
+  });
+
+  it("kv and dual isolates overlapping: a kv refresh never leaves dual a stale grant", async () => {
+    const kvIso = isolate("kv");
+    await connectAgent(kvIso);
+    const dualIso = isolate("dual");
+    const a = await connectAgent(dualIso);
+    // kv rotates the grant (KV only): D1's pre-refresh row goes.
+    const r = await refresh(kvIso, a.clientId, a.refresh_token);
+    expect(r.status).toBe(200);
+    const t = (await r.json()) as Tokens;
+    expect((await mcp(dualIso, t.access_token)).status).toBe(200);
+    expect((await refresh(dualIso, a.clientId, t.refresh_token)).status).toBe(
+      200,
+    );
+  });
+
   it("an expired grant or token is refused before the sweep runs; the sweep then deletes it", async () => {
     const e = inMode("d1");
     const a = await connectAgent(e);
@@ -475,10 +568,57 @@ describe("#769 and revocation", () => {
     )
       .bind(key, -(now - 3600))
       .run();
-    await sweepOAuthStore(env, Date.now());
+    const later = Date.now() + TOMBSTONE_DAYS * 86_400_000;
+    await sweepOAuthStore(inMode("d1"), Date.now());
     expect(await rowOf(key)).not.toBeNull();
-    await sweepOAuthStore(env, Date.now() + TOMBSTONE_DAYS * 86_400_000);
+    // kv and dual: a tombstone keeps KV's copy dead, so it stays.
+    for (const mode of ["kv", "dual"] as const) {
+      await sweepOAuthStore(inMode(mode), later);
+      expect(await rowOf(key)).not.toBeNull();
+    }
+    await sweepOAuthStore(inMode("d1"), later);
     expect(await rowOf(key)).toBeNull();
+  });
+
+  it("the nightly cron: the sweep stays in its slot, and the whole run's D1 queries are counted", async () => {
+    // A backlog past one night's slot: expired rows only.
+    const n = OAUTH_SWEEP_QUERIES * 1000 + 1;
+    await env.DB.prepare(
+      "insert into oauth_kv (key, value, expires_at) with recursive i(x) as (select 1 union all select x + 1 from i where x < ?) select ? || x, '', ? from i",
+    )
+      .bind(n, `token:nightly-${tag}:`, nowS() - 10)
+      .run();
+    const c = countingDb(env.DB);
+    const waits: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (p: Promise<unknown>) => waits.push(p),
+      passThroughOnException() {},
+    } as unknown as ExecutionContext;
+    const f = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response("", { status: 429 }));
+    try {
+      await scheduled(
+        {} as ScheduledController,
+        inMode("d1", { DB: c.db }),
+        ctx,
+      );
+      const settled = (await waits[0]) as PromiseSettledResult<unknown>[];
+      expect(settled.every((s) => s.status === "fulfilled")).toBe(true);
+    } finally {
+      f.mockRestore();
+    }
+    expect(c.oauthKv().length).toBe(OAUTH_SWEEP_QUERIES);
+    // Every nightly task's queries together, within D1's 50 per invocation.
+    expect(c.sqls.length).toBeLessThanOrEqual(50);
+    expect(c.sqls.length).toBe(NIGHTLY_QUERIES);
+    const left = await env.DB.prepare(
+      "select count(*) n from oauth_kv where key like ?",
+    )
+      .bind(`token:nightly-${tag}:%`)
+      .first<{ n: number }>();
+    expect(left?.n).toBe(1);
+    await sweepOAuthStore(env, Date.now());
   });
 });
 
@@ -609,39 +749,80 @@ describe("/healthz oauthStore", () => {
     return ((await r.json()) as { oauthStore: Record<string, unknown> })
       .oauthStore;
   };
-  const offSince = async () =>
-    (
-      await env.DB.prepare("select value from settings where key = ?")
-        .bind(KV_WRITES_OFF_KEY)
-        .first<{ value: string }>()
-    )?.value ?? null;
-
-  it("kvWritesOffSince: stamped on the first d1 serve, unchanged by later serves, cleared by a rollback to dual", async () => {
+  it("kvWritesOffSince: stamped on the first d1 serve (never by /healthz), unchanged by later serves", async () => {
     expect(await health(inMode("dual"))).toEqual({
       mode: "dual",
       backfilled: expect.any(Boolean),
       kvWritesOffSince: null,
     });
+    // /healthz in d1 mode reads only: one query, nothing stamped.
+    const c = countingDb(env.DB);
+    expect((await health(inMode("d1", { DB: c.db }))).kvWritesOffSince).toBe(
+      null,
+    );
+    expect(c.sqls).toEqual([
+      "select key, value from settings where key in (?, ?)",
+    ]);
     expect(await offSince()).toBeNull();
-    resetOAuthStoreMarkers();
     // The first d1 serve (any app-host request) stamps it.
     const before = Date.now();
-    await callWorker(new Request(`${APP}/robots.txt`), inMode("d1"));
+    await robots(inMode("d1"));
     const t1 = Number(await offSince());
     expect(t1).toBeGreaterThanOrEqual(before);
     // Later serves (another isolate too) leave it.
     while (Date.now() <= t1) await Promise.resolve();
     resetOAuthStoreMarkers();
-    await callWorker(new Request(`${APP}/robots.txt`), inMode("d1"));
+    await robots(inMode("d1"));
     expect((await health(inMode("d1"))).kvWritesOffSince).toBe(t1);
     expect(Number(await offSince())).toBe(t1);
-    // Rollback to dual clears it; the next d1 serve stamps it fresh.
+  });
+
+  it("kvWritesOffSince only ever moves earlier (two d1 isolates racing to stamp)", async () => {
+    await robots(inMode("d1"));
+    const t1 = Number(await offSince());
+    while (Date.now() <= t1) await Promise.resolve();
+    // An isolate whose marker read missed the first stamp writes a later one.
+    const blind = new Proxy(env.DB, {
+      get(t, p) {
+        if (p === "prepare")
+          return (sql: string) =>
+            /^select key, value from settings/.test(sql)
+              ? t.prepare(`${sql} and 0`)
+              : t.prepare(sql);
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    await robots(inMode("d1", { DB: blind }));
+    expect(Number(await offSince())).toBe(t1);
+    // An earlier one wins.
+    await env.DB.prepare("update settings set value = ? where key = ?")
+      .bind(String(t1 + 5000), KV_WRITES_OFF_KEY)
+      .run();
     resetOAuthStoreMarkers();
-    await callWorker(new Request(`${APP}/robots.txt`), inMode("dual"));
-    expect(await offSince()).toBeNull();
-    expect((await health(inMode("dual"))).kvWritesOffSince).toBeNull();
-    const t2 = (await health(inMode("d1"))).kvWritesOffSince as number;
-    expect(t2).toBeGreaterThan(t1);
+    await robots(inMode("d1", { DB: blind }));
+    expect(Number(await offSince())).toBeLessThan(t1 + 5000);
+  });
+
+  it("/healthz with D1 down: oauthStore null, never a 500", async () => {
+    const down = new Proxy(env.DB, {
+      get(t, p) {
+        if (p === "prepare" || p === "batch")
+          return () => {
+            throw new Error("D1_ERROR: Network connection lost.");
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const r = await callWorker(
+      new Request(`${APP}/healthz`),
+      inMode("d1", { DB: down }),
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { ok: boolean; oauthStore: unknown };
+    expect(body.ok).toBe(true);
+    expect(body.oauthStore).toBeNull();
   });
 
   it("only mode, backfilled and kvWritesOffSince", async () => {
@@ -650,6 +831,56 @@ describe("/healthz oauthStore", () => {
       "backfilled",
       "kvWritesOffSince",
     ]);
+  });
+});
+
+// ------------------------------------------------------------ leaving d1
+
+describe("leaving d1 is refused", () => {
+  it("kv or dual after d1: 503 oauth_store_misconfigured, the stamp kept, unless OAUTH_STORE_ROLLBACK=1", async () => {
+    const a = await connectAgent(inMode("d1"));
+    const t1 = await offSince();
+    expect(t1).not.toBeNull();
+    for (const mode of ["kv", "dual"] as const) {
+      resetOAuthStoreMarkers();
+      for (const r of [
+        await robots(inMode(mode)),
+        await mcp(inMode(mode), a.access_token),
+      ]) {
+        expect(r.status).toBe(503);
+        const body = (await r.json()) as { error: string; message: string };
+        expect(body.error).toBe("oauth_store_misconfigured");
+        expect(body.message).toMatch(
+          new RegExp(
+            `^OAUTH_STORE=${mode} is refused: .*OAUTH_STORE_ROLLBACK=1`,
+          ),
+        );
+      }
+      // The store's writes outside the serve path are refused too.
+      await expect(
+        oauthEnv(inMode(mode)).OAUTH_KV.put(`x:refused-${tag}`, "1"),
+      ).rejects.toThrow(/is refused/);
+      await expect(
+        oauthEnv(inMode(mode)).OAUTH_KV.delete(`x:refused-${tag}`),
+      ).rejects.toThrow(/is refused/);
+      // Nothing of this mode cleared the stamp before the check.
+      expect(await offSince()).toBe(t1);
+      // /healthz still answers and shows it.
+      const h = await callWorker(new Request(`${APP}/healthz`), inMode(mode));
+      expect(h.status).toBe(200);
+      expect(
+        ((await h.json()) as { oauthStore: { kvWritesOffSince: number } })
+          .oauthStore.kvWritesOffSince,
+      ).toBe(Number(t1));
+    }
+    await expect(copyKvToD1(inMode("dual"))).rejects.toThrow(/is refused/);
+    // The override (after KV's OAuth keys were emptied): serves, clears it.
+    resetOAuthStoreMarkers();
+    const r = await robots(inMode("dual", { OAUTH_STORE_ROLLBACK: "1" }));
+    expect(r.status).toBe(200);
+    expect(await offSince()).toBeNull();
+    resetOAuthStoreMarkers();
+    expect((await robots(inMode("kv"))).status).toBe(200);
   });
 });
 
@@ -725,6 +956,7 @@ describe("copyKvToD1 (the backfill's core)", () => {
       copied: 2,
       skippedExpiring: 1,
       d1Rows: 3,
+      nextCursor: null,
     });
     expect(await rowOf("grant:u:a")).toMatchObject({
       value: "A",
@@ -751,6 +983,61 @@ describe("copyKvToD1 (the backfill's core)", () => {
     });
   });
 
+  it("resumes by cursor within KV's and D1's per-invocation limits; backfilled only after the final page", async () => {
+    await env.DB.prepare("delete from oauth_kv").run();
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(BACKFILLED_KEY)
+      .run();
+    const mem = memKv();
+    const n = COPY_PAGE * 2 + 37;
+    const exp = nowS() + 3600;
+    for (let i = 0; i < n; i++)
+      mem.m.set(`token:bf-${tag}:${String(i).padStart(5, "0")}`, {
+        v: `v${i}`,
+        expiration: exp,
+      });
+    let kvOps = 0;
+    const kv = {
+      get: (k: string) => {
+        kvOps++;
+        return mem.get(k);
+      },
+      list: (o: { limit?: number; cursor?: string }) => {
+        kvOps++;
+        return mem.list(o);
+      },
+    };
+    const backfilled = async () =>
+      (await env.DB.prepare("select 1 from settings where key = ?")
+        .bind(BACKFILLED_KEY)
+        .first()) !== null;
+    let cursor: string | null = null;
+    let calls = 0;
+    let copied = 0;
+    do {
+      kvOps = 0;
+      const c = countingDb(env.DB);
+      const r = await copyKvToD1(inMode("dual", { OAUTH_KV: kv, DB: c.db }), {
+        cursor,
+      });
+      calls++;
+      copied += r.copied;
+      expect(kvOps).toBeLessThanOrEqual(1000);
+      expect(c.sqls.length).toBeLessThanOrEqual(50);
+      expect(await backfilled()).toBe(r.nextCursor === null);
+      expect(r.d1Rows === null).toBe(r.nextCursor !== null);
+      cursor = r.nextCursor;
+    } while (cursor);
+    expect(calls).toBe(3);
+    expect(copied).toBe(n);
+    const count = await env.DB.prepare(
+      "select count(*) n from oauth_kv where key like ?",
+    )
+      .bind(`token:bf-${tag}:%`)
+      .first<{ n: number }>();
+    expect(count?.n).toBe(n);
+  });
+
   it("is refused outside dual mode", async () => {
     for (const mode of ["kv", "d1"] as const)
       await expect(copyKvToD1(inMode(mode))).rejects.toThrow(
@@ -758,21 +1045,39 @@ describe("copyKvToD1 (the backfill's core)", () => {
       );
   });
 
-  it("a kv-mode write resets D1 (stale rows and markers), so a later dual start is clean", async () => {
-    await new D1KvStore(env.DB).put("grant:stale:x", "{}");
+  it("kv mode: a put drops D1's row, a delete tombstones only a row D1 holds, backfilled is cleared; no bulk wipe", async () => {
+    const p = `grant:kvm-${tag}:`;
+    const d1 = new D1KvStore(env.DB);
+    // Rows from an earlier dual run, and one kv never touches.
+    await d1.put(`${p}a`, "OLD");
+    await d1.put(`${p}b`, "B");
+    await d1.put(`${p}keep`, "K");
     await env.DB.prepare(
       "insert into settings (key, value) values (?, '1') on conflict(key) do nothing",
     )
       .bind(BACKFILLED_KEY)
       .run();
-    resetOAuthStoreMarkers();
-    await connectAgent(inMode("kv"));
-    expect(await rowOf("grant:stale:x")).toBeNull();
+    const c = countingDb(env.DB);
+    const s = oauthEnv(inMode("kv", { DB: c.db })).OAUTH_KV;
+    await s.put(`${p}a`, "NEW");
+    expect(await rowOf(`${p}a`)).toBeNull();
+    expect(await env.OAUTH_KV.get(`${p}a`)).toBe("NEW");
+    await Promise.all([s.delete(`${p}b`), s.delete(`${p}none`)]);
+    expect((await rowOf(`${p}b`))?.expires_at).toBeLessThan(0);
+    expect(await rowOf(`${p}none`)).toBeNull();
+    expect((await rowOf(`${p}keep`))?.value).toBe("K");
+    // The marker read, the backfilled clear, one drop, one batched tombstone.
+    expect(c.sqls.length).toBe(4);
     const h = await callWorker(new Request(`${APP}/healthz`), inMode("dual"));
     expect(
       ((await h.json()) as { oauthStore: { backfilled: boolean } }).oauthStore
         .backfilled,
     ).toBe(false);
+    // dual reads KV's value (no stale D1 row), and b stays dead.
+    const dual = oauthEnv(inMode("dual")).OAUTH_KV;
+    expect(await dual.get(`${p}a`)).toBe("NEW");
+    expect(await dual.get(`${p}b`)).toBeNull();
+    await env.OAUTH_KV.delete(`${p}a`);
   });
 });
 
@@ -856,6 +1161,28 @@ describe("D1KvStore matches KV", () => {
     expect(await s.get(`${p}a`)).toBeNull();
   });
 
+  it("a stale snapshot is never used (a newer one, or the one just loaded)", async () => {
+    const p = `snap-${tag}:u:`;
+    const names = (r: { keys: { name: string }[] }) =>
+      r.keys.map((k) => k.name);
+    await new D1KvStore(env.DB).put(`${p}a`, "1");
+    const s = new D1KvStore(env.DB);
+    expect(names(await s.list({ prefix: p }))).toEqual([`${p}a`]);
+    // Another isolate writes b after this store's snapshot.
+    await new D1KvStore(env.DB).put(`${p}b`, "2");
+    const t0 = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => t0 + 6_000);
+    try {
+      expect(names(await s.list({ prefix: p }))).toEqual([`${p}a`, `${p}b`]);
+      expect(await s.get(`${p}b`)).toBe("2");
+      // Still within the new snapshot's window: it answers, not the old one.
+      expect(names(await s.list({ prefix: p, limit: 1 }))).toEqual([`${p}a`]);
+      expect(await s.get(`${p}b`)).toBe("2");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("keyCompare is UTF-8 byte order (code points), not UTF-16", () => {
     const astral = "\u{1F600}";
     const highBmp = "｡";
@@ -881,6 +1208,13 @@ describe("D1KvStore matches KV", () => {
     );
     const other = new Error("D1_ERROR: no such table: oauth_kv");
     expect(mapStoreError(other)).toBe(other);
+    // The per-invocation limit is this request's own: not retryable.
+    const perInvocation = new Error(
+      "D1_ERROR: Too many API requests by single Worker invocation.",
+    );
+    expect(mapStoreError(perInvocation)).toBe(perInvocation);
+    const tooMany = new Error("Too many requests");
+    expect(mapStoreError(tooMany)).toBe(tooMany);
     expect(String(mapStoreError(new Error("SQLITE_BUSY")))).toMatch(
       /429 Too Many Requests/,
     );

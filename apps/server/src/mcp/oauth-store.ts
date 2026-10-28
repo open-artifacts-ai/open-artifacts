@@ -1,5 +1,6 @@
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
+import { logWarn } from "../log.js";
 
 // The OAuth provider's store, per install (post-M1 OAuth store move). The
 // library (@cloudflare/workers-oauth-provider, pinned) only ever reads
@@ -30,9 +31,16 @@ import type { Env } from "../env.js";
 // one statement, so the provider's list-then-get-each and delete-each stay
 // under D1's 50 queries per invocation on Workers Free.
 //
-// Rollback: dual -> kv loses nothing (KV took every write). kv mode empties
-// oauth_kv before its first KV write (markerStmts), so going forward again
-// starts dual from an empty table and a fresh copy.
+// Rollback: dual -> kv loses nothing (KV took every write). KV stays
+// authoritative in kv mode, and D1 never contradicts it: every kv put drops
+// D1's row and every kv delete tombstones the row D1 holds, so a later dual
+// run (or a dual isolate overlapping a kv one, in either direction) can't
+// serve a stale row or revive a revoked grant. Leaving d1 is refused
+// (checkMarkers): once oauth_kv_writes_off_since is set, kv or dual answer
+// 503 oauth_store_misconfigured unless OAUTH_STORE_ROLLBACK=1. Runbook for
+// the override: empty the OAuth keys from KV first, so every agent
+// reconnects; KV's copy is never revived. Keep the override set until
+// /healthz shows kvWritesOffSince null.
 
 export type OAuthStoreMode = "kv" | "dual" | "d1";
 const MODES: readonly OAuthStoreMode[] = ["kv", "dual", "d1"];
@@ -65,26 +73,39 @@ export function oauthStoreMode(env: Pick<Env, "OAUTH_STORE">): OAuthStoreMode {
 export type OAuthEnv = Env & { OAUTH_KV: KVNamespace };
 
 /**
+ * OAUTH_STORE's mode, checked against the bindings (no D1): throws
+ * OAuthStoreConfigError when the mode is invalid, or is kv or dual with no
+ * OAUTH_KV binding.
+ */
+export function checkedStoreMode(
+  env: Pick<Env, "OAUTH_STORE" | "OAUTH_KV">,
+): OAuthStoreMode {
+  const mode = oauthStoreMode(env);
+  if (mode !== "d1" && !env.OAUTH_KV)
+    throw new OAuthStoreConfigError(
+      `OAUTH_STORE=${mode} needs the OAUTH_KV binding`,
+    );
+  return mode;
+}
+
+/**
  * `env` with OAUTH_KV set to this install's store (a new one, with its own
- * per-request cache, unless `env` already carries one). kv mode returns the
- * binding wrapped only to clear the D1 markers once per isolate before its
- * first KV write (markers below). Throws OAuthStoreConfigError when the mode
- * is invalid, or is kv or dual with no OAUTH_KV binding.
+ * per-request cache, unless `env` already carries one). kv mode wraps the
+ * binding so its writes keep D1 from contradicting KV (KvModeStore). kv and
+ * dual check the markers once per isolate before their first write
+ * (checkMarkers). Throws OAuthStoreConfigError when the mode is invalid, or
+ * is kv or dual with no OAUTH_KV binding.
  */
 export function oauthEnv(env: Env): OAuthEnv {
   const kv = env.OAUTH_KV;
   if (kv instanceof StoreBase) return env as OAuthEnv;
-  const mode = oauthStoreMode(env);
-  if (mode !== "d1" && !kv)
-    throw new OAuthStoreConfigError(
-      `OAUTH_STORE=${mode} needs the OAUTH_KV binding`,
-    );
+  const mode = checkedStoreMode(env);
   const store =
     mode === "kv"
-      ? new KvModeStore(kv as KVNamespace, env.DB)
+      ? new KvModeStore(kv as KVNamespace, env)
       : mode === "d1"
         ? new D1KvStore(env.DB)
-        : new DualKvStore(new D1KvStore(env.DB), kv as KVNamespace);
+        : new DualKvStore(new D1KvStore(env.DB), kv as KVNamespace, env);
   return { ...env, OAUTH_KV: store as unknown as KVNamespace };
 }
 
@@ -221,13 +242,20 @@ function listResult(keys: ListKey[], more: boolean): ListResult {
 /**
  * D1 overload or busy as the KV 429 the library already treats as retryable
  * (isKvRateLimitError matches "429 Too Many Requests": OAuth
- * temporarily_unavailable, not a 500).
+ * temporarily_unavailable, not a 500). Only overload and busy: "Too many API
+ * requests by single Worker invocation" (the per-invocation query limit) is
+ * this request's own doing, and a retry of the same request hits it again.
  */
-const BUSY =
-  /overloaded|too many requests|SQLITE_BUSY|database is locked|\bbusy\b/i;
+const BUSY = /overloaded|SQLITE_BUSY|database is locked|\bbusy\b/i;
+const PER_INVOCATION = /too many api requests by single worker invocation/i;
 export function mapStoreError(e: unknown): unknown {
   const msg = e instanceof Error ? e.message : String(e);
-  if (!BUSY.test(msg) || /429 Too Many Requests/i.test(msg)) return e;
+  if (
+    !BUSY.test(msg) ||
+    PER_INVOCATION.test(msg) ||
+    /429 Too Many Requests/i.test(msg)
+  )
+    return e;
   return new Error(`oauth_kv D1 failed: 429 Too Many Requests (${msg})`, {
     cause: e,
   });
@@ -238,11 +266,13 @@ abstract class StoreBase {}
 // ---------------------------------------------------------------- d1
 
 /**
- * A deleted key, in dual and d1 modes: a row whose expires_at is minus the
- * deletion time (unix s). Every read treats it as missing, like an expired
- * row, and it keeps D1 deciding: a dual get never falls back to KV for it,
- * a dual list drops KV's copy, and the backfill's insert-or-ignore can't
- * bring it back. The nightly sweep removes it after TOMBSTONE_DAYS.
+ * A deleted key: a row whose expires_at is minus the deletion time (unix s).
+ * Every read treats it as missing, like an expired row, and it keeps D1
+ * deciding: a dual get never falls back to KV for it, a dual list drops KV's
+ * copy, and the backfill's insert-or-ignore can't bring it back. dual and d1
+ * write one for every delete; kv only over a row D1 already holds (any other
+ * key has no D1 row to contradict KV). The nightly sweep removes it after
+ * TOMBSTONE_DAYS, in d1 mode only (sweepOAuthStore).
  */
 const tombstoneOf = (key: string, now: number): Row => ({
   key,
@@ -268,30 +298,49 @@ const RANGE_ALL =
 /** Rows for a JSON array of keys. */
 const BY_KEYS =
   "select key, value, expires_at, metadata from oauth_kv where key in (select value from json_each(?))";
+/** kv mode's put: D1 holds no row for a key KV just wrote. */
 const DELETE_KEYS =
   "delete from oauth_kv where key in (select value from json_each(?))";
+/** dual and d1: a tombstone for every deleted key. */
 const TOMBSTONE_KEYS =
   "insert into oauth_kv (key, value, expires_at, metadata) select value, '', ?, null from json_each(?) where true on conflict(key) do update set value = '', expires_at = excluded.expires_at, metadata = null";
+/** kv: a tombstone over the rows D1 holds; other keys get no row. */
+const TOMBSTONE_HELD =
+  "update oauth_kv set value = '', expires_at = ?, metadata = null where key in (select value from json_each(?))";
 
-type Pending = { key: string; done: () => void; fail: (e: unknown) => void };
+type Pending = {
+  key: string;
+  /** tomb: a delete (tombstone); drop: kv mode's put (no row). */
+  kind: "tomb" | "drop";
+  done: () => void;
+  fail: (e: unknown) => void;
+};
+
+type Snap = { prefix: string; rows: Map<string, Row>; at: number };
 
 /** KV-shaped store over the install's D1 table oauth_kv; one per request. */
 export class D1KvStore extends StoreBase {
   /** key -> row (null: no row), with when it was read. Rows may be dead. */
   private readonly rows = new Map<string, { r: Row | null; at: number }>();
   /** Complete snapshots of every row (dead ones too) under a prefix. */
-  private readonly snaps: {
-    prefix: string;
-    rows: Map<string, Row>;
-    at: number;
-  }[] = [];
-  /** Snapshot queries in flight, by prefix. */
-  private readonly loading = new Map<string, Promise<Row[]>>();
+  private snaps: Snap[] = [];
+  /** Snapshot queries in flight, by prefix (the snapshot, if it fit). */
+  private readonly loading = new Map<
+    string,
+    Promise<{ got: Row[]; snap: Snap | null }>
+  >();
   private pending: Pending[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
   private flushing: Promise<void> = Promise.resolve();
 
-  constructor(private readonly db: D1Database) {
+  /**
+   * `tombstones`: "every" (dual, d1) writes one for each deleted key;
+   * "held" (kv) only over a row D1 already holds.
+   */
+  constructor(
+    private readonly db: D1Database,
+    private readonly tombstones: "every" | "held" = "every",
+  ) {
     super();
   }
 
@@ -299,13 +348,20 @@ export class D1KvStore extends StoreBase {
     return Date.now() - at <= CACHE_MS;
   }
 
+  /** The newest fresh snapshot that `test` accepts. */
+  private newestSnap(test: (s: Snap) => boolean): Snap | undefined {
+    for (let i = this.snaps.length - 1; i >= 0; i--) {
+      const s = this.snaps[i] as Snap;
+      if (this.fresh(s.at) && test(s)) return s;
+    }
+    return undefined;
+  }
+
   /** The cached row (null: no row) or undefined (unknown). */
   private cached(key: string): Row | null | undefined {
     const c = this.rows.get(key);
     if (c && this.fresh(c.at)) return c.r;
-    const s = this.snaps.find(
-      (x) => key.startsWith(x.prefix) && this.fresh(x.at),
-    );
+    const s = this.newestSnap((x) => key.startsWith(x.prefix));
     return s ? (s.rows.get(key) ?? null) : undefined;
   }
 
@@ -391,8 +447,18 @@ export class D1KvStore extends StoreBase {
    */
   delete(key: string): Promise<void> {
     this.remember(key, tombstoneOf(key, nowS()));
+    return this.enqueue(key, "tomb");
+  }
+
+  /** kv mode's put: D1's row goes (KV holds the value). Batched like delete. */
+  drop(key: string): Promise<void> {
+    this.remember(key, null);
+    return this.enqueue(key, "drop");
+  }
+
+  private enqueue(key: string, kind: Pending["kind"]): Promise<void> {
     return new Promise((done, fail) => {
-      this.pending.push({ key, done, fail });
+      this.pending.push({ key, kind, done, fail });
       this.timer ??= setTimeout(() => void this.flush().catch(() => {}), 0);
     });
   }
@@ -404,14 +470,29 @@ export class D1KvStore extends StoreBase {
     this.timer = null;
     if (batch.length === 0) return this.flushing.catch(() => {});
     this.pending = [];
-    const keys = [...new Set(batch.map((p) => p.key))];
+    // A key's last write in the batch wins.
+    const last = new Map<string, Pending["kind"]>();
+    for (const p of batch) {
+      last.delete(p.key);
+      last.set(p.key, p.kind);
+    }
+    const tombs = [...last].filter(([, k]) => k === "tomb").map(([k]) => k);
+    const drops = [...last].filter(([, k]) => k === "drop").map(([k]) => k);
     const now = nowS();
     const stmts: D1PreparedStatement[] = [];
-    for (let i = 0; i < keys.length; i += KEYS_CHUNK)
+    const tombSql =
+      this.tombstones === "every" ? TOMBSTONE_KEYS : TOMBSTONE_HELD;
+    for (let i = 0; i < tombs.length; i += KEYS_CHUNK)
       stmts.push(
-        stmt(this.db, TOMBSTONE_KEYS).bind(
+        stmt(this.db, tombSql).bind(
           -now,
-          JSON.stringify(keys.slice(i, i + KEYS_CHUNK)),
+          JSON.stringify(tombs.slice(i, i + KEYS_CHUNK)),
+        ),
+      );
+    for (let i = 0; i < drops.length; i += KEYS_CHUNK)
+      stmts.push(
+        stmt(this.db, DELETE_KEYS).bind(
+          JSON.stringify(drops.slice(i, i + KEYS_CHUNK)),
         ),
       );
     const run = this.flushing
@@ -459,9 +540,7 @@ export class D1KvStore extends StoreBase {
         .sort((a, b) => keyCompare(a.key, b.key));
       return { rows: all.slice(0, n), more: all.length > n };
     };
-    const covering = this.snaps.find(
-      (s) => prefix.startsWith(s.prefix) && this.fresh(s.at),
-    );
+    const covering = this.newestSnap((s) => prefix.startsWith(s.prefix));
     if (covering) return pick(covering.rows.values());
     const wide = widen(prefix);
     // Concurrent lists under one prefix (revokeGrant per grant, in
@@ -476,20 +555,24 @@ export class D1KvStore extends StoreBase {
             : stmt(this.db, SNAP).bind(wide, prefixEnd(wide), SNAPSHOT_MAX + 1);
         return (await s.all<Row>()).results;
       }).then((got) => {
-        if (got.length <= SNAPSHOT_MAX) {
-          const rows = new Map(got.map((r) => [r.key, r]));
-          // This request's own writes since the query began win.
-          for (const [k, c] of this.rows)
-            if (c.at >= started && k.startsWith(wide)) {
-              if (c.r) rows.set(k, c.r);
-              else rows.delete(k);
-            }
-          this.snaps.push({ prefix: wide, rows, at: Date.now() });
-          for (const r of got)
-            if (!((this.rows.get(r.key)?.at ?? -1) >= started))
-              this.rows.set(r.key, { r, at: Date.now() });
-        }
-        return got;
+        if (got.length > SNAPSHOT_MAX) return { got, snap: null };
+        const rows = new Map(got.map((r) => [r.key, r]));
+        // This request's own writes since the query began win.
+        for (const [k, c] of this.rows)
+          if (c.at >= started && k.startsWith(wide)) {
+            if (c.r) rows.set(k, c.r);
+            else rows.delete(k);
+          }
+        const snap: Snap = { prefix: wide, rows, at: Date.now() };
+        // Only fresh snapshots stay, and none this one supersedes.
+        this.snaps = this.snaps.filter(
+          (s) => this.fresh(s.at) && !s.prefix.startsWith(wide),
+        );
+        this.snaps.push(snap);
+        for (const r of got)
+          if (!((this.rows.get(r.key)?.at ?? -1) >= started))
+            this.rows.set(r.key, { r, at: Date.now() });
+        return { got, snap };
       });
       this.loading.set(wide, load);
       void load.then(
@@ -497,11 +580,9 @@ export class D1KvStore extends StoreBase {
         () => this.loading.delete(wide),
       );
     }
-    const got = await load;
-    if (got.length <= SNAPSHOT_MAX) {
-      const snap = this.snaps.find((s) => s.prefix === wide);
-      return pick((snap?.rows ?? new Map<string, Row>()).values());
-    }
+    // The snapshot this query loaded, never an older one.
+    const { snap } = await load;
+    if (snap) return pick(snap.rows.values());
     const page = await this.q(async () => {
       const s =
         prefix === ""
@@ -529,20 +610,19 @@ export class D1KvStore extends StoreBase {
 
 // ---------------------------------------------------------------- dual
 
-/** Upper bound on KV pages one dual list walks to reach its cursor. */
-const MAX_KV_PAGES = 20;
-
 /**
  * Writes and deletes to D1 and KV; get from D1, else KV; list merges both by
  * key, D1 winning. D1 decides whenever it holds a row: a dead one (expired
  * or deleted) hides KV's copy. KV lists can't start after a key, so a dual
  * list walks KV's pages from the start of the prefix to its cursor (a
- * user's grants and tokens: one page).
+ * user's grants and tokens: one page), every page if need be. Writes check
+ * the markers first (checkMarkers: leaving d1 is refused).
  */
 export class DualKvStore extends StoreBase {
   constructor(
     private readonly d1: D1KvStore,
     private readonly kv: KVNamespace,
+    private readonly env?: Env,
   ) {
     super();
   }
@@ -555,6 +635,7 @@ export class DualKvStore extends StoreBase {
   }
 
   async put(key: string, value: unknown, opt?: PutOpt): Promise<void> {
+    if (this.env) await checkMarkers(this.env, "dual");
     await Promise.all([
       this.d1.put(key, value, opt),
       this.kv.put(key, value as string, opt as KVNamespacePutOptions),
@@ -562,6 +643,7 @@ export class DualKvStore extends StoreBase {
   }
 
   async delete(key: string): Promise<void> {
+    if (this.env) await checkMarkers(this.env, "dual");
     await Promise.all([this.d1.delete(key), this.kv.delete(key)]);
   }
 
@@ -600,7 +682,7 @@ export class DualKvStore extends StoreBase {
   ): Promise<{ keys: ListKey[]; more: boolean }> {
     const out: ListKey[] = [];
     let cursor: string | undefined;
-    for (let page = 0; page < MAX_KV_PAGES; page++) {
+    for (;;) {
       const r = await this.kv.list({
         prefix,
         limit: MAX_LIST_LIMIT,
@@ -617,33 +699,40 @@ export class DualKvStore extends StoreBase {
       if (r.list_complete) return { keys: out, more: false };
       cursor = r.cursor;
     }
-    throw new Error("oauth store: KV listing too long for a dual list");
   }
 }
 
 // ---------------------------------------------------------------- kv
 
 /**
- * kv mode: the binding as is, except that before its first write or delete
- * in this isolate the D1 side is reset (markerStmts "kv": KV writes resumed,
- * so oauth_kv and its markers are stale).
+ * kv mode: KV decides every read. Each write also keeps D1 from contradicting
+ * KV, so a later dual run, or a dual isolate overlapping this one, never
+ * serves a stale row or revives a revoked grant: a put drops D1's row (the
+ * value lives in KV only), and a delete tombstones the row D1 holds, before
+ * KV's delete. Both batch like D1KvStore's deletes and map D1 overload like
+ * every store query. Writes check the markers first (checkMarkers: leaving
+ * d1 is refused).
  */
 class KvModeStore extends StoreBase {
+  private readonly d1: D1KvStore;
   constructor(
     private readonly kv: KVNamespace,
-    private readonly db: D1Database,
+    private readonly env: Env,
   ) {
     super();
+    this.d1 = new D1KvStore(env.DB, "held");
   }
   get(key: string, opt?: GetOpt) {
     return this.kv.get(key, opt as "text");
   }
   async put(key: string, value: string, opt?: KVNamespacePutOptions) {
-    await syncMarkersOnce(this.db, "kv");
+    await checkMarkers(this.env, "kv");
+    await this.d1.drop(key);
     return this.kv.put(key, value, opt);
   }
   async delete(key: string) {
-    await syncMarkersOnce(this.db, "kv");
+    await checkMarkers(this.env, "kv");
+    await this.d1.delete(key);
     return this.kv.delete(key);
   }
   list(opt?: KVNamespaceListOptions) {
@@ -658,65 +747,100 @@ export const BACKFILLED_KEY = "oauth_store_backfilled";
 /** settings: when this install first served in d1 mode (epoch ms). */
 export const KV_WRITES_OFF_KEY = "oauth_kv_writes_off_since";
 
+/** Moves only earlier: a later stamp never replaces an earlier one. */
 const STAMP =
-  "insert into settings (key, value) values (?, ?) on conflict(key) do nothing";
+  "insert into settings (key, value) values (?, ?) on conflict(key) do update set value = excluded.value where cast(excluded.value as integer) < cast(settings.value as integer)";
 const CLEAR = "delete from settings where key = ?";
-const CLEAR_BOTH = "delete from settings where key in (?, ?)";
-const DROP_ROWS = "delete from oauth_kv";
 const MARKERS = "select key, value from settings where key in (?, ?)";
 
+/** The markers' state; `off` is KV_WRITES_OFF's stamp (epoch ms). */
+type Markers = { backfilled: boolean; off: number | null };
+
+async function readMarkers(db: D1Database): Promise<Markers> {
+  const got = await stmt(db, MARKERS)
+    .bind(BACKFILLED_KEY, KV_WRITES_OFF_KEY)
+    .all<{ key: string; value: string }>();
+  const m = new Map(got.results.map((r) => [r.key, r.value]));
+  const off = Number(m.get(KV_WRITES_OFF_KEY));
+  return {
+    backfilled: m.has(BACKFILLED_KEY),
+    off: m.has(KV_WRITES_OFF_KEY) && Number.isFinite(off) ? off : null,
+  };
+}
+
+const rollbackOn = (env: Pick<Env, "OAUTH_STORE_ROLLBACK">) =>
+  env.OAUTH_STORE_ROLLBACK?.trim() === "1";
+
 /**
- * The marker writes for `mode`:
- * - d1 stamps KV_WRITES_OFF once (never moved forward while d1 lasts);
- * - dual clears it (KV writes resumed; the backfill stays valid: dual
- *   writes both stores);
- * - kv clears both and empties oauth_kv: from here D1 misses KV's writes and
- *   deletes, so a later dual start begins empty and needs a fresh copy (a
- *   stale row would win over KV, and could revive a revoked grant).
+ * Reads the markers, refuses leaving d1, then writes what `mode` changes:
+ * - kv or dual while KV_WRITES_OFF is set: OAuthStoreConfigError (503
+ *   oauth_store_misconfigured) unless OAUTH_STORE_ROLLBACK=1, which clears
+ *   the stamp. The stamp is read before any write, so no write of this
+ *   mode clears it first.
+ * - d1 stamps KV_WRITES_OFF unless set (STAMP: only ever earlier);
+ * - kv clears BACKFILLED: D1 misses KV's new keys from here, so going
+ *   forward again needs a fresh copy.
+ * One read, and a write only when something changes.
  */
-function markerStmts(
-  db: D1Database,
+async function syncMarkers(
+  env: Env,
   mode: OAuthStoreMode,
-  now: number,
-): D1PreparedStatement[] {
-  if (mode === "d1")
-    return [stmt(db, STAMP).bind(KV_WRITES_OFF_KEY, String(now))];
-  if (mode === "dual") return [stmt(db, CLEAR).bind(KV_WRITES_OFF_KEY)];
-  return [
-    stmt(db, CLEAR_BOTH).bind(BACKFILLED_KEY, KV_WRITES_OFF_KEY),
-    stmt(db, DROP_ROWS),
-  ];
+  rollback: boolean,
+): Promise<void> {
+  const db = env.DB;
+  const m = await readMarkers(db);
+  if (mode !== "d1" && m.off !== null && !rollback)
+    throw new OAuthStoreConfigError(
+      `OAUTH_STORE=${mode} is refused: this install has served in d1 mode since ${new Date(m.off).toISOString()}, so KV is stale. Set OAUTH_STORE back to d1, or roll back with OAUTH_STORE_ROLLBACK=1 after emptying the OAuth keys from KV (every agent reconnects).`,
+    );
+  const writes: D1PreparedStatement[] = [];
+  if (mode === "d1") {
+    if (m.off === null)
+      writes.push(stmt(db, STAMP).bind(KV_WRITES_OFF_KEY, String(Date.now())));
+  } else {
+    if (m.off !== null) writes.push(stmt(db, CLEAR).bind(KV_WRITES_OFF_KEY));
+    if (mode === "kv" && m.backfilled)
+      writes.push(stmt(db, CLEAR).bind(BACKFILLED_KEY));
+  }
+  if (writes.length === 1) await (writes[0] as D1PreparedStatement).run();
+  else if (writes.length > 1) await db.batch(writes);
 }
 
-/** The mode whose markers this isolate already wrote, per database. */
-let synced = new WeakMap<D1Database, OAuthStoreMode>();
+/** This isolate's marker check per database (a refusal is not kept). */
+let synced = new WeakMap<
+  D1Database,
+  { mode: OAuthStoreMode; rollback: boolean; done: Promise<void> }
+>();
 
-async function syncMarkersOnce(db: D1Database, mode: OAuthStoreMode) {
-  if (synced.get(db) === mode) return;
-  await db.batch(markerStmts(db, mode, Date.now()));
-  synced.set(db, mode);
+/**
+ * syncMarkers once per isolate, mode and override (concurrent callers share
+ * it); a refusal or an error is retried by the next call.
+ */
+function checkMarkers(env: Env, mode: OAuthStoreMode): Promise<void> {
+  const rollback = rollbackOn(env);
+  const c = synced.get(env.DB);
+  if (c && c.mode === mode && c.rollback === rollback) return c.done;
+  const done = syncMarkers(env, mode, rollback);
+  synced.set(env.DB, { mode, rollback, done });
+  done.catch(() => {
+    if (synced.get(env.DB)?.done === done) synced.delete(env.DB);
+  });
+  return done;
 }
 
-/** Tests: forget which markers this isolate wrote. */
+/** Tests: forget which markers this isolate checked. */
 export function resetOAuthStoreMarkers(): void {
   synced = new WeakMap();
 }
 
 /**
- * Every app-host request, once per isolate and mode: dual and d1 write their
- * markers (d1: "the first time the install serves in d1 mode"). kv writes
- * its markers lazily, before the first KV write (KvModeStore), so a
- * read-only kv request never touches D1. Throws OAuthStoreConfigError on a
- * bad mode or a missing binding.
+ * Every app-host request except /healthz: the markers, once per isolate
+ * and mode (checkMarkers; d1: "the first time the install serves in d1
+ * mode"). Throws OAuthStoreConfigError on a bad mode, a missing binding, or
+ * kv or dual after d1 without the override.
  */
 export async function syncStoreMarkers(env: Env): Promise<void> {
-  const mode = oauthStoreMode(env);
-  if (mode !== "d1" && !env.OAUTH_KV)
-    throw new OAuthStoreConfigError(
-      `OAUTH_STORE=${mode} needs the OAUTH_KV binding`,
-    );
-  if (mode === "kv") return;
-  await syncMarkersOnce(env.DB, mode);
+  await checkMarkers(env, checkedStoreMode(env));
 }
 
 export type OAuthStoreHealth = {
@@ -726,53 +850,61 @@ export type OAuthStoreHealth = {
 };
 
 /**
- * /healthz's oauthStore: writes this mode's markers unless this isolate
- * already did (so a rollback clears them here too, kv included), then reads
- * them, in one batch. kvWritesOffSince is null unless the mode is d1.
+ * /healthz's oauthStore: reads the markers (one query), writes nothing.
+ * kvWritesOffSince is the stamp in any mode (set in kv or dual: refused, or
+ * an override not yet applied). Null when D1 can't be read, never a 500.
+ * Throws OAuthStoreConfigError on a bad mode or a missing binding.
  */
-export async function oauthStoreHealth(env: Env): Promise<OAuthStoreHealth> {
-  const mode = oauthStoreMode(env);
-  const writes =
-    synced.get(env.DB) === mode ? [] : markerStmts(env.DB, mode, Date.now());
-  const res = await env.DB.batch<{ key: string; value: string }>([
-    ...writes,
-    stmt(env.DB, MARKERS).bind(BACKFILLED_KEY, KV_WRITES_OFF_KEY),
-  ]);
-  synced.set(env.DB, mode);
-  const read = res[writes.length]?.results ?? [];
-  const m = new Map(read.map((r) => [r.key, r.value]));
-  const off = Number(m.get(KV_WRITES_OFF_KEY));
-  return {
-    mode,
-    backfilled: m.has(BACKFILLED_KEY),
-    kvWritesOffSince: mode === "d1" && Number.isFinite(off) ? off : null,
-  };
+export async function oauthStoreHealth(
+  env: Env,
+): Promise<OAuthStoreHealth | null> {
+  const mode = checkedStoreMode(env);
+  try {
+    const m = await readMarkers(env.DB);
+    return { mode, backfilled: m.backfilled, kvWritesOffSince: m.off };
+  } catch (e) {
+    logWarn("oauth_store_health_unread", e);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------- sweep
 
-/** Expired rows deleted per statement, and statements per nightly run. */
-const SWEEP_BATCH = 500;
-const SWEEP_ROUNDS = 20;
+/** Rows deleted per statement. */
+const SWEEP_BATCH = 1000;
+/**
+ * The sweep's own slot in the nightly cron's D1 budget (50 queries per
+ * invocation on Workers Free, shared by every nightly task): at most this
+ * many statements, SWEEP_BATCH rows each.
+ */
+export const OAUTH_SWEEP_QUERIES = 5;
 /** How long a deleted key's tombstone outlives it (the backfill window). */
 export const TOMBSTONE_DAYS = 30;
+/** d1: expired rows and tombstones older than TOMBSTONE_DAYS. */
 const SWEEP =
   "delete from oauth_kv where key in (select key from oauth_kv where expires_at is not null and ((expires_at >= 0 and expires_at <= ?) or (expires_at < 0 and expires_at >= ?)) limit ?)";
+/** kv and dual: expired rows only; tombstones stay. */
+const SWEEP_EXPIRED =
+  "delete from oauth_kv where key in (select key from oauth_kv where expires_at >= 0 and expires_at <= ? limit ?)";
 
 /**
- * Nightly: deletes rows past expires_at, and tombstones older than
- * TOMBSTONE_DAYS, SWEEP_BATCH per statement, at most SWEEP_ROUNDS
- * statements (reads already treat both as missing). Every mode: a table
- * left by dual or d1 still drains. Returns the rows deleted.
+ * Nightly: deletes rows past expires_at (reads already treat them as
+ * missing), SWEEP_BATCH per statement, at most OAUTH_SWEEP_QUERIES
+ * statements. Every mode: a table left by dual or d1 still drains.
+ * Tombstones older than TOMBSTONE_DAYS go in d1 mode only: in kv and dual a
+ * tombstone is what keeps KV's copy of a revoked key dead (a later dual
+ * read, the copy), and leaving d1 is refused. Returns the rows deleted.
  */
 export async function sweepOAuthStore(env: Env, now: number): Promise<number> {
   const at = Math.floor(now / 1000);
   const tombCutoff = at - TOMBSTONE_DAYS * 86_400;
+  const d1 = parseOAuthStoreMode(env.OAUTH_STORE) === "d1";
   let total = 0;
-  for (let i = 0; i < SWEEP_ROUNDS; i++) {
-    const r = await stmt(env.DB, SWEEP)
-      .bind(at, -tombCutoff, SWEEP_BATCH)
-      .run();
+  for (let i = 0; i < OAUTH_SWEEP_QUERIES; i++) {
+    const r = await (d1
+      ? stmt(env.DB, SWEEP).bind(at, -tombCutoff, SWEEP_BATCH)
+      : stmt(env.DB, SWEEP_EXPIRED).bind(at, SWEEP_BATCH)
+    ).run();
     const n = r.meta.changes ?? 0;
     total += n;
     if (n < SWEEP_BATCH) break;
@@ -783,98 +915,132 @@ export async function sweepOAuthStore(env: Env, now: number): Promise<number> {
 // ---------------------------------------------------------------- copy
 
 export type CopyCounts = {
-  /** Keys KV listed. */
+  /** Keys KV listed in this invocation. */
   kvKeys: number;
   /** Rows inserted into D1 (keys D1 already held are left as they are). */
   copied: number;
   /** Keys expiring within MIN_COPY_TTL_S, or gone before their read. */
   skippedExpiring: number;
-  /** Live oauth_kv rows after the pass. */
-  d1Rows: number;
+  /** Live oauth_kv rows after the final page; null before it. */
+  d1Rows: number | null;
+  /** Pass to the next call; null: the pass is complete (backfilled set). */
+  nextCursor: string | null;
 };
 
 /** KV's minimum TTL: a key closer to expiry than this is not copied. */
 const MIN_COPY_TTL_S = 60;
-/** KV reads in flight, and inserts per D1 batch. */
+/**
+ * Keys per invocation: one KV list and up to this many KV gets (KV allows
+ * 1,000 operations per invocation).
+ */
+export const COPY_PAGE = 800;
+/** KV reads in flight, and rows per D1 insert (by count, then size). */
 const COPY_CHUNK = 50;
+const COPY_CHUNK_CHARS = 512_000;
+/**
+ * Rows for a JSON array of [key, value, expires_at, metadata]: one
+ * statement per chunk, so a page costs COPY_PAGE / COPY_CHUNK D1 queries at
+ * most (D1 allows 50 per invocation on Workers Free).
+ */
 const COPY =
-  "insert into oauth_kv (key, value, expires_at, metadata) values (?, ?, ?, ?) on conflict(key) do nothing";
+  "insert into oauth_kv (key, value, expires_at, metadata) select json_extract(value, '$[0]'), json_extract(value, '$[1]'), json_extract(value, '$[2]'), json_extract(value, '$[3]') from json_each(?) where true on conflict(key) do nothing";
 const COUNT_LIVE =
   "select count(*) as n from oauth_kv where expires_at is null or expires_at > ?";
 const MARK_BACKFILLED =
   "insert into settings (key, value) values (?, ?) on conflict(key) do update set value = excluded.value";
 
 /**
- * The backfill's core (Platform's job calls it), in dual mode only: walks
- * KV (list, then get each) and inserts every key into D1 with its original
- * expiry and metadata, never overwriting a row D1 already holds (a newer
- * dual write, or a deleted key's tombstone). Idempotent: a rerun copies only
- * what is missing. When the pass completes it records BACKFILLED_KEY.
- * Refused in kv mode (D1 is reset there) and d1 mode (KV is stale: a copy
- * could revive what d1 deleted). Never logs or returns keys or values.
+ * The backfill's core (Platform's job calls it), in dual mode only: one KV
+ * page per call (COPY_PAGE keys, within KV's and D1's per-invocation
+ * limits), resumed from `cursor` (the previous call's nextCursor). Inserts
+ * every key into D1 with its original expiry and metadata, never
+ * overwriting a row D1 already holds (a newer dual write, or a deleted
+ * key's tombstone). Idempotent: a rerun copies only what is missing. The
+ * call that completes the pass (nextCursor null) records BACKFILLED_KEY.
+ * Refused in kv mode (D1 misses KV's writes there), in d1 mode (KV is
+ * stale: a copy could revive what d1 deleted), and in dual after d1 without
+ * the override (checkMarkers). Never logs or returns keys or values.
+ * Runbook: start at least 60 s after dual is fully rolled out (KV's edge
+ * caches and every kv isolate gone), so no kv write lands behind the copy.
  */
 export async function copyKvToD1(
   env: Env,
-  now: number = Date.now(),
+  opt: { cursor?: string | null; now?: number } = {},
 ): Promise<CopyCounts> {
+  const now = opt.now ?? Date.now();
   const mode = oauthStoreMode(env);
   const kv = env.OAUTH_KV;
   if (mode !== "dual" || !kv)
     throw new OAuthStoreConfigError(
       "the KV -> D1 copy runs only with OAUTH_STORE=dual and OAUTH_KV bound",
     );
+  await checkMarkers(env, "dual");
   const db = env.DB;
   const at = Math.floor(now / 1000);
-  let kvKeys = 0;
   let copied = 0;
   let skippedExpiring = 0;
-  let cursor: string | undefined;
-  do {
-    const page = await kv.list({
-      limit: MAX_LIST_LIMIT,
-      ...(cursor ? { cursor } : {}),
+  const page = await kv.list({
+    limit: COPY_PAGE,
+    ...(opt.cursor ? { cursor: opt.cursor } : {}),
+  });
+  const todo = page.keys.filter(
+    (k) => k.expiration === undefined || k.expiration - at >= MIN_COPY_TTL_S,
+  );
+  skippedExpiring += page.keys.length - todo.length;
+  const inserts: D1PreparedStatement[] = [];
+  let rows: unknown[] = [];
+  let chars = 0;
+  const flushRows = () => {
+    if (rows.length === 0) return;
+    inserts.push(stmt(db, COPY).bind(JSON.stringify(rows)));
+    rows = [];
+    chars = 0;
+  };
+  for (let i = 0; i < todo.length; i += COPY_CHUNK) {
+    const chunk = todo.slice(i, i + COPY_CHUNK);
+    const values = await Promise.all(chunk.map((k) => kv.get(k.name, "text")));
+    chunk.forEach((k, j) => {
+      const v = values[j];
+      if (v === null || v === undefined) {
+        skippedExpiring++;
+        return;
+      }
+      const row = [
+        k.name,
+        v,
+        k.expiration ?? null,
+        k.metadata === undefined || k.metadata === null
+          ? null
+          : JSON.stringify(k.metadata),
+      ];
+      const size = k.name.length + v.length + 64;
+      if (rows.length >= COPY_CHUNK || chars + size > COPY_CHUNK_CHARS)
+        flushRows();
+      rows.push(row);
+      chars += size;
     });
-    kvKeys += page.keys.length;
-    const todo = page.keys.filter(
-      (k) => k.expiration === undefined || k.expiration - at >= MIN_COPY_TTL_S,
-    );
-    skippedExpiring += page.keys.length - todo.length;
-    for (let i = 0; i < todo.length; i += COPY_CHUNK) {
-      const chunk = todo.slice(i, i + COPY_CHUNK);
-      const values = await Promise.all(
-        chunk.map((k) => kv.get(k.name, "text")),
-      );
-      const inserts: D1PreparedStatement[] = [];
-      chunk.forEach((k, j) => {
-        const v = values[j];
-        if (v === null || v === undefined) {
-          skippedExpiring++;
-          return;
-        }
-        inserts.push(
-          stmt(db, COPY).bind(
-            k.name,
-            v,
-            k.expiration ?? null,
-            k.metadata === undefined || k.metadata === null
-              ? null
-              : JSON.stringify(k.metadata),
-          ),
-        );
-      });
-      if (inserts.length === 0) continue;
-      for (const r of await db.batch(inserts)) copied += r.meta.changes ?? 0;
-    }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-  const [count] = await db.batch<{ n: number }>([
-    stmt(db, COUNT_LIVE).bind(at),
-    stmt(db, MARK_BACKFILLED).bind(BACKFILLED_KEY, String(now)),
-  ]);
+  }
+  flushRows();
+  for (const s of inserts) {
+    const r = await s.run().catch((e: unknown) => {
+      throw mapStoreError(e);
+    });
+    copied += r.meta.changes ?? 0;
+  }
+  const nextCursor = page.list_complete ? null : page.cursor;
+  let d1Rows: number | null = null;
+  if (nextCursor === null) {
+    const [count] = await db.batch<{ n: number }>([
+      stmt(db, COUNT_LIVE).bind(at),
+      stmt(db, MARK_BACKFILLED).bind(BACKFILLED_KEY, String(now)),
+    ]);
+    d1Rows = count?.results[0]?.n ?? 0;
+  }
   return {
-    kvKeys,
+    kvKeys: page.keys.length,
     copied,
     skippedExpiring,
-    d1Rows: count?.results[0]?.n ?? 0,
+    d1Rows,
+    nextCursor,
   };
 }

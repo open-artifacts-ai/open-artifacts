@@ -15,6 +15,7 @@ import { sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import { revokeAllGrants } from "../src/mcp/oauth-api.js";
+import { KV_WRITES_OFF_KEY } from "../src/mcp/oauth-store.js";
 import { direct, mailer, seedUser, uniq } from "./auth-helpers.js";
 
 // P2 Task 14: test hooks for P5's cross-tenant suite.
@@ -653,6 +654,11 @@ describe("hooks", () => {
     expect(live?.n).toBeGreaterThan(0);
     await revokeAllGrants(e, uid);
     expect((await mcp(accessToken)).status).toBe(401);
+    // Serving in d1 stamped KV_WRITES_OFF; the later tests serve in kv,
+    // which is refused while it is set (leaving d1).
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(KV_WRITES_OFF_KEY)
+      .run();
   });
 
   it("code-caps/reset: before the key, the uniform 404 and nothing deleted", async () => {

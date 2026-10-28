@@ -353,10 +353,11 @@ export async function serveAppHost(
     req = gated;
   }
   // This install's OAuth store (OAUTH_STORE), one per request; the app and
-  // the /mcp handler get it too, so their helpers share its cache.
+  // the /mcp handler get it too, so their helpers share its cache. /healthz
+  // only reads (oauthStoreHealth): the markers are written on serve paths.
   let store: OAuthEnv;
   try {
-    await syncStoreMarkers(env);
+    if (new URL(req.url).pathname !== "/healthz") await syncStoreMarkers(env);
     store = oauthEnv(env);
   } catch (e) {
     if (!(e instanceof OAuthStoreConfigError)) throw e;

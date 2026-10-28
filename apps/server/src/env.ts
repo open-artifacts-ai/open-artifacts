@@ -17,6 +17,12 @@ export interface Env {
    * (the install's D1 only). Anything else fails clearly (503).
    */
   OAUTH_STORE?: string;
+  /**
+   * "1": kv or dual may serve after this install served in d1 mode
+   * (otherwise 503 oauth_store_misconfigured). Only after the OAuth keys
+   * were emptied from KV (every agent reconnects); see mcp/oauth-store.ts.
+   */
+  OAUTH_STORE_ROLLBACK?: string;
   ARTIFACT_RUNTIME: DurableObjectNamespace<ArtifactRuntime>;
   /**
    * One UserPresence DO per user (runtime/presence.ts): closes a revoked

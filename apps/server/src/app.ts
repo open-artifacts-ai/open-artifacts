@@ -119,8 +119,8 @@ export function createApp(
   // unchanged. It proves routing, never authenticity: the control plane must
   // not treat it as an authorization signal. oauthStore (the OAuth store
   // move): the mode, whether a full KV -> D1 copy completed, and since when
-  // KV writes are off (d1 only); one D1 batch, nothing else (no counts, no
-  // keys).
+  // KV writes are off; one D1 read, no writes (no counts, no keys), and null
+  // when D1 can't be read.
   app.get("/healthz", async (c) => {
     const installId = c.env.INSTALL_ID?.trim();
     const oauthStore = await oauthStoreHealth(c.env);
