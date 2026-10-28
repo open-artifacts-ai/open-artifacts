@@ -9,11 +9,6 @@ const FROZEN_GROUPS =
   "frozen sync: a manual override keeps the synced row's groups in the response (syncRole null, groups [gEng01]); the contract says groups [] (new)";
 
 export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
-  "public links off keeps an existing public artifact public (no rewrite)": {
-    item: "new",
-    m1: true,
-    why: "POST /artifacts with an existing id is 400 bad_request (use POST /versions); the contract republishes through it and expects 201 (new)",
-  },
   "spaces, members, mappings, directory, transfer": {
     item: "31",
     m1: false,
@@ -33,5 +28,4 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
 export const M1_OPEN: readonly string[] = [
   "new: frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited",
   "new: frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)",
-  "new: public links off keeps an existing public artifact public (no rewrite)",
 ];

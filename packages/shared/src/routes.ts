@@ -10,7 +10,7 @@ const seg = (s: string): string => {
 export const R = {
   /** GET -> Me; PATCH MePatch (`{ displayName }`) -> Me. Any signed-in user, guests included. */
   me: "/api/v1/me",
-  /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. */
+  /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. Create only: an existing artifact's id is 400 bad_request (details { path: "id", reason: "not_reserved" }); publish a new version with POST R.versions(id). (MCP publish_artifact with an id does publish a new version.) */
   artifacts: A,
   /** GET -> ArtifactSummary; PATCH ArtifactPatch -> ArtifactPatchResult; DELETE soft-delete -> 204 */
   artifact: (id: string) => `${A}/${seg(id)}`,

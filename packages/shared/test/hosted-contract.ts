@@ -785,16 +785,24 @@ export function hostedContract(d: ContractDriver): ContractCases {
           (await d.call("PATCH", R.artifact(notes), { visibility: "public" }))
             .status,
         ).toBe(200);
+        // A new version is POST /versions (resending "public" passes there too).
         expect(
           (
-            await d.call("POST", R.artifacts, {
-              id: notes,
+            await d.call("POST", R.versions(notes), {
               format: "html",
               content: "y",
               visibility: "public",
             })
           ).status,
         ).toBe(201);
+        // REST create never upserts: an existing id is 400 (use /versions).
+        const upsert = await d.call("POST", R.artifacts, {
+          id: notes,
+          format: "html",
+          content: "y",
+        });
+        expect(upsert.status).toBe(400);
+        expect((await errCode(upsert)).code).toBe("bad_request");
       },
     );
 

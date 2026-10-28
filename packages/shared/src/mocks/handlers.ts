@@ -143,13 +143,20 @@ const userRef = (u: UserRef): UserRef => ({
   name: u.name,
 });
 
-async function body<T extends z.ZodType>(req: Request, schema: T) {
+async function body<T extends z.ZodType>(
+  req: Request,
+  schema: T,
+  /** Fields set from the path, over the body's (the server's publishInput id). */
+  fromPath?: Record<string, unknown>,
+) {
   let raw: unknown;
   try {
     raw = await req.json();
   } catch {
     return { error: badRequest("Body must be valid JSON") };
   }
+  if (fromPath && raw && typeof raw === "object" && !Array.isArray(raw))
+    raw = { ...raw, ...fromPath };
   const r = schema.safeParse(raw);
   // Oversize inline content is 413, as on the server.
   if (
@@ -503,10 +510,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       if (noPublic) return noPublic;
       if (!existing && r.data.id && r.data.title === undefined)
         return badRequest("title is required when creating an artifact");
+      // REST create never upserts, as on the server: a new version is
+      // POST /versions.
       if (existing)
-        return existing.deletedAt !== null || existing.access === "viewer"
-          ? notFound()
-          : publishTo(existing, r.data);
+        return err(
+          "bad_request",
+          "use POST /versions to publish a new version",
+          { path: "id", reason: "not_reserved" },
+        );
       const now = iso();
       const a: ArtifactSummary = {
         id: r.data.id ?? newId(),
@@ -607,8 +618,16 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     http.post(
       `${A}/versions`,
       withArt(async (a, { request }) => {
-        const r = await body(request, PublishInputSchema);
-        return r.error ?? publishTo(a, r.data);
+        const r = await body(request, PublishInputSchema, { id: a.id });
+        if (r.error) return r.error;
+        const placed = h?.checkPublish(r.data, a);
+        if (placed instanceof Response) return placed;
+        const noPublic = h?.refusePublic(
+          a.space,
+          r.data.visibility,
+          a.visibility,
+        );
+        return noPublic ?? publishTo(a, r.data);
       }, "write"),
     ),
     http.get(
