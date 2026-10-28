@@ -701,6 +701,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       a.can = artifactCan(a.access, {
         personal: s.kind === "personal",
         cap: cap(),
+        dataWriters: a.dataWriters,
       });
     }
   };
@@ -711,6 +712,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     notes.space = ref(findSpace(ENG) as SpaceRow);
     notes.access = "manager";
   }
+  // Bob's "Onboarding guide" (the caller is a viewer): data writes are editors-only.
+  const guide = artifacts.find((a) => a.title === "Onboarding guide");
+  if (guide) guide.dataWriters = "editors";
   refresh();
 
   // ---- code flow state -----------------------------------------------------

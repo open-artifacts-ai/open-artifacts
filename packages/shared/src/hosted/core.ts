@@ -237,7 +237,7 @@ export const ArtifactCanSchema = z.object({
   transfer: z.boolean(),
   /** Move into a shared space. */
   move: z.boolean(),
-  /** Live-data and storage writes, role-wise (the artifact still needs the capability). False for guests and restricted members; ordinary viewers keep it. */
+  /** Live-data and storage writes, role-wise (the artifact still needs the capability). False for guests and restricted members, and for viewers when the artifact's dataWriters is "editors"; other viewers keep it. */
   dataWrite: z.boolean(),
 });
 export type ArtifactCan = z.infer<typeof ArtifactCanSchema>;
@@ -248,10 +248,15 @@ export type HostedAccessLevel = "viewer" | "editor" | "manager" | "owner";
  * The action table (P3 "Actions per level") as one pure function, shared by
  * the server and the mocks. `personal`: the artifact is in a personal space.
  * `cap`: the caller's cap; a capped caller gets viewer actions minus data writes.
+ * `dataWriters`: the artifact's (#681); "editors" takes data writes from viewers.
  */
 export function artifactCan(
   level: HostedAccessLevel,
-  opts: { personal: boolean; cap?: CapReason | null },
+  opts: {
+    personal: boolean;
+    cap?: CapReason | null;
+    dataWriters?: "editors" | "viewers";
+  },
 ): ArtifactCan {
   const capped = opts.cap != null;
   const write = !capped && level !== "viewer";
@@ -263,6 +268,7 @@ export function artifactCan(
     delete: full,
     transfer: full && level === "owner" && opts.personal,
     move: full,
-    dataWrite: !capped,
+    dataWrite:
+      !capped && (opts.dataWriters !== "editors" || level !== "viewer"),
   };
 }

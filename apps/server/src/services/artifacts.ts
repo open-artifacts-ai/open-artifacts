@@ -764,7 +764,11 @@ export function withSpace<T extends ArtifactSummary>(
       name: shared ? (sp.name ?? "") : (out.owner.name ?? "Personal"),
       publicLinks: shared ? sp.publicLinks === 1 : true,
     };
-  out.can = artifactCan(level, { personal: !shared, cap: capOfCaller(caller) });
+  out.can = artifactCan(level, {
+    personal: !shared,
+    cap: capOfCaller(caller),
+    dataWriters: out.dataWriters,
+  });
   return out;
 }
 

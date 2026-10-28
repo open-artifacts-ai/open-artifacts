@@ -284,6 +284,23 @@ describe("hosted contract schemas", () => {
     expect(
       artifactCan("viewer", { personal: false, cap: "restricted" }).dataWrite,
     ).toBe(false);
+    // #681: dataWriters "editors" takes data writes from viewers only.
+    const dw = (
+      level: "viewer" | "editor" | "owner",
+      d?: "editors" | "viewers",
+    ) => artifactCan(level, { personal: true, dataWriters: d }).dataWrite;
+    expect(dw("viewer", "editors")).toBe(false);
+    expect(dw("viewer", "viewers")).toBe(true);
+    expect(dw("viewer")).toBe(true);
+    expect(dw("editor", "editors")).toBe(true);
+    expect(dw("owner", "editors")).toBe(true);
+    expect(
+      artifactCan("owner", {
+        personal: true,
+        cap: "guest",
+        dataWriters: "viewers",
+      }).dataWrite,
+    ).toBe(false);
   });
 
   it("schemas: settings flag, Space.can, org mappings, audit action", () => {

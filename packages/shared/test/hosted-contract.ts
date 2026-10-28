@@ -259,8 +259,9 @@ export function hostedContract(d: ContractDriver): ContractCases {
         const mine = list.items.find((a) => a.title === "Landing page");
         expect(mine?.space).toMatchObject({ kind: "personal", id: me.user.id });
         expect(mine?.can?.transfer).toBe(true);
+        // The viewer row is Bob's editors-only guide: no data writes either.
         const viewer = list.items.find((a) => a.access === "viewer");
-        expect(viewer?.can).toMatchObject({ edit: false, dataWrite: true });
+        expect(viewer?.can).toMatchObject({ edit: false, dataWrite: false });
         const hits = PageSchema(Strict.SearchHit).parse(
           await json(await d.call("GET", `${R.search}?q=notes`)),
         );
@@ -618,6 +619,48 @@ export function hostedContract(d: ContractDriver): ContractCases {
             await list(`scope=mine&spaceId=${me.personalSpaceId}&limit=100`),
           ),
         ).toContain("Landing page");
+      },
+    );
+  });
+
+  describe("hosted mocks: data writers", () => {
+    t(
+      "a viewer of an editors-only artifact gets can.dataWrite false",
+      async () => {
+        await d.fresh({ hosted: true });
+        const get = async (title: string) => {
+          const id = fixtures.artifacts.find((a) => a.title === title)
+            ?.id as string;
+          return Strict.ArtifactSummary.parse(
+            await json(await d.call("GET", R.artifact(id))),
+          );
+        };
+        const guide = await get("Onboarding guide");
+        expect(guide).toMatchObject({
+          access: "viewer",
+          dataWriters: "editors",
+        });
+        expect(guide.can?.dataWrite).toBe(false);
+        // The list says the same.
+        const page = PageSchema(Strict.ArtifactSummary).parse(
+          await json(await d.call("GET", `${R.artifacts}?scope=all&limit=100`)),
+        );
+        expect(page.items.find((a) => a.id === guide.id)?.can?.dataWrite).toBe(
+          false,
+        );
+        // Owners keep it on an editors-only artifact.
+        const landing = fixtures.artifacts.find(
+          (a) => a.title === "Landing page",
+        )?.id as string;
+        const own = Strict.ArtifactSummary.parse(
+          await json(
+            await d.call("PATCH", R.artifact(landing), {
+              dataWriters: "editors",
+            }),
+          ),
+        );
+        expect(own).toMatchObject({ access: "owner", dataWriters: "editors" });
+        expect((await get("Landing page")).can?.dataWrite).toBe(true);
       },
     );
   });

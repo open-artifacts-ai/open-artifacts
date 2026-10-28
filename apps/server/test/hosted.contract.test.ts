@@ -502,7 +502,8 @@ async function seed(hosted: boolean, h: ContractHosted = {}) {
         ]),
   ]);
   // Artifacts (fixtures.ts), published for real; "Meeting notes" lives in
-  // Engineering. Bob's "Shared draft" is shared with Ada as an editor.
+  // Engineering. Bob's "Shared draft" is shared with Ada as an editor; his
+  // "Onboarding guide" is editors-only for data.
   const mine: [string, Record<string, unknown>][] = [
     ["Landing page", {}],
     ["Meeting notes", { format: "markdown", visibility: "team", spaceId: ENG }],
@@ -537,6 +538,8 @@ async function seed(hosted: boolean, h: ContractHosted = {}) {
       await publishAs("bob", "Onboarding guide", {
         format: "markdown",
         visibility: "team",
+        // As the mock: data writes are editors-only (Ada is a viewer).
+        dataWriters: "editors",
       })
     ).id,
   );
