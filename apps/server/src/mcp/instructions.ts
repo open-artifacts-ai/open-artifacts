@@ -64,7 +64,8 @@ export const SECTIONS = {
 - markdown: rendered with code highlighting and mermaid diagrams.
 - code: one source file shown with syntax highlighting; set language (for example "python").
 - pdf: an uploaded PDF document.
-- If format is omitted it is inferred from the entry file's extension.`,
+- If format is omitted it is inferred from the entry file's extension: .html, .md, .pdf, or a known text file (source code, .txt, .csv, .log, config) as code. Any other name (LICENSE, .gitignore) publishes as code when the file is UTF-8 text; anything else (a photo, an archive) is refused with unsupported_format.
+- The entry's content must fit its format: code, markdown and html are UTF-8 text, a pdf starts with %PDF. A mismatch is refused with binary_entry.`,
   },
   publishing: {
     title: "Publishing",
