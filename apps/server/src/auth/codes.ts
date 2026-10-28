@@ -261,11 +261,46 @@ export async function takeRequestSlot(
   return { ok: true };
 }
 
+type CodeRow = {
+  code_hash: string;
+  expires_at: number;
+  attempts: number;
+  created_at: number;
+};
+
+const UPSERT_CODE = `insert into login_codes (email_key, request_id, code_hash, expires_at, created_at)
+  values (?1, ?2, ?3, ?4, ?5)
+  on conflict (email_key, request_id) do update set
+    code_hash = excluded.code_hash, expires_at = excluded.expires_at,
+    attempts = 0, created_at = excluded.created_at`;
+
 /**
- * Stores a new code for (ek, rid) and returns it. A row already under that
- * id (a resend for the same pending request, review item 13) is replaced:
- * new hash, expiry and attempts. `gen` is for tests only.
+ * Stores a new code for (ek, rid). A row already under that id (a resend for
+ * the same pending request, review item 13) is replaced: new hash, expiry
+ * and attempts. The row it replaced is read in the same batch (one
+ * transaction), so nothing lands between the read and the write. Returns
+ * the code, its hash and that earlier row.
  */
+async function storeCode(
+  env: Env,
+  ek: string,
+  rid: string,
+  now: number,
+  gen: () => string,
+): Promise<{ code: string; hash: string; before: CodeRow | null }> {
+  const code = gen();
+  const hash = await codeHash(env, ek, rid, code);
+  const [prev] = await env.DB.batch<CodeRow>([
+    stmt(
+      env.DB,
+      "select code_hash, expires_at, attempts, created_at from login_codes where email_key = ?1 and request_id = ?2",
+    ).bind(ek, rid),
+    stmt(env.DB, UPSERT_CODE).bind(ek, rid, hash, now + TTL_MS, now),
+  ]);
+  return { code, hash, before: prev?.results[0] ?? null };
+}
+
+/** Stores a new code for (ek, rid) (storeCode) and returns it. `gen` is for tests only. */
 export async function createCode(
   env: Env,
   ek: string,
@@ -273,26 +308,8 @@ export async function createCode(
   now = Date.now(),
   gen: () => string = randomCode,
 ): Promise<string> {
-  const code = gen();
-  await stmt(
-    env.DB,
-    `insert into login_codes (email_key, request_id, code_hash, expires_at, created_at)
-     values (?1, ?2, ?3, ?4, ?5)
-     on conflict (email_key, request_id) do update set
-       code_hash = excluded.code_hash, expires_at = excluded.expires_at,
-       attempts = 0, created_at = excluded.created_at`,
-  )
-    .bind(ek, rid, await codeHash(env, ek, rid, code), now + TTL_MS, now)
-    .run();
-  return code;
+  return (await storeCode(env, ek, rid, now, gen)).code;
 }
-
-type CodeRow = {
-  code_hash: string;
-  expires_at: number;
-  attempts: number;
-  created_at: number;
-};
 
 /** Every way one deliverCode call ends; "error" is it throwing (the route logs that). */
 export type CodeSendOutcome =
@@ -389,13 +406,11 @@ export async function deliverCode(
     logAuth({ evt: "code_abuse", scope: "send" });
   // The code a resend replaces (same pending request id), put back if this
   // send fails: the earlier email's code stays usable.
-  const before = await stmt(
-    env.DB,
-    "select code_hash, expires_at, attempts, created_at from login_codes where email_key = ?1 and request_id = ?2",
-  )
-    .bind(ek, requestId)
-    .first<CodeRow>();
-  const code = await createCode(env, ek, requestId, now);
+  const {
+    code,
+    hash: mine,
+    before,
+  } = await storeCode(env, ek, requestId, now, randomCode);
   const instance = (await getSettings(env).catch(() => null))?.name ?? null;
   const sent = await sendEmail(
     env,
@@ -411,13 +426,14 @@ export async function deliverCode(
     { kind: "code", now, caps: [], instance },
   );
   if (!sent) {
-    // Only the row this call wrote (its hash): a racing resend's stays.
-    const mine = await codeHash(env, ek, requestId, code);
+    // Only while the row still holds the code this call wrote (its hash): a
+    // consumed or replaced row is never revived. Guesses made against it
+    // since stay counted (the higher attempts wins).
     await (before
       ? stmt(
           env.DB,
           `update login_codes set code_hash = ?3, expires_at = ?4,
-             attempts = ?5, created_at = ?6
+             attempts = max(attempts, ?5), created_at = ?6
            where email_key = ?1 and request_id = ?2 and code_hash = ?7`,
         ).bind(
           ek,
