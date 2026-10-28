@@ -5,7 +5,8 @@ import { request as httpsRequest } from "node:https";
 // WebSocket handshakes and raw-Host requests over node:http(s). fetch can't
 // send Upgrade or a Host that differs from the URL. Both resolve to a
 // Response (a 101 included), so crossCheck and expectRefused judge them like
-// any other reply. A timeout or socket error rejects: a FAIL, never a refusal.
+// any other reply. A timeout or socket error rejects, never a refusal; under
+// sendProbe it is tried once more, then infra.
 
 const TIMEOUT_MS = 15_000;
 
@@ -66,7 +67,10 @@ export function rawRequest(o: RawOpts): Promise<Response> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       req.destroy();
-      reject(new Error(`timed out after ${o.timeoutMs ?? TIMEOUT_MS} ms`));
+      // Named TimeoutError so sendProbe reads it as no response (infra).
+      const e = new Error(`timed out after ${o.timeoutMs ?? TIMEOUT_MS} ms`);
+      e.name = "TimeoutError";
+      reject(e);
     }, o.timeoutMs ?? TIMEOUT_MS);
     const done = (r: Response) => {
       clearTimeout(timer);
@@ -87,9 +91,12 @@ export function rawRequest(o: RawOpts): Promise<Response> {
     });
     req.on("error", (e) => {
       clearTimeout(timer);
-      // Never the message: it can carry the URL. The code is enough.
+      // Never the message: it can carry the URL. The code is enough, and it
+      // stays on the error so sendProbe can tell no response (ECONNRESET, ...)
+      // from a verdict: one retry, then infra.
+      const code = (e as { code?: string }).code;
       reject(
-        new Error(`request failed (${(e as { code?: string }).code ?? "?"})`),
+        Object.assign(new Error(`request failed (${code ?? "?"})`), { code }),
       );
     });
     req.end();
