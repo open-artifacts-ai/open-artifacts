@@ -253,6 +253,12 @@ const UNBIND = `update identities set directory_bound = 0
   where provider = 'google' and directory_bound = 1
     and user_id in (select value from json_each(?1))`;
 const SYNC_ACTOR = { kind: "sync", id: null } as const;
+/** Adds ?2 (JSON ids) to the tenant.retired list (?1), in the same batch. */
+const RECORD_RETIRED = `insert into directory_state (key, value) values (?1, ?2)
+  on conflict (key) do update set value = (select json_group_array(v) from (
+    select j.value as v from json_each(directory_state.value) j
+    union select k.value from json_each(excluded.value) k))`;
+const RETIRED_IDS = "select value as ids from directory_state where key = ?";
 
 /**
  * A confirm swapped in a different Google Workspace (customer) than the one
@@ -299,29 +305,49 @@ export async function retireTenant(
         }),
       ),
       stmt(env.DB, RETIRE_PATS).bind(ids, now),
+      stmt(env.DB, RECORD_RETIRED).bind(
+        K.retired,
+        JSON.stringify(active.map((r) => r.id)),
+      ),
       stmt(env.DB, UNBIND).bind(ids),
     ]);
     unbound += results.length;
     suspended.push(...active.map((r) => r.id));
   }
-  // Done: the sync.state tombstone may go (health.ts clearHealth).
-  await stmt(env.DB, "delete from directory_state where key = ? and value = ?")
-    .bind(K.retire, previousCustomerId)
-    .run();
+  // Everyone this change suspended, an interrupted earlier attempt's too
+  // (they are unbound now, so the loop above no longer finds them).
+  const row = await stmt(env.DB, RETIRED_IDS)
+    .bind(K.retired)
+    .first<{ ids: string }>();
+  let recorded: string[] = [];
+  try {
+    recorded = row ? (JSON.parse(row.ids) as string[]) : [];
+  } catch {
+    recorded = [];
+  }
+  const all = [...new Set([...recorded, ...suspended])];
   logInfo("directory_tenant_retired", {
     unbound,
-    suspended: suspended.length,
+    suspended: all.length,
   });
   // Already refused (status, epoch, status_changed_at): the stored grants
   // and the sockets are cleanup, bounded like every fan-out.
   const grants = (async () => {
-    for (const id of suspended.slice(0, revokeFanoutCap(env)))
+    for (const id of all.slice(0, revokeFanoutCap(env)))
       await revokeAllGrants(env, id).catch((e) =>
         logWarn("directory_tenant_grants", e),
       );
   })();
   if (ctx) ctx.waitUntil(grants);
   else await grants;
-  await revokeUsersLive(env, suspended, "directory tenant changed", ctx);
-  return suspended;
+  await revokeUsersLive(env, all, "directory tenant changed", ctx);
+  // Done: the sync.state tombstone may go (health.ts clearHealth).
+  await env.DB.batch([
+    stmt(
+      env.DB,
+      "delete from directory_state where key = ? and value = ?",
+    ).bind(K.retire, previousCustomerId),
+    stmt(env.DB, "delete from directory_state where key = ?").bind(K.retired),
+  ]);
+  return all;
 }

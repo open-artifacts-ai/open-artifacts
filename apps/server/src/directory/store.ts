@@ -28,7 +28,10 @@ import { directoryClient } from "./client.js";
 //   until a new binding replaces both (health.ts clearHealth);
 // - "tenant.retire": the previous customer id while a confirm that swapped
 //   in another Workspace still owes retiring its users (binding.ts
-//   retireTenant); the sync.state tombstone stays until it is done.
+//   retireTenant); the sync.state tombstone stays until it is done;
+// - "tenant.retired": the users that change has suspended so far (JSON
+//   array), so a retry still revokes the grants and closes the sockets of
+//   those an earlier, interrupted attempt suspended.
 
 export const K = {
   binding: "binding",
@@ -41,6 +44,7 @@ export const K = {
   initial: "binding.initial",
   prior: "binding.prior",
   retire: "tenant.retire",
+  retired: "tenant.retired",
 } as const;
 
 export const UPSERT = `insert into directory_state (key, value) values (?, ?)
@@ -370,7 +374,7 @@ export const wipeState = (env: Env, guard?: SqlGuard) =>
     `delete from directory_state
       where not (
         (key = 'sync.state' and value = 'customer_mismatch')
-        or key = '${K.retire}'
+        or key in ('${K.retire}', '${K.retired}')
         or (key = ?1 and ${TOMBSTONED}))${guard ? ` and ${guard.sql}` : ""}
       returning key, value`,
   ).bind(K.prior, ...(guard?.args ?? []));

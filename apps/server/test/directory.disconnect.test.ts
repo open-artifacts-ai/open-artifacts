@@ -22,6 +22,7 @@ import { K, UPSERT } from "../src/directory/store.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
+import { oauthApi } from "../src/mcp/oauth-api.js";
 import { resetSync, SYNC_DO_NAME } from "../src/services/directory.js";
 import { admit } from "../src/services/identity.js";
 import { mailer, type SentMail, seedUser, uniq } from "./auth-helpers.js";
@@ -1005,6 +1006,59 @@ describe("during customer_mismatch", () => {
     expect(await statusOf(a.userId)).toBe("suspended");
     expect(await boundOf(a.sub)).toBe(0);
     expect((await meAs(e, { cookie: a.cookie })).status).toBe(401);
+  });
+
+  it("review #4: a retry still revokes the grants and closes the sockets of users an interrupted attempt suspended", async () => {
+    const a = await boundUser("ws-retry");
+    await mismatchAndDisconnect(e);
+    await reconnectElsewhere(e, false);
+    // The first attempt dies after suspending a, before its cleanup.
+    let tripped = 0;
+    const db = env.DB;
+    const failing = {
+      ...e,
+      DB: new Proxy(db, {
+        get(t, k) {
+          if (k === "prepare")
+            return (sql: string) => {
+              // Its first step after the D1 loop, before any cleanup.
+              if (
+                (sql.startsWith(
+                  "delete from directory_state where key = ? and value = ?",
+                ) ||
+                  sql.startsWith("select value as ids from directory_state")) &&
+                tripped++ === 0
+              )
+                throw new Error("d1 down");
+              return t.prepare(sql);
+            };
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    } as Env;
+    expect((await post(failing, R.directoryConfirm, owner.cookie)).status).toBe(
+      200,
+    );
+    expect(tripped).toBeGreaterThan(0);
+    expect(await statusOf(a.userId)).toBe("suspended");
+    // The retry (DirectorySync) finds nobody bound, yet still cleans up a.
+    await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
+    expect(await keys()).not.toContain("tenant.retire");
+    expect(await keys()).not.toContain("tenant.retired");
+    const ns = env.USER_PRESENCE as NonNullable<Env["USER_PRESENCE"]>;
+    const revoked = await runInDurableObject(
+      ns.get(ns.idFromName(a.userId)),
+      (_i, s) =>
+        s.storage.sql
+          .exec("select revoked_at from state where id = 1")
+          .toArray()[0]?.revoked_at,
+    );
+    expect(Number(revoked)).toBeGreaterThan(0);
+    const { items } = await oauthApi(e).listUserGrants(a.userId, {
+      limit: 10,
+    });
+    expect(items).toEqual([]);
   });
 
   it("P2.5 #16: a reset keeps the customer_mismatch tombstone while a retire is owed, even with a live binding", async () => {
