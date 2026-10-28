@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
 import { INSTRUCTIONS, planText, sizeText } from "../src/mcp/instructions.js";
 import { SKILL_HASH, SKILL_TEMPLATE } from "../src/mcp/skill.generated.js";
-import { renderSkill, SKILL_DOC_URI } from "../src/mcp/skill.js";
+import { renderSkill, SKILL_DOC_URI, upgradeLine } from "../src/mcp/skill.js";
 import {
   hostSlug,
   SECRET_LABELS,
@@ -92,6 +92,7 @@ describe("skill.md drift", () => {
       name: await skillName(e.APP_HOST),
       hostSlug: hostSlug(e.APP_HOST),
       version: VERSION,
+      upgradeLine: upgradeLine(e),
     };
     const fresh = renderSkillTemplate().replace(
       /\{\{(\w+)\}\}/g,

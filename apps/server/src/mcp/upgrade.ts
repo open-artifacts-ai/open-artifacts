@@ -1,7 +1,9 @@
 // GET /upgrade.md on the app host: this instance's upgrade Agent Skill, from
 // the pre-rendered template (upgrade.generated.ts) with its tokens filled in.
 // Same shape as /skill.md: one regex pass, memoized per isolate, no D1 or
-// session. SKILL_MD=off turns it off too.
+// session. SKILL_MD=off turns it off too, and HOSTED=1 always does: a hosted
+// tenant is upgraded by the platform, never by the self-host oa:setup flow
+// (review item 39).
 import type { Context } from "hono";
 import type { Env } from "../env.js";
 import type { AppEnv } from "../http/middleware.js";
@@ -53,7 +55,7 @@ export function renderUpgrade(env: UpgradeEnv): Promise<string> {
 export const UPGRADE_ETAG = `"${VERSION}-upgrade-${UPGRADE_HASH}"`;
 
 export async function serveUpgrade(c: Context<AppEnv>) {
-  if (!skillEnabled(c.env)) return c.notFound();
+  if (!skillEnabled(c.env) || c.env.HOSTED === "1") return c.notFound();
   const headers = {
     "Content-Type": "text/markdown; charset=utf-8",
     "Cache-Control": "public, max-age=300",
