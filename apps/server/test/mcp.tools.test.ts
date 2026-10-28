@@ -7,6 +7,7 @@ import {
   LIMITS,
   newId,
   QUOTA_MESSAGE,
+  UNSUPPORTED_FORMAT_MESSAGE,
 } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPat } from "../src/auth/pat.js";
@@ -239,6 +240,44 @@ describe("MCP tools over PAT", () => {
       files: { "a.txt": half, "b.txt": half, "c.txt": "y" },
     });
     expect(textOf(f)).toBe(`too_large: ${INLINE_TOO_LARGE_MESSAGE}`);
+  });
+
+  it("a file no viewer shows → unsupported_format, with what to publish instead", async () => {
+    const jpeg = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 0, 0x10));
+    const r = await tool(client, "publish_artifact", {
+      title: "photo",
+      files: { "IMG_0042.jpg": { base64: jpeg } },
+    });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(`unsupported_format: ${UNSUPPORTED_FORMAT_MESSAGE}`);
+    const b = await tool(client, "publish_artifact", {
+      title: "photo",
+      format: "code",
+      entry: "photo.txt",
+      files: { "photo.txt": { base64: jpeg } },
+    });
+    expect(b.isError).toBe(true);
+    expect(textOf(b)).toBe(
+      'binary_entry: "photo.txt" is a JPEG image, not text, so it can\'t be shown as code.',
+    );
+    const p = await tool(client, "publish_artifact", {
+      title: "doc",
+      format: "pdf",
+      content: "not a pdf",
+    });
+    expect(textOf(p)).toBe(
+      "binary_entry: \"document.pdf\" doesn't start with %PDF, so it can't be shown as a PDF.",
+    );
+  });
+
+  it("the instructions and publish_artifact say what is refused", async () => {
+    const { tools } = await client.listTools();
+    const d = tools.find((t) => t.name === "publish_artifact")?.description;
+    expect(d).toContain("unsupported_format");
+    expect(d).toContain("binary_entry");
+    const ins = client.getInstructions() ?? "";
+    expect(ins).toContain("unsupported_format");
+    expect(ins).not.toMatch(/anything else is code/i);
   });
 
   it("no access is not_found, never forbidden", async () => {
