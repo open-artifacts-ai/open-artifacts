@@ -12,13 +12,14 @@ import {
   TEST_OTP_OUTCOMES,
   TestAuditInputSchema,
   type TestAuditResult,
+  TestCodeCapsResetInputSchema,
   type TestHookRefusal,
   type TestOtpOutcome,
   TestSessionInputSchema,
 } from "@oa/shared";
 import { eq } from "drizzle-orm";
 import type { Context } from "hono";
-import { emailKey } from "../auth/codes.js";
+import { emailKey, ipKey } from "../auth/codes.js";
 import { authConfig } from "../auth/config.js";
 import { signSession } from "../auth/session.js";
 import { getDb } from "../db/client.js";
@@ -212,19 +213,39 @@ const log = (evt: string) =>
   console.log(JSON.stringify({ evt: `test_hook.${evt}` }));
 const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
 
-type HookName = "session" | "otp_latest" | "oauth_client" | "audit" | "unknown";
+type HookName =
+  | "session"
+  | "otp_latest"
+  | "oauth_client"
+  | "audit"
+  | "code_caps_reset"
+  | "unknown";
 type Outcome = "ok" | "denied" | "refused" | "none" | "error";
 
+const HOOK_NAMES: Record<string, HookName> = {
+  [TEST_HOOKS.session]: "session",
+  [TEST_HOOKS.otpLatest]: "otp_latest",
+  [TEST_HOOKS.oauthClient]: "oauth_client",
+  [TEST_HOOKS.audit]: "audit",
+  [TEST_HOOKS.codeCapsReset]: "code_caps_reset",
+};
 const hookName = (path: string): HookName =>
-  path === TEST_HOOKS.session
-    ? "session"
-    : path === TEST_HOOKS.otpLatest
-      ? "otp_latest"
-      : path === TEST_HOOKS.oauthClient
-        ? "oauth_client"
-        : path === TEST_HOOKS.audit
-          ? "audit"
-          : "unknown";
+  Object.hasOwn(HOOK_NAMES, path) ? (HOOK_NAMES[path] as HookName) : "unknown";
+
+// The caller's own per-IP code buckets (auth/codes.ts takeRequestSlot and
+// verify), by its ipKey: exactly these two keys, never a prefix match, so no
+// other IP's buckets, no per-address bucket and no pool counter is touched.
+// D1 (strongly consistent): the next code request sees the reset.
+const CODE_CAPS_DELETE = "delete from counters where key in (?1, ?2)";
+
+/** Deletes the caller's code:ip and code:fail buckets; how many rows went. */
+async function resetCodeCaps(env: Env, ip: string): Promise<number> {
+  const ik = await ipKey(env, ip);
+  const r = await env.DB.prepare(CODE_CAPS_DELETE)
+    .bind(`code:ip:${ik}`, `code:fail:${ik}`)
+    .run();
+  return r.meta.changes ?? 0;
+}
 
 // Same DDL as P3's audit_events (0009_spaces, also IF NOT EXISTS), so the
 // rows land in the audit log on installs that predate that migration.
@@ -571,6 +592,17 @@ export function mountTestHooks(app: AppType): void {
       return "code" in got
         ? c.json({ code: got.code })
         : refused("no_code", { outcome: got.outcome });
+    }
+
+    if (hook === "code_caps_reset") {
+      // Strictly `{}`: a body naming an IP or a key is refused.
+      if (!TestCodeCapsResetInputSchema.safeParse(body).success || !ip) {
+        await audit(env, hook, ip, "refused");
+        return refused("bad_input");
+      }
+      const reset = await resetCodeCaps(env, ip);
+      await audit(env, hook, ip, "ok");
+      return c.json({ reset });
     }
 
     if (hook === "audit") {

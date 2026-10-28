@@ -23,6 +23,7 @@ export const TEST_HOOKS = {
   otpLatest: "/__test/otp/latest",
   oauthClient: "/__test/oauth-client",
   audit: "/__test/audit",
+  codeCapsReset: "/__test/code-caps/reset",
 } as const;
 
 /**
@@ -103,6 +104,21 @@ export const OAuthClientHookResultSchema = z.object({
   accessToken: z.string(),
 });
 export type OAuthClientHookResult = z.infer<typeof OAuthClientHookResultSchema>;
+
+/**
+ * POST TEST_HOOKS.codeCapsReset with exactly `{}`: deletes the CALLER's own
+ * per-IP code buckets (code:ip and code:fail for its IP), nothing else.
+ */
+export const TestCodeCapsResetInputSchema = z.strictObject({});
+export type TestCodeCapsResetInput = z.infer<
+  typeof TestCodeCapsResetInputSchema
+>;
+export const TestCodeCapsResetResultSchema = z.object({
+  reset: z.number().int().nonnegative(),
+});
+export type TestCodeCapsResetResult = z.infer<
+  typeof TestCodeCapsResetResultSchema
+>;
 
 /** Most rows POST TEST_HOOKS.audit returns. */
 export const TEST_AUDIT_LIMIT = 200;
