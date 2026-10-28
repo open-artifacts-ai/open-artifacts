@@ -121,6 +121,7 @@ const DEFAULT_ENTRY = {
   markdown: "document.md",
   code: "file.txt",
   pdf: "document.pdf",
+  image: "image.svg",
 } as const;
 
 /**

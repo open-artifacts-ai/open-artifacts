@@ -102,6 +102,7 @@ const NAME: Record<Format, string> = {
   markdown: "Markdown",
   code: "code",
   pdf: "a PDF",
+  image: "an image",
 };
 
 /**

@@ -16,6 +16,7 @@ const LABEL: Record<Format, string> = {
   markdown: "Markdown",
   code: "Code",
   pdf: "PDF",
+  image: "Image",
 };
 // Radix items can't hold "", so "All" travels as a sentinel.
 const ALL = "__all";

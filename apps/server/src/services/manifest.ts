@@ -164,6 +164,8 @@ function defaultEntry(format: Format, language: string | null): string {
   if (format === "html") return "index.html";
   if (format === "markdown") return "README.md";
   if (format === "pdf") return "document.pdf";
+  // Inline `content` is text: of the image types, only SVG.
+  if (format === "image") return "image.svg";
   return `main.${EXT.get((language ?? "").toLowerCase()) ?? "txt"}`;
 }
 
