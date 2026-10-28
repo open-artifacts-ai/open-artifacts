@@ -173,10 +173,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
       <Modal
         onClose={onClose}
         title={
-          added.emailed
-            ? `Invitation sent to ${added.email}`
-            : added.uncertain
-              ? `Invite sent to ${added.email}`
+          // Design (#800): an uncertain invite is "Invite sent", emailed or not.
+          added.uncertain
+            ? `Invite sent to ${added.email}`
+            : added.emailed
+              ? `Invitation sent to ${added.email}`
               : `${added.email} can now sign in`
         }
         description={

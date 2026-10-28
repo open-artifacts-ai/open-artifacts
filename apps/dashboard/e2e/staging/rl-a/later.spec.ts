@@ -72,6 +72,10 @@ test("#764: a space manager who isn't an admin adds people", async ({
   await page.getByRole("option", { name: new RegExp(newbie.name) }).click();
   await d.getByRole("button", { name: "Add 1 person" }).click();
   await expect(d).toHaveCount(0);
+  // Search: earlier runs' people can push this one past the first page.
+  await people
+    .getByRole("searchbox", { name: `Search people in ${eng.name}` })
+    .fill(newbie.email);
   await expect(people.getByText(newbie.name)).toBeVisible();
 
   const q = new URLSearchParams({ q: newbie.email });
@@ -81,6 +85,11 @@ test("#764: a space manager who isn't an admin adds people", async ({
   expect(rows.items).toEqual([
     expect.objectContaining({ userId: newbie.id, manualRole: "viewer" }),
   ]);
+  // Leave the fixed space as found, so its People list doesn't grow per run.
+  const out = await api(keeper, R.spaceMember(eng.id, newbie.id), {
+    method: "DELETE",
+  });
+  expect([200, 204]).toContain(out.status);
 });
 
 test("#765: Mine inside a shared space lists only the caller's artifacts", async ({
