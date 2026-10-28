@@ -109,7 +109,18 @@ describe("test-affected.sh", () => {
   const pnpm = 'case " $* " in *" ls "*) echo "${STUB_LS:-[]}" ;; esac';
   const run = (env: Record<string, string>) => {
     const sb = sandbox({ pnpm });
-    const r = sb.run(["bash", script("test-affected.sh")], { env });
+    // Every input explicit: CI's own TEST_SHARD, BASE_SHA and event must
+    // never leak in from the job running this test.
+    const r = sb.run(["bash", script("test-affected.sh")], {
+      env: {
+        GITHUB_EVENT_NAME: "",
+        BASE_SHA: "",
+        TEST_SHARD: "",
+        STUB_LS: "",
+        GITHUB_STEP_SUMMARY: "",
+        ...env,
+      },
+    });
     return { ...r, log: sb.log() };
   };
   const LS = "pnpm --filter ...[HEAD] ls --depth -1 --json";
