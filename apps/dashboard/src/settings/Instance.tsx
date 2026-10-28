@@ -34,12 +34,13 @@ export function Instance() {
   const me = state.status === "authed" ? state.me : null;
   const latest = instanceUpdate(me);
   // Owners only (absent for everyone else): why a configured sign-in method
-  // is off, as the server's own full sentences (review item 35).
+  // is off, or a risk such as codes without Turnstile (parity A4), as the
+  // server's own full sentences (review item 35).
   const problems = me?.instance.signIn?.problems ?? [];
   return (
     <div className={STACK}>
       {problems.length > 0 && (
-        <Notice tone="warning" title="Some sign-in methods are off.">
+        <Notice tone="warning" title="Sign-in needs attention.">
           <ul className="m-0 grid gap-[var(--oa-space-1)] pl-[18px]">
             {problems.map((p) => (
               <li key={p}>{p}</li>
