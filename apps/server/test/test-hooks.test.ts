@@ -624,13 +624,14 @@ describe("hooks", () => {
   });
 
   it("oauth-client with OAUTH_STORE=d1 and no OAUTH_KV binding: the grant lives in D1", async () => {
-    const e = on({ OAUTH_STORE: "d1" }) as Record<string, unknown>;
-    delete e.OAUTH_KV;
-    const r = await hook(e as Env, TEST_HOOKS.oauthClient);
+    const raw = on({ OAUTH_STORE: "d1" }) as unknown as Record<string, unknown>;
+    delete raw.OAUTH_KV;
+    const e = raw as unknown as Env;
+    const r = await hook(e, TEST_HOOKS.oauthClient);
     expect(r.status).toBe(200);
     const { accessToken } = OAuthClientHookResultSchema.parse(await r.json());
     const mcp = (t: string) =>
-      call(e as Env, "/mcp", {
+      call(e, "/mcp", {
         scheme: "https",
         body: { jsonrpc: "2.0", id: 1, method: "tools/list" },
         headers: {
@@ -650,7 +651,7 @@ describe("hooks", () => {
       .bind(`grant:${uid}:%`, Math.floor(Date.now() / 1000))
       .first<{ n: number }>();
     expect(live?.n).toBeGreaterThan(0);
-    await revokeAllGrants(e as Env, uid);
+    await revokeAllGrants(e, uid);
     expect((await mcp(accessToken)).status).toBe(401);
   });
 

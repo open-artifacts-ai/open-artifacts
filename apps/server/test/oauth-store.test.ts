@@ -50,7 +50,7 @@ function noKv(over: Record<string, unknown> = {}): TestEnv {
     unknown
   >;
   delete e.OAUTH_KV;
-  return e as TestEnv;
+  return e as unknown as TestEnv;
 }
 
 // ------------------------------------------------------------ flow helpers
