@@ -392,7 +392,7 @@ export function TitleBar({
             onSuccess: () => {
               deleted.current = true;
               go("/");
-              offerUndo(artifact.id, artifact.title);
+              offerUndo(artifact.id);
             },
             onError: () => {
               deleting.current = false;

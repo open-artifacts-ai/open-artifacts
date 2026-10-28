@@ -8,7 +8,7 @@ const COPY: Partial<Record<ErrorCode, string>> = {
     "You can't publish to this space. Ask a space manager to make you an editor.",
   space_personal: "Personal spaces can't be used here. Pick a shared space.",
   space_not_empty:
-    "This space still has artifacts. Move or delete them first. Deleted artifacts count until they're permanently removed, 30 days after deletion.",
+    "This space still has artifacts. Move or delete them first. Deleted ones stay in Trash for 30 days.",
   public_links_off:
     "Public links are off for this space. A space manager can turn them on.",
   use_move: "This artifact already exists. Use Move to change its space.",

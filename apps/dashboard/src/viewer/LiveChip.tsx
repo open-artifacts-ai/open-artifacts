@@ -3,6 +3,7 @@ import { Button } from "@oa/ui/shadcn";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "../layout/toast";
+import { DeletedNote } from "../trash/DeletedNote";
 import { svg } from "./SlowNotice";
 import { SM } from "./ui";
 import type { Gone, LiveUpdate, Swapped } from "./useLiveVersions";
@@ -307,15 +308,12 @@ const WarnIcon = svg("M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2zM8 4.8v3.7M8 11v.2");
  */
 export function GoneBanner({
   gone,
-  owner,
   canRestore,
   authed,
   next,
   onRestore,
 }: {
   gone: Gone;
-  /** The caller owns it: "You deleted" copy. */
-  owner: boolean;
   /** The caller may undelete it (`can.delete`). */
   canRestore: boolean;
   authed: boolean;
@@ -334,11 +332,11 @@ export function GoneBanner({
         {WarnIcon}
       </span>
       <span className="min-w-0 flex-1">
-        {restorable
-          ? owner
-            ? "You deleted this artifact."
-            : "This artifact was deleted."
-          : "This artifact is no longer available to you."}
+        {restorable ? (
+          <DeletedNote />
+        ) : (
+          "This artifact is no longer available to you."
+        )}
       </span>
       {restorable ? (
         <Button
