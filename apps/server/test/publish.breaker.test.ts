@@ -92,30 +92,30 @@ describe("B6 breaker", () => {
   }, 30_000);
 
   it("an upload that was never PUT is rejected without an R2 head", async () => {
-    const up = await uploaded("z.bin");
+    const up = await uploaded("z.txt");
     const r = await api(app, R.uploads, u.cookie, {
       method: "POST",
-      body: { path: "y.bin", size: 3, artifactId: up.artifactId },
+      body: { path: "y.txt", size: 3, artifactId: up.artifactId },
     });
     const { uploadId } = (await r.json()) as { uploadId: string };
     const res = await call(env, R.artifacts, {
       title: "t",
       id: up.artifactId,
-      files: { "y.bin": { uploadId } },
+      files: { "y.txt": { uploadId } },
     });
     expect(res.status).toBe(400);
   });
 
   it("2. an upload consumed by two concurrent publishes → one fails", async () => {
-    const up = await uploaded("a.bin");
+    const up = await uploaded("a.txt");
     const c = await call(env, R.artifacts, {
       title: "t",
       id: up.artifactId,
-      files: { "a.bin": { uploadId: up.uploadId } },
+      files: { "a.txt": { uploadId: up.uploadId } },
     });
     expect(c.status).toBe(201);
-    const { uploadId } = await uploaded("b.bin", up.artifactId);
-    const v = { files: { "b.bin": { uploadId } } };
+    const { uploadId } = await uploaded("b.txt", up.artifactId);
+    const v = { files: { "b.txt": { uploadId } } };
     const rs = await Promise.all(
       [1, 2].map(() => call(env, R.versions(up.artifactId), v)),
     );
@@ -131,7 +131,7 @@ describe("B6 breaker", () => {
   });
 
   it("2b. the batch refuses an upload consumed after the precheck → 409", async () => {
-    const up = await uploaded("e.bin");
+    const up = await uploaded("e.txt");
     await call(env, R.artifacts, {
       title: "t",
       id: up.artifactId,
@@ -152,7 +152,7 @@ describe("B6 breaker", () => {
       },
     });
     const r = await call({ ...env, DB }, R.versions(up.artifactId), {
-      files: { "e.bin": { uploadId: up.uploadId }, "i.txt": "inline" },
+      files: { "e.txt": { uploadId: up.uploadId }, "i.txt": "inline" },
     });
     expect(r.status).toBe(409);
     const cv = await env.DB.prepare(
@@ -164,13 +164,13 @@ describe("B6 breaker", () => {
   });
 
   it("3. publish that loses a race with delete must not consume its upload", async () => {
-    const up = await uploaded("c.bin");
+    const up = await uploaded("c.txt");
     await call(env, R.artifacts, {
       title: "t",
       id: up.artifactId,
-      files: { "c.bin": "x" },
+      files: { "c.txt": "x" },
     });
-    const { uploadId } = await uploaded("d.bin", up.artifactId);
+    const { uploadId } = await uploaded("d.txt", up.artifactId);
     const DB = new Proxy(env.DB, {
       get(o, k) {
         if (k === "batch")
@@ -186,7 +186,7 @@ describe("B6 breaker", () => {
       },
     });
     const r = await call({ ...env, DB }, R.versions(up.artifactId), {
-      files: { "d.bin": { uploadId } },
+      files: { "d.txt": { uploadId } },
     });
     expect(r.status).toBe(404);
     expect(await consumed(uploadId)).toBe(0);
@@ -253,7 +253,7 @@ describe("B6 breaker", () => {
     expect((await errOf(r2)).message).toBe(
       "use POST /versions to publish a new version",
     );
-    const up = await uploaded("r.bin");
+    const up = await uploaded("r.txt");
     const r3 = await call(env, R.versions(up.artifactId), {
       title: "t",
       format: "markdown",

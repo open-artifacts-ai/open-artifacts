@@ -32,6 +32,7 @@ export const ERROR_CODES = [
   "break_glass_required",
   // Publish format guard.
   "unsupported_format",
+  "binary_entry",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -93,6 +94,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   break_glass_required: 401,
   /** Publish with no `format` whose entry name implies none (inferFormat null); details { path, reason: "no_viewer" }. */
   unsupported_format: 400,
+  /** The entry's content doesn't fit its format (binary as code, markdown or html; a pdf without %PDF; a binary upload content type); details { path, reason } (sniff.ts EntryRefusal). */
+  binary_entry: 400,
 };
 
 /** 400 unsupported_format message. */

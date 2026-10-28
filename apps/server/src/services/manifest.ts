@@ -1,5 +1,8 @@
 import {
+  bytesHead,
+  checkEntry,
   contentTypeFor,
+  type EntryRefusal,
   type Format,
   findCaseCollision,
   INLINE_TOO_LARGE_MESSAGE,
@@ -9,6 +12,8 @@ import {
   newId,
   normalizePath,
   type PublishInput,
+  SNIFF_BYTES,
+  textHead,
   UNSUPPORTED_FORMAT_MESSAGE,
 } from "@oa/shared";
 import type { Env } from "../env.js";
@@ -61,6 +66,22 @@ const noViewer = (path: string) =>
     path,
     reason: "no_viewer",
   });
+
+/** The entry's content doesn't fit its format: 400 binary_entry. */
+const refuse = (path: string, r: EntryRefusal) =>
+  new ApiError("binary_entry", r.message, { path, reason: r.reason });
+
+/** Checks an inline entry's first SNIFF_BYTES against its format. */
+function checkInline(
+  path: string,
+  format: Format,
+  s: { bytes: Uint8Array } | { text: string; size: number },
+): void {
+  const { head, truncated } =
+    "text" in s ? textHead(s.text) : bytesHead(s.bytes);
+  const r = checkEntry(path, format, head, truncated);
+  if (r) throw refuse(path, r);
+}
 
 function norm(p: unknown): string {
   if (typeof p !== "string") throw bad(String(p), "invalid");
@@ -173,8 +194,10 @@ export function planFiles(input: PublishInput): Plan {
     const entry = entryIn ?? defaultEntry(format, language);
     // UTF-8 is ≥ 1 byte per UTF-16 unit: reject before encoding when obviously too big.
     if (content.length > budget) throw inlineTooLarge(entry);
+    const source = textSource(entry, content);
+    checkInline(entry, format, source);
     return {
-      files: [{ path: entry, source: textSource(entry, content) }],
+      files: [{ path: entry, source }],
       entry,
       format,
       language,
@@ -258,6 +281,9 @@ export function planFiles(input: PublishInput): Plan {
   }
   const format = input.format ?? inferFormat(entry);
   if (!format) throw noViewer(entry);
+  const head = out.find((f) => f.path === entry)?.source;
+  // An uploaded entry is checked in materialize (one R2 range read).
+  if (head && !("uploadId" in head)) checkInline(entry, format, head);
   const language =
     input.language ?? (format === "code" ? inferLanguage(entry) : null);
   return { files: out, entry, format, language };
@@ -278,6 +304,34 @@ type UploadRow = {
   consumed: number;
   received_at: number | null;
 };
+
+/**
+ * An uploaded entry's first SNIFF_BYTES (one R2 range read, the entry only)
+ * and declared content type against the plan's format: 400 binary_entry.
+ * Runs before anything is written or consumed.
+ */
+async function checkUploadedEntry(
+  env: Env,
+  plan: Plan,
+  rows: Map<string, UploadRow>,
+): Promise<void> {
+  const f = plan.files.find((x) => x.path === plan.entry);
+  if (!f || !("uploadId" in f.source)) return;
+  const row = rows.get(f.source.uploadId) as UploadRow;
+  const obj = await env.FILES.get(row.r2_key, {
+    range: { offset: 0, length: SNIFF_BYTES },
+  });
+  if (!obj) throw bad(f.path, "upload_incomplete");
+  const head = new Uint8Array(await obj.arrayBuffer());
+  const r = checkEntry(
+    f.path,
+    plan.format,
+    head,
+    row.size > head.length,
+    row.content_type,
+  );
+  if (r) throw refuse(f.path, r);
+}
 
 /**
  * Resolves uploads (must belong to (artifactId, userId), be unconsumed, match the
@@ -328,6 +382,7 @@ export async function materialize(
     total += row.size;
   }
   if (total > LIMITS.publishBytes) throw tooLarge("files", LIMITS.publishBytes);
+  await checkUploadedEntry(env, plan, rows);
 
   const written: string[] = [];
   const manifest: ManifestEntry[] = [];
