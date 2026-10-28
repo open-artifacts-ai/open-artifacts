@@ -83,32 +83,39 @@ describe("sniff", () => {
     );
   });
 
-  it("checkEntry: a binary declared content type is refused for text formats", () => {
+  it("checkEntry: a declared content type is a hint; the bytes decide", () => {
+    // Text passes whatever it was declared as.
     for (const ct of [
       "image/jpeg",
       "audio/mpeg",
-      "video/mp4",
+      "video/mp2t",
       "application/octet-stream",
+      "image/svg+xml",
     ])
-      expect(checkEntry("a.bin", "code", s("x"), false, ct)?.reason, ct).toBe(
+      expect(checkEntry("a.ts", "code", s("x"), false, ct), ct).toBeNull();
+    // Bytes that fail the text check: named by a binary declared type...
+    for (const ct of ["image/png", "audio/mpeg", "video/mp4"])
+      expect(checkEntry("a", "code", b(0x61, 0), false, ct)?.reason, ct).toBe(
         "content_type",
       );
+    // ...but octet-stream claims nothing.
     expect(
-      checkEntry("a.svg", "code", s("<svg/>"), false, "image/svg+xml"),
-    ).toBeNull();
-    // contentTypeFor labels .py octet-stream: the bytes decide.
+      checkEntry("a", "code", b(0x61, 0), false, "application/octet-stream")
+        ?.reason,
+    ).toBe("not_text");
+  });
+
+  it("checkEntry: text that starts like a signature passes for text formats", () => {
+    for (const t of ["GIF89a header", "%PDF-1.7 notes", "fLaC magic"])
+      for (const f of ["code", "markdown", "html"] as const)
+        expect(checkEntry("a", f, s(t), false), `${f} ${t}`).toBeNull();
+  });
+
+  it("checkEntry: a UTF-8 BOM and an empty file are text", () => {
     expect(
-      checkEntry(
-        "a.py",
-        "code",
-        s("print(1)"),
-        false,
-        "application/octet-stream",
-      ),
+      checkEntry("a", "code", b(0xef, 0xbb, 0xbf, 0x61), false),
     ).toBeNull();
-    expect(checkEntry("a.py", "code", s("x"), false, "image/png")?.reason).toBe(
-      "content_type",
-    );
+    expect(checkEntry("a", "markdown", b(), false)).toBeNull();
   });
 
   it("messages have no em dash", () => {
@@ -116,7 +123,7 @@ describe("sniff", () => {
       checkEntry("a", "code", SIGS[0]?.[1] as Uint8Array, false),
       checkEntry("a", "code", b(0), false),
       checkEntry("a", "pdf", s("x"), false),
-      checkEntry("a", "code", s("x"), false, "image/png"),
+      checkEntry("a", "code", b(0), false, "image/png"),
     ];
     for (const r of all) expect(r?.message).not.toMatch(/—/);
   });

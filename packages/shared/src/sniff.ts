@@ -1,6 +1,6 @@
 // Publish format guard: does an entry's content fit its format? Shared by the
 // server (planFiles/materialize) and the MSW mock, so both refuse alike.
-import { type Format, isTextPath } from "./formats.js";
+import type { Format } from "./formats.js";
 
 /** How much of an entry is checked: the first 8 KB (one R2 range read for an upload). */
 export const SNIFF_BYTES = 8192;
@@ -80,20 +80,14 @@ export function isUtf8Text(head: Uint8Array, truncated: boolean): boolean {
   }
 }
 
-/** Upload content types that are never text (image/svg+xml is). */
+/** Declared upload types that claim binary (image/svg+xml is text; application/octet-stream claims nothing). */
 export function isBinaryContentType(ct: string): boolean {
   const t = (ct.split(";")[0] ?? "").trim().toLowerCase();
   if (t === "image/svg+xml") return false;
   return (
-    t.startsWith("image/") ||
-    t.startsWith("audio/") ||
-    t.startsWith("video/") ||
-    t === "application/octet-stream"
+    t.startsWith("image/") || t.startsWith("audio/") || t.startsWith("video/")
   );
 }
-
-const isGenericType = (ct: string) =>
-  (ct.split(";")[0] ?? "").trim().toLowerCase() === "application/octet-stream";
 
 /** Why an entry is refused (400 binary_entry, details { path, reason }). */
 export type EntryRefusal = {
@@ -111,11 +105,14 @@ const NAME: Record<Format, string> = {
 };
 
 /**
- * Checks an entry's first SNIFF_BYTES (`head`) against its format: code,
- * markdown and html must be UTF-8 text with no known binary signature; a pdf
- * must start with %PDF. `truncated`: the entry is longer than `head`.
- * `contentType`: an upload's declared type (a binary one is refused for text
- * formats). Null when it fits.
+ * Checks an entry's first SNIFF_BYTES (`head`) against its format. A pdf must
+ * start with %PDF. For code, markdown and html the bytes decide: UTF-8 text
+ * (no NUL, valid UTF-8) passes whatever its first bytes look like or its
+ * upload was declared as. Only bytes that fail the text check are refused,
+ * named by their binary signature (`binary`), else by a binary declared
+ * upload type (`content_type`; application/octet-stream claims nothing),
+ * else `not_text`. `truncated`: the entry is longer than `head`. Null when it
+ * fits.
  */
 export function checkEntry(
   path: string,
@@ -131,30 +128,22 @@ export function checkEntry(
           reason: "not_pdf",
           message: `"${path}" doesn't start with %PDF, so it can't be shown as a PDF.`,
         };
-  if (!TEXT_FORMATS.has(format)) return null;
-  if (
-    contentType !== undefined &&
-    isBinaryContentType(contentType) &&
-    // contentTypeFor (the dashboard's and create_upload's default) labels
-    // most source files application/octet-stream: their bytes still decide.
-    !(isGenericType(contentType) && isTextPath(path))
-  )
-    return {
-      reason: "content_type",
-      message: `"${path}" was uploaded as ${contentType}, so it can't be shown as ${NAME[format]}. Publish text, or pass the format that fits the file.`,
-    };
+  if (!TEXT_FORMATS.has(format) || isUtf8Text(head, truncated)) return null;
   const what = detectBinary(head);
   if (what)
     return {
       reason: "binary",
       message: `"${path}" is ${what}, not text, so it can't be shown as ${NAME[format]}.`,
     };
-  if (!isUtf8Text(head, truncated))
+  if (contentType !== undefined && isBinaryContentType(contentType))
     return {
-      reason: "not_text",
-      message: `"${path}" isn't UTF-8 text, so it can't be shown as ${NAME[format]}.`,
+      reason: "content_type",
+      message: `"${path}" was uploaded as ${contentType} and isn't UTF-8 text, so it can't be shown as ${NAME[format]}.`,
     };
-  return null;
+  return {
+    reason: "not_text",
+    message: `"${path}" isn't UTF-8 text, so it can't be shown as ${NAME[format]}.`,
+  };
 }
 
 /** The first SNIFF_BYTES of inline text as UTF-8, and whether there is more. */
