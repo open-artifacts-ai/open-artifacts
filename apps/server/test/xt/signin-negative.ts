@@ -152,6 +152,19 @@ const hook = (to: Install, path: string, body: unknown = {}) =>
     headers: { authorization: `Bearer ${to.hookKey}` },
   });
 
+/**
+ * Clears this runner's own per-IP code buckets on `to` (code:ip, code:fail),
+ * so repeated runs from one IP never hit the 50-a-day cap (flake server #6).
+ * Returns how many buckets went; throws unless the hook answered 200.
+ */
+export async function resetCodeCaps(to: Install): Promise<number> {
+  const r = await hook(to, TEST_HOOKS.codeCapsReset, {});
+  await expectStatus(r, [200], `code-caps reset on ${to.origin}`);
+  const n = ((await r.json()) as { reset?: unknown }).reset;
+  if (typeof n !== "number") throw new Refusal("code-caps reset: no count");
+  return n;
+}
+
 const setsSession = (r: Response, to: Install) =>
   r.headers
     .getSetCookie()

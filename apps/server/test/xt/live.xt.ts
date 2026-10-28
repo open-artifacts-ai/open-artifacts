@@ -2,7 +2,11 @@ import { beforeAll, describe, it } from "vitest";
 import { liveFetch } from "./live-fetch.js";
 import { checkHealth, stagingOrigin } from "./live-guard.js";
 import { readSecretFile } from "./secret-file.js";
-import { type Install, SIGNIN_NEGATIVE_CASES } from "./signin-negative.js";
+import {
+  type Install,
+  resetCodeCaps,
+  SIGNIN_NEGATIVE_CASES,
+} from "./signin-negative.js";
 
 // pnpm xt:live (sets XT_LIVE=1): the catalog against two live staging
 // installs. Origins from env (XT_A, XT_B and their content hosts XT_A_CONTENT,
@@ -57,6 +61,10 @@ describe.runIf(live_)("sign-in negative catalog (live)", () => {
       : undefined;
     A.turnstileToken = turnstile;
     B.turnstileToken = turnstile;
+    // Each run makes ~6 code requests per install from this IP; its per-IP
+    // day cap would refuse the 9th run in a day. Reset only our own buckets.
+    await resetCodeCaps(A);
+    await resetCodeCaps(B);
   });
 
   for (const c of SIGNIN_NEGATIVE_CASES) it(c.name, () => c.run(A, B));
