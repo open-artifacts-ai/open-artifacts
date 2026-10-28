@@ -1,24 +1,13 @@
 import { env } from "cloudflare:workers";
 import { newId, R } from "@oa/shared";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { MAX_INLINE_FILES } from "../src/services/manifest.js";
 import { api, errOf, login } from "./helpers.js";
 
 // Adversarial cases from the B6 review (fix round 1).
 const app = createApp();
-// waitUntil work (indexing, logs) is collected and awaited after each test,
-// so none of it outlives the test and logs after the worker tears down.
-const pending: Promise<unknown>[] = [];
-const ctx = {
-  waitUntil(p: Promise<unknown>) {
-    pending.push(p);
-  },
-  passThroughOnException() {},
-} as never;
-afterEach(async () => {
-  await Promise.allSettled(pending.splice(0));
-});
+const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
 let u: { cookie: string; userId: string };
 beforeAll(async () => {
   u = await login(`brk-${newId().slice(0, 6).toLowerCase()}@x.com`);

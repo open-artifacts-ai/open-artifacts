@@ -582,7 +582,16 @@ describe("deliverCode", () => {
   it("email off: nothing sent, no row", async () => {
     await seedUser(E, "guest");
     const ek = await emailKey(env, E);
-    expect(await deliverCode(direct(), cfg, E, ek, "off-1", IP)).toBeNull();
+    expect(
+      await deliverCode(
+        direct({ EMAIL: undefined, EMAIL_FROM: undefined }),
+        cfg,
+        E,
+        ek,
+        "off-1",
+        IP,
+      ),
+    ).toBeNull();
     expect(
       await one("select 1 from login_codes where request_id = 'off-1'"),
     ).toBeNull();

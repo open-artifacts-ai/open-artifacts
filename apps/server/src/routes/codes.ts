@@ -180,7 +180,8 @@ function guard(c: Context<AppEnv>): void {
 /** Codes are a sign-in method only where `email` is enabled. */
 function requireCodes(c: Context<AppEnv>) {
   const cfg = authConfig(c.env);
-  if (!cfg.providers.has("email")) throw new ApiError("not_found", "Not found");
+  // Not offered when the install can't send email (AuthConfig.emailCodes).
+  if (!cfg.emailCodes) throw new ApiError("not_found", "Not found");
   return cfg;
 }
 
