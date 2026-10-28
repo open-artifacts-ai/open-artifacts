@@ -1,7 +1,15 @@
 // redline-staging.yml: the red-line suite against rl-a and rl-b, on demand.
 // Secrets live only in the redline-staging Environment and reach the suite as
 // 0600 files by path; no other step sees them.
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -108,9 +116,11 @@ describe("redline-staging.yml", () => {
     const scan = steps.find((s) => s.id === "scan");
     expect(scan?.if).toBe("always()");
     expect(scan?.run).toContain('[ -d "$d" ] && [ -d "$r" ] || exit 0');
+    // -f: the key is read from its file, never put in argv.
     expect(scan?.run).toContain(
-      'if grep -rqF -- "$(cat "$f")" "$r"; then echo "secret in report: ${f##*/}"; exit 1; fi',
+      'if grep -rqF -f "$f" "$r"; then echo "secret in report: ${f##*/}"; exit 1; fi',
     );
+    expect(scan?.run).not.toContain("$(cat");
     const up = steps.find((s) =>
       String(s.uses ?? "").startsWith("actions/upload-artifact"),
     );
@@ -118,6 +128,30 @@ describe("redline-staging.yml", () => {
     expect(steps.indexOf(up as object)).toBeGreaterThan(
       steps.indexOf(scan as object),
     );
+  });
+
+  it("the scan step fails on a leaked key and passes a clean report", () => {
+    const scan = steps.find((s) => s.id === "scan");
+    const tmp = mkdtempSync(join(tmpdir(), "rl-scan-"));
+    try {
+      mkdirSync(join(tmp, "redline-secrets"));
+      mkdirSync(join(tmp, "redline-report"));
+      writeFileSync(join(tmp, "redline-secrets", "KEY"), "oa_pat_s3cret");
+      const run = () =>
+        spawnSync("bash", ["-c", String(scan?.run)], {
+          env: { PATH: process.env.PATH, RUNNER_TEMP: tmp },
+          encoding: "utf8",
+        });
+      writeFileSync(join(tmp, "redline-report", "r.txt"), "all clear");
+      expect(run().status).toBe(0);
+      writeFileSync(join(tmp, "redline-report", "r.txt"), "x oa_pat_s3cret y");
+      const leak = run();
+      expect(leak.status).toBe(1);
+      expect(leak.stdout).toContain("secret in report: KEY");
+      expect(leak.stdout).not.toContain("oa_pat_s3cret");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it("uploads only the report directory", () => {

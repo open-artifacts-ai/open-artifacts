@@ -75,7 +75,8 @@ jobs:
           r="$RUNNER_TEMP/redline-report"
           [ -d "$d" ] && [ -d "$r" ] || exit 0
           for f in "$d"/*; do
-            if grep -rqF -- "$(cat "$f")" "$r"; then echo "secret in report: ${f##*/}"; exit 1; fi
+            # -f reads the pattern from the file: the key never reaches argv.
+            if grep -rqF -f "$f" "$r"; then echo "secret in report: ${f##*/}"; exit 1; fi
           done
       - name: Remove the secret files
         if: always()
