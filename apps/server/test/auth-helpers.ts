@@ -9,10 +9,15 @@ export const CID = "cid.apps.googleusercontent.com";
 export const TEST_BROKER_KEY =
   "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f";
 
-/** The test env with direct sign-in (Google direct transport and codes) on. */
+/**
+ * The test env with direct sign-in (Google direct transport and codes) on.
+ * Codes need email sending (AuthConfig.emailCodes), so it carries a no-op
+ * mailer; pass `EMAIL: undefined` for an install that can't send.
+ */
 export function direct(over: Partial<Env> = {}): Env {
   return {
     ...env,
+    ...mailer().env,
     AUTH_PROVIDERS: "google,email",
     AUTH_DOMAINS: "a.com",
     AUTH_DOMAIN_JOIN: "member",

@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { authConfig } from "../src/auth/config.js";
 import type { Env } from "../src/env.js";
 import { CID, direct, TEST_BROKER_KEY, trial } from "./auth-helpers.js";
@@ -32,7 +32,9 @@ describe("authConfig", () => {
   test("unknown providers are dropped with a problem; none left means none", () => {
     const c = authConfig(base({ AUTH_PROVIDERS: "saml" }));
     expect(c.providers.size).toBe(0);
-    expect(c.problems).toContain("AUTH_PROVIDERS: unknown provider saml");
+    expect(c.problems).toContain(
+      `AUTH_PROVIDERS lists "saml", which isn't a sign-in method, so it's ignored. Use access, google or email.`,
+    );
   });
 
   test("FEATURES can't set the guest cap; direct sign-in always does", () => {
@@ -54,7 +56,9 @@ describe("authConfig", () => {
   test("google without domains is disabled, fail closed", () => {
     const c = authConfig(direct({ AUTH_DOMAINS: "" }));
     expect(c.google).toBeNull();
-    expect(c.problems).toContain("google: AUTH_DOMAINS is empty");
+    expect(c.problems).toContain(
+      "Google sign-in is on, but AUTH_DOMAINS is empty, so Google isn't offered. Set the Google Workspace domains that may sign in.",
+    );
   });
 
   test("google without a client id or secret is disabled", () => {
@@ -65,7 +69,9 @@ describe("authConfig", () => {
   test("invalid domains are dropped with a problem", () => {
     const c = authConfig(direct({ AUTH_DOMAINS: "a.com,bad domain" }));
     expect(c.domains).toEqual(["a.com"]);
-    expect(c.problems).toContain("AUTH_DOMAINS: invalid domain bad domain");
+    expect(c.problems).toContain(
+      `AUTH_DOMAINS has "bad domain", which isn't a valid domain, so it's ignored. Fix or remove it.`,
+    );
   });
 
   test("domain codes need email, no google, turnstile and domains", () => {
@@ -88,7 +94,7 @@ describe("authConfig", () => {
     const c = authConfig(trial({ TURNSTILE_SITE_KEY: "" }));
     expect(c.turnstile).toBeNull();
     expect(c.problems).toContain(
-      "turnstile: TURNSTILE_SITE_KEY and TURNSTILE_SECRET are both required",
+      "Only one of TURNSTILE_SITE_KEY and TURNSTILE_SECRET is set, so the bot check is off. Set both, or neither.",
     );
   });
 
@@ -116,7 +122,7 @@ describe("authConfig", () => {
     const hostedDirect = authConfig(direct({ HOSTED: "1" }));
     expect(hostedDirect.google).toBeNull();
     expect(hostedDirect.problems).toContain(
-      "google: HOSTED=1 requires the broker transport (AUTH_BROKER_URL)",
+      "Google sign-in is on, but a hosted install needs the broker transport and AUTH_BROKER_URL isn't set, so Google isn't offered. Set AUTH_BROKER_URL to the sign-in broker.",
     );
 
     // A tenant-supplied shared secret is never accepted on a hosted install:
@@ -157,7 +163,7 @@ describe("authConfig", () => {
     const member = hosted({ AUTH_DOMAIN_JOIN: "member" });
     expect(member.domainJoin).toBe("invite");
     expect(member.problems).toContain(
-      "AUTH_DOMAIN_JOIN: HOSTED=1 allows invite only",
+      `AUTH_DOMAIN_JOIN is "member", but a hosted install admits people by invite only, so invites apply.`,
     );
     for (const join of [undefined, "invite"]) {
       const c = hosted({ AUTH_DOMAIN_JOIN: join });
@@ -191,5 +197,57 @@ describe("authConfig", () => {
   test("memoized per env object", () => {
     const e = direct();
     expect(authConfig(e)).toBe(authConfig(e));
+  });
+  // Review item 35: email sign-in without email sending is a problem, and
+  // codes aren't offered (AuthConfig.emailCodes), never a silent 202.
+  test("email on without EMAIL/EMAIL_FROM: a problem, and no codes", () => {
+    const off = authConfig(direct({ EMAIL: undefined, EMAIL_FROM: undefined }));
+    expect(off.emailCodes).toBe(false);
+    expect(off.problems).toContain(
+      "Email sign-in is on, but sending email isn't set up (EMAIL and EMAIL_FROM), so sign-in codes aren't offered. Set up email sending, or turn email sign-in off.",
+    );
+    // Guests stay read-only and the mode stays direct: fail closed.
+    expect(off.guestsReadOnly).toBe(true);
+    const on = authConfig(direct());
+    expect(on.emailCodes).toBe(true);
+    expect(on.problems).toEqual([]);
+    expect(authConfig(direct({ EMAIL_FROM: undefined })).emailCodes).toBe(
+      false,
+    );
+  });
+  test("every problem is a full sentence: ends with a period, no em dash", () => {
+    const c = authConfig(
+      direct({
+        AUTH_PROVIDERS: "google,email,saml",
+        AUTH_DOMAINS: "a.com,bad domain",
+        GOOGLE_CLIENT_ID: "",
+        TURNSTILE_SITE_KEY: "k",
+        EMAIL: undefined,
+      }),
+    );
+    expect(c.problems.length).toBeGreaterThanOrEqual(4);
+    for (const p of c.problems) {
+      expect(p, p).toMatch(/^[A-Z].*\.$/);
+      expect(p, p).not.toContain("\u2014");
+    }
+  });
+  test("problems are logged once per env, when there are any", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const e = direct({ EMAIL: undefined });
+    authConfig(e);
+    authConfig(e);
+    const lines = spy.mock.calls
+      .map((a) => String(a[0]))
+      .filter((l) => l.includes("auth_config_problems"));
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0] as string).problems).toEqual(
+      authConfig(e).problems,
+    );
+    spy.mockClear();
+    authConfig(direct());
+    expect(
+      spy.mock.calls.some((a) => String(a[0]).includes("auth_config_problems")),
+    ).toBe(false);
+    spy.mockRestore();
   });
 });
