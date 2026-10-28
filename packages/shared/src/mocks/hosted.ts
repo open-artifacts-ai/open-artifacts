@@ -1290,7 +1290,10 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           return err("space_personal", "Personal spaces can't be deleted");
         if (!isAdmin()) return notFound();
         if (artifacts.some((a) => a.space?.id === s.id))
-          return err("space_not_empty", "Move or delete its artifacts first");
+          return err(
+            "space_not_empty",
+            "Move or delete its artifacts first. Deleted artifacts count until the trash clears them, 30 days after deletion.",
+          );
         spaces.splice(spaces.indexOf(s), 1);
         log("space.delete", { type: "space", id: s.id }, s.id);
         return noContent();

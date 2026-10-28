@@ -721,7 +721,7 @@ export const SURFACES: readonly Surface[] = [
     [`GET ${ARTS}/events`],
     read((id) => `${A(id)}/events`, 426),
   ),
-  // MCP (all 18 tools)
+  // MCP (all 19 tools)
   mcp(
     "get_artifact",
     "view",
@@ -778,6 +778,12 @@ export const SURFACES: readonly Surface[] = [
     "delete_artifact",
     "delete",
     tool("delete_artifact", (id) => ({ id })),
+    "access",
+  ),
+  mcp(
+    "undelete_artifact",
+    "undelete",
+    tool("undelete_artifact", (id) => ({ id })),
     "access",
   ),
   mcp("artifact_data_get", "data.read", data("get", { docId: "d" })),

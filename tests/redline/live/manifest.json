@@ -474,6 +474,10 @@
     },
     {
       "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp undelete_artifact [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact mcp artifact_data_get [pat]"
     },
     {

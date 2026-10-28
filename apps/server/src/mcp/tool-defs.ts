@@ -105,7 +105,14 @@ export const TOOL_DEFS = [
     inputSchema: IdInputSchema,
     example: { id: ID },
     description:
-      "Delete an artifact. It can be restored from the dashboard for 30 days. Owner or space manager only.",
+      "Delete an artifact. Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days. Owner or space manager only.",
+  },
+  {
+    name: "undelete_artifact",
+    inputSchema: IdInputSchema,
+    example: { id: ID },
+    description:
+      "Restore a deleted artifact from the trash, within 30 days of its deletion. Its personal owner, or in a shared space a space manager or org admin.",
   },
   {
     name: "artifact_data_get",

@@ -40,6 +40,7 @@ const TOOLS = [
   "unshare_artifact",
   "set_visibility",
   "delete_artifact",
+  "undelete_artifact",
   "artifact_data_get",
   "artifact_data_list",
   "artifact_data_query",
@@ -90,7 +91,7 @@ afterAll(async () => {
 });
 
 describe("MCP tools over PAT", () => {
-  it("tools/list has all 18 tools", async () => {
+  it("tools/list has all 19 tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOLS].sort());
     for (const t of tools) {
@@ -282,9 +283,23 @@ describe("MCP tools over PAT", () => {
         email: `friend-${tag}@x.com`,
       }),
     );
-    sc(await tool(client, "delete_artifact", { id: pub.id }));
+    const del = await tool(client, "delete_artifact", { id: pub.id });
+    sc(del);
+    expect(textOf(del)).toContain(
+      "Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days",
+    );
     const gone = await tool(client, "get_artifact", { id: pub.id });
     expect(textOf(gone)).toMatch(/^not_found/);
+    // undelete_artifact brings it back (ArtifactSummary), live again.
+    const back = sc<{ id: string; deletedAt: string | null }>(
+      await tool(client, "undelete_artifact", { id: pub.id }),
+    );
+    expect(back).toMatchObject({ id: pub.id, deletedAt: null });
+    sc(await tool(client, "get_artifact", { id: pub.id }));
+    // An id nobody may restore is not_found, as for any artifact.
+    expect(
+      textOf(await tool(client, "undelete_artifact", { id: newId() })),
+    ).toMatch(/^not_found/);
   });
 
   // #681: set_visibility and publish_artifact warn when the result is
@@ -629,7 +644,7 @@ describe("MCP artifact data tools", () => {
 describe("MCP 2026-07-28 era (per-request envelope)", () => {
   it("lists tools and publishes", async () => {
     const c = await connect(ownerPat, { modern: true });
-    expect((await c.listTools()).tools).toHaveLength(18);
+    expect((await c.listTools()).tools).toHaveLength(19);
     const pub = await publishMd(c, "# modern");
     const got = sc<{ content: string; version: { agent: unknown } }>(
       await tool(c, "get_artifact", { id: pub.id }),

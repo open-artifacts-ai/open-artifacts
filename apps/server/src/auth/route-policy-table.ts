@@ -266,6 +266,7 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   unshare_artifact: art("unshare"),
   set_visibility: art("visibility"),
   delete_artifact: art("delete"),
+  undelete_artifact: art("undelete", { allowDeleted: true }),
   artifact_data_get: art("data.read"),
   artifact_data_list: art("data.read"),
   artifact_data_query: art("data.read"),
