@@ -66,6 +66,44 @@ describe("decide: decision table rows", () => {
       "manager",
     ],
     [
+      "3 deleted shared, org admin without a role, allowDeleted",
+      with_({
+        caller: { id: ME, orgRole: "admin" },
+        artifact: { ...base.artifact, deleted: true },
+        allowDeleted: true,
+      }),
+      "manager",
+    ],
+    [
+      "3 deleted shared, org owner viewer, allowDeleted",
+      with_({
+        caller: { id: ME, orgRole: "owner" },
+        artifact: { ...base.artifact, deleted: true },
+        spaceRole: "viewer",
+        allowDeleted: true,
+      }),
+      "manager",
+    ],
+    [
+      "4 deleted shared, capped org admin, allowDeleted",
+      with_({
+        caller: { id: ME, orgRole: "admin" },
+        cap: "restricted",
+        artifact: { ...base.artifact, deleted: true },
+        allowDeleted: true,
+      }),
+      null,
+    ],
+    [
+      "4 deleted someone's personal, org admin, allowDeleted",
+      with_({
+        caller: { id: ME, orgRole: "admin" },
+        artifact: personal("u_other", { deleted: true }),
+        allowDeleted: true,
+      }),
+      null,
+    ],
+    [
       "4 deleted own personal without allowDeleted",
       with_({ artifact: personal(ME, { deleted: true }) }),
       null,

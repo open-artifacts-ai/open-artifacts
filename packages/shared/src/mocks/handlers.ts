@@ -644,7 +644,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     }),
     http.post(`${A}/undelete`, ({ params }) => {
       const a = artifacts.find((x) => x.id === params.id);
-      if (!a || !full(a)) return notFound();
+      if (!a) return notFound();
+      // Hosted: a shared space's trash is its managers' and org admins' (R.trash's rule).
+      const scope = h?.trashScope(undefined);
+      const managed = typeof scope === "function" ? scope(a) : null;
+      const sharedSpace = a.space !== undefined && a.space.kind === "shared";
+      if (h && sharedSpace ? !managed : !full(a)) return notFound();
       a.deletedAt = null;
       return HttpResponse.json(a);
     }),

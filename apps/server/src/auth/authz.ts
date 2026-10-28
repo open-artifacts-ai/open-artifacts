@@ -41,6 +41,7 @@ import {
   dataWritersOf,
   decide,
   editorsOnlyRefusal,
+  isOrgAdmin,
   isTeamRole,
   orgCan,
   type PolicyAction,
@@ -305,10 +306,11 @@ export function levelSql(
     ${member && !capped ? sql`when ${artifacts.visibility} = 'team' then 'viewer'` : sql``}
     when ${artifacts.visibility} = 'public' then 'viewer'
     end end`;
-  // Trash: the personal owner, or a shared space's manager; never capped.
+  // Trash: the personal owner, or a shared space's manager, org owner or
+  // admin (decide); never capped.
   const trash =
     opts.allowDeleted && user && !capped
-      ? sql`case when ${shared} then (case when ${role} = 3 then 'manager' end)
+      ? sql`case when ${shared} then (case when ${isOrgAdmin(user.role) ? sql`1` : sql`${role} = 3`} then 'manager' end)
           when ${artifacts.spaceId} = ${user.id} then 'owner' end`
       : sql`null`;
   return sql<AccessLevel | null>`(case

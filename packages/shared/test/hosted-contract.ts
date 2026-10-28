@@ -706,6 +706,43 @@ export function hostedContract(d: ContractDriver): ContractCases {
       },
     );
 
+    t(
+      "an org admin with no manager role lists and restores a shared space's trash; an editor can't",
+      async () => {
+        await d.fresh({ hosted: true });
+        const notes = idOf("Meeting notes");
+        expect((await d.call("DELETE", R.artifact(notes))).status).toBe(204);
+        // Erin is an org admin, a viewer in Engineering (allMembersRole).
+        await d.signIn("erin@example.com");
+        const page = await trash();
+        expect(page.items.map((a) => a.title)).toContain("Meeting notes");
+        expect(
+          page.items.find((a) => a.title === "Meeting notes")?.space,
+        ).toMatchObject({
+          name: "Engineering",
+          personal: false,
+        });
+        // Bob, an editor there, may do neither.
+        await d.signIn("bob@example.com");
+        expect((await trash()).items.map((a) => a.title)).not.toContain(
+          "Meeting notes",
+        );
+        expect((await d.call("POST", R.restoreDeleted(notes))).status).toBe(
+          404,
+        );
+        await d.signIn("erin@example.com");
+        const r = await d.call("POST", R.restoreDeleted(notes));
+        expect(r.status).toBe(200);
+        expect(Strict.ArtifactSummary.parse(await json(r))).toMatchObject({
+          title: "Meeting notes",
+          deletedAt: null,
+        });
+        expect((await trash()).items.map((a) => a.title)).not.toContain(
+          "Meeting notes",
+        );
+      },
+    );
+
     t("spaces off: personal trash only; another spaceId is 400", async () => {
       await d.fresh();
       const me = await json(await d.call("GET", R.me));

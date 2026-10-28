@@ -21,6 +21,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { type Caller, capOfCaller, roleRankSql } from "../auth/authz.js";
+import { isOrgAdmin } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { artifacts, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -57,8 +58,8 @@ export async function listTrash(
   const { user } = c;
   const capped = capOfCaller(c) != null;
   const on = spacesOn(env);
-  // Space managers only for now (decide()'s trash rule).
-  const admin = false;
+  // Org owners and admins manage every space (decide()'s trash rule).
+  const admin = !capped && isOrgAdmin(user.role);
   const db = getDb(env);
 
   // Which trash: personal (the caller's own space id), one shared space, or
