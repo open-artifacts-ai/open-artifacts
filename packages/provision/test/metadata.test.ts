@@ -213,6 +213,35 @@ describe("userWorkerMetadata", () => {
     expect(text(m.bindings, "FEATURES")).toBe("usage_off,x,spaces");
   });
 
+  // TIER is the single source of an install's features: FEATURES is derived
+  // (plus spaces and usage_off), the tier is passed through for Me, and the
+  // two are never passed together, on any install (Manager ruling).
+  it("TIER derives FEATURES; TIER with FEATURES, or an unknown tier, is refused", () => {
+    const expected = {
+      trial: "spaces,sync_google,content_revocation,usage_off",
+      team: "spaces,sync_frozen,content_revocation,usage_off",
+      business: "spaces,sync_google,content_revocation,usage_off",
+    };
+    for (const [tier, f] of Object.entries(expected)) {
+      const m = userWorkerMetadata(inst({ vars: { TIER: tier } }), res());
+      expect(text(m.bindings, "FEATURES"), tier).toBe(f);
+      expect(text(m.bindings, "TIER"), tier).toBe(tier);
+    }
+    expect(() =>
+      userWorkerMetadata(
+        inst({ vars: { TIER: "team", FEATURES: "sync_google" } }),
+        res(),
+      ),
+    ).toThrow(/derived from TIER/);
+    for (const bad of ["Team", "enterprise", " team", ""])
+      expect(() =>
+        userWorkerMetadata(inst({ vars: { TIER: bad } }), res()),
+      ).toThrow(/invalid var TIER/);
+    // No TIER: no TIER binding, and today's explicit FEATURES.
+    const none = userWorkerMetadata(inst(), res());
+    expect(text(none.bindings, "TIER")).toBeUndefined();
+  });
+
   it("unknown or invalid var throws", () => {
     expect(() =>
       userWorkerMetadata(

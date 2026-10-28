@@ -3,6 +3,7 @@ import {
   type Me,
   type Member,
   MePatchSchema,
+  parseTier,
   planOf,
   R,
 } from "@oa/shared";
@@ -52,6 +53,9 @@ async function toMe(
   const cap = capOfCaller(caller(c));
   const exp = c.var.sessionExp;
   me.instance.hosted = c.env.HOSTED === "1";
+  // Reported only (behaviour follows FEATURES, which provisioning derives
+  // from TIER); null off hosted.
+  me.instance.tier = me.instance.hosted ? parseTier(c.env.TIER) : null;
   me.instance.signIn = instanceSignIn(c.env);
   me.instance.features = instanceFeatures(c.env);
   // P3 T13: only while a directory mode is on; health for owners and admins.
