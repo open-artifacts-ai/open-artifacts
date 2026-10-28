@@ -459,3 +459,38 @@ it("no trash: plain progress and toast", async () => {
   release();
   await findVisibleToast("Moved 2 artifacts to Bob Builder.");
 });
+
+it("the Removed filter lists a removed person with nothing left, and restores them", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/members", true, undefined, [
+    // First match wins: nothing left to transfer.
+    http.get(`*${R.memberTransfer(CAROL)}`, () =>
+      HttpResponse.json({ live: 0, deleted: 0 }),
+    ),
+    ...removedCarol,
+  ]);
+  fireEvent.click(await screen.findByRole("button", { name: "Removed (1)" }));
+  const list = await screen.findByRole("list", { name: "Removed people" });
+  expect(list).toHaveTextContent("Carol Departed");
+  // Nothing left to transfer: no Departed card, yet Restore is still offered.
+  expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
+  fireEvent.click(
+    within(list).getByRole("button", { name: "Restore Carol Departed" }),
+  );
+  fireEvent.click(
+    within(
+      await screen.findByRole("alertdialog", {
+        name: "Restore Carol Departed?",
+      }),
+    ).getByRole("button", { name: "Restore" }),
+  );
+  await waitFor(() =>
+    expect(seen.some((c) => c.path === R.memberRestore(CAROL))).toBe(true),
+  );
+});
+
+it("no removed people: no Removed filter", async () => {
+  mountHosted("/settings/members");
+  await screen.findByText("Bob Builder");
+  expect(screen.queryByRole("button", { name: /^Removed/ })).toBeNull();
+});

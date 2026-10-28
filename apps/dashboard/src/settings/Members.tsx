@@ -51,7 +51,7 @@ import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { clearDenied, denyMember, useDenied } from "./denied";
-import { type Departed, useDeparted } from "./departed";
+import { type Departed, seesDeparted, useDeparted } from "./departed";
 import { restrictionReason } from "./restriction";
 import { artifacts, runAll, TransferDialog } from "./Transfer";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
@@ -620,6 +620,11 @@ export function Members() {
   // Spaces only change copy here: restriction and the More menu are on every install (parity 1).
   const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
   const departed = useDeparted(state.status === "authed" ? state.me : null);
+  // Every removed person, artifacts or not, each with Restore (parity 1).
+  const admin = seesDeparted(state.status === "authed" ? state.me : null);
+  const removedQ = useMembers("removed", admin);
+  const removed = (removedQ.data ?? []).filter((m) => m.status === "removed");
+  const [showRemoved, setShowRemoved] = useState(false);
   return (
     <div className={STACK}>
       {departed.length > 0 && (
@@ -634,37 +639,68 @@ export function Members() {
         id="oa-members-h"
         title="Members"
         action={
-          <Button
-            size="sm"
-            className="text-[length:var(--oa-text-sm)]"
-            onClick={() => setInviting(true)}
-          >
-            Add member
-          </Button>
+          <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
+            {admin && (showRemoved || removed.length > 0) && (
+              <Button
+                size="sm"
+                variant={showRemoved ? "secondary" : "ghost"}
+                aria-pressed={showRemoved}
+                className="text-[length:var(--oa-text-sm)]"
+                onClick={() => setShowRemoved((v) => !v)}
+              >
+                Removed ({removed.length})
+              </Button>
+            )}
+            <Button
+              size="sm"
+              className="text-[length:var(--oa-text-sm)]"
+              onClick={() => setInviting(true)}
+            >
+              Add member
+            </Button>
+          </div>
         }
       >
-        {/* Design: why some rows are read-only, for anyone but the owner. */}
-        {!owner &&
-          q.data?.some(
-            (m) =>
-              m.id !== me?.id && (m.role === "admin" || m.role === "owner"),
-          ) && <p className={`m-0 ${muted}`}>{ADMIN_ONLY}</p>}
-        {q.isError ? (
-          <p role="alert" className={errorText}>
-            Couldn't load members.
-          </p>
+        {showRemoved ? (
+          removedQ.isError ? (
+            <p role="alert" className={errorText}>
+              Couldn't load removed people.
+            </p>
+          ) : removed.length === 0 ? (
+            <p className={`m-0 ${muted}`}>Nobody is removed.</p>
+          ) : (
+            <ul className="grid p-0" aria-label="Removed people">
+              {removed.map((m) => (
+                <RemovedRow key={m.id} m={m} />
+              ))}
+            </ul>
+          )
         ) : (
-          <ul className="grid p-0">
-            {q.data?.map((m) => (
-              <Row
-                key={m.id}
-                m={m}
-                you={m.id === me?.id}
-                spaces={spaces}
-                owner={owner}
-              />
-            ))}
-          </ul>
+          <>
+            {/* Design: why some rows are read-only, for anyone but the owner. */}
+            {!owner &&
+              q.data?.some(
+                (m) =>
+                  m.id !== me?.id && (m.role === "admin" || m.role === "owner"),
+              ) && <p className={`m-0 ${muted}`}>{ADMIN_ONLY}</p>}
+            {q.isError ? (
+              <p role="alert" className={errorText}>
+                Couldn't load members.
+              </p>
+            ) : (
+              <ul className="grid p-0">
+                {q.data?.map((m) => (
+                  <Row
+                    key={m.id}
+                    m={m}
+                    you={m.id === me?.id}
+                    spaces={spaces}
+                    owner={owner}
+                  />
+                ))}
+              </ul>
+            )}
+          </>
         )}
         {inviting && <InviteDialog onClose={() => setInviting(false)} />}
       </SettingsCard>
@@ -673,6 +709,50 @@ export function Members() {
 }
 
 const STATUS = { suspended: "Suspended", removed: "Removed" } as const;
+
+/** One removed person under the Removed filter: Restore, refusals inline. */
+function RemovedRow({ m }: { m: Member }) {
+  const [restoring, setRestoring] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const label = displayName(m);
+  return (
+    <li className="flex flex-wrap items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] first:border-t-0">
+      <UserAvatar name={m.name} email={m.email} />
+      <div className="min-w-0 flex-1">
+        <b className="flex min-w-0 flex-wrap items-center gap-x-[6px] font-medium">
+          <span className="min-w-0 break-words">{label}</span>
+          <Badge variant="outline" className="flex-none">
+            Removed
+          </Badge>
+        </b>
+        {m.name && <small className={`block ${muted}`}>{m.email}</small>}
+      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        className="text-[length:var(--oa-text-sm)]"
+        aria-label={`Restore ${label}`}
+        onClick={() => {
+          setProblem(null);
+          setRestoring(true);
+        }}
+      >
+        Restore…
+      </Button>
+      {problem && (
+        <p role="alert" className={`m-0 basis-full ${errorText}`}>
+          {problem}
+        </p>
+      )}
+      <RestoreDialog
+        member={m}
+        open={restoring}
+        onClose={() => setRestoring(false)}
+        onRefused={setProblem}
+      />
+    </li>
+  );
+}
 
 /** Inline copy for a refused restore (parity 1). */
 const restoreRefusal = (e: unknown, first: string) => {
