@@ -992,6 +992,66 @@
   }
 }
 
+/* ---------- Not shown (binary or too large code) ---------- */
+/* unpreviewableHtml() in src/code.ts: a calm note and a Download link, not an error. */
+.oa-unpreviewable {
+  max-width: 560px;
+  margin: 48px auto;
+  padding: 0 16px;
+  text-align: center;
+  font:
+    400 14px / 1.5 "Geist",
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  color: #3d4249;
+}
+.oa-unpreviewable p {
+  margin: 0 0 12px;
+}
+.oa-unpreviewable a {
+  display: inline-block;
+  padding: 6px 14px;
+  border: 1px solid #c9cdd3;
+  border-radius: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+.oa-unpreviewable a:focus-visible {
+  outline: 2px solid #2f6bed;
+  outline-offset: 2px;
+}
+:root:has(.oa-unpreviewable) {
+  color-scheme: light;
+  background: #eef0f3;
+}
+@media screen and (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):has(.oa-unpreviewable) {
+    color-scheme: dark;
+    background: #131518;
+  }
+  :root:not([data-theme="light"]) .oa-unpreviewable {
+    color: #d5d8dd;
+  }
+  :root:not([data-theme="light"]) .oa-unpreviewable a {
+    border-color: #3a3f46;
+  }
+}
+@media screen {
+  :root[data-theme="dark"]:has(.oa-unpreviewable) {
+    color-scheme: dark;
+    background: #131518;
+  }
+  [data-theme="dark"] .oa-unpreviewable {
+    color: #d5d8dd;
+  }
+  [data-theme="dark"] .oa-unpreviewable a {
+    border-color: #3a3f46;
+  }
+}
+
 /* ---------- Render error ---------- */
 /*
  * fail() in src/index.ts replaces the document with <p class="oa-error">, so
