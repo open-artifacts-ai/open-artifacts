@@ -260,7 +260,7 @@ it("Restore is offered for removed people, and posts R.memberRestore", async () 
     name: "Restore Carol Departed?",
   });
   expect(d).toHaveTextContent(
-    "Carol comes back as a member, with any manual restriction kept",
+    "Carol comes back as a member (no admin role), with any manual restriction kept",
   );
   fireEvent.click(within(d).getByRole("button", { name: "Restore" }));
   await waitFor(() =>

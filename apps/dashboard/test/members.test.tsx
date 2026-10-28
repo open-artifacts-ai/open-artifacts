@@ -289,7 +289,7 @@ describe("members: failures and edge cases", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add member" }));
     const offer = await screen.findByRole("alert");
     expect(offer).toHaveTextContent(
-      "gone@example.com was removed. Restore them to bring back their account and the personal artifacts you haven't transferred. They come back as a member.",
+      "gone@example.com was removed. Restore them to bring back their account and the personal artifacts you haven't transferred. They come back with the access they had (no admin role) and sign in again.",
     );
     expect(screen.queryByRole("status")).toBeNull();
     fireEvent.click(
@@ -300,9 +300,31 @@ describe("members: failures and edge cases", () => {
     );
     expect(
       await screen.findByText(
-        "gone@example.com is a member again. They can sign in now.",
+        "gone@example.com is restored. They can sign in again.",
       ),
     ).toBeTruthy();
+  });
+
+  it("inviting a lapsed guest says to share with them, with no Restore", async () => {
+    server.use(
+      http.post(`*${R.members}`, () =>
+        HttpResponse.json(
+          { error: { code: "guest_lapsed", message: "x" } },
+          { status: 409 },
+        ),
+      ),
+    );
+    mount("/settings/members");
+    fireEvent.click(await screen.findByRole("button", { name: "Add member" }));
+    fireEvent.change(await screen.findByLabelText("Email"), {
+      target: { value: "old.guest@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "old.guest@example.com was a guest whose access lapsed. Share an artifact with them to bring them back.",
+    );
+    expect(screen.queryByRole("button", { name: /^Restore/ })).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("Enter in the invite form submits it, once while pending", async () => {

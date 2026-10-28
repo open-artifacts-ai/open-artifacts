@@ -356,11 +356,13 @@ export const useInviteMember = () => {
       api.send("POST", R.members, input, MemberInviteResultSchema),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.members }),
     // invite_unreachable: the dialog says why under the email field.
-    // member_removed: the dialog offers Restore (parity 1).
+    // member_removed: the dialog offers Restore; guest_lapsed: it says to share (parity 1).
     onError: (e) => {
       if (
         e instanceof ApiClientError &&
-        (e.code === "invite_unreachable" || e.code === "member_removed")
+        (e.code === "invite_unreachable" ||
+          e.code === "member_removed" ||
+          e.code === "guest_lapsed")
       )
         return;
       failToast(e, "Couldn't send the invite.");

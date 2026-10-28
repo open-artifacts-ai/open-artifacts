@@ -170,6 +170,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
               ? MemberRemovedDetailsSchema.safeParse(e.details)
               : null;
           if (gone?.success) return setRemoved({ ...gone.data, email: parsed });
+          // A lapsed guest can't be restored: a new share brings them back.
+          if (e instanceof ApiClientError && e.code === "guest_lapsed")
+            return setError(
+              `${parsed} was a guest whose access lapsed. Share an artifact with them to bring them back.`,
+            );
           // Nothing was created: Design's copy, not the server's message.
           const refused =
             e instanceof ApiClientError && e.code === "invite_unreachable"
@@ -268,7 +273,8 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             <p className="m-0">
               {removed.email} was removed. Restore them to bring back their
               account and the personal artifacts you haven't transferred. They
-              come back as a member.
+              come back with the access they had (no admin role) and sign in
+              again.
             </p>
             <Button
               type="button"
@@ -280,7 +286,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
                 restore.mutate(removed.userId, {
                   onSuccess: () => {
                     toast({
-                      title: `${removed.email} is a member again. They can sign in now.`,
+                      title: `${removed.email} is restored. They can sign in again.`,
                       tone: "success",
                     });
                     onClose();
@@ -948,9 +954,12 @@ function RestoreDialog({
       title={`Restore ${label}?`}
       body={
         <p>
-          {first} comes back as a member, with any manual restriction kept, and
-          gets back the personal artifacts you haven't transferred. Their old
-          tokens and agent connections stay off, so they sign in again.
+          {/* Manager's ruling: a guest stays a guest; anyone else comes back a member. */}
+          {first} comes back{" "}
+          {m.role === "guest" ? "as a guest" : "as a member (no admin role)"},
+          with any manual restriction kept, and gets back the personal artifacts
+          you haven't transferred. Their old tokens and agent connections stay
+          off, so they sign in again.
         </p>
       }
       confirm="Restore"
@@ -958,7 +967,7 @@ function RestoreDialog({
         restore.mutate(m.id, {
           onSuccess: () =>
             toast({
-              title: `${label} is a member again. They can sign in now.`,
+              title: `${label} is restored. They can sign in again.`,
               tone: "success",
             }),
           onError: (e) => onRefused(restoreRefusal(e, first)),
