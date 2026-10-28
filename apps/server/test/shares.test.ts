@@ -49,7 +49,7 @@ beforeAll(async () => {
 });
 
 describe("shares", () => {
-  it("viewer share lets a guest read; editor share lets them publish; delete revokes at once", async () => {
+  it("viewer share lets a guest read; an editor share stays view-only (parity 2); delete revokes at once", async () => {
     const id = await pub();
     expect((await api(app, R.artifact(id), guest.cookie)).status).toBe(404);
     const r = await put(id, owner, guest.email, "viewer");
@@ -74,7 +74,8 @@ describe("shares", () => {
       method: "POST",
       body,
     });
-    expect(pr.status).toBe(201);
+    // Guests are view-only on every install: the editor row reads as viewer.
+    expect(pr.status).toBe(404);
     // revoke
     expect((await del(id, owner, guest.email)).status).toBe(204);
     expect((await api(app, R.artifact(id), guest.cookie)).status).toBe(404);

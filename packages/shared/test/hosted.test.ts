@@ -17,6 +17,7 @@ import {
   directoryModeOf,
   ENV_FEATURE_FLAGS,
   ERROR_CODES,
+  GUEST_SHARES_NOTICE_LIMIT,
   HealthzSchema,
   INVITE_UNREACHABLE_MESSAGE,
   InviteUnreachableDetailsSchema,
@@ -280,6 +281,50 @@ describe("mock invite reachability (review item 11)", () => {
     expect(
       MemberInviteResultSchema.parse(await r.json()).signIn,
     ).toBeUndefined();
+  });
+});
+
+describe("mock owner notice of guest shares (parity 2)", () => {
+  const notices = async () =>
+    MeSchema.parse(await (await call("GET", R.me)).json()).notices;
+  const dismiss = () => call("POST", R.noticeDismiss("guest_shares"));
+
+  it("self-host owner: capped at the limit with more, until dismissed", async () => {
+    server.use(
+      ...createHandlers({
+        hosted: {
+          selfHosted: true,
+          guestShares: GUEST_SHARES_NOTICE_LIMIT + 1,
+        },
+      }),
+    );
+    const n = (await notices())?.guestShares;
+    expect(n?.items).toHaveLength(GUEST_SHARES_NOTICE_LIMIT);
+    expect(n?.more).toBe(true);
+    expect(n?.items[0]).toMatchObject({
+      title: "Landing page",
+      guestEmail: `guest${GUEST_SHARES_NOTICE_LIMIT + 1}@outside.example`,
+      role: "editor",
+    });
+    expect((await dismiss()).status).toBe(204);
+    expect(await notices()).toBeUndefined();
+    expect((await dismiss()).status).toBe(204);
+  });
+
+  it("absent with no guest shares, on hosted, and for an admin (dismiss 404)", async () => {
+    server.use(...createHandlers({ hosted: { selfHosted: true } }));
+    expect(await notices()).toBeUndefined();
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { guestShares: 2 } }));
+    expect(await notices()).toBeUndefined();
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({
+        hosted: { selfHosted: true, guestShares: 2, actAs: "admin" },
+      }),
+    );
+    expect(await notices()).toBeUndefined();
+    expect((await dismiss()).status).toBe(404);
   });
 });
 

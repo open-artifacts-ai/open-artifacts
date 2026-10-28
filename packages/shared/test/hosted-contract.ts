@@ -1218,13 +1218,11 @@ export function hostedContract(d: ContractDriver): ContractCases {
     });
 
     t(
-      "guests_read_only is reported from sign-in config, never from FEATURES",
+      "guests_read_only is on for every install (parity 2), Access-only too",
       async () => {
-        await d.fresh({
-          hosted: { mode: "access", features: ["guests_read_only"] },
-        });
+        await d.fresh({ hosted: { mode: "access" } });
         const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
-        expect(me.instance.features).not.toContain("guests_read_only");
+        expect(me.instance.features).toContain("guests_read_only");
         await d.fresh({ hosted: true });
         const me2 = Strict.Me.parse(await json(await d.call("GET", R.me)));
         expect(me2.instance.features).toContain("guests_read_only");

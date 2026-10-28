@@ -68,7 +68,7 @@ Direct sign-in replaces Cloudflare Access with Google (one multi-tenant client) 
 | Address enumeration | The same 202 for every address. Delivery runs after the response. Verify runs the same statements with or without a code, and its wording comes from the browser's own cookie. | None known. |
 | Email quota exhaustion | The code pool is separate from invites and is spent only on real sends. There is a per-IP daily cap and Turnstile. | Requests for guests count against the per-IP quota. |
 | Login CSRF | `__Host-` Lax cookies, `X-OA-Request`, and `Sec-Fetch-Site: same-origin` or an exact `Origin`. | None known. |
-| Guests writing | A capped caller (a guest under direct sign-in, or any code session outside the domains) is read-only on the whole API, refused before any route. | None known. |
+| Guests writing | A capped caller (a guest on every install, Access-only ones included, or any code session outside the domains) is read-only on the whole API, refused before any route, whatever share role they hold. Share rows keep their role; the org owner gets a one-time notice of guest shares above viewer. | None known. |
 | Test hooks in production | Hooks require a build flag release builds never set, plus `TEST_HOOKS=1` and a 32+ character key. Otherwise every path is a 404. | Operator error on a staging install. |
 | Stale sessions | Sessions carry the user's epoch (a role change or link reset ends them) and their tenant. | Suspension in the Workspace takes effect with P3's directory sync. |
 
