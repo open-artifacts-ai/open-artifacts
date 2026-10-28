@@ -707,13 +707,15 @@ export async function disconnectDirectory(
  * GET R.directory until T13's DirectorySync serves it. With no transport,
  * mode is "off" and, with `showProblem` (the org owner: directory.manage),
  * lastError carries the configuration problem. An expired pending
- * confirmation is dropped first (lazy expiry).
+ * confirmation is dropped first (lazy expiry), except with expire: false.
  */
 export async function directoryStatus(
   env: Env,
-  o: { showProblem: boolean },
+  o: { showProblem: boolean; expire?: boolean },
 ): Promise<SyncStatus> {
-  await expirePending(env);
+  // Not in the DirectorySync DO (expire: false): expiry revokes the pending
+  // grant first, and the DO has no broker capability on hosted (review 33).
+  if (o.expire !== false) await expirePending(env);
   const t = directoryTransport(env);
   const mode = t.kind === "none" ? "off" : directoryMode(env);
   const [{ binding }, pending, health, tomb, prior, next] = await Promise.all([

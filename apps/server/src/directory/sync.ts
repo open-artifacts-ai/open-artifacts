@@ -583,7 +583,8 @@ export class SyncEngine {
   }
 
   status(): Promise<SyncStatus> {
-    return directoryStatus(this.env, { showProblem: true });
+    // Expiry stays with the Worker (cron, status reads): it revokes first.
+    return directoryStatus(this.env, { showProblem: true, expire: false });
   }
 
   /**

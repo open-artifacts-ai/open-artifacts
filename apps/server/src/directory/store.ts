@@ -258,9 +258,14 @@ const EXPIRED = `exists (select 1 from directory_state
 /**
  * Drops a pending confirmation past its 24 h (its pending binding and token
  * only; a live connection and its sync are untouched), with one
- * directory.connect audit row (actor system), then revokes the pending
- * grant at Google (best effort). A no-op otherwise. Called lazily by status
- * and confirm, and by the daily cron.
+ * directory.connect audit row (actor system). The pending grant is revoked
+ * at Google FIRST, and the rows go only once that succeeded (or was rightly
+ * skipped: the same Google account as the live grant): a failed revoke keeps
+ * the token for the next try, so no grant outlives its stored token (review
+ * item 33). The delete also requires the token it revoked, so a consent that
+ * landed meanwhile stays. Called lazily by the Worker's status reads and
+ * confirm, and by the daily cron; never in the DirectorySync DO, which has
+ * no broker capability to revoke with on hosted.
  */
 export async function expirePending(
   env: Env,
@@ -270,6 +275,24 @@ export async function expirePending(
     readBinding(env, "pending"),
     readPendingAny(env),
   ]);
+  if (!p || p.exp > now) return false;
+  if (sealed) {
+    const r = await revokeGrant(
+      env,
+      sealed,
+      { kind: "system", id: null },
+      "pending",
+      { sub: p.s, keep: [await liveSub(env)] },
+    );
+    if (r === "failed") {
+      logInfo("directory_connect", { outcome: "expire_deferred" });
+      return false;
+    }
+  }
+  const same = sealed
+    ? "exists (select 1 from directory_state where key = ? and value = ?)"
+    : "not exists (select 1 from directory_state where key = ?)";
+  const sameArgs = sealed ? [K.pendingRefresh, sealed] : [K.pendingRefresh];
   const out = await env.DB.batch([
     audit(
       env,
@@ -278,33 +301,35 @@ export async function expirePending(
       { kind: "system", id: null },
       {
         detail: { outcome: "expired" },
-        when: { sql: EXPIRED, args: [K.confirm, now] },
+        when: {
+          sql: `${EXPIRED} and ${same}`,
+          args: [K.confirm, now, ...sameArgs],
+        },
       },
     ),
     stmt(
       env.DB,
-      `delete from directory_state where key in (?, ?) and ${EXPIRED}`,
-    ).bind(K.pendingBinding, K.pendingRefresh, K.confirm, now),
+      `delete from directory_state where key in (?, ?) and ${EXPIRED} and ${same}`,
+    ).bind(K.pendingBinding, K.pendingRefresh, K.confirm, now, ...sameArgs),
+    // The token went just above (or there was none): a replacing consent
+    // also rewrote the confirmation, with a fresh exp.
     stmt(
       env.DB,
-      "delete from directory_state where key = ? and json_extract(value, '$.exp') <= ?",
-    ).bind(K.confirm, now),
+      `delete from directory_state where key = ? and json_extract(value, '$.exp') <= ?
+         and not exists (select 1 from directory_state where key = ?)`,
+    ).bind(K.confirm, now, K.pendingRefresh),
   ]);
   const expired = (out[2]?.meta.changes ?? 0) > 0;
-  if (!expired) return false;
-  logInfo("directory_connect", { outcome: "expired" });
-  if (sealed)
-    await revokeGrant(env, sealed, { kind: "system", id: null }, "pending", {
-      sub: p?.s,
-      keep: [await liveSub(env)],
-    });
-  return true;
+  if (expired) logInfo("directory_connect", { outcome: "expired" });
+  return expired;
 }
 
 /**
  * Revokes a grant no longer stored (an old live token after a confirm, a
- * pending one after cancel or expiry) at Google, best effort: a failure is
- * audited and logged, never surfaced.
+ * pending one after cancel) or about to go (an expired pending one) at
+ * Google, best effort: a failure is audited and logged, never thrown. Says
+ * whether it revoked, skipped (same Google account as a kept token, or
+ * unknown) or failed.
  */
 export async function revokeGrant(
   env: Env,
@@ -312,7 +337,7 @@ export async function revokeGrant(
   actor: AuditActor,
   which: "old" | "pending",
   same: { sub: string | null | undefined; keep: (string | null)[] },
-): Promise<boolean> {
+): Promise<"revoked" | "skipped" | "failed"> {
   // Same Google account as a token that stays: revoking would end that one
   // too (Google revokes the whole grant). Unknown account: skip, fail safe.
   if (!same.sub || same.keep.includes(same.sub)) {
@@ -325,7 +350,7 @@ export async function revokeGrant(
     )
       .run()
       .catch((e) => logWarn("directory_revoke_audit", e));
-    return false;
+    return "skipped";
   }
   const ok = await revokeAtGoogle(env, sealed, which);
   await audit(
@@ -337,7 +362,7 @@ export async function revokeGrant(
   )
     .run()
     .catch((e) => logWarn("directory_revoke_audit", e));
-  return ok;
+  return ok ? "revoked" : "failed";
 }
 
 /**
