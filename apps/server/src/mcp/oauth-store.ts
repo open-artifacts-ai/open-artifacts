@@ -738,21 +738,23 @@ class KvModeStore extends StoreBase {
   }
   async get(key: string, opt?: GetOpt) {
     await checkMarkers(this.env, "kv");
-    return this.kv.get(key, opt as "text");
+    // return await: a KV rejection is handled at once (workerd reports one
+    // adopted a job later as unhandled).
+    return await this.kv.get(key, opt as "text");
   }
   async put(key: string, value: string, opt?: KVNamespacePutOptions) {
     await checkMarkers(this.env, "kv");
     await this.d1.drop(key);
-    return this.kv.put(key, value, opt);
+    return await this.kv.put(key, value, opt);
   }
   async delete(key: string) {
     await checkMarkers(this.env, "kv");
     await this.d1.delete(key);
-    return this.kv.delete(key);
+    return await this.kv.delete(key);
   }
   async list(opt?: KVNamespaceListOptions) {
     await checkMarkers(this.env, "kv");
-    return this.kv.list(opt);
+    return await this.kv.list(opt);
   }
 }
 
