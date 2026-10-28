@@ -512,19 +512,18 @@ describe("Me sign-in fields", () => {
     });
   });
 
-  it("a guest's PAT is refused on REST, as at /mcp (canConnect, item 34)", async () => {
+  // #792 (A): item 34 refuses restricted members' PATs only; a guest's PAT
+  // keeps main's REST behaviour (capped, read-only) until #609 decides.
+  it("a guest's PAT is capped too (REST behaviour unchanged by item 34)", async () => {
     const e = direct();
     const { userId } = await login(uniq("gpat", "x.com"), "guest");
-    // Guests can't mint one; a PAT left from before a demotion is no one.
     const pat = await createPat(e, userId, "t");
-    const r = await app.fetch(
-      new Request(`${APP}${R.me}`, {
-        headers: { authorization: `Bearer ${pat.token}` },
-      }),
-      e,
-      ctx,
-    );
-    expect(r.status).toBe(401);
+    expect((await me(e, pat.token)).auth).toEqual({
+      method: "pat",
+      readOnly: true,
+      cap: "guest",
+      expiresAt: null,
+    });
   });
 });
 
