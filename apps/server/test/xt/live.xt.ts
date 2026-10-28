@@ -1,4 +1,5 @@
 import { beforeAll, describe, it } from "vitest";
+import { liveFetch } from "./live-fetch.js";
 import { checkHealth, stagingOrigin } from "./live-guard.js";
 import { readSecretFile } from "./secret-file.js";
 import { type Install, SIGNIN_NEGATIVE_CASES } from "./signin-negative.js";
@@ -27,7 +28,7 @@ function live(origin: string, contentOrigin: string): Install {
     fetch: (req) => {
       const h = new Headers(req.headers);
       h.delete("host");
-      return fetch(new Request(req, { headers: h }));
+      return liveFetch(new Request(req, { headers: h }));
     },
   };
 }
@@ -41,7 +42,9 @@ describe.runIf(live_)("sign-in negative catalog (live)", () => {
     A = live(stagingOrigin(need("XT_A")), stagingOrigin(need("XT_A_CONTENT")));
     B = live(stagingOrigin(need("XT_B")), stagingOrigin(need("XT_B_CONTENT")));
     const text = async (o: string) => {
-      const r = await fetch(`${o}/healthz`, { redirect: "manual" });
+      const r = await liveFetch(
+        new Request(`${o}/healthz`, { redirect: "manual" }),
+      );
       if (r.status !== 200)
         throw new Error(`${new URL(o).host} /healthz: ${r.status}`);
       return r.text();

@@ -1027,8 +1027,8 @@ describe("thumbnail job on the artifact DO", () => {
           return new Promise<never>(() => {});
         };
         void i.alarm();
-        await new Promise((r) => setTimeout(r, 20));
-        expect(seen).toEqual([1]);
+        // The alarm awaits setAlarm and storage.sync() before launching.
+        await vi.waitFor(() => expect(seen).toEqual([1]));
         expect(i.pendingThumbnail()).toMatchObject({ attempts: 1 });
         // Armed before launching, so the runtime comes back after a kill.
         const armed = await storage.getAlarm();
@@ -1036,8 +1036,7 @@ describe("thumbnail job on the artifact DO", () => {
         // Its retry alarm comes THUMB_RETRY_MS later.
         i.now = () => Date.now() + THUMB_RETRY_MS;
         void i.alarm();
-        await new Promise((r) => setTimeout(r, 20));
-        expect(seen).toEqual([1, 2]);
+        await vi.waitFor(() => expect(seen).toEqual([1, 2]));
         i.now = () => Date.now() + 2 * THUMB_RETRY_MS;
         await i.alarm();
         expect(seen).toEqual([1, 2]);
