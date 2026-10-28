@@ -57,7 +57,7 @@ We may remove content or suspend access that breaks these rules, or that puts th
 
 ## Plans and payment
 
-- **Individuals:** free, for good.
+- **Individuals:** free forever.
 - **Team:** $10 per creator per month, with a 14-day free trial.
 - **Business:** $25 per creator per month.
 
