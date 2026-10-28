@@ -78,6 +78,7 @@ import type {
   Member,
   PublishInput,
   Share,
+  ShareRecipient,
 } from "../schemas.js";
 import { MemberInviteSchema, SettingsPatchSchema } from "../schemas.js";
 
@@ -1900,9 +1901,25 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     return (a) => a?.id === spaceId;
   };
 
+  /**
+   * ShareResult.recipient (review item 37), the server's rules for the mock's
+   * providers (invite-only): an in-domain non-member needs an invite; outside
+   * the domain, guests sign in with codes, so only a Google-only mock flags.
+   */
+  const shareRecipient = (email: string): ShareRecipient | undefined => {
+    if (mode === "access") return undefined;
+    if (members.some((m) => m.email === email)) return undefined;
+    if (email.endsWith(`@${MOCK_DOMAIN}`))
+      return { canSignIn: false, reason: "needs_invite" };
+    return providerIds.includes("email")
+      ? undefined
+      : { canSignIn: false, reason: "outside_domains" };
+  };
+
   return {
     handlers,
     refresh,
+    shareRecipient,
     checkPublish,
     placeNew,
     refuseCappedCreate,

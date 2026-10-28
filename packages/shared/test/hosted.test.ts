@@ -33,6 +33,7 @@ import {
   SearchQuerySchema,
   SettingsPatchSchema,
   SettingsSchema,
+  ShareResultSchema,
   SPACE_MANAGER_MAPPING_ROLES,
   SPACE_NAME_RESERVED_MESSAGE,
   SpaceCanSchema,
@@ -95,6 +96,32 @@ const msw: ContractDriver = {
 };
 
 hostedContract(msw);
+
+describe("mock ShareResult.recipient (review item 37)", () => {
+  const share = async (email: string, providers?: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: providers ? { providers } : {} }));
+    const id = fixtures.artifacts.find((a) => a.access === "owner")?.id;
+    const r = await call("PUT", R.shares(id ?? ""), {
+      email,
+      role: "viewer",
+    });
+    expect(r.status).toBe(200);
+    return ShareResultSchema.parse(await r.json());
+  };
+
+  it("in-domain non-member: needs_invite; a member or an outside guest: none", async () => {
+    expect((await share("new@example.com")).recipient).toEqual({
+      canSignIn: false,
+      reason: "needs_invite",
+    });
+    expect((await share("guest@elsewhere.com")).recipient).toBeUndefined();
+    expect((await share("guest@elsewhere.com", ["google"])).recipient).toEqual({
+      canSignIn: false,
+      reason: "outside_domains",
+    });
+  });
+});
 
 describe("mock invite reachability (review item 11)", () => {
   const use = (providers: ("google" | "email")[]) => {

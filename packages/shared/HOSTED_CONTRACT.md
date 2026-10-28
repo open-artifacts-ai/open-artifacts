@@ -96,6 +96,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `Me` | `auth?: MeAuth`, `personalSpaceId?` (= user.id), `spaces?: MySpace[]` (shared, by name, ≤ 200) |
 | `Settings` (so `SettingsPatch`) | `spaceManagerMappings?: boolean` (hosted; default true, absent self-hosted). PATCH needs `settings.manage` (org owner, admin); audited `settings.space_manager_mappings` |
 | `Space` | `can?: SpaceCan` (`{ manageMappings }`) |
+| `ShareResult` (PUT shares, MCP share_artifact) | `recipient?: ShareRecipient` = `{ canSignIn: false, reason: "needs_invite" \| "outside_domains" \| "no_sign_in_method" }`: the share applied, but the recipient can't sign in yet. `needs_invite`: in a verified domain on an invite-only install (hosted, or AUTH_DOMAIN_JOIN=invite): an admin must invite them as a member. Absent when they can sign in (or only Google might admit them). The share email says they need an invite instead of promising a sign-in |
 | `MemberInviteResult` | `signIn?: InviteSignIn` = `{ status: "uncertain", reason: "outside_domains" }`: the invite stands, but only Google might admit the address (outside AUTH_DOMAINS: works only for a Workspace account whose primary domain is verified). Absent when an offered method admits it. Warn the inviter |
 | `AuditActionSchema` | `settings.space_manager_mappings`, `user.role` (a member role change: `detail { from, to }`, written only when the role changes) |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |

@@ -185,7 +185,8 @@ export type CodeEligibility =
   | { kind: "guest"; userId: string | null }
   | { kind: "none" };
 
-const ELIGIBILITY = `select u.id, u.role, u.status,
+/** The user row codeRule reads, by email (?1). */
+export const ELIGIBILITY = `select u.id, u.role, u.status,
     exists (select 1 from identities i where i.user_id = u.id) as linked
   from users u where u.email = ?1 limit 1`;
 const SHARED = "select 1 as x from shares where email = ?1 limit 1";

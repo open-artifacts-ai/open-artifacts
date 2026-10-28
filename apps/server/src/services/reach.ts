@@ -8,16 +8,19 @@
 // - codes: codeRule, the rule codeEligibility applies.
 // One D1 read at most (the share lookup codeRule may ask for).
 import { inDomains } from "@oa/auth-core";
+import type { ShareRecipient } from "@oa/shared";
 import {
   type AuthConfig,
   authConfig,
   type SignInProvider,
 } from "../auth/config.js";
 import { authProviders } from "../auth/sign-in.js";
+import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import {
   type CodeRow,
   codeRule,
+  ELIGIBILITY,
   googleNewRowOk,
   googleTenantOk,
 } from "./identity.js";
@@ -85,3 +88,28 @@ export const inviteReach = (
     { id: null, role, status: "active", linked: false },
     async () => false,
   );
+
+/**
+ * A share recipient (review item 37), after the share is written: which
+ * methods admit them, and ShareResult.recipient when none could (the share
+ * still applies). Only for no row or an active one: a removed or suspended
+ * person is out of scope here. Google that only might admit them (outside
+ * AUTH_DOMAINS) isn't flagged.
+ */
+export async function shareReach(
+  env: Env,
+  email: string,
+): Promise<{ methods: SignInProvider[]; recipient?: ShareRecipient }> {
+  const row = await stmt(env.DB, ELIGIBILITY).bind(email).first<CodeRow>();
+  const r = await reachOf(env, email, row, async () => true);
+  if (r.methods.length > 0 || r.googleUncertain) return { methods: r.methods };
+  if (row && row.status !== "active") return { methods: [] };
+  // In a verified domain: an invite as a member would let them in, unless
+  // no offered method admits a member there either.
+  const reason: ShareRecipient["reason"] = !r.inDomain
+    ? "outside_domains"
+    : (await inviteReach(env, email, "member")).methods.length > 0
+      ? "needs_invite"
+      : "no_sign_in_method";
+  return { methods: [], recipient: { canSignIn: false, reason } };
+}

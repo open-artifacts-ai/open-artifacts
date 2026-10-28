@@ -198,6 +198,12 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       return ok(
         `Shared ${input.id} with ${s.email} as ${s.role}: ${viewUrl(env, input.id)}. ${
           s.emailed ? `Emailed ${s.email} a link.` : "No email sent."
+        }${
+          s.recipient
+            ? s.recipient.reason === "needs_invite"
+              ? ` ${s.email} can't sign in until an admin invites them as a member.`
+              : ` ${s.email} can't sign in to this instance with the sign-in methods it offers.`
+            : ""
         }`,
         s,
       );

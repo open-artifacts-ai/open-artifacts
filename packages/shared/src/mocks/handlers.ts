@@ -767,7 +767,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         };
         if (i >= 0) list[i] = share;
         else list.push(share);
-        return HttpResponse.json({ ...share, emailed: false });
+        const recipient = h?.shareRecipient(email);
+        return HttpResponse.json({
+          ...share,
+          emailed: false,
+          ...(recipient ? { recipient } : {}),
+        });
       }, "owner"),
     ),
     http.delete(

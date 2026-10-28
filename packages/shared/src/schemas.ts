@@ -322,10 +322,25 @@ export const ShareSchema = z.object({
 });
 export type Share = z.infer<typeof ShareSchema>;
 
+/**
+ * ShareResult.recipient: present only when the recipient can't sign in on
+ * this install yet (the share still applies). needs_invite: in a verified
+ * domain on an invite-only install, so an admin must invite them as a
+ * member; outside_domains: outside the verified domains and no guest
+ * sign-in is offered (see InviteUnreachableReasonSchema).
+ */
+export const ShareRecipientSchema = z.object({
+  canSignIn: z.literal(false),
+  reason: z.enum(["needs_invite", "outside_domains", "no_sign_in_method"]),
+});
+export type ShareRecipient = z.infer<typeof ShareRecipientSchema>;
+
 /** PUT shares response. */
 export const ShareResultSchema = ShareSchema.extend({
   /** True if a notification email went to a non-member (best effort). */
   emailed: z.boolean(),
+  /** Absent when the recipient can sign in; see ShareRecipientSchema. */
+  recipient: ShareRecipientSchema.optional(),
 });
 export type ShareResult = z.infer<typeof ShareResultSchema>;
 

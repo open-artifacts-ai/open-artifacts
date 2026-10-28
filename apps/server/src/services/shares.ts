@@ -9,6 +9,7 @@ import {
 } from "@oa/shared";
 import { asc, eq } from "drizzle-orm";
 import { authorize, callerOf } from "../auth/authz.js";
+import type { SignInProvider } from "../auth/config.js";
 import { getDb } from "../db/client.js";
 import { shares } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -21,7 +22,7 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { getSettings } from "./members.js";
-import { reachOf } from "./reach.js";
+import { shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
 
@@ -176,9 +177,15 @@ export async function putShare(
         lapseAudit(env, guest.id, "active", user.id),
       ]);
   }
+  // Review item 37: whether they can sign in at all (an in-domain
+  // non-member on an invite-only install can't); the share stands either way.
+  const reach = await shareReach(env, email);
   return {
     ...toShare(row),
-    emailed: created && (await emailShare(env, user, artifact, email, s.role)),
+    emailed:
+      created &&
+      (await emailShare(env, user, artifact, email, s.role, reach.methods)),
+    ...(reach.recipient ? { recipient: reach.recipient } : {}),
   };
 }
 
@@ -188,6 +195,8 @@ async function emailShare(
   artifact: { id: string; title: string; format: string },
   email: string,
   role: ShareRole,
+  /** The methods that admit the recipient (none: the email says so). */
+  signIn: SignInProvider[],
 ): Promise<boolean> {
   if (!emailEnabled(env)) return false;
   try {
@@ -196,8 +205,6 @@ async function emailShare(
       getSettings(env),
     ]);
     if (member) return false;
-    // No user row: the share is what admits them (reach.ts).
-    const { methods } = await reachOf(env, email, null, async () => true);
     return await sendEmail(
       env,
       user.id,
@@ -212,7 +219,7 @@ async function emailShare(
           path: viewerPath(artifact.id),
           format: artifact.format as Format,
           role,
-          signIn: methods,
+          signIn,
         }),
       {
         kind: "share",
