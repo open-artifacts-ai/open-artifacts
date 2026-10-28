@@ -398,6 +398,11 @@ function Viewer({
   }, [failed]);
 
   useEffect(() => bridge.current?.setTheme(theme), [theme]);
+  // Access settings changed under an open frame (Share): the bridge follows.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: these fields are the trigger
+  useEffect(() => {
+    bridge.current?.setArtifact(artifact);
+  }, [artifact.capabilities, artifact.dataWriters, artifact.visibility]);
 
   if ((content.notFound || signedOut) && isEmbed())
     return <NotPublic id={artifact.id} />;
