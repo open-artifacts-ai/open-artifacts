@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { InfraError, isNetworkError, networkCode } from "./fetch-timeout.ts";
 import {
   adminCreds,
   type Cred,
@@ -474,7 +475,18 @@ export async function crossWrite<C, X>(
 ): Promise<void> {
   const made: [Target, X][] = [];
   const fresh = async (t: Target) => {
-    const x = await o.fresh(t);
+    // Setup, not a verdict: no response creating the target is infra.
+    let x: X;
+    try {
+      x = await o.fresh(t);
+    } catch (e) {
+      if (isNetworkError(e))
+        throw new InfraError(
+          `setup on ${t.name} got no response (${networkCode(e)})`,
+          { cause: e },
+        );
+      throw e;
+    }
     made.push([t, x]);
     return x;
   };
