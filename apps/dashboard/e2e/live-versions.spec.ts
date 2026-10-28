@@ -221,7 +221,9 @@ for (const width of [1280, 390])
         // Deleted elsewhere (an agent): the mock emits gone "deleted".
         await del(page);
         await expect(
-          page.locator(".oa-lgone").getByText("You deleted this artifact."),
+          page
+            .locator(".oa-lgone")
+            .getByText("Deleted. It stays in Trash for 30 days."),
         ).toBeVisible();
         await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
         await expect(

@@ -137,8 +137,10 @@ it("spaces API (P3 T9): create, member add, a no-op and a role change", async ()
   expect(r.status).toBe(201);
   const { id } = (await r.json()) as { id: string };
   // spaces 2 (WITHOUT ROWID table, spaces_kind_name_idx) + audit_events 2
-  // (table, audit_events_at_idx).
-  expect(rows.n).toBe(4);
+  // (table, audit_events_at_idx) for space.create; the creator's manager row
+  // (addMe, the default): space_members 2 (table, space_members_user_idx) +
+  // audit_events 2 for space.member.add.
+  expect(rows.n).toBe(8);
   const put = (role: string) =>
     api(S as never, R.spaceMember(id, m.userId), admin.cookie, {
       method: "PUT",
@@ -225,7 +227,8 @@ it("spaces API reads (P3 T9): GET /spaces skips personal spaces; a member page d
   for (let i = 0; i < 30; i++) await login(`rows-read-u${i}@x.com`);
   const r = await api(S as never, R.spaces, admin.cookie, {
     method: "POST",
-    body: { name: "Rows read" },
+    // addMe false: the admin holds no role (the measured read below).
+    body: { name: "Rows read", addMe: false },
   });
   const { id } = (await r.json()) as { id: string };
   for (let i = 0; i < 5; i++) {
@@ -243,10 +246,11 @@ it("spaces API reads (P3 T9): GET /spaces skips personal spaces; a member page d
   rows.read = 0;
   const list = await api(S as never, `${R.spaces}?limit=200`, admin.cookie);
   expect(list.status).toBe(200);
-  // Measured 20: the PK read, the walk over the 2 shared spaces and their
-  // counts and roles. A scan of the 36+ personal spaces would read more.
-  // (rows_read moves by a few with b-tree layout; random ids.)
-  expect(rows.read).toBeLessThanOrEqual(24);
+  // The PK read, the walk over the 2 shared spaces and their counts and
+  // roles: measured 24 without the earlier test's creator row, 26 with it
+  // (addMe). A scan of the 36+ personal spaces would read more. (rows_read
+  // moves by a few with b-tree layout; random ids.)
+  expect(rows.read).toBeLessThanOrEqual(28);
   // Personal space by PK, then the shared walk; never the 36+ personal rows.
   const allSpaces = (
     await env.DB.prepare("select count(*) n from spaces").first<{ n: number }>()

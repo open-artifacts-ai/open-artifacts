@@ -2,7 +2,13 @@
 // R.events mock: swap when provably safe, otherwise the chip; restore; gone;
 // a hello that is ahead of the shown version; embeds never show names.
 import { type ArtifactSummary, R, viewerPath } from "@oa/shared";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setEmbedForTests } from "../src/embed";
@@ -330,17 +336,22 @@ const GUIDE = idOf("Onboarding guide"); // team, viewer access
 const NEUTRAL = "This artifact is no longer available to you.";
 /** The banner's copy, not the announcer's. */
 const BANNER = { selector: ".oa-lgone span" };
+/** The deleted banner's note; its text runs across the Trash link. */
+const DELETED = (_: string, el: Element | null) =>
+  el?.textContent === "Deleted. It stays in Trash for 30 days.";
 /** No call for `id` after `from` (artifact, versions, content URL, data). */
 const callsFor = (id: string, from: number) =>
   seen.slice(from).filter((u) => u.pathname.includes(`/artifacts/${id}`));
 
 describe("live versions: gone", () => {
-  it("deleted, the owner: You deleted this artifact, frame kept, nothing fetched", async () => {
+  it("deleted, the owner: the Trash note with its link, frame kept, nothing fetched", async () => {
     const first = await open(viewerPath(OWNED));
     await api("DELETE", R.artifact(OWNED));
-    expect(
-      await screen.findByText("You deleted this artifact.", BANNER),
-    ).toBeTruthy();
+    const banner = await screen.findByText(DELETED, BANNER);
+    expect(within(banner).getByRole("link", { name: "Trash" })).toHaveAttribute(
+      "href",
+      "/trash",
+    );
     const after = seen.length;
     expect(frames()).toEqual([first]);
     expect(screen.queryByText("Page not found")).toBeNull();
@@ -385,11 +396,7 @@ describe("live versions: gone", () => {
     const before = nonceOf(first);
     await api("DELETE", R.artifact(OWNED));
     fireEvent.click(await screen.findByRole("button", { name: "Restore" }));
-    await waitFor(() =>
-      expect(
-        screen.queryByText("You deleted this artifact.", BANNER),
-      ).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByText(DELETED, BANNER)).toBeNull());
     await waitFor(() => expect(events.connections(OWNED)).toBe(1));
     // A fresh load of the frame, with a fresh nonce.
     await waitFor(() =>
@@ -404,7 +411,7 @@ describe("live versions: gone", () => {
     });
     expect(await screen.findByText(NEUTRAL, BANNER)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
-    expect(screen.queryByText("You deleted this artifact.", BANNER)).toBeNull();
+    expect(screen.queryByText(DELETED, BANNER)).toBeNull();
   });
 
   it("deleted, a space manager (can.delete, not the owner): Restore", async () => {
@@ -430,9 +437,7 @@ describe("live versions: gone", () => {
     act(() => {
       events.emitGone(GUIDE, "deleted");
     });
-    expect(
-      await screen.findByText("This artifact was deleted.", BANNER),
-    ).toBeTruthy();
+    expect(await screen.findByText(DELETED, BANNER)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
   });
 
@@ -489,7 +494,7 @@ describe("live versions: gone", () => {
     await waitFor(() => expect(events.connections(OWNED)).toBe(1));
     await act(() => new Promise((r) => setTimeout(r, 50)));
     expect(screen.queryByText(NEUTRAL, BANNER)).toBeNull();
-    expect(screen.queryByText("You deleted this artifact.", BANNER)).toBeNull();
+    expect(screen.queryByText(DELETED, BANNER)).toBeNull();
     // Still the same frame, and its bridge still answers.
     expect(frames()).toEqual([first]);
     expect(post(first, "hello")).toHaveBeenCalled();

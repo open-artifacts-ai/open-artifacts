@@ -191,7 +191,8 @@ const putMember = (e: Env, who: U, sid: string, userId: string, role: string) =>
   });
 /** A space with a manager, an editor and a viewer (manual rows). */
 const staffed = async (body: Record<string, unknown> = {}) => {
-  const s = await createSpace(body);
+  // The org admin who creates it stays out of it (addMe false).
+  const s = await createSpace({ addMe: false, ...body });
   const mgr = await mk("mgr");
   const ed = await mk("ed");
   const vw = await mk("vw");
@@ -296,7 +297,7 @@ describe("spaces", () => {
   });
 
   it("POST /spaces: org admin 201, audited space.create; a member 404", async () => {
-    const s = await createSpace({ allMembersRole: "viewer" });
+    const s = await createSpace({ allMembersRole: "viewer", addMe: false });
     expect(s).toMatchObject({
       kind: "shared",
       allMembersRole: "viewer",
@@ -314,6 +315,38 @@ describe("spaces", () => {
       body: { name: "x" },
     });
     expect(r.status).toBe(404);
+  });
+
+  it("POST /spaces: the creator becomes a manual manager (addMe, default true), audited space.member.add; addMe false adds no row", async () => {
+    for (const body of [{}, { addMe: true }]) {
+      const s = await createSpace(body);
+      expect(s).toMatchObject({ myRole: "manager", memberCount: 1 });
+      const ms = await one<{ role: string; source: string }>(
+        "select role, source from space_members where space_id = ? and user_id = ?",
+        s.id,
+        admin.userId,
+      );
+      expect(ms).toEqual({ role: "manager", source: "manual" });
+      const rows = await audits("space.member.add", admin.userId);
+      expect(
+        rows
+          .filter((x) => x.space_id === s.id)
+          .map((x) => [x.actor_id, JSON.parse(x.detail)]),
+      ).toEqual([[admin.userId, { role: "manager" }]]);
+      const people = await json<Page<{ userId: string; role: string }>>(
+        await call(GOOGLE, R.spaceMembers(s.id), admin.cookie),
+      );
+      expect(people.items.map((p) => [p.userId, p.role])).toEqual([
+        [admin.userId, "manager"],
+      ]);
+    }
+    const no = await createSpace({ addMe: false });
+    expect(no).toMatchObject({ myRole: null, memberCount: 0 });
+    expect(
+      (await audits("space.member.add", admin.userId)).filter(
+        (x) => x.space_id === no.id,
+      ),
+    ).toEqual([]);
   });
 
   it("GET /spaces pages with nextCursor; personal first; org admins see every shared space", async () => {
@@ -359,8 +392,7 @@ describe("spaces", () => {
     );
     expect(shared.items.every((s) => s.kind === "shared")).toBe(true);
     // An org admin sees a space they hold no role in, myRole null.
-    const other = await createSpace();
-    await run("delete from space_members where space_id = ?", other.id);
+    const other = await createSpace({ addMe: false });
     const all: Space[] = [];
     let c2: string | null = null;
     do {

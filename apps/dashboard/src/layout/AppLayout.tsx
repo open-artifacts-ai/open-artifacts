@@ -75,6 +75,7 @@ const I = {
     "M6 3.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM1.5 13.5c.5-2.5 2.3-3.8 4.5-3.8s4 1.3 4.5 3.8",
   ),
   usage: icon("M2.5 11a5.5 5.5 0 1 1 11 0M8 11l2.5-3"),
+  trash: icon("M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.5 7v4M9.5 7v4"),
   gear: icon(
     "M8 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7",
   ),
@@ -450,6 +451,23 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
           </SidebarGroup>
         </nav>
         <SpaceSwitcher path={path} />
+        {/* Its own group under Spaces (Design's Trash A), on every install. */}
+        {me && !guest && (
+          <nav aria-label="Trash">
+            <SidebarGroup>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  <Link
+                    to="/trash"
+                    active={on("/trash")}
+                    icon={I.trash}
+                    label="Trash"
+                  />
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          </nav>
+        )}
       </SidebarContent>
       {/* On phones the chip takes the nav rows' inset: 8px (content) + 8px (group). */}
       {shouldNudge(update) && (

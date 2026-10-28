@@ -7,6 +7,7 @@ import {
   textOf,
   unpreviewableHtml,
 } from "../src/code";
+import { renderImage } from "../src/image";
 import { prepareMarkdown, renderMarkdown } from "../src/markdown";
 import { truncateUtf8, versionFromPath } from "../src/shell";
 import { applyTheme, watchShellTheme } from "../src/theme";
@@ -292,5 +293,65 @@ describe("boot with a binary code entry", () => {
     expect(
       document.querySelector(".oa-unpreviewable a")?.getAttribute("download"),
     ).toBe("IMG_0042.jpg");
+  });
+});
+
+describe("renderImage", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.head.innerHTML = "";
+    document.body.innerHTML = "";
+    document.documentElement.removeAttribute("data-oa-rendered");
+  });
+
+  it("is one <img> of the entry, never an inlined or framed SVG", async () => {
+    const root = document.createElement("div");
+    const done = renderImage(
+      "https://c.test/v1/logo%20a.svg",
+      "logo a.svg",
+      root,
+    );
+    const img = root.querySelector(".oa-image img") as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe("https://c.test/v1/logo%20a.svg");
+    expect(img.alt).toBe("logo a.svg");
+    expect(root.querySelector("svg, object, embed, iframe")).toBeNull();
+    img.dispatchEvent(new Event("load"));
+    await done;
+    expect(root.querySelector(".oa-image img")).not.toBeNull();
+  });
+
+  it("an image that can't decode shows the note with Download", async () => {
+    const root = document.createElement("div");
+    const done = renderImage("https://c.test/v1/x.png", "x.png", root);
+    root.querySelector("img")?.dispatchEvent(new Event("error"));
+    await done;
+    expect(root.textContent).toContain("This file can't be shown.");
+    expect(root.querySelector("a")?.getAttribute("download")).toBe("x.png");
+  });
+
+  it("boot renders an image entry and marks itself rendered once it loads", async () => {
+    document.head.innerHTML =
+      '<meta name="oa-format" content="image"><meta name="oa-entry" content="photos/IMG 1.jpg"><meta name="oa-content-type" content="image/jpeg">';
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    vi.resetModules();
+    await import("../src/index");
+    const img = await vi.waitFor(() => {
+      const el = document.querySelector<HTMLImageElement>(".oa-image img");
+      if (!el) throw new Error("no img yet");
+      return el;
+    });
+    expect(img.getAttribute("src")).toMatch(/photos\/IMG%201\.jpg$/);
+    expect(document.documentElement.hasAttribute("data-oa-rendered")).toBe(
+      false,
+    );
+    img.dispatchEvent(new Event("load"));
+    await vi.waitFor(() =>
+      expect(document.documentElement.hasAttribute("data-oa-rendered")).toBe(
+        true,
+      ),
+    );
+    // The bytes are never fetched as text.
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

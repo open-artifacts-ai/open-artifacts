@@ -480,11 +480,11 @@ it("an empty space whose trash still holds artifacts: the 409 shows inline, once
     }),
   );
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "This space still has artifacts. Move or delete them first. Deleted artifacts count until they're permanently removed, 30 days after deletion.",
+    "This space still has artifacts. Move or delete them first. Deleted ones stay in Trash for 30 days.",
   );
   expect(
     screen.getAllByText(
-      "This space still has artifacts. Move or delete them first. Deleted artifacts count until they're permanently removed, 30 days after deletion.",
+      "This space still has artifacts. Move or delete them first. Deleted ones stay in Trash for 30 days.",
     ),
   ).toHaveLength(1);
 });

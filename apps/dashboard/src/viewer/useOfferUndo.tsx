@@ -4,14 +4,15 @@ import { useNavigate } from "@tanstack/react-router";
 import { ApiClientError, api } from "../api/client";
 import { qk } from "../api/queries";
 import { toast } from "../layout/toast";
+import { DeletedNote } from "../trash/DeletedNote";
 
 /** Returns a function that toasts an Undo for a just-deleted artifact. */
 export function useOfferUndo() {
   const qc = useQueryClient();
   const navigate = useNavigate();
-  return (artifactId: string, title: string) =>
+  return (artifactId: string) =>
     toast({
-      title: `Deleted “${title}”`,
+      title: <DeletedNote />,
       action: {
         label: "Undo",
         onClick: () => {
