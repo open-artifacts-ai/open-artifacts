@@ -3,10 +3,16 @@
 # no admin bypass), are written as 0600 files under RUNNER_TEMP in one step,
 # and reach the suite by path (REDLINE_TARGETS.secretsDir), never as env.
 # Cases that need prod credentials report not-applicable, never a pass.
+# The t19 job then runs the M1 gate's dashboard suite (T19) against rl-a.
 name: redline-staging
 
 on:
   workflow_dispatch:
+    inputs:
+      expect_version:
+        description: "T19: the release rl-a must run (x.y.z); empty pins none"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -86,4 +92,68 @@ jobs:
         with:
           name: redline-report
           path: ${{ runner.temp }}/redline-report
+          if-no-files-found: warn
+  # T19: the dashboard against rl-a (apps/dashboard/e2e/staging). After the
+  # red-line job, never beside it: both write to rl-a through its hooks
+  # (per-IP code caps, the hook audit log the red-line cases read), so they
+  # run one at a time. The workflow's own concurrency group already keeps
+  # runs apart; a job-level group of the same name would wait on itself.
+  t19:
+    needs: redline
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    environment: redline-staging
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - run: pnpm install --frozen-lockfile
+      # Before any secret file exists: only the suite runs while it does.
+      - run: pnpm --filter @oa/shared build
+      - run: pnpm --filter @oa/dashboard exec playwright install --with-deps chromium
+      - name: Write the suite's secret as a 0600 file
+        env:
+          RL_A_HOOK_KEY: ${{ secrets.REDLINE_RL_A_HOOK_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          d="$RUNNER_TEMP/redline-secrets"
+          mkdir -p "$d"
+          printf '%s' "$RL_A_HOOK_KEY" > "$d/REDLINE_RL_A_HOOK_KEY"
+          for f in "$d"/*; do test -s "$f" || { echo "empty secret file: ${f##*/}"; exit 1; }; done
+      - name: Run the suite
+        env:
+          REDLINE_TARGETS_BASE: ${{ vars.REDLINE_TARGETS }}
+          T19_EXPECT_TIER: team
+          T19_EXPECT_VERSION: ${{ inputs.expect_version }}
+        run: |
+          set -euo pipefail
+          REDLINE_TARGETS=$(jq -c --arg d "$RUNNER_TEMP/redline-secrets" '. + {secretsDir: $d}' <<< "$REDLINE_TARGETS_BASE")
+          export REDLINE_TARGETS
+          pnpm --filter @oa/dashboard exec playwright test -c playwright.staging.config.ts
+      # Artifacts are not masked: a secret echoed into the report stops the upload.
+      - id: scan
+        name: No secret in the report
+        if: always()
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/redline-secrets"
+          r="apps/dashboard/playwright-report"
+          [ -d "$d" ] && [ -d "$r" ] || exit 0
+          for f in "$d"/*; do
+            if grep -rqF -- "$(cat "$f")" "$r"; then echo "secret in report: ${f##*/}"; exit 1; fi
+          done
+      - name: Remove the secret file
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/redline-secrets"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && steps.scan.outcome == 'success'
+        with:
+          name: t19-report
+          path: apps/dashboard/playwright-report
           if-no-files-found: warn
