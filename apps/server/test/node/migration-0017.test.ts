@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LIMITS } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getPlatformProxy } from "wrangler";
 import {
@@ -15,6 +16,7 @@ import {
   NARROW,
   parseCapture,
   type Query,
+  SOFT_DELETE_DAYS,
   serialize,
   verify,
   WIDE,
@@ -297,6 +299,24 @@ async function seed() {
       A(i),
       `${u}@Example.com`,
     );
+  // At the audit high-water mark (the capture records its ids): an unshare
+  // that predates the capture.
+  await run(
+    `insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id)
+     values ('ev-mark', 13, 'user', 'u-owner', 'artifact.unshare', 'artifact', ?)`,
+    A(23),
+  );
+  // Trash not yet due for purge: trashed just now, and a purge backed off.
+  await run(
+    "update artifacts set deleted_at = ?, purge_after = null where id = ?",
+    NOW,
+    A(44),
+  );
+  await run(
+    "update artifacts set purge_after = ? where id = ?",
+    NOW + 365 * DAY_MS,
+    A(55),
+  );
   // rowid gaps: a purge deletes (cascading its rows and its FTS row by hand),
   // so later rowids are not 1..n and a renumbering copy would show.
   for (const i of [3, 17, 18, 40]) {
@@ -313,6 +333,8 @@ async function seed() {
   );
 }
 
+const NOW = Date.now();
+const DAY_MS = 86_400_000;
 let before: Snap;
 let captured: string;
 let recaptured: string;
@@ -520,7 +542,7 @@ describe("migration 0017_image_format rehearsal", () => {
       A(19),
     );
     // The trash purge (not audited): an artifact trashed at capture.
-    expect(JSON.parse(captured).trashed).toContain(A(11));
+    expect(parseCapture(captured).trashed.map((t) => t.id)).toContain(A(11));
     await run(
       "delete from artifact_search where rowid = (select rowid from artifacts where id = ?)",
       A(11),
@@ -554,6 +576,28 @@ describe("migration 0017_image_format rehearsal", () => {
       A(15),
     );
     expect((await verify(q, parseCapture(captured))).failures).toEqual([]);
+  });
+
+  it("SOFT_DELETE_DAYS is LIMITS.softDeleteDays; the capture keeps the rebuilt tables' foreign keys", async () => {
+    expect(SOFT_DELETE_DAYS).toBe(LIMITS.softDeleteDays);
+    const cap = parseCapture(captured);
+    expect(cap.format).toBe("oa-verify-migration/3");
+    expect(cap.fks.shares.join("\n")).toMatch(
+      /artifacts artifact_id id NO ACTION CASCADE/,
+    );
+    expect(cap.fks.versions.join("\n")).toMatch(
+      /artifacts artifact_id id NO ACTION CASCADE/,
+    );
+    const changed = {
+      ...cap,
+      fks: {
+        ...cap.fks,
+        shares: cap.fks.shares.map((l) => l.replace("CASCADE", "NO ACTION")),
+      },
+    };
+    expect((await verify(q, changed)).failures).toContain(
+      "table shares: foreign keys differ from before",
+    );
   });
 
   it("refuses a --db that looks like a flag, and never echoes bad JSON", () => {
@@ -627,6 +671,82 @@ describe("migration 0017_image_format rehearsal", () => {
     for (const e of err) {
       expect(e).not.toMatch(/@|art00/i);
     }
+  });
+
+  it("unexplained deletes fail: a live artifact, a move without a share, audit rows at the mark, more shares than events, a purge not yet due", async () => {
+    /** Unexplained missing rows per table, from verify's failures. */
+    const unexp = async (now?: number) => {
+      const r = await verify(q, parseCapture(captured), now);
+      const out: Record<string, number> = {
+        artifacts: 0,
+        versions: 0,
+        shares: 0,
+      };
+      for (const f of r.failures) {
+        const m =
+          /^(\w+): (\d+) of \d+ captured rows missing, unexplained$/.exec(f);
+        if (m) out[m[1] as string] = Number(m[2]);
+      }
+      return out;
+    };
+    const purge = async (i: number) => {
+      await run(
+        "delete from artifact_search where rowid = (select rowid from artifacts where id = ?)",
+        A(i),
+      );
+      await run("delete from artifacts where id = ?", A(i));
+    };
+    const audit = (id: string, target: string, at: number) =>
+      run(
+        `insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id)
+         values (?, ?, 'user', 'u-owner', 'artifact.unshare', 'artifact', ?)`,
+        id,
+        at,
+        target,
+      );
+    let base = await unexp();
+    const expectDelta = async (d: Record<string, number>, now?: number) => {
+      const cur = await unexp(now);
+      expect({
+        artifacts: (cur.artifacts ?? 0) - (base.artifacts ?? 0),
+        versions: (cur.versions ?? 0) - (base.versions ?? 0),
+        shares: (cur.shares ?? 0) - (base.shares ?? 0),
+      }).toEqual({ artifacts: 0, versions: 0, shares: 0, ...d });
+      base = cur;
+    };
+    // A live (never trashed) artifact deleted: its rows and shares.
+    await purge(25);
+    await expectDelta({ artifacts: 1, versions: 2, shares: 2 });
+    // An address move with no share at the new address.
+    await run(
+      "update users set email = 'guest.new@example.com' where id = 'u-guest'",
+    );
+    await run(
+      "delete from shares where artifact_id = ? and email = 'u-guest@Example.com'",
+      A(15),
+    );
+    await expectDelta({ shares: 1 });
+    // An unshare audit row already at the mark predates the capture...
+    await run(
+      "delete from shares where artifact_id = ? and email = 'ed@example.com'",
+      A(23),
+    );
+    await expectDelta({ shares: 1 });
+    // ...a new row at the same millisecond doesn't.
+    const mark = parseCapture(captured).audit;
+    expect(mark.ids).toContain("ev-mark");
+    await audit("ev-same-ms", A(23), mark.at);
+    await expectDelta({ shares: -1 });
+    // One unshare row explains one share, not two.
+    await audit("ev-one", A(27), 10_000_000_000);
+    await run("delete from shares where artifact_id = ?", A(27));
+    await expectDelta({ shares: 1 });
+    // Purges not yet due at verify time: trashed just now (A(44)), and a
+    // backed-off purge_after (A(55)); 40 days on, only A(44) is due.
+    await purge(44);
+    await purge(55);
+    await expectDelta({ artifacts: 2, versions: 4, shares: 2 });
+    await expectDelta({ artifacts: -1, versions: -2 }, NOW + 40 * DAY_MS);
   });
 
   it("runs under node --experimental-strip-types as Platform invokes it", () => {

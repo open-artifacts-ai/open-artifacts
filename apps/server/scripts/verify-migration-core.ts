@@ -12,9 +12,11 @@
 //     artifact_id:version, shares artifact_id:h(lower(email)) (h: a sha256
 //     prefix; no plaintext emails);
 //   * what explains a key that goes missing while the app stays live (see
-//     EXPLAINED): the trashed artifacts (deleted_at set), every user as
+//     EXPLAINED): the trashed artifacts (id, deleted_at, purge_after), every user as
 //     id:h(lower(email)), and the audit high-water mark (the latest
 //     audit_events.at and the ids at it);
+//   * PRAGMA foreign_key_list of the rebuilt tables (compared even after
+//     later migrations);
 //   * the artifact_search rows with no artifact of their rowid.
 // verify() re-reads the database and fails on: a captured key missing from a
 // rebuilt table that nothing explains (new rows are fine), 0017 not recorded
@@ -31,18 +33,19 @@
 // high-water mark.
 //   * artifacts, and with it its versions and shares (ON DELETE CASCADE):
 //     purgeArtifact (cron trash purge, services/artifacts.ts). NOT AUDITED;
-//     explained by state instead: the artifact was in the trash at capture
-//     and no row with its id is left.
+//     explained by state instead: the artifact was in the trash at capture,
+//     its purge was due by verify time (deleted_at + SOFT_DELETE_DAYS and
+//     purge_after both passed) and no row with its id is left.
 //   * versions: no delete path but that cascade.
-//   * shares, deleteShare (unshare): audit artifact.unshare on the artifact
-//     (its detail names no email, so any unshare on the artifact explains
-//     any of its shares).
+//   * shares, deleteShare (unshare): audit artifact.unshare on the artifact.
+//     Its detail names no email, so each such row explains one missing
+//     share of that artifact (unshare and transfer rows share the count).
 //   * shares, transferArtifact and the departed-owner transfer
 //     (services/spaces.ts, the successor's own share): audit
 //     artifact.transfer on the artifact.
 //   * shares, the directory's deleteUser (directory/apply.ts DROP_SHARES):
 //     audit user.status on the user whose captured address the share was
-//     keyed by.
+//     keyed by (every share at that address).
 //   * shares, moveUserEmail (services/email-move.ts, from sign-in drift and
 //     directory renames): NOT AUDITED; explained by state instead: the
 //     user's address changed and the same artifact has a share at the new
@@ -61,6 +64,10 @@ export const WIDENED = ["artifacts", "versions"] as const;
 export const NARROW = "in ('html', 'markdown', 'code', 'pdf')";
 export const WIDE = "in ('html', 'markdown', 'code', 'pdf', 'image')";
 const PAGE = 5000;
+/** LIMITS.softDeleteDays (a test keeps them equal): no @oa/shared import here. */
+export const SOFT_DELETE_DAYS = 30;
+const DAY = 86_400_000;
+const FORMAT = "oa-verify-migration/3";
 
 export type SchemaEntry = {
   type: string;
@@ -71,13 +78,15 @@ export type SchemaEntry = {
   expectHash: string;
 };
 export type Capture = {
-  format: "oa-verify-migration/2";
+  format: typeof FORMAT;
   migration: string;
   tables: { name: string; rows: number }[];
   schema: SchemaEntry[];
   keys: { artifacts: string[]; versions: string[]; shares: string[] };
-  /** Artifact ids with deleted_at set (purge candidates). */
-  trashed: string[];
+  /** Artifacts with deleted_at set (purge candidates), by id. */
+  trashed: { id: string; deletedAt: number; purgeAfter: number | null }[];
+  /** PRAGMA foreign_key_list of each rebuilt table, one line per key column. */
+  fks: Record<(typeof REBUILT)[number], string[]>;
   /** Every user as id:h(lower(email)). */
   users: string[];
   /** The latest audit_events.at (0: none) and the ids at it. */
@@ -192,6 +201,19 @@ async function userKeys(q: Query): Promise<string[]> {
   ).sort(cmp);
 }
 
+async function foreignKeys(q: Query): Promise<Capture["fks"]> {
+  const out = {} as Capture["fks"];
+  for (const t of REBUILT)
+    out[t] = (await q(`select * from pragma_foreign_key_list(${lit(t)})`))
+      .map((r) =>
+        [r.id, r.seq, r.table, r.from, r.to, r.on_update, r.on_delete, r.match]
+          .map(str)
+          .join(" "),
+      )
+      .sort(cmp);
+  return out;
+}
+
 async function applied(q: Query): Promise<boolean> {
   const r = await q(
     `select count(*) as n from d1_migrations where name = ${lit(MIGRATION_FILE)}`,
@@ -241,38 +263,48 @@ export async function capture(q: Query): Promise<Capture> {
     await q(`select id from audit_events where at = ${at} order by id`)
   ).map((r) => str(r.id));
   return {
-    format: "oa-verify-migration/2",
+    format: FORMAT,
     migration: MIGRATION,
     tables: await tableCounts(q, tableNames),
     schema,
     keys: await keySets(q),
     trashed: (
       await q(
-        "select id from artifacts where deleted_at is not null order by id",
+        "select id, deleted_at, purge_after from artifacts where deleted_at is not null order by id",
       )
-    ).map((r) => str(r.id)),
+    ).map((r) => ({
+      id: str(r.id),
+      deletedAt: num(r.deleted_at),
+      purgeAfter: r.purge_after == null ? null : num(r.purge_after),
+    })),
+    fks: await foreignKeys(q),
     users: await userKeys(q),
     audit: { at, ids },
     ftsOrphans: num((await q(FTS_ORPHANS))[0]?.n),
   };
 }
 
-/** Audit rows written after the capture's high-water mark: action → target ids. */
+/**
+ * Audit rows written after the capture's high-water mark (rows at the mark
+ * that the capture already saw don't count): action → target id → count.
+ */
 async function auditSince(
   q: Query,
   mark: Capture["audit"],
-): Promise<Map<string, Set<string>>> {
+): Promise<Map<string, Map<string, number>>> {
   const known = new Set(mark.ids);
   const rows = await q(
     `select id, action, target_id from audit_events where at >= ${num(mark.at)}
      and action in ('artifact.unshare', 'artifact.transfer', 'user.status')`,
   );
-  const out = new Map<string, Set<string>>();
+  const out = new Map<string, Map<string, number>>();
   for (const r of rows) {
     if (known.has(str(r.id))) continue;
     const a = str(r.action);
-    if (!out.has(a)) out.set(a, new Set());
-    out.get(a)?.add(str(r.target_id));
+    const t = str(r.target_id);
+    const m = out.get(a) ?? new Map<string, number>();
+    m.set(t, (m.get(t) ?? 0) + 1);
+    out.set(a, m);
   }
   return out;
 }
@@ -282,14 +314,28 @@ async function unexplained(
   q: Query,
   before: Capture,
   keys: Capture["keys"],
+  now: number,
 ): Promise<{ table: string; missing: number; explained: number }[]> {
   const live = new Set(keys.artifacts.map((k) => k.split(":")[0] as string));
-  const trashed = new Set(before.trashed);
-  /** Purged during the window: trashed at capture, no row left. */
-  const purged = (aid: string) => trashed.has(aid) && !live.has(aid);
+  // When the purge could first take each trashed artifact (purgeExpired:
+  // deleted_at older than SOFT_DELETE_DAYS and purge_after passed).
+  const due = new Map(
+    before.trashed.map((t) => [
+      t.id,
+      Math.max(t.deletedAt + SOFT_DELETE_DAYS * DAY, t.purgeAfter ?? 0),
+    ]),
+  );
+  /** Purged during the window: trashed at capture, due by now, no row left. */
+  const purged = (aid: string) =>
+    !live.has(aid) && (due.get(aid) ?? Number.POSITIVE_INFINITY) <= now;
   const events = await auditSince(q, before.audit);
   const hit = (action: string, id: string) =>
-    events.get(action)?.has(id) ?? false;
+    (events.get(action)?.get(id) ?? 0) > 0;
+  /** Shares each artifact's unshare and transfer rows may still explain. */
+  const budget = new Map<string, number>();
+  for (const a of ["artifact.unshare", "artifact.transfer"])
+    for (const [id, n] of events.get(a) ?? [])
+      budget.set(id, (budget.get(id) ?? 0) + n);
   // Users by captured address, and where each one's address is now.
   const usersBefore = new Map<string, string[]>();
   for (const u of before.users) {
@@ -300,11 +346,11 @@ async function unexplained(
     (await userKeys(q)).map((u) => u.split(":") as [string, string]),
   );
   const sharesNow = new Set(keys.shares);
-  const shareExplained = (k: string) => {
+  // Unbounded evidence first (purge, the user's removal, an address move),
+  // then one unshare or transfer row per remaining share of its artifact.
+  const byState = (k: string) => {
     const [aid, h] = k.split(":") as [string, string];
     if (purged(aid)) return true;
-    if (hit("artifact.unshare", aid) || hit("artifact.transfer", aid))
-      return true;
     for (const uid of usersBefore.get(h) ?? []) {
       if (hit("user.status", uid)) return true;
       const moved = usersNow.get(uid);
@@ -312,6 +358,17 @@ async function unexplained(
     }
     return false;
   };
+  const byAudit = (k: string) => {
+    const aid = k.split(":")[0] as string;
+    const n = budget.get(aid) ?? 0;
+    if (n <= 0) return false;
+    budget.set(aid, n - 1);
+    return true;
+  };
+  const goneShares = before.keys.shares.filter((k) => !sharesNow.has(k));
+  const shareOk = new Set(goneShares.filter(byState));
+  for (const k of goneShares) if (!shareOk.has(k) && byAudit(k)) shareOk.add(k);
+  const shareExplained = (k: string) => shareOk.has(k);
   const why: Record<(typeof REBUILT)[number], (k: string) => boolean> = {
     artifacts: (k) => purged(k.split(":")[0] as string),
     versions: (k) => purged(k.split(":")[0] as string),
@@ -338,7 +395,7 @@ export function parseCapture(text: string): Capture {
     // Never echo the input: a parse error message quotes it.
     throw new CheckError("not a capture file (invalid JSON)");
   }
-  if (c?.format !== "oa-verify-migration/2" || c.migration !== MIGRATION)
+  if (c?.format !== FORMAT || c.migration !== MIGRATION)
     throw new CheckError("not a capture file for this migration");
   return c;
 }
@@ -346,7 +403,11 @@ export function parseCapture(text: string): Capture {
 export type Report = { ok: boolean; failures: string[]; notes: string[] };
 
 /** The state after the migration, against `before`. */
-export async function verify(q: Query, before: Capture): Promise<Report> {
+export async function verify(
+  q: Query,
+  before: Capture,
+  now = Date.now(),
+): Promise<Report> {
   const failures: string[] = [];
   const notes: string[] = [];
   const master = await schemaRows(q);
@@ -379,7 +440,7 @@ export async function verify(q: Query, before: Capture): Promise<Report> {
   // Key sets of the rebuilt tables: every captured key still there, or
   // explained (EXPLAINED).
   const keys = await keySets(q);
-  for (const r of await unexplained(q, before, keys)) {
+  for (const r of await unexplained(q, before, keys, now)) {
     const total = before.keys[r.table as (typeof REBUILT)[number]].length;
     if (r.missing)
       failures.push(
@@ -427,6 +488,13 @@ export async function verify(q: Query, before: Capture): Promise<Report> {
     after.delete(k);
   }
   for (const k of after.keys()) flag(later === 0, `${k}: not there before`);
+  // The rebuilt tables' foreign keys, always (a later migration may change
+  // their sql, never what 0017 must keep: shares and versions cascade from
+  // artifacts).
+  const fks = await foreignKeys(q);
+  for (const t of REBUILT)
+    if (fks[t].join("\n") !== before.fks[t].join("\n"))
+      failures.push(`table ${t}: foreign keys differ from before`);
   for (const t of WIDENED) {
     const m = master.find((x) => x.type === "table" && x.name === t);
     if (m && !m.sql.includes(WIDE))
