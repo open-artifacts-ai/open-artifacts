@@ -5,7 +5,7 @@ import {
   sendToShell,
 } from "@oa/shared";
 
-import { renderCode } from "./code";
+import { renderCode, textOf, unpreviewableHtml } from "./code";
 import { wireCodeButtons } from "./copy";
 import { prepareMarkdown, renderMarkdown } from "./markdown";
 import { renderMermaid } from "./mermaid";
@@ -51,11 +51,12 @@ function fail(message: string): void {
   document.body.replaceChildren(p);
 }
 
-async function fetchText(url: string): Promise<string> {
+async function fetchOk(url: string): Promise<Response> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Could not load the artifact (${res.status}).`);
-  return res.text();
+  return res;
 }
+const fetchText = async (url: string) => (await fetchOk(url)).text();
 
 async function boot(): Promise<void> {
   const format = meta("oa-format") as Format;
@@ -81,13 +82,13 @@ async function boot(): Promise<void> {
       await renderMermaid(document.body, currentTheme());
       onThemeChange((t) => void renderMermaid(document.body, t));
     } else if (format === "code") {
-      const src = await fetchText(url);
       const name = entry.slice(entry.lastIndexOf("/") + 1);
-      document.body.innerHTML = await renderCode(
-        src,
-        meta("oa-language") || "text",
-        name,
+      const src = textOf(
+        new Uint8Array(await (await fetchOk(url)).arrayBuffer()),
       );
+      document.body.innerHTML = src.ok
+        ? await renderCode(src.text, meta("oa-language") || "text", name)
+        : unpreviewableHtml(src.reason, url, name);
     } else {
       await renderPdf(url, document.body);
     }
