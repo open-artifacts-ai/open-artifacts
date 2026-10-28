@@ -205,7 +205,7 @@ Only if the capture above exited 0, and whatever the upgrade's exit code once it
 ${VERIFY} verify --db ${NAME} --in ${CAPTURE}
 \`\`\`
 
-Exit 0: the data matches; go on. Any other exit: the migration didn't keep the data. Show the user its MISMATCH lines, then restore the database to the bookmark and roll the Worker back:
+Exit 0: the data matches; go on. Any other exit: the migration didn't keep the data. Show the user its MISMATCH lines, then restore the database to the bookmark and roll the Worker back. A restore discards every write since the bookmark, the user's own included (artifacts published, shares, live data written during the upgrade): tell the user so.
 
 \`\`\`sh
 ${WRANGLER} d1 time-travel restore ${NAME} --bookmark=<bookmark>

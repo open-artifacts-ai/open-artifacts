@@ -30,7 +30,7 @@ Upgrades keep all your artifacts, versions, shares, and live-page data. Database
 
 Migration `0017_image_format` rebuilds the `artifacts`, `versions` and `shares` tables to widen their format check to `image`, keeping every row and rowid, index, trigger and the search index. Because it isn't purely additive, record a way back and check the result. From the release directory, with the deploy token in `CLOUDFLARE_API_TOKEN` (and `CLOUDFLARE_ACCOUNT_ID` if the token reaches several accounts), and `<db>` your install name:
 
-1. **Capture** the database before the upgrade. Exit 1 with "already applied" means the instance already has it: upgrade as usual.
+1. **Capture** the database before the upgrade. Exit 1 with "already applied" means the instance already has it: upgrade as usual. Any other exit 1, or exit 2: stop, and don't upgrade; the message says why.
 
    ```sh
    node --experimental-strip-types apps/server/scripts/verify-migration.ts capture --db <db> --out .openartifacts/migration-0017-before.json
@@ -49,14 +49,14 @@ Migration `0017_image_format` rebuilds the `artifacts`, `versions` and `shares` 
    node --experimental-strip-types apps/server/scripts/verify-migration.ts verify --db <db> --in .openartifacts/migration-0017-before.json
    ```
 
-5. **If verify fails**, restore the database and roll the Worker back:
+5. **If verify fails**, restore the database and roll the Worker back. A restore discards every write since the bookmark: anything published, shared or written to live data during the upgrade is lost.
 
    ```sh
    pnpm -s --filter @oa/server exec wrangler d1 time-travel restore <db> --bookmark=<bookmark>
    pnpm -s oa:setup --rollback --json
    ```
 
-Verify reports rows added while the upgrade ran as notes, never as failures; a captured row that's gone, any schema change other than the widened check, a search row detached from its artifact, a foreign key violation or a failed integrity check fails it.
+Verify reports rows added while the upgrade ran as notes, never as failures, and so are rows the app deleted meanwhile when their audit row or state explains them (an unshare, a transfer, a directory removal, an address change, the trash purge). A captured row that's gone otherwise, a change to the three rebuilt tables other than the widened check, a search row detached from its artifact, a foreign key violation or a failed integrity check fails it. Later migrations may add or change other objects.
 
 ## If the Cloudflare login has expired
 

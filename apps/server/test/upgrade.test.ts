@@ -188,6 +188,7 @@ describe("upgrade.md content", () => {
       at = i;
     }
     expect(md.split("## 8. ")[1]).toContain("failed its verify");
+    expect(s7).toContain("A restore discards every write since the bookmark");
   });
 
   it("secrets: saved with secretSnippet to secretFile, passed by $(cat), no inline token", async () => {
