@@ -1,6 +1,7 @@
 // Hosted P4 Task 6: spaces in the sidebar and the space marker (Design D1 to
 // D3: Spaces A, G68RE4oKC9pH3cgr v7, plus Design's answers of 2026-10-22).
 import type { Me, MySpace } from "@oa/shared";
+import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
@@ -310,22 +311,66 @@ it("inside a space, the tabs keep the space; there is no Team tab", async () => 
   ).toBeVisible();
 });
 
-it("a shared space has no Mine tab, and /mine?space=<shared> falls back to All", async () => {
+// Review item 20: the server's scope=mine is the personal space, so Mine in a
+// shared space is scope=space&spaceId=<id>&owner=me (P3).
+it("a shared space's Mine tab lists the caller's artifacts there (scope=space, owner=me)", async () => {
   const list = calls("GET");
-  const router = mountHosted(`/mine?space=${ENG}`);
+  mountHosted(`/?space=${ENG}`);
   await screen.findByRole("heading", { level: 1, name: "Engineering" });
-  expect(screen.queryByRole("tab", { name: "Mine" })).toBeNull();
-  expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute(
-    "aria-selected",
-    "true",
+  const tab = screen.getByRole("tab", { name: "Mine" });
+  fireEvent.mouseDown(tab);
+  fireEvent.click(tab);
+  await waitFor(() =>
+    expect(
+      list.some(
+        (c) =>
+          c.path === "/api/v1/artifacts" &&
+          c.search.get("scope") === "space" &&
+          c.search.get("spaceId") === ENG &&
+          c.search.get("owner") === "me",
+      ),
+    ).toBe(true),
   );
-  await waitFor(() => expect(router.state.location.pathname).toBe("/"));
-  expect(router.state.location.search).toEqual({ space: ENG });
-  const scoped = list.filter(
-    (c) => c.path === "/api/v1/artifacts" && c.search.get("spaceId") === ENG,
+  // Never scope=mine with a shared spaceId: P3 refuses it (400).
+  expect(
+    list.some(
+      (c) =>
+        c.path === "/api/v1/artifacts" &&
+        c.search.get("scope") === "mine" &&
+        c.search.get("spaceId") === ENG,
+    ),
+  ).toBe(false);
+});
+
+// With #792's owner=me, the shared mock answers it: Mine in Engineering is
+// exactly the caller's artifacts among All of Engineering's.
+it("Mine in Engineering lists only the caller's artifacts there", async () => {
+  const titles = async (q: string) => {
+    const r = await fetch(`http://localhost/api/v1/artifacts?${q}`);
+    const body = (await r.json()) as {
+      items: { title: string; owner: { id: string } }[];
+    };
+    return body.items;
+  };
+  const router = mountHosted(`/?space=${ENG}`);
+  await screen.findByRole("heading", { level: 1, name: "Engineering" });
+  const all = await titles(`scope=space&spaceId=${ENG}`);
+  const mine = await titles(`scope=space&spaceId=${ENG}&owner=me`);
+  const meId = fixtures.me.user.id;
+  expect(mine.length).toBeGreaterThan(0);
+  expect(mine.map((a) => a.title).sort()).toEqual(
+    all
+      .filter((a) => a.owner.id === meId)
+      .map((a) => a.title)
+      .sort(),
   );
-  expect(scoped.length).toBeGreaterThan(0);
-  for (const c of scoped) expect(c.search.get("scope")).toBe("space");
+  const tab = screen.getByRole("tab", { name: "Mine" });
+  fireEvent.mouseDown(tab);
+  fireEvent.click(tab);
+  await waitFor(() => expect(router.state.location.pathname).toBe("/mine"));
+  for (const a of mine) expect(await card(a.title)).toBeVisible();
+  for (const a of all.filter((x) => !mine.some((m) => m.title === x.title)))
+    expect(screen.queryByText(a.title, { selector: "a" })).toBeNull();
 });
 
 it("the personal space keeps its Mine tab", async () => {

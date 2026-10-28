@@ -89,16 +89,11 @@ const EMPTY: Record<Scope, [string, React.ReactNode]> = {
   ],
 };
 
-export function Library({ scope: routed }: { scope: Scope }) {
+export function Library({ scope }: { scope: Scope }) {
   const me = useMe();
   const { space } = useCurrentSpace();
   const { spaces } = useHosted();
   const personal = space?.kind === "personal";
-  // The server can't filter a shared space to the caller's artifacts yet
-  // (its `mine` means the personal space), so a shared space has no Mine tab
-  // and /mine?space=<shared> shows All.
-  const noMine = space != null && !personal;
-  const scope: Scope = noMine && routed === "mine" ? "all" : routed;
   const spaceName = space
     ? personal
       ? "Personal"
@@ -124,10 +119,6 @@ export function Library({ scope: routed }: { scope: Scope }) {
   const go = (to: string, search: object) =>
     void navigate({ to, search } as never);
   const set = (patch: object) => go(PATH[scope], { ...s, ...patch });
-  useEffect(() => {
-    if (scope !== routed)
-      void navigate({ to: PATH[scope], search: s, replace: true } as never);
-  }, [scope, routed, navigate, s]);
 
   const q = useLibraryQuery({
     scope,
@@ -361,10 +352,8 @@ export function Library({ scope: routed }: { scope: Scope }) {
             {TABS.filter(
               (t) =>
                 (!guest || t.id === "shared") &&
-                // Inside a space: All, Mine and Shared with me; a shared
-                // space drops Mine (see noMine).
-                !(space && t.id === "team") &&
-                !(noMine && t.id === "mine"),
+                // Inside a space: All, Mine and Shared with me.
+                !(space && t.id === "team"),
             ).map((t) => (
               <TabsTrigger
                 key={t.id}
