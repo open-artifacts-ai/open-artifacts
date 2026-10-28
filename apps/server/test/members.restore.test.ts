@@ -53,13 +53,14 @@ const remove = (id: string, cookie: string, e: Env = OFF) =>
   call(e, R.member(id), cookie, { method: "DELETE" });
 const row = (id: string) =>
   env.DB.prepare(
-    "select role, status, guest_lapsed lapsed, restricted_manual rm, session_epoch e, status_changed_at sc from users where id = ?",
+    "select role, status, guest_lapsed lapsed, removed_by_sync bySync, restricted_manual rm, session_epoch e, status_changed_at sc from users where id = ?",
   )
     .bind(id)
     .first<{
       role: string;
       status: string;
       lapsed: number;
+      bySync: number;
       rm: number;
       e: number;
       sc: number | null;
@@ -112,8 +113,12 @@ describe("POST R.memberRestore(id): authorization", () => {
     expect(await statusAudits(a.userId)).toHaveLength(audits);
     const ok = await restore(a.userId, owner.cookie);
     expect(ok.status).toBe(200);
-    // Comes back as a plain member.
+    // Comes back as a member, never an admin.
     expect(MemberSchema.parse(await ok.json()).role).toBe("member");
+    expect(await row(a.userId)).toMatchObject({
+      status: "active",
+      role: "member",
+    });
   });
 
   it("works on a spaces-on install too (same rules)", async () => {
@@ -163,12 +168,21 @@ describe("POST R.memberRestore(id): behaviour", () => {
     expect(list.find((x) => x.id === u.userId)?.status).toBe("active");
   });
 
-  it("a removed guest comes back as a plain member", async () => {
+  it("a removed guest comes back as a guest, a removed member as a member", async () => {
     const g = await login(uniq("rs-g", "x.com"), "guest");
     expect((await remove(g.userId, admin.cookie)).status).toBe(204);
     const r = await restore(g.userId, admin.cookie);
     expect(r.status).toBe(200);
-    expect((await row(g.userId))?.role).toBe("member");
+    expect(MemberSchema.parse(await r.json()).role).toBe("guest");
+    expect(await row(g.userId)).toMatchObject({
+      status: "active",
+      role: "guest",
+    });
+    const m = await removed();
+    const rm = await restore(m.userId, admin.cookie);
+    expect(rm.status).toBe(200);
+    expect(MemberSchema.parse(await rm.json()).role).toBe("member");
+    expect((await row(m.userId))?.role).toBe("member");
   });
 
   it("not removed → 409 member_active (active, suspended, the owner); nothing audited", async () => {
@@ -219,6 +233,10 @@ describe("POST R.memberRestore(id): behaviour", () => {
       "directory_delete",
       SYSTEM_ACTOR,
     );
+    expect(await row(u.userId)).toMatchObject({
+      status: "removed",
+      bySync: 1,
+    });
     const GOOGLE = { ...(env as object), FEATURES: "sync_google" } as Env;
     const r = await restore(u.userId, admin.cookie, GOOGLE);
     expect(r.status).toBe(409);
@@ -226,10 +244,54 @@ describe("POST R.memberRestore(id): behaviour", () => {
     expect((await row(u.userId))?.status).toBe("removed");
     // An admin removal under Google sync is restorable.
     const a = await removed();
+    expect((await row(a.userId))?.bySync).toBe(0);
     expect((await restore(a.userId, admin.cookie, GOOGLE)).status).toBe(200);
-    // Sync frozen (manual edits allowed): the directory removal restores.
+    // Sync frozen (manual edits allowed): the directory removal restores,
+    // and the restore clears the flag.
     const FROZEN = { ...(env as object), FEATURES: "sync_frozen" } as Env;
     expect((await restore(u.userId, admin.cookie, FROZEN)).status).toBe(200);
+    expect(await row(u.userId)).toMatchObject({ status: "active", bySync: 0 });
+  });
+
+  it("a directory removal stays refused after audit retention sweeps its audit row", async () => {
+    const u = await login(uniq("rs-dir-swept", "a.com"), "member");
+    await setUserStatus(
+      env,
+      u.userId,
+      "removed",
+      "directory_delete",
+      SYSTEM_ACTOR,
+    );
+    await env.DB.prepare(
+      "delete from audit_events where target_type = 'user' and target_id = ?",
+    )
+      .bind(u.userId)
+      .run();
+    expect(await statusAudits(u.userId)).toHaveLength(0);
+    const GOOGLE = { ...(env as object), FEATURES: "sync_google" } as Env;
+    const r = await restore(u.userId, admin.cookie, GOOGLE);
+    expect(r.status).toBe(409);
+    expect((await errOf(r)).code).toBe("directory_managed");
+    expect(await row(u.userId)).toMatchObject({
+      status: "removed",
+      bySync: 1,
+    });
+  });
+
+  it("a directory suspension then an admin removal is restorable under Google sync (the admin change clears the flag)", async () => {
+    const u = await login(uniq("rs-dir-susp", "a.com"), "member");
+    await setUserStatus(
+      env,
+      u.userId,
+      "suspended",
+      "directory_suspend",
+      SYSTEM_ACTOR,
+    );
+    expect((await row(u.userId))?.bySync).toBe(0);
+    expect((await remove(u.userId, admin.cookie)).status).toBe(204);
+    expect((await row(u.userId))?.bySync).toBe(0);
+    const GOOGLE = { ...(env as object), FEATURES: "sync_google" } as Env;
+    expect((await restore(u.userId, admin.cookie, GOOGLE)).status).toBe(200);
   });
 });
 
@@ -256,6 +318,39 @@ describe("invite of a removed address", () => {
         details: { userId: u.userId },
       });
       expect((await row(u.userId))?.status).toBe("removed");
+    },
+  );
+
+  it.each([
+    ["Access", OFF],
+    ["direct", direct()],
+  ] as const)(
+    "%s: a lapsed guest's address → 409 guest_lapsed (no Restore offered); nothing created",
+    async (_, e) => {
+      const g = await login(uniq("rs-inv-lapsed", "x.com"), "guest");
+      await env.DB.prepare(
+        "update users set status = 'removed', guest_lapsed = 1 where id = ?",
+      )
+        .bind(g.userId)
+        .run();
+      const email = (
+        await env.DB.prepare("select email from users where id = ?")
+          .bind(g.userId)
+          .first<{ email: string }>()
+      )?.email;
+      const r = await call(e, R.members, admin.cookie, {
+        method: "POST",
+        body: { email, role: "member" },
+      });
+      expect(r.status).toBe(409);
+      const body = await errOf(r);
+      expect(body.code).toBe("guest_lapsed");
+      expect(body.details).toBeUndefined();
+      expect(await row(g.userId)).toMatchObject({
+        status: "removed",
+        lapsed: 1,
+        role: "guest",
+      });
     },
   );
 

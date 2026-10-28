@@ -116,18 +116,27 @@ export function hostedFields(
   };
 }
 
-const EXISTING = "select id, status from users where email = ?1 limit 1";
+const EXISTING =
+  "select id, status, guest_lapsed as guestLapsed from users where email = ?1 limit 1";
+
+const guestLapsed = () =>
+  new ApiError(
+    "guest_lapsed",
+    "This guest left when their last share went; share an artifact with them to bring them back",
+  );
 
 /**
- * The 409 for an address that already has a row: member_removed (details
- * { userId }, so the caller can offer R.memberRestore) when that row is
- * removed, else conflict "Already a member".
+ * The 409 for an address that already has a row: guest_lapsed for a lapsed
+ * guest (a new share brings them back; restore would refuse), member_removed
+ * (details { userId }, so the caller can offer R.memberRestore) when that
+ * row is otherwise removed, else conflict "Already a member".
  */
 async function existingConflict(env: Env, email: string): Promise<never> {
   const r = await stmt(env.DB, EXISTING)
     .bind(email)
-    .first<{ id: string; status: string }>();
+    .first<{ id: string; status: string; guestLapsed: number }>();
   if (r && statusOf(r.status) === "removed") {
+    if (r.guestLapsed !== 0) throw guestLapsed();
     const details: MemberRemovedDetails = { userId: r.id };
     throw new ApiError(
       "member_removed",
@@ -140,8 +149,9 @@ async function existingConflict(env: Env, email: string): Promise<never> {
 
 /**
  * Pre-creates the user row, then emails the invitee (best effort).
- * 400 on an invalid (non-ASCII) email, 409 if it exists (member_removed
- * with { userId } when that member was removed, else conflict), 400
+ * 400 on an invalid (non-ASCII) email, 409 if it exists (guest_lapsed for
+ * a lapsed guest, member_removed with { userId } when that member was
+ * otherwise removed, else conflict), 400
  * invite_unreachable (nothing created) when no sign-in method this install
  * offers could ever admit the address (review item 11). When only Google
  * might (an address outside AUTH_DOMAINS), the invite stands and the result
@@ -280,8 +290,10 @@ function actorFor(why: AuditReason): AuditActor {
 // can still be removed for good: that clears guest_lapsed, so a later share
 // no longer revives them (putShare).
 // An admin row only when ?4 = 1 (the actor may act on admins, #475).
+// removed_by_sync (?5) is 1 only for a directory_* removal; every other
+// change clears it, so an admin removal stays restorable.
 const SET_STATUS = `update users set status = ?2, guest_lapsed = 0, status_changed_at = ?3,
-  session_epoch = session_epoch + 1
+  session_epoch = session_epoch + 1, removed_by_sync = ?5
   where id = ?1 and role <> 'owner' and (role <> 'admin' or ?4 = 1)
   and ((status <> ?2 and status <> 'removed')
     or (?2 = 'removed' and status = 'removed' and guest_lapsed = 1))`;
@@ -323,7 +335,13 @@ export async function setUserStatus(
   const admins = adminsOk(actor);
   const by = auditActor(actor, why);
   const out = await env.DB.batch([
-    stmt(env.DB, SET_STATUS).bind(userId, status, Date.now(), admins),
+    stmt(env.DB, SET_STATUS).bind(
+      userId,
+      status,
+      Date.now(),
+      admins,
+      status === "removed" && why.startsWith("directory_") ? 1 : 0,
+    ),
     // Directly after the update: audited only when it changed the row.
     audit(env, "user.status", { type: "user", id: userId }, by, {
       reason: why,
@@ -460,32 +478,38 @@ export async function removeMember(
   );
 }
 
-// removed -> active, as a plain member (restricted_manual and
-// restricted_sync kept), never the owner, an admin only when ?3 = 1 (#475),
-// never a lapsed guest (a share revives those). Ends every session minted
-// before (session_epoch) and moves status_changed_at, so OAuth grants issued
-// before the removal stay refused; their PATs were revoked at the removal
-// and stay revoked.
-const RESTORE = `update users set status = 'active', role = 'member', guest_lapsed = 0,
+// removed -> active: a member or admin comes back as a member (never an
+// admin), a guest as a guest (restricted_manual and restricted_sync kept).
+// Never the owner, an admin only when ?3 = 1 (#475), never a lapsed guest (a
+// share revives those), never a directory removal while Google sync is on
+// (?4 = 1). Ends every session minted before (session_epoch) and moves
+// status_changed_at, so OAuth grants issued before the removal stay refused;
+// their PATs were revoked at the removal and stay revoked.
+const RESTORE = `update users set status = 'active',
+  role = case when role = 'guest' then 'guest' else 'member' end,
+  guest_lapsed = 0, removed_by_sync = 0,
   status_changed_at = ?2, session_epoch = session_epoch + 1
   where id = ?1 and status = 'removed' and guest_lapsed = 0
+  and (removed_by_sync = 0 or ?4 = 0)
   and role <> 'owner' and (role <> 'admin' or ?3 = 1)`;
 const RESTORED = `select id, email, name, display_name as displayName, role,
   last_seen_at as lastSeenAt, users.status, ${MEMBER_EXTRAS_COLS}
   from users where users.id = ?1`;
-// The latest status change's reason (directory sync or an admin).
-const LAST_STATUS_REASON = `select json_extract(detail, '$.reason') as reason
-  from audit_events where target_type = 'user' and target_id = ?1
-  and action = 'user.status' order by at desc, id desc limit 1`;
+const directoryManaged = () =>
+  new ApiError(
+    "directory_managed",
+    "Directory sync removed this member; restore them in Google Workspace",
+  );
 
 /**
- * POST R.memberRestore(id): a removed member comes back active as a plain
- * member, keeping a manual restriction. Audited user.status (admin_restore)
+ * POST R.memberRestore(id): a removed member or admin comes back active as a
+ * member (never an admin), a removed guest as a guest, keeping a manual
+ * restriction. Audited user.status (admin_restore)
  * in the same batch, only when the row changed. 404 unknown; 403 owner_only
  * for an admin target unless the actor is the owner (#475); 409
  * member_active when not removed; 409 guest_lapsed for a lapsed guest; 409
- * directory_managed when directory sync removed them and Google sync is on
- * (the next sync would remove them again). Their old credentials stay dead:
+ * directory_managed when directory sync removed them (users.removed_by_sync)
+ * and Google sync is on (the next sync would remove them again). Their old credentials stay dead:
  * they sign in again (a kept Google identity relinks the same subject).
  */
 export async function restoreMember(
@@ -499,23 +523,11 @@ export async function restoreMember(
   checkTarget(row.role, admins);
   if (statusOf(row.status) !== "removed" || row.role === "owner")
     throw new ApiError("member_active", "This member isn't removed");
-  if (row.guestLapsed)
-    throw new ApiError(
-      "guest_lapsed",
-      "This guest left when their last share went; share an artifact with them to bring them back",
-    );
-  if (directoryModeOf(authConfig(env).features) === "google") {
-    const last = await stmt(env.DB, LAST_STATUS_REASON)
-      .bind(id)
-      .first<{ reason: string | null }>();
-    if (last?.reason?.startsWith("directory_"))
-      throw new ApiError(
-        "directory_managed",
-        "Directory sync removed this member; restore them in Google Workspace",
-      );
-  }
+  if (row.guestLapsed) throw guestLapsed();
+  const synced = directoryModeOf(authConfig(env).features) === "google" ? 1 : 0;
+  if (synced && row.removedBySync) throw directoryManaged();
   const out = await env.DB.batch([
-    stmt(env.DB, RESTORE).bind(id, Date.now(), admins),
+    stmt(env.DB, RESTORE).bind(id, Date.now(), admins, synced),
     audit(env, "user.status", { type: "user", id }, userActor(actor.id), {
       reason: "admin_restore",
       detail: { status: "active" },
@@ -529,6 +541,10 @@ export async function restoreMember(
   if (!out[0]?.meta.changes) {
     await raceCheck(env, id, admins);
     if (!r) throw new ApiError("not_found", "Not found");
+    // A directory removal that raced the read above.
+    const now = await getRow(env, id);
+    if (synced && statusOf(now.status) === "removed" && now.removedBySync)
+      throw directoryManaged();
     throw new ApiError("member_active", "This member isn't removed");
   }
   if (!r) throw new ApiError("not_found", "Not found");
