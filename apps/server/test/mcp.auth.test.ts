@@ -595,6 +595,23 @@ describe("MCP auth: fix round 1", () => {
     ).toBe("Only members can connect agents");
   });
 
+  it("a restricted member's PAT is refused on REST too, the same rule as /mcp (item 34)", async () => {
+    const m = await login(`pat-rest-restricted-${tag}@x.com`);
+    const { token } = await createPat(env, m.userId, "r");
+    expect((await api(app, R.me, token)).status).toBe(200);
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(m.userId)
+      .run();
+    // A refused bearer is no one (no cookie fallback): 401 on REST.
+    expect((await api(app, R.me, token)).status).toBe(401);
+    expect((await api(app, R.artifacts, token)).status).toBe(401);
+    // Lifted, the same PAT works again (restriction never revoked it).
+    await env.DB.prepare("update users set restricted_manual = 0 where id = ?")
+      .bind(m.userId)
+      .run();
+    expect((await api(app, R.me, token)).status).toBe(200);
+  });
+
   it("demotion to guest revokes the user's OAuth grants and PATs", async () => {
     const { member, accessToken } = await oauthToken(`oauth-dem-${tag}@x.com`);
     const { token } = await createPat(env, member.userId, "p");

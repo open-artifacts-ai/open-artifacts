@@ -10,6 +10,7 @@ import {
 } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
+import { canConnect } from "../auth/agents.js";
 import { callerOf, capOfCaller, withCap } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { verifyPat } from "../auth/pat.js";
@@ -221,7 +222,9 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
     }
     const pat = await verifyPat(c.env, bearer[1] ?? "", ctx);
     const row = pat ? await getUserWithEpoch(c.env, pat.userId) : null;
-    if (pat && row) {
+    // canConnect, as /mcp: a capped caller (a guest, a restricted member)
+    // can't act through an agent credential on REST either (review item 34).
+    if (pat && row && canConnect(row.user)) {
       c.set("user", row.user);
       c.set("tokenLabel", pat.label);
       c.set("tokenId", pat.tokenId);
