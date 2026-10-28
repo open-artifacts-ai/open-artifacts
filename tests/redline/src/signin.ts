@@ -1,6 +1,7 @@
 import {
   describeRes,
   HookError,
+  type HookOtpOutcome,
   HttpError,
   hook,
   parseJson,
@@ -326,26 +327,27 @@ export const OTP_WAIT_MS = 10_000;
 const OTP_POLL_MS = 1000;
 
 /**
- * The last code sent to `email` at `t` (the otp/latest hook), polled for up
- * to `waitMs` (the code is mailed after the response); null when it is still
- * pending at the end. Retries only the hook's "no code yet" (a 404 no_code
- * whose outcome is pending). A no_code with any other outcome throws
- * "<install>: no code (<outcome>)"; any other answer throws with its status
- * and body hash: the rate limit, a wrong key and hooks off are all the
- * reasonless 404, never "no code". The server keeps one outcome per address,
- * so a second request inside the 60 s resend window nulls the earlier code:
- * the suite must never re-request the same address within 60 s.
+ * What the otp/latest hook says for `email` at `t`, polled for up to `waitMs`
+ * (the code is mailed after the response): `{ code }` once a code is there,
+ * `{ outcome }` for a final no_code (the server's last code-send outcome;
+ * "no_outcome" when it named none), or `{ outcome: "pending" }` when the hook
+ * still said "no code yet" at the end. Retries only that pending 404; any
+ * other answer throws with its status and body hash: the rate limit, a wrong
+ * key and hooks off are all the reasonless 404, never "no code". The server
+ * keeps one outcome per address, so a second request inside the 60 s resend
+ * window nulls the earlier code: the suite must never re-request the same
+ * address within 60 s.
  */
-export async function latestOtp(
+export async function otpOutcome(
   t: Target,
   email: string,
   waitMs = OTP_WAIT_MS,
-): Promise<string | null> {
+): Promise<{ code: string } | { outcome: HookOtpOutcome | "no_outcome" }> {
   const end = Date.now() + waitMs;
   for (;;) {
     try {
       const out = (await hook(t, OTP_LATEST, { email })) as { code?: unknown };
-      if (typeof out.code === "string" && out.code) return out.code;
+      if (typeof out.code === "string" && out.code) return { code: out.code };
       throw new Error(`${t.name} otp hook: no code in the body`);
     } catch (e) {
       if (
@@ -355,11 +357,27 @@ export async function latestOtp(
       )
         throw e;
       if (e.outcome !== "pending")
-        throw new Error(`${t.name}: no code (${e.outcome ?? "no_outcome"})`);
+        return { outcome: e.outcome ?? "no_outcome" };
     }
-    if (Date.now() >= end) return null;
+    if (Date.now() >= end) return { outcome: "pending" };
     await sleep(Math.min(OTP_POLL_MS, Math.max(0, end - Date.now())));
   }
+}
+
+/**
+ * The last code sent to `email` at `t` (otpOutcome); null when it is still
+ * pending at the end of `waitMs`. A final no_code outcome throws
+ * "<install>: no code (<outcome>)".
+ */
+export async function latestOtp(
+  t: Target,
+  email: string,
+  waitMs = OTP_WAIT_MS,
+): Promise<string | null> {
+  const r = await otpOutcome(t, email, waitMs);
+  if ("code" in r) return r.code;
+  if (r.outcome === "pending") return null;
+  throw new Error(`${t.name}: no code (${r.outcome})`);
 }
 
 /** How long the __Host- cookie case waits for its emailed code. */

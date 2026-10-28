@@ -34,6 +34,7 @@ import {
   type GoogleStart,
   labelTurnstileTestKey,
   latestOtp,
+  otpOutcome,
   relayedTo,
   requestCode,
   startGoogle,
@@ -297,8 +298,14 @@ describe("sign-in: one-time codes", () => {
       throw new Error(
         `not generic: status ${rs.status} vs ${ri.status}, same body shape ${rs.shape === ri.shape}, pending cookie ${!!rs.pending}`,
       );
-    if ((await latestOtp(T.b, stranger, 4000)) !== null)
+    // The server records why it sent nothing: the stranger is ineligible.
+    const so = await otpOutcome(T.b, stranger);
+    if ("code" in so)
       throw new Error("B sent a code to an address it never invited");
+    if (so.outcome !== "ineligible")
+      throw new Error(
+        `stranger: expected outcome ineligible, got ${so.outcome}`,
+      );
   });
 });
 
