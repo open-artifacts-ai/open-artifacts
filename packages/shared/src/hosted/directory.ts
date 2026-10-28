@@ -203,6 +203,33 @@ export const AuditActionSchema = z.enum([
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 
+/**
+ * The credential behind an audited action (#803): a browser session, a
+ * personal access token, an MCP OAuth grant, or the system (sync, cron).
+ * `test_hook` is reserved: nothing writes it today (the test hooks' own rows
+ * leave the credential null, and the audit API never returns them), so a
+ * client sees only the other four.
+ */
+export const AuditCredKindSchema = z.enum([
+  "session",
+  "pat",
+  "oauth_grant",
+  "system",
+  "test_hook",
+]);
+export type AuditCredKind = z.infer<typeof AuditCredKindSchema>;
+
+/**
+ * `id`: for `session`, `<provider>:<issued at ms>` (sessions have no row);
+ * for `pat`, the token id (R.tokens); for `oauth_grant`, the grant id
+ * (R.oauthClients); null for `system`. Never a token or secret.
+ */
+export const AuditCredSchema = z.object({
+  kind: AuditCredKindSchema,
+  id: z.string().nullable(),
+});
+export type AuditCred = z.infer<typeof AuditCredSchema>;
+
 /** GET R.audit?cursor&limit (org owner, admin) -> Page<AuditEvent>; R.auditExport is NDJSON of the same. */
 export const AuditEventSchema = z.object({
   id: z.string(),
@@ -211,6 +238,8 @@ export const AuditEventSchema = z.object({
     kind: z.enum(["user", "sync", "system"]),
     id: z.string().nullable(),
     email: z.string().nullable(),
+    /** The credential used; null when none was recorded (rows from before #803, sign-ins, background work). */
+    cred: AuditCredSchema.nullable().optional(),
   }),
   action: AuditActionSchema,
   target: z.object({

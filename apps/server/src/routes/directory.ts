@@ -20,7 +20,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
-import { userActor } from "../services/audit.js";
+import { userActor, withRequestCred } from "../services/audit.js";
 import { feedSync, SYNC_DO_NAME } from "../services/directory.js";
 import { directoryMode } from "../services/spaces.js";
 import type { AppType } from "./index.js";
@@ -175,7 +175,7 @@ export function mountDirectory(app: AppType): void {
       );
     const status = await syncStub(c.env).confirmHeld(
       c.req.param("groupId"),
-      userActor(requireUser(c).id),
+      withRequestCred(userActor(requireUser(c).id)),
     );
     if (!status)
       throw new ApiError(
