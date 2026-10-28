@@ -899,7 +899,10 @@ describe("prod and staging tokens never cross", () => {
     const job = w.jobs["deploy-prod"];
     const steps = job.steps as {
       id?: string;
+      name?: string;
       if?: string;
+      uses?: string;
+      with?: Record<string, unknown>;
       env?: Record<string, string>;
       run?: string;
     }[];
@@ -945,11 +948,27 @@ describe("prod and staging tokens never cross", () => {
       const withTok = steps.filter((s) =>
         JSON.stringify(s.env ?? {}).includes("secrets."),
       );
-      expect(withTok).toHaveLength(3);
-      for (const s of withTok) {
+      // setup's three steps carry both tokens; the migration guard's record,
+      // verify and restore steps carry the Cloudflare token only.
+      const setup = withTok.filter((s) => s.run?.includes("prod-setup.sh"));
+      expect(setup).toHaveLength(3);
+      for (const s of setup) {
         expect(s.env?.CLOUDFLARE_API_TOKEN).toBe(tok);
         expect(s.env?.OA_ACCESS_TOKEN).toBe(tok);
       }
+      const guard = withTok.filter((s) =>
+        s.run?.includes("prod-migration-guard.sh"),
+      );
+      expect(guard.map((s) => s.run)).toEqual([
+        "bash scripts/ci/prod-migration-guard.sh record",
+        "bash scripts/ci/prod-migration-guard.sh verify",
+        "bash scripts/ci/prod-migration-guard.sh restore",
+      ]);
+      for (const s of guard) {
+        expect(s.env?.CLOUDFLARE_API_TOKEN).toBe(tok);
+        expect(s.env).not.toHaveProperty("OA_ACCESS_TOKEN");
+      }
+      expect(withTok).toHaveLength(setup.length + guard.length);
       const sh = readFileSync(join(root, "scripts/ci/prod-setup.sh"), "utf8");
       expect(sh).toContain(
         'upgrade) mode_args=(--ci --upgrade "${EMAIL_SWITCH[@]}" --browser --plan paid)',
@@ -964,6 +983,55 @@ describe("prod and staging tokens never cross", () => {
         "EMAIL_SWITCH=(--team --yes-paid --email-domain mail.leourbina.com)",
       );
       expect(sh).toContain("--ci --revoke-ci-tokens");
+    });
+    // A release that adds a `-- oa:non-additive` migration (a table rebuild)
+    // is held from the automatic deploy; a manual run deploys it guarded.
+    it("non-additive migration guard: held unless manual; record, upgrade, verify, then restore only when allowed", () => {
+      const at = (m: string) => steps.findIndex((s) => s.run?.includes(m));
+      const idx = (id: string) => steps.findIndex((s) => s.id === id);
+      const checkout = steps.find((s) =>
+        String(s.uses).startsWith("actions/checkout@"),
+      );
+      expect(checkout?.with?.["fetch-depth"]).toBe(0);
+      const det = idx("migration");
+      expect(steps[det]?.run).toBe(
+        "bash scripts/ci/prod-migration-guard.sh detect",
+      );
+      expect(det).toBeGreaterThan(at("pnpm install --frozen-lockfile"));
+      // Every step after the guard needs an explicit hold == 'false' (a guard
+      // that didn't run deploys nothing).
+      for (const s of steps
+        .slice(det + 1)
+        .filter((s) => s.run && !s.if?.startsWith("failure()")))
+        expect(s.if, s.name ?? s.run).toContain(
+          "steps.migration.outputs.hold == 'false'",
+        );
+      const [rec, up, ver] = [
+        idx("record"),
+        at("prod-setup.sh upgrade"),
+        idx("verify"),
+      ];
+      expect(rec).toBeGreaterThan(at("prod-setup.sh preflight"));
+      expect(up).toBeGreaterThan(rec);
+      expect(ver).toBeGreaterThan(up);
+      for (const i of [rec, ver])
+        expect(steps[i]?.if).toContain(
+          "steps.migration.outputs.guarded == 'true'",
+        );
+      const restore = steps[at("prod-migration-guard.sh restore")];
+      const page = steps.find((s) => s.name?.startsWith("Page"));
+      expect(at("prod-migration-guard.sh restore")).toBeGreaterThan(ver);
+      expect(restore?.if).toBe(
+        "failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure == true",
+      );
+      expect(page?.if).toBe(
+        "failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure != true",
+      );
+      expect(JSON.stringify(page?.env ?? {})).not.toContain("secrets.");
+      expect(w.on.workflow_dispatch.inputs.restore_on_failure).toMatchObject({
+        type: "boolean",
+        default: false,
+      });
     });
     it("passes ANALYTICS_TOKEN to the upgrade step only", () => {
       const withA = steps.filter((s) =>

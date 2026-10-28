@@ -19,6 +19,12 @@ export type AuthConfig = {
   domainJoin: "member" | "invite";
   /** Domain members may use emailed codes (trial): needs email, no google, Turnstile, domains. */
   domainCodes: boolean;
+  /**
+   * Email sign-in codes are offered: email is in AUTH_PROVIDERS and the install
+   * can send email (EMAIL and EMAIL_FROM). Email on without them is a problem,
+   * never a code request that silently sends nothing.
+   */
+  emailCodes: boolean;
   /** Guests capped at viewer: whenever google or email is on. Not configurable. */
   guestsReadOnly: boolean;
   features: FeatureFlag[];
@@ -28,7 +34,10 @@ export type AuthConfig = {
   codeEmailsPerDay: number;
   /** INSTALL_ID, else APP_HOST: the install part of rate-limit keys. */
   installKey: string;
-  /** Why something configured is off. Never contains secret values. */
+  /**
+   * Why something configured is off: full sentences saying what to do (shown
+   * verbatim to owners, Me.instance.signIn.problems). Never secret values.
+   */
   problems: string[];
 };
 
@@ -71,7 +80,10 @@ function parseProviders(
     if (!p) continue;
     if ((PROVIDERS as readonly string[]).includes(p))
       out.add(p as SignInProvider);
-    else problems.push(`AUTH_PROVIDERS: unknown provider ${p}`);
+    else
+      problems.push(
+        `AUTH_PROVIDERS lists "${p}", which isn't a sign-in method, so it's ignored. Use access, google or email.`,
+      );
   }
   return out;
 }
@@ -81,32 +93,60 @@ function googleConfig(
   domains: readonly string[],
   problems: string[],
 ): AuthConfig["google"] {
-  const fail = (why: string) => {
-    problems.push(`google: ${why}`);
+  // "Google sign-in is on, but <why>, so Google isn't offered. <todo>."
+  const fail = (why: string, todo: string) => {
+    problems.push(
+      `Google sign-in is on, but ${why}, so Google isn't offered. ${todo}.`,
+    );
     return null;
   };
-  if (!nonEmpty(env.GOOGLE_CLIENT_ID)) return fail("GOOGLE_CLIENT_ID is empty");
-  if (domains.length === 0) return fail("AUTH_DOMAINS is empty");
+  if (!nonEmpty(env.GOOGLE_CLIENT_ID))
+    return fail(
+      "GOOGLE_CLIENT_ID isn't set",
+      "Set it, or turn Google sign-in off",
+    );
+  if (domains.length === 0)
+    return fail(
+      "AUTH_DOMAINS is empty",
+      "Set the Google Workspace domains that may sign in",
+    );
   const clientId = env.GOOGLE_CLIENT_ID.trim();
   // Hosted installs never hold the shared Google client secret: the broker
   // alone does the code exchange. Fail closed, and never fall back to direct
   // or honour a tenant-supplied GOOGLE_CLIENT_SECRET.
   if (env.HOSTED === "1" && !nonEmpty(env.AUTH_BROKER_URL))
-    return fail("HOSTED=1 requires the broker transport (AUTH_BROKER_URL)");
+    return fail(
+      "a hosted install needs the broker transport and AUTH_BROKER_URL isn't set",
+      "Set AUTH_BROKER_URL to the sign-in broker",
+    );
   if (nonEmpty(env.AUTH_BROKER_URL)) {
     let url: URL;
     try {
       url = new URL(env.AUTH_BROKER_URL);
     } catch {
-      return fail("AUTH_BROKER_URL is not a URL");
+      return fail(
+        "AUTH_BROKER_URL isn't a URL",
+        "Set it to the broker's https address",
+      );
     }
-    if (url.protocol !== "https:") return fail("AUTH_BROKER_URL must be https");
-    if (!nonEmpty(env.INSTALL_ID)) return fail("INSTALL_ID is empty");
+    if (url.protocol !== "https:")
+      return fail(
+        "AUTH_BROKER_URL isn't https",
+        "Use the broker's https address",
+      );
+    if (!nonEmpty(env.INSTALL_ID))
+      return fail(
+        "INSTALL_ID isn't set and the broker needs it",
+        "Set INSTALL_ID to this install's id",
+      );
     if (
       !nonEmpty(env.BROKER_SIGNING_KEY) ||
       !isEd25519Pkcs8(env.BROKER_SIGNING_KEY)
     )
-      return fail("BROKER_SIGNING_KEY is not a PKCS#8 Ed25519 key");
+      return fail(
+        "BROKER_SIGNING_KEY isn't a PKCS#8 Ed25519 key",
+        "Set the key the broker registered for this install",
+      );
     return {
       clientId,
       transport: {
@@ -118,7 +158,10 @@ function googleConfig(
     };
   }
   if (!nonEmpty(env.GOOGLE_CLIENT_SECRET))
-    return fail("GOOGLE_CLIENT_SECRET is empty");
+    return fail(
+      "GOOGLE_CLIENT_SECRET isn't set",
+      "Set it, or turn Google sign-in off",
+    );
   return {
     clientId,
     transport: { kind: "direct", secret: env.GOOGLE_CLIENT_SECRET },
@@ -129,7 +172,9 @@ function googleConfig(
 function domainJoin(env: Env, problems: string[]): AuthConfig["domainJoin"] {
   const join = env.AUTH_DOMAIN_JOIN === "member" ? "member" : "invite";
   if (env.HOSTED === "1" && join === "member") {
-    problems.push("AUTH_DOMAIN_JOIN: HOSTED=1 allows invite only");
+    problems.push(
+      'AUTH_DOMAIN_JOIN is "member", but a hosted install admits people by invite only, so invites apply.',
+    );
     return "invite";
   }
   return join;
@@ -140,7 +185,9 @@ function build(env: Env): AuthConfig {
   const providers = parseProviders(env.AUTH_PROVIDERS, problems);
   const parsed = parseDomains(env.AUTH_DOMAINS ?? "");
   for (const d of parsed.invalid)
-    problems.push(`AUTH_DOMAINS: invalid domain ${d}`);
+    problems.push(
+      `AUTH_DOMAINS has "${d}", which isn't a valid domain, so it's ignored. Fix or remove it.`,
+    );
   const domains = parsed.domains;
 
   let turnstile: AuthConfig["turnstile"] = null;
@@ -151,21 +198,29 @@ function build(env: Env): AuthConfig {
     };
   else if (nonEmpty(env.TURNSTILE_SITE_KEY) || nonEmpty(env.TURNSTILE_SECRET))
     problems.push(
-      "turnstile: TURNSTILE_SITE_KEY and TURNSTILE_SECRET are both required",
+      "Only one of TURNSTILE_SITE_KEY and TURNSTILE_SECRET is set, so the bot check is off. Set both, or neither.",
     );
 
   const google = providers.has("google")
     ? googleConfig(env, domains, problems)
     : null;
   const direct = providers.has("google") || providers.has("email");
+  // Same rule as email/send.ts emailEnabled (not imported: it pulls in services).
+  const canSend = !!env.EMAIL && !!env.EMAIL_FROM;
+  if (providers.has("email") && !canSend)
+    problems.push(
+      "Email sign-in is on, but sending email isn't set up (EMAIL and EMAIL_FROM), so sign-in codes aren't offered. Set up email sending, or turn email sign-in off.",
+    );
 
   return {
     providers,
     domains,
     domainJoin: domainJoin(env, problems),
+    emailCodes: providers.has("email") && canSend,
     domainCodes:
       env.EMAIL_CODE_DOMAIN === "on" &&
       providers.has("email") &&
+      canSend &&
       !providers.has("google") &&
       turnstile !== null &&
       domains.length > 0,
@@ -188,6 +243,12 @@ export function authConfig(env: Env): AuthConfig {
   if (!c) {
     c = build(env);
     memo.set(env, c);
+    // Once per env object (an isolate's): the operator sees why a configured
+    // sign-in method is off without asking an owner to look.
+    if (c.problems.length > 0)
+      console.log(
+        JSON.stringify({ evt: "auth_config_problems", problems: c.problems }),
+      );
   }
   return c;
 }

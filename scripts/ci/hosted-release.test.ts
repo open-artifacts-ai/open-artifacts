@@ -579,6 +579,9 @@ describe("docs/ops/hosted.md first-create checklist", () => {
 
 describe("deploy-prod checks the release bundle before Upgrade", () => {
   const st = steps("deploy-prod");
+  // Stable release, and not held by the non-additive migration guard.
+  const GATE =
+    "steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false'";
   const at = (m: string) => st.findIndex((s) => (s.run ?? "").includes(m));
   it("builds the release bundle and runs check-no-test-hooks on it before the upgrade", () => {
     const build = at("build-release-bundle.ts");
@@ -588,7 +591,7 @@ describe("deploy-prod checks the release bundle before Upgrade", () => {
     expect(check).toBeGreaterThan(build);
     expect(up).toBeGreaterThan(check);
     for (const i of [build, check]) {
-      expect(st[i]?.if).toBe("steps.guard.outputs.deploy == 'true'");
+      expect(st[i]?.if).toBe(GATE);
       expect(st[i]?.["continue-on-error"]).toBeUndefined();
       expect(JSON.stringify(st[i]?.env ?? {})).not.toContain("secrets.");
     }
@@ -599,7 +602,7 @@ describe("deploy-prod checks the release bundle before Upgrade", () => {
     const fake = at('pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"');
     expect(fake).toBeGreaterThan(check);
     expect(at("prod-setup.sh upgrade")).toBeGreaterThan(fake);
-    expect(st[fake]?.if).toBe("steps.guard.outputs.deploy == 'true'");
+    expect(st[fake]?.if).toBe(GATE);
     expect(st[fake]?.["continue-on-error"]).toBeUndefined();
   });
   it("L10: the upgrade itself runs check-no-test-hooks on the bundle it deploys", () => {
