@@ -161,7 +161,8 @@ const RASTER_SIG: Record<
 /**
  * True when `head` (UTF-8) starts, after an optional BOM, XML declaration,
  * comments, processing instructions and a DOCTYPE, with an <svg> root
- * element. All of the prolog must fit in `head`.
+ * element. All of the prolog must fit in `head`. A DOCTYPE that declares an
+ * entity (<!ENTITY) is refused.
  */
 export function hasSvgRoot(head: Uint8Array): boolean {
   const t = new TextDecoder("utf-8").decode(head, { stream: true });
@@ -185,7 +186,10 @@ export function hasSvgRoot(head: Uint8Array): boolean {
       if (gt < 0) return false;
       if (open >= 0 && open < gt) {
         i = open;
+        const start = i;
         if (!skip("]")) return false;
+        // Entity declarations (expansion bombs, external entities): refused.
+        if (/<!ENTITY/i.test(t.slice(start, i))) return false;
       }
       if (!skip(">")) return false;
     } else return /^<svg[\s/>]/.test(t.slice(i, i + 5));

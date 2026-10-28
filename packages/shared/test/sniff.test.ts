@@ -214,7 +214,7 @@ describe("sniff: images", () => {
     const ok = [
       `<svg xmlns="http://www.w3.org/2000/svg"/>`,
       `﻿<?xml version="1.0"?>\n<!-- logo -->\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "x">\n<svg>`,
-      `<!DOCTYPE svg [ <!ENTITY a "b>"> ]><svg\nviewBox="0 0 1 1">`,
+      `<!DOCTYPE svg [ <!-- a "b>" --> ]><svg\nviewBox="0 0 1 1">`,
       "  \n<svg>",
     ];
     for (const t of ok)
@@ -225,6 +225,8 @@ describe("sniff: images", () => {
       "hello",
       "<!-- never closed <svg>",
       "",
+      `<!DOCTYPE svg [ <!ENTITY a "b>"> ]><svg>`,
+      `<!DOCTYPE svg [<!entity lol "lol"><!ENTITY lol2 "&lol;&lol;">]>\n<svg>&lol2;</svg>`,
     ];
     for (const t of bad)
       expect(checkEntry("a.svg", "image", s(t), false)?.reason, t).toBe(
