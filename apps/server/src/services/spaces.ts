@@ -397,7 +397,11 @@ export async function listSpaces(
   };
 }
 
-/** POST R.spaces (org owner, admin): one batch with its space.create row. */
+/**
+ * POST R.spaces (org owner, admin): one batch with its space.create row and,
+ * with addMe (the default), the creator's manual manager row, audited
+ * space.member.add. A manual row: directory sync never removes it.
+ */
 export async function createSpace(
   env: Env,
   c: Caller,
@@ -424,6 +428,21 @@ export async function createSpace(
         publicLinks: input.publicLinks,
       },
     }),
+    ...(input.addMe
+      ? [
+          stmt(
+            env.DB,
+            "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'manager', 'manual', ?)",
+          ).bind(id, u.id, Date.now()),
+          audit(
+            env,
+            "space.member.add",
+            { type: "user", id: u.id },
+            userActor(u.id),
+            { spaceId: id, detail: { role: "manager" } },
+          ),
+        ]
+      : []),
   ]);
   return getSpace(env, c, id);
 }

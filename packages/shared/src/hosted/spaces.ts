@@ -108,11 +108,16 @@ export const spaceNameReserved = (issues: readonly unknown[]): boolean =>
     );
   });
 
-/** POST R.spaces (org owner, admin) -> 201 Space. */
+/**
+ * POST R.spaces (org owner, admin) -> 201 Space. addMe (default true): the
+ * creator becomes a manual manager of the new space; false adds no row (an
+ * admin is never implicitly in a space).
+ */
 export const SpaceCreateSchema = z.strictObject({
   name: SpaceNameSchema,
   allMembersRole: SpaceRoleSchema.nullable().default(null),
   publicLinks: z.boolean().default(true),
+  addMe: z.boolean().default(true),
 });
 export type SpaceCreate = z.infer<typeof SpaceCreateSchema>;
 export type SpaceCreateInput = z.input<typeof SpaceCreateSchema>;

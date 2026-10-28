@@ -619,6 +619,18 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     return r === "manager" ? "manager" : r;
   };
 
+  /**
+   * The server's move source rule: the caller's own personal space, or a
+   * shared space where they are an uncapped manager now (so an artifact they
+   * lost their role on can't move, whatever its last can said).
+   */
+  const mayLeave = (a: ArtifactSummary) => {
+    const s = findSpace(a.space?.id);
+    if (!s) return false;
+    if (s.kind === "personal") return s.id === me.user.id;
+    return cap() === null && roleIn(s) === "manager";
+  };
+
   const features = (): FeatureFlag[] => [
     ...new Set<FeatureFlag>([
       "spaces",
@@ -1180,7 +1192,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         const a = artifacts.find(
           (x) => x.id === params.id && x.deletedAt === null,
         );
-        if (!a?.can?.move) return notFound();
+        // As the server: never a stale can (an artifact the caller no longer
+        // reaches): a shared source needs the caller's manager role there now.
+        if (!a?.can?.move || !mayLeave(a)) return notFound();
         const r = await c.body(request, MoveArtifactInputSchema);
         if (r.error) return r.error;
         const s = findSpace(r.data.spaceId);
@@ -1213,7 +1227,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         const a = artifacts.find(
           (x) => x.id === params.id && x.deletedAt === null,
         );
-        if (!a?.can?.transfer) return notFound();
+        // As the server: only the caller's own personal artifact, now.
+        if (!a?.can?.transfer || a.space?.id !== me.user.id) return notFound();
         const r = await c.body(request, TransferArtifactInputSchema);
         if (r.error) return r.error;
         const u = memberOf(r.data.userId);
@@ -1257,16 +1272,34 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         if (!isAdmin()) return notFound();
         const r = await c.body(request, SpaceCreateSchema);
         if (r.error) return r.error;
+        const { addMe, ...data } = r.data;
         const s: SpaceRow = {
           id: newId(),
           kind: "shared",
           ownerId: null,
           createdAt: iso(),
-          ...r.data,
+          ...data,
         };
         spaces.push(s);
-        rows.set(s.id, []);
+        // addMe (the default): the creator is a manual manager; false: no row.
+        rows.set(
+          s.id,
+          addMe
+            ? [
+                {
+                  userId: me.user.id,
+                  manualRole: "manager",
+                  syncRole: null,
+                  groups: [],
+                },
+              ]
+            : [],
+        );
         log("space.create", { type: "space", id: s.id }, s.id);
+        if (addMe)
+          log("space.member.add", { type: "user", id: me.user.id }, s.id, {
+            role: "manager",
+          });
         refresh();
         return HttpResponse.json(view(s), { status: 201 });
       }),
