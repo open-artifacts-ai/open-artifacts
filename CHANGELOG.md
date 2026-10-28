@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.74.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.73.0...v0.74.0) (2026-10-28)
+
+
+### Features
+
+* **dashboard:** P6 sign-in warnings: hosting line, invite and share reach, Access refusal ([#800](https://github.com/open-artifacts-ai/open-artifacts/issues/800)) ([aa3ebb6](https://github.com/open-artifacts-ai/open-artifacts/commit/aa3ebb610e441dc055eabc8920a6aa004ba95ebf))
+* **spaces:** an Every space role is a floor: 409 managed_by_org_mapping (item 19) ([#820](https://github.com/open-artifacts-ai/open-artifacts/issues/820)) ([3ec6f12](https://github.com/open-artifacts-ai/open-artifacts/commit/3ec6f127c581ea93a02efe4f5f64c37539f8b48c))
+* **viewer:** live sockets wait out the server's retry hint after an access change ([#816](https://github.com/open-artifacts-ai/open-artifacts/issues/816)) ([#821](https://github.com/open-artifacts-ai/open-artifacts/issues/821)) ([4d2abb0](https://github.com/open-artifacts-ai/open-artifacts/commit/4d2abb0a6a518a42be3a8b824ce722e9f9898b08))
+
+
+### Bug Fixes
+
+* **audit:** artifact delete, undelete and purge write audit rows ([#825](https://github.com/open-artifacts-ai/open-artifacts/issues/825)) ([fe3bcf7](https://github.com/open-artifacts-ai/open-artifacts/commit/fe3bcf72691ffb106411213dda4ff1da4141e8cf))
+* **ci:** the prod migration guard compares with the version prod runs ([#822](https://github.com/open-artifacts-ai/open-artifacts/issues/822)) ([3cbb7ee](https://github.com/open-artifacts-ai/open-artifacts/commit/3cbb7eea06e7f38ad62cf023de1e996af0b16e62))
+* **runtime:** review items 22, 23, 29, 38 (server and runtime package) ([#816](https://github.com/open-artifacts-ai/open-artifacts/issues/816)) ([4dcb23d](https://github.com/open-artifacts-ai/open-artifacts/commit/4dcb23d0fd244eeb990c1e270ed712a140f792e9))
+
 ## [0.73.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.72.0...v0.73.0) (2026-10-28)
 
 
