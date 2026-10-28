@@ -6,7 +6,11 @@ import { type Member, newId, PageSchema, R, SearchHitSchema } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { IMAGE_CSP } from "../src/content/app.js";
-import { signContent, signDownload } from "../src/content/signing.js";
+import {
+  publicPrefix,
+  signContent,
+  signDownload,
+} from "../src/content/signing.js";
 import { publish } from "../src/services/artifacts.js";
 import { IMAGE_THUMB } from "../src/services/thumbs.js";
 import { getUser } from "../src/services/users.js";
@@ -358,6 +362,48 @@ describe("image: content host", () => {
       r.headers.get("content-security-policy")?.startsWith(IMAGE_CSP),
     ).toBe(false);
     expect(r.headers.get("content-disposition")).toBeNull();
+  });
+
+  it("a public image on /p/ gets the same headers", async () => {
+    const r0 = await post({
+      title: "pub",
+      visibility: "public",
+      files: { "pub.svg": SVG() },
+    });
+    expect(r0.status).toBe(201);
+    const { id } = (await r0.json()) as { id: string };
+    const r = await get(`${publicPrefix(id, 1)}pub.svg`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toBe("image/svg+xml");
+    expect(r.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(r.headers.get("content-disposition")).toBe("inline");
+    expect(
+      r.headers.get("content-security-policy")?.startsWith(IMAGE_CSP),
+    ).toBe(true);
+    expect(r.headers.get("cache-control")).toBe(
+      "public, max-age=0, must-revalidate",
+    );
+  });
+
+  it("a byte range is 206 with the image headers", async () => {
+    const bytes = png(4, 4, 256);
+    const { id } = await pubImage({ "r.png": { base64: b64(bytes) } });
+    const r = await get(`${await signed(id)}r.png`, { range: "bytes=8-23" });
+    expect(r.status).toBe(206);
+    expect(r.headers.get("content-range")).toBe("bytes 8-23/256");
+    expect(r.headers.get("content-type")).toBe("image/png");
+    expect(r.headers.get("content-disposition")).toBe("inline");
+    expect(
+      r.headers.get("content-security-policy")?.startsWith(IMAGE_CSP),
+    ).toBe(true);
+    expect(new Uint8Array(await r.arrayBuffer())).toEqual(
+      bytes.subarray(8, 24),
+    );
+    const bad = await get(`${await signed(id)}r.png`, { range: "bytes=999-" });
+    expect(bad.status).toBe(416);
+    expect(
+      bad.headers.get("content-security-policy")?.startsWith(IMAGE_CSP),
+    ).toBe(false);
   });
 
   it("__view is the renderer page with the entry and its content type", async () => {
