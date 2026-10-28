@@ -40,7 +40,7 @@ describe("redline-staging.yml", () => {
   it("runs only on demand, in the redline-staging Environment, read-only and bounded", () => {
     expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
     expect(w.permissions).toEqual({ contents: "read" });
-    expect(Object.keys(w.jobs)).toEqual(["redline"]);
+    expect(Object.keys(w.jobs)).toEqual(["redline", "t19"]);
     expect(job.environment).toBe("redline-staging");
     expect(job.permissions).toBeUndefined();
     expect(job["timeout-minutes"]).toBe(45);
@@ -179,5 +179,53 @@ describe("redline-staging.yml", () => {
       `(umask 077 && printf '%s' 'XXXX.DUMMY.TOKEN.XXXX' > "$t")`,
     );
     expect(run?.run).not.toContain("redline-secrets/redline-turnstile");
+  });
+});
+
+// T19 (the M1 gate's dashboard suite against rl-a): after the red-line job,
+// never beside it, with only rl-a's hook key, and a report scanned before upload.
+describe("redline-staging.yml t19", () => {
+  // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+  const t: any = w.jobs.t19;
+  // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+  const ts: Record<string, any>[] = t.steps;
+
+  it("runs after redline, in the same Environment, bounded, with no extra permissions", () => {
+    expect(t.needs).toBe("redline");
+    expect(t.environment).toBe("redline-staging");
+    expect(t.permissions).toBeUndefined();
+    expect(t["timeout-minutes"]).toBe(30);
+    expect(t.env).toBeUndefined();
+  });
+
+  it("pins every action by SHA and keeps no git credentials", () => {
+    for (const s of ts) if (s.uses) expect(s.uses).toMatch(SHA_PIN);
+    expect(ts[0]?.with?.["persist-credentials"]).toBe(false);
+  });
+
+  it("only the write step sees a secret: rl-a's hook key, as a 0600 file", () => {
+    const withSecrets = ts.filter((s) =>
+      JSON.stringify(s).includes("secrets."),
+    );
+    expect(withSecrets).toHaveLength(1);
+    const st = withSecrets[0] as Record<string, any>;
+    expect(Object.values(st.env as object)).toEqual([
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: a literal workflow expression
+      "${{ secrets.REDLINE_RL_A_HOOK_KEY }}",
+    ]);
+    expect(st.run).toMatch(/^set -euo pipefail\numask 077\n/);
+  });
+
+  it("scans the report with grep -f (the key never in argv), removes the file, uploads only a clean report", () => {
+    const scan = ts.find((s) => s.id === "scan");
+    expect(scan?.if).toBe("always()");
+    expect(scan?.run).toContain('grep -rqF -f "$f"');
+    expect(scan?.run).not.toContain("$(cat");
+    const rm = ts.find((s) => (s.run ?? "").includes("rm -rf"));
+    expect(rm?.if).toBe("always()");
+    const up = ts.find((s) =>
+      (s.uses ?? "").startsWith("actions/upload-artifact"),
+    );
+    expect(up?.if).toBe("always() && steps.scan.outcome == 'success'");
   });
 });

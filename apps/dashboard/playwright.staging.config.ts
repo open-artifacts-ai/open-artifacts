@@ -13,7 +13,13 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
-  use: { trace: "retain-on-failure", ...devices["Desktop Chrome"] },
+  use: {
+    // CI uploads the report: a trace holds the test sessions' cookies, so CI
+    // keeps a screenshot instead.
+    trace: process.env.CI ? "off" : "retain-on-failure",
+    screenshot: "only-on-failure",
+    ...devices["Desktop Chrome"],
+  },
   projects: [
     { name: "rl-a guard", testMatch: "rl-a/guard.setup.ts" },
     {
