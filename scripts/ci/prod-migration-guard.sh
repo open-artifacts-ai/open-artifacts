@@ -69,6 +69,10 @@ case "${1:-}" in
     echo "guarded=true" >> "$out"
     ;;
   record)
+    # The bookmark and the capture are taken back to back (prod stays live):
+    # writes between them would make a post-restore recapture differ from the
+    # capture. After a restore the compare matches only because the restore
+    # also rewinds every write made after the bookmark.
     : "${PROD_NAME:?}"
     mkdir -p "$dir"
     version="$(wr deployments list --name "$PROD_NAME" --json |
