@@ -1,8 +1,11 @@
 import { closeSync, fstatSync, openSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // T19's two targets (docs: the T19 plan). rl-a comes from REDLINE_TARGETS
 // (the red-line suite's JSON, its `a` install); leo from T19_LEO_APP. Paths
 // only: the hook key stays in its 0600 file and is read here, never logged.
+// Locally the JSON names it (a.hookKeyFile); CI's has none and names
+// secretsDir, holding REDLINE_RL_A_HOOK_KEY (the red-line suite's layout).
 
 export type Install = {
   name: string;
@@ -24,17 +27,38 @@ const httpsOrigin = (v: unknown, what: string): string => {
   return v;
 };
 
-const raw = (): Record<string, unknown> => {
+const raw = () => {
   const env = process.env.REDLINE_TARGETS;
   if (!env) return fail("set REDLINE_TARGETS (the red-line targets JSON)");
-  const t = JSON.parse(env) as { mode?: unknown; a?: Record<string, unknown> };
+  const t = JSON.parse(env) as {
+    mode?: unknown;
+    secretsDir?: unknown;
+    a?: Record<string, unknown>;
+  };
   if (t.mode !== "staging") fail("REDLINE_TARGETS.mode must be staging");
-  return t.a ?? fail("REDLINE_TARGETS.a is missing");
+  return {
+    a: t.a ?? fail("REDLINE_TARGETS.a is missing"),
+    secretsDir:
+      typeof t.secretsDir === "string" && t.secretsDir !== ""
+        ? t.secretsDir
+        : undefined,
+  };
 };
+
+/** a.hookKeyFile, else CI's <secretsDir>/REDLINE_RL_A_HOOK_KEY. */
+const hookKeyFileOf = (
+  a: Record<string, unknown>,
+  secretsDir: string | undefined,
+): string =>
+  typeof a.hookKeyFile === "string" && a.hookKeyFile !== ""
+    ? a.hookKeyFile
+    : secretsDir
+      ? join(secretsDir, "REDLINE_RL_A_HOOK_KEY")
+      : fail("a.hookKeyFile (or secretsDir) is missing");
 
 /** rl-a: the staging install with test hooks. */
 export const rlA = (): Install & { hookKeyFile: string } => {
-  const a = raw();
+  const { a, secretsDir } = raw();
   if (a.name !== "rl-a") fail("REDLINE_TARGETS.a must be rl-a");
   return {
     name: "rl-a",
@@ -43,7 +67,7 @@ export const rlA = (): Install & { hookKeyFile: string } => {
     testDomain: String(
       a.testDomain ?? fail("a.testDomain is missing"),
     ).toLowerCase(),
-    hookKeyFile: String(a.hookKeyFile ?? fail("a.hookKeyFile is missing")),
+    hookKeyFile: hookKeyFileOf(a, secretsDir),
   };
 };
 

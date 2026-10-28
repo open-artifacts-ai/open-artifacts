@@ -156,7 +156,11 @@ jobs:
         if: steps.guard.outputs.deploy == 'true'
         env:
           EVENT: ${{ github.event_name }}
-        run: bash scripts/ci/prod-migration-guard.sh detect
+        # The guard compares with the version prod runs; unreadable holds.
+        run: |
+          PROD_VERSION="$(curl -fsS -m 20 "https://$PROD_APP_HOST/healthz" | jq -r '.version // empty')" || PROD_VERSION=""
+          export PROD_VERSION
+          bash scripts/ci/prod-migration-guard.sh detect
       # The release bundle must hold no /__test/* hooks; a failure stops the deploy.
       - name: Build the release bundle (buildBundle, dry run)
         if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false'

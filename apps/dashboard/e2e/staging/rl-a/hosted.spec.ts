@@ -4,10 +4,6 @@ import { A, api, expect, person, test } from "./fixtures";
 // The hosted-only UI on rl-a: its tier and features, usage_off, the hosting
 // line. M1 has no tier UI (no self-serve or billing), so the tier is an API check.
 
-// Item 36: direct-mode installs show no hosting line until AuthProviders
-// says which kind of install it is. Drop the marker when that lands.
-const HOSTED_FLAG = "item 36: AuthProviders has no hosted flag yet";
-
 // The tier rl-a should be on (CI sets it once Platform has applied TIER).
 // Unset: rl-a has no tier yet and today's FEATURES.
 const TIER = process.env.T19_EXPECT_TIER
@@ -51,9 +47,7 @@ test("the sign-in page never calls rl-a self-hosted", async ({ page }) => {
 test("the sign-in page says it's hosted by Open Artifacts", async ({
   page,
 }) => {
-  test.fail(true, HOSTED_FLAG);
   await page.goto(`${A.app}/sign-in`);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-  // Counted once the page is up, not waited for: a timeout isn't an expected failure.
-  expect(await page.getByText("Hosted by Open Artifacts").count()).toBe(1);
+  await expect(page.getByText("Hosted by Open Artifacts")).toHaveCount(1);
 });

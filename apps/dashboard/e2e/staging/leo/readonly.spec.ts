@@ -37,11 +37,9 @@ test("the sign-in page never calls leo self-hosted", async ({ page }) => {
 test("the sign-in page says it's hosted by Open Artifacts", async ({
   page,
 }) => {
-  test.fail(true, "item 36: AuthProviders has no hosted flag yet");
   await page.goto(`${LEO}/sign-in`);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-  // Counted once the page is up, not waited for: a timeout isn't an expected failure.
-  expect(await page.getByText("Hosted by Open Artifacts").count()).toBe(1);
+  await expect(page.getByText("Hosted by Open Artifacts")).toHaveCount(1);
 });
 
 // A leo spec that could sign in or write would break the rule above: no

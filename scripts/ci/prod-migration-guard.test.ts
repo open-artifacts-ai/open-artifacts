@@ -112,7 +112,11 @@ describe("prod-migration-guard.sh detect", () => {
     r.release("v1.1.0", {
       "apps/server/migrations/0002_add.sql": "alter table a add y;\n",
     });
-    const d = r.run("detect", { TAG: "v1.1.0", EVENT: "push" });
+    const d = r.run("detect", {
+      TAG: "v1.1.0",
+      EVENT: "push",
+      PROD_VERSION: "1.0.0",
+    });
     expect(d.code).toBe(0);
     expect(d.out).toBe("hold=false\nguarded=false\n");
   });
@@ -121,7 +125,11 @@ describe("prod-migration-guard.sh detect", () => {
     r.release("v1.1.0", {
       "apps/server/migrations/0002_rebuild.sql": `${MARK}\ncreate table a2 (x);\n`,
     });
-    const auto = r.run("detect", { TAG: "v1.1.0", EVENT: "push" });
+    const auto = r.run("detect", {
+      TAG: "v1.1.0",
+      EVENT: "push",
+      PROD_VERSION: "1.0.0",
+    });
     expect(auto.code).toBe(0);
     expect(auto.out).toBe("hold=true\nguarded=false\n");
     expect(auto.stdout).toContain("::warning title=Prod deploy held::");
@@ -129,10 +137,11 @@ describe("prod-migration-guard.sh detect", () => {
     const manual = r.run("detect", {
       TAG: "v1.1.0",
       EVENT: "workflow_dispatch",
+      PROD_VERSION: "1.0.0",
     });
     expect(manual.out).toBe("hold=false\nguarded=true\n");
   });
-  it("only migrations this release adds count; the marker must be the first line", () => {
+  it("only migrations added since the version prod runs count; the marker must be the first line", () => {
     const r = repo();
     r.release("v1.1.0", {
       "apps/server/migrations/0002_rebuild.sql": `${MARK}\n`,
@@ -140,18 +149,54 @@ describe("prod-migration-guard.sh detect", () => {
     r.release("v1.2.0", {
       "apps/server/migrations/0003_add.sql": `alter table a add z;\n${MARK}\n`,
     });
-    expect(r.run("detect", { TAG: "v1.2.0", EVENT: "push" }).out).toBe(
-      "hold=false\nguarded=false\n",
-    );
+    // Prod already took 0002 (it runs 1.1.0): 1.2.0 adds nothing non-additive.
+    expect(
+      r.run("detect", { TAG: "v1.2.0", EVENT: "push", PROD_VERSION: "1.1.0" })
+        .out,
+    ).toBe("hold=false\nguarded=false\n");
   });
-  it("any doubt holds: an unknown tag, or no release before it", () => {
+  it("a held release's migration still holds the next release (prod on 0.71.0, tag 0.73.0)", () => {
     const r = repo();
-    expect(r.run("detect", { TAG: "v9.9.9", EVENT: "push" }).out).toBe(
-      "hold=true\nguarded=false\n",
-    );
-    expect(r.run("detect", { TAG: "v1.0.0", EVENT: "push" }).out).toBe(
-      "hold=true\nguarded=false\n",
-    );
+    r.release("v0.71.0", {
+      "apps/server/migrations/0016_add.sql": "alter table a add y;\n",
+    });
+    // 0.72.0 adds 0017 and is held, so prod stays on 0.71.0.
+    r.release("v0.72.0", {
+      "apps/server/migrations/0017_image_format.sql": `${MARK}\ncreate table a2 (x);\n`,
+    });
+    r.release("v0.73.0", {
+      "apps/server/migrations/0018_trash_index.sql":
+        "create index i on a (y);\n",
+    });
+    const d = r.run("detect", {
+      TAG: "v0.73.0",
+      EVENT: "push",
+      PROD_VERSION: "0.71.0",
+    });
+    expect(d.out).toBe("hold=true\nguarded=false\n");
+    expect(d.summary).toContain("0017_image_format.sql");
+    // Its guarded dispatch deploys it guarded.
+    expect(
+      r.run("detect", {
+        TAG: "v0.73.0",
+        EVENT: "workflow_dispatch",
+        PROD_VERSION: "0.71.0",
+      }).out,
+    ).toBe("hold=false\nguarded=true\n");
+  });
+  it("any doubt holds: prod's version unknown, not a release, or without a tag; an unknown tag", () => {
+    const r = repo();
+    r.release("v1.1.0", {
+      "apps/server/migrations/0002_add.sql": "alter table a add y;\n",
+    });
+    for (const PROD_VERSION of ["", "1.0", "1.0.0-rc.1", "9.9.9", "<html>"]) {
+      const d = r.run("detect", { TAG: "v1.1.0", EVENT: "push", PROD_VERSION });
+      expect(d.out, PROD_VERSION).toBe("hold=true\nguarded=false\n");
+    }
+    expect(
+      r.run("detect", { TAG: "v9.9.9", EVENT: "push", PROD_VERSION: "1.0.0" })
+        .out,
+    ).toBe("hold=true\nguarded=false\n");
   });
 });
 

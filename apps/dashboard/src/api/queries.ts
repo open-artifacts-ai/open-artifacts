@@ -355,7 +355,12 @@ export const useInviteMember = () => {
     mutationFn: (input: MemberInvite) =>
       api.send("POST", R.members, input, MemberInviteResultSchema),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.members }),
-    onError: (e) => failToast(e, "Couldn't send the invite."),
+    // invite_unreachable: the dialog says why under the email field.
+    onError: (e) => {
+      if (e instanceof ApiClientError && e.code === "invite_unreachable")
+        return;
+      failToast(e, "Couldn't send the invite.");
+    },
   });
 };
 
