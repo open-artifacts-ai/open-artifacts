@@ -7,6 +7,7 @@ import {
 
 import { renderCode, textOf, unpreviewableHtml } from "./code";
 import { wireCodeButtons } from "./copy";
+import { renderImage } from "./image";
 import { prepareMarkdown, renderMarkdown } from "./markdown";
 import { renderMermaid } from "./mermaid";
 import { renderPdf } from "./pdf";
@@ -19,7 +20,7 @@ import {
 // Built by Vite, so the fonts theme.css names are emitted next to it, hashed.
 import themeHref from "./theme.css?url";
 
-export { prepareMarkdown, renderCode, renderMarkdown, renderPdf };
+export { prepareMarkdown, renderCode, renderImage, renderMarkdown, renderPdf };
 
 function meta(name: string): string {
   return (
@@ -89,6 +90,12 @@ async function boot(): Promise<void> {
       document.body.innerHTML = src.ok
         ? await renderCode(src.text, meta("oa-language") || "text", name)
         : unpreviewableHtml(src.reason, url, name);
+    } else if (format === "image") {
+      await renderImage(
+        url,
+        entry.slice(entry.lastIndexOf("/") + 1),
+        document.body,
+      );
     } else {
       await renderPdf(url, document.body);
     }
