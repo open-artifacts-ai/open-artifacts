@@ -44,11 +44,13 @@ function Choice<T extends string>({
   value,
   options,
   onChange,
+  className,
 }: {
   label: string;
   value: T;
   options: { value: T; label: string }[];
   onChange: (v: T) => void;
+  className?: string;
 }) {
   return (
     <ToggleGroup
@@ -56,6 +58,7 @@ function Choice<T extends string>({
       variant="outline"
       size="sm"
       aria-label={label}
+      className={className}
       value={value}
       onValueChange={(v) => v && onChange(v as T)}
     >
@@ -73,12 +76,33 @@ export function Filters(p: FilterProps) {
     p.agent && !p.agents.includes(p.agent) ? [...p.agents, p.agent] : p.agents;
   return (
     <div className={BAR}>
+      {/* Six formats don't fit a phone as toggles: a select there, like Agent. */}
       <Choice
         label="Format"
         options={FORMATS}
         value={p.format ?? ALL}
         onChange={(v) => p.onFormat(v === ALL ? undefined : (v as Format))}
+        className="max-[600px]:hidden"
       />
+      <Select
+        value={p.format ?? ALL}
+        onValueChange={(v) => p.onFormat(v === ALL ? undefined : (v as Format))}
+      >
+        <SelectTrigger
+          aria-label="Format"
+          size="sm"
+          className={`min-w-[140px] min-[601px]:hidden ${TEXT}`}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent position="popper">
+          {FORMATS.map((f) => (
+            <SelectItem key={f.value} value={f.value} className={TEXT}>
+              {f.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
       <Select
         value={p.agent ?? ALL}
         onValueChange={(v) => p.onAgent(v === ALL ? undefined : v)}
