@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.72.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.71.0...v0.72.0) (2026-10-28)
+
+
+### Features
+
+* image artifact format (PNG, JPEG, GIF, WebP, SVG) with guarded migration 0017 ([#782](https://github.com/open-artifacts-ai/open-artifacts/issues/782)) ([eb5a450](https://github.com/open-artifacts-ai/open-artifacts/commit/eb5a450ea5419ffb7fefc5965f883bee676ad4df))
+* **members:** Remove says they lose access to what was shared with them too (item 7) ([#796](https://github.com/open-artifacts-ai/open-artifacts/issues/796)) ([c709c18](https://github.com/open-artifacts-ai/open-artifacts/commit/c709c18b9cd502d2fc252302fff6f2754718f4a6))
+
+
+### Bug Fixes
+
+* **server:** P6 hosted gating, invite and share reach, AuthProviders.hosted, Access refusals (review 39, 11, 37, 36c, 12) ([#799](https://github.com/open-artifacts-ai/open-artifacts/issues/799)) ([45b8cbc](https://github.com/open-artifacts-ai/open-artifacts/commit/45b8cbc2ab594944ea4ab91c40a169491ab833f0))
+* **spaces:** a shared space named Personal reads "Personal (shared)" ([#804](https://github.com/open-artifacts-ai/open-artifacts/issues/804)) ([656032c](https://github.com/open-artifacts-ai/open-artifacts/commit/656032c9ce7e5bbde71bf978205eca0ec32b6653))
+
 ## [0.71.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.70.0...v0.71.0) (2026-10-28)
 
 
