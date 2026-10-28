@@ -16,7 +16,7 @@ export const RUNTIME_DOC_URI = "openartifacts://docs/runtime";
  * The plan-dependent words a section uses. INSTRUCTIONS fills them from the
  * plan; the skill template keeps them as {{tokens}} filled at request time.
  */
-export type PlanText = {
+export type PlanWords = {
   plan: string;
   dataDoc: string;
   /** After "(<plan> plan": the Paid limit on Free, nothing on Paid. */
@@ -24,6 +24,10 @@ export type PlanText = {
   mcpBody: string;
   /** What quota_exceeded means the instance hit. */
   quota: string;
+};
+
+/** PlanWords plus what the sections branch on (never a skill token). */
+export type PlanText = PlanWords & {
   /**
    * False on an install without the spaces feature: the text names no
    * spaces, list_spaces or spaceId (parity 1, B12). The skill (built once
@@ -45,9 +49,7 @@ export const sizeText = (b: number): string =>
 export const planText = (
   plan: Plan,
   docBytes: number = dataDocLimit(plan),
-  spaces = true,
-): PlanText => ({
-  spaces,
+): PlanWords => ({
   plan,
   dataDoc: sizeText(docBytes),
   dataDocNote:
@@ -208,7 +210,7 @@ export function INSTRUCTIONS(
   if (s === undefined) {
     s = `Open Artifacts hosts the pages, documents and code you publish, with versions, sharing and live data.
 
-${renderSections(planText(plan, docBytes, spaces), (t) => t)}
+${renderSections({ ...planText(plan, docBytes), spaces }, (t) => t)}
 ${skillUrl ? `\nFull guide: ${skillUrl}\n` : ""}`;
     memo.set(key, s);
   }
