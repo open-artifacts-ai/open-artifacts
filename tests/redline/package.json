@@ -13,6 +13,9 @@
     "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
+    "@oa/auth-core": "workspace:*",
+    "@oa/server": "workspace:*",
+    "@oa/shared": "workspace:*",
     "@types/node": "^22.20.5",
     "tldts": "7.4.18",
     "typescript": "^5.9.3",

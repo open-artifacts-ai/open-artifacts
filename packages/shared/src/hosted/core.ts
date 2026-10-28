@@ -60,6 +60,11 @@ export type CapReason = z.infer<typeof CapReasonSchema>;
 /** Hosted billing tier (the UI's tier copy). Null when self-hosted. */
 export const TierSchema = z.enum(["trial", "team", "business"]);
 export type Tier = z.infer<typeof TierSchema>;
+/** Parse a TIER env value: a Tier, or null (unset, empty or unknown). The only parser: import it from here. */
+export const parseTier = (raw: string | undefined): Tier | null => {
+  const r = TierSchema.safeParse((raw ?? "").trim());
+  return r.success ? r.data : null;
+};
 
 /** Directory binding mode: off (none), google (syncing), frozen (Team: kept, edited by hand). */
 export const DirectoryModeSchema = z.enum(["off", "google", "frozen"]);
