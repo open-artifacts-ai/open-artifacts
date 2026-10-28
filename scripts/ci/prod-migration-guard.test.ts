@@ -1,0 +1,198 @@
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { script } from "./stubs.ts";
+
+const MARK = "-- oa:non-additive";
+
+/**
+ * A throwaway repo laid out like this one (scripts/ci/prod-migration-guard.sh
+ * copied in, so it resolves `root` there), with stub wrangler and verifier.
+ */
+function repo() {
+  const dir = mkdtempSync(join(tmpdir(), "guard-"));
+  const git = (...a: string[]) =>
+    execFileSync("git", a, { cwd: dir, encoding: "utf8" });
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "t@example.com");
+  git("config", "user.name", "t");
+  mkdirSync(join(dir, "scripts/ci"), { recursive: true });
+  mkdirSync(join(dir, "apps/server/migrations"), { recursive: true });
+  mkdirSync(join(dir, "apps/server/scripts"), { recursive: true });
+  copyFileSync(
+    script("prod-migration-guard.sh"),
+    join(dir, "scripts/ci/prod-migration-guard.sh"),
+  );
+  const write = (p: string, s: string) => writeFileSync(join(dir, p), s);
+  write("apps/server/migrations/0001_init.sql", "create table a (x);\n");
+  git("add", "-A");
+  git("commit", "-qm", "init");
+  git("tag", "v1.0.0");
+  const release = (tag: string, files: Record<string, string>) => {
+    for (const [p, s] of Object.entries(files)) write(p, s);
+    git("add", "-A");
+    git("commit", "-qm", tag);
+    git("tag", tag);
+  };
+  // Stubs: wrangler logs its argv and answers deployments/time-travel; the
+  // verifier logs too, writes captures, and fails verify when VERIFY_FAIL=1.
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  const log = join(dir, "calls.log");
+  writeFileSync(log, "");
+  writeFileSync(
+    join(bin, "wrangler"),
+    `#!/usr/bin/env bash
+echo "wrangler $*" >> "${log}"
+case "$1 $2" in
+  "deployments list") echo '[{"versions":[{"version_id":"old-1","percentage":100}]},{"versions":[{"version_id":"live-2","percentage":100}]}]' ;;
+  "d1 time-travel") [ "$3" = info ] && echo '{"bookmark":"bm-123"}' ;;
+esac
+exit 0
+`,
+  );
+  chmodSync(join(bin, "wrangler"), 0o755);
+  write(
+    "apps/server/scripts/verify-migration.ts",
+    `import { appendFileSync, writeFileSync } from "node:fs";
+const [cmd, , db, , file] = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, \`verifier \${cmd} \${db}\\n\`);
+if (cmd === "capture") writeFileSync(file, process.env.CAPTURE ?? "counts-v1");
+if (cmd === "verify" && process.env.VERIFY_FAIL === "1") process.exit(1);
+`,
+  );
+  const run = (mode: string, env: Record<string, string> = {}) => {
+    const out = join(dir, "out");
+    const summary = join(dir, "summary");
+    writeFileSync(out, "");
+    writeFileSync(summary, "");
+    writeFileSync(log, "");
+    const r = spawnSync(
+      "bash",
+      [join(dir, "scripts/ci/prod-migration-guard.sh"), mode],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          WRANGLER: join(bin, "wrangler"),
+          GITHUB_OUTPUT: out,
+          GITHUB_STEP_SUMMARY: summary,
+          GUARD_DIR: join(dir, "guard"),
+          PROD_NAME: "open-artifacts-prod",
+          ...env,
+        },
+      },
+    );
+    return {
+      code: r.status,
+      stdout: r.stdout,
+      stderr: r.stderr,
+      out: readFileSync(out, "utf8"),
+      summary: readFileSync(summary, "utf8"),
+      calls: readFileSync(log, "utf8").split("\n").filter(Boolean),
+    };
+  };
+  return { dir, release, run };
+}
+
+describe("prod-migration-guard.sh detect", () => {
+  it("an additive release deploys as usual", () => {
+    const r = repo();
+    r.release("v1.1.0", {
+      "apps/server/migrations/0002_add.sql": "alter table a add y;\n",
+    });
+    const d = r.run("detect", { TAG: "v1.1.0", EVENT: "push" });
+    expect(d.code).toBe(0);
+    expect(d.out).toBe("hold=false\nguarded=false\n");
+  });
+  it("a non-additive migration holds the automatic deploy, and a manual run deploys it guarded", () => {
+    const r = repo();
+    r.release("v1.1.0", {
+      "apps/server/migrations/0002_rebuild.sql": `${MARK}\ncreate table a2 (x);\n`,
+    });
+    const auto = r.run("detect", { TAG: "v1.1.0", EVENT: "push" });
+    expect(auto.code).toBe(0);
+    expect(auto.out).toBe("hold=true\nguarded=false\n");
+    expect(auto.stdout).toContain("::warning title=Prod deploy held::");
+    expect(auto.summary).toContain("0002_rebuild.sql");
+    const manual = r.run("detect", {
+      TAG: "v1.1.0",
+      EVENT: "workflow_dispatch",
+    });
+    expect(manual.out).toBe("hold=false\nguarded=true\n");
+  });
+  it("only migrations this release adds count; the marker must be the first line", () => {
+    const r = repo();
+    r.release("v1.1.0", {
+      "apps/server/migrations/0002_rebuild.sql": `${MARK}\n`,
+    });
+    r.release("v1.2.0", {
+      "apps/server/migrations/0003_add.sql": `alter table a add z;\n${MARK}\n`,
+    });
+    expect(r.run("detect", { TAG: "v1.2.0", EVENT: "push" }).out).toBe(
+      "hold=false\nguarded=false\n",
+    );
+  });
+  it("any doubt holds: an unknown tag, or no release before it", () => {
+    const r = repo();
+    expect(r.run("detect", { TAG: "v9.9.9", EVENT: "push" }).out).toBe(
+      "hold=true\nguarded=false\n",
+    );
+    expect(r.run("detect", { TAG: "v1.0.0", EVENT: "push" }).out).toBe(
+      "hold=true\nguarded=false\n",
+    );
+  });
+});
+
+describe("prod-migration-guard.sh record, verify, restore", () => {
+  it("record: the live (last) Worker version, a bookmark, and a capture", () => {
+    const r = repo();
+    const d = r.run("record");
+    expect(d.code).toBe(0);
+    expect(d.out).toBe("worker_version=live-2\nbookmark=bm-123\n");
+    expect(d.calls).toEqual([
+      "wrangler deployments list --name open-artifacts-prod --json",
+      "wrangler d1 time-travel info open-artifacts-prod --json",
+      "verifier capture open-artifacts-prod",
+    ]);
+    expect(d.summary).toContain("`bm-123`");
+  });
+  it("verify: the migration's verifier decides; missing verifier refuses", () => {
+    const r = repo();
+    r.run("record");
+    expect(r.run("verify").code).toBe(0);
+    expect(r.run("verify", { VERIFY_FAIL: "1" }).code).not.toBe(0);
+    const gone = r.run("verify", {
+      VERIFY_SCRIPT: "apps/server/scripts/nope.ts",
+    });
+    expect(gone.code).toBe(1);
+    expect(gone.stderr).toContain("refusing a guarded deploy without it");
+  });
+  it("restore: Worker first, then D1 to the bookmark, then compare with the capture", () => {
+    const r = repo();
+    r.run("record");
+    const env = { WORKER_VERSION: "live-2", BOOKMARK: "bm-123" };
+    const ok = r.run("restore", env);
+    expect(ok.code).toBe(0);
+    expect(ok.calls).toEqual([
+      "wrangler rollback live-2 --name open-artifacts-prod --message non-additive migration failed verification --yes",
+      "wrangler d1 time-travel restore open-artifacts-prod --bookmark bm-123 --json",
+      "verifier capture open-artifacts-prod",
+    ]);
+    expect(ok.summary).toContain("matches its pre-migration capture");
+    // The restored database differs from the capture: fail loudly.
+    const bad = r.run("restore", { ...env, CAPTURE: "counts-v2" });
+    expect(bad.code).toBe(1);
+    expect(bad.stdout).toContain("differs from its pre-migration capture");
+  });
+});
