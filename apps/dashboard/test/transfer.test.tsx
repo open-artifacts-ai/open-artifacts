@@ -293,7 +293,7 @@ it("409 directory_managed shows why inline", async () => {
     }),
   );
   expect(await within(await carolRow()).findByRole("alert")).toHaveTextContent(
-    "Google directory sync removed Carol, so they can't be restored here while sync is on.",
+    "Removed by your Google Workspace. They come back if their Workspace account is restored.",
   );
 });
 
