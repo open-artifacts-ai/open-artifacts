@@ -10,7 +10,31 @@ function ext(path: string): string {
   return i <= 0 ? "" : b.slice(i + 1).toLowerCase();
 }
 
-export function inferFormat(entry: string): Format {
+/**
+ * Plain-text extensions shown as `code` (language "text") besides the
+ * LANGUAGES keys: notes, tables, logs and config files.
+ */
+export const PLAIN_TEXT_EXTENSIONS: readonly string[] = [
+  "txt",
+  "text",
+  "csv",
+  "tsv",
+  "log",
+  "env",
+  "conf",
+  "cfg",
+  "properties",
+  "rst",
+  "adoc",
+];
+
+/**
+ * The format an entry's name implies, or null when no viewer shows it (a
+ * photo, an archive, any other binary): a publish without `format` is then
+ * refused with unsupported_format. `code` only for known text: a LANGUAGES
+ * key, a PLAIN_TEXT_EXTENSIONS entry, or a file named Makefile or Dockerfile.
+ */
+export function inferFormat(entry: string): Format | null {
   switch (ext(entry)) {
     case "html":
     case "htm":
@@ -21,9 +45,18 @@ export function inferFormat(entry: string): Format {
       return "markdown";
     case "pdf":
       return "pdf";
-    default:
-      return "code";
   }
+  return isTextPath(entry) ? "code" : null;
+}
+
+/** A known text file by its name (see inferFormat). */
+export function isTextPath(path: string): boolean {
+  const e = ext(path);
+  return (
+    Object.hasOwn(LANGUAGES, e) ||
+    PLAIN_TEXT_EXTENSIONS.includes(e) ||
+    Object.hasOwn(LANGUAGE_BY_NAME, basename(path).toLowerCase())
+  );
 }
 
 const LANGUAGES: Record<string, string> = {

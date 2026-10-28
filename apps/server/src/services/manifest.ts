@@ -54,6 +54,9 @@ const inlineTooLarge = (path: string) =>
     path,
     reason: "too_large",
   });
+/** No `format` and the entry's name implies none (inferFormat null). */
+const noViewer = (path: string) =>
+  bad(path, "no_viewer", `"${path}" has no viewer; pass format`);
 
 function norm(p: unknown): string {
   if (typeof p !== "string") throw bad(String(p), "invalid");
@@ -156,9 +159,10 @@ export function planFiles(input: PublishInput): Plan {
     if (files !== undefined)
       throw bad("files", "content_and_files", "Provide content or files");
     const entryIn = input.entry === undefined ? undefined : norm(input.entry);
-    const format = input.format ?? (entryIn && inferFormat(entryIn));
-    if (!format)
+    if (!input.format && entryIn === undefined)
       throw bad("format", "missing", "content requires format or entry");
+    const format = input.format ?? inferFormat(entryIn as string);
+    if (!format) throw noViewer(entryIn as string);
     const language =
       input.language ??
       (format === "code" ? (entryIn ? inferLanguage(entryIn) : "text") : null);
@@ -249,6 +253,7 @@ export function planFiles(input: PublishInput): Plan {
     } else throw bad(key, "invalid");
   }
   const format = input.format ?? inferFormat(entry);
+  if (!format) throw noViewer(entry);
   const language =
     input.language ?? (format === "code" ? inferLanguage(entry) : null);
   return { files: out, entry, format, language };
