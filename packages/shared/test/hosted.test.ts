@@ -98,7 +98,8 @@ describe("mock AuthProviders.hosted (review item 36c)", () => {
       [false, true],
       [true, false],
     ] as const) {
-      await msw.fresh({ hosted: { selfHosted } });
+      server.resetHandlers();
+      server.use(...createHandlers({ hosted: { selfHosted } }));
       const p = AuthProvidersSchema.parse(
         await (await call("GET", AUTH.providers)).json(),
       );
