@@ -764,7 +764,11 @@ export function withSpace<T extends ArtifactSummary>(
       name: shared ? (sp.name ?? "") : (out.owner.name ?? "Personal"),
       publicLinks: shared ? sp.publicLinks === 1 : true,
     };
-  out.can = artifactCan(level, { personal: !shared, cap: capOfCaller(caller) });
+  out.can = artifactCan(level, {
+    personal: !shared,
+    cap: capOfCaller(caller),
+    dataWriters: out.dataWriters,
+  });
   return out;
 }
 
@@ -821,7 +825,11 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
   if (q.format) conds.push(eq(artifacts.format, q.format));
   if (q.visibility) conds.push(eq(artifacts.visibility, q.visibility));
   if (q.agent !== undefined) conds.push(eq(artifacts.lastAgentName, q.agent));
-  if (q.owner !== undefined) {
+  // owner "me" (any case) is the caller; anything else is an email.
+  if (q.owner !== undefined && q.owner.trim().toLowerCase() === "me") {
+    if (caller.kind !== "user") throw bad("Invalid owner email", "owner");
+    conds.push(eq(artifacts.ownerId, caller.user.id));
+  } else if (q.owner !== undefined) {
     const e = normalizeEmail(q.owner);
     if (!e) throw bad("Invalid owner email", "owner");
     conds.push(
@@ -874,7 +882,13 @@ export async function list(
 ): Promise<Page<ArtifactSummary>> {
   if (caller.kind !== "user")
     throw new ApiError("unauthorized", "Sign in required");
-  if (q.spaceId !== undefined) await checkListSpace(env, caller, q.spaceId);
+  if (q.spaceId !== undefined) {
+    await checkListSpace(env, caller, q.spaceId);
+    // mine is the caller's personal space: inside a shared one it can only
+    // be empty, so say so (the dashboard's "Mine" tab sends owner=me).
+    if (q.scope === "mine" && q.spaceId !== caller.user.id)
+      throw bad('scope "mine" is the personal space; use owner=me', "spaceId");
+  }
   const rows = await listQuery(env, caller, q);
   const page = rows.slice(0, q.limit);
   const last = page[page.length - 1];
@@ -1410,6 +1424,18 @@ export async function undelete(
     allowDeleted: true,
   });
   if (a.deletedAt != null) {
+    // A shared space's trash restores only into a live space, with spaces
+    // on (#792 D); 404 otherwise, as for no access. Personal trash always.
+    const sp = await env.DB.prepare(
+      "select kind, deleted_at from spaces where id = ?",
+    )
+      .bind(a.spaceId ?? "")
+      .first<{ kind: string; deleted_at: number | null }>();
+    if (
+      sp?.kind === "shared" &&
+      (sp.deleted_at !== null || !authConfig(env).features.includes("spaces"))
+    )
+      throw notFound();
     const cutoff = Date.now() - LIMITS.softDeleteDays * DAY;
     // The search row went with the delete: the current version is unindexed
     // again (a pdf takes a viewer's text again) and updated_at moves, so a

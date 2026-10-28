@@ -10,12 +10,22 @@ const seg = (s: string): string => {
 export const R = {
   /** GET -> Me; PATCH MePatch (`{ displayName }`) -> Me. Any signed-in user, guests included. */
   me: "/api/v1/me",
-  /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. */
+  /** GET (ListQuery) -> Page<ArtifactSummary>; POST PublishInput (JSON) -> PublishResult. Inline content (content, text files and base64 together) is limited to LIMITS.inlineBytes (128 KB): over it, or a body over twice that plus 64 KB, 413 too_large (INLINE_TOO_LARGE_MESSAGE); larger files go through R.uploads then files: { path: { uploadId } }. Publishing to an uploaded/reserved id with no existing artifact requires title; the server returns 400 without it. Create only: an existing artifact's id is 400 bad_request (details { path: "id", reason: "not_reserved" }); publish a new version with POST R.versions(id). (MCP publish_artifact with an id does publish a new version.) */
   artifacts: A,
   /** GET -> ArtifactSummary; PATCH ArtifactPatch -> ArtifactPatchResult; DELETE soft-delete -> 204 */
   artifact: (id: string) => `${A}/${seg(id)}`,
-  /** POST -> ArtifactSummary */
+  /** POST -> ArtifactSummary. The personal owner, or (shared space) an uncapped manager of that space by space role (an org admin only after self-adding as manager), within LIMITS.softDeleteDays. A shared space's trash restores only while the space is live and spaces are on. Anyone else, or otherwise, 404. */
   restoreDeleted: (id: string) => `${A}/${seg(id)}/undelete`,
+  /**
+   * GET TrashQuery (?spaceId=&cursor=&limit=) -> Page<TrashItem>, newest
+   * deletedAt first. The caller's personal trash plus, with spaces on, the
+   * trash of every shared space where their space role is manager (uncapped;
+   * no org-admin shortcut). spaceId narrows it: a shared space the caller doesn't manage,
+   * or can't see, is 404; another person's personal space is 404. With
+   * spaces off, any spaceId but the caller's own id is 400. Capped callers
+   * get an empty page (they can't restore).
+   */
+  trash: "/api/v1/trash",
   /**
    * GET -> VersionInfo[]: newest first with version < `before` (all versions when omitted).
    * A page holds at most VERSIONS_PAGE_SIZE (20) and stops early once its manifests pass

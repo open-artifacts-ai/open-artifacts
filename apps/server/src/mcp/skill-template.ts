@@ -224,7 +224,7 @@ Check every item before telling the user a public live page is ready:
 
 - After a publish: the view URL from the result, the version, and who can open it. New artifacts are private (or team, if an admin changed the default); offer share_artifact or set_visibility.
 - After a share: the result says whether ${T("host")} emailed the person a link; if not, give the user the URL to send.
-- After a delete: it can be restored from the dashboard at ${T("origin")} for 30 days.
+- After a delete: restore it from Trash in the dashboard at ${T("origin")}, or with undelete_artifact, within 30 days.
 - Pass on quota_exceeded and CPU-limit notes as they are; the fix is the instance owner's.
 - Never show a token, even one you just read from a file.
 `;

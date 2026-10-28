@@ -1,4 +1,9 @@
-import type { HeldSweep, InstanceDirectory, SyncState } from "@oa/shared";
+import type {
+  HeldSweep,
+  InstanceDirectory,
+  LiftPaused,
+  SyncState,
+} from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { UPSERT } from "./store.js";
@@ -47,6 +52,15 @@ export type Health = {
    * failing alarm past it; null again on success. Informational (T18).
    */
   staleAt: number | null;
+  /**
+   * Restricted groups that blocked the last reconcile's lift (RESTRICTED_ALL
+   * lowers nobody until every restricted group is read whole).
+   */
+  liftsPaused: LiftPaused[];
+  /** Lifts paused without a break since; null while they run. */
+  liftsPausedSince: number | null;
+  /** The owner alert for the current pause (once per pause), else null. */
+  liftsAlertedAt: number | null;
 };
 
 export const NEVER: Health = {
@@ -62,6 +76,9 @@ export const NEVER: Health = {
   failState: null,
   lanes: { fast: null, rec: null },
   staleAt: null,
+  liftsPaused: [],
+  liftsPausedSince: null,
+  liftsAlertedAt: null,
 };
 
 /**
@@ -102,6 +119,7 @@ export async function readHealth(env: Pick<Env, "DB">): Promise<Health> {
       ...NEVER,
       ...v,
       held: Array.isArray(v.held) ? v.held : [],
+      liftsPaused: Array.isArray(v.liftsPaused) ? v.liftsPaused : [],
       lanes: { ...NEVER.lanes, ...(v.lanes ?? {}) },
     };
   } catch {
@@ -181,6 +199,7 @@ export function healthFields(h: Health, now = Date.now()) {
     alertedAt: iso(h.alertedAt),
     customerMismatch: h.customerMismatch,
     held: h.held,
+    liftsPaused: h.liftsPaused,
   };
 }
 

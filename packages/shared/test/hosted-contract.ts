@@ -37,6 +37,7 @@ import {
   SyncStatusSchema,
   TransferResultSchema,
   TransferSummarySchema,
+  TrashItemSchema,
   UNSUPPORTED_FORMAT_MESSAGE,
 } from "../src/index.js";
 import { fixtures } from "../src/mocks/fixtures.js";
@@ -120,6 +121,7 @@ const Strict = {
   RestrictedGroup: RestrictedGroupSchema.strict(),
   DirectoryGroup: DirectoryGroupSchema.strict(),
   AuditEvent: AuditEventSchema.strict(),
+  TrashItem: TrashItemSchema.strict(),
 };
 
 /** Registers the hosted contract cases against `d`. */
@@ -262,8 +264,9 @@ export function hostedContract(d: ContractDriver): ContractCases {
         const mine = list.items.find((a) => a.title === "Landing page");
         expect(mine?.space).toMatchObject({ kind: "personal", id: me.user.id });
         expect(mine?.can?.transfer).toBe(true);
+        // The viewer row is Bob's editors-only guide: no data writes either.
         const viewer = list.items.find((a) => a.access === "viewer");
-        expect(viewer?.can).toMatchObject({ edit: false, dataWrite: true });
+        expect(viewer?.can).toMatchObject({ edit: false, dataWrite: false });
         const hits = PageSchema(Strict.SearchHit).parse(
           await json(await d.call("GET", `${R.search}?q=notes`)),
         );
@@ -571,6 +574,337 @@ export function hostedContract(d: ContractDriver): ContractCases {
           .parse(await json(await d.call("GET", R.members)))[0]?.status,
       ).toBe("active");
     });
+
+    t(
+      "owner=me lists the caller's own; scope=mine with a shared spaceId is 400",
+      async () => {
+        await d.fresh({ hosted: true });
+        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+        const eng = me.spaces?.find((s) => s.name === "Engineering")
+          ?.id as string;
+        const list = async (q: string) => {
+          const r = await d.call("GET", `${R.artifacts}?${q}`);
+          expect(r.status, q).toBe(200);
+          return PageSchema(Strict.ArtifactSummary).parse(await json(r)).items;
+        };
+        const titles = (xs: { title: string }[]) => xs.map((a) => a.title);
+        expect(titles(await list("scope=all&limit=100"))).toContain(
+          "Shared draft",
+        );
+        const own = await list("scope=all&owner=me&limit=100");
+        expect(own.length).toBeGreaterThan(0);
+        expect(own.every((a) => a.owner.id === me.user.id)).toBe(true);
+        expect(titles(own)).toEqual(
+          expect.arrayContaining(["Landing page", "Meeting notes"]),
+        );
+        expect(titles(own)).not.toContain("Shared draft");
+        // The literal "me" is the caller; an email still works.
+        expect(
+          titles(
+            await list(
+              `scope=all&owner=${encodeURIComponent(me.user.email)}&limit=100`,
+            ),
+          ).sort(),
+        ).toEqual(titles(own).sort());
+        // "Mine" inside a shared space: scope=space plus owner=me.
+        expect(
+          titles(await list(`scope=space&spaceId=${eng}&owner=me`)),
+        ).toEqual(["Meeting notes"]);
+        const bad = await d.call(
+          "GET",
+          `${R.artifacts}?scope=mine&spaceId=${eng}`,
+        );
+        expect(bad.status).toBe(400);
+        const e = ApiErrorSchema.parse(await json(bad)).error;
+        expect(e.code).toBe("bad_request");
+        expect(e.details).toMatchObject({ path: "spaceId" });
+        // The caller's own personal space is still fine with mine.
+        expect(
+          titles(
+            await list(`scope=mine&spaceId=${me.personalSpaceId}&limit=100`),
+          ),
+        ).toContain("Landing page");
+      },
+    );
+  });
+
+  describe("trash (P4 item 9)", () => {
+    const DAY = 86_400_000;
+    const idOf = (title: string) =>
+      fixtures.artifacts.find((a) => a.title === title)?.id as string;
+    const trash = async (q = "") => {
+      const r = await d.call("GET", `${R.trash}${q}`);
+      expect(r.status, q).toBe(200);
+      return PageSchema(Strict.TrashItem).parse(await json(r));
+    };
+
+    t(
+      "trash lists personal and managed-space deletions, newest first; spaceId narrows",
+      async () => {
+        await d.fresh({ hosted: true });
+        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+        const eng = me.spaces?.find((s) => s.name === "Engineering")
+          ?.id as string;
+        expect((await trash()).items).toEqual([]);
+        for (const title of ["Landing page", "Meeting notes"])
+          expect((await d.call("DELETE", R.artifact(idOf(title)))).status).toBe(
+            204,
+          );
+        const all = await trash();
+        // Newest deletedAt first (two deletes may share a millisecond: then id desc).
+        const order = [...all.items].sort(
+          (x, y) =>
+            y.deletedAt.localeCompare(x.deletedAt) || (y.id < x.id ? -1 : 1),
+        );
+        expect(all.items).toEqual(order);
+        expect(all.items.map((a) => a.title).sort()).toEqual([
+          "Landing page",
+          "Meeting notes",
+        ]);
+        const notes = all.items.find((a) => a.title === "Meeting notes");
+        const landing = all.items.find((a) => a.title === "Landing page");
+        expect(notes).toMatchObject({
+          access: "manager",
+          space: { id: eng, name: "Engineering", personal: false },
+        });
+        expect(landing).toMatchObject({
+          access: "owner",
+          space: { id: me.personalSpaceId, name: "Personal", personal: true },
+        });
+        for (const a of all.items)
+          expect(Date.parse(a.purgeAt) - Date.parse(a.deletedAt)).toBe(
+            30 * DAY,
+          );
+        // Pages of one, newest first.
+        const titles = all.items.map((a) => a.title);
+        const p1 = await trash("?limit=1");
+        expect(p1.items.map((a) => a.title)).toEqual([titles[0]]);
+        expect(p1.nextCursor).not.toBeNull();
+        const p2 = await trash(
+          `?limit=1&cursor=${encodeURIComponent(p1.nextCursor as string)}`,
+        );
+        expect(p2.items.map((a) => a.title)).toEqual([titles[1]]);
+        expect(p2.nextCursor).toBeNull();
+        expect(
+          (await trash(`?spaceId=${eng}`)).items.map((a) => a.title),
+        ).toEqual(["Meeting notes"]);
+        expect(
+          (await trash(`?spaceId=${me.personalSpaceId}`)).items.map(
+            (a) => a.title,
+          ),
+        ).toEqual(["Landing page"]);
+        expect(
+          (await d.call("GET", `${R.trash}?spaceId=SpNopeNpQrSt9uVw`)).status,
+        ).toBe(404);
+        expect((await d.call("GET", `${R.trash}?limit=101`)).status).toBe(400);
+        // Bob is an editor in Engineering: not his to restore, so not listed;
+        // asking for it is 404, as for a space he can't see.
+        await d.signIn("bob@example.com");
+        expect((await trash()).items.map((a) => a.title)).not.toContain(
+          "Meeting notes",
+        );
+        expect((await d.call("GET", `${R.trash}?spaceId=${eng}`)).status).toBe(
+          404,
+        );
+      },
+    );
+
+    t(
+      "an org admin can't list or restore a shared space's trash until they self-add as manager; an editor can't",
+      async () => {
+        await d.fresh({ hosted: true });
+        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+        const eng = me.spaces?.find((s) => s.name === "Engineering")
+          ?.id as string;
+        const notes = idOf("Meeting notes");
+        expect((await d.call("DELETE", R.artifact(notes))).status).toBe(204);
+        const titles = async () => (await trash()).items.map((a) => a.title);
+        // Erin is an org admin with no manager role in Engineering (a viewer
+        // through allMembersRole): no implicit access, so 404 both ways.
+        await d.signIn("erin@example.com");
+        expect(await titles()).not.toContain("Meeting notes");
+        expect((await d.call("GET", `${R.trash}?spaceId=${eng}`)).status).toBe(
+          404,
+        );
+        expect((await d.call("POST", R.restoreDeleted(notes))).status).toBe(
+          404,
+        );
+        // Bob, an editor there, may do neither.
+        await d.signIn("bob@example.com");
+        expect(await titles()).not.toContain("Meeting notes");
+        expect((await d.call("POST", R.restoreDeleted(notes))).status).toBe(
+          404,
+        );
+        // Self-added as manager (audited), Erin acts as that role.
+        await d.signIn("erin@example.com");
+        expect(
+          (await d.call("POST", R.spaceMemberSelf(eng), { role: "manager" }))
+            .status,
+        ).toBe(201);
+        expect(await titles()).toContain("Meeting notes");
+        const r = await d.call("POST", R.restoreDeleted(notes));
+        expect(r.status).toBe(200);
+        expect(Strict.ArtifactSummary.parse(await json(r))).toMatchObject({
+          title: "Meeting notes",
+          deletedAt: null,
+        });
+        expect(await titles()).not.toContain("Meeting notes");
+      },
+    );
+
+    t("spaces off: personal trash only; another spaceId is 400", async () => {
+      await d.fresh();
+      const me = await json(await d.call("GET", R.me));
+      expect(
+        (await d.call("DELETE", R.artifact(idOf("Landing page")))).status,
+      ).toBe(204);
+      const page = await trash();
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]).toMatchObject({
+        title: "Landing page",
+        access: "owner",
+        space: { id: me.user.id, name: "Personal", personal: true },
+      });
+      expect((await trash(`?spaceId=${me.user.id}`)).items).toHaveLength(1);
+      const bad = await d.call("GET", `${R.trash}?spaceId=SpEngNpQrSt2uVwX`);
+      expect(bad.status).toBe(400);
+      expect(ApiErrorSchema.parse(await json(bad)).error.details).toMatchObject(
+        {
+          path: "spaceId",
+        },
+      );
+    });
+  });
+
+  describe("hosted mocks: access in a shared space (decide order)", () => {
+    const idOf = (title: string) =>
+      fixtures.artifacts.find((a) => a.title === title)?.id as string;
+    const get = (id: string) => d.call("GET", R.artifact(id));
+
+    t(
+      "a capped caller with no space role gets nothing on a team artifact",
+      async () => {
+        await d.fresh({ hosted: true });
+        // Dan is restricted (gCon04): team visibility never reaches a capped
+        // caller, and Engineering's allMembersRole doesn't either.
+        await d.signIn("dan@example.com");
+        expect((await get(idOf("Meeting notes"))).status).toBe(404);
+        const list = PageSchema(Strict.ArtifactSummary).parse(
+          await json(await d.call("GET", `${R.artifacts}?scope=all&limit=100`)),
+        );
+        expect(list.items.map((a) => a.title)).not.toContain("Meeting notes");
+      },
+    );
+
+    t("a capped caller with a space role gets viewer", async () => {
+      await d.fresh({ hosted: { directory: "frozen" } });
+      const bob = fixtures.members[1]?.id as string;
+      expect((await d.call("PUT", R.memberRestricted(bob))).status).toBe(200);
+      // Bob is an editor in Engineering; restricted, he reads at viewer.
+      await d.signIn("bob@example.com");
+      const a = Strict.ArtifactSummary.parse(
+        await json(await get(idOf("Meeting notes"))),
+      );
+      expect(a.access).toBe("viewer");
+      expect(a.can).toMatchObject({ edit: false, dataWrite: false });
+    });
+
+    t(
+      "a caller who lost their space role on a private artifact gets nothing, or their share's level",
+      async () => {
+        await d.fresh({ hosted: true });
+        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+        const eng = me.spaces?.find((s) => s.name === "Engineering")
+          ?.id as string;
+        const pub = await d.call("POST", R.artifacts, {
+          title: "Eng private",
+          format: "html",
+          content: "x",
+          visibility: "private",
+          spaceId: eng,
+        });
+        expect(pub.status).toBe(201);
+        const id = (await json(pub)).id as string;
+        // Erin reads it through Engineering's allMembersRole (viewer)...
+        await d.signIn("erin@example.com");
+        expect(
+          Strict.ArtifactSummary.parse(await json(await get(id))).access,
+        ).toBe("viewer");
+        // ...until that role goes: a private artifact is then 404.
+        await d.signIn("ada@example.com");
+        expect(
+          (await d.call("PATCH", R.space(eng), { allMembersRole: null }))
+            .status,
+        ).toBe(200);
+        await d.signIn("erin@example.com");
+        expect((await get(id)).status).toBe(404);
+        // A share gives back exactly the share's level.
+        await d.signIn("ada@example.com");
+        expect(
+          (
+            await d.call("PUT", R.shares(id), {
+              email: "erin@example.com",
+              role: "editor",
+            })
+          ).status,
+        ).toBe(200);
+        await d.signIn("erin@example.com");
+        expect(
+          Strict.ArtifactSummary.parse(await json(await get(id))).access,
+        ).toBe("editor");
+      },
+    );
+  });
+
+  describe("hosted mocks: data writers", () => {
+    t(
+      "a viewer of an editors-only artifact gets can.dataWrite false",
+      async () => {
+        await d.fresh({ hosted: true });
+        const get = async (title: string) => {
+          const id = fixtures.artifacts.find((a) => a.title === title)
+            ?.id as string;
+          return Strict.ArtifactSummary.parse(
+            await json(await d.call("GET", R.artifact(id))),
+          );
+        };
+        const guide = await get("Onboarding guide");
+        expect(guide).toMatchObject({
+          access: "viewer",
+          dataWriters: "editors",
+        });
+        expect(guide.can?.dataWrite).toBe(false);
+        // The list says the same.
+        const page = PageSchema(Strict.ArtifactSummary).parse(
+          await json(await d.call("GET", `${R.artifacts}?scope=all&limit=100`)),
+        );
+        expect(page.items.find((a) => a.id === guide.id)?.can?.dataWrite).toBe(
+          false,
+        );
+        // Owners keep it on an editors-only artifact.
+        const landing = fixtures.artifacts.find(
+          (a) => a.title === "Landing page",
+        )?.id as string;
+        const own = Strict.ArtifactSummary.parse(
+          await json(
+            await d.call("PATCH", R.artifact(landing), {
+              dataWriters: "editors",
+            }),
+          ),
+        );
+        expect(own).toMatchObject({ access: "owner", dataWriters: "editors" });
+        expect((await get("Landing page")).can?.dataWrite).toBe(true);
+        // A plain viewer of a "viewers" artifact keeps data writes: Erin (org
+        // admin) is a viewer in Engineering through allMembersRole.
+        await d.signIn("erin@example.com");
+        const notes = await get("Meeting notes");
+        expect(notes).toMatchObject({
+          access: "viewer",
+          dataWriters: "viewers",
+        });
+        expect(notes.can?.dataWrite).toBe(true);
+      },
+    );
   });
 
   describe("hosted mocks: restriction, public links, admin self-add, audit", () => {
@@ -736,16 +1070,38 @@ export function hostedContract(d: ContractDriver): ContractCases {
           (await d.call("PATCH", R.artifact(notes), { visibility: "public" }))
             .status,
         ).toBe(200);
+        // A new version is POST /versions (resending "public" passes there too).
         expect(
           (
-            await d.call("POST", R.artifacts, {
-              id: notes,
+            await d.call("POST", R.versions(notes), {
               format: "html",
               content: "y",
               visibility: "public",
             })
           ).status,
         ).toBe(201);
+        // An id that is neither an artifact nor reserved: 400 not_reserved.
+        const unknown = await d.call("POST", R.artifacts, {
+          id: "Zq3nPqRsTu5vWxYz",
+          title: "t",
+          format: "html",
+          content: "y",
+        });
+        expect(unknown.status).toBe(400);
+        expect(ApiErrorSchema.parse(await json(unknown)).error.details).toEqual(
+          {
+            path: "id",
+            reason: "not_reserved",
+          },
+        );
+        // REST create never upserts: an existing id is 400 (use /versions).
+        const upsert = await d.call("POST", R.artifacts, {
+          id: notes,
+          format: "html",
+          content: "y",
+        });
+        expect(upsert.status).toBe(400);
+        expect((await errCode(upsert)).code).toBe("bad_request");
       },
     );
 

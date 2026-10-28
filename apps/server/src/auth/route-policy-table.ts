@@ -156,6 +156,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
   "GET /api/v1/artifacts": { user: "list, filtered by listFilterSql" },
+  "GET /api/v1/trash": {
+    user: "trash, filtered by listTrash: own personal plus managed shared spaces",
+  },
   "POST /api/v1/artifacts": {
     org: "artifact.create",
   },
@@ -263,6 +266,7 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   unshare_artifact: art("unshare"),
   set_visibility: art("visibility"),
   delete_artifact: art("delete"),
+  undelete_artifact: art("undelete", { allowDeleted: true }),
   artifact_data_get: art("data.read"),
   artifact_data_list: art("data.read"),
   artifact_data_query: art("data.read"),

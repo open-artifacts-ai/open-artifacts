@@ -29,7 +29,7 @@ describe("MCP surface is vendor-neutral", () => {
     const u = await login(`neutral-${newId().slice(0, 6).toLowerCase()}@x.com`);
     const c = await connect((await createPat(env, u.userId, "n")).token);
     const { tools } = await c.listTools();
-    expect(tools).toHaveLength(18);
+    expect(tools).toHaveLength(19);
     for (const t of tools) expect(JSON.stringify(t)).not.toMatch(VENDOR);
     const instructions = c.getInstructions() ?? "";
     expect(instructions.split("\n").length).toBeGreaterThanOrEqual(55);

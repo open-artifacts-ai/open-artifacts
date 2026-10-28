@@ -37,7 +37,11 @@
   },
   {
     "name": "delete_artifact",
-    "description": "Delete an artifact. It can be recovered for 30 days."
+    "description": "Delete an artifact. Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days."
+  },
+  {
+    "name": "undelete_artifact",
+    "description": "Restore a deleted artifact from the trash within 30 days."
   },
   {
     "name": "create_upload",

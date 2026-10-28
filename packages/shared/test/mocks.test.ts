@@ -651,6 +651,29 @@ describe("round 3", () => {
   });
 });
 
+describe("REST create with an id (#792 E)", () => {
+  it("an unknown, unreserved id is 400 not_reserved; an id R.uploads reserved creates", async () => {
+    fresh();
+    const id = "Zq3nPqRsTu5vWxYz";
+    const base = { title: "t", format: "html", content: "x" };
+    const r = await call("POST", R.artifacts, { ...base, id });
+    expect(r.status).toBe(400);
+    expect(Err.parse(await r.json()).error).toMatchObject({
+      code: "bad_request",
+      details: { path: "id", reason: "not_reserved" },
+    });
+    const up = (await (
+      await call("POST", R.uploads, {
+        path: "a.png",
+        size: 10,
+        contentType: "image/png",
+      })
+    ).json()) as { artifactId: string };
+    const ok = await call("POST", R.artifacts, { ...base, id: up.artifactId });
+    expect(ok.status).toBe(201);
+  });
+});
+
 describe("round 2", () => {
   it("version files differ per version; unknown path 404", async () => {
     fresh();

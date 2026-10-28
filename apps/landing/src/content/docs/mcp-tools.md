@@ -82,7 +82,7 @@ Only an artifact's creator can share it, change its visibility, or delete it.
 
 ## Deleting
 
-`delete_artifact` moves an artifact to the trash. It can be recovered for {LIMIT_SOFT_DELETE}, then it's purged.
+`delete_artifact` moves an artifact to the trash. It can be recovered for {LIMIT_SOFT_DELETE}, then it's purged. Restore it from Trash in the dashboard, or with `undelete_artifact`, within that time. In a shared space, its managers can restore it too.
 
 ## Live-page data
 

@@ -218,6 +218,14 @@ export async function oauthToken(
   );
   expect(t.status).toBe(200);
   expect(t.headers.get("x-robots-tag")).toBe("noindex, nofollow");
-  const { access_token } = (await t.json()) as { access_token: string };
-  return { member, accessToken: access_token, clientId };
+  const { access_token, refresh_token } = (await t.json()) as {
+    access_token: string;
+    refresh_token: string;
+  };
+  return {
+    member,
+    accessToken: access_token,
+    refreshToken: refresh_token,
+    clientId,
+  };
 }

@@ -586,7 +586,7 @@ export async function deleteSpace(
     if (!still) throw notFound();
     throw new ApiError(
       "space_not_empty",
-      "Move or delete its artifacts first, trash included",
+      "Move or delete its artifacts first. Deleted artifacts count until the trash clears them, 30 days after deletion.",
     );
   }
 }

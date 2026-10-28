@@ -595,6 +595,16 @@ export const SURFACES: readonly Surface[] = [
         `/api/v1/search?q=${id}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
     ),
   ),
+  // P4 item 9: the trash lists exactly what the caller may restore.
+  rest(
+    "rest trash",
+    "trash",
+    ["GET /api/v1/trash"],
+    restList(
+      (_id, cursor) =>
+        `/api/v1/trash?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+    ),
+  ),
   // Data and storage
   rest(
     "data GET list",
@@ -711,7 +721,7 @@ export const SURFACES: readonly Surface[] = [
     [`GET ${ARTS}/events`],
     read((id) => `${A(id)}/events`, 426),
   ),
-  // MCP (all 18 tools)
+  // MCP (all 19 tools)
   mcp(
     "get_artifact",
     "view",
@@ -768,6 +778,12 @@ export const SURFACES: readonly Surface[] = [
     "delete_artifact",
     "delete",
     tool("delete_artifact", (id) => ({ id })),
+    "access",
+  ),
+  mcp(
+    "undelete_artifact",
+    "undelete",
+    tool("undelete_artifact", (id) => ({ id })),
     "access",
   ),
   mcp("artifact_data_get", "data.read", data("get", { docId: "d" })),

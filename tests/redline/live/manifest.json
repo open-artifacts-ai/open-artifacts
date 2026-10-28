@@ -302,6 +302,14 @@
     },
     {
       "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest trash [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest trash [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact data GET list [session]"
     },
     {
@@ -463,6 +471,10 @@
     {
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact mcp delete_artifact [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp undelete_artifact [pat]"
     },
     {
       "file": "live/surfaces.test.ts",

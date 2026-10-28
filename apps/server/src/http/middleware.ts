@@ -221,7 +221,10 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
     }
     const pat = await verifyPat(c.env, bearer[1] ?? "", ctx);
     const row = pat ? await getUserWithEpoch(c.env, pat.userId) : null;
-    if (pat && row) {
+    // Review item 34: a restricted member's PAT is refused on REST, as at
+    // /mcp. Only restricted: a guest's PAT keeps today's capped, read-only
+    // REST access (#609 is a post-M1 product call).
+    if (pat && row && capOfCaller(callerOf(row.user)) !== "restricted") {
       c.set("user", row.user);
       c.set("tokenLabel", pat.label);
       c.set("tokenId", pat.tokenId);

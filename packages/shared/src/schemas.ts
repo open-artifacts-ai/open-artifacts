@@ -289,9 +289,11 @@ export const ListQuerySchema = z
     scope: z
       .enum(["mine", "shared", "team", "all", "space", "spaces"])
       .default("all"),
+    /** Narrows any scope to one space. With scope "mine", only the caller's personal space (else 400, path spaceId). */
     spaceId: z.string().optional(),
     format: FormatSchema.optional(),
     visibility: VisibilitySchema.optional(),
+    /** An owner's email, or the literal "me" for the caller. */
     owner: z.string().optional(),
     agent: z.string().optional(),
     q: z.string().optional(),
@@ -310,6 +312,31 @@ export type ListQueryInput = z.input<typeof ListQuerySchema>;
 export type Page<T> = { items: T[]; nextCursor: string | null };
 export const PageSchema = <T extends z.ZodType>(item: T) =>
   z.object({ items: z.array(item), nextCursor: z.string().nullable() });
+
+/**
+ * One R.trash row: a deleted artifact the caller may restore (POST
+ * R.restoreDeleted) until purgeAt (deletedAt + LIMITS.softDeleteDays).
+ * `space` is where it lives: the caller's personal space reads
+ * { id: personalSpaceId, name: "Personal", personal: true }.
+ */
+export const TrashItemSchema = ArtifactSummarySchema.extend({
+  deletedAt: z.string(),
+  purgeAt: z.string(),
+  space: z.object({
+    id: z.string(),
+    name: z.string(),
+    personal: z.boolean(),
+  }),
+});
+export type TrashItem = z.infer<typeof TrashItemSchema>;
+
+/** GET R.trash query: newest deletedAt first; limit 1 to 100 (default 25). */
+export const TrashQuerySchema = z.object({
+  spaceId: z.string().optional(),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+});
+export type TrashQuery = z.infer<typeof TrashQuerySchema>;
 
 export const SearchHitSchema = ArtifactSummarySchema.extend({
   snippet: z.string(),

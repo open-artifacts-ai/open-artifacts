@@ -154,6 +154,9 @@ describe("list", () => {
       (await ids(`owner=${encodeURIComponent(f.email.toUpperCase())}`)).length,
     ).toBe(2);
     expect(await ids("owner=nobody%40x.com")).toEqual([]);
+    // The literal "me" (any case) is the caller.
+    expect((await ids("owner=me")).sort()).toEqual([html.id, md.id].sort());
+    expect((await ids("owner=ME")).length).toBe(2);
     expect(await ids("visibility=public")).toEqual([]);
     expect((await ids("updatedSince=2000-01-01T00:00:00Z")).length).toBe(2);
     expect(
