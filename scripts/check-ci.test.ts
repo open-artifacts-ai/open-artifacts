@@ -73,19 +73,27 @@ describe("ci.yml", () => {
     expect(w.on.push.branches).toContain("main");
     expect("workflow_dispatch" in w.on).toBe(true);
   });
-  it("test: pull requests run the affected packages; everything else runs the full suite", () => {
+  it("test shards: server, dashboard, rest, cpu; pull requests run the affected packages, everything else the full suite", () => {
+    const job = w.jobs["test-shard"];
+    // Free plan (20 concurrent jobs): one `pr` job for pull requests, four
+    // shards on the merge queue and main.
+    expect(job.strategy.matrix.shard).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      `\${{ fromJSON(github.event_name == 'pull_request' && '["pr"]' || '["server","dashboard","rest","cpu"]') }}`,
+    );
+    expect(job.strategy["fail-fast"]).toBe(false);
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
-    const steps: any[] = w.jobs.test.steps;
+    const steps: any[] = job.steps;
     const suite = steps.find((s) => s.id === "suite");
     expect(suite.run).toBe("bash scripts/ci/test-affected.sh");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(suite.env.BASE_SHA).toBe(
       "${{ github.event.pull_request.base.sha }}",
     );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(suite.env.TEST_SHARD).toBe("${{ matrix.shard }}");
     expect(suite.if).toContain("steps.ro.outputs.release_only != 'true'");
     expect(steps.some((s) => s.run === "pnpm test")).toBe(false);
-    const cpu = steps.find((s) => (s.run ?? "").includes("test:cpu"));
-    expect(cpu.if).toContain("steps.suite.outputs.server == 'true'");
     const sh = ci("test-affected.sh");
     expect(sh).toContain(
       '[ "${GITHUB_EVENT_NAME:-}" = pull_request ] || everything',
@@ -185,7 +193,10 @@ describe("ci.yml", () => {
       "e2e",
       "authz-matrix",
     ];
-    const HEAVY = ["typecheck", "test", "build", "e2e", "authz-matrix"];
+    // `test` is an aggregate (below); its shards do the heavy work.
+    const HEAVY = ["typecheck", "test-shard", "build", "e2e", "authz-matrix"];
+    /** Required checks that aggregate a matrix job, and that job. */
+    const AGGREGATES: Record<string, string> = { test: "test-shard" };
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     type Step = any;
     const raw = read(".github/workflows/ci.yml");
@@ -197,11 +208,32 @@ describe("ci.yml", () => {
       expect(Object.keys(w.jobs)).toEqual(expect.arrayContaining(REQUIRED));
     });
     it("no required job has a job-level if or needs (a skipped job counts as passing)", () => {
-      for (const j of REQUIRED) {
+      for (const j of REQUIRED.filter((j) => !(j in AGGREGATES))) {
         expect(w.jobs[j].if, `${j} if`).toBeUndefined();
         expect(w.jobs[j].needs, `${j} needs`).toBeUndefined();
       }
+      for (const m of Object.values(AGGREGATES)) {
+        expect(w.jobs[m].if, `${m} if`).toBeUndefined();
+        expect(w.jobs[m].needs, `${m} needs`).toBeUndefined();
+      }
       expect(w.jobs.changes).toBeUndefined();
+    });
+    // The one exception, and why it can't pass by being skipped: an aggregate
+    // always runs (never skipped), and its first, ungated step fails unless
+    // every shard succeeded, so a skipped, cancelled or failed shard fails it.
+    it("each aggregate always runs, and passes only when every shard passed", () => {
+      for (const [agg, matrix] of Object.entries(AGGREGATES)) {
+        const job = w.jobs[agg];
+        expect(job.needs, agg).toBe(matrix);
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        expect(job.if, agg).toBe("${{ always() }}");
+        const [gate] = steps(agg);
+        expect(gate.if, agg).toBeUndefined();
+        expect(gate["continue-on-error"], agg).toBeUndefined();
+        expect(gate.env.SHARDS, agg).toBe(`\${{ needs.${matrix}.result }}`);
+        expect(gate.run, agg).toMatch(/^\[ "\$SHARDS" = success \]$/m);
+        expect(JSON.stringify(job), agg).not.toContain("secrets.");
+      }
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {
       for (const j of HEAVY) {

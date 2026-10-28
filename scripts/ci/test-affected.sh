@@ -1,21 +1,62 @@
 #!/usr/bin/env bash
-# The CI test job's suite. Pull requests run the root scripts suite plus only
-# the packages their diff can affect: pnpm's own `--filter ...[base]` (each
-# changed package and its dependents). That graph is complete because every
-# cross-package import is declared (scripts/ci/workspace-imports.ts check, in
-# the root suite). Every other event (the merge queue, main), a change pnpm
-# can't place (root config, lockfile, workflows, ROOT_PATHS), and any error run
-# everything (`pnpm test`).
-#   GITHUB_EVENT_NAME, BASE_SHA (the pull request's base) from the job.
-# Writes server=true|false to $GITHUB_OUTPUT (the server's CPU budgets step).
+# One shard of the CI test job (TEST_SHARD), or the whole suite when unset.
+#   server     @oa/server's suite
+#   dashboard  @oa/dashboard's suite
+#   rest       the root scripts suite and every other package
+#   cpu        the server's wall-clock CPU budgets (alone on its runner, so
+#              never under another suite's load)
+#   pr         one job for a pull request: everything above, in turn (the
+#              Free plan's 20 concurrent jobs: shards only on the merge queue
+#              and main, where waits matter most)
+# Pull requests run only the shard's share of the packages their diff can
+# affect: pnpm's own `--filter ...[base]` (changed packages and their
+# dependents; complete because every cross-package import is declared, which
+# scripts/ci/workspace-imports.ts checks in the root suite). Every other event
+# (the merge queue, main), a change pnpm can't place (root config, lockfile,
+# workflows, ROOT_PATHS), and any error run the shard's share of everything.
+#   GITHUB_EVENT_NAME, BASE_SHA (the pull request's base), TEST_SHARD.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-out="${GITHUB_OUTPUT:-/dev/null}"
+shard="${TEST_SHARD:-}"
+case "$shard" in "" | server | dashboard | rest | cpu | pr) ;; *)
+  echo "unknown TEST_SHARD ${shard}" >&2
+  exit 2
+  ;;
+esac
 
+# The shard's share of everything.
 everything() {
-  echo "server=true" >> "$out"
   echo "test scope: everything ($1)"
-  exec pnpm test
+  case "$shard" in
+    "") exec pnpm test ;;
+    pr)
+      pnpm test
+      exec pnpm --filter @oa/server test:cpu
+      ;;
+    server | dashboard)
+      pnpm run test:prep
+      exec pnpm --filter "@oa/$shard" test
+      ;;
+    rest)
+      pnpm run test:prep
+      pnpm exec vitest run
+      exec pnpm -r --if-present --filter '!@oa/server' --filter '!@oa/dashboard' test
+      ;;
+    cpu)
+      pnpm run test:prep
+      exec pnpm --filter @oa/server test:cpu
+      ;;
+  esac
+}
+
+# Is package $1 in this shard?
+mine() {
+  case "$shard" in
+    "" | pr) return 0 ;;
+    server | cpu) [ "$1" = @oa/server ] ;;
+    dashboard) [ "$1" = @oa/dashboard ] ;;
+    rest) [ "$1" != @oa/server ] && [ "$1" != @oa/dashboard ] ;;
+  esac
 }
 
 [ "${GITHUB_EVENT_NAME:-}" = pull_request ] || everything "${GITHUB_EVENT_NAME:-no event}"
@@ -32,29 +73,38 @@ if ! names="$(node -e 'const a=JSON.parse(require("fs").readFileSync(0,"utf8")||
   everything "the affected list did not parse"
 fi
 
-server=false
-count=0
+filters=()
+picked=()
 while IFS= read -r p; do
   [ -n "$p" ] || continue
-  count=$((count + 1))
-  if [ "$p" = @oa/server ]; then server=true; fi
+  if mine "$p"; then
+    picked+=("$p")
+    filters+=(--filter "$p")
+  fi
 done <<< "$names"
-echo "server=$server" >> "$out"
-echo "test scope: $count affected package(s) of the diff from $BASE_SHA"
-while IFS= read -r p; do [ -z "$p" ] || echo "  $p"; done <<< "$names"
+echo "test scope${shard:+ ($shard)}: ${#picked[@]} affected package(s) of the diff from $BASE_SHA"
+[ ${#picked[@]} -eq 0 ] || printf '  %s\n' "${picked[@]}"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
-    echo "### test: affected packages only (pull request)"
-    if [ "$count" -eq 0 ]; then
-      echo "None: the root scripts suite only."
+    echo "### test${shard:+ ($shard)}: affected packages only (pull request)"
+    if [ ${#picked[@]} -eq 0 ]; then
+      echo "None in this shard."
     else
-      while IFS= read -r p; do [ -z "$p" ] || echo "- $p"; done <<< "$names"
+      printf -- '- %s\n' "${picked[@]}"
     fi
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 
+case "$shard" in "" | rest | pr) run_root=true ;; *) run_root=false ;; esac
+if [ "$run_root" = false ] && [ ${#picked[@]} -eq 0 ]; then exit 0; fi
 pnpm run test:prep
-pnpm exec vitest run
-if [ "$count" -gt 0 ]; then
-  pnpm -r --if-present --filter "...[$BASE_SHA]" test
+if [ "$run_root" = true ]; then pnpm exec vitest run; fi
+[ ${#picked[@]} -gt 0 ] || exit 0
+if [ "$shard" = cpu ]; then
+  exec pnpm --filter @oa/server test:cpu
+fi
+pnpm -r --if-present "${filters[@]}" test
+# The pr shard also runs the CPU budgets, after the suite, when the server is affected.
+if [ "$shard" = pr ] && printf '%s\n' "${picked[@]}" | grep -qx @oa/server; then
+  exec pnpm --filter @oa/server test:cpu
 fi

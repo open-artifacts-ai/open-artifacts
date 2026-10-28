@@ -80,8 +80,18 @@ jobs:
         if: ${{ steps.ro.outputs.release_only != 'true' }}
       - run: pnpm typecheck
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-  test:
+  # Four shards (one runner each): the server, the dashboard, everything else
+  # (with the root scripts suite), and the server's CPU budgets alone. The
+  # `test` job below is the required check.
+  test-shard:
     runs-on: ubuntu-latest
+    strategy:
+      # Every shard reports, so one failure never hides another.
+      fail-fast: false
+      matrix:
+        # Free plan: 20 concurrent jobs. Pull requests run one job (pr); the
+        # merge queue and main, where the wait matters most, run four shards.
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '["pr"]' || '["server","dashboard","rest","cpu"]') }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -126,20 +136,33 @@ jobs:
         # @oa/shared first: both bundle it from its dist (`pnpm test` builds
         # it too, but only after this step).
         run: pnpm --filter @oa/shared build && pnpm --filter @oa/render --filter @oa/runtime build
-      # Pull requests: the root scripts suite plus only the packages the diff can
-      # affect (pnpm --filter ...[base]; complete because every cross-package
-      # import is declared, which the root suite checks). The script is the PR
-      # head's copy: it can narrow only this PR's check. The merge queue and
-      # main always run everything.
+      # This shard's share of the suite. Pull requests: only the packages the
+      # diff can affect (pnpm --filter ...[base]; complete because every
+      # cross-package import is declared, which the root suite checks). The
+      # script is the PR head's copy: it can narrow only this PR's check. The
+      # merge queue and main always run everything. The cpu shard (wall-clock
+      # CPU budgets) runs alone on its runner, never under another suite.
       - id: suite
-        name: Tests (pull requests, affected packages only)
+        name: Tests (this shard; pull requests, affected packages only)
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          TEST_SHARD: ${{ matrix.shard }}
         run: bash scripts/ci/test-affected.sh
-      # Wall-clock CPU budgets, serial (not under the parallel suite's load).
-      - run: pnpm --filter @oa/server test:cpu
-        if: ${{ steps.ro.outputs.release_only != 'true' && steps.suite.outputs.server == 'true' }}
+  # The required check (its name is branch protection's). Always runs, and passes
+  # only when every shard passed: a skipped, cancelled or failed shard fails it.
+  test:
+    needs: test-shard
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          SHARDS: ${{ needs.test-shard.result }}
+        run: |
+          echo "test-shard: $SHARDS"
+          [ "$SHARDS" = success ]
   # P3 T16 (#605): the server authz matrix, in parallel with `test` so total
   # wall time drops. A required check; same release-only pattern as `test`.
   authz-matrix:

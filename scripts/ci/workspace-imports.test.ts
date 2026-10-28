@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { root, sandbox, script } from "./stubs.ts";
 import {
@@ -104,56 +102,120 @@ describe("scope", () => {
 });
 
 describe("test-affected.sh", () => {
-  // pnpm stub: `ls --json` lists nothing; anything else just logs.
-  const pnpm = 'case " $* " in *" ls "*) echo "[]" ;; esac';
+  // pnpm stub: `ls --json` prints $STUB_LS (default: nothing affected); the
+  // rest only logs. HEAD...HEAD changes nothing, so scope is "affected".
+  const pnpm = 'case " $* " in *" ls "*) echo "${STUB_LS:-[]}" ;; esac';
   const run = (env: Record<string, string>) => {
     const sb = sandbox({ pnpm });
-    const out = join(sb.dir, "out");
-    // Every input explicit: the job running this test sets BASE_SHA (and the
-    // event), which must never leak in.
+    // Every input explicit: CI's own TEST_SHARD, BASE_SHA and event must
+    // never leak in from the job running this test.
     const r = sb.run(["bash", script("test-affected.sh")], {
       env: {
         GITHUB_EVENT_NAME: "",
         BASE_SHA: "",
+        TEST_SHARD: "",
+        STUB_LS: "",
         GITHUB_STEP_SUMMARY: "",
-        GITHUB_OUTPUT: out,
         ...env,
       },
     });
-    let o = "";
-    try {
-      o = readFileSync(out, "utf8");
-    } catch {}
-    return { ...r, log: sb.log(), outputs: o };
+    return { ...r, log: sb.log() };
   };
-  it("anything but a pull request runs everything", () => {
-    for (const e of ["merge_group", "push", "schedule"]) {
-      const r = run({ GITHUB_EVENT_NAME: e, BASE_SHA: "HEAD" });
-      expect(r.code).toBe(0);
-      expect(r.log).toEqual(["pnpm test"]);
-      expect(r.outputs).toBe("server=true\n");
-    }
+  const LS = "pnpm --filter ...[HEAD] ls --depth -1 --json";
+  it("anything but a pull request runs the shard's share of everything", () => {
+    const full: Record<string, string[]> = {
+      "": ["pnpm test"],
+      server: ["pnpm run test:prep", "pnpm --filter @oa/server test"],
+      dashboard: ["pnpm run test:prep", "pnpm --filter @oa/dashboard test"],
+      rest: [
+        "pnpm run test:prep",
+        "pnpm exec vitest run",
+        "pnpm -r --if-present --filter !@oa/server --filter !@oa/dashboard test",
+      ],
+      cpu: ["pnpm run test:prep", "pnpm --filter @oa/server test:cpu"],
+      pr: ["pnpm test", "pnpm --filter @oa/server test:cpu"],
+    };
+    for (const e of ["merge_group", "push", "schedule"])
+      for (const [shard, log] of Object.entries(full)) {
+        const r = run({
+          GITHUB_EVENT_NAME: e,
+          BASE_SHA: "HEAD",
+          TEST_SHARD: shard,
+        });
+        expect(r.code, `${e} ${shard}`).toBe(0);
+        expect(r.log, `${e} ${shard}`).toEqual(log);
+      }
   });
-  it("a pull request with no base, or a scope error, runs everything", () => {
-    expect(run({ GITHUB_EVENT_NAME: "pull_request" }).log).toEqual([
-      "pnpm test",
+  it("a pull request splits the affected packages across the shards", () => {
+    const STUB_LS = JSON.stringify([
+      { name: "@oa/server" },
+      { name: "@oa/landing" },
+      { name: "@oa/redline" },
     ]);
+    const pr = (TEST_SHARD: string) =>
+      run({
+        GITHUB_EVENT_NAME: "pull_request",
+        BASE_SHA: "HEAD",
+        TEST_SHARD,
+        STUB_LS,
+      }).log;
+    expect(pr("server")).toEqual([
+      LS,
+      "pnpm run test:prep",
+      "pnpm -r --if-present --filter @oa/server test",
+    ]);
+    expect(pr("cpu")).toEqual([
+      LS,
+      "pnpm run test:prep",
+      "pnpm --filter @oa/server test:cpu",
+    ]);
+    expect(pr("rest")).toEqual([
+      LS,
+      "pnpm run test:prep",
+      "pnpm exec vitest run",
+      "pnpm -r --if-present --filter @oa/landing --filter @oa/redline test",
+    ]);
+    // Not affected: the shard does nothing at all.
+    expect(pr("dashboard")).toEqual([LS]);
+    // The single pull-request job: all of them, then the CPU budgets.
+    expect(pr("pr")).toEqual([
+      LS,
+      "pnpm run test:prep",
+      "pnpm exec vitest run",
+      "pnpm -r --if-present --filter @oa/server --filter @oa/landing --filter @oa/redline test",
+      "pnpm --filter @oa/server test:cpu",
+    ]);
+  });
+  it("a pull request with nothing affected: the root suite only (rest), nothing elsewhere", () => {
+    const pr = (TEST_SHARD: string) =>
+      run({ GITHUB_EVENT_NAME: "pull_request", BASE_SHA: "HEAD", TEST_SHARD })
+        .log;
+    expect(pr("rest")).toEqual([
+      LS,
+      "pnpm run test:prep",
+      "pnpm exec vitest run",
+    ]);
+    for (const s of ["server", "dashboard", "cpu"])
+      expect(pr(s), s).toEqual([LS]);
+    // The single pull-request job: the root suite only, no CPU budgets.
+    expect(pr("pr")).toEqual([
+      LS,
+      "pnpm run test:prep",
+      "pnpm exec vitest run",
+    ]);
+  });
+  it("no base, a scope error or an unknown shard never means nothing", () => {
+    expect(
+      run({ GITHUB_EVENT_NAME: "pull_request", TEST_SHARD: "server" }).log,
+    ).toEqual(["pnpm run test:prep", "pnpm --filter @oa/server test"]);
     const bad = run({
       GITHUB_EVENT_NAME: "pull_request",
       BASE_SHA: "not-a-commit",
     });
     expect(bad.log).toEqual(["pnpm test"]);
     expect(bad.out).toContain("the scope check failed");
-  });
-  it("a pull request with nothing affected runs the root suite only", () => {
-    // HEAD...HEAD: nothing changed.
-    const r = run({ GITHUB_EVENT_NAME: "pull_request", BASE_SHA: "HEAD" });
-    expect(r.code).toBe(0);
-    expect(r.log).toEqual([
-      "pnpm --filter ...[HEAD] ls --depth -1 --json",
-      "pnpm run test:prep",
-      "pnpm exec vitest run",
-    ]);
-    expect(r.outputs).toBe("server=false\n");
+    expect(run({ GITHUB_EVENT_NAME: "push", TEST_SHARD: "servr" }).code).toBe(
+      2,
+    );
   });
 });
