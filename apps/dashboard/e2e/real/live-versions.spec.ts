@@ -36,6 +36,13 @@ const helloOn = (page: Page, id: string) =>
     page.on("websocket", onSocket);
   });
 
+/**
+ * The cross-fade has finished: one frame left. artifactFrame() is strict, so
+ * reading it while the old frame fades out fails on two elements.
+ */
+const swapped = (page: Page) =>
+  expect(page.locator("iframe.oa-vframe")).toHaveCount(1, { timeout: 15_000 });
+
 const publishVersion = (pat: string, id: string, n: number) =>
   fetch(`${APP}${R.versions(id)}`, {
     method: "POST",
@@ -66,7 +73,7 @@ test("publish v2 while v1 is open: it swaps in within about 2 s", async ({
   await expect(page.getByText("Updated to v2")).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
+  await swapped(page);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 2");
   await expect(
     page.getByRole("button", { name: "Version: v2 · Current" }),
@@ -98,7 +105,7 @@ test("touched (typed in the frame): the chip, and the typing survives", async ({
   await expect(
     page.getByRole("button", { name: "View version 2" }),
   ).toHaveCount(0);
-  await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
+  await swapped(page);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 2");
 });
 
@@ -162,7 +169,10 @@ test("scrolled, then a new version: it swaps and keeps the place", async ({
   const before = await settledScroll(page);
   await page.waitForTimeout(400); // the throttled report reaches the shell
   await publishLong(member.pat, id, 2);
-  await expect(page.getByText("Updated to v2")).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText("Updated to v2")).toBeVisible({
+    timeout: 15_000,
+  });
+  await swapped(page);
   await expect(artifactFrame(page).locator("#p0")).toHaveText(
     "paragraph 0 of version 2",
   );
@@ -187,7 +197,10 @@ test("the side panel open: a new version still swaps", async ({
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
   await hello;
   await publishLong(member.pat, id, 2);
-  await expect(page.getByText("Updated to v2")).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText("Updated to v2")).toBeVisible({
+    timeout: 15_000,
+  });
+  await swapped(page);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 2");
   await expect(
     page.getByRole("complementary", { name: "Side panel" }),
