@@ -30,6 +30,19 @@ describe("formats", () => {
       "src/Makefile",
       "Dockerfile",
       "a.json",
+      "rows.jsonl",
+      "rows.ndjson",
+      "api.proto",
+      "A.scala",
+      "Main.hs",
+      "x.pl",
+      "x.ps1",
+      "run.bat",
+      "flake.nix",
+      "paper.tex",
+      "subs.srt",
+      "subs.vtt",
+      "Cargo.lock",
     ])
       expect(inferFormat(p), p).toBe("code");
     for (const p of [

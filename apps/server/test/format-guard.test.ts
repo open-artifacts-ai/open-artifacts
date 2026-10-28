@@ -47,8 +47,12 @@ describe("inferred format", () => {
     await nothingWritten(title);
   });
 
-  it("inline content with an unknown entry is refused", async () => {
-    const r = await post({ title: "t", entry: "data.bin", content: "x" });
+  it("inline content with an unknown entry that isn't text is refused", async () => {
+    const r = await post({
+      title: "t",
+      entry: "data.bin",
+      content: "a\u0000b",
+    });
     expect(r.status).toBe(400);
     expect(await errOf(r)).toEqual({
       code: "unsupported_format",
@@ -77,13 +81,80 @@ describe("inferred format", () => {
   it("known text still infers code", async () => {
     const r = await post({ title: "t", files: { "notes.txt": "hello" } });
     expect(r.status).toBe(201);
-    const { id } = (await r.json()) as { id: string };
-    const a = (await (await api(app, R.artifact(id), owner.cookie)).json()) as {
-      format: string;
-    };
-    expect(a.format).toBe("code");
+    expect(await formatOf(r)).toEqual({ format: "code", language: "text" });
+  });
+
+  it("a text file with no extension (LICENSE) publishes as code, language text", async () => {
+    const r = await post({ title: "t", files: { LICENSE: "MIT License\n" } });
+    expect(r.status).toBe(201);
+    expect(await formatOf(r)).toEqual({ format: "code", language: "text" });
+  });
+
+  it("text under a name that implies no format (.gitignore, notes.foo) publishes as code", async () => {
+    for (const name of [".gitignore", "notes.foo"]) {
+      const r = await post({ title: "t", files: { [name]: "dist/\n" } });
+      expect(r.status, name).toBe(201);
+    }
+  });
+
+  it(".jsonl infers code", async () => {
+    const r = await post({
+      title: "t",
+      files: { "rows.jsonl": '{"a":1}\n{"a":2}\n' },
+    });
+    expect(r.status).toBe(201);
+    expect(await formatOf(r)).toEqual({ format: "code", language: "text" });
+  });
+
+  it("svg as code publishes", async () => {
+    const r = await post({
+      title: "t",
+      files: { "logo.svg": '<svg xmlns="http://www.w3.org/2000/svg"/>' },
+    });
+    expect(r.status).toBe(201);
+    expect(await formatOf(r)).toEqual({ format: "code", language: "xml" });
+  });
+
+  it("a UTF-8 BOM and an empty file are text", async () => {
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf, 0x68, 0x69]);
+    for (const [name, bytes] of [
+      ["bom.md", bom],
+      ["NOTES", bom],
+      ["empty.txt", new Uint8Array()],
+      ["EMPTY", new Uint8Array()],
+    ] as const) {
+      const r = await post({
+        title: "t",
+        files: { [name]: { base64: b64(bytes) } },
+      });
+      expect(r.status, name).toBe(201);
+    }
+  });
+
+  it("text that starts with GIF89a, %PDF or fLaC is text", async () => {
+    for (const [name, content] of [
+      ["gif.md", "GIF89a is a GIF header."],
+      ["pdf.txt", "%PDF-1.7 is how a PDF starts."],
+      ["flac.md", "fLaC is FLAC's magic."],
+      ["README", "GIF89a notes"],
+    ] as const) {
+      const r = await post({ title: "t", files: { [name]: content } });
+      expect(r.status, name).toBe(201);
+    }
   });
 });
+
+/** The created artifact's format and its current version's language. */
+async function formatOf(r: Response) {
+  const { id } = (await r.json()) as { id: string };
+  const a = (await (await api(app, R.artifact(id), owner.cookie)).json()) as {
+    format: string;
+  };
+  const [v] = (await (await api(app, R.versions(id), owner.cookie)).json()) as {
+    language: string | null;
+  }[];
+  return { format: a.format, language: v?.language ?? null };
+}
 
 const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
 
@@ -235,16 +306,86 @@ describe("entry content: uploads", () => {
     expect(await consumed(up.uploadId)).toBe(0);
   });
 
-  it("an image/jpeg upload as explicit code is refused by its content type", async () => {
+  it("an image/jpeg upload of JPEG bytes as explicit code is refused", async () => {
     const path = "photo.jpg";
     const up = await uploaded(path, new Uint8Array(JPEG), "image/jpeg");
+    await refusedUpload(path, up, "code", "binary");
+  });
+
+  it("non-text bytes declared audio/* as code are refused by their content type", async () => {
+    const path = "clip.txt";
+    const bytes = new Uint8Array([0x61, 0x00, 0x62]);
+    const up = await uploaded(path, bytes, "audio/mpeg");
     await refusedUpload(path, up, "code", "content_type");
   });
 
-  it("an octet-stream upload with an unknown name as markdown is refused", async () => {
-    const path = "notes.dat";
+  it("an uploaded text file with no extension publishes as code; binary is unsupported_format", async () => {
+    const ok = await uploaded("LICENSE", text("MIT License\n"));
+    const r = await post({
+      id: ok.artifactId,
+      title: "t",
+      files: { LICENSE: { uploadId: ok.uploadId } },
+    });
+    expect(r.status).toBe(201);
+    expect(await formatOf(r)).toEqual({ format: "code", language: "text" });
+
+    const bin = await uploaded("blob", new Uint8Array(JPEG));
+    const before = (await env.FILES.list()).objects.length;
+    const b = await post({
+      id: bin.artifactId,
+      title: "t",
+      files: { blob: { uploadId: bin.uploadId }, "x.txt": "inline" },
+    });
+    expect(b.status).toBe(400);
+    expect(await errOf(b)).toEqual({
+      code: "unsupported_format",
+      message: UNSUPPORTED_FORMAT_MESSAGE,
+      details: { path: "blob", reason: "no_viewer" },
+    });
+    expect(await consumed(bin.uploadId)).toBe(0);
+    expect((await env.FILES.list()).objects.length).toBe(before);
+  });
+
+  it("an octet-stream upload as explicit code on notes.foo publishes (no claim)", async () => {
+    const path = "notes.foo";
     const up = await uploaded(path, text("# hi"), "application/octet-stream");
-    await refusedUpload(path, up, "markdown", "content_type");
+    const r = await post({
+      id: up.artifactId,
+      title: "t",
+      format: "code",
+      files: { [path]: { uploadId: up.uploadId } },
+    });
+    expect(r.status).toBe(201);
+  });
+
+  it("a .ts upload declared video/mp2t publishes: the bytes decide", async () => {
+    const path = "main.ts";
+    const up = await uploaded(
+      path,
+      text("export const a = 1;\n"),
+      "video/mp2t",
+    );
+    const r = await post({
+      id: up.artifactId,
+      title: "t",
+      files: { [path]: { uploadId: up.uploadId } },
+    });
+    expect(r.status).toBe(201);
+    expect(await formatOf(r)).toEqual({ format: "code", language: "ts" });
+  });
+
+  it("a GIF89a-prefixed text upload is text (uploads are never empty)", async () => {
+    for (const [path, bytes] of [
+      ["gif.md", text("GIF89a, the header, explained")],
+    ] as const) {
+      const up = await uploaded(path, bytes);
+      const r = await post({
+        id: up.artifactId,
+        title: "t",
+        files: { [path]: { uploadId: up.uploadId } },
+      });
+      expect(r.status, path).toBe(201);
+    }
   });
 
   it("JPEG bytes uploaded as main.py (default type) are refused by the range read", async () => {
