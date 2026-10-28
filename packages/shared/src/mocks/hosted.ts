@@ -700,6 +700,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         findSpace(a.owner.id) ??
         (spaces[0] as SpaceRow);
       a.space = ref(s);
+      // A shared space's artifact: the signed-in caller's level there (a role,
+      // or viewer through team/public visibility), as the server's decide().
+      if (s.kind === "shared" && a.deletedAt === null) {
+        const l = levelIn(s);
+        if (l) a.access = l;
+        else if (a.visibility !== "private") a.access = "viewer";
+      }
       a.can = artifactCan(a.access, {
         personal: s.kind === "personal",
         cap: cap(),

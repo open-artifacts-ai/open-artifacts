@@ -805,6 +805,15 @@ export function hostedContract(d: ContractDriver): ContractCases {
         );
         expect(own).toMatchObject({ access: "owner", dataWriters: "editors" });
         expect((await get("Landing page")).can?.dataWrite).toBe(true);
+        // A plain viewer of a "viewers" artifact keeps data writes: Erin (org
+        // admin) is a viewer in Engineering through allMembersRole.
+        await d.signIn("erin@example.com");
+        const notes = await get("Meeting notes");
+        expect(notes).toMatchObject({
+          access: "viewer",
+          dataWriters: "viewers",
+        });
+        expect(notes.can?.dataWrite).toBe(true);
       },
     );
   });
