@@ -41,6 +41,10 @@ export type AuthConfig = {
   problems: string[];
 };
 
+/** Me.instance.signIn.problems when email codes run with no Turnstile keys (self-host). */
+export const NO_BOT_CHECK =
+  "Sign-in codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.";
+
 const PROVIDERS: readonly SignInProvider[] = ["access", "google", "email"];
 const CODE_EMAILS_DEFAULT = 200;
 const CODE_EMAILS_MAX = 10_000;
@@ -211,6 +215,18 @@ function build(env: Env): AuthConfig {
     problems.push(
       "Email sign-in is on, but sending email isn't set up (EMAIL and EMAIL_FROM), so sign-in codes aren't offered. Set up email sending, or turn email sign-in off.",
     );
+
+  // A4: Turnstile stays optional on self-host, but codes without it let bots
+  // spend the install's email quota, so owners hear about it. Hosted already
+  // refuses codes without Turnstile (routes/codes.ts): no warning there.
+  if (
+    providers.has("email") &&
+    canSend &&
+    env.HOSTED !== "1" &&
+    !nonEmpty(env.TURNSTILE_SITE_KEY) &&
+    !nonEmpty(env.TURNSTILE_SECRET)
+  )
+    problems.push(NO_BOT_CHECK);
 
   return {
     providers,
