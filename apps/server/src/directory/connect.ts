@@ -764,6 +764,7 @@ export async function directoryStatus(
     alertedAt: h.alertedAt,
     customerMismatch: h.customerMismatch,
     held: h.held,
+    liftsPaused: binding ? h.liftsPaused : [],
     pendingCount: pending ? pending.count : null,
     pendingCountCapped: pending ? pending.capped : false,
     pendingExpiresAt: pending ? new Date(pending.exp).toISOString() : null,

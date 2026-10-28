@@ -522,6 +522,38 @@ describe("review fixes (P3 T6)", () => {
     ]);
   });
 
+  it("a guest who is a space member keeps their account when their last share goes (item 18)", async () => {
+    const sharer = await mk("st-sm-sharer");
+    const by = await asMember(sharer.userId);
+    const g = await mk("st-sm-guest", "guest");
+    const gEmail = (await asMember(g.userId)).email;
+    const pat = await createPat(env, g.userId, "t");
+    const sid = await sharedSpace();
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'viewer', 'sync', 1)",
+    )
+      .bind(sid, g.userId)
+      .run();
+    const a = newId();
+    await insertArtifact(a, sharer.userId, sharer.userId);
+    await putShare(env, by, a, { email: gEmail, role: "viewer" });
+    await deleteShare(env, by, a, gEmail);
+    expect(await status(g.userId)).toBe("active");
+    expect(await auditsFor(g.userId, "user.status")).toEqual([]);
+    const tok = await one<{ n: number }>(
+      "select count(*) n from tokens where id = ?",
+      pat.id,
+    );
+    expect(tok?.n).toBe(1);
+    // Out of the space too, the next lapse removes them as before.
+    await env.DB.prepare("delete from space_members where user_id = ?")
+      .bind(g.userId)
+      .run();
+    await putShare(env, by, a, { email: gEmail, role: "viewer" });
+    await deleteShare(env, by, a, gEmail);
+    expect(await status(g.userId)).toBe("removed");
+  });
+
   it("no PAT is created for a user suspended after the request's user read", async () => {
     const u = await mk("st-pat-race");
     // After the policy gate's session read, before the handler's insert.

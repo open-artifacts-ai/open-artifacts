@@ -66,6 +66,26 @@ describe("decide: decision table rows", () => {
       "manager",
     ],
     [
+      "4 deleted shared, org admin without a manager role, allowDeleted",
+      with_({
+        caller: { id: ME, orgRole: "admin" },
+        artifact: { ...base.artifact, deleted: true },
+        spaceRole: "viewer",
+        allowDeleted: true,
+      }),
+      null,
+    ],
+    [
+      "3 deleted shared, org admin self-added as manager, allowDeleted",
+      with_({
+        caller: { id: ME, orgRole: "admin" },
+        artifact: { ...base.artifact, deleted: true },
+        spaceRole: "manager",
+        allowDeleted: true,
+      }),
+      "manager",
+    ],
+    [
       "4 deleted own personal without allowDeleted",
       with_({ artifact: personal(ME, { deleted: true }) }),
       null,
@@ -434,20 +454,26 @@ describe("can", () => {
   };
   it("agrees with the contract's artifactCan on its seven actions", () => {
     const caps: (CapReason | null)[] = [null, "guest", "restricted"];
+    // Undefined dataWriters: "editors" on both sides (fail closed).
     for (const level of LEVELS)
       for (const personal of [true, false])
-        for (const cap of caps) {
-          const mine = Object.fromEntries(
-            ARTIFACT_ACTIONS.map((a) => [
-              a,
-              // artifactCan describes the default, dataWriters "viewers".
-              can(level, SEVEN[a], { cap, personal, dataWriters: "viewers" }),
-            ]),
-          );
-          expect(mine, `${level} personal=${personal} cap=${cap}`).toEqual(
-            artifactCan(level, { personal, cap }),
-          );
-        }
+        for (const cap of caps)
+          for (const dataWriters of [
+            "viewers",
+            "editors",
+            undefined,
+          ] as const) {
+            const mine = Object.fromEntries(
+              ARTIFACT_ACTIONS.map((a) => [
+                a,
+                can(level, SEVEN[a], { cap, personal, dataWriters }),
+              ]),
+            );
+            expect(
+              mine,
+              `${level} personal=${personal} cap=${cap} dataWriters=${dataWriters}`,
+            ).toEqual(artifactCan(level, { personal, cap, dataWriters }));
+          }
   });
 });
 

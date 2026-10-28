@@ -346,6 +346,10 @@ export const artifacts = sqliteTable(
     index("artifacts_space_live_idx")
       .on(t.spaceId)
       .where(sql`${t.deletedAt} is null`),
+    // A shared space's trash (R.trash), newest deleted first.
+    index("artifacts_space_deleted_idx")
+      .on(t.spaceId, t.deletedAt)
+      .where(sql`${t.deletedAt} is not null`),
     check(
       "artifacts_allow_anon_check",
       sql`${t.allowAnonymousWrites} in (0, 1)`,

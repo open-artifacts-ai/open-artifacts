@@ -269,10 +269,13 @@ export async function deleteShare(
   );
 }
 
-// Every statement re-checks "still a guest, still no share" itself, so the
-// batch is atomic against a concurrent promotion or putShare.
+// Every statement re-checks "still a guest, still no share, still in no
+// space" itself, so the batch is atomic against a concurrent promotion,
+// putShare or space grant. A guest who holds a space role (the API or
+// directory sync added them) keeps their account when their last share goes
+// (review item 18).
 const UNSHARED_GUEST =
-  "email = ?1 AND role = 'guest' AND NOT EXISTS (SELECT 1 FROM shares WHERE email = ?1)";
+  "email = ?1 AND role = 'guest' AND NOT EXISTS (SELECT 1 FROM shares WHERE email = ?1) AND NOT EXISTS (SELECT 1 FROM space_members sm WHERE sm.user_id = users.id)";
 const GUEST_ID = "select id from users where email = ? and role = 'guest'";
 const DEACTIVATE_GUEST = `UPDATE users SET status = 'removed', guest_lapsed = 1, status_changed_at = ?2,
    session_epoch = session_epoch + 1

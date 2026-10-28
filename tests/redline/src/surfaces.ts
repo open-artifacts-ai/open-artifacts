@@ -55,6 +55,8 @@ export interface World {
   artifactId: string;
   /** The admin's private personal artifact (the side's marker). */
   personalId: string;
+  /** A deleted artifact in the world space, in the trash (R.trash's probe). */
+  trashedId: string;
   /** The shared space holding `artifactId`. */
   spaceId: string;
   /** Plain member test users (the space probes' member, editor and peer manager). */
@@ -118,6 +120,13 @@ const CELLS = [
     art: "personalPrivate",
     artifact: "personalId",
     fresh: "artifact-personal",
+  },
+  // Last, so only what no live cell allows (the trash listing) lands here.
+  {
+    who: "spaceManager",
+    art: "deletedSpace",
+    artifact: "trashedId",
+    fresh: "artifact-space",
   },
 ] as const;
 
@@ -684,6 +693,9 @@ export function worldSpaces(testDomain: string): {
   return out;
 }
 const WORLD_TITLE = "test-redline-world";
+const TRASH_TITLE = "test-redline-trash";
+/** Reuse a trashed probe artifact only while it is this fresh: well inside the 30-day purge. */
+const TRASH_REUSE_MS = 20 * 86_400_000;
 const GUARD_TITLE = "test-redline-guard";
 
 /** A member test user's id (fixed address; the session hook creates it once). */
@@ -753,6 +765,27 @@ async function fixedArtifact(
 }
 
 /**
+ * A deleted artifact in `spaceId` for the trash probe: the newest one
+ * titled TRASH_TITLE still well inside the purge window, else a new one
+ * deleted now (older ones purge on their own, so at most two a month).
+ */
+async function trashedArtifact(side: Side, spaceId: string): Promise<string> {
+  const q = `/api/v1/trash?spaceId=${encodeURIComponent(spaceId)}&limit=100`;
+  const page = (await api(side.t, side.pat, "GET", q)) as {
+    items?: { id: string; title?: string; deletedAt?: string }[];
+  };
+  const hit = page.items?.find(
+    (a) =>
+      a.title === TRASH_TITLE &&
+      Date.now() - Date.parse(a.deletedAt ?? "") < TRASH_REUSE_MS,
+  );
+  if (hit) return hit.id;
+  const id = await newArtifact(side, TRASH_TITLE, spaceId);
+  await api(side.t, side.pat, "DELETE", `/api/v1/artifacts/${id}`);
+  return id;
+}
+
+/**
  * Seeds what the probes need on `side`'s install (the WORLD of
  * apps/server/test/authz/expect.ts, for the admin test user), reusing the
  * same state every run:
@@ -798,12 +831,14 @@ export async function seedWorld(side: Side): Promise<World> {
     type: "image/webp",
   });
   await resetData(side, id);
+  const trashedId = await trashedArtifact(side, WORLD_SPACE);
   const got = (await api(t, pat, "GET", A)) as { space?: { id?: unknown } };
   if (got.space?.id !== WORLD_SPACE)
     throw new Error(`${t.name}: the probe artifact is not in the world space`);
   return {
     artifactId: id,
     personalId: side.markerId,
+    trashedId,
     spaceId: WORLD_SPACE,
     users,
     org: {

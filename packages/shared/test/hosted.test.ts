@@ -409,7 +409,9 @@ describe("hosted contract schemas", () => {
   });
 
   it("artifactCan follows the action table", () => {
-    expect(artifactCan("viewer", { personal: false })).toEqual({
+    expect(
+      artifactCan("viewer", { personal: false, dataWriters: "viewers" }),
+    ).toEqual({
       edit: false,
       share: false,
       setVisibility: false,
@@ -432,6 +434,25 @@ describe("hosted contract schemas", () => {
     });
     expect(
       artifactCan("viewer", { personal: false, cap: "restricted" }).dataWrite,
+    ).toBe(false);
+    // #681: dataWriters "editors" takes data writes from viewers only.
+    const dw = (
+      level: "viewer" | "editor" | "owner",
+      d?: "editors" | "viewers",
+    ) => artifactCan(level, { personal: true, dataWriters: d }).dataWrite;
+    expect(dw("viewer", "editors")).toBe(false);
+    expect(dw("viewer", "viewers")).toBe(true);
+    // Left out: "editors" (fail closed), as the server's can().
+    expect(dw("viewer")).toBe(false);
+    expect(dw("editor")).toBe(true);
+    expect(dw("editor", "editors")).toBe(true);
+    expect(dw("owner", "editors")).toBe(true);
+    expect(
+      artifactCan("owner", {
+        personal: true,
+        cap: "guest",
+        dataWriters: "viewers",
+      }).dataWrite,
     ).toBe(false);
   });
 

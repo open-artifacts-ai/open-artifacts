@@ -136,6 +136,7 @@ describe("authz-probe", () => {
       "mcp unshare_artifact",
       "mcp set_visibility",
       "mcp delete_artifact",
+      "mcp undelete_artifact",
       "mcp artifact_data_set",
       "mcp artifact_data_update",
       "mcp artifact_data_delete",

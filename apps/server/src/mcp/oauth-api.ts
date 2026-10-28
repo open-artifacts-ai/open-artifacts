@@ -6,6 +6,7 @@ import {
 } from "@cloudflare/workers-oauth-provider";
 import { MCP_PATH } from "@oa/shared";
 import type { Env } from "../env.js";
+import { logWarn } from "../log.js";
 import { mcpResource } from "./server.js";
 
 // The provider's configuration and its helpers, without the MCP handler, so
@@ -54,6 +55,14 @@ export function providerOptions(
         statusCode: 429,
         headers: { "retry-after": "60", "cache-control": "no-store" },
       });
+    },
+    // #769: a refresh with a token that is neither the grant's current nor
+    // its previous one (refresh_token_mismatch: a client replaying an old
+    // token, or two refreshing at once). The event only: never the token,
+    // the client secret or who it was.
+    onError: ({ internal }) => {
+      if (internal?.reason === "refresh_token_mismatch")
+        logWarn("oauth_refresh_mismatch");
     },
     resourceMetadata: {
       resource,

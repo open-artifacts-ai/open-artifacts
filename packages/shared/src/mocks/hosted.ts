@@ -405,6 +405,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     pendingCountCapped: false,
     pendingExpiresAt: null,
     pendingCustomerChange: null,
+    liftsPaused: [],
     held:
       directoryMode === "google"
         ? [
@@ -460,6 +461,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       alertedAt: null,
       customerMismatch: null,
       held: [],
+      liftsPaused: [],
       pendingCount: null,
       pendingCountCapped: false,
       pendingExpiresAt: null,
@@ -545,6 +547,37 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     const all =
       u && u.role !== "guest" && !restrictionOf(u.id) ? s.allMembersRole : null;
     return maxRole(r?.manualRole, r?.syncRole, all);
+  };
+  /** Shared-space artifacts the signed-in caller has no level on (refresh). */
+  const hidden = new Set<string>();
+  /**
+   * decide() for a live artifact in shared space `s`, as the caller: a
+   * manager role; else the better of their space role and share; else team
+   * visibility for uncapped members; else public; else none. A cap lowers any
+   * level to viewer.
+   */
+  const sharedLevel = (a: ArtifactSummary, s: SpaceRow): AccessLevel | null => {
+    const capped = cap() !== null;
+    const member = me.user.role !== "guest";
+    const role = roleIn(s);
+    const share =
+      c.shares[a.id]?.find(
+        (x) => x.email.toLowerCase() === me.user.email.toLowerCase(),
+      )?.role ?? null;
+    let l: AccessLevel | null;
+    if (role === "manager") l = "manager";
+    else {
+      const best = maxRole(role, share);
+      l =
+        best === "editor" || best === "viewer"
+          ? best
+          : a.visibility === "team" && member && !capped
+            ? "viewer"
+            : a.visibility === "public"
+              ? "viewer"
+              : null;
+    }
+    return l && capped ? "viewer" : l;
   };
   const ref = (s: SpaceRow): SpaceRef => ({
     id: s.id,
@@ -720,19 +753,33 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         findSpace(a.owner.id) ??
         (spaces[0] as SpaceRow);
       a.space = ref(s);
+      // A shared space's live artifact: the caller's level, decide()'s order
+      // (never a stale access); none hides it (404, unlisted).
+      if (s.kind === "shared" && a.deletedAt === null) {
+        const l = sharedLevel(a, s);
+        if (l) {
+          a.access = l;
+          hidden.delete(a.id);
+        } else hidden.add(a.id);
+      }
       a.can = artifactCan(a.access, {
         personal: s.kind === "personal",
         cap: cap(),
+        dataWriters: a.dataWriters,
       });
     }
   };
 
   // Seed: "Meeting notes" in Engineering, where the caller is manager.
+  // (refresh recomputes every shared-space level per caller: sharedLevel.)
   const notes = artifacts.find((a) => a.title === "Meeting notes");
   if (notes) {
     notes.space = ref(findSpace(ENG) as SpaceRow);
     notes.access = "manager";
   }
+  // Bob's "Onboarding guide" (the caller is a viewer): data writes are editors-only.
+  const guide = artifacts.find((a) => a.title === "Onboarding guide");
+  if (guide) guide.dataWriters = "editors";
   refresh();
 
   // ---- code flow state -----------------------------------------------------
@@ -1371,7 +1418,10 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           return err("space_personal", "Personal spaces can't be deleted");
         if (!isAdmin()) return notFound();
         if (artifacts.some((a) => a.space?.id === s.id))
-          return err("space_not_empty", "Move or delete its artifacts first");
+          return err(
+            "space_not_empty",
+            "Move or delete its artifacts first. Deleted artifacts count until the trash clears them, 30 days after deletion.",
+          );
         spaces.splice(spaces.indexOf(s), 1);
         log("space.delete", { type: "space", id: s.id }, s.id);
         return noContent();
@@ -1927,6 +1977,20 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     | ((space: { id: string; kind: string } | null | undefined) => boolean)
     | null => {
     if (scope === "spaces") return (sp) => sp?.kind === "shared";
+    if (scope === "mine" && spaceId !== undefined) {
+      const sp = findSpace(spaceId);
+      if (!sp) return notFound();
+      if (sp.kind === "personal" && sp.id !== me.user.id)
+        return err("space_personal", "Pick a shared space");
+      if (sp.kind === "shared" && !roleIn(sp)) return notFound();
+      if (sp.id !== me.user.id)
+        return err(
+          "bad_request",
+          'scope "mine" is the personal space; use owner=me',
+          { path: "spaceId", reason: "invalid" },
+        );
+      return null;
+    }
     if (scope !== "space") return null;
     const sp = findSpace(spaceId);
     if (!sp) return notFound();
@@ -1935,6 +1999,34 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     // No role there: 404, as an unknown id (no existence oracle).
     if (sp.kind === "shared" && !roleIn(sp)) return notFound();
     return (a) => a?.id === spaceId;
+  };
+
+  /**
+   * R.trash's shared part: a refusal for `spaceId`, or which artifacts'
+   * spaces the caller manages (uncapped manager or org admin), as the row's
+   * `space` (null: not a managed shared space; the caller's personal trash is
+   * the core handler's).
+   */
+  const trashScope = (
+    spaceId: string | undefined,
+  ):
+    | Response
+    | ((a: ArtifactSummary) => {
+        id: string;
+        name: string;
+        personal: false;
+      } | null) => {
+    const manages = (s: SpaceRow | undefined) =>
+      !!s && s.kind === "shared" && cap() === null && roleIn(s) === "manager";
+    if (spaceId !== undefined && spaceId !== me.user.id) {
+      if (!manages(findSpace(spaceId))) return notFound();
+    }
+    return (a) => {
+      const s = findSpace(a.space?.id);
+      if (!s || !manages(s)) return null;
+      if (spaceId !== undefined && s.id !== spaceId) return null;
+      return { id: s.id, name: s.name, personal: false };
+    };
   };
 
   /**
@@ -1980,6 +2072,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   return {
     handlers,
     refresh,
+    trashScope,
+    /** No level for the signed-in caller: 404 and unlisted (sharedLevel). */
+    hidden: (id: string) => hidden.has(id),
     shareRecipient,
     signInMethods,
     checkPublish,

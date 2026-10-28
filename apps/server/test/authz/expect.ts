@@ -198,6 +198,8 @@ export type SurfaceAction =
   | PolicyAction
   /** Appears in list or search results. */
   | "list"
+  /** Appears in the trash listing (R.trash): deleted and the caller may undelete it. */
+  | "trash"
   /** /p/: served to anyone while public and live, whoever asks. */
   | "public.link"
   /** Not artifact-scoped: any caller who reaches the surface at all. */
@@ -259,6 +261,7 @@ export function expected(
   if (via === "mcp" && !t.mcp) return "deny";
   if (action === "reach") return "allow";
   const writer = t.session && !t.capped;
+  if (action === "trash") return yes(a.deleted && writer && isFull(level));
   if (a.deleted) return yes(action === "undelete" && writer && isFull(level));
   if (level === null) return "deny";
   if (action === "list")

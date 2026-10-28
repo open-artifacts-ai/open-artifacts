@@ -108,7 +108,13 @@ export const canOf = (
   a: ArtifactSummary,
   feats: FeatureFlag[],
 ): ArtifactCan => {
-  const can = a.can ?? artifactCan(a.access, { personal: true, cap: null });
+  const can =
+    a.can ??
+    artifactCan(a.access, {
+      personal: true,
+      cap: null,
+      dataWriters: a.dataWriters,
+    });
   return feats.includes("spaces")
     ? can
     : { ...can, move: false, transfer: false };

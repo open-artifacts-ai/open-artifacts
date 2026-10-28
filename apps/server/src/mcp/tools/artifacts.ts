@@ -22,6 +22,7 @@ import {
   readVersionFile,
   restoreVersion,
   softDelete,
+  undelete,
 } from "../../services/artifacts.js";
 import { search } from "../../services/search.js";
 import { deleteShare, putShare } from "../../services/shares.js";
@@ -249,9 +250,19 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       guard(async () => {
         await softDelete(env, user, input.id);
         return ok(
-          `Deleted ${input.id}; restore it from the dashboard within 30 days: ${appOrigin(env)}/`,
+          `Deleted ${input.id}. Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days: ${appOrigin(env)}/`,
           { id: input.id, deleted: true },
         );
+      }),
+  );
+
+  server.registerTool(
+    "undelete_artifact",
+    toolConfig("undelete_artifact"),
+    (input) =>
+      guard(async () => {
+        const a = await undelete(env, user, input.id);
+        return ok(`Restored "${a.title}" (${a.id}): ${viewUrl(env, a.id)}`, a);
       }),
   );
 }

@@ -9,6 +9,7 @@ import {
   PublishInputSchema,
   R,
   TransferArtifactInputSchema,
+  TrashQuerySchema,
 } from "@oa/shared";
 import type { Context } from "hono";
 import { authorize, caller, callerOf, requireUser } from "../auth/authz.js";
@@ -43,6 +44,7 @@ import {
   transferArtifact,
 } from "../services/spaces.js";
 import { thumbnailType } from "../services/thumbs.js";
+import { listTrash } from "../services/trash.js";
 import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
 
@@ -149,6 +151,15 @@ export function mountArtifacts(app: AppType): void {
     if (!q.success)
       throw new ApiError("bad_request", "Invalid query", q.error.issues);
     return c.json(await list(c.env, callerOf(user), q.data));
+  });
+
+  // P4 item 9: what the caller may restore (services/trash.ts).
+  app.get(R.trash, async (c) => {
+    const user = requireUser(c);
+    const q = TrashQuerySchema.safeParse(c.req.query());
+    if (!q.success)
+      throw new ApiError("bad_request", "Invalid query", q.error.issues);
+    return c.json(await listTrash(c.env, callerOf(user), q.data));
   });
 
   app.get(ARTIFACT, async (c) =>

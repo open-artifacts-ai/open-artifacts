@@ -62,7 +62,7 @@ describe("MCP auth: PAT", () => {
     const u = await login(`auth-rev-${tag}@x.com`);
     const { id, token } = await createPat(env, u.userId, "rev");
     const c = await connect(token);
-    expect((await c.listTools()).tools.length).toBe(18);
+    expect((await c.listTools()).tools.length).toBe(19);
     await c.close();
     await env.DB.prepare("update tokens set revoked_at = ? where id = ?")
       .bind(Date.now(), id)
@@ -335,7 +335,7 @@ describe("MCP auth: OAuth", () => {
       modern: true,
       clientInfo: { name: "self-reported", version: "4.5.6" },
     });
-    expect((await c.listTools()).tools).toHaveLength(18);
+    expect((await c.listTools()).tools).toHaveLength(19);
     const pub = (
       await tool(c, "publish_artifact", {
         title: "oauth",
@@ -593,6 +593,84 @@ describe("MCP auth: fix round 1", () => {
     expect(
       ((await r.json()) as { error: { message: string } }).error.message,
     ).toBe("Only members can connect agents");
+  });
+
+  it("a restricted member's PAT is refused on REST too, the same rule as /mcp (item 34)", async () => {
+    const m = await login(`pat-rest-restricted-${tag}@x.com`);
+    const { token } = await createPat(env, m.userId, "r");
+    expect((await api(app, R.me, token)).status).toBe(200);
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(m.userId)
+      .run();
+    // A refused bearer is no one (no cookie fallback): 401 on REST.
+    expect((await api(app, R.me, token)).status).toBe(401);
+    expect((await api(app, R.artifacts, token)).status).toBe(401);
+    // Lifted, the same PAT works again (restriction never revoked it).
+    await env.DB.prepare("update users set restricted_manual = 0 where id = ?")
+      .bind(m.userId)
+      .run();
+    expect((await api(app, R.me, token)).status).toBe(200);
+  });
+
+  it("a refresh with a stale refresh token logs oauth_refresh_mismatch, and nothing secret (#769)", async () => {
+    const { refreshToken, clientId } = await oauthToken(
+      `oauth-rtm-${tag}@x.com`,
+    );
+    // Same grant, wrong secret: the provider's refresh_token_mismatch.
+    const [userId, grantId] = refreshToken.split(":");
+    const stale = `${userId}:${grantId}:${"x".repeat(32)}`;
+    const lines: string[] = [];
+    const spies = (["log", "warn", "error"] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(" "));
+      }),
+    );
+    try {
+      const refresh = (token: string) =>
+        callWorker(
+          new Request(`${APP}/oauth/token`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/x-www-form-urlencoded",
+              "cf-connecting-ip": "203.0.113.77",
+            },
+            body: new URLSearchParams({
+              grant_type: "refresh_token",
+              refresh_token: token,
+              client_id: clientId,
+            }).toString(),
+          }),
+        );
+      const r = await refresh(stale);
+      expect(r.status).toBe(400);
+      expect(await r.json()).toMatchObject({
+        error: "invalid_grant",
+        error_description: "Invalid refresh token",
+      });
+      const evts = lines.flatMap((l) => {
+        try {
+          return [JSON.parse(l) as Record<string, unknown>];
+        } catch {
+          return [];
+        }
+      });
+      expect(evts.filter((x) => x.evt === "oauth_refresh_mismatch")).toEqual([
+        { evt: "oauth_refresh_mismatch" },
+      ]);
+      for (const l of lines) {
+        expect(l).not.toContain(grantId);
+        expect(l).not.toContain(userId);
+        expect(l).not.toContain(clientId);
+      }
+      // A good refresh logs no mismatch.
+      lines.length = 0;
+      expect((await refresh(refreshToken)).status).toBe(200);
+      expect(lines.some((l) => l.includes("oauth_refresh_mismatch"))).toBe(
+        false,
+      );
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
   });
 
   it("demotion to guest revokes the user's OAuth grants and PATs", async () => {
