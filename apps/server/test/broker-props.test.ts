@@ -903,6 +903,28 @@ describe("review fixes", () => {
     expect(await inDo((s) => s.storage.getAlarm())).toBeNull();
   });
 
+  it("P2.5 #15: a reconnect waiting for confirm keeps feeding (and syncing) the live binding", async () => {
+    const t0 = Date.now();
+    await connected(t0);
+    const r = await connect(
+      e,
+      owner.cookie,
+      g,
+      { sub: adminSub },
+      {
+        confirm: false,
+      },
+    );
+    expect(r.consented).toBe(true);
+    // The DO's token is gone (evicted): the next due lane wants one.
+    box = new TokenBox();
+    clock = t0 + FAST_MS;
+    expect(
+      await withBrokerProps({ props: hostedProps() }, () => feedSync(e)),
+    ).toBe("fed");
+    expect(await alarms(t0 + FAST_MS)).toBe("done");
+  });
+
   it("L5: a token or fault held for another binding is never used", async () => {
     const t0 = Date.now();
     await connected(t0);

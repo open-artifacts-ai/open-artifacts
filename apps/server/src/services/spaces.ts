@@ -554,12 +554,28 @@ export async function deleteSpace(
         args: [id, id, id],
       },
     }),
+    // Gated as the delete below, before its cascade drops the mappings:
+    // the rows of groups only this space maps go (as DROP_UNTARGETED), so
+    // mapping one elsewhere never grants from frozen rows (P2.5 #17).
+    stmt(
+      env.DB,
+      `delete from directory_members
+        where group_id in (select group_id from group_mappings where space_id = ?)
+          and not exists (select 1 from group_mappings gm
+            where gm.group_id = directory_members.group_id and gm.space_id <> ?)
+          and not exists (select 1 from org_group_mappings o
+            where o.group_id = directory_members.group_id)
+          and not exists (select 1 from restricted_groups rg
+            where rg.group_id = directory_members.group_id)
+          and exists (select 1 from spaces where id = ? and kind = 'shared')
+          and ${empty}`,
+    ).bind(id, id, id, id, id),
     stmt(
       env.DB,
       `delete from spaces where id = ? and kind = 'shared' and ${empty}`,
     ).bind(id, id, id),
   ]);
-  if (!out[1]?.meta.changes) {
+  if (!out[2]?.meta.changes) {
     // Gone meanwhile (a concurrent delete): 404, not 409.
     const still = await stmt(
       env.DB,
@@ -687,8 +703,11 @@ function toSpaceMember(
   detail: boolean,
 ): SpaceMember | null {
   const manualRole = knownRole(r.manualRole);
+  // Only the groups that grant syncRole (contract): a per-space mapping
+  // grants through the sync row, so with none (a frozen override removed
+  // or replaced it) its groups grant nothing here.
   const groups = [
-    ...groupsOf(r.spaceGroups, "space"),
+    ...groupsOf(r.syncRow === null ? null : r.spaceGroups, "space"),
     ...groupsOf(r.everyGroups, "every"),
   ];
   // Per-space groups are expanded into the sync row; Every-space ones are
@@ -1208,14 +1227,28 @@ async function notifyManagers(
 // as the reconcile does, so the change applies now and not at the next sync.
 const RESYNC_DELETE = `delete from space_members where space_id = ?1 and source = 'sync'
   and user_id in (select user_id from directory_members where group_id = ?2)`;
+// Never a removed user (as apply.ts SYNC_ADD): a directory deletion keeps
+// its directory_members rows, and a mapping must not hand them a row.
 const RESYNC_INSERT = `insert into space_members (space_id, user_id, role, source, created_at)
   select ?1, dm.user_id,
     case max(case gm.role when 'manager' then 3 when 'editor' then 2 when 'viewer' then 1 else 0 end)
       when 3 then 'manager' when 2 then 'editor' else 'viewer' end,
     'sync', ?3
   from directory_members dm join group_mappings gm on gm.group_id = dm.group_id and gm.space_id = ?1
+  join users u on u.id = dm.user_id and u.status <> 'removed'
   where dm.user_id in (select user_id from directory_members where group_id = ?2)
   group by dm.user_id`;
+/**
+ * A group that is no longer a target (mapped per space or Every space, or
+ * restricted) loses its directory_members rows: sync stops reading it, so
+ * they would go stale, and a later mapping would grant access from them.
+ * Mapped again, it starts empty until sync reads it (P2.5 #17). Runs after
+ * every statement that still reads them (the re-derive, the revoke list).
+ */
+export const DROP_UNTARGETED = `delete from directory_members where group_id = ?1
+  and not exists (select 1 from group_mappings where group_id = ?1)
+  and not exists (select 1 from org_group_mappings where group_id = ?1)
+  and not exists (select 1 from restricted_groups where group_id = ?1)`;
 // Active members only (the others hold no socket), most recently seen first.
 // At most ?2 rows (revokeUsersLive's cap plus one), as ALL_MEMBERS.
 const GROUP_MEMBERS = `select u.id from directory_members dm join users u on u.id = dm.user_id
@@ -1411,6 +1444,7 @@ export async function deleteSpaceMapping(
     stmt(env.DB, RESYNC_INSERT).bind(id, groupId, Date.now()),
     stmt(env.DB, GROUP_MEMBERS).bind(groupId, revokeFanoutCap(env) + 1),
     stmt(env.DB, MAP_ROLE).bind(id, groupId),
+    stmt(env.DB, DROP_UNTARGETED).bind(groupId),
   ]);
   if (!out[1]?.meta.changes) {
     // Refused (raced to a manager mapping, non-admin) or already gone.
@@ -1535,6 +1569,7 @@ export async function deleteOrgMapping(
       groupId,
     ),
     stmt(env.DB, GROUP_MEMBERS).bind(groupId, revokeFanoutCap(env) + 1),
+    stmt(env.DB, DROP_UNTARGETED).bind(groupId),
   ]);
   if (!out[1]?.meta.changes) throw notFound();
   await revokeUsersLive(env, idsOf(out[2]), "every-space mapping removed", ctx);
@@ -1643,6 +1678,7 @@ export async function deleteRestrictedGroup(
       groupId,
     ),
     stmt(env.DB, RESTRICTED_SYNC_FOR_GROUP).bind(groupId),
+    stmt(env.DB, DROP_UNTARGETED).bind(groupId),
   ]);
   if (!out[1]?.meta.changes) throw notFound();
 }

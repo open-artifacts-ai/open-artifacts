@@ -28,6 +28,7 @@ import {
   VersionInfoSchema,
 } from "@oa/shared";
 import {
+  keepPreviousData,
   type QueryClient,
   useInfiniteQuery,
   useMutation,
@@ -41,6 +42,7 @@ import {
   DirectoryGroupSchema,
   GroupMappingSchema,
   RestrictedGroupSchema,
+  SpaceCandidateSchema,
   type SpaceCreateInput,
   SpaceMemberSchema,
   SpaceMembersPageSchema,
@@ -90,6 +92,9 @@ export const qk = {
   spaceMembers: (id: string) => ["spaces", id, "members"] as const,
   spaceMemberList: (id: string, q: string, group: string) =>
     ["spaces", id, "members", { q, group }] as const,
+  /** Under spaceMembers, so a role change refreshes who's already here. */
+  spaceCandidates: (id: string, q: string) =>
+    ["spaces", id, "members", "candidates", q] as const,
   spaceMappings: (id: string) => ["spaces", id, "mappings"] as const,
   directory: ["directory"] as const,
   restrictedGroups: ["directory", "restricted"] as const,
@@ -497,6 +502,19 @@ export const useSpaceMembers = (
         signal,
       ),
     getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+/** Add people's search: org members a manager of the space may add (first page; typing narrows it). */
+export const useSpaceCandidates = (id: string, q: string, enabled = true) =>
+  useQuery({
+    enabled: enabled && q.trim().length > 0,
+    queryKey: qk.spaceCandidates(id, q.trim()),
+    queryFn: ({ signal }) =>
+      api.get(
+        withQuery(R.spaceCandidates(id), { q: q.trim(), limit: 20 }),
+        PageSchema(SpaceCandidateSchema),
+        signal,
+      ),
+    placeholderData: keepPreviousData,
   });
 /** The People card shows member refusals by the row, and snaps the role back. */
 const memberInline = (e: ApiClientError) =>

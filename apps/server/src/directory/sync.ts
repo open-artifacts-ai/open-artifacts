@@ -10,10 +10,11 @@ import { logError, logInfo, logWarn } from "../log.js";
 import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
 import { setUserStatus } from "../services/members.js";
+import { RESTRICTED_SYNC_CASE } from "../services/restriction.js";
 import { directoryMode } from "../services/spaces.js";
 import { alertOwners } from "./alert.js";
 import { applyGroupDiff, applyUsers } from "./apply.js";
-import { bindPage } from "./binding.js";
+import { bindPage, retireTenant } from "./binding.js";
 import { directoryClient } from "./client.js";
 import { directoryStatus } from "./connect.js";
 import {
@@ -38,7 +39,7 @@ import {
   putInitial,
   readBinding,
   readInitial,
-  readPending,
+  readRetire,
 } from "./store.js";
 import { type PendingRevokes, thawFrozenEdits } from "./thaw.js";
 import { type DirectoryClient, TransportError } from "./transport.js";
@@ -208,6 +209,12 @@ type Run = {
   reasons: KickReason[];
   /** User-event addresses still to re-read (past USER_EVENTS_PER_PAGE). */
   userKeys: string[];
+  /**
+   * Targets this run read whole, each with when its read began: the finish
+   * recompute lowers restricted_sync only once every restricted group is
+   * here, and only for users created before the earliest such read.
+   */
+  read?: [string, number][];
 };
 
 /** What a step did: its status, whether it called Google, its commit. */
@@ -300,6 +307,13 @@ const chunks = <T>(xs: T[], n: number): T[][] => {
 const TARGETS = `select group_id from group_mappings
   union select group_id from org_group_mappings
   union select group_id from restricted_groups`;
+/**
+ * Rows of groups that are no longer targets (an unmapping the route's own
+ * DROP_UNTARGETED missed, a space deleted with its mappings): nothing reads
+ * them for access, and a later mapping must not start from them.
+ */
+const PRUNE_UNTARGETED = `delete from directory_members
+  where group_id not in (${TARGETS})`;
 const GROUP_IDS_BY_EMAIL = `select group_id from directory_groups
   where email in (select value from json_each(?1))`;
 /**
@@ -339,8 +353,38 @@ const SYNCED_PAGE = `select u.id from identities i join users u on u.id = i.user
     and u.id > ?1
     and (select value from directory_state where key = 'sync.state') = 'customer_mismatch'
   order by u.id limit ?2`;
+/**
+ * RESTRICTED_ALL lifts only users created this long before the earliest
+ * restricted-group read: users.created_at is stamped by whichever isolate
+ * wrote the row, so a hire stamped a little before the read began by a
+ * slower clock still isn't lifted from rows that predate them.
+ */
+export const CREATED_SKEW_MS = 5 * 60_000;
 /** DO kv: the last user id whose sockets the customer_mismatch close signalled. */
 const CLOSE_KEY = "mismatch.close";
+/**
+ * restricted_sync recomputed for every user after a reconcile read the
+ * groups (P2.5 #5): derived state follows directory_members and
+ * restricted_groups, whoever the diffs touched, so a new hire created
+ * restricted (fail closed, binding.ts CREATE_USERS) and in no restricted
+ * group is lifted. Raising always applies. Lowering (a lift) applies only
+ * when this run read every restricted group whole (?1: [group, began]
+ * pairs; a group restricted after the run planned, or one read partially,
+ * refused or held, blocks every lift), and only to users created before the
+ * earliest of those reads (a hire created since, by the fast lane or
+ * sign-in, may be in a group whose rows predate them), less ?3
+ * (CREATED_SKEW_MS). ?2: the bound when no
+ * restricted group exists. Returns the users whose flag changed.
+ */
+const RESTRICTED_ALL = `update users set restricted_sync = ${RESTRICTED_SYNC_CASE}
+  where restricted_sync <> ${RESTRICTED_SYNC_CASE}
+    and (${RESTRICTED_SYNC_CASE} = 1 or (
+      not exists (select 1 from restricted_groups rg where rg.group_id not in
+        (select json_extract(j.value, '$[0]') from json_each(?1) j))
+      and users.created_at < coalesce((select min(json_extract(j.value, '$[1]'))
+        from json_each(?1) j join restricted_groups rg
+          on rg.group_id = json_extract(j.value, '$[0]')) - ?3, ?2)))
+  returning id, restricted_sync as r`;
 
 /** A reset() landed since this alarm started: it writes nothing more. */
 class StaleSignal extends Error {
@@ -700,6 +744,14 @@ export class SyncEngine {
       await this.applyReset(this.ep);
       if (!this.fresh()) return now;
     }
+    // A tenant change a confirm didn't finish (binding.ts retireTenant):
+    // before anything syncs, in any mode, so no success lifts the
+    // customer_mismatch tombstone while the old users are still bound.
+    const retire = await readRetire(this.env);
+    if (retire) {
+      await retireTenant(this.env, retire, this.ctx);
+      if (!this.fresh()) return now;
+    }
     // Socket closes a thaw still owes, first, in any mode.
     await this.retryOwed();
     // A customer_mismatch close still paging (T18): one page per alarm,
@@ -713,15 +765,13 @@ export class SyncEngine {
     }
     const mode = directoryMode(this.env);
     const client = directoryClient(this.env);
-    const [{ binding, sealed }, pending] = await Promise.all([
-      readBinding(this.env),
-      readPending(this.env),
-    ]);
+    const { binding, sealed } = await readBinding(this.env);
     // Nothing to sync (off, unbound, no transport): stop until kicked. Runs
-    // in flight are kept; they resume when sync is back.
+    // in flight are kept; they resume when sync is back. A first connect
+    // waiting for its owner has no live binding, so nothing syncs until the
+    // confirm; a reconnect waiting for one keeps syncing (and enforcing) the
+    // live binding until the confirm swaps it (P2.5 #15).
     if (mode === "off" || !client || !binding || !sealed) return null;
-    // A consent waiting for its owner: nothing syncs until confirm or cancel.
-    if (pending) return now + FAST_MS;
     if (!this.fresh()) return now;
     const groups = mode === "google";
     // Hosted with no token in hand: stop cleanly before planning anything
@@ -1106,6 +1156,9 @@ export class SyncEngine {
       case "walk":
         return this.walk(run, step, token);
       case "finish": {
+        // Frozen (groups false) never recomputes: no group is read, so the
+        // flags stay as the last sync left them (fail closed; P3 T15).
+        if (run.lane === "rec" && groups) await this.recomputeRestricted(run);
         await this.succeed(run, now, groups);
         return { status: "done", called: false };
       }
@@ -1236,9 +1289,11 @@ export class SyncEngine {
     pairs: { origin: string; target: string }[];
   }> {
     if (all) {
-      const { results } = await stmt(this.env.DB, TARGETS).all<{
-        group_id: string;
-      }>();
+      this.guard();
+      const [, { results }] = await this.env.DB.batch<{ group_id: string }>([
+        stmt(this.env.DB, PRUNE_UNTARGETED),
+        stmt(this.env.DB, TARGETS),
+      ]);
       return { ids: results.map((r) => r.group_id), dirty: [], pairs: [] };
     }
     const dirty = this.sql
@@ -1498,6 +1553,16 @@ export class SyncEngine {
     }
     const wouldRemove = removed.length;
     if (hold) removed = [];
+    // Read whole: the finish recompute may lower flags from its rows
+    // (RESTRICTED_ALL). A 404 counts only when the group is known gone
+    // (DELETE_GROUP this run) or the owner confirmed its removal: a
+    // transient 404 on a group with no rows yet must lift nobody.
+    const gone = !hold && (run.deletedGroups.includes(email) || confirmOk);
+    if (!w.partial && (!w.missing || gone))
+      run.read = [
+        ...(run.read ?? []).filter(([g]) => g !== w.target),
+        [w.target, w.startedAt ?? run.startedAt],
+      ];
     await this.apply(w.target, added, removed, pre);
     // Released: a sweep that read the whole group and held nothing (or a
     // readable group that was surfaced as unreadable).
@@ -1586,6 +1651,34 @@ export class SyncEngine {
       now: this.now,
       ctx: this.ctx,
     });
+  }
+
+  /**
+   * The reconcile's full restricted_sync recompute (RESTRICTED_ALL); the
+   * newly capped lose their live sockets.
+   */
+  private async recomputeRestricted(run: Run) {
+    this.guard();
+    const { results } = await stmt(this.env.DB, RESTRICTED_ALL)
+      .bind(
+        JSON.stringify(run.read ?? []),
+        Number.MAX_SAFE_INTEGER,
+        CREATED_SKEW_MS,
+      )
+      .all<{ id: string; r: number }>();
+    const capped = results.filter((x) => x.r === 1).map((x) => x.id);
+    if (results.length)
+      logInfo("directory_restricted_recomputed", {
+        changed: results.length,
+        capped: capped.length,
+      });
+    // Never guarded: the update committed.
+    await revokeUsersLive(
+      this.env,
+      capped,
+      "directory restriction recomputed",
+      this.ctx,
+    );
   }
 
   // ------------------------------------------------------------ health

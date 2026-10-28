@@ -18,12 +18,20 @@ import { directoryClient } from "./client.js";
 // - "connect.pending": the one connect in flight, {h: sha256(state), u, exp},
 //   consumed by its callback (single use);
 // - "connect.confirm": a consent waiting for its owner, {u, exp, count,
-//   capped}; T13 must not sync while it exists;
+//   capped}. While it exists with no live binding (a first connect),
+//   nothing syncs; a reconnect keeps syncing and enforcing the live binding
+//   until confirm swaps it (P2.5 #15);
 // - "binding.initial": the initial binding pass, {done, cursor} (T13
 //   continues a pass whose cursor is set);
 // - "binding.prior": {customerId, domain} of the binding a disconnect
 //   during customer_mismatch removed, kept with the sync.state tombstone
-//   until a new binding replaces both (health.ts clearHealth).
+//   until a new binding replaces both (health.ts clearHealth);
+// - "tenant.retire": the previous customer id while a confirm that swapped
+//   in another Workspace still owes retiring its users (binding.ts
+//   retireTenant); the sync.state tombstone stays until it is done;
+// - "tenant.retired": the users that change has suspended so far (JSON
+//   array), so a retry still revokes the grants and closes the sockets of
+//   those an earlier, interrupted attempt suspended.
 
 export const K = {
   binding: "binding",
@@ -35,6 +43,8 @@ export const K = {
   confirm: "connect.confirm",
   initial: "binding.initial",
   prior: "binding.prior",
+  retire: "tenant.retire",
+  retired: "tenant.retired",
 } as const;
 
 export const UPSERT = `insert into directory_state (key, value) values (?, ?)
@@ -109,7 +119,21 @@ export type PendingConfirm = {
   s?: string;
 };
 
-export async function readPending(env: Env): Promise<PendingConfirm | null> {
+/**
+ * The consent waiting for confirmation, or null when there is none or it is
+ * past its exp (lazily deleted by expirePending, the daily cron, or the
+ * next status read). readPendingAny also returns an expired one.
+ */
+export async function readPending(
+  env: Env,
+  now = Date.now(),
+): Promise<PendingConfirm | null> {
+  const p = await readPendingAny(env);
+  return p && p.exp > now ? p : null;
+}
+
+/** The consent row as stored, expired or not (expiry and revokes need it). */
+export async function readPendingAny(env: Env): Promise<PendingConfirm | null> {
   const row = await stmt(
     env.DB,
     "select value from directory_state where key = ?",
@@ -244,7 +268,7 @@ export async function expirePending(
 ): Promise<boolean> {
   const [{ sealed }, p] = await Promise.all([
     readBinding(env, "pending"),
-    readPending(env),
+    readPendingAny(env),
   ]);
   const out = await env.DB.batch([
     audit(
@@ -339,9 +363,10 @@ export async function revokeAtGoogle(
 
 /**
  * Every directory_state key (binding, tokens, pending consent, grant.sub,
- * the initial pass, health and sync.state), returning what it deleted. One
- * exception: sync.state = customer_mismatch stays as a tombstone, so synced
- * users stay denied after a disconnect (health.ts MISMATCH_TOMBSTONE).
+ * the initial pass, health and sync.state), returning what it deleted. Two
+ * exceptions: sync.state = customer_mismatch stays as a tombstone, so synced
+ * users stay denied after a disconnect (health.ts MISMATCH_TOMBSTONE), and
+ * an unfinished tenant.retire stays until the old users are retired.
  */
 export const wipeState = (env: Env, guard?: SqlGuard) =>
   stmt(
@@ -349,6 +374,7 @@ export const wipeState = (env: Env, guard?: SqlGuard) =>
     `delete from directory_state
       where not (
         (key = 'sync.state' and value = 'customer_mismatch')
+        or key in ('${K.retire}', '${K.retired}')
         or (key = ?1 and ${TOMBSTONED}))${guard ? ` and ${guard.sql}` : ""}
       returning key, value`,
   ).bind(K.prior, ...(guard?.args ?? []));
@@ -408,6 +434,17 @@ export async function liveSub(env: Env): Promise<string | null> {
     "select value from directory_state where key = ?",
   )
     .bind(K.grantSub)
+    .first<{ value: string }>();
+  return row?.value ?? null;
+}
+
+/** The previous customer id a tenant change still owes retiring, or null. */
+export async function readRetire(env: Env): Promise<string | null> {
+  const row = await stmt(
+    env.DB,
+    "select value from directory_state where key = ?",
+  )
+    .bind(K.retire)
     .first<{ value: string }>();
   return row?.value ?? null;
 }

@@ -24,6 +24,7 @@ import {
   normalizeCode,
   PublishInputSchema,
   parseFeatures,
+  parseTier,
   R,
   SearchQuerySchema,
   SettingsPatchSchema,
@@ -219,6 +220,14 @@ describe("hosted contract schemas", () => {
       "usage_off",
     ]);
     expect(TEST_HOOKS_ALLOWED).toBe(false);
+  });
+
+  it("parseTier: the three tiers (trimmed), else null", () => {
+    for (const t of ["trial", "team", "business"] as const)
+      expect(parseTier(t)).toBe(t);
+    expect(parseTier(" team ")).toBe("team");
+    for (const v of [undefined, "", "Team", "enterprise", "team,business"])
+      expect(parseTier(v)).toBeNull();
   });
 
   it("TIER_FEATURES: settable flags only; Team swaps sync_google for sync_frozen; directoryModeOf", () => {

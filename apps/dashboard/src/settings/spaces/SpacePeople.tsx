@@ -4,7 +4,7 @@
 // raises (PUT sets the manual row; the highest role wins); Remove only where a
 // manual role exists; frozen sync lets kept rows be edited and removed. People
 // reached only through All members aren't rows, so they aren't listed.
-import type { Member, SpaceMember, SpaceRole } from "@oa/shared";
+import type { SpaceMember, SpaceRole } from "@oa/shared";
 import { displayName } from "@oa/ui";
 import {
   Badge,
@@ -18,12 +18,12 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
 import { ApiClientError } from "../../api/client";
-import type { Space } from "../../api/contract";
+import type { Restriction, Space, SpaceCandidate } from "../../api/contract";
 import {
   qk,
   useDeleteSpaceMember,
-  useMembers,
   usePutSpaceMember,
+  useSpaceCandidates,
   useSpaceMappings,
   useSpaceMembers,
 } from "../../api/queries";
@@ -98,7 +98,7 @@ const MANAGER_ONLY = "Only an admin can change another manager's access.";
 const reason = (
   m: SpaceMember,
   frozen: boolean,
-  restricted: Member["restriction"] | undefined,
+  restricted: Restriction | null | undefined,
 ) => {
   if (m.status !== "active") {
     const lead =
@@ -157,7 +157,7 @@ function PersonRow({
   admin: boolean;
   you: boolean;
   frozen: boolean;
-  restricted: Member["restriction"] | undefined;
+  restricted: Restriction | null | undefined;
 }) {
   const qc = useQueryClient();
   const put = usePutSpaceMember(space.id);
@@ -381,42 +381,47 @@ const ROLE_HELP: Record<SpaceRole, string> = {
   manager: "Can also add people and change roles.",
 };
 
-/** Add people: org members only (guests come in by link); one PUT each. */
+/**
+ * Add people: org members only (guests come in by link), searched through
+ * R.spaceCandidates (open to the space's managers, not only admins); one PUT each.
+ */
 function AddPeople({
   space,
   admin,
   orgName,
-  here,
   onClose,
 }: {
   space: Space;
   admin: boolean;
   orgName: string;
-  here: SpaceMember[];
   onClose: () => void;
 }) {
-  const members = useMembers();
   const put = usePutSpaceMember(space.id);
   const [q, setQ] = useState("");
-  const [picked, setPicked] = useState<Member[]>([]);
+  const [term, setTerm] = useState("");
+  // Debounced: the search follows the typing, not every key.
+  useEffect(() => {
+    const t = setTimeout(() => setTerm(q), 250);
+    return () => clearTimeout(t);
+  }, [q]);
+  const members = useSpaceCandidates(space.id, term);
+  const [picked, setPicked] = useState<SpaceCandidate[]>([]);
   const [role, setRole] = useState<SpaceRole>("viewer");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(-1);
   const id = useId();
   const roles = admin ? ALL_ROLES : ALL_ROLES.filter((r) => r !== "manager");
-  const needle = q.trim().toLowerCase();
-  const found = (members.data ?? []).filter(
-    (m) =>
-      m.role !== "guest" &&
-      (m.status ?? "active") === "active" &&
-      !picked.some((p) => p.id === m.id) &&
-      needle.length > 0 &&
-      ((m.name ?? "").toLowerCase().includes(needle) ||
-        m.email.toLowerCase().includes(needle)),
-  );
-  const already = (m: Member) => here.find((h) => h.userId === m.id);
-  const pick = (m: Member) => {
+  // The server only returns active org members; hide the picked ones, and
+  // anything left over from before the box was cleared.
+  const found =
+    q.trim() === ""
+      ? []
+      : (members.data?.items ?? []).filter(
+          (m) => !picked.some((p) => p.id === m.id),
+        );
+  const already = (m: SpaceCandidate) => m.spaceRole;
+  const pick = (m: SpaceCandidate) => {
     if (already(m)) return;
     setPicked((p) => [...p, m]);
     setQ("");
@@ -458,10 +463,7 @@ function AddPeople({
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button
-            disabled={busy || members.isError}
-            onClick={() => void submit()}
-          >
+          <Button disabled={busy} onClick={() => void submit()}>
             {picked.length === 0 ? "Add" : `Add ${people(picked.length)}`}
           </Button>
         </>
@@ -492,86 +494,86 @@ function AddPeople({
               ))}
             </ul>
           )}
-          {members.isError ? (
+          <div className="relative">
+            <Input
+              role="combobox"
+              aria-labelledby={`${id}-people`}
+              aria-expanded={found.length > 0}
+              aria-controls={`${id}-list`}
+              aria-autocomplete="list"
+              aria-activedescendant={
+                active >= 0 && found[active] ? `${id}-o${active}` : undefined
+              }
+              placeholder={`Search people at ${orgName}`}
+              value={q}
+              autoComplete="off"
+              onChange={(e) => {
+                setQ(e.target.value);
+                setActive(-1);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  if (!found.length) return;
+                  const step = e.key === "ArrowDown" ? 1 : -1;
+                  setActive((i) => (i + step + found.length) % found.length);
+                } else if (e.key === "Enter" && found[active]) {
+                  e.preventDefault();
+                  pick(found[active]);
+                }
+              }}
+            />
+            {found.length > 0 && (
+              <div
+                id={`${id}-list`}
+                role="listbox"
+                aria-labelledby={`${id}-people`}
+                className="absolute inset-x-0 top-[calc(100%+4px)] z-20 max-h-[220px] overflow-y-auto rounded-md border border-border bg-popover p-[var(--oa-space-1)] shadow-md"
+              >
+                {found.map((m, i) => {
+                  const h = already(m);
+                  return (
+                    // Keyboard lives on the combobox (aria-activedescendant).
+                    // biome-ignore lint/a11y/useKeyWithClickEvents: see above
+                    <div
+                      key={m.id}
+                      id={`${id}-o${i}`}
+                      role="option"
+                      tabIndex={-1}
+                      aria-selected={i === active}
+                      aria-disabled={h ? true : undefined}
+                      className="flex cursor-pointer items-center gap-[var(--oa-space-2)] rounded-sm px-[var(--oa-space-2)] py-[6px] aria-disabled:cursor-default aria-disabled:opacity-60 aria-selected:bg-accent hover:bg-accent"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => pick(m)}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <b className="block font-medium">{displayName(m)}</b>
+                        <small className={`block ${muted}`}>
+                          {m.email}
+                          {h && ` · Already here as ${ROLE_LABEL[h]}`}
+                        </small>
+                      </span>
+                      {m.restriction && (
+                        <Badge
+                          variant="outline"
+                          className="border-transparent bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]"
+                        >
+                          Restricted
+                        </Badge>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          {/* Under the box, so the typed search stays for Retry. */}
+          {members.isError && (
             <LoadError
               title="Couldn't load the people you can add."
               error={members.error}
               onRetry={() => void members.refetch()}
             />
-          ) : (
-            <div className="relative">
-              <Input
-                role="combobox"
-                aria-labelledby={`${id}-people`}
-                aria-expanded={found.length > 0}
-                aria-controls={`${id}-list`}
-                aria-autocomplete="list"
-                aria-activedescendant={
-                  active >= 0 && found[active] ? `${id}-o${active}` : undefined
-                }
-                placeholder={`Search people at ${orgName}`}
-                value={q}
-                autoComplete="off"
-                onChange={(e) => {
-                  setQ(e.target.value);
-                  setActive(-1);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                    e.preventDefault();
-                    if (!found.length) return;
-                    const step = e.key === "ArrowDown" ? 1 : -1;
-                    setActive((i) => (i + step + found.length) % found.length);
-                  } else if (e.key === "Enter" && found[active]) {
-                    e.preventDefault();
-                    pick(found[active]);
-                  }
-                }}
-              />
-              {found.length > 0 && (
-                <div
-                  id={`${id}-list`}
-                  role="listbox"
-                  aria-labelledby={`${id}-people`}
-                  className="absolute inset-x-0 top-[calc(100%+4px)] z-20 max-h-[220px] overflow-y-auto rounded-md border border-border bg-popover p-[var(--oa-space-1)] shadow-md"
-                >
-                  {found.map((m, i) => {
-                    const h = already(m);
-                    return (
-                      // Keyboard lives on the combobox (aria-activedescendant).
-                      // biome-ignore lint/a11y/useKeyWithClickEvents: see above
-                      <div
-                        key={m.id}
-                        id={`${id}-o${i}`}
-                        role="option"
-                        tabIndex={-1}
-                        aria-selected={i === active}
-                        aria-disabled={h ? true : undefined}
-                        className="flex cursor-pointer items-center gap-[var(--oa-space-2)] rounded-sm px-[var(--oa-space-2)] py-[6px] aria-disabled:cursor-default aria-disabled:opacity-60 aria-selected:bg-accent hover:bg-accent"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => pick(m)}
-                      >
-                        <span className="min-w-0 flex-1">
-                          <b className="block font-medium">{displayName(m)}</b>
-                          <small className={`block ${muted}`}>
-                            {m.email}
-                            {h && ` · Already here as ${ROLE_LABEL[h.role]}`}
-                          </small>
-                        </span>
-                        {m.restriction && (
-                          <Badge
-                            variant="outline"
-                            className="border-transparent bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]"
-                          >
-                            Restricted
-                          </Badge>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
           )}
         </div>
         <fieldset className="grid gap-[var(--oa-space-2)] border-0 p-0">
@@ -645,7 +647,6 @@ export function SpacePeople({
   }, [q]);
   const list = useSpaceMembers(space.id, { q: term, group });
   const everyone = useSpaceMembers(space.id, {}, term !== "" || group !== "");
-  const members = useMembers();
   const mappings = useSpaceMappings(space.id);
   const rows = [...(list.data?.pages.flatMap((p) => p.items) ?? [])].sort(
     order,
@@ -653,8 +654,6 @@ export function SpacePeople({
   const total = list.data?.pages[0]?.total ?? 0;
   const allTotal =
     term || group ? (everyone.data?.pages[0]?.total ?? 0) : total;
-  const restriction = (userId: string) =>
-    members.data?.find((m) => m.id === userId)?.restriction;
   const filtered = mappings.data?.find((g) => g.groupId === group);
 
   return (
@@ -720,13 +719,6 @@ export function SpacePeople({
           Couldn't load people. Try again.
         </p>
       )}
-      {members.isError && (
-        <LoadError
-          title="Couldn't check who is restricted."
-          error={members.error}
-          onRetry={() => void members.refetch()}
-        />
-      )}
       <ul className="grid p-0">
         {rows.map((m) => (
           <PersonRow
@@ -736,7 +728,7 @@ export function SpacePeople({
             admin={admin}
             you={m.userId === meId}
             frozen={frozen}
-            restricted={restriction(m.userId)}
+            restricted={m.restriction}
           />
         ))}
       </ul>
@@ -760,7 +752,6 @@ export function SpacePeople({
           space={space}
           admin={admin}
           orgName={orgName}
-          here={rows}
           onClose={() => setAdding(false)}
         />
       )}
