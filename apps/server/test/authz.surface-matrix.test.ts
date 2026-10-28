@@ -52,6 +52,7 @@ import {
   ORG_WRITES,
   type OrgTarget,
   PROBE_SHARE_EMAIL,
+  type ProbeIO,
   PUBLIC_ROUTES,
   SPACE_SURFACES,
   type SpaceTarget,
@@ -391,10 +392,13 @@ describe("directory disconnect: cookie sessions only, plus the platform system j
 
 /**
  * Option C (#839): red-line and scripts/authz-probe.ts run the instance
- * write probes in refusal mode against a live world. Run every one, as
- * every caller, with this world's target and with a red-line-shaped one (no
- * spaceMemberId or groupId), and prove the world space S gained no member
- * row and no audit row: refusal mode writes nothing there.
+ * write probes in refusal mode against a live world (the "no-directory"
+ * ones included: red-line runs them). Run every one, as every caller, with
+ * this world's target and with a red-line-shaped one (no spaceMemberId or
+ * groupId), and prove nothing was written: the world space S gained no
+ * member row, and no audit row was written anywhere but the owner's broker
+ * check (POST admin/broker-check audits each run). Every route must have
+ * sent at least one write request, counted at the fetch.
  */
 describe("refusal mode writes nothing on the world space", () => {
   it(
@@ -416,26 +420,44 @@ describe("refusal mode writes nothing on the world space", () => {
         memberId: target.memberId,
         departedId: target.departedId,
       };
-      let sent = 0;
+      const routes = ORG_SURFACES.filter(
+        (s) => !s.route.startsWith("GET ") && s.realOnly !== true && !s.mutates,
+      );
+      // Write requests that reached the Worker, per route (GET R.me for
+      // the caller's own id doesn't count).
+      const sent: Record<string, number> = Object.fromEntries(
+        routes.map((s) => [s.route, 0]),
+      );
       for (const t of [target, redline])
         await Promise.all(
-          ORG_SURFACES.filter(
-            (s) => !s.route.startsWith("GET ") && !s.realOnly && !s.mutates,
-          ).flatMap((s) =>
+          routes.flatMap((s) =>
             CALLERS.map(async (who) => {
-              sent++;
-              // A verdict or a refusal to send: neither may write on S.
-              await s.probe(BASE, w.creds[who], t, io).catch(() => "error");
+              const counted: ProbeIO = {
+                ...io,
+                fetch: (req) => {
+                  if (req.method !== "GET")
+                    sent[s.route] = (sent[s.route] ?? 0) + 1;
+                  return io.fetch?.(req) as Promise<Response>;
+                },
+              };
+              // A verdict or a refusal to send: neither may write.
+              await s
+                .probe(BASE, w.creds[who], t, counted)
+                .catch(() => "error");
             }),
           ),
         );
-      expect(sent).toBeGreaterThan(0);
+      expect(
+        Object.entries(sent)
+          .filter(([, n]) => n === 0)
+          .map(([r]) => r),
+      ).toEqual([]);
       expect(await members()).toEqual(before);
       const audit = (
         await env.DB.prepare(
-          "select action, target_id from audit_events where at >= ? and (space_id = ? or target_id = ?)",
+          "select action, target_id, space_id from audit_events where at >= ? and action <> 'auth.broker_check'",
         )
-          .bind(since, S, S)
+          .bind(since)
           .all()
       ).results;
       expect(audit).toEqual([]);
