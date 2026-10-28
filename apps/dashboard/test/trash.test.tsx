@@ -231,7 +231,7 @@ it("a failed listing is a load error with Retry, never an empty Trash", async ()
 });
 
 // A member who manages Engineering and only views Exec (#792: a shared
-// space's trash is its managers' and the org admins').
+// space's trash is its managers', by space role only).
 const asMemberManager = (m: Me): Me => ({
   ...m,
   user: { ...m.user, role: "member" },
@@ -259,16 +259,13 @@ it("a member's space filter lists Personal and the spaces they manage, and sends
   );
 });
 
-it("an org admin's space filter lists every shared space", async () => {
+it("an org admin's filter is by space role too: Exec, where they only view, isn't listed", async () => {
   mountHosted("/trash", true, undefined, trashApi(ROWS));
   await screen.findByText("Q3 planning board");
   fireEvent.click(screen.getByRole("combobox", { name: "Space" }));
-  const names = (await screen.findAllByRole("option")).map(
-    (o) => o.textContent,
-  );
-  expect(names.slice(0, 2)).toEqual(["All spaces", "Personal"]);
-  // Exec, where the owner only views, is listed too.
-  expect(names).toEqual(expect.arrayContaining(["Engineering", "Exec"]));
+  expect(
+    (await screen.findAllByRole("option")).map((o) => o.textContent),
+  ).toEqual(["All spaces", "Personal", "Engineering"]);
 });
 
 it("Load more: the next page is asked for with the cursor", async () => {

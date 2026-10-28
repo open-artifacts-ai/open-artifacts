@@ -17,11 +17,10 @@ import {
   TooltipTrigger,
 } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { TrashItem } from "../api/contract";
-import { useRestoreDeleted, useSpaces, useTrash } from "../api/queries";
+import { useRestoreDeleted, useTrash } from "../api/queries";
 import { useHosted } from "../auth/permissions";
-import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
@@ -180,26 +179,10 @@ export function Trash() {
   const items = uniqueItems(q.data?.pages);
   const sentinel = useSentinel(q);
   const now = Date.now();
-  // The spaces whose trash the caller sees: Personal, those they manage, and
-  // for an uncapped org owner or admin every shared space (#792).
-  const me = useMe();
-  const admin =
-    me.status === "authed" &&
-    (me.me.user.role === "owner" || me.me.user.role === "admin") &&
-    !me.me.auth?.cap;
-  const every = useSpaces({ kind: "shared" }, spacesOn && admin);
-  // Every shared space, not only the first page (a failed page stops here).
-  useEffect(() => {
-    if (every.hasNextPage && !every.isFetching && !every.isError)
-      void every.fetchNextPage();
-  }, [every]);
-  const byId = new Map<string, string>();
-  for (const s of spaces)
-    if (s.kind === "shared" && s.myRole === "manager") byId.set(s.id, s.name);
-  for (const s of every.data?.pages.flatMap((p) => p.items) ?? [])
-    byId.set(s.id, s.name);
-  const managed = [...byId]
-    .map(([id, name]) => ({ id, name }))
+  // The spaces whose trash the caller sees: Personal and those they manage.
+  // By space role only: an org admin has no trash power of their own (#792).
+  const managed = spaces
+    .filter((s) => s.kind === "shared" && s.myRole === "manager")
     .sort((a, b) => a.name.localeCompare(b.name));
   const options = [
     { value: ALL, label: "All spaces" },
