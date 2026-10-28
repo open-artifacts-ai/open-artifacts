@@ -27,6 +27,7 @@ import {
   withSpace,
 } from "./artifacts.js";
 import type { ManifestEntry } from "./manifest.js";
+import { imageThumbnail } from "./thumbs.js";
 
 /**
  * The FTS5 table (migration 0000; kept out of schema.ts so drizzle-kit leaves
@@ -247,7 +248,8 @@ export const INDEX_INPUT_BYTES = LIMITS.indexTextBytes;
  * Indexable text of an entry, at most LIMITS.searchBodyChars, with SNIPPET_MARK
  * characters stripped. html: markup stripped, script/style/noscript/template
  * and comment content dropped, entities decoded, whitespace collapsed;
- * markdown/code: raw; pdf: "" (the viewer extracts and PUTs it).
+ * markdown/code: raw; pdf: "" (the viewer extracts and PUTs it); image: ""
+ * (an image is searched by its title and description only, never its bytes).
  * A stream is read until the output reaches the cap, INDEX_INPUT_BYTES bytes
  * have been read (the chunk crossing it is truncated there) or MAX_SKIPS
  * comments/skipped elements were opened, then cancelled; at most
@@ -262,7 +264,7 @@ export async function extractText(
   body: ReadableStream | string,
 ): Promise<string> {
   const cap = LIMITS.searchBodyChars;
-  if (format === "pdf") {
+  if (format === "pdf" || format === "image") {
     if (typeof body !== "string") await body.cancel().catch(() => {});
     return "";
   }
@@ -344,7 +346,14 @@ export async function indexVersionOrThrow(
   if (!row || row.cv !== version) return;
   let body = "";
   const pdf = row.format === "pdf";
-  if (pdf) {
+  const entry = (JSON.parse(row.manifest) as ManifestEntry[]).find(
+    (e) => e.path === row.entry,
+  );
+  if (row.format === "image") {
+    // Title and description only: the bytes are never read as text. The
+    // thumbnail comes from the image itself (bounded, best-effort).
+    if (entry) await imageThumbnail(env, artifactId, version, entry);
+  } else if (pdf) {
     if (row.text_indexed === 1) {
       const old = await env.DB.prepare(
         "select body from artifact_search where rowid = ?",
@@ -354,9 +363,6 @@ export async function indexVersionOrThrow(
       body = old?.body ?? "";
     }
   } else {
-    const entry = (JSON.parse(row.manifest) as ManifestEntry[]).find(
-      (e) => e.path === row.entry,
-    );
     // Only the first INDEX_INPUT_BYTES are read: ask R2 for no more.
     const obj = entry
       ? await env.FILES.get(

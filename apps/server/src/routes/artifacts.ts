@@ -42,6 +42,7 @@ import {
   requireSpaces,
   transferArtifact,
 } from "../services/spaces.js";
+import { thumbnailType } from "../services/thumbs.js";
 import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
 
@@ -324,7 +325,8 @@ export function mountArtifacts(app: AppType): void {
     const body = await readThumbnail(c.env, caller(c), idParam(c));
     return new Response(body.body, {
       headers: {
-        "Content-Type": "image/webp",
+        // webp, or an image artifact's own PNG, JPEG or GIF (never SVG).
+        "Content-Type": thumbnailType(body.httpMetadata?.contentType),
         "Content-Length": String(body.size),
         "X-Content-Type-Options": "nosniff",
         "Cache-Control": "private, no-store",
