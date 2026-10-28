@@ -15,6 +15,7 @@ import { directorySignIn } from "../src/directory/signin.js";
 import { readPending, readPendingAny } from "../src/directory/store.js";
 import {
   BACKOFF_MAX_MS,
+  CREATED_SKEW_MS,
   FAST_MS,
   RECONCILE_MS,
   SyncEngine,
@@ -1541,10 +1542,13 @@ describe("P2.5 #5: restricted_sync is recomputed for everyone on each reconcile"
     // Created by the fast lane or a sign-in while the read is in flight: it
     // may be in the group, and the rows read predate it.
     const late = await hireAt("rs-race-late", at + 1);
-    const early = await hireAt("rs-race-early", at - 1);
+    // Within the clock-skew margin before the read: not lifted either.
+    const skewed = await hireAt("rs-race-skew", at - CREATED_SKEW_MS + 1);
+    const early = await hireAt("rs-race-early", at - CREATED_SKEW_MS - 1);
     gate.release();
     await run;
     expect(await restrictedOf(late)).toBe(1);
+    expect(await restrictedOf(skewed)).toBe(1);
     expect(await restrictedOf(early)).toBe(0);
   });
 
@@ -1559,6 +1563,7 @@ describe("P2.5 #5: restricted_sync is recomputed for everyone on each reconcile"
     await gate.hit;
     // Restricted now, after the targets were planned: no rows, never read.
     const added = `grp-rs-added-${crypto.randomUUID()}`;
+    g.addGroup({ id: added, email: `${added}@a.com`, members: [] });
     await env.DB.batch([
       env.DB.prepare(
         "insert into directory_groups (group_id, email) values (?, ?)",
@@ -1592,6 +1597,35 @@ describe("P2.5 #5: restricted_sync is recomputed for everyone on each reconcile"
     expect(await kv("run.rec")).toBeNull();
     expect(await restrictedOf(later?.id as string)).toBe(0);
     expect(await restrictedOf(inGroup?.id as string)).toBe(1);
+  });
+  it("review S1: a transient 404 on a new restricted group lifts nobody until the restriction goes", async () => {
+    const [inGroup] = dirUsers(1, "rs-404");
+    const gid = `grp-rs-404-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    // Restricted before Google lists it (no rows yet): its reads 404.
+    const fresh = `grp-rs-404-new-${crypto.randomUUID()}`;
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into directory_groups (group_id, email) values (?, ?)",
+      ).bind(fresh, `${fresh}@a.com`),
+      env.DB.prepare(
+        "insert into restricted_groups (group_id, group_email) values (?, ?)",
+      ).bind(fresh, `${fresh}@a.com`),
+    ]);
+    const hire = await hireAt("rs-404-hire", 1);
+    await drain(nextRec(t0));
+    expect(await restrictedOf(hire)).toBe(1);
+    // Still 404 next hour: still nobody lifted (fail closed) ...
+    await drain(nextRec(nextRec(t0)));
+    expect(await restrictedOf(hire)).toBe(1);
+    // ... until an admin removes the restriction.
+    await env.DB.prepare("delete from restricted_groups where group_id = ?")
+      .bind(fresh)
+      .run();
+    await drain(nextRec(nextRec(nextRec(t0))));
+    expect(await restrictedOf(hire)).toBe(0);
   });
 });
 

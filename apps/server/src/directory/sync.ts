@@ -353,6 +353,13 @@ const SYNCED_PAGE = `select u.id from identities i join users u on u.id = i.user
     and u.id > ?1
     and (select value from directory_state where key = 'sync.state') = 'customer_mismatch'
   order by u.id limit ?2`;
+/**
+ * RESTRICTED_ALL lifts only users created this long before the earliest
+ * restricted-group read: users.created_at is stamped by whichever isolate
+ * wrote the row, so a hire stamped a little before the read began by a
+ * slower clock still isn't lifted from rows that predate them.
+ */
+export const CREATED_SKEW_MS = 5 * 60_000;
 /** DO kv: the last user id whose sockets the customer_mismatch close signalled. */
 const CLOSE_KEY = "mismatch.close";
 /**
@@ -365,7 +372,8 @@ const CLOSE_KEY = "mismatch.close";
  * pairs; a group restricted after the run planned, or one read partially,
  * refused or held, blocks every lift), and only to users created before the
  * earliest of those reads (a hire created since, by the fast lane or
- * sign-in, may be in a group whose rows predate them). ?2: the bound when no
+ * sign-in, may be in a group whose rows predate them), less ?3
+ * (CREATED_SKEW_MS). ?2: the bound when no
  * restricted group exists. Returns the users whose flag changed.
  */
 const RESTRICTED_ALL = `update users set restricted_sync = ${RESTRICTED_SYNC_CASE}
@@ -375,7 +383,7 @@ const RESTRICTED_ALL = `update users set restricted_sync = ${RESTRICTED_SYNC_CAS
         (select json_extract(j.value, '$[0]') from json_each(?1) j))
       and users.created_at < coalesce((select min(json_extract(j.value, '$[1]'))
         from json_each(?1) j join restricted_groups rg
-          on rg.group_id = json_extract(j.value, '$[0]')), ?2)))
+          on rg.group_id = json_extract(j.value, '$[0]')) - ?3, ?2)))
   returning id, restricted_sync as r`;
 
 /** A reset() landed since this alarm started: it writes nothing more. */
@@ -1545,9 +1553,12 @@ export class SyncEngine {
     }
     const wouldRemove = removed.length;
     if (hold) removed = [];
-    // Read whole (a deleted group whose removals applied counts): the
-    // finish recompute may lower flags from its rows (RESTRICTED_ALL).
-    if (!w.partial && !(w.missing && hold))
+    // Read whole: the finish recompute may lower flags from its rows
+    // (RESTRICTED_ALL). A 404 counts only when the group is known gone
+    // (DELETE_GROUP this run) or the owner confirmed its removal: a
+    // transient 404 on a group with no rows yet must lift nobody.
+    const gone = !hold && (run.deletedGroups.includes(email) || confirmOk);
+    if (!w.partial && (!w.missing || gone))
       run.read = [
         ...(run.read ?? []).filter(([g]) => g !== w.target),
         [w.target, w.startedAt ?? run.startedAt],
@@ -1649,7 +1660,11 @@ export class SyncEngine {
   private async recomputeRestricted(run: Run) {
     this.guard();
     const { results } = await stmt(this.env.DB, RESTRICTED_ALL)
-      .bind(JSON.stringify(run.read ?? []), Number.MAX_SAFE_INTEGER)
+      .bind(
+        JSON.stringify(run.read ?? []),
+        Number.MAX_SAFE_INTEGER,
+        CREATED_SKEW_MS,
+      )
       .all<{ id: string; r: number }>();
     const capped = results.filter((x) => x.r === 1).map((x) => x.id);
     if (results.length)
