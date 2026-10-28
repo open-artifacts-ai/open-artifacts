@@ -33,6 +33,7 @@ export type ManifestEntry = {
  * Well-formed text stays a string (R2 encodes it natively; `size` is its UTF-8
  * length): no 2× copy of the content in an encoded buffer per publish.
  */
+type InlineSource = { bytes: Uint8Array } | { text: string; size: number };
 export type PlannedSource =
   | { bytes: Uint8Array }
   | { text: string; size: number }
@@ -167,7 +168,7 @@ export function planFiles(input: PublishInput): Plan {
     budget -= size;
   };
   /** Text as TextEncoder would store it: lone surrogates become U+FFFD bytes. */
-  const textSource = (path: string, v: string): PlannedSource => {
+  const textSource = (path: string, v: string): InlineSource => {
     if (!isWellFormed(v)) {
       const bytes = utf8Encoder.encode(v);
       take(path, bytes.length);
