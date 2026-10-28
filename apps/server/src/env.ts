@@ -21,6 +21,14 @@ export interface Env {
   ASSETS: Fetcher;
   /** Anonymous-write limiter (per IP); unbound in the test pool. */
   RL_ANON?: RateLimit;
+  /**
+   * Optional limiter for anonymous data writes only, keyed per IP, with the
+   * operator's own limit (wrangler `ratelimits`, set to match
+   * ANON_WRITES_PER_MIN). Bound, it replaces RL_ANON for those writes (except
+   * with HOSTED=1, where both apply), so ANON_WRITES_PER_MIN above RL_ANON's
+   * 30 takes effect. Unbound (the default), RL_ANON applies as before.
+   */
+  RL_ANON_WRITES?: RateLimit;
   /** Sign-in code limiter, keyed `${installKey}:${ip}`; unbound in the test pool. */
   RL_AUTH?: RateLimit;
   /** GET R.directoryGroups limiter, keyed per caller (P3 T13); unbound: unlimited. */
@@ -63,7 +71,8 @@ export interface Env {
   /**
    * Anonymous writes per IP per artifact per minute, enforced in the DO
    * (anonWritesPerMin: 1..600, default LIMITS.anonWritesPerMinPerIp). The
-   * RL_ANON binding's own per-IP limit (wrangler `ratelimits`) applies first.
+   * RL_ANON binding's own per-IP limit (wrangler `ratelimits`, 30) applies
+   * first, so a higher value needs RL_ANON_WRITES bound with a matching limit.
    */
   ANON_WRITES_PER_MIN?: string;
   /**
