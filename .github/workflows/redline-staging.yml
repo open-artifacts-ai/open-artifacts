@@ -44,6 +44,10 @@ jobs:
           RL_B_PAT: ${{ secrets.REDLINE_RL_B_PAT }}
           RL_B_HOOK_KEY: ${{ secrets.REDLINE_RL_B_HOOK_KEY }}
           STG_INVENTORY_KEY: ${{ secrets.REDLINE_STG_INVENTORY_KEY }}
+          # The "prod is clean" probe: read-only tokens, all three or none.
+          PROD_R2_TOKEN: ${{ secrets.REDLINE_PROD_R2_TOKEN }}
+          PROD_SCRIPTS_TOKEN: ${{ secrets.REDLINE_PROD_SCRIPTS_TOKEN }}
+          PROD_INVENTORY_KEY: ${{ secrets.REDLINE_PROD_INVENTORY_KEY }}
         run: |
           set -euo pipefail
           umask 077
@@ -54,12 +58,19 @@ jobs:
           printf '%s' "$RL_B_PAT" > "$d/REDLINE_RL_B_PAT"
           printf '%s' "$RL_B_HOOK_KEY" > "$d/REDLINE_RL_B_HOOK_KEY"
           printf '%s' "$STG_INVENTORY_KEY" > "$d/REDLINE_STG_INVENTORY_KEY"
+          if [ -n "${PROD_R2_TOKEN:-}${PROD_SCRIPTS_TOKEN:-}${PROD_INVENTORY_KEY:-}" ]; then
+            printf '%s' "$PROD_R2_TOKEN" > "$d/REDLINE_PROD_R2_TOKEN"
+            printf '%s' "$PROD_SCRIPTS_TOKEN" > "$d/REDLINE_PROD_SCRIPTS_TOKEN"
+            printf '%s' "$PROD_INVENTORY_KEY" > "$d/REDLINE_PROD_INVENTORY_KEY"
+          fi
           for f in "$d"/*; do test -s "$f" || { echo "empty secret file: ${f##*/}"; exit 1; }; done
       - name: Run the suite
         env:
           REDLINE_TARGETS_BASE: ${{ vars.REDLINE_TARGETS }}
           REDLINE_STG_INVENTORY_URL: ${{ vars.REDLINE_STG_INVENTORY_URL }}
           REDLINE_DELETED_HOSTS: ${{ vars.REDLINE_DELETED_HOSTS }}
+          REDLINE_PROD_ACCOUNT_ID: ${{ vars.REDLINE_PROD_ACCOUNT_ID }}
+          REDLINE_PROD_INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
         run: |
           set -euo pipefail
           # Cloudflare's dummy Turnstile token, which the always-pass test
@@ -67,6 +78,11 @@ jobs:
           t="$RUNNER_TEMP/redline-turnstile-token"
           (umask 077 && printf '%s' 'XXXX.DUMMY.TOKEN.XXXX' > "$t")
           REDLINE_TARGETS=$(jq -c --arg d "$RUNNER_TEMP/redline-secrets" --arg t "$t" '. + {secretsDir: $d} | .a.turnstileFile = $t | .b.turnstileFile = $t' <<< "$REDLINE_TARGETS_BASE")
+          # The prod probe reads its token files from secretsDir; the inventory
+          # origin is the only prod field it needs from here.
+          if [ -n "${REDLINE_PROD_INVENTORY_URL:-}" ] && [ -s "$RUNNER_TEMP/redline-secrets/REDLINE_PROD_R2_TOKEN" ]; then
+            REDLINE_TARGETS=$(jq -c --arg u "$REDLINE_PROD_INVENTORY_URL" '.prod = {inventoryUrl: $u}' <<< "$REDLINE_TARGETS")
+          fi
           export REDLINE_TARGETS
           export REDLINE_REPORT="$RUNNER_TEMP/redline-report/report.json"
           mkdir -p "$RUNNER_TEMP/redline-report"
