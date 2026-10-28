@@ -3,8 +3,8 @@
 // ephemeral --ci-owner-token and ci-token-sweep.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { cfClient } from "@oa/provision";
 import type { DatabaseSync } from "node:sqlite";
+import { cfClient } from "@oa/provision";
 import { describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.ts";
 import { PUB, SECURITY, signed, world } from "./world.ts";
@@ -458,7 +458,9 @@ describe("ci-token-sweep", () => {
     w.deps.cf = (c) => cfClient({ ...c, fetch: lossy, sleep: async () => {} });
     expect(await main(SWEEP(id), w.deps)).toBe(1);
     expect(
-      w.parsed().find((l) => l.step === "ci-token-sweep" && l.status === "error")
+      w
+        .parsed()
+        .find((l) => l.step === "ci-token-sweep" && l.status === "error")
         ?.message,
     ).toMatch(/still active after the sweep/);
   });

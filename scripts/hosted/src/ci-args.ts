@@ -117,7 +117,8 @@ function plain(v: unknown, what: string, max = 512): string {
   if (typeof v !== "string") refuse(`${what} must be a string`);
   const s = v as string;
   if (s === "" || s.length > max) refuse(`${what} is empty or too long`);
-  if (!PRINTABLE.test(s)) refuse(`${what} has a character that is not printable ASCII`);
+  if (!PRINTABLE.test(s))
+    refuse(`${what} has a character that is not printable ASCII`);
   if (s.startsWith("-")) refuse(`${what} may not start with "-"`);
   return s;
 }
@@ -128,8 +129,10 @@ function varsOf(v: unknown, what: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const kv of v as unknown[]) {
-    const s = typeof kv === "string" ? kv : refuse(`${what}: each entry is a string`);
-    if (!PRINTABLE.test(s)) refuse(`${what}: a value has a character that is not printable ASCII`);
+    const s =
+      typeof kv === "string" ? kv : refuse(`${what}: each entry is a string`);
+    if (!PRINTABLE.test(s))
+      refuse(`${what}: a value has a character that is not printable ASCII`);
     if (s.length > 2048) refuse(`${what}: an entry is too long`);
     const i = s.indexOf("=");
     const k = i > 0 ? s.slice(0, i) : "";
@@ -177,7 +180,12 @@ function floorOf(v: unknown, env: string): string {
     refuse("args.floor must have exactly record and signature");
   for (const k of ["record", "signature"] as const) {
     const s = f[k];
-    if (typeof s !== "string" || s === "" || s.length > 8192 || !FLOOR_PART.test(s))
+    if (
+      typeof s !== "string" ||
+      s === "" ||
+      s.length > 8192 ||
+      !FLOOR_PART.test(s)
+    )
       refuse(`args.floor.${k} is not a signed floor part`);
   }
   let rec: unknown;
@@ -275,7 +283,8 @@ export function plan(i: Inputs, floorFile?: string): Plan {
       break;
     case "release-lease":
       if (a.force !== undefined) {
-        if (typeof a.force !== "boolean") refuse("args.force must be a boolean");
+        if (typeof a.force !== "boolean")
+          refuse("args.force must be a boolean");
         if (a.force) argv.push("--force");
       }
       break;
@@ -285,7 +294,7 @@ export function plan(i: Inputs, floorFile?: string): Plan {
       break;
     case "publish-floor": {
       floor = floorOf(a.floor, env);
-      if (!floorFile || !floorFile.startsWith("/"))
+      if (!floorFile?.startsWith("/"))
         refuse("publish-floor needs OPS_FLOOR_FILE (an absolute path)");
       argv.push("--floor", floorFile as string);
       break;

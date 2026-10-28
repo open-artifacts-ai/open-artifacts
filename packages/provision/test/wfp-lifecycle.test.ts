@@ -4256,9 +4256,7 @@ describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
       revoked: 1,
       active: 0,
     });
-    expect(ciTokens(s, inst.id).every((t) => t.revoked_at !== null)).toBe(
-      true,
-    );
+    expect(ciTokens(s, inst.id).every((t) => t.revoked_at !== null)).toBe(true);
   });
 
   it("a crash between mint and revoke leaves the token live; ci-token-sweep revokes it, and a second sweep finds none", async () => {

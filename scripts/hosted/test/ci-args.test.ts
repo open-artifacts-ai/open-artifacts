@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: literal workflow expressions
 // OPS-B: hosted-ops.yml's input validator. Every op's schema, and injection
 // attempts in every input.
 import { spawnSync } from "node:child_process";
@@ -140,12 +141,18 @@ describe("install, tag and confirm", () => {
     ]) {
       refused({ ...CREATE(), tag }, /stable release tag/);
       refused({ op: "upgrade", tag }, /stable release tag/);
-      refused({ op: "publish-release", install: "", tag }, /stable release tag/);
+      refused(
+        { op: "publish-release", install: "", tag },
+        /stable release tag/,
+      );
     }
     refused({ op: "upgrade", tag: "" }, /upgrade needs a tag/);
     refused({ op: "publish-release", install: "", tag: "" }, /needs a tag/);
     for (const op of ["rollback", "status", "update-vars", "delete"])
-      refused({ op, tag: "v1.2.3", confirm: op === "delete" ? ID : "" }, /takes no tag/);
+      refused(
+        { op, tag: "v1.2.3", confirm: op === "delete" ? ID : "" },
+        /takes no tag/,
+      );
   });
 
   it("confirm: exactly the install for delete and release-lease, empty elsewhere", () => {
@@ -168,20 +175,36 @@ describe("install, tag and confirm", () => {
 
 describe("args: JSON against each op's schema", () => {
   it("args is a JSON object with only the op's keys", () => {
-    for (const args of ["[]", "null", "1", '"x"', "{", "{'a':1}", "x".repeat(20_000)])
+    for (const args of [
+      "[]",
+      "null",
+      "1",
+      '"x"',
+      "{",
+      "{'a':1}",
+      "x".repeat(20_000),
+    ])
       refused({ args });
     for (const op of OPS)
       if (ARG_KEYS[op].length === 0)
         refused(
           {
             op,
-            install: ["turnstile-init", "publish-release"].includes(op) ? "" : ID,
+            install: ["turnstile-init", "publish-release"].includes(op)
+              ? ""
+              : ID,
             tag: ["upgrade", "publish-release"].includes(op) ? "v1.0.0" : "",
             args: '{"x":1}',
           },
           /takes no args/,
         );
-    refused({ ...CREATE(), args: '{"slug":"a","owner":"a@b.co","__proto__":{"x":1}}' }, /not one of/);
+    refused(
+      {
+        ...CREATE(),
+        args: '{"slug":"a","owner":"a@b.co","__proto__":{"x":1}}',
+      },
+      /not one of/,
+    );
     refused({ ...CREATE({ install: ID }) }, /not one of/);
     refused({ ...CREATE({ env: "prod" }) }, /not one of/);
   });
@@ -213,9 +236,19 @@ describe("args: JSON against each op's schema", () => {
     expect(ok(CREATE({ testHooks: false })).argv).not.toContain("--test-hooks");
     refused({ ...CREATE({ testHooks: true }), env: "prod" }, /staging only/);
     refused(CREATE({ testHooks: "true" }), /boolean/);
-    for (const slug of ["www", "xn--a", "-ab","Fin", "x".repeat(40), "", 1, ...INJECT])
+    for (const slug of [
+      "www",
+      "xn--a",
+      "-ab",
+      "Fin",
+      "x".repeat(40),
+      "",
+      1,
+      ...INJECT,
+    ])
       refused(CREATE({ slug }));
-    for (const owner of ["nope", "", 7, "a b@c.co", ...INJECT]) refused(CREATE({ owner }));
+    for (const owner of ["nope", "", 7, "a b@c.co", ...INJECT])
+      refused(CREATE({ owner }));
     refused({ ...CREATE(), args: '{"slug":"finqore"}' }, /args.owner/);
   });
 
@@ -240,7 +273,9 @@ describe("args: JSON against each op's schema", () => {
     expect(
       ok({
         op: "update-vars",
-        args: JSON.stringify({ var: ["FEATURES=beta", "AUTH_PROVIDERS=email"] }),
+        args: JSON.stringify({
+          var: ["FEATURES=beta", "AUTH_PROVIDERS=email"],
+        }),
       }),
     ).toEqual({
       argv: [
@@ -275,7 +310,14 @@ describe("args: JSON against each op's schema", () => {
       sweep: ID,
     });
     expect(ok({ op: "rollback" })).toEqual({
-      argv: ["rollback", "--env", "staging", "--install", ID, "--ci-owner-token"],
+      argv: [
+        "rollback",
+        "--env",
+        "staging",
+        "--install",
+        ID,
+        "--ci-owner-token",
+      ],
       sweep: ID,
     });
   });
@@ -285,7 +327,9 @@ describe("args: JSON against each op's schema", () => {
       ok({
         op: "delete",
         confirm: ID,
-        args: JSON.stringify({ skipDirectoryRevoke: "the customer revoked it" }),
+        args: JSON.stringify({
+          skipDirectoryRevoke: "the customer revoked it",
+        }),
       }).argv,
     ).toEqual([
       "delete",
@@ -312,9 +356,7 @@ describe("args: JSON against each op's schema", () => {
       argv: ["turnstile-init", "--env", "staging"],
       sweep: null,
     });
-    expect(
-      ok({ op: "publish-release", install: "", tag: "v0.74.1" }),
-    ).toEqual({
+    expect(ok({ op: "publish-release", install: "", tag: "v0.74.1" })).toEqual({
       argv: ["publish-release", "--env", "staging", "--tag", "v0.74.1"],
       sweep: null,
     });
@@ -326,7 +368,12 @@ describe("args: JSON against each op's schema", () => {
 
   it("publish-floor: the signed floor object, re-serialized to OPS_FLOOR_FILE", () => {
     const floor = {
-      record: JSON.stringify({ env: "staging", seq: 2, minVersion: "0.20.0", revoked: [] }),
+      record: JSON.stringify({
+        env: "staging",
+        seq: 2,
+        minVersion: "0.20.0",
+        revoked: [],
+      }),
       signature: "abcDEF123_-",
     };
     const p = ok(
@@ -343,7 +390,11 @@ describe("args: JSON against each op's schema", () => {
     expect(JSON.parse(p.floor as string)).toEqual(floor);
     const pf = (f: unknown, file = "/tmp/f.json") =>
       refused(
-        { op: "publish-floor", install: "", args: JSON.stringify({ floor: f }) },
+        {
+          op: "publish-floor",
+          install: "",
+          args: JSON.stringify({ floor: f }),
+        },
         undefined,
         file,
       );
@@ -355,7 +406,11 @@ describe("args: JSON against each op's schema", () => {
     pf({ ...floor, record: JSON.stringify({ env: "prod", seq: 2 }) });
     pf("floor");
     pf(floor, "relative.json");
-    refused({ op: "publish-floor", install: "", args: JSON.stringify({ floor }) });
+    refused({
+      op: "publish-floor",
+      install: "",
+      args: JSON.stringify({ floor }),
+    });
   });
 
   it("no injection string survives in any argv slot: every value is refused or kept as one inert argv entry", () => {
@@ -365,7 +420,11 @@ describe("args: JSON against each op's schema", () => {
         CREATE({ owner: s }),
         CREATE({ to: s }),
         CREATE({ var: [`FEATURES=${s}`] }),
-        { op: "delete", confirm: ID, args: JSON.stringify({ skipDirectoryRevoke: s }) },
+        {
+          op: "delete",
+          confirm: ID,
+          args: JSON.stringify({ skipDirectoryRevoke: s }),
+        },
       ] as Partial<Inputs>[]) {
         let p: ReturnType<typeof plan> | undefined;
         try {
@@ -430,7 +489,12 @@ describe("the script: env in, one JSON argv out", () => {
     const dir = mkdtempSync(join(tmpdir(), "oa-ci-args-"));
     const file = join(dir, "floor.sig.json");
     const floor = {
-      record: JSON.stringify({ env: "prod", seq: 3, minVersion: "0.70.0", revoked: [] }),
+      record: JSON.stringify({
+        env: "prod",
+        seq: 3,
+        minVersion: "0.70.0",
+        revoked: [],
+      }),
       signature: "sig",
     };
     const env = {
@@ -462,8 +526,12 @@ describe("the script: env in, one JSON argv out", () => {
       writeFile: () => {},
       appendFile: () => {},
     };
-    expect(run({ OPS_ENV: "prod", OPS_OP: "status", OPS_INSTALL: ID }, io)).toBe(0);
-    expect(outs).toEqual([JSON.stringify(["status", "--env", "prod", "--install", ID])]);
+    expect(
+      run({ OPS_ENV: "prod", OPS_OP: "status", OPS_INSTALL: ID }, io),
+    ).toBe(0);
+    expect(outs).toEqual([
+      JSON.stringify(["status", "--env", "prod", "--install", ID]),
+    ]);
     expect(run({ OPS_ENV: "prod", OPS_OP: "status" }, io)).toBe(1);
     expect(errs).toEqual(["hosted-ops: refused: status needs an install"]);
   });

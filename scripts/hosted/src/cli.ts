@@ -403,10 +403,7 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
       throw new Refused("--tag must be a release tag like v1.2.3");
   }
   if (cmd === "publish-floor") need("floor", "floor");
-  if (
-    f.ciOwnerToken &&
-    !(CI_TOKEN_COMMANDS as readonly string[]).includes(cmd)
-  )
+  if (f.ciOwnerToken && !(CI_TOKEN_COMMANDS as readonly string[]).includes(cmd))
     throw new Refused(
       `--ci-owner-token is for ${CI_TOKEN_COMMANDS.join(", ")} only`,
     );
