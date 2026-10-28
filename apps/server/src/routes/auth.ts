@@ -132,6 +132,13 @@ export function mountAuth(app: AppType): void {
       c.req.query("state") ?? "",
     );
     const clear = picked ? [clearOidcCookie(c.env, picked.name)] : [];
+    // A refused Access sign-in: in direct mode the SPA sign-in page with the
+    // reason and `next` (like every other direct-mode refusal, #359; review
+    // item 12); Access-only installs keep PAGES.noAccess.
+    const refuse = (next: string) =>
+      signInMode(authConfig(c.env)) === "direct"
+        ? toSignIn("no_access", next, clear)
+        : redirect(PAGES.noAccess, clear);
     try {
       const { email, name, next } = await handleCallback(
         c.env,
@@ -145,7 +152,7 @@ export function mountAuth(app: AppType): void {
       if (!user) {
         logOidcFail("no_access");
         logAuth({ provider: "access", outcome: "refused", stage: "no_access" });
-        return redirect(PAGES.noAccess, clear);
+        return refuse(next);
       }
       // The epoch must come from the row: a guest reactivated after #368,
       // or any user whose epoch a role change bumped, is otherwise issued a
@@ -154,7 +161,7 @@ export function mountAuth(app: AppType): void {
       if (!row) {
         logOidcFail("no_access");
         logAuth({ provider: "access", outcome: "refused", stage: "no_access" });
-        return redirect(PAGES.noAccess, clear);
+        return refuse(next);
       }
       const sess = sessionCookie(
         await signSession(c.env, user.id, Date.now(), {

@@ -249,6 +249,7 @@ export const AUDIT_NEXT_CURSOR_HEADER = "X-OA-Next-Cursor";
 
 export const AUTH = {
   login: "/auth/login",
+  /** GET (Access OIDC) -> 302 next; a refusal goes to PAGES.noAccess on Access-only installs, else (direct mode) SIGN_IN_PAGE?error=no_access&next. */
   callback: "/auth/callback",
   logout: "/auth/logout",
   devLogin: "/auth/dev-login",

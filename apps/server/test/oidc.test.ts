@@ -1,5 +1,11 @@
 import { env } from "cloudflare:workers";
-import { newId, PAGES } from "@oa/shared";
+import {
+  AUTH,
+  AuthProvidersSchema,
+  newId,
+  PAGES,
+  SIGN_IN_PAGE,
+} from "@oa/shared";
 import { Hono } from "hono";
 import { exportJWK, generateKeyPair, type JWTPayload, SignJWT } from "jose";
 import {
@@ -129,10 +135,10 @@ async function begin(
   next = "/a/xyz",
   e: Env = env,
   key?: CryptoKey,
-  extra: { retry?: boolean; cookie?: string } = {},
+  extra: { retry?: boolean; cookie?: string; via?: boolean } = {},
 ) {
   const r = await call(
-    `/auth/login?next=${encodeURIComponent(next)}${extra.retry ? "&retry=1" : ""}`,
+    `/auth/login?next=${encodeURIComponent(next)}${extra.retry ? "&retry=1" : ""}${extra.via ? "&via=access" : ""}`,
     extra.cookie ? { headers: { cookie: extra.cookie } } : {},
     e,
   );
@@ -972,6 +978,57 @@ describe("session epoch on the Access callback (#369)", () => {
     const r = await callback(b, b.oidc);
     expect(r.status).toBe(302);
     expect(r.headers.get("location")).toBe(PAGES.noAccess);
+    expect(cookieVal(r, SESSION)).toBeUndefined();
+  });
+});
+
+// Review item 12: in direct mode (access plus google or email) an Access
+// refusal lands on the SPA sign-in page with the reason and `next`, like
+// every other direct-mode refusal; Access-only keeps /no-access (above).
+describe("Access refusals in direct mode", () => {
+  const direct = { ...env, AUTH_PROVIDERS: "access,email" } as Env;
+  const want = (next: string) =>
+    `${SIGN_IN_PAGE}?error=no_access&next=${encodeURIComponent(next)}`;
+
+  it("the providers list carries access with its start URL (the SPA's button)", async () => {
+    const r = await call(AUTH.providers, {}, direct);
+    const p = AuthProvidersSchema.parse(await r.json());
+    expect(p.mode).toBe("direct");
+    expect(p.providers).toContainEqual({
+      id: "access",
+      start: `${AUTH.login}?via=access`,
+    });
+    // That start URL goes to Access, not back to the chooser.
+    const go = await call(`${AUTH.login}?via=access&next=%2Fa%2Fz`, {}, direct);
+    expect(new URL(go.headers.get("location") ?? "").hostname).toBe(
+      env.ACCESS_TEAM_DOMAIN,
+    );
+  });
+
+  it("unknown email: sign-in page with error and next, no session, no row", async () => {
+    const email = `dn-${newId().slice(0, 6)}@x.com`;
+    const b = await begin({ email }, "/a/keep", direct, undefined, {
+      via: true,
+    });
+    const r = await callback(b, b.oidc, direct);
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toBe(want("/a/keep"));
+    expect(cookieVal(r, SESSION)).toBeUndefined();
+    expect(await userByEmail(email)).toBeNull();
+    // The state cookie is still cleared.
+    expect(setCookies(r).some((c) => c.startsWith(b.cname))).toBe(true);
+  });
+
+  it("a suspended member: sign-in page with error and next, no session", async () => {
+    const email = `ds-${newId().slice(0, 6)}@x.com`;
+    const { userId } = await login(email, "member");
+    await env.DB.prepare("update users set status = 'suspended' where id = ?")
+      .bind(userId)
+      .run();
+    const b = await begin({ email }, "/a/s", direct, undefined, { via: true });
+    const r = await callback(b, b.oidc, direct);
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toBe(want("/a/s"));
     expect(cookieVal(r, SESSION)).toBeUndefined();
   });
 });
