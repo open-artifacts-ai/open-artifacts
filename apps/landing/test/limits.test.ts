@@ -87,6 +87,9 @@ describe("limits in the docs", () => {
     expect(page("runtime-api.md")).toContain(
       `| Writes per viewer | ${LIMITS.viewerWritesPerMin} per minute |`,
     );
+    expect(page("runtime-api.md")).toContain(
+      `| Collection size for \`query()\` with \`where\` or \`orderBy\` | ${formatBytes(LIMITS.queryCollectionBytes)} |`,
+    );
     expect(page("security.md")).toContain(
       `expires after ${formatSeconds(LIMITS.signedUrlTtlSec)}`,
     );

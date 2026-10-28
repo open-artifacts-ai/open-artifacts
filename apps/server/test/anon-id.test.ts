@@ -485,6 +485,68 @@ describe("ANON_WRITES_PER_MIN", () => {
     expect(anonWritesPerMin("100000")).toBe(600);
   });
 
+  /** One anonymous write from a fixed IP with stubbed limiters; returns the keys each was asked for. */
+  const writeVia = async (id: string, extra: Record<string, unknown>) => {
+    const calls: string[] = [];
+    const lim = (name: string, ok: boolean) => ({
+      async limit({ key }: { key: string }) {
+        calls.push(`${name}:${key}`);
+        return { success: ok };
+      },
+    });
+    const e: Record<string, unknown> = { ...env, RL_ANON: lim("anon", true) };
+    for (const [k, v] of Object.entries(extra))
+      e[k] =
+        typeof v === "object" && v && "ok" in v
+          ? lim(k, (v as { ok: boolean }).ok)
+          : v;
+    const r = await app.fetch(
+      new Request(`http://app.localhost${R.dataDoc(id, "c", "d")}`, {
+        method: "PUT",
+        body: "1",
+        headers: {
+          "cf-connecting-ip": "192.0.2.44",
+          "content-type": "application/json",
+        },
+      }),
+      e,
+      { waitUntil() {}, passThroughOnException() {} } as never,
+    );
+    return { r, calls };
+  };
+
+  it("by default anonymous writes still spend RL_ANON per IP (review item 38)", async () => {
+    const id = await optIn();
+    const { r, calls } = await writeVia(id, {});
+    expect(r.status).toBe(200);
+    expect(calls).toEqual(["anon:ip:192.0.2.44"]);
+  });
+
+  it("RL_ANON_WRITES, when bound, replaces RL_ANON for writes so a raised ANON_WRITES_PER_MIN works", async () => {
+    const id = await optIn();
+    const ok = await writeVia(id, {
+      RL_ANON_WRITES: { ok: true },
+      RL_ANON: undefined,
+    });
+    expect(ok.r.status).toBe(200);
+    expect(ok.calls).toEqual(["RL_ANON_WRITES:ip:192.0.2.44"]);
+    const denied = await writeVia(id, { RL_ANON_WRITES: { ok: false } });
+    expect(denied.r.status).toBe(429);
+    expect(denied.calls).toEqual(["RL_ANON_WRITES:ip:192.0.2.44"]);
+  });
+
+  it("with HOSTED=1 both limiters apply (hosted only tightens)", async () => {
+    const id = await optIn();
+    const { calls } = await writeVia(id, {
+      RL_ANON_WRITES: { ok: true },
+      HOSTED: "1",
+    });
+    expect(calls).toEqual([
+      "anon:ip:192.0.2.44",
+      "RL_ANON_WRITES:ip:192.0.2.44",
+    ]);
+  });
+
   it("the DO applies it per IP, across anonIds", async () => {
     const id = await optIn();
     await runInDurableObject(
