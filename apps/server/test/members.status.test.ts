@@ -339,8 +339,8 @@ describe("removeMember with the spaces flag on", () => {
   });
 });
 
-describe("removeMember with the spaces flag off (#478)", () => {
-  it("only personal-space artifacts move; shared-space ones keep their space", async () => {
+describe("removeMember with the spaces flag off (parity 1: soft, as with spaces)", () => {
+  it("nothing moves: personal artifacts wait for a Departed transfer, shared-space ones keep their space", async () => {
     const u = await mk("st-rm-off");
     const space = await sharedSpace();
     const [mine, mineGone, inSpace, inSpaceGone] = [
@@ -354,17 +354,19 @@ describe("removeMember with the spaces flag off (#478)", () => {
     await insertArtifact(inSpace, u.userId, space);
     await insertArtifact(inSpaceGone, u.userId, space, 5);
     await removeMember(env, u.userId, SYSTEM_ACTOR);
-    const to = ownerOfRecord;
-    expect(await placement(mine)).toEqual({ owner_id: to, space_id: to });
-    expect(await placement(mineGone)).toEqual({ owner_id: to, space_id: to });
-    // owner_id must name a user (the row is deleted); it grants nothing in a
-    // shared space, where access comes from the space alone.
-    expect(await placement(inSpace)).toEqual({ owner_id: to, space_id: space });
+    const me = u.userId;
+    expect(await placement(mine)).toEqual({ owner_id: me, space_id: me });
+    expect(await placement(mineGone)).toEqual({ owner_id: me, space_id: me });
+    expect(await placement(inSpace)).toEqual({ owner_id: me, space_id: space });
     expect(await placement(inSpaceGone)).toEqual({
-      owner_id: to,
+      owner_id: me,
       space_id: space,
     });
-    expect(await one("select id from users where id = ?", u.userId)).toBeNull();
+    expect(await status(u.userId)).toBe("removed");
+    // The personal space stays: a transfer reads from it.
+    expect(
+      await one("select id, kind from spaces where id = ?", u.userId),
+    ).toEqual({ id: u.userId, kind: "personal" });
   });
 
   it("writes exactly one user.status row (admin_remove) with the removal", async () => {
@@ -381,7 +383,6 @@ describe("removeMember with the spaces flag off (#478)", () => {
     expect(JSON.parse(rows[0]?.detail ?? "{}")).toEqual({
       status: "removed",
       reason: "admin_remove",
-      sharesDropped: 0,
     });
   });
 

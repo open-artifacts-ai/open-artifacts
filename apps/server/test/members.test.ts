@@ -59,6 +59,7 @@ describe("GET /api/v1/me", () => {
     const me = MeSchema.parse(await r.json());
     expect(me.user.id).toBe(member.userId);
     expect(me.user.email).toBe(`member-${tag}@x.com`);
+    // Access-only: the same shape as every other sign-in mode (parity 1, A7).
     expect(me.instance).toEqual({
       name: expect.any(String),
       defaultVisibility: expect.stringMatching(/^(private|team)$/),
@@ -67,6 +68,16 @@ describe("GET /api/v1/me", () => {
       emailEnabled: false,
       plan: "free",
       update: null,
+      hosted: false,
+      tier: null,
+      signIn: { mode: "access", providers: ["access"] },
+      features: [],
+    });
+    expect(me.auth).toEqual({
+      method: expect.any(String),
+      readOnly: false,
+      cap: null,
+      expiresAt: expect.any(String),
     });
   });
 });
@@ -181,7 +192,7 @@ describe("members API", () => {
     ).toBe(404);
   });
 
-  it("delete reassigns artifacts to the owner, removes tokens and the shares to their email", async () => {
+  it("delete is soft (parity 1): the row, artifacts, authorship and shares stay; PATs revoked", async () => {
     const v = await login(`del-${tag}@x.com`, "member");
     const db = getDb(env);
     const aid = newId();
@@ -226,23 +237,43 @@ describe("members API", () => {
     });
     expect(r.status).toBe(204);
 
-    const a = await env.DB.prepare("select owner_id from artifacts where id=?")
+    // Their artifact waits in their personal space for a Departed transfer.
+    const a = await env.DB.prepare(
+      "select owner_id, space_id from artifacts where id=?",
+    )
       .bind(aid)
-      .first<{ owner_id: string }>();
-    expect(a?.owner_id).toBe(ownerOfRecord);
+      .first<{ owner_id: string; space_id: string }>();
+    expect(a).toEqual({ owner_id: v.userId, space_id: v.userId });
+    expect(a?.owner_id).not.toBe(ownerOfRecord);
     expect(
-      await env.DB.prepare("select id from users where id=?")
+      await env.DB.prepare("select status from users where id=?")
         .bind(v.userId)
         .first(),
-    ).toBeNull();
+    ).toEqual({ status: "removed" });
+    // Authorship stays true (L3).
+    const authored = await env.DB.prepare(
+      `select (select created_by from versions where artifact_id = ?1) as v,
+        (select user_id from uploads where artifact_id = ?1) as u,
+        (select created_by from shares where artifact_id = ?1) as s`,
+    )
+      .bind(aid)
+      .first();
+    expect(authored).toEqual({ v: v.userId, u: v.userId, s: v.userId });
+    // The PAT row stays, revoked (L4).
     expect(await verifyPat(env, token)).toBeNull();
+    const pats = await env.DB.prepare(
+      "select count(*) as n from tokens where user_id = ? and revoked_at is not null",
+    )
+      .bind(v.userId)
+      .first<{ n: number }>();
+    expect(pats?.n).toBe(1);
+    // The share to their address stays: the removed row refuses sign-in.
     const s = await env.DB.prepare(
       "select count(*) as n from shares where artifact_id=?",
     )
       .bind(aid)
       .first<{ n: number }>();
-    // A leftover share would re-admit them as a guest (review item 7).
-    expect(s?.n).toBe(0);
+    expect(s?.n).toBe(1);
     // Their session/PAT now resolve to anonymous.
     expect((await call(R.me, v.cookie)).status).toBe(401);
   });
