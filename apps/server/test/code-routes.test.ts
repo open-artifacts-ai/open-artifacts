@@ -816,3 +816,239 @@ describe("code routes: review fixes", () => {
     ).toBeTruthy();
   });
 });
+
+// Review item 13: a re-request that sends nothing (resend_wait, capped,
+// pool_full, send_failed) must not orphan the code already in the inbox.
+describe("a code re-request keeps the pending request id", () => {
+  const ridOf = (cookie: string | undefined) => {
+    const v = (cookie ?? "").split("=")[1]?.split(".")[0] ?? "";
+    return (
+      JSON.parse(atob(v.replace(/-/g, "+").replace(/_/g, "/"))) as {
+        rid: string;
+      }
+    ).rid;
+  };
+
+  it("a re-request inside the resend wait leaves the first code usable", async () => {
+    const guest = uniq("rs", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const ip = "198.51.100.201";
+    const r1 = await request(e, guest, { ip });
+    const first = m.codeFor(guest);
+    const r2 = await request(e, guest, {
+      ip,
+      cookie: cookieOf(r1, CODE_COOKIE),
+    });
+    expect(m.sent).toHaveLength(1);
+    // The 202 is the same either way: nothing says whether a code went out.
+    expect(await r2.json()).toEqual(await r1.json());
+    expect(ridOf(cookieOf(r2, CODE_COOKIE))).toBe(
+      ridOf(cookieOf(r1, CODE_COOKIE)),
+    );
+    const v = await verify(e, first, cookieOf(r2, CODE_COOKIE), { ip });
+    expect(v.status).toBe(200);
+  });
+
+  it("a resend after the wait replaces the code under the same id", async () => {
+    const guest = uniq("rs2", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const ip = "198.51.100.202";
+    const r1 = await request(e, guest, { ip });
+    const first = m.codeFor(guest);
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    const r2 = await request(e, guest, {
+      ip,
+      cookie: cookieOf(r1, CODE_COOKIE),
+    });
+    expect(m.sent).toHaveLength(2);
+    const second = m.codeFor(guest);
+    expect(second).not.toBe(first);
+    const c2 = cookieOf(r2, CODE_COOKIE);
+    const bad = await verify(e, first, c2, { ip });
+    expect(bad.status).toBe(401);
+    const ok = await verify(e, second, cookieOf(bad, CODE_COOKIE) ?? c2, {
+      ip,
+    });
+    expect(ok.status).toBe(200);
+  });
+
+  it("a resend whose email fails leaves the earlier code usable", async () => {
+    const guest = uniq("rs3", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const ip = "198.51.100.203";
+    const r1 = await request(withMail(direct(), m), guest, { ip });
+    const first = m.codeFor(guest);
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    const r2 = await request(withMail(direct(), mailer(true)), guest, {
+      ip,
+      cookie: cookieOf(r1, CODE_COOKIE),
+    });
+    expect(r2.status).toBe(202);
+    const v = await verify(
+      withMail(direct(), m),
+      first,
+      cookieOf(r2, CODE_COOKIE),
+      { ip },
+    );
+    expect(v.status).toBe(200);
+  });
+
+  it("a cookie for another address, or none, gets a new id", async () => {
+    const a = uniq("rsa", "x.com");
+    const b = uniq("rsb", "x.com");
+    const e = withMail(direct());
+    const r1 = await request(e, a);
+    const r2 = await request(e, b, { cookie: cookieOf(r1, CODE_COOKIE) });
+    const r3 = await request(e, a);
+    const rid1 = ridOf(cookieOf(r1, CODE_COOKIE));
+    expect(ridOf(cookieOf(r2, CODE_COOKIE))).not.toBe(rid1);
+    expect(ridOf(cookieOf(r3, CODE_COOKIE))).not.toBe(rid1);
+  });
+});
+
+// Review item 36b: next (up to 512 bytes) plus a long address could push the
+// pending cookie past its own 1024-byte read limit, so verify said no_pending.
+describe("the pending cookie fits its read limit", () => {
+  it("a 60-character address with a 512-byte next signs in, next falls back to /", async () => {
+    const base = uniq("l", "x.com");
+    const at = base.indexOf("@");
+    const guest = `${base.slice(0, at)}${"z".repeat(60 - base.length)}${base.slice(at)}`;
+    expect(guest).toHaveLength(60);
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const next = `/a/${"n".repeat(509)}`;
+    expect(next).toHaveLength(512);
+    const r1 = await request(e, guest, { next });
+    const raw = cookieOf(r1, CODE_COOKIE)?.slice(CODE_COOKIE.length + 1) ?? "";
+    expect(raw.length).toBeLessThanOrEqual(1024);
+    const r = await verify(e, m.codeFor(guest), cookieOf(r1, CODE_COOKIE));
+    expect(r.status).toBe(200);
+    expect(CodeVerifiedSchema.parse(await r.json()).next).toBe("/");
+  });
+});
+
+// #813 review: a resend whose email fails puts the earlier code back. That
+// restore must never revive a code consumed while the resend ran, nor erase
+// guesses made against the row meanwhile.
+describe("a failed resend's restore", () => {
+  const SELECT = "select code_hash, expires_at";
+  /**
+   * A DB whose read of the replaced row is followed (old shape: a separate
+   * read) or preceded (one batch) by `consume` deleting that row, as a
+   * verify landing in the resend's window would.
+   */
+  function racingDb(consume: (ek: string, rid: string) => Promise<unknown>) {
+    const reads = new WeakMap<object, [string, string]>();
+    return new Proxy(env.DB, {
+      get(t, k) {
+        if (k === "prepare")
+          return (sql: string) => {
+            const s = t.prepare(sql);
+            if (!sql.startsWith(SELECT)) return s;
+            const bind = s.bind.bind(s);
+            s.bind = (...a: unknown[]) => {
+              const b = bind(...a);
+              reads.set(b, [String(a[0]), String(a[1])]);
+              const first = b.first.bind(b);
+              b.first = (async (...x: unknown[]) => {
+                const r = await first(...(x as []));
+                await consume(String(a[0]), String(a[1]));
+                return r;
+              }) as typeof b.first;
+              return b;
+            };
+            return s;
+          };
+        if (k === "batch")
+          return async (stmts: D1PreparedStatement[]) => {
+            const read = stmts.map((x) => reads.get(x)).find(Boolean);
+            if (read) await consume(read[0], read[1]);
+            return t.batch(stmts);
+          };
+        const v = Reflect.get(t, k, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  }
+
+  it("never revives a code consumed during the resend", async () => {
+    const guest = uniq("rv", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const ip = "198.51.100.211";
+    const r1 = await request(withMail(direct(), m), guest, { ip });
+    const first = m.codeFor(guest);
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    const DB = racingDb((ek, rid) =>
+      env.DB.prepare(
+        "delete from login_codes where email_key = ? and request_id = ?",
+      )
+        .bind(ek, rid)
+        .run(),
+    );
+    const r2 = await request(
+      { ...withMail(direct(), mailer(true)), DB } as Env,
+      guest,
+      { ip, cookie: cookieOf(r1, CODE_COOKIE) },
+    );
+    expect(r2.status).toBe(202);
+    const v = await verify(
+      withMail(direct(), m),
+      first,
+      cookieOf(r2, CODE_COOKIE),
+      { ip },
+    );
+    expect(v.status).toBe(401);
+  });
+
+  it("keeps guesses made against the new code while the send failed", async () => {
+    const guest = uniq("rg", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const ip = "198.51.100.212";
+    const e = withMail(direct(), m);
+    const r1 = await request(e, guest, { ip });
+    const first = m.codeFor(guest);
+    const wrong = first === "00000000" ? "11111111" : "00000000";
+    const g1 = await verify(e, wrong, cookieOf(r1, CODE_COOKIE), { ip });
+    expect(g1.status).toBe(401);
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    // Three guesses land on the new row before the send gives up.
+    const ek = await emailKey(direct(), guest);
+    const failing = {
+      ...withMail(direct()),
+      EMAIL: {
+        async send() {
+          await env.DB.prepare(
+            "update login_codes set attempts = attempts + 3 where email_key = ?",
+          )
+            .bind(ek)
+            .run();
+          throw new Error("E_SEND_FAILED");
+        },
+      } as unknown as SendEmail,
+    } as Env;
+    const r2 = await request(failing, guest, {
+      ip,
+      cookie: cookieOf(g1, CODE_COOKIE),
+    });
+    let cookie = cookieOf(r2, CODE_COOKIE);
+    for (let i = 0; i < 2; i++) {
+      const g = await verify(e, wrong, cookie, { ip });
+      expect(g.status).toBe(401);
+      cookie = cookieOf(g, CODE_COOKIE) ?? cookie;
+    }
+    // 1 + 3 + 2 tries: the earlier code's five are spent.
+    expect((await verify(e, first, cookie, { ip })).status).toBe(401);
+  });
+});

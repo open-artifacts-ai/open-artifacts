@@ -308,7 +308,7 @@ export function mountAuth(app: AppType): void {
       }
       if (e instanceof OidcRedeemError)
         return toSignIn(
-          e.stage === "tenant" ? "tenant" : "failed",
+          e.stage === "tenant" || e.stage === "expired" ? e.stage : "failed",
           e.next,
           clear,
           "google",

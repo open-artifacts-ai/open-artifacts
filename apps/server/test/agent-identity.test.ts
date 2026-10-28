@@ -630,3 +630,82 @@ describe("capped callers", () => {
     ).toBe(204);
   });
 });
+
+// Review item 40: the list, label and revoke routes saw only the first 100
+// grants (KV order), and a grant fresh enough to miss KV's listing lost its
+// usage row to the prune.
+describe("many grants, and KV list lag", () => {
+  /** A grant record as the provider stores it (KV `grant:<user>:<id>`). */
+  const putGrant = (userId: string, id: string) =>
+    env.OAUTH_KV.put(
+      `grant:${userId}:${id}`,
+      JSON.stringify({
+        id,
+        clientId: `client-${id}`,
+        userId,
+        scope: [],
+        metadata: { clientName: `Agent ${id}` },
+        encryptedProps: "",
+        createdAt: Math.floor(Date.now() / 1000),
+      }),
+    );
+
+  it("lists every grant, and labels and revokes one past the first 100", async () => {
+    const member = await login(`card-many-${tag}@x.com`);
+    const ids = Array.from(
+      { length: 105 },
+      (_, i) => `m${String(i).padStart(3, "0")}${tag}`,
+    );
+    await Promise.all(ids.map((id) => putGrant(member.userId, id)));
+    const listed = await clients(member.cookie);
+    expect(listed.map((c) => c.grantId).sort()).toEqual(ids);
+    const last = ids[104] as string;
+    const p = await api(app, R.oauthClient(last), member.cookie, {
+      method: "PATCH",
+      body: { label: "far" },
+    });
+    expect(p.status).toBe(200);
+    expect(OAuthClientSchema.parse(await p.json())).toMatchObject({
+      grantId: last,
+      label: "far",
+    });
+    const d = await api(app, R.oauthClient(last), member.cookie, {
+      method: "DELETE",
+    });
+    expect(d.status).toBe(204);
+    expect(await env.OAUTH_KV.get(`grant:${member.userId}:${last}`)).toBeNull();
+    expect(await clients(member.cookie)).toHaveLength(104);
+  });
+
+  it("someone else's grant id is 404 on PATCH and DELETE", async () => {
+    const a = await login(`card-own-a-${tag}@x.com`);
+    const b = await login(`card-own-b-${tag}@x.com`);
+    const id = `own${tag}`;
+    await putGrant(a.userId, id);
+    for (const method of ["PATCH", "DELETE"] as const)
+      expect(
+        (
+          await api(app, R.oauthClient(id), b.cookie, {
+            method,
+            ...(method === "PATCH" ? { body: { label: "x" } } : {}),
+          })
+        ).status,
+      ).toBe(404);
+    expect(await env.OAUTH_KV.get(`grant:${a.userId}:${id}`)).not.toBeNull();
+  });
+
+  it("the prune keeps a recently used row the listing can't see yet", async () => {
+    const { member } = await grant(`card-lag-${tag}@x.com`);
+    const ins = (id: string, at: number) =>
+      env.DB.prepare(
+        "insert into agent_grants (grant_id, user_id, last_used_at) values (?, ?, ?)",
+      )
+        .bind(id, member.userId, at)
+        .run();
+    await ins(`fresh-${tag}`, Date.now());
+    await ins(`stale-${tag}`, Date.now() - 2 * 3600_000);
+    await clients(member.cookie);
+    expect(await usageRow(`fresh-${tag}`)).not.toBeNull();
+    expect(await usageRow(`stale-${tag}`)).toBeNull();
+  });
+});
