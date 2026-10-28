@@ -1,0 +1,136 @@
+// deploy-hosted-platform.yml: one env's hosted platform Workers deploy by hand
+// only, from a stable tag, in that env's reviewer-gated Environment, with
+// main's deploy scripts and the tag's code.
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
+import { root } from "./stubs.ts";
+
+const text = readFileSync(
+  join(root, ".github/workflows/deploy-hosted-platform.yml"),
+  "utf8",
+);
+// biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+const w: any = parse(text);
+const job = w.jobs.deploy;
+// biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+const steps: Record<string, any>[] = job.steps;
+const named = (n: string) =>
+  steps.find((s) => s.name === n) as Record<string, any>;
+
+describe("deploy-hosted-platform.yml", () => {
+  it("runs only on dispatch, read-only, one at a time, in the gated Environment", () => {
+    expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
+    const inputs = w.on.workflow_dispatch.inputs;
+    expect(inputs.tag.required).toBe(true);
+    expect(inputs.env).toMatchObject({
+      type: "choice",
+      options: ["staging", "prod"],
+      required: true,
+    });
+    expect(inputs.verify_only).toMatchObject({
+      type: "boolean",
+      default: false,
+    });
+    expect(w.permissions).toEqual({ contents: "read" });
+    expect(job.permissions).toBeUndefined();
+    expect(job.environment).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}",
+    );
+    expect(w.concurrency).toEqual({
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      group: "hosted-platform-${{ inputs.env }}",
+      "cancel-in-progress": false,
+    });
+    expect(job["timeout-minutes"]).toBeLessThanOrEqual(30);
+  });
+
+  it("pins every action by SHA and keeps no git credentials", () => {
+    for (const l of text.split("\n").filter((l) => /^\s*- uses: /.test(l)))
+      expect(l).toMatch(/@[0-9a-f]{40} # v\d/);
+    for (const s of steps.filter((s) => s.uses)) {
+      expect(s.uses).toMatch(/@[0-9a-f]{40}$/);
+      if (String(s.uses).startsWith("actions/checkout@"))
+        expect(s.with["persist-credentials"]).toBe(false);
+    }
+  });
+
+  it("deploys the tag's code with main's deploy scripts", () => {
+    const outs = steps.filter((s) =>
+      String(s.uses).startsWith("actions/checkout@"),
+    );
+    expect(outs).toHaveLength(2);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(outs[0]?.with.ref).toBe("refs/tags/${{ inputs.tag }}");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(outs[1]?.with).toMatchObject({
+      ref: "${{ github.sha }}",
+      path: ".deploy-logic",
+      "sparse-checkout": "scripts/ops",
+    });
+    expect(named("The checkout is exactly the tag").run).toContain(
+      'test "$(git describe --tags --exact-match)" = "$TAG"',
+    );
+    const use = named("Use main's deploy scripts").run as string;
+    expect(use).toContain(
+      "deploy-hosted-platform.sh deploy-platform-worker.sh",
+    );
+    expect(steps.indexOf(named("Use main's deploy scripts"))).toBeLessThan(
+      steps.indexOf(named("Deploy and verify")),
+    );
+  });
+
+  it("only the deploy step sees secrets, through env, exactly these", () => {
+    const withSecrets = steps.filter((s) =>
+      JSON.stringify(s).includes("secrets."),
+    );
+    expect(withSecrets.map((s) => s.name)).toEqual(["Deploy and verify"]);
+    const env = named("Deploy and verify").env as Record<string, string>;
+    const secrets = Object.entries(env)
+      .filter(([, v]) => v.includes("secrets."))
+      .map(([k]) => k)
+      .sort();
+    expect(secrets).toEqual([
+      "CLOUDFLARE_API_TOKEN",
+      "GOOGLE_CLIENT_SECRET",
+      "GOOGLE_DIRECTORY_CLIENT_SECRET",
+      "INVENTORY_KEY",
+    ]);
+    // The same names in each env's Environment: no env-specific secret names.
+    expect(JSON.stringify(env)).not.toMatch(/PROD_|STAGING_/);
+    expect(env.CLOUDFLARE_API_TOKEN).toBe("${{ secrets.DEPLOY_TOKEN }}");
+    expect(env.VERIFY_ONLY).toBe("${{ inputs.verify_only && '1' || '' }}");
+    expect(named("Deploy and verify").run).not.toContain("secrets.");
+    expect(named("Deploy and verify").run).toContain(
+      'bash scripts/ops/deploy-hosted-platform.sh "$DEPLOY_ENV" "$t"',
+    );
+  });
+
+  it("the input check accepts known targets in order and refuses anything else", () => {
+    const check = named("Check the inputs").run as string;
+    const go = (TAG: string, TARGETS: string) =>
+      spawnSync("bash", ["-c", check], {
+        env: { PATH: process.env.PATH, TAG, TARGETS },
+        encoding: "utf8",
+      }).status;
+    expect(
+      go("v0.74.1", "auth-broker,directory-broker,dispatch,scheduler"),
+    ).toBe(0);
+    expect(go("v0.74.1", "inventory-key")).toBe(0);
+    expect(go("v0.74.1", "dispatch,scheduler")).toBe(0);
+    for (const [tag, t] of [
+      ["0.74.1", "dispatch"],
+      ["v0.74.1-rc.1", "dispatch"],
+      ["main", "dispatch"],
+      ["v0.74.1", "scheduler,dispatch"],
+      ["v0.74.1", "dispatch,dispatch"],
+      ["v0.74.1", "inventory"],
+      ["v0.74.1", "dispatch;rm -rf /"],
+      ["v0.74.1", ""],
+    ])
+      expect(go(tag as string, t as string), `${tag} ${t}`).toBe(1);
+  });
+});

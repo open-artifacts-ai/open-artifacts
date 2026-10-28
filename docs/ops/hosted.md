@@ -359,6 +359,26 @@ Email-quota lines (one per run, after `nightly summary`; filter on `email-quota`
 
 A failed or skipped alert never changes the nightly lines above.
 
+## Platform Workers through CI (`deploy-hosted-platform.yml`)
+
+The brokers, dispatch and the scheduler deploy from CI, not a laptop: `deploy-hosted-platform.yml` is dispatch-only and takes an env (`staging` or `prod`), a stable release tag and a comma-separated target list in dependency order (`auth-broker,directory-broker,dispatch,scheduler,inventory-key`). The workflow file and its deploy scripts come from main; everything deployed comes from the tag. It runs `scripts/ops/deploy-hosted-platform.sh <env> <target>`, which deploys through `deploy-platform-worker.sh` (the allowlist, placeholders filled and checked), sets secrets only after the Worker exists, then reads the live settings back and refuses on any mismatch: bindings, vars, the dispatch namespace, service bindings, observability (off on the brokers and dispatch), the scheduler's two schedules, and the exact secret names. `verify_only` deploys and sets nothing: it reads the live Workers back and runs every check (a read-only rehearsal). Secrets reach wrangler on stdin and the API token reaches curl on stdin; none is in argv or printed.
+
+Each env has its own GitHub Environment, `hosted-staging-deploy` or `hosted-prod-deploy`: deployment branch `main` only, and the user as required reviewer. It is separate from `hosted-prod`, whose release signing job runs on every release and must not wait for a review. Both hold the same names:
+
+| Kind | Name | Value |
+| --- | --- | --- |
+| Secret | `DEPLOY_TOKEN` | A Cloudflare API token for the hosted account: Workers Scripts Edit (account), nothing else; set a TTL |
+| Secret | `GOOGLE_CLIENT_SECRET` | The env's sign-in client secret |
+| Secret | `GOOGLE_DIRECTORY_CLIENT_SECRET` | The env's Directory client secret |
+| Secret | `INVENTORY_KEY` | `oa-<p>-inventory`'s key (32+ chars); only the `inventory-key` target uses it |
+| Variable | `HOSTED_ACCOUNT_ID` | The hosted account id |
+| Variable | `GOOGLE_CLIENT_ID`, `GOOGLE_DIRECTORY_CLIENT_ID` | The env's two client ids (public) |
+| Variable | `BROKER_REGISTRY_ID`, `DIRECTORY_REGISTRY_ID`, `HOSTS_KV_ID` | The ids of `oa-<p>-broker-registry`, `oa-<p>-directory-registry`, `oa-<p>-hosts` |
+| Variable | `PLATFORM_DB_ID` | The id of `oa-<p>-platform` |
+| Variable | `EMAIL_ZONE_TAGS`, `EMAIL_DAILY_LIMIT` | The sending zone tag(s) and the account's daily sending limit (see the scheduler section) |
+
+The broker state keys (`BROKER_STATE_KEY`, `DIRECTORY_STATE_KEY`) are never stored anywhere: the first run generates each one inside the runner, and later runs keep it (a failed secrets listing stops the run instead of reading as "absent"). The Google secrets are set on every run, so rotating one is: update the Environment secret, then re-run that target. The zone wiring (routes, DNS, settings) stays a one-off step with a short-lived zone token.
+
 ## Hosted release files (T3b)
 
 - The stored record is `{ "record": "<canonicalJson(record)>", "signature": "<base64url>" }`. The signature covers `"oa-release-v1\n" + env + "\n" + record` (the exact string). Readers verify that string, parse it refusing duplicate keys (objects built with a null prototype), and require it to re-serialize byte for byte.
