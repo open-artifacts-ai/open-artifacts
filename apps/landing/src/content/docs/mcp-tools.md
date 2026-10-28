@@ -8,11 +8,11 @@ Tool inputs are JSON Schema. Each tool returns plain text plus structured output
 
 ## Publishing
 
-`publish_artifact` creates an artifact, or publishes a new version when you pass `id`. Pass exactly one of `content` or `files`.
+`publish_artifact` creates an artifact, or publishes a new version when you pass `id`. Pass exactly one of `content` or `files`. To change only settings (`title`, `description`, `visibility`, `capabilities`, or `dataWriters`), pass `id` with neither: the artifact updates in place, no version is created, and `message` is ignored.
 
 | Field | Notes |
 |---|---|
-| `id` | The artifact to publish a new version of. Leave it out to create one, or pass an id reserved by `create_upload`. |
+| `id` | The artifact to publish a new version of, or to change settings on. Leave it out to create one, or pass an id reserved by `create_upload`. |
 | `title` | Required when creating (no `id`). Up to 200 characters. |
 | `description` | Optional. Up to 2,000 characters. |
 | `format` | `html`, `markdown`, `code`, or `pdf`. With `content`, pass `format` or `entry`; when it's left out, it's taken from the entry file's extension (`.html`, `.md`, and `.pdf`; anything else is `code`). |
@@ -29,7 +29,7 @@ Tool inputs are JSON Schema. Each tool returns plain text plus structured output
 
 Only the artifact's creator can change `visibility`, `capabilities`, or `dataWriters` when publishing a new version; editors can publish the rest.
 
-It returns the artifact's `id`, the new `version`, and its view URL.
+It returns the artifact's `id`, the new `version` (the current one for a settings-only update), and its view URL.
 
 ## Large files
 
