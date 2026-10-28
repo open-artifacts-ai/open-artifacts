@@ -49,21 +49,25 @@ describe.skipIf(!base || !pat)("staging smoke: search", () => {
     let last = "";
     const deadline = Date.now() + 60_000;
     for (;;) {
-      // A non-200 or a timed-out poll is "not yet" until the deadline.
+      // A transient non-200 or a timed-out poll is "not yet" until the
+      // deadline; a 401/403 (the PAT itself refused) fails at once.
+      let status = 0;
       try {
         const s = await fetch(`${base}${R.search}?q=${word}`, {
           headers: { authorization: `Bearer ${pat}` },
           signal: AbortSignal.timeout(10_000),
         });
+        status = s.status;
         last = `${s.status} ${await s.text()}`;
-        if (s.status === 200) {
-          const page = PageSchema(SearchHitSchema).parse(
-            JSON.parse(last.slice(4)),
-          );
-          found = page.items.some((h) => h.id === id);
-        }
       } catch (e) {
         last = `error ${(e as Error).name}`;
+      }
+      expect([401, 403], last).not.toContain(status);
+      if (status === 200) {
+        const page = PageSchema(SearchHitSchema).parse(
+          JSON.parse(last.slice(4)),
+        );
+        found = page.items.some((h) => h.id === id);
       }
       if (found || Date.now() >= deadline) break;
       await new Promise((res) => setTimeout(res, 2_000));

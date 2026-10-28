@@ -84,6 +84,25 @@ describe("unread request bodies on early refusals", () => {
     expect(r.status).toBe(201);
   });
 
+  it("a handler that read the body, then refused: the middleware is a no-op", async () => {
+    const { Hono } = await import("hono");
+    const { cancelUnreadOnRefusal } = await import(
+      "../src/http/unread-body.js"
+    );
+    const app = new Hono();
+    app.use(cancelUnreadOnRefusal());
+    let read = "";
+    app.post("/x", async (c) => {
+      read = await c.req.text();
+      return c.json({ error: "bad" }, 400);
+    });
+    const { s, body } = tracked(2);
+    const r = await app.fetch(post("http://app.localhost/x", body));
+    expect(r.status).toBe(400);
+    expect(read.length).toBe(2 * 64 * 1024);
+    expect(s.cancelled).toBe(false);
+  });
+
   it("cancelUnreadBody: no body, a used body or a locked one is a no-op", async () => {
     expect(cancelUnreadBody(new Request("http://x/"))).toBe(false);
     const used = new Request("http://x/", { method: "POST", body: "a" });

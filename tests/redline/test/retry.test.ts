@@ -136,14 +136,31 @@ describe("sendProbe", () => {
   it("no response twice: infra, never a verdict", async () => {
     const s = scripted([fetchFailed(), fetchFailed()]);
     const e = await sendProbe(
-      new Request(URL_, { method: "POST", body: "p" }),
+      new Request(URL_, { method: "PUT", body: "p" }),
       s.go,
     ).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(InfraError);
     expect(infraOf([e as Error])).toMatch(
-      /^infra: probe POST \/api\/v1\/me on rl-b\.example\.test got no response twice \(ECONNRESET\)/,
+      /^infra: probe PUT \/api\/v1\/me on rl-b\.example\.test got no response twice \(ECONNRESET\)/,
     );
-    expect(s.calls).toEqual(["POST p", "POST p"]);
+    expect(s.calls).toEqual(["PUT p", "PUT p"]);
+  });
+
+  it("a POST (or DELETE, PATCH) with no response: infra at once, never sent again", async () => {
+    // A refresh-token POST B wrongly accepted, its answer lost: a retry would
+    // get invalid_grant (the token spent) and read as a refusal.
+    for (const method of ["POST", "DELETE", "PATCH"]) {
+      const s = scripted([fetchFailed(), 400]);
+      const e = await sendProbe(
+        new Request(URL_, { method, body: "p" }),
+        s.go,
+      ).catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(InfraError);
+      expect((e as Error).message).toMatch(
+        new RegExp(`^infra: probe ${method} .* not idempotent, not retried`),
+      );
+      expect(s.calls).toEqual([`${method} p`]);
+    }
   });
 
   it("a response is never retried, and nor is another error", async () => {

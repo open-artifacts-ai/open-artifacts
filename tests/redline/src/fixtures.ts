@@ -53,8 +53,9 @@ export async function call(
       throw new HttpError(what, res, text);
     return { res, text };
   }
-  // Bounded: a timeout is a FAIL (an abort error), never a refusal. GET and
-  // PUT get retryIdempotent's tries on a network error or a 5xx.
+  // Bounded at 15 s per try. GET and PUT get retryIdempotent's tries on a
+  // network error (a timeout included) or a 5xx; anything else, or the last
+  // try, throws (a FAIL, never a refusal).
   const res = await retryIdempotent(req, {
     send: (r) => send(new Request(r, { signal: AbortSignal.timeout(15_000) })),
   });

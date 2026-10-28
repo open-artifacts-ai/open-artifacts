@@ -110,11 +110,20 @@ export async function sendProbe(
   req: Request,
   go: (r: Request) => Promise<Response> = send,
 ): Promise<Response> {
-  const spare = req.clone();
+  // Only an idempotent probe is sent again: a POST B wrongly accepted whose
+  // answer was lost could be refused on the retry (a refresh token now
+  // spent) and read as a pass. Anything else with no response is infra.
+  const idempotent = IDEMPOTENT.has(req.method.toUpperCase());
+  const spare = idempotent ? req.clone() : null;
   try {
     return await go(req);
   } catch (e) {
     if (!isNetworkError(e) || req.signal.aborted) throw e;
+    if (!spare)
+      throw new InfraError(
+        `probe ${where(req)} on ${new URL(req.url).host} got no response (${networkCode(e)}; not idempotent, not retried)`,
+        { cause: e },
+      );
     note(`probe ${where(req)} retried once (no response: ${networkCode(e)})`);
     try {
       return await go(spare);
