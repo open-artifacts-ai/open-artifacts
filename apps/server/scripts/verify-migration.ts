@@ -11,7 +11,7 @@
 // failure. Reasons go to stderr and name tables, counts and objects only,
 // never row data. The checks themselves are in verify-migration-core.ts.
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -117,6 +117,7 @@ export async function main(
   try {
     if (a.cmd === "capture") {
       const c = await capture(q(a.db));
+      mkdirSync(path.dirname(path.resolve(a.file)), { recursive: true });
       writeFileSync(a.file, serialize(c));
       io.out(
         `captured ${c.tables.length} tables and ${c.schema.length} schema objects to ${a.file}`,

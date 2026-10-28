@@ -166,6 +166,30 @@ describe("upgrade.md content", () => {
     expect(md).toContain("verbatim");
   });
 
+  it("guards migration 0017: bookmark and capture before, verify after, restore on failure", async () => {
+    const md = await upgrade();
+    const s7 = md.split("## 7. ")[1]?.split("\n## ")[0] ?? "";
+    const cf = `${SECRET_ENV_VARS.cloudflare}="$(cat ${secretFile("cloudflare", { installName: WORKER })})"`;
+    const script =
+      "node --experimental-strip-types apps/server/scripts/verify-migration.ts";
+    const order = [
+      `${cf} ${script} capture --db ${WORKER} --out .openartifacts/migration-0017-before.json`,
+      `wrangler d1 time-travel info ${WORKER} --json`,
+      "already applied",
+      `--upgrade --name ${WORKER} --json`,
+      `${cf} ${script} verify --db ${WORKER} --in .openartifacts/migration-0017-before.json`,
+      `wrangler d1 time-travel restore ${WORKER} --bookmark=<bookmark>`,
+      "rollback in step 8",
+    ];
+    let at = -1;
+    for (const x of order) {
+      const i = s7.indexOf(x, at + 1);
+      expect(i, x).toBeGreaterThan(at);
+      at = i;
+    }
+    expect(md.split("## 8. ")[1]).toContain("failed its verify");
+  });
+
   it("secrets: saved with secretSnippet to secretFile, passed by $(cat), no inline token", async () => {
     const md = await upgrade();
     const cf = secretFile("cloudflare", { installName: WORKER });
