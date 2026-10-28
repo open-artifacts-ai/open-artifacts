@@ -3,6 +3,8 @@
 Date: 2026-10-24
 Status: Draft for approval
 
+> **Revised 2026-10-29** against origin/main `5469cf78`, which had moved past #503 (UserPresence revocation gate), #814, #816 (`gone.retryAfterMs`) and #821 (client `notBefore`). Changes: MCP 2026-07-28 removed protocol-level sessions, so `Mcp-Session-Id` is issued only to legacy-era clients (2025-03-26 through 2025-11-25) at `initialize` and modern-era agents show as one face per connection in v1 (Section 5, Section 9); the product comes from the agent name only for an OAuth grant, and a token connection's label never reaches anyone but the owner (Section 5, tested in plan Task 6); revocation and refused sockets (Section 6); server-side names are `viewer_presence_*` to avoid confusion with the existing `UserPresence` revocation DO (Section 7). The plan carries the per-task details and line references.
+
 ## 1. Intent
 
 When someone opens an artifact, the header shows who else has it open right now, the way Google Docs and Drive do. The goal is awareness: a glance tells you whether you're alone or whether teammates, strangers on a public link, or AI agents are on it with you. **The rule for every detail: mirror Google Drive's patterns** (user).
@@ -41,8 +43,8 @@ When someone opens an artifact, the header shows who else has it open right now,
 - **Sticky for the browser session:** a fresh random presence id is kept in a session cookie on the app origin (no expiry, so the browser drops it when the session ends; shared by every tab of that browser). It's not the `oa.anonId`. The animal and color come from that id, so all tabs of one browser show one animal. A new browser session gets a new animal, as in Google. My call (from the builder check: `sessionStorage` would give each tab its own animal).
 - **Agents: one face per agent session, in the shared identity card shape** (user, 2026-10-24; option C of the options page, step 1 of the shared-identity proposal). Each card field carries a trust level, and the UI never shows a self-reported field as fact:
   - **owner** (verified): the person whose sign-in the connection belongs to. The face shows the owner's initials inside the agent shape. The card says "<Owner name>'s agent".
-  - **product** (self-reported): the OAuth client name the agent registered with ("Claude Code"). For a token connection there's no product; the card says "Agent". The token label shows to the owner only.
-  - **session** (server-issued): the MCP Streamable HTTP session id (`Mcp-Session-Id`), which the server starts issuing at `initialize`. One face per session. Plain REST calls and clients that don't keep the session fall back to one face per connection.
+  - **product** (self-reported): the OAuth client name the agent registered with ("Claude Code"), taken only when the connection is an OAuth grant. For a token connection there's no product; the card says "Agent". The token label (a token connection's agent name) shows to the owner only: it never reaches any other viewer, named, anonymous, guest or embed.
+  - **session** (server-issued): the MCP Streamable HTTP session id (`Mcp-Session-Id`), issued at `initialize` only to legacy-era clients (protocol 2025-03-26 through 2025-11-25). One face per session. MCP 2026-07-28 removed protocol-level sessions (its Streamable HTTP spec says a server receiving `Mcp-Session-Id` should ignore it and not mint or echo session ids), so the server never mints or echoes it for 2026-07-28-era requests. **Known limit:** modern-era agents show as one face per connection in v1. Plain REST calls and legacy clients that don't keep the session also fall back to one face per connection.
   - **name** (server-assigned): the product name, made unique on the artifact with "-2", "-3" on a clash, the way OpenBus does ("Claude Code", "Claude Code-2"). Agents never name themselves as a trusted fact through tool arguments.
   - **activity** (self-reported): the change note from the agent's last publish, or an optional short "what I'm doing" field on reads and data calls, at most 80 characters, shown in quotes and labeled as the agent's own words. The MCP server instructions ask agents to set it.
   - **state**: "Editing" after a publish or data write, otherwise "Viewing".
@@ -63,13 +65,14 @@ When someone opens an artifact, the header shows who else has it open right now,
 - **Reconnects don't reshuffle:** the 10-minute signed-URL reconnect (close 4408) and short drops keep a person's place: a leave is held for a ~5 s grace before it's broadcast, and the server keeps the person's arrival time across that grace (a reconnect inside it inherits the held arrival), so the client sends no arrival time. Coordinator's call.
 - **Free plan:** presence frames are sent only on join, leave, and agent expiry, coalesced (a burst of joins sends one frame). No timers per socket; agent expiry uses the DO's existing alarm.
 - **Copy:** no em dashes; say "any AI agent" where relevant.
-- **RBAC:** visibility of presence follows the ability to open the artifact. Revoking someone's access closes their sockets (P3 T7b), which removes them from the stack.
+- **RBAC:** visibility of presence follows the ability to open the artifact. Revoking someone's access closes their sockets (P3 T7b, `closeActor`), which removes them from the stack at once (no reconnect grace) along with their agents. A socket the server refuses right after opening (authorized just before an access change, or refused by the revocation gate) never joins the stack.
 
 ## 7. What a builder decides
 
 - The presence frame's shape, coalescing window, and how a newly connected socket gets the current roster.
 - The animal list (around 50 to 70 animals, family-friendly, each with an icon) and the color palette.
 - Where the agent "last seen" signal is recorded on MCP and REST paths without adding a Worker request (for example, inside calls that already reach the DO).
+- Internal names: the server already has a `UserPresence` DO (revocation) and `presence_*` logs, so this feature's tables, logs and keys are named `viewer_presence_*` (plan Global Constraints).
 - Tests, including: two tabs of one person show once; a closed tab leaves within a few seconds; an anonymous viewer's frames never carry the anonId; a guest and a stranger see names but never emails; an agent drops off after the window.
 
 ## 8. Decided
@@ -93,6 +96,7 @@ When someone opens an artifact, the header shows who else has it open right now,
 ## 9. Later
 
 - **Verified by OpenBus** (user, 2026-10-24). An agent presents a short-lived identity card signed by OpenBus, which can attest the product and session from the agent's machine; Open Artifacts verifies it and shows "verified by OpenBus". Conditions: same human linked once by the owner; trust only the signed card; activity stays self-reported; no agent shown to someone who couldn't see it on the bus; revoking a machine in OpenBus drops its agents. Joint with OpenBus (#540).
+- **One face per session for modern-era agents.** MCP 2026-07-28 has no protocol-level session, so v1 shows those agents one face per connection. A later version could key them on something the client sends per request, if the protocol or OpenBus provides it.
 - **Profile photos** (user, 2026-10-24: initials for now). Google shows photos, but none exist in Open Artifacts today; adding them means taking the picture at sign-in, storing it and serving it.
 
 ## 10. Left to the builder
