@@ -6,7 +6,13 @@ import type { Me } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { type HttpHandler, HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
-import { calls, installHarness, mount, mountHosted } from "./harness";
+import {
+  type Call,
+  calls,
+  installHarness,
+  mount,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -45,6 +51,10 @@ const serve = (
     HttpResponse.json({ items, nextCursor: next, total }),
   );
 const people = () => screen.findByRole("region", { name: "People" });
+/** GET R.members for active people (no status, or one including active). */
+const activeLookup = (c: Call) =>
+  c.path === "/api/v1/members" &&
+  (c.search.get("status") ?? "active").split(",").includes("active");
 const row = async (name: string) => {
   const el = (await within(await people()).findByText(name)).closest("li");
   if (!el) throw new Error(`no row for ${name}`);
@@ -289,6 +299,36 @@ it("restricted and guest rows show Viewer as text with their chip and reason", a
     "gia@partner.io · Guest · can only view · via eng@",
   );
   expect(within(gia).queryByRole("combobox")).toBeNull();
+});
+
+it("a restricted row's reason comes from the row itself, with no member lookup", async () => {
+  const gets = calls("GET");
+  mountWith([
+    serve([
+      person({
+        userId: "d1",
+        user: { id: "d1", name: "Dan Contractor", email: "dan@example.com" },
+        role: "editor",
+        manualRole: "editor",
+        cap: "restricted",
+        restriction: {
+          manual: false,
+          groups: [
+            {
+              groupId: "gCon09",
+              email: "contractors@example.com",
+              name: "Contractors",
+            },
+          ],
+        },
+      }),
+    ]),
+  ]);
+  expect(await row("Dan Contractor")).toHaveTextContent(
+    "Can only view · restricted via Contractors",
+  );
+  // No active-member lookup (Departed's suspended,removed list is admin-only and separate).
+  expect(gets.some(activeLookup)).toBe(false);
 });
 
 it("suspended and removed people sort last, say No access, and show the role as text", async () => {
@@ -668,6 +708,43 @@ it("Add people with nobody picked says so", async () => {
   });
   fireEvent.click(within(d).getByRole("button", { name: "Add" }));
   expect(await within(d).findByText("Pick at least one person.")).toBeVisible();
+});
+
+// Review item 3: GET /members is admin-only, so a manager's search can't use it.
+it("a space manager who isn't an org admin finds and adds people (R.spaceCandidates)", async () => {
+  const seen = calls("PUT");
+  const gets = calls("GET");
+  mountHosted(ENG, true, asManager);
+  fireEvent.click(
+    within(await people()).getByRole("button", { name: "Add people" }),
+  );
+  const d = await screen.findByRole("dialog", {
+    name: "Add people to Engineering",
+  });
+  fireEvent.change(within(d).getByRole("combobox", { name: "People" }), {
+    target: { value: "da" },
+  });
+  fireEvent.click(
+    await screen.findByRole("option", { name: /Dan Contractor/ }),
+  );
+  fireEvent.click(within(d).getByRole("button", { name: "Add 1 person" }));
+  await waitFor(() =>
+    expect(seen.at(-1)).toEqual(
+      expect.objectContaining({
+        path: `/api/v1/spaces/${ID}/members/Dn8uPqRsTu9vWxYz`,
+        body: { role: "viewer" },
+      }),
+    ),
+  );
+  expect(
+    gets.some(
+      (c) =>
+        c.path === `/api/v1/spaces/${ID}/candidates` &&
+        c.search.get("q") === "da",
+    ),
+  ).toBe(true);
+  // No active-member lookup (Departed's suspended,removed list is admin-only and separate).
+  expect(gets.some(activeLookup)).toBe(false);
 });
 
 it("a space manager's Add people has no Manager role", async () => {

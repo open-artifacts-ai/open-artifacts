@@ -11,7 +11,15 @@ import {
   parseUsersPage,
 } from "../src/directory/google.js";
 import { instanceDirectory, readHealth } from "../src/directory/health.js";
-import { SyncEngine } from "../src/directory/sync.js";
+import { directorySignIn } from "../src/directory/signin.js";
+import { readPending, readPendingAny } from "../src/directory/store.js";
+import {
+  BACKOFF_MAX_MS,
+  CREATED_SKEW_MS,
+  FAST_MS,
+  RECONCILE_MS,
+  SyncEngine,
+} from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
@@ -1165,7 +1173,7 @@ describe("review fixes (P3 T13)", () => {
     await connected(t0);
     g.fail(/\/reports\/admin/, 503, { times: 1 });
     const flaky = { ...e, DB: flakyDb } as Env;
-    // readPending (tick), then fail()'s readHealth: the second such read.
+    // The alarm's second directory_state read (readRetire is its first).
     const gate = d1Gate(
       /^select value from directory_state where key = \?$/,
       1,
@@ -1424,5 +1432,410 @@ describe("kicks and the group lookup", () => {
     expect(JSON.parse(String(await reasons()))).toContain("manual");
     const member = await login(uniq("sync-now-member"), "member");
     expect((await post(e, R.directorySync, member.cookie)).status).toBe(404);
+  });
+});
+
+describe("P2.5 #5: restricted_sync is recomputed for everyone on each reconcile", () => {
+  const restrictedOf = async (sub: string) =>
+    (
+      await env.DB.prepare(
+        "select u.restricted_sync as r from users u join identities i on i.user_id = u.id where i.provider = 'google' and i.subject = ?",
+      )
+        .bind(sub)
+        .first<{ r: number }>()
+    )?.r;
+  /** The next reconcile is due (its own interval past t). */
+  const nextRec = (t: number) => t + RECONCILE_MS + FAST_MS;
+
+  it("a new hire outside any restricted group is not restricted; one inside is", async () => {
+    const [inGroup, outside] = dirUsers(2, "rs");
+    const gid = `grp-rs-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    expect(await restrictedOf(inGroup?.id as string)).toBe(1);
+    // Hired later: created by the reconcile's listing (fail closed), lifted
+    // by its finish.
+    const [later] = dirUsers(1, "rs-later");
+    await drain(nextRec(t0));
+    expect(await restrictedOf(later?.id as string)).toBe(0);
+    expect(await restrictedOf(outside?.id as string)).toBe(0);
+    expect(await restrictedOf(inGroup?.id as string)).toBe(1);
+  });
+
+  it("a restricted group that could not be read keeps new hires restricted (fail closed)", async () => {
+    const [inGroup] = dirUsers(1, "rs-ref");
+    const gid = `grp-rs-ref-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    g.fail(new RegExp(`/groups/${gid}/members`), 403, { times: 1000 });
+    const [later] = dirUsers(1, "rs-ref-later");
+    await drain(nextRec(t0));
+    expect(await uidOf(later?.id as string)).toBeTruthy();
+    expect(await restrictedOf(later?.id as string)).toBe(1);
+    // Readable again: the next reconcile lifts them.
+    g.clearFailures();
+    await drain(nextRec(nextRec(t0)));
+    expect(await restrictedOf(later?.id as string)).toBe(0);
+    expect(await restrictedOf(inGroup?.id as string)).toBe(1);
+  });
+
+  it("a user who left every restricted group outside any diff is lifted; one who joined is capped and loses live sockets", async () => {
+    const [stays, left] = dirUsers(2, "rs-drift");
+    const gid = `grp-rs-drift-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [stays?.id ?? "", left?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    const leftUid = await uidOf(left?.id as string);
+    const staysUid = await uidOf(stays?.id as string);
+    // Drift no diff touches: flags written behind sync's back.
+    await env.DB.batch([
+      env.DB.prepare("update users set restricted_sync = 0 where id = ?").bind(
+        staysUid,
+      ),
+      env.DB.prepare(
+        "delete from directory_members where group_id = ? and user_id = ?",
+      ).bind(gid, leftUid),
+    ]);
+    g.removeMember(gid, left?.id as string);
+    await drain(nextRec(t0));
+    expect(await restrictedOf(left?.id as string)).toBe(0);
+    expect(await restrictedOf(stays?.id as string)).toBe(1);
+    // Newly capped: their UserPresence recorded the revocation.
+    const ns = env.USER_PRESENCE as NonNullable<Env["USER_PRESENCE"]>;
+    const revoked = await runInDurableObject(
+      ns.get(ns.idFromName(staysUid)),
+      (_i, s) =>
+        s.storage.sql
+          .exec("select revoked_at from state where id = 1")
+          .toArray()[0]?.revoked_at,
+    );
+    expect(Number(revoked)).toBeGreaterThan(0);
+  });
+
+  /** A synced user row created at `at` (ms), restricted (fail closed). */
+  async function hireAt(tag: string, at: number) {
+    const sub = `g-${tag}-${crypto.randomUUID()}`;
+    const uid = `u${crypto.randomUUID().replace(/-/g, "").slice(0, 15)}`;
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into users (id, email, name, role, created_at, status, restricted_sync) values (?, ?, ?, 'member', ?, 'active', 1)",
+      ).bind(uid, uniq(tag), tag, at),
+      env.DB.prepare(
+        "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, ?, 1)",
+      ).bind(sub, uid, at),
+    ]);
+    return sub;
+  }
+
+  it("review #1a: a hire created after the restricted group's read began is not lifted by that run", async () => {
+    const [inGroup] = dirUsers(1, "rs-race");
+    const gid = `grp-rs-race-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    const at = nextRec(t0);
+    const gate = g.gate(new RegExp(`/groups/${gid}/members`));
+    const run = drain(at);
+    await gate.hit;
+    // Created by the fast lane or a sign-in while the read is in flight: it
+    // may be in the group, and the rows read predate it.
+    const late = await hireAt("rs-race-late", at + 1);
+    // Within the clock-skew margin before the read: not lifted either.
+    const skewed = await hireAt("rs-race-skew", at - CREATED_SKEW_MS + 1);
+    const early = await hireAt("rs-race-early", at - CREATED_SKEW_MS - 1);
+    gate.release();
+    await run;
+    expect(await restrictedOf(late)).toBe(1);
+    expect(await restrictedOf(skewed)).toBe(1);
+    expect(await restrictedOf(early)).toBe(0);
+  });
+
+  it("review #1b: a group restricted after the run planned blocks every lift that run", async () => {
+    const [inGroup] = dirUsers(1, "rs-new");
+    const gid = `grp-rs-new-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    const gate = g.gate(new RegExp(`/groups/${gid}/members`));
+    const run = drain(nextRec(t0));
+    await gate.hit;
+    // Restricted now, after the targets were planned: no rows, never read.
+    const added = `grp-rs-added-${crypto.randomUUID()}`;
+    g.addGroup({ id: added, email: `${added}@a.com`, members: [] });
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into directory_groups (group_id, email) values (?, ?)",
+      ).bind(added, `${added}@a.com`),
+      env.DB.prepare(
+        "insert into restricted_groups (group_id, group_email) values (?, ?)",
+      ).bind(added, `${added}@a.com`),
+    ]);
+    const hire = await hireAt("rs-new-hire", 1);
+    gate.release();
+    await run;
+    expect(await restrictedOf(hire)).toBe(1);
+    // The next reconcile reads it: lifted (not a member).
+    await drain(nextRec(nextRec(t0)));
+    expect(await restrictedOf(hire)).toBe(0);
+  });
+
+  it("review #2: a reconcile aborted midway keeps new hires restricted; the next tick finishes it and lifts them", async () => {
+    const [inGroup] = dirUsers(1, "rs-abort");
+    const gid = `grp-rs-abort-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    g.fail(new RegExp(`/groups/${gid}/members`), 503, { times: 1 });
+    const [later] = dirUsers(1, "rs-abort-later");
+    const at = nextRec(t0);
+    await drain(at);
+    expect(await kv("run.rec")).not.toBeNull();
+    expect(await restrictedOf(later?.id as string)).toBe(1);
+    await drain(at + BACKOFF_MAX_MS);
+    expect(await kv("run.rec")).toBeNull();
+    expect(await restrictedOf(later?.id as string)).toBe(0);
+    expect(await restrictedOf(inGroup?.id as string)).toBe(1);
+  });
+  it("review S1: a transient 404 on a new restricted group lifts nobody until the restriction goes", async () => {
+    const [inGroup] = dirUsers(1, "rs-404");
+    const gid = `grp-rs-404-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    // Restricted before Google lists it (no rows yet): its reads 404.
+    const fresh = `grp-rs-404-new-${crypto.randomUUID()}`;
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into directory_groups (group_id, email) values (?, ?)",
+      ).bind(fresh, `${fresh}@a.com`),
+      env.DB.prepare(
+        "insert into restricted_groups (group_id, group_email) values (?, ?)",
+      ).bind(fresh, `${fresh}@a.com`),
+    ]);
+    const hire = await hireAt("rs-404-hire", 1);
+    await drain(nextRec(t0));
+    expect(await restrictedOf(hire)).toBe(1);
+    // Still 404 next hour: still nobody lifted (fail closed) ...
+    await drain(nextRec(nextRec(t0)));
+    expect(await restrictedOf(hire)).toBe(1);
+    // ... until an admin removes the restriction.
+    await env.DB.prepare("delete from restricted_groups where group_id = ?")
+      .bind(fresh)
+      .run();
+    await drain(nextRec(nextRec(nextRec(t0))));
+    expect(await restrictedOf(hire)).toBe(0);
+  });
+});
+
+describe("P2.5 scenarios: admin actions chained with a sync", () => {
+  const send = (method: "PUT" | "DELETE", path: string, body?: unknown) =>
+    fetchAndWait(
+      app,
+      new Request(`${APP}${path}`, {
+        method,
+        headers: {
+          "x-oa-request": "1",
+          "content-type": "application/json",
+          cookie: owner.cookie,
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      }),
+      e,
+    );
+  const nextRec = (t: number) => t + RECONCILE_MS + FAST_MS;
+
+  it("unmap, remove members in Google, remap: no access from the old rows, no over_half hold", async () => {
+    const us = dirUsers(6, "remap");
+    const gid = `grp-remap-${crypto.randomUUID()}`;
+    await mappedGroup(
+      gid,
+      us.map((u) => u.id),
+    );
+    const t0 = Date.now();
+    await connected(t0);
+    expect(await membersOf(gid)).toHaveLength(6);
+    expect((await send("DELETE", R.orgMapping(gid))).status).toBe(204);
+    expect(await membersOf(gid)).toEqual([]);
+    // Four leave in Google while nothing reads the group.
+    for (const u of us.slice(0, 4)) g.removeMember(gid, u.id);
+    expect(
+      (await send("PUT", R.orgMapping(gid), { role: "viewer" })).status,
+    ).toBe(200);
+    // Nobody is granted anything before sync reads the group.
+    expect(await membersOf(gid)).toEqual([]);
+    await drain(nextRec(t0));
+    const kept = await Promise.all(us.slice(4).map((u) => uidOf(u.id)));
+    expect(await membersOf(gid)).toEqual([...kept].sort());
+    expect((await status()).held).toEqual([]);
+  });
+
+  it("a walk that outlived an unmapping never brings the rows back", async () => {
+    const us = dirUsers(2, "outlive");
+    const gid = `grp-outlive-${crypto.randomUUID()}`;
+    await mappedGroup(
+      gid,
+      us.map((u) => u.id),
+    );
+    const t0 = Date.now();
+    await connected(t0);
+    // The next reconcile is planned and has its targets; the unmapping lands
+    // before its sweep.
+    const gate = g.gate(new RegExp(`/groups/${gid}/members`));
+    const run = drain(nextRec(t0));
+    await gate.hit;
+    expect((await send("DELETE", R.orgMapping(gid))).status).toBe(204);
+    gate.release();
+    await run;
+    expect(await membersOf(gid)).toEqual([]);
+  });
+
+  it("reset a member's Google link, then sync: the same user is relinked and keeps restriction and group roles; nobody is held", async () => {
+    const us = dirUsers(5, "reset");
+    const [target] = us;
+    const mapped = `grp-reset-map-${crypto.randomUUID()}`;
+    const restricted = `grp-reset-rs-${crypto.randomUUID()}`;
+    await mappedGroup(
+      mapped,
+      us.map((u) => u.id),
+    );
+    await mappedGroup(restricted, [target?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    const uid = await uidOf(target?.id as string);
+    expect((await membersOf(mapped)).includes(uid)).toBe(true);
+    expect((await send("DELETE", R.memberIdentity(uid, "google"))).status).toBe(
+      204,
+    );
+    expect(await uidOf(target?.id as string)).toBeUndefined();
+    await drain(nextRec(t0));
+    // Relinked by email: the same row, still in both groups, still capped.
+    expect(await uidOf(target?.id as string)).toBe(uid);
+    expect(await statusOf(uid)).toBe("active");
+    expect((await membersOf(mapped)).includes(uid)).toBe(true);
+    expect(await membersOf(restricted)).toEqual([uid]);
+    const r = await env.DB.prepare(
+      "select restricted_sync as r from users where id = ?",
+    )
+      .bind(uid)
+      .first<{ r: number }>();
+    expect(r?.r).toBe(1);
+    expect((await status()).held).toEqual([]);
+  });
+
+  it("reconnect (same Workspace) then confirm: one reset, then sync resumes on the new grant and keeps everyone", async () => {
+    const us = dirUsers(3, "reconf");
+    const gid = `grp-reconf-${crypto.randomUUID()}`;
+    await mappedGroup(
+      gid,
+      us.map((u) => u.id),
+    );
+    const t0 = Date.now();
+    await connected(t0);
+    const before = await membersOf(gid);
+    expect(before).toHaveLength(3);
+    const r = await connect(
+      e,
+      owner.cookie,
+      g,
+      { sub: adminSub },
+      {
+        confirm: false,
+      },
+    );
+    expect(r.consented).toBe(true);
+    // Pending: the live binding keeps syncing; a removal in Google applies.
+    g.removeMember(gid, us[0]?.id as string);
+    await drain(nextRec(t0));
+    const removed = await uidOf(us[0]?.id as string);
+    expect(await membersOf(gid)).toEqual(before.filter((x) => x !== removed));
+    expect((await post(e, R.directoryConfirm, owner.cookie)).status).toBe(200);
+    await drain(nextRec(nextRec(t0)));
+    expect((await status()).state).toBe("ok");
+    expect(await membersOf(gid)).toEqual(before.filter((x) => x !== removed));
+    for (const u of us)
+      expect(await statusOf(await uidOf(u.id))).toBe("active");
+  });
+});
+
+describe("P2.5 #15: a pending reconnect keeps the live binding synced and enforced", () => {
+  /** Same Workspace, same super admin: a reconnect waiting for confirm. */
+  async function reconnectPending() {
+    const r = await connect(
+      e,
+      owner.cookie,
+      g,
+      { sub: adminSub },
+      {
+        confirm: false,
+      },
+    );
+    expect(r.consented).toBe(true);
+    expect((await status()).state).toBe("pending_confirm");
+  }
+  const suspendInGoogle = (
+    u: { id: string; primaryEmail: string },
+    at: number,
+  ) => {
+    (g.users.get(u.id) as { suspended?: boolean }).suspended = true;
+    g.activity("admin", "SUSPEND_USER", { USER_EMAIL: u.primaryEmail }, at);
+  };
+
+  it("a Google suspension still applies on the next fast tick", async () => {
+    const [u] = dirUsers(1, "pend-susp");
+    const t0 = Date.now();
+    await connected(t0);
+    const uid = await uidOf(u?.id as string);
+    await reconnectPending();
+    suspendInGoogle(u as { id: string; primaryEmail: string }, t0 + FAST_MS);
+    await drain(t0 + FAST_MS);
+    expect(await statusOf(uid)).toBe("suspended");
+  });
+
+  it("sign-in still checks the directory: a user suspended in Google is refused", async () => {
+    const [u] = dirUsers(1, "pend-signin");
+    const t0 = Date.now();
+    await connected(t0);
+    const uid = await uidOf(u?.id as string);
+    await reconnectPending();
+    (g.users.get(u?.id as string) as { suspended?: boolean }).suspended = true;
+    const row = await env.DB.prepare(
+      "select id, email, name, role from users where id = ?",
+    )
+      .bind(uid)
+      .first<{ id: string; email: string; name: string; role: string }>();
+    await expect(
+      directorySignIn(e, { ...row, displayName: null } as never),
+    ).rejects.toMatchObject({ why: "suspended" });
+    expect(await statusOf(uid)).toBe("suspended");
+  });
+
+  it("a first connect waiting for its owner syncs nothing", async () => {
+    const [u] = dirUsers(1, "first-pend");
+    const r = await connect(
+      e,
+      owner.cookie,
+      g,
+      { sub: adminSub },
+      {
+        confirm: false,
+      },
+    );
+    expect(r.consented).toBe(true);
+    const calls = g.adminCalls.length;
+    await tick(Date.now());
+    expect(g.adminCalls.length).toBe(calls);
+    expect(await uidOf(u?.id as string)).toBeUndefined();
+  });
+
+  it("readPending ignores a consent past its exp; readPendingAny still returns it", async () => {
+    await connect(e, owner.cookie, g, { sub: adminSub }, { confirm: false });
+    const p = await readPendingAny(e);
+    expect(p).not.toBeNull();
+    const exp = p?.exp as number;
+    expect(await readPending(e, exp - 1)).toMatchObject({ exp });
+    expect(await readPending(e, exp)).toBeNull();
+    expect(await readPendingAny(e)).toMatchObject({ exp });
   });
 });

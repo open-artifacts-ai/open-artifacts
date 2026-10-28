@@ -547,6 +547,7 @@ describe("orgCan", () => {
     "directory.manage",
     "members.manageAdmins",
     "broker.check",
+    "signin.problems",
   ] as OrgAction[])("%s: the org owner only", (action) => {
     expect(
       (["owner", "admin", "member", "guest"] as Role[]).map((r) =>

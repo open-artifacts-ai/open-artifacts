@@ -46,7 +46,9 @@ export function authProviders(env: Env): AuthProviders {
       start: AUTH.loginGoogle,
       domains: [...cfg.domains],
     });
-  if (cfg.providers.has("email"))
+  // Only when codes can be sent (cfg.emailCodes): email on without email
+  // sending is a problem the owner sees, not a code that never arrives.
+  if (cfg.emailCodes)
     providers.push({
       id: "email",
       domainCodes: cfg.domainCodes,
@@ -56,10 +58,15 @@ export function authProviders(env: Env): AuthProviders {
   return { mode, providers };
 }
 
-/** Me.instance.signIn. */
-export function instanceSignIn(env: Env): InstanceSignIn {
+/** Me.instance.signIn; with `owner`, also why configured sign-in is off (problems). */
+export function instanceSignIn(env: Env, owner = false): InstanceSignIn {
   const p = authProviders(env);
-  return { mode: p.mode, providers: p.providers.map((x) => x.id) };
+  const out: InstanceSignIn = {
+    mode: p.mode,
+    providers: p.providers.map((x) => x.id),
+  };
+  if (owner) out.problems = [...authConfig(env).problems];
+  return out;
 }
 
 /** Me.instance.features: FEATURES plus guests_read_only when the guest cap is on (reported only). */

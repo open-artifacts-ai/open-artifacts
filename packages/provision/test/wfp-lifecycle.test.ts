@@ -3112,17 +3112,17 @@ describe("fix round 4 (T8): every server precondition for hosted google", () => 
   };
 
   const RENDERED: [string, string, RegExp][] = [
-    ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID", /GOOGLE_CLIENT_ID is empty/],
+    ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID", /GOOGLE_CLIENT_ID isn't set/],
     [
       "HOSTED=1 needs the broker transport",
       "AUTH_BROKER_URL",
-      /requires the broker transport/,
+      /needs the broker transport/,
     ],
-    ["INSTALL_ID", "INSTALL_ID", /INSTALL_ID is empty/],
+    ["INSTALL_ID", "INSTALL_ID", /INSTALL_ID isn't set/],
     [
       "BROKER_SIGNING_KEY (PKCS#8 Ed25519)",
       "BROKER_SIGNING_KEY",
-      /BROKER_SIGNING_KEY is not/,
+      /BROKER_SIGNING_KEY isn't/,
     ],
     ["AUTH_DOMAINS non-empty", "AUTH_DOMAINS", /AUTH_DOMAINS is empty/],
   ];

@@ -8,6 +8,9 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@oa/auth-core": "workspace:*",
+    "@oa/server": "workspace:*",
+    "@oa/shared": "workspace:*",
     "@types/node": "^22.19.0",
     "vitest": "^4.1.12"
   },
