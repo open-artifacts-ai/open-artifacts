@@ -14,7 +14,13 @@ import { createPat } from "../src/auth/pat.js";
 import { getDb } from "../src/db/client.js";
 import { shares } from "../src/db/schema.js";
 import { INSTRUCTIONS } from "../src/mcp/instructions.js";
-import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
+import {
+  describeTool,
+  descriptionFor,
+  NO_SPACES_TEXT,
+  TOOL_DEFS,
+  type ToolName,
+} from "../src/mcp/tool-defs.js";
 import manifest from "../src/mcp/tool-manifest.json";
 import { SYSTEM_ACTOR, setUserStatus } from "../src/services/members.js";
 import { login, runIndex } from "./helpers.js";
@@ -48,8 +54,11 @@ const TOOLS = [
   "artifact_data_set",
   "artifact_data_update",
   "artifact_data_delete",
-  "list_spaces",
 ];
+/** With the spaces feature on, list_spaces is offered too (parity 1, B12). */
+const SPACES_TOOLS = [...TOOLS, "list_spaces"];
+/** What an install without spaces must never say to an agent. */
+const SPACES_WORDS = /\bspaces?\b|list_spaces|spaceId/i;
 
 const tag = newId().slice(0, 6).toLowerCase();
 let owner: { userId: string };
@@ -92,7 +101,7 @@ afterAll(async () => {
 });
 
 describe("MCP tools over PAT", () => {
-  it("tools/list has all 19 tools", async () => {
+  it("tools/list has the 18 tools (spaces off: no list_spaces)", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOLS].sort());
     for (const t of tools) {
@@ -201,7 +210,7 @@ describe("MCP tools over PAT", () => {
     expect(got.content).toBeUndefined();
     expect(got.downloadUrl).toMatch(
       new RegExp(
-        `^http://content\\.localhost/c/\\d+\\.[\\w-]+/${pub.id}/v1/a\\.png\\?dl=1$`,
+        `^http://content\\.localhost/c/\\d+\\.[\\w.-]+/${pub.id}/v1/a\\.png\\?dl=1$`,
       ),
     );
   });
@@ -766,7 +775,7 @@ describe("MCP artifact data tools", () => {
 describe("MCP 2026-07-28 era (per-request envelope)", () => {
   it("lists tools and publishes", async () => {
     const c = await connect(ownerPat, { modern: true });
-    expect((await c.listTools()).tools).toHaveLength(19);
+    expect((await c.listTools()).tools).toHaveLength(18);
     const pub = await publishMd(c, "# modern");
     const got = sc<{ content: string; version: { agent: unknown } }>(
       await tool(c, "get_artifact", { id: pub.id }),
@@ -875,7 +884,9 @@ describe("tool manifest", () => {
     expect(manifest).toEqual(
       TOOL_DEFS.map(({ name, description }) => ({ name, description })),
     );
-    expect(manifest.map((t) => t.name).sort()).toEqual([...TOOLS].sort());
+    expect(manifest.map((t) => t.name).sort()).toEqual(
+      [...SPACES_TOOLS].sort(),
+    );
   });
 
   it("tool descriptions and instructions state the current inline limit", () => {
@@ -974,18 +985,45 @@ describe("MCP spaces (P3 T10)", () => {
     await c.close();
   });
 
-  it("spaces off: list_spaces offers the personal space only", async () => {
+  it("spaces off (B12): no list_spaces, and no instructions or tool description names spaces", async () => {
     const u = await login(`mcp-spoff-${tag}@x.com`);
     const edit = await mkSpace(`Off ${tag}`);
     await member(edit, u.userId, "editor");
     const c = await connect((await createPat(env, u.userId, "off")).token, {
       env: E({ FEATURES: "" }),
     });
-    const listed = sc<{ items: { id: string }[] }>(
-      await tool(c, "list_spaces", {}),
-    );
-    expect(listed.items.map((s) => s.id)).toEqual([u.userId]);
+    const { tools } = await c.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual([...TOOLS].sort());
+    for (const t of tools)
+      expect(t.description ?? "", t.name).not.toMatch(SPACES_WORDS);
+    expect(c.getInstructions() ?? "").not.toMatch(SPACES_WORDS);
+    expect(c.getInstructions() ?? "").toContain("for the owner only");
+    // A direct call is not a tool there.
+    await expect(tool(c, "list_spaces", {})).rejects.toThrow(/not found/);
     await c.close();
+    // Spaces on: list_spaces is offered and the spaces text is back.
+    const on = await connect((await createPat(env, u.userId, "on")).token, {
+      env: E({ FEATURES: "spaces" }),
+    });
+    const onTools = (await on.listTools()).tools;
+    expect(onTools.map((t) => t.name).sort()).toEqual([...SPACES_TOOLS].sort());
+    expect(
+      onTools.find((t) => t.name === "publish_artifact")?.description,
+    ).toContain("spaceId");
+    expect(on.getInstructions() ?? "").toContain("list_spaces");
+    await on.close();
+  });
+
+  it("every spaces wording replaced off spaces occurs in its tool's description", () => {
+    for (const [name, reps] of Object.entries(NO_SPACES_TEXT))
+      for (const r of reps ?? [])
+        expect(describeTool(name as ToolName), name).toContain(r.from);
+    for (const d of TOOL_DEFS)
+      if (d.name !== "list_spaces")
+        expect(descriptionFor(d.name, false), d.name).not.toMatch(SPACES_WORDS);
+    expect(INSTRUCTIONS("free", undefined, undefined, false)).not.toMatch(
+      SPACES_WORDS,
+    );
   });
 
   it("the skill lists list_spaces and the instructions say owner or space manager", () => {
@@ -995,30 +1033,36 @@ describe("MCP spaces (P3 T10)", () => {
 });
 
 describe("content revocation (P3 T11)", () => {
-  it("with content_revocation, download URLs bind the agent's user; a suspension refuses them", async () => {
-    const u = await login(`mcp-rev-${tag}@x.com`);
-    const rev = E({ FEATURES: "content_revocation" });
-    const c = await connect((await createPat(env, u.userId, "rev")).token, {
-      env: rev,
-    });
-    const { id } = await publishMd(c, "# rev");
-    const { downloadUrl } = sc<{ downloadUrl: string }>(
-      await tool(c, "get_artifact", { id, includeContent: false }),
-    );
-    const url = new URL(downloadUrl);
-    expect(url.pathname).toMatch(
-      new RegExp(`^/c/\\d+\\.${u.userId}\\.\\d+\\.[A-Za-z0-9_-]{43}/${id}/`),
-    );
-    const get = () =>
-      callWorker(new Request(`http://content.localhost${url.pathname}?dl=1`));
-    expect((await get()).status).toBe(200);
-    await setUserStatus(
-      env,
-      u.userId,
-      "suspended",
-      "admin_suspend",
-      SYSTEM_ACTOR,
-    );
-    expect((await get()).status).toBe(404);
-  });
+  it.each([
+    ["with content_revocation", "content_revocation"],
+    ["without it (parity 1, L12)", ""],
+  ])(
+    "%s, download URLs bind the agent's user; a suspension refuses them",
+    async (_, features) => {
+      const u = await login(`mcp-rev-${features || "off"}-${tag}@x.com`);
+      const rev = E({ FEATURES: features });
+      const c = await connect((await createPat(env, u.userId, "rev")).token, {
+        env: rev,
+      });
+      const { id } = await publishMd(c, "# rev");
+      const { downloadUrl } = sc<{ downloadUrl: string }>(
+        await tool(c, "get_artifact", { id, includeContent: false }),
+      );
+      const url = new URL(downloadUrl);
+      expect(url.pathname).toMatch(
+        new RegExp(`^/c/\\d+\\.${u.userId}\\.\\d+\\.[A-Za-z0-9_-]{43}/${id}/`),
+      );
+      const get = () =>
+        callWorker(new Request(`http://content.localhost${url.pathname}?dl=1`));
+      expect((await get()).status).toBe(200);
+      await setUserStatus(
+        env,
+        u.userId,
+        "suspended",
+        "admin_suspend",
+        SYSTEM_ACTOR,
+      );
+      expect((await get()).status).toBe(404);
+    },
+  );
 });

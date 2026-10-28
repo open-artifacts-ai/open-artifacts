@@ -10,8 +10,18 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
 import { INSTRUCTIONS, planText, sizeText } from "../src/mcp/instructions.js";
-import { SKILL_HASH, SKILL_TEMPLATE } from "../src/mcp/skill.generated.js";
-import { renderSkill, SKILL_DOC_URI, upgradeLine } from "../src/mcp/skill.js";
+import {
+  SKILL_HASH,
+  SKILL_HASH_NO_SPACES,
+  SKILL_TEMPLATE,
+  SKILL_TEMPLATE_NO_SPACES,
+} from "../src/mcp/skill.generated.js";
+import {
+  renderSkill,
+  SKILL_DOC_URI,
+  skillEtag,
+  upgradeLine,
+} from "../src/mcp/skill.js";
 import {
   hostSlug,
   SECRET_LABELS,
@@ -78,60 +88,82 @@ describe("skill.md drift", () => {
     expect(renderSkillTemplate()).toBe(renderSkillTemplate());
   });
 
-  it("the generated template is a fresh render", () => {
+  it("the generated templates are fresh renders", () => {
     expect(SKILL_TEMPLATE).toBe(renderSkillTemplate());
+    expect(SKILL_TEMPLATE_NO_SPACES).toBe(renderSkillTemplate(false));
   });
 
-  it("the served /skill.md is a fresh render with its tokens filled", async () => {
-    const e = E() as Parameters<typeof dataLimits>[0] & { APP_HOST: string };
-    const { plan, docBytes } = dataLimits(e);
-    const v: Record<string, string> = {
-      ...planText(plan, docBytes),
-      origin: skillOrigin(e.APP_HOST),
-      host: e.APP_HOST,
-      name: await skillName(e.APP_HOST),
-      hostSlug: hostSlug(e.APP_HOST),
-      version: VERSION,
-      upgradeLine: upgradeLine(e),
-    };
-    const fresh = renderSkillTemplate().replace(
-      /\{\{(\w+)\}\}/g,
-      (m, k: string) => v[k] ?? m,
-    );
-    expect(await skill()).toBe(fresh);
-  });
+  it.each([
+    ["spaces off (the default test env)", "", false],
+    ["spaces on", "spaces", true],
+  ] as const)(
+    "%s: the served /skill.md is a fresh render with its tokens filled",
+    async (_, FEATURES, spaces) => {
+      const e = E({ FEATURES }) as Parameters<typeof dataLimits>[0] & {
+        APP_HOST: string;
+      };
+      const { plan, docBytes } = dataLimits(e);
+      const v: Record<string, string> = {
+        ...planText(plan, docBytes),
+        origin: skillOrigin(e.APP_HOST),
+        host: e.APP_HOST,
+        name: await skillName(e.APP_HOST),
+        hostSlug: hostSlug(e.APP_HOST),
+        version: VERSION,
+        upgradeLine: upgradeLine(e),
+      };
+      const fresh = renderSkillTemplate(spaces).replace(
+        /\{\{(\w+)\}\}/g,
+        (m, k: string) => v[k] ?? m,
+      );
+      expect(await skill(e)).toBe(fresh);
+    },
+  );
 
-  it("SKILL_HASH is the template's sha256 prefix", async () => {
+  it.each([
+    [SKILL_HASH, SKILL_TEMPLATE],
+    [SKILL_HASH_NO_SPACES, SKILL_TEMPLATE_NO_SPACES],
+  ])("%s is its template's sha256 prefix", async (hash, tpl) => {
     const d = await crypto.subtle.digest(
       "SHA-256",
-      new TextEncoder().encode(SKILL_TEMPLATE),
+      new TextEncoder().encode(tpl),
     );
     const hex = [...new Uint8Array(d)]
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
-    expect(SKILL_HASH).toBe(hex.slice(0, 8));
+    expect(hash).toBe(hex.slice(0, 8));
   });
 
-  it("tool headings equal tools/list; every input property is in its section", async () => {
-    const u = await login(`skill-${newId().slice(0, 6).toLowerCase()}@x.com`);
-    const c = await connect((await createPat(env, u.userId, "s")).token);
-    const { tools } = await c.listTools();
-    await c.close();
-    const sections = toolSections(await skill());
-    expect([...sections.keys()].sort()).toEqual(
-      tools.map((t) => t.name).sort(),
-    );
-    for (const t of tools) {
-      const line =
-        (sections.get(t.name) ?? "")
-          .split("\n")
-          .find((l) => l.startsWith("Parameters (? = optional): ")) ?? "";
-      const listed = [...line.matchAll(/`(\w+)\??`/g)].map((m) => m[1]);
-      expect(listed.sort(), t.name).toEqual(
-        Object.keys(t.inputSchema.properties ?? {}).sort(),
+  it.each([
+    ["spaces off", ""],
+    ["spaces on", "spaces"],
+  ])(
+    "%s: tool headings equal tools/list; every input property is in its section",
+    async (_, FEATURES) => {
+      const u = await login(`skill-${newId().slice(0, 6).toLowerCase()}@x.com`);
+      // The skill documents the tools this install's tools/list offers:
+      // list_spaces only with the spaces feature.
+      const c = await connect((await createPat(env, u.userId, "s")).token, {
+        env: E({ FEATURES }),
+      });
+      const { tools } = await c.listTools();
+      await c.close();
+      const sections = toolSections(await skill(E({ FEATURES })));
+      expect([...sections.keys()].sort()).toEqual(
+        tools.map((t) => t.name).sort(),
       );
-    }
-  });
+      for (const t of tools) {
+        const line =
+          (sections.get(t.name) ?? "")
+            .split("\n")
+            .find((l) => l.startsWith("Parameters (? = optional): ")) ?? "";
+        const listed = [...line.matchAll(/`(\w+)\??`/g)].map((m) => m[1]);
+        expect(listed.sort(), t.name).toEqual(
+          Object.keys(t.inputSchema.properties ?? {}).sort(),
+        );
+      }
+    },
+  );
 
   it("quota_exceeded is plan-aware; includeDeleted renders as boolean", async () => {
     expect(await skill(E({ PLAN: "free" }))).toContain(
@@ -146,13 +178,43 @@ describe("skill.md drift", () => {
     expect(list?.inputSchema.safeParse({ includeDeleted: true }).success).toBe(
       true,
     );
-    expect(md).toContain(`tools/list shows the ${TOOL_DEFS.length} tools`);
+    // Spaces off (the default test env): every tool but list_spaces.
+    const n = TOOL_DEFS.length - 1;
+    expect(md).toContain(`tools/list shows the ${n} tools`);
     // The tool count appears once; the version (e.g. 0.17.0) is not a count.
     expect(
-      md
-        .replaceAll(VERSION, "")
-        .match(new RegExp(`\\b${TOOL_DEFS.length}\\b`, "g")) ?? [],
+      md.replaceAll(VERSION, "").match(new RegExp(`\\b${n}\\b`, "g")) ?? [],
     ).toHaveLength(1);
+    expect(await skill(E({ FEATURES: "spaces" }))).toContain(
+      `tools/list shows the ${TOOL_DEFS.length} tools`,
+    );
+  });
+
+  it("an install without spaces gets a skill with no spaces lines; with spaces they are back", async () => {
+    const off = await skill(E({ FEATURES: "" }));
+    const on = await skill(E({ FEATURES: "spaces" }));
+    for (const phrase of [
+      "### list_spaces",
+      "call list_spaces",
+      "from list_spaces",
+      "shared space",
+      "space manager",
+      "personal space",
+      "when spaces are on",
+    ]) {
+      expect(off, phrase).not.toContain(phrase);
+      expect(on, phrase).toContain(phrase);
+    }
+    // No prose names a space; only the tools' parameter lines (tools/list's
+    // own input schemas) carry spaceId.
+    const prose = off
+      .split("\n")
+      .filter((l) => !l.startsWith("Parameters (? = optional): "));
+    expect(prose.filter((l) => /\bspaces?\b|spaceId/i.test(l))).toEqual([]);
+    // Each variant has its own ETag.
+    expect(skillEtag(E({ FEATURES: "" }))).not.toBe(
+      skillEtag(E({ FEATURES: "spaces" })),
+    );
   });
 
   it("has the public interactive artifacts section, after the sharing and live-data sections", async () => {
@@ -367,7 +429,8 @@ describe("GET /skill.md", () => {
     expect(r.headers.get("x-content-type-options")).toBe("nosniff");
     expect(r.headers.get("set-cookie")).toBeNull();
     const etag = r.headers.get("etag");
-    expect(etag).toBe(`"${VERSION}-free-${SKILL_HASH}"`);
+    // Spaces off (the default test env): the no-spaces template's hash.
+    expect(etag).toBe(`"${VERSION}-free-nospaces-${SKILL_HASH_NO_SPACES}"`);
     const nm = await get(`${APP}/skill.md`, {
       headers: { "if-none-match": etag ?? "" },
     });

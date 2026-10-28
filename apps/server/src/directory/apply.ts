@@ -7,7 +7,11 @@ import { logInfo, logWarn } from "../log.js";
 import { revokeUserLive, revokeUsersLive } from "../runtime/revoke.js";
 import { type AuditActor, audit } from "../services/audit.js";
 import { moveUserEmail } from "../services/email-move.js";
-import { SYSTEM_ACTOR, setUserStatus } from "../services/members.js";
+import {
+  reviveFromSync,
+  SYSTEM_ACTOR,
+  setUserStatus,
+} from "../services/members.js";
 import { RESTRICTED_SYNC_CASE } from "../services/restriction.js";
 import { bindPage } from "./binding.js";
 import type { GoogleUser } from "./google.js";
@@ -23,8 +27,8 @@ import type { GoogleUser } from "./google.js";
 //   synced role dropped (per space or Every space) and those newly capped
 //   have their sockets closed, always, once the batch committed.
 // - applyUsers: a page of directory users (listing, Reports re-read or
-//   sign-in): deletion, suspension, unsuspension (never reviving a removed
-//   row), a new primary address (shares follow the person), and a recycled
+//   sign-in): deletion, suspension, unsuspension, the revival of a row sync
+//   removed (same directory id, active again), a new primary address (shares follow the person), and a recycled
 //   address (a new directory id
 //   behind an address an old row still holds: that row gets the deletion
 //   treatment first, then the new row is created), except a row whose link
@@ -426,8 +430,25 @@ async function applyLinked(
       await deleteUser(env, r.uid, "directory_delete", guard, o.ctx);
     return;
   }
-  // A removed row is never revived nor renamed.
-  if (r.status === "removed") return;
+  // A removed row is never renamed. Only a row directory sync removed
+  // (removed_by_sync) comes back, and only when Google lists this same
+  // directory id (matched through its identity, so never a new account
+  // reusing the address) active again: the restore rules, the address taken
+  // back while no other row holds it (reviveFromSync).
+  if (r.status === "removed") {
+    if (u.suspended || !email) return;
+    if (r.hid && r.hid !== r.uid) {
+      // Another row took the address after sync removed this one: it can't
+      // come back (and Restore is directory_managed), so say so, not silence.
+      if (await removedBySync(env, r.uid))
+        logWarn("directory_revive_blocked", undefined, { userId: r.uid });
+      return;
+    }
+    guard();
+    if (await reviveFromSync(env, r.uid, u.id, email, o.ctx))
+      logInfo("directory_revived");
+    return;
+  }
   if (u.suspended && r.status === "active") {
     guard();
     await setUserStatus(
@@ -489,4 +510,13 @@ async function changeEmail(
   guard();
   if (!(await moveUserEmail(env, uid, from, to)))
     logWarn("directory_email_taken");
+}
+
+/** Whether directory sync removed this row (users.removed_by_sync). */
+async function removedBySync(env: Env, id: string) {
+  return !!(await env.DB.prepare(
+    "select 1 from users where id = ? and removed_by_sync = 1",
+  )
+    .bind(id)
+    .first());
 }

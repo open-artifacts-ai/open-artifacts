@@ -130,7 +130,8 @@ describe("GET /members?status=", () => {
   it("no query, or status=active, lists active members only", async () => {
     const d = await list(admin.cookie);
     expect(ids(d)).toEqual(active());
-    expect(d.every((m) => m.status === undefined)).toBe(true);
+    // Every row carries its status (one shape, parity 1, A8).
+    expect(d.every((m) => m.status === "active")).toBe(true);
     expect(ids(await list(admin.cookie, "active"))).toEqual(active());
   });
 

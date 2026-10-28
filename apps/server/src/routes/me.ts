@@ -11,11 +11,7 @@ import {
 import type { Context } from "hono";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
-import {
-  instanceFeatures,
-  instanceSignIn,
-  showsSignInFields,
-} from "../auth/sign-in.js";
+import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
 import { instanceDirectory, readHealth } from "../directory/health.js";
 import { emailEnabled } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
@@ -65,9 +61,8 @@ async function toMe(
     },
     ...profile,
   };
-  // Hosted M1 (#359): optional, appended last, only on hosted or
-  // direct-sign-in installs, so Access-only installs keep today's shape.
-  if (!showsSignInFields(c.env)) return me;
+  // Hosted M1 (#359): appended last, in every sign-in mode (Access-only
+  // included, parity 1), so the dashboard reads one shape.
   const cap = capOfCaller(caller(c));
   const exp = c.var.sessionExp;
   me.instance.hosted = c.env.HOSTED === "1";

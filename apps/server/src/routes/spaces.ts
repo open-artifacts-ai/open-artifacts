@@ -80,6 +80,14 @@ function spacesCaller(c: Context<AppEnv>) {
 /** Org owner or admin for `action` (a cap drops it), else 404. */
 function orgAdmin(c: Context<AppEnv>, action: OrgAction) {
   requireSpaces(c.env);
+  return orgAdminAnyInstall(c, action);
+}
+
+/**
+ * orgAdmin without the spaces feature: for routes every install serves (the
+ * manual restriction, parity 1). Same authorization.
+ */
+function orgAdminAnyInstall(c: Context<AppEnv>, action: OrgAction) {
   const user = requireUser(c);
   if (!orgCan(user, action, { cap: capOfCaller(caller(c)) }))
     throw new ApiError("not_found", "Not found");
@@ -288,7 +296,8 @@ export function mountSpaces(app: AppType): void {
 
   for (const method of ["put", "delete"] as const)
     app[method](MEMBER_RESTRICTED, async (c) => {
-      const user = orgAdmin(c, "restricted.member");
+      // Every install: a manual restriction needs no spaces or directory.
+      const user = orgAdminAnyInstall(c, "restricted.member");
       return c.json(
         await setMemberRestricted(
           c.env,

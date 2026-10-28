@@ -2063,6 +2063,9 @@ export async function transferPersonal(
     spaceId = to;
     ownerId = to;
   } else {
+    // A shared-space target needs the spaces feature (parity 1: the user
+    // target works on every install).
+    requireSpaces(env);
     const s = await stmt(
       env.DB,
       "select kind, public_links as publicLinks from spaces where id = ? and deleted_at is null",

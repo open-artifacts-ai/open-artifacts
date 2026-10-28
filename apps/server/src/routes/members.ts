@@ -9,7 +9,6 @@ import {
 import type { Context } from "hono";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
-import { showsSignInFields } from "../auth/sign-in.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
@@ -19,12 +18,9 @@ import {
   listMembers,
   patchMember,
   removeMember,
+  restoreMember,
 } from "../services/members.js";
-import {
-  requireSpaces,
-  transferPersonal,
-  transferSummary,
-} from "../services/spaces.js";
+import { transferPersonal, transferSummary } from "../services/spaces.js";
 import type { AppType } from "./index.js";
 
 /** Owner/admin only: 401 anonymous, 404 for everyone else (route hidden). */
@@ -36,9 +32,12 @@ export function requireManager(c: Context<AppEnv>): Member {
   return user;
 }
 
-/** An uncapped org owner or admin with spaces on (P3 T10), else 404. */
+/**
+ * An uncapped org owner or admin (P3 T10), else 404. On every install: a
+ * removal leaves the person's personal artifacts in place, with or without
+ * spaces, so the Departed transfer must be reachable (parity 1).
+ */
 function requireDeparted(c: Context<AppEnv>): Member {
-  requireSpaces(c.env);
   const user = requireUser(c);
   if (!orgCan(user, "transfer.departed", { cap: capOfCaller(caller(c)) }))
     throw new ApiError("not_found", "Not found");
@@ -54,9 +53,7 @@ export function mountMembers(app: AppType): void {
     const q = MembersQuerySchema.safeParse(c.req.query());
     if (!q.success)
       throw new ApiError("bad_request", "Invalid query", q.error.issues);
-    return c.json(
-      await listMembers(c.env, q.data.status, showsSignInFields(c.env)),
-    );
+    return c.json(await listMembers(c.env, q.data.status));
   });
 
   /**
@@ -81,6 +78,15 @@ export function mountMembers(app: AppType): void {
     const actor = requireManager(c);
     await removeMember(c.env, c.req.param("id"), actor, execCtx(c));
     return c.body(null, 204);
+  });
+
+  // Restore a removed member (parity 1). Literal so Hono infers :id; must
+  // equal R.memberRestore(id).
+  app.post("/api/v1/members/:id/restore", async (c) => {
+    const actor = requireManager(c);
+    return c.json(
+      await restoreMember(c.env, c.req.param("id"), actor, execCtx(c)),
+    );
   });
 
   // A departed member's personal artifacts (P3 T10). Literal so Hono infers

@@ -81,7 +81,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/members": { org: "members.manage" },
   "PATCH /api/v1/members/:id": { org: "members.manage" },
   "DELETE /api/v1/members/:id": { org: "members.manage" },
-  // P3 T10: a departed member's artifacts (404 without the spaces feature).
+  "POST /api/v1/members/:id/restore": { org: "members.manage" },
+  // P3 T10: a departed member's artifacts (every install, parity 1).
   "GET /api/v1/members/:id/transfer": { org: "transfer.departed" },
   "POST /api/v1/members/:id/transfer": { org: "transfer.departed" },
   // The handler requires a manager and 404s for the owner's own link.

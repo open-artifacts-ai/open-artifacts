@@ -283,6 +283,49 @@ describe("mock invite reachability (review item 11)", () => {
   });
 });
 
+describe("mock lapsed guests (#829 review item 3)", () => {
+  const LAPSED = "gone@elsewhere.com";
+  const use = (providers: ("google" | "email")[]) => {
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({ hosted: { providers, lapsedGuests: [LAPSED] } }),
+    );
+  };
+
+  it.each([[["google", "email"]], [["email"]]] as const)(
+    "%j: inviting a lapsed guest is 409 guest_lapsed, never member_removed; nothing created",
+    async (providers) => {
+      use([...providers]);
+      const r = await call("POST", R.members, {
+        email: LAPSED,
+        role: "member",
+      });
+      expect(r.status).toBe(409);
+      const { error } = ApiErrorSchema.parse(await r.json());
+      expect(error.code).toBe("guest_lapsed");
+      expect(error.details).toBeUndefined();
+      const all = MemberSchema.array().parse(
+        await (await call("GET", `${R.members}?status=removed`)).json(),
+      );
+      expect(all.filter((m) => m.email === LAPSED)).toHaveLength(1);
+    },
+  );
+
+  it("restoring a lapsed guest is 409 guest_lapsed; they stay a removed guest", async () => {
+    use(["google", "email"]);
+    const all = MemberSchema.array().parse(
+      await (await call("GET", `${R.members}?status=removed`)).json(),
+    );
+    const g = all.find((m) => m.email === LAPSED);
+    expect(g).toMatchObject({ role: "guest", status: "removed" });
+    const r = await call("POST", R.memberRestore(g?.id ?? ""));
+    expect(r.status).toBe(409);
+    expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
+      "guest_lapsed",
+    );
+  });
+});
+
 describe("mock AuthProviders.hosted (review item 36c)", () => {
   it("true by default; false with selfHosted, and Me agrees", async () => {
     for (const [selfHosted, hosted] of [

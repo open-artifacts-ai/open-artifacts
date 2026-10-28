@@ -23,13 +23,14 @@ const SRC = join(import.meta.dirname, "../../src");
 
 type Guard = "user" | "artifact";
 const REGISTRY: Readonly<Record<string, Guard>> = {
-  // Removes the user: every socket they hold closes through setUserStatus
-  // (spaces on) or deleteMember (off), both "user" below; its own guard is
-  // the belt-and-braces close of the artifacts shared with them.
+  // Removes the user (soft, every install): every socket they hold closes
+  // through setUserStatus ("user" below); its own guard is the
+  // belt-and-braces close of the artifacts shared with them.
   "services/members.ts:removeMember": "artifact",
-  // The spaces-off removal: the row is deleted, and the shares addressed to
-  // their email go in the same batch (a leftover share re-admitted them).
-  "services/members.ts:deleteMember": "user",
+  // Parity 1 restore: removed -> active bumps session_epoch (sessions minted
+  // before end) and moves status_changed_at (grants issued before stay
+  // refused); their presence is revoked again, belt and braces.
+  "services/members.ts:restoreMember": "user",
   // Suspend or remove (P3 T6): PATs, grants and sessions revoked.
   "services/members.ts:setUserStatus": "user",
   // A role change ends their sessions; sockets were authorized under the old role.
@@ -418,15 +419,20 @@ describe("revocation lint (P3 T7)", () => {
     expect(check(unitsOf("x.ts", src), {}).missing).toEqual(["x.ts:f"]);
   });
 
-  // The spaces-off removal drops the shares addressed to the removed email
-  // (a leftover share re-admitted it), a marker that keeps it registered.
-  // The spaces-on removal keeps them: the removed row refuses every sign-in.
-  it("the spaces-off removal drops shares and is registered with the user guard", () => {
+  // Parity 1: removal is soft on every install (no hard delete). The removal
+  // keeps the shares addressed to the removed email: the removed row refuses
+  // every sign-in. Restore is registered with the user guard.
+  it("removal is soft everywhere and keeps shares; restore is registered with the user guard", () => {
     const drop = /\.delete\(shares\)|delete from shares\b/i;
-    expect(fns.get("services/members.ts:deleteMember")).toMatch(drop);
-    expect(REGISTRY["services/members.ts:deleteMember"]).toBe("user");
+    expect(fns.has("services/members.ts:deleteMember")).toBe(false);
+    expect(fns.get("services/members.ts:removeMember")).toMatch(
+      /setUserStatus\(/,
+    );
+    expect(fns.get("services/members.ts:removeMember")).not.toMatch(drop);
     expect(fns.get("services/members.ts:setUserStatus")).not.toMatch(drop);
     expect(REGISTRY["services/members.ts:setUserStatus"]).toBe("user");
+    expect(fns.get("services/members.ts:restoreMember")).toMatch(/\bRESTORE\b/);
+    expect(REGISTRY["services/members.ts:restoreMember"]).toBe("user");
   });
 
   it("finds a shrinking function that skips the guard (self-test)", () => {
