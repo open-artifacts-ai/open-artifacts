@@ -400,6 +400,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     pendingCountCapped: false,
     pendingExpiresAt: null,
     pendingCustomerChange: null,
+    liftsPaused: [],
     held:
       directoryMode === "google"
         ? [
@@ -455,6 +456,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       alertedAt: null,
       customerMismatch: null,
       held: [],
+      liftsPaused: [],
       pendingCount: null,
       pendingCountCapped: false,
       pendingExpiresAt: null,

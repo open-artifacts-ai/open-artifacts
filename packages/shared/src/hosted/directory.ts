@@ -45,6 +45,25 @@ export type HeldSweep = z.infer<typeof HeldSweepSchema>;
  * (Me.instance.directory.banner); for 24 h: owner email and sessions capped
  * at 24 h. No stale cutoff: staleAt (7 days after lastSuccessAt) is informational.
  */
+/**
+ * Why a restricted group blocks the reconcile's lift of restrictions: the
+ * group refused its listing, answered 404 without being deleted, was read
+ * only partly, had its sweep held, or wasn't read this run.
+ */
+export const LiftPausedReasonSchema = z.enum([
+  "refused",
+  "not_found",
+  "partial",
+  "held",
+  "not_read",
+]);
+export type LiftPausedReason = z.infer<typeof LiftPausedReasonSchema>;
+export const LiftPausedSchema = z.object({
+  groupId: z.string(),
+  reason: LiftPausedReasonSchema,
+});
+export type LiftPaused = z.infer<typeof LiftPausedSchema>;
+
 export const SyncStatusSchema = z.object({
   mode: DirectoryModeSchema,
   binding: DirectoryBindingSchema.nullable(),
@@ -66,6 +85,12 @@ export const SyncStatusSchema = z.object({
     .object({ expected: z.string(), actual: z.string() })
     .nullable(),
   held: z.array(HeldSweepSchema),
+  /**
+   * Restricted groups that kept the last reconcile from lifting anyone's
+   * restriction (fail closed: new restrictions still apply). Empty when
+   * lifts run. Defaulted so a payload from before it shipped still parses.
+   */
+  liftsPaused: z.array(LiftPausedSchema).default([]),
   /**
    * state pending_confirm only (else null / false / null): active in-domain
    * directory users the binding pass would link or create, counted over at

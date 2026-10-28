@@ -1,4 +1,10 @@
-import type { DirectoryBinding, HeldSweep, SyncStatus } from "@oa/shared";
+import type {
+  DirectoryBinding,
+  HeldSweep,
+  LiftPaused,
+  LiftPausedReason,
+  SyncStatus,
+} from "@oa/shared";
 import {
   brokerTransportKind,
   withoutBrokerProps,
@@ -215,6 +221,8 @@ type Run = {
    * here, and only for users created before the earliest such read.
    */
   read?: [string, number][];
+  /** Targets this run did not read whole, with why (the lift pause's reason). */
+  blocked?: [string, LiftPausedReason][];
 };
 
 /** What a step did: its status, whether it called Google, its commit. */
@@ -304,6 +312,7 @@ const chunks = <T>(xs: T[], n: number): T[][] => {
 };
 
 // D1 statements.
+const RESTRICTED_IDS = "select group_id from restricted_groups";
 const TARGETS = `select group_id from group_mappings
   union select group_id from org_group_mappings
   union select group_id from restricted_groups`;
@@ -1158,7 +1167,8 @@ export class SyncEngine {
       case "finish": {
         // Frozen (groups false) never recomputes: no group is read, so the
         // flags stay as the last sync left them (fail closed; P3 T15).
-        if (run.lane === "rec" && groups) await this.recomputeRestricted(run);
+        if (run.lane === "rec" && groups)
+          await this.recomputeRestricted(run, now);
         await this.succeed(run, now, groups);
         return { status: "done", called: false };
       }
@@ -1563,6 +1573,20 @@ export class SyncEngine {
         ...(run.read ?? []).filter(([g]) => g !== w.target),
         [w.target, w.startedAt ?? run.startedAt],
       ];
+    else
+      run.blocked = [
+        ...(run.blocked ?? []).filter(([g]) => g !== w.target),
+        [
+          w.target,
+          hold
+            ? "held"
+            : w.refused
+              ? "refused"
+              : w.missing
+                ? "not_found"
+                : "partial",
+        ],
+      ];
     await this.apply(w.target, added, removed, pre);
     // Released: a sweep that read the whole group and held nothing (or a
     // readable group that was surfaced as unreadable).
@@ -1657,8 +1681,9 @@ export class SyncEngine {
    * The reconcile's full restricted_sync recompute (RESTRICTED_ALL); the
    * newly capped lose their live sockets.
    */
-  private async recomputeRestricted(run: Run) {
+  private async recomputeRestricted(run: Run, now: number) {
     this.guard();
+    await this.liftsPaused(run, now);
     const { results } = await stmt(this.env.DB, RESTRICTED_ALL)
       .bind(
         JSON.stringify(run.read ?? []),
@@ -1679,6 +1704,49 @@ export class SyncEngine {
       "directory restriction recomputed",
       this.ctx,
     );
+  }
+
+  /**
+   * Which restricted groups keep this reconcile from lifting (every one not
+   * read whole: RESTRICTED_ALL's rule), into health; the owners get one
+   * alert per pause once it has lasted ALERT_AFTER_MS, as for an outage.
+   */
+  private async liftsPaused(run: Run, now: number) {
+    const { results } = await stmt(this.env.DB, RESTRICTED_IDS).all<{
+      group_id: string;
+    }>();
+    const read = new Set((run.read ?? []).map(([g]) => g));
+    const why = new Map(run.blocked ?? []);
+    const paused: LiftPaused[] = results
+      .filter((r) => !read.has(r.group_id))
+      .map((r) => ({
+        groupId: r.group_id,
+        reason: why.get(r.group_id) ?? "not_read",
+      }));
+    let alert = false;
+    await this.writeHealth((h) => {
+      if (!paused.length)
+        return {
+          ...h,
+          liftsPaused: [],
+          liftsPausedSince: null,
+          liftsAlertedAt: null,
+        };
+      const since = h.liftsPausedSince ?? now;
+      alert = h.liftsAlertedAt === null && now - since >= ALERT_AFTER_MS;
+      return {
+        ...h,
+        liftsPaused: paused,
+        liftsPausedSince: since,
+        liftsAlertedAt: alert ? now : h.liftsAlertedAt,
+      };
+    });
+    if (paused.length)
+      logWarn("directory_lifts_paused", undefined, { groups: paused.length });
+    if (alert) {
+      this.guard();
+      await this.alertOwners("lifts_paused");
+    }
   }
 
   // ------------------------------------------------------------ health

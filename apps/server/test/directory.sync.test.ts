@@ -10,7 +10,11 @@ import {
   listMembers,
   parseUsersPage,
 } from "../src/directory/google.js";
-import { instanceDirectory, readHealth } from "../src/directory/health.js";
+import {
+  ALERT_AFTER_MS,
+  instanceDirectory,
+  readHealth,
+} from "../src/directory/health.js";
 import { directorySignIn } from "../src/directory/signin.js";
 import { readPending, readPendingAny } from "../src/directory/store.js";
 import {
@@ -152,6 +156,9 @@ beforeEach(async () => {
     env.DB.prepare("delete from restricted_groups"),
     env.DB.prepare("delete from directory_members"),
     env.DB.prepare("delete from directory_groups"),
+    // The instance-wide daily email cap counts every alert this file sends:
+    // each test starts with it empty, so a late test's alert isn't capped.
+    env.DB.prepare("delete from counters where key = 'email:*'"),
   ]);
   await inDo(async (s) => {
     for (const t of ["kv", "seen", "dirty", "held"])
@@ -1479,6 +1486,40 @@ describe("P2.5 #5: restricted_sync is recomputed for everyone on each reconcile"
     await drain(nextRec(nextRec(t0)));
     expect(await restrictedOf(later?.id as string)).toBe(0);
     expect(await restrictedOf(inGroup?.id as string)).toBe(1);
+  });
+
+  it("a restricted group that blocks lifts shows in sync health (liftsPaused); owners get one alert after 24 h", async () => {
+    const [inGroup] = dirUsers(1, "rs-pause");
+    const gid = `grp-rs-pause-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    // Far enough back that a 24 h pause ends before now.
+    const t0 = Date.now() - 30 * 60 * MIN;
+    await connected(t0);
+    expect((await status()).liftsPaused).toEqual([]);
+    g.fail(new RegExp(`/groups/${gid}/members`), 403, { times: 10_000 });
+    const t1 = nextRec(t0);
+    await drain(t1);
+    expect((await status()).liftsPaused).toEqual([
+      { groupId: gid, reason: "refused" },
+    ]);
+    expect((await readHealth(e)).liftsPausedSince).not.toBeNull();
+    expect(toOwner()).toHaveLength(0);
+    // Paused a full ALERT_AFTER_MS: one alert, then none for the same pause.
+    const since = (await readHealth(e)).liftsPausedSince as number;
+    const t2 = nextRec(since + ALERT_AFTER_MS);
+    await drain(t2);
+    expect(toOwner()).toHaveLength(1);
+    expect(toOwner()[0]?.text).toContain("unable to lift restrictions");
+    await drain(nextRec(t2));
+    expect(toOwner()).toHaveLength(1);
+    // Readable again: lifts run, the pause and its alert clear.
+    g.clearFailures();
+    await drain(nextRec(nextRec(t2)));
+    const h = await readHealth(e);
+    expect(h.liftsPaused).toEqual([]);
+    expect(h.liftsPausedSince).toBeNull();
+    expect(h.liftsAlertedAt).toBeNull();
+    expect((await status()).liftsPaused).toEqual([]);
   });
 
   it("a user who left every restricted group outside any diff is lifted; one who joined is capped and loses live sockets", async () => {
