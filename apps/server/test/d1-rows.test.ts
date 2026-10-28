@@ -246,11 +246,11 @@ it("spaces API reads (P3 T9): GET /spaces skips personal spaces; a member page d
   rows.read = 0;
   const list = await api(S as never, `${R.spaces}?limit=200`, admin.cookie);
   expect(list.status).toBe(200);
-  // Measured 20: the PK read, the walk over the 2 shared spaces and their
-  // counts and roles. A scan of the 36+ personal spaces would read more.
-  // (rows_read moves by a few with b-tree layout; random ids.) Measured 26
-  // once the earlier test's space also holds its creator's manager row.
-  expect(rows.read).toBeLessThanOrEqual(30);
+  // The PK read, the walk over the 2 shared spaces and their counts and
+  // roles: measured 24 without the earlier test's creator row, 26 with it
+  // (addMe). A scan of the 36+ personal spaces would read more. (rows_read
+  // moves by a few with b-tree layout; random ids.)
+  expect(rows.read).toBeLessThanOrEqual(28);
   // Personal space by PK, then the shared walk; never the 36+ personal rows.
   const allSpaces = (
     await env.DB.prepare("select count(*) n from spaces").first<{ n: number }>()
