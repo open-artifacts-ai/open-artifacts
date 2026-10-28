@@ -389,6 +389,61 @@ describe("directory disconnect: cookie sessions only, plus the platform system j
   });
 });
 
+/**
+ * Option C (#839): red-line and scripts/authz-probe.ts run the instance
+ * write probes in refusal mode against a live world. Run every one, as
+ * every caller, with this world's target and with a red-line-shaped one (no
+ * spaceMemberId or groupId), and prove the world space S gained no member
+ * row and no audit row: refusal mode writes nothing there.
+ */
+describe("refusal mode writes nothing on the world space", () => {
+  it(
+    "every refusal-mode instance write, every caller, both target shapes",
+    async () => {
+      const S = w.spaces.S;
+      const members = async () =>
+        (
+          await env.DB.prepare(
+            "select user_id, role, source from space_members where space_id = ? order by user_id",
+          )
+            .bind(S)
+            .all()
+        ).results;
+      const before = await members();
+      const since = Date.now();
+      const redline: OrgTarget = {
+        spaceId: target.spaceId,
+        memberId: target.memberId,
+        departedId: target.departedId,
+      };
+      let sent = 0;
+      for (const t of [target, redline])
+        await Promise.all(
+          ORG_SURFACES.filter(
+            (s) => !s.route.startsWith("GET ") && !s.realOnly && !s.mutates,
+          ).flatMap((s) =>
+            CALLERS.map(async (who) => {
+              sent++;
+              // A verdict or a refusal to send: neither may write on S.
+              await s.probe(BASE, w.creds[who], t, io).catch(() => "error");
+            }),
+          ),
+        );
+      expect(sent).toBeGreaterThan(0);
+      expect(await members()).toEqual(before);
+      const audit = (
+        await env.DB.prepare(
+          "select action, target_id from audit_events where at >= ? and (space_id = ? or target_id = ?)",
+        )
+          .bind(since, S, S)
+          .all()
+      ).results;
+      expect(audit).toEqual([]);
+    },
+    SLOW,
+  );
+});
+
 describe("space writes (the service rules behind { user })", () => {
   describe.each(SPACE_SURFACES.map((s) => ({ ...s })))("$name", (s) => {
     it.concurrent(

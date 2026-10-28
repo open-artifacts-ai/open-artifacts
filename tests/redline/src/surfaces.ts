@@ -481,14 +481,15 @@ export function derive(): Derived {
       unsupported.push(name);
       continue;
     }
-    // #839: no refusal-after-access request: a real write on a throwaway
-    // the install makes for itself (crossWrite), or a recorded drop.
-    if (s.realOnly === true) {
-      const fresh = ORG_FRESH[s.route];
-      if (!fresh) {
-        drop(name, [s.route], "real-only");
-        continue;
-      }
+    // #839: a real write on a throwaway the install makes for itself
+    // (crossWrite) wherever a refusal-mode request would touch the world or
+    // none exists; a realOnly route with no throwaway is a recorded drop.
+    const fresh = ORG_FRESH[s.route];
+    if (s.realOnly === true && !fresh) {
+      drop(name, [s.route], "real-only");
+      continue;
+    }
+    if (fresh) {
       cases.push({
         name: `${name} [session]`,
         routes: [s.route],
@@ -555,6 +556,10 @@ export const ORG_FRESH: Readonly<Record<string, Fresh>> = {
   "PATCH /api/v1/oauth-clients/:grantId": "grant",
   "DELETE /api/v1/oauth-clients/:grantId": "grant",
   "DELETE /api/v1/spaces/:id/members/:userId": "space",
+  // The throwaway's member is a viewer already: a no-op 200.
+  "PUT /api/v1/spaces/:id/members/:userId": "space",
+  // The empty throwaway itself goes (204), never the world space.
+  "DELETE /api/v1/spaces/:id": "space",
 };
 
 /** An instance probe's real-mode target on a throwaway. */
@@ -566,7 +571,11 @@ const orgThrowaway = (x: Throwaway): OrgTarget => ({
     ...(x.tokenId ? { tokenId: x.tokenId } : {}),
     ...(x.grantId ? { grantId: x.grantId } : {}),
     ...(x.space?.cloneId
-      ? { spaceId: x.space.cloneId, spaceEditorId: x.space.editorId }
+      ? {
+          spaceId: x.space.cloneId,
+          spaceEditorId: x.space.editorId,
+          memberId: x.space.memberId,
+        }
       : {}),
   },
 });
@@ -1014,7 +1023,10 @@ export async function throwaway(
     return x;
   }
   if (fresh === "grant") {
-    // The consent flow, as the admin (the code names the grant).
+    // The consent flow, as the admin (the code names the grant). Listed
+    // before and after, so a code without one still finds the grant and
+    // dispose always revokes it.
+    const before = new Set(await grantIds(side));
     const code = await authorizeCode(
       t,
       side.cookie,
@@ -1022,8 +1034,10 @@ export async function throwaway(
       pkce(),
       mcpResource(t),
     );
-    const grantId = code.split(":")[1];
-    if (!grantId) throw new Error(`${t.name}: no grant id in the code`);
+    const grantId =
+      code.split(":")[1] ||
+      (await grantIds(side)).find((id) => !before.has(id));
+    if (!grantId) throw new Error(`${t.name}: the consent made no grant`);
     x.grantId = grantId;
     return x;
   }
@@ -1094,6 +1108,14 @@ export function snapshot(side: Side, x: Throwaway): Promise<string> {
   if (x.tokenId) return entry(side, "/api/v1/tokens", x.tokenId);
   if (x.grantId) return entry(side, "/api/v1/oauth-clients", x.grantId);
   throw new Error(`${side.t.name}: an empty throwaway has no snapshot`);
+}
+
+/** The admin's grant ids (GET R.oauthClients). */
+async function grantIds(side: Side): Promise<string[]> {
+  const v = (await api(side.t, side.pat, "GET", "/api/v1/oauth-clients")) as
+    | { grantId: string }[]
+    | { items?: { grantId: string }[] };
+  return (Array.isArray(v) ? v : (v.items ?? [])).map((g) => g.grantId);
 }
 
 /** The list entry with `id` (the "grantId" or "id" field), as text; it must be there. */
@@ -1203,13 +1225,13 @@ export async function dispose(side: Side, x: Throwaway): Promise<void> {
       await cleanup(side, A);
     });
   }
-  if (x.space?.cloneId)
-    await cleanup(side, `/api/v1/spaces/${x.space.cloneId}`);
-  // Revoked already when B's own probe ran (the success leg): a 404 then.
+  // Gone already when B's own probe ran (the success leg revokes the
+  // token or grant, or deletes the space): a 404 then.
   const revoke = async (path: string) =>
     cleanup(side, path).catch((e) => {
       if (!(e instanceof HttpError && e.status === 404)) throw e;
     });
+  if (x.space?.cloneId) await revoke(`/api/v1/spaces/${x.space.cloneId}`);
   if (x.tokenId) await revoke(`/api/v1/tokens/${x.tokenId}`);
   if (x.grantId) await revoke(`/api/v1/oauth-clients/${x.grantId}`);
 }

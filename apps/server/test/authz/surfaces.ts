@@ -1423,10 +1423,10 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
-  // Refuse: S holds artifacts (409 space_not_empty, the documented
-  // conflict). Real: the empty copy goes (204).
+  // Real only: a refusal-mode DELETE would aim at a live space and rely on
+  // it holding artifacts. Real: the empty copy goes (204); red-line deletes
+  // its own throwaway space (ORG_FRESH there).
   "DELETE /api/v1/spaces/:id": {
-    refuse: { req: async () => ({ path: "" }), allow: code("space_not_empty") },
     real: {
       needs: ["spaceId"],
       req: (r) => ({ path: `${SPACES}/${r.spaceId}` }),
@@ -1444,16 +1444,21 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(201),
     },
   },
-  // Refuse: spaceMemberId as viewer. In the matrix they are there only by an
-  // Every space mapping (editor): 409 managed_by_org_mapping, after the
-  // manager rule. Elsewhere a viewer already: no change (200).
+  // Refuse: spaceMemberId, in the space only by an Every space mapping
+  // (editor), as viewer: 409 managed_by_org_mapping after the manager rule,
+  // nothing written. Without one it refuses to send (never a write on a
+  // live space); red-line runs it on its own throwaway space (ORG_FRESH).
   "PUT /api/v1/spaces/:id/members/:userId": {
     refuse: {
-      req: async (c) => ({
-        path: `${SPACES}/${c.t.spaceId}/members/${c.t.spaceMemberId ?? c.t.memberId}`,
-        body: { role: "viewer" },
-      }),
-      allow: either(ok(200), code("managed_by_org_mapping")),
+      req: async (c) => {
+        if (!c.t.spaceMemberId)
+          throw new Unexpected("this refusal needs spaceMemberId");
+        return {
+          path: `${SPACES}/${c.t.spaceId}/members/${c.t.spaceMemberId}`,
+          body: { role: "viewer" },
+        };
+      },
+      allow: code("managed_by_org_mapping"),
     },
     real: {
       needs: ["spaceId", "memberId"],
