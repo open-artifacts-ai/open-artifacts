@@ -1401,7 +1401,7 @@ export async function softDelete(
   id: string,
   ctx?: Ctx,
 ): Promise<void> {
-  await authorize(env, asUser(user), id, "delete");
+  const { artifact: a } = await authorize(env, asUser(user), id, "delete");
   await env.DB.batch([
     env.DB.prepare(
       "delete from artifact_search where rowid = (select rowid from artifacts where id = ?)",
@@ -1409,6 +1409,17 @@ export async function softDelete(
     env.DB.prepare(
       "update artifacts set deleted_at = ?, purge_attempts = 0, purge_after = null where id = ? and deleted_at is null",
     ).bind(Date.now(), id),
+    // Only when this call moved it to the trash (#824).
+    audit(
+      env,
+      "artifact.delete",
+      { type: "artifact", id },
+      userActor(user.id),
+      {
+        spaceId: a.spaceId,
+        when: { sql: "changes() > 0", args: [] },
+      },
+    ),
   ]);
   await closeRuntimeSockets(env, [id], "artifact deleted", ctx, "deleted");
 }
@@ -1444,6 +1455,14 @@ export async function undelete(
       env.DB.prepare(
         "update artifacts set deleted_at = null, updated_at = ? where id = ? and deleted_at >= ?",
       ).bind(Date.now(), id, cutoff),
+      // Only when this call restored it (#824).
+      audit(
+        env,
+        "artifact.undelete",
+        { type: "artifact", id },
+        userActor(user.id),
+        { spaceId: a.spaceId, when: { sql: "changes() > 0", args: [] } },
+      ),
       env.DB.prepare(
         `update versions set text_indexed = 0, index_failed = 0
          where artifact_id = ?1 and version = (select current_version from artifacts where id = ?1 and deleted_at is null)`,
@@ -1634,6 +1653,14 @@ async function purgeOne(
     env.DB.prepare(
       "delete from artifacts where id = ? and deleted_at is not null and deleted_at < ?",
     ).bind(id, cutoff),
+    // The trash sweep's own row, only when this run removed it (#824).
+    audit(
+      env,
+      "artifact.purge",
+      { type: "artifact", id },
+      { kind: "system", id: null },
+      { when: { sql: "changes() > 0", args: [] } },
+    ),
   ]);
   return true;
 }
