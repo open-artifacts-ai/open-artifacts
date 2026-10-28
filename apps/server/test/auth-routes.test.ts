@@ -446,11 +446,13 @@ describe("Me sign-in fields", () => {
     expect((await me(hosted(), cookie)).instance.tier).toBeNull();
     expect((await me(hosted("enterprise"), cookie)).instance.tier).toBeNull();
     // Self-hosted direct sign-in: never a tier, whatever TIER says.
-    expect((await me(direct({ TIER: "team" }), cookie)).instance.tier).toBeNull();
-    // Reported only: features still follow FEATURES (provisioning derives them).
     expect(
-      (await me(hosted("team"), cookie)).instance.features,
-    ).not.toContain("sync_frozen");
+      (await me(direct({ TIER: "team" }), cookie)).instance.tier,
+    ).toBeNull();
+    // Reported only: features still follow FEATURES (provisioning derives them).
+    expect((await me(hosted("team"), cookie)).instance.features).not.toContain(
+      "sync_frozen",
+    );
     // Access-only installs keep today's shape.
     expect((await me(env, cookie)).instance.tier).toBeUndefined();
   });
