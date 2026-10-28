@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -34,6 +35,9 @@ const SECRETS = [
   "REDLINE_RL_B_PAT",
   "REDLINE_RL_B_HOOK_KEY",
   "REDLINE_STG_INVENTORY_KEY",
+  "REDLINE_PROD_R2_TOKEN",
+  "REDLINE_PROD_SCRIPTS_TOKEN",
+  "REDLINE_PROD_INVENTORY_KEY",
 ];
 
 describe("redline-staging.yml", () => {
@@ -71,6 +75,75 @@ describe("redline-staging.yml", () => {
     for (const n of SECRETS) expect(st.run).toContain(`> "$d/${n}"`);
     expect(job.env).toBeUndefined();
     expect(w.env).toBeUndefined();
+  });
+
+  it("the prod probe's files: written only when its secrets are set, all three or the job fails", () => {
+    const st = steps.find((s) =>
+      JSON.stringify(s).includes("secrets."),
+    ) as Record<string, any>;
+    const write = (prod: Record<string, string>) => {
+      const tmp = mkdtempSync(join(tmpdir(), "rl-write-"));
+      try {
+        const r = spawnSync("bash", ["-c", String(st.run)], {
+          env: {
+            PATH: process.env.PATH,
+            RUNNER_TEMP: tmp,
+            RL_A_PAT: "a",
+            RL_A_HOOK_KEY: "ak",
+            RL_B_PAT: "b",
+            RL_B_HOOK_KEY: "bk",
+            STG_INVENTORY_KEY: "i",
+            // Actions passes a missing secret as an empty string.
+            PROD_R2_TOKEN: "",
+            PROD_SCRIPTS_TOKEN: "",
+            PROD_INVENTORY_KEY: "",
+            ...prod,
+          },
+          encoding: "utf8",
+        });
+        const d = join(tmp, "redline-secrets");
+        const files = r.status === 0 ? readdirSync(d).sort() : [];
+        return { code: r.status, files, out: r.stdout };
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    };
+    const none = write({});
+    expect(none.code).toBe(0);
+    expect(none.files.some((f) => f.startsWith("REDLINE_PROD_"))).toBe(false);
+    const all = write({
+      PROD_R2_TOKEN: "r",
+      PROD_SCRIPTS_TOKEN: "s",
+      PROD_INVENTORY_KEY: "k",
+    });
+    expect(all.code).toBe(0);
+    expect(all.files.filter((f) => f.startsWith("REDLINE_PROD_"))).toEqual([
+      "REDLINE_PROD_INVENTORY_KEY",
+      "REDLINE_PROD_R2_TOKEN",
+      "REDLINE_PROD_SCRIPTS_TOKEN",
+    ]);
+    // A partial set is a misconfiguration: the empty-file check stops the job.
+    const partial = write({ PROD_R2_TOKEN: "r" });
+    expect(partial.code).toBe(1);
+    expect(partial.out).toContain("empty secret file: REDLINE_PROD_");
+  });
+
+  it("the run step adds prod.inventoryUrl only with the prod files, and passes the account id", () => {
+    const run = steps.find((s) =>
+      (s.run ?? "").includes("REDLINE_TARGETS=$(jq"),
+    ) as Record<string, any>;
+    expect(run.env.REDLINE_PROD_ACCOUNT_ID).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ vars.REDLINE_PROD_ACCOUNT_ID }}",
+    );
+    expect(run.env.REDLINE_PROD_INVENTORY_URL).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ vars.REDLINE_PROD_INVENTORY_URL }}",
+    );
+    expect(run.run).toContain(
+      'if [ -n "${REDLINE_PROD_INVENTORY_URL:-}" ] && [ -s "$RUNNER_TEMP/redline-secrets/REDLINE_PROD_R2_TOKEN" ]; then',
+    );
+    expect(run.run).toContain(".prod = {inventoryUrl: $u}");
   });
 
   it("the suite gets the secrets dir by path, runs live without the gate, and the files are removed", () => {
