@@ -53,7 +53,13 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { clearDenied, denyMember, useDenied } from "./denied";
 import { type Departed, seesDeparted, useDeparted } from "./departed";
 import { restrictionReason } from "./restriction";
-import { artifacts, runAll, TransferDialog } from "./Transfer";
+import {
+  artifacts,
+  ownerOnlySource,
+  runAll,
+  TRANSFER_OWNER_ONLY,
+  TransferDialog,
+} from "./Transfer";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
 
 type Assignable = "admin" | "member";
@@ -644,6 +650,7 @@ export function Members() {
           meId={me?.id ?? null}
           spaces={spaces}
           capped={state.status === "authed" && state.me.auth?.cap != null}
+          owner={owner}
         />
       )}
       <SettingsCard
@@ -783,6 +790,7 @@ function DepartedCard({
   meId,
   spaces,
   capped,
+  owner,
 }: {
   people: Departed[];
   /** Who "Transfer all to me" moves them to. */
@@ -790,6 +798,8 @@ function DepartedCard({
   spaces: boolean;
   /** A restricted (capped) caller can't receive artifacts: no "to me". */
   capped: boolean;
+  /** The uncapped owner: only they transfer an admin's artifacts. */
+  owner: boolean;
 }) {
   return (
     <SettingsCard id="oa-departed-h" title="Departed">
@@ -805,6 +815,7 @@ function DepartedCard({
             d={d}
             toMe={capped ? null : meId}
             spaces={spaces}
+            blocked={ownerOnlySource(d.member, owner)}
           />
         ))}
       </ul>
@@ -816,10 +827,13 @@ function DepartedRow({
   d: { member: m, summary },
   toMe,
   spaces,
+  blocked,
 }: {
   d: Departed;
   toMe: string | null;
   spaces: boolean;
+  /** An admin's artifacts, seen by an admin: no transfer (owner only). */
+  blocked: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -867,7 +881,9 @@ function DepartedRow({
           {spaces && " · their space artifacts stay put"}
         </small>
       </div>
-      {toMe ? (
+      {blocked ? (
+        <small className={muted}>{TRANSFER_OWNER_ONLY}</small>
+      ) : toMe ? (
         <Button
           size="sm"
           variant="outline"
@@ -908,9 +924,11 @@ function DepartedRow({
           align="end"
           className="text-[length:var(--oa-text-sm)]"
         >
-          <DropdownMenuItem disabled={moving} onSelect={() => setOpen(true)}>
-            Transfer to someone else…
-          </DropdownMenuItem>
+          {!blocked && (
+            <DropdownMenuItem disabled={moving} onSelect={() => setOpen(true)}>
+              Transfer to someone else…
+            </DropdownMenuItem>
+          )}
           {m.status === "removed" && (
             <DropdownMenuItem
               disabled={moving}

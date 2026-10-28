@@ -494,3 +494,51 @@ it("no removed people: no Removed filter", async () => {
   await screen.findByText("Bob Builder");
   expect(screen.queryByRole("button", { name: /^Removed/ })).toBeNull();
 });
+
+/** Carol was an admin, removed, with 2 artifacts left. */
+const removedAdminCarol = [
+  http.get(`*${R.members}`, ({ request }) =>
+    HttpResponse.json(
+      new URL(request.url).searchParams.get("status")
+        ? [{ ...carol, role: "admin" as const }]
+        : fixtures.members,
+    ),
+  ),
+  http.get(`*${R.memberTransfer(CAROL)}`, () =>
+    HttpResponse.json({ live: 2, deleted: 0 }),
+  ),
+];
+
+it("an admin can't transfer a departed admin's artifacts: the owner-only line, no buttons", async () => {
+  mountHosted(
+    "/settings/members",
+    { actAs: "admin" },
+    undefined,
+    removedAdminCarol,
+  );
+  const row = await carolRow();
+  expect(
+    await within(row).findByText(
+      "Only the owner can transfer an admin's artifacts.",
+    ),
+  ).toBeVisible();
+  expect(within(row).queryByRole("button", { name: /^Transfer/ })).toBeNull();
+  await openMenu(row);
+  await screen.findByRole("menuitem", { name: "Restore…" });
+  expect(
+    screen.queryByRole("menuitem", { name: "Transfer to someone else…" }),
+  ).toBeNull();
+});
+
+it("the owner can still transfer a departed admin's artifacts", async () => {
+  mountHosted("/settings/members", true, undefined, removedAdminCarol);
+  const row = await carolRow();
+  expect(
+    await within(row).findByRole("button", { name: "Transfer all to me" }),
+  ).toBeVisible();
+  expect(
+    within(row).queryByText(
+      "Only the owner can transfer an admin's artifacts.",
+    ),
+  ).toBeNull();
+});
