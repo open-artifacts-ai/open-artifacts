@@ -69,10 +69,13 @@ export const DIRECTORY_SYNC_CRON = "oa:directory-sync";
  * nothing).
  * Self-host (O1): Workers Free allows 5 cron triggers per account, so an
  * install has one, RECOVERY_CRON (every 2 min): each tick runs the lost
- * index and thumbnail sweep, and the tick in the daily slot (03:18 UTC) runs
- * the daily work once. An install still on DAILY_CRON alone keeps running
- * the daily work from it; one with both runs it once a day (claimDaily).
- * Any other non-`oa:` cron runs the daily work, as before. */
+ * index and thumbnail sweep, and a tick in the daily slot (03:17 up to 03:30
+ * UTC) runs the daily work once that UTC day. DAILY_CRON on self-host claims
+ * the same day (claimDaily), so an install still on DAILY_CRON alone runs it
+ * daily and one with both triggers runs it once, whichever fires first.
+ * Hosted DAILY_CRON (the scheduler's nightly call) runs it every call. Any
+ * other non-`oa:` cron runs the daily work every call and marks the day, as
+ * before. Each run logs cron_daily_ran { day, via }. */
 export function scheduled(
   event: ScheduledEvent,
   env: Env,
@@ -125,31 +128,44 @@ async function run(
       ),
     );
     if (!inDailySlot(at) || !(await claimDaily(env, at))) return;
-    daily(env, ctx, Date.now(), false);
+    daily(env, ctx, Date.now(), false, "slot");
     return;
   }
-  daily(env, ctx, Date.now(), env.HOSTED !== "1");
+  if (env.HOSTED === "1") {
+    daily(env, ctx, Date.now(), false, "daily");
+    return;
+  }
+  if (event.cron === DAILY_CRON) {
+    // Self-host: the slot tick may have claimed the day already (a late
+    // 03:17 delivery), so DAILY_CRON claims it too; one run either way.
+    if (!(await claimDaily(env, event.scheduledTime ?? Date.now()))) return;
+    daily(env, ctx, Date.now(), false, "daily");
+    return;
+  }
+  daily(env, ctx, Date.now(), true, "daily");
 }
 
 /** Self-host's one cron trigger (O1): every 2 minutes. */
 export const RECOVERY_CRON = "*/2 * * * *";
 /** The daily trigger: self-host before O1, and the hosted scheduler's nightly call. */
 export const DAILY_CRON = "17 3 * * *";
-const TICK_MS = 2 * 60_000;
 const DAY_MS = 86_400_000;
 /**
- * The RECOVERY_CRON tick that runs the daily work: the first tick at or
- * after DAILY_CRON's time (03:17 UTC, so the 03:18 tick), one TICK_MS wide.
- * After it, not before, so an install still carrying the DAILY_CRON trigger
- * as well has already marked the day (see claimDaily) and the tick skips it.
+ * The RECOVERY_CRON ticks that may run the daily work: from DAILY_CRON's
+ * time (03:17 UTC) up to 03:30 UTC, so the 03:18 to 03:28 ticks. The first
+ * one to claim the UTC day runs it (claimDaily), so one missed or late tick
+ * doesn't skip the day, and a DAILY_CRON trigger at 03:17 as well (an
+ * install with both) runs it once, in either order.
  */
 export const DAILY_SLOT_START_MS = (() => {
   const [min, hour] = DAILY_CRON.split(" ").map(Number) as [number, number];
-  return Math.ceil(((hour * 60 + min) * 60_000) / TICK_MS) * TICK_MS;
+  return (hour * 60 + min) * 60_000;
 })();
+/** The end of the daily slot (exclusive): 03:30 UTC. */
+export const DAILY_SLOT_END_MS = (3 * 60 + 30) * 60_000;
 export const inDailySlot = (t: number): boolean => {
   const d = ((t % DAY_MS) + DAY_MS) % DAY_MS;
-  return d >= DAILY_SLOT_START_MS && d < DAILY_SLOT_START_MS + TICK_MS;
+  return d >= DAILY_SLOT_START_MS && d < DAILY_SLOT_END_MS;
 };
 
 /** settings row: the UTC day (YYYY-MM-DD) the daily work last ran. */
@@ -162,8 +178,10 @@ const CLAIM_DAY = `insert into settings (key, value) values (?1, ?2)
   where settings.value <> excluded.value`;
 
 /**
- * The daily slot tick claims its UTC day: false when the daily work already
- * ran that day (a DAILY_CRON trigger at 03:17, or a repeated tick). A D1
+ * A daily slot tick or a self-host DAILY_CRON call claims its UTC day: false
+ * when the daily work already ran that day (the other trigger, an earlier
+ * slot tick, or a repeated delivery). The claim is one conditional upsert,
+ * so two concurrent claims of a day can't both win. A D1
  * error claims it anyway: the daily jobs are idempotent and bounded, so a
  * second run is cheaper than a lost day.
  */
@@ -184,7 +202,10 @@ function daily(
   ctx: ExecutionContext,
   now: number,
   mark: boolean,
+  via: "slot" | "daily",
 ): void {
+  // One line per daily run: Platform checks exactly one per UTC day.
+  logInfo("cron_daily_ran", { day: utcDay(now), via });
   ctx.waitUntil(
     Promise.allSettled([
       purgeDeleted(env, now),
@@ -200,9 +221,9 @@ function daily(
       // DirectorySync keeps its own 2 min alarm; the daily kick restarts a
       // lost one.
       directoryMode(env) === "off" ? null : kickSync(env, "cron"),
-      // DAILY_CRON on self-host marks the day, so the slot tick of an install
-      // that has both triggers doesn't run it again. Hosted gets no
-      // RECOVERY_CRON (no per-install triggers): nothing to mark.
+      // Another self-host cron marks the day, so a slot tick doesn't run it
+      // again. A claim already marked it; hosted gets no RECOVERY_CRON (no
+      // per-install triggers): nothing to mark.
       mark
         ? stmt(env.DB, MARK_DAY).bind(DAILY_RAN_KEY, utcDay(now)).run()
         : null,
