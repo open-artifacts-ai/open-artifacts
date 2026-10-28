@@ -107,7 +107,12 @@ function Shell({
 }
 
 /** Copy for a refused redirect sign-in. Unknown values never reach here. */
-const errorCopy = (error: SignInError, name: string, domain?: string) => {
+const errorCopy = (
+  error: SignInError,
+  name: string,
+  domain?: string,
+  via?: "access" | "google",
+) => {
   switch (error) {
     case "tenant":
       return domain
@@ -117,8 +122,13 @@ const errorCopy = (error: SignInError, name: string, domain?: string) => {
       return "This email is linked to a different Google account. Ask your admin to reset the link.";
     case "removed":
       return `Your access to ${name} was removed. Ask your admin if this is a mistake.`;
+    // `via` says which sign-in refused (#799); an older server sends neither.
     case "no_access":
-      return "You don't have access yet. Ask your admin to invite you.";
+      return via === "access"
+        ? "Your organization's single sign-on didn't let you in. Ask your admin for access, then try again."
+        : via === "google"
+          ? "This Google account doesn't have access here yet. Ask an admin to invite you, or sign in with another Google account."
+          : "You don't have access here yet. Ask an admin to invite you, then try again.";
     case "expired":
       return "Sign-in took too long. Try again.";
     default:
@@ -200,11 +210,14 @@ function HostedSignIn({
   error,
   next,
   method,
+  via,
 }: {
   providers: AuthProviders;
   error: SignInError | null;
   next: string;
   method?: "code";
+  /** Which sign-in refused a no_access. */
+  via?: "access" | "google";
 }) {
   const name = useInstanceName();
   const [step, setStep] = useState<"email" | "code">("email");
@@ -222,7 +235,7 @@ function HostedSignIn({
   const domain = google?.domains[0];
   const googleHref = google ? startHref(google.start, next) : undefined;
   const banner = error && (
-    <Notice tone="danger">{errorCopy(error, name, domain)}</Notice>
+    <Notice tone="danger">{errorCopy(error, name, domain, via)}</Notice>
   );
   const secondary = Boolean(google || email);
   const accessButton = access && (
@@ -376,10 +389,12 @@ export function SignIn({
   error,
   next,
   method,
+  via,
 }: {
   error?: string;
   next?: string;
   method?: string;
+  via?: "access" | "google";
 }) {
   useDocumentTitle("Sign in");
   const providers = useAuthProviders();
@@ -398,21 +413,24 @@ export function SignIn({
       <Shell hosted={null} />
     );
   const data = providers.data;
+  // AuthProviders.hosted says which; an older server's Access mode is
+  // self-hosted, as before.
   if (data.mode === "access")
     return (
-      <Shell hosted={false}>
+      <Shell hosted={data.hosted ?? false}>
         <AccessSignIn failed={error !== undefined} />
       </Shell>
     );
-  // Direct mode covers hosted and self-hosted installs alike; until the
-  // server says which, claim neither.
+  // Direct mode covers hosted and self-hosted installs alike; an older server
+  // doesn't say which, so claim neither.
   return (
-    <Shell hosted={null}>
+    <Shell hosted={data.hosted ?? null}>
       <HostedSignIn
         providers={data}
         error={shownError}
         next={safeNext(next)}
         method={method === "code" ? "code" : undefined}
+        via={via}
       />
     </Shell>
   );

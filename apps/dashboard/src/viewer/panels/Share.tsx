@@ -21,6 +21,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useState } from "react";
 import { ApiClientError } from "../../api/client";
+import type { ShareRecipient } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
   useDeleteShare,
@@ -31,6 +32,7 @@ import {
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { emailEnabled } from "../../auth/emailEnabled";
 import { useCan } from "../../auth/permissions";
+import { signInWith, useSignInDomains } from "../../auth/reach";
 import { useMe } from "../../auth/useMe";
 import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
@@ -40,6 +42,8 @@ import { Modal } from "../../layout/Modal";
 import { Notice } from "../../layout/Notice";
 import { toast } from "../../layout/toast";
 import { UserAvatar } from "../../layout/UserAvatar";
+import { AppLink } from "../../library/AppLink";
+import { isOrgAdmin } from "../../settings/spaces/access";
 import { visibilityHint } from "../../spaces/SpaceMarker";
 
 const VIS: { value: Visibility; label: string }[] = [
@@ -104,6 +108,43 @@ const H3 = "mb-[6px] text-[length:var(--oa-text-sm)] font-semibold";
 const MUTED = "text-muted-foreground";
 const PERSON = "flex items-center gap-[var(--oa-space-2)]";
 const NAME = "min-w-0 flex-1 truncate";
+
+const MEMBERS_PAGE = "/settings/members";
+
+/**
+ * ShareResult.recipient (review item 37): the share applies, but the person
+ * can't sign in to open it yet. The line under "Shared with <email>." in the
+ * share box, which turns warning (Design, #800).
+ */
+function RecipientLine({
+  email,
+  reason,
+  admin,
+  domains,
+}: {
+  email: string;
+  reason: ShareRecipient["reason"];
+  /** The caller is an org owner or admin, so may invite members. */
+  admin: boolean;
+  domains: string;
+}) {
+  return reason === "needs_invite" ? (
+    admin ? (
+      <>
+        {email} can't sign in until they're a member.{" "}
+        <AppLink href={MEMBERS_PAGE} className="underline">
+          Invite them
+        </AppLink>
+      </>
+    ) : (
+      `${email} can't sign in until they're a member. Ask an admin to invite them.`
+    )
+  ) : reason === "outside_domains" ? (
+    `${email} can't sign in here, so they can't open this. Share with an address at ${domains} instead.`
+  ) : (
+    `No sign-in method here fits ${email}, so they can't open this. Share with another address.`
+  );
+}
 
 function RoleSelect({
   label,
@@ -170,10 +211,16 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const [shared, setShared] = useState<{
     email: string;
     emailed: boolean;
+    /** Set when they can't sign in yet: the box warns instead. */
+    recipient?: ShareRecipient;
+    /** How they sign in, from the server (older servers omit it). */
+    with: string | null;
   } | null>(null);
+  const domains = useSignInDomains();
   const state = useMe();
-  const install = state.status === "authed" ? state.me.instance.name : "";
-  const sends = emailEnabled(state.status === "authed" ? state.me : null);
+  const me = state.status === "authed" ? state.me : null;
+  const install = me?.instance.name ?? "";
+  const sends = emailEnabled(me);
 
   const save = (p: ArtifactPatch) =>
     patch.mutate(p, { onError: (e) => fail(e, "Couldn't save") });
@@ -210,7 +257,12 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           onSettled: done,
           onSuccess: (r) => {
             setEmail("");
-            setShared({ email: e, emailed: r.emailed });
+            setShared({
+              email: e,
+              emailed: r.emailed,
+              recipient: r.recipient,
+              with: signInWith(r.signInMethods),
+            });
           },
           onError: (x) => fail(x, "Couldn't share"),
         },
@@ -373,25 +425,49 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
       )}
 
       <section>
-        {shared && (
-          <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
+        {shared?.recipient ? (
+          // They can't sign in yet: one warning box, and no link that won't work for them.
+          <div className="mb-[var(--oa-space-4)]">
             <Notice
-              tone="success"
-              title={`Shared with ${shared.email}`}
+              tone="warning"
+              title={`Shared with ${shared.email}.`}
               onDismiss={() => setShared(null)}
             >
               <p>
-                {shared.emailed
-                  ? "We emailed them a link. They'll sign in with a one-time code."
-                  : artifact.visibility === "public"
-                    ? "Send them this link. They can open it without signing in."
-                    : "Send them this link. They'll sign in with a one-time code sent to that address, then see the artifact."}
+                <RecipientLine
+                  email={shared.email}
+                  reason={shared.recipient.reason}
+                  admin={isOrgAdmin(me)}
+                  domains={domains}
+                />
               </p>
-              {/* emailed:false with email on is not a failure here: members and
-                  re-shares are never emailed, so there's no "didn't send" line. */}
-              <CopyLink link={link} label="Artifact link" />
             </Notice>
           </div>
+        ) : (
+          shared && (
+            <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
+              <Notice
+                tone="success"
+                title={`Shared with ${shared.email}`}
+                onDismiss={() => setShared(null)}
+              >
+                <p>
+                  {shared.emailed
+                    ? shared.with
+                      ? `We emailed them a link. They'll sign in with ${shared.with}.`
+                      : "We emailed them a link. They'll sign in with a one-time code."
+                    : artifact.visibility === "public"
+                      ? "Send them this link. They can open it without signing in."
+                      : shared.with
+                        ? `Send them this link. They'll sign in with ${shared.with}.`
+                        : "Send them this link. They'll sign in with a one-time code sent to that address, then see the artifact."}
+                </p>
+                {/* emailed:false with email on is not a failure here: members and
+                  re-shares are never emailed, so there's no "didn't send" line. */}
+                <CopyLink link={link} label="Artifact link" />
+              </Notice>
+            </div>
+          )
         )}
         <h3 className={H3}>People</h3>
         <ul className="flex flex-col gap-[var(--oa-space-2)] p-0">
@@ -406,43 +482,49 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             <span className="text-muted-foreground">Owner</span>
           </li>
           {(people ? (shares.data ?? []) : []).map((s) => (
-            <li key={s.email} className={PERSON}>
-              <UserAvatar name={null} email={s.email} />
-              <span className={NAME} title={s.email}>
-                {s.email}
-              </span>
-              {people ? (
-                <>
-                  <RoleSelect
-                    label={`Role for ${s.email}`}
-                    value={s.role}
-                    onChange={(r) =>
-                      put.mutate(
-                        { email: s.email, role: r },
-                        { onError: (x) => fail(x, "Couldn't change role") },
-                      )
-                    }
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="size-[30px] flex-none p-0"
-                    aria-label={`Remove ${s.email}`}
-                    onClick={() =>
-                      removeOnce((done) =>
-                        del.mutate(s.email, {
-                          onSettled: done,
-                          onError: (x) => fail(x, "Couldn't remove"),
-                        }),
-                      )
-                    }
-                  >
-                    ×
-                  </Button>
-                </>
-              ) : (
-                <span className="text-muted-foreground">{s.role}</span>
-              )}
+            <li key={s.email} className="flex flex-col gap-[var(--oa-space-2)]">
+              <div className={PERSON}>
+                <UserAvatar name={null} email={s.email} />
+                <span className={NAME} title={s.email}>
+                  {s.email}
+                </span>
+                {people ? (
+                  <>
+                    <RoleSelect
+                      label={`Role for ${s.email}`}
+                      value={s.role}
+                      onChange={(r) =>
+                        put.mutate(
+                          { email: s.email, role: r },
+                          { onError: (x) => fail(x, "Couldn't change role") },
+                        )
+                      }
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="size-[30px] flex-none p-0"
+                      aria-label={`Remove ${s.email}`}
+                      onClick={() =>
+                        removeOnce((done) =>
+                          del.mutate(s.email, {
+                            onSettled: done,
+                            onSuccess: () =>
+                              setShared((x) =>
+                                x?.email === s.email ? null : x,
+                              ),
+                            onError: (x) => fail(x, "Couldn't remove"),
+                          }),
+                        )
+                      }
+                    >
+                      ×
+                    </Button>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">{s.role}</span>
+                )}
+              </div>
             </li>
           ))}
         </ul>
