@@ -80,6 +80,8 @@ export type OrgAction =
   | "directory.disconnect"
   /** Probe the auth and directory brokers (R.adminBrokerCheck): the org owner. */
   | "broker.check"
+  /** See why configured sign-in is off (Me.instance.signIn.problems): the org owner. */
+  | "signin.problems"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"
@@ -376,6 +378,8 @@ export function orgCan(
     case "directory.disconnect":
     // The broker check: owner only (it spends broker rate limit).
     case "broker.check":
+    // Sign-in config problems: the owner, who can fix them (review item 35).
+    case "signin.problems":
     // Acting on an org owner or admin (role, removal, suspension, Google
     // link reset): owner only (#475).
     case "members.manageAdmins":

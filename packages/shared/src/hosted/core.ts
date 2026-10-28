@@ -186,6 +186,12 @@ export type SignInProviderId = z.infer<typeof SignInProviderIdSchema>;
 export const InstanceSignInSchema = z.object({
   mode: SignInModeSchema,
   providers: z.array(SignInProviderIdSchema),
+  /**
+   * Owners only: why a configured sign-in method is off, as full sentences
+   * saying what to do (shown verbatim). Absent for everyone else; empty when
+   * nothing is wrong. Optional: older servers omit it.
+   */
+  problems: z.array(z.string()).optional(),
 });
 export type InstanceSignIn = z.infer<typeof InstanceSignInSchema>;
 
