@@ -9,8 +9,8 @@ import type { MiddlewareHandler } from "hono";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { currentCred, withCred } from "../src/auth/cred.js";
-import { mw } from "../src/auth/route-policy.js";
 import { createPat } from "../src/auth/pat.js";
+import { mw } from "../src/auth/route-policy.js";
 import { readSession } from "../src/auth/session.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import { type AppEnv, resolveSession } from "../src/http/middleware.js";
@@ -250,7 +250,10 @@ describe("the store never bleeds between requests", () => {
     ) as unknown as DurableObjectStub<DirectorySync>;
     // Creates the DO's tables, then holds two sweeps to confirm.
     await stub.status();
-    const [g1, g2] = [`grp-${crypto.randomUUID()}`, `grp-${crypto.randomUUID()}`];
+    const [g1, g2] = [
+      `grp-${crypto.randomUUID()}`,
+      `grp-${crypto.randomUUID()}`,
+    ];
     await runInDurableObject(stub, (_i, s) => {
       for (const g of [g1, g2])
         s.storage.sql.exec(
@@ -283,17 +286,26 @@ describe("the store never bleeds between requests", () => {
     expect(currentCred()).toBeNull();
     await env.DB.batch([
       audit(env, "space.delete", { type: "space", id: t }, userActor("u")),
-      audit(env, "directory.sync", { type: "directory", id: t }, {
-        kind: "sync",
-        id: null,
-      }),
-      audit(env, "user.status", { type: "user", id: t }, {
-        kind: "system",
-        id: null,
-      }),
+      audit(
+        env,
+        "directory.sync",
+        { type: "directory", id: t },
+        {
+          kind: "sync",
+          id: null,
+        },
+      ),
+      audit(
+        env,
+        "user.status",
+        { type: "user", id: t },
+        {
+          kind: "system",
+          id: null,
+        },
+      ),
     ]);
-    const byAction = async (a: string) =>
-      credOfRows(t, `action = '${a}'`);
+    const byAction = async (a: string) => credOfRows(t, `action = '${a}'`);
     expect(await byAction("space.delete")).toEqual([{ kind: null, id: null }]);
     expect(await byAction("directory.sync")).toEqual([
       { kind: "system", id: null },
@@ -306,9 +318,9 @@ describe("the store never bleeds between requests", () => {
 
 describe("no token text in any row", () => {
   it("no audit row holds a token, cookie or secret", async () => {
-    const { results } = await env.DB.prepare(
-      "select * from audit_events",
-    ).all<Record<string, unknown>>();
+    const { results } = await env.DB.prepare("select * from audit_events").all<
+      Record<string, unknown>
+    >();
     expect(results.length).toBeGreaterThan(0);
     const dump = JSON.stringify(results);
     // The whole value, and its secret part: an OAuth token's last segment

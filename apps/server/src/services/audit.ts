@@ -1,9 +1,9 @@
 import {
   AUDIT_RETENTION_MS,
   type AuditAction,
+  AuditActionSchema,
   type AuditCred,
   AuditCredKindSchema,
-  AuditActionSchema,
   type AuditEvent,
   type AuditReason,
   AuditReasonSchema,
