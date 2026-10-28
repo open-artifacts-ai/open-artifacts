@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.69.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.69.0...v0.69.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **directory:** P2.5 directory sync ([#767](https://github.com/open-artifacts-ai/open-artifacts/issues/767)) ([abeb28d](https://github.com/open-artifacts-ai/open-artifacts/commit/abeb28d9b7a5118fb8df35c593999f41b9c96375))
+
 ## [0.69.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.68.2...v0.69.0) (2026-10-28)
 
 
