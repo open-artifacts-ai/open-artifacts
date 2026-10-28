@@ -9,6 +9,7 @@ import {
   localFeatures,
   localModeOf,
   localOAuthStoreOf,
+  localOAuthStoreSeedSql,
   localOAuthStoreVars,
   reservePort,
   waitBroker,
@@ -198,5 +199,13 @@ describe("local pair OAuth store", () => {
     expect(localOAuthStoreVars("kv")).toEqual({});
     expect(localOAuthStoreVars("d1")).toEqual({ OAUTH_STORE: "d1" });
     expect(localOAuthStoreVars("dual")).toEqual({ OAUTH_STORE: "dual" });
+  });
+  it("d1 seeds the completed-copy marker (d1 is refused without it); kv and dual seed nothing", () => {
+    expect(localOAuthStoreSeedSql()).toBeNull();
+    expect(localOAuthStoreSeedSql("kv")).toBeNull();
+    expect(localOAuthStoreSeedSql("dual")).toBeNull();
+    expect(localOAuthStoreSeedSql("d1")).toMatch(
+      /^insert into settings \(key, value\) values \('oauth_store_backfilled', /,
+    );
   });
 });

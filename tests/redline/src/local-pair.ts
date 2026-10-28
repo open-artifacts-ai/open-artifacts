@@ -324,6 +324,18 @@ export const localOAuthStoreVars = (
   store: LocalOAuthStore = "kv",
 ): Record<string, string> => (store === "kv" ? {} : { OAUTH_STORE: store });
 
+/**
+ * SQL run on a fresh install's local D1 before it boots, or null. d1 serves
+ * only once a KV -> D1 copy is recorded (oauth_store_backfilled); a fresh
+ * install's KV is empty, so that copy is trivially complete.
+ */
+export const localOAuthStoreSeedSql = (
+  store: LocalOAuthStore = "kv",
+): string | null =>
+  store === "d1"
+    ? "insert into settings (key, value) values ('oauth_store_backfilled', '0') on conflict(key) do nothing"
+    : null;
+
 function wranglerConfig(
   i: { name: string; testDomain: string; installId: string },
   port: number,
@@ -714,6 +726,27 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
         track,
         exited,
       );
+      const seed = localOAuthStoreSeedSql(o.oauthStore);
+      if (seed)
+        await runWrangler(
+          [
+            "d1",
+            "execute",
+            cfg.d1_databases[0].database_name,
+            "--local",
+            "--config",
+            config,
+            "--persist-to",
+            persistTo,
+            "--command",
+            seed,
+          ],
+          env,
+          log,
+          120_000,
+          track,
+          exited,
+        );
       const { pid, gone: g } = await dev(
         spec.name,
         config,
