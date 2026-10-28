@@ -5,9 +5,12 @@ import { scheduled } from "../src/cron.js";
 import { revokeAllGrants } from "../src/mcp/oauth-api.js";
 import {
   BACKFILLED_KEY,
+  COPY_GEN_KEY,
   COPY_PAGE,
   copyKvToD1,
   D1KvStore,
+  DUAL_LIST_KV_PAGES,
+  DualKvStore,
   KV_WRITES_OFF_KEY,
   keyCompare,
   mapStoreError,
@@ -17,6 +20,7 @@ import {
   resetOAuthStoreMarkers,
   sweepOAuthStore,
   TOMBSTONE_DAYS,
+  TOMBSTONE_KV_DAYS,
 } from "../src/mcp/oauth-store.js";
 import { login } from "./helpers.js";
 import {
@@ -279,13 +283,28 @@ const offSince = async () =>
       .first<{ value: string }>()
   )?.value ?? null;
 
+/** Records a completed copy (d1 is refused without one). */
+const markBackfilled = () =>
+  env.DB.prepare(
+    "insert into settings (key, value) values (?, '1') on conflict(key) do nothing",
+  )
+    .bind(BACKFILLED_KEY)
+    .run();
+
+const isBackfilled = async () =>
+  (await env.DB.prepare("select 1 from settings where key = ?")
+    .bind(BACKFILLED_KEY)
+    .first()) !== null;
+
 // Each test starts as if this install never served in d1 mode (leaving d1
-// is refused otherwise), with no isolate's markers checked.
+// is refused otherwise) and a copy completed (d1 needs one), with no
+// isolate's markers checked.
 beforeEach(async () => {
   resetOAuthStoreMarkers();
   await env.DB.prepare("delete from settings where key = ?")
     .bind(KV_WRITES_OFF_KEY)
     .run();
+  await markBackfilled();
 });
 
 /** Any app-host request: a serve, which checks and writes the markers. */
@@ -304,6 +323,7 @@ describe("contract: the provider's flows in kv, dual and d1", () => {
   it("register, authorize, exchange, refresh, revoke, listUserGrants, revokeAllGrants: identical", async () => {
     const results: Record<string, unknown> = {};
     for (const mode of MODES) {
+      await markBackfilled(); // kv cleared it; d1 needs it
       const e = inMode(mode);
       const a = await connectAgent(e);
       const steps: Record<string, unknown> = {};
@@ -373,6 +393,7 @@ describe("contract: the provider's flows in kv, dual and d1", () => {
 
   it("d1 writes D1 only; dual writes both; kv writes KV only", async () => {
     for (const mode of MODES) {
+      await markBackfilled(); // kv cleared it; d1 needs it
       const a = await connectAgent(inMode(mode));
       const inD1 = await grantKeyFor(a.member.userId);
       const kvList = await env.OAUTH_KV.list({
@@ -393,6 +414,7 @@ describe("#769 and revocation", () => {
   it("a refresh straight after the exchange works in d1 and dual (stale KV edge cache); kv shows the bug", async () => {
     const out: Record<string, number> = {};
     for (const mode of MODES) {
+      await markBackfilled(); // kv cleared it; d1 needs it
       const e = inMode(mode, { OAUTH_KV: staleKv(env.OAUTH_KV) });
       const a = await connectAgent(e);
       out[mode] = (await refresh(e, a.clientId, a.refresh_token)).status;
@@ -404,6 +426,7 @@ describe("#769 and revocation", () => {
   it("a revoked token is refused at once in d1 and dual (stale KV edge cache)", async () => {
     const out: Record<string, number> = {};
     for (const mode of MODES) {
+      await markBackfilled(); // kv cleared it; d1 needs it
       const e = inMode(mode, { OAUTH_KV: staleKv(env.OAUTH_KV) });
       const a = await connectAgent(e);
       expect((await mcp(e, a.access_token)).status).toBe(200);
@@ -454,6 +477,154 @@ describe("#769 and revocation", () => {
       [],
     );
     await env.OAUTH_KV.delete(key);
+  });
+
+  it("a put never overwrites a tombstone (dual and d1)", async () => {
+    for (const mode of ["dual", "d1"] as const) {
+      const p = `grant:sticky-${mode}-${tag}:`;
+      const key = `${p}g`;
+      const e = inMode(mode);
+      const s = oauthEnv(e).OAUTH_KV;
+      await s.put(key, "v1");
+      await s.delete(key);
+      await s.put(key, "v2");
+      expect(await s.get(key)).toBeNull();
+      expect((await rowOf(key))?.expires_at).toBeLessThan(0);
+      const fresh = oauthEnv(e).OAUTH_KV;
+      expect(await fresh.get(key)).toBeNull();
+      expect((await fresh.list({ prefix: p })).keys).toEqual([]);
+      await env.OAUTH_KV.delete(key);
+    }
+  });
+
+  it("race: dual's KV put, kv's tombstone, dual's D1 put, kv's KV delete: the grant is dead in the next dual run", async () => {
+    const p = `grant:race-${tag}:`;
+    const key = `${p}g`;
+    const signal = () => {
+      let go!: () => void;
+      const at = new Promise<void>((r) => {
+        go = r;
+      });
+      return { go, at };
+    };
+    const kvPutLanded = signal();
+    const tombLanded = signal();
+    const d1PutGate = signal();
+    const kvDeleteGate = signal();
+    const pass = <T extends object>(t: T, p: string | symbol) => {
+      const v = Reflect.get(t, p);
+      return typeof v === "function" ? v.bind(t) : v;
+    };
+    // The dual isolate: its D1 put (PUT) waits for the gate.
+    const dualDb = new Proxy(env.DB, {
+      get(t, p) {
+        if (p !== "prepare") return pass(t, p);
+        return (sql: string) => {
+          const s = t.prepare(sql);
+          if (!/^insert into oauth_kv .* values \(\?, \?, \?, \?\)/.test(sql))
+            return s;
+          return new Proxy(s, {
+            get(st, sp) {
+              if (sp !== "bind") return pass(st, sp);
+              return (...a: unknown[]) => {
+                const b = st.bind(...a);
+                return {
+                  run: async () => {
+                    await d1PutGate.at;
+                    return b.run();
+                  },
+                };
+              };
+            },
+          });
+        };
+      },
+    });
+    const dualKv = new Proxy(env.OAUTH_KV, {
+      get(t, p) {
+        if (p !== "put") return pass(t, p);
+        return async (k: string, v: string) => {
+          await t.put(k, v);
+          kvPutLanded.go();
+        };
+      },
+    });
+    // The kv isolate: its KV delete (after its D1 tombstone) waits.
+    const kvKv = new Proxy(env.OAUTH_KV, {
+      get(t, p) {
+        if (p !== "delete") return pass(t, p);
+        return async (k: string) => {
+          tombLanded.go();
+          await kvDeleteGate.at;
+          await t.delete(k);
+        };
+      },
+    });
+    const dual = new DualKvStore(new D1KvStore(dualDb), dualKv);
+    const kvIso = oauthEnv(isolate("kv", { OAUTH_KV: kvKv })).OAUTH_KV;
+    // 1. dual's KV put.
+    const dualPut = dual.put(key, JSON.stringify({ id: "g" }));
+    await kvPutLanded.at;
+    // 2. kv's tombstone (D1 held no row yet).
+    const kvDelete = kvIso.delete(key);
+    await tombLanded.at;
+    expect((await rowOf(key))?.expires_at).toBeLessThan(0);
+    // 3. dual's D1 put.
+    d1PutGate.go();
+    await dualPut;
+    // 4. kv's KV delete.
+    kvDeleteGate.go();
+    await kvDelete;
+    // The next dual run: dead.
+    const next = oauthEnv(isolate("dual")).OAUTH_KV;
+    expect(await next.get(key)).toBeNull();
+    expect((await next.list({ prefix: p })).keys).toEqual([]);
+    expect((await rowOf(key))?.expires_at).toBeLessThan(0);
+  });
+
+  it("dual list: the KV walk stops at DUAL_LIST_KV_PAGES with the KV 429 the library retries", async () => {
+    // A full listing of P pages walks P(P+1)/2 KV lists: within half of
+    // KV's 1,000 operations per invocation.
+    expect(DUAL_LIST_KV_PAGES).toBe(31);
+    const p = `token:walk-${tag}:`;
+    const kvOf = (pages: number) => {
+      const o = { lists: 0 };
+      const kv = {
+        list: async (opt: { cursor?: string }) => {
+          // Bounds the test if the walk is unbounded.
+          if (++o.lists > DUAL_LIST_KV_PAGES + 5)
+            throw new Error("unbounded walk");
+          const i = Number(opt.cursor ?? 0);
+          const keys = [{ name: `${p}${String(i).padStart(6, "0")}` }];
+          return i + 1 >= pages
+            ? { keys, list_complete: true, cacheStatus: null }
+            : {
+                keys,
+                list_complete: false,
+                cursor: String(i + 1),
+                cacheStatus: null,
+              };
+        },
+      } as unknown as KVNamespace;
+      return { kv, o };
+    };
+    // At the cap: listed in full.
+    const ok = kvOf(DUAL_LIST_KV_PAGES);
+    const r = await new DualKvStore(new D1KvStore(env.DB), ok.kv).list({
+      prefix: p,
+    });
+    expect(r.keys.length).toBe(DUAL_LIST_KV_PAGES);
+    expect(ok.o.lists).toBe(DUAL_LIST_KV_PAGES);
+    // Past it: the KV 429, after DUAL_LIST_KV_PAGES lists.
+    const endless = kvOf(Number.POSITIVE_INFINITY);
+    const err = await new DualKvStore(new D1KvStore(env.DB), endless.kv)
+      .list({ prefix: p })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(String(err)).toMatch(/429 Too Many Requests/);
+    expect(endless.o.lists).toBe(DUAL_LIST_KV_PAGES);
   });
 
   it("switching dual to kv loses nothing", async () => {
@@ -560,24 +731,35 @@ describe("#769 and revocation", () => {
     expect(await rowOf(tok?.key ?? "")).toBeNull();
   });
 
-  it("the sweep keeps tombstones for TOMBSTONE_DAYS, then deletes them", async () => {
-    const key = `grant:sweep-${tag}:g`;
-    const now = nowS();
-    await env.DB.prepare(
-      "insert into oauth_kv (key, value, expires_at) values (?, '', ?)",
-    )
-      .bind(key, -(now - 3600))
-      .run();
-    const later = Date.now() + TOMBSTONE_DAYS * 86_400_000;
-    await sweepOAuthStore(inMode("d1"), Date.now());
-    expect(await rowOf(key)).not.toBeNull();
-    // kv and dual: a tombstone keeps KV's copy dead, so it stays.
-    for (const mode of ["kv", "dual"] as const) {
-      await sweepOAuthStore(inMode(mode), later);
-      expect(await rowOf(key)).not.toBeNull();
-    }
-    await sweepOAuthStore(inMode("d1"), later);
-    expect(await rowOf(key)).toBeNull();
+  it("the sweep keeps tombstones for TOMBSTONE_DAYS in d1, TOMBSTONE_KV_DAYS in kv, for good in dual", async () => {
+    expect(TOMBSTONE_KV_DAYS).toBe(1);
+    const tomb = async (key: string) => {
+      await env.DB.prepare(
+        "insert into oauth_kv (key, value, expires_at) values (?, '', ?)",
+      )
+        .bind(key, -(nowS() - 3600))
+        .run();
+      return key;
+    };
+    const kvDay = Date.now() + TOMBSTONE_KV_DAYS * 86_400_000;
+    const d1Days = Date.now() + TOMBSTONE_DAYS * 86_400_000;
+    // kv: kept within a day (a dual isolate may still overlap), then gone.
+    const k = await tomb(`grant:sweep-${tag}:kv`);
+    await sweepOAuthStore(inMode("kv"), Date.now());
+    expect(await rowOf(k)).not.toBeNull();
+    await sweepOAuthStore(inMode("kv"), kvDay - 3_600_000 - 60_000);
+    expect(await rowOf(k)).not.toBeNull();
+    await sweepOAuthStore(inMode("kv"), kvDay);
+    expect(await rowOf(k)).toBeNull();
+    // d1: kept past a day, gone after TOMBSTONE_DAYS.
+    const d = await tomb(`grant:sweep-${tag}:d1`);
+    await sweepOAuthStore(inMode("d1"), kvDay);
+    expect(await rowOf(d)).not.toBeNull();
+    // dual: a tombstone keeps KV's copy dead, so it stays.
+    await sweepOAuthStore(inMode("dual"), d1Days * 2);
+    expect(await rowOf(d)).not.toBeNull();
+    await sweepOAuthStore(inMode("d1"), d1Days);
+    expect(await rowOf(d)).toBeNull();
   });
 
   it("the nightly cron: the sweep stays in its slot, and the whole run's D1 queries are counted", async () => {
@@ -662,6 +844,7 @@ describe("D1 queries per invocation", () => {
   it("one /mcp request: oauth_kv queries per mode", async () => {
     const counts: Record<string, [number, number]> = {};
     for (const mode of MODES) {
+      await markBackfilled(); // kv cleared it; d1 needs it
       const a = await connectAgent(inMode(mode));
       const c = countingDb(env.DB);
       const e = inMode(mode, { DB: c.db });
@@ -704,7 +887,7 @@ describe("d1 with no OAUTH_KV binding", () => {
     expect(h.status).toBe(200);
     expect(((await h.json()) as { oauthStore: unknown }).oauthStore).toEqual({
       mode: "d1",
-      backfilled: false,
+      backfilled: true,
       kvWritesOffSince: expect.any(Number),
     });
   });
@@ -761,7 +944,7 @@ describe("/healthz oauthStore", () => {
       null,
     );
     expect(c.sqls).toEqual([
-      "select key, value from settings where key in (?, ?)",
+      "select key, value from settings where key in (?, ?, ?)",
     ]);
     expect(await offSince()).toBeNull();
     // The first d1 serve (any app-host request) stamps it.
@@ -787,7 +970,7 @@ describe("/healthz oauthStore", () => {
         if (p === "prepare")
           return (sql: string) =>
             /^select key, value from settings/.test(sql)
-              ? t.prepare(`${sql} and 0`)
+              ? t.prepare(`${sql} and key <> '${KV_WRITES_OFF_KEY}'`)
               : t.prepare(sql);
         const v = Reflect.get(t, p);
         return typeof v === "function" ? v.bind(t) : v;
@@ -889,6 +1072,33 @@ describe("leaving d1 is refused", () => {
   });
 });
 
+describe("d1 needs a completed copy", () => {
+  it("d1 without backfilled: 503 oauth_store_misconfigured, nothing stamped; once recorded, it serves", async () => {
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(BACKFILLED_KEY)
+      .run();
+    const r = await robots(inMode("d1"));
+    expect(r.status).toBe(503);
+    const body = (await r.json()) as { error: string; message: string };
+    expect(body.error).toBe("oauth_store_misconfigured");
+    expect(body.message).toMatch(
+      /^OAUTH_STORE=d1 is refused: no complete KV -> D1 copy/,
+    );
+    expect(await offSince()).toBeNull();
+    // /healthz still answers and shows why.
+    const h = await callWorker(new Request(`${APP}/healthz`), inMode("d1"));
+    expect(h.status).toBe(200);
+    expect(
+      ((await h.json()) as { oauthStore: { backfilled: boolean } }).oauthStore
+        .backfilled,
+    ).toBe(false);
+    // The refusal is not kept: once a copy is recorded, d1 serves.
+    await markBackfilled();
+    expect((await robots(inMode("d1"))).status).toBe(200);
+    expect(await offSince()).not.toBeNull();
+  });
+});
+
 // ------------------------------------------------------------ copy
 
 /** An in-memory KV with KV's list order, cursor, expiry and metadata. */
@@ -962,6 +1172,7 @@ describe("copyKvToD1 (the backfill's core)", () => {
       skippedExpiring: 1,
       d1Rows: 3,
       nextCursor: null,
+      restarted: false,
     });
     expect(await rowOf("grant:u:a")).toMatchObject({
       value: "A",
@@ -1043,6 +1254,63 @@ describe("copyKvToD1 (the backfill's core)", () => {
     expect(count?.n).toBe(n);
   });
 
+  it("the cursor carries a generation: a kv run retires it, so an old cursor restarts the pass and a retired pass never records backfilled", async () => {
+    const mem = memKv();
+    const p = `token:gen-${tag}:`;
+    const exp = nowS() + 3600;
+    for (let i = 0; i < COPY_PAGE + 5; i++)
+      mem.m.set(`${p}${String(i).padStart(5, "0")}`, {
+        v: `v${i}`,
+        expiration: exp,
+      });
+    const dual = inMode("dual", { OAUTH_KV: mem });
+    const genOf = async () =>
+      (
+        await env.DB.prepare("select value from settings where key = ?")
+          .bind(COPY_GEN_KEY)
+          .first<{ value: string }>()
+      )?.value ?? null;
+    /** A kv isolate's first store operation. */
+    const kvRun = async () => {
+      await oauthEnv(isolate("kv")).OAUTH_KV.get(`${p}none`);
+    };
+    const r1 = await copyKvToD1(dual);
+    expect(r1).toMatchObject({ kvKeys: COPY_PAGE, restarted: false });
+    expect(r1.nextCursor?.startsWith(`${await genOf()}.`)).toBe(true);
+    await kvRun();
+    expect(await genOf()).toBeNull();
+    expect(await isBackfilled()).toBe(false);
+    // The old cursor restarts the pass (its first page again).
+    const r2 = await copyKvToD1(dual, { cursor: r1.nextCursor });
+    expect(r2).toMatchObject({ kvKeys: COPY_PAGE, restarted: true });
+    expect(r2.nextCursor).not.toBeNull();
+    const r3 = await copyKvToD1(dual, { cursor: r2.nextCursor });
+    expect(r3).toMatchObject({ kvKeys: 5, nextCursor: null, restarted: false });
+    expect(await isBackfilled()).toBe(true);
+    // A kv run while the final page is copied: not recorded; the pass
+    // restarts on the next call and completes.
+    await kvRun();
+    const one = memKv();
+    one.m.set(`${p}only`, { v: "x", expiration: exp });
+    const retiring = {
+      ...one,
+      list: async (o: { limit?: number; cursor?: string }) => {
+        await kvRun();
+        return one.list(o);
+      },
+    };
+    const single = inMode("dual", { OAUTH_KV: retiring });
+    const r4 = await copyKvToD1(single);
+    expect(r4.nextCursor).not.toBeNull();
+    expect(r4.d1Rows).toBeNull();
+    expect(await isBackfilled()).toBe(false);
+    const r5 = await copyKvToD1(inMode("dual", { OAUTH_KV: one }), {
+      cursor: r4.nextCursor,
+    });
+    expect(r5).toMatchObject({ nextCursor: null, restarted: true });
+    expect(await isBackfilled()).toBe(true);
+  });
+
   it("is refused outside dual mode", async () => {
     for (const mode of ["kv", "d1"] as const)
       await expect(copyKvToD1(inMode(mode))).rejects.toThrow(
@@ -1050,17 +1318,16 @@ describe("copyKvToD1 (the backfill's core)", () => {
       );
   });
 
-  it("kv mode: a put drops D1's row, a delete tombstones only a row D1 holds, backfilled is cleared; no bulk wipe", async () => {
+  it("kv mode: a put drops D1's row, a delete tombstones every key (held or not), backfilled is cleared; no bulk wipe", async () => {
     const p = `grant:kvm-${tag}:`;
     const d1 = new D1KvStore(env.DB);
     // Rows from an earlier dual run, and one kv never touches.
     await d1.put(`${p}a`, "OLD");
     await d1.put(`${p}b`, "B");
     await d1.put(`${p}keep`, "K");
-    await env.DB.prepare(
-      "insert into settings (key, value) values (?, '1') on conflict(key) do nothing",
-    )
-      .bind(BACKFILLED_KEY)
+    await markBackfilled();
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(COPY_GEN_KEY)
       .run();
     const c = countingDb(env.DB);
     const s = oauthEnv(inMode("kv", { DB: c.db })).OAUTH_KV;
@@ -1069,7 +1336,9 @@ describe("copyKvToD1 (the backfill's core)", () => {
     expect(await env.OAUTH_KV.get(`${p}a`)).toBe("NEW");
     await Promise.all([s.delete(`${p}b`), s.delete(`${p}none`)]);
     expect((await rowOf(`${p}b`))?.expires_at).toBeLessThan(0);
-    expect(await rowOf(`${p}none`)).toBeNull();
+    // A key D1 never held gets one too: a dual isolate's D1 half may land
+    // after this delete.
+    expect((await rowOf(`${p}none`))?.expires_at).toBeLessThan(0);
     expect((await rowOf(`${p}keep`))?.value).toBe("K");
     // The marker read, the backfilled clear, one drop, one batched tombstone.
     expect(c.sqls.length).toBe(4);

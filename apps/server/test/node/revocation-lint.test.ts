@@ -141,11 +141,10 @@ const STATEMENTS: Readonly<Record<string, string>> = {
   // below is the provider's own put or delete, or keeps D1 agreeing with
   // KV. The revocations that reach it (revokeAllGrants) are markers in
   // their callers.
-  "mcp/oauth-store.ts:PUT": "the provider's put (KV's put)",
+  "mcp/oauth-store.ts:PUT":
+    "the provider's put (KV's put); never over a tombstone",
   "mcp/oauth-store.ts:TOMBSTONE_KEYS":
-    "the provider's delete (dual, d1): a tombstone",
-  "mcp/oauth-store.ts:TOMBSTONE_HELD":
-    "the provider's delete in kv mode: tombstones the row D1 holds",
+    "the provider's delete (every mode): a tombstone",
   "mcp/oauth-store.ts:DELETE_KEYS":
     "kv mode's put: drops D1's row, KV holds the value",
   "mcp/oauth-store.ts:SWEEP":

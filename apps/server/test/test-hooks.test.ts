@@ -15,7 +15,7 @@ import { sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import { revokeAllGrants } from "../src/mcp/oauth-api.js";
-import { KV_WRITES_OFF_KEY } from "../src/mcp/oauth-store.js";
+import { BACKFILLED_KEY, KV_WRITES_OFF_KEY } from "../src/mcp/oauth-store.js";
 import { direct, mailer, seedUser, uniq } from "./auth-helpers.js";
 
 // P2 Task 14: test hooks for P5's cross-tenant suite.
@@ -639,6 +639,12 @@ describe("hooks", () => {
     const raw = on({ OAUTH_STORE: "d1" }) as unknown as Record<string, unknown>;
     delete raw.OAUTH_KV;
     const e = raw as unknown as Env;
+    // d1 serves only after a completed KV -> D1 copy.
+    await env.DB.prepare(
+      "insert into settings (key, value) values (?, '1') on conflict(key) do nothing",
+    )
+      .bind(BACKFILLED_KEY)
+      .run();
     const r = await hook(e, TEST_HOOKS.oauthClient);
     expect(r.status).toBe(200);
     const { accessToken } = OAuthClientHookResultSchema.parse(await r.json());
