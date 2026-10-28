@@ -21,8 +21,13 @@ a green preflight leave only the Google sign-ins to you.
 
 - A Mac with this repo, `REDLINE_TARGETS` for `rl-a`/`rl-b` (the kit's
   `targets.json`, with `strayHost`) and its 0600 secret files. The admin PAT
-  copies come from `pnpm oa:hosted redline-creds --env staging --install <id> --confirm <id>`
+  copies come from
+  `CLOUDFLARE_ACCOUNT_ID=<hosted account id> pnpm oa:hosted redline-creds --env staging --install <id> --confirm <id>`
   (one run per install; it writes `~/.open-artifacts/redline-capture/secrets/`).
+  It also needs: the Keychain item `oa-hosted-staging` (the staging Cloudflare
+  token), `gh` signed in with access to the `redline-staging` environment's
+  secrets, and create's 0600 hook-key file in `~/.open-artifacts/hosted-staging/`.
+  No red-line CI run may be in progress: it rotates the CI secrets too.
 - The passwords of `alice@oa-redline-a.fyi` and `dave@oa-redline-c.fyi`
   (password manager).
 - Once, by an admin: `rl-a` has Google sign-in on, `AUTH_DOMAINS=oa-redline-a.fyi`
