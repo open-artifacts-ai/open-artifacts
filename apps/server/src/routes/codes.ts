@@ -274,7 +274,16 @@ export function mountCodes(app: AppType): void {
     const slot = await takeRequestSlot(c.env, cfg, ek, ip);
     if (!slot.ok) return rateLimited(slot.retryAfter, slot.scope);
 
-    const rid = b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
+    // Review item 13: a pending request for this same address keeps its id,
+    // so a re-request that sends nothing (resend_wait, capped, pool_full,
+    // send_failed) leaves the code already in the inbox usable; a resend
+    // replaces that code under the same id (createCode). Decided from this
+    // browser's own cookie only, never from delivery, so the 202 says nothing.
+    const prior = await readPending(c);
+    const rid =
+      prior && prior.ek === ek && Date.now() <= prior.exp
+        ? prior.rid
+        : b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
     const next = safeNext(c.env, parsed.data.next);
     const pending: Pending = {
       ek,

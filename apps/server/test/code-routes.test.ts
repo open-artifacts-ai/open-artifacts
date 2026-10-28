@@ -799,3 +799,99 @@ describe("code routes: review fixes", () => {
     ).toBeTruthy();
   });
 });
+
+// Review item 13: a re-request that sends nothing (resend_wait, capped,
+// pool_full, send_failed) must not orphan the code already in the inbox.
+describe("a code re-request keeps the pending request id", () => {
+  const ridOf = (cookie: string | undefined) => {
+    const v = (cookie ?? "").split("=")[1]?.split(".")[0] ?? "";
+    return (
+      JSON.parse(atob(v.replace(/-/g, "+").replace(/_/g, "/"))) as {
+        rid: string;
+      }
+    ).rid;
+  };
+
+  it("a re-request inside the resend wait leaves the first code usable", async () => {
+    const guest = uniq("rs", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const ip = "198.51.100.201";
+    const r1 = await request(e, guest, { ip });
+    const first = m.codeFor(guest);
+    const r2 = await request(e, guest, {
+      ip,
+      cookie: cookieOf(r1, CODE_COOKIE),
+    });
+    expect(m.sent).toHaveLength(1);
+    // The 202 is the same either way: nothing says whether a code went out.
+    expect(await r2.json()).toEqual(await r1.json());
+    expect(ridOf(cookieOf(r2, CODE_COOKIE))).toBe(
+      ridOf(cookieOf(r1, CODE_COOKIE)),
+    );
+    const v = await verify(e, first, cookieOf(r2, CODE_COOKIE), { ip });
+    expect(v.status).toBe(200);
+  });
+
+  it("a resend after the wait replaces the code under the same id", async () => {
+    const guest = uniq("rs2", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const ip = "198.51.100.202";
+    const r1 = await request(e, guest, { ip });
+    const first = m.codeFor(guest);
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    const r2 = await request(e, guest, {
+      ip,
+      cookie: cookieOf(r1, CODE_COOKIE),
+    });
+    expect(m.sent).toHaveLength(2);
+    const second = m.codeFor(guest);
+    expect(second).not.toBe(first);
+    const c2 = cookieOf(r2, CODE_COOKIE);
+    const bad = await verify(e, first, c2, { ip });
+    expect(bad.status).toBe(401);
+    const ok = await verify(e, second, cookieOf(bad, CODE_COOKIE) ?? c2, {
+      ip,
+    });
+    expect(ok.status).toBe(200);
+  });
+
+  it("a resend whose email fails leaves the earlier code usable", async () => {
+    const guest = uniq("rs3", "x.com");
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const ip = "198.51.100.203";
+    const r1 = await request(withMail(direct(), m), guest, { ip });
+    const first = m.codeFor(guest);
+    const later = Date.now() + 61_000;
+    vi.spyOn(Date, "now").mockImplementation(() => later);
+    const r2 = await request(withMail(direct(), mailer(true)), guest, {
+      ip,
+      cookie: cookieOf(r1, CODE_COOKIE),
+    });
+    expect(r2.status).toBe(202);
+    const v = await verify(
+      withMail(direct(), m),
+      first,
+      cookieOf(r2, CODE_COOKIE),
+      { ip },
+    );
+    expect(v.status).toBe(200);
+  });
+
+  it("a cookie for another address, or none, gets a new id", async () => {
+    const a = uniq("rsa", "x.com");
+    const b = uniq("rsb", "x.com");
+    const e = withMail(direct());
+    const r1 = await request(e, a);
+    const r2 = await request(e, b, { cookie: cookieOf(r1, CODE_COOKIE) });
+    const r3 = await request(e, a);
+    const rid1 = ridOf(cookieOf(r1, CODE_COOKIE));
+    expect(ridOf(cookieOf(r2, CODE_COOKIE))).not.toBe(rid1);
+    expect(ridOf(cookieOf(r3, CODE_COOKIE))).not.toBe(rid1);
+  });
+});

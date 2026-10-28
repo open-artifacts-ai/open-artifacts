@@ -261,7 +261,11 @@ export async function takeRequestSlot(
   return { ok: true };
 }
 
-/** Stores a new code for (ek, rid) and returns it. `gen` is for tests only. */
+/**
+ * Stores a new code for (ek, rid) and returns it. A row already under that
+ * id (a resend for the same pending request, review item 13) is replaced:
+ * new hash, expiry and attempts. `gen` is for tests only.
+ */
 export async function createCode(
   env: Env,
   ek: string,
@@ -272,12 +276,23 @@ export async function createCode(
   const code = gen();
   await stmt(
     env.DB,
-    "insert into login_codes (email_key, request_id, code_hash, expires_at, created_at) values (?1, ?2, ?3, ?4, ?5)",
+    `insert into login_codes (email_key, request_id, code_hash, expires_at, created_at)
+     values (?1, ?2, ?3, ?4, ?5)
+     on conflict (email_key, request_id) do update set
+       code_hash = excluded.code_hash, expires_at = excluded.expires_at,
+       attempts = 0, created_at = excluded.created_at`,
   )
     .bind(ek, rid, await codeHash(env, ek, rid, code), now + TTL_MS, now)
     .run();
   return code;
 }
+
+type CodeRow = {
+  code_hash: string;
+  expires_at: number;
+  attempts: number;
+  created_at: number;
+};
 
 /** Every way one deliverCode call ends; "error" is it throwing (the route logs that). */
 export type CodeSendOutcome =
@@ -323,7 +338,8 @@ const RESEND = `insert into counters (key, n, day) values (?1, ?2, ?3)
  * one address across networks are soft: counted, code_abuse at the alert
  * count, never refused, so no stranger can stop the victim's own network
  * getting codes. Null when nothing was sent; the route answers the same 202
- * either way. A failed send deletes its row.
+ * either way. A failed send deletes its row, or puts back the code a
+ * resend replaced.
  */
 export async function deliverCode(
   env: Env,
@@ -371,6 +387,14 @@ export async function deliverCode(
     CODE_LIMITS.sendsPerEmailPerDayAlert
   )
     logAuth({ evt: "code_abuse", scope: "send" });
+  // The code a resend replaces (same pending request id), put back if this
+  // send fails: the earlier email's code stays usable.
+  const before = await stmt(
+    env.DB,
+    "select code_hash, expires_at, attempts, created_at from login_codes where email_key = ?1 and request_id = ?2",
+  )
+    .bind(ek, requestId)
+    .first<CodeRow>();
   const code = await createCode(env, ek, requestId, now);
   const instance = (await getSettings(env).catch(() => null))?.name ?? null;
   const sent = await sendEmail(
@@ -387,12 +411,28 @@ export async function deliverCode(
     { kind: "code", now, caps: [], instance },
   );
   if (!sent) {
-    await stmt(
-      env.DB,
-      "delete from login_codes where email_key = ?1 and request_id = ?2",
-    )
-      .bind(ek, requestId)
-      .run();
+    // Only the row this call wrote (its hash): a racing resend's stays.
+    const mine = await codeHash(env, ek, requestId, code);
+    await (before
+      ? stmt(
+          env.DB,
+          `update login_codes set code_hash = ?3, expires_at = ?4,
+             attempts = ?5, created_at = ?6
+           where email_key = ?1 and request_id = ?2 and code_hash = ?7`,
+        ).bind(
+          ek,
+          requestId,
+          before.code_hash,
+          before.expires_at,
+          before.attempts,
+          before.created_at,
+          mine,
+        )
+      : stmt(
+          env.DB,
+          "delete from login_codes where email_key = ?1 and request_id = ?2 and code_hash = ?3",
+        ).bind(ek, requestId, mine)
+    ).run();
     return none("send_failed");
   }
   logCodeSend("sent");
