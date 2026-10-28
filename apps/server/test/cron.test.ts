@@ -110,6 +110,7 @@ describe("purgeDeleted", () => {
       "fulfilled", // expirePending (P3 T12 directory confirm)
       "fulfilled", // sweepAuditEvents (400-day audit retention)
       "fulfilled", // kickSync (P3 T13; a no-op with sync off)
+      "fulfilled", // marks the day for RECOVERY_CRON's daily slot (O1)
     ]);
     expect(
       await count("select count(*) n from artifacts where id = ?", gone),
