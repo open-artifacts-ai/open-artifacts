@@ -9,6 +9,13 @@ import { calls, installHarness, mount, mountHosted } from "./harness";
 
 installHarness();
 
+// Radix Checkbox measures itself; jsdom has no ResizeObserver.
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof ResizeObserver;
+
 const ENG = "SpEngNpQrSt2uVwX";
 const CLIENTS = "SpCliNpQrSt4uVwX";
 
@@ -137,8 +144,45 @@ it("create trims the name and sends the defaults", async () => {
       name: "Design",
       allMembersRole: null,
       publicLinks: true,
+      addMe: true,
     }),
   );
+});
+
+// #806: the creator manages the new space unless they untick it, so it shows
+// in their own sidebar.
+it("New space: Add me as a manager is on by default; unticked, it sends addMe false", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/spaces");
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  const box = within(d).getByRole("checkbox", { name: "Add me as a manager" });
+  expect(box).toBeChecked();
+  fireEvent.click(box);
+  expect(box).not.toBeChecked();
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "Ops" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  await waitFor(() =>
+    expect(seen.find((c) => c.path === "/api/v1/spaces")?.body).toEqual(
+      expect.objectContaining({ name: "Ops", addMe: false }),
+    ),
+  );
+});
+
+it("a space created with Add me shows in the creator's sidebar (shared mock)", async () => {
+  mountHosted("/settings/spaces");
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "Launch crew" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  const spaces = await screen.findByRole("navigation", { name: "Spaces" });
+  expect(
+    await within(spaces).findByRole("link", { name: "Launch crew" }),
+  ).toBeVisible();
 });
 
 it("a fresh New space form shows no error until the field is left or a submit is tried", async () => {
