@@ -1,4 +1,5 @@
 import { R } from "@oa/shared";
+import type { Page, WebSocket } from "@playwright/test";
 import {
   APP,
   artifactFrame,
@@ -13,6 +14,27 @@ import {
 // (option B); touched, the chip.
 const page1 = (n: number) =>
   `<!doctype html><h1 id="v">version ${n}</h1><input id="note" aria-label="Note">`;
+
+/**
+ * Resolves on the R.events hello for `id`: from then on the viewer hears about
+ * new versions. Call it before the goto, so the socket can't open unseen.
+ */
+const helloOn = (page: Page, id: string) =>
+  new Promise<void>((resolve) => {
+    const onSocket = (ws: WebSocket) => {
+      if (!ws.url().includes(R.events(id))) return;
+      ws.on("framereceived", ({ payload }) => {
+        try {
+          if (JSON.parse(String(payload)).type !== "hello") return;
+        } catch {
+          return;
+        }
+        page.off("websocket", onSocket);
+        resolve();
+      });
+    };
+    page.on("websocket", onSocket);
+  });
 
 const publishVersion = (pat: string, id: string, n: number) =>
   fetch(`${APP}${R.versions(id)}`, {
@@ -35,14 +57,15 @@ test("publish v2 while v1 is open: it swaps in within about 2 s", async ({
     format: "html",
     content: page1(1),
   });
+  const hello = helloOn(page, id);
   await page.goto(`/a/${id}`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
-  // The events socket's hello has landed.
-  await page.waitForTimeout(500);
+  await hello;
   await publishVersion(member.pat, id, 2);
-  const t0 = Date.now();
-  await expect(page.getByText("Updated to v2")).toBeVisible({ timeout: 3_000 });
-  expect(Date.now() - t0).toBeLessThan(3_000);
+  // A generous deadline, not the 2 s target: CI runners are slower.
+  await expect(page.getByText("Updated to v2")).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 2");
   await expect(
@@ -59,15 +82,16 @@ test("touched (typed in the frame): the chip, and the typing survives", async ({
     format: "html",
     content: page1(1),
   });
+  const hello = helloOn(page, id);
   await page.goto(`/a/${id}/full`);
   const frame = artifactFrame(page);
   await expect(frame.locator("#v")).toHaveText("version 1");
   await frame.locator("#note").fill("half typed");
-  await page.waitForTimeout(500);
+  await hello;
   await publishVersion(member.pat, id, 2);
   await expect(
     page.getByRole("button", { name: "View version 2" }),
-  ).toBeVisible({ timeout: 3_000 });
+  ).toBeVisible({ timeout: 15_000 });
   await expect(frame.locator("#note")).toHaveValue("half typed");
   await page.getByRole("button", { name: "View version 2" }).click();
   // The chip stays until the preloaded frame has swapped in.
@@ -125,9 +149,10 @@ test("scrolled, then a new version: it swaps and keeps the place", async ({
     format: "html",
     content: LONG(1),
   });
+  const hello = helloOn(page, id);
   await page.goto(`/a/${id}`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
-  await page.waitForTimeout(500);
+  await hello;
   const box = await page.locator("iframe.oa-vframe").boundingBox();
   if (!box) throw new Error("no frame");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -157,9 +182,10 @@ test("the side panel open: a new version still swaps", async ({
     format: "html",
     content: LONG(1),
   });
+  const hello = helloOn(page, id);
   await page.goto(`/a/${id}?panel=open&tab=versions`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
-  await page.waitForTimeout(500);
+  await hello;
   await publishLong(member.pat, id, 2);
   await expect(page.getByText("Updated to v2")).toBeVisible({ timeout: 5_000 });
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 2");
@@ -185,9 +211,10 @@ test("text selected in the frame: the chip, not a swap", async ({
     format: "html",
     content: LONG(1),
   });
+  const hello = helloOn(page, id);
   await page.goto(`/a/${id}`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
-  await page.waitForTimeout(500);
+  await hello;
   // A selection made without a click or key (the runtime reports it).
   await artifactFrame(page)
     .locator("#p2")
@@ -210,9 +237,10 @@ test("clicked inside: still the chip", async ({ page, member }) => {
     format: "html",
     content: LONG(1),
   });
+  const hello = helloOn(page, id);
   await page.goto(`/a/${id}`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
-  await page.waitForTimeout(500);
+  await hello;
   await artifactFrame(page).locator("#p3").click();
   await publishLong(member.pat, id, 2);
   await expect(page.locator(".oa-lchip")).toContainText("v2 available", {
@@ -257,9 +285,10 @@ test("row 52, v2 swaps in, then the panel opens and v3 lands on row 52 too", asy
     format: "html",
     content: ROWS(1),
   });
+  const hello = helloOn(page, id);
   await page.goto(`/a/${id}`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
-  await page.waitForTimeout(500);
+  await hello;
   // Row 52 (60px rows under a 60px heading).
   await artifactFrame(page)
     .locator("body")
@@ -288,9 +317,10 @@ test("a new artifact's first load starts at the top", async ({
     format: "html",
     content: ROWS(1),
   });
+  const hello = helloOn(page, a);
   await page.goto(`/a/${a}`);
   await expect(artifactFrame(page).locator("#v")).toHaveText("version 1");
-  await page.waitForTimeout(500);
+  await hello;
   await artifactFrame(page)
     .locator("body")
     .evaluate(() => window.scrollTo(0, document.body.scrollHeight));

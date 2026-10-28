@@ -98,6 +98,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`DELETE ${SPACES}`]: { user: "org admin; personal 400 first (the service)" },
   [`GET ${SPACES}/members`]: { user: "member or org admin (the service)" },
   [`POST ${SPACES}/members/self`]: { org: "space.adminSelfAdd" },
+  [`GET ${SPACES}/candidates`]: {
+    user: "space manager or org admin, uncapped (the service)",
+  },
   [`PUT ${SPACES}/members/:userId`]: {
     user: "space manager or org admin (the service)",
   },

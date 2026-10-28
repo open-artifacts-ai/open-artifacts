@@ -73,7 +73,13 @@ const msw: ContractDriver = {
     server.use(...createHandlers(o));
   },
   call,
+  // Google when it is on (a domain member gets no code then), else a code.
   signIn: async (email) => {
+    const g = await fetch(
+      `${O}${AUTH.callbackGoogle}?mock_email=${encodeURIComponent(email)}`,
+      { headers: H, redirect: "manual" },
+    );
+    if (g.headers.get("location") === "/") return;
     await call("POST", AUTH.codeRequest, { email });
     await call("POST", AUTH.codeVerify, { code: HOSTED_MOCK_CODE });
   },
@@ -289,7 +295,10 @@ describe("hosted contract schemas", () => {
     });
     expect(ERROR_CODES).toContain("member_synced");
     expect(STATUS_FOR.member_synced).toBe(409);
-    expect(Object.keys(SpaceMemberSchema.shape).at(-1)).toBe("allMembers");
+    expect(Object.keys(SpaceMemberSchema.shape).slice(-2)).toEqual([
+      "allMembers",
+      "restriction",
+    ]);
     expect(Object.keys(SpaceMemberSchema.shape)).not.toContain("lastSeenAt");
   });
 });

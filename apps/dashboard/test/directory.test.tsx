@@ -4,7 +4,7 @@
 import { type Me, R } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { expect, it, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { calls, installHarness, lastClient, mountHosted } from "./harness";
 
 installHarness();
@@ -134,6 +134,14 @@ it("times from another day show the date: frozen as of, failing since", async ()
 });
 
 it("times from today show the time only", async () => {
+  // Local midday, so "a minute ago" is always today. Only Date is faked.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  vi.setSystemTime(noon);
   const now = Date.now();
   const today = new Date(now - 60_000).toISOString();
   const since = new Date(now - 30_000).toISOString();
