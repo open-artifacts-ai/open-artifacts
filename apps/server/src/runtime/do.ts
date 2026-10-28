@@ -411,6 +411,11 @@ export const EVENTS_NAMED_HEADER = "X-OA-Named";
 export type GoneReason = "deleted" | "changed";
 const GONE_DELETED = '{"type":"gone","reason":"deleted"}';
 const GONE_CHANGED = '{"type":"gone","reason":"changed"}';
+/**
+ * Margin on a stale socket's retryAfterMs: the reconnect must be authorized
+ * after accessChangedAt + SKEW_MS, or it is refused again.
+ */
+const STALE_RETRY_MARGIN_MS = 250;
 
 /** A new version, broadcast to R.events sockets by scheduleIndex. */
 export type VersionEvent = {
@@ -1245,8 +1250,32 @@ export class ArtifactRuntime extends DurableObject<Env> {
       stale ||
       (userId !== null && !(await this.touchPresence(userId, authzAt)))
     ) {
+      // A stale socket (authorized inside the skew window of an access change)
+      // is told when a reconnect will pass, so the client backs off once
+      // instead of looping refused reconnects until the window ends.
+      const retry =
+        stale && changed !== null
+          ? Math.min(
+              SKEW_MS + STALE_RETRY_MARGIN_MS,
+              Math.max(
+                STALE_RETRY_MARGIN_MS,
+                changed + SKEW_MS + STALE_RETRY_MARGIN_MS - this.now(),
+              ),
+            )
+          : null;
       try {
-        pair[1].close(4403, "access revoked");
+        if (url.pathname === "/events")
+          pair[1].send(
+            retry === null
+              ? GONE_CHANGED
+              : `{"type":"gone","reason":"changed","retryAfterMs":${retry}}`,
+          );
+        pair[1].close(
+          4403,
+          retry === null
+            ? "access revoked"
+            : `access changed; retry after ${retry} ms`,
+        );
       } catch {
         // already closed
       }

@@ -934,7 +934,9 @@ export type ArtifactEventBy = z.infer<typeof ArtifactEventBySchema>;
  * - gone: access changed; the socket then closes with EVENTS_GONE_CLOSE
  *   (4403). reason "deleted": soft delete; "changed": visibility,
  *   capabilities, share revoked or member removed.
- *   Reconnect to re-check access (404 = no longer readable).
+ *   Reconnect to re-check access (404 = no longer readable). With
+ *   `retryAfterMs` (a socket opened just as access changed), wait that long
+ *   first: a sooner reconnect is refused the same way.
  * Sockets also close with 4408 near the signed-URL TTL: reconnect.
  */
 export const ArtifactEventSchema = z.discriminatedUnion("type", [
@@ -949,6 +951,7 @@ export const ArtifactEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("gone"),
     reason: z.enum(["deleted", "changed"]),
+    retryAfterMs: z.number().int().min(0).optional(),
   }),
 ]);
 export type ArtifactEvent = z.infer<typeof ArtifactEventSchema>;

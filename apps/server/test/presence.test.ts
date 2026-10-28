@@ -12,6 +12,7 @@ import {
   ACTOR_HEADER,
   type ArtifactRuntime,
   AUTHZ_AT_HEADER,
+  EVENTS_VERSION_HEADER,
   runtimeStub,
 } from "../src/runtime/do.js";
 import {
@@ -447,6 +448,49 @@ describe("UserPresence", () => {
     expect(await wrap(r.webSocket).closed).toBe(4403);
     // Authorized after the change plus the skew margin: accepted.
     const later = await direct(art, `pr-v2-${newId()}`, (at as number) + 2001);
+    await tick();
+    expect(later.isOpen()).toBe(true);
+    later.ws.close();
+  });
+
+  it("a socket refused as stale gets a gone frame with retryAfterMs, and a reconnect after it passes (item 38)", async () => {
+    const art = await pub();
+    await patch(env, owner.member, art, { visibility: "private" });
+    const at = (await runInDurableObject(
+      runtimeStub(env, art) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (i) => i.accessChangedAt(),
+    )) as number;
+    const r = await runtimeStub(env, art).fetch("https://runtime.invalid/events", {
+      headers: {
+        Upgrade: "websocket",
+        [ACTOR_HEADER]: "ip:198.51.100.78",
+        [AUTHZ_AT_HEADER]: String(at),
+        [EVENTS_VERSION_HEADER]: "1",
+      },
+    });
+    if (!r.webSocket) throw new Error(`no websocket (${r.status})`);
+    const frames: string[] = [];
+    let reason = "";
+    r.webSocket.addEventListener("message", (e) =>
+      frames.push(String((e as MessageEvent).data)),
+    );
+    r.webSocket.addEventListener("close", (e) => {
+      reason = (e as CloseEvent).reason;
+    });
+    const s = wrap(r.webSocket);
+    expect(await s.closed).toBe(4403);
+    expect(frames).toHaveLength(1);
+    const g = JSON.parse(frames[0]!) as {
+      type: string;
+      reason: string;
+      retryAfterMs?: number;
+    };
+    expect(g).toMatchObject({ type: "gone", reason: "changed" });
+    expect(g.retryAfterMs).toBeGreaterThan(0);
+    expect(g.retryAfterMs).toBeLessThanOrEqual(SKEW_MS + 250);
+    expect(reason).toMatch(/retry after \d+ ms/);
+    // A reconnect authorized once retryAfterMs has passed is accepted.
+    const later = await direct(art, `pr-v3-${newId()}`, Date.now() + g.retryAfterMs!);
     await tick();
     expect(later.isOpen()).toBe(true);
     later.ws.close();
