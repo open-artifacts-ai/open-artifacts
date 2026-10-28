@@ -2,6 +2,10 @@ import { type ErrorCode, QUOTA_MESSAGE, STATUS_FOR } from "@oa/shared";
 import { HTTPException } from "hono/http-exception";
 import type { Env } from "../env.js";
 import { logError } from "../log.js";
+import {
+  OAuthStoreConfigError,
+  storeMisconfigured,
+} from "../mcp/oauth-store.js";
 
 export class ApiError extends Error {
   constructor(
@@ -62,6 +66,7 @@ export function toErrorResponse(e: unknown): Response {
       QUOTA_MESSAGE,
     );
   }
+  if (e instanceof OAuthStoreConfigError) return storeMisconfigured(e);
   if (e instanceof HTTPException) {
     return errorJson(
       e.status,

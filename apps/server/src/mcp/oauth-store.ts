@@ -1,6 +1,6 @@
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
-import { logWarn } from "../log.js";
+import { logError, logWarn } from "../log.js";
 
 // The OAuth provider's store, per install (post-M1 OAuth store move). The
 // library (@cloudflare/workers-oauth-provider, pinned) only ever reads
@@ -45,9 +45,21 @@ import { logWarn } from "../log.js";
 export type OAuthStoreMode = "kv" | "dual" | "d1";
 const MODES: readonly OAuthStoreMode[] = ["kv", "dual", "d1"];
 
-/** A broken OAUTH_STORE setting or a missing binding: fails clearly. */
+/**
+ * A broken OAUTH_STORE setting, a missing binding, or leaving d1 without
+ * the override: fails clearly (storeMisconfigured).
+ */
 export class OAuthStoreConfigError extends Error {
   override name = "OAuthStoreConfigError";
+}
+
+/** The 503 for an OAuthStoreConfigError, wherever it surfaces. */
+export function storeMisconfigured(e: OAuthStoreConfigError): Response {
+  logError("oauth_store_misconfigured", e);
+  return Response.json(
+    { error: "oauth_store_misconfigured", message: e.message },
+    { status: 503, headers: { "cache-control": "no-store" } },
+  );
 }
 
 /** OAUTH_STORE's mode (unset or empty: kv); null for any other value. */
@@ -710,8 +722,10 @@ export class DualKvStore extends StoreBase {
  * serves a stale row or revives a revoked grant: a put drops D1's row (the
  * value lives in KV only), and a delete tombstones the row D1 holds, before
  * KV's delete. Both batch like D1KvStore's deletes and map D1 overload like
- * every store query. Writes check the markers first (checkMarkers: leaving
- * d1 is refused).
+ * every store query. Every operation, reads included (KV after d1 still
+ * holds grants revoked since), checks the markers first, once per isolate
+ * (checkMarkers: leaving d1 is refused); a request that never touches the
+ * store never touches D1.
  */
 class KvModeStore extends StoreBase {
   private readonly d1: D1KvStore;
@@ -722,7 +736,8 @@ class KvModeStore extends StoreBase {
     super();
     this.d1 = new D1KvStore(env.DB, "held");
   }
-  get(key: string, opt?: GetOpt) {
+  async get(key: string, opt?: GetOpt) {
+    await checkMarkers(this.env, "kv");
     return this.kv.get(key, opt as "text");
   }
   async put(key: string, value: string, opt?: KVNamespacePutOptions) {
@@ -735,7 +750,8 @@ class KvModeStore extends StoreBase {
     await this.d1.delete(key);
     return this.kv.delete(key);
   }
-  list(opt?: KVNamespaceListOptions) {
+  async list(opt?: KVNamespaceListOptions) {
+    await checkMarkers(this.env, "kv");
     return this.kv.list(opt);
   }
 }
@@ -834,13 +850,18 @@ export function resetOAuthStoreMarkers(): void {
 }
 
 /**
- * Every app-host request except /healthz: the markers, once per isolate
- * and mode (checkMarkers; d1: "the first time the install serves in d1
- * mode"). Throws OAuthStoreConfigError on a bad mode, a missing binding, or
- * kv or dual after d1 without the override.
+ * Every app-host request except /healthz: dual and d1 check the markers,
+ * once per isolate and mode (checkMarkers; d1: "the first time the install
+ * serves in d1 mode"). kv checks them lazily, before its first store
+ * operation (KvModeStore), so a kv request that never touches the store
+ * (/skill.md, a D1 quota error page) never touches D1. Throws
+ * OAuthStoreConfigError on a bad mode, a missing binding, or dual after d1
+ * without the override.
  */
 export async function syncStoreMarkers(env: Env): Promise<void> {
-  await checkMarkers(env, checkedStoreMode(env));
+  const mode = checkedStoreMode(env);
+  if (mode === "kv") return;
+  await checkMarkers(env, mode);
 }
 
 export type OAuthStoreHealth = {

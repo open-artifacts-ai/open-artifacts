@@ -57,6 +57,7 @@ import {
   type OAuthEnv,
   OAuthStoreConfigError,
   oauthEnv,
+  storeMisconfigured,
   syncStoreMarkers,
 } from "./oauth-store.js";
 import {
@@ -355,19 +356,17 @@ export async function serveAppHost(
   // This install's OAuth store (OAUTH_STORE), one per request; the app and
   // the /mcp handler get it too, so their helpers share its cache. /healthz
   // only reads (oauthStoreHealth): the markers are written on serve paths.
-  let store: OAuthEnv;
+  // kv refuses leaving d1 at its first store operation, which may run
+  // inside the provider: that refusal is the same 503.
+  let res: Response;
   try {
     if (new URL(req.url).pathname !== "/healthz") await syncStoreMarkers(env);
-    store = oauthEnv(env);
+    const store: OAuthEnv = oauthEnv(env);
+    res = await oauthProvider(env, app).fetch(req, store, ctx);
   } catch (e) {
     if (!(e instanceof OAuthStoreConfigError)) throw e;
-    logError("oauth_store_misconfigured", e);
-    return Response.json(
-      { error: "oauth_store_misconfigured", message: e.message },
-      { status: 503, headers: { "cache-control": "no-store" } },
-    );
+    return storeMisconfigured(e);
   }
-  const res = await oauthProvider(env, app).fetch(req, store, ctx);
   if (res.status === 401 && res.body === null) return explainNoToken(req, res);
   if (req.method === "POST" && new URL(req.url).pathname === OAUTH.register)
     await trackRegisteredClient(env, res);

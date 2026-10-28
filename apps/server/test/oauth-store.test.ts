@@ -836,6 +836,9 @@ describe("/healthz oauthStore", () => {
 
 // ------------------------------------------------------------ leaving d1
 
+const grants503 = (e: unknown, cookie: string) =>
+  appCall(e, R.oauthClients, cookie);
+
 describe("leaving d1 is refused", () => {
   it("kv or dual after d1: 503 oauth_store_misconfigured, the stamp kept, unless OAUTH_STORE_ROLLBACK=1", async () => {
     const a = await connectAgent(inMode("d1"));
@@ -843,9 +846,11 @@ describe("leaving d1 is refused", () => {
     expect(t1).not.toBeNull();
     for (const mode of ["kv", "dual"] as const) {
       resetOAuthStoreMarkers();
+      // dual: every serve; kv: every request that touches the store.
       for (const r of [
-        await robots(inMode(mode)),
+        ...(mode === "dual" ? [await robots(inMode(mode))] : []),
         await mcp(inMode(mode), a.access_token),
+        await grants503(inMode(mode), a.member.cookie),
       ]) {
         expect(r.status).toBe(503);
         const body = (await r.json()) as { error: string; message: string };
