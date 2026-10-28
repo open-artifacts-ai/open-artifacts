@@ -254,10 +254,18 @@ const UNBIND = `update identities set directory_bound = 0
     and user_id in (select value from json_each(?1))`;
 const SYNC_ACTOR = { kind: "sync", id: null } as const;
 /** Adds ?2 (JSON ids) to the tenant.retired list (?1), in the same batch. */
-const RECORD_RETIRED = `insert into directory_state (key, value) values (?1, ?2)
+/**
+ * Kept to ?3 ids (revokeFanoutCap): the cleanup revokes no more than that
+ * anyway, and an unbounded list would outgrow a D1 row on a large tenant
+ * and leave the retire stuck.
+ */
+const RECORD_RETIRED = `insert into directory_state (key, value)
+  values (?1, (select json_group_array(value) from
+    (select value from json_each(?2) limit ?3)))
   on conflict (key) do update set value = (select json_group_array(v) from (
     select j.value as v from json_each(directory_state.value) j
-    union select k.value from json_each(excluded.value) k))`;
+    union select k.value from json_each(excluded.value) k
+    limit ?3))`;
 const RETIRED_IDS = "select value as ids from directory_state where key = ?";
 
 /**
@@ -308,6 +316,7 @@ export async function retireTenant(
       stmt(env.DB, RECORD_RETIRED).bind(
         K.retired,
         JSON.stringify(active.map((r) => r.id)),
+        revokeFanoutCap(env),
       ),
       stmt(env.DB, UNBIND).bind(ids),
     ]);

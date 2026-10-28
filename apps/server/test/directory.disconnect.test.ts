@@ -16,6 +16,7 @@ import { createPat } from "../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import { applyGroupDiff } from "../src/directory/apply.js";
+import { retireTenant } from "../src/directory/binding.js";
 import { seal } from "../src/directory/crypto.js";
 import { clearHealth, HK, NEVER } from "../src/directory/health.js";
 import { K, UPSERT } from "../src/directory/store.js";
@@ -23,6 +24,7 @@ import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { oauthApi } from "../src/mcp/oauth-api.js";
+import { revokeFanoutCap } from "../src/runtime/revoke.js";
 import { resetSync, SYNC_DO_NAME } from "../src/services/directory.js";
 import { admit } from "../src/services/identity.js";
 import { mailer, type SentMail, seedUser, uniq } from "./auth-helpers.js";
@@ -1059,6 +1061,36 @@ describe("during customer_mismatch", () => {
       limit: 10,
     });
     expect(items).toEqual([]);
+  });
+  it("review N2: tenant.retired keeps at most revokeFanoutCap ids", async () => {
+    const free = { ...e, PLAN: "free" } as Env;
+    const cap = revokeFanoutCap(free);
+    for (let i = 0; i < cap + 5; i++) await boundUser(`ws-cap${i}`);
+    // Stop it right after the D1 loop, with the list still stored.
+    const db = env.DB;
+    const stop = {
+      ...free,
+      DB: new Proxy(db, {
+        get(t, k) {
+          if (k === "prepare")
+            return (sql: string) => {
+              if (sql.startsWith("select value as ids from directory_state"))
+                throw new Error("stop");
+              return t.prepare(sql);
+            };
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    } as Env;
+    await expect(retireTenant(stop, "C-old")).rejects.toThrow("stop");
+    const row = await env.DB.prepare(
+      "select value from directory_state where key = 'tenant.retired'",
+    ).first<{ value: string }>();
+    expect((JSON.parse(row?.value ?? "[]") as string[]).length).toBe(cap);
+    // A clean retry finishes and drops the list.
+    await retireTenant(free, "C-old");
+    expect(await keys()).not.toContain("tenant.retired");
   });
 
   it("P2.5 #16: a reset keeps the customer_mismatch tombstone while a retire is owed, even with a live binding", async () => {
