@@ -21,6 +21,7 @@ export {
   staleAssertion,
   unb64,
   verifyAssertion,
+  verifyState,
 } from "./core.js";
 export {
   clearRegistryCache,
