@@ -1,17 +1,17 @@
 ---
 title: Terms of Service
 description: The rules for using hosted Open Artifacts and this website.
-updated: "[TODO: date of publication]"
+updated: "October 28, 2026"
 ---
 
-These terms are an agreement between you and **[TODO: legal entity name]** ("we", "us"), **[TODO: registered address]**. They cover:
+These terms are an agreement between you and **Leo Urbina Consulting LLC** ("we", "us"), 8913 Bar K Ranch Road, Leander, Texas 78645, USA. They cover:
 
 - **Hosted Open Artifacts**, the service at open-artifacts.app and its subdomains ("the Service"); and
 - **this website**, open-artifacts.com, including its docs and llms.txt.
 
 They don't cover a **self-hosted** Open Artifacts instance. If you run Open Artifacts yourself, in your own Cloudflare account, you're the operator: you set the rules for your instance, and the software is provided under its [MIT license](https://github.com/open-artifacts-ai/open-artifacts/blob/main/LICENSE). If you use an instance someone else runs, its operator's terms apply, not these.
 
-By creating an account or using the Service, you agree to these terms. If you use it for an organization, you confirm you're allowed to accept them for that organization.
+By creating an account or using the Service, you agree to these terms. If you use it for an organization, you confirm you're allowed to accept them for that organization. You must be at least 16 to use the Service.
 
 ## The Service
 
@@ -24,7 +24,7 @@ We may change, add or remove features. If we remove something you rely on, we'll
 - You sign in with Google, or with a one-time code sent to your email.
 - Keep your sign-in and any tokens you create secure. You're responsible for what happens under your account.
 - The instance owner and admins decide who's a member, what they can do, and whether a Google directory controls membership. They can see the members list and the audit log.
-- Tell us at **[TODO: security contact email]** if you think your account was used without permission.
+- Tell us at [security@open-artifacts.com](mailto:security@open-artifacts.com) if you think your account was used without permission.
 
 ## AI agents you connect
 
@@ -57,7 +57,11 @@ We may remove content or suspend access that breaks these rules, or that puts th
 
 ## Plans and payment
 
-**[TODO: pricing. During the trial the Service is free. Before charging, add plans, billing, renewals, refunds and taxes here.]**
+- **Individuals:** free, for good.
+- **Team:** $10 per creator per month, with a 14-day free trial.
+- **Business:** $25 per creator per month.
+
+Paid plans aren't on sale yet. Before we charge anyone, we'll add billing, renewal, refund and tax terms here, and tell instance owners first.
 
 ## Privacy
 
@@ -65,9 +69,9 @@ Our [Privacy Policy](/privacy/) explains what data we collect and how we use it,
 
 ## Ending your use
 
-- You can delete artifacts at any time; deleted artifacts stay in trash for **[TODO: confirm, 30 days]** and can be restored until then.
+- You can delete artifacts at any time; deleted artifacts stay in trash for 30 days and can be restored until then.
 - The instance owner can delete the instance. That deletes its artifacts, members and settings, as described in the Privacy Policy.
-- We may end or suspend the Service for you if you seriously or repeatedly break these terms, or if we stop offering the Service. If we stop offering it, we'll give at least **[TODO: notice period, for example 30 days]** notice so you can export your content.
+- We may end or suspend the Service for you if you seriously or repeatedly break these terms, or if we stop offering the Service. If we stop offering it, we'll give at least 30 days' notice so you can export your content.
 
 Sections that by their nature should last (your content, disclaimers, liability, governing law) continue after your use ends.
 
@@ -81,20 +85,24 @@ The Service is provided "as is" and "as available". To the extent the law allows
 
 ## Limitation of liability
 
-**[TODO: liability limits. For example: to the extent the law allows, we aren't liable for indirect or consequential losses, and our total liability is limited to the greater of the amount you paid us in the 12 months before the claim or USD 100. Confirm with a lawyer.]**
+To the extent the law allows, we aren't liable for any indirect, incidental, special or consequential losses, such as lost profits, revenue or data. Our total liability for all claims about the Service is limited to the greater of the amount you paid us in the 12 months before the claim or USD 100.
 
 ## Indemnity
 
-**[TODO: confirm whether to include an indemnity, and its scope.]**
+You'll defend and indemnify us against claims, losses and costs (including reasonable legal fees) that come from content you or your agents publish on the Service, or from your breaking these terms.
 
 ## Governing law
 
-**[TODO: governing law and courts, for example the laws of a named state or country.]**
+These terms are governed by the laws of the State of Delaware, USA, without regard to its conflict of laws rules. Any dispute about them or the Service goes to the state or federal courts in Delaware, and you and we agree to those courts' jurisdiction.
 
 ## Changes to these terms
 
-We may update these terms. If a change matters, we'll tell instance owners by email or in the app at least **[TODO: for example 30 days]** before it takes effect. The date at the top shows the latest version.
+We may update these terms. If a change matters, we'll tell instance owners by email or in the app at least 30 days before it takes effect. The date at the top shows the latest version.
 
 ## Contact
 
-**[TODO: contact email]**
+Leo Urbina Consulting LLC, 8913 Bar K Ranch Road, Leander, Texas 78645, USA.
+
+- General: [hello@open-artifacts.com](mailto:hello@open-artifacts.com)
+- Privacy: [privacy@open-artifacts.com](mailto:privacy@open-artifacts.com)
+- Security: [security@open-artifacts.com](mailto:security@open-artifacts.com)

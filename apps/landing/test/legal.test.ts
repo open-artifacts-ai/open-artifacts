@@ -47,6 +47,19 @@ describe("legal pages", () => {
     expect(home).toContain('href="/terms/"');
   });
 
+  it("is filled in: no TODOs, the entity, its contacts and the dates", () => {
+    for (const html of [privacy, terms]) {
+      expect(html).not.toContain("TODO");
+      expect(html).toContain("Leo Urbina Consulting LLC");
+      expect(html).toContain("mailto:privacy@open-artifacts.com");
+      expect(html).toContain("mailto:security@open-artifacts.com");
+      expect(html).toContain("mailto:hello@open-artifacts.com");
+      expect(html).toMatch(/Last updated [A-Z][a-z]+ \d{1,2}, \d{4}/);
+    }
+    expect(terms).toContain("State of Delaware");
+    expect(privacy).toMatch(/GDPR/);
+  });
+
   it("uses no em dashes", () => {
     for (const html of [privacy, terms]) expect(html).not.toContain("—");
   });

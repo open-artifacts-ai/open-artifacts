@@ -1,17 +1,22 @@
 ---
 title: Privacy Policy
 description: What data hosted Open Artifacts and this website collect, why, and how long we keep it.
-updated: "[TODO: date of publication]"
+updated: "October 28, 2026"
 ---
 
-This policy explains what **[TODO: legal entity name]** ("we", "us") collects when you use:
+This policy explains what **Leo Urbina Consulting LLC** ("we", "us") collects when you use:
 
 - **Hosted Open Artifacts**, at open-artifacts.app and its subdomains ("the Service"); and
 - **this website**, open-artifacts.com.
 
 **Self-hosted instances aren't covered.** If you run Open Artifacts in your own Cloudflare account, the data stays in that account and you're the one responsible for it. If you use an instance someone else runs, ask its operator; their policy applies.
 
-**Who decides.** On the Service, each organization's workspace (an "instance") belongs to its owner. The owner and admins decide who's a member and what's shared, and we process the instance's content and member data to run the Service for them. **[TODO: confirm controller and processor roles, and whether to offer a data processing agreement, with a lawyer.]**
+**Who decides.** On the Service, each organization's workspace (an "instance") belongs to its owner. The owner and admins decide who's a member and what's shared, and we process the instance's content and member data to run the Service for them.
+
+- For each organization's **content and member data**, we're a **processor**: we act for the instance's owner, on their instructions.
+- For **account, sign-in and billing data**, we're a **controller**: we decide how it's used, as this policy describes.
+
+A data processing agreement is available on request at [privacy@open-artifacts.com](mailto:privacy@open-artifacts.com).
 
 ## What we collect
 
@@ -62,7 +67,7 @@ The Service uses only cookies it needs to work. All are `HttpOnly`, `Secure` and
 
 The Service also keeps a few things in your browser's local storage: an anonymous id, so live pages can tell your edits apart if you aren't signed in, and display preferences such as the theme. Artifacts are served from a separate host that sets no cookies.
 
-**This website** (open-artifacts.com) sets no cookies and runs no analytics script. **[TODO: confirm Cloudflare Web Analytics is off for the open-artifacts.com zone, or disclose it here.]**
+**This website** (open-artifacts.com) sets no cookies and has no analytics or tracking beacon.
 
 ## Google user data
 
@@ -92,11 +97,11 @@ An admin who is a **Google Workspace super admin** can connect the organization'
 - **How often:** we check for changes every 2 minutes and do a full check every hour.
 - **The refresh token:** encrypted (AES-GCM) with a key only that instance holds, and stored in the instance's database.
 - **We never change anything in Google.** Every scope is read-only.
-- **Disconnecting:** the owner can choose **Disconnect directory** in Settings, Directory, while signed in themselves (not through a token or an AI agent). That revokes our access at Google and deletes the stored token, and we email the owner to confirm. Members stay, and are managed in Open Artifacts from then on. Deleting the instance also revokes our access at Google. You can also remove Open Artifacts at any time in your Google Admin console, under Security, API controls. **[TODO: confirm "Disconnect directory" and revoke on instance delete are built before publishing.]**
+- **Disconnecting:** the owner can choose **Disconnect** in Settings, Directory, while signed in themselves (not through a token or an AI agent). That revokes our access at Google and deletes the stored token, and we email the owner to confirm. Members stay, and are managed in Open Artifacts from then on. Deleting the instance also revokes our access at Google. You can also remove Open Artifacts at any time in your Google Admin console, under Security, API controls.
 
 ### What we never do with Google data
 
-We don't sell Google user data. We don't use it for advertising, and we don't use it to develop, improve or train AI or machine learning models. We don't transfer it to anyone except as needed to run the Service (to the providers listed below), to comply with the law, or with your organization's permission. People at **[TODO: entity name]** don't read it, except with your permission, for security or abuse investigations, or when the law requires.
+We don't sell Google user data. We don't use it for advertising, and we don't use it to develop, improve or train AI or machine learning models. We don't transfer it to anyone except as needed to run the Service (to the providers listed below), to comply with the law, or with your organization's permission. People at **Leo Urbina Consulting LLC** don't read it, except with your permission, for security or abuse investigations, or when the law requires.
 
 ## How we use your data
 
@@ -123,7 +128,7 @@ The providers that process data for us:
 | Google | Sign-in, and the Google Workspace directory if your organization connects it |
 | GitHub | Checking for new Open Artifacts releases; no personal data is sent |
 
-Fonts are served by us, not by a third party. **[TODO: add the entity's own processors, for example billing, once they exist.]**
+Fonts are served by us, not by a third party.
 
 ## How long we keep it
 
@@ -137,26 +142,27 @@ Fonts are served by us, not by a third party. **[TODO: add the entity's own proc
 | Sessions | 7 days, or until you sign out or are removed |
 | A pending Google directory connection | 24 hours |
 | Audit log | 400 days, then deleted by a daily job |
-| Service logs | **[TODO: confirm Cloudflare Workers Logs retention for our plan and state it.]** |
+| Service logs | The hosted services that route requests and handle sign-in keep no request logs. Each instance keeps only the app's own log lines, with no record per request, for at most 7 days. |
 | Database backups | Cloudflare keeps a 30-day restore window for the database, so deleted database records can be restored for up to 30 days. Files and live data aren't backed up. |
-| The owner's email after an instance is deleted | 30 days **[TODO: confirm the purge is built before publishing.]** |
+| The owner's email after an instance is deleted | 30 days |
 | An instance's former address | Kept, reserved, so nobody else can reuse it |
 
 ## Removing people, and deleting an instance
 
-- **When someone is removed** from an instance, by an admin or because they left the Google directory, their access ends at once, their tokens and agents are revoked, and they're signed out. Their name and email stay in the instance's member list, marked as removed, so work they published still shows who made it. If they were removed because they left the Google directory, their email is replaced with a placeholder. **[TODO: confirm what happens to their past live-data edits, and whether the removed record is ever deleted.]**
+- **When someone is removed** from an instance, by an admin or because they left the Google directory, their access ends at once, their tokens and agents are revoked, and they're signed out. Their name and email stay in the instance's member list, marked as removed, so work they published still shows who made it. If they were removed because they left the Google directory, their email is replaced with a placeholder. Their past live-data edits stay, with their account id. The removed record is kept while the instance exists, and is deleted with it.
 - **When an owner deletes an instance**, we delete its artifacts, files, members, settings and database, and revoke our access to its Google directory. We delete the owner's email 30 days after an instance is deleted. We keep the instance's former address reserved so it can't be reused by someone else.
 
 ## Your choices and rights
 
 - You can see and change your name in your profile, and delete your artifacts at any time.
 - Your organization's owner and admins can remove members and revoke agents and tokens. The owner can also disconnect the directory and delete the instance.
-- To get a copy of your data, correct it, or delete your account, email **[TODO: privacy contact email]**. If your account belongs to an organization, we may need to involve its owner. We reply within **[TODO: for example 30 days]**. **[TODO: list the rights that apply where you operate (for example GDPR and UK GDPR, or CCPA), and how to complain to a regulator.]**
+- Wherever you live, you can ask us to **access**, **correct**, **delete** or **export** your data, or **object** to how we use it. Email [privacy@open-artifacts.com](mailto:privacy@open-artifacts.com). If your account belongs to an organization, we may need to involve its owner. We reply within 30 days.
+- These rights include those under the **GDPR** (EU), the **UK GDPR** (United Kingdom) and the **CCPA** (California). If you're in the EU or the UK, you can also complain to your local data protection supervisory authority. Under the CCPA, we don't sell or share your personal information, and we won't treat you differently for using your rights.
 - You can revoke Open Artifacts' access to your Google account at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
 
 ## Children
 
-The Service isn't meant for children under **[TODO: 13 or 16, depending on where you operate]**, and we don't knowingly collect their data.
+The Service isn't meant for anyone under **16**, and we don't knowingly collect their data.
 
 ## Security
 
@@ -164,8 +170,12 @@ Artifacts run in a sandbox on a separate host, so they can't read your session o
 
 ## Changes
 
-If we change this policy in a way that matters, we'll tell instance owners by email or in the app before it takes effect. The date at the top shows the latest version.
+If we change this policy in a way that matters, we'll tell instance owners by email or in the app at least 30 days before it takes effect. The date at the top shows the latest version.
 
 ## Contact
 
-**[TODO: privacy contact email and postal address]**
+Leo Urbina Consulting LLC, 8913 Bar K Ranch Road, Leander, Texas 78645, USA.
+
+- Privacy: [privacy@open-artifacts.com](mailto:privacy@open-artifacts.com)
+- Security: [security@open-artifacts.com](mailto:security@open-artifacts.com)
+- Anything else: [hello@open-artifacts.com](mailto:hello@open-artifacts.com)
