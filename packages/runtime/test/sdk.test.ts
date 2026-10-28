@@ -405,6 +405,32 @@ describe("subscribe", () => {
     expect(calls("db.unsubscribe")[0]?.params).toEqual({ collection: "votes" });
   });
 
+  it("a failed refetch delivers resync, never data: null (review item 38)", async () => {
+    const oa = start();
+    const cb = vi.fn();
+    oa.db.collection("c").subscribe(cb);
+    await flush();
+    fromShell({
+      oa: 1,
+      type: "event",
+      event: "db.change",
+      collection: "c",
+      docs: [doc("small", { n: 1 }), doc("big", null)],
+      deleted: [],
+    });
+    await flush();
+    fromShell({
+      oa: 1,
+      type: "result",
+      id: calls("db.get")[0]?.id ?? "",
+      ok: false,
+      error: { code: "internal", message: "boom" },
+    });
+    await flush();
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(cb).toHaveBeenCalledWith({ docs: [], deleted: [], resync: true });
+  });
+
   it("a refetched doc that is gone is reported as deleted", async () => {
     const oa = start();
     const cb = vi.fn();

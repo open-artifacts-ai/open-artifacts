@@ -256,7 +256,11 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
     }
   };
 
-  /** Docs broadcast with data:null (over 16 KB) are refetched before delivery. */
+  /**
+   * Docs broadcast with data:null (over 16 KB) are refetched before delivery.
+   * A failed refetch delivers `resync` instead, so the page reloads its data
+   * rather than taking a doc with no data as the new value.
+   */
   async function deliver(
     m: Extract<ShellToArtifact, { event: "db.change" }>,
   ): Promise<void> {
@@ -267,9 +271,16 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
         docs.push(d);
         continue;
       }
-      const fresh = await bridge
-        .call("db.get", { collection: m.collection, id: d.id })
-        .catch(() => d);
+      let fresh: DataDoc | null;
+      try {
+        fresh = await bridge.call("db.get", {
+          collection: m.collection,
+          id: d.id,
+        });
+      } catch {
+        emit(m.collection, { docs: [], deleted: [], resync: true });
+        return;
+      }
       if (fresh) docs.push(fresh);
       else deleted.push(d.id);
     }
