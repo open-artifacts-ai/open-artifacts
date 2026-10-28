@@ -387,10 +387,50 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
     }
   });
 
+  /**
+   * Cursors of a query chain that already restarted once after
+   * cursor_stale: a second cursor_stale in that chain is surfaced.
+   */
+  const restarted = new Set<string>();
+  /**
+   * db.query. On 409 cursor_stale (the doc a page ended on changed while
+   * paging) it restarts once from the first page: the page returned is then
+   * the first one again, so a caller collecting pages should start over when
+   * its items repeat. A second cursor_stale in the same chain is thrown.
+   */
+  async function query(
+    name: string,
+    q: DataQueryInput,
+  ): Promise<Page<DataDoc>> {
+    const cursor = q?.cursor;
+    const again = cursor !== undefined && restarted.delete(cursor);
+    let page: Page<DataDoc>;
+    let restart = again;
+    try {
+      page = await bridge.call("db.query", { collection: name, query: q });
+    } catch (e) {
+      if (
+        again ||
+        cursor === undefined ||
+        !(e instanceof RuntimeError) ||
+        e.code !== "cursor_stale"
+      )
+        throw e;
+      const { cursor: _drop, ...first } = q;
+      page = await bridge.call("db.query", {
+        collection: name,
+        query: first,
+      });
+      restart = true;
+    }
+    if (restart && page.nextCursor) restarted.add(page.nextCursor);
+    return page;
+  }
+
   const collection = (name: string): Collection => ({
     get: (id) => bridge.call("db.get", { collection: name, id }),
     list: (o = {}) => bridge.call("db.list", { collection: name, ...o }),
-    query: (query) => bridge.call("db.query", { collection: name, query }),
+    query: (q) => query(name, q),
     set: (id, data) => bridge.call("db.set", { collection: name, id, data }),
     update: (id, patch) =>
       bridge.call("db.update", { collection: name, id, patch }),
