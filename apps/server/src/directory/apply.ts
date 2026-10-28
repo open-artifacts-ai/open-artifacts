@@ -436,7 +436,14 @@ async function applyLinked(
   // reusing the address) active again: the restore rules, the address taken
   // back while no other row holds it (reviveFromSync).
   if (r.status === "removed") {
-    if (u.suspended || !email || (r.hid && r.hid !== r.uid)) return;
+    if (u.suspended || !email) return;
+    if (r.hid && r.hid !== r.uid) {
+      // Another row took the address after sync removed this one: it can't
+      // come back (and Restore is directory_managed), so say so, not silence.
+      if (await removedBySync(env, r.uid))
+        logWarn("directory_revive_blocked", undefined, { userId: r.uid });
+      return;
+    }
     guard();
     if (await reviveFromSync(env, r.uid, u.id, email, o.ctx))
       logInfo("directory_revived");
@@ -503,4 +510,13 @@ async function changeEmail(
   guard();
   if (!(await moveUserEmail(env, uid, from, to)))
     logWarn("directory_email_taken");
+}
+
+/** Whether directory sync removed this row (users.removed_by_sync). */
+async function removedBySync(env: Env, id: string) {
+  return !!(await env.DB.prepare(
+    "select 1 from users where id = ? and removed_by_sync = 1",
+  )
+    .bind(id)
+    .first());
 }

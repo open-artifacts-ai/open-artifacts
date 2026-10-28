@@ -1211,9 +1211,17 @@ describe("parity 1 round 2: sync revives a row it removed (same directory id onl
     expect((await userByIdentity(oldSub))?.id).toBe(old);
     // The old id listed active again while the fresh row holds the address:
     // the old row stays removed, the fresh row keeps it.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await list(gu(oldSub, addr));
     expect(await row(old)).toEqual(gone);
     expect(await userByIdentity(newSub)).toEqual(fresh);
+    // Not silent: the blocked revive is logged, with the id only.
+    const logged = warn.mock.calls.map((c) => String(c[0]));
+    warn.mockRestore();
+    expect(logged.some((l) => l.includes("directory_revive_blocked"))).toBe(
+      true,
+    );
+    expect(logged.join("")).not.toContain(addr);
     expect(
       (await statusAudits(old)).map((a) => JSON.parse(a.detail).reason),
     ).not.toContain("sync_revive");
