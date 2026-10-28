@@ -170,6 +170,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
               ? MemberRemovedDetailsSchema.safeParse(e.details)
               : null;
           if (gone?.success) return setRemoved({ ...gone.data, email: parsed });
+          // Directory sync removed them: Restore can't work while sync is on.
+          if (e instanceof ApiClientError && e.code === "directory_managed")
+            return setError(
+              `Google directory sync removed ${parsed}. Add them back in Google Workspace, and the next sync restores them.`,
+            );
           // A lapsed guest can't be restored: a new share brings them back.
           if (e instanceof ApiClientError && e.code === "guest_lapsed")
             return setError(

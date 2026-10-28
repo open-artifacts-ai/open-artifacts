@@ -305,6 +305,28 @@ describe("members: failures and edge cases", () => {
     ).toBeTruthy();
   });
 
+  it("inviting someone directory sync removed points to Google Workspace, with no Restore", async () => {
+    server.use(
+      http.post(`*${R.members}`, () =>
+        HttpResponse.json(
+          { error: { code: "directory_managed", message: "x" } },
+          { status: 409 },
+        ),
+      ),
+    );
+    mount("/settings/members");
+    fireEvent.click(await screen.findByRole("button", { name: "Add member" }));
+    fireEvent.change(await screen.findByLabelText("Email"), {
+      target: { value: "synced@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Google directory sync removed synced@example.com. Add them back in Google Workspace, and the next sync restores them.",
+    );
+    expect(screen.queryByRole("button", { name: /^Restore/ })).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("inviting a lapsed guest says to share with them, with no Restore", async () => {
     server.use(
       http.post(`*${R.members}`, () =>

@@ -362,7 +362,8 @@ export const useInviteMember = () => {
         e instanceof ApiClientError &&
         (e.code === "invite_unreachable" ||
           e.code === "member_removed" ||
-          e.code === "guest_lapsed")
+          e.code === "guest_lapsed" ||
+          e.code === "directory_managed")
       )
         return;
       failToast(e, "Couldn't send the invite.");
