@@ -32,6 +32,7 @@ import {
   withMintLock,
 } from "./anonId";
 import { frameLoad, loadArtifactFrame } from "./frame";
+import { clampRetryHint } from "./liveEvents";
 
 type Viewer = { email: string; name: string | null };
 type Theme = "light" | "dark";
@@ -246,7 +247,8 @@ export function createBridge(opts: BridgeOptions) {
       }
       // A 4403 for a socket opened just as access changed says how long to
       // hold off (#816): never sooner, or it closes again at once.
-      const hold = e?.code === 4403 ? (retryAfterFromClose(e.reason) ?? 0) : 0;
+      const hold =
+        e?.code === 4403 ? clampRetryHint(retryAfterFromClose(e.reason)) : 0;
       const delay = Math.max(
         hold,
         Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** s.attempt++),

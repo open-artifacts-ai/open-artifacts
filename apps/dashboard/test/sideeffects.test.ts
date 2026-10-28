@@ -312,6 +312,17 @@ describe("bridge follow-ups", () => {
     expect(FakeWS.all).toHaveLength(2);
   });
 
+  it("a 4403 hint over 5 minutes is clamped to 5 minutes", async () => {
+    mk({ onAccessLost: vi.fn() });
+    const ws = await sub();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    ws.onclose?.({ code: 4403, reason: accessChangedCloseReason(3_600_000) });
+    vi.advanceTimersByTime(5 * 60_000 - 1);
+    expect(FakeWS.all).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeWS.all).toHaveLength(2);
+  });
+
   it("a 4403 without a hint (access revoked) keeps the usual backoff", async () => {
     mk({ onAccessLost: vi.fn() });
     const ws = await sub();

@@ -33,6 +33,14 @@ export interface ArtifactEventsOptions {
   onDown: () => void;
 }
 
+/** A server retry hint is honoured up to this long: a bad one never stalls reconnects. */
+export const RETRY_HINT_MAX_MS = 5 * 60_000;
+/** A server retry hint in ms, clamped to 0..RETRY_HINT_MAX_MS; NaN, negative or absent is 0. */
+export const clampRetryHint = (ms: number | null | undefined): number =>
+  typeof ms === "number" && Number.isFinite(ms) && ms > 0
+    ? Math.min(ms, RETRY_HINT_MAX_MS)
+    : 0;
+
 export const eventsUrl = (id: string, embed: boolean) => {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${location.host}${R.events(id)}${embed ? "?embed=1" : ""}`;
@@ -128,7 +136,7 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
   const gone = (sock: WebSocket, reason: GoneReason, retryAfterMs?: number) => {
     if (paused) return;
     paused = true;
-    notBefore = Date.now() + (retryAfterMs ?? 0);
+    notBefore = Date.now() + clampRetryHint(retryAfterMs);
     if (ws === sock) ws = null;
     sock.close();
     opts.onGone(reason);
