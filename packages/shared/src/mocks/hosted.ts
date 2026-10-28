@@ -1870,9 +1870,41 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     return (a) => a?.id === spaceId;
   };
 
+  /**
+   * R.trash's shared part: a refusal for `spaceId`, or which artifacts'
+   * spaces the caller manages (uncapped manager or org admin), as the row's
+   * `space` (null: not a managed shared space; the caller's personal trash is
+   * the core handler's).
+   */
+  const trashScope = (
+    spaceId: string | undefined,
+  ):
+    | Response
+    | ((a: ArtifactSummary) => {
+        id: string;
+        name: string;
+        personal: false;
+      } | null) => {
+    const manages = (s: SpaceRow | undefined) =>
+      !!s &&
+      s.kind === "shared" &&
+      cap() === null &&
+      (isAdmin() || roleIn(s) === "manager");
+    if (spaceId !== undefined && spaceId !== me.user.id) {
+      if (!manages(findSpace(spaceId))) return notFound();
+    }
+    return (a) => {
+      const s = findSpace(a.space?.id);
+      if (!s || !manages(s)) return null;
+      if (spaceId !== undefined && s.id !== spaceId) return null;
+      return { id: s.id, name: s.name, personal: false };
+    };
+  };
+
   return {
     handlers,
     refresh,
+    trashScope,
     checkPublish,
     placeNew,
     refuseCappedCreate,

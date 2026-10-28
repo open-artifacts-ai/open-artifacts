@@ -37,6 +37,7 @@ import {
   SyncStatusSchema,
   TransferResultSchema,
   TransferSummarySchema,
+  TrashItemSchema,
 } from "../src/index.js";
 import { fixtures } from "../src/mocks/fixtures.js";
 
@@ -119,6 +120,7 @@ const Strict = {
   RestrictedGroup: RestrictedGroupSchema.strict(),
   DirectoryGroup: DirectoryGroupSchema.strict(),
   AuditEvent: AuditEventSchema.strict(),
+  TrashItem: TrashItemSchema.strict(),
 };
 
 /** Registers the hosted contract cases against `d`. */
@@ -621,6 +623,111 @@ export function hostedContract(d: ContractDriver): ContractCases {
         ).toContain("Landing page");
       },
     );
+  });
+
+  describe("trash (P4 item 9)", () => {
+    const DAY = 86_400_000;
+    const idOf = (title: string) =>
+      fixtures.artifacts.find((a) => a.title === title)?.id as string;
+    const trash = async (q = "") => {
+      const r = await d.call("GET", `${R.trash}${q}`);
+      expect(r.status, q).toBe(200);
+      return PageSchema(Strict.TrashItem).parse(await json(r));
+    };
+
+    t(
+      "trash lists personal and managed-space deletions, newest first; spaceId narrows",
+      async () => {
+        await d.fresh({ hosted: true });
+        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+        const eng = me.spaces?.find((s) => s.name === "Engineering")
+          ?.id as string;
+        expect((await trash()).items).toEqual([]);
+        for (const title of ["Landing page", "Meeting notes"])
+          expect((await d.call("DELETE", R.artifact(idOf(title)))).status).toBe(
+            204,
+          );
+        const all = await trash();
+        // Newest deletedAt first (two deletes may share a millisecond: then id desc).
+        const order = [...all.items].sort(
+          (x, y) =>
+            y.deletedAt.localeCompare(x.deletedAt) || (y.id < x.id ? -1 : 1),
+        );
+        expect(all.items).toEqual(order);
+        expect(all.items.map((a) => a.title).sort()).toEqual([
+          "Landing page",
+          "Meeting notes",
+        ]);
+        const notes = all.items.find((a) => a.title === "Meeting notes");
+        const landing = all.items.find((a) => a.title === "Landing page");
+        expect(notes).toMatchObject({
+          access: "manager",
+          space: { id: eng, name: "Engineering", personal: false },
+        });
+        expect(landing).toMatchObject({
+          access: "owner",
+          space: { id: me.personalSpaceId, name: "Personal", personal: true },
+        });
+        for (const a of all.items)
+          expect(Date.parse(a.purgeAt) - Date.parse(a.deletedAt)).toBe(
+            30 * DAY,
+          );
+        // Pages of one, newest first.
+        const titles = all.items.map((a) => a.title);
+        const p1 = await trash("?limit=1");
+        expect(p1.items.map((a) => a.title)).toEqual([titles[0]]);
+        expect(p1.nextCursor).not.toBeNull();
+        const p2 = await trash(
+          `?limit=1&cursor=${encodeURIComponent(p1.nextCursor as string)}`,
+        );
+        expect(p2.items.map((a) => a.title)).toEqual([titles[1]]);
+        expect(p2.nextCursor).toBeNull();
+        expect(
+          (await trash(`?spaceId=${eng}`)).items.map((a) => a.title),
+        ).toEqual(["Meeting notes"]);
+        expect(
+          (await trash(`?spaceId=${me.personalSpaceId}`)).items.map(
+            (a) => a.title,
+          ),
+        ).toEqual(["Landing page"]);
+        expect(
+          (await d.call("GET", `${R.trash}?spaceId=SpNopeNpQrSt9uVw`)).status,
+        ).toBe(404);
+        expect((await d.call("GET", `${R.trash}?limit=101`)).status).toBe(400);
+        // Bob is an editor in Engineering: not his to restore, so not listed;
+        // asking for it is 404, as for a space he can't see.
+        await d.signIn("bob@example.com");
+        expect((await trash()).items.map((a) => a.title)).not.toContain(
+          "Meeting notes",
+        );
+        expect((await d.call("GET", `${R.trash}?spaceId=${eng}`)).status).toBe(
+          404,
+        );
+      },
+    );
+
+    t("spaces off: personal trash only; another spaceId is 400", async () => {
+      await d.fresh();
+      const me = await json(await d.call("GET", R.me));
+      expect(
+        (await d.call("DELETE", R.artifact(idOf("Landing page")))).status,
+      ).toBe(204);
+      const page = await trash();
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]).toMatchObject({
+        title: "Landing page",
+        access: "owner",
+        space: { id: me.user.id, name: "Personal", personal: true },
+      });
+      expect((await trash(`?spaceId=${me.user.id}`)).items).toHaveLength(1);
+      const bad = await d.call("GET", `${R.trash}?spaceId=SpEngNpQrSt2uVwX`);
+      expect(bad.status).toBe(400);
+      expect(ApiErrorSchema.parse(await json(bad)).error.details).toMatchObject(
+        {
+          path: "spaceId",
+        },
+      );
+    });
   });
 
   describe("hosted mocks: data writers", () => {

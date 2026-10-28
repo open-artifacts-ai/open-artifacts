@@ -64,6 +64,8 @@ import {
   StorageSetBodySchema,
   TokenCreateInputSchema,
   TokenPatchSchema,
+  type TrashItem,
+  TrashQuerySchema,
   UploadCreateInputSchema,
   type UserRef,
 } from "../schemas.js";
@@ -590,6 +592,56 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         return noContent();
       }, "owner"),
     ),
+    // R.trash: what the caller may restore, newest deletedAt first.
+    http.get("*/api/v1/trash", ({ request }) => {
+      if (isAnon(request))
+        return err("unauthorized", "Authentication required");
+      const q = new URL(request.url).searchParams;
+      const p = TrashQuerySchema.safeParse(params(q));
+      if (!p.success)
+        return err("bad_request", "Invalid query", p.error.issues);
+      const spaceId = p.data.spaceId;
+      const personalId = me.user.id;
+      // Hosted: managed shared spaces too; else personal only.
+      const scope = h?.trashScope(spaceId);
+      if (scope instanceof Response) return scope;
+      if (!h && spaceId !== undefined && spaceId !== personalId)
+        return err("bad_request", "Spaces are off: only your own trash", {
+          path: "spaceId",
+          reason: "invalid",
+        });
+      const cutoff = Date.now() - LIMITS.softDeleteDays * 86_400_000;
+      const items = artifacts
+        .filter(
+          (a) => a.deletedAt !== null && Date.parse(a.deletedAt) >= cutoff,
+        )
+        .map((a): TrashItem | null => {
+          const sp = scope ? scope(a) : null;
+          const own =
+            !sp &&
+            a.owner.id === me.user.id &&
+            (a.space === undefined || a.space.id === personalId) &&
+            (spaceId === undefined || spaceId === personalId);
+          if (!own && !sp) return null;
+          const deletedAt = a.deletedAt as string;
+          const { can: _can, ...summary } = redactArt(a, request);
+          return {
+            ...summary,
+            access: own ? "owner" : "manager",
+            deletedAt,
+            purgeAt: new Date(
+              Date.parse(deletedAt) + LIMITS.softDeleteDays * 86_400_000,
+            ).toISOString(),
+            space: sp ?? { id: personalId, name: "Personal", personal: true },
+          };
+        })
+        .filter((x): x is TrashItem => x !== null)
+        .sort(
+          (x, y) =>
+            y.deletedAt.localeCompare(x.deletedAt) || y.id.localeCompare(x.id),
+        );
+      return paginate(items, q);
+    }),
     http.post(`${A}/undelete`, ({ params }) => {
       const a = artifacts.find((x) => x.id === params.id);
       if (!a || !full(a)) return notFound();
