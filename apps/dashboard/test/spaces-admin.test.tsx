@@ -164,6 +164,59 @@ it("create refuses an empty name before sending", async () => {
   expect(seen.some((c) => c.path === "/api/v1/spaces")).toBe(false);
 });
 
+const RESERVED =
+  "Everyone already has a space called Personal. Use another name.";
+
+it('create refuses "Personal" in any case before sending', async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/spaces");
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "  personal " },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  expect(await within(d).findByText(RESERVED)).toBeVisible();
+  expect(seen.some((c) => c.path === "/api/v1/spaces")).toBe(false);
+});
+
+it("a server 400 space_name_reserved shows the reserved copy under the field", async () => {
+  mountHosted("/settings/spaces", true, undefined, [
+    http.post("*/api/v1/spaces", () =>
+      HttpResponse.json(
+        {
+          error: {
+            code: "space_name_reserved",
+            message: "server text",
+            details: { field: "name" },
+          },
+        },
+        { status: 400 },
+      ),
+    ),
+  ]);
+  fireEvent.click(await screen.findByRole("button", { name: "New space" }));
+  const d = screen.getByRole("dialog", { name: "New space" });
+  fireEvent.change(within(d).getByRole("textbox", { name: "Name" }), {
+    target: { value: "Design" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Create space" }));
+  expect(await within(d).findByText(RESERVED)).toBeVisible();
+  expect(screen.queryByText("server text")).toBeNull();
+  expect(screen.queryByText("Couldn't create the space.")).toBeNull();
+});
+
+it('rename to "Personal" shows the reserved copy and sends nothing', async () => {
+  const seen = calls("PATCH");
+  mountHosted(`/settings/spaces?space=${ENG}`);
+  const field = await screen.findByRole("textbox", { name: "Name" });
+  fireEvent.change(field, { target: { value: "PERSONAL" } });
+  fireEvent.blur(field);
+  expect(await screen.findByText(RESERVED)).toBeVisible();
+  fireEvent.submit(field.closest("form") as HTMLFormElement);
+  expect(seen).toHaveLength(0);
+});
+
 const CTRL = "\u202e\u0007";
 
 it("create sends the cleaned name: controls and bidi stripped, trimmed", async () => {
