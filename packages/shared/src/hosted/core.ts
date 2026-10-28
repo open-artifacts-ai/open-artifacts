@@ -254,7 +254,8 @@ export type HostedAccessLevel = "viewer" | "editor" | "manager" | "owner";
  * The action table (P3 "Actions per level") as one pure function, shared by
  * the server and the mocks. `personal`: the artifact is in a personal space.
  * `cap`: the caller's cap; a capped caller gets viewer actions minus data writes.
- * `dataWriters`: the artifact's (#681); "editors" takes data writes from viewers.
+ * `dataWriters`: the artifact's (#681); "editors" takes data writes from
+ * viewers, and so does leaving it out (fail closed).
  */
 export function artifactCan(
   level: HostedAccessLevel,
@@ -274,7 +275,10 @@ export function artifactCan(
     delete: full,
     transfer: full && level === "owner" && opts.personal,
     move: full,
+    // Undefined dataWriters reads as "editors" (fail closed), as the
+    // server's can() does.
     dataWrite:
-      !capped && (opts.dataWriters !== "editors" || level !== "viewer"),
+      !capped &&
+      ((opts.dataWriters ?? "editors") === "viewers" || level !== "viewer"),
   };
 }

@@ -474,18 +474,24 @@ describe("can", () => {
     const caps: (CapReason | null)[] = [null, "guest", "restricted"];
     for (const level of LEVELS)
       for (const personal of [true, false])
-        for (const cap of caps) {
-          const mine = Object.fromEntries(
-            ARTIFACT_ACTIONS.map((a) => [
-              a,
-              // artifactCan describes the default, dataWriters "viewers".
-              can(level, SEVEN[a], { cap, personal, dataWriters: "viewers" }),
-            ]),
-          );
-          expect(mine, `${level} personal=${personal} cap=${cap}`).toEqual(
-            artifactCan(level, { personal, cap }),
-          );
-        }
+        // Undefined dataWriters: "editors" on both sides (fail closed).
+        for (const cap of caps)
+          for (const dataWriters of [
+            "viewers",
+            "editors",
+            undefined,
+          ] as const) {
+            const mine = Object.fromEntries(
+              ARTIFACT_ACTIONS.map((a) => [
+                a,
+                can(level, SEVEN[a], { cap, personal, dataWriters }),
+              ]),
+            );
+            expect(
+              mine,
+              `${level} personal=${personal} cap=${cap} dataWriters=${dataWriters}`,
+            ).toEqual(artifactCan(level, { personal, cap, dataWriters }));
+          }
   });
 });
 
