@@ -264,6 +264,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     files.get(`${id}/${v}/${path}`) ?? `mock ${path} (v${v})`;
 
   /** Owner-level actions; a hosted space manager has them too (not transfer). */
+  /** Ids R.uploads reserved for a create (the server's reserved_artifacts). */
+  const reserved = new Set<string>();
   const full = (a: ArtifactSummary) =>
     a.access === "owner" || a.access === "manager";
   /** Resolve a live artifact the caller may use at the given level, else 404. */
@@ -510,6 +512,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         existing?.visibility,
       );
       if (noPublic) return noPublic;
+      // An id that is neither an artifact nor reserved by R.uploads: 400
+      // not_reserved, as on the server (a new version is POST /versions).
+      if (!existing && r.data.id && !reserved.has(r.data.id))
+        return err(
+          "bad_request",
+          "use POST /versions to publish a new version",
+          { path: "id", reason: "not_reserved" },
+        );
       if (!existing && r.data.id && r.data.title === undefined)
         return badRequest("title is required when creating an artifact");
       // REST create never upserts, as on the server: a new version is
@@ -550,6 +560,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           ) ?? "viewers",
       };
       artifacts.unshift(a);
+      reserved.delete(a.id);
       h?.placeNew(a, placed?.space ?? null);
       versions[a.id] = [];
       return publishTo(a, r.data);
@@ -810,10 +821,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       const r = await body(request, UploadCreateInputSchema);
       if (r.error) return r.error;
       const uploadId = newId();
+      const artifactId = r.data.artifactId ?? newId();
+      // A new artifact's id is reserved for a later create, as on the server.
+      if (!artifacts.some((a) => a.id === artifactId)) reserved.add(artifactId);
       return HttpResponse.json(
         {
           uploadId,
-          artifactId: r.data.artifactId ?? newId(),
+          artifactId,
           url: `${me.instance.appUrl}/api/v1/uploads/${uploadId}?sig=mock&exp=0`,
           expiresAt: new Date(
             Date.now() + LIMITS.uploadUrlTtlSec * 1000,

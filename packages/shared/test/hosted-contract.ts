@@ -997,6 +997,20 @@ export function hostedContract(d: ContractDriver): ContractCases {
             })
           ).status,
         ).toBe(201);
+        // An id that is neither an artifact nor reserved: 400 not_reserved.
+        const unknown = await d.call("POST", R.artifacts, {
+          id: "Zq3nPqRsTu5vWxYz",
+          title: "t",
+          format: "html",
+          content: "y",
+        });
+        expect(unknown.status).toBe(400);
+        expect(ApiErrorSchema.parse(await json(unknown)).error.details).toEqual(
+          {
+            path: "id",
+            reason: "not_reserved",
+          },
+        );
         // REST create never upserts: an existing id is 400 (use /versions).
         const upsert = await d.call("POST", R.artifacts, {
           id: notes,
