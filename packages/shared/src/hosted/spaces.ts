@@ -259,6 +259,21 @@ export const SpaceForbiddenDetailsSchema = z.object({
 });
 export type SpaceForbiddenDetails = z.infer<typeof SpaceForbiddenDetailsSchema>;
 
+/**
+ * 409 managed_by_org_mapping details on R.spaceMember: the member's role
+ * here comes from an Every space group (an org mapping) at `everyRole`.
+ */
+export const ManagedByOrgMappingDetailsSchema = z.object({
+  userId: z.string(),
+  everyRole: SpaceRoleSchema,
+});
+export type ManagedByOrgMappingDetails = z.infer<
+  typeof ManagedByOrgMappingDetailsSchema
+>;
+/** 409 managed_by_org_mapping message. */
+export const MANAGED_BY_ORG_MAPPING_MESSAGE =
+  "This role comes from an Every space group. Change it in Settings › Spaces › Every space.";
+
 /*
  * PUT R.spaceMember(id, userId) (space manager, org admin) -> SpaceMember.
  * The target must be an existing, active member, else 404.
@@ -269,11 +284,17 @@ export type SpaceForbiddenDetails = z.infer<typeof SpaceForbiddenDetailsSchema>;
  * synced row with a manual override (the next reconcile after unfreezing
  * replaces it). Audited space.member.add/role
  * (frozen override: detail { syncFrozen: true, role }).
+ * An Every space group's role (everyRole) is a floor, sync live or frozen:
+ * below it, 409 managed_by_org_mapping { userId, everyRole }; equal to it
+ * with no row of the space's own, a no-op; above it, a manual grant.
  *
- * DELETE R.spaceMember(id, userId) -> 204: removes the manual row. Only an
- * org admin removes a peer manager (a manager row by hand or synced, frozen
+ * DELETE R.spaceMember(id, userId) -> 204, or 200 SpaceMember when they keep
+ * a role here (an Every space group's, or a synced row while sync is live):
+ * removes the manual row. Only an org admin removes a peer manager (a
+ * manager row by hand or synced, or an Every space group's Manager; frozen
  * included): else 403 space_forbidden { target: "member" }, before
- * member_synced. A synced-only row while sync is live: 409 member_synced. While frozen it
+ * member_synced. Only an Every space group's role (no row of the space's
+ * own): 409 managed_by_org_mapping { userId, everyRole }. A synced-only row while sync is live: 409 member_synced. While frozen it
  * removes the synced row too (removing access is always allowed); audited
  * space.member.remove (frozen: detail { syncFrozen: true }).
  */

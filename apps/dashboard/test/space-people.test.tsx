@@ -1013,10 +1013,7 @@ it("a manual role on top of an Every space group: Remove takes the manual part, 
   expect(screen.queryByText(/Change it in Google/)).toBeNull();
 });
 
-// Known gap: the client parses error codes against the shared ErrorCode, which
-// gains managed_by_org_mapping in Backend's batch C. Until then this fails;
-// drop .fails when it lands (the test then fails as a reminder).
-it.fails("409 managed_by_org_mapping shows the Every space line by the row", async () => {
+it("409 managed_by_org_mapping shows the Every space line by the row", async () => {
   mountWith([
     serve([everyOnly]),
     http.put(`*/api/v1/spaces/${ID}/members/e1`, () =>

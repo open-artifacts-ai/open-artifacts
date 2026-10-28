@@ -20,6 +20,7 @@ import {
   type DirectoryMode,
   type FeatureFlag,
   GroupMappingSchema,
+  ManagedByOrgMappingDetailsSchema,
   MemberSchema,
   MeSchema,
   PageSchema,
@@ -1750,6 +1751,71 @@ export function hostedContract(d: ContractDriver): ContractCases {
         expect(r.status).toBe(409);
         expect((await errCode(r)).code).toBe("member_synced");
         expect((await list(ENG)).items.map((m) => m.userId)).toContain(bob);
+      },
+    );
+
+    t(
+      "Every space role: DELETE or a lower PUT is 409 managed_by_org_mapping; equal is a no-op; a manual role on top comes off to it",
+      async () => {
+        const CLIENTS = "SpCliNpQrSt4uVwX";
+        await d.fresh({ hosted: true });
+        // Bob is in Clients only through the Every space group gEng01.
+        await d.call("PUT", R.orgMapping("gEng01"), { role: "editor" });
+        const managed = async (r: Response) => {
+          expect(r.status).toBe(409);
+          const e = await errCode(r);
+          expect(e.code).toBe("managed_by_org_mapping");
+          return ManagedByOrgMappingDetailsSchema.strict().parse(e.details);
+        };
+        const details = { userId: bob, everyRole: "editor" };
+        expect(await managed(await d.call("DELETE", R.spaceMember(CLIENTS, bob)))).toEqual(details);
+        expect(
+          await managed(
+            await d.call("PUT", R.spaceMember(CLIENTS, bob), { role: "viewer" }),
+          ),
+        ).toEqual(details);
+        const everyOnly = {
+          userId: bob,
+          role: "editor",
+          source: "sync",
+          manualRole: null,
+          syncRole: "editor",
+        };
+        // Equal to the Every space role: nothing written, nothing audited.
+        const audits = async () =>
+          PageSchema(Strict.AuditEvent)
+            .parse(await json(await d.call("GET", R.audit)))
+            .items.filter((e) => e.action.startsWith("space.member")).length;
+        const before = await audits();
+        expect(
+          StrictMember.parse(
+            await json(
+              await d.call("PUT", R.spaceMember(CLIENTS, bob), {
+                role: "editor",
+              }),
+            ),
+          ),
+        ).toMatchObject(everyOnly);
+        expect(await audits()).toBe(before);
+        // Above it: a manual grant.
+        expect(
+          StrictMember.parse(
+            await json(
+              await d.call("PUT", R.spaceMember(CLIENTS, bob), {
+                role: "manager",
+              }),
+            ),
+          ),
+        ).toMatchObject({ role: "manager", manualRole: "manager" });
+        // DELETE takes the manual part off; the Every space role stays (200).
+        const r = await d.call("DELETE", R.spaceMember(CLIENTS, bob));
+        expect(r.status).toBe(200);
+        expect(StrictMember.parse(await json(r))).toMatchObject(everyOnly);
+        expect((await list(CLIENTS)).items).toEqual([
+          expect.objectContaining(everyOnly),
+        ]);
+        // Nothing left of the space's own: 409 again.
+        expect(await managed(await d.call("DELETE", R.spaceMember(CLIENTS, bob)))).toEqual(details);
       },
     );
 
