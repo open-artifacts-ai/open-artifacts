@@ -117,6 +117,11 @@ export type PendingConfirm = {
   capped: boolean;
   /** The consenting Google account (sub). */
   s?: string;
+  /**
+   * When expiry's revoke of this grant failed (ms). Set, only the daily cron
+   * retries (no outbound call and audit row per status read).
+   */
+  rf?: number;
 };
 
 /**
@@ -150,6 +155,7 @@ export async function readPendingAny(env: Env): Promise<PendingConfirm | null> {
           count: typeof v.count === "number" ? v.count : 0,
           capped: v.capped === true,
           ...(typeof v.s === "string" ? { s: v.s } : {}),
+          ...(typeof v.rf === "number" ? { rf: v.rf } : {}),
         }
       : null;
   } catch {
@@ -265,17 +271,20 @@ const EXPIRED = `exists (select 1 from directory_state
  * item 33). The delete also requires the token it revoked, so a consent that
  * landed meanwhile stays. Called lazily by the Worker's status reads and
  * confirm, and by the daily cron; never in the DirectorySync DO, which has
- * no broker capability to revoke with on hosted.
+ * no broker capability to revoke with on hosted. Once a revoke failed
+ * (stamped `rf`), only the cron (`o.cron`) tries again.
  */
 export async function expirePending(
   env: Env,
   now = Date.now(),
+  o: { cron?: boolean } = {},
 ): Promise<boolean> {
   const [{ sealed }, p] = await Promise.all([
     readBinding(env, "pending"),
     readPendingAny(env),
   ]);
   if (!p || p.exp > now) return false;
+  if (p.rf !== undefined && !o.cron) return false;
   if (sealed) {
     const r = await revokeGrant(
       env,
@@ -286,6 +295,14 @@ export async function expirePending(
     );
     if (r === "failed") {
       logInfo("directory_connect", { outcome: "expire_deferred" });
+      // This confirmation only (its exp): a newer consent isn't stamped.
+      await stmt(
+        env.DB,
+        `update directory_state set value = json_set(value, '$.rf', ?)
+          where key = ? and json_extract(value, '$.exp') = ?`,
+      )
+        .bind(now, K.confirm, p.exp)
+        .run();
       return false;
     }
   }

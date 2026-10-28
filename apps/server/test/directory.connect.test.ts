@@ -521,6 +521,42 @@ describe("confirm step", () => {
       "update directory_state set value = json_set(value, '$.exp', 1) where key = 'connect.confirm'",
     ).run();
 
+  const cron = async (e: Env) => {
+    const waits: Promise<unknown>[] = [];
+    await scheduled({} as ScheduledController, e, {
+      waitUntil: (p: Promise<unknown>) => waits.push(p),
+      passThroughOnException() {},
+    } as never);
+    await Promise.all(waits);
+  };
+
+  // #813 review: a revoke that keeps failing (no transport, a token that
+  // won't unseal) was retried, with an outbound call and an audit row, on
+  // every status read. After the first failure only the daily cron retries.
+  it("after a failed expiry revoke, status reads don't retry; the cron does", async () => {
+    const e = directEnv();
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    await age();
+    const failedRows = async () =>
+      (await audits()).filter((a) => a.detail.outcome === "revoke_failed")
+        .length;
+    const f0 = await failedRows();
+    g.setRevokeStatus(500);
+    for (let i = 0; i < 3; i++) await status(e);
+    expect(await failedRows()).toBe(f0 + 1);
+    g.setRevokeStatus(200);
+    await status(e);
+    expect(g.revoked).toEqual([]);
+    expect(await keys()).toEqual([
+      "connect.confirm",
+      "pending.binding",
+      "pending.refresh",
+    ]);
+    await cron(e);
+    expect(g.revoked).toEqual([`rt-${admin.sub}`]);
+    expect(await keys()).toEqual([]);
+  });
+
   it("expiry revokes before it deletes: a failed revoke keeps the token for the next try", async () => {
     const e = directEnv();
     await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
@@ -538,7 +574,7 @@ describe("confirm step", () => {
     ]);
     expect(g.revoked).toEqual([]);
     g.setRevokeStatus(200);
-    expect((await status(e)).state).toBe("never");
+    await cron(e);
     expect(await keys()).toEqual([]);
     expect(g.revoked).toEqual([`rt-${admin.sub}`]);
     const details = (await audits()).map((a) => a.detail);
