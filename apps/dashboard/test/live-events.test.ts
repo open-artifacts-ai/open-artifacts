@@ -1,7 +1,12 @@
 // Live versions: the R.events client (one socket, never sends, reconnects)
 // and Design's safe-swap decision table (option B).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { connectArtifactEvents, onWake } from "../src/viewer/liveEvents";
+import {
+  clampRetryHint,
+  connectArtifactEvents,
+  onWake,
+  RETRY_HINT_MAX_MS,
+} from "../src/viewer/liveEvents";
 import { isSafeSwap } from "../src/viewer/useLiveVersions";
 
 class FakeWS {
@@ -170,6 +175,54 @@ describe("events socket", () => {
       expect(FakeWS.all).toHaveLength(2);
     },
   );
+
+  // #816: a socket opened just as access changed gets retryAfterMs; resume
+  // waits that long instead of reconnecting into another gone (the ~2 s loop).
+  it("gone with retryAfterMs: resume reconnects only after the wait", () => {
+    const { c } = mk();
+    const w = last();
+    w.frame({ type: "gone", reason: "changed", retryAfterMs: 2_000 });
+    w.closed(4403);
+    c.resume();
+    expect(FakeWS.all).toHaveLength(1);
+    vi.advanceTimersByTime(1_999);
+    expect(FakeWS.all).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeWS.all).toHaveLength(2);
+  });
+
+  // The Manager's condition: a bad hint can't stall reconnects forever.
+  it("clampRetryHint: 0 to 5 minutes; NaN, negative or absent is 0", () => {
+    expect(clampRetryHint(2_000)).toBe(2_000);
+    expect(clampRetryHint(RETRY_HINT_MAX_MS + 1)).toBe(RETRY_HINT_MAX_MS);
+    expect(clampRetryHint(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(clampRetryHint(Number.NaN)).toBe(0);
+    expect(clampRetryHint(-5)).toBe(0);
+    expect(clampRetryHint(null)).toBe(0);
+    expect(clampRetryHint(undefined)).toBe(0);
+  });
+
+  it("a huge retryAfterMs still reconnects after 5 minutes", () => {
+    const { c } = mk();
+    const w = last();
+    w.frame({ type: "gone", reason: "changed", retryAfterMs: 10 * 3_600_000 });
+    w.closed(4403);
+    c.resume();
+    vi.advanceTimersByTime(RETRY_HINT_MAX_MS - 1);
+    expect(FakeWS.all).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeWS.all).toHaveLength(2);
+  });
+
+  it("a resume after the wait has passed reconnects at once", () => {
+    const { c } = mk();
+    const w = last();
+    w.frame({ type: "gone", reason: "changed", retryAfterMs: 500 });
+    w.closed(4403);
+    vi.advanceTimersByTime(600);
+    c.resume();
+    expect(FakeWS.all).toHaveLength(2);
+  });
 
   it("a bare 4403 close reads as changed", () => {
     const { onGone } = mk();
