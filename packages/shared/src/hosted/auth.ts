@@ -30,6 +30,13 @@ export type AuthProvider = z.infer<typeof AuthProviderSchema>;
 export const AuthProvidersSchema = z.object({
   mode: SignInModeSchema,
   providers: z.array(AuthProviderSchema),
+  /**
+   * True only on an install Open Artifacts hosts (HOSTED=1), for "Hosted by
+   * Open Artifacts" copy; false on every self-hosted install, direct sign-in
+   * included. The server always sends it; absent (an older server) reads as
+   * false.
+   */
+  hosted: z.boolean().optional(),
 });
 export type AuthProviders = z.infer<typeof AuthProvidersSchema>;
 

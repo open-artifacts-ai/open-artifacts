@@ -92,6 +92,23 @@ const msw: ContractDriver = {
 
 hostedContract(msw);
 
+describe("mock AuthProviders.hosted (review item 36c)", () => {
+  it("true by default; false with selfHosted, and Me agrees", async () => {
+    for (const [selfHosted, hosted] of [
+      [false, true],
+      [true, false],
+    ] as const) {
+      await msw.fresh({ hosted: { selfHosted } });
+      const p = AuthProvidersSchema.parse(
+        await (await call("GET", AUTH.providers)).json(),
+      );
+      expect(p.hosted).toBe(hosted);
+      const me = MeSchema.parse(await (await call("GET", R.me)).json());
+      expect(me.instance.hosted).toBe(hosted);
+    }
+  });
+});
+
 describe("hosted contract schemas", () => {
   it("every new error code has a status", () => {
     expect(Object.keys(STATUS_FOR).sort()).toEqual([...ERROR_CODES].sort());
@@ -123,6 +140,7 @@ describe("hosted contract schemas", () => {
           turnstileSiteKey: "k",
         },
       ],
+      hosted: true,
     };
     expect(AuthProvidersSchema.parse(providers)).toEqual(providers);
     expect(

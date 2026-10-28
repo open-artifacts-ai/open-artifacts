@@ -115,7 +115,7 @@ Installs in one environment share a single Google client through the auth broker
 
 | Schema | Meaning |
 |---|---|
-| `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[] }`; only fully configured providers; `turnstileSiteKey` whenever Turnstile is configured |
+| `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[], hosted? }`; only fully configured providers; `turnstileSiteKey` whenever Turnstile is configured; `hosted` true only on HOSTED=1 (the server always sends it; absent reads as false) |
 | `SignInErrorSchema` | `tenant \| identity_conflict \| removed \| no_access \| expired \| failed` |
 | `CODE_POLICY` | `{ length: 8, ttlSec: 600, resendAfterSec: 60, maxAttempts: 5 }` |
 | `CodeRequestSchema` | `{ email, next?, turnstileToken? }` |

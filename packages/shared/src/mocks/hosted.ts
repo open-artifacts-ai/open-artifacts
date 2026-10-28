@@ -89,6 +89,8 @@ export const MOCK_DOMAIN = "example.com";
 export type HostedMockOptions = {
   /** Sign-in mode (default "direct"). "access" lists only Access. */
   mode?: "access" | "direct";
+  /** A self-hosted install (AuthProviders.hosted and Me.instance.hosted false); default false (hosted). */
+  selfHosted?: boolean;
   /** Direct-mode providers (default both). */
   providers?: ("google" | "email")[];
   /** Code requests need a Turnstile token (default false). Token "fail" is refused. */
@@ -631,9 +633,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   ];
   const providers = (): AuthProviders =>
     mode === "access"
-      ? { mode, providers: [{ id: "access", start: "/auth/login" }] }
+      ? {
+          mode,
+          providers: [{ id: "access", start: "/auth/login" }],
+          hosted: !o.selfHosted,
+        }
       : {
           mode,
+          hosted: !o.selfHosted,
           providers: [
             ...(providerIds.includes("google")
               ? [
@@ -661,7 +668,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
 
   /** Refresh Me's hosted fields and every artifact's space/can. Runs before each request. */
   const refresh = () => {
-    me.instance.hosted = true;
+    me.instance.hosted = !o.selfHosted;
     me.instance.tier = o.tier === undefined ? "business" : o.tier;
     me.instance.signIn = {
       mode,
