@@ -13,6 +13,9 @@ import {
   type Schemas,
 } from "./bridge.js";
 
+/** A db.query page; `restarted` is set when it is the first page again after cursor_stale. */
+export type QueryPage = Page<DataDoc> & { restarted?: true };
+
 export { RuntimeError, type RuntimeErrorCode } from "./bridge.js";
 
 export type Theme = "light" | "dark";
@@ -34,7 +37,7 @@ export type ChangeEvent = {
 export interface Collection {
   get(id: string): Promise<DataDoc | null>;
   list(opts?: { cursor?: string; limit?: number }): Promise<Page<DataDoc>>;
-  query(q: DataQueryInput): Promise<Page<DataDoc>>;
+  query(q: DataQueryInput): Promise<QueryPage>;
   set(id: string, data: unknown): Promise<DataDoc>;
   update(id: string, patch: Record<string, unknown>): Promise<DataDoc>;
   delete(id: string): Promise<void>;
@@ -394,18 +397,15 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
   const restarted = new Set<string>();
   /**
    * db.query. On 409 cursor_stale (the doc a page ended on changed while
-   * paging) it restarts once from the first page: the page returned is then
-   * the first one again, so a caller collecting pages should start over when
-   * its items repeat. A second cursor_stale in the same chain is thrown.
+   * paging) it restarts once from the first page and marks that page
+   * `restarted: true`, so a caller collecting pages starts over instead of
+   * appending duplicates. A second cursor_stale in the same chain is thrown.
    */
-  async function query(
-    name: string,
-    q: DataQueryInput,
-  ): Promise<Page<DataDoc>> {
+  async function query(name: string, q: DataQueryInput): Promise<QueryPage> {
     const cursor = q?.cursor;
     const again = cursor !== undefined && restarted.delete(cursor);
     let page: Page<DataDoc>;
-    let restart = again;
+    const restart = again;
     try {
       page = await bridge.call("db.query", { collection: name, query: q });
     } catch (e) {
@@ -421,7 +421,8 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
         collection: name,
         query: first,
       });
-      restart = true;
+      if (page.nextCursor) restarted.add(page.nextCursor);
+      return { ...page, restarted: true };
     }
     if (restart && page.nextCursor) restarted.add(page.nextCursor);
     return page;

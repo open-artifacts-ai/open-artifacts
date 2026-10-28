@@ -429,7 +429,11 @@ describe("subscribe", () => {
     expect(again).toMatchObject({ collection: "c", query: { orderBy: "n" } });
     expect(again.query).not.toHaveProperty("cursor");
     reply(q()[1]?.id ?? "", { items: [doc("a", { n: 1 })], nextCursor: "c2" });
-    expect(await p1).toEqual({ items: [doc("a", { n: 1 })], nextCursor: "c2" });
+    expect(await p1).toEqual({
+      items: [doc("a", { n: 1 })],
+      nextCursor: "c2",
+      restarted: true,
+    });
 
     // Stale again in the restarted chain: surfaced, no second restart.
     const p2 = col.query({ orderBy: "n", cursor: "c2" });

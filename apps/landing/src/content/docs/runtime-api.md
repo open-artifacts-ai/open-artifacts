@@ -126,7 +126,7 @@ Every call returns a promise. A failed call rejects with an error that has a `co
 | `data_editors_only` | (403) Only this artifact's editors can change its data. |
 | `bad_request` | Invalid parameters, such as a bad collection name or a value that can't be sent. |
 | `query_too_large` | (400) `query()` with `where` or `orderBy` on a collection over {LIMIT_QUERY_COLLECTION}. Use `list()` and filter in the page, or split the data into smaller collections. |
-| `cursor_stale` | (409) The document a `query()` page ended on changed while paging. Start the query again without a cursor. |
+| `cursor_stale` | (409) The document a `query()` page ended on changed while paging. The runtime restarts once from the first page and marks that page `restarted: true`: start your list over. A second one in the same chain is thrown. |
 | `rate_limited`, `too_large`, `quota_exceeded` | A limit was reached. |
 | `not_found`, `unauthorized`, `conflict`, `internal` | Other server errors. |
 
