@@ -193,7 +193,9 @@ describe("members", () => {
     const row = await rowOf(other.email);
     fireEvent.click(within(row).getByRole("button", { name: /remove/i }));
     expect(
-      await screen.findByText("Their artifacts move to the instance owner."),
+      await screen.findByText(
+        "They lose access, including to anything shared with them. Their artifacts move to the instance owner.",
+      ),
     ).toBeTruthy();
   });
 
@@ -204,7 +206,9 @@ describe("members", () => {
     const row = await rowOf(other.email);
     fireEvent.click(within(row).getByRole("button", { name: /remove/i }));
     expect(
-      await screen.findByText("Their artifacts move to you."),
+      await screen.findByText(
+        "They lose access, including to anything shared with them. Their artifacts move to you.",
+      ),
     ).toBeTruthy();
     expect(dels.length).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Remove member" }));

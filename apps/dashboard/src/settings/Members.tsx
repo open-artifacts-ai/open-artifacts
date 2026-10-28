@@ -490,11 +490,12 @@ function Row({
         onClose={() => setConfirm(false)}
         title={`Remove ${label}?`}
         description={
+          // Removing also unshares what was shared with them (#795), so they stay removed.
           hosted
-            ? "Their artifacts stay where they are. You can transfer their personal artifacts later under Departed."
+            ? "They lose access, including to anything shared with them. Their artifacts stay where they are. You can transfer their personal artifacts later under Departed."
             : owner
-              ? "Their artifacts move to you."
-              : "Their artifacts move to the instance owner."
+              ? "They lose access, including to anything shared with them. Their artifacts move to you."
+              : "They lose access, including to anything shared with them. Their artifacts move to the instance owner."
         }
         footer={
           <>
