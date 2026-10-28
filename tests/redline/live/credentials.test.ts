@@ -5,6 +5,7 @@ import {
   authorizeRefused,
   authorizeUrl,
   codeForm,
+  lastRedeemAt,
   mcpResource,
   pkce,
   redeem,
@@ -14,6 +15,7 @@ import {
   slotValue,
   tokenRefused,
   tokenRequest,
+  untilKvSettled,
 } from "../src/creds.ts";
 import {
   type Cred,
@@ -288,12 +290,16 @@ describe("credentials", () => {
             ? refreshForm(c.aAtA, rtAatA, res(T.a))
             : refreshForm(atB, rtAatB, res(T.b)),
         );
+        // Each refresh reads a grant just written by its redeem: wait out
+        // KV's read cache first, or a stale read refuses a valid token (#769).
+        await untilKvSettled(lastRedeemAt());
         await crossCheck((cr, t) => tokenRequest(t, slotValue(cr, t)), {
           ...pair(credA, credB),
           ok: okStatus(200),
           refused: tokenRefused(errors),
         });
         // The token B refused is live at A.
+        await untilKvSettled(lastRedeemAt());
         const r = await fetch(
           tokenRequest(T.a, refreshForm(c.aAtB, rtAatB, res(T.a))),
         );

@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   authorizeRefused,
+  KV_CACHE_TTL_MS,
+  KV_SETTLE_SLACK_MS,
   once,
   slot,
   slotValue,
   tokenRefused,
+  untilKvSettled,
 } from "../src/creds.ts";
 import { NotRefused, registerMarker } from "../src/refused.ts";
 import type { Target } from "../src/targets.ts";
@@ -106,5 +109,37 @@ describe("slots", () => {
     const next = once(1, 2);
     expect([next(), next()]).toEqual([1, 2]);
     expect(next).toThrow(/already used/);
+  });
+});
+
+describe("untilKvSettled (#769)", () => {
+  it("the window is derived from KV's 60 s cache TTL plus slack", () => {
+    expect(KV_CACHE_TTL_MS).toBe(60_000);
+    expect(KV_SETTLE_SLACK_MS).toBeGreaterThan(0);
+  });
+
+  it("waits until TTL + slack past the timestamp, on a deadline", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      const since = Date.now();
+      let done = false;
+      const p = untilKvSettled(since).then((d) => {
+        done = true;
+        return d;
+      });
+      await vi.advanceTimersByTimeAsync(KV_CACHE_TTL_MS);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(KV_SETTLE_SLACK_MS);
+      expect(await p).toBe(since + KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS);
+      expect(done).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns at once when the deadline has passed", async () => {
+    const t0 = Date.now();
+    await untilKvSettled(t0 - KV_CACHE_TTL_MS - KV_SETTLE_SLACK_MS - 1);
+    expect(Date.now() - t0).toBeLessThan(50);
   });
 });
