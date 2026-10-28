@@ -1,6 +1,8 @@
 import {
   AUDIT_RETENTION_MS,
   type AuditAction,
+  type AuditCred,
+  AuditCredKindSchema,
   AuditActionSchema,
   type AuditEvent,
   type AuditReason,
@@ -10,6 +12,7 @@ import {
   type Page,
 } from "@oa/shared";
 import { sql } from "drizzle-orm";
+import { type Cred, currentCred } from "../auth/cred.js";
 import { deriveKey } from "../auth/keys.js";
 import { getDb } from "../db/client.js";
 import { auditEvents } from "../db/schema.js";
@@ -26,11 +29,32 @@ import { hmacSign, hmacVerify } from "../util/crypto.js";
 // Rows are never updated; the daily cron deletes those past 400 days
 // (AUDIT_RETENTION_MS, sweepAuditEvents below; HOSTED_CONTRACT.md).
 
-/** Who did it: a signed-in user, directory sync, or the system (cron, alarms). */
+/**
+ * Who did it: a signed-in user, directory sync, or the system (cron, alarms).
+ * `cred` (#803) names the credential explicitly, for a row written where the
+ * request's own store can't reach (a Durable Object, reached by RPC). When
+ * absent, a user's row takes the request's credential (auth/cred.ts) and a
+ * sync or system row records `system`.
+ */
 export type AuditActor = {
   kind: "user" | "sync" | "system";
   id: string | null;
+  cred?: Cred | null;
 };
+
+const SYSTEM_CRED: Cred = { kind: "system", id: null };
+
+/** The credential a row records: explicit, else the request's, else none. */
+export function credOf(actor: AuditActor): Cred | null {
+  if (actor.cred !== undefined) return actor.cred;
+  return actor.kind === "user" ? currentCred() : SYSTEM_CRED;
+}
+
+/** `actor` with this request's credential fixed on it, to hand to a Durable Object. */
+export const withRequestCred = (actor: AuditActor): AuditActor => ({
+  ...actor,
+  cred: credOf(actor),
+});
 
 export type AuditExtra = {
   spaceId?: string | null;
@@ -52,8 +76,8 @@ export type AuditExtra = {
 };
 
 const insertSql = (detailSql?: string) => `insert into audit_events
-  (id, at, actor_kind, actor_id, action, target_type, target_id, space_id, detail)
-  select ?, ?, ?, ?, ?, ?, ?, ?, ${detailSql ? `json_patch(?, ${detailSql})` : "?"}`;
+  (id, at, actor_kind, actor_id, actor_cred_kind, actor_cred_id, action, target_type, target_id, space_id, detail)
+  select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${detailSql ? `json_patch(?, ${detailSql})` : "?"}`;
 
 /** One audit row, as a statement for the caller's own batch. */
 export function audit(
@@ -72,11 +96,14 @@ export function audit(
   };
   const insert = insertSql(extra.detailSql?.sql);
   const sql = extra.when ? `${insert} where ${extra.when.sql}` : insert;
+  const cred = credOf(actor);
   return stmt(env.DB, sql).bind(
     newId(),
     Date.now(),
     actor.kind,
     actor.id,
+    cred?.kind ?? null,
+    cred?.id ?? null,
     action,
     target.type,
     target.id,
@@ -115,13 +142,19 @@ export const signInAudit = (
  * insert (drizzle's raw `run` can't join a D1 batch with parameters), in the
  * table's column order.
  */
-export const signInAuditByEmail = (env: Env, email: string, provider: string) =>
-  getDb(env)
+export const signInAuditByEmail = (
+  env: Env,
+  email: string,
+  provider: string,
+) => {
+  const cred = currentCred();
+  return getDb(env)
     .insert(auditEvents)
     .select(
-      sql`select ${newId()}, ${Date.now()}, 'user', u.id, 'auth.signin', 'user', u.id, null, ${JSON.stringify({ provider })}
+      sql`select ${newId()}, ${Date.now()}, 'user', u.id, 'auth.signin', 'user', u.id, null, ${JSON.stringify({ provider })}, ${cred?.kind ?? null}, ${cred?.id ?? null}
         from users u where u.email = ${email}`,
     );
+};
 
 // ------------------------------------------------------------------- read
 
@@ -131,6 +164,8 @@ type Row = {
   actorKind: string;
   actorId: string | null;
   actorEmail: string | null;
+  credKind: string | null;
+  credId: string | null;
   action: string;
   targetType: string;
   targetId: string | null;
@@ -161,7 +196,8 @@ const bound = (op: "<" | "<=" | null) =>
 const PAGE_SQL = (
   op: "<" | "<=" | null,
 ) => `select e.id, e.at, e.actor_kind as actorKind,
-    e.actor_id as actorId, u.email as actorEmail, e.action,
+    e.actor_id as actorId, u.email as actorEmail,
+    e.actor_cred_kind as credKind, e.actor_cred_id as credId, e.action,
     e.target_type as targetType, e.target_id as targetId,
     e.space_id as spaceId, e.detail
   from audit_events e left join users u on u.id = e.actor_id
@@ -192,6 +228,12 @@ function parseDetail(s: string): {
   };
 }
 
+/** The row's credential; an unknown kind reads as none. */
+function credOfRow(r: Row): AuditCred | null {
+  const k = AuditCredKindSchema.safeParse(r.credKind);
+  return k.success ? { kind: k.data, id: r.credId } : null;
+}
+
 function toEvent(r: Row): AuditEvent | null {
   if (
     !ACTOR_KINDS.has(r.actorKind) ||
@@ -207,6 +249,7 @@ function toEvent(r: Row): AuditEvent | null {
       kind: r.actorKind as AuditEvent["actor"]["kind"],
       id: r.actorId,
       email: r.actorKind === "user" ? r.actorEmail : null,
+      cred: credOfRow(r),
     },
     action: r.action as AuditAction,
     target: {

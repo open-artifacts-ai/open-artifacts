@@ -276,6 +276,11 @@ export const auditEvents = sqliteTable(
     targetId: text("target_id"),
     spaceId: text("space_id"),
     detail: text("detail").notNull().default("{}"),
+    // The credential behind a user's action (#803): its kind (session, pat,
+    // oauth_grant, system) and id (session issue key, PAT id, grant id),
+    // never the token. Null outside a request (cron, sync, alarms).
+    actorCredKind: text("actor_cred_kind"),
+    actorCredId: text("actor_cred_id"),
   },
   (t) => [index("audit_events_at_idx").on(t.at)],
 );
