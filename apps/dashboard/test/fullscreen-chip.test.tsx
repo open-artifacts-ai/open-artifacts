@@ -22,6 +22,7 @@ vi.mock("../src/viewer/bridge", () => ({
     dispose: () => {},
     requestThumbnail: () => {},
     setTheme: () => {},
+    setArtifact: () => {},
   }),
 }));
 

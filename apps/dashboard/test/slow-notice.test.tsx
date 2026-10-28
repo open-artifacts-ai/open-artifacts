@@ -13,6 +13,7 @@ const createBridge = vi.fn((_: Opts) => ({
   dispose: vi.fn(),
   requestThumbnail: vi.fn(),
   setTheme: vi.fn(),
+  setArtifact: vi.fn(),
 }));
 /** When set, the mock bridge doesn't load the frame (it stays at about:blank). */
 const hold = { load: false };

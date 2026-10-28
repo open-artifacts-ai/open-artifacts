@@ -131,7 +131,6 @@ const qs = (p: { cursor?: string; limit?: number }) => {
 export function createBridge(opts: BridgeOptions) {
   const {
     iframe,
-    artifact,
     onPdfText,
     onThumb,
     onResize,
@@ -139,14 +138,18 @@ export function createBridge(opts: BridgeOptions) {
     onAccessLost,
     onInteracted,
   } = opts;
+  // The live artifact: capabilities, dataWriters and visibility follow
+  // setArtifact (review item 38), so a change in Share applies without a reload.
+  let artifact = opts.artifact;
   const id = artifact.id; // the only artifact id any route is ever built from
   // Framed, the artifact never learns who is viewing, whatever the caller passed.
   const embed = isEmbed();
-  const viewer = artifact.capabilities.viewer && !embed ? opts.viewer : null;
+  const viewer = () =>
+    artifact.capabilities.viewer && !embed ? opts.viewer : null;
   // The anonId header rides only on anonymous calls (viewer null for any
   // reason: signed out, or embed mode) to artifacts that allow anonymous
   // writes; never signed in, never into the frame.
-  const anon =
+  const anon = () =>
     (opts.viewer === null || embed) &&
     artifact.visibility === "public" &&
     artifact.dataWriters === "viewers";
@@ -289,7 +292,7 @@ export function createBridge(opts: BridgeOptions) {
     mints: boolean,
     go: (extra?: RequestExtra) => Promise<T>,
   ): Promise<T> => {
-    if (!anon) return go();
+    if (!anon()) return go();
     // Re-check after each wait: a failed mint leaves no token, and only one
     // waiter may become the next minter.
     if (mints) while (!loadAnonToken() && minting) await minting;
@@ -381,12 +384,12 @@ export function createBridge(opts: BridgeOptions) {
         unsubscribe(p.collection);
         return null;
       case "viewer.get":
-        return viewer;
+        return viewer();
       case "viewer.anonId":
         // Only the per-artifact short id; the signed token stays here.
         // Cached per token id and artifact: the route is rate limited per IP,
         // and a failed lookup would cost the page its id (#681).
-        if (!anon) return null;
+        if (!anon()) return null;
         {
           const cached = loadAnonShort(loadAnonToken(), id);
           if (cached) return cached;
@@ -466,7 +469,7 @@ export function createBridge(opts: BridgeOptions) {
           oa: 1,
           type: "welcome",
           capabilities: artifact.capabilities,
-          viewer,
+          viewer: viewer(),
           theme: opts.theme,
           // The runtime turns plain links to this app into navigate requests.
           appOrigin: location.origin,
@@ -548,6 +551,14 @@ export function createBridge(opts: BridgeOptions) {
     },
     setTheme(t: Theme) {
       reply({ oa: 1, type: "theme", theme: t });
+    },
+    /**
+     * The artifact changed (capabilities, dataWriters, visibility): later calls
+     * follow it. Another artifact's summary is ignored: the id never changes.
+     * The frame's own copy (from welcome) refreshes on its next load.
+     */
+    setArtifact(next: ArtifactSummary) {
+      if (next.id === id) artifact = next;
     },
     /** After a live swap: scroll to the previous version's position. */
     scrollTo(pos: ScrollPos) {
