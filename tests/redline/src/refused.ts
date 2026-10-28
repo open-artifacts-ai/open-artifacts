@@ -7,6 +7,7 @@ import {
   publishMarker,
   readBody,
   send,
+  sendProbe,
 } from "./http.ts";
 import type { Target } from "./targets.ts";
 
@@ -222,7 +223,8 @@ export async function crossCheck<C = Cred>(
   o: CrossCheck<C>,
 ): Promise<void> {
   const ok = o.ok ?? defaultOk;
-  const go = o.send ?? send;
+  // No response at all: one more try, then infra (sendProbe), never a verdict.
+  const go = (r: Request) => sendProbe(r, o.send ?? send);
   const refused = o.refused ?? expectRefused;
   // A send that throws (before any response) is tagged with its leg too.
   const sent = (leg: LegName, host: Target, r: () => Request) =>
@@ -300,7 +302,7 @@ async function leg(
   const f: ProbeFetch = async (req) => {
     // URL and headers only: a clone would tee the body.
     reqs.push(new Request(req.url, { headers: req.headers }));
-    const r = await send(req);
+    const r = await sendProbe(req);
     const buf = NULL_BODY.has(r.status) ? null : await r.arrayBuffer();
     const copy = () =>
       new Response(buf, {
@@ -314,6 +316,8 @@ async function leg(
   try {
     return { verdict: await run(f), seen, reqs };
   } catch (e) {
+    // A probe that got no response (sendProbe, twice) is infra, not a verdict.
+    if (e instanceof Error && e.message.startsWith("infra: ")) throw e;
     // A probe error quotes the body: show its hash and the last status only.
     const last = seen.at(-1);
     const at = last ? describeRes(last, await readBody(last)) : "no response";

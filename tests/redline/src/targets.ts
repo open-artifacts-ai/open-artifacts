@@ -1,6 +1,6 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describeRes, readBody } from "./http.ts";
+import { describeRes, readBody, retryIdempotent } from "./http.ts";
 
 // REDLINE_TARGETS: the two installs (and the prod probe) the suite runs
 // against. Secrets are never in the JSON: only paths of 0600 files, read here
@@ -426,7 +426,7 @@ export interface Healthz {
 
 /** The guard: /healthz on the app host is 200 with ok, testHooks: true and this target's installId. */
 export async function verifyTarget(t: Target): Promise<void> {
-  const res = await fetch(`${t.app}/healthz`, { redirect: "manual" });
+  const res = await retryIdempotent(new Request(`${t.app}/healthz`));
   const text = await readBody(res);
   if (res.status !== 200)
     throw new Error(`${t.name} /healthz: ${describeRes(res, text)}`);

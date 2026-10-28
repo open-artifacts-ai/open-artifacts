@@ -17,6 +17,7 @@ import {
   tokenRequest,
   untilKvSettled,
 } from "../src/creds.ts";
+import { deleteThrowaways } from "../src/fixtures.ts";
 import {
   type Cred,
   HttpError,
@@ -26,6 +27,7 @@ import {
   sessionCred,
   withCred,
 } from "../src/http.ts";
+import { note } from "../src/notes.ts";
 import {
   allMarkers,
   crossCheck,
@@ -62,13 +64,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  for (const s of [A, B]) {
-    if (!s) continue;
-    await fetch(
-      `${s.t.app}/api/v1/artifacts/${encodeURIComponent(s.markerId)}`,
-      withCred(s.pat, { method: "DELETE" }),
-    ).then((r) => r.body?.cancel());
-  }
+  // Per id, one retry, never a throw mid-loop: a failed delete is noted.
+  let bad = 0;
+  for (const s of [A, B])
+    if (s) bad += await deleteThrowaways(s.t, s.pat, [s.markerId]);
+  if (bad) note(`cleanup: ${bad} marker artifact(s) not deleted`);
 });
 
 const pair = (credA: Cred, credB: Cred) => ({
