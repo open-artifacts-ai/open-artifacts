@@ -4,6 +4,7 @@ import {
   authorizeRefused,
   KV_CACHE_TTL_MS,
   KV_SETTLE_SLACK_MS,
+  oauthStoreMode,
   once,
   slot,
   slotValue,
@@ -208,6 +209,38 @@ describe("authorizeCode", () => {
         authorizeCode(B, cookie as never, "client", pkce as never, "res"),
       ).rejects.not.toThrow(/^infra/);
       expect(f).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("oauthStoreMode", () => {
+  const healthz = (body: unknown, status = 200) =>
+    vi.fn(async () => json(status, body));
+  it("reads /healthz oauthStore.mode; absent or unknown is kv", async () => {
+    for (const [body, want] of [
+      [{ ok: true, oauthStore: { mode: "d1" } }, "d1"],
+      [{ ok: true, oauthStore: { mode: "dual" } }, "dual"],
+      [{ ok: true, oauthStore: { mode: "kv" } }, "kv"],
+      [{ ok: true }, "kv"],
+      [{ ok: true, oauthStore: { mode: "D1" } }, "kv"],
+    ] as const) {
+      vi.stubGlobal("fetch", healthz(body));
+      try {
+        await expect(oauthStoreMode(B)).resolves.toBe(want);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  });
+  it("a non-200 /healthz throws", async () => {
+    vi.stubGlobal(
+      "fetch",
+      healthz({ error: "oauth_store_misconfigured" }, 503),
+    );
+    try {
+      await expect(oauthStoreMode(B)).rejects.toThrow(/healthz/);
     } finally {
       vi.unstubAllGlobals();
     }

@@ -20,6 +20,7 @@ describe("skeleton", () => {
       ok: true,
       plan: "free",
       version: VERSION,
+      oauthStore: { mode: "kv", backfilled: false, kvWritesOffSince: null },
     });
   });
 

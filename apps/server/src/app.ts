@@ -21,6 +21,7 @@ import {
   session,
 } from "./http/middleware.js";
 import { cancelUnreadOnRefusal } from "./http/unread-body.js";
+import { oauthStoreHealth } from "./mcp/oauth-store.js";
 import { SKILL_PATH, serveSkill } from "./mcp/skill.js";
 import { serveUpgrade, UPGRADE_PATH } from "./mcp/upgrade.js";
 import { type AppType, mountRoutes } from "./routes/index.js";
@@ -116,13 +117,18 @@ export function createApp(
   // INSTALL_ID (the same value authConfig uses for keys), and absent (not
   // null) when unset or empty after trimming, so self-host output is
   // unchanged. It proves routing, never authenticity: the control plane must
-  // not treat it as an authorization signal.
-  app.get("/healthz", (c) => {
+  // not treat it as an authorization signal. oauthStore (the OAuth store
+  // move): the mode, whether a full KV -> D1 copy completed, and since when
+  // KV writes are off; one D1 read, no writes (no counts, no keys), and null
+  // when D1 can't be read.
+  app.get("/healthz", async (c) => {
     const installId = c.env.INSTALL_ID?.trim();
+    const oauthStore = await oauthStoreHealth(c.env);
     return c.json({
       ok: true,
       plan: planOf(c.env.PLAN),
       version: VERSION,
+      oauthStore,
       // Only where hooks are on (the redline bundle); absent means off, so
       // production's /healthz bytes are unchanged.
       ...(hooks && hooks.testHooksOn(c.env) ? { testHooks: true } : {}),

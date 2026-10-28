@@ -7,7 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   exitReason,
   localFeatures,
+  localKvNamespaces,
   localModeOf,
+  localOAuthStoreOf,
+  localOAuthStoreVars,
   reservePort,
   waitBroker,
   waitHealthy,
@@ -179,5 +182,34 @@ describe("local pair modes", () => {
     expect(() => localModeOf({ REDLINE_LOCAL_MODE: "gogle" })).toThrow(
       /REDLINE_LOCAL_MODE/,
     );
+  });
+});
+
+describe("local pair OAuth store", () => {
+  it("REDLINE_OAUTH_STORE: kv by default, dual, d1, anything else refused", () => {
+    expect(localOAuthStoreOf({})).toBe("kv");
+    expect(localOAuthStoreOf({ REDLINE_OAUTH_STORE: "dual" })).toBe("dual");
+    expect(localOAuthStoreOf({ REDLINE_OAUTH_STORE: "d1" })).toBe("d1");
+    expect(() => localOAuthStoreOf({ REDLINE_OAUTH_STORE: "D1" })).toThrow(
+      /REDLINE_OAUTH_STORE/,
+    );
+  });
+  it("kv leaves OAUTH_STORE unset; dual and d1 set it", () => {
+    expect(localOAuthStoreVars()).toEqual({});
+    expect(localOAuthStoreVars("kv")).toEqual({});
+    expect(localOAuthStoreVars("d1")).toEqual({ OAUTH_STORE: "d1" });
+    expect(localOAuthStoreVars("dual")).toEqual({ OAUTH_STORE: "dual" });
+  });
+  it("d1 unbinds OAUTH_KV (a fresh d1 install); kv and dual keep it", () => {
+    const kv = [
+      { binding: "OAUTH_KV", id: "oa-kv-test" },
+      { binding: "OTHER", id: "x" },
+    ];
+    expect(localKvNamespaces(kv)).toEqual(kv);
+    expect(localKvNamespaces(kv, "kv")).toEqual(kv);
+    expect(localKvNamespaces(kv, "dual")).toEqual(kv);
+    expect(localKvNamespaces(kv, "d1")).toEqual([
+      { binding: "OTHER", id: "x" },
+    ]);
   });
 });

@@ -103,6 +103,7 @@ describe("purgeDeleted", () => {
       "fulfilled",
       "fulfilled",
       "fulfilled",
+      "fulfilled", // sweepOAuthStore (expired rows, old tombstones)
       "fulfilled", // C3: reindexStale
       "fulfilled", // sweepEmailCounters
       "fulfilled", // sweepLoginCodes (P2)
