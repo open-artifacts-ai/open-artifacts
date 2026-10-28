@@ -1045,3 +1045,51 @@ describe("setArtifact", () => {
     expect(post.mock.calls[0]?.[0].error.code).toBe("capability_denied");
   });
 });
+
+// The Manager's condition on item 38: only the shell's own server data reaches
+// setArtifact. Nothing the frame posts can widen its capabilities.
+describe("the frame can't change the bridge's artifact", () => {
+  it.each([
+    {
+      oa: 1,
+      type: "setArtifact",
+      artifact: { capabilities: { storage: true } },
+    },
+    {
+      oa: 1,
+      type: "welcome",
+      capabilities: { db: true, viewer: true, storage: true },
+    },
+    { oa: 1, type: "capabilities", capabilities: { storage: true } },
+    {
+      oa: 1,
+      type: "hello",
+      protocol: 1,
+      kind: "html",
+      capabilities: { storage: true },
+    },
+  ])("a frame message ($type) leaves storage refused", async (msg) => {
+    mk();
+    send(msg);
+    post.mockClear();
+    call("storage.get", { key: "k" });
+    await flush();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(post.mock.calls[0]?.[0].error.code).toBe("capability_denied");
+  });
+
+  it("setArtifact isn't reachable through any message type the bridge handles", () => {
+    // The bridge's API is the shell's; the frame only ever sends messages.
+    const b = mk();
+    expect(typeof b.setArtifact).toBe("function");
+    expect(Object.keys(b).sort()).toEqual(
+      [
+        "dispose",
+        "requestThumbnail",
+        "scrollTo",
+        "setArtifact",
+        "setTheme",
+      ].sort(),
+    );
+  });
+});
