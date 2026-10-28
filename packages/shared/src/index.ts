@@ -13,4 +13,5 @@ export * from "./routes.js";
 export * from "./sandbox.js";
 export * from "./schemas.js";
 export * from "./secrets.js";
+export * from "./sniff.js";
 export * from "./tunables.js";
