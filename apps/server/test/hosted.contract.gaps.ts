@@ -5,9 +5,6 @@
 // first assertion that fails today (a case may have more behind it).
 import type { KnownGap } from "../../../packages/shared/test/hosted-contract.js";
 
-const FROZEN_GROUPS =
-  "frozen sync: a manual override keeps the synced row's groups in the response (syncRole null, groups [gEng01]); the contract says groups [] (new)";
-
 export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
   "providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal":
     {
@@ -25,10 +22,6 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
     m1: false,
     why: "PUT space mapping returns name null: group names are never stored",
   },
-  "frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)":
-    { item: "new", m1: true, why: FROZEN_GROUPS },
-  "frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited":
-    { item: "new", m1: true, why: FROZEN_GROUPS },
 };
 
 /**
@@ -37,8 +30,6 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
  * KNOWN_GAPS disagree, so closing an M1 gap edits both.
  */
 export const M1_OPEN: readonly string[] = [
-  "new: frozen sync: DELETE removes a synced row; PUT may lower (manual override); audited",
-  "new: frozen sync: raising a synced row is a manual grant (managers up to editor, admins any)",
   "new: providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal",
   "new: public links off keeps an existing public artifact public (no rewrite)",
 ];

@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.69.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.69.0...v0.69.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **directory:** P2.5 directory sync ([#767](https://github.com/open-artifacts-ai/open-artifacts/issues/767)) ([abeb28d](https://github.com/open-artifacts-ai/open-artifacts/commit/abeb28d9b7a5118fb8df35c593999f41b9c96375))
+
+## [0.69.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.68.2...v0.69.0) (2026-10-28)
+
+
+### Features
+
+* **hosted:** the TIER var: provisioning derives FEATURES from it; Me reports it ([#772](https://github.com/open-artifacts-ai/open-artifacts/issues/772)) ([74b5fc6](https://github.com/open-artifacts-ai/open-artifacts/commit/74b5fc69a6370bd8b363906d2fec982551a842b6))
+* **spaces:** Add people searches R.spaceCandidates; People reads restriction from its rows ([#764](https://github.com/open-artifacts-ai/open-artifacts/issues/764)) ([6f0a0a4](https://github.com/open-artifacts-ai/open-artifacts/commit/6f0a0a47781c44cbed84bd828ebdea436931090a))
+
+
+### Bug Fixes
+
+* **render:** binary or oversized code entries show a note with Download, never a hang ([#773](https://github.com/open-artifacts-ai/open-artifacts/issues/773)) ([151d78f](https://github.com/open-artifacts-ai/open-artifacts/commit/151d78feb0c672faca283dad327325a12b798e07))
+* **server:** GET /me returns spaces; refuse "Personal" as a space name ([#768](https://github.com/open-artifacts-ai/open-artifacts/issues/768)) ([833e77d](https://github.com/open-artifacts-ai/open-artifacts/commit/833e77d594d93b40316e3899c0076c4dcbc8252b))
+
 ## [0.68.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.68.1...v0.68.2) (2026-10-27)
 
 

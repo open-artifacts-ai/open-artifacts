@@ -11,18 +11,22 @@ import { GOOGLE_REVOKE_URL } from "@oa/auth-core";
 import { newId, R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearRegistryCache } from "../../../packages/broker-core/src/index.js";
+import { authConfig } from "../src/auth/config.js";
 import { createPat } from "../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import { applyGroupDiff } from "../src/directory/apply.js";
+import { retireTenant } from "../src/directory/binding.js";
 import { seal } from "../src/directory/crypto.js";
-import { HK, NEVER } from "../src/directory/health.js";
-import { directorySignIn } from "../src/directory/signin.js";
+import { clearHealth, HK, NEVER } from "../src/directory/health.js";
 import { K, UPSERT } from "../src/directory/store.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
+import { oauthApi } from "../src/mcp/oauth-api.js";
+import { revokeFanoutCap } from "../src/runtime/revoke.js";
 import { resetSync, SYNC_DO_NAME } from "../src/services/directory.js";
+import { admit } from "../src/services/identity.js";
 import { mailer, type SentMail, seedUser, uniq } from "./auth-helpers.js";
 import {
   APP,
@@ -105,6 +109,15 @@ const call = (
     e,
     e.HOSTED === "1" ? hostedProps() : undefined,
   );
+/** A Google sign-in's admission (P2) for this subject and address. */
+const admitGoogle = (e: Env, subject: string, email: string) =>
+  admit(e, authConfig(e), {
+    provider: "google",
+    subject,
+    email,
+    name: null,
+    tenant: "a.com",
+  });
 const disconnectMails = () =>
   sent.filter((m) => m.text.includes("Google Workspace was disconnected"));
 
@@ -824,14 +837,275 @@ describe("during customer_mismatch", () => {
     expect(await keys()).not.toContain("binding.prior");
 
     // Users bound to the old Workspace don't carry over: refused at sign-in.
-    const row = await env.DB.prepare(
-      "select id, email, name, role from users where id = ?",
+    expect(await statusOf(oldUid)).toBe("suspended");
+    expect(await admitGoogle(e, oldSub, oldEmail)).toEqual({
+      ok: false,
+      reason: "removed",
+    });
+  });
+
+  /** A user bound to the current Workspace, with a session, a PAT and a grant. */
+  async function boundUser(tag: string) {
+    const sub = `g-${tag}-${crypto.randomUUID()}`;
+    const email = uniq(tag);
+    g.addUser({ id: sub, primaryEmail: email });
+    const u = await login(email);
+    await env.DB.prepare(
+      "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, ?, 1)",
     )
-      .bind(oldUid)
-      .first<{ id: string; email: string; name: string; role: string }>();
-    await expect(
-      directorySignIn(e, { ...row, displayName: null } as never),
-    ).rejects.toMatchObject({ why: "customer_mismatch" });
+      .bind(sub, u.userId, Date.now())
+      .run();
+    const { token } = await createPat(env, u.userId, tag);
+    const { accessToken } = await oauthToken(email, `${tag} Agent`, u);
+    return { ...u, sub, email, token, accessToken };
+  }
+  const meAs = (e: Env, auth: { cookie?: string; bearer?: string }) =>
+    fetchAndWait(
+      app,
+      new Request(`${APP}${R.me}`, {
+        headers: {
+          ...(auth.cookie ? { cookie: auth.cookie } : {}),
+          ...(auth.bearer ? { authorization: `Bearer ${auth.bearer}` } : {}),
+        },
+      }),
+      e,
+    );
+  const statusOf = async (id: string) =>
+    (
+      await env.DB.prepare("select status from users where id = ?")
+        .bind(id)
+        .first<{ status: string }>()
+    )?.status;
+  const boundOf = async (sub: string) =>
+    (
+      await env.DB.prepare(
+        "select directory_bound as b from identities where provider = 'google' and subject = ?",
+      )
+        .bind(sub)
+        .first<{ b: number }>()
+    )?.b;
+  const syncState = async () =>
+    (
+      await env.DB.prepare(
+        "select value from directory_state where key = 'sync.state'",
+      ).first<{ value: string }>()
+    )?.value ?? null;
+  /** Another Workspace's super admin (same domain) consents (and confirms). */
+  async function reconnectElsewhere(e: Env, confirm = true) {
+    const other = g.addUser({
+      id: `g-other-${crypto.randomUUID()}`,
+      primaryEmail: uniq("other-ws"),
+      isAdmin: true,
+      customerId: "C9999",
+    });
+    g.users.set(other.id, { ...other });
+    g.domains.set("C9999", [{ domainName: "a.com", verified: true }]);
+    const r = await connect(e, owner.cookie, g, { sub: other.id }, { confirm });
+    expect(r.consented).toBe(true);
+    return r;
+  }
+  /** Customer A in customer_mismatch, then disconnected (the tombstone). */
+  async function mismatchAndDisconnect(e: Env) {
+    await env.DB.prepare(UPSERT).bind(HK.state, "customer_mismatch").run();
+    expect((await call(e, "POST", { cookie: owner.cookie })).status).toBe(200);
+  }
+
+  it("P2.5 #16: reconnect to customer B and confirm: A's users' sessions, PATs and grants stay dead once the tombstone lifts; sign-in refused", async () => {
+    const a = await boundUser("ws-a");
+    const first = g.customerId;
+    expect((await meAs(e, { cookie: a.cookie })).status).toBe(200);
+    await mismatchAndDisconnect(e);
+    expect((await meAs(e, { cookie: a.cookie })).status).toBe(401);
+
+    const r = await reconnectElsewhere(e);
+    expect(r.confirmed?.status).toBe(200);
+    // The DO applies the reset and syncs B: the tombstone is gone.
+    await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
+    expect(await keys()).not.toContain("tenant.retire");
+    expect(await syncState()).not.toBe("customer_mismatch");
+
+    // A's user: suspended, unbound, and every credential refused.
+    expect(await statusOf(a.userId)).toBe("suspended");
+    expect(await boundOf(a.sub)).toBe(0);
+    expect((await meAs(e, { cookie: a.cookie })).status).toBe(401);
+    expect((await meAs(e, { bearer: a.token })).status).toBe(401);
+    await expect(mcpConnect(a.accessToken, { env: e })).rejects.toThrow();
+    expect(await admitGoogle(e, a.sub, a.email)).toEqual({
+      ok: false,
+      reason: "removed",
+    });
+    // Audited once per user, as directory sync.
+    const rows = (
+      await env.DB.prepare(
+        "select actor_kind as k, detail from audit_events where action = 'user.status' and target_id = ?",
+      )
+        .bind(a.userId)
+        .all<{ k: string; detail: string }>()
+    ).results;
+    expect(rows.map((x) => [x.k, JSON.parse(x.detail)])).toEqual([
+      [
+        "sync",
+        {
+          status: "suspended",
+          previousCustomerId: first,
+          reason: "directory_suspend",
+        },
+      ],
+    ]);
+    // The org owner is exempt (break-glass) and keeps access.
+    expect((await meAs(e, { cookie: owner.cookie })).status).toBe(200);
+    // Later syncs of B never rebind or restore A's user.
+    await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now() + 2 * MIN));
+    expect(await statusOf(a.userId)).toBe("suspended");
+    expect(await boundOf(a.sub)).toBe(0);
+  });
+
+  it("P2.5 #16: confirming the same Workspace again retires nobody", async () => {
+    const a = await boundUser("ws-same");
+    await mismatchAndDisconnect(e);
+    expect((await connect(e, owner.cookie, g, { sub: adminSub })).ok).toBe(
+      true,
+    );
+    await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
+    expect(await statusOf(a.userId)).toBe("active");
+    expect(await boundOf(a.sub)).toBe(1);
+    expect((await meAs(e, { cookie: a.cookie })).status).toBe(200);
+  });
+
+  it("P2.5 #16: a confirm that fails before retiring leaves it owed: the tombstone survives a reset, and DirectorySync retires them before syncing", async () => {
+    const a = await boundUser("ws-owed");
+    await mismatchAndDisconnect(e);
+    await reconnectElsewhere(e, false);
+    // The batch after the swap (the first retire batch) fails, as a D1
+    // outage right after the swap would.
+    let batches = 0;
+    const db = env.DB;
+    const failing = {
+      ...e,
+      DB: new Proxy(db, {
+        get(t, k) {
+          if (k === "batch")
+            return (xs: D1PreparedStatement[]) =>
+              ++batches === 2
+                ? Promise.reject(new Error("d1 down"))
+                : t.batch(xs);
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    } as Env;
+    // The connection stands; the binding pass waits for the retire.
+    expect((await post(failing, R.directoryConfirm, owner.cookie)).status).toBe(
+      200,
+    );
+    expect(batches).toBeGreaterThanOrEqual(2);
+    // The connection stands, with the retire owed: whichever alarm runs
+    // next (the confirm kicked one) retires them before syncing anything.
+    expect(await keys()).toEqual(expect.arrayContaining(["binding"]));
+    expect((await meAs(e, { cookie: a.cookie })).status).toBe(401);
+    await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
+    expect(await keys()).not.toContain("tenant.retire");
+    expect(await statusOf(a.userId)).toBe("suspended");
+    expect(await boundOf(a.sub)).toBe(0);
+    expect((await meAs(e, { cookie: a.cookie })).status).toBe(401);
+  });
+
+  it("review #4: a retry still revokes the grants and closes the sockets of users an interrupted attempt suspended", async () => {
+    const a = await boundUser("ws-retry");
+    await mismatchAndDisconnect(e);
+    await reconnectElsewhere(e, false);
+    // The first attempt dies after suspending a, before its cleanup.
+    let tripped = 0;
+    const db = env.DB;
+    const failing = {
+      ...e,
+      DB: new Proxy(db, {
+        get(t, k) {
+          if (k === "prepare")
+            return (sql: string) => {
+              // Its first step after the D1 loop, before any cleanup.
+              if (
+                (sql.startsWith(
+                  "delete from directory_state where key = ? and value = ?",
+                ) ||
+                  sql.startsWith("select value as ids from directory_state")) &&
+                tripped++ === 0
+              )
+                throw new Error("d1 down");
+              return t.prepare(sql);
+            };
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    } as Env;
+    expect((await post(failing, R.directoryConfirm, owner.cookie)).status).toBe(
+      200,
+    );
+    expect(tripped).toBeGreaterThan(0);
+    expect(await statusOf(a.userId)).toBe("suspended");
+    // The retry (DirectorySync) finds nobody bound, yet still cleans up a.
+    await inDo((s) => new SyncEngine(e, s.storage).alarm(Date.now()));
+    expect(await keys()).not.toContain("tenant.retire");
+    expect(await keys()).not.toContain("tenant.retired");
+    const ns = env.USER_PRESENCE as NonNullable<Env["USER_PRESENCE"]>;
+    const revoked = await runInDurableObject(
+      ns.get(ns.idFromName(a.userId)),
+      (_i, s) =>
+        s.storage.sql
+          .exec("select revoked_at from state where id = 1")
+          .toArray()[0]?.revoked_at,
+    );
+    expect(Number(revoked)).toBeGreaterThan(0);
+    const { items } = await oauthApi(e).listUserGrants(a.userId, {
+      limit: 10,
+    });
+    expect(items).toEqual([]);
+  });
+  it("review N2: tenant.retired keeps at most revokeFanoutCap ids", async () => {
+    const free = { ...e, PLAN: "free" } as Env;
+    const cap = revokeFanoutCap(free);
+    for (let i = 0; i < cap + 5; i++) await boundUser(`ws-cap${i}`);
+    // Stop it right after the D1 loop, with the list still stored.
+    const db = env.DB;
+    const stop = {
+      ...free,
+      DB: new Proxy(db, {
+        get(t, k) {
+          if (k === "prepare")
+            return (sql: string) => {
+              if (sql.startsWith("select value as ids from directory_state"))
+                throw new Error("stop");
+              return t.prepare(sql);
+            };
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    } as Env;
+    await expect(retireTenant(stop, "C-old")).rejects.toThrow("stop");
+    const row = await env.DB.prepare(
+      "select value from directory_state where key = 'tenant.retired'",
+    ).first<{ value: string }>();
+    expect((JSON.parse(row?.value ?? "[]") as string[]).length).toBe(cap);
+    // A clean retry finishes and drops the list.
+    await retireTenant(free, "C-old");
+    expect(await keys()).not.toContain("tenant.retired");
+  });
+
+  it("P2.5 #16: a reset keeps the customer_mismatch tombstone while a retire is owed, even with a live binding", async () => {
+    await env.DB.batch([
+      env.DB.prepare(UPSERT).bind(HK.state, "customer_mismatch"),
+      env.DB.prepare(UPSERT).bind(K.retire, "C-old"),
+    ]);
+    expect(await keys()).toContain("binding");
+    await clearHealth(env).run();
+    expect(await syncState()).toBe("customer_mismatch");
+    await env.DB.prepare("delete from directory_state where key = ?")
+      .bind(K.retire)
+      .run();
+    await clearHealth(env).run();
+    expect(await syncState()).toBeNull();
   });
 });
 
