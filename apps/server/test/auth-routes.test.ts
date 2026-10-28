@@ -334,6 +334,27 @@ describe("direct-mode sign-in routes", () => {
     ).toBe("/a/x");
   });
 
+  it("a late return from the hosted broker (error=expired) says it took too long; other errors stay failed", async () => {
+    for (const [error, want] of [
+      ["expired", "expired"],
+      ["access_denied", "failed"],
+    ]) {
+      const start = await get(`${AUTH.loginGoogle}?next=%2Fa%2Fx`, direct());
+      const state = new URL(loc(start)).searchParams.get("state");
+      const cookie = (
+        start.headers.getSetCookie().find((c) => /oa_oidc_/.test(c)) ?? ""
+      ).split(";")[0];
+      const r = await get(
+        `${AUTH.callbackGoogle}?error=${error}&state=${state}`,
+        direct(),
+        cookie,
+      );
+      expect(loc(r)).toBe(`${SIGN_IN_PAGE}?error=${want}&next=%2Fa%2Fx`);
+      expect(clearsState(r)).toBe(true);
+      expect(cookieVal(r, SESSION)).toBeUndefined();
+    }
+  });
+
   it("a non-ApiError in the callback lands on failed and clears the state cookie", async () => {
     vi.spyOn(identity, "admit").mockRejectedValue(new Error("d1 down"));
     vi.spyOn(console, "warn").mockImplementation(() => {});

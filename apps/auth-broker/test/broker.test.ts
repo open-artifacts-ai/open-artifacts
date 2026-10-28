@@ -8,6 +8,7 @@ import {
   publicFromPkcs8,
   signRedeem,
 } from "@oa/auth-core";
+import { readState, signState } from "@oa/broker-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import broker, { type Env } from "../src/index.js";
 import { clearRegistryCache } from "../src/registry.js";
@@ -263,6 +264,38 @@ describe("callback", () => {
       JSON.stringify({ ...body, i: "inst-b" }),
     ).toString("base64url");
     for (const s of [`${swapped}.${sig}`, `${p}.${sig}x`, "garbage", ""])
+      expect(
+        (await call(`/google/callback?code=abc&state=${encodeURIComponent(s)}`))
+          .status,
+      ).toBe(404);
+  });
+
+  it("a late return (expired but authentic state) goes back to the install as expired, never with the code", async () => {
+    const late = await signState(env.BROKER_STATE_KEY, {
+      i: "inst-a",
+      s: "s1",
+      h: "h",
+      exp: Date.now() - 1,
+    });
+    const r = await call(
+      `/google/callback?code=abc&state=${encodeURIComponent(late)}`,
+    );
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toBe(
+      "https://a.hosted.test/auth/callback/google?error=expired&state=s1",
+    );
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    // An expired state is still never redeemable.
+    expect(await readState(env.BROKER_STATE_KEY, late, Date.now())).toBeNull();
+    // Tampered or foreign-keyed expired states stay a 404.
+    const [p, sig] = late.split(".");
+    const forged = await signState("another-key-of-32-bytes-or-more!!", {
+      i: "inst-a",
+      s: "s1",
+      h: "h",
+      exp: Date.now() - 1,
+    });
+    for (const s of [`${p}.${sig}x`, forged])
       expect(
         (await call(`/google/callback?code=abc&state=${encodeURIComponent(s)}`))
           .status,

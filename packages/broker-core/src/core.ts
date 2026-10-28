@@ -96,6 +96,20 @@ export async function readState(
   now: number,
   domain?: string,
 ): Promise<BrokerState | null> {
+  const st = await verifyState(key, v, domain);
+  return st && st.exp > now ? st : null;
+}
+
+/**
+ * A state this broker signed, whether or not it has expired: MAC and shape
+ * only. Only for telling an authentic late return from a forgery; every
+ * flow step uses readState.
+ */
+export async function verifyState(
+  key: string,
+  v: string,
+  domain?: string,
+): Promise<BrokerState | null> {
   const [p, sig, extra] = v.split(".");
   if (!p || !sig || extra !== undefined) return null;
   const want = await hmac(key, macInput(domain, p));
@@ -118,7 +132,7 @@ export async function readState(
       typeof st.h !== "string"
     )
       return null;
-    return typeof st.exp === "number" && st.exp > now ? st : null;
+    return typeof st.exp === "number" ? st : null;
   } catch {
     return null;
   }

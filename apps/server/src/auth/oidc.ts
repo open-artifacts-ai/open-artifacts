@@ -405,8 +405,13 @@ export async function handleCallback(
   const next = safeNext(env, st.next);
   try {
     await consumeState(env, keys.key, st);
+    // "expired": the hosted sign-in broker's own state ran out while the
+    // user sat on Google (a late return), which is a took-too-long, not a
+    // failure.
     if (q.has("error"))
-      return fail("idp_error", { error: tag(q.get("error")) });
+      return fail(q.get("error") === "expired" ? "expired" : "idp_error", {
+        error: tag(q.get("error")),
+      });
     const code = q.get("code");
     if (!code) return fail("no_code");
     const id = await provider.redeem(env, {

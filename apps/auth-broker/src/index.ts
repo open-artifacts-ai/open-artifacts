@@ -32,6 +32,7 @@ import {
   signState as signSigned,
   staleAssertion,
   verifyAssertion,
+  verifyState as verifySigned,
 } from "@oa/broker-core";
 import { lookupInstall } from "./registry.js";
 
@@ -157,24 +158,31 @@ async function callback(
   now: number,
 ): Promise<Response> {
   const q = new URL(req.url).searchParams;
-  const st = await readState(env, q.get("state") ?? "", now);
-  if (!st) return log("callback", "bad_state"), notFound();
-  const entry = await lookupInstall(env.BROKER_REGISTRY, st.i, now);
+  const raw = q.get("state") ?? "";
+  const st = await readState(env, raw, now);
+  // A late return (Google sat open past STATE_TTL_MS) carries a state this
+  // broker signed: send the user back to their install's sign-in, not a raw
+  // 404. Forgeries still 404, and an expired state never carries a code on.
+  const late = st ? null : await verifySigned(env.BROKER_STATE_KEY, raw);
+  const flow = st ?? late;
+  if (!flow) return log("callback", "bad_state"), notFound();
+  const entry = await lookupInstall(env.BROKER_REGISTRY, flow.i, now);
   if (!entry) return log("callback", "unknown_install"), notFound();
   // Only the registry decides where the user goes next.
   const to = new URL("/auth/callback/google", entry.origin);
-  const code = q.get("code");
+  const code = late ? null : q.get("code");
   const error = q.get("error");
-  if (code) to.searchParams.set("code", code);
+  if (late) to.searchParams.set("error", "expired");
+  else if (code) to.searchParams.set("code", code);
   else
     to.searchParams.set(
       "error",
       error && /^[a-z_]{1,64}$/.test(error) ? error : "access_denied",
     );
-  to.searchParams.set("state", st.s);
+  to.searchParams.set("state", flow.s);
   // Back at redeem, with the install's H(nonce || challenge) to match.
-  to.searchParams.set("bstate", q.get("state") ?? "");
-  log("callback", code ? "ok" : "idp_error");
+  if (!late) to.searchParams.set("bstate", raw);
+  log("callback", late ? "expired" : code ? "ok" : "idp_error");
   return new Response(null, {
     status: 302,
     headers: {
