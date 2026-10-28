@@ -2,7 +2,7 @@
 // (the DO class alone is in presence.class.test.ts).
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { type Member, newId, R } from "@oa/shared";
+import { type Member, newId, R, retryAfterFromClose } from "@oa/shared";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { mw } from "../src/auth/route-policy.js";
@@ -491,7 +491,7 @@ describe("UserPresence", () => {
     expect(g).toMatchObject({ type: "gone", reason: "changed" });
     expect(g.retryAfterMs).toBeGreaterThan(0);
     expect(g.retryAfterMs).toBeLessThanOrEqual(SKEW_MS + 250);
-    expect(reason).toMatch(/retry after \d+ ms/);
+    expect(retryAfterFromClose(reason)).toBe(g.retryAfterMs);
     // A reconnect authorized once retryAfterMs has passed is accepted.
     const later = await direct(
       art,

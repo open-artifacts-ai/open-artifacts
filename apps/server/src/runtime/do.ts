@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  accessChangedCloseReason,
   DATA_LIMIT_DEFAULTS,
   type DataChange,
   DataChangeSchema,
@@ -1282,7 +1283,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           4403,
           retry === null
             ? "access revoked"
-            : `access changed; retry after ${retry} ms`,
+            : accessChangedCloseReason(retry),
         );
       } catch {
         // already closed

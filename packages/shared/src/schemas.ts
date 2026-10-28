@@ -958,6 +958,23 @@ export type ArtifactEvent = z.infer<typeof ArtifactEventSchema>;
 /** The close code that follows a `gone` frame on R.events. */
 export const EVENTS_GONE_CLOSE = 4403;
 
+/**
+ * The 4403 close reason of a socket (data or events) opened just as the
+ * artifact's access changed: a reconnect sooner than `ms` is refused the
+ * same way. Parse it with retryAfterFromClose.
+ */
+export const accessChangedCloseReason = (ms: number): string =>
+  `access changed; retry after ${Math.max(0, Math.round(ms))} ms`;
+
+const ACCESS_CHANGED_CLOSE_RE = /^access changed; retry after (\d{1,7}) ms$/;
+
+/** The wait (ms) in an accessChangedCloseReason close reason, else null. */
+export function retryAfterFromClose(reason: unknown): number | null {
+  if (typeof reason !== "string") return null;
+  const m = ACCESS_CHANGED_CLOSE_RE.exec(reason);
+  return m ? Number(m[1]) : null;
+}
+
 export const DataQuerySchema = z.strictObject({
   where: WhereSchema.optional(),
   orderBy: DataKeySchema.optional(),
