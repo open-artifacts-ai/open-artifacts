@@ -82,8 +82,15 @@ const ctxOf = () => {
     drain: () => Promise.all(pending),
   };
 };
+/**
+ * How long a publish whose DO gate never opens may take before it counts as
+ * waiting on the DO: the gate never opens, so this only separates "never"
+ * from "eventually" and can be generous (under the 20 s testTimeout) for a
+ * loaded runner's real D1/R2 I/O.
+ */
+const LATE_MS = 10_000;
 /** "late" when `p` hasn't settled within `ms`. */
-const within = <T>(p: Promise<T>, ms = 1500) =>
+const within = <T>(p: Promise<T>, ms = LATE_MS) =>
   Promise.race([
     p,
     new Promise<"late">((r) => setTimeout(() => r("late"), ms)),
@@ -180,9 +187,11 @@ describe("enqueue after the response", () => {
     const r = await publish(env as Env, owner, input(), null);
     const order: string[] = [];
     const closing = gate();
+    const reached = gate();
     const e = hooked({
       closeSockets: async (real) => {
         order.push("close");
+        reached.open();
         await closing.p;
         await real();
         order.push("closed");
@@ -201,7 +210,19 @@ describe("enqueue after the response", () => {
       c.ctx,
       "version",
     );
-    expect(await within(p, 300)).toBe("late");
+    let settled = false;
+    void p.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    // A signal, not a timer: wait until publish is inside closeSockets, then
+    // it must still be waiting on the closing gate.
+    await reached.p;
+    expect(settled).toBe(false);
     expect(order).toEqual(["close"]);
     closing.open();
     expect((await p).version).toBe(2);
