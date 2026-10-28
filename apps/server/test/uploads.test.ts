@@ -157,7 +157,9 @@ describe("uploads", () => {
       size: 5,
     });
     const u = new URL(up.url);
-    u.searchParams.set("sig", `${u.searchParams.get("sig")?.slice(0, -2)}AA`);
+    // Flip the first character: it can never equal the real signature.
+    const real = u.searchParams.get("sig") ?? "";
+    u.searchParams.set("sig", `${real[0] === "A" ? "B" : "A"}${real.slice(1)}`);
     expect((await put(u.toString(), "hello")).status).toBe(404);
     const exp = String(Math.floor(Date.now() / 1000) - 10);
     const sig = await hmacSign(
