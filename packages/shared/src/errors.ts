@@ -35,6 +35,8 @@ export const ERROR_CODES = [
   "binary_entry",
   "space_name_reserved",
   "invite_unreachable",
+  // Runtime data query.
+  "cursor_stale",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -102,6 +104,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   space_name_reserved: 400,
   /** POST R.members (invite) for an address no sign-in method this install offers could ever admit; details InviteUnreachableDetails, message INVITE_UNREACHABLE_MESSAGE[reason]. Nothing is created. */
   invite_unreachable: 400,
+  /** db.query cursor whose anchor doc changed since the page was read (long sort values only): restart without a cursor. */
+  cursor_stale: 409,
 };
 
 /**

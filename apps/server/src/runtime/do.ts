@@ -247,6 +247,14 @@ function decodeCursor<K extends string>(
   raw: unknown,
   keys: readonly K[],
 ): Record<K, string> | null {
+  return decodeCursorOf(raw, [keys]);
+}
+
+/** decodeCursor accepting any one of several exact key sets. */
+function decodeCursorOf<K extends string>(
+  raw: unknown,
+  shapes: readonly (readonly K[])[],
+): Partial<Record<K, string>> | null {
   if (raw === undefined) return null;
   if (
     typeof raw !== "string" ||
@@ -266,11 +274,14 @@ function decodeCursor<K extends string>(
       typeof p === "object" &&
       p !== null &&
       !Array.isArray(p) &&
-      Object.keys(p).length === keys.length &&
-      keys.every(
-        (k) =>
-          Object.hasOwn(p, k) &&
-          typeof (p as Record<string, unknown>)[k] === "string",
+      shapes.some(
+        (keys) =>
+          Object.keys(p).length === keys.length &&
+          keys.every(
+            (k) =>
+              Object.hasOwn(p, k) &&
+              typeof (p as Record<string, unknown>)[k] === "string",
+          ),
       )
     )
       return p as Record<K, string>;
@@ -278,6 +289,48 @@ function decodeCursor<K extends string>(
     // fall through
   }
   fail("bad_request", "invalid cursor");
+}
+
+/**
+ * A query cursor's sort value carried inline up to this many UTF-8 bytes; a
+ * longer one is looked up from the anchor doc instead (the cursor's "h" form).
+ */
+const MAX_CURSOR_SORT_BYTES = 1024;
+
+/** A query sort value: what json_extract (or updated_at) yields. */
+type SortValue = string | number | null;
+
+/**
+ * The tag/text pair a sort value rides in: t "z" null, "n" a finite number
+ * (String(n)), "s" a string. Typed so a cursor can only ever bind a null, a
+ * number or a string, never change the query's shape.
+ */
+function sortTag(v: SortValue): { t: string; v: string } {
+  if (v === null) return { t: "z", v: "" };
+  if (typeof v === "number") return { t: "n", v: String(v) };
+  return { t: "s", v };
+}
+
+function sortUntag(t: string, v: string): SortValue {
+  if (t === "z" && v === "") return null;
+  if (t === "s") return v;
+  if (t === "n" && /^-?[0-9][0-9.eE+-]*$/.test(v)) {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  fail("bad_request", "invalid cursor");
+}
+
+/** FNV-1a 32 over UTF-16 units, plus the length: a long sort value's fingerprint. */
+function sortHash(v: SortValue): string {
+  const { t, v: text } = sortTag(v);
+  const s = `${t}:${text}`;
+  let h = 0x811c9dc5;
+  for (let k = 0; k < s.length; k++) {
+    h ^= s.charCodeAt(k);
+    h = Math.imul(h, 0x01000193);
+  }
+  return `${(h >>> 0).toString(16)}.${s.length}`;
 }
 
 type DocRow = {
@@ -668,9 +721,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const parsed = DataQuerySchema.safeParse(q ?? {});
     if (!parsed.success) fail("bad_request", "invalid query");
     const { where, orderBy, order, limit, cursor } = parsed.data;
-    // Cursor carries only the last id plus the ordering it belongs to; the sort value is
-    // looked up by (collection, id), so long sort values still paginate.
-    const cur = decodeCursor(cursor, ["i", "o", "d"] as const);
+    // The cursor carries the last doc's id and sort value (t/v) plus the ordering it
+    // belongs to, so a later write to that doc can't move the page boundary. A sort value
+    // over MAX_CURSOR_SORT_BYTES rides as a fingerprint (h) plus the doc's updated_at (u)
+    // instead: it is looked up again, and any change to that doc is 409 cursor_stale.
+    // The where filter is applied on every page, so a forged cursor only moves the
+    // start position inside the filtered set.
+    const cur = decodeCursorOf(cursor, [
+      ["i", "o", "d", "t", "v"],
+      ["i", "o", "d", "u", "h"],
+    ] as const);
     if (cur && (cur.o !== (orderBy ?? "") || cur.d !== order))
       fail("bad_request", "cursor does not match query");
     if (where || orderBy) {
@@ -712,19 +772,32 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const svp: SqlParam[] = orderBy ? [orderBy] : [];
     const desc = order === "desc";
     if (cur) {
-      const anchor = this.sql
-        .exec<{ v: SqlStorageValue }>(
-          `select ${sv} as v from docs where collection = ? and id = ?`,
-          ...svp,
-          c,
-          cur.i,
+      let v: SortValue;
+      if (cur.t !== undefined && cur.v !== undefined) {
+        v = sortUntag(cur.t, cur.v);
+      } else {
+        const anchor = this.sql
+          .exec<{ v: SqlStorageValue; u: string }>(
+            `select ${sv} as v, updated_at as u from docs where collection = ? and id = ?`,
+            ...svp,
+            c,
+            cur.i ?? "",
+          )
+          .toArray()[0];
+        const av = anchor?.v;
+        if (
+          !anchor ||
+          (av !== null && typeof av !== "number" && typeof av !== "string") ||
+          anchor.u !== cur.u ||
+          sortHash(av) !== cur.h
         )
-        .toArray()[0];
-      if (!anchor) fail("bad_request", "cursor expired; restart the query");
-      const v = anchor.v;
-      if (v !== null && typeof v !== "number" && typeof v !== "string")
-        fail("bad_request", "invalid cursor");
-      const id = cur.i;
+          fail(
+            "cursor_stale",
+            "The data changed while paging. Restart the query without a cursor.",
+          );
+        v = av;
+      }
+      const id = cur.i ?? "";
       const op = desc ? "<" : ">";
       if (v === null) {
         // NULLs come first ascending, last descending.
@@ -744,7 +817,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
     const dir = desc ? "desc" : "asc";
     const rows = this.sql
-      .exec<DocRow>(
+      .exec<DocRow & { sv: SqlStorageValue }>(
         `select id, data, updated_at, updated_by, ${sv} as sv from docs
          where ${conds.join(" and ")} order by sv ${dir}, id ${dir} limit ?`,
         ...svp,
@@ -754,10 +827,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
       .toArray();
     const items = rows.slice(0, limit);
     const last = items[items.length - 1];
-    const nextCursor =
-      rows.length > limit && last
-        ? encodeCursor({ i: last.id, o: orderBy ?? "", d: order })
-        : null;
+    let nextCursor: string | null = null;
+    if (rows.length > limit && last) {
+      const lv = last.sv;
+      if (lv !== null && typeof lv !== "number" && typeof lv !== "string")
+        fail("internal", "unexpected sort value");
+      const base = { i: last.id, o: orderBy ?? "", d: order };
+      nextCursor =
+        typeof lv === "string" && enc.encode(lv).length > MAX_CURSOR_SORT_BYTES
+          ? encodeCursor({ ...base, u: last.updated_at, h: sortHash(lv) })
+          : encodeCursor({ ...base, ...sortTag(lv) });
+    }
     return { items: items.map(toDoc), nextCursor };
   }
 
