@@ -126,8 +126,18 @@ const WIDENS: Readonly<Record<string, string>> = {
   "services/spaces.ts:SUCCESSOR": "a read: the successor predicate",
 };
 
-/** Exempt from the scan: the primitives themselves. */
-const SKIP_FILES = new Set(["runtime/revoke.ts", "mcp/oauth-api.ts"]);
+/**
+ * Exempt from the scan: the primitives themselves. mcp/oauth-store.ts is the
+ * OAuth provider's store: its deletes and tombstones run the provider's own
+ * revocations (revokeGrant, through revokeAllGrants), its kv-mode reset
+ * empties a table no read uses in kv mode, and its sweep drops only rows
+ * every read already treats as missing.
+ */
+const SKIP_FILES = new Set([
+  "runtime/revoke.ts",
+  "mcp/oauth-api.ts",
+  "mcp/oauth-store.ts",
+]);
 
 /**
  * #681: a dataWriters write ("editors" cuts every viewer's data writes),
@@ -139,6 +149,9 @@ const DATA_WRITERS_WRITE =
 /** Access-shrinking markers in a unit's code. */
 const SHRINK: readonly RegExp[] = [
   /\brevokeAllGrants\(/,
+  // The OAuth store's rows (grants, tokens): a delete or tombstone outside
+  // mcp/oauth-store.ts revokes behind the provider's back.
+  /delete from oauth_kv\b|\bTOMBSTONE_KEYS\b/i,
   /\bcloseRuntimeSockets\(/,
   /session_epoch \+ 1|sessionEpoch\} \+ 1/,
   /\.delete\((shares|identities)\)/,

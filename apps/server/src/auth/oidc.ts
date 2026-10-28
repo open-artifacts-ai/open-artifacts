@@ -1,5 +1,6 @@
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
+import { oauthEnv } from "../mcp/oauth-store.js";
 import {
   b64urlDecode,
   b64urlEncode,
@@ -349,7 +350,8 @@ const KV_MIN_TTL_S = 60;
 /**
  * Single use server-side: the browser clears the state cookie, but a captured
  * cookie plus a fresh code must not sign in again. Marks this state consumed
- * in OAUTH_KV until it expires; a second use fails (stage state_replay).
+ * in the OAuth store (oauthEnv: KV or D1) until it expires; a second use
+ * fails (stage state_replay).
  * Best effort against two concurrent uses (KV has no compare-and-set); the
  * IdP's single-use code and the nonce still bind each sign-in.
  */
@@ -359,9 +361,10 @@ async function consumeState(
   st: OidcState,
 ): Promise<void> {
   const id = USED_STATE + (await hmacSign(key, `used:${st.nonce}`));
-  if ((await env.OAUTH_KV.get(id)) !== null) fail("state_replay");
+  const kv = oauthEnv(env).OAUTH_KV;
+  if ((await kv.get(id)) !== null) fail("state_replay");
   const ttl = Math.max(KV_MIN_TTL_S, Math.ceil((st.exp - Date.now()) / 1000));
-  await env.OAUTH_KV.put(id, "1", { expirationTtl: ttl });
+  await kv.put(id, "1", { expirationTtl: ttl });
 }
 
 /** Constant-time string equality via HMAC verify. */

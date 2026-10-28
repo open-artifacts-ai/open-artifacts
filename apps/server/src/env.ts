@@ -5,7 +5,18 @@ import type { UserPresence } from "./runtime/presence.js";
 export interface Env {
   DB: D1Database;
   FILES: R2Bucket;
-  OAUTH_KV: KVNamespace;
+  /**
+   * The OAuth provider's KV namespace. Required while OAUTH_STORE is kv
+   * (the default) or dual; unbound is fine with d1 (mcp/oauth-store.ts).
+   * Reach it only through oauthEnv(env).OAUTH_KV.
+   */
+  OAUTH_KV?: KVNamespace;
+  /**
+   * Where the OAuth provider's records live (mcp/oauth-store.ts): "kv"
+   * (unset: today's behaviour), "dual" (D1 and KV, reads D1 first) or "d1"
+   * (the install's D1 only). Anything else fails clearly (503).
+   */
+  OAUTH_STORE?: string;
   ARTIFACT_RUNTIME: DurableObjectNamespace<ArtifactRuntime>;
   /**
    * One UserPresence DO per user (runtime/presence.ts): closes a revoked

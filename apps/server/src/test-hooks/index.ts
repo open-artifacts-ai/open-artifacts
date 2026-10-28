@@ -30,6 +30,7 @@ import { ApiError, appOrigin, toErrorResponse } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import { type GrantProps, oauthProvider } from "../mcp/oauth.js";
 import { oauthApi } from "../mcp/oauth-api.js";
+import { oauthEnv } from "../mcp/oauth-store.js";
 import { mcpResource } from "../mcp/server.js";
 import type { AppType } from "../routes/index.js";
 import { revokeUserLive } from "../runtime/revoke.js";
@@ -493,7 +494,8 @@ async function oauthClientFor(
   c: Context<AppEnv>,
   user: Member,
 ): Promise<OAuthClientHookResult> {
-  const env = c.env;
+  // This install's OAuth store (OAUTH_STORE), shared by both calls below.
+  const env = oauthEnv(c.env);
   const origin = appOrigin(env);
   const helpers = oauthApi(env);
   const client = await helpers.createClient({

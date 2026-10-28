@@ -54,6 +54,12 @@ import {
   providerOptions,
 } from "./oauth-api.js";
 import {
+  type OAuthEnv,
+  OAuthStoreConfigError,
+  oauthEnv,
+  syncStoreMarkers,
+} from "./oauth-store.js";
+import {
   markClientGranted,
   registrationAllowed,
   trackRegisteredClient,
@@ -346,7 +352,21 @@ export async function serveAppHost(
     if (gated instanceof Response) return gated;
     req = gated;
   }
-  const res = await oauthProvider(env, app).fetch(req, env, ctx);
+  // This install's OAuth store (OAUTH_STORE), one per request; the app and
+  // the /mcp handler get it too, so their helpers share its cache.
+  let store: OAuthEnv;
+  try {
+    await syncStoreMarkers(env);
+    store = oauthEnv(env);
+  } catch (e) {
+    if (!(e instanceof OAuthStoreConfigError)) throw e;
+    logError("oauth_store_misconfigured", e);
+    return Response.json(
+      { error: "oauth_store_misconfigured", message: e.message },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
+  const res = await oauthProvider(env, app).fetch(req, store, ctx);
   if (res.status === 401 && res.body === null) return explainNoToken(req, res);
   if (req.method === "POST" && new URL(req.url).pathname === OAUTH.register)
     await trackRegisteredClient(env, res);

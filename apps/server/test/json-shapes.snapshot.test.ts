@@ -135,11 +135,13 @@ describe("JSON shapes (byte snapshots)", () => {
     expect(norm(all)).toMatchSnapshot("with deleted");
   });
 
-  it("healthz: public, version last", async () => {
+  it("healthz: public, then oauthStore", async () => {
     const r = await app.request("http://app.localhost/healthz", {}, env);
     expect(r.status).toBe(200);
     const body = await r.text();
-    expect(body).toBe(`{"ok":true,"plan":"free","version":"${VERSION}"}`);
+    expect(body).toBe(
+      `{"ok":true,"plan":"free","version":"${VERSION}","oauthStore":{"mode":"kv","backfilled":false,"kvWritesOffSince":null}}`,
+    );
     expect(body.replace(VERSION, "<VERSION>")).toMatchSnapshot("healthz");
   });
 
