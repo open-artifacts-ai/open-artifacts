@@ -1148,6 +1148,8 @@ export class SyncEngine {
       case "walk":
         return this.walk(run, step, token);
       case "finish": {
+        // Frozen (groups false) never recomputes: no group is read, so the
+        // flags stay as the last sync left them (fail closed; P3 T15).
         if (run.lane === "rec" && groups) await this.recomputeRestricted(run);
         await this.succeed(run, now, groups);
         return { status: "done", called: false };

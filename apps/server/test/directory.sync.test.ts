@@ -14,6 +14,7 @@ import { instanceDirectory, readHealth } from "../src/directory/health.js";
 import { directorySignIn } from "../src/directory/signin.js";
 import { readPending, readPendingAny } from "../src/directory/store.js";
 import {
+  BACKOFF_MAX_MS,
   FAST_MS,
   RECONCILE_MS,
   SyncEngine,
@@ -1573,6 +1574,24 @@ describe("P2.5 #5: restricted_sync is recomputed for everyone on each reconcile"
     // The next reconcile reads it: lifted (not a member).
     await drain(nextRec(nextRec(t0)));
     expect(await restrictedOf(hire)).toBe(0);
+  });
+
+  it("review #2: a reconcile aborted midway keeps new hires restricted; the next tick finishes it and lifts them", async () => {
+    const [inGroup] = dirUsers(1, "rs-abort");
+    const gid = `grp-rs-abort-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    g.fail(new RegExp(`/groups/${gid}/members`), 503, { times: 1 });
+    const [later] = dirUsers(1, "rs-abort-later");
+    const at = nextRec(t0);
+    await drain(at);
+    expect(await kv("run.rec")).not.toBeNull();
+    expect(await restrictedOf(later?.id as string)).toBe(1);
+    await drain(at + BACKOFF_MAX_MS);
+    expect(await kv("run.rec")).toBeNull();
+    expect(await restrictedOf(later?.id as string)).toBe(0);
+    expect(await restrictedOf(inGroup?.id as string)).toBe(1);
   });
 });
 
