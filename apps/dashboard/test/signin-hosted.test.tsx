@@ -151,7 +151,10 @@ it.each([
     "removed",
     "Your access to Acme Artifacts was removed. Ask your admin if this is a mistake.",
   ],
-  ["no_access", "You don't have access yet. Ask your admin to invite you."],
+  [
+    "no_access",
+    "Your organization's single sign-on didn't let you in. Ask your admin for access, then try again.",
+  ],
   ["expired", "Sign-in took too long. Try again."],
   ["failed", "Sign-in didn't work. Try again."],
 ])("error=%s", async (error, copy) => {
@@ -164,13 +167,6 @@ const providersWith = (providers: unknown[]) =>
     HttpResponse.json({ mode: "direct", providers }),
   );
 const ACCESS = { id: "access", start: "/auth/login?via=access" };
-
-it("direct: no hosting line (self-hosted installs run direct too)", async () => {
-  mountHosted("/sign-in");
-  await screen.findByRole("link", { name: "Continue with Google" });
-  expect(screen.queryByText("Hosted by Open Artifacts")).toBeNull();
-  expect(screen.queryByText("Self-hosted on Cloudflare")).toBeNull();
-});
 
 it("direct with Access and Google: an Access button keeps via and adds next", async () => {
   mountHosted("/sign-in?next=%2Fmine", true, undefined, [

@@ -21,6 +21,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useState } from "react";
 import { ApiClientError } from "../../api/client";
+import type { ShareRecipient } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
   useDeleteShare,
@@ -31,6 +32,7 @@ import {
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { emailEnabled } from "../../auth/emailEnabled";
 import { useCan } from "../../auth/permissions";
+import { useSignInDomains } from "../../auth/reach";
 import { useMe } from "../../auth/useMe";
 import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
@@ -40,6 +42,8 @@ import { Modal } from "../../layout/Modal";
 import { Notice } from "../../layout/Notice";
 import { toast } from "../../layout/toast";
 import { UserAvatar } from "../../layout/UserAvatar";
+import { AppLink } from "../../library/AppLink";
+import { isOrgAdmin } from "../../settings/spaces/access";
 import { visibilityHint } from "../../spaces/SpaceMarker";
 
 const VIS: { value: Visibility; label: string }[] = [
@@ -104,6 +108,47 @@ const H3 = "mb-[6px] text-[length:var(--oa-text-sm)] font-semibold";
 const MUTED = "text-muted-foreground";
 const PERSON = "flex items-center gap-[var(--oa-space-2)]";
 const NAME = "min-w-0 flex-1 truncate";
+
+const MEMBERS_PAGE = "/settings/members";
+
+/**
+ * ShareResult.recipient (review item 37): the share applies, but the person
+ * can't sign in to open it yet. Shown under their row until the panel closes
+ * or they're removed.
+ */
+function RecipientNote({
+  email,
+  reason,
+  admin,
+  domains,
+}: {
+  email: string;
+  reason: ShareRecipient["reason"];
+  /** The caller is an org owner or admin, so may invite members. */
+  admin: boolean;
+  domains: string;
+}) {
+  return (
+    <Notice tone="warning" compact>
+      {reason === "needs_invite" ? (
+        admin ? (
+          <>
+            {email} can't sign in until they're a member.{" "}
+            <AppLink href={MEMBERS_PAGE} className="underline">
+              Invite them
+            </AppLink>
+          </>
+        ) : (
+          `${email} can't sign in until they're a member. Ask an admin to invite them.`
+        )
+      ) : reason === "outside_domains" ? (
+        `${email} can't sign in here, so they can't open this. Share with an address at ${domains} instead.`
+      ) : (
+        `No sign-in method here fits ${email}, so they can't open this. Share with another address.`
+      )}
+    </Notice>
+  );
+}
 
 function RoleSelect({
   label,
@@ -171,9 +216,19 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     email: string;
     emailed: boolean;
   } | null>(null);
+  // Who can't sign in yet, by email: kept for this panel's lifetime.
+  const [cantSignIn, setCantSignIn] = useState<
+    Record<string, ShareRecipient["reason"]>
+  >({});
+  const noteFor = (email: string, r: ShareRecipient | undefined) =>
+    setCantSignIn(({ [email]: _, ...rest }) =>
+      r ? { ...rest, [email]: r.reason } : rest,
+    );
+  const domains = useSignInDomains();
   const state = useMe();
-  const install = state.status === "authed" ? state.me.instance.name : "";
-  const sends = emailEnabled(state.status === "authed" ? state.me : null);
+  const me = state.status === "authed" ? state.me : null;
+  const install = me?.instance.name ?? "";
+  const sends = emailEnabled(me);
 
   const save = (p: ArtifactPatch) =>
     patch.mutate(p, { onError: (e) => fail(e, "Couldn't save") });
@@ -211,6 +266,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           onSuccess: (r) => {
             setEmail("");
             setShared({ email: e, emailed: r.emailed });
+            noteFor(e, r.recipient);
           },
           onError: (x) => fail(x, "Couldn't share"),
         },
@@ -406,42 +462,53 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             <span className="text-muted-foreground">Owner</span>
           </li>
           {(people ? (shares.data ?? []) : []).map((s) => (
-            <li key={s.email} className={PERSON}>
-              <UserAvatar name={null} email={s.email} />
-              <span className={NAME} title={s.email}>
-                {s.email}
-              </span>
-              {people ? (
-                <>
-                  <RoleSelect
-                    label={`Role for ${s.email}`}
-                    value={s.role}
-                    onChange={(r) =>
-                      put.mutate(
-                        { email: s.email, role: r },
-                        { onError: (x) => fail(x, "Couldn't change role") },
-                      )
-                    }
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="size-[30px] flex-none p-0"
-                    aria-label={`Remove ${s.email}`}
-                    onClick={() =>
-                      removeOnce((done) =>
-                        del.mutate(s.email, {
-                          onSettled: done,
-                          onError: (x) => fail(x, "Couldn't remove"),
-                        }),
-                      )
-                    }
-                  >
-                    ×
-                  </Button>
-                </>
-              ) : (
-                <span className="text-muted-foreground">{s.role}</span>
+            <li key={s.email} className="flex flex-col gap-[var(--oa-space-2)]">
+              <div className={PERSON}>
+                <UserAvatar name={null} email={s.email} />
+                <span className={NAME} title={s.email}>
+                  {s.email}
+                </span>
+                {people ? (
+                  <>
+                    <RoleSelect
+                      label={`Role for ${s.email}`}
+                      value={s.role}
+                      onChange={(r) =>
+                        put.mutate(
+                          { email: s.email, role: r },
+                          { onError: (x) => fail(x, "Couldn't change role") },
+                        )
+                      }
+                    />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="size-[30px] flex-none p-0"
+                      aria-label={`Remove ${s.email}`}
+                      onClick={() =>
+                        removeOnce((done) =>
+                          del.mutate(s.email, {
+                            onSettled: done,
+                            onSuccess: () => noteFor(s.email, undefined),
+                            onError: (x) => fail(x, "Couldn't remove"),
+                          }),
+                        )
+                      }
+                    >
+                      ×
+                    </Button>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">{s.role}</span>
+                )}
+              </div>
+              {cantSignIn[s.email] && (
+                <RecipientNote
+                  email={s.email}
+                  reason={cantSignIn[s.email]}
+                  admin={isOrgAdmin(me)}
+                  domains={domains}
+                />
               )}
             </li>
           ))}

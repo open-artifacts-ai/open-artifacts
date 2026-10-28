@@ -118,7 +118,7 @@ const errorCopy = (error: SignInError, name: string, domain?: string) => {
     case "removed":
       return `Your access to ${name} was removed. Ask your admin if this is a mistake.`;
     case "no_access":
-      return "You don't have access yet. Ask your admin to invite you.";
+      return "Your organization's single sign-on didn't let you in. Ask your admin for access, then try again.";
     case "expired":
       return "Sign-in took too long. Try again.";
     default:
@@ -398,16 +398,18 @@ export function SignIn({
       <Shell hosted={null} />
     );
   const data = providers.data;
+  // AuthProviders.hosted says which; an older server's Access mode is
+  // self-hosted, as before.
   if (data.mode === "access")
     return (
-      <Shell hosted={false}>
+      <Shell hosted={data.hosted ?? false}>
         <AccessSignIn failed={error !== undefined} />
       </Shell>
     );
-  // Direct mode covers hosted and self-hosted installs alike; until the
-  // server says which, claim neither.
+  // Direct mode covers hosted and self-hosted installs alike; an older server
+  // doesn't say which, so claim neither.
   return (
-    <Shell hosted={null}>
+    <Shell hosted={data.hosted ?? null}>
       <HostedSignIn
         providers={data}
         error={shownError}

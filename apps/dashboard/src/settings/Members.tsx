@@ -17,7 +17,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
-import { hasFeature } from "../api/contract";
+import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
 import {
   useInviteMember,
   useMembers,
@@ -27,6 +27,11 @@ import {
   useSetRestricted,
 } from "../api/queries";
 import { emailEnabled } from "../auth/emailEnabled";
+import {
+  inviteRefusedCopy,
+  inviteUncertainCopy,
+  useSignInDomains,
+} from "../auth/reach";
 import { useMe } from "../auth/useMe";
 import { CopyLink } from "../layout/CopyLink";
 import { Modal } from "../layout/Modal";
@@ -107,6 +112,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const me = state.status === "authed" ? state.me : null;
   const sends = emailEnabled(me);
   const invite = useInviteMember();
+  const domains = useSignInDomains();
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Assignable>("member");
   const [error, setError] = useState<string | null>(null);
@@ -129,9 +135,28 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
         onSettled: () => {
           sending.current = false;
         },
-        onSuccess: (r) => setAdded({ email: parsed, emailed: r.emailed }),
-        onError: (e) =>
-          setError(e instanceof ApiClientError ? e.message : "Couldn't add."),
+        onSuccess: (r) => {
+          setAdded({ email: parsed, emailed: r.emailed });
+          if (r.signIn?.status === "uncertain")
+            toast({
+              title: inviteUncertainCopy(parsed, domains),
+              tone: "warning",
+            });
+        },
+        onError: (e) => {
+          // Nothing was created: Design's copy, not the server's message.
+          const refused =
+            e instanceof ApiClientError && e.code === "invite_unreachable"
+              ? InviteUnreachableDetailsSchema.safeParse(e.details)
+              : null;
+          setError(
+            refused?.success
+              ? inviteRefusedCopy(refused.data.reason, parsed, domains)
+              : e instanceof ApiClientError
+                ? e.message
+                : "Couldn't add.",
+          );
+        },
       },
     );
   };
@@ -198,14 +223,16 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
           placeholder="name@example.com"
           className="text-[length:var(--oa-text-sm)]"
           value={email}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? "oa-invite-error" : undefined}
           onChange={(e) => setEmail(e.target.value)}
         />
-        <RoleSelect label="Role" value={role} onChange={setRole} />
         {error && (
-          <p role="alert" className={errorText}>
+          <p id="oa-invite-error" role="alert" className={errorText}>
             {error}
           </p>
         )}
+        <RoleSelect label="Role" value={role} onChange={setRole} />
       </form>
     </Modal>
   );
