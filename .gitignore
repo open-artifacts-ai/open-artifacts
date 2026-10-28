@@ -24,4 +24,5 @@ coverage/
 .astro/
 test-results/
 playwright-report/
+blob-report/
 .dist-node-*/

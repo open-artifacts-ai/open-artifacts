@@ -8,7 +8,9 @@ import {
   R,
   UploadCreatedSchema,
 } from "@oa/shared";
+
 import { api } from "../api/client";
+import { entryRefusal } from "./openable";
 
 export type UploadInput = {
   files: File[];
@@ -142,6 +144,13 @@ export async function uploadArtifact(
     throw new UploadValidationError("Choose which file to open first (entry)");
   if (entry !== undefined && !paths.includes(entry))
     throw new UploadValidationError(`Entry "${entry}" is not one of the files`);
+  // Before anything is sent: an entry the viewer can't open is refused here.
+  const opened = entry ?? paths[0];
+  const refusal =
+    opened === undefined
+      ? null
+      : await entryRefusal(opened, input.files[paths.indexOf(opened)] as File);
+  if (refusal) throw new UploadValidationError(refusal);
 
   const total = paths.length;
   let reserved: string | undefined;

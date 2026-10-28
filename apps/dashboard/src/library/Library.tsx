@@ -19,6 +19,7 @@ import { copyText } from "../settings/ui";
 import { useUploadSpace } from "../spaces/SpacePicker";
 import { useCurrentSpace } from "../spaces/useCurrentSpace";
 import { DropZone } from "../upload/DropZone";
+import { KINDS_LINE } from "../upload/openable";
 import { AppLink } from "./AppLink";
 import { ArtifactCard } from "./ArtifactCard";
 import { ArtifactRow } from "./ArtifactRow";
@@ -259,7 +260,21 @@ export function Library({ scope: routed }: { scope: Scope }) {
         <Empty
           icon={<LibraryIcon />}
           title={filtered ? "No artifacts match these filters" : emptyTitle}
-          description={filtered ? "Try removing a filter." : emptyText}
+          description={
+            filtered ? (
+              "Try removing a filter."
+            ) : canCreate ? (
+              // What upload opens, before a file is picked (Design, #780).
+              <>
+                {emptyText}
+                <span className="mt-[4px] block text-[length:var(--oa-text-xs)]">
+                  {KINDS_LINE}
+                </span>
+              </>
+            ) : (
+              emptyText
+            )
+          }
           action={filtered ? undefined : emptyAction}
         />
       )}

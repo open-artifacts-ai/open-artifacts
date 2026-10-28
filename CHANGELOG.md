@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.70.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.69.1...v0.70.0) (2026-10-28)
+
+
+### Features
+
+* **ops:** redline-deploy puts a release candidate on the red-line installs ([#789](https://github.com/open-artifacts-ai/open-artifacts/issues/789)) ([c2965ad](https://github.com/open-artifacts-ai/open-artifacts/commit/c2965adbf1428eb87896754a92c64596ef0a58f7))
+* **settings:** the owner sees why a sign-in method is off, on Instance ([#786](https://github.com/open-artifacts-ai/open-artifacts/issues/786)) ([de10dc9](https://github.com/open-artifacts-ai/open-artifacts/commit/de10dc938ec636732650949995a7e77879d82796))
+* **spaces:** "Personal" is a reserved space name, shown inline; spaces e2e expects /me spaces ([#770](https://github.com/open-artifacts-ai/open-artifacts/issues/770)) ([9477aa1](https://github.com/open-artifacts-ai/open-artifacts/commit/9477aa17fcd931ce1a850bb6ba9670c74333d867))
+
+
+### Bug Fixes
+
+* refuse files no viewer can show (publish format guard) ([#775](https://github.com/open-artifacts-ai/open-artifacts/issues/775)) ([5beb0e8](https://github.com/open-artifacts-ai/open-artifacts/commit/5beb0e8a49b097e0d703d8b5ede91db1551dac01))
+* **server:** sign-in config problems are logged and shown to owners; no codes without email ([#785](https://github.com/open-artifacts-ai/open-artifacts/issues/785)) ([c04c770](https://github.com/open-artifacts-ai/open-artifacts/commit/c04c7709b19d30594ef63df841987dafc9244166))
+
 ## [0.69.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.69.0...v0.69.1) (2026-10-28)
 
 
