@@ -16,6 +16,7 @@ import { useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { copyText } from "../settings/ui";
+import { sharedSpaceName } from "../spaces/label";
 import { useUploadSpace } from "../spaces/SpacePicker";
 import { useCurrentSpace } from "../spaces/useCurrentSpace";
 import { DropZone } from "../upload/DropZone";
@@ -98,7 +99,11 @@ export function Library({ scope: routed }: { scope: Scope }) {
   // and /mine?space=<shared> shows All.
   const noMine = space != null && !personal;
   const scope: Scope = noMine && routed === "mine" ? "all" : routed;
-  const spaceName = space ? (personal ? "Personal" : space.name) : null;
+  const spaceName = space
+    ? personal
+      ? "Personal"
+      : sharedSpaceName(space.name)
+    : null;
   const myRole = space
     ? (spaces.find((x) => x.id === space.id)?.myRole ?? null)
     : null;

@@ -14,6 +14,7 @@ import type { SpaceRef } from "../api/contract";
 import { useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { META } from "../library/ui";
+import { sharedSpaceName } from "./label";
 
 /** What a visibility means here, or null when the label says it all. */
 export const visibilityHint = (
@@ -63,7 +64,7 @@ export function SpaceMarker({ space }: { space?: SpaceRef }) {
   if (!space) return null;
   const label =
     space.kind === "shared"
-      ? space.name
+      ? sharedSpaceName(space.name)
       : space.id === personalSpaceId
         ? "Personal"
         : null;

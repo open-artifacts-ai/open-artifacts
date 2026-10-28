@@ -4,6 +4,7 @@ import type { Me, MySpace } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it } from "vitest";
+import { sharedSpaceName } from "../src/spaces/label";
 import { visibilityHint } from "../src/spaces/SpaceMarker";
 import { calls, installHarness, mount, mountHosted } from "./harness";
 
@@ -352,4 +353,40 @@ it("below 640px the chip drops 'in' and the placeholder is just Search", async (
   } finally {
     window.matchMedia = real;
   }
+});
+
+// A shared space named "Personal" (made before #770 reserved the name) stays
+// listed and reachable, labelled so it isn't the built-in Personal.
+it("a shared space named Personal reads Personal (shared), next to the built-in Personal", async () => {
+  const legacy: MySpace = {
+    id: "SpOldPersonal0001",
+    kind: "shared",
+    name: " personal ",
+    publicLinks: true,
+    myRole: "manager",
+  };
+  mountHosted(
+    "/",
+    true,
+    (m: Me): Me => ({
+      ...m,
+      spaces: [...(m.spaces ?? []), legacy],
+    }),
+  );
+  const spaces = await nav();
+  expect(within(spaces).getByRole("link", { name: "Personal" })).toBeVisible();
+  const shared = within(spaces).getByRole("link", {
+    name: "personal (shared)",
+  });
+  expect(shared).toHaveAttribute(
+    "href",
+    expect.stringContaining(`space=${legacy.id}`),
+  );
+});
+
+it("sharedSpaceName labels only the reserved name", () => {
+  expect(sharedSpaceName("Personal")).toBe("Personal (shared)");
+  expect(sharedSpaceName(" PERSONAL ")).toBe("PERSONAL (shared)");
+  expect(sharedSpaceName("Personal stuff")).toBe("Personal stuff");
+  expect(sharedSpaceName("Engineering")).toBe("Engineering");
 });
