@@ -56,7 +56,11 @@ async function toMe(
   // Reported only (behaviour follows FEATURES, which provisioning derives
   // from TIER); null off hosted.
   me.instance.tier = me.instance.hosted ? parseTier(c.env.TIER) : null;
-  me.instance.signIn = instanceSignIn(c.env);
+  // Owners also see why configured sign-in is off (AuthConfig.problems).
+  me.instance.signIn = instanceSignIn(
+    c.env,
+    orgCan(user, "signin.problems", { cap }),
+  );
   me.instance.features = instanceFeatures(c.env);
   // P3 T13: only while a directory mode is on; health for owners and admins.
   const mode = directoryMode(c.env);

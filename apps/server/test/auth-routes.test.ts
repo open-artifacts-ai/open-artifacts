@@ -8,6 +8,7 @@ import {
 } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { authConfig } from "../src/auth/config.js";
 import { createPat } from "../src/auth/pat.js";
 import { readSession, sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
@@ -101,6 +102,18 @@ const clearsState = (r: Response) =>
     .some((c) => /^oa_oidc_[^=]*=;/.test(c) && /Max-Age=0/i.test(c));
 
 describe("GET /auth/providers", () => {
+  it("email without email sending: no email provider listed, and never the problems", async () => {
+    const off = direct({ EMAIL: undefined, EMAIL_FROM: undefined });
+    const ids = (
+      (await (await get(AUTH.providers, off)).json()) as {
+        providers: { id: string }[];
+      }
+    ).providers.map((p) => p.id);
+    expect(ids).toEqual(["google"]);
+    expect(
+      JSON.stringify(await (await get(AUTH.providers, off)).json()),
+    ).not.toContain("problems");
+  });
   it("access-only: just access, and /auth/login still goes to Access", async () => {
     const r = await get(AUTH.providers);
     expect(r.headers.get("cache-control")).toBe("no-store");
@@ -430,6 +443,26 @@ describe("Me sign-in fields", () => {
       cap: null,
       expiresAt: null,
     });
+  });
+
+  // Review item 35: owners see why configured sign-in is off; nobody else does.
+  it("signIn.problems: owners only, verbatim; empty when nothing is wrong", async () => {
+    const owner = await login(uniq("own"), "owner");
+    const member = await login(uniq("mem"));
+    const off = direct({ EMAIL: undefined, EMAIL_FROM: undefined });
+    const o = await me(off, owner.cookie);
+    expect(o.instance.signIn?.problems).toEqual(authConfig(off).problems);
+    expect(o.instance.signIn?.problems?.[0]).toMatch(
+      /^Email sign-in is on, but sending email isn't set up/,
+    );
+    // Codes aren't offered when the install can't send email.
+    expect(o.instance.signIn?.providers).toEqual(["google"]);
+    expect((await me(off, member.cookie)).instance.signIn).not.toHaveProperty(
+      "problems",
+    );
+    expect(
+      (await me(direct(), owner.cookie)).instance.signIn?.problems,
+    ).toEqual([]);
   });
 
   it("tier: the hosted install's TIER; null off hosted, or for an unknown value; absent access-only", async () => {
