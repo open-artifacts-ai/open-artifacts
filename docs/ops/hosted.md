@@ -456,7 +456,7 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 | `publish-release` | `--tag v<version>` | `gh release download` of `oa-release-<env>-*` into a temp dir, then `probeR2Conditionals` and `publishRelease` per variant |
 | `publish-floor` | `--floor <path to floor-<env>-<seq>.sig.json>` | `probeR2Conditionals`, then `publishFloor` |
 | `turnstile-init` | none | `turnstileInit`: creates `oa-<p>-turnstile` once (managed, exactly the env's app domain). Every create attempt is preceded by a listing by that exact name, so a create whose reply was lost is adopted, not duplicated. A same-named widget that differs is refused, and two or more are refused with both ids |
-| `redline-creds` | `--install`, `--confirm <same id>` (staging only, laptop only) | The red-line suite's credentials for rl-a or rl-b (see below) |
+| `redline-creds` | `--env staging`, `--install`, `--confirm <same id>` (laptop only) | The red-line suite's credentials for rl-a or rl-b (see below) |
 | `owner-token` | `--install`, `--confirm <same id>` (laptop only) | `reissueOwnerToken`: mints a fresh owner PAT (label `provision`) into the install's 0600 PAT file under the lease, and retires the earlier `provision` tokens |
 
 - `pnpm oa:hosted --help` prints every command and flag. The flags beyond the plan's list: `--tag` (publish-release), `--floor` (publish-floor) and `--force` (release-lease only: releases a live lease, only when no operation is running).

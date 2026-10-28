@@ -104,7 +104,7 @@ Commands:
   owner-token     --install <id> --confirm <the same id>  (laptop only)
                   mints a fresh owner PAT into the install's 0600 PAT file, retiring
                   the earlier provision ones; lifecycle operations need that file
-  redline-creds   --install <id> --confirm <the same id>  (staging, rl-a or rl-b only)
+  redline-creds   --env staging --install <id> --confirm <the same id>  (rl-a or rl-b only)
                   mints the red-line admin PAT, sets it and the hook key in the
                   redline-staging Environment over stdin and in 0600 files under
                   ~/.open-artifacts/redline-capture/secrets, then revokes earlier ones
