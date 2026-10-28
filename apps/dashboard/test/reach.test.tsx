@@ -152,6 +152,34 @@ describe("invite reachability", () => {
     expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 
+  it("uncertain and emailed: still Invite sent to <email> (T19 on rl-a)", async () => {
+    mountHosted("/settings/members", true, undefined, [
+      http.post(`*${R.members}`, () =>
+        HttpResponse.json(
+          {
+            id: "Pt1aBcDeFgHjKmNp",
+            email: "pat@elsewhere.org",
+            name: null,
+            role: "member",
+            lastSeenAt: null,
+            status: "active",
+            emailed: true,
+            signIn: { status: "uncertain", reason: "outside_domains" },
+            signInMethods: ["google"],
+          },
+          { status: 201 },
+        ),
+      ),
+    ]);
+    const dialog = await invite("pat@elsewhere.org");
+    expect(
+      await within(dialog).findByText("Invite sent to pat@elsewhere.org"),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("Invitation sent to pat@elsewhere.org"),
+    ).toBeNull();
+  });
+
   it("uncertain: Invite sent to <email>, the warning inline, no toast", async () => {
     // Google on: outside the domain, only a Workspace secondary domain gets in.
     mountHosted("/settings/members");
