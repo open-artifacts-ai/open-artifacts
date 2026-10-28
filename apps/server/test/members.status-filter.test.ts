@@ -193,8 +193,11 @@ describe("GET /members?status=", () => {
       });
     });
 
-    it("a removed member → its counts", async () => {
-      const r = await call(R.memberTransfer(removed), admin.cookie);
+    it("a removed member → its counts (an admin row: the owner only, #475)", async () => {
+      const denied = await call(R.memberTransfer(removed), admin.cookie);
+      expect(denied.status).toBe(403);
+      expect((await errOf(denied)).code).toBe("owner_only");
+      const r = await call(R.memberTransfer(removed), owner.cookie);
       expect(r.status).toBe(200);
       expect((await r.json()) as TransferSummary).toEqual({
         live: 1,

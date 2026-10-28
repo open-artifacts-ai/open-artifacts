@@ -284,12 +284,13 @@ describe("mock invite reachability (review item 11)", () => {
   });
 });
 
-describe("mock owner notice of guest shares (parity 2)", () => {
+describe("mock guest share notices (parity 2)", () => {
   const notices = async () =>
     MeSchema.parse(await (await call("GET", R.me)).json()).notices;
-  const dismiss = () => call("POST", R.noticeDismiss("guest_shares"));
+  const dismiss = (id: "guest_shares" | "guest_summary") =>
+    call("POST", R.noticeDismiss(id));
 
-  it("self-host owner: capped at the limit with more, until dismissed", async () => {
+  it("Access-only self-host: the caller's shares, capped at the limit with more, until dismissed (per user)", async () => {
     server.use(
       ...createHandlers({
         hosted: {
@@ -306,12 +307,56 @@ describe("mock owner notice of guest shares (parity 2)", () => {
       guestEmail: `guest${GUEST_SHARES_NOTICE_LIMIT + 1}@outside.example`,
       role: "editor",
     });
-    expect((await dismiss()).status).toBe(204);
-    expect(await notices()).toBeUndefined();
-    expect((await dismiss()).status).toBe(204);
+    expect((await dismiss("guest_shares")).status).toBe(204);
+    const after = await notices();
+    expect(after?.guestShares).toBeUndefined();
+    // The owner's summary is separate: counts only, no titles.
+    expect(after?.guestSummary).toEqual({
+      shares: GUEST_SHARES_NOTICE_LIMIT + 1,
+      owners: 1,
+      guestOwners: [],
+      more: false,
+    });
+    expect((await dismiss("guest_shares")).status).toBe(204);
   });
 
-  it("absent with no guest shares, on hosted, and for an admin (dismiss 404)", async () => {
+  it("guestOwners: the owner's summary lists guests who own artifacts, until dismissed; transfer takes a guest", async () => {
+    server.use(
+      ...createHandlers({ hosted: { selfHosted: true, guestOwners: 2 } }),
+    );
+    const n = await notices();
+    expect(n?.guestShares).toBeUndefined();
+    expect(n?.guestSummary).toEqual({
+      shares: 0,
+      owners: 0,
+      guestOwners: [
+        {
+          userId: "Go0001AbCdEfGhIj",
+          email: "owner1@outside.example",
+          artifacts: 1,
+        },
+        {
+          userId: "Go0002AbCdEfGhIj",
+          email: "owner2@outside.example",
+          artifacts: 1,
+        },
+      ],
+      more: false,
+    });
+    // An active guest: no suspension needed.
+    const sum = await call("GET", R.memberTransfer("Go0001AbCdEfGhIj"));
+    expect(sum.status).toBe(200);
+    expect(await sum.json()).toEqual({ live: 1, deleted: 0 });
+    const t = await call("POST", R.memberTransfer("Go0001AbCdEfGhIj"), {
+      to: { kind: "user", userId: "Bc4eFgHjKm5nPqRs" },
+    });
+    expect(t.status).toBe(200);
+    expect((await notices())?.guestSummary?.guestOwners).toHaveLength(1);
+    expect((await dismiss("guest_summary")).status).toBe(204);
+    expect(await notices()).toBeUndefined();
+  });
+
+  it("absent with no guest shares, on hosted, and on direct sign-in; admins get no summary (dismiss 404)", async () => {
     server.use(...createHandlers({ hosted: { selfHosted: true } }));
     expect(await notices()).toBeUndefined();
     server.resetHandlers();
@@ -320,11 +365,38 @@ describe("mock owner notice of guest shares (parity 2)", () => {
     server.resetHandlers();
     server.use(
       ...createHandlers({
-        hosted: { selfHosted: true, guestShares: 2, actAs: "admin" },
+        hosted: { selfHosted: true, guestShares: 2, mode: "direct" },
       }),
     );
     expect(await notices()).toBeUndefined();
-    expect((await dismiss()).status).toBe(404);
+    server.resetHandlers();
+    server.use(
+      ...createHandlers({
+        hosted: { selfHosted: true, guestShares: 2, actAs: "admin" },
+      }),
+    );
+    const n = await notices();
+    // The admin owns "Landing page" here, so they see their own shares.
+    expect(n?.guestShares?.items).toHaveLength(2);
+    expect(n?.guestSummary).toBeUndefined();
+    expect((await dismiss("guest_summary")).status).toBe(404);
+    expect((await dismiss("guest_shares")).status).toBe(204);
+    expect((await call("POST", "/api/v1/notices/nope/dismiss")).status).toBe(
+      404,
+    );
+  });
+
+  it("transfer: an active member is 409 member_active; an admin on an admin source is 403 owner_only", async () => {
+    server.use(...createHandlers({ hosted: { selfHosted: true } }));
+    const dan = await call("GET", R.memberTransfer("Dn8uPqRsTu9vWxYz"));
+    expect(dan.status).toBe(409);
+    server.resetHandlers();
+    server.use(...createHandlers({ hosted: { actAs: "admin" } }));
+    const erin = await call("GET", R.memberTransfer("Er9vQrStUv0wXyZa"));
+    expect(erin.status).toBe(403);
+    expect(ApiErrorSchema.parse(await erin.json()).error.code).toBe(
+      "owner_only",
+    );
   });
 });
 
