@@ -82,6 +82,8 @@ export {
   TransferResultSchema,
   type TransferSummary,
   TransferSummarySchema,
+  type TrashItem,
+  TrashItemSchema,
   type TurnstileRequiredDetails,
 } from "@oa/shared";
 

@@ -88,7 +88,7 @@ export function Details({ artifact }: { artifact: ArtifactSummary }) {
         onSuccess: () => {
           setConfirm(false);
           void navigate({ to: "/" });
-          offerUndo(id, artifact.title);
+          offerUndo(id);
         },
         onError: (e) => {
           setConfirm(false);
