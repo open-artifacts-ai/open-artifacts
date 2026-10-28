@@ -726,13 +726,14 @@ export type OAuthStoreHealth = {
 };
 
 /**
- * /healthz's oauthStore: writes this mode's markers (so a rollback clears
- * them here too), then reads them, in one batch. kvWritesOffSince is null
- * unless the mode is d1.
+ * /healthz's oauthStore: writes this mode's markers unless this isolate
+ * already did (so a rollback clears them here too, kv included), then reads
+ * them, in one batch. kvWritesOffSince is null unless the mode is d1.
  */
 export async function oauthStoreHealth(env: Env): Promise<OAuthStoreHealth> {
   const mode = oauthStoreMode(env);
-  const writes = markerStmts(env.DB, mode, Date.now());
+  const writes =
+    synced.get(env.DB) === mode ? [] : markerStmts(env.DB, mode, Date.now());
   const res = await env.DB.batch<{ key: string; value: string }>([
     ...writes,
     stmt(env.DB, MARKERS).bind(BACKFILLED_KEY, KV_WRITES_OFF_KEY),
