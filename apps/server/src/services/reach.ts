@@ -60,7 +60,11 @@ export async function reachOf(
     methods.push("access");
   // admit: a removed or suspended row is refused; no row needs a join rule.
   if (offered.has("google") && active && (row || googleNewRowOk(cfg, false))) {
-    // A verified domain is the address's own Google tenant (hd) in practice.
+    // Accepted assumption (review #799): an address in a verified domain is
+    // treated as certain, as if its Google tenant (hd) were that domain. A
+    // consumer Google account registered with a work address has no hd and
+    // would get "tenant"; we don't flag that rare case. Outside the domains,
+    // only a Workspace secondary domain could pass, so that is "uncertain".
     if (googleTenantOk(cfg, domain)) methods.push("google");
     else googleUncertain = true;
   }
@@ -94,7 +98,8 @@ export const inviteReach = (
  * methods admit them, and ShareResult.recipient when none could (the share
  * still applies). Only for no row or an active one: a removed or suspended
  * person is out of scope here. Google that only might admit them (outside
- * AUTH_DOMAINS) isn't flagged.
+ * AUTH_DOMAINS) isn't flagged, and the email names Google for them, so the
+ * flag and the email agree.
  */
 export async function shareReach(
   env: Env,
@@ -102,7 +107,8 @@ export async function shareReach(
 ): Promise<{ methods: SignInProvider[]; recipient?: ShareRecipient }> {
   const row = await stmt(env.DB, ELIGIBILITY).bind(email).first<CodeRow>();
   const r = await reachOf(env, email, row, async () => true);
-  if (r.methods.length > 0 || r.googleUncertain) return { methods: r.methods };
+  if (r.methods.length > 0) return { methods: r.methods };
+  if (r.googleUncertain) return { methods: ["google"] };
   if (row && row.status !== "active") return { methods: [] };
   // In a verified domain: an invite as a member would let them in, unless
   // no offered method admits a member there either.

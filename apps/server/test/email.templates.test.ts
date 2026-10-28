@@ -202,17 +202,45 @@ describe("sign-in copy (review item 11)", () => {
     );
   });
 
-  it("no method: says they need an invite, promises nothing", () => {
+  // Design's final copy per ShareResult.recipient.reason (#799).
+  it.each([
+    [
+      "needs_invite",
+      "You can't sign in to Acme yet. Ask an admin there to invite you, then open this link again.",
+    ],
+    [
+      "outside_domains",
+      "This address can't sign in to Acme. Ask Ada to share it with an address that can.",
+    ],
+    [
+      "no_sign_in_method",
+      "This address can't sign in to Acme. Ask Ada to share it with an address that can.",
+    ],
+  ] as const)("no method, %s: %s", (cantSignIn, line) => {
     expect(
-      signInSentence([], "x@y.com", { instance: "Acme", inviter: "Ada" }),
-    ).toBe(
-      "You can't sign in to Acme yet. Ask Ada to invite you as a member first.",
-    );
-    const m = share([]);
-    expect(m.text).toContain("You can't sign in to Acme yet.");
+      signInSentence([], "x@y.com", {
+        instance: "Acme",
+        inviter: "Ada",
+        cantSignIn,
+      }),
+    ).toBe(line);
+    const m = shareEmail({
+      ...common,
+      inviter: "Ada",
+      instance: "Acme",
+      title: "Plan",
+      path: "/a/abc",
+      format: "pdf",
+      role: "viewer",
+      signIn: [],
+      cantSignIn,
+    });
+    expect(m.text).toContain(line);
+    expect(m.html.replaceAll("&#39;", "'")).toContain(line);
     for (const part of [m.text, m.html]) {
       expect(part).not.toContain("one-time code");
       expect(part).not.toContain("sign in with");
+      expect(part).not.toContain("Reply to");
     }
   });
 

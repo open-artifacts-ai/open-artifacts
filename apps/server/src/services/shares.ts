@@ -3,6 +3,7 @@ import {
   type Format,
   type Member,
   type Share,
+  type ShareRecipient,
   type ShareResult,
   type ShareRole,
   viewerPath,
@@ -183,8 +184,7 @@ export async function putShare(
   return {
     ...toShare(row),
     emailed:
-      created &&
-      (await emailShare(env, user, artifact, email, s.role, reach.methods)),
+      created && (await emailShare(env, user, artifact, email, s.role, reach)),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
   };
 }
@@ -195,8 +195,8 @@ async function emailShare(
   artifact: { id: string; title: string; format: string },
   email: string,
   role: ShareRole,
-  /** The methods that admit the recipient (none: the email says so). */
-  signIn: SignInProvider[],
+  /** The methods that admit the recipient and, with none, why (shareReach). */
+  reach: { methods: SignInProvider[]; recipient?: ShareRecipient },
 ): Promise<boolean> {
   if (!emailEnabled(env)) return false;
   try {
@@ -219,7 +219,8 @@ async function emailShare(
           path: viewerPath(artifact.id),
           format: artifact.format as Format,
           role,
-          signIn,
+          signIn: reach.methods,
+          cantSignIn: reach.recipient?.reason,
         }),
       {
         kind: "share",

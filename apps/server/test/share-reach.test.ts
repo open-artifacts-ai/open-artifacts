@@ -65,8 +65,9 @@ describe("share recipient reach (review item 37)", () => {
     expect(s).toMatchObject({ email, role: "viewer", emailed: true });
     expect(s.recipient).toEqual({ canSignIn: false, reason: "needs_invite" });
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toContain("yet. Ask ");
-    expect(m?.text).toContain("to invite you as a member first.");
+    expect(m?.text).toMatch(
+      /You can't sign in to .+ yet\. Ask an admin there to invite you, then open this link again\./,
+    );
     for (const part of [m?.text, m?.html]) {
       expect(part).not.toContain("one-time code");
       expect(part).not.toContain("sign in with");
@@ -90,26 +91,53 @@ describe("share recipient reach (review item 37)", () => {
     );
   });
 
-  it("Google only, outside the domain: outside_domains", async () => {
-    const { share } = await setup(direct, {
+  /** Design's copy for outside_domains and no_sign_in_method (#799). */
+  const NO_ADDRESS =
+    /This address can't sign in to .+\. Ask .+ to share it with an address that can\./;
+
+  it("Google only, outside the domain: outside_domains, and the email says so", async () => {
+    const { share, sent } = await setup(direct, {
       ...HOSTED,
       AUTH_PROVIDERS: "google",
     });
-    expect((await share(uniq("g", "out.com"))).recipient).toEqual({
+    const email = uniq("g", "out.com");
+    expect((await share(email)).recipient).toEqual({
       canSignIn: false,
       reason: "outside_domains",
     });
+    const m = sent.find((x) => x.to === email);
+    expect(m?.text).toMatch(NO_ADDRESS);
+    expect(m?.text).not.toContain("invite you");
   });
 
-  it("email only, domain codes off, in-domain: no_sign_in_method (an invite wouldn't help)", async () => {
-    const { share } = await setup(direct, {
+  it("email only, domain codes off, in-domain: no_sign_in_method (an invite wouldn't help), and the email says so", async () => {
+    const { share, sent } = await setup(direct, {
       AUTH_PROVIDERS: "email",
       AUTH_DOMAIN_JOIN: "invite",
     });
-    expect((await share(uniq("in", "a.com"))).recipient).toEqual({
+    const email = uniq("in", "a.com");
+    expect((await share(email)).recipient).toEqual({
       canSignIn: false,
       reason: "no_sign_in_method",
     });
+    const m = sent.find((x) => x.to === email);
+    expect(m?.text).toMatch(NO_ADDRESS);
+    expect(m?.text).not.toContain("one-time code");
+  });
+
+  // #799 nit: a no-row recipient whom only Google might admit (outside
+  // AUTH_DOMAINS, domain join on): no flag, and the email names Google
+  // rather than saying they can't sign in.
+  it("only Google might admit a no-row recipient: no flag, and the email names Google", async () => {
+    const { share, sent } = await setup(direct, {
+      AUTH_PROVIDERS: "google",
+      AUTH_DOMAIN_JOIN: "member",
+    });
+    const email = uniq("sec", "secondary.com");
+    expect((await share(email)).recipient).toBeUndefined();
+    const m = sent.find((x) => x.to === email);
+    expect(m?.text).toContain("You'll sign in with your Google account.");
+    expect(m?.text).not.toContain("can't sign in");
   });
 
   it("self-hosted direct with domain join: in-domain non-member signs in with Google, no flag", async () => {

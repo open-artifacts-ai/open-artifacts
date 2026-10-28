@@ -2,7 +2,7 @@
 // by scripts/emit-email-templates.ts). Every value is untrusted: stripped of
 // control characters (CR/LF included) and length-capped everywhere, then
 // HTML-escaped for the .html part, so nothing can inject headers or markup.
-import type { Format, ShareRole } from "@oa/shared";
+import type { Format, ShareRecipient, ShareRole } from "@oa/shared";
 import type { SignInProvider } from "../auth/config.js";
 import { escapeHtml } from "../mcp/template.js";
 import { effectiveName } from "../services/users.js";
@@ -116,14 +116,22 @@ const METHOD_ORDER: readonly SignInProvider[] = ["google", "access", "email"];
 export function signInSentence(
   methods: readonly SignInProvider[],
   to: string,
-  p: { instance: string; inviter: string },
+  p: {
+    instance: string;
+    inviter: string;
+    /** Why they can't sign in (ShareResult.recipient.reason), when no method admits them. */
+    cantSignIn?: ShareRecipient["reason"];
+  },
 ): string {
   const parts = METHOD_ORDER.filter((m) => methods.includes(m)).map((m) =>
     METHOD_PHRASE[m](to),
   );
-  if (parts.length === 0)
-    return `You can't sign in to ${oneLine(p.instance, NAME_MAX)} yet. Ask ${oneLine(p.inviter, NAME_MAX)} to invite you as a member first.`;
-  return `You'll sign in with ${parts.join(" or ")}.`;
+  if (parts.length > 0) return `You'll sign in with ${parts.join(" or ")}.`;
+  const instance = oneLine(p.instance, NAME_MAX);
+  // Design's final copy (review #799).
+  return p.cantSignIn === "needs_invite"
+    ? `You can't sign in to ${instance} yet. Ask an admin there to invite you, then open this link again.`
+    : `This address can't sign in to ${instance}. Ask ${oneLine(p.inviter, NAME_MAX)} to share it with an address that can.`;
 }
 
 type Common = {
@@ -166,7 +174,11 @@ function render(
 }
 
 /** How the recipient can sign in: the methods that admit their address. */
-type SignIn = { signIn: readonly SignInProvider[] };
+type SignIn = {
+  signIn: readonly SignInProvider[];
+  /** With no method: why (ShareResult.recipient.reason), for the share copy. */
+  cantSignIn?: ShareRecipient["reason"];
+};
 
 /** A member invite, linking to the instance's sign-in page. */
 export function inviteEmail(p: Common & SignIn): EmailContent {
