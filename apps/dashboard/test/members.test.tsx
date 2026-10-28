@@ -305,7 +305,7 @@ describe("members: failures and edge cases", () => {
     ).toBeTruthy();
   });
 
-  it("inviting someone directory sync removed points to Google Workspace, with no Restore", async () => {
+  it("inviting someone directory sync removed says Restore can't work while sync is on", async () => {
     server.use(
       http.post(`*${R.members}`, () =>
         HttpResponse.json(
@@ -321,7 +321,7 @@ describe("members: failures and edge cases", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Add member" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Google directory sync removed synced@example.com. Add them back in Google Workspace, and the next sync restores them.",
+      "Google directory sync removed synced@example.com, so they can't be restored here while sync is on.",
     );
     expect(screen.queryByRole("button", { name: /^Restore/ })).toBeNull();
     expect(screen.queryByRole("status")).toBeNull();

@@ -173,7 +173,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
           // Directory sync removed them: Restore can't work while sync is on.
           if (e instanceof ApiClientError && e.code === "directory_managed")
             return setError(
-              `Google directory sync removed ${parsed}. Add them back in Google Workspace, and the next sync restores them.`,
+              `Google directory sync removed ${parsed}, so they can't be restored here while sync is on.`,
             );
           // A lapsed guest can't be restored: a new share brings them back.
           if (e instanceof ApiClientError && e.code === "guest_lapsed")
@@ -769,7 +769,7 @@ function RemovedRow({ m }: { m: Member }) {
 const restoreRefusal = (e: unknown, first: string) => {
   const code = e instanceof ApiClientError ? e.code : "";
   if (code === "directory_managed")
-    return `Google directory sync removed ${first}. Add them back in Google Workspace, and the next sync restores them.`;
+    return `Google directory sync removed ${first}, so they can't be restored here while sync is on.`;
   if (code === "guest_lapsed")
     return `${first} was a guest whose shares ended. Share something with them to bring them back.`;
   if (code === "member_active") return `${first} is already active.`;
