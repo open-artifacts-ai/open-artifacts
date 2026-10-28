@@ -1816,8 +1816,9 @@ describe("WfpProvisioner.create", () => {
   it("the PAT file is 0600, minted for the owner, and its content never appears in returned values", async () => {
     const s = setup();
     const inst = await s.p.create(input());
-    expect(statSync(inst.patFile).mode & 0o777).toBe(0o600);
-    const pat = readFileSync(inst.patFile, "utf8").trim();
+    const patFile = inst.patFile as string;
+    expect(statSync(patFile).mode & 0o777).toBe(0o600);
+    const pat = readFileSync(patFile, "utf8").trim();
     expect(isPat(pat)).toBe(true);
     expect(SENSITIVE.has(pat)).toBe(true);
     expect(JSON.stringify(inst)).not.toContain(pat);
