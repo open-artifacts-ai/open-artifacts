@@ -94,6 +94,7 @@ const FORMAT_LABEL: Record<Format, string> = {
   markdown: "Markdown doc",
   code: "Code",
   pdf: "PDF",
+  image: "Image",
 };
 const ROLE_LABEL: Record<ShareRole, string> = {
   viewer: "Viewer",

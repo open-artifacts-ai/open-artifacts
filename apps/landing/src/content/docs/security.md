@@ -19,6 +19,8 @@ The viewer shell loads each artifact from the content host in an iframe with `sa
 
 Every content-host response also sends `Content-Security-Policy: sandbox` with the same flags, so opening a content URL directly is just as isolated.
 
+An image artifact's file is stricter still: it's served with its real type (`image/png`, `image/jpeg`, `image/gif`, `image/webp` or `image/svg+xml`), `X-Content-Type-Options: nosniff`, `Content-Disposition: inline` and `Content-Security-Policy: default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox`, with no `allow-scripts`. A script inside an SVG never runs, even when the SVG is opened on its own, and the viewer shows images only through `<img>`. An image's thumbnail is the image itself only for a PNG, JPEG, GIF or WebP of at most 200 KB and 4096 pixels a side; an SVG never becomes a thumbnail.
+
 Private content URLs carry a signed token that expires after {LIMIT_SIGNED_URL_TTL}, because the content host has no session. Public artifacts need no token. Revoking a share, unsharing, or deleting an artifact refuses new content URLs immediately, but a URL that was already issued keeps working until it expires, up to {LIMIT_SIGNED_URL_TTL} later.
 
 ## Live pages without credentials

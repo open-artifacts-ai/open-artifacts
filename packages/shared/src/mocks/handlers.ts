@@ -72,7 +72,13 @@ import {
   UploadCreateInputSchema,
   type UserRef,
 } from "../schemas.js";
-import { bytesHead, checkEntry, textHead } from "../sniff.js";
+import {
+  bytesHead,
+  checkEntry,
+  HEIC_MESSAGE,
+  isHeic,
+  textHead,
+} from "../sniff.js";
 import type { ArtifactEventsMock } from "./events.js";
 import { fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
@@ -117,6 +123,11 @@ const TYPES: Record<string, string> = {
   md: "text/markdown",
   pdf: "application/pdf",
   png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
 };
 const typeOf = (path: string) =>
   TYPES[path.split(".").pop()?.toLowerCase() ?? ""] ?? "text/plain";
@@ -125,13 +136,16 @@ const DEFAULT_ENTRY = {
   markdown: "document.md",
   code: "file.txt",
   pdf: "document.pdf",
+  image: "image.svg",
 } as const;
 
 /**
  * The server's format guard (manifest.ts): with no `format` and a name that
  * implies none, inline text publishes as code and anything else is 400
  * unsupported_format; an inline entry whose content doesn't fit its format is
- * 400 binary_entry. Uploaded entries pass (the mock keeps no upload bytes).
+ * 400 binary_entry. A HEIC/HEIF entry (name or bytes) is unsupported_format
+ * (reason heic) whatever the format; an image publish has one file. Uploaded
+ * entries pass the byte checks (the mock keeps no upload bytes).
  * Null when the publish may go ahead.
  */
 function formatRefusal(
@@ -157,13 +171,27 @@ function formatRefusal(
           : (keys[0] ?? ""));
     src = input.files[entry];
   } else return null;
+  const heic = () =>
+    err("unsupported_format", HEIC_MESSAGE, { path: entry, reason: "heic" });
+  if (isHeic(entry)) return heic();
   const inferred = input.format ?? inferFormat(entry);
+  if (
+    (inferred ?? "code") === "image" &&
+    input.files &&
+    Object.keys(input.files).length > 1
+  )
+    return err(
+      "bad_request",
+      "An image artifact has one file, the image. Publish it alone, or publish an HTML page that shows it.",
+      { path: "files", reason: "image_single_file" },
+    );
   if (src === undefined || (typeof src === "object" && "uploadId" in src))
     return null;
   const { head, truncated } =
     typeof src === "string"
       ? textHead(src)
       : bytesHead(Uint8Array.from(atob(src.base64), (c) => c.charCodeAt(0)));
+  if (isHeic(entry, head)) return heic();
   // No format implied by the name: the bytes decide (text is code).
   const r = checkEntry(entry, inferred ?? "code", head, truncated);
   if (!r) return null;

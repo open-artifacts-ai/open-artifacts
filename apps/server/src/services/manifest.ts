@@ -5,9 +5,11 @@ import {
   type EntryRefusal,
   type Format,
   findCaseCollision,
+  HEIC_MESSAGE,
   INLINE_TOO_LARGE_MESSAGE,
   inferFormat,
   inferLanguage,
+  isHeic,
   LIMITS,
   newId,
   normalizePath,
@@ -74,6 +76,10 @@ const noViewer = (path: string) =>
     reason: "no_viewer",
   });
 
+/** A HEIC/HEIF entry, by name or bytes, whatever the format: 400 unsupported_format. */
+const heic = (path: string) =>
+  new ApiError("unsupported_format", HEIC_MESSAGE, { path, reason: "heic" });
+
 /** The entry's content doesn't fit its format: 400 binary_entry. */
 const refuse = (path: string, r: EntryRefusal) =>
   new ApiError("binary_entry", r.message, { path, reason: r.reason });
@@ -91,6 +97,7 @@ function checkInline(
 ): void {
   const { head, truncated } =
     "text" in s ? textHead(s.text) : bytesHead(s.bytes);
+  if (isHeic(path, head)) throw heic(path);
   const r = checkEntry(path, format, head, truncated);
   if (r) throw byBytes ? noViewer(path) : refuse(path, r);
 }
@@ -164,6 +171,8 @@ function defaultEntry(format: Format, language: string | null): string {
   if (format === "html") return "index.html";
   if (format === "markdown") return "README.md";
   if (format === "pdf") return "document.pdf";
+  // Inline `content` is text: of the image types, only SVG.
+  if (format === "image") return "image.svg";
   return `main.${EXT.get((language ?? "").toLowerCase()) ?? "txt"}`;
 }
 
@@ -293,9 +302,17 @@ export function planFiles(input: PublishInput): Plan {
       });
     } else throw bad(key, "invalid");
   }
+  // By name now; by bytes in checkInline or, for an upload, materialize.
+  if (isHeic(entry)) throw heic(entry);
   const inferred = input.format ?? inferFormat(entry);
   const byBytes = !inferred;
   const format = inferred ?? "code";
+  if (format === "image" && out.length > 1)
+    throw bad(
+      "files",
+      "image_single_file",
+      "An image artifact has one file, the image. Publish it alone, or publish an HTML page that shows it.",
+    );
   const head = out.find((f) => f.path === entry)?.source;
   // An uploaded entry is checked in materialize (one R2 range read).
   if (head && !("uploadId" in head)) checkInline(entry, format, head, byBytes);
@@ -344,6 +361,7 @@ async function checkUploadedEntry(
   });
   if (!obj) throw bad(f.path, "upload_incomplete");
   const head = new Uint8Array(await obj.arrayBuffer());
+  if (isHeic(f.path, head)) throw heic(f.path);
   const r = checkEntry(
     f.path,
     plan.format,

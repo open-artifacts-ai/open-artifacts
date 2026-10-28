@@ -48,6 +48,18 @@ describe("formats", () => {
     for (const p of [
       "IMG_0042.JPG",
       "photo.jpeg",
+      "a/b.png",
+      "x.jpg",
+      "anim.GIF",
+      "p.webp",
+      "logo.svg",
+    ])
+      expect(inferFormat(p), p).toBe("image");
+    for (const p of [
+      "IMG_0042.HEIC",
+      "photo.heif",
+      "a.avif",
+      "a.tiff",
       "a.zip",
       "a.bin",
       "a.mp4",
