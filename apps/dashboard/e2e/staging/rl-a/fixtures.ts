@@ -15,6 +15,7 @@ import {
   expect,
   type Page,
 } from "@playwright/test";
+import { gate } from "../gate";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
 // rl-a's helpers: sessions through TEST_HOOKS.session for users in its
@@ -239,18 +240,14 @@ export const rlAVersion = () => {
   return version;
 };
 
-/** Semver order of two x.y.z versions (a prerelease suffix is ignored). */
-export const below = (v: string, min: string): boolean => {
-  const n = (s: string) => s.split(/[-+]/)[0].split(".").map(Number);
-  const [a, b] = [n(v), n(min)];
-  for (let i = 0; i < 3; i++)
-    if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) < (b[i] ?? 0);
-  return false;
-};
-
-/** Skips the running test until rl-a runs `min` or later. */
-export async function needs(min: string): Promise<void> {
-  test.skip(below(await rlAVersion(), min), `needs ${min}`);
+/**
+ * Gates the running test on rl-a's version (gate.ts): skipped on an older
+ * rl-a, but a failure on the gate run (T19_EXPECT_VERSION set).
+ */
+export async function needs(flow: string, min: string): Promise<void> {
+  const v = await rlAVersion();
+  const why = gate(flow, min, v, process.env.T19_EXPECT_VERSION);
+  test.skip(why !== null, why ?? "");
 }
 
 export const test = base;

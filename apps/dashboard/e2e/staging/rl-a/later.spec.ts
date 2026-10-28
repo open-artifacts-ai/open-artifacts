@@ -24,7 +24,7 @@ import {
 // T19 step 4: flows that landed after M1's first RC. Each test names the
 // release that ships it and skips until rl-a's /healthz reports that release
 // or later, so they run as soon as rl-a is upgraded (CI pins the RC with
-// T19_EXPECT_VERSION). Releases: CHANGELOG.md and the v* tags; "0.73.0" is
+// T19_EXPECT_VERSION, which turns a gated skip into a failure). Releases: CHANGELOG.md and the v* tags; "0.73.0" is
 // the next release after 0.72.0 for what is on main but unreleased, and for
 // the queued PRs (#800, #807) if they miss it, move their gate.
 
@@ -56,7 +56,7 @@ const PNG =
 test("#764: a space manager who isn't an admin adds people", async ({
   browser,
 }) => {
-  await needs("0.69.0");
+  await needs("#764", "0.69.0");
   const mgr = await person(browser, "people-mgr", "member", [
     { spaceId: eng.id, role: "manager" },
   ]);
@@ -87,7 +87,7 @@ test("#764: a space manager who isn't an admin adds people", async ({
 test("#765: Mine inside a shared space lists only the caller's artifacts", async ({
   browser,
 }) => {
-  await needs("0.72.0");
+  await needs("#765", "0.72.0");
   const me = await person(browser, "mine", "member", [
     { spaceId: eng.id, role: "editor" },
   ]);
@@ -112,7 +112,7 @@ test("#765: Mine inside a shared space lists only the caller's artifacts", async
 });
 
 test("#766: Trash: delete, find it in Trash, Restore", async ({ browser }) => {
-  await needs("0.73.0");
+  await needs("#766", "0.73.0");
   const owner = await person(browser, "trash", "member");
   const title = `T19 ${RUN} trash`;
   const { id } = await publish(owner, page1(title));
@@ -146,7 +146,7 @@ test("#766: Trash: delete, find it in Trash, Restore", async ({ browser }) => {
 });
 
 test("#783: an image artifact opens as an image", async ({ browser }) => {
-  await needs("0.73.0");
+  await needs("#783", "0.73.0");
   const owner = await person(browser, "image", "member");
   const { id } = await publish(owner, {
     title: `T19 ${RUN} image`,
@@ -172,7 +172,7 @@ test("#783: an image artifact opens as an image", async ({ browser }) => {
 test("#794: a member who views editors-only live data sees View only", async ({
   browser,
 }) => {
-  await needs("0.72.0");
+  await needs("#794", "0.72.0");
   const owner = await person(browser, "live-owner", "member");
   const viewer = await person(browser, "live-viewer", "member");
   const title = `T19 ${RUN} live`;
@@ -200,7 +200,7 @@ test("#794: a member who views editors-only live data sees View only", async ({
 test("#800: inviting outside the sign-in domain warns that they may not sign in", async ({
   browser,
 }) => {
-  await needs("0.73.0");
+  await needs("#800", "0.73.0");
   const admin = await person(browser, "admin", "admin");
   const providers = await json<AuthProviders>(
     await fetch(`${A.app}/auth/providers`, {
@@ -228,7 +228,7 @@ test("#800: inviting outside the sign-in domain warns that they may not sign in"
 test('#807: New space has "Add me as a manager", on by default', async ({
   browser,
 }) => {
-  await needs("0.73.0");
+  await needs("#807", "0.73.0");
   const admin = await person(browser, "admin", "admin");
   const page = admin.page;
   await page.goto("/settings/spaces");
