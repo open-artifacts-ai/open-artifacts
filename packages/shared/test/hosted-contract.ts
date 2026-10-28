@@ -1768,10 +1768,14 @@ export function hostedContract(d: ContractDriver): ContractCases {
           return ManagedByOrgMappingDetailsSchema.strict().parse(e.details);
         };
         const details = { userId: bob, everyRole: "editor" };
-        expect(await managed(await d.call("DELETE", R.spaceMember(CLIENTS, bob)))).toEqual(details);
+        expect(
+          await managed(await d.call("DELETE", R.spaceMember(CLIENTS, bob))),
+        ).toEqual(details);
         expect(
           await managed(
-            await d.call("PUT", R.spaceMember(CLIENTS, bob), { role: "viewer" }),
+            await d.call("PUT", R.spaceMember(CLIENTS, bob), {
+              role: "viewer",
+            }),
           ),
         ).toEqual(details);
         const everyOnly = {
@@ -1815,7 +1819,9 @@ export function hostedContract(d: ContractDriver): ContractCases {
           expect.objectContaining(everyOnly),
         ]);
         // Nothing left of the space's own: 409 again.
-        expect(await managed(await d.call("DELETE", R.spaceMember(CLIENTS, bob)))).toEqual(details);
+        expect(
+          await managed(await d.call("DELETE", R.spaceMember(CLIENTS, bob))),
+        ).toEqual(details);
       },
     );
 

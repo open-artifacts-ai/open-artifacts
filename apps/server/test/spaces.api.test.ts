@@ -755,7 +755,11 @@ describe("space members", () => {
         try {
           const art = await insertArtifact(admin.userId, s.id);
           expect(await level(e, m.userId, art)).toBe("editor");
-          await managed(await del(e, admin, s.id, m.userId), m.userId, "editor");
+          await managed(
+            await del(e, admin, s.id, m.userId),
+            m.userId,
+            "editor",
+          );
           await managed(
             await putMember(e, admin, s.id, m.userId, "viewer"),
             m.userId,
@@ -807,7 +811,11 @@ describe("space members", () => {
           expect(await level(e, m.userId, art)).toBe("editor");
           expect(await audits("space.member.remove", m.userId)).toHaveLength(1);
           expect(await revokedAt(m.userId)).not.toBeNull();
-          await managed(await del(e, admin, s.id, m.userId), m.userId, "editor");
+          await managed(
+            await del(e, admin, s.id, m.userId),
+            m.userId,
+            "editor",
+          );
         } finally {
           await run("delete from org_group_mappings where group_id = ?", g);
         }
@@ -859,7 +867,11 @@ describe("space members", () => {
             m.userId,
             "manager",
           );
-          await managed(await del(e, admin, s.id, m.userId), m.userId, "manager");
+          await managed(
+            await del(e, admin, s.id, m.userId),
+            m.userId,
+            "manager",
+          );
         }
         expect(await rowsOf(s.id, m.userId)).toEqual([]);
       } finally {
