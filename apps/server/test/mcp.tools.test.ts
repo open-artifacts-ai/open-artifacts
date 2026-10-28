@@ -154,6 +154,38 @@ describe("MCP tools over PAT", () => {
     expect(v.items[0]?.files).toHaveLength(3);
   });
 
+  it("list_versions pages past the newest 20 with cursor (review item 29)", async () => {
+    const first = await publishMd(client, "v1");
+    for (let k = 2; k <= 22; k++)
+      await publishMd(client, `v${k}`, { id: first.id });
+    const r1 = await tool(client, "list_versions", { id: first.id });
+    const p1 = sc<{ items: { version: number }[]; nextCursor: string | null }>(
+      r1,
+    );
+    expect(p1.items.map((v) => v.version)).toEqual(
+      Array.from({ length: 20 }, (_, k) => 22 - k),
+    );
+    expect(p1.nextCursor).toBe("3");
+    expect(textOf(r1)).toContain("more versions");
+    const r2 = await tool(client, "list_versions", {
+      id: first.id,
+      cursor: p1.nextCursor,
+    });
+    const p2 = sc<{ items: { version: number }[]; nextCursor: string | null }>(
+      r2,
+    );
+    expect(p2.items.map((v) => v.version)).toEqual([2, 1]);
+    expect(p2.nextCursor).toBeNull();
+    expect(textOf(r2)).not.toContain("more versions");
+    const bad = await tool(client, "list_versions", {
+      id: first.id,
+      cursor: "abc",
+    });
+    expect(bad.isError).toBe(true);
+    const def = TOOL_DEFS.find((d) => d.name === "list_versions");
+    expect(def?.description).toContain("cursor");
+  }, 60_000);
+
   it("get_artifact: binary is never inlined, gets a signed downloadUrl", async () => {
     const png = btoa(String.fromCharCode(137, 80, 78, 71, 13, 10, 26, 10, 0));
     const pub = sc<{ id: string }>(

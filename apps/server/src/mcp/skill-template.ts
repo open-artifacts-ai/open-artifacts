@@ -2,7 +2,7 @@
 // Build time only (scripts/emit-skill.ts writes skill.generated.ts; the drift
 // test re-renders it): the Worker never runs this. Plain Node-loadable.
 
-import { agentClients, type Snippet } from "@oa/shared";
+import { agentClients, LIMITS, type Snippet } from "@oa/shared";
 import { z } from "zod";
 import { renderSections } from "./instructions.ts";
 import {
@@ -204,6 +204,7 @@ Use this when anyone with the link should be able to vote, play or add to a page
 - \`viewer.anonId()\` returns a per-artifact id for an anonymous visitor (null when signed in). Use it to label things ("your vote", "X: you") and to key one document per browser, not to grant or deny anything.
 - Design for griefing: first-come seats or slots, a visible reset that anyone can use, and state that is easy to rebuild. Prefer choices, emoji and presets over free text. If you need text, cap its length and expire it.
 - Budget writes. Each artifact has a daily write limit and anonymous writes are rate-limited per network, so never write on a timer (no heartbeats). Write only on a user action, and use a day-keyed collection (e.g. \`votes-20261020\`) instead of deleting old data. When \`rate_limited\` mentions the daily limit, show "done for today".
+- Keep collections small if the page uses \`query()\` with \`where\` or \`orderBy\`: it works only while a collection holds up to ${LIMITS.queryCollectionBytes / 1024 / 1024} MB, then fails with \`query_too_large\`. Use \`list()\` and filter in the page, or a day-keyed collection.
 - Handle rejected writes: roll back anything you showed optimistically, then reload from the server. Codes: \`data_editors_only\`, \`unauthorized\`, \`rate_limited\`, \`capability_denied\`, and \`no_shell\` when the page is opened outside the viewer.
 - Don't claim presence ("3 people here", "watching now"); there is no presence API.
 - Never be silently deaf: when a subscribe callback gets \`offline: true\`, show that live updates are paused (for example, "Live updates paused. Reload to retry.") until it gets \`resync: true\`.

@@ -714,6 +714,172 @@ describe("space members", () => {
     expect(await revokedAt(m.userId)).not.toBeNull();
   });
 
+  describe("an Every space role (review item 19)", () => {
+    const del = (e: Env, who: U, sid: string, userId: string) =>
+      call(e, R.spaceMember(sid, userId), who.cookie, { method: "DELETE" });
+    /** A member in a new space only through an Every space group at `role`. */
+    const everyOnly = async (role: "viewer" | "editor" | "manager") => {
+      const s = await createSpace({ addMe: false });
+      const m = await mk("evo");
+      const g = await group([m.userId]);
+      await run(
+        "insert into org_group_mappings (group_id, group_email, role) values (?, ?, ?)",
+        g,
+        `${g.toLowerCase()}@x.com`,
+        role,
+      );
+      return { s, m, g };
+    };
+    const managed = async (r: Response, userId: string, everyRole: string) => {
+      expect(r.status).toBe(409);
+      expect(await errOf(r)).toMatchObject({
+        code: "managed_by_org_mapping",
+        details: { userId, everyRole },
+      });
+    };
+    const rowsOf = async (sid: string, userId: string) =>
+      (
+        await env.DB.prepare(
+          "select source, role from space_members where space_id = ? and user_id = ? order by source",
+        )
+          .bind(sid, userId)
+          .all<{ source: string; role: string }>()
+      ).results;
+
+    for (const [name, e] of [
+      ["live", GOOGLE],
+      ["frozen", FROZEN],
+    ] as const)
+      it(`${name}: DELETE an Every-only member is 409 managed_by_org_mapping; a lower PUT is 409; equal is a no-op; higher is a manual grant`, async () => {
+        const { s, m, g } = await everyOnly("editor");
+        try {
+          const art = await insertArtifact(admin.userId, s.id);
+          expect(await level(e, m.userId, art)).toBe("editor");
+          await managed(
+            await del(e, admin, s.id, m.userId),
+            m.userId,
+            "editor",
+          );
+          await managed(
+            await putMember(e, admin, s.id, m.userId, "viewer"),
+            m.userId,
+            "editor",
+          );
+          // Nothing written or audited by the refusals.
+          expect(await rowsOf(s.id, m.userId)).toEqual([]);
+          expect(await audits("space.member.remove", m.userId)).toEqual([]);
+          expect(await audits("space.member.add", m.userId)).toEqual([]);
+          expect(await audits("space.member.role", m.userId)).toEqual([]);
+          // Equal: a no-op (no row, no audit), the Every space view back.
+          let r = await putMember(e, admin, s.id, m.userId, "editor");
+          expect(r.status).toBe(200);
+          expect(await json<SpaceMember>(r)).toMatchObject({
+            role: "editor",
+            source: "sync",
+            manualRole: null,
+            syncRole: "editor",
+            groups: [expect.objectContaining({ groupId: g, via: "every" })],
+          });
+          expect(await rowsOf(s.id, m.userId)).toEqual([]);
+          expect(await audits("space.member.add", m.userId)).toEqual([]);
+          // Higher: a manual grant on top.
+          r = await putMember(e, admin, s.id, m.userId, "manager");
+          expect(await json<SpaceMember>(r)).toMatchObject({
+            role: "manager",
+            manualRole: "manager",
+            syncRole: "editor",
+          });
+          expect(await level(e, m.userId, art)).toBe("manager");
+          // Lowering the manual part below the Every role: still 409.
+          await managed(
+            await putMember(e, admin, s.id, m.userId, "viewer"),
+            m.userId,
+            "editor",
+          );
+          expect(await level(e, m.userId, art)).toBe("manager");
+          // DELETE takes off the manual part; they keep editor (200).
+          r = await del(e, admin, s.id, m.userId);
+          expect(r.status).toBe(200);
+          expect(await json<SpaceMember>(r)).toMatchObject({
+            userId: m.userId,
+            role: "editor",
+            source: "sync",
+            manualRole: null,
+            syncRole: "editor",
+          });
+          expect(await rowsOf(s.id, m.userId)).toEqual([]);
+          expect(await level(e, m.userId, art)).toBe("editor");
+          expect(await audits("space.member.remove", m.userId)).toHaveLength(1);
+          expect(await revokedAt(m.userId)).not.toBeNull();
+          await managed(
+            await del(e, admin, s.id, m.userId),
+            m.userId,
+            "editor",
+          );
+        } finally {
+          await run("delete from org_group_mappings where group_id = ?", g);
+        }
+      });
+
+    it("frozen: DELETE of a synced row on top of an Every role leaves the Every role (200)", async () => {
+      const { s, m, g } = await everyOnly("viewer");
+      try {
+        await run(
+          "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'sync', 1)",
+          s.id,
+          m.userId,
+        );
+        // Live: the synced row is Google's (409 member_synced).
+        expect(await code(await del(GOOGLE, admin, s.id, m.userId))).toBe(
+          "member_synced",
+        );
+        // Frozen: the synced row goes; the Every space role stays.
+        const r = await del(FROZEN, admin, s.id, m.userId);
+        expect(r.status).toBe(200);
+        expect(await json<SpaceMember>(r)).toMatchObject({
+          role: "viewer",
+          manualRole: null,
+          syncRole: "viewer",
+        });
+        expect(await rowsOf(s.id, m.userId)).toEqual([]);
+      } finally {
+        await run("delete from org_group_mappings where group_id = ?", g);
+      }
+    });
+
+    it("a space manager can't change or remove an Every space Manager (403 target member); an org admin gets 409", async () => {
+      const { s, m, g } = await everyOnly("manager");
+      try {
+        const mgr = await mk("evmgr");
+        expect(
+          (await putMember(GOOGLE, admin, s.id, mgr.userId, "manager")).status,
+        ).toBe(200);
+        for (const e of [GOOGLE, FROZEN]) {
+          const r = await putMember(e, mgr, s.id, m.userId, "editor");
+          expect(r.status).toBe(403);
+          expect(await errOf(r)).toMatchObject({
+            code: "space_forbidden",
+            details: { target: "member" },
+          });
+          expect((await del(e, mgr, s.id, m.userId)).status).toBe(403);
+          await managed(
+            await putMember(e, admin, s.id, m.userId, "editor"),
+            m.userId,
+            "manager",
+          );
+          await managed(
+            await del(e, admin, s.id, m.userId),
+            m.userId,
+            "manager",
+          );
+        }
+        expect(await rowsOf(s.id, m.userId)).toEqual([]);
+      } finally {
+        await run("delete from org_group_mappings where group_id = ?", g);
+      }
+    });
+  });
+
   it("GET members: Page plus total; q and group filters; groups via space and every", async () => {
     const { s, mgr, ed, vw } = await staffed();
     const g = await group([ed.userId]);

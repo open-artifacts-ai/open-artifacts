@@ -568,6 +568,7 @@ export const useSpaceCandidates = (id: string, q: string, enabled = true) =>
 const memberInline = (e: ApiClientError) =>
   e.code === "space_forbidden" ||
   e.code === "member_synced" ||
+  e.code === "managed_by_org_mapping" ||
   e.code === "not_found";
 const spaceMemberKeys = (id: string) => () => [
   qk.spaceMembers(id),

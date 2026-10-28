@@ -149,8 +149,12 @@ export function anonIpKey(ip: string): string | null {
  * Applies RL_ANON to `key`. Fails closed (503) when the binding is missing
  * outside ENVIRONMENT=dev (the test pool and local dev have none).
  */
-async function anonLimit(c: C, key: string, what: string): Promise<void> {
-  const rl = c.env.RL_ANON;
+async function anonLimit(
+  c: C,
+  key: string,
+  what: string,
+  rl: RateLimit | undefined = c.env.RL_ANON,
+): Promise<void> {
   if (!rl) {
     if (c.env.ENVIRONMENT === "dev") return;
     throw new HTTPException(503, { message: "rate limiter unavailable" });
@@ -262,7 +266,14 @@ async function gate(
     await anonLimit(c, `anonid:ip:${key}`, "requests");
     return { artifactId, actor: "", anon: await anonId(), authzAt };
   }
-  await anonLimit(c, `ip:${key}`, "writes");
+  // RL_ANON (30 per IP across the instance) would cap ANON_WRITES_PER_MIN at
+  // 30; RL_ANON_WRITES (not yet in setup's template), bound with a matching limit,
+  // which then replaces RL_ANON for writes. Unbound: RL_ANON, as before.
+  // HOSTED=1 only tightens: RL_ANON still applies there.
+  const writes = c.env.RL_ANON_WRITES;
+  if (!writes || c.env.HOSTED === "1")
+    await anonLimit(c, `ip:${key}`, "writes");
+  if (writes) await anonLimit(c, `ip:${key}`, "writes", writes);
   const anon = await anonId();
   return { artifactId, actor: `ip:${key}|${anon.short}`, anon, authzAt };
 }

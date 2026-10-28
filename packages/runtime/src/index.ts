@@ -13,6 +13,9 @@ import {
   type Schemas,
 } from "./bridge.js";
 
+/** A db.query page; `restarted` is set when it is the first page again after cursor_stale. */
+export type QueryPage = Page<DataDoc> & { restarted?: true };
+
 export { RuntimeError, type RuntimeErrorCode } from "./bridge.js";
 
 export type Theme = "light" | "dark";
@@ -34,7 +37,7 @@ export type ChangeEvent = {
 export interface Collection {
   get(id: string): Promise<DataDoc | null>;
   list(opts?: { cursor?: string; limit?: number }): Promise<Page<DataDoc>>;
-  query(q: DataQueryInput): Promise<Page<DataDoc>>;
+  query(q: DataQueryInput): Promise<QueryPage>;
   set(id: string, data: unknown): Promise<DataDoc>;
   update(id: string, patch: Record<string, unknown>): Promise<DataDoc>;
   delete(id: string): Promise<void>;
@@ -256,7 +259,11 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
     }
   };
 
-  /** Docs broadcast with data:null (over 16 KB) are refetched before delivery. */
+  /**
+   * Docs broadcast with data:null (over 16 KB) are refetched before delivery.
+   * A failed refetch delivers `resync` instead, so the page reloads its data
+   * rather than taking a doc with no data as the new value.
+   */
   async function deliver(
     m: Extract<ShellToArtifact, { event: "db.change" }>,
   ): Promise<void> {
@@ -267,9 +274,16 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
         docs.push(d);
         continue;
       }
-      const fresh = await bridge
-        .call("db.get", { collection: m.collection, id: d.id })
-        .catch(() => d);
+      let fresh: DataDoc | null;
+      try {
+        fresh = await bridge.call("db.get", {
+          collection: m.collection,
+          id: d.id,
+        });
+      } catch {
+        emit(m.collection, { docs: [], deleted: [], resync: true });
+        return;
+      }
       if (fresh) docs.push(fresh);
       else deleted.push(d.id);
     }
@@ -376,10 +390,48 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
     }
   });
 
+  /**
+   * Cursors of a query chain that already restarted once after
+   * cursor_stale: a second cursor_stale in that chain is surfaced.
+   */
+  const restarted = new Set<string>();
+  /**
+   * db.query. On 409 cursor_stale (the doc a page ended on changed while
+   * paging) it restarts once from the first page and marks that page
+   * `restarted: true`, so a caller collecting pages starts over instead of
+   * appending duplicates. A second cursor_stale in the same chain is thrown.
+   */
+  async function query(name: string, q: DataQueryInput): Promise<QueryPage> {
+    const cursor = q?.cursor;
+    const again = cursor !== undefined && restarted.delete(cursor);
+    let page: Page<DataDoc>;
+    const restart = again;
+    try {
+      page = await bridge.call("db.query", { collection: name, query: q });
+    } catch (e) {
+      if (
+        again ||
+        cursor === undefined ||
+        !(e instanceof RuntimeError) ||
+        e.code !== "cursor_stale"
+      )
+        throw e;
+      const { cursor: _drop, ...first } = q;
+      page = await bridge.call("db.query", {
+        collection: name,
+        query: first,
+      });
+      if (page.nextCursor) restarted.add(page.nextCursor);
+      return { ...page, restarted: true };
+    }
+    if (restart && page.nextCursor) restarted.add(page.nextCursor);
+    return page;
+  }
+
   const collection = (name: string): Collection => ({
     get: (id) => bridge.call("db.get", { collection: name, id }),
     list: (o = {}) => bridge.call("db.list", { collection: name, ...o }),
-    query: (query) => bridge.call("db.query", { collection: name, query }),
+    query: (q) => query(name, q),
     set: (id, data) => bridge.call("db.set", { collection: name, id, data }),
     update: (id, patch) =>
       bridge.call("db.update", { collection: name, id, patch }),

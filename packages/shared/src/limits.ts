@@ -36,6 +36,12 @@ export const LIMITS = {
   mcpBodyBytesPaid: DATA_DOC_PAID + 64 * KB,
   artifactDataBytes: 50 * 1024 * 1024,
   /**
+   * db query() with where or orderBy scans and decodes every doc in the
+   * collection, so it is refused (400 query_too_large) once the collection
+   * holds more than this. list() and query() with neither are unaffected.
+   */
+  queryCollectionBytes: 2 * 1024 * 1024,
+  /**
    * PUT R.dataReset body on Workers Free (the whole snapshot, as sent). The
    * Worker only caps and forwards it; the DO parses and validates (no 10 ms cap there).
    */
@@ -74,6 +80,9 @@ export const LIMITS = {
  * batches. Beside LIMITS.softDeleteDays (30, trashed artifacts).
  */
 export const AUDIT_RETENTION_MS = 400 * 86_400_000;
+
+/** The 400 query_too_large message: query() with where/orderBy on a collection over LIMITS.queryCollectionBytes. */
+export const QUERY_TOO_LARGE_MESSAGE = `This collection holds more than ${LIMITS.queryCollectionBytes / 1024 / 1024} MB, too much for query() with where or orderBy. Use list() and filter in the page, or split the data into smaller collections (for example, one per day).`;
 
 /** The 413 too_large message for inline publish content over LIMITS.inlineBytes (REST and MCP). */
 export const INLINE_TOO_LARGE_MESSAGE = `Inline content is limited to ${LIMITS.inlineBytes / 1024} KB per publish. For larger files: create_upload({ path, size, contentType }), PUT the bytes to the returned url, then publish_artifact({ id: artifactId, title, files: { "<path>": { uploadId } } }).`;

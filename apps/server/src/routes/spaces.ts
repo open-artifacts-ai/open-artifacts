@@ -198,14 +198,16 @@ export function mountSpaces(app: AppType): void {
 
   app.delete(MEMBER, async (c) => {
     const who = spacesCaller(c);
-    await deleteSpaceMember(
+    const kept = await deleteSpaceMember(
       c.env,
       who,
       c.req.param("id"),
       c.req.param("userId"),
       execCtx(c),
     );
-    return c.body(null, 204);
+    // Still in the space (an Every space group's role, or a live synced
+    // row): the role they keep.
+    return kept ? c.json(kept) : c.body(null, 204);
   });
 
   app.get(`${SPACE}/mappings`, async (c) => {

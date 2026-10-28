@@ -1,5 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { QUERY_TOO_LARGE_MESSAGE, STATUS_FOR } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/http/errors.js";
 import {
@@ -259,16 +260,19 @@ describe("B12 adversarial scan", () => {
       );
     });
     expect(await codeOf(s.query("v", { where: { choice: "B" } }))).toBe(
-      "bad_request",
+      "query_too_large",
     );
     // Refused from the totals row alone: no doc rows are scanned.
     const probe = await rowsReadBy(s, (i) =>
       i.query("v", { where: { choice: "B" } }),
     );
-    expect(probe.error).toMatch(/^oa:bad_request:collection too large/);
+    // A distinct code with a message that says what to do, not a caller mistake.
+    expect(probe.error).toBe(`oa:query_too_large:${QUERY_TOO_LARGE_MESSAGE}`);
+    expect(QUERY_TOO_LARGE_MESSAGE).toMatch(/2 MB.*list\(\)/);
+    expect(STATUS_FOR.query_too_large).toBe(400);
     expect(probe.rows).toBeLessThanOrEqual(1);
     expect(await codeOf(s.query("v", { orderBy: "choice" }))).toBe(
-      "bad_request",
+      "query_too_large",
     );
     expect((await s.query("v", { limit: 2 })).items).toHaveLength(2);
     expect((await s.list("v", undefined, 2)).items).toHaveLength(2);
@@ -306,7 +310,7 @@ describe("B12 adversarial scan", () => {
     expect(o.items[0]?.id).toBe("d7");
     await s.set("v", "extra", { pad }, "u:1");
     expect(await codeOf(s.query("v", { where: { choice: "B" } }))).toBe(
-      "bad_request",
+      "query_too_large",
     );
     // Deleting brings it back under.
     await s.delete("v", "extra", "u:1");

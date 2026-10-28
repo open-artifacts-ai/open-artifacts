@@ -28,6 +28,7 @@ export const ERROR_CODES = [
   "restrict_admin",
   "directory_mapping_off",
   "member_synced",
+  "managed_by_org_mapping",
   "owner_only",
   "break_glass_required",
   // Publish format guard.
@@ -35,6 +36,9 @@ export const ERROR_CODES = [
   "binary_entry",
   "space_name_reserved",
   "invite_unreachable",
+  // Runtime data query.
+  "cursor_stale",
+  "query_too_large",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -90,6 +94,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   directory_mapping_off: 403,
   /** DELETE R.spaceMember on a synced-only row while directory sync is live: remove them from the Google group, or change their role. */
   member_synced: 409,
+  /** DELETE R.spaceMember on a member whose only role here comes from an Every space group, or a PUT below that role; details ManagedByOrgMappingDetails { userId, everyRole }. */
+  managed_by_org_mapping: 409,
   /** Resetting or unlinking an org admin's Google identity: only the org owner may (it signs a peer admin out). */
   owner_only: 403,
   /** GET R.me for the org owner refused by a directory customer_mismatch; details BreakGlassRequiredDetails { fresh }. */
@@ -102,6 +108,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   space_name_reserved: 400,
   /** POST R.members (invite) for an address no sign-in method this install offers could ever admit; details InviteUnreachableDetails, message INVITE_UNREACHABLE_MESSAGE[reason]. Nothing is created. */
   invite_unreachable: 400,
+  /** db.query cursor whose anchor doc changed since the page was read (long sort values only): restart without a cursor. */
+  cursor_stale: 409,
+  /** db query() with where/orderBy on a collection over LIMITS.queryCollectionBytes; message QUERY_TOO_LARGE_MESSAGE. */
+  query_too_large: 400,
 };
 
 /**

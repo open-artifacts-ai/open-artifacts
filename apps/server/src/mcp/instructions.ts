@@ -111,6 +111,7 @@ export const SECTIONS = {
   - storage: private per-viewer key/value storage.
 - Undeclared calls fail with capability_denied. ${DATA_WRITERS_NOTE} Anonymous writes are rate-limited.
 - Limits: ${p.dataDoc} per document on this instance (${p.plan} plan${p.dataDocNote}), ${LIMITS.artifactDataBytes / 1024 / 1024} MB per artifact, ${LIMITS.viewerWritesPerMin} writes per minute per viewer.
+- query() with where or orderBy (and artifact_data_query) reads the whole collection, so it works only up to ${LIMITS.queryCollectionBytes / 1024 / 1024} MB per collection; past that it fails with query_too_large. Plan for it: list() and filter in the page, or keep collections small (for example, one per day).
 - The artifact_data_* tools read and write the same db collections; documents are JSON objects. They need the db capability, except for the artifact's owner, who may seed data before declaring it (viewers' pages still need db).`,
   },
   runtimeApi: {

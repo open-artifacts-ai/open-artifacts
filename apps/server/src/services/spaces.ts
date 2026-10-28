@@ -6,6 +6,8 @@ import {
   directoryModeOf,
   type GroupMapping,
   LIST_SPACES_MAX,
+  MANAGED_BY_ORG_MAPPING_MESSAGE,
+  type ManagedByOrgMappingDetails,
   type Member,
   type MySpace,
   newId,
@@ -888,31 +890,59 @@ export async function listSpaceCandidates(
   };
 }
 
+/** Their SpaceMember view, or null when they hold no role here. */
+async function memberViewOf(
+  env: Env,
+  spaceId: string,
+  allMembersRole: string | null,
+  userId: string,
+): Promise<SpaceMember | null> {
+  const row = await stmt(env.DB, MEMBER_PAGE)
+    .bind(spaceId, 1, userId, null, null, null, null, null)
+    .first<MemberRowSql>();
+  // Its callers (PUT or DELETE a member, an admin's self-add) manage the space.
+  return row ? toSpaceMember(env, allMembersRole, row, true) : null;
+}
+
 async function memberView(
   env: Env,
   spaceId: string,
   allMembersRole: string | null,
   userId: string,
 ): Promise<SpaceMember> {
-  const row = await stmt(env.DB, MEMBER_PAGE)
-    .bind(spaceId, 1, userId, null, null, null, null, null)
-    .first<MemberRowSql>();
-  // Its callers (PUT a member, an admin's self-add) manage the space.
-  const m = row && toSpaceMember(env, allMembersRole, row, true);
+  const m = await memberViewOf(env, spaceId, allMembersRole, userId);
   if (!m) throw notFound();
   return m;
 }
 
 const ROWS_OF = `select u.id, u.status,
   (select role from space_members where space_id = ?1 and user_id = u.id and source = 'manual') as manual,
-  (select role from space_members where space_id = ?1 and user_id = u.id and source = 'sync') as sync
+  (select role from space_members where space_id = ?1 and user_id = u.id and source = 'sync') as sync,
+  (select json_group_array(ogm.role) from org_group_mappings ogm
+    join directory_members dm on dm.group_id = ogm.group_id and dm.user_id = u.id) as every
   from users u where u.id = ?2`;
 type Rows = {
   id: string;
   status: string;
   manual: string | null;
   sync: string | null;
+  /** The roles their Every space groups (org mappings) give, as JSON. */
+  every: string | null;
 };
+
+/** Their Every space role: the best org mapping role over their groups. */
+const everyOf = (t: Rows | null | undefined): SpaceRole | null =>
+  maxRole(...rolesIn(t?.every ?? null));
+
+/**
+ * 409 managed_by_org_mapping: an Every space group gives them `everyRole`
+ * here, which no change to this space's rows can remove or lower.
+ */
+const managedByOrgMapping = (userId: string, everyRole: SpaceRole) =>
+  new ApiError("managed_by_org_mapping", MANAGED_BY_ORG_MAPPING_MESSAGE, {
+    userId,
+    everyRole,
+  } satisfies ManagedByOrgMappingDetails);
 
 // The manual row. A non-admin never overwrites a manager row (the handler
 // refuses first; this keeps a racing promotion intact). A same-role write
@@ -976,12 +1006,23 @@ export async function putSpaceMember(
   if (t?.status !== "active") throw notFound();
   const manual = knownRole(t.manual);
   const synced = knownRole(t.sync);
-  // A peer manager (by hand or synced) is an org admin's to change.
+  const every = everyOf(t);
+  // A peer manager (by hand, synced or Every space) is an org admin's to change.
   if (
     !admin &&
-    (role === "manager" || manual === "manager" || synced === "manager")
+    (role === "manager" ||
+      manual === "manager" ||
+      synced === "manager" ||
+      every === "manager")
   )
     throw forbidden("member");
+  // An Every space group's role is a floor, sync live or frozen: below it the
+  // write could never take effect. Equal to it, with no row here, changes
+  // nothing; above it is a manual grant.
+  if (every && rank(role) < rank(every))
+    throw managedByOrgMapping(userId, every);
+  if (role === every && !manual && !synced)
+    return memberView(env, id, r.allMembersRole, userId);
   const override = directoryMode(env) === "frozen" && synced !== null;
   const actor = userActor(u.id);
   const target = { type: "user", id: userId } as const;
@@ -1067,7 +1108,7 @@ export async function deleteSpaceMember(
   id: string,
   userId: string,
   ctx?: Ctx,
-): Promise<void> {
+): Promise<SpaceMember | null> {
   const r = await seeSpace(env, c, id);
   if (r.kind !== "shared") throw personalError("have no members");
   const u = requireSpaceManager(c, r);
@@ -1075,9 +1116,16 @@ export async function deleteSpaceMember(
   const t = await stmt(env.DB, ROWS_OF).bind(id, userId).first<Rows>();
   const manual = knownRole(t?.manual);
   const synced = knownRole(t?.sync);
-  if (!manual && !synced) throw notFound();
-  if (!admin && (manual === "manager" || synced === "manager"))
+  const every = everyOf(t);
+  if (!manual && !synced && !every) throw notFound();
+  if (
+    !admin &&
+    (manual === "manager" || synced === "manager" || every === "manager")
+  )
     throw forbidden("member");
+  // Only an Every space group puts them here: nothing of this space's to
+  // remove, sync live or frozen.
+  if (!manual && !synced && every) throw managedByOrgMapping(userId, every);
   const mode = directoryMode(env);
   const both = mode === "frozen" && synced !== null;
   if (!manual && !both) {
@@ -1138,8 +1186,14 @@ export async function deleteSpaceMember(
       throw forbidden("member");
     throw notFound();
   }
-  if (rank(rowsRole(rowsIn(out.at(-1)))) < rank(rowsRole(rowsIn(out[0]))))
+  const after = rowsIn(out.at(-1));
+  if (rank(rowsRole(after)) < rank(rowsRole(rowsIn(out[0]))))
     await revokeUserLive(env, userId, "removed from space", ctx);
+  // Still here (an Every space group's role, or a live synced row): the role
+  // they keep.
+  return maxRole(rowsRole(after), everyOf(after))
+    ? memberViewOf(env, id, r.allMembersRole, userId)
+    : null;
 }
 
 /**

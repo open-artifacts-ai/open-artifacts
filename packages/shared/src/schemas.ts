@@ -934,7 +934,9 @@ export type ArtifactEventBy = z.infer<typeof ArtifactEventBySchema>;
  * - gone: access changed; the socket then closes with EVENTS_GONE_CLOSE
  *   (4403). reason "deleted": soft delete; "changed": visibility,
  *   capabilities, share revoked or member removed.
- *   Reconnect to re-check access (404 = no longer readable).
+ *   Reconnect to re-check access (404 = no longer readable). With
+ *   `retryAfterMs` (a socket opened just as access changed), wait that long
+ *   first: a sooner reconnect is refused the same way.
  * Sockets also close with 4408 near the signed-URL TTL: reconnect.
  */
 export const ArtifactEventSchema = z.discriminatedUnion("type", [
@@ -949,11 +951,29 @@ export const ArtifactEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("gone"),
     reason: z.enum(["deleted", "changed"]),
+    retryAfterMs: z.number().int().min(0).optional(),
   }),
 ]);
 export type ArtifactEvent = z.infer<typeof ArtifactEventSchema>;
 /** The close code that follows a `gone` frame on R.events. */
 export const EVENTS_GONE_CLOSE = 4403;
+
+/**
+ * The 4403 close reason of a socket (data or events) opened just as the
+ * artifact's access changed: a reconnect sooner than `ms` is refused the
+ * same way. Parse it with retryAfterFromClose.
+ */
+export const accessChangedCloseReason = (ms: number): string =>
+  `access changed; retry after ${Math.max(0, Math.round(ms))} ms`;
+
+const ACCESS_CHANGED_CLOSE_RE = /^access changed; retry after (\d{1,7}) ms$/;
+
+/** The wait (ms) in an accessChangedCloseReason close reason, else null. */
+export function retryAfterFromClose(reason: unknown): number | null {
+  if (typeof reason !== "string") return null;
+  const m = ACCESS_CHANGED_CLOSE_RE.exec(reason);
+  return m ? Number(m[1]) : null;
+}
 
 export const DataQuerySchema = z.strictObject({
   where: WhereSchema.optional(),
@@ -1011,6 +1031,22 @@ export type SearchQueryInput = z.input<typeof SearchQuerySchema>;
 
 export const IdInputSchema = z.strictObject({ id: IdSchema });
 export type IdInput = z.infer<typeof IdInputSchema>;
+
+/**
+ * MCP list_versions. `cursor` is the result's nextCursor: the REST versions
+ * cursor (`before` = the last version of the previous page), as a string.
+ */
+export const ListVersionsInputSchema = z.strictObject({
+  id: IdSchema,
+  cursor: z
+    .string()
+    .regex(
+      /^[1-9][0-9]{0,14}$/,
+      "cursor must be a nextCursor from list_versions",
+    )
+    .optional(),
+});
+export type ListVersionsInput = z.infer<typeof ListVersionsInputSchema>;
 
 export const RestoreVersionInputSchema = z.strictObject({
   id: IdSchema,
