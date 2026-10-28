@@ -5,9 +5,9 @@ const port = Number(process.env.OA_E2E_PORT) || 5199;
 
 export default defineConfig({
   testDir: "e2e",
-  // e2e/real and e2e/spaces run against wrangler dev:
-  // playwright.real.config.ts and playwright.spaces.config.ts.
-  testIgnore: ["real/**", "spaces/**"],
+  // e2e/real and e2e/spaces run against wrangler dev (playwright.real and
+  // playwright.spaces configs); e2e/staging against staging installs (T19).
+  testIgnore: ["real/**", "spaces/**", "staging/**"],
   use: { baseURL: `http://localhost:${port}`, browserName: "chromium" },
   webServer: {
     command: `pnpm exec vite --port ${port} --strictPort`,

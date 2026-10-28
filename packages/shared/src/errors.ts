@@ -33,6 +33,7 @@ export const ERROR_CODES = [
   // Publish format guard.
   "unsupported_format",
   "binary_entry",
+  "space_name_reserved",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -96,6 +97,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   unsupported_format: 400,
   /** The entry's content doesn't fit its format (binary as code, markdown or html; a pdf without %PDF; a binary upload content type); details { path, reason } (sniff.ts EntryRefusal). */
   binary_entry: 400,
+  /** POST R.spaces or a PATCH R.space rename to "Personal" (trimmed, any case); details { field: "name" }, message SPACE_NAME_RESERVED_MESSAGE. */
+  space_name_reserved: 400,
 };
 
 /** 400 unsupported_format message. */

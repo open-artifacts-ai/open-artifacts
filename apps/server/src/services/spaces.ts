@@ -2118,3 +2118,43 @@ export async function publishableSpaces(
   }
   return out.slice(0, LIST_SPACES_MAX);
 }
+
+/**
+ * GET /me `spaces`: the shared spaces where the caller has a role (rank >= 1,
+ * roleRankSql, so a cap drops allMembersRole), by name, at most
+ * LIST_SPACES_MAX. Empty without the spaces feature. One statement.
+ */
+export async function mySharedSpaces(env: Env, c: Caller): Promise<MySpace[]> {
+  if (c.kind !== "user" || !spacesOn(env)) return [];
+  const rank = roleRankSql(c, sql`${spaces.id}`);
+  const rows = await getDb(env)
+    .select({
+      id: spaces.id,
+      name: spaces.name,
+      publicLinks: spaces.publicLinks,
+      rank,
+    })
+    .from(spaces)
+    .where(
+      and(
+        eq(spaces.kind, "shared"),
+        isNull(spaces.deletedAt),
+        sql`${rank} >= 1`,
+      ),
+    )
+    .orderBy(spaces.name, spaces.id)
+    .limit(LIST_SPACES_MAX);
+  const out: MySpace[] = [];
+  for (const r of rows) {
+    const role = roleOf(r.rank);
+    if (role)
+      out.push({
+        id: r.id,
+        kind: "shared",
+        name: r.name,
+        publicLinks: r.publicLinks === 1,
+        myRole: role,
+      });
+  }
+  return out;
+}

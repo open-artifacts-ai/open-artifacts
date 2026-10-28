@@ -30,6 +30,10 @@ import {
   UNSUPPORTED_FORMAT_MESSAGE,
 } from "../errors.js";
 import { type Format, inferFormat } from "../formats.js";
+import {
+  SPACE_NAME_RESERVED_MESSAGE,
+  spaceNameReserved,
+} from "../hosted/spaces.js";
 import { newId, newPat } from "../ids.js";
 import {
   INLINE_TOO_LARGE_MESSAGE,
@@ -207,6 +211,13 @@ async function body<T extends z.ZodType>(req: Request, schema: T) {
     r.error.issues.some((i) => i.message === INLINE_TOO_LARGE_MESSAGE)
   )
     return { error: err("too_large", INLINE_TOO_LARGE_MESSAGE) };
+  // A space named "Personal" (create or rename), as on the server.
+  if (!r.success && spaceNameReserved(r.error.issues))
+    return {
+      error: err("space_name_reserved", SPACE_NAME_RESERVED_MESSAGE, {
+        field: "name",
+      }),
+    };
   if (!r.success)
     return {
       error: err("bad_request", "Invalid request body", r.error.issues),
