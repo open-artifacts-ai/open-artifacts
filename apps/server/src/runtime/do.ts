@@ -1281,9 +1281,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           );
         pair[1].close(
           4403,
-          retry === null
-            ? "access revoked"
-            : accessChangedCloseReason(retry),
+          retry === null ? "access revoked" : accessChangedCloseReason(retry),
         );
       } catch {
         // already closed
