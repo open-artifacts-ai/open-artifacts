@@ -11,6 +11,7 @@ import {
   MemberSchema,
   type MePatch,
   MeSchema,
+  type NoticeId,
   type OAuthClient,
   OAuthClientSchema,
   PageSchema,
@@ -414,6 +415,32 @@ export const useRemoveMember = (onOwnerOnly?: (id: string) => void) =>
     "Couldn't remove the member.",
     onOwnerOnly,
   );
+
+/**
+ * POST R.noticeDismiss (parity 2): the owner's one-time notice goes for good.
+ * Hidden at once; /me refetches to confirm. A failure toasts and it returns.
+ */
+export const useDismissNotice = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (notice: NoticeId) =>
+      api.send("POST", R.noticeDismiss(notice), undefined),
+    onMutate: (notice) => {
+      const before = qc.getQueryData<Me>(qk.me);
+      if (before?.notices && notice === "guest_shares")
+        qc.setQueryData<Me>(qk.me, {
+          ...before,
+          notices: { ...before.notices, guestShares: undefined },
+        });
+      return { before };
+    },
+    onError: (e, _n, ctx) => {
+      if (ctx?.before) qc.setQueryData(qk.me, ctx.before);
+      failToast(e, "Couldn't dismiss the notice.");
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.me }),
+  });
+};
 
 /** PATCH /me; the response is the new Me, so it replaces the cache. Errors are the caller's to show. */
 export const useUpdateMe = () => {
