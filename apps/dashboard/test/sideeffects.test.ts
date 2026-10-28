@@ -1,4 +1,9 @@
-import { type ArtifactSummary, LIMITS, R } from "@oa/shared";
+import {
+  type ArtifactSummary,
+  accessChangedCloseReason,
+  LIMITS,
+  R,
+} from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiClientError } from "../src/api/client";
 import { createBridge } from "../src/viewer/bridge";
@@ -217,7 +222,7 @@ describe("bridge follow-ups", () => {
     static all: FakeWS[] = [];
     onopen: (() => void) | null = null;
     onmessage: ((e: { data: unknown }) => void) | null = null;
-    onclose: ((e: { code: number }) => void) | null = null;
+    onclose: ((e: { code: number; reason?: string }) => void) | null = null;
     constructor(public url: string) {
       FakeWS.all.push(this);
     }
@@ -294,6 +299,28 @@ describe("bridge follow-ups", () => {
     expect(onAccessLost).toHaveBeenCalledTimes(1);
     expect(FakeWS.all).toHaveLength(2);
   });
+  // #816: a data socket opened just as access changed is closed 4403 with a
+  // retry hint in its reason; the reconnect holds at least that long.
+  it("a 4403 with a retry hint reconnects no sooner than it says", async () => {
+    mk({ onAccessLost: vi.fn() });
+    const ws = await sub();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    ws.onclose?.({ code: 4403, reason: accessChangedCloseReason(3_000) });
+    vi.advanceTimersByTime(2_999);
+    expect(FakeWS.all).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeWS.all).toHaveLength(2);
+  });
+
+  it("a 4403 without a hint (access revoked) keeps the usual backoff", async () => {
+    mk({ onAccessLost: vi.fn() });
+    const ws = await sub();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    ws.onclose?.({ code: 4403, reason: "access revoked" });
+    vi.advanceTimersByTime(1_000);
+    expect(FakeWS.all).toHaveLength(2);
+  });
+
   it("one 4403 burst across subscriptions fires onAccessLost once", async () => {
     const onAccessLost = vi.fn();
     mk({ onAccessLost });

@@ -14,6 +14,7 @@ import {
   RUNTIME_PARAMS,
   RUNTIME_RESULTS,
   type RuntimeMethod,
+  retryAfterFromClose,
   type ShellToArtifact,
   StorageEntrySchema,
   StorageKeySchema,
@@ -243,9 +244,12 @@ export function createBridge(opts: BridgeOptions) {
         s.offline = true;
         reply({ oa: 1, type: "event", event: "db.offline", collection: col });
       }
-      const delay = Math.min(
-        BACKOFF_CAP_MS,
-        BACKOFF_BASE_MS * 2 ** s.attempt++,
+      // A 4403 for a socket opened just as access changed says how long to
+      // hold off (#816): never sooner, or it closes again at once.
+      const hold = e?.code === 4403 ? (retryAfterFromClose(e.reason) ?? 0) : 0;
+      const delay = Math.max(
+        hold,
+        Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** s.attempt++),
       );
       s.timer = setTimeout(() => {
         if (!disposed && s.refs > 0) connect(col, s);
