@@ -1,20 +1,32 @@
-import { R } from "@oa/shared";
+import { R, TIER_FEATURES, TierSchema } from "@oa/shared";
 import { A, api, expect, person, test } from "./fixtures";
 
-// The hosted-only UI on rl-a (FEATURES spaces, usage_off, guests_read_only).
+// The hosted-only UI on rl-a: its tier and features, usage_off, the hosting
+// line. M1 has no tier UI (no self-serve or billing), so the tier is an API check.
 
 // Item 36: direct-mode installs show no hosting line until AuthProviders
 // says which kind of install it is. Drop the marker when that lands.
 const HOSTED_FLAG = "item 36: AuthProviders has no hosted flag yet";
 
-test("Me reports rl-a's features", async ({ browser }) => {
+// The tier rl-a should be on (CI sets it once Platform has applied TIER).
+// Unset: rl-a has no tier yet and today's FEATURES.
+const TIER = process.env.T19_EXPECT_TIER
+  ? TierSchema.parse(process.env.T19_EXPECT_TIER)
+  : null;
+
+test("Me reports rl-a's tier, and the features follow from it", async ({
+  browser,
+}) => {
   const admin = await person(browser, "admin", "admin");
   const me = (await (await api(admin, R.me)).json()) as {
-    instance: { features: string[] };
+    instance: { features: string[]; tier?: string | null };
   };
-  expect([...me.instance.features].sort()).toEqual(
-    ["guests_read_only", "spaces", "usage_off"].sort(),
-  );
+  expect(me.instance.tier ?? null).toBe(TIER);
+  // Hosted adds usage_off on every tier; /me adds guests_read_only.
+  const want = TIER
+    ? [...TIER_FEATURES[TIER], "usage_off", "guests_read_only"]
+    : ["guests_read_only", "spaces", "usage_off"];
+  expect([...me.instance.features].sort()).toEqual([...want].sort());
 });
 
 test("usage_off: no Usage in Settings, the page goes to Profile, and R.usage is 404", async ({
@@ -45,6 +57,3 @@ test("the sign-in page says it's hosted by Open Artifacts", async ({
   // Counted once the page is up, not waited for: a timeout isn't an expected failure.
   expect(await page.getByText("Hosted by Open Artifacts").count()).toBe(1);
 });
-
-// Platform's TIER var: assert the tier copy once Me reports it.
-test.fixme("the tier copy matches rl-a's tier", async () => {});
