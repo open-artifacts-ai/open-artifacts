@@ -42,7 +42,11 @@ import {
   type DirectoryMode,
   type FeatureFlag,
   type GroupRef,
+  GUEST_SHARES_NOTICE_LIMIT,
+  type GuestSharesNotice,
   type MySpace,
+  type NoticeId,
+  NoticeIdSchema,
   orderSignInMethods,
   type SignInProviderId,
   type SpaceRef,
@@ -129,7 +133,14 @@ export type HostedMockOptions = {
    * customer_mismatch removed.
    */
   pendingCustomerChange?: NonNullable<SyncStatus["pendingCustomerChange"]>;
-  /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on when google or email is enabled). */
+  /**
+   * Parity 2: seed this many guests, each holding an editor share on the
+   * caller's "Landing page" (default 0). With selfHosted, the uncapped owner
+   * then sees Me.notices.guestShares (at most 50 items, `more` past that)
+   * until POST R.noticeDismiss("guest_shares").
+   */
+  guestShares?: number;
+  /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on for every install). */
   features?: FeatureFlag[];
 };
 
@@ -236,6 +247,29 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     identities: [],
   };
   members.push(carol, dan, erin);
+  // Parity 2: guests holding editor shares (the owner notice's source).
+  const landing = artifacts.find((a) => a.title === "Landing page");
+  for (let i = 1; landing && i <= (o.guestShares ?? 0); i++) {
+    const email = `guest${i}@outside.example`;
+    members.push({
+      id: `Gs${String(i).padStart(4, "0")}AbCdEfGhIj`,
+      email,
+      name: email,
+      role: "guest",
+      lastSeenAt: null,
+      status: "active",
+      identities: [],
+    });
+    const list = shares[landing.id] ?? [];
+    shares[landing.id] = list;
+    list.push({
+      email,
+      role: "editor",
+      createdAt: new Date(Date.parse(T0) + i * 60_000).toISOString(),
+    });
+  }
+  /** Notices dismissed on this install (R.noticeDismiss). */
+  const dismissed = new Set<NoticeId>();
   if (o.actAs === "admin") me.user.role = "admin";
   /** Departed members' personal artifacts, counts only (admins never see titles). */
   const departed = new Map([[carol.id, { live: 2, deleted: 1 }]]);
@@ -477,8 +511,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     (me.user.role !== "owner" || cap() !== null);
   const findSpace = (id: unknown) => spaces.find((s) => s.id === id);
   const memberOf = (id: string) => members.find((m) => m.id === id);
-  /** guests_read_only: P2's authConfig.guestsReadOnly, true whenever google or email sign-in is on. */
-  const guestsReadOnly = () => mode === "direct" && providerIds.length > 0;
+  /** guests_read_only: authConfig.guestsReadOnly, true on every install (parity 2). */
+  const guestsReadOnly = () => true;
   const restrictionOf = (userId: string) => {
     const gs = restricted
       .filter((g) => groupMembers.get(g.groupId)?.includes(userId))
@@ -727,6 +761,36 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         };
 
   /** Refresh Me's hosted fields and every artifact's space/can. Runs before each request. */
+  /** Shares an active guest holds above viewer on live artifacts, newest first. */
+  const guestSharesNotice = (): GuestSharesNotice | null => {
+    const rows = artifacts
+      .filter((a) => a.deletedAt === null)
+      .flatMap((a) =>
+        (shares[a.id] ?? [])
+          .filter(
+            (s) =>
+              s.role === "editor" &&
+              members.some(
+                (m) =>
+                  m.email === s.email &&
+                  m.role === "guest" &&
+                  (m.status ?? "active") === "active",
+              ),
+          )
+          .map((s) => ({ a, s })),
+      )
+      .sort((x, y) => y.s.createdAt.localeCompare(x.s.createdAt));
+    if (rows.length === 0) return null;
+    return {
+      items: rows.slice(0, GUEST_SHARES_NOTICE_LIMIT).map(({ a, s }) => ({
+        artifactId: a.id,
+        title: a.title,
+        guestEmail: s.email,
+        role: "editor" as const,
+      })),
+      more: rows.length > GUEST_SHARES_NOTICE_LIMIT,
+    };
+  };
   const refresh = () => {
     me.instance.hosted = !o.selfHosted;
     me.instance.tier = o.tier === undefined ? "business" : o.tier;
@@ -754,6 +818,16 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       cap: myCap,
       expiresAt: me.auth?.expiresAt ?? "2026-12-31T00:00:00.000Z",
     };
+    // Parity 2: the uncapped owner's notices, self-host only, computed live.
+    const guestShares =
+      o.selfHosted &&
+      me.user.role === "owner" &&
+      myCap === null &&
+      !dismissed.has("guest_shares")
+        ? guestSharesNotice()
+        : null;
+    if (guestShares) me.notices = { guestShares };
+    else delete me.notices;
     me.personalSpaceId = me.user.id;
     me.spaces = spaces
       .filter((s) => s.kind === "shared" && roleIn(s))
@@ -1985,6 +2059,18 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       authed(() => {
         if (me.user.role !== "owner") return notFound();
         disconnect();
+        return noContent();
+      }),
+    ),
+    // Parity 2: dismiss an owner notice, once per install; else 404.
+    http.post(
+      "*/api/v1/notices/:notice/dismiss",
+      authed(({ params }) => {
+        const id = NoticeIdSchema.safeParse(params.notice);
+        if (me.user.role !== "owner" || cap() !== null || !id.success)
+          return notFound();
+        dismissed.add(id.data);
+        refresh();
         return noContent();
       }),
     ),

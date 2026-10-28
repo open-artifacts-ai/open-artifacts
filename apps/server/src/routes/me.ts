@@ -3,6 +3,7 @@ import {
   type Me,
   type Member,
   MePatchSchema,
+  NoticeIdSchema,
   parseTier,
   planOf,
   R,
@@ -19,10 +20,11 @@ import {
 import { instanceDirectory, readHealth } from "../directory/health.js";
 import { emailEnabled } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
-import { appOrigin } from "../http/errors.js";
+import { ApiError, appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
+import { dismissNotice, ownerNotices } from "../services/notices.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
 import { getProfile, type Profile, setDisplayName } from "../services/users.js";
@@ -65,10 +67,15 @@ async function toMe(
     },
     ...profile,
   };
+  const cap = capOfCaller(caller(c));
+  // Parity 2: the org owner's one-time notices, on every install.
+  if (orgCan(user, "notices.manage", { cap })) {
+    const notices = await ownerNotices(c.env, kv);
+    if (notices) me.notices = notices;
+  }
   // Hosted M1 (#359): optional, appended last, only on hosted or
   // direct-sign-in installs, so Access-only installs keep today's shape.
   if (!showsSignInFields(c.env)) return me;
-  const cap = capOfCaller(caller(c));
   const exp = c.var.sessionExp;
   me.instance.hosted = c.env.HOSTED === "1";
   // Reported only (behaviour follows FEATURES, which provisioning derives
@@ -118,5 +125,17 @@ export function mountMe(app: AppType): void {
       displayName,
     );
     return c.json(await toMe(c, member, profile));
+  });
+
+  // Parity 2: dismiss an owner notice for this install (R.noticeDismiss).
+  // The gate already refused anyone but the uncapped org owner (404).
+  app.post("/api/v1/notices/:notice/dismiss", async (c) => {
+    const user = requireUser(c);
+    if (!orgCan(user, "notices.manage", { cap: capOfCaller(caller(c)) }))
+      throw new ApiError("not_found", "Not found");
+    const id = NoticeIdSchema.safeParse(c.req.param("notice"));
+    if (!id.success) throw new ApiError("not_found", "Not found");
+    await dismissNotice(c.env, id.data);
+    return c.body(null, 204);
   });
 }

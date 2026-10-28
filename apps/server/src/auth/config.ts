@@ -25,7 +25,11 @@ export type AuthConfig = {
    * never a code request that silently sends nothing.
    */
   emailCodes: boolean;
-  /** Guests capped at viewer: whenever google or email is on. Not configurable. */
+  /**
+   * Guests capped at viewer on every install (parity 2): Access-only too,
+   * whatever share role they hold. Share rows are never rewritten. Not
+   * configurable.
+   */
   guestsReadOnly: boolean;
   features: FeatureFlag[];
   /** Null unless google is enabled and fully configured (fail closed). */
@@ -204,7 +208,6 @@ function build(env: Env): AuthConfig {
   const google = providers.has("google")
     ? googleConfig(env, domains, problems)
     : null;
-  const direct = providers.has("google") || providers.has("email");
   // Same rule as email/send.ts emailEnabled (not imported: it pulls in services).
   const canSend = !!env.EMAIL && !!env.EMAIL_FROM;
   if (providers.has("email") && !canSend)
@@ -224,7 +227,7 @@ function build(env: Env): AuthConfig {
       !providers.has("google") &&
       turnstile !== null &&
       domains.length > 0,
-    guestsReadOnly: direct,
+    guestsReadOnly: true,
     features: parseFeatures(env.FEATURES),
     google,
     turnstile,

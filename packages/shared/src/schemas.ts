@@ -8,6 +8,7 @@ import {
   InstanceSignInSchema,
   MeAuthSchema,
   MemberStatusSchema,
+  MeNoticesSchema,
   MySpaceSchema,
   RestrictionSchema,
   SignInProviderIdSchema,
@@ -583,6 +584,8 @@ export const MeSchema = z.object({
   personalSpaceId: z.string().optional(),
   /** Hosted M1: shared spaces the caller has a role in, by name, at most 200 (then page R.spaces). */
   spaces: z.array(MySpaceSchema).optional(),
+  /** Parity 2: one-time notices, org owner only; absent when there are none. */
+  notices: MeNoticesSchema.optional(),
 });
 export type Me = z.infer<typeof MeSchema>;
 

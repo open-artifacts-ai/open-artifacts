@@ -82,6 +82,8 @@ export type OrgAction =
   | "broker.check"
   /** See why configured sign-in is off (Me.instance.signIn.problems): the org owner. */
   | "signin.problems"
+  /** See and dismiss owner notices (Me.notices, R.noticeDismiss): the org owner. */
+  | "notices.manage"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"
@@ -161,7 +163,8 @@ const maxRole = (
 
 /**
  * The caller's cap: restricted (manual flag or a restricted group) or a guest
- * while P2's authConfig.guestsReadOnly is on. Null when uncapped.
+ * (authConfig.guestsReadOnly, on for every install since parity 2). Null when
+ * uncapped.
  */
 export function capOf(
   m: Pick<Member, "role"> & {
@@ -376,6 +379,8 @@ export function orgCan(
     case "broker.check":
     // Sign-in config problems: the owner, who can fix them (review item 35).
     case "signin.problems":
+    // Owner notices (Me.notices) and their dismissal (parity 2).
+    case "notices.manage":
     // Acting on an org owner or admin (role, removal, suspension, Google
     // link reset): owner only (#475).
     case "members.manageAdmins":

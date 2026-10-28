@@ -913,6 +913,7 @@ const fill = (path: string, t: OrgTarget) =>
     .replace(":id", t.memberId)
     .replace(":userId", t.memberId)
     .replace(":groupId", "probe-group")
+    .replace(":notice", "guest_shares")
     .replace(":grantId", "probe-grant")
     // An unknown query key: 400 past the guard, before any Google call.
     .replace(/\/directory\/groups$/, "/directory/groups?probe=1");
@@ -1002,6 +1003,7 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["POST /api/v1/directory/disconnect", org("directory.disconnect")],
   ["DELETE /api/v1/directory", org("directory.disconnect")],
   ["POST /api/v1/admin/broker-check", org("broker.check")],
+  ["POST /api/v1/notices/:notice/dismiss", org("notices.manage")],
   ["POST /api/v1/artifacts", org("artifact.create")],
   ["GET /api/v1/tokens", U, [200]],
   ["POST /api/v1/tokens", org("tokens.create")],
