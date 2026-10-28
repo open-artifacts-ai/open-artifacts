@@ -31,7 +31,13 @@ const READS: Record<string, string> = {
   "auth/sign-in.ts: authProviders":
     "reports: AuthProviders.hosted (review item 36c)",
   "cron.ts: run":
+    "no access change: hosted's nightly call doesn't mark the day for RECOVERY_CRON, which a hosted install never gets (O1)",
+  "cron.ts: daily":
     "tightens: the daily cron skips the GitHub release check (review item 39)",
+  "auth/config.ts: build":
+    "reports: no bot-check problem on hosted, where codes already require Turnstile (A4)",
+  "services/spaces.ts: directoryMode":
+    "tightens: hosted takes the directory mode from FEATURES (its tier) only, never from the transport (P4)",
   "mcp/skill.ts: (module)":
     "type only: SkillEnv picks HOSTED for the upgrade line",
   "mcp/skill.ts: renderSkill":
