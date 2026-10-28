@@ -1019,6 +1019,20 @@ describe("Access refusals in direct mode", () => {
     expect(setCookies(r).some((c) => c.startsWith(b.cname))).toBe(true);
   });
 
+  it("a hostile next (//evil.com) is made safe on the refusal redirect", async () => {
+    const email = `dh-${newId().slice(0, 6)}@x.com`;
+    const b = await begin({ email }, "//evil.com", direct, undefined, {
+      via: true,
+    });
+    const r = await callback(b, b.oidc, direct);
+    expect(r.status).toBe(302);
+    const loc = r.headers.get("location") ?? "";
+    expect(loc).toBe(want("/"));
+    expect(new URL(loc, "https://app.localhost").host).toBe("app.localhost");
+    expect(loc).not.toContain("evil.com");
+    expect(cookieVal(r, SESSION)).toBeUndefined();
+  });
+
   it("a suspended member: sign-in page with error and next, no session", async () => {
     const email = `ds-${newId().slice(0, 6)}@x.com`;
     const { userId } = await login(email, "member");
