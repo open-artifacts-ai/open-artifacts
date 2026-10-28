@@ -94,6 +94,27 @@ const source = (m: SpaceMember, frozen: boolean) => {
 /** Another manager's row is an admin's to change. */
 const MANAGER_ONLY = "Only an admin can change another manager's access.";
 
+/** Every space groups (org mappings, review item 19): the highest role they give, or null. */
+const everyRole = (m: SpaceMember): SpaceRole | null =>
+  m.groups
+    .filter((g) => g.via === "every")
+    .reduce<SpaceRole | null>(
+      (best, g) => (best === null || RANK[g.role] > RANK[best] ? g.role : best),
+      null,
+    );
+/** Here only through an Every space group: no manual role, no group of this space's own. */
+const everyOnly = (m: SpaceMember) =>
+  !m.manualRole &&
+  m.groups.length > 0 &&
+  m.groups.every((g) => g.via === "every");
+/** Where an Every space group is changed: org admins only (R.orgMappings). */
+const EVERY_SPACE = "/settings/spaces#oa-every-space";
+const SET_BY_EVERY = "Set by an Every space group.";
+const everyLine = (admin: boolean) =>
+  admin
+    ? `${SET_BY_EVERY} Change it in Settings › Spaces › Every space.`
+    : `${SET_BY_EVERY} Ask an admin to change it.`;
+
 /** The per-row reason line under the email. */
 const reason = (
   m: SpaceMember,
@@ -130,8 +151,17 @@ const order = (a: SpaceMember, b: SpaceMember) => {
 };
 
 /** What a refused member change says, by the row. `promote`: the change was a grant of Manager. */
-const refusal = (e: unknown, m: SpaceMember, promote = false) => {
+const refusal = (
+  e: unknown,
+  m: SpaceMember,
+  admin: boolean,
+  promote = false,
+) => {
   if (e instanceof ApiClientError) {
+    // 409 managed_by_org_mapping (review item 19): removing or lowering what an
+    // Every space group gives can't take effect.
+    if ((e.code as string) === "managed_by_org_mapping")
+      return everyLine(admin);
     if (e.code === "member_synced")
       return `${first(m)} is here through ${syncShort(m)}. Change it in Google, or remove the group under Who gets access.`;
     if (e.code === "space_forbidden")
@@ -164,7 +194,7 @@ function PersonRow({
   const del = useDeleteSpaceMember(space.id);
   // A 403 means the list is stale: refetch so the row goes read-only.
   const refused = (e: unknown, promote = false) => {
-    setProblem(refusal(e, m, promote));
+    setProblem(refusal(e, m, admin, promote));
     if (e instanceof ApiClientError && e.code === "space_forbidden")
       void qc.invalidateQueries({ queryKey: qk.spaceMembers(space.id) });
   };
@@ -181,7 +211,13 @@ function PersonRow({
   const allowed = admin ? ALL_ROLES : ALL_ROLES.filter((r) => r !== "manager");
   // PUT sets the manual row and the highest role wins: a synced role can only
   // be raised here (frozen kept rows take any role).
-  const floor = !frozen && m.syncRole ? RANK[m.syncRole] : 0;
+  // An Every space group's role is a floor everywhere, frozen included: the
+  // server refuses anything below it (409 managed_by_org_mapping).
+  const every = everyRole(m);
+  const floor = Math.max(
+    !frozen && m.syncRole ? RANK[m.syncRole] : 0,
+    every ? RANK[every] : 0,
+  );
   const options = allowed.filter((r) => RANK[r] >= floor);
   const shown = pending ?? m.role;
   const select =
@@ -212,41 +248,54 @@ function PersonRow({
 
   // The one removal this row offers, and its confirm.
   const kept = frozen && !!m.syncRole;
-  const removal = !canAct
-    ? null
-    : you && (m.manualRole || kept)
-      ? {
-          item: `Leave ${space.name}…`,
-          title: `Leave ${space.name}?`,
-          body: "You won't be able to manage this space after this. An admin can add you back.",
-          button: "Leave",
-        }
-      : kept
+  const removal =
+    !canAct || everyOnly(m)
+      ? null
+      : you && (m.manualRole || kept)
         ? {
-            item: `Remove from ${space.name}…`,
-            title: `Remove ${name} from ${space.name}?`,
-            body: `${first(m)} loses access to ${space.name} within a minute. If sync comes back and ${syncShort(m)} still includes ${first(m)}, ${first(m)} gets ${ROLE_LABEL[m.syncRole as SpaceRole]} again.`,
-            button: "Remove",
+            item: `Leave ${space.name}…`,
+            title: `Leave ${space.name}?`,
+            body: "You won't be able to manage this space after this. An admin can add you back.",
+            button: "Leave",
           }
-        : m.manualRole && m.syncRole
+        : kept
           ? {
-              item: "Remove manually added role…",
-              hint: `Also synced from ${syncShort(m)}. ${first(m)} keeps ${ROLE_LABEL[m.syncRole]} through it.`,
-              title: `Remove ${first(m)}'s manually added role?`,
-              body: `${first(m)} goes from ${ROLE_LABEL[m.manualRole]} to ${ROLE_LABEL[m.syncRole]}, the role ${syncShort(m)} gives. To take ${first(m)} out of the space, change ${syncShort(m)} in Google or under Who gets access.`,
-              button: "Remove role",
+              item: `Remove from ${space.name}…`,
+              title: `Remove ${name} from ${space.name}?`,
+              body: `${first(m)} loses access to ${space.name} within a minute. If sync comes back and ${syncShort(m)} still includes ${first(m)}, ${first(m)} gets ${ROLE_LABEL[m.syncRole as SpaceRole]} again.`,
+              button: "Remove",
             }
-          : m.manualRole
+          : m.manualRole &&
+              m.syncRole &&
+              every &&
+              everyOnly({ ...m, manualRole: null })
             ? {
-                item: `Remove from ${space.name}…`,
-                title: `Remove ${name} from ${space.name}?`,
-                body: m.allMembers
-                  ? `${first(m)} keeps ${ROLE_LABEL[m.allMembers]} through All members. Artifacts ${first(m)} made here stay in the space.`
-                  : `${first(m)} loses access to ${space.name} within a minute. Artifacts ${first(m)} made here stay in the space.`,
-                button: "Remove",
+                item: "Remove manually added role…",
+                hint: `${first(m)} keeps ${ROLE_LABEL[every]} from an Every space group.`,
+                title: `Remove ${first(m)}'s manually added role?`,
+                body: `${first(m)} goes from ${ROLE_LABEL[m.manualRole]} to ${ROLE_LABEL[every]}. They keep ${ROLE_LABEL[every]} from an Every space group.`,
+                button: "Remove role",
               }
-            : null;
-  const syncedOnly = canAct && !removal && !!m.syncRole && !frozen;
+            : m.manualRole && m.syncRole
+              ? {
+                  item: "Remove manually added role…",
+                  hint: `Also synced from ${syncShort(m)}. ${first(m)} keeps ${ROLE_LABEL[m.syncRole]} through it.`,
+                  title: `Remove ${first(m)}'s manually added role?`,
+                  body: `${first(m)} goes from ${ROLE_LABEL[m.manualRole]} to ${ROLE_LABEL[m.syncRole]}, the role ${syncShort(m)} gives. To take ${first(m)} out of the space, change ${syncShort(m)} in Google or under Who gets access.`,
+                  button: "Remove role",
+                }
+              : m.manualRole
+                ? {
+                    item: `Remove from ${space.name}…`,
+                    title: `Remove ${name} from ${space.name}?`,
+                    body: m.allMembers
+                      ? `${first(m)} keeps ${ROLE_LABEL[m.allMembers]} through All members. Artifacts ${first(m)} made here stay in the space.`
+                      : `${first(m)} loses access to ${space.name} within a minute. Artifacts ${first(m)} made here stay in the space.`,
+                    button: "Remove",
+                  }
+                : null;
+  const syncedOnly =
+    canAct && !removal && !!m.syncRole && !frozen && !everyOnly(m);
   const manage = admin && !active;
   const menu = !!removal || syncedOnly || manage;
 
@@ -356,6 +405,21 @@ function PersonRow({
           </DropdownMenu>
         )}
       </div>
+      {everyOnly(m) && active && !problem && (
+        <p className={`col-span-full m-0 ${muted}`}>
+          {admin ? (
+            <>
+              {SET_BY_EVERY} Change it in{" "}
+              <AppLink href={EVERY_SPACE} className="underline">
+                Settings › Spaces › Every space
+              </AppLink>
+              .
+            </>
+          ) : (
+            everyLine(false)
+          )}
+        </p>
+      )}
       {problem && (
         <p role="alert" className={`col-span-full m-0 ${errorText}`}>
           {problem}
