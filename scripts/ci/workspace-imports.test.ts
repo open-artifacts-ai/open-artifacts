@@ -109,8 +109,16 @@ describe("test-affected.sh", () => {
   const run = (env: Record<string, string>) => {
     const sb = sandbox({ pnpm });
     const out = join(sb.dir, "out");
+    // Every input explicit: the job running this test sets BASE_SHA (and the
+    // event), which must never leak in.
     const r = sb.run(["bash", script("test-affected.sh")], {
-      env: { GITHUB_OUTPUT: out, ...env },
+      env: {
+        GITHUB_EVENT_NAME: "",
+        BASE_SHA: "",
+        GITHUB_STEP_SUMMARY: "",
+        GITHUB_OUTPUT: out,
+        ...env,
+      },
     });
     let o = "";
     try {
