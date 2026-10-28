@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.71.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.70.0...v0.71.0) (2026-10-28)
+
+
+### Features
+
+* **upload:** say up front when the viewer can't open a file; map [#775](https://github.com/open-artifacts-ai/open-artifacts/issues/775)'s refusals ([#780](https://github.com/open-artifacts-ai/open-artifacts/issues/780)) ([46111de](https://github.com/open-artifacts-ai/open-artifacts/commit/46111de41c19b1a64823af6575934f16c5d9ec1c))
+
+
+### Bug Fixes
+
+* **members:** a removed member or guest stays removed (their shares are dropped) ([#795](https://github.com/open-artifacts-ai/open-artifacts/issues/795)) ([f8278d7](https://github.com/open-artifacts-ai/open-artifacts/commit/f8278d7798c89a82d9c23e5483fa524bf286933a))
+
 ## [0.70.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.69.1...v0.70.0) (2026-10-28)
 
 
