@@ -548,6 +548,37 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       u && u.role !== "guest" && !restrictionOf(u.id) ? s.allMembersRole : null;
     return maxRole(r?.manualRole, r?.syncRole, all);
   };
+  /** Shared-space artifacts the signed-in caller has no level on (refresh). */
+  const hidden = new Set<string>();
+  /**
+   * decide() for a live artifact in shared space `s`, as the caller: a
+   * manager role; else the better of their space role and share; else team
+   * visibility for uncapped members; else public; else none. A cap lowers any
+   * level to viewer.
+   */
+  const sharedLevel = (a: ArtifactSummary, s: SpaceRow): AccessLevel | null => {
+    const capped = cap() !== null;
+    const member = me.user.role !== "guest";
+    const role = roleIn(s);
+    const share =
+      c.shares[a.id]?.find(
+        (x) => x.email.toLowerCase() === me.user.email.toLowerCase(),
+      )?.role ?? null;
+    let l: AccessLevel | null;
+    if (role === "manager") l = "manager";
+    else {
+      const best = maxRole(role, share);
+      l =
+        best === "editor" || best === "viewer"
+          ? best
+          : a.visibility === "team" && member && !capped
+            ? "viewer"
+            : a.visibility === "public"
+              ? "viewer"
+              : null;
+    }
+    return l && capped ? "viewer" : l;
+  };
   const ref = (s: SpaceRow): SpaceRef => ({
     id: s.id,
     kind: s.kind,
@@ -710,12 +741,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         findSpace(a.owner.id) ??
         (spaces[0] as SpaceRow);
       a.space = ref(s);
-      // A shared space's artifact: the signed-in caller's level there (a role,
-      // or viewer through team/public visibility), as the server's decide().
+      // A shared space's live artifact: the caller's level, decide()'s order
+      // (never a stale access); none hides it (404, unlisted).
       if (s.kind === "shared" && a.deletedAt === null) {
-        const l = levelIn(s);
-        if (l) a.access = l;
-        else if (a.visibility !== "private") a.access = "viewer";
+        const l = sharedLevel(a, s);
+        if (l) {
+          a.access = l;
+          hidden.delete(a.id);
+        } else hidden.add(a.id);
       }
       a.can = artifactCan(a.access, {
         personal: s.kind === "personal",
@@ -726,6 +759,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   };
 
   // Seed: "Meeting notes" in Engineering, where the caller is manager.
+  // (refresh recomputes every shared-space level per caller: sharedLevel.)
   const notes = artifacts.find((a) => a.title === "Meeting notes");
   if (notes) {
     notes.space = ref(findSpace(ENG) as SpaceRow);
@@ -2006,6 +2040,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     handlers,
     refresh,
     trashScope,
+    /** No level for the signed-in caller: 404 and unlisted (sharedLevel). */
+    hidden: (id: string) => hidden.has(id),
     shareRecipient,
     signInMethods,
     checkPublish,

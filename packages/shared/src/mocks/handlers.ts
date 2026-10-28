@@ -358,7 +358,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     ) =>
     (ctx: Ctx) => {
       const a = artifacts.find((x) => x.id === ctx.params.id);
-      if (!a || a.deletedAt !== null) return notFound();
+      if (!a || a.deletedAt !== null || h?.hidden(a.id)) return notFound();
       // Anonymous callers see only public artifacts; anything else is 404.
       if (a.visibility !== "public" && isAnon(ctx.request)) return notFound();
       if (need === "owner" && !full(a)) return notFound();
@@ -571,6 +571,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       if (inSpace instanceof Response) return inSpace;
       return paginate(
         artifacts
+          .filter((a) => !h?.hidden(a.id))
           .filter((a) => (inSpace ? inSpace(a.space) : matches(a, q)))
           .filter((a) => !inSpace || matches(a, withScope(q, "all")))
           .map((a) => redactArt(a, request)),
@@ -944,6 +945,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         .filter(
           (a) =>
             a.deletedAt === null &&
+            !h?.hidden(a.id) &&
             (!inSpace || inSpace(a.space)) &&
             matches(a, new URLSearchParams({ q: needle })),
         )

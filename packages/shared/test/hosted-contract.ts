@@ -776,6 +776,86 @@ export function hostedContract(d: ContractDriver): ContractCases {
     });
   });
 
+  describe("hosted mocks: access in a shared space (decide order)", () => {
+    const idOf = (title: string) =>
+      fixtures.artifacts.find((a) => a.title === title)?.id as string;
+    const get = (id: string) => d.call("GET", R.artifact(id));
+
+    t(
+      "a capped caller with no space role gets nothing on a team artifact",
+      async () => {
+        await d.fresh({ hosted: true });
+        // Dan is restricted (gCon04): team visibility never reaches a capped
+        // caller, and Engineering's allMembersRole doesn't either.
+        await d.signIn("dan@example.com");
+        expect((await get(idOf("Meeting notes"))).status).toBe(404);
+        const list = PageSchema(Strict.ArtifactSummary).parse(
+          await json(await d.call("GET", `${R.artifacts}?scope=all&limit=100`)),
+        );
+        expect(list.items.map((a) => a.title)).not.toContain("Meeting notes");
+      },
+    );
+
+    t("a capped caller with a space role gets viewer", async () => {
+      await d.fresh({ hosted: { directory: "frozen" } });
+      const bob = fixtures.members[1]?.id as string;
+      expect((await d.call("PUT", R.memberRestricted(bob))).status).toBe(200);
+      // Bob is an editor in Engineering; restricted, he reads at viewer.
+      await d.signIn("bob@example.com");
+      const a = Strict.ArtifactSummary.parse(
+        await json(await get(idOf("Meeting notes"))),
+      );
+      expect(a.access).toBe("viewer");
+      expect(a.can).toMatchObject({ edit: false, dataWrite: false });
+    });
+
+    t(
+      "a caller who lost their space role on a private artifact gets nothing, or their share's level",
+      async () => {
+        await d.fresh({ hosted: true });
+        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+        const eng = me.spaces?.find((s) => s.name === "Engineering")
+          ?.id as string;
+        const pub = await d.call("POST", R.artifacts, {
+          title: "Eng private",
+          format: "html",
+          content: "x",
+          visibility: "private",
+          spaceId: eng,
+        });
+        expect(pub.status).toBe(201);
+        const id = (await json(pub)).id as string;
+        // Erin reads it through Engineering's allMembersRole (viewer)...
+        await d.signIn("erin@example.com");
+        expect(
+          Strict.ArtifactSummary.parse(await json(await get(id))).access,
+        ).toBe("viewer");
+        // ...until that role goes: a private artifact is then 404.
+        await d.signIn("ada@example.com");
+        expect(
+          (await d.call("PATCH", R.space(eng), { allMembersRole: null }))
+            .status,
+        ).toBe(200);
+        await d.signIn("erin@example.com");
+        expect((await get(id)).status).toBe(404);
+        // A share gives back exactly the share's level.
+        await d.signIn("ada@example.com");
+        expect(
+          (
+            await d.call("PUT", R.shares(id), {
+              email: "erin@example.com",
+              role: "editor",
+            })
+          ).status,
+        ).toBe(200);
+        await d.signIn("erin@example.com");
+        expect(
+          Strict.ArtifactSummary.parse(await json(await get(id))).access,
+        ).toBe("editor");
+      },
+    );
+  });
+
   describe("hosted mocks: data writers", () => {
     t(
       "a viewer of an editors-only artifact gets can.dataWrite false",
