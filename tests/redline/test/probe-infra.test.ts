@@ -63,6 +63,30 @@ describe("WebSocket probes with no response", () => {
     );
   });
 
+  it("a body cut off after a status is a fail, never retried", async () => {
+    // 200 with a partial body, then a reset; a retry would answer 403 and
+    // read as a refusal.
+    let n = 0;
+    server = createServer((req, res) => {
+      if (n++ === 0) {
+        res.writeHead(200, { "content-length": "100" });
+        res.write("partial", () => req.socket.destroy());
+        return;
+      }
+      res.writeHead(403).end();
+    });
+    await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+    const e = await sendProbe(
+      new Request(`http://127.0.0.1:${port}/live`),
+      wsHandshake,
+    ).catch((x: unknown) => x);
+    expect(e).not.toBeInstanceOf(InfraError);
+    expect(isNetworkError(e)).toBe(false);
+    expect((e as Error).message).toBe("body failed after status 200");
+    expect(n).toBe(1);
+  });
+
   it("a timeout reads as no response too", async () => {
     server = createServer(() => {});
     await new Promise<void>((r) => server?.listen(0, "127.0.0.1", r));
@@ -102,6 +126,32 @@ describe("a write probe's setup with no response", () => {
     expect((e as Error).message).toBe(
       "infra: setup on rl-b got no response (ECONNRESET)",
     );
+  });
+
+  it("a later setup with no response still disposes what was made", async () => {
+    const t = (name: string) =>
+      ({ name, app: `http://${name}.invalid` }) as Target;
+    const disposed: string[] = [];
+    let n = 0;
+    const e = await crossWrite(async () => "allow", {
+      a: t("rl-a"),
+      b: t("rl-b"),
+      credA: "A",
+      credB: "B",
+      carries: () => true,
+      fresh: async (h) => {
+        if (n++ === 0) return h.name;
+        throw Object.assign(new TypeError("fetch failed"), {
+          cause: { code: "ECONNRESET" },
+        });
+      },
+      snapshot: async () => "",
+      dispose: async (h) => {
+        disposed.push(h.name);
+      },
+    }).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(InfraError);
+    expect(disposed).toEqual(["rl-b"]);
   });
 
   it("any other setup error still fails", async () => {

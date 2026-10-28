@@ -16,6 +16,7 @@ import {
   parseJson,
   readBody,
   send,
+  sendProbe,
   withCred,
 } from "../src/http.ts";
 import {
@@ -339,12 +340,14 @@ describe("WebSocket at B with B's own session and A's Origin: refused", () => {
   for (const [what, url] of SOCKETS) {
     for (const which of ["app", "content"] as const) {
       it(`${what} with Origin = A's ${which} origin`, async () => {
+        // No response: one more try, then infra (sendProbe), never a verdict.
         const hs = (l: Live, origin: string) =>
-          wsHandshake(
+          sendProbe(
             new Request(
               url(l.s.t),
               withCred(l.s.cookie, { headers: { origin } }),
             ),
+            wsHandshake,
           );
         // Success legs: each side's own session from its own app origin.
         for (const l of [B, A]) {

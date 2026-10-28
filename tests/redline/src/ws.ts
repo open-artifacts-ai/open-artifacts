@@ -84,9 +84,11 @@ export function rawRequest(o: RawOpts): Promise<Response> {
       const chunks: Buffer[] = [];
       res.on("data", (c: Buffer) => chunks.push(c));
       res.on("end", () => done(toResponse(res, Buffer.concat(chunks))));
-      res.on("error", (e) => {
+      res.on("error", () => {
         clearTimeout(timer);
-        reject(e);
+        // A response came: no code, so it is never read as no response and
+        // never retried (a retry's answer must not replace this one).
+        reject(new Error(`body failed after status ${res.statusCode ?? "?"}`));
       });
     });
     req.on("error", (e) => {
