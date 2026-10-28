@@ -77,5 +77,8 @@
     "OAUTH_KV_ID": "{{KV_ID}}"
   },
   "define": { "__OA_TEST_HOOKS_ALLOWED__": "false" },
-  "observability": { "enabled": true }
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": false }
+  }
 }
