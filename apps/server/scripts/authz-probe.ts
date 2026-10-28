@@ -182,10 +182,11 @@ export async function main(
   }
   if (file.org)
     for (const s of ORG_SURFACES) {
-      if (s.mutates || !only(s.route)) continue;
+      // realOnly: no refusal mode that holds here (only the matrix shows it).
+      if (s.mutates || s.realOnly || !only(s.route)) continue;
       await Promise.all(
         callers.map((who) =>
-          check(`${s.route} ${who}`, orgExpected(who, s.rule), () =>
+          check(`${s.route} ${who}`, orgExpected(who, s.rule, s.route), () =>
             s.probe(
               args.base,
               file.callers[who] as Cred,

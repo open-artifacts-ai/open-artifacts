@@ -566,10 +566,6 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org DELETE /api/v1/members/:id/identities/google [session]"
-    },
-    {
-      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > org PUT /api/v1/members/:id/restricted [session]"
     },
     {
@@ -658,10 +654,6 @@
     },
     {
       "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org DELETE /api/v1/spaces/:id/mappings/:groupId [session]"
-    },
-    {
-      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > org GET /api/v1/directory/org-mappings [session]"
     },
     {
@@ -687,10 +679,6 @@
     {
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > org PUT /api/v1/directory/restricted-groups/:groupId [session]"
-    },
-    {
-      "file": "live/surfaces.test.ts",
-      "name": "surface probes (cross-install) > org DELETE /api/v1/directory/restricted-groups/:groupId [session]"
     },
     {
       "file": "live/surfaces.test.ts",

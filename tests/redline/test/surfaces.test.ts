@@ -39,6 +39,7 @@ import {
   groupSeed,
   HOOK_SPACE_ID,
   HOSTED_FEATURES,
+  ORG_FRESH,
   readRepoFile,
   viaTarget,
   worldGroups,
@@ -157,6 +158,8 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     const mutating = new Set([
       ...SURFACES.filter((s) => s.mutates).map((s) => `artifact ${s.name}`),
       ...ORG_SURFACES.filter((s) => s.mutates).map((s) => `org ${s.route}`),
+      // #839: realOnly instance writes run on a throwaway.
+      ...Object.keys(ORG_FRESH).map((r) => `org ${r}`),
       ...SPACE_SURFACES.filter((s) => s.mutates).map((s) => `space ${s.name}`),
     ]);
     expect(mutating.size).toBeGreaterThan(0);

@@ -3,8 +3,13 @@
 // caller on every instance route, against the hand-written tables in
 // test/authz/expect.ts. Then the customer_mismatch world: synced callers
 // fail closed, and only the org owner's break-glass reaches the directory.
+// #839: every cookie write sends X-OA-Request (as the app does), so it runs
+// through readOnlyCap and the route's rules; writes run for real on per-cell
+// throwaways and count as allowed only on the route's documented success.
+// "CSRF: a cookie write without X-OA-Request" checks the header itself.
 import { env } from "cloudflare:workers";
 import { BreakGlassRequiredDetailsSchema, R } from "@oa/shared";
+import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { main } from "../scripts/authz-probe.ts";
 import { createApp } from "../src/app.js";
@@ -15,11 +20,14 @@ import {
 } from "../src/auth/route-policy.js";
 import { contentApp } from "../src/content/app.js";
 import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
+import { type AppEnv, readOnlyCap } from "../src/http/middleware.js";
 import manifest from "../src/mcp/tool-manifest.json";
+import { getUser } from "../src/services/users.js";
 import {
   ARTIFACTS,
   type ArtifactName,
   CALLERS,
+  CAPPED_WRITES,
   type CallerName,
   expected,
   orgExpected,
@@ -41,7 +49,10 @@ import {
   type Cred,
   contentUnlisted,
   ORG_SURFACES,
+  ORG_WRITES,
   type OrgTarget,
+  PROBE_SHARE_EMAIL,
+  PUBLIC_ROUTES,
   SPACE_SURFACES,
   type SpaceTarget,
   SURFACES,
@@ -59,6 +70,9 @@ beforeAll(async () => {
     spaceId: w.spaces.S,
     memberId: w.users.otherMember as string,
     departedId: w.users.removedUser as string,
+    // In S only through the Every space mapping; S maps groups.viewer.
+    spaceMemberId: w.users.everySpaceMember as string,
+    groupId: w.groups.viewer,
   };
   space = {
     spaceId: w.spaces.S,
@@ -134,6 +148,40 @@ describe("coverage (derived from the router and the registries)", () => {
       ].filter((r) => !known.has(r)),
     ).toEqual([]);
   });
+  it("ORG_WRITES has a request for every instance write route, and only those", () => {
+    expect(Object.keys(ORG_WRITES).sort()).toEqual(
+      ORG_SURFACES.map((s) => s.route)
+        .filter((r) => !r.startsWith("GET "))
+        .sort(),
+    );
+  });
+  it("CAPPED_WRITES is readOnlyCap's own list (a capped caller's open writes)", async () => {
+    const member = await getUser(
+      env as never,
+      w.users.restrictedContractor as string,
+    );
+    if (!member) throw new Error("no restricted member");
+    const app = new Hono<AppEnv>();
+    app.use(async (c, next) => {
+      c.set("user", member);
+      await next();
+    });
+    app.use(readOnlyCap());
+    app.all("*", (c) => c.text("open"));
+    const open: string[] = [];
+    for (const k of Object.keys(ROUTE_POLICY)) {
+      const [m = "", path = ""] = k.split(" ");
+      if (["GET", "HEAD", "ALL"].includes(m) || !path.startsWith("/api/v1/"))
+        continue;
+      const r = await app.request(
+        path.replace(/:[A-Za-z]+/g, "AAAAAAAAAAAAAAAA").replace("*", "x"),
+        { method: m },
+        env,
+      );
+      if ((await r.text()) === "open") open.push(k);
+    }
+    expect(open.sort()).toEqual([...CAPPED_WRITES].sort());
+  });
   it("ORG_SURFACES rules match ROUTE_POLICY", () => {
     // offWhen (feature-off 404s, T19) is not an access rule.
     for (const s of ORG_SURFACES) {
@@ -158,21 +206,33 @@ describe("coverage (derived from the router and the registries)", () => {
  */
 const KNOWN: Partial<Record<CallerName, { via: string; traits: Traits }>> = {};
 
-/** One caller's row on one surface: every artifact, probed. */
+/**
+ * One caller's row on one surface: every artifact, probed. A surface with a
+ * real mode (#839) writes for real on a per-cell copy and counts only its
+ * documented success as allowed.
+ */
 async function row(
   s: Surface,
   cred: Cred,
   want: (art: ArtifactName) => string,
   ids: Record<ArtifactName, string> = w.ids,
+  editorsOnly = false,
 ) {
   const got = {} as Record<ArtifactName, string>;
   const exp = {} as Record<ArtifactName, string>;
   await Promise.all(
     ARTIFACTS.map(async (art) => {
-      const id = s.mutates === "access" ? await w.clone(art) : ids[art];
-      got[art] = await s
-        .probe(BASE, cred, id, io)
-        .catch((e: Error) => `error: ${e.message}`);
+      const copy = s.real || s.mutates === "access";
+      const id = copy
+        ? await w.clone(art, {
+            editorsOnly,
+            noThumbnail: s.realCopy === "noThumbnail",
+          })
+        : ids[art];
+      got[art] = await (s.real ?? s.probe)(BASE, cred, id, {
+        ...io,
+        real: w.artReal,
+      }).catch((e: Error) => `error: ${e.message}`);
       exp[art] = want(art);
     }),
   );
@@ -250,6 +310,7 @@ describe("artifact surfaces, dataWriters editors (#681)", () => {
           w.creds[who],
           (art) => expected(who, art, s.action, s.via, TRAITS[who], "editors"),
           w.editorsOnly,
+          true,
         );
         expect(got).toEqual(exp);
       },
@@ -267,10 +328,20 @@ describe("instance routes", () => {
         const exp = {} as Record<CallerName, string>;
         await Promise.all(
           CALLERS.map(async (who) => {
+            exp[who] = orgExpected(who, s.rule, s.route);
+            // Allowed, it changes the instance: "instance writes" runs it
+            // last, on its own.
+            if (s.instance && exp[who] === "allow") {
+              got[who] = "allow";
+              return;
+            }
+            // Writes run for real, on this cell's own throwaways.
+            const t = s.route.startsWith("GET ")
+              ? target
+              : { ...target, real: await w.orgReal(who, s.needs ?? []) };
             got[who] = await s
-              .probe(BASE, w.creds[who], target, io)
+              .probe(BASE, w.creds[who], t, io)
               .catch((e: Error) => `error: ${e.message}`);
-            exp[who] = orgExpected(who, s.rule);
           }),
         );
         expect(got).toEqual(exp);
@@ -397,7 +468,11 @@ describe("attack seeds: another member's personal space", () => {
 describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
   const names = [
     ...SURFACES.filter((s) => !s.mutates).map((s) => s.name),
-    ...ORG_SURFACES.filter((s) => !s.mutates).map((s) => s.route),
+    // realOnly: no refusal mode holds in this world (the instance routes
+    // above run them for real).
+    ...ORG_SURFACES.filter((s) => !s.mutates && !s.realOnly).map(
+      (s) => s.route,
+    ),
     ...SPACE_SURFACES.filter((s) => !s.mutates).map((s) => s.name),
   ];
   it.concurrent.each(names.map((n) => [n]))(
@@ -491,14 +566,22 @@ describe("customer_mismatch: synced callers resolve to no one", () => {
       const cred = { cookie: await googleCookie(w.users.orgOwner as string) };
       const got: Record<string, string> = {};
       const exp: Record<string, string> = {};
-      await Promise.all(
-        ORG_SURFACES.map(async (s) => {
-          got[s.route] = await s
-            .probe(BASE, cred, target, io)
-            .catch((e: Error) => `error: ${e.message}`);
-          exp[s.route] = BREAK_GLASS.has(s.route) ? "allow" : "deny";
-        }),
-      );
+      // Writes run for real; the instance ones (one consent slot) serially.
+      const probe = async (s: (typeof ORG_SURFACES)[number]) => {
+        const t = s.route.startsWith("GET ")
+          ? target
+          : { ...target, real: await w.orgReal("orgOwner", s.needs ?? []) };
+        if (s.route === "POST /api/v1/directory/confirm")
+          await w.seedConsent(true);
+        if (s.route === "POST /api/v1/directory/cancel")
+          await w.seedConsent(false);
+        got[s.route] = await s
+          .probe(BASE, cred, t, io)
+          .catch((e: Error) => `error: ${e.message}`);
+        exp[s.route] = BREAK_GLASS.has(s.route) ? "allow" : "deny";
+      };
+      await Promise.all(ORG_SURFACES.filter((s) => !s.instance).map(probe));
+      for (const s of ORG_SURFACES.filter((x) => x.instance)) await probe(s);
       expect(got).toEqual(exp);
       // A public artifact still opens, as for anyone.
       const pub = await io.fetch?.(
@@ -527,4 +610,111 @@ describe("customer_mismatch: synced callers resolve to no one", () => {
       SLOW,
     );
   });
+});
+
+/**
+ * #839: every cookie write route (ROUTE_POLICY, derived, so none is missed)
+ * without X-OA-Request is 403 csrf, sent with the session of a caller the
+ * route admits (the matrix's own tables), so only the header is missing.
+ */
+describe("CSRF: a cookie write without X-OA-Request", () => {
+  const WRITE = /^(POST|PUT|PATCH|DELETE) (\/api\/v1\/|\/auth\/logout$)/;
+  /** Authenticated by its URL signature: no session, so no CSRF check (app.ts unlessSigned). */
+  const SIGNED = ["PUT /api/v1/uploads/:uploadId"];
+  const routes = Object.keys(ROUTE_POLICY).filter(
+    (k) => WRITE.test(k) && !SIGNED.includes(k),
+  );
+  it("covers every cookie write route", () => {
+    expect(routes.length).toBeGreaterThan(40);
+  });
+  /** A caller the route admits, and the path it is sent to. */
+  const admitted = (route: string): { who: CallerName; path: string } => {
+    const [, path = ""] = route.split(" ");
+    const s = SURFACES.find((x) => x.routes.includes(route));
+    if (s)
+      for (const art of ARTIFACTS)
+        for (const who of CALLERS)
+          if (
+            expected(who, art, s.action, s.via) === "allow" &&
+            who !== "anonymous"
+          )
+            return {
+              who,
+              path: path
+                .replace(":id", w.ids[art])
+                .replace(":v", "1")
+                .replace(":col", "c")
+                .replace(":doc", "d")
+                .replace(":key", "k")
+                .replace(":email", encodeURIComponent(PROBE_SHARE_EMAIL)),
+            };
+    const o = ORG_SURFACES.find((x) => x.route === route);
+    const fill = (p: string) =>
+      p
+        .replace(/^\/api\/v1\/spaces\/:id/, `/api/v1/spaces/${w.spaces.S}`)
+        .replace(":id", w.users.otherMember as string)
+        .replace(":userId", w.users.otherMember as string)
+        .replace(/:[A-Za-z]+/g, "probe");
+    if (o)
+      for (const who of CALLERS)
+        if (orgExpected(who, o.rule, route) === "allow")
+          return { who, path: fill(path) };
+    // Public (an upload's signed PUT, logout): any signed-in caller.
+    if (PUBLIC_ROUTES.includes(route))
+      return { who: "orgOwner", path: fill(path) };
+    throw new Error(`${route}: no caller the route admits`);
+  };
+  it.concurrent.each(routes.map((r) => [r]))("%s", async (route) => {
+    const { who, path } = admitted(route);
+    const [method] = route.split(" ");
+    const r = await io.fetch?.(
+      new Request(`${BASE}${path}`, {
+        method,
+        headers: {
+          cookie: w.creds[who].cookie as string,
+          "content-type": "application/json",
+        },
+        body: "{}",
+      }),
+    );
+    const body = (await r?.json().catch(() => ({}))) as {
+      error?: { code?: string };
+    };
+    expect({ status: r?.status, code: body.error?.code }, `${who}`).toEqual({
+      status: 403,
+      code: "csrf",
+    });
+  });
+});
+
+/**
+ * Last: the instance-wide writes (the directory connection), each allowed
+ * caller for real, serially, consent seeded per probe: sync (202), confirm
+ * of an expired consent (409 conflict), cancel (204), disconnect (200), and
+ * DELETE R.directory after it (204, idempotent).
+ */
+describe("instance writes (last: they change the directory connection)", () => {
+  it(
+    "each allowed caller, for real",
+    async () => {
+      const got: Record<string, string> = {};
+      const exp: Record<string, string> = {};
+      for (const s of ORG_SURFACES.filter((x) => x.instance))
+        for (const who of CALLERS) {
+          if (orgExpected(who, s.rule, s.route) !== "allow") continue;
+          if (s.route === "POST /api/v1/directory/confirm")
+            await w.seedConsent(true);
+          if (s.route === "POST /api/v1/directory/cancel")
+            await w.seedConsent(false);
+          const k = `${s.route} ${who}`;
+          got[k] = await s
+            .probe(BASE, w.creds[who], { ...target, real: {} }, io)
+            .catch((e: Error) => `error: ${e.message}`);
+          exp[k] = "allow";
+        }
+      expect(Object.keys(exp).length).toBeGreaterThan(0);
+      expect(got).toEqual(exp);
+    },
+    SLOW,
+  );
 });
