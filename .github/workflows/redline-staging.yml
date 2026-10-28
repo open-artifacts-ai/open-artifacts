@@ -143,10 +143,16 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/redline-secrets"
-          r="apps/dashboard/playwright-report"
-          [ -d "$d" ] && [ -d "$r" ] || exit 0
+          [ -d "$d" ] || exit 0
+          # The report, and test-results/ (screenshots it links to), if present.
+          dirs=()
+          for r in apps/dashboard/playwright-report apps/dashboard/test-results; do
+            [ -d "$r" ] && dirs+=("$r")
+          done
+          [ "${#dirs[@]}" -gt 0 ] || exit 0
           for f in "$d"/*; do
-            if grep -rqF -- "$(cat "$f")" "$r"; then echo "secret in report: ${f##*/}"; exit 1; fi
+            # -f reads the pattern from the file: the key never reaches argv.
+            if grep -rqF -f "$f" "${dirs[@]}"; then echo "secret in report: ${f##*/}"; exit 1; fi
           done
       - name: Remove the secret file
         if: always()
