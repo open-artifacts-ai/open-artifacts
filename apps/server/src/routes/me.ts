@@ -3,7 +3,7 @@ import {
   type Me,
   type Member,
   MePatchSchema,
-  NoticeIdSchema,
+  type NoticeId,
   parseTier,
   planOf,
   R,
@@ -24,7 +24,7 @@ import { ApiError, appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
-import { dismissNotice, ownerNotices } from "../services/notices.js";
+import { dismissNotice, meNotices } from "../services/notices.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
 import { getProfile, type Profile, setDisplayName } from "../services/users.js";
@@ -68,11 +68,9 @@ async function toMe(
     ...profile,
   };
   const cap = capOfCaller(caller(c));
-  // Parity 2: the org owner's one-time notices, on every install.
-  if (orgCan(user, "notices.manage", { cap })) {
-    const notices = await ownerNotices(c.env, kv);
-    if (notices) me.notices = notices;
-  }
+  // Parity 2: one-time notices of guest shares, Access-only installs only.
+  const notices = await meNotices(c.env, user, cap, kv);
+  if (notices) me.notices = notices;
   // Hosted M1 (#359): optional, appended last, only on hosted or
   // direct-sign-in installs, so Access-only installs keep today's shape.
   if (!showsSignInFields(c.env)) return me;
@@ -127,15 +125,26 @@ export function mountMe(app: AppType): void {
     return c.json(await toMe(c, member, profile));
   });
 
-  // Parity 2: dismiss an owner notice for this install (R.noticeDismiss).
-  // The gate already refused anyone but the uncapped org owner (404).
-  app.post("/api/v1/notices/:notice/dismiss", async (c) => {
-    const user = requireUser(c);
-    if (!orgCan(user, "notices.manage", { cap: capOfCaller(caller(c)) }))
-      throw new ApiError("not_found", "Not found");
-    const id = NoticeIdSchema.safeParse(c.req.param("notice"));
-    if (!id.success) throw new ApiError("not_found", "Not found");
-    await dismissNotice(c.env, id.data);
-    return c.body(null, 204);
-  });
+  // Parity 2: dismiss a notice (R.noticeDismiss). Literal per id, so each
+  // has its own gate rule; an unknown id has no route (404).
+  const dismiss =
+    (id: NoticeId, action: "notices.own" | "notices.manage") =>
+    async (c: Context<AppEnv>) => {
+      const user = requireUser(c);
+      // The gate already refused anyone else (404); belt and braces.
+      if (!orgCan(user, action, { cap: capOfCaller(caller(c)) }))
+        throw new ApiError("not_found", "Not found");
+      await dismissNotice(c.env, user.id, id);
+      return c.body(null, 204);
+    };
+  // The caller's own list, per user: any non-guest member.
+  app.post(
+    "/api/v1/notices/guest_shares/dismiss",
+    dismiss("guest_shares", "notices.own"),
+  );
+  // The install-wide summary: the uncapped org owner.
+  app.post(
+    "/api/v1/notices/guest_summary/dismiss",
+    dismiss("guest_summary", "notices.manage"),
+  );
 }

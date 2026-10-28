@@ -152,8 +152,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // Probes the auth and directory brokers through the real transport: the
   // org owner only (admins too get 404).
   "POST /api/v1/admin/broker-check": { org: "broker.check" },
-  // Parity 2: dismiss an owner notice (Me.notices), the org owner only.
-  "POST /api/v1/notices/:notice/dismiss": { org: "notices.manage" },
+  // Parity 2: dismiss a notice (R.noticeDismiss). guest_shares: one's own,
+  // any non-guest member; guest_summary: install-wide, the org owner only.
+  "POST /api/v1/notices/guest_shares/dismiss": { org: "notices.own" },
+  "POST /api/v1/notices/guest_summary/dismiss": { org: "notices.manage" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },

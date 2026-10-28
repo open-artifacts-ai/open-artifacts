@@ -247,10 +247,10 @@ export const R = {
    */
   adminBrokerCheck: "/api/v1/admin/broker-check",
   /**
-   * POST (no body) -> 204: dismiss an owner notice (Me.notices) once per
-   * install (a settings row), so it never shows again. The uncapped org owner
-   * only, by any /api/v1 credential; anyone else, and an unknown notice, 404.
-   * Idempotent.
+   * POST (no body) -> 204: dismiss a notice (Me.notices) for good, by any
+   * /api/v1 credential. Idempotent. "guest_shares": the caller's own list,
+   * per user, any non-guest member. "guest_summary": install-wide, the
+   * uncapped org owner only. Anyone else, and an unknown notice, 404.
    */
   noticeDismiss: (notice: NoticeId) => `/api/v1/notices/${seg(notice)}/dismiss`,
   /** GET ?cursor&limit -> Page<AuditEvent> (org owner, admin). */

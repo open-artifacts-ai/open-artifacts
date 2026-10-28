@@ -82,8 +82,10 @@ export type OrgAction =
   | "broker.check"
   /** See why configured sign-in is off (Me.instance.signIn.problems): the org owner. */
   | "signin.problems"
-  /** See and dismiss owner notices (Me.notices, R.noticeDismiss): the org owner. */
+  /** See and dismiss the install-wide guest summary (Me.notices.guestSummary): the org owner. */
   | "notices.manage"
+  /** See and dismiss one's own guest-share notice (Me.notices.guestShares): any non-guest member. */
+  | "notices.own"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"
@@ -371,6 +373,9 @@ export function orgCan(
     case "artifact.create":
       return !capped;
     case "settings.read":
+    // One's own guest-share notice (parity 2): a restricted member still
+    // owns the artifacts it lists.
+    case "notices.own":
       return TEAM_ROLES.includes(m.role);
     case "directory.manage":
     // Disconnect: owner only too (the route also needs a cookie session).
@@ -379,7 +384,7 @@ export function orgCan(
     case "broker.check":
     // Sign-in config problems: the owner, who can fix them (review item 35).
     case "signin.problems":
-    // Owner notices (Me.notices) and their dismissal (parity 2).
+    // The install-wide guest summary and its dismissal (parity 2).
     case "notices.manage":
     // Acting on an org owner or admin (role, removal, suspension, Google
     // link reset): owner only (#475).
