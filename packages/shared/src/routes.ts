@@ -226,8 +226,9 @@ export const R = {
   /** GET -> TransferSummary; POST TransferInput -> TransferResult (409 member_active). Org owner, admin. */
   memberTransfer: (id: string) => `/api/v1/members/${seg(id)}/transfer`,
   /**
-   * POST (no body) -> 200 Member: a removed member comes back active, as a
-   * plain member (manual restriction kept). Org owner, admin; an admin
+   * POST (no body) -> 200 Member: a removed member or admin comes back
+   * active as a member (never an admin), a removed guest as a guest (manual
+   * restriction kept). Org owner, admin; an admin
    * target needs the owner (403 owner_only). Their old PATs and agent
    * connections stay revoked; they sign in again. Audited user.status
    * (reason admin_restore). 404 unknown; 409 member_active (not removed),

@@ -116,7 +116,7 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   member_removed: 409,
   /** POST R.memberRestore(id) on a member the directory removed while Google sync is on: sync would remove them again. */
   directory_managed: 409,
-  /** POST R.memberRestore(id) on a lapsed guest (removed when their last share went): a new share brings them back instead. */
+  /** POST R.memberRestore(id) on a lapsed guest, or POST R.members (invite) for a lapsed guest's address (removed when their last share went): a new share brings them back instead. */
   guest_lapsed: 409,
   /** db.query cursor whose anchor doc changed since the page was read (long sort values only): restart without a cursor. */
   cursor_stale: 409,

@@ -129,6 +129,11 @@ export type HostedMockOptions = {
    * customer_mismatch removed.
    */
   pendingCustomerChange?: NonNullable<SyncStatus["pendingCustomerChange"]>;
+  /**
+   * Seed these emails as lapsed guests (removed when their last share went):
+   * inviting or restoring one answers 409 guest_lapsed (default none).
+   */
+  lapsedGuests?: string[];
   /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on when google or email is enabled). */
   features?: FeatureFlag[];
 };
@@ -236,6 +241,21 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     identities: [],
   };
   members.push(carol, dan, erin);
+  /** Lapsed guests' ids: removed when their last share went (a share revives them). */
+  const lapsed = new Set<string>();
+  for (const email of o.lapsedGuests ?? []) {
+    const g: Member = {
+      id: newId(),
+      email: email.toLowerCase(),
+      name: null,
+      role: "guest",
+      lastSeenAt: null,
+      status: "removed",
+      identities: [],
+    };
+    members.push(g);
+    lapsed.add(g.id);
+  }
   if (o.actAs === "admin") me.user.role = "admin";
   /** Departed members' personal artifacts, counts only (admins never see titles). */
   const departed = new Map([[carol.id, { live: 2, deleted: 1 }]]);
@@ -1107,6 +1127,21 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       const r = await c.body(request.clone(), MemberInviteSchema);
       if (r.error) return undefined;
       const email = r.data.email.toLowerCase();
+      // An existing removed row is a 409 before reachability (as the server).
+      const removed = members.find(
+        (m) => m.email === email && m.status === "removed",
+      );
+      if (removed && lapsed.has(removed.id))
+        return err(
+          "guest_lapsed",
+          "This guest left when their last share went; share an artifact with them to bring them back",
+        );
+      if (removed)
+        return err(
+          "member_removed",
+          "This person was removed. Restore them instead.",
+          { userId: removed.id },
+        );
       const inDomain = email.endsWith(`@${MOCK_DOMAIN}`);
       const google = providerIds.includes("google");
       if (inDomain && (google || providerIds.includes("email")))
@@ -1118,14 +1153,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           reason,
         });
       }
-      const existing = members.find((m) => m.email === email);
-      if (existing?.status === "removed")
-        return err(
-          "member_removed",
-          "This person was removed. Restore them instead.",
-          { userId: existing.id },
-        );
-      if (existing) return err("conflict", "Already a member");
+      if (members.some((m) => m.email === email))
+        return err("conflict", "Already a member");
       const m: Member = {
         id: newId(),
         email,
@@ -1209,9 +1238,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         });
       }),
     ),
-    // Parity 1: a removed member comes back active as a plain member, the
-    // manual restriction kept. Lapsed guests and directory removals aren't
-    // modelled here.
+    // Parity 1: a removed member or admin comes back active as a member, a
+    // removed guest as a guest, the manual restriction kept. A lapsed guest
+    // is 409 guest_lapsed; directory removals aren't modelled here.
     http.post(
       "*/api/v1/members/:id/restore",
       authed(({ params }) => {
@@ -1224,8 +1253,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           );
         if (m.status !== "removed")
           return err("member_active", "This member isn't removed");
+        if (lapsed.has(m.id))
+          return err(
+            "guest_lapsed",
+            "This guest left when their last share went; share an artifact with them to bring them back",
+          );
         m.status = "active";
-        m.role = "member";
+        if (m.role !== "guest") m.role = "member";
         log("user.status", { type: "user", id: m.id }, null, {
           status: "active",
           reason: "admin_restore",
