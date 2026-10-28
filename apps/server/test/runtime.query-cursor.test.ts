@@ -71,7 +71,11 @@ describe("db.query cursor carries the anchor's sort value", () => {
       },
     );
     // b moved to the end after page 1 was read; c, d and e are all still served.
-    expect(pages).toEqual([["a", "b"], ["c", "d"], ["e", "b"]]);
+    expect(pages).toEqual([
+      ["a", "b"],
+      ["c", "d"],
+      ["e", "b"],
+    ]);
   });
 
   it("descending: the anchor moving up doesn't skip the rest (nulls last)", async () => {

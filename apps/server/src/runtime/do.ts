@@ -249,7 +249,8 @@ function decodeCursor<K extends string>(
   raw: unknown,
   keys: readonly K[],
 ): Record<K, string> | null {
-  return decodeCursorOf(raw, [keys]);
+  // One exact key set: every key is present.
+  return decodeCursorOf(raw, [keys]) as Record<K, string> | null;
 }
 
 /** decodeCursor accepting any one of several exact key sets. */

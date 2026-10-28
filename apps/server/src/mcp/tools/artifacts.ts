@@ -174,8 +174,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       // The REST cursor: page on with before = the last version. A page may stop
       // short of 20 on manifest bytes, so only version 1 (or nothing) ends it.
       const last = items[items.length - 1];
-      const nextCursor =
-        last && last.version > 1 ? String(last.version) : null;
+      const nextCursor = last && last.version > 1 ? String(last.version) : null;
       return ok(
         `${plural(items.length, "version")} of ${input.id}${
           nextCursor ? " (more versions: pass nextCursor as cursor)" : ""

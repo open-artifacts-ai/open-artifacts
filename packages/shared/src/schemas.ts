@@ -1023,7 +1023,10 @@ export const ListVersionsInputSchema = z.strictObject({
   id: IdSchema,
   cursor: z
     .string()
-    .regex(/^[1-9][0-9]{0,14}$/, "cursor must be a nextCursor from list_versions")
+    .regex(
+      /^[1-9][0-9]{0,14}$/,
+      "cursor must be a nextCursor from list_versions",
+    )
     .optional(),
 });
 export type ListVersionsInput = z.infer<typeof ListVersionsInputSchema>;
