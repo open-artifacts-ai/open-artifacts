@@ -5,55 +5,23 @@
 // first assertion that fails today (a case may have more behind it).
 import type { KnownGap } from "../../../packages/shared/test/hosted-contract.js";
 
-const ME_SPACES =
-  "GET /me has no spaces (item 2), so the case can't find its space ids";
-
 export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
   "providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal":
     {
-      item: "new, 2",
+      item: "new",
       m1: true,
-      why: "GET /me has no instance.tier (hosted billing tier, new); the case reads me.spaces after it (item 2)",
+      why: "GET /me has instance.tier null: Platform adds the TIER var later (new)",
     },
+  "public links off keeps an existing public artifact public (no rewrite)": {
+    item: "new",
+    m1: true,
+    why: "POST /artifacts with an existing id is 400 bad_request (use POST /versions); the contract republishes through it and expects 201 (new)",
+  },
   "spaces, members, mappings, directory, transfer": {
     item: "31",
     m1: false,
     why: "PUT space mapping returns name null: group names are never stored",
   },
-  "transfer of a personal artifact and spaceId on publish": {
-    item: "2",
-    m1: true,
-    why: `${ME_SPACES}: the Exec publish goes to Personal (201, not space_forbidden)`,
-  },
-  "a restricted-group member is capped and gets no allMembersRole": {
-    item: "2",
-    m1: true,
-    why: ME_SPACES,
-  },
-  "manual restricted flag: cap on space members, no successor, audited": {
-    item: "2",
-    m1: true,
-    why: ME_SPACES,
-  },
-  "public in a space with publicLinks off is 403 public_links_off": {
-    item: "2",
-    m1: true,
-    why: ME_SPACES,
-  },
-  "public links off keeps an existing public artifact public (no rewrite)": {
-    item: "2",
-    m1: true,
-    why: ME_SPACES,
-  },
-  "space members: personal space 400 space_personal; PUT needs an existing, active target":
-    { item: "2", m1: true, why: ME_SPACES },
-  "moving a public artifact into a space with publicLinks off makes it team": {
-    item: "2",
-    m1: true,
-    why: ME_SPACES,
-  },
-  "scope=space lists one space; scope=spaces lists shared spaces; scope=space without spaceId is 400":
-    { item: "2", m1: true, why: ME_SPACES },
 };
 
 /**
@@ -62,13 +30,6 @@ export const KNOWN_GAPS: Readonly<Record<string, KnownGap>> = {
  * KNOWN_GAPS disagree, so closing an M1 gap edits both.
  */
 export const M1_OPEN: readonly string[] = [
-  "2: a restricted-group member is capped and gets no allMembersRole",
-  "2: manual restricted flag: cap on space members, no successor, audited",
-  "2: moving a public artifact into a space with publicLinks off makes it team",
-  "2: public in a space with publicLinks off is 403 public_links_off",
-  "2: public links off keeps an existing public artifact public (no rewrite)",
-  "2: scope=space lists one space; scope=spaces lists shared spaces; scope=space without spaceId is 400",
-  "2: space members: personal space 400 space_personal; PUT needs an existing, active target",
-  "2: transfer of a personal artifact and spaceId on publish",
-  "new, 2: providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal",
+  "new: providers -> code request -> verify -> me with spaces -> list with can/space -> move refusal",
+  "new: public links off keeps an existing public artifact public (no rewrite)",
 ];

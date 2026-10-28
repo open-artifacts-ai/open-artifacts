@@ -10,6 +10,7 @@ import {
   newId,
   type Page,
   R,
+  SPACE_NAME_RESERVED_MESSAGE,
   type Space,
   type SpaceMember,
   type SpaceMembersPage,
@@ -242,6 +243,56 @@ describe("spaces", () => {
       body: { name: "\u202A\u0000" },
     });
     expect(bad.status).toBe(400);
+  });
+
+  it('"Personal" (trimmed, any case) is 400 space_name_reserved on create and rename; an existing one is left alone', async () => {
+    const reserved = {
+      code: "space_name_reserved",
+      message: SPACE_NAME_RESERVED_MESSAGE,
+      details: { field: "name" },
+    };
+    for (const name of ["Personal", "  personal ", "PERSONAL", "Pers​onal"]) {
+      const r = await call(GOOGLE, R.spaces, admin.cookie, {
+        method: "POST",
+        body: { name },
+      });
+      expect(r.status).toBe(400);
+      expect(await errOf(r)).toEqual(reserved);
+    }
+    const { s, mgr } = await staffed();
+    for (const who of [admin, mgr]) {
+      const r = await call(GOOGLE, R.space(s.id), who.cookie, {
+        method: "PATCH",
+        body: { name: "personal" },
+      });
+      expect(r.status).toBe(400);
+      expect(await errOf(r)).toEqual(reserved);
+    }
+    expect(
+      await one<{ name: string }>("select name from spaces where id = ?", s.id),
+    ).toEqual({ name: s.name });
+    expect(await audits("space.update", s.id)).toEqual([]);
+    // A space already named Personal keeps working; it can be renamed away.
+    const old = newId();
+    await run(
+      "insert into spaces (id, kind, name, public_links, created_at) values (?, 'shared', 'Personal', 1, 1)",
+      old,
+    );
+    const get = await call(GOOGLE, R.space(old), admin.cookie);
+    expect((await json<Space>(get)).name).toBe("Personal");
+    const links = await call(GOOGLE, R.space(old), admin.cookie, {
+      method: "PATCH",
+      body: { publicLinks: false },
+    });
+    expect(await json<Space>(links)).toMatchObject({
+      name: "Personal",
+      publicLinks: false,
+    });
+    const away = await call(GOOGLE, R.space(old), admin.cookie, {
+      method: "PATCH",
+      body: { name: "Personal finance" },
+    });
+    expect((await json<Space>(away)).name).toBe("Personal finance");
   });
 
   it("POST /spaces: org admin 201, audited space.create; a member 404", async () => {

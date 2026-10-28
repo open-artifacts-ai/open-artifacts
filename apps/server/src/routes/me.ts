@@ -21,7 +21,7 @@ import { appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
-import { directoryMode } from "../services/spaces.js";
+import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
 import { getProfile, type Profile, setDisplayName } from "../services/users.js";
 import type { AppType } from "./index.js";
 
@@ -68,6 +68,11 @@ async function toMe(
     cap,
     expiresAt: exp === null ? null : new Date(exp).toISOString(),
   };
+  // Hosted M1 item 2: the caller's spaces, only with the spaces feature.
+  if (spacesOn(c.env)) {
+    me.personalSpaceId = user.id;
+    me.spaces = await mySharedSpaces(c.env, caller(c));
+  }
   return me;
 }
 

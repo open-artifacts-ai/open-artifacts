@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { utf8Decoder } from "../util/text.js";
 import { ApiError } from "./errors.js";
 
-type Parser<T> = {
+export type Parser<T> = {
   safeParse(
     x: unknown,
   ):
