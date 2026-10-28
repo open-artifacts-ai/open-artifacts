@@ -20,6 +20,7 @@ import {
   LIMITS,
   type Page,
   planOf,
+  QUERY_TOO_LARGE_MESSAGE,
   type StorageEntry,
   type StorageKey,
   StorageKeyNameSchema,
@@ -149,10 +150,11 @@ export const ACTOR_HEADER = "X-OA-Actor";
 export const AUTHZ_AT_HEADER = "X-OA-Authz-At";
 /**
  * where/orderBy queries scan and json-decode every doc in the collection, so they are
- * refused once its tracked byte total (totals.cols[collection]) exceeds this. A ~50 MB scan
- * costs hundreds of ms of CPU; 2 MiB stays near the 10 ms budget. Plain list is unaffected.
+ * refused (query_too_large) once its tracked byte total (totals.cols[collection]) exceeds
+ * this. A ~50 MB scan costs hundreds of ms of CPU; 2 MiB stays near the 10 ms budget.
+ * Plain list is unaffected.
  */
-const MAX_QUERY_COLLECTION_BYTES = 2 * 1024 * 1024;
+const MAX_QUERY_COLLECTION_BYTES = LIMITS.queryCollectionBytes;
 /** JSON path of a collection's byte total in totals.cols. */
 const colPath = (collection: string) => `$."${collection}"`;
 const DEFAULT_LIMIT = 100;
@@ -741,7 +743,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
         )
         .one().v;
       if (bytes > MAX_QUERY_COLLECTION_BYTES)
-        fail("bad_request", "collection too large to query; use list");
+        fail("query_too_large", QUERY_TOO_LARGE_MESSAGE);
     }
 
     // Keys are schema-validated identifiers, and are still only ever bound as '$.' || ? params.

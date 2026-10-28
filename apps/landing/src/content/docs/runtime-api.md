@@ -34,6 +34,7 @@ An artifact declares what it uses when it's published, for example `capabilities
 
 - `get(id)` to read one document, or `null`
 - `list({ cursor, limit })` and `query(filter)` to read many. Each returns a page, `{ items, nextCursor }`; pass `nextCursor` back as `cursor` for the next page.
+- `query({ where, orderBy, order, limit, cursor })` filters on equal values and sorts by one field. With `where` or `orderBy`, it reads the whole collection, so it works only while the collection holds up to {LIMIT_QUERY_COLLECTION}; past that it fails with `query_too_large`. For bigger data, use `list()` and filter in the page, or split it into smaller collections (for example, one per day).
 - `set(id, doc)`, `update(id, patch)`, and `delete(id)` to write
 - `subscribe(callback)` for live updates when anyone changes the collection. It returns a function that unsubscribes.
 
@@ -110,6 +111,7 @@ Before you share a public page that writes data, check each item:
 | Document size (Workers Free) | {LIMIT_DATA_DOC_FREE} |
 | Document size (Workers Paid) | {LIMIT_DATA_DOC_PAID} |
 | Data per artifact | {LIMIT_ARTIFACT_DATA} |
+| Collection size for `query()` with `where` or `orderBy` | {LIMIT_QUERY_COLLECTION} |
 | Writes per viewer | {LIMIT_VIEWER_WRITES} |
 | Anonymous writes per IP | {LIMIT_ANON_WRITES} |
 
@@ -123,6 +125,8 @@ Every call returns a promise. A failed call rejects with an error that has a `co
 | `capability_denied` | The artifact didn't declare that capability, or the viewer isn't allowed. |
 | `data_editors_only` | (403) Only this artifact's editors can change its data. |
 | `bad_request` | Invalid parameters, such as a bad collection name or a value that can't be sent. |
+| `query_too_large` | (400) `query()` with `where` or `orderBy` on a collection over {LIMIT_QUERY_COLLECTION}. Use `list()` and filter in the page, or split the data into smaller collections. |
+| `cursor_stale` | (409) The document a `query()` page ended on changed while paging. Start the query again without a cursor. |
 | `rate_limited`, `too_large`, `quota_exceeded` | A limit was reached. |
 | `not_found`, `unauthorized`, `conflict`, `internal` | Other server errors. |
 

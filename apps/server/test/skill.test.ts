@@ -429,3 +429,18 @@ describe("GET /skill.md", () => {
     await c.close();
   });
 });
+
+describe("query_too_large is documented (review item 23)", () => {
+  it("the MCP instructions and the skill name the query cap and its code", async () => {
+    const mb = `${LIMITS.queryCollectionBytes / 1024 / 1024} MB`;
+    for (const text of [
+      INSTRUCTIONS("free"),
+      INSTRUCTIONS("paid"),
+      await skill(),
+    ]) {
+      expect(text).toContain("query_too_large");
+      expect(text).toContain(`up to ${mb}`);
+    }
+    expect(SKILL_TEMPLATE).toContain("Keep collections small");
+  });
+});
