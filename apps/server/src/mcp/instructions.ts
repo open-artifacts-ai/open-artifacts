@@ -64,8 +64,10 @@ export const SECTIONS = {
 - markdown: rendered with code highlighting and mermaid diagrams.
 - code: one source file shown with syntax highlighting; set language (for example "python").
 - pdf: an uploaded PDF document.
-- If format is omitted it is inferred from the entry file's extension: .html, .md, .pdf, or a known text file (source code, .txt, .csv, .log, config) as code. Any other name (LICENSE, .gitignore) publishes as code when the file is UTF-8 text; anything else (a photo, an archive) is refused with unsupported_format.
-- The entry's content must fit its format: code, markdown and html are UTF-8 text, a pdf starts with %PDF. A mismatch is refused with binary_entry.`,
+- image: one PNG, JPEG, GIF, WebP or SVG image, shown as is. An image artifact is that one file; to combine images with text, publish html.
+- If format is omitted it is inferred from the entry file's extension: .html, .md, .pdf, .png, .jpg, .jpeg, .gif, .webp, .svg, or a known text file (source code, .txt, .csv, .log, config) as code. Any other name (LICENSE, .gitignore) publishes as code when the file is UTF-8 text; anything else (an archive) is refused with unsupported_format. HEIC photos are refused with unsupported_format: save them as JPEG first.
+- The entry's content must fit its format: code, markdown and html are UTF-8 text, a pdf starts with %PDF, an image starts with its extension's signature (an .svg is UTF-8 text with an <svg> root), and an upload's contentType must match the image's extension. A mismatch is refused with binary_entry.
+- Search matches an image by its title and description, never its content.`,
   },
   publishing: {
     title: "Publishing",

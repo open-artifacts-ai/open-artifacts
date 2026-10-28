@@ -363,7 +363,7 @@
     const start = performance.now();
     const step = (now) => {
       const p = Math.min(1, (now - start) / COUNT_MS);
-      const e = 1 - Math.pow(1 - p, 3);
+      const e = 1 - (1 - p) ** 3;
       setNumber(node, Math.round(from + (to - from) * e), cut);
       if (p < 1) node._raf = requestAnimationFrame(step);
       else node._raf = 0;
@@ -448,7 +448,7 @@
 
   function niceMax(v) {
     if (v <= 4) return 4;
-    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    const p = 10 ** Math.floor(Math.log10(v));
     for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
     return 10 * p;
   }

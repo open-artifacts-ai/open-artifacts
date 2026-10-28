@@ -147,7 +147,7 @@ export function renderSkillTemplate(): string {
   };
   return `---
 name: ${T("name")}
-description: "Open Artifacts (${T("host")}): publish and share web pages, documents, code and PDFs on ${T("host")}, the user's own Open Artifacts instance, through its MCP tools. Use when the user asks to publish, host, share or send a link to an HTML page, site, report, doc, diagram, dashboard or file; to update, list, search or restore artifacts and versions; to change who can see one; or to read and write a live page's data."
+description: "Open Artifacts (${T("host")}): publish and share web pages, documents, code, PDFs and images on ${T("host")}, the user's own Open Artifacts instance, through its MCP tools. Use when the user asks to publish, host, share or send a link to an HTML page, site, report, doc, diagram, dashboard, image or file; to update, list, search or restore artifacts and versions; to change who can see one; or to read and write a live page's data."
 compatibility: "Requires an MCP client with HTTP transport, or curl"
 metadata:
   version: "${T("version")}"
