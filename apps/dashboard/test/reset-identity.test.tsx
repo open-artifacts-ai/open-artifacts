@@ -243,7 +243,7 @@ it("hosted: Remove says artifacts stay and personal ones transfer under Departed
   fireEvent.click(within(menu).getByRole("menuitem", { name: "Remove…" }));
   expect(
     await screen.findByText(
-      "Their artifacts stay where they are. You can transfer their personal artifacts later under Departed.",
+      "They lose access, including to anything shared with them. Their artifacts stay where they are. You can transfer their personal artifacts later under Departed.",
     ),
   ).toBeTruthy();
 });
