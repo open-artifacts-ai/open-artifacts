@@ -16,6 +16,7 @@ import {
   LIMITS,
   ListQuerySchema,
   ListSpacesInputSchema,
+  ListVersionsInputSchema,
   PublishToolInputSchema,
   RestoreVersionInputSchema,
   SearchQuerySchema,
@@ -69,9 +70,10 @@ export const TOOL_DEFS = [
   },
   {
     name: "list_versions",
-    inputSchema: IdInputSchema,
+    inputSchema: ListVersionsInputSchema,
     example: { id: ID },
-    description: "List an artifact's versions, newest first.",
+    description:
+      "List an artifact's versions, newest first, up to 20 per page. When the result has a nextCursor, pass it as `cursor` for older versions.",
   },
   {
     name: "restore_version",

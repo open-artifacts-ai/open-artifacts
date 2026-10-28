@@ -1012,6 +1012,19 @@ export type SearchQueryInput = z.input<typeof SearchQuerySchema>;
 export const IdInputSchema = z.strictObject({ id: IdSchema });
 export type IdInput = z.infer<typeof IdInputSchema>;
 
+/**
+ * MCP list_versions. `cursor` is the result's nextCursor: the REST versions
+ * cursor (`before` = the last version of the previous page), as a string.
+ */
+export const ListVersionsInputSchema = z.strictObject({
+  id: IdSchema,
+  cursor: z
+    .string()
+    .regex(/^[1-9][0-9]{0,14}$/, "cursor must be a nextCursor from list_versions")
+    .optional(),
+});
+export type ListVersionsInput = z.infer<typeof ListVersionsInputSchema>;
+
 export const RestoreVersionInputSchema = z.strictObject({
   id: IdSchema,
   version: z.number().int().min(1),
