@@ -73,6 +73,7 @@ button.primary{background:var(--text);border-color:var(--text);color:var(--surfa
     <ul>
       <li><svg viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg><div><b>Publish and read artifacts as you</b><small>Create new versions and open anything you can open.</small></div></li>
       <li><svg viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg><div><b>Manage live data</b><small>Read and change the data stored by your live pages.</small></div></li>
+      <li><svg viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></svg><div><b>Delete and share as you</b><small>Delete artifacts, make them public, and share them with anyone.</small></div></li>
     </ul>
     <div class="who">Signed in as <b>{{user_email}}</b><a href="{{switch_url}}">Not you?</a></div>
     <div class="note" role="note"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 11h.01"/></svg><span>Only approve if you just started this from {{client_name}}.</span></div>
