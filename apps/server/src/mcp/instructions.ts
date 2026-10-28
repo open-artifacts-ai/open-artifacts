@@ -24,6 +24,12 @@ export type PlanText = {
   mcpBody: string;
   /** What quota_exceeded means the instance hit. */
   quota: string;
+  /**
+   * False on an install without the spaces feature: the text names no
+   * spaces, list_spaces or spaceId (parity 1, B12). The skill (built once
+   * for every install) leaves it unset and keeps the spaces lines.
+   */
+  spaces?: boolean;
 };
 
 /** Bytes as "N MB" when a whole MB, else as formatKb ("N KB", or exact bytes). */
@@ -39,7 +45,9 @@ export const sizeText = (b: number): string =>
 export const planText = (
   plan: Plan,
   docBytes: number = dataDocLimit(plan),
+  spaces = true,
 ): PlanText => ({
+  spaces,
   plan,
   dataDoc: sizeText(docBytes),
   dataDocNote:
@@ -71,7 +79,7 @@ export const SECTIONS = {
   },
   publishing: {
     title: "Publishing",
-    body: () => `- One file: publish_artifact { title, format, content }.
+    body: (p) => `- One file: publish_artifact { title, format, content }.
 - Several files: publish_artifact { title, entry: "index.html", files: { "index.html": "...", "app.js": "...", "img/logo.png": { "base64": "..." } } }.
 - Paths are relative, use "/" and are case-sensitive; link between files with relative URLs.
 - Open outbound links with target="_blank" rel="noopener"; links can't navigate the viewer page.
@@ -79,8 +87,11 @@ export const SECTIONS = {
 - Text files are plain strings; binary files are { "base64": "..." }.
 - To publish a new version, pass the artifact's id; every publish creates a version and the URL stays the same.
 - To change only settings (title, description, visibility, capabilities, dataWriters), pass the id with those and no content or files: they update in place and no version is created.
-- Add a short message describing the change. New artifacts get the instance's default visibility (private unless an admin chose team).
-- New artifacts go in your personal space. To publish into a shared space, call list_spaces and pass its id as spaceId (new artifacts only).`,
+- Add a short message describing the change. New artifacts get the instance's default visibility (private unless an admin chose team).${
+      p.spaces === false
+        ? ""
+        : "\n- New artifacts go in your personal space. To publish into a shared space, call list_spaces and pass its id as spaceId (new artifacts only)."
+    }`,
   },
   largeFiles: {
     title: "Large files",
@@ -96,9 +107,11 @@ export const SECTIONS = {
   },
   sharing: {
     title: "Sharing and visibility",
-    body: () => `- private: you and the people you share with. team: every member of this instance. public: anyone with the link, no sign-in.
+    body: (
+      p,
+    ) => `- private: you and the people you share with. team: every member of this instance. public: anyone with the link, no sign-in.
 - share_artifact { id, email, role: "viewer" | "editor" } adds a person; unshare_artifact removes them. Editors can publish new versions.
-- set_visibility { id, visibility } changes who can open it. Sharing, visibility and delete are for the owner or space manager only.
+- set_visibility { id, visibility } changes who can open it. Sharing, visibility and delete are for the owner${p.spaces === false ? "" : " or space manager"} only.
 - Make an artifact public only when the user asks for it.`,
   },
   liveData: {
@@ -181,19 +194,21 @@ const memo = new Map<string, string>();
 
 /**
  * The server instructions for `plan`. With `skillUrl` (the instance's
- * /skill.md, when served) they end by pointing at it.
+ * /skill.md, when served) they end by pointing at it. `spaces` false (an
+ * install without the spaces feature) leaves every spaces line out.
  */
 export function INSTRUCTIONS(
   plan: Plan,
   skillUrl?: string,
   docBytes: number = dataDocLimit(plan),
+  spaces = true,
 ): string {
-  const key = `${plan}|${docBytes}|${skillUrl ?? ""}`;
+  const key = `${plan}|${docBytes}|${spaces ? 1 : 0}|${skillUrl ?? ""}`;
   let s = memo.get(key);
   if (s === undefined) {
     s = `Open Artifacts hosts the pages, documents and code you publish, with versions, sharing and live data.
 
-${renderSections(planText(plan, docBytes), (t) => t)}
+${renderSections(planText(plan, docBytes, spaces), (t) => t)}
 ${skillUrl ? `\nFull guide: ${skillUrl}\n` : ""}`;
     memo.set(key, s);
   }

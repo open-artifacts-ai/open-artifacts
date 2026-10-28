@@ -952,6 +952,7 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["POST /api/v1/members", org("members.manage")],
   ["PATCH /api/v1/members/:id", org("members.manage")],
   ["DELETE /api/v1/members/:id", org("members.manage")],
+  ["POST /api/v1/members/:id/restore", org("members.manage")],
   // 409 member_active is past the guard: redline's target is an active member.
   ["GET /api/v1/members/:id/transfer", org("transfer.departed"), [200, 409]],
   ["POST /api/v1/members/:id/transfer", org("transfer.departed")],

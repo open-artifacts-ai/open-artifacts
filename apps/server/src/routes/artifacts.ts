@@ -244,7 +244,7 @@ export function mountArtifacts(app: AppType): void {
         expiresAt: null,
         version: v,
       });
-    // Bound to the viewer (content_revocation): the content host re-checks
+    // Bound to the viewer (every install): the content host re-checks
     // their status and epoch on every file (P3 T11).
     const { prefix, exp } = await signContent(
       c.env,

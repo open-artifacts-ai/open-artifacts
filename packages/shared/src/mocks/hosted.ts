@@ -1118,8 +1118,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           reason,
         });
       }
-      if (members.some((m) => m.email === email))
-        return err("conflict", "Already a member");
+      const existing = members.find((m) => m.email === email);
+      if (existing?.status === "removed")
+        return err(
+          "member_removed",
+          "This person was removed. Restore them instead.",
+          { userId: existing.id },
+        );
+      if (existing) return err("conflict", "Already a member");
       const m: Member = {
         id: newId(),
         email,
@@ -1201,6 +1207,30 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           remaining,
           nextCursor: remaining > 0 ? btoa(String(moved)) : null,
         });
+      }),
+    ),
+    // Parity 1: a removed member comes back active as a plain member, the
+    // manual restriction kept. Lapsed guests and directory removals aren't
+    // modelled here.
+    http.post(
+      "*/api/v1/members/:id/restore",
+      authed(({ params }) => {
+        const m = memberOf(params.id as string);
+        if (!m || !isAdmin()) return notFound();
+        if (needsOwner(m))
+          return err(
+            "owner_only",
+            "Only the owner can manage an owner or admin",
+          );
+        if (m.status !== "removed")
+          return err("member_active", "This member isn't removed");
+        m.status = "active";
+        m.role = "member";
+        log("user.status", { type: "user", id: m.id }, null, {
+          status: "active",
+          reason: "admin_restore",
+        });
+        return HttpResponse.json(m);
       }),
     ),
     ...(["put", "delete"] as const).map((method) =>

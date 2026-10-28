@@ -76,7 +76,3 @@ export function instanceFeatures(env: Env): FeatureFlag[] {
     ? [...cfg.features, "guests_read_only"]
     : [...cfg.features];
 }
-
-/** Hosted sign-in fields appear in Me only on hosted or direct-sign-in installs. */
-export const showsSignInFields = (env: Env): boolean =>
-  env.HOSTED === "1" || signInMode(authConfig(env)) === "direct";

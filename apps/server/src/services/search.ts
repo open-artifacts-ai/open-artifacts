@@ -20,11 +20,11 @@ import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import {
+  decorate,
   decorates,
   redact,
   spaceCols,
   toSummary,
-  withSpace,
 } from "./artifacts.js";
 import type { ManifestEntry } from "./manifest.js";
 import { imageThumbnail } from "./thumbs.js";
@@ -578,7 +578,6 @@ export async function search(
   const rows = await searchQuery(env, caller, m, offset, limit, spaceId);
   const page = rows.slice(0, limit);
   const next = offset + limit;
-  const dec = decorates(env, caller);
   return {
     // Built in SearchHitSchema's key order (summary fields, then snippet);
     // validated by the tests, not per hit in production.
@@ -602,7 +601,7 @@ export async function search(
       );
       return [
         {
-          ...(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out),
+          ...decorate(env, caller, out, level, r.a.spaceId, r.space),
           snippet: pickSnippet(r.sb ?? "", r.sd ?? "", r.st ?? ""),
         },
       ];

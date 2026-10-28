@@ -1,5 +1,4 @@
 import { LIMITS } from "@oa/shared";
-import { authConfig } from "../auth/config.js";
 import { contentKey } from "../auth/keys.js";
 import type { Env } from "../env.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
@@ -29,19 +28,17 @@ export type ContentViewer = { uid: string; epoch: number };
 
 /**
  * The viewer to bind into a minted /c/ token: the signed-in user at their
- * current epoch while FEATURES has content_revocation (hosted sets it), else
- * null (today's two-part token). Verification checks any bound token,
- * flag or not, so turning the flag off never loosens one already minted.
- * Fails closed: with the flag on, a user without an epoch throws rather than
- * getting an unbound token.
+ * current epoch, on every install (parity 1: the content_revocation flag no
+ * longer gates it, so a removal cuts content access at once everywhere).
+ * Null only without a signed-in user (the two-part token). Fails closed: a
+ * user without an epoch throws rather than getting an unbound token.
  */
 export function contentViewer(
-  env: Env,
+  _env: Env,
   uid: string | null | undefined,
   epoch: number | null | undefined,
 ): ContentViewer | null {
   if (!uid) return null;
-  if (!authConfig(env).features.includes("content_revocation")) return null;
   if (epoch == null)
     throw new Error("content_revocation: a signed-in viewer needs an epoch");
   return { uid, epoch };
