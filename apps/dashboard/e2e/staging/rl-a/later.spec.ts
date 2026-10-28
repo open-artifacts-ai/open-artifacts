@@ -24,9 +24,8 @@ import {
 // T19 step 4: flows that landed after M1's first RC. Each test names the
 // release that ships it and skips until rl-a's /healthz reports that release
 // or later, so they run as soon as rl-a is upgraded (CI pins the RC with
-// T19_EXPECT_VERSION, which turns a gated skip into a failure). Releases: CHANGELOG.md and the v* tags; "0.73.0" is
-// the next release after 0.72.0 for what is on main but unreleased, and for
-// the queued PRs (#800, #807) if they miss it, move their gate.
+// T19_EXPECT_VERSION, which turns a gated skip into a failure). Releases:
+// CHANGELOG.md and the v* tags. #800 missed 0.73.0, so it gates on 0.74.0.
 
 const { eng } = SPACES;
 
@@ -200,7 +199,7 @@ test("#794: a member who views editors-only live data sees View only", async ({
 test("#800: inviting outside the sign-in domain warns that they may not sign in", async ({
   browser,
 }) => {
-  await needs("#800", "0.73.0");
+  await needs("#800", "0.74.0");
   const admin = await person(browser, "admin", "admin");
   const providers = await json<AuthProviders>(
     await fetch(`${A.app}/auth/providers`, {
