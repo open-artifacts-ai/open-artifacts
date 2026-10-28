@@ -35,7 +35,8 @@ export const PLAIN_TEXT_EXTENSIONS: readonly string[] = [
 
 /**
  * The format an entry's name implies, or null when the name implies none
- * (LICENSE, .gitignore, a photo). `code` only for known text: a LANGUAGES
+ * (LICENSE, .gitignore, a .heic photo). `image` for .png, .jpg, .jpeg, .gif,
+ * .webp and .svg. `code` only for known text: a LANGUAGES
  * key, a PLAIN_TEXT_EXTENSIONS entry, or a file named Makefile or Dockerfile.
  * On null, a publish without `format` lets the bytes decide: UTF-8 text
  * publishes as code (language "text"), anything else is unsupported_format.
@@ -51,6 +52,13 @@ export function inferFormat(entry: string): Format | null {
       return "markdown";
     case "pdf":
       return "pdf";
+    case "png":
+    case "jpg":
+    case "jpeg":
+    case "gif":
+    case "webp":
+    case "svg":
+      return "image";
   }
   return isTextPath(entry) ? "code" : null;
 }

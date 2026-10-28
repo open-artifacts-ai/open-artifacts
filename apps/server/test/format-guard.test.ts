@@ -12,6 +12,7 @@ let owner: { cookie: string; userId: string };
 const JPEG = new Uint8Array([
   0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
 ]);
+const ZIP = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]);
 const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
 
 beforeAll(async () => {
@@ -30,18 +31,18 @@ async function nothingWritten(title: string) {
 }
 
 describe("inferred format", () => {
-  it("a .jpg entry without format is refused, nothing written", async () => {
-    const title = `jpg-${newId()}`;
+  it("a .zip entry without format is refused, nothing written", async () => {
+    const title = `zip-${newId()}`;
     const before = (await env.FILES.list()).objects.length;
     const r = await post({
       title,
-      files: { "IMG_0042.JPG": { base64: b64(JPEG) } },
+      files: { "a.zip": { base64: b64(ZIP) } },
     });
     expect(r.status).toBe(400);
     expect(await errOf(r)).toEqual({
       code: "unsupported_format",
       message: UNSUPPORTED_FORMAT_MESSAGE,
-      details: { path: "IMG_0042.JPG", reason: "no_viewer" },
+      details: { path: "a.zip", reason: "no_viewer" },
     });
     expect((await env.FILES.list()).objects.length).toBe(before);
     await nothingWritten(title);
@@ -73,7 +74,7 @@ describe("inferred format", () => {
 
   it("the message names what can be published, with no em dash", () => {
     expect(UNSUPPORTED_FORMAT_MESSAGE).toBe(
-      "This file type can't be shown yet. Publish HTML, Markdown, code or PDF.",
+      "This file type can't be shown yet. Publish HTML, Markdown, code, PDF or an image (PNG, JPEG, GIF, WebP, SVG).",
     );
     expect(UNSUPPORTED_FORMAT_MESSAGE).not.toMatch(/—/);
   });
@@ -106,13 +107,18 @@ describe("inferred format", () => {
     expect(await formatOf(r)).toEqual({ format: "code", language: "text" });
   });
 
-  it("svg as code publishes", async () => {
-    const r = await post({
-      title: "t",
-      files: { "logo.svg": '<svg xmlns="http://www.w3.org/2000/svg"/>' },
-    });
+  it("svg infers image; svg as explicit code still publishes as code", async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
+    const r = await post({ title: "t", files: { "logo.svg": svg } });
     expect(r.status).toBe(201);
-    expect(await formatOf(r)).toEqual({ format: "code", language: "xml" });
+    expect(await formatOf(r)).toEqual({ format: "image", language: null });
+    const c = await post({
+      title: "t",
+      format: "code",
+      files: { "logo.svg": svg },
+    });
+    expect(c.status).toBe(201);
+    expect(await formatOf(c)).toEqual({ format: "code", language: "xml" });
   });
 
   it("a UTF-8 BOM and an empty file are text", async () => {
@@ -294,12 +300,12 @@ describe("entry content: inline", () => {
 });
 
 describe("entry content: uploads", () => {
-  it("an uploaded .jpg without format is unsupported_format, not consumed", async () => {
-    const up = await uploaded("IMG_0042.jpg", new Uint8Array(JPEG));
+  it("an uploaded .zip without format is unsupported_format, not consumed", async () => {
+    const up = await uploaded("a.zip", new Uint8Array(ZIP));
     const r = await post({
       id: up.artifactId,
       title: "t",
-      files: { "IMG_0042.jpg": { uploadId: up.uploadId } },
+      files: { "a.zip": { uploadId: up.uploadId } },
     });
     expect(r.status).toBe(400);
     expect((await errOf(r)).code).toBe("unsupported_format");

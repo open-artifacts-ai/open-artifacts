@@ -92,15 +92,15 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   owner_only: 403,
   /** GET R.me for the org owner refused by a directory customer_mismatch; details BreakGlassRequiredDetails { fresh }. */
   break_glass_required: 401,
-  /** Publish with no `format` whose entry name implies none (inferFormat null); details { path, reason: "no_viewer" }. */
+  /** Publish with no `format` whose entry name implies none and whose bytes aren't text (details { path, reason: "no_viewer" }), or any HEIC/HEIF entry (details { path, reason: "heic" }, HEIC_MESSAGE). */
   unsupported_format: 400,
-  /** The entry's content doesn't fit its format (binary as code, markdown or html; a pdf without %PDF; a binary upload content type); details { path, reason } (sniff.ts EntryRefusal). */
+  /** The entry's content doesn't fit its format (binary as code, markdown or html; a pdf without %PDF; an image without its extension's signature, an .svg without an <svg> root, or an image upload declared as another type); details { path, reason } (sniff.ts EntryRefusal). */
   binary_entry: 400,
 };
 
 /** 400 unsupported_format message. */
 export const UNSUPPORTED_FORMAT_MESSAGE =
-  "This file type can't be shown yet. Publish HTML, Markdown, code or PDF.";
+  "This file type can't be shown yet. Publish HTML, Markdown, code, PDF or an image (PNG, JPEG, GIF, WebP, SVG).";
 
 /**
  * #681: the one sentence MCP instructions and the publish_artifact /
