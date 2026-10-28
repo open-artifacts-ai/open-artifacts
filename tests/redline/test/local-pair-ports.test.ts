@@ -8,6 +8,8 @@ import {
   exitReason,
   localFeatures,
   localModeOf,
+  localOAuthStoreOf,
+  localOAuthStoreVars,
   reservePort,
   waitBroker,
   waitHealthy,
@@ -179,5 +181,22 @@ describe("local pair modes", () => {
     expect(() => localModeOf({ REDLINE_LOCAL_MODE: "gogle" })).toThrow(
       /REDLINE_LOCAL_MODE/,
     );
+  });
+});
+
+describe("local pair OAuth store", () => {
+  it("REDLINE_OAUTH_STORE: kv by default, dual, d1, anything else refused", () => {
+    expect(localOAuthStoreOf({})).toBe("kv");
+    expect(localOAuthStoreOf({ REDLINE_OAUTH_STORE: "dual" })).toBe("dual");
+    expect(localOAuthStoreOf({ REDLINE_OAUTH_STORE: "d1" })).toBe("d1");
+    expect(() => localOAuthStoreOf({ REDLINE_OAUTH_STORE: "D1" })).toThrow(
+      /REDLINE_OAUTH_STORE/,
+    );
+  });
+  it("kv leaves OAUTH_STORE unset; dual and d1 set it", () => {
+    expect(localOAuthStoreVars()).toEqual({});
+    expect(localOAuthStoreVars("kv")).toEqual({});
+    expect(localOAuthStoreVars("d1")).toEqual({ OAUTH_STORE: "d1" });
+    expect(localOAuthStoreVars("dual")).toEqual({ OAUTH_STORE: "dual" });
   });
 });

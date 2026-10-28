@@ -282,6 +282,26 @@ export async function untilKvSettled(
   return deadline;
 }
 
+export type OAuthStoreMode = "kv" | "dual" | "d1";
+
+/**
+ * The install's OAuth store (/healthz oauthStore.mode, the OAuth store
+ * move). "kv" when the field is absent (a build from before the move) or
+ * holds anything else: the cautious answer, since only dual and d1 read
+ * the grant from D1. Throws on a non-200 /healthz.
+ */
+export async function oauthStoreMode(t: Target): Promise<OAuthStoreMode> {
+  const res = await fetch(`${t.app}/healthz`, { redirect: "manual" });
+  const text = await readBody(res);
+  if (res.status !== 200) throw new HttpError(`${t.name} /healthz`, res, text);
+  const mode = (
+    parseJson(res, text, `${t.name} /healthz`) as {
+      oauthStore?: { mode?: unknown };
+    }
+  ).oauthStore?.mode;
+  return mode === "dual" || mode === "d1" ? mode : "kv";
+}
+
 /** A 200 from /oauth/token that issued an access token. */
 export async function tokenIssued(r: Response): Promise<boolean> {
   if (r.status !== 200) return false;

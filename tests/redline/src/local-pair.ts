@@ -293,11 +293,43 @@ export function localModeOf(
   return known;
 }
 
+/**
+ * The OAuth store move: where both installs keep the OAuth provider's
+ * records. kv (the default, as every hosted install today) leaves
+ * OAUTH_STORE unset; dual and d1 set it, so the whole suite runs on the D1
+ * store (the #769 and revocation cases then need no KV wait).
+ */
+export type LocalOAuthStore = "kv" | "dual" | "d1";
+export const LOCAL_OAUTH_STORES: readonly LocalOAuthStore[] = [
+  "kv",
+  "dual",
+  "d1",
+];
+
+/** REDLINE_OAUTH_STORE (default "kv"); throws on any other value. */
+export function localOAuthStoreOf(
+  env: Record<string, string | undefined> = process.env,
+): LocalOAuthStore {
+  const m = env.REDLINE_OAUTH_STORE || "kv";
+  const known = LOCAL_OAUTH_STORES.find((x) => x === m);
+  if (!known)
+    throw new Error(
+      `REDLINE_OAUTH_STORE must be one of ${LOCAL_OAUTH_STORES.join(", ")}`,
+    );
+  return known;
+}
+
+/** The installs' OAUTH_STORE var: none for kv (the config is unchanged). */
+export const localOAuthStoreVars = (
+  store: LocalOAuthStore = "kv",
+): Record<string, string> => (store === "kv" ? {} : { OAUTH_STORE: store });
+
 function wranglerConfig(
   i: { name: string; testDomain: string; installId: string },
   port: number,
   idp?: InstallIdp,
   mode: LocalMode = "base",
+  oauthStore: LocalOAuthStore = "kv",
 ) {
   const base = JSON.parse(
     readFileSync(join(SERVER, "wrangler.test.jsonc"), "utf8"),
@@ -332,6 +364,7 @@ function wranglerConfig(
       TEST_DOMAIN: i.testDomain,
       // As a hosted install of the chosen tier (localFeatures).
       FEATURES: localFeatures(i.name, mode),
+      ...localOAuthStoreVars(oauthStore),
       // Sign-in (R6): codes, and Google on a client of its own (direct
       // transport; Google itself is never called). AUTH_DOMAINS stays off
       // TEST_DOMAIN so hook users sign in by code as guests.
@@ -456,6 +489,8 @@ export interface StartOpts {
   idp?: FakeIdpPair;
   /** The installs' FEATURES (localFeatures); default "base". */
   mode?: LocalMode;
+  /** Both installs' OAUTH_STORE (localOAuthStoreOf); default kv, as hosted. */
+  oauthStore?: LocalOAuthStore;
 }
 
 /** The local auth broker of a fake-IdP pair. */
@@ -655,6 +690,7 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
             }
           : undefined,
         o.mode,
+        o.oauthStore,
       );
       writeFileSync(config, JSON.stringify(cfg, null, 2), { mode: 0o600 });
       const persistTo = join(sub, "state");
