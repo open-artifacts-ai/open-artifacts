@@ -18,6 +18,8 @@ const HOOK_PATHS = [
   "/__test/otp/latest",
   "/__test/oauth-client",
   "/__test/audit",
+  "/__test/code-caps/reset",
+  "/__test/directory-groups",
   "/__test/x",
 ];
 const METHODS = ["GET", "POST"];

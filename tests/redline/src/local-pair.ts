@@ -264,10 +264,40 @@ interface InstallIdp {
   brokerOrigin: string;
 }
 
+/**
+ * The local pair's FEATURES. "base": every hosted install's
+ * `spaces,usage_off` (provision userWorkerMetadata; HOSTED_FEATURES in
+ * src/surfaces.ts). "google": the tiers the staging pair moves to: rl-a
+ * frozen sync, rl-b Google sync with no directory binding (the space mapping
+ * probes then need the directory-groups hook seed), both with content
+ * revocation.
+ */
+export type LocalMode = "base" | "google";
+export const LOCAL_MODES: readonly LocalMode[] = ["base", "google"];
+export function localFeatures(name: string, mode: LocalMode = "base"): string {
+  if (mode === "base") return "spaces,usage_off";
+  const sync = name === "rl-b" ? "sync_google" : "sync_frozen";
+  return `spaces,${sync},content_revocation,usage_off`;
+}
+
+/** REDLINE_LOCAL_MODE (default "base"); throws on any other value. */
+export function localModeOf(
+  env: Record<string, string | undefined> = process.env,
+): LocalMode {
+  const m = env.REDLINE_LOCAL_MODE || "base";
+  const known = LOCAL_MODES.find((x) => x === m);
+  if (!known)
+    throw new Error(
+      `REDLINE_LOCAL_MODE must be one of ${LOCAL_MODES.join(", ")}`,
+    );
+  return known;
+}
+
 function wranglerConfig(
   i: { name: string; testDomain: string; installId: string },
   port: number,
   idp?: InstallIdp,
+  mode: LocalMode = "base",
 ) {
   const base = JSON.parse(
     readFileSync(join(SERVER, "wrangler.test.jsonc"), "utf8"),
@@ -300,9 +330,8 @@ function wranglerConfig(
       INSTALL_ID: i.installId,
       TEST_HOOKS: "1",
       TEST_DOMAIN: i.testDomain,
-      // As every hosted install (provision userWorkerMetadata; HOSTED_FEATURES
-      // in src/surfaces.ts).
-      FEATURES: "spaces,usage_off",
+      // As a hosted install of the chosen tier (localFeatures).
+      FEATURES: localFeatures(i.name, mode),
       // Sign-in (R6): codes, and Google on a client of its own (direct
       // transport; Google itself is never called). AUTH_DOMAINS stays off
       // TEST_DOMAIN so hook users sign in by code as guests.
@@ -425,6 +454,8 @@ export interface StartOpts {
    * its Google tenant (as on staging).
    */
   idp?: FakeIdpPair;
+  /** The installs' FEATURES (localFeatures); default "base". */
+  mode?: LocalMode;
 }
 
 /** The local auth broker of a fake-IdP pair. */
@@ -623,6 +654,7 @@ export async function startLocalPair(o: StartOpts = {}): Promise<LocalPair> {
               brokerOrigin: broker.origin,
             }
           : undefined,
+        o.mode,
       );
       writeFileSync(config, JSON.stringify(cfg, null, 2), { mode: 0o600 });
       const persistTo = join(sub, "state");

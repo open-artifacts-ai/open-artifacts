@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { newId, type OAuthClient, OAuthClientSchema, R } from "@oa/shared";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import designConsent from "../../../design/screens/oauth-consent.html?raw";
 import { createApp } from "../src/app.js";
 import { createPat, verifyPat } from "../src/auth/pat.js";
@@ -39,6 +39,7 @@ import {
   register,
   tool,
 } from "./mcp-helpers.js";
+import { pinMiddayUtc } from "./midday.js";
 
 const app = createApp();
 
@@ -749,7 +750,11 @@ describe("MCP auth: fix round 1", () => {
   });
 
   it("instance-wide daily cap: over it → 429 'registration limit reached; try tomorrow'", async () => {
-    const today = new Date().toISOString().slice(0, 10);
+    // The seed's day and the server's own Date.now() must agree.
+    const today = new Date(pinMiddayUtc()).toISOString().slice(0, 10);
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     await env.DB.prepare(
       "insert into counters (key, n, day) values ('oauth_register', ?, ?) on conflict (key) do update set n = excluded.n, day = excluded.day",
     )

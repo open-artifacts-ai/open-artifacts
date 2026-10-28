@@ -6,6 +6,7 @@ import {
   NEEDS_CAPTURE,
 } from "../src/capture.ts";
 import { setupFetch } from "../src/fetch-timeout.ts";
+import { deleteThrowaways } from "../src/fixtures.ts";
 import {
   type Cred,
   describeRes,
@@ -15,6 +16,7 @@ import {
   send,
   withCred,
 } from "../src/http.ts";
+import { note } from "../src/notes.ts";
 import {
   crossCheck,
   expectRefused,
@@ -34,6 +36,7 @@ import {
   type GoogleStart,
   labelTurnstileTestKey,
   latestOtp,
+  otpOutcome,
   relayedTo,
   requestCode,
   startGoogle,
@@ -71,11 +74,10 @@ const cleanup: { t: Target; pat: Cred; id: string }[] = [];
 afterAll(async () => {
   for (const s of [A, B])
     if (s) cleanup.push({ t: s.t, pat: s.pat, id: s.markerId });
-  for (const c of cleanup)
-    await fetch(
-      `${c.t.app}/api/v1/artifacts/${encodeURIComponent(c.id)}`,
-      withCred(c.pat, { method: "DELETE" }),
-    ).then((r) => r.body?.cancel());
+  // Per id, one retry, never a throw mid-loop: a failed delete is noted.
+  let bad = 0;
+  for (const c of cleanup) bad += await deleteThrowaways(c.t, c.pat, [c.id]);
+  if (bad) note(`cleanup: ${bad} artifact(s) not deleted`);
 });
 
 const rand = () => randomBytes(5).toString("hex");
@@ -297,8 +299,14 @@ describe("sign-in: one-time codes", () => {
       throw new Error(
         `not generic: status ${rs.status} vs ${ri.status}, same body shape ${rs.shape === ri.shape}, pending cookie ${!!rs.pending}`,
       );
-    if ((await latestOtp(T.b, stranger, 4000)) !== null)
+    // The server records why it sent nothing: the stranger is ineligible.
+    const so = await otpOutcome(T.b, stranger);
+    if ("code" in so)
       throw new Error("B sent a code to an address it never invited");
+    if (so.outcome !== "ineligible")
+      throw new Error(
+        `stranger: expected outcome ineligible, got ${so.outcome}`,
+      );
   });
 });
 

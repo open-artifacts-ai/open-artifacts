@@ -9,6 +9,7 @@ import {
   expectTurnstileRequired,
   labelTurnstileTestKey,
   OTP_WAIT_MS,
+  otpOutcome,
   ownCodeRequestReq,
   pendingCode,
   signInRefused,
@@ -374,5 +375,38 @@ describe("pendingCode (the __Host- cookie case's code)", () => {
       ++n < 2 ? json(r, 404, NO_CODE) : json(r, 200, { code: "123456" }),
     );
     expect(await pendingCode(t, "g@rl-a.test", ok)).toEqual({ code: "123456" });
+  });
+
+  it("otpOutcome returns a final outcome instead of throwing (the stranger case)", async () => {
+    let n = 0;
+    const t = await hooked((_q, r) =>
+      ++n < 2 ? json(r, 404, NO_CODE) : json(r, 404, noCode("ineligible")),
+    );
+    expect(await otpOutcome(t, "s@rl-a.test")).toEqual({
+      outcome: "ineligible",
+    });
+    expect(n).toBe(2);
+  });
+
+  it("otpOutcome: the code, pending at the end, and no_outcome", async () => {
+    const c = await hooked((_q, r) => json(r, 200, { code: "654321" }));
+    expect(await otpOutcome(c, "g@rl-a.test")).toEqual({ code: "654321" });
+    const p = await hooked((_q, r) => json(r, 404, NO_CODE));
+    expect(await otpOutcome(p, "g@rl-a.test", 50)).toEqual({
+      outcome: "pending",
+    });
+    const u = await hooked((_q, r) => json(r, 404, noCode()));
+    expect(await otpOutcome(u, "g@rl-a.test")).toEqual({
+      outcome: "no_outcome",
+    });
+  });
+
+  it("otpOutcome still throws on a reasonless 404", async () => {
+    const t = await hooked((_q, r) =>
+      json(r, 404, { error: { code: "not_found", message: "Not found" } }),
+    );
+    await expect(otpOutcome(t, "g@rl-a.test")).rejects.toBeInstanceOf(
+      HookError,
+    );
   });
 });

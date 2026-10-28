@@ -12,13 +12,15 @@ import {
   TEST_OTP_OUTCOMES,
   TestAuditInputSchema,
   type TestAuditResult,
+  TestCodeCapsResetInputSchema,
+  TestDirectoryGroupsInputSchema,
   type TestHookRefusal,
   type TestOtpOutcome,
   TestSessionInputSchema,
 } from "@oa/shared";
 import { eq } from "drizzle-orm";
 import type { Context } from "hono";
-import { emailKey } from "../auth/codes.js";
+import { emailKey, ipKey } from "../auth/codes.js";
 import { authConfig } from "../auth/config.js";
 import { signSession } from "../auth/session.js";
 import { getDb } from "../db/client.js";
@@ -212,9 +214,18 @@ const log = (evt: string) =>
   console.log(JSON.stringify({ evt: `test_hook.${evt}` }));
 const BEARER = /^\s*Bearer\s+(\S+)\s*$/i;
 
-type HookName = "session" | "otp_latest" | "oauth_client" | "audit" | "unknown";
+type HookName =
+  | "session"
+  | "otp_latest"
+  | "oauth_client"
+  | "audit"
+  | "code_caps_reset"
+  | "directory_groups"
+  | "unknown";
 type Outcome = "ok" | "denied" | "refused" | "none" | "error";
 
+// A function, never a top-level table: only called from mountTestHooks, so
+// release builds (TEST_HOOKS_ALLOWED false) drop it and every /__test/* path.
 const hookName = (path: string): HookName =>
   path === TEST_HOOKS.session
     ? "session"
@@ -224,7 +235,54 @@ const hookName = (path: string): HookName =>
         ? "oauth_client"
         : path === TEST_HOOKS.audit
           ? "audit"
-          : "unknown";
+          : path === TEST_HOOKS.codeCapsReset
+            ? "code_caps_reset"
+            : path === TEST_HOOKS.directoryGroups
+              ? "directory_groups"
+              : "unknown";
+
+// directory_groups seed: `test-` ids with an email exactly under TEST_DOMAIN
+// only, enforced here in SQL too (no LIKE wildcards), so a handler slip can't
+// write or rewrite a real group. An existing row is updated only when its id
+// is itself prefixed. ?1 id, ?2 email, ?3 domain.
+const GROUP_UPSERT = `insert into directory_groups (group_id, email)
+  select ?1, ?2
+  where substr(?1, 1, 5) = 'test-'
+    and substr(?2, length(?2) - length(?3)) = '@' || ?3
+  on conflict (group_id) do update set email = excluded.email
+    where substr(directory_groups.group_id, 1, 5) = 'test-'`;
+
+/** Upserts the prefixed groups in one batch; how many rows wrote. */
+async function seedDirectoryGroups(
+  env: Env,
+  groups: { groupId: string; email: string }[],
+): Promise<number> {
+  const res = await env.DB.batch(
+    groups.map((g) =>
+      env.DB.prepare(GROUP_UPSERT).bind(
+        g.groupId,
+        g.email,
+        env.TEST_DOMAIN ?? "",
+      ),
+    ),
+  );
+  return res.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
+}
+
+// The caller's own per-IP code buckets (auth/codes.ts takeRequestSlot and
+// verify), by its ipKey: exactly these two keys, never a prefix match, so no
+// other IP's buckets, no per-address bucket and no pool counter is touched.
+// D1 (strongly consistent): the next code request sees the reset.
+const CODE_CAPS_DELETE = "delete from counters where key in (?1, ?2)";
+
+/** Deletes the caller's code:ip and code:fail buckets; how many rows went. */
+async function resetCodeCaps(env: Env, ip: string): Promise<number> {
+  const ik = await ipKey(env, ip);
+  const r = await env.DB.prepare(CODE_CAPS_DELETE)
+    .bind(`code:ip:${ik}`, `code:fail:${ik}`)
+    .run();
+  return r.meta.changes ?? 0;
+}
 
 // Same DDL as P3's audit_events (0009_spaces, also IF NOT EXISTS), so the
 // rows land in the audit log on installs that predate that migration.
@@ -571,6 +629,41 @@ export function mountTestHooks(app: AppType): void {
       return "code" in got
         ? c.json({ code: got.code })
         : refused("no_code", { outcome: got.outcome });
+    }
+
+    if (hook === "code_caps_reset") {
+      // Strictly `{}`: a body naming an IP or a key is refused.
+      if (!TestCodeCapsResetInputSchema.safeParse(body).success || !ip) {
+        await audit(env, hook, ip, "refused");
+        return refused("bad_input");
+      }
+      const reset = await resetCodeCaps(env, ip);
+      await audit(env, hook, ip, "ok");
+      return c.json({ reset });
+    }
+
+    if (hook === "directory_groups") {
+      const input = TestDirectoryGroupsInputSchema.safeParse(body);
+      const groups = input.success
+        ? input.data.groups.map((g) => ({
+            groupId: g.groupId,
+            email: normalizeEmail(g.email),
+          }))
+        : [];
+      if (
+        !input.success ||
+        new Set(groups.map((g) => g.groupId)).size !== groups.length ||
+        groups.some((g) => !g.email || !inTestDomain(env, g.email))
+      ) {
+        await audit(env, hook, ip, "refused");
+        return refused("bad_input");
+      }
+      const seeded = await seedDirectoryGroups(
+        env,
+        groups as { groupId: string; email: string }[],
+      );
+      await audit(env, hook, ip, "ok");
+      return c.json({ seeded });
     }
 
     if (hook === "audit") {

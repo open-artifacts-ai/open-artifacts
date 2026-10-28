@@ -5,6 +5,7 @@ import {
   authorizeRefused,
   authorizeUrl,
   codeForm,
+  lastRedeemAt,
   mcpResource,
   pkce,
   redeem,
@@ -14,7 +15,9 @@ import {
   slotValue,
   tokenRefused,
   tokenRequest,
+  untilKvSettled,
 } from "../src/creds.ts";
+import { deleteThrowaways } from "../src/fixtures.ts";
 import {
   type Cred,
   HttpError,
@@ -24,6 +27,7 @@ import {
   sessionCred,
   withCred,
 } from "../src/http.ts";
+import { note } from "../src/notes.ts";
 import {
   allMarkers,
   crossCheck,
@@ -60,13 +64,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  for (const s of [A, B]) {
-    if (!s) continue;
-    await fetch(
-      `${s.t.app}/api/v1/artifacts/${encodeURIComponent(s.markerId)}`,
-      withCred(s.pat, { method: "DELETE" }),
-    ).then((r) => r.body?.cancel());
-  }
+  // Per id, one retry, never a throw mid-loop: a failed delete is noted.
+  let bad = 0;
+  for (const s of [A, B])
+    if (s) bad += await deleteThrowaways(s.t, s.pat, [s.markerId]);
+  if (bad) note(`cleanup: ${bad} marker artifact(s) not deleted`);
 });
 
 const pair = (credA: Cred, credB: Cred) => ({
@@ -288,12 +290,16 @@ describe("credentials", () => {
             ? refreshForm(c.aAtA, rtAatA, res(T.a))
             : refreshForm(atB, rtAatB, res(T.b)),
         );
+        // Each refresh reads a grant just written by its redeem: wait out
+        // KV's read cache first, or a stale read refuses a valid token (#769).
+        await untilKvSettled(lastRedeemAt());
         await crossCheck((cr, t) => tokenRequest(t, slotValue(cr, t)), {
           ...pair(credA, credB),
           ok: okStatus(200),
           refused: tokenRefused(errors),
         });
         // The token B refused is live at A.
+        await untilKvSettled(lastRedeemAt());
         const r = await fetch(
           tokenRequest(T.a, refreshForm(c.aAtB, rtAatB, res(T.a))),
         );

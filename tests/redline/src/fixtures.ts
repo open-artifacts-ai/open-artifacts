@@ -5,6 +5,7 @@ import {
   newMarker,
   parseJson,
   readBody,
+  retryIdempotent,
   send,
   withCred,
 } from "./http.ts";
@@ -52,10 +53,12 @@ export async function call(
       throw new HttpError(what, res, text);
     return { res, text };
   }
-  // Bounded: a timeout is a FAIL (an abort error), never a refusal.
-  const res = await send(
-    new Request(req, { signal: AbortSignal.timeout(15_000) }),
-  );
+  // Bounded at 15 s per try. GET and PUT get retryIdempotent's tries on a
+  // network error (a timeout included) or a 5xx; anything else, or the last
+  // try, throws (a FAIL, never a refusal).
+  const res = await retryIdempotent(req, {
+    send: (r) => send(new Request(r, { signal: AbortSignal.timeout(15_000) })),
+  });
   const text = await readBody(res);
   if (res.status < 200 || res.status > 299)
     throw new HttpError(what, res, text);
@@ -118,21 +121,39 @@ export async function createThrowaway(
   return { id, marker };
 }
 
-/** Deletes throwaways; returns how many didn't answer 2xx or 404. */
+/**
+ * Deletes throwaways; returns how many didn't answer 2xx or 404. Each id is
+ * tried at most twice (a thrown error or a non-2xx/404 answer); a failure is
+ * counted, never thrown, so one bad delete never skips the rest.
+ */
 export async function deleteThrowaways(
   t: Target,
   pat: Cred,
   ids: readonly string[],
+  go: (r: Request) => Promise<Response> = send,
 ): Promise<number> {
   let bad = 0;
-  for (const id of ids) {
-    const res = await send(
-      apiReq(t, pat, "DELETE", `/api/v1/artifacts/${encodeURIComponent(id)}`),
-    );
-    await readBody(res);
-    if (!(res.status >= 200 && res.status < 300) && res.status !== 404) bad++;
-  }
+  for (const id of ids) if (!(await deleteOne(t, pat, id, go))) bad++;
   return bad;
+}
+
+async function deleteOne(
+  t: Target,
+  pat: Cred,
+  id: string,
+  go: (r: Request) => Promise<Response>,
+): Promise<boolean> {
+  for (let i = 0; i < 2; i++) {
+    try {
+      const res = await go(
+        apiReq(t, pat, "DELETE", `/api/v1/artifacts/${encodeURIComponent(id)}`),
+      );
+      await readBody(res);
+      if ((res.status >= 200 && res.status < 300) || res.status === 404)
+        return true;
+    } catch {}
+  }
+  return false;
 }
 
 export const dataPath = (id: string, ...rest: string[]) =>

@@ -10,6 +10,7 @@
     "test": "pnpm --filter @oa/provision build && vitest run",
     "live": "node --experimental-strip-types scripts/redline.ts",
     "local": "node --experimental-strip-types scripts/local-pair.ts",
+    "local:google": "REDLINE_LOCAL_MODE=google node --experimental-strip-types scripts/local-pair.ts",
     "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {

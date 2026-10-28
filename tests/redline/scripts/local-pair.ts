@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
   groupMembers,
   type LocalPair,
+  localModeOf,
   startLocalPair,
 } from "../src/local-pair.ts";
 
@@ -91,6 +92,8 @@ const timer = setTimeout(() => void finish(124, "timed out"), timeoutMs);
 
 try {
   booting = startLocalPair({
+    // REDLINE_LOCAL_MODE=google: the sync_frozen / sync_google tiers.
+    mode: localModeOf(),
     signal: abort.signal,
     onSpawn: (p) => {
       spawnedPids.push(p);

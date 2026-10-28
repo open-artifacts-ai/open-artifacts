@@ -19,6 +19,7 @@ import {
   securityHeaders,
   session,
 } from "./http/middleware.js";
+import { cancelUnreadOnRefusal } from "./http/unread-body.js";
 import { SKILL_PATH, serveSkill } from "./mcp/skill.js";
 import { serveUpgrade, UPGRADE_PATH } from "./mcp/upgrade.js";
 import { type AppType, mountRoutes } from "./routes/index.js";
@@ -86,6 +87,8 @@ export function createApp(
   extraPolicy: Readonly<Record<string, Policy>> = {},
 ) {
   const app: AppType = new Hono<AppEnv>();
+  // Outermost: an early refusal cancels the request body nothing read.
+  app.use(mw(cancelUnreadOnRefusal()));
   // This invocation's broker capabilities (ctx.props) for the whole request,
   // waitUntil work included (auth/broker-transport.ts).
   app.use(

@@ -692,6 +692,37 @@ export function worldSpaces(testDomain: string): {
     if (!HOOK_SPACE_ID.test(id)) throw new Error(`bad hook space id ${id}`);
   return out;
 }
+/**
+ * The fixed directory groups the space mapping probes name, per TEST_DOMAIN
+ * (the same tag as worldSpaces). seedWorld seeds their directory_groups rows
+ * through the directory-groups hook (`test-` ids, TEST_DOMAIN emails), so on
+ * a Google-sync install with no binding the success leg is a real write, not
+ * a 404 (never accepted as a pass). On sync off or frozen the put answers
+ * the service's 409 (sync off), still past the access rule.
+ */
+export function worldGroups(testDomain: string): SpaceTarget["groups"] {
+  const tag = createHash("sha256")
+    .update(testDomain.toLowerCase())
+    .digest("hex")
+    .slice(0, 8);
+  const out = {
+    viewer: `test-redline-viewer-${tag}`,
+    manager: `test-redline-manager-${tag}`,
+    free: `test-redline-free-${tag}`,
+  };
+  for (const id of Object.values(out))
+    if (!HOOK_SPACE_ID.test(id)) throw new Error(`bad hook group id ${id}`);
+  return out;
+}
+
+/** The directory-groups hook body for `testDomain`'s world groups. */
+export const groupSeed = (testDomain: string) => ({
+  groups: Object.values(worldGroups(testDomain)).map((groupId) => ({
+    groupId,
+    email: `${groupId}@${testDomain}`,
+  })),
+});
+
 const WORLD_TITLE = "test-redline-world";
 const TRASH_TITLE = "test-redline-trash";
 /** Reuse a trashed probe artifact only while it is this fresh: well inside the 30-day purge. */
@@ -814,6 +845,11 @@ export async function seedWorld(side: Side): Promise<World> {
     },
     { setup: true },
   );
+  // The mapping probes' groups (idempotent; harmless when sync is off).
+  await hook(t, "/__test/directory-groups", groupSeed(t.testDomain), {
+    setup: true,
+  });
+  const groups = worldGroups(t.testDomain);
   const users = {
     member: await memberId(t, pat, "member"),
     editor: await memberId(t, pat, "editor"),
@@ -846,14 +882,15 @@ export async function seedWorld(side: Side): Promise<World> {
       memberId: users.member,
       departedId: users.member,
     },
-    space: spaceTarget(WORLD_SPACE, users),
-    guard: spaceTarget(GUARD_SPACE, users),
+    space: spaceTarget(WORLD_SPACE, users, groups),
+    guard: spaceTarget(GUARD_SPACE, users, groups),
   };
 }
 
 const spaceTarget = (
   spaceId: string,
   u: World["users"],
+  groups: SpaceTarget["groups"],
   cloneId?: string,
 ): SpaceTarget => ({
   spaceId,
@@ -862,13 +899,9 @@ const spaceTarget = (
   memberId: u.member,
   editorId: u.editor,
   managerId: u.manager,
-  // No directory on the red-line installs: the mapping put probes answer the
-  // service's 409 (sync off) past the access rule, an allowed answer.
-  groups: {
-    viewer: "redline-viewer",
-    manager: "redline-manager",
-    free: "redline-free",
-  },
+  // Seeded by seedWorld (worldGroups): a real write on Google-sync
+  // installs, the service's 409 (sync off) elsewhere; both past the rule.
+  groups,
   ...(cloneId ? { cloneId } : {}),
 });
 
@@ -893,7 +926,7 @@ export async function throwaway(
     })) as { id?: string };
     if (typeof space.id !== "string") throw new Error(`${t.name}: no space id`);
     const clone = space.id;
-    x.space = spaceTarget(w.spaceId, w.users, clone);
+    x.space = spaceTarget(w.spaceId, w.users, w.space.groups, clone);
     await api(t, pat, "POST", `/api/v1/spaces/${clone}/members/self`, {
       json: { role: "manager" },
     });

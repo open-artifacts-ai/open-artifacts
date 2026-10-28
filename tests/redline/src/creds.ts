@@ -218,7 +218,37 @@ export async function redeem(
   };
   if (typeof j.access_token !== "string" || typeof j.refresh_token !== "string")
     throw new Error(`${t.name} token: no access or refresh token`);
+  lastRedeem = Date.now();
   return { accessToken: j.access_token, refreshToken: j.refresh_token };
+}
+
+/**
+ * Workers KV's per-location read cache (the OAuth provider passes no
+ * cacheTtl, so the 60 s default). A grant read within it of the redeem can
+ * see the pre-redeem record and refuse a valid refresh token with
+ * invalid_grant (issue #769).
+ */
+export const KV_CACHE_TTL_MS = 60_000;
+/** Past the TTL: clock skew and the cache's own expiry lag. */
+export const KV_SETTLE_SLACK_MS = 5_000;
+
+let lastRedeem = 0;
+/** When this process last redeemed a code (0: never). */
+export const lastRedeemAt = () => lastRedeem;
+
+/**
+ * Waits until KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS have passed since `since`
+ * (default: the last redeem), so a refresh reads the redeemed grant. A
+ * deadline on a timestamp: no wait once it has passed.
+ */
+export async function untilKvSettled(
+  since = lastRedeem,
+  now: () => number = Date.now,
+): Promise<number> {
+  const deadline = since + KV_CACHE_TTL_MS + KV_SETTLE_SLACK_MS;
+  while (now() < deadline)
+    await new Promise((r) => setTimeout(r, deadline - now()));
+  return deadline;
 }
 
 /** A 200 from /oauth/token that issued an access token. */

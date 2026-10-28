@@ -69,8 +69,23 @@ beforeAll(async () => {
     groups: w.groups,
   };
 }, 120_000);
-/** Probe-heavy tests: rows of cells through the Worker, under suite load. */
-const SLOW = 120_000;
+/**
+ * One Worker call's bound under suite load: the base config's testTimeout
+ * (vitest.config.ts), which every single-call test lives under.
+ */
+const CALL_MS = 20_000;
+/**
+ * The most Worker calls a cell makes in sequence: a clone (mutating
+ * surfaces), then the probe's mint or MCP call, then the content load.
+ */
+const CALLS_PER_CELL = 3;
+/**
+ * Probe-heavy tests: a row's cells (one per artifact) run concurrently on one
+ * workerd, so under machine load they queue behind each other; the window is
+ * every call of the row at its own bound, not a guess (it was a flat 120 s,
+ * which the content and socket rows overran under load).
+ */
+const SLOW = CALL_MS * CALLS_PER_CELL * ARTIFACTS.length;
 
 type RouteDef = { method: string; path: string; handler: { length: number } };
 /** Answering routes only (middleware are ALL routes taking (c, next)). */

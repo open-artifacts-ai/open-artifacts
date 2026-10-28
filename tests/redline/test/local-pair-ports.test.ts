@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   exitReason,
+  localFeatures,
+  localModeOf,
   reservePort,
   waitBroker,
   waitHealthy,
@@ -155,5 +157,27 @@ describe("waitBroker", () => {
       ),
     ).rejects.toThrow("exited early");
     expect(Date.now() - t0).toBeLessThan(2_000);
+  });
+});
+
+describe("local pair modes", () => {
+  it("base: every hosted install's FEATURES on both", () => {
+    expect(localFeatures("rl-a")).toBe("spaces,usage_off");
+    expect(localFeatures("rl-b", "base")).toBe("spaces,usage_off");
+  });
+  it("google: rl-a frozen, rl-b Google sync, both with content revocation", () => {
+    expect(localFeatures("rl-a", "google")).toBe(
+      "spaces,sync_frozen,content_revocation,usage_off",
+    );
+    expect(localFeatures("rl-b", "google")).toBe(
+      "spaces,sync_google,content_revocation,usage_off",
+    );
+  });
+  it("REDLINE_LOCAL_MODE: base by default, google, anything else refused", () => {
+    expect(localModeOf({})).toBe("base");
+    expect(localModeOf({ REDLINE_LOCAL_MODE: "google" })).toBe("google");
+    expect(() => localModeOf({ REDLINE_LOCAL_MODE: "gogle" })).toThrow(
+      /REDLINE_LOCAL_MODE/,
+    );
   });
 });

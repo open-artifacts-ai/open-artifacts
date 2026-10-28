@@ -544,6 +544,8 @@ describe("A: buildBundle builds both variants from one dry-run config", () => {
         "/__test/session",
         "/__test/otp/latest",
         "/__test/oauth-client",
+        "/__test/code-caps/reset",
+        "/__test/directory-groups",
       ]) {
         expect(main(rel).includes(r), r).toBe(false);
         expect(main(red).includes(r), r).toBe(true);

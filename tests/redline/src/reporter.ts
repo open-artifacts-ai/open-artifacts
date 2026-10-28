@@ -13,6 +13,7 @@ import {
   legOf,
   levelOf,
   type Manifest,
+  notesOf,
   parseManifest,
   type RunBinding,
   redactReason,
@@ -107,12 +108,14 @@ export function collect(
             }
         : levelOf(state, t.meta(), errors);
       const label = labelOf(t.meta());
+      const notes = notesOf(t.meta());
       cases.push({
         name: t.fullName,
         file,
         level,
         ...(reason ? { reason } : {}),
         ...(label ? { label } : {}),
+        ...(notes.length ? { notes } : {}),
         ...(level === "pass" ? {} : legOf(setupFailed ? setup : errors)),
       });
     }
@@ -145,6 +148,19 @@ export function collect(
       )}`,
     });
   return cases;
+}
+
+/** The notes a file recorded outside any test (live/setup.ts afterAll). */
+export function collectFileNotes(
+  modules: ReadonlyArray<Pick<TestModule, "moduleId" | "meta">>,
+  root: string,
+): { file: string; note: string }[] {
+  return modules.flatMap((m) =>
+    notesOf(m.meta()).map((note) => ({
+      file: relative(root, m.moduleId),
+      note,
+    })),
+  );
 }
 
 /**
@@ -190,12 +206,14 @@ export default class RedlineReporter implements Reporter {
   ): Promise<void> {
     const root = join(import.meta.dirname, "..");
     const binding = await bindingOf();
+    const fileNotes = collectFileNotes(modules, root);
     const report = {
       ...buildReport(
         applyManifest(collect(modules, unhandled, root), loadManifest()),
         modeOf(),
       ),
       ...(binding ? { binding } : {}),
+      ...(fileNotes.length ? { fileNotes } : {}),
     };
     const out = reportPath();
     mkdirSync(dirname(out), { recursive: true, mode: 0o700 });

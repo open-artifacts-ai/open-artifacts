@@ -10,7 +10,7 @@ import {
   TestSessionResultSchema,
 } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { emailKey } from "../src/auth/codes.js";
+import { emailKey, ipKey } from "../src/auth/codes.js";
 import { sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
@@ -117,6 +117,19 @@ const otpRows = async (code: string) =>
       .catch(() => null)
   )?.n ?? 0;
 const on = (over: Partial<Env> = {}) => ({ ...env, ...ON, ...over }) as Env;
+/** A counters row at n = 7 for today's bucket (any bucket: the reset ignores it). */
+const seedCounter = (key: string) =>
+  env.DB.prepare(
+    "insert into counters (key, n, day) values (?1, 7, 'd') on conflict (key) do update set n = 7",
+  )
+    .bind(key)
+    .run();
+const counter = async (key: string) =>
+  (
+    await env.DB.prepare("select n from counters where key = ?")
+      .bind(key)
+      .first<{ n: number }>()
+  )?.n ?? null;
 const hook = (e: Env, path: string, body?: unknown, key = KEY) =>
   call(e, path, { body: body ?? {}, key });
 
@@ -608,6 +621,168 @@ describe("hooks", () => {
     )?.id;
     await revokeAllGrants(e, uid as string);
     expect((await mcp(accessToken)).status).toBe(401);
+  });
+
+  it("code-caps/reset: before the key, the uniform 404 and nothing deleted", async () => {
+    const ik = await ipKey(env, "198.51.100.200");
+    await seedCounter(`code:ip:${ik}`);
+    for (const r of [
+      await call(on(), TEST_HOOKS.codeCapsReset, {
+        body: {},
+        key: "x".repeat(32),
+      }),
+      await call(on(), TEST_HOOKS.codeCapsReset, { body: {} }),
+      await hook(env, TEST_HOOKS.codeCapsReset, {}),
+    ])
+      await same404(r);
+    expect(await counter(`code:ip:${ik}`)).toBe(7);
+  });
+
+  it("code-caps/reset: deletes only the caller's code:ip and code:fail buckets", async () => {
+    const mine = await ipKey(env, "198.51.100.200");
+    const other = await ipKey(env, "203.0.113.9");
+    const keep = [
+      `code:ip:${other}`,
+      `code:fail:${other}`,
+      `code:eip:ek1:${mine}`,
+      `code:en:ek1:${mine}`,
+      "code:e:ek1",
+      "email:pool",
+    ];
+    for (const k of [`code:ip:${mine}`, `code:fail:${mine}`, ...keep])
+      await seedCounter(k);
+    const r = await hook(on(), TEST_HOOKS.codeCapsReset, {});
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ reset: 2 });
+    expect(await counter(`code:ip:${mine}`)).toBeNull();
+    expect(await counter(`code:fail:${mine}`)).toBeNull();
+    for (const k of keep) expect(await counter(k)).toBe(7);
+    // Again: nothing left to reset.
+    expect(
+      await (await hook(on(), TEST_HOOKS.codeCapsReset, {})).json(),
+    ).toEqual({ reset: 0 });
+  });
+
+  it("code-caps/reset: the body must be exactly {} (no IP or key to aim it)", async () => {
+    const since = Date.now();
+    for (const body of [{ ip: "203.0.113.9" }, { key: "code:ip:x" }, []])
+      await refused404(
+        await hook(on(), TEST_HOOKS.codeCapsReset, body),
+        "bad_input",
+      );
+    const rows = await auditRows(since);
+    expect(rows.map((r) => [r.action, r.detail.outcome])).toEqual([
+      ["test_hook.code_caps_reset", "refused"],
+      ["test_hook.code_caps_reset", "refused"],
+      ["test_hook.code_caps_reset", "refused"],
+    ]);
+  });
+
+  it("code-caps/reset: audited and rate-limited like every hook", async () => {
+    const since = Date.now();
+    rlCalls.length = 0;
+    await hook(on(), TEST_HOOKS.codeCapsReset, {});
+    expect(rlCalls).toHaveLength(1);
+    const rows = await auditRows(since);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.action).toBe("test_hook.code_caps_reset");
+    expect(rows[0]?.detail).toEqual({
+      hook: "code_caps_reset",
+      ip: "198.51.100.200",
+      outcome: "ok",
+    });
+    const noRl = {
+      limit: async () => ({ success: false }),
+    } as unknown as RateLimit;
+    await same404(
+      await hook(on({ RL_ANON: noRl }), TEST_HOOKS.codeCapsReset, {}),
+    );
+  });
+
+  const groupEmail = async (id: string) =>
+    (
+      await env.DB.prepare(
+        "select email from directory_groups where group_id = ?",
+      )
+        .bind(id)
+        .first<{ email: string }>()
+    )?.email ?? null;
+
+  it("directory-groups: before the key, the uniform 404 and nothing written", async () => {
+    const id = `test-g-${crypto.randomUUID().slice(0, 8)}`;
+    const body = { groups: [{ groupId: id, email: `g@${TD}` }] };
+    for (const r of [
+      await call(on(), TEST_HOOKS.directoryGroups, {
+        body,
+        key: "x".repeat(32),
+      }),
+      await call(on(), TEST_HOOKS.directoryGroups, { body }),
+      await hook(env, TEST_HOOKS.directoryGroups, body),
+    ])
+      await same404(r);
+    expect(await groupEmail(id)).toBeNull();
+  });
+
+  it("directory-groups: seeds test- ids at TEST_DOMAIN emails, idempotently", async () => {
+    const a = `test-g-${crypto.randomUUID().slice(0, 8)}`;
+    const b = `test-g-${crypto.randomUUID().slice(0, 8)}`;
+    const body = {
+      groups: [
+        { groupId: a, email: `${a}@${TD}` },
+        { groupId: b, email: `${b}@${TD}` },
+      ],
+    };
+    const r = await hook(on(), TEST_HOOKS.directoryGroups, body);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ seeded: 2 });
+    expect(await groupEmail(a)).toBe(`${a}@${TD}`);
+    expect((await hook(on(), TEST_HOOKS.directoryGroups, body)).status).toBe(
+      200,
+    );
+    expect(await groupEmail(b)).toBe(`${b}@${TD}`);
+  });
+
+  it("directory-groups: never a non-test id or an email outside TEST_DOMAIN; a real group is untouched", async () => {
+    const real = `g-${crypto.randomUUID().slice(0, 8)}`;
+    await env.DB.prepare(
+      "insert into directory_groups (group_id, email) values (?, 'real@corp.example')",
+    )
+      .bind(real)
+      .run();
+    const since = Date.now();
+    for (const groups of [
+      [{ groupId: real, email: `x@${TD}` }],
+      [{ groupId: "TEST-x", email: `x@${TD}` }],
+      [{ groupId: "test-ok", email: "x@corp.example" }],
+      [{ groupId: "test-ok", email: `x@sub.${TD}` }],
+      [
+        { groupId: "test-dup", email: `x@${TD}` },
+        { groupId: "test-dup", email: `y@${TD}` },
+      ],
+      [],
+    ])
+      await refused404(
+        await hook(on(), TEST_HOOKS.directoryGroups, { groups }),
+        "bad_input",
+      );
+    await refused404(
+      await hook(on(), TEST_HOOKS.directoryGroups, {
+        groups: [{ groupId: "test-ok", email: `x@${TD}` }],
+        extra: 1,
+      }),
+      "bad_input",
+    );
+    expect(await groupEmail(real)).toBe("real@corp.example");
+    expect(await groupEmail("test-ok")).toBeNull();
+    const rows = await auditRows(since);
+    expect(rows).toHaveLength(7);
+    expect(
+      rows.every(
+        (r) =>
+          r.action === "test_hook.directory_groups" &&
+          r.detail.outcome === "refused",
+      ),
+    ).toBe(true);
   });
 
   it("/healthz reports testHooks", async () => {

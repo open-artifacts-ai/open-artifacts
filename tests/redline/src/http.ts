@@ -2,7 +2,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InfraError, setupFetch } from "./fetch-timeout.ts";
+import {
+  InfraError,
+  isNetworkError,
+  networkCode,
+  setupFetch,
+} from "./fetch-timeout.ts";
+import { note } from "./notes.ts";
 import { secretsOf, setPat, type Target } from "./targets.ts";
 
 // Fetch helpers. Every request uses redirect: "manual" (a 3xx is judged, never
@@ -51,6 +57,85 @@ export function asPair(credA: Cred, credB: Cred) {
 /** fetch with redirect: "manual", whatever the Request says. */
 export const send = (req: Request): Promise<Response> =>
   fetch(req, { redirect: "manual" });
+
+const IDEMPOTENT = new Set(["GET", "HEAD", "PUT"]);
+/** Backoff before try n+1 (n from 1): 250 ms, then 1 s. */
+export const RETRY_BACKOFF_MS = [250, 1000] as const;
+const where = (r: Request) => `${r.method} ${new URL(r.url).pathname}`;
+
+/**
+ * Sends an idempotent (GET, HEAD, PUT) request with up to 3 tries, retrying
+ * only what never got a usable answer: a network error (TypeError, reset,
+ * abort, timeout) or a 5xx. A 4xx, a 2xx and anything not idempotent are
+ * returned (or thrown) at once. Each retry is noted on the case (src/notes.ts).
+ * `sendFn` defaults to `send` (redirect: "manual").
+ */
+export async function retryIdempotent(
+  req: Request,
+  o: {
+    send?: (r: Request) => Promise<Response>;
+    backoff?: readonly number[];
+  } = {},
+): Promise<Response> {
+  const go = o.send ?? send;
+  if (!IDEMPOTENT.has(req.method.toUpperCase())) return go(req);
+  const backoff = o.backoff ?? RETRY_BACKOFF_MS;
+  const tries = backoff.length + 1;
+  for (let i = 1; ; i++) {
+    // A spare copy for the next try (a PUT body is single-use).
+    const spare = i < tries ? req.clone() : null;
+    let why: string;
+    try {
+      const res = await go(req);
+      if (res.status < 500 || !spare) return res;
+      await res.body?.cancel();
+      why = `status ${res.status}`;
+    } catch (e) {
+      if (!spare || !isNetworkError(e) || req.signal.aborted) throw e;
+      why = networkCode(e);
+    }
+    note(`${where(req)} retried (try ${i + 1} of ${tries}; ${why})`);
+    await new Promise((r) => setTimeout(r, backoff[i - 1]));
+    req = spare;
+  }
+}
+
+/**
+ * A probe's send: a request that got no response at all (it never reached a
+ * Worker) is sent once more; no response again is infra, never a verdict. A
+ * probe that didn't run proves nothing. Any response, whatever its status, is
+ * returned as is.
+ */
+export async function sendProbe(
+  req: Request,
+  go: (r: Request) => Promise<Response> = send,
+): Promise<Response> {
+  // Only an idempotent probe is sent again: a POST B wrongly accepted whose
+  // answer was lost could be refused on the retry (a refresh token now
+  // spent) and read as a pass. Anything else with no response is infra.
+  const idempotent = IDEMPOTENT.has(req.method.toUpperCase());
+  const spare = idempotent ? req.clone() : null;
+  try {
+    return await go(req);
+  } catch (e) {
+    if (!isNetworkError(e) || req.signal.aborted) throw e;
+    if (!spare)
+      throw new InfraError(
+        `probe ${where(req)} on ${new URL(req.url).host} got no response (${networkCode(e)}; not idempotent, not retried)`,
+        { cause: e },
+      );
+    note(`probe ${where(req)} retried once (no response: ${networkCode(e)})`);
+    try {
+      return await go(spare);
+    } catch (e2) {
+      if (!isNetworkError(e2) || spare.signal.aborted) throw e2;
+      throw new InfraError(
+        `probe ${where(req)} on ${new URL(req.url).host} got no response twice (${networkCode(e2)})`,
+        { cause: e2 },
+      );
+    }
+  }
+}
 
 /** JSON.parse that never puts body text in an error: status and hash only. */
 export function parseJson(res: Response, text: string, what: string): unknown {
@@ -216,15 +301,26 @@ export async function hook(
   if (!path.startsWith("/__test/"))
     throw new Error("hook paths start with /__test/");
   await paceHook(t);
-  const res = await fetch(`${t.app}${path}`, {
-    method: "POST",
-    redirect: "manual",
-    headers: {
-      authorization: `Bearer ${secretsOf(t).hookKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body ?? {}),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${t.app}${path}`, {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        authorization: `Bearer ${secretsOf(t).hookKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body ?? {}),
+    });
+  } catch (e) {
+    // A setup hook (a POST: never retried) that got no answer is infra.
+    if (o.setup && isNetworkError(e))
+      throw new InfraError(
+        `setup ${path} no_response on ${t.name} (${networkCode(e)})`,
+        { cause: e },
+      );
+    throw e;
+  }
   const text = await readBody(res);
   if (res.status < 200 || res.status > 299)
     throw o.setup
@@ -290,7 +386,9 @@ export async function adminCreds(t: Target): Promise<AdminCreds> {
     pat = await mintPat(t, cookie);
     if (pat.kind === "pat") setPat(t, pat.token);
   }
-  const res = await fetch(`${t.app}/api/v1/me`, withCred(pat));
+  const res = await retryIdempotent(
+    new Request(`${t.app}/api/v1/me`, withCred(pat)),
+  );
   const text = await readBody(res);
   if (res.status !== 200)
     throw new HttpError(`${t.name} PAT /api/v1/me`, res, text);
