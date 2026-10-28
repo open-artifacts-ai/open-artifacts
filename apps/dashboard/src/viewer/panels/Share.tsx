@@ -32,7 +32,7 @@ import {
 import { useSingleFlight } from "../../api/useSingleFlight";
 import { emailEnabled } from "../../auth/emailEnabled";
 import { useCan } from "../../auth/permissions";
-import { useSignInDomains } from "../../auth/reach";
+import { signInWith, useSignInDomains } from "../../auth/reach";
 import { useMe } from "../../auth/useMe";
 import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
@@ -113,10 +113,10 @@ const MEMBERS_PAGE = "/settings/members";
 
 /**
  * ShareResult.recipient (review item 37): the share applies, but the person
- * can't sign in to open it yet. Shown under their row until the panel closes
- * or they're removed.
+ * can't sign in to open it yet. The line under "Shared with <email>." in the
+ * share box, which turns warning (Design, #800).
  */
-function RecipientNote({
+function RecipientLine({
   email,
   reason,
   admin,
@@ -128,25 +128,21 @@ function RecipientNote({
   admin: boolean;
   domains: string;
 }) {
-  return (
-    <Notice tone="warning" compact>
-      {reason === "needs_invite" ? (
-        admin ? (
-          <>
-            {email} can't sign in until they're a member.{" "}
-            <AppLink href={MEMBERS_PAGE} className="underline">
-              Invite them
-            </AppLink>
-          </>
-        ) : (
-          `${email} can't sign in until they're a member. Ask an admin to invite them.`
-        )
-      ) : reason === "outside_domains" ? (
-        `${email} can't sign in here, so they can't open this. Share with an address at ${domains} instead.`
-      ) : (
-        `No sign-in method here fits ${email}, so they can't open this. Share with another address.`
-      )}
-    </Notice>
+  return reason === "needs_invite" ? (
+    admin ? (
+      <>
+        {email} can't sign in until they're a member.{" "}
+        <AppLink href={MEMBERS_PAGE} className="underline">
+          Invite them
+        </AppLink>
+      </>
+    ) : (
+      `${email} can't sign in until they're a member. Ask an admin to invite them.`
+    )
+  ) : reason === "outside_domains" ? (
+    `${email} can't sign in here, so they can't open this. Share with an address at ${domains} instead.`
+  ) : (
+    `No sign-in method here fits ${email}, so they can't open this. Share with another address.`
   );
 }
 
@@ -215,15 +211,11 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const [shared, setShared] = useState<{
     email: string;
     emailed: boolean;
+    /** Set when they can't sign in yet: the box warns instead. */
+    recipient?: ShareRecipient;
+    /** How they sign in, from the server (older servers omit it). */
+    with: string | null;
   } | null>(null);
-  // Who can't sign in yet, by email: kept for this panel's lifetime.
-  const [cantSignIn, setCantSignIn] = useState<
-    Record<string, ShareRecipient["reason"]>
-  >({});
-  const noteFor = (email: string, r: ShareRecipient | undefined) =>
-    setCantSignIn(({ [email]: _, ...rest }) =>
-      r ? { ...rest, [email]: r.reason } : rest,
-    );
   const domains = useSignInDomains();
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
@@ -265,8 +257,12 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           onSettled: done,
           onSuccess: (r) => {
             setEmail("");
-            setShared({ email: e, emailed: r.emailed });
-            noteFor(e, r.recipient);
+            setShared({
+              email: e,
+              emailed: r.emailed,
+              recipient: r.recipient,
+              with: signInWith(r.signInMethods),
+            });
           },
           onError: (x) => fail(x, "Couldn't share"),
         },
@@ -429,25 +425,49 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
       )}
 
       <section>
-        {shared && (
-          <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
+        {shared?.recipient ? (
+          // They can't sign in yet: one warning box, and no link that won't work for them.
+          <div className="mb-[var(--oa-space-4)]">
             <Notice
-              tone="success"
-              title={`Shared with ${shared.email}`}
+              tone="warning"
+              title={`Shared with ${shared.email}.`}
               onDismiss={() => setShared(null)}
             >
               <p>
-                {shared.emailed
-                  ? "We emailed them a link. They'll sign in with a one-time code."
-                  : artifact.visibility === "public"
-                    ? "Send them this link. They can open it without signing in."
-                    : "Send them this link. They'll sign in with a one-time code sent to that address, then see the artifact."}
+                <RecipientLine
+                  email={shared.email}
+                  reason={shared.recipient.reason}
+                  admin={isOrgAdmin(me)}
+                  domains={domains}
+                />
               </p>
-              {/* emailed:false with email on is not a failure here: members and
-                  re-shares are never emailed, so there's no "didn't send" line. */}
-              <CopyLink link={link} label="Artifact link" />
             </Notice>
           </div>
+        ) : (
+          shared && (
+            <div className="mb-[var(--oa-space-4)] [&_p]:mb-[var(--oa-space-2)]">
+              <Notice
+                tone="success"
+                title={`Shared with ${shared.email}`}
+                onDismiss={() => setShared(null)}
+              >
+                <p>
+                  {shared.emailed
+                    ? shared.with
+                      ? `We emailed them a link. They'll sign in with ${shared.with}.`
+                      : "We emailed them a link. They'll sign in with a one-time code."
+                    : artifact.visibility === "public"
+                      ? "Send them this link. They can open it without signing in."
+                      : shared.with
+                        ? `Send them this link. They'll sign in with ${shared.with}.`
+                        : "Send them this link. They'll sign in with a one-time code sent to that address, then see the artifact."}
+                </p>
+                {/* emailed:false with email on is not a failure here: members and
+                  re-shares are never emailed, so there's no "didn't send" line. */}
+                <CopyLink link={link} label="Artifact link" />
+              </Notice>
+            </div>
+          )
         )}
         <h3 className={H3}>People</h3>
         <ul className="flex flex-col gap-[var(--oa-space-2)] p-0">
@@ -489,7 +509,10 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                         removeOnce((done) =>
                           del.mutate(s.email, {
                             onSettled: done,
-                            onSuccess: () => noteFor(s.email, undefined),
+                            onSuccess: () =>
+                              setShared((x) =>
+                                x?.email === s.email ? null : x,
+                              ),
                             onError: (x) => fail(x, "Couldn't remove"),
                           }),
                         )
@@ -502,14 +525,6 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
                   <span className="text-muted-foreground">{s.role}</span>
                 )}
               </div>
-              {cantSignIn[s.email] && (
-                <RecipientNote
-                  email={s.email}
-                  reason={cantSignIn[s.email]}
-                  admin={isOrgAdmin(me)}
-                  domains={domains}
-                />
-              )}
             </li>
           ))}
         </ul>

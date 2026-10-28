@@ -6,7 +6,7 @@ import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import { orList } from "../src/auth/reach";
+import { orList, signInWith } from "../src/auth/reach";
 import { findVisibleToast, installHarness, mountHosted } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
@@ -85,6 +85,16 @@ describe("sign-in hosting line", () => {
   });
 });
 
+it("signInWith uses the email's phrases, in the server's order", () => {
+  expect(signInWith(["email", "google"])).toBe(
+    "their Google account or a one-time code sent to that address",
+  );
+  expect(signInWith(["access"])).toBe("your organization's single sign-on");
+  // Nothing admits them, or an older server didn't say: no sentence of ours.
+  expect(signInWith([])).toBeNull();
+  expect(signInWith(undefined)).toBeNull();
+});
+
 it("orList joins domains with 'or'", () => {
   expect(orList(["acme.com"])).toBe("acme.com");
   expect(orList(["acme.com", "acme.io"])).toBe("acme.com or acme.io");
@@ -142,64 +152,78 @@ describe("invite reachability", () => {
     expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 
-  it("uncertain: the invite is sent, with a warning toast", async () => {
+  it("uncertain: Invite sent to <email>, the warning inline, no toast", async () => {
     // Google on: outside the domain, only a Workspace secondary domain gets in.
     mountHosted("/settings/members");
-    await invite("pat@elsewhere.org");
-    await findVisibleToast(
-      "Invite sent. pat@elsewhere.org is outside example.com, so they may not be able to sign in. If they can't, invite an address at example.com.",
+    const dialog = await invite("pat@elsewhere.org");
+    expect(
+      await within(dialog).findByText("Invite sent to pat@elsewhere.org"),
+    ).toBeVisible();
+    expect(dialog).toHaveTextContent(
+      "pat@elsewhere.org is outside example.com, so they may not be able to sign in. If they can't, invite an address at example.com.",
     );
     expect(
-      await screen.findByText("pat@elsewhere.org can now sign in"),
+      within(dialog).getByRole("textbox", { name: "Sign-in link" }),
     ).toBeVisible();
+    expect(screen.queryByText("pat@elsewhere.org can now sign in")).toBeNull();
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 });
 
 const LANDING = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
 ).id;
+/** Shares with `email`; returns the box that confirms it (success or warning). */
 const share = async (email: string) => {
   const input = await screen.findByRole("textbox", { name: "Email" });
   fireEvent.change(input, { target: { value: email } });
   fireEvent.click(screen.getByRole("button", { name: "Add" }));
-  await screen.findByText(`Shared with ${email}`);
-  const row = screen
-    .getByRole("button", { name: `Remove ${email}` })
-    .closest("li");
-  if (!row) throw new Error(`no row for ${email}`);
-  return row as HTMLElement;
+  const title = await screen.findByText(
+    new RegExp(`^Shared with ${email.replace(".", "\\.")}\\.?$`),
+  );
+  const box = title.closest("[role=alert]");
+  if (!box) throw new Error(`no box for ${email}`);
+  return box as HTMLElement;
+};
+/** A recipient who can't sign in gets a warning box with no link (Design, #800). */
+const noLink = (box: HTMLElement) => {
+  expect(within(box).queryByRole("textbox", { name: "Artifact link" })).toBeNull();
+  expect(within(box).queryByRole("button", { name: /Copy/ })).toBeNull();
 };
 const asMember = (m: Me): Me => ({ ...m, user: { ...m.user, role: "member" } });
 const PANEL = `${viewerPath(LANDING)}?panel=open&tab=share`;
 
-describe("share recipient notes", () => {
+describe("share box when the recipient can't sign in", () => {
   it("needs_invite, as an org owner: links to Members", async () => {
     mountHosted(PANEL);
-    const row = await share("pat@example.com");
-    expect(row).toHaveTextContent(
-      "pat@example.com can't sign in until they're a member. Invite them",
+    const box = await share("pat@example.com");
+    expect(box).toHaveTextContent(
+      "Shared with pat@example.com.pat@example.com can't sign in until they're a member. Invite them",
     );
     expect(
-      within(row).getByRole("link", { name: "Invite them" }),
+      within(box).getByRole("link", { name: "Invite them" }),
     ).toHaveAttribute("href", "/settings/members");
+    noLink(box);
   });
 
   it("needs_invite, as a member: ask an admin", async () => {
     mountHosted(PANEL, true, asMember);
-    const row = await share("pat@example.com");
-    expect(row).toHaveTextContent(
+    const box = await share("pat@example.com");
+    expect(box).toHaveTextContent(
       "pat@example.com can't sign in until they're a member. Ask an admin to invite them.",
     );
-    expect(within(row).queryByRole("link")).toBeNull();
+    expect(within(box).queryByRole("link")).toBeNull();
+    noLink(box);
   });
 
   it("outside_domains: share with an address at the domains", async () => {
     // Google only: no guest codes outside the domain.
     mountHosted(PANEL, { providers: ["google"] });
-    const row = await share("pat@elsewhere.org");
-    expect(row).toHaveTextContent(
+    const box = await share("pat@elsewhere.org");
+    expect(box).toHaveTextContent(
       "pat@elsewhere.org can't sign in here, so they can't open this. Share with an address at example.com instead.",
     );
+    noLink(box);
   });
 
   it("no_sign_in_method: share with another address", async () => {
@@ -227,24 +251,35 @@ describe("share recipient notes", () => {
         ]),
       ),
     ]);
-    const row = await share("pat@example.com");
-    expect(row).toHaveTextContent(
+    const box = await share("pat@example.com");
+    expect(box).toHaveTextContent(
       "No sign-in method here fits pat@example.com, so they can't open this. Share with another address.",
+    );
+    noLink(box);
+  });
+
+  it("a recipient who can sign in gets the success box, its link, and how they sign in", async () => {
+    mountHosted(PANEL);
+    const box = await share("guest@elsewhere.org");
+    expect(box).not.toHaveTextContent("can't sign in");
+    expect(
+      within(box).getByRole("textbox", { name: "Artifact link" }),
+    ).toBeVisible();
+    // The mock's signInMethods for an outside guest: codes.
+    expect(box).toHaveTextContent(
+      "They'll sign in with a one-time code sent to that address.",
     );
   });
 
-  it("a recipient who can sign in gets no note; removing clears one", async () => {
+  it("removing the person clears the warning box", async () => {
     mountHosted(PANEL);
-    const ok = await share("guest@elsewhere.org");
-    expect(within(ok).queryByRole("alert")).toBeNull();
-    expect(ok).not.toHaveTextContent("can't sign in");
-    const row = await share("pat@example.com");
-    expect(row).toHaveTextContent("can't sign in until they're a member");
+    await share("pat@example.com");
     fireEvent.click(
-      within(row).getByRole("button", { name: "Remove pat@example.com" }),
+      screen.getByRole("button", { name: "Remove pat@example.com" }),
     );
     await waitFor(() =>
       expect(screen.queryByText(/can't sign in until/)).toBeNull(),
     );
   });
+});
 });

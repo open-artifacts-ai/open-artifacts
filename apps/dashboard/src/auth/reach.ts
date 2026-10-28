@@ -2,7 +2,10 @@
 // invite, an invite that may not sign in, and a share whose recipient can't
 // sign in yet. The server's messages are never shown for these.
 import { useAuthProviders } from "../api/auth";
-import type { InviteUnreachableReason } from "../api/contract";
+import type {
+  InviteUnreachableReason,
+  SignInProviderId,
+} from "../api/contract";
 
 /** "a", "a or b", "a, b or c". */
 export const orList = (list: readonly string[]) =>
@@ -32,6 +35,28 @@ export const inviteRefusedCopy = (
     ? `${email} can't sign in here. Only addresses at ${domains} can. Use one of those addresses.`
     : `No sign-in method here fits ${email}. Use another address, or ask the owner to add a sign-in method.`;
 
-/** 201 with signIn "uncertain": the invite stands, but warn. */
+/** 201 with signIn "uncertain": the invite stands, but warn (inline, under its heading). */
 export const inviteUncertainCopy = (email: string, domains: string) =>
-  `Invite sent. ${email} is outside ${domains}, so they may not be able to sign in. If they can't, invite an address at ${domains}.`;
+  `${email} is outside ${domains}, so they may not be able to sign in. If they can't, invite an address at ${domains}.`;
+
+// The email's phrases (server signInSentence), about the recipient.
+const METHOD_PHRASE: Record<SignInProviderId, string> = {
+  google: "their Google account",
+  access: "your organization's single sign-on",
+  email: "a one-time code sent to that address",
+};
+const METHOD_ORDER: readonly SignInProviderId[] = ["google", "access", "email"];
+
+/**
+ * How the recipient signs in, from the server's `signInMethods` for that
+ * address: "their Google account or a one-time code sent to that address".
+ * Null when the server didn't say (older) or nothing admits them.
+ */
+export const signInWith = (
+  methods: readonly SignInProviderId[] | undefined,
+): string | null => {
+  const parts = METHOD_ORDER.filter((m) => methods?.includes(m)).map(
+    (m) => METHOD_PHRASE[m],
+  );
+  return parts.length ? parts.join(" or ") : null;
+};

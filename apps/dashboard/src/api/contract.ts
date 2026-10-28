@@ -59,6 +59,7 @@ export {
   SIGN_IN_PAGE,
   type SignInError,
   SignInErrorSchema,
+  type SignInProviderId,
   SPACE_MANAGER_FIELDS,
   SPACE_MANAGER_MAPPING_ROLES,
   type Space,

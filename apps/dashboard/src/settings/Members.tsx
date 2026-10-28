@@ -30,11 +30,13 @@ import { emailEnabled } from "../auth/emailEnabled";
 import {
   inviteRefusedCopy,
   inviteUncertainCopy,
+  signInWith,
   useSignInDomains,
 } from "../auth/reach";
 import { useMe } from "../auth/useMe";
 import { CopyLink } from "../layout/CopyLink";
 import { Modal } from "../layout/Modal";
+import { Notice } from "../layout/Notice";
 import { toast } from "../layout/toast";
 import { UserAvatar } from "../layout/UserAvatar";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
@@ -119,6 +121,10 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const [added, setAdded] = useState<{
     email: string;
     emailed: boolean;
+    /** signIn "uncertain": they may not be able to sign in (warned inline). */
+    uncertain: boolean;
+    /** How they sign in, from the server (older servers omit it). */
+    with: string | null;
   } | null>(null);
   // Set synchronously: `isPending` only turns true on the next render, so two
   // submits in one tick (a fast double Enter) would both pass that check.
@@ -136,12 +142,12 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
           sending.current = false;
         },
         onSuccess: (r) => {
-          setAdded({ email: parsed, emailed: r.emailed });
-          if (r.signIn?.status === "uncertain")
-            toast({
-              title: inviteUncertainCopy(parsed, domains),
-              tone: "warning",
-            });
+          setAdded({
+            email: parsed,
+            emailed: r.emailed,
+            uncertain: r.signIn?.status === "uncertain",
+            with: signInWith(r.signInMethods),
+          });
         },
         onError: (e) => {
           // Nothing was created: Design's copy, not the server's message.
@@ -169,15 +175,22 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
         title={
           added.emailed
             ? `Invitation sent to ${added.email}`
-            : `${added.email} can now sign in`
+            : added.uncertain
+              ? `Invite sent to ${added.email}`
+              : `${added.email} can now sign in`
         }
         description={
           added.emailed
-            ? `They can also sign in at ${url} with a one-time code.`
-            : `Send them this link. They'll sign in at ${url} with a one-time code sent to that address.`
+            ? `They can also sign in at ${url} with ${added.with ?? "a one-time code"}.`
+            : `Send them this link. They'll sign in at ${url} with ${added.with ?? "a one-time code sent to that address"}.`
         }
         footer={<Button onClick={onClose}>Done</Button>}
       >
+        {added.uncertain && (
+          <Notice tone="warning" compact>
+            {inviteUncertainCopy(added.email, domains)}
+          </Notice>
+        )}
         {sends && !added.emailed && (
           <p role="status" className={errorText}>
             The email didn't send. Copy the link and share it yourself.
