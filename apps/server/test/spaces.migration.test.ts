@@ -61,7 +61,7 @@ let ownerCookie: string;
 let memberCookie: string;
 
 beforeAll(async () => {
-  // removeMember reassigns to the instance owner; the test DB needs one.
+  // An instance owner, as every install has.
   const o = await login(`s4-owner-${tag}@a.com`, "owner");
   ownerCookie = o.cookie;
   owner = (await getUser(env, o.userId)) as Member;
@@ -310,7 +310,7 @@ describe("migration spaces", () => {
     ).rejects.toThrow(/FOREIGN KEY/);
   });
 
-  it("flag-off removeMember moves owner_id and space_id together", async () => {
+  it("flag-off removeMember moves nothing and keeps the personal space (parity 1)", async () => {
     const { userId } = await login(`s4-rm-${tag}@a.com`);
     const id = newId();
     await insertArtifact(id, userId, userId);
@@ -319,9 +319,8 @@ describe("migration spaces", () => {
       "select owner_id, space_id from artifacts where id = ?",
       id,
     );
-    expect(row).toEqual({ owner_id: owner.id, space_id: owner.id });
-    // The personal space's id IS the removed user's id and it is now empty:
-    // it is deleted, never re-pointed at the instance owner.
-    expect(await spaceRow(userId)).toBeNull();
+    expect(row).toEqual({ owner_id: userId, space_id: userId });
+    // The personal space stays: a Departed transfer reads from it.
+    expect(await spaceRow(userId)).not.toBeNull();
   });
 });

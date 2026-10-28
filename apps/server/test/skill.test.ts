@@ -114,7 +114,11 @@ describe("skill.md drift", () => {
 
   it("tool headings equal tools/list; every input property is in its section", async () => {
     const u = await login(`skill-${newId().slice(0, 6).toLowerCase()}@x.com`);
-    const c = await connect((await createPat(env, u.userId, "s")).token);
+    // The skill is one file for every install: it documents the full tool
+    // list, list_spaces included (offered with the spaces feature on).
+    const c = await connect((await createPat(env, u.userId, "s")).token, {
+      env: E({ FEATURES: "spaces" }),
+    });
     const { tools } = await c.listTools();
     await c.close();
     const sections = toolSections(await skill());
