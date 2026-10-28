@@ -7,8 +7,10 @@ import {
   SURFACES,
 } from "../../../apps/server/test/authz/surfaces.ts";
 import {
+  TEST_GROUP_ID,
   TEST_HOOK_REFUSALS,
   TEST_OTP_OUTCOMES,
+  TestDirectoryGroupsInputSchema,
 } from "../../../packages/shared/src/hosted/test-hooks.ts";
 import {
   HOOK_OTP_OUTCOMES,
@@ -34,10 +36,12 @@ import {
   coverageGaps,
   DROPPED,
   derive,
+  groupSeed,
   HOOK_SPACE_ID,
   HOSTED_FEATURES,
   readRepoFile,
   viaTarget,
+  worldGroups,
   worldSpaces,
 } from "../src/surfaces.ts";
 import { loadTargets, type Target } from "../src/targets.ts";
@@ -595,6 +599,21 @@ describe("worldSpaces (fixed hook spaces per TEST_DOMAIN)", () => {
     // Stable per domain (case-insensitive), different for another domain.
     expect(worldSpaces("GUESTS.oa-redline-a.fyi")).toEqual(a);
     expect(worldSpaces("oa-redline-a.fyi").world).not.toBe(a.world);
+  });
+});
+
+describe("worldGroups (the mapping probes' seeded directory groups)", () => {
+  it("test- ids the directory-groups hook accepts, TEST_DOMAIN emails, never the old unseeded names", () => {
+    const d = "guests.oa-redline-a.fyi";
+    const g = worldGroups(d);
+    expect(Object.values(g)).not.toContain("redline-free");
+    for (const id of Object.values(g))
+      expect(TEST_GROUP_ID.test(id)).toBe(true);
+    expect(g.free.slice(-8)).toBe(worldSpaces(d).world.slice(-8));
+    const body = groupSeed(d);
+    expect(TestDirectoryGroupsInputSchema.safeParse(body).success).toBe(true);
+    for (const x of body.groups) expect(x.email).toBe(`${x.groupId}@${d}`);
+    expect(body.groups.map((x) => x.groupId)).toContain(g.free);
   });
 });
 

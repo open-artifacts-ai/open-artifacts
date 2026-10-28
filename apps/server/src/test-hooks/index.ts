@@ -13,6 +13,7 @@ import {
   TestAuditInputSchema,
   type TestAuditResult,
   TestCodeCapsResetInputSchema,
+  TestDirectoryGroupsInputSchema,
   type TestHookRefusal,
   type TestOtpOutcome,
   TestSessionInputSchema,
@@ -219,6 +220,7 @@ type HookName =
   | "oauth_client"
   | "audit"
   | "code_caps_reset"
+  | "directory_groups"
   | "unknown";
 type Outcome = "ok" | "denied" | "refused" | "none" | "error";
 
@@ -228,7 +230,36 @@ const HOOK_NAMES: Record<string, HookName> = {
   [TEST_HOOKS.oauthClient]: "oauth_client",
   [TEST_HOOKS.audit]: "audit",
   [TEST_HOOKS.codeCapsReset]: "code_caps_reset",
+  [TEST_HOOKS.directoryGroups]: "directory_groups",
 };
+
+// directory_groups seed: `test-` ids with an email exactly under TEST_DOMAIN
+// only, enforced here in SQL too (no LIKE wildcards), so a handler slip can't
+// write or rewrite a real group. An existing row is updated only when its id
+// is itself prefixed. ?1 id, ?2 email, ?3 domain.
+const GROUP_UPSERT = `insert into directory_groups (group_id, email)
+  select ?1, ?2
+  where substr(?1, 1, 5) = 'test-'
+    and substr(?2, length(?2) - length(?3)) = '@' || ?3
+  on conflict (group_id) do update set email = excluded.email
+    where substr(directory_groups.group_id, 1, 5) = 'test-'`;
+
+/** Upserts the prefixed groups in one batch; how many rows wrote. */
+async function seedDirectoryGroups(
+  env: Env,
+  groups: { groupId: string; email: string }[],
+): Promise<number> {
+  const res = await env.DB.batch(
+    groups.map((g) =>
+      env.DB.prepare(GROUP_UPSERT).bind(
+        g.groupId,
+        g.email,
+        env.TEST_DOMAIN ?? "",
+      ),
+    ),
+  );
+  return res.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
+}
 const hookName = (path: string): HookName =>
   Object.hasOwn(HOOK_NAMES, path) ? (HOOK_NAMES[path] as HookName) : "unknown";
 
@@ -603,6 +634,30 @@ export function mountTestHooks(app: AppType): void {
       const reset = await resetCodeCaps(env, ip);
       await audit(env, hook, ip, "ok");
       return c.json({ reset });
+    }
+
+    if (hook === "directory_groups") {
+      const input = TestDirectoryGroupsInputSchema.safeParse(body);
+      const groups = input.success
+        ? input.data.groups.map((g) => ({
+            groupId: g.groupId,
+            email: normalizeEmail(g.email),
+          }))
+        : [];
+      if (
+        !input.success ||
+        new Set(groups.map((g) => g.groupId)).size !== groups.length ||
+        groups.some((g) => !g.email || !inTestDomain(env, g.email))
+      ) {
+        await audit(env, hook, ip, "refused");
+        return refused("bad_input");
+      }
+      const seeded = await seedDirectoryGroups(
+        env,
+        groups as { groupId: string; email: string }[],
+      );
+      await audit(env, hook, ip, "ok");
+      return c.json({ seeded });
     }
 
     if (hook === "audit") {

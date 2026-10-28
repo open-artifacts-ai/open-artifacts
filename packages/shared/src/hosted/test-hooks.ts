@@ -24,6 +24,7 @@ export const TEST_HOOKS = {
   oauthClient: "/__test/oauth-client",
   audit: "/__test/audit",
   codeCapsReset: "/__test/code-caps/reset",
+  directoryGroups: "/__test/directory-groups",
 } as const;
 
 /**
@@ -118,6 +119,37 @@ export const TestCodeCapsResetResultSchema = z.object({
 });
 export type TestCodeCapsResetResult = z.infer<
   typeof TestCodeCapsResetResultSchema
+>;
+
+/** Hook group ids: the hook spaces' `test-` rule (checked again in SQL). */
+export const TEST_GROUP_ID = /^test-[A-Za-z0-9_-]{1,59}$/;
+/** Most groups one TEST_HOOKS.directoryGroups call seeds. */
+export const TEST_DIRECTORY_GROUPS_MAX = 20;
+/**
+ * POST TEST_HOOKS.directoryGroups: upserts directory_groups rows (id and
+ * email) for `test-` ids with emails under TEST_DOMAIN only, so a space
+ * mapping can name a group on an install with no directory binding. Never
+ * touches any other row.
+ */
+export const TestDirectoryGroupsInputSchema = z.strictObject({
+  groups: z
+    .array(
+      z.strictObject({
+        groupId: z.string().regex(TEST_GROUP_ID),
+        email: z.email(),
+      }),
+    )
+    .min(1)
+    .max(TEST_DIRECTORY_GROUPS_MAX),
+});
+export type TestDirectoryGroupsInput = z.infer<
+  typeof TestDirectoryGroupsInputSchema
+>;
+export const TestDirectoryGroupsResultSchema = z.object({
+  seeded: z.number().int().nonnegative(),
+});
+export type TestDirectoryGroupsResult = z.infer<
+  typeof TestDirectoryGroupsResultSchema
 >;
 
 /** Most rows POST TEST_HOOKS.audit returns. */

@@ -699,6 +699,92 @@ describe("hooks", () => {
     );
   });
 
+  const groupEmail = async (id: string) =>
+    (
+      await env.DB.prepare(
+        "select email from directory_groups where group_id = ?",
+      )
+        .bind(id)
+        .first<{ email: string }>()
+    )?.email ?? null;
+
+  it("directory-groups: before the key, the uniform 404 and nothing written", async () => {
+    const id = `test-g-${crypto.randomUUID().slice(0, 8)}`;
+    const body = { groups: [{ groupId: id, email: `g@${TD}` }] };
+    for (const r of [
+      await call(on(), TEST_HOOKS.directoryGroups, {
+        body,
+        key: "x".repeat(32),
+      }),
+      await call(on(), TEST_HOOKS.directoryGroups, { body }),
+      await hook(env, TEST_HOOKS.directoryGroups, body),
+    ])
+      await same404(r);
+    expect(await groupEmail(id)).toBeNull();
+  });
+
+  it("directory-groups: seeds test- ids at TEST_DOMAIN emails, idempotently", async () => {
+    const a = `test-g-${crypto.randomUUID().slice(0, 8)}`;
+    const b = `test-g-${crypto.randomUUID().slice(0, 8)}`;
+    const body = {
+      groups: [
+        { groupId: a, email: `${a}@${TD}` },
+        { groupId: b, email: `${b}@${TD}` },
+      ],
+    };
+    const r = await hook(on(), TEST_HOOKS.directoryGroups, body);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ seeded: 2 });
+    expect(await groupEmail(a)).toBe(`${a}@${TD}`);
+    expect((await hook(on(), TEST_HOOKS.directoryGroups, body)).status).toBe(
+      200,
+    );
+    expect(await groupEmail(b)).toBe(`${b}@${TD}`);
+  });
+
+  it("directory-groups: never a non-test id or an email outside TEST_DOMAIN; a real group is untouched", async () => {
+    const real = `g-${crypto.randomUUID().slice(0, 8)}`;
+    await env.DB.prepare(
+      "insert into directory_groups (group_id, email) values (?, 'real@corp.example')",
+    )
+      .bind(real)
+      .run();
+    const since = Date.now();
+    for (const groups of [
+      [{ groupId: real, email: `x@${TD}` }],
+      [{ groupId: "TEST-x", email: `x@${TD}` }],
+      [{ groupId: "test-ok", email: "x@corp.example" }],
+      [{ groupId: "test-ok", email: `x@sub.${TD}` }],
+      [
+        { groupId: "test-dup", email: `x@${TD}` },
+        { groupId: "test-dup", email: `y@${TD}` },
+      ],
+      [],
+    ])
+      await refused404(
+        await hook(on(), TEST_HOOKS.directoryGroups, { groups }),
+        "bad_input",
+      );
+    await refused404(
+      await hook(on(), TEST_HOOKS.directoryGroups, {
+        groups: [{ groupId: "test-ok", email: `x@${TD}` }],
+        extra: 1,
+      }),
+      "bad_input",
+    );
+    expect(await groupEmail(real)).toBe("real@corp.example");
+    expect(await groupEmail("test-ok")).toBeNull();
+    const rows = await auditRows(since);
+    expect(rows).toHaveLength(7);
+    expect(
+      rows.every(
+        (r) =>
+          r.action === "test_hook.directory_groups" &&
+          r.detail.outcome === "refused",
+      ),
+    ).toBe(true);
+  });
+
   it("/healthz reports testHooks", async () => {
     const h = HealthzSchema.parse(
       await (await call(env, "/healthz", { method: "GET" })).json(),
