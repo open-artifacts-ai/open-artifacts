@@ -7,6 +7,7 @@ import type { Member, TransferInput, TransferResult } from "@oa/shared";
 import { displayName } from "@oa/ui";
 import { Button, Label } from "@oa/ui/shadcn";
 import { useEffect, useId, useRef, useState } from "react";
+import { hasFeature } from "../api/contract";
 import { errorCopy } from "../api/errorCopy";
 import {
   useMembers,
@@ -14,6 +15,7 @@ import {
   useSpaces,
   useTransferSummary,
 } from "../api/queries";
+import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
@@ -21,7 +23,8 @@ import { sharedSpaceName } from "../spaces/label";
 import { OptionSelect } from "./OptionSelect";
 import { errorText, muted } from "./ui";
 
-const artifacts = (n: number) => `${n} ${n === 1 ? "artifact" : "artifacts"}`;
+export const artifacts = (n: number) =>
+  `${n} ${n === 1 ? "artifact" : "artifacts"}`;
 
 /** Runs every page; resolves with the number moved. `onProgress(moved, remaining)`. */
 export async function runAll(
@@ -60,7 +63,11 @@ export function TransferDialog({
   const name = displayName(member);
   const summary = useTransferSummary(member.id);
   const members = useMembers();
-  const spaces = useSpaces({ kind: "shared" });
+  const state = useMe();
+  // Without spaces every artifact is personal: only a person can receive them (parity 1).
+  const withSpaces =
+    state.status === "authed" && hasFeature(state.me, "spaces");
+  const spaces = useSpaces({ kind: "shared" }, withSpaces);
   const run = useRunTransfer(member.id);
   const [kind, setKind] = useState<"user" | "space">("user");
   const [userId, setUserId] = useState<string | null>(null);
@@ -151,7 +158,9 @@ export function TransferDialog({
       description={
         trash > 0
           ? `Plus ${trash} in trash: ${trash === 1 ? "it moves" : "they move"} too and ${trash === 1 ? "keeps its" : "keep their"} trash timer.`
-          : "Their space artifacts stay where they are."
+          : withSpaces
+            ? "Their space artifacts stay where they are."
+            : undefined
       }
       footer={
         <>
@@ -165,33 +174,37 @@ export function TransferDialog({
       }
     >
       <div className="grid gap-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]">
-        <fieldset className="grid gap-[var(--oa-space-2)] border-0 p-0">
-          <legend className="sr-only">Transfer to</legend>
-          <label className="flex items-center gap-[var(--oa-space-2)]">
-            <input
-              type="radio"
-              name={radios}
-              checked={kind === "user"}
-              disabled={busy}
-              onChange={() => setKind("user")}
-            />
-            <span>
-              To a person <span className={muted}>· they become the owner</span>
-            </span>
-          </label>
-          <label className="flex items-center gap-[var(--oa-space-2)]">
-            <input
-              type="radio"
-              name={radios}
-              checked={kind === "space"}
-              disabled={busy}
-              onChange={() => setKind("space")}
-            />
-            <span>
-              To a space <span className={muted}>· the company owns them</span>
-            </span>
-          </label>
-        </fieldset>
+        {withSpaces && (
+          <fieldset className="grid gap-[var(--oa-space-2)] border-0 p-0">
+            <legend className="sr-only">Transfer to</legend>
+            <label className="flex items-center gap-[var(--oa-space-2)]">
+              <input
+                type="radio"
+                name={radios}
+                checked={kind === "user"}
+                disabled={busy}
+                onChange={() => setKind("user")}
+              />
+              <span>
+                To a person{" "}
+                <span className={muted}>· they become the owner</span>
+              </span>
+            </label>
+            <label className="flex items-center gap-[var(--oa-space-2)]">
+              <input
+                type="radio"
+                name={radios}
+                checked={kind === "space"}
+                disabled={busy}
+                onChange={() => setKind("space")}
+              />
+              <span>
+                To a space{" "}
+                <span className={muted}>· the company owns them</span>
+              </span>
+            </label>
+          </fieldset>
+        )}
         {kind === "user" ? (
           <div className="grid gap-[6px]">
             <Label>Give them to</Label>

@@ -356,8 +356,12 @@ export const useInviteMember = () => {
       api.send("POST", R.members, input, MemberInviteResultSchema),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.members }),
     // invite_unreachable: the dialog says why under the email field.
+    // member_removed: the dialog offers Restore (parity 1).
     onError: (e) => {
-      if (e instanceof ApiClientError && e.code === "invite_unreachable")
+      if (
+        e instanceof ApiClientError &&
+        (e.code === "invite_unreachable" || e.code === "member_removed")
+      )
         return;
       failToast(e, "Couldn't send the invite.");
     },
@@ -848,6 +852,20 @@ export const useRunTransfer = (memberId: string) =>
     // The transfer dialog reports every failure inline, with Retry.
     () => true,
   );
+/**
+ * POST R.memberRestore: a removed member comes back active, as a plain member
+ * (parity 1). Errors are the caller's to show inline (409 directory_managed,
+ * guest_lapsed, member_active).
+ */
+export const useRestoreMember = () =>
+  useInvalidating(
+    (memberId: string) =>
+      api.send("POST", R.memberRestore(memberId), undefined, MemberSchema),
+    () => [qk.members],
+    "Couldn't restore them.",
+    () => true,
+  );
+
 export const useResetIdentity = () => {
   const qc = useQueryClient();
   const refresh = () =>

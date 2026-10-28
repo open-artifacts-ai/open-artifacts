@@ -280,14 +280,14 @@ it("Remove moves into the More menu on hosted rows and still confirms", async ()
   ).toBeVisible();
 });
 
-it("self-hosted: today's Remove button, no More menu, no Restrict", async () => {
+it("self-hosted: the More menu restricts too, and the copy names no spaces (parity 1)", async () => {
   mount("/settings/members");
-  const r = await row("Bob Builder");
+  await choose("Bob Builder", "Restrict manually…");
   expect(
-    within(r).getByRole("button", { name: "Remove Bob Builder" }),
-  ).toBeVisible();
-  expect(screen.queryByRole("button", { name: /^More for / })).toBeNull();
-  expect(screen.queryAllByText("Restricted")).toHaveLength(0);
+    await screen.findByText(
+      "Bob will only be able to view. They can't publish, edit, share or write live data, from the app or any AI agent. Their artifacts stay where they are.",
+    ),
+  ).toBeTruthy();
 });
 
 it("no copy contains an em dash", async () => {

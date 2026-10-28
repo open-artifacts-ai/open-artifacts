@@ -1,4 +1,9 @@
-import { type Member, MemberInviteSchema, type Role } from "@oa/shared";
+import {
+  type Member,
+  MemberInviteSchema,
+  MemberRemovedDetailsSchema,
+  type Role,
+} from "@oa/shared";
 import { displayName } from "@oa/ui";
 import {
   Badge,
@@ -18,12 +23,15 @@ import {
 import { useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
+import { errorCopy } from "../api/errorCopy";
 import {
   useInviteMember,
   useMembers,
   usePatchMember,
   useRemoveMember,
   useResetIdentity,
+  useRestoreMember,
+  useRunTransfer,
   useSetRestricted,
 } from "../api/queries";
 import { emailEnabled } from "../auth/emailEnabled";
@@ -45,7 +53,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { clearDenied, denyMember, useDenied } from "./denied";
 import { type Departed, useDeparted } from "./departed";
 import { restrictionReason } from "./restriction";
-import { TransferDialog } from "./Transfer";
+import { artifacts, runAll, TransferDialog } from "./Transfer";
 import { errorText, muted, SettingsCard, STACK } from "./ui";
 
 type Assignable = "admin" | "member";
@@ -118,6 +126,12 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Assignable>("member");
   const [error, setError] = useState<string | null>(null);
+  // The address belongs to a removed member: offer Restore (parity 1).
+  const [removed, setRemoved] = useState<{
+    userId: string;
+    email: string;
+  } | null>(null);
+  const restore = useRestoreMember();
   const [added, setAdded] = useState<{
     email: string;
     emailed: boolean;
@@ -134,6 +148,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
     const parsed = parseInviteEmail(email);
     if (!parsed) return setError("Enter a valid email address (ASCII only).");
     setError(null);
+    setRemoved(null);
     sending.current = true;
     invite.mutate(
       { email: parsed, role },
@@ -150,6 +165,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
           });
         },
         onError: (e) => {
+          const gone =
+            e instanceof ApiClientError && e.code === "member_removed"
+              ? MemberRemovedDetailsSchema.safeParse(e.details)
+              : null;
+          if (gone?.success) return setRemoved({ ...gone.data, email: parsed });
           // Nothing was created: Design's copy, not the server's message.
           const refused =
             e instanceof ApiClientError && e.code === "invite_unreachable"
@@ -240,6 +260,42 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
           aria-describedby={error ? "oa-invite-error" : undefined}
           onChange={(e) => setEmail(e.target.value)}
         />
+        {removed && (
+          <div
+            role="alert"
+            className="grid gap-[var(--oa-space-2)] text-[length:var(--oa-text-sm)]"
+          >
+            <p className="m-0">
+              {removed.email} was removed. Restore them to bring back their
+              account and the personal artifacts you haven't transferred. They
+              come back as a member.
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="justify-self-start"
+              disabled={restore.isPending}
+              onClick={() =>
+                restore.mutate(removed.userId, {
+                  onSuccess: () => {
+                    toast({
+                      title: `${removed.email} is a member again. They can sign in now.`,
+                      tone: "success",
+                    });
+                    onClose();
+                  },
+                  onError: (e) => {
+                    setRemoved(null);
+                    setError(restoreRefusal(e, removed.email));
+                  },
+                })
+              }
+            >
+              Restore {removed.email}
+            </Button>
+          </div>
+        )}
         {error && (
           <p id="oa-invite-error" role="alert" className={errorText}>
             {error}
@@ -287,12 +343,13 @@ const RESET_ONLY = "Only the owner can reset another admin's Google link.";
 function Row({
   m,
   you,
-  hosted,
+  spaces,
   owner,
 }: {
   m: Member;
   you: boolean;
-  hosted: boolean;
+  /** The spaces feature: only the copy names spaces (parity 1 ungates the rest). */
+  spaces: boolean;
   /** The viewer is the owner, uncapped: only they act on owner and admin rows. */
   owner: boolean;
 }) {
@@ -306,17 +363,17 @@ function Row({
   const setRestricted = useSetRestricted();
   const resetGoogle = useResetIdentity();
   const [resetting, setResetting] = useState(false);
-  const canResetGoogle = hosted && mayResetGoogle(m, you, owner);
+  const canResetGoogle = mayResetGoogle(m, you, owner);
   const label = displayName(m);
   // Another admin's (or the owner's) row, seen by anyone but the owner: read-only.
   const readOnly = !owner && (m.role === "admin" || m.role === "owner");
   const locked = m.role === "owner" || you || readOnly;
-  const why = hosted ? restrictionReason(m.restriction) : null;
+  const why = restrictionReason(m.restriction);
   const manual = m.restriction?.manual === true;
   const groups = m.restriction?.groups ?? [];
   // The manual flag only: active members, never owners, admins or guests.
   const canRestrict =
-    hosted && m.role === "member" && (m.status ?? "active") === "active";
+    m.role === "member" && (m.status ?? "active") === "active";
   const first = firstName(m);
   return (
     <li className={ROW}>
@@ -381,7 +438,7 @@ function Row({
       </span>
       {locked ? (
         <span />
-      ) : hosted ? (
+      ) : (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -438,16 +495,6 @@ function Row({
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      ) : (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="justify-self-end text-[length:var(--oa-text-sm)]"
-          aria-label={`Remove ${label}`}
-          onClick={() => setConfirm(true)}
-        >
-          Remove
-        </Button>
       )}
       {denied && (
         <p
@@ -499,9 +546,11 @@ function Row({
         title={`Restrict ${label}?`}
         body={
           <p>
-            {first} will only be able to view, in every space and in their
-            personal space. They can't publish, edit, share or write live data,
-            from the app or any AI agent. Their artifacts stay where they are.
+            {spaces
+              ? `${first} will only be able to view, in every space and in their personal space.`
+              : `${first} will only be able to view.`}{" "}
+            They can't publish, edit, share or write live data, from the app or
+            any AI agent. Their artifacts stay where they are.
           </p>
         }
         confirm="Restrict"
@@ -517,7 +566,9 @@ function Row({
           <p>
             {groups.length
               ? `${first} stays restricted ${restrictionReason({ manual: false, groups })}. To lift that, remove ${groups.map((g) => g.name ?? g.email).join(", ")} from Restricted groups in Directory.`
-              : `${first} gets back the roles their spaces and groups give them.`}
+              : spaces
+                ? `${first} gets back the roles their spaces and groups give them.`
+                : `${first} gets back what their role allows.`}
           </p>
         }
         confirm="Lift manual restriction"
@@ -531,11 +582,8 @@ function Row({
         title={`Remove ${label}?`}
         description={
           // Removing also unshares what was shared with them (#795), so they stay removed.
-          hosted
-            ? "They lose access, including to anything shared with them. Their artifacts stay where they are. You can transfer their personal artifacts later under Departed."
-            : owner
-              ? "They lose access, including to anything shared with them. Their artifacts move to you."
-              : "They lose access, including to anything shared with them. Their artifacts move to the instance owner."
+          // Parity 1: every install keeps them where they are.
+          "They lose access, including to anything shared with them. Their artifacts stay where they are. You can transfer them later under Departed, or restore this person."
         }
         footer={
           <>
@@ -569,12 +617,19 @@ export function Members() {
     state.status === "authed" &&
     state.me.user.role === "owner" &&
     state.me.auth?.cap == null;
-  // Hosted (the spaces feature): restriction badges and the row's More menu.
-  const hosted = state.status === "authed" && hasFeature(state.me, "spaces");
+  // Spaces only change copy here: restriction and the More menu are on every install (parity 1).
+  const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
   const departed = useDeparted(state.status === "authed" ? state.me : null);
   return (
     <div className={STACK}>
-      {departed.length > 0 && <DepartedCard people={departed} />}
+      {departed.length > 0 && (
+        <DepartedCard
+          people={departed}
+          meId={me?.id ?? null}
+          spaces={spaces}
+          capped={state.status === "authed" && state.me.auth?.cap != null}
+        />
+      )}
       <SettingsCard
         id="oa-members-h"
         title="Members"
@@ -605,7 +660,7 @@ export function Members() {
                 key={m.id}
                 m={m}
                 you={m.id === me?.id}
-                hosted={hosted}
+                spaces={spaces}
                 owner={owner}
               />
             ))}
@@ -619,8 +674,32 @@ export function Members() {
 
 const STATUS = { suspended: "Suspended", removed: "Removed" } as const;
 
+/** Inline copy for a refused restore (parity 1). */
+const restoreRefusal = (e: unknown, first: string) => {
+  const code = e instanceof ApiClientError ? e.code : "";
+  if (code === "directory_managed")
+    return `Google directory sync removed ${first}. Add them back in Google Workspace, and the next sync restores them.`;
+  if (code === "guest_lapsed")
+    return `${first} was a guest whose shares ended. Share something with them to bring them back.`;
+  if (code === "member_active") return `${first} is already active.`;
+  if (code === "owner_only") return "Only the owner can restore an admin.";
+  return errorCopy(e, `Couldn't restore ${first}. Try again.`);
+};
+
 /** Departed people who still have personal artifacts (counts only, never titles). */
-function DepartedCard({ people }: { people: Departed[] }) {
+function DepartedCard({
+  people,
+  meId,
+  spaces,
+  capped,
+}: {
+  people: Departed[];
+  /** Who "Transfer all to me" moves them to. */
+  meId: string | null;
+  spaces: boolean;
+  /** A restricted (capped) caller can't receive artifacts: no "to me". */
+  capped: boolean;
+}) {
   return (
     <SettingsCard id="oa-departed-h" title="Departed">
       <p className={muted}>
@@ -630,17 +709,57 @@ function DepartedCard({ people }: { people: Departed[] }) {
       </p>
       <ul className="grid p-0">
         {people.map((d) => (
-          <DepartedRow key={d.member.id} d={d} />
+          <DepartedRow
+            key={d.member.id}
+            d={d}
+            toMe={capped ? null : meId}
+            spaces={spaces}
+          />
         ))}
       </ul>
     </SettingsCard>
   );
 }
 
-function DepartedRow({ d: { member: m, summary } }: { d: Departed }) {
+function DepartedRow({
+  d: { member: m, summary },
+  toMe,
+  spaces,
+}: {
+  d: Departed;
+  toMe: string | null;
+  spaces: boolean;
+}) {
   const [open, setOpen] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const run = useRunTransfer(m.id);
   const label = displayName(m);
+  const first = firstName(m);
   const n = summary.live;
+  const transferAllToMe = async () => {
+    if (!toMe) return;
+    setProblem(null);
+    setMoving(true);
+    try {
+      const moved = await runAll(
+        (i) => run.mutateAsync(i),
+        { kind: "user", userId: toMe },
+        () => {},
+      );
+      toast({
+        title: `Moved ${artifacts(moved)} from ${label} to you.`,
+        tone: "success",
+      });
+    } catch (e) {
+      setProblem(
+        errorCopy(e, `Couldn't move ${first}'s artifacts. Try again.`),
+      );
+    } finally {
+      setMoving(false);
+    }
+  };
   return (
     <li className="flex flex-wrap items-center gap-[10px] border-0 border-t border-border py-[var(--oa-space-2)] first:border-t-0">
       <UserAvatar name={m.name} email={m.email} />
@@ -653,19 +772,31 @@ function DepartedRow({ d: { member: m, summary } }: { d: Departed }) {
         </b>
         <small className={`block ${muted}`}>
           {n} personal {n === 1 ? "artifact" : "artifacts"}
-          {summary.deleted > 0 && ` (plus ${summary.deleted} in trash)`} · their
-          space artifacts stay put
+          {summary.deleted > 0 && ` (plus ${summary.deleted} in trash)`}
+          {spaces && " · their space artifacts stay put"}
         </small>
       </div>
-      <Button
-        size="sm"
-        variant="outline"
-        className="text-[length:var(--oa-text-sm)]"
-        aria-label={`Transfer ${label}'s artifacts`}
-        onClick={() => setOpen(true)}
-      >
-        Transfer
-      </Button>
+      {toMe ? (
+        <Button
+          size="sm"
+          variant="outline"
+          className="text-[length:var(--oa-text-sm)]"
+          disabled={moving}
+          onClick={() => void transferAllToMe()}
+        >
+          {moving ? "Moving…" : "Transfer all to me"}
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          className="text-[length:var(--oa-text-sm)]"
+          aria-label={`Transfer ${label}'s artifacts`}
+          onClick={() => setOpen(true)}
+        >
+          Transfer
+        </Button>
+      )}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="sm" aria-label={`More for ${label}`}>
@@ -686,12 +817,73 @@ function DepartedRow({ d: { member: m, summary } }: { d: Departed }) {
           align="end"
           className="text-[length:var(--oa-text-sm)]"
         >
-          <DropdownMenuItem onSelect={() => setOpen(true)}>
-            Transfer…
+          <DropdownMenuItem disabled={moving} onSelect={() => setOpen(true)}>
+            Transfer to someone else…
           </DropdownMenuItem>
+          {m.status === "removed" && (
+            <DropdownMenuItem
+              disabled={moving}
+              onSelect={() => setRestoring(true)}
+            >
+              Restore…
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
+      {problem && (
+        <p role="alert" className={`m-0 basis-full ${errorText}`}>
+          {problem}
+        </p>
+      )}
       {open && <TransferDialog member={m} onClose={() => setOpen(false)} />}
+      <RestoreDialog
+        member={m}
+        open={restoring}
+        onClose={() => setRestoring(false)}
+        onRefused={setProblem}
+      />
     </li>
+  );
+}
+
+/** Restore a removed member (parity 1): back as a plain member, restriction kept. */
+function RestoreDialog({
+  member: m,
+  open,
+  onClose,
+  onRefused,
+}: {
+  member: Member;
+  open: boolean;
+  onClose: () => void;
+  onRefused: (why: string) => void;
+}) {
+  const restore = useRestoreMember();
+  const label = displayName(m);
+  const first = firstName(m);
+  return (
+    <ConfirmDialog
+      open={open}
+      onClose={onClose}
+      title={`Restore ${label}?`}
+      body={
+        <p>
+          {first} comes back as a member, with any manual restriction kept, and
+          gets back the personal artifacts you haven't transferred. Their old
+          tokens and agent connections stay off, so they sign in again.
+        </p>
+      }
+      confirm="Restore"
+      onConfirm={() =>
+        restore.mutate(m.id, {
+          onSuccess: () =>
+            toast({
+              title: `${label} is a member again. They can sign in now.`,
+              tone: "success",
+            }),
+          onError: (e) => onRefused(restoreRefusal(e, first)),
+        })
+      }
+    />
   );
 }

@@ -54,6 +54,17 @@ const bodies = (method: string) => {
 };
 
 /** The email also shows in the top bar, so wait for it inside the list. */
+/** Remove sits in the row's More menu on every install (parity 1). */
+const openRemove = async (row: HTMLElement) => {
+  fireEvent.pointerDown(
+    within(row).getByRole("button", { name: /^More for / }),
+    { button: 0, pointerType: "mouse" },
+  );
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Remove…" }));
+};
+const REMOVE_COPY =
+  "They lose access, including to anything shared with them. Their artifacts stay where they are. You can transfer them later under Departed, or restore this person.";
+
 const rowOf = (email: string) =>
   waitFor(() => {
     const row = screen
@@ -68,10 +79,14 @@ describe("members", () => {
   it("the owner row has no Remove and no role select", async () => {
     mount("/settings/members");
     const row = await rowOf(owner.email);
-    expect(within(row).queryByRole("button", { name: /remove/i })).toBeNull();
+    expect(
+      within(row).queryByRole("button", { name: /^More for / }),
+    ).toBeNull();
     expect(within(row).queryByRole("combobox")).toBeNull();
     const bob = await rowOf((fixtures.members[1] as Member).email);
-    expect(within(bob).getByRole("button", { name: /remove/i })).toBeTruthy();
+    expect(
+      within(bob).getByRole("button", { name: /^More for / }),
+    ).toBeTruthy();
   });
 
   it("invite POSTs a trimmed, lowercased email", async () => {
@@ -187,29 +202,19 @@ describe("members", () => {
     );
   });
 
-  it("an admin's remove dialog says the artifacts go to the instance owner", async () => {
+  it("an admin's remove dialog says the artifacts stay (parity 1)", async () => {
     as(admin);
     mount("/settings/members");
-    const row = await rowOf(other.email);
-    fireEvent.click(within(row).getByRole("button", { name: /remove/i }));
-    expect(
-      await screen.findByText(
-        "They lose access, including to anything shared with them. Their artifacts move to the instance owner.",
-      ),
-    ).toBeTruthy();
+    await openRemove(await rowOf(other.email));
+    expect(await screen.findByText(REMOVE_COPY)).toBeTruthy();
   });
 
   it("remove confirms with the transfer copy, then DELETEs", async () => {
     const dels = bodies("DELETE");
     as(owner);
     mount("/settings/members");
-    const row = await rowOf(other.email);
-    fireEvent.click(within(row).getByRole("button", { name: /remove/i }));
-    expect(
-      await screen.findByText(
-        "They lose access, including to anything shared with them. Their artifacts move to you.",
-      ),
-    ).toBeTruthy();
+    await openRemove(await rowOf(other.email));
+    expect(await screen.findByText(REMOVE_COPY)).toBeTruthy();
     expect(dels.length).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Remove member" }));
     await waitFor(() => expect(dels.length).toBe(1));
@@ -237,8 +242,7 @@ describe("members: failures and edge cases", () => {
       }),
     );
     mount("/settings/members");
-    const row = await rowOf(other.email);
-    fireEvent.click(within(row).getByRole("button", { name: /remove/i }));
+    await openRemove(await rowOf(other.email));
     fireEvent.click(
       await screen.findByRole("button", { name: "Remove member" }),
     );
@@ -256,6 +260,49 @@ describe("members: failures and edge cases", () => {
     await waitFor(() =>
       expect(screen.getAllByText("Already a member").length).toBe(2),
     );
+  });
+
+  it("inviting a removed address offers Restore instead of a toast (parity 1)", async () => {
+    const posts = bodies("POST");
+    server.use(
+      http.post(`*${R.members}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "member_removed",
+              message: "This person was removed. Restore them instead.",
+              details: { userId: "gone1" },
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+      http.post(`*${R.memberRestore("gone1")}`, () =>
+        HttpResponse.json(mk("gone1", "gone@example.com", "member")),
+      ),
+    );
+    mount("/settings/members");
+    fireEvent.click(await screen.findByRole("button", { name: "Add member" }));
+    fireEvent.change(await screen.findByLabelText("Email"), {
+      target: { value: "gone@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+    const offer = await screen.findByRole("alert");
+    expect(offer).toHaveTextContent(
+      "gone@example.com was removed. Restore them to bring back their account and the personal artifacts you haven't transferred. They come back as a member.",
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(
+      within(offer).getByRole("button", { name: "Restore gone@example.com" }),
+    );
+    await waitFor(() =>
+      expect(posts.some((p) => p.url === R.memberRestore("gone1"))).toBe(true),
+    );
+    expect(
+      await screen.findByText(
+        "gone@example.com is a member again. They can sign in now.",
+      ),
+    ).toBeTruthy();
   });
 
   it("Enter in the invite form submits it, once while pending", async () => {
