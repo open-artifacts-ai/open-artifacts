@@ -215,14 +215,10 @@ function uncapped(i: DecisionInput): AccessLevel | null {
     ? known<"viewer" | "editor">(i.shareRole, SHARE_ROLES)
     : null;
   if (deleted) {
-    // Trash is for those who can undelete: never capped callers. A shared
-    // space's trash is its managers' and the org owner's and admins' (they
-    // manage every space; R.trash lists it to them).
+    // Trash is for those who can undelete: never capped callers.
     if (i.allowDeleted !== true || capped) return null;
     if (ownPersonal) return "owner";
     if (spaceRole === "manager") return "manager";
-    if (!personal && caller !== null && isOrgAdmin(caller.orgRole))
-      return "manager";
     return null;
   }
   if (ownPersonal) return "owner";

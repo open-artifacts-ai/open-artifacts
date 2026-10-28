@@ -147,8 +147,8 @@ type Row = readonly (AccessLevel | null)[];
 // biome-ignore format: an aligned table
 const LEVELS: Record<CallerName, Row> = {
   //                    pPriv pTeam pPub sPriv sTeam sPub lOff delP delS
-  orgOwner:             [_,   V,    V,   _,    V,    V,   E,   _,   M],
-  orgAdmin:             [_,   V,    V,   _,    V,    V,   E,   _,   M],
+  orgOwner:             [_,   V,    V,   _,    V,    V,   E,   _,   _],
+  orgAdmin:             [_,   V,    V,   _,    V,    V,   E,   _,   _],
   spaceManager:         [_,   V,    V,   M,    M,    M,   M,   _,   M],
   spaceEditor:          [_,   V,    V,   E,    E,    E,   E,   _,   _],
   spaceViewer:          [_,   V,    V,   V,    V,    V,   E,   _,   _],

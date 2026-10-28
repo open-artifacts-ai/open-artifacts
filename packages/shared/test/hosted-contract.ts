@@ -707,39 +707,45 @@ export function hostedContract(d: ContractDriver): ContractCases {
     );
 
     t(
-      "an org admin with no manager role lists and restores a shared space's trash; an editor can't",
+      "an org admin can't list or restore a shared space's trash until they self-add as manager; an editor can't",
       async () => {
         await d.fresh({ hosted: true });
+        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+        const eng = me.spaces?.find((s) => s.name === "Engineering")
+          ?.id as string;
         const notes = idOf("Meeting notes");
         expect((await d.call("DELETE", R.artifact(notes))).status).toBe(204);
-        // Erin is an org admin, a viewer in Engineering (allMembersRole).
+        const titles = async () => (await trash()).items.map((a) => a.title);
+        // Erin is an org admin with no manager role in Engineering (a viewer
+        // through allMembersRole): no implicit access, so 404 both ways.
         await d.signIn("erin@example.com");
-        const page = await trash();
-        expect(page.items.map((a) => a.title)).toContain("Meeting notes");
-        expect(
-          page.items.find((a) => a.title === "Meeting notes")?.space,
-        ).toMatchObject({
-          name: "Engineering",
-          personal: false,
-        });
-        // Bob, an editor there, may do neither.
-        await d.signIn("bob@example.com");
-        expect((await trash()).items.map((a) => a.title)).not.toContain(
-          "Meeting notes",
+        expect(await titles()).not.toContain("Meeting notes");
+        expect((await d.call("GET", `${R.trash}?spaceId=${eng}`)).status).toBe(
+          404,
         );
         expect((await d.call("POST", R.restoreDeleted(notes))).status).toBe(
           404,
         );
+        // Bob, an editor there, may do neither.
+        await d.signIn("bob@example.com");
+        expect(await titles()).not.toContain("Meeting notes");
+        expect((await d.call("POST", R.restoreDeleted(notes))).status).toBe(
+          404,
+        );
+        // Self-added as manager (audited), Erin acts as that role.
         await d.signIn("erin@example.com");
+        expect(
+          (await d.call("POST", R.spaceMemberSelf(eng), { role: "manager" }))
+            .status,
+        ).toBe(201);
+        expect(await titles()).toContain("Meeting notes");
         const r = await d.call("POST", R.restoreDeleted(notes));
         expect(r.status).toBe(200);
         expect(Strict.ArtifactSummary.parse(await json(r))).toMatchObject({
           title: "Meeting notes",
           deletedAt: null,
         });
-        expect((await trash()).items.map((a) => a.title)).not.toContain(
-          "Meeting notes",
-        );
+        expect(await titles()).not.toContain("Meeting notes");
       },
     );
 

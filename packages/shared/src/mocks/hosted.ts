@@ -1898,10 +1898,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         personal: false;
       } | null) => {
     const manages = (s: SpaceRow | undefined) =>
-      !!s &&
-      s.kind === "shared" &&
-      cap() === null &&
-      (isAdmin() || roleIn(s) === "manager");
+      !!s && s.kind === "shared" && cap() === null && roleIn(s) === "manager";
     if (spaceId !== undefined && spaceId !== me.user.id) {
       if (!manages(findSpace(spaceId))) return notFound();
     }

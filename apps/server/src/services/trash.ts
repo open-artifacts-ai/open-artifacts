@@ -1,7 +1,9 @@
 // P4 (review item 9): the trash listing, R.trash. Deleted artifacts the
 // caller may restore (POST R.restoreDeleted): their personal trash and, with
-// spaces on, the trash of every shared space they manage (an uncapped space
-// manager or org admin; decide()'s trash rule). Newest deletedAt first.
+// spaces on, the trash of every shared space where their space role is
+// manager (uncapped; decide()'s trash rule). Org admins have no implicit
+// access: one who self-added as manager counts through that role. Newest
+// deletedAt first.
 import {
   type AccessLevel,
   LIMITS,
@@ -21,7 +23,6 @@ import {
   sql,
 } from "drizzle-orm";
 import { type Caller, capOfCaller, roleRankSql } from "../auth/authz.js";
-import { isOrgAdmin } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { artifacts, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -39,13 +40,13 @@ const notFound = () => new ApiError("not_found", "Not found");
 const iso = (t: number) => new Date(t).toISOString();
 
 /**
- * The shared spaces whose trash the caller lists, as a subquery of ids:
- * every live shared space for an uncapped org admin; else those where their
- * full role rank (roleRankSql, allMembersRole included) is manager.
+ * The shared spaces whose trash the caller lists, as a subquery of ids: live
+ * ones where their full role rank (roleRankSql, allMembersRole included) is
+ * manager.
  */
-function managedSpaceIds(c: Caller & { kind: "user" }, admin: boolean): SQL {
+function managedSpaceIds(c: Caller & { kind: "user" }): SQL {
   return sql`(select ${spaces.id} from ${spaces} where ${spaces.kind} = 'shared'
-    and ${spaces.deletedAt} is null${admin ? sql`` : sql` and ${roleRankSql(c, sql`${spaces.id}`)} = 3`})`;
+    and ${spaces.deletedAt} is null and ${roleRankSql(c, sql`${spaces.id}`)} = 3)`;
 }
 
 /** GET R.trash. Signed-in callers only (anonymous 401). */
@@ -58,14 +59,12 @@ export async function listTrash(
   const { user } = c;
   const capped = capOfCaller(c) != null;
   const on = spacesOn(env);
-  // Org owners and admins manage every space (decide()'s trash rule).
-  const admin = !capped && isOrgAdmin(user.role);
   const db = getDb(env);
 
   // Which trash: personal (the caller's own space id), one shared space, or
   // everything they may restore.
   let personal = true;
-  let shared: SQL | null = on && !capped ? managedSpaceIds(c, admin) : null;
+  let shared: SQL | null = on && !capped ? managedSpaceIds(c) : null;
   if (q.spaceId !== undefined && q.spaceId !== user.id) {
     if (!on)
       throw new ApiError("bad_request", "Spaces are off: only your own trash", {
@@ -75,9 +74,7 @@ export async function listTrash(
     const [sp] = await db
       .select({
         kind: spaces.kind,
-        managed: admin
-          ? sql<number>`1`
-          : sql<number>`${roleRankSql(c, sql`${spaces.id}`)} = 3`,
+        managed: sql<number>`${roleRankSql(c, sql`${spaces.id}`)} = 3`,
       })
       .from(spaces)
       .where(and(eq(spaces.id, q.spaceId), isNull(spaces.deletedAt)))

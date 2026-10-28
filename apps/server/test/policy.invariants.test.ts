@@ -96,11 +96,7 @@ function violations(i: DecisionInput, l: AccessLevel | null): string[] {
     !(
       !personal &&
       (i.spaceRole === "manager" ||
-        (i.space.allMembersRole === "manager" && member && !cap) ||
-        // Org owners and admins restore a shared space's trash (item 9).
-        (caller !== null &&
-          (caller.orgRole === "owner" || caller.orgRole === "admin") &&
-          !cap))
+        (i.space.allMembersRole === "manager" && member && !cap))
     )
   )
     out.push("deleted to a non-manager");
