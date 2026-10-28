@@ -6,8 +6,12 @@ import {
   SPACE_SURFACES,
   SURFACES,
 } from "../../../apps/server/test/authz/surfaces.ts";
-import { TEST_HOOK_REFUSALS } from "../../../packages/shared/src/hosted/test-hooks.ts";
 import {
+  TEST_HOOK_REFUSALS,
+  TEST_OTP_OUTCOMES,
+} from "../../../packages/shared/src/hosted/test-hooks.ts";
+import {
+  HOOK_OTP_OUTCOMES,
   HOOK_REFUSALS,
   HttpError,
   hook,
@@ -611,6 +615,10 @@ describe("setup hooks", () => {
       req.url === "/healthz"
         ? json(res, 200, { ok: true, testHooks: true, installId })
         : res.writeHead(404).end(body);
+
+  it("HOOK_OTP_OUTCOMES is @oa/shared's TEST_OTP_OUTCOMES", () => {
+    expect([...HOOK_OTP_OUTCOMES]).toEqual([...TEST_OTP_OUTCOMES]);
+  });
 
   it("HOOK_REFUSALS is @oa/shared's TEST_HOOK_REFUSALS", () => {
     expect([...HOOK_REFUSALS]).toEqual([...TEST_HOOK_REFUSALS]);

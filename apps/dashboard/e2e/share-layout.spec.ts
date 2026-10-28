@@ -69,7 +69,10 @@ for (const width of [1280, 390])
       // A success toast: placed per Design, with an accessible close button.
       await page.getByRole("button", { name: "Copy link" }).last().click();
       await expect(page.getByText("Link copied")).toBeVisible();
-      await page.waitForTimeout(400); // Sonner's enter animation
+      // Sonner's enter animation slides it up: measure once it has landed.
+      await expect
+        .poll(async () => (await toastBox(page)).bottom)
+        .toBeGreaterThanOrEqual(16);
       const t = await toastBox(page);
       expect(t.close).toBe("Dismiss");
       expect(t.hit).toBeGreaterThanOrEqual(24);

@@ -41,10 +41,37 @@ export const TEST_HOOK_REFUSALS = [
   "user_refused",
   /** A grant row didn't write (the space changed after the check). */
   "grant_refused",
-  /** otp/latest: no code pending for that address. */
+  /** otp/latest: no code to read for that address (details.outcome says why). */
   "no_code",
 ] as const;
 export type TestHookRefusal = (typeof TEST_HOOK_REFUSALS)[number];
+
+/**
+ * otp/latest's no_code 404 (after the key) carries error.details.outcome: the
+ * last code-send outcome recorded for that TEST_DOMAIN address. Only "pending"
+ * means "not yet, ask again"; every other value is final for that request.
+ */
+export const TEST_OTP_OUTCOMES = [
+  /** Requested; the send hasn't finished. */
+  "pending",
+  /** Sent (the 200 carries the code; never in a no_code 404). */
+  "sent",
+  /** The sent code was redeemed. */
+  "used",
+  /** The sent code is past its TTL. */
+  "expired",
+  /** Nothing recorded for that address. */
+  "none",
+  // deliverCode's own outcomes (its code_send log), plus "error" (it threw).
+  "email_off",
+  "ineligible",
+  "pool_full",
+  "capped",
+  "resend_wait",
+  "send_failed",
+  "error",
+] as const;
+export type TestOtpOutcome = (typeof TEST_OTP_OUTCOMES)[number];
 
 /** POST TEST_HOOKS.session -> TestSessionResult (a real __Host-oa_session value, p: "test"). */
 export const TestSessionInputSchema = z.strictObject({

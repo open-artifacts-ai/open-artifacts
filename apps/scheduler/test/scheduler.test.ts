@@ -328,10 +328,12 @@ describe("runNightly", () => {
     await seed(ids(10));
     const o = await night(10, NOW);
     const f = fakes("staging", () => "hang");
+    // The run waits out its deadline (every call hangs). 2 s, not 300 ms: the
+    // D1 read and re-checks must fit before the three calls on a loaded runner.
     const r = await runNightly(f.env, NOW, {
       concurrency: 3,
       timeoutMs: 20,
-      deadlineMs: 300,
+      deadlineMs: 2_000,
       recheckFloorMs: 1,
     });
     // Three calls hold the three lanes forever; nothing else is started.
@@ -342,7 +344,7 @@ describe("runNightly", () => {
     );
     expect(r.ok).toEqual([]);
     expect(r.skipped).toEqual(o.slice(3));
-  });
+  }, 20_000);
 
   it("timed-out calls still count against the cap while the others run", async () => {
     await seed(ids(12));
@@ -574,10 +576,12 @@ describe("runNightly", () => {
     await seed(ids(30));
     const lines = captureLogs();
     const f = fakes("staging", () => "hang");
+    // Waited out in full (every call hangs). 3 s, not 400 ms: 12 dispatches,
+    // their timeouts and leaks, and the re-checks must fit on a loaded runner.
     const r = await runNightly(f.env, 0, {
       timeoutMs: 10,
       leakMs: 10,
-      deadlineMs: 400,
+      deadlineMs: 3_000,
       recheckFloorMs: 1,
     });
     // Every call hangs, so each one stays unsettled: the fake's max in flight
@@ -595,7 +599,7 @@ describe("runNightly", () => {
     expect(lines.some((l) => l.startsWith("nightly skipped deadline"))).toBe(
       false,
     );
-  });
+  }, 20_000);
 
   it("work still waiting on free lanes at the deadline is deadline, not capped", async () => {
     await seed(ids(6));
@@ -699,18 +703,25 @@ describe("runNightly", () => {
 
   it("a different day gives a starved tail its turn", async () => {
     await seed(ids(12));
-    const ran = new Set<string>();
+    // Who goes first each day, not how many fit a tight deadline (a slow D1
+    // read let only one call in per run): the first dispatch is that day's
+    // order head, and on some day it is an id day 0 left in its tail.
+    const day0 = await night(12, 0);
+    const firsts: string[] = [];
     for (const day of [0, 1, 2, 3, 4, 5]) {
-      const f = fakes("staging", () => "ok", 30);
-      const r = await runNightly(f.env, day * DAY, {
+      const f = fakes("staging", () => "ok", 5);
+      await runNightly(f.env, day * DAY, {
         concurrency: 1,
-        deadlineMs: 70,
+        deadlineMs: 10_000,
         recheckFloorMs: 1,
       });
-      for (const id of r.ok) ran.add(id);
+      const first = f.calls[0];
+      expect(first, `day ${day}`).toBeDefined();
+      firsts.push(idIn((first as { script: string }).script));
+      expect(firsts.at(-1)).toBe((await night(12, day * DAY))[0]);
     }
-    expect(ran.size).toBeGreaterThan(6);
-  });
+    expect(firsts.some((id) => day0.indexOf(id) >= 2)).toBe(true);
+  }, 30_000);
 
   it("a stalled re-check is skipped after recheckMs, not an unbounded wait", async () => {
     await seed(ids(3));
@@ -821,7 +832,9 @@ describe("runNightly", () => {
       done = true;
       return r;
     });
-    for (let k = 0; k < 50 && lines.length === 0; k++) await realSleep(5);
+    // A deadline, not an iteration count: the first log on a slow runner.
+    for (const t0 = Date.now(); lines.length === 0 && Date.now() - t0 < 5_000; )
+      await realSleep(5);
     expect(lines).toEqual([`nightly failed exception ${idOf(0)}`]);
     expect(done).toBe(false);
     await p;

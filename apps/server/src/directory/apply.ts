@@ -27,7 +27,8 @@ import type { GoogleUser } from "./google.js";
 //   row), a new primary address (shares follow the person), and a recycled
 //   address (a new directory id
 //   behind an address an old row still holds: that row gets the deletion
-//   treatment first, then the new row is created).
+//   treatment first, then the new row is created), except a row whose link
+//   an admin reset (google_relink): it is relinked by email instead.
 
 /** Throws when a reset landed since the caller started (DirectorySync). */
 export type Guard = () => void;
@@ -236,6 +237,7 @@ const ROWS = `select json_extract(j.value, '$.id') as sub,
     u.id as uid, u.email, u.status, u.role = 'owner' as owner,
     h.id as hid, h.role = 'owner' as howner, h.status as hstatus,
     (select hi.subject from identities hi where hi.provider = 'google' and hi.user_id = h.id) as hsub,
+    h.google_relink as hrelink,
     (h.status = 'active' and h.last_seen_at is null
       and not exists (select 1 from identities hx where hx.user_id = h.id)) as hinvite
   from json_each(?1) j
@@ -254,6 +256,21 @@ const DROP_SHARES = `delete from shares where ${GONE}
   and email = (select email from users where id = ?1)`;
 const DROP_MEMBERSHIPS = `delete from space_members where user_id = ?1 and ${GONE}`;
 const PLACEHOLDER = `update users set email = ?2 where id = ?1 and email <> ?2 and ${GONE}`;
+/**
+ * An admin reset the link of the row at the address (?5): that same row
+ * takes the directory user's id (?2). As LINK_BY_EMAIL, never onto a row
+ * that has a Google identity; never a removed row.
+ */
+const RELINK = `insert or ignore into identities
+  (provider, subject, tenant, user_id, created_at, directory_bound)
+  select 'google', ?2, ?3, ?1, ?4, 1
+  where exists (select 1 from users where id = ?1 and email = ?5
+      and google_relink = 1 and status <> 'removed')
+    and not exists (select 1 from identities
+      where provider = 'google' and user_id = ?1)`;
+/** The relink consumed: only once the row holds that identity. */
+const RELINKED = `update users set google_relink = 0 where id = ?1 and google_relink = 1
+  and exists (select 1 from identities where provider = 'google' and subject = ?2 and user_id = ?1)`;
 /** A pure invite at the address (?5) becomes the directory user's row. */
 const LINK_INVITE = `insert or ignore into identities
   (provider, subject, tenant, user_id, created_at, directory_bound)
@@ -286,6 +303,7 @@ type Row = {
   hsub: string | null;
   hstatus: string | null;
   hinvite: number | null;
+  hrelink: number | null;
 };
 
 /** One directory user (the plan's applyUser); `run` names the pass in logs. */
@@ -338,7 +356,18 @@ export async function applyUsers(
       continue;
     }
     if (!r.hsub) {
-      // No Google link. A pure invite (never signed in) is this person's
+      // No Google link. An admin reset it (google_relink): the same person,
+      // relinked by email, keeping their id, shares and spaces.
+      if (r.hrelink && r.hstatus !== "removed") {
+        guard();
+        await env.DB.batch([
+          stmt(env.DB, RELINK).bind(r.hid, u.id, o.tenant, Date.now(), email),
+          stmt(env.DB, RELINKED).bind(r.hid, u.id),
+        ]);
+        logInfo("directory_relinked_after_reset");
+        continue;
+      }
+      // A pure invite (never signed in) is this person's
       // row: link it. A row with sign-in history is a recycled address:
       // the deletion treatment, so nothing is inherited.
       if (r.hinvite) {

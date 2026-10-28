@@ -11,10 +11,13 @@ import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
 import { HTTPException } from "hono/http-exception";
 import { logAuth } from "../auth/audit.js";
+import { callerOf, capOfCaller } from "../auth/authz.js";
 import {
   codesKey,
   deliverCode,
   emailKey,
+  errorClass,
+  logCodeSend,
   takeRequestSlot,
   verifyCode,
 } from "../auth/codes.js";
@@ -27,8 +30,9 @@ import { ApiError, appOrigin, errorJson } from "../http/errors.js";
 import { type AppEnv, CSRF_HEADER, execCtx } from "../http/middleware.js";
 import { signInAudit } from "../services/audit.js";
 import { codeEligibility } from "../services/identity.js";
+import { HOSTED_FIELDS, hostedFields } from "../services/members.js";
 import { getUserWithEpoch, insertUser } from "../services/users.js";
-import { forgetTestOtp } from "../test-hooks/index.js";
+import { forgetTestOtp, noteTestOtp } from "../test-hooks/index.js";
 import {
   b64urlDecode,
   b64urlEncode,
@@ -46,6 +50,10 @@ const forgetOtp =
   typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
   __OA_TEST_HOOKS_ALLOWED__ === true &&
   forgetTestOtp;
+const noteOtp =
+  typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
+  __OA_TEST_HOOKS_ALLOWED__ === true &&
+  noteTestOtp;
 
 const GUEST_MAX_AGE_S = 86_400;
 const MAX_COOKIE_LEN = 1024;
@@ -275,9 +283,19 @@ export function mountCodes(app: AppType): void {
       exp: Date.now() + CODE_POLICY.ttlSec * 1000,
       f: 0,
     };
+    // Test builds, TEST_DOMAIN only: "pending" before the 202, so the
+    // otp/latest hook never reads an older request's outcome for this one.
+    if (noteOtp) await noteOtp(c.env, email, ek, "pending");
     // Eligibility, the row and the email happen after the response, so its
-    // timing says nothing about the address.
-    const work = deliverCode(c.env, cfg, email, ek, rid, ip).catch(() => null);
+    // timing says nothing about the address. A throw is the "error" outcome:
+    // its class only, never the message (it may carry the address).
+    const work = deliverCode(c.env, cfg, email, ek, rid, ip).catch(
+      async (e: unknown) => {
+        logCodeSend("error", errorClass(e));
+        if (noteOtp) await noteOtp(c.env, email, ek, "error");
+        return null;
+      },
+    );
     const ctx = execCtx(c);
     if (ctx) ctx.waitUntil(work);
     else await work;
@@ -356,13 +374,15 @@ export function mountCodes(app: AppType): void {
       epoch: row.sessionEpoch,
       maxAgeS,
     });
-    // The sign-in and its auth.signin audit row commit together.
-    await c.env.DB.batch([
+    // The sign-in and its auth.signin audit row commit together; the last
+    // statement reads the member's hosted fields (restriction included).
+    const out = await c.env.DB.batch([
       stmt(c.env.DB, "update users set last_seen_at = ?1 where id = ?2").bind(
         Date.now(),
         user.id,
       ),
       signInAudit(c.env, user.id, "code", guest ? undefined : domain),
+      stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
     ]);
     logAuth({
       provider: "code",
@@ -370,13 +390,20 @@ export function mountCodes(app: AppType): void {
       uid: user.id,
       tenant: guest ? undefined : domain,
     });
+    // As the session's next request will see it (middleware; GET /me's
+    // auth.cap): the member's own cap (guest, or restricted by the manual
+    // flag or a restricted group), and a guest code session is capped too.
+    const cap = capOfCaller(callerOf(user)) ?? (guest ? "guest" : null);
     const res = c.json({
       next: p.next,
-      user,
-      readOnly: guest,
+      user: hostedFields(
+        user,
+        out[2]?.results[0] as Parameters<typeof hostedFields>[1],
+      ),
+      readOnly: cap !== null,
     });
     res.headers.append("set-cookie", clearPending(c));
-    if (forgetOtp) await forgetOtp(c.env, p.ek);
+    if (forgetOtp) await forgetOtp(c.env, email, p.ek);
     res.headers.append("set-cookie", sessionCookie(sess, c.env, maxAgeS));
     res.headers.set("cache-control", "no-store");
     return res;

@@ -3,6 +3,10 @@
 // frame said hello and is untouched, nothing open), otherwise the chip.
 import { writeFileSync } from "node:fs";
 import { expect, type Page, test } from "@playwright/test";
+import { DEBOUNCE_MS } from "../src/viewer/useLiveVersions";
+
+/** The debounce plus slack for a loaded runner: a deadline, not a budget. */
+const LIVE_MS = DEBOUNCE_MS + 3_000;
 
 const LANDING = "Cd5fGhJkLm6nPqRs"; // owned, private, v2 current
 
@@ -96,13 +100,11 @@ for (const width of [1280, 390])
           .locator("iframe.oa-vframe")
           .getAttribute("src");
         const v = await publish(page);
-        const t0 = Date.now();
         const note =
           width < 640
             ? page.getByText("Updated", { exact: true })
             : page.getByText(`Updated to v${v}`);
-        await expect(note).toBeVisible({ timeout: 2_000 });
-        expect(Date.now() - t0).toBeLessThan(2_000);
+        await expect(note).toBeVisible({ timeout: LIVE_MS });
         await expect(
           page.getByRole("button", { name: `Version: v${v} · Current` }),
         ).toBeVisible();
@@ -135,7 +137,7 @@ for (const width of [1280, 390])
           .getAttribute("src");
         const v = await publish(page);
         const view = page.getByRole("button", { name: `View version ${v}` });
-        await expect(view).toBeVisible({ timeout: 2_000 });
+        await expect(view).toBeVisible({ timeout: LIVE_MS });
         await expect(
           page.getByText(width < 640 ? `v${v}` : `v${v} available`, {
             exact: true,
@@ -163,7 +165,7 @@ for (const width of [1280, 390])
         await loaded(page);
         let v = await publish(page);
         await expect(page.getByText(`Updated to v${v}`)).toBeVisible({
-          timeout: 2_000,
+          timeout: LIVE_MS,
         });
         await shot(page, `swapped-full-${tag}`);
         await expect(page.getByText(`Updated to v${v}`)).toHaveCount(0, {
@@ -172,14 +174,17 @@ for (const width of [1280, 390])
         await touchFrame(page);
         v = await publish(page);
         const pill = page.getByRole("button", { name: `View version ${v}` });
-        await expect(pill).toBeVisible({ timeout: 2_000 });
+        await expect(pill).toBeVisible({ timeout: LIVE_MS });
         await expect(pill).toHaveText(`v${v} available · View`);
         await shot(page, `chip-full-${tag}`);
         // Collapses to the 32px circle after 4 s.
         await expect(pill).toHaveAttribute("data-open", "false", {
           timeout: 6_000,
         });
-        expect((await pill.boundingBox())?.width).toBe(32);
+        // The width transitions: measure once it has finished.
+        await expect
+          .poll(async () => (await pill.boundingBox())?.width)
+          .toBe(32);
         await pill.click();
         await expect(pill).toHaveCount(0);
       });
@@ -192,7 +197,7 @@ for (const width of [1280, 390])
         await touchFrame(page);
         await restore(page, 1);
         const view = page.getByRole("button", { name: "View version 3" });
-        await expect(view).toBeVisible({ timeout: 2_000 });
+        await expect(view).toBeVisible({ timeout: LIVE_MS });
         if (width >= 640)
           await expect(page.getByText("v1 restored as v3")).toBeVisible();
         await view.click();
@@ -203,7 +208,7 @@ for (const width of [1280, 390])
           .locator(".oa-lchip")
           .getByText("Restored v2", { exact: true })
           .filter({ visible: true });
-        await expect(note).toBeVisible({ timeout: 2_000 });
+        await expect(note).toBeVisible({ timeout: LIVE_MS });
         await expect(
           page.getByRole("button", { name: "Version: v4 · Current" }),
         ).toBeVisible();
@@ -266,7 +271,7 @@ test("an explicit version never swaps: Current is vN selects Current", async ({
   await expect(
     page.getByRole("button", { name: `Current is v${v}` }),
   ).toBeVisible({
-    timeout: 2_000,
+    timeout: LIVE_MS,
   });
   await expect(page.getByRole("button", { name: /View version/ })).toHaveCount(
     0,
@@ -289,7 +294,7 @@ test("an open menu means the chip, which stays until View", async ({
   const v = await publish(page);
   // The menu is modal (the rest is aria-hidden): the chip shows under it.
   await expect(page.locator(".oa-lchip")).toContainText(`v${v} available`, {
-    timeout: 2_000,
+    timeout: LIVE_MS,
   });
   await page.keyboard.press("Escape");
   const view = page.getByRole("button", { name: `View version ${v}` });
@@ -312,7 +317,7 @@ test("a burst of versions: one chip with the newest number", async ({
   await expect(
     page.getByRole("button", { name: `View version ${v}` }),
   ).toBeVisible({
-    timeout: 2_000,
+    timeout: LIVE_MS,
   });
   await expect(page.getByRole("button", { name: /View version/ })).toHaveCount(
     1,

@@ -96,11 +96,20 @@ user's live sockets.
 ### `POST /__test/otp/latest`
 
 Body `{ email }`. Returns `200 { code }`, or 404 when there is none. `email`
-must be under `TEST_DOMAIN`. Codes stay hashed in D1. Only while hooks are on,
-a code actually **sent** to a `TEST_DOMAIN` address is also written in
-plaintext to `OAUTH_KV` under `test:otp:<installKey>:<emailKey(email)>`
-(`emailKey` is an HMAC of the address, never the address) with a 600 s TTL,
-and deleted when the code is redeemed.
+must be under `TEST_DOMAIN`. Codes stay hashed in `login_codes`. Only while
+hooks are on, for `TEST_DOMAIN` addresses, the code request records the last
+code-send outcome in D1 (`test_otps`, one row per `emailKey(email)`, an HMAC
+of the address, never the address; created on first use, no migration):
+`pending` before the 202, then deliverCode's outcome. Only `sent` (after the
+email went out) stores the plaintext code; it is readable for 600 s and
+cleared (outcome `used`) when the code is redeemed. D1, not KV: KV cached a
+poll's miss at the PoP, so polls kept missing after the send (run 7b).
+
+No code: the 404 `no_code`, and after the key verifies its
+`error.details.outcome` is the last outcome (`TEST_OTP_OUTCOMES`): only
+`pending` means "ask again"; `sent` never appears there; `used`, `expired`,
+`none`, or one of deliverCode's (`email_off`, `ineligible`, `pool_full`,
+`capped`, `resend_wait`, `send_failed`, `error`) are final.
 
 ### `POST /__test/oauth-client`
 
@@ -182,7 +191,7 @@ read this admin PAT.
 | `/healthz` reports `testHooks: false` when off | The field is **absent** when off, never `false` |
 | `session` for any role; user "created if missing" | `owner` refused; email must be under `TEST_DOMAIN` and not `OWNER_EMAIL`; an existing user's role is never changed |
 | `spaces?: [{id, role}]` | `spaces?: [{spaceId, role}]`; `test-` ids only, at most 20, no member outside `TEST_DOMAIN` |
-| `otp/latest` KV key `test:otp:<install>:<email>` | `test:otp:<installKey>:<emailKey(email)>`; only sent codes to `TEST_DOMAIN`; deleted on redeem |
+| `otp/latest` KV key `test:otp:<install>:<email>` | D1 `test_otps` keyed by `emailKey(email)`; only sent codes to `TEST_DOMAIN`; cleared on redeem; no KV |
 | `oauth-client`: a grant for the owner | A grant for member `p5-oauth@<TEST_DOMAIN>` |
 | Cookie `__Host-oa_session` | `oa_session` under `ENVIRONMENT=dev` |
 | Rate-limited, every call audited | Rate-limited calls are logged, not audited; every call past the limiter is audited |

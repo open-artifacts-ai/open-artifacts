@@ -158,6 +158,9 @@ describe("ci.yml", () => {
       "apps/dashboard/test-results",
     ]);
     expect(uploads[1].if).toBe("failure()");
+    // The spaces suite (one spec, its own server) runs whole in one shard.
+    const spaces = steps.find((s) => s.run === "bash scripts/ci/e2e.sh spaces");
+    expect(spaces.if).toContain("matrix.shard == 3");
     // Local wrangler dev only: no secrets, nothing pointing at staging.
     const s = JSON.stringify(job);
     expect(s).not.toContain("secrets.");

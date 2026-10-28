@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HookError, HttpError } from "../src/http.ts";
 import { crossCheck, NotRefused } from "../src/refused.ts";
 import {
+  COOKIE_CASE_OTP_MS,
   codeRequestReq,
   expectStateRefused,
   expectTurnstileRequired,
   labelTurnstileTestKey,
+  OTP_WAIT_MS,
   ownCodeRequestReq,
   pendingCode,
   signInRefused,
@@ -266,13 +268,14 @@ describe("pendingCode (the __Host- cookie case's code)", () => {
     return T.a;
   }
   const ok = { status: 202, pending: ["oa_code=x"] };
-  const NO_CODE = {
+  const noCode = (outcome?: string) => ({
     error: {
       code: "not_found",
       message: "Not found",
-      details: { reason: "no_code" },
+      details: { reason: "no_code", ...(outcome ? { outcome } : {}) },
     },
-  };
+  });
+  const NO_CODE = noCode("pending");
 
   it("no pending cookie: unproven with why, no hook call", async () => {
     let calls = 0;
@@ -295,14 +298,40 @@ describe("pendingCode (the __Host- cookie case's code)", () => {
     expect(calls).toBe(0);
   });
 
-  it("only no_code 404s within the wait: unproven, no code within the wait", async () => {
+  it("waits past the server's 3 s email timeout by default", () => {
+    expect(COOKIE_CASE_OTP_MS).toBeGreaterThan(3000);
+    expect(OTP_WAIT_MS).toBeGreaterThan(3000);
+  });
+
+  it("a final no_code outcome throws at once with the outcome", async () => {
+    for (const outcome of ["ineligible", "send_failed", "error", "none"]) {
+      let calls = 0;
+      const t = await hooked((_q, r) => {
+        calls++;
+        json(r, 404, noCode(outcome));
+      });
+      await expect(pendingCode(t, "g@rl-a.test", ok)).rejects.toThrow(
+        `rl-a: no code (${outcome})`,
+      );
+      expect(calls).toBe(1);
+    }
+  });
+
+  it("a no_code without a known outcome is final too", async () => {
+    const t = await hooked((_q, r) => json(r, 404, noCode("bogus")));
+    await expect(pendingCode(t, "g@rl-a.test", ok)).rejects.toThrow(
+      "rl-a: no code (no_outcome)",
+    );
+  });
+
+  it("only pending no_code 404s within the wait: unproven, no code within the wait", async () => {
     let calls = 0;
     const t = await hooked((_q, r) => {
       calls++;
       json(r, 404, NO_CODE);
     });
-    expect(await pendingCode(t, "g@rl-a.test", ok, 600)).toEqual({
-      unproven: "rl-a: code sign-in unavailable (no code within 0.6 s)",
+    expect(await pendingCode(t, "g@rl-a.test", ok, 1500)).toEqual({
+      unproven: "rl-a: code sign-in unavailable (no code within 1.5 s)",
     });
     expect(calls).toBeGreaterThan(1);
   });

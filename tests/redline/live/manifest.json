@@ -614,6 +614,14 @@
     },
     {
       "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces/:id/candidates [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/spaces/:id/candidates [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > org POST /api/v1/spaces/:id/members/self [session]"
     },
     {

@@ -105,6 +105,24 @@ describe("e2e.sh", () => {
       "PW_DIR=playwright-report/real",
     ]);
   });
+  it("spaces runs its whole suite: an html report locally, a blob in a CI shard", () => {
+    const local = run("spaces");
+    expect(local.code).toBe(0);
+    expect(local.sb.log()).toEqual([
+      "pnpm --filter @oa/dashboard test:e2e:spaces",
+      "PW_DIR=playwright-report/spaces",
+    ]);
+    const blob = 'echo "BLOB=$PLAYWRIGHT_BLOB_OUTPUT_FILE" >> "$STUB_LOG"';
+    const sb = sandbox({ pnpm: blob });
+    const r = sb.run(["bash", script("e2e.sh"), "spaces"], {
+      env: { E2E_SHARD: "3/4", E2E_BLOB_DIR: join(sb.dir, "blobs") },
+    });
+    expect(r.code).toBe(0);
+    expect(sb.log()).toEqual([
+      "pnpm --filter @oa/dashboard test:e2e:spaces --reporter=list,blob",
+      `BLOB=${join(sb.dir, "blobs", "spaces", "shard-3.zip")}`,
+    ]);
+  });
   it("ui runs the @oa/ui real-browser checks (axe contrast, focus)", () => {
     const r = run("ui");
     expect(r.code).toBe(0);

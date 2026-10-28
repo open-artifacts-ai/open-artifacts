@@ -56,13 +56,19 @@ async function same404(r: Response) {
   expect(await r.text()).toBe(await ref.text());
   expect(r.headers.get("content-type")).toBe(ref.headers.get("content-type"));
 }
-/** A refusal after the key: the same 404, plus error.details.reason. */
-async function refused404(r: Response, reason: string) {
+/** A refusal after the key: the same 404, plus error.details.reason (and any extra details). */
+async function refused404(
+  r: Response,
+  reason: string,
+  extra: Record<string, string> = {},
+) {
   const ref = await call(env, TEST_HOOKS.session, { body: {} });
   expect(r.status).toBe(404);
   expect(r.headers.get("content-type")).toBe(ref.headers.get("content-type"));
   const { error } = (await ref.json()) as { error: object };
-  expect(await r.json()).toEqual({ error: { ...error, details: { reason } } });
+  expect(await r.json()).toEqual({
+    error: { ...error, details: { reason, ...extra } },
+  });
 }
 afterEach(() => vi.restoreAllMocks());
 
@@ -102,6 +108,14 @@ async function call(
   await Promise.all(waits);
   return r;
 }
+/** test_otps rows holding `code` (0 when the table doesn't exist). */
+const otpRows = async (code: string) =>
+  (
+    await env.DB.prepare("select count(*) n from test_otps where code = ?")
+      .bind(code)
+      .first<{ n: number }>()
+      .catch(() => null)
+  )?.n ?? 0;
 const on = (over: Partial<Env> = {}) => ({ ...env, ...ON, ...over }) as Env;
 const hook = (e: Env, path: string, body?: unknown, key = KEY) =>
   call(e, path, { body: body ?? {}, key });
@@ -525,6 +539,7 @@ describe("hooks", () => {
     await refused404(
       await hook(e, TEST_HOOKS.otpLatest, { email: guest }),
       "no_code",
+      { outcome: "used" },
     );
   });
 
@@ -538,10 +553,10 @@ describe("hooks", () => {
       body: { email: guest },
       headers: { "x-oa-request": "1", "sec-fetch-site": "same-origin" },
     });
-    expect(m.codeFor(guest)).toBeTruthy();
-    expect(puts.mock.calls.map((c) => c[0])).not.toContainEqual(
-      expect.stringMatching(/^test:otp:/),
-    );
+    const code = m.codeFor(guest);
+    expect(code).toBeTruthy();
+    expect(JSON.stringify(puts.mock.calls)).not.toContain(code);
+    expect(await otpRows(code)).toBe(0);
   });
 
   it("off: a full code flow writes no plaintext anywhere", async () => {
@@ -555,7 +570,8 @@ describe("hooks", () => {
       headers: { "x-oa-request": "1", "sec-fetch-site": "same-origin" },
     });
     const code = m.codeFor(guest);
-    expect(puts).not.toHaveBeenCalled();
+    expect(JSON.stringify(puts.mock.calls)).not.toContain(code);
+    expect(await otpRows(code)).toBe(0);
     const rows = JSON.stringify(
       (
         await env.DB.prepare("select * from login_codes where email_key = ?")

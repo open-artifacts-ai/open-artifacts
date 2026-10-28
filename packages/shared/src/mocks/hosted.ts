@@ -60,6 +60,8 @@ import {
   SPACE_MANAGER_FIELDS,
   SPACE_MANAGER_MAPPING_ROLES,
   type Space,
+  type SpaceCandidate,
+  SpaceCandidatesQuerySchema,
   SpaceCreateSchema,
   type SpaceMember,
   type SpaceMemberGroup,
@@ -102,6 +104,11 @@ export type HostedMockOptions = {
     | "scope_missing";
   /** Sync unhealthy for 2 h: banner and tokensUnverified (default false). */
   unhealthy?: boolean;
+  /**
+   * With unhealthy: the outage began, and the last success was, 8 d ago, so
+   * staleAt (lastSuccessAt + 7 d) has passed and is reported (default false).
+   */
+  stale?: boolean;
   /**
    * The caller is the org owner refused by a customer_mismatch: GET R.me
    * answers 401 break_glass_required with details { fresh } ("fresh": the
@@ -359,7 +366,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     });
 
   const unhealthySince = o.unhealthy
-    ? new Date(Date.now() - 2 * 3600_000).toISOString()
+    ? new Date(Date.now() - (o.stale ? 8 * 24 : 2) * 3600_000).toISOString()
     : null;
   const sync: SyncStatus = {
     mode: directoryMode,
@@ -421,10 +428,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     } satisfies Partial<SyncStatus>);
   }
 
-  if (sync.lastSuccessAt)
-    sync.staleAt = new Date(
-      Date.parse(sync.lastSuccessAt) + 7 * 24 * 3600_000,
-    ).toISOString();
+  // staleAt: lastSuccessAt + 7 d once that has passed, else null.
+  if (sync.lastSuccessAt) {
+    const at = Date.parse(sync.lastSuccessAt) + 7 * 24 * 3600_000;
+    if (at <= Date.now()) sync.staleAt = new Date(at).toISOString();
+  }
 
   // ---- derived views --------------------------------------------------------
   const isAdmin = () => me.user.role === "owner" || me.user.role === "admin";
@@ -589,6 +597,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       allMembers:
         s.kind === "shared" && u.role !== "guest" && !restrictionOf(u.id)
           ? s.allMembersRole
+          : null,
+      // The detail only for a caller who can manage the space (cap still says restricted).
+      restriction:
+        cap() === null && (isAdmin() || roleIn(s) === "manager")
+          ? restrictionOf(u.id)
           : null,
     };
   };
@@ -849,6 +862,35 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         },
       });
     }),
+    // Mock only: the Google round trip, done. ?mock_email signs that active
+    // member in (method google) and 302s to /; anyone else to SIGN_IN_PAGE.
+    http.get("*/auth/callback/google", ({ request }) => {
+      if (mode !== "direct" || !providerIds.includes("google"))
+        return notFound();
+      const email = new URL(request.url).searchParams
+        .get("mock_email")
+        ?.toLowerCase();
+      const u = members.find(
+        (m) => m.email === email && m.status === "active" && m.role !== "guest",
+      );
+      if (!u)
+        return new HttpResponse(null, {
+          status: 302,
+          headers: { location: "/sign-in?error=no_access" },
+        });
+      me.user = u;
+      me.auth = {
+        method: "google",
+        readOnly: false,
+        cap: null,
+        expiresAt: new Date(Date.now() + 168 * 3600_000).toISOString(),
+      };
+      refresh();
+      return new HttpResponse(null, {
+        status: 302,
+        headers: { location: "/" },
+      });
+    }),
     http.post("*/auth/code/request", async ({ request }) => {
       if (mode !== "direct" || !providerIds.includes("email"))
         return notFound();
@@ -869,7 +911,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           retryAfter: 3600,
           scope: "email",
         });
-      pending = { email, attempts: 0, next: r.data.next ?? "/" };
+      // A domain member with domainCodes off signs in with Google: the same
+      // 202, but no code is sent (as the server).
+      const domainCodes = !providerIds.includes("google");
+      pending =
+        !domainCodes && email.endsWith(`@${MOCK_DOMAIN}`)
+          ? null
+          : { email, attempts: 0, next: r.data.next ?? "/" };
       return HttpResponse.json(
         {
           maskedEmail: mask(email),
@@ -978,8 +1026,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         );
         if (!r.success)
           return err("bad_request", "Invalid query", r.error.issues);
-        if (!r.data.status.every((s) => s === "active") && !isAdmin())
-          return notFound();
+        // Org owners and admins only, as the server (members.manage): space
+        // managers search R.spaceCandidates instead.
+        if (!isAdmin()) return notFound();
         return HttpResponse.json(
           members.filter((m) => r.data.status.includes(m.status ?? "active")),
         );
@@ -1276,6 +1325,61 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         const res = page(list, qs);
         // Page<SpaceMember> plus the filtered total.
         return HttpResponse.json({ ...(await res.json()), total: list.length });
+      }),
+    ),
+    http.get(
+      `${sp}/candidates`,
+      authed(({ request, params }) => {
+        const s = sharedSpace(params.id);
+        if (s instanceof Response) return s;
+        if (s.kind === "personal")
+          return err("space_personal", "Personal spaces have no members");
+        // An uncapped org admin or an uncapped manager of this space.
+        if (!isAdmin() && (roleIn(s) !== "manager" || cap() !== null))
+          return notFound();
+        const qs = new URL(request.url).searchParams;
+        const raw: Record<string, string> = {};
+        qs.forEach((v, k) => {
+          raw[k] = v;
+        });
+        const q = SpaceCandidatesQuerySchema.safeParse(raw);
+        if (!q.success)
+          return err("bad_request", "Invalid query", q.error.issues);
+        const needle = q.data.q?.toLowerCase();
+        const here = rowsOf(s);
+        const list = members
+          .filter(
+            (m) =>
+              m.role !== "guest" &&
+              (m.status ?? "active") === "active" &&
+              (!needle ||
+                m.email.toLowerCase().startsWith(needle) ||
+                (m.name ?? "")
+                  .toLowerCase()
+                  .split(/\s+/)
+                  .some((w) => w.startsWith(needle))),
+          )
+          .sort((a, b) =>
+            a.email === b.email
+              ? a.id < b.id
+                ? -1
+                : 1
+              : a.email < b.email
+                ? -1
+                : 1,
+          )
+          .map((m): SpaceCandidate => {
+            const r = here.find((x) => x.userId === m.id);
+            return {
+              id: m.id,
+              email: m.email,
+              name: m.name,
+              role: m.role,
+              restriction: restrictionOf(m.id),
+              spaceRole: r ? maxRole(r.manualRole, r.syncRole) : null,
+            };
+          });
+        return page(list, qs, 20);
       }),
     ),
     http.post(
