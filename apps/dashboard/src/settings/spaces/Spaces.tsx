@@ -22,6 +22,7 @@ import {
   useUpdateSettings,
 } from "../../api/queries";
 import { useMe } from "../../auth/useMe";
+import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
 import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
 import { useDocumentTitle } from "../../layout/useDocumentTitle";
@@ -68,6 +69,9 @@ function NewSpace({
   const [name, setName] = useState("");
   const [allMembersRole, setAll] = useState<SpaceRole | null>(null);
   const [publicLinks, setPublic] = useState(true);
+  // The creator manages it unless they say otherwise, so it's in their sidebar (#806).
+  const [addMe, setAddMe] = useState(true);
+  const addMeId = useId();
   const [touched, setTouched] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
   const hint = useId();
@@ -81,7 +85,7 @@ function NewSpace({
     if (clean === null) return;
     setRefused(null);
     create.mutate(
-      { name: clean, allMembersRole, publicLinks },
+      { name: clean, allMembersRole, publicLinks, addMe },
       {
         onSuccess: onClose,
         onError: (e) => setRefused(nameRefusal(e, name)),
@@ -156,6 +160,12 @@ function NewSpace({
             onChange={setPublic}
           />
         </div>
+        <LabelledCheckbox
+          id={addMeId}
+          label="Add me as a manager"
+          checked={addMe}
+          onCheckedChange={setAddMe}
+        />
       </form>
     </Modal>
   );
