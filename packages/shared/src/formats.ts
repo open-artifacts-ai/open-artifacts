@@ -1,4 +1,4 @@
-export const FORMATS = ["html", "markdown", "code", "pdf"] as const;
+export const FORMATS = ["html", "markdown", "code", "pdf", "image"] as const;
 export type Format = (typeof FORMATS)[number];
 
 function basename(path: string): string {
