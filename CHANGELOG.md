@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.74.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.74.0...v0.74.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **members:** uncertain invite title when emailed; T19 [#764](https://github.com/open-artifacts-ai/open-artifacts/issues/764) finds its person ([#834](https://github.com/open-artifacts-ai/open-artifacts/issues/834)) ([c44c1c0](https://github.com/open-artifacts-ai/open-artifacts/commit/c44c1c0608cff498c1036e01cd6fbe3b8fe93035))
+
 ## [0.74.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.73.0...v0.74.0) (2026-10-28)
 
 
