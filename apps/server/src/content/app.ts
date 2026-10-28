@@ -7,6 +7,7 @@ import type { Env } from "../env.js";
 import { contentFrameAncestors } from "../http/embed.js";
 import { ApiError, appOrigin, toErrorResponse } from "../http/errors.js";
 import { CONTENT_CSP } from "../http/middleware.js";
+import { cancelUnreadOnRefusal } from "../http/unread-body.js";
 import { injectRuntime } from "./inject.js";
 import {
   CAPTURE_HEADER,
@@ -480,6 +481,9 @@ const entryLocation = (entry: string) =>
 
 /** Content host: untrusted artifact files only. No session, no cookies. */
 export const contentApp = new Hono<CEnv>();
+
+// Outermost: an early refusal cancels the request body nothing read.
+contentApp.use(mw(cancelUnreadOnRefusal()));
 
 // On every response, errors included (onError/notFound run inside compose).
 contentApp.use(
