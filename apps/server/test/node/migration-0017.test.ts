@@ -4,11 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getPlatformProxy } from "wrangler";
-import { main, parseArgs } from "../../scripts/verify-migration.ts";
+import {
+  main,
+  parseArgs,
+  parseWranglerJson,
+} from "../../scripts/verify-migration.ts";
 import {
   capture,
   MIGRATION_FILE,
   NARROW,
+  parseCapture,
   type Query,
   serialize,
   verify,
@@ -60,6 +65,7 @@ type Snap = {
   fk: unknown[];
   quick: unknown[];
   rowids: unknown[];
+  content: Record<string, unknown[]>;
 };
 async function snap(): Promise<Snap> {
   const master = (
@@ -78,7 +84,19 @@ async function snap(): Promise<Snap> {
       counts[m.name] = Number(
         (await q(`select count(*) as n from "${m.name}"`))[0]?.n,
       );
+  // Every column of every row of the rebuilt tables, exactly (quote() keeps
+  // the storage class: 1 vs '1' vs 1.0, NULL vs '').
+  const content: Record<string, unknown[]> = {};
+  for (const t of ["artifacts", "versions", "shares"]) {
+    const cols = (await q(`select name from pragma_table_info('${t}')`)).map(
+      (r) => `quote("${String(r.name)}")`,
+    );
+    content[t] = await q(
+      `select rowid as _r, ${cols.join(", ")} from "${t}" order by rowid`,
+    );
+  }
   return {
+    content,
     counts,
     master,
     // Search as the app does: match, then join on rowid.
@@ -221,6 +239,64 @@ async function seed() {
       i % 2,
     );
   }
+  // Edge rows: every nullable column NULL, unicode (astral, RTL, combining,
+  // ZWJ, quotes, LIKE wildcards), max-size title/description, a ~1 MB
+  // manifest, int64 extremes and a REAL in an integer column.
+  const big = JSON.stringify(
+    Array.from({ length: 9000 }, (_, k) => ({
+      path: `d/été-${k}-\u{1F600}.txt`,
+      key: "k".repeat(64),
+      size: k,
+      contentType: "text/plain",
+    })),
+  );
+  expect(big.length).toBeGreaterThan(900_000);
+  const edgeCols = `id, owner_id, space_id, title, description, format, visibility, current_version,
+    capabilities, allow_anonymous_writes, data_writers, has_thumbnail, thumbnail_version, created_at, updated_at,
+    deleted_at, purge_attempts, purge_after, last_agent_name, last_agent_version`;
+  await run(
+    `insert into artifacts (${edgeCols})
+     values ('edge-null', 'u-ann', 'u-ann', ?, null, 'markdown', 'private', 0, '{}', 0, 'viewers', 0, null,
+       -9223372036854775808, 9223372036854775807, null, 0, null, null, null)`,
+    "T".repeat(200),
+  );
+  await run(
+    `insert into artifacts (${edgeCols})
+     values ('edge-uni', 'u-bob', 'sp-team', ?, ?, 'code', 'public', 7, ?, 1, 'editors', 1, 3, 1.5, 2, 3, 2, 4, ?, ?)`,
+    `\u{1F680} שלום é 'q' "d" \\ %_`,
+    "\u{1F469}‍\u{1F4BB}".repeat(400),
+    '{"db":true,"viewer":true,"storage":true,"n":"ü"}',
+    "\u{1F916} agent",
+    "v²",
+  );
+  await run(
+    `insert into versions (artifact_id, version, entry, manifest, language, message, agent_name, agent_version,
+       created_by, created_at, text_indexed, format, agent_via, index_failed, thumb_failed)
+     values ('edge-null', 1, 'README.md', '[]', null, null, null, null, 'u-ann', 0, 0, null, null, 0, 0),
+            ('edge-uni', 9223372036854775807, ?, ?, 'rust', ?, ?, ?, 'u-bob', 1, 1, 'code', 'g:gr1', 1, 1)`,
+    "src/\u{1F600}/main.rs",
+    big,
+    "m".repeat(10_000),
+    "é",
+    "",
+  );
+  await run(
+    "insert into shares values ('edge-uni', ?, 'editor', 'u-owner', -1), ('edge-null', ?, 'viewer', 'u-owner', 0)",
+    "JÜRGEN@Über.example",
+    `${"a".repeat(64)}@${"b".repeat(180)}.example`,
+  );
+  // Shares at users' own addresses: the directory delete and the address
+  // move (verify's EXPLAINED) need them.
+  for (const [i, u] of [
+    [13, "u-bob"],
+    [15, "u-guest"],
+    [19, "u-ann"],
+  ] as const)
+    await run(
+      "insert into shares values (?, ?, 'viewer', 'u-owner', 1)",
+      A(i),
+      `${u}@Example.com`,
+    );
   // rowid gaps: a purge deletes (cascading its rows and its FTS row by hand),
   // so later rowids are not 1..n and a renumbering copy would show.
   for (const i of [3, 17, 18, 40]) {
@@ -311,6 +387,12 @@ describe("migration 0017_image_format rehearsal", () => {
     };
     expect(after.counts).toEqual(counts);
     expect(after.rowids).toEqual(before.rowids);
+    for (const t of ["artifacts", "versions", "shares"])
+      expect(after.content[t], t).toEqual(before.content[t]);
+    const edge = (before.content.artifacts ?? []).filter((r) =>
+      String(Object.values(r as object)[1]).startsWith("'edge-"),
+    );
+    expect(edge.length).toBe(2);
     expect(after.fts).toEqual(before.fts);
     expect(after.fk).toEqual([]);
     expect(after.quick).toEqual([{ quick_check: "ok" }]);
@@ -364,10 +446,136 @@ describe("migration 0017_image_format rehearsal", () => {
   it("verify-migration's capture/verify pass, and capture is deterministic", async () => {
     expect(recaptured).toBe(captured);
     expect(captured).not.toMatch(/@/);
-    const r = await verify(q, JSON.parse(captured));
+    const r = await verify(q, parseCapture(captured));
     expect(r.failures).toEqual([]);
     expect(r.ok).toBe(true);
     expect(r.notes).toContain("quick_check: ok");
+  });
+
+  it("verify accepts a later migration that adds objects", async () => {
+    await db.batch([
+      db.prepare("create table later_t (x text)"),
+      db.prepare("create index later_t_x on later_t (x)"),
+      db.prepare("create index artifacts_later_idx on artifacts (title)"),
+      db.prepare("insert into later_t values ('a')"),
+      db
+        .prepare("insert into d1_migrations (name) values (?)")
+        .bind("0018_later.sql"),
+    ]);
+    const r = await verify(q, parseCapture(captured));
+    expect(r.failures).toEqual([]);
+    expect(r.notes).toEqual(
+      expect.arrayContaining([
+        "d1_migrations: 1 migrations after 0017",
+        "index later_t_x: not there before",
+        "index artifacts_later_idx: not there before",
+      ]),
+    );
+  });
+
+  it("a delete by the app during the window is explained by its audit row or state; others fail", async () => {
+    const audit = (
+      id: string,
+      action: string,
+      type: string,
+      target: string,
+      at: number,
+    ) =>
+      run(
+        "insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id) values (?, ?, 'user', 'u-owner', ?, ?, ?)",
+        id,
+        at,
+        action,
+        type,
+        target,
+      );
+    const LATER = 10_000_000_000;
+    // Unshare (artifact.unshare), transfer (artifact.transfer).
+    await run(
+      "delete from shares where artifact_id = ? and email = 'Viewer@Example.com'",
+      A(7),
+    );
+    await audit("ev-unshare", "artifact.unshare", "artifact", A(7), LATER);
+    await run(
+      "delete from shares where artifact_id = ? and email = 'ed@example.com'",
+      A(9),
+    );
+    await audit("ev-transfer", "artifact.transfer", "artifact", A(9), LATER);
+    // The directory's deleteUser: user.status on the user, their shares gone.
+    await run(
+      "delete from shares where artifact_id = ? and email = 'u-bob@Example.com'",
+      A(13),
+    );
+    await audit("ev-status", "user.status", "user", "u-bob", LATER);
+    // An address move (not audited): the share moves to the new address.
+    await run(
+      "update users set email = 'ann.new@example.com' where id = 'u-ann'",
+    );
+    await run(
+      "insert into shares values (?, 'ann.new@example.com', 'viewer', 'u-owner', 1)",
+      A(19),
+    );
+    await run(
+      "delete from shares where artifact_id = ? and email = 'u-ann@Example.com'",
+      A(19),
+    );
+    // The trash purge (not audited): an artifact trashed at capture.
+    expect(JSON.parse(captured).trashed).toContain(A(11));
+    await run(
+      "delete from artifact_search where rowid = (select rowid from artifacts where id = ?)",
+      A(11),
+    );
+    await run("delete from artifacts where id = ?", A(11));
+    const ok = await verify(q, parseCapture(captured));
+    expect(ok.failures).toEqual([]);
+    expect(ok.notes).toEqual(
+      expect.arrayContaining([
+        "artifacts: 1 captured rows deleted by the app since capture",
+        "versions: 2 captured rows deleted by the app since capture",
+        // 4 above, plus A(11)'s two (the purge cascade).
+        "shares: 6 captured rows deleted by the app since capture",
+      ]),
+    );
+    // Unexplained: an audit row from before the capture doesn't count, nor
+    // does an audit for another artifact; a live artifact can't be purged.
+    await audit("ev-old", "artifact.unshare", "artifact", A(15), 1);
+    await audit("ev-other", "artifact.unshare", "artifact", A(21), LATER);
+    await run(
+      "delete from shares where artifact_id = ? and email = 'u-guest@Example.com'",
+      A(15),
+    );
+    const bad = await verify(q, parseCapture(captured));
+    expect(bad.ok).toBe(false);
+    expect(bad.failures).toEqual([
+      `shares: 1 of ${before.counts.shares} captured rows missing, unexplained`,
+    ]);
+    await run(
+      "insert into shares values (?, 'u-guest@Example.com', 'viewer', 'u-owner', 1)",
+      A(15),
+    );
+    expect((await verify(q, parseCapture(captured))).failures).toEqual([]);
+  });
+
+  it("refuses a --db that looks like a flag, and never echoes bad JSON", () => {
+    expect(parseArgs(["verify", "--db", "--remote", "--in", "f"])).toBeNull();
+    expect(parseArgs(["capture", "--db", "-x", "--out", "f"])).toBeNull();
+    const secret = '[{"results": [secret@example.com';
+    expect(() => parseWranglerJson(secret)).toThrow(
+      "wrangler printed invalid JSON",
+    );
+    try {
+      parseWranglerJson(secret);
+    } catch (e) {
+      expect(String(e)).not.toMatch(/secret/);
+    }
+    expect(() => parseCapture("{ secret@example.com")).toThrow(
+      "not a capture file (invalid JSON)",
+    );
+    try {
+      parseCapture("{ secret@example.com");
+    } catch (e) {
+      expect(String(e)).not.toMatch(/secret/);
+    }
   });
 
   it("the CLI exits 0 on a match and 1 on a mismatch, with no row data in its reasons", async () => {
@@ -412,8 +620,8 @@ describe("migration 0017_image_format rehearsal", () => {
     );
     expect(err).toEqual(
       expect.arrayContaining([
-        `MISMATCH shares: 2 of ${before.counts.shares} captured rows missing`,
-        `MISMATCH versions: 1 of ${before.counts.versions} captured rows missing`,
+        `MISMATCH shares: 2 of ${before.counts.shares} captured rows missing, unexplained`,
+        `MISMATCH versions: 1 of ${before.counts.versions} captured rows missing, unexplained`,
       ]),
     );
     for (const e of err) {

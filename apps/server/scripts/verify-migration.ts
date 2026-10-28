@@ -46,7 +46,8 @@ export function parseArgs(argv: string[]): Args | null {
   }
   const db = opts.get("--db");
   const file = opts.get(want);
-  if (!db || !file) return null;
+  // A name starting with "-" would reach wrangler as a flag.
+  if (!db || !file || db.startsWith("-")) return null;
   return { cmd, db, file };
 }
 
@@ -66,10 +67,15 @@ function wranglerBin(): string {
 export function parseWranglerJson(stdout: string): Record<string, unknown>[] {
   const start = stdout.indexOf("[");
   if (start < 0) throw new Error("wrangler printed no JSON");
-  const out = JSON.parse(stdout.slice(start)) as {
-    results?: Record<string, unknown>[];
-    success?: boolean;
-  }[];
+  type Result = { results?: Record<string, unknown>[]; success?: boolean };
+  let out: Result[];
+  try {
+    out = JSON.parse(stdout.slice(start)) as Result[];
+  } catch {
+    // Generic: a JSON.parse message quotes its input, which may be row data.
+    throw new Error("wrangler printed invalid JSON");
+  }
+  if (!Array.isArray(out)) throw new Error("wrangler printed unexpected JSON");
   const last = out[out.length - 1];
   if (!last || last.success === false) throw new Error("query failed");
   return last.results ?? [];
