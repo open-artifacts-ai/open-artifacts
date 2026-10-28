@@ -54,6 +54,8 @@ import {
   type TransferInput,
   TransferResultSchema,
   TransferSummarySchema,
+  type TrashItem,
+  TrashItemSchema,
 } from "./contract";
 import {
   DIRECTORY_SETTINGS,
@@ -78,6 +80,8 @@ export const qk = {
   versions: (id: string) => ["artifact", id, "versions"] as const,
   shares: (id: string) => ["artifact", id, "shares"] as const,
   search: (q: SearchQuery) => ["search", q] as const,
+  /** Every Trash list (any space filter) starts with ["trash"]. */
+  trash: (spaceId?: string) => ["trash", spaceId ?? ""] as const,
   /** Every member query: the lists below and per-member data. */
   members: ["members"] as const,
   memberList: (status?: string) => ["members", status ?? "active"] as const,
@@ -114,6 +118,7 @@ const withQuery = (path: string, q: object) => {
 
 const ArtifactPage = PageSchema(ArtifactSummarySchema);
 const SearchPage = PageSchema(SearchHitSchema);
+const TrashPage = PageSchema(TrashItemSchema);
 
 export const useArtifacts = (q: ListQueryInput) =>
   useQuery({
@@ -463,6 +468,49 @@ export const useCreateSpace = () =>
     // A refused name shows under the field.
     (e) => e.status === 400,
   );
+/** Trash: the caller's deleted artifacts and those in spaces they manage, newest first. */
+export const useTrash = (spaceId?: string) =>
+  useInfiniteQuery({
+    queryKey: qk.trash(spaceId),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam, signal }) =>
+      api.get(
+        withQuery(R.trash, { spaceId, cursor: pageParam }),
+        TrashPage,
+        signal,
+      ),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+/** Undelete from Trash: the row leaves at once, then Trash and the lists refetch. */
+export const useRestoreDeleted = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (item: TrashItem) =>
+      api.send(
+        "POST",
+        R.restoreDeleted(item.id),
+        undefined,
+        ArtifactSummarySchema,
+      ),
+    onSuccess: (_a, item) => {
+      qc.setQueriesData<{ pages: { items: TrashItem[] }[] }>(
+        { queryKey: ["trash"] },
+        (d) =>
+          d && {
+            ...d,
+            pages: d.pages.map((p) => ({
+              ...p,
+              items: p.items.filter((x) => x.id !== item.id),
+            })),
+          },
+      );
+      // Not awaited: the toast shouldn't wait for the refetches.
+      void qc.invalidateQueries({ queryKey: ["trash"] });
+      void qc.invalidateQueries({ queryKey: ["artifacts"] });
+      void qc.invalidateQueries({ queryKey: qk.artifact(item.id) });
+    },
+  });
+};
 /** Turning public links off rewrites public artifacts to team, so the library refreshes. */
 export const usePatchSpace = (id: string) =>
   useInvalidating(

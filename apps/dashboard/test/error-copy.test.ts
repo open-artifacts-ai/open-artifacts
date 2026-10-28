@@ -15,7 +15,7 @@ it.each([
   ],
   [
     "space_not_empty",
-    "This space still has artifacts. Move or delete them first. Deleted artifacts count until they're permanently removed, 30 days after deletion.",
+    "This space still has artifacts. Move or delete them first. Deleted ones stay in Trash for 30 days.",
   ],
   [
     "public_links_off",

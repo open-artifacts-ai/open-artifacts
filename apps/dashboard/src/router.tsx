@@ -27,6 +27,7 @@ import { Gate, SettingsLayout } from "./settings/SettingsLayout";
 import { canAdminSpaces } from "./settings/spaces/access";
 import { Spaces } from "./settings/spaces/Spaces";
 import { Usage } from "./settings/Usage";
+import { Trash } from "./trash/Trash";
 import { Diff } from "./viewer/Diff";
 import { Shell } from "./viewer/Shell";
 
@@ -119,6 +120,22 @@ const search = createRoute({
   component: SearchPage,
 });
 
+/** Every install; guests delete nothing. */
+function TrashRoute() {
+  const state = useMe();
+  if (state.status !== "authed") return null;
+  if (state.me.user.role === "guest") return <NotFound />;
+  return <Trash />;
+}
+const trash = createRoute({
+  getParentRoute: () => root,
+  path: "/trash",
+  validateSearch: (s: Record<string, unknown>) => ({
+    ...(str(s.spaceId) && { spaceId: str(s.spaceId) }),
+  }),
+  component: TrashRoute,
+});
+
 const ADMINS: Role[] = ["owner", "admin"];
 /** Guests go to /shared; a member is sent to the page they may see. */
 const gated = (
@@ -195,6 +212,7 @@ const routeTree = root.addChildren([
   library("/shared", "shared"),
   library("/team", "team"),
   search,
+  trash,
   route("/a/$id", ViewerRoute),
   route("/a/$id/v/$v", ViewerRoute),
   route("/a/$id/full", FullRoute),

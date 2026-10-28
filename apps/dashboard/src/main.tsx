@@ -270,6 +270,65 @@ async function startMocks() {
       }),
     );
   }
+  // ?mock=trash: four deleted artifacts, 0 to 29 days old (two in Engineering
+  // when hosted); ?mock=trash-empty: none. Fixed rows for screenshots; the
+  // shared mock's own R.trash answers otherwise.
+  const trash = params.get("mock");
+  if (trash === "trash" || trash === "trash-empty") {
+    const day = 86_400_000;
+    const personal = {
+      id: "Ab3dEfGhJk4mNpQr",
+      name: "Personal",
+      personal: true,
+    };
+    const eng =
+      params.get("hosted") !== null
+        ? { id: "SpEngNpQrSt2uVwX", name: "Engineering", personal: false }
+        : personal;
+    const row = (id: string, title: string, ago: number, space: object) => {
+      const deleted = Date.now() - ago * day;
+      return {
+        id,
+        title,
+        description: null,
+        format: "html",
+        visibility: "private",
+        owner: { id: personal.id, name: "Ada", email: "ada@example.com" },
+        currentVersion: 1,
+        createdAt: new Date(deleted - day).toISOString(),
+        updatedAt: new Date(deleted).toISOString(),
+        deletedAt: new Date(deleted).toISOString(),
+        lastAgent: null,
+        thumbnailUrl: null,
+        thumbnailVersion: null,
+        access: "owner",
+        capabilities: { db: false, viewer: false, storage: false },
+        dataWriters: "editors",
+        allowAnonymousWrites: false,
+        purgeAt: new Date(deleted + 30 * day).toISOString(),
+        space,
+      };
+    };
+    const items =
+      trash === "trash-empty"
+        ? []
+        : [
+            row("TrA1aaaaaaaaaaaa", "Q3 planning board", 0, personal),
+            row(
+              "TrA2aaaaaaaaaaaa",
+              "Launch checklist with a long title that wraps",
+              3,
+              eng,
+            ),
+            row("TrA3aaaaaaaaaaaa", "Poll: offsite dates", 25, personal),
+            row("TrA4aaaaaaaaaaaa", "Old pricing draft", 29, eng),
+          ];
+    extra.push(
+      http.get("*/api/v1/trash", () =>
+        HttpResponse.json({ items, nextCursor: null }),
+      ),
+    );
+  }
   // ?mock=paid: a Workers Paid instance (#279): no daily caps, 30 s of CPU.
   // ?mock=paid-cpu adds 4 CPU-limit hits today.
   const paidCpu = params.get("mock") === "paid-cpu";
