@@ -2,6 +2,7 @@ import { MCP_PATH, normalizeHost as normHost } from "@oa/shared";
 import { app } from "./app.js";
 import { canConnect } from "./auth/agents.js";
 import { withBrokerProps } from "./auth/broker-transport.js";
+import { withCred } from "./auth/cred.js";
 import { verifyPat } from "./auth/pat.js";
 import { contentApp } from "./content/app.js";
 import { scheduled } from "./cron.js";
@@ -69,13 +70,16 @@ async function mcpWithPat(
     version: null,
     via: { kind: "token", id: pat.tokenId },
   };
-  return mcpHandler(env, () =>
-    createServer({ env, user, sessionEpoch, agent, exec: ctx }),
-  ).fetch(capped, {
-    // token is deliberately empty: tools never need it, and the SDK must not
-    // be able to log or echo the PAT. clientId names the token row instead.
-    authInfo: { token: "", clientId: `pat:${pat.tokenId}`, scopes: [] },
-  });
+  // Audit rows from these tools name the PAT (by id, never its text).
+  return withCred({ kind: "pat", id: pat.tokenId }, () =>
+    mcpHandler(env, () =>
+      createServer({ env, user, sessionEpoch, agent, exec: ctx }),
+    ).fetch(capped, {
+      // token is deliberately empty: tools never need it, and the SDK must not
+      // be able to log or echo the PAT. clientId names the token row instead.
+      authInfo: { token: "", clientId: `pat:${pat.tokenId}`, scopes: [] },
+    }),
+  );
 }
 
 export default {

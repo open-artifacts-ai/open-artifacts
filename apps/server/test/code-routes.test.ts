@@ -21,7 +21,7 @@ import {
   trial,
   uniq,
 } from "./auth-helpers.js";
-import { fetchAndWait } from "./helpers.js";
+import { fetchAndWait, login } from "./helpers.js";
 import { callWorker, nextIp } from "./mcp-helpers.js";
 
 // P2 Task 8: code sign-in routes.
@@ -323,6 +323,23 @@ describe("POST AUTH.codeVerify", () => {
       await readSession(s.e, cookieOf(r, SESSION)?.split("=")[1]),
     ).toMatchObject({ p: "code" });
     expect(setCookieLine(r, CODE_COOKIE)).toContain("Max-Age=0");
+  });
+
+  it("#803: a sign-in sent with another user's valid cookie records no credential", async () => {
+    const alice = await login(uniq("alice"));
+    const guest = uniq("g", "x.com");
+    await seedUser(guest, "guest");
+    const s = await start(direct(), guest);
+    const r = await verify(s.e, s.code(), `${s.cookie}; ${alice.cookie}`);
+    expect(r.status).toBe(200);
+    const rows = await env.DB.prepare(
+      `select e.actor_cred_kind kind, e.actor_cred_id id from audit_events e
+        join users u on u.id = e.target_id
+        where e.action = 'auth.signin' and u.email = ?`,
+    )
+      .bind(guest)
+      .all();
+    expect(rows.results).toEqual([{ kind: null, id: null }]);
   });
 
   it("a shared address with no row becomes a guest on verify", async () => {

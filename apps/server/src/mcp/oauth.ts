@@ -17,6 +17,7 @@ import {
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
 import { callerOf, capOfCaller, requireUser } from "../auth/authz.js";
+import { withCred } from "../auth/cred.js";
 import { orgCan } from "../auth/policy.js";
 import type { Env } from "../env.js";
 import { jsonBody, readCappedRequest } from "../http/body.js";
@@ -141,17 +142,20 @@ const apiHandler = {
       ...(grantId ? { via: { kind: "grant" as const, id: grantId } } : {}),
     };
     let server: ReturnType<typeof createServer> | undefined;
-    const res = await mcpHandler(env, () => {
-      server = createServer({
-        env,
-        user,
-        sessionEpoch: row.sessionEpoch,
-        agent,
-        exec: ctx,
-        clientVersion: true,
-      });
-      return server;
-    })(capped, env, ctx);
+    // Audit rows from these tools name the grant (by id, never the token).
+    const res = await withCred({ kind: "oauth_grant", id: grantId }, () =>
+      mcpHandler(env, () => {
+        server = createServer({
+          env,
+          user,
+          sessionEpoch: row.sessionEpoch,
+          agent,
+          exec: ctx,
+          clientVersion: true,
+        });
+        return server;
+      })(capped, env, ctx),
+    );
     if (grantId) {
       const version = clientVersionOf(
         server?.server.getClientVersion()?.version,

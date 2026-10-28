@@ -2,6 +2,7 @@ import { AUTH, planOf } from "@oa/shared";
 import { type Context, Hono, type MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
 import { withBrokerProps } from "./auth/broker-transport.js";
+import { withCredScope } from "./auth/cred.js";
 import {
   enforcePolicy,
   mw,
@@ -99,7 +100,9 @@ export function createApp(
       } catch {
         ctx = undefined;
       }
-      return withBrokerProps(ctx, next);
+      // A fresh credential slot per request (auth/cred.ts): the session read
+      // fills it, audit() reads it, and waitUntil work keeps this one.
+      return withCredScope(() => withBrokerProps(ctx, next));
     }),
   );
   app.use(mw(securityHeaders()));

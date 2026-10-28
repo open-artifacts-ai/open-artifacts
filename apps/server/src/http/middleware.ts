@@ -12,6 +12,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
 import { callerOf, capOfCaller, withCap } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
+import { sessionCredId, setCred } from "../auth/cred.js";
 import { verifyPat } from "../auth/pat.js";
 import { isGuestRole } from "../auth/policy.js";
 import {
@@ -229,6 +230,7 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       c.set("tokenLabel", pat.label);
       c.set("tokenId", pat.tokenId);
       c.set("authMethod", "pat");
+      setCred({ kind: "pat", id: pat.tokenId });
       c.set("sessionEpoch", row.sessionEpoch);
     }
   } else {
@@ -257,6 +259,7 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
         );
       else c.set("user", row.user);
       c.set("authMethod", s.p);
+      setCred({ kind: "session", id: sessionCredId(s) });
       c.set("sessionExp", s.exp);
       c.set("sessionEpoch", row.sessionEpoch);
     }
@@ -350,6 +353,8 @@ async function meBreakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
   const row = await getMismatchOwner(c.env, s.uid);
   if (!row || !sessionStillValid(c.env, s, row.sessionEpoch)) return;
   const now = Date.now();
+  // The 401 still names the session that asked: its use is audited as such.
+  setCred({ kind: "session", id: sessionCredId(s) });
   await auditBreakGlass(c, row.user.id, s, now);
   throw new ApiError(
     "break_glass_required",
@@ -419,6 +424,7 @@ async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
 function setCookieUser(c: Context<AppEnv>, s: Session, row: UserWithEpoch) {
   c.set("user", row.user);
   c.set("authMethod", s.p);
+  setCred({ kind: "session", id: sessionCredId(s) });
   c.set("sessionExp", s.exp);
   c.set("sessionEpoch", row.sessionEpoch);
 }

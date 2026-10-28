@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { SyncStatus } from "@oa/shared";
+import { withoutCred } from "../auth/cred.js";
 import type { Env } from "../env.js";
 import type { AuditActor } from "../services/audit.js";
 import {
@@ -17,6 +18,11 @@ export type { KickReason, SyncJob } from "./sync.js";
  * health and the queued access jobs (P3 T13). The engine (sync.ts) holds the
  * logic; this class is its alarm and RPC surface. The directory access token
  * lives in `box`, in memory only (sync.ts TokenBox).
+ *
+ * Every entry point runs withoutCred (#803): an RPC from a request never lends
+ * this DO that request's credential. A row written here for a user's action
+ * gets it explicitly on the actor (confirmHeld's `by`, via withRequestCred);
+ * alarm work records `system`.
  */
 export class DirectorySync extends DurableObject<Env> {
   private engine: SyncEngine;
@@ -28,16 +34,16 @@ export class DirectorySync extends DurableObject<Env> {
   }
 
   kick(reason: KickReason): Promise<SyncStatus> {
-    return this.engine.kick(reason);
+    return withoutCred(() => this.engine.kick(reason));
   }
 
   status(): Promise<SyncStatus> {
-    return this.engine.status();
+    return withoutCred(() => this.engine.status());
   }
 
   /** A run is due and no token is in hand (services/directory.ts feedSync). */
   wantsToken(): Promise<boolean> {
-    return this.engine.wantsToken();
+    return withoutCred(() => this.engine.wantsToken());
   }
 
   /** The caller's freshly minted token (never its capability), or why it failed. */
@@ -45,23 +51,23 @@ export class DirectorySync extends DurableObject<Env> {
     forKey: string,
     h: { token: string } | { error: MintFault },
   ): Promise<void> {
-    return this.engine.handToken(forKey, h);
+    return withoutCred(() => this.engine.handToken(forKey, h));
   }
 
   /** Null: nothing confirmable (no hold, or an unreadable group). */
   confirmHeld(groupId: string, by?: AuditActor): Promise<SyncStatus | null> {
-    return this.engine.confirmHeld(groupId, by);
+    return withoutCred(() => this.engine.confirmHeld(groupId, by));
   }
 
   reset(): Promise<void> {
-    return this.engine.reset();
+    return withoutCred(() => this.engine.reset());
   }
 
   enqueue(job: SyncJob): Promise<void> {
-    return this.engine.enqueue(job);
+    return withoutCred(() => this.engine.enqueue(job));
   }
 
   async alarm(): Promise<void> {
-    await this.engine.alarm();
+    await withoutCred(() => this.engine.alarm());
   }
 }
