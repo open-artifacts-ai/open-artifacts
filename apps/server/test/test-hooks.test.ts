@@ -35,6 +35,17 @@ const ON = {
   RL_ANON: passRl,
 };
 const tu = (local: string) => uniq(local, TD);
+/**
+ * A start time past the current millisecond: an earlier test's last audit
+ * row may share it. Waits on the clock moving (a D1 round trip advances
+ * workerd's clock), not on a sleep.
+ */
+async function freshSince(): Promise<number> {
+  const t = Date.now();
+  while (Date.now() <= t) await env.DB.prepare("select 1").first();
+  return Date.now();
+}
+
 const auditRows = async (since: number) =>
   (
     await env.DB.prepare(
@@ -284,7 +295,7 @@ describe("audit", () => {
     vi.spyOn(console, "log").mockImplementation((s: unknown) => {
       lines.push(String(s));
     });
-    const since = Date.now();
+    const since = await freshSince();
     const email = tu("log");
     const r = await hook(on(), TEST_HOOKS.session, { email, role: "member" });
     const { cookie } = TestSessionResultSchema.parse(await r.json());
@@ -664,7 +675,7 @@ describe("hooks", () => {
   });
 
   it("code-caps/reset: the body must be exactly {} (no IP or key to aim it)", async () => {
-    const since = Date.now();
+    const since = await freshSince();
     for (const body of [{ ip: "203.0.113.9" }, { key: "code:ip:x" }, []])
       await refused404(
         await hook(on(), TEST_HOOKS.codeCapsReset, body),
@@ -679,7 +690,7 @@ describe("hooks", () => {
   });
 
   it("code-caps/reset: audited and rate-limited like every hook", async () => {
-    const since = Date.now();
+    const since = await freshSince();
     rlCalls.length = 0;
     await hook(on(), TEST_HOOKS.codeCapsReset, {});
     expect(rlCalls).toHaveLength(1);
@@ -749,7 +760,7 @@ describe("hooks", () => {
     )
       .bind(real)
       .run();
-    const since = Date.now();
+    const since = await freshSince();
     for (const groups of [
       [{ groupId: real, email: `x@${TD}` }],
       [{ groupId: "TEST-x", email: `x@${TD}` }],
