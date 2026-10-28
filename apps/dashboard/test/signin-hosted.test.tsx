@@ -151,9 +151,10 @@ it.each([
     "removed",
     "Your access to Acme Artifacts was removed. Ask your admin if this is a mistake.",
   ],
+  // An older server sends no via: the line that's true either way.
   [
     "no_access",
-    "Your organization's single sign-on didn't let you in. Ask your admin for access, then try again.",
+    "You don't have access here yet. Ask an admin to invite you, then try again.",
   ],
   ["expired", "Sign-in took too long. Try again."],
   ["failed", "Sign-in didn't work. Try again."],

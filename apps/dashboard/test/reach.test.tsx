@@ -1,5 +1,5 @@
 // Backend P6 (#799), Design's copy: the hosting line from AuthProviders.hosted
-// (review item 36), an Access no_access refusal, refused and uncertain
+// (review item 36), a no_access refusal by Access or Google, refused and uncertain
 // invites (item 11), and share recipients who can't sign in yet (item 37).
 import { type Me, R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
@@ -59,11 +59,29 @@ describe("sign-in hosting line", () => {
     expect(screen.queryByText(SELF)).toBeNull();
   });
 
-  it("error=no_access: the single sign-on copy", async () => {
-    mountHosted("/sign-in?error=no_access&next=%2Fmine");
-    expect(await screen.findByRole("alert")).toHaveTextContent(
+  // #799's via says which sign-in refused; an older server sends neither.
+  it.each([
+    [
+      "access",
       "Your organization's single sign-on didn't let you in. Ask your admin for access, then try again.",
+    ],
+    [
+      "google",
+      "This Google account doesn't have access here yet. Ask an admin to invite you, or sign in with another Google account.",
+    ],
+    [
+      "",
+      "You don't have access here yet. Ask an admin to invite you, then try again.",
+    ],
+    [
+      "bogus",
+      "You don't have access here yet. Ask an admin to invite you, then try again.",
+    ],
+  ])("error=no_access&via=%s", async (via, copy) => {
+    mountHosted(
+      `/sign-in?error=no_access${via ? `&via=${via}` : ""}&next=%2Fmine`,
     );
+    expect(await screen.findByRole("alert")).toHaveTextContent(copy);
   });
 });
 
