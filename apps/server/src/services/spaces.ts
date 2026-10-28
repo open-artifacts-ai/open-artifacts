@@ -47,6 +47,7 @@ import { canBeRestricted, capOf, isGuestRole, orgCan } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { spaces } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
+import { directoryTransport } from "../directory/transport.js";
 import { emailEnabled, sendEmail } from "../email/send.js";
 import { spaceSelfAddEmail } from "../email/templates.js";
 import type { Env } from "../env.js";
@@ -89,9 +90,22 @@ type Ctx = Pick<ExecutionContext, "waitUntil"> | undefined;
 export const spacesOn = (env: Env): boolean =>
   authConfig(env).features.includes("spaces");
 
-/** Directory sync mode from FEATURES: google (running), frozen (Team after trial) or off. */
-export const directoryMode = (env: Env): DirectoryMode =>
-  directoryModeOf(authConfig(env).features);
+/**
+ * Directory sync mode: google (running), frozen (Team after trial) or off.
+ * - Hosted (HOSTED=1): FEATURES alone, which provisioning derives from TIER.
+ * - Self-host (P4): FEATURES when it names a mode (sync_frozen stays
+ *   frozen), else the connection decides: a working directory transport
+ *   (directory/transport.ts, not "none") is google, with no FEATURES entry.
+ *   Nothing syncs until Google Workspace is connected: every sync path
+ *   (DirectorySync's alarm, feedSync, sign-in checks) also needs the live
+ *   binding, so a disconnect stops sync and a first connect waits for its
+ *   confirm, as on hosted.
+ */
+export const directoryMode = (env: Env): DirectoryMode => {
+  const m = directoryModeOf(authConfig(env).features);
+  if (m !== "off" || env.HOSTED === "1") return m;
+  return directoryTransport(env).kind === "none" ? "off" : "google";
+};
 
 // Frozen edits (P3 T15), each in the batch of the edit, before its writes:
 // (space ?1, user ?2) at ?3; ?4 = 1 for an org admin, else never a manager row
