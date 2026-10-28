@@ -219,6 +219,19 @@ describe("Me.notices.guestShares (parity 2)", () => {
     );
   });
 
+  it("a restricted member sees their own notice and can dismiss it (CSRF header sent)", async () => {
+    const a = await user("r");
+    await share(await artifact(a.userId, "R"), uniq("g", "x.com"));
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(a.userId)
+      .run();
+    expect((await notices(a.cookie))?.guestShares?.items).toHaveLength(1);
+    expect((await dismiss(a.cookie)).status).toBe(204);
+    expect(await notices(a.cookie)).toBeUndefined();
+    // Still read-only elsewhere: the summary dismiss stays refused.
+    expect((await dismiss(a.cookie, "guest_summary")).status).toBe(404);
+  });
+
   it("guests get none and their dismiss is 404; a member can dismiss with a PAT", async () => {
     const g = await user("g", "guest");
     const own = await artifact(g.userId, "Guest-owned");
