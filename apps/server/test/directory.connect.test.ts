@@ -2,6 +2,7 @@
 // fails closed: each refusal redirects to /settings/directory?error=<code>
 // with a directory.connect audit row; success stores the binding and the
 // sealed refresh token, then runs the initial binding pass.
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { R, type SyncStatus } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +10,10 @@ import { scheduled } from "../src/cron.js";
 import { directoryClient } from "../src/directory/client.js";
 import { afterConsent } from "../src/directory/connect.js";
 import { open, seal } from "../src/directory/crypto.js";
+import { SyncEngine } from "../src/directory/sync.js";
+import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
+import { SYNC_DO_NAME } from "../src/services/directory.js";
 import { getUser } from "../src/services/users.js";
 import { seedUser, uniq } from "./auth-helpers.js";
 import {
@@ -507,6 +511,103 @@ describe("confirm step", () => {
     const s = await status(e);
     expect(s.pendingCount).toBe(500);
     expect(s.pendingCountCapped).toBe(true);
+  });
+
+  // Review item 33: expiry revoked only after deleting the token, so a
+  // failed revoke (always, in the DirectorySync DO: no broker capability
+  // there) left a live grant at Google with no stored token to retry.
+  const age = () =>
+    env.DB.prepare(
+      "update directory_state set value = json_set(value, '$.exp', 1) where key = 'connect.confirm'",
+    ).run();
+
+  const cron = async (e: Env) => {
+    const waits: Promise<unknown>[] = [];
+    await scheduled({} as ScheduledController, e, {
+      waitUntil: (p: Promise<unknown>) => waits.push(p),
+      passThroughOnException() {},
+    } as never);
+    await Promise.all(waits);
+  };
+
+  // #813 review: a revoke that keeps failing (no transport, a token that
+  // won't unseal) was retried, with an outbound call and an audit row, on
+  // every status read. After the first failure only the daily cron retries.
+  it("after a failed expiry revoke, status reads don't retry; the cron does", async () => {
+    const e = directEnv();
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    await age();
+    const failedRows = async () =>
+      (await audits()).filter((a) => a.detail.outcome === "revoke_failed")
+        .length;
+    const f0 = await failedRows();
+    g.setRevokeStatus(500);
+    for (let i = 0; i < 3; i++) await status(e);
+    expect(await failedRows()).toBe(f0 + 1);
+    g.setRevokeStatus(200);
+    await status(e);
+    expect(g.revoked).toEqual([]);
+    expect(await keys()).toEqual([
+      "connect.confirm",
+      "pending.binding",
+      "pending.refresh",
+    ]);
+    await cron(e);
+    expect(g.revoked).toEqual([`rt-${admin.sub}`]);
+    expect(await keys()).toEqual([]);
+  });
+
+  it("expiry revokes before it deletes: a failed revoke keeps the token for the next try", async () => {
+    const e = directEnv();
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    await age();
+    const expiredRows = async () =>
+      (await audits()).filter((a) => a.detail.outcome === "expired").length;
+    const n0 = await expiredRows();
+    g.setRevokeStatus(500);
+    expect((await status(e)).state).toBe("never");
+    expect(await expiredRows()).toBe(n0);
+    expect(await keys()).toEqual([
+      "connect.confirm",
+      "pending.binding",
+      "pending.refresh",
+    ]);
+    expect(g.revoked).toEqual([]);
+    g.setRevokeStatus(200);
+    await cron(e);
+    expect(await keys()).toEqual([]);
+    expect(g.revoked).toEqual([`rt-${admin.sub}`]);
+    const details = (await audits()).map((a) => a.detail);
+    expect(details).toContainEqual({
+      outcome: "revoke_failed",
+      token: "pending",
+    });
+    expect(details).toContainEqual({ outcome: "revoked", token: "pending" });
+    expect(await expiredRows()).toBe(n0 + 1);
+  });
+
+  it("the DirectorySync status read leaves expiry to the Worker", async () => {
+    const e = hostedEnv();
+    await connect(e, owner.cookie, g, { sub: admin.sub }, { confirm: false });
+    await age();
+    const ns = env.DIRECTORY_SYNC;
+    if (!ns) throw new Error("DIRECTORY_SYNC unbound");
+    const doStatus = await runInDurableObject(
+      ns.get(
+        ns.idFromName(SYNC_DO_NAME),
+      ) as unknown as DurableObjectStub<DirectorySync>,
+      (_i, s) => new SyncEngine(e, s.storage).status(),
+    );
+    expect(doStatus.state).toBe("never");
+    expect(await keys()).toEqual([
+      "connect.confirm",
+      "pending.binding",
+      "pending.refresh",
+    ]);
+    expect(g.revoked).toEqual([]);
+    expect((await status(e)).state).toBe("never");
+    expect(await keys()).toEqual([]);
+    expect(g.revoked).toEqual([`rt-${admin.sub}`]);
   });
 });
 

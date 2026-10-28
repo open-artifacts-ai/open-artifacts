@@ -1,4 +1,5 @@
 import {
+  type GrantSummary,
   getOAuthApi,
   OAuthError,
   type OAuthHelpers,
@@ -81,6 +82,45 @@ export const oauthApi = (env: Env): OAuthHelpers =>
 
 /** Upper bound on grant pages walked per revocation (100 grants per page). */
 const MAX_GRANT_PAGES = 10;
+
+/**
+ * Every grant the user holds, page by page (100 per page, at most
+ * MAX_GRANT_PAGES). `complete` is false when pages were left unread, so a
+ * caller never prunes against a partial list (review item 40).
+ */
+export async function listAllUserGrants(
+  env: Env,
+  userId: string,
+): Promise<{ items: GrantSummary[]; complete: boolean }> {
+  const oauth = oauthApi(env);
+  const items: GrantSummary[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_GRANT_PAGES; page++) {
+    const r = await oauth.listUserGrants(userId, { limit: 100, cursor });
+    items.push(...r.items);
+    cursor = r.cursor;
+    if (!cursor) return { items, complete: true };
+  }
+  return { items, complete: false };
+}
+
+/**
+ * One of the user's grants by id: a direct read of the provider's grant
+ * record (`grant:<userId>:<grantId>`, the key listUserGrants lists), so no
+ * listing page or KV list lag decides whether it exists. Null when absent
+ * or not this user's. The caller checked grantId's shape (no ':').
+ */
+export async function lookupUserGrant(
+  env: Env,
+  userId: string,
+  grantId: string,
+): Promise<GrantSummary | null> {
+  const g = await env.OAUTH_KV.get<GrantSummary>(
+    `grant:${userId}:${grantId}`,
+    "json",
+  );
+  return g && g.id === grantId && g.userId === userId ? g : null;
+}
 
 /**
  * Revokes every OAuth grant (and its tokens) the user holds. Re-lists from the

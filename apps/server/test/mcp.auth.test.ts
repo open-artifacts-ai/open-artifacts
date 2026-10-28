@@ -515,6 +515,23 @@ describe("MCP auth: OAuth", () => {
     );
   });
 
+  // Review item 40: the grant is full access, so the page names the
+  // destructive part too, not only publish and data.
+  it("consent page lists delete, public visibility and sharing", async () => {
+    const m = await login(`oauth-destr-${tag}@x.com`);
+    const clientId = await register("Destr Agent");
+    const page = await consentPage(
+      authorizeUrl(clientId, (await pkce()).challenge),
+      m.cookie,
+    );
+    expect(page.r.status).toBe(200);
+    expect(page.body).toContain("<b>Delete and share as you</b>");
+    expect(page.body).toContain(
+      "<small>Delete artifacts, make them public, and share them with others.</small>",
+    );
+    expect(page.body).not.toContain("\u2014");
+  });
+
   it("the consent template is Design's file, comment stripped", () => {
     expect(CONSENT_TEMPLATE).toBe(stripTemplateComment(designConsent));
   });

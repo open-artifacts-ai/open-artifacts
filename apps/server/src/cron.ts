@@ -115,7 +115,7 @@ async function run(
       sweepLoginCodes(env, now),
       // Hosted: the platform upgrades tenants; no GitHub call (review item 39).
       env.HOSTED === "1" ? null : checkLatestRelease(env, now),
-      expirePending(env, now),
+      expirePending(env, now, { cron: true }),
       sweepAuditEvents(env, now),
       // DirectorySync keeps its own 2 min alarm; the daily kick restarts a
       // lost one.
