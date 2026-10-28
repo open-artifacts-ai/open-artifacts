@@ -57,7 +57,7 @@ const noteOtp =
 
 const GUEST_MAX_AGE_S = 86_400;
 const MAX_COOKIE_LEN = 1024;
-/** A longer `next` becomes "/", so the pending cookie stays under MAX_COOKIE_LEN. */
+/** A longer `next` becomes "/" (and a shorter one too when the cookie would pass MAX_COOKIE_LEN). */
 const MAX_PENDING_NEXT = 512;
 
 /**
@@ -124,9 +124,16 @@ const cookieAttrs = (c: Context<AppEnv>) =>
     ? "HttpOnly; SameSite=Lax; Path=/"
     : "HttpOnly; Secure; SameSite=Lax; Path=/";
 
+/**
+ * The Set-Cookie line. A value past MAX_COOKIE_LEN (readPending refuses it)
+ * drops `next` to "/" instead (review item 36b: a 512-byte next plus a long
+ * address).
+ */
 async function pendingCookie(c: Context<AppEnv>, p: Pending): Promise<string> {
   const v = b64urlEncode(utf8Encoder.encode(JSON.stringify(p)));
   const sig = await hmacSign(await codesKey(c.env, "oa:code-cookie"), v);
+  if (v.length + 1 + sig.length > MAX_COOKIE_LEN && p.next !== "/")
+    return pendingCookie(c, { ...p, next: "/" });
   const maxAge = Math.max(0, Math.ceil((p.exp - Date.now()) / 1000));
   return `${cookieName(c)}=${v}.${sig}; ${cookieAttrs(c)}; Max-Age=${maxAge}`;
 }

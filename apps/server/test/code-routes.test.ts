@@ -895,3 +895,25 @@ describe("a code re-request keeps the pending request id", () => {
     expect(ridOf(cookieOf(r3, CODE_COOKIE))).not.toBe(rid1);
   });
 });
+
+// Review item 36b: next (up to 512 bytes) plus a long address could push the
+// pending cookie past its own 1024-byte read limit, so verify said no_pending.
+describe("the pending cookie fits its read limit", () => {
+  it("a 60-character address with a 512-byte next signs in, next falls back to /", async () => {
+    const base = uniq("l", "x.com");
+    const at = base.indexOf("@");
+    const guest = `${base.slice(0, at)}${"z".repeat(60 - base.length)}${base.slice(at)}`;
+    expect(guest).toHaveLength(60);
+    await seedUser(guest, "guest");
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const next = `/a/${"n".repeat(509)}`;
+    expect(next).toHaveLength(512);
+    const r1 = await request(e, guest, { next });
+    const raw = cookieOf(r1, CODE_COOKIE)?.slice(CODE_COOKIE.length + 1) ?? "";
+    expect(raw.length).toBeLessThanOrEqual(1024);
+    const r = await verify(e, m.codeFor(guest), cookieOf(r1, CODE_COOKIE));
+    expect(r.status).toBe(200);
+    expect(CodeVerifiedSchema.parse(await r.json()).next).toBe("/");
+  });
+});
