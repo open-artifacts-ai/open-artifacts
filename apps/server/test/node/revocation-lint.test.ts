@@ -86,6 +86,12 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // P3 T18: entering customer_mismatch denies every synced user (getUser and
   // the content load): their sockets close.
   "directory/sync.ts:SyncEngine.mismatch": "user",
+  // P2.5 #16: a confirm that swaps in another Workspace suspends and
+  // unbinds the previous one's users (sessions, PATs and grants end).
+  "directory/binding.ts:retireTenant": "user",
+  // P2.5 #5: the reconcile's full restricted_sync recompute caps whoever a
+  // restricted group now holds.
+  "directory/sync.ts:SyncEngine.recomputeRestricted": "user",
   // P3 T17 (test builds only): the session hook may lower the user's manual
   // space row.
   "test-hooks/index.ts:grantSpaces": "user",
@@ -109,6 +115,12 @@ const WIDENS: Readonly<Record<string, string>> = {
   // P3 T14: every address change (sign-in drift, sync) re-keys the person's shares to it (the
   // higher role on a conflict): their access stays or widens.
   "services/email-move.ts:moveUserEmail": "shares follow the person, max role",
+  // P2.5 #17: the reconcile drops directory_members rows of groups that are
+  // no longer targets; no mapping or restriction reads them.
+  "directory/sync.ts:SyncEngine.targets": "rows nothing reads for access",
+  // P2.5 #17: a deleted space's groups that nothing else targets lose their
+  // directory_members rows (its own rows and mappings go by cascade).
+  "services/spaces.ts:deleteSpace": "rows nothing reads for access",
   // P3 T10: the transfer successor predicate reads restricted_* (no write).
   "services/spaces.ts:SUCCESSOR": "a read: the successor predicate",
 };

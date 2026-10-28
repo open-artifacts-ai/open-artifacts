@@ -127,13 +127,18 @@ export const putHealth = (
           : [stmt(env.DB, UPSERT).bind(HK.state, next.state)]),
       ];
 
-/** Drops the health rows (directory disconnected). */
+/**
+ * Drops the health rows (a reset). The customer_mismatch tombstone goes only
+ * once a new binding is live and no tenant change still owes retiring the
+ * previous Workspace's users (binding.ts retireTenant).
+ */
 export const clearHealth = (env: Pick<Env, "DB">) =>
   stmt(
     env.DB,
     `delete from directory_state where key = ?1 or (key = ?2 and (
       value <> 'customer_mismatch'
-      or exists (select 1 from directory_state where key = 'binding')))
+      or (exists (select 1 from directory_state where key = 'binding')
+        and not exists (select 1 from directory_state where key = 'tenant.retire'))))
       or (key = 'binding.prior'
         and exists (select 1 from directory_state where key = 'binding'))`,
   ).bind(HK.health, HK.state);

@@ -692,6 +692,13 @@ describe("space members", () => {
       g,
       `${g.toLowerCase()}@x.com`,
     );
+    // The synced row the mapping grants through (as the route or sync writes
+    // it): a per-space group is listed only behind one.
+    await run(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'sync', 1)",
+      s.id,
+      ed.userId,
+    );
     await run(
       "insert into org_group_mappings (group_id, group_email, role) values (?, ?, 'editor')",
       every,
@@ -948,6 +955,125 @@ describe("space mappings", () => {
     expect(await revokedAt(b.userId)).not.toBeNull();
     expect(await audits("mapping.remove", g)).toHaveLength(1);
     expect((await delMap(GOOGLE, mgr, s.id, g)).status).toBe(404);
+  });
+
+  const dmCount = async (g: string) =>
+    (
+      await one<{ n: number }>(
+        "select count(*) n from directory_members where group_id = ?",
+        g,
+      )
+    )?.n;
+
+  it("P2.5 #17: unmapping drops the group's directory_members rows; mapping it again grants nothing from them", async () => {
+    const { s, mgr } = await staffed();
+    const a = await mk("remap");
+    const g = await group([a.userId]);
+    const art = await insertArtifact(mgr.userId, s.id);
+    expect((await putMap(GOOGLE, admin, s.id, g, "editor")).status).toBe(200);
+    expect(await level(GOOGLE, a.userId, art)).toBe("editor");
+    expect((await delMap(GOOGLE, admin, s.id, g)).status).toBe(204);
+    expect(await dmCount(g)).toBe(0);
+    // Meanwhile a is removed from the group in Google (sync no longer reads
+    // it). Mapped again: nobody gets access until sync reads the group.
+    const r = await putMap(GOOGLE, admin, s.id, g, "editor");
+    expect(r.status).toBe(200);
+    expect(await json<GroupMapping>(r)).toMatchObject({ memberCount: 0 });
+    expect(await level(GOOGLE, a.userId, art)).toBeNull();
+  });
+
+  it("P2.5 #17: a group still mapped elsewhere (or restricted, or Every space) keeps its rows", async () => {
+    const s1 = await createSpace();
+    const s2 = await createSpace();
+    const a = await mk("keep");
+    const g = await group([a.userId]);
+    expect((await putMap(GOOGLE, admin, s1.id, g, "viewer")).status).toBe(200);
+    expect((await putMap(GOOGLE, admin, s2.id, g, "viewer")).status).toBe(200);
+    expect((await delMap(GOOGLE, admin, s1.id, g)).status).toBe(204);
+    expect(await dmCount(g)).toBe(1);
+    expect(
+      (
+        await call(GOOGLE, R.orgMapping(g), admin.cookie, {
+          method: "PUT",
+          body: { role: "viewer" },
+        })
+      ).status,
+    ).toBe(200);
+    expect((await delMap(GOOGLE, admin, s2.id, g)).status).toBe(204);
+    expect(await dmCount(g)).toBe(1);
+    expect(
+      (
+        await call(GOOGLE, R.restrictedGroup(g), admin.cookie, {
+          method: "PUT",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (await call(GOOGLE, R.orgMapping(g), admin.cookie, { method: "DELETE" }))
+        .status,
+    ).toBe(204);
+    expect(await dmCount(g)).toBe(1);
+    // The last target gone: the rows go.
+    expect(
+      (
+        await call(GOOGLE, R.restrictedGroup(g), admin.cookie, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(204);
+    expect(await dmCount(g)).toBe(0);
+  });
+
+  it("P2.5 #17: mapping a group never hands a removed user a row", async () => {
+    const s1 = await createSpace();
+    const s2 = await createSpace();
+    const a = await mk("gone");
+    const b = await mk("here");
+    const g = await group([a.userId, b.userId]);
+    expect((await putMap(GOOGLE, admin, s1.id, g, "viewer")).status).toBe(200);
+    // A directory deletion keeps the user's directory_members rows.
+    await run("update users set status = 'removed' where id = ?", a.userId);
+    expect((await putMap(GOOGLE, admin, s2.id, g, "viewer")).status).toBe(200);
+    const rows = async (sid: string) =>
+      (
+        await env.DB.prepare(
+          "select user_id from space_members where space_id = ? and source = 'sync' order by user_id",
+        )
+          .bind(sid)
+          .all<{ user_id: string }>()
+      ).results.map((x) => x.user_id);
+    expect(await rows(s2.id)).toEqual([b.userId]);
+  });
+
+  it("P2.5 #17: deleting a space drops the rows of groups only it mapped; mapping one elsewhere grants nothing from them", async () => {
+    const gone = await createSpace();
+    const other = await createSpace();
+    const keep = await createSpace();
+    const a = await mk("delsp");
+    const g = await group([a.userId]);
+    const shared = await group([a.userId]);
+    expect((await putMap(GOOGLE, admin, gone.id, g, "editor")).status).toBe(
+      200,
+    );
+    expect(
+      (await putMap(GOOGLE, admin, gone.id, shared, "viewer")).status,
+    ).toBe(200);
+    expect(
+      (await putMap(GOOGLE, admin, keep.id, shared, "viewer")).status,
+    ).toBe(200);
+    expect(
+      (await call(GOOGLE, R.space(gone.id), admin.cookie, { method: "DELETE" }))
+        .status,
+    ).toBe(204);
+    expect(await dmCount(g)).toBe(0);
+    // Still mapped in another space: its rows stay.
+    expect(await dmCount(shared)).toBe(1);
+    // a leaves g in Google meanwhile; g mapped elsewhere grants nothing yet.
+    const art = await insertArtifact(admin.userId, other.id);
+    expect((await putMap(GOOGLE, admin, other.id, g, "editor")).status).toBe(
+      200,
+    );
+    expect(await level(GOOGLE, a.userId, art)).toBeNull();
   });
 });
 
