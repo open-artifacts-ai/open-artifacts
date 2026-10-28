@@ -224,14 +224,22 @@ type HookName =
   | "unknown";
 type Outcome = "ok" | "denied" | "refused" | "none" | "error";
 
-const HOOK_NAMES: Record<string, HookName> = {
-  [TEST_HOOKS.session]: "session",
-  [TEST_HOOKS.otpLatest]: "otp_latest",
-  [TEST_HOOKS.oauthClient]: "oauth_client",
-  [TEST_HOOKS.audit]: "audit",
-  [TEST_HOOKS.codeCapsReset]: "code_caps_reset",
-  [TEST_HOOKS.directoryGroups]: "directory_groups",
-};
+// A function, never a top-level table: only called from mountTestHooks, so
+// release builds (TEST_HOOKS_ALLOWED false) drop it and every /__test/* path.
+const hookName = (path: string): HookName =>
+  path === TEST_HOOKS.session
+    ? "session"
+    : path === TEST_HOOKS.otpLatest
+      ? "otp_latest"
+      : path === TEST_HOOKS.oauthClient
+        ? "oauth_client"
+        : path === TEST_HOOKS.audit
+          ? "audit"
+          : path === TEST_HOOKS.codeCapsReset
+            ? "code_caps_reset"
+            : path === TEST_HOOKS.directoryGroups
+              ? "directory_groups"
+              : "unknown";
 
 // directory_groups seed: `test-` ids with an email exactly under TEST_DOMAIN
 // only, enforced here in SQL too (no LIKE wildcards), so a handler slip can't
@@ -260,8 +268,6 @@ async function seedDirectoryGroups(
   );
   return res.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
 }
-const hookName = (path: string): HookName =>
-  Object.hasOwn(HOOK_NAMES, path) ? (HOOK_NAMES[path] as HookName) : "unknown";
 
 // The caller's own per-IP code buckets (auth/codes.ts takeRequestSlot and
 // verify), by its ipKey: exactly these two keys, never a prefix match, so no
