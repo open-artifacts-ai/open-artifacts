@@ -210,10 +210,11 @@ type Run = {
   /** User-event addresses still to re-read (past USER_EVENTS_PER_PAGE). */
   userKeys: string[];
   /**
-   * Targets this run could not read whole (partial, missing or refused):
-   * restricted_sync is never lowered from their stale rows (finish).
+   * Targets this run read whole, each with when its read began: the finish
+   * recompute lowers restricted_sync only once every restricted group is
+   * here, and only for users created before the earliest such read.
    */
-  incomplete?: string[];
+  read?: [string, number][];
 };
 
 /** What a step did: its status, whether it called Google, its commit. */
@@ -359,14 +360,22 @@ const CLOSE_KEY = "mismatch.close";
  * groups (P2.5 #5): derived state follows directory_members and
  * restricted_groups, whoever the diffs touched, so a new hire created
  * restricted (fail closed, binding.ts CREATE_USERS) and in no restricted
- * group is lifted. A flag is never lowered while a restricted group was not
- * read whole this run (?1: those targets), so a stale row can't lift it.
- * Returns the users whose flag changed.
+ * group is lifted. Raising always applies. Lowering (a lift) applies only
+ * when this run read every restricted group whole (?1: [group, began]
+ * pairs; a group restricted after the run planned, or one read partially,
+ * refused or held, blocks every lift), and only to users created before the
+ * earliest of those reads (a hire created since, by the fast lane or
+ * sign-in, may be in a group whose rows predate them). ?2: the bound when no
+ * restricted group exists. Returns the users whose flag changed.
  */
 const RESTRICTED_ALL = `update users set restricted_sync = ${RESTRICTED_SYNC_CASE}
   where restricted_sync <> ${RESTRICTED_SYNC_CASE}
-    and (${RESTRICTED_SYNC_CASE} = 1 or not exists (select 1 from restricted_groups
-      where group_id in (select value from json_each(?1))))
+    and (${RESTRICTED_SYNC_CASE} = 1 or (
+      not exists (select 1 from restricted_groups rg where rg.group_id not in
+        (select json_extract(j.value, '$[0]') from json_each(?1) j))
+      and users.created_at < coalesce((select min(json_extract(j.value, '$[1]'))
+        from json_each(?1) j join restricted_groups rg
+          on rg.group_id = json_extract(j.value, '$[0]')), ?2)))
   returning id, restricted_sync as r`;
 
 /** A reset() landed since this alarm started: it writes nothing more. */
@@ -1534,13 +1543,13 @@ export class SyncEngine {
     }
     const wouldRemove = removed.length;
     if (hold) removed = [];
-    // Not read whole (a deleted group whose removals applied was): its rows
-    // may be stale, so the finish recompute lowers no flag from them.
-    if (
-      (w.partial || (w.missing && hold)) &&
-      !run.incomplete?.includes(w.target)
-    )
-      run.incomplete = [...(run.incomplete ?? []), w.target];
+    // Read whole (a deleted group whose removals applied counts): the
+    // finish recompute may lower flags from its rows (RESTRICTED_ALL).
+    if (!w.partial && !(w.missing && hold))
+      run.read = [
+        ...(run.read ?? []).filter(([g]) => g !== w.target),
+        [w.target, w.startedAt ?? run.startedAt],
+      ];
     await this.apply(w.target, added, removed, pre);
     // Released: a sweep that read the whole group and held nothing (or a
     // readable group that was surfaced as unreadable).
@@ -1638,7 +1647,7 @@ export class SyncEngine {
   private async recomputeRestricted(run: Run) {
     this.guard();
     const { results } = await stmt(this.env.DB, RESTRICTED_ALL)
-      .bind(JSON.stringify(run.incomplete ?? []))
+      .bind(JSON.stringify(run.read ?? []), Number.MAX_SAFE_INTEGER)
       .all<{ id: string; r: number }>();
     const capped = results.filter((x) => x.r === 1).map((x) => x.id);
     if (results.length)

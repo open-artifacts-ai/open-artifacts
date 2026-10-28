@@ -13,7 +13,11 @@ import {
 import { instanceDirectory, readHealth } from "../src/directory/health.js";
 import { directorySignIn } from "../src/directory/signin.js";
 import { readPending, readPendingAny } from "../src/directory/store.js";
-import { FAST_MS, RECONCILE_MS, SyncEngine } from "../src/directory/sync.js";
+import {
+  FAST_MS,
+  RECONCILE_MS,
+  SyncEngine,
+} from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { SYNC_DO_NAME } from "../src/services/directory.js";
@@ -1448,12 +1452,12 @@ describe("P2.5 #5: restricted_sync is recomputed for everyone on each reconcile"
     const t0 = Date.now();
     await connected(t0);
     expect(await restrictedOf(inGroup?.id as string)).toBe(1);
-    expect(await restrictedOf(outside?.id as string)).toBe(0);
     // Hired later: created by the reconcile's listing (fail closed), lifted
     // by its finish.
     const [later] = dirUsers(1, "rs-later");
     await drain(nextRec(t0));
     expect(await restrictedOf(later?.id as string)).toBe(0);
+    expect(await restrictedOf(outside?.id as string)).toBe(0);
     expect(await restrictedOf(inGroup?.id as string)).toBe(1);
   });
 
@@ -1506,6 +1510,69 @@ describe("P2.5 #5: restricted_sync is recomputed for everyone on each reconcile"
           .toArray()[0]?.revoked_at,
     );
     expect(Number(revoked)).toBeGreaterThan(0);
+  });
+
+  /** A synced user row created at `at` (ms), restricted (fail closed). */
+  async function hireAt(tag: string, at: number) {
+    const sub = `g-${tag}-${crypto.randomUUID()}`;
+    const uid = `u${crypto.randomUUID().replace(/-/g, "").slice(0, 15)}`;
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into users (id, email, name, role, created_at, status, restricted_sync) values (?, ?, ?, 'member', ?, 'active', 1)",
+      ).bind(uid, uniq(tag), tag, at),
+      env.DB.prepare(
+        "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, ?, 1)",
+      ).bind(sub, uid, at),
+    ]);
+    return sub;
+  }
+
+  it("review #1a: a hire created after the restricted group's read began is not lifted by that run", async () => {
+    const [inGroup] = dirUsers(1, "rs-race");
+    const gid = `grp-rs-race-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    const at = nextRec(t0);
+    const gate = g.gate(new RegExp(`/groups/${gid}/members`));
+    const run = drain(at);
+    await gate.hit;
+    // Created by the fast lane or a sign-in while the read is in flight: it
+    // may be in the group, and the rows read predate it.
+    const late = await hireAt("rs-race-late", at + 1);
+    const early = await hireAt("rs-race-early", at - 1);
+    gate.release();
+    await run;
+    expect(await restrictedOf(late)).toBe(1);
+    expect(await restrictedOf(early)).toBe(0);
+  });
+
+  it("review #1b: a group restricted after the run planned blocks every lift that run", async () => {
+    const [inGroup] = dirUsers(1, "rs-new");
+    const gid = `grp-rs-new-${crypto.randomUUID()}`;
+    await mappedGroup(gid, [inGroup?.id ?? ""], "restricted");
+    const t0 = Date.now();
+    await connected(t0);
+    const gate = g.gate(new RegExp(`/groups/${gid}/members`));
+    const run = drain(nextRec(t0));
+    await gate.hit;
+    // Restricted now, after the targets were planned: no rows, never read.
+    const added = `grp-rs-added-${crypto.randomUUID()}`;
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into directory_groups (group_id, email) values (?, ?)",
+      ).bind(added, `${added}@a.com`),
+      env.DB.prepare(
+        "insert into restricted_groups (group_id, group_email) values (?, ?)",
+      ).bind(added, `${added}@a.com`),
+    ]);
+    const hire = await hireAt("rs-new-hire", 1);
+    gate.release();
+    await run;
+    expect(await restrictedOf(hire)).toBe(1);
+    // The next reconcile reads it: lifted (not a member).
+    await drain(nextRec(nextRec(t0)));
+    expect(await restrictedOf(hire)).toBe(0);
   });
 });
 
