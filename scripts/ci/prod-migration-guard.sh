@@ -36,7 +36,8 @@ verifier_run() {
 case "${1:-}" in
   detect)
     : "${TAG:?}"
-    # Any doubt holds: no previous stable tag, a git error, an unreadable file.
+    # Any doubt holds: prod's running version unknown or not a release, a git
+    # error, an unreadable file.
     hold() {
       echo "hold=true" >> "$out"
       echo "guarded=false" >> "$out"
@@ -44,9 +45,18 @@ case "${1:-}" in
       echo "**Prod deploy held:** $1" >> "$summary"
       exit 0
     }
-    prev="$(git -C "$root" tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -A1 -x "$TAG" | sed -n 2p)" ||
-      hold "could not find the release before $TAG"
-    [ -n "$prev" ] || hold "no stable release before $TAG to compare migrations with"
+    # Compare with what prod RUNS (its /healthz version, PROD_VERSION), never
+    # with the release before TAG: a held release never reaches prod, so the
+    # next one must still count its migrations (0.73.0 shipped 0017 unguarded
+    # after 0.72.0 was held).
+    running="${PROD_VERSION:-}"
+    [[ "$running" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+      hold "could not read the version prod runs (got '${running:0:40}')"
+    prev="v$running"
+    git -C "$root" rev-parse -q --verify "refs/tags/$prev" > /dev/null ||
+      hold "prod runs $running, which has no release tag $prev to compare migrations with"
+    git -C "$root" rev-parse -q --verify "refs/tags/$TAG" > /dev/null ||
+      hold "no release tag $TAG"
     added="$(git -C "$root" diff --name-only --diff-filter=A "$prev" "$TAG" -- 'apps/server/migrations/*.sql')" ||
       hold "could not list the migrations $TAG adds"
     marked=()
@@ -59,7 +69,7 @@ case "${1:-}" in
     if [ ${#marked[@]} -eq 0 ]; then
       echo "hold=false" >> "$out"
       echo "guarded=false" >> "$out"
-      echo "no non-additive migration in $TAG (since $prev)"
+      echo "no non-additive migration in $TAG (since $prev, which prod runs)"
       exit 0
     fi
     echo "non-additive migration(s) in $TAG: ${marked[*]}"

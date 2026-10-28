@@ -1036,8 +1036,12 @@ describe("prod and staging tokens never cross", () => {
       );
       expect(checkout?.with?.["fetch-depth"]).toBe(0);
       const det = idx("migration");
-      expect(steps[det]?.run).toBe(
-        "bash scripts/ci/prod-migration-guard.sh detect",
+      // It compares with the version prod runs (/healthz), never the prior tag.
+      expect(steps[det]?.run).toContain(
+        'PROD_VERSION="$(curl -fsS -m 20 "https://$PROD_APP_HOST/healthz" | jq -r \'.version // empty\')" || PROD_VERSION=""',
+      );
+      expect(steps[det]?.run).toMatch(
+        /export PROD_VERSION\nbash scripts\/ci\/prod-migration-guard\.sh detect\n?$/,
       );
       expect(det).toBeGreaterThan(at("pnpm install --frozen-lockfile"));
       // Every step after the guard needs an explicit hold == 'false' (a guard
