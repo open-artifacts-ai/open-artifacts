@@ -127,8 +127,12 @@ describe("ci.yml", () => {
     expect(step.run).toContain("command -v shellcheck");
     expect(step.run).toContain(".github/workflows/*.yml");
   });
-  it("e2e job runs both Playwright suites locally, in the pinned Playwright image", () => {
-    const job = w.jobs.e2e;
+  it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
+    const job = w.jobs["e2e-shard"];
+    expect(job.strategy.matrix.shard).toEqual([1, 2, 3, 4]);
+    expect(job.strategy["fail-fast"]).toBe(false);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(job.env.E2E_SHARD).toBe("${{ matrix.shard }}/4");
     // Browsers and their OS deps come baked into the image, pinned by digest:
     // no apt step, so a slow Ubuntu mirror can't eat the job's budget (#462).
     expect(job.container.image).toMatch(
@@ -164,11 +168,18 @@ describe("ci.yml", () => {
     const img = /playwright:v(\d+\.\d+\.\d+)-noble/.exec(job.container.image);
     const pkg = JSON.parse(read("apps/dashboard/package.json"));
     expect(img?.[1]).toBe(pkg.devDependencies["@playwright/test"]);
-    const upload = steps.find((s) =>
+    const uploads = steps.filter((s) =>
       (s.uses ?? "").startsWith("actions/upload-artifact@"),
     );
-    expect(upload.if).toBe("failure()");
-    expect(upload.with.path).toContain("apps/dashboard/playwright-report");
+    // Each shard's blob report (merged by `e2e`), and its traces on failure.
+    expect(uploads.map((u) => u.with.path)).toEqual([
+      "apps/dashboard/blob-report",
+      "apps/dashboard/test-results",
+    ]);
+    expect(uploads[1].if).toBe("failure()");
+    // The spaces suite (one spec, its own server) runs whole in one shard.
+    const spaces = steps.find((s) => s.run === "bash scripts/ci/e2e.sh spaces");
+    expect(spaces.if).toContain("matrix.shard == 3");
     // Local wrangler dev only: no secrets, nothing pointing at staging.
     const s = JSON.stringify(job);
     expect(s).not.toContain("secrets.");
@@ -185,7 +196,8 @@ describe("ci.yml", () => {
       "e2e",
       "authz-matrix",
     ];
-    const HEAVY = ["typecheck", "test", "build", "e2e", "authz-matrix"];
+    // `e2e` is an aggregate (below); its shards do the heavy work.
+    const HEAVY = ["typecheck", "test", "build", "e2e-shard", "authz-matrix"];
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     type Step = any;
     const raw = read(".github/workflows/ci.yml");
@@ -197,11 +209,29 @@ describe("ci.yml", () => {
       expect(Object.keys(w.jobs)).toEqual(expect.arrayContaining(REQUIRED));
     });
     it("no required job has a job-level if or needs (a skipped job counts as passing)", () => {
-      for (const j of REQUIRED) {
+      for (const j of REQUIRED.filter((j) => j !== "e2e")) {
         expect(w.jobs[j].if, `${j} if`).toBeUndefined();
         expect(w.jobs[j].needs, `${j} needs`).toBeUndefined();
       }
+      expect(w.jobs["e2e-shard"].if).toBeUndefined();
+      expect(w.jobs["e2e-shard"].needs).toBeUndefined();
       expect(w.jobs.changes).toBeUndefined();
+    });
+    // The one exception, and why it can't pass by being skipped: `e2e` always
+    // runs (never skipped), and its first, ungated step fails unless every
+    // shard succeeded, so a skipped, cancelled or failed shard fails it.
+    it("e2e is the shards' aggregate: always runs, passes only when every shard passed", () => {
+      const job = w.jobs.e2e;
+      expect(job.needs).toBe("e2e-shard");
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job.if).toBe("${{ always() }}");
+      const [gate] = steps("e2e");
+      expect(gate.if).toBeUndefined();
+      expect(gate["continue-on-error"]).toBeUndefined();
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.SHARDS).toBe("${{ needs.e2e-shard.result }}");
+      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
+      expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     it("each heavy job checks out full history, then runs the release-only step first", () => {
       for (const j of HEAVY) {
