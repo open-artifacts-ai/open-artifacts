@@ -187,7 +187,9 @@ const share = async (email: string) => {
 };
 /** A recipient who can't sign in gets a warning box with no link (Design, #800). */
 const noLink = (box: HTMLElement) => {
-  expect(within(box).queryByRole("textbox", { name: "Artifact link" })).toBeNull();
+  expect(
+    within(box).queryByRole("textbox", { name: "Artifact link" }),
+  ).toBeNull();
   expect(within(box).queryByRole("button", { name: /Copy/ })).toBeNull();
 };
 const asMember = (m: Me): Me => ({ ...m, user: { ...m.user, role: "member" } });
