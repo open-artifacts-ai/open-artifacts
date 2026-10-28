@@ -25,7 +25,7 @@ import {
   usePatchArtifact,
   useVersionInfo,
 } from "../api/queries";
-import { accessLabel, useCan, useHosted } from "../auth/permissions";
+import { accessLabel, useCan } from "../auth/permissions";
 import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
 import { VersionsDot } from "./LiveChip";
@@ -151,11 +151,9 @@ export function TitleBar({
   const canShare = authed && (can.share || can.setVisibility);
   const canDelete = authed && can.delete;
   const canEdit = authed && can.edit;
-  // Guests and contractors on live-data artifacts (D10); hosted only.
-  const viewOnly =
-    useHosted().features.includes("spaces") &&
-    artifact.capabilities.db &&
-    !can.dataWrite;
+  // Live data the caller can't change: guests and contractors (D10), and
+  // viewers of an editors-only artifact on any install (review item 28).
+  const viewOnly = artifact.capabilities.db && !can.dataWrite;
   const go = (to: string) => void navigate({ to: to as string });
 
   const info = useVersionInfo(artifact.id, version, authed).data;

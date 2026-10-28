@@ -127,16 +127,43 @@ it("hosted guest on an artifact without live data gets no chip", async () => {
   expect(screen.queryByText("View only")).toBeNull();
 });
 
-it("self-hosted guest-shaped viewer gets no chip", async () => {
+// Review item 28: the chip follows can.dataWrite on every install, so a
+// viewer of an editors-only artifact sees "View only" instead of failing writes.
+it("self-hosted viewer of an editors-only live artifact sees View only", async () => {
   serve({
     access: "viewer",
-    can: guestCan,
+    can: undefined,
     space: undefined,
     capabilities: live,
+    dataWriters: "editors",
+  });
+  mount(`/a/${arts[0].id}`);
+  expect(await screen.findByText("View only")).toBeVisible();
+});
+
+it("self-hosted viewer of a viewers-writable live artifact gets no chip", async () => {
+  serve({
+    access: "viewer",
+    can: undefined,
+    space: undefined,
+    capabilities: live,
+    dataWriters: "viewers",
   });
   mount(`/a/${arts[0].id}`);
   await screen.findByRole("heading", { name: arts[0].title });
   expect(screen.queryByText("View only")).toBeNull();
+});
+
+it("hosted viewer whose can says no data writes (editors-only) sees View only", async () => {
+  mountHosted(`/a/${arts[0].id}`, true, undefined, [
+    handler({
+      access: "viewer",
+      can: guestCan,
+      capabilities: live,
+      dataWriters: "editors",
+    }),
+  ]);
+  expect(await screen.findByText("View only")).toBeVisible();
 });
 
 it("self-hosted viewer share (no can, no space): no notice, no access label", async () => {
