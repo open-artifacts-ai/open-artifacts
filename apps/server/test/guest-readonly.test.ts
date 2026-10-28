@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { R } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { accessLevel } from "../src/auth/authz.js";
+import { accessLevel, callerOf, capOfCaller } from "../src/auth/authz.js";
 import { createPat } from "../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
@@ -10,6 +10,7 @@ import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { direct, uniq } from "./auth-helpers.js";
 import { login } from "./helpers.js";
+import { callWorker, MCP_URL } from "./mcp-helpers.js";
 
 // P2 Task 9: guests are read-only under direct sign-in (and every code
 // session outside the verified domains, whatever the env says).
@@ -79,6 +80,9 @@ async function sessionFor(
   const { userId } = await login(email, role);
   return `${SESSION}=${await signSession(env, userId, Date.now(), { provider, tenant, epoch: 0 })}`;
 }
+
+/** An Access-only install (no google, no email). */
+const ACCESS_ONLY = { ...env, AUTH_PROVIDERS: "access" } as Env;
 
 const WRITES = (id: string) =>
   [
@@ -178,18 +182,24 @@ describe("guest read cap (direct sign-in)", () => {
     ).toBe(404);
   });
 
-  it("Access-only installs keep today's guest editor rights", async () => {
+  it("parity 2: Access-only installs cap guests too; the share row keeps editor", async () => {
     const email = uniq("g", "x.com");
     const id = await sharedArtifact(email);
     const g = await sessionFor(email, "guest");
     expect(
       (
-        await call(env, R.artifact(id), g, {
+        await call(ACCESS_ONLY, R.artifact(id), g, {
           method: "PATCH",
           body: { title: "x" },
         })
       ).status,
-    ).toBe(200);
+    ).toBe(404);
+    const row = await env.DB.prepare(
+      "select role from shares where artifact_id = ? and email = ?",
+    )
+      .bind(id, email)
+      .first<{ role: string }>();
+    expect(row?.role).toBe("editor");
   });
 
   it("a capped guest can open the live socket, and writes stay refused", async () => {
@@ -239,30 +249,22 @@ describe("guest read cap (direct sign-in)", () => {
     ).toBe(404);
   });
 
-  it("a guest without an explicit cap is capped on a code session", async () => {
-    // Access-only install: guestsReadOnly is off, so the member row has no cap.
+  it("an Access-only guest is capped on an Access and a code session alike", async () => {
     const email = uniq("g", "x.com");
     const id = await sharedArtifact(email);
     const { userId } = await login(email, "guest");
     const cookie = async (provider: "access" | "code") =>
       `${SESSION}=${await signSession(env, userId, Date.now(), { provider, epoch: 0 })}`;
-    const g = await cookie("code");
-    expect(
-      (
-        await call(env, R.artifact(id), await cookie("access"), {
-          method: "PATCH",
-          body: { title: "x" },
-        })
-      ).status,
-    ).toBe(200);
-    expect(
-      (
-        await call(env, R.artifact(id), g, {
-          method: "PATCH",
-          body: { title: "x" },
-        })
-      ).status,
-    ).toBe(404);
+    for (const p of ["access", "code"] as const)
+      expect(
+        (
+          await call(ACCESS_ONLY, R.artifact(id), await cookie(p), {
+            method: "PATCH",
+            body: { title: "x" },
+          })
+        ).status,
+        p,
+      ).toBe(404);
   });
 
   it("a capped guest can revoke their own token, not someone else's", async () => {
@@ -294,6 +296,139 @@ describe("guest read cap (direct sign-in)", () => {
         await call(direct(), R.artifact(id), m, {
           method: "PATCH",
           body: { title: "x" },
+        })
+      ).status,
+    ).toBe(200);
+  });
+});
+
+// Parity 2: guests are view-only on every install. Each guest write path an
+// Access guest holding an editor share could reach, on an Access-only install.
+describe("guest read cap (Access-only install, parity 2)", () => {
+  /** Every artifact write a share could grant, plus the uncapped control. */
+  const ALL_WRITES = (id: string) =>
+    [
+      ...WRITES(id),
+      ["PATCH", R.dataDoc(id, "c", "d"), { v: 2 }],
+      ["PUT", R.dataReset(id), { c: { d: { v: 1 } } }],
+      ["DELETE", R.storageKey(id, "k"), undefined],
+      ["POST", R.restoreVersion(id, 1), undefined],
+      ["PUT", R.thumbnail(id), undefined],
+      ["DELETE", R.share(id, "z@x.com"), undefined],
+      ["POST", R.restoreDeleted(id), undefined],
+    ] as const;
+
+  it("an Access guest with an editor share reads, and every write path is refused", async () => {
+    const email = uniq("g", "x.com");
+    const id = await sharedArtifact(email);
+    const g = await sessionFor(email, "guest");
+    expect((await call(ACCESS_ONLY, R.artifact(id), g)).status).toBe(200);
+    for (const [method, path, body] of ALL_WRITES(id)) {
+      const r = await call(ACCESS_ONLY, path, g, { method, body });
+      expect(r.status, `${method} ${path}`).toBe(404);
+    }
+    // Publishing a new artifact: the contract's 403, never a create.
+    const create = await call(ACCESS_ONLY, R.artifacts, g, {
+      method: "POST",
+      body: { title: "n", format: "markdown", content: "x" },
+    });
+    expect(create.status).toBe(403);
+    expect(
+      ((await create.json()) as { error: { code: string } }).error.code,
+    ).toBe("space_forbidden");
+    // Nothing was written: no new version, no title change, no data.
+    const a = await env.DB.prepare(
+      "select title, current_version v from artifacts where id = ?",
+    )
+      .bind(id)
+      .first<{ title: string; v: number }>();
+    expect(a).toEqual({ title: "t", v: 1 });
+    expect((await call(ACCESS_ONLY, R.dataDoc(id, "c", "d"), g)).status).toBe(
+      404,
+    );
+  });
+
+  it("the same guest's PAT is refused on REST writes and at /mcp", async () => {
+    const email = uniq("g", "x.com");
+    const id = await sharedArtifact(email);
+    const { userId } = await login(email, "guest");
+    const { token } = await createPat(env, userId, "g");
+    const bearer = (method: string, path: string, body?: unknown) =>
+      app.fetch(
+        new Request(`http://app.localhost${path}`, {
+          method,
+          headers: {
+            authorization: `Bearer ${token}`,
+            ...(body === undefined
+              ? {}
+              : { "content-type": "application/json" }),
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        }),
+        ACCESS_ONLY,
+        ctx,
+      );
+    expect((await bearer("GET", R.artifact(id))).status).toBe(200);
+    for (const [method, path, body] of ALL_WRITES(id))
+      expect(
+        (await bearer(method, path, body)).status,
+        `${method} ${path}`,
+      ).toBe(404);
+    expect(
+      (
+        await bearer("POST", R.artifacts, {
+          title: "n",
+          format: "markdown",
+          content: "x",
+        })
+      ).status,
+    ).toBe(403);
+    // MCP (every tool, publish and data writes included): members only.
+    const mcp = await callWorker(
+      new Request(MCP_URL, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+      ACCESS_ONLY,
+    );
+    expect(mcp.status).toBe(401);
+    expect(
+      ((await mcp.json()) as { error: { message: string } }).error.message,
+    ).toBe("Only members can connect agents");
+  });
+
+  it("the guest's caller carries the cap and reads the editor share as viewer", async () => {
+    const email = uniq("g", "x.com");
+    const id = await sharedArtifact(email);
+    const { userId } = await login(email, "guest");
+    const user = await getUser(ACCESS_ONLY, userId);
+    const who = callerOf(user as NonNullable<typeof user>);
+    expect(capOfCaller(who)).toBe("guest");
+    expect((await accessLevel(ACCESS_ONLY, who, id))?.level).toBe("viewer");
+  });
+
+  it("a member holding the same editor share still writes (control)", async () => {
+    const email = uniq("m");
+    const id = await sharedArtifact(email);
+    const m = await sessionFor(email, "member");
+    expect(
+      (
+        await call(ACCESS_ONLY, R.artifact(id), m, {
+          method: "PATCH",
+          body: { title: "x" },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await call(ACCESS_ONLY, R.dataDoc(id, "c", "d"), m, {
+          method: "PUT",
+          body: { v: 1 },
         })
       ).status,
     ).toBe(200);

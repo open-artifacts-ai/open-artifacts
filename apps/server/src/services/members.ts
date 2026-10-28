@@ -612,10 +612,13 @@ const DEFAULT_SETTINGS: Settings = {
 };
 const KEY = { name: "name", defaultVisibility: "default_visibility" } as const;
 
-const SETTINGS_ALL = "select key, value from settings";
+// Per-user notice dismissals (services/notices.ts USER_NOTICE_PREFIX, one
+// row per member who dismissed) stay out: notices.ts reads the caller's own.
+const SETTINGS_ALL =
+  "select key, value from settings where substr(key, 1, 12) <> 'notice_user:'";
 
-/** Every settings row (one prepared D1 statement); /me also reads the
- * latest-release row from it, so that costs no extra query. */
+/** Every install-wide settings row (one prepared D1 statement); /me also
+ * reads the latest-release row from it, so that costs no extra query. */
 export async function getSettingsKv(env: Env): Promise<Map<string, string>> {
   const { results: rows } = await stmt(env.DB, SETTINGS_ALL).all<{
     key: string;

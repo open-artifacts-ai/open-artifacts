@@ -218,6 +218,8 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
   "DELETE /api/v1/directory": OWNER_ONLY,
   "POST /api/v1/admin/broker-check":
     "owner-only (the broker check): no admin success leg",
+  "POST /api/v1/notices/guest_summary/dismiss":
+    "owner-only (the guest summary notice, parity 2): no admin success leg",
   "GET /api/v1/directory/callback":
     "needs the Google directory connector (404 without it)",
   "GET /api/v1/artifacts/:id/anon-id":
@@ -276,6 +278,17 @@ export const DROPPED: Readonly<
       {
         file: "apps/server/test/broker-check.test.ts",
         describe: "who may run it",
+      },
+    ],
+  },
+  "org POST /api/v1/notices/guest_summary/dismiss": {
+    why: "owner-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: "apps/server/test/notices.test.ts",
+        describe: "Me.notices.guestSummary (parity 2)",
+        test: "only the uncapped org owner sees it; others get 404 on dismiss",
       },
     ],
   },

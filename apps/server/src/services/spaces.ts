@@ -38,12 +38,19 @@ import {
   type Caller,
   callerOf,
   capOfCaller,
+  managesAdmins,
   publishTarget,
   roleRankQuery,
   roleRankSql,
 } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { canBeRestricted, capOf, isGuestRole, orgCan } from "../auth/policy.js";
+import {
+  canBeRestricted,
+  capOf,
+  isGuestRole,
+  isOrgAdmin,
+  orgCan,
+} from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import { spaces } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -1996,21 +2003,45 @@ const memberActive = () =>
     "Suspend or remove the member before transferring their artifacts",
   );
 
+const transferOwnerOnly = () =>
+  new ApiError("owner_only", "Only the owner can manage an owner or admin");
+
+const SOURCE = "select status, role from users where id = ?";
+
+/**
+ * A transfer source: a departed person (suspended or removed), or a guest,
+ * active or not (parity 2: guests are view-only, so their artifacts need a
+ * new home). An org owner or admin source needs the owner (#475): 403
+ * owner_only for an admin, checked first. Any other active member: 409
+ * member_active.
+ */
+function checkSource(
+  from: { status: string; role: string } | undefined,
+  admins: boolean,
+): void {
+  if (!from) throw notFound();
+  if (!admins && isOrgAdmin(from.role)) throw transferOwnerOnly();
+  if (statusOf(from.status) === "active" && !isGuestRole(from.role as Role))
+    throw memberActive();
+}
+
 /**
  * GET R.memberTransfer(id) (org owner, admin): counts only, never titles.
- * 409 member_active for an active member, like transferPersonal.
+ * The source rules of transferPersonal (checkSource).
  */
 export async function transferSummary(
   env: Env,
+  actor: Member,
   fromUserId: string,
 ): Promise<TransferSummary> {
   const [u, c] = await env.DB.batch([
-    stmt(env.DB, "select status from users where id = ?").bind(fromUserId),
+    stmt(env.DB, SOURCE).bind(fromUserId),
     stmt(env.DB, DEPARTED_COUNTS).bind(fromUserId),
   ]);
-  const from = u?.results[0] as { status: string } | undefined;
-  if (!from) throw notFound();
-  if (statusOf(from.status) === "active") throw memberActive();
+  checkSource(
+    u?.results[0] as { status: string; role: string } | undefined,
+    managesAdmins(actor),
+  );
   const r = c?.results[0] as Counts | undefined;
   return { live: r?.live ?? 0, deleted: r?.deleted ?? 0 };
 }
@@ -2020,9 +2051,11 @@ const TRANSFER_CURSOR = /^[A-Za-z0-9_-]{1,64}$/;
 
 /**
  * POST R.memberTransfer(id) (org owner, admin): moves the next page of a
- * suspended or removed member's personal artifacts (trash included) to a
- * successor's personal space (owner_id too) or a shared space. 409
- * member_active for an active source; 400 invalid_successor for a bad user
+ * suspended or removed member's, or a guest's (active or not, parity 2),
+ * personal artifacts (trash included) to a successor's personal space
+ * (owner_id too) or a shared space. 403 owner_only for an admin on an owner
+ * or admin source (#475); 409 member_active for any other active non-guest
+ * source; 400 invalid_successor for a bad user
  * target (the source included); 400 space_personal or 404 for a bad space
  * target. Each call takes the next TRANSFER_PAGE rows still in the departed
  * space, so the cursor is only a continuation marker and a forged one moves
@@ -2030,9 +2063,10 @@ const TRANSFER_CURSOR = /^[A-Za-z0-9_-]{1,64}$/;
  * in the same batch and their sockets close; such a page is at most
  * MAX_CLOSE so every close fits the request.
  *
- * Revocation: the source is already inactive (setUserStatus revoked their
- * live access), and this narrows it on up to a page of artifacts, so their
- * presence is revoked again (one call, belt and braces); the artifacts
+ * Revocation: a departed source is already inactive (setUserStatus revoked
+ * their live access), and this narrows it on up to a page of artifacts, so
+ * their presence is revoked again (one call; for an active guest it closes
+ * their live sockets, which reconnect at their new, lower level); the artifacts
  * rewritten to team close their sockets. One artifact.transfer row per call,
  * on the user, gated on the move.
  */
@@ -2048,11 +2082,11 @@ export async function transferPersonal(
       path: "cursor",
       reason: "invalid",
     });
-  const from = await stmt(env.DB, "select status from users where id = ?")
+  const admins = managesAdmins(actor);
+  const from = await stmt(env.DB, SOURCE)
     .bind(fromUserId)
-    .first<{ status: string }>();
-  if (!from) throw notFound();
-  if (statusOf(from.status) === "active") throw memberActive();
+    .first<{ status: string; role: string }>();
+  checkSource(from ?? undefined, admins);
   let spaceId: string;
   let ownerId: string;
   let publicLinks = true;
@@ -2088,7 +2122,9 @@ export async function transferPersonal(
   // One statement, re-checking in SQL what was read: each row is still in
   // the departed space (two admins racing move each artifact once), the
   // target space still exists with the public-links value read (a personal
-  // one always qualifies), and a user target is still a valid successor.
+  // one always qualifies), a user target is still a valid successor, and the
+  // source is still departed or a guest (and, for an admin actor, not an
+  // owner or admin, #475).
   // Into a space with public links off, public rows become team in the same
   // write.
   const move = stmt(
@@ -2099,7 +2135,9 @@ export async function transferPersonal(
         and exists (select 1 from spaces where id = ?3 and deleted_at is null
           and (kind = 'personal' or public_links = ?5))
         and (?6 = 0 or ${SUCCESSOR(4)})
-        and exists (select 1 from users where id = ?2 and status <> 'active')
+        and exists (select 1 from users where id = ?2
+          and (status <> 'active' or role = 'guest')
+          and (?7 = 1 or role not in ('owner', 'admin')))
       returning id`,
   ).bind(
     ids,
@@ -2108,6 +2146,7 @@ export async function transferPersonal(
     ownerId,
     publicLinks ? 1 : 0,
     input.to.kind === "user" ? 1 : 0,
+    admins ? 1 : 0,
   );
   const out = await env.DB.batch([
     move,
@@ -2134,12 +2173,21 @@ export async function transferPersonal(
   const moved = out[0]?.meta.changes ?? 0;
   const counts = out[2]?.results[0] as Counts | undefined;
   const remaining = (counts?.live ?? 0) + (counts?.deleted ?? 0);
-  // Nothing moved while rows remain: the target changed under us.
-  if (!moved && remaining > 0)
+  // Nothing moved while rows remain: the source or target changed under us.
+  if (!moved && remaining > 0) {
+    // Promoted to owner or admin, or reactivated as a member, mid-call.
+    checkSource(
+      (await stmt(env.DB, SOURCE).bind(fromUserId).first<{
+        status: string;
+        role: string;
+      }>()) ?? undefined,
+      admins,
+    );
     throw new ApiError(
       "conflict",
       "The transfer target changed; check it and try again",
     );
+  }
   if (moved) {
     await revokeUserLive(env, fromUserId, "artifacts transferred", ctx);
     // Public links off: every moved row may have been public (a page is at

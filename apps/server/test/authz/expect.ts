@@ -334,7 +334,12 @@ export function orgExpected(
       return yes(t.role === "owner" && !t.capped);
     // Any /api/v1 credential (session or PAT), the uncapped owner's only.
     case "broker.check":
+    // Parity 2: the install-wide guest summary, the uncapped owner's only.
+    case "notices.manage":
       return yes(t.role === "owner" && !t.capped);
+    // Parity 2: one's own guest-share notice, any non-guest (a cap too).
+    case "notices.own":
+      return yes(t.team);
     case "tokens.create":
       return yes(t.team && !t.capped);
     case "artifact.create":

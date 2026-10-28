@@ -1,3 +1,5 @@
+import type { NoticeId } from "./hosted/core.js";
+
 const A = "/api/v1/artifacts";
 // "." and ".." segments (even percent-encoded) are collapsed by URL parsers, so they cannot be
 // represented safely; refuse them rather than emit a URL that resolves elsewhere.
@@ -244,6 +246,13 @@ export const R = {
    * (cached); else 2 a minute (429). Audited auth.broker_check.
    */
   adminBrokerCheck: "/api/v1/admin/broker-check",
+  /**
+   * POST (no body) -> 204: dismiss a notice (Me.notices) for good, by any
+   * /api/v1 credential. Idempotent. "guest_shares": the caller's own list,
+   * per user, any non-guest member. "guest_summary": install-wide, the
+   * uncapped org owner only. Anyone else, and an unknown notice, 404.
+   */
+  noticeDismiss: (notice: NoticeId) => `/api/v1/notices/${seg(notice)}/dismiss`,
   /** GET ?cursor&limit -> Page<AuditEvent> (org owner, admin). */
   audit: "/api/v1/audit",
   /**

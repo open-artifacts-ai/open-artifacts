@@ -82,9 +82,9 @@ export type DirectoryMode = z.infer<typeof DirectoryModeSchema>;
  *
  * All but guests_read_only come from the FEATURES env (comma list, set per
  * tier by provisioning; self-hosted default empty = today's behaviour).
- * guests_read_only has ONE source, P2's authConfig.guestsReadOnly: true
- * whenever the google or email sign-in provider is enabled, not configurable;
- * Access-only installs keep today's guest behaviour. FEATURES can't set it.
+ * guests_read_only has ONE source, authConfig.guestsReadOnly: true on every
+ * install (parity 2: Access-only installs too), not configurable. FEATURES
+ * can't set it.
  */
 export const FEATURE_FLAGS = [
   "spaces",
@@ -230,6 +230,81 @@ export const MeAuthSchema = z.object({
   expiresAt: z.string().nullable(),
 });
 export type MeAuth = z.infer<typeof MeAuthSchema>;
+
+/**
+ * Notices R.noticeDismiss can dismiss (parity 2). guest_shares: per user
+ * (each member's own list); guest_summary: install-wide (the org owner's).
+ */
+export const NoticeIdSchema = z.enum(["guest_shares", "guest_summary"]);
+export type NoticeId = z.infer<typeof NoticeIdSchema>;
+
+/** At most this many Me.notices.guestShares items; `more` says there are others. */
+export const GUEST_SHARES_NOTICE_LIMIT = 50;
+
+/** At most this many Me.notices.guestSummary.guestOwners; `more` says there are others. */
+export const GUEST_OWNERS_NOTICE_LIMIT = 50;
+
+/**
+ * One share a guest holds above viewer on an artifact the caller owns, which
+ * the guest cap (on for every install since parity 2) now reads as viewer.
+ * The share row keeps its role. guestEmail is the share's address, which may
+ * not have signed in yet (it becomes a guest at its first Access sign-in).
+ */
+export const GuestShareNoticeItemSchema = z.object({
+  artifactId: z.string(),
+  /** The artifact's title (the caller owns the artifact). */
+  title: z.string(),
+  guestEmail: z.string(),
+  /** The share's stored role (above viewer). */
+  role: z.enum(["editor"]),
+});
+export type GuestShareNoticeItem = z.infer<typeof GuestShareNoticeItemSchema>;
+
+/** Me.notices.guestShares: newest share first, at most GUEST_SHARES_NOTICE_LIMIT. */
+export const GuestSharesNoticeSchema = z.object({
+  items: z.array(GuestShareNoticeItemSchema).max(GUEST_SHARES_NOTICE_LIMIT),
+  /** More shares than items. */
+  more: z.boolean(),
+});
+export type GuestSharesNotice = z.infer<typeof GuestSharesNoticeSchema>;
+
+/** A guest who owns live artifacts (R.memberTransfer moves them). */
+export const GuestOwnerSchema = z.object({
+  userId: z.string(),
+  email: z.string(),
+  /** Live artifacts in their personal space. */
+  artifacts: z.number().int().positive(),
+});
+export type GuestOwner = z.infer<typeof GuestOwnerSchema>;
+
+/**
+ * Me.notices.guestSummary, the org owner's install-wide view: counts only for
+ * shares (no titles, no guest emails), plus the guests who own artifacts.
+ */
+export const GuestSummaryNoticeSchema = z.object({
+  /** Guest shares above viewer on live artifacts, install-wide. */
+  shares: z.number().int().nonnegative(),
+  /** Distinct artifact owners those shares are on. */
+  owners: z.number().int().nonnegative(),
+  /** Most live artifacts first, at most GUEST_OWNERS_NOTICE_LIMIT. */
+  guestOwners: z.array(GuestOwnerSchema).max(GUEST_OWNERS_NOTICE_LIMIT),
+  /** More guest owners than listed. */
+  more: z.boolean(),
+});
+export type GuestSummaryNotice = z.infer<typeof GuestSummaryNoticeSchema>;
+
+/**
+ * Me.notices: one-time notices, on Access-only installs only. Each is absent
+ * when empty or dismissed (R.noticeDismiss), and Me.notices is absent when
+ * none is present.
+ */
+export const MeNoticesSchema = z.object({
+  /** Any non-guest member, for artifacts they own. Dismissed per user. */
+  guestShares: GuestSharesNoticeSchema.optional(),
+  /** The uncapped org owner only. Dismissed install-wide. */
+  guestSummary: GuestSummaryNoticeSchema.optional(),
+});
+export type MeNotices = z.infer<typeof MeNoticesSchema>;
 
 /**
  * Actions the caller may take on one artifact (ArtifactSummary.can). P3's

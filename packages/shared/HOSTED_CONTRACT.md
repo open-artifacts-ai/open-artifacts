@@ -58,7 +58,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `spaces` | FEATURES | Spaces and roles on; space routes 404 without it (authz identical either way) |
 | `sync_google` | FEATURES | Directory sync running |
 | `sync_frozen` | FEATURES | Team after trial: synced rows kept (`source: "sync"`), edited by hand (an edit becomes a manual override), user status still polled, no group reads; `lastSuccessAt`/`staleAt` keep the last run that read groups. Each frozen hand edit is recorded in D1 `frozen_edits` (server migration `0013_frozen_edits`). The first reconcile after return to Business, after its walks: an override's pre-freeze manual row comes back exactly (none: removed); an explicit frozen DELETE is final; a frozen manual add (no synced row) is kept; then the synced role is derived again from fresh membership and the narrowed are revoked. Audited by `sync`: `space.member.role` / `.add` / `.remove` with `{ thaw: true, role? }`, or `directory.sync` with `{ thaw: "removal_kept" }` / `{ thaw: "manual_kept", role }`. A live admin edit after sync returns, before that reconcile, supersedes the pending outcome (never undone). Synced-row changes at the thaw: `directory.sync` `{ thaw: "sync", from?, to? }` |
-| `guests_read_only` | **reported only** | Guests capped at viewer, no data writes. One source: P2's `authConfig.guestsReadOnly`, true whenever the google or email provider is enabled (not configurable; no `GUEST_ACCESS` var). Access-only installs keep today's guest behaviour. FEATURES can't set it |
+| `guests_read_only` | **reported only** | Guests capped at viewer, no data writes. One source: `authConfig.guestsReadOnly`, true on every install, Access-only ones included (parity 2; not configurable; no `GUEST_ACCESS` var). Share rows keep their role; the cap lowers it at read time. FEATURES can't set it |
 | `content_revocation` | FEATURES | uid-bound `/c/` content tokens re-check the user's status. A space's `publicLinks` is never part of the `/p/` check: off only refuses new public links |
 | `usage_off` | FEATURES | Hosted: the Usage page and `R.usage` are 404 |
 
@@ -95,7 +95,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `ArtifactSummary` (so `SearchHit`) | `space?: SpaceRef`, `can?: ArtifactCan`. Signed-in callers with spaces on. `space` is absent for a shared space where the caller has no role (a share or link alone), so its id and name never leak; `can` is always set |
 | `Member` | `status?: MemberStatus` (absent = active), `identities?: ("google")[]`, `restriction?: Restriction \| null`. Hosted and direct-sign-in installs send all three on every `R.members` row (`restriction` null when unrestricted) |
 | `Me.instance` | `hosted?`, `tier?`, `signIn?`, `features?: FeatureFlag[]`, `directory?: InstanceDirectory` |
-| `Me` | `auth?: MeAuth`, `personalSpaceId?` (= user.id), `spaces?: MySpace[]` (shared, by name, ≤ 200) |
+| `Me` | `auth?: MeAuth`, `personalSpaceId?` (= user.id), `spaces?: MySpace[]` (shared, by name, ≤ 200), `notices?: MeNotices` (Access-only installs only; see Guest share notices) |
 | `Settings` (so `SettingsPatch`) | `spaceManagerMappings?: boolean` (hosted; default true, absent self-hosted). PATCH needs `settings.manage` (org owner, admin); audited `settings.space_manager_mappings` |
 | `Space` | `can?: SpaceCan` (`{ manageMappings }`) |
 | `ShareResult` (PUT shares, MCP share_artifact) | `recipient?: ShareRecipient` = `{ canSignIn: false, reason: "needs_invite" \| "outside_domains" \| "no_sign_in_method" }`: the share applied, but the recipient can't sign in yet. `needs_invite`: in a verified domain on an invite-only install (hosted, or AUTH_DOMAIN_JOIN=invite): an admin must invite them as a member. Absent when they can sign in (or only Google might admit them). The share email says they need an invite instead of promising a sign-in |
@@ -103,6 +103,24 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `MemberInviteResult` | `signIn?: InviteSignIn` = `{ status: "uncertain", reason: "outside_domains" }`: the invite stands, but only Google might admit the address (outside AUTH_DOMAINS: works only for a Workspace account whose primary domain is verified). Absent when an offered method admits it. Warn the inviter |
 | `AuditActionSchema` | `settings.space_manager_mappings`, `user.role` (a member role change: `detail { from, to }`, written only when the role changes) |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
+
+## Guest share notices (`hosted/core.ts`, parity 2)
+
+Guests are view-only on every install (`guests_read_only`), Access-only ones included; share rows keep their role. Direct sign-in and hosted installs always capped guests, so the notices appear **only on Access-only installs** (not HOSTED=1, not google or email sign-in). A "guest share" is a share above viewer on a live (not deleted) artifact to an active guest, or to an address with no user row yet (it becomes a guest at its first Access sign-in). Both notices are computed live on every `GET R.me`; `Me.notices` is absent when it holds no notice.
+
+| Route / field | Contract |
+|---|---|
+| `Me.notices.guestShares` | `GuestSharesNotice { items: { artifactId, title, guestEmail, role: "editor" }[], more }`: the guest shares on artifacts **the caller owns** (`owner_id`), never anyone else's, newest share first, at most `GUEST_SHARES_NOTICE_LIMIT` (50) items; `more` is true when there are others. Every non-guest member (owner, admin, member; a restricted member too). Absent for guests, when the list is empty, and once the caller dismissed it |
+| `Me.notices.guestSummary` | `GuestSummaryNotice { shares, owners, guestOwners: { userId, email, artifacts }[], more }`: counts only for shares (`shares`: guest shares install-wide; `owners`: distinct artifact owners they are on), never titles or share emails. `guestOwners`: guests (any status) with live artifacts in their personal space (`artifacts` = that count), most first, at most `GUEST_OWNERS_NOTICE_LIMIT` (50); `more` when there are others. Move them with `R.memberTransfer`. The uncapped org owner only; absent when there are no guest shares and no guest owners, and once dismissed |
+| `POST R.noticeDismiss("guest_shares")` `/api/v1/notices/guest_shares/dismiss` | No body → 204. Dismisses the caller's own list for good (a per-user `settings` row `notice_user:<userId>:guest_shares`, kept out of the install settings `R.me` reads); never hides another member's. Any non-guest member (`notices.own`), by any `/api/v1` credential; a guest, 404. Idempotent. Not audited |
+| `POST R.noticeDismiss("guest_summary")` `/api/v1/notices/guest_summary/dismiss` | No body → 204. Dismisses the summary for the install (`settings` row `notice_dismissed:guest_summary`). The uncapped org owner only (`notices.manage`), by any `/api/v1` credential; anyone else 404. Idempotent. Not audited. Any other notice id: 404 |
+
+| Schema | Meaning |
+|---|---|
+| `NoticeIdSchema` | `"guest_shares" \| "guest_summary"` |
+| `GuestShareNoticeItemSchema`, `GuestSharesNoticeSchema`, `GUEST_SHARES_NOTICE_LIMIT` | As above (50) |
+| `GuestOwnerSchema`, `GuestSummaryNoticeSchema`, `GUEST_OWNERS_NOTICE_LIMIT` | As above (50) |
+| `MeNoticesSchema` | `{ guestShares?: GuestSharesNotice, guestSummary?: GuestSummaryNotice }` |
 
 ## Sign-in (`hosted/auth.ts`, P2)
 
@@ -202,8 +220,8 @@ line, never twice. A non-null `cap` still limits access to viewer.
 | `GET R.members?status=` | `MembersQuery` → `Member[]` | uncapped org owner, admin only, any status (anyone else 404, `active` included; space managers search `R.spaceCandidates`). Comma list, default `active` |
 | `PATCH R.member(id)` | `MemberPatch` → `Member` | uncapped org owner, admin (else 404; a capped admin, e.g. a code session outside the verified domains, is 404 on every members route). An org owner or admin target needs the uncapped owner: an admin gets 403 `owner_only` (#475). The owner on themselves stays 400. Enforced in the write: a target promoted to admin mid-request is 403 `owner_only`, nothing changes or is audited |
 | `DELETE R.member(id)` | 204 | uncapped org owner, admin (else 404); spaces on: status `removed` (suspension and removal share this rule). An org owner or admin target needs the uncapped owner: an admin gets 403 `owner_only` (#475). The owner on themselves stays 400. Enforced in the write, as PATCH |
-| `GET R.memberTransfer(id)` | → `TransferSummary {live, deleted}` | counts only; org owner, admin |
-| `POST R.memberTransfer(id)` | `TransferInput {to: user\|space, cursor?}` → `TransferResult {moved, remaining, nextCursor}` | 409 `member_active`; user target active, non-guest, non-restricted (400 `invalid_successor`); ≤ `TRANSFER_PAGE` (100) per call; repeat with `cursor` until `nextCursor` is null (each call moves the next page still in the departed person's space; the cursor is a continuation marker only, so a forged one moves no more). Into a space with publicLinks off, public artifacts become `team` and their sockets close, and a page is at most 50 so the closes fit one request. The target (and a user target's eligibility) is re-checked in the write: if it changed, nothing moves and the call is 409 `conflict`. One `artifact.transfer` audit row per call (`detail: { moved, teamed, to }`) |
+| `GET R.memberTransfer(id)` | → `TransferSummary {live, deleted}` | counts only; org owner, admin; the source rules below (403 `owner_only`, 409 `member_active`) |
+| `POST R.memberTransfer(id)` | `TransferInput {to: user\|space, cursor?}` → `TransferResult {moved, remaining, nextCursor}` | Source: a departed (suspended or removed) member, or a guest, active or not (parity 2; moves only that guest's personal artifacts, the guest keeps their role and status). An org owner or admin source needs the owner (#475): an admin gets 403 `owner_only`. Any other active member: 409 `member_active`. The source rules are re-checked in the write: a guest promoted mid-call moves nothing (403 `owner_only` or 409 `member_active`). User target active, non-guest, non-restricted (400 `invalid_successor`); ≤ `TRANSFER_PAGE` (100) per call; repeat with `cursor` until `nextCursor` is null (each call moves the next page still in the departed person's space; the cursor is a continuation marker only, so a forged one moves no more). Into a space with publicLinks off, public artifacts become `team` and their sockets close, and a page is at most 50 so the closes fit one request. The target (and a user target's eligibility) is re-checked in the write: if it changed, nothing moves and the call is 409 `conflict`. One `artifact.transfer` audit row per call (`detail: { moved, teamed, to }`) |
 | MCP `list_spaces` | → `{ items: MySpace[] }` | the spaces the caller can publish into: their personal space first, then shared spaces where they are editor or manager; empty for a capped caller |
 
 Accepted disclosure: `scope=space` (or any `spaceId`) naming another user's personal space returns 400 `space_personal`, not 404, so it reveals that the id is a user's. Accepted because ids are random and already visible to members on Members (a personal space's id is its owner's user id).
@@ -262,7 +280,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `public_links_off` | 403 | make an artifact public in a space whose publicLinks is off |
 | `use_move` | 400 | `spaceId` on publish to an existing artifact |
 | `invalid_successor` | 400 | transfer target isn't an active, non-guest, non-restricted member |
-| `member_active` | 409 | departed-person transfer on an active member |
+| `member_active` | 409 | member transfer on an active non-guest member |
 | `directory_sync_off` | 409 | mapping or restricted-group change while sync is off or frozen (also Sync now) |
 | `turnstile_required` | 400 | code request with no Turnstile token while Turnstile is configured |
 | `turnstile_failed` | 403 | Turnstile token rejected |
@@ -295,7 +313,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 
 `createHandlers({ hosted: true | HostedMockOptions })`, off by default (existing
 FE tests unchanged). Options: `mode`, `providers`, `turnstile`, `tier`,
-`directory`, `unhealthy`, `unhealthyState`, `breakGlass` (`"fresh" | "stale"`: `GET R.me` answers 401 `break_glass_required`), `features` (`guests_read_only` ignored). Store:
+`directory`, `unhealthy`, `unhealthyState`, `breakGlass` (`"fresh" | "stale"`: `GET R.me` answers 401 `break_glass_required`), `features` (`guests_read_only` ignored), `guestShares` (parity 2: that many guests `guestN@outside.example`, each an editor share on the caller's "Landing page"), `guestOwners` (parity 2: that many guests `ownerN@outside.example`, each owning one live personal artifact; `R.memberTransfer` moves it with no suspension). With either set, `mode` defaults to `"access"`; with `selfHosted` on an Access-only mock, any non-guest caller sees `Me.notices.guestShares` (their own artifacts) until `POST R.noticeDismiss("guest_shares")` (per user; 404 for a guest), and the uncapped owner sees `Me.notices.guestSummary` until `R.noticeDismiss("guest_summary")` (404 for anyone else). `R.memberTransfer` follows the server's source rules (403 `owner_only`, 409 `member_active`). Store:
 personal space per member, Engineering (caller manager, allMembersRole viewer,
 "Meeting notes" lives there), Exec (caller viewer, publicLinks off), Clients
 (admin view); groups `gEng01`, `gExec02`, `gSales03`, `gCon04` (restricted

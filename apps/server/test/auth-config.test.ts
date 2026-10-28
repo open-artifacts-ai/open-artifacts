@@ -8,10 +8,10 @@ const base = (over: Partial<Env>) =>
   ({ ...env, AUTH_PROVIDERS: undefined, ...over }) as Env;
 
 describe("authConfig", () => {
-  test("unset is access only; guests uncapped; invite only", () => {
+  test("unset is access only; guests capped (parity 2); invite only", () => {
     const c = authConfig(base({}));
     expect([...c.providers]).toEqual(["access"]);
-    expect(c.guestsReadOnly).toBe(false);
+    expect(c.guestsReadOnly).toBe(true);
     expect(c.domainJoin).toBe("invite");
     expect(c.google).toBeNull();
     expect(c.problems).toEqual([]);
@@ -37,10 +37,14 @@ describe("authConfig", () => {
     );
   });
 
-  test("FEATURES can't set the guest cap; direct sign-in always does", () => {
+  test("the guest cap is on for every install; FEATURES can't change it", () => {
     expect(
       authConfig(base({ FEATURES: "guests_read_only" })).guestsReadOnly,
-    ).toBe(false);
+    ).toBe(true);
+    expect(authConfig(base({ FEATURES: "" })).guestsReadOnly).toBe(true);
+    expect(authConfig(base({ AUTH_PROVIDERS: "saml" })).guestsReadOnly).toBe(
+      true,
+    );
     expect(authConfig(direct({ FEATURES: "" })).guestsReadOnly).toBe(true);
     expect(
       authConfig(base({ AUTH_PROVIDERS: "access,email" })).guestsReadOnly,

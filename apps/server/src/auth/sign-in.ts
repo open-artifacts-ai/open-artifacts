@@ -69,7 +69,7 @@ export function instanceSignIn(env: Env, owner = false): InstanceSignIn {
   return out;
 }
 
-/** Me.instance.features: FEATURES plus guests_read_only when the guest cap is on (reported only). */
+/** Me.instance.features: FEATURES plus guests_read_only (reported only; on for every install since parity 2). */
 export function instanceFeatures(env: Env): FeatureFlag[] {
   const cfg = authConfig(env);
   return cfg.guestsReadOnly
