@@ -91,6 +91,8 @@ jobs:
     needs: [release-please]
     outputs:
       installed: ${{ steps.preflight.outputs.installed }}
+      # 'true' when the migration guard held the deploy (prod stays on the old version).
+      held: ${{ steps.migration.outputs.hold }}
     if: ${{ always() && github.ref == 'refs/heads/main' && (needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')) }}
     runs-on: ubuntu-latest
     permissions:
@@ -303,8 +305,9 @@ jobs:
     env:
       TAG: ${{ needs.release-please.outputs.tag_name }}
       GH_TOKEN: ${{ github.token }}
-      # deploy-prod skipped itself because prod is not installed: do not verify prod.
-      SKIP_PROD: ${{ needs.deploy-prod.outputs.installed == 'false' && '--skip-prod' || '' }}
+      # deploy-prod skipped itself (prod not installed) or the migration guard held
+      # the release for a guarded dispatch: prod is not on this tag, so don't verify it.
+      SKIP_PROD: ${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:

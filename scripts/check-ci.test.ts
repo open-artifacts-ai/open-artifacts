@@ -1282,6 +1282,16 @@ describe("release cadence", () => {
         /!contains\(needs\.release-please\.outputs\.tag_name, '-'\)/,
       );
     });
+    it("skips prod when deploy-prod skipped itself or the migration guard held the release", () => {
+      expect(rp.jobs["deploy-prod"].outputs.held).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ steps.migration.outputs.hold }}",
+      );
+      expect(v.env.SKIP_PROD).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}",
+      );
+    });
   });
 });
 
