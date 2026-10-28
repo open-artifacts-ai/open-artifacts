@@ -230,21 +230,31 @@ export async function setGrantLabel(
 }
 
 /**
+ * How long a usage row outlives its grant's absence from the KV listing:
+ * a grant used within it may just be missing from a lagging list (review
+ * item 40). Rows with no recorded use (labels, counts) carry no time and go.
+ */
+export const PRUNE_GRACE_MS = 3600_000;
+
+/**
  * Deletes the user's usage rows whose grant is no longer in KV (revoked by
- * revokeAllGrants, expired, or removed elsewhere): one statement. Only call
- * it with the user's complete grant list.
+ * revokeAllGrants, expired, or removed elsewhere), except rows used within
+ * PRUNE_GRACE_MS: one statement. Only call it with the user's complete
+ * grant list.
  */
 export async function pruneGrantUsage(
   env: Env,
   userId: string,
   liveGrantIds: string[],
+  now = Date.now(),
 ): Promise<void> {
   await stmt(
     env.DB,
     `delete from agent_grants where user_id = ?
-       and grant_id not in (select value from json_each(?))`,
+       and grant_id not in (select value from json_each(?))
+       and (last_used_at is null or last_used_at < ?)`,
   )
-    .bind(userId, JSON.stringify(liveGrantIds))
+    .bind(userId, JSON.stringify(liveGrantIds), now - PRUNE_GRACE_MS)
     .run();
 }
 

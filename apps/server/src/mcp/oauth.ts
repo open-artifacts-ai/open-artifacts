@@ -1,6 +1,7 @@
 import {
   AuthorizationError,
   CimdFetchError,
+  type GrantSummary,
   OAuthProvider,
 } from "@cloudflare/workers-oauth-provider";
 import {
@@ -31,6 +32,7 @@ import {
   clientVersionOf,
   dropGrantUsage,
   type GrantIdentity,
+  type GrantUsage,
   grantUsage,
   pruneGrantUsage,
   redirectInfo,
@@ -43,6 +45,8 @@ import { getUser, getUserWithEpoch } from "../services/users.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
 import { CONSENT_TEMPLATE } from "./consent-template.js";
 import {
+  listAllUserGrants,
+  lookupUserGrant,
   OAUTH,
   oauthApi,
   type ProviderOptions,
@@ -82,7 +86,6 @@ const CONSENT_KEY = "consent:u:";
 const MAX_TOKEN_BODY = 16 * 1024;
 const CSRF_TTL_S = 600;
 const MAX_FORM_BYTES = 8 * 1024;
-const MAX_GRANTS_LISTED = 100;
 const GRANT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** Controls, bidi overrides/isolates and zero-width characters: they can disguise a name. */
@@ -552,67 +555,65 @@ const notFound = () => new ApiError("not_found", "Not found");
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
+/** One grant as a card: its approval facts (KV metadata) and usage row. */
+function toClient(g: GrantSummary, u: GrantUsage | undefined): OAuthClient {
+  const m = (g.metadata ?? {}) as GrantMetadata;
+  const kind = RedirectKindSchema.safeParse(m.redirectKind);
+  const from = ApprovedFromSchema.safeParse(m.approvedFrom);
+  return {
+    grantId: g.id,
+    clientName: stripNameControls(clientNameOf(m.clientName, g.clientId)),
+    createdAt: iso(g.createdAt * 1000),
+    ...(u?.label ? { label: u.label } : {}),
+    ...(kind.success ? { redirectKind: kind.data } : {}),
+    ...(kind.data === "hosted" && typeof m.redirectHost === "string"
+      ? { redirectHost: m.redirectHost }
+      : {}),
+    ...(from.success ? { approvedFrom: from.data } : {}),
+    ...(u?.lastUsedAt != null ? { lastUsedAt: iso(u.lastUsedAt) } : {}),
+    ...(clientVersionOf(u?.clientVersion)
+      ? { clientVersion: clientVersionOf(u?.clientVersion) as string }
+      : {}),
+    ...(from.success ? { versionsPublished: u?.versionsPublished ?? 0 } : {}),
+  };
+}
+
 /**
- * The caller's grants (KV), each with its usage row (D1), newest first. With
- * `ctx`, and when the listing is complete (one page), usage rows of grants no
- * longer in KV are deleted in waitUntil (pruneGrantUsage, one statement).
+ * The caller's grants (KV, every page), each with its usage row (D1),
+ * newest first. With `ctx`, and when every page was read, usage rows of
+ * grants not listed are deleted in waitUntil (pruneGrantUsage, one
+ * statement; rows used within its grace stay, for KV list lag).
  */
 async function listClients(
   env: Env,
   user: Member,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<OAuthClient[]> {
-  const { items, cursor } = await oauthApi(env).listUserGrants(user.id, {
-    limit: MAX_GRANTS_LISTED,
-  });
+  const { items, complete } = await listAllUserGrants(env, user.id);
   const ids = items.map((g) => g.id);
   const usage = await grantUsage(env, user.id, ids);
-  if (ctx && !cursor && items.length < MAX_GRANTS_LISTED)
+  if (ctx && complete)
     ctx.waitUntil(
       pruneGrantUsage(env, user.id, ids).catch((e) =>
         logError("grant_usage_prune_failed", e),
       ),
     );
   return items
-    .map((g): OAuthClient => {
-      const m = (g.metadata ?? {}) as GrantMetadata;
-      const kind = RedirectKindSchema.safeParse(m.redirectKind);
-      const from = ApprovedFromSchema.safeParse(m.approvedFrom);
-      const u = usage.get(g.id);
-      return {
-        grantId: g.id,
-        clientName: stripNameControls(clientNameOf(m.clientName, g.clientId)),
-        createdAt: iso(g.createdAt * 1000),
-        ...(u?.label ? { label: u.label } : {}),
-        ...(kind.success ? { redirectKind: kind.data } : {}),
-        ...(kind.data === "hosted" && typeof m.redirectHost === "string"
-          ? { redirectHost: m.redirectHost }
-          : {}),
-        ...(from.success ? { approvedFrom: from.data } : {}),
-        ...(u?.lastUsedAt != null ? { lastUsedAt: iso(u.lastUsedAt) } : {}),
-        ...(clientVersionOf(u?.clientVersion)
-          ? { clientVersion: clientVersionOf(u?.clientVersion) as string }
-          : {}),
-        ...(from.success
-          ? { versionsPublished: u?.versionsPublished ?? 0 }
-          : {}),
-      };
-    })
+    .map((g) => toClient(g, usage.get(g.id)))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-/** The caller's grant named by :grantId, or 404. */
+/** The caller's grant named by :grantId (a direct lookup, not a listing), or 404. */
 async function ownGrant(
   c: Context<AppEnv>,
 ): Promise<{ user: Member; grant: OAuthClient }> {
   const user = requireUser(c);
   const grantId = c.req.param("grantId") ?? "";
   if (!GRANT_ID.test(grantId)) throw notFound();
-  const grant = (await listClients(c.env, user)).find(
-    (g) => g.grantId === grantId,
-  );
-  if (!grant) throw notFound();
-  return { user, grant };
+  const g = await lookupUserGrant(c.env, user.id, grantId);
+  if (!g) throw notFound();
+  const usage = await grantUsage(c.env, user.id, [g.id]);
+  return { user, grant: toClient(g, usage.get(g.id)) };
 }
 
 export function mountOAuth(app: AppType): void {
