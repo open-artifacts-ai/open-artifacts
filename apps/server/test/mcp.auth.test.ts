@@ -612,6 +612,67 @@ describe("MCP auth: fix round 1", () => {
     expect((await api(app, R.me, token)).status).toBe(200);
   });
 
+  it("a refresh with a stale refresh token logs oauth_refresh_mismatch, and nothing secret (#769)", async () => {
+    const { refreshToken, clientId } = await oauthToken(
+      `oauth-rtm-${tag}@x.com`,
+    );
+    // Same grant, wrong secret: the provider's refresh_token_mismatch.
+    const [userId, grantId] = refreshToken.split(":");
+    const stale = `${userId}:${grantId}:${"x".repeat(32)}`;
+    const lines: string[] = [];
+    const spies = (["log", "warn", "error"] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(" "));
+      }),
+    );
+    try {
+      const refresh = (token: string) =>
+        callWorker(
+          new Request(`${APP}/oauth/token`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/x-www-form-urlencoded",
+              "cf-connecting-ip": "203.0.113.77",
+            },
+            body: new URLSearchParams({
+              grant_type: "refresh_token",
+              refresh_token: token,
+              client_id: clientId,
+            }).toString(),
+          }),
+        );
+      const r = await refresh(stale);
+      expect(r.status).toBe(400);
+      expect(await r.json()).toMatchObject({
+        error: "invalid_grant",
+        error_description: "Invalid refresh token",
+      });
+      const evts = lines.flatMap((l) => {
+        try {
+          return [JSON.parse(l) as Record<string, unknown>];
+        } catch {
+          return [];
+        }
+      });
+      expect(evts.filter((x) => x.evt === "oauth_refresh_mismatch")).toEqual([
+        { evt: "oauth_refresh_mismatch" },
+      ]);
+      for (const l of lines) {
+        expect(l).not.toContain(grantId);
+        expect(l).not.toContain(userId);
+        expect(l).not.toContain(clientId);
+      }
+      // A good refresh logs no mismatch.
+      lines.length = 0;
+      expect((await refresh(refreshToken)).status).toBe(200);
+      expect(lines.some((l) => l.includes("oauth_refresh_mismatch"))).toBe(
+        false,
+      );
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
+  });
+
   it("demotion to guest revokes the user's OAuth grants and PATs", async () => {
     const { member, accessToken } = await oauthToken(`oauth-dem-${tag}@x.com`);
     const { token } = await createPat(env, member.userId, "p");
