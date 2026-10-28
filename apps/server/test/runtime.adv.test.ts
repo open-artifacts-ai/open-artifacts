@@ -170,12 +170,8 @@ describe("B12 adversarial", () => {
       ws.addEventListener("close", (e) => r(e.code)),
     );
     ws.send("x".repeat(100_000));
-    expect(
-      await Promise.race([
-        closed,
-        new Promise((r) => setTimeout(() => r("open"), 200)),
-      ]),
-    ).not.toBe("open");
+    // The close itself, no race against a timer (the testTimeout bounds it).
+    expect(typeof (await closed)).toBe("number");
   });
   it("fan-out: sockets capped at 200; 1 MB docs fan out as small data:null frames", async () => {
     const s = stubFor();

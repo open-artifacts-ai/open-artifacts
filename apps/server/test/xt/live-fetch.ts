@@ -29,7 +29,8 @@ export async function liveFetch(
     const signal = AbortSignal.any([req.signal, AbortSignal.timeout(ms)]);
     let res: Response;
     try {
-      res = await f(new Request(req.clone(), { signal }));
+      // (Node's Request; the workers types' Request differs only in `cf`.)
+      res = await f(new Request(req.clone() as never, { signal }) as never);
     } catch (e) {
       if (i >= tries || req.signal.aborted) throw e;
       await new Promise((r) => setTimeout(r, backoff * i));

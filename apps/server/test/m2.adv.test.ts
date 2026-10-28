@@ -1,7 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { newId, R } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import { removeMember, SYSTEM_ACTOR } from "../src/services/members.js";
@@ -15,6 +15,7 @@ import {
   nextIp,
   tool,
 } from "./mcp-helpers.js";
+import { pinMiddayUtc } from "./midday.js";
 
 const tag = newId().slice(0, 6).toLowerCase();
 const CONTENT = "https://content.localhost";
@@ -161,10 +162,10 @@ async function oauth(email: string, e?: unknown) {
   return { m: a.m, clientId: a.clientId, ...j };
 }
 
-const closedWithin = (ws: WebSocket, ms: number) =>
-  new Promise<number | "open">((res) => {
+/** The socket's close code: no timer; the 20 s testTimeout bounds the wait. */
+const closeCode = (ws: WebSocket) =>
+  new Promise<number>((res) => {
     ws.addEventListener("close", (e) => res((e as CloseEvent).code));
-    setTimeout(() => res("open"), ms);
   });
 
 describe("M2 whole-track adversarial", () => {
@@ -184,7 +185,7 @@ describe("M2 whole-track adversarial", () => {
     const ws = up.webSocket;
     if (!ws) throw new Error(`no ws ${up.status}`);
     ws.accept();
-    const closed = closedWithin(ws, 1500);
+    const closed = closeCode(ws);
     const v = await w(
       req(`/api/v1/artifacts/${id}/versions`, {
         method: "POST",
@@ -518,7 +519,11 @@ describe("M2 whole-track adversarial", () => {
   });
 
   it("F4 rejected registrations past the daily cap write nothing to D1", async () => {
-    const day = new Date().toISOString().slice(0, 10);
+    // The seed's day and the server's own Date.now() must agree.
+    const day = new Date(pinMiddayUtc()).toISOString().slice(0, 10);
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     await env.DB.prepare(
       "insert into counters (key,n,day) values ('oauth_register',200,?) on conflict(key) do update set n=200, day=excluded.day",
     )

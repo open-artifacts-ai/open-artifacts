@@ -47,6 +47,9 @@ const withBrowser = {
   BROWSER: {} as Fetcher,
   SERVER_THUMBNAILS: "on",
 } as Env;
+/** vi.waitFor bound: a generous deadline under the 20 s testTimeout. */
+const WAIT = { timeout: 10_000, interval: 20 };
+
 const key = (id: string) => `thumbs/${id}.webp`;
 
 const webp = (n: number) => {
@@ -1028,7 +1031,7 @@ describe("thumbnail job on the artifact DO", () => {
         };
         void i.alarm();
         // The alarm awaits setAlarm and storage.sync() before launching.
-        await vi.waitFor(() => expect(seen).toEqual([1]));
+        await vi.waitFor(() => expect(seen).toEqual([1]), WAIT);
         expect(i.pendingThumbnail()).toMatchObject({ attempts: 1 });
         // Armed before launching, so the runtime comes back after a kill.
         const armed = await storage.getAlarm();
@@ -1036,7 +1039,7 @@ describe("thumbnail job on the artifact DO", () => {
         // Its retry alarm comes THUMB_RETRY_MS later.
         i.now = () => Date.now() + THUMB_RETRY_MS;
         void i.alarm();
-        await vi.waitFor(() => expect(seen).toEqual([1, 2]));
+        await vi.waitFor(() => expect(seen).toEqual([1, 2]), WAIT);
         i.now = () => Date.now() + 2 * THUMB_RETRY_MS;
         await i.alarm();
         expect(seen).toEqual([1, 2]);

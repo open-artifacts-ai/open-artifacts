@@ -20,6 +20,7 @@ import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { login } from "./helpers.js";
 import { connect, E, textOf, tool } from "./mcp-helpers.js";
+import { pinMiddayUtc } from "./midday.js";
 
 const app = createApp();
 const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
@@ -81,7 +82,13 @@ async function newOwner() {
 }
 
 beforeEach(async () => {
+  // Seeds use today(); the server reads its own Date.now(): pin both to
+  // midday UTC so a run across 00:00 UTC can't split them.
+  pinMiddayUtc();
   await env.DB.prepare("delete from counters where key like 'email:%'").run();
+});
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("Me.instance.emailEnabled", () => {

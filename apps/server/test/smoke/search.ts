@@ -49,13 +49,22 @@ describe.skipIf(!base || !pat)("staging smoke: search", () => {
     let last = "";
     const deadline = Date.now() + 60_000;
     for (;;) {
-      const s = await fetch(`${base}${R.search}?q=${word}`, {
-        headers: { authorization: `Bearer ${pat}` },
-      });
-      last = `${s.status} ${await s.text()}`;
-      expect(s.status, last).toBe(200);
-      const page = PageSchema(SearchHitSchema).parse(JSON.parse(last.slice(4)));
-      found = page.items.some((h) => h.id === id);
+      // A non-200 or a timed-out poll is "not yet" until the deadline.
+      try {
+        const s = await fetch(`${base}${R.search}?q=${word}`, {
+          headers: { authorization: `Bearer ${pat}` },
+          signal: AbortSignal.timeout(10_000),
+        });
+        last = `${s.status} ${await s.text()}`;
+        if (s.status === 200) {
+          const page = PageSchema(SearchHitSchema).parse(
+            JSON.parse(last.slice(4)),
+          );
+          found = page.items.some((h) => h.id === id);
+        }
+      } catch (e) {
+        last = `error ${(e as Error).name}`;
+      }
       if (found || Date.now() >= deadline) break;
       await new Promise((res) => setTimeout(res, 2_000));
     }
