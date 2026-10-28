@@ -444,7 +444,21 @@ describe("Me sign-in fields", () => {
     for (const t of ["trial", "team", "business"] as const)
       expect((await me(hosted(t), cookie)).instance.tier).toBe(t);
     expect((await me(hosted(), cookie)).instance.tier).toBeNull();
-    expect((await me(hosted("enterprise"), cookie)).instance.tier).toBeNull();
+    // An unknown value is null and logged (the value is ours, never secret,
+    // but the line carries only the event).
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await me(hosted("enterprise"), cookie)).instance.tier).toBeNull();
+      expect(warn.mock.calls.map((c) => JSON.parse(String(c[0])))).toEqual([
+        { evt: "tier_unknown" },
+      ]);
+      warn.mockClear();
+      // Unset is not a misconfiguration: no line.
+      await me(hosted(), cookie);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
     // Self-hosted direct sign-in: never a tier, whatever TIER says.
     expect(
       (await me(direct({ TIER: "team" }), cookie)).instance.tier,

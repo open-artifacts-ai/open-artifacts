@@ -133,6 +133,8 @@ const hostedEnv = (o: ContractSetup["hosted"]): Env => {
     ENVIRONMENT: "production",
     PLAN: "paid",
     HOSTED: "1",
+    // The mock's default tier (reported only: FEATURES below still rules).
+    TIER: "business",
     INSTALL_ID: "inst-a",
     OWNER_EMAIL: U.ada.email,
     FEATURES: [

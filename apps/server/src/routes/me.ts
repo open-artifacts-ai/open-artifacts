@@ -6,6 +6,7 @@ import {
   parseTier,
   planOf,
   R,
+  type Tier,
 } from "@oa/shared";
 import type { Context } from "hono";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
@@ -20,11 +21,23 @@ import { emailEnabled } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
 import { appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
+import { logWarn } from "../log.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
 import { getProfile, type Profile, setDisplayName } from "../services/users.js";
 import type { AppType } from "./index.js";
+
+/**
+ * A hosted install's TIER (trial | team | business), or null. Unset is null
+ * quietly; any other value is a provisioning mistake: null and a log line
+ * (the event only, never the value).
+ */
+function hostedTier(raw: string | undefined): Tier | null {
+  const t = parseTier(raw);
+  if (t === null && (raw ?? "").trim() !== "") logWarn("tier_unknown");
+  return t;
+}
 
 async function toMe(
   c: Context<AppEnv>,
@@ -55,7 +68,7 @@ async function toMe(
   me.instance.hosted = c.env.HOSTED === "1";
   // Reported only (behaviour follows FEATURES, which provisioning derives
   // from TIER); null off hosted.
-  me.instance.tier = me.instance.hosted ? parseTier(c.env.TIER) : null;
+  me.instance.tier = me.instance.hosted ? hostedTier(c.env.TIER) : null;
   me.instance.signIn = instanceSignIn(c.env);
   me.instance.features = instanceFeatures(c.env);
   // P3 T13: only while a directory mode is on; health for owners and admins.
