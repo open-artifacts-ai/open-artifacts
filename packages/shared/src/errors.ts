@@ -28,6 +28,7 @@ export const ERROR_CODES = [
   "restrict_admin",
   "directory_mapping_off",
   "member_synced",
+  "managed_by_org_mapping",
   "owner_only",
   "break_glass_required",
   // Publish format guard.
@@ -90,6 +91,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   directory_mapping_off: 403,
   /** DELETE R.spaceMember on a synced-only row while directory sync is live: remove them from the Google group, or change their role. */
   member_synced: 409,
+  /** DELETE R.spaceMember on a member whose only role here comes from an Every space group, or a PUT below that role; details ManagedByOrgMappingDetails { userId, everyRole }. */
+  managed_by_org_mapping: 409,
   /** Resetting or unlinking an org admin's Google identity: only the org owner may (it signs a peer admin out). */
   owner_only: 403,
   /** GET R.me for the org owner refused by a directory customer_mismatch; details BreakGlassRequiredDetails { fresh }. */

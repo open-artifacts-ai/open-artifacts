@@ -58,6 +58,7 @@ import type {
 import {
   type GroupMapping,
   GroupMappingPutSchema,
+  MANAGED_BY_ORG_MAPPING_MESSAGE,
   type RestrictedGroup,
   SPACE_MANAGER_FIELDS,
   SPACE_MANAGER_MAPPING_ROLES,
@@ -164,8 +165,6 @@ type MemberRow = {
   manualRole: SpaceRole | null;
   syncRole: SpaceRole | null;
   groups: GroupRef[];
-  /** Frozen-sync override (lowered or removed by hand): org mappings no longer merge in until the next reconcile. */
-  detached?: boolean;
 };
 
 const T0 = "2026-01-01T00:00:00.000Z";
@@ -507,7 +506,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     );
     for (const m of orgMappings)
       for (const userId of groupMembers.get(m.groupId) ?? []) {
-        if (out.get(userId)?.detached) continue;
+        // Every space roles are resolved at read time, as the server's
+        // authz: no change to a space's rows (frozen included) drops them.
         const r = out.get(userId) ?? {
           userId,
           manualRole: null,
@@ -532,13 +532,25 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     }
     return row;
   };
-  /** Frozen sync: drop the synced part of a row (org mappings included) by hand. */
+  /** Frozen sync: drop the space's own rows (manual and synced) by hand; Every space roles stay. */
   const detach = (row: MemberRow) => {
     row.manualRole = null;
     row.syncRole = null;
     row.groups = [];
-    row.detached = true;
   };
+  /** Their Every space role: the best org mapping role over their groups. */
+  const everyRoleOf = (userId: string): SpaceRole | null =>
+    maxRole(
+      ...orgMappings
+        .filter((m) => groupMembers.get(m.groupId)?.includes(userId))
+        .map((m) => m.role),
+    );
+  /** 409 managed_by_org_mapping: an Every space group gives them everyRole here. */
+  const managedByOrgMapping = (userId: string, everyRole: SpaceRole) =>
+    err("managed_by_org_mapping", MANAGED_BY_ORG_MAPPING_MESSAGE, {
+      userId,
+      everyRole,
+    });
   const roleIn = (s: SpaceRow, userId = me.user.id): SpaceRole | null => {
     if (s.kind === "personal") return s.ownerId === userId ? "manager" : null;
     const u = memberOf(userId);
@@ -1577,8 +1589,17 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
             "Only an admin can grant or change the Manager role",
             { target: "member" },
           );
+        // The space's own rows (manual, synced), without Every space roles.
+        const own = rows.get(s.id)?.find((x) => x.userId === u.id);
+        // An Every space group's role is a floor (sync live or frozen):
+        // below it 409; equal to it with no row here, a no-op.
+        const every = everyRoleOf(u.id);
+        if (every && RANK[r.data.role] < RANK[every])
+          return managedByOrgMapping(u.id, every);
+        if (cur && r.data.role === every && !own?.manualRole && !own?.syncRole)
+          return HttpResponse.json(memberView(s, cur));
         // Frozen, synced row: any role (raise or lower, manual rules above) is a manual override.
-        const frozenSynced = directoryMode === "frozen" && !!cur?.syncRole;
+        const frozenSynced = directoryMode === "frozen" && !!own?.syncRole;
         const row = baseRow(s, u.id);
         if (frozenSynced) {
           // Manual override; the next reconcile after unfreezing replaces it.
@@ -1618,17 +1639,29 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           return err("space_forbidden", "Only an admin can remove a manager", {
             target: "member",
           });
-        if (directoryMode === "frozen" && cur.syncRole) {
+        // The space's own rows (manual, synced), without Every space roles.
+        const own = rows.get(s.id)?.find((x) => x.userId === userId);
+        const every = everyRoleOf(userId);
+        // Only an Every space group puts them here: nothing to remove.
+        if (every && !own?.manualRole && !own?.syncRole)
+          return managedByOrgMapping(userId, every);
+        // Still here after the removal (Every space, or a live synced row):
+        // 200 with the role they keep; else 204.
+        const kept = () => {
+          const k = rowsOf(s).find((x) => x.userId === userId);
+          return k ? HttpResponse.json(memberView(s, k)) : noContent();
+        };
+        if (directoryMode === "frozen" && own?.syncRole) {
           // Removing access is always allowed, synced rows included.
           detach(baseRow(s, userId));
           log("space.member.remove", { type: "user", id: userId }, s.id, {
             syncFrozen: true,
           });
           refresh();
-          return noContent();
+          return kept();
         }
-        if (!cur.manualRole)
-          return cur.syncRole && directoryMode === "google"
+        if (!own?.manualRole)
+          return own?.syncRole && directoryMode === "google"
             ? err(
                 "member_synced",
                 "This person comes from a Google group. Remove them from the group in Google, or change their role here.",
@@ -1638,7 +1671,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         row.manualRole = null;
         log("space.member.remove", { type: "user", id: userId }, s.id);
         refresh();
-        return noContent();
+        return kept();
       }),
     ),
     http.get(
