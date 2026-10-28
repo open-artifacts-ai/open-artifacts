@@ -2,7 +2,7 @@ import type { Me, Member, TransferSummary } from "@oa/shared";
 import { R } from "@oa/shared";
 import { useQueries } from "@tanstack/react-query";
 import { api } from "../api/client";
-import { hasFeature, TransferSummarySchema } from "../api/contract";
+import { TransferSummarySchema } from "../api/contract";
 import { qk, useMembers } from "../api/queries";
 
 type Gone = Member & { status: "suspended" | "removed" };
@@ -12,11 +12,9 @@ export type Departed = { member: Gone; summary: TransferSummary };
 const isGone = (m: Member): m is Gone =>
   m.status === "suspended" || m.status === "removed";
 
-/** Org owners and admins on a hosted install: who may see departed people. */
+/** Org owners and admins, on every install (parity 1): who may see departed people. */
 export const seesDeparted = (me: Me | null | undefined) =>
-  !!me &&
-  hasFeature(me, "spaces") &&
-  (me.user.role === "owner" || me.user.role === "admin");
+  !!me && (me.user.role === "owner" || me.user.role === "admin");
 
 /**
  * Suspended or removed members who still have personal artifacts, with their

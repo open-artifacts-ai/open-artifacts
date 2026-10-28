@@ -7,6 +7,7 @@ import type { Member, TransferInput, TransferResult } from "@oa/shared";
 import { displayName } from "@oa/ui";
 import { Button, Label } from "@oa/ui/shadcn";
 import { useEffect, useId, useRef, useState } from "react";
+import { hasFeature } from "../api/contract";
 import { errorCopy } from "../api/errorCopy";
 import {
   useMembers,
@@ -14,6 +15,7 @@ import {
   useSpaces,
   useTransferSummary,
 } from "../api/queries";
+import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
@@ -21,7 +23,14 @@ import { sharedSpaceName } from "../spaces/label";
 import { OptionSelect } from "./OptionSelect";
 import { errorText, muted } from "./ui";
 
-const artifacts = (n: number) => `${n} ${n === 1 ? "artifact" : "artifacts"}`;
+/** Manager's rule: only the uncapped owner transfers an owner's or admin's artifacts (403 owner_only). */
+export const TRANSFER_OWNER_ONLY =
+  "Only the owner can transfer an admin's artifacts.";
+export const ownerOnlySource = (source: Member, callerIsOwner: boolean) =>
+  (source.role === "admin" || source.role === "owner") && !callerIsOwner;
+
+export const artifacts = (n: number) =>
+  `${n} ${n === 1 ? "artifact" : "artifacts"}`;
 
 /** Runs every page; resolves with the number moved. `onProgress(moved, remaining)`. */
 export async function runAll(
@@ -60,7 +69,16 @@ export function TransferDialog({
   const name = displayName(member);
   const summary = useTransferSummary(member.id);
   const members = useMembers();
-  const spaces = useSpaces({ kind: "shared" });
+  const state = useMe();
+  // Without spaces every artifact is personal: only a person can receive them (parity 1).
+  const withSpaces =
+    state.status === "authed" && hasFeature(state.me, "spaces");
+  const callerIsOwner =
+    state.status === "authed" &&
+    state.me.user.role === "owner" &&
+    state.me.auth?.cap == null;
+  const blocked = ownerOnlySource(member, callerIsOwner);
+  const spaces = useSpaces({ kind: "shared" }, withSpaces);
   const run = useRunTransfer(member.id);
   const [kind, setKind] = useState<"user" | "space">("user");
   const [userId, setUserId] = useState<string | null>(null);
@@ -151,130 +169,146 @@ export function TransferDialog({
       description={
         trash > 0
           ? `Plus ${trash} in trash: ${trash === 1 ? "it moves" : "they move"} too and ${trash === 1 ? "keeps its" : "keep their"} trash timer.`
-          : "Their space artifacts stay where they are."
+          : withSpaces
+            ? "Their space artifacts stay where they are."
+            : undefined
       }
       footer={
         <>
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             Later
           </Button>
-          <Button disabled={!target || busy} onClick={() => void start()}>
-            Transfer {live}
-          </Button>
+          {!blocked && (
+            <Button disabled={!target || busy} onClick={() => void start()}>
+              Transfer {live}
+            </Button>
+          )}
         </>
       }
     >
-      <div className="grid gap-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]">
-        <fieldset className="grid gap-[var(--oa-space-2)] border-0 p-0">
-          <legend className="sr-only">Transfer to</legend>
-          <label className="flex items-center gap-[var(--oa-space-2)]">
-            <input
-              type="radio"
-              name={radios}
-              checked={kind === "user"}
-              disabled={busy}
-              onChange={() => setKind("user")}
-            />
-            <span>
-              To a person <span className={muted}>· they become the owner</span>
-            </span>
-          </label>
-          <label className="flex items-center gap-[var(--oa-space-2)]">
-            <input
-              type="radio"
-              name={radios}
-              checked={kind === "space"}
-              disabled={busy}
-              onChange={() => setKind("space")}
-            />
-            <span>
-              To a space <span className={muted}>· the company owns them</span>
-            </span>
-          </label>
-        </fieldset>
-        {kind === "user" ? (
-          <div className="grid gap-[6px]">
-            <Label>Give them to</Label>
-            {members.isError ? (
-              <LoadError
-                title="Couldn't load people."
-                error={members.error}
-                onRetry={() => void members.refetch()}
-              />
-            ) : (
-              <OptionSelect
-                label="Give them to"
-                value={userId}
-                options={successors.map((m) => ({
-                  value: m.id,
-                  label: displayName(m),
-                }))}
-                placeholder="Choose a person"
-                disabled={busy}
-                onChange={setUserId}
-              />
-            )}
-            {person && (
-              <p className={muted}>
-                You won't see titles or contents. {displayName(person)} gets
-                them in their Personal, with {name}'s shares kept.
-              </p>
-            )}
-          </div>
-        ) : (
-          <div className="grid gap-[6px]">
-            <Label>Space</Label>
-            {spaces.isError ? (
-              <LoadError
-                title="Couldn't load spaces."
-                error={spaces.error}
-                onRetry={() => void spaces.refetch()}
-              />
-            ) : (
-              <OptionSelect
-                label="Space"
-                value={spaceId}
-                options={shared.map((s) => ({
-                  value: s.id,
-                  label: sharedSpaceName(s.name),
-                }))}
-                placeholder="Choose a space"
-                disabled={busy}
-                onChange={setSpaceId}
-              />
-            )}
-            {space && (
-              <p className={muted}>
-                Everyone with access to {space.name} can open them, by their
-                role.
-              </p>
-            )}
-          </div>
-        )}
-        {progress && (
-          <p role="status" className={muted}>
-            Transferring… {progress.done} of {progress.of}
-            {progress.of > live ? ", including trash." : ""}
-          </p>
-        )}
-        {failed && (
-          <div
-            role="alert"
-            className={`flex flex-wrap items-center gap-[var(--oa-space-2)] ${errorText}`}
-          >
-            <span>
-              {failed.done > 0
-                ? `Moved ${failed.done} of ${failed.of}. ${failed.of - failed.done} didn't move.`
-                : failed.why || "Couldn't transfer the artifacts. Try again."}
-            </span>
-            {failed.done > 0 && (
-              <Button size="sm" variant="outline" onClick={() => void start()}>
-                Retry
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
+      {blocked ? (
+        <p className={muted}>{TRANSFER_OWNER_ONLY}</p>
+      ) : (
+        <div className="grid gap-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]">
+          {withSpaces && (
+            <fieldset className="grid gap-[var(--oa-space-2)] border-0 p-0">
+              <legend className="sr-only">Transfer to</legend>
+              <label className="flex items-center gap-[var(--oa-space-2)]">
+                <input
+                  type="radio"
+                  name={radios}
+                  checked={kind === "user"}
+                  disabled={busy}
+                  onChange={() => setKind("user")}
+                />
+                <span>
+                  To a person{" "}
+                  <span className={muted}>· they become the owner</span>
+                </span>
+              </label>
+              <label className="flex items-center gap-[var(--oa-space-2)]">
+                <input
+                  type="radio"
+                  name={radios}
+                  checked={kind === "space"}
+                  disabled={busy}
+                  onChange={() => setKind("space")}
+                />
+                <span>
+                  To a space{" "}
+                  <span className={muted}>· the company owns them</span>
+                </span>
+              </label>
+            </fieldset>
+          )}
+          {kind === "user" ? (
+            <div className="grid gap-[6px]">
+              <Label>Give them to</Label>
+              {members.isError ? (
+                <LoadError
+                  title="Couldn't load people."
+                  error={members.error}
+                  onRetry={() => void members.refetch()}
+                />
+              ) : (
+                <OptionSelect
+                  label="Give them to"
+                  value={userId}
+                  options={successors.map((m) => ({
+                    value: m.id,
+                    label: displayName(m),
+                  }))}
+                  placeholder="Choose a person"
+                  disabled={busy}
+                  onChange={setUserId}
+                />
+              )}
+              {person && (
+                <p className={muted}>
+                  You won't see titles or contents. {displayName(person)} gets
+                  them in their Personal, with {name}'s shares kept.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="grid gap-[6px]">
+              <Label>Space</Label>
+              {spaces.isError ? (
+                <LoadError
+                  title="Couldn't load spaces."
+                  error={spaces.error}
+                  onRetry={() => void spaces.refetch()}
+                />
+              ) : (
+                <OptionSelect
+                  label="Space"
+                  value={spaceId}
+                  options={shared.map((s) => ({
+                    value: s.id,
+                    label: sharedSpaceName(s.name),
+                  }))}
+                  placeholder="Choose a space"
+                  disabled={busy}
+                  onChange={setSpaceId}
+                />
+              )}
+              {space && (
+                <p className={muted}>
+                  Everyone with access to {space.name} can open them, by their
+                  role.
+                </p>
+              )}
+            </div>
+          )}
+          {progress && (
+            <p role="status" className={muted}>
+              Transferring… {progress.done} of {progress.of}
+              {progress.of > live ? ", including trash." : ""}
+            </p>
+          )}
+          {failed && (
+            <div
+              role="alert"
+              className={`flex flex-wrap items-center gap-[var(--oa-space-2)] ${errorText}`}
+            >
+              <span>
+                {failed.done > 0
+                  ? `Moved ${failed.done} of ${failed.of}. ${failed.of - failed.done} didn't move.`
+                  : failed.why || "Couldn't transfer the artifacts. Try again."}
+              </span>
+              {failed.done > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void start()}
+                >
+                  Retry
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </Modal>
   );
 }

@@ -131,10 +131,13 @@ const openTransfer = async () => {
   const row = (await within(card).findByText("Carol Departed")).closest(
     "li",
   ) as HTMLElement;
+  // "Transfer all to me" is the button; choosing someone is in the menu (parity 1).
+  fireEvent.pointerDown(
+    within(row).getByRole("button", { name: "More for Carol Departed" }),
+    { button: 0, pointerType: "mouse" },
+  );
   fireEvent.click(
-    within(row).getByRole("button", {
-      name: "Transfer Carol Departed's artifacts",
-    }),
+    await screen.findByRole("menuitem", { name: "Transfer to someone else…" }),
   );
   return screen.findByRole("dialog");
 };
