@@ -2,6 +2,7 @@
 import { LIMITS } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api/client";
+import { entryRefusal } from "../src/upload/openable";
 import {
   defaultEntry,
   relativePaths,
@@ -106,6 +107,62 @@ describe("uploadArtifact", () => {
       uploadArtifact({ files: three(), title: "T" }, () => {}, c.signal),
     ).rejects.toThrow();
     expect(seen).toHaveLength(0);
+  });
+});
+
+// The leo white page (2026-10-28): a phone photo became a code artifact.
+// The entry the viewer opens is checked before anything is sent.
+const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+const binary = (name: string) =>
+  new File([JPEG], name, { type: "application/octet-stream" });
+
+describe("entries the viewer can't open", () => {
+  it("refuses a HEIC photo with the export hint, before any request", async () => {
+    await expect(
+      uploadArtifact(
+        { files: [binary("IMG_0042.heic")], title: "T" },
+        () => {},
+      ),
+    ).rejects.toThrow(
+      "IMG_0042.heic can't be opened here. Export it as JPEG or PNG, then upload it again.",
+    );
+    expect(seen).toHaveLength(0);
+  });
+
+  it("refuses a binary file with no viewer (a JPEG, until images open)", async () => {
+    await expect(
+      uploadArtifact({ files: [binary("IMG_0042.jpg")], title: "T" }, () => {}),
+    ).rejects.toThrow(
+      "IMG_0042.jpg can't be opened here. Upload a web page, Markdown, code or a PDF.",
+    );
+    expect(seen).toHaveLength(0);
+  });
+
+  it("lets text under any name through (it opens as code)", async () => {
+    await expect(
+      entryRefusal("LICENSE", file("LICENSE", "MIT License")),
+    ).resolves.toBeNull();
+    await expect(
+      entryRefusal("notes.weird", file("notes.weird", "plain text")),
+    ).resolves.toBeNull();
+  });
+
+  it("checks only the entry: a site's images are assets, not refused", async () => {
+    await expect(
+      entryRefusal("index.html", file("index.html", "<p>hi</p>")),
+    ).resolves.toBeNull();
+    expect(
+      await uploadArtifact(
+        {
+          files: [
+            file("index.html", "<p>hi</p>"),
+            new File([JPEG], "logo.jpg", { type: "image/jpeg" }),
+          ],
+          title: "T",
+        },
+        () => {},
+      ).catch((e) => e),
+    ).not.toBeInstanceOf(UploadValidationError);
   });
 });
 
