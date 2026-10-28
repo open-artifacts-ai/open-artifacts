@@ -267,6 +267,8 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `owner_only` | 403 | an admin (or a capped owner) acting on an org owner or admin: `PATCH`/`DELETE R.member(id)`, `DELETE R.memberIdentity(id, "google")` (#475). Admins keep managing members and guests |
 | `directory_mapping_off` | 403 | a space manager (not an org admin) adds or changes a space mapping (PUT) while `Settings.spaceManagerMappings` is off; list and DELETE stay allowed |
 | `member_synced` | 409 | `DELETE R.spaceMember` on a synced-only row while sync is live. UI copy: "This person comes from a Google group. Remove them from the group in Google, or change their role here." |
+| `unsupported_format` | 400 | publish (`R.artifacts`, `R.versions`, MCP `publish_artifact`) with no `format` whose entry name implies none: `inferFormat` returns `code` only for known text (the `LANGUAGES` keys, `PLAIN_TEXT_EXTENSIONS`, Makefile, Dockerfile), else null. Details `{ path, reason: "no_viewer" }`; message `UNSUPPORTED_FORMAT_MESSAGE`. Nothing is written or consumed |
+| `binary_entry` | 400 | the entry's content doesn't fit its format (`sniff.ts` `checkEntry`, first 8 KB): `code`, `markdown` and `html` need UTF-8 text with no NUL and no known binary signature (reason `binary` or `not_text`), and an upload declared `image/*` (not svg), `audio/*`, `video/*` or `application/octet-stream` (unless a known text name) is refused for them (`content_type`); a `pdf` must start with `%PDF` (`not_pdf`). Details `{ path, reason }`. An uploaded entry costs one R2 range read. Nothing is written or consumed |
 
 ## Test hooks (`hosted/test-hooks.ts`, types only)
 
@@ -291,7 +293,7 @@ personal space per member, Engineering (caller manager, allMembersRole viewer,
 "Contractors", member Dan: `cap: "restricted"`, no allMembersRole); a suspended
 member Carol with `{ live: 2, deleted: 1 }` to transfer; a held sweep
 (`gSales03`); `can` from `artifactCan` on every request; `public_links_off`
-on PATCH and publish; `owner_only` when an admin changes, removes or resets
+on PATCH and publish; the publish format guard (`unsupported_format`, `binary_entry` for inline entries; uploaded entries pass); `owner_only` when an admin changes, removes or resets
 the Google link of the owner or an admin (`actAs: "admin"`; Erin is the seeded
 admin); `Settings.spaceManagerMappings` (default on, PATCH
 admin-only and audited); space managers map `viewer`/`editor` only (never over a manager row); org

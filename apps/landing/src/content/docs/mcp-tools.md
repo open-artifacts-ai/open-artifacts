@@ -15,7 +15,7 @@ Tool inputs are JSON Schema. Each tool returns plain text plus structured output
 | `id` | The artifact to publish a new version of. Leave it out to create one, or pass an id reserved by `create_upload`. |
 | `title` | Required when creating (no `id`). Up to 200 characters. |
 | `description` | Optional. Up to 2,000 characters. |
-| `format` | `html`, `markdown`, `code`, or `pdf`. With `content`, pass `format` or `entry`; when it's left out, it's taken from the entry file's extension (`.html`, `.md`, and `.pdf`; anything else is `code`). |
+| `format` | `html`, `markdown`, `code`, or `pdf`. With `content`, pass `format` or `entry`; when it's left out, it's taken from the entry file's extension (`.html`, `.md` and `.pdf`; a known text file such as source code, `.txt`, `.csv`, `.tsv`, `.log`, `.env`, `.conf` or `.cfg` is `code`). Any other file type, such as a photo or an archive, fails with `unsupported_format`. The entry's content must fit its format: `code`, `markdown` and `html` are UTF-8 text, and a `pdf` starts with `%PDF`; otherwise the publish fails with `binary_entry`. |
 | `content` | A single file as a string. Needs `format` or `entry`. |
 | `files` | Instead of `content`: a map of path to file, for an HTML page with its CSS, JS, and images. Each file is a string, `{ "base64": "…" }` for binary, or `{ "uploadId": "…" }` from `create_upload`. |
 | `entry` | The file to open first. With `files`, it defaults to `index.html`, then `README.md`, then the first file. |

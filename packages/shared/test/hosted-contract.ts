@@ -36,6 +36,7 @@ import {
   SyncStatusSchema,
   TransferResultSchema,
   TransferSummarySchema,
+  UNSUPPORTED_FORMAT_MESSAGE,
 } from "../src/index.js";
 import { fixtures } from "../src/mocks/fixtures.js";
 
@@ -1759,6 +1760,78 @@ export function hostedContract(d: ContractDriver): ContractCases {
         ).toBe(400);
       },
     );
+  });
+
+  describe("publish format guard", () => {
+    const jpeg = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 0, 0x10));
+    const titles = async () =>
+      (
+        (await json(await d.call("GET", `${R.artifacts}?limit=100`))).items as {
+          title: string;
+        }[]
+      ).map((a) => a.title);
+
+    t(
+      "a photo without format: 400 unsupported_format, nothing created",
+      async () => {
+        await d.fresh();
+        const r = await d.call("POST", R.artifacts, {
+          title: "guard-photo",
+          files: { "IMG_0042.JPG": { base64: jpeg } },
+        });
+        expect(r.status).toBe(400);
+        expect((await errCode(r)) as unknown).toEqual({
+          code: "unsupported_format",
+          message: UNSUPPORTED_FORMAT_MESSAGE,
+          details: { path: "IMG_0042.JPG", reason: "no_viewer" },
+        });
+        expect(await titles()).not.toContain("guard-photo");
+      },
+    );
+
+    t("binary content as an explicit format: 400 binary_entry", async () => {
+      await d.fresh();
+      const code = await d.call("POST", R.artifacts, {
+        title: "guard-code",
+        format: "code",
+        entry: "photo.txt",
+        files: { "photo.txt": { base64: jpeg } },
+      });
+      expect(code.status).toBe(400);
+      const e = await errCode(code);
+      expect(e.code).toBe("binary_entry");
+      expect(e.details).toEqual({ path: "photo.txt", reason: "binary" });
+      const pdf = await d.call("POST", R.artifacts, {
+        title: "guard-pdf",
+        format: "pdf",
+        content: "not a pdf",
+      });
+      expect(pdf.status).toBe(400);
+      expect((await errCode(pdf)).details).toEqual({
+        path: "document.pdf",
+        reason: "not_pdf",
+      });
+      const md = await d.call("POST", R.artifacts, {
+        title: "guard-md",
+        format: "markdown",
+        content: "a\u0000b",
+      });
+      expect((await errCode(md)).details).toMatchObject({ reason: "not_text" });
+      expect(await titles()).not.toContain("guard-code");
+    });
+
+    t("known text infers code", async () => {
+      await d.fresh();
+      const r = await d.call("POST", R.artifacts, {
+        title: "guard-csv",
+        files: { "data.csv": "a,b\n1,2\n" },
+      });
+      expect(r.status).toBe(201);
+      const { id } = await json(r);
+      expect((await json(await d.call("GET", R.artifact(id)))).format).toBe(
+        "code",
+      );
+    });
   });
 
   return { names, mswOnly };
