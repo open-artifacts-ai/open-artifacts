@@ -374,7 +374,10 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         (scope === "team" && a.visibility === "team")) &&
       (!q.get("format") || a.format === q.get("format")) &&
       (!q.get("visibility") || a.visibility === q.get("visibility")) &&
-      (!owner || a.owner.id === owner || a.owner.email === owner) &&
+      (!owner ||
+        (owner.trim().toLowerCase() === "me"
+          ? a.owner.id === me.user.id
+          : a.owner.id === owner || a.owner.email === owner)) &&
       (!q.get("agent") || a.lastAgent?.name === q.get("agent")) &&
       (!needle ||
         a.title.toLowerCase().includes(needle) ||

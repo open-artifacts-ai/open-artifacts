@@ -821,7 +821,11 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
   if (q.format) conds.push(eq(artifacts.format, q.format));
   if (q.visibility) conds.push(eq(artifacts.visibility, q.visibility));
   if (q.agent !== undefined) conds.push(eq(artifacts.lastAgentName, q.agent));
-  if (q.owner !== undefined) {
+  // owner "me" (any case) is the caller; anything else is an email.
+  if (q.owner !== undefined && q.owner.trim().toLowerCase() === "me") {
+    if (caller.kind !== "user") throw bad("Invalid owner email", "owner");
+    conds.push(eq(artifacts.ownerId, caller.user.id));
+  } else if (q.owner !== undefined) {
     const e = normalizeEmail(q.owner);
     if (!e) throw bad("Invalid owner email", "owner");
     conds.push(
@@ -874,7 +878,13 @@ export async function list(
 ): Promise<Page<ArtifactSummary>> {
   if (caller.kind !== "user")
     throw new ApiError("unauthorized", "Sign in required");
-  if (q.spaceId !== undefined) await checkListSpace(env, caller, q.spaceId);
+  if (q.spaceId !== undefined) {
+    await checkListSpace(env, caller, q.spaceId);
+    // mine is the caller's personal space: inside a shared one it can only
+    // be empty, so say so (the dashboard's "Mine" tab sends owner=me).
+    if (q.scope === "mine" && q.spaceId !== caller.user.id)
+      throw bad('scope "mine" is the personal space; use owner=me', "spaceId");
+  }
   const rows = await listQuery(env, caller, q);
   const page = rows.slice(0, q.limit);
   const last = page[page.length - 1];

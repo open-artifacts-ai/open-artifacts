@@ -1842,6 +1842,20 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     | ((space: { id: string; kind: string } | null | undefined) => boolean)
     | null => {
     if (scope === "spaces") return (sp) => sp?.kind === "shared";
+    if (scope === "mine" && spaceId !== undefined) {
+      const sp = findSpace(spaceId);
+      if (!sp) return notFound();
+      if (sp.kind === "personal" && sp.id !== me.user.id)
+        return err("space_personal", "Pick a shared space");
+      if (sp.kind === "shared" && !roleIn(sp)) return notFound();
+      if (sp.id !== me.user.id)
+        return err(
+          "bad_request",
+          'scope "mine" is the personal space; use owner=me',
+          { path: "spaceId", reason: "invalid" },
+        );
+      return null;
+    }
     if (scope !== "space") return null;
     const sp = findSpace(spaceId);
     if (!sp) return notFound();

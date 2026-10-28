@@ -568,6 +568,58 @@ export function hostedContract(d: ContractDriver): ContractCases {
           .parse(await json(await d.call("GET", R.members)))[0]?.status,
       ).toBe("active");
     });
+
+    t(
+      "owner=me lists the caller's own; scope=mine with a shared spaceId is 400",
+      async () => {
+        await d.fresh({ hosted: true });
+        const me = Strict.Me.parse(await json(await d.call("GET", R.me)));
+        const eng = me.spaces?.find((s) => s.name === "Engineering")
+          ?.id as string;
+        const list = async (q: string) => {
+          const r = await d.call("GET", `${R.artifacts}?${q}`);
+          expect(r.status, q).toBe(200);
+          return PageSchema(Strict.ArtifactSummary).parse(await json(r)).items;
+        };
+        const titles = (xs: { title: string }[]) => xs.map((a) => a.title);
+        expect(titles(await list("scope=all&limit=100"))).toContain(
+          "Shared draft",
+        );
+        const own = await list("scope=all&owner=me&limit=100");
+        expect(own.length).toBeGreaterThan(0);
+        expect(own.every((a) => a.owner.id === me.user.id)).toBe(true);
+        expect(titles(own)).toEqual(
+          expect.arrayContaining(["Landing page", "Meeting notes"]),
+        );
+        expect(titles(own)).not.toContain("Shared draft");
+        // The literal "me" is the caller; an email still works.
+        expect(
+          titles(
+            await list(
+              `scope=all&owner=${encodeURIComponent(me.user.email)}&limit=100`,
+            ),
+          ).sort(),
+        ).toEqual(titles(own).sort());
+        // "Mine" inside a shared space: scope=space plus owner=me.
+        expect(
+          titles(await list(`scope=space&spaceId=${eng}&owner=me`)),
+        ).toEqual(["Meeting notes"]);
+        const bad = await d.call(
+          "GET",
+          `${R.artifacts}?scope=mine&spaceId=${eng}`,
+        );
+        expect(bad.status).toBe(400);
+        const e = ApiErrorSchema.parse(await json(bad)).error;
+        expect(e.code).toBe("bad_request");
+        expect(e.details).toMatchObject({ path: "spaceId" });
+        // The caller's own personal space is still fine with mine.
+        expect(
+          titles(
+            await list(`scope=mine&spaceId=${me.personalSpaceId}&limit=100`),
+          ),
+        ).toContain("Landing page");
+      },
+    );
   });
 
   describe("hosted mocks: restriction, public links, admin self-add, audit", () => {

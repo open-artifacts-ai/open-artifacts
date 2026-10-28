@@ -288,9 +288,11 @@ export const ListQuerySchema = z
     scope: z
       .enum(["mine", "shared", "team", "all", "space", "spaces"])
       .default("all"),
+    /** Narrows any scope to one space. With scope "mine", only the caller's personal space (else 400, path spaceId). */
     spaceId: z.string().optional(),
     format: FormatSchema.optional(),
     visibility: VisibilitySchema.optional(),
+    /** An owner's email, or the literal "me" for the caller. */
     owner: z.string().optional(),
     agent: z.string().optional(),
     q: z.string().optional(),
