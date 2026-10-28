@@ -884,7 +884,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       if (!u)
         return new HttpResponse(null, {
           status: 302,
-          headers: { location: "/sign-in?error=no_access" },
+          headers: { location: "/sign-in?error=no_access&via=google" },
         });
       me.user = u;
       me.auth = {

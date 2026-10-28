@@ -12,7 +12,8 @@ hosted off.
 - **The SPA owns sign-in.** The chooser and code forms live at `SIGN_IN_PAGE`
   (`/sign-in`). The server is JSON-only; every refused redirect sign-in
   (`no_access` included) lands on `/sign-in?error=<SignInError>&next=…`, never
-  `PAGES.noAccess`.
+  `PAGES.noAccess`. A `no_access` redirect also carries `via=access|google`
+  (`SignInVia`): the provider whose identity wasn't admitted.
 - **No access is 404**, never 403. The exceptions are explicit codes:
   `space_forbidden` (403) on publish or move into a space the caller can't
   publish to, or on a member or mapping change the caller's role can't make
@@ -110,7 +111,7 @@ Installs in one environment share a single Google client through the auth broker
 | `GET AUTH.providers` `/auth/providers` | `AuthProviders` (public, no-store, no D1) |
 | `GET AUTH.loginGoogle` `/auth/login/google?next&reauth` | 302 to Google or the broker; 404 when Google is off. `reauth=1` forces a fresh Google authentication (`max_age=0`) for break-glass |
 | `GET R.me` (break-glass) | 401 `break_glass_required` details `BreakGlassRequiredDetails { fresh }` when the session is the org owner's and a directory customer_mismatch refuses them. `fresh: true`: the session already meets break-glass, so open the directory settings; `false`: sign in with `AUTH.loginGoogle?reauth=1` first. Any other refusal stays a plain 401 `unauthorized` |
-| `GET AUTH.callbackGoogle` `/auth/callback/google` | 302 `next`; any refusal (incl. `no_access`) 302 `SIGN_IN_PAGE?error=SignInError&next` only |
+| `GET AUTH.callbackGoogle` `/auth/callback/google` | 302 `next`; any refusal (incl. `no_access`) 302 `SIGN_IN_PAGE?error=SignInError&next` only; `no_access` adds `&via=google` |
 | `POST AUTH.codeRequest` `/auth/code/request` | `CodeRequest` → 202 `CodeRequested` |
 | `POST AUTH.codeVerify` `/auth/code/verify` | `CodeVerify` → 200 `CodeVerified` |
 | `DELETE R.memberIdentity(id, "google")` | 204; owner/admin reset a member's Google link (never the owner's: the owner on themselves is 404). An admin or owner target needs the uncapped OWNER: an admin acting on an admin or the owner gets 403 `owner_only` whether or not they are linked (checked by role before the link, so it reveals no link), also when the target is promoted to admin mid-request (enforced in the write; nothing changes). For any other target, no link is 404. A capped admin gets 404, as on every members route. |
@@ -119,6 +120,7 @@ Installs in one environment share a single Google client through the auth broker
 |---|---|
 | `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[], hosted? }`; only fully configured providers; `turnstileSiteKey` whenever Turnstile is configured; `hosted` true only on HOSTED=1 (the server always sends it; absent reads as false) |
 | `SignInErrorSchema` | `tenant \| identity_conflict \| removed \| no_access \| expired \| failed` |
+| `SignInViaSchema` | `access \| google`: `?via=` on every `error=no_access` redirect (Access callback in direct mode: access; Google callback: google); absent on other errors |
 | `CODE_POLICY` | `{ length: 8, ttlSec: 600, resendAfterSec: 60, maxAttempts: 5 }` |
 | `CodeRequestSchema` | `{ email, next?, turnstileToken? }` |
 | `CodeRequestedSchema` | `{ maskedEmail, expiresIn, resendAfter, codeLength }`; same 202 for every well-formed address, and when the email pool is full (the pool never 429s) |

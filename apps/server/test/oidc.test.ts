@@ -988,7 +988,7 @@ describe("session epoch on the Access callback (#369)", () => {
 describe("Access refusals in direct mode", () => {
   const direct = { ...env, AUTH_PROVIDERS: "access,email" } as Env;
   const want = (next: string) =>
-    `${SIGN_IN_PAGE}?error=no_access&next=${encodeURIComponent(next)}`;
+    `${SIGN_IN_PAGE}?error=no_access&next=${encodeURIComponent(next)}&via=access`;
 
   it("the providers list carries access with its start URL (the SPA's button)", async () => {
     const r = await call(AUTH.providers, {}, direct);

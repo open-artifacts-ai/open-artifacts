@@ -284,7 +284,7 @@ describe("direct-mode sign-in routes", () => {
           sub: `s-${c}`,
         }),
       ),
-    ).toBe(`${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx`);
+    ).toBe(`${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx&via=google`);
   });
 
   it("a stale state retries once, then expired on the sign-in page", async () => {

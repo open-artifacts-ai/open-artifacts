@@ -6,6 +6,7 @@ import {
   RoleSchema,
   SIGN_IN_PAGE,
   type SignInError,
+  type SignInVia,
 } from "@oa/shared";
 import { logAuth, oidcStage } from "../auth/audit.js";
 import { authConfig } from "../auth/config.js";
@@ -81,10 +82,22 @@ ${FAVICON_TAGS}
 
 const EmailSchema = MemberSchema.shape.email;
 
-/** Every refused redirect sign-in lands here (#359): the SPA shows the reason. */
-const toSignIn = (error: SignInError, next: string, cookies: string[]) =>
+/**
+ * Every refused redirect sign-in lands here (#359): the SPA shows the reason.
+ * `next` is already safe (safeNext, in the OIDC state). A no_access refusal
+ * also names the provider that refused (`via`, SignInVia), so the SPA can
+ * say which account wasn't admitted.
+ */
+const toSignIn = (
+  error: SignInError,
+  next: string,
+  cookies: string[],
+  via: SignInVia,
+) =>
   redirect(
-    `${SIGN_IN_PAGE}?error=${error}&next=${encodeURIComponent(next)}`,
+    `${SIGN_IN_PAGE}?error=${error}&next=${encodeURIComponent(next)}${
+      error === "no_access" ? `&via=${via}` : ""
+    }`,
     cookies,
   );
 
@@ -137,7 +150,7 @@ export function mountAuth(app: AppType): void {
     // item 12); Access-only installs keep PAGES.noAccess.
     const refuse = (next: string) =>
       signInMode(authConfig(c.env)) === "direct"
-        ? toSignIn("no_access", next, clear)
+        ? toSignIn("no_access", next, clear, "access")
         : redirect(PAGES.noAccess, clear);
     try {
       const { email, name, next } = await handleCallback(
@@ -224,7 +237,7 @@ export function mountAuth(app: AppType): void {
       if (!r.ok) {
         logOidcFail(r.reason);
         logAuth({ provider: "google", outcome: "refused", stage: r.reason });
-        return toSignIn(r.reason, id.next, clear);
+        return toSignIn(r.reason, id.next, clear, "google");
       }
       try {
         await onGoogleSignIn(c.env, r.user);
@@ -240,6 +253,7 @@ export function mountAuth(app: AppType): void {
             e.why === "suspended" || e.why === "gone" ? "removed" : "failed",
             id.next,
             clear,
+            "google",
           );
         }
         logAuth({ evt: "directory_sync_failed" });
@@ -251,7 +265,7 @@ export function mountAuth(app: AppType): void {
         (await getMismatchOwner(c.env, r.user.id));
       if (!row) {
         logAuth({ provider: "google", outcome: "error", stage: "no_user" });
-        return toSignIn("failed", id.next, clear);
+        return toSignIn("failed", id.next, clear, "google");
       }
       // Break-glass (T18) needs a forced re-authentication: asked for
       // (?reauth=1, max_age=0) and confirmed by a recent auth_time.
@@ -286,7 +300,7 @@ export function mountAuth(app: AppType): void {
         stage: catchStage(e),
       });
       if (e instanceof OidcStateError) {
-        if (e.retry) return toSignIn("expired", e.next, clear);
+        if (e.retry) return toSignIn("expired", e.next, clear, "google");
         return redirect(
           `${AUTH.loginGoogle}?next=${encodeURIComponent(e.next)}&retry=1`,
           clear,
@@ -297,6 +311,7 @@ export function mountAuth(app: AppType): void {
           e.stage === "tenant" ? "tenant" : "failed",
           e.next,
           clear,
+          "google",
         );
       if (e instanceof ApiError) {
         const res = toErrorResponse(e);
@@ -306,7 +321,7 @@ export function mountAuth(app: AppType): void {
       }
       // Anything unexpected (D1, signing): the sign-in page, never a 500.
       logOidcFail("internal");
-      return toSignIn("failed", next, clear);
+      return toSignIn("failed", next, clear, "google");
     }
   });
 
