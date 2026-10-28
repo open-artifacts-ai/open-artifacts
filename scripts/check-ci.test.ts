@@ -1266,6 +1266,15 @@ describe("release cadence", () => {
         "needs.release-please.outputs.release_created == 'true'",
       );
       expect(String(v.if)).toContain("always()");
+      // And after a dispatch whose prod deploy succeeded (a held release's
+      // guarded deploy), on the dispatched tag.
+      expect(String(v.if)).toContain(
+        "github.event_name == 'workflow_dispatch' && inputs.tag != '' && !contains(inputs.tag, '-') && (needs.deploy-prod.result == 'success' || needs.deploy-prod.result == 'failure')",
+      );
+      expect(v.env.TAG).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ needs.release-please.outputs.tag_name || inputs.tag }}",
+      );
     });
     it("can only write issues, and runs the tested script on the new tag", () => {
       expect(v.permissions).toEqual({ contents: "read", issues: "write" });
@@ -1280,6 +1289,16 @@ describe("release cadence", () => {
     it("is skipped for pre-release tags", () => {
       expect(String(v.if)).toMatch(
         /!contains\(needs\.release-please\.outputs\.tag_name, '-'\)/,
+      );
+    });
+    it("skips prod when deploy-prod skipped itself or the migration guard held the release", () => {
+      expect(rp.jobs["deploy-prod"].outputs.held).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ steps.migration.outputs.hold }}",
+      );
+      expect(v.env.SKIP_PROD).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}",
       );
     });
   });

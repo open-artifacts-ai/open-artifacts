@@ -509,11 +509,17 @@ describe("release-please.yml deploy-prod invariants (#172)", () => {
       expect(s, mode).toContain("steps.guard.outputs.deploy == 'true'");
     }
   });
-  it("verify-release tolerates a skipped deploy-prod (always(), no result gate)", () => {
+  it("verify-release tolerates a skipped deploy-prod on a release (always(), result gate only on the dispatch branch, which alerts on a failed deploy too)", () => {
     const v = job("verify-release");
     expect(v).toContain("deploy-prod");
     expect(v).toMatch(/if: \$\{\{ always\(\)/);
-    expect(v).not.toMatch(/needs\.deploy-prod\.result/);
+    // The result gate is only inside the workflow_dispatch clause: a guarded
+    // dispatch is verified once its prod deploy ran, and a failed one gets the
+    // not-live blocker issue.
+    expect(v.match(/needs\.deploy-prod\.result/g) ?? []).toHaveLength(2);
+    expect(v).toContain(
+      "(github.event_name == 'workflow_dispatch' && inputs.tag != '' && !contains(inputs.tag, '-') && (needs.deploy-prod.result == 'success' || needs.deploy-prod.result == 'failure'))",
+    );
   });
   it("deploy-prod passes the sign-in repository variables through env, never inline in run:", () => {
     for (const v of [

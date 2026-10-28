@@ -91,6 +91,8 @@ jobs:
     needs: [release-please]
     outputs:
       installed: ${{ steps.preflight.outputs.installed }}
+      # 'true' when the migration guard held the deploy (prod stays on the old version).
+      held: ${{ steps.migration.outputs.hold }}
     if: ${{ always() && github.ref == 'refs/heads/main' && (needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.tag != '')) }}
     runs-on: ubuntu-latest
     permissions:
@@ -295,20 +297,24 @@ jobs:
   # `blocker` issue is opened and this job fails. Skipped for pre-release tags.
   verify-release:
     needs: [release-please, deploy-prod, deploy-landing, deploy-demo]
-    if: ${{ always() && needs.release-please.outputs.release_created == 'true' && !contains(needs.release-please.outputs.tag_name, '-') }}
+    # A new stable release, or a dispatch whose prod deploy ran (the guarded deploy
+    # of a held release). A failed or restored dispatch leaves prod on the old
+    # version, so the check opens the "Release vX not live" blocker: the alert.
+    if: ${{ always() && ((needs.release-please.outputs.release_created == 'true' && !contains(needs.release-please.outputs.tag_name, '-')) || (github.event_name == 'workflow_dispatch' && inputs.tag != '' && !contains(inputs.tag, '-') && (needs.deploy-prod.result == 'success' || needs.deploy-prod.result == 'failure'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
     env:
-      TAG: ${{ needs.release-please.outputs.tag_name }}
+      TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
       GH_TOKEN: ${{ github.token }}
-      # deploy-prod skipped itself because prod is not installed: do not verify prod.
-      SKIP_PROD: ${{ needs.deploy-prod.outputs.installed == 'false' && '--skip-prod' || '' }}
+      # deploy-prod skipped itself (prod not installed) or the migration guard held
+      # the release for a guarded dispatch: prod is not on this tag, so don't verify it.
+      SKIP_PROD: ${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
