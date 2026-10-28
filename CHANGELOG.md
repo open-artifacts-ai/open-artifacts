@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.73.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.72.0...v0.73.0) (2026-10-28)
+
+
+### Features
+
+* **dashboard:** Trash view: restore deleted artifacts within 30 days (item 9) ([#766](https://github.com/open-artifacts-ai/open-artifacts/issues/766)) ([be229c8](https://github.com/open-artifacts-ai/open-artifacts/commit/be229c82a98586a151b4cacd97009e13543326e0))
+* **render:** the image view: one &lt;img&gt; of the entry, fit to the frame ([#783](https://github.com/open-artifacts-ai/open-artifacts/issues/783)) ([7e7bf36](https://github.com/open-artifacts-ai/open-artifacts/commit/7e7bf36f337a7193d07282eaed04208b8b813bd6))
+* **spaces:** Every space group rows can't be removed or lowered below the group (item 19) ([#810](https://github.com/open-artifacts-ai/open-artifacts/issues/810)) ([8bf3cb2](https://github.com/open-artifacts-ai/open-artifacts/commit/8bf3cb285cdee10750266216c01c022e753bdea6))
+* **spaces:** New space has "Add me as a manager", on by default ([#807](https://github.com/open-artifacts-ai/open-artifacts/issues/807)) ([b36b96d](https://github.com/open-artifacts-ai/open-artifacts/commit/b36b96d40e8a1c485230a2580d55b54b7f5f99d6))
+* **viewer:** View only follows can.dataWrite on every install (review item 28) ([#794](https://github.com/open-artifacts-ai/open-artifacts/issues/794)) ([6ff1991](https://github.com/open-artifacts-ai/open-artifacts/commit/6ff199179376959f79f58f470904743f54c57547))
+
+
+### Bug Fixes
+
+* **auth-broker:** a late Google return goes back to the install as expired ([#809](https://github.com/open-artifacts-ai/open-artifacts/issues/809)) ([36e00c2](https://github.com/open-artifacts-ai/open-artifacts/commit/36e00c267a7e1ad1915f3554bd9ac933fc30519c))
+* **auth:** later review items 13, 33, 36b, 40 ([#813](https://github.com/open-artifacts-ai/open-artifacts/issues/813)) ([2a6cdf2](https://github.com/open-artifacts-ai/open-artifacts/commit/2a6cdf2947508559277991641874479c375a7209))
+* **spaces:** the creator manages a new space (addMe, default true) ([#806](https://github.com/open-artifacts-ai/open-artifacts/issues/806)) ([685c7e7](https://github.com/open-artifacts-ai/open-artifacts/commit/685c7e79e5fe0d9dee8e921bf4494f7b1e8c6751))
+* **viewer:** the shell bridge follows the artifact's live access settings (item 38) ([#814](https://github.com/open-artifacts-ai/open-artifacts/issues/814)) ([695bd93](https://github.com/open-artifacts-ai/open-artifacts/commit/695bd9399bdc140eae2f773541aa35d9f04aab85))
+
 ## [0.72.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.71.0...v0.72.0) (2026-10-28)
 
 
