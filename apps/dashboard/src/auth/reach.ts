@@ -2,9 +2,10 @@
 // invite, an invite that may not sign in, and a share whose recipient can't
 // sign in yet. The server's messages are never shown for these.
 import { useAuthProviders } from "../api/auth";
-import type {
-  InviteUnreachableReason,
-  SignInProviderId,
+import {
+  type InviteUnreachableReason,
+  SIGN_IN_METHOD_ORDER,
+  type SignInProviderId,
 } from "../api/contract";
 
 /** "a", "a or b", "a, b or c". */
@@ -45,7 +46,6 @@ const METHOD_PHRASE: Record<SignInProviderId, string> = {
   access: "your organization's single sign-on",
   email: "a one-time code sent to that address",
 };
-const METHOD_ORDER: readonly SignInProviderId[] = ["google", "access", "email"];
 
 /**
  * How the recipient signs in, from the server's `signInMethods` for that
@@ -55,7 +55,7 @@ const METHOD_ORDER: readonly SignInProviderId[] = ["google", "access", "email"];
 export const signInWith = (
   methods: readonly SignInProviderId[] | undefined,
 ): string | null => {
-  const parts = METHOD_ORDER.filter((m) => methods?.includes(m)).map(
+  const parts = SIGN_IN_METHOD_ORDER.filter((m) => methods?.includes(m)).map(
     (m) => METHOD_PHRASE[m],
   );
   return parts.length ? parts.join(" or ") : null;

@@ -56,6 +56,7 @@ export {
   RestrictedGroupSchema,
   type Restriction,
   type ShareRecipient,
+  SIGN_IN_METHOD_ORDER,
   SIGN_IN_PAGE,
   type SignInError,
   SignInErrorSchema,

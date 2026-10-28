@@ -181,7 +181,7 @@ const share = async (email: string) => {
   const title = await screen.findByText(
     new RegExp(`^Shared with ${email.replace(".", "\\.")}\\.?$`),
   );
-  const box = title.closest("[role=alert]");
+  const box = title.closest("[data-slot=alert]");
   if (!box) throw new Error(`no box for ${email}`);
   return box as HTMLElement;
 };
@@ -281,5 +281,4 @@ describe("share box when the recipient can't sign in", () => {
       expect(screen.queryByText(/can't sign in until/)).toBeNull(),
     );
   });
-});
 });
