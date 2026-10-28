@@ -880,7 +880,10 @@ describe("prod and staging tokens never cross", () => {
     const job = w.jobs["deploy-prod"];
     const steps = job.steps as {
       id?: string;
+      name?: string;
       if?: string;
+      uses?: string;
+      with?: Record<string, unknown>;
       env?: Record<string, string>;
       run?: string;
     }[];
