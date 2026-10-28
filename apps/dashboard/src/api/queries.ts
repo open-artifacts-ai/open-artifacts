@@ -420,6 +420,12 @@ export const useRemoveMember = (onOwnerOnly?: (id: string) => void) =>
  * POST R.noticeDismiss (parity 2): the owner's one-time notice goes for good.
  * Hidden at once; /me refetches to confirm. A failure toasts and it returns.
  */
+/** Which Me.notices field each dismissable notice is. */
+const NOTICE_FIELD = {
+  guest_shares: "guestShares",
+  guest_summary: "guestSummary",
+} as const satisfies Record<NoticeId, keyof NonNullable<Me["notices"]>>;
+
 export const useDismissNotice = () => {
   const qc = useQueryClient();
   return useMutation({
@@ -427,10 +433,11 @@ export const useDismissNotice = () => {
       api.send("POST", R.noticeDismiss(notice), undefined),
     onMutate: (notice) => {
       const before = qc.getQueryData<Me>(qk.me);
-      if (before?.notices && notice === "guest_shares")
+      const key = NOTICE_FIELD[notice];
+      if (before?.notices)
         qc.setQueryData<Me>(qk.me, {
           ...before,
-          notices: { ...before.notices, guestShares: undefined },
+          notices: { ...before.notices, [key]: undefined },
         });
       return { before };
     },
