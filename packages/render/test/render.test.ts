@@ -1,7 +1,12 @@
 // @vitest-environment happy-dom
 import { LIMITS } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { renderCode } from "../src/code";
+import {
+  CODE_MAX_BYTES,
+  renderCode,
+  textOf,
+  unpreviewableHtml,
+} from "../src/code";
 import { prepareMarkdown, renderMarkdown } from "../src/markdown";
 import { truncateUtf8, versionFromPath } from "../src/shell";
 import { applyTheme, watchShellTheme } from "../src/theme";
@@ -206,5 +211,86 @@ describe("boot readiness marker", () => {
       ),
     );
     expect(document.body.textContent).toContain("readybody");
+  });
+});
+
+// A phone JPEG published as code froze the viewer (leo, 2026-10-28): binary
+// and oversized entries never reach the highlighter.
+const JPEG = new Uint8Array([
+  0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+]);
+
+describe("textOf", () => {
+  it("refuses a JPEG (invalid UTF-8 and NUL bytes up front)", () => {
+    expect(textOf(JPEG)).toEqual({ ok: false, reason: "binary" });
+  });
+
+  it("refuses a NUL byte in otherwise plain text", () => {
+    expect(textOf(new TextEncoder().encode("abc\0def"))).toEqual({
+      ok: false,
+      reason: "binary",
+    });
+  });
+
+  it("refuses invalid UTF-8 with no NUL", () => {
+    expect(textOf(new Uint8Array([0x61, 0xc3, 0x28, 0x62]))).toEqual({
+      ok: false,
+      reason: "binary",
+    });
+  });
+
+  it("refuses anything over the cap before decoding", () => {
+    expect(textOf(new Uint8Array(CODE_MAX_BYTES + 1).fill(0x61))).toEqual({
+      ok: false,
+      reason: "too_large",
+    });
+  });
+
+  it("keeps UTF-8 text, even with a character cut at the 8 KB sniff boundary", () => {
+    const text = `${"a".repeat(8 * 1024 - 1)}é and more`;
+    expect(textOf(new TextEncoder().encode(text))).toEqual({ ok: true, text });
+  });
+});
+
+describe("unpreviewableHtml", () => {
+  it("says why and links the download, escaped", () => {
+    const el = dom(
+      unpreviewableHtml("binary", 'https://c.test/a"b', "x<y>.jpg"),
+    );
+    expect(el.textContent).toContain("This file can't be shown.");
+    const a = el.querySelector("a");
+    expect(a?.getAttribute("href")).toBe('https://c.test/a"b');
+    expect(a?.getAttribute("download")).toBe("x<y>.jpg");
+    expect(a?.textContent).toBe("Download");
+    expect(dom(unpreviewableHtml("too_large", "u", "n")).textContent).toContain(
+      "This file is too large to preview.",
+    );
+  });
+});
+
+describe("boot with a binary code entry", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.head.innerHTML = "";
+    document.body.innerHTML = "";
+    document.documentElement.removeAttribute("data-oa-rendered");
+  });
+
+  it("shows the note with Download, never the code view, and still marks itself rendered", async () => {
+    document.head.innerHTML =
+      '<meta name="oa-format" content="code"><meta name="oa-entry" content="IMG_0042.jpg"><meta name="oa-language" content="text">';
+    vi.stubGlobal("fetch", async () => new Response(JPEG));
+    vi.resetModules();
+    await import("../src/index");
+    await vi.waitFor(() =>
+      expect(document.documentElement.hasAttribute("data-oa-rendered")).toBe(
+        true,
+      ),
+    );
+    expect(document.querySelector(".oa-code")).toBeNull();
+    expect(document.body.textContent).toContain("This file can't be shown.");
+    expect(
+      document.querySelector(".oa-unpreviewable a")?.getAttribute("download"),
+    ).toBe("IMG_0042.jpg");
   });
 });

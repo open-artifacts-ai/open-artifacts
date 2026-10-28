@@ -27,6 +27,7 @@ import {
   RestrictedGroupSchema,
   SearchHitSchema,
   SettingsSchema,
+  SPACE_NAME_RESERVED_MESSAGE,
   SpaceCandidateSchema,
   SpaceForbiddenDetailsSchema,
   SpaceMemberGroupSchema,
@@ -361,6 +362,44 @@ export function hostedContract(d: ContractDriver): ContractCases {
       });
       expect((await errCode(pub)).code).toBe("space_forbidden");
     });
+
+    t(
+      'a shared space named "Personal" (trimmed, any case) is 400 space_name_reserved on create and rename',
+      async () => {
+        await d.fresh({ hosted: true });
+        const reserved = {
+          code: "space_name_reserved",
+          message: SPACE_NAME_RESERVED_MESSAGE,
+          details: { field: "name" },
+        };
+        for (const name of ["Personal", "  personal ", "PERSONAL"]) {
+          const r = await d.call("POST", R.spaces, { name });
+          expect(r.status).toBe(400);
+          expect(await errCode(r)).toEqual(reserved);
+        }
+        const sales = Strict.Space.parse(
+          await json(await d.call("POST", R.spaces, { name: "Sales" })),
+        );
+        const rename = await d.call("PATCH", R.space(sales.id), {
+          name: " Personal",
+        });
+        expect(rename.status).toBe(400);
+        expect(await errCode(rename)).toEqual(reserved);
+        expect(
+          Strict.Space.parse(await json(await d.call("GET", R.space(sales.id))))
+            .name,
+        ).toBe("Sales");
+        // Only the whole name is reserved.
+        const ok = Strict.Space.parse(
+          await json(
+            await d.call("PATCH", R.space(sales.id), {
+              name: "Personal finance",
+            }),
+          ),
+        );
+        expect(ok.name).toBe("Personal finance");
+      },
+    );
 
     t("spaces, members, mappings, directory, transfer", async () => {
       await d.fresh({ hosted: true });

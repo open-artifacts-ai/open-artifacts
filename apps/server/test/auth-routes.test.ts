@@ -432,6 +432,31 @@ describe("Me sign-in fields", () => {
     });
   });
 
+  it("tier: the hosted install's TIER; null off hosted, or for an unknown value; absent access-only", async () => {
+    const { cookie } = await login(uniq("tier"));
+    const hosted = (TIER?: string) =>
+      direct({
+        HOSTED: "1",
+        AUTH_BROKER_URL: "https://auth.h.test",
+        BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+        ...(TIER === undefined ? {} : { TIER }),
+      });
+    for (const t of ["trial", "team", "business"] as const)
+      expect((await me(hosted(t), cookie)).instance.tier).toBe(t);
+    expect((await me(hosted(), cookie)).instance.tier).toBeNull();
+    expect((await me(hosted("enterprise"), cookie)).instance.tier).toBeNull();
+    // Self-hosted direct sign-in: never a tier, whatever TIER says.
+    expect(
+      (await me(direct({ TIER: "team" }), cookie)).instance.tier,
+    ).toBeNull();
+    // Reported only: features still follow FEATURES (provisioning derives them).
+    expect((await me(hosted("team"), cookie)).instance.features).not.toContain(
+      "sync_frozen",
+    );
+    // Access-only installs keep today's shape.
+    expect((await me(env, cookie)).instance.tier).toBeUndefined();
+  });
+
   it("a guest under direct sign-in is read-only with cap guest", async () => {
     const { cookie } = await login(uniq("guest", "x.com"), "guest");
     expect((await me(direct(), cookie)).auth).toMatchObject({

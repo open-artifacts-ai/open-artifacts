@@ -72,12 +72,6 @@ async function openDetails(page: Page) {
   await page.getByRole("tab", { name: "Details" }).click();
 }
 
-// Review item 2: GET /me never returns `spaces` or `personalSpaceId`, so a
-// member never sees the spaces they manage or belong to. Backend owns the fix;
-// these flip to passing then (and test.fail turns that into a failure, so
-// whoever lands it drops the marker).
-const ME_SPACES = "review item 2: GET /me has no spaces or personalSpaceId";
-
 const page1 = (title: string) => ({
   title,
   format: "html" as const,
@@ -140,7 +134,6 @@ test("admin: Spaces settings shows the space with its manager and viewer", async
 test("space manager: manages their space, but Members and Directory stay closed", async ({
   browser,
 }) => {
-  test.fail(true, ME_SPACES);
   const { mgr, viewer, space } = await world(browser);
   const page = mgr.page;
   await page.goto(`/settings/spaces?space=${space.id}`);
@@ -160,7 +153,6 @@ test("space manager: manages their space, but Members and Directory stay closed"
 test("Move: the manager moves a personal artifact into the space; the viewer can open it but not move it", async ({
   browser,
 }) => {
-  test.fail(true, ME_SPACES);
   const { mgr, viewer, space } = await world(browser);
   const title = `Plan ${uniq()}`;
   const { id } = await publishViaApi(await createToken(mgr.page), page1(title));

@@ -16,6 +16,7 @@ import { SearchPage } from "./library/Search";
 import type { Scope } from "./library/useLibraryQuery";
 import { NoAccess } from "./pages/NoAccess";
 import { NotFound } from "./pages/NotFound";
+import { RenderError } from "./pages/RenderError";
 import { SignIn } from "./pages/SignIn";
 import { Agents } from "./settings/Agents";
 import { Directory } from "./settings/Directory";
@@ -234,7 +235,14 @@ const routeTree = root.addChildren([
 ]);
 
 export const createAppRouter = (history?: RouterHistory) =>
-  createRouter({ routeTree, history, parseSearch, stringifySearch });
+  createRouter({
+    routeTree,
+    history,
+    parseSearch,
+    stringifySearch,
+    // A page that throws renders this in the layout's outlet, never a blank app.
+    defaultErrorComponent: RenderError,
+  });
 
 export const router = createAppRouter();
 

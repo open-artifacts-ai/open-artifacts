@@ -30,6 +30,7 @@ export const ERROR_CODES = [
   "member_synced",
   "owner_only",
   "break_glass_required",
+  "space_name_reserved",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -89,6 +90,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   owner_only: 403,
   /** GET R.me for the org owner refused by a directory customer_mismatch; details BreakGlassRequiredDetails { fresh }. */
   break_glass_required: 401,
+  /** POST R.spaces or a PATCH R.space rename to "Personal" (trimmed, any case); details { field: "name" }, message SPACE_NAME_RESERVED_MESSAGE. */
+  space_name_reserved: 400,
 };
 
 /**

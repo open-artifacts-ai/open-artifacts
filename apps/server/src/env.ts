@@ -132,6 +132,12 @@ export interface Env {
    * default): today's behaviour. usage_off: R.usage is 404 (hosted, P3 T19).
    */
   FEATURES?: string;
+  /**
+   * Hosted billing tier (trial | team | business; @oa/shared parseTier), set
+   * by provisioning, which derives FEATURES from it. Reported only
+   * (Me.instance.tier, hosted installs): behaviour always follows FEATURES.
+   */
+  TIER?: string;
   // secrets
   ACCESS_CLIENT_SECRET: string;
   /** Google client secret (direct transport only). */

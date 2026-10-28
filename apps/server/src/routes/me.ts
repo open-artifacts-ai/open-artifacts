@@ -3,6 +3,7 @@ import {
   type Me,
   type Member,
   MePatchSchema,
+  parseTier,
   planOf,
   R,
 } from "@oa/shared";
@@ -21,7 +22,7 @@ import { appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
-import { directoryMode } from "../services/spaces.js";
+import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
 import { getProfile, type Profile, setDisplayName } from "../services/users.js";
 import type { AppType } from "./index.js";
 
@@ -52,6 +53,9 @@ async function toMe(
   const cap = capOfCaller(caller(c));
   const exp = c.var.sessionExp;
   me.instance.hosted = c.env.HOSTED === "1";
+  // Reported only (behaviour follows FEATURES, which provisioning derives
+  // from TIER); null off hosted.
+  me.instance.tier = me.instance.hosted ? parseTier(c.env.TIER) : null;
   me.instance.signIn = instanceSignIn(c.env);
   me.instance.features = instanceFeatures(c.env);
   // P3 T13: only while a directory mode is on; health for owners and admins.
@@ -68,6 +72,11 @@ async function toMe(
     cap,
     expiresAt: exp === null ? null : new Date(exp).toISOString(),
   };
+  // Hosted M1 item 2: the caller's spaces, only with the spaces feature.
+  if (spacesOn(c.env)) {
+    me.personalSpaceId = user.id;
+    me.spaces = await mySharedSpaces(c.env, caller(c));
+  }
   return me;
 }
 
