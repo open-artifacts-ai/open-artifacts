@@ -15,6 +15,7 @@ import { readSession } from "../src/auth/session.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import { type AppEnv, resolveSession } from "../src/http/middleware.js";
 import { type AppType, mountRoutes } from "../src/routes/index.js";
+import { purgeDeleted } from "../src/services/artifacts.js";
 import {
   audit,
   listAudit,
@@ -351,5 +352,58 @@ describe("no token text in any row", () => {
       expect(p.length).toBeGreaterThanOrEqual(16);
       expect(dump).not.toContain(p);
     }
+  });
+});
+
+describe("delete, undelete and purge are audited (#824)", () => {
+  const del = (auth: string, id: string) =>
+    api(app, R.artifact(id), auth, { method: "DELETE" });
+  const restore = (auth: string, id: string) =>
+    api(app, R.restoreDeleted(id), auth, { method: "POST" });
+
+  it("a REST delete records artifact.delete with the session; a second delete records nothing", async () => {
+    const id = await publish(alice.cookie);
+    expect((await del(alice.cookie, id)).status).toBeLessThan(300);
+    expect(await credOfRows(id, "action = 'artifact.delete'")).toEqual([
+      { kind: "session", id: await sessionId(alice.cookie) },
+    ]);
+    await del(alice.cookie, id);
+    expect(await credOfRows(id, "action = 'artifact.delete'")).toHaveLength(1);
+  });
+
+  it("an MCP delete with a PAT records the token id", async () => {
+    const id = await publish(bobPat.token);
+    const client = await connect(bobPat.token);
+    const r = await tool(client, "delete_artifact", { id });
+    expect(r.isError).toBeFalsy();
+    await client.close();
+    expect(await credOfRows(id, "action = 'artifact.delete'")).toEqual([
+      { kind: "pat", id: bobPat.id },
+    ]);
+  });
+
+  it("restoring from trash records artifact.undelete; restoring a live artifact records nothing", async () => {
+    const id = await publish(alice.cookie);
+    expect((await restore(alice.cookie, id)).status).toBe(200);
+    expect(await credOfRows(id, "action = 'artifact.undelete'")).toHaveLength(
+      0,
+    );
+    await del(alice.cookie, id);
+    expect((await restore(alice.cookie, id)).status).toBe(200);
+    expect(await credOfRows(id, "action = 'artifact.undelete'")).toEqual([
+      { kind: "session", id: await sessionId(alice.cookie) },
+    ]);
+  });
+
+  it("the trash sweep records artifact.purge as the system", async () => {
+    const id = await publish(alice.cookie);
+    await del(alice.cookie, id);
+    await env.DB.prepare("update artifacts set deleted_at = 1 where id = ?")
+      .bind(id)
+      .run();
+    expect(await purgeDeleted(env, Date.now())).toBeGreaterThan(0);
+    expect(await credOfRows(id, "action = 'artifact.purge'")).toEqual([
+      { kind: "system", id: null },
+    ]);
   });
 });
