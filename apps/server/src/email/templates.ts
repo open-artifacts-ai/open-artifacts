@@ -2,7 +2,13 @@
 // by scripts/emit-email-templates.ts). Every value is untrusted: stripped of
 // control characters (CR/LF included) and length-capped everywhere, then
 // HTML-escaped for the .html part, so nothing can inject headers or markup.
-import type { Format, ShareRole } from "@oa/shared";
+import {
+  type Format,
+  orderSignInMethods,
+  type ShareRecipient,
+  type ShareRole,
+} from "@oa/shared";
+import type { SignInProvider } from "../auth/config.js";
 import { escapeHtml } from "../mcp/template.js";
 import { effectiveName } from "../services/users.js";
 import {
@@ -94,11 +100,42 @@ const FORMAT_LABEL: Record<Format, string> = {
   markdown: "Markdown doc",
   code: "Code",
   pdf: "PDF",
+  image: "Image",
 };
 const ROLE_LABEL: Record<ShareRole, string> = {
   viewer: "Viewer",
   editor: "Editor",
 };
+
+const METHOD_PHRASE: Record<SignInProvider, (to: string) => string> = {
+  google: () => "your Google account",
+  access: () => "your organization's single sign-on",
+  email: (to) => `a one-time code sent to ${to}`,
+};
+
+/**
+ * How `to` signs in, from the sign-in methods that can admit that address
+ * (services/reach.ts), never a method this install doesn't offer it. Empty:
+ * they can't sign in yet and need an invite.
+ */
+export function signInSentence(
+  methods: readonly SignInProvider[],
+  to: string,
+  p: {
+    instance: string;
+    inviter: string;
+    /** Why they can't sign in (ShareResult.recipient.reason), when no method admits them. */
+    cantSignIn?: ShareRecipient["reason"];
+  },
+): string {
+  const parts = orderSignInMethods(methods).map((m) => METHOD_PHRASE[m](to));
+  if (parts.length > 0) return `You'll sign in with ${parts.join(" or ")}.`;
+  const instance = oneLine(p.instance, NAME_MAX);
+  // Design's final copy (review #799).
+  return p.cantSignIn === "needs_invite"
+    ? `You can't sign in to ${instance} yet. Ask an admin there to invite you, then open this link again.`
+    : `This address can't sign in to ${instance}. Ask ${oneLine(p.inviter, NAME_MAX)} to share it with an address that can.`;
+}
 
 type Common = {
   inviter: string;
@@ -139,26 +176,39 @@ function render(
   };
 }
 
+/** How the recipient can sign in: the methods that admit their address. */
+type SignIn = {
+  signIn: readonly SignInProvider[];
+  /** With no method: why (ShareResult.recipient.reason), for the share copy. */
+  cantSignIn?: ShareRecipient["reason"];
+};
+
 /** A member invite, linking to the instance's sign-in page. */
-export function inviteEmail(p: Common): EmailContent {
+export function inviteEmail(p: Common & SignIn): EmailContent {
   const { origin, values } = common(p);
   return render(
     INVITE_HTML,
     INVITE_TXT,
     "{{inviterName}} added you to {{instanceName}}",
-    { ...values, signInUrl: linkOn(origin, "/sign-in") },
+    {
+      ...values,
+      signInUrl: linkOn(origin, "/sign-in"),
+      signInLine: `There's no password to set up. ${signInSentence(p.signIn, values.recipientEmail, p)}`,
+      signInPreheader: signInSentence(p.signIn, "this address", p),
+    },
   );
 }
 
 /** An artifact shared with a non-member, linking to its viewer URL. */
 export function shareEmail(
-  p: Common & {
-    title: string;
-    /** Viewer path on the app host, e.g. `/a/<id>`. */
-    path: string;
-    format: Format;
-    role: ShareRole;
-  },
+  p: Common &
+    SignIn & {
+      title: string;
+      /** Viewer path on the app host, e.g. `/a/<id>`. */
+      path: string;
+      format: Format;
+      role: ShareRole;
+    },
 ): EmailContent {
   const { origin, values } = common(p);
   return render(
@@ -171,6 +221,7 @@ export function shareEmail(
       artifactUrl: linkOn(origin, p.path),
       artifactFormat: FORMAT_LABEL[p.format],
       role: ROLE_LABEL[p.role],
+      signInLine: signInSentence(p.signIn, values.recipientEmail, p),
     },
   );
 }

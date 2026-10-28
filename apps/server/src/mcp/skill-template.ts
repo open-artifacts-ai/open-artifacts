@@ -25,6 +25,7 @@ export const SKILL_TOKENS = [
   "mcpBody",
   "quota",
   "version",
+  "upgradeLine",
 ] as const;
 export type SkillToken = (typeof SKILL_TOKENS)[number];
 
@@ -147,7 +148,7 @@ export function renderSkillTemplate(): string {
   };
   return `---
 name: ${T("name")}
-description: "Open Artifacts (${T("host")}): publish and share web pages, documents, code and PDFs on ${T("host")}, the user's own Open Artifacts instance, through its MCP tools. Use when the user asks to publish, host, share or send a link to an HTML page, site, report, doc, diagram, dashboard or file; to update, list, search or restore artifacts and versions; to change who can see one; or to read and write a live page's data."
+description: "Open Artifacts (${T("host")}): publish and share web pages, documents, code, PDFs and images on ${T("host")}, the user's own Open Artifacts instance, through its MCP tools. Use when the user asks to publish, host, share or send a link to an HTML page, site, report, doc, diagram, dashboard, image or file; to update, list, search or restore artifacts and versions; to change who can see one; or to read and write a live page's data."
 compatibility: "Requires an MCP client with HTTP transport, or curl"
 metadata:
   version: "${T("version")}"
@@ -159,9 +160,7 @@ metadata:
 
 Skill version ${T("version")} for ${T("origin")} (${T("plan")} plan). If the server's tools/list differs from the Tools section below, fetch ${T("origin")}/skill.md again and replace this skill with it.
 
-To upgrade this instance to the latest release: ${T("origin")}/upgrade.md.
-
-Open Artifacts hosts the pages, documents and code you publish, with versions, sharing and live data. Each artifact gets a stable URL on ${T("origin")}; every publish with content adds a version; a publish with only settings updates them in place.
+${T("upgradeLine")}Open Artifacts hosts the pages, documents and code you publish, with versions, sharing and live data. Each artifact gets a stable URL on ${T("origin")}; every publish with content adds a version; a publish with only settings updates them in place.
 
 ## Connect
 

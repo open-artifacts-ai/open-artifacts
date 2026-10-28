@@ -1,4 +1,11 @@
-import { LIMITS } from "@oa/shared";
+import {
+  checkEntry,
+  IMAGE_CONTENT_TYPES,
+  imageKind,
+  imageSize,
+  LIMITS,
+  SNIFF_BYTES,
+} from "@oa/shared";
 import {
   CAPTURE_HEADER,
   signCapture,
@@ -96,11 +103,12 @@ const sameOrigin = (u: string, origin: string) => {
  * version can never land last; D1 thumbnail_version only moves forward.
  */
 export async function writeThumbnail(
-  env: Env,
+  env: Pick<Env, "DB" | "FILES">,
   id: string,
   version: number,
   bytes: Uint8Array,
   by: "server" | "client",
+  contentType: ThumbnailType = "image/webp",
 ): Promise<"stored" | "stale"> {
   for (let i = 0; i < 3; i++) {
     const prev = await env.FILES.head(thumbKey(id));
@@ -109,7 +117,7 @@ export async function writeThumbnail(
       onlyIf: prev
         ? { etagMatches: prev.etag }
         : new Headers({ "If-None-Match": "*" }),
-      httpMetadata: { contentType: "image/webp" },
+      httpMetadata: { contentType },
       customMetadata: { v: String(version), by },
     });
     if (!put) continue;
@@ -123,6 +131,87 @@ export async function writeThumbnail(
   }
   // Lost three races in a row: newer writers are active; let them win.
   return "stale";
+}
+
+/**
+ * The types a stored thumbnail may have: webp (captures and client uploads)
+ * or an image artifact's own raster bytes. Never SVG: the thumbnail is served
+ * from the app host.
+ */
+export const THUMBNAIL_TYPES = [
+  "image/webp",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+] as const;
+export type ThumbnailType = (typeof THUMBNAIL_TYPES)[number];
+
+/** A stored thumbnail's Content-Type: its recorded one when allowed, else webp. */
+export function thumbnailType(stored: string | undefined): ThumbnailType {
+  const t = (stored ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  return (THUMBNAIL_TYPES as readonly string[]).includes(t)
+    ? (t as ThumbnailType)
+    : "image/webp";
+}
+
+/** An image artifact's own bytes are its thumbnail up to these bounds. */
+export const IMAGE_THUMB = {
+  bytes: LIMITS.thumbnailBytes,
+  /** Pixels per side, read from the header: no decode, no decompression bomb. */
+  maxSide: 4096,
+} as const;
+
+/**
+ * The thumbnail of an image artifact's `version`, from the image itself (the
+ * index job, never a request): a PNG, JPEG, GIF or WebP of at most
+ * IMAGE_THUMB.bytes and IMAGE_THUMB.maxSide pixels a side is copied as is,
+ * no decode and no headless render. Anything else (an SVG, a larger raster)
+ * gets the placeholder: no thumbnail of this version, and an older version's
+ * stops showing. "stale": a newer thumbnail is stored.
+ */
+export async function imageThumbnail(
+  env: Pick<Env, "DB" | "FILES">,
+  id: string,
+  version: number,
+  entry: { path: string; key: string; size: number },
+): Promise<"stored" | "stale" | "placeholder"> {
+  const kind = imageKind(entry.path);
+  const placeholder = async () => {
+    await env.DB.prepare(
+      `update artifacts set has_thumbnail = 0
+       where id = ? and has_thumbnail = 1 and coalesce(thumbnail_version, 0) < ?`,
+    )
+      .bind(id, version)
+      .run();
+    return "placeholder" as const;
+  };
+  if (!kind || kind === "svg" || entry.size > IMAGE_THUMB.bytes)
+    return placeholder();
+  const obj = await env.FILES.get(entry.key);
+  if (!obj) return placeholder();
+  const bytes = new Uint8Array(await obj.arrayBuffer());
+  const size = imageSize(bytes);
+  if (
+    bytes.length > IMAGE_THUMB.bytes ||
+    checkEntry(
+      entry.path,
+      "image",
+      bytes.subarray(0, SNIFF_BYTES),
+      bytes.length > SNIFF_BYTES,
+    ) ||
+    !size ||
+    size.width > IMAGE_THUMB.maxSide ||
+    size.height > IMAGE_THUMB.maxSide
+  )
+    return placeholder();
+  return writeThumbnail(
+    env,
+    id,
+    version,
+    bytes,
+    "server",
+    thumbnailType(IMAGE_CONTENT_TYPES[kind]),
+  );
 }
 
 /**
@@ -150,6 +239,8 @@ export async function captureThumbnail(
     .bind(id)
     .first<{ v: number; t: number | null; f: string }>();
   if (row?.v !== version || (row.t ?? 0) >= version) return "skipped";
+  // An image's thumbnail is the image itself (imageThumbnail): no browser.
+  if (row.f === "image") return "skipped";
   const day = utcDay(now);
   const stop = await env.DB.prepare(
     "select 1 x from counters where key = ? and day = ?",

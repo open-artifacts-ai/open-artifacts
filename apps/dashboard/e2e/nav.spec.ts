@@ -113,7 +113,10 @@ test("phone: a 288px sheet that navigates, closes and returns focus", async ({
   await trigger.click();
   const sheet = page.getByRole("dialog");
   await expect(sheet.getByRole("link", { name: "Team" })).toBeVisible();
-  expect((await sheet.boundingBox())?.width).toBe(288);
+  // The sheet slides in with a transform: measure once it has landed at the
+  // left edge, not mid-slide (sub-pixel widths, Platform's #755 shard 3).
+  await expect.poll(async () => (await sheet.boundingBox())?.x).toBe(0);
+  expect((await sheet.boundingBox())?.width).toBeCloseTo(288, 2);
   // The desktop's insets: brand 8px in and 48px tall, rows 16px in.
   const inset = await sheet.evaluate((d) => {
     const left = d.getBoundingClientRect().left;

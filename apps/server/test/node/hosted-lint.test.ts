@@ -24,7 +24,22 @@ const READS: Record<string, string> = {
     "fail closed: hosted Google sign-in requires the broker transport",
   "routes/codes.ts: (anonymous)":
     "fail closed: hosted code sign-in requires Turnstile",
-  "routes/me.ts: toMe": "reports: Me.instance.hosted",
+  "routes/me.ts: toMe":
+    "reports: Me.instance.hosted; tightens: Me.instance.update is null (no self-host upgrade nudge, review item 39)",
+  "auth/sign-in.ts: authProviders":
+    "reports: AuthProviders.hosted (review item 36c)",
+  "cron.ts: run":
+    "tightens: the daily cron skips the GitHub release check (review item 39)",
+  "mcp/skill.ts: (module)":
+    "type only: SkillEnv picks HOSTED for the upgrade line",
+  "mcp/skill.ts: renderSkill":
+    "tightens: memo key for the skill without its upgrade line (review item 39)",
+  "mcp/skill.ts: skillEtag":
+    "tightens: the hosted skill (no upgrade line) gets its own ETag (review item 39)",
+  "mcp/skill.ts: upgradeLine":
+    "tightens: the skill omits its upgrade line (review item 39)",
+  "mcp/upgrade.ts: serveUpgrade":
+    "tightens: GET /upgrade.md is 404 (review item 39)",
   "directory/transport.ts: resolve":
     "fail closed: hosted directory sync requires the broker; direct vars or no broker resolve to none",
 };

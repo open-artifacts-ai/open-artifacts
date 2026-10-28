@@ -7,6 +7,7 @@ import {
   LIMITS,
   newId,
   QUOTA_MESSAGE,
+  UNSUPPORTED_FORMAT_MESSAGE,
 } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPat } from "../src/auth/pat.js";
@@ -16,7 +17,7 @@ import { INSTRUCTIONS } from "../src/mcp/instructions.js";
 import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
 import manifest from "../src/mcp/tool-manifest.json";
 import { SYSTEM_ACTOR, setUserStatus } from "../src/services/members.js";
-import { login } from "./helpers.js";
+import { login, runIndex } from "./helpers.js";
 import {
   APP,
   callWorker,
@@ -240,6 +241,95 @@ describe("MCP tools over PAT", () => {
       files: { "a.txt": half, "b.txt": half, "c.txt": "y" },
     });
     expect(textOf(f)).toBe(`too_large: ${INLINE_TOO_LARGE_MESSAGE}`);
+  });
+
+  it("a file no viewer shows → unsupported_format, with what to publish instead", async () => {
+    const jpeg = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 0, 0x10));
+    const r = await tool(client, "publish_artifact", {
+      title: "archive",
+      files: { "a.zip": { base64: btoa("PK\x03\x04\x00\x00") } },
+    });
+    expect(r.isError).toBe(true);
+    expect(textOf(r)).toBe(`unsupported_format: ${UNSUPPORTED_FORMAT_MESSAGE}`);
+    const heic = await tool(client, "publish_artifact", {
+      title: "photo",
+      files: { "IMG_0001.HEIC": { base64: jpeg } },
+    });
+    expect(textOf(heic)).toBe(
+      "unsupported_format: HEIC photos can't be shown yet. Save as JPEG and upload again.",
+    );
+    const png = await tool(client, "publish_artifact", {
+      title: "photo",
+      files: { "a.png": { base64: jpeg } },
+    });
+    expect(textOf(png)).toBe(
+      'binary_entry: "a.png" is a JPEG image, so it can\'t be shown as a PNG image.',
+    );
+    const b = await tool(client, "publish_artifact", {
+      title: "photo",
+      format: "code",
+      entry: "photo.txt",
+      files: { "photo.txt": { base64: jpeg } },
+    });
+    expect(b.isError).toBe(true);
+    expect(textOf(b)).toBe(
+      'binary_entry: "photo.txt" is a JPEG image, not text, so it can\'t be shown as code.',
+    );
+    const p = await tool(client, "publish_artifact", {
+      title: "doc",
+      format: "pdf",
+      content: "not a pdf",
+    });
+    expect(textOf(p)).toBe(
+      "binary_entry: \"document.pdf\" doesn't start with %PDF, so it can't be shown as a PDF.",
+    );
+  });
+
+  it("an image publishes, lists and searches as image", async () => {
+    const jpeg = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 0, 0x10));
+    const word = `zqimg${tag}`;
+    const pub = sc<{ id: string }>(
+      await tool(client, "publish_artifact", {
+        title: `photo ${word}`,
+        files: { "IMG_0042.jpg": { base64: jpeg } },
+      }),
+    );
+    const g = await tool(client, "get_artifact", { id: pub.id });
+    expect(
+      sc<{ artifact: { format: string }; version: { format: string } }>(g),
+    ).toMatchObject({
+      artifact: { format: "image" },
+      version: { format: "image" },
+    });
+    expect(textOf(g)).toMatch(/ image v1, /);
+    const l = sc<{ items: { id: string; format: string }[] }>(
+      await tool(client, "list_artifacts", { format: "image", limit: 100 }),
+    );
+    expect(l.items.map((i) => i.id)).toContain(pub.id);
+    expect(new Set(l.items.map((i) => i.format))).toEqual(new Set(["image"]));
+    await runIndex(pub.id);
+    const f = sc<{ items: { id: string; format: string }[] }>(
+      await tool(client, "search_artifacts", { q: word }),
+    );
+    expect(f.items).toEqual([
+      expect.objectContaining({ id: pub.id, format: "image" }),
+    ]);
+    const { tools } = await client.listTools();
+    const d = tools.find((t) => t.name === "publish_artifact")?.description;
+    expect(d).toMatch(/image \(\.png, \.jpg, \.jpeg, \.gif, \.webp or \.svg/);
+    expect(client.getInstructions() ?? "").toMatch(
+      /- image: one PNG, JPEG, GIF, WebP or SVG image/,
+    );
+  });
+
+  it("the instructions and publish_artifact say what is refused", async () => {
+    const { tools } = await client.listTools();
+    const d = tools.find((t) => t.name === "publish_artifact")?.description;
+    expect(d).toContain("unsupported_format");
+    expect(d).toContain("binary_entry");
+    const ins = client.getInstructions() ?? "";
+    expect(ins).toContain("unsupported_format");
+    expect(ins).not.toMatch(/anything else is code/i);
   });
 
   it("no access is not_found, never forbidden", async () => {

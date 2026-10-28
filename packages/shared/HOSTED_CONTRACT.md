@@ -12,7 +12,8 @@ hosted off.
 - **The SPA owns sign-in.** The chooser and code forms live at `SIGN_IN_PAGE`
   (`/sign-in`). The server is JSON-only; every refused redirect sign-in
   (`no_access` included) lands on `/sign-in?error=<SignInError>&next=…`, never
-  `PAGES.noAccess`.
+  `PAGES.noAccess`. A `no_access` redirect also carries `via=access|google`
+  (`SignInVia`): the provider whose identity wasn't admitted.
 - **No access is 404**, never 403. The exceptions are explicit codes:
   `space_forbidden` (403) on publish or move into a space the caller can't
   publish to, or on a member or mapping change the caller's role can't make
@@ -90,12 +91,16 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 
 | Shape | Added |
 |---|---|
+| `Format` | `"html" \| "markdown" \| "code" \| "pdf" \| "image"` (migration 0017 widens the D1 CHECKs). An `image` artifact is one PNG, JPEG, GIF, WebP or SVG file, its entry; search indexes its title and description only (`textIndexed` true, empty body); `GET R.thumbnail(id)` may answer `image/png`, `image/jpeg` or `image/gif` (the image itself, at most `LIMITS.thumbnailBytes` and 4096 px a side) besides `image/webp`, never SVG. Content host: the entry is served with its real type, `nosniff`, `Content-Disposition: inline` and CSP `default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox` (plus `frame-ancestors`); `__view` is the renderer page with `oa-format` `image`, `oa-entry` and `oa-content-type` metas |
 | `ArtifactSummary` (so `SearchHit`) | `space?: SpaceRef`, `can?: ArtifactCan`. Signed-in callers with spaces on. `space` is absent for a shared space where the caller has no role (a share or link alone), so its id and name never leak; `can` is always set |
 | `Member` | `status?: MemberStatus` (absent = active), `identities?: ("google")[]`, `restriction?: Restriction \| null`. Hosted and direct-sign-in installs send all three on every `R.members` row (`restriction` null when unrestricted) |
 | `Me.instance` | `hosted?`, `tier?`, `signIn?`, `features?: FeatureFlag[]`, `directory?: InstanceDirectory` |
 | `Me` | `auth?: MeAuth`, `personalSpaceId?` (= user.id), `spaces?: MySpace[]` (shared, by name, ≤ 200) |
 | `Settings` (so `SettingsPatch`) | `spaceManagerMappings?: boolean` (hosted; default true, absent self-hosted). PATCH needs `settings.manage` (org owner, admin); audited `settings.space_manager_mappings` |
 | `Space` | `can?: SpaceCan` (`{ manageMappings }`) |
+| `ShareResult` (PUT shares, MCP share_artifact) | `recipient?: ShareRecipient` = `{ canSignIn: false, reason: "needs_invite" \| "outside_domains" \| "no_sign_in_method" }`: the share applied, but the recipient can't sign in yet. `needs_invite`: in a verified domain on an invite-only install (hosted, or AUTH_DOMAIN_JOIN=invite): an admin must invite them as a member. Absent when they can sign in (or only Google might admit them). The share email says they need an invite instead of promising a sign-in |
+| `ShareResult`, `MemberInviteResult` | `signInMethods?: ("access" \| "google" \| "email")[]`: the sign-in methods that admit the person, in `SIGN_IN_METHOD_ORDER` (google, access, email; `orderSignInMethods`), `[]` when they can't sign in; an uncertain invite lists `["google"]`. Exactly the list the share or invite email names, so UI copy and the email agree |
+| `MemberInviteResult` | `signIn?: InviteSignIn` = `{ status: "uncertain", reason: "outside_domains" }`: the invite stands, but only Google might admit the address (outside AUTH_DOMAINS: works only for a Workspace account whose primary domain is verified). Absent when an offered method admits it. Warn the inviter |
 | `AuditActionSchema` | `settings.space_manager_mappings`, `user.role` (a member role change: `detail { from, to }`, written only when the role changes) |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
 
@@ -108,15 +113,16 @@ Installs in one environment share a single Google client through the auth broker
 | `GET AUTH.providers` `/auth/providers` | `AuthProviders` (public, no-store, no D1) |
 | `GET AUTH.loginGoogle` `/auth/login/google?next&reauth` | 302 to Google or the broker; 404 when Google is off. `reauth=1` forces a fresh Google authentication (`max_age=0`) for break-glass |
 | `GET R.me` (break-glass) | 401 `break_glass_required` details `BreakGlassRequiredDetails { fresh }` when the session is the org owner's and a directory customer_mismatch refuses them. `fresh: true`: the session already meets break-glass, so open the directory settings; `false`: sign in with `AUTH.loginGoogle?reauth=1` first. Any other refusal stays a plain 401 `unauthorized` |
-| `GET AUTH.callbackGoogle` `/auth/callback/google` | 302 `next`; any refusal (incl. `no_access`) 302 `SIGN_IN_PAGE?error=SignInError&next` only |
+| `GET AUTH.callbackGoogle` `/auth/callback/google` | 302 `next`; any refusal (incl. `no_access`) 302 `SIGN_IN_PAGE?error=SignInError&next` only; `no_access` adds `&via=google` |
 | `POST AUTH.codeRequest` `/auth/code/request` | `CodeRequest` → 202 `CodeRequested` |
 | `POST AUTH.codeVerify` `/auth/code/verify` | `CodeVerify` → 200 `CodeVerified` |
 | `DELETE R.memberIdentity(id, "google")` | 204; owner/admin reset a member's Google link (never the owner's: the owner on themselves is 404). An admin or owner target needs the uncapped OWNER: an admin acting on an admin or the owner gets 403 `owner_only` whether or not they are linked (checked by role before the link, so it reveals no link), also when the target is promoted to admin mid-request (enforced in the write; nothing changes). For any other target, no link is 404. A capped admin gets 404, as on every members route. |
 
 | Schema | Meaning |
 |---|---|
-| `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[] }`; only fully configured providers; `turnstileSiteKey` whenever Turnstile is configured |
+| `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[], hosted? }`; only fully configured providers; `turnstileSiteKey` whenever Turnstile is configured; `hosted` true only on HOSTED=1 (the server always sends it; absent reads as false) |
 | `SignInErrorSchema` | `tenant \| identity_conflict \| removed \| no_access \| expired \| failed` |
+| `SignInViaSchema` | `access \| google`: `?via=` on every `error=no_access` redirect (Access callback in direct mode: access; Google callback: google); absent on other errors |
 | `CODE_POLICY` | `{ length: 8, ttlSec: 600, resendAfterSec: 60, maxAttempts: 5 }` |
 | `CodeRequestSchema` | `{ email, next?, turnstileToken? }` |
 | `CodeRequestedSchema` | `{ maskedEmail, expiresIn, resendAfter, codeLength }`; same 202 for every well-formed address, and when the email pool is full (the pool never 429s) |
@@ -264,10 +270,13 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `reauth_required` | 401 | break-glass routes need a fresh Google sign-in |
 | `break_glass_required` | 401 | `GET R.me` for the org owner refused by a directory customer_mismatch; details `{ fresh }` (see Sign-in) |
 | `space_name_reserved` | 400 | `POST R.spaces` or a `PATCH R.space(id)` rename to "Personal" (trimmed, any case); details `{ field: "name" }`, message `SPACE_NAME_RESERVED_MESSAGE`. Existing spaces with that name are left alone |
+| `invite_unreachable` | 400 | `POST R.members` for an address no offered sign-in method could ever admit (e.g. outside AUTH_DOMAINS with email codes only, or Google off and codes off); nothing is created. Details `InviteUnreachableDetails` `{ field: "email", reason: "outside_domains" \| "no_sign_in_method" }`, message `INVITE_UNREACHABLE_MESSAGE[reason]` (outside_domains: "This address can't sign in to this workspace. Share artifacts with them as a guest instead."). An existing row is still 409. Access installs never refuse |
 | `restrict_admin` | 400 | `PUT R.memberRestricted(id)` on an org owner or admin |
 | `owner_only` | 403 | an admin (or a capped owner) acting on an org owner or admin: `PATCH`/`DELETE R.member(id)`, `DELETE R.memberIdentity(id, "google")` (#475). Admins keep managing members and guests |
 | `directory_mapping_off` | 403 | a space manager (not an org admin) adds or changes a space mapping (PUT) while `Settings.spaceManagerMappings` is off; list and DELETE stay allowed |
 | `member_synced` | 409 | `DELETE R.spaceMember` on a synced-only row while sync is live. UI copy: "This person comes from a Google group. Remove them from the group in Google, or change their role here." |
+| `unsupported_format` | 400 | publish (`R.artifacts`, `R.versions`, MCP `publish_artifact`) with no `format` whose entry name implies none (`inferFormat` returns `image` for `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, and `code` only for known text: the `LANGUAGES` keys, `PLAIN_TEXT_EXTENSIONS`, Makefile, Dockerfile; else null) and whose bytes aren't UTF-8 text. When the name implies none but the bytes are text (a `LICENSE`, `.gitignore`), the publish goes ahead as `code`, language `"text"`. Details `{ path, reason: "no_viewer" }`; message `UNSUPPORTED_FORMAT_MESSAGE`. A HEIC/HEIF entry (named `.heic`/`.heif`, or an ISO BMFF `ftyp` at byte 4 with brand `heic`, `heix`, `hevc`, `heim`, `heis`, `mif1` or `msf1`) is refused whatever the `format`: details `{ path, reason: "heic" }`, message `HEIC_MESSAGE`. Nothing is written or consumed |
+| `binary_entry` | 400 | the entry's content doesn't fit its format (`sniff.ts` `checkEntry`, first 8 KB): for `code`, `markdown` and `html` the bytes decide: UTF-8 text (no NUL, valid UTF-8) passes whatever its first bytes or declared upload type. Bytes that fail are refused with reason `binary` (a known signature), else `content_type` (an upload declared `image/*` other than svg, `audio/*` or `video/*`; `application/octet-stream` claims nothing), else `not_text`. A `pdf` must start with `%PDF` (`not_pdf`). An `image` must carry its extension's signature (JPEG `FF D8 FF`, PNG, `GIF87a`/`GIF89a`, WebP `RIFF....WEBP`; else `not_image`, also for an entry with no image extension), an `.svg` must be UTF-8 text with an `<svg>` root (`not_svg`), and an upload's declared type must be the extension's (`content_type`; `application/octet-stream` claims nothing). An `image` publish with more than one file is 400 `bad_request` `{ path: "files", reason: "image_single_file" }`. Details `{ path, reason }`. An uploaded entry costs one R2 range read. Nothing is written or consumed |
 
 ## Test hooks (`hosted/test-hooks.ts`, types only)
 
@@ -292,7 +301,7 @@ personal space per member, Engineering (caller manager, allMembersRole viewer,
 "Contractors", member Dan: `cap: "restricted"`, no allMembersRole); a suspended
 member Carol with `{ live: 2, deleted: 1 }` to transfer; a held sweep
 (`gSales03`); `can` from `artifactCan` on every request; `public_links_off`
-on PATCH and publish; `owner_only` when an admin changes, removes or resets
+on PATCH and publish; the publish format guard (`unsupported_format`, `binary_entry` for inline entries; uploaded entries pass); `owner_only` when an admin changes, removes or resets
 the Google link of the owner or an admin (`actAs: "admin"`; Erin is the seeded
 admin); `Settings.spaceManagerMappings` (default on, PATCH
 admin-only and audited); space managers map `viewer`/`editor` only (never over a manager row); org

@@ -44,6 +44,15 @@ it.each([
     "reauth_required",
     "For your security, sign in with Google again to manage the directory.",
   ],
+  // Design, 2026-10-28 (the upload refusals, #775).
+  [
+    "unsupported_format",
+    "This type of file can't be opened yet. Upload a web page, Markdown, code or a PDF.",
+  ],
+  [
+    "binary_entry",
+    "This file isn't text, so it can't open as a web page, Markdown or code. Check that its file extension matches what it is.",
+  ],
 ])("%s", (code, copy) => {
   expect(
     errorCopy(new ApiClientError(code as ErrorCode, "server text", 400), "x"),
@@ -86,4 +95,14 @@ it("no link for other errors", () => {
     errorLink(new ApiClientError("space_forbidden", "server text", 403)),
   ).toBeNull();
   expect(errorLink(new Error("boom"))).toBeNull();
+});
+
+it("a HEIC refusal names the photo and says to export it", () => {
+  const e = new ApiClientError("unsupported_format", "server text", 400, {
+    path: "photos/IMG_0042.HEIC",
+    reason: "heic",
+  });
+  expect(errorCopy(e, "x")).toBe(
+    "IMG_0042.HEIC can't be opened here. Export it as JPEG or PNG, then upload it again.",
+  );
 });

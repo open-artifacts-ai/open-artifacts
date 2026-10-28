@@ -183,6 +183,19 @@ export type SignInMode = z.infer<typeof SignInModeSchema>;
 export const SignInProviderIdSchema = z.enum(["access", "google", "email"]);
 export type SignInProviderId = z.infer<typeof SignInProviderIdSchema>;
 
+/** The order sign-in methods are named in (emails and UI copy). */
+export const SIGN_IN_METHOD_ORDER: readonly SignInProviderId[] = [
+  "google",
+  "access",
+  "email",
+];
+
+/** `methods` deduplicated, in SIGN_IN_METHOD_ORDER. */
+export const orderSignInMethods = (
+  methods: readonly SignInProviderId[],
+): SignInProviderId[] =>
+  SIGN_IN_METHOD_ORDER.filter((m) => methods.includes(m));
+
 export const InstanceSignInSchema = z.object({
   mode: SignInModeSchema,
   providers: z.array(SignInProviderIdSchema),

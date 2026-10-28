@@ -21,7 +21,7 @@
  */
 import { type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
-import type { ErrorCode } from "../errors.js";
+import { type ErrorCode, INVITE_UNREACHABLE_MESSAGE } from "../errors.js";
 import {
   MembersQuerySchema,
   MoveArtifactInputSchema,
@@ -43,6 +43,8 @@ import {
   type FeatureFlag,
   type GroupRef,
   type MySpace,
+  orderSignInMethods,
+  type SignInProviderId,
   type SpaceRef,
   type SpaceRole,
   type Tier,
@@ -78,8 +80,9 @@ import type {
   Member,
   PublishInput,
   Share,
+  ShareRecipient,
 } from "../schemas.js";
-import { SettingsPatchSchema } from "../schemas.js";
+import { MemberInviteSchema, SettingsPatchSchema } from "../schemas.js";
 
 /** The code the mock accepts (any address). */
 export const HOSTED_MOCK_CODE = "24681357";
@@ -89,6 +92,8 @@ export const MOCK_DOMAIN = "example.com";
 export type HostedMockOptions = {
   /** Sign-in mode (default "direct"). "access" lists only Access. */
   mode?: "access" | "direct";
+  /** A self-hosted install (AuthProviders.hosted and Me.instance.hosted false); default false (hosted). */
+  selfHosted?: boolean;
   /** Direct-mode providers (default both). */
   providers?: ("google" | "email")[];
   /** Code requests need a Turnstile token (default false). Token "fail" is refused. */
@@ -633,9 +638,14 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   ];
   const providers = (): AuthProviders =>
     mode === "access"
-      ? { mode, providers: [{ id: "access", start: "/auth/login" }] }
+      ? {
+          mode,
+          providers: [{ id: "access", start: "/auth/login" }],
+          hosted: !o.selfHosted,
+        }
       : {
           mode,
+          hosted: !o.selfHosted,
           providers: [
             ...(providerIds.includes("google")
               ? [
@@ -663,7 +673,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
 
   /** Refresh Me's hosted fields and every artifact's space/can. Runs before each request. */
   const refresh = () => {
-    me.instance.hosted = true;
+    me.instance.hosted = !o.selfHosted;
     me.instance.tier = o.tier === undefined ? "business" : o.tier;
     me.instance.signIn = {
       mode,
@@ -889,7 +899,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       if (!u)
         return new HttpResponse(null, {
           status: 302,
-          headers: { location: "/sign-in?error=no_access" },
+          headers: { location: "/sign-in?error=no_access&via=google" },
         });
       me.user = u;
       me.auth = {
@@ -1029,6 +1039,48 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         return err("owner_only", "Only the owner can manage an owner or admin");
       }),
     ),
+    // -- invite reachability (review item 11), the server's rules for the
+    // mock's providers: Google admits MOCK_DOMAIN (outside it, only maybe: a
+    // Workspace secondary domain, so signIn "uncertain"); codes admit
+    // MOCK_DOMAIN only while Google is off (domainCodes). Reachable invites
+    // fall through to the base handler.
+    http.post("*/api/v1/members", async ({ request }) => {
+      if (mode === "access" || c.isAnon(request)) return undefined;
+      const r = await c.body(request.clone(), MemberInviteSchema);
+      if (r.error) return undefined;
+      const email = r.data.email.toLowerCase();
+      const inDomain = email.endsWith(`@${MOCK_DOMAIN}`);
+      const google = providerIds.includes("google");
+      if (inDomain && (google || providerIds.includes("email")))
+        return undefined;
+      if (!google) {
+        const reason = inDomain ? "no_sign_in_method" : "outside_domains";
+        return err("invite_unreachable", INVITE_UNREACHABLE_MESSAGE[reason], {
+          field: "email",
+          reason,
+        });
+      }
+      if (members.some((m) => m.email === email))
+        return err("conflict", "Already a member");
+      const m: Member = {
+        id: newId(),
+        email,
+        name: null,
+        role: r.data.role,
+        lastSeenAt: null,
+        status: "active",
+      };
+      members.push(m);
+      return HttpResponse.json(
+        {
+          ...m,
+          emailed: false,
+          signIn: { status: "uncertain", reason: "outside_domains" },
+          signInMethods: ["google"],
+        },
+        { status: 201 },
+      );
+    }),
     // -- members (status filter), departed transfer, identity reset
     http.get(
       "*/api/v1/members",
@@ -1910,10 +1962,52 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     };
   };
 
+  /**
+   * ShareResult.recipient (review item 37), the server's rules for the mock's
+   * providers (invite-only): an in-domain non-member needs an invite; outside
+   * the domain, guests sign in with codes, so only a Google-only mock flags.
+   */
+  const shareRecipient = (email: string): ShareRecipient | undefined => {
+    if (mode === "access") return undefined;
+    if (members.some((m) => m.email === email)) return undefined;
+    if (email.endsWith(`@${MOCK_DOMAIN}`))
+      return { canSignIn: false, reason: "needs_invite" };
+    return providerIds.includes("email")
+      ? undefined
+      : { canSignIn: false, reason: "outside_domains" };
+  };
+
+  /**
+   * signInMethods (#799) for an invite (a member row about to exist) or a
+   * share, the server's reach rules for the mock's providers, in
+   * SIGN_IN_METHOD_ORDER; [] when they can't sign in. An uncertain Google
+   * invite (outside the domain) names Google.
+   */
+  const signInMethods = (
+    email: string,
+    kind: "invite" | "share",
+  ): SignInProviderId[] => {
+    if (mode === "access") return ["access"];
+    const google = providerIds.includes("google");
+    const codes = providerIds.includes("email");
+    const inDomain = email.endsWith(`@${MOCK_DOMAIN}`);
+    const member =
+      kind === "invite" ||
+      members.some((m) => m.email === email && m.role !== "guest");
+    const guest = !member;
+    const out: SignInProviderId[] = [];
+    if (google && (inDomain ? member : kind === "invite")) out.push("google");
+    // Codes: domain codes (Google off) in the domain; guests outside it.
+    if (codes && (inDomain ? !google && member : guest)) out.push("email");
+    return orderSignInMethods(out);
+  };
+
   return {
     handlers,
     refresh,
     trashScope,
+    shareRecipient,
+    signInMethods,
     checkPublish,
     placeNew,
     refuseCappedCreate,

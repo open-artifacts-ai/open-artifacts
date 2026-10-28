@@ -120,6 +120,7 @@ describe("GET /auth/providers", () => {
     expect(await r.json()).toEqual({
       mode: "access",
       providers: [{ id: "access", start: AUTH.login }],
+      hosted: false,
     });
     expect(new URL(loc(await get(`${AUTH.login}?next=/`))).hostname).toBe(
       env.ACCESS_TEAM_DOMAIN,
@@ -136,7 +137,28 @@ describe("GET /auth/providers", () => {
         { id: "google", start: AUTH.loginGoogle, domains: ["a.com"] },
         { id: "email", domainCodes: false, guests: true },
       ],
+      hosted: false,
     });
+  });
+
+  // Review item 36c: only HOSTED=1 says "Hosted by Open Artifacts".
+  it("hosted: true only on HOSTED=1; false on self-hosted direct and access installs", async () => {
+    const hostedOf = async (e: Env) =>
+      AuthProvidersSchema.parse(await (await get(AUTH.providers, e)).json())
+        .hosted;
+    expect(await hostedOf(env)).toBe(false);
+    expect(await hostedOf(direct())).toBe(false);
+    expect(await hostedOf(direct({ HOSTED: "0" }))).toBe(false);
+    expect(
+      await hostedOf(
+        direct({
+          HOSTED: "1",
+          AUTH_BROKER_URL: "https://auth.h.test",
+          BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+          GOOGLE_CLIENT_SECRET: "",
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("trial: domain codes on and the Turnstile site key", async () => {
@@ -145,6 +167,7 @@ describe("GET /auth/providers", () => {
       providers: [
         { id: "email", domainCodes: true, guests: true, turnstileSiteKey: "k" },
       ],
+      hosted: false,
     });
   });
 
@@ -261,7 +284,7 @@ describe("direct-mode sign-in routes", () => {
           sub: `s-${c}`,
         }),
       ),
-    ).toBe(`${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx`);
+    ).toBe(`${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx&via=google`);
   });
 
   it("a stale state retries once, then expired on the sign-in page", async () => {

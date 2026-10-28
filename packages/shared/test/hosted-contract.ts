@@ -38,6 +38,7 @@ import {
   TransferResultSchema,
   TransferSummarySchema,
   TrashItemSchema,
+  UNSUPPORTED_FORMAT_MESSAGE,
 } from "../src/index.js";
 import { fixtures } from "../src/mocks/fixtures.js";
 
@@ -175,6 +176,8 @@ export function hostedContract(d: ContractDriver): ContractCases {
         await json(await d.call("GET", AUTH.providers)),
       );
       expect(p.mode).toBe("direct");
+      // Review item 36c: HOSTED=1 only.
+      expect(p.hosted).toBe(true);
       // turnstileSiteKey is the driver's own config, not the contract's.
       expect(
         p.providers.map((x) => {
@@ -2074,6 +2077,202 @@ export function hostedContract(d: ContractDriver): ContractCases {
         ).toBe(400);
       },
     );
+  });
+
+  describe("publish format guard", () => {
+    const jpeg = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 0, 0x10));
+    const titles = async () =>
+      (
+        (await json(await d.call("GET", `${R.artifacts}?limit=100`))).items as {
+          title: string;
+        }[]
+      ).map((a) => a.title);
+
+    t(
+      "an archive without format: 400 unsupported_format, nothing created",
+      async () => {
+        await d.fresh();
+        const r = await d.call("POST", R.artifacts, {
+          title: "guard-zip",
+          files: { "a.zip": { base64: btoa("PK\x03\x04\x00\x00") } },
+        });
+        expect(r.status).toBe(400);
+        expect((await errCode(r)) as unknown).toEqual({
+          code: "unsupported_format",
+          message: UNSUPPORTED_FORMAT_MESSAGE,
+          details: { path: "a.zip", reason: "no_viewer" },
+        });
+        expect(await titles()).not.toContain("guard-zip");
+      },
+    );
+
+    t(
+      "a HEIC photo: 400 unsupported_format (heic), with or without format",
+      async () => {
+        await d.fresh();
+        const heic = btoa(`\x00\x00\x00\x18ftypheic\x00\x00\x00\x00`);
+        for (const body of [
+          { files: { "IMG_0001.HEIC": { base64: heic } } },
+          { format: "image", files: { "IMG_0001.HEIC": { base64: heic } } },
+          { format: "image", files: { "IMG_0001.jpg": { base64: heic } } },
+          { files: { "IMG_0001.jpg": { base64: heic } } },
+        ]) {
+          const r = await d.call("POST", R.artifacts, {
+            title: "guard-heic",
+            ...body,
+          });
+          expect(r.status).toBe(400);
+          const e = await errCode(r);
+          expect(e as unknown).toEqual({
+            code: "unsupported_format",
+            message:
+              "HEIC photos can't be shown yet. Save as JPEG and upload again.",
+            details: {
+              path: Object.keys(body.files)[0],
+              reason: "heic",
+            },
+          });
+        }
+        expect(await titles()).not.toContain("guard-heic");
+      },
+    );
+
+    t("an image publishes as image, listed and searched as image", async () => {
+      await d.fresh();
+      const png = btoa("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR");
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+      const made: string[] = [];
+      for (const files of [
+        { "IMG_0042.JPG": { base64: jpeg } },
+        { "chart.png": { base64: png } },
+        { "logo.svg": svg },
+      ]) {
+        const r = await d.call("POST", R.artifacts, {
+          title: `guard-image-${Object.keys(files)[0]}`,
+          files,
+        });
+        expect(r.status, Object.keys(files)[0]).toBe(201);
+        const { id } = await json(r);
+        made.push(id);
+        expect((await json(await d.call("GET", R.artifact(id)))).format).toBe(
+          "image",
+        );
+      }
+      const listed = (
+        (await json(await d.call("GET", `${R.artifacts}?format=image`)))
+          .items as { id: string; format: string }[]
+      ).map((a) => a.format);
+      expect(listed.length).toBeGreaterThanOrEqual(3);
+      expect(new Set(listed)).toEqual(new Set(["image"]));
+      const inline = await d.call("POST", R.artifacts, {
+        title: "guard-inline-svg",
+        format: "image",
+        content: svg,
+      });
+      expect(inline.status).toBe(201);
+      expect(
+        (await json(await d.call("GET", R.artifact((await json(inline)).id))))
+          .format,
+      ).toBe("image");
+    });
+
+    t("an image that doesn't fit its extension: 400 binary_entry", async () => {
+      await d.fresh();
+      for (const [files, reason] of [
+        [{ "a.png": { base64: jpeg } }, "not_image"],
+        [{ "a.gif": "GIF88a" }, "not_image"],
+        [{ "a.svg": "<html><svg></svg></html>" }, "not_svg"],
+      ] as const) {
+        const r = await d.call("POST", R.artifacts, {
+          title: "guard-bad-image",
+          files,
+        });
+        expect(r.status).toBe(400);
+        expect(await errCode(r)).toMatchObject({
+          code: "binary_entry",
+          details: { path: Object.keys(files)[0], reason },
+        });
+      }
+      const many = await d.call("POST", R.artifacts, {
+        title: "guard-bad-image",
+        entry: "a.jpg",
+        files: { "a.jpg": { base64: jpeg }, "b.jpg": { base64: jpeg } },
+      });
+      expect(many.status).toBe(400);
+      expect((await errCode(many)).details).toEqual({
+        path: "files",
+        reason: "image_single_file",
+      });
+      expect(await titles()).not.toContain("guard-bad-image");
+    });
+
+    t("binary content as an explicit format: 400 binary_entry", async () => {
+      await d.fresh();
+      const code = await d.call("POST", R.artifacts, {
+        title: "guard-code",
+        format: "code",
+        entry: "photo.txt",
+        files: { "photo.txt": { base64: jpeg } },
+      });
+      expect(code.status).toBe(400);
+      const e = await errCode(code);
+      expect(e.code).toBe("binary_entry");
+      expect(e.details).toEqual({ path: "photo.txt", reason: "binary" });
+      const pdf = await d.call("POST", R.artifacts, {
+        title: "guard-pdf",
+        format: "pdf",
+        content: "not a pdf",
+      });
+      expect(pdf.status).toBe(400);
+      expect((await errCode(pdf)).details).toEqual({
+        path: "document.pdf",
+        reason: "not_pdf",
+      });
+      const md = await d.call("POST", R.artifacts, {
+        title: "guard-md",
+        format: "markdown",
+        content: "a\u0000b",
+      });
+      expect((await errCode(md)).details).toMatchObject({ reason: "not_text" });
+      expect(await titles()).not.toContain("guard-code");
+    });
+
+    t(
+      "text under a name that implies no format publishes as code",
+      async () => {
+        await d.fresh();
+        for (const name of ["LICENSE", ".gitignore", "notes.foo"]) {
+          const r = await d.call("POST", R.artifacts, {
+            title: `guard-${name}`,
+            files: { [name]: "plain text\n" },
+          });
+          expect(r.status, name).toBe(201);
+          const { id } = await json(r);
+          expect(
+            (await json(await d.call("GET", R.artifact(id)))).format,
+            name,
+          ).toBe("code");
+        }
+        const gif = await d.call("POST", R.artifacts, {
+          title: "guard-gif",
+          files: { "gif.md": "GIF89a is a GIF header." },
+        });
+        expect(gif.status).toBe(201);
+      },
+    );
+
+    t("known text infers code", async () => {
+      await d.fresh();
+      const r = await d.call("POST", R.artifacts, {
+        title: "guard-csv",
+        files: { "data.csv": "a,b\n1,2\n" },
+      });
+      expect(r.status).toBe(201);
+      const { id } = await json(r);
+      expect((await json(await d.call("GET", R.artifact(id)))).format).toBe(
+        "code",
+      );
+    });
   });
 
   return { names, mswOnly };

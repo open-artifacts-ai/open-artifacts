@@ -15,6 +15,60 @@ describe("formats", () => {
     expect(inferFormat("x.pdf")).toBe("pdf");
     expect(inferFormat("main.rs")).toBe("code");
   });
+  it("inferFormat: code only for known text, else null", () => {
+    for (const p of [
+      "a.ts",
+      "x/y.py",
+      "notes.txt",
+      "a.TEXT",
+      "data.csv",
+      "t.tsv",
+      "app.log",
+      "prod.env",
+      "nginx.conf",
+      "setup.cfg",
+      "src/Makefile",
+      "Dockerfile",
+      "a.json",
+      "rows.jsonl",
+      "rows.ndjson",
+      "api.proto",
+      "A.scala",
+      "Main.hs",
+      "x.pl",
+      "x.ps1",
+      "run.bat",
+      "flake.nix",
+      "paper.tex",
+      "subs.srt",
+      "subs.vtt",
+      "Cargo.lock",
+    ])
+      expect(inferFormat(p), p).toBe("code");
+    for (const p of [
+      "IMG_0042.JPG",
+      "photo.jpeg",
+      "a/b.png",
+      "x.jpg",
+      "anim.GIF",
+      "p.webp",
+      "logo.svg",
+    ])
+      expect(inferFormat(p), p).toBe("image");
+    for (const p of [
+      "IMG_0042.HEIC",
+      "photo.heif",
+      "a.avif",
+      "a.tiff",
+      "a.zip",
+      "a.bin",
+      "a.mp4",
+      "a.docx",
+      "noext",
+      "x.unknown",
+    ])
+      expect(inferFormat(p), p).toBeNull();
+  });
   it("inferLanguage", () => {
     expect(inferLanguage("a.tsx")).toBe("tsx");
     expect(inferLanguage("src/Makefile")).toBe("makefile");

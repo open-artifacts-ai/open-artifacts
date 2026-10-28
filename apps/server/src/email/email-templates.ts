@@ -36,7 +36,7 @@ export const INVITE_HTML = `<!doctype html>
 </style>
 </head>
 <body class="oa-bg" style="margin:0;padding:0;width:100%;background-color:#EEF0F3;-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
-<div style="display:none;max-height:0;max-width:0;overflow:hidden;opacity:0;mso-hide:all;font-size:1px;line-height:1px;color:#EEF0F3;">You'll sign in with a one-time code sent to this address.&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;</div>
+<div style="display:none;max-height:0;max-width:0;overflow:hidden;opacity:0;mso-hide:all;font-size:1px;line-height:1px;color:#EEF0F3;">{{signInPreheader}}&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;&#8199;&#847;</div>
 <table role="presentation" class="oa-bg" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#EEF0F3;">
   <tr>
     <td class="oa-outer" align="center" style="padding:40px 16px;">
@@ -51,7 +51,7 @@ export const INVITE_HTML = `<!doctype html>
           <td class="oa-pad" style="padding:32px 40px 0 40px;font-family:Geist,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
             <h1 class="oa-text" style="margin:0;font-size:22px;line-height:30px;font-weight:600;letter-spacing:-0.01em;color:#15181C;">{{inviterName}} added you to {{instanceName}}</h1>
             <p class="oa-text-2" style="margin:16px 0 0 0;font-size:15px;line-height:24px;color:#454C56;">{{introLine}}</p>
-            <p class="oa-text-2" style="margin:12px 0 0 0;font-size:15px;line-height:24px;color:#454C56;">There's no password to set up. You'll sign in with a one-time code sent to {{recipientEmail}}.</p>
+            <p class="oa-text-2" style="margin:12px 0 0 0;font-size:15px;line-height:24px;color:#454C56;">{{signInLine}}</p>
           </td>
         </tr>
         <tr>
@@ -97,7 +97,7 @@ export const INVITE_TXT = `{{inviterName}} added you to {{instanceName}}
 
 {{introLine}}
 
-There's no password to set up. You'll sign in with a one-time code sent to {{recipientEmail}}.
+{{signInLine}}
 
 Go to {{instanceName}}:
 {{signInUrl}}
@@ -179,7 +179,7 @@ export const SHARE_HTML = `<!doctype html>
                 </td>
               </tr>
             </table>
-            <p class="oa-text-2" style="margin:20px 0 0 0;font-size:15px;line-height:24px;color:#454C56;">It lives on {{instanceName}}, where any AI agent publishes pages, docs, code and PDFs for your team. You'll sign in with a one-time code sent to {{recipientEmail}}.</p>
+            <p class="oa-text-2" style="margin:20px 0 0 0;font-size:15px;line-height:24px;color:#454C56;">It lives on {{instanceName}}, where any AI agent publishes pages, docs, code and PDFs for your team. {{signInLine}}</p>
           </td>
         </tr>
         <tr>
@@ -227,7 +227,7 @@ export const SHARE_TXT = `{{inviterName}} shared “{{artifactTitle}}” with yo
 Format: {{artifactFormat}}
 Your role: {{role}}
 
-It lives on {{instanceName}}, where any AI agent publishes pages, docs, code and PDFs for your team. You'll sign in with a one-time code sent to {{recipientEmail}}.
+It lives on {{instanceName}}, where any AI agent publishes pages, docs, code and PDFs for your team. {{signInLine}}
 
 Open the artifact:
 {{artifactUrl}}

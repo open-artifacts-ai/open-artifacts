@@ -1,13 +1,15 @@
 import { normalizeEmail } from "@oa/auth-core";
-import type {
-  AuditReason,
-  Member,
-  MemberInvite,
-  MemberInviteResult,
-  MemberPatch,
-  MemberStatus,
-  Settings,
-  SettingsPatch,
+import {
+  type AuditReason,
+  INVITE_UNREACHABLE_MESSAGE,
+  type InviteUnreachableDetails,
+  type Member,
+  type MemberInvite,
+  type MemberInviteResult,
+  type MemberPatch,
+  type MemberStatus,
+  type Settings,
+  type SettingsPatch,
 } from "@oa/shared";
 import {
   and,
@@ -22,7 +24,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { managesAdmins } from "../auth/authz.js";
-import { authConfig } from "../auth/config.js";
+import { authConfig, type SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
 import {
@@ -49,6 +51,7 @@ import {
   revokeUserLive,
 } from "../runtime/revoke.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
+import { inviteReach } from "./reach.js";
 import {
   IDENTITIES_SQL,
   identitiesOf,
@@ -136,9 +139,16 @@ export function hostedFields(
   };
 }
 
+const EXISTS = "select 1 as x from users where email = ?1 limit 1";
+
 /**
  * Pre-creates the user row, then emails the invitee (best effort).
- * 400 on an invalid (non-ASCII) email, 409 if it exists.
+ * 400 on an invalid (non-ASCII) email, 409 if it exists, 400
+ * invite_unreachable (nothing created) when no sign-in method this install
+ * offers could ever admit the address (review item 11). When only Google
+ * might (an address outside AUTH_DOMAINS), the invite stands and the result
+ * carries signIn { status: "uncertain" }. The email names only the methods
+ * that admit the address.
  */
 export async function inviteMember(
   env: Env,
@@ -147,6 +157,21 @@ export async function inviteMember(
 ): Promise<MemberInviteResult> {
   const email = normalizeEmail(input.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
+  const reach = await inviteReach(env, email, input.role);
+  if (reach.methods.length === 0 && !reach.googleUncertain) {
+    // An existing row is still "Already a member" (409), not a 400.
+    if (await stmt(env.DB, EXISTS).bind(email).first())
+      throw new ApiError("conflict", "Already a member");
+    const details: InviteUnreachableDetails = {
+      field: "email",
+      reason: reach.inDomain ? "no_sign_in_method" : "outside_domains",
+    };
+    throw new ApiError(
+      "invite_unreachable",
+      INVITE_UNREACHABLE_MESSAGE[details.reason],
+      details,
+    );
+  }
   const [row] = await insertUser(env, {
     email,
     name: "",
@@ -156,6 +181,11 @@ export async function inviteMember(
     .onConflictDoNothing({ target: users.email })
     .returning();
   if (!row) throw new ApiError("conflict", "Already a member");
+  // What the email names, and the result reports: uncertain Google is still
+  // the only way in, so it is named.
+  const signInMethods: SignInProvider[] = reach.methods.length
+    ? reach.methods
+    : ["google"];
   let emailed = false;
   if (emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))
@@ -170,6 +200,7 @@ export async function inviteMember(
           instance,
           recipient: email,
           appHost: env.APP_HOST,
+          signIn: signInMethods,
         }),
       {
         kind: "invite",
@@ -178,7 +209,14 @@ export async function inviteMember(
       },
     );
   }
-  return { ...toMember(row), emailed };
+  return {
+    ...toMember(row),
+    emailed,
+    signInMethods,
+    ...(reach.methods.length === 0
+      ? { signIn: { status: "uncertain", reason: "outside_domains" } as const }
+      : {}),
+  };
 }
 
 async function getRow(env: Env, id: string) {
@@ -267,7 +305,9 @@ const STATUS_OF = "select status from users where id = ?1";
  * (revokeUserLive). Unsuspending sets the status back to active; the PATs
  * and sessions the suspension revoked stay revoked. A removed row stays
  * removed. getUser resolves only active rows, so every credential stops at
- * the next request.
+ * the next request. A removal keeps the shares addressed to their email:
+ * the removed row refuses every sign-in, so none re-admits them, and they
+ * stay with the row should a removal ever be restored.
  *
  * `actor` is the member acting (routes; audited as them) or SYSTEM_ACTOR
  * (system and directory sync). An admin may not suspend or remove an owner
@@ -396,7 +436,13 @@ export async function patchMember(
  * name a user and it grants nothing in a shared space. Every other row that
  * references them is reassigned to the instance owner; their tokens are
  * deleted (tokens.user_id has no cascade, so revoked rows would block the
- * delete). Shares addressed to their email are kept.
+ * delete).
+ *
+ * Without spaces the shares addressed to their email are dropped in the
+ * same batch (audited as a count, sharesDropped): with the row gone, a
+ * leftover share would re-admit them as a guest at their next sign-in. A
+ * share made afterwards is a fresh grant. With spaces on the removed row
+ * refuses every sign-in, so its shares are kept with it.
  *
  * `actor` is the member acting (routes; audited as them) or SYSTEM_ACTOR. An
  * admin may not remove an owner or admin, 403 owner_only, enforced in the
@@ -413,15 +459,16 @@ export async function removeMember(
   if (row.role === "owner")
     throw new ApiError("bad_request", "The owner cannot be removed");
   const db = getDb(env);
-  if (authConfig(env).features.includes("spaces"))
-    await setUserStatus(env, id, "removed", "admin_remove", actor, ctx);
-  else await deleteMember(env, id, actor, ctx);
-  // Belt and braces for the artifacts shared with them (best effort, capped).
+  // Belt and braces for the artifacts shared with them (best effort,
+  // capped), read before a spaces-off removal drops those shares.
   const shared = await db
     .select({ id: shares.artifactId })
     .from(shares)
     .where(eq(shares.email, row.email))
     .limit(MAX_CLOSE);
+  if (authConfig(env).features.includes("spaces"))
+    await setUserStatus(env, id, "removed", "admin_remove", actor, ctx);
+  else await deleteMember(env, id, actor, ctx);
   await closeRuntimeSockets(
     env,
     shared.map((r) => r.id),
@@ -513,15 +560,31 @@ async function deleteMember(
     // Grant usage rows reference the user (their grants are revoked above).
     db.delete(agentGrants).where(and(eq(agentGrants.userId, id), target)),
     db.delete(identities).where(and(eq(identities.userId, id), target)),
+    // The shares addressed to their email (still the row's, read before it
+    // goes): a leftover share would re-admit them as a guest at the next
+    // code or Access sign-in. Last, so the audit row counts it.
+    db
+      .delete(shares)
+      .where(
+        and(
+          eq(
+            shares.email,
+            sql`(select u.email from users u where u.id = ${id})`,
+          ),
+          target,
+        ),
+      ),
   ];
   const out = await env.DB.batch([
     ...writes.map(raw),
     // Before the row goes, and only while it exists (a concurrent removal
     // writes one row). The target id stays; the actor's email is joined at
-    // read time, so a deleted target only reads back without one.
+    // read time, so a deleted target only reads back without one. Right
+    // after the shares delete: sharesDropped is its changes(), a count only.
     audit(env, "user.status", { type: "user", id }, by, {
       reason: "admin_remove",
       detail: { status: "removed" },
+      detailSql: { sql: "json_object('sharesDropped', changes())", args: [] },
       when: {
         sql: "exists (select 1 from users where id = ? and role <> 'owner' and (role <> 'admin' or ? = 1))",
         args: [id, admins],

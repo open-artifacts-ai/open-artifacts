@@ -62,6 +62,10 @@ const ANALYTICS = secretFile("analytics", { installName: NAME });
 const PAT = secretFile("pat", { hostSlug: T("hostSlug") });
 const CF_ENV = `${SECRET_ENV_VARS.cloudflare}="$(cat ${CF})"`;
 const SETUP = `${CF_ENV} pnpm -s oa:setup`;
+const WRANGLER = `${CF_ENV} pnpm -s --filter @oa/server exec wrangler`;
+const VERIFY = `${CF_ENV} node --experimental-strip-types apps/server/scripts/verify-migration.ts`;
+/** Where the guarded-migration capture is kept: the install's state directory. */
+const CAPTURE = ".openartifacts/migration-0017-before.json";
 
 export function renderUpgradeTemplate(): string {
   return `---
@@ -167,9 +171,47 @@ ${SETUP} --upgrade --name ${NAME} --check --json
 
 ## 7. Upgrade
 
+### Before: the guarded migration
+
+Migration \`0017_image_format\` rebuilds the artifacts, versions and shares tables to allow image artifacts. It's the one migration that isn't purely additive, so it runs guarded. In the release directory, check whether this upgrade applies it:
+
+\`\`\`sh
+${VERIFY} capture --db ${NAME} --out ${CAPTURE}
+\`\`\`
+
+- Exit 0: it will run. Before going on, record a D1 Time Travel bookmark and keep the \`bookmark\` value for this session:
+
+  \`\`\`sh
+  ${WRANGLER} d1 time-travel info ${NAME} --json
+  \`\`\`
+
+- Exit 1 with "already applied": the instance has it; skip the rest of this subsection.
+- Any other exit 1: the database can't be migrated safely as it is. Show the user the message and stop. Do not upgrade.
+- Exit 2: show the user the message and stop.
+
+Add \`CLOUDFLARE_ACCOUNT_ID=<id>\` in front of these commands if the deploy token can reach more than one Cloudflare account.
+
+### Run it
+
 \`\`\`sh
 ${SETUP} --upgrade --name ${NAME} --json
 \`\`\`
+
+### After: verify the guarded migration
+
+Only if the capture above exited 0, and whatever the upgrade's exit code once its \`deploy\` step ran:
+
+\`\`\`sh
+${VERIFY} verify --db ${NAME} --in ${CAPTURE}
+\`\`\`
+
+Exit 0: the data matches; go on. Any other exit: the migration didn't keep the data. Show the user its MISMATCH lines, then restore the database to the bookmark and roll the Worker back. A restore discards every write since the bookmark, the user's own included (artifacts published, shares, live data written during the upgrade): tell the user so.
+
+\`\`\`sh
+${WRANGLER} d1 time-travel restore ${NAME} --bookmark=<bookmark>
+\`\`\`
+
+Then run the rollback in step 8 (whatever step 7 returned), tell the user the upgrade was rolled back and the database restored, and stop.
 
 Add \`--account-id <id>\` if the deploy token can reach more than one Cloudflare account. With no saved state, setup reads the hosts and owner email from the deployed Worker.
 
@@ -177,7 +219,7 @@ Never pass \`--allow-downgrade\` unless the user explicitly asks for a downgrade
 
 ## 8. Roll back a failed deploy
 
-Roll back only when step 7 exits 1 and its last \`error\` line has ${STEPS_JSON}: those steps run after the deploy, so the new version is live and failing. If it failed at any earlier step, nothing was deployed: do not roll back; show the user the \`message\` and stop.
+Roll back only when step 7 exits 1 and its last \`error\` line has ${STEPS_JSON}: those steps run after the deploy, so the new version is live and failing. Also roll back after the database was restored because the guarded migration failed its verify (step 7). If it failed at any earlier step, nothing was deployed: do not roll back; show the user the \`message\` and stop.
 
 Exit code 2 is never a reason to roll back. Relay the \`message\` verbatim, then:
 

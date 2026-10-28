@@ -495,7 +495,9 @@ describe("hosted: the redeem through the dispatch props (AUTH_BROKER)", () => {
       },
     });
     // Redeemed and verified; a hosted install then admits by invite only.
-    expect(loc(r)).toBe(`${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx`);
+    expect(loc(r)).toBe(
+      `${SIGN_IN_PAGE}?error=no_access&next=%2Fa%2Fx&via=google`,
+    );
     expect(calls).toEqual(["POST /google/redeem"]);
     expect(brokerUrls(n)).toEqual([]);
   });

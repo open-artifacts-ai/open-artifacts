@@ -3,12 +3,14 @@ import {
   type Format,
   type Member,
   type Share,
+  type ShareRecipient,
   type ShareResult,
   type ShareRole,
   viewerPath,
 } from "@oa/shared";
 import { asc, eq } from "drizzle-orm";
 import { authorize, callerOf } from "../auth/authz.js";
+import type { SignInProvider } from "../auth/config.js";
 import { getDb } from "../db/client.js";
 import { shares } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -21,6 +23,7 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
 import { getSettings } from "./members.js";
+import { shareReach } from "./reach.js";
 
 export const MAX_SHARES = 200;
 
@@ -175,9 +178,16 @@ export async function putShare(
         lapseAudit(env, guest.id, "active", user.id),
       ]);
   }
+  // Review item 37: whether they can sign in at all (an in-domain
+  // non-member on an invite-only install can't); the share stands either way.
+  const reach = await shareReach(env, email);
   return {
     ...toShare(row),
-    emailed: created && (await emailShare(env, user, artifact, email, s.role)),
+    emailed:
+      created && (await emailShare(env, user, artifact, email, s.role, reach)),
+    ...(reach.recipient ? { recipient: reach.recipient } : {}),
+    // The list the share email names (reach.ts), so the UI and email agree.
+    signInMethods: reach.methods,
   };
 }
 
@@ -187,6 +197,8 @@ async function emailShare(
   artifact: { id: string; title: string; format: string },
   email: string,
   role: ShareRole,
+  /** The methods that admit the recipient and, with none, why (shareReach). */
+  reach: { methods: SignInProvider[]; recipient?: ShareRecipient },
 ): Promise<boolean> {
   if (!emailEnabled(env)) return false;
   try {
@@ -209,6 +221,8 @@ async function emailShare(
           path: viewerPath(artifact.id),
           format: artifact.format as Format,
           role,
+          signIn: reach.methods,
+          cantSignIn: reach.recipient?.reason,
         }),
       {
         kind: "share",

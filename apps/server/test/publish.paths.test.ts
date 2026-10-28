@@ -222,9 +222,9 @@ describe("planFiles (defensive)", () => {
     expect(planFiles({ title: "t", format: "html", content: "x" }).entry).toBe(
       "index.html",
     );
-    expect(planFiles({ title: "t", format: "pdf", content: "x" }).entry).toBe(
-      "document.pdf",
-    );
+    expect(
+      planFiles({ title: "t", format: "pdf", content: "%PDF-x" }).entry,
+    ).toBe("document.pdf");
     expect(
       planFiles({ title: "t", files: { "b.md": "x", "README.md": "y" } }),
     ).toMatchObject({

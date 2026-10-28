@@ -2,7 +2,7 @@
   "version": "6",
   "dialect": "sqlite",
   "id": "1610f05c-b752-4f2c-82b2-63fbdae857e1",
-  "prevId": "9d4c209b-7e2c-4b21-9b38-0297367a58d2",
+  "prevId": "69469e35-afaf-40b9-807b-e2e7c41a9774",
   "tables": {
     "agent_grants": {
       "name": "agent_grants",

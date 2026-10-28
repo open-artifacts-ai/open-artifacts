@@ -10,6 +10,7 @@ import {
   MemberStatusSchema,
   MySpaceSchema,
   RestrictionSchema,
+  SignInProviderIdSchema,
   SpaceRefSchema,
   TierSchema,
 } from "./hosted/core.js";
@@ -349,10 +350,31 @@ export const ShareSchema = z.object({
 });
 export type Share = z.infer<typeof ShareSchema>;
 
+/**
+ * ShareResult.recipient: present only when the recipient can't sign in on
+ * this install yet (the share still applies). needs_invite: in a verified
+ * domain on an invite-only install, so an admin must invite them as a
+ * member; outside_domains: outside the verified domains and no guest
+ * sign-in is offered (see InviteUnreachableReasonSchema).
+ */
+export const ShareRecipientSchema = z.object({
+  canSignIn: z.literal(false),
+  reason: z.enum(["needs_invite", "outside_domains", "no_sign_in_method"]),
+});
+export type ShareRecipient = z.infer<typeof ShareRecipientSchema>;
+
 /** PUT shares response. */
 export const ShareResultSchema = ShareSchema.extend({
   /** True if a notification email went to a non-member (best effort). */
   emailed: z.boolean(),
+  /** Absent when the recipient can sign in; see ShareRecipientSchema. */
+  recipient: ShareRecipientSchema.optional(),
+  /**
+   * The sign-in methods that admit the recipient, in SIGN_IN_METHOD_ORDER;
+   * [] when they can't sign in. The same list the share email names, so UI
+   * copy and the email agree. Sent by direct-sign-in and Access installs.
+   */
+  signInMethods: z.array(SignInProviderIdSchema).optional(),
 });
 export type ShareResult = z.infer<typeof ShareResultSchema>;
 
@@ -393,10 +415,30 @@ export const MemberInviteSchema = z.strictObject({
 });
 export type MemberInvite = z.infer<typeof MemberInviteSchema>;
 
+/**
+ * MemberInviteResult.signIn: present only when the server can't tell whether
+ * the invitee can sign in. outside_domains: the address is outside
+ * AUTH_DOMAINS and only Google could admit it, which works only if it is a
+ * Google Workspace account whose primary domain is verified (a secondary
+ * domain). The invite still stands; warn the inviter.
+ */
+export const InviteSignInSchema = z.object({
+  status: z.literal("uncertain"),
+  reason: z.literal("outside_domains"),
+});
+export type InviteSignIn = z.infer<typeof InviteSignInSchema>;
+
 /** POST members (invite) response. */
 export const MemberInviteResultSchema = MemberSchema.extend({
   /** True if an invite email was sent (best effort). */
   emailed: z.boolean(),
+  /** Absent when the invitee can sign in; see InviteSignInSchema. */
+  signIn: InviteSignInSchema.optional(),
+  /**
+   * The sign-in methods the invite email names, in SIGN_IN_METHOD_ORDER
+   * (["google"] when signIn is uncertain). The same list the email uses.
+   */
+  signInMethods: z.array(SignInProviderIdSchema).optional(),
 });
 export type MemberInviteResult = z.infer<typeof MemberInviteResultSchema>;
 
