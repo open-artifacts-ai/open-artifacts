@@ -805,6 +805,62 @@ export const useConfirmHeld = () =>
     "Couldn't apply the change.",
     directoryInline,
   );
+/**
+ * Snooze / unsnooze a held sweep (#412). A 404 means the caller lost the owner
+ * role: refetch /me (the page then shows the owner-only line) and skip the toast.
+ */
+const useHeldSnooze = <V>(fn: (v: V) => Promise<unknown>, failure: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onError: (e: unknown) => {
+      if (e instanceof ApiClientError && e.status === 404) {
+        void qc.invalidateQueries({ queryKey: qk.me });
+        void qc.invalidateQueries({ queryKey: qk.directory });
+        return;
+      }
+      // 409: the hold or the sync moved on; reload so the page shows it.
+      if (e instanceof ApiClientError && e.status === 409) {
+        void qc.invalidateQueries({ queryKey: qk.me });
+        void qc.invalidateQueries({ queryKey: qk.directory });
+        if (e.code === "conflict")
+          return toast({
+            title: "This change is no longer waiting.",
+            tone: "danger",
+          });
+      }
+      failureToast(qc, failure, e);
+    },
+    onSuccess: () =>
+      Promise.all(
+        [qk.directory, qk.me].map((queryKey) =>
+          qc.invalidateQueries({ queryKey }),
+        ),
+      ),
+  });
+};
+export const useSnoozeHeld = () =>
+  useHeldSnooze(
+    (v: { groupId: string; reason?: string }) =>
+      api.send(
+        "POST",
+        R.directoryHeldSnooze(v.groupId),
+        v.reason ? { reason: v.reason } : undefined,
+        SyncStatusSchema,
+      ),
+    "Couldn't snooze the change.",
+  );
+export const useUnsnoozeHeld = () =>
+  useHeldSnooze(
+    (groupId: string) =>
+      api.send(
+        "DELETE",
+        R.directoryHeldSnooze(groupId),
+        undefined,
+        SyncStatusSchema,
+      ),
+    "Couldn't cancel the snooze.",
+  );
 export const useDisconnectDirectory = () =>
   useInvalidating(
     () => api.send("DELETE", R.directory, undefined),

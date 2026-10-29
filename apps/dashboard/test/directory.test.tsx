@@ -5,7 +5,13 @@ import { type Me, R } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, onTestFinished, vi } from "vitest";
-import { calls, installHarness, lastClient, mountHosted } from "./harness";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  lastClient,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -595,7 +601,9 @@ it("no held sweeps: no region", async () => {
 it("the owner applies a held sweep", async () => {
   const seen = calls("POST");
   mountHosted("/settings/directory");
-  fireEvent.click(within(await held()).getByRole("button", { name: "Apply" }));
+  fireEvent.click(
+    within(await held()).getByRole("button", { name: "Apply Sales" }),
+  );
   const d = screen.getByRole("alertdialog");
   expect(d).toHaveTextContent("Remove 4 people from Sales?");
   expect(d).toHaveTextContent(
@@ -613,7 +621,9 @@ it("the owner applies a held sweep", async () => {
 it("Cancel leaves the sweep waiting", async () => {
   const seen = calls("POST");
   mountHosted("/settings/directory");
-  fireEvent.click(within(await held()).getByRole("button", { name: "Apply" }));
+  fireEvent.click(
+    within(await held()).getByRole("button", { name: "Apply Sales" }),
+  );
   fireEvent.click(
     within(screen.getByRole("alertdialog")).getByRole("button", {
       name: "Cancel",
@@ -642,7 +652,9 @@ it("a held sweep on a restricted group says it lifts the restriction", async () 
       ],
     }),
   );
-  fireEvent.click(within(await held()).getByRole("button", { name: "Apply" }));
+  fireEvent.click(
+    within(await held()).getByRole("button", { name: "Apply Contractors" }),
+  );
   const d = screen.getByRole("alertdialog");
   expect(d).toHaveTextContent(
     "Applying this lifts the restriction for 1 person.",
@@ -655,7 +667,7 @@ it("a held sweep on a restricted group says it lifts the restriction", async () 
 it("admins see held sweeps but can't apply them", async () => {
   mountHosted("/settings/directory", true, asAdmin);
   const h = await held();
-  expect(within(h).queryByRole("button", { name: "Apply" })).toBeNull();
+  expect(within(h).queryByRole("button", { name: /^Apply/ })).toBeNull();
 });
 
 it("restricted groups list Contractors and add through the group picker", async () => {
@@ -731,7 +743,9 @@ it("Lift is a real button styled like Apply", async () => {
   const lift = within(row).getByRole("button", {
     name: "Lift restriction on Contractors",
   });
-  const apply = within(await held()).getByRole("button", { name: "Apply" });
+  const apply = within(await held()).getByRole("button", {
+    name: "Apply Sales",
+  });
   expect(lift.className).toBe(apply.className);
 });
 
@@ -815,4 +829,278 @@ it("no copy contains an em dash", async () => {
   mountHosted("/settings/directory", { unhealthy: true });
   await held();
   expect(document.body.textContent).not.toContain("—");
+});
+
+// -- #412: snooze a held sweep
+
+const SNOOZED = {
+  groupId: "gEng01",
+  email: "eng@example.com",
+  name: "Engineering",
+  wouldRemove: 6,
+  members: 10,
+  since: "2026-10-20T09:12:00.000Z",
+  snoozedUntil: "2026-11-19T09:12:00.000Z",
+  snoozeReason: "Admin is fixing the group",
+};
+const snoozedStatus = (o: object = {}) =>
+  serveStatus({ held: [{ ...SNOOZED, ...o }] });
+const snoozeRoute = "/api/v1/directory/held/gSales03/snooze";
+
+it("the owner sees Snooze and Apply on a held row", async () => {
+  mountHosted("/settings/directory");
+  const h = await held();
+  expect(within(h).getByRole("button", { name: "Snooze Sales" })).toBeVisible();
+  expect(within(h).getByRole("button", { name: "Apply Sales" })).toBeVisible();
+});
+
+it("an admin sees no Snooze", async () => {
+  mountHosted("/settings/directory", true, asAdmin);
+  const h = await held();
+  expect(within(h).queryByRole("button", { name: /^Snooze/ })).toBeNull();
+});
+
+it("Snooze posts the reason and refetches the status", async () => {
+  const seen = calls("POST");
+  let statusReads = 0;
+  mountHosted("/settings/directory", true, undefined, [
+    http.get("*/api/v1/directory", () => {
+      statusReads++;
+      return HttpResponse.json({
+        ...STATUS,
+        held: [
+          {
+            groupId: "gSales03",
+            email: "sales@example.com",
+            name: "Sales",
+            wouldRemove: 4,
+            members: 4,
+            since: "2026-10-20T09:12:00.000Z",
+          },
+        ],
+      });
+    }),
+    http.post(`*${snoozeRoute}`, () => HttpResponse.json(STATUS)),
+  ]);
+  fireEvent.click(
+    within(await held()).getByRole("button", { name: "Snooze Sales" }),
+  );
+  const d = screen.getByRole("alertdialog");
+  expect(d).toHaveTextContent("Snooze Sales?");
+  expect(d).toHaveTextContent(
+    "Snooze until the group changes. Nobody loses access while it's snoozed. It comes back if Google's membership for this group changes, or after 30 days.",
+  );
+  const before = statusReads;
+  fireEvent.change(within(d).getByLabelText("Reason (optional)"), {
+    target: { value: "Admin is fixing the group" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Snooze" }));
+  await waitFor(() => expect(seen.at(-1)?.path).toBe(snoozeRoute));
+  await waitFor(() =>
+    expect(seen.at(-1)?.body).toEqual({
+      reason: "Admin is fixing the group",
+    }),
+  );
+  await waitFor(() => expect(statusReads).toBeGreaterThan(before));
+});
+
+it("Snooze with the field empty sends no reason", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/directory", true, undefined, [
+    http.post(`*${snoozeRoute}`, () => HttpResponse.json(STATUS)),
+  ]);
+  fireEvent.click(
+    within(await held()).getByRole("button", { name: "Snooze Sales" }),
+  );
+  const d = screen.getByRole("alertdialog");
+  expect(within(d).getByLabelText("Reason (optional)")).toHaveAttribute(
+    "maxLength",
+    "200",
+  );
+  fireEvent.click(within(d).getByRole("button", { name: "Snooze" }));
+  await waitFor(() => expect(seen.at(-1)?.path).toBe(snoozeRoute));
+  await waitFor(() => expect(seen.at(-1)?.body).toBeUndefined());
+});
+
+it("a snoozed row shows when it ends and why; Unsnooze sends DELETE; Apply still works", async () => {
+  const dels = calls("DELETE");
+  const posts = calls("POST");
+  mountHosted("/settings/directory", true, undefined, [
+    ...snoozedStatus(),
+    http.delete("*/api/v1/directory/held/gEng01/snooze", () =>
+      HttpResponse.json(STATUS),
+    ),
+    http.post("*/api/v1/directory/held/gEng01/confirm", () =>
+      HttpResponse.json(STATUS),
+    ),
+  ]);
+  const h = await held();
+  expect(h).toHaveTextContent(/Snoozed until /);
+  expect(h).toHaveTextContent("“Admin is fixing the group”");
+  expect(h).toHaveTextContent("Snoozed holds don't light the Settings dot.");
+  expect(
+    within(h).queryByRole("button", { name: "Snooze Engineering" }),
+  ).toBeNull();
+  fireEvent.click(
+    within(h).getByRole("button", { name: "Unsnooze Engineering" }),
+  );
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  await waitFor(() =>
+    expect(dels.at(-1)?.path).toBe("/api/v1/directory/held/gEng01/snooze"),
+  );
+  fireEvent.click(within(h).getByRole("button", { name: "Apply Engineering" }));
+  fireEvent.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: /^Remove/,
+    }),
+  );
+  await waitFor(() =>
+    expect(posts.at(-1)?.path).toBe("/api/v1/directory/held/gEng01/confirm"),
+  );
+});
+
+it("an admin sees a snoozed row without buttons", async () => {
+  mountHosted("/settings/directory", true, asAdmin, snoozedStatus());
+  const h = await held();
+  expect(h).toHaveTextContent("Snoozed until ");
+  expect(within(h).queryByRole("button")).toBeNull();
+});
+
+it("a 404 on Snooze refetches /me and shows the owner-only line", async () => {
+  let me = 0;
+  mountHosted("/settings/directory", true, (m) => (++me > 1 ? asAdmin(m) : m), [
+    http.post(`*${snoozeRoute}`, () =>
+      HttpResponse.json(
+        { error: { code: "not_found", message: "Not found" } },
+        { status: 404 },
+      ),
+    ),
+  ]);
+  fireEvent.click(
+    within(await held()).getByRole("button", { name: "Snooze Sales" }),
+  );
+  fireEvent.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Snooze",
+    }),
+  );
+  await status();
+  await waitFor(() =>
+    expect(
+      screen.getByRole("status", { name: "Sync status" }),
+    ).toHaveTextContent(/Only the owner/),
+  );
+  expect(me).toBeGreaterThan(1);
+});
+
+it("two held rows: each row's buttons are found by name", async () => {
+  mountHosted(
+    "/settings/directory",
+    true,
+    undefined,
+    serveStatus({
+      held: [
+        { ...SNOOZED, snoozedUntil: null, snoozeReason: null },
+        {
+          ...SNOOZED,
+          groupId: "gOps02",
+          name: "Ops",
+          email: "ops@example.com",
+        },
+      ],
+    }),
+  );
+  const h = await held();
+  for (const name of [
+    "Snooze Engineering",
+    "Apply Engineering",
+    "Unsnooze Ops",
+    "Apply Ops",
+  ])
+    expect(within(h).getByRole("button", { name })).toBeVisible();
+  expect(
+    within(h).queryByRole("button", { name: "Unsnooze Engineering" }),
+  ).toBeNull();
+});
+
+it("closing the Snooze dialog clears the reason", async () => {
+  mountHosted("/settings/directory");
+  fireEvent.click(
+    within(await held()).getByRole("button", { name: "Snooze Sales" }),
+  );
+  fireEvent.change(
+    within(screen.getByRole("alertdialog")).getByLabelText("Reason (optional)"),
+    { target: { value: "draft" } },
+  );
+  fireEvent.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Cancel",
+    }),
+  );
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  fireEvent.click(
+    within(await held()).getByRole("button", { name: "Snooze Sales" }),
+  );
+  expect(
+    within(screen.getByRole("alertdialog")).getByLabelText("Reason (optional)"),
+  ).toHaveValue("");
+});
+
+const SALES = {
+  groupId: "gSales03",
+  email: "sales@example.com",
+  name: "Sales",
+  wouldRemove: 4,
+  members: 4,
+  since: "2026-10-20T09:12:00.000Z",
+};
+const failSnooze = (status: number, code: string) =>
+  http.post(`*${snoozeRoute}`, () =>
+    HttpResponse.json({ error: { code, message: "server text" } }, { status }),
+  );
+const snoozeSales = async () => {
+  fireEvent.click(
+    within(await held()).getByRole("button", { name: "Snooze Sales" }),
+  );
+  fireEvent.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Snooze",
+    }),
+  );
+};
+
+it("a 409 conflict on Snooze says the change is gone and reloads the status", async () => {
+  let reads = 0;
+  mountHosted("/settings/directory", true, undefined, [
+    failSnooze(409, "conflict"),
+    http.get("*/api/v1/directory", () => {
+      reads++;
+      return HttpResponse.json({
+        ...STATUS,
+        held: reads > 1 ? [] : [SALES],
+      });
+    }),
+  ]);
+  await snoozeSales();
+  expect(
+    await findVisibleToast("This change is no longer waiting."),
+  ).toBeVisible();
+  await waitFor(() => expect(reads).toBeGreaterThan(1));
+});
+
+it("a 409 directory_sync_off on Snooze toasts the failure and reloads", async () => {
+  let reads = 0;
+  mountHosted("/settings/directory", true, undefined, [
+    failSnooze(409, "directory_sync_off"),
+    http.get("*/api/v1/directory", () => {
+      reads++;
+      return HttpResponse.json({
+        ...STATUS,
+        ...(reads > 1 ? { mode: "off" } : { held: [SALES] }),
+      });
+    }),
+  ]);
+  await snoozeSales();
+  expect(await findVisibleToast("Couldn't snooze the change.")).toBeVisible();
+  await waitFor(() => expect(reads).toBeGreaterThan(1));
 });
