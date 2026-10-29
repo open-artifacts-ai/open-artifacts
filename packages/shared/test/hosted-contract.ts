@@ -523,6 +523,23 @@ export function hostedContract(d: ContractDriver): ContractCases {
         customerMismatch: null,
       });
       expect(st.held).toHaveLength(1);
+      // #412: a snooze is visibility only; DELETE cancels it.
+      const snoozed = Strict.SyncStatus.parse(
+        await json(
+          await d.call("POST", R.directoryHeldSnooze("gSales03"), {
+            reason: "Google is wrong",
+          }),
+        ),
+      );
+      expect(snoozed.held[0]).toMatchObject({
+        wouldRemove: 4,
+        snoozeReason: "Google is wrong",
+      });
+      expect(snoozed.held[0]?.snoozedUntil).not.toBeNull();
+      const unsnoozed = Strict.SyncStatus.parse(
+        await json(await d.call("DELETE", R.directoryHeldSnooze("gSales03"))),
+      );
+      expect(unsnoozed.held[0]?.snoozedUntil).toBeNull();
       expect(
         (await d.call("POST", R.directoryHeldConfirm("gSales03"))).status,
       ).toBe(202);
