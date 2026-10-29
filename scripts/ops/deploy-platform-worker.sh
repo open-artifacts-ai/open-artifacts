@@ -92,6 +92,9 @@ case "$app" in
     # This env's Stripe test-mode price per paid plan (/checkout).
     fill "STRIPE_PRICE_TEAM_${up}" "${STRIPE_PRICE_TEAM:-}" "$price"
     fill "STRIPE_PRICE_BUSINESS_${up}" "${STRIPE_PRICE_BUSINESS:-}" "$price"
+    # Its D1 migrations are pinned once deployed: the lock must be frozen and
+    # match every file (MIGRATION_LOCK overrides the lock path, tests only).
+    node ../../scripts/ops/check-migration-lock.mjs migrations "${MIGRATION_LOCK:-migration-lock.json}"
     ;;
   scheduler)
     fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"

@@ -1,4 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { root, sandbox } from "../ci/stubs.ts";
@@ -156,6 +164,27 @@ describe("deploy-platform-worker.sh", () => {
   });
   describe("billing", () => {
     const DIR = join(root, "apps/billing");
+    // A frozen lock pinning the real migrations, so the deploy tests pass the
+    // migration-lock check (the repo's own lock stays unfrozen until deploy).
+    const MIG = join(DIR, "migrations");
+    const lockDir = mkdtempSync(join(tmpdir(), "oa-lock-"));
+    const pinsOf = () =>
+      Object.fromEntries(
+        readdirSync(MIG)
+          .filter((f) => f.endsWith(".sql"))
+          .map((f) => [
+            f,
+            createHash("sha256")
+              .update(readFileSync(join(MIG, f)))
+              .digest("hex"),
+          ]),
+      );
+    const lockAt = (name: string, lock: unknown) => {
+      const f = join(lockDir, name);
+      writeFileSync(f, JSON.stringify(lock));
+      return f;
+    };
+    const FROZEN = lockAt("frozen.json", { frozen: true, pins: pinsOf() });
     const DB = "0123abcd-4567-89ef-0123-456789abcdef";
     const IDS = { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: REG };
     const PRICES = {
@@ -165,7 +194,11 @@ describe("deploy-platform-worker.sh", () => {
 
     for (const env of ["staging", "prod"] as const)
       it(`${env}: deploys from apps/billing with exact argv and fills its D1 and registry ids`, () => {
-        const r = run(["billing", env], { ...PRICES, ...IDS });
+        const r = run(["billing", env], {
+          ...PRICES,
+          ...IDS,
+          MIGRATION_LOCK: FROZEN,
+        });
         expect(r.code).toBe(0);
         expect(r.log).toEqual([
           `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
@@ -214,7 +247,11 @@ describe("deploy-platform-worker.sh", () => {
         { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: `${REG}/x` },
         { BILLING_DB_ID: DB, DIRECTORY_REGISTRY_ID: REG },
       ] as Record<string, string>[]) {
-        const r = run(["billing", "staging"], { ...PRICES, ...env });
+        const r = run(["billing", "staging"], {
+          ...PRICES,
+          ...env,
+          MIGRATION_LOCK: FROZEN,
+        });
         expect(r.code).toBe(1);
         expect(r.log).toEqual([]);
       }
@@ -232,9 +269,48 @@ describe("deploy-platform-worker.sh", () => {
         { ...PRICES, STRIPE_PRICE_BUSINESS: "price_1Abc&x" },
         { ...PRICES, STRIPE_PRICE_BUSINESS: "price_1Abc x" },
       ] as Record<string, string>[]) {
-        const r = run(["billing", "staging"], { ...IDS, ...p });
+        const r = run(["billing", "staging"], {
+          ...IDS,
+          ...p,
+          MIGRATION_LOCK: FROZEN,
+        });
         expect(r.code).toBe(1);
         expect(r.log).toEqual([]);
+      }
+    });
+
+    it("refuses to deploy billing with an unfrozen, unpinned or changed migration lock", () => {
+      const pins = pinsOf();
+      const first = Object.keys(pins)[0] as string;
+      for (const [why, lock] of [
+        ["the repo's own lock (not frozen until the first deploy)", undefined],
+        ["not frozen", lockAt("open.json", { frozen: false, pins })],
+        [
+          "a migration not pinned",
+          lockAt("missing.json", { frozen: true, pins: {} }),
+        ],
+        [
+          "a pinned file changed",
+          lockAt("changed.json", {
+            frozen: true,
+            pins: { ...pins, [first]: "0".repeat(64) },
+          }),
+        ],
+        [
+          "a pin for a missing file",
+          lockAt("extra.json", {
+            frozen: true,
+            pins: { ...pins, "9999_gone.sql": "0".repeat(64) },
+          }),
+        ],
+      ] as [string, string | undefined][]) {
+        const r = run(["billing", "staging"], {
+          ...PRICES,
+          ...IDS,
+          ...(lock ? { MIGRATION_LOCK: lock } : {}),
+        });
+        expect(r.code, why).toBe(1);
+        expect(r.log, why).toEqual([]);
       }
     });
   });
