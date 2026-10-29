@@ -41,14 +41,14 @@ import {
 } from "./suite.ts";
 
 // The one-shot real-tenant sign-in capture (docs/ops/redline-signin.md):
-//   pnpm -C tests/redline capture            (the run)
-//   pnpm -C tests/redline capture:dry-run    (Platform's dry run)
+//   pnpm -C tests/redline capture
 // In order: prerequisites (each refusal names its fix), the admin
 // credentials (printed, or made with --make-creds), the preflight with the
 // approved broker override built in, plain Chrome on a temporary profile
 // with the capture extension the person loads once (it blocks and reports
 // the callback, never copied, and clears Google's cookies between prompts),
-// the 5 Google sign-ins, then the live suite with --gate in the frozen
+// the 5 Google sign-ins (each prompt's hd hint checked on Google's page
+// before the person is asked to sign in), then the live suite with --gate in the frozen
 // suite checkout. The capture logic itself is the frozen checkout's
 // runCaptures, given this CaptureIO.
 
@@ -87,13 +87,13 @@ export const EXIT = {
   refused: 2,
   googleBlocked: 3,
   stopped: 4,
+  wrongHint: 5,
 } as const;
 
 export interface OneShotOpts {
   suite: string;
   expectSha: string;
   targetsFile: string;
-  dryRun: boolean;
   makeCreds: boolean;
   promptTimeoutMs: number;
   /** Google Chrome's binary (default the installed app). */
@@ -129,6 +129,8 @@ export interface OneShotDeps {
   question(q: string): Promise<string | null>;
   /** Rehearsal only: stands in for the person at the Chrome window. */
   human?(h: Human): Promise<void>;
+  /** Rehearsal only: tampers a prompt's Google URL (the wrong-hd stop). */
+  beforeOpen?(url: URL, p: CapturePrompt): URL;
   /** Each Chrome as it starts (tests). */
   onChrome?(c: Chrome): void;
   /** The listener and the extension folder, once ready (tests). */
@@ -138,12 +140,11 @@ export interface OneShotDeps {
   platform?: NodeJS.Platform;
 }
 
-export const usage = `Usage: pnpm -C tests/redline capture [--make-creds] [--dry-run]
+export const usage = `Usage: pnpm -C tests/redline capture [--make-creds]
   --suite <path>              the frozen suite checkout (default ${DEFAULT_SUITE})
   --expect-sha <sha>          its required commit (default ${DEFAULT_EXPECT_SHA})
   --targets <file>            the kit's targets (default ${join(KIT_DIR, "targets.json")})
   --make-creds                run the redline-creds commands when the admin secrets are missing
-  --dry-run                   each prompt up to Google's sign-in page, no credentials, no suite
   --prompt-timeout-min <n>    minutes per prompt before offering a retry (default 5)
   --chrome <path>             Google Chrome's binary (default ${CHROME_MAC})`;
 
@@ -160,7 +161,6 @@ export function parseOpts(
         suite: { type: "string" },
         "expect-sha": { type: "string" },
         targets: { type: "string" },
-        "dry-run": { type: "boolean" },
         "make-creds": { type: "boolean" },
         "prompt-timeout-min": { type: "string" },
         "prompt-timeout-ms": { type: "string" },
@@ -194,7 +194,6 @@ export function parseOpts(
       suite: str("suite") ?? DEFAULT_SUITE,
       expectSha,
       targetsFile: str("targets") ?? join(KIT_DIR, "targets.json"),
-      dryRun: v["dry-run"] === true,
       makeCreds: v["make-creds"] === true,
       promptTimeoutMs: timeout,
       ...(str("chrome") ? { chromePath: str("chrome") as string } : {}),
@@ -595,6 +594,27 @@ class Session {
   }
 }
 
+/** The hd hint a prompt's Google page must carry: its tenant, or none for the foreign flow. */
+function expectedHd(c: Ctx, flow: FlowName): string | null {
+  const spec = c.suite.signin.CAPTURE_FLOWS[flow];
+  if ("foreign" in spec && spec.foreign) return null;
+  return spec.user.split("@")[1] ?? null;
+}
+
+/** Google was given the wrong account hint: stop before any sign-in. */
+class WrongHint extends Error {
+  override name = "WrongHint";
+}
+
+export const wrongHintLines = (
+  p: CapturePrompt,
+  want: string | null,
+  got: string | null,
+) => [
+  `Stopped before prompt ${p.n} of ${p.total} (${p.install}, ${p.user}): Google's sign-in page has ${got ? `hd=${got}` : "no hd hint"}, but this prompt needs ${want ? `hd=${want}` : "no hd hint"}.`,
+  "  Don't sign in. Nothing was redeemed. This is a setup problem (the broker registry's domains for the install), not a red-line result. Tell Platform.",
+];
+
 /** The CaptureIO: one Chrome for the run, Google's cookies cleared before each prompt. */
 function captureIO(c: Ctx, s: Session): CaptureIO {
   let cur: { armed: Armed; url: URL; p: CapturePrompt } | null = null;
@@ -612,14 +632,10 @@ function captureIO(c: Ctx, s: Session): CaptureIO {
       throw new Error(
         "the capture extension did not clear Google's cookies: remove and load it again, then run the command again",
       );
-    const armed = armPrompt(
-      s.L,
-      {
-        origin: browserOriginOf(c, target(p)),
-        state: installStateOf(c, url),
-      },
-      { idp: c.idp },
-    );
+    const armed = armPrompt(s.L, {
+      origin: browserOriginOf(c, target(p)),
+      state: installStateOf(c, url),
+    });
     cur = { armed, url, p };
     await s.L.command({ cmd: "open", url: armed.probeUrl });
     await race(
@@ -627,8 +643,32 @@ function captureIO(c: Ctx, s: Session): CaptureIO {
       15_000,
       "the capture extension did not report its probe callback: remove and load it again, then run the command again",
     );
+    // The Google page first; the person is asked to sign in only once the
+    // extension has seen it with the right hd hint.
+    const opened = c.d.beforeOpen ? c.d.beforeOpen(url, p) : url;
+    await s.L.command({ cmd: "open", url: opened.href, prompt: armed.prompt });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const seen = await Promise.race([
+      armed.landed.then((hd) => ({ k: "landed" as const, hd })),
+      armed.blocked.then((why) => ({ k: "blocked" as const, why })),
+      (s.chrome as Chrome).exited.then(() => ({ k: "closed" as const })),
+      new Promise<{ k: "timeout" }>((res) => {
+        timer = setTimeout(() => res({ k: "timeout" }), 60_000);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (seen.k === "blocked") throw blocked(p, seen.why);
+    if (seen.k === "closed")
+      throw new Error(
+        `Chrome closed before prompt ${p.n}; run the command again`,
+      );
+    if (seen.k === "timeout")
+      throw new Error(
+        `Google's sign-in page for prompt ${p.n} did not load within 60 s; run the command again`,
+      );
+    const want = expectedHd(c, p.flow);
+    if (seen.hd !== want)
+      throw new WrongHint(wrongHintLines(p, want, seen.hd).join("\n"));
     c.d.out(promptLine(p, url));
-    await s.L.command({ cmd: "open", url: url.href });
     await c.d.human?.({
       chrome: s.chrome as Chrome,
       prompt: p,
@@ -689,119 +729,6 @@ function captureIO(c: Ctx, s: Session): CaptureIO {
       c.d.out(line);
     },
   };
-}
-
-export interface DryResult {
-  flow: FlowName;
-  install: string;
-  hd: string | null;
-  problems: string[];
-}
-
-/**
- * (dry run) Each prompt up to Google's sign-in page, in the run's Chrome:
- * the extension's probe callback (interception armed for this host and
- * state), then the Google page, whose URL the extension reports: hd present
- * or absent as it must be, no block page. Redeems nothing.
- */
-async function dryRun(c: Ctx, s: Session): Promise<DryResult[]> {
-  const { CAPTURE_FLOWS, startGoogle, googleUrlOf } = c.suite.signin;
-  const flows = c.o.flows ?? (Object.keys(CAPTURE_FLOWS) as FlowName[]);
-  const out: DryResult[] = [];
-  for (const [i, flow] of flows.entries()) {
-    const spec = CAPTURE_FLOWS[flow];
-    const t = c.T[spec.at];
-    const foreign = "foreign" in spec && spec.foreign;
-    const r: DryResult = { flow, install: t.name, hd: null, problems: [] };
-    out.push(r);
-    const line = () =>
-      c.d.out(
-        `dry run [${i + 1}/${flows.length}] ${flow} at ${t.name} as ${spec.user}: ` +
-          (r.problems.length
-            ? `PROBLEM: ${r.problems.join("; ")}`
-            : `ok (hd ${r.hd ?? "absent, as it must be"}, from the URL the extension reported; interception armed for ${t.name}'s callback and this start's state; Google's sign-in page loaded)`),
-      );
-    let url: URL;
-    let state: string;
-    try {
-      const st = await startGoogle(t);
-      if (!st) {
-        r.problems.push("Google sign-in is off");
-        line();
-        continue;
-      }
-      state = st.state;
-      url = await googleUrlOf(st, {
-        dropHd: foreign,
-        ...(c.o.idp ? { idp: c.o.idp } : {}),
-        ...(c.o.loopback ? { map: loopbackHttp } : {}),
-      });
-    } catch (e) {
-      r.problems.push(
-        `the sign-in start didn't lead to Google (${safeMessage(e)})`,
-      );
-      line();
-      continue;
-    }
-    const armed = armPrompt(
-      s.L,
-      { origin: browserOriginOf(c, t), state: installStateOf(c, url) },
-      { idp: c.idp },
-    );
-    try {
-      await s.ensure();
-      if (armed.state !== state)
-        r.problems.push("the broker state doesn't name this start");
-      if (!(await s.L.command({ cmd: "clear" })))
-        r.problems.push("the extension did not clear Google's cookies");
-      await s.L.command({ cmd: "open", url: armed.probeUrl });
-      await race(
-        armed.probed,
-        15_000,
-        "the extension did not report its probe",
-      );
-      await s.L.command({ cmd: "open", url: url.href });
-      const got = await race(
-        Promise.race([
-          armed.landed.then((u) => ({ k: "landed" as const, u })),
-          armed.blocked.then((why) => ({ k: "blocked" as const, why })),
-        ]),
-        60_000,
-        "Google's sign-in page did not load within 60 s",
-      );
-      if (got.k === "blocked")
-        r.problems.push(
-          `${got.why}: Google refuses this browser (not a test failure)`,
-        );
-      else {
-        const seen = new URL(got.u);
-        r.hd = seen.searchParams.get("hd");
-        const tenant = spec.user.split("@")[1] ?? "";
-        if (seen.origin !== c.idp)
-          r.problems.push(`the page is not on ${c.idp}`);
-        if (foreign && r.hd !== null)
-          r.problems.push("hd is present (it must be absent for this prompt)");
-        if (!foreign && r.hd !== tenant)
-          r.problems.push(`hd is ${r.hd ?? "absent"}, not ${tenant}`);
-        const bs = c.suite.capture.decodeBrokerState(
-          seen.searchParams.get("state") ?? "",
-        );
-        if (bs && (bs.i !== t.installId || bs.s !== state))
-          r.problems.push(
-            "the broker state doesn't name this install and start",
-          );
-      }
-      if (armed.counts.captured !== 0)
-        r.problems.push("something was captured without a sign-in");
-    } catch (e) {
-      r.problems.push(safeMessage(e, 160));
-    } finally {
-      armed.off();
-    }
-    line();
-  }
-  await s.L.command({ cmd: "clear" }).catch(() => false);
-  return out;
 }
 
 /** Directories this run made (removed on every exit path). */
@@ -895,16 +822,6 @@ export async function oneShot(argv: string[], d: OneShotDeps): Promise<number> {
   const s = new Session(ctx, run);
   try {
     await s.start();
-    if (o.dryRun) {
-      const r = await dryRun(ctx, s);
-      const bad = r.filter((x) => x.problems.length);
-      d.out(
-        bad.length
-          ? `Dry run: ${bad.length} of ${r.length} prompts have problems (above).`
-          : `Dry run green: all ${r.length} prompts reach Google's sign-in page with the right hint and an armed interception.`,
-      );
-      return bad.length ? EXIT.failed : EXIT.ok;
-    }
     d.out(
       `${o.flows?.length ?? 5} Google sign-ins follow, each in a new tab with Google's cookies cleared first. Type only the test accounts' passwords.`,
     );
@@ -937,6 +854,10 @@ export async function oneShot(argv: string[], d: OneShotDeps): Promise<number> {
     if (e instanceof GoogleBlocked) {
       d.out(e.message);
       return EXIT.googleBlocked;
+    }
+    if (e instanceof WrongHint) {
+      d.out(e.message);
+      return EXIT.wrongHint;
     }
     d.out(`capture: ${safeMessage(e, 300)}`);
     return EXIT.stopped;

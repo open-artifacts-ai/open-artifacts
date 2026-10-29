@@ -43,7 +43,7 @@ import { loadTargets, type Targets } from "../src/targets.ts";
 // The no-human rehearsal of the ONE-SHOT capture: the command's own code
 // path (src/oneshot/driver.ts: prerequisites, the frozen-suite binding, the
 // preflight, plain Chrome on a temporary profile with the capture
-// extension, the listener, the dry run, the suite with --gate) against the
+// extension, the listener, the pre-sign-in hd check, the suite with --gate) against the
 // local pair, a local auth broker and a fake Google (src/fake-idp).
 //
 // The stand-in for the person is this test's HARNESS: through its own
@@ -254,6 +254,7 @@ describe.skipIf(!on)(
       const out: string[] = [];
       const report = join(work, `report-${Date.now()}.json`);
       let ext = "";
+      const google: string[] = [];
       const harnesses = new Map<string, Promise<Browser>>();
       const d: OneShotDeps = {
         env: {
@@ -267,8 +268,12 @@ describe.skipIf(!on)(
         },
         key: async () => "",
         question: async () => null,
-        onListener: (_l, dir) => {
+        onListener: (l, dir) => {
           ext = dir;
+          // Every Google observation the extension sends, verbatim.
+          l.tap = (path, body) => {
+            if (path === "/google") google.push(body);
+          };
         },
         onChrome: (c) => {
           chromes.push({ pid: c.pid, profile: c.profile });
@@ -286,8 +291,27 @@ describe.skipIf(!on)(
       };
       const browserOf = (c: Chrome) =>
         harnesses.get(`${c.pid}`) as Promise<Browser>;
-      return { d, out, report, browserOf };
+      return { d, out, report, browserOf, google };
     }
+
+    /**
+     * Point 1: each Google observation is { prompt, google, hd } and holds no
+     * URL-like string (no "://", no "?", no path), the token aside.
+     */
+    const classificationsOnly = (bodies: string[]) => {
+      expect(bodies.length).toBeGreaterThan(0);
+      for (const b of bodies) {
+        const { token: _t, ...m } = JSON.parse(b) as Record<string, unknown>;
+        expect(Object.keys(m).sort()).toEqual(["google", "hd", "prompt"]);
+        expect(JSON.stringify(m), b.length.toString()).not.toMatch(
+          /:\/\/|\?|\//,
+        );
+      }
+      return bodies.map((b) => {
+        const m = JSON.parse(b) as { google: string; hd: string | null };
+        return `${m.google}:${m.hd ?? "none"}`;
+      });
+    };
 
     /** The person at the fake Google: types the account and a password. */
     const types =
@@ -460,15 +484,11 @@ describe.skipIf(!on)(
         await loadUnpacked(b, ext);
         await L.checkedIn;
         const state = "rehearsal-state-0123456789abcdef";
-        const armed = armPrompt(
-          L,
-          { origin: httpsA, state },
-          { idp: idp.origin },
-        );
+        const armed = armPrompt(L, { origin: httpsA, state });
         const reported = (url: string) =>
-          new Promise<"blocked" | "idp">((res) => {
+          new Promise<"blocked" | "google">((res) => {
             const off = L.on((r) => {
-              if (r.url === url) {
+              if (r.kind === "blocked" && r.url === url) {
                 off();
                 res(r.kind);
               }
@@ -558,33 +578,37 @@ describe.skipIf(!on)(
       }
     }, 180_000);
 
-    it("dry run: all 5 prompts up to the sign-in page; hd from the extension's report, absent only for b-alice; nothing redeemed", async () => {
-      const chooserBefore = idp.events.filter((e) => e.at === "chooser").length;
+    it("a wrong hd hint on Google's page stops BEFORE the person is asked to sign in, with the plain message; nothing redeemed", async () => {
       const tokensBefore = idp.events.filter((e) => e.at === "token").length;
-      const { d, out } = deps();
-      const code = await oneShot([...base(), "--dry-run"], d);
-      expect(code).toBe(EXIT.ok);
-      const lines = out.filter((l) => l.startsWith("dry run ["));
-      expect(lines).toHaveLength(5);
-      for (const [flow, hd] of [
-        ["a-alice", "hd oa-redline-a.fyi"],
-        ["b-alice", "hd absent, as it must be"],
-        ["a-alice-replay", "hd oa-redline-a.fyi"],
-        ["b-dave", "hd oa-redline-c.fyi"],
-        ["b-dave-2", "hd oa-redline-c.fyi"],
-      ] as const) {
-        const l = lines.find((x) => x.includes(`] ${flow} at `));
-        expect(l, flow).toContain(
-          `ok (${hd}, from the URL the extension reported; interception armed`,
-        );
-      }
-      expect(out.at(-1)).toMatch(/^Dry run green: all 5 prompts/);
-      expect(
-        idp.events.filter((e) => e.at === "chooser").length - chooserBefore,
-      ).toBe(5);
+      let asked = 0;
+      const r = deps({
+        // The broker would have sent tenant C's hint for rl-a.
+        beforeOpen: (u) => {
+          const v = new URL(u);
+          v.searchParams.set("hd", "oa-redline-c.fyi");
+          return v;
+        },
+      });
+      r.d.human = async () => {
+        asked++;
+      };
+      const code = await oneShot([...base(), "--flows", "a-alice"], r.d);
+      expect(code).toBe(EXIT.wrongHint);
+      expect(r.out).toContain(
+        "Stopped before prompt 1 of 1 (rl-a, alice@oa-redline-a.fyi): Google's sign-in page has hd=oa-redline-c.fyi, but this prompt needs hd=oa-redline-a.fyi.",
+      );
+      expect(r.out.join("\n")).toMatch(
+        /Don't sign in\. Nothing was redeemed\./,
+      );
+      // Never asked: no prompt line, no stand-in at the form.
+      expect(r.out.filter((l) => /sign in as /.test(l))).toEqual([]);
+      expect(asked).toBe(0);
       expect(idp.events.filter((e) => e.at === "token").length).toBe(
         tokensBefore,
       );
+      expect(classificationsOnly(r.google)).toEqual([
+        "signin:oa-redline-c.fyi",
+      ]);
     }, 300_000);
 
     it("the one command: 5 prompts in one profile, (a) each callback blocked as the broker's 302 target and never delivered, (b) no IdP cookie on any prompt, then the suite with --gate passes both ID-token cases", async () => {
@@ -593,10 +617,40 @@ describe.skipIf(!on)(
       const ev0 = idp.events.length;
       const c0 = chromes.length;
       const r = deps();
-      r.d.human = types(r.browserOf, seen, hops);
+      const person = types(r.browserOf, seen, hops);
+      /** Google classifications received by the time each sign-in was asked for. */
+      const before: number[] = [];
+      const lines: number[] = [];
+      r.d.human = async (h) => {
+        before.push(r.google.length);
+        lines.push(r.out.filter((l) => /sign in as /.test(l)).length);
+        await person(h);
+      };
       const code = await oneShot(base(), r.d);
       console.log(`one-shot exit code: ${code}`);
       const run = idp.events.slice(ev0);
+      // Point 2: each prompt's hd was checked on Google's page (the
+      // extension's classification) BEFORE the person was asked to sign in:
+      // classification k arrived before prompt line k and the sign-in k.
+      expect(before).toEqual([1, 2, 3, 4, 5]);
+      expect(lines).toEqual([1, 2, 3, 4, 5]);
+      // Point 1: classifications only, hd as each prompt needs.
+      const g = classificationsOnly(r.google);
+      expect(g).toEqual([
+        "signin:oa-redline-a.fyi",
+        "signin:none",
+        "signin:oa-redline-a.fyi",
+        "signin:oa-redline-c.fyi",
+        "signin:oa-redline-c.fyi",
+      ]);
+      console.log(
+        `google observations: ${r.google
+          .map((b) => {
+            const { token: _t, ...m } = JSON.parse(b);
+            return JSON.stringify({ ...m, prompt: "<id>" });
+          })
+          .join(" ")}`,
+      );
       // One Chrome, one profile, for the whole run; gone at the end.
       expect(chromes.length - c0).toBe(1);
       const c = chromes[c0] as { pid: number; profile: string };
@@ -756,15 +810,18 @@ describe.skipIf(!on)(
         expect(code).toBe(EXIT.googleBlocked);
         const all = r.out.join("\n");
         expect(all).toMatch(
-          /Stopped at prompt 1 of 1 \(rl-a, alice@oa-redline-a\.fyi\): Google's block page \(\/v3\/signin\/rejected\)\./,
+          /Stopped at prompt 1 of 1 \(rl-a, alice@oa-redline-a\.fyi\): Google showed its block page\./,
         );
         expect(all).toMatch(
           /This is Google refusing to sign in from this browser .*not a red-line test failure\. Nothing was retried and nothing was redeemed\./,
         );
         expect(all).not.toMatch(/captured, /);
-        expect(
-          r.out.filter((l) => l.startsWith("[1/1] rl-a: sign in as")),
-        ).toHaveLength(1);
+        // Seen before the person was asked: no sign-in line at all.
+        expect(r.out.filter((l) => /sign in as /.test(l))).toEqual([]);
+        // The extension said only "block" (no URL or path).
+        expect(classificationsOnly(r.google)).toEqual([
+          "block:oa-redline-a.fyi",
+        ]);
       } finally {
         idp.block = false;
       }

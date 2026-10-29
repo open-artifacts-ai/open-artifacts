@@ -20,8 +20,9 @@ import { join } from "node:path";
 // automation or blink flags, and a small extension (capture-extension/)
 // they load by hand once per run. The extension blocks the installs'
 // callback with declarativeNetRequest (so the browser never spends a code),
-// reports the blocked URL and the IdP's page URLs to this script's 127.0.0.1
-// listener with a per-run token, and clears the IdP's cookies and storage
+// reports the blocked URL to this script's 127.0.0.1 listener with a
+// per-run token (for Google's pages it sends only a classification:
+// sign-in page or block page, and the hd hint), and clears Google's cookies and storage
 // before each prompt. The script accepts only this prompt's host and state,
 // once.
 
@@ -174,28 +175,41 @@ export function launchChrome(o: {
   };
 }
 
-/** Google's block pages (automation, unsupported browser, OAuth errors), by path. */
-const BLOCK_PATHS = [
-  /\/signin\/rejected/i,
-  /\/deniedsigninrejected/i,
-  /\/signin\/v2\/deniedsignin/i,
-  /\/signin\/unsupported/i,
-  /\/signin\/oauth\/error/i,
+/**
+ * Google's block pages (automation, unsupported browser, OAuth errors such
+ * as disallowed_useragent), as path regex sources. The extension's
+ * classifier (capture-extension/classify.js) applies them; the script only
+ * ever hears "block".
+ */
+export const BLOCK_PATTERNS = [
+  "/signin/rejected",
+  "/deniedsigninrejected",
+  "/signin/v2/deniedsignin",
+  "/signin/unsupported",
+  "/signin/oauth/error",
 ];
 
-/** A Google block page, from its URL on the IdP's origin: a short reason, or null. */
-export function blockedBy(url: string, idp: string): string | null {
-  let u: URL;
-  try {
-    u = new URL(url);
-  } catch {
+/** What the script is told about a Google page: a classification, never a URL. */
+export interface GoogleSeen {
+  prompt: string;
+  google: "signin" | "block";
+  hd: string | null;
+}
+
+const PROMPT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const HD = /^[a-z0-9.-]{1,253}$/;
+
+/** A /google payload's fields, or null if it holds anything else. */
+export function googleSeen(m: Record<string, unknown>): GoogleSeen | null {
+  const keys = Object.keys(m)
+    .filter((k) => k !== "token")
+    .sort();
+  if (keys.join(",") !== "google,hd,prompt") return null;
+  if (typeof m.prompt !== "string" || !PROMPT_ID.test(m.prompt)) return null;
+  if (m.google !== "signin" && m.google !== "block") return null;
+  if (m.hd !== null && (typeof m.hd !== "string" || !HD.test(m.hd)))
     return null;
-  }
-  if (u.origin !== idp) return null;
-  if (!BLOCK_PATHS.some((r) => r.test(u.pathname))) return null;
-  const err = u.searchParams.get("authError") ?? u.searchParams.get("error");
-  const code = err && /^[A-Za-z0-9_]{1,40}$/.test(err) ? `, ${err}` : "";
-  return `Google's block page (${u.pathname}${code})`;
+  return { prompt: m.prompt, google: m.google, hd: m.hd as string | null };
 }
 
 export interface ArmSpec {
@@ -227,14 +241,13 @@ export function judge(url: string, a: ArmSpec & { probe: string }): Judged {
   return "capture";
 }
 
-export interface Report {
-  kind: "blocked" | "idp";
-  url: string;
-  phase?: "request" | "completed";
-  status?: number;
-}
+export type Report =
+  /** An install callback the extension blocked: its URL (the script needs the code). */
+  | { kind: "blocked"; url: string }
+  /** A Google page in a prompt's tab: a classification only. */
+  | ({ kind: "google" } & GoogleSeen);
 
-type Command = { cmd: "clear" } | { cmd: "open"; url: string };
+type Command = { cmd: "clear" } | { cmd: "open"; url: string; prompt?: string };
 
 const deferred = <T>() => {
   let res!: (v: T) => void;
@@ -267,6 +280,8 @@ export class Listener {
   private subs = new Set<(r: Report) => void>();
   private nextId = 1;
   private hellos: (() => void)[] = [];
+  /** Tests: every token-bearing request's path and raw body. */
+  tap?: (path: string, body: string) => void;
 
   /** Resolves on the extension's next check-in (/hello with this run's token). */
   nextHello(): Promise<void> {
@@ -355,19 +370,17 @@ export class Listener {
         this.acks.delete(id);
         return this.reply(res, 200, {});
       }
-      if (path === "/blocked" || path === "/idp") {
-        if (typeof m.url === "string") {
-          const r: Report =
-            path === "/blocked"
-              ? { kind: "blocked", url: m.url }
-              : {
-                  kind: "idp",
-                  url: m.url,
-                  phase: m.phase === "completed" ? "completed" : "request",
-                  status: typeof m.status === "number" ? m.status : 0,
-                };
-          for (const s of this.subs) s(r);
-        }
+      this.tap?.(path ?? "", body);
+      if (path === "/blocked") {
+        if (typeof m.url === "string")
+          for (const s of this.subs) s({ kind: "blocked", url: m.url });
+        return this.reply(res, 200, {});
+      }
+      if (path === "/google") {
+        // A classification only: anything else (a URL, a path) is refused.
+        const g = googleSeen(m);
+        if (!g) return this.reply(res, 400, {});
+        for (const s of this.subs) s({ kind: "google", ...g });
         return this.reply(res, 200, {});
       }
       return this.reply(res, 404, {});
@@ -430,27 +443,26 @@ export class Listener {
 export interface Armed extends ArmSpec {
   /** The captured callback URL (as the browser requested it); never logged. */
   captured: Promise<string>;
-  /** Resolves with the reason once the IdP shows a block page. */
+  /** Resolves once the extension classifies this prompt's tab as a Google block page. */
   blocked: Promise<string>;
-  /** Resolves with the URL of the first completed 2xx IdP page (the sign-in page). */
-  landed: Promise<string>;
+  /** Resolves with the hd hint once this prompt's tab shows the sign-in page. */
+  landed: Promise<string | null>;
   probed: Promise<void>;
   probeUrl: string;
+  /** This prompt's id: its tab's classifications carry it. */
+  prompt: string;
   counts: { captured: number; passed: number; probes: number };
   off(): void;
 }
 
 /** Arms one prompt on the listener's reports. */
-export function armPrompt(
-  L: Listener,
-  spec: ArmSpec,
-  o: { idp: string },
-): Armed {
+export function armPrompt(L: Listener, spec: ArmSpec): Armed {
   const probe = `${PROBE_PREFIX}${randomBytes(12).toString("base64url")}`;
+  const prompt = `p-${randomBytes(9).toString("base64url")}`;
   const a = { ...spec, probe };
   const captured = deferred<string>();
   const blocked = deferred<string>();
-  const landed = deferred<string>();
+  const landed = deferred<string | null>();
   const probed = deferred<void>();
   const counts = { captured: 0, passed: 0, probes: 0 };
   const off = L.on((r) => {
@@ -465,14 +477,9 @@ export function armPrompt(
       } else counts.passed++;
       return;
     }
-    const why = blockedBy(r.url, o.idp);
-    if (why) blocked.res(why);
-    else if (
-      r.phase === "completed" &&
-      (r.status ?? 0) >= 200 &&
-      (r.status ?? 0) < 300
-    )
-      landed.res(r.url);
+    if (r.prompt !== prompt) return;
+    if (r.google === "block") blocked.res("Google showed its block page");
+    else landed.res(r.hd);
   });
   const u = new URL(CALLBACK_PATH, spec.origin);
   u.searchParams.set("state", probe);
@@ -483,6 +490,7 @@ export function armPrompt(
     landed: landed.p,
     probed: probed.p,
     probeUrl: u.href,
+    prompt,
     counts,
     off,
   };
@@ -517,16 +525,14 @@ export const GOOGLE_CLEAR = [
 /**
  * Writes this run's copy of the extension into `dir`: background.js, and
  * the generated manifest.json (host permissions: the two install origins,
- * 127.0.0.1 for the listener, the IdP for its page URLs), rules.json (the
+ * 127.0.0.1 for the listener, the IdP to classify its pages), rules.json (the
  * callback block) and config.js (listener, token, patterns).
  */
 export function writeExtension(dir: string, c: ExtensionConfig): void {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  copyFileSync(
-    join(EXTENSION_SRC, "background.js"),
-    join(dir, "background.js"),
-  );
+  for (const f of ["background.js", "classify.js"])
+    copyFileSync(join(EXTENSION_SRC, f), join(dir, f));
   const hosts = [
     ...c.installs.map((o) => matchOf(o)),
     "http://127.0.0.1/*",
@@ -578,6 +584,8 @@ export function writeExtension(dir: string, c: ExtensionConfig): void {
     token: c.token,
     callbackPatterns: c.installs.map((o) => matchOf(o, `${CALLBACK_PATH}*`)),
     idpPatterns: [matchOf(c.idp)],
+    idp: new URL(c.idp).origin,
+    blockPatterns: BLOCK_PATTERNS,
     clearOrigins: c.clearOrigins,
   };
   const w = (f: string, s: string) =>

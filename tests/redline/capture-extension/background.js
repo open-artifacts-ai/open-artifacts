@@ -9,14 +9,16 @@
 //   (net::ERR_BLOCKED_BY_CLIENT), the URL goes to the script's 127.0.0.1
 //   listener with this run's token, and the tab is closed. The script takes
 //   only this prompt's host and state, once.
-// - webRequest, observe only, on the IdP's top-level pages: their URL and
-//   status go to the listener (a block page stops the run; the dry run checks
-//   the hd hint).
+// - webRequest, observe only, on the IdP's top-level pages in a prompt's
+//   tab: only a classification goes to the listener,
+//   { prompt, google: "signin" | "block", hd }, computed here (classify.js).
+//   Never a Google URL, path or query: those carry sign-in state.
 // - On the script's "clear" command: the IdP's cookies and storage are
 //   removed (chrome.browsingData) and the tabs this extension opened are
-//   closed, before each prompt. "open" opens a URL in a new tab.
+//   closed, before each prompt. "open" opens a URL in a new tab, tagged with
+//   its prompt.
 // Nothing is ever logged.
-importScripts("config.js");
+importScripts("config.js", "classify.js");
 const C = self.OA_CAPTURE;
 
 const post = (path, body) =>
@@ -47,20 +49,36 @@ chrome.webRequest.onErrorOccurred.addListener(
   { urls: C.callbackPatterns, types: ["main_frame"] },
 );
 
-for (const [event, phase] of [
-  [chrome.webRequest.onBeforeRequest, "request"],
-  [chrome.webRequest.onCompleted, "completed"],
-])
-  event.addListener(
-    (d) => {
-      post("/idp", {
-        url: d.url,
-        phase,
-        status: typeof d.statusCode === "number" ? d.statusCode : 0,
-      }).catch(() => {});
-    },
-    { urls: C.idpPatterns, types: ["main_frame"] },
-  );
+/** Each prompt tab's prompt, and the hd of the first IdP page it opened. */
+const promptOf = new Map();
+const hdOf = new Map();
+const tell = (tabId, google) =>
+  post("/google", {
+    prompt: promptOf.get(tabId),
+    google,
+    hd: hdOf.get(tabId) ?? null,
+  }).catch(() => {});
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (d) => {
+    if (!promptOf.has(d.tabId)) return;
+    const c = self.OA_classify(d.url, C.idp, C.blockPatterns);
+    if (!c) return;
+    // The first IdP request of the tab is the authorize URL the script opened.
+    if (!hdOf.has(d.tabId)) hdOf.set(d.tabId, c.hd);
+    if (c.google === "block") tell(d.tabId, "block");
+  },
+  { urls: C.idpPatterns, types: ["main_frame"] },
+);
+chrome.webRequest.onCompleted.addListener(
+  (d) => {
+    if (!promptOf.has(d.tabId)) return;
+    const c = self.OA_classify(d.url, C.idp, C.blockPatterns);
+    if (!c || c.google !== "signin") return;
+    if (d.statusCode >= 200 && d.statusCode < 300) tell(d.tabId, "signin");
+  },
+  { urls: C.idpPatterns, types: ["main_frame"] },
+);
 
 async function run(c) {
   if (c.cmd === "clear") {
@@ -77,9 +95,14 @@ async function run(c) {
     );
     for (const id of opened) await chrome.tabs.remove(id).catch(() => {});
     opened.clear();
+    promptOf.clear();
+    hdOf.clear();
   } else if (c.cmd === "open") {
-    const t = await chrome.tabs.create({ url: c.url });
+    // Tag the tab before it navigates, so its first request is seen.
+    const t = await chrome.tabs.create({ url: "about:blank" });
     opened.add(t.id);
+    if (typeof c.prompt === "string") promptOf.set(t.id, c.prompt);
+    await chrome.tabs.update(t.id, { url: c.url });
   }
 }
 

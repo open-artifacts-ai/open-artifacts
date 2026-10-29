@@ -9,7 +9,6 @@
   "scripts": {
     "test": "pnpm --filter @oa/provision build && vitest run",
     "capture": "node --experimental-strip-types scripts/capture-oneshot.ts",
-    "capture:dry-run": "node --experimental-strip-types scripts/capture-oneshot.ts --dry-run",
     "live": "node --experimental-strip-types scripts/redline.ts",
     "local": "node --experimental-strip-types scripts/local-pair.ts",
     "local:google": "REDLINE_LOCAL_MODE=google node --experimental-strip-types scripts/local-pair.ts",

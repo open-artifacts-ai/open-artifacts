@@ -1,6 +1,5 @@
 // The one-shot real-tenant sign-in capture (P5 R6, staging, macOS):
 //   pnpm -C tests/redline capture [--make-creds]
-//   pnpm -C tests/redline capture:dry-run
 // Runbook: docs/ops/redline-signin.md. Everything is in src/oneshot/driver.ts;
 // this is its terminal: keys, questions, and cleanup on every exit path.
 import { createInterface } from "node:readline/promises";

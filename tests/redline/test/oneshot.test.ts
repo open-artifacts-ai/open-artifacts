@@ -9,13 +9,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { afterAll, describe, expect, it } from "vitest";
 import * as capture from "../src/capture.ts";
 import {
-  blockedBy,
+  BLOCK_PATTERNS,
   CALLBACK_PATH,
   chromeArgs,
   GOOGLE_CLEAR,
+  googleSeen,
   judge,
   Listener,
   rehearsalArgs,
@@ -31,6 +33,7 @@ import {
   safeMessage,
   timeoutLines,
   usage,
+  wrongHintLines,
 } from "../src/oneshot/driver.ts";
 import {
   apiGaps,
@@ -125,20 +128,86 @@ describe("Chrome's launch", () => {
   });
 });
 
-describe("blockedBy: Google's automation, unsupported-browser and OAuth error pages", () => {
+describe("the extension's Google classifier (capture-extension/classify.js)", () => {
   const G = "https://accounts.google.com";
-  it("by path, on the IdP's origin only", () => {
-    expect(blockedBy(`${G}/v3/signin/rejected?rrk=46`, G)).toBe(
-      "Google's block page (/v3/signin/rejected)",
-    );
+  // The extension's own file, run as the worker runs it (a classic script).
+  const sandbox: { self: Record<string, unknown> } = { self: {} };
+  runInNewContext(
+    readFileSync(
+      join(import.meta.dirname, "..", "capture-extension", "classify.js"),
+      "utf8",
+    ),
+    { ...sandbox, URL },
+  );
+  const classify = sandbox.self.OA_classify as (
+    url: string,
+    idp: string,
+    blockPatterns: string[],
+  ) => { google: string; hd: string | null } | null;
+  const c = (u: string) => classify(u, G, BLOCK_PATTERNS);
+  it("block pages: automation, unsupported browser, OAuth errors", () => {
+    for (const p of [
+      "/v3/signin/rejected?rrk=46",
+      "/signin/rejected",
+      "/signin/v2/deniedsigninrejected",
+      "/signin/unsupported",
+      "/signin/oauth/error?authError=disallowed_useragent",
+      "/signin/oauth/error/v2?authError=x",
+    ])
+      expect(c(`${G}${p}`)?.google, p).toBe("block");
+  });
+  it("the sign-in page, with its hd hint (lowercased) or null", () => {
     expect(
-      blockedBy(`${G}/signin/oauth/error?authError=disallowed_useragent`, G),
-    ).toBe("Google's block page (/signin/oauth/error, disallowed_useragent)");
-    expect(blockedBy(`${G}/signin/oauth/error/v2?authError=x y`, G)).toBe(
-      "Google's block page (/signin/oauth/error/v2)",
-    );
-    expect(blockedBy(`${G}/v3/signin/identifier`, G)).toBeNull();
-    expect(blockedBy(`${A}/v3/signin/rejected`, G)).toBeNull();
+      c(`${G}/o/oauth2/v2/auth?client_id=x&hd=OA-Redline-A.fyi&state=s`),
+    ).toEqual({ google: "signin", hd: "oa-redline-a.fyi" });
+    expect(c(`${G}/v3/signin/identifier?state=s`)).toEqual({
+      google: "signin",
+      hd: null,
+    });
+    // An hd that isn't a domain is no hint.
+    expect(c(`${G}/o/oauth2/v2/auth?hd=a%2Fb`)?.hd).toBeNull();
+  });
+  it("other origins and junk: nothing", () => {
+    expect(c(`${A}/v3/signin/rejected`)).toBeNull();
+    expect(c("not a url")).toBeNull();
+  });
+  it("its result never holds a URL, path or query", () => {
+    for (const u of [
+      `${G}/o/oauth2/v2/auth?hd=oa-redline-a.fyi&state=s&code_challenge=x`,
+      `${G}/signin/oauth/error?authError=disallowed_useragent`,
+    ])
+      expect(JSON.stringify(c(u))).not.toMatch(/:\/\/|\?|\//);
+  });
+});
+
+describe("the listener's /google payload: a classification only", () => {
+  it("accepts exactly { prompt, google, hd }", () => {
+    expect(
+      googleSeen({ token: "t", prompt: "p-1", google: "signin", hd: "a.fyi" }),
+    ).toEqual({ prompt: "p-1", google: "signin", hd: "a.fyi" });
+    expect(googleSeen({ prompt: "p-1", google: "block", hd: null })).toEqual({
+      prompt: "p-1",
+      google: "block",
+      hd: null,
+    });
+  });
+  it("refuses a URL, a path, extra fields or a bad hint", () => {
+    expect(
+      googleSeen({
+        prompt: "p-1",
+        google: "signin",
+        hd: null,
+        url: "https://x/",
+      }),
+    ).toBeNull();
+    expect(
+      googleSeen({ prompt: "p/1", google: "signin", hd: null }),
+    ).toBeNull();
+    expect(googleSeen({ prompt: "p-1", google: "other", hd: null })).toBeNull();
+    expect(
+      googleSeen({ prompt: "p-1", google: "signin", hd: "https://a.fyi/" }),
+    ).toBeNull();
+    expect(googleSeen({ prompt: "p-1", google: "signin" })).toBeNull();
   });
 });
 
@@ -193,7 +262,14 @@ describe("the capture extension's generated files", () => {
     expect(cfg).toContain(
       `"clearOrigins":["https://accounts.google.com","https://www.google.com","https://google.com"]`,
     );
-    expect(read("background.js")).not.toMatch(/console\./);
+    expect(cfg).toContain(`"idp":"https://accounts.google.com"`);
+    expect(cfg).toContain(`"blockPatterns":${JSON.stringify(BLOCK_PATTERNS)}`);
+    for (const f of ["background.js", "classify.js"])
+      expect(read(f)).not.toMatch(/console\./);
+    // Google observations send only { prompt, google, hd }.
+    expect(read("background.js")).toMatch(
+      /post\("\/google", \{\s*prompt: [^,]+,\s*google,\s*hd: [^}]+\}\)/,
+    );
     expect(statSync(join(dir, "e", "config.js")).mode & 0o077).toBe(0);
   });
 });
@@ -257,6 +333,16 @@ describe("what the person reads", () => {
     expect(t).toMatch(/within 5 min/);
     expect(t).toMatch(
       /Redo prompt 2 of 5: sign in as alice@oa-redline-a\.fyi at rl-b\. Press r to retry it/,
+    );
+  });
+  it("a wrong hd hint stops before the sign-in, says not to sign in", () => {
+    const t = wrongHintLines(p, null, "oa-redline-c.fyi").join("\n");
+    expect(t).toMatch(
+      /^Stopped before prompt 2 of 5 \(rl-b, alice@oa-redline-a\.fyi\): Google's sign-in page has hd=oa-redline-c\.fyi, but this prompt needs no hd hint\./,
+    );
+    expect(t).toMatch(/Don't sign in\. Nothing was redeemed\./);
+    expect(wrongHintLines(p, "a.fyi", null)[0]).toMatch(
+      /has no hd hint, but this prompt needs hd=a\.fyi\./,
     );
   });
   it("a Google block says it is Google refusing, not a test failure, and nothing retried", () => {
