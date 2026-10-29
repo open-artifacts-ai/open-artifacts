@@ -1,70 +1,74 @@
-// Every message ends acked or in SIGNUPS_DLQ as { signupId }, never as its
-// body: the config has no runtime dead_letter_queue. An accepted signup that
-// never got a row (dropped after a DLQ outage) is reconciled by the sign-up
-// service (SS4), which holds the signupId it minted.
-import {
-  type ProvisionParams,
-  parseSignup,
-  type SignupMessage,
-  signupIdOf,
-} from "./message.js";
-
-/** What a dead-lettered signup carries: its id only, never the email. */
-export interface DlqPayload {
-  signupId: string | null;
-}
+// The signups consumer. A message is { signupId } only: SS4 has already
+// written the row (pending) and its signup_secret. The consumer admits the
+// row under the daily cap, starts its Workflow with the stored slug and sub,
+// and never reads or writes the email.
+import { type ProvisionParams, parseSignup, signupIdOf } from "./message.js";
 
 export interface ConsumerEnv {
   PLATFORM_DB: D1Database;
   PROVISION_INSTALL: Workflow<ProvisionParams>;
-  SIGNUPS_DLQ: Queue<DlqPayload>;
   SIGNUP_DAILY_CAP: string;
 }
 
-/** wrangler.jsonc's max_retries: a message is delivered at most this + 1 times. */
-export const MAX_RETRIES = 5;
 const DAY_MS = 86_400_000;
 
+export type Admission =
+  | "queued"
+  | "waiting_cap"
+  | "missing"
+  | "running"
+  | "settled";
+
 /**
- * Records a signup once, settling the daily cap atomically: one batch (D1's
- * transaction) whose conditional insert sees every earlier write, so two
- * deliveries at the boundary can't both pass. The secret row is written only
- * while the signup still needs it (never again after `done` removed it).
+ * Admits a signup once. A pending or waiting_cap row moves to queued (with
+ * admitted_at) only while fewer than `cap` rows were admitted this UTC day,
+ * else to waiting_cap: one batch (D1's transaction), so two deliveries at the
+ * boundary can't both pass.
  */
-export async function recordSignup(
+export async function admit(
   db: D1Database,
-  m: SignupMessage,
+  signupId: string,
   cap: number,
   now: number,
-): Promise<"queued" | "waiting_cap" | "exists"> {
+): Promise<Admission> {
+  const row = await db
+    .prepare("SELECT status FROM signups WHERE signup_id = ?")
+    .bind(signupId)
+    .first<{ status: string }>();
+  if (!row) return "missing";
+  switch (row.status) {
+    case "queued":
+    case "creating":
+      return "running";
+    case "ready":
+    case "failed":
+      return "settled";
+    case "pending":
+    case "waiting_cap":
+      break;
+    default:
+      throw new Error("signups row has an unknown status");
+  }
   const dayStart = Math.floor(now / DAY_MS) * DAY_MS;
   const [queued, waiting] = await db.batch([
     db
       .prepare(
-        `INSERT INTO signups (signup_id, owner_sub, slug, status, created_at, updated_at)
-         SELECT ?1, ?2, ?3, 'queued', ?4, ?4
-         WHERE (SELECT count(*) FROM signups WHERE created_at >= ?5 AND status != 'failed') < ?6
-         ON CONFLICT (signup_id) DO NOTHING`,
+        `UPDATE signups SET status = 'queued', admitted_at = ?1, updated_at = ?1
+         WHERE signup_id = ?2 AND status IN ('pending', 'waiting_cap')
+           AND (SELECT count(*) FROM signups WHERE admitted_at >= ?3) < ?4`,
       )
-      .bind(m.signupId, m.ownerSub, m.slug, now, dayStart, cap),
+      .bind(now, signupId, dayStart, cap),
     db
       .prepare(
-        `INSERT INTO signups (signup_id, owner_sub, slug, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 'waiting_cap', ?4, ?4)
-         ON CONFLICT (signup_id) DO NOTHING`,
+        `UPDATE signups SET status = 'waiting_cap', updated_at = ?1
+         WHERE signup_id = ?2 AND status IN ('pending', 'waiting_cap')`,
       )
-      .bind(m.signupId, m.ownerSub, m.slug, now),
-    db
-      .prepare(
-        `INSERT OR IGNORE INTO signup_secret (signup_id, owner_email)
-         SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM signups WHERE signup_id = ?1
-           AND status IN ('queued', 'waiting_cap', 'creating'))`,
-      )
-      .bind(m.signupId, m.ownerEmail),
+      .bind(now, signupId),
   ]);
   if ((queued?.meta.changes ?? 0) > 0) return "queued";
   if ((waiting?.meta.changes ?? 0) > 0) return "waiting_cap";
-  return "exists";
+  // Another delivery moved it between the read and the batch.
+  return admit(db, signupId, cap, now);
 }
 
 /** The cap var: 1 to 9999, or null (a config error, never a silent deferral). */
@@ -73,20 +77,31 @@ export function dailyCap(v: string | undefined): number | null {
 }
 
 /** Starts the signup's Workflow; an instance that already exists is success. */
-async function start(env: ConsumerEnv, params: ProvisionParams): Promise<void> {
+async function start(env: ConsumerEnv, signupId: string): Promise<void> {
+  const row = await env.PLATFORM_DB.prepare(
+    "SELECT slug, owner_sub FROM signups WHERE signup_id = ?",
+  )
+    .bind(signupId)
+    .first<{ slug: string; owner_sub: string }>();
+  if (!row) throw new Error("signups row vanished");
+  const params: ProvisionParams = {
+    signupId,
+    slug: row.slug,
+    ownerSub: row.owner_sub,
+  };
   try {
-    await env.PROVISION_INSTALL.create({ id: params.signupId, params });
+    await env.PROVISION_INSTALL.create({ id: signupId, params });
   } catch (e) {
     // create throws on an id in use; get finds that instance, or rethrows.
     try {
-      await env.PROVISION_INSTALL.get(params.signupId);
+      await env.PROVISION_INSTALL.get(signupId);
     } catch {
       throw e;
     }
   }
 }
 
-// Fixed categories and the signup id only: never the body or an error's text.
+// Fixed categories and the signup id only: never an error's text.
 const log = (signupId: string | null, outcome: string) =>
   console.log(JSON.stringify({ event: "signup", signupId, outcome }));
 
@@ -95,37 +110,10 @@ const backoff = (msg: Message<unknown>) => ({
 });
 
 /**
- * Writes { signupId } to SIGNUPS_DLQ and acks. A failed send retries; on the
- * last delivery the message is dropped (logged by id), since the config has
- * no runtime dead_letter_queue that could receive the body.
- */
-async function deadLetter(
-  env: ConsumerEnv,
-  msg: Message<unknown>,
-  reason: string,
-): Promise<void> {
-  const signupId = signupIdOf(msg.body);
-  try {
-    await env.SIGNUPS_DLQ.send({ signupId });
-  } catch {
-    if (msg.attempts <= MAX_RETRIES) {
-      log(signupId, "dlq_retry");
-      msg.retry(backoff(msg));
-    } else {
-      log(signupId, "dropped");
-      msg.ack();
-    }
-    return;
-  }
-  log(signupId, reason);
-  msg.ack();
-}
-
-/**
- * One message: validate, record under the cap, start the Workflow when the
- * row is (still) queued or creating, then ack. A redelivery starts from the
- * stored row, and one whose slug or sub differ from it is dead-lettered. A
- * failure retries with backoff; the last delivery dead-letters the id.
+ * One message: a bad shape is acked; otherwise admit, start the Workflow
+ * when the row is queued or running, then ack. A missing row, a bad cap or a
+ * D1 or Workflows error retries; after max_retries the runtime DLQ takes the
+ * message, which holds the id only.
  */
 export async function handleSignup(
   msg: Message<unknown>,
@@ -133,51 +121,28 @@ export async function handleSignup(
   now = Date.now(),
 ): Promise<void> {
   const m = parseSignup(msg.body);
-  if (!m) return deadLetter(env, msg, "bad_shape");
-  let outcome: string;
+  if (!m) {
+    log(signupIdOf(msg.body), "bad_shape");
+    msg.ack();
+    return;
+  }
+  const cap = dailyCap(env.SIGNUP_DAILY_CAP);
+  if (cap === null) {
+    log(m.signupId, "cap_config");
+    msg.retry(backoff(msg));
+    return;
+  }
+  let outcome: Admission;
   try {
-    const cap = dailyCap(env.SIGNUP_DAILY_CAP);
-    if (cap === null) {
-      log(m.signupId, "cap_config");
-      throw new Error("SIGNUP_DAILY_CAP is not 1-9999");
-    }
-    outcome = await recordSignup(env.PLATFORM_DB, m, cap, now);
-    let params: ProvisionParams = {
-      signupId: m.signupId,
-      slug: m.slug,
-      ownerSub: m.ownerSub,
-    };
-    if (outcome === "exists") {
-      const row = await env.PLATFORM_DB.prepare(
-        "SELECT slug, owner_sub, status FROM signups WHERE signup_id = ?",
-      )
-        .bind(m.signupId)
-        .first<{ slug: string; owner_sub: string; status: string }>();
-      if (!row) throw new Error("signup row missing after insert");
-      outcome =
-        row.slug !== m.slug || row.owner_sub !== m.ownerSub
-          ? "mismatch"
-          : `exists_${row.status}`;
-      params = {
-        signupId: m.signupId,
-        slug: row.slug,
-        ownerSub: row.owner_sub,
-      };
-    }
-    if (
-      outcome === "queued" ||
-      outcome === "exists_queued" ||
-      outcome === "exists_creating"
-    )
-      await start(env, params);
+    outcome = await admit(env.PLATFORM_DB, m.signupId, cap, now);
+    if (outcome === "queued" || outcome === "running")
+      await start(env, m.signupId);
   } catch {
-    if (msg.attempts > MAX_RETRIES)
-      return deadLetter(env, msg, "retries_exhausted");
     log(m.signupId, "retry");
     msg.retry(backoff(msg));
     return;
   }
-  if (outcome === "mismatch") return deadLetter(env, msg, "mismatch");
   log(m.signupId, outcome);
-  msg.ack();
+  if (outcome === "missing") msg.retry(backoff(msg));
+  else msg.ack();
 }

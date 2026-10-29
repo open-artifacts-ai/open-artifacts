@@ -9,41 +9,48 @@ import {
   vi,
 } from "vitest";
 import { splitSql } from "../../../packages/provision/test/fake-cf.js";
-import {
-  type ConsumerEnv,
-  type DlqPayload,
-  handleSignup,
-  MAX_RETRIES,
-  recordSignup,
-} from "../src/consumer.js";
-import {
-  type ProvisionParams,
-  parseSignup,
-  type SignupMessage,
-} from "../src/message.js";
+import { admit, type ConsumerEnv, handleSignup } from "../src/consumer.js";
+import { type ProvisionParams, parseSignup } from "../src/message.js";
 
 // The signups consumer against the real platform schema (Miniflare D1) and a
 // fake PROVISION_INSTALL that refuses a second create of the same id, as
-// Workflows does.
+// Workflows does. SS4 writes each row as pending, with its secret, before it
+// enqueues { signupId }; the tests seed rows the same way.
 
 const E = testEnv as unknown as {
   SIGNUPS_DB: D1Database;
   FIXTURE_PLATFORM_SQL: string;
 };
 const db = E.SIGNUPS_DB;
+const DAY = 86_400_000;
 const NOW = Date.parse("2026-10-29T12:00:00Z");
 // Uppercase and "+": redaction must not depend on the address's case.
 const EMAIL = "Owner+Tag@Example.COM";
+const B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const id = (n: number) =>
-  `01JBQ4ZKXW5V9R3M2N8P6T7Y${"0123456789ABCDEFGHJKMNPQRSTVWXYZ"[n >> 5]}${"0123456789ABCDEFGHJKMNPQRSTVWXYZ"[n & 31]}`;
-const signup = (n: number, over: Partial<SignupMessage> = {}) => ({
-  signupId: id(n),
-  slug: `team-${n}`,
-  ownerSub: `10000000000000000000${n}`,
-  ownerEmail: EMAIL,
-  tier: "free" as const,
-  ...over,
-});
+  `01JBQ4ZKXW5V9R3M2N8P6T7Y${B32[n >> 5]}${B32[n & 31]}`;
+const slug = (n: number) => `team-${n}`;
+const sub = (n: number) => `10000000000000000000${n}`;
+
+/** What SS4 does: the pending row and its secret in one batch. */
+const seed = (n: number, at = NOW) =>
+  db.batch([
+    db
+      .prepare(
+        "INSERT INTO signups (signup_id, owner_sub, slug, status, created_at, updated_at) VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
+      )
+      .bind(id(n), sub(n), slug(n), at),
+    db
+      .prepare(
+        "INSERT INTO signup_secret (signup_id, owner_email) VALUES (?, ?)",
+      )
+      .bind(id(n), EMAIL),
+  ]);
+const setStatus = (n: number, status: string) =>
+  db
+    .prepare("UPDATE signups SET status = ? WHERE signup_id = ?")
+    .bind(status, id(n))
+    .run();
 
 class FakeWorkflow {
   instances = new Map<string, ProvisionParams>();
@@ -72,27 +79,24 @@ const message = (body: unknown, attempts = 1) => ({
   ack: vi.fn(),
   retry: vi.fn(),
 });
+const msg = (n: number, attempts = 1) => message({ signupId: id(n) }, attempts);
 
 let wf: FakeWorkflow;
-let dlq: DlqPayload[];
 let logs: string[];
 let env: ConsumerEnv;
 const mkEnv = (cap = "20", platformDb: D1Database = db): ConsumerEnv => ({
   PLATFORM_DB: platformDb,
   PROVISION_INSTALL: wf as unknown as Workflow<ProvisionParams>,
-  SIGNUPS_DLQ: {
-    send: async (p: DlqPayload) => {
-      dlq.push(p);
-    },
-  } as unknown as Queue<DlqPayload>,
   SIGNUP_DAILY_CAP: cap,
 });
+const outcomes = () =>
+  logs.map((l) => (JSON.parse(l) as { outcome: string }).outcome);
 
 const rows = async () =>
   (
     await db
       .prepare(
-        "SELECT signup_id, owner_sub, slug, install_id, status, error, created_at FROM signups ORDER BY signup_id",
+        "SELECT signup_id, owner_sub, slug, install_id, status, admitted_at, created_at, updated_at FROM signups ORDER BY signup_id",
       )
       .all()
   ).results;
@@ -109,7 +113,6 @@ beforeEach(async () => {
     db.prepare("DELETE FROM signup_secret"),
   ]);
   wf = new FakeWorkflow();
-  dlq = [];
   logs = [];
   env = mkEnv();
   vi.spyOn(console, "log").mockImplementation((...a) => {
@@ -121,167 +124,199 @@ beforeEach(async () => {
 });
 afterEach(() => {
   vi.restoreAllMocks();
-  // Nothing any test wrote outside signup_secret holds the email.
-  const out = JSON.stringify({ logs, dlq, creates: wf.creates });
-  expect(out.toLowerCase()).not.toContain("example.com");
-  expect(out.toLowerCase()).not.toContain("owner+tag");
+  // Nothing the consumer wrote or said holds the email.
+  const out = JSON.stringify({ logs, creates: wf.creates }).toLowerCase();
+  expect(out).not.toContain("example.com");
+  expect(out).not.toContain("owner+tag");
 });
 
 describe("parseSignup", () => {
-  it("accepts the message and nothing else", () => {
-    expect(parseSignup(signup(1))).toEqual(signup(1));
-    // 254 characters is the longest address accepted; 255 is refused (below).
-    const longest = `${"a".repeat(248)}@b.com`;
-    expect(longest).toHaveLength(254);
-    expect(parseSignup(signup(1, { ownerEmail: longest }))).not.toBeNull();
+  it("accepts exactly { signupId: <ULID> }", () => {
+    expect(parseSignup({ signupId: id(1) })).toEqual({ signupId: id(1) });
     for (const bad of [
       null,
       "x",
       [],
-      { ...signup(1), extra: 1 },
-      { ...signup(1), tier: "pro" },
-      { ...signup(1), signupId: "not-a-ulid" },
-      { ...signup(1), signupId: id(1).toLowerCase() },
-      { ...signup(1), slug: "Bad_Slug" },
-      { ...signup(1), slug: "admin" },
-      { ...signup(1), slug: "ab--cd" },
-      { ...signup(1), ownerSub: "abc" },
-      { ...signup(1), ownerSub: "1".repeat(256) },
-      { ...signup(1), ownerEmail: "no-at-sign" },
-      { ...signup(1), ownerEmail: `${"a".repeat(250)}@b.co` },
-      { ...signup(1), ownerEmail: `${"a".repeat(249)}@b.com` },
-      { ...signup(1), ownerEmail: "a@b.co\r\nBcc: x@y.z" },
-      { ...signup(1), ownerEmail: "a@b.co\r\n" },
-      { ...signup(1), ownerEmail: "a\n@b.co" },
-      { ...signup(1), ownerEmail: 7 },
+      {},
+      { signupId: id(1), slug: "x" },
+      { signupId: id(1).toLowerCase() },
+      { signupId: `8${id(1).slice(1)}` },
+      { signupId: `${id(1)}0` },
+      { signupId: id(1).slice(0, 25) },
+      { signupId: `${id(1).slice(0, 25)}I` },
+      { signupId: 1 },
     ])
-      expect(parseSignup(bad)).toBeNull();
+      expect(parseSignup(bad), JSON.stringify(bad)).toBeNull();
   });
 });
 
 describe("handleSignup", () => {
-  it("bad shapes go to the DLQ with the signup id only", async () => {
-    const withId = message({ ...signup(1), tier: "pro" });
-    const noId = message({ ownerEmail: EMAIL, signupId: 42 });
-    await handleSignup(withId, env, NOW);
-    await handleSignup(noId, env, NOW);
-    expect(dlq).toEqual([{ signupId: id(1) }, { signupId: null }]);
-    // Dead-lettered by us (so the runtime never DLQs the body), then acked.
-    for (const m of [withId, noId]) {
+  it("bad shapes are acked, never retried", async () => {
+    await seed(1);
+    for (const body of [
+      { signupId: id(1), extra: 1 },
+      { signupId: id(1).toLowerCase() },
+      { signupId: id(1), ownerEmail: EMAIL },
+    ]) {
+      const m = message(body);
+      await handleSignup(m, env, NOW);
       expect(m.ack).toHaveBeenCalledOnce();
       expect(m.retry).not.toHaveBeenCalled();
     }
-    expect(await rows()).toEqual([]);
-    expect(await secrets()).toEqual([]);
+    expect(outcomes()).toEqual(["bad_shape", "bad_shape", "bad_shape"]);
+    expect(await rows()).toMatchObject([{ status: "pending" }]);
     expect(wf.creates).toEqual([]);
   });
 
-  it("queued: one row, one secret row, one workflow start, then ack", async () => {
-    const m = message(signup(1));
+  it("pending under the cap: queued, admitted_at set, one workflow start from the stored row, then ack", async () => {
+    await seed(1, NOW - 5000);
+    const m = msg(1);
     await handleSignup(m, env, NOW);
     expect(await rows()).toEqual([
       {
         signup_id: id(1),
-        owner_sub: signup(1).ownerSub,
-        slug: "team-1",
+        owner_sub: sub(1),
+        slug: slug(1),
         install_id: null,
         status: "queued",
-        error: null,
-        created_at: NOW,
+        admitted_at: NOW,
+        created_at: NOW - 5000,
+        updated_at: NOW,
       },
     ]);
-    expect(await secrets()).toEqual([{ signup_id: id(1), owner_email: EMAIL }]);
     expect(wf.creates).toEqual([
       {
         id: id(1),
-        params: {
-          signupId: id(1),
-          slug: "team-1",
-          ownerSub: signup(1).ownerSub,
-        },
+        params: { signupId: id(1), slug: slug(1), ownerSub: sub(1) },
       },
     ]);
     expect(m.ack).toHaveBeenCalledOnce();
     expect(m.retry).not.toHaveBeenCalled();
+    // The secret is SS4's: the consumer neither writes nor removes it.
+    expect(await secrets()).toEqual([{ signup_id: id(1), owner_email: EMAIL }]);
   });
 
-  it("redelivery during create: recordSignup says exists, the start returns 'already exists', ack, still one row", async () => {
-    await handleSignup(message(signup(1)), env, NOW);
-    // The Workflow's reserve step has moved the row on.
-    await db
-      .prepare("UPDATE signups SET status = 'creating' WHERE signup_id = ?")
-      .bind(id(1))
-      .run();
-    expect(await recordSignup(db, signup(1), 20, NOW + 1000)).toBe("exists");
-    const again = message(signup(1), 2);
+  it("redelivery during create: running, the start returns 'already exists', ack", async () => {
+    await seed(1);
+    await handleSignup(msg(1), env, NOW);
+    await setStatus(1, "creating");
+    expect(await admit(db, id(1), 20, NOW + 1000)).toBe("running");
+    const again = msg(1, 2);
     await handleSignup(again, env, NOW + 2000);
     expect(wf.creates).toHaveLength(2);
     expect(wf.instances.size).toBe(1);
     expect(again.ack).toHaveBeenCalledOnce();
     expect(again.retry).not.toHaveBeenCalled();
+    // admitted_at stays the first admission's.
     expect(await rows()).toMatchObject([
-      { signup_id: id(1), status: "creating", created_at: NOW },
+      { status: "creating", admitted_at: NOW },
     ]);
-    expect(await secrets()).toHaveLength(1);
   });
 
-  it("a redelivery after the first start was lost starts it", async () => {
-    // Recorded, then the consumer died before create.
-    expect(await recordSignup(db, signup(1), 20, NOW)).toBe("queued");
-    const m = message(signup(1), 2);
+  it("a redelivery of a queued row whose start was lost starts it", async () => {
+    await seed(1);
+    expect(await admit(db, id(1), 20, NOW)).toBe("queued");
+    const m = msg(1, 2);
     await handleSignup(m, env, NOW);
     expect([...wf.instances.keys()]).toEqual([id(1)]);
     expect(m.ack).toHaveBeenCalledOnce();
   });
 
-  it("a redelivery after done neither restarts nor rewrites the secret", async () => {
-    await handleSignup(message(signup(1)), env, NOW);
-    await db.batch([
-      db
-        .prepare("UPDATE signups SET status = 'ready' WHERE signup_id = ?")
-        .bind(id(1)),
-      db.prepare("DELETE FROM signup_secret WHERE signup_id = ?").bind(id(1)),
-    ]);
-    const m = message(signup(1), 2);
-    await handleSignup(m, env, NOW);
-    expect(wf.creates).toHaveLength(1);
-    expect(await secrets()).toEqual([]);
-    expect(m.ack).toHaveBeenCalledOnce();
+  it("a settled row is acked and never restarted", async () => {
+    for (const [n, st] of [
+      [1, "ready"],
+      [2, "failed"],
+    ] as const) {
+      await seed(n);
+      await setStatus(n, st);
+      expect(await admit(db, id(n), 20, NOW)).toBe("settled");
+      const m = msg(n, 2);
+      await handleSignup(m, env, NOW);
+      expect(m.ack).toHaveBeenCalledOnce();
+    }
+    expect(wf.creates).toEqual([]);
+    expect(outcomes()).toEqual(["settled", "settled"]);
   });
 
-  it("over the cap: waiting_cap, no workflow start, ack", async () => {
+  it("a missing row retries", async () => {
+    const m = msg(1);
+    await handleSignup(m, env, NOW);
+    expect(m.retry).toHaveBeenCalledOnce();
+    expect(m.ack).not.toHaveBeenCalled();
+    expect(wf.creates).toEqual([]);
+    expect(await rows()).toEqual([]);
+    expect(outcomes()).toEqual(["missing"]);
+  });
+
+  it("over the cap: waiting_cap, no start, ack", async () => {
     env = mkEnv("1");
-    await handleSignup(message(signup(1)), env, NOW);
-    const over = message(signup(2));
+    await seed(1);
+    await seed(2);
+    await handleSignup(msg(1), env, NOW);
+    const over = msg(2);
     await handleSignup(over, env, NOW);
-    expect((await rows()).map((r) => [r.signup_id, r.status])).toEqual([
-      [id(1), "queued"],
-      [id(2), "waiting_cap"],
+    expect(
+      (await rows()).map((r) => [r.signup_id, r.status, r.admitted_at]),
+    ).toEqual([
+      [id(1), "queued", NOW],
+      [id(2), "waiting_cap", null],
     ]);
-    // Kept for the scheduler's re-enqueue after 00:00 UTC.
-    expect(await secrets()).toHaveLength(2);
     expect([...wf.instances.keys()]).toEqual([id(1)]);
     expect(over.ack).toHaveBeenCalledOnce();
     expect(over.retry).not.toHaveBeenCalled();
-    // A redelivery of the deferred one starts nothing either.
-    await handleSignup(message(signup(2), 2), env, NOW);
+    // A redelivery the same day stays deferred.
+    await handleSignup(msg(2, 2), env, NOW + 1000);
     expect([...wf.instances.keys()]).toEqual([id(1)]);
   });
 
-  it("the cap counts today's (UTC) non-failed rows only", async () => {
-    const yesterday = Date.parse("2026-10-28T23:59:59Z");
-    expect(await recordSignup(db, signup(1), 1, yesterday)).toBe("queued");
-    expect(await recordSignup(db, signup(2), 1, NOW)).toBe("queued");
-    await db
-      .prepare("UPDATE signups SET status = 'failed' WHERE signup_id = ?")
-      .bind(id(2))
-      .run();
-    expect(await recordSignup(db, signup(3), 1, NOW)).toBe("queued");
-    expect(await recordSignup(db, signup(4), 1, NOW)).toBe("waiting_cap");
+  it("concurrent at the boundary", async () => {
+    for (const n of [1, 2, 3, 4, 5]) await seed(n);
+    env = mkEnv("2");
+    const ms = [1, 2, 3, 4, 5].map((n) => msg(n));
+    await Promise.all(ms.map((m) => handleSignup(m, env, NOW)));
+    const st = (await rows()).map((r) => r.status);
+    expect(st.filter((s) => s === "queued")).toHaveLength(2);
+    expect(st.filter((s) => s === "waiting_cap")).toHaveLength(3);
+    expect(wf.instances.size).toBe(2);
+    for (const m of ms) expect(m.ack).toHaveBeenCalledOnce();
   });
 
-  it("a bad cap is a config error: logged and retried, never deferred", async () => {
-    for (const cap of [
+  it("a promoted waiting_cap row counts toward the day it's admitted into", async () => {
+    env = mkEnv("1");
+    await seed(1);
+    await seed(2);
+    await handleSignup(msg(1), env, NOW);
+    await handleSignup(msg(2), env, NOW);
+    expect(await admit(db, id(2), 1, NOW)).toBe("waiting_cap");
+    // The next UTC day: the scheduler re-enqueues it; it takes that day's slot.
+    const tomorrow = NOW + DAY;
+    await handleSignup(msg(2, 1), env, tomorrow);
+    await seed(3, tomorrow);
+    await handleSignup(msg(3), env, tomorrow);
+    expect(
+      (await rows()).map((r) => [r.signup_id, r.status, r.admitted_at]),
+    ).toEqual([
+      [id(1), "queued", NOW],
+      [id(2), "queued", tomorrow],
+      [id(3), "waiting_cap", null],
+    ]);
+    expect([...wf.instances.keys()]).toEqual([id(1), id(2)]);
+  });
+
+  it("the day starts at 00:00 UTC, and a failed admitted row still counts", async () => {
+    const lateYesterday = Date.parse("2026-10-28T23:59:59Z");
+    await seed(1, lateYesterday);
+    await seed(2);
+    await seed(3);
+    expect(await admit(db, id(1), 1, lateYesterday)).toBe("queued");
+    expect(await admit(db, id(2), 1, NOW)).toBe("queued");
+    await setStatus(2, "failed");
+    expect(await admit(db, id(3), 1, NOW)).toBe("waiting_cap");
+  });
+
+  it("an invalid cap retries and logs cap_config", async () => {
+    await seed(1);
+    const caps = [
       "{{SIGNUP_DAILY_CAP_STAGING}}",
       "",
       "0",
@@ -289,135 +324,69 @@ describe("handleSignup", () => {
       "1.5",
       "020",
       "10000",
-    ]) {
-      const m = message(signup(1));
+    ];
+    for (const cap of caps) {
+      const m = msg(1);
       await handleSignup(m, mkEnv(cap), NOW);
       expect(m.retry, cap).toHaveBeenCalledOnce();
       expect(m.ack, cap).not.toHaveBeenCalled();
     }
-    expect(await rows()).toEqual([]);
+    expect(outcomes()).toEqual(caps.map(() => "cap_config"));
+    expect(await rows()).toMatchObject([{ status: "pending" }]);
     expect(wf.creates).toEqual([]);
-    expect(logs.filter((l) => l.includes('"cap_config"'))).toHaveLength(7);
     // The bounds themselves are fine.
     for (const cap of ["1", "9999"]) {
-      const m = message(signup(cap.length));
+      await db.prepare("DELETE FROM signups").run();
+      await db.prepare("DELETE FROM signup_secret").run();
+      await seed(1);
+      const m = msg(1);
       await handleSignup(m, mkEnv(cap), NOW);
-      expect(m.ack).toHaveBeenCalledOnce();
+      expect(m.ack, cap).toHaveBeenCalledOnce();
     }
   });
 
-  it("a redelivery with another slug or sub is dead-lettered, never started", async () => {
-    await handleSignup(message(signup(1)), env, NOW);
-    for (const over of [{ slug: "other" }, { ownerSub: "999" }]) {
-      const m = message(signup(1, over), 2);
-      await handleSignup(m, env, NOW);
-      expect(m.ack).toHaveBeenCalledOnce();
-      expect(m.retry).not.toHaveBeenCalled();
-    }
-    expect(dlq).toEqual([{ signupId: id(1) }, { signupId: id(1) }]);
-    expect(logs.filter((l) => l.includes('"mismatch"'))).toHaveLength(2);
-    // Only the first delivery started, with the stored values.
-    expect(wf.creates).toEqual([
-      {
-        id: id(1),
-        params: {
-          signupId: id(1),
-          slug: "team-1",
-          ownerSub: signup(1).ownerSub,
-        },
-      },
-    ]);
-    expect(await rows()).toMatchObject([{ slug: "team-1", status: "queued" }]);
-  });
-
-  it("a DLQ send failure retries; the last delivery is acked and dropped", async () => {
-    const down = {
-      ...mkEnv(),
-      SIGNUPS_DLQ: {
-        send: async () => {
-          throw new Error("queue unavailable");
-        },
-      } as unknown as Queue<DlqPayload>,
-    };
-    const bad = { ...signup(1), tier: "pro" };
-    const first = message(bad, 1);
-    await handleSignup(first, down, NOW);
-    expect(first.retry).toHaveBeenCalledOnce();
-    expect(first.ack).not.toHaveBeenCalled();
-    const last = message(bad, MAX_RETRIES + 1);
-    await handleSignup(last, down, NOW);
-    expect(last.retry).not.toHaveBeenCalled();
-    expect(last.ack).toHaveBeenCalledOnce();
-    expect(dlq).toEqual([]);
-    expect(logs.filter((l) => l.includes('"dropped"'))).toEqual([
-      JSON.stringify({ event: "signup", signupId: id(1), outcome: "dropped" }),
-    ]);
-    // A body with no parseable id is dropped with a null id.
-    const anon = message({ ownerEmail: EMAIL }, MAX_RETRIES + 1);
-    await handleSignup(anon, down, NOW);
-    expect(anon.ack).toHaveBeenCalledOnce();
-    expect(logs.at(-1)).toBe(
-      JSON.stringify({ event: "signup", signupId: null, outcome: "dropped" }),
+  it("workflow params carry no email, and come from the row, not the message", async () => {
+    for (const n of [1, 2, 3]) await seed(n);
+    // A body with more than the id is refused before anything runs.
+    await handleSignup(
+      message({ signupId: id(1), slug: "evil", ownerSub: "1" }),
+      env,
+      NOW,
     );
-    expect(await rows()).toEqual([]);
-    expect(await secrets()).toEqual([]);
-  });
-
-  it("concurrent at the boundary", async () => {
-    const out = await Promise.all(
-      [1, 2, 3, 4, 5].map((n) => recordSignup(db, signup(n), 2, NOW)),
-    );
-    expect(out.filter((o) => o === "queued")).toHaveLength(2);
-    expect(out.filter((o) => o === "waiting_cap")).toHaveLength(3);
-    const st = (await rows()).map((r) => r.status);
-    expect(st.filter((s) => s === "queued")).toHaveLength(2);
-    expect(st.filter((s) => s === "waiting_cap")).toHaveLength(3);
-  });
-
-  it("workflow params carry no email", async () => {
-    await Promise.all(
-      [1, 2, 3].map((n) => handleSignup(message(signup(n)), env, NOW)),
-    );
+    expect(wf.creates).toEqual([]);
+    await Promise.all([1, 2, 3].map((n) => handleSignup(msg(n), env, NOW)));
     expect(wf.creates).toHaveLength(3);
     for (const c of wf.creates) {
-      expect(Object.keys(c.params ?? {}).sort()).toEqual([
-        "ownerSub",
-        "signupId",
-        "slug",
-      ]);
+      const n = [1, 2, 3].find((k) => id(k) === c.id) ?? 0;
+      expect(c.params).toEqual({
+        signupId: id(n),
+        slug: slug(n),
+        ownerSub: sub(n),
+      });
       expect(JSON.stringify(c)).not.toMatch(/@/);
     }
-    // The email is in signup_secret and in no other row.
-    expect(JSON.stringify(await rows())).not.toMatch(/@/);
   });
 
-  it("a failure retries with backoff; the last delivery dead-letters the id only", async () => {
+  it("a D1 or Workflows error retries, logging no error text", async () => {
+    await seed(1);
     const broken = mkEnv("20", {
-      prepare: (sql: string) => db.prepare(sql),
-      batch: async () => {
+      prepare: () => {
         throw new Error(`D1_ERROR: boom ${EMAIL}`);
       },
     } as unknown as D1Database);
-    const first = message(signup(1), 1);
-    await handleSignup(first, broken, NOW);
-    expect(first.retry).toHaveBeenCalledWith({ delaySeconds: 20 });
-    expect(first.ack).not.toHaveBeenCalled();
-    const last = message(signup(1), MAX_RETRIES + 1);
-    await handleSignup(last, broken, NOW);
-    expect(last.retry).not.toHaveBeenCalled();
-    expect(last.ack).toHaveBeenCalledOnce();
-    expect(dlq).toEqual([{ signupId: id(1) }]);
-  });
-
-  it("a workflow create that fails without an instance retries", async () => {
+    const a = msg(1);
+    await handleSignup(a, broken, NOW);
+    expect(a.retry).toHaveBeenCalledWith({ delaySeconds: 20 });
+    expect(a.ack).not.toHaveBeenCalled();
     wf.create = async () => {
-      throw new Error("workflows unavailable");
+      throw new Error(`workflows unavailable ${EMAIL}`);
     };
-    const m = message(signup(1));
-    await handleSignup(m, env, NOW);
-    expect(m.ack).not.toHaveBeenCalled();
-    expect(m.retry).toHaveBeenCalledOnce();
-    // The row stays queued, so the redelivery starts it.
+    const b = msg(1);
+    await handleSignup(b, env, NOW);
+    expect(b.retry).toHaveBeenCalledOnce();
+    expect(b.ack).not.toHaveBeenCalled();
+    // Admitted, so the redelivery starts it.
     expect(await rows()).toMatchObject([{ status: "queued" }]);
+    expect(outcomes()).toEqual(["retry", "retry"]);
   });
 });

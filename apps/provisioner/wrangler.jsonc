@@ -1,7 +1,8 @@
 // Hosted provisioner Worker (self-serve step 3): consumes oa-<p>-signups,
-// records each signup under the daily cap (platform D1 `signups`) and starts
-// one ProvisionInstall Workflow per signup id, which runs provision's
-// WfpProvisioner.create. The owner's email is kept only in `signup_secret`.
+// admits each signup under the daily cap (platform D1 `signups`, written
+// pending by SS4) and starts one ProvisionInstall Workflow per signup id,
+// which runs provision's WfpProvisioner.create. The owner's email is kept only
+// in `signup_secret` (SS4 writes it).
 //
 // Deploy with --env staging or --env prod only: the top level has no name and
 // no main, so a deploy without --env is refused, even with --name. No routes,
@@ -9,9 +10,8 @@
 // ids, cap, sender and account are placeholders filled at deploy.
 // Observability stays off: the Worker logs fixed categories and signup ids only.
 // The provision token is the Secrets Store secret oa-<p>-provision-token,
-// bound here and in no other Worker. A signup that can't be handled goes to
-// the DLQ as { signupId } only (SIGNUPS_DLQ, written by the consumer), never
-// as its body: the consumer has no runtime dead_letter_queue on purpose.
+// bound here and in no other Worker. Messages are { signupId } only, so the
+// runtime dead-letter queue never holds an email, slug or sub.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "compatibility_date": "2026-10-01",
@@ -37,10 +37,10 @@
           {
             "queue": "oa-s-signups",
             "max_batch_size": 1,
-            "max_retries": 5
+            "max_retries": 5,
+            "dead_letter_queue": "oa-s-signups-dlq"
           }
-        ],
-        "producers": [{ "binding": "SIGNUPS_DLQ", "queue": "oa-s-signups-dlq" }]
+        ]
       },
       "workflows": [
         {
@@ -96,10 +96,10 @@
           {
             "queue": "oa-p-signups",
             "max_batch_size": 1,
-            "max_retries": 5
+            "max_retries": 5,
+            "dead_letter_queue": "oa-p-signups-dlq"
           }
-        ],
-        "producers": [{ "binding": "SIGNUPS_DLQ", "queue": "oa-p-signups-dlq" }]
+        ]
       },
       "workflows": [
         {

@@ -49,10 +49,6 @@ const ALLOWED: Record<string, RegExp[]> = {
     /^\s*const v = row\.owner_email;$/,
     /^export function ownerEmailOf\(row: \{ owner_email\?: unknown \}\): string \| null \{$/,
   ],
-  // The signups consumer's signup_secret insert (a write, not installs).
-  "apps/provisioner/src/consumer.ts": [
-    /^\s*`INSERT OR IGNORE INTO signup_secret \(signup_id, owner_email\)$/,
-  ],
   // The purge (a write).
   "apps/scheduler/src/index.ts": [
     /^\s*"UPDATE installs SET owner_email = '', inputs_hash = '' WHERE state='deleted' AND updated_at < \?1 AND owner_email <> '' RETURNING id";$/,
