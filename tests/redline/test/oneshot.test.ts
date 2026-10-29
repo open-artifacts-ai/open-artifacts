@@ -104,24 +104,23 @@ describe("Chrome's launch", () => {
     const driver = src("src/oneshot/driver.ts");
     const browser = src("src/oneshot/browser.ts");
     const cli = src("scripts/capture-oneshot.ts");
-    for (const s of [driver, cli])
-      expect(s).not.toMatch(
-        /--remote-debugging|--enable-automation|--disable-blink-features|--load-extension|--headless/,
-      );
-    // browser.ts: only inside rehearsalArgs().
+    const flags =
+      /--remote-debugging|--enable-automation|--disable-blink-features|--load-extension|--headless|--enable-unsafe/;
+    for (const s of [driver, cli]) expect(s).not.toMatch(flags);
+    // browser.ts: only inside rehearsalArgs() (the --rehearsal-harness flag,
+    // refused with staging targets).
     const outside = browser.replace(
       /export function rehearsalArgs[\s\S]*?\n}\n/,
       "",
     );
-    expect(outside).not.toMatch(
-      /--remote-debugging|--enable-automation|--disable-blink-features|--load-extension|--headless/,
+    expect(outside).not.toMatch(flags);
+    expect(browser).not.toMatch(
+      /disable-blink-features|enable-automation|load-extension/,
     );
-    expect(browser).not.toMatch(/disable-blink-features|enable-automation/);
-    expect(rehearsalArgs("/x")).toEqual([
-      "--load-extension=/x",
-      "--disable-extensions-except=/x",
+    expect(rehearsalArgs()).toEqual([
       "--headless=new",
       "--remote-debugging-port=0",
+      "--enable-unsafe-extension-debugging",
     ]);
   });
 });
@@ -214,7 +213,9 @@ describe("the listener", () => {
       expect(L.refused).toBe(2);
       const reports: string[] = [];
       L.on((r) => reports.push(r.kind));
-      expect((await post("/blocked", { token: "y", url: "https://a/" })).status).toBe(403);
+      expect(
+        (await post("/blocked", { token: "y", url: "https://a/" })).status,
+      ).toBe(403);
       expect(reports).toEqual([]);
       const hello = L.nextHello();
       expect((await post("/hello", { token: L.token })).status).toBe(200);
@@ -326,7 +327,7 @@ describe("flags", () => {
     );
     expect(r.opts.promptTimeoutMs).toBe(300_000);
     expect(r.opts.chromePath).toBeUndefined();
-    expect(r.opts.rehearsalChromium).toBeUndefined();
+    expect(r.opts.rehearsalHarness).toBeUndefined();
   });
   it("refuses unknown flags and a short SHA", () => {
     expect(parseOpts(["--nope"]).ok).toBe(false);
@@ -433,14 +434,12 @@ describe("prerequisites", () => {
         targetsFile: tf,
         idp: "http://127.0.0.1:1",
         loopback: true,
-        rehearsalChromium: process.execPath,
+        rehearsalHarness: true,
       }),
       targets.secretFileName,
       "darwin",
     ).gaps.join();
-    expect(g).toMatch(
-      /--idp, --loopback, --rehearsal-chromium: rehearsal only/,
-    );
+    expect(g).toMatch(/--idp, --loopback, --rehearsal-harness: rehearsal only/);
   });
 });
 

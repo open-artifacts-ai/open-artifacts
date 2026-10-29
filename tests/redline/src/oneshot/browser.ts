@@ -53,18 +53,17 @@ export function chromeArgs(profile: string, url: string): string[] {
 }
 
 /**
- * Rehearsal only (`--rehearsal-chromium`): Chrome for Testing loads the
- * extension from the command line (branded Chrome ignores that switch
- * since 137), runs headless, and opens a debugging port for the
- * TEST's harness (the stand-in person). The script never connects to it.
+ * Rehearsal only (`--rehearsal-harness`): the same installed Chrome,
+ * headless, with a debugging port for the TEST's harness, which stands in
+ * for the person: it does "Load unpacked" (CDP Extensions.loadUnpacked,
+ * which needs the unsafe-extension-debugging switch) and types into the
+ * fake IdP's form. The script never connects to that port.
  */
-export function rehearsalArgs(ext: string, withExtension = true): string[] {
+export function rehearsalArgs(): string[] {
   return [
-    ...(withExtension
-      ? [`--load-extension=${ext}`, `--disable-extensions-except=${ext}`]
-      : []),
     "--headless=new",
     "--remote-debugging-port=0",
+    "--enable-unsafe-extension-debugging",
   ];
 }
 
@@ -98,7 +97,10 @@ export function killAllChromesSync(): void {
 export const liveChromes = () => [...live].map((p) => p.pid as number);
 
 /** True once no process is left in the group (a bounded wait on that condition). */
-async function groupGone(pid: number | undefined, ms: number): Promise<boolean> {
+async function groupGone(
+  pid: number | undefined,
+  ms: number,
+): Promise<boolean> {
   if (!pid) return true;
   const alive = () => {
     try {
@@ -257,8 +259,10 @@ export class Listener {
   private checkIn = deferred<void>();
   private server: Server;
   private queue: (Command & { id: number })[] = [];
-  private poll: { res: ServerResponse; t: ReturnType<typeof setTimeout> } | null =
-    null;
+  private poll: {
+    res: ServerResponse;
+    t: ReturnType<typeof setTimeout>;
+  } | null = null;
   private acks = new Map<number, (ok: boolean) => void>();
   private subs = new Set<(r: Report) => void>();
   private nextId = 1;
@@ -304,6 +308,22 @@ export class Listener {
   }
 
   private handle(req: IncomingMessage, res: ServerResponse) {
+    if (process.env.OA_CAPTURE_DEBUG === "1")
+      console.error(
+        `[listener] ${req.method} ${(req.url ?? "").split("?")[0]}`,
+      );
+    if (req.method === "OPTIONS") {
+      // A CORS / local-network preflight from the extension's worker. The
+      // token in the POST body is still required for anything to happen.
+      res.writeHead(204, {
+        "access-control-allow-origin": String(req.headers.origin ?? "*"),
+        "access-control-allow-methods": "POST",
+        "access-control-allow-headers": "content-type",
+        "access-control-allow-private-network": "true",
+        "access-control-max-age": "600",
+      });
+      return res.end();
+    }
     if (req.method !== "POST") return this.reply(res, 405, {});
     let body = "";
     req.setEncoding("utf8");
@@ -503,7 +523,10 @@ export const GOOGLE_CLEAR = [
 export function writeExtension(dir: string, c: ExtensionConfig): void {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  copyFileSync(join(EXTENSION_SRC, "background.js"), join(dir, "background.js"));
+  copyFileSync(
+    join(EXTENSION_SRC, "background.js"),
+    join(dir, "background.js"),
+  );
   const hosts = [
     ...c.installs.map((o) => matchOf(o)),
     "http://127.0.0.1/*",
@@ -538,7 +561,10 @@ export function writeExtension(dir: string, c: ExtensionConfig): void {
           {
             id: 100,
             priority: 1,
-            action: { type: "redirect", redirect: { transform: { scheme: "http" } } },
+            action: {
+              type: "redirect",
+              redirect: { transform: { scheme: "http" } },
+            },
             condition: {
               regexFilter: "^https://[^/]*\\.localhost[:/]",
               resourceTypes: ["main_frame"],

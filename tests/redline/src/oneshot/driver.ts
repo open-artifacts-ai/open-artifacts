@@ -99,13 +99,11 @@ export interface OneShotOpts {
   /** Google Chrome's binary (default the installed app). */
   chromePath?: string;
   /**
-   * Rehearsal only (local targets): Chrome for Testing at this path, which
-   * loads the extension from the command line (the stand-in for Load
-   * unpacked), headless, with a debugging port for the test's harness.
+   * Rehearsal only (local targets): the same Chrome, headless, with a
+   * debugging port for the test's harness (the stand-in person, who loads
+   * the extension and types). The script never connects to it.
    */
-  rehearsalChromium?: string;
-  /** Rehearsal only: start without the extension (it never checks in). */
-  noExtension?: boolean;
+  rehearsalHarness?: boolean;
   /** Rehearsal only (local targets): the fake IdP's origin. */
   idp?: string;
   /** Rehearsal only (local targets): https *.localhost served over http. */
@@ -169,8 +167,7 @@ export function parseOpts(
         chrome: { type: "string" },
         idp: { type: "string" },
         loopback: { type: "boolean" },
-        "rehearsal-chromium": { type: "string" },
-        "rehearsal-no-extension": { type: "boolean" },
+        "rehearsal-harness": { type: "boolean" },
         flows: { type: "string" },
         gate: { type: "boolean" },
       },
@@ -201,10 +198,7 @@ export function parseOpts(
       makeCreds: v["make-creds"] === true,
       promptTimeoutMs: timeout,
       ...(str("chrome") ? { chromePath: str("chrome") as string } : {}),
-      ...(str("rehearsal-chromium")
-        ? { rehearsalChromium: str("rehearsal-chromium") as string }
-        : {}),
-      ...(v["rehearsal-no-extension"] === true ? { noExtension: true } : {}),
+      ...(v["rehearsal-harness"] === true ? { rehearsalHarness: true } : {}),
       ...(str("idp") ? { idp: str("idp") as string } : {}),
       ...(v.loopback === true ? { loopback: true } : {}),
       ...(flows?.length ? { flows } : {}),
@@ -217,8 +211,7 @@ const rehearsalFlags = (o: OneShotOpts) =>
   [
     o.idp ? "--idp" : "",
     o.loopback ? "--loopback" : "",
-    o.rehearsalChromium ? "--rehearsal-chromium" : "",
-    o.noExtension ? "--rehearsal-no-extension" : "",
+    o.rehearsalHarness ? "--rehearsal-harness" : "",
     o.flows ? "--flows" : "",
     o.promptTimeoutMs < 60_000 ? "--prompt-timeout-ms" : "",
   ].filter(Boolean);
@@ -264,7 +257,7 @@ export function prereqs(
   const gaps: string[] = [];
   const out: Prereqs = { gaps, raw: null, rawText: "", needCreds: [] };
   if (platform !== "darwin") gaps.push("this runs on macOS only");
-  const chrome = o.rehearsalChromium ?? o.chromePath ?? CHROME_MAC;
+  const chrome = o.chromePath ?? CHROME_MAC;
   if (!existsSync(chrome))
     gaps.push(
       `Google Chrome is not at ${chrome}: install it from google.com/chrome (or pass --chrome <path>)`,
@@ -486,7 +479,9 @@ export function promptLine(p: CapturePrompt, url: URL): string {
 }
 
 const span = (ms: number) =>
-  ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`;
+  ms >= 60_000
+    ? `${Math.round(ms / 60_000)} min`
+    : `${Math.round(ms / 1000)} s`;
 
 export const timeoutLines = (p: CapturePrompt, ms: number) => [
   `[${p.n}/${p.total}] No sign-in came back within ${span(ms)}.`,
@@ -564,14 +559,8 @@ class Session {
     mkdirSync(this.profile, { recursive: true, mode: 0o700 });
     const hello = this.L.nextHello();
     this.chrome = launchChrome({
-      ...(o.rehearsalChromium
-        ? {
-            path: o.rehearsalChromium,
-            extra: rehearsalArgs(this.ext, !o.noExtension),
-          }
-        : o.chromePath
-          ? { path: o.chromePath }
-          : {}),
+      ...(o.chromePath ? { path: o.chromePath } : {}),
+      ...(o.rehearsalHarness ? { extra: rehearsalArgs() } : {}),
       profile: this.profile,
       url: EXTENSIONS_PAGE,
     });
@@ -746,7 +735,9 @@ async function dryRun(c: Ctx, s: Session): Promise<DryResult[]> {
         ...(c.o.loopback ? { map: loopbackHttp } : {}),
       });
     } catch (e) {
-      r.problems.push(`the sign-in start didn't lead to Google (${safeMessage(e)})`);
+      r.problems.push(
+        `the sign-in start didn't lead to Google (${safeMessage(e)})`,
+      );
       line();
       continue;
     }
@@ -762,7 +753,11 @@ async function dryRun(c: Ctx, s: Session): Promise<DryResult[]> {
       if (!(await s.L.command({ cmd: "clear" })))
         r.problems.push("the extension did not clear Google's cookies");
       await s.L.command({ cmd: "open", url: armed.probeUrl });
-      await race(armed.probed, 15_000, "the extension did not report its probe");
+      await race(
+        armed.probed,
+        15_000,
+        "the extension did not report its probe",
+      );
       await s.L.command({ cmd: "open", url: url.href });
       const got = await race(
         Promise.race([
@@ -773,12 +768,15 @@ async function dryRun(c: Ctx, s: Session): Promise<DryResult[]> {
         "Google's sign-in page did not load within 60 s",
       );
       if (got.k === "blocked")
-        r.problems.push(`${got.why}: Google refuses this browser (not a test failure)`);
+        r.problems.push(
+          `${got.why}: Google refuses this browser (not a test failure)`,
+        );
       else {
         const seen = new URL(got.u);
         r.hd = seen.searchParams.get("hd");
         const tenant = spec.user.split("@")[1] ?? "";
-        if (seen.origin !== c.idp) r.problems.push(`the page is not on ${c.idp}`);
+        if (seen.origin !== c.idp)
+          r.problems.push(`the page is not on ${c.idp}`);
         if (foreign && r.hd !== null)
           r.problems.push("hd is present (it must be absent for this prompt)");
         if (!foreign && r.hd !== tenant)
@@ -787,7 +785,9 @@ async function dryRun(c: Ctx, s: Session): Promise<DryResult[]> {
           seen.searchParams.get("state") ?? "",
         );
         if (bs && (bs.i !== t.installId || bs.s !== state))
-          r.problems.push("the broker state doesn't name this install and start");
+          r.problems.push(
+            "the broker state doesn't name this install and start",
+          );
       }
       if (armed.counts.captured !== 0)
         r.problems.push("something was captured without a sign-in");
@@ -840,7 +840,9 @@ export async function oneShot(argv: string[], d: OneShotDeps): Promise<number> {
   } catch (e) {
     if (e instanceof BindingRefused) p.gaps.push(...e.gaps);
     else
-      p.gaps.push(`the suite checkout's modules don't load (${safeMessage(e)})`);
+      p.gaps.push(
+        `the suite checkout's modules don't load (${safeMessage(e)})`,
+      );
   }
   if (p.gaps.length || !suite || !p.raw) return refuse(p.gaps);
   d.out(
@@ -904,11 +906,16 @@ export async function oneShot(argv: string[], d: OneShotDeps): Promise<number> {
     d.out(
       `${o.flows?.length ?? 5} Google sign-ins follow, each in a new tab with Google's cookies cleared first. Type only the test accounts' passwords.`,
     );
-    const verdicts = await suite.capture.runCaptures(T, verdictsDir, captureIO(ctx, s), {
-      ...(o.idp ? { idp: o.idp } : {}),
-      ...(o.loopback ? { map: loopbackHttp } : {}),
-      ...(o.flows ? { flows: o.flows } : {}),
-    });
+    const verdicts = await suite.capture.runCaptures(
+      T,
+      verdictsDir,
+      captureIO(ctx, s),
+      {
+        ...(o.idp ? { idp: o.idp } : {}),
+        ...(o.loopback ? { map: loopbackHttp } : {}),
+        ...(o.flows ? { flows: o.flows } : {}),
+      },
+    );
     await s.close();
     // The frozen checkout may not change while the capture ran.
     const late = bindingGaps(suite.dir, o.expectSha);
