@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -118,7 +118,10 @@ async function harness(profile: string, since = 0): Promise<Browser> {
 const loadedIds = new Map<string, string>();
 async function loadUnpacked(b: Browser, dir: string): Promise<void> {
   const s = await b.newBrowserCDPSession();
-  const send = s.send as (m: string, p: object) => Promise<{ id?: string }>;
+  const send = s.send.bind(s) as unknown as (
+    m: string,
+    p: object,
+  ) => Promise<{ id?: string }>;
   try {
     const r = await send("Extensions.loadUnpacked", { path: dir });
     if (r.id) loadedIds.set(dir, r.id);
@@ -176,6 +179,8 @@ describe.skipIf(!on)(
     /** Every Chrome the driver launched. */
     const chromes: { pid: number; profile: string }[] = [];
     const browsers: Browser[] = [];
+    /** CLI children still running (a failed test's): SIGTERM'd in afterAll. */
+    const clis = new Set<ChildProcess>();
 
     beforeAll(async () => {
       work = mkdtempSync(join(tmpdir(), "oa-oneshot-rehearsal-"));
@@ -243,6 +248,12 @@ describe.skipIf(!on)(
 
     afterAll(async () => {
       for (const b of browsers) await b.close().catch(() => {});
+      // Their own handlers quit their Chrome and remove their run dirs.
+      for (const c of clis) {
+        const exited = new Promise((r) => c.once("exit", r));
+        c.kill("SIGTERM");
+        await Promise.race([exited, new Promise((r) => setTimeout(r, 15_000))]);
+      }
       // A test that failed mid-prompt leaves its Chrome: stop it (ours, by PID).
       const leaked = liveChromes().length;
       cleanupSync();
@@ -420,7 +431,9 @@ describe.skipIf(!on)(
       const exit = new Promise<number | null>((r) =>
         child.on("exit", (c, sig) => r(c ?? (sig ? 128 : null))),
       );
-      const timer = setTimeout(() => child.kill("SIGKILL"), 240_000);
+      clis.add(child);
+      child.once("exit", () => clis.delete(child));
+      const timer = setTimeout(() => child.kill("SIGTERM"), 240_000);
       void exit.then(() => clearTimeout(timer));
       return {
         child,
@@ -485,8 +498,12 @@ describe.skipIf(!on)(
         });
         expect(r.status, path).toBe(403);
       }
-      // Still waiting: no prompt, no check-in, no other way forward.
-      expect(run.out()).not.toMatch(/checked in|\[1\/1\]|sign in as/);
+      // Still waiting: no prompt, no check-in, no other way forward. (This
+      // test process isn't the command's Chrome, so it is refused as such.)
+      await run.until(/checked in from another Chrome/);
+      expect(run.out()).not.toMatch(
+        /The capture extension checked in\.|\[1\/1\]|sign in as/,
+      );
       const runDir = join(ext, "..");
       // Under the kit's dir (reachable in the folder picker), not /var/folders.
       expect(runDir).toMatch(/\/\.open-artifacts\/redline-capture\/run-[^/]+$/);
