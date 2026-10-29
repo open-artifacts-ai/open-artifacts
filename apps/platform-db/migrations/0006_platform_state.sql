@@ -5,7 +5,6 @@
 --   <alert>_notified_at    its last open or reminder email (0: one is owed)
 --   <alert>_cleared_at     a clear email is owed
 --   billing_health_ok_at   the last time oa-<p>-billing answered /health
---   billing_alert_at       the last "billing unreachable" alert (once per hour)
 -- with <alert> one of ALERT_KEYS (packages/shared/src/provisioning/enums.ts).
 -- Same shape as #849's 0006. Holds no customer data. Re-runnable (IF NOT EXISTS).
 CREATE TABLE IF NOT EXISTS platform_state (

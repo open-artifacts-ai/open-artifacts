@@ -19,9 +19,10 @@ import {
   isReleaseVersion,
   REVOKE_MIN_VERSION,
 } from "@oa/provision/versions";
+import { alertFor, stepAlert } from "./provapi/alerts.js";
 import { type ProvapiEnv, provapiTick, writeTick } from "./provapi/index.js";
 import { billingHealth } from "./billing-health.js";
-import { emailQuota, type QuotaEnv } from "./quota.js";
+import { emailQuota, type QuotaEnv, type QuotaOutcome } from "./quota.js";
 
 // And to the tier store (see @oa/broker-core/billing-gate).
 export { BillingGate } from "@oa/broker-core/billing-gate";
@@ -43,7 +44,11 @@ const withGates = (gates: GateExports | undefined, id: string) =>
     ? { props: { ...brokerProps(gates, id), ...billingProps(gates, id) } }
     : undefined;
 
-export interface Env extends QuotaEnv, BrokerGateEnv, ProvapiEnv, BillingGateEnv {
+export interface Env
+  extends QuotaEnv,
+    BrokerGateEnv,
+    ProvapiEnv,
+    BillingGateEnv {
   DISPATCHER: DispatchNamespace;
   /** Platform D1 (installs metadata only; no customer data). */
   PLATFORM_DB: D1Database;
@@ -770,7 +775,8 @@ export default {
       } catch {
         console.error("provapi tick failed db_error");
       }
-      // The billing outage alert first, bounded (5 s) and never throwing, so
+      // The billing outage alert first, bounded (a 5 s check, 5 s per email)
+      // and never throwing, so
       // a long revoke or sync tick can't starve it.
       await billingHealth(env, event.scheduledTime);
       await revokeTick(env, event.scheduledTime, { gates });
@@ -794,11 +800,20 @@ export default {
     // Own try, after the nightly result is settled: it never changes it
     // (emailQuota logs one fixed line and doesn't throw; this catch is
     // defense only, unreachable today).
+    let quota: QuotaOutcome = "failed";
     try {
-      await emailQuota(env, event.scheduledTime);
+      quota = await emailQuota(env, event.scheduledTime);
     } catch {
       console.error("email-quota failed http");
     }
+    // "warn" opens the alert, "ok" clears it, a skip or failure leaves it;
+    // an open alert reminds here once a day. stepAlert never throws.
+    await stepAlert(
+      env,
+      alertFor("email_quota", env.OA_ENV),
+      quota === "warn" ? true : quota === "ok" ? false : null,
+      event.scheduledTime,
+    );
     // H-DV: own try too; a D1 error here never changes the nightly result.
     try {
       await purgeOwnerEmails(env.PLATFORM_DB, event.scheduledTime);

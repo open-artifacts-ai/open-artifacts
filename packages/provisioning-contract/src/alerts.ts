@@ -23,11 +23,15 @@ export const RPC_ALERT_KEYS = [
 ] as const satisfies readonly AlertKey[];
 /**
  * Keys only the scheduler can decide: they need the fleet target, its own
- * release (#955). R27 shows them while open, with no rows.
+ * release (#955), or an outside check (billing_unreachable: the scheduler's
+ * billing health check; email_quota: its nightly sends check). R27 shows them
+ * while open, with no rows.
  */
 export const SCHEDULER_ALERT_KEYS = [
   "fleet_halted",
   "version_skew",
+  "billing_unreachable",
+  "email_quota",
 ] as const satisfies readonly AlertKey[];
 export type SqlAlertKey = Exclude<
   AlertKey,
