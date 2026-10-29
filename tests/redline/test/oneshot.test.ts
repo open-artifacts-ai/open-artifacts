@@ -360,6 +360,95 @@ describe("the listener", () => {
   });
 });
 
+describe("the listener after Chrome goes away", () => {
+  const post = (
+    L: Listener,
+    path: string,
+    body: object,
+    signal?: AbortSignal,
+  ) =>
+    fetch(`${L.origin}${path}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      ...(signal ? { signal } : {}),
+    });
+
+  it("a poll whose Chrome closed never takes the next command: it waits for the new Chrome's poll", async () => {
+    const L = new Listener();
+    await L.start();
+    try {
+      await post(L, "/hello", { token: L.token });
+      await L.checkedIn;
+      // The closed Chrome's long poll: its connection drops.
+      const gone = new AbortController();
+      const dead = post(L, "/next", { token: L.token }, gone.signal).catch(
+        () => "aborted",
+      );
+      await new Promise((r) => setTimeout(r, 50));
+      gone.abort();
+      expect(await dead).toBe("aborted");
+      await new Promise((r) => setTimeout(r, 50));
+      // The command is sent before the new Chrome polls: it must be queued.
+      const done = L.command({ cmd: "clear" }, 5_000);
+      const c = (await (await post(L, "/next", { token: L.token })).json()) as {
+        cmd: string;
+        id: number;
+      };
+      expect(c.cmd).toBe("clear");
+      await post(L, "/ack", { token: L.token, id: c.id, ok: true });
+      expect(await done).toBe(true);
+    } finally {
+      await L.close();
+    }
+  });
+
+  it("a peer lookup that failed once is asked again on the SAME connection, never remembered as a refusal", async () => {
+    const { Agent, request } = await import("node:http");
+    const L = new Listener();
+    const ports: number[] = [];
+    let asked = 0;
+    // First lookup fails (lsof timed out or missed the socket), the next succeeds.
+    L.verify = (port) => {
+      ports.push(port);
+      return asked++ === 0 ? "unknown" : true;
+    };
+    await L.start();
+    // One kept-alive socket for both requests, so a per-connection cache would show.
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+    const hello = () =>
+      new Promise<number>((res, rej) => {
+        const u = new URL(`${L.origin}/hello`);
+        const r = request(
+          {
+            host: u.hostname,
+            port: u.port,
+            path: u.pathname,
+            method: "POST",
+            agent,
+            headers: { "content-type": "application/json" },
+          },
+          (resp) => {
+            resp.resume();
+            resp.on("end", () => res(resp.statusCode ?? 0));
+          },
+        );
+        r.on("error", rej);
+        r.end(JSON.stringify({ token: L.token }));
+      });
+    try {
+      expect(await hello()).toBe(403);
+      expect(L.foreign).toBe(0);
+      expect(await hello()).toBe(200);
+      expect(asked).toBe(2);
+      // Both requests came over the same connection.
+      expect(new Set(ports).size).toBe(1);
+    } finally {
+      agent.destroy();
+      await L.close();
+    }
+  });
+});
+
 describe("what the person reads", () => {
   const p = {
     n: 2,

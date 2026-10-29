@@ -886,6 +886,15 @@ export async function oneShot(argv: string[], d: OneShotDeps): Promise<number> {
   const run = mkdtempSync(join(base, "run-"));
   chmodSync(run, 0o700);
   scratch.add(run);
+  // The profile holds the test accounts' Google session cookies: keep the
+  // run dir out of Time Machine (best effort; it is deleted at exit anyway).
+  if (!d.runBase && process.platform === "darwin")
+    try {
+      execFileSync("tmutil", ["addexclusion", run], {
+        stdio: "ignore",
+        timeout: 10_000,
+      });
+    } catch {}
   d.out(
     `Temp dir for this run: ${run} (the Chrome profile, the extension copy and the verdicts; removed when the command ends).`,
   );

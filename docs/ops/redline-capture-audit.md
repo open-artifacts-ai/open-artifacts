@@ -106,6 +106,7 @@ how the one-shot driver (`pnpm -C tests/redline capture`,
 - Chrome 137 and later ignore the command-line extension switch, so the
   extension is loaded by hand once per run (Developer mode, Load unpacked).
 - Google was given the wrong account hint for a prompt (`hd` wrong, or
-  present for b-alice): the command sees it in the extension's
-  classification before asking for any sign-in, stops, and says not to sign
-  in. This replaces a separate dry run.
+  present for b-alice): the command checks the Google sign-in URL it is
+  about to open, before any tab exists, stops, and says not to sign in. This
+  replaces a separate dry run. The extension's classification is used only
+  to spot Google's block pages.

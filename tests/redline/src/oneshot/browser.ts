@@ -373,8 +373,12 @@ export class Listener {
       let ok = this.verified.get(port);
       if (ok === undefined) {
         ok = this.verify(port);
-        this.verified.set(port, ok);
-        req.socket.once("close", () => this.verified.delete(port));
+        // Only a definite answer is kept for the connection: a lookup that
+        // failed once ("unknown") is asked again on the next request.
+        if (ok !== "unknown") {
+          this.verified.set(port, ok);
+          req.socket.once("close", () => this.verified.delete(port));
+        }
       }
       if (ok !== true) {
         // "unknown": the sender is gone (a closed Chrome): refused, not "another Chrome".
@@ -444,6 +448,14 @@ export class Listener {
       this.reply(res, 200, { cmd: "none" });
     }, 15_000);
     this.poll = { res, t };
+    // A poll whose Chrome went away (closed, crashed) must not take the next
+    // command: forget it, so command() queues for the new Chrome's poll.
+    res.on("close", () => {
+      if (this.poll?.res === res) {
+        clearTimeout(t);
+        this.poll = null;
+      }
+    });
   }
 
   /** Sends a command; resolves with the extension's ok, or false after `ms`. */
@@ -460,11 +472,17 @@ export class Listener {
       });
     });
     const p = this.poll;
-    if (p) {
+    if (p && !p.res.destroyed && !p.res.socket?.destroyed) {
       this.poll = null;
       clearTimeout(p.t);
       this.reply(p.res, 200, { ...c, id });
-    } else this.queue.push({ ...c, id });
+    } else {
+      if (p) {
+        clearTimeout(p.t);
+        this.poll = null;
+      }
+      this.queue.push({ ...c, id });
+    }
     return done;
   }
 
