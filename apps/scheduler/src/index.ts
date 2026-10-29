@@ -22,6 +22,7 @@ import {
 import { type AlertEnv, emailQuotaAlert, stepAlert } from "./alerts.js";
 import { billingHealth } from "./billing-health.js";
 import { emailQuota, type QuotaEnv, type QuotaOutcome } from "./quota.js";
+import { type SignupsEnv, signupTick } from "./signups.js";
 
 // And to the tier store (see @oa/broker-core/billing-gate).
 export { BillingGate } from "@oa/broker-core/billing-gate";
@@ -43,7 +44,12 @@ const withGates = (gates: GateExports | undefined, id: string) =>
     ? { props: { ...brokerProps(gates, id), ...billingProps(gates, id) } }
     : undefined;
 
-export interface Env extends QuotaEnv, AlertEnv, BrokerGateEnv, BillingGateEnv {
+export interface Env
+  extends QuotaEnv,
+    AlertEnv,
+    SignupsEnv,
+    BrokerGateEnv,
+    BillingGateEnv {
   DISPATCHER: DispatchNamespace;
   /** Platform D1 (installs metadata only; no customer data). */
   PLATFORM_DB: D1Database;
@@ -753,6 +759,9 @@ export default {
           remind: false,
         },
       );
+      // SS3: the waiting_cap re-enqueue, the stale-row sweep and the signup
+      // alerts; bounded, and never throws.
+      await signupTick(env, event.scheduledTime);
       await revokeTick(env, event.scheduledTime, { gates });
       // Own try: a sync run that aborts (D1, env) never fails the revoke tick.
       try {

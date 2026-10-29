@@ -1,6 +1,7 @@
 /**
- * Operator alerts by email (billing unreachable, email quota). An alert has a
- * key; it opens, reminds once a day while open, and clears. Each change of
+ * Operator alerts by email (billing unreachable, email quota, and the signup
+ * alerts: cap reached, failed, welcome unsent). An alert has a key; it opens,
+ * reminds once a day while open, and clears. Each change of
  * state is one log line, and each is one plain-text email to ALERT_TO through
  * the send_email binding ALERT_EMAIL:
  * - one when it opens,
@@ -16,8 +17,8 @@
  * failed send gives its claim back, so the next tick retries it.
  *
  * Emails carry a fixed subject per key and state and fixed text: no customer
- * data and no URLs. Logs carry the key and fixed categories only. Never
- * throws out of a tick.
+ * data and no URLs; the signup alerts' text adds counts and signup ids only.
+ * Logs carry the key and fixed categories only. Never throws out of a tick.
  */
 
 export interface AlertEnv {
@@ -220,4 +221,70 @@ export const emailQuotaAlert = (env: string): Alert => ({
     state === "clear"
       ? `The ${env} daily email sends are back under 80% of the account's sending limit (cleared at ${iso(at)}).\n`
       : `The ${env} daily email sends reached 80% or more of the account's Email Sending daily limit (alert opened at ${iso(at)}). Raise the limit or reduce sending. You will get one reminder a day while it stays high.\n`,
+});
+
+/** Signup facts for an alert's text: a count and some ids, never an email. */
+export interface SignupFacts {
+  count: number;
+  /** Signup ids (ULIDs), at most SIGNUP_IDS_SHOWN of them. */
+  ids: string[];
+}
+
+export const SIGNUP_IDS_SHOWN = 20;
+
+const signups = (n: number) => `${n} signup${n === 1 ? "" : "s"}`;
+const idLines = ({ count, ids }: SignupFacts) =>
+  ids.length === 0
+    ? ""
+    : `\n${ids.join("\n")}\n${count > ids.length ? `and ${count - ids.length} more\n` : ""}`;
+
+/** The day's SIGNUP_DAILY_CAP was reached: new signups wait for 00:00 UTC. */
+export const signupCapAlert = (
+  env: string,
+  facts: SignupFacts = { count: 0, ids: [] },
+): Alert => ({
+  key: "signup_cap",
+  subject: {
+    open: `Open Artifacts ${env}: signup cap reached`,
+    remind: `Open Artifacts ${env}: signup cap still reached`,
+    clear: `Open Artifacts ${env}: signup cap no longer reached`,
+  },
+  text: (state, at) =>
+    state === "clear"
+      ? `No ${env} signups are waiting for today's cap (cleared at ${iso(at)}).\n`
+      : `The ${env} daily signup cap was reached (alert opened at ${iso(at)}): ${signups(facts.count)} waiting. They are re-enqueued after 00:00 UTC, oldest first. A sudden rise can mean abuse or demand; raise SIGNUP_DAILY_CAP to admit more. This alert opens at most once a UTC day.\n${idLines(facts)}`,
+});
+
+/** A signup ended failed in the last 24 h. */
+export const signupFailedAlert = (
+  env: string,
+  facts: SignupFacts = { count: 0, ids: [] },
+): Alert => ({
+  key: "signup_failed",
+  subject: {
+    open: `Open Artifacts ${env}: signups failed`,
+    remind: `Open Artifacts ${env}: signups still failing`,
+    clear: `Open Artifacts ${env}: no failed signups`,
+  },
+  text: (state, at) =>
+    state === "clear"
+      ? `No ${env} signup has failed in the last 24 hours (cleared at ${iso(at)}).\n`
+      : `${signups(facts.count)} in ${env} failed in the last 24 hours (alert opened at ${iso(at)}). Each row's error column in platform D1 signups has its category.\n${idLines(facts)}`,
+});
+
+/** A welcome email was claimed over 10 minutes ago and never marked sent. */
+export const welcomeUnsentAlert = (
+  env: string,
+  facts: SignupFacts = { count: 0, ids: [] },
+): Alert => ({
+  key: "welcome_unsent",
+  subject: {
+    open: `Open Artifacts ${env}: welcome email unsent`,
+    remind: `Open Artifacts ${env}: welcome email still unsent`,
+    clear: `Open Artifacts ${env}: welcome emails sent`,
+  },
+  text: (state, at) =>
+    state === "clear"
+      ? `Every claimed ${env} welcome email is marked sent (cleared at ${iso(at)}).\n`
+      : `${signups(facts.count)} in ${env} claimed a welcome email over 10 minutes ago and never marked it sent (alert opened at ${iso(at)}). The welcome is sent at most once, so it is not retried: send it by hand, then set welcome_sent_at.\n${idLines(facts)}`,
 });

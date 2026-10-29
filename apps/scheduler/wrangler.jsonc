@@ -19,6 +19,12 @@
 // email through the send_email binding ALERT_EMAIL (Cloudflare Email
 // Service), from ALERT_FROM to ALERT_TO, both per-env placeholders filled at
 // deploy.
+// Signups (SS3, src/signups.ts): the */2 tick re-enqueues waiting_cap rows
+// and sweeps stale pending and queued rows onto oa-<p>-signups (the SIGNUPS
+// producer; messages are { signupId } only), looking queued rows up through
+// the provisioner's ProvisionInstall Workflow (PROVISION_INSTALL, script
+// oa-<p>-provisioner). SIGNUP_DAILY_CAP is the provisioner's placeholder, so
+// both Workers read one value.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "compatibility_date": "2026-10-01",
@@ -37,8 +43,20 @@
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app",
         "ALERT_TO": "{{OPS_ALERT_EMAIL_STAGING}}",
-        "ALERT_FROM": "{{OPS_ALERT_FROM_STAGING}}"
+        "ALERT_FROM": "{{OPS_ALERT_FROM_STAGING}}",
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}"
       },
+      "queues": {
+        "producers": [{ "binding": "SIGNUPS", "queue": "oa-s-signups" }]
+      },
+      "workflows": [
+        {
+          "name": "oa-s-provision-install",
+          "binding": "PROVISION_INSTALL",
+          "class_name": "ProvisionInstall",
+          "script_name": "oa-s-provisioner"
+        }
+      ],
       "send_email": [{ "name": "ALERT_EMAIL" }],
       // The BrokerGate and BillingGate stubs each install call carries (see
       // the gates); the */2 tick also checks BILLING /health directly.
@@ -72,8 +90,20 @@
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app",
         "ALERT_TO": "{{OPS_ALERT_EMAIL_PROD}}",
-        "ALERT_FROM": "{{OPS_ALERT_FROM_PROD}}"
+        "ALERT_FROM": "{{OPS_ALERT_FROM_PROD}}",
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}"
       },
+      "queues": {
+        "producers": [{ "binding": "SIGNUPS", "queue": "oa-p-signups" }]
+      },
+      "workflows": [
+        {
+          "name": "oa-p-provision-install",
+          "binding": "PROVISION_INSTALL",
+          "class_name": "ProvisionInstall",
+          "script_name": "oa-p-provisioner"
+        }
+      ],
       "send_email": [{ "name": "ALERT_EMAIL" }],
       // The BrokerGate and BillingGate stubs each install call carries (see
       // the gates); the */2 tick also checks BILLING /health directly.

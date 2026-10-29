@@ -586,6 +586,7 @@ describe("H-DV review fixes", () => {
     const f = fakes();
     const env = {
       ...f.env,
+      SIGNUP_DAILY_CAP: "20",
       PLATFORM_DB: new Proxy(db, {
         get(t, k) {
           if (k === "prepare")
@@ -603,11 +604,17 @@ describe("H-DV review fixes", () => {
         createExecutionContext(),
       ),
     ).resolves.toBeUndefined();
-    // The billing check and the quota alert retry before it and the sync
-    // run after it each fail on their own fixed line, never raw text.
+    // The billing check, the quota alert retry and the signups tick before
+    // it and the sync run after it each fail on their own fixed line, never
+    // raw text.
     expect(lines).toEqual([
       "billing-health db_error",
       "alert email_quota db_error",
+      "signups requeue failed",
+      "signups sweep failed",
+      "alert signup_cap db_error",
+      "alert signup_failed db_error",
+      "alert welcome_unsent db_error",
       "directory-revoke aborted exception",
       "directory-sync aborted exception",
     ]);
