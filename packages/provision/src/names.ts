@@ -22,6 +22,8 @@ export const RESERVED_SLUGS: readonly string[] = [
   "login",
   "sso",
   "directory",
+  // The billing Worker's public Stripe webhook (billing.<app-domain>).
+  "billing",
 ];
 
 export function isInstallId(s: string): s is InstallId {

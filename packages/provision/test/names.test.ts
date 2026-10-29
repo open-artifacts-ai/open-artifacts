@@ -125,6 +125,15 @@ describe("provision names", () => {
       contentHost: "finqore.content.test",
     });
   });
+  it("billing is a platform host on the app zone (SS1d): reserved", () => {
+    // SS4's sign-up name check reads the same RESERVED_SLUGS.
+    expect(namesModule.RESERVED_SLUGS).toContain("billing");
+    expect(() => hosts("billing", D)).toThrow(/slug/);
+    for (const env of ["staging", "prod"] as const)
+      expect(() => hosts("billing", namesModule.HOSTED_DOMAINS[env])).toThrow(
+        /slug/,
+      );
+  });
   it("refuses punycode and IDNA-reserved slugs (H-T4b L4)", () => {
     for (const s of ["xn--80ak6aa92e", "xn--a", "ab--c", "a1--", "zz--zz"])
       expect(() => hosts(s, D)).toThrow(/slug/);
