@@ -31,13 +31,16 @@ const err = (name: string, value: string) => {
 };
 
 describe("validators", () => {
-  it("the allowlist is exactly the six tunables", () => {
+  it("the allowlist is exactly the nine tunables", () => {
     expect(Object.keys(TUNABLES).sort()).toEqual([
       "ANON_WRITES_PER_MIN",
       "DATA_DAILY_WRITES",
       "DATA_DOC_BYTES",
       "EMBED_ALLOW_SAME_SITE",
       "EMBED_ORIGINS",
+      "FREE_DATA_DAILY_WRITES",
+      "FREE_DATA_DOCS",
+      "FREE_STORAGE_BYTES",
       "PUBLIC_HOME",
     ]);
   });
@@ -98,6 +101,19 @@ describe("validators", () => {
     for (const n of ["DATA_DOC_BYTES", "DATA_DAILY_WRITES"]) {
       expect(err(n, "262144")).toBeUndefined();
       for (const bad of ["0", "-3", "1.5", "x", "01x"])
+        expect(err(n, bad), `${n}=${bad}`).toMatch(new RegExp(n));
+    }
+  });
+
+  it("the free-plan caps: positive integers up to 2^53-1", () => {
+    for (const n of [
+      "FREE_STORAGE_BYTES",
+      "FREE_DATA_DOCS",
+      "FREE_DATA_DAILY_WRITES",
+    ]) {
+      for (const ok of ["1", String(2 ** 53 - 1)])
+        expect(err(n, ok), `${n}=${ok}`).toBeUndefined();
+      for (const bad of ["0", "-1", "1.5", String(2 ** 53)])
         expect(err(n, bad), `${n}=${bad}`).toMatch(new RegExp(n));
     }
   });

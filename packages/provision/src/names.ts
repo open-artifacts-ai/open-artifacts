@@ -55,6 +55,43 @@ export const HOSTED_DOMAINS: Readonly<
   }),
 });
 
+/** A trial's length from its start: the billing Worker and the backfill. */
+export const TRIAL_MS = 14 * 86_400_000;
+
+/**
+ * Platform-wide var defaults per env, rendered at create for a name the
+ * caller does not pass (a caller value wins; updateVars changes or clears
+ * them). An empty value is no default. The free-plan caps are off until
+ * their numbers are picked.
+ * Change a default only when no install is in `creating`: the defaults are
+ * part of create's inputs hash, so a resume would refuse.
+ */
+export const HOSTED_DEFAULT_VARS: Readonly<
+  Record<Env, Readonly<Record<string, string>>>
+> = Object.freeze({
+  staging: Object.freeze({
+    FREE_STORAGE_BYTES: "",
+    FREE_DATA_DOCS: "",
+    FREE_DATA_DAILY_WRITES: "",
+  }),
+  prod: Object.freeze({
+    FREE_STORAGE_BYTES: "",
+    FREE_DATA_DOCS: "",
+    FREE_DATA_DAILY_WRITES: "",
+  }),
+});
+
+/** The caller's vars plus each non-empty default it does not set. */
+export function withDefaultVars(
+  vars: Readonly<Record<string, string>>,
+  defaults: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const out = { ...vars };
+  for (const [k, v] of Object.entries(defaults))
+    if (v !== "" && !Object.hasOwn(out, k)) out[k] = v;
+  return out;
+}
+
 const APP_LABEL = /^[a-z0-9-]+$/;
 
 /**

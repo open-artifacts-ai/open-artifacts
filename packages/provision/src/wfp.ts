@@ -56,6 +56,7 @@ import {
   assertOwnResource,
   type Env,
   ForeignResource,
+  HOSTED_DEFAULT_VARS,
   HOSTED_DOMAINS,
   hosts,
   isInstallId,
@@ -67,6 +68,7 @@ import {
   registryDomains,
   registryEntry,
   registryKey,
+  withDefaultVars,
 } from "./names.js";
 import {
   canonicalJson,
@@ -178,6 +180,8 @@ export interface WfpOptions {
   fetch?: typeof fetch;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Test seam: the create defaults (HOSTED_DEFAULT_VARS[env] otherwise). */
+  defaultVars?: Readonly<Record<string, string>>;
   healthTimeoutMs?: number;
   /** Require /healthz to report installId (Task 6b, Backend). */
   requireInstallId?: boolean;
@@ -1221,7 +1225,11 @@ export class WfpProvisioner {
     if (i.resumeId !== undefined && !isInstallId(i.resumeId))
       throw new ProvisionRefused("resumeId is not an install id");
     const testHooks = i.testHooks === true;
-    const vars = i.vars ?? {};
+    // A caller value wins; a default is rendered and stored only at create.
+    const vars = withDefaultVars(
+      i.vars ?? {},
+      this.o.defaultVars ?? HOSTED_DEFAULT_VARS[this.env],
+    );
     this.brokerVars(vars);
     this.checkVariant(i, vars);
     this.checkEmailCodeDomain(vars, "providers");
