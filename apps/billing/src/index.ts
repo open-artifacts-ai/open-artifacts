@@ -160,7 +160,12 @@ async function usage(
 }
 
 /** Gate routes: method, path. /health takes no install. */
-const GATE = new Set(["GET /tier", "GET /health", "POST /trial/start", "POST /usage"]);
+const GATE = new Set([
+  "GET /tier",
+  "GET /health",
+  "POST /trial/start",
+  "POST /usage",
+]);
 
 export default {
   async fetch(req, env) {
@@ -191,7 +196,8 @@ export default {
     }
     const now = Date.now();
     try {
-      if (route === "GET /tier") return await tier(env.BILLING_DB, install, now);
+      if (route === "GET /tier")
+        return await tier(env.BILLING_DB, install, now);
       if (route === "POST /trial/start")
         return await trialStart(env.BILLING_DB, install, req, now);
       return await usage(env.BILLING_DB, install, req, now);

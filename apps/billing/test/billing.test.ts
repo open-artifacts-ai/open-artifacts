@@ -1,7 +1,15 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env as testEnv } from "cloudflare:workers";
 import type { D1Migration } from "@cloudflare/vitest-plugin";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import billing, { type Env, MAX_CREATORS, TRIAL_MS } from "../src/index.js";
 
 // The tier store's routes. Gate routes answer only over a binding (no
@@ -93,11 +101,7 @@ function gated(
 }
 
 const call = (req: Request) =>
-  billing.fetch(
-    req as Parameters<typeof billing.fetch>[0],
-    env,
-    {} as ExecutionContext,
-  );
+  billing.fetch(req as Parameters<typeof billing.fetch>[0], env);
 
 const at = () => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -112,10 +116,17 @@ describe("gate routes answer only over a binding", () => {
       ["GET", "/tier", undefined],
       ["GET", "/health", undefined],
       ["POST", "/trial/start", { install: A }],
-      ["POST", "/usage", { install: A, month: "2026-10", creators: [], count: 0 }],
+      [
+        "POST",
+        "/usage",
+        { install: A, month: "2026-10", creators: [], count: 0 },
+      ],
     ] as [string, string, unknown][]) {
       const r = await call(
-        gated(m, p, b, { "x-oa-gate-install": A, "cf-connecting-ip": "1.2.3.4" }),
+        gated(m, p, b, {
+          "x-oa-gate-install": A,
+          "cf-connecting-ip": "1.2.3.4",
+        }),
       );
       expect(r.status).toBe(404);
       expect(await r.text()).toBe("Not found");
@@ -125,7 +136,10 @@ describe("gate routes answer only over a binding", () => {
   });
 
   it("/health over a binding is ok, with or without an install header", async () => {
-    for (const h of [{}, { "x-oa-gate-install": A }]) {
+    for (const h of [{}, { "x-oa-gate-install": A }] as Record<
+      string,
+      string
+    >[]) {
       const r = await call(gated("GET", "/health", undefined, h));
       expect(r.status).toBe(200);
       expect(await r.json()).toEqual({ ok: true });
@@ -133,8 +147,13 @@ describe("gate routes answer only over a binding", () => {
   });
 
   it("the Stripe webhook is public and not implemented yet", async () => {
-    for (const h of [{ "cf-connecting-ip": "1.2.3.4" }, {}]) {
-      const r = await call(gated("POST", "/stripe/webhook", { id: "evt_1" }, h));
+    for (const h of [{ "cf-connecting-ip": "1.2.3.4" }, {}] as Record<
+      string,
+      string
+    >[]) {
+      const r = await call(
+        gated("POST", "/stripe/webhook", { id: "evt_1" }, h),
+      );
       expect(r.status).toBe(501);
       expect(await r.json()).toEqual({ error: "not_implemented" });
     }
@@ -171,7 +190,7 @@ describe("the install id comes only from x-oa-gate-install", () => {
       { "x-oa-gate-install": A.toUpperCase() },
       { "x-oa-gate-install": `${A}x` },
       { "x-oa-gate-install": "../iabc123def4" },
-    ]) {
+    ] as Record<string, string>[]) {
       const r = await call(gated("GET", "/tier", undefined, h));
       expect(r.status).toBe(404);
     }
@@ -194,7 +213,12 @@ describe("the install id comes only from x-oa-gate-install", () => {
     const t = await call(gated("POST", "/trial/start", { install: B }));
     expect(t.status).toBe(403);
     const u = await call(
-      gated("POST", "/usage", { install: B, month: "2026-10", creators: ["c1"], count: 1 }),
+      gated("POST", "/usage", {
+        install: B,
+        month: "2026-10",
+        creators: ["c1"],
+        count: 1,
+      }),
     );
     expect(u.status).toBe(403);
     expect(await rowOf(B)).toMatchObject({ tier: "team", version: 1 });
@@ -270,10 +294,16 @@ describe("POST /trial/start", () => {
   });
 
   it("never twice: back on free after a trial, it doesn't start again", async () => {
-    await seed([{ install: A, tier: "free", trialEndsAt: NOW - 1, version: 7 }]);
+    await seed([
+      { install: A, tier: "free", trialEndsAt: NOW - 1, version: 7 },
+    ]);
     const r = await call(gated("POST", "/trial/start", { install: A }));
     expect(r.status).toBe(200);
-    expect(await r.json()).toMatchObject({ tier: "free", version: 7, trialEndsAt: NOW - 1 });
+    expect(await r.json()).toMatchObject({
+      tier: "free",
+      version: 7,
+      trialEndsAt: NOW - 1,
+    });
   });
 
   it("any other state: 200 with the unchanged row", async () => {
@@ -361,11 +391,23 @@ describe("POST /usage", () => {
     const many = Array.from({ length: MAX_CREATORS + 1 }, (_, i) => `c${i}`);
     const fits = many.slice(0, MAX_CREATORS);
     expect(
-      (await call(gated("POST", "/usage", { ...ok, creators: fits, count: fits.length })))
-        .status,
+      (
+        await call(
+          gated("POST", "/usage", {
+            ...ok,
+            creators: fits,
+            count: fits.length,
+          }),
+        )
+      ).status,
     ).toBe(200);
     const r = await call(
-      gated("POST", "/usage", { ...ok, month: "2026-09", creators: many, count: many.length }),
+      gated("POST", "/usage", {
+        ...ok,
+        month: "2026-09",
+        creators: many,
+        count: many.length,
+      }),
     );
     expect(r.status).toBe(400);
     expect(await r.json()).toEqual({ error: "bad_creators" });
@@ -414,7 +456,12 @@ describe("logs", () => {
     await call(gated("GET", "/tier"));
     await call(gated("POST", "/trial/start", { install: A, secret: "s3cret" }));
     await call(
-      gated("POST", "/usage", { install: A, month: "2026-10", creators: ["creator-x"], count: 1 }),
+      gated("POST", "/usage", {
+        install: A,
+        month: "2026-10",
+        creators: ["creator-x"],
+        count: 1,
+      }),
     );
     expect(lines).toEqual([
       `billing tier row ${A}`,
@@ -438,7 +485,6 @@ describe("logs", () => {
     const r = await billing.fetch(
       gated("GET", "/tier") as Parameters<typeof billing.fetch>[0],
       broken,
-      {} as ExecutionContext,
     );
     expect(r.status).toBe(503);
     expect(lines).toEqual([`billing db_error ${A}`]);

@@ -62,7 +62,10 @@ const refuse = (status: number, error: GateRefusal) =>
   Response.json({ error }, { status, headers: { [GATE_HEADER]: "1" } });
 
 /** The body as text, or null when it is larger than `max` bytes. */
-export async function boundedText(req: Request, max: number): Promise<string | null> {
+export async function boundedText(
+  req: Request,
+  max: number,
+): Promise<string | null> {
   const declared = req.headers.get("content-length");
   if (declared !== null && !(Number(declared) <= max)) {
     await req.body?.cancel();

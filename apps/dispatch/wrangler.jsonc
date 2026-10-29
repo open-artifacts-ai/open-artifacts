@@ -25,11 +25,13 @@
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },
-      // Installs reach the brokers only through BrokerGate stubs built on
-      // these (a same-zone fetch to a broker Route fails; see the gate).
+      // Installs reach the brokers and billing only through BrokerGate and
+      // BillingGate stubs built on these (a same-zone fetch to a broker Route
+      // fails; see the gates).
       "services": [
         { "binding": "AUTH_BROKER", "service": "oa-s-auth-broker" },
-        { "binding": "DIRECTORY_BROKER", "service": "oa-s-directory-broker" }
+        { "binding": "DIRECTORY_BROKER", "service": "oa-s-directory-broker" },
+        { "binding": "BILLING", "service": "oa-s-billing" }
       ],
       "observability": { "enabled": false },
       "dispatch_namespaces": [
@@ -47,11 +49,13 @@
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
       },
-      // Installs reach the brokers only through BrokerGate stubs built on
-      // these (a same-zone fetch to a broker Route fails; see the gate).
+      // Installs reach the brokers and billing only through BrokerGate and
+      // BillingGate stubs built on these (a same-zone fetch to a broker Route
+      // fails; see the gates).
       "services": [
         { "binding": "AUTH_BROKER", "service": "oa-p-auth-broker" },
-        { "binding": "DIRECTORY_BROKER", "service": "oa-p-directory-broker" }
+        { "binding": "DIRECTORY_BROKER", "service": "oa-p-directory-broker" },
+        { "binding": "BILLING", "service": "oa-p-billing" }
       ],
       "observability": { "enabled": false },
       "dispatch_namespaces": [

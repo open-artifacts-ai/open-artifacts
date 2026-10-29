@@ -10,6 +10,7 @@
 # Usage: [DEPLOY_TAG=vX.Y.Z] <PLACEHOLDER VARS> scripts/ops/deploy-platform-worker.sh <app> staging|prod
 #   auth-broker: BROKER_REGISTRY_ID=<32 hex> [GOOGLE_CLIENT_ID_PROD=<client id>, prod]
 #   directory-broker: DIRECTORY_REGISTRY_ID=<32 hex> [GOOGLE_DIRECTORY_CLIENT_ID_PROD=<client id>, prod]
+#   billing: BILLING_DB_ID=<D1 uuid>
 #   dispatch: HOSTS_KV_ID=<32 hex>
 #   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
 #              ALERT_TO=<address> ALERT_FROM=<address> SIGNUP_DAILY_CAP=<1-9999>
@@ -79,6 +80,7 @@ case "$app" in
   inventory) dir=apps/inventory ;;
   provisioner) dir=apps/provisioner ;;
   provisioning) dir=apps/provisioning ;;
+  billing) dir=apps/billing ;;
   *)
     echo "unknown app: not in the allowlist" >&2
     exit 2
@@ -117,6 +119,10 @@ case "$app" in
     if [ "$env" = prod ] && [ -n "${GOOGLE_DIRECTORY_CLIENT_ID_PROD:-}" ]; then
       fill GOOGLE_DIRECTORY_CLIENT_ID_PROD "$GOOGLE_DIRECTORY_CLIENT_ID_PROD" "$google_id"
     fi
+    ;;
+  billing)
+    # The id of this env's D1 oa-<p>-billing.
+    fill "BILLING_DB_ID_${up}" "${BILLING_DB_ID:-}" "$uuid"
     ;;
   dispatch)
     fill "HOSTS_KV_ID_${up}" "${HOSTS_KV_ID:-}" "$hex32"
