@@ -1,6 +1,8 @@
 // The hosted-ops workflow's input validator (OPS-B). Workflow inputs reach
 // this file only through env (OPS_ENV, OPS_OP, OPS_INSTALL, OPS_TAG,
-// OPS_ARGS, OPS_CONFIRM), never through shell text. It checks them against an
+// OPS_ARGS, OPS_CONFIRM, and OPS_OWNER for create), never through shell text.
+// The repo is public and so are a run's inputs: create's owner email comes
+// from the CREATE_OWNER_EMAIL Environment secret (OPS_OWNER), never from args. It checks them against an
 // allowlist of operations and a per-op schema, and prints the oa:hosted argv
 // as one JSON array of strings: the workflow passes those as separate argv
 // entries, so no value is ever parsed by a shell.
@@ -68,7 +70,7 @@ const NEEDS_CONFIRM: readonly Op[] = ["delete", "release-lease"];
 
 /** The keys each op's `args` may hold. */
 export const ARG_KEYS: Record<Op, readonly string[]> = {
-  create: ["slug", "owner", "to", "var", "testHooks"],
+  create: ["slug", "to", "var", "testHooks"],
   upgrade: [],
   rollback: [],
   "update-vars": ["var"],
@@ -91,6 +93,8 @@ export interface Inputs {
   tag: string;
   args: string;
   confirm: string;
+  /** create only: the owner email, from the CREATE_OWNER_EMAIL secret. */
+  owner?: string;
 }
 
 export interface Plan {
@@ -244,8 +248,9 @@ export function plan(i: Inputs, floorFile?: string): Plan {
       } catch {
         refuse("args.slug is not a valid install slug");
       }
-      const owner = plain(a.owner, "args.owner", 320);
-      if (normOwnerEmail(owner) === null) refuse("args.owner is not an email");
+      const owner = plain(i.owner, "CREATE_OWNER_EMAIL", 320);
+      if (normOwnerEmail(owner) === null)
+        refuse("CREATE_OWNER_EMAIL is not an email");
       if (a.to !== undefined) {
         const to = plain(a.to, "args.to", 32);
         if (!isReleaseVersion(to)) refuse("args.to is not a release version");
@@ -331,6 +336,7 @@ export function run(
         tag: env.OPS_TAG ?? "",
         args: env.OPS_ARGS ?? "",
         confirm: env.OPS_CONFIRM ?? "",
+        owner: env.OPS_OWNER ?? "",
       },
       env.OPS_FLOOR_FILE,
     );

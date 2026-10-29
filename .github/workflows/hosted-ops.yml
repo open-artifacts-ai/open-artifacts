@@ -43,7 +43,7 @@ on:
         default: ""
         type: string
       args:
-        description: 'JSON per op, e.g. create {"slug":"x","owner":"a@b.co","var":["AUTH_PROVIDERS=email"]}, update-vars {"var":[...]}'
+        description: 'JSON per op, e.g. create {"slug":"x","var":["AUTH_PROVIDERS=email"]}, update-vars {"var":[...]}. Inputs are public: create takes its owner email from the CREATE_OWNER_EMAIL secret'
         required: false
         default: "{}"
         type: string
@@ -93,6 +93,8 @@ jobs:
           OPS_TAG: ${{ inputs.tag }}
           OPS_ARGS: ${{ inputs.args }}
           OPS_CONFIRM: ${{ inputs.confirm }}
+          # Never an input (inputs are public): the Environment secret, create only.
+          OPS_OWNER: ${{ inputs.op == 'create' && secrets.CREATE_OWNER_EMAIL || '' }}
           OPS_FLOOR_FILE: ${{ runner.temp }}/hosted-ops-floor.sig.json
         run: |
           set -euo pipefail

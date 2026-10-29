@@ -39,11 +39,17 @@ const refused = (o: Partial<Inputs>, re?: RegExp, floor?: string) => {
   expect(e, JSON.stringify(o)).toBeInstanceOf(ArgsRefused);
   if (re) expect((e as Error).message, JSON.stringify(o)).toMatch(re);
 };
-const CREATE = (args: Record<string, unknown> = {}): Partial<Inputs> => ({
+// The owner email is never an input (run inputs are public): it comes from
+// the CREATE_OWNER_EMAIL secret as OPS_OWNER.
+const CREATE = (
+  args: Record<string, unknown> = {},
+  owner: unknown = "ops@finqore.test",
+): Partial<Inputs> => ({
   op: "create",
   install: "",
   tag: "v0.74.1",
-  args: JSON.stringify({ slug: "finqore", owner: "ops@finqore.test", ...args }),
+  args: JSON.stringify({ slug: "finqore", ...args }),
+  owner: owner as string,
 });
 
 const INJECT = [
@@ -248,8 +254,9 @@ describe("args: JSON against each op's schema", () => {
     ])
       refused(CREATE({ slug }));
     for (const owner of ["nope", "", 7, "a b@c.co", ...INJECT])
-      refused(CREATE({ owner }));
-    refused({ ...CREATE(), args: '{"slug":"finqore"}' }, /args.owner/);
+      refused(CREATE({}, owner), /CREATE_OWNER_EMAIL|owner must be a string/);
+    // An owner in the public args is refused outright.
+    refused(CREATE({ owner: "ops@finqore.test" }));
   });
 
   it("var entries: K=V with only the var names the CLI accepts", () => {
@@ -417,7 +424,7 @@ describe("args: JSON against each op's schema", () => {
     for (const s of INJECT) {
       for (const o of [
         CREATE({ slug: s }),
-        CREATE({ owner: s }),
+        CREATE({}, s),
         CREATE({ to: s }),
         CREATE({ var: [`FEATURES=${s}`] }),
         {

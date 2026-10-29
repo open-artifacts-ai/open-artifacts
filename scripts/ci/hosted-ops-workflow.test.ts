@@ -100,6 +100,9 @@ describe("hosted-ops.yml", () => {
       OPS_TAG: "${{ inputs.tag }}",
       OPS_ARGS: "${{ inputs.args }}",
       OPS_CONFIRM: "${{ inputs.confirm }}",
+      // Not an input: inputs are public, so create's owner email is a secret.
+      OPS_OWNER:
+        "${{ inputs.op == 'create' && secrets.CREATE_OWNER_EMAIL || '' }}",
       OPS_FLOOR_FILE: "${{ runner.temp }}/hosted-ops-floor.sig.json",
     });
     expect(named("Check the inputs").run).toContain(
@@ -114,7 +117,18 @@ describe("hosted-ops.yml", () => {
     const withSecrets = steps.filter((s) =>
       JSON.stringify(s).includes("secrets."),
     );
-    expect(withSecrets.map((s) => s.name)).toEqual(["Write the token files"]);
+    expect(withSecrets.map((s) => s.name)).toEqual([
+      "Check the inputs",
+      "Write the token files",
+    ]);
+    // The input check sees one secret, create's owner email, and no token.
+    const check = JSON.stringify(named("Check the inputs"));
+    expect(check.match(/secrets\.[A-Z_]+/g)).toEqual([
+      "secrets.CREATE_OWNER_EMAIL",
+    ]);
+    expect(JSON.stringify(w.on.workflow_dispatch.inputs)).not.toMatch(
+      /owner"?\s*:/,
+    );
     const s = named("Write the token files");
     expect(s.env).toEqual({
       PROVISION_TOKEN: "${{ secrets.PROVISION_TOKEN }}",
