@@ -121,11 +121,11 @@ describe("0007_signups", () => {
         }[]
       ).map((c) => [c.name, c.notnull, c.pk]);
     expect(cols("signups")).toEqual([
-      ["signup_id", 0, 1],
+      ["signup_id", 1, 1],
       ["owner_sub", 1, 0],
       ["slug", 1, 0],
       ["install_id", 0, 0],
-      ["status", 0, 0],
+      ["status", 1, 0],
       ["welcome_claimed_at", 0, 0],
       ["welcome_sent_at", 0, 0],
       ["error", 0, 0],
@@ -133,7 +133,7 @@ describe("0007_signups", () => {
       ["updated_at", 1, 0],
     ]);
     expect(cols("signup_secret")).toEqual([
-      ["signup_id", 0, 1],
+      ["signup_id", 1, 1],
       ["owner_email", 1, 0],
     ]);
     const idx = db
@@ -142,6 +142,23 @@ describe("0007_signups", () => {
       )
       .all();
     expect(JSON.stringify(idx)).toMatch(/signups_created_at/);
+    // A TEXT primary key accepts NULL in SQLite unless NOT NULL; a NULL
+    // status would slip past the CHECK. Both are refused.
+    const raw = (id: string | null, st: string | null) =>
+      db
+        .prepare(
+          "INSERT INTO signups (signup_id, owner_sub, slug, status, created_at, updated_at) VALUES (?, 's', 'n', ?, 1, 1)",
+        )
+        .run(id, st);
+    expect(() => raw(null, "queued")).toThrow(/NOT NULL/);
+    expect(() => raw("01NULLSTATUS", null)).toThrow(/NOT NULL/);
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO signup_secret (signup_id, owner_email) VALUES (NULL, 'a@b.c')",
+        )
+        .run(),
+    ).toThrow(/NOT NULL/);
     const ins = (id: string, inst: string | null, st: string) =>
       db
         .prepare(

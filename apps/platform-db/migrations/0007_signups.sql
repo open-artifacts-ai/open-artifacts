@@ -6,11 +6,11 @@
 -- removed after the welcome is sent.
 -- Additive only. Re-runnable (IF NOT EXISTS).
 CREATE TABLE IF NOT EXISTS signups (
-  signup_id TEXT PRIMARY KEY,
+  signup_id TEXT NOT NULL PRIMARY KEY,
   owner_sub TEXT NOT NULL,
   slug TEXT NOT NULL,
   install_id TEXT UNIQUE,
-  status TEXT CHECK (status IN ('queued','waiting_cap','creating','ready','failed')),
+  status TEXT NOT NULL CHECK (status IN ('queued','waiting_cap','creating','ready','failed')),
   welcome_claimed_at INTEGER,
   welcome_sent_at INTEGER,
   error TEXT,
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS signups (
   updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS signup_secret (
-  signup_id TEXT PRIMARY KEY,
+  signup_id TEXT NOT NULL PRIMARY KEY,
   owner_email TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS signups_created_at ON signups (created_at);

@@ -111,8 +111,8 @@
 - Test: `packages/provision/test/platform-migrations.test.ts`
 
 The schema is the spec's, verbatim:
-- `signups(signup_id TEXT PK, owner_sub TEXT NOT NULL, slug TEXT NOT NULL, install_id TEXT UNIQUE, status TEXT CHECK (status IN ('queued','waiting_cap','creating','ready','failed')), welcome_claimed_at INTEGER, welcome_sent_at INTEGER, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`;
-- `signup_secret(signup_id TEXT PRIMARY KEY, owner_email TEXT NOT NULL)`;
+- `signups(signup_id TEXT NOT NULL PK, owner_sub TEXT NOT NULL, slug TEXT NOT NULL, install_id TEXT UNIQUE, status TEXT NOT NULL CHECK (status IN ('queued','waiting_cap','creating','ready','failed')), welcome_claimed_at INTEGER, welcome_sent_at INTEGER, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`;
+- `signup_secret(signup_id TEXT NOT NULL PRIMARY KEY, owner_email TEXT NOT NULL)`;
 - an index on `signups(created_at)`.
 - Everything uses `CREATE ... IF NOT EXISTS`. The migration is additive only.
 

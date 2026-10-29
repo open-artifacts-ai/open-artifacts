@@ -139,11 +139,11 @@ refuses anything else to the DLQ (with the `signupId` only).
 ### Idempotency
 
 - Platform D1 migration `0007_signups.sql` (additive; 0006 is SS1's):
-  `signups(signup_id TEXT PK, owner_sub TEXT NOT NULL, slug TEXT NOT NULL,
-  install_id TEXT UNIQUE, status TEXT CHECK (status IN
+  `signups(signup_id TEXT NOT NULL PK, owner_sub TEXT NOT NULL, slug TEXT NOT NULL,
+  install_id TEXT UNIQUE, status TEXT NOT NULL CHECK (status IN
   ('queued','waiting_cap','creating','ready','failed')), welcome_claimed_at INTEGER,
   welcome_sent_at INTEGER, error TEXT, created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL)`, and `signup_secret(signup_id TEXT PK,
+  updated_at INTEGER NOT NULL)`, and `signup_secret(signup_id TEXT NOT NULL PK,
   owner_email TEXT NOT NULL)`. Workflows keeps instance params for up to 30
   days, so the email is never a param: the consumer writes it to
   `signup_secret`, the create step reads it, and `done` deletes the row. The
