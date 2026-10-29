@@ -21,7 +21,9 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import {
   decorates,
+  lastPublisherSql,
   redact,
+  shownLastAgent,
   spaceCols,
   toSummary,
   withSpace,
@@ -524,6 +526,7 @@ export function searchQuery(
     .select({
       a: artifacts,
       ownerEmail: users.email,
+      lastPub: lastPublisherSql,
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller),
@@ -600,6 +603,7 @@ export async function search(
         ),
         level,
       );
+      out.lastAgent = shownLastAgent(out.lastAgent, r.lastPub, caller);
       return [
         {
           ...(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out),

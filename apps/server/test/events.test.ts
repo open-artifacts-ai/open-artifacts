@@ -27,9 +27,17 @@ let owner: U;
 let viewer: U;
 let guest: U;
 
-async function mk(prefix: string, role: Member["role"]): Promise<U> {
+async function mk(
+  prefix: string,
+  role: Member["role"],
+  displayName?: string,
+): Promise<U> {
   const email = `${prefix}-${tag}@x.com`;
   const l = await login(email, role);
+  if (displayName)
+    await env.DB.prepare("update users set display_name = ? where id = ?")
+      .bind(displayName, l.userId)
+      .run();
   const m = await getUser(env, l.userId);
   if (!m) throw new Error("no user");
   return { ...l, member: m, email };
@@ -107,8 +115,8 @@ async function sock(
   return s;
 }
 
-/** The version row's user attribution (name, else email). */
-const ownerName = () => owner.member.name ?? owner.email;
+/** The version's user attribution: the real name, never the email. */
+const ownerName = () => "Evie Owner";
 
 const restPublish = async (id: string, u: U, content: string) => {
   const r = await api(app, R.versions(id), u.cookie, {
@@ -120,7 +128,7 @@ const restPublish = async (id: string, u: U, content: string) => {
 };
 
 beforeAll(async () => {
-  owner = await mk("ev-owner", "member");
+  owner = await mk("ev-owner", "member", "Evie Owner");
   viewer = await mk("ev-viewer", "member");
   guest = await mk("ev-guest", "guest");
 });
@@ -190,19 +198,77 @@ describe("events socket", () => {
     g.ws.close();
   });
 
+  it('a member with no real name shows as "Member", never the email', async () => {
+    const n = await mk("ev-nameless", "member");
+    const id = (
+      await publish(
+        env,
+        n.member,
+        {
+          title: "nn",
+          format: "html",
+          content: "<p>1</p>",
+          visibility: "team",
+        } as never,
+        null,
+        undefined,
+        "create",
+      )
+    ).id;
+    const s = await sock(id, viewer);
+    await s.next();
+    await restPublish(id, n, "<p>2</p>");
+    const f = await s.next();
+    expect(f).toMatchObject({ by: { kind: "user", name: "Member" } });
+    expect(JSON.stringify(f)).not.toContain(n.email);
+    expect(JSON.stringify(f)).not.toContain("ev-nameless");
+    s.ws.close();
+  });
+
+  it('a PAT publish by an owner with no real name: "Member\'s agent"', async () => {
+    const n = await mk("ev-nameless2", "member");
+    const pat = (await createPat(env, n.userId, "label-9q2x private")).token;
+    const r = await api(app, R.artifacts, pat, {
+      method: "POST",
+      body: {
+        title: "nn",
+        format: "html",
+        content: "<p>1</p>",
+        visibility: "team",
+      },
+    });
+    expect(r.status).toBe(201);
+    const { id } = (await r.json()) as { id: string };
+    const s = await sock(id, viewer);
+    await s.next();
+    const r2 = await api(app, R.versions(id), pat, {
+      method: "POST",
+      body: { format: "html", content: "<p>2</p>" },
+    });
+    expect(r2.status).toBe(201);
+    const f = await s.next();
+    expect(f).toMatchObject({ by: { kind: "agent", name: "Member's agent" } });
+    expect(JSON.stringify(f)).not.toContain(n.email);
+    expect(JSON.stringify(f)).not.toContain("9q2x");
+    s.ws.close();
+  });
+
   describe("MCP", () => {
     let client: Awaited<ReturnType<typeof connect>>;
     beforeAll(async () => {
-      client = await connect((await createPat(env, owner.userId, "ev")).token, {
-        clientInfo: { name: "ev-agent", version: "1.0.0" },
-      });
+      client = await connect(
+        (await createPat(env, owner.userId, "label-9q2x private")).token,
+        { clientInfo: { name: "ev-agent", version: "1.0.0" } },
+      );
     });
     afterAll(() => client.close());
 
     it("an MCP publish and restore send version events (agent, restoredFrom)", async () => {
       const id = await pub({ visibility: "public" });
+      const o = await sock(id, owner);
       const m = await sock(id, viewer);
       const a = await sock(id, null);
+      await o.next();
       await m.next();
       await a.next();
       const r = await tool(client, "publish_artifact", {
@@ -211,10 +277,16 @@ describe("events socket", () => {
         content: "<p>2</p>",
       });
       expect(r.isError).toBeFalsy();
+      // The token label is the owner's private note: only the owner sees it.
+      expect(await o.next()).toMatchObject({
+        type: "version",
+        version: 2,
+        by: { kind: "agent", name: "label-9q2x private" },
+      });
       expect(await m.next()).toMatchObject({
         type: "version",
         version: 2,
-        by: { kind: "agent", name: "ev" },
+        by: { kind: "agent", name: "Evie Owner's agent" },
       });
       expect(await a.next()).toMatchObject({
         type: "version",
@@ -225,15 +297,82 @@ describe("events socket", () => {
 
       const rr = await tool(client, "restore_version", { id, version: 1 });
       expect(rr.isError).toBeFalsy();
+      expect(await o.next()).toMatchObject({
+        version: 3,
+        restoredFrom: 1,
+        by: { kind: "agent", name: "label-9q2x private" },
+      });
       expect(await m.next()).toMatchObject({
         type: "version",
         version: 3,
         restoredFrom: 1,
-        by: { kind: "agent", name: "ev" },
+        by: { kind: "agent", name: "Evie Owner's agent" },
       });
       expect(await a.next()).toMatchObject({ version: 3, restoredFrom: 1 });
+      for (const f of [...m.frames, ...a.frames])
+        expect(JSON.stringify(f)).not.toContain("9q2x");
+      o.ws.close();
       m.ws.close();
       a.ws.close();
+    });
+
+    it("a PAT publish: guest, anonymous and embed sockets get { kind } only; no non-owner frame has the label", async () => {
+      const id = await pub({ visibility: "public" });
+      const socks = {
+        owner: await sock(id, owner),
+        member: await sock(id, viewer),
+        guest: await sock(id, guest),
+        anon: await sock(id, null),
+        embed: await sock(id, owner, {}, `${R.events(id)}?embed=1`),
+      };
+      for (const s of Object.values(socks)) await s.next();
+      const r = await tool(client, "publish_artifact", {
+        id,
+        format: "html",
+        content: "<p>2</p>",
+      });
+      expect(r.isError).toBeFalsy();
+      const f = Object.fromEntries(
+        await Promise.all(
+          Object.entries(socks).map(async ([k, s]) => [k, await s.next()]),
+        ),
+      ) as Record<keyof typeof socks, ArtifactEvent>;
+      expect(f.owner).toMatchObject({
+        by: { kind: "agent", name: "label-9q2x private" },
+      });
+      expect(f.member).toMatchObject({
+        by: { kind: "agent", name: "Evie Owner's agent" },
+      });
+      for (const k of ["guest", "anon", "embed"] as const)
+        expect((f[k] as { by: unknown }).by).toEqual({ kind: "agent" });
+      for (const k of ["member", "guest", "anon", "embed"] as const)
+        expect(JSON.stringify(f[k])).not.toContain("9q2x");
+      for (const s of Object.values(socks)) s.ws.close();
+    });
+
+    it("a grant publish shows the client name to every named socket", async () => {
+      const id = await pub({ visibility: "public" });
+      const o = await sock(id, owner);
+      const m = await sock(id, viewer);
+      await o.next();
+      await m.next();
+      await publish(
+        env,
+        owner.member,
+        { id, format: "html", content: "<p>2</p>" } as never,
+        {
+          name: "Claude Code",
+          version: "2.1",
+          via: { kind: "grant", id: newId() },
+        },
+        undefined,
+        "version",
+      );
+      const by = { kind: "agent", name: "Claude Code" };
+      expect(await o.next()).toMatchObject({ by });
+      expect(await m.next()).toMatchObject({ by });
+      o.ws.close();
+      m.ws.close();
     });
   });
 

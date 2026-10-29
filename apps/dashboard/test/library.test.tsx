@@ -130,6 +130,44 @@ describe("Library", () => {
     expect(opts).toContain("Beta");
   });
 
+  it("a masked agent (another member's token) gets no chip; a client's chip still filters", async () => {
+    const masked = {
+      ...arts[0],
+      lastAgent: { name: "Olive Owner's agent", version: null, masked: true },
+    };
+    const client = {
+      ...arts[1],
+      id: "x2",
+      lastAgent: { name: "Claude Code", version: "2.1" },
+    };
+    server.use(
+      http.get("*/api/v1/artifacts", ({ request }) => {
+        const ag = new URL(request.url).searchParams.get("agent");
+        const all = [masked, client] as ArtifactSummary[];
+        return page(
+          all.filter((a) => !ag || a.lastAgent?.name === ag),
+          null,
+        );
+      }),
+    );
+    mount("/");
+    await link(masked.title as string);
+    fireEvent.click(screen.getByRole("combobox", { name: "Agent" }));
+    const opts = (await screen.findAllByRole("option")).map(
+      (o) => o.textContent,
+    );
+    expect(opts).toContain("Claude Code");
+    expect(opts).not.toContain("Olive Owner's agent");
+    fireEvent.click(await screen.findByRole("option", { name: "Claude Code" }));
+    // The mock filters by ?agent=, so the masked artifact drops out.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("link", { name: masked.title as string }),
+      ).toBeNull(),
+    );
+    expect(await link(client.title as string)).toBeInTheDocument();
+  });
+
   it("drops artifacts repeated across pages", async () => {
     const a = arts[0] as ArtifactSummary;
     let second = 0;

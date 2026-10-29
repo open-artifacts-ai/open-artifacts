@@ -27,7 +27,14 @@ import { getDb } from "../db/client.js";
 import { artifacts, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { decodeCursor, encodeCursor, redact, toSummary } from "./artifacts.js";
+import {
+  decodeCursor,
+  encodeCursor,
+  lastPublisherSql,
+  redact,
+  shownLastAgent,
+  toSummary,
+} from "./artifacts.js";
 import { spacesOn } from "./spaces.js";
 
 const DAY = 86_400_000;
@@ -114,6 +121,7 @@ export async function listTrash(
     .select({
       a: artifacts,
       ownerEmail: users.email,
+      lastPub: lastPublisherSql,
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       kind: spaces.kind,
@@ -144,6 +152,7 @@ export async function listTrash(
       ),
       level,
     );
+    s.lastAgent = shownLastAgent(s.lastAgent, r.lastPub, c);
     return {
       ...s,
       deletedAt: iso(deletedAt),

@@ -51,6 +51,12 @@ import { ApiError, appOrigin } from "../http/errors.js";
 import { logError, logInfo, logWarn } from "../log.js";
 import { runtimeStub, type VersionEvent } from "../runtime/do.js";
 import { closeRuntimeSockets } from "../runtime/revoke.js";
+import {
+  agentFor,
+  isPrivateAgent,
+  ownersAgent,
+  shownName,
+} from "./agent-display.js";
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { audit, userActor } from "./audit.js";
 import { type ManifestEntry, materialize, planFiles } from "./manifest.js";
@@ -58,7 +64,7 @@ import { getSettings } from "./members.js";
 import { ftsFilter, seedSearchStmt, syncTitleStmt } from "./search.js";
 import { requireSpaces } from "./spaces.js";
 import { serverThumbnails, writeThumbnail } from "./thumbs.js";
-import { toUserRef } from "./users.js";
+import { effectiveName, toUserRef } from "./users.js";
 
 type Ctx = Pick<ExecutionContext, "waitUntil">;
 const CAPS = { db: false, viewer: false, storage: false };
@@ -108,18 +114,29 @@ export async function enqueueIndex(
   }
 }
 
-/** The R.events `version` attribution, from what the version row stores. */
+/**
+ * The R.events `version` attribution, from what the version row stores.
+ * Named sockets get `by.name`: the person's public name ("Member" without a
+ * real one, never the email), or the agent's name. A private token label
+ * (isPrivateAgent) goes only to the publisher's own sockets (`owner`);
+ * everyone else gets "<publisher>'s agent".
+ */
 export function versionEvent(
   user: Member,
-  agent: AgentRef | null,
+  agent: AgentAttr | null,
   at: number,
   restoredFrom?: number,
 ): VersionEvent {
+  const hidden =
+    agent !== null && isPrivateAgent(agent.via ? viaKey(agent.via) : null);
   return {
     at: new Date(at).toISOString(),
     by: agent
-      ? { kind: "agent", name: agent.name }
-      : { kind: "user", name: user.name ?? user.email },
+      ? { kind: "agent", name: hidden ? ownersAgent(user) : agent.name }
+      : { kind: "user", name: shownName(user) },
+    ...(agent && hidden
+      ? { owner: { userId: user.id, name: agent.name } }
+      : {}),
     ...(restoredFrom === undefined ? {} : { restoredFrom }),
   };
 }
@@ -663,6 +680,74 @@ export function toSummary(
 
 export { dataWritersOf };
 
+type NameCols = {
+  email: string;
+  name: string | null;
+  displayName: string | null;
+};
+
+/** A version's publisher (createdBy) for agentFor: id, email, rendered name. */
+const publisherOf = (id: string, u: NameCols) => ({
+  id,
+  email: u.email,
+  name: effectiveName({
+    email: u.email,
+    name: u.name ?? "",
+    displayName: u.displayName,
+  }),
+});
+
+/**
+ * The current version's publisher for `lastAgent`, as one JSON array
+ * [agent_via, created_by, email, name, display_name], or null
+ * with no row. The artifacts row keeps no via, so this reads the version row
+ * the same batch wrote (allocateVersion): a correlated PK lookup per output
+ * row, inside the list, search and trash SELECTs (no extra D1 call).
+ * Qualified by hand: drizzle drops the table name in a one-table select,
+ * and a bare "id" would bind to lu.id.
+ */
+export const lastPublisherSql = sql<string | null>`(select json_array(
+    lv.agent_via, lv.created_by, lu.email, lu.name, lu.display_name)
+  from versions lv join users lu on lu.id = lv.created_by
+  where lv.artifact_id = "artifacts"."id"
+    and lv.version = "artifacts"."current_version")`;
+
+/**
+ * `lastAgent` as `caller` sees it (agentFor), from lastPublisherSql's value.
+ * A missing version row hides the name.
+ */
+export function shownLastAgent(
+  lastAgent: AgentRef | null,
+  pub: string | null | undefined,
+  caller: Caller,
+): AgentRef | null {
+  if (!lastAgent || !pub) return null;
+  const [via, by, email, name, displayName] = JSON.parse(pub) as (
+    | string
+    | null
+  )[];
+  return agentFor(
+    lastAgent,
+    isPrivateAgent(via ?? null),
+    publisherOf(by ?? "", {
+      email: email ?? "",
+      name: name ?? null,
+      displayName: displayName ?? null,
+    }),
+    caller.kind === "user" ? caller.user.id : null,
+  );
+}
+
+/**
+ * The `agent` list filter: a private token label (isPrivateAgent on the
+ * current version) matches only for its publisher, so the filter is no
+ * oracle for another member's label.
+ */
+const agentShownSql = (caller: Caller) =>
+  sql`exists (select 1 from versions v where v.artifact_id = "artifacts"."id"
+    and v.version = "artifacts"."current_version"
+    and (v.agent_via like 'g:%' or v.created_by = ${caller.kind === "user" ? caller.user.id : null}))`;
+
 /** Anonymous callers never see member emails (not even as a name fallback). */
 export function redact(
   u: { id: string; email: string; name: string; displayName: string | null },
@@ -694,8 +779,19 @@ export async function getSummary(
 ): Promise<ArtifactSummary> {
   const r = await accessLevel(env, caller, id);
   if (!r) throw notFound();
-  const owner = await ownerRef(env, r.artifact.ownerId, caller);
+  const [owner, pub] = await Promise.all([
+    ownerRef(env, r.artifact.ownerId, caller),
+    // Only with a last agent: one PK read beside the owner's.
+    r.artifact.lastAgentName == null
+      ? null
+      : getDb(env)
+          .select({ p: lastPublisherSql })
+          .from(artifacts)
+          .where(eq(artifacts.id, id))
+          .then((rows) => rows[0]?.p ?? null),
+  ]);
   const out = toSummary(env, r.artifact, owner, r.level);
+  out.lastAgent = shownLastAgent(out.lastAgent, pub, caller);
   if (!decorates(env, caller)) return out;
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
@@ -824,7 +920,8 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
   ];
   if (q.format) conds.push(eq(artifacts.format, q.format));
   if (q.visibility) conds.push(eq(artifacts.visibility, q.visibility));
-  if (q.agent !== undefined) conds.push(eq(artifacts.lastAgentName, q.agent));
+  if (q.agent !== undefined)
+    conds.push(eq(artifacts.lastAgentName, q.agent), agentShownSql(caller));
   // owner "me" (any case) is the caller; anything else is an email.
   if (q.owner !== undefined && q.owner.trim().toLowerCase() === "me") {
     if (caller.kind !== "user") throw bad("Invalid owner email", "owner");
@@ -856,6 +953,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller, { allowDeleted: q.includeDeleted }),
+      lastPub: lastPublisherSql,
       // The joined space, for `space` and `can` (withSpace).
       space: spaceCols(caller, decorates(env, caller)),
     })
@@ -914,6 +1012,7 @@ export async function list(
       ),
       level,
     );
+    out.lastAgent = shownLastAgent(out.lastAgent, r.lastPub, caller);
     items.push(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out);
   }
   return {
@@ -935,6 +1034,7 @@ type VersionRow = {
   message: string | null;
   agent_name: string | null;
   agent_version: string | null;
+  agent_via: string | null;
   created_by: string;
   created_at: number;
   text_indexed: number;
@@ -970,7 +1070,7 @@ export async function listVersions(
        from page window w as (order by version desc)
      )
      select v.version, v.entry, v.manifest, v.language, v.message, v.agent_name,
-       v.agent_version, v.created_by, v.created_at, v.text_indexed,
+       v.agent_version, v.agent_via, v.created_by, v.created_at, v.text_indexed,
        coalesce(v.format, a.format) as format, u.email, u.name,
        u.display_name as displayName
      from cut
@@ -987,13 +1087,19 @@ export async function listVersions(
       VERSIONS_PAGE_BYTES,
     )
     .all<VersionRow>();
+  const viewerId = caller.kind === "user" ? caller.user.id : null;
   return results.map((v) => ({
     version: v.version,
     message: v.message,
     agent:
       v.agent_name == null
         ? null
-        : { name: v.agent_name, version: v.agent_version },
+        : agentFor(
+            { name: v.agent_name, version: v.agent_version },
+            isPrivateAgent(v.agent_via),
+            publisherOf(v.created_by, v),
+            viewerId,
+          ),
     createdBy: redact(
       {
         id: v.created_by,
