@@ -1,0 +1,20 @@
+// The workerd test Worker: provision runs under nodejs_compat against the fake
+// Cloudflare (packages/provision/test/fake-cf.ts), whose D1s are these local
+// Miniflare D1s (one platform DB and one per install the test creates).
+{
+  "name": "oa-provisioner-test",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "PLATFORM_DB",
+      "database_name": "oa-platform-test",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "binding": "INSTALL_DB",
+      "database_name": "oa-install-test",
+      "database_id": "00000000-0000-0000-0000-000000000001"
+    }
+  ]
+}

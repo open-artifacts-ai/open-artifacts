@@ -2,8 +2,6 @@ import {
   createHash,
   createPrivateKey,
   createPublicKey,
-  generateKeyPairSync,
-  type KeyObject,
   sign,
   verify,
 } from "node:crypto";
@@ -34,11 +32,7 @@ import {
 import * as INDEX from "../src/index.js";
 import { RELEASE_PUBKEY_PLACEHOLDER } from "../src/internal/gates.js";
 import { loadTemplate } from "../src/internal/template.js";
-import {
-  HOSTED_ADDED,
-  type Template,
-  userWorkerMetadata,
-} from "../src/metadata.js";
+import { HOSTED_ADDED, userWorkerMetadata } from "../src/metadata.js";
 import {
   ENV_PREFIX,
   type Env,
@@ -55,16 +49,13 @@ import {
 } from "../src/publish.js";
 import { r2S3Client } from "../src/r2s3.js";
 import {
-  assetEntries,
   bundleSha256,
   compareVersions,
   migrationsSha256,
   type ReleaseAsset,
-  type ReleaseFile,
   type ReleaseReader,
   type ReleaseRecord,
   readTreeHardened,
-  type SignedReleaseRecord,
   TEST_HOOKS_DEFINE,
 } from "../src/release.js";
 import {
@@ -81,6 +72,22 @@ import {
   WfpProvisioner,
 } from "../src/wfp.js";
 import { type FakeCf as Fake, FakeCf, splitSql } from "./fake-cf.js";
+import {
+  ASSETS,
+  enc,
+  floorOf,
+  makeBundle,
+  OTHER_SIGNER,
+  payloadOf,
+  pubX,
+  releaseFixtures,
+  SIGNER,
+  signFloor,
+  signRecord,
+  TEST_PUBKEY,
+  tamper,
+  WELCOME_BYTES,
+} from "./fixtures/release.js";
 
 const hostsOf = (slug: string) =>
   hostsOf0(slug, { app: "app.test", content: "content.test" });
@@ -225,214 +232,29 @@ async function fails(p: Promise<unknown>): Promise<Error> {
   throw new Error("expected a failure");
 }
 
-const enc = (s: string) => new TextEncoder().encode(s);
-
-function makeBundle(
-  variant: "release" | "redline",
-  version = "0.23.0",
-): {
-  modules: { name: string; type: "esm" | "wasm"; bytes: Uint8Array }[];
-  mainModule: string;
-  version: string;
-} {
-  return {
-    modules: [
-      {
-        name: "index.js",
-        type: "esm",
-        bytes: enc(
-          `const hooksAllowed = ${variant === "redline"};\nexport default { fetch() { return new Response(String(hooksAllowed)); } };\n`,
-        ),
-      },
-    ],
-    mainModule: "index.js",
-    version,
-  };
-}
-
 // The release's own files (what T3b will put in oa-<p>-releases). Read here
 // once from this checkout as fixtures; create itself must never read them.
-const TEMPLATE_BYTES = new Uint8Array(
-  readFileSync(new URL("apps/server/wrangler.template.jsonc", ROOT)),
-);
-const MIGRATION_FILES: ReleaseFile[] = SERVER_MIGRATIONS.map((name) => ({
-  name,
-  bytes: new Uint8Array(
-    readFileSync(new URL(`apps/server/migrations/${name}`, ROOT)),
-  ),
-}));
-const ASSETS: ReleaseAsset[] = [
-  { path: "index.html", bytes: enc("<!doctype html><p>hi</p>") },
-  { path: "app.js", bytes: enc("console.log(1)") },
-];
+const { TEMPLATE_BYTES, MIGRATION_FILES, recordOf, makeRelease } =
+  releaseFixtures({
+    template: new Uint8Array(
+      readFileSync(new URL("apps/server/wrangler.template.jsonc", ROOT)),
+    ),
+    migrations: SERVER_MIGRATIONS.map((name) => ({
+      name,
+      bytes: new Uint8Array(
+        readFileSync(new URL(`apps/server/migrations/${name}`, ROOT)),
+      ),
+    })),
+  });
 
-/** Release content; a Template object is serialized to the template bytes. */
-type ReleaseSpec = {
-  env?: Env;
-  welcome?: Uint8Array;
-  template?: Template | Uint8Array;
-  migrations?: ReleaseFile[];
-  assets?: ReleaseAsset[];
-  floor?: unknown;
-};
-const tplBytes = (t: ReleaseSpec["template"]) =>
-  t === undefined
-    ? TEMPLATE_BYTES
-    : t instanceof Uint8Array
-      ? t
-      : enc(JSON.stringify(t, null, 2));
-
-// The release signing keypair of these tests (T3b holds the real one).
-const SIGNER = generateKeyPairSync("ed25519");
-const OTHER_SIGNER = generateKeyPairSync("ed25519");
 for (const k of [SIGNER, OTHER_SIGNER]) {
   SENSITIVE.add(
     k.privateKey.export({ format: "der", type: "pkcs8" }).toString("base64url"),
   );
   SENSITIVE.add(k.privateKey.export({ format: "jwk" }).d as string);
 }
-const pubX = (k: { publicKey: KeyObject }) =>
-  k.publicKey.export({ format: "jwk" }).x as string;
-const TEST_PUBKEY = pubX(SIGNER);
 // One key for both envs on purpose: domain separation must still hold (F2).
 G.RELEASE_PUBKEY = { staging: TEST_PUBKEY, prod: TEST_PUBKEY };
-
-/** The signed bytes: "oa-release-v1\n" + env + "\n" + the stored record string. */
-const payloadOf = (record: string, env: string) =>
-  Buffer.from(`oa-release-v1\n${env}\n${record}`);
-/** The stored form (T3b): the record as its canonical JSON string, and the signature over it. */
-const signRecord = (
-  record: ReleaseRecord,
-  key: KeyObject = SIGNER.privateKey,
-  env: string = record.env,
-): SignedReleaseRecord => {
-  const s = canonicalJson(record);
-  return {
-    record: s,
-    signature: sign(null, payloadOf(s, env), key).toString("base64url"),
-  };
-};
-/** A stored record with one field replaced after signing. */
-const tamper = (g: SignedReleaseRecord, over: Record<string, unknown>) => ({
-  ...g,
-  record: canonicalJson({ ...JSON.parse(g.record), ...over }),
-});
-
-/** The env's signed floor (releases/floor.json). */
-type Floor = {
-  env: string;
-  seq: number;
-  minVersion: string;
-  revoked: string[];
-};
-const floorOf = (o: Partial<Floor> = {}, env: string = "staging"): Floor => ({
-  env,
-  seq: 1,
-  minVersion: "0.1.0",
-  revoked: [],
-  ...o,
-});
-const signFloor = (
-  f: Floor,
-  key: KeyObject = SIGNER.privateKey,
-  env: string = f.env,
-) => {
-  const s = canonicalJson(f);
-  return {
-    record: s,
-    signature: sign(
-      null,
-      Buffer.from(`oa-release-floor-v1\n${env}\n${s}`),
-      key,
-    ).toString("base64url"),
-  };
-};
-
-const WELCOME_BYTES = enc(
-  "# Welcome to Open Artifacts\n\nThis text comes from the release (sentinel-from-release).\n",
-);
-
-/** The per-release manifest the bundle step (T3b) will write. */
-const recordOf = (
-  variant: "release" | "redline",
-  version = "0.23.0",
-  spec: ReleaseSpec = {},
-): ReleaseRecord => ({
-  env: spec.env ?? "staging",
-  version,
-  variant,
-  sha256: bundleSha256(makeBundle(variant, version)),
-  defines: { [TEST_HOOKS_DEFINE]: variant === "redline" },
-  assets: assetEntries(spec.assets ?? ASSETS),
-  templateSha256: createHash("sha256")
-    .update(tplBytes(spec.template))
-    .digest("hex"),
-  migrationsSha256: migrationsSha256(spec.migrations ?? MIGRATION_FILES),
-  welcomeSha256: createHash("sha256")
-    .update(spec.welcome ?? WELCOME_BYTES)
-    .digest("hex"),
-});
-
-type Kind =
-  | "record"
-  | "modules"
-  | "assets"
-  | "template"
-  | "migrations"
-  | "welcome"
-  | "floor";
-/** An in-memory release reader that counts reads; `over` replaces any read. */
-function makeRelease(
-  spec: ReleaseSpec = {},
-  over: Partial<ReleaseReader> = {},
-): ReleaseReader & { calls: Record<Kind, number> } {
-  const calls: Record<Kind, number> = {
-    record: 0,
-    modules: 0,
-    assets: 0,
-    template: 0,
-    migrations: 0,
-    welcome: 0,
-    floor: 0,
-  };
-  const base: ReleaseReader = {
-    record: async (version, v) => signRecord(recordOf(v, version, spec)),
-    modules: async (version, v) => {
-      const b = makeBundle(v, version);
-      return { mainModule: b.mainModule, modules: b.modules };
-    },
-    assets: async () =>
-      (spec.assets ?? ASSETS).map((a) => ({ ...a, bytes: a.bytes.slice() })),
-    template: async () => tplBytes(spec.template).slice(),
-    migrations: async () =>
-      (spec.migrations ?? MIGRATION_FILES).map((f) => ({
-        ...f,
-        bytes: f.bytes.slice(),
-      })),
-    welcome: async () => (spec.welcome ?? WELCOME_BYTES).slice(),
-    floor: async () =>
-      spec.floor !== undefined
-        ? spec.floor
-        : signFloor(floorOf({}, spec.env ?? "staging")),
-  };
-  const counted = (k: Kind) =>
-    // biome-ignore lint/suspicious/noExplicitAny: forwards each reader's own args
-    (async (...a: any[]) => {
-      calls[k]++;
-      // biome-ignore lint/suspicious/noExplicitAny: forwards each reader's own args
-      return ((over[k] ?? base[k]) as any)(...a);
-    }) as never;
-  return {
-    calls,
-    record: counted("record"),
-    modules: counted("modules"),
-    assets: counted("assets"),
-    template: counted("template"),
-    migrations: counted("migrations"),
-    welcome: counted("welcome"),
-    floor: counted("floor"),
-  };
-}
 
 /** The first `after` reads are the good ones, every later read the other. */
 const swapAfterFirst = <T>(
