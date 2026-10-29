@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { authorize, canCtx } from "../../auth/authz.js";
-import { can } from "../../auth/policy.js";
+import { can, dataWriteCreates } from "../../auth/policy.js";
+import { recordDataCreator } from "../../billing/creators.js";
 import { ApiError } from "../../http/errors.js";
 import {
   type RuntimeStub,
@@ -24,6 +25,15 @@ export async function store(
   id: string,
   action: "data.read" | "data.write",
 ): Promise<RuntimeStub> {
+  return (await storeOf(t, id, action)).s;
+}
+
+/** store(), and whether a write counts its caller as a creator (editor level or above). */
+async function storeOf(
+  t: Pick<ToolEnv, "env" | "caller">,
+  id: string,
+  action: "data.read" | "data.write",
+): Promise<{ s: RuntimeStub; creator: boolean }> {
   const { level, artifact: a } = await authorize(t.env, t.caller, id, action);
   if (
     !capsOf(a.capabilities).db &&
@@ -33,12 +43,21 @@ export async function store(
       "capability_denied",
       "This artifact does not declare the db capability",
     );
-  return runtimeStub(t.env, id);
+  return {
+    s: runtimeStub(t.env, id),
+    creator:
+      action === "data.write" &&
+      t.caller.kind === "user" &&
+      dataWriteCreates(level),
+  };
 }
 
 export function registerDataTools(server: McpServer, t: ToolEnv): void {
   // Same actor as the user's REST writes: one rate bucket per user.
   const actor = `u:${t.user.id}`;
+  /** After a successful write: CREATOR (an agent counts for its owner). */
+  const counted = (creator: boolean) =>
+    creator ? recordDataCreator(t.env, t.user.id, Date.now()) : undefined;
   const where = (id: string, collection: string) =>
     `${id} collection "${collection}"`;
 
@@ -91,10 +110,11 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     toolConfig("artifact_data_set"),
     (i) =>
       guard(async () => {
-        const s = await store(t, i.id, "data.write");
+        const { s, creator } = await storeOf(t, i.id, "data.write");
         const doc = await runtimeCall(() =>
           s.set(i.collection, i.docId, i.data, actor),
         );
+        await counted(creator);
         return ok(`Set "${i.docId}" in ${where(i.id, i.collection)}`, doc);
       }),
   );
@@ -104,10 +124,11 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     toolConfig("artifact_data_update"),
     (i) =>
       guard(async () => {
-        const s = await store(t, i.id, "data.write");
+        const { s, creator } = await storeOf(t, i.id, "data.write");
         const doc = await runtimeCall(() =>
           s.update(i.collection, i.docId, i.patch, actor),
         );
+        await counted(creator);
         return ok(`Updated "${i.docId}" in ${where(i.id, i.collection)}`, doc);
       }),
   );
@@ -117,8 +138,9 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     toolConfig("artifact_data_delete"),
     (i) =>
       guard(async () => {
-        const s = await store(t, i.id, "data.write");
+        const { s, creator } = await storeOf(t, i.id, "data.write");
         await runtimeCall(() => s.delete(i.collection, i.docId, actor));
+        await counted(creator);
         return ok(`Deleted "${i.docId}" from ${where(i.id, i.collection)}`, {
           id: i.id,
           collection: i.collection,

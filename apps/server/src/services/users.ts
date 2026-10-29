@@ -2,9 +2,10 @@ import { normalizeEmail } from "@oa/auth-core";
 import { type Member, newId, type Role, type UserRef } from "@oa/shared";
 import { eq } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
-import { withCap } from "../auth/authz.js";
+import { withCap, withPlan } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { capOf } from "../auth/policy.js";
+import { capOf, planCapsRole } from "../auth/policy.js";
+import { billingOn, CHECK_KEY, PLAN_KEY, planOfRaw } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -261,11 +262,27 @@ const CAP_SINCE = `case when ?2 = 1 and d.st not in ('', 'ok') and ${SYNCED}
   then (select json_extract(h.value, '$.unhealthySince') from directory_state h where h.key = 'sync.health')
   end as capSince`;
 
-const USER_BY_ID = `select ${USER_COLS}, ${CAP_SINCE} from ${STATE}, users
+/**
+ * Hosted billing (HOSTED=1 only, so self-hosted statements are unchanged):
+ * the cached plan and its read attempts, two settings PK probes in the same
+ * statement. withEpoch derives the plan cap from them (billing/plan.ts).
+ */
+const PLAN_COLS = `, (select value from settings where key = '${PLAN_KEY}') as billingPlan,
+  (select value from settings where key = '${CHECK_KEY}') as billingCheck`;
+
+const userById = (
+  plan: string,
+) => `select ${USER_COLS}, ${CAP_SINCE}${plan} from ${STATE}, users
   where id = ?1 and status = 'active' and not ${MISMATCH} limit 1`;
+const USER_BY_ID = userById("");
+const USER_BY_ID_HOSTED = userById(PLAN_COLS);
 /** The org owner denied by customer_mismatch, for break-glass only (T18). */
-const MISMATCH_OWNER = `select ${USER_COLS}, null as capSince from ${STATE}, users
+const mismatchOwner = (
+  plan: string,
+) => `select ${USER_COLS}, null as capSince${plan} from ${STATE}, users
   where id = ?1 and status = 'active' and role = 'owner' and ${MISMATCH} limit 1`;
+const MISMATCH_OWNER = mismatchOwner("");
+const MISMATCH_OWNER_HOSTED = mismatchOwner(PLAN_COLS);
 
 type UserByIdRow = Pick<
   UserRow,
@@ -279,7 +296,12 @@ type UserByIdRow = Pick<
   | "restrictedManual"
   | "restrictedSync"
   | "statusChangedAt"
-> & { capSince: number | null };
+> & {
+  capSince: number | null;
+  /** Hosted statements only: the settings rows (billing/plan.ts). */
+  billingPlan?: string | null;
+  billingCheck?: string | null;
+};
 
 export type UserWithEpoch = {
   user: Member;
@@ -298,19 +320,21 @@ function withEpoch(env: Env, row: UserByIdRow | null): UserWithEpoch | null {
   // is set once (P3's capOf: the one source authz's CAP reads). Sources: P2's
   // authConfig.guestsReadOnly and P3's restriction columns (0009).
   if (!row) return null;
+  const plan = planOfRaw(env, row.billingPlan, row.billingCheck, Date.now());
+  // P2/P3's cap first; then, hosted, the plan cap: a free or read-only
+  // instance is read-only for everyone but the org owner (writes only).
+  const cap =
+    capOf(
+      {
+        role: row.role as Role,
+        // Fail closed: any non-zero flag restricts.
+        restrictedManual: row.restrictedManual !== 0,
+        restrictedSync: row.restrictedSync !== 0,
+      },
+      authConfig(env),
+    ) ?? (plan?.lock && planCapsRole(row.role as Role) ? "plan" : null);
   return {
-    user: withCap(
-      toMember(row),
-      capOf(
-        {
-          role: row.role as Role,
-          // Fail closed: any non-zero flag restricts.
-          restrictedManual: row.restrictedManual !== 0,
-          restrictedSync: row.restrictedSync !== 0,
-        },
-        authConfig(env),
-      ),
-    ),
+    user: withPlan(withCap(toMember(row), cap), plan),
     sessionEpoch: row.sessionEpoch,
     statusChangedAt: row.statusChangedAt ?? null,
     capSince: typeof row.capSince === "number" ? row.capSince : null,
@@ -331,7 +355,7 @@ export async function getUserWithEpoch(
 ): Promise<UserWithEpoch | null> {
   return withEpoch(
     env,
-    await stmt(env.DB, USER_BY_ID)
+    await stmt(env.DB, billingOn(env) ? USER_BY_ID_HOSTED : USER_BY_ID)
       .bind(id, o.cookie ? 1 : 0)
       .first<UserByIdRow>(),
   );
@@ -347,7 +371,9 @@ export async function getMismatchOwner(
 ): Promise<UserWithEpoch | null> {
   return withEpoch(
     env,
-    await stmt(env.DB, MISMATCH_OWNER).bind(id).first<UserByIdRow>(),
+    await stmt(env.DB, billingOn(env) ? MISMATCH_OWNER_HOSTED : MISMATCH_OWNER)
+      .bind(id)
+      .first<UserByIdRow>(),
   );
 }
 

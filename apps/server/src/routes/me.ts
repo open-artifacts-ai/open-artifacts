@@ -11,14 +11,21 @@ import {
 } from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
-import { caller, capOfCaller, requireUser } from "../auth/authz.js";
+import {
+  caller,
+  capOfCaller,
+  planOfMember,
+  requireUser,
+} from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
+import { creatorCount, monthOf } from "../billing/creators.js";
+import { refreshPlan } from "../billing/store.js";
 import { instanceDirectory, readHealth } from "../directory/health.js";
 import { emailEnabled } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
-import type { AppEnv } from "../http/middleware.js";
+import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { busOn } from "../services/bus.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
@@ -110,6 +117,38 @@ async function toMe(
   me.canConnect = who ? canConnect(who) : false;
   // #1293: the dashboard's bus pages show only while the bus answers.
   me.busOn = busOn(c.env);
+  // Self-serve billing (hosted only): the plan as this request's user load
+  // read it. Billing details for the uncapped owner and admins, who also
+  // refresh the tier on demand (at most once a minute, after the response).
+  const plan = planOfMember(user);
+  if (plan) {
+    const details = orgCan(user, "billing.manage", { cap });
+    me.instance.billing = {
+      tier: plan.tier,
+      status: details ? plan.status : null,
+      trialEndsAt:
+        details && plan.trialEndsAt !== null
+          ? new Date(plan.trialEndsAt).toISOString()
+          : null,
+      graceUntil:
+        details && plan.graceUntil !== null
+          ? new Date(plan.graceUntil).toISOString()
+          : null,
+      ...(details
+        ? {
+            creatorsThisMonth: await creatorCount(c.env, monthOf(Date.now())),
+          }
+        : {}),
+      readOnly: plan.readOnly,
+      ...(plan.reason ? { reason: plan.reason } : {}),
+    };
+    if (details) {
+      const run = refreshPlan(c.env, Date.now(), { onDemand: true });
+      const ctx = execCtx(c);
+      if (ctx) ctx.waitUntil(run);
+      else await run;
+    }
+  }
   return me;
 }
 

@@ -49,6 +49,10 @@ export const ERROR_CODES = [
   "query_too_large",
   // Collaboration suite: follows (#1292).
   "follow_limit",
+  // Self-serve billing (hosted/billing.ts).
+  "plan_required",
+  "plan_read_only",
+  "billing_unavailable",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -135,6 +139,12 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   query_too_large: 400,
   /** A bus follow() past FOLLOW_LIMIT follows for one member (#1292): unfollow first. */
   follow_limit: 409,
+  /** A team feature on a free (solo) instance whose trial was already used: an invite, a share to someone else, a shared space; details PlanRefusalDetails. */
+  plan_required: 403,
+  /** A write refused because team features are read-only (trial ended, lapsed, payment failed past grace, suspended, or billing unreachable past 7 days); details PlanRefusalDetails. Nothing was deleted. */
+  plan_read_only: 403,
+  /** R.billingCheckout / R.billingPortal / R.billingUsage while billing can't be reached. */
+  billing_unavailable: 503,
 };
 
 /**
