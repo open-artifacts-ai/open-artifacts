@@ -466,6 +466,38 @@ describe("ProvisionInstall", () => {
     expect(await signup(8)).toMatchObject({ status: "ready" });
   });
 
+  it("a pinned version below the release floor fails refused, nothing created", async () => {
+    // A signed release at 0.0.9, under the fixtures' floor (minVersion 0.1.0).
+    const { makeRelease } = releaseFixtures({
+      template: enc(E.FIXTURE_TEMPLATE),
+      migrations: E.FIXTURE_SERVER_MIGRATIONS.map((f) => ({
+        name: f.name,
+        bytes: enc(f.text),
+      })),
+    });
+    await seedRelease(
+      E.RELEASES,
+      makeRelease({ env: ENV }),
+      "0.0.9",
+      "release",
+    );
+    H.vars = { RELEASE_VERSION: "0.0.9" };
+    const p = await seedSignup(10, "floorco");
+    await run(p, "errored");
+    const errs = errorsOf(p.signupId);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toMatchObject({ name: "create", retryable: false });
+    expect(errs[0]?.message).toMatch(
+      /^refused: .*0\.0\.9.*floor|^refused: .*floor.*0\.0\.9/,
+    );
+    expect(await signup(10)).toMatchObject({
+      status: "failed",
+      error: "refused",
+    });
+    expect(await installs("floorco")).toEqual([]);
+    expect(fake.writes()).toEqual([]);
+  });
+
   it("an OA_ENV other than staging or prod fails internal, nothing created", async () => {
     H.vars = { OA_ENV: "dev" };
     const p = await seedSignup(9, "envco");

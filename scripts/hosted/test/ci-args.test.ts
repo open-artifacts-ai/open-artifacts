@@ -215,6 +215,13 @@ describe("args: JSON against each op's schema", () => {
     refused({ ...CREATE({ env: "prod" }) }, /not one of/);
   });
 
+  it("create: args never carry installId or install_id (only the provisioner sets a fixed id)", () => {
+    expect(ARG_KEYS.create).not.toContain("installId");
+    expect(ARG_KEYS.create).not.toContain("install_id");
+    for (const k of ["installId", "install_id"])
+      refused(CREATE({ [k]: ID }), new RegExp(`args\\.${k} is not one of`));
+  });
+
   it("create: --slug, --owner, --to from the tag (or args.to), --var, staging --test-hooks; always --ci-owner-token", () => {
     expect(ok(CREATE({ var: ["AUTH_PROVIDERS=email"] }))).toEqual({
       argv: [

@@ -73,6 +73,44 @@ describe("domains", () => {
 });
 
 describe("refusals before any call", () => {
+  it("create has no flag for a fixed install id (only the provisioner sets one)", async () => {
+    for (const flag of [
+      "--install-id",
+      "--installId",
+      "--install_id",
+      "--install-id=iabcdefghjkm",
+    ]) {
+      const w = world();
+      const args = flag.includes("=") ? [flag] : [flag, "iabcdefghjkm"];
+      expect(await main([...CREATE(), ...args], w.deps), flag).toBe(1);
+      expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
+      noCalls(w);
+    }
+  });
+
+  it("create --install only resumes: it never fixes a fresh install's id", async () => {
+    const w = world();
+    expect(await main([...CREATE(), "--install", "iabcdefghjkm"], w.deps)).toBe(
+      1,
+    );
+    expect(
+      w.parsed().find((l) => l.step === "create" && l.status === "error")
+        ?.message,
+    ).toMatch(/resumeId iabcdefghjkm is not the install for slug finqore/);
+    // No install was made under that id.
+    expect(
+      await main(
+        ["status", "--env", "staging", "--install", "iabcdefghjkm"],
+        w.deps,
+      ),
+    ).toBe(1);
+    expect(
+      w
+        .parsed()
+        .some((l) => /install iabcdefghjkm not found/.test(String(l.message))),
+    ).toBe(true);
+  });
+
   it("--test-hooks with --env prod exits 1 before any call", async () => {
     const w = world({ env: "prod" });
     expect(await main([...CREATE("prod"), "--test-hooks"], w.deps)).toBe(1);
