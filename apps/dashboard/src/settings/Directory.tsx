@@ -46,7 +46,6 @@ import {
   useSnoozeHeld,
   useUnsnoozeHeld,
 } from "../api/queries";
-import { useFrozen } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
@@ -54,7 +53,14 @@ import { Notice } from "../layout/Notice";
 import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { GroupPicker } from "./GroupPicker";
-import { errorText, muted, SettingsCard, STACK } from "./ui";
+import {
+  errorText,
+  muted,
+  ReadOnlyNote,
+  SettingsCard,
+  STACK,
+  WriteLock,
+} from "./ui";
 
 const PAGE = "/settings/directory";
 const REAUTH = `/auth/login/google?next=${encodeURIComponent(PAGE)}`;
@@ -177,13 +183,6 @@ function ConnectLink({ label }: { label: string }) {
     window.addEventListener("pageshow", reset);
     return () => window.removeEventListener("pageshow", reset);
   }, []);
-  // A link ignores the page's disabled fieldset: under the plan cap it's a dead button.
-  if (useFrozen())
-    return (
-      <Button disabled size="sm" className="text-[length:var(--oa-text-sm)]">
-        {label}
-      </Button>
-    );
   return (
     <Button asChild size="sm" className="text-[length:var(--oa-text-sm)]">
       <a href={R.directoryConnect} onClick={() => setOpening(true)}>
@@ -913,15 +912,17 @@ function RestrictedRow({ g }: { g: RestrictedGroup }) {
         </small>
       </td>
       <td className="py-[var(--oa-space-3)] text-right">
-        <Button
-          size="sm"
-          variant="outline"
-          className="text-[length:var(--oa-text-sm)]"
-          aria-label={`Lift restriction on ${g.name ?? g.email}`}
-          onClick={() => setAsking(true)}
-        >
-          Lift
-        </Button>
+        <WriteLock>
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-[length:var(--oa-text-sm)]"
+            aria-label={`Lift restriction on ${g.name ?? g.email}`}
+            onClick={() => setAsking(true)}
+          >
+            Lift
+          </Button>
+        </WriteLock>
         <Confirm
           open={asking}
           onClose={() => setAsking(false)}
@@ -984,13 +985,15 @@ function RestrictedGroups({
         </table>
       )}
       {mode === "google" && (
-        <GroupPicker
-          label="Add a restricted group"
-          placeholder="Add a restricted group…"
-          exclude={groups.map((g) => g.groupId)}
-          disabled={add.isPending}
-          onPick={(g) => add.mutate(g.groupId)}
-        />
+        <WriteLock>
+          <GroupPicker
+            label="Add a restricted group"
+            placeholder="Add a restricted group…"
+            exclude={groups.map((g) => g.groupId)}
+            disabled={add.isPending}
+            onPick={(g) => add.mutate(g.groupId)}
+          />
+        </WriteLock>
       )}
       {mode === "frozen" && (
         <p className={muted}>
@@ -1176,6 +1179,7 @@ export function Directory() {
 
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       {/* After the status loads: the copy names the bound domain. */}
       {search.error !== undefined && !status.isPending && (
         <Notice
