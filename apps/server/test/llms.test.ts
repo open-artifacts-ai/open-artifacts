@@ -163,7 +163,7 @@ describe("llms.txt can't drift from agentClients", () => {
     // Cursor has no token variant: it gets a note instead.
     expect(token.map((t) => t.agent)).not.toContain("Cursor");
     expect(connect).toContain(
-      "#### Cursor\nNo token option: sign in through the browser as above.",
+      "#### Cursor\nNo token-file option: sign in through the browser as above.",
     );
   });
 
@@ -193,7 +193,7 @@ describe("llms.txt can't drift from agentClients", () => {
     // never a value.
     expect(txt).not.toMatch(/Bearer oa_/);
     expect(txt).not.toMatch(/oa_pat_/);
-    expect(txt).toContain("Settings › Agents (Tokens)");
+    expect(txt).toContain("Personal access tokens");
     expect(txt).toContain("they ask their admin");
     expect(txt).toContain("never ask the person for it");
     expect(txt).not.toMatch(/[\w.+-]+@[\w-]+\.[\w.-]+/);
@@ -277,6 +277,9 @@ describe("served .txt and .md paths on the app host", () => {
       "/settings/llms.txt",
       "/a/abc/notes.md",
       "/llms.txt/x.txt",
+      // Missing bundle files: ASSETS answers its SPA shell; we don't.
+      "/assets/missing.txt",
+      "/assets/missing.md",
     ]) {
       for (const method of ["GET", "HEAD"]) {
         const r = await get(`${APP}${p}`, { method }, e);
@@ -285,7 +288,19 @@ describe("served .txt and .md paths on the app host", () => {
         if (method === "GET") expect(await r.text()).toBe("Not found\n");
       }
     }
-    expect(assets.calls).toEqual([]);
+    // Only the /assets/ paths reach ASSETS.
+    expect(new Set(assets.calls)).toEqual(
+      new Set(["/assets/missing.txt", "/assets/missing.md"]),
+    );
+  });
+
+  it("a missing bundle .txt that ASSETS 404s is the same plain 404", async () => {
+    const nf = {
+      fetch: () => Promise.resolve(new Response("nf", { status: 404 })),
+    };
+    const r = await get(`${APP}/assets/gone.md`, {}, E({ ASSETS: nf }));
+    expect(r.status).toBe(404);
+    expect(await r.text()).toBe("Not found\n");
   });
 
   it("everything else still falls through to the SPA as before", async () => {

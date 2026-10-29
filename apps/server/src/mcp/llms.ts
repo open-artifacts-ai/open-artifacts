@@ -79,7 +79,7 @@ const tokenBlock = (agent: string, s: Snippet | undefined) =>
         ...(s.hint ? [`Note: ${s.hint}`] : []),
         `Then: ${s.verify}`,
       ].join("\n")
-    : `#### ${agent}\nNo token option: sign in through the browser as above.`;
+    : `#### ${agent}\nNo token-file option: sign in through the browser as above.`;
 
 const pluginBlock = (origin: string) => {
   const { marketplace, name, option } = CLAUDE_PLUGIN;
@@ -124,7 +124,7 @@ Use the section for the client you are running in: you know which one that is. O
 
 ${clients.map(clientBlock).join("\n\n")}
 
-${plugin ? pluginBlock(origin) : ""}If a client can only use a token, never ask the person for it and never paste it into chat. The person creates it in Settings › Agents (Tokens) at ${origin}/settings/agents and saves it to \`${tokenFile}\` (mode 0600). If they can't open that page, they ask their admin. Your config reads the file at connect time:
+${plugin ? pluginBlock(origin) : ""}If a client can only use a token, never ask the person for it and never paste it into chat. The person creates it under Personal access tokens at ${origin}/settings/agents and saves it to \`${tokenFile}\` (mode 0600). If they can't open that page, they ask their admin. Your config reads the file at connect time:
 
 ${clients
   .map((o) =>
