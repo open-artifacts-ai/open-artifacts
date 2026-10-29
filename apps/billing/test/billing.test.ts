@@ -1,6 +1,8 @@
 import { applyD1Migrations } from "cloudflare:test";
 import { env as testEnv } from "cloudflare:workers";
 import type { D1Migration } from "@cloudflare/vitest-plugin";
+import { keyId, publicFromPkcs8, signRequest } from "@oa/auth-core";
+import { clearRegistryCache } from "@oa/broker-core";
 import {
   afterEach,
   beforeAll,
@@ -10,8 +12,6 @@ import {
   it,
   vi,
 } from "vitest";
-import { keyId, publicFromPkcs8, signRequest } from "@oa/auth-core";
-import { clearRegistryCache } from "@oa/broker-core";
 import billing, { type Env, MAX_CREATORS, TRIAL_MS } from "../src/index.js";
 
 // The tier store's routes. Gate routes answer only over a binding (no
@@ -332,8 +332,9 @@ describe("the POSTs carry the gate install's signature", () => {
 
   it("a signed POST passes (the baseline for every refusal below)", async () => {
     at();
-    expect((await call(gated("POST", "/trial/start", { install: A }))).status)
-      .toBe(200);
+    expect(
+      (await call(gated("POST", "/trial/start", { install: A }))).status,
+    ).toBe(200);
     expect(
       (await call(gated("POST", "/usage", { install: A, ...usage }))).status,
     ).toBe(200);
@@ -390,8 +391,11 @@ describe("the POSTs carry the gate install's signature", () => {
       }
     // At the edge of the window it still passes.
     expect(
-      (await call(gated("POST", "/usage", { install: A, ...usage, ts: NOW - 60_000 })))
-        .status,
+      (
+        await call(
+          gated("POST", "/usage", { install: A, ...usage, ts: NOW - 60_000 }),
+        )
+      ).status,
     ).toBe(200);
     await db.prepare("DELETE FROM usage").run();
     await nothingWritten();
@@ -418,9 +422,15 @@ describe("the POSTs carry the gate install's signature", () => {
     const C = "iccc111ccc11";
     for (const [path, body] of POSTS)
       await refused(
-        gated("POST", path, { ...body, install: C }, {
-          "x-oa-gate-install": C,
-        }, { key: KEYS[A] }),
+        gated(
+          "POST",
+          path,
+          { ...body, install: C },
+          {
+            "x-oa-gate-install": C,
+          },
+          { key: KEYS[A] },
+        ),
       );
     const x = await publicFromPkcs8(KEYS[A] as string);
     await registry.put(
