@@ -279,6 +279,52 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `unsupported_format` | 400 | publish (`R.artifacts`, `R.versions`, MCP `publish_artifact`) with no `format` whose entry name implies none (`inferFormat` returns `image` for `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, and `code` only for known text: the `LANGUAGES` keys, `PLAIN_TEXT_EXTENSIONS`, Makefile, Dockerfile; else null) and whose bytes aren't UTF-8 text. When the name implies none but the bytes are text (a `LICENSE`, `.gitignore`), the publish goes ahead as `code`, language `"text"`. Details `{ path, reason: "no_viewer" }`; message `UNSUPPORTED_FORMAT_MESSAGE`. A HEIC/HEIF entry (named `.heic`/`.heif`, or an ISO BMFF `ftyp` at byte 4 with brand `heic`, `heix`, `hevc`, `heim`, `heis`, `mif1` or `msf1`) is refused whatever the `format`: details `{ path, reason: "heic" }`, message `HEIC_MESSAGE`. Nothing is written or consumed |
 | `binary_entry` | 400 | the entry's content doesn't fit its format (`sniff.ts` `checkEntry`, first 8 KB): for `code`, `markdown` and `html` the bytes decide: UTF-8 text (no NUL, valid UTF-8) passes whatever its first bytes or declared upload type. Bytes that fail are refused with reason `binary` (a known signature), else `content_type` (an upload declared `image/*` other than svg, `audio/*` or `video/*`; `application/octet-stream` claims nothing), else `not_text`. A `pdf` must start with `%PDF` (`not_pdf`). An `image` must carry its extension's signature (JPEG `FF D8 FF`, PNG, `GIF87a`/`GIF89a`, WebP `RIFF....WEBP`; else `not_image`, also for an entry with no image extension), an `.svg` must be UTF-8 text with an `<svg>` root (`not_svg`), and an upload's declared type must be the extension's (`content_type`; `application/octet-stream` claims nothing). An `image` publish with more than one file is 400 `bad_request` `{ path: "files", reason: "image_single_file" }`. Details `{ path, reason }`. An uploaded entry costs one R2 range read. Nothing is written or consumed |
 
+## Self-serve billing (`hosted/billing.ts`, post-M1)
+
+Hosted only (`HOSTED=1`). Self-hosted installs keep `TIER`/`FEATURES` and
+never carry a plan. The install reads its tier from oa-<p>-billing through
+the platform's BillingGate (`ctx.props.BILLING`) on the scheduler's 2-min
+tick and on demand (an owner's or admin's `GET R.me`, at most once a minute),
+and caches the last good answer (never an older `version`).
+
+`Me.instance.billing` (`PlanView`; not `plan`, which is the Workers plan):
+`{ tier, status, trialEndsAt, graceUntil, creatorsThisMonth?, readOnly, reason? }`.
+`tier` free | trial | team | business; `status` active | past_due | lapsed |
+suspended. Everyone gets `tier`, `readOnly`, `reason`. `status`,
+`trialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth` go to the uncapped
+org owner and admins only; everyone else gets null and no count. Absent
+before the first read when no `TIER` was provisioned.
+
+| State | What it does | `reason` |
+|---|---|---|
+| free | solo: one person and their agents. Team features answer `plan_required`; the first invite passes while the trial never ran and starts the 14-day trial | `solo` |
+| trial (until `trialEndsAt`), team, business, past_due within `graceUntil` | today's behaviour | none |
+| trial ended, lapsed, past_due past grace, suspended | read-only (`readOnly: true`): team features answer `plan_read_only` | `trial_ended`, `lapsed`, `payment_failed`, `suspended` |
+| billing unreachable over 7 days (`PLAN_STALE_MS`) | read-only; never falls back upward | `billing_unreachable` |
+
+Under free or read-only: everyone but the org owner is read-only (`Me.auth.cap`
+`"plan"`, `readOnly: true`; reads are kept, agents can't connect); the owner
+keeps their personal artifacts and loses the team features: invites, shares
+to others, shared spaces (create, settings, members, mappings, publishing and
+writing in them), moves and transfers, directory connect. While read-only,
+anonymous live-data writes stop too. Removals (a member, a share) always pass.
+Nothing is ever deleted.
+
+A creator (the bill) is a user who published a version, or wrote live data
+at editor level or above, in the UTC month, by any credential (an agent
+counts for its owner). Restores, moves, transfers, renames, storage, viewer
+and anonymous writes never count.
+
+Routes, uncapped org owner or admin only (else 404; 404 off hosted):
+`POST R.billingCheckout` `BillingCheckoutInput { tier: team | business }` →
+`BillingUrl { url }` (Stripe Checkout); `POST R.billingPortal` → `BillingUrl`
+(Customer Portal); `POST R.billingUsage` → `BillingUsage { month, count }`.
+503 `billing_unavailable` when billing can't be reached.
+
+Errors: `plan_required` (403) and `plan_read_only` (403), details
+`PlanRefusalDetails { tier, reason }`; `billing_unavailable` (503). Mocks:
+`createHostedMock({ billing, billingDown })`.
+
 ## Test hooks (`hosted/test-hooks.ts`, types only)
 
 | Name | Meaning |

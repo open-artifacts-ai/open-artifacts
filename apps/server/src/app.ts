@@ -7,6 +7,7 @@ import {
   enforcePolicy,
   mw,
   type Policy,
+  planGate,
   ROUTE_POLICY,
 } from "./auth/route-policy.js";
 import { readSession, sessionCookieName } from "./auth/session.js";
@@ -155,6 +156,8 @@ export function createApp(
   app.use("/api/v1/*", mw(unlessSigned(csrf())));
   // Capped callers (guests under direct sign-in) are read-only (P2 T9).
   app.use("/api/v1/*", mw(unlessSigned(readOnlyCap())));
+  // Hosted billing: team features under a plan lock (route-policy.ts).
+  app.use("/api/v1/*", planGate());
   app.use(AUTH.logout, mw(sameOrigin()), mw(csrf()));
 
   mount(app);
