@@ -45,6 +45,8 @@ describe("wrangler.jsonc", () => {
           binding: "DIRECTORY_BROKER",
           service: platformNames(env).directoryBroker,
         },
+        // BillingGate's binding: this env's billing Worker.
+        { binding: "BILLING", service: platformNames(env).billing },
       ]);
       expect(e.vars).not.toHaveProperty("EMAIL_QUOTA_TOKEN");
       // The nightly run, and H-DV's directory revoke tick every 2 minutes.

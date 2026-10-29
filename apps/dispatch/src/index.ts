@@ -1,14 +1,21 @@
 import {
+  type BillingGateEnv,
+  type BillingGateProps,
+  billingProps,
+} from "@oa/broker-core/billing-gate";
+import {
   type BrokerGateEnv,
   type BrokerGateProps,
   brokerProps,
 } from "@oa/broker-core/gate";
 import { isInstallId, names, type Env as OaEnv } from "@oa/provision/names";
 
+// And its only path to the tier store (see @oa/broker-core/billing-gate).
+export { BillingGate } from "@oa/broker-core/billing-gate";
 // The install's only path to the brokers (see @oa/broker-core/gate).
 export { BrokerGate } from "@oa/broker-core/gate";
 
-export interface Env extends BrokerGateEnv {
+export interface Env extends BrokerGateEnv, BillingGateEnv {
   DISPATCHER: DispatchNamespace;
   /** host -> install id, written by provisioning (create and delete). */
   HOSTS: KVNamespace;
@@ -49,9 +56,10 @@ const category = (e: unknown) =>
     ? "not_found"
     : "exception";
 
-/** What ctx.exports holds for this Worker's own BrokerGate export. */
+/** What ctx.exports holds for this Worker's own gate exports. */
 interface GateExports {
   BrokerGate: (o: { props: BrokerGateProps }) => Fetcher;
+  BillingGate: (o: { props: BillingGateProps }) => Fetcher;
 }
 
 export default {
@@ -68,8 +76,10 @@ export default {
     if (typeof id !== "string" || !isInstallId(id)) return notFound();
     try {
       // The original Request, unread and unchanged (body, Upgrade, Cookie),
-      // with this install's broker gates in ctx.props for this request only.
-      const props = brokerProps(ctx.exports as unknown as GateExports, id);
+      // with this install's broker and billing gates in ctx.props for this
+      // request only.
+      const gates = ctx.exports as unknown as GateExports;
+      const props = { ...brokerProps(gates, id), ...billingProps(gates, id) };
       return await env.DISPATCHER.get(names(id, env.OA_ENV).script, {
         props,
       }).fetch(req);

@@ -603,8 +603,10 @@ describe("H-DV review fixes", () => {
         createExecutionContext(),
       ),
     ).resolves.toBeUndefined();
-    // The sync run after it aborts on its own fixed line, never raw text.
+    // The billing check before it and the sync run after it each fail on
+    // their own fixed line, never raw text.
     expect(lines).toEqual([
+      "billing-health db_error",
       "directory-revoke aborted exception",
       "directory-sync aborted exception",
     ]);
@@ -739,11 +741,13 @@ describe("broker gates on every install call", () => {
   /** ctx.exports.BrokerGate as the runtime gives it: one stub per call, with its props. */
   const gates = {
     BrokerGate: (o: { props: unknown }) => ({ gate: o.props }),
+    BillingGate: (o: { props: unknown }) => ({ billingGate: o.props }),
   } as unknown as GateExports;
   const props = (id: string) => ({
     props: {
       AUTH_BROKER: { gate: { installId: id, kind: "auth" } },
       DIRECTORY_BROKER: { gate: { installId: id, kind: "directory" } },
+      billing: { billingGate: { installId: id } },
     },
   });
 

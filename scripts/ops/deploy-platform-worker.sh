@@ -8,6 +8,7 @@
 # Usage: <PLACEHOLDER VARS> scripts/ops/deploy-platform-worker.sh <app> staging|prod
 #   auth-broker: BROKER_REGISTRY_ID=<32 hex> [GOOGLE_CLIENT_ID_PROD=<client id>, prod]
 #   directory-broker: DIRECTORY_REGISTRY_ID=<32 hex> [GOOGLE_DIRECTORY_CLIENT_ID_PROD=<client id>, prod]
+#   billing: BILLING_DB_ID=<D1 uuid>
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -27,11 +28,13 @@ esac
 
 hex32='^[0-9a-f]{32}$'
 google_id='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
+uuid='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
 # The allowlist: app -> dir, plus the placeholders filled below.
 case "$app" in
   auth-broker) dir=apps/auth-broker ;;
   directory-broker) dir=apps/directory-broker ;;
+  billing) dir=apps/billing ;;
   *)
     echo "unknown app: not in the allowlist" >&2
     exit 2
@@ -69,6 +72,10 @@ case "$app" in
     if [ "$env" = prod ] && [ -n "${GOOGLE_DIRECTORY_CLIENT_ID_PROD:-}" ]; then
       fill GOOGLE_DIRECTORY_CLIENT_ID_PROD "$GOOGLE_DIRECTORY_CLIENT_ID_PROD" "$google_id"
     fi
+    ;;
+  billing)
+    # The id of this env's D1 oa-<p>-billing.
+    fill "BILLING_DB_ID_${up}" "${BILLING_DB_ID:-}" "$uuid"
     ;;
 esac
 

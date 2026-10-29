@@ -154,4 +154,44 @@ describe("deploy-platform-worker.sh", () => {
       }
     });
   });
+  describe("billing", () => {
+    const DIR = join(root, "apps/billing");
+    const DB = "0123abcd-4567-89ef-0123-456789abcdef";
+
+    for (const env of ["staging", "prod"] as const)
+      it(`${env}: deploys from apps/billing with exact argv and fills its D1 id`, () => {
+        const r = run(["billing", env], { BILLING_DB_ID: DB });
+        expect(r.code).toBe(0);
+        expect(r.log).toEqual([
+          `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
+          DIR,
+          "copy-present",
+        ]);
+        const snap = readFileSync(r.snap, "utf8");
+        const up = env.toUpperCase();
+        expect(snap).toContain(`"database_id": "${DB}"`);
+        expect(snap).not.toContain(`{{BILLING_DB_ID_${up}}}`);
+        // Only this env's placeholder is filled.
+        const other = env === "staging" ? "PROD" : "STAGING";
+        expect(snap).toContain(`{{BILLING_DB_ID_${other}}}`);
+        expect(r.out + r.err).not.toContain(DB);
+        expect(existsSync(join(DIR, "wrangler.deploy.jsonc"))).toBe(false);
+      });
+
+    it("refuses a missing or malformed D1 id, or another app's variable", () => {
+      for (const env of [
+        {},
+        { BILLING_DB_ID: "" },
+        { BILLING_DB_ID: "0123456789abcdef0123456789abcdef" },
+        { BILLING_DB_ID: DB.toUpperCase() },
+        { BILLING_DB_ID: `${DB}/x` },
+        { BILLING_DB_ID: "../../etc" },
+        { BROKER_REGISTRY_ID: REG },
+      ] as Record<string, string>[]) {
+        const r = run(["billing", "staging"], env);
+        expect(r.code).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
+  });
 });

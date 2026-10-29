@@ -1,4 +1,9 @@
 import {
+  type BillingGateEnv,
+  type BillingGateProps,
+  billingProps,
+} from "@oa/broker-core/billing-gate";
+import {
   type BrokerGateEnv,
   type BrokerGateProps,
   brokerProps,
@@ -14,21 +19,30 @@ import {
   isReleaseVersion,
   REVOKE_MIN_VERSION,
 } from "@oa/provision/versions";
+import { billingHealth } from "./billing-health.js";
 import { emailQuota, type QuotaEnv } from "./quota.js";
 
+// And to the tier store (see @oa/broker-core/billing-gate).
+export { BillingGate } from "@oa/broker-core/billing-gate";
 // Installs reach the brokers only through these stubs (see @oa/broker-core/gate).
 export { BrokerGate } from "@oa/broker-core/gate";
 
-/** ctx.exports for this Worker's own BrokerGate export. */
+/** ctx.exports for this Worker's own gate exports. */
 export interface GateExports {
   BrokerGate: (o: { props: BrokerGateProps }) => Fetcher;
+  BillingGate: (o: { props: BillingGateProps }) => Fetcher;
 }
 
-/** A call's args: the install's broker gates in props when this run has them. */
+/**
+ * A call's args: the install's broker and billing gates in props when this
+ * run has them, built per call so each holds that install only.
+ */
 const withGates = (gates: GateExports | undefined, id: string) =>
-  gates ? { props: brokerProps(gates, id) } : undefined;
+  gates
+    ? { props: { ...brokerProps(gates, id), ...billingProps(gates, id) } }
+    : undefined;
 
-export interface Env extends QuotaEnv, BrokerGateEnv {
+export interface Env extends QuotaEnv, BrokerGateEnv, BillingGateEnv {
   DISPATCHER: DispatchNamespace;
   /** Platform D1 (installs metadata only; no customer data). */
   PLATFORM_DB: D1Database;
@@ -723,6 +737,9 @@ export default {
   async scheduled(event, env, ctx) {
     const gates = ctx.exports as unknown as GateExports;
     if (event.cron === REVOKE_CRON) {
+      // The billing outage alert first, bounded (5 s) and never throwing, so
+      // a long revoke or sync tick can't starve it.
+      await billingHealth(env, event.scheduledTime);
       await revokeTick(env, event.scheduledTime, { gates });
       // Own try: a sync run that aborts (D1, env) never fails the revoke tick.
       try {
