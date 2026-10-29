@@ -20,8 +20,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { DatabaseSync as Sqlite } from "node:sqlite";
-import v8 from "node:v8";
-import { runInNewContext } from "node:vm";
 import { isPat } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { packUstar } from "../../../scripts/ci/release-artifact.mjs";
@@ -1851,6 +1849,7 @@ describe("WfpProvisioner.create", () => {
         Object.keys(want).map((path) => ({
           path,
           size: path.length,
+          hash: assetHash(enc(path), path),
           bytes: async () => enc(path),
         })),
       );
@@ -1881,7 +1880,14 @@ describe("WfpProvisioner.create", () => {
       const r = await cf.assetsUpload(
         { kind: "namespace", ns: "oa-staging" },
         "oa-s-iaaaaaaaaaaa",
-        [{ path: "a.txt", size: 1, bytes: async () => enc("a") }],
+        [
+          {
+            path: "a.txt",
+            size: 1,
+            hash: assetHash(enc("a"), "a.txt"),
+            bytes: async () => enc("a"),
+          },
+        ],
       );
       expect(r.jwt).toMatch(/^jwt-sess-/);
       expect(fake.log.some((e) => e.path.includes("/assets/upload"))).toBe(
@@ -1911,8 +1917,8 @@ describe("WfpProvisioner.create", () => {
         path: `f${String(i).padStart(2, "0")}.bin`,
         bytes: new Uint8Array(randomBytes(2 * MiB)),
       }));
-      v8.setFlagsFromString("--expose-gc");
-      const gc = runInNewContext("gc") as () => void;
+      // vitest.config.ts runs this suite with --expose-gc.
+      const gc = globalThis.gc as () => void;
       const held = async () => {
         // The fake's own request log keeps every body; that is not create's.
         s.fake.raw.length = 0;
@@ -1949,9 +1955,33 @@ describe("WfpProvisioner.create", () => {
       // The fake asks for one file per bucket, so one bucket is 2 MiB; 256 KiB
       // is room for the other buffers of a create.
       expect(peak).toBeLessThan(2 * MiB + 256 * 1024);
-      // Pre-flight, the upload's hash pass, and the bucket Cloudflare asked for.
-      expect([...r.reads.values()]).toEqual(files.map(() => 3));
+      // Pre-flight, and the bucket Cloudflare asked for.
+      expect([...r.reads.values()]).toEqual(files.map(() => 2));
     });
+
+    it.each([
+      ["10 missing, in one bucket", 10, 162],
+      ["none missing", 0, 152],
+    ])(
+      "152 assets with %s are read %i + 152 times: once to verify, once per bucket file",
+      async (_n, missing, total) => {
+        const files = Array.from({ length: 152 }, (_, i) => ({
+          path: `a${String(i).padStart(3, "0")}.js`,
+          bytes: enc(`export const n = ${i};`),
+        }));
+        const s = setup({ release: makeRelease({ assets: files }) });
+        for (const f of files.slice(missing))
+          s.fake.assetHashes.add(assetHash(f.bytes, f.path));
+        s.fake.assetsPerBucket = 10;
+        await s.p.create(input());
+        const c = (s.release as ReturnType<typeof makeRelease>).calls;
+        expect(c.assetBytes).toBe(total);
+        expect(
+          s.fake.log.filter((e) => e.path.includes("/workers/assets/upload"))
+            .length,
+        ).toBe(missing ? 1 : 0);
+      },
+    );
 
     it("a file Cloudflare already has is read only to verify it", async () => {
       const r = counting(
@@ -1964,8 +1994,8 @@ describe("WfpProvisioner.create", () => {
         s.fake.assetHashes.add(assetHash(a.bytes, a.path));
       await s.p.create(input());
       expect(Object.fromEntries(r.reads)).toEqual({
-        "app.js": 2,
-        "index.html": 2,
+        "app.js": 1,
+        "index.html": 1,
       });
       expect(
         s.fake.log.some((e) => e.path.includes("/workers/assets/upload")),
@@ -1986,10 +2016,7 @@ describe("WfpProvisioner.create", () => {
       expect(s.fake.log).toEqual([]);
     });
 
-    it.each([
-      ["between verify and upload", 2],
-      ["between the upload's hash and its bucket", 3],
-    ])(
+    it.each([["between verify and its bucket", 2]])(
       "a file changed %s is refused before the script upload",
       async (_n, at) => {
         const r = counting((path, n) =>
@@ -2006,11 +2033,41 @@ describe("WfpProvisioner.create", () => {
         expect(uploads(s.fake)).toHaveLength(0);
         expect(
           s.fake.log.some((x) => x.path.endsWith("/assets-upload-session")),
-        ).toBe(at === 3);
+        ).toBe(true);
       },
     );
 
-    it("cf.assetsUpload reads a file to hash it and again only for its bucket", async () => {
+    it("cf.assetsUpload refuses a file changed since its manifest hash, before its bucket is posted", async () => {
+      const fake = new FakeCf();
+      FAKES.push(fake);
+      SENSITIVE.add(fake.token);
+      const cf = cfClient({
+        accountId: fake.accountId,
+        token: fake.token,
+        fetch: fake.fetch,
+      });
+      const e = await fails(
+        cf.assetsUpload(
+          { kind: "namespace", ns: "oa-staging" },
+          "oa-s-iaaaaaaaaaaa",
+          [
+            {
+              path: "a.txt",
+              size: 1,
+              hash: assetHash(enc("a"), "a.txt"),
+              // Read for the bucket: not the bytes the manifest hashed.
+              bytes: async () => enc("b"),
+            },
+          ],
+        ),
+      );
+      expect(e.message).toMatch(/changed since its hash/);
+      expect(fake.log.some((x) => x.path.includes("/assets/upload"))).toBe(
+        false,
+      );
+    });
+
+    it("cf.assetsUpload reads a file only for its bucket", async () => {
       const fake = new FakeCf();
       FAKES.push(fake);
       SENSITIVE.add(fake.token);
@@ -2024,6 +2081,7 @@ describe("WfpProvisioner.create", () => {
       const file = (path: string, text: string) => ({
         path,
         size: text.length,
+        hash: assetHash(enc(text), path),
         bytes: async () => {
           reads.push(path);
           return enc(text);
@@ -2034,7 +2092,7 @@ describe("WfpProvisioner.create", () => {
         "oa-s-iaaaaaaaaaaa",
         [file("a.txt", "a"), file("b.txt", "b")],
       );
-      expect(reads).toEqual(["a.txt", "b.txt", "b.txt"]);
+      expect(reads).toEqual(["b.txt"]);
     });
   });
 
@@ -2442,7 +2500,14 @@ describe("release record integrity (H-T4b M1)", () => {
       cf.assetsUpload(
         { kind: "namespace", ns: "oa-staging" },
         "oa-s-iaaaaaaaaaaa",
-        [{ path: ".dev.vars", size: 8, bytes: async () => enc("SECRET=1") }],
+        [
+          {
+            path: ".dev.vars",
+            size: 8,
+            hash: assetHash(enc("SECRET=1"), ".dev.vars"),
+            bytes: async () => enc("SECRET=1"),
+          },
+        ],
       ),
     );
     expect(e.message).toMatch(/asset path/);

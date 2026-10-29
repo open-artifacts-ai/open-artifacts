@@ -210,6 +210,8 @@ export class FakeCf {
   /** The Content-Type each uploaded asset will be served with, by path. */
   readonly assetTypes = new Map<string, string>();
   private bucketJwts = new Map<string, string>();
+  /** How many missing files the assets session puts in each bucket. */
+  assetsPerBucket = 1;
   private completions = new Set<string>();
   readonly artifacts = new Map<string, { title: string; content: string }>();
   private faults: Fault[] = [];
@@ -789,7 +791,9 @@ export class FakeCf {
         this.completions.add(jwt);
         return env({ jwt, buckets: [] });
       }
-      const buckets = missing.map((h) => [h]);
+      const buckets: string[][] = [];
+      for (let i = 0; i < missing.length; i += this.assetsPerBucket)
+        buckets.push(missing.slice(i, i + this.assetsPerBucket));
       const paths = new Map(
         Object.entries(manifest).map(([p, v]) => [v.hash, p] as const),
       );

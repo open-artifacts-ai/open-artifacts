@@ -34,6 +34,7 @@ import { join } from "node:path";
 import { newId, newPat } from "@oa/shared";
 import {
   type AssetFile,
+  assetHash,
   type Cf,
   CfError,
   type Module,
@@ -236,8 +237,6 @@ interface Checked {
   rec: ReleaseRecord;
   mainModule: string;
   modules: Module[];
-  /** Listed and verified; each file is re-read when it is uploaded. */
-  assets: AssetFile[];
   template: Template;
   migrations: ReleaseFile[];
   /** The env's signed floor, checked against FLOOR_MIN_SEQ and the version. */
@@ -662,6 +661,8 @@ export class ProbeAccepted extends Error {
 
 export class WfpProvisioner {
   readonly notes: string[] = [];
+  /** Each verified asset's assetHash, by its record sha256 and path. */
+  private readonly assetHashes = new Map<string, string>();
   private readonly cf: Cf;
   private readonly env: Env;
   private readonly target: Target;
@@ -972,8 +973,10 @@ export class WfpProvisioner {
    * The assets list, checked against the signed record, as an upload
    * manifest whose bytes are read only when used: every read is a private
    * copy checked against the record's size and sha256, so a file changed
-   * since an earlier read is refused. With `verify` (pre-flight) every file
-   * is read and checked now, one at a time, and dropped.
+   * since an earlier read is refused. Each file's assetHash comes from its
+   * verify read: with `verify` (pre-flight, rollback apply) every file is
+   * read and checked now, one at a time, and dropped; without, only a file
+   * not verified yet in this run is.
    */
   private async readAssets(
     rec: ReleaseRecord,
@@ -995,20 +998,26 @@ export class WfpProvisioner {
     }
     if (canonicalJson(got) !== canonicalJson(rec.assets))
       this.refuse(rec, "assets", "an extra, missing or changed file");
-    const files = rec.assets.map((a) => ({
-      path: a.path,
-      size: a.size,
-      bytes: async () => {
-        const bytes = new Uint8Array(
-          (await this.o.release.assetBytes(rec.version, rec.variant, a.path)) ??
-            [],
-        );
-        if (bytes.byteLength !== a.size || sha256Hex(bytes) !== a.sha256)
-          this.refuse(rec, "assets", `${a.path} changed`);
-        return bytes;
-      },
-    }));
-    if (verify) for (const f of files) await f.bytes();
+    const read = async (a: ReleaseAssetEntry) => {
+      const bytes = new Uint8Array(
+        (await this.o.release.assetBytes(rec.version, rec.variant, a.path)) ??
+          [],
+      );
+      if (bytes.byteLength !== a.size || sha256Hex(bytes) !== a.sha256)
+        this.refuse(rec, "assets", `${a.path} changed`);
+      return bytes;
+    };
+    const files: AssetFile[] = [];
+    for (const a of rec.assets) {
+      // The hash is of the bytes with this sha256, so it is reused safely.
+      const key = `${a.sha256}\0${a.path}`;
+      let hash = this.assetHashes.get(key);
+      if (verify || hash === undefined) {
+        hash = assetHash(await read(a), a.path);
+        this.assetHashes.set(key, hash);
+      }
+      files.push({ path: a.path, size: a.size, hash, bytes: () => read(a) });
+    }
     return files;
   }
 
@@ -1068,11 +1077,11 @@ export class WfpProvisioner {
     const rec = await this.readRecord(i);
     const floor = await this.readFloor(rec);
     const { mainModule, modules } = await this.readModules(rec);
-    const assets = await this.readAssets(rec, true);
+    await this.readAssets(rec, true);
     const template = await this.readTemplate(rec);
     const migrations = await this.readMigrations(rec);
     await this.readWelcome(rec);
-    return { rec, mainModule, modules, assets, template, migrations, floor };
+    return { rec, mainModule, modules, template, migrations, floor };
   }
 
   /**
@@ -2808,7 +2817,8 @@ export class WfpProvisioner {
     await this.logged("rollback.start", { from, to });
     this.assertHooksAllowed(rel.rec.variant, p.m.testHooks);
     const mods = await this.readModules(rel.rec);
-    const assets = await this.readAssets(rel.rec);
+    // Check-first: every file again, before the probe or any write.
+    const assets = await this.readAssets(rel.rec, true);
     // L5: the live tag, not only the journal; a rollback never crosses it.
     await this.hold();
     let live: string | null | undefined;

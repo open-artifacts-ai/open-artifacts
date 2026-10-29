@@ -906,6 +906,27 @@ describe("rollback", () => {
     });
   });
 
+  it("rollback refuses an asset changed between plan and apply before any probe or upload", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    const good = s.rel.reader.assetBytes;
+    let reads = 0;
+    // The plan's pre-flight read is good; the apply's read is not.
+    s.rel.reader.assetBytes = async (version, variant, path) =>
+      path === "app.js" && ++reads >= 2
+        ? enc("console.log(2)")
+        : good(version, variant, path);
+    const from = s.fake.log.length;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/assets do not match the signed record/);
+    expect(reads).toBe(2);
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(probes(s.fake, from)).toHaveLength(0);
+    expect(s.audit(inst.id)).not.toContain("rollback.incomplete");
+  });
+
   it("rollback refuses a previous version below the floor or revoked", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));

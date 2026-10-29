@@ -112,9 +112,9 @@ export interface Cf {
   /**
    * Upload session on the target's route, buckets on the account route;
    * returns the completion jwt. Paths are relative; a dotfile, dot-directory
-   * or other unsafe path is refused before any call. Each file is read once
-   * for the manifest hash and dropped, then read again only for the bucket
-   * Cloudflare asks for it in, so at most one bucket is held.
+   * or other unsafe path is refused before any call. The manifest is built
+   * from each file's hash; a file is read only for the bucket Cloudflare asks
+   * for it in, so at most one bucket is held.
    */
   assetsUpload(
     t: Target,
@@ -207,10 +207,14 @@ export function assetContentType(path: string): string {
   return ASSET_TYPES[extOf(path)] ?? "application/octet-stream";
 }
 
-/** One asset to upload: its bytes are read only when they are needed. */
+/**
+ * One asset to upload: its size and assetHash, from the caller's verify
+ * read, and its bytes, read only if Cloudflare asks for the file in a bucket.
+ */
 export interface AssetFile {
   path: string;
   size: number;
+  hash: string;
   bytes: () => Promise<Uint8Array>;
 }
 
@@ -552,28 +556,19 @@ export function cfClient(o: {
       });
     },
     async assetsUpload(t, script, list) {
-      const seen = new Set<string>();
-      for (const f of list) {
-        assertAssetPath(f?.path);
-        if (seen.has(f.path))
-          throw new Error(`asset path ${f.path} appears twice`);
-        seen.add(f.path);
-      }
-      /** One file's bytes, checked against its listed size. */
-      const read = async (f: AssetFile) => {
-        const bytes = await f.bytes();
-        if (bytes.byteLength !== f.size)
-          throw new Error(
-            `asset ${f.path}: size ${bytes.byteLength}, listed ${f.size}`,
-          );
-        return bytes;
-      };
       const files = new Map<string, AssetFile>();
       const manifest: Record<string, { hash: string; size: number }> = {};
       for (const f of list) {
-        const hash = assetHash(await read(f), f.path);
-        manifest[`/${f.path}`] = { hash, size: f.size };
-        files.set(hash, f);
+        assertAssetPath(f?.path);
+        const key = `/${f.path}`;
+        if (Object.hasOwn(manifest, key))
+          throw new Error(`asset path ${f.path} appears twice`);
+        if (!/^[0-9a-f]{32}$/.test(String(f.hash)))
+          throw new Error(`asset ${f.path} has no valid hash`);
+        if (!Number.isSafeInteger(f.size) || f.size < 0)
+          throw new Error(`asset ${f.path} has no valid size`);
+        manifest[key] = { hash: f.hash, size: f.size };
+        files.set(f.hash, f);
       }
       const sess = await result<{ jwt: string; buckets?: string[][] }>(
         "POST",
@@ -591,8 +586,11 @@ export function cfClient(o: {
           const file = files.get(h);
           if (!file)
             throw new Error("assets session asked for an unknown file");
-          const bytes = await read(file);
-          if (assetHash(bytes, file.path) !== h)
+          const bytes = await file.bytes();
+          if (
+            bytes.byteLength !== file.size ||
+            assetHash(bytes, file.path) !== h
+          )
             throw new Error(`asset ${file.path} changed since its hash`);
           // The part's Content-Type is what Cloudflare serves the asset with.
           form.append(
