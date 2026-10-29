@@ -20,13 +20,16 @@ import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import type { AppType } from "./index.js";
 
-// Self-serve billing for the org owner and admins (uncapped), hosted only:
-// a Stripe Checkout or Customer Portal URL from billing (signed POST
-// /checkout and /portal through the BILLING gate; the billing Worker holds
-// the Stripe key and passes its own URLs), and this month's usage report on
-// demand. Cookie writes need X-OA-Request: 1 (csrf()); capped callers are
-// refused by the route policy (404) and readOnlyCap. The answer to the
-// dashboard is only the Stripe URL.
+// Self-serve billing for the org owner and admins, hosted only (the billing
+// plan cap included: a locked admin can still pay; guests, restricted
+// members and members never): a Stripe Checkout or Customer Portal URL from
+// billing (signed POST /checkout and /portal through the BILLING gate; the
+// billing Worker holds the Stripe key and passes its own URLs), and this
+// month's usage report on demand. Cookie writes need X-OA-Request: 1
+// (csrf()); other callers are refused by the route policy (404) and
+// readOnlyCap. The answer to the dashboard is only the Stripe URL.
+// Dependency: /checkout and /portal are Platform's routes (#849's gate
+// allowlist); until they ship, these answer 503 billing_unavailable.
 
 /** Stripe's hosted pages: the only URLs these routes hand out. */
 const STRIPE_URL = /^https:\/\/(checkout|billing)\.stripe\.com\//;
