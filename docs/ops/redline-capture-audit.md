@@ -76,26 +76,32 @@ how the one-shot driver (`pnpm -C tests/redline capture`,
 | 1 | `redline-creds` refused | `--env staging` missing from the doc | the driver prints (or with `--make-creds` runs) the exact command with `--env staging`; flags checked against `scripts/hosted/src/cli.ts` and `--help` |
 | 2 | `redline-creds` refused again, then again | `CLOUDFLARE_ACCOUNT_ID` unset; then the Keychain item, `gh auth` and the hook-key file each found one at a time | prerequisites checked up front, all at once, each with its exact fix; the account id is read from the env or `~/.open-artifacts/redline-capture/cloudflare-account-id`, else asked once and saved there (0600) |
 | 3 | Preflight refused on the broker probe | the server hook was never built (#846) | `REDLINE_ALLOW_UNCHECKED_BROKER=1` is built in (it still refuses on anything but the hook's 404) |
-| 4 | Wrong callback host copied | the inspector lists several callbacks; the person picked another host's | no copying: the driver intercepts the callback in Chrome itself, armed for this prompt's install origin and state only |
-| 5 | Confused by the `r1.` retry screen showing the other tenant's `hd` | the browser consumed the first callback and the install retried | the first callback is held by the driver (CDP `Fetch.failRequest`) before it leaves the browser, so the install never sees it and never retries; the window closes at once |
-| 6 | `run-capture.sh` ran a stale checkout | a hard-coded path in the kit | the driver runs from this repo and imports the suite from `--suite` (default `~/code/projects/openartifacts-capture`), refusing unless its HEAD is `--expect-sha` and its tree is clean |
+| 4 | Wrong callback host copied | the inspector lists several callbacks; the person picked another host's | no copying: the capture extension blocks the callback in Chrome and reports it to the command, which accepts only this prompt's install origin and state, once |
+| 5 | Confused by the `r1.` retry screen showing the other tenant's `hd` | the browser consumed the first callback and the install retried | the extension's `declarativeNetRequest` rule blocks the callback (the broker's 302 target) before it leaves the browser, so the install never sees it and never retries; the tab closes at once |
+| 6 | `run-capture.sh` ran a stale checkout | a hard-coded path in the kit | the driver runs from this repo and imports the suite from `--suite` (default `~/code/projects/openartifacts-capture`), refusing unless its HEAD is `--expect-sha` and its tree is clean; checked again right before the suite runs |
 | 7 | The secrets dir was empty | `redline-creds` never ran on this Mac | prerequisite check names each missing file and the command that writes it |
-| 8 | Couldn't run as a `!` command | 5 prompts waited for Enter after a clipboard copy | the terminal needs no input on the happy path; the only key is `r` to retry a prompt that timed out |
-| 9 | alice's Google session reached dave's prompt | one Incognito window for all prompts | a fresh temporary Chrome profile per prompt, deleted when the prompt ends |
-| 10 | The clipboard held a live credential | pbcopy/pbpaste | no clipboard anywhere; the URL stays in the driver's memory |
+| 8 | Couldn't run as a `!` command | 5 prompts waited for Enter after a clipboard copy | the terminal needs no input on the happy path (one Load unpacked in Chrome per run, then only the Google sign-ins); the only key is `r` to retry a prompt |
+| 9 | alice's Google session reached dave's prompt | one Incognito window for all prompts | one temporary profile per run; before each prompt the extension clears the cookies and storage of accounts.google.com and google.com; the profile is deleted at exit |
+| 10 | The clipboard held a live credential | pbcopy/pbpaste | no clipboard anywhere; the URL goes from the extension to the command's 127.0.0.1 listener (token-guarded) and stays in memory |
 | 11 | The person had to read and follow a 6-line instruction per prompt | the manual inspector flow | one line per prompt: who to sign in as and what Google will offer |
-| 12 | A slow prompt meant re-reading the doc | only a "too old" message after the paste | a per-prompt timeout (5 min, `--prompt-timeout-min`) names the prompt, the user and the key to retry it |
-| 13 | Google could refuse an automated browser | n/a with a manual window, but a risk for any driver | Chrome is started as a normal process (no `--enable-automation`, `navigator.webdriver` false, checked in a throwaway tab), driven by raw CDP with only `Target` and `Fetch` on the browser session and no session at all on the sign-in tab (no `Runtime`, no `Page`, no init script); if Google still shows "This browser or app may not be secure" or another block, the driver stops with a plain message saying it is Google refusing the automated browser, not a test failure, and never retries on its own |
+| 12 | A slow prompt meant re-reading the doc | only a "too old" message after the paste | a per-prompt timeout (5 min, `--prompt-timeout-min`) names the prompt, the user and the key to retry it; Chrome closing mid-prompt is noticed at once |
+| 13 | Google could refuse an automated browser | n/a with a manual window, but a risk for any driver | there is no automation: plain Chrome with only `--user-data-dir`, `--no-first-run` and a URL (no debugging port, no automation or blink switches; a unit test asserts the argv), and an extension the person loads. If Google still shows a block page (automation, unsupported browser, OAuth error such as `disallowed_useragent`), the extension reports its URL and the command stops with a plain message saying it is Google refusing the browser, not a test failure, and never retries |
 | 14 | Verdicts bound to whatever checkout ran | `suiteSha()` is git HEAD of the directory holding `capture.ts` | the driver imports `capture.ts` from the frozen checkout, so the verdicts carry its SHA, which matches CI's `GITHUB_SHA` for that commit |
 
 ## Failure modes the one-shot keeps or adds
 
-- Ctrl-C, SIGTERM or SIGHUP at any point: Chrome (its whole process group, by PID) is
-  stopped and its profile deleted; the verdicts directory is removed.
+- Ctrl-C, SIGTERM or SIGHUP at any point (including at the account id
+  question): Chrome (the process group the command started) is quit and the
+  temp dir (profile, extension copy, verdicts) is deleted.
+- `kill -9` of the command: it can't clean up. It prints the temp dir at
+  start; the runbook says how to quit that Chrome and delete the dir by hand.
+- The extension isn't loaded: the command waits with a plain message and has
+  no fallback. Requests without the run's token get 403.
 - Chrome missing, not macOS, the suite checkout dirty or at another commit:
   refused before anything starts, with the fix.
 - A callback for another host, or with another state (including any `r1.`):
-  never captured. With the interception pattern scoped to the prompt's
-  install origin, another host's callback is not even paused.
-- The remote-debugging port listens on 127.0.0.1 only, on a port Chrome picks
-  (`--remote-debugging-port=0`), and only while the prompt's window is open.
+  blocked by the extension (the code is never spent) and never captured.
+- Chrome closes mid-prompt: noticed at once; `r` reopens it on the same
+  profile and retries that prompt.
+- Chrome 137 and later ignore the command-line extension switch, so the
+  extension is loaded by hand once per run (Developer mode, Load unpacked).

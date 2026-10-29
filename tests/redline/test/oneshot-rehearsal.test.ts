@@ -5,6 +5,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -96,11 +97,13 @@ const listeners = (port: number) =>
     .map((l) => l.slice(1));
 
 /** The harness's own connection to a rehearsal Chrome (its debugging port). */
-async function harness(profile: string): Promise<Browser> {
+async function harness(profile: string, since = 0): Promise<Browser> {
   const f = join(profile, "DevToolsActivePort");
   let lines: string[] = [];
   const ok = await until(() => {
     try {
+      // A reopened Chrome on the same profile: never the last run's port.
+      if (statSync(f).mtimeMs < since) return false;
       lines = readFileSync(f, "utf8").split("\n");
       return !!lines[1];
     } catch {
@@ -271,7 +274,7 @@ describe.skipIf(!on)(
           chromes.push({ pid: c.pid, profile: c.profile });
           // The person loads the extension (each start: the stand-in's
           // loadUnpacked doesn't persist across Chrome restarts).
-          const b = harness(c.profile).then(async (br) => {
+          const b = harness(c.profile, Date.now() - 1_000).then(async (br) => {
             browsers.push(br);
             if (o.load !== false) await loadUnpacked(br, ext);
             return br;

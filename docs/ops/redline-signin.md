@@ -5,9 +5,10 @@ aud at B** (`tests/redline/live/signin.test.ts`). Without this step they report
 `unproven-live` and the gate fails. The step is **5 Google sign-ins** with two
 test users, then the suite runs. The suite never mints or signs a token.
 
-You run one command and type two test accounts' passwords into Chrome. Nothing
-is copied, pasted or clicked in the terminal. Why it is built this way, and
-what it replaced: `docs/ops/redline-capture-audit.md`.
+You run one command, load a small extension into the Chrome window it opens
+(once per run), and type two test accounts' passwords. Nothing is copied or
+pasted. Why it is built this way, and what it replaced:
+`docs/ops/redline-capture-audit.md`.
 
 ## Run it
 
@@ -18,48 +19,83 @@ the frozen checkout, see "The gate binding"):
 pnpm -C tests/redline capture
 ```
 
-That is all. The first time, or when the admin secrets are missing, add
-`--make-creds` to have it make them (it shows the commands first; see
-"Credentials").
+The first time, or when the admin secrets are missing, add `--make-creds`
+to have it make them (it shows the commands first; see "What it checks
+first").
 
-For each of the 5 prompts it prints one line, for example
+1. After its checks it prints the run's temp dir, then opens Google Chrome
+   on its Extensions page with a temporary profile, and prints:
 
-```
-[1/5] rl-a: sign in as alice@oa-redline-a.fyi in the Chrome window that just opened (Google offers only oa-redline-a.fyi accounts). Google may ask you to confirm it's you; that's normal. The window closes by itself.
-```
+   ```
+   Chrome is open on its Extensions page, with a temporary profile for this run. Load the capture extension once:
+     1. Turn on "Developer mode" (top right).
+     2. Click "Load unpacked" and choose this folder: /var/folders/.../oa-redline-capture-XXXX/extension
+   Waiting for the extension to check in (Ctrl-C stops).
+   ```
 
-and opens a new Chrome window already on Google's sign-in page. Type the
-named account and its password (password manager). When Google hands the
-sign-in back, the window closes on its own and the terminal prints
-`captured, N of 5` and each leg's verdict (`pass`, or `fail` with the
-reason). Then the next window opens. After prompt 5 the live suite runs with
-`--gate` and prints the gate result.
+   Do those two clicks. (Chrome 137 and later ignore the command-line
+   switch that used to load extensions, so this step is by hand.) The
+   command waits until the extension checks in with this run's token. It
+   has no other way forward.
+2. For each of the 5 prompts it prints one line, for example
 
-If a prompt sees no sign-in within 5 minutes (`--prompt-timeout-min <n>`), the
-window closes and the terminal says which prompt to redo and as whom:
+   ```
+   [1/5] rl-a: sign in as alice@oa-redline-a.fyi in the new Chrome tab (Google offers only oa-redline-a.fyi accounts). Google may ask you to confirm it's you; that's normal. The tab closes by itself.
+   ```
+
+   and opens a new tab on Google's sign-in page, with Google's cookies
+   cleared first. Type the named account and its password (password
+   manager). When Google hands the sign-in back, the tab closes on its own
+   and the terminal prints `captured, N of 5` and each leg's verdict
+   (`pass`, or `fail` with the reason).
+3. After prompt 5, Chrome quits, the frozen checkout is checked again, and
+   the live suite runs with `--gate` and prints the gate result.
+
+If a prompt sees no sign-in within 5 minutes (`--prompt-timeout-min <n>`):
 
 ```
 [2/5] No sign-in came back within 5 min.
   Redo prompt 2 of 5: sign in as alice@oa-redline-a.fyi at rl-b. Press r to retry it (Ctrl-C stops).
 ```
 
-Press `r`: a fresh window opens for that prompt only. Ctrl-C at any point
-stops Chrome, deletes its temporary profile and the verdicts, and exits.
+If Chrome closes during a prompt (a crash, or you quit it), it says so at
+once:
 
-If Google refuses the window itself ("This browser or app may not be secure",
-or any Google automation or unsupported-browser page), the run stops at once
-with:
+```
+[2/5] Chrome closed during this prompt.
+  Redo prompt 2 of 5: sign in as alice@oa-redline-a.fyi at rl-b. Press r to reopen Chrome and retry it (Ctrl-C stops).
+```
+
+Press `r`: Chrome reopens on the same profile (the extension stays loaded)
+and that prompt starts again. Ctrl-C at any point, including at the account
+id question, quits Chrome, deletes the temp dir and exits.
+
+If Google refuses the browser (its "This browser or app may not be secure"
+page, another automation or unsupported-browser page, or an OAuth error page
+such as `disallowed_useragent`), the extension reports the page and the run
+stops at once:
 
 ```
 Stopped at prompt 1 of 5 (rl-a, alice@oa-redline-a.fyi): Google's block page (/v3/signin/rejected).
-  This is Google refusing to sign in from the browser this script started (its automation or unsupported-browser block), not a red-line test failure. Nothing was retried and nothing was redeemed.
+  This is Google refusing to sign in from this browser (its automation, unsupported-browser or OAuth error page), not a red-line test failure. Nothing was retried and nothing was redeemed.
 ```
 
 It never retries on its own. Tell Platform.
 
+### If the command itself is killed hard
+
+Ctrl-C, SIGTERM and SIGHUP clean up. A `kill -9` of the command can't: its
+Chrome may stay open and its temp dir (the one printed as `Temp dir for this
+run:`) stays on disk, holding Google session cookies. Quit that Chrome
+window (Cmd-Q), then delete the dir:
+
+```sh
+rm -rf /var/folders/.../oa-redline-capture-XXXX   # the path it printed
+```
+
 ## What it checks first (each refusal names its fix)
 
-In order, all before any window opens:
+In order, all before Chrome opens:
 
 1. **Prerequisites.** macOS; Google Chrome at `/Applications/Google Chrome.app`
    (`--chrome <path>` otherwise); the frozen suite checkout (below) at the
@@ -76,10 +112,11 @@ In order, all before any window opens:
 
    and, with `--make-creds`, runs them. The account id comes from
    `CLOUDFLARE_ACCOUNT_ID`, else `~/.open-artifacts/redline-capture/cloudflare-account-id`,
-   else it asks once and saves it there (0600). Those commands also need, and
-   it checks first: the Keychain item `oa-hosted-staging` (account
-   `open-artifacts`), `gh auth status`, `git config user.email`, and each
-   install's `~/.open-artifacts/hosted-staging/<app host>-hook-key` (0600).
+   else it asks once and saves it there (0600, dir 0700). Those commands
+   also need, and it checks first: the Keychain item `oa-hosted-staging`
+   (account `open-artifacts`), `gh auth status`, `git config user.email`,
+   and each install's `~/.open-artifacts/hosted-staging/<app host>-hook-key`
+   (0600).
 3. **The preflight** (below), with `REDLINE_ALLOW_UNCHECKED_BROKER=1` built in
    until the broker-probe hook ships (#846). The override applies only when
    the hook answers 404; any other answer still refuses.
@@ -95,60 +132,56 @@ Every flag and environment variable the old steps needed is built in.
 pnpm -C tests/redline capture:dry-run
 ```
 
-Runs the prerequisites and the preflight, then for each of the 5 prompts
-starts a real sign-in at the install, opens Chrome up to Google's sign-in
-page with no credentials, and checks: the Google URL carries `hd` for
-a-alice, a-alice-replay, b-dave and b-dave-2 and has **no** `hd` for b-alice;
-the broker state names this install and this start; the interception is armed
-(and answers a probe) for this install's callback host and this start's
-state; Google's page loaded with no block; `navigator.webdriver` is false.
-Then it closes the window and deletes the profile. It redeems nothing and
-runs no suite. It prints one line per prompt and exits 0 only when all 5 are
-clean.
+Runs the prerequisites and the preflight, opens Chrome and waits for the
+extension the same way (load it once), then for each of the 5 prompts:
+clears Google's cookies, sends a probe callback the extension must block and
+report (the interception is armed for this install's host and this start's
+state), starts a real sign-in at the install and opens Google's sign-in page
+with no credentials. It checks the URL the extension reports for that page:
+`hd` present for a-alice, a-alice-replay, b-dave and b-dave-2, **absent** for
+b-alice; the broker state names this install and this start; no block page.
+It redeems nothing and runs no suite. It prints one line per prompt and exits
+0 only when all 5 are clean.
 
-## How the window works
+## How the browser half works
 
-- Chrome is the installed Google Chrome, started as a **normal process**
-  with a fresh temporary profile per prompt (`--user-data-dir`), so alice's
-  Google session never reaches dave's prompt. A fresh profile can make Google
-  ask you to confirm it's you (a new-device check); that is normal, not a
-  block. Chrome is not started by an automation library and has no
-  `--enable-automation`: Google refuses sign-in in browsers that look
-  automated. Current Chrome sets `navigator.webdriver` whenever a debugging
-  port is open, so the launch adds
-  `--disable-blink-features=AutomationControlled`; the value is checked in a
-  throwaway first tab, never in the sign-in tab.
-- The debugging port listens on 127.0.0.1 only, on a port Chrome picks
-  (`--remote-debugging-port=0`), only while the prompt's window is open.
-- The driver speaks raw CDP over one WebSocket to the browser endpoint and
-  uses only the `Target` and `Fetch` domains there. `Fetch` is enabled on
-  the browser session itself, before the sign-in tab exists, so it holds
-  every tab's navigations (the new tab's very first one, popups) with
-  nothing to race. The sign-in tab is created with
-  `Target.createTarget(<Google URL>)` and the driver never opens a session
-  on it: no `Runtime`, no `Page`, no init script, no user-agent override.
-  (Per-tab `Fetch` after auto-attach with `waitForDebuggerOnStart` missed a
-  new tab's first navigation on Chrome 156 in the rehearsal, so it is not
-  used.)
-- `Fetch` at the Request stage is armed for **this prompt's install callback
-  only** (`https://<install>/auth/callback/google*`). The callback arrives as
-  the broker's 302 target, and the Request stage pauses that redirect hop.
-  The first request carrying this prompt's state is captured and failed in
-  the browser, so the install never sees it and never starts its automatic
-  retry (no `r1.` screen); nothing reloads or revisits it, the window just
-  closes. A callback for another host or another state is never captured.
-  Before the Google page opens, a probe callback navigation in a tab of its
-  own proves the interception is armed (it is held and the tab closed).
-- A Google block is recognized from the sign-in tab's URL (Google's
-  `/signin/rejected` pages), seen through `Fetch` and target-info events, so
-  no script ever runs in that tab.
+- **Plain Chrome.** The installed Google Chrome is started (in its own
+  process group, so the command can quit all of it) with exactly
+  `--user-data-dir=<temp profile> --no-first-run chrome://extensions/`: no
+  debugging port, no automation or blink switches (a unit test asserts the
+  argv). The profile is fresh for the run, so Google may ask you to confirm
+  it's you (a new-device check); that is normal, not a block.
+- **The capture extension** (`tests/redline/capture-extension/`, MV3). For
+  each run the command writes a copy into the temp dir with that run's
+  `manifest.json`, `rules.json` and `config.js`: the listener port and a
+  random token. Its host permissions are only the two install app origins
+  from `targets.json`, `http://127.0.0.1/*` for the listener, and
+  `https://accounts.google.com/*`, so it can see the URL and status of
+  Google's top-level pages (that is how a block page is recognized and how
+  the dry run reads `hd`). It is observe-only there.
+  - `declarativeNetRequest` blocks top-level requests to
+    `<install>/auth/callback/google*`, so the browser never spends a code.
+    The callback arrives as the broker's 302 target and the block catches
+    that redirect hop: the install never receives it, so it never starts
+    its automatic retry (no `r1.` screen).
+  - `webRequest`, observe only: on that block
+    (`net::ERR_BLOCKED_BY_CLIENT`) it sends the URL to the command's
+    127.0.0.1 listener with the run's token and closes the tab. The listener
+    refuses any request without the token. The command takes only this
+    prompt's host and state, once. Another host, another state or an `r1.`
+    retry is never captured.
+  - On the command's request, before each prompt, it clears the cookies
+    and storage of accounts.google.com and google.com (`chrome.browsingData`)
+    and closes the tabs it opened, so alice's Google session never reaches
+    dave's prompt. This only ever runs inside the temp profile.
+  - It opens each prompt's tab (`chrome.tabs.create`). It logs nothing.
 - The captured URL stays in memory: it is checked by the frozen capture code
-  and redeemed at once (its legs run right after its own prompt), each leg's
-  verdict going to a 0600 verdicts file in a 0700 temporary directory that is
-  removed at the end. It is never printed, logged, put on the clipboard or
+  and redeemed at once, each leg's verdict going to a 0600 verdicts file in
+  the 0700 temp dir. It is never printed, logged, put on the clipboard or
   written anywhere else.
-- Chrome and its profile are removed on every exit path: success, error,
-  timeout, a Google block, Ctrl-C, SIGTERM and SIGHUP.
+- On every exit path (success, error, timeout, a Google block, Ctrl-C,
+  SIGTERM, SIGHUP) the command quits Chrome (kills the process group it
+  started and waits for it) and deletes the temp dir.
 
 ## The preflight
 
@@ -186,8 +219,8 @@ report unproven (their reason says CI-only) and never count as a pass.
 Prompt 2's mismatch is the test. The broker asks Google to offer only the
 install's tenant (`hd`), so for prompt 2 the capture removes that hint, as
 someone from another tenant would, and rl-b must still refuse alice on her
-token's tenant. Each prompt has its own fresh profile, so there is nothing to
-sign out of between alice and dave.
+token's tenant. Google's cookies are cleared before each prompt, so there is
+nothing to sign out of between alice and dave.
 
 Codes are single use, so each of the 3 legs per case (B's own success, A's own
 success, A's value refused at B) needs its own sign-in; the aud case gets two
@@ -210,7 +243,9 @@ suite checkout** (`--suite <path>`, default `~/code/projects/openartifacts-captu
 and refuses unless that checkout's HEAD is `--expect-sha` (default
 `5469cf7811e17857091d49dc18e0daa327bdbf89`) and its tree is clean (no
 modified, staged or untracked files). The live suite after the capture runs
-in that checkout too. To make one:
+in that checkout too, and the binding is checked again right before it
+starts, so an edit to the checkout during the capture is caught. To make
+one:
 
 ```sh
 git worktree add --detach ~/code/projects/openartifacts-capture 5469cf7811e17857091d49dc18e0daa327bdbf89
@@ -255,44 +290,53 @@ no release config does (a test checks), and the shim refuses to load without
 its build-time defines.
 
 `oneshot-rehearsal.test.ts` runs **the one command's own code path**
-(`src/oneshot/driver.ts`, the same Chrome launch, raw CDP and `Fetch`
-interception) against a frozen suite checkout it makes at the expected
-commit, with real Chrome. The test types each account and password into the
-fake Google's form over its own CDP session, standing in for you; the
-driver is checked to have held no session on the sign-in tab at all. Chrome runs headless there
-(`--headless`, rehearsal only; it changes nothing else), and the local pair's
-https origins are answered over loopback http by the interceptor
-(`--loopback`, rehearsal only). Both flags, `--idp` and `--flows` are refused
-with staging targets. It proves:
+(`src/oneshot/driver.ts`: the same plain Chrome launch, the same extension
+copy, the listener, the dry run and the suite) against a frozen suite
+checkout it makes at the expected commit. The stand-in for you is the
+test's harness. The rehearsal-only `--rehearsal-harness` flag starts the
+same installed Chrome headless with a debugging port that only the test
+uses: it does "Load unpacked" (CDP `Extensions.loadUnpacked`) and types each
+account and password into the fake Google's form. The command never
+connects to that port. Other rehearsal-only flags: `--loopback` (the
+extension's copy also redirects the pair's https origins to http, since the
+local servers speak http), `--idp`, `--flows`, `--prompt-timeout-ms`; all are
+refused with staging targets. It proves:
 
-- each prompt captures the first callback, caught as the broker's 302
-  target, and the install never starts its retry (the fake Google sees
-  exactly one visit per prompt);
-- the driver opens no CDP session on the sign-in tab (its only page session
-  is the throwaway tab's `navigator.webdriver` check; the rest is `Target`
-  and `Fetch` on the browser session);
-- a callback for another host, or with an `r1.` or other state, is never
-  captured;
-- each prompt's profile is fresh: alice's Google session never reaches
-  dave's prompt (and does persist within one profile, the control);
+- (a) the extension's block catches the callback as a redirect hop (the
+  fake Google's 302 to the broker, the broker's 302 to the install) with
+  `net::ERR_BLOCKED_BY_CLIENT`, and the install never receives it: the fake
+  Google sees exactly one visit per prompt, no retry;
+- (b) one profile for the whole run, yet the fake Google sees no session
+  cookie on any of the 5 prompts, though each sign-in set one; a control
+  shows the cookie does persist in the profile until the extension's clear;
+- (c) with the extension not loaded, the command waits with the plain
+  message and never falls back; requests with a wrong token get 403 and
+  change nothing; the listener is on 127.0.0.1 only;
+- a callback for another host, or with an `r1.` or other state, is blocked
+  but never captured; this prompt's is captured once;
 - the timeout prints the prompt, the user and the key, and `r` retries it;
-- a Google block page stops the run with the plain message, once;
-- Ctrl-C mid-prompt leaves no Chrome process and no profile;
-- the debugging port listens on 127.0.0.1 only;
+- Chrome closing mid-prompt is noticed at once, and `r` reopens it on the
+  same profile;
+- a Google block page, reported by the extension, stops the run with the
+  plain message, once;
+- Ctrl-C mid-prompt quits Chrome and deletes the temp dir;
 - the binding refuses another commit and a dirty tree;
-- the dry run's checks, all 5 prompts;
+- the dry run's checks, all 5 prompts, `hd` read from the extension's report;
 - and the suite, run with `--gate` from the frozen checkout, passes both
   ID-token cases from the capture's verdicts.
+
+What it can't prove: the manual Load unpacked itself (the harness's
+`loadUnpacked` stands in for it), real Google (its account chooser,
+new-device checks, automation detection and google.com cookies), TLS, and
+the hosted dispatch Worker.
 
 `rehearsal.test.ts` drives the capture library (`src/capture.ts`) with a
 scripted browser: the preflight's gaps, the foreign flow's dropped `hd`, the
 broker relaying every code, the replay leg, and codes that die 30 s after
 issue still passing when each is redeemed after its own prompt.
 
-What neither can prove: Google itself (its account chooser, its code
-lifetime, its automation checks, real Workspace tenants), TLS, and the hosted
-dispatch Worker in front of the installs. The dry run on staging covers the
-path up to Google's sign-in page.
+Neither can prove Google itself (its code lifetime, real Workspace tenants).
+The dry run on staging covers the path up to Google's sign-in page.
 
 ## The old clipboard flow
 

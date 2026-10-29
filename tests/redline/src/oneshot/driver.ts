@@ -557,6 +557,8 @@ class Session {
   private async launch(first: boolean): Promise<void> {
     const o = this.c.o;
     mkdirSync(this.profile, { recursive: true, mode: 0o700 });
+    // A Chrome that closed on its own: make sure nothing of its group is left.
+    await this.chrome?.close();
     const hello = this.L.nextHello();
     this.chrome = launchChrome({
       ...(o.chromePath ? { path: o.chromePath } : {}),
