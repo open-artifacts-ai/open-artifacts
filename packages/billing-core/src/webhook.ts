@@ -257,11 +257,32 @@ async function rawText(req: Request): Promise<string | null> {
     await req.body?.cancel();
     return null;
   }
+  // Read the stream with a byte cap: a body with no (or a false)
+  // Content-Length is never buffered past MAX_WEBHOOK_BODY.
+  const reader = req.body?.getReader();
+  if (!reader) return "";
+  const parts: Uint8Array[] = [];
+  let total = 0;
   try {
-    const buf = await req.arrayBuffer();
-    if (buf.byteLength > MAX_WEBHOOK_BODY) return null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_WEBHOOK_BODY) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      parts.push(value);
+    }
+    const buf = new Uint8Array(total);
+    let at = 0;
+    for (const p of parts) {
+      buf.set(p, at);
+      at += p.byteLength;
+    }
     return new TextDecoder("utf-8", { fatal: true }).decode(buf);
   } catch {
+    await reader.cancel().catch(() => {});
     return null;
   }
 }
