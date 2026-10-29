@@ -66,7 +66,7 @@ import {
 import { EraseDialog } from "./EraseDialog";
 import { restrictionReason } from "./restriction";
 import { TransferDialog } from "./Transfer";
-import { errorText, muted, SettingsCard, STACK } from "./ui";
+import { errorText, muted, ReadOnlyNote, SettingsCard, STACK } from "./ui";
 
 type Assignable = "admin" | "member";
 /** Owner is never offered, to anyone. */
@@ -699,6 +699,7 @@ export function Members() {
   }, [departed.retrying, departed.failed, nobodyLeft]);
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       {(departed.people.length > 0 || departed.failed) && (
         <DepartedCard
           people={departed.people}

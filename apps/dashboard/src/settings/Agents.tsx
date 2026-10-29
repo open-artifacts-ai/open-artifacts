@@ -45,8 +45,10 @@ import {
   errorText,
   GAP,
   muted,
+  ReadOnlyNote,
   SettingsCard,
   STACK,
+  WriteLock,
 } from "./ui";
 
 const when = (iso: string) => relativeTime(iso) || "Unknown";
@@ -406,14 +408,16 @@ function Tokens() {
       title="Personal access tokens"
       action={
         !revokeOnly && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-[length:var(--oa-text-sm)]"
-            onClick={() => setCreating(true)}
-          >
-            Create token
-          </Button>
+          <WriteLock>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-[length:var(--oa-text-sm)]"
+              onClick={() => setCreating(true)}
+            >
+              Create token
+            </Button>
+          </WriteLock>
         )
       }
     >
@@ -435,16 +439,18 @@ function Tokens() {
               <span className={muted}>
                 Last used {t.lastUsedAt ? when(t.lastUsedAt) : "Never"}
               </span>
-              <Button
-                className={ACTION}
-                variant="ghost"
-                size="sm"
-                aria-label={`Revoke ${t.label}`}
-                disabled={revoke.isPending && revoke.variables === t.id}
-                onClick={() => setTarget(t)}
-              >
-                Revoke
-              </Button>
+              <WriteLock>
+                <Button
+                  className={ACTION}
+                  variant="ghost"
+                  size="sm"
+                  aria-label={`Revoke ${t.label}`}
+                  disabled={revoke.isPending && revoke.variables === t.id}
+                  onClick={() => setTarget(t)}
+                >
+                  Revoke
+                </Button>
+              </WriteLock>
             </li>
           ))}
         </ul>
@@ -473,6 +479,7 @@ export function Connections() {
   const canConnect = useCanSetUpAgent();
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       <p className="m-0 text-[length:var(--oa-text-sm)] text-muted-foreground">
         {CONNECTIONS_INTRO}
       </p>
