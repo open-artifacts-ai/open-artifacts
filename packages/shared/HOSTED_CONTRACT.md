@@ -287,13 +287,31 @@ the platform's BillingGate (`ctx.props.BILLING`) on the scheduler's 2-min
 tick and on demand (an owner's or admin's `GET R.me`, at most once a minute),
 and caches the last good answer (never an older `version`).
 
+Which tier applies (in this order):
+1. The BillingGate is present: the billing tier (the cached answer). The last
+   good read holds for 7 days (`PLAN_STALE_MS`; a good read of an older
+   version counts as reachable but never applies its tier), then read-only.
+   Nothing read yet: the provisioned `TIER`, else free.
+2. No BillingGate (before Platform's #849 is deployed): no billing
+   enforcement. The provisioned `TIER`; never `billing_unreachable`, no 7-day
+   clock, nothing recorded. No `TIER`: the cached answer, else free.
+3. Hosted with no `TIER` and nothing cached: free (solo, the trial allowed),
+   never unenforced.
+
+Features (`Me.instance.features` and every check) follow that tier at read
+time through `TIER_FEATURES` (the trial and free report Business's; hosted
+adds `usage_off`), not the provisioned `FEATURES`. `Me.instance.tier` is the
+same tier (null for free). Business to Team swaps `sync_google` for
+`sync_frozen`: the binding and synced rows stay, sync stops (the scheduler
+skips the feed while locked or frozen). No transition deletes anything.
+
 `Me.instance.billing` (`PlanView`; not `plan`, which is the Workers plan):
 `{ tier, status, trialEndsAt, graceUntil, creatorsThisMonth?, readOnly, reason? }`.
 `tier` free | trial | team | business; `status` active | past_due | lapsed |
 suspended. Everyone gets `tier`, `readOnly`, `reason`. `status`,
-`trialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth` go to the uncapped
-org owner and admins only; everyone else gets null and no count. Absent
-before the first read when no `TIER` was provisioned.
+`trialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth` go to the org
+owner and admins only, the plan cap included; everyone else gets null and no
+count.
 
 | State | What it does | `reason` |
 |---|---|---|
@@ -306,23 +324,42 @@ Under free or read-only: everyone but the org owner is read-only (`Me.auth.cap`
 `"plan"`, `readOnly: true`; reads are kept, agents can't connect); the owner
 keeps their personal artifacts and loses the team features: invites, shares
 to others, shared spaces (create, settings, members, mappings, publishing and
-writing in them), moves and transfers, directory connect. While read-only,
-anonymous live-data writes stop too. Removals (a member, a share) always pass.
-Nothing is ever deleted.
+writing in them), moves and transfers, directory connect, sync now, a held
+group's confirm and restricted groups, and (free only) role changes. While
+read-only, anonymous live-data writes stop too. Removals (a member, a share,
+a demotion while read-only) always pass. Nothing is ever deleted. The plan
+cap hides the trash (as any cap does).
+
+The owner and admins can always pay and see their instance: the billing
+routes, Me's billing details, and the admin reads (`GET R.members`,
+`GET R.directory`, `GET R.audit`, `GET R.settings`) pass under the plan cap.
+Their writes stay capped. A member of a locked team is read-only and has no
+billing access.
+
+Free-tier caps (configuration; each OFF until set, positive integers):
+`FREE_STORAGE_BYTES` (stored version bytes per instance),
+`FREE_DATA_DOCS` (live-data docs per artifact), `FREE_DATA_DAILY_WRITES`
+(live-data writes per artifact per UTC day). On the free tier only, past one:
+403 `plan_limit`, details `PlanLimitDetails { tier: "free", limit, max }`
+(`limit` storage_bytes | data_docs | data_daily_writes).
 
 A creator (the bill) is a user who published a version, or wrote live data
 at editor level or above, in the UTC month, by any credential (an agent
 counts for its owner). Restores, moves, transfers, renames, storage, viewer
 and anonymous writes never count.
 
-Routes, uncapped org owner or admin only (else 404; 404 off hosted):
+Routes, the org owner or an admin only (the plan cap included; else 404; 404
+off hosted):
 `POST R.billingCheckout` `BillingCheckoutInput { tier: team | business }` →
 `BillingUrl { url }` (Stripe Checkout); `POST R.billingPortal` → `BillingUrl`
 (Customer Portal); `POST R.billingUsage` → `BillingUsage { month, count }`.
-503 `billing_unavailable` when billing can't be reached.
+503 `billing_unavailable` when billing can't be reached. Checkout and Portal
+depend on Platform's billing routes (#849 gate allowlist for `POST /checkout`
+and `/portal`); until those ship they answer 503 `billing_unavailable`.
 
 Errors: `plan_required` (403) and `plan_read_only` (403), details
-`PlanRefusalDetails { tier, reason }`; `billing_unavailable` (503). Mocks:
+`PlanRefusalDetails { tier, reason }`; `plan_limit` (403), details
+`PlanLimitDetails`; `billing_unavailable` (503). Mocks:
 `createHostedMock({ billing, billingDown })`.
 
 ## Test hooks (`hosted/test-hooks.ts`, types only)

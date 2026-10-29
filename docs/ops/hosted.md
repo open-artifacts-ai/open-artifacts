@@ -493,3 +493,13 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 - **The lease has a time-of-check to time-of-use window.** An operation renews its lease and then makes its Cloudflare call. If the process stalls for longer than the lease between the two (for example, a laptop sleeps), another operation can claim the row in the meantime, and the stalled call still lands once. Example: a create's `HOSTS` put lands after a delete has unmapped the hosts. The stalled operation's next step raises `LostLease`, so it goes no further. A stale `HOSTS` entry left this way points only at the deleted install's id, never at another install: the dispatch Worker finds no script and answers 404. To clear it, re-run delete, which removes the `HOSTS` keys first.
 - **A pending session cut** (`status(id).sessionCut.pending`) means google was turned on and the epoch bump that ends earlier sessions has not run yet. Re-run `updateVars` with the intended vars; any upgrade or rollback also settles it right after its upload. Rotation refuses while a cut is pending.
 - A lease left by a dead process: `releaseLease(id, confirm: id)` once it has expired, or with `force: true` only when you are sure nothing is running. Both are audited.
+
+## Self-serve billing: release order (#849, then #857)
+
+The install side of billing (#857) must not reach hosted installs before Platform's billing Worker and gate. In this order, each step verified before the next:
+
+1. **#849 deployed** (Platform): `oa-<p>-billing` with its tier store, the BillingGate in dispatch (`ctx.props.BILLING`) and the scheduler's billing step, on staging and then production. Its gate allowlists `POST /checkout` and `/portal` (signed, red line A != B); until then the install's checkout and portal answer 503 `billing_unavailable`.
+2. **Platform backfills tier rows** for every existing hosted install: one row per install from its provisioned `TIER` (trial, team or business; status active), through an idempotent CI hosted-ops op (rerunning writes nothing new). Check: every hosted install id has a row, and its tier equals its `TIER`.
+3. **#857 released.** Installs then read the billing tier. Before step 1 an install has no gate and keeps its provisioned `TIER` (no enforcement, no 7-day clock); without step 2, billing would answer its no-row default (version 0), which never overrides a provisioned `TIER` but would make a `TIER`-less install free.
+
+Free-tier caps (`FREE_STORAGE_BYTES`, `FREE_DATA_DOCS`, `FREE_DATA_DAILY_WRITES`) are off until set; set them per install only after the release, when the values are decided.
