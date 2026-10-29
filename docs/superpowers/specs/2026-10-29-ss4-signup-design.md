@@ -72,7 +72,8 @@ own dashboard already signed in. One free install per Google account.
 1. `GET /` (sign-up page). `POST /auth/start`: a broker authorize URL with
    this Worker's nonce, PKCE challenge and a signed state, exactly as an
    install builds it; no `hd` (consumer accounts allowed).
-2. Broker callback lands on `https://signup.<app domain>/auth/callback`.
+2. Broker callback lands on `https://signup.<app domain>/auth/callback/google`
+   (the broker's existing callback path).
    The Worker redeems through the broker (Ed25519-signed, within 60 s) and
    verifies the ID token itself: signature (Google JWKS), `iss`, `aud` (the
    env's broker client), `exp`, its nonce, and **`email_verified === true`**
@@ -93,6 +94,13 @@ own dashboard already signed in. One free install per Google account.
      signupId:
    - `INSERT INTO signups (... status 'pending', slug, skeleton, owner_sub)`;
    - `INSERT INTO signup_secret (signup_id, owner_email)`.
+   The claim and inserts are one batch: the signup and secret inserts are
+   `INSERT ... SELECT ... WHERE EXISTS (SELECT 1 FROM signup_accounts WHERE
+   owner_sub = ? AND signup_id = ?)`, so they land only if this submit holds
+   the claim. Outcomes: the claim is held by a live signup -> 409
+   `already_signed_up` (the page shows that signup's status); a unique-index
+   failure on `slug` -> 409 `taken`, on `skeleton` -> 409 `lookalike` (told
+   apart by re-running the name check after the failure); otherwise 200.
    Then `SIGNUPS.send({ signupId })`. A send failure is fine: the rows exist
    and SS3's sweep re-sends a stale `pending` row after 15 minutes. Reply
    `{ signupId }`.
@@ -134,10 +142,13 @@ reserved | lookalike`, used by sign-up (and available to the CLI):
   folding it first only lets the page say "lookalike" rather than "invalid"
   for a pasted homograph.
 - "Taken" vs "lookalike": an exact match is `taken`.
-- Race: two concurrent submits with lookalike names. `signups` gains a
-  `skeleton` column (in 0008) with a unique index over live rows
-  (`WHERE status != 'failed'`), so the second insert fails and is answered
-  `lookalike`. Installs made by the CLI are checked at submit time (rare,
+- Source of truth: `installs.slug` (platform D1, every non-deleted install)
+  plus live `signups.slug`, plus `RESERVED_SLUGS` and the platform names.
+- Race: two concurrent submits. `signups` gains a `skeleton` column (in 0008)
+  with unique indexes over live rows (`WHERE status != 'failed'`) on both
+  `slug` and `skeleton`, so the second insert fails and is answered `taken`
+  or `lookalike`. A ready signup keeps its slug and skeleton reserved after
+  its install is deleted, matching the claim (no reuse of a deleted name). Installs made by the CLI are checked at submit time (rare,
   operator-made).
 
 ### Abuse
@@ -150,13 +161,31 @@ reserved | lookalike`, used by sign-up (and available to the CLI):
 ### Small changes elsewhere
 
 - **Broker (Platform):** `GET /google/authorize` accepts an optional
-  `login_hint` from the caller (a syntactically valid email, at most 254
-  chars) and passes it to Google; when it is present, the broker sends no
-  `prompt` (today it always sends `select_account`, which forces a click).
+  `login_hint` from any registered caller (a syntactically valid email, at
+  most 254 chars) and passes it to Google; when it is present and `reauth` is
+  not, the broker sends no `prompt` (today it always sends `select_account`,
+  which forces a click). `reauth=1` keeps `max_age=0` and the prompt.
   The install still verifies the token's email, so a wrong hint signs no one
   in as someone else.
 - **Server (Backend):** `/auth/google/start` forwards a `login_hint` query
   parameter to the broker's authorize, and never logs it.
+- **Server (Backend, the Gmail owner path; Manager, 2026-10-29):** today an
+  install's Google sign-in admits only Workspace domains (`AUTH_DOMAINS`
+  required, `hd` checked), so a personal Gmail owner could never sign in to
+  their own install. The user wants personal Gmail, so the server gains a
+  per-person path, never a domain one:
+  1. a token with no `hd` is admitted only when `email_verified` is true, the
+     email exactly matches an invited or member user, and the email's domain
+     is not one of the install's `AUTH_DOMAINS` (a Workspace domain always
+     arrives with a matching `hd`);
+  2. the `sub` is pinned on first sign-in; a different `sub` for the same
+     email is refused and flagged to admins;
+  3. no wildcard and no join-by-domain on this path.
+  A sign-up install therefore needs no `AUTH_DOMAINS`; its config check
+  accepts an empty list when this path is on. Red-line: hd-less on an
+  `AUTH_DOMAINS` email, hd-less unverified, a `sub` mismatch, an uninvited
+  Gmail address, and another install's invited Gmail address are all refused.
+  SS4's handoff depends on this landing first.
 - **Provisioner (SS3):** nothing; it already reads the pending rows SS4 writes.
 
 ### Deploy
@@ -164,7 +193,9 @@ reserved | lookalike`, used by sign-up (and available to the CLI):
 A `signup` target in #847 after `provisioner`: the Worker, its route
 `signup.<app domain>/*`, its registry entry (keypair generated in CI, public
 key written to the broker registry, check-first like the install keys), its
-session secret, and the Turnstile keys from the env's hosted-ops secrets.
+session secret, a reserved registry id (`SIGNUP_REGISTRY_ID`, a fixed id in
+the install-id shape that `newInstallId` refuses to return), and the
+Turnstile keys from the env's hosted-ops secrets.
 `SIGNUPS_ENABLED` gates it the same way as SS3.
 
 ## Tests
@@ -194,7 +225,14 @@ session secret, and the Turnstile keys from the env's hosted-ops secrets.
 - Page markup (plain, accessible, replaced by Frontend's screens), module
   layout, the exact rate-limit numbers within the binding's limits.
 
+## Decided (Manager, 2026-10-29)
+
+- Personal Gmail is in: the server's per-person path above (Backend).
+- Handoff by `login_hint`, no login grant.
+- Calls: broker callback path; `login_hint` rules; reserved registry id;
+  exact `slug` index next to `skeleton`; 409 `already_signed_up`.
+
 ## Open (for the Manager)
 
-- A claim lasts after the install is deleted (proposed). OK?
+- A claim, and its name, last after the install is deleted (proposed). OK?
 - The skeleton folding table above (proposed). Anything to add?
