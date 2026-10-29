@@ -224,22 +224,6 @@ describe("gate routes answer only over a binding", () => {
     }
   });
 
-  it("the Stripe webhook is public and not implemented yet", async () => {
-    for (const h of [{ "cf-connecting-ip": "1.2.3.4" }, {}] as Record<
-      string,
-      string
-    >[]) {
-      const r = await call(
-        gated("POST", "/stripe/webhook", { id: "evt_1" }, h),
-      );
-      expect(r.status).toBe(501);
-      expect(await r.json()).toEqual({ error: "not_implemented" });
-    }
-    expect(
-      (await db.prepare("SELECT COUNT(*) AS n FROM stripe_events").first())?.n,
-    ).toBe(0);
-  });
-
   it("every other method or path is the plain 404", async () => {
     for (const [m, p] of [
       ["GET", "/"],

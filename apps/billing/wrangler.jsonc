@@ -6,8 +6,10 @@
 //
 // Installs reach it only through BillingGate stubs (@oa/broker-core's
 // billing-gate) that dispatch and the scheduler pass in ctx.props; the
-// scheduler also calls /health over its own BILLING binding. The Stripe
-// webhook route is wired later by the gated ops step, never from this file.
+// scheduler also calls /health over its own BILLING binding. The one public
+// path, billing.<app domain>/stripe/webhook, is an exact zone route that
+// scripts/ops/hosted-zones.sh manages with auth. and directory., never from
+// this file. STRIPE_WEBHOOK_SECRET is a Worker secret, never a var here.
 //
 // Deploy with --env staging or --env prod only (scripts/ops/
 // deploy-platform-worker.sh billing <env>): the top level has no name and no

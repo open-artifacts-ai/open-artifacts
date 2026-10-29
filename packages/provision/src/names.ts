@@ -13,8 +13,31 @@ const ID_RE = /^i[a-z0-9]{11}$/;
 /** A HOSTS value: an install id, optionally `paused:` or `closed:` first. */
 const HOSTS_VALUE_RE = /^(?:(paused|closed):)?(i[a-z0-9]{11})$/;
 
+<<<<<<< HEAD
 // Moved to @oa/provisioning-contract (design v7 section 3); re-exported here.
 export { isValidSlug, RESERVED_SLUGS, SLUG_RE, slugRule };
+=======
+export const RESERVED_SLUGS: readonly string[] = [
+  "www",
+  "api",
+  "admin",
+  "app",
+  "mail",
+  "status",
+  "docs",
+  "staging",
+  "content",
+  // Platform hosts on the tenant domains (P2 auth broker at auth.<app-domain>,
+  // P3 directory broker at directory.<app-domain>).
+  "auth",
+  "broker",
+  "login",
+  "sso",
+  "directory",
+  // The billing Worker's public Stripe webhook (billing.<app-domain>).
+  "billing",
+];
+>>>>>>> f7b61830 (feat(billing): mount the Stripe webhook; billing is a reserved slug)
 
 export function isInstallId(s: string): s is InstallId {
   return ID_RE.test(s);

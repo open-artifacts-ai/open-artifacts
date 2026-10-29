@@ -20,6 +20,12 @@
 // over the exact body text, and the body's `ts` is within ASSERTION_SKEW_MS.
 // Anything else is 401 bad_signature and writes nothing.
 //
+// POST /stripe/webhook is the one public route (internet traffic, with
+// cf-connecting-ip). @oa/billing-core's handleStripeWebhook reads the raw
+// body once and checks its Stripe-Signature itself, so billing never reads
+// the body first. A missing STRIPE_WEBHOOK_SECRET (a Worker secret) is 500
+// config, body unread. Any other method or path stays the plain 404.
+//
 // Logs carry fixed categories and install ids only: never bodies, headers or
 // URLs.
 
@@ -28,6 +34,7 @@ import {
   createCheckoutSession,
   createCustomer,
   createPortalSession,
+  handleStripeWebhook,
   StripeApiError,
   type StripeConfig,
   StripeConfigError,
@@ -51,6 +58,8 @@ export interface Env {
   OA_ENV: OaEnv;
   /** Stripe test-mode secret key (a Worker secret; billing-core refuses live keys). */
   STRIPE_SECRET_KEY?: string;
+  /** Stripe webhook signing secret (a Worker secret: never a var, never logged). */
+  STRIPE_WEBHOOK_SECRET?: string;
   /** The env's Stripe price ids, one per paid plan (placeholders, filled at deploy). */
   STRIPE_PRICE_TEAM: string;
   STRIPE_PRICE_BUSINESS: string;
@@ -453,10 +462,20 @@ export default {
       return notFound();
     }
     const route = `${req.method} ${url.pathname}`;
+    // The one public route: reachable with cf-connecting-ip (Stripe's
+    // delivery). billing-core reads and verifies the body; billing doesn't.
     if (route === "POST /stripe/webhook") {
-      // Backend's webhook module mounts here (step 2).
-      await req.body?.cancel();
-      return Response.json({ error: "not_implemented" }, { status: 501 });
+      const secret = env.STRIPE_WEBHOOK_SECRET;
+      if (!secret) {
+        await req.body?.cancel();
+        console.error("billing webhook config");
+        return bad("config", 500);
+      }
+      return handleStripeWebhook(
+        req,
+        { BILLING_DB: env.BILLING_DB, STRIPE_WEBHOOK_SECRET: secret },
+        Date.now(),
+      );
     }
     // Gate routes only over a binding: an internet request always carries
     // cf-connecting-ip.
