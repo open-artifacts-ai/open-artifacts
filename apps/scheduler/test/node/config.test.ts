@@ -37,7 +37,12 @@ describe("wrangler.jsonc", () => {
         EMAIL_DAILY_LIMIT: `{{EMAIL_DAILY_LIMIT_${env.toUpperCase()}}}`,
         AUTH_BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
         DIRECTORY_BROKER_ORIGIN: `https://directory.${HOSTED_DOMAINS[env].app}`,
+        // The operator alerts' recipient and sender, filled at deploy.
+        ALERT_TO: `{{OPS_ALERT_EMAIL_${env.toUpperCase()}}}`,
+        ALERT_FROM: `{{OPS_ALERT_FROM_${env.toUpperCase()}}}`,
       });
+      // The operator alerts' one sending binding (src/alerts.ts).
+      expect(e.send_email).toEqual([{ name: "ALERT_EMAIL" }]);
       // BrokerGate's bindings: this env's two brokers, never the other env's.
       expect(e.services).toEqual([
         { binding: "AUTH_BROKER", service: platformNames(env).broker },
@@ -45,6 +50,8 @@ describe("wrangler.jsonc", () => {
           binding: "DIRECTORY_BROKER",
           service: platformNames(env).directoryBroker,
         },
+        // BillingGate's binding: this env's billing Worker.
+        { binding: "BILLING", service: platformNames(env).billing },
       ]);
       expect(e.vars).not.toHaveProperty("EMAIL_QUOTA_TOKEN");
       // The nightly run, and H-DV's directory revoke tick every 2 minutes.

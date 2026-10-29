@@ -246,6 +246,12 @@ User Workers in a dispatch namespace get no cron triggers, so `apps/scheduler` i
   | `EMAIL_DAILY_LIMIT` | `{{EMAIL_DAILY_LIMIT_STAGING}}`, `{{EMAIL_DAILY_LIMIT_PROD}}` | The account's Email Sending daily limit, a positive integer: dashboard > Compute > Email Service > Email Sending |
 
   Step 3 below fills them in the same gitignored copy as the D1 id and refuses to deploy if any of this env's placeholders is left. An unfilled placeholder would be an invalid config, so the alert would skip.
+- **Operator alerts by email** (`apps/scheduler/src/alerts.ts`). Two alerts, each with a key: `billing_unreachable` opens when the last `/health` success of `oa-<p>-billing` is over an hour old (checked every 2 minutes) and clears on the next success; `email_quota` opens on the nightly check's `warn` and clears on a later `ok` (a skipped or failed check leaves it as it is). Each alert sends one plain-text email when it opens, one a day while it stays open, and one when it clears, with a fixed subject per key and state, no customer data and no URLs. State is in `platform_state` (0006): `<key>_opened_at`, `<key>_notified_at` and `<key>_cleared_at`. A failed send logs `alert <key> send_failed <category>` and is retried on the next 2-minute tick (the quota reminder itself is sent only by the nightly check). Logs: `alert <key> opened|cleared|db_error`, `alert <key> sent open|remind|clear`. The mail goes through the `send_email` binding `ALERT_EMAIL` (Cloudflare Email Service) from `ALERT_FROM` to `ALERT_TO`. With no binding or an empty or malformed address, each email is logged as `alert skipped no_destination` and the state machine runs on.
+
+  | Var | Placeholder (staging, prod) | Value |
+  |---|---|---|
+  | `ALERT_TO` | `{{OPS_ALERT_EMAIL_STAGING}}`, `{{OPS_ALERT_EMAIL_PROD}}` | The operator's address |
+  | `ALERT_FROM` | `{{OPS_ALERT_FROM_STAGING}}`, `{{OPS_ALERT_FROM_PROD}}` | A sender on a domain onboarded to Email Sending in this account |
 
 A hosted upload carries no cron of its own (`TEMPLATE_BINDINGS_EXCLUDED.triggers`). That's pinned for the metadata in `packages/provision/test/metadata.test.ts`, and for the create, upgrade and rollback uploads, with no `/schedules` call, in `wfp-lifecycle.test.ts`. So the job runs once.
 
@@ -264,25 +270,32 @@ Steps, per env (`ENV`, `P` and `UP` as in the dispatch steps above):
    git status --porcelain | grep -q . && { echo "dirty checkout" >&2; exit 1; }
    pnpm install --frozen-lockfile && pnpm --filter @oa/provision build && pnpm --filter @oa/scheduler test
    ```
-3. Deploy with the provisioning token. Fill this env's placeholders into a gitignored copy, refuse if any of this env's `{{...}}` is left, deploy the copy, then remove it. `ZONES` is the sending zone tags, comma-separated (each is the zone's id: dashboard > the domain > Overview > API section > Zone ID, 32 lowercase hex chars). `LIMIT` is the account's Email Sending daily limit (dashboard > Compute > Email Service > Email Sending), a positive integer of at most 9 digits. Replace both quoted values before running; the chain refuses anything `apps/scheduler/src/quota.ts` would reject (an empty value, the example text, a bad tag or limit):
+3. Deploy with the provisioning token. Fill this env's placeholders into a gitignored copy, refuse if any of this env's `{{...}}` is left, deploy the copy, then remove it. `ZONES` is the sending zone tags, comma-separated (each is the zone's id: dashboard > the domain > Overview > API section > Zone ID, 32 lowercase hex chars). `LIMIT` is the account's Email Sending daily limit (dashboard > Compute > Email Service > Email Sending), a positive integer of at most 9 digits. `ALERT_TO` and `ALERT_FROM` are the operator alerts' recipient and sender (plain addresses). Replace all four quoted values before running; the chain refuses anything `apps/scheduler/src/quota.ts` would reject (an empty value, the example text, a bad tag or limit) and any address that isn't a plain one. `scripts/ops/deploy-platform-worker.sh scheduler $ENV` does the same with `PLATFORM_DB_ID`, `EMAIL_ZONE_TAGS`, `EMAIL_DAILY_LIMIT`, `OPS_ALERT_EMAIL` and `OPS_ALERT_FROM`:
    ```sh
    cd apps/scheduler
    ZONES='<zone tag>[,<zone tag>...]'
    LIMIT='<daily limit>'
+   ALERT_TO='<operator address>'
+   ALERT_FROM='<sender address>'
+   ADDR='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
    DB_ID=$(pnpm exec wrangler d1 list --json | jq -r --arg n "oa-$P-platform" '.[] | select(.name == $n) | .uuid')
    printf '%s' "$ZONES" | grep -Eq '^[0-9a-f]{32}(,[0-9a-f]{32}){0,9}$' \
      && printf '%s' "$LIMIT" | grep -Eq '^[1-9][0-9]{0,8}$' \
+     && printf '%s' "$ALERT_TO" | grep -Eq "$ADDR" \
+     && printf '%s' "$ALERT_FROM" | grep -Eq "$ADDR" \
      && test -n "$DB_ID" \
      && sed -e "s/{{PLATFORM_DB_ID_$UP}}/$DB_ID/" \
             -e "s/{{EMAIL_ZONE_TAG_$UP}}/$ZONES/" \
-            -e "s/{{EMAIL_DAILY_LIMIT_$UP}}/$LIMIT/" wrangler.jsonc > wrangler.deploy.jsonc \
+            -e "s/{{EMAIL_DAILY_LIMIT_$UP}}/$LIMIT/" \
+            -e "s/{{OPS_ALERT_EMAIL_$UP}}/$ALERT_TO/" \
+            -e "s/{{OPS_ALERT_FROM_$UP}}/$ALERT_FROM/" wrangler.jsonc > wrangler.deploy.jsonc \
      && { ! grep -q "{{[A-Z_]*_$UP}}" wrangler.deploy.jsonc \
           || { rm wrangler.deploy.jsonc; echo "unfilled $UP placeholder" >&2; false; }; } \
      && pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env "$ENV" \
      && rm wrangler.deploy.jsonc
    ```
    The copy is the whole file, so the other env's placeholders stay in it (harmless: `--env` deploys only this env's block); the check is on this env's. A refused chain leaves nothing deployed; if `wrangler deploy` itself fails, remove `wrangler.deploy.jsonc` by hand.
-   The deploy output must name `oa-$P-scheduler` with `DISPATCHER (oa-$ENV)`, `PLATFORM_DB (oa-$P-platform)`, `OA_ENV ("$ENV")`, `EMAIL_QUOTA_ZONES ("<your zone tags>")` and `EMAIL_DAILY_LIMIT ("<your limit>")` (no `{{`), the schedules `17 3 * * *` and `*/2 * * * *`, and no routes or workers.dev URL.
+   The deploy output must name `oa-$P-scheduler` with `DISPATCHER (oa-$ENV)`, `PLATFORM_DB (oa-$P-platform)`, `OA_ENV ("$ENV")`, `EMAIL_QUOTA_ZONES ("<your zone tags>")`, `EMAIL_DAILY_LIMIT ("<your limit>")`, `ALERT_TO`, `ALERT_FROM` and the `ALERT_EMAIL` send_email binding (no `{{`), the schedules `17 3 * * *` and `*/2 * * * *`, and no routes or workers.dev URL.
 4. Binding check, from the deployed settings (in the same shell as step 3, so `ZONES` and `LIMIT` are still set): `PLATFORM_DB` must be the database named `oa-$P-platform`, `DISPATCHER` must be the namespace `oa-$ENV`, `OA_ENV` must be `$ENV`, `EMAIL_QUOTA_ZONES` and `EMAIL_DAILY_LIMIT` must be the values from step 3, and the schedules must be exactly `17 3 * * *` and `*/2 * * * *`. Never another env's (`CF_ACCOUNT_ID` and `CF_API_TOKEN` as in the dispatch check):
    ```sh
    API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID"
@@ -427,7 +440,7 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 ### First-create checklist (per env)
 
 1. Create the KV namespaces `oa-<p>-broker-registry` and `oa-<p>-directory-registry` side by side, before any provision run on the env (any provision version that includes the directory copy). With the broker on, create and every lifecycle operation (status aside) refuse before any write if either is missing.
-2. Apply every platform D1 migration to `oa-<p>-platform` that it does not have yet, in order, before deploying the scheduler or running a CLI that needs it (0005 before the H-DV scheduler, whose 2-minute tick otherwise logs `directory-revoke aborted exception` every time; a delete run before 0005 moves the row to `deleting` and then fails on its first revoke write, so rerun it once 0005 is applied) (0004 adds a column, so it can't be re-run; check with `PRAGMA table_info(hosted_audit)` before applying it): `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal), then `0004_audit_actor.sql` (the `hosted_audit.actor` column the CLI writes), then `0005_directory_revoke.sql` (the four directory revoke columns and the `installs_revoke_pending` index; `owner_email` is unchanged; not re-runnable, so check `PRAGMA table_info(installs)` for `directory_revoke` first). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write; without 0004, every `oa:hosted` command fails closed on its first audit row; without 0005, delete stops at its first revoke write with the row already `deleting` (rerun after applying it).
+2. Apply every platform D1 migration to `oa-<p>-platform` that it does not have yet, in order, before deploying the scheduler or running a CLI that needs it (0005 before the H-DV scheduler, whose 2-minute tick otherwise logs `directory-revoke aborted exception` every time; a delete run before 0005 moves the row to `deleting` and then fails on its first revoke write, so rerun it once 0005 is applied) (0004 adds a column, so it can't be re-run; check with `PRAGMA table_info(hosted_audit)` before applying it): `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal), then `0004_audit_actor.sql` (the `hosted_audit.actor` column the CLI writes), then `0005_directory_revoke.sql` (the four directory revoke columns and the `installs_revoke_pending` index; `owner_email` is unchanged; not re-runnable, so check `PRAGMA table_info(installs)` for `directory_revoke` first), then `0006_platform_state.sql` (the scheduler's `platform_state` row store for the operator alerts; re-runnable). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write; without 0004, every `oa:hosted` command fails closed on its first audit row; without 0005, delete stops at its first revoke write with the row already `deleting` (rerun after applying it). Without 0006, the scheduler's 2-minute tick logs `billing-health db_error` and `alert email_quota db_error`, and neither operator alert can fire. The scheduler and dispatch bind `oa-<p>-billing`, so deploy it first (`scripts/ops/deploy-platform-worker.sh billing <env>` with `BILLING_DB_ID` and `BROKER_REGISTRY_ID`, the auth broker's registry namespace id, which billing reads to check the install signatures on its POSTs; after applying `apps/billing/migrations` to `oa-<p>-billing`).
 3. Key ceremony done: `RELEASE_PUBKEY[env]` set in gates.ts (and `PROD_UNLOCKED` for prod).
    - Prod, before FinQore go-live: add the user back as a required reviewer on `hosted-prod` (admin bypass stays off), so every prod signing run waits for approval again.
 4. Create the env's R2 API token and keychain item `oa-hosted-<env>-r2` (see "R2 API token").
