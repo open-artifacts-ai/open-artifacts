@@ -161,7 +161,8 @@ one-per-account key, stored on the row). A message that isn't exactly
   leaves `pending` or `waiting_cap` for `queued`, and the cap counts rows
   whose `admitted_at` is in the current UTC day. A promoted `waiting_cap` row
   counts toward the day it is admitted into, so a day never admits more than
-  the cap.
+  the cap. A failed create still counts: it used a create slot, and not counting it
+  would let a failing signup loop past the cap.
 - Over the cap (deferred, never failed): the row becomes `waiting_cap`; the
   scheduler re-enqueues `waiting_cap` rows after 00:00 UTC, oldest first. The
   first cap hit of each UTC day sends one operator alert (an abuse or demand
@@ -207,7 +208,7 @@ A step that exhausts its retries sets status `failed` with a category and
 raises the operator alert. There is no automatic re-drive: the operator re-runs
 a failed signup with a new CLI command `signup-redrive --signup <id>` (restarts
 the same Workflow instance id) or removes a half-made install with the CLI
-`delete`. A failed signup counts toward neither the cap nor its slug. The lease
+`delete`. A failed signup still counts toward the day's cap (it was admitted), but holds no slug. The lease
 and audit rows are create's own. "Welcome unsent" (claimed, not sent) is one
 more alert key in SS1b's scheduler `alerts.ts`.
 
