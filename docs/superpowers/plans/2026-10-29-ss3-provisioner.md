@@ -14,7 +14,7 @@
 
 - Branch `pl/ss3-provisioner`. Post-M1: push and open a DRAFT PR; never arm or merge. Nothing merges until the freeze lifts.
 - Base: `origin/main` + `origin/pl/hosted-ops-ci` (#848, `ciOwnerToken`, `ciTokenSweep`) + `origin/pl/ss1-tier-store` (#849, `platform_state` 0006, scheduler `alerts.ts`), merged in Task 0.
-- `ownerEmail` never in a log line, Workflow param, step output, step error, alert text, DLQ payload or D1 row other than `signup_secret` and `installs.owner_email`.
+- `ownerEmail` never in a queue message, log line, Workflow param, step output, step error, alert text, DLQ payload or D1 row other than `signup_secret` and `installs.owner_email`. Queue messages are `{ signupId }` only; SS4 writes `signups` (`pending`) and `signup_secret` before it enqueues.
 - One signup id gives one install and at most one welcome email.
 - Caps: `SIGNUP_DAILY_CAP` var, staging `20`, prod `50`. Over the cap the signup is deferred (`waiting_cap`), never failed.
 - Token: Secrets Store secret `oa-<p>-provision-token`, bound only to `oa-<p>-provisioner` as `PROVISION_TOKEN`.
@@ -122,6 +122,16 @@ The schema is the spec's, verbatim:
 - [ ] **Step 4:** Run it. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(platform-db): 0007 signups and signup_secret`.
 
+### Task 4b: 0007 for the id-only queue (Manager, 2026-10-29)
+
+0007 is unmerged, so amend it in place:
+- status gains `'pending'` (first in the CHECK list);
+- a new column `admitted_at INTEGER`, after `status`;
+- the index moves from `signups(created_at)` to `signups(admitted_at)`.
+
+- [ ] **Step 1:** Update the 0007 test: the PRAGMA column list includes `admitted_at`; each of the 6 statuses inserts; the index covers `admitted_at`. Run it. Expected: FAIL.
+- [ ] **Step 2:** Amend the SQL. Run it. Expected: PASS.
+
 ### Task 5: The queue consumer
 
 **Files:**
@@ -129,7 +139,7 @@ The schema is the spec's, verbatim:
   - `nodejs_compat`;
   - `limits.cpu_ms` `300000`;
   - `workers_dev` false, no routes, logs off;
-  - a queue consumer of `oa-<p>-signups` with `max_batch_size` 1, `max_retries` 5 and dead-letter queue `oa-<p>-signups-dlq`;
+  - a queue consumer of `oa-<p>-signups` with `max_batch_size` 1, `max_retries` 5 and dead-letter queue `oa-<p>-signups-dlq` (safe to keep: messages carry only `{ signupId }`);
   - the workflow `ProvisionInstall` bound as `PROVISION_INSTALL`;
   - bindings `PLATFORM_DB`, `HOSTS`, `BROKER_REGISTRY`, `DIRECTORY_REGISTRY` and `RELEASES` (R2 `oa-<p>-releases`);
   - `WELCOME_EMAIL` as send_email;
@@ -139,22 +149,32 @@ The schema is the spec's, verbatim:
 - Test: `apps/provisioner/test/consumer.test.ts`, `apps/provisioner/test/node/config.test.ts`
 
 **Interfaces:**
-- Produces: `parseSignup(body: unknown): SignupMessage | null`, where `SignupMessage = { signupId: string /* ULID */; slug: string; ownerSub: string; ownerEmail: string; tier: "free" }`. The slug is validated with provision's slug rule, and the sub with `/^[0-9]{1,255}$/`.
-- Produces: `recordSignup(db: D1Database, m: SignupMessage, cap: number, now: number): Promise<"queued" | "waiting_cap" | "exists">`, written as one conditional `INSERT ... SELECT ... WHERE (SELECT count(*) FROM signups WHERE created_at >= <UTC day start> AND status != 'failed') < ?cap`. If that inserts nothing, a second statement inserts `waiting_cap`. Both use `ON CONFLICT (signup_id) DO NOTHING`. The email goes to `signup_secret` with `INSERT OR IGNORE`.
-- Produces: the Workflow params `{ signupId, slug, ownerSub }`.
+- **Contract (Manager, 2026-10-29):** SS4 writes the `signups` row as `pending` plus its `signup_secret` row in one D1 batch, then enqueues `{ signupId }`. The message never carries the email, slug or sub.
+- Produces: `parseSignup(body: unknown): { signupId: string } | null`. The body must be exactly `{ signupId }`, a Crockford ULID (26 characters, uppercase, first character 0-7); any other key refuses it. A bad shape is acked and logged `signup bad_shape`, never retried.
+- Produces: `admit(db: D1Database, signupId: string, cap: number, now: number): Promise<"queued" | "waiting_cap" | "missing" | "running" | "settled">`. It reads the row:
+  - none → `missing`;
+  - `pending` or `waiting_cap` → one conditional `UPDATE signups SET status = 'queued', admitted_at = ?now, updated_at = ?now WHERE signup_id = ? AND status IN ('pending','waiting_cap') AND (SELECT count(*) FROM signups WHERE admitted_at >= ?dayStart) < ?cap`, else the same row to `waiting_cap`, both in one `db.batch`;
+  - `queued` or `creating` → `running`;
+  - `ready` or `failed` → `settled`.
+- The consumer: `missing` → `retry()` (the runtime DLQ takes the id after the retries); `queued` or `running` → `PROVISION_INSTALL.create({ id: signupId, params })`, with `params` read from the stored row (`{ signupId, slug, ownerSub }`), "already exists" counting as success, then ack; `waiting_cap` or `settled` → ack. A D1 or Workflows error → `retry()`.
+- `SIGNUP_DAILY_CAP` is parsed as `/^[1-9][0-9]{0,3}$/`. Anything else logs `signup cap_config` and retries.
+- The provisioner never writes `signup_secret`; the owner-email allowlist entry Task 5 added moves to SS4.
 
-- [ ] **Step 1: Failing tests.**
-  - "bad shapes go to the DLQ with the signup id only": the message is retried to DLQ, and no D1 row is written.
-  - "queued: one row, one secret row, one workflow start, then ack".
-  - "redelivery during create: recordSignup says exists, the start returns 'already exists', ack, still one row".
-  - "over the cap: waiting_cap, no workflow start, ack".
-  - "concurrent at the boundary": cap 2, five messages at once, exactly two `queued`.
-  - "workflow params carry no email".
+- [ ] **Step 1: Failing tests.** Seed the `pending` rows the way SS4 will.
+  - "bad shapes are acked, never retried": an extra key, a lowercase ULID and an email in the body.
+  - "pending under the cap: queued, admitted_at set, one workflow start from the stored row, then ack".
+  - "redelivery during create: running, the start returns 'already exists', ack".
+  - "a missing row retries".
+  - "over the cap: waiting_cap, no start, ack".
+  - "concurrent at the boundary": cap 2, five pending rows, all five messages at once, exactly two `queued`.
+  - "a promoted waiting_cap row counts toward the day it's admitted into".
+  - "an invalid cap retries and logs cap_config".
+  - "workflow params carry no email, and come from the row, not the message".
   - Config test: both env blocks have the queue, DLQ, workflow and Secrets Store binding, and no other platform Worker's config binds `oa-<p>-provision-token`. It checks every `apps/*/wrangler.jsonc`.
 - [ ] **Step 2:** Run `pnpm -C apps/provisioner test`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run it. Expected: PASS.
-- [ ] **Step 5:** Mutation-check: replace the conditional insert with a count followed by an insert, and confirm "concurrent at the boundary" fails. Then commit `feat(provisioner): the signups consumer, cap and idempotent start`.
+- [ ] **Step 5:** Mutation-check: replace the conditional update with a count followed by an update, and confirm "concurrent at the boundary" fails. Then commit `feat(provisioner): the signups consumer, cap and idempotent start`.
 
 ### Task 6: The ProvisionInstall Workflow
 
@@ -193,9 +213,10 @@ The schema is the spec's, verbatim:
 **Interfaces:**
 - Consumes: `stepAlert(env, alert, condition, now, opts)` (SS1b).
 - Produces: the alerts `signupCapAlert(env)` (the condition is true while any `waiting_cap` row exists today; it opens once per UTC day), `signupFailedAlert(env)` (a `failed` row in the last 24 h) and `welcomeUnsentAlert(env)` (a row with `welcome_claimed_at` set, `welcome_sent_at` NULL, older than 10 minutes). The alert text carries counts and signup ids only.
-- Produces: `requeueWaiting(env, now)`. After 00:00 UTC it sends `waiting_cap` rows, oldest first, as signup messages; each message's email comes from `signup_secret`. It sends at most that day's free cap, and moves each sent row back to `queued`.
+- Produces: `requeueWaiting(env, now)`. After 00:00 UTC it sends `{ signupId }` for `waiting_cap` rows, oldest first, at most that day's remaining cap. The consumer does the admission, so this function changes no row.
+- Produces: `sweepStale(env, now)`. Each tick it re-sends `{ signupId }` for any `pending` row older than 15 minutes, and any `queued` row older than 15 minutes whose Workflow instance doesn't exist (`PROVISION_INSTALL.get` throws not-found). The scheduler gets a `PROVISION_INSTALL` workflow binding pointing at the provisioner's script.
 
-- [ ] **Step 1: Failing tests.** The three alerts open and clear; "cap alert opens once a day"; "requeue respects the cap and order"; and "alert text has no email".
+- [ ] **Step 1: Failing tests.** The three alerts open and clear; "cap alert opens once a day"; "requeue sends ids only, in order, within the cap"; "sweep re-sends a stale pending row and a queued row with no instance, but not a fresh one"; and "alert text has no email".
 - [ ] **Step 2:** Run `pnpm -C apps/scheduler test`. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run it. Expected: PASS.

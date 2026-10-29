@@ -131,36 +131,54 @@ numbers and reviewed before any build.
 
 ### The message
 
-`{ signupId, slug, ownerSub, ownerEmail, tier: "free" }`. `signupId` is a ULID
-minted by SS4 at the moment a sign-up is accepted. `ownerSub` is the Google
-subject (SS4's one-per-account key). The consumer validates the shape and
-refuses anything else to the DLQ (with the `signupId` only).
+`{ signupId }` only (Manager, 2026-10-29). SS4's sign-up service writes the
+`signups` row (status `pending`) and the `signup_secret` row in platform D1
+first, then enqueues. The owner's email never enters a queue, so the runtime
+dead-letter queue (kept) only ever sees an id, and nothing is lost when D1
+blips at the consumer: the row is already there. `signupId` is a ULID minted by
+SS4 when the sign-up is accepted; `owner_sub` is the Google subject (SS4's
+one-per-account key, stored on the row). A message that isn't exactly
+`{ signupId: <ULID> }` is acked and logged by category, never retried.
 
 ### Idempotency
 
 - Platform D1 migration `0007_signups.sql` (additive; 0006 is SS1's):
   `signups(signup_id TEXT NOT NULL PK, owner_sub TEXT NOT NULL, slug TEXT NOT NULL,
   install_id TEXT UNIQUE, status TEXT NOT NULL CHECK (status IN
-  ('queued','waiting_cap','creating','ready','failed')), welcome_claimed_at INTEGER,
-  welcome_sent_at INTEGER, error TEXT, created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL)`, and `signup_secret(signup_id TEXT NOT NULL PK,
-  owner_email TEXT NOT NULL)`. Workflows keeps instance params for up to 30
-  days, so the email is never a param: the consumer writes it to
-  `signup_secret`, the create step reads it, and `done` deletes the row. The
-  email lives only in the queue message, that row and `installs.owner_email`
-  (which create already writes). Params are `{ signupId, slug, ownerSub }`.
-- SS4 never writes `signups`; it keeps its own one-per-Google-account table
-  (keyed by sub) holding the `signupId` it minted.
-- Over the cap (deferred, never failed): the row is written as `waiting_cap`;
-  the scheduler re-enqueues `waiting_cap` rows after 00:00 UTC, oldest first,
-  within that day's cap. The first cap hit of each UTC day sends one operator
-  alert (an abuse or demand signal). The cap is config: `SIGNUP_DAILY_CAP`,
-  staging 20, prod 50.
-- Consumer: one conditional `INSERT ... SELECT ... WHERE (today's non-failed
-  rows) < cap ON CONFLICT (signup_id) DO NOTHING` (atomic: D1 serializes
-  writes), then
-  `PROVISION_INSTALL.create({ id: signupId, params })`. An "already exists"
-  from Workflows is success. Ack the message only after both.
+  ('pending','queued','waiting_cap','creating','ready','failed')),
+  admitted_at INTEGER, welcome_claimed_at INTEGER, welcome_sent_at INTEGER,
+  error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`, an
+  index on `signups(admitted_at)`, and `signup_secret(signup_id TEXT NOT NULL
+  PK, owner_email TEXT NOT NULL)`. Workflows keeps instance params for up to
+  30 days, so the email is never a param: SS4 writes it to `signup_secret`,
+  the create step reads it, and `done` deletes the row. The email lives only
+  in that row and `installs.owner_email` (which create already writes).
+  Params are `{ signupId, slug, ownerSub }`, read from the stored row.
+- SS4 writes `signups` only as `pending` rows with their `signup_secret`, in
+  one D1 batch, then enqueues. Everything after `pending` belongs to the
+  provisioner.
+- The cap counts admissions, not arrivals: `admitted_at` is set when a row
+  leaves `pending` or `waiting_cap` for `queued`, and the cap counts rows
+  whose `admitted_at` is in the current UTC day. A promoted `waiting_cap` row
+  counts toward the day it is admitted into, so a day never admits more than
+  the cap.
+- Over the cap (deferred, never failed): the row becomes `waiting_cap`; the
+  scheduler re-enqueues `waiting_cap` rows after 00:00 UTC, oldest first. The
+  first cap hit of each UTC day sends one operator alert (an abuse or demand
+  signal). The cap is config: `SIGNUP_DAILY_CAP`, staging 20, prod 50, parsed
+  strictly (`^[1-9][0-9]{0,3}$`); an invalid value retries and logs, never
+  defers silently.
+- Consumer: read the row. No row: retry (SS4 writes it before enqueueing; the
+  runtime DLQ takes the id after the retries). `pending` or `waiting_cap`: one
+  conditional `UPDATE signups SET status = 'queued', admitted_at = now WHERE
+  signup_id = ? AND status IN ('pending','waiting_cap') AND (SELECT count(*)
+  FROM signups WHERE admitted_at >= <UTC day start>) < cap`, else the same row
+  to `waiting_cap` (atomic: D1 serializes writes). `queued` or `creating`:
+  `PROVISION_INSTALL.create({ id: signupId, params })` from the stored row; an
+  "already exists" from Workflows is success. `ready` or `failed`: ack. Ack
+  only after the start.
+- Sweep (scheduler, every tick): a `pending` row older than 15 minutes, or a
+  `queued` row with no Workflow instance, is re-enqueued as `{ signupId }`.
 - Workflow `reserve` step: picks the install id once and stores it on the row
   (`install_id` set only when NULL); a retry reads it back. `create` is called
   with that fixed install id, so a rerun resumes the same install.
@@ -214,7 +232,7 @@ are created by the deploy script check-first. Prod stays behind
 ## Tests
 
 - Message validation, DLQ on bad shape, ack only after reserve and start.
-- Idempotency: the same message twice, a Workflow retry of each step, a crash
+- Idempotency: the same `{ signupId }` twice, a Workflow retry of each step, a crash
   after create before `notify`, a crash mid-create with the lease held: one
   install, one email, no active `ci-<signupId>` token left.
 - The daily cap, including concurrent messages at the boundary.
@@ -233,7 +251,7 @@ are created by the deploy script check-first. Prod stays behind
 ## Calls made by Platform (check while reading)
 
 The tier step dropped; the email kept out of Workflow params via
-`signup_secret`; the atomic cap in the consumer's insert; lease-held as the
+`signup_secret` (written by SS4); the atomic cap as a conditional update counting admissions; lease-held as the
 only retryable refusal; no automatic re-drive; stacking on #848 and #849.
 
 ## Open (for the Manager)
