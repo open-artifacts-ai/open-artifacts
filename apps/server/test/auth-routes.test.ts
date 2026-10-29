@@ -540,8 +540,9 @@ describe("Me sign-in fields", () => {
     expect(
       (await me(direct({ TIER: "team" }), cookie)).instance.tier,
     ).toBeNull();
-    // Reported only: features still follow FEATURES (provisioning derives them).
-    expect((await me(hosted("team"), cookie)).instance.features).not.toContain(
+    // Hosted billing (#857): features follow the tier (TIER_FEATURES; with no
+    // BILLING gate, the provisioned TIER), not FEATURES. Team freezes sync.
+    expect((await me(hosted("team"), cookie)).instance.features).toContain(
       "sync_frozen",
     );
     // Access-only installs keep today's shape.

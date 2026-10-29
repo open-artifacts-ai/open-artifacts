@@ -33,14 +33,17 @@ export async function withPlanScope<T>(
   f: () => Promise<T>,
   now = Date.now(),
 ): Promise<T> {
-  if (!billingOn(env) || scope.getStore()) return f();
+  // `return await`, never a bare return: f's rejection gets its handler at
+  // once (a returned promise is adopted a tick later, which workerd reports
+  // as an unhandled rejection).
+  if (!billingOn(env) || scope.getStore()) return await f();
   let plan: EffectivePlan | null = null;
   try {
     plan = await readPlan(env, now);
   } catch (e) {
     logWarn("billing_plan_read_failed", e);
   }
-  return scope.run({ plan }, f);
+  return await scope.run({ plan }, f);
 }
 
 /** This invocation's plan (withPlanScope), or null (none read, or self-hosted). */

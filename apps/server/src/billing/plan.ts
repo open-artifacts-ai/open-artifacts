@@ -37,8 +37,8 @@ import { ApiError } from "../http/errors.js";
 //    trial allowed), never unenforced.
 // 2. The gate is absent (before #849 is deployed, or a context without it):
 //    no billing enforcement: the provisioned TIER, never unreachable, and no
-//    7-day clock. Without a TIER, the cached answer (no clock); with neither,
-//    free (solo, trial allowed).
+//    7-day clock. Without a TIER: no plan (the provisioned FEATURES, as
+//    before billing). Nothing is recorded (store.ts refreshPlan skips).
 //
 // Features (Me.instance.features and every check) follow the plan's tier at
 // read time through TIER_FEATURES, not the provisioned FEATURES (planFeatures).
@@ -191,12 +191,13 @@ export function planOfRaw(
   const c = parseStored(PlanCheckSchema, check);
   const gate = o.gate ?? billingGate() !== null;
   if (!gate) {
-    // No BILLING: no billing enforcement. The provisioned TIER wins; else
-    // the cached answer; else free. Never unreachable, no 7-day clock.
+    // No BILLING: no billing enforcement. The provisioned TIER (never
+    // unreachable, no 7-day clock); without one, no plan at all (the
+    // provisioned FEATURES, as before billing). The cache is not consulted.
     const tier = parseTier(env.TIER);
     return tier !== null
       ? effectivePlan(null, null, tier, now, { clock: false })
-      : effectivePlan(last, null, undefined, now, { clock: false });
+      : null;
   }
   // The billing tier, with the last-good rule. No answer and no TIER: free
   // (solo, trial allowed) until the first good read, never unenforced.

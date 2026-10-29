@@ -294,9 +294,10 @@ Which tier applies (in this order):
    Nothing read yet: the provisioned `TIER`, else free.
 2. No BillingGate (before Platform's #849 is deployed): no billing
    enforcement. The provisioned `TIER`; never `billing_unreachable`, no 7-day
-   clock, nothing recorded. No `TIER`: the cached answer, else free.
-3. Hosted with no `TIER` and nothing cached: free (solo, the trial allowed),
-   never unenforced.
+   clock, nothing recorded. No `TIER`: no plan (the provisioned `FEATURES`,
+   as before billing; `Me.instance.billing` absent).
+3. Hosted with the gate, no `TIER` and nothing cached: free (solo, the trial
+   allowed) until the first good read, never unenforced.
 
 Features (`Me.instance.features` and every check) follow that tier at read
 time through `TIER_FEATURES` (the trial and free report Business's; hosted
