@@ -116,10 +116,7 @@ describe("stepAlert", () => {
     ]);
     expect(await state("opened_at")).toBe(T0);
     expect(await state("notified_at")).toBe(T0);
-    expect(lines).toEqual([
-      `alert ${KEY} opened`,
-      `alert ${KEY} sent open`,
-    ]);
+    expect(lines).toEqual([`alert ${KEY} opened`, `alert ${KEY} sent open`]);
   });
 
   it("no repeat within 24 h, whether the condition holds or is unknown", async () => {

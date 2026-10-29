@@ -43,11 +43,7 @@ const withGates = (gates: GateExports | undefined, id: string) =>
     ? { props: { ...brokerProps(gates, id), ...billingProps(gates, id) } }
     : undefined;
 
-export interface Env
-  extends QuotaEnv,
-    AlertEnv,
-    BrokerGateEnv,
-    BillingGateEnv {
+export interface Env extends QuotaEnv, AlertEnv, BrokerGateEnv, BillingGateEnv {
   DISPATCHER: DispatchNamespace;
   /** Platform D1 (installs metadata only; no customer data). */
   PLATFORM_DB: D1Database;
@@ -748,9 +744,15 @@ export default {
       await billingHealth(env, event.scheduledTime);
       // The quota alert is checked nightly; between checks this only retries
       // an email whose send failed (no reminder: the nightly check sends it).
-      await stepAlert(env, emailQuotaAlert(env.OA_ENV), null, event.scheduledTime, {
-        remind: false,
-      });
+      await stepAlert(
+        env,
+        emailQuotaAlert(env.OA_ENV),
+        null,
+        event.scheduledTime,
+        {
+          remind: false,
+        },
+      );
       await revokeTick(env, event.scheduledTime, { gates });
       // Own try: a sync run that aborts (D1, env) never fails the revoke tick.
       try {

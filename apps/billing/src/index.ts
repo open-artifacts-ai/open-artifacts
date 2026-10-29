@@ -103,9 +103,11 @@ async function bodyText(req: Request): Promise<string | null> {
   }
 }
 
-const sigLog = (outcome: string, install: string) =>
+/** 401 bad_signature, logged by fixed outcome and install id. */
+function badSignature(outcome: string, install: string) {
   console.log("billing signature", outcome, install);
-const badSignature = () => bad("bad_signature", 401);
+  return bad("bad_signature", 401);
+}
 
 /**
  * A signed POST's body as a JSON object, or the refusal. The kid must be one
@@ -124,18 +126,18 @@ async function signedBody(
   const sig = req.headers.get("x-oa-sig") ?? "";
   const text = await bodyText(req);
   if (text === null) return bad("bad_body");
-  if (!kid || !sig) return sigLog("missing", install), badSignature();
+  if (!kid || !sig) return badSignature("missing", install);
   const entry = await lookupInstall(env.BROKER_REGISTRY, install, now);
-  if (!entry) return sigLog("unknown_install", install), badSignature();
+  if (!entry) return badSignature("unknown_install", install);
   if (!(await verifyAssertion(entry, path, kid, text, sig)))
-    return sigLog("bad", install), badSignature();
+    return badSignature("bad", install);
   const body = jsonObject(text);
   if (!body) return bad("bad_body");
   if (
     typeof body.ts !== "number" ||
     !(Math.abs(now - body.ts) <= ASSERTION_SKEW_MS)
   )
-    return sigLog("stale", install), badSignature();
+    return badSignature("stale", install);
   return body;
 }
 
