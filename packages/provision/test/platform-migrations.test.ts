@@ -126,6 +126,7 @@ describe("0007_signups", () => {
       ["slug", 1, 0],
       ["install_id", 0, 0],
       ["status", 1, 0],
+      ["admitted_at", 0, 0],
       ["welcome_claimed_at", 0, 0],
       ["welcome_sent_at", 0, 0],
       ["error", 0, 0],
@@ -141,7 +142,16 @@ describe("0007_signups", () => {
         "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'signups' AND sql IS NOT NULL",
       )
       .all();
-    expect(JSON.stringify(idx)).toMatch(/signups_created_at/);
+    expect(idx).toEqual([{ name: "signups_admitted_at" }]);
+    // The cap counts a day's admitted rows: the index serves that count.
+    const plan = db
+      .prepare(
+        "EXPLAIN QUERY PLAN SELECT count(*) FROM signups WHERE admitted_at >= 1",
+      )
+      .all() as { detail: string }[];
+    expect(plan.map((p) => p.detail).join("\n")).toMatch(
+      /USING (?:COVERING )?INDEX signups_admitted_at/,
+    );
     // A TEXT primary key accepts NULL in SQLite unless NOT NULL; a NULL
     // status would slip past the CHECK. Both are refused.
     const raw = (id: string | null, st: string | null) =>
@@ -171,12 +181,19 @@ describe("0007_signups", () => {
     // UNIQUE install_id allows many NULLs: every signup before its create.
     ins("n1", null, "queued");
     ins("n2", null, "queued");
-    for (const st of ["queued", "waiting_cap", "creating", "ready", "failed"])
+    for (const st of [
+      "pending",
+      "queued",
+      "waiting_cap",
+      "creating",
+      "ready",
+      "failed",
+    ])
       ins(`s-${st}`, null, st);
     expect(
       db
         .prepare("SELECT count(*) AS n FROM signups WHERE install_id IS NULL")
         .get(),
-    ).toEqual({ n: 7 });
+    ).toEqual({ n: 8 });
   });
 });
