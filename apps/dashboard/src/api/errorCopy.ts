@@ -56,6 +56,8 @@ const planCopy = (e: ApiClientError, owner: boolean): string | undefined => {
           return owner
             ? "This instance is read-only until billing is sorted out. Update billing to fix it."
             : `This instance is read-only until billing is sorted out. ${ASK}.`;
+        case "billing_unreachable":
+          return "Team features are read-only while we restore billing. Nothing has been deleted.";
         case "suspended":
           return owner
             ? "This instance is suspended."
