@@ -1306,6 +1306,10 @@ export class WfpProvisioner {
     const { appHost, contentHost } = hosts(i.slug, this.o.domains);
     if (i.resumeId !== undefined && !isInstallId(i.resumeId))
       throw new ProvisionRefused("resumeId is not an install id");
+    if (i.installId !== undefined && !isInstallId(i.installId))
+      throw new ProvisionRefused("installId is not an install id");
+    if (i.installId !== undefined && i.resumeId !== undefined)
+      throw new ProvisionRefused("pass installId or resumeId, not both");
     const testHooks = i.testHooks === true;
     const vars = i.vars ?? {};
     this.brokerVars(vars);
@@ -1411,7 +1415,7 @@ export class WfpProvisioner {
     const fresh = !row;
     if (!row)
       row = await this.platform.insertCreating({
-        id: newInstallId(),
+        id: i.installId ?? newInstallId(),
         slug: i.slug,
         appHost,
         contentHost,
@@ -1498,6 +1502,19 @@ export class WfpProvisioner {
 
   private async findRow(i: WfpCreateInput): Promise<InstallRow | undefined> {
     const bySlug = await this.platform.bySlug(i.slug);
+    if (i.installId !== undefined) {
+      const byId = await this.platform.byId(i.installId);
+      if (byId && byId.slug !== i.slug)
+        throw new ProvisionRefused(
+          `installId ${i.installId} is not the install for slug ${i.slug}`,
+        );
+      // An active row keeps its own refusal (slug ... already exists).
+      if (bySlug && bySlug.id !== i.installId && bySlug.state !== "active")
+        throw new ProvisionRefused(
+          `slug ${i.slug} is already taken by install ${bySlug.id}`,
+        );
+      return bySlug;
+    }
     if (i.resumeId === undefined) return bySlug;
     const byId = await this.platform.byId(i.resumeId);
     if (!byId || byId.slug !== i.slug || bySlug?.id !== byId.id)

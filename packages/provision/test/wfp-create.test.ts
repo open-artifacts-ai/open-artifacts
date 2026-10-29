@@ -611,6 +611,60 @@ describe("WfpProvisioner.create", () => {
       expect(inst.id).toBe(row.id);
     });
 
+    it("installId fixes a fresh install's id; a rerun resumes it", async () => {
+      const s = setup();
+      const id = "iabcdefghjkm";
+      s.fake.inject((m, p) => m === "POST" && p.endsWith("/r2/buckets"));
+      await fails(s.p.create(input("finqore", { installId: id })));
+      expect(s.rows().map((r) => r.id)).toEqual([id]);
+      const inst = await s.p.create(input("finqore", { installId: id }));
+      expect(inst.id).toBe(id);
+      expect(s.rows()).toHaveLength(1);
+    });
+
+    it("installId: the slug held by another install, or the id on another slug, is refused before any write", async () => {
+      const s = setup();
+      s.fake.inject((m, p) => m === "POST" && p.endsWith("/r2/buckets"));
+      await fails(s.p.create(input("finqore", { installId: "iabcdefghjkm" })));
+      const n = s.fake.writes().length;
+      const other = await fails(
+        s.p.create(input("finqore", { installId: "iabcdefghjkn" })),
+      );
+      expect(other.message).toMatch(
+        /slug finqore is already taken by install iabcdefghjkm/,
+      );
+      const moved = await fails(
+        s.p.create(input("other", { installId: "iabcdefghjkm" })),
+      );
+      expect(moved.message).toMatch(/not the install for slug other/);
+      for (const bad of ["Iabcdefghjkm", "iabcdefghjkm "])
+        expect(
+          (await fails(s.p.create(input("other", { installId: bad })))).message,
+        ).toMatch(/installId is not an install id/);
+      const both = await fails(
+        s.p.create(
+          input("finqore", {
+            installId: "iabcdefghjkm",
+            resumeId: "iabcdefghjkm",
+          }),
+        ),
+      );
+      expect(both.message).toMatch(/installId or resumeId/);
+      expect(nonReads(s.fake, n)).toEqual([]);
+      expect(s.rows()).toHaveLength(1);
+    });
+
+    it("installId on another install's active slug keeps the active refusal", async () => {
+      const s = setup();
+      await s.p.create(input());
+      const n = s.fake.writes().length;
+      const e = await fails(
+        s.p.create(input("finqore", { installId: "iabcdefghjkm" })),
+      );
+      expect(e.message).toMatch(/slug finqore already exists as active install/);
+      expect(nonReads(s.fake, n)).toEqual([]);
+    });
+
     it("an active slug fails before any Cloudflare write", async () => {
       const s = setup();
       await s.p.create(input());
