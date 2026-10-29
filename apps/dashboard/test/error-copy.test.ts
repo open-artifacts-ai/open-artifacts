@@ -135,8 +135,8 @@ it.each([
   ],
   [
     "billing_unreachable",
-    "This instance is read-only right now. Ask your instance owner.",
-    "This instance is read-only right now.",
+    "Team features are read-only while we restore billing. Nothing has been deleted.",
+    "Team features are read-only while we restore billing. Nothing has been deleted.",
   ],
   [
     undefined,
