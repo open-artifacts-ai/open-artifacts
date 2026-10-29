@@ -19,8 +19,9 @@ import {
   isReleaseVersion,
   REVOKE_MIN_VERSION,
 } from "@oa/provision/versions";
+import { type AlertEnv, emailQuotaAlert, stepAlert } from "./alerts.js";
 import { billingHealth } from "./billing-health.js";
-import { emailQuota, type QuotaEnv } from "./quota.js";
+import { emailQuota, type QuotaEnv, type QuotaOutcome } from "./quota.js";
 
 // And to the tier store (see @oa/broker-core/billing-gate).
 export { BillingGate } from "@oa/broker-core/billing-gate";
@@ -42,7 +43,11 @@ const withGates = (gates: GateExports | undefined, id: string) =>
     ? { props: { ...brokerProps(gates, id), ...billingProps(gates, id) } }
     : undefined;
 
-export interface Env extends QuotaEnv, BrokerGateEnv, BillingGateEnv {
+export interface Env
+  extends QuotaEnv,
+    AlertEnv,
+    BrokerGateEnv,
+    BillingGateEnv {
   DISPATCHER: DispatchNamespace;
   /** Platform D1 (installs metadata only; no customer data). */
   PLATFORM_DB: D1Database;
@@ -737,9 +742,15 @@ export default {
   async scheduled(event, env, ctx) {
     const gates = ctx.exports as unknown as GateExports;
     if (event.cron === REVOKE_CRON) {
-      // The billing outage alert first, bounded (5 s) and never throwing, so
+      // The billing outage alert first, bounded (a 5 s check, 5 s per email)
+      // and never throwing, so
       // a long revoke or sync tick can't starve it.
       await billingHealth(env, event.scheduledTime);
+      // The quota alert is checked nightly; between checks this only retries
+      // an email whose send failed (no reminder: the nightly check sends it).
+      await stepAlert(env, emailQuotaAlert(env.OA_ENV), null, event.scheduledTime, {
+        remind: false,
+      });
       await revokeTick(env, event.scheduledTime, { gates });
       // Own try: a sync run that aborts (D1, env) never fails the revoke tick.
       try {
@@ -754,11 +765,20 @@ export default {
     // Own try, after the nightly result is settled: it never changes it
     // (emailQuota logs one fixed line and doesn't throw; this catch is
     // defense only, unreachable today).
+    let quota: QuotaOutcome = "failed";
     try {
-      await emailQuota(env, event.scheduledTime);
+      quota = await emailQuota(env, event.scheduledTime);
     } catch {
       console.error("email-quota failed http");
     }
+    // "warn" opens the alert, "ok" clears it, a skip or failure leaves it;
+    // an open alert reminds here once a day. stepAlert never throws.
+    await stepAlert(
+      env,
+      emailQuotaAlert(env.OA_ENV),
+      quota === "warn" ? true : quota === "ok" ? false : null,
+      event.scheduledTime,
+    );
     // H-DV: own try too; a D1 error here never changes the nightly result.
     try {
       await purgeOwnerEmails(env.PLATFORM_DB, event.scheduledTime);

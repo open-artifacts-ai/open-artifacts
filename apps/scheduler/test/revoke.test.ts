@@ -603,10 +603,11 @@ describe("H-DV review fixes", () => {
         createExecutionContext(),
       ),
     ).resolves.toBeUndefined();
-    // The billing check before it and the sync run after it each fail on
-    // their own fixed line, never raw text.
+    // The billing check and the quota alert retry before it and the sync
+    // run after it each fail on their own fixed line, never raw text.
     expect(lines).toEqual([
       "billing-health db_error",
+      "alert email_quota db_error",
       "directory-revoke aborted exception",
       "directory-sync aborted exception",
     ]);

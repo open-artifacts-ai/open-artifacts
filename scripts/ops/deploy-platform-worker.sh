@@ -8,7 +8,9 @@
 # Usage: <PLACEHOLDER VARS> scripts/ops/deploy-platform-worker.sh <app> staging|prod
 #   auth-broker: BROKER_REGISTRY_ID=<32 hex> [GOOGLE_CLIENT_ID_PROD=<client id>, prod]
 #   directory-broker: DIRECTORY_REGISTRY_ID=<32 hex> [GOOGLE_DIRECTORY_CLIENT_ID_PROD=<client id>, prod]
-#   billing: BILLING_DB_ID=<D1 uuid>
+#   billing: BILLING_DB_ID=<D1 uuid> BROKER_REGISTRY_ID=<32 hex>
+#   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
+#              OPS_ALERT_EMAIL=<address> OPS_ALERT_FROM=<address>
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -29,12 +31,18 @@ esac
 hex32='^[0-9a-f]{32}$'
 google_id='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
 uuid='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+zones='^[0-9a-f]{32}(,[0-9a-f]{32}){0,9}$'
+limit='^[1-9][0-9]{0,8}$'
+# One plain address: no slash, ampersand, backslash, quote, comma or space, so
+# it can't carry sed syntax or read as a list or display name.
+email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
 
 # The allowlist: app -> dir, plus the placeholders filled below.
 case "$app" in
   auth-broker) dir=apps/auth-broker ;;
   directory-broker) dir=apps/directory-broker ;;
   billing) dir=apps/billing ;;
+  scheduler) dir=apps/scheduler ;;
   *)
     echo "unknown app: not in the allowlist" >&2
     exit 2
@@ -76,6 +84,17 @@ case "$app" in
   billing)
     # The id of this env's D1 oa-<p>-billing.
     fill "BILLING_DB_ID_${up}" "${BILLING_DB_ID:-}" "$uuid"
+    # The auth broker's registry namespace (read-only here): same variable,
+    # same id as the auth-broker deploy.
+    fill "BROKER_REGISTRY_ID_${up}" "${BROKER_REGISTRY_ID:-}" "$hex32"
+    ;;
+  scheduler)
+    fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
+    fill "EMAIL_ZONE_TAG_${up}" "${EMAIL_ZONE_TAGS:-}" "$zones"
+    fill "EMAIL_DAILY_LIMIT_${up}" "${EMAIL_DAILY_LIMIT:-}" "$limit"
+    # The operator alerts' recipient and sender (src/alerts.ts).
+    fill "OPS_ALERT_EMAIL_${up}" "${OPS_ALERT_EMAIL:-}" "$email"
+    fill "OPS_ALERT_FROM_${up}" "${OPS_ALERT_FROM:-}" "$email"
     ;;
 esac
 

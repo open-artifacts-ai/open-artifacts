@@ -159,8 +159,11 @@ describe("deploy-platform-worker.sh", () => {
     const DB = "0123abcd-4567-89ef-0123-456789abcdef";
 
     for (const env of ["staging", "prod"] as const)
-      it(`${env}: deploys from apps/billing with exact argv and fills its D1 id`, () => {
-        const r = run(["billing", env], { BILLING_DB_ID: DB });
+      it(`${env}: deploys from apps/billing with exact argv and fills its D1 and registry ids`, () => {
+        const r = run(["billing", env], {
+          BILLING_DB_ID: DB,
+          BROKER_REGISTRY_ID: REG,
+        });
         expect(r.code).toBe(0);
         expect(r.log).toEqual([
           `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
@@ -170,25 +173,118 @@ describe("deploy-platform-worker.sh", () => {
         const snap = readFileSync(r.snap, "utf8");
         const up = env.toUpperCase();
         expect(snap).toContain(`"database_id": "${DB}"`);
+        expect(snap).toContain(`"id": "${REG}"`);
         expect(snap).not.toContain(`{{BILLING_DB_ID_${up}}}`);
-        // Only this env's placeholder is filled.
+        expect(snap).not.toContain(`{{BROKER_REGISTRY_ID_${up}}}`);
+        // Only this env's placeholders are filled.
         const other = env === "staging" ? "PROD" : "STAGING";
         expect(snap).toContain(`{{BILLING_DB_ID_${other}}}`);
+        expect(snap).toContain(`{{BROKER_REGISTRY_ID_${other}}}`);
         expect(r.out + r.err).not.toContain(DB);
+        expect(r.out + r.err).not.toContain(REG);
         expect(existsSync(join(DIR, "wrangler.deploy.jsonc"))).toBe(false);
       });
 
-    it("refuses a missing or malformed D1 id, or another app's variable", () => {
+    it("refuses a missing or malformed D1 or registry id", () => {
       for (const env of [
         {},
-        { BILLING_DB_ID: "" },
-        { BILLING_DB_ID: "0123456789abcdef0123456789abcdef" },
-        { BILLING_DB_ID: DB.toUpperCase() },
-        { BILLING_DB_ID: `${DB}/x` },
-        { BILLING_DB_ID: "../../etc" },
         { BROKER_REGISTRY_ID: REG },
+        { BILLING_DB_ID: "", BROKER_REGISTRY_ID: REG },
+        {
+          BILLING_DB_ID: "0123456789abcdef0123456789abcdef",
+          BROKER_REGISTRY_ID: REG,
+        },
+        { BILLING_DB_ID: DB.toUpperCase(), BROKER_REGISTRY_ID: REG },
+        { BILLING_DB_ID: `${DB}/x`, BROKER_REGISTRY_ID: REG },
+        { BILLING_DB_ID: "../../etc", BROKER_REGISTRY_ID: REG },
+        { BILLING_DB_ID: DB },
+        { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: "" },
+        { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: DB },
+        { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: `${REG}/x` },
+        { BILLING_DB_ID: DB, DIRECTORY_REGISTRY_ID: REG },
       ] as Record<string, string>[]) {
         const r = run(["billing", "staging"], env);
+        expect(r.code).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
+  });
+
+  describe("scheduler", () => {
+    const DIR = join(root, "apps/scheduler");
+    const DB = "0123abcd-4567-89ef-0123-456789abcdef";
+    const OK = {
+      PLATFORM_DB_ID: DB,
+      EMAIL_ZONE_TAGS: `${REG},${"b".repeat(32)}`,
+      EMAIL_DAILY_LIMIT: "3000",
+      OPS_ALERT_EMAIL: "ops+alerts@example.com",
+      OPS_ALERT_FROM: "alerts@mail.open-artifacts.app",
+    };
+
+    for (const env of ["staging", "prod"] as const)
+      it(`${env}: deploys from apps/scheduler and fills its D1, quota and alert placeholders`, () => {
+        const r = run(["scheduler", env], OK);
+        expect(r.code).toBe(0);
+        expect(r.log).toEqual([
+          `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
+          DIR,
+          "copy-present",
+        ]);
+        const snap = readFileSync(r.snap, "utf8");
+        const up = env.toUpperCase();
+        expect(snap).toContain(`"ALERT_TO": "${OK.OPS_ALERT_EMAIL}"`);
+        expect(snap).toContain(`"ALERT_FROM": "${OK.OPS_ALERT_FROM}"`);
+        expect(snap).toContain(`"database_id": "${DB}"`);
+        expect(snap).not.toMatch(new RegExp(`\\{\\{[A-Z0-9_]*_${up}\\}\\}`));
+        // Only this env's placeholders are filled.
+        const other = env === "staging" ? "PROD" : "STAGING";
+        expect(snap).toContain(`{{OPS_ALERT_EMAIL_${other}}}`);
+        expect(snap).toContain(`{{OPS_ALERT_FROM_${other}}}`);
+        expect(r.out + r.err).not.toContain(OK.OPS_ALERT_EMAIL);
+        expect(existsSync(join(DIR, "wrangler.deploy.jsonc"))).toBe(false);
+      });
+
+    it("refuses a missing or malformed alert address (an email pattern, no sed syntax)", () => {
+      for (const bad of [
+        "",
+        "ops",
+        "ops@",
+        "@example.com",
+        "ops@example",
+        "ops@example.com/x",
+        "ops@exa&mple.com",
+        "o\\ps@example.com",
+        "ops @example.com",
+        "a@b.com,c@d.com",
+        "Ops <ops@example.com>",
+        '"ops"@example.com',
+        "{{OPS_ALERT_EMAIL_STAGING}}",
+      ])
+        for (const key of ["OPS_ALERT_EMAIL", "OPS_ALERT_FROM"]) {
+          const r = run(["scheduler", "staging"], { ...OK, [key]: bad });
+          expect(r.code).toBe(1);
+          expect(r.log).toEqual([]);
+        }
+      for (const key of ["OPS_ALERT_EMAIL", "OPS_ALERT_FROM"]) {
+        const { [key as keyof typeof OK]: _, ...rest } = OK;
+        const r = run(["scheduler", "staging"], rest);
+        expect(r.code).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
+
+    it("refuses a missing or malformed D1 id, zone list or limit", () => {
+      for (const o of [
+        { PLATFORM_DB_ID: "" },
+        { PLATFORM_DB_ID: REG },
+        { EMAIL_ZONE_TAGS: "" },
+        { EMAIL_ZONE_TAGS: "abc" },
+        { EMAIL_ZONE_TAGS: Array(11).fill(REG).join(",") },
+        { EMAIL_DAILY_LIMIT: "0" },
+        { EMAIL_DAILY_LIMIT: "1000000000" },
+        { EMAIL_DAILY_LIMIT: "1e3" },
+      ]) {
+        const r = run(["scheduler", "staging"], { ...OK, ...o });
         expect(r.code).toBe(1);
         expect(r.log).toEqual([]);
       }
