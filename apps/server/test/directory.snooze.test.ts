@@ -20,6 +20,7 @@ import {
   app,
   connect,
   directEnv,
+  get,
   post,
   registerInstall,
   resetDirectory,
@@ -515,5 +516,294 @@ describe("held sweep snooze (#412)", () => {
       ["user", null],
       ["system", "released"],
     ]);
+  });
+});
+
+/** health.ts READ: the health (and bare state) row's read. */
+const HEALTH_READ = /^select value from directory_state where key = \?$/;
+/** sync.ts MEMBERS_OF: a sweep's read of the group's rows. */
+const MEMBERS_READ = /^select user_id, gen from directory_members where/;
+
+/**
+ * `e` with a D1 binding that runs `f` once, before or after the first query
+ * whose SQL matches: a fixed interleaving point for a race.
+ */
+function raced(
+  match: RegExp,
+  when: "before" | "after",
+  f: () => Promise<void>,
+): Env {
+  let fired = false;
+  const fire = async () => {
+    if (fired) return;
+    fired = true;
+    await f();
+  };
+  const real = new WeakMap<object, D1PreparedStatement>();
+  const wrap = (st: D1PreparedStatement, sql: string): D1PreparedStatement => {
+    const p = new Proxy(st, {
+      get(t, k) {
+        if (k === "bind") return (...a: unknown[]) => wrap(t.bind(...a), sql);
+        if (
+          (k === "first" || k === "all" || k === "run" || k === "raw") &&
+          match.test(sql)
+        )
+          return async (...a: unknown[]) => {
+            if (when === "before") await fire();
+            const r = await (
+              t[k] as (...x: unknown[]) => Promise<unknown>
+            ).apply(t, a);
+            if (when === "after") await fire();
+            return r;
+          };
+        const v = Reflect.get(t, k, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    real.set(p, st);
+    return p;
+  };
+  const DB = new Proxy(e.DB, {
+    get(t, k) {
+      if (k === "prepare") return (sql: string) => wrap(t.prepare(sql), sql);
+      if (k === "batch")
+        return (ss: D1PreparedStatement[]) =>
+          t.batch(ss.map((x) => real.get(x) ?? x));
+      const v = Reflect.get(t, k, t);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  return { ...e, DB };
+}
+
+/** Alarms at `now` until no lane may run, inside a DO call. */
+async function drainIn(s: DurableObjectState, now: number, en: Env = e) {
+  for (let i = 0; i < 80; i++) {
+    await new SyncEngine(en, s.storage).alarm(now);
+    if (!new SyncEngine(en, s.storage).due(now)) return;
+  }
+  throw new Error("run never finished");
+}
+
+/** Each directory.sweep.snoozed row's detail.renewed (1/0), oldest first. */
+const snoozedRenewed = async (gid: string) =>
+  (
+    await env.DB.prepare(
+      `select json_extract(detail, '$.renewed') renewed from audit_events
+        where target_id = ? and action = 'directory.sweep.snoozed'
+        order by json_extract(detail, '$.until')`,
+    )
+      .bind(gid)
+      .all<{ renewed: number }>()
+  ).results.map((r) => r.renewed);
+
+describe("held sweep snooze races and review fixes (#412)", () => {
+  it("review 1: an alarm's health write between the snooze's read and write keeps the newly held group", async () => {
+    const a = await heldGroup("race-a");
+    const b = await group("race-b");
+    await connected();
+    await a.hold();
+    // B's next sweep holds it: the alarm that does so lands mid-snooze.
+    for (const u of b.us.slice(0, 4)) g.removeMember(b.gid, u.id);
+    const t1 = t0 + 62 * MIN;
+    await inDo(async (s) => {
+      const en = raced(HEALTH_READ, "after", async () => {
+        await drainIn(s, t0 + 122 * MIN);
+        const h = await readHealth(e);
+        expect(h.held.map((x) => x.groupId).sort()).toEqual(
+          [a.gid, b.gid].sort(),
+        );
+      });
+      const st = await new SyncEngine(en, s.storage).snoozeHeld(
+        a.gid,
+        userActor(owner.userId),
+        null,
+        t1,
+      );
+      expect(st?.held.find((x) => x.groupId === b.gid)?.wouldRemove).toBe(4);
+    });
+    const h = await readHealth(e);
+    expect(h.held.find((x) => x.groupId === b.gid)).toMatchObject({
+      wouldRemove: 4,
+      snoozedUntil: null,
+    });
+    expect(h.held.find((x) => x.groupId === a.gid)?.snoozedUntil).toBe(
+      new Date(t1 + HELD_SNOOZE_MS).toISOString(),
+    );
+    expect(await dot(t1)).toBe(1);
+  });
+
+  it("review 1: a disconnect between the snooze's read and write doesn't bring the held list back", async () => {
+    const a = await heldGroup("race-dis");
+    await connected();
+    await a.hold();
+    const t1 = t0 + 62 * MIN;
+    await inDo(async (s) => {
+      const en = raced(HEALTH_READ, "after", async () => {
+        const r = await post(e, R.directoryDisconnect, owner.cookie);
+        expect(r.status).toBe(200);
+        await engine(s).alarm(t1);
+        expect((await readHealth(e)).held).toEqual([]);
+      });
+      await new SyncEngine(en, s.storage).snoozeHeld(
+        a.gid,
+        userActor(owner.userId),
+        null,
+        t1,
+      );
+    });
+    expect((await readHealth(e)).held).toEqual([]);
+    expect(
+      await env.DB.prepare(
+        "select 1 from directory_state where key = 'sync.health'",
+      ).first(),
+    ).toBeNull();
+    expect((await status()).held).toEqual([]);
+  });
+
+  it("review 2: a snooze written while a releasing sweep runs goes with the hold", async () => {
+    const a = await heldGroup("orph");
+    await connected();
+    await a.hold();
+    // Google fixed: the next sweep releases. The owner's snooze lands after
+    // that sweep read the snoozed table, before its commit.
+    for (const u of a.us.slice(0, 4)) g.addMember(a.gid, u.id);
+    const at = t0 + 122 * MIN;
+    let snoozed = false;
+    await inDo(async (s) => {
+      const en = raced(MEMBERS_READ, "before", async () => {
+        snoozed =
+          (await engine(s).snoozeHeld(
+            a.gid,
+            userActor(owner.userId),
+            null,
+            at,
+          )) !== null;
+      });
+      await drainIn(s, at, en);
+    });
+    expect(snoozed).toBe(true);
+    expect(await heldOf(a.gid)).toBeUndefined();
+    expect(await snoozeRows()).toEqual([]);
+    expect(await membersOf(a.gid)).toHaveLength(6);
+  });
+
+  it("review 3: the same member list held for another reason (group_404, then over_half) ends the snooze", async () => {
+    const a = await group("why");
+    await connected();
+    g.fail(new RegExp(`/groups/${a.gid}/members`), 404, { times: 1 });
+    await drain(t0 + 61 * MIN);
+    expect((await heldOf(a.gid))?.wouldRemove).toBe(6);
+    await snooze(a.gid, t0 + 62 * MIN);
+    // Readable again, but every member resolves to nobody here: the same
+    // (empty) list as the 404's, now held over_half.
+    for (const u of a.us) g.removeMember(a.gid, u.id);
+    for (let i = 0; i < 6; i++)
+      g.addMember(a.gid, `g-why-out-${i}-${crypto.randomUUID()}`);
+    await drain(t0 + 122 * MIN);
+    expect(await heldOf(a.gid)).toMatchObject({
+      wouldRemove: 6,
+      snoozedUntil: null,
+    });
+    expect(await snoozeRows()).toEqual([]);
+    expect(await membersOf(a.gid)).toHaveLength(6);
+    expect((await audits(a.gid)).map((x) => [x.action, x.kind, x.why])).toEqual(
+      [
+        ["directory.sweep.snoozed", "user", null],
+        ["directory.sweep.unsnoozed", "system", "group_changed"],
+      ],
+    );
+  });
+
+  it("review 4: a renewal racing a cancel is a snooze of its own; the cancel ended the one it read", async () => {
+    const a = await heldGroup("ren");
+    await connected();
+    await a.hold();
+    const t1 = t0 + 62 * MIN;
+    await snooze(a.gid, t1);
+    await inDo(async (s) => {
+      const en = raced(/^insert into audit_events/, "before", async () => {
+        await engine(s).snoozeHeld(
+          a.gid,
+          userActor(owner.userId),
+          "again",
+          t1 + MIN,
+        );
+      });
+      await new SyncEngine(en, s.storage).unsnoozeHeld(
+        a.gid,
+        userActor(owner.userId),
+      );
+    });
+    // The renewal found no snooze (the cancel had ended it): not renewed.
+    expect(await snoozedRenewed(a.gid)).toEqual([0, 0]);
+    const rows = await snoozeRows();
+    expect(rows.map((r) => Number(r.at))).toEqual([t1 + MIN]);
+    expect(await heldOf(a.gid)).toMatchObject({
+      snoozedUntil: new Date(t1 + MIN + HELD_SNOOZE_MS).toISOString(),
+      snoozeReason: "again",
+    });
+    expect((await audits(a.gid)).map((x) => [x.action, x.why])).toEqual([
+      ["directory.sweep.snoozed", null],
+      ["directory.sweep.snoozed", null],
+      ["directory.sweep.unsnoozed", "owner_cancel"],
+    ]);
+  });
+
+  it("review 5: GET R.directory shows the snooze reason to the owner only", async () => {
+    const a = await heldGroup("rsn");
+    await connected();
+    await a.hold();
+    await snooze(a.gid, Date.now(), "Google is wrong");
+    const admin = await login(uniq("rsn-admin"), "admin");
+    const read = async (cookie: string) => {
+      const r = await get(e, R.directory, cookie);
+      expect(r.status).toBe(200);
+      return ((await r.json()) as SyncStatus).held.find(
+        (x) => x.groupId === a.gid,
+      );
+    };
+    const mine = await read(owner.cookie);
+    expect(mine?.snoozeReason).toBe("Google is wrong");
+    const theirs = await read(admin.cookie);
+    expect(theirs?.snoozedUntil).toBe(mine?.snoozedUntil);
+    expect(theirs?.snoozedUntil).not.toBeNull();
+    expect(theirs?.snoozeReason).toBeNull();
+  });
+
+  it("the Manager's: an install user already in the Google group, once bound, changes the hash and ends the snooze", async () => {
+    const a = await heldGroup("bind");
+    // In the Google group, but no user on this install yet.
+    const late = `g-bind-late-${crypto.randomUUID()}`;
+    g.addMember(a.gid, late);
+    await connected();
+    await a.hold();
+    await snooze(a.gid, t0 + 62 * MIN);
+    // They join the install: bound to their Google identity.
+    const email = uniq("bind-late");
+    g.addUser({ id: late, primaryEmail: email });
+    const uid = `u${crypto.randomUUID().replace(/-/g, "").slice(0, 15)}`;
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into users (id, email, name, role, created_at, status, restricted_sync) values (?, ?, 'late', 'member', ?, 'active', 0)",
+      ).bind(uid, email, t0 + 90 * MIN),
+      env.DB.prepare(
+        "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, ?, 1)",
+      ).bind(late, uid, t0 + 90 * MIN),
+    ]);
+    await drain(t0 + 122 * MIN);
+    // A different list: the snooze ends; still 4 of 6 gone, held again.
+    expect(await heldOf(a.gid)).toMatchObject({
+      wouldRemove: 4,
+      snoozedUntil: null,
+    });
+    expect(await snoozeRows()).toEqual([]);
+    expect(await dot(t0 + 122 * MIN)).toBe(1);
+    expect((await audits(a.gid)).map((x) => [x.action, x.kind, x.why])).toEqual(
+      [
+        ["directory.sweep.snoozed", "user", null],
+        ["directory.sweep.unsnoozed", "system", "group_changed"],
+      ],
+    );
   });
 });

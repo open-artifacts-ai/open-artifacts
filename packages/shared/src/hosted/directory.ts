@@ -42,7 +42,10 @@ export const HeldSweepSchema = GroupRefSchema.extend({
    * passes. Defaulted so a payload from before it shipped still parses.
    */
   snoozedUntil: z.string().nullable().default(null),
-  /** The owner's note when snoozing (cleaned, at most HELD_SNOOZE_REASON_MAX), else null. */
+  /**
+   * The owner's note when snoozing (cleaned, at most HELD_SNOOZE_REASON_MAX),
+   * else null. Org owner only: an admin's GET R.directory has null.
+   */
   snoozeReason: z.string().nullable().default(null),
 });
 export type HeldSweep = z.infer<typeof HeldSweepSchema>;

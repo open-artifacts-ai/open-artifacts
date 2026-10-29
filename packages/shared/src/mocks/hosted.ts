@@ -2029,7 +2029,19 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     ),
     http.get(
       "*/api/v1/directory",
-      authed(() => (isAdmin() ? HttpResponse.json(sync) : notFound())),
+      authed(() =>
+        !isAdmin()
+          ? notFound()
+          : // A snooze's note is the owner's (#412).
+            HttpResponse.json(
+              me.user.role === "owner"
+                ? sync
+                : {
+                    ...sync,
+                    held: sync.held.map((h) => ({ ...h, snoozeReason: null })),
+                  },
+            ),
+      ),
     ),
     http.post(
       "*/api/v1/directory/disconnect",

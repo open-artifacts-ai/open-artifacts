@@ -37,10 +37,14 @@ import {
 import {
   ALERT_AFTER_MS,
   clearHealth,
+  HEALTH_CAS,
   type Health,
+  HK,
+  heldAt,
   markStale,
   putHealth,
   readHealth,
+  readHealthRaw,
 } from "./health.js";
 import {
   liveSub,
@@ -83,8 +87,8 @@ import { type DirectoryClient, TransportError } from "./transport.js";
 // - Snoozes (#412): the owner may snooze a sweep hold for HELD_SNOOZE_MS.
 //   Visibility only: the hold stops counting in the Settings dot and shows
 //   as snoozed, and its removals stay held exactly as before. Every whole
-//   read of the group compares its member list's hash (held.hash) with the
-//   snooze's: a change ends the snooze at once and the sweep is judged
+//   read of the group compares its hold's hash (held.hash: the reason and
+//   the member list) with the snooze's: a change ends the snooze at once and the sweep is judged
 //   afresh; so does `until` passing (each alarm), applying the hold, the
 //   owner's cancel, or the hold ending. A reset (disconnect) drops them all.
 // - Customer check on every run: the grant's own user (users.get) and every
@@ -139,6 +143,8 @@ const NOFEED_KEY = "nofeed.since";
  * own that raced the RPC's.
  */
 const SNOOZE_SYNC_KEY = "snooze.sync";
+/** An RPC's compare-and-set tries on health before leaving it to the alarm. */
+const SNOOZE_CAS_TRIES = 4;
 
 /**
  * The directory access token, in memory only: never written to DO storage,
@@ -187,13 +193,26 @@ const SYNC: AuditActor = { kind: "sync", id: null };
 /** Snoozes ended by sync itself (group changed, expired, released). */
 const SYSTEM: AuditActor = { kind: "system", id: null };
 
+/** Why a sweep holds (sweep()). */
+type HoldWhy = "group_404" | "empty_active_listing" | "over_half";
+const HOLD_WHYS: readonly HoldWhy[] = [
+  "group_404",
+  "empty_active_listing",
+  "over_half",
+];
+
 /**
- * A group's member list as a sweep saw it (the people it resolved to on this
- * install, the list its removals are computed from): SHA-256 over the
- * sorted ids. A snooze lasts only while this is unchanged.
+ * A hold as a sweep saw it: why it held, and the group's member list (the
+ * people it resolved to on this install, the list its removals are computed
+ * from). SHA-256 over the reason and the sorted ids. A snooze lasts only
+ * while this is unchanged: a new list, or the same list held for another
+ * reason (group_404 turning into over_half), ends it.
  */
-export async function memberListHash(seen: Iterable<string>): Promise<string> {
-  const data = new TextEncoder().encode([...seen].sort().join("\n"));
+export async function memberListHash(
+  seen: Iterable<string>,
+  why: HoldWhy,
+): Promise<string> {
+  const data = new TextEncoder().encode([why, ...[...seen].sort()].join("\n"));
   const d = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
   return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -625,9 +644,15 @@ export class SyncEngine {
     return this.status();
   }
 
-  status(): Promise<SyncStatus> {
+  async status(now = Date.now()): Promise<SyncStatus> {
     // Expiry stays with the Worker (cron, status reads): it revokes first.
-    return directoryStatus(this.env, { showProblem: true, expire: false });
+    const s = await directoryStatus(this.env, {
+      showProblem: true,
+      expire: false,
+    });
+    // The snoozes as this DO holds them: D1's copy may trail by an alarm
+    // when a write raced an RPC's (SNOOZE_SYNC_KEY heals it).
+    return { ...s, held: heldAt(this.snoozesOn(s.held), now) };
   }
 
   /**
@@ -776,11 +801,47 @@ export class SyncEngine {
     groupId: string,
     by: AuditActor = SYNC,
   ): Promise<SyncStatus> {
-    const z = this.sql
-      .exec("select at from snoozed where group_id = ?", groupId)
-      .toArray()[0];
+    // Read and delete together: a renewal racing this cancel lands either
+    // before it (and is cancelled) or after it (a snooze of its own), so the
+    // owner_cancel row is always true.
+    const z = this.storage.transactionSync(() => {
+      const r = this.sql
+        .exec(
+          "select hash, until, at, by, reason from snoozed where group_id = ?",
+          groupId,
+        )
+        .toArray()[0];
+      if (!r) return null;
+      this.sql.exec("delete from snoozed where group_id = ?", groupId);
+      this.put(SNOOZE_SYNC_KEY, true);
+      return r;
+    });
     if (z) {
-      await this.endSnooze(groupId, Number(z.at), "owner_cancel", by, false);
+      const why: HeldSnoozeEnd = "owner_cancel";
+      try {
+        await audit(
+          this.env,
+          "directory.sweep.unsnoozed",
+          { type: "group", id: groupId },
+          by,
+          { detail: { why } },
+        ).run();
+      } catch (e) {
+        // No audit row, no cancel: the snooze is back (unless one was
+        // written since).
+        this.sql.exec(
+          `insert into snoozed (group_id, hash, until, at, by, reason)
+            values (?, ?, ?, ?, ?, ?) on conflict (group_id) do nothing`,
+          groupId,
+          z.hash,
+          z.until,
+          z.at,
+          z.by,
+          z.reason,
+        );
+        throw e;
+      }
+      logInfo("directory_sweep_unsnoozed", { why });
       await this.snoozeHealth();
     }
     return this.status();
@@ -817,6 +878,11 @@ export class SyncEngine {
 
   /** `h` with each held entry's snooze from the snoozed table. */
   private withSnoozes(h: Health): Health {
+    return { ...h, held: this.snoozesOn(h.held) };
+  }
+
+  /** Each entry's snooze from the snoozed table. */
+  private snoozesOn(held: HeldSweep[]): HeldSweep[] {
     const z = new Map(
       this.sql
         .exec("select group_id, until, reason from snoozed")
@@ -829,24 +895,35 @@ export class SyncEngine {
           },
         ]),
     );
-    return {
-      ...h,
-      held: h.held.map((x) => {
-        const s = z.get(x.groupId);
-        return {
-          ...x,
-          snoozedUntil: s ? isoOf(s.until) : null,
-          snoozeReason: s ? s.reason : null,
-        };
-      }),
-    };
+    return held.map((x) => {
+      const s = z.get(x.groupId);
+      return {
+        ...x,
+        snoozedUntil: s ? isoOf(s.until) : null,
+        snoozeReason: s ? s.reason : null,
+      };
+    });
   }
 
-  /** An RPC's health write of the snoozes (no epoch: never in an alarm). */
+  /**
+   * An RPC's health write of the snoozes (never in an alarm, so no epoch):
+   * a compare-and-set on the JSON it read, so it never overwrites an alarm's
+   * write (a newly held group, lanes, lastError, alertedAt) or a disconnect's
+   * clear. A lost race re-reads; past SNOOZE_CAS_TRIES the next alarm writes
+   * it (SNOOZE_SYNC_KEY, set by every RPC change).
+   */
   private async snoozeHealth() {
-    const h = await readHealth(this.env);
-    const out = putHealth(this.env, h, this.withSnoozes(h));
-    if (out.length) await this.env.DB.batch(out);
+    for (let i = 0; i < SNOOZE_CAS_TRIES; i++) {
+      const { h, raw } = await readHealthRaw(this.env);
+      // No row (never synced, or cleared): nothing is held.
+      if (raw === null) return;
+      const next = JSON.stringify(this.withSnoozes(h));
+      if (next === JSON.stringify(h)) return;
+      const r = await stmt(this.env.DB, HEALTH_CAS)
+        .bind(next, HK.health, raw)
+        .run();
+      if (r.meta.changes) return;
+    }
   }
 
   /**
@@ -1685,23 +1762,6 @@ export class SyncEngine {
     const newer = new Set(
       results.filter((r) => Number(r.gen) >= begun).map((r) => r.user_id),
     );
-    // #412: a whole read whose member list differs from the snooze's ends
-    // the snooze before anything is judged, as does `until` passing; the
-    // sweep below then holds (unsnoozed) or releases as usual.
-    const hash = await memberListHash(seen);
-    let snoozedAt = snoozeRow ? Number(snoozeRow.at) : null;
-    if (snoozeRow && snoozedAt !== null) {
-      const why: HeldSnoozeEnd | null =
-        !w.partial && String(snoozeRow.hash) !== hash
-          ? "group_changed"
-          : now >= Number(snoozeRow.until)
-            ? "expired"
-            : null;
-      if (why) {
-        await this.endSnooze(w.target, snoozedAt, why);
-        snoozedAt = null;
-      }
-    }
     const d = memberDiff(seen, cur);
     const added = w.missing ? [] : d.added;
     let removed = (w.partial ? [] : w.missing ? [...cur] : d.removed).filter(
@@ -1718,7 +1778,7 @@ export class SyncEngine {
       now - clicked < CONFIRM_TTL_MS &&
       removed.length <= Number(prior.would);
     let called = false;
-    let hold: string | null = null;
+    let hold: HoldWhy | null = null;
     if (removed.length && !confirmOk) {
       if (w.missing && !run.deletedGroups.includes(email)) hold = "group_404";
       else if ((lastActive ?? 1) === 0) hold = "empty_active_listing";
@@ -1731,6 +1791,32 @@ export class SyncEngine {
           if (!groupRefusal(e)) throw e;
           hold = "over_half";
         }
+      }
+    }
+    // #412: a whole read whose hold differs from the snooze's (another member
+    // list, or the same list held for another reason) ends the snooze, as
+    // does `until` passing; the sweep below then holds (unsnoozed) or
+    // releases as usual. With no hold, the list changed unless some reason
+    // gives the snooze's hash.
+    const hash = hold ? await memberListHash(seen, hold) : null;
+    let snoozedAt = snoozeRow ? Number(snoozeRow.at) : null;
+    if (snoozeRow && snoozedAt !== null) {
+      const was = String(snoozeRow.hash);
+      const changed =
+        !w.partial &&
+        (hash !== null
+          ? was !== hash
+          : !(
+              await Promise.all(HOLD_WHYS.map((y) => memberListHash(seen, y)))
+            ).includes(was));
+      const why: HeldSnoozeEnd | null = changed
+        ? "group_changed"
+        : now >= Number(snoozeRow.until)
+          ? "expired"
+          : null;
+      if (why) {
+        await this.endSnooze(w.target, snoozedAt, why);
+        snoozedAt = null;
       }
     }
     // Consecutive reconciles that couldn't read the group.
@@ -1897,6 +1983,10 @@ export class SyncEngine {
             w.target,
             clicked,
           );
+        // No sweep hold left, so no snooze of one either (an RPC's written
+        // while this sweep ran included).
+        if (!hold && (release || unreadable))
+          this.sql.exec("delete from snoozed where group_id = ?", w.target);
         else if (clicked !== null)
           this.sql.exec(
             "update held set confirmed_at = null where group_id = ? and confirmed_at is ?",
