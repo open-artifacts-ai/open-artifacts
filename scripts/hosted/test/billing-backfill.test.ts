@@ -331,18 +331,17 @@ describe("billing-backfill", () => {
     expect(w.tiers()).toEqual(before);
   });
 
-  it("prod on a laptop is refused: prod runs in CI only", async () => {
+  it("prod on a laptop is refused before any call: no token read, no audit row", async () => {
     const w = backfillWorld({ env: "prod" });
     const before = w.tiers();
     expect(await main(["billing-backfill", "--env", "prod"], w.deps)).toBe(1);
-    expect(
-      w.parsed().find((l) => l.step === "billing-backfill")?.message,
-    ).toMatch(/runs on prod in CI only/);
+    expect(w.parsed().at(-1)).toMatchObject({ step: "args", status: "error" });
+    expect(w.parsed().at(-1)?.message).toMatch(/runs on prod in CI only/);
+    expect(w.fake.log).toEqual([]);
+    expect(w.cfCalls).toEqual([]);
+    expect(w.execs).toEqual([]);
+    expect(w.audit()).toEqual([]);
     expect(w.tiers()).toEqual(before);
-    expect(w.perInstall()).toEqual([]);
-    expect(
-      w.fake.raw.some((x) => String(x.body).includes("INSERT INTO tiers")),
-    ).toBe(false);
   });
 
   it("staging still runs from a laptop", async () => {

@@ -588,6 +588,13 @@ export async function main(argv: string[], d: Deps): Promise<number> {
     return fail("args", e);
   }
   const env = f.env;
+  // Before the token, the account and the start audit row: a laptop prod
+  // billing-backfill makes no Cloudflare call at all.
+  if (cmd === "billing-backfill" && env === "prod" && !inCi(d.env))
+    return fail(
+      "args",
+      new Refused("billing-backfill runs on prod in CI only"),
+    );
 
   let cf: Cf;
   let r2: R2Releases | undefined;
