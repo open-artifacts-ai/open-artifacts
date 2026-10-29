@@ -10,8 +10,15 @@
 // 3. The customer maps to an install only by tiers.stripe_customer_id: an
 //    event can only ever change the row whose customer it names, never an
 //    install it names in metadata or anywhere else. An unknown customer is
-//    200 with no change.
-// 4. The row's tier, status, trial_ends_at and grace_until move as below,
+//    409 and its event id is NOT recorded, so Stripe retries it (billing's
+//    /checkout writes the customer id before the session exists; this is
+//    the backstop for the window in between).
+// 4. Ordering: Stripe delivers out of order. Each row keeps the newest
+//    applied event's `created` (last_event_created); an older event is
+//    recorded and skipped. At the same second, nothing changes a lapsed row,
+//    so a delayed update or a retried checkout never revives a deleted
+//    subscription.
+// 5. The row's tier, status, trial_ends_at and grace_until move as below,
 //    with version = version + 1 (installs never accept an older version).
 //
 // Logs: fixed categories and the install id only; never a body, header or
@@ -37,6 +44,8 @@ export type StripeEvent = {
   id: string;
   type: string;
   livemode: boolean;
+  /** Stripe's event time, epoch seconds: the ordering key. */
+  created: number;
   /** data.object */
   object: Record<string, unknown>;
 };
@@ -66,11 +75,17 @@ export function parseEvent(text: string): StripeEvent | null {
     return null;
   }
   if (!isObj(raw) || raw.object !== "event") return null;
-  const { id, type, livemode, data } = raw;
+  const { id, type, livemode, created, data } = raw;
   if (typeof id !== "string" || !EVENT_ID.test(id)) return null;
   if (typeof type !== "string" || typeof livemode !== "boolean") return null;
+  if (
+    typeof created !== "number" ||
+    !Number.isSafeInteger(created) ||
+    created < 0
+  )
+    return null;
   if (!isObj(data) || !isObj(data.object)) return null;
-  return { id, type, livemode, object: data.object };
+  return { id, type, livemode, created, object: data.object };
 }
 
 /** An object's customer id (a string or an expanded customer), or null. */
@@ -84,13 +99,16 @@ const asTier = (v: unknown): PaidTier | null =>
   v === "team" || v === "business" ? v : null;
 
 /**
- * A subscription's paid tier: the first item whose price lookup_key, or
- * price metadata.tier, names one, else the subscription's metadata.tier.
- * Null when none does (the tier is then left as it is). Pure.
+ * A subscription's paid tier: its metadata.tier (Checkout writes it through
+ * subscription_data), else the first item whose price lookup_key, or price
+ * metadata.tier, names one. Null when none does (the tier is then left as
+ * it is). Pure.
  */
 export function tierFromSubscription(
   sub: Record<string, unknown>,
 ): PaidTier | null {
+  const own = isObj(sub.metadata) ? asTier(sub.metadata.tier) : null;
+  if (own) return own;
   const items =
     isObj(sub.items) && Array.isArray(sub.items.data) ? sub.items.data : [];
   for (const item of items) {
@@ -101,7 +119,7 @@ export function tierFromSubscription(
       (isObj(p.metadata) ? asTier(p.metadata.tier) : null);
     if (t) return t;
   }
-  return isObj(sub.metadata) ? asTier(sub.metadata.tier) : null;
+  return null;
 }
 
 /** Stripe subscription status → ours; null leaves the status as it is. Pure. */
@@ -138,21 +156,31 @@ export function changeFor(ev: StripeEvent, now: number): Set[] | null {
         typeof o.subscription === "string" && SUB_ID.test(o.subscription)
           ? o.subscription
           : null;
-      const sets: Set[] = [
-        { sql: "status = 'active'", args: [] },
-        { sql: "grace_until = NULL", args: [] },
-      ];
+      const sets: Set[] = [];
       if (sub) sets.push({ sql: "stripe_subscription_id = ?", args: [sub] });
-      const tier = isObj(o.metadata) ? asTier(o.metadata.tier) : null;
-      if (tier) sets.push({ sql: "tier = ?", args: [tier] });
-      return sets;
+      // Paid (or nothing to pay): active at its tier. Otherwise (an async
+      // payment still pending) the status and tier wait for the invoice and
+      // subscription events.
+      if (
+        o.payment_status === "paid" ||
+        o.payment_status === "no_payment_required"
+      ) {
+        sets.push(
+          { sql: "status = 'active'", args: [] },
+          { sql: "grace_until = NULL", args: [] },
+        );
+        const tier = isObj(o.metadata) ? asTier(o.metadata.tier) : null;
+        if (tier) sets.push({ sql: "tier = ?", args: [tier] });
+      }
+      return sets.length ? sets : null;
     }
     case "customer.subscription.created":
     case "customer.subscription.updated": {
       const sets: Set[] = [];
-      const tier = tierFromSubscription(o);
-      if (tier) sets.push({ sql: "tier = ?", args: [tier] });
       const status = statusFromSubscription(o.status);
+      // incomplete (first payment pending): no tier yet either.
+      const tier = status ? tierFromSubscription(o) : null;
+      if (tier) sets.push({ sql: "tier = ?", args: [tier] });
       if (status === "active")
         sets.push(
           { sql: "status = 'active'", args: [] },
@@ -237,6 +265,17 @@ async function rawText(req: Request): Promise<string | null> {
 
 const INSERT_EVENT =
   "INSERT INTO stripe_events (event_id, received_at) VALUES (?1, ?2) ON CONFLICT (event_id) DO NOTHING";
+/** Recorded only when the customer is known (an unknown one is retried). */
+const INSERT_KNOWN_EVENT =
+  "INSERT INTO stripe_events (event_id, received_at) SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM tiers WHERE stripe_customer_id = ?3) ON CONFLICT (event_id) DO NOTHING";
+const KNOWN =
+  "SELECT EXISTS (SELECT 1 FROM tiers WHERE stripe_customer_id = ?) AS known";
+/**
+ * Newer than the row's last applied event; at the same second, never on a
+ * lapsed row (a delayed update or retried checkout can't revive it).
+ */
+const IN_ORDER =
+  "(?1 > coalesce(last_event_created, 0) OR (?1 = coalesce(last_event_created, 0) AND status IS NOT 'lapsed'))";
 
 /** The Stripe webhook route. Never throws: a D1 error is 500 (Stripe retries). */
 export async function handleStripeWebhook(
@@ -284,40 +323,44 @@ export async function handleStripeWebhook(
   const customer = customerOf(ev.object);
   try {
     const db = env.BILLING_DB;
-    const stmts: D1PreparedStatement[] = [
-      db.prepare(INSERT_EVENT).bind(ev.id, now),
-    ];
-    if (change && customer) {
-      const sets = [
-        ...change,
-        { sql: "version = version + 1", args: [] },
-        { sql: "updated_at = ?", args: [now] },
-      ];
-      stmts.push(
-        db
-          .prepare(
-            // changes() is the event insert's: 1 the first time, 0 on a replay.
-            `UPDATE tiers SET ${sets.map((s) => s.sql).join(", ")} WHERE stripe_customer_id = ? AND changes() = 1 RETURNING install_id`,
-          )
-          .bind(...sets.flatMap((s) => s.args), customer),
-      );
+    if (!change || !customer) {
+      const res = await db.batch([db.prepare(INSERT_EVENT).bind(ev.id, now)]);
+      const fresh = (res[0]?.meta.changes ?? 0) > 0;
+      log(!fresh ? "replay" : !change ? "ignored_type" : "no_customer");
+      return json({ received: true });
     }
-    const res = await db.batch<{ install_id: string }>(stmts);
-    const fresh = (res[0]?.meta.changes ?? 0) > 0;
-    if (!fresh) {
+    const sets = [
+      ...change,
+      { sql: "last_event_created = ?", args: [ev.created] },
+      { sql: "version = version + 1", args: [] },
+      { sql: "updated_at = ?", args: [now] },
+    ];
+    // Positional binds after the numbered ?1 in IN_ORDER would collide, so
+    // the ordering check binds its own copy of `created` by number last.
+    const n = sets.reduce((k, s) => k + s.args.length, 0);
+    const order = IN_ORDER.replaceAll("?1", `?${n + 2}`);
+    const res = await db.batch<{ known?: number; install_id?: string }>([
+      db.prepare(KNOWN).bind(customer),
+      db.prepare(INSERT_KNOWN_EVENT).bind(ev.id, now, customer),
+      db
+        .prepare(
+          // changes() is the event insert's: 1 the first time, 0 on a
+          // replay or an unknown customer.
+          `UPDATE tiers SET ${sets.map((s) => s.sql).join(", ")} WHERE stripe_customer_id = ? AND changes() = 1 AND ${order} RETURNING install_id`,
+        )
+        .bind(...sets.flatMap((s) => s.args), customer, ev.created),
+    ]);
+    if (!res[0]?.results[0]?.known) {
+      // Not recorded: Stripe retries until billing has written the customer.
+      log("unknown_customer");
+      return json({ error: "unknown_customer" }, 409);
+    }
+    if ((res[1]?.meta.changes ?? 0) === 0) {
       log("replay");
       return json({ received: true });
     }
-    if (!change) {
-      log("ignored_type");
-      return json({ received: true });
-    }
-    if (!customer) {
-      log("no_customer");
-      return json({ received: true });
-    }
-    const install = res[1]?.results[0]?.install_id ?? null;
-    log(install ? "applied" : "unknown_customer", install);
+    const install = res[2]?.results[0]?.install_id ?? null;
+    log(install ? "applied" : "stale", install);
     return json({ received: true });
   } catch {
     // Never the error text: it can carry a D1 message.
