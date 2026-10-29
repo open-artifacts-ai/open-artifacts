@@ -26,6 +26,7 @@ describe("0005_directory_revoke", () => {
       "0004_audit_actor.sql",
       "0005_directory_revoke.sql",
       "0006_platform_state.sql",
+      "0007_signups.sql",
     ]);
   });
 
@@ -98,5 +99,57 @@ describe("0006_platform_state", () => {
       ["value", 1, 0],
       ["updated_at", 1, 0],
     ]);
+  });
+});
+
+describe("0007_signups", () => {
+  it("0007 is additive and applies after 0006", () => {
+    const sql = readFileSync(new URL("0007_signups.sql", DIR), "utf8").replace(
+      /--[^\n]*/g,
+      "",
+    );
+    expect(sql).not.toMatch(/\b(?:DROP|ALTER|UPDATE|DELETE)\b/i);
+    const db = all();
+    // Re-running it is a no-op.
+    for (const s of splitSql(sql)) db.exec(s);
+    const cols = (t: string) =>
+      (
+        db.prepare(`PRAGMA table_info(${t})`).all() as {
+          name: string;
+          notnull: number;
+          pk: number;
+        }[]
+      ).map((c) => [c.name, c.notnull, c.pk]);
+    expect(cols("signups")).toEqual([
+      ["signup_id", 0, 1],
+      ["owner_sub", 1, 0],
+      ["slug", 1, 0],
+      ["install_id", 0, 0],
+      ["status", 0, 0],
+      ["welcome_claimed_at", 0, 0],
+      ["welcome_sent_at", 0, 0],
+      ["error", 0, 0],
+      ["created_at", 1, 0],
+      ["updated_at", 1, 0],
+    ]);
+    expect(cols("signup_secret")).toEqual([
+      ["signup_id", 0, 1],
+      ["owner_email", 1, 0],
+    ]);
+    const idx = db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'signups' AND sql IS NOT NULL",
+      )
+      .all();
+    expect(JSON.stringify(idx)).toMatch(/signups_created_at/);
+    const ins = (id: string, inst: string | null, st: string) =>
+      db
+        .prepare(
+          "INSERT INTO signups (signup_id, owner_sub, slug, install_id, status, created_at, updated_at) VALUES (?, 's', 'x', ?, ?, 1, 1)",
+        )
+        .run(id, inst, st);
+    expect(() => ins("a", "i1", "bogus")).toThrow();
+    ins("a", "i1", "queued");
+    expect(() => ins("b", "i1", "ready")).toThrow();
   });
 });
