@@ -29,7 +29,14 @@ import { useDocumentTitle } from "../../layout/useDocumentTitle";
 import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { GroupPicker } from "../GroupPicker";
-import { errorText, muted, SettingsCard, STACK } from "../ui";
+import {
+  errorText,
+  muted,
+  ReadOnlyNote,
+  SettingsCard,
+  STACK,
+  WriteLock,
+} from "../ui";
 import { isOrgAdmin } from "./access";
 import { checkName, nameRefusal } from "./name";
 import {
@@ -187,13 +194,15 @@ function AccessSwitch() {
             To spaces they manage, as Viewer or Editor. Every change is audited.
           </small>
         </div>
-        <Switch
-          label="Space managers can map groups"
-          describedBy="oa-spaces-access-hint"
-          checked={on}
-          disabled={update.isPending}
-          onChange={(next) => update.mutate({ spaceManagerMappings: next })}
-        />
+        <WriteLock>
+          <Switch
+            label="Space managers can map groups"
+            describedBy="oa-spaces-access-hint"
+            checked={on}
+            disabled={update.isPending}
+            onChange={(next) => update.mutate({ spaceManagerMappings: next })}
+          />
+        </WriteLock>
       </div>
     </SettingsCard>
   );
@@ -250,7 +259,7 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
                   .join(" · ")}
                 control={
                   syncOn ? (
-                    <>
+                    <WriteLock>
                       <RoleSelect
                         label={`Role for ${g.email}`}
                         value={pending[g.groupId] ?? g.role}
@@ -271,7 +280,7 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
                       >
                         Remove
                       </Button>
-                    </>
+                    </WriteLock>
                   ) : (
                     <span className="text-[length:var(--oa-text-sm)]">
                       {ROLE_LABEL[g.role]}
@@ -284,19 +293,21 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
         </table>
       )}
       {syncOn && (
-        <GroupPicker
-          label="Add a group to every space"
-          placeholder="Add a group…"
-          exclude={rows.map((g) => g.groupId)}
-          disabled={put.isPending}
-          onPick={(g) => {
-            setProblem(null);
-            put.mutate(
-              { groupId: g.groupId, role: "viewer" },
-              { onError: (e) => setProblem(mappingProblem(e)) },
-            );
-          }}
-        />
+        <WriteLock>
+          <GroupPicker
+            label="Add a group to every space"
+            placeholder="Add a group…"
+            exclude={rows.map((g) => g.groupId)}
+            disabled={put.isPending}
+            onPick={(g) => {
+              setProblem(null);
+              put.mutate(
+                { groupId: g.groupId, role: "viewer" },
+                { onError: (e) => setProblem(mappingProblem(e)) },
+              );
+            }}
+          />
+        </WriteLock>
       )}
       <Problem problem={problem} />
     </SettingsCard>
@@ -323,13 +334,15 @@ function SpaceList({
       title="Spaces"
       action={
         admin && (
-          <Button
-            size="sm"
-            className="text-[length:var(--oa-text-sm)]"
-            onClick={onNew}
-          >
-            New space
-          </Button>
+          <WriteLock>
+            <Button
+              size="sm"
+              className="text-[length:var(--oa-text-sm)]"
+              onClick={onNew}
+            >
+              New space
+            </Button>
+          </WriteLock>
         )
       }
     >
@@ -427,28 +440,30 @@ function General({ space }: { space: Space }) {
         }}
       >
         <Label htmlFor="oa-space-name">Name</Label>
-        <div className="flex gap-[var(--oa-space-2)]">
-          <Input
-            id="oa-space-name"
-            value={name}
-            aria-invalid={error ? true : undefined}
-            aria-describedby={error ? nameId : undefined}
-            onBlur={() => setTouched(true)}
-            onChange={(e) => {
-              setName(e.target.value);
-              setRefused(null);
-            }}
-          />
-          <Button
-            type="submit"
-            size="sm"
-            variant="outline"
-            className="h-auto text-[length:var(--oa-text-sm)]"
-            disabled={!checked.name || same || patch.isPending}
-          >
-            Save name
-          </Button>
-        </div>
+        <WriteLock>
+          <div className="flex gap-[var(--oa-space-2)]">
+            <Input
+              id="oa-space-name"
+              value={name}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? nameId : undefined}
+              onBlur={() => setTouched(true)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setRefused(null);
+              }}
+            />
+            <Button
+              type="submit"
+              size="sm"
+              variant="outline"
+              className="h-auto text-[length:var(--oa-text-sm)]"
+              disabled={!checked.name || same || patch.isPending}
+            >
+              Save name
+            </Button>
+          </div>
+        </WriteLock>
         {error && (
           <p id={nameId} role="alert" className={`m-0 ${errorText}`}>
             {error}
@@ -464,15 +479,17 @@ function General({ space }: { space: Space }) {
             Anyone with the link can view, no sign-in.
           </small>
         </div>
-        <Switch
-          label="Public links"
-          describedBy="oa-space-public-hint"
-          checked={space.publicLinks}
-          disabled={patch.isPending}
-          onChange={(next) =>
-            next ? patch.mutate({ publicLinks: true }) : setAsking(true)
-          }
-        />
+        <WriteLock>
+          <Switch
+            label="Public links"
+            describedBy="oa-space-public-hint"
+            checked={space.publicLinks}
+            disabled={patch.isPending}
+            onChange={(next) =>
+              next ? patch.mutate({ publicLinks: true }) : setAsking(true)
+            }
+          />
+        </WriteLock>
       </div>
       <ConfirmDialog
         open={asking}
@@ -507,14 +524,16 @@ function AddMe({ space }: { space: Space }) {
         artifacts.
       </p>
       <div>
-        <Button
-          size="sm"
-          variant="outline"
-          className="text-[length:var(--oa-text-sm)]"
-          onClick={() => setAsking(true)}
-        >
-          Add me to this space
-        </Button>
+        <WriteLock>
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-[length:var(--oa-text-sm)]"
+            onClick={() => setAsking(true)}
+          >
+            Add me to this space
+          </Button>
+        </WriteLock>
       </div>
       <ConfirmDialog
         open={asking}
@@ -568,16 +587,18 @@ function DeleteSpace({
         they're permanently removed, 30 days after deletion.
       </p>
       <div className="flex flex-wrap items-center gap-[var(--oa-space-3)]">
-        <Button
-          size="sm"
-          variant="outline"
-          className="text-[length:var(--oa-text-sm)] text-destructive"
-          disabled={n > 0}
-          aria-describedby={n > 0 ? reason : undefined}
-          onClick={() => setAsking(true)}
-        >
-          Delete space
-        </Button>
+        <WriteLock>
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-[length:var(--oa-text-sm)] text-destructive"
+            disabled={n > 0}
+            aria-describedby={n > 0 ? reason : undefined}
+            onClick={() => setAsking(true)}
+          >
+            Delete space
+          </Button>
+        </WriteLock>
         {n > 0 && (
           <small id={reason} className={muted}>
             Move or delete its {n} {n === 1 ? "artifact" : "artifacts"} first.
@@ -628,6 +649,7 @@ function SpaceDetail({
   const [group, setGroup] = useState("");
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       <div className="grid gap-[var(--oa-space-2)]">
         <AppLink href={PAGE} className={`${muted} w-fit hover:underline`}>
           <span aria-hidden="true">← </span>All spaces
@@ -714,6 +736,7 @@ export function Spaces() {
     );
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       {admin && <EverySpace syncOn={syncOn} />}
       <SpaceList
         spaces={all}

@@ -58,8 +58,24 @@ export function useHosted(): Hosted {
 }
 
 /** What the caller may do with `a`. Every action gate reads this, never `access`. */
-export const useCan = (a: ArtifactSummary): ArtifactCan =>
-  canOf(a, useHosted().features);
+export const useCan = (a: ArtifactSummary): ArtifactCan => {
+  const { features, cap } = useHosted();
+  const can = canOf(a, features);
+  // A capped caller (guest, restricted, plan) writes nothing, whatever `can`
+  // says: the server's answer is the same, this keeps the UI honest if stale.
+  return cap == null
+    ? can
+    : {
+        ...can,
+        edit: false,
+        share: false,
+        setVisibility: false,
+        delete: false,
+        transfer: false,
+        move: false,
+        dataWrite: false,
+      };
+};
 
 /** Whether the caller may publish into a space: never when capped (guest, restricted). */
 export const canPublishTo = (
@@ -77,3 +93,12 @@ const LABEL = {
 } as const satisfies Record<AccessLevel, string>;
 
 export const accessLabel = (level: AccessLevel) => LABEL[level];
+
+/**
+ * The plan locked the instance for this caller (cap "plan", readOnly): every
+ * write control is off, reads stay. The org owner is never frozen.
+ */
+export function useFrozen(): boolean {
+  const { cap, readOnly } = useHosted();
+  return cap === "plan" && readOnly;
+}

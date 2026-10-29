@@ -39,8 +39,10 @@ import {
   errorText,
   GAP,
   muted,
+  ReadOnlyNote,
   SettingsCard,
   STACK,
+  WriteLock,
 } from "./ui";
 
 const when = (iso: string) => relativeTime(iso) || "Unknown";
@@ -363,14 +365,16 @@ function Tokens() {
       id="oa-pat-h"
       title="Personal access tokens"
       action={
-        <Button
-          variant="outline"
-          size="sm"
-          className="text-[length:var(--oa-text-sm)]"
-          onClick={() => setCreating(true)}
-        >
-          Create token
-        </Button>
+        <WriteLock>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-[length:var(--oa-text-sm)]"
+            onClick={() => setCreating(true)}
+          >
+            Create token
+          </Button>
+        </WriteLock>
       }
     >
       {q.isError ? (
@@ -390,16 +394,18 @@ function Tokens() {
               <span className={muted}>
                 Last used {t.lastUsedAt ? when(t.lastUsedAt) : "Never"}
               </span>
-              <Button
-                className={ACTION}
-                variant="ghost"
-                size="sm"
-                aria-label={`Revoke ${t.label}`}
-                disabled={revoke.isPending && revoke.variables === t.id}
-                onClick={() => setTarget(t)}
-              >
-                Revoke
-              </Button>
+              <WriteLock>
+                <Button
+                  className={ACTION}
+                  variant="ghost"
+                  size="sm"
+                  aria-label={`Revoke ${t.label}`}
+                  disabled={revoke.isPending && revoke.variables === t.id}
+                  onClick={() => setTarget(t)}
+                >
+                  Revoke
+                </Button>
+              </WriteLock>
             </li>
           ))}
         </ul>
@@ -423,6 +429,7 @@ export function Agents() {
   const mcpUrl = state.status === "authed" ? state.me.instance.mcpUrl : null;
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       {mcpUrl && (
         <SettingsCard id="oa-mcp-h" title="MCP server">
           <div className="flex min-w-0 items-center gap-[var(--oa-space-2)]">

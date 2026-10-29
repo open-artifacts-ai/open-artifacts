@@ -251,10 +251,15 @@ export const useUsage = (
   });
 
 /** Where the error shows and who hit it, for `errorCopy` and `errorLink`. */
-const errorContext = (qc: QueryClient): ErrorContext => ({
-  capped: qc.getQueryData<Me>(qk.me)?.auth?.cap != null,
-  onDirectoryPage: location.pathname.startsWith(DIRECTORY_SETTINGS),
-});
+const errorContext = (qc: QueryClient): ErrorContext => {
+  const me = qc.getQueryData<Me>(qk.me);
+  return {
+    capped: me?.auth?.cap != null,
+    cap: me?.auth?.cap ?? null,
+    owner: me?.user.role === "owner" && me.auth?.cap == null,
+    onDirectoryPage: location.pathname.startsWith(DIRECTORY_SETTINGS),
+  };
+};
 
 /** A failure toast: `title`, Design's copy for `e`, and its link if any. */
 const failureToast = (
@@ -371,6 +376,8 @@ const useOptimisticMembers = <V>(
   failure: string,
   /** A 403 owner_only: the caller says so on the row (no toast). */
   onOwnerOnly?: (v: V) => void,
+  /** A free instance's plan_limit / plan_required: the caller says so on the row, with this copy. */
+  onPlan?: (v: V, copy: string) => void,
 ) => {
   const qc = useQueryClient();
   return useMutation({
@@ -394,18 +401,28 @@ const useOptimisticMembers = <V>(
         void qc.invalidateQueries({ queryKey: qk.me });
         if (onOwnerOnly) return onOwnerOnly(v);
       }
+      if (
+        onPlan &&
+        e instanceof ApiClientError &&
+        (e.code === "plan_limit" || e.code === "plan_required")
+      )
+        return onPlan(v, errorCopy(e, failure, errorContext(qc)));
       failToast(e, failure);
     },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.members }),
   });
 };
-export const usePatchMember = (onOwnerOnly?: (id: string) => void) =>
+export const usePatchMember = (
+  onOwnerOnly?: (id: string) => void,
+  onPlan?: (id: string, copy: string) => void,
+) =>
   useOptimisticMembers(
     (v: { id: string } & MemberPatch) =>
       api.send("PATCH", R.member(v.id), { role: v.role }, MemberSchema),
     (list, v) => list.map((m) => (m.id === v.id ? { ...m, role: v.role } : m)),
     "Couldn't change the role.",
     onOwnerOnly && ((v) => onOwnerOnly(v.id)),
+    onPlan && ((v, copy) => onPlan(v.id, copy)),
   );
 export const useRemoveMember = (onOwnerOnly?: (id: string) => void) =>
   useOptimisticMembers(
@@ -572,6 +589,8 @@ export const useSpaceCandidates = (id: string, q: string, enabled = true) =>
 /** The People card shows member refusals by the row, and snaps the role back. */
 const memberInline = (e: ApiClientError) =>
   e.code === "space_forbidden" ||
+  e.code === "plan_limit" ||
+  e.code === "plan_required" ||
   e.code === "member_synced" ||
   e.code === "managed_by_org_mapping" ||
   e.code === "not_found";

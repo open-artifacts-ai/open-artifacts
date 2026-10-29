@@ -9,6 +9,8 @@ import {
   Button as ShButton,
 } from "@oa/ui/shadcn";
 import type { ReactNode } from "react";
+import { READ_ONLY_NOTICE } from "../api/errorCopy";
+import { useFrozen } from "../auth/permissions";
 import { toast } from "../layout/toast";
 
 /** The settings pages' 880px measure, centered in the shell gutter. */
@@ -127,5 +129,27 @@ export function Code({
         <code>{code}</code>
       </pre>
     </CodeBlock>
+  );
+}
+
+/**
+ * Write controls only. Under the plan cap the fieldset turns the controls
+ * inside off (it adds no box); reads, lists, pagers and Retry stay outside.
+ */
+export function WriteLock({ children }: { children: ReactNode }) {
+  return (
+    <fieldset disabled={useFrozen()} className="contents">
+      {children}
+    </fieldset>
+  );
+}
+
+/** The one muted line a locked page shows, for the disabled controls. */
+export function ReadOnlyNote() {
+  if (!useFrozen()) return null;
+  return (
+    <p role="status" className={`m-0 ${muted}`}>
+      {READ_ONLY_NOTICE}
+    </p>
   );
 }

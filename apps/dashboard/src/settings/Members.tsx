@@ -18,6 +18,7 @@ import {
 import { useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
+import { errorCopy } from "../api/errorCopy";
 import {
   useInviteMember,
   useMembers,
@@ -27,6 +28,7 @@ import {
   useSetRestricted,
 } from "../api/queries";
 import { emailEnabled } from "../auth/emailEnabled";
+import { useFrozen } from "../auth/permissions";
 import {
   inviteRefusedCopy,
   inviteUncertainCopy,
@@ -46,7 +48,7 @@ import { clearDenied, denyMember, useDenied } from "./denied";
 import { type Departed, useDeparted } from "./departed";
 import { restrictionReason } from "./restriction";
 import { TransferDialog } from "./Transfer";
-import { errorText, muted, SettingsCard, STACK } from "./ui";
+import { errorText, muted, ReadOnlyNote, SettingsCard, STACK } from "./ui";
 
 type Assignable = "admin" | "member";
 /** Owner is never offered, to anyone. */
@@ -76,7 +78,9 @@ function RoleSelect({
   value,
   placeholder,
   onChange,
+  disabled,
 }: {
+  disabled?: boolean;
   label: string;
   value: Assignable | undefined;
   placeholder?: string;
@@ -85,6 +89,7 @@ function RoleSelect({
   return (
     <Select
       value={value ?? ""}
+      disabled={disabled}
       onValueChange={(v) => onChange(v as Assignable)}
     >
       <SelectTrigger
@@ -159,7 +164,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             refused?.success
               ? inviteRefusedCopy(refused.data.reason, parsed, domains)
               : e instanceof ApiClientError
-                ? e.message
+                ? e.code.startsWith("plan_") || e.code === "billing_unavailable"
+                  ? errorCopy(e, e.message, {
+                      owner: me?.user.role === "owner" && me.auth?.cap == null,
+                    })
+                  : e.message
                 : "Couldn't add.",
           );
         },
@@ -290,7 +299,10 @@ function Row({
   you,
   hosted,
   owner,
+  frozen,
 }: {
+  /** The plan locked the instance (cap "plan"): reads stay, every write control is off. */
+  frozen: boolean;
   m: Member;
   you: boolean;
   hosted: boolean;
@@ -298,7 +310,7 @@ function Row({
   owner: boolean;
 }) {
   const denyAdmin = (id: string) => denyMember(id, ADMIN_ONLY);
-  const patch = usePatchMember(denyAdmin);
+  const patch = usePatchMember(denyAdmin, denyMember);
   const [confirm, setConfirm] = useState(false);
   const [restricting, setRestricting] = useState(false);
   const [lifting, setLifting] = useState(false);
@@ -358,6 +370,7 @@ function Row({
           label={`Role for ${label}`}
           value={m.role === "admin" || m.role === "member" ? m.role : undefined}
           placeholder="Guest"
+          disabled={frozen}
           onChange={(role) => {
             clearDenied(m.id);
             patch.mutate({ id: m.id, role });
@@ -389,6 +402,7 @@ function Row({
               variant="ghost"
               size="sm"
               className="justify-self-end"
+              disabled={frozen}
               aria-label={`More for ${label}`}
             >
               <svg
@@ -445,6 +459,7 @@ function Row({
           size="sm"
           className="justify-self-end text-[length:var(--oa-text-sm)]"
           aria-label={`Remove ${label}`}
+          disabled={frozen}
           onClick={() => setConfirm(true)}
         >
           Remove
@@ -570,11 +585,14 @@ export function Members() {
     state.status === "authed" &&
     state.me.user.role === "owner" &&
     state.me.auth?.cap == null;
+  // The plan locked the instance: this page still lists, nothing here writes.
+  const frozen = useFrozen();
   // Hosted (the spaces feature): restriction badges and the row's More menu.
   const hosted = state.status === "authed" && hasFeature(state.me, "spaces");
   const departed = useDeparted(state.status === "authed" ? state.me : null);
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       {departed.length > 0 && <DepartedCard people={departed} />}
       <SettingsCard
         id="oa-members-h"
@@ -583,6 +601,7 @@ export function Members() {
           <Button
             size="sm"
             className="text-[length:var(--oa-text-sm)]"
+            disabled={frozen}
             onClick={() => setInviting(true)}
           >
             Add member
@@ -608,6 +627,7 @@ export function Members() {
                 you={m.id === me?.id}
                 hosted={hosted}
                 owner={owner}
+                frozen={frozen}
               />
             ))}
           </ul>

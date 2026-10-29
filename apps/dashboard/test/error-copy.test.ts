@@ -106,3 +106,92 @@ it("a HEIC refusal names the photo and says to export it", () => {
     "IMG_0042.HEIC can't be opened here. Export it as JPEG or PNG, then upload it again.",
   );
 });
+
+// Billing plumbing (no new visual): Design reviews this copy on Oct 30.
+const planErr = (code: string, details?: unknown) =>
+  new ApiClientError(code as never, "server text", 403, details);
+const reason = (r?: string) => (r ? { tier: "trial", reason: r } : undefined);
+
+it.each([
+  [
+    "trial_ended",
+    "Your trial ended, so this instance is read-only until the owner picks a plan.",
+    "Your trial ended, so this instance is read-only until you pick a plan.",
+  ],
+  [
+    "lapsed",
+    "This instance is read-only until billing is sorted out. Ask your instance owner.",
+    "This instance is read-only until billing is sorted out. Update billing to fix it.",
+  ],
+  [
+    "payment_failed",
+    "This instance is read-only until billing is sorted out. Ask your instance owner.",
+    "This instance is read-only until billing is sorted out. Update billing to fix it.",
+  ],
+  [
+    "suspended",
+    "This instance is suspended. Ask your instance owner.",
+    "This instance is suspended.",
+  ],
+  [
+    "billing_unreachable",
+    "Team features are read-only while we restore billing. Nothing has been deleted.",
+    "Team features are read-only while we restore billing. Nothing has been deleted.",
+  ],
+  [
+    undefined,
+    "This instance is read-only right now. Ask your instance owner.",
+    "This instance is read-only right now.",
+  ],
+])("plan_read_only (%s)", (r, member, owner) => {
+  const e = planErr("plan_read_only", reason(r));
+  expect(errorCopy(e, "x")).toBe(member);
+  expect(errorCopy(e, "x", { owner: true })).toBe(owner);
+});
+
+it("plan_required", () => {
+  const e = planErr("plan_required", reason("solo"));
+  expect(errorCopy(e, "x")).toBe(
+    "This needs a paid plan. Ask your instance owner to choose one.",
+  );
+  expect(errorCopy(e, "x", { owner: true })).toBe(
+    "This needs a paid plan. Choose a plan to continue.",
+  );
+});
+
+it.each([
+  ["storage_bytes", "storage"],
+  ["data_docs", "live-data documents per artifact"],
+  ["data_daily_writes", "live-data writes per day"],
+  ["something_new", "something_new"],
+])("plan_limit names %s", (limit, noun) => {
+  const e = planErr("plan_limit", { tier: "free", limit, max: 50 });
+  expect(errorCopy(e, "x")).toBe(
+    `The free plan allows up to 50 ${noun}. Ask your instance owner about a paid plan.`,
+  );
+  expect(errorCopy(e, "x", { owner: true })).toBe(
+    `The free plan allows up to 50 ${noun}. Choose a paid plan to raise it.`,
+  );
+});
+
+it("plan_limit without details falls back to a generic line", () => {
+  expect(errorCopy(planErr("plan_limit"), "x")).toBe(
+    "The free plan's limit is reached. Ask your instance owner about a paid plan.",
+  );
+});
+
+it("billing_unavailable", () => {
+  expect(
+    errorCopy(new ApiClientError("billing_unavailable", "s", 503), "x"),
+  ).toBe("Billing isn't reachable right now. Try again in a minute.");
+});
+
+it("space_forbidden under the plan cap says the instance is read-only", () => {
+  const e = planErr("space_forbidden");
+  expect(errorCopy(e, "x", { capped: true, cap: "plan" })).toBe(
+    "This instance is read-only right now, so you can't publish.",
+  );
+  expect(errorCopy(e, "x", { capped: true, cap: "restricted" })).toBe(
+    "Your account can only view, so you can't publish.",
+  );
+});
