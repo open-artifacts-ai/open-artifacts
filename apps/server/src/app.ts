@@ -52,7 +52,7 @@ const WORKER_PREFIX =
 // Text and Markdown files the Worker doesn't serve (/robots.txt, /skill.md,
 // /upgrade.md and /llms.txt are routes, matched before the fallback): a plain
 // 404, never the SPA shell, so an agent that guesses a wrong file sees "not
-// found". The dashboard build ships no .txt or .md assets.
+// found". The built bundle under /assets/ is exempt and still goes to ASSETS.
 const TEXT_FILE = /\.(txt|md)$/i;
 const textNotFound = () =>
   new Response("Not found\n", {
@@ -180,7 +180,8 @@ export function createApp(
     if (path === null || WORKER_PREFIX.test(path) || !c.env.ASSETS) {
       return toErrorResponse(new ApiError("not_found", "Not found"));
     }
-    if (TEXT_FILE.test(path)) return textNotFound();
+    if (TEXT_FILE.test(path) && !path.startsWith("/assets/"))
+      return textNotFound();
     // PUBLIC_HOME: a signed-out visitor at exactly "/" goes to a public
     // artifact. Signed in = a valid session cookie (HMAC only, no D1).
     if (

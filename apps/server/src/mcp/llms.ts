@@ -43,11 +43,12 @@ export const llmsInputs = (host: string) => {
   const origin = skillOrigin(host);
   const mcpUrl = `${origin}/mcp`;
   const tokenFile = secretFile("pat", { hostSlug: hostSlug(host) });
-  // The dashboard's call (Settings → Agents): OAuth variants only here.
-  const clients = agentClients(mcpUrl, { tokenFile }).filter(
-    (s) => s.variant === "oauth",
-  );
-  return { origin, mcpUrl, tokenFile, clients };
+  // The dashboard's call (Settings → Agents). Token variants read the file at
+  // connect time (headersHelper, http_headers_helper, {file:}): never a token.
+  const all = agentClients(mcpUrl, { tokenFile });
+  const clients = all.filter((s) => s.variant === "oauth");
+  const tokens = all.filter((s) => s.variant === "token");
+  return { origin, mcpUrl, tokenFile, clients, tokens };
 };
 
 const intro = (s: Snippet) =>
@@ -66,6 +67,19 @@ const clientBlock = (s: Snippet) =>
     "```",
     `Then: ${s.verify}`,
   ].join("\n");
+
+/** One client's token-file setup, or a note when it has none (Cursor). */
+const tokenBlock = (agent: string, s: Snippet | undefined) =>
+  s
+    ? [
+        `#### ${agent}`,
+        ...(s.language === "text"
+          ? [s.code]
+          : [intro(s), `\`\`\`${s.language}`, s.code, "```"]),
+        ...(s.hint ? [`Note: ${s.hint}`] : []),
+        `Then: ${s.verify}`,
+      ].join("\n")
+    : `#### ${agent}\nNo token option: sign in through the browser as above.`;
 
 const pluginBlock = (origin: string) => {
   const { marketplace, name, option } = CLAUDE_PLUGIN;
@@ -88,7 +102,7 @@ export function renderLlms(
 ): string {
   const plugin = opts.plugin ?? CLAUDE_PLUGIN_ENABLED;
   const skill = opts.skill ?? true;
-  const { origin, mcpUrl, tokenFile, clients } = llmsInputs(host);
+  const { origin, mcpUrl, tokenFile, clients, tokens } = llmsInputs(host);
   const verifySteps = [
     "List the server's tools. You should see tools such as `publish_artifact` and `list_artifacts`. If the list is empty or you get 401, see Troubleshoot.",
     'Optional: publish a tiny test artifact with `visibility: "private"` (title "setup check"), confirm you get back a link, then delete it right away with `delete_artifact`. If the delete fails, tell the person, with the link, so they can delete it.',
@@ -110,7 +124,16 @@ Use the section for the client you are running in: you know which one that is. O
 
 ${clients.map(clientBlock).join("\n\n")}
 
-${plugin ? pluginBlock(origin) : ""}If a client can only use a token, never paste it into chat. The person creates it in ${origin}/settings/agents and saves it to \`${tokenFile}\` (mode 0600) or the system keychain; your config reads it from there at connect time.
+${plugin ? pluginBlock(origin) : ""}If a client can only use a token, never ask the person for it and never paste it into chat. The person creates it in Settings › Agents (Tokens) at ${origin}/settings/agents and saves it to \`${tokenFile}\` (mode 0600). If they can't open that page, they ask their admin. Your config reads the file at connect time:
+
+${clients
+  .map((o) =>
+    tokenBlock(
+      o.agent,
+      tokens.find((t) => t.agent === o.agent),
+    ),
+  )
+  .join("\n\n")}
 
 ## Restart
 
@@ -126,7 +149,7 @@ Tell the person: "${PRODUCT_NAME} is connected." Include the address ${origin}.
 
 - The browser sign-in never opened: start it from the client (for example \`claude mcp login ${SERVER_NAME}\` or \`codex mcp login ${SERVER_NAME}\`), then ask the person to approve it in the browser.
 - 401 or "unauthorized" after it worked before: the sign-in expired or was revoked. Sign in again the same way. Don't switch to a token unless the person asks.
-- 404 or "not found" on the server address: check it is exactly ${mcpUrl}, with the \`/mcp\` path and https.
+- 404 or "not found" on the server address: check it is exactly the address above, including \`/mcp\`: ${mcpUrl}
 - The tools don't appear: restart the client as in Restart, then list the tools again.
 - Still stuck: tell the person what you ran and the exact error, without any token or secret in it.
 `;

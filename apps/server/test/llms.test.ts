@@ -13,7 +13,7 @@ import { skillOrigin } from "../src/mcp/skill-common.js";
 import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { VERSION } from "../src/version.gen.js";
-import { contentCall, fakeAssets } from "./assets-stub.js";
+import { contentCall, DEFAULT_FILES, fakeAssets } from "./assets-stub.js";
 import { login } from "./helpers.js";
 import { APP, callWorker, E } from "./mcp-helpers.js";
 
@@ -129,21 +129,54 @@ describe("llms.txt can't drift from agentClients", () => {
   const origin = skillOrigin(HOST);
   const mcpUrl = `${origin}/mcp`;
   const tokenFile = secretFile("pat", { hostSlug: hostSlug(HOST) });
-  // The dashboard's call (apps/dashboard/src/settings/Agents.tsx).
-  const oauth = agentClients(mcpUrl, { tokenFile }).filter(
-    (s) => s.variant === "oauth",
-  );
+  // What this guarantees: the guide calls agentClients with the same
+  // arguments as the dashboard (apps/dashboard/src/settings/Agents.tsx), an
+  // mcpUrl and { tokenFile }, with mcpUrl built from skillOrigin(APP_HOST).
+  // The dashboard derives its origin separately (appOrigin / location), the
+  // same split /skill.md has, so the two agree whenever those origins do.
+  const all = agentClients(mcpUrl, { tokenFile });
+  const oauth = all.filter((s) => s.variant === "oauth");
+  const token = all.filter((s) => s.variant === "token");
 
-  it("Connect's code blocks are agentClients' OAuth snippets, in order", async () => {
+  it("Connect's code blocks are agentClients' OAuth then token snippets, in order", async () => {
     const connect = sections(await guide()).get("Connect") ?? "";
-    expect(codeBlocks(connect)).toEqual(oauth.map((s) => s.code));
+    expect(codeBlocks(connect)).toEqual([
+      ...oauth.map((s) => s.code),
+      ...oauth.flatMap((o) =>
+        token
+          .filter((t) => t.agent === o.agent && t.language !== "text")
+          .map((t) => t.code),
+      ),
+    ]);
     expect([...connect.matchAll(/^### (.+)$/gm)].map((m) => m[1])).toEqual(
       oauth.map((s) => s.agent),
     );
-    for (const s of oauth) {
+    expect([...connect.matchAll(/^#### (.+)$/gm)].map((m) => m[1])).toEqual(
+      oauth.map((s) => s.agent),
+    );
+    for (const s of all) {
       expect(connect).toContain(`Then: ${s.verify}`);
       if (s.file) expect(connect).toContain(`\`${s.file}\``);
+      if (s.hint) expect(connect).toContain(`Note: ${s.hint}`);
+      if (s.language === "text") expect(connect).toContain(s.code);
     }
+    // Cursor has no token variant: it gets a note instead.
+    expect(token.map((t) => t.agent)).not.toContain("Cursor");
+    expect(connect).toContain(
+      "#### Cursor\nNo token option: sign in through the browser as above.",
+    );
+  });
+
+  it("no rendered snippet contains a literal token", async () => {
+    const txt = await guide();
+    expect(token.length).toBeGreaterThan(0);
+    for (const s of all) {
+      expect(s.code, s.agent).not.toMatch(/oa_pat_|Bearer oa_/);
+      expect(s.code, s.agent).not.toContain("<YOUR_TOKEN>");
+    }
+    for (const t of token) expect(t.code).toContain(tokenFile);
+    // A real token, as createPat makes them, never appears.
+    expect(txt).not.toMatch(/oa_pat_[1-9A-HJ-NP-Za-km-z]{32}/);
   });
 
   it("Restart is agentClients' reload line per client", async () => {
@@ -156,8 +189,13 @@ describe("llms.txt can't drift from agentClients", () => {
   it("names the token file, never a token, Bearer value, email or secret", async () => {
     const txt = await guide();
     expect(txt).toContain(`\`${tokenFile}\``);
-    expect(txt).not.toContain("Bearer ");
+    // Token snippets name the header ("Bearer %s", "Bearer {file:...}"),
+    // never a value.
+    expect(txt).not.toMatch(/Bearer oa_/);
     expect(txt).not.toMatch(/oa_pat_/);
+    expect(txt).toContain("Settings › Agents (Tokens)");
+    expect(txt).toContain("they ask their admin");
+    expect(txt).toContain("never ask the person for it");
     expect(txt).not.toMatch(/[\w.+-]+@[\w-]+\.[\w.-]+/);
     const secrets = Object.entries(env as unknown as Record<string, unknown>)
       .filter(([k, v]) => /SECRET|KEY|TOKEN|PASSWORD/.test(k) && v)
@@ -258,6 +296,22 @@ describe("served .txt and .md paths on the app host", () => {
       expect(r.status, p).toBe(200);
       expect(await r.text(), p).toContain("SPA");
     }
+    // Built bundle files under /assets/ keep going to ASSETS, .txt or .md.
+    const bundle = fakeAssets({
+      ...DEFAULT_FILES,
+      "/assets/licenses.txt": { body: "MIT", type: "text/plain" },
+      "/assets/notes.md": { body: "# n", type: "text/markdown" },
+    });
+    const be = E({ ASSETS: bundle.fetcher });
+    for (const [p, body] of [
+      ["/assets/licenses.txt", "MIT"],
+      ["/assets/notes.md", "# n"],
+    ] as const) {
+      const r = await get(`${APP}${p}`, {}, be);
+      expect(r.status, p).toBe(200);
+      expect(await r.text(), p).toBe(body);
+    }
+    expect(bundle.calls).toEqual(["/assets/licenses.txt", "/assets/notes.md"]);
     // Worker prefixes keep their JSON 404, .txt or not.
     for (const p of ["/api/v1/x.txt", "/.well-known/security.txt"]) {
       const r = await get(`${APP}${p}`, {}, e);
