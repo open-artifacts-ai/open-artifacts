@@ -79,3 +79,12 @@ const LABEL = {
 } as const satisfies Record<AccessLevel, string>;
 
 export const accessLabel = (level: AccessLevel) => LABEL[level];
+
+/**
+ * The plan locked the instance for this caller (cap "plan", readOnly): every
+ * write control is off, reads stay. The org owner is never frozen.
+ */
+export function useFrozen(): boolean {
+  const { cap, readOnly } = useHosted();
+  return cap === "plan" && readOnly;
+}
