@@ -9,14 +9,11 @@ import { muted, SettingsCard } from "./ui";
 export const setupInstruction = () =>
   `Add this Open Artifacts instance: follow ${location.origin}/llms.txt. Never paste a token in chat.`;
 
-/** Guests and capped (restricted) callers can't connect agents. */
+/** Same rule as the MCP server card on Settings > Agents: whoever has an
+    MCP URL to connect with. */
 export function useCanSetUpAgent() {
   const state = useMe();
-  return (
-    state.status === "authed" &&
-    state.me.user.role !== "guest" &&
-    (state.me.auth?.cap ?? null) === null
-  );
+  return state.status === "authed" && Boolean(state.me.instance.mcpUrl);
 }
 
 /** The card's body: one line, the instruction in a read-only field (wrapped,

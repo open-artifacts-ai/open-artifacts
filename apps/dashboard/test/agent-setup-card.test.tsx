@@ -1,5 +1,5 @@
 import type { Me } from "@oa/shared";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { installHarness, mount, mountHosted, page, server } from "./harness";
@@ -70,35 +70,39 @@ describe("AgentSetupCard", () => {
     expect(screen.queryByLabelText("Setup instruction")).toBeNull();
   });
 
-  it("not for a guest", async () => {
+  it("shows for a guest, as the MCP card does", async () => {
     mountHosted(
       "/mine",
       true,
       (m) => ({ ...m, user: { ...m.user, role: "guest" } }),
       [none],
     );
-    await screen.findByText(/Ask your agent to publish something|Nothing/);
-    await waitFor(() =>
-      expect(screen.queryByLabelText("Setup instruction")).toBeNull(),
+    expect(await screen.findByLabelText("Setup instruction")).toHaveValue(
+      INSTRUCTION(),
     );
   });
 
-  it("not for a capped caller, on either screen", async () => {
+  it("shows for a capped caller on both screens, as the MCP card does", async () => {
     const capped = (m: Me): Me => ({
       ...m,
       auth: m.auth ? { ...m.auth, cap: "restricted" } : m.auth,
     });
     mountHosted("/mine", true, capped, [none]);
-    await screen.findByText(/Ask your agent to publish something|Nothing/);
-    expect(screen.queryByLabelText("Setup instruction")).toBeNull();
+    expect(await screen.findByLabelText("Setup instruction")).toBeTruthy();
+    cleanup();
+    mountHosted("/settings/agents", true, capped);
+    await screen.findByRole("heading", { name: "MCP server" });
+    expect(screen.getByLabelText("Setup instruction")).toBeTruthy();
   });
 
-  it("not on Settings > Agents for a capped caller", async () => {
-    mountHosted("/settings/agents", true, (m) => ({
+  it("hides with the MCP card when the instance has no MCP URL", async () => {
+    const none_ = (m: Me): Me => ({
       ...m,
-      auth: m.auth ? { ...m.auth, cap: "restricted" } : m.auth,
-    }));
-    await screen.findByRole("heading", { name: "MCP server" });
+      instance: { ...m.instance, mcpUrl: "" },
+    });
+    mountHosted("/settings/agents", true, none_);
+    await screen.findByRole("heading", { name: "Connected agents" });
+    expect(screen.queryByRole("heading", { name: "MCP server" })).toBeNull();
     expect(screen.queryByLabelText("Setup instruction")).toBeNull();
   });
 
