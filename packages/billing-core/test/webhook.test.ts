@@ -14,6 +14,7 @@ import {
   changeFor,
   GRACE_MS,
   handleStripeWebhook,
+  MAX_WEBHOOK_BODY,
   parseEvent,
   parseSignatureHeader,
   STRIPE_TOLERANCE_S,
@@ -338,6 +339,35 @@ describe("handleStripeWebhook", () => {
       status: "past_due",
       grace_until: NOW + GRACE_MS,
     });
+  });
+
+  it("a body with no Content-Length is read only up to MAX_WEBHOOK_BODY, then refused", async () => {
+    // A chunked stream that never ends on its own: the reader must stop at the cap.
+    let sent = 0;
+    let cancelled = false;
+    const chunk = new Uint8Array(64 * 1024).fill(0x61);
+    const stream = new ReadableStream<Uint8Array>({
+      pull(c) {
+        sent += chunk.byteLength;
+        c.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const req = new Request("https://billing.example/stripe/webhook", {
+      method: "POST",
+      body: stream,
+      headers: { "stripe-signature": "t=1,v1=00" },
+      // @ts-expect-error: Node/workerd need duplex for a streamed body
+      duplex: "half",
+    });
+    expect(req.headers.get("content-length")).toBeNull();
+    const r = await handleStripeWebhook(req, env, NOW);
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: string }).error).toBe("bad_body");
+    expect(sent).toBeLessThanOrEqual(MAX_WEBHOOK_BODY + 2 * chunk.byteLength);
+    expect(cancelled).toBe(true);
   });
 
   it("idempotent: a replayed event id changes nothing", async () => {
