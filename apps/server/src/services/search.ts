@@ -21,8 +21,9 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import {
   decorates,
-  lastAgentsFor,
+  lastPublisherSql,
   redact,
+  shownLastAgent,
   spaceCols,
   toSummary,
   withSpace,
@@ -525,6 +526,7 @@ export function searchQuery(
     .select({
       a: artifacts,
       ownerEmail: users.email,
+      lastPub: lastPublisherSql,
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller),
@@ -580,7 +582,7 @@ export async function search(
   const page = rows.slice(0, limit);
   const next = offset + limit;
   const dec = decorates(env, caller);
-  const result = {
+  return {
     // Built in SearchHitSchema's key order (summary fields, then snippet);
     // validated by the tests, not per hit in production.
     // Rows the policy denies are dropped (belt and braces with listFilterSql).
@@ -601,6 +603,7 @@ export async function search(
         ),
         level,
       );
+      out.lastAgent = shownLastAgent(out.lastAgent, r.lastPub, caller);
       return [
         {
           ...(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out),
@@ -611,6 +614,4 @@ export async function search(
     nextCursor:
       rows.length > limit && next <= MAX_OFFSET ? encodeOffset(next) : null,
   };
-  await lastAgentsFor(env, caller, result.items);
-  return result;
 }

@@ -30,8 +30,9 @@ import { ApiError } from "../http/errors.js";
 import {
   decodeCursor,
   encodeCursor,
-  lastAgentsFor,
+  lastPublisherSql,
   redact,
+  shownLastAgent,
   toSummary,
 } from "./artifacts.js";
 import { spacesOn } from "./spaces.js";
@@ -120,6 +121,7 @@ export async function listTrash(
     .select({
       a: artifacts,
       ownerEmail: users.email,
+      lastPub: lastPublisherSql,
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       kind: spaces.kind,
@@ -150,6 +152,7 @@ export async function listTrash(
       ),
       level,
     );
+    s.lastAgent = shownLastAgent(s.lastAgent, r.lastPub, c);
     return {
       ...s,
       deletedAt: iso(deletedAt),
@@ -161,7 +164,6 @@ export async function listTrash(
       },
     };
   });
-  await lastAgentsFor(env, c, items);
   const last = page[page.length - 1];
   return {
     items,

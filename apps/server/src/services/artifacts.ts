@@ -699,50 +699,45 @@ const publisherOf = (id: string, u: NameCols) => ({
 });
 
 /**
- * `lastAgent` as `caller` sees it (agentFor). The artifacts row keeps no
- * via, so it comes from the current version's row, which the same batch
- * wrote (allocateVersion): one statement per page, and none when no item
- * has a last agent. A missing version row hides the name. Mutates `items`.
+ * The current version's publisher for `lastAgent`, as one JSON array
+ * [agent_via, agent_version, created_by, email, name, display_name], or null
+ * with no row. The artifacts row keeps no via, so this reads the version row
+ * the same batch wrote (allocateVersion): a correlated PK lookup per output
+ * row, inside the list, search and trash SELECTs (no extra D1 call).
+ * Qualified by hand: drizzle drops the table name in a one-table select,
+ * and a bare "id" would bind to lu.id.
  */
-export async function lastAgentsFor<
-  T extends Pick<ArtifactSummary, "id" | "currentVersion" | "lastAgent">,
->(env: Env, caller: Caller, items: T[]): Promise<T[]> {
-  const keys = items
-    .filter((i) => i.lastAgent !== null)
-    .map((i) => [i.id, i.currentVersion]);
-  if (!keys.length) return items;
-  const { results } = await env.DB.prepare(
-    `select v.artifact_id as id, v.agent_via as via, v.agent_version as ver,
-       v.created_by as createdBy, u.email, u.name, u.display_name as displayName
-     from json_each(?1) k
-     join versions v on v.artifact_id = json_extract(k.value, '$[0]')
-       and v.version = json_extract(k.value, '$[1]')
-     join users u on u.id = v.created_by`,
-  )
-    .bind(JSON.stringify(keys))
-    .all<
-      NameCols & {
-        id: string;
-        via: string | null;
-        ver: string | null;
-        createdBy: string;
-      }
-    >();
-  const rows = new Map(results.map((r) => [r.id, r]));
-  const viewerId = caller.kind === "user" ? caller.user.id : null;
-  for (const i of items) {
-    if (!i.lastAgent) continue;
-    const r = rows.get(i.id);
-    i.lastAgent = r
-      ? agentFor(
-          i.lastAgent,
-          isPrivateAgent(r.via, r.ver),
-          publisherOf(r.createdBy, r),
-          viewerId,
-        )
-      : null;
-  }
-  return items;
+export const lastPublisherSql = sql<string | null>`(select json_array(
+    lv.agent_via, lv.agent_version, lv.created_by, lu.email, lu.name,
+    lu.display_name)
+  from versions lv join users lu on lu.id = lv.created_by
+  where lv.artifact_id = "artifacts"."id"
+    and lv.version = "artifacts"."current_version")`;
+
+/**
+ * `lastAgent` as `caller` sees it (agentFor), from lastPublisherSql's value.
+ * A missing version row hides the name.
+ */
+export function shownLastAgent(
+  lastAgent: AgentRef | null,
+  pub: string | null | undefined,
+  caller: Caller,
+): AgentRef | null {
+  if (!lastAgent || !pub) return null;
+  const [via, ver, by, email, name, displayName] = JSON.parse(pub) as (
+    | string
+    | null
+  )[];
+  return agentFor(
+    lastAgent,
+    isPrivateAgent(via ?? null, ver ?? null),
+    publisherOf(by ?? "", {
+      email: email ?? "",
+      name: name ?? null,
+      displayName: displayName ?? null,
+    }),
+    caller.kind === "user" ? caller.user.id : null,
+  );
 }
 
 /**
@@ -751,8 +746,8 @@ export async function lastAgentsFor<
  * oracle for another member's label.
  */
 const agentShownSql = (caller: Caller) =>
-  sql`exists (select 1 from versions v where v.artifact_id = ${artifacts.id}
-    and v.version = ${artifacts.currentVersion}
+  sql`exists (select 1 from versions v where v.artifact_id = "artifacts"."id"
+    and v.version = "artifacts"."current_version"
     and (v.agent_via like 'g:%'
       or (v.agent_via is null and v.agent_version is not null)
       or v.created_by = ${caller.kind === "user" ? caller.user.id : null}))`;
@@ -788,11 +783,19 @@ export async function getSummary(
 ): Promise<ArtifactSummary> {
   const r = await accessLevel(env, caller, id);
   if (!r) throw notFound();
-  const owner = await ownerRef(env, r.artifact.ownerId, caller);
-  const [out] = await lastAgentsFor(env, caller, [
-    toSummary(env, r.artifact, owner, r.level),
+  const [owner, pub] = await Promise.all([
+    ownerRef(env, r.artifact.ownerId, caller),
+    // Only with a last agent: one PK read beside the owner's.
+    r.artifact.lastAgentName == null
+      ? null
+      : getDb(env)
+          .select({ p: lastPublisherSql })
+          .from(artifacts)
+          .where(eq(artifacts.id, id))
+          .then((rows) => rows[0]?.p ?? null),
   ]);
-  if (!out) throw notFound();
+  const out = toSummary(env, r.artifact, owner, r.level);
+  out.lastAgent = shownLastAgent(out.lastAgent, pub, caller);
   if (!decorates(env, caller)) return out;
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
@@ -954,6 +957,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller, { allowDeleted: q.includeDeleted }),
+      lastPub: lastPublisherSql,
       // The joined space, for `space` and `can` (withSpace).
       space: spaceCols(caller, decorates(env, caller)),
     })
@@ -1012,9 +1016,9 @@ export async function list(
       ),
       level,
     );
+    out.lastAgent = shownLastAgent(out.lastAgent, r.lastPub, caller);
     items.push(dec ? withSpace(caller, out, level, r.a.spaceId, r.space) : out);
   }
-  await lastAgentsFor(env, caller, items);
   return {
     items,
     nextCursor:
