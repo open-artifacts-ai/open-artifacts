@@ -101,9 +101,12 @@ jobs:
           node scripts/hosted/src/ci-args.ts > "$RUNNER_TEMP/hosted-ops-argv.json"
       # Only this step sees the secrets. R2_TOKEN only for the publish ops.
       - name: Write the token files
+        id: tok
         env:
           PROVISION_TOKEN: ${{ secrets.PROVISION_TOKEN }}
           R2_TOKEN: ${{ (inputs.op == 'publish-release' || inputs.op == 'publish-floor') && secrets.R2_TOKEN || '' }}
+          # Only the ops that render an install's vars (codes on needs the pair).
+          TURNSTILE_KEYS: ${{ contains(fromJSON('["create","upgrade","rollback","update-vars"]'), inputs.op) && secrets.TURNSTILE_KEYS || '' }}
         run: |
           set +x
           set -euo pipefail
@@ -113,11 +116,18 @@ jobs:
           [ -n "$PROVISION_TOKEN" ] || { echo "PROVISION_TOKEN is not set in this Environment"; exit 1; }
           printf '%s\n' "$PROVISION_TOKEN" > "$dir/token"
           if [ -n "$R2_TOKEN" ]; then printf '%s\n' "$R2_TOKEN" > "$dir/r2"; fi
+          if [ -n "${TURNSTILE_KEYS:-}" ]; then
+            printf '%s\n' "$TURNSTILE_KEYS" > "$dir/turnstile"
+            echo "turnstile=1" >> "$GITHUB_OUTPUT"
+          fi
       - name: Run the operation
         id: run
         env:
           OA_HOSTED_TOKEN_FILE: ${{ runner.temp }}/hosted-ops-secrets/token
           OA_HOSTED_R2_FILE: ${{ runner.temp }}/hosted-ops-secrets/r2
+          # Named only when the file was written (the secret is set); with no
+          # keys, provision refuses an install with codes on.
+          OA_HOSTED_TURNSTILE_FILE: ${{ steps.tok.outputs.turnstile == '1' && format('{0}/hosted-ops-secrets/turnstile', runner.temp) || '' }}
           OA_HOSTED_ENVIRONMENT: ${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.HOSTED_ACCOUNT_ID }}
           GH_TOKEN: ${{ inputs.op == 'publish-release' && github.token || '' }}

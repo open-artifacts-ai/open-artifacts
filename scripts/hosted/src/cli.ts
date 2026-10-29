@@ -128,6 +128,7 @@ Flags:
                   google turns the sign-in broker on for the install.
 Token: keychain item oa-hosted-<env> (account open-artifacts). CI: a 0600 file at OA_HOSTED_TOKEN_FILE.
 R2 (publish-release, publish-floor): keychain item oa-hosted-<env>-r2, <accessKeyId>:<secretAccessKey>. CI: a 0600 file at OA_HOSTED_R2_FILE.
+Turnstile (create, upgrade, rollback, update-vars): keychain item oa-hosted-<env>-turnstile, <sitekey>:<secret>. CI: a 0600 file at OA_HOSTED_TURNSTILE_FILE.
 Prod in CI: only with GITHUB_ACTIONS=true, GITHUB_REF=refs/heads/main and OA_HOSTED_ENVIRONMENT=hosted-prod-deploy.
 Exit 3: an AUDIT GAP (the after-row failed twice; recorded under ~/.config/oa-hosted/pending-audit).
 Env: CLOUDFLARE_ACCOUNT_ID (the hosted account id). Output: one JSON line per step.`;
@@ -542,8 +543,33 @@ async function readR2(d: Deps, env: Env): Promise<R2Credentials> {
   return { accessKeyId, secretAccessKey };
 }
 
+/** `<sitekey>:<secret>`, from the keychain on a laptop or a 0600 file in CI. */
+function parseTurnstile(raw: string, label: string): TurnstileKeys {
+  const i = raw.indexOf(":");
+  const sitekey = raw.slice(0, i);
+  const secret = raw.slice(i + 1);
+  if (i < 1 || !KEY_CHARS.test(sitekey) || !KEY_CHARS.test(secret))
+    throw new Refused(`${label} is not <sitekey>:<secret>`);
+  return { sitekey, secret };
+}
+
 async function readTurnstile(d: Deps, env: Env): Promise<TurnstileKeys | null> {
-  if (inCi(d.env)) return null;
+  if (inCi(d.env)) {
+    // CI: only the 0600 file the workflow wrote from TURNSTILE_KEYS, and for
+    // prod only in the gated job (as the token). No file: no codes support.
+    const file = d.env.OA_HOSTED_TURNSTILE_FILE;
+    if (!file) return null;
+    if (env === "prod" && !prodCiAllowed(d.env))
+      throw new Refused("CI is staging only; prod refused");
+    return parseTurnstile(
+      readPrivateFile(d, file, "OA_HOSTED_TURNSTILE_FILE").trim(),
+      "OA_HOSTED_TURNSTILE_FILE",
+    );
+  }
+  if (d.env.OA_HOSTED_TURNSTILE_FILE !== undefined)
+    throw new Refused(
+      "the Turnstile keys come only from the keychain on a laptop; unset OA_HOSTED_TURNSTILE_FILE",
+    );
   let raw: string;
   try {
     raw = (
@@ -559,14 +585,7 @@ async function readTurnstile(d: Deps, env: Env): Promise<TurnstileKeys | null> {
   } catch {
     return null;
   }
-  const i = raw.indexOf(":");
-  const sitekey = raw.slice(0, i);
-  const secret = raw.slice(i + 1);
-  if (i < 1 || !KEY_CHARS.test(sitekey) || !KEY_CHARS.test(secret))
-    throw new Refused(
-      `keychain item ${turnstileItem(env)} is not <sitekey>:<secret>`,
-    );
-  return { sitekey, secret };
+  return parseTurnstile(raw, `keychain item ${turnstileItem(env)}`);
 }
 
 /** Written through `security -i` on stdin, so the secret is never in argv. */

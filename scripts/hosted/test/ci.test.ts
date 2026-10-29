@@ -234,6 +234,83 @@ describe("prod in CI: credentials from the 0600 files, with the same checks", ()
     expect(out).not.toContain(w.fake.token);
   });
 
+  it("reads the Turnstile keys from OA_HOSTED_TURNSTILE_FILE for a codes-on create, with the same file checks, never printing the secret", async () => {
+    const KEYS = {
+      sitekey: "0x4AAAAAAA0123456789abcdef",
+      secret: "0x4AAAAAAAturnstileSecretValue",
+    };
+    const CODES = [...CREATE("prod"), "--var", "AUTH_PROVIDERS=email"];
+    const put = (w: W, mode: number) =>
+      w.files.set("/ci/turnstile", {
+        bytes: enc(`${KEYS.sitekey}:${KEYS.secret}\n`),
+        info: { mode, uid: 501, isFile: true },
+      });
+    // No file: codes-on create is refused by provision (no keys).
+    const none = ciWorld("prod", GATED);
+    expect(await main(CODES, none.deps)).toBe(1);
+    expect(none.lines.join("\n")).toMatch(
+      /Turnstile sitekey and secret are missing/,
+    );
+    // A file that isn't 0600: refused before any call.
+    const loose = ciWorld("prod", {
+      ...GATED,
+      OA_HOSTED_TURNSTILE_FILE: "/ci/turnstile",
+    });
+    put(loose, 0o100640);
+    expect(await main(CODES, loose.deps)).toBe(1);
+    expect(lastLine(loose).message).toMatch(
+      /OA_HOSTED_TURNSTILE_FILE must be mode 0600/,
+    );
+    // The gated job with a 0600 file: the install gets the pair, no keychain call.
+    const w = ciWorld("prod", {
+      ...GATED,
+      OA_HOSTED_TURNSTILE_FILE: "/ci/turnstile",
+    });
+    put(w, 0o100600);
+    // The widget exists on the account (provision checks it before using it).
+    w.fake.turnstile.set(KEYS.sitekey, {
+      sitekey: KEYS.sitekey,
+      name: "oa-p-turnstile",
+      domains: ["open-artifacts.app"],
+      mode: "managed",
+      secret: KEYS.secret,
+    });
+    expect(await main(CODES, w.deps)).toBe(0);
+    const sc = [...w.fake.scripts.values()][0];
+    expect(sc?.secrets.get("TURNSTILE_SECRET")).toBe(KEYS.secret);
+    expect(w.execs.filter((e) => e.file === SECURITY)).toEqual([]);
+    expect(w.lines.join("\n")).not.toContain(KEYS.secret);
+  });
+
+  it("prod Turnstile keys in CI only in the gated job; on a laptop never from a file", async () => {
+    const f = { OA_HOSTED_TURNSTILE_FILE: "/ci/turnstile" };
+    const ungated = ciWorld("prod", {
+      ...GATED,
+      GITHUB_REF: "refs/heads/feature",
+      ...f,
+    });
+    expect(
+      await main(
+        [...CREATE("prod"), "--var", "AUTH_PROVIDERS=email"],
+        ungated.deps,
+      ),
+    ).toBe(1);
+    expect(ungated.lines.join("\n")).toMatch(
+      /CI is staging only; prod refused/,
+    );
+    const laptop = world();
+    expect(
+      await main(["turnstile-init", "--env", "staging"], laptop.deps),
+    ).toBe(0);
+    Object.assign(laptop.deps.env, f);
+    expect(
+      await main([...CREATE(), "--var", "AUTH_PROVIDERS=email"], laptop.deps),
+    ).toBe(1);
+    expect(laptop.lines.join("\n")).toMatch(
+      /only from the keychain on a laptop/,
+    );
+  });
+
   it("reads R2 from OA_HOSTED_R2_FILE for prod publish, with the same file checks, and prints neither half", async () => {
     const w = ciWorld("prod", GATED);
     w.files.set("/f/floor.sig.json", {

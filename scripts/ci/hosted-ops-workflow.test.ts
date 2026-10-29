@@ -134,7 +134,13 @@ describe("hosted-ops.yml", () => {
       PROVISION_TOKEN: "${{ secrets.PROVISION_TOKEN }}",
       R2_TOKEN:
         "${{ (inputs.op == 'publish-release' || inputs.op == 'publish-floor') && secrets.R2_TOKEN || '' }}",
+      TURNSTILE_KEYS:
+        '${{ contains(fromJSON(\'["create","upgrade","rollback","update-vars"]\'), inputs.op) && secrets.TURNSTILE_KEYS || \'\' }}',
     });
+    // The CLI step learns the Turnstile file exists from a plain flag, never a secret.
+    expect(named("Run the operation").env.OA_HOSTED_TURNSTILE_FILE).toBe(
+      "${{ steps.tok.outputs.turnstile == '1' && format('{0}/hosted-ops-secrets/turnstile', runner.temp) || '' }}",
+    );
     expect(s.run).toMatch(/^set \+x\n/);
     expect(s.run).toContain("umask 077");
     expect(JSON.stringify(w)).not.toContain("DEPLOY_TOKEN");
@@ -287,6 +293,24 @@ describe("the steps' shell, run", () => {
     });
     expect(r3.code).toBe(1);
     expect(r3.out).toMatch(/PROVISION_TOKEN is not set/);
+    // Turnstile keys: a 0600 file and the flag, only when the secret is set.
+    const { sb: sb4, temp: t4 } = box();
+    const outFile = join(t4, "github-output");
+    writeFileSync(outFile, "");
+    const r4 = bash(sb4, named("Write the token files").run, {
+      RUNNER_TEMP: t4,
+      GITHUB_OUTPUT: outFile,
+      PROVISION_TOKEN: tok,
+      R2_TOKEN: "",
+      TURNSTILE_KEYS: "0x4AAAAAAA0123456789:SECRETturnstile",
+    });
+    expect(r4.code).toBe(0);
+    expect(r4.out + r4.err).toBe("");
+    expect(
+      statSync(join(t4, "hosted-ops-secrets", "turnstile")).mode & 0o777,
+    ).toBe(0o600);
+    expect(readFileSync(outFile, "utf8")).toBe("turnstile=1\n");
+    expect(existsSync(join(dir, "turnstile"))).toBe(false);
   });
 
   describe("the sweep step", () => {
