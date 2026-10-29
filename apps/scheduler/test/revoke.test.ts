@@ -747,7 +747,7 @@ describe("broker gates on every install call", () => {
     props: {
       AUTH_BROKER: { gate: { installId: id, kind: "auth" } },
       DIRECTORY_BROKER: { gate: { installId: id, kind: "directory" } },
-      billing: { billingGate: { installId: id } },
+      BILLING: { billingGate: { installId: id } },
     },
   });
 

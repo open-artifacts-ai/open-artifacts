@@ -146,6 +146,6 @@ export class BillingGate extends WorkerEntrypoint<
 export function billingProps(
   exports: { BillingGate: (o: { props: BillingGateProps }) => Fetcher },
   installId: string,
-): { billing: Fetcher } {
-  return { billing: exports.BillingGate({ props: { installId } }) };
+): { BILLING: Fetcher } {
+  return { BILLING: exports.BillingGate({ props: { installId } }) };
 }

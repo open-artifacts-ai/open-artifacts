@@ -494,7 +494,7 @@ describe("broker gates in props", () => {
         props: {
           AUTH_BROKER: { gate: { installId: B, kind: "auth" } },
           DIRECTORY_BROKER: { gate: { installId: B, kind: "directory" } },
-          billing: { billingGate: { installId: B } },
+          BILLING: { billingGate: { installId: B } },
         },
       },
     ]);
@@ -511,7 +511,7 @@ describe("broker gates in props", () => {
     await call(f.env, "https://acme.open-artifacts-staging.app/");
     await call(f.env, "https://beta.open-artifacts-staging.app/");
     expect(
-      f.args.map((a) => (a as { props: { billing: unknown } }).props.billing),
+      f.args.map((a) => (a as { props: { BILLING: unknown } }).props.BILLING),
     ).toEqual([
       { billingGate: { installId: A } },
       { billingGate: { installId: B } },
