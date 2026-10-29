@@ -2232,6 +2232,8 @@ export class WfpProvisioner {
         throw new ProvisionRefused(
           "reissueOwnerToken needs confirm to be exactly the install id",
         );
+      // The new PAT goes to a file: no patDir is refused before any write.
+      this.patDir();
       const row = await this.openInstall(id, ["active"]);
       const raw = ownerEmailOf(row);
       const ownerEmail = raw === null ? null : normOwnerEmail(raw);
@@ -3661,6 +3663,8 @@ export class WfpProvisioner {
     email: string,
     appHost: string,
   ): Promise<string> {
+    // Before the token row: a PAT with no file to go to is never minted.
+    const dir = this.patDir();
     const pat = newPat();
     this.sensitive.add(pat);
     const tokenId = newId();
@@ -3688,7 +3692,6 @@ export class WfpProvisioner {
     );
     if (!ok[0]?.results?.length)
       throw new Error(`token row ${tokenId} missing after the insert; rerun`);
-    const dir = this.patDir();
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const file = join(dir, `${appHost}-pat-token`);
     try {

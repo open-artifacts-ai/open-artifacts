@@ -59,6 +59,29 @@ const G = vi.hoisted(() => ({
   RELEASE_PUBKEY: { staging: "", prod: "" } as Record<string, string>,
   FLOOR_MIN_SEQ: { staging: 1, prod: 1 } as Record<string, number>,
 }));
+// Every node:fs call that writes, with its path: a run with no patDir must make none.
+const FSW = vi.hoisted(() => {
+  const WRITES: string[] = [];
+  // biome-ignore lint/suspicious/noExplicitAny: wraps overloaded fs functions
+  const recordWrites = (m: any) => {
+    // biome-ignore lint/suspicious/noExplicitAny: overloaded
+    const out: Record<string, any> = {};
+    for (const f of [
+      "mkdirSync",
+      "openSync",
+      "writeFileSync",
+      "writeSync",
+      "rmSync",
+    ])
+      out[f] = (p: unknown, ...a: unknown[]) => {
+        WRITES.push(`${f} ${String(p)}`);
+        return m[f](p, ...a);
+      };
+    return { ...m, ...out, default: { ...m, ...out } };
+  };
+  return { WRITES, recordWrites };
+});
+vi.mock("node:fs", async (orig) => FSW.recordWrites(await orig()));
 vi.mock("../src/internal/gates.js", async (orig) => {
   const m = await orig<typeof import("../src/internal/gates.js")>();
   return {
@@ -4382,12 +4405,12 @@ describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
   it("no patDir with ciOwnerToken: create succeeds and nothing is written under any directory", async () => {
     const s = setup();
     const before = readdirSync(s.patDir);
+    FSW.WRITES.length = 0;
     const inst = keep(
       await noPatDir(s, { ciOwnerToken: { label: SS_A } }).create(input()),
     );
     expect(inst.patFile).toBeUndefined();
     expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
-    expect(readdirSync(s.patDir)).toEqual(before);
     // A delete with no patDir has no file to remove.
     expect(
       keep(
@@ -4396,6 +4419,58 @@ describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
         }),
       ),
     ).toMatchObject({ ok: true, state: "deleted" });
+    // No node:fs write at all (no mkdir, open, write or rm), anywhere.
+    expect(FSW.WRITES).toEqual([]);
+    expect(readdirSync(s.patDir)).toEqual(before);
+  });
+
+  it("the file hook sees a laptop create's PAT write (the hook is live)", async () => {
+    const s = setup();
+    FSW.WRITES.length = 0;
+    const inst = keep(await s.p.create(input()));
+    expect(FSW.WRITES).toContain(
+      `openSync ${join(s.patDir, `${inst.appHost}-pat-token`)}`,
+    );
+  });
+
+  it("reissueOwnerToken with no patDir is refused before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const rows = tokens(s, inst.id);
+    const n = s.fake.log.length;
+    const e = await fails(noPatDir(s).reissueOwnerToken(inst.id, inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/patDir is required/);
+    expect(s.fake.log.length).toBe(n);
+    expect(tokens(s, inst.id)).toEqual(rows);
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("upgrade, rollback and updateVars of a test-hook install with ciOwnerToken need no patDir and write no file", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("redqa", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
+      ),
+    );
+    FSW.WRITES.length = 0;
+    const ci = { ciOwnerToken: { label: SS_A } };
+    expect(
+      keep(await noPatDir(s, ci).upgrade(inst.id, "0.24.0")),
+    ).toMatchObject({ ok: true });
+    expect(keep(await noPatDir(s, ci).rollback(inst.id))).toMatchObject({
+      ok: true,
+      rolledBack: true,
+    });
+    expect(
+      keep(
+        await noPatDir(s, ci).updateVars(inst.id, {
+          ...HOOK_VARS,
+          FEATURES: "beta",
+        }),
+      ),
+    ).toMatchObject({ ok: true });
+    expect(FSW.WRITES).toEqual([]);
   });
 
   it("no patDir and no ciOwnerToken is refused before any call", async () => {
