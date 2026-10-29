@@ -1633,8 +1633,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
   async touchViewerAgent(t: AgentTouch): Promise<void> {
     const p = AgentTouchSchema.safeParse(t);
     if (!p.success) fail("bad_request", "invalid agent touch");
-    const seen = this.upsertViewerAgent(p.data, p.data.write);
-    await this.afterViewerAgentTouch(seen);
+    try {
+      const seen = this.upsertViewerAgent(p.data, p.data.write);
+      await this.afterViewerAgentTouch(seen);
+    } catch (e) {
+      // Fire-and-forget for the caller: logged here, never surfaced.
+      logError("viewer_presence_touch_failed", e);
+    }
   }
 
   /**

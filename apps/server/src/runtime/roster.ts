@@ -1,6 +1,7 @@
 import {
   AGENT_PRESENT_MS,
   ANIMALS,
+  PRESENCE_ACTIVITY_MAX,
   PRESENCE_LIST_MAX,
   PRESENCE_NAME_MAX,
   PRESENCE_PALETTE_SIZE,
@@ -56,11 +57,27 @@ const hash = (s: string): number => {
 export const colorOf = (key: string): number =>
   hash(key) % PRESENCE_PALETTE_SIZE;
 
-/** Strip controls, trim, collapse whitespace, cut to 80 code points; empty is null. */
-export const cleanName = (s: string | null): string | null => {
+/**
+ * `s` cut to at most `max` UTF-16 units (what zod's max counts), on a code
+ * point boundary: a surrogate pair is never split.
+ */
+export const cutUnits = (s: string, max: number): string => {
+  if (s.length <= max) return s;
+  let end = max;
+  const c = s.charCodeAt(end - 1);
+  // A high surrogate at the cut would lose its low half: drop it.
+  if (c >= 0xd800 && c <= 0xdbff) end--;
+  return s.slice(0, end);
+};
+
+/** Strip controls, trim, collapse whitespace, cut to `max` UTF-16 units (default 80); empty is null. */
+export const cleanName = (
+  s: string | null,
+  max: number = PRESENCE_NAME_MAX,
+): string | null => {
   if (s === null) return null;
   const t = stripNameControls(s).replace(/\s+/g, " ").trim();
-  const cut = [...t].slice(0, PRESENCE_NAME_MAX).join("").trim();
+  const cut = cutUnits(t, max).trim();
   return cut === "" ? null : cut;
 };
 
@@ -162,13 +179,17 @@ export function buildRoster(
     const base = product ?? "Agent";
     const count = (nth.get(base) ?? 0) + 1;
     nth.set(base, count);
-    const activity = cleanName(a.activity);
+    const activity = cleanName(a.activity, PRESENCE_ACTIVITY_MAX);
+    // "-N" for a clash: the base is trimmed first so the name stays within 80.
+    const suffix = count === 1 ? "" : `-${count}`;
+    const name =
+      cutUnits(base, PRESENCE_NAME_MAX - suffix.length).trimEnd() + suffix;
     entries.push({
       since: a.since,
       entry: {
         key: a.key,
         kind: "agent",
-        name: count === 1 ? base : `${base}-${count}`,
+        name,
         named: product !== null,
         color: colorOf(a.key),
         agent: {

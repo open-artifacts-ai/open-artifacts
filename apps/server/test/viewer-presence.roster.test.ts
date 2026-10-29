@@ -3,6 +3,7 @@ import {
   ANIMALS,
   PRESENCE_LIST_MAX,
   PresenceEntrySchema,
+  PresenceFrameSchema,
 } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import {
@@ -212,5 +213,50 @@ describe("cleanName", () => {
     expect(cleanName("  a \t  b ")).toBe("a b");
     expect(cleanName("​ ")).toBeNull();
     expect(cleanName(null)).toBeNull();
+  });
+});
+
+describe("length caps (UTF-16 units, as the shared schema counts)", () => {
+  const emoji = "\u{1F600}"; // 2 UTF-16 units
+  it("cleanName cuts 80 emoji to 40 whole ones (80 units), never half a pair", () => {
+    const out = cleanName(emoji.repeat(80)) as string;
+    expect(out.length).toBe(80);
+    expect(out).toBe(emoji.repeat(40));
+    // An odd cut point drops the high surrogate rather than split it.
+    const odd = cleanName(`a${emoji.repeat(80)}`) as string;
+    expect(odd).toBe(`a${emoji.repeat(39)}`);
+    expect(odd.length).toBe(79);
+  });
+
+  it("80-emoji names and activity, and an 80-char product with a clash, build entries and a frame the schemas accept", () => {
+    const product = "p".repeat(80);
+    const r = buildRoster(
+      [seat(k(1), 1, { name: emoji.repeat(80) })],
+      [
+        agent(k(2), 2, {
+          product,
+          owner: emoji.repeat(80),
+          activity: emoji.repeat(80),
+        }),
+        agent(k(3), 3, { product, activity: `x${emoji.repeat(80)}` }),
+        agent(k(4), 4, { product: emoji.repeat(80) }),
+        agent(k(5), 5, { product: emoji.repeat(80) }),
+      ],
+      NOW,
+    );
+    for (const v of r.viewers) PresenceEntrySchema.parse(v);
+    PresenceFrameSchema.parse({
+      type: "presence",
+      viewers: r.viewers,
+      total: r.total,
+    });
+    const names = r.viewers.map((v) => v.name);
+    expect(names).toContain(product);
+    expect(names).toContain(`${"p".repeat(78)}-2`);
+    expect(names).toContain(`${emoji.repeat(39)}-2`);
+    for (const v of r.viewers) {
+      expect(v.name.length).toBeLessThanOrEqual(80);
+      expect(v.agent?.activity?.length ?? 0).toBeLessThanOrEqual(80);
+    }
   });
 });

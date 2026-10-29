@@ -37,7 +37,6 @@ export async function viewerAgentTouch(
   o: ViewerAgentFrom,
 ): Promise<AgentTouch> {
   const via = o.agent?.via?.kind;
-  const activity = cleanName(o.activity);
   return {
     key: await viewerPresenceKey(
       env,
@@ -50,10 +49,7 @@ export async function viewerAgentTouch(
     // A grant's owner-set label (#559) is not loaded here yet: null.
     label: via === "token" ? cleanName(o.agent?.name ?? null) : null,
     write: o.write,
-    activity:
-      activity === null
-        ? null
-        : [...activity].slice(0, PRESENCE_ACTIVITY_MAX).join(""),
+    activity: cleanName(o.activity, PRESENCE_ACTIVITY_MAX),
   };
 }
 

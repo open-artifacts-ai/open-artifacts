@@ -41,6 +41,7 @@ let alice: U & { grant: string };
 let bob: U;
 let guest: U;
 let alicePat: string;
+let alicePatId: string;
 
 const member = async (l: { cookie: string; userId: string }, email: string) => {
   const m = await getUser(env, l.userId);
@@ -190,7 +191,9 @@ beforeAll(async () => {
   await setName(bob.userId, "Bob Viewer");
   bob = await member(bob, bob.email);
   guest = await mk("vpa-guest", "guest");
-  alicePat = (await createPat(env, alice.userId, LABEL)).token;
+  const p = await createPat(env, alice.userId, LABEL);
+  alicePat = p.token;
+  alicePatId = p.id;
 });
 
 afterEach(() => {
@@ -498,6 +501,8 @@ describe("agents on the presence roster", () => {
       expect(all).not.toContain(alice.userId);
       expect(all).not.toContain('"u:');
       expect(all).not.toContain('"t:');
+      expect(all).not.toContain('"g:');
+      expect(all).not.toContain(alicePatId);
     }
     await c.close();
     for (const s of [o, named, anon, g, embed]) s.ws.close();
@@ -583,5 +588,57 @@ describe("agents on the presence roster", () => {
     const f = await b.until(hasAgents(1));
     expect(agents(f)[0]?.name).toBe("Agent");
     b.ws.close();
+  });
+
+  it("a failed touch leaves the MCP and REST results intact and logs viewer_presence_touch_failed", async () => {
+    const id = await pub(alice);
+    // The schema is not recreated while the instance is ready: every agent
+    // upsert now throws.
+    await runInDurableObject(stubOf(id), (_i, st) => {
+      st.storage.sql.exec("drop table viewer_presence_agent");
+    });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logged = () =>
+      spy.mock.calls.filter((c) =>
+        String(c[0]).includes("viewer_presence_touch_failed"),
+      ).length;
+    const c = await connect(alice.grant);
+    const set = ok(
+      await tool(c, "artifact_data_set", {
+        id,
+        collection: "notes",
+        docId: "n1",
+        data: { a: 1 },
+      }),
+    );
+    expect(set.structuredContent).toMatchObject({ id: "n1", data: { a: 1 } });
+    const got = ok(
+      await tool(c, "artifact_data_get", {
+        id,
+        collection: "notes",
+        docId: "n1",
+      }),
+    );
+    expect(got.structuredContent).toMatchObject({ doc: { data: { a: 1 } } });
+    ok(await tool(c, "get_artifact", { id }));
+    ok(
+      await tool(c, "publish_artifact", {
+        id,
+        format: "html",
+        content: "<p>2</p>",
+      }),
+    );
+    const put = await api(app, R.dataDoc(id, "notes", "n2"), alicePat, {
+      method: "PUT",
+      body: { b: 2 },
+    });
+    expect(put.status).toBe(200);
+    expect(await put.json()).toMatchObject({ id: "n2", data: { b: 2 } });
+    const read = await api(app, R.dataDoc(id, "notes", "n2"), alicePat);
+    expect(read.status).toBe(200);
+    expect(await read.json()).toMatchObject({ data: { b: 2 } });
+    // data set, data get, get_artifact, publish, REST put, REST get.
+    await vi.waitFor(() => expect(logged()).toBeGreaterThanOrEqual(6));
+    await c.close();
   });
 });

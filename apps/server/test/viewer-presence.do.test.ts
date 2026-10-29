@@ -572,6 +572,43 @@ describe("viewer presence on R.events", () => {
     a.ws.close();
   });
 
+  it("an owner's 21st agent evicts their oldest (by seen) and keeps the fresh one", async () => {
+    const r = await room();
+    const touch = (n: number, owner = "u:cap-owner") =>
+      r.stub.touchViewerAgent({
+        key: key(100 + n),
+        product: `P${n}`,
+        owner: "Cap",
+        ownerActor: owner,
+        label: null,
+        write: false,
+        activity: null,
+      });
+    const keys = () =>
+      r.inDo((_i, st) =>
+        st.storage.sql
+          .exec<{ key: string }>("select key from viewer_presence_agent")
+          .toArray()
+          .map((x) => x.key)
+          .sort(),
+      );
+    await touch(0, "u:someone-else");
+    for (let n = 1; n <= 20; n++) {
+      r.clock.t += 10;
+      await touch(n);
+    }
+    expect(await keys()).toHaveLength(21);
+    r.clock.t += 10;
+    await touch(21);
+    const left = await keys();
+    expect(left).toHaveLength(21);
+    expect(left).not.toContain(key(101));
+    expect(left).toContain(key(121));
+    expect(left).toContain(key(102));
+    // Another owner's row is untouched.
+    expect(left).toContain(key(100));
+  });
+
   it("a failing flush logs viewer_presence_flush_failed and never fails a join, closeActor or alarm", async () => {
     const r = await room();
     const a = await r.open({ who: person(1) });
