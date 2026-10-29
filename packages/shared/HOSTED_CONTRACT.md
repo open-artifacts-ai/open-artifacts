@@ -81,7 +81,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `DirectoryModeSchema` | `off \| google \| frozen` |
 | `InstanceDirectorySchema` | `{ mode, healthy, unhealthySince, banner, tokensUnverified, state, staleAt, heldSweeps }`. `banner`: unhealthy ≥ 1 h (owner/admin only). `tokensUnverified`: true while unhealthy, since PATs and MCP grants aren't capped at 24 h. `state` (`SyncState`) and `staleAt` (lastSuccessAt + 7 d, informational only - no access effect): owner/admin only, null for others; `heldSweeps`: held sweeps waiting, 0 for non-admins |
 | `SyncStateSchema` | `ok \| backoff \| auth_failed \| customer_mismatch \| scope_missing \| never`. `scope_missing`: a granted scope was revoked (Admin SDK 403 insufficientPermissions); fix copy "reconnect and grant all scopes" |
-| `InstanceSignInSchema` | `{ mode: access \| direct, providers: (access \| google \| email)[] }`; owners also get `problems: string[]` (full sentences, shown verbatim). Besides config problems, a Google sign-in refused for `identity_conflict` (another Google account than the one pinned) adds one sentence for 7 days, cleared when that person's Google link is reset; it names no one |
+| `InstanceSignInSchema` | `{ mode: access \| direct, providers: (access \| google \| email)[] }`; owners also get `problems: string[]` (full sentences, shown verbatim). Besides config problems, a Google sign-in refused for `identity_conflict` (another Google account than the one pinned) adds one sentence while any person's latest conflict is under 7 days old (kept per person, at most 20; the person is the one whose pin it hit), that person's entry cleared when their Google link is reset; it names no one |
 | `AuthMethodSchema` | `access \| google \| code \| pat \| oauth \| dev \| test` |
 | `MeAuthSchema` | `{ method, readOnly, cap, expiresAt }` |
 | `ArtifactCanSchema`, `ARTIFACT_ACTIONS`, `ArtifactAction` | `{ edit, share, setVisibility, delete, transfer, move, dataWrite }`. P3's internal superset is `PolicyAction`, so the names don't clash |
@@ -120,7 +120,7 @@ Installs in one environment share a single Google client through the auth broker
 
 | Schema | Meaning |
 |---|---|
-| `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[], hosted? }`; only fully configured providers; google's `domains` may be empty (a Gmail-only install: Google admits invited personal accounts only, which any install's Google does for invited addresses outside its domains); `turnstileSiteKey` whenever Turnstile is configured; `hosted` true only on HOSTED=1 (the server always sends it; absent reads as false) |
+| `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[], hosted? }`; only fully configured providers; google's `domains` may be empty (a Gmail-only install: Google admits invited personal accounts only, which any install's Google does for invited gmail.com and googlemail.com addresses outside its domains; a no-hd token at any other domain is refused as `tenant`); `turnstileSiteKey` whenever Turnstile is configured; `hosted` true only on HOSTED=1 (the server always sends it; absent reads as false) |
 | `SignInErrorSchema` | `tenant \| identity_conflict \| removed \| no_access \| expired \| failed` |
 | `SignInViaSchema` | `access \| google`: `?via=` on every `error=no_access` redirect (Access callback in direct mode: access; Google callback: google); absent on other errors |
 | `CODE_POLICY` | `{ length: 8, ttlSec: 600, resendAfterSec: 60, maxAttempts: 5 }` |
@@ -132,7 +132,7 @@ Installs in one environment share a single Google client through the auth broker
 | `CodeVerifySchema`, `normalizeCode` | `{ code }`; whitespace and hyphens stripped, then 8 digits |
 | `CodeVerifiedSchema` | `{ next, user: Member, readOnly }` |
 | `CodeVerifyFailureDetailsSchema` | 401 details: `invalid_code{attemptsLeft} \| expired \| no_pending`; locked: 429 `{ retryAfter, scope: "ip" }` (a per-address lock would enable victim lockout) |
-| `SessionPayload` (type, reference) | `{ uid, exp, iat, p: access \| google \| code \| dev \| test, t?: tenant (verified Google hd, or the email domain of a domain-code session), e: session epoch, a?: Google auth_time (ms) of a forced re-authentication within 10 min (break-glass) }` |
+| `SessionPayload` (type, reference) | `{ uid, exp, iat, p: access \| google \| code \| dev \| test, t?: tenant (verified Google hd, or the email domain of a domain-code session), pd?: a personal Google account's (no hd) email domain; the session ends once it is in AUTH_DOMAINS, e: session epoch, a?: Google auth_time (ms) of a forced re-authentication within 10 min (break-glass) }` |
 
 ## Spaces (`hosted/spaces.ts`, P3)
 
