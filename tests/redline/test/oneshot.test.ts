@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,9 +15,12 @@ import {
   blockedBy,
   CALLBACK_PATH,
   chromeArgs,
+  GOOGLE_CLEAR,
   judge,
-  patternOf,
-} from "../src/oneshot/chrome.ts";
+  Listener,
+  rehearsalArgs,
+  writeExtension,
+} from "../src/oneshot/browser.ts";
 import {
   BROKER_OVERRIDE,
   blockedLines,
@@ -84,50 +88,147 @@ describe("judge: only this install's callback with this prompt's state is captur
     expect(judge(cb(A, { state: armed.probe }), armed)).toBe("probe");
     expect(judge(cb(B, { state: armed.probe }), armed)).toBe("pass");
   });
-  it("escapes CDP pattern wildcards", () => {
-    expect(patternOf("https://a?b*c\\d")).toBe("https://a\\?b\\*c\\\\d");
-  });
 });
 
 describe("Chrome's launch", () => {
-  it("is a normal launch: CDP on 127.0.0.1, a port Chrome picks, its own profile, no automation switch", () => {
-    const a = chromeArgs("/tmp/p");
-    expect(a).toContain("--remote-debugging-address=127.0.0.1");
-    expect(a).toContain("--remote-debugging-port=0");
-    expect(a).toContain("--user-data-dir=/tmp/p");
-    expect(a).toContain("--disable-blink-features=AutomationControlled");
-    expect(a.join(" ")).not.toMatch(
-      /enable-automation|headless|remote-debugging-pipe/,
+  it("is plain Chrome: exactly a profile, no first-run screens and a URL; nothing else", () => {
+    expect(chromeArgs("/tmp/p", "chrome://extensions/")).toEqual([
+      "--user-data-dir=/tmp/p",
+      "--no-first-run",
+      "chrome://extensions/",
+    ]);
+  });
+  it("no source file of the driver adds a debugging, automation or blink flag outside the rehearsal-only args", () => {
+    const src = (f: string) =>
+      readFileSync(join(import.meta.dirname, "..", f), "utf8");
+    const driver = src("src/oneshot/driver.ts");
+    const browser = src("src/oneshot/browser.ts");
+    const cli = src("scripts/capture-oneshot.ts");
+    for (const s of [driver, cli])
+      expect(s).not.toMatch(
+        /--remote-debugging|--enable-automation|--disable-blink-features|--load-extension|--headless/,
+      );
+    // browser.ts: only inside rehearsalArgs().
+    const outside = browser.replace(
+      /export function rehearsalArgs[\s\S]*?\n}\n/,
+      "",
     );
-    expect(chromeArgs("/tmp/p", true)).toEqual([
-      ...a.slice(0, -1),
+    expect(outside).not.toMatch(
+      /--remote-debugging|--enable-automation|--disable-blink-features|--load-extension|--headless/,
+    );
+    expect(browser).not.toMatch(/disable-blink-features|enable-automation/);
+    expect(rehearsalArgs("/x")).toEqual([
+      "--load-extension=/x",
+      "--disable-extensions-except=/x",
       "--headless=new",
-      "about:blank",
+      "--remote-debugging-port=0",
     ]);
   });
 });
 
-describe("blockedBy: Google's automation and unsupported-browser blocks", () => {
+describe("blockedBy: Google's automation, unsupported-browser and OAuth error pages", () => {
   const G = "https://accounts.google.com";
-  it("by path and by text, on the IdP's origin only", () => {
-    expect(blockedBy(`${G}/v3/signin/rejected?rrk=46`, "", G)).toMatch(
-      /block page/,
+  it("by path, on the IdP's origin only", () => {
+    expect(blockedBy(`${G}/v3/signin/rejected?rrk=46`, G)).toBe(
+      "Google's block page (/v3/signin/rejected)",
     );
     expect(
-      blockedBy(
-        `${G}/v3/signin/identifier`,
-        "Couldn't sign you in\nThis browser or app may not be secure.",
-        G,
-      ),
-    ).toMatch(/Couldn.t sign you in|may not be secure/);
-    expect(
-      blockedBy(`${G}/x`, "This browser or app may not be secure", G),
-    ).toMatch(/may not be secure/);
-    expect(blockedBy(`${G}/x`, "Unsupported browser", G)).toBeTruthy();
-    expect(blockedBy(`${G}/v3/signin/identifier`, "Sign in", G)).toBeNull();
-    expect(
-      blockedBy(`${A}/v3/signin/rejected`, "may not be secure", G),
-    ).toBeNull();
+      blockedBy(`${G}/signin/oauth/error?authError=disallowed_useragent`, G),
+    ).toBe("Google's block page (/signin/oauth/error, disallowed_useragent)");
+    expect(blockedBy(`${G}/signin/oauth/error/v2?authError=x y`, G)).toBe(
+      "Google's block page (/signin/oauth/error/v2)",
+    );
+    expect(blockedBy(`${G}/v3/signin/identifier`, G)).toBeNull();
+    expect(blockedBy(`${A}/v3/signin/rejected`, G)).toBeNull();
+  });
+});
+
+describe("the capture extension's generated files", () => {
+  const dir = mkdtempSync(join(tmpdir(), "oa-oneshot-ext-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  it("host permissions are the two installs, 127.0.0.1 and the IdP; DNR blocks only their callbacks", () => {
+    writeExtension(join(dir, "e"), {
+      installs: [A, B],
+      listener: "http://127.0.0.1:4567",
+      token: "t".repeat(43),
+      idp: "https://accounts.google.com",
+      clearOrigins: GOOGLE_CLEAR,
+    });
+    const read = (f: string) => readFileSync(join(dir, "e", f), "utf8");
+    const m = JSON.parse(read("manifest.json"));
+    expect(m.manifest_version).toBe(3);
+    expect(m.permissions.sort()).toEqual([
+      "browsingData",
+      "declarativeNetRequest",
+      "webRequest",
+    ]);
+    expect(m.host_permissions).toEqual([
+      "https://rl-a.open-artifacts-staging.app/*",
+      "https://rl-b.open-artifacts-staging.app/*",
+      "http://127.0.0.1/*",
+      "https://accounts.google.com/*",
+    ]);
+    expect(JSON.parse(read("rules.json"))).toEqual([
+      {
+        id: 1,
+        priority: 2,
+        action: { type: "block" },
+        condition: {
+          urlFilter: `|${A}/auth/callback/google`,
+          resourceTypes: ["main_frame", "sub_frame"],
+        },
+      },
+      {
+        id: 2,
+        priority: 2,
+        action: { type: "block" },
+        condition: {
+          urlFilter: `|${B}/auth/callback/google`,
+          resourceTypes: ["main_frame", "sub_frame"],
+        },
+      },
+    ]);
+    const cfg = read("config.js");
+    expect(cfg).toContain('"listener":"http://127.0.0.1:4567"');
+    expect(cfg).toContain(`"token":"${"t".repeat(43)}"`);
+    expect(cfg).toContain(
+      `"clearOrigins":["https://accounts.google.com","https://www.google.com","https://google.com"]`,
+    );
+    expect(read("background.js")).not.toMatch(/console\./);
+    expect(statSync(join(dir, "e", "config.js")).mode & 0o077).toBe(0);
+  });
+});
+
+describe("the listener", () => {
+  it("refuses a missing or wrong token, takes the right one, and long-polls commands", async () => {
+    const L = new Listener();
+    await L.start();
+    try {
+      const post = (path: string, body: object) =>
+        fetch(`${L.origin}${path}`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        });
+      expect((await post("/hello", {})).status).toBe(403);
+      expect((await post("/hello", { token: "x" })).status).toBe(403);
+      expect(L.refused).toBe(2);
+      const reports: string[] = [];
+      L.on((r) => reports.push(r.kind));
+      expect((await post("/blocked", { token: "y", url: "https://a/" })).status).toBe(403);
+      expect(reports).toEqual([]);
+      const hello = L.nextHello();
+      expect((await post("/hello", { token: L.token })).status).toBe(200);
+      await hello;
+      await L.checkedIn;
+      const polled = post("/next", { token: L.token }).then((r) => r.json());
+      const done = L.command({ cmd: "clear" });
+      const c = (await polled) as { cmd: string; id: number };
+      expect(c.cmd).toBe("clear");
+      await post("/ack", { token: L.token, id: c.id, ok: true });
+      expect(await done).toBe(true);
+    } finally {
+      await L.close();
+    }
   });
 });
 
@@ -224,7 +325,8 @@ describe("flags", () => {
       /\.open-artifacts\/redline-capture\/targets\.json$/,
     );
     expect(r.opts.promptTimeoutMs).toBe(300_000);
-    expect(r.opts.chrome).toEqual({});
+    expect(r.opts.chromePath).toBeUndefined();
+    expect(r.opts.rehearsalChromium).toBeUndefined();
   });
   it("refuses unknown flags and a short SHA", () => {
     expect(parseOpts(["--nope"]).ok).toBe(false);
@@ -248,7 +350,7 @@ describe("prerequisites", () => {
   const opts = (o: Partial<OneShotOpts>): OneShotOpts => {
     const r = parseOpts([]);
     if (!r.ok) throw new Error(r.why);
-    return { ...r.opts, chrome: { path: process.execPath }, ...o };
+    return { ...r.opts, chromePath: process.execPath, ...o };
   };
   const secret = (p: string, mode = 0o600) =>
     writeFileSync(p, "x".repeat(40), { mode });
@@ -283,7 +385,7 @@ describe("prerequisites", () => {
     const p = prereqs(
       opts({
         targetsFile: "/nonexistent/targets.json",
-        chrome: { path: "/no/chrome" },
+        chromePath: "/no/chrome",
       }),
       targets.secretFileName,
       "linux",
@@ -331,12 +433,14 @@ describe("prerequisites", () => {
         targetsFile: tf,
         idp: "http://127.0.0.1:1",
         loopback: true,
-        chrome: { path: process.execPath, headless: true },
+        rehearsalChromium: process.execPath,
       }),
       targets.secretFileName,
       "darwin",
     ).gaps.join();
-    expect(g).toMatch(/--idp, --loopback, --headless: rehearsal only/);
+    expect(g).toMatch(
+      /--idp, --loopback, --rehearsal-chromium: rehearsal only/,
+    );
   });
 });
 

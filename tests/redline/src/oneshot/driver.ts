@@ -17,17 +17,22 @@ import type { FlowName } from "../signin.ts";
 import type { Target, Targets } from "../targets.ts";
 import {
   type Armed,
-  armCallback,
+  armPrompt,
   CALLBACK_PATH,
   CHROME_MAC,
   type Chrome,
-  type ChromeOpts,
+  EXTENSIONS_PAGE,
+  GOOGLE_CLEAR,
   GoogleBlocked,
   killAllChromesSync,
+  Listener,
   launchChrome,
-} from "./chrome.ts";
+  rehearsalArgs,
+  writeExtension,
+} from "./browser.ts";
 import {
   BindingRefused,
+  bindingGaps,
   DEFAULT_EXPECT_SHA,
   DEFAULT_SUITE,
   loadSuite,
@@ -40,10 +45,12 @@ import {
 //   pnpm -C tests/redline capture:dry-run    (Platform's dry run)
 // In order: prerequisites (each refusal names its fix), the admin
 // credentials (printed, or made with --make-creds), the preflight with the
-// approved broker override built in, the 5 Google sign-ins in a fresh
-// Chrome per prompt (the callback is intercepted, never copied), then the
-// live suite with --gate in the frozen suite checkout. The capture logic
-// itself is the frozen checkout's runCaptures, given a Chrome CaptureIO.
+// approved broker override built in, plain Chrome on a temporary profile
+// with the capture extension the person loads once (it blocks and reports
+// the callback, never copied, and clears Google's cookies between prompts),
+// the 5 Google sign-ins, then the live suite with --gate in the frozen
+// suite checkout. The capture logic itself is the frozen checkout's
+// runCaptures, given this CaptureIO.
 
 export const KIT_DIR = join(homedir(), ".open-artifacts", "redline-capture");
 export const ACCOUNT_ID_FILE = join(KIT_DIR, "cloudflare-account-id");
@@ -89,7 +96,16 @@ export interface OneShotOpts {
   dryRun: boolean;
   makeCreds: boolean;
   promptTimeoutMs: number;
-  chrome: ChromeOpts;
+  /** Google Chrome's binary (default the installed app). */
+  chromePath?: string;
+  /**
+   * Rehearsal only (local targets): Chrome for Testing at this path, which
+   * loads the extension from the command line (the stand-in for Load
+   * unpacked), headless, with a debugging port for the test's harness.
+   */
+  rehearsalChromium?: string;
+  /** Rehearsal only: start without the extension (it never checks in). */
+  noExtension?: boolean;
   /** Rehearsal only (local targets): the fake IdP's origin. */
   idp?: string;
   /** Rehearsal only (local targets): https *.localhost served over http. */
@@ -103,6 +119,7 @@ export interface Human {
   prompt: CapturePrompt;
   url: URL;
   armed: Armed;
+  listener: Listener;
 }
 
 export interface OneShotDeps {
@@ -116,6 +133,8 @@ export interface OneShotDeps {
   human?(h: Human): Promise<void>;
   /** Each Chrome as it starts (tests). */
   onChrome?(c: Chrome): void;
+  /** The listener and the extension folder, once ready (tests). */
+  onListener?(l: Listener, extensionDir: string): void;
   /** The suite child's pid (signal forwarding). */
   onSuite?(pid: number): void;
   platform?: NodeJS.Platform;
@@ -150,7 +169,8 @@ export function parseOpts(
         chrome: { type: "string" },
         idp: { type: "string" },
         loopback: { type: "boolean" },
-        headless: { type: "boolean" },
+        "rehearsal-chromium": { type: "string" },
+        "rehearsal-no-extension": { type: "boolean" },
         flows: { type: "string" },
         gate: { type: "boolean" },
       },
@@ -180,10 +200,11 @@ export function parseOpts(
       dryRun: v["dry-run"] === true,
       makeCreds: v["make-creds"] === true,
       promptTimeoutMs: timeout,
-      chrome: {
-        ...(str("chrome") ? { path: str("chrome") as string } : {}),
-        ...(v.headless === true ? { headless: true } : {}),
-      },
+      ...(str("chrome") ? { chromePath: str("chrome") as string } : {}),
+      ...(str("rehearsal-chromium")
+        ? { rehearsalChromium: str("rehearsal-chromium") as string }
+        : {}),
+      ...(v["rehearsal-no-extension"] === true ? { noExtension: true } : {}),
       ...(str("idp") ? { idp: str("idp") as string } : {}),
       ...(v.loopback === true ? { loopback: true } : {}),
       ...(flows?.length ? { flows } : {}),
@@ -196,7 +217,8 @@ const rehearsalFlags = (o: OneShotOpts) =>
   [
     o.idp ? "--idp" : "",
     o.loopback ? "--loopback" : "",
-    o.chrome.headless ? "--headless" : "",
+    o.rehearsalChromium ? "--rehearsal-chromium" : "",
+    o.noExtension ? "--rehearsal-no-extension" : "",
     o.flows ? "--flows" : "",
     o.promptTimeoutMs < 60_000 ? "--prompt-timeout-ms" : "",
   ].filter(Boolean);
@@ -242,7 +264,7 @@ export function prereqs(
   const gaps: string[] = [];
   const out: Prereqs = { gaps, raw: null, rawText: "", needCreds: [] };
   if (platform !== "darwin") gaps.push("this runs on macOS only");
-  const chrome = o.chrome.path ?? CHROME_MAC;
+  const chrome = o.rehearsalChromium ?? o.chromePath ?? CHROME_MAC;
   if (!existsSync(chrome))
     gaps.push(
       `Google Chrome is not at ${chrome}: install it from google.com/chrome (or pass --chrome <path>)`,
@@ -321,8 +343,11 @@ async function accountId(d: OneShotDeps): Promise<string | null> {
     ),
   );
   if (a) {
+    // writeFileSync and mkdirSync set modes only on create: set them anyway.
     mkdirSync(dirname(ACCOUNT_ID_FILE), { recursive: true, mode: 0o700 });
+    chmodSync(dirname(ACCOUNT_ID_FILE), 0o700);
     writeFileSync(ACCOUNT_ID_FILE, `${a}\n`, { mode: 0o600 });
+    chmodSync(ACCOUNT_ID_FILE, 0o600);
   }
   return a;
 }
@@ -441,14 +466,9 @@ interface Ctx {
   idp: string;
 }
 
+/** The install's callback origin as the browser sees it. */
 const browserOriginOf = (c: Ctx, t: Target) =>
   c.o.loopback ? httpsOf(t.app) : t.app;
-const armOpts = (c: Ctx) => ({
-  idp: c.idp,
-  ...(c.o.loopback
-    ? { proxy: { pattern: "https://*.localhost*", map: loopbackHttp } }
-    : {}),
-});
 
 /** The install's own state behind a Google URL (the broker's state names it). */
 function installStateOf(c: Ctx, url: URL): string {
@@ -462,92 +482,209 @@ export function promptLine(p: CapturePrompt, url: URL): string {
   const shows = hd
     ? `Google offers only ${hd} accounts`
     : "Google shows any account: pick this one, the refusal later is the point";
-  return `[${p.n}/${p.total}] ${p.install}: sign in as ${p.user} in the Chrome window that just opened (${shows}). Google may ask you to confirm it's you; that's normal. The window closes by itself.`;
+  return `[${p.n}/${p.total}] ${p.install}: sign in as ${p.user} in the new Chrome tab (${shows}). Google may ask you to confirm it's you; that's normal. The tab closes by itself.`;
 }
 
+const span = (ms: number) =>
+  ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`;
+
 export const timeoutLines = (p: CapturePrompt, ms: number) => [
-  `[${p.n}/${p.total}] No sign-in came back within ${Math.round(ms / 60_000) || `${Math.round(ms / 1000)} s`}${ms >= 60_000 ? " min" : ""}.`,
+  `[${p.n}/${p.total}] No sign-in came back within ${span(ms)}.`,
   `  Redo prompt ${p.n} of ${p.total}: sign in as ${p.user} at ${p.install}. Press r to retry it (Ctrl-C stops).`,
+];
+
+export const chromeGoneLines = (p: CapturePrompt) => [
+  `[${p.n}/${p.total}] Chrome closed during this prompt.`,
+  `  Redo prompt ${p.n} of ${p.total}: sign in as ${p.user} at ${p.install}. Press r to reopen Chrome and retry it (Ctrl-C stops).`,
 ];
 
 export const blockedLines = (p: CapturePrompt, why: string) => [
   `Stopped at prompt ${p.n} of ${p.total} (${p.install}, ${p.user}): ${why}.`,
-  "  This is Google refusing to sign in from the browser this script started (its automation or unsupported-browser block), not a red-line test failure. Nothing was retried and nothing was redeemed.",
-  "  Tell Platform; the run can't continue on this Mac until Google allows the window.",
+  "  This is Google refusing to sign in from this browser (its automation, unsupported-browser or OAuth error page), not a red-line test failure. Nothing was retried and nothing was redeemed.",
+  "  Tell Platform; the run can't continue on this Mac until Google allows it.",
 ];
 
-/** The Chrome CaptureIO: a fresh Chrome per prompt, the callback intercepted. */
-export function chromeIO(c: Ctx): CaptureIO & { shut(): Promise<void> } {
-  let cur: { chrome: Chrome; armed: Armed } | null = null;
+export const loadLines = (ext: string) => [
+  "Chrome is open on its Extensions page, with a temporary profile for this run. Load the capture extension once:",
+  '  1. Turn on "Developer mode" (top right).',
+  `  2. Click "Load unpacked" and choose this folder: ${ext}`,
+  "Waiting for the extension to check in (Ctrl-C stops).",
+];
+
+const race = <T>(p: Promise<T>, ms: number, what: string): Promise<T> => {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) => {
+      t = setTimeout(() => rej(new Error(what)), ms);
+    }),
+  ]).finally(() => clearTimeout(t));
+};
+
+/** Chrome closed before the extension checked in. */
+class ChromeClosed extends Error {
+  override name = "ChromeClosed";
+}
+
+/**
+ * One run's browser: the temp dir (profile, extension copy), the listener,
+ * and plain Chrome on that profile. Chrome is (re)started here only.
+ */
+class Session {
+  readonly L = new Listener();
+  chrome: Chrome | null = null;
+  readonly profile: string;
+  readonly ext: string;
+  private readonly c: Ctx;
+
+  constructor(c: Ctx, run: string) {
+    this.c = c;
+    this.profile = join(run, "profile");
+    this.ext = join(run, "extension");
+  }
+
+  async start(): Promise<void> {
+    await this.L.start();
+    const t = this.c.T;
+    writeExtension(this.ext, {
+      installs: [browserOriginOf(this.c, t.a), browserOriginOf(this.c, t.b)],
+      listener: this.L.origin,
+      token: this.L.token,
+      idp: this.c.idp,
+      clearOrigins: this.c.o.idp ? [this.c.idp] : GOOGLE_CLEAR,
+      ...(this.c.o.loopback ? { loopback: true } : {}),
+    });
+    this.c.d.onListener?.(this.L, this.ext);
+    await this.launch(true);
+  }
+
+  /** Starts Chrome and waits until the extension checks in with this run's token. */
+  private async launch(first: boolean): Promise<void> {
+    const o = this.c.o;
+    mkdirSync(this.profile, { recursive: true, mode: 0o700 });
+    const hello = this.L.nextHello();
+    this.chrome = launchChrome({
+      ...(o.rehearsalChromium
+        ? {
+            path: o.rehearsalChromium,
+            extra: rehearsalArgs(this.ext, !o.noExtension),
+          }
+        : o.chromePath
+          ? { path: o.chromePath }
+          : {}),
+      profile: this.profile,
+      url: EXTENSIONS_PAGE,
+    });
+    this.c.d.onChrome?.(this.chrome);
+    if (first) for (const l of loadLines(this.ext)) this.c.d.out(l);
+    else
+      this.c.d.out(
+        "Chrome reopened on the same profile; waiting for the extension to check in (Ctrl-C stops).",
+      );
+    // No fallback of any kind: the extension checks in, or Chrome closes.
+    const r = await Promise.race([
+      hello.then(() => "in" as const),
+      this.chrome.exited.then(() => "closed" as const),
+    ]);
+    if (r === "closed")
+      throw new ChromeClosed(
+        "Chrome closed before the capture extension checked in. Run the command again.",
+      );
+    this.c.d.out("The capture extension checked in.");
+  }
+
+  /** Chrome is running (restarted on the same profile if it closed). */
+  async ensure(): Promise<void> {
+    if (!this.chrome?.alive()) await this.launch(false);
+  }
+
+  async close(): Promise<void> {
+    await this.chrome?.close();
+    await this.L.close();
+  }
+}
+
+/** The CaptureIO: one Chrome for the run, Google's cookies cleared before each prompt. */
+function captureIO(c: Ctx, s: Session): CaptureIO {
+  let cur: { armed: Armed; url: URL; p: CapturePrompt } | null = null;
   let last: { url: URL; p: CapturePrompt } | null = null;
   const target = (p: CapturePrompt) =>
     p.install === c.T.a.name ? c.T.a : c.T.b;
-  const shut = async () => {
-    const x = cur;
-    cur = null;
-    if (!x) return;
-    await x.chrome.close();
-  };
   const blocked = (p: CapturePrompt, why: string) =>
     new GoogleBlocked(blockedLines(p, why).join("\n"));
   const open = async (url: URL, p: CapturePrompt) => {
-    await shut();
+    await s.ensure();
+    cur?.armed.off();
+    cur = null;
     last = { url, p };
-    const t = target(p);
-    const chrome = await launchChrome(c.o.chrome);
-    c.d.onChrome?.(chrome);
-    try {
-      const armed = await armCallback(
-        chrome,
-        { origin: browserOriginOf(c, t), state: installStateOf(c, url) },
-        armOpts(c),
+    if (!(await s.L.command({ cmd: "clear" })))
+      throw new Error(
+        "the capture extension did not clear Google's cookies: remove and load it again, then run the command again",
       );
-      await armed.checkWebdriver();
-      await armed.probe();
-      cur = { chrome, armed };
-      c.d.out(promptLine(p, url));
-      await armed.open(url.toString());
-      await c.d.human?.({ chrome, prompt: p, url, armed });
-    } catch (e) {
-      await shut();
-      await chrome.close();
-      throw e;
-    }
+    const armed = armPrompt(
+      s.L,
+      {
+        origin: browserOriginOf(c, target(p)),
+        state: installStateOf(c, url),
+      },
+      { idp: c.idp },
+    );
+    cur = { armed, url, p };
+    await s.L.command({ cmd: "open", url: armed.probeUrl });
+    await race(
+      armed.probed,
+      15_000,
+      "the capture extension did not report its probe callback: remove and load it again, then run the command again",
+    );
+    c.d.out(promptLine(p, url));
+    await s.L.command({ cmd: "open", url: url.href });
+    await c.d.human?.({
+      chrome: s.chrome as Chrome,
+      prompt: p,
+      url,
+      armed,
+      listener: s.L,
+    });
   };
   return {
-    shut,
     async offer(url, p) {
       await open(url, p);
     },
     async ask(p) {
       if (!cur && last) await open(last.url, last.p);
       const x = cur;
-      if (!x) throw new Error("ask before offer");
+      const chrome = s.chrome;
+      if (!x || !chrome) throw new Error("ask before offer");
       let timer: ReturnType<typeof setTimeout> | undefined;
       const r = await Promise.race([
         x.armed.captured.then((u) => ({ k: "captured" as const, u })),
         x.armed.blocked.then((why) => ({ k: "blocked" as const, why })),
+        chrome.exited.then(() => ({ k: "closed" as const })),
         new Promise<{ k: "timeout" }>((res) => {
           timer = setTimeout(() => res({ k: "timeout" }), c.o.promptTimeoutMs);
         }),
       ]).finally(() => clearTimeout(timer));
-      // The browser goes at once: the code is held here only.
-      await shut();
+      x.armed.off();
+      cur = null;
       if (r.k === "captured")
         return (c.o.loopback ? loopbackHttp(new URL(r.u)) : new URL(r.u)).href;
       if (r.k === "blocked") throw blocked(p, r.why);
-      for (const l of timeoutLines(p, c.o.promptTimeoutMs)) c.d.out(l);
+      for (const l of r.k === "closed"
+        ? chromeGoneLines(p)
+        : timeoutLines(p, c.o.promptTimeoutMs))
+        c.d.out(l);
       for (;;) {
         const k = await c.d.key();
         if (k === "r") break;
         if (k === "")
           throw new Error(
-            `no terminal to read the retry key; run the command again in a terminal (prompt ${p.n} timed out)`,
+            `no terminal to read the retry key; run the command again in a terminal (prompt ${p.n})`,
           );
         c.d.out(`  Press r to retry prompt ${p.n} (Ctrl-C stops).`);
       }
       // A restart: the capture starts this prompt's sign-in again (a fresh
-      // state), through its own "the IdP sent no code" path.
+      // state), through its own "the IdP sent no code" path; offer() then
+      // reopens Chrome if it closed.
       const u = new URL(CALLBACK_PATH, target(p).app);
       u.searchParams.set(
         "state",
@@ -555,9 +692,6 @@ export function chromeIO(c: Ctx): CaptureIO & { shut(): Promise<void> } {
       );
       u.searchParams.set("error", TIMEOUT_MARK);
       return u.href;
-    },
-    async taken() {
-      await shut();
     },
     say(line) {
       if (line.includes(TIMEOUT_MARK)) return;
@@ -573,8 +707,13 @@ export interface DryResult {
   problems: string[];
 }
 
-/** (dry run) Each prompt up to Google's sign-in page: URL, hd, interception, no block. */
-export async function dryRun(c: Ctx): Promise<DryResult[]> {
+/**
+ * (dry run) Each prompt up to Google's sign-in page, in the run's Chrome:
+ * the extension's probe callback (interception armed for this host and
+ * state), then the Google page, whose URL the extension reports: hd present
+ * or absent as it must be, no block page. Redeems nothing.
+ */
+async function dryRun(c: Ctx, s: Session): Promise<DryResult[]> {
   const { CAPTURE_FLOWS, startGoogle, googleUrlOf } = c.suite.signin;
   const flows = c.o.flows ?? (Object.keys(CAPTURE_FLOWS) as FlowName[]);
   const out: DryResult[] = [];
@@ -584,93 +723,89 @@ export async function dryRun(c: Ctx): Promise<DryResult[]> {
     const foreign = "foreign" in spec && spec.foreign;
     const r: DryResult = { flow, install: t.name, hd: null, problems: [] };
     out.push(r);
-    const s = await startGoogle(t).catch((e: unknown) => {
-      r.problems.push(`sign-in start failed (${safeMessage(e, 120)})`);
-      return null;
-    });
-    if (!s) {
-      if (!r.problems.length) r.problems.push("Google sign-in is off");
-      continue;
-    }
+    const line = () =>
+      c.d.out(
+        `dry run [${i + 1}/${flows.length}] ${flow} at ${t.name} as ${spec.user}: ` +
+          (r.problems.length
+            ? `PROBLEM: ${r.problems.join("; ")}`
+            : `ok (hd ${r.hd ?? "absent, as it must be"}, from the URL the extension reported; interception armed for ${t.name}'s callback and this start's state; Google's sign-in page loaded)`),
+      );
     let url: URL;
+    let state: string;
     try {
-      url = await googleUrlOf(s, {
+      const st = await startGoogle(t);
+      if (!st) {
+        r.problems.push("Google sign-in is off");
+        line();
+        continue;
+      }
+      state = st.state;
+      url = await googleUrlOf(st, {
         dropHd: foreign,
         ...(c.o.idp ? { idp: c.o.idp } : {}),
         ...(c.o.loopback ? { map: loopbackHttp } : {}),
       });
     } catch (e) {
-      r.problems.push(`the broker didn't lead to Google (${safeMessage(e)})`);
-      c.d.out(
-        `dry run [${i + 1}/${flows.length}] ${flow}: PROBLEM: ${r.problems.join("; ")}`,
-      );
+      r.problems.push(`the sign-in start didn't lead to Google (${safeMessage(e)})`);
+      line();
       continue;
     }
-    r.hd = url.searchParams.get("hd");
-    const tenant = spec.user.split("@")[1] ?? "";
-    if (url.origin !== c.idp) r.problems.push(`the URL is not on ${c.idp}`);
-    if (foreign && r.hd !== null)
-      r.problems.push("hd is present (it must be absent for this prompt)");
-    if (!foreign && r.hd !== tenant)
-      r.problems.push(`hd is ${r.hd ?? "absent"}, not ${tenant}`);
-    const viaBroker = s.location.pathname === "/google/authorize";
-    const bs = c.suite.capture.decodeBrokerState(
-      url.searchParams.get("state") ?? "",
+    const armed = armPrompt(
+      s.L,
+      { origin: browserOriginOf(c, t), state: installStateOf(c, url) },
+      { idp: c.idp },
     );
-    if (viaBroker && (bs?.i !== t.installId || bs?.s !== s.state))
-      r.problems.push("the broker state doesn't name this install and start");
-    const state = installStateOf(c, url);
-    if (state !== s.state)
-      r.problems.push("the armed state is not this start's");
-    let chrome: Chrome | null = null;
     try {
-      chrome = await launchChrome(c.o.chrome);
-      c.d.onChrome?.(chrome);
-      const armed = await armCallback(
-        chrome,
-        { origin: browserOriginOf(c, t), state },
-        armOpts(c),
+      await s.ensure();
+      if (armed.state !== state)
+        r.problems.push("the broker state doesn't name this start");
+      if (!(await s.L.command({ cmd: "clear" })))
+        r.problems.push("the extension did not clear Google's cookies");
+      await s.L.command({ cmd: "open", url: armed.probeUrl });
+      await race(armed.probed, 15_000, "the extension did not report its probe");
+      await s.L.command({ cmd: "open", url: url.href });
+      const got = await race(
+        Promise.race([
+          armed.landed.then((u) => ({ k: "landed" as const, u })),
+          armed.blocked.then((why) => ({ k: "blocked" as const, why })),
+        ]),
+        60_000,
+        "Google's sign-in page did not load within 60 s",
       );
-      await armed.checkWebdriver();
-      await armed.probe();
-      if (armed.origin !== browserOriginOf(c, t) || armed.state !== s.state)
-        r.problems.push("interception is not armed for this host and state");
-      await armed.open(url.toString());
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const got = await Promise.race([
-        armed.landed.then(() => ({ k: "landed" as const })),
-        armed.blocked.then((why) => ({ k: "blocked" as const, why })),
-        new Promise<{ k: "timeout" }>((res) => {
-          timer = setTimeout(() => res({ k: "timeout" }), 60_000);
-        }),
-      ]).finally(() => clearTimeout(timer));
       if (got.k === "blocked")
-        r.problems.push(
-          `${got.why}: Google refuses this browser (not a test failure)`,
+        r.problems.push(`${got.why}: Google refuses this browser (not a test failure)`);
+      else {
+        const seen = new URL(got.u);
+        r.hd = seen.searchParams.get("hd");
+        const tenant = spec.user.split("@")[1] ?? "";
+        if (seen.origin !== c.idp) r.problems.push(`the page is not on ${c.idp}`);
+        if (foreign && r.hd !== null)
+          r.problems.push("hd is present (it must be absent for this prompt)");
+        if (!foreign && r.hd !== tenant)
+          r.problems.push(`hd is ${r.hd ?? "absent"}, not ${tenant}`);
+        const bs = c.suite.capture.decodeBrokerState(
+          seen.searchParams.get("state") ?? "",
         );
-      if (got.k === "timeout")
-        r.problems.push("Google's sign-in page did not load within 60 s");
+        if (bs && (bs.i !== t.installId || bs.s !== state))
+          r.problems.push("the broker state doesn't name this install and start");
+      }
       if (armed.counts.captured !== 0)
         r.problems.push("something was captured without a sign-in");
     } catch (e) {
-      r.problems.push(`browser: ${safeMessage(e, 160)}`);
+      r.problems.push(safeMessage(e, 160));
     } finally {
-      await chrome?.close();
+      armed.off();
     }
-    c.d.out(
-      `dry run [${i + 1}/${flows.length}] ${flow} at ${t.name} as ${spec.user}: ` +
-        (r.problems.length
-          ? `PROBLEM: ${r.problems.join("; ")}`
-          : `ok (hd ${r.hd ?? "absent, as it must be"}; interception armed for ${t.name}'s callback and this start's state; Google's sign-in page loaded; navigator.webdriver false)`),
-    );
+    line();
   }
+  await s.L.command({ cmd: "clear" }).catch(() => false);
   return out;
 }
 
 /** Directories this run made (removed on every exit path). */
 const scratch = new Set<string>();
 
-/** Synchronous cleanup for signal and exit paths. */
+/** Synchronous cleanup for signal and exit paths: quit our Chrome, remove the temp dir. */
 export function cleanupSync(): void {
   killAllChromesSync();
   for (const d of scratch) {
@@ -705,9 +840,7 @@ export async function oneShot(argv: string[], d: OneShotDeps): Promise<number> {
   } catch (e) {
     if (e instanceof BindingRefused) p.gaps.push(...e.gaps);
     else
-      p.gaps.push(
-        `the suite checkout's modules don't load (${safeMessage(e)})`,
-      );
+      p.gaps.push(`the suite checkout's modules don't load (${safeMessage(e)})`);
   }
   if (p.gaps.length || !suite || !p.raw) return refuse(p.gaps);
   d.out(
@@ -746,38 +879,46 @@ export async function oneShot(argv: string[], d: OneShotDeps): Promise<number> {
   if (!T || suite.preflight.gaps(checks).length) return EXIT.refused;
   const ctx: Ctx = { o, d, suite, T, idp };
 
-  if (o.dryRun) {
-    const r = await dryRun(ctx);
-    const bad = r.filter((x) => x.problems.length);
-    d.out(
-      bad.length
-        ? `Dry run: ${bad.length} of ${r.length} prompts have problems (above).`
-        : `Dry run green: all ${r.length} prompts reach Google's sign-in page with the right hint and an armed interception.`,
-    );
-    return bad.length ? EXIT.failed : EXIT.ok;
-  }
-
-  // (d) the capture, then the suite with --gate in the frozen checkout.
-  const dir = mkdtempSync(join(tmpdir(), "oa-redline-signin-"));
-  chmodSync(dir, 0o700);
-  scratch.add(dir);
-  const io = chromeIO(ctx);
+  // (d) the run's temp dir: the Chrome profile, the extension copy, the verdicts.
+  const run = mkdtempSync(join(tmpdir(), "oa-redline-capture-"));
+  chmodSync(run, 0o700);
+  scratch.add(run);
+  d.out(
+    `Temp dir for this run: ${run} (the Chrome profile, the extension copy and the verdicts; removed when the command ends).`,
+  );
+  const verdictsDir = join(run, "verdicts");
+  mkdirSync(verdictsDir, { mode: 0o700 });
+  const s = new Session(ctx, run);
   try {
+    await s.start();
+    if (o.dryRun) {
+      const r = await dryRun(ctx, s);
+      const bad = r.filter((x) => x.problems.length);
+      d.out(
+        bad.length
+          ? `Dry run: ${bad.length} of ${r.length} prompts have problems (above).`
+          : `Dry run green: all ${r.length} prompts reach Google's sign-in page with the right hint and an armed interception.`,
+      );
+      return bad.length ? EXIT.failed : EXIT.ok;
+    }
     d.out(
-      `${o.flows?.length ?? 5} Google sign-ins follow, each in a fresh Chrome window. Type only the test accounts' passwords.`,
+      `${o.flows?.length ?? 5} Google sign-ins follow, each in a new tab with Google's cookies cleared first. Type only the test accounts' passwords.`,
     );
-    const verdicts = await suite.capture.runCaptures(T, dir, io, {
+    const verdicts = await suite.capture.runCaptures(T, verdictsDir, captureIO(ctx, s), {
       ...(o.idp ? { idp: o.idp } : {}),
       ...(o.loopback ? { map: loopbackHttp } : {}),
       ...(o.flows ? { flows: o.flows } : {}),
     });
-    await io.shut();
+    await s.close();
+    // The frozen checkout may not change while the capture ran.
+    const late = bindingGaps(suite.dir, o.expectSha);
+    if (late.length) return refuse(late);
     d.out("Captures done. The live suite runs now (with --gate).");
     return await runSuiteIn(
       suite.dir,
       {
         ...env,
-        REDLINE_SIGNIN_CAPTURES: dir,
+        REDLINE_SIGNIN_CAPTURES: verdictsDir,
         REDLINE_CAPTURE_RUN: "1",
         REDLINE_CAPTURE_NONCE: verdicts.runNonce,
       },
@@ -791,8 +932,8 @@ export async function oneShot(argv: string[], d: OneShotDeps): Promise<number> {
     d.out(`capture: ${safeMessage(e, 300)}`);
     return EXIT.stopped;
   } finally {
-    await io.shut();
-    rmSync(dir, { recursive: true, force: true });
-    scratch.delete(dir);
+    await s.close();
+    rmSync(run, { recursive: true, force: true });
+    scratch.delete(run);
   }
 }

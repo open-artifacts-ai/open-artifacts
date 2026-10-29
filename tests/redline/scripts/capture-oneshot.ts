@@ -38,6 +38,8 @@ function key(): Promise<string> {
 async function question(q: string): Promise<string | null> {
   if (!process.stdin.isTTY) return null;
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // readline turns Ctrl-C into its own event: send it down the same scrub path.
+  rl.on("SIGINT", () => process.kill(process.pid, "SIGINT"));
   try {
     return await rl.question(q);
   } finally {
