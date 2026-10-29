@@ -331,9 +331,24 @@ describe("billing-backfill", () => {
     expect(w.tiers()).toEqual(before);
   });
 
-  it("prod on a laptop runs under the keychain token", async () => {
+  it("prod on a laptop is refused: prod runs in CI only", async () => {
     const w = backfillWorld({ env: "prod" });
-    expect(await main(["billing-backfill", "--env", "prod"], w.deps)).toBe(0);
+    const before = w.tiers();
+    expect(await main(["billing-backfill", "--env", "prod"], w.deps)).toBe(1);
+    expect(
+      w.parsed().find((l) => l.step === "billing-backfill")?.message,
+    ).toMatch(/runs on prod in CI only/);
+    expect(w.tiers()).toEqual(before);
+    expect(w.perInstall()).toEqual([]);
+    expect(
+      w.fake.raw.some((x) => String(x.body).includes("INSERT INTO tiers")),
+    ).toBe(false);
+  });
+
+  it("staging still runs from a laptop", async () => {
+    const w = backfillWorld();
+    expect(w.deps.env.CI).toBeUndefined();
+    expect(await run(w)).toBe(0);
     expect(w.tiers()).toEqual(WANT);
   });
 

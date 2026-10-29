@@ -63,6 +63,8 @@ export const TRIAL_MS = 14 * 86_400_000;
  * caller does not pass (a caller value wins; updateVars changes or clears
  * them). An empty value is no default. The free-plan caps are off until
  * their numbers are picked.
+ * Change a default only when no install is in `creating`: the defaults are
+ * part of create's inputs hash, so a resume would refuse.
  */
 export const HOSTED_DEFAULT_VARS: Readonly<
   Record<Env, Readonly<Record<string, string>>>

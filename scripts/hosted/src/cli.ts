@@ -865,8 +865,11 @@ async function run(
     case "status":
       return { ok: true, data: await prov.status(id) };
     case "billing-backfill": {
-      // Prod only under the prod gates: the keychain token on a laptop
-      // (readSecret refuses prod in CI). One audit row per install.
+      // Prod runs in CI only (everything prod goes through CI), and
+      // readSecret refuses prod in CI until #848's prodCiAllowed is stacked:
+      // prod is unrunnable on this base, by design. One audit row per install.
+      if (env === "prod" && !inCi(d.env))
+        throw new Refused("billing-backfill runs on prod in CI only");
       const r = await billingBackfill({
         cf,
         env,
