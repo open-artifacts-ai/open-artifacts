@@ -212,13 +212,13 @@ describe("the menu and the empty state", () => {
   it("View published versions and Revoke… (the existing confirm)", async () => {
     mount("/settings/agents");
     const menu = await openMenu(await rowOf("Example MCP client 1.2.0"));
-    // The server filters by agent name only (#589): the item says so.
+    // #589: this connection only (agentVia), not every "Example MCP client".
     const view = within(menu).getByRole("menuitem", {
       name: "View versions from Example MCP client",
     });
     expect(view).toHaveAttribute(
       "href",
-      `/?agent=${encodeURIComponent("Example MCP client")}`,
+      `/?agentVia=${encodeURIComponent(`g:${BASE.grantId}`)}`,
     );
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Revoke…" }));
     expect(

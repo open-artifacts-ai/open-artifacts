@@ -23,6 +23,7 @@ export function mountSearch(app: AppType): void {
         q.data.cursor,
         q.data.limit,
         q.data.spaceId,
+        q.data.agentVia,
       ),
     );
   });

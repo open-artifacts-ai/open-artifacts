@@ -184,13 +184,15 @@ export const useMembers = (status?: string, enabled = true) =>
     queryFn: ({ signal }) =>
       api.get(withQuery(R.members, { status }), z.array(MemberSchema), signal),
   });
-export const useTokens = () =>
+export const useTokens = (enabled = true) =>
   useQuery({
+    enabled,
     queryKey: qk.tokens,
     queryFn: ({ signal }) => api.get(R.tokens, z.array(TokenSchema), signal),
   });
-export const useOAuthClients = () =>
+export const useOAuthClients = (enabled = true) =>
   useQuery({
+    enabled,
     queryKey: qk.oauthClients,
     queryFn: ({ signal }) =>
       api.get(R.oauthClients, z.array(OAuthClientSchema), signal),

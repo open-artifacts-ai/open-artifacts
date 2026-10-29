@@ -20,6 +20,7 @@ import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import {
+  agentViaSql,
   decorates,
   lastPublisherSql,
   redact,
@@ -510,8 +511,9 @@ function pickSnippet(body: string, desc: string, title: string): string {
 
 /**
  * The search SELECT (exported for the EXPLAIN test): FTS MATCH `m` joined to
- * live, visible artifacts (in `spaceId` when given) with the caller's level
- * per hit (levelSql), bm25 order, `limit + 1` rows from `offset`.
+ * live, visible artifacts (in `spaceId` when given; from the caller's own
+ * connection with `agentVia`, agentViaSql) with the caller's level per hit
+ * (levelSql), bm25 order, `limit + 1` rows from `offset`.
  */
 export function searchQuery(
   env: Env,
@@ -520,6 +522,7 @@ export function searchQuery(
   offset: number,
   limit: number,
   spaceId?: string,
+  agentVia?: string,
 ) {
   const email = normalizeEmail(caller.user.email);
   return getDb(env)
@@ -551,6 +554,7 @@ export function searchQuery(
       and(
         sql`${artifactSearch} match ${m}`,
         listFilterSql(caller, "all", false, spaceId),
+        agentVia === undefined ? undefined : agentViaSql(caller, agentVia),
       ),
     )
     .orderBy(sql`bm25(${artifactSearch})`, artifacts.id)
@@ -561,7 +565,8 @@ export function searchQuery(
 /**
  * Signed-in only (401). FTS MATCH of the sanitized query, joined to artifacts
  * through listFilterSql(caller, "all") (live, visible rows only; one space
- * with `spaceId`), ordered by bm25 then id, with an offset cursor capped at
+ * with `spaceId`; the caller's own connection with `agentVia`), ordered by
+ * bm25 then id, with an offset cursor capped at
  * MAX_OFFSET.
  */
 export async function search(
@@ -571,6 +576,7 @@ export async function search(
   cursor?: string,
   limit = 25,
   spaceId?: string,
+  agentVia?: string,
 ): Promise<Page<SearchHit>> {
   if (caller.kind !== "user")
     throw new ApiError("unauthorized", "Sign in required");
@@ -578,7 +584,15 @@ export async function search(
   if (!m) throw bad("q has no searchable words", "q");
   const offset = cursor === undefined ? 0 : decodeOffset(cursor);
   if (spaceId !== undefined) await checkListSpace(env, caller, spaceId);
-  const rows = await searchQuery(env, caller, m, offset, limit, spaceId);
+  const rows = await searchQuery(
+    env,
+    caller,
+    m,
+    offset,
+    limit,
+    spaceId,
+    agentVia,
+  );
   const page = rows.slice(0, limit);
   const next = offset + limit;
   const dec = decorates(env, caller);
