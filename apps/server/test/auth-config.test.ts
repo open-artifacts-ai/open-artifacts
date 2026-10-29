@@ -53,11 +53,19 @@ describe("authConfig", () => {
     ).toEqual(["spaces"]);
   });
 
-  test("google without domains is disabled, fail closed", () => {
+  test("google without domains is offered (invited personal accounts only), no problem", () => {
     const c = authConfig(direct({ AUTH_DOMAINS: "" }));
+    expect(c.domains).toEqual([]);
+    expect(c.google).toMatchObject({ transport: { kind: "direct" } });
+    expect(c.problems.filter((p) => p.includes("AUTH_DOMAINS"))).toEqual([]);
+  });
+
+  test("hosted without domains keeps the broker transport rules", () => {
+    const hosted = { AUTH_DOMAINS: "", HOSTED: "1" };
+    const c = authConfig(direct(hosted));
     expect(c.google).toBeNull();
     expect(c.problems).toContain(
-      "Google sign-in is on, but AUTH_DOMAINS is empty, so Google isn't offered. Set the Google Workspace domains that may sign in.",
+      "Google sign-in is on, but a hosted install needs the broker transport and AUTH_BROKER_URL isn't set, so Google isn't offered. Set AUTH_BROKER_URL to the sign-in broker.",
     );
   });
 

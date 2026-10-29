@@ -70,7 +70,9 @@ export type AuthEvent =
    * it keep open sockets until the socket TTL (refused on reconnect).
    */
   | { evt: "revoke_fanout_truncated"; total: number; cap: number }
-  | { evt: "email_drift"; outcome: "kept" };
+  | { evt: "email_drift"; outcome: "kept" }
+  /** The owner's identity-conflict flag (audit row, sign-in problem) wasn't written. */
+  | { evt: "identity_conflict_flag_failed" };
 
 /** Letters and underscores only: an enum or error code, never an address, URL or token. */
 const ENUM = /^[A-Za-z_]+$/;

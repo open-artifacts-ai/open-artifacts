@@ -60,8 +60,12 @@ export type GoogleIdentity = {
   sub: string;
   email: string;
   name: string | null;
-  /** The verified Workspace domain; always one of the caller's domains. */
-  hd: string;
+  /**
+   * The verified Workspace domain, always one of the caller's domains; null
+   * for a token with no hd claim (a personal Google account). The caller
+   * decides whether a personal account is admitted.
+   */
+  hd: string | null;
   /** When the user last authenticated at Google (auth_time, ms), if sent. */
   authTime: number | null;
 };
@@ -106,8 +110,10 @@ async function sameString(a: string, b: string): Promise<boolean> {
  * (RS256 only, Google's JWKS unless `jwks` is given), iss, aud, exp/iat
  * (60 s skew, issued at most 1 h ago) and required claims; then aud is exactly the client id; azp,
  * when present, is the client id; nonce equals this flow's nonce (constant
- * time); email_verified is true; the email normalizes (normalizeEmail); hd is one of `domains` exactly. The email
- * domain is never consulted.
+ * time); email_verified is true; the email normalizes (normalizeEmail); hd,
+ * when the claim is present, is one of `domains` exactly. A token with no hd
+ * claim (a personal account) returns hd null. The email domain is never
+ * consulted.
  */
 export async function verifyGoogleIdToken(
   opts: {
@@ -152,7 +158,10 @@ export async function verifyGoogleIdToken(
     throw new GoogleTokenError("nonce");
   if (claims.email_verified !== true)
     throw new GoogleTokenError("email_unverified");
-  if (!inDomains(opts.domains, claims.hd)) throw new GoogleTokenError("tenant");
+  // Absent hd: a personal account (hd null). Present: exactly a domain, so a
+  // non-string, empty or foreign hd is refused as before.
+  if (claims.hd !== undefined && !inDomains(opts.domains, claims.hd))
+    throw new GoogleTokenError("tenant");
   const { sub } = claims;
   const email =
     typeof claims.email === "string" ? normalizeEmail(claims.email) : null;
@@ -165,5 +174,6 @@ export async function verifyGoogleIdToken(
   const at = claims.auth_time;
   const authTime =
     typeof at === "number" && Number.isFinite(at) && at > 0 ? at * 1000 : null;
-  return { sub, email, name, hd: claims.hd as string, authTime };
+  const hd = claims.hd === undefined ? null : (claims.hd as string);
+  return { sub, email, name, hd, authTime };
 }

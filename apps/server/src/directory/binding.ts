@@ -21,6 +21,8 @@ import { K, putInitial, readInitial } from "./store.js";
 //   AUTH_DOMAINS (checked in the plan and again in SQL) and it has no Google
 //   identity yet (an address already bound to another Google id stays put).
 //   An out-of-domain row (a guest's secondary address, say) is never linked.
+// - A personal Google account (identities.tenant '', admitted by invite with
+//   no hd) is never bound, linked, created or suspended here.
 // - New rows are created only for active users whose address is in
 //   AUTH_DOMAINS (the sign-in allow-list), as members. While any restricted
 //   group exists they start restricted (fail closed) until a reconcile has
@@ -39,9 +41,12 @@ export const SUSPEND_BATCH = 25;
 const ID = "json_extract(j.value, '$.id')";
 const EMAIL = "json_extract(j.value, '$.email')";
 
-/** Already linked through the directory id: mark it bound. */
+/**
+ * Already linked through the directory id: mark it bound. Never a personal
+ * account's identity (tenant ''): personal accounts aren't the directory's.
+ */
 const MARK_BOUND = `update identities set directory_bound = 1
-  where provider = 'google' and directory_bound = 0
+  where provider = 'google' and directory_bound = 0 and tenant <> ''
     and subject in (select ${ID} from json_each(?1) j)`;
 
 /**
@@ -86,10 +91,10 @@ const LINK_CREATED = `insert or ignore into identities
   where not exists (select 1 from identities i
                     where i.provider = 'google' and i.subject = ${ID})`;
 
-/** Active install users bound to a suspended directory user. */
+/** Active install users bound to a suspended directory user (never a personal account). */
 const SUSPENDED_LINKED = `select i.user_id id from identities i
   join users u on u.id = i.user_id
-  where i.provider = 'google' and u.status = 'active'
+  where i.provider = 'google' and i.tenant <> '' and u.status = 'active'
     and i.subject in (select value from json_each(?1))
   limit ${SUSPEND_BATCH}`;
 

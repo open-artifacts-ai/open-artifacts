@@ -281,6 +281,15 @@ export function mountAuth(app: AppType): void {
         await signSession(c.env, r.user.id, now, {
           provider: "google",
           tenant: id.tenant ?? undefined,
+          // A personal account (no hd): its email domain, so the session
+          // ends once that domain joins AUTH_DOMAINS (sessionStillValid).
+          ...(id.tenant === null
+            ? {
+                personalDomain: r.user.email.slice(
+                  r.user.email.lastIndexOf("@") + 1,
+                ),
+              }
+            : {}),
           epoch: row.sessionEpoch,
           ...(authAt !== undefined ? { authAt } : {}),
         }),

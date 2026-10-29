@@ -171,7 +171,9 @@ const BEARER = /^\s*Bearer(?:\s+(.*?))?\s*$/i;
 /**
  * A signed session is still good for this user and install: its epoch is the
  * user's current one (a bump ends every session), its tenant, if any, is
- * still a verified domain, and a domain-code session ends once Google is on.
+ * still a verified domain, a personal Google account's session ends once its
+ * email domain (pd) is a verified domain (they sign in through Workspace),
+ * and a domain-code session ends once Google is on.
  */
 export function sessionStillValid(
   env: Env,
@@ -179,6 +181,8 @@ export function sessionStillValid(
   sessionEpoch: number,
 ): boolean {
   if ((s.e ?? 0) !== sessionEpoch) return false;
+  if (s.pd !== undefined && inDomains(authConfig(env).domains, s.pd))
+    return false;
   if (s.t === undefined) return true;
   const cfg = authConfig(env);
   if (!inDomains(cfg.domains, s.t)) return false;

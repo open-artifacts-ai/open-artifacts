@@ -1,4 +1,4 @@
-import { normalizeEmail } from "@oa/auth-core";
+import { inDomains, normalizeEmail } from "@oa/auth-core";
 import { type Member, newId, type Role, type UserRef } from "@oa/shared";
 import { eq } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
@@ -263,6 +263,18 @@ const CAP_SINCE = `case when ?2 = 1 and d.st not in ('', 'ok') and ${SYNCED}
 
 const USER_BY_ID = `select ${USER_COLS}, ${CAP_SINCE} from ${STATE}, users
   where id = ?1 and status = 'active' and not ${MISMATCH} limit 1`;
+const PERSONAL_GOOGLE =
+  "select 1 from identities where user_id = ? and provider = 'google' and tenant = '' limit 1";
+
+/**
+ * The only domains whose address Google vouches for without hd: a consumer
+ * account's verified email elsewhere (a work address registered as a
+ * personal account) isn't authoritative, so it never signs in this way.
+ */
+export const PERSONAL_DOMAINS: readonly string[] = [
+  "gmail.com",
+  "googlemail.com",
+];
 /** The org owner denied by customer_mismatch, for break-glass only (T18). */
 const MISMATCH_OWNER = `select ${USER_COLS}, null as capSince from ${STATE}, users
   where id = ?1 and status = 'active' and role = 'owner' and ${MISMATCH} limit 1`;
@@ -329,13 +341,26 @@ export async function getUserWithEpoch(
   id: string,
   o: { cookie?: boolean } = {},
 ): Promise<UserWithEpoch | null> {
-  return withEpoch(
-    env,
-    await stmt(env.DB, USER_BY_ID)
-      .bind(id, o.cookie ? 1 : 0)
-      .first<UserByIdRow>(),
-  );
+  const row = await stmt(env.DB, USER_BY_ID)
+    .bind(id, o.cookie ? 1 : 0)
+    .first<UserByIdRow>();
+  // A personal Google account (#864) whose address is now in AUTH_DOMAINS
+  // must come back through Workspace: refused on every credential (session,
+  // PAT, OAuth grant), the same rule as the session's pd check. Only a Gmail
+  // address an operator has put in AUTH_DOMAINS pays the extra read.
+  if (row) {
+    const d = emailDomain(row.email);
+    if (
+      PERSONAL_DOMAINS.includes(d) &&
+      inDomains(authConfig(env).domains, d) &&
+      (await stmt(env.DB, PERSONAL_GOOGLE).bind(row.id).first())
+    )
+      return null;
+  }
+  return withEpoch(env, row);
 }
+
+const emailDomain = (email: string) => email.slice(email.lastIndexOf("@") + 1);
 
 /**
  * The org owner that getUserWithEpoch refused for customer_mismatch, else
