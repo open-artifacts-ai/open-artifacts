@@ -40,7 +40,9 @@ export type ManifestEntry = {
 /** SHA-256 hex of an inline file's bytes. */
 async function digestOf(s: InlineSource): Promise<string> {
   const bytes = "text" in s ? utf8Encoder.encode(s.text) : s.bytes;
-  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const h = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", bytes as BufferSource),
+  );
   return Array.from(h, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 /**

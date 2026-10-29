@@ -197,7 +197,7 @@ describe("the plan read: lazy, once per invocation, seeded by the user load (R4)
     qs.filter((q) => q.includes("billing.plan")).length;
   const call = (e: Env, url: string, cookie?: string) =>
     fetchAndWait(
-      worker as unknown as Fetcher,
+      worker as never,
       new Request(url, { headers: cookie ? { cookie } : {} }),
       e,
       props,
