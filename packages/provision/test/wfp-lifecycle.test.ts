@@ -16,15 +16,21 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { cfClient, type Target } from "../src/cf.js";
-import { epochBumpSql, type Template } from "../src/metadata.js";
+import {
+  epochBumpSql,
+  hostedVarProblem,
+  type Template,
+} from "../src/metadata.js";
 import {
   ENV_PREFIX,
   type Env,
+  HOSTED_DEFAULT_VARS,
   isPurgedEmail,
   ownerEmailOf,
   PURGED_EMAIL,
   platformNames,
   registryKey,
+  withDefaultVars,
 } from "../src/names.js";
 import { canonicalJson } from "../src/platform.js";
 import {
@@ -4105,5 +4111,97 @@ describe("reissueOwnerToken", () => {
     ).toMatch(/busy/);
     expect(tokens()).toEqual(before);
     expect(s.row(inst.id).lease).toBe("x");
+  });
+});
+
+describe("SS1e: the free-plan caps and the per-env create defaults", () => {
+  const CAPS = [
+    "FREE_STORAGE_BYTES",
+    "FREE_DATA_DOCS",
+    "FREE_DATA_DAILY_WRITES",
+  ] as const;
+  const DEFAULTS = {
+    FREE_STORAGE_BYTES: "1073741824",
+    FREE_DATA_DOCS: "100",
+    FREE_DATA_DAILY_WRITES: "5000",
+  };
+  const plainOf = (s: S, from = 0) => {
+    const meta = metaOf(uploads(s.fake, from).at(-1)?.body as string);
+    return (n: string) =>
+      meta.bindings.find(
+        (b: { name: string; type: string }) =>
+          b.name === n && b.type === "plain_text",
+      )?.text as string | undefined;
+  };
+
+  it("each cap is a hosted var: 1 and 2^53-1 pass; 0, -1, 1.5 and 2^53 are refused", () => {
+    for (const n of CAPS) {
+      for (const ok of ["1", String(2 ** 53 - 1), ""])
+        expect(hostedVarProblem(n, ok), `${n}=${ok}`).toBeUndefined();
+      for (const bad of ["0", "-1", "1.5", String(2 ** 53)])
+        expect(hostedVarProblem(n, bad), `${n}=${bad}`).toMatch(
+          new RegExp(`invalid var ${n}`),
+        );
+    }
+  });
+
+  it("the defaults are off today in both envs (empty: nothing rendered)", () => {
+    for (const e of ["staging", "prod"] as const) {
+      expect(Object.keys(HOSTED_DEFAULT_VARS[e]).sort()).toEqual(
+        [...CAPS].sort(),
+      );
+      expect(Object.values(HOSTED_DEFAULT_VARS[e])).toEqual(["", "", ""]);
+      expect(withDefaultVars({ A: "1" }, HOSTED_DEFAULT_VARS[e])).toEqual({
+        A: "1",
+      });
+    }
+  });
+
+  it("create renders the env default when the caller passes none, and stores it", async () => {
+    const s = setup();
+    const p = s.mk({ defaultVars: DEFAULTS });
+    const inst = keep(await p.create(input()));
+    const plain = plainOf(s);
+    for (const [k, v] of Object.entries(DEFAULTS)) expect(plain(k)).toBe(v);
+    expect(JSON.parse(s.row(inst.id).vars)).toEqual(DEFAULTS);
+  });
+
+  it("a caller value wins over the default", async () => {
+    const s = setup();
+    const p = s.mk({ defaultVars: DEFAULTS });
+    const inst = keep(
+      await p.create(input("finqore", { vars: { FREE_DATA_DOCS: "7" } })),
+    );
+    const plain = plainOf(s);
+    expect(plain("FREE_DATA_DOCS")).toBe("7");
+    expect(plain("FREE_STORAGE_BYTES")).toBe(DEFAULTS.FREE_STORAGE_BYTES);
+    expect(JSON.parse(s.row(inst.id).vars).FREE_DATA_DOCS).toBe("7");
+  });
+
+  it("updateVars changes or clears them, and a default never comes back", async () => {
+    const s = setup();
+    const p = s.mk({ defaultVars: DEFAULTS });
+    const inst = keep(await p.create(input()));
+    let from = s.fake.log.length;
+    await p.updateVars(inst.id, { ...DEFAULTS, FREE_DATA_DOCS: "9" });
+    expect(plainOf(s, from)("FREE_DATA_DOCS")).toBe("9");
+    from = s.fake.log.length;
+    await p.updateVars(inst.id, { FREE_DATA_DOCS: "" });
+    const plain = plainOf(s, from);
+    expect(plain("FREE_DATA_DOCS")).toBe("");
+    expect(plain("FREE_STORAGE_BYTES")).toBeUndefined();
+    expect(plain("FREE_DATA_DAILY_WRITES")).toBeUndefined();
+    expect(JSON.parse(s.row(inst.id).vars)).toEqual({ FREE_DATA_DOCS: "" });
+  });
+
+  it("an install that never had them renders none, on create and on upgrade", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    for (const n of CAPS) expect(plainOf(s)(n)).toBeUndefined();
+    // A default set later never reaches an existing install.
+    const from = s.fake.log.length;
+    await s.mk({ defaultVars: DEFAULTS }).upgrade(inst.id, "0.24.0");
+    for (const n of CAPS) expect(plainOf(s, from)(n)).toBeUndefined();
+    expect(JSON.parse(s.row(inst.id).vars)).toEqual({});
   });
 });

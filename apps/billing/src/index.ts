@@ -48,7 +48,7 @@ import {
   GATE_APP_HOST_HEADER,
   GATE_INSTALL_HEADER,
 } from "@oa/broker-core/gate-header";
-import { isAppHost, type Env as OaEnv } from "@oa/provision/names";
+import { isAppHost, type Env as OaEnv, TRIAL_MS } from "@oa/provision/names";
 
 export interface Env {
   BILLING_DB: D1Database;
@@ -65,8 +65,7 @@ export interface Env {
   STRIPE_PRICE_BUSINESS: string;
 }
 
-const DAY_MS = 86_400_000;
-export const TRIAL_MS = 14 * DAY_MS;
+export { TRIAL_MS };
 /** The most creators one usage report may list. */
 export const MAX_CREATORS = 10_000;
 /**

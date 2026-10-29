@@ -39,12 +39,14 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import {
+  billingBackfill,
   type Cf,
   cfClient,
   type Env,
   googleNewlyEnabled,
   HOSTED_DOMAINS,
   hostedVarProblem,
+  type InstallId,
   isInstallId,
   isReleaseVersion,
   NAMESPACES,
@@ -81,6 +83,7 @@ export const COMMANDS = [
   "turnstile-init",
   "redline-creds",
   "owner-token",
+  "billing-backfill",
 ] as const;
 type Command = (typeof COMMANDS)[number];
 
@@ -108,6 +111,9 @@ Commands:
                   mints the red-line admin PAT, sets it and the hook key in the
                   redline-staging Environment over stdin and in 0600 files under
                   ~/.open-artifacts/redline-capture/secrets, then revokes earlier ones
+  billing-backfill [--dry-run]  one tiers row (oa-<p>-billing) per active install
+                  that has none, from its TIER var; never overwrites a row.
+                  --dry-run prints the plan and writes nothing
 
 Flags:
   --var K=V       repeatable; checked by provision's var allowlist. AUTH_PROVIDERS with
@@ -242,6 +248,7 @@ interface Flags {
   floor?: string;
   testHooks: boolean;
   force: boolean;
+  dryRun: boolean;
   /** delete only: skip the Google directory revoke, with this reason. */
   skipRevoke?: string;
   vars: Record<string, string>;
@@ -266,6 +273,7 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
         floor: { type: "string" },
         "test-hooks": { type: "boolean" },
         force: { type: "boolean" },
+        "dry-run": { type: "boolean" },
         "skip-directory-revoke": { type: "string" },
         var: { type: "string", multiple: true },
       },
@@ -308,6 +316,7 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
     floor: v.floor as string | undefined,
     testHooks,
     force: v.force === true,
+    dryRun: v["dry-run"] === true,
     skipRevoke: v["skip-directory-revoke"] as string | undefined,
     vars,
   };
@@ -351,6 +360,8 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
         `${cmd} needs --confirm to be exactly the install id (--install)`,
       );
   }
+  if (f.dryRun && cmd !== "billing-backfill")
+    throw new Refused("--dry-run is for billing-backfill only");
   if (f.force && cmd !== "release-lease")
     throw new Refused("--force is for release-lease only");
   if (f.skipRevoke !== undefined) {
@@ -666,6 +677,7 @@ export async function main(argv: string[], d: Deps): Promise<number> {
       prov,
       emit,
       db: audit,
+      actor,
       hide: (x) => secrets.push(x),
     });
     notes();
@@ -791,6 +803,7 @@ async function run(
     prov: WfpProvisioner;
     emit: (l: Record<string, unknown>) => void;
     db: PlatformDb;
+    actor: string;
     hide: (value: string) => void;
   },
 ): Promise<{ ok: boolean; id?: string; data: unknown }> {
@@ -851,6 +864,36 @@ async function run(
     }
     case "status":
       return { ok: true, data: await prov.status(id) };
+    case "billing-backfill": {
+      // Prod only under the prod gates: the keychain token on a laptop
+      // (readSecret refuses prod in CI). One audit row per install.
+      const r = await billingBackfill({
+        cf,
+        env,
+        now: (d.now ?? Date.now)(),
+        dryRun: f.dryRun,
+        onEntry: (e) =>
+          c.db.auditAs(
+            c.actor,
+            e.install as InstallId,
+            "cli.billing-backfill.install",
+            {
+              cmd,
+              tier: e.tier ?? "-",
+              action: e.action,
+              ...(e.reason ? { reason: e.reason } : {}),
+            },
+          ),
+      });
+      for (const e of r.entries)
+        c.emit({
+          step: f.dryRun ? "plan" : "backfill",
+          status: "ok",
+          data: e,
+        });
+      const { entries: _e, ...summary } = r;
+      return { ok: true, data: summary };
+    }
     case "owner-token": {
       if (inCi(d.env)) throw new Refused("owner-token runs on a laptop only");
       return {
