@@ -71,6 +71,7 @@ type Row = {
   stripe_subscription_id: string | null;
   version: number;
   updated_at: number;
+  last_event_created: number | null;
 };
 const row = async (install: string) =>
   db
@@ -78,6 +79,8 @@ const row = async (install: string) =>
     .bind(install)
     .first<Row>() as Promise<Row>;
 
+// Each event is a second newer than the last unless a test says otherwise
+// (Stripe's `created` is the ordering key).
 let n = 0;
 const event = (
   type: string,
@@ -88,7 +91,7 @@ const event = (
   object: "event",
   type,
   livemode: false,
-  created: T,
+  created: T + n,
   data: { object },
   ...extra,
 });
@@ -207,9 +210,17 @@ describe("pure helpers", () => {
     expect(
       parseEvent(JSON.stringify({ ...event("x", {}), data: [] })),
     ).toBeNull();
+    // `created` is the ordering key: required, a non-negative integer.
+    for (const created of [undefined, "1", -1, 1.5])
+      expect(
+        parseEvent(JSON.stringify({ ...event("x", {}), created })),
+      ).toBeNull();
   });
 
-  it("tierFromSubscription reads the price lookup key, price metadata, then the subscription's", () => {
+  it("tierFromSubscription prefers the subscription's metadata, then the price lookup key, then price metadata", () => {
+    expect(tierFromSubscription(sub({ metadata: { tier: "business" } }))).toBe(
+      "business",
+    );
     expect(tierFromSubscription(sub())).toBe("team");
     expect(
       tierFromSubscription(
@@ -234,7 +245,13 @@ describe("pure helpers", () => {
     expect(statusFromSubscription("incomplete")).toBeNull();
     expect(
       changeFor(
-        { id: "evt_x", type: "charge.refunded", livemode: false, object: {} },
+        {
+          id: "evt_x",
+          type: "charge.refunded",
+          livemode: false,
+          created: T,
+          object: {},
+        },
         NOW,
       ),
     ).toBeNull();
@@ -250,6 +267,7 @@ describe("handleStripeWebhook", () => {
             customer: CUS_A,
             subscription: "sub_Test1",
             mode: "subscription",
+            payment_status: "paid",
           }),
         )
       ).status,
@@ -260,6 +278,7 @@ describe("handleStripeWebhook", () => {
       stripe_subscription_id: "sub_Test1",
       version: 2,
       updated_at: NOW,
+      last_event_created: T + n,
     });
     expect(
       (await deliver(event("customer.subscription.created", sub()))).status,
@@ -352,6 +371,7 @@ describe("handleStripeWebhook", () => {
       event("checkout.session.completed", {
         customer: CUS_A,
         client_reference_id: B,
+        payment_status: "paid",
         metadata: { install: B },
       }),
     );
@@ -359,18 +379,149 @@ describe("handleStripeWebhook", () => {
     expect((await row(A)).version).toBe(4);
   });
 
-  it("an unknown customer is 200 with no change", async () => {
+  it("an unknown customer is 409 and its event id is not recorded, so Stripe retries", async () => {
     const a = await row(A);
     const b = await row(B);
-    expect(
-      (
-        await deliver(
-          event("invoice.payment_failed", { customer: "cus_Nobody" }),
-        )
-      ).status,
-    ).toBe(200);
+    const ev = event("invoice.payment_failed", { customer: "cus_Nobody" });
+    const res = await deliver(ev);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "unknown_customer" });
     expect(await row(A)).toEqual(a);
     expect(await row(B)).toEqual(b);
+    expect(
+      await db
+        .prepare("SELECT count(*) AS n FROM stripe_events")
+        .first<{ n: number }>(),
+    ).toEqual({ n: 0 });
+    // Billing then writes the customer; Stripe's retry of the same event applies.
+    await db
+      .prepare("UPDATE tiers SET stripe_customer_id = ? WHERE install_id = ?")
+      .bind("cus_Nobody", A)
+      .run();
+    expect((await deliver(ev)).status).toBe(200);
+    expect((await row(A)).status).toBe("past_due");
+  });
+
+  it("checkout completed unpaid leaves status and tier for the invoice events", async () => {
+    await db
+      .prepare("UPDATE tiers SET status = 'lapsed' WHERE install_id = ?")
+      .bind(A)
+      .run();
+    for (const payment_status of ["unpaid", undefined]) {
+      await deliver(
+        event("checkout.session.completed", {
+          customer: CUS_A,
+          subscription: "sub_Test1",
+          payment_status,
+          metadata: { tier: "business" },
+        }),
+      );
+      expect(await row(A)).toMatchObject({
+        tier: "trial",
+        status: "lapsed",
+        stripe_subscription_id: "sub_Test1",
+      });
+    }
+    // An incomplete subscription sets no tier either.
+    await deliver(
+      event(
+        "customer.subscription.created",
+        sub({ status: "incomplete", metadata: { tier: "business" } }),
+      ),
+    );
+    expect(await row(A)).toMatchObject({ tier: "trial", status: "lapsed" });
+    await deliver(
+      event("checkout.session.completed", {
+        customer: CUS_A,
+        subscription: "sub_Test1",
+        payment_status: "no_payment_required",
+        metadata: { tier: "business" },
+      }),
+    );
+    expect(await row(A)).toMatchObject({ tier: "business", status: "active" });
+  });
+
+  describe("event ordering (stale events)", () => {
+    const at = (created: number) => ({ created });
+
+    it("deleted, then a delayed older updated: stays lapsed", async () => {
+      await deliver(event("customer.subscription.deleted", sub(), at(T + 100)));
+      expect(await row(A)).toMatchObject({
+        status: "lapsed",
+        last_event_created: T + 100,
+      });
+      const before = await row(A);
+      const late = await deliver(
+        event(
+          "customer.subscription.updated",
+          sub({ status: "active", metadata: { tier: "business" } }),
+          at(T + 50),
+        ),
+      );
+      expect(late.status).toBe(200);
+      expect(await row(A)).toEqual(before);
+    });
+
+    it("deleted, then an updated from the same second: stays lapsed", async () => {
+      await deliver(event("customer.subscription.deleted", sub(), at(T + 100)));
+      await deliver(event("customer.subscription.updated", sub(), at(T + 100)));
+      await deliver(event("invoice.paid", { customer: CUS_A }, at(T + 100)));
+      expect((await row(A)).status).toBe("lapsed");
+    });
+
+    it("a retried checkout.session.completed after deletion never revives the row", async () => {
+      const checkout = event(
+        "checkout.session.completed",
+        {
+          customer: CUS_A,
+          subscription: "sub_Test1",
+          payment_status: "paid",
+          metadata: { tier: "team" },
+        },
+        at(T + 10),
+      );
+      await deliver(checkout);
+      expect((await row(A)).status).toBe("active");
+      await deliver(event("customer.subscription.deleted", sub(), at(T + 100)));
+      // Stripe's retry: the same event id, and a second delivery of an
+      // older checkout under a fresh id (both carry the original created).
+      await deliver(checkout, { now: NOW + 60_000 });
+      await deliver({ ...checkout, id: "evt_retry_other" });
+      expect(await row(A)).toMatchObject({
+        status: "lapsed",
+        last_event_created: T + 100,
+      });
+    });
+
+    it("a stale event is recorded once, logged stale; a newer event still applies", async () => {
+      const lines: string[] = [];
+      vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+        lines.push(a.map(String).join(" "));
+      });
+      await deliver(event("customer.subscription.deleted", sub(), at(T + 100)));
+      await deliver(event("customer.subscription.updated", sub(), at(T + 99)));
+      expect(lines).toEqual([
+        `billing webhook applied ${A}`,
+        "billing webhook stale",
+      ]);
+      // A new subscription later on: newer, so it applies.
+      await deliver(
+        event(
+          "checkout.session.completed",
+          {
+            customer: CUS_A,
+            subscription: "sub_Test2",
+            payment_status: "paid",
+          },
+          at(T + 200),
+        ),
+      );
+      expect(await row(A)).toMatchObject({
+        status: "active",
+        stripe_subscription_id: "sub_Test2",
+        last_event_created: T + 200,
+      });
+    });
   });
 
   it("refuses before parsing: bad or stale signature, wrong secret, oversize; nothing written", async () => {

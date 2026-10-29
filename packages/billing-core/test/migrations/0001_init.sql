@@ -11,7 +11,8 @@ CREATE TABLE tiers (
   stripe_subscription_id TEXT,
   version INTEGER NOT NULL DEFAULT 1,
   last_read_at INTEGER,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  last_event_created INTEGER
 );
 
 -- Webhook idempotency: one row per Stripe event id (step 2 writes it).
