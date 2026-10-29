@@ -1,0 +1,14 @@
+// Tests call the handler with a local BILLING_DB (this app's migrations,
+// applied by the test).
+{
+  "name": "oa-billing-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "d1_databases": [
+    {
+      "binding": "BILLING_DB",
+      "database_name": "oa-billing-test",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

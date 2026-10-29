@@ -1,0 +1,204 @@
+// oa-<p>-billing: the tier store (self-serve step 1). See wrangler.jsonc.
+//
+// Gate routes (GET /tier, POST /trial/start, POST /usage, GET /health) are
+// reachable only over a service binding: every internet request carries
+// cf-connecting-ip and a binding request does not, so one that has it gets
+// the plain 404. The install id comes only from x-oa-gate-install, which
+// BillingGate sets to its own install; never from a query or a body.
+//
+// Logs carry fixed categories and install ids only: never bodies, headers or
+// URLs.
+import { GATE_INSTALL_HEADER } from "@oa/broker-core/gate-header";
+
+export interface Env {
+  BILLING_DB: D1Database;
+}
+
+const DAY_MS = 86_400_000;
+export const TRIAL_MS = 14 * DAY_MS;
+/** The most creators one usage report may list. */
+export const MAX_CREATORS = 10_000;
+/**
+ * The largest body billing reads: room for MAX_CREATORS ids at their longest.
+ * Gate traffic is already capped lower (GATE_MAX_BODY).
+ */
+export const MAX_BODY = 2 * 1024 * 1024;
+
+const INSTALL_ID = /^i[a-z0-9]{11}$/;
+const MONTH = /^\d{4}-(?:0[1-9]|1[0-2])$/;
+/** An opaque creator id: the install chooses it; billing only counts it. */
+const CREATOR = /^[A-Za-z0-9_-]{1,128}$/;
+
+const notFound = () => new Response("Not found", { status: 404 });
+const bad = (error: string, status = 400) =>
+  Response.json({ error }, { status });
+
+interface TierRow {
+  tier: string | null;
+  status: string | null;
+  trial_ends_at: number | null;
+  grace_until: number | null;
+  version: number;
+}
+
+/** What an install sees: no Stripe ids, ever. */
+function view(r: TierRow | null, now: number) {
+  if (!r)
+    return {
+      tier: "free",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      version: 0,
+      asOf: now,
+    };
+  return {
+    tier: r.tier,
+    status: r.status,
+    trialEndsAt: r.trial_ends_at,
+    graceUntil: r.grace_until,
+    version: r.version,
+    asOf: now,
+  };
+}
+
+const COLS = "tier, status, trial_ends_at, grace_until, version";
+// The read records last_read_at on the install's own row and writes nothing
+// when there is no row (create writes rows, not this route).
+const READ_SQL = `UPDATE tiers SET last_read_at = ?2 WHERE install_id = ?1 RETURNING ${COLS}`;
+const SELECT_SQL = `SELECT ${COLS} FROM tiers WHERE install_id = ?1`;
+// Only free/active with no trial before: a trial never starts twice.
+const TRIAL_SQL = `UPDATE tiers SET tier = 'trial', trial_ends_at = ?2, version = version + 1, updated_at = ?3 WHERE install_id = ?1 AND tier = 'free' AND status = 'active' AND trial_ends_at IS NULL RETURNING ${COLS}`;
+const USAGE_SQL =
+  "INSERT INTO usage (install_id, month, creators_json, count, received_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (install_id, month) DO UPDATE SET creators_json = excluded.creators_json, count = excluded.count, received_at = excluded.received_at";
+
+/** The body as a JSON object, or null for anything else (or over MAX_BODY). */
+async function jsonObject(
+  req: Request,
+): Promise<Record<string, unknown> | null> {
+  const type = req.headers.get("content-type") ?? "";
+  if (!/^application\/json(\s*;|$)/i.test(type)) return null;
+  const declared = req.headers.get("content-length");
+  if (declared !== null && !(Number(declared) <= MAX_BODY)) return null;
+  let text: string;
+  try {
+    const buf = await req.arrayBuffer();
+    if (buf.byteLength > MAX_BODY) return null;
+    text = new TextDecoder("utf-8", { fatal: true }).decode(buf);
+  } catch {
+    return null;
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  return typeof body === "object" && body !== null && !Array.isArray(body)
+    ? (body as Record<string, unknown>)
+    : null;
+}
+
+/** A body naming an install names the gate's own (defense in depth). */
+const mismatched = (body: Record<string, unknown>, install: string) =>
+  Object.hasOwn(body, "install") && body.install !== install;
+
+async function tier(db: D1Database, install: string, now: number) {
+  const r = await db.prepare(READ_SQL).bind(install, now).first<TierRow>();
+  console.log("billing tier", r ? "row" : "default", install);
+  return Response.json(view(r, now));
+}
+
+async function trialStart(
+  db: D1Database,
+  install: string,
+  req: Request,
+  now: number,
+) {
+  const body = await jsonObject(req);
+  if (!body) return bad("bad_body");
+  if (mismatched(body, install)) return bad("install_mismatch", 403);
+  const started = await db
+    .prepare(TRIAL_SQL)
+    .bind(install, now + TRIAL_MS, now)
+    .first<TierRow>();
+  if (started) {
+    console.log("billing trial started", install);
+    return Response.json(view(started, now));
+  }
+  // Any other state (or no row): unchanged, and still a 200.
+  const r = await db.prepare(SELECT_SQL).bind(install).first<TierRow>();
+  console.log("billing trial unchanged", install);
+  return Response.json(view(r, now));
+}
+
+async function usage(
+  db: D1Database,
+  install: string,
+  req: Request,
+  now: number,
+) {
+  const body = await jsonObject(req);
+  if (!body) return bad("bad_body");
+  if (mismatched(body, install)) return bad("install_mismatch", 403);
+  const { month, creators, count } = body;
+  if (typeof month !== "string" || !MONTH.test(month)) return bad("bad_month");
+  if (
+    !Array.isArray(creators) ||
+    creators.length > MAX_CREATORS ||
+    !creators.every((c) => typeof c === "string" && CREATOR.test(c)) ||
+    new Set(creators).size !== creators.length
+  )
+    return bad("bad_creators");
+  if (count !== creators.length) return bad("bad_count");
+  await db
+    .prepare(USAGE_SQL)
+    .bind(install, month, JSON.stringify(creators), count, now)
+    .run();
+  console.log("billing usage", install);
+  return Response.json({ ok: true, month, count });
+}
+
+/** Gate routes: method, path. /health takes no install. */
+const GATE = new Set(["GET /tier", "GET /health", "POST /trial/start", "POST /usage"]);
+
+export default {
+  async fetch(req, env) {
+    let url: URL;
+    try {
+      url = new URL(req.url);
+    } catch {
+      return notFound();
+    }
+    const route = `${req.method} ${url.pathname}`;
+    if (route === "POST /stripe/webhook") {
+      // Backend's webhook module mounts here (step 2).
+      await req.body?.cancel();
+      return Response.json({ error: "not_implemented" }, { status: 501 });
+    }
+    // Gate routes only over a binding: an internet request always carries
+    // cf-connecting-ip.
+    if (!GATE.has(route) || req.headers.has("cf-connecting-ip")) {
+      await req.body?.cancel();
+      return notFound();
+    }
+    if (route === "GET /health") return Response.json({ ok: true });
+    // The install is the gate's header and nothing else.
+    const install = req.headers.get(GATE_INSTALL_HEADER);
+    if (install === null || !INSTALL_ID.test(install)) {
+      await req.body?.cancel();
+      return notFound();
+    }
+    const now = Date.now();
+    try {
+      if (route === "GET /tier") return await tier(env.BILLING_DB, install, now);
+      if (route === "POST /trial/start")
+        return await trialStart(env.BILLING_DB, install, req, now);
+      return await usage(env.BILLING_DB, install, req, now);
+    } catch {
+      // Never the error text: it can carry a D1 message.
+      console.error("billing db_error", install);
+      return bad("unavailable", 503);
+    }
+  },
+} satisfies ExportedHandler<Env>;
