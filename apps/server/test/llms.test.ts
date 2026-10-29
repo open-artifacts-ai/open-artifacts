@@ -303,6 +303,14 @@ describe("served .txt and .md paths on the app host", () => {
     expect(await r.text()).toBe("Not found\n");
   });
 
+  it("a bundle .txt revalidation (304 from ASSETS) stays a 304", async () => {
+    const nm = {
+      fetch: () => Promise.resolve(new Response(null, { status: 304 })),
+    };
+    const r = await get(`${APP}/assets/licenses.txt`, {}, E({ ASSETS: nm }));
+    expect(r.status).toBe(304);
+  });
+
   it("everything else still falls through to the SPA as before", async () => {
     const assets = fakeAssets();
     const e = E({ ASSETS: assets.fetcher });

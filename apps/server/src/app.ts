@@ -200,10 +200,11 @@ export function createApp(
     }
     const res = await c.env.ASSETS.fetch(c.req.raw);
     // A missing bundle .txt/.md gets ASSETS' SPA fallback (200 text/html):
-    // answer the plain 404 instead.
+    // answer the plain 404 instead. A 304 revalidation passes through.
     if (
       text &&
-      (!res.ok || /^text\/html/i.test(res.headers.get("content-type") ?? ""))
+      (res.status >= 400 ||
+        /^text\/html/i.test(res.headers.get("content-type") ?? ""))
     ) {
       await res.body?.cancel();
       return textNotFound();
