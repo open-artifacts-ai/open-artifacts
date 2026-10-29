@@ -14,7 +14,15 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { cfClient, type Target } from "../src/cf.js";
 import { epochBumpSql, type Template } from "../src/metadata.js";
 import {
@@ -74,6 +82,19 @@ vi.mock("../src/internal/gates.js", async (orig) => {
     },
     get FLOOR_MIN_SEQ() {
       return G.FLOOR_MIN_SEQ;
+    },
+  };
+});
+// GMAIL_OWNER_MIN_VERSION is null until #864 ships; tests set it per case.
+const V = vi.hoisted(() => ({
+  GMAIL_OWNER_MIN_VERSION: null as string | null,
+}));
+vi.mock("../src/versions.js", async (orig) => {
+  const m = await orig<typeof import("../src/versions.js")>();
+  return {
+    ...m,
+    get GMAIL_OWNER_MIN_VERSION() {
+      return V.GMAIL_OWNER_MIN_VERSION;
     },
   };
 });
@@ -3292,6 +3313,109 @@ describe("fix round 4 (T8): every server precondition for hosted google", () => 
     const rb = keep(await p.rollback(inst.id));
     expect(rb).toMatchObject({ ok: true, rolledBack: true });
     expect(renderedEnv(s, inst.id).GOOGLE_CLIENT_ID).toBe(STAGING_CLIENT);
+  });
+});
+
+describe("#864: google with an empty AUTH_DOMAINS from GMAIL_OWNER_MIN_VERSION", () => {
+  const PERSONAL = { AUTH_PROVIDERS: "google" };
+  const entryOf = (s: S, id: string) =>
+    JSON.parse(s.fake.kvValues(s.regId).get(registryKey(id)) as string);
+  const floor = (v: string | null) => {
+    V.GMAIL_OWNER_MIN_VERSION = v;
+  };
+  afterEach(() => floor(null));
+
+  it("with the floor null, google with no AUTH_DOMAINS is refused at any version", async () => {
+    for (const version of ["0.23.0", "0.24.0"]) {
+      const s = setup();
+      const w = s.fake.writes().length;
+      const e = await fails(
+        s.p.create(input("finqore", { version, vars: PERSONAL })),
+      );
+      expect(e.message).toMatch(/google needs AUTH_DOMAINS/);
+      expect(s.fake.writes().length).toBe(w);
+    }
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
+    const w = s.fake.writes().length;
+    const e = await fails(s.p.updateVars(inst.id, PERSONAL));
+    expect(e.message).toMatch(/google needs AUTH_DOMAINS/);
+    expect(s.fake.writes().length).toBe(w);
+  });
+
+  it.each(["0.24.0", "0.25.0"])(
+    "with the floor at 0.24.0, a create at %s with google and no AUTH_DOMAINS succeeds, with no registry domains",
+    async (version) => {
+      floor("0.24.0");
+      const s = setup();
+      const inst = keep(
+        await s.p.create(input("finqore", { version, vars: PERSONAL })),
+      );
+      expect(s.row(inst.id)).toMatchObject({ state: "active", version });
+      expect(entryOf(s, inst.id).domains).toEqual([]);
+    },
+  );
+
+  it("with the floor at 0.24.0, a create at 0.23.0 with google and no AUTH_DOMAINS is refused before any write", async () => {
+    floor("0.24.0");
+    const s = setup();
+    const w = s.fake.writes().length;
+    const e = await fails(
+      s.p.create(input("finqore", { version: "0.23.0", vars: PERSONAL })),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/google needs AUTH_DOMAINS/);
+    expect(s.fake.writes().length).toBe(w);
+    expect([...s.fake.kvValues(s.regId).keys()]).toEqual([]);
+  });
+
+  it("with the floor at 0.24.0, an update-vars to google with no AUTH_DOMAINS succeeds at 0.24.0", async () => {
+    floor("0.24.0");
+    const s = setup();
+    const inst = keep(
+      await s.p.create(input("finqore", { version: "0.24.0", vars: CODES })),
+    );
+    const r = await s.p.updateVars(inst.id, PERSONAL);
+    expect(r).toMatchObject({ ok: true });
+    expect(entryOf(s, inst.id).domains).toEqual([]);
+  });
+
+  it("with the floor at 0.24.0, an update-vars to google with no AUTH_DOMAINS at 0.23.0 is refused before any write", async () => {
+    floor("0.24.0");
+    const s = setup();
+    const inst = keep(
+      await s.p.create(input("finqore", { version: "0.23.0", vars: CODES })),
+    );
+    const w = s.fake.writes().length;
+    const e = await fails(s.p.updateVars(inst.id, PERSONAL));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/google needs AUTH_DOMAINS/);
+    expect(s.fake.writes().length).toBe(w);
+    expect(s.row(inst.id)).toMatchObject({ session_cut: null, lease: null });
+  });
+
+  it("a rollback below the floor of an install with google and no AUTH_DOMAINS is refused before any write", async () => {
+    floor("0.24.0");
+    const s = setup();
+    const inst = keep(await s.p.create(input("finqore", { vars: CODES })));
+    await s.p.upgrade(inst.id, "0.24.0");
+    expect(await s.p.updateVars(inst.id, PERSONAL)).toMatchObject({
+      ok: true,
+    });
+    const w = s.fake.writes().length;
+    const from = s.fake.log.length;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(
+      /the current vars do not fit 0\.23\.0: google needs AUTH_DOMAINS/,
+    );
+    expect(s.fake.writes().length).toBe(w);
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(s.row(inst.id)).toMatchObject({
+      version: "0.24.0",
+      state: "active",
+      lease: null,
+    });
   });
 });
 
