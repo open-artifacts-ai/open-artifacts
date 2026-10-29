@@ -13,7 +13,7 @@ Open Artifacts signs people in through Cloudflare Access by default. Direct sign
 | Variable | Kind | Setup flag | Meaning |
 |---|---|---|---|
 | `AUTH_PROVIDERS` | var | `--auth-providers` | `google,email` (or `google`, or `email`), optionally with `access`. Unset means Access only. |
-| `AUTH_DOMAINS` | var | `--auth-domains` | Your verified domains, comma separated, e.g. `example.com`. |
+| `AUTH_DOMAINS` | var | `--auth-domains` | Your verified domains, comma separated, e.g. `example.com`. Empty with `google` means invited personal Google accounts only (#864). |
 | `AUTH_DOMAIN_JOIN` | var | `--auth-domain-join` | `member` (anyone in the domain joins) or `invite` (default). |
 | `GOOGLE_CLIENT_ID` | var | `--google-client-id` | Your Google OAuth client id. |
 | `GOOGLE_CLIENT_SECRET` | secret | none | Its secret. |
@@ -39,7 +39,7 @@ pnpm -C apps/server exec wrangler secret put GOOGLE_CLIENT_SECRET --name <name>
 
 - **Upgrades keep them.** Every setup run deploys the Worker, and a deploy replaces its vars with the rendered config. Without a flag, setup reads the value already on the deployed Worker and deploys it again, so a later `--upgrade` (stateless CI included) keeps your sign-in settings. A flag replaces the value, with a note naming the old one. Values set in the Cloudflare dashboard are kept the same way.
 - **Clearing one:** pass it empty, e.g. `--auth-domains ""` or `--auth-domain-join=`. The var is removed and the server default applies.
-- **Setup refuses before deploying** an unknown provider, a malformed domain, an `AUTH_DOMAIN_JOIN` other than `invite` or `member`, and `google` without both `GOOGLE_CLIENT_ID` and `AUTH_DOMAINS`. Flags are trimmed, and provider names, the join mode and `EMAIL_CODE_DOMAIN` lowercased. A value already on the Worker is carried exactly as it is; one the server would read differently (padded like `"member "`, wrong case like `Google`, an empty list item, an empty `AUTH_PROVIDERS`, or the var held as a secret or JSON binding) is refused instead: fix it with its flag. A missing `GOOGLE_CLIENT_SECRET` (or `TURNSTILE_SECRET` with a site key) is only a warning on the `deploy` line; that sign-in method stays off until you set it.
+- **Setup refuses before deploying** an unknown provider, a malformed domain, an `AUTH_DOMAIN_JOIN` other than `invite` or `member`, and `google` without `GOOGLE_CLIENT_ID`. `google` with an empty `AUTH_DOMAINS` deploys: it admits invited personal Google accounts only (#864). Flags are trimmed, and provider names, the join mode and `EMAIL_CODE_DOMAIN` lowercased. A value already on the Worker is carried exactly as it is; one the server would read differently (padded like `"member "`, wrong case like `Google`, an empty list item, an empty `AUTH_PROVIDERS`, or the var held as a secret or JSON binding) is refused instead: fix it with its flag. A missing `GOOGLE_CLIENT_SECRET` (or `TURNSTILE_SECRET` with a site key) is only a warning on the `deploy` line; that sign-in method stays off until you set it.
 - **If setup can't read the Worker's settings** (or they come back with no bindings), it never deploys an existing Worker, with or without `--upgrade`: the deploy step stops with `action_required`. Rerun once they are readable (the token needs Workers Scripts Read). A first install, with no Worker yet, is not affected.
 - `--check` reports the values it would deploy as `data.signin` on the `deploy` line.
 
@@ -70,7 +70,7 @@ Existing members keep their accounts and artifacts. On their first Google sign-i
 
 ## Security notes
 
-- Each install verifies Google's ID token itself: signature, issuer, audience, expiry, its own nonce, a verified email, and `hd` exactly in `AUTH_DOMAINS`.
+- Each install verifies Google's ID token itself: signature, issuer, audience, expiry, its own nonce, a verified email, and `hd` exactly in `AUTH_DOMAINS`, or, for a personal account with no `hd`, an exactly invited email (#864).
 - Codes are 8 digits and expire after 10 minutes. Each code request allows 5 tries, there is a per-IP failure cap, and codes are stored only as keyed hashes.
 - Asking for a code answers the same way whether or not the address can sign in.
 - Code sends are capped per address and network (3 an hour, 5 a day), so someone on other networks can't stop a person getting codes. Those caps can't stop an attacker spread across many networks; Turnstile does. **Without Turnstile, emailed codes are weaker**: set `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET` if you turn codes on. Hosted installs refuse code sign-in without Turnstile.

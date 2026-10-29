@@ -96,12 +96,9 @@ export const providersOf = (s: Signin) =>
 /** Every reason this combination would not serve the sign-in it asks for. */
 export function signinProblems(s: Signin): string[] {
   const out = SIGNIN_VARS.flatMap((k) => valueProblems(k, s[k]));
-  if (providersOf(s).includes("google")) {
-    if (!s.GOOGLE_CLIENT_ID)
-      out.push("google is in AUTH_PROVIDERS but GOOGLE_CLIENT_ID is empty");
-    if (!parseDomains(s.AUTH_DOMAINS).domains.length)
-      out.push("google is in AUTH_PROVIDERS but AUTH_DOMAINS is empty");
-  }
+  // An empty AUTH_DOMAINS is google for invited personal accounts only (#864).
+  if (providersOf(s).includes("google") && !s.GOOGLE_CLIENT_ID)
+    out.push("google is in AUTH_PROVIDERS but GOOGLE_CLIENT_ID is empty");
   return out;
 }
 

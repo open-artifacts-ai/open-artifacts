@@ -314,14 +314,10 @@ describe("fail closed before any deploy call", () => {
     expect(w.deployed()).toBeUndefined();
   };
 
-  it("google without GOOGLE_CLIENT_ID or AUTH_DOMAINS", async () => {
+  it("google without GOOGLE_CLIENT_ID", async () => {
     await refused(
       ["--auth-providers", "google", "--auth-domains", "example.com"],
       /GOOGLE_CLIENT_ID is empty/,
-    );
-    await refused(
-      ["--auth-providers", "access,google", "--google-client-id", "x.apps"],
-      /AUTH_DOMAINS is empty/,
     );
   });
 
@@ -342,6 +338,20 @@ describe("fail closed before any deploy call", () => {
     await refused(["--code-emails-per-day", "10001"], /CODE_EMAILS_PER_DAY/);
   });
 
+  it("google with an empty AUTH_DOMAINS deploys: invited personal accounts only (#864)", async () => {
+    const w = world({ secrets: ["GOOGLE_CLIENT_SECRET"] });
+    const argv = [
+      ...HOSTS,
+      ...["--auth-providers", "access,google", "--google-client-id", "x.apps"],
+    ];
+    expect(await run(argv, w.deps, ROOT)).toBe(0);
+    expect(deployedVars(w)).toMatchObject({
+      AUTH_PROVIDERS: "access,google",
+      GOOGLE_CLIENT_ID: "x.apps",
+    });
+    expect(deployedVars(w).AUTH_DOMAINS ?? "").toBe("");
+  });
+
   it("a malformed domain", async () => {
     await refused(
       ["--auth-domains", "example.com,not a domain"],
@@ -350,17 +360,17 @@ describe("fail closed before any deploy call", () => {
     await refused(["--auth-domains", "localhost"], /invalid domain/);
   });
 
-  it("a flag that breaks the live combination (google on, domains cleared)", async () => {
+  it("a flag that breaks the live combination (google on, client id cleared)", async () => {
     const w = await deployedWithGoogle();
     const before = w.deployed();
     const code = await run(
-      [...HOSTS, "--upgrade", "--auth-domains", ""],
+      [...HOSTS, "--upgrade", "--google-client-id", ""],
       w.deps,
       ROOT,
     );
     expect(code).toBe(1);
     expect(line(w, "deploy").message).toMatch(
-      /refusing to deploy: .*AUTH_DOMAINS is empty/,
+      /refusing to deploy: .*GOOGLE_CLIENT_ID is empty/,
     );
     expect(deploys(w)).toEqual([]);
     expect(w.deployed()).toBe(before);
@@ -403,11 +413,26 @@ describe("rules match the server", () => {
     );
   });
 
-  it("signinProblems: unset is fine; google needs both a client id and domains", () => {
+  it("signinProblems: unset is fine; google needs a client id, and empty domains is invited personal accounts (#864)", () => {
     expect(signinProblems(empty)).toEqual([]);
+    expect(signinProblems({ ...empty, AUTH_PROVIDERS: "google" })).toEqual([
+      "google is in AUTH_PROVIDERS but GOOGLE_CLIENT_ID is empty",
+    ]);
     expect(
-      signinProblems({ ...empty, AUTH_PROVIDERS: "google" }).join(";"),
-    ).toMatch(/GOOGLE_CLIENT_ID.*AUTH_DOMAINS/);
+      signinProblems({
+        ...empty,
+        AUTH_PROVIDERS: "google",
+        GOOGLE_CLIENT_ID: "x.apps",
+      }),
+    ).toEqual([]);
+    expect(
+      signinProblems({
+        ...empty,
+        AUTH_PROVIDERS: "google",
+        GOOGLE_CLIENT_ID: "x.apps",
+        AUTH_DOMAINS: "example.com,not a domain",
+      }).join(";"),
+    ).toMatch(/invalid domain/);
     expect(signinProblems({ ...empty, ...LIVE })).toEqual([]);
   });
 

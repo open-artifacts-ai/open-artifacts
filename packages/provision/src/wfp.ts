@@ -105,7 +105,7 @@ import type {
   InstallId,
   UpgradeResult,
 } from "./types.js";
-import { REVOKE_MIN_VERSION } from "./versions.js";
+import { GMAIL_OWNER_MIN_VERSION, REVOKE_MIN_VERSION } from "./versions.js";
 
 /** Option names that look like a gate: refused, so no config or spread can try one. */
 const GATE_LIKE =
@@ -191,6 +191,15 @@ export interface WfpOptions {
   healthTimeoutMs?: number;
   /** Require /healthz to report installId (Task 6b, Backend). */
   requireInstallId?: boolean;
+}
+
+/** True when `version`'s server admits personal Google accounts by invited email (#864). */
+function gmailOwnerReady(version: string): boolean {
+  return (
+    GMAIL_OWNER_MIN_VERSION !== null &&
+    isReleaseVersion(version) &&
+    compareVersions(version, GMAIL_OWNER_MIN_VERSION) >= 0
+  );
 }
 
 export class ProvisionRefused extends Error {
@@ -1082,7 +1091,10 @@ export class WfpProvisioner {
    * parse (@oa/auth-core). The rest (client id, HOSTED, AUTH_BROKER_URL,
    * INSTALL_ID, BROKER_SIGNING_KEY) are rendered; a test pins the list.
    */
-  private checkGoogleBroker(vars: Record<string, string>): void {
+  private checkGoogleBroker(
+    vars: Record<string, string>,
+    version: string,
+  ): void {
     const google = googleNewlyEnabled({}, vars);
     if (
       !this.o.brokerEnabled &&
@@ -1091,7 +1103,13 @@ export class WfpProvisioner {
       throw new ProvisionRefused(
         "google sign-in on a hosted install needs the sign-in broker (brokerEnabled)",
       );
-    if (google && this.registryDomainsOf(vars).length === 0)
+    // An empty AUTH_DOMAINS is google for invited people only (#864), from
+    // GMAIL_OWNER_MIN_VERSION on; below it the server refuses google.
+    if (
+      google &&
+      this.registryDomainsOf(vars).length === 0 &&
+      !gmailOwnerReady(version)
+    )
       throw new ProvisionRefused(
         "google needs AUTH_DOMAINS: the server refuses google when it is empty",
       );
@@ -1237,7 +1255,7 @@ export class WfpProvisioner {
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars, testHooks);
     this.checkEmailCodeDomain(vars, "domains");
-    this.checkGoogleBroker(vars);
+    this.checkGoogleBroker(vars, i.version);
     if (this.o.brokerEnabled) this.registryDomainsOf(vars);
     const rel = await this.readRelease(i);
 
@@ -2647,6 +2665,13 @@ export class WfpProvisioner {
         `install ${id}: the current vars do not fit ${to}: ${(e as Error).message}`,
       );
     const m = this.renderInputs(row, vars);
+    // A rollback below GMAIL_OWNER_MIN_VERSION with google and no domains
+    // would land on a server that refuses google: refused, as for create.
+    try {
+      this.checkGoogleBroker(vars, to);
+    } catch (e) {
+      throw unfit(e);
+    }
     const rel = await this.readRelease({
       version: to,
       bundle: m.testHooks ? "redline" : "release",
@@ -2815,7 +2840,7 @@ export class WfpProvisioner {
       const vars = { ...nextVars };
       this.brokerVars(vars);
       const m = this.renderInputs(row, vars);
-      this.checkGoogleBroker(vars);
+      this.checkGoogleBroker(vars, version);
       // T8 review M2: only create's broker step issues the signing key and
       // the first registry entry. Without them google can't work, and the
       // session cut would log everyone out for nothing.
