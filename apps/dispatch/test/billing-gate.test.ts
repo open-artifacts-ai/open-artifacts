@@ -5,6 +5,7 @@ import {
   type BillingGateProps,
   billingProps,
   passBillingGate,
+  USAGE_MAX_BODY,
 } from "@oa/broker-core/billing-gate";
 import { GATE_MAX_BODY } from "@oa/broker-core/gate";
 import { describe, expect, it } from "vitest";
@@ -210,7 +211,7 @@ describe("BillingGate: refusals (nothing reaches billing)", () => {
     const w = world();
     const big = JSON.stringify({ install: A, pad: "x".repeat(GATE_MAX_BODY) });
     expect(
-      await err(await passBillingGate(post("/usage", big), props, w.env)),
+      await err(await passBillingGate(post("/trial/start", big), props, w.env)),
     ).toEqual({ status: 413, error: "too_large" });
     const stream = new ReadableStream({
       start(c) {
@@ -218,7 +219,7 @@ describe("BillingGate: refusals (nothing reaches billing)", () => {
         c.close();
       },
     });
-    const req = new Request("https://x.example/usage", {
+    const req = new Request("https://x.example/trial/start", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: stream,
@@ -230,6 +231,31 @@ describe("BillingGate: refusals (nothing reaches billing)", () => {
       error: "too_large",
     });
     expect(w.got).toEqual([]);
+  });
+
+  it("/usage alone has the larger cap: 10,000 creators of 128 chars pass, more is 413", async () => {
+    const w = world();
+    const creators = Array.from({ length: 10_000 }, (_, i) =>
+      String(i).padStart(128, "c"),
+    );
+    const full = JSON.stringify({
+      install: A,
+      month: "2026-10",
+      creators,
+      count: creators.length,
+    });
+    expect(full.length).toBeGreaterThan(GATE_MAX_BODY);
+    const r = await passBillingGate(post("/usage", full), props, w.env);
+    expect(r.headers.get("x-oa-gate")).toBeNull();
+    expect(w.got).toHaveLength(1);
+    const over = JSON.stringify({
+      install: A,
+      pad: "x".repeat(USAGE_MAX_BODY),
+    });
+    expect(
+      await err(await passBillingGate(post("/usage", over), props, w.env)),
+    ).toEqual({ status: 413, error: "too_large" });
+    expect(w.got).toHaveLength(1);
   });
 
   it("bad bytes in the body → 400", async () => {

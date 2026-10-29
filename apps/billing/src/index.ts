@@ -68,7 +68,10 @@ const COLS = "tier, status, trial_ends_at, grace_until, version";
 const READ_SQL = `UPDATE tiers SET last_read_at = ?2 WHERE install_id = ?1 RETURNING ${COLS}`;
 const SELECT_SQL = `SELECT ${COLS} FROM tiers WHERE install_id = ?1`;
 // Only free/active with no trial before: a trial never starts twice.
-const TRIAL_SQL = `UPDATE tiers SET tier = 'trial', trial_ends_at = ?2, version = version + 1, updated_at = ?3 WHERE install_id = ?1 AND tier = 'free' AND status = 'active' AND trial_ends_at IS NULL RETURNING ${COLS}`;
+// No row is the free/active default, so a trial can start from it too (an
+// install made before create writes rows); an existing row moves only from
+// free/active, and only once (trial_ends_at stays set after).
+const TRIAL_SQL = `INSERT INTO tiers (install_id, tier, status, trial_ends_at, version, updated_at) VALUES (?1, 'trial', 'active', ?2, 1, ?3) ON CONFLICT (install_id) DO UPDATE SET tier = 'trial', trial_ends_at = ?2, version = tiers.version + 1, updated_at = ?3 WHERE tiers.tier = 'free' AND tiers.status = 'active' AND tiers.trial_ends_at IS NULL RETURNING ${COLS}`;
 const USAGE_SQL =
   "INSERT INTO usage (install_id, month, creators_json, count, received_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (install_id, month) DO UPDATE SET creators_json = excluded.creators_json, count = excluded.count, received_at = excluded.received_at";
 
@@ -126,7 +129,7 @@ async function trialStart(
     console.log("billing trial started", install);
     return Response.json(view(started, now));
   }
-  // Any other state (or no row): unchanged, and still a 200.
+  // Any other state: unchanged, and still a 200.
   const r = await db.prepare(SELECT_SQL).bind(install).first<TierRow>();
   console.log("billing trial unchanged", install);
   return Response.json(view(r, now));
