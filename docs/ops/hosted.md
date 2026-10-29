@@ -536,7 +536,7 @@ Every hosted install operation and release publish runs from the `hosted-ops` wo
 ### The Workflow
 
 1. `reserve`: picks the install id once and stores it on the row; a retry reads it back.
-2. `sweep`: revokes any active `ci-<signupId>` owner token a crashed attempt left.
+2. `sweep`: revokes any active `ss-<signupId>` owner token (the selftest's, `PROVISIONER_TOKEN_LABEL_RE`) a crashed attempt left.
 3. `create`: `WfpProvisioner.create` with that fixed install id, so a retry resumes the same install. A lease-held refusal is retried (backoff far past the 30-minute lease); every other refusal, `slug_taken` included, is terminal.
 4. `notify`: claims the welcome (`welcome_claimed_at`), sends it once, then sets `welcome_sent_at`.
 5. `done`: sweeps again, deletes `signup_secret`, sets the row `ready`.
