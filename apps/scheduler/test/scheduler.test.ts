@@ -15,6 +15,7 @@ import scheduler, {
   type Env,
   nightly,
   nightOrder,
+  REVOKE_CRON,
   runNightly,
 } from "../src/index.js";
 
@@ -33,6 +34,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await db.prepare("DELETE FROM installs").run();
+  await db.prepare("DELETE FROM platform_state").run();
 });
 
 afterEach(() => {
@@ -155,7 +157,7 @@ const NOW = Date.UTC(2026, 9, 24, 3, 17);
 
 /** The whole log vocabulary: install ids, fixed categories and counts. */
 const LOG_LINE =
-  /^(?:nightly failed (?:timeout|not_found|canceled|exception) i[a-z0-9]{11}|nightly skipped (?:state|deadline|capped|recheck|db_error) i[a-z0-9]{11}|nightly db_error i[a-z0-9]{11}|nightly leaked i[a-z0-9]{11}|nightly summary active=\d+ ok=\d+ failed=\d+ skipped=\d+ capped=\d+ db_errors=\d+ leaked=\d+|nightly invalid ids=\d+|nightly scale active=\d+ over 300|nightly aborted (?:env|exception)|email-quota skipped (?:no_token|config)|email-quota failed (?:http|graphql|timeout|shape)|email-quota (?:ok|warn) sent=\d+ limit=\d+ pct=\d+|directory-revoke (?:done|unsupported|db_error) i[a-z0-9]{11}|directory-revoke (?:retry|failed) i[a-z0-9]{11} (?:exception|exceededCpu|exceededMemory|canceled|unknown|throw|timeout)|directory-revoke invalid ids=\d+|directory-revoke aborted exception|owner-email purged count=\d+|owner-email failed db)$/;
+  /^(?:nightly failed (?:timeout|not_found|canceled|exception) i[a-z0-9]{11}|nightly skipped (?:state|deadline|capped|recheck|db_error) i[a-z0-9]{11}|nightly db_error i[a-z0-9]{11}|nightly leaked i[a-z0-9]{11}|nightly summary active=\d+ ok=\d+ failed=\d+ skipped=\d+ capped=\d+ db_errors=\d+ leaked=\d+|nightly invalid ids=\d+|nightly scale active=\d+ over 300|nightly aborted (?:env|exception)|email-quota skipped (?:no_token|config)|email-quota failed (?:http|graphql|timeout|shape)|email-quota (?:ok|warn) sent=\d+ limit=\d+ pct=\d+|directory-revoke (?:done|unsupported|db_error) i[a-z0-9]{11}|directory-revoke (?:retry|failed) i[a-z0-9]{11} (?:exception|exceededCpu|exceededMemory|canceled|unknown|throw|timeout)|directory-revoke invalid ids=\d+|directory-revoke aborted exception|owner-email purged count=\d+|owner-email failed db|alert email_quota (?:opened|cleared|db_error)|alert email_quota sent (?:open|remind|clear)|alert email_quota send_failed [A-Za-z0-9_]+|alert skipped no_destination)$/;
 
 const DAY = 86_400_000;
 const GOLDEN = 0.3819660112501051;
@@ -1182,9 +1184,101 @@ describe("scheduled: the email-quota alert", () => {
     expect(lines).toEqual([
       "nightly summary active=2 ok=2 failed=0 skipped=0 capped=0 db_errors=0 leaked=0",
       "email-quota warn sent=85 limit=100 pct=85",
+      // The warn opens the email_quota alert; this env has no destination.
+      "alert email_quota opened",
+      "alert skipped no_destination",
       "owner-email purged count=0",
     ]);
     for (const l of lines) expect(l).toMatch(LOG_LINE);
+  });
+
+  /** A send_email fake: `fail` makes send() reject; `subjects` records sends. */
+  const mailer = () => {
+    const m = {
+      fail: false,
+      subjects: [] as string[],
+      binding: {
+        send: async (msg: { subject: string; to: string }) => {
+          if (m.fail) throw new Error("send failed");
+          m.subjects.push(msg.subject);
+          return { messageId: "m" };
+        },
+      } as unknown as SendEmail,
+    };
+    return m;
+  };
+  const night = (n: number) => NOW + n * DAY;
+  const OPEN = "Open Artifacts staging: email quota warning";
+  const REMIND = "Open Artifacts staging: email quota still high";
+  const CLEAR = "Open Artifacts staging: email quota back under";
+
+  it("the email_quota alert: warn opens it, the next warn reminds, ok clears it, a failure leaves it", async () => {
+    captureLogs();
+    const m = mailer();
+    const f = fakes();
+    const e = quotaEnv(f, {
+      ALERT_EMAIL: m.binding,
+      ALERT_TO: "ops@example.test",
+      ALERT_FROM: "alerts@example.test",
+    });
+    let count = 85;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        if (count < 0) throw new Error("down");
+        return reply(count);
+      }),
+    );
+    const run = (t: number) =>
+      scheduler.scheduled(controller(t), e, createExecutionContext());
+    await run(night(0));
+    expect(m.subjects).toEqual([OPEN]);
+    await run(night(1));
+    expect(m.subjects).toEqual([OPEN, REMIND]);
+    count = -1; // the check fails: the alert stays open, no email
+    await run(night(2) - 1);
+    expect(m.subjects).toEqual([OPEN, REMIND]);
+    count = 79;
+    await run(night(3));
+    expect(m.subjects).toEqual([OPEN, REMIND, CLEAR]);
+    await run(night(4));
+    expect(m.subjects).toEqual([OPEN, REMIND, CLEAR]);
+    vi.unstubAllGlobals();
+  });
+
+  it("a failed quota email is retried on the next 2-minute tick, which never sends the reminder itself", async () => {
+    captureLogs();
+    const m = mailer();
+    const f = fakes();
+    const e = quotaEnv(f, {
+      ALERT_EMAIL: m.binding,
+      ALERT_TO: "ops@example.test",
+      ALERT_FROM: "alerts@example.test",
+    });
+    // Billing answers, so only the quota alert can email.
+    (e as { BILLING: unknown }).BILLING = {
+      fetch: async () => Response.json({ ok: true }),
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => reply(90)),
+    );
+    m.fail = true;
+    await scheduler.scheduled(controller(NOW), e, createExecutionContext());
+    expect(m.subjects).toEqual([]);
+    m.fail = false;
+    const tick = (t: number) =>
+      scheduler.scheduled(
+        { scheduledTime: t, cron: REVOKE_CRON, noRetry() {} },
+        e,
+        createExecutionContext(),
+      );
+    await tick(NOW + 2 * 60_000);
+    expect(m.subjects).toEqual([OPEN]);
+    // A day later the reminder is due, but only the nightly check sends it.
+    await tick(NOW + 2 * 60_000 + DAY);
+    expect(m.subjects).toEqual([OPEN]);
+    vi.unstubAllGlobals();
   });
 
   it("a quota failure leaves the nightly result and summary intact", async () => {

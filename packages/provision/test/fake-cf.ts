@@ -4,13 +4,34 @@
 // bucket (SigV4 checked, conditionals enforced). Nothing here talks to the
 // network.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
 import { AwsV4Signer } from "aws4fetch";
+import { NodeSqlEngine, type SqlEngine } from "./fake-cf-sql.js";
 
 const API = "https://api.cloudflare.com/client/v4";
 /** provision's poll of one install's revoke state (PlatformDb.revokeState). */
 const REVOKE_POLL_SQL_PREFIX =
   "SELECT directory_revoke, directory_revoke_attempts, directory_revoked_at, directory_revoke_requested_at FROM installs WHERE id";
+/** The default revoker: a pending revoke on a deleting row is done at once. */
+const REVOKE_DONE_SQL =
+  "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = directory_revoke_requested_at WHERE id = ? AND state = 'deleting' AND directory_revoke = 'pending'";
+
+/** One fake D1: its SQL engine, and the seed SQL every query waits for. */
+export class FakeD1 {
+  readonly name: string;
+  readonly engine: SqlEngine;
+  readonly ready: Promise<void>;
+  constructor(name: string, engine: SqlEngine, ready: Promise<void>) {
+    this.name = name;
+    this.engine = engine;
+    this.ready = ready;
+  }
+  /** The node:sqlite database (the default engine) for direct test reads. */
+  get db(): DatabaseSync {
+    if (this.engine instanceof NodeSqlEngine) return this.engine.db;
+    throw new Error(`fake: D1 ${this.name} is not node:sqlite`);
+  }
+}
 
 export interface LogEntry {
   method: string;
@@ -108,7 +129,7 @@ export class FakeCf {
   readonly log: LogEntry[] = [];
   /** Request bodies; NOT printable (secrets are sent to Cloudflare here). */
   readonly raw: { method: string; path: string; body: string }[] = [];
-  readonly d1 = new Map<string, { name: string; db: DatabaseSync }>();
+  readonly d1 = new Map<string, FakeD1>();
   readonly r2 = new Set<string>();
   /** R2 objects by bucket, then key (the releases bucket; T3b). */
   readonly r2Objects = new Map<
@@ -161,13 +182,14 @@ export class FakeCf {
   /**
    * The scheduler's 2-minute revoke cron, emulated: runs on a D1 right before
    * provision polls an install's revoke state. Default: a pending revoke on
-   * a deleting row is done at once. null: never (a stuck scheduler).
+   * a deleting row is done at once. null: never (a stuck scheduler). A
+   * custom revoker needs the default (node:sqlite) engine.
    */
-  revoker: ((db: DatabaseSync, id: string) => void) | null = (db, id) => {
-    db.prepare(
-      "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = directory_revoke_requested_at WHERE id = ? AND state = 'deleting' AND directory_revoke = 'pending'",
-    ).run(id);
-  };
+  revoker: ((db: DatabaseSync, id: string) => void) | null =
+    this.defaultRevoker;
+  private defaultRevoker(db: DatabaseSync, id: string) {
+    db.prepare(REVOKE_DONE_SQL).run(id);
+  }
   /** The next N widget creates store the widget, then answer 500 (a lost reply). */
   turnstileCreateLandsThen500 = 0;
   /** Edits a widget as it is created (e.g. Cloudflare normalizing it). */
@@ -188,8 +210,12 @@ export class FakeCf {
   /** The Content-Type each uploaded asset will be served with, by path. */
   readonly assetTypes = new Map<string, string>();
   private bucketJwts = new Map<string, string>();
+  /** How many missing files the assets session puts in each bucket. */
+  assetsPerBucket = 1;
   private completions = new Set<string>();
   readonly artifacts = new Map<string, { title: string; content: string }>();
+  /** Workflow instances by `<workflow>/<instance id>`; a restart sets queued. */
+  readonly workflows = new Map<string, { status: string; restarts: number }>();
   private faults: Fault[] = [];
   tokenInfo: Record<string, unknown>;
   scriptsReadStatus = 200;
@@ -200,7 +226,17 @@ export class FakeCf {
   /** /healthz override for a script (e.g. to simulate a slow start). */
   health?: (s: FakeScript) => unknown;
 
-  constructor(o: { token?: string; now?: number } = {}) {
+  /** Makes each D1's engine (default: an in-memory node:sqlite). */
+  private readonly sql: (dbName: string) => SqlEngine;
+
+  constructor(
+    o: {
+      token?: string;
+      now?: number;
+      sql?: (dbName: string) => SqlEngine;
+    } = {},
+  ) {
+    this.sql = o.sql ?? (() => new NodeSqlEngine());
     this.token = o.token ?? `cf-token-${randomBytes(12).toString("hex")}`;
     const now = o.now ?? Date.now();
     this.tokenInfo = {
@@ -233,9 +269,19 @@ export class FakeCf {
   /** Seed a D1 (e.g. the platform DB) with SQL; returns its uuid. */
   seedD1(name: string, sql = ""): string {
     const id = randomUUID();
-    const db = new DatabaseSync(":memory:");
-    for (const s of splitSql(sql)) db.exec(s);
-    this.d1.set(id, { name, db });
+    const engine = this.sql(name);
+    let ready = Promise.resolve();
+    // node:sqlite seeds at once, so a test can read the D1 right away.
+    if (engine instanceof NodeSqlEngine)
+      for (const s of splitSql(sql)) engine.db.exec(s);
+    else {
+      ready = (async () => {
+        for (const s of splitSql(sql)) await engine.exec(s, []);
+      })();
+      // Surfaced by the first query, which awaits it.
+      ready.catch(() => {});
+    }
+    this.d1.set(id, new FakeD1(name, engine, ready));
     return id;
   }
   seedKv(title: string): string {
@@ -301,7 +347,11 @@ export class FakeCf {
   fetch: typeof fetch = async (input, init) => {
     const req = new Request(input as RequestInfo, init);
     const url = new URL(req.url);
-    const body = req.method === "GET" ? "" : await req.clone().text();
+    // Multipart bodies are read as bytes: workerd warns on .text() of one.
+    const body =
+      req.method === "GET"
+        ? ""
+        : new TextDecoder().decode(await req.clone().arrayBuffer());
     const path =
       url.origin === new URL(API).origin
         ? url.pathname.replace(/^\/client\/v4/, "") + url.search
@@ -448,6 +498,20 @@ export class FakeCf {
       }
       return env({ sitekey, secret, name, domains, mode });
     }
+    m = r.match(/^\/workflows\/([^/]+)\/instances\/([^/]+)(\/status)?$/);
+    if (m) {
+      const key = `${decodeURIComponent(m[1] as string)}/${decodeURIComponent(m[2] as string)}`;
+      const inst = this.workflows.get(key);
+      if (!inst) return fail(404, "instance not found", 10404);
+      if (!m[3] && req.method === "GET")
+        return env({ id: m[2], status: inst.status });
+      if (m[3] && req.method === "PATCH") {
+        if (json().status !== "restart") return fail(400, "unsupported status");
+        inst.status = "queued";
+        inst.restarts++;
+        return env({ status: "queued" });
+      }
+    }
     m = r.match(/^\/challenges\/widgets\/([^/]+)$/);
     if (m && req.method === "GET") {
       const w = this.turnstile.get(decodeURIComponent(m[1] as string));
@@ -460,28 +524,31 @@ export class FakeCf {
       if (!d) return fail(404, "database not found", 7404);
       const { sql, params, batch } = json();
       try {
+        await d.ready;
         if (Array.isArray(batch)) {
           // REST batch: one transaction, all or nothing.
-          d.db.exec("BEGIN");
-          try {
-            const out = batch.flatMap(
-              (q: { sql: string; params?: unknown[] }) =>
-                this.exec(d.db, q.sql, q.params ?? []),
-            );
-            d.db.exec("COMMIT");
-            return env(out);
-          } catch (e) {
-            d.db.exec("ROLLBACK");
-            throw e;
-          }
+          const stmts = batch.flatMap(
+            (q: { sql: string; params?: unknown[] }) =>
+              this.statements(q.sql, q.params ?? []),
+          );
+          const out = await d.engine.batch(stmts);
+          return env(stmts.map((q, i) => this.d1Result(q.sql, out[i])));
         }
         if (
           typeof sql === "string" &&
           sql.startsWith(REVOKE_POLL_SQL_PREFIX) &&
           this.revoker
-        )
-          this.revoker(d.db, String((params ?? [])[0]));
-        return env(this.exec(d.db, sql, params ?? []));
+        ) {
+          const id = String((params ?? [])[0]);
+          if (d.engine instanceof NodeSqlEngine) this.revoker(d.engine.db, id);
+          else if (this.revoker === this.defaultRevoker)
+            await d.engine.exec(REVOKE_DONE_SQL, [id]);
+          else throw new Error("fake: a custom revoker needs node:sqlite");
+        }
+        const out = [];
+        for (const q of this.statements(sql, params ?? []))
+          out.push(this.d1Result(q.sql, await d.engine.exec(q.sql, q.params)));
+        return env(out);
       } catch (e) {
         return fail(400, `${(e as Error).message}: SQLITE_ERROR`, 7500);
       }
@@ -684,27 +751,24 @@ export class FakeCf {
     return fail(404, `fake: no route ${req.method} ${r}`);
   }
 
-  // biome-ignore lint/suspicious/noExplicitAny: D1 params are arbitrary JSON
-  private exec(db: DatabaseSync, sql: string, params: any[]) {
+  /** One query's statements; params bind only a single-statement query. */
+  private statements(sql: string, params: unknown[]) {
     const stmts = splitSql(sql);
-    return stmts.map((s) => {
-      const st = db.prepare(s);
-      const total = () =>
-        Number(
-          (db.prepare("SELECT total_changes() AS c").get() as { c: number }).c,
-        );
-      const before = total();
-      const rows = st.all(...(stmts.length === 1 ? params : []));
-      // Real D1 counts rows a trigger writes too (measured on staging: a
-      // one-row UPDATE of installs reports 2, from installs_row_version), so
-      // the fake reports total_changes(), not SQLite's changes().
-      const changes = total() - before;
-      return {
-        results: rows,
-        success: true,
-        meta: { changes: /^\s*SELECT/i.test(s) ? 0 : changes },
-      };
-    });
+    return stmts.map((s) => ({
+      sql: s,
+      params: stmts.length === 1 ? params : [],
+    }));
+  }
+
+  private d1Result(
+    sql: string,
+    r: { rows: Record<string, unknown>[]; changes: number } | undefined,
+  ) {
+    return {
+      results: r?.rows ?? [],
+      success: true,
+      meta: { changes: /^\s*SELECT/i.test(sql) ? 0 : (r?.changes ?? 0) },
+    };
   }
 
   private async scriptRoute(
@@ -743,7 +807,9 @@ export class FakeCf {
         this.completions.add(jwt);
         return env({ jwt, buckets: [] });
       }
-      const buckets = missing.map((h) => [h]);
+      const buckets: string[][] = [];
+      for (let i = 0; i < missing.length; i += this.assetsPerBucket)
+        buckets.push(missing.slice(i, i + this.assetsPerBucket));
       const paths = new Map(
         Object.entries(manifest).map(([p, v]) => [v.hash, p] as const),
       );
@@ -1036,14 +1102,16 @@ export class FakeCf {
       const dbId = s.metadata.bindings.find(
         (b: { type: string }) => b.type === "d1",
       )?.id;
-      const db = this.d1.get(dbId)?.db;
+      const d = this.d1.get(dbId);
       const hash = createHash("sha256").update(auth).digest("hex");
+      await d?.ready;
       const ok =
-        db
-          ?.prepare(
+        ((
+          await d?.engine.exec(
             "SELECT 1 FROM tokens WHERE token_hash = ? AND revoked_at IS NULL",
+            [hash],
           )
-          .get(hash) !== undefined;
+        )?.rows.length ?? 0) > 0;
       if (!ok) return new Response("unauthorized", { status: 401 });
       const msg = JSON.parse(body);
       if (msg.id === undefined) return new Response(null, { status: 202 });

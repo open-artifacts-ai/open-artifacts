@@ -246,6 +246,12 @@ User Workers in a dispatch namespace get no cron triggers, so `apps/scheduler` i
   | `EMAIL_DAILY_LIMIT` | `{{EMAIL_DAILY_LIMIT_STAGING}}`, `{{EMAIL_DAILY_LIMIT_PROD}}` | The account's Email Sending daily limit, a positive integer: dashboard > Compute > Email Service > Email Sending |
 
   Step 3 below fills them in the same gitignored copy as the D1 id and refuses to deploy if any of this env's placeholders is left. An unfilled placeholder would be an invalid config, so the alert would skip.
+- **Operator alerts by email** (`apps/scheduler/src/alerts.ts`). Two alerts, each with a key: `billing_unreachable` opens when the last `/health` success of `oa-<p>-billing` is over an hour old (checked every 2 minutes) and clears on the next success; `email_quota` opens on the nightly check's `warn` and clears on a later `ok` (a skipped or failed check leaves it as it is). Each alert sends one plain-text email when it opens, one a day while it stays open, and one when it clears, with a fixed subject per key and state, no customer data and no URLs. State is in `platform_state` (0006): `<key>_opened_at`, `<key>_notified_at` and `<key>_cleared_at`. A failed send logs `alert <key> send_failed <category>` and is retried on the next 2-minute tick (the quota reminder itself is sent only by the nightly check). Logs: `alert <key> opened|cleared|db_error`, `alert <key> sent open|remind|clear`. The mail goes through the `send_email` binding `ALERT_EMAIL` (Cloudflare Email Service) from `ALERT_FROM` to `ALERT_TO`. With no binding or an empty or malformed address, each email is logged as `alert skipped no_destination` and the state machine runs on.
+
+  | Var | Placeholder (staging, prod) | Value |
+  |---|---|---|
+  | `ALERT_TO` | `{{OPS_ALERT_EMAIL_STAGING}}`, `{{OPS_ALERT_EMAIL_PROD}}` | The operator's address |
+  | `ALERT_FROM` | `{{OPS_ALERT_FROM_STAGING}}`, `{{OPS_ALERT_FROM_PROD}}` | A sender on a domain onboarded to Email Sending in this account |
 
 A hosted upload carries no cron of its own (`TEMPLATE_BINDINGS_EXCLUDED.triggers`). That's pinned for the metadata in `packages/provision/test/metadata.test.ts`, and for the create, upgrade and rollback uploads, with no `/schedules` call, in `wfp-lifecycle.test.ts`. So the job runs once.
 
@@ -264,25 +270,32 @@ Steps, per env (`ENV`, `P` and `UP` as in the dispatch steps above):
    git status --porcelain | grep -q . && { echo "dirty checkout" >&2; exit 1; }
    pnpm install --frozen-lockfile && pnpm --filter @oa/provision build && pnpm --filter @oa/scheduler test
    ```
-3. Deploy with the provisioning token. Fill this env's placeholders into a gitignored copy, refuse if any of this env's `{{...}}` is left, deploy the copy, then remove it. `ZONES` is the sending zone tags, comma-separated (each is the zone's id: dashboard > the domain > Overview > API section > Zone ID, 32 lowercase hex chars). `LIMIT` is the account's Email Sending daily limit (dashboard > Compute > Email Service > Email Sending), a positive integer of at most 9 digits. Replace both quoted values before running; the chain refuses anything `apps/scheduler/src/quota.ts` would reject (an empty value, the example text, a bad tag or limit):
+3. Deploy with the provisioning token. Fill this env's placeholders into a gitignored copy, refuse if any of this env's `{{...}}` is left, deploy the copy, then remove it. `ZONES` is the sending zone tags, comma-separated (each is the zone's id: dashboard > the domain > Overview > API section > Zone ID, 32 lowercase hex chars). `LIMIT` is the account's Email Sending daily limit (dashboard > Compute > Email Service > Email Sending), a positive integer of at most 9 digits. `ALERT_TO` and `ALERT_FROM` are the operator alerts' recipient and sender (plain addresses). Replace all four quoted values before running; the chain refuses anything `apps/scheduler/src/quota.ts` would reject (an empty value, the example text, a bad tag or limit) and any address that isn't a plain one. `scripts/ops/deploy-platform-worker.sh scheduler $ENV` does the same with `PLATFORM_DB_ID`, `EMAIL_ZONE_TAGS`, `EMAIL_DAILY_LIMIT`, `OPS_ALERT_EMAIL` and `OPS_ALERT_FROM`:
    ```sh
    cd apps/scheduler
    ZONES='<zone tag>[,<zone tag>...]'
    LIMIT='<daily limit>'
+   ALERT_TO='<operator address>'
+   ALERT_FROM='<sender address>'
+   ADDR='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
    DB_ID=$(pnpm exec wrangler d1 list --json | jq -r --arg n "oa-$P-platform" '.[] | select(.name == $n) | .uuid')
    printf '%s' "$ZONES" | grep -Eq '^[0-9a-f]{32}(,[0-9a-f]{32}){0,9}$' \
      && printf '%s' "$LIMIT" | grep -Eq '^[1-9][0-9]{0,8}$' \
+     && printf '%s' "$ALERT_TO" | grep -Eq "$ADDR" \
+     && printf '%s' "$ALERT_FROM" | grep -Eq "$ADDR" \
      && test -n "$DB_ID" \
      && sed -e "s/{{PLATFORM_DB_ID_$UP}}/$DB_ID/" \
             -e "s/{{EMAIL_ZONE_TAG_$UP}}/$ZONES/" \
-            -e "s/{{EMAIL_DAILY_LIMIT_$UP}}/$LIMIT/" wrangler.jsonc > wrangler.deploy.jsonc \
+            -e "s/{{EMAIL_DAILY_LIMIT_$UP}}/$LIMIT/" \
+            -e "s/{{OPS_ALERT_EMAIL_$UP}}/$ALERT_TO/" \
+            -e "s/{{OPS_ALERT_FROM_$UP}}/$ALERT_FROM/" wrangler.jsonc > wrangler.deploy.jsonc \
      && { ! grep -q "{{[A-Z_]*_$UP}}" wrangler.deploy.jsonc \
           || { rm wrangler.deploy.jsonc; echo "unfilled $UP placeholder" >&2; false; }; } \
      && pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env "$ENV" \
      && rm wrangler.deploy.jsonc
    ```
    The copy is the whole file, so the other env's placeholders stay in it (harmless: `--env` deploys only this env's block); the check is on this env's. A refused chain leaves nothing deployed; if `wrangler deploy` itself fails, remove `wrangler.deploy.jsonc` by hand.
-   The deploy output must name `oa-$P-scheduler` with `DISPATCHER (oa-$ENV)`, `PLATFORM_DB (oa-$P-platform)`, `OA_ENV ("$ENV")`, `EMAIL_QUOTA_ZONES ("<your zone tags>")` and `EMAIL_DAILY_LIMIT ("<your limit>")` (no `{{`), the schedules `17 3 * * *` and `*/2 * * * *`, and no routes or workers.dev URL.
+   The deploy output must name `oa-$P-scheduler` with `DISPATCHER (oa-$ENV)`, `PLATFORM_DB (oa-$P-platform)`, `OA_ENV ("$ENV")`, `EMAIL_QUOTA_ZONES ("<your zone tags>")`, `EMAIL_DAILY_LIMIT ("<your limit>")`, `ALERT_TO`, `ALERT_FROM` and the `ALERT_EMAIL` send_email binding (no `{{`), the schedules `17 3 * * *` and `*/2 * * * *`, and no routes or workers.dev URL.
 4. Binding check, from the deployed settings (in the same shell as step 3, so `ZONES` and `LIMIT` are still set): `PLATFORM_DB` must be the database named `oa-$P-platform`, `DISPATCHER` must be the namespace `oa-$ENV`, `OA_ENV` must be `$ENV`, `EMAIL_QUOTA_ZONES` and `EMAIL_DAILY_LIMIT` must be the values from step 3, and the schedules must be exactly `17 3 * * *` and `*/2 * * * *`. Never another env's (`CF_ACCOUNT_ID` and `CF_API_TOKEN` as in the dispatch check):
    ```sh
    API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID"
@@ -427,7 +440,7 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 ### First-create checklist (per env)
 
 1. Create the KV namespaces `oa-<p>-broker-registry` and `oa-<p>-directory-registry` side by side, before any provision run on the env (any provision version that includes the directory copy). With the broker on, create and every lifecycle operation (status aside) refuse before any write if either is missing.
-2. Apply every platform D1 migration to `oa-<p>-platform` that it does not have yet, in order, before deploying the scheduler or running a CLI that needs it (0005 before the H-DV scheduler, whose 2-minute tick otherwise logs `directory-revoke aborted exception` every time; a delete run before 0005 moves the row to `deleting` and then fails on its first revoke write, so rerun it once 0005 is applied) (0004 adds a column, so it can't be re-run; check with `PRAGMA table_info(hosted_audit)` before applying it): `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal), then `0004_audit_actor.sql` (the `hosted_audit.actor` column the CLI writes), then `0005_directory_revoke.sql` (the four directory revoke columns and the `installs_revoke_pending` index; `owner_email` is unchanged; not re-runnable, so check `PRAGMA table_info(installs)` for `directory_revoke` first). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write; without 0004, every `oa:hosted` command fails closed on its first audit row; without 0005, delete stops at its first revoke write with the row already `deleting` (rerun after applying it).
+2. Apply every platform D1 migration to `oa-<p>-platform` that it does not have yet, in order, before deploying the scheduler or running a CLI that needs it (0005 before the H-DV scheduler, whose 2-minute tick otherwise logs `directory-revoke aborted exception` every time; a delete run before 0005 moves the row to `deleting` and then fails on its first revoke write, so rerun it once 0005 is applied) (0004 adds a column, so it can't be re-run; check with `PRAGMA table_info(hosted_audit)` before applying it): `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal), then `0004_audit_actor.sql` (the `hosted_audit.actor` column the CLI writes), then `0005_directory_revoke.sql` (the four directory revoke columns and the `installs_revoke_pending` index; `owner_email` is unchanged; not re-runnable, so check `PRAGMA table_info(installs)` for `directory_revoke` first), then `0006_platform_state.sql` (the scheduler's `platform_state` row store for the operator alerts; re-runnable), then `0007_signups.sql` (the provisioner's `signups` and `signup_secret` tables, before the provisioner or the SS3 scheduler is deployed). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write; without 0004, every `oa:hosted` command fails closed on its first audit row; without 0005, delete stops at its first revoke write with the row already `deleting` (rerun after applying it). Without 0006, the scheduler's 2-minute tick logs `billing-health db_error` and `alert email_quota db_error`, and neither operator alert can fire. Without 0007, the provisioner's consumer retries every signup into the DLQ and the scheduler (while enabled) logs `signups requeue failed` and `signups sweep failed`. The scheduler and dispatch bind `oa-<p>-billing`, so deploy it first (`scripts/ops/deploy-platform-worker.sh billing <env>` with `BILLING_DB_ID` and `BROKER_REGISTRY_ID`, the auth broker's registry namespace id, which billing reads to check the install signatures on its POSTs; after applying `apps/billing/migrations` to `oa-<p>-billing`).
 3. Key ceremony done: `RELEASE_PUBKEY[env]` set in gates.ts (and `PROD_UNLOCKED` for prod).
    - Prod, before FinQore go-live: add the user back as a required reviewer on `hosted-prod` (admin bypass stays off), so every prod signing run waits for approval again.
 4. Create the env's R2 API token and keychain item `oa-hosted-<env>-r2` (see "R2 API token").
@@ -458,6 +471,7 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 | `turnstile-init` | none | `turnstileInit`: creates `oa-<p>-turnstile` once (managed, exactly the env's app domain). Every create attempt is preceded by a listing by that exact name, so a create whose reply was lost is adopted, not duplicated. A same-named widget that differs is refused, and two or more are refused with both ids |
 | `redline-creds` | `--install`, `--confirm <same id>` (staging only, laptop only) | The red-line suite's credentials for rl-a or rl-b (see below) |
 | `owner-token` | `--install`, `--confirm <same id>` (laptop only) | `reissueOwnerToken`: mints a fresh owner PAT (label `provision`) into the install's 0600 PAT file under the lease, and retires the earlier `provision` tokens |
+| `ci-token-sweep` | `--install`, `--run <GitHub run id>` | `ciTokenSweep`: revokes every active owner token labelled `ci-<run id>` in the install's D1, then lists them again and exits 1 unless none remains (no lease; a deleted install has none) |
 
 - `pnpm oa:hosted --help` prints every command and flag. The flags beyond the plan's list: `--tag` (publish-release), `--floor` (publish-floor) and `--force` (release-lease only: releases a live lease, only when no operation is running).
 - Sign-in broker: on for an install whose vars turn google on (`AUTH_PROVIDERS` includes `google`); there is no flag. `create` reads it from `--var`; `update-vars` from the new `--var` set or the install's current vars; the other commands from the install's current vars. With it on, provision requires both `oa-<p>-broker-registry` and `oa-<p>-directory-registry`, writes the entry with origin `https://<app host>`, and renders `AUTH_BROKER_URL` as exactly `https://auth.<the env's app domain>` and `DIRECTORY_BROKER_URL` as exactly `https://directory.<the env's app domain>` (without it the server's directory transport is `none` on HOSTED=1, so directory sync would be dead) and `GOOGLE_CLIENT_ID` as the env's broker client (`BROKER_GOOGLE_CLIENT_ID`, equal to `apps/auth-broker/wrangler.jsonc`, pinned by a test) on every upload. Prod has no broker client yet, so the broker on prod is refused ("no prod Google client yet"). A caller `AUTH_BROKER_URL` or `GOOGLE_CLIENT_ID` that differs is refused, `GOOGLE_CLIENT_SECRET` is never a hosted var, google with no `AUTH_DOMAINS` (after the server's own parse) is refused, and google with the broker off is refused, both before any write.
@@ -465,8 +479,10 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 - Upgrade and rollback never refuse on these: a stale stored `AUTH_BROKER_URL` or `GOOGLE_CLIENT_ID` is re-rendered as the derived value, with a note.
 - Google off: `update-vars` that turns google off keeps the install's registry entry (still trusted, its domains still synced) until a broker-disable op exists.
 - Refused before any call: `--test-hooks` with `--env prod`, `delete` or `release-lease` whose `--confirm` is not the `--install` id, a `--var` that `HOSTED_VARS` rejects, and any missing or malformed flag.
-- Token: the keychain item `oa-hosted-<env>` with account `open-artifacts` (`/usr/bin/security find-generic-password -a open-artifacts -s oa-hosted-<env> -w`, never a PATH lookup). Every keychain read and write the CLI does uses that account, the Turnstile item included. CI is staging only and reads a 0600 file it owns, named by `OA_HOSTED_TOKEN_FILE`, opened with `O_NOFOLLOW` (a symlink is refused) and checked and read through that one fd (`fstat`), never by path again; prod refuses that variable and refuses to run in CI. Then the provisioner's own token checks run (`verifyToken`) before the CLI's first write.
-- R2 credentials (`publish-release` and `publish-floor` only): the keychain item `oa-hosted-<env>-r2`, account `open-artifacts`, holding `<accessKeyId>:<secretAccessKey>` (see "R2 API token" above). The item name is per env, so another env's token is never read; R2 also denies a token outside its one bucket. Staging CI may use a 0600 file named by `OA_HOSTED_R2_FILE` (same `O_NOFOLLOW` and `fstat` rules as the token file); prod refuses it. Both halves are redacted from every output line and never reach argv, a child's environment, an error or the audit.
+- Token: the keychain item `oa-hosted-<env>` with account `open-artifacts` (`/usr/bin/security find-generic-password -a open-artifacts -s oa-hosted-<env> -w`, never a PATH lookup). Every keychain read and write the CLI does uses that account, the Turnstile item included. CI reads a 0600 file it owns, named by `OA_HOSTED_TOKEN_FILE`, opened with `O_NOFOLLOW` (a symlink is refused) and checked and read through that one fd (`fstat`), never by path again. On a laptop, prod refuses that variable (keychain only). Then the provisioner's own token checks run (`verifyToken`) before the CLI's first write.
+- Prod in CI: refused ("CI is staging only; prod refused") unless all three hold: `GITHUB_ACTIONS=true`, `GITHUB_REF=refs/heads/main` and `OA_HOSTED_ENVIRONMENT=hosted-prod-deploy` (set by `hosted-ops.yml` from the same expression that picks its Environment). `CI=true` alone is CI and refused for prod. The check runs before any secret is read or any call. GitHub's Environment protection (main only, the user as required reviewer) is the real gate; this check stops a misconfigured workflow from reaching prod. Prod in CI then reads both the token and the R2 credentials from their files, with the same checks.
+- R2 credentials (`publish-release` and `publish-floor` only): the keychain item `oa-hosted-<env>-r2`, account `open-artifacts`, holding `<accessKeyId>:<secretAccessKey>` (see "R2 API token" above). The item name is per env, so another env's token is never read; R2 also denies a token outside its one bucket. CI uses a 0600 file named by `OA_HOSTED_R2_FILE` (same `O_NOFOLLOW` and `fstat` rules as the token file, and the same prod guard); prod on a laptop refuses it. Both halves are redacted from every output line and never reach argv, a child's environment, an error or the audit.
+- `--ci-owner-token` (CI only: refused outside CI, without a numeric `GITHUB_RUN_ID`, and on any command but `create`, `upgrade`, `rollback` and `update-vars`): the selftest runs on an owner PAT labelled `ci-<GITHUB_RUN_ID>`, minted into the install's D1 right after the operation claims its lease, held only in memory (never a file, an output line, an error or the audit) and revoked, then read back, before the lease is released. No PAT file is read or written: `create` gives the owner no PAT from provisioning (they sign in), and `upgrade`, `rollback` and `update-vars` skip the PAT-file pre-flight. A failed revoke is a note naming the sweep, and the operation's result stands. With the flag, the CLI prints `{"step":"ci-owner-token","install":"<id>"}` for the workflow's sweep.
 - `CLOUDFLARE_ACCOUNT_ID` must be the hosted account id; it also names the S3 endpoint.
 - Turnstile keys: the keychain item `oa-hosted-<env>-turnstile` holds `<sitekey>:<secret>`. `turnstile-init` writes it through `/usr/bin/security -i` on stdin (never argv) and reads it back; `create`, `update-vars`, `upgrade` and `rollback` read it (every command that renders an install's vars).
 - Turnstile test keys: a test-hooks install (rl-a and rl-b on staging) with codes on always gets Cloudflare's always-pass pair (sitekey `1x00000000000000000000AA`, secret `1x0000000000000000000000000000000AA`, `TURNSTILE_TEST_KEYS` in provision), never the env widget, so the red-line suite can sign in by code. `update-vars` re-sends that secret every time, which moves an install that held the env's secret onto the test pair; rotation skips test-hooks installs. Any other install refuses a Cloudflare test key (`1x`/`2x`/`3x`) as the env widget, and prod refuses test keys always.
@@ -475,7 +491,7 @@ TODO (Platform): before directory sync is enabled on any env that already has br
   - `hosted_audit` is append-only by convention: triggers refuse UPDATE and DELETE. That is not a security boundary against someone holding the D1 (provisioning) token, who can drop the triggers or the table.
   - Audit gap: a failed after-row is retried once. If the retry fails too, the CLI prints `AUDIT GAP: <command> <install> took effect, after-row not written` on stderr, exits 3, and records the gap in a 0600 file under `~/.config/oa-hosted/pending-audit/` (directory 0700), named `<env>-<install>-<time>.json`, holding only env, install id, action, command, exit code and actor. The next command for that install (same env) writes the recovered after-row first (detail `recovered: 1`), then removes the file. If even the file can't be written, stderr says to add the row by hand.
 - Release candidate on the red-line installs (before the final gate, T19): `CLOUDFLARE_ACCOUNT_ID=<hosted account> scripts/ops/redline-deploy.sh vX.Y.Z [--with-rl-b]` publishes that tag's staging release (an already published one is fine: a version is never overwritten), upgrades rl-a (and rl-b), and exits non-zero unless each install's `/healthz` reports that version and its own install id. An upgrade keeps the install's data. The gate then checks `rl-a /healthz version == the tag`.
-- PAT files go to `~/.open-artifacts/hosted-<env>/`. Every lifecycle operation (upgrade, rollback, update-vars) runs its pre-flight and selftest with that owner PAT, so every install keeps one there, the red-line installs rl-a and rl-b included; never revoke it. If the file is lost or the token was revoked, `owner-token` re-mints it. The red-line suite never uses it: it signs in as its own admin test user (`redline-creds`).
+- PAT files go to `~/.open-artifacts/hosted-<env>/` (laptop runs; CI runs use `--ci-owner-token` instead). Every lifecycle operation (upgrade, rollback, update-vars) runs its pre-flight and selftest with that owner PAT, so every install keeps one there, the red-line installs rl-a and rl-b included; never revoke it. If the file is lost or the token was revoked, `owner-token` re-mints it. The red-line suite never uses it: it signs in as its own admin test user (`redline-creds`).
 - `redline-creds` (P5): for an active staging install with test hooks whose slug is `rl-a` or `rl-b` only, and whose `/healthz` reports `testHooks: true` and that install id. It reads the hook key from create's 0600 file `~/.open-artifacts/hosted-staging/<app host>-hook-key` (`O_NOFOLLOW`, `fstat`), opens a session for the suite's admin test user `redline-admin@<TEST_DOMAIN>` (`POST /__test/session`; never the owner), mints one PAT labelled `redline-<UTC yyyymmddhhmm>`, and checks it on `/api/v1/me`. Then it sets `REDLINE_RL_A_PAT` and `REDLINE_RL_A_HOOK_KEY` (or `RL_B`) in the `redline-staging` Environment with `gh secret set` on stdin, writes the same two values as 0600 files `REDLINE_RL_A_PAT` and `REDLINE_RL_A_HOOK_KEY` (or `RL_B`) in `~/.open-artifacts/redline-capture/secrets/` (0700, `O_NOFOLLOW`; the suite's `secretsDir` layout, for a local run such as the sign-in capture), and only then revokes that user's earlier `redline-*` PATs, so at most one is live. The token API has no scope or expiry, so every run rotates. The PAT, the key and the session cookie are redacted from every output line and never reach argv, a child's environment or the audit. An HTTP failure reports only the status.
 - Delete revokes the Google directory grant first (H-DV):
   - Phase 1: claim the lease, set `state='deleting'`, `directory_revoke='pending'`, `directory_revoke_attempts=0` and `directory_revoke_requested_at` (this attempt's start), unmap every HOSTS key of the install (the revoke job needs none, and the dispatch Worker 404s at once), audit `delete.revoke_pending`, release the lease. Every read-only refusal (a resource id that isn't `names(id)`'s) comes before this, so a refused delete writes nothing. Every rerun that isn't already settled starts a fresh attempt this way.
@@ -483,6 +499,18 @@ TODO (Platform): before directory sync is enabled on any env that already has br
   - `unsupported` (an install below `REVOKE_MIN_VERSION`, or no script) is audited as `delete.revoke_unsupported` and refused: "install <id> is below <REVOKE_MIN_VERSION> and can't confirm the Google revoke; upgrade it or pass --skip-directory-revoke <reason>". It never tears down by itself.
   - Still `pending` after 10 minutes, or `failed`: refused, and the row stays `deleting`.
   - `--skip-directory-revoke "<reason>"`: the `delete.revoke_skipped` audit row is written before the row says `skipped`, and a `skipped` row with no such audit row is refused until the flag is given again. A one-line reason, at most 200 characters, no email (it goes to hosted_audit as `delete.revoke_skipped`). It sets `skipped` and tears down at once, also from `pending` or `failed`, and prints: "the Google grant stays live; revoke it in the customer's Google Admin console: Security > Access and data control > API controls > Manage Third-Party App Access (Manage App Access in newer consoles), find the Open Artifacts Directory app, then Change access to Blocked" (path checked against Google's Workspace Admin help, 2026-10-26).
+
+### `hosted-ops.yml`: the CLI in CI
+
+Every hosted install operation and release publish runs from the `hosted-ops` workflow (dispatch on `main`), never a laptop. The platform Workers deploy from `deploy-hosted-platform` instead.
+
+- Inputs: `env` (staging or prod), `op` (`create`, `upgrade`, `rollback`, `update-vars`, `status`, `delete`, `release-lease`, `turnstile-init`, `publish-release`, `publish-floor`), `install`, `tag` (a stable `vX.Y.Z`: the version for `create` and `upgrade`, the release for `publish-release`), `args` (JSON) and `confirm` (the install id again, for `delete` and `release-lease`).
+- `args` per op: `create` `{"slug","owner","to"?,"var"?:["K=V"],"testHooks"?}` (`testHooks` staging only; `to` must equal the tag when both are given), `update-vars` `{"var":["K=V",...]}` (the full set; only names `HOSTED_VARS` accepts), `delete` `{"skipDirectoryRevoke"?:"<reason>"}`, `release-lease` `{"force"?:true}`, `publish-floor` `{"floor":{"record","signature"}}` (the signed floor from a `hosted-floor` run's artifact; `publishFloor` verifies it). Every other op takes `{}`.
+- Environment: `hosted-prod-deploy` for prod, `hosted-staging-deploy` for staging (main only, the user as required reviewer). Secrets in each: `PROVISION_TOKEN` (the env's provisioning token, the keychain item `oa-hosted-<env>`) and `R2_TOKEN` (`<accessKeyId>:<secretAccessKey>`, Object Read & Write on `oa-<p>-releases` only). They are separate from `deploy-hosted-platform`'s `DEPLOY_TOKEN`. Variable: `HOSTED_ACCOUNT_ID`. `TURNSTILE_KEYS` (`<sitekey>:<secret>`, the env's one widget): the CLI reads it from a 0600 file, only for the ops that render an install's vars (create, upgrade, rollback, update-vars), never in args or output; without it, provision refuses an install with codes on. For `create`, also `CREATE_OWNER_EMAIL`: the repo is public and so are a run's inputs, so the owner's email is never an input. Set it just before the create (`gh secret set CREATE_OWNER_EMAIL --env hosted-<env>-deploy`, which prompts), and `args` refuses an `owner` key.
+- Steps: prod checks `github.ref` is main; checkout of the workflow's commit; `scripts/hosted/src/ci-args.ts` validates the inputs (passed through env, never shell text) and prints the CLI argv as a JSON array; one step writes `PROVISION_TOKEN` (and `R2_TOKEN` for the publish ops only) to 0600 files under `umask 077` with `set +x`; `pnpm -s oa:hosted <argv>` runs with `--ci-owner-token` for `create`, `upgrade`, `rollback` and `update-vars`; then, always: `ci-token-sweep` for those ops, removal of the files, and a job summary of every JSON line (already redacted).
+- Concurrency: one run per `hosted-ops-<env>-<install or env>`. Audit actor: the run URL.
+- The sweep: when the CLI never finished and a `create`'s install is unknown, the step fails naming the label (`ci-<run id>`) to sweep by hand: `pnpm oa:hosted ci-token-sweep --env <env> --install <id> --run <run id>`.
+- Not in CI yet: `turnstile-init` and the Turnstile pair. The CLI reads the pair only from the laptop keychain, so in CI `turnstile-init` is refused ("laptop only") and a codes-on install that is not a test-hooks install can't be created, upgraded, rolled back or have its vars changed (provision refuses: the Turnstile sitekey and secret are missing). Test-hooks installs (rl-a, rl-b) get the test pair and work.
 
 ### Leases and recovery (Task 5)
 
@@ -493,3 +521,90 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 - **The lease has a time-of-check to time-of-use window.** An operation renews its lease and then makes its Cloudflare call. If the process stalls for longer than the lease between the two (for example, a laptop sleeps), another operation can claim the row in the meantime, and the stalled call still lands once. Example: a create's `HOSTS` put lands after a delete has unmapped the hosts. The stalled operation's next step raises `LostLease`, so it goes no further. A stale `HOSTS` entry left this way points only at the deleted install's id, never at another install: the dispatch Worker finds no script and answers 404. To clear it, re-run delete, which removes the `HOSTS` keys first.
 - **A pending session cut** (`status(id).sessionCut.pending`) means google was turned on and the epoch bump that ends earlier sessions has not run yet. Re-run `updateVars` with the intended vars; any upgrade or rollback also settles it right after its upload. Rotation refuses while a cut is pending.
 - A lease left by a dead process: `releaseLease(id, confirm: id)` once it has expired, or with `force: true` only when you are sure nothing is running. Both are audited.
+
+## The provisioner (SS3, self-serve step 3)
+
+`oa-<p>-provisioner` (`apps/provisioner`) turns one signup into one hosted install: a Queue consumer admits the signup under the daily cap, then starts the `ProvisionInstall` Workflow (`oa-<p>-provision-install`, instance id = the signup id), which runs the same `WfpProvisioner.create` as the CLI. Spec: `docs/superpowers/specs/2026-10-29-ss3-provisioner-design.md`.
+
+### The queue contract
+
+- A message on `oa-<p>-signups` is exactly `{ "signupId": "<ULID>" }`. Anything else is acked and logged as `bad_shape`, never retried.
+- SS4 (the sign-up service) writes the `signups` row (status `pending`) and its `signup_secret` row (the owner's email) in platform D1 first, in one batch, and only then enqueues. Everything after `pending` belongs to the provisioner.
+- The owner's email is never in a message, a log line, a Workflow param, a step output or error, an alert or the dead-letter queue (`oa-<p>-signups-dlq`). It lives only in `signup_secret` (deleted by the `done` step) and `installs.owner_email`.
+- No row yet: the consumer retries (5 times, then the DLQ takes the id). `ready` or `failed`: acked, nothing else. Migration: `apps/platform-db/migrations/0007_signups.sql`, after 0006.
+
+### The Workflow
+
+1. `reserve`: picks the install id once and stores it on the row (a retry reads it back), and outputs the row's stored slug, which create uses (never the event's).
+2. `create`: each attempt first revokes any active `ss-<signupId>` owner token (the selftest's, `PROVISIONER_TOKEN_LABEL_RE`) a crashed attempt left, then runs `WfpProvisioner.create` with that fixed install id, so a retry resumes the same install. A lease-held refusal is retried (backoff far past the 30-minute lease); every other refusal, `slug_taken` included, is terminal. Any other error (a `/healthz` timeout, an MCP selftest failure, "rerun to resume", a Cloudflare or D1 error) is retried as `internal` or `cf_error` within the 6 retries: create is check-first and leased. Only a bad `OA_ENV` or `RELEASE_VERSION` and a missing `signup_secret` fail at once.
+3. `notify`: claims the welcome (`welcome_claimed_at`), sends it once, then sets `welcome_sent_at`.
+4. `done`: sweeps again, deletes `signup_secret`, sets the row `ready`.
+
+A step that runs out of retries sets the row `failed` with a fixed category in `error`. Nothing re-drives it automatically. The scheduler deletes a failed row's `signup_secret` 30 days after it failed (the redrive window); a redrive after that fails `internal` (no email to create with), so use the fallback in `signup-redrive` below.
+
+### The daily cap
+
+- `SIGNUP_DAILY_CAP` (a var on the provisioner and the scheduler, the same value) is a deploy input, not a code constant: the deployer passes it to the wrapper (planned: staging `20`, prod `50`). Parsed strictly (`^[1-9][0-9]{0,3}$`). An invalid value retries and logs `cap_config`; it never defers silently.
+- The cap counts admissions (`admitted_at` in the current UTC day), failed creates included. Over the cap a signup is deferred (`waiting_cap`), never failed; the scheduler re-sends `waiting_cap` rows after 00:00 UTC, oldest first, up to that day's cap.
+- The first cap hit of a UTC day sends one `signup_cap` alert (a demand or abuse signal), at most once a day.
+
+### The signup alerts
+
+All four come from the scheduler (`apps/scheduler/src/alerts.ts`), by email to the operator; their text holds counts and signup ids only.
+
+| Key | Fires when | First check |
+| --- | --- | --- |
+| `signup_cap` | the day's cap was reached | demand or abuse; raise `SIGNUP_DAILY_CAP` only on purpose |
+| `signup_stuck` | a `queued` or `creating` row's Workflow instance is dead (errored, terminated or complete), or a `creating` row is untouched for over 12 hours (past create's retry budget) | `signup-redrive` |
+| `signup_failed` | a signup failed in the last 24 hours | the row's `error` category, then `signup-redrive` or the CLI `delete` |
+| `welcome_unsent` | a welcome was claimed over 10 minutes ago and never marked sent | the send log first (below) |
+
+### Welcome email
+
+At most once per signup: the claim (`welcome_claimed_at`) comes before the send, so a crash between them never sends a second email. "Welcome unsent" means the claim landed and `welcome_sent_at` did not. Check the Email Sending log for the owner's address first: a send can succeed while its `welcome_sent_at` write fails. Send it by hand only if it never went out, then set `welcome_sent_at`.
+
+### `signup-redrive`
+
+`pnpm oa:hosted signup-redrive --env <env> --signup <ULID>` (laptop, or `hosted-ops.yml` with `op: signup-redrive`, `args: {"signup":"<ULID>"}`; prod in CI only from the gated job) re-runs a failed or stuck signup: the row goes back to `queued` (error cleared) and the same Workflow instance is restarted.
+
+- Refused unless the row is `failed`, `queued` or `creating` and its instance is errored, terminated or complete. A live instance is never restarted (that would cancel its steps), and `pending` or `waiting_cap` rows are not admitted yet (a redrive would skip the cap).
+- A `queued` row touched in the last 15 minutes is refused ("wait, then rerun"), and the update matches the `updated_at` it read, so two overlapping redrives restart the instance once.
+- The restart needs Workers Scripts Write on the account, which the provisioning token already has.
+- A failed row whose instance has aged past the Workflows retention has no instance left, so `signup-redrive` refuses it ("has no ... instance"). The fallback: the CLI `delete` of its install (if `install_id` is set and an install row exists), then a fresh signup.
+
+### Deploy prerequisites (per env, check-first)
+
+Before the first provisioner deploy, check each of these exists and create only the missing ones. They land in #847's `provisioner` target in `deploy-hosted-platform.yml`; until then, by hand:
+
+- Queue `oa-<p>-signups` (`wrangler queues info oa-<p>-signups`, else `wrangler queues create oa-<p>-signups`).
+- Its dead-letter queue `oa-<p>-signups-dlq` (same check, then create).
+- Secrets Store secret `oa-<p>-provision-token` in the account's store (`SECRETS_STORE_ID`): the provisioning token's value, never printed.
+- Platform D1 migration 0007 applied (the ordered list in "First-create checklist" above).
+
+### Deploy order
+
+1. `billing`.
+2. The queue, its DLQ and the secret above, then the `provisioner` (it consumes the queue and defines the Workflow).
+3. `dispatch` and the `scheduler` (the scheduler binds the queue as a producer and the provisioner's Workflow, so it deploys after both).
+
+Each with `scripts/ops/deploy-platform-worker.sh <app> <env>` (the provisioner's fills are in its header). The `provisioner` target in `deploy-hosted-platform.yml` lands in #847 after the freeze. The wrapper refuses a provisioner config that binds any secret but `oa-s-provision-token` and `oa-p-provision-token`, or whose block for the env being deployed doesn't bind that env's token (`--env staging` checks the `staging` block for `oa-s-provision-token`, `--env prod` the `prod` block for `oa-p-provision-token`), and refuses `oa-<p>-provision-token` on any other Worker.
+
+### On/off gates
+
+- `SIGNUPS_ENABLED` (a var on the provisioner and the scheduler, filled per env by the wrapper, exactly `true` or `false`): anything but `true` and the consumer acks each message without admitting it (the row stays `pending`, logged `signup disabled`), and the scheduler skips its requeue and its sweep (the alerts and the failed-secret purge still run). Turned on later, the sweep re-sends the `pending` rows.
+- `PROD_UNLOCKED` (`packages/provision/src/internal/gates.ts`): while it is false, provision refuses every prod create, whatever `SIGNUPS_ENABLED` says.
+- Prod runs with `SIGNUPS_ENABLED=false` until the staging create and delete through `hosted-ops.yml` has passed (below).
+
+### Prod enable gate
+
+The provisioner stays off in prod (`SIGNUPS_ENABLED=false`) until one real staging create and delete of a throwaway install (`ss3-spike-<n>`, codes off) run through `hosted-ops.yml`, after #848 merges, with the wall time and API calls read from the run (spike part 2 in the spec). Then redeploy both prod Workers with `SIGNUPS_ENABLED=true` (provisioner first).
+
+### Red-line cases (pending)
+
+`tests/redline/pending/provisioner.test.ts` holds two real probes: "a replayed signup creates nothing new" and "a signup for a taken slug fails cleanly". They sit outside `live/` and out of `live/manifest.json` until the staging provisioner is deployed, because a case that can't pass must not sit in the gate. To enable them:
+
+1. Make the replay fixture: one real staging signup through the provisioner that ends `ready` with its welcome sent. Keep its install.
+2. Configure `REDLINE_STG_PROVISIONER` in the `redline-staging` Environment: `{"accountId","platformDbId","signupsQueueId","tokenFile","replaySignupId"}`. The token (a 0600 file) needs D1 Edit on `oa-s-platform` and Queues Write on `oa-s-signups`, nothing else.
+3. Move the file to `tests/redline/live/` and add both cases (`provisioner > ...`) to `live/manifest.json`.
+
+The taken-slug probe signs up for rl-a's slug, expects `failed` with `slug_taken`, rl-a unchanged, and removes its own signup row afterwards. It uses one of the day's cap slots per run.

@@ -98,7 +98,14 @@ export interface ReleaseReader {
     version: string,
     variant: BundleVariant,
   ): Promise<{ mainModule: string; modules: Module[] }>;
-  assets(version: string, variant: BundleVariant): Promise<ReleaseAsset[]>;
+  /** The assets list only (path, size, sha256); no bytes. */
+  assets(version: string, variant: BundleVariant): Promise<ReleaseAssetEntry[]>;
+  /** The bytes of one asset of that list, read when they are used. */
+  assetBytes(
+    version: string,
+    variant: BundleVariant,
+    path: string,
+  ): Promise<Uint8Array>;
   /** The exact bytes of the server template (wrangler.template.jsonc). */
   template(version: string, variant: BundleVariant): Promise<Uint8Array>;
   /** Every D1 migration file of the server. */

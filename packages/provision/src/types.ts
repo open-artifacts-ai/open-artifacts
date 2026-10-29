@@ -7,6 +7,12 @@ export interface CreateInput {
   vars?: Record<string, string>;
   testHooks?: boolean;
   resumeId?: InstallId;
+  /**
+   * The id a fresh install gets (the hosted provisioner reserves it first);
+   * a rerun resumes that install. The slug held by another install, or this
+   * id on another slug, is refused. Not with resumeId.
+   */
+  installId?: InstallId;
 }
 
 export interface Install {
@@ -15,7 +21,8 @@ export interface Install {
   appHost: string;
   contentHost: string;
   version: string;
-  patFile: string;
+  /** The owner's 0600 PAT file; absent when CI's ephemeral token ran the selftest. */
+  patFile?: string;
 }
 
 export interface Release {

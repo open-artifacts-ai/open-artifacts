@@ -59,6 +59,29 @@ const G = vi.hoisted(() => ({
   RELEASE_PUBKEY: { staging: "", prod: "" } as Record<string, string>,
   FLOOR_MIN_SEQ: { staging: 1, prod: 1 } as Record<string, number>,
 }));
+// Every node:fs call that writes, with its path: a run with no patDir must make none.
+const FSW = vi.hoisted(() => {
+  const WRITES: string[] = [];
+  // biome-ignore lint/suspicious/noExplicitAny: wraps overloaded fs functions
+  const recordWrites = (m: any) => {
+    // biome-ignore lint/suspicious/noExplicitAny: overloaded
+    const out: Record<string, any> = {};
+    for (const f of [
+      "mkdirSync",
+      "openSync",
+      "writeFileSync",
+      "writeSync",
+      "rmSync",
+    ])
+      out[f] = (p: unknown, ...a: unknown[]) => {
+        WRITES.push(`${f} ${String(p)}`);
+        return m[f](p, ...a);
+      };
+    return { ...m, ...out, default: { ...m, ...out } };
+  };
+  return { WRITES, recordWrites };
+});
+vi.mock("node:fs", async (orig) => FSW.recordWrites(await orig()));
 vi.mock("../src/internal/gates.js", async (orig) => {
   const m = await orig<typeof import("../src/internal/gates.js")>();
   return {
@@ -273,11 +296,12 @@ function makeReleases(env: Env, specs: Record<string, Spec> = {}) {
       const b = bundleOf(variant, version);
       return { mainModule: b.mainModule, modules: b.modules };
     },
-    assets: async (version) =>
-      (spec(version).assets ?? ASSETS).map((a) => ({
-        ...a,
-        bytes: a.bytes.slice(),
-      })),
+    assets: async (version) => assetEntries(spec(version).assets ?? ASSETS),
+    assetBytes: async (version, _variant, path) => {
+      const a = (spec(version).assets ?? ASSETS).find((x) => x.path === path);
+      if (!a) throw new Error(`no asset ${path}`);
+      return a.bytes.slice();
+    },
     template: async (version) => tplBytes(spec(version).template).slice(),
     migrations: async (version) =>
       (spec(version).migrations ?? MIGRATION_FILES).map((f) => ({
@@ -447,6 +471,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     mk,
     cfWith,
     opts,
+    patDir,
     pdb,
     hostsId,
     regId,
@@ -903,6 +928,27 @@ describe("rollback", () => {
       previous_version: "0.24.0",
       state: "active",
     });
+  });
+
+  it("rollback refuses an asset changed between plan and apply before any probe or upload", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.p.upgrade(inst.id, "0.24.0");
+    const good = s.rel.reader.assetBytes;
+    let reads = 0;
+    // The plan's pre-flight read is good; the apply's read is not.
+    s.rel.reader.assetBytes = async (version, variant, path) =>
+      path === "app.js" && ++reads >= 2
+        ? enc("console.log(2)")
+        : good(version, variant, path);
+    const from = s.fake.log.length;
+    const e = await fails(s.p.rollback(inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/assets do not match the signed record/);
+    expect(reads).toBe(2);
+    expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(probes(s.fake, from)).toHaveLength(0);
+    expect(s.audit(inst.id)).not.toContain("rollback.incomplete");
   });
 
   it("rollback refuses a previous version below the floor or revoked", async () => {
@@ -2013,7 +2059,7 @@ describe("fix round 2", () => {
         input("redqa", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
       ),
     );
-    const dir = s.opts().patDir;
+    const dir = s.patDir;
     const files = [`${inst.appHost}-pat-token`, `${inst.appHost}-hook-key`];
     for (const f of files) expect(existsSync(join(dir, f))).toBe(true);
     await s.p.delete(inst.id, inst.id);
@@ -2289,7 +2335,7 @@ describe("fix round 3", () => {
 
 describe("fix round 4", () => {
   const patOf = (s: S, appHost: string) =>
-    readFileSync(join(s.opts().patDir, `${appHost}-pat-token`), "utf8").trim();
+    readFileSync(join(s.patDir, `${appHost}-pat-token`), "utf8").trim();
 
   it("R2-L1: status() during a running op leaves its lease and redaction intact; a later error from the op is still scrubbed", async () => {
     const s = setup();
@@ -4027,7 +4073,7 @@ describe("Turnstile test keys (red-line installs only)", () => {
 
 describe("reissueOwnerToken", () => {
   const patPath = (s: ReturnType<typeof setup>, appHost: string) =>
-    join(s.opts().patDir, `${appHost}-pat-token`);
+    join(s.patDir, `${appHost}-pat-token`);
 
   it("mints a fresh provision PAT under the lease, writes it 0600, and retires the earlier provision ones only", async () => {
     const s = setup();
@@ -4105,5 +4151,411 @@ describe("reissueOwnerToken", () => {
     ).toMatch(/busy/);
     expect(tokens()).toEqual(before);
     expect(s.row(inst.id).lease).toBe("x");
+  });
+});
+
+describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
+  const CI = { ciOwnerToken: { label: "ci-42" } };
+  const tokens = (s: S, id: string) =>
+    s
+      .installDb(id)
+      .prepare("SELECT id, label, revoked_at FROM tokens ORDER BY created_at")
+      .all() as { id: string; label: string; revoked_at: number | null }[];
+  const ciTokens = (s: S, id: string) =>
+    tokens(s, id).filter((t) => t.label === "ci-42");
+  const patFiles = (s: S) =>
+    readdirSync(s.patDir).filter((f) => f.endsWith("-pat-token"));
+  /** Raw request index of the first body matching `re`, from `from`. */
+  const at = (s: S, re: RegExp, from = 0) =>
+    s.fake.raw.findIndex((r, i) => i >= from && re.test(r.body));
+  const MINT = /INSERT INTO tokens/;
+  const REVOKE = /UPDATE tokens SET revoked_at = \?1 WHERE id = \?2/;
+  const CLAIM = /UPDATE installs SET state = \?1, lease = \?2/;
+  const FINISH = /lease = NULL, lease_until = NULL/;
+  /** Mint after the claim, revoke before the lease is dropped. */
+  const underLease = (s: S, from: number) => {
+    const claim = at(s, CLAIM, from);
+    const mint = at(s, MINT, from);
+    const revoke = at(s, REVOKE, from);
+    const finish = at(s, FINISH, from);
+    expect(claim).toBeGreaterThanOrEqual(0);
+    expect(mint).toBeGreaterThan(claim);
+    expect(revoke).toBeGreaterThan(mint);
+    expect(finish).toBeGreaterThan(revoke);
+  };
+  /** MCP never answers: the process "crashes" between mint and revoke. */
+  const hangMcp =
+    (s: S): typeof fetch =>
+    (u, init) =>
+      String(u).endsWith("/mcp")
+        ? new Promise<Response>(() => {})
+        : s.fake.fetch(u, init);
+
+  it("create: the selftest runs on a ci-<run> PAT minted under the lease and revoked before it is released; no PAT file, no provision token", async () => {
+    const s = setup();
+    const from = s.fake.raw.length;
+    const inst = keep(await s.mk(CI).create(input()));
+    expect(inst.patFile).toBeUndefined();
+    expect(patFiles(s)).toEqual([]);
+    const ts = tokens(s, inst.id);
+    expect(ts.map((t) => t.label)).toEqual(["ci-42"]);
+    expect(ts[0]?.revoked_at).not.toBeNull();
+    // The selftest published the welcome artifact with it.
+    expect(s.fake.artifacts.size).toBe(1);
+    underLease(s, from);
+    expect(s.audit(inst.id)).toEqual(
+      expect.arrayContaining([
+        "ci_token.mint",
+        "ci_token.revoke",
+        "create.active",
+      ]),
+    );
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("upgrade, rollback and updateVars: no PAT file is read; each mints its own ci token under the lease and revokes it", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    // The laptop PAT file is gone: CI never has one.
+    rmSync(join(s.patDir, `${inst.appHost}-pat-token`));
+    let from = s.fake.raw.length;
+    expect(keep(await s.mk(CI).upgrade(inst.id, "0.24.0"))).toMatchObject({
+      ok: true,
+    });
+    underLease(s, from);
+    from = s.fake.raw.length;
+    const back = keep(await s.mk(CI).rollback(inst.id));
+    expect(back).toMatchObject({ ok: true, rolledBack: true });
+    // The selftest ran (not skipped as with a refused PAT).
+    expect(back.note).toBeUndefined();
+    underLease(s, from);
+    from = s.fake.raw.length;
+    expect(
+      keep(await s.mk(CI).updateVars(inst.id, { FEATURES: "beta" })),
+    ).toMatchObject({ ok: true });
+    underLease(s, from);
+    const ci = ciTokens(s, inst.id);
+    expect(ci).toHaveLength(3);
+    expect(ci.every((t) => t.revoked_at !== null)).toBe(true);
+    // The owner's provision token from the laptop create is untouched.
+    expect(
+      tokens(s, inst.id).filter(
+        (t) => t.label === "provision" && t.revoked_at === null,
+      ),
+    ).toHaveLength(1);
+    // Without the flag, the same upgrade still needs the PAT file.
+    expect((await fails(s.p.upgrade(inst.id, "0.24.0"))).message).toMatch(
+      /owner token file .* is missing/,
+    );
+  });
+
+  it("a failed upgrade's automatic rollback selftests with the same ci token, then revokes it", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    unhealthyAt(s, "0.24.0");
+    const r = keep(await s.mk(CI).upgrade(inst.id, "0.24.0"));
+    expect(r).toMatchObject({ ok: false, rolledBack: true });
+    const ci = ciTokens(s, inst.id);
+    expect(ci).toHaveLength(1);
+    expect(ci[0]?.revoked_at).not.toBeNull();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("an upgrade that fails after the mint still revokes the ci token before the lease is dropped", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const from = s.fake.raw.length;
+    // The script upload is refused: the upgrade aborts after the mint.
+    s.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-[^/]+$/.test(p));
+    await fails(s.mk(CI).upgrade(inst.id, "0.24.0"));
+    const ci = ciTokens(s, inst.id);
+    expect(ci).toHaveLength(1);
+    expect(ci[0]?.revoked_at).not.toBeNull();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    underLease(s, from);
+  });
+
+  it("a revoke that fails is a note naming the sweep, never the token; the sweep then revokes and verifies it", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const flaky: typeof fetch = async (u, init) => {
+      if (REVOKE.test(String(init?.body ?? "")))
+        return Response.json(
+          { success: false, errors: [{ code: 7500, message: "boom" }] },
+          { status: 400 },
+        );
+      return s.fake.fetch(u, init);
+    };
+    const p = s.mk({ ...CI, cf: s.cfWith(flaky) });
+    expect(keep(await p.upgrade(inst.id, "0.24.0"))).toMatchObject({
+      ok: true,
+    });
+    expect(p.notes.join("\n")).toMatch(
+      /CI owner token was not revoked .*ci-token-sweep revokes it/,
+    );
+    expect(
+      ciTokens(s, inst.id).filter((t) => t.revoked_at === null),
+    ).toHaveLength(1);
+    expect(keep(await s.mk().ciTokenSweep(inst.id, "ci-42"))).toEqual({
+      id: inst.id,
+      label: "ci-42",
+      revoked: 1,
+      active: 0,
+    });
+    expect(ciTokens(s, inst.id).every((t) => t.revoked_at !== null)).toBe(true);
+  });
+
+  it("a crash between mint and revoke leaves the token live; ci-token-sweep revokes it, and a second sweep finds none", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    void s.mk({ ...CI, fetch: hangMcp(s) }).upgrade(inst.id, "0.24.0");
+    // Wait until the upgrade is past the mint and stuck (the hang is at
+    // the pre-upload MCP-free path's end: the health check or selftest).
+    for (let i = 0; i < 5000 && s.row(inst.id).version !== "0.24.0"; i++)
+      await new Promise((r) => setImmediate(r));
+    expect(s.row(inst.id).version).toBe("0.24.0");
+    const live = ciTokens(s, inst.id).filter((t) => t.revoked_at === null);
+    expect(live).toHaveLength(1);
+    // Another run's ci token and the owner's own tokens are left alone.
+    s.installDb(inst.id)
+      .prepare(
+        "INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tother', id, 'ci-7', 'h7', 1 FROM users WHERE role = 'owner'",
+      )
+      .run();
+    const r = keep(await s.mk().ciTokenSweep(inst.id, "ci-42"));
+    expect(r).toEqual({ id: inst.id, label: "ci-42", revoked: 1, active: 0 });
+    expect(
+      ciTokens(s, inst.id).filter((t) => t.revoked_at === null),
+    ).toHaveLength(0);
+    const rest = tokens(s, inst.id).filter((t) => t.label !== "ci-42");
+    expect(rest.every((t) => t.revoked_at === null)).toBe(true);
+    expect(rest.map((t) => t.label).sort()).toEqual(["ci-7", "provision"]);
+    expect(s.audit(inst.id)).toContain("ci_token.sweep");
+    expect(keep(await s.mk().ciTokenSweep(inst.id, "ci-42")).revoked).toBe(0);
+  });
+
+  it("the sweep verifies by reading again: a revoke that silently did nothing fails the sweep", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.installDb(inst.id)
+      .prepare(
+        "INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tleft', id, 'ci-42', 'h42', 1 FROM users WHERE role = 'owner'",
+      )
+      .run();
+    // The label UPDATE "succeeds" but changes nothing.
+    const lossy: typeof fetch = async (u, init) => {
+      const body = String(init?.body ?? "");
+      if (/UPDATE tokens SET revoked_at = \?1 WHERE label = \?2/.test(body))
+        return s.fake.fetch(u, {
+          ...init,
+          body: JSON.stringify({ sql: "SELECT 1", params: [] }),
+        });
+      return s.fake.fetch(u, init);
+    };
+    const e = await fails(
+      s.mk({ cf: s.cfWith(lossy) }).ciTokenSweep(inst.id, "ci-42"),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(
+      /1 owner token\(s\) labelled ci-42 are still active after the sweep/,
+    );
+  });
+
+  it("the sweep refuses a malformed label or id, and a deleted install has nothing to sweep", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    for (const bad of ["ci-", "ci-0", "provision", "ci-42 OR 1=1", "ci-4x"])
+      expect((await fails(s.p.ciTokenSweep(inst.id, bad))).message).toMatch(
+        /ci-<run id>/,
+      );
+    expect(await fails(s.p.ciTokenSweep("not-an-id", "ci-42"))).toBeInstanceOf(
+      ProvisionRefused,
+    );
+    keep(await s.p.delete(inst.id, inst.id, { skipDirectoryRevoke: "test" }));
+    expect(keep(await s.p.ciTokenSweep(inst.id, "ci-42"))).toEqual({
+      id: inst.id,
+      label: "ci-42",
+      revoked: 0,
+      active: 0,
+    });
+  });
+
+  it("a malformed ciOwnerToken label is refused before any call", async () => {
+    const s = setup();
+    for (const label of ["ci-", "provision", "ci-1;DROP", ""]) {
+      const n = s.fake.log.length;
+      const e = await fails(s.mk({ ciOwnerToken: { label } }).create(input()));
+      expect(e.message).toMatch(/ci-<run id>/);
+      expect(s.fake.log.length).toBe(n);
+    }
+  });
+
+  // SS3: the hosted provisioner's label (ss-<signup ULID>) and no patDir.
+  const SS_A = "ss-01JBQ4ZKXW5V9R3M2N8P6T7Y0A";
+  const SS_B = "ss-01JBQ4ZKXW5V9R3M2N8P6T7Y0B";
+  /** The options with no patDir at all (the provisioner Worker has no disk). */
+  const noPatDir = (s: S, over: Partial<WfpOptions> = {}) => {
+    const o = s.opts(over);
+    delete (o as { patDir?: string }).patDir;
+    const p = new WfpProvisioner(o);
+    PROVS.push(p);
+    return p;
+  };
+
+  it("no patDir with ciOwnerToken: create succeeds and nothing is written under any directory", async () => {
+    const s = setup();
+    const before = readdirSync(s.patDir);
+    FSW.WRITES.length = 0;
+    const inst = keep(
+      await noPatDir(s, { ciOwnerToken: { label: SS_A } }).create(input()),
+    );
+    expect(inst.patFile).toBeUndefined();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    // A delete with no patDir has no file to remove.
+    expect(
+      keep(
+        await noPatDir(s).delete(inst.id, inst.id, {
+          skipDirectoryRevoke: "test",
+        }),
+      ),
+    ).toMatchObject({ ok: true, state: "deleted" });
+    // No node:fs write at all (no mkdir, open, write or rm), anywhere.
+    expect(FSW.WRITES).toEqual([]);
+    expect(readdirSync(s.patDir)).toEqual(before);
+  });
+
+  it("the file hook sees a laptop create's PAT write (the hook is live)", async () => {
+    const s = setup();
+    FSW.WRITES.length = 0;
+    const inst = keep(await s.p.create(input()));
+    expect(FSW.WRITES).toContain(
+      `openSync ${join(s.patDir, `${inst.appHost}-pat-token`)}`,
+    );
+  });
+
+  it("reissueOwnerToken with no patDir is refused before any write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const rows = tokens(s, inst.id);
+    const n = s.fake.log.length;
+    const e = await fails(noPatDir(s).reissueOwnerToken(inst.id, inst.id));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/patDir is required/);
+    expect(s.fake.log.length).toBe(n);
+    expect(tokens(s, inst.id)).toEqual(rows);
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("upgrade, rollback and updateVars of a test-hook install with ciOwnerToken need no patDir and write no file", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.p.create(
+        input("redqa", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
+      ),
+    );
+    FSW.WRITES.length = 0;
+    const ci = { ciOwnerToken: { label: SS_A } };
+    expect(
+      keep(await noPatDir(s, ci).upgrade(inst.id, "0.24.0")),
+    ).toMatchObject({ ok: true });
+    expect(keep(await noPatDir(s, ci).rollback(inst.id))).toMatchObject({
+      ok: true,
+      rolledBack: true,
+    });
+    expect(
+      keep(
+        await noPatDir(s, ci).updateVars(inst.id, {
+          ...HOOK_VARS,
+          FEATURES: "beta",
+        }),
+      ),
+    ).toMatchObject({ ok: true });
+    expect(FSW.WRITES).toEqual([]);
+  });
+
+  it("no patDir and no ciOwnerToken is refused before any call", async () => {
+    const s = setup();
+    const n = s.fake.log.length;
+    const e = await fails(noPatDir(s).create(input()));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/patDir is required/);
+    expect(s.fake.log.length).toBe(n);
+  });
+
+  it("redline variant without patDir is refused", async () => {
+    const s = setup();
+    const n = s.fake.log.length;
+    const e = await fails(
+      noPatDir(s, { ciOwnerToken: { label: SS_A } }).create(
+        input("redqa", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
+      ),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/patDir is required/);
+    expect(s.fake.log.length).toBe(n);
+  });
+
+  it("ss-<ULID> labels mint and sweep; other labels are refused", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.mk({ ciOwnerToken: { label: SS_A } }).create(input()),
+    );
+    const ss = tokens(s, inst.id).filter((t) => t.label === SS_A);
+    expect(ss).toHaveLength(1);
+    expect(ss[0]?.revoked_at).not.toBeNull();
+    s.installDb(inst.id)
+      .prepare(
+        `INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tss', id, '${SS_A}', 'hss', 1 FROM users WHERE role = 'owner'`,
+      )
+      .run();
+    expect(keep(await s.p.ciTokenSweep(inst.id, SS_A))).toEqual({
+      id: inst.id,
+      label: SS_A,
+      revoked: 1,
+      active: 0,
+    });
+    for (const bad of [
+      "ss-short",
+      `ss-${"a".repeat(26)}`,
+      "ci-abc",
+      `ss-${"0".repeat(25)}I`,
+      `${SS_A}0`,
+    ]) {
+      const n = s.fake.log.length;
+      const e = await fails(
+        s.mk({ ciOwnerToken: { label: bad } }).create(input("other")),
+      );
+      expect(e.message, bad).toMatch(/ci-<run id> or ss-<ULID>/);
+      expect(s.fake.log.length).toBe(n);
+      expect(
+        (await fails(s.p.ciTokenSweep(inst.id, bad))).message,
+        bad,
+      ).toMatch(/ci-<run id> or ss-<ULID>/);
+    }
+  });
+
+  it("a sweep revokes only its own exact label", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    for (const [id, label] of [
+      ["t1", "ci-123"],
+      ["t2", "ci-1234"],
+      ["t3", SS_A],
+      ["t4", SS_B],
+    ])
+      s.installDb(inst.id)
+        .prepare(
+          `INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT '${id}', id, '${label}', 'h${id}', 1 FROM users WHERE role = 'owner'`,
+        )
+        .run();
+    const live = () =>
+      tokens(s, inst.id)
+        .filter((t) => t.revoked_at === null)
+        .map((t) => t.label)
+        .sort();
+    expect(keep(await s.p.ciTokenSweep(inst.id, "ci-123")).revoked).toBe(1);
+    expect(live()).toEqual(["ci-1234", "provision", SS_A, SS_B].sort());
+    expect(keep(await s.p.ciTokenSweep(inst.id, SS_A)).revoked).toBe(1);
+    expect(live()).toEqual(["ci-1234", "provision", SS_B].sort());
   });
 });

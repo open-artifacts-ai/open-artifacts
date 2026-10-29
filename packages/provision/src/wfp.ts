@@ -32,7 +32,14 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { newId, newPat } from "@oa/shared";
-import { type Cf, CfError, type Module, type Target } from "./cf.js";
+import {
+  type AssetFile,
+  assetHash,
+  type Cf,
+  CfError,
+  type Module,
+  type Target,
+} from "./cf.js";
 import {
   ALLOW_ACCOUNT_TARGET,
   FLOOR_MIN_SEQ,
@@ -80,7 +87,6 @@ import {
 import {
   ASSET_LIMITS,
   assertAssetPath,
-  assetEntries,
   type BundleVariant,
   bundleSha256,
   compareVersions,
@@ -91,7 +97,6 @@ import {
   migrationsSha256,
   openFloor,
   openReleaseRecord,
-  type ReleaseAsset,
   type ReleaseAssetEntry,
   type ReleaseFile,
   type ReleaseReader,
@@ -181,7 +186,20 @@ export interface WfpOptions {
    * oa-hosted-<env>-turnstile). Required when codes are on.
    */
   turnstile?: { sitekey: string; secret: string };
-  patDir: string;
+  /**
+   * Where the owner PAT and a test-hook key are saved (0600). Required unless
+   * ciOwnerToken is set, and always for a redline (test-hook) create.
+   */
+  patDir?: string;
+  /**
+   * CI (the oa:hosted CLI's --ci-owner-token, label ci-<run id>) and the
+   * hosted provisioner (label ss-<signup ULID>): create, upgrade, rollback
+   * and updateVars mint an owner PAT labelled `label` into the install's D1
+   * under the operation's lease, hold it in memory for the selftest and
+   * revoke it before the lease is released. No PAT file is read or written;
+   * ciTokenSweep revokes what a crashed run left.
+   */
+  ciOwnerToken?: { label: string };
   /** Broker keypair (P2); off until the broker exists. */
   brokerEnabled?: boolean;
   /** For /healthz and the MCP selftest. */
@@ -224,7 +242,6 @@ interface Checked {
   rec: ReleaseRecord;
   mainModule: string;
   modules: Module[];
-  assets: ReleaseAsset[];
   template: Template;
   migrations: ReleaseFile[];
   /** The env's signed floor, checked against FLOOR_MIN_SEQ and the version. */
@@ -535,7 +552,25 @@ interface Held {
 interface OpContext {
   sensitive: Set<string>;
   held: Held | null;
+  /** The CI owner token this operation minted and has not revoked yet. */
+  ci: CiToken | null;
 }
+
+/** An ephemeral CI owner PAT: in memory only, revoked before the lease goes. */
+interface CiToken {
+  pat: string;
+  tokenId: string;
+  d1Id: string;
+  d1Name: string;
+}
+
+/** The CI owner token label: ci-<GitHub run id>. */
+export const CI_TOKEN_LABEL_RE = /^ci-[1-9][0-9]{0,19}$/;
+/** The hosted provisioner's owner token label: ss-<signup ULID>. */
+export const PROVISIONER_TOKEN_LABEL_RE = /^ss-[0-9A-HJKMNP-TV-Z]{26}$/;
+const isTokenLabel = (l: unknown): l is string =>
+  typeof l === "string" &&
+  (CI_TOKEN_LABEL_RE.test(l) || PROVISIONER_TOKEN_LABEL_RE.test(l));
 
 /** A pending session cut and the vars it was minted against. */
 interface Cut {
@@ -569,15 +604,19 @@ interface RollbackPlan {
   m: Meta;
   rel: Checked;
   d1Id: string;
-  patFile: string;
+  /** Absent with ciOwnerToken: the selftest uses the in-memory CI token. */
+  patFile?: string;
   /** R-L1: the PAT was refused; the rollback checks /healthz only. */
   refused?: string;
   raiseFloor: boolean;
 }
 
-/** The owner PAT file, and why it was refused when a manual rollback goes on without it. */
+/**
+ * The owner PAT file, and why it was refused when a manual rollback goes on
+ * without it. No file with ciOwnerToken: the CI token is minted under the lease.
+ */
 interface OwnerToken {
-  patFile: string;
+  patFile?: string;
   refused?: string;
 }
 
@@ -632,6 +671,8 @@ export class ProbeAccepted extends Error {
 
 export class WfpProvisioner {
   readonly notes: string[] = [];
+  /** Each verified asset's assetHash, by its record sha256 and path. */
+  private readonly assetHashes = new Map<string, string>();
   private readonly cf: Cf;
   private readonly env: Env;
   private readonly target: Target;
@@ -744,6 +785,8 @@ export class WfpProvisioner {
       throw new ProvisionRefused(
         `RELEASE_PUBKEY.${env} is still the placeholder; T3b must set the release signing key before any create`,
       );
+    // A malformed CI label is refused before any call, not at the mint.
+    this.ciLabel();
     const d = HOSTED_DOMAINS[env];
     if (o.domains?.app !== d.app || o.domains?.content !== d.content)
       throw new ProvisionRefused(
@@ -936,15 +979,28 @@ export class WfpProvisioner {
     return copy;
   }
 
-  private async readAssets(rec: ReleaseRecord): Promise<ReleaseAsset[]> {
+  /**
+   * The assets list, checked against the signed record, as an upload
+   * manifest whose bytes are read only when used: every read is a private
+   * copy checked against the record's size and sha256, so a file changed
+   * since an earlier read is refused. Each file's assetHash comes from its
+   * verify read: with `verify` (pre-flight, rollback apply) every file is
+   * read and checked now, one at a time, and dropped; without, only a file
+   * not verified yet in this run is.
+   */
+  private async readAssets(
+    rec: ReleaseRecord,
+    verify = false,
+  ): Promise<AssetFile[]> {
     const list = await this.o.release.assets(rec.version, rec.variant);
-    const copy = (list ?? []).map((a) => ({
+    const got = (Array.isArray(list) ? list : []).map((a) => ({
       path: a?.path,
-      bytes: new Uint8Array(a?.bytes ?? []),
+      size: a?.size,
+      sha256: a?.sha256,
     }));
-    let got: ReturnType<typeof assetEntries>;
     try {
-      got = assetEntries(copy);
+      for (const a of got) assertAssetEntry(a);
+      got.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     } catch (e) {
       throw new ProvisionRefused(
         `release ${rec.version} (${rec.variant}): ${(e as Error).message}`,
@@ -952,7 +1008,27 @@ export class WfpProvisioner {
     }
     if (canonicalJson(got) !== canonicalJson(rec.assets))
       this.refuse(rec, "assets", "an extra, missing or changed file");
-    return copy;
+    const read = async (a: ReleaseAssetEntry) => {
+      const bytes = new Uint8Array(
+        (await this.o.release.assetBytes(rec.version, rec.variant, a.path)) ??
+          [],
+      );
+      if (bytes.byteLength !== a.size || sha256Hex(bytes) !== a.sha256)
+        this.refuse(rec, "assets", `${a.path} changed`);
+      return bytes;
+    };
+    const files: AssetFile[] = [];
+    for (const a of rec.assets) {
+      // The hash is of the bytes with this sha256, so it is reused safely.
+      const key = `${a.sha256}\0${a.path}`;
+      let hash = this.assetHashes.get(key);
+      if (verify || hash === undefined) {
+        hash = assetHash(await read(a), a.path);
+        this.assetHashes.set(key, hash);
+      }
+      files.push({ path: a.path, size: a.size, hash, bytes: () => read(a) });
+    }
+    return files;
   }
 
   private async readTemplate(rec: ReleaseRecord): Promise<Template> {
@@ -1011,11 +1087,11 @@ export class WfpProvisioner {
     const rec = await this.readRecord(i);
     const floor = await this.readFloor(rec);
     const { mainModule, modules } = await this.readModules(rec);
-    const assets = await this.readAssets(rec);
+    await this.readAssets(rec, true);
     const template = await this.readTemplate(rec);
     const migrations = await this.readMigrations(rec);
     await this.readWelcome(rec);
-    return { rec, mainModule, modules, assets, template, migrations, floor };
+    return { rec, mainModule, modules, template, migrations, floor };
   }
 
   /**
@@ -1230,10 +1306,16 @@ export class WfpProvisioner {
     const { appHost, contentHost } = hosts(i.slug, this.o.domains);
     if (i.resumeId !== undefined && !isInstallId(i.resumeId))
       throw new ProvisionRefused("resumeId is not an install id");
+    if (i.installId !== undefined && !isInstallId(i.installId))
+      throw new ProvisionRefused("installId is not an install id");
+    if (i.installId !== undefined && i.resumeId !== undefined)
+      throw new ProvisionRefused("pass installId or resumeId, not both");
     const testHooks = i.testHooks === true;
     const vars = i.vars ?? {};
     this.brokerVars(vars);
     this.checkVariant(i, vars);
+    // The owner PAT file without a CI token, and the test-hook key either way.
+    if (this.o.ciOwnerToken === undefined || testHooks) this.patDir();
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars, testHooks);
     this.checkEmailCodeDomain(vars, "domains");
@@ -1333,7 +1415,7 @@ export class WfpProvisioner {
     const fresh = !row;
     if (!row)
       row = await this.platform.insertCreating({
-        id: newInstallId(),
+        id: i.installId ?? newInstallId(),
         slug: i.slug,
         appHost,
         contentHost,
@@ -1420,6 +1502,19 @@ export class WfpProvisioner {
 
   private async findRow(i: WfpCreateInput): Promise<InstallRow | undefined> {
     const bySlug = await this.platform.bySlug(i.slug);
+    if (i.installId !== undefined) {
+      const byId = await this.platform.byId(i.installId);
+      if (byId && byId.slug !== i.slug)
+        throw new ProvisionRefused(
+          `installId ${i.installId} is not the install for slug ${i.slug}`,
+        );
+      // An active row keeps its own refusal (slug ... already exists).
+      if (bySlug && bySlug.id !== i.installId && bySlug.state !== "active")
+        throw new ProvisionRefused(
+          `slug ${i.slug} is already taken by install ${bySlug.id}`,
+        );
+      return bySlug;
+    }
     if (i.resumeId === undefined) return bySlug;
     const byId = await this.platform.byId(i.resumeId);
     if (!byId || byId.slug !== i.slug || bySlug?.id !== byId.id)
@@ -1595,8 +1690,9 @@ export class WfpProvisioner {
         missing.map((k) => [k, fresh[k] as string]),
       );
       if (send.TEST_HOOK_KEY !== undefined) {
-        mkdirSync(this.o.patDir, { recursive: true, mode: 0o700 });
-        const f = join(this.o.patDir, `${m.appHost}-hook-key`);
+        const dir = this.patDir();
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const f = join(dir, `${m.appHost}-hook-key`);
         try {
           writeSecretFile(f, `${send.TEST_HOOK_KEY}\n`);
         } catch (e) {
@@ -1669,7 +1765,12 @@ export class WfpProvisioner {
 
     await this.health(id, m.appHost, version);
     await this.hold();
-    const patFile = await this.mintPat(d1Id, n.d1, m.ownerEmail, m.appHost);
+    // CI: the selftest runs on an ephemeral token and the owner gets no PAT
+    // from provisioning (they sign in); otherwise the 0600 PAT file.
+    let patFile: string | undefined;
+    if (this.o.ciOwnerToken)
+      await this.mintCiToken(d1Id, n.d1, m.ownerEmail, true);
+    else patFile = await this.mintPat(d1Id, n.d1, m.ownerEmail, m.appHost);
     await this.selftest(rec, m.appHost, patFile);
 
     await this.logged("create.active", { version });
@@ -1680,7 +1781,7 @@ export class WfpProvisioner {
       appHost: m.appHost,
       contentHost: m.contentHost,
       version,
-      patFile,
+      ...(patFile === undefined ? {} : { patFile }),
     };
   }
 
@@ -1859,12 +1960,16 @@ export class WfpProvisioner {
     this.inFlight = true;
     try {
       return await this.ctx.run(
-        { sensitive: new Set(), held: null },
+        { sensitive: new Set(), held: null, ci: null },
         async () => {
           try {
             return await fn();
           } catch (e) {
             throw this.scrub(e);
+          } finally {
+            // Any path that left the CI token live (a lost lease, a throw
+            // past the release): revoke it now; ciTokenSweep is the backstop.
+            await this.revokeCiToken();
           }
         },
       );
@@ -1978,6 +2083,7 @@ export class WfpProvisioner {
   private async release(state: InstallState): Promise<void> {
     const h = this.held;
     if (!h) return;
+    await this.revokeCiToken();
     if (!(await this.platform.finish(h.id, h.lease, state))) await this.lost();
     this.held = null;
   }
@@ -1993,6 +2099,7 @@ export class WfpProvisioner {
     e?: unknown,
   ): Promise<void> {
     const h = this.held;
+    if (h) await this.revokeCiToken();
     this.held = null;
     if (!h) return;
     if (e !== undefined)
@@ -2142,6 +2249,8 @@ export class WfpProvisioner {
         throw new ProvisionRefused(
           "reissueOwnerToken needs confirm to be exactly the install id",
         );
+      // The new PAT goes to a file: no patDir is refused before any write.
+      this.patDir();
       const row = await this.openInstall(id, ["active"]);
       const raw = ownerEmailOf(row);
       const ownerEmail = raw === null ? null : normOwnerEmail(raw);
@@ -2236,7 +2345,7 @@ export class WfpProvisioner {
 
   /** The owner PAT create saved; the selftest uses it, and nothing re-mints it. */
   private patFileOf(appHost: string): string {
-    const f = join(this.o.patDir, `${appHost}-pat-token`);
+    const f = join(this.patDir(), `${appHost}-pat-token`);
     if (!existsSync(f))
       throw new ProvisionRefused(
         `the owner token file ${f} is missing; the selftest needs it`,
@@ -2254,6 +2363,8 @@ export class WfpProvisioner {
     appHost: string,
     allowRefused = false,
   ): Promise<OwnerToken> {
+    // CI: no file to check; the token is minted after the claim.
+    if (this.o.ciOwnerToken) return {};
     const patFile = this.patFileOf(appHost);
     try {
       await this.mcp(appHost, patFile).initialize();
@@ -2457,6 +2568,7 @@ export class WfpProvisioner {
     await this.claim(row, ["active"], "upgrading", "upgrade");
     let uploaded = false;
     try {
+      await this.ciTokenUnderLease(d1Id, n.d1, m.ownerEmail);
       if (raiseFloor) {
         await this.hold();
         await this.platform.raiseFloorSeq(rel.floor.seq);
@@ -2598,6 +2710,11 @@ export class WfpProvisioner {
       const plan = await this.planRollback(row);
       await this.claim(row, ["active"], "upgrading", "rollback");
       try {
+        await this.ciTokenUnderLease(
+          plan.d1Id,
+          names(id, this.env).d1,
+          plan.m.ownerEmail,
+        );
         const r = await this.applyRollback(plan, this.pendingCut(row));
         await this.release("active");
         return {
@@ -2712,7 +2829,7 @@ export class WfpProvisioner {
       m,
       rel,
       d1Id,
-      patFile: tok.patFile,
+      ...(tok.patFile === undefined ? {} : { patFile: tok.patFile }),
       ...(tok.refused === undefined ? {} : { refused: tok.refused }),
       raiseFloor,
     };
@@ -2732,7 +2849,8 @@ export class WfpProvisioner {
     await this.logged("rollback.start", { from, to });
     this.assertHooksAllowed(rel.rec.variant, p.m.testHooks);
     const mods = await this.readModules(rel.rec);
-    const assets = await this.readAssets(rel.rec);
+    // Check-first: every file again, before the probe or any write.
+    const assets = await this.readAssets(rel.rec, true);
     // L5: the live tag, not only the journal; a rollback never crosses it.
     await this.hold();
     let live: string | null | undefined;
@@ -2872,6 +2990,7 @@ export class WfpProvisioner {
       let armedHere = false;
       const out: UploadOut = { reached: null, maybe: false };
       try {
+        await this.ciTokenUnderLease(d1Id, n.d1, m.ownerEmail);
         if (raiseFloor) {
           await this.hold();
           await this.platform.raiseFloorSeq(rel.floor.seq);
@@ -3302,11 +3421,14 @@ export class WfpProvisioner {
           }
         }
         // L8: the owner PAT and hook key of a deleted host are dead weight.
-        for (const f of [
-          `${row.app_host}-pat-token`,
-          `${row.app_host}-hook-key`,
-        ])
-          rmSync(join(this.o.patDir, f), { force: true });
+        // With no patDir (the provisioner Worker) there is no file.
+        const dir = this.o.patDir;
+        if (dir !== undefined)
+          for (const f of [
+            `${row.app_host}-pat-token`,
+            `${row.app_host}-hook-key`,
+          ])
+            rmSync(join(dir, f), { force: true });
         await this.release("deleted");
         await this.platform.audit(id, "delete.done", {});
         return { id, ok: true, state: "deleted" };
@@ -3558,6 +3680,8 @@ export class WfpProvisioner {
     email: string,
     appHost: string,
   ): Promise<string> {
+    // Before the token row: a PAT with no file to go to is never minted.
+    const dir = this.patDir();
     const pat = newPat();
     this.sensitive.add(pat);
     const tokenId = newId();
@@ -3585,8 +3709,8 @@ export class WfpProvisioner {
     );
     if (!ok[0]?.results?.length)
       throw new Error(`token row ${tokenId} missing after the insert; rerun`);
-    mkdirSync(this.o.patDir, { recursive: true, mode: 0o700 });
-    const file = join(this.o.patDir, `${appHost}-pat-token`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = join(dir, `${appHost}-pat-token`);
     try {
       writeSecretFile(file, `${pat}\n`);
     } catch (e) {
@@ -3606,9 +3730,187 @@ export class WfpProvisioner {
     return file;
   }
 
+  /** The CI label, checked; undefined when the CI token is off. */
+  private ciLabel(): string | undefined {
+    const c = this.o.ciOwnerToken;
+    if (c === undefined) return undefined;
+    if (!isTokenLabel(c?.label))
+      throw new ProvisionRefused(
+        "ciOwnerToken.label must be ci-<run id> or ss-<ULID>",
+      );
+    return c.label;
+  }
+
+  /** The PAT directory, for the files only a laptop or redline run writes. */
+  private patDir(): string {
+    const d = this.o.patDir;
+    if (typeof d !== "string" || d === "")
+      throw new ProvisionRefused(
+        "patDir is required without ciOwnerToken and for a redline (test-hook) install",
+      );
+    return d;
+  }
+
+  /** With ciOwnerToken: the CI token, right after the claim (under the lease). */
+  private async ciTokenUnderLease(
+    d1Id: string,
+    d1Name: string,
+    email: string,
+  ): Promise<void> {
+    if (!this.o.ciOwnerToken) return;
+    await this.hold();
+    await this.mintCiToken(d1Id, d1Name, email, false);
+  }
+
+  /**
+   * An owner PAT labelled ci-<run id>, held only in this operation's context
+   * (never a file, a note, a result or an error: it is in the redaction set).
+   * `upsertOwner` (create only) makes the owner row as mintPat does; the
+   * lifecycle operations need the owner row to exist already.
+   */
+  private async mintCiToken(
+    d1Id: string,
+    d1Name: string,
+    email: string,
+    upsertOwner: boolean,
+  ): Promise<void> {
+    const label = this.ciLabel() as string;
+    const c = this.ctx.getStore();
+    if (!c || !this.held)
+      throw new Error("the CI token is minted under a lease");
+    if (c.ci) throw new Error("this operation already holds a CI token");
+    const pat = newPat();
+    this.sensitive.add(pat);
+    const tokenId = newId();
+    const now = this.now();
+    const hash = createHash("sha256").update(pat).digest("hex");
+    const q = async (sql: string, params: unknown[]) => {
+      if (!/^\s*SELECT/i.test(sql)) assertOwnResource(d1Name, this.env);
+      return this.cf.d1Query(d1Id, sql, params);
+    };
+    if (upsertOwner)
+      await q(
+        "INSERT INTO users (id, email, name, role, created_at) VALUES (?1, ?2, ?3, 'owner', ?4) ON CONFLICT(email) DO UPDATE SET role = 'owner'",
+        [newId(), email, email.split("@")[0] || email, now],
+      );
+    else {
+      const u = await q("SELECT id FROM users WHERE email = ?1", [email]);
+      if (!u[0]?.results?.length)
+        throw new ProvisionRefused(
+          "the install has no owner user for the CI selftest token",
+        );
+    }
+    // Recorded before the insert: a lost reply still gets revoked by id.
+    c.ci = { pat, tokenId, d1Id, d1Name };
+    const ins = await q(
+      `INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT ?1, id, ?2, ?3, ?4 FROM users WHERE email = ?5 AND (SELECT count(*) FROM tokens WHERE user_id = users.id AND revoked_at IS NULL) < ${MAX_ACTIVE_TOKENS}`,
+      [tokenId, label, hash, now, email],
+    );
+    if (!ins[0]?.meta?.changes)
+      throw new ProvisionRefused(
+        `the owner already has ${MAX_ACTIVE_TOKENS} active tokens; revoke some, then rerun`,
+      );
+    await this.logged("ci_token.mint", { label });
+  }
+
+  /**
+   * Revokes this operation's CI token, if any, and reads it back. Called
+   * before every lease release and once more when the operation ends. A
+   * failure is a note (the run's ci-token-sweep revokes and verifies), never
+   * a mask over the operation's own result.
+   */
+  private async revokeCiToken(): Promise<void> {
+    const c = this.ctx.getStore();
+    const t = c?.ci;
+    if (!c || !t) return;
+    c.ci = null;
+    try {
+      assertOwnResource(t.d1Name, this.env);
+      await this.cf.d1Query(
+        t.d1Id,
+        "UPDATE tokens SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
+        [this.now(), t.tokenId],
+      );
+      const left = await this.cf.d1Query(
+        t.d1Id,
+        "SELECT id FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
+        [t.tokenId],
+      );
+      if (left[0]?.results?.length) throw new Error("still active");
+      const h = this.held;
+      if (h)
+        await this.platform
+          .audit(h.id, "ci_token.revoke", { label: this.ciLabel() as string })
+          .catch(() => {});
+    } catch (e) {
+      this.notes.push(
+        `the CI owner token was not revoked (${errCode(e)}); ci-token-sweep revokes it`,
+      );
+    }
+  }
+
+  /**
+   * The CI backstop: revokes every still-active owner token labelled exactly
+   * `label` (ci-<run id> or ss-<ULID>; never a prefix or pattern) in the
+   * install's D1, then lists them again and refuses unless none remains. Takes no lease: it runs after the operation, which
+   * may have crashed holding one. An install with no D1 has no token.
+   */
+  async ciTokenSweep(
+    id: InstallId,
+    label: string,
+  ): Promise<{ id: InstallId; label: string; revoked: number; active: 0 }> {
+    return this.guarded(async () => {
+      if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
+      if (!isTokenLabel(label))
+        throw new ProvisionRefused(
+          "the sweep label must be ci-<run id> or ss-<ULID>",
+        );
+      this.checkOptions();
+      await this.checkToken("warn");
+      await this.resolvePlatform();
+      const row = await this.platform.byId(id);
+      if (!row) throw new ProvisionRefused(`install ${id} not found`);
+      // A deleted install's D1 is gone, and its tokens with it.
+      const { d1 } = await this.resources(row, true);
+      if (!d1) return { id, label, revoked: 0, active: 0 as const };
+      const d1Name = names(id, this.env).d1;
+      const active = async () =>
+        (
+          await this.cf.d1Query(
+            d1,
+            "SELECT id FROM tokens WHERE label = ?1 AND revoked_at IS NULL",
+            [label],
+          )
+        )[0]?.results?.length ?? 0;
+      const before = await active();
+      if (before > 0) {
+        assertOwnResource(d1Name, this.env);
+        await this.cf.d1Query(
+          d1,
+          "UPDATE tokens SET revoked_at = ?1 WHERE label = ?2 AND revoked_at IS NULL",
+          [this.now(), label],
+        );
+        await this.platform
+          .audit(id, "ci_token.sweep", { label, revoked: before })
+          .catch(() => {});
+      }
+      // The verification: a fresh read, never the UPDATE's own count.
+      const left = await active();
+      if (left !== 0)
+        throw new ProvisionRefused(
+          `install ${id}: ${left} owner token(s) labelled ${label} are still active after the sweep; revoke them by label`,
+        );
+      return { id, label, revoked: before, active: 0 as const };
+    });
+  }
+
   /** An MCP session on the install as its owner (the PAT is scrubbed from every error, L6). */
-  private mcp(appHost: string, patFile: string) {
-    const token = readFileSync(patFile, "utf8").trim();
+  private mcp(appHost: string, patFile: string | undefined) {
+    const token =
+      patFile === undefined
+        ? this.ctx.getStore()?.ci?.pat
+        : readFileSync(patFile, "utf8").trim();
+    if (!token) throw new Error("no owner token for the MCP selftest");
     this.sensitive.add(token);
     const url = `https://${appHost}/mcp`;
     const headers = {
@@ -3675,7 +3977,7 @@ export class WfpProvisioner {
   private async selftest(
     rec: ReleaseRecord,
     appHost: string,
-    patFile: string,
+    patFile: string | undefined,
   ): Promise<string> {
     const c = this.mcp(appHost, patFile);
     await c.initialize();
@@ -3700,7 +4002,10 @@ export class WfpProvisioner {
    * owner keeps: initialize, tools/list and an authenticated list_artifacts
    * (it succeeds on an empty account). Nothing is published.
    */
-  private async checkSelf(appHost: string, patFile: string): Promise<void> {
+  private async checkSelf(
+    appHost: string,
+    patFile: string | undefined,
+  ): Promise<void> {
     const c = this.mcp(appHost, patFile);
     await c.initialize();
     const { tools } = await c.post("tools/list", {});

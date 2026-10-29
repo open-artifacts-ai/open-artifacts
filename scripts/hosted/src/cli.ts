@@ -4,15 +4,26 @@
 // turnstileInit); this file holds no provisioning logic of its own.
 //
 // - Token: the macOS keychain item oa-hosted-<env>, read with
-//   `security find-generic-password -w`. CI is staging only and reads a 0600
-//   file named by OA_HOSTED_TOKEN_FILE; prod never reads a file. The token
-//   lives only in this process: never in argv, a file, a child's environment
-//   or the output.
+//   `security find-generic-password -w`. CI reads a 0600 file named by
+//   OA_HOSTED_TOKEN_FILE. Prod in CI only from the hosted-ops workflow's
+//   gated job (GITHUB_ACTIONS=true, GITHUB_REF=refs/heads/main and
+//   OA_HOSTED_ENVIRONMENT=hosted-prod-deploy); prod on a laptop never reads a
+//   file. The token lives only in this process: never in argv, a file, a
+//   child's environment or the output.
 // - R2 credentials (publish-release, publish-floor only): the env's R2 API
 //   token, keychain item oa-hosted-<env>-r2 holding <accessKeyId>:<secret>;
-//   staging CI may use a 0600 file named by OA_HOSTED_R2_FILE. Same rules as
-//   the token; both halves are redacted. Publish writes go through R2's S3 API
-//   with it, the only endpoint that enforces conditional writes.
+//   CI uses a 0600 file named by OA_HOSTED_R2_FILE, under the same prod
+//   guard. Same rules as the token; both halves are redacted. Publish writes
+//   go through R2's S3 API with it, the only endpoint that enforces
+//   conditional writes.
+// - --ci-owner-token (CI only): create, upgrade, rollback and update-vars
+//   run their selftest on an owner PAT labelled ci-<GITHUB_RUN_ID>, minted
+//   under the lease, held in memory and revoked before the lease goes;
+//   ci-token-sweep revokes and verifies what a crashed run left.
+// - signup-redrive: the operator's only re-run of a failed or stuck signup
+//   (self-serve step 3). The row goes back to queued, error cleared, through
+//   platform D1; then the ProvisionInstall instance (id = the signup id) is
+//   restarted through the Workflows REST API.
 // - Before any write: flag refusals, then the provisioner's own token checks.
 // - Audit: a before row and an after row in hosted_audit, with the actor
 //   (git config user.email, or the CI run URL).
@@ -41,6 +52,7 @@ import { parseArgs } from "node:util";
 import {
   type Cf,
   cfClient,
+  ENV_PREFIX,
   type Env,
   googleNewlyEnabled,
   HOSTED_DOMAINS,
@@ -81,6 +93,8 @@ export const COMMANDS = [
   "turnstile-init",
   "redline-creds",
   "owner-token",
+  "ci-token-sweep",
+  "signup-redrive",
 ] as const;
 type Command = (typeof COMMANDS)[number];
 
@@ -92,6 +106,9 @@ Commands:
   upgrade         --install <id> --to <version>
   rollback        --install <id>
   update-vars     --install <id> --var K=V... (the full set)
+                  create, upgrade, rollback, update-vars: --ci-owner-token (CI only) runs the
+                  selftest on an in-memory owner PAT labelled ci-<GITHUB_RUN_ID>, revoked
+                  before the lease is released; no PAT file is read or written
   delete          --install <id> --confirm <the same id> [--skip-directory-revoke "<reason>"]
                   waits (up to 10 min) for the scheduler to revoke the Google directory
                   grant; the skip leaves the grant live (revoke it in Google Admin)
@@ -108,12 +125,21 @@ Commands:
                   mints the red-line admin PAT, sets it and the hook key in the
                   redline-staging Environment over stdin and in 0600 files under
                   ~/.open-artifacts/redline-capture/secrets, then revokes earlier ones
+  ci-token-sweep  --install <id> --run <GitHub run id>
+                  revokes every active owner token labelled ci-<run id>, then lists them
+                  again; exits 1 unless none remains
+  signup-redrive  --signup <ULID>
+                  re-runs a failed signup, or a stuck one (its ProvisionInstall instance
+                  errored, terminated or complete while the row isn't ready): the row goes
+                  back to queued with error cleared, then the instance is restarted
 
 Flags:
   --var K=V       repeatable; checked by provision's var allowlist. AUTH_PROVIDERS with
                   google turns the sign-in broker on for the install.
-Token: keychain item oa-hosted-<env> (account open-artifacts). CI (staging only): a 0600 file at OA_HOSTED_TOKEN_FILE.
-R2 (publish-release, publish-floor): keychain item oa-hosted-<env>-r2, <accessKeyId>:<secretAccessKey>. CI (staging only): a 0600 file at OA_HOSTED_R2_FILE.
+Token: keychain item oa-hosted-<env> (account open-artifacts). CI: a 0600 file at OA_HOSTED_TOKEN_FILE.
+R2 (publish-release, publish-floor): keychain item oa-hosted-<env>-r2, <accessKeyId>:<secretAccessKey>. CI: a 0600 file at OA_HOSTED_R2_FILE.
+Turnstile (create, upgrade, rollback, update-vars): keychain item oa-hosted-<env>-turnstile, <sitekey>:<secret>. CI: a 0600 file at OA_HOSTED_TURNSTILE_FILE.
+Prod in CI: only with GITHUB_ACTIONS=true, GITHUB_REF=refs/heads/main and OA_HOSTED_ENVIRONMENT=hosted-prod-deploy.
 Exit 3: an AUDIT GAP (the after-row failed twice; recorded under ~/.config/oa-hosted/pending-audit).
 Env: CLOUDFLARE_ACCOUNT_ID (the hosted account id). Output: one JSON line per step.`;
 
@@ -245,7 +271,25 @@ interface Flags {
   /** delete only: skip the Google directory revoke, with this reason. */
   skipRevoke?: string;
   vars: Record<string, string>;
+  /** CI only: the selftest's owner PAT is ephemeral (ci-<run id>). */
+  ciOwnerToken: boolean;
+  /** ci-token-sweep: the GitHub run id whose ci-<run id> tokens to revoke. */
+  run?: string;
+  /** signup-redrive: the signup id (a ULID). */
+  signup?: string;
 }
+
+/** The commands --ci-owner-token applies to: each runs an MCP selftest. */
+export const CI_TOKEN_COMMANDS = [
+  "create",
+  "upgrade",
+  "rollback",
+  "update-vars",
+] as const;
+
+const RUN_ID = /^[1-9][0-9]{0,19}$/;
+/** A signup id: a ULID (Crockford base32, first character 0-7). */
+const SIGNUP_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 /** Every refusal that needs no call: exits 1 before the token is read. */
 function parse(argv: string[]): { cmd: Command; f: Flags } {
@@ -268,6 +312,9 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
         force: { type: "boolean" },
         "skip-directory-revoke": { type: "string" },
         var: { type: "string", multiple: true },
+        "ci-owner-token": { type: "boolean" },
+        run: { type: "string" },
+        signup: { type: "string" },
       },
     });
   } catch (e) {
@@ -310,6 +357,9 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
     force: v.force === true,
     skipRevoke: v["skip-directory-revoke"] as string | undefined,
     vars,
+    ciOwnerToken: v["ci-owner-token"] === true,
+    run: v.run as string | undefined,
+    signup: v.signup as string | undefined,
   };
   const need = (k: keyof Flags, flag: string) => {
     if (typeof f[k] !== "string" || f[k] === "")
@@ -324,6 +374,7 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
     "status",
     "redline-creds",
     "owner-token",
+    "ci-token-sweep",
   ];
   if (byInstall.includes(cmd)) need("install", "install");
   else if (cmd !== "create" && f.install !== undefined)
@@ -369,16 +420,47 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
       throw new Refused("--tag must be a release tag like v1.2.3");
   }
   if (cmd === "publish-floor") need("floor", "floor");
+  if (f.ciOwnerToken && !(CI_TOKEN_COMMANDS as readonly string[]).includes(cmd))
+    throw new Refused(
+      `--ci-owner-token is for ${CI_TOKEN_COMMANDS.join(", ")} only`,
+    );
+  if (cmd === "ci-token-sweep") {
+    need("run", "run");
+    if (!RUN_ID.test(f.run as string))
+      throw new Refused("--run must be a GitHub run id");
+  } else if (f.run !== undefined)
+    throw new Refused("--run is for ci-token-sweep only");
+  if (cmd === "signup-redrive") {
+    need("signup", "signup");
+    if (!SIGNUP_ID.test(f.signup as string))
+      throw new Refused("--signup must be a signup id (a ULID)");
+  } else if (f.signup !== undefined)
+    throw new Refused("--signup is for signup-redrive only");
   return { cmd, f };
 }
 
 const inCi = (env: Deps["env"]) =>
   env.CI === "true" || env.GITHUB_ACTIONS === "true";
 
+/** The Environment the hosted-ops workflow runs prod in (main only, reviewer-gated). */
+export const PROD_CI_ENVIRONMENT = "hosted-prod-deploy";
+
+/**
+ * Prod in CI: only a GitHub Actions job on main in the hosted-prod-deploy
+ * Environment (the workflow sets OA_HOSTED_ENVIRONMENT from the same
+ * expression that picks the Environment). GitHub's Environment protection is
+ * the real gate; this stops a misconfigured workflow from reaching prod.
+ */
+const prodCiAllowed = (env: Deps["env"]) =>
+  env.GITHUB_ACTIONS === "true" &&
+  env.GITHUB_REF === "refs/heads/main" &&
+  env.OA_HOSTED_ENVIRONMENT === PROD_CI_ENVIRONMENT;
+
 /**
  * A secret from the only source `env` allows: the keychain item `item`, or
- * (staging CI only) a 0600 file of this user named by `$fileVar`, opened with
- * O_NOFOLLOW and read through that fd. Prod reads only the keychain.
+ * (CI) a 0600 file of this user named by `$fileVar`, opened with O_NOFOLLOW
+ * and read through that fd. Prod on a laptop reads only the keychain; prod in
+ * CI only under prodCiAllowed, and then only the file.
  */
 async function readSecret(
   d: Deps,
@@ -389,11 +471,13 @@ async function readSecret(
 ): Promise<string> {
   const file = d.env[fileVar];
   if (env === "prod") {
-    if (file !== undefined)
+    if (inCi(d.env)) {
+      if (!prodCiAllowed(d.env))
+        throw new Refused("CI is staging only; prod refused");
+    } else if (file !== undefined)
       throw new Refused(
         `prod reads its ${what} only from the keychain; unset ${fileVar}`,
       );
-    if (inCi(d.env)) throw new Refused("CI is staging only; prod refused");
   }
   if (file !== undefined) return readPrivateFile(d, file, fileVar);
   if (inCi(d.env)) throw new Refused(`CI has no keychain; set ${fileVar}`);
@@ -481,8 +565,37 @@ async function readR2(d: Deps, env: Env): Promise<R2Credentials> {
   return { accessKeyId, secretAccessKey };
 }
 
-async function readTurnstile(d: Deps, env: Env): Promise<TurnstileKeys | null> {
-  if (inCi(d.env)) return null;
+/** `<sitekey>:<secret>`, from the keychain on a laptop or a 0600 file in CI. */
+function parseTurnstile(raw: string, label: string): TurnstileKeys {
+  const i = raw.indexOf(":");
+  const sitekey = raw.slice(0, i);
+  const secret = raw.slice(i + 1);
+  if (i < 1 || !KEY_CHARS.test(sitekey) || !KEY_CHARS.test(secret))
+    throw new Refused(`${label} is not <sitekey>:<secret>`);
+  return { sitekey, secret };
+}
+
+/** Exported for its own tests: the second (Turnstile) layer of the prod-in-CI guard. */
+export async function readTurnstile(
+  d: Deps,
+  env: Env,
+): Promise<TurnstileKeys | null> {
+  if (inCi(d.env)) {
+    // CI: only the 0600 file the workflow wrote from TURNSTILE_KEYS, and for
+    // prod only in the gated job (as the token). No file: no codes support.
+    const file = d.env.OA_HOSTED_TURNSTILE_FILE;
+    if (!file) return null;
+    if (env === "prod" && !prodCiAllowed(d.env))
+      throw new Refused("CI is staging only; prod refused");
+    return parseTurnstile(
+      readPrivateFile(d, file, "OA_HOSTED_TURNSTILE_FILE").trim(),
+      "OA_HOSTED_TURNSTILE_FILE",
+    );
+  }
+  if (d.env.OA_HOSTED_TURNSTILE_FILE !== undefined)
+    throw new Refused(
+      "the Turnstile keys come only from the keychain on a laptop; unset OA_HOSTED_TURNSTILE_FILE",
+    );
   let raw: string;
   try {
     raw = (
@@ -498,14 +611,7 @@ async function readTurnstile(d: Deps, env: Env): Promise<TurnstileKeys | null> {
   } catch {
     return null;
   }
-  const i = raw.indexOf(":");
-  const sitekey = raw.slice(0, i);
-  const secret = raw.slice(i + 1);
-  if (i < 1 || !KEY_CHARS.test(sitekey) || !KEY_CHARS.test(secret))
-    throw new Refused(
-      `keychain item ${turnstileItem(env)} is not <sitekey>:<secret>`,
-    );
-  return { sitekey, secret };
+  return parseTurnstile(raw, `keychain item ${turnstileItem(env)}`);
 }
 
 /** Written through `security -i` on stdin, so the secret is never in argv. */
@@ -577,6 +683,16 @@ export async function main(argv: string[], d: Deps): Promise<number> {
     return fail("args", e);
   }
   const env = f.env;
+  let ciLabel: string | undefined;
+  if (f.ciOwnerToken) {
+    const runId = d.env.GITHUB_RUN_ID ?? "";
+    if (!inCi(d.env) || !RUN_ID.test(runId))
+      return fail(
+        "args",
+        new Refused("--ci-owner-token runs in CI only (with GITHUB_RUN_ID)"),
+      );
+    ciLabel = `ci-${runId}`;
+  }
 
   let cf: Cf;
   let r2: R2Releases | undefined;
@@ -612,6 +728,7 @@ export async function main(argv: string[], d: Deps): Promise<number> {
       release: (d.release ?? r2ReleaseReader)(cf, env),
       ...(turnstile ? { turnstile } : {}),
       patDir: join(d.home, ".open-artifacts", `hosted-${env}`),
+      ...(ciLabel ? { ciOwnerToken: { label: ciLabel } } : {}),
       brokerEnabled,
       // Health must come from this install, not just any install that
       // answers on its host (review item 43). Every hosted release reports
@@ -629,7 +746,14 @@ export async function main(argv: string[], d: Deps): Promise<number> {
 
   // The provisioner's token checks, before this CLI's first write. Recovery
   // commands run near expiry with a warning, as the provisioner allows.
-  const recovery = ["rollback", "delete", "release-lease", "status"];
+  const recovery = [
+    "rollback",
+    "delete",
+    "release-lease",
+    "status",
+    "ci-token-sweep",
+    "signup-redrive",
+  ];
   try {
     await prov.verifyToken(recovery.includes(cmd) ? "warn" : "refuse");
     notes();
@@ -639,16 +763,22 @@ export async function main(argv: string[], d: Deps): Promise<number> {
   }
 
   let audit: PlatformDb;
+  let dbId: string;
   let startedAt = 0;
   const subject = f.install ?? "-";
+  // A signup has no install id yet: the audit rows name it in their detail.
+  const detail: Record<string, string> = f.signup
+    ? { cmd, signup: f.signup }
+    : { cmd };
   try {
     const db = platformNames(env).db;
     const id = await cf.d1Get(db);
     if (!id) throw new Refused(`platform D1 ${db} not found`);
+    dbId = id;
     audit = new PlatformDb(cf, { id, name: db }, env, d.now ?? Date.now);
     startedAt = (d.now ?? Date.now)();
     await recoverGaps(d, env, subject, audit, emit);
-    await audit.auditAs(actor, subject, `cli.${cmd}.start`, { cmd });
+    await audit.auditAs(actor, subject, `cli.${cmd}.start`, detail);
     emit({ step: "audit", status: "ok", message: "before row written" });
   } catch (e) {
     return fail("audit", e);
@@ -666,6 +796,7 @@ export async function main(argv: string[], d: Deps): Promise<number> {
       prov,
       emit,
       db: audit,
+      dbId,
       hide: (x) => secrets.push(x),
     });
     notes();
@@ -682,8 +813,13 @@ export async function main(argv: string[], d: Deps): Promise<number> {
       if (row && (row.created_at ?? 0) >= startedAt) after = row.id;
     }
   }
+  // The workflow's always() sweep needs the install a CI token was minted
+  // in; a create learns it only here.
+  if (ciLabel && after !== "-")
+    emit({ step: "ci-owner-token", status: "ok", install: after });
   const action = `cli.${cmd}.${code === 0 ? "done" : "failed"}`;
-  const write = () => audit.auditAs(actor, after, action, { cmd, exit: code });
+  const write = () =>
+    audit.auditAs(actor, after, action, { ...detail, exit: code });
   try {
     await write().catch(write);
     emit({ step: "audit", status: "ok", message: "after row written" });
@@ -791,6 +927,8 @@ async function run(
     prov: WfpProvisioner;
     emit: (l: Record<string, unknown>) => void;
     db: PlatformDb;
+    /** The platform D1's id. */
+    dbId: string;
     hide: (value: string) => void;
   },
 ): Promise<{ ok: boolean; id?: string; data: unknown }> {
@@ -851,6 +989,11 @@ async function run(
     }
     case "status":
       return { ok: true, data: await prov.status(id) };
+    case "ci-token-sweep":
+      return {
+        ok: true,
+        data: await prov.ciTokenSweep(id, `ci-${f.run as string}`),
+      };
     case "owner-token": {
       if (inCi(d.env)) throw new Refused("owner-token runs on a laptop only");
       return {
@@ -883,6 +1026,11 @@ async function run(
         throw e;
       }
     }
+    case "signup-redrive":
+      return {
+        ok: true,
+        data: await redrive(cf, env, c.dbId, f.signup as string, d.now),
+      };
     case "turnstile-init": {
       if (inCi(d.env))
         throw new Refused("turnstile-init runs on a laptop only");
@@ -956,6 +1104,71 @@ async function run(
       }
     }
   }
+}
+
+/** Instance statuses that never run the signup's create again on their own. */
+const DEAD = new Set(["errored", "terminated", "complete"]);
+/**
+ * Rows a redrive may set back to queued: failed, or admitted and not ready
+ * (stuck). pending and waiting_cap are not admitted yet, so a redrive would
+ * skip the daily cap.
+ */
+const REDRIVABLE = new Set(["failed", "queued", "creating"]);
+/** A queued row younger than this may have a redrive or a start in flight. */
+const REDRIVE_QUIET_MS = 15 * 60_000;
+
+/**
+ * signup-redrive: refuses unless the row is failed or stuck and its
+ * ProvisionInstall instance is dead (a live one is never restarted: that
+ * would cancel its steps). The row goes back to queued, error cleared, only
+ * if it is still in the status read; then the instance is restarted. A
+ * restart that fails leaves the row queued behind a dead instance, which the
+ * stuck alert reports and a second redrive restarts. A queued row touched in
+ * the last REDRIVE_QUIET_MS is refused, and the update matches the
+ * updated_at read, so two overlapping redrives never restart twice.
+ */
+async function redrive(
+  cf: Cf,
+  env: Env,
+  dbId: string,
+  signup: string,
+  now: () => number = Date.now,
+): Promise<{ signup: string; was: string; instance: string }> {
+  const workflow = `${ENV_PREFIX[env]}provision-install`;
+  const row = (
+    await cf.d1Query(
+      dbId,
+      "SELECT status, updated_at FROM signups WHERE signup_id = ?1",
+      [signup],
+    )
+  )[0]?.results?.[0] as { status?: unknown; updated_at?: unknown } | undefined;
+  if (!row) throw new Refused(`no signup ${signup}`);
+  const was = String(row.status);
+  if (!REDRIVABLE.has(was))
+    throw new Refused(
+      `signup ${signup} is ${was}: only a failed or stuck signup is redriven`,
+    );
+  const touched = Number(row.updated_at);
+  if (was === "queued" && !(now() - touched >= REDRIVE_QUIET_MS))
+    throw new Refused(
+      `signup ${signup} was queued under 15 minutes ago: wait, then rerun`,
+    );
+  const instance = await cf.workflowInstanceStatus(workflow, signup);
+  if (instance === null)
+    throw new Refused(`signup ${signup} has no ${workflow} instance`);
+  if (!DEAD.has(instance))
+    throw new Refused(
+      `signup ${signup}'s instance is ${instance}: only an errored, terminated or complete one is restarted`,
+    );
+  const set = await cf.d1Query(
+    dbId,
+    "UPDATE signups SET status = 'queued', error = NULL, updated_at = ?1 WHERE signup_id = ?2 AND status = ?3 AND updated_at = ?4 RETURNING signup_id",
+    [now(), signup, was, touched],
+  );
+  if (!set[0]?.results?.length)
+    throw new Refused(`signup ${signup} changed while redriving; rerun`);
+  await cf.workflowInstanceRestart(workflow, signup);
+  return { signup, was, instance };
 }
 
 export function realDeps(): Deps {

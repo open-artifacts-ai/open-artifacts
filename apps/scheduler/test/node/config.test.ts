@@ -37,7 +37,29 @@ describe("wrangler.jsonc", () => {
         EMAIL_DAILY_LIMIT: `{{EMAIL_DAILY_LIMIT_${env.toUpperCase()}}}`,
         AUTH_BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
         DIRECTORY_BROKER_ORIGIN: `https://directory.${HOSTED_DOMAINS[env].app}`,
+        // The operator alerts' recipient and sender, filled at deploy.
+        ALERT_TO: `{{OPS_ALERT_EMAIL_${env.toUpperCase()}}}`,
+        ALERT_FROM: `{{OPS_ALERT_FROM_${env.toUpperCase()}}}`,
+        // The provisioner's placeholder (apps/provisioner/wrangler.jsonc).
+        SIGNUP_DAILY_CAP: `{{SIGNUP_DAILY_CAP_${env.toUpperCase()}}}`,
+        SIGNUPS_ENABLED: `{{SIGNUPS_ENABLED_${env.toUpperCase()}}}`,
       });
+      const p = env === "staging" ? "oa-s-" : "oa-p-";
+      // The signups producer only: the provisioner is the one consumer.
+      expect(e.queues).toEqual({
+        producers: [{ binding: "SIGNUPS", queue: `${p}signups` }],
+      });
+      // The provisioner's Workflow, on its script, this env's only.
+      expect(e.workflows).toEqual([
+        {
+          name: `${p}provision-install`,
+          binding: "PROVISION_INSTALL",
+          class_name: "ProvisionInstall",
+          script_name: `${p}provisioner`,
+        },
+      ]);
+      // The operator alerts' one sending binding (src/alerts.ts).
+      expect(e.send_email).toEqual([{ name: "ALERT_EMAIL" }]);
       // BrokerGate's bindings: this env's two brokers, never the other env's.
       expect(e.services).toEqual([
         { binding: "AUTH_BROKER", service: platformNames(env).broker },
@@ -45,6 +67,8 @@ describe("wrangler.jsonc", () => {
           binding: "DIRECTORY_BROKER",
           service: platformNames(env).directoryBroker,
         },
+        // BillingGate's binding: this env's billing Worker.
+        { binding: "BILLING", service: platformNames(env).billing },
       ]);
       expect(e.vars).not.toHaveProperty("EMAIL_QUOTA_TOKEN");
       // The nightly run, and H-DV's directory revoke tick every 2 minutes.
@@ -69,14 +93,32 @@ describe("wrangler.jsonc", () => {
         "kv_namespaces",
         "r2_buckets",
         "durable_objects",
-        "queues",
         "secrets",
+        "secrets_store_secrets",
       ])
         expect(e).not.toHaveProperty(k);
     }
     expect(platformNames("staging").scheduler).toBe("oa-s-scheduler");
     expect(platformNames("prod").scheduler).toBe("oa-p-scheduler");
     expect(NAMESPACES).toEqual({ staging: "oa-staging", prod: "oa-prod" });
+  });
+
+  it("matches the provisioner's cap and gate vars, queue and Workflow in each env", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+    const prov: any = JSON.parse(
+      strip(readFileSync(join(app, "../provisioner/wrangler.jsonc"), "utf8")),
+    );
+    for (const env of ENVS) {
+      const e = cfg.env[env];
+      const pe = prov.env[env];
+      expect(e.vars.SIGNUP_DAILY_CAP).toBe(pe.vars.SIGNUP_DAILY_CAP);
+      expect(e.vars.SIGNUPS_ENABLED).toBe(pe.vars.SIGNUPS_ENABLED);
+      expect(e.queues.producers[0].queue).toBe(pe.queues.consumers[0].queue);
+      const [w] = e.workflows;
+      const [pw] = pe.workflows;
+      expect(w.script_name).toBe(pe.name);
+      expect([w.name, w.class_name]).toEqual([pw.name, pw.class_name]);
+    }
   });
 
   it("has no routes, custom domains or workers.dev, at the top or in any env", () => {
@@ -99,6 +141,8 @@ describe("wrangler.jsonc", () => {
       "d1_databases",
       "dispatch_namespaces",
       "services",
+      "queues",
+      "workflows",
     ])
       expect(cfg).not.toHaveProperty(k);
   });

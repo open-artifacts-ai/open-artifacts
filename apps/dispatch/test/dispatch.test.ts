@@ -55,6 +55,10 @@ const ctx = {
       gates.push(o);
       return { gate: o.props };
     },
+    BillingGate: (o: { props: unknown }) => {
+      gates.push(o);
+      return { billingGate: o.props };
+    },
   },
 } as unknown as ExecutionContext;
 
@@ -479,7 +483,7 @@ describe("host normalization matches @oa/shared normalizeHost", () => {
 });
 
 describe("broker gates in props", () => {
-  it("a mapped host gets one auth and one directory gate, for that install only", async () => {
+  it("a mapped host gets one auth, one directory and one billing gate, for that install only", async () => {
     const f = fakes(MAP);
     gates.length = 0;
     expect(
@@ -490,13 +494,29 @@ describe("broker gates in props", () => {
         props: {
           AUTH_BROKER: { gate: { installId: B, kind: "auth" } },
           DIRECTORY_BROKER: { gate: { installId: B, kind: "directory" } },
+          BILLING: { billingGate: { installId: B } },
         },
       },
     ]);
     expect(gates.map((g) => g.props)).toEqual([
       { installId: B, kind: "auth" },
       { installId: B, kind: "directory" },
+      { installId: B },
     ]);
+  });
+
+  it("each request builds its own gates: two installs never share one", async () => {
+    const f = fakes(MAP);
+    gates.length = 0;
+    await call(f.env, "https://acme.open-artifacts-staging.app/");
+    await call(f.env, "https://beta.open-artifacts-staging.app/");
+    expect(
+      f.args.map((a) => (a as { props: { BILLING: unknown } }).props.BILLING),
+    ).toEqual([
+      { billingGate: { installId: A } },
+      { billingGate: { installId: B } },
+    ]);
+    expect(gates).toHaveLength(6);
   });
 
   it("an unmapped host or a bad HOSTS value gets no gate and no dispatch", async () => {

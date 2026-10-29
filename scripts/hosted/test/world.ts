@@ -105,7 +105,12 @@ function releases(env: Env): ReleaseReader {
       const b = bundleOf(variant, version);
       return { mainModule: b.mainModule, modules: b.modules };
     },
-    assets: async () => ASSETS.map((a) => ({ ...a, bytes: a.bytes.slice() })),
+    assets: async () => assetEntries(ASSETS),
+    assetBytes: async (_version, _variant, path) => {
+      const a = ASSETS.find((x) => x.path === path);
+      if (!a) throw new Error(`no asset ${path}`);
+      return a.bytes.slice();
+    },
     template: async () => TEMPLATE.slice(),
     migrations: async () =>
       MIGRATIONS.map((f) => ({ ...f, bytes: f.bytes.slice() })),

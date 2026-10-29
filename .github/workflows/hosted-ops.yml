@@ -1,0 +1,192 @@
+# Runs one oa:hosted operation (docs/ops/hosted.md, "The oa:hosted CLI") in
+# CI, by hand only: create, upgrade, rollback, update-vars, status, delete,
+# release-lease, turnstile-init, publish-release, publish-floor or
+# signup-redrive (args {"signup":"<ULID>"}). Each env has
+# its own Environment (hosted-staging-deploy, hosted-prod-deploy) holding
+# PROVISION_TOKEN and R2_TOKEN; every run waits for its required reviewer, and
+# prod runs only from main (checked here and again by the CLI). Inputs reach
+# the CLI only through env and the ci-args validator, never as shell text.
+# create, upgrade, rollback and update-vars selftest on an ephemeral owner
+# token (ci-<run id>) that the always() sweep revokes and verifies.
+name: hosted-ops
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Which env"
+        required: true
+        type: choice
+        options: [staging, prod]
+      op:
+        description: "The oa:hosted operation"
+        required: true
+        type: choice
+        options:
+          - status
+          - create
+          - upgrade
+          - rollback
+          - update-vars
+          - delete
+          - release-lease
+          - turnstile-init
+          - publish-release
+          - publish-floor
+          - signup-redrive
+      install:
+        description: "Install id (iXXXXXXXXXXX); empty for create and the env-level ops"
+        required: false
+        default: ""
+        type: string
+      tag:
+        description: "Stable release tag (vX.Y.Z): create and upgrade (the version), publish-release"
+        required: false
+        default: ""
+        type: string
+      args:
+        description: 'JSON per op, e.g. create {"slug":"x","var":["AUTH_PROVIDERS=email"]}, update-vars {"var":[...]}. Inputs are public: create takes its owner email from the CREATE_OWNER_EMAIL secret'
+        required: false
+        default: "{}"
+        type: string
+      confirm:
+        description: "delete and release-lease: the install id again"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosted-ops-${{ inputs.env }}-${{ inputs.install || inputs.env }}
+  cancel-in-progress: false
+
+jobs:
+  op:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}
+    timeout-minutes: 45
+    steps:
+      - name: Prod runs only from main
+        if: ${{ inputs.env == 'prod' }}
+        env:
+          REF: ${{ github.ref }}
+        run: test "$REF" = refs/heads/main
+      # The CLI is this workflow's own commit (main for prod).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @oa/provision build
+      # Every input goes through env to the validator, which prints the argv
+      # as a JSON array (and the install the sweep needs to GITHUB_OUTPUT).
+      - name: Check the inputs
+        id: args
+        env:
+          OPS_ENV: ${{ inputs.env }}
+          OPS_OP: ${{ inputs.op }}
+          OPS_INSTALL: ${{ inputs.install }}
+          OPS_TAG: ${{ inputs.tag }}
+          OPS_ARGS: ${{ inputs.args }}
+          OPS_CONFIRM: ${{ inputs.confirm }}
+          # Never an input (inputs are public): the Environment secret, create only.
+          OPS_OWNER: ${{ inputs.op == 'create' && secrets.CREATE_OWNER_EMAIL || '' }}
+          OPS_FLOOR_FILE: ${{ runner.temp }}/hosted-ops-floor.sig.json
+        run: |
+          set -euo pipefail
+          node scripts/hosted/src/ci-args.ts > "$RUNNER_TEMP/hosted-ops-argv.json"
+      # Only this step sees the secrets. R2_TOKEN only for the publish ops.
+      - name: Write the token files
+        id: tok
+        env:
+          PROVISION_TOKEN: ${{ secrets.PROVISION_TOKEN }}
+          R2_TOKEN: ${{ (inputs.op == 'publish-release' || inputs.op == 'publish-floor') && secrets.R2_TOKEN || '' }}
+          # Only the ops that render an install's vars (codes on needs the pair).
+          TURNSTILE_KEYS: ${{ contains(fromJSON('["create","upgrade","rollback","update-vars"]'), inputs.op) && secrets.TURNSTILE_KEYS || '' }}
+        run: |
+          set +x
+          set -euo pipefail
+          umask 077
+          dir="$RUNNER_TEMP/hosted-ops-secrets"
+          mkdir -m 700 "$dir"
+          [ -n "$PROVISION_TOKEN" ] || { echo "PROVISION_TOKEN is not set in this Environment"; exit 1; }
+          printf '%s\n' "$PROVISION_TOKEN" > "$dir/token"
+          if [ -n "$R2_TOKEN" ]; then printf '%s\n' "$R2_TOKEN" > "$dir/r2"; fi
+          if [ -n "${TURNSTILE_KEYS:-}" ]; then
+            printf '%s\n' "$TURNSTILE_KEYS" > "$dir/turnstile"
+            echo "turnstile=1" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run the operation
+        id: run
+        env:
+          OA_HOSTED_TOKEN_FILE: ${{ runner.temp }}/hosted-ops-secrets/token
+          OA_HOSTED_R2_FILE: ${{ runner.temp }}/hosted-ops-secrets/r2
+          # Named only when the file was written (the secret is set); with no
+          # keys, provision refuses an install with codes on.
+          OA_HOSTED_TURNSTILE_FILE: ${{ steps.tok.outputs.turnstile == '1' && format('{0}/hosted-ops-secrets/turnstile', runner.temp) || '' }}
+          OA_HOSTED_ENVIRONMENT: ${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.HOSTED_ACCOUNT_ID }}
+          GH_TOKEN: ${{ inputs.op == 'publish-release' && github.token || '' }}
+        run: |
+          set -euo pipefail
+          # NUL-separated: each JSON string is one argv entry, never re-split.
+          argv=()
+          while IFS= read -r -d '' a; do argv+=("$a"); done < <(jq -j '.[] | (., "\u0000")' "$RUNNER_TEMP/hosted-ops-argv.json")
+          [ "${#argv[@]}" -gt 0 ] || { echo "no argv"; exit 1; }
+          pnpm -s oa:hosted "${argv[@]}" | tee "$RUNNER_TEMP/hosted-ops-out.jsonl"
+      # A crashed run may leave its ci-<run id> token live: revoke it and
+      # verify none remains. A create learns its install id from the CLI.
+      - name: Sweep the CI owner token
+        if: ${{ always() && contains(fromJSON('["create","upgrade","rollback","update-vars"]'), inputs.op) }}
+        env:
+          OA_HOSTED_TOKEN_FILE: ${{ runner.temp }}/hosted-ops-secrets/token
+          OA_HOSTED_ENVIRONMENT: ${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.HOSTED_ACCOUNT_ID }}
+          OPS_ENV: ${{ inputs.env }}
+          INSTALL: ${{ steps.args.outputs.install }}
+          RUN_OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/hosted-ops-out.jsonl"
+          id="$INSTALL"
+          if [ -z "$id" ] && [ -f "$out" ]; then
+            id="$(jq -r 'select(.step == "ci-owner-token") | .install' "$out" | tail -n 1)"
+          fi
+          if [ -z "$id" ]; then
+            # No install: nothing was minted, unless the CLI never finished.
+            if [ "$RUN_OUTCOME" = success ] || [ "$RUN_OUTCOME" = skipped ] ||
+              { [ -f "$out" ] && grep -q '"after row written"' "$out"; }; then
+              echo "no install was touched; nothing to sweep"
+              exit 0
+            fi
+            echo "::error::the install is unknown; revoke any owner token labelled ci-$GITHUB_RUN_ID: oa:hosted ci-token-sweep --install <id> --run $GITHUB_RUN_ID"
+            exit 1
+          fi
+          [[ "$id" =~ ^i[a-z0-9]{11}$ ]] || { echo "::error::not an install id"; exit 1; }
+          pnpm -s oa:hosted ci-token-sweep --env "$OPS_ENV" --install "$id" --run "$GITHUB_RUN_ID" | tee -a "$out"
+      - name: Remove the token files
+        if: ${{ always() }}
+        run: rm -rf "$RUNNER_TEMP/hosted-ops-secrets" "$RUNNER_TEMP/hosted-ops-floor.sig.json"
+      # Audit: the CLI's actor is this run's URL; the summary lists each
+      # step's JSON line (already redacted by the CLI).
+      - name: Summary
+        if: ${{ always() }}
+        env:
+          OPS_ENV: ${{ inputs.env }}
+          OPS_OP: ${{ inputs.op }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/hosted-ops-out.jsonl"
+          {
+            echo "### oa:hosted $OPS_OP ($OPS_ENV)"
+            echo
+            echo '```json'
+            if [ -f "$out" ]; then cat "$out"; else echo "(no output)"; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

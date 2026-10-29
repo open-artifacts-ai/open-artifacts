@@ -1,0 +1,111 @@
+// The workerd test Worker: provision runs under nodejs_compat against the fake
+// Cloudflare (packages/provision/test/fake-cf.ts), whose D1s are these local
+// Miniflare D1s (one platform DB and one per install the test creates).
+{
+  "name": "oa-provisioner-test",
+  // The ProvisionInstall suite's Worker: the Workflow on fake-cf.
+  "main": "test/workflow-worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "PLATFORM_DB",
+      "database_name": "oa-platform-test",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "binding": "INSTALL_DB",
+      "database_name": "oa-install-test",
+      "database_id": "00000000-0000-0000-0000-000000000001"
+    },
+    // The consumer suite's own platform D1 (signups), apart from the create suite's.
+    {
+      "binding": "SIGNUPS_DB",
+      "database_name": "oa-signups-test",
+      "database_id": "00000000-0000-0000-0000-000000000002"
+    },
+    // The workflow suite: its platform D1 (installs and signups), then one
+    // fresh D1 per install it creates.
+    {
+      "binding": "WF_PLATFORM_DB",
+      "database_name": "oa-wf-platform-test",
+      "database_id": "00000000-0000-0000-0000-000000000010"
+    },
+    {
+      "binding": "WF_INSTALL_DB_1",
+      "database_name": "oa-wf-install-1-test",
+      "database_id": "00000000-0000-0000-0000-000000000011"
+    },
+    {
+      "binding": "WF_INSTALL_DB_2",
+      "database_name": "oa-wf-install-2-test",
+      "database_id": "00000000-0000-0000-0000-000000000012"
+    },
+    {
+      "binding": "WF_INSTALL_DB_3",
+      "database_name": "oa-wf-install-3-test",
+      "database_id": "00000000-0000-0000-0000-000000000013"
+    },
+    {
+      "binding": "WF_INSTALL_DB_4",
+      "database_name": "oa-wf-install-4-test",
+      "database_id": "00000000-0000-0000-0000-000000000014"
+    },
+    {
+      "binding": "WF_INSTALL_DB_5",
+      "database_name": "oa-wf-install-5-test",
+      "database_id": "00000000-0000-0000-0000-000000000015"
+    },
+    {
+      "binding": "WF_INSTALL_DB_6",
+      "database_name": "oa-wf-install-6-test",
+      "database_id": "00000000-0000-0000-0000-000000000016"
+    },
+    {
+      "binding": "WF_INSTALL_DB_7",
+      "database_name": "oa-wf-install-7-test",
+      "database_id": "00000000-0000-0000-0000-000000000017"
+    },
+    {
+      "binding": "WF_INSTALL_DB_8",
+      "database_name": "oa-wf-install-8-test",
+      "database_id": "00000000-0000-0000-0000-000000000018"
+    },
+    {
+      "binding": "WF_INSTALL_DB_9",
+      "database_name": "oa-wf-install-9-test",
+      "database_id": "00000000-0000-0000-0000-000000000019"
+    },
+    {
+      "binding": "WF_INSTALL_DB_10",
+      "database_name": "oa-wf-install-10-test",
+      "database_id": "00000000-0000-0000-0000-000000000020"
+    },
+    {
+      "binding": "WF_INSTALL_DB_11",
+      "database_name": "oa-wf-install-11-test",
+      "database_id": "00000000-0000-0000-0000-000000000021"
+    },
+    {
+      "binding": "WF_INSTALL_DB_12",
+      "database_name": "oa-wf-install-12-test",
+      "database_id": "00000000-0000-0000-0000-000000000022"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "oa-provision-install-test",
+      "binding": "PROVISION_INSTALL",
+      "class_name": "TestProvisionInstall"
+    }
+  ],
+  "vars": {
+    "OA_ENV": "staging",
+    "RELEASE_VERSION": "0.23.0",
+    "WELCOME_FROM": "welcome@staging.open-artifacts.test",
+    // fake-cf's account.
+    "ACCOUNT_ID": "0123456789abcdef0123456789abcdef"
+  },
+  // The releases bucket the provisioner reads through r2BindingReleaseReader.
+  "r2_buckets": [{ "binding": "RELEASES", "bucket_name": "oa-s-releases" }]
+}

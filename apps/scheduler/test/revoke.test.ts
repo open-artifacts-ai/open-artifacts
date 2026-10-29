@@ -586,6 +586,8 @@ describe("H-DV review fixes", () => {
     const f = fakes();
     const env = {
       ...f.env,
+      SIGNUP_DAILY_CAP: "20",
+      SIGNUPS_ENABLED: "true",
       PLATFORM_DB: new Proxy(db, {
         get(t, k) {
           if (k === "prepare")
@@ -603,8 +605,19 @@ describe("H-DV review fixes", () => {
         createExecutionContext(),
       ),
     ).resolves.toBeUndefined();
-    // The sync run after it aborts on its own fixed line, never raw text.
+    // The billing check, the quota alert retry and the signups tick before
+    // it and the sync run after it each fail on their own fixed line, never
+    // raw text.
     expect(lines).toEqual([
+      "billing-health db_error",
+      "alert email_quota db_error",
+      "signups requeue failed",
+      "signups sweep failed",
+      "alert signup_stuck db_error",
+      "signups purge failed",
+      "alert signup_cap db_error",
+      "alert signup_failed db_error",
+      "alert welcome_unsent db_error",
       "directory-revoke aborted exception",
       "directory-sync aborted exception",
     ]);
@@ -739,11 +752,13 @@ describe("broker gates on every install call", () => {
   /** ctx.exports.BrokerGate as the runtime gives it: one stub per call, with its props. */
   const gates = {
     BrokerGate: (o: { props: unknown }) => ({ gate: o.props }),
+    BillingGate: (o: { props: unknown }) => ({ billingGate: o.props }),
   } as unknown as GateExports;
   const props = (id: string) => ({
     props: {
       AUTH_BROKER: { gate: { installId: id, kind: "auth" } },
       DIRECTORY_BROKER: { gate: { installId: id, kind: "directory" } },
+      BILLING: { billingGate: { installId: id } },
     },
   });
 
