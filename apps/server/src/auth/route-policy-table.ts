@@ -259,6 +259,19 @@ export const TEAM_ROUTES: ReadonlySet<string> = new Set([
   "PUT /api/v1/directory/org-mappings/:groupId",
   "GET /api/v1/directory/connect",
   "POST /api/v1/directory/confirm",
+  // Sync now, a held group's confirm, a restricted group: directory sync is
+  // a team feature (the cron feed is skipped too: cron.ts).
+  "POST /api/v1/directory/sync",
+  "POST /api/v1/directory/held/:groupId/confirm",
+  "PUT /api/v1/directory/restricted-groups/:groupId",
+]);
+
+/**
+ * Refused only on a free (solo) instance: a member's role change. On a
+ * read-only instance a demotion is how a team drops back, so it passes.
+ */
+export const SOLO_ROUTES: ReadonlySet<string> = new Set([
+  "PATCH /api/v1/members/:id",
 ]);
 
 /** Content host routes: the handlers verify signed tokens or public visibility. */

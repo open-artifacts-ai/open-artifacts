@@ -79,6 +79,27 @@ export const PlanRefusalDetailsSchema = z.object({
 });
 export type PlanRefusalDetails = z.infer<typeof PlanRefusalDetailsSchema>;
 
+/**
+ * A free-tier cap (apps/server billing/caps.ts; each is off until the
+ * operator sets it): storage_bytes (FREE_STORAGE_BYTES), data_docs per
+ * artifact (FREE_DATA_DOCS), data_daily_writes per artifact per UTC day
+ * (FREE_DATA_DAILY_WRITES).
+ */
+export const PlanLimitSchema = z.enum([
+  "storage_bytes",
+  "data_docs",
+  "data_daily_writes",
+]);
+export type PlanLimit = z.infer<typeof PlanLimitSchema>;
+
+/** details of 403 plan_limit: which cap, and its value. The paywall names it. */
+export const PlanLimitDetailsSchema = z.object({
+  tier: z.literal("free"),
+  limit: PlanLimitSchema,
+  max: z.number().int().positive(),
+});
+export type PlanLimitDetails = z.infer<typeof PlanLimitDetailsSchema>;
+
 /** Last good tier kept this long when billing is unreachable (OUR outage). */
 export const PLAN_STALE_MS = 7 * 86_400_000;
 /** The trial billing starts at the first invite. */

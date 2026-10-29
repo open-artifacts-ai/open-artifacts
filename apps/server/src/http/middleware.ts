@@ -14,7 +14,7 @@ import { callerOf, capOfCaller, planOfMember, withCap } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { sessionCredId, setCred } from "../auth/cred.js";
 import { verifyPat } from "../auth/pat.js";
-import { isGuestRole } from "../auth/policy.js";
+import { isGuestRole, orgCan } from "../auth/policy.js";
 import {
   readSession,
   type Session,
@@ -445,6 +445,13 @@ const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
   ["DELETE", /^\/api\/v1\/oauth-clients\/[^/]+$/],
 ];
 
+/** The billing routes a plan-capped owner or admin may still POST. */
+const BILLING_POSTS: ReadonlySet<string> = new Set([
+  R.billingCheckout,
+  R.billingPortal,
+  R.billingUsage,
+]);
+
 /**
  * A capped caller (CapReason on the member: a guest while the guest cap is on,
  * any code session outside the verified domains, a P3 restricted member) is
@@ -462,8 +469,19 @@ export const readOnlyCap = (): MiddlewareHandler<AppEnv> => async (c, next) => {
     const path = c.req.path;
     if (CAPPED_ALLOWED.some(([am, re]) => am === m && re.test(path)))
       return next();
-    // Hosted billing's plan cap: a clear 403 (the caller can see what they
-    // can't change), never a 404.
+    // Hosted billing's plan cap: the owner and admins can still pay
+    // (Checkout, Portal, the usage report; orgCan billing.manage). Members
+    // cannot.
+    if (
+      cap === "plan" &&
+      m === "POST" &&
+      BILLING_POSTS.has(path) &&
+      c.var.user &&
+      orgCan(c.var.user, "billing.manage", { cap })
+    )
+      return next();
+    // Otherwise a clear 403 (the caller can see what they can't change),
+    // never a 404.
     const lock = cap === "plan" ? planOfMember(c.var.user)?.lock : null;
     if (lock) return toErrorResponse(planError(lock));
     if (m === "POST" && path === R.artifacts)

@@ -1,6 +1,7 @@
 import { withBrokerProps } from "./auth/broker-transport.js";
 import { sweepLoginCodes } from "./auth/codes.js";
 import { usageTick } from "./billing/creators.js";
+import { scopedPlan, withPlanScope } from "./billing/features.js";
 import { billingOn } from "./billing/plan.js";
 import { billingTick } from "./billing/store.js";
 import { disconnectDirectory } from "./directory/connect.js";
@@ -75,7 +76,10 @@ export function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   // The scheduler's broker capabilities (ctx.props) for this invocation.
-  return withBrokerProps(ctx, () => run(event, env, ctx));
+  // Hosted: the billing plan, read once, for every features check.
+  return withBrokerProps(ctx, () =>
+    withPlanScope(env, () => run(event, env, ctx)),
+  );
 }
 
 async function run(
@@ -101,6 +105,21 @@ async function run(
             await usageTick(env, now);
           })().catch((e) => logError("cron_task_failed", e)),
         );
+      // Hosted billing: no directory sync while team features are locked
+      // (free, or read-only), nor on a tier that freezes it (Team:
+      // sync_frozen). Nothing is disconnected or deleted: the binding and
+      // the synced rows stay, and sync resumes with the tier.
+      if (
+        billingOn(env) &&
+        (scopedPlan()?.lock || directoryMode(env) !== "google")
+      ) {
+        if (directoryMode(env) !== "off")
+          logInfo("system_job", {
+            job: "directory-sync",
+            state: "plan_paused",
+          });
+        return;
+      }
       const fed = await feedSync(env);
       if (fed === "fed" || fed === "mint_failed")
         logInfo("system_job", { job: "directory-sync", state: fed });

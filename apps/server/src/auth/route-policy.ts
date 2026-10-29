@@ -1,6 +1,7 @@
 import { isId } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { matchedRoutes } from "hono/route";
+import { featuresOf } from "../billing/features.js";
 import { planError, requireTeamPlan } from "../billing/plan.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, resolveSession } from "../http/middleware.js";
@@ -13,12 +14,12 @@ import {
   planOfMember,
   withAccessCache,
 } from "./authz.js";
-import { authConfig } from "./config.js";
 import { orgCan } from "./policy.js";
 import {
   CONTENT_POLICY,
   type Policy,
   ROUTE_POLICY,
+  SOLO_ROUTES,
   TEAM_ROUTES,
 } from "./route-policy-table.js";
 
@@ -151,14 +152,17 @@ export async function enforce(
     return;
   }
   // A switched-off feature is absent for everyone, signed in or not.
-  if ("org" in p && p.offWhen && authConfig(env).features.includes(p.offWhen))
+  if ("org" in p && p.offWhen && featuresOf(env).includes(p.offWhen))
     throw notFound();
   if (who.kind !== "user")
     throw new ApiError("unauthorized", "Sign in required");
-  if ("org" in p && !orgCan(who.user, p.org, { cap: capOfCaller(who) })) {
+  if (
+    "org" in p &&
+    !orgCan(who.user, p.org, { cap: capOfCaller(who), read: !write })
+  ) {
     // Hosted billing: an admin under the plan cap gets the clear 403 on a
-    // write their role would allow (their admin reads stay 404, as for any
-    // capped admin).
+    // write their role would allow (their admin reads and billing pass
+    // above: orgCan PLAN_ADMIN_READS).
     const lock =
       who.cap === "plan" && write ? planOfMember(who.user)?.lock : null;
     if (lock && orgCan(who.user, p.org, { cap: null })) throw planError(lock);
@@ -225,5 +229,7 @@ export const planGate = (): MiddlewareHandler<AppEnv> =>
       requireTeamPlan(planOfMember(user), {
         invite: route === "POST /api/v1/members",
       });
+    const lock = user ? planOfMember(user)?.lock : null;
+    if (lock?.mode === "solo" && SOLO_ROUTES.has(route)) throw planError(lock);
     await next();
   });

@@ -1,6 +1,6 @@
 import { LIMITS } from "@oa/shared";
-import { authConfig } from "../auth/config.js";
 import { contentKey } from "../auth/keys.js";
+import { featuresOf } from "../billing/features.js";
 import type { Env } from "../env.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
 
@@ -41,7 +41,7 @@ export function contentViewer(
   epoch: number | null | undefined,
 ): ContentViewer | null {
   if (!uid) return null;
-  if (!authConfig(env).features.includes("content_revocation")) return null;
+  if (!featuresOf(env).includes("content_revocation")) return null;
   if (epoch == null)
     throw new Error("content_revocation: a signed-in viewer needs an epoch");
   return { uid, epoch };

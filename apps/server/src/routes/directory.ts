@@ -54,7 +54,12 @@ const manages = (c: Context<AppEnv>) =>
 export function mountDirectory(app: AppType): void {
   app.get(R.directory, async (c) => {
     const user = requireUser(c);
-    if (!orgCan(user, "members.manage", { cap: capOfCaller(caller(c)) }))
+    if (
+      !orgCan(user, "members.manage", {
+        cap: capOfCaller(caller(c)),
+        read: true,
+      })
+    )
       throw notFound();
     return c.json(await directoryStatus(c.env, { showProblem: manages(c) }));
   });

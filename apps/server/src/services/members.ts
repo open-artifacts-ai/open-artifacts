@@ -24,8 +24,9 @@ import {
   sql,
 } from "drizzle-orm";
 import { managesAdmins, planOfMember } from "../auth/authz.js";
-import { authConfig, type SignInProvider } from "../auth/config.js";
+import type { SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
+import { featuresOf } from "../billing/features.js";
 import { startTrial } from "../billing/store.js";
 import { getDb } from "../db/client.js";
 import {
@@ -471,7 +472,7 @@ export async function removeMember(
     .from(shares)
     .where(eq(shares.email, row.email))
     .limit(MAX_CLOSE);
-  if (authConfig(env).features.includes("spaces"))
+  if (featuresOf(env).includes("spaces"))
     await setUserStatus(env, id, "removed", "admin_remove", actor, ctx);
   else await deleteMember(env, id, actor, ctx);
   await closeRuntimeSockets(

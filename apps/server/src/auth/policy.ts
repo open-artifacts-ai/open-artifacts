@@ -400,12 +400,38 @@ export const canBeRestricted = (role: Role): boolean =>
 export const isOrgAdmin = (role: string): boolean =>
   (ORG_ADMINS as readonly string[]).includes(role);
 
+/**
+ * Admin reads an org owner or admin keeps under the billing plan cap (on a
+ * GET only): the members list and directory status, the audit log, the
+ * settings.
+ */
+const PLAN_ADMIN_READS: ReadonlySet<OrgAction> = new Set<OrgAction>([
+  "members.manage",
+  "audit.read",
+  "settings.read",
+]);
+
 /** Instance and space administration (no artifact involved). */
 export function orgCan(
   m: Member,
   action: OrgAction,
-  opts: { spaceRole?: SpaceRole | null; cap?: CapReason | null } = {},
+  opts: {
+    spaceRole?: SpaceRole | null;
+    cap?: CapReason | null;
+    /** The request only reads (GET/HEAD): the billing plan cap keeps admin reads. */
+    read?: boolean;
+  } = {},
 ): boolean {
+  // Hosted billing's plan cap never locks the owner and admins out of
+  // paying (billing.manage) or out of seeing their instance (PLAN_ADMIN_READS
+  // on a read). Every write stays capped. Members get neither.
+  if (
+    opts.cap === "plan" &&
+    ORG_ADMINS.includes(m.role) &&
+    (action === "billing.manage" ||
+      (opts.read === true && PLAN_ADMIN_READS.has(action)))
+  )
+    return true;
   const capped = opts.cap != null;
   // Owners and admins can't be restricted (restrict_admin); a cap still
   // removes every admin power as belt and braces.

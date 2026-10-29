@@ -12,6 +12,7 @@ import {
 } from "./auth/route-policy.js";
 import { readSession, sessionCookieName } from "./auth/session.js";
 import { authProviders } from "./auth/sign-in.js";
+import { withPlanScope } from "./billing/features.js";
 import { ApiError, errorJson, toErrorResponse } from "./http/errors.js";
 import {
   type AppEnv,
@@ -103,7 +104,11 @@ export function createApp(
       }
       // A fresh credential slot per request (auth/cred.ts): the session read
       // fills it, audit() reads it, and waitUntil work keeps this one.
-      return withCredScope(() => withBrokerProps(ctx, next));
+      // Hosted: the billing plan for every features check (a no-op when the
+      // fetch entry already read it).
+      return withCredScope(() =>
+        withBrokerProps(ctx, () => withPlanScope(c.env, next)),
+      );
     }),
   );
   app.use(mw(securityHeaders()));

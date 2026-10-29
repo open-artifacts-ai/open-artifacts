@@ -78,9 +78,18 @@ async function toMe(
   const cap = capOfCaller(caller(c));
   const exp = c.var.sessionExp;
   me.instance.hosted = c.env.HOSTED === "1";
-  // Reported only (behaviour follows FEATURES, which provisioning derives
-  // from TIER); null off hosted.
-  me.instance.tier = me.instance.hosted ? hostedTier(c.env.TIER) : null;
+  // Hosted: the billing plan's tier when there is one (the same tier as
+  // Me.instance.billing.tier; null for free, which has no Tier), else the
+  // provisioned TIER. Features follow the same tier (featuresOf). Null off
+  // hosted.
+  const plan = planOfMember(user);
+  me.instance.tier = !me.instance.hosted
+    ? null
+    : plan
+      ? plan.tier === "free"
+        ? null
+        : plan.tier
+      : hostedTier(c.env.TIER);
   // Owners also see why configured sign-in is off (AuthConfig.problems).
   me.instance.signIn = instanceSignIn(
     c.env,
@@ -109,7 +118,6 @@ async function toMe(
   // Self-serve billing (hosted only): the plan as this request's user load
   // read it. Billing details for the uncapped owner and admins, who also
   // refresh the tier on demand (at most once a minute, after the response).
-  const plan = planOfMember(user);
   if (plan) {
     const details = orgCan(user, "billing.manage", { cap });
     me.instance.billing = {

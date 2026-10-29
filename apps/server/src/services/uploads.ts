@@ -12,6 +12,7 @@ import {
 import { authorize, callerOf, capOfCaller } from "../auth/authz.js";
 import { contentKey } from "../auth/keys.js";
 import { orgCan } from "../auth/policy.js";
+import { requireFreeStorage } from "../billing/caps.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
@@ -101,6 +102,8 @@ export async function createUpload(
       if (!r) throw notFound();
     }
   }
+  // Hosted billing: a free instance's storage cap (off until set).
+  await requireFreeStorage(env, input.size);
   const uploadId = newId();
   stmts.push(
     db
