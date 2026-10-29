@@ -1428,7 +1428,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
     ws.send(
       JSON.stringify({ type: "hello", version: o.version, you: who.key }),
     );
-    ws.send(JSON.stringify(this.viewerPresenceFrame(now)));
+    try {
+      ws.send(JSON.stringify(this.viewerPresenceFrame(now)));
+    } catch (e) {
+      logError("viewer_presence_flush_failed", e);
+    }
     await this.viewerPresenceChanged(ws);
     if (o.ping)
       await this.armAt(Math.min(o.t + SOCKET_TTL_MS, now + PRESENCE_SWEEP_MS));
@@ -1490,10 +1494,15 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * the current roster (a joiner).
    */
   private async viewerPresenceChanged(skip?: WebSocket): Promise<void> {
-    const sent = this.viewerPresenceSent();
-    if (sent === null || this.now() - sent.sentAt >= PRESENCE_COALESCE_MS)
-      this.flushViewerPresence(skip);
-    else await this.armAt(sent.sentAt + PRESENCE_COALESCE_MS);
+    try {
+      const sent = this.viewerPresenceSent();
+      if (sent === null || this.now() - sent.sentAt >= PRESENCE_COALESCE_MS)
+        this.flushViewerPresenceOrThrow(skip);
+      else await this.armAt(sent.sentAt + PRESENCE_COALESCE_MS);
+    } catch (e) {
+      // A failed broadcast never fails a join or closeActor.
+      logError("viewer_presence_flush_failed", e);
+    }
   }
 
   /**
@@ -1502,6 +1511,15 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * exact compare, so no collision can swallow a change.
    */
   private flushViewerPresence(skip?: WebSocket): void {
+    try {
+      this.flushViewerPresenceOrThrow(skip);
+    } catch (e) {
+      // A failed broadcast never fails a join, close or alarm.
+      logError("viewer_presence_flush_failed", e);
+    }
+  }
+
+  private flushViewerPresenceOrThrow(skip?: WebSocket): void {
     const now = this.now();
     const frame = JSON.stringify(this.viewerPresenceFrame(now));
     if (this.viewerPresenceSent()?.hash === frame) return;
@@ -1820,7 +1838,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       !job &&
       !thumb &&
       sockets.length === 0 &&
-      this.pendingViewerPresence().left === 0
+      this.sql.exec("select 1 from viewer_presence_left limit 1").toArray()
+        .length === 0
     )
       return;
     const now = this.now();
@@ -1838,7 +1857,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
         }
       } else next = Math.min(next, t + SOCKET_TTL_MS);
     }
-    next = Math.min(next, this.viewerPresenceDue(now));
+    this.viewerPresenceDue(now);
     const indexDue = !!job && (job.attempts === 0 || job.due <= now);
     if (job && indexDue) {
       const same = "where id = 1 and seq = ?";
@@ -1875,6 +1894,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
         next,
         indexDue && pendingThumb.attempts === 0 ? this.now() : pendingThumb.due,
       );
+    // Joins, closes and upgrades ran during the awaits above and may have
+    // armed an earlier alarm: recompute their due times from storage and
+    // the open sockets, so the setAlarm below never moves one later.
+    next = Math.min(next, this.liveDue(now));
     if (next !== Number.POSITIVE_INFINITY)
       await this.ctx.storage.setAlarm(next);
   }
@@ -1935,7 +1958,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
       retryAt,
       job.version,
     );
-    await this.ctx.storage.setAlarm(retryAt);
+    // Never moves a future alarm later (a presence grace end or coalesce
+    // armed during this run); a past one is this run's own.
+    const cur = await this.ctx.storage.getAlarm();
+    if (cur === null || cur > retryAt || cur <= this.now())
+      await this.ctx.storage.setAlarm(retryAt);
     await this.ctx.storage.sync();
     let result: ThumbResult;
     try {
@@ -1985,6 +2012,39 @@ export class ArtifactRuntime extends DurableObject<Env> {
   }
 
   /**
+   * Side-effect-free due time of socket and presence work: open sockets'
+   * TTL, the next sweep (a joined pinging socket is open), the earliest
+   * grace end and a pending coalesced flush. Infinity when none.
+   */
+  private liveDue(now: number): number {
+    let next = Number.POSITIVE_INFINITY;
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      const t = (ws.deserializeAttachment() as SocketMeta | null)?.t ?? 0;
+      next = Math.min(next, t + SOCKET_TTL_MS);
+    }
+    if (this.viewerPresenceSockets().some(({ p }) => p.ping))
+      next = Math.min(next, now + PRESENCE_SWEEP_MS);
+    try {
+      const until = this.sql
+        .exec<{ u: number | null }>(
+          "select min(until) as u from viewer_presence_left",
+        )
+        .one().u;
+      if (until !== null) next = Math.min(next, until);
+      const sent = this.viewerPresenceSent();
+      if (
+        sent !== null &&
+        sent.hash !== JSON.stringify(this.viewerPresenceFrame(this.now()))
+      )
+        next = Math.min(next, sent.sentAt + PRESENCE_COALESCE_MS);
+    } catch (e) {
+      logError("viewer_presence_flush_failed", e);
+    }
+    return next;
+  }
+
+  /**
    * The alarm's presence sweep: closes joined pinging sockets with no
    * auto-response (ping) for PRESENCE_STALE_MS (1001 "stale", then the
    * grace). A socket opened without X-OA-Ping is never swept. Returns the
@@ -2014,24 +2074,19 @@ export class ArtifactRuntime extends DurableObject<Env> {
 
   /**
    * The alarm's presence upkeep: drops expired grace rows, flushes a
-   * changed roster once its coalesce window has passed. Returns the next
-   * grace end or pending flush, else Infinity.
+   * changed roster once its coalesce window has passed (liveDue arms what
+   * stays pending). Never throws: a failed broadcast never fails the alarm.
    */
-  private viewerPresenceDue(now: number): number {
-    this.sql.exec("delete from viewer_presence_left where until <= ?", now);
-    let next =
-      this.sql
-        .exec<{ u: number | null }>(
-          "select min(until) as u from viewer_presence_left",
-        )
-        .one().u ?? Number.POSITIVE_INFINITY;
-    // No frame ever sent: nobody joined since the last wipe, nothing to flush.
-    const sent = this.viewerPresenceSent();
-    if (sent === null) return next;
-    if (now - sent.sentAt >= PRESENCE_COALESCE_MS) this.flushViewerPresence();
-    else if (sent.hash !== JSON.stringify(this.viewerPresenceFrame(now)))
-      next = Math.min(next, sent.sentAt + PRESENCE_COALESCE_MS);
-    return next;
+  private viewerPresenceDue(now: number): void {
+    try {
+      this.sql.exec("delete from viewer_presence_left where until <= ?", now);
+      // No frame ever sent: nobody joined since the last wipe.
+      const sent = this.viewerPresenceSent();
+      if (sent !== null && now - sent.sentAt >= PRESENCE_COALESCE_MS)
+        this.flushViewerPresenceOrThrow();
+    } catch (e) {
+      logError("viewer_presence_flush_failed", e);
+    }
   }
 
   /**

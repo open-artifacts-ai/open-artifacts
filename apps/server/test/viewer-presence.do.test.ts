@@ -14,7 +14,7 @@ import {
   PRESENCE_SWEEP_MS,
   type PresenceFrame,
 } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ACTOR_HEADER,
   ArtifactRuntime,
@@ -530,5 +530,83 @@ describe("viewer presence on R.events", () => {
       },
     });
     expect(res.status).toBe(400);
+  });
+
+  it("a grace row written while the alarm awaits the indexer keeps an alarm at or before its until", async () => {
+    const r = await room();
+    const a = await r.open({ who: person(1) });
+    await a.count(2);
+    r.clock.t += 2_000;
+    const b = await r.open({ who: person(2) });
+    await a.count(3);
+    // Plain flags, not promises: a promise can't be settled across the test's
+    // and the alarm's I/O contexts. The indexer waits (bounded) for release.
+    const gate = { started: false, released: false };
+    await r.inDo(async (i) => {
+      await i.scheduleIndex(r.id, 1);
+      i.indexer = async () => {
+        gate.started = true;
+        const end = Date.now() + 10_000;
+        while (!gate.released && Date.now() < end)
+          await new Promise((res) => setTimeout(res, 5));
+      };
+    });
+    const run = r.alarm();
+    await vi.waitFor(() => expect(gate.started).toBe(true));
+    r.clock.t += 1_000;
+    const closedAt = r.clock.t;
+    b.ws.close();
+    await r.leftIs(1);
+    gate.released = true;
+    await run;
+    const at = await r.alarmAt();
+    expect(at).not.toBeNull();
+    expect(at as number).toBeLessThanOrEqual(closedAt + PRESENCE_GRACE_MS);
+    expect(await r.inDo((i) => i.pendingIndex())).toBeNull();
+    const before = a.presence().length;
+    r.clock.t = closedAt + PRESENCE_GRACE_MS;
+    await r.alarm();
+    await a.sync();
+    expect(a.presence()).toHaveLength(before + 1);
+    expect(names(last(a))).toEqual(["P1"]);
+    a.ws.close();
+  });
+
+  it("a failing flush logs viewer_presence_flush_failed and never fails a join, closeActor or alarm", async () => {
+    const r = await room();
+    const a = await r.open({ who: person(1) });
+    await a.count(2);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logged = () =>
+      spy.mock.calls.filter((c) =>
+        String(c[0]).includes("viewer_presence_flush_failed"),
+      ).length;
+    try {
+      // The schema is not recreated while the instance is ready: every
+      // read of the state row now throws.
+      await r.inDo((_i, st) => {
+        st.storage.sql.exec("drop table viewer_presence_state");
+      });
+      r.clock.t += 2_000;
+      const b = await r.open({ who: person(2) });
+      await b.count(2);
+      expect(JSON.parse(b.raw[0] as string)).toEqual({
+        type: "hello",
+        version: 1,
+        you: key(2),
+      });
+      expect(names(last(b))).toEqual(["P2", "P1"]);
+      expect(logged()).toBe(1);
+      expect(await r.stub.closeActor("ip:192.0.2.250", "x")).toBe(0);
+      await vi.waitFor(() => expect(logged()).toBe(2));
+      r.clock.t += 2_000;
+      await r.alarm();
+      expect(logged()).toBeGreaterThanOrEqual(3);
+      expect(b.ws.readyState).toBe(WebSocket.OPEN);
+      a.ws.close();
+      b.ws.close();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
