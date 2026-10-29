@@ -82,6 +82,9 @@ export const directEnv = (over: Partial<Env> = {}): Env =>
 export const hostedEnv = (over: Partial<Env> = {}): Env => {
   const e = direct({
     HOSTED: "1",
+    // Hosted billing: with no BILLING gate the provisioned TIER sets the
+    // features (Business: sync_google); without one, free and solo.
+    TIER: "business",
     FEATURES: SYNC,
     DIRECTORY_BROKER_URL: BROKER,
     BROKER_SIGNING_KEY: TEST_BROKER_KEY,

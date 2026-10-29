@@ -24,10 +24,13 @@ import {
   vi,
 } from "vitest";
 import { withBrokerProps } from "../src/auth/broker-transport.js";
+import { storedBytes } from "../src/billing/caps.js";
 import { CHECK_KEY, readPlan } from "../src/billing/plan.js";
 import { refreshPlan } from "../src/billing/store.js";
 import { DIRECTORY_SYNC_CRON, scheduled } from "../src/cron.js";
 import type { Env } from "../src/env.js";
+import worker from "../src/index.js";
+import { fakeAssets } from "./assets-stub.js";
 import {
   type BillingRow,
   cachePlan,
@@ -37,13 +40,14 @@ import {
   H,
   send,
 } from "./billing-helpers.js";
-import { errOf, login } from "./helpers.js";
+import { errOf, fetchAndWait, login } from "./helpers.js";
 import { pinMiddayUtc } from "./midday.js";
 
 const tag = newId().slice(0, 6).toLowerCase();
 const b = fakeBilling();
 const { props } = b;
 const TEAM_TIER = { ...H, TIER: "team" } as Env;
+const BUSINESS_TIER = { ...H, TIER: "business" } as Env;
 
 let owner: { cookie: string; userId: string };
 let admin: { cookie: string; userId: string };
@@ -122,8 +126,8 @@ describe("precedence: BILLING present, then absent, then nothing", () => {
     });
   });
 
-  it("BILLING absent: the provisioned TIER, whatever is cached; never unreachable; nothing recorded", async () => {
-    await cachePlan(row({ status: "lapsed", version: 3 }), mid, TEAM_TIER);
+  it("BILLING absent, a cache: the cached tier (never upward to TIER); never unreachable; nothing recorded (R2)", async () => {
+    await cachePlan(row({ tier: "team", version: 3 }), mid, BUSINESS_TIER);
     await env.DB.prepare(
       "insert into settings (key, value) values (?, ?) on conflict (key) do update set value = excluded.value",
     )
@@ -138,8 +142,8 @@ describe("precedence: BILLING present, then absent, then nothing", () => {
       .bind(CHECK_KEY)
       .first();
     for (const t of [mid, mid + 30 * DAY]) {
-      expect(await refreshPlan(TEAM_TIER, t)).toBe("skipped");
-      expect(await readPlan(TEAM_TIER, t)).toMatchObject({
+      expect(await refreshPlan(BUSINESS_TIER, t)).toBe("skipped");
+      expect(await readPlan(BUSINESS_TIER, t)).toMatchObject({
         tier: "team",
         lock: null,
       });
@@ -149,17 +153,84 @@ describe("precedence: BILLING present, then absent, then nothing", () => {
         .bind(CHECK_KEY)
         .first(),
     ).toEqual(before);
-  });
-
-  it("BILLING absent, no TIER: no plan at all (no enforcement), whatever is cached", async () => {
-    expect(await readPlan(H, mid)).toBeNull();
-    await cachePlan(row({ tier: "team", status: "lapsed", version: 2 }), mid);
-    expect(await readPlan(H, mid + 30 * DAY)).toBeNull();
-    // The same install with the gate: the cached lapse applies.
-    expect(await withGate(() => readPlan(H, mid))).toMatchObject({
+    // A cached lapse applies too (no billing call needed to stay locked).
+    await cachePlan(row({ status: "lapsed", version: 4 }), mid, BUSINESS_TIER);
+    expect(await readPlan(BUSINESS_TIER, mid + 30 * DAY)).toMatchObject({
       readOnly: true,
       reason: "lapsed",
     });
+  });
+
+  it("BILLING absent, no cache: the provisioned TIER; no TIER either: free and solo (R2)", async () => {
+    expect(await readPlan(TEAM_TIER, mid)).toMatchObject({
+      tier: "team",
+      lock: null,
+    });
+    expect(await readPlan(H, mid)).toMatchObject({
+      tier: "free",
+      lock: { mode: "solo", reason: "solo" },
+      trialEligible: true,
+    });
+  });
+});
+
+// ------------------------------------------------------ plan read (R4)
+
+describe("the plan read: lazy, once per invocation, seeded by the user load (R4)", () => {
+  /** H with a DB that records each statement's SQL, and a fake ASSETS. */
+  const counting = () => {
+    const qs: string[] = [];
+    const DB = new Proxy(env.DB, {
+      get(t, p) {
+        if (p === "prepare")
+          return (q: string) => {
+            qs.push(q);
+            return t.prepare(q);
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    return { qs, e: { ...H, DB, ASSETS: fakeAssets().fetcher } as Env };
+  };
+  const planReads = (qs: string[]) =>
+    qs.filter((q) => q.includes("billing.plan")).length;
+  const call = (e: Env, url: string, cookie?: string) =>
+    fetchAndWait(
+      worker as unknown as Fetcher,
+      new Request(url, { headers: cookie ? { cookie } : {} }),
+      e,
+      props,
+    );
+
+  it("the SPA and the content host read no plan; a signed-in call reads it once, in its user load; an anonymous API call once", async () => {
+    await cachePlan(row({}), mid);
+    const c = counting();
+    for (const url of [
+      "http://app.localhost/",
+      "http://app.localhost/settings/billing",
+      "http://content.localhost/robots.txt",
+    ]) {
+      c.qs.length = 0;
+      await call(c.e, url, owner.cookie);
+      expect(planReads(c.qs), url).toBe(0);
+    }
+    // Signed in: the user load's own statement carries it; no second read,
+    // and Me still reports the billing tier's features.
+    c.qs.length = 0;
+    const me = await call(c.e, `http://app.localhost${R.me}`, owner.cookie);
+    expect(me.status).toBe(200);
+    expect(planReads(c.qs)).toBe(1);
+    expect(c.qs.find((q) => q.includes("billing.plan"))).toMatch(
+      /^select id, email,[\s\S]* users\s+where id = \?1/,
+    );
+    expect(MeSchema.parse(await me.json()).instance.features).toEqual(
+      expect.arrayContaining(["sync_google"]),
+    );
+    // Anonymous, an API route: read once, lazily.
+    c.qs.length = 0;
+    expect((await call(c.e, "http://app.localhost/healthz")).status).toBe(200);
+    expect(planReads(c.qs)).toBe(1);
   });
 });
 
@@ -314,17 +385,31 @@ describe("the gate's team routes", () => {
       expect(await code(await f())).toBe("plan_required");
   });
 
-  it("a role change is refused on a free instance; read-only still lets the owner demote", async () => {
+  it("a free instance refuses only a promotion or a reactivation; demotions pass, and read-only lets them all through (R3)", async () => {
     const target = await login(`t-role-${uniq()}@a.com`, "admin");
-    await cachePlan(row({ tier: "free", trialEndsAt: 1, version: 1 }), mid);
-    const patch = () =>
+    const patch = (role: string) =>
       send(props, R.member(target.userId), owner.cookie, {
         method: "PATCH",
-        body: { role: "member" },
+        body: { role },
       });
-    expect(await code(await patch())).toBe("plan_required");
+    await cachePlan(row({ tier: "free", trialEndsAt: 1, version: 1 }), mid);
+    // A demotion, then the same role again: pass.
+    expect((await patch("member")).status).toBe(200);
+    expect((await patch("member")).status).toBe(200);
+    // A promotion: plan_required.
+    expect(await code(await patch("admin"))).toBe("plan_required");
+    // A reactivation (someone not active): plan_required, even unchanged.
+    await env.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(target.userId)
+      .run();
+    expect(await code(await patch("member"))).toBe("plan_required");
+    await env.DB.prepare("update users set status = 'active' where id = ?")
+      .bind(target.userId)
+      .run();
+    // Read-only (a lapse): the owner may promote or demote.
     await cachePlan(row({ tier: "team", status: "lapsed", version: 2 }), mid);
-    expect((await patch()).status).toBe(200);
+    expect((await patch("admin")).status).toBe(200);
+    expect((await patch("member")).status).toBe(200);
   });
 });
 
@@ -365,12 +450,7 @@ describe("free-tier caps: config, off until set", () => {
         contentType: "image/png",
       },
     });
-  const stored = async () =>
-    (
-      (await env.DB.prepare(
-        "select coalesce(sum(json_extract(j.value, '$.size')), 0) as n from versions v, json_each(v.manifest) j",
-      ).first<{ n: number }>()) as { n: number }
-    ).n;
+  const stored = () => storedBytes(H);
 
   it("unset: a free instance has no caps", async () => {
     await cachePlan(FREE, mid);
@@ -433,5 +513,81 @@ describe("free-tier caps: config, off until set", () => {
       expect(
         (await publish({ ...H, FREE_STORAGE_BYTES: v } as Env)).status,
       ).toBe(201);
+  });
+
+  // Manager decision R5: distinct content across every version (history
+  // included), each blob once, trashed artifacts excluded.
+  const version = (id: string, content: string, e: Env = H) =>
+    send(props, R.versions(id), owner.cookie, {
+      method: "POST",
+      e,
+      body: { format: "html", content },
+    });
+  const fresh = async (content: string) => {
+    const r = await send(props, R.artifacts, owner.cookie, {
+      method: "POST",
+      body: { title: "s", format: "html", content },
+    });
+    expect(r.status).toBe(201);
+    return ((await r.json()) as { id: string }).id;
+  };
+  const trash = (id: string) =>
+    send(props, R.artifact(id), owner.cookie, { method: "DELETE" });
+
+  it("storage: republishing the same file 100 times counts it once", async () => {
+    const content = `<p>same ${uniq()}</p>`;
+    const size = new TextEncoder().encode(content).length;
+    const before = await stored();
+    const id = await fresh(content);
+    expect(await stored()).toBe(before + size);
+    for (let i = 0; i < 100; i++)
+      expect((await version(id, content)).status).toBe(201);
+    expect(await stored()).toBe(before + size);
+  });
+
+  it("storage: a new version with new content adds its bytes; history stays counted", async () => {
+    const a = `<p>a ${uniq()}</p>`;
+    const b = `<p>bb ${uniq()}</p>`;
+    const before = await stored();
+    const id = await fresh(a);
+    expect((await version(id, b)).status).toBe(201);
+    const both =
+      new TextEncoder().encode(a).length + new TextEncoder().encode(b).length;
+    expect(await stored()).toBe(before + both);
+  });
+
+  it("storage: trashing an artifact drops the blobs no live artifact still holds", async () => {
+    const shared = `<p>shared ${uniq()}</p>`;
+    const own = `<p>own only ${uniq()}</p>`;
+    const n = (s: string) => new TextEncoder().encode(s).length;
+    const before = await stored();
+    const keep = await fresh(shared);
+    const gone = await fresh(shared);
+    expect((await version(gone, own)).status).toBe(201);
+    expect(await stored()).toBe(before + n(shared) + n(own));
+    expect((await trash(gone)).status).toBe(204);
+    // `own` went with it; `shared` stays: `keep` still holds it.
+    expect(await stored()).toBe(before + n(shared));
+    expect((await trash(keep)).status).toBe(204);
+    expect(await stored()).toBe(before);
+  });
+
+  it("storage: the cap set is enforced at the distinct count; unset, never", async () => {
+    await cachePlan(FREE, mid);
+    const content = `<p>cap ${uniq()}</p>`;
+    const id = await fresh(content);
+    const at = { ...H, FREE_STORAGE_BYTES: String(await stored()) } as Env;
+    // At the cap: refused, though the bytes would not change.
+    expect((await errOf(await version(id, content, at))).code).toBe(
+      "plan_limit",
+    );
+    const roomy = {
+      ...H,
+      FREE_STORAGE_BYTES: String((await stored()) + 1_000),
+    } as Env;
+    for (let i = 0; i < 5; i++)
+      expect((await version(id, content, roomy)).status).toBe(201);
+    // Unset: nothing enforced, whatever is stored.
+    expect((await version(id, `<p>${uniq()}</p>`)).status).toBe(201);
   });
 });

@@ -5,6 +5,7 @@ import type { BatchItem } from "drizzle-orm/batch";
 import { withCap, withPlan } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { capOf, planCapsRole } from "../auth/policy.js";
+import { seedPlan } from "../billing/features.js";
 import { billingOn, CHECK_KEY, PLAN_KEY, planOfRaw } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
@@ -321,6 +322,9 @@ function withEpoch(env: Env, row: UserByIdRow | null): UserWithEpoch | null {
   // authConfig.guestsReadOnly and P3's restriction columns (0009).
   if (!row) return null;
   const plan = planOfRaw(env, row.billingPlan, row.billingCheck, Date.now());
+  // The same statement read the plan: this invocation keeps it (no second
+  // read for its features checks).
+  seedPlan(plan);
   // P2/P3's cap first; then, hosted, the plan cap: a free or read-only
   // instance is read-only for everyone but the org owner (writes only).
   const cap =

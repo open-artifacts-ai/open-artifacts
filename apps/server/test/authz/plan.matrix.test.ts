@@ -362,10 +362,12 @@ const EXEMPT: Exempt[] = [
     ok: ["owner", "admin"],
     run: (w) => send(props, R.audit, cred(w)),
   },
+  // A capped read (audit.read refuses any cap) that the plan cap exempts:
+  // settings.read ignores caps altogether, so it would prove nothing.
   {
-    name: "read settings",
-    ok: ["owner", "admin", "member"],
-    run: (w) => send(props, R.settings, cred(w)),
+    name: "export the audit log",
+    ok: ["owner", "admin"],
+    run: (w) => send(props, R.auditExport, cred(w)),
   },
 ];
 

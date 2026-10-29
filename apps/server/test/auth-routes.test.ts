@@ -463,6 +463,8 @@ describe("Me sign-in fields", () => {
   it("direct: auth for a session and a PAT, signIn, features, hosted", async () => {
     const e = direct({
       HOSTED: "1",
+      // No BILLING gate: the provisioned TIER is the plan; features follow it.
+      TIER: "business",
       FEATURES: "spaces",
       AUTH_BROKER_URL: "https://auth.h.test",
       BROKER_SIGNING_KEY: TEST_BROKER_KEY,
@@ -478,7 +480,13 @@ describe("Me sign-in fields", () => {
     expect(m.instance).toMatchObject({
       hosted: true,
       signIn: { mode: "direct", providers: ["google", "email"] },
-      features: ["spaces", "guests_read_only"],
+      features: [
+        "spaces",
+        "sync_google",
+        "content_revocation",
+        "usage_off",
+        "guests_read_only",
+      ],
     });
     const pat = await createPat(e, userId, "t");
     expect((await me(e, pat.token)).auth).toEqual({

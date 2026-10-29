@@ -35,7 +35,7 @@ import {
 } from "../auth/policy.js";
 import { requireFreeData } from "../billing/caps.js";
 import { recordDataCreator } from "../billing/creators.js";
-import { readPlan } from "../billing/plan.js";
+import { planNow } from "../billing/features.js";
 import { cappedJson, readCapped } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
@@ -233,7 +233,7 @@ async function gate(
   // Hosted billing: an anonymous write reads the instance's plan here (a
   // signed-in caller carries it from their user load).
   const plan =
-    who.kind !== "user" && kind === "write" ? await readPlan(c.env) : null;
+    who.kind !== "user" && kind === "write" ? await planNow(c.env) : null;
   // Each gate kind is one policy action; checked after the anonymous 401s
   // below so their messages keep their order.
   const ctx = { ...canCtx(who, a, plan), personal: r.personal };

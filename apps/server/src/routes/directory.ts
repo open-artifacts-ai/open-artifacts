@@ -21,7 +21,7 @@ import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { userActor, withRequestCred } from "../services/audit.js";
-import { feedSync, SYNC_DO_NAME } from "../services/directory.js";
+import { feedSync, SYNC_DO_NAME, syncModeFor } from "../services/directory.js";
 import { directoryMode } from "../services/spaces.js";
 import type { AppType } from "./index.js";
 
@@ -165,7 +165,7 @@ export function mountDirectory(app: AppType): void {
   // "Sync now" and a held sweep's confirmation (org owner): 202 SyncStatus.
   app.post(R.directorySync, async (c) => {
     if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
-    const status = await syncStub(c.env).kick("manual");
+    const status = await syncStub(c.env).kick("manual", syncModeFor(c.env));
     await feedAfter(c);
     return c.json(status, 202);
   });
@@ -181,6 +181,7 @@ export function mountDirectory(app: AppType): void {
     const status = await syncStub(c.env).confirmHeld(
       c.req.param("groupId"),
       withRequestCred(userActor(requireUser(c).id)),
+      syncModeFor(c.env),
     );
     if (!status)
       throw new ApiError(

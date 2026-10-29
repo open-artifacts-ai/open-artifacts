@@ -244,7 +244,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
  * 403 plan_required (a free, solo instance) or plan_read_only (team
  * features read-only). Removals (DELETE, a suspension or demotion through
  * PATCH members) are never listed: removing people is how a team drops back
- * to free. The first invite on a free instance whose trial never ran passes
+ * to free (on a free instance PATCH members refuses only a promotion or a
+ * reactivation: services/members.ts patchMember). The first invite on a
+ * free instance whose trial never ran passes
  * and starts the trial. Artifact writes in shared spaces, shares, moves and
  * transfers are refused per artifact (policy can, putShare).
  */
@@ -264,14 +266,6 @@ export const TEAM_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/v1/directory/sync",
   "POST /api/v1/directory/held/:groupId/confirm",
   "PUT /api/v1/directory/restricted-groups/:groupId",
-]);
-
-/**
- * Refused only on a free (solo) instance: a member's role change. On a
- * read-only instance a demotion is how a team drops back, so it passes.
- */
-export const SOLO_ROUTES: ReadonlySet<string> = new Set([
-  "PATCH /api/v1/members/:id",
 ]);
 
 /** Content host routes: the handlers verify signed tokens or public visibility. */

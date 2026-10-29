@@ -1,7 +1,7 @@
 import { withBrokerProps } from "./auth/broker-transport.js";
 import { sweepLoginCodes } from "./auth/codes.js";
 import { usageTick } from "./billing/creators.js";
-import { scopedPlan, withPlanScope } from "./billing/features.js";
+import { planNow, withPlanScope } from "./billing/features.js";
 import { billingOn } from "./billing/plan.js";
 import { billingTick } from "./billing/store.js";
 import { disconnectDirectory } from "./directory/connect.js";
@@ -16,7 +16,7 @@ import {
   sweepLostIndexJobs,
 } from "./services/artifacts.js";
 import { sweepAuditEvents } from "./services/audit.js";
-import { feedSync, kickSync } from "./services/directory.js";
+import { feedSync, kickSync, syncModeFor } from "./services/directory.js";
 import { checkLatestRelease } from "./services/release.js";
 import { directoryMode } from "./services/spaces.js";
 import { sweepUploads } from "./services/uploads.js";
@@ -87,6 +87,9 @@ async function run(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
+  // Hosted: this tick's plan, read once (lazily scoped), before any
+  // features check.
+  await planNow(env);
   if (event.cron?.startsWith(SYSTEM_JOB_PREFIX)) {
     if (event.cron === DIRECTORY_SYNC_CRON) {
       ctx.waitUntil(
@@ -107,22 +110,15 @@ async function run(
         );
       // Hosted billing: no directory sync while team features are locked
       // (free, or read-only), nor on a tier that freezes it (Team:
-      // sync_frozen). Nothing is disconnected or deleted: the binding and
-      // the synced rows stay, and sync resumes with the tier.
-      if (
-        billingOn(env) &&
-        (scopedPlan()?.lock || directoryMode(env) !== "google")
-      ) {
-        if (directoryMode(env) !== "off")
-          logInfo("system_job", {
-            job: "directory-sync",
-            state: "plan_paused",
-          });
-        return;
-      }
+      // sync_frozen). feedSync hands DirectorySync that mode (syncModeFor:
+      // frozen), so its alarm stops too, and nothing is minted. Nothing is
+      // disconnected or deleted: the binding and the synced rows stay, and
+      // sync resumes with the tier.
       const fed = await feedSync(env);
       if (fed === "fed" || fed === "mint_failed")
         logInfo("system_job", { job: "directory-sync", state: fed });
+      else if (billingOn(env) && syncModeFor(env) === "frozen")
+        logInfo("system_job", { job: "directory-sync", state: "plan_paused" });
       return;
     }
     if (event.cron !== DIRECTORY_DISCONNECT_CRON) {

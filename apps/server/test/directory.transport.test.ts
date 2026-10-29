@@ -99,7 +99,7 @@ describe("directoryTransport", () => {
   });
 
   it("HOSTED=1 with direct config resolves to none: connect 404, SyncStatus mode off with the problem", async () => {
-    const e = directEnv({ HOSTED: "1" });
+    const e = directEnv({ HOSTED: "1", TIER: "business" });
     expect((await get(e, R.directoryConnect, owner.cookie)).status).toBe(404);
     expect((await get(e, R.directoryCallback, owner.cookie)).status).toBe(404);
     const s = (await (

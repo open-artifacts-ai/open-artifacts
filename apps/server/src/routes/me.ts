@@ -83,13 +83,15 @@ async function toMe(
   // provisioned TIER. Features follow the same tier (featuresOf). Null off
   // hosted.
   const plan = planOfMember(user);
+  // Read even when the plan rules: an unknown TIER is still logged.
+  const provisioned = me.instance.hosted ? hostedTier(c.env.TIER) : null;
   me.instance.tier = !me.instance.hosted
     ? null
     : plan
       ? plan.tier === "free"
         ? null
         : plan.tier
-      : hostedTier(c.env.TIER);
+      : provisioned;
   // Owners also see why configured sign-in is off (AuthConfig.problems).
   me.instance.signIn = instanceSignIn(
     c.env,

@@ -17,6 +17,8 @@ const app = createApp();
 /** A hosted install (invite-only, Google through the broker, codes). */
 const HOSTED: Partial<Env> = {
   HOSTED: "1",
+  // No BILLING gate: the provisioned TIER is the plan (none: free, solo).
+  TIER: "business",
   AUTH_DOMAIN_JOIN: "invite",
   AUTH_BROKER_URL: "https://auth.h.test",
   BROKER_SIGNING_KEY: TEST_BROKER_KEY,

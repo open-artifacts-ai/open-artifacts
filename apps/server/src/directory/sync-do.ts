@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { SyncStatus } from "@oa/shared";
+import type { DirectoryMode, SyncStatus } from "@oa/shared";
 import { withoutCred } from "../auth/cred.js";
 import type { Env } from "../env.js";
 import type { AuditActor } from "../services/audit.js";
@@ -33,8 +33,11 @@ export class DirectorySync extends DurableObject<Env> {
     this.engine = new SyncEngine(env, ctx.storage, ctx, this.box);
   }
 
-  kick(reason: KickReason): Promise<SyncStatus> {
-    return withoutCred(() => this.engine.kick(reason));
+  // `mode` on every call: the caller's directory mode (services/directory.ts
+  // syncModeFor: hosted, the billing tier's), which the alarms then follow.
+
+  kick(reason: KickReason, mode?: DirectoryMode): Promise<SyncStatus> {
+    return withoutCred(() => this.engine.kick(reason, undefined, mode));
   }
 
   status(): Promise<SyncStatus> {
@@ -42,21 +45,28 @@ export class DirectorySync extends DurableObject<Env> {
   }
 
   /** A run is due and no token is in hand (services/directory.ts feedSync). */
-  wantsToken(): Promise<boolean> {
-    return withoutCred(() => this.engine.wantsToken());
+  wantsToken(mode?: DirectoryMode): Promise<boolean> {
+    return withoutCred(() => this.engine.wantsToken(undefined, mode));
   }
 
   /** The caller's freshly minted token (never its capability), or why it failed. */
   handToken(
     forKey: string,
     h: { token: string } | { error: MintFault },
+    mode?: DirectoryMode,
   ): Promise<void> {
-    return withoutCred(() => this.engine.handToken(forKey, h));
+    return withoutCred(() => this.engine.handToken(forKey, h, undefined, mode));
   }
 
   /** Null: nothing confirmable (no hold, or an unreadable group). */
-  confirmHeld(groupId: string, by?: AuditActor): Promise<SyncStatus | null> {
-    return withoutCred(() => this.engine.confirmHeld(groupId, by));
+  confirmHeld(
+    groupId: string,
+    by?: AuditActor,
+    mode?: DirectoryMode,
+  ): Promise<SyncStatus | null> {
+    return withoutCred(() =>
+      this.engine.confirmHeld(groupId, by, undefined, mode),
+    );
   }
 
   reset(): Promise<void> {

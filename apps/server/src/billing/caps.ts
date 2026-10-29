@@ -9,8 +9,9 @@ import { billingOn } from "./plan.js";
 // empty or invalid leaves that cap off. They apply only while the billing
 // tier is free (this invocation's plan, withPlanScope), to everyone,
 // the owner included:
-// - FREE_STORAGE_BYTES: the instance's stored version bytes (every
-//   version's manifest sizes, trash included). An upload that would pass it,
+// - FREE_STORAGE_BYTES: the instance's stored content: every version of
+//   every live artifact, each distinct blob once, trash excluded
+//   (STORED_BYTES). An upload that would pass it,
 //   or a publish once it is reached, is 403 plan_limit.
 // - FREE_DATA_DOCS: live-data docs per artifact. A write that would add a
 //   doc past it is 403 plan_limit (updates and deletes of existing docs
@@ -58,8 +59,27 @@ export function planLimitError(limit: PlanLimit, max: number): ApiError {
   );
 }
 
-const STORED_BYTES = `select coalesce(sum(json_extract(j.value, '$.size')), 0) as n
-  from versions v, json_each(v.manifest) j`;
+/**
+ * The instance's stored content (Manager decision R5): every version of
+ * every live (not trashed) artifact, history included, each distinct blob
+ * once. A blob is its content digest (an inline file, hosted:
+ * services/manifest.ts) or else its R2 key (an upload; a restore reuses
+ * its keys). So republishing the same bytes adds nothing, and trashing an
+ * artifact drops the blobs no live artifact still holds. One statement,
+ * bounded by the cap itself (it runs only while the cap is on).
+ */
+const STORED_BYTES = `select coalesce(sum(size), 0) as n from (
+  select max(json_extract(j.value, '$.size')) as size
+  from artifacts a join versions v on v.artifact_id = a.id, json_each(v.manifest) j
+  where a.deleted_at is null
+  group by coalesce('d:' || json_extract(j.value, '$.digest'), 'k:' || json_extract(j.value, '$.key'))
+)`;
+
+/** The instance's stored content bytes (STORED_BYTES). */
+export async function storedBytes(env: Env): Promise<number> {
+  const r = await env.DB.prepare(STORED_BYTES).first<{ n: number }>();
+  return r?.n ?? 0;
+}
 
 /**
  * FREE_STORAGE_BYTES: refuses `adding` more bytes when the instance's
@@ -72,8 +92,8 @@ export async function requireFreeStorage(
 ): Promise<void> {
   const max = activeFreeCaps(env)?.storage_bytes ?? null;
   if (max === null) return;
-  const r = await env.DB.prepare(STORED_BYTES).first<{ n: number }>();
-  if ((r?.n ?? 0) + adding > max) throw planLimitError("storage_bytes", max);
+  if ((await storedBytes(env)) + adding > max)
+    throw planLimitError("storage_bytes", max);
 }
 
 /** The DO's numbers the data caps need (ArtifactRuntime.capUsage). */
