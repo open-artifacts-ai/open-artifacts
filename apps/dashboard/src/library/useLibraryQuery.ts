@@ -9,6 +9,8 @@ export type LibraryFilters = {
   scope: Scope;
   format?: Format;
   agent?: string;
+  /** One connection (`g:<grantId>` or `t:<tokenId>`, #589); the caller's own only. */
+  agentVia?: string;
   /** A space id from `?space=`; the caller's personal space reads as `mine`. */
   space?: string;
 };
@@ -40,6 +42,7 @@ export const useLibraryQuery = (f: LibraryFilters) => {
       if (ownMine) p.set("owner", "me");
       if (f.format) p.set("format", f.format);
       if (f.agent) p.set("agent", f.agent);
+      if (f.agentVia) p.set("agentVia", f.agentVia);
       if (pageParam) p.set("cursor", pageParam);
       return api.get(`${R.artifacts}?${p}`, ArtifactPage, signal);
     },

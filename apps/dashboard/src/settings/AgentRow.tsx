@@ -264,7 +264,10 @@ export function AgentRow({
             )}
             {versions > 0 && (
               <DropdownMenuItem asChild>
-                <AppLink href={`/?agent=${encodeURIComponent(c.clientName)}`}>
+                {/* This connection only (#589), not every agent with its name. */}
+                <AppLink
+                  href={`/?agentVia=${encodeURIComponent(`g:${c.grantId}`)}`}
+                >
                   View versions from {c.clientName}
                 </AppLink>
               </DropdownMenuItem>
