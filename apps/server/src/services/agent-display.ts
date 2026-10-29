@@ -35,20 +35,13 @@ export const shownName = (u: { name: string | null; email: string }): string =>
   publicName(u) ?? "Member";
 
 /**
- * Whether a version's agent name is the publisher's private token label, from
- * `versions.agent_via` and `agent_version`. `t:` (token): yes. `g:` (grant):
- * no, it is the client's name. NULL (rows before migration 0012): a PAT never
- * had a version and an OAuth client usually reports one, so a name with a
- * version is a client's and one without may be a label (private).
+ * Whether a version's agent name may be the publisher's private token label,
+ * from `versions.agent_via`. Only a grant (`g:`, the client's own name) is
+ * public. A token (`t:`) and a NULL via (rows before migration 0012, when a
+ * name could be either) are private.
  */
-export function isPrivateAgent(
-  via: string | null,
-  version: string | null,
-): boolean {
-  if (via?.startsWith("g:")) return false;
-  if (via?.startsWith("t:")) return true;
-  return version === null;
-}
+export const isPrivateAgent = (via: string | null): boolean =>
+  !via?.startsWith("g:");
 
 /** The stand-in for a private label: "<publisher>'s agent". */
 export const ownersAgent = (publisher: {
@@ -68,5 +61,5 @@ export function agentFor(
   viewerId: string | null,
 ): AgentRef {
   if (!isPrivate || viewerId === publisher.id) return agent;
-  return { name: ownersAgent(publisher), version: agent.version };
+  return { name: ownersAgent(publisher), version: agent.version, masked: true };
 }

@@ -90,11 +90,14 @@ export type UserRef = z.infer<typeof UserRefSchema>;
 /**
  * An agent that published. For a token (PAT) publish `name` is the token's
  * label, which only the token's owner (the version's createdBy) sees; every
- * other viewer gets "<owner name>'s agent". An OAuth client's name shows as is.
+ * other viewer gets "<owner name>'s agent" with `masked: true` (no list
+ * filter matches it). An OAuth client's name shows as is.
  */
 export const AgentRefSchema = z.object({
   name: z.string(),
   version: z.string().nullable(),
+  /** Set only when `name` is the "<owner name>'s agent" stand-in. */
+  masked: z.literal(true).optional(),
 });
 export type AgentRef = z.infer<typeof AgentRefSchema>;
 

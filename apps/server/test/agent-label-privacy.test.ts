@@ -3,12 +3,15 @@
 // client name is a product and stays. Every response to a non-owner is
 // scanned whole for the label, so a future field can't leak it.
 import { env } from "cloudflare:workers";
-import { newId, R } from "@oa/shared";
+import { type Member, newId, R, TrashQuerySchema } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { callerOf } from "../src/auth/authz.js";
 import { createPat } from "../src/auth/pat.js";
+import type { Env } from "../src/env.js";
 import { isPrivateAgent, publicName } from "../src/services/agent-display.js";
-import { publish } from "../src/services/artifacts.js";
+import { publish, softDelete } from "../src/services/artifacts.js";
+import { listTrash } from "../src/services/trash.js";
 import { getUser } from "../src/services/users.js";
 import { api, login, runIndex } from "./helpers.js";
 import { connect, tool } from "./mcp-helpers.js";
@@ -110,13 +113,11 @@ describe("helpers", () => {
     expect(publicName({ name: null, email: "a@x.com" })).toBeNull();
   });
 
-  it("isPrivateAgent: tokens yes, grants no; older rows private unless versioned", () => {
-    expect(isPrivateAgent("t:abc", null)).toBe(true);
-    expect(isPrivateAgent("g:abc", null)).toBe(false);
-    expect(isPrivateAgent("g:abc", "1.0")).toBe(false);
-    // Before 0012: a PAT never had a version; an OAuth client usually did.
-    expect(isPrivateAgent(null, null)).toBe(true);
-    expect(isPrivateAgent(null, "1.0")).toBe(false);
+  it("isPrivateAgent: tokens and rows with no via (before 0012) yes, grants no", () => {
+    expect(isPrivateAgent("t:abc")).toBe(true);
+    expect(isPrivateAgent("g:abc")).toBe(false);
+    // Before 0012 a name could be a token label: always private.
+    expect(isPrivateAgent(null)).toBe(true);
   });
 });
 
@@ -129,8 +130,9 @@ describe("a PAT publish: REST", () => {
       search: { items: { id: string; lastAgent: { name: string } }[] };
     };
     const name = `lbl-owner ${LABEL}`;
-    expect(r.artifact.lastAgent.name).toBe(name);
-    expect(r.versions[0]?.agent.name).toBe(name);
+    // The owner's copy is the real name: no `masked`.
+    expect(r.artifact.lastAgent).toEqual({ name, version: null });
+    expect(r.versions[0]?.agent).toEqual({ name, version: null });
     expect(r.list.items.find((i) => i.id === pubId)?.lastAgent.name).toBe(name);
     expect(r.search.items.find((i) => i.id === pubId)?.lastAgent.name).toBe(
       name,
@@ -145,7 +147,11 @@ describe("a PAT publish: REST", () => {
         list: { items: { id: string; lastAgent: { name: string } }[] };
         search: { items: { id: string; lastAgent: { name: string } }[] };
       };
-      const want = { name: "Olive Owner's agent", version: null };
+      const want = {
+        name: "Olive Owner's agent",
+        version: null,
+        masked: true,
+      };
       expect(r.artifact.lastAgent).toEqual(want);
       expect(r.versions[0]?.agent).toEqual(want);
       expect(r.list.items.find((i) => i.id === pubId)?.lastAgent).toEqual(want);
@@ -189,14 +195,25 @@ describe("a PAT publish: REST", () => {
     expect(JSON.stringify(anon)).not.toContain(nameless.email);
   });
 
-  it("a version from before 0012 (no agent_via, no version) is private too", async () => {
+  it("a version from before 0012 (no agent_via) is private, even with a version", async () => {
     await env.DB.prepare(
-      "update versions set agent_via = null where artifact_id = ?",
+      "update versions set agent_via = null, agent_version = '1.0' where artifact_id = ?",
     )
       .bind(pubId)
       .run();
-    const r = await restReads(pubId, other.cookie);
+    await env.DB.prepare(
+      "update artifacts set last_agent_version = '1.0' where id = ?",
+    )
+      .bind(pubId)
+      .run();
+    const r = (await restReads(pubId, other.cookie)) as {
+      artifact: { lastAgent: unknown };
+      versions: { agent: unknown }[];
+    };
     expect(JSON.stringify(r)).not.toContain("9q2x");
+    const want = { name: "Olive Owner's agent", version: "1.0", masked: true };
+    expect(r.artifact.lastAgent).toEqual(want);
+    expect(r.versions[0]?.agent).toEqual(want);
     const o = (await restReads(pubId, owner.cookie)) as {
       versions: { agent: { name: string } }[];
     };
@@ -221,11 +238,17 @@ describe("a PAT publish: MCP from another user's agent", () => {
     for (const r of results) expect(r.isError).toBeFalsy();
     expect(JSON.stringify(results)).not.toContain("9q2x");
     const got = results[0]?.structuredContent as {
-      artifact: { lastAgent: { name: string } };
-      version: { agent: { name: string } };
+      artifact: { lastAgent: unknown };
+      version: { agent: unknown };
     };
-    expect(got.artifact.lastAgent.name).toBe("Olive Owner's agent");
-    expect(got.version.agent.name).toBe("Olive Owner's agent");
+    expect(got.artifact.lastAgent).toMatchObject({
+      name: "Olive Owner's agent",
+      masked: true,
+    });
+    expect(got.version.agent).toMatchObject({
+      name: "Olive Owner's agent",
+      masked: true,
+    });
   });
 
   it("the owner's own agent still sees the label", async () => {
@@ -266,5 +289,56 @@ describe("a grant publish", () => {
       expect(r.artifact.lastAgent).toEqual(want);
       expect(r.versions[0]?.agent).toEqual(want);
     }
+  });
+});
+
+describe("trash", () => {
+  it("a space manager who isn't the publisher sees the label masked", async () => {
+    const SPACES = { ...(env as object), FEATURES: "spaces" } as Env;
+    const spaceId = newId();
+    const run = (q: string, ...b: unknown[]) =>
+      env.DB.prepare(q)
+        .bind(...b)
+        .run();
+    await run(
+      "insert into spaces (id, kind, name, created_at) values (?, 'shared', ?, 1)",
+      spaceId,
+      `Lbl ${tag}`,
+    );
+    for (const [u, role] of [
+      [other, "manager"],
+      [owner, "editor"],
+    ] as const)
+      await run(
+        "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, ?, 'manual', 1)",
+        spaceId,
+        u.userId,
+        role,
+      );
+    const pubM = (await getUser(SPACES, owner.userId)) as Member;
+    const mgr = (await getUser(SPACES, other.userId)) as Member;
+    const { id } = await publish(
+      SPACES,
+      pubM,
+      { title: "tr", format: "html", content: "<p>t</p>", spaceId } as never,
+      {
+        name: `lbl-owner ${LABEL}`,
+        version: null,
+        via: { kind: "token", id: newId() },
+      },
+    );
+    await softDelete(SPACES, mgr, id);
+    const page = await listTrash(
+      SPACES,
+      callerOf(mgr),
+      TrashQuerySchema.parse({ spaceId }),
+    );
+    const item = page.items.find((i) => i.id === id);
+    expect(item?.lastAgent).toEqual({
+      name: "Olive Owner's agent",
+      version: null,
+      masked: true,
+    });
+    expect(JSON.stringify(page)).not.toContain("9q2x");
   });
 });

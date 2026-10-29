@@ -128,8 +128,7 @@ export function versionEvent(
   restoredFrom?: number,
 ): VersionEvent {
   const hidden =
-    agent !== null &&
-    isPrivateAgent(agent.via ? viaKey(agent.via) : null, agent.version);
+    agent !== null && isPrivateAgent(agent.via ? viaKey(agent.via) : null);
   return {
     at: new Date(at).toISOString(),
     by: agent
@@ -700,7 +699,7 @@ const publisherOf = (id: string, u: NameCols) => ({
 
 /**
  * The current version's publisher for `lastAgent`, as one JSON array
- * [agent_via, agent_version, created_by, email, name, display_name], or null
+ * [agent_via, created_by, email, name, display_name], or null
  * with no row. The artifacts row keeps no via, so this reads the version row
  * the same batch wrote (allocateVersion): a correlated PK lookup per output
  * row, inside the list, search and trash SELECTs (no extra D1 call).
@@ -708,8 +707,7 @@ const publisherOf = (id: string, u: NameCols) => ({
  * and a bare "id" would bind to lu.id.
  */
 export const lastPublisherSql = sql<string | null>`(select json_array(
-    lv.agent_via, lv.agent_version, lv.created_by, lu.email, lu.name,
-    lu.display_name)
+    lv.agent_via, lv.created_by, lu.email, lu.name, lu.display_name)
   from versions lv join users lu on lu.id = lv.created_by
   where lv.artifact_id = "artifacts"."id"
     and lv.version = "artifacts"."current_version")`;
@@ -724,13 +722,13 @@ export function shownLastAgent(
   caller: Caller,
 ): AgentRef | null {
   if (!lastAgent || !pub) return null;
-  const [via, ver, by, email, name, displayName] = JSON.parse(pub) as (
+  const [via, by, email, name, displayName] = JSON.parse(pub) as (
     | string
     | null
   )[];
   return agentFor(
     lastAgent,
-    isPrivateAgent(via ?? null, ver ?? null),
+    isPrivateAgent(via ?? null),
     publisherOf(by ?? "", {
       email: email ?? "",
       name: name ?? null,
@@ -748,9 +746,7 @@ export function shownLastAgent(
 const agentShownSql = (caller: Caller) =>
   sql`exists (select 1 from versions v where v.artifact_id = "artifacts"."id"
     and v.version = "artifacts"."current_version"
-    and (v.agent_via like 'g:%'
-      or (v.agent_via is null and v.agent_version is not null)
-      or v.created_by = ${caller.kind === "user" ? caller.user.id : null}))`;
+    and (v.agent_via like 'g:%' or v.created_by = ${caller.kind === "user" ? caller.user.id : null}))`;
 
 /** Anonymous callers never see member emails (not even as a name fallback). */
 export function redact(
@@ -1100,7 +1096,7 @@ export async function listVersions(
         ? null
         : agentFor(
             { name: v.agent_name, version: v.agent_version },
-            isPrivateAgent(v.agent_via, v.agent_version),
+            isPrivateAgent(v.agent_via),
             publisherOf(v.created_by, v),
             viewerId,
           ),
