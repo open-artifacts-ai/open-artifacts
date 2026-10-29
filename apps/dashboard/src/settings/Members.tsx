@@ -76,7 +76,9 @@ function RoleSelect({
   value,
   placeholder,
   onChange,
+  disabled,
 }: {
+  disabled?: boolean;
   label: string;
   value: Assignable | undefined;
   placeholder?: string;
@@ -85,6 +87,7 @@ function RoleSelect({
   return (
     <Select
       value={value ?? ""}
+      disabled={disabled}
       onValueChange={(v) => onChange(v as Assignable)}
     >
       <SelectTrigger
@@ -290,7 +293,10 @@ function Row({
   you,
   hosted,
   owner,
+  frozen,
 }: {
+  /** The plan locked the instance (cap "plan"): reads stay, every write control is off. */
+  frozen: boolean;
   m: Member;
   you: boolean;
   hosted: boolean;
@@ -298,7 +304,7 @@ function Row({
   owner: boolean;
 }) {
   const denyAdmin = (id: string) => denyMember(id, ADMIN_ONLY);
-  const patch = usePatchMember(denyAdmin);
+  const patch = usePatchMember(denyAdmin, denyMember);
   const [confirm, setConfirm] = useState(false);
   const [restricting, setRestricting] = useState(false);
   const [lifting, setLifting] = useState(false);
@@ -358,6 +364,7 @@ function Row({
           label={`Role for ${label}`}
           value={m.role === "admin" || m.role === "member" ? m.role : undefined}
           placeholder="Guest"
+          disabled={frozen}
           onChange={(role) => {
             clearDenied(m.id);
             patch.mutate({ id: m.id, role });
@@ -389,6 +396,7 @@ function Row({
               variant="ghost"
               size="sm"
               className="justify-self-end"
+              disabled={frozen}
               aria-label={`More for ${label}`}
             >
               <svg
@@ -445,6 +453,7 @@ function Row({
           size="sm"
           className="justify-self-end text-[length:var(--oa-text-sm)]"
           aria-label={`Remove ${label}`}
+          disabled={frozen}
           onClick={() => setConfirm(true)}
         >
           Remove
@@ -570,6 +579,8 @@ export function Members() {
     state.status === "authed" &&
     state.me.user.role === "owner" &&
     state.me.auth?.cap == null;
+  // The plan locked the instance: this page still lists, nothing here writes.
+  const frozen = state.status === "authed" && state.me.auth?.cap === "plan";
   // Hosted (the spaces feature): restriction badges and the row's More menu.
   const hosted = state.status === "authed" && hasFeature(state.me, "spaces");
   const departed = useDeparted(state.status === "authed" ? state.me : null);
@@ -583,6 +594,7 @@ export function Members() {
           <Button
             size="sm"
             className="text-[length:var(--oa-text-sm)]"
+            disabled={frozen}
             onClick={() => setInviting(true)}
           >
             Add member
@@ -608,6 +620,7 @@ export function Members() {
                 you={m.id === me?.id}
                 hosted={hosted}
                 owner={owner}
+                frozen={frozen}
               />
             ))}
           </ul>
