@@ -343,7 +343,11 @@ export class FakeCf {
   fetch: typeof fetch = async (input, init) => {
     const req = new Request(input as RequestInfo, init);
     const url = new URL(req.url);
-    const body = req.method === "GET" ? "" : await req.clone().text();
+    // Multipart bodies are read as bytes: workerd warns on .text() of one.
+    const body =
+      req.method === "GET"
+        ? ""
+        : new TextDecoder().decode(await req.clone().arrayBuffer());
     const path =
       url.origin === new URL(API).origin
         ? url.pathname.replace(/^\/client\/v4/, "") + url.search
@@ -509,9 +513,7 @@ export class FakeCf {
             (q: { sql: string; params?: unknown[] }) =>
               this.statements(q.sql, q.params ?? []),
           );
-          const out = d.engine.batch
-            ? await d.engine.batch(stmts)
-            : await this.inTransaction(d.engine, stmts);
+          const out = await d.engine.batch(stmts);
           return env(stmts.map((q, i) => this.d1Result(q.sql, out[i])));
         }
         if (
@@ -749,23 +751,6 @@ export class FakeCf {
       success: true,
       meta: { changes: /^\s*SELECT/i.test(sql) ? 0 : (r?.changes ?? 0) },
     };
-  }
-
-  /** A batch on an engine without its own: BEGIN and COMMIT through exec. */
-  private async inTransaction(
-    engine: SqlEngine,
-    stmts: { sql: string; params: unknown[] }[],
-  ) {
-    await engine.exec("BEGIN", []);
-    try {
-      const out = [];
-      for (const q of stmts) out.push(await engine.exec(q.sql, q.params));
-      await engine.exec("COMMIT", []);
-      return out;
-    } catch (e) {
-      await engine.exec("ROLLBACK", []);
-      throw e;
-    }
   }
 
   private async scriptRoute(

@@ -1667,15 +1667,71 @@ describe("F: r2ReleaseReader", () => {
     }
   });
 
+  it("assets lists the record's entries without downloading any asset", async () => {
+    const s = await published();
+    const r = r2ReleaseReader(s.cf, "staging");
+    expect(await r.assets("0.34.0", "release")).toEqual(recordOf().assets);
+    expect(gets(s, "/assets/")).toEqual([]);
+  });
+
+  it("assetBytes downloads one asset, checked against the record", async () => {
+    const s = await published();
+    const r = r2ReleaseReader(s.cf, "staging");
+    const want = ASSETS.find((a) => a.path === "index.html")?.bytes;
+    // With or without an assets call first (the record is read either way).
+    expect(await r.assetBytes("0.34.0", "release", "index.html")).toEqual(want);
+    await r.assets("0.34.0", "release");
+    s.fake.r2Log.length = 0;
+    expect(await r.assetBytes("0.34.0", "release", "index.html")).toEqual(want);
+    expect(gets(s, "").map((e) => e.key)).toEqual([
+      "releases/0.34.0/release/assets/index.html",
+    ]);
+  });
+
+  it("assetBytes refuses a path the record does not list, before any download", async () => {
+    const s = await published();
+    s.fake.r2Seed(
+      s.bucket,
+      "releases/0.34.0/release/assets/extra.js",
+      enc("x"),
+    );
+    const r = r2ReleaseReader(s.cf, "staging");
+    await r.assets("0.34.0", "release").catch(() => {});
+    s.fake.r2Log.length = 0;
+    for (const path of ["extra.js", "../record.sig.json", ""]) {
+      const e = await fails(r.assetBytes("0.34.0", "release", path));
+      expect(e.message).toMatch(/not in the 0\.34\.0 \(release\) record/);
+    }
+    expect(gets(s, "/assets/")).toEqual([]);
+  });
+
   it("checks each object's size against the record before its hash", async () => {
     const s = await published();
     // The listing says the record's size; the bytes served differ.
     s.fake.r2Serve = (key, bytes) =>
       key.endsWith("assets/index.html") ? concat(bytes, enc("!")) : bytes;
     const e = await fails(
-      r2ReleaseReader(s.cf, "staging").assets("0.34.0", "release"),
+      r2ReleaseReader(s.cf, "staging").assetBytes(
+        "0.34.0",
+        "release",
+        "index.html",
+      ),
     );
     expect(e.message).toMatch(/size/);
+  });
+
+  it("refuses an asset whose bytes are not the record's", async () => {
+    const s = await published();
+    s.fake.r2Serve = (key, bytes) =>
+      key.endsWith("assets/assets/app.js") ? enc("console.log(2)") : bytes;
+    const e = await fails(
+      r2ReleaseReader(s.cf, "staging").assetBytes(
+        "0.34.0",
+        "release",
+        "assets/app.js",
+      ),
+    );
+    expect(e.message).toMatch(/sha256 does not match the record/);
   });
 
   it("caps the asset count by ASSET_LIMITS before any download", async () => {

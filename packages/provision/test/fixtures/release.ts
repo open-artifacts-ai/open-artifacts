@@ -54,6 +54,29 @@ export const ASSETS: ReleaseAsset[] = [
   { path: "app.js", bytes: enc("console.log(1)") },
 ];
 
+/**
+ * A reader's assets and assetBytes over these files: the list in their own
+ * order (path, size, sha256, unchecked, so a test can serve a bad path) and a
+ * fresh copy of one file's bytes per read.
+ */
+export function assetsOf(
+  files: readonly ReleaseAsset[],
+): Pick<ReleaseReader, "assets" | "assetBytes"> {
+  return {
+    assets: async () =>
+      files.map((f) => ({
+        path: f.path,
+        size: f.bytes.byteLength,
+        sha256: createHash("sha256").update(f.bytes).digest("hex"),
+      })),
+    assetBytes: async (_version, _variant, path) => {
+      const f = files.find((x) => x.path === path);
+      if (!f) throw new Error(`no asset ${path}`);
+      return f.bytes.slice();
+    },
+  };
+}
+
 /** Release content; a Template object is serialized to the template bytes. */
 export type ReleaseSpec = {
   env?: Env;
@@ -136,6 +159,7 @@ export type Kind =
   | "record"
   | "modules"
   | "assets"
+  | "assetBytes"
   | "template"
   | "migrations"
   | "welcome"
@@ -188,6 +212,7 @@ export function releaseFixtures(src: {
       record: 0,
       modules: 0,
       assets: 0,
+      assetBytes: 0,
       template: 0,
       migrations: 0,
       welcome: 0,
@@ -199,8 +224,7 @@ export function releaseFixtures(src: {
         const b = makeBundle(v, version);
         return { mainModule: b.mainModule, modules: b.modules };
       },
-      assets: async () =>
-        (spec.assets ?? ASSETS).map((a) => ({ ...a, bytes: a.bytes.slice() })),
+      ...assetsOf(spec.assets ?? ASSETS),
       template: async () => tplBytes(spec.template).slice(),
       migrations: async () =>
         (spec.migrations ?? MIGRATION_FILES).map((f) => ({
@@ -225,6 +249,7 @@ export function releaseFixtures(src: {
       record: counted("record"),
       modules: counted("modules"),
       assets: counted("assets"),
+      assetBytes: counted("assetBytes"),
       template: counted("template"),
       migrations: counted("migrations"),
       welcome: counted("welcome"),

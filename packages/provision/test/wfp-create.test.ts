@@ -2,6 +2,7 @@ import {
   createHash,
   createPrivateKey,
   createPublicKey,
+  randomBytes,
   sign,
   verify,
 } from "node:crypto";
@@ -19,6 +20,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { DatabaseSync as Sqlite } from "node:sqlite";
+import v8 from "node:v8";
+import { runInNewContext } from "node:vm";
 import { isPat } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { packUstar } from "../../../scripts/ci/release-artifact.mjs";
@@ -74,6 +77,7 @@ import {
 import { type FakeCf as Fake, FakeCf, splitSql } from "./fake-cf.js";
 import {
   ASSETS,
+  assetsOf,
   enc,
   floorOf,
   makeBundle,
@@ -1844,7 +1848,11 @@ describe("WfpProvisioner.create", () => {
       await cf.assetsUpload(
         { kind: "namespace", ns: "oa-staging" },
         "oa-s-iaaaaaaaaaaa",
-        Object.keys(want).map((path) => ({ path, bytes: enc(path) })),
+        Object.keys(want).map((path) => ({
+          path,
+          size: path.length,
+          bytes: async () => enc(path),
+        })),
       );
       expect(Object.fromEntries(fake.assetTypes)).toEqual(
         Object.fromEntries(Object.entries(want).map(([p, t]) => [`/${p}`, t])),
@@ -1873,12 +1881,160 @@ describe("WfpProvisioner.create", () => {
       const r = await cf.assetsUpload(
         { kind: "namespace", ns: "oa-staging" },
         "oa-s-iaaaaaaaaaaa",
-        [{ path: "a.txt", bytes: enc("a") }],
+        [{ path: "a.txt", size: 1, bytes: async () => enc("a") }],
       );
       expect(r.jwt).toMatch(/^jwt-sess-/);
       expect(fake.log.some((e) => e.path.includes("/assets/upload"))).toBe(
         false,
       );
+    });
+  });
+
+  describe("assets (lazy reads)", () => {
+    /** Reads per asset path, through `bytes(path, n)` (n counts from 1). */
+    const counting = (bytes: (path: string, n: number) => Uint8Array) => {
+      const reads = new Map<string, number>();
+      return {
+        reads,
+        assetBytes: async (_v: string, _b: string, path: string) => {
+          const n = (reads.get(path) ?? 0) + 1;
+          reads.set(path, n);
+          return bytes(path, n);
+        },
+      };
+    };
+
+    it("assets are read one at a time", async () => {
+      // 16 files of 2 MiB: holding them all would be 32 MiB of ArrayBuffers.
+      const MiB = 1024 * 1024;
+      const files = Array.from({ length: 16 }, (_, i) => ({
+        path: `f${String(i).padStart(2, "0")}.bin`,
+        bytes: new Uint8Array(randomBytes(2 * MiB)),
+      }));
+      v8.setFlagsFromString("--expose-gc");
+      const gc = runInNewContext("gc") as () => void;
+      const held = async () => {
+        // The fake's own request log keeps every body; that is not create's.
+        s.fake.raw.length = 0;
+        // Freed ArrayBuffers are released by a background sweeper, so the
+        // least of a few collections, each after a macrotask, is what is held.
+        let least = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < 3; i++) {
+          await new Promise((r) => setImmediate(r));
+          gc();
+          least = Math.min(least, process.memoryUsage().arrayBuffers);
+        }
+        return least;
+      };
+      let base: number | undefined;
+      let peak = 0;
+      const r = counting((path) => {
+        const f = files.find((x) => x.path === path) as ReleaseAsset;
+        return f.bytes.slice();
+      });
+      const s = setup({
+        release: makeRelease(
+          { assets: files },
+          {
+            assetBytes: async (v, b, path) => {
+              const now = await held();
+              base ??= now;
+              peak = Math.max(peak, now - base);
+              return r.assetBytes(v, b, path);
+            },
+          },
+        ),
+      });
+      await s.p.create(input());
+      // The fake asks for one file per bucket, so one bucket is 2 MiB; 256 KiB
+      // is room for the other buffers of a create.
+      expect(peak).toBeLessThan(2 * MiB + 256 * 1024);
+      // Pre-flight, the upload's hash pass, and the bucket Cloudflare asked for.
+      expect([...r.reads.values()]).toEqual(files.map(() => 3));
+    });
+
+    it("a file Cloudflare already has is read only to verify it", async () => {
+      const r = counting(
+        (path) => (ASSETS.find((a) => a.path === path) as ReleaseAsset).bytes,
+      );
+      const s = setup({
+        release: makeRelease({}, { assetBytes: r.assetBytes }),
+      });
+      for (const a of ASSETS)
+        s.fake.assetHashes.add(assetHash(a.bytes, a.path));
+      await s.p.create(input());
+      expect(Object.fromEntries(r.reads)).toEqual({
+        "app.js": 2,
+        "index.html": 2,
+      });
+      expect(
+        s.fake.log.some((e) => e.path.includes("/workers/assets/upload")),
+      ).toBe(false);
+    });
+
+    it("a file whose bytes differ from its listed entry is refused with zero Cloudflare calls", async () => {
+      const r = counting((path) =>
+        path === "app.js"
+          ? enc("console.log(2)")
+          : (ASSETS.find((a) => a.path === path) as ReleaseAsset).bytes,
+      );
+      const s = setup({
+        release: makeRelease({}, { assetBytes: r.assetBytes }),
+      });
+      const e = await fails(s.p.create(input()));
+      expect(e.message).toMatch(/assets do not match the signed record/);
+      expect(s.fake.log).toEqual([]);
+    });
+
+    it.each([
+      ["between verify and upload", 2],
+      ["between the upload's hash and its bucket", 3],
+    ])(
+      "a file changed %s is refused before the script upload",
+      async (_n, at) => {
+        const r = counting((path, n) =>
+          path === "app.js" && n >= at
+            ? enc("console.log(2)")
+            : (ASSETS.find((a) => a.path === path) as ReleaseAsset).bytes,
+        );
+        const s = setup({
+          release: makeRelease({}, { assetBytes: r.assetBytes }),
+        });
+        const e = await fails(s.p.create(input()));
+        expect(e).toBeInstanceOf(ProvisionRefused);
+        expect(e.message).toMatch(/assets do not match the signed record/);
+        expect(uploads(s.fake)).toHaveLength(0);
+        expect(
+          s.fake.log.some((x) => x.path.endsWith("/assets-upload-session")),
+        ).toBe(at === 3);
+      },
+    );
+
+    it("cf.assetsUpload reads a file to hash it and again only for its bucket", async () => {
+      const fake = new FakeCf();
+      FAKES.push(fake);
+      SENSITIVE.add(fake.token);
+      const cf = cfClient({
+        accountId: fake.accountId,
+        token: fake.token,
+        fetch: fake.fetch,
+      });
+      fake.assetHashes.add(assetHash(enc("a"), "a.txt"));
+      const reads: string[] = [];
+      const file = (path: string, text: string) => ({
+        path,
+        size: text.length,
+        bytes: async () => {
+          reads.push(path);
+          return enc(text);
+        },
+      });
+      await cf.assetsUpload(
+        { kind: "namespace", ns: "oa-staging" },
+        "oa-s-iaaaaaaaaaaa",
+        [file("a.txt", "a"), file("b.txt", "b")],
+      );
+      expect(reads).toEqual(["a.txt", "b.txt", "b.txt"]);
     });
   });
 
@@ -2141,12 +2297,10 @@ describe("release record integrity (H-T4b M1)", () => {
     modules: {
       modules: async () => makeBundle("redline"),
     },
-    assets: {
-      assets: async () => [
-        ASSETS[0] as ReleaseAsset,
-        { path: "app.js", bytes: enc("steal(document.cookie)") },
-      ],
-    },
+    assets: assetsOf([
+      ASSETS[0] as ReleaseAsset,
+      { path: "app.js", bytes: enc("steal(document.cookie)") },
+    ]),
     template: {
       template: async () => {
         const t = structuredClone(loadTemplate());
@@ -2226,7 +2380,7 @@ describe("release record integrity (H-T4b M1)", () => {
     ],
   ])("%s is refused with zero Cloudflare calls", async (_n, assets) => {
     const s = setup({
-      release: makeRelease({}, { assets: async () => assets }),
+      release: makeRelease({}, assetsOf(assets)),
     });
     const e = await fails(s.p.create(input()));
     expect(e.message).toMatch(/assets do not match the signed record/);
@@ -2258,7 +2412,7 @@ describe("release record integrity (H-T4b M1)", () => {
         release: makeRelease(
           {},
           {
-            assets: async () => assets,
+            ...assetsOf(assets),
             record: async () =>
               signRecord({ ...recordOf("release"), assets: entries }),
           },
@@ -2268,7 +2422,7 @@ describe("release record integrity (H-T4b M1)", () => {
       expect(e.message).toMatch(/asset path/);
       expect(s.fake.log).toEqual([]);
       const unlisted = setup({
-        release: makeRelease({}, { assets: async () => assets }),
+        release: makeRelease({}, assetsOf(assets)),
       });
       await fails(unlisted.p.create(input()));
       expect(unlisted.fake.log).toEqual([]);
@@ -2288,7 +2442,7 @@ describe("release record integrity (H-T4b M1)", () => {
       cf.assetsUpload(
         { kind: "namespace", ns: "oa-staging" },
         "oa-s-iaaaaaaaaaaa",
-        [{ path: ".dev.vars", bytes: enc("SECRET=1") }],
+        [{ path: ".dev.vars", size: 8, bytes: async () => enc("SECRET=1") }],
       ),
     );
     expect(e.message).toMatch(/asset path/);
@@ -3098,7 +3252,7 @@ describe("H-T4b round 1", () => {
         const s = setup({
           release: makeRelease(
             {},
-            { assets: async () => [...ASSETS, { path, bytes: enc("x") }] },
+            assetsOf([...ASSETS, { path, bytes: enc("x") }]),
           ),
         });
         const e = await fails(s.p.create(input()));

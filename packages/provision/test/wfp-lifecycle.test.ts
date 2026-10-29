@@ -273,11 +273,12 @@ function makeReleases(env: Env, specs: Record<string, Spec> = {}) {
       const b = bundleOf(variant, version);
       return { mainModule: b.mainModule, modules: b.modules };
     },
-    assets: async (version) =>
-      (spec(version).assets ?? ASSETS).map((a) => ({
-        ...a,
-        bytes: a.bytes.slice(),
-      })),
+    assets: async (version) => assetEntries(spec(version).assets ?? ASSETS),
+    assetBytes: async (version, _variant, path) => {
+      const a = (spec(version).assets ?? ASSETS).find((x) => x.path === path);
+      if (!a) throw new Error(`no asset ${path}`);
+      return a.bytes.slice();
+    },
     template: async (version) => tplBytes(spec(version).template).slice(),
     migrations: async (version) =>
       (spec(version).migrations ?? MIGRATION_FILES).map((f) => ({

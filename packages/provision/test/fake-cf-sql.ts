@@ -9,11 +9,8 @@ export interface SqlEngine {
     sql: string,
     params: unknown[],
   ): Promise<{ rows: Record<string, unknown>[]; changes: number }>;
-  /**
-   * The statements as one transaction (all or none). Optional: without it,
-   * fake-cf wraps the statements in BEGIN and COMMIT through exec.
-   */
-  batch?(
+  /** The statements as one transaction (all or none). */
+  batch(
     stmts: { sql: string; params: unknown[] }[],
   ): Promise<{ rows: Record<string, unknown>[]; changes: number }[]>;
 }

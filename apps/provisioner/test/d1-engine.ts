@@ -1,6 +1,16 @@
 import type { SqlEngine } from "../../../packages/provision/test/fake-cf-sql.js";
 
-/** A fake-cf SqlEngine over a Miniflare D1 binding. */
+/**
+ * A fake-cf SqlEngine over a Miniflare D1 binding.
+ *
+ * Known differences from the node suites' node:sqlite engine:
+ * - D1 rejects `undefined` params (node:sqlite does too, with other text):
+ *   bind `null` explicitly.
+ * - BLOBs come back as number arrays, not Uint8Arrays.
+ * - Errors read `D1_ERROR: ...`, not SQLite's own text.
+ * - `meta.changes` may not count rows a trigger writes, where the node
+ *   engine reports `total_changes()` (which does).
+ */
 export function d1Engine(db: D1Database): SqlEngine {
   const out = (r: D1Result<Record<string, unknown>>) => ({
     rows: r.results,

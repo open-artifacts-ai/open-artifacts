@@ -52,6 +52,7 @@ import {
   openReleaseRecord,
   parseStrictJson,
   type ReleaseAsset,
+  type ReleaseAssetEntry,
   type ReleaseFile,
   type ReleaseReader,
   type ReleaseRecord,
@@ -510,6 +511,8 @@ export async function publishFloor(o: {
  * env's releases bucket). Listings are paginated and capped; assets are
  * capped by ASSET_LIMITS and matched to the signed record (names and sizes)
  * before any download, and each object's size is checked before its hash.
+ * `assets` returns the record's list only; `assetBytes` downloads one file,
+ * checked against the entry of the last verified record for its release.
  */
 export function r2ReleaseReader(cf: Cf, env: Env): ReleaseReader {
   const bucket = bucketOf(env);
@@ -529,6 +532,25 @@ export function r2ReleaseReader(cf: Cf, env: Env): ReleaseReader {
   };
   const template = (version: string, variant: BundleVariant) =>
     get(releaseKey(version, variant, TEMPLATE_FILE), SMALL_MAX);
+  /** The verified record's assets, by path, for one release. */
+  const entries = new Map<string, Map<string, ReleaseAssetEntry>>();
+  const verified = async (version: string, variant: BundleVariant) => {
+    const signed = await record(version, variant);
+    if (!signed)
+      throw new Error(`no release record for ${version} (${variant})`);
+    const rec = openReleaseRecord(signed, pubkeyOf(env), env);
+    // L7: the record at this path must be for this version and variant.
+    if (rec.version !== version || rec.variant !== variant)
+      throw new Error(
+        `the release record at ${version} (${variant}) is for ${rec.version} (${rec.variant})`,
+      );
+    assertAssetLimits(rec.assets);
+    entries.set(
+      releaseKey(version, variant, ""),
+      new Map(rec.assets.map((a) => [a.path, a])),
+    );
+    return rec;
+  };
   return {
     record: async (version, variant) =>
       (await record(version, variant)) as Awaited<
@@ -558,16 +580,7 @@ export function r2ReleaseReader(cf: Cf, env: Env): ReleaseReader {
       return { mainModule, modules };
     },
     async assets(version, variant) {
-      const signed = await record(version, variant);
-      if (!signed)
-        throw new Error(`no release record for ${version} (${variant})`);
-      const rec = openReleaseRecord(signed, pubkeyOf(env), env);
-      // L7: the record at this path must be for this version and variant.
-      if (rec.version !== version || rec.variant !== variant)
-        throw new Error(
-          `the release record at ${version} (${variant}) is for ${rec.version} (${rec.variant})`,
-        );
-      assertAssetLimits(rec.assets);
+      const rec = await verified(version, variant);
       const prefix = releaseKey(version, variant, "assets/");
       const listed = await list(prefix, ASSET_LIMITS.files);
       const sizes = new Map(rec.assets.map((a) => [a.path, a.size]));
@@ -578,18 +591,27 @@ export function r2ReleaseReader(cf: Cf, env: Env): ReleaseReader {
         throw new Error(
           `release ${version} (${variant}): the assets in ${bucket} do not match the record (an extra, missing or resized file)`,
         );
-      const out: ReleaseAsset[] = [];
-      for (const a of rec.assets) {
-        const bytes = await get(prefix + a.path, a.size);
-        if (bytes.length !== a.size)
-          throw new Error(
-            `asset ${a.path}: size ${bytes.length}, the record says ${a.size}`,
-          );
-        if (sha256Hex(bytes) !== a.sha256)
-          throw new Error(`asset ${a.path}: sha256 does not match the record`);
-        out.push({ path: a.path, bytes });
-      }
-      return out;
+      return rec.assets;
+    },
+    async assetBytes(version, variant, path) {
+      const at = releaseKey(version, variant, "");
+      if (!entries.has(at)) await verified(version, variant);
+      const a = entries.get(at)?.get(path);
+      if (!a)
+        throw new Error(
+          `asset ${String(path).slice(0, 80)} is not in the ${version} (${variant}) record`,
+        );
+      const bytes = await get(
+        releaseKey(version, variant, "assets/") + a.path,
+        a.size,
+      );
+      if (bytes.length !== a.size)
+        throw new Error(
+          `asset ${a.path}: size ${bytes.length}, the record says ${a.size}`,
+        );
+      if (sha256Hex(bytes) !== a.sha256)
+        throw new Error(`asset ${a.path}: sha256 does not match the record`);
+      return bytes;
     },
     template,
     async migrations(version, variant) {

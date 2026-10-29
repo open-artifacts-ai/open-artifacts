@@ -32,7 +32,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { newId, newPat } from "@oa/shared";
-import { type Cf, CfError, type Module, type Target } from "./cf.js";
+import {
+  type AssetFile,
+  type Cf,
+  CfError,
+  type Module,
+  type Target,
+} from "./cf.js";
 import {
   ALLOW_ACCOUNT_TARGET,
   FLOOR_MIN_SEQ,
@@ -80,7 +86,6 @@ import {
 import {
   ASSET_LIMITS,
   assertAssetPath,
-  assetEntries,
   type BundleVariant,
   bundleSha256,
   compareVersions,
@@ -91,7 +96,6 @@ import {
   migrationsSha256,
   openFloor,
   openReleaseRecord,
-  type ReleaseAsset,
   type ReleaseAssetEntry,
   type ReleaseFile,
   type ReleaseReader,
@@ -232,7 +236,8 @@ interface Checked {
   rec: ReleaseRecord;
   mainModule: string;
   modules: Module[];
-  assets: ReleaseAsset[];
+  /** Listed and verified; each file is re-read when it is uploaded. */
+  assets: AssetFile[];
   template: Template;
   migrations: ReleaseFile[];
   /** The env's signed floor, checked against FLOOR_MIN_SEQ and the version. */
@@ -963,15 +968,26 @@ export class WfpProvisioner {
     return copy;
   }
 
-  private async readAssets(rec: ReleaseRecord): Promise<ReleaseAsset[]> {
+  /**
+   * The assets list, checked against the signed record, as an upload
+   * manifest whose bytes are read only when used: every read is a private
+   * copy checked against the record's size and sha256, so a file changed
+   * since an earlier read is refused. With `verify` (pre-flight) every file
+   * is read and checked now, one at a time, and dropped.
+   */
+  private async readAssets(
+    rec: ReleaseRecord,
+    verify = false,
+  ): Promise<AssetFile[]> {
     const list = await this.o.release.assets(rec.version, rec.variant);
-    const copy = (list ?? []).map((a) => ({
+    const got = (Array.isArray(list) ? list : []).map((a) => ({
       path: a?.path,
-      bytes: new Uint8Array(a?.bytes ?? []),
+      size: a?.size,
+      sha256: a?.sha256,
     }));
-    let got: ReturnType<typeof assetEntries>;
     try {
-      got = assetEntries(copy);
+      for (const a of got) assertAssetEntry(a);
+      got.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     } catch (e) {
       throw new ProvisionRefused(
         `release ${rec.version} (${rec.variant}): ${(e as Error).message}`,
@@ -979,7 +995,21 @@ export class WfpProvisioner {
     }
     if (canonicalJson(got) !== canonicalJson(rec.assets))
       this.refuse(rec, "assets", "an extra, missing or changed file");
-    return copy;
+    const files = rec.assets.map((a) => ({
+      path: a.path,
+      size: a.size,
+      bytes: async () => {
+        const bytes = new Uint8Array(
+          (await this.o.release.assetBytes(rec.version, rec.variant, a.path)) ??
+            [],
+        );
+        if (bytes.byteLength !== a.size || sha256Hex(bytes) !== a.sha256)
+          this.refuse(rec, "assets", `${a.path} changed`);
+        return bytes;
+      },
+    }));
+    if (verify) for (const f of files) await f.bytes();
+    return files;
   }
 
   private async readTemplate(rec: ReleaseRecord): Promise<Template> {
@@ -1038,7 +1068,7 @@ export class WfpProvisioner {
     const rec = await this.readRecord(i);
     const floor = await this.readFloor(rec);
     const { mainModule, modules } = await this.readModules(rec);
-    const assets = await this.readAssets(rec);
+    const assets = await this.readAssets(rec, true);
     const template = await this.readTemplate(rec);
     const migrations = await this.readMigrations(rec);
     await this.readWelcome(rec);
