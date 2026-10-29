@@ -1,15 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  appHostFor,
   assertOwnResource,
   ENV_PREFIX,
   ForeignResource,
   hosts,
   hostsKvTitle,
+  isAppHost,
   isInstallId,
   names,
   newInstallId,
   platformNames,
 } from "../src/index.js";
+import * as namesModule from "../src/names.js";
+import * as wfpModule from "../src/wfp.js";
 
 const D = { app: "app.test", content: "content.test" };
 
@@ -46,7 +50,9 @@ describe("provision names", () => {
       dispatch: "oa-s-dispatch",
       hosts: "oa-s-hosts",
       turnstile: "oa-s-turnstile",
+      billing: "oa-s-billing",
     });
+    expect(platformNames("prod").billing).toBe("oa-p-billing");
     expect(platformNames("prod").turnstile).toBe("oa-p-turnstile");
     expect(platformNames("prod").db).toBe("oa-p-platform");
     expect(platformNames("prod").hosts).toBe("oa-p-hosts");
@@ -119,6 +125,15 @@ describe("provision names", () => {
       contentHost: "finqore.content.test",
     });
   });
+  it("billing is a platform host on the app zone (SS1d): reserved", () => {
+    // SS4's sign-up name check reads the same RESERVED_SLUGS.
+    expect(namesModule.RESERVED_SLUGS).toContain("billing");
+    expect(() => hosts("billing", D)).toThrow(/slug/);
+    for (const env of ["staging", "prod"] as const)
+      expect(() => hosts("billing", namesModule.HOSTED_DOMAINS[env])).toThrow(
+        /slug/,
+      );
+  });
   it("refuses punycode and IDNA-reserved slugs (H-T4b L4)", () => {
     for (const s of ["xn--80ak6aa92e", "xn--a", "ab--c", "a1--", "zz--zz"])
       expect(() => hosts(s, D)).toThrow(/slug/);
@@ -135,5 +150,53 @@ describe("provision names", () => {
     expect(() => hosts("a", { app: "c.x.test", content: "x.test" })).toThrow(
       /domain/,
     );
+  });
+});
+
+describe("app hosts (the billing gate's appHost)", () => {
+  it("HOSTED_DOMAINS lives in names.ts; wfp re-exports the same object", () => {
+    expect(wfpModule.HOSTED_DOMAINS).toBe(namesModule.HOSTED_DOMAINS);
+    expect(namesModule.HOSTED_DOMAINS.staging.app).toBe(
+      "open-artifacts-staging.app",
+    );
+  });
+  it("isAppHost: only <label>.<env app domain>", () => {
+    expect(isAppHost("acme.open-artifacts-staging.app", "staging")).toBe(true);
+    expect(isAppHost("a-1.open-artifacts.app", "prod")).toBe(true);
+    for (const [h, env] of [
+      ["acme.open-artifacts.app", "staging"],
+      ["acme.open-artifacts-staging.app", "prod"],
+      ["acme.open-artifacts-staging.page", "staging"],
+      ["a.b.open-artifacts-staging.app", "staging"],
+      [".open-artifacts-staging.app", "staging"],
+      ["open-artifacts-staging.app", "staging"],
+      ["Acme.open-artifacts-staging.app", "staging"],
+      ["acme.open-artifacts-staging.app.evil.test", "staging"],
+      ["acme.open-artifacts-staging.app/x", "staging"],
+      ["acme.open-artifacts-staging.app:443", "staging"],
+      ["acme_open-artifacts-staging.app", "staging"],
+      [null, "staging"],
+      ["acme.open-artifacts-staging.app", "dev"],
+    ] as [unknown, "staging"][])
+      expect(isAppHost(h, env)).toBe(false);
+  });
+  it("appHostFor: the app or content host's slug on the app domain, else null", () => {
+    expect(appHostFor("acme.open-artifacts-staging.app", "staging")).toBe(
+      "acme.open-artifacts-staging.app",
+    );
+    expect(appHostFor("acme.open-artifacts-staging.page", "staging")).toBe(
+      "acme.open-artifacts-staging.app",
+    );
+    expect(appHostFor("acme.open-artifacts.page", "prod")).toBe(
+      "acme.open-artifacts.app",
+    );
+    for (const h of [
+      "acme.open-artifacts.app",
+      "a.b.open-artifacts-staging.app",
+      "stray.example.test",
+      "open-artifacts-staging.app",
+    ])
+      expect(appHostFor(h, "staging")).toBeNull();
+    expect(appHostFor("acme.open-artifacts.app", "dev" as "prod")).toBeNull();
   });
 });

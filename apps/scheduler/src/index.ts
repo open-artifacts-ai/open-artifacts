@@ -1,4 +1,9 @@
 import {
+  type BillingGateEnv,
+  type BillingGateProps,
+  billingProps,
+} from "@oa/broker-core/billing-gate";
+import {
   type BrokerGateEnv,
   type BrokerGateProps,
   brokerProps,
@@ -14,21 +19,44 @@ import {
   isReleaseVersion,
   REVOKE_MIN_VERSION,
 } from "@oa/provision/versions";
-import { emailQuota, type QuotaEnv } from "./quota.js";
+import { type AlertEnv, emailQuotaAlert, stepAlert } from "./alerts.js";
+import { billingHealth } from "./billing-health.js";
+import { emailQuota, type QuotaEnv, type QuotaOutcome } from "./quota.js";
 
+// And to the tier store (see @oa/broker-core/billing-gate).
+export { BillingGate } from "@oa/broker-core/billing-gate";
 // Installs reach the brokers only through these stubs (see @oa/broker-core/gate).
 export { BrokerGate } from "@oa/broker-core/gate";
 
-/** ctx.exports for this Worker's own BrokerGate export. */
+/** ctx.exports for this Worker's own gate exports. */
 export interface GateExports {
   BrokerGate: (o: { props: BrokerGateProps }) => Fetcher;
+  BillingGate: (o: { props: BillingGateProps }) => Fetcher;
 }
 
-/** A call's args: the install's broker gates in props when this run has them. */
-const withGates = (gates: GateExports | undefined, id: string) =>
-  gates ? { props: brokerProps(gates, id) } : undefined;
+/**
+ * A call's args: the install's broker and billing gates in props when this
+ * run has them, built per call so each holds that install only.
+ */
+const withGates = (
+  gates: GateExports | undefined,
+  id: string,
+  appHost: unknown,
+) =>
+  gates
+    ? {
+        props: {
+          ...brokerProps(gates, id),
+          ...billingProps(
+            gates,
+            id,
+            typeof appHost === "string" ? appHost : "",
+          ),
+        },
+      }
+    : undefined;
 
-export interface Env extends QuotaEnv, BrokerGateEnv {
+export interface Env extends QuotaEnv, AlertEnv, BrokerGateEnv, BillingGateEnv {
   DISPATCHER: DispatchNamespace;
   /** Platform D1 (installs metadata only; no customer data). */
   PLATFORM_DB: D1Database;
@@ -109,9 +137,10 @@ const PAGE_SQL =
   "SELECT id FROM installs WHERE state = 'active' AND id > ?1 ORDER BY id LIMIT ?2";
 
 // Right before each call: still active, and no live lifecycle lease
-// (provision holds one through upgrade, rollback and delete).
+// (provision holds one through upgrade, rollback and delete). Its app_host
+// is the billing gate's appHost (the installs row, never a request).
 const RECHECK_SQL =
-  "SELECT 1 AS ok FROM installs WHERE id = ?1 AND state = 'active' AND (lease_until IS NULL OR lease_until <= ?2)";
+  "SELECT 1 AS ok, app_host FROM installs WHERE id = ?1 AND state = 'active' AND (lease_until IS NULL OR lease_until <= ?2)";
 
 /**
  * Measured on staging through a dispatch namespace (2026-10-24): scheduled()
@@ -428,7 +457,7 @@ export async function runNightly(
         const r = await (
           env.DISPATCHER.get(
             names(id, env.OA_ENV).script,
-            withGates(gates, id),
+            withGates(gates, id, (still as { app_host?: unknown }).app_host),
           ) as unknown as ScheduledFetcher
         ).scheduled({ cron: job, scheduledTime: new Date(now) });
         checkOutcome(r);
@@ -494,7 +523,7 @@ export const REVOKE_JOB = "oa:directory-disconnect";
 export const REVOKE_MAX_ATTEMPTS = 5;
 /** One query, on the partial index installs_revoke_pending (0005). */
 export const REVOKE_SQL =
-  "SELECT id, version FROM installs WHERE state='deleting' AND directory_revoke='pending' LIMIT 10";
+  "SELECT id, version, app_host FROM installs WHERE state='deleting' AND directory_revoke='pending' LIMIT 10";
 // The only writes: the three revoke columns, on rows still deleting whose
 // revoke is still pending (L2: a late result never overwrites an operator's
 // skip, and never bumps row_version under a teardown).
@@ -585,10 +614,10 @@ async function runRevokeTick(
   const db = env.PLATFORM_DB;
   const { results } = await db
     .prepare(REVOKE_SQL)
-    .all<{ id: unknown; version: unknown }>();
+    .all<{ id: unknown; version: unknown; app_host: unknown }>();
   if (results.length === 0) return;
   const rows = results.filter(
-    (r): r is { id: string; version: unknown } =>
+    (r): r is { id: string; version: unknown; app_host: unknown } =>
       typeof r.id === "string" && isInstallId(r.id),
   );
   if (rows.length < results.length)
@@ -598,7 +627,15 @@ async function runRevokeTick(
     );
   // An unknown OA_ENV throws before any call.
   for (const r of rows) names(r.id, env.OA_ENV);
-  const one = async ({ id, version }: { id: string; version: unknown }) => {
+  const one = async ({
+    id,
+    version,
+    app_host,
+  }: {
+    id: string;
+    version: unknown;
+    app_host: unknown;
+  }) => {
     const unsupported = async () => {
       await db.prepare(REVOKE_UNSUPPORTED_SQL).bind(id).run();
       console.log("directory-revoke unsupported", id);
@@ -615,7 +652,7 @@ async function runRevokeTick(
           (
             env.DISPATCHER.get(
               names(id, env.OA_ENV).script,
-              withGates(gates, id),
+              withGates(gates, id, app_host),
             ) as unknown as ScheduledFetcher
           ).scheduled({ cron: REVOKE_JOB, scheduledTime: new Date(now) }),
           timeoutMs,
@@ -644,7 +681,7 @@ async function runRevokeTick(
   let next = 0;
   const lane = async () => {
     while (next < rows.length) {
-      const row = rows[next++] as { id: string; version: unknown };
+      const row = rows[next++] as (typeof rows)[number];
       try {
         await one(row);
       } catch {
@@ -723,6 +760,21 @@ export default {
   async scheduled(event, env, ctx) {
     const gates = ctx.exports as unknown as GateExports;
     if (event.cron === REVOKE_CRON) {
+      // The billing outage alert first, bounded (a 5 s check, 5 s per email)
+      // and never throwing, so
+      // a long revoke or sync tick can't starve it.
+      await billingHealth(env, event.scheduledTime);
+      // The quota alert is checked nightly; between checks this only retries
+      // an email whose send failed (no reminder: the nightly check sends it).
+      await stepAlert(
+        env,
+        emailQuotaAlert(env.OA_ENV),
+        null,
+        event.scheduledTime,
+        {
+          remind: false,
+        },
+      );
       await revokeTick(env, event.scheduledTime, { gates });
       // Own try: a sync run that aborts (D1, env) never fails the revoke tick.
       try {
@@ -737,11 +789,20 @@ export default {
     // Own try, after the nightly result is settled: it never changes it
     // (emailQuota logs one fixed line and doesn't throw; this catch is
     // defense only, unreachable today).
+    let quota: QuotaOutcome = "failed";
     try {
-      await emailQuota(env, event.scheduledTime);
+      quota = await emailQuota(env, event.scheduledTime);
     } catch {
       console.error("email-quota failed http");
     }
+    // "warn" opens the alert, "ok" clears it, a skip or failure leaves it;
+    // an open alert reminds here once a day. stepAlert never throws.
+    await stepAlert(
+      env,
+      emailQuotaAlert(env.OA_ENV),
+      quota === "warn" ? true : quota === "ok" ? false : null,
+      event.scheduledTime,
+    );
     // H-DV: own try too; a D1 error here never changes the nightly result.
     try {
       await purgeOwnerEmails(env.PLATFORM_DB, event.scheduledTime);

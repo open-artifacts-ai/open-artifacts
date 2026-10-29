@@ -1,4 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { root, sandbox } from "../ci/stubs.ts";
@@ -149,6 +157,239 @@ describe("deploy-platform-worker.sh", () => {
         ],
       ] as [string[], Record<string, string>][]) {
         const r = run(args, env);
+        expect(r.code).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
+  });
+  describe("billing", () => {
+    const DIR = join(root, "apps/billing");
+    // A frozen lock pinning the real migrations, so the deploy tests pass the
+    // migration-lock check (the repo's own lock stays unfrozen until deploy).
+    const MIG = join(DIR, "migrations");
+    const lockDir = mkdtempSync(join(tmpdir(), "oa-lock-"));
+    const pinsOf = () =>
+      Object.fromEntries(
+        readdirSync(MIG)
+          .filter((f) => f.endsWith(".sql"))
+          .map((f) => [
+            f,
+            createHash("sha256")
+              .update(readFileSync(join(MIG, f)))
+              .digest("hex"),
+          ]),
+      );
+    const lockAt = (name: string, lock: unknown) => {
+      const f = join(lockDir, name);
+      writeFileSync(f, JSON.stringify(lock));
+      return f;
+    };
+    const FROZEN = lockAt("frozen.json", { frozen: true, pins: pinsOf() });
+    const DB = "0123abcd-4567-89ef-0123-456789abcdef";
+    const IDS = { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: REG };
+    const PRICES = {
+      STRIPE_PRICE_TEAM: "price_1TeamAbc",
+      STRIPE_PRICE_BUSINESS: "price_1BizXyz",
+    };
+
+    for (const env of ["staging", "prod"] as const)
+      it(`${env}: deploys from apps/billing with exact argv and fills its D1 and registry ids`, () => {
+        const r = run(["billing", env], {
+          ...PRICES,
+          ...IDS,
+          MIGRATION_LOCK: FROZEN,
+        });
+        expect(r.code).toBe(0);
+        expect(r.log).toEqual([
+          `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
+          DIR,
+          "copy-present",
+        ]);
+        const snap = readFileSync(r.snap, "utf8");
+        const up = env.toUpperCase();
+        expect(snap).toContain(`"database_id": "${DB}"`);
+        expect(snap).toContain(`"id": "${REG}"`);
+        expect(snap).not.toContain(`{{BILLING_DB_ID_${up}}}`);
+        expect(snap).not.toContain(`{{BROKER_REGISTRY_ID_${up}}}`);
+        expect(snap).toContain(
+          `"STRIPE_PRICE_TEAM": "${PRICES.STRIPE_PRICE_TEAM}"`,
+        );
+        expect(snap).toContain(
+          `"STRIPE_PRICE_BUSINESS": "${PRICES.STRIPE_PRICE_BUSINESS}"`,
+        );
+        expect(snap).not.toMatch(new RegExp(`\\{\\{[A-Z0-9_]*_${up}\\}\\}`));
+        // Only this env's placeholders are filled.
+        const other = env === "staging" ? "PROD" : "STAGING";
+        expect(snap).toContain(`{{BILLING_DB_ID_${other}}}`);
+        expect(snap).toContain(`{{BROKER_REGISTRY_ID_${other}}}`);
+        expect(snap).toContain(`{{STRIPE_PRICE_TEAM_${other}}}`);
+        expect(snap).toContain(`{{STRIPE_PRICE_BUSINESS_${other}}}`);
+        expect(r.out + r.err).not.toContain(DB);
+        expect(r.out + r.err).not.toContain(REG);
+        expect(existsSync(join(DIR, "wrangler.deploy.jsonc"))).toBe(false);
+      });
+
+    it("refuses a missing or malformed D1 or registry id", () => {
+      for (const env of [
+        {},
+        { BROKER_REGISTRY_ID: REG },
+        { BILLING_DB_ID: "", BROKER_REGISTRY_ID: REG },
+        {
+          BILLING_DB_ID: "0123456789abcdef0123456789abcdef",
+          BROKER_REGISTRY_ID: REG,
+        },
+        { BILLING_DB_ID: DB.toUpperCase(), BROKER_REGISTRY_ID: REG },
+        { BILLING_DB_ID: `${DB}/x`, BROKER_REGISTRY_ID: REG },
+        { BILLING_DB_ID: "../../etc", BROKER_REGISTRY_ID: REG },
+        { BILLING_DB_ID: DB },
+        { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: "" },
+        { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: DB },
+        { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: `${REG}/x` },
+        { BILLING_DB_ID: DB, DIRECTORY_REGISTRY_ID: REG },
+      ] as Record<string, string>[]) {
+        const r = run(["billing", "staging"], {
+          ...PRICES,
+          ...env,
+          MIGRATION_LOCK: FROZEN,
+        });
+        expect(r.code).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
+
+    it("refuses a missing or malformed price id", () => {
+      for (const p of [
+        {},
+        { STRIPE_PRICE_TEAM: PRICES.STRIPE_PRICE_TEAM },
+        { STRIPE_PRICE_BUSINESS: PRICES.STRIPE_PRICE_BUSINESS },
+        { ...PRICES, STRIPE_PRICE_TEAM: "" },
+        { ...PRICES, STRIPE_PRICE_TEAM: "prod_1Abc" },
+        { ...PRICES, STRIPE_PRICE_TEAM: "price_1Abc/x" },
+        { ...PRICES, STRIPE_PRICE_BUSINESS: "price_" },
+        { ...PRICES, STRIPE_PRICE_BUSINESS: "price_1Abc&x" },
+        { ...PRICES, STRIPE_PRICE_BUSINESS: "price_1Abc x" },
+      ] as Record<string, string>[]) {
+        const r = run(["billing", "staging"], {
+          ...IDS,
+          ...p,
+          MIGRATION_LOCK: FROZEN,
+        });
+        expect(r.code).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
+
+    it("refuses to deploy billing with an unfrozen, unpinned or changed migration lock", () => {
+      const pins = pinsOf();
+      const first = Object.keys(pins)[0] as string;
+      for (const [why, lock] of [
+        ["the repo's own lock (not frozen until the first deploy)", undefined],
+        ["not frozen", lockAt("open.json", { frozen: false, pins })],
+        [
+          "a migration not pinned",
+          lockAt("missing.json", { frozen: true, pins: {} }),
+        ],
+        [
+          "a pinned file changed",
+          lockAt("changed.json", {
+            frozen: true,
+            pins: { ...pins, [first]: "0".repeat(64) },
+          }),
+        ],
+        [
+          "a pin for a missing file",
+          lockAt("extra.json", {
+            frozen: true,
+            pins: { ...pins, "9999_gone.sql": "0".repeat(64) },
+          }),
+        ],
+      ] as [string, string | undefined][]) {
+        const r = run(["billing", "staging"], {
+          ...PRICES,
+          ...IDS,
+          ...(lock ? { MIGRATION_LOCK: lock } : {}),
+        });
+        expect(r.code, why).toBe(1);
+        expect(r.log, why).toEqual([]);
+      }
+    });
+  });
+
+  describe("scheduler", () => {
+    const DIR = join(root, "apps/scheduler");
+    const DB = "0123abcd-4567-89ef-0123-456789abcdef";
+    const OK = {
+      PLATFORM_DB_ID: DB,
+      EMAIL_ZONE_TAGS: `${REG},${"b".repeat(32)}`,
+      EMAIL_DAILY_LIMIT: "3000",
+      OPS_ALERT_EMAIL: "ops+alerts@example.com",
+      OPS_ALERT_FROM: "alerts@mail.open-artifacts.app",
+    };
+
+    for (const env of ["staging", "prod"] as const)
+      it(`${env}: deploys from apps/scheduler and fills its D1, quota and alert placeholders`, () => {
+        const r = run(["scheduler", env], OK);
+        expect(r.code).toBe(0);
+        expect(r.log).toEqual([
+          `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
+          DIR,
+          "copy-present",
+        ]);
+        const snap = readFileSync(r.snap, "utf8");
+        const up = env.toUpperCase();
+        expect(snap).toContain(`"ALERT_TO": "${OK.OPS_ALERT_EMAIL}"`);
+        expect(snap).toContain(`"ALERT_FROM": "${OK.OPS_ALERT_FROM}"`);
+        expect(snap).toContain(`"database_id": "${DB}"`);
+        expect(snap).not.toMatch(new RegExp(`\\{\\{[A-Z0-9_]*_${up}\\}\\}`));
+        // Only this env's placeholders are filled.
+        const other = env === "staging" ? "PROD" : "STAGING";
+        expect(snap).toContain(`{{OPS_ALERT_EMAIL_${other}}}`);
+        expect(snap).toContain(`{{OPS_ALERT_FROM_${other}}}`);
+        expect(r.out + r.err).not.toContain(OK.OPS_ALERT_EMAIL);
+        expect(existsSync(join(DIR, "wrangler.deploy.jsonc"))).toBe(false);
+      });
+
+    it("refuses a missing or malformed alert address (an email pattern, no sed syntax)", () => {
+      for (const bad of [
+        "",
+        "ops",
+        "ops@",
+        "@example.com",
+        "ops@example",
+        "ops@example.com/x",
+        "ops@exa&mple.com",
+        "o\\ps@example.com",
+        "ops @example.com",
+        "a@b.com,c@d.com",
+        "Ops <ops@example.com>",
+        '"ops"@example.com',
+        "{{OPS_ALERT_EMAIL_STAGING}}",
+      ])
+        for (const key of ["OPS_ALERT_EMAIL", "OPS_ALERT_FROM"]) {
+          const r = run(["scheduler", "staging"], { ...OK, [key]: bad });
+          expect(r.code).toBe(1);
+          expect(r.log).toEqual([]);
+        }
+      for (const key of ["OPS_ALERT_EMAIL", "OPS_ALERT_FROM"]) {
+        const { [key as keyof typeof OK]: _, ...rest } = OK;
+        const r = run(["scheduler", "staging"], rest);
+        expect(r.code).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
+
+    it("refuses a missing or malformed D1 id, zone list or limit", () => {
+      for (const o of [
+        { PLATFORM_DB_ID: "" },
+        { PLATFORM_DB_ID: REG },
+        { EMAIL_ZONE_TAGS: "" },
+        { EMAIL_ZONE_TAGS: "abc" },
+        { EMAIL_ZONE_TAGS: Array(11).fill(REG).join(",") },
+        { EMAIL_DAILY_LIMIT: "0" },
+        { EMAIL_DAILY_LIMIT: "1000000000" },
+        { EMAIL_DAILY_LIMIT: "1e3" },
+      ]) {
+        const r = run(["scheduler", "staging"], { ...OK, ...o });
         expect(r.code).toBe(1);
         expect(r.log).toEqual([]);
       }

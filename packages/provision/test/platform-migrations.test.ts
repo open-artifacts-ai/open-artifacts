@@ -25,6 +25,7 @@ describe("0005_directory_revoke", () => {
       "0003_lifecycle.sql",
       "0004_audit_actor.sql",
       "0005_directory_revoke.sql",
+      "0006_platform_state.sql",
     ]);
   });
 
@@ -73,5 +74,29 @@ describe("0005_directory_revoke", () => {
     expect(plan.map((p) => p.detail).join("\n")).toMatch(
       /USING (?:COVERING )?INDEX installs_revoke_pending/,
     );
+  });
+});
+
+describe("0006_platform_state", () => {
+  it("only creates platform_state, re-runnably, and touches no other table", () => {
+    const sql = readFileSync(
+      new URL("0006_platform_state.sql", DIR),
+      "utf8",
+    ).replace(/--[^\n]*/g, "");
+    expect(sql).not.toMatch(/\b(?:DROP|RENAME|ALTER|INSERT|UPDATE|DELETE)\b/i);
+    expect(sql).toMatch(/CREATE TABLE IF NOT EXISTS platform_state \(/);
+    const db = all();
+    // Re-running it is a no-op.
+    for (const s of splitSql(sql)) db.exec(s);
+    const cols = db.prepare("PRAGMA table_info(platform_state)").all() as {
+      name: string;
+      notnull: number;
+      pk: number;
+    }[];
+    expect(cols.map((c) => [c.name, c.notnull, c.pk])).toEqual([
+      ["key", 0, 1],
+      ["value", 1, 0],
+      ["updated_at", 1, 0],
+    ]);
   });
 });
