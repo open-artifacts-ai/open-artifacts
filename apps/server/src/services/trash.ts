@@ -27,7 +27,13 @@ import { getDb } from "../db/client.js";
 import { artifacts, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { decodeCursor, encodeCursor, redact, toSummary } from "./artifacts.js";
+import {
+  decodeCursor,
+  encodeCursor,
+  lastAgentsFor,
+  redact,
+  toSummary,
+} from "./artifacts.js";
 import { spacesOn } from "./spaces.js";
 
 const DAY = 86_400_000;
@@ -155,6 +161,7 @@ export async function listTrash(
       },
     };
   });
+  await lastAgentsFor(env, c, items);
   const last = page[page.length - 1];
   return {
     items,

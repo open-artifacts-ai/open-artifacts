@@ -21,6 +21,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import {
   decorates,
+  lastAgentsFor,
   redact,
   spaceCols,
   toSummary,
@@ -579,7 +580,7 @@ export async function search(
   const page = rows.slice(0, limit);
   const next = offset + limit;
   const dec = decorates(env, caller);
-  return {
+  const result = {
     // Built in SearchHitSchema's key order (summary fields, then snippet);
     // validated by the tests, not per hit in production.
     // Rows the policy denies are dropped (belt and braces with listFilterSql).
@@ -610,4 +611,6 @@ export async function search(
     nextCursor:
       rows.length > limit && next <= MAX_OFFSET ? encodeOffset(next) : null,
   };
+  await lastAgentsFor(env, caller, result.items);
+  return result;
 }

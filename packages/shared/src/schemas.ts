@@ -87,6 +87,11 @@ export const UserRefSchema = z.object({
 });
 export type UserRef = z.infer<typeof UserRefSchema>;
 
+/**
+ * An agent that published. For a token (PAT) publish `name` is the token's
+ * label, which only the token's owner (the version's createdBy) sees; every
+ * other viewer gets "<owner name>'s agent". An OAuth client's name shows as is.
+ */
 export const AgentRefSchema = z.object({
   name: z.string(),
   version: z.string().nullable(),
@@ -914,10 +919,12 @@ export const DataChangeSchema = z.object({
 export type DataChange = z.infer<typeof DataChangeSchema>;
 
 /**
- * Who published a version, on the R.events socket. `name` (the user's name or
- * email, or the agent's name) goes only to signed-in viewers who are team
- * members (owner/admin/member) or have access through a share; anonymous and
- * embed sockets, and guests reading a public link, get `{ kind }` only.
+ * Who published a version, on the R.events socket. `name` (the user's name,
+ * "Member" without a real one, never an email; or the agent's name) goes only
+ * to signed-in viewers who are team members (owner/admin/member) or have
+ * access through a share; anonymous and embed sockets, and guests reading a
+ * public link, get `{ kind }` only. A token label is the owner's private
+ * note: everyone else gets "<owner name>'s agent" (as in AgentRef).
  */
 export const ArtifactEventBySchema = z.object({
   kind: z.enum(["user", "agent"]),

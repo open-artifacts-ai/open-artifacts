@@ -423,6 +423,11 @@ const STALE_RETRY_MARGIN_MS = 250;
 export type VersionEvent = {
   at: string;
   by: { kind: "user" | "agent"; name: string | null };
+  /**
+   * A private token label: the publisher's own named sockets get `name` as
+   * `by.name` instead (everyone else keeps `by.name`, "<owner>'s agent").
+   */
+  owner?: { userId: string; name: string };
   restoredFrom?: number;
 };
 
@@ -1396,7 +1401,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
 
   /**
    * One `version` frame per viewer class, serialized once each: named sockets
-   * get `by.name`, anonymous/embed/guest sockets `{ kind }` only.
+   * get `by.name`, anonymous/embed/guest sockets `{ kind }` only. With
+   * `owner`, the publisher's named sockets (actor tag "ea:u:{id}") get the
+   * owner's frame instead.
    */
   private broadcastVersion(version: number, e: VersionEvent): void {
     const kind = e.by.kind === "agent" ? "agent" : "user";
@@ -1413,24 +1420,39 @@ export class ArtifactRuntime extends DurableObject<Env> {
         by,
         ...(from === undefined ? {} : { restoredFrom: from }),
       });
-    const send = (tag: string, msg: () => string) => {
+    const send = (
+      tag: string,
+      msg: () => string,
+      own?: { tag: string; msg: () => string },
+    ) => {
       const socks = this.ctx.getWebSockets(tag);
       if (!socks.length) return;
-      const m = msg();
+      let m: string | undefined;
+      let o: string | undefined;
       for (const ws of socks) {
+        const mine =
+          own !== undefined && this.ctx.getTags(ws).includes(own.tag);
+        if (mine) o ??= own.msg();
+        else m ??= msg();
+        const out = (mine ? o : m) as string;
         try {
-          ws.send(m);
+          ws.send(out);
         } catch {
           // closing socket
         }
       }
     };
-    const name =
-      typeof e.by.name === "string" && e.by.name
-        ? e.by.name.slice(0, 200)
-        : undefined;
-    send(EVENTS_NAMED_TAG, () =>
-      frame(name === undefined ? { kind } : { kind, name }),
+    const cut = (n: unknown) =>
+      typeof n === "string" && n ? n.slice(0, 200) : undefined;
+    const name = cut(e.by.name);
+    const ownName = cut(e.owner?.name);
+    const ownId = e.owner?.userId;
+    send(
+      EVENTS_NAMED_TAG,
+      () => frame(name === undefined ? { kind } : { kind, name }),
+      typeof ownId === "string" && ownId && ownName !== undefined
+        ? { tag: `ea:u:${ownId}`, msg: () => frame({ kind, name: ownName }) }
+        : undefined,
     );
     send(EVENTS_ANON_TAG, () => frame({ kind }));
   }
