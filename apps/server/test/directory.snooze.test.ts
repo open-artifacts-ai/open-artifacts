@@ -521,6 +521,9 @@ describe("held sweep snooze (#412)", () => {
 
 /** health.ts READ: the health (and bare state) row's read. */
 const HEALTH_READ = /^select value from directory_state where key = \?$/;
+/** A write of the health row (an upsert, or the snooze's compare-and-set). */
+const HEALTH_WRITE =
+  /^(insert into directory_state|update directory_state set value)/;
 /** sync.ts MEMBERS_OF: a sweep's read of the group's rows. */
 const MEMBERS_READ = /^select user_id, gen from directory_members where/;
 
@@ -539,7 +542,7 @@ function raced(
     fired = true;
     await f();
   };
-  const real = new WeakMap<object, D1PreparedStatement>();
+  const real = new WeakMap<object, { st: D1PreparedStatement; sql: string }>();
   const wrap = (st: D1PreparedStatement, sql: string): D1PreparedStatement => {
     const p = new Proxy(st, {
       get(t, k) {
@@ -560,15 +563,20 @@ function raced(
         return typeof v === "function" ? v.bind(t) : v;
       },
     });
-    real.set(p, st);
+    real.set(p, { st, sql });
     return p;
   };
   const DB = new Proxy(e.DB, {
     get(t, k) {
       if (k === "prepare") return (sql: string) => wrap(t.prepare(sql), sql);
       if (k === "batch")
-        return (ss: D1PreparedStatement[]) =>
-          t.batch(ss.map((x) => real.get(x) ?? x));
+        return async (ss: D1PreparedStatement[]) => {
+          const hit = ss.some((x) => match.test(real.get(x)?.sql ?? ""));
+          if (hit && when === "before") await fire();
+          const r = await t.batch(ss.map((x) => real.get(x)?.st ?? x));
+          if (hit && when === "after") await fire();
+          return r;
+        };
       const v = Reflect.get(t, k, t);
       return typeof v === "function" ? v.bind(t) : v;
     },
@@ -633,17 +641,19 @@ describe("held sweep snooze races and review fixes (#412)", () => {
     expect(await dot(t1)).toBe(1);
   });
 
-  it("review 1: a disconnect between the snooze's read and write doesn't bring the held list back", async () => {
+  it("review 1: a disconnect just before the snooze's health write doesn't bring the held list back", async () => {
     const a = await heldGroup("race-dis");
     await connected();
     await a.hold();
     const t1 = t0 + 62 * MIN;
+    let cleared = false;
     await inDo(async (s) => {
-      const en = raced(HEALTH_READ, "after", async () => {
+      const en = raced(HEALTH_WRITE, "before", async () => {
         const r = await post(e, R.directoryDisconnect, owner.cookie);
         expect(r.status).toBe(200);
         await engine(s).alarm(t1);
         expect((await readHealth(e)).held).toEqual([]);
+        cleared = true;
       });
       await new SyncEngine(en, s.storage).snoozeHeld(
         a.gid,
@@ -652,6 +662,7 @@ describe("held sweep snooze races and review fixes (#412)", () => {
         t1,
       );
     });
+    expect(cleared).toBe(true);
     expect((await readHealth(e)).held).toEqual([]);
     expect(
       await env.DB.prepare(
