@@ -112,8 +112,8 @@ const STALE = `SELECT signup_id FROM signups WHERE status = ?1 AND updated_at < 
 
 /**
  * Re-sends stale pending rows, then stale queued rows whose Workflow
- * instance can't be read (any get() error: the consumer's start is
- * idempotent). A queued row whose instance is dead is stuck: never re-sent
+ * instance can't be read (any get() or status() error: the consumer's start
+ * is idempotent). A queued row whose instance is dead is stuck: never re-sent
  * (the operator redrives it), only counted for the stuck alert. Pending rows
  * are read first, so stuck queued rows never use up the bound before them.
  */
@@ -154,7 +154,9 @@ export async function sweepStale(
         try {
           if (DEAD.has((await instance.status()).status)) stuck.push(id);
         } catch {
+          // As a get() error: re-send, the consumer's start is idempotent.
           errors++;
+          ids.push(id);
         }
       }
     }

@@ -135,7 +135,13 @@ function fakes(o: {
         if (o.getError) throw new Error(o.getError);
         const status = instances.get(iid);
         if (status === undefined) throw new Error("instance.not_found");
-        return { id: iid, status: async () => ({ status }) };
+        return {
+          id: iid,
+          status: async () => {
+            if (status === "throw") throw new Error("status unavailable");
+            return { status };
+          },
+        };
       },
     },
   } as unknown as SignupsEnv;
@@ -242,6 +248,16 @@ describe("sweepStale", () => {
       expect(lines.join("\n")).not.toContain("@");
       vi.restoreAllMocks();
     }
+  });
+
+  it("a status error re-sends", async () => {
+    await seed({ 1: { status: "queued", created: stale, admitted: stale } });
+    const f = fakes({ instances: { [id(1)]: "throw" } });
+    expect(await sweepStale(f.env, T0)).toEqual({
+      sent: 1,
+      stuck: { count: 0, ids: [] },
+    });
+    expect(f.queued).toEqual([{ signupId: id(1) }]);
   });
 
   it("a dead instance is stuck: counted, never re-sent", async () => {
