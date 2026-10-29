@@ -87,18 +87,24 @@ release upload), and keep the rest coarse.
 
 ## Step 0: the spike (gate; numbers reported before building)
 
-1. **Real staging create, measured.** Run `oa:hosted create --env staging` for a
-   throwaway install (slug `ss3-spike-<n>`, codes off), with the CLI's `fetch`
-   wrapped to count subrequests by host and the process sampled for peak heap
-   and CPU (`process.cpuUsage`). Then delete it with the CLI (lease checked,
-   audit row written). Report: subrequests, CPU ms, wall s, peak heap, the
-   release's module and asset bytes.
-2. **workerd compatibility.** A vitest pool-workers test that imports
-   `@oa/provision` under `nodejs_compat` and runs `create` end to end against
-   the existing fake Cloudflare (`fake-cf.ts`) with an in-memory release, and
-   asserts Ed25519 key generation and signature verification work there.
-   Report anything that fails to import or run.
-3. Fit rule: subrequests under 50% of 10,000, CPU under 50% of 300 s, peak
+Everything deploys through CI, staging included (the user's rule), so the
+spike runs in two parts.
+
+1. **Now, without deploying anything:**
+   - the release's size: module and asset bytes of the current staging
+     release, read (read-only) from `oa-s-releases`;
+   - the subrequest count of one create, from a full create against the
+     existing fake Cloudflare (`fake-cf.ts`) with the real release's files,
+     every API call and fetch counted by kind;
+   - memory and CPU of that create in workerd, run under pool-workers (and
+     `wrangler dev` where pool-workers can't show peak memory);
+   - workerd compatibility: `@oa/provision` imports and runs under
+     `nodejs_compat`, Ed25519 key generation and verification included.
+2. **After #848 merges (post-gate):** one real staging create of a throwaway
+   install (`ss3-spike-<n>`, codes off) through `hosted-ops.yml`, its wall
+   time and API calls read from the run, then its delete through the same
+   workflow.
+Fit rule: subrequests under 50% of 10,000, CPU under 50% of 300 s, peak
    heap under 64 MB. Anything over goes back to the Manager with a split
    proposal for just that part.
 
@@ -145,6 +151,11 @@ refuses anything else to the DLQ (with the `signupId` only).
   (which create already writes). Params are `{ signupId, slug, ownerSub }`.
 - SS4 never writes `signups`; it keeps its own one-per-Google-account table
   (keyed by sub) holding the `signupId` it minted.
+- Over the cap (deferred, never failed): the row is written as `waiting_cap`;
+  the scheduler re-enqueues `waiting_cap` rows after 00:00 UTC, oldest first,
+  within that day's cap. The first cap hit of each UTC day sends one operator
+  alert (an abuse or demand signal). The cap is config: `SIGNUP_DAILY_CAP`,
+  staging 20, prod 50.
 - Consumer: one conditional `INSERT ... SELECT ... WHERE (today's non-failed
   rows) < cap ON CONFLICT (signup_id) DO NOTHING` (atomic: D1 serializes
   writes), then
@@ -227,9 +238,7 @@ only retryable refusal; no automatic re-drive; stacking on #848 and #849.
 
 ## Open (for the Manager)
 
-- The spike's real staging create runs from the laptop CLI on staging (the
-  established staging path until #848 merges), with a throwaway install that is
-  deleted after. OK, or wait for hosted-ops in CI?
-- The daily cap's starting value per env (proposed: staging 20, prod 50).
-- Over the cap: defer (proposed: `waiting_cap`, the scheduler re-enqueues
-  after 00:00 UTC, the owner is told they'll get an email) or fail.
+None. Decided 2026-10-29 (Manager): over the cap is deferred; the spike's
+real create goes through #848's workflow after it merges; caps staging 20/day
+and prod 50/day, in config (`SIGNUP_DAILY_CAP`).
+
