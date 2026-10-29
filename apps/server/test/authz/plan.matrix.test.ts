@@ -320,3 +320,106 @@ it("the expected table refuses every non-owner write and every owner team write 
           expect(expected(s, who, state)).toBe(CODE[state]);
   void DAY;
 });
+
+// S4: under a lock, the owner and admins can still pay and still see their
+// instance (billing actions and admin READS); a member of a locked team is
+// read-only with no billing access. Writes stay capped (the table above).
+type Exempt = {
+  name: string;
+  run: (who: Who) => Promise<Response>;
+  /** Who passes, in every state. */
+  ok: readonly Who[];
+};
+const EXEMPT: Exempt[] = [
+  {
+    name: "billing checkout",
+    ok: ["owner", "admin"],
+    run: (w) =>
+      send(props, R.billingCheckout, cred(w), {
+        method: "POST",
+        body: { tier: "team" },
+      }),
+  },
+  {
+    name: "billing portal",
+    ok: ["owner", "admin"],
+    run: (w) =>
+      send(props, R.billingPortal, cred(w), { method: "POST", body: {} }),
+  },
+  {
+    name: "billing usage report",
+    ok: ["owner", "admin"],
+    run: (w) =>
+      send(props, R.billingUsage, cred(w), { method: "POST", body: {} }),
+  },
+  {
+    name: "list members",
+    ok: ["owner", "admin"],
+    run: (w) => send(props, R.members, cred(w)),
+  },
+  {
+    name: "read the audit log",
+    ok: ["owner", "admin"],
+    run: (w) => send(props, R.audit, cred(w)),
+  },
+  {
+    name: "read settings",
+    ok: ["owner", "admin", "member"],
+    run: (w) => send(props, R.settings, cred(w)),
+  },
+];
+
+describe.each(["none", "solo", "readOnly"] as const)(
+  "plan %s: billing and admin reads",
+  (state) => {
+    beforeAll(async () => {
+      await clearBilling();
+      await cachePlan(ROWS[state]);
+    });
+
+    it.each(
+      EXEMPT.flatMap((s) => CALLERS.map((who) => [s.name, who] as const)),
+    )("%s as %s", async (name, who) => {
+      const s = EXEMPT.find((x) => x.name === name) as Exempt;
+      const r = await s.run(who);
+      const text = await r.text();
+      if (s.ok.includes(who))
+        expect([r.status, text]).toEqual([
+          expect.toSatisfy((n: number) => n >= 200 && n < 300),
+          text,
+        ]);
+      else if (who === "anonymous") expect(r.status).toBe(401);
+      // A member: no billing access, ever (404, or the plan's 403 on a POST).
+      else expect([403, 404]).toContain(r.status);
+    });
+
+    it("Me's billing details: the owner and admins, never a member", async () => {
+      for (const w of ["owner", "admin", "member"] as const) {
+        const r = await send(props, R.me, cred(w));
+        const me = (await r.json()) as {
+          instance: { billing?: { status: string | null } };
+        };
+        expect(me.instance.billing?.status ?? null).toBe(
+          w === "member" ? null : ROWS[state].status,
+        );
+      }
+    });
+
+    it("an admin's writes stay capped under a lock (settings)", async () => {
+      const patch = (w: Who) =>
+        send(props, R.settings, cred(w), {
+          method: "PATCH",
+          body: { name: `M ${uniq()}` },
+        });
+      const a = await patch("admin");
+      if (state === "none") expect(a.status).toBe(200);
+      else {
+        expect(a.status).toBe(403);
+        expect(
+          ((await a.json()) as { error: { code: string } }).error.code,
+        ).toBe(CODE[state]);
+      }
+      expect((await patch("owner")).status).toBe(200);
+    });
+  },
+);
