@@ -114,6 +114,11 @@ function badSignature(outcome: string, install: string) {
  * of the GATE install's registry keys (never the body's install), the
  * signature must cover this route's path and the exact body text, and the
  * body's `ts` must be within ASSERTION_SKEW_MS of now. Runs before any write.
+ *
+ * There is no nonce (jti): the same signed body can be replayed within the
+ * skew window. That is accepted only because both POSTs are idempotent (a
+ * trial starts once; /usage overwrites the month with the same data). Any
+ * future POST that is not idempotent must add a nonce and a seen-store first.
  */
 async function signedBody(
   req: Request,
