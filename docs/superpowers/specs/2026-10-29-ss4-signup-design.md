@@ -120,10 +120,13 @@ own dashboard already signed in. One free install per Google account.
 
 `signup_accounts(owner_sub TEXT NOT NULL PRIMARY KEY, signup_id TEXT NOT NULL,
 created_at INTEGER NOT NULL)` in platform D1 (migration `0008`, additive). The
-claim is keyed by `sub`, never by email (an email can change hands). A claim
-lasts for good, including after the install is deleted (no churn for free
-installs); an operator can release one with a CLI command
-(`signup-release --sub`). A `failed` signup frees it.
+claim is keyed by `sub`, never by email (an email can change hands). **One live
+free install per Google account at a time** (Manager, 2026-10-29). The claim
+frees when its signup is `failed`, or when its install is `deleted` and that
+was at least 7 days ago (`installs.state = 'deleted' AND installs.updated_at
+<= now - 7 days`): the cooldown stops churn without punishing an honest
+restart. The claim's conditional upsert tests exactly these. An operator can
+release one early with a CLI command (`signup-release --sub`).
 
 ### The name check
 
@@ -137,7 +140,9 @@ reserved | lookalike`, used by sign-up (and available to the CLI):
   live signup's slug, or a platform name.
 - **Skeleton:** lowercase; Unicode NFKC, then Unicode confusables folded to
   ASCII (a small table: Cyrillic and Greek lookalikes of a-z, fullwidth forms);
-  then `0`→`o`, `1`→`l`, `i`→`l`, `5`→`s`, `rn`→`m`, `vv`→`w`, and `-` removed.
+  then `0`->`o`, `1`->`l`, `i`->`l`, `5`->`s`, `rn`->`m`, `nn`->`m`,
+  `cl`->`d`, `vv`->`w`, and `-` removed. `SLUG_RE` is ASCII-only, which
+  already rules out mixed-script homographs; this table is enough (Manager).
   Slugs are ASCII-only by `SLUG_RE`, so Unicode can't reach an install name;
   folding it first only lets the page say "lookalike" rather than "invalid"
   for a pasted homograph.
@@ -147,8 +152,11 @@ reserved | lookalike`, used by sign-up (and available to the CLI):
 - Race: two concurrent submits. `signups` gains a `skeleton` column (in 0008)
   with unique indexes over live rows (`WHERE status != 'failed'`) on both
   `slug` and `skeleton`, so the second insert fails and is answered `taken`
-  or `lookalike`. A ready signup keeps its slug and skeleton reserved after
-  its install is deleted, matching the claim (no reuse of a deleted name). Installs made by the CLI are checked at submit time (rare,
+  or `lookalike`. The unique indexes cover in-flight signups (`pending`,
+  `queued`, `waiting_cap`, `creating`); a `ready` signup's name is held by its
+  `installs` row instead, which keeps the slug (deleted included) until the
+  explicit purge after the existing wait (#526). The check therefore reads
+  every `installs` row, whatever its state. Installs made by the CLI are checked at submit time (rare,
   operator-made).
 
 ### Abuse
@@ -205,8 +213,12 @@ Turnstile keys from the env's hosted-ops secrets.
   **`email_verified` false or missing**: all refused, no row written.
 - One per account: the same `sub` twice (and concurrently) gives one claim;
   after `failed`, a retry claims again; after `ready`, a retry is refused.
-- Names: every `checkSlug` class; the confusable table; the concurrent
+- Names: every `checkSlug` class; the confusable table, `cl`/`d` and
+  `nn`/`m` included; the check runs against every reserved name too (a
+  lookalike of `admin`, `auth` or `login` is `reserved`); the concurrent
   lookalike race.
+- Claims: a deleted install frees its claim only after 7 days (6 days 23 h
+  refused, 7 days allowed); a failed signup frees it at once.
 - Turnstile: missing, invalid, wrong hostname, wrong action: refused, no write.
 - `/status` never shows another person's signup.
 - No email in any log line, URL we build (except the one handoff hop), queue
@@ -232,7 +244,5 @@ Turnstile keys from the env's hosted-ops secrets.
 - Calls: broker callback path; `login_hint` rules; reserved registry id;
   exact `slug` index next to `skeleton`; 409 `already_signed_up`.
 
-## Open (for the Manager)
-
-- A claim, and its name, last after the install is deleted (proposed). OK?
-- The skeleton folding table above (proposed). Anything to add?
+Design approved (Manager, 2026-10-29). The build waits for Backend's Gmail
+owner path (A) to land first.
