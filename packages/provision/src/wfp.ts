@@ -82,6 +82,7 @@ import {
   type Env,
   ForeignResource,
   type HostsMode,
+  HOSTED_DOMAINS,
   hosts,
   hostsValue,
   isInstallId,
@@ -161,19 +162,8 @@ export const NAMESPACES: Readonly<Record<Env, string>> = Object.freeze({
   prod: "oa-prod",
 });
 
-/** The tenant domain pair of each env (user decision, 2026-10-21). */
-export const HOSTED_DOMAINS: Readonly<
-  Record<Env, Readonly<{ app: string; content: string }>>
-> = Object.freeze({
-  staging: Object.freeze({
-    app: "open-artifacts-staging.app",
-    content: "open-artifacts-staging.page",
-  }),
-  prod: Object.freeze({
-    app: "open-artifacts.app",
-    content: "open-artifacts.page",
-  }),
-});
+// The tenant domain pair of each env lives in names.ts (the Workers import it).
+export { HOSTED_DOMAINS };
 
 /**
  * The env's broker Google sign-in client (public). Staging's equals

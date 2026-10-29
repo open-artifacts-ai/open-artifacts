@@ -40,7 +40,8 @@ function world() {
   return { env, got };
 }
 
-const props: BillingGateProps = { installId: A };
+const APP_HOST = "acme.open-artifacts-staging.app";
+const props: BillingGateProps = { installId: A, appHost: APP_HOST };
 
 const post = (
   path: string,
@@ -67,6 +68,7 @@ const HOSTILE = {
   cookie: "a=b",
   authorization: "Bearer x",
   "x-oa-gate-install": B,
+  "x-oa-gate-app-host": "evil.open-artifacts-staging.app",
 };
 
 describe("BillingGate: allowed calls", () => {
@@ -92,7 +94,7 @@ describe("BillingGate: allowed calls", () => {
     );
   });
 
-  it("POST /trial/start and /usage: body unchanged, three headers plus the install", async () => {
+  it("every POST: body unchanged, three headers plus the install; /checkout and /portal also the props' app host", async () => {
     const w = world();
     const bodies = {
       "/trial/start": JSON.stringify({ install: A }),
@@ -102,6 +104,8 @@ describe("BillingGate: allowed calls", () => {
         creators: ["c"],
         count: 1,
       }),
+      "/checkout": JSON.stringify({ install: A, ts: 1, plan: "team" }),
+      "/portal": JSON.stringify({ install: A, ts: 1 }),
     } as Record<string, string>;
     for (const path of BILLING_GATE_ROUTES.POST) {
       const r = await passBillingGate(
@@ -119,17 +123,52 @@ describe("BillingGate: allowed calls", () => {
           "content-type": "application/json",
           "x-oa-sig": "s",
           "x-oa-gate-install": A,
+          ...(p === "/checkout" || p === "/portal"
+            ? { "x-oa-gate-app-host": APP_HOST }
+            : {}),
         },
         body: bodies[p],
       })),
     );
   });
 
-  it("the allowlist is exactly the four routes", () => {
+  it("the allowlist is exactly the six routes", () => {
     expect(BILLING_GATE_ROUTES).toEqual({
       GET: ["/tier", "/health"],
-      POST: ["/trial/start", "/usage"],
+      POST: ["/trial/start", "/usage", "/checkout", "/portal"],
     });
+  });
+
+  it("the app host is the props' only: no caller header, query or body moves it", async () => {
+    const w = world();
+    const r = await passBillingGate(
+      post(
+        "/checkout",
+        {
+          install: A,
+          ts: 1,
+          plan: "team",
+          success_url: "https://evil.example/",
+        },
+        {
+          ...HOSTILE,
+          origin: "https://evil.example",
+          referer: "https://evil.example/",
+        },
+      ),
+      props,
+      w.env,
+    );
+    expect(r.status).toBe(200);
+    expect(w.got[0]?.headers["x-oa-gate-app-host"]).toBe(APP_HOST);
+    // A query is refused before anything else.
+    const q = await passBillingGate(
+      post("/portal?appHost=evil.example", { install: A, ts: 1 }),
+      props,
+      w.env,
+    );
+    expect(q.status).toBe(404);
+    expect(w.got).toHaveLength(1);
   });
 
   it("billingProps gives one gate, for that install only", () => {
@@ -142,9 +181,12 @@ describe("BillingGate: allowed calls", () => {
         },
       },
       A,
+      APP_HOST,
     );
-    expect(out).toEqual({ BILLING: { gate: { installId: A } } });
-    expect(made).toEqual([{ installId: A }]);
+    expect(out).toEqual({
+      BILLING: { gate: { installId: A, appHost: APP_HOST } },
+    });
+    expect(made).toEqual([{ installId: A, appHost: APP_HOST }]);
   });
 });
 
@@ -291,6 +333,44 @@ describe("BillingGate: refusals (nothing reaches billing)", () => {
         ),
       ).toEqual({ status: 500, error: "gate_misconfigured" });
     expect(w.got).toEqual([]);
+  });
+
+  it("/checkout and /portal with a missing or malformed appHost → 500, never a call; other routes don't need it", async () => {
+    const w = world();
+    for (const appHost of [
+      undefined,
+      "",
+      "Acme.open-artifacts-staging.app",
+      "acme.open-artifacts-staging.app/x",
+      "acme.open-artifacts-staging.app:443",
+      "evil.example?x=",
+      "localhost",
+      1,
+    ])
+      for (const [path, body] of [
+        ["/checkout", { install: A, ts: 1, plan: "team" }],
+        ["/portal", { install: A, ts: 1 }],
+      ] as const)
+        expect(
+          await err(
+            await passBillingGate(
+              post(path, body),
+              {
+                installId: A,
+                appHost,
+              } as unknown as BillingGateProps,
+              w.env,
+            ),
+          ),
+        ).toEqual({ status: 500, error: "gate_misconfigured" });
+    expect(w.got).toEqual([]);
+    const r = await passBillingGate(
+      new Request("https://x.example/tier"),
+      { installId: A, appHost: "" },
+      w.env,
+    );
+    expect(r.status).toBe(200);
+    expect(w.got[0]?.headers).not.toHaveProperty("x-oa-gate-app-host");
   });
 
   it("billing's own response passes through without the gate's marker", async () => {

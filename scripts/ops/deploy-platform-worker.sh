@@ -11,6 +11,7 @@
 #   auth-broker: BROKER_REGISTRY_ID=<32 hex> [GOOGLE_CLIENT_ID_PROD=<client id>, prod]
 #   directory-broker: DIRECTORY_REGISTRY_ID=<32 hex> [GOOGLE_DIRECTORY_CLIENT_ID_PROD=<client id>, prod]
 #   billing: BILLING_DB_ID=<D1 uuid> BROKER_REGISTRY_ID=<32 hex>
+#            STRIPE_PRICE_TEAM=<price_...> STRIPE_PRICE_BUSINESS=<price_...>
 #   dispatch: HOSTS_KV_ID=<32 hex>
 #   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
 #              ALERT_TO=<address> ALERT_FROM=<address> SIGNUP_DAILY_CAP=<1-9999>
@@ -65,6 +66,7 @@ cap='^[1-9][0-9]{0,3}$'
 # Manager approves), so a deploy can't admit real signups into stub Workflow steps.
 if [ "${ALLOW_SIGNUPS:-}" = 1 ]; then on='true|'; else on=''; fi
 if [ "$env" = staging ]; then onoff="^(${on}false|test-users)\$"; else onoff="^(${on}false)\$"; fi
+price='^price_[A-Za-z0-9]{1,255}$'
 # One plain address: no slash, ampersand, backslash, quote, comma or space, so
 # it can't carry sed syntax or read as a list or display name.
 email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
@@ -126,6 +128,9 @@ case "$app" in
     # The auth broker's registry namespace (read-only here): same variable,
     # same id as the auth-broker deploy.
     fill "BROKER_REGISTRY_ID_${up}" "${BROKER_REGISTRY_ID:-}" "$hex32"
+    # This env's Stripe test-mode price per paid plan (/checkout).
+    fill "STRIPE_PRICE_TEAM_${up}" "${STRIPE_PRICE_TEAM:-}" "$price"
+    fill "STRIPE_PRICE_BUSINESS_${up}" "${STRIPE_PRICE_BUSINESS:-}" "$price"
     ;;
   dispatch)
     fill "HOSTS_KV_ID_${up}" "${HOSTS_KV_ID:-}" "$hex32"

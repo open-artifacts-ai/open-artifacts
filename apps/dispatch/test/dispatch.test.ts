@@ -66,6 +66,8 @@ const MAP = {
   "acme.open-artifacts-staging.app": A,
   "acme.open-artifacts-staging.page": A,
   "beta.open-artifacts-staging.app": B,
+  // A test mapping on neither domain (red-line's strayHost).
+  "stray.example.test": B,
 };
 
 /** An incoming request as the handler types it (cf properties unused). */
@@ -494,14 +496,19 @@ describe("broker gates in props", () => {
         props: {
           AUTH_BROKER: { gate: { installId: B, kind: "auth" } },
           DIRECTORY_BROKER: { gate: { installId: B, kind: "directory" } },
-          BILLING: { billingGate: { installId: B } },
+          BILLING: {
+            billingGate: {
+              installId: B,
+              appHost: "beta.open-artifacts-staging.app",
+            },
+          },
         },
       },
     ]);
     expect(gates.map((g) => g.props)).toEqual([
       { installId: B, kind: "auth" },
       { installId: B, kind: "directory" },
-      { installId: B },
+      { installId: B, appHost: "beta.open-artifacts-staging.app" },
     ]);
   });
 
@@ -513,10 +520,50 @@ describe("broker gates in props", () => {
     expect(
       f.args.map((a) => (a as { props: { BILLING: unknown } }).props.BILLING),
     ).toEqual([
-      { billingGate: { installId: A } },
-      { billingGate: { installId: B } },
+      {
+        billingGate: {
+          installId: A,
+          appHost: "acme.open-artifacts-staging.app",
+        },
+      },
+      {
+        billingGate: {
+          installId: B,
+          appHost: "beta.open-artifacts-staging.app",
+        },
+      },
     ]);
     expect(gates).toHaveLength(6);
+  });
+
+  it("the billing gate's appHost is the mapped install's app host: the content host maps to it, no header or query moves it", async () => {
+    const f = fakes(MAP);
+    await call(
+      f.env,
+      new Request(
+        "https://acme.open-artifacts-staging.page/x?appHost=evil.open-artifacts-staging.app",
+        {
+          headers: {
+            "x-forwarded-host": "beta.open-artifacts-staging.app",
+            origin: "https://beta.open-artifacts-staging.app",
+            "x-oa-gate-app-host": "beta.open-artifacts-staging.app",
+          },
+        },
+      ),
+    );
+    await call(f.env, "https://stray.example.test/");
+    expect(
+      f.args.map((a) => (a as { props: { BILLING: unknown } }).props.BILLING),
+    ).toEqual([
+      {
+        billingGate: {
+          installId: A,
+          appHost: "acme.open-artifacts-staging.app",
+        },
+      },
+      // Neither domain: no app host, so the gate refuses /checkout and /portal.
+      { billingGate: { installId: B, appHost: "" } },
+    ]);
   });
 
   it("an unmapped host or a bad HOSTS value gets no gate and no dispatch", async () => {

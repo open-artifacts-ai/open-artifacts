@@ -5,8 +5,9 @@
 // each install a stub of this class in ctx.props, valid for that one request.
 //
 // The gate is the identity: it sets x-oa-gate-install to its own install, and
-// billing reads and writes only that row. It forwards four fixed routes, never
-// a caller-chosen host, query or header beyond the three below.
+// billing reads and writes only that row. It forwards six fixed routes, never
+// a caller-chosen host, query or header beyond the three below. On /checkout
+// and /portal it also sets x-oa-gate-app-host to its own props.appHost.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import {
   boundedText,
@@ -14,10 +15,16 @@ import {
   GATE_MAX_BODY,
   type GateRefusal,
 } from "./gate.js";
-import { GATE_INSTALL_HEADER } from "./gate-header.js";
+import { GATE_APP_HOST_HEADER, GATE_INSTALL_HEADER } from "./gate-header.js";
 
 export interface BillingGateProps {
   installId: string;
+  /**
+   * The install's app host (<slug>.<env app domain>), from its platform
+   * record: dispatch's HOSTS lookup, the scheduler's installs row. Never
+   * from a request. Billing builds the Stripe redirect URLs from it.
+   */
+  appHost: string;
 }
 
 export interface BillingGateEnv {
@@ -38,12 +45,17 @@ export const BILLING_GATE_ROUTES: Readonly<
   Record<"GET" | "POST", readonly string[]>
 > = {
   GET: ["/tier", "/health"],
-  POST: ["/trial/start", "/usage"],
+  POST: ["/trial/start", "/usage", "/checkout", "/portal"],
 };
+
+/** The routes that carry the gate's app host (Stripe redirect URLs). */
+const APP_HOST_ROUTES: readonly string[] = ["/checkout", "/portal"];
 
 const FORWARD = ["content-type", "x-oa-kid", "x-oa-sig"] as const;
 
 const INSTALL_ID = /^i[a-z0-9]{11}$/;
+/** A lowercase DNS name; billing checks it against the env's app domain. */
+const HOST = /^(?=.{1,253}$)[a-z0-9-]{1,63}(?:\.[a-z0-9-]{1,63})+$/;
 
 const refuse = (status: number, error: GateRefusal) =>
   Response.json({ error }, { status, headers: { [GATE_HEADER]: "1" } });
@@ -53,7 +65,8 @@ const refuse = (status: number, error: GateRefusal) =>
  * query string), 415 for a POST body that isn't JSON, 413 over GATE_MAX_BODY,
  * 400 for a body that can't be read (bad_body) or isn't a JSON object
  * (bad_json), 403 when a POST body's `install` isn't the gate's, 500 for
- * missing or malformed props. Every refusal carries `x-oa-gate: 1`.
+ * missing or malformed props (an appHost that isn't a host name, on /checkout
+ * and /portal). Every refusal carries `x-oa-gate: 1`.
  * Otherwise the fixed route, the allowed headers and the gate's install
  * header, over the BILLING binding.
  */
@@ -82,6 +95,13 @@ export async function passBillingGate(
   ) {
     await req.body?.cancel();
     return refuse(404, "not_found");
+  }
+  if (
+    APP_HOST_ROUTES.includes(url.pathname) &&
+    (typeof props.appHost !== "string" || !HOST.test(props.appHost))
+  ) {
+    await req.body?.cancel();
+    return refuse(500, "gate_misconfigured");
   }
 
   let text: string | undefined;
@@ -123,6 +143,9 @@ export async function passBillingGate(
   }
   // Billing's only source of the install id: this gate's, never a caller's.
   headers.set(GATE_INSTALL_HEADER, props.installId);
+  // And of the app host behind the Stripe redirect URLs: the gate's props.
+  if (APP_HOST_ROUTES.includes(url.pathname))
+    headers.set(GATE_APP_HOST_HEADER, props.appHost);
   return env.BILLING.fetch(
     new Request(`${BILLING_ORIGIN}${url.pathname}`, {
       method,
@@ -146,6 +169,7 @@ export class BillingGate extends WorkerEntrypoint<
 export function billingProps(
   exports: { BillingGate: (o: { props: BillingGateProps }) => Fetcher },
   installId: string,
+  appHost: string,
 ): { BILLING: Fetcher } {
-  return { BILLING: exports.BillingGate({ props: { installId } }) };
+  return { BILLING: exports.BillingGate({ props: { installId, appHost } }) };
 }

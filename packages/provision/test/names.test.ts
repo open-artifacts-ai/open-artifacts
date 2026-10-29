@@ -1,12 +1,14 @@
 import { RESERVED_SLUGS as SHARED_RESERVED } from "@oa/provisioning-contract/slugs";
 import { describe, expect, it } from "vitest";
 import {
+  appHostFor,
   assertOwnResource,
   ENV_PREFIX,
   ForeignResource,
   hosts,
   hostsKvTitle,
   hostsValue,
+  isAppHost,
   isInstallId,
   isPlatformPrincipalId,
   names,
@@ -19,6 +21,7 @@ import {
   STAGING_TEST_DOMAIN,
 } from "../src/index.js";
 import * as namesEntry from "../src/names.js";
+import * as wfpModule from "../src/wfp.js";
 
 const D = { app: "app.test", content: "content.test" };
 
@@ -257,5 +260,53 @@ describe("STAGING_TEST_DOMAIN (3.3)", () => {
     expect(REDLINE_TEST_DOMAINS[0]).toBe(STAGING_TEST_DOMAIN);
     expect(Object.isFrozen(REDLINE_TEST_DOMAINS)).toBe(true);
     expect(namesEntry.REDLINE_TEST_DOMAINS).toBe(REDLINE_TEST_DOMAINS);
+  });
+});
+
+describe("app hosts (the billing gate's appHost)", () => {
+  it("HOSTED_DOMAINS lives in names.ts; wfp re-exports the same object", () => {
+    expect(wfpModule.HOSTED_DOMAINS).toBe(namesEntry.HOSTED_DOMAINS);
+    expect(namesEntry.HOSTED_DOMAINS.staging.app).toBe(
+      "open-artifacts-staging.app",
+    );
+  });
+  it("isAppHost: only <label>.<env app domain>", () => {
+    expect(isAppHost("acme.open-artifacts-staging.app", "staging")).toBe(true);
+    expect(isAppHost("a-1.open-artifacts.app", "prod")).toBe(true);
+    for (const [h, env] of [
+      ["acme.open-artifacts.app", "staging"],
+      ["acme.open-artifacts-staging.app", "prod"],
+      ["acme.open-artifacts-staging.page", "staging"],
+      ["a.b.open-artifacts-staging.app", "staging"],
+      [".open-artifacts-staging.app", "staging"],
+      ["open-artifacts-staging.app", "staging"],
+      ["Acme.open-artifacts-staging.app", "staging"],
+      ["acme.open-artifacts-staging.app.evil.test", "staging"],
+      ["acme.open-artifacts-staging.app/x", "staging"],
+      ["acme.open-artifacts-staging.app:443", "staging"],
+      ["acme_open-artifacts-staging.app", "staging"],
+      [null, "staging"],
+      ["acme.open-artifacts-staging.app", "dev"],
+    ] as [unknown, "staging"][])
+      expect(isAppHost(h, env)).toBe(false);
+  });
+  it("appHostFor: the app or content host's slug on the app domain, else null", () => {
+    expect(appHostFor("acme.open-artifacts-staging.app", "staging")).toBe(
+      "acme.open-artifacts-staging.app",
+    );
+    expect(appHostFor("acme.open-artifacts-staging.page", "staging")).toBe(
+      "acme.open-artifacts-staging.app",
+    );
+    expect(appHostFor("acme.open-artifacts.page", "prod")).toBe(
+      "acme.open-artifacts.app",
+    );
+    for (const h of [
+      "acme.open-artifacts.app",
+      "a.b.open-artifacts-staging.app",
+      "stray.example.test",
+      "open-artifacts-staging.app",
+    ])
+      expect(appHostFor(h, "staging")).toBeNull();
+    expect(appHostFor("acme.open-artifacts.app", "dev" as "prod")).toBeNull();
   });
 });

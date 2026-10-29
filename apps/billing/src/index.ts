@@ -6,7 +6,15 @@
 // the plain 404. The install id comes only from x-oa-gate-install, which
 // BillingGate sets to its own install; never from a query or a body.
 //
-// The two POSTs also carry the install's Ed25519 assertion (defense in
+// POST /checkout and POST /portal (self-serve step 3) answer a Stripe
+// Checkout or Customer Portal URL, through @oa/billing-core (the one Stripe
+// client). Their success, cancel and return URLs are built here from the
+// app host the gate sends (x-oa-gate-app-host, from the gate's props), never
+// from the request; a body with any field beyond the route's own is refused.
+// The install's Stripe customer is created here only, and mapped in tiers
+// before any session is made.
+//
+// Every POST also carries the install's Ed25519 assertion (defense in
 // depth), the auth broker's redeem scheme: x-oa-kid names one of the gate
 // install's registry keys, x-oa-sig signs requestTranscript(path, kid, body)
 // over the exact body text, and the body's `ts` is within ASSERTION_SKEW_MS.
@@ -14,17 +22,38 @@
 //
 // Logs carry fixed categories and install ids only: never bodies, headers or
 // URLs.
+
+import {
+  type CheckoutTier,
+  createCheckoutSession,
+  createCustomer,
+  createPortalSession,
+  StripeApiError,
+  type StripeConfig,
+  StripeConfigError,
+} from "@oa/billing-core";
 import {
   ASSERTION_SKEW_MS,
   lookupInstall,
   verifyAssertion,
 } from "@oa/broker-core";
-import { GATE_INSTALL_HEADER } from "@oa/broker-core/gate-header";
+import {
+  GATE_APP_HOST_HEADER,
+  GATE_INSTALL_HEADER,
+} from "@oa/broker-core/gate-header";
+import { isAppHost, type Env as OaEnv } from "@oa/provision/names";
 
 export interface Env {
   BILLING_DB: D1Database;
   /** The install registry (read-only): the namespace the auth broker reads. */
   BROKER_REGISTRY: KVNamespace;
+  /** staging or prod: picks the app domain the gate's app host must be on. */
+  OA_ENV: OaEnv;
+  /** Stripe test-mode secret key (a Worker secret; billing-core refuses live keys). */
+  STRIPE_SECRET_KEY?: string;
+  /** The env's Stripe price ids, one per paid plan (placeholders, filled at deploy). */
+  STRIPE_PRICE_TEAM: string;
+  STRIPE_PRICE_BUSINESS: string;
 }
 
 const DAY_MS = 86_400_000;
@@ -116,9 +145,11 @@ function badSignature(outcome: string, install: string) {
  * body's `ts` must be within ASSERTION_SKEW_MS of now. Runs before any write.
  *
  * There is no nonce (jti): the same signed body can be replayed within the
- * skew window. That is accepted only because both POSTs are idempotent (a
- * trial starts once; /usage overwrites the month with the same data). Any
- * future POST that is not idempotent must add a nonce and a seen-store first.
+ * skew window. That is accepted only because every POST is idempotent (a
+ * trial starts once; /usage overwrites the month with the same data;
+ * /checkout and /portal key each Stripe call by the body's ts, so a replay
+ * gets the same session and the customer is made once). Any future POST that
+ * is not idempotent must add a nonce and a seen-store first.
  */
 async function signedBody(
   req: Request,
@@ -162,6 +193,173 @@ function jsonObject(text: string): Record<string, unknown> | null {
 /** A body naming an install names the gate's own (defense in depth). */
 const mismatched = (body: Record<string, unknown>, install: string) =>
   Object.hasOwn(body, "install") && body.install !== install;
+
+/** Each signed POST's allowed body keys; any other field is 400 bad_body. */
+const BODY_KEYS: Readonly<Record<string, readonly string[]>> = {
+  "/checkout": ["install", "ts", "plan"],
+  "/portal": ["install", "ts"],
+};
+/** Only a Stripe-hosted page is ever passed back. */
+const CHECKOUT_URL = /^https:\/\/checkout\.stripe\.com\//;
+const PORTAL_URL = /^https:\/\/billing\.stripe\.com\//;
+
+// The free/active row, created first when missing (as /trial/start does).
+// Version 0 is what GET /tier shows for no row, so the view is unchanged.
+const ENSURE_ROW_SQL =
+  "INSERT INTO tiers (install_id, tier, status, version, updated_at) VALUES (?1, 'free', 'active', 0, ?2) ON CONFLICT (install_id) DO NOTHING";
+const CUSTOMER_SQL =
+  "SELECT stripe_customer_id FROM tiers WHERE install_id = ?1";
+// Only where none is mapped yet: a concurrent winner's id is kept.
+const MAP_CUSTOMER_SQL =
+  "UPDATE tiers SET stripe_customer_id = ? WHERE install_id = ? AND stripe_customer_id IS NULL";
+
+/** A Stripe failure, as the route's answer (logged by category only). */
+class StripeFailure {
+  constructor(public res: Response) {}
+}
+
+/**
+ * Runs one billing-core call: StripeConfigError is 500 config and
+ * StripeApiError (bad_answer: bad_upstream) or a network error is 502
+ * upstream, each logged as a fixed category with the install id.
+ */
+async function stripe<T>(install: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    if (e instanceof StripeConfigError) {
+      console.error("billing stripe config", install);
+      throw new StripeFailure(bad("config", 500));
+    }
+    if (e instanceof StripeApiError && e.type === "bad_answer") {
+      console.error("billing stripe bad_upstream", install);
+      throw new StripeFailure(bad("bad_upstream", 502));
+    }
+    console.error("billing stripe upstream", install);
+    throw new StripeFailure(bad("upstream", 502));
+  }
+}
+
+/** The body's own fields only, and an integer ts (it keys the session). */
+function strictBody(body: Record<string, unknown>, path: string): boolean {
+  const keys = BODY_KEYS[path] ?? [];
+  return (
+    Object.keys(body).every((k) => keys.includes(k)) &&
+    Number.isSafeInteger(body.ts)
+  );
+}
+
+/**
+ * The install's Stripe customer id. The mapping is read first; with none,
+ * the row is made if missing, billing-core creates the customer (one per
+ * install: Idempotency-Key cust-<install>), the id is written only where
+ * none is mapped, and the row is read again so a concurrent winner's id is
+ * the one used.
+ */
+async function customerFor(
+  db: D1Database,
+  install: string,
+  cfg: StripeConfig,
+  now: number,
+): Promise<string> {
+  const read = async () =>
+    (
+      await db
+        .prepare(CUSTOMER_SQL)
+        .bind(install)
+        .first<{ stripe_customer_id: string | null }>()
+    )?.stripe_customer_id ?? null;
+  const mapped = await read();
+  if (mapped) return mapped;
+  await db.prepare(ENSURE_ROW_SQL).bind(install, now).run();
+  const { id } = await stripe(install, () =>
+    createCustomer(
+      { installId: install, idempotencyKey: `cust-${install}` },
+      cfg,
+    ),
+  );
+  const wrote = await db.prepare(MAP_CUSTOMER_SQL).bind(id, install).run();
+  console.log(
+    "billing customer",
+    wrote.meta.changes === 1 ? "mapped" : "kept",
+    install,
+  );
+  const winner = await read();
+  if (!winner) throw new Error("customer mapping missing after write");
+  return winner;
+}
+
+async function checkout(
+  env: Env,
+  install: string,
+  appHost: string,
+  body: Record<string, unknown>,
+) {
+  const { plan } = body;
+  if (plan !== "team" && plan !== "business") return bad("bad_plan");
+  const tier: CheckoutTier = plan;
+  const cfg: StripeConfig = { secretKey: env.STRIPE_SECRET_KEY ?? "" };
+  const customerId = await customerFor(
+    env.BILLING_DB,
+    install,
+    cfg,
+    Date.now(),
+  );
+  const base = `https://${appHost}/settings/billing`;
+  const s = await stripe(install, () =>
+    createCheckoutSession(
+      {
+        customerId,
+        priceId:
+          tier === "team" ? env.STRIPE_PRICE_TEAM : env.STRIPE_PRICE_BUSINESS,
+        tier,
+        successUrl: `${base}?checkout=done`,
+        cancelUrl: `${base}?checkout=cancel`,
+        idempotencyKey: `checkout-${install}-${body.ts}`,
+      },
+      cfg,
+    ),
+  );
+  return answer(install, "checkout", s.url, CHECKOUT_URL);
+}
+
+async function portal(
+  env: Env,
+  install: string,
+  appHost: string,
+  body: Record<string, unknown>,
+) {
+  const row = await env.BILLING_DB.prepare(CUSTOMER_SQL)
+    .bind(install)
+    .first<{ stripe_customer_id: string | null }>();
+  const customerId = row?.stripe_customer_id;
+  if (!customerId) {
+    console.log("billing portal no_customer", install);
+    return bad("no_customer", 409);
+  }
+  const cfg: StripeConfig = { secretKey: env.STRIPE_SECRET_KEY ?? "" };
+  const s = await stripe(install, () =>
+    createPortalSession(
+      {
+        customerId,
+        returnUrl: `https://${appHost}/settings/billing`,
+        idempotencyKey: `portal-${install}-${body.ts}`,
+      },
+      cfg,
+    ),
+  );
+  return answer(install, "portal", s.url, PORTAL_URL);
+}
+
+/** `{url}` only, and only a Stripe-hosted page (else 502 bad_upstream). */
+function answer(install: string, route: string, url: string, host: RegExp) {
+  if (!host.test(url)) {
+    console.error("billing stripe bad_upstream", install);
+    return bad("bad_upstream", 502);
+  }
+  console.log("billing", route, "session", install);
+  return Response.json({ url });
+}
 
 async function tier(db: D1Database, install: string, now: number) {
   const r = await db.prepare(READ_SQL).bind(install, now).first<TierRow>();
@@ -221,6 +419,8 @@ const GATE = new Set([
   "GET /health",
   "POST /trial/start",
   "POST /usage",
+  "POST /checkout",
+  "POST /portal",
 ]);
 
 export default {
@@ -257,6 +457,25 @@ export default {
       // Both POSTs: the install's signature first, before any write.
       const body = await signedBody(req, env, install, url.pathname, now);
       if (body instanceof Response) return body;
+      if (route === "POST /checkout" || route === "POST /portal") {
+        if (body.install !== install) return bad("install_mismatch", 403);
+        if (!strictBody(body, url.pathname)) return bad("bad_body");
+        // The redirect origin: the gate's header (its props), and only an
+        // app host on this env's app domain.
+        const appHost = req.headers.get(GATE_APP_HOST_HEADER);
+        if (!isAppHost(appHost, env.OA_ENV)) {
+          console.error("billing bad_app_host", install);
+          return bad("bad_app_host", 500);
+        }
+        try {
+          return route === "POST /checkout"
+            ? await checkout(env, install, appHost, body)
+            : await portal(env, install, appHost, body);
+        } catch (e) {
+          if (e instanceof StripeFailure) return e.res;
+          throw e;
+        }
+      }
       if (route === "POST /trial/start")
         return await trialStart(env.BILLING_DB, install, body, now);
       return await usage(env.BILLING_DB, install, body, now);
