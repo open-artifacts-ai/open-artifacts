@@ -86,6 +86,7 @@ export function platformNames(env: Env): {
   dispatch: string;
   hosts: string;
   turnstile: string;
+  billing: string;
 } {
   if (!Object.hasOwn(ENV_PREFIX, env)) throw new ForeignResource("", env);
   const p = ENV_PREFIX[env];
@@ -106,6 +107,8 @@ export function platformNames(env: Env): {
     hosts: `${p}hosts`,
     // The one Turnstile widget of the env (created once by Task 8's init).
     turnstile: `${p}turnstile`,
+    // The tier store: the billing Worker and its own D1 share this name.
+    billing: `${p}billing`,
   };
 }
 

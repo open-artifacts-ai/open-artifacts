@@ -46,7 +46,9 @@ describe("provision names", () => {
       dispatch: "oa-s-dispatch",
       hosts: "oa-s-hosts",
       turnstile: "oa-s-turnstile",
+      billing: "oa-s-billing",
     });
+    expect(platformNames("prod").billing).toBe("oa-p-billing");
     expect(platformNames("prod").turnstile).toBe("oa-p-turnstile");
     expect(platformNames("prod").db).toBe("oa-p-platform");
     expect(platformNames("prod").hosts).toBe("oa-p-hosts");
