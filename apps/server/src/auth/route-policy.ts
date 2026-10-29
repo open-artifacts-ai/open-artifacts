@@ -1,7 +1,7 @@
 import { isId } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { matchedRoutes } from "hono/route";
-import { featuresOf } from "../billing/features.js";
+import { featuresOf, planNow } from "../billing/features.js";
 import { planError, requireTeamPlan } from "../billing/plan.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, resolveSession } from "../http/middleware.js";
@@ -19,7 +19,6 @@ import {
   CONTENT_POLICY,
   type Policy,
   ROUTE_POLICY,
-  SOLO_ROUTES,
   TEAM_ROUTES,
 } from "./route-policy-table.js";
 
@@ -200,6 +199,10 @@ export const enforcePolicy = (
     // Registered first, so it reads the session itself when a rule needs a
     // caller (session() later is then a no-op).
     if (!("public" in p || "signed" in p)) await resolveSession(c);
+    // Hosted billing: this invocation's plan before any features check (a
+    // no-op once the user load above seeded it). The SPA and its assets
+    // never read it.
+    if (t.path !== "/*") await planNow(c.env);
     const who: Caller =
       c.req.header("x-oa-embed") === "1" ? { kind: "anonymous" } : caller(c);
     await withAccessCache(async () => {
@@ -229,7 +232,5 @@ export const planGate = (): MiddlewareHandler<AppEnv> =>
       requireTeamPlan(planOfMember(user), {
         invite: route === "POST /api/v1/members",
       });
-    const lock = user ? planOfMember(user)?.lock : null;
-    if (lock?.mode === "solo" && SOLO_ROUTES.has(route)) throw planError(lock);
     await next();
   });

@@ -29,7 +29,7 @@ export const PORTAL_PATH = "/portal";
 /** Nothing reached billing, or it answered with a failure we can't act on. */
 export class BillingUnavailableError extends Error {
   constructor(
-    /** A fixed category, safe to log: no_gate, unconfigured, gate_refused, stale, network, http_<status>, bad_answer. */
+    /** A fixed category, safe to log: no_gate, unconfigured, gate_refused, stale, network, retry, http_<status>, bad_answer. */
     public why: string,
   ) {
     super(`billing unavailable: ${why}`);
@@ -81,6 +81,18 @@ export async function signedBillingRequest(
   });
 }
 
+/** A 503 whose small JSON body is billing's { error: "retry" }. Reads the body. */
+async function isRetry(res: Response): Promise<boolean> {
+  try {
+    const t = await res.text();
+    if (t.length > 256) return false;
+    const j = JSON.parse(t) as { error?: unknown } | null;
+    return j?.error === "retry";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * One call through the gate: the JSON answer of a 2xx, else
  * BillingUnavailableError. Never logs a body, header or URL.
@@ -109,11 +121,15 @@ export async function billingCall(
     );
   }
   if (!res.ok) {
-    await res.body?.cancel();
+    const refused = res.headers.get(GATE_HEADER) === "1";
+    // Billing's 503 { error: "retry" }: Stripe still has the same
+    // idempotent request in progress (Platform #858). The caller may resend
+    // the same signed body once.
+    if (!refused && res.status === 503 && (await isRetry(res)))
+      throw new BillingUnavailableError("retry");
+    await res.body?.cancel().catch(() => {});
     throw new BillingUnavailableError(
-      res.headers.get(GATE_HEADER) === "1"
-        ? "gate_refused"
-        : `http_${res.status}`,
+      refused ? "gate_refused" : `http_${res.status}`,
     );
   }
   try {

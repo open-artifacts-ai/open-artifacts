@@ -50,6 +50,7 @@ import {
 } from "../src/billing/store.js";
 import { DIRECTORY_SYNC_CRON, scheduled } from "../src/cron.js";
 import type { Env } from "../src/env.js";
+import { billingRetry } from "../src/routes/billing.js";
 import { TEST_BROKER_KEY } from "./auth-helpers.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
 import { connect, textOf, tool } from "./mcp-helpers.js";
@@ -326,8 +327,11 @@ describe("effectivePlan", () => {
       lock: { mode: "solo" },
       trialEligible: true,
     });
-    // No BILLING gate: no billing enforcement at all (decision 3).
-    expect(planOfRaw(H, null, null, mid, { gate: false })).toBeNull();
+    // No BILLING gate, no cache, no TIER: free and solo too (R2), no clock.
+    expect(planOfRaw(H, null, null, mid, { gate: false })).toMatchObject({
+      tier: "free",
+      lock: { mode: "solo" },
+    });
     const failing = JSON.stringify({
       checkedAt: mid,
       failingSince: mid - PLAN_STALE_MS - 1,
@@ -336,7 +340,9 @@ describe("effectivePlan", () => {
       "billing_unreachable",
     );
     // No BILLING gate: failures never make it unreachable.
-    expect(planOfRaw(H, null, failing, mid, { gate: false })).toBeNull();
+    expect(planOfRaw(H, null, failing, mid, { gate: false })?.reason).toBe(
+      "solo",
+    );
     // Self-hosted: no gate, whatever is stored.
     const stored = JSON.stringify(at({ status: "lapsed" }, mid));
     expect(planOfRaw(SELF, stored, null, mid)).toBeNull();
@@ -434,7 +440,7 @@ describe("tier read and cache", () => {
     expect(after).toEqual(check);
   });
 
-  it("no BILLING gate: nothing recorded, no 7-day clock, the provisioned TIER (B1)", async () => {
+  it("no BILLING gate: nothing recorded, no 7-day clock; the cache, else the provisioned TIER (B1, R2)", async () => {
     const TEAM = { ...H, TIER: "team" } as Env;
     for (const t of [mid, mid + 30 * DAY])
       expect(await refreshPlan(TEAM, t, { onDemand: true })).toBe("skipped");
@@ -444,11 +450,17 @@ describe("tier read and cache", () => {
         .first<{ n: number }>(),
     ).toEqual({ n: 0 });
     expect(calls).toEqual([]);
-    // Even with a lapse cached and 30 days of silence: TIER, unlocked.
-    await cache({ tier: "business", status: "lapsed", version: 4 }, mid);
+    // No cache: the provisioned TIER.
     expect(await readPlan(TEAM, mid + 30 * DAY)).toMatchObject({
       tier: "team",
       lock: null,
+    });
+    // A cache: the cached answer, never upward to TIER, and 30 days of
+    // silence never make it unreachable (R2).
+    await cache({ tier: "free", trialEndsAt: 1, version: 4 }, mid);
+    expect(await readPlan(TEAM, mid + 30 * DAY)).toMatchObject({
+      tier: "free",
+      reason: "solo",
     });
   });
 
@@ -972,7 +984,7 @@ describe("Me.instance.billing and the billing routes", () => {
     });
     expect(calls.find((c) => c.path === "/checkout")?.body).toMatchObject({
       install: INSTALL,
-      tier: "team",
+      plan: "team",
     });
     const p = await send(R.billingPortal, owner.cookie, {
       method: "POST",
@@ -1035,6 +1047,60 @@ describe("Me.instance.billing and the billing routes", () => {
       expect(r.status).toBe(503);
     } finally {
       gate.fetch = orig;
+    }
+  });
+
+  it("billing's 503 retry (Stripe 409): one more try with the same signed body after the backoff, then billing_unavailable (R7)", async () => {
+    await cache({ tier: "team", version: 2 });
+    const orig = gate.fetch;
+    const wait = billingRetry.wait;
+    const waits: number[] = [];
+    billingRetry.wait = async (ms) => {
+      waits.push(ms);
+    };
+    // Each answer in turn; the bodies each try sent.
+    let answers: Array<() => Response> = [];
+    const bodies: string[] = [];
+    gate.fetch = async (req: Request) => {
+      bodies.push(await req.text());
+      const next = answers.shift();
+      if (!next) throw new Error("unexpected call");
+      return next();
+    };
+    const retry = () => Response.json({ error: "retry" }, { status: 503 });
+    const ok = () =>
+      Response.json({ url: "https://checkout.stripe.com/c/pay/cs_test_2" });
+    const checkout = () =>
+      send(R.billingCheckout, owner.cookie, {
+        method: "POST",
+        body: { tier: "business" },
+      });
+    try {
+      // Retry, then the session: 200, the same body twice, one backoff.
+      answers = [retry, ok];
+      const r = await checkout();
+      expect(await r.json()).toEqual({
+        url: "https://checkout.stripe.com/c/pay/cs_test_2",
+      });
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]).toBe(bodies[0]);
+      expect(waits).toEqual([billingRetry.backoffMs]);
+      // Retry twice: 503 billing_unavailable, no third call.
+      bodies.length = 0;
+      answers = [retry, retry];
+      const d = await checkout();
+      expect(d.status).toBe(503);
+      expect((await errOf(d)).code).toBe("billing_unavailable");
+      expect(bodies).toHaveLength(2);
+      // Any other 503 (or the gate's refusal) is not retried.
+      bodies.length = 0;
+      answers = [() => Response.json({ error: "upstream" }, { status: 503 })];
+      expect((await checkout()).status).toBe(503);
+      expect(bodies).toHaveLength(1);
+      expect(waits).toHaveLength(2);
+    } finally {
+      gate.fetch = orig;
+      billingRetry.wait = wait;
     }
   });
 });

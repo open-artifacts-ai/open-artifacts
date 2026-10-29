@@ -36,9 +36,10 @@ import { ApiError } from "../http/errors.js";
 //    the provisioned TIER is the last good tier; with neither, free (solo,
 //    trial allowed), never unenforced.
 // 2. The gate is absent (before #849 is deployed, or a context without it):
-//    no billing enforcement: the provisioned TIER, never unreachable, and no
-//    7-day clock. Without a TIER: no plan (the provisioned FEATURES, as
-//    before billing). Nothing is recorded (store.ts refreshPlan skips).
+//    no billing enforcement from billing itself: the cached answer when one
+//    exists (never upward to the provisioned TIER), else the provisioned
+//    TIER, else free (solo, trial allowed). Never unreachable, no 7-day
+//    clock, nothing recorded (store.ts refreshPlan skips).
 //
 // Features (Me.instance.features and every check) follow the plan's tier at
 // read time through TIER_FEATURES, not the provisioned FEATURES (planFeatures).
@@ -190,15 +191,11 @@ export function planOfRaw(
   const last = parseStored(TierAnswerSchema, plan);
   const c = parseStored(PlanCheckSchema, check);
   const gate = o.gate ?? billingGate() !== null;
-  if (!gate) {
-    // No BILLING: no billing enforcement. The provisioned TIER (never
-    // unreachable, no 7-day clock); without one, no plan at all (the
-    // provisioned FEATURES, as before billing). The cache is not consulted.
-    const tier = parseTier(env.TIER);
-    return tier !== null
-      ? effectivePlan(null, null, tier, now, { clock: false })
-      : null;
-  }
+  // No BILLING: no billing enforcement and nothing recorded (store.ts
+  // refreshPlan skips), and no 7-day clock: never unreachable. The cached
+  // answer when there is one (never upward to the provisioned TIER), else
+  // the provisioned TIER, else free (solo, trial allowed).
+  if (!gate) return effectivePlan(last, null, env.TIER, now, { clock: false });
   // The billing tier, with the last-good rule. No answer and no TIER: free
   // (solo, trial allowed) until the first good read, never unenforced.
   return effectivePlan(last, c, env.TIER, now);

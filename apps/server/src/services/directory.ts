@@ -1,5 +1,7 @@
-import type { Member } from "@oa/shared";
+import type { DirectoryMode, Member } from "@oa/shared";
 import { brokerTransportKind } from "../auth/broker-transport.js";
+import { scopedPlan } from "../billing/features.js";
+import { billingOn } from "../billing/plan.js";
 import { directoryClient } from "../directory/client.js";
 import { directorySignIn, SignInRefused } from "../directory/signin.js";
 import { readBinding } from "../directory/store.js";
@@ -86,7 +88,7 @@ export async function kickSync(
   const ns = env.DIRECTORY_SYNC;
   if (!ns) return;
   const run = (async () => {
-    await ns.get(ns.idFromName(SYNC_DO_NAME)).kick(reason);
+    await ns.get(ns.idFromName(SYNC_DO_NAME)).kick(reason, syncModeFor(env));
     await feedSync(env);
   })().catch((e) => logWarn("directory_kick", e, { reason }));
   if (ctx) ctx.waitUntil(run);
@@ -117,7 +119,8 @@ export type FeedOutcome =
 export async function feedSync(env: Env): Promise<FeedOutcome> {
   const ns = env.DIRECTORY_SYNC;
   const client = directoryClient(env);
-  if (!ns || !client || directoryMode(env) === "off") return "off";
+  const mode = syncModeFor(env);
+  if (!ns || !client || mode === "off") return "off";
   if (client.kind !== "broker") return "self";
   const kind = brokerTransportKind(env, "directory");
   // Hosted without the capability: nothing can feed the DO from here (its
@@ -135,7 +138,7 @@ export async function feedSync(env: Env): Promise<FeedOutcome> {
   // The alarm syncs nothing in this state either (a first connect too).
   if (!binding || !sealed) return "unbound";
   const stub = ns.get(ns.idFromName(SYNC_DO_NAME));
-  if (!(await stub.wantsToken())) return "not_due";
+  if (!(await stub.wantsToken(mode))) return "not_due";
   const key = tokenFor(binding);
   let token: string;
   try {
@@ -151,13 +154,28 @@ export async function feedSync(env: Env): Promise<FeedOutcome> {
     // next alarm fails the lane with it, as a mint there would have
     // (classify: transport_<stage>, or backoff "internal" for the rest).
     if (!(e instanceof TransportError)) logWarn("directory_feed_mint", e);
-    await stub.handToken(key, {
-      error: e instanceof TransportError ? e.stage : "internal",
-    });
+    await stub.handToken(
+      key,
+      { error: e instanceof TransportError ? e.stage : "internal" },
+      mode,
+    );
     return "mint_failed";
   }
-  await stub.handToken(key, { token });
+  await stub.handToken(key, { token }, mode);
   return "fed";
+}
+
+/**
+ * The directory mode DirectorySync follows, handed over on every kick, feed
+ * and RPC: this invocation's (featuresOf: hosted, the billing tier's;
+ * Business google, Team frozen). Hosted, a locked plan (free, read-only)
+ * is frozen too: the DO calls nothing and fails nothing until it lifts.
+ */
+export function syncModeFor(env: Env): DirectoryMode {
+  const mode = directoryMode(env);
+  return billingOn(env) && mode !== "off" && scopedPlan()?.lock
+    ? "frozen"
+    : mode;
 }
 
 /** The one DirectorySync per install. */

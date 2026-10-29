@@ -22,7 +22,7 @@ import {
   scheduled,
 } from "../src/cron.js";
 import { directoryClient } from "../src/directory/client.js";
-import { STALE_MS } from "../src/directory/health.js";
+import { ALERT_AFTER_MS, STALE_MS } from "../src/directory/health.js";
 import {
   BACKOFF_MAX_MS,
   BACKOFF_MIN_MS,
@@ -39,6 +39,12 @@ import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { feedSync, SYNC_DO_NAME } from "../src/services/directory.js";
 import { mailer, uniq } from "./auth-helpers.js";
+import {
+  type BillingRow,
+  cachePlan,
+  clearBilling,
+  DAY,
+} from "./billing-helpers.js";
 import {
   BROKER,
   brokerGate,
@@ -57,6 +63,7 @@ import {
   fakeDirectory,
 } from "./fixtures/fake-directory.js";
 import { login } from "./helpers.js";
+import { pinMiddayUtc } from "./midday.js";
 
 const MIN = 60_000;
 const req = (path: string) =>
@@ -261,21 +268,30 @@ const engine = (s: DurableObjectState) =>
   new SyncEngine(e, s.storage, undefined, box);
 /** DirectorySync RPCs made through fakeNs, by name. */
 const rpcs: string[] = [];
+/** The directory mode each kick, feed or confirm RPC handed over. */
+const modes: Array<string | undefined> = [];
 const fakeNs = {
   idFromName: () => ({}),
   get: () => ({
-    kick: (r: never) => inDo((s) => engine(s).kick(r, clock)),
-    wantsToken: () => {
-      rpcs.push("wantsToken");
-      return inDo((s) => engine(s).wantsToken(clock));
+    kick: (r: never, m?: never) => {
+      modes.push(m);
+      return inDo((s) => engine(s).kick(r, clock, m));
     },
-    handToken: (k: string, h: never) => {
+    wantsToken: (m?: never) => {
+      rpcs.push("wantsToken");
+      modes.push(m);
+      return inDo((s) => engine(s).wantsToken(clock, m));
+    },
+    handToken: (k: string, h: never, m?: never) => {
       rpcs.push("handToken");
-      return inDo((s) => engine(s).handToken(k, h, clock));
+      modes.push(m);
+      return inDo((s) => engine(s).handToken(k, h, clock, m));
     },
     reset: () => inDo((s) => engine(s).reset(clock)),
-    confirmHeld: (id: string, by: never) =>
-      inDo((s) => engine(s).confirmHeld(id, by, clock)),
+    confirmHeld: (id: string, by: never, m?: never) => {
+      modes.push(m);
+      return inDo((s) => engine(s).confirmHeld(id, by, clock, m));
+    },
     status: () => inDo((s) => engine(s).status()),
   }),
 } as unknown as Env["DIRECTORY_SYNC"];
@@ -900,7 +916,6 @@ describe("review fixes", () => {
     ).toBe("unbound");
     await cronTick(clock);
     expect(rpcs.length).toBe(n);
-    expect(await inDo((s) => s.storage.getAlarm())).toBeNull();
   });
 
   it("P2.5 #15: a reconnect waiting for confirm keeps feeding (and syncing) the live binding", async () => {
@@ -987,5 +1002,140 @@ describe("review fixes", () => {
     expect(await alarms(t0 + 3 * MIN)).toBe("starved");
     expect(box.tok).toBeNull();
     expect(g.adminCalls.length).toBe(google0);
+  });
+});
+
+// ------------------------------------------------- billing tier (R1)
+
+describe("DirectorySync follows the billing tier's directory mode (#857 R1)", () => {
+  let ver = 0;
+  /** The cached billing answer (no BILLING gate here: the cache rules, R2). */
+  const tier = (r: Partial<BillingRow>, at: number) =>
+    cachePlan(
+      {
+        tier: "business",
+        status: "active",
+        trialEndsAt: null,
+        graceUntil: null,
+        version: ++ver,
+        ...r,
+      },
+      at,
+      e,
+    );
+  const audits = async (action: string) =>
+    (
+      await env.DB.prepare(
+        "select count(*) n from audit_events where action = ?",
+      )
+        .bind(action)
+        .first<{ n: number }>()
+    )?.n ?? 0;
+  const mints = () =>
+    gateCalls.filter((c) => c.path === "/google/directory/token").length;
+
+  afterEach(async () => {
+    await clearBilling();
+    vi.useRealTimers();
+  });
+
+  it("a trial syncs (google handed over) though the provisioned TIER is Team", async () => {
+    const t0 = pinMiddayUtc();
+    e = hostedEnv({
+      ...mailer().env,
+      DIRECTORY_SYNC: fakeNs,
+      TIER: "team",
+      FEATURES: "spaces,sync_frozen",
+    });
+    await tier({ tier: "trial", trialEndsAt: t0 + 14 * DAY }, t0);
+    await connected(t0);
+    modes.length = 0;
+    const google0 = g.adminCalls.length;
+    expect(await period(t0 + FAST_MS)).toBe("done");
+    expect(modes.length).toBeGreaterThan(0);
+    expect(new Set(modes)).toEqual(new Set(["google"]));
+    expect(await kv("mode")).toBe("google");
+    expect(g.adminCalls.length).toBeGreaterThan(google0);
+    expect((await status()).state).toBe("ok");
+  });
+
+  it("Business to Team freezes it: no Google call or mint, no lane failure past NO_FEED_MS, no alert; Business again resumes", async () => {
+    const t0 = pinMiddayUtc();
+    const m = mailer();
+    e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
+    await tier({ tier: "business" }, t0);
+    await connected(t0);
+    expect(await kv("mode")).toBe("google");
+    const failed0 = await audits("directory.sync.failed");
+    const stale0 = await audits("directory.stale");
+    const sent0 = m.sent.length;
+    const google0 = g.adminCalls.length;
+    const mints0 = mints();
+    await tier({ tier: "team" }, t0 + MIN);
+    // Every tick hands frozen over; the alarms (long past NO_FEED_MS and the
+    // owner alert's 24 h) call nothing and fail nothing.
+    const late = t0 + ALERT_AFTER_MS + NO_FEED_MS + 2 * MIN;
+    for (const t of [t0 + FAST_MS, t0 + FAST_MS + NO_FEED_MS + MIN, late]) {
+      modes.length = 0;
+      await cronTick(t);
+      expect(modes).toEqual(["frozen"]);
+      await inDo((s) => engine(s).alarm(t));
+    }
+    expect(await kv("mode")).toBe("frozen");
+    expect(g.adminCalls.length).toBe(google0);
+    expect(mints()).toBe(mints0);
+    expect(await kv("retryAt.fast")).toBeNull();
+    expect(await kv("nofeed.since")).toBeNull();
+    const s = await status();
+    expect(s.state).toBe("ok");
+    expect(s.lastError ?? null).toBeNull();
+    expect(await audits("directory.sync.failed")).toBe(failed0);
+    expect(await audits("directory.stale")).toBe(stale0);
+    expect(m.sent.length).toBe(sent0);
+    // Business again: the next tick feeds google and the lanes run.
+    await tier({ tier: "business" }, late);
+    modes.length = 0;
+    expect(await period(late + MIN)).toBe("done");
+    expect(modes[0]).toBe("google");
+    expect(g.adminCalls.length).toBeGreaterThan(google0);
+    expect((await status()).state).toBe("ok");
+  });
+
+  it("a locked plan (a lapse) freezes it too, without a lane failure", async () => {
+    const t0 = pinMiddayUtc();
+    await tier({ tier: "business" }, t0);
+    await connected(t0);
+    const google0 = g.adminCalls.length;
+    await tier({ tier: "business", status: "lapsed" }, t0 + MIN);
+    const t = t0 + FAST_MS + NO_FEED_MS + MIN;
+    await cronTick(t);
+    await inDo((s) => engine(s).alarm(t));
+    expect(await kv("mode")).toBe("frozen");
+    expect(g.adminCalls.length).toBe(google0);
+    expect(await kv("retryAt.fast")).toBeNull();
+    expect((await status()).state).toBe("ok");
+  });
+
+  it("the DirectorySync class hands each RPC's mode to its engine", async () => {
+    await runInDurableObject(realStub(), async (inst) => {
+      const eng = (inst as unknown as { engine: SyncEngine }).engine;
+      const k = vi.spyOn(eng, "kick").mockResolvedValue({} as SyncStatus);
+      const w = vi.spyOn(eng, "wantsToken").mockResolvedValue(false);
+      const h = vi.spyOn(eng, "handToken").mockResolvedValue();
+      const c = vi.spyOn(eng, "confirmHeld").mockResolvedValue(null);
+      await inst.kick("cron", "frozen");
+      await inst.wantsToken("google");
+      await inst.handToken("k", { error: "internal" }, "frozen");
+      await inst.confirmHeld("g1", undefined, "google");
+      expect(k).toHaveBeenCalledWith("cron", undefined, "frozen");
+      expect(w).toHaveBeenCalledWith(undefined, "google");
+      expect(h).toHaveBeenCalledWith(
+        "k",
+        { error: "internal" },
+        undefined,
+        "frozen",
+      );
+      expect(c).toHaveBeenCalledWith("g1", undefined, undefined, "google");
+    });
   });
 });

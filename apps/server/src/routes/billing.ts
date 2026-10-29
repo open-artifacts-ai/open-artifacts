@@ -35,6 +35,12 @@ import type { AppType } from "./index.js";
 const STRIPE_URL = /^https:\/\/(checkout|billing)\.stripe\.com\//;
 const UrlAnswerSchema = z.object({ url: z.string().regex(STRIPE_URL) });
 
+/** The one retry on billing's 503 retry: its backoff (tests replace `wait`). */
+export const billingRetry = {
+  backoffMs: 500,
+  wait: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+};
+
 const unavailable = () =>
   new ApiError("billing_unavailable", "Billing is unavailable; try again");
 
@@ -54,10 +60,22 @@ async function stripeUrl(
   path: string,
   fields: Record<string, unknown>,
 ): Promise<BillingUrl> {
+  // One `now` for both tries: the same signed body (billing's session key
+  // includes ts), so a retry finds the request Stripe was still running.
+  const now = Date.now();
+  const call = () => billingCall(c.env, path, fields, now);
   try {
-    const r = UrlAnswerSchema.safeParse(
-      await billingCall(c.env, path, fields, Date.now()),
-    );
+    let answer: unknown;
+    try {
+      answer = await call();
+    } catch (e) {
+      // Billing's 503 retry (Stripe 409, the same request in progress): one
+      // more try after a short backoff, then billing_unavailable.
+      if (!(e instanceof BillingUnavailableError) || e.why !== "retry") throw e;
+      await billingRetry.wait(billingRetry.backoffMs);
+      answer = await call();
+    }
+    const r = UrlAnswerSchema.safeParse(answer);
     if (!r.success) throw new BillingUnavailableError("bad_answer");
     return { url: r.data.url };
   } catch (e) {
@@ -71,7 +89,8 @@ export function mountBilling(app: AppType): void {
   app.post(R.billingCheckout, async (c) => {
     requireBillingManager(c);
     const { tier } = await jsonBody(c, BillingCheckoutInputSchema);
-    return c.json(await stripeUrl(c, CHECKOUT_PATH, { tier }));
+    // Billing's /checkout body is { install, ts, plan } (Platform #858).
+    return c.json(await stripeUrl(c, CHECKOUT_PATH, { plan: tier }));
   });
 
   app.post(R.billingPortal, async (c) => {
