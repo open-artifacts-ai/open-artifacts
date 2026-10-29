@@ -112,17 +112,23 @@ export function platformNames(env: Env): {
   };
 }
 
+/** The slug rule hosts() enforces, for callers that check before creating. */
+export function isValidSlug(slug: unknown): slug is string {
+  // "--" at positions 3-4 is IDNA-reserved ("xn--" is punycode): a slug
+  // like that could render as another name (homograph).
+  return (
+    typeof slug === "string" &&
+    SLUG_RE.test(slug) &&
+    !RESERVED_SLUGS.includes(slug) &&
+    slug.slice(2, 4) !== "--"
+  );
+}
+
 export function hosts(
   slug: string,
   domains: { app: string; content: string },
 ): { appHost: string; contentHost: string } {
-  // "--" at positions 3-4 is IDNA-reserved ("xn--" is punycode): a slug
-  // like that could render as another name (homograph).
-  if (
-    !SLUG_RE.test(slug) ||
-    RESERVED_SLUGS.includes(slug) ||
-    slug.slice(2, 4) === "--"
-  ) {
+  if (!isValidSlug(slug)) {
     throw new Error(`invalid slug: ${slug}`);
   }
   const { app, content } = domains;

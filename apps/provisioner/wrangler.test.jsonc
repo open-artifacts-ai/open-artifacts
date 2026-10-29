@@ -15,6 +15,12 @@
       "binding": "INSTALL_DB",
       "database_name": "oa-install-test",
       "database_id": "00000000-0000-0000-0000-000000000001"
+    },
+    // The consumer suite's own platform D1 (signups), apart from the create suite's.
+    {
+      "binding": "SIGNUPS_DB",
+      "database_name": "oa-signups-test",
+      "database_id": "00000000-0000-0000-0000-000000000002"
     }
   ],
   // The releases bucket the provisioner reads through r2BindingReleaseReader.

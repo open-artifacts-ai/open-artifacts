@@ -1,0 +1,138 @@
+// Hosted provisioner Worker (self-serve step 3): consumes oa-<p>-signups,
+// records each signup under the daily cap (platform D1 `signups`) and starts
+// one ProvisionInstall Workflow per signup id, which runs provision's
+// WfpProvisioner.create. The owner's email is kept only in `signup_secret`.
+//
+// Deploy with --env staging or --env prod only: the top level has no name and
+// no main, so a deploy without --env is refused, even with --name. No routes,
+// custom domains or workers.dev: the Worker has no fetch handler. Each env's
+// ids, cap, sender and account are placeholders filled at deploy.
+// Observability stays off: the Worker logs fixed categories and signup ids only.
+// The provision token is the Secrets Store secret oa-<p>-provision-token,
+// bound here and in no other Worker. A signup that can't be handled goes to
+// the DLQ as { signupId } only (SIGNUPS_DLQ), never as its body.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "env": {
+    "staging": {
+      "name": "oa-s-provisioner",
+      "main": "src/index.ts",
+      "workers_dev": false,
+      "preview_urls": false,
+      "compatibility_flags": ["nodejs_compat"],
+      // A create is ~300 ms of CPU; the headroom covers a slow release.
+      "limits": { "cpu_ms": 300000 },
+      "observability": { "enabled": false },
+      "vars": {
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}",
+        "WELCOME_FROM": "{{WELCOME_FROM_STAGING}}",
+        "ACCOUNT_ID": "{{ACCOUNT_ID_STAGING}}"
+      },
+      "queues": {
+        "consumers": [
+          {
+            "queue": "oa-s-signups",
+            "max_batch_size": 1,
+            "max_retries": 5,
+            "dead_letter_queue": "oa-s-signups-dlq"
+          }
+        ],
+        "producers": [{ "binding": "SIGNUPS_DLQ", "queue": "oa-s-signups-dlq" }]
+      },
+      "workflows": [
+        {
+          "name": "oa-s-provision-install",
+          "binding": "PROVISION_INSTALL",
+          "class_name": "ProvisionInstall"
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "PLATFORM_DB",
+          "database_name": "oa-s-platform",
+          "database_id": "{{PLATFORM_DB_ID_STAGING}}"
+        }
+      ],
+      "kv_namespaces": [
+        { "binding": "HOSTS", "id": "{{HOSTS_KV_ID_STAGING}}" },
+        {
+          "binding": "BROKER_REGISTRY",
+          "id": "{{BROKER_REGISTRY_ID_STAGING}}"
+        },
+        {
+          "binding": "DIRECTORY_REGISTRY",
+          "id": "{{DIRECTORY_REGISTRY_ID_STAGING}}"
+        }
+      ],
+      "r2_buckets": [{ "binding": "RELEASES", "bucket_name": "oa-s-releases" }],
+      "send_email": [{ "name": "WELCOME_EMAIL" }],
+      "secrets_store_secrets": [
+        {
+          "binding": "PROVISION_TOKEN",
+          "store_id": "{{SECRETS_STORE_ID_STAGING}}",
+          "secret_name": "oa-s-provision-token"
+        }
+      ]
+    },
+    "prod": {
+      "name": "oa-p-provisioner",
+      "main": "src/index.ts",
+      "workers_dev": false,
+      "preview_urls": false,
+      "compatibility_flags": ["nodejs_compat"],
+      // A create is ~300 ms of CPU; the headroom covers a slow release.
+      "limits": { "cpu_ms": 300000 },
+      "observability": { "enabled": false },
+      "vars": {
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",
+        "WELCOME_FROM": "{{WELCOME_FROM_PROD}}",
+        "ACCOUNT_ID": "{{ACCOUNT_ID_PROD}}"
+      },
+      "queues": {
+        "consumers": [
+          {
+            "queue": "oa-p-signups",
+            "max_batch_size": 1,
+            "max_retries": 5,
+            "dead_letter_queue": "oa-p-signups-dlq"
+          }
+        ],
+        "producers": [{ "binding": "SIGNUPS_DLQ", "queue": "oa-p-signups-dlq" }]
+      },
+      "workflows": [
+        {
+          "name": "oa-p-provision-install",
+          "binding": "PROVISION_INSTALL",
+          "class_name": "ProvisionInstall"
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "PLATFORM_DB",
+          "database_name": "oa-p-platform",
+          "database_id": "{{PLATFORM_DB_ID_PROD}}"
+        }
+      ],
+      "kv_namespaces": [
+        { "binding": "HOSTS", "id": "{{HOSTS_KV_ID_PROD}}" },
+        { "binding": "BROKER_REGISTRY", "id": "{{BROKER_REGISTRY_ID_PROD}}" },
+        {
+          "binding": "DIRECTORY_REGISTRY",
+          "id": "{{DIRECTORY_REGISTRY_ID_PROD}}"
+        }
+      ],
+      "r2_buckets": [{ "binding": "RELEASES", "bucket_name": "oa-p-releases" }],
+      "send_email": [{ "name": "WELCOME_EMAIL" }],
+      "secrets_store_secrets": [
+        {
+          "binding": "PROVISION_TOKEN",
+          "store_id": "{{SECRETS_STORE_ID_PROD}}",
+          "secret_name": "oa-p-provision-token"
+        }
+      ]
+    }
+  }
+}

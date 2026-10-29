@@ -168,5 +168,15 @@ describe("0007_signups", () => {
     expect(() => ins("a", "i1", "bogus")).toThrow();
     ins("a", "i1", "queued");
     expect(() => ins("b", "i1", "ready")).toThrow();
+    // UNIQUE install_id allows many NULLs: every signup before its create.
+    ins("n1", null, "queued");
+    ins("n2", null, "queued");
+    for (const st of ["queued", "waiting_cap", "creating", "ready", "failed"])
+      ins(`s-${st}`, null, st);
+    expect(
+      db
+        .prepare("SELECT count(*) AS n FROM signups WHERE install_id IS NULL")
+        .get(),
+    ).toEqual({ n: 7 });
   });
 });
