@@ -2,6 +2,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
+  ANON_ID_HEADER,
   type ArtifactEvent,
   ArtifactEventSchema,
   EVENTS_GONE_CLOSE,
@@ -554,13 +555,27 @@ describe("events socket: presence", () => {
     for (const x of [a1, a2, c]) x.ws.close();
   });
 
-  it("the anonymous frame never carries the anonId, the oa_pid or the IP", async () => {
-    const id = await pub({ visibility: "public" });
+  it("the anonymous frame never carries the anon token, the public anonId, the oa_pid or the IP", async () => {
+    const id = await pub({
+      visibility: "public",
+      allowAnonymousWrites: true,
+      capabilities: { db: true, viewer: true, storage: true },
+    });
     const addr = "198.51.100.77";
     const secret = pid("secret");
+    // A real anon token for this artifact, and its public anonId.
+    const mint = await api(app, R.anonId(id), null, {
+      headers: { "cf-connecting-ip": addr },
+    });
+    expect(mint.status).toBe(200);
+    const token = mint.headers.get(ANON_ID_HEADER) ?? "";
+    const anonId = ((await mint.json()) as { anonId: string }).anonId;
+    expect(token).not.toBe("");
+    expect(anonId).toMatch(/^[A-Za-z0-9_-]{6,}$/);
     const a = await sock(id, null, {
       "cf-connecting-ip": addr,
-      cookie: `${PRESENCE_COOKIE}=${secret}; oa_anon=anon-${tag}`,
+      [ANON_ID_HEADER]: token,
+      cookie: `${PRESENCE_COOKIE}=${secret}`,
     });
     const { s: c } = await rosterSeenBy(id, owner);
     await a.nextOf("presence");
@@ -568,12 +583,38 @@ describe("events socket: presence", () => {
       const all = x.raw.join("\n");
       expect(all).not.toContain(secret);
       expect(all).not.toContain("198.51.100.");
-      expect(all).not.toContain(`anon-${tag}`);
+      expect(all).not.toContain(token);
+      expect(all).not.toContain(anonId);
+      expect(all).not.toContain(`anon:${anonId}`);
       expect(all).not.toContain(owner.email);
       expect(all).not.toContain(owner.userId);
     }
     a.ws.close();
     c.ws.close();
+  });
+
+  it("a display name that is the email, padded, zero-width-laced or in another case, shows as Member with no email in any frame", async () => {
+    const id = await pub({ visibility: "public" });
+    const names = (e: string) => [`${e} `, `${e}\u200B`, e.toUpperCase()];
+    const socks: Sock[] = [];
+    const users: U[] = [];
+    for (let i = 0; i < 3; i++) {
+      const u = await mk(`ev-nm${i}`, "member");
+      const name = names(u.email)[i] as string;
+      await env.DB.prepare("update users set display_name = ? where id = ?")
+        .bind(name, u.userId)
+        .run();
+      users.push(u);
+      socks.push(await sock(id, u));
+    }
+    const { s: z, roster } = await rosterSeenBy(id, null);
+    for (const x of socks) await x.nextOf("presence");
+    expect(viewersOf(roster).filter((n) => n === "Member")).toHaveLength(3);
+    for (const x of [...socks, z]) {
+      const all = x.raw.join("\n").toLowerCase();
+      for (const u of users) expect(all).not.toContain(u.email.toLowerCase());
+    }
+    for (const x of [...socks, z]) x.ws.close();
   });
 
   it("a guest and a stranger on a public link see names but never emails", async () => {

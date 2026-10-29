@@ -53,12 +53,13 @@ import { viewerPresenceKey } from "./viewer-presence-key.js";
 /**
  * A member's name for the presence roster. Member.name falls back to the
  * email when the user has no real name (effectiveName), and an email never
- * goes to another viewer: that case is null (the roster shows "Member").
+ * goes to another viewer: that case is null (compared after cleaning, so
+ * trailing spaces, zero-width characters and case do not hide it) (the roster shows "Member").
  */
-const presenceName = (u: { name: string | null; email: string }) =>
-  u.name !== null && u.name.toLowerCase() === u.email.toLowerCase()
-    ? null
-    : cleanName(u.name);
+const presenceName = (u: { name: string | null; email: string }) => {
+  const n = cleanName(u.name);
+  return n !== null && n.toLowerCase() === u.email.toLowerCase() ? null : n;
+};
 
 // Literals so Hono infers params; must equal R.data* / R.storage* in @oa/shared.
 const ART = "/api/v1/artifacts/:id";
