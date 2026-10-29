@@ -24,7 +24,13 @@ export class TestProvisionInstall extends ProvisionInstall {
         },
       } as unknown as SendEmail,
       PROVISION_TOKEN: {
-        get: async () => H.cf().token,
+        get: async () => {
+          if (H.failTokenGets > 0) {
+            H.failTokenGets--;
+            throw new Error("secrets store unavailable");
+          }
+          return H.cf().token;
+        },
       } as SecretsStoreSecret,
       ...H.vars,
     });

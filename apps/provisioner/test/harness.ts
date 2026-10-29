@@ -8,6 +8,8 @@ export const H = {
   mail: [] as Welcome[],
   /** Sends to fail before one goes through. */
   failSends: 0,
+  /** PROVISION_TOKEN.get() calls to fail first. */
+  failTokenGets: 0,
   /** Each step body's run: its output or its error. */
   steps: [] as {
     id: string;

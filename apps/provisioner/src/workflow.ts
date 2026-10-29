@@ -7,12 +7,16 @@
 // 1. reserve: the install id, picked once and stored on the row (a rerun
 //    reads it back); status creating.
 // 2. sweep: revoke an ss-<signupId> owner token a crashed attempt left.
-// 3. create: WfpProvisioner.create with the reserved install id (a rerun
-//    resumes it; an install already active under it is done). A lease-held
-//    refusal retries past LEASE_MS; every other refusal is terminal.
+// 3. create: each attempt sweeps first (a crashed attempt's token), then
+//    WfpProvisioner.create with the reserved install id (a rerun resumes
+//    it; an install already active under it is done). A lease-held refusal
+//    retries past LEASE_MS; every other refusal is terminal.
 // 4. notify: claim the welcome (a conditional write); send only on the claim.
 // 5. done: sweep again, delete signup_secret, status ready.
-// A step that fails for good leaves the signup failed with its category.
+// Each failing attempt writes its category to the row's error (status
+// unchanged); a step that fails for good ends in the `fail` step, which
+// sweeps and sets status failed, keeping that error. Every decision is read
+// from D1, never from instance state, so a replay ends the same way.
 import {
   WorkflowEntrypoint,
   type WorkflowEvent,
@@ -29,7 +33,7 @@ import {
   r2BindingReleaseReader,
   WfpProvisioner,
 } from "@oa/provision";
-import { type Category, categoryOf, classify, stepError } from "./errors.js";
+import { categoryOf, classify, stepError } from "./errors.js";
 import type { ProvisionParams } from "./message.js";
 import { welcomeEmail } from "./welcome.js";
 
@@ -46,10 +50,17 @@ export interface WorkflowEnv {
   ACCOUNT_ID: string;
 }
 
-/** 10 + 20 + 40 + 80 + 160 + 320 minutes: far past create's 30-minute lease. */
+/**
+ * Retries 10 + 20 + 40 + 80 + 160 + 320 minutes: far past create's 30-minute
+ * lease. An attempt may run past the lease (it renews it) but not past 45.
+ */
 const CREATE_STEP = {
   retries: { limit: 6, delay: "10 minutes", backoff: "exponential" },
+  timeout: "45 minutes",
 } as const;
+
+/** A stable release (no prerelease or build suffix). */
+const STABLE_VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}$/;
 
 // Fixed categories and the signup id only.
 const log = (signupId: string, step: string, outcome: string) =>
@@ -61,6 +72,16 @@ const SECRET_EMAIL =
 /** A config or state error no retry fixes. */
 const internal = () => new NonRetryableError("internal");
 
+/** A D1 or Secrets Store binding failed: retried, as `internal`. */
+class Transient extends Error {}
+const transient = async <T>(p: Promise<T>): Promise<T> => {
+  try {
+    return await p;
+  } catch {
+    throw new Transient("internal");
+  }
+};
+
 export class ProvisionInstall extends WorkflowEntrypoint<
   WorkflowEnv,
   ProvisionParams
@@ -70,12 +91,6 @@ export class ProvisionInstall extends WorkflowEntrypoint<
   protected now: () => number = () => Date.now();
   protected sleep = (ms: number): Promise<void> =>
     new Promise((r) => setTimeout(r, ms));
-
-  /**
-   * The category of this run's last step error: a NonRetryableError reaches
-   * run() as the engine's own error, without its message.
-   */
-  private failure: Category | null = null;
 
   async run(
     event: Readonly<WorkflowEvent<ProvisionParams>>,
@@ -103,13 +118,16 @@ export class ProvisionInstall extends WorkflowEntrypoint<
       );
       log(signupId, "run", "ready");
     } catch (e) {
-      // Idempotent: a replay of run() after the failure writes the same.
-      await this.db
-        .prepare(
-          "UPDATE signups SET status = 'failed', error = ?1, updated_at = ?2 WHERE signup_id = ?3 AND status <> 'ready'",
-        )
-        .bind(this.failure ?? categoryOf(e), this.now(), signupId)
-        .run();
+      // e is the engine's error (a NonRetryableError arrives without its
+      // message): the category is the one the failing attempt stored.
+      await step.do("fail", async () => {
+        try {
+          return await this.fail(signupId, label);
+        } catch (f) {
+          // Retried; never overwrites the stored category.
+          throw new Error(classify(f).category);
+        }
+      });
       log(signupId, "run", "failed");
       throw e;
     }
@@ -141,9 +159,10 @@ export class ProvisionInstall extends WorkflowEntrypoint<
     try {
       return await fn();
     } catch (e) {
-      if (e instanceof NonRetryableError) throw this.failed(signupId, name, e);
+      if (e instanceof NonRetryableError)
+        throw await this.failed(signupId, name, e);
       const { category } = classify(e);
-      throw this.failed(
+      throw await this.failed(
         signupId,
         name,
         category === "slug_taken" || category === "refused"
@@ -153,11 +172,53 @@ export class ProvisionInstall extends WorkflowEntrypoint<
     }
   }
 
-  /** Logs and records a step's error (already only a category). */
-  private failed(signupId: string, name: string, err: Error): Error {
-    this.failure = categoryOf(err);
-    log(signupId, name, this.failure);
+  /**
+   * Logs a step's error (already only a category) and stores it on the row,
+   * status unchanged, so the fail step reads it. Best effort: a D1 that
+   * fails here fails the fail step too, which retries.
+   */
+  private async failed(
+    signupId: string,
+    name: string,
+    err: Error,
+  ): Promise<Error> {
+    const category = categoryOf(err);
+    log(signupId, name, category);
+    await this.db
+      .prepare(
+        "UPDATE signups SET error = ?1, updated_at = ?2 WHERE signup_id = ?3 AND status <> 'ready'",
+      )
+      .bind(category, this.now(), signupId)
+      .run()
+      .catch(() => {});
     return err;
+  }
+
+  /**
+   * The end of a failed run: the signup is failed with the error its last
+   * attempt stored (internal if none was), then its ss- tokens are swept.
+   */
+  private async fail(
+    signupId: string,
+    label: string,
+  ): Promise<{ failed: boolean }> {
+    const r = await this.db
+      .prepare(
+        "UPDATE signups SET status = 'failed', error = COALESCE(error, 'internal'), updated_at = ?1 WHERE signup_id = ?2 AND status <> 'ready' RETURNING install_id",
+      )
+      .bind(this.now(), signupId)
+      .first<{ install_id: string | null }>();
+    if (r?.install_id) {
+      // A bad env var means no install was ever made under it.
+      let ok = true;
+      try {
+        this.config();
+      } catch {
+        ok = false;
+      }
+      if (ok) await this.sweep(r.install_id, label);
+    }
+    return { failed: r !== null };
   }
 
   /** The env and release, from vars; never guessed. */
@@ -165,7 +226,11 @@ export class ProvisionInstall extends WorkflowEntrypoint<
     const env = this.env.OA_ENV;
     if (env !== "staging" && env !== "prod") throw internal();
     const version = this.env.RELEASE_VERSION;
-    if (typeof version !== "string" || !isReleaseVersion(version))
+    if (
+      typeof version !== "string" ||
+      !STABLE_VERSION.test(version) ||
+      !isReleaseVersion(version)
+    )
       throw internal();
     return { env, version };
   }
@@ -174,7 +239,7 @@ export class ProvisionInstall extends WorkflowEntrypoint<
     env: DeployEnv,
     label: string,
   ): Promise<WfpProvisioner> {
-    const token = await this.env.PROVISION_TOKEN.get();
+    const token = await transient(this.env.PROVISION_TOKEN.get());
     return new WfpProvisioner({
       cf: cfClient({
         accountId: this.env.ACCOUNT_ID,
@@ -218,10 +283,12 @@ export class ProvisionInstall extends WorkflowEntrypoint<
     label: string,
   ): Promise<{ revoked: number }> {
     const { env } = this.config();
-    const row = await this.db
-      .prepare("SELECT 1 AS x FROM installs WHERE id = ?")
-      .bind(installId)
-      .first();
+    const row = await transient(
+      this.db
+        .prepare("SELECT 1 AS x FROM installs WHERE id = ?")
+        .bind(installId)
+        .first(),
+    );
     if (!row) return { revoked: 0 };
     const p = await this.provisioner(env, label);
     const { revoked } = await p.ciTokenSweep(installId, label);
@@ -237,15 +304,20 @@ export class ProvisionInstall extends WorkflowEntrypoint<
     let email: string | null = null;
     try {
       const { env, version } = this.config();
+      // A crashed attempt's token goes first, even if this attempt then
+      // fails for good.
+      await this.sweep(installId, label);
       // A rerun after create finished: the install is already this signup's.
-      const have = await this.db
-        .prepare(
-          "SELECT app_host FROM installs WHERE id = ?1 AND slug = ?2 AND state = 'active'",
-        )
-        .bind(installId, slug)
-        .first<{ app_host: string }>();
+      const have = await transient(
+        this.db
+          .prepare(
+            "SELECT app_host FROM installs WHERE id = ?1 AND slug = ?2 AND state = 'active'",
+          )
+          .bind(installId, slug)
+          .first<{ app_host: string }>(),
+      );
       if (have) return { appHost: have.app_host };
-      email = await this.ownerEmail(signupId);
+      email = await transient(this.ownerEmail(signupId));
       if (email === null) throw internal();
       const p = await this.provisioner(env, label);
       const inst = await p.create({
@@ -259,10 +331,14 @@ export class ProvisionInstall extends WorkflowEntrypoint<
       });
       return { appHost: inst.appHost };
     } catch (e) {
-      throw this.failed(
+      throw await this.failed(
         signupId,
         "create",
-        e instanceof NonRetryableError ? e : stepError(e, email),
+        e instanceof NonRetryableError
+          ? e
+          : e instanceof Transient
+            ? new Error("internal")
+            : stepError(e, email),
       );
     }
   }

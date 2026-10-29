@@ -82,6 +82,12 @@ const engines = () => {
   };
 };
 
+type WorkflowInstanceModifier = Parameters<
+  Parameters<
+    Awaited<ReturnType<typeof introspectWorkflowInstance>>["modify"]
+  >[0]
+>[0];
+
 let fake: FakeCf;
 let logs: string[];
 let logSpy: ReturnType<typeof vi.spyOn>;
@@ -113,6 +119,7 @@ beforeEach(async () => {
   H.clock.t = NOW;
   H.mail = [];
   H.failSends = 0;
+  H.failTokenGets = 0;
   H.vars = {};
   H.steps = [];
   logs = [];
@@ -161,6 +168,7 @@ async function run(
   params: ProvisionParams,
   status: "complete" | "errored" = "complete",
   instanceId = params.signupId,
+  mods: (m: WorkflowInstanceModifier) => Promise<void> = async () => {},
 ) {
   const inst = await introspectWorkflowInstance(
     E.PROVISION_INSTALL,
@@ -169,6 +177,7 @@ async function run(
   opened.push(inst);
   await inst.modify(async (m) => {
     await m.disableRetryDelays();
+    await mods(m);
   });
   await E.PROVISION_INSTALL.create({ id: instanceId, params });
   await inst.waitForStatus(status);
@@ -217,6 +226,57 @@ const outputsOf = (instanceId: string) =>
   H.steps
     .filter((s) => s.id === instanceId && !s.error)
     .map((s) => ({ name: s.name, output: s.output }));
+
+/**
+ * A signup whose create attempt died holding the lease: the row is
+ * reserved (creating, `installId`), and an outside create with the
+ * Workflow's label minted its ss- token and hangs in the MCP selftest.
+ */
+async function crashed(n: number, slug: string, installId: string) {
+  const p = await seedSignup(n, slug, { status: "creating", installId });
+  const label = `ss-${id(n)}`;
+  let hung!: () => void;
+  const reached = new Promise<void>((r) => {
+    hung = r;
+  });
+  const dying: typeof fetch = (input, init) => {
+    const u = new URL(input instanceof Request ? input.url : String(input));
+    if (u.pathname === "/mcp") {
+      hung();
+      return new Promise(() => {});
+    }
+    return fake.fetch(input, init);
+  };
+  void provisioner({ fetch: dying, label })
+    .create({
+      slug,
+      ownerEmail: EMAIL,
+      plan: "paid",
+      vars: {},
+      bundle: "release",
+      version: VERSION,
+      installId,
+    })
+    .catch(() => {});
+  await reached;
+  const d = installDbs[0] as D1Database;
+  expect(await tokensOf(d)).toEqual([
+    { label, created_at: expect.any(Number), revoked_at: null },
+  ]);
+  return { p, label, d };
+}
+
+const seedFloorRelease = async () => {
+  // A signed release at 0.0.9, under the fixtures' floor (minVersion 0.1.0).
+  const { makeRelease } = releaseFixtures({
+    template: enc(E.FIXTURE_TEMPLATE),
+    migrations: E.FIXTURE_SERVER_MIGRATIONS.map((f) => ({
+      name: f.name,
+      bytes: enc(f.text),
+    })),
+  });
+  await seedRelease(E.RELEASES, makeRelease({ env: ENV }), "0.0.9", "release");
+};
 
 /** An install made outside the Workflow, as another run or owner would. */
 function provisioner(o: { fetch?: typeof fetch; label?: string } = {}) {
@@ -308,39 +368,10 @@ describe("ProvisionInstall", () => {
   });
 
   it("crash mid-create with the lease held: retried, then one install, no active ss- token", async () => {
-    // An earlier attempt reserved the id, took the lease, minted its ss-
-    // token and died in the MCP selftest (its fetch never returns).
+    // The sweep step ran (cached); then an attempt took the lease, minted
+    // its ss- token and died in the MCP selftest.
     const installId = "icrashedrun2";
-    const p = await seedSignup(3, "crashco", { status: "creating", installId });
-    const label = `ss-${id(3)}`;
-    let hung!: () => void;
-    const reached = new Promise<void>((r) => {
-      hung = r;
-    });
-    const dying: typeof fetch = (input, init) => {
-      const u = new URL(input instanceof Request ? input.url : String(input));
-      if (u.pathname === "/mcp") {
-        hung();
-        return new Promise(() => {});
-      }
-      return fake.fetch(input, init);
-    };
-    void provisioner({ fetch: dying, label })
-      .create({
-        slug: "crashco",
-        ownerEmail: EMAIL,
-        plan: "paid",
-        vars: {},
-        bundle: "release",
-        version: VERSION,
-        installId,
-      })
-      .catch(() => {});
-    await reached;
-    const d = installDbs[0] as D1Database;
-    expect(await tokensOf(d)).toEqual([
-      { label, created_at: expect.any(Number), revoked_at: null },
-    ]);
+    const { p, label, d } = await crashed(3, "crashco", installId);
     // Each lease-held refusal is followed by time passing past the lease.
     let leaseHeld = 0;
     logSpy.mockImplementation((...a: unknown[]) => {
@@ -351,17 +382,19 @@ describe("ProvisionInstall", () => {
         H.clock.t += LEASE_MS + 1;
       }
     });
-    await run(p);
+    await run(p, "complete", p.signupId, async (m) => {
+      await m.mockStepResult({ name: "sweep" }, { revoked: 0 });
+    });
     expect(leaseHeld).toBeGreaterThanOrEqual(1);
     expect(await installs("crashco")).toMatchObject([
       { id: installId, slug: "crashco", state: "active" },
     ]);
-    const [crashed, resumed] = await tokensOf(d);
-    expect(crashed?.label).toBe(label);
+    const [died, resumed] = await tokensOf(d);
+    expect(died?.label).toBe(label);
     expect(resumed?.label).toBe(label);
-    // The sweep step revoked the crashed run's token before create resumed.
-    expect(crashed?.revoked_at).toEqual(expect.any(Number));
-    expect(crashed?.revoked_at as number).toBeLessThan(
+    // The next create attempt swept the crashed run's token before resuming.
+    expect(died?.revoked_at).toEqual(expect.any(Number));
+    expect(died?.revoked_at as number).toBeLessThan(
       resumed?.created_at as number,
     );
     expect(resumed?.revoked_at).toEqual(expect.any(Number));
@@ -467,20 +500,7 @@ describe("ProvisionInstall", () => {
   });
 
   it("a pinned version below the release floor fails refused, nothing created", async () => {
-    // A signed release at 0.0.9, under the fixtures' floor (minVersion 0.1.0).
-    const { makeRelease } = releaseFixtures({
-      template: enc(E.FIXTURE_TEMPLATE),
-      migrations: E.FIXTURE_SERVER_MIGRATIONS.map((f) => ({
-        name: f.name,
-        bytes: enc(f.text),
-      })),
-    });
-    await seedRelease(
-      E.RELEASES,
-      makeRelease({ env: ENV }),
-      "0.0.9",
-      "release",
-    );
+    await seedFloorRelease();
     H.vars = { RELEASE_VERSION: "0.0.9" };
     const p = await seedSignup(10, "floorco");
     await run(p, "errored");
@@ -496,6 +516,85 @@ describe("ProvisionInstall", () => {
     });
     expect(await installs("floorco")).toEqual([]);
     expect(fake.writes()).toEqual([]);
+  });
+
+  it("a non-stable RELEASE_VERSION fails internal, nothing created", async () => {
+    for (const [n, v] of [
+      [11, "0.23.0-rc.1"],
+      [12, "0.23.0+build"],
+      [13, "v0.23.0"],
+    ] as const) {
+      H.vars = { RELEASE_VERSION: v };
+      const p = await seedSignup(n, `stable${n}`);
+      await run(p, "errored");
+      expect(errorsOf(p.signupId), v).toEqual([
+        { name: "reserve", message: "internal", retryable: false },
+      ]);
+      expect(await signup(n)).toMatchObject({
+        status: "failed",
+        error: "internal",
+      });
+    }
+    expect(fake.writes()).toEqual([]);
+  });
+
+  it("a replay whose failing step's body doesn't re-run still ends failed with the stored category", async () => {
+    // A run before this one reserved the row and its create attempt stored
+    // slug_taken; on this replay reserve and sweep are cached and create's
+    // body never runs (the engine replays its error).
+    const p = await seedSignup(14, "replayco", {
+      status: "creating",
+      installId: "ireplayrun14",
+    });
+    await db
+      .prepare("UPDATE signups SET error = 'slug_taken' WHERE signup_id = ?")
+      .bind(p.signupId)
+      .run();
+    await run(p, "errored", p.signupId, async (m) => {
+      await m.mockStepResult(
+        { name: "reserve" },
+        { installId: "ireplayrun14" },
+      );
+      await m.mockStepResult({ name: "sweep" }, { revoked: 0 });
+      await m.mockStepError({ name: "create" }, new Error("replayed"));
+    });
+    expect(
+      H.steps.filter((s) => s.id === p.signupId).map((s) => s.name),
+    ).toEqual(["fail"]);
+    expect(await signup(14)).toMatchObject({
+      status: "failed",
+      error: "slug_taken",
+    });
+  });
+
+  it("a crash with a token minted, then a terminal failure, leaves no active ss- token", async () => {
+    const { p, label, d } = await crashed(15, "crashfail", "icrashfail15");
+    await seedFloorRelease();
+    H.vars = { RELEASE_VERSION: "0.0.9" };
+    await run(p, "errored", p.signupId, async (m) => {
+      await m.mockStepResult({ name: "sweep" }, { revoked: 0 });
+    });
+    expect(errorsOf(p.signupId)).toMatchObject([
+      { name: "create", retryable: false },
+    ]);
+    expect(await signup(15)).toMatchObject({
+      status: "failed",
+      error: "refused",
+    });
+    const toks = await tokensOf(d);
+    expect(toks.map((t) => t.label)).toEqual([label]);
+    expect(toks.every((t) => t.revoked_at !== null)).toBe(true);
+  });
+
+  it("a Secrets Store or D1 binding error inside create is retried as internal", async () => {
+    H.failTokenGets = 1;
+    const p = await seedSignup(16, "transientco");
+    await run(p);
+    expect(errorsOf(p.signupId)).toEqual([
+      { name: "create", message: "internal", retryable: true },
+    ]);
+    expect(await signup(16)).toMatchObject({ status: "ready", error: null });
+    expect(H.mail).toHaveLength(1);
   });
 
   it("an OA_ENV other than staging or prod fails internal, nothing created", async () => {
