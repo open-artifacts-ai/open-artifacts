@@ -12,7 +12,7 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { revokeUserLive } from "../runtime/revoke.js";
 import { audit, signInAudit, userActor } from "./audit.js";
 import { moveUserEmail } from "./email-move.js";
-import { googleLinkStmts, toMember } from "./users.js";
+import { googleLinkStmts, PERSONAL_DOMAINS, toMember } from "./users.js";
 
 // Admission and account linking for direct sign-in (P2). identities
 // (provider, subject) is the only link; email links an existing ACTIVE row at
@@ -206,15 +206,7 @@ export const PERSONAL_TENANT = "";
 
 const domainOf = (email: string) => email.slice(email.lastIndexOf("@") + 1);
 
-/**
- * The only domains whose address Google vouches for without hd: a consumer
- * account's verified email elsewhere (a work address registered as a
- * personal account) isn't authoritative, so it never signs in this way.
- */
-export const PERSONAL_DOMAINS: readonly string[] = [
-  "gmail.com",
-  "googlemail.com",
-];
+export { PERSONAL_DOMAINS } from "./users.js";
 
 /**
  * Links a personal account to the existing row ?2 (id) at ?3 (email): never

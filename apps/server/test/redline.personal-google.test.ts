@@ -8,6 +8,7 @@ import { env } from "cloudflare:workers";
 import { AUTH, type Me, R, SIGN_IN_PAGE } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import { readSession, sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import { CONFLICT_KEY, PERSONAL_TENANT } from "../src/services/identity.js";
@@ -277,6 +278,19 @@ describe("red-line: personal Google accounts (no hd)", () => {
       AUTH_DOMAIN_JOIN: "member",
     });
     expect((await get(R.me, after, cookie)).status).toBe(401);
+    // The same rule for every credential, not only the cookie: a PAT minted
+    // while personal is refused too (getUserWithEpoch).
+    const { token } = await createPat(env, uid, "pd");
+    const viaPat = (e: Env) =>
+      app.fetch(
+        new Request(`${APP}${R.me}`, {
+          headers: { authorization: `Bearer ${token}` },
+        }),
+        e,
+        ctx,
+      );
+    expect((await viaPat(before)).status).toBe(200);
+    expect((await viaPat(after)).status).toBe(401);
     // A personal sign-in is now refused; the Workspace one (hd) admits them,
     // and the identity becomes that tenant's (R3).
     expect(loc(await signIn(after, gmail(email, sub)))).toBe(refused("tenant"));
