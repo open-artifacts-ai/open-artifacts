@@ -8,7 +8,7 @@ import {
 } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
-import { authConfig } from "../src/auth/config.js";
+import { authConfig, NO_BOT_CHECK } from "../src/auth/config.js";
 import { createPat } from "../src/auth/pat.js";
 import { readSession, sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
@@ -505,8 +505,37 @@ describe("Me sign-in fields", () => {
       "problems",
     );
     expect(
-      (await me(direct(), owner.cookie)).instance.signIn?.problems,
+      (
+        await me(
+          direct({ TURNSTILE_SITE_KEY: "k", TURNSTILE_SECRET: "s" }),
+          owner.cookie,
+        )
+      ).instance.signIn?.problems,
     ).toEqual([]);
+  });
+
+  // A4: codes with no Turnstile keys stay on (self-host) and warn the owner.
+  it("signIn.problems: codes without Turnstile warn the owner only; codes still offered; hosted unchanged", async () => {
+    const owner = await login(uniq("own"), "owner");
+    const admin = await login(uniq("adm"), "admin");
+    const member = await login(uniq("mem"));
+    const o = await me(direct(), owner.cookie);
+    expect(o.instance.signIn?.problems).toEqual([NO_BOT_CHECK]);
+    expect(o.instance.signIn?.providers).toEqual(["google", "email"]);
+    expect(MeSchema.safeParse(o).success).toBe(true);
+    for (const u of [admin, member])
+      expect((await me(direct(), u.cookie)).instance.signIn).not.toHaveProperty(
+        "problems",
+      );
+    const hosted = direct({
+      HOSTED: "1",
+      AUTH_BROKER_URL: "https://auth.h.test",
+      BROKER_SIGNING_KEY: TEST_BROKER_KEY,
+      GOOGLE_CLIENT_SECRET: undefined,
+    });
+    expect(
+      (await me(hosted, owner.cookie)).instance.signIn?.problems,
+    ).not.toContain(NO_BOT_CHECK);
   });
 
   it("tier: the hosted install's TIER; null off hosted, or for an unknown value; absent access-only", async () => {

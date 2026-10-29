@@ -1,5 +1,6 @@
 import { withBrokerProps } from "./auth/broker-transport.js";
 import { sweepLoginCodes } from "./auth/codes.js";
+import { stmt } from "./db/stmt.js";
 import { disconnectDirectory } from "./directory/connect.js";
 import { expirePending } from "./directory/store.js";
 import { sweepEmailCounters } from "./email/send.js";
@@ -65,9 +66,18 @@ export const DIRECTORY_SYNC_CRON = "oa:directory-sync";
  * (P3 T13), and delete audit rows past AUDIT_RETENTION_MS (400 days), a
  * bounded batch per run (sweepAuditEvents). An `oa:` cron is a platform
  * system job instead (above); an unknown one is refused (rejects, runs
- * nothing). */
+ * nothing).
+ * Self-host (O1): Workers Free allows 5 cron triggers per account, so an
+ * install has one, RECOVERY_CRON (every 2 min): each tick runs the lost
+ * index and thumbnail sweep, and a tick in the daily slot (03:17 up to 03:30
+ * UTC) runs the daily work once that UTC day. DAILY_CRON on self-host claims
+ * the same day (claimDaily), so an install still on DAILY_CRON alone runs it
+ * daily and one with both triggers runs it once, whichever fires first.
+ * Hosted DAILY_CRON (the scheduler's nightly call) runs it every call. Any
+ * other non-`oa:` cron runs the daily work every call and marks the day, as
+ * before. Each run logs cron_daily_ran { day, via }. */
 export function scheduled(
-  event: Pick<ScheduledController, "cron">,
+  event: ScheduledEvent,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
@@ -75,8 +85,12 @@ export function scheduled(
   return withBrokerProps(ctx, () => run(event, env, ctx));
 }
 
+/** The controller's cron, and its scheduledTime when the caller passes one. */
+type ScheduledEvent = Pick<ScheduledController, "cron"> &
+  Partial<Pick<ScheduledController, "scheduledTime">>;
+
 async function run(
-  event: Pick<ScheduledController, "cron">,
+  event: ScheduledEvent,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
@@ -104,7 +118,94 @@ async function run(
     logInfo("system_job", { job: "directory-disconnect", state: s.state });
     return;
   }
-  const now = Date.now();
+  if (event.cron === RECOVERY_CRON) {
+    const at = event.scheduledTime ?? Date.now();
+    // Every tick: the bounded, windowed lost index and thumbnail sweep (two
+    // indexed reads when there is nothing to recover).
+    ctx.waitUntil(
+      sweepLostIndexJobs(env, at, "tick").catch((e) =>
+        logError("cron_task_failed", e),
+      ),
+    );
+    if (!inDailySlot(at) || !(await claimDaily(env, at))) return;
+    daily(env, ctx, Date.now(), false, "slot");
+    return;
+  }
+  if (env.HOSTED === "1") {
+    daily(env, ctx, Date.now(), false, "daily");
+    return;
+  }
+  if (event.cron === DAILY_CRON) {
+    // Self-host: the slot tick may have claimed the day already (a late
+    // 03:17 delivery), so DAILY_CRON claims it too; one run either way.
+    if (!(await claimDaily(env, event.scheduledTime ?? Date.now()))) return;
+    daily(env, ctx, Date.now(), false, "daily");
+    return;
+  }
+  daily(env, ctx, Date.now(), true, "daily");
+}
+
+/** Self-host's one cron trigger (O1): every 2 minutes. */
+export const RECOVERY_CRON = "*/2 * * * *";
+/** The daily trigger: self-host before O1, and the hosted scheduler's nightly call. */
+export const DAILY_CRON = "17 3 * * *";
+const DAY_MS = 86_400_000;
+/**
+ * The RECOVERY_CRON ticks that may run the daily work: from DAILY_CRON's
+ * time (03:17 UTC) up to 03:30 UTC, so the 03:18 to 03:28 ticks. The first
+ * one to claim the UTC day runs it (claimDaily), so one missed or late tick
+ * doesn't skip the day, and a DAILY_CRON trigger at 03:17 as well (an
+ * install with both) runs it once, in either order.
+ */
+export const DAILY_SLOT_START_MS = (() => {
+  const [min, hour] = DAILY_CRON.split(" ").map(Number) as [number, number];
+  return (hour * 60 + min) * 60_000;
+})();
+/** The end of the daily slot (exclusive): 03:30 UTC. */
+export const DAILY_SLOT_END_MS = (3 * 60 + 30) * 60_000;
+export const inDailySlot = (t: number): boolean => {
+  const d = ((t % DAY_MS) + DAY_MS) % DAY_MS;
+  return d >= DAILY_SLOT_START_MS && d < DAILY_SLOT_END_MS;
+};
+
+/** settings row: the UTC day (YYYY-MM-DD) the daily work last ran. */
+export const DAILY_RAN_KEY = "cron_daily_ran";
+const utcDay = (t: number) => new Date(t).toISOString().slice(0, 10);
+const MARK_DAY = `insert into settings (key, value) values (?1, ?2)
+  on conflict (key) do update set value = excluded.value`;
+const CLAIM_DAY = `insert into settings (key, value) values (?1, ?2)
+  on conflict (key) do update set value = excluded.value
+  where settings.value <> excluded.value`;
+
+/**
+ * A daily slot tick or a self-host DAILY_CRON call claims its UTC day: false
+ * when the daily work already ran that day (the other trigger, an earlier
+ * slot tick, or a repeated delivery). The claim is one conditional upsert,
+ * so two concurrent claims of a day can't both win. A D1
+ * error claims it anyway: the daily jobs are idempotent and bounded, so a
+ * second run is cheaper than a lost day.
+ */
+async function claimDaily(env: Env, at: number): Promise<boolean> {
+  try {
+    const r = await stmt(env.DB, CLAIM_DAY)
+      .bind(DAILY_RAN_KEY, utcDay(at))
+      .run();
+    return (r.meta.changes ?? 0) > 0;
+  } catch (e) {
+    logWarn("cron_daily_claim", e);
+    return true;
+  }
+}
+
+function daily(
+  env: Env,
+  ctx: ExecutionContext,
+  now: number,
+  mark: boolean,
+  via: "slot" | "daily",
+): void {
+  // One line per daily run: Platform checks exactly one per UTC day.
+  logInfo("cron_daily_ran", { day: utcDay(now), via });
   ctx.waitUntil(
     Promise.allSettled([
       purgeDeleted(env, now),
@@ -120,6 +221,12 @@ async function run(
       // DirectorySync keeps its own 2 min alarm; the daily kick restarts a
       // lost one.
       directoryMode(env) === "off" ? null : kickSync(env, "cron"),
+      // Another self-host cron marks the day, so a slot tick doesn't run it
+      // again. A claim already marked it; hosted gets no RECOVERY_CRON (no
+      // per-install triggers): nothing to mark.
+      mark
+        ? stmt(env.DB, MARK_DAY).bind(DAILY_RAN_KEY, utcDay(now)).run()
+        : null,
     ]).then((rs) => {
       for (const r of rs)
         if (r.status === "rejected") logError("cron_task_failed", r.reason);
