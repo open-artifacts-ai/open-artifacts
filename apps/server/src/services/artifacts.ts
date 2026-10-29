@@ -748,6 +748,23 @@ const agentShownSql = (caller: Caller) =>
     and v.version = "artifacts"."current_version"
     and (v.agent_via like 'g:%' or v.created_by = ${caller.kind === "user" ? caller.user.id : null}))`;
 
+/**
+ * The `agentVia` filter (#589): artifacts with any version from this
+ * connection (`g:<grantId>` or `t:<tokenId>`), only while that grant or token
+ * is the caller's (agent_grants or tokens, by primary key). Anyone else's via
+ * matches nothing: an empty page, never 403 or 404, so ids can't be probed.
+ * The versions EXISTS is keyed by artifact_id (the versions primary key).
+ */
+export const agentViaSql = (caller: Caller, via: string) => {
+  const uid = caller.kind === "user" ? caller.user.id : null;
+  const id = via.slice(2);
+  const owns = via.startsWith("g:")
+    ? sql`exists (select 1 from agent_grants ag where ag.grant_id = ${id} and ag.user_id = ${uid})`
+    : sql`exists (select 1 from tokens tk where tk.id = ${id} and tk.user_id = ${uid})`;
+  return sql`(${owns} and exists (select 1 from versions vv
+    where vv.artifact_id = "artifacts"."id" and vv.agent_via = ${via}))`;
+};
+
 /** Anonymous callers never see member emails (not even as a name fallback). */
 export function redact(
   u: { id: string; email: string; name: string; displayName: string | null },
@@ -922,6 +939,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
   if (q.visibility) conds.push(eq(artifacts.visibility, q.visibility));
   if (q.agent !== undefined)
     conds.push(eq(artifacts.lastAgentName, q.agent), agentShownSql(caller));
+  if (q.agentVia !== undefined) conds.push(agentViaSql(caller, q.agentVia));
   // owner "me" (any case) is the caller; anything else is an email.
   if (q.owner !== undefined && q.owner.trim().toLowerCase() === "me") {
     if (caller.kind !== "user") throw bad("Invalid owner email", "owner");
