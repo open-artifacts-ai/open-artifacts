@@ -553,6 +553,12 @@ class Session {
   readonly profile: string;
   readonly ext: string;
   private readonly c: Ctx;
+  /** The process groups of every Chrome this run started. */
+  private readonly groups = new Set<number>();
+  private track(ch: Chrome): Chrome {
+    this.groups.add(ch.pid);
+    return ch;
+  }
 
   constructor(c: Ctx, run: string) {
     this.c = c;
@@ -564,8 +570,10 @@ class Session {
     // Only the Chrome this command started (its process group) may talk to
     // the listener: a copy loaded in the person's own Chrome is refused, so
     // its "clear" never touches their real Google cookies.
+    // (Any Chrome this run started: a closed one's last requests aren't
+    // "another Chrome".)
     this.L.verify = (port) =>
-      !!this.chrome?.alive() && groupsOnPort(port).includes(this.chrome.pid);
+      groupsOnPort(port).some((g) => this.groups.has(g));
     let told = false;
     this.L.onForeign = () => {
       if (told) return;
@@ -593,12 +601,14 @@ class Session {
     // A Chrome that closed on its own: make sure nothing of its group is left.
     await this.chrome?.close();
     const hello = this.L.nextHello();
-    this.chrome = launchChrome({
-      ...(o.chromePath ? { path: o.chromePath } : {}),
-      ...(o.rehearsalHarness ? { extra: rehearsalArgs() } : {}),
-      profile: this.profile,
-      url: EXTENSIONS_PAGE,
-    });
+    this.chrome = this.track(
+      launchChrome({
+        ...(o.chromePath ? { path: o.chromePath } : {}),
+        ...(o.rehearsalHarness ? { extra: rehearsalArgs() } : {}),
+        profile: this.profile,
+        url: EXTENSIONS_PAGE,
+      }),
+    );
     this.c.d.onChrome?.(this.chrome);
     if (first) for (const l of loadLines(this.ext)) this.c.d.out(l);
     else

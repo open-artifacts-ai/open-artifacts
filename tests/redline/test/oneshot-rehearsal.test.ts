@@ -326,7 +326,7 @@ describe.skipIf(!on)(
           chromes.push({ pid: c.pid, profile: c.profile });
           // The person loads the extension (each start: the stand-in's
           // loadUnpacked doesn't persist across Chrome restarts).
-          const b = harness(c.profile, Date.now() - 1_000).then(async (br) => {
+          const b = harness(c.profile, Date.now()).then(async (br) => {
             browsers.push(br);
             if (o.load !== false) await loadUnpacked(br, ext);
             return br;
@@ -914,6 +914,8 @@ describe.skipIf(!on)(
         "  Redo prompt 1 of 1: sign in as dave@oa-redline-c.fyi at rl-b. Press r to reopen Chrome and retry it (Ctrl-C stops).",
       );
       expect(r.out.join("\n")).not.toMatch(/No sign-in came back/);
+      // The closed Chrome's last requests aren't "another Chrome".
+      expect(r.out.join("\n")).not.toMatch(/from another Chrome/);
       expect(Date.now() - t0).toBeLessThan(110_000);
       expect(chromes.length - c0).toBe(2);
       expect(chromes[c0]?.profile).toBe(chromes[c0 + 1]?.profile);
