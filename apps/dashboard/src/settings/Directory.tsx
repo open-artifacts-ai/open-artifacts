@@ -46,6 +46,7 @@ import {
   useSnoozeHeld,
   useUnsnoozeHeld,
 } from "../api/queries";
+import { useFrozen } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
@@ -176,6 +177,13 @@ function ConnectLink({ label }: { label: string }) {
     window.addEventListener("pageshow", reset);
     return () => window.removeEventListener("pageshow", reset);
   }, []);
+  // A link ignores the page's disabled fieldset: under the plan cap it's a dead button.
+  if (useFrozen())
+    return (
+      <Button disabled size="sm" className="text-[length:var(--oa-text-sm)]">
+        {label}
+      </Button>
+    );
   return (
     <Button asChild size="sm" className="text-[length:var(--oa-text-sm)]">
       <a href={R.directoryConnect} onClick={() => setOpening(true)}>

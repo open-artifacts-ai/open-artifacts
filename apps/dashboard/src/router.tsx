@@ -33,6 +33,7 @@ import { Gate, SettingsLayout } from "./settings/SettingsLayout";
 import { canAdminSpaces } from "./settings/spaces/access";
 import { Spaces } from "./settings/spaces/Spaces";
 import { Usage } from "./settings/Usage";
+import { WriteLock } from "./settings/ui";
 import { Trash } from "./trash/Trash";
 import { Diff } from "./viewer/Diff";
 import { Shell } from "./viewer/Shell";
@@ -189,13 +190,21 @@ const gated = (
   allow: Role[],
   memberTo: string,
   C: () => React.ReactNode,
+  /** Under the plan cap the page's controls are off (not Profile: that's your own). */
+  locked = true,
 ) =>
   createRoute({
     getParentRoute: () => settings,
     path,
     component: () => (
       <Gate allow={allow} redirects={{ guest: "/shared", member: memberTo }}>
-        <C />
+        {locked ? (
+          <WriteLock>
+            <C />
+          </WriteLock>
+        ) : (
+          <C />
+        )}
       </Gate>
     ),
   });
@@ -215,7 +224,9 @@ function SpacesRoute() {
         admin: "/settings/connections",
       }}
     >
-      <Spaces />
+      <WriteLock>
+        <Spaces />
+      </WriteLock>
     </Gate>
   );
 }
@@ -281,7 +292,7 @@ const routeTree = root.addChildren([
   route("/a/$id/full", FullRoute),
   route("/a/$id/diff/$from/$to", DiffRoute),
   settings.addChildren([
-    gated("/settings/profile", [...ADMINS, "member"], "/", Profile),
+    gated("/settings/profile", [...ADMINS, "member"], "/", Profile, false),
     gated("/settings/members", ADMINS, "/settings/connections", Members),
     createRoute({
       getParentRoute: () => settings,

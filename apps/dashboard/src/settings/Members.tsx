@@ -33,6 +33,7 @@ import {
   useSetRestricted,
 } from "../api/queries";
 import { emailEnabled } from "../auth/emailEnabled";
+import { useFrozen } from "../auth/permissions";
 import {
   inviteRefusedCopy,
   inviteUncertainCopy,
@@ -204,7 +205,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             refused?.success
               ? inviteRefusedCopy(refused.data.reason, parsed, domains)
               : e instanceof ApiClientError
-                ? e.message
+                ? e.code.startsWith("plan_") || e.code === "billing_unavailable"
+                  ? errorCopy(e, e.message, {
+                      owner: me?.user.role === "owner" && me.auth?.cap == null,
+                    })
+                  : e.message
                 : "Couldn't add.",
           );
         },
@@ -670,7 +675,7 @@ export function Members() {
     state.me.user.role === "owner" &&
     state.me.auth?.cap == null;
   // The plan locked the instance: this page still lists, nothing here writes.
-  const frozen = state.status === "authed" && state.me.auth?.cap === "plan";
+  const frozen = useFrozen();
   // Spaces only change copy here: restriction and the More menu are on every install (parity 1).
   const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
   const departed = useDeparted(state.status === "authed" ? state.me : null);
