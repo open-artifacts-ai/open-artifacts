@@ -30,6 +30,7 @@ import { Modal } from "../layout/Modal";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
 import { AgentRow } from "./AgentRow";
+import { AgentSetupCard } from "./AgentSetupCard";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { saveTokenCommand, snippets, tokenFile } from "./snippets";
 import {
@@ -423,6 +424,7 @@ export function Agents() {
   const mcpUrl = state.status === "authed" ? state.me.instance.mcpUrl : null;
   return (
     <div className={STACK}>
+      <AgentSetupCard />
       {mcpUrl && (
         <SettingsCard id="oa-mcp-h" title="MCP server">
           <div className="flex min-w-0 items-center gap-[var(--oa-space-2)]">
