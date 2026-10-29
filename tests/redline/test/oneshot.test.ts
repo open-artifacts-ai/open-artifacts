@@ -15,9 +15,11 @@ import * as capture from "../src/capture.ts";
 import {
   BLOCK_PATTERNS,
   CALLBACK_PATH,
+  CHROME_MAC,
   chromeArgs,
   GOOGLE_CLEAR,
   googleSeen,
+  groupsOnPort,
   judge,
   Listener,
   rehearsalArgs,
@@ -243,7 +245,7 @@ describe("the capture extension's generated files", () => {
         action: { type: "block" },
         condition: {
           urlFilter: `|${A}/auth/callback/google`,
-          resourceTypes: ["main_frame", "sub_frame"],
+          resourceTypes: ["main_frame"],
         },
       },
       {
@@ -252,7 +254,7 @@ describe("the capture extension's generated files", () => {
         action: { type: "block" },
         condition: {
           urlFilter: `|${B}/auth/callback/google`,
-          resourceTypes: ["main_frame", "sub_frame"],
+          resourceTypes: ["main_frame"],
         },
       },
     ]);
@@ -271,6 +273,55 @@ describe("the capture extension's generated files", () => {
       /post\("\/google", \{\s*prompt: [^,]+,\s*google,\s*hd: [^}]+\}\)/,
     );
     expect(statSync(join(dir, "e", "config.js")).mode & 0o077).toBe(0);
+  });
+});
+
+describe("the listener: only our own Chrome", () => {
+  it("a request from another process (not our Chrome's group) is refused, even with the token", async () => {
+    const L = new Listener();
+    const seen: number[] = [];
+    const ourChrome = -12345; // no such process group
+    L.verify = (port) => {
+      const groups = groupsOnPort(port);
+      seen.push(groups.length);
+      return groups.includes(ourChrome);
+    };
+    let told = 0;
+    L.onForeign = () => {
+      told++;
+    };
+    await L.start();
+    try {
+      const r = await fetch(`${L.origin}/hello`, {
+        method: "POST",
+        body: JSON.stringify({ token: L.token }),
+      });
+      expect(r.status).toBe(403);
+      expect(L.foreign).toBe(1);
+      expect(told).toBe(1);
+      // This test process is excluded; the other end was found and wasn't ours.
+      expect(seen).toEqual([0]);
+      // No check-in happened.
+      expect(
+        await Promise.race([
+          L.checkedIn.then(() => "in"),
+          new Promise((res) => setImmediate(() => res("not"))),
+        ]),
+      ).toBe("not");
+    } finally {
+      await L.close();
+    }
+  });
+  it("no CORS: OPTIONS is refused like any non-POST", async () => {
+    const L = new Listener();
+    await L.start();
+    try {
+      const r = await fetch(`${L.origin}/hello`, { method: "OPTIONS" });
+      expect(r.status).toBe(405);
+      expect(r.headers.get("access-control-allow-origin")).toBeNull();
+    } finally {
+      await L.close();
+    }
   });
 });
 
@@ -338,7 +389,7 @@ describe("what the person reads", () => {
   it("a wrong hd hint stops before the sign-in, says not to sign in", () => {
     const t = wrongHintLines(p, null, "oa-redline-c.fyi").join("\n");
     expect(t).toMatch(
-      /^Stopped before prompt 2 of 5 \(rl-b, alice@oa-redline-a\.fyi\): Google's sign-in page has hd=oa-redline-c\.fyi, but this prompt needs no hd hint\./,
+      /^Stopped before prompt 2 of 5 \(rl-b, alice@oa-redline-a\.fyi\): the Google sign-in URL has hd=oa-redline-c\.fyi, but this prompt needs no hd hint\./,
     );
     expect(t).toMatch(/Don't sign in\. Nothing was redeemed\./);
     expect(wrongHintLines(p, "a.fyi", null)[0]).toMatch(
@@ -437,7 +488,7 @@ describe("prerequisites", () => {
   const opts = (o: Partial<OneShotOpts>): OneShotOpts => {
     const r = parseOpts([]);
     if (!r.ok) throw new Error(r.why);
-    return { ...r.opts, chromePath: process.execPath, ...o };
+    return { ...r.opts, chromePath: CHROME_MAC, ...o };
   };
   const secret = (p: string, mode = 0o600) =>
     writeFileSync(p, "x".repeat(40), { mode });
@@ -512,20 +563,77 @@ describe("prerequisites", () => {
     expect(p.needCreds).toEqual([]);
     expect(p.gaps).toEqual([]);
   });
-  it("rehearsal flags are refused with staging targets", () => {
+  it("all 5 rehearsal flags are refused with staging targets, from the real argv", () => {
     const d = tmp();
     const { tf } = kit(d);
+    const parsed = parseOpts([
+      "--targets",
+      tf,
+      "--idp",
+      "http://127.0.0.1:1",
+      "--loopback",
+      "--rehearsal-harness",
+      "--flows",
+      "a-alice",
+      "--prompt-timeout-ms",
+      "4000",
+    ]);
+    if (!parsed.ok) throw new Error(parsed.why);
     const g = prereqs(
-      opts({
-        targetsFile: tf,
-        idp: "http://127.0.0.1:1",
-        loopback: true,
-        rehearsalHarness: true,
-      }),
+      { ...parsed.opts, chromePath: process.execPath },
       targets.secretFileName,
       "darwin",
     ).gaps.join();
-    expect(g).toMatch(/--idp, --loopback, --rehearsal-harness: rehearsal only/);
+    expect(g).toMatch(
+      /--idp, --loopback, --rehearsal-harness, --flows, --prompt-timeout-ms: rehearsal only, refused with staging targets/,
+    );
+    // Each alone, too.
+    for (const flag of [
+      ["--idp", "http://127.0.0.1:1"],
+      ["--loopback"],
+      ["--rehearsal-harness"],
+      ["--flows", "a-alice"],
+      ["--prompt-timeout-ms", "4000"],
+    ]) {
+      const one = parseOpts(["--targets", tf, ...flag]);
+      if (!one.ok) throw new Error(one.why);
+      expect(
+        prereqs(
+          { ...one.opts, chromePath: CHROME_MAC },
+          targets.secretFileName,
+          "darwin",
+        ).gaps.join(),
+        flag[0],
+      ).toMatch(new RegExp(`${flag[0]}: rehearsal only`));
+    }
+  });
+  it("with staging targets, --chrome must be a Google Chrome app binary", () => {
+    const d = tmp();
+    const { tf } = kit(d);
+    const gap = (chromePath: string) =>
+      prereqs(
+        opts({ targetsFile: tf, chromePath }),
+        targets.secretFileName,
+        "darwin",
+      ).gaps.join();
+    expect(gap(process.execPath)).toMatch(/is not a Google Chrome app binary/);
+    expect(
+      gap(
+        "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+      ),
+    ).toMatch(/is not a Google Chrome app binary/);
+    expect(gap(CHROME_MAC)).not.toMatch(/is not a Google Chrome app binary/);
+  });
+  it("flag errors name their unit", () => {
+    expect(parseOpts(["--prompt-timeout-min", "0"])).toEqual({
+      ok: false,
+      why: "--prompt-timeout-min must be a positive number of minutes",
+    });
+    expect(parseOpts(["--prompt-timeout-ms", "x"])).toEqual({
+      ok: false,
+      why: "--prompt-timeout-ms must be a positive number of milliseconds",
+    });
+    expect(parseOpts(["--gate"]).ok).toBe(false);
   });
 });
 

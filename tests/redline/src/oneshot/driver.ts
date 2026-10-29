@@ -24,6 +24,7 @@ import {
   EXTENSIONS_PAGE,
   GOOGLE_CLEAR,
   GoogleBlocked,
+  groupsOnPort,
   killAllChromesSync,
   Listener,
   launchChrome,
@@ -96,6 +97,8 @@ export interface OneShotOpts {
   targetsFile: string;
   makeCreds: boolean;
   promptTimeoutMs: number;
+  /** Rehearsal only: the timeout was given in ms (--prompt-timeout-ms). */
+  promptTimeoutMsFlag?: boolean;
   /** Google Chrome's binary (default the installed app). */
   chromePath?: string;
   /**
@@ -129,6 +132,8 @@ export interface OneShotDeps {
   question(q: string): Promise<string | null>;
   /** Rehearsal only: stands in for the person at the Chrome window. */
   human?(h: Human): Promise<void>;
+  /** Where the run dir goes (default ~/.open-artifacts/redline-capture; tests). */
+  runBase?: string;
   /** Rehearsal only: tampers a prompt's Google URL (the wrong-hd stop). */
   beforeOpen?(url: URL, p: CapturePrompt): URL;
   /** Each Chrome as it starts (tests). */
@@ -169,7 +174,6 @@ export function parseOpts(
         loopback: { type: "boolean" },
         "rehearsal-harness": { type: "boolean" },
         flows: { type: "string" },
-        gate: { type: "boolean" },
       },
     }));
   } catch (e) {
@@ -181,7 +185,13 @@ export function parseOpts(
   const ms = str("prompt-timeout-ms");
   const timeout = ms !== undefined ? Number(ms) : min * 60_000;
   if (!Number.isFinite(timeout) || timeout <= 0)
-    return { ok: false, why: "--prompt-timeout-min must be a positive number" };
+    return {
+      ok: false,
+      why:
+        ms !== undefined
+          ? "--prompt-timeout-ms must be a positive number of milliseconds"
+          : "--prompt-timeout-min must be a positive number of minutes",
+    };
   const expectSha = str("expect-sha") ?? DEFAULT_EXPECT_SHA;
   if (!/^[0-9a-f]{40}$/.test(expectSha))
     return { ok: false, why: "--expect-sha must be a full 40-hex commit" };
@@ -196,6 +206,7 @@ export function parseOpts(
       targetsFile: str("targets") ?? join(KIT_DIR, "targets.json"),
       makeCreds: v["make-creds"] === true,
       promptTimeoutMs: timeout,
+      ...(ms !== undefined ? { promptTimeoutMsFlag: true } : {}),
       ...(str("chrome") ? { chromePath: str("chrome") as string } : {}),
       ...(v["rehearsal-harness"] === true ? { rehearsalHarness: true } : {}),
       ...(str("idp") ? { idp: str("idp") as string } : {}),
@@ -212,7 +223,7 @@ const rehearsalFlags = (o: OneShotOpts) =>
     o.loopback ? "--loopback" : "",
     o.rehearsalHarness ? "--rehearsal-harness" : "",
     o.flows ? "--flows" : "",
-    o.promptTimeoutMs < 60_000 ? "--prompt-timeout-ms" : "",
+    o.promptTimeoutMsFlag ? "--prompt-timeout-ms" : "",
   ].filter(Boolean);
 
 /** A 0600 regular non-empty file, or why not (never read). */
@@ -279,6 +290,14 @@ export function prereqs(
   const rf = rehearsalFlags(o);
   if (mode === "staging" && rf.length)
     gaps.push(`${rf.join(", ")}: rehearsal only, refused with staging targets`);
+  if (
+    mode === "staging" &&
+    o.chromePath &&
+    !/\/Google Chrome\.app\/Contents\/MacOS\/Google Chrome$/.test(o.chromePath)
+  )
+    gaps.push(
+      `--chrome ${o.chromePath} is not a Google Chrome app binary (…/Google Chrome.app/Contents/MacOS/Google Chrome)`,
+    );
   if (mode !== "staging" && mode !== "local")
     gaps.push(`${tf}: mode must be staging`);
   if (mode === "local" && !o.idp)
@@ -499,11 +518,15 @@ export const blockedLines = (p: CapturePrompt, why: string) => [
 ];
 
 export const loadLines = (ext: string) => [
-  "Chrome is open on its Extensions page, with a temporary profile for this run. Load the capture extension once:",
+  "Chrome is open on its Extensions page, with a temporary profile for this run. Load the capture extension once, in the Chrome window that just opened (not your own Chrome):",
   '  1. Turn on "Developer mode" (top right).',
   `  2. Click "Load unpacked" and choose this folder: ${ext}`,
+  "     (In the folder picker press Cmd-Shift-G, paste the path, press Return, then Select.)",
   "Waiting for the extension to check in (Ctrl-C stops).",
 ];
+
+export const FOREIGN_LINE =
+  "The capture extension checked in from another Chrome. Load it in the Chrome window that just opened, not your own Chrome. Still waiting.";
 
 const race = <T>(p: Promise<T>, ms: number, what: string): Promise<T> => {
   let t: ReturnType<typeof setTimeout> | undefined;
@@ -538,6 +561,17 @@ class Session {
   }
 
   async start(): Promise<void> {
+    // Only the Chrome this command started (its process group) may talk to
+    // the listener: a copy loaded in the person's own Chrome is refused, so
+    // its "clear" never touches their real Google cookies.
+    this.L.verify = (port) =>
+      !!this.chrome?.alive() && groupsOnPort(port).includes(this.chrome.pid);
+    let told = false;
+    this.L.onForeign = () => {
+      if (told) return;
+      told = true;
+      this.c.d.out(FOREIGN_LINE);
+    };
     await this.L.start();
     const t = this.c.T;
     writeExtension(this.ext, {
@@ -611,7 +645,7 @@ export const wrongHintLines = (
   want: string | null,
   got: string | null,
 ) => [
-  `Stopped before prompt ${p.n} of ${p.total} (${p.install}, ${p.user}): Google's sign-in page has ${got ? `hd=${got}` : "no hd hint"}, but this prompt needs ${want ? `hd=${want}` : "no hd hint"}.`,
+  `Stopped before prompt ${p.n} of ${p.total} (${p.install}, ${p.user}): the Google sign-in URL has ${got ? `hd=${got}` : "no hd hint"}, but this prompt needs ${want ? `hd=${want}` : "no hd hint"}.`,
   "  Don't sign in. Nothing was redeemed. This is a setup problem (the broker registry's domains for the install), not a red-line result. Tell Platform.",
 ];
 
@@ -637,37 +671,58 @@ function captureIO(c: Ctx, s: Session): CaptureIO {
       state: installStateOf(c, url),
     });
     cur = { armed, url, p };
-    await s.L.command({ cmd: "open", url: armed.probeUrl });
-    await race(
-      armed.probed,
-      15_000,
-      "the capture extension did not report its probe callback: remove and load it again, then run the command again",
-    );
-    // The Google page first; the person is asked to sign in only once the
-    // extension has seen it with the right hd hint.
+    const chrome = s.chrome as Chrome;
+    /** Waits on `p`, or on Chrome closing (ask() then offers the retry). */
+    const orClosed = <T>(w: Promise<T>) =>
+      Promise.race([w, chrome.exited.then(() => "closed" as const)]);
+    // The hd hint, from the URL this command is about to open (built before
+    // any tab exists, so authoritative): the person is never asked to sign
+    // in with the wrong one. Google may drop hd after its own redirects, so
+    // the page itself is never judged on it.
     const opened = c.d.beforeOpen ? c.d.beforeOpen(url, p) : url;
-    await s.L.command({ cmd: "open", url: opened.href, prompt: armed.prompt });
+    const want = expectedHd(c, p.flow);
+    const got = opened.searchParams.get("hd");
+    if (got !== want)
+      throw new WrongHint(wrongHintLines(p, want, got).join("\n"));
+    if (
+      (await orClosed(s.L.command({ cmd: "open", url: armed.probeUrl }))) ===
+      "closed"
+    )
+      return;
+    if (
+      (await orClosed(
+        race(
+          armed.probed,
+          15_000,
+          "the capture extension did not report its probe callback: remove and load it again, then run the command again",
+        ),
+      )) === "closed"
+    )
+      return;
+    if (
+      (await orClosed(
+        s.L.command({ cmd: "open", url: opened.href, prompt: armed.prompt }),
+      )) === "closed"
+    )
+      return;
+    // The extension's classification of the page (a secondary check): a
+    // block page stops the run before the person is asked anything.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const seen = await Promise.race([
-      armed.landed.then((hd) => ({ k: "landed" as const, hd })),
+      armed.landed.then(() => ({ k: "landed" as const })),
       armed.blocked.then((why) => ({ k: "blocked" as const, why })),
-      (s.chrome as Chrome).exited.then(() => ({ k: "closed" as const })),
+      chrome.exited.then(() => ({ k: "closed" as const })),
       new Promise<{ k: "timeout" }>((res) => {
         timer = setTimeout(() => res({ k: "timeout" }), 60_000);
       }),
     ]).finally(() => clearTimeout(timer));
     if (seen.k === "blocked") throw blocked(p, seen.why);
-    if (seen.k === "closed")
-      throw new Error(
-        `Chrome closed before prompt ${p.n}; run the command again`,
-      );
+    // Closed: ask() sees Chrome gone at once and offers the retry.
+    if (seen.k === "closed") return;
     if (seen.k === "timeout")
       throw new Error(
         `Google's sign-in page for prompt ${p.n} did not load within 60 s; run the command again`,
       );
-    const want = expectedHd(c, p.flow);
-    if (seen.hd !== want)
-      throw new WrongHint(wrongHintLines(p, want, seen.hd).join("\n"));
     c.d.out(promptLine(p, url));
     await c.d.human?.({
       chrome: s.chrome as Chrome,
@@ -811,7 +866,11 @@ export async function oneShot(argv: string[], d: OneShotDeps): Promise<number> {
   const ctx: Ctx = { o, d, suite, T, idp };
 
   // (d) the run's temp dir: the Chrome profile, the extension copy, the verdicts.
-  const run = mkdtempSync(join(tmpdir(), "oa-redline-capture-"));
+  // Under the kit's own dir (reachable in the Load unpacked picker, unlike
+  // /var/folders), 0700; deleted at exit.
+  const base = d.runBase ?? KIT_DIR;
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  const run = mkdtempSync(join(base, "run-"));
   chmodSync(run, 0o700);
   scratch.add(run);
   d.out(

@@ -81,11 +81,11 @@ how the one-shot driver (`pnpm -C tests/redline capture`,
 | 6 | `run-capture.sh` ran a stale checkout | a hard-coded path in the kit | the driver runs from this repo and imports the suite from `--suite` (default `~/code/projects/openartifacts-capture`), refusing unless its HEAD is `--expect-sha` and its tree is clean; checked again right before the suite runs |
 | 7 | The secrets dir was empty | `redline-creds` never ran on this Mac | prerequisite check names each missing file and the command that writes it |
 | 8 | Couldn't run as a `!` command | 5 prompts waited for Enter after a clipboard copy | the terminal needs no input on the happy path (one Load unpacked in Chrome per run, then only the Google sign-ins); the only key is `r` to retry a prompt |
-| 9 | alice's Google session reached dave's prompt | one Incognito window for all prompts | one temporary profile per run; before each prompt the extension clears the cookies and storage of accounts.google.com and google.com; the profile is deleted at exit |
+| 9 | alice's Google session reached dave's prompt | one Incognito window for all prompts | one temporary profile per run; before each prompt the extension clears the cookies and storage of accounts.google.com, www.google.com and google.com; the profile is deleted at exit |
 | 10 | The clipboard held a live credential | pbcopy/pbpaste | no clipboard anywhere; the URL goes from the extension to the command's 127.0.0.1 listener (token-guarded) and stays in memory |
 | 11 | The person had to read and follow a 6-line instruction per prompt | the manual inspector flow | one line per prompt: who to sign in as and what Google will offer |
 | 12 | A slow prompt meant re-reading the doc | only a "too old" message after the paste | a per-prompt timeout (5 min, `--prompt-timeout-min`) names the prompt, the user and the key to retry it; Chrome closing mid-prompt is noticed at once |
-| 13 | Google could refuse an automated browser | n/a with a manual window, but a risk for any driver | there is no automation: plain Chrome with only `--user-data-dir`, `--no-first-run` and a URL (no debugging port, no automation or blink switches; a unit test asserts the argv), and an extension the person loads. If Google still shows a block page (automation, unsupported browser, OAuth error such as `disallowed_useragent`), the extension reports its URL and the command stops with a plain message saying it is Google refusing the browser, not a test failure, and never retries |
+| 13 | Google could refuse an automated browser | n/a with a manual window, but a risk for any driver | there is no automation: plain Chrome with only `--user-data-dir`, `--no-first-run` and a URL (no debugging port, no automation or blink switches; a unit test asserts the argv), and an extension the person loads. If Google still shows a block page (automation, unsupported browser, OAuth error such as `disallowed_useragent`), the extension classifies it as a block (it never sends a Google URL, path or query to the command) and the command stops with a plain message saying it is Google refusing the browser, not a test failure, and never retries |
 | 14 | Verdicts bound to whatever checkout ran | `suiteSha()` is git HEAD of the directory holding `capture.ts` | the driver imports `capture.ts` from the frozen checkout, so the verdicts carry its SHA, which matches CI's `GITHUB_SHA` for that commit |
 
 ## Failure modes the one-shot keeps or adds
@@ -105,3 +105,7 @@ how the one-shot driver (`pnpm -C tests/redline capture`,
   profile and retries that prompt.
 - Chrome 137 and later ignore the command-line extension switch, so the
   extension is loaded by hand once per run (Developer mode, Load unpacked).
+- Google was given the wrong account hint for a prompt (`hd` wrong, or
+  present for b-alice): the command sees it in the extension's
+  classification before asking for any sign-in, stops, and says not to sign
+  in. This replaces a separate dry run.

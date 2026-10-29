@@ -6,6 +6,8 @@ import { createInterface } from "node:readline/promises";
 import { cleanupSync, oneShot } from "../src/oneshot/driver.ts";
 
 let suitePid: number | undefined;
+/** 128 + the signal's number. */
+const EXIT_BY_SIGNAL = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 } as const;
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
   process.on(sig, () => {
     if (suitePid)
@@ -13,7 +15,7 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
         process.kill(suitePid, sig);
       } catch {}
     cleanupSync();
-    process.exit(130);
+    process.exit(EXIT_BY_SIGNAL[sig]);
   });
 process.on("exit", () => cleanupSync());
 

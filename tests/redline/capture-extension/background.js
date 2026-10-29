@@ -59,24 +59,34 @@ const tell = (tabId, google) =>
     hd: hdOf.get(tabId) ?? null,
   }).catch(() => {});
 
-chrome.webRequest.onBeforeRequest.addListener(
-  (d) => {
-    if (!promptOf.has(d.tabId)) return;
-    const c = self.OA_classify(d.url, C.idp, C.blockPatterns);
-    if (!c) return;
-    // The first IdP request of the tab is the authorize URL the script opened.
-    if (!hdOf.has(d.tabId)) hdOf.set(d.tabId, c.hd);
-    if (c.google === "block") tell(d.tabId, "block");
-  },
-  { urls: C.idpPatterns, types: ["main_frame"] },
-);
+/** Classifications seen before their tab was tagged (tabs.create races its first request). */
+const early = new Map();
+
+function onRequest(tabId, c) {
+  // The first IdP request of the tab is the authorize URL the script opened.
+  if (!hdOf.has(tabId)) hdOf.set(tabId, c.hd);
+  if (c.google === "block") tell(tabId, "block");
+}
+function onDone(tabId, c, status) {
+  if (c.google === "signin" && status >= 200 && status < 300)
+    tell(tabId, "signin");
+}
+function seen(d, f) {
+  const c = self.OA_classify(d.url, C.idp, C.blockPatterns);
+  if (!c) return;
+  if (promptOf.has(d.tabId)) return f(d.tabId, c);
+  // Not tagged yet: hold the classification (never the URL) briefly.
+  const q = early.get(d.tabId) ?? [];
+  if (q.length < 20) q.push(() => f(d.tabId, c));
+  early.set(d.tabId, q);
+}
+
+chrome.webRequest.onBeforeRequest.addListener((d) => seen(d, onRequest), {
+  urls: C.idpPatterns,
+  types: ["main_frame"],
+});
 chrome.webRequest.onCompleted.addListener(
-  (d) => {
-    if (!promptOf.has(d.tabId)) return;
-    const c = self.OA_classify(d.url, C.idp, C.blockPatterns);
-    if (!c || c.google !== "signin") return;
-    if (d.statusCode >= 200 && d.statusCode < 300) tell(d.tabId, "signin");
-  },
+  (d) => seen(d, (tabId, c) => onDone(tabId, c, d.statusCode)),
   { urls: C.idpPatterns, types: ["main_frame"] },
 );
 
@@ -97,12 +107,16 @@ async function run(c) {
     opened.clear();
     promptOf.clear();
     hdOf.clear();
+    early.clear();
   } else if (c.cmd === "open") {
-    // Tag the tab before it navigates, so its first request is seen.
-    const t = await chrome.tabs.create({ url: "about:blank" });
+    const t = await chrome.tabs.create({ url: c.url });
     opened.add(t.id);
-    if (typeof c.prompt === "string") promptOf.set(t.id, c.prompt);
-    await chrome.tabs.update(t.id, { url: c.url });
+    if (typeof c.prompt === "string") {
+      promptOf.set(t.id, c.prompt);
+      // Whatever the tab did before it was tagged, in order.
+      for (const f of early.get(t.id) ?? []) f();
+    }
+    early.delete(t.id);
   }
 }
 

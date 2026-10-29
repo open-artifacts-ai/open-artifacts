@@ -23,6 +23,7 @@ import {
   armPrompt,
   CALLBACK_PATH,
   type Chrome,
+  groupsOnPort,
   Listener,
   launchChrome,
   liveChromes,
@@ -114,27 +115,52 @@ async function harness(profile: string, since = 0): Promise<Browser> {
   return chromium.connectOverCDP(`http://127.0.0.1:${lines[0]}`);
 }
 /** The person's "Load unpacked", by the harness. */
+const loadedIds = new Map<string, string>();
 async function loadUnpacked(b: Browser, dir: string): Promise<void> {
   const s = await b.newBrowserCDPSession();
-  await (s.send as (m: string, p: object) => Promise<unknown>)(
-    "Extensions.loadUnpacked",
-    { path: dir },
-  );
+  const send = s.send as (m: string, p: object) => Promise<{ id?: string }>;
+  try {
+    const r = await send("Extensions.loadUnpacked", { path: dir });
+    if (r.id) loadedIds.set(dir, r.id);
+  } catch (e) {
+    // A reopened profile may still hold the copy: load it afresh.
+    const id = loadedIds.get(dir);
+    if (!id) throw e;
+    await send("Extensions.uninstall", { id }).catch(() => ({}));
+    await send("Extensions.loadUnpacked", { path: dir });
+  }
 }
 /** The first tab of the run whose URL passes `ok`. */
 async function tabWhere(b: Browser, ok: (u: URL) => boolean): Promise<Page> {
   const ctx = b.contexts()[0];
   if (!ctx) throw new Error("no browser context");
-  const test = (p: Page) => {
+  // The page's own location (the harness may have attached to the tab
+  // while it was still about:blank, before the extension navigated it).
+  const where = async (p: Page) => {
     try {
-      return ok(new URL(p.url()));
+      if (ok(new URL(p.url()))) return true;
+    } catch {}
+    let t: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const href = await Promise.race([
+        p.evaluate(() => location.href),
+        new Promise<string>((r) => {
+          t = setTimeout(() => r(""), 1_000);
+        }),
+      ]);
+      return !!href && ok(new URL(href));
     } catch {
       return false;
+    } finally {
+      clearTimeout(t);
     }
   };
-  if (!(await until(() => ctx.pages().some(test), 30_000)))
-    throw new Error("the prompt's tab never showed the IdP");
-  return ctx.pages().find(test) as Page;
+  const end = Date.now() + 30_000;
+  while (Date.now() < end) {
+    for (const p of ctx.pages()) if (await where(p)) return p;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error("the prompt's tab never showed the IdP");
 }
 
 describe.skipIf(!on)(
@@ -256,15 +282,25 @@ describe.skipIf(!on)(
       let ext = "";
       const google: string[] = [];
       const harnesses = new Map<string, Promise<Browser>>();
+      const outWaiters: { re: RegExp; res: () => void }[] = [];
+      /** Resolves when a line matching `re` is printed. */
+      const printed = (re: RegExp) =>
+        out.some((l) => re.test(l))
+          ? Promise.resolve()
+          : new Promise<void>((res) => outWaiters.push({ re, res }));
       const d: OneShotDeps = {
         env: {
           PATH: process.env.PATH ?? "",
           HOME: process.env.HOME ?? "",
           REDLINE_REPORT: report,
         },
+        runBase: work,
         out: (l) => {
           out.push(l);
           console.log(l);
+          for (const w of outWaiters.splice(0))
+            if (w.re.test(l)) w.res();
+            else outWaiters.push(w);
         },
         key: async () => "",
         question: async () => null,
@@ -284,14 +320,26 @@ describe.skipIf(!on)(
             if (o.load !== false) await loadUnpacked(br, ext);
             return br;
           });
-          b.catch(() => {});
+          b.catch((e: unknown) =>
+            console.log(
+              `harness: ${e instanceof Error ? e.message.split("\n")[0] : e}`,
+            ),
+          );
           harnesses.set(`${c.pid}`, b);
         },
         ...o,
       };
       const browserOf = (c: Chrome) =>
         harnesses.get(`${c.pid}`) as Promise<Browser>;
-      return { d, out, report, browserOf, google };
+      return {
+        d,
+        out,
+        report,
+        browserOf,
+        google,
+        printed,
+        ext: () => ext,
+      };
     }
 
     /**
@@ -351,7 +399,8 @@ describe.skipIf(!on)(
           cwd: PKG,
           env: {
             PATH: process.env.PATH ?? "",
-            HOME: process.env.HOME ?? "",
+            // The run dir goes under $HOME/.open-artifacts/redline-capture.
+            HOME: tmp,
             TMPDIR: tmp,
           },
           stdio: ["ignore", "pipe", "pipe"],
@@ -438,24 +487,61 @@ describe.skipIf(!on)(
       }
       // Still waiting: no prompt, no check-in, no other way forward.
       expect(run.out()).not.toMatch(/checked in|\[1\/1\]|sign in as/);
-      const profile = join(
-        tmp,
-        readdirSync(tmp).find((f) =>
-          f.startsWith("oa-redline-capture-"),
-        ) as string,
-        "profile",
-      );
-      const pids = chromePidsOf(profile);
+      const runDir = join(ext, "..");
+      // Under the kit's dir (reachable in the folder picker), not /var/folders.
+      expect(runDir).toMatch(/\/\.open-artifacts\/redline-capture\/run-[^/]+$/);
+      const pids = chromePidsOf(join(runDir, "profile"));
       expect(pids.length).toBeGreaterThan(0);
-      run.child.kill("SIGINT");
-      expect(await run.exit).toBe(130);
+      // SIGTERM exits 143 (SIGINT 130, SIGHUP 129), cleaning up the same way.
+      run.child.kill("SIGTERM");
+      expect(await run.exit).toBe(143);
       for (const p of pids) expect(await gone(p), `chrome ${p}`).toBe(true);
-      expect(
-        readdirSync(tmp).filter(
-          (f) => !/^oa-redline-hooks-[0-9a-f]+\.json$/.test(f),
-        ),
-      ).toEqual([]);
+      expect(existsSync(runDir)).toBe(false);
     }, 180_000);
+
+    it("a copy loaded in ANOTHER Chrome is refused with the plain message; the run goes on once it's loaded in the window that just opened", async () => {
+      const other = mkdtempSync(join(work, "other-"));
+      const r = deps({
+        load: false,
+        onSuite: (pid) => process.kill(pid, "SIGTERM"),
+      });
+      r.d.human = types(r.browserOf);
+      const done = oneShot([...base(), "--flows", "a-alice"], r.d);
+      await r.printed(/Waiting for the extension to check in/);
+      // The person's own Chrome: not the one the command started.
+      const theirs = launchChrome({
+        profile: join(other, "profile"),
+        url: "chrome://extensions/",
+        extra: rehearsalArgs(),
+      });
+      chromes.push({ pid: theirs.pid, profile: theirs.profile });
+      try {
+        const b = await harness(theirs.profile);
+        browsers.push(b);
+        await loadUnpacked(b, r.ext());
+        await r.printed(/checked in from another Chrome/);
+        expect(r.out).toContain(
+          "The capture extension checked in from another Chrome. Load it in the Chrome window that just opened, not your own Chrome. Still waiting.",
+        );
+        expect(r.out.join("\n")).not.toMatch(
+          /The capture extension checked in\.|sign in as/,
+        );
+        // Now in the right window.
+        const ours = chromes.find(
+          (c) => c.profile.endsWith("/profile") && c.profile.includes("/run-"),
+        );
+        if (!ours) throw new Error("no run Chrome");
+        const ob = await harness(ours.profile);
+        browsers.push(ob);
+        await loadUnpacked(ob, r.ext());
+        await done;
+        expect(r.out).toContain("The capture extension checked in.");
+        expect(r.out).toContain("  a-alice: A's credential at A (rl-a): pass");
+      } finally {
+        await theirs.close();
+        rmSync(other, { recursive: true, force: true });
+      }
+    }, 300_000);
 
     it("real Chrome + extension: the DNR block reports only to this run's listener; only this host and state are captured; Google's cookies are cleared on command", async () => {
       const dir = mkdtempSync(join(work, "x-"));
@@ -478,11 +564,14 @@ describe.skipIf(!on)(
         extra: rehearsalArgs(),
       });
       chromes.push({ pid: c.pid, profile: c.profile });
+      // As the command does: only this Chrome's process group may talk.
+      L.verify = (port) => groupsOnPort(port).includes(c.pid);
       try {
         const b = await harness(c.profile);
         browsers.push(b);
         await loadUnpacked(b, ext);
         await L.checkedIn;
+        expect(L.foreign).toBe(0);
         const state = "rehearsal-state-0123456789abcdef";
         const armed = armPrompt(L, { origin: httpsA, state });
         const reported = (url: string) =>
@@ -503,12 +592,18 @@ describe.skipIf(!on)(
           u.searchParams.set("code", "4/0junk");
           const r = reported(u.href);
           const page = await ctx.newPage();
-          const err = await page.goto(u.href).then(
+          const nav = page.goto(u.href).then(
             () => "loaded",
             (e: Error) =>
-              /ERR_BLOCKED_BY_CLIENT/.test(e.message) ? "blocked" : "other",
+              /ERR_BLOCKED_BY_CLIENT|closed/i.test(e.message)
+                ? "blocked"
+                : "other",
           );
-          return { kind: await r, err };
+          // The listener's report first (the extension sends it on the
+          // block, then closes the tab, which can race goto's own error).
+          const kind = await r;
+          const how = await nav;
+          return { kind, err: how === "loaded" ? "loaded" : "blocked" };
         };
         // Another install's callback carrying this state: blocked (the code
         // is never spent), reported, never captured.
@@ -578,7 +673,7 @@ describe.skipIf(!on)(
       }
     }, 180_000);
 
-    it("a wrong hd hint on Google's page stops BEFORE the person is asked to sign in, with the plain message; nothing redeemed", async () => {
+    it("a wrong hd hint in the Google URL stops BEFORE the tab opens and the person is asked to sign in, with the plain message; nothing redeemed", async () => {
       const tokensBefore = idp.events.filter((e) => e.at === "token").length;
       let asked = 0;
       const r = deps({
@@ -594,8 +689,8 @@ describe.skipIf(!on)(
       };
       const code = await oneShot([...base(), "--flows", "a-alice"], r.d);
       expect(code).toBe(EXIT.wrongHint);
-      expect(r.out).toContain(
-        "Stopped before prompt 1 of 1 (rl-a, alice@oa-redline-a.fyi): Google's sign-in page has hd=oa-redline-c.fyi, but this prompt needs hd=oa-redline-a.fyi.",
+      expect(r.out.join("\n")).toContain(
+        "Stopped before prompt 1 of 1 (rl-a, alice@oa-redline-a.fyi): the Google sign-in URL has hd=oa-redline-c.fyi, but this prompt needs hd=oa-redline-a.fyi.",
       );
       expect(r.out.join("\n")).toMatch(
         /Don't sign in\. Nothing was redeemed\./,
@@ -606,9 +701,9 @@ describe.skipIf(!on)(
       expect(idp.events.filter((e) => e.at === "token").length).toBe(
         tokensBefore,
       );
-      expect(classificationsOnly(r.google)).toEqual([
-        "signin:oa-redline-c.fyi",
-      ]);
+      // Checked on the URL the command was about to open: no Google tab was
+      // opened at all.
+      expect(r.google).toEqual([]);
     }, 300_000);
 
     it("the one command: 5 prompts in one profile, (a) each callback blocked as the broker's 302 target and never delivered, (b) no IdP cookie on any prompt, then the suite with --gate passes both ID-token cases", async () => {
@@ -629,9 +724,10 @@ describe.skipIf(!on)(
       const code = await oneShot(base(), r.d);
       console.log(`one-shot exit code: ${code}`);
       const run = idp.events.slice(ev0);
-      // Point 2: each prompt's hd was checked on Google's page (the
-      // extension's classification) BEFORE the person was asked to sign in:
-      // classification k arrived before prompt line k and the sign-in k.
+      // Each prompt's hd was checked (on the URL the command opens) and its
+      // page classified by the extension (block check) BEFORE the person was
+      // asked to sign in: classification k arrived before prompt line k and
+      // sign-in k.
       expect(before).toEqual([1, 2, 3, 4, 5]);
       expect(lines).toEqual([1, 2, 3, 4, 5]);
       // Point 1: classifications only, hd as each prompt needs.
@@ -845,10 +941,15 @@ describe.skipIf(!on)(
       expect(await run.exit).toBe(130);
       for (const p of pids) expect(await gone(p), `chrome ${p}`).toBe(true);
       expect(existsSync(runDir)).toBe(false);
+      // Left: only the suite's hook pacing ledgers and the (now empty) kit dir.
       expect(
         readdirSync(tmp).filter(
-          (f) => !/^oa-redline-hooks-[0-9a-f]+\.json$/.test(f),
+          (f) =>
+            !/^oa-redline-hooks-[0-9a-f]+\.json$|^\.open-artifacts$/.test(f),
         ),
+      ).toEqual([]);
+      expect(
+        readdirSync(join(tmp, ".open-artifacts", "redline-capture")),
       ).toEqual([]);
       console.log(
         `SIGINT: exit 130; chrome pids ${pids.join(" ")} gone; temp dir removed`,

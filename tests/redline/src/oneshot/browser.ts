@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   copyFileSync,
@@ -117,6 +117,37 @@ async function groupGone(
     await new Promise((r) => setTimeout(r, 25));
   }
   return true;
+}
+
+/**
+ * The process groups of the processes (other than this one) holding a
+ * local TCP endpoint on `port`: who is at the other end of a connection to
+ * the listener. Read with lsof and ps; empty when unknown.
+ */
+export function groupsOnPort(port: number): number[] {
+  if (!Number.isInteger(port) || port <= 0) return [];
+  try {
+    const pids = execFileSync(
+      "/usr/sbin/lsof",
+      ["-nP", `-iTCP:${port}`, "-sTCP:ESTABLISHED", "-Fp"],
+      { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] },
+    )
+      .split("\n")
+      .filter((l) => l.startsWith("p"))
+      .map((l) => Number(l.slice(1)))
+      .filter((p) => p !== process.pid);
+    if (!pids.length) return [];
+    return execFileSync("/bin/ps", ["-o", "pgid=", "-p", pids.join(",")], {
+      encoding: "utf8",
+      timeout: 5_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .split("\n")
+      .map((l) => Number(l.trim()))
+      .filter((n) => n > 0);
+  } catch {
+    return [];
+  }
 }
 
 /** Starts Chrome (its own process group, so we can quit all of it by our PID). */
@@ -282,6 +313,12 @@ export class Listener {
   private hellos: (() => void)[] = [];
   /** Tests: every token-bearing request's path and raw body. */
   tap?: (path: string, body: string) => void;
+  /** Accepts a connection only from our own Chrome (by its local port). */
+  verify?: (remotePort: number) => boolean;
+  /** A request from a process that isn't our Chrome (refused). */
+  onForeign?: () => void;
+  foreign = 0;
+  private verified = new Map<number, boolean>();
 
   /** Resolves on the extension's next check-in (/hello with this run's token). */
   nextHello(): Promise<void> {
@@ -327,19 +364,24 @@ export class Listener {
       console.error(
         `[listener] ${req.method} ${(req.url ?? "").split("?")[0]}`,
       );
-    if (req.method === "OPTIONS") {
-      // A CORS / local-network preflight from the extension's worker. The
-      // token in the POST body is still required for anything to happen.
-      res.writeHead(204, {
-        "access-control-allow-origin": String(req.headers.origin ?? "*"),
-        "access-control-allow-methods": "POST",
-        "access-control-allow-headers": "content-type",
-        "access-control-allow-private-network": "true",
-        "access-control-max-age": "600",
-      });
-      return res.end();
-    }
+    // POST only; no CORS headers (the extension's host permission needs none).
     if (req.method !== "POST") return this.reply(res, 405, {});
+    // Only the Chrome this command started may talk to it (a copy loaded in
+    // the person's own Chrome must never get a "clear").
+    const port = req.socket.remotePort ?? 0;
+    if (this.verify) {
+      let ok = this.verified.get(port);
+      if (ok === undefined) {
+        ok = this.verify(port);
+        this.verified.set(port, ok);
+        req.socket.once("close", () => this.verified.delete(port));
+      }
+      if (!ok) {
+        this.foreign++;
+        this.onForeign?.();
+        return this.reply(res, 403, {});
+      }
+    }
     let body = "";
     req.setEncoding("utf8");
     req.on("data", (d: string) => {
@@ -559,7 +601,7 @@ export function writeExtension(dir: string, c: ExtensionConfig): void {
       action: { type: "block" },
       condition: {
         urlFilter: `|${new URL(o).origin}${CALLBACK_PATH}`,
-        resourceTypes: ["main_frame", "sub_frame"],
+        resourceTypes: ["main_frame"],
       },
     })),
     ...(c.loopback

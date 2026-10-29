@@ -23,31 +23,57 @@ The first time, or when the admin secrets are missing, add `--make-creds`
 to have it make them (it shows the commands first; see "What it checks
 first").
 
-1. After its checks it prints the run's temp dir, then opens Google Chrome
-   on its Extensions page with a temporary profile, and prints:
+1. After its checks it prints the run's temp dir
+   (`~/.open-artifacts/redline-capture/run-XXXX`, 0700), then opens Google
+   Chrome on its Extensions page with a temporary profile, and prints:
 
    ```
-   Chrome is open on its Extensions page, with a temporary profile for this run. Load the capture extension once:
+   Chrome is open on its Extensions page, with a temporary profile for this run. Load the capture extension once, in the Chrome window that just opened (not your own Chrome):
      1. Turn on "Developer mode" (top right).
-     2. Click "Load unpacked" and choose this folder: /var/folders/.../oa-redline-capture-XXXX/extension
+     2. Click "Load unpacked" and choose this folder: /Users/you/.open-artifacts/redline-capture/run-XXXX/extension
+        (In the folder picker press Cmd-Shift-G, paste the path, press Return, then Select.)
    Waiting for the extension to check in (Ctrl-C stops).
    ```
 
-   Do those two clicks. (Chrome 137 and later ignore the command-line
-   switch that used to load extensions, so this step is by hand.) The
-   command waits until the extension checks in with this run's token. It
-   has no other way forward.
-2. For each of the 5 prompts it prints one line, for example
+   Do those two clicks **in the Chrome window that just opened**. (Chrome
+   137 and later ignore the command-line switch that used to load
+   extensions, so this step is by hand.) The command waits until the
+   extension checks in with this run's token, from that Chrome. It has no
+   other way forward. If you load it in your own Chrome by mistake, the
+   command refuses it (it only talks to the Chrome it started, by process
+   group, so your own Chrome's Google cookies are never cleared) and says:
+
+   ```
+   The capture extension checked in from another Chrome. Load it in the Chrome window that just opened, not your own Chrome. Still waiting.
+   ```
+
+   Remove it from your own Chrome afterwards.
+2. For each of the 5 prompts it first checks the `hd` hint in the Google
+   sign-in URL it is about to open (built before any tab exists): present
+   and right for a-alice, a-alice-replay, b-dave and b-dave-2 (the
+   install's tenant), absent for b-alice. If it is wrong, the run stops
+   before opening anything and asks for no sign-in:
+
+   ```
+   Stopped before prompt 1 of 5 (rl-a, alice@oa-redline-a.fyi): the Google sign-in URL has hd=oa-redline-c.fyi, but this prompt needs hd=oa-redline-a.fyi.
+     Don't sign in. Nothing was redeemed. This is a setup problem (the broker registry's domains for the install), not a red-line result. Tell Platform.
+   ```
+
+   When the hint is right it clears Google's cookies, sends a probe callback
+   the extension must block and report, opens a new tab on Google's sign-in
+   page and waits for the extension to classify that page (a block page
+   stops the run here, before you are asked anything). Google may drop `hd`
+   after its own redirects, so the page itself is never judged on it. Then
+   it prints one line, for example
 
    ```
    [1/5] rl-a: sign in as alice@oa-redline-a.fyi in the new Chrome tab (Google offers only oa-redline-a.fyi accounts). Google may ask you to confirm it's you; that's normal. The tab closes by itself.
    ```
 
-   and opens a new tab on Google's sign-in page, with Google's cookies
-   cleared first. Type the named account and its password (password
-   manager). When Google hands the sign-in back, the tab closes on its own
-   and the terminal prints `captured, N of 5` and each leg's verdict
-   (`pass`, or `fail` with the reason).
+   Type the named account and its password (password manager). When Google
+   hands the sign-in back, the tab closes on its own and the terminal prints
+   `captured, N of 5` and each leg's verdict (`pass`, or `fail` with the
+   reason).
 3. After prompt 5, Chrome quits, the frozen checkout is checked again, and
    the live suite runs with `--gate` and prints the gate result.
 
@@ -72,11 +98,11 @@ id question, quits Chrome, deletes the temp dir and exits.
 
 If Google refuses the browser (its "This browser or app may not be secure"
 page, another automation or unsupported-browser page, or an OAuth error page
-such as `disallowed_useragent`), the extension reports the page and the run
-stops at once:
+such as `disallowed_useragent`), the extension classifies the page as a block
+and the run stops at once:
 
 ```
-Stopped at prompt 1 of 5 (rl-a, alice@oa-redline-a.fyi): Google's block page (/v3/signin/rejected).
+Stopped at prompt 1 of 5 (rl-a, alice@oa-redline-a.fyi): Google showed its block page.
   This is Google refusing to sign in from this browser (its automation, unsupported-browser or OAuth error page), not a red-line test failure. Nothing was retried and nothing was redeemed.
 ```
 
@@ -90,7 +116,7 @@ run:`) stays on disk, holding Google session cookies. Quit that Chrome
 window (Cmd-Q), then delete the dir:
 
 ```sh
-rm -rf /var/folders/.../oa-redline-capture-XXXX   # the path it printed
+rm -rf ~/.open-artifacts/redline-capture/run-XXXX   # the path it printed
 ```
 
 ## What it checks first (each refusal names its fix)
@@ -126,22 +152,9 @@ In order, all before Chrome opens:
 
 Every flag and environment variable the old steps needed is built in.
 
-## Platform's dry run
-
-```sh
-pnpm -C tests/redline capture:dry-run
-```
-
-Runs the prerequisites and the preflight, opens Chrome and waits for the
-extension the same way (load it once), then for each of the 5 prompts:
-clears Google's cookies, sends a probe callback the extension must block and
-report (the interception is armed for this install's host and this start's
-state), starts a real sign-in at the install and opens Google's sign-in page
-with no credentials. It checks the URL the extension reports for that page:
-`hd` present for a-alice, a-alice-replay, b-dave and b-dave-2, **absent** for
-b-alice; the broker state names this install and this start; no block page.
-It redeems nothing and runs no suite. It prints one line per prompt and exits
-0 only when all 5 are clean.
+There is no separate dry run: each prompt's `hd` check, the interception
+probe and the block-page check happen in the real run, before you are asked
+to sign in.
 
 ## How the browser half works
 
@@ -156,9 +169,11 @@ It redeems nothing and runs no suite. It prints one line per prompt and exits
   `manifest.json`, `rules.json` and `config.js`: the listener port and a
   random token. Its host permissions are only the two install app origins
   from `targets.json`, `http://127.0.0.1/*` for the listener, and
-  `https://accounts.google.com/*`, so it can see the URL and status of
-  Google's top-level pages (that is how a block page is recognized and how
-  the dry run reads `hd`). It is observe-only there.
+  `https://accounts.google.com/*`, observe only, to classify Google's
+  top-level pages in a prompt's tab. For Google it never sends the command a
+  URL, path or query string (those carry sign-in state): only
+  `{ prompt, google: "signin" | "block", hd }`, computed inside the extension
+  (`classify.js`). The listener refuses any other shape.
   - `declarativeNetRequest` blocks top-level requests to
     `<install>/auth/callback/google*`, so the browser never spends a code.
     The callback arrives as the broker's 302 target and the block catches
@@ -171,7 +186,7 @@ It redeems nothing and runs no suite. It prints one line per prompt and exits
     prompt's host and state, once. Another host, another state or an `r1.`
     retry is never captured.
   - On the command's request, before each prompt, it clears the cookies
-    and storage of accounts.google.com and google.com (`chrome.browsingData`)
+    and storage of accounts.google.com, www.google.com and google.com (`chrome.browsingData`)
     and closes the tabs it opened, so alice's Google session never reaches
     dave's prompt. This only ever runs inside the temp profile.
   - It opens each prompt's tab (`chrome.tabs.create`). It logs nothing.
@@ -291,7 +306,7 @@ its build-time defines.
 
 `oneshot-rehearsal.test.ts` runs **the one command's own code path**
 (`src/oneshot/driver.ts`: the same plain Chrome launch, the same extension
-copy, the listener, the dry run and the suite) against a frozen suite
+copy, the listener, the pre-sign-in checks and the suite) against a frozen suite
 checkout it makes at the expected commit. The stand-in for you is the
 test's harness. The rehearsal-only `--rehearsal-harness` flag starts the
 same installed Chrome headless with a debugging port that only the test
@@ -319,9 +334,18 @@ refused with staging targets. It proves:
   same profile;
 - a Google block page, reported by the extension, stops the run with the
   plain message, once;
-- Ctrl-C mid-prompt quits Chrome and deletes the temp dir;
+- Ctrl-C (exit 130) and SIGTERM (exit 143) quit Chrome and delete the temp
+  dir;
+- a copy of the extension loaded in another Chrome is refused with the plain
+  message, and the run goes on once it is loaded in the window that just
+  opened;
 - the binding refuses another commit and a dirty tree;
-- the dry run's checks, all 5 prompts, `hd` read from the extension's report;
+- each prompt's `hd` is checked on the URL the command opens, before the
+  tab opens (right for all 5), and a wrong `hd` stops the run with the plain
+  message, no tab and no sign-in; the page is classified by the extension
+  before the sign-in is asked for;
+- every Google observation the extension sends is `{ prompt, google, hd }`
+  with no URL-like string (no `://`, no `?`, no path);
 - and the suite, run with `--gate` from the frozen checkout, passes both
   ID-token cases from the capture's verdicts.
 
@@ -336,7 +360,8 @@ broker relaying every code, the replay leg, and codes that die 30 s after
 issue still passing when each is redeemed after its own prompt.
 
 Neither can prove Google itself (its code lifetime, real Workspace tenants).
-The dry run on staging covers the path up to Google's sign-in page.
+On staging, each prompt's checks before the sign-in (probe, `hd`, block
+page) cover the path up to Google's sign-in page.
 
 ## The old clipboard flow
 
