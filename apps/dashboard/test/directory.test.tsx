@@ -816,3 +816,155 @@ it("no copy contains an em dash", async () => {
   await held();
   expect(document.body.textContent).not.toContain("—");
 });
+
+// -- #412: snooze a held sweep
+
+const SNOOZED = {
+  groupId: "gEng01",
+  email: "eng@example.com",
+  name: "Engineering",
+  wouldRemove: 6,
+  members: 10,
+  since: "2026-10-20T09:12:00.000Z",
+  snoozedUntil: "2026-11-19T09:12:00.000Z",
+  snoozeReason: "Admin is fixing the group",
+};
+const snoozedStatus = (o: object = {}) =>
+  serveStatus({ held: [{ ...SNOOZED, ...o }] });
+const snoozeRoute = "/api/v1/directory/held/gSales03/snooze";
+
+it("the owner sees Snooze and Apply on a held row", async () => {
+  mountHosted("/settings/directory");
+  const h = await held();
+  expect(within(h).getByRole("button", { name: "Snooze" })).toBeVisible();
+  expect(within(h).getByRole("button", { name: "Apply" })).toBeVisible();
+});
+
+it("an admin sees no Snooze", async () => {
+  mountHosted("/settings/directory", true, asAdmin);
+  const h = await held();
+  expect(within(h).queryByRole("button", { name: "Snooze" })).toBeNull();
+});
+
+it("Snooze posts the reason and refetches the status", async () => {
+  const seen = calls("POST");
+  let statusReads = 0;
+  mountHosted("/settings/directory", true, undefined, [
+    http.get("*/api/v1/directory", () => {
+      statusReads++;
+      return HttpResponse.json({
+        ...STATUS,
+        held: [
+          {
+            groupId: "gSales03",
+            email: "sales@example.com",
+            name: "Sales",
+            wouldRemove: 4,
+            members: 4,
+            since: "2026-10-20T09:12:00.000Z",
+          },
+        ],
+      });
+    }),
+    http.post(`*${snoozeRoute}`, () => HttpResponse.json(STATUS)),
+  ]);
+  fireEvent.click(within(await held()).getByRole("button", { name: "Snooze" }));
+  const d = screen.getByRole("alertdialog");
+  expect(d).toHaveTextContent("Snooze Sales?");
+  expect(d).toHaveTextContent(
+    "Snooze until the group changes. Nobody loses access while it's snoozed. It comes back if Google's membership for this group changes, or after 30 days.",
+  );
+  const before = statusReads;
+  fireEvent.change(within(d).getByLabelText("Reason (optional)"), {
+    target: { value: "Admin is fixing the group" },
+  });
+  fireEvent.click(within(d).getByRole("button", { name: "Snooze" }));
+  await waitFor(() => expect(seen.at(-1)?.path).toBe(snoozeRoute));
+  await waitFor(() =>
+    expect(seen.at(-1)?.body).toEqual({
+      reason: "Admin is fixing the group",
+    }),
+  );
+  await waitFor(() => expect(statusReads).toBeGreaterThan(before));
+});
+
+it("Snooze with the field empty sends no reason", async () => {
+  const seen = calls("POST");
+  mountHosted("/settings/directory", true, undefined, [
+    http.post(`*${snoozeRoute}`, () => HttpResponse.json(STATUS)),
+  ]);
+  fireEvent.click(within(await held()).getByRole("button", { name: "Snooze" }));
+  const d = screen.getByRole("alertdialog");
+  expect(within(d).getByLabelText("Reason (optional)")).toHaveAttribute(
+    "maxLength",
+    "200",
+  );
+  fireEvent.click(within(d).getByRole("button", { name: "Snooze" }));
+  await waitFor(() => expect(seen.at(-1)?.path).toBe(snoozeRoute));
+  await waitFor(() => expect(seen.at(-1)?.body).toBeUndefined());
+});
+
+it("a snoozed row shows when it ends and why; Unsnooze sends DELETE; Apply still works", async () => {
+  const dels = calls("DELETE");
+  const posts = calls("POST");
+  mountHosted("/settings/directory", true, undefined, [
+    ...snoozedStatus(),
+    http.delete("*/api/v1/directory/held/gEng01/snooze", () =>
+      HttpResponse.json(STATUS),
+    ),
+    http.post("*/api/v1/directory/held/gEng01/confirm", () =>
+      HttpResponse.json(STATUS),
+    ),
+  ]);
+  const h = await held();
+  expect(h).toHaveTextContent(/Snoozed until Nov 19, 2026|Snoozed until /);
+  expect(h).toHaveTextContent("“Admin is fixing the group”");
+  expect(h).toHaveTextContent("Snoozed holds don't light the Settings dot.");
+  expect(within(h).queryByRole("button", { name: "Snooze" })).toBeNull();
+  fireEvent.click(within(h).getByRole("button", { name: "Unsnooze" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  await waitFor(() =>
+    expect(dels.at(-1)?.path).toBe("/api/v1/directory/held/gEng01/snooze"),
+  );
+  fireEvent.click(within(h).getByRole("button", { name: "Apply" }));
+  fireEvent.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: /^Remove/,
+    }),
+  );
+  await waitFor(() =>
+    expect(posts.at(-1)?.path).toBe("/api/v1/directory/held/gEng01/confirm"),
+  );
+});
+
+it("an admin sees a snoozed row without buttons", async () => {
+  mountHosted("/settings/directory", true, asAdmin, snoozedStatus());
+  const h = await held();
+  expect(h).toHaveTextContent("Snoozed until ");
+  expect(within(h).queryByRole("button")).toBeNull();
+});
+
+it("a 404 on Snooze refetches /me and shows the owner-only line", async () => {
+  let me = 0;
+  mountHosted("/settings/directory", true, (m) => (++me > 1 ? asAdmin(m) : m), [
+    http.post(`*${snoozeRoute}`, () =>
+      HttpResponse.json(
+        { error: { code: "not_found", message: "Not found" } },
+        { status: 404 },
+      ),
+    ),
+  ]);
+  fireEvent.click(within(await held()).getByRole("button", { name: "Snooze" }));
+  fireEvent.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Snooze",
+    }),
+  );
+  await status();
+  await waitFor(() =>
+    expect(
+      screen.getByRole("status", { name: "Sync status" }),
+    ).toHaveTextContent(/Only the owner/),
+  );
+  expect(me).toBeGreaterThan(1);
+});

@@ -3,7 +3,7 @@
 // access and offers the one fix; below it, held sweeps, restricted groups,
 // then the connection with Disconnect last. Copy: build spec t6cjQuskQ6zrZaJd
 // v5. Losing sync never cuts access, so `staleAt` is never shown.
-import { R } from "@oa/shared";
+import { HELD_SNOOZE_REASON_MAX, R } from "@oa/shared";
 import { displayName } from "@oa/ui";
 import {
   AlertDialog,
@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
   Button,
   DialogFooter,
+  Input,
 } from "@oa/ui/shadcn";
 import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -41,6 +42,8 @@ import {
   useMembers,
   usePutRestrictedGroup,
   useRestrictedGroups,
+  useSnoozeHeld,
+  useUnsnoozeHeld,
 } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
@@ -694,7 +697,11 @@ function HeldRow({
   restricted: boolean;
 }) {
   const [asking, setAsking] = useState(false);
+  const [snoozing, setSnoozing] = useState(false);
+  const [reason, setReason] = useState("");
   const confirm = useConfirmHeld();
+  const snooze = useSnoozeHeld();
+  const unsnooze = useUnsnoozeHeld();
   const empty = h.wouldRemove >= h.members;
   return (
     <li className="flex flex-wrap items-center justify-between gap-[var(--oa-space-3)] border-0 border-t border-border py-[var(--oa-space-3)] first:border-t-0">
@@ -708,18 +715,81 @@ function HeldRow({
             ? "Google lists the group as empty"
             : "more than half the group"}{" "}
           · since <At iso={h.since} />
+          {h.snoozedUntil && (
+            <>
+              {" "}
+              · Snoozed until <At iso={h.snoozedUntil} />
+            </>
+          )}
         </small>
+        {h.snoozedUntil && h.snoozeReason && (
+          <small className={`block ${muted}`}>
+            {"\u201c"}
+            {h.snoozeReason}
+            {"\u201d"}
+          </small>
+        )}
       </div>
       {owner && (
-        <Button
-          size="sm"
-          variant="outline"
-          className="text-[length:var(--oa-text-sm)]"
-          onClick={() => setAsking(true)}
-        >
-          Apply
-        </Button>
+        <div className="flex gap-[var(--oa-space-2)]">
+          {h.snoozedUntil ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-[length:var(--oa-text-sm)]"
+              disabled={unsnooze.isPending}
+              onClick={() => unsnooze.mutate(h.groupId)}
+            >
+              Unsnooze
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-[length:var(--oa-text-sm)]"
+              onClick={() => setSnoozing(true)}
+            >
+              Snooze
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-[length:var(--oa-text-sm)]"
+            onClick={() => setAsking(true)}
+          >
+            Apply
+          </Button>
+        </div>
       )}
+      <Confirm
+        open={snoozing}
+        onClose={() => setSnoozing(false)}
+        title={`Snooze ${h.name}?`}
+        body={
+          <>
+            <p>
+              Snooze until the group changes. Nobody loses access while it's
+              snoozed. It comes back if Google's membership for this group
+              changes, or after 30 days.
+            </p>
+            <Input
+              aria-label="Reason (optional)"
+              placeholder="Reason (optional)"
+              autoComplete="off"
+              maxLength={HELD_SNOOZE_REASON_MAX}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </>
+        }
+        confirm="Snooze"
+        onConfirm={() => {
+          const r = reason.trim();
+          snooze.mutate({ groupId: h.groupId, ...(r ? { reason: r } : {}) });
+          setReason("");
+        }}
+      />
       <Confirm
         open={asking}
         onClose={() => setAsking(false)}
@@ -762,6 +832,9 @@ function HeldSweeps({
         These changes from Google would remove a lot of people at once, so we
         held them. Nobody loses access until you apply one.
       </p>
+      {held.every((h) => h.snoozedUntil) && (
+        <p className={muted}>Snoozed holds don't light the Settings dot.</p>
+      )}
       <ul>
         {held.map((h) => (
           <HeldRow
