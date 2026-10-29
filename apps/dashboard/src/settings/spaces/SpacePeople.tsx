@@ -4,6 +4,7 @@
 // raises (PUT sets the manual row; the highest role wins); Remove only where a
 // manual role exists; frozen sync lets kept rows be edited and removed. People
 // reached only through All members aren't rows, so they aren't listed.
+
 import type { SpaceMember, SpaceRole } from "@oa/shared";
 import { displayName } from "@oa/ui";
 import {
@@ -27,13 +28,14 @@ import {
   useSpaceMappings,
   useSpaceMembers,
 } from "../../api/queries";
+import { useFrozen } from "../../auth/permissions";
 import { useMe } from "../../auth/useMe";
 import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
 import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
-import { errorText, muted, SettingsCard } from "../ui";
+import { errorText, muted, SettingsCard, WriteLock } from "../ui";
 import { ALL_ROLES, people, ROLE_LABEL, RoleSelect } from "./SpaceAccess";
 
 const RANK: Record<SpaceRole, number> = { viewer: 0, editor: 1, manager: 2 };
@@ -190,6 +192,7 @@ function PersonRow({
   restricted: Restriction | null | undefined;
 }) {
   const qc = useQueryClient();
+  const locked = useFrozen();
   const put = usePutSpaceMember(space.id);
   const del = useDeleteSpaceMember(space.id);
   // A 403 means the list is stale: refetch so the row goes read-only.
@@ -341,13 +344,15 @@ function PersonRow({
       </div>
       <div className="flex items-center justify-end gap-[var(--oa-space-1)] max-[600px]:justify-start">
         {select ? (
-          <RoleSelect
-            label={`Role for ${name}`}
-            value={shown}
-            roles={options}
-            labels={label}
-            onChange={(r) => r && change(r)}
-          />
+          <WriteLock>
+            <RoleSelect
+              label={`Role for ${name}`}
+              value={shown}
+              roles={options}
+              labels={label}
+              onChange={(r) => r && change(r)}
+            />
+          </WriteLock>
         ) : (
           <span className="px-[var(--oa-space-2)] text-[length:var(--oa-text-sm)] max-[600px]:pl-0">
             {ROLE_LABEL[capped ? "viewer" : m.role]}
@@ -376,6 +381,7 @@ function PersonRow({
             >
               {removal && (
                 <DropdownMenuItem
+                  disabled={locked}
                   onSelect={() => setAsking(true)}
                   className="flex-col items-start gap-0"
                 >
@@ -725,13 +731,15 @@ export function SpacePeople({
       id="oa-space-people"
       title="People"
       action={
-        <Button
-          size="sm"
-          className="text-[length:var(--oa-text-sm)]"
-          onClick={() => setAdding(true)}
-        >
-          Add people
-        </Button>
+        <WriteLock>
+          <Button
+            size="sm"
+            className="text-[length:var(--oa-text-sm)]"
+            onClick={() => setAdding(true)}
+          >
+            Add people
+          </Button>
+        </WriteLock>
       }
     >
       {space.allMembersRole && (

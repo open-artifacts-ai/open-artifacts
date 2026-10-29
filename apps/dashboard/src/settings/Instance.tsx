@@ -15,7 +15,15 @@ import { useMe } from "../auth/useMe";
 import { Notice } from "../layout/Notice";
 import { instanceUpdate } from "../layout/update";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
-import { CARD, errorText, INSET, muted, STACK } from "./ui";
+import {
+  CARD,
+  errorText,
+  INSET,
+  muted,
+  ReadOnlyNote,
+  STACK,
+  WriteLock,
+} from "./ui";
 import { VersionCard } from "./VersionCard";
 
 const VISIBILITY = [
@@ -38,6 +46,7 @@ export function Instance() {
   const problems = me?.instance.signIn?.problems ?? [];
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       {problems.length > 0 && (
         <Notice tone="warning" title="Some sign-in methods are off.">
           <ul className="m-0 grid gap-[var(--oa-space-1)] pl-[18px]">
@@ -110,105 +119,107 @@ function InstanceSettings() {
           if (dirty && valid) save();
         }}
       >
-        <CardContent className={`grid min-w-0 ${INSET}`}>
-          {settings.isError && (
-            <div className="pb-[var(--oa-space-3)]">
-              <Notice tone="warning" title="Couldn't refresh settings.">
-                Showing the last loaded values. Your edits are kept.
-              </Notice>
-            </div>
-          )}
-          <div className={FIELD}>
-            <div className={HINT}>
-              <Label htmlFor="oa-inst-name" className={LABEL}>
-                Instance name
-              </Label>
-              <p className={muted}>
-                Shown in the sidebar, page titles, and on the sign-in page.
-              </p>
-            </div>
-            <div className="grid min-w-0 gap-[var(--oa-space-1)]">
-              <Input
-                id="oa-inst-name"
-                value={name}
-                maxLength={NAME_MAX}
-                disabled={saving}
-                aria-describedby={nameOk ? undefined : "oa-inst-name-err"}
-                placeholder="e.g. Northwind Eng"
-                aria-invalid={!nameOk || undefined}
-                className="h-[30px] text-[length:var(--oa-text-sm)]"
-                onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-              />
-              {!nameOk && (
-                <p className={errorText} id="oa-inst-name-err" role="alert">
-                  Name must be 1 to {NAME_MAX} characters.
+        <WriteLock>
+          <CardContent className={`grid min-w-0 ${INSET}`}>
+            {settings.isError && (
+              <div className="pb-[var(--oa-space-3)]">
+                <Notice tone="warning" title="Couldn't refresh settings.">
+                  Showing the last loaded values. Your edits are kept.
+                </Notice>
+              </div>
+            )}
+            <div className={FIELD}>
+              <div className={HINT}>
+                <Label htmlFor="oa-inst-name" className={LABEL}>
+                  Instance name
+                </Label>
+                <p className={muted}>
+                  Shown in the sidebar, page titles, and on the sign-in page.
                 </p>
-              )}
+              </div>
+              <div className="grid min-w-0 gap-[var(--oa-space-1)]">
+                <Input
+                  id="oa-inst-name"
+                  value={name}
+                  maxLength={NAME_MAX}
+                  disabled={saving}
+                  aria-describedby={nameOk ? undefined : "oa-inst-name-err"}
+                  placeholder="e.g. Northwind Eng"
+                  aria-invalid={!nameOk || undefined}
+                  className="h-[30px] text-[length:var(--oa-text-sm)]"
+                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                />
+                {!nameOk && (
+                  <p className={errorText} id="oa-inst-name-err" role="alert">
+                    Name must be 1 to {NAME_MAX} characters.
+                  </p>
+                )}
+              </div>
             </div>
-          </div>
-          <div className={FIELD}>
-            <div className={HINT}>
-              <span id="oa-inst-vis" className={LABEL}>
-                Default visibility
-              </span>
-              <p className={muted}>
-                For new artifacts from agents and uploads. Public is always
-                chosen per artifact.
-              </p>
+            <div className={FIELD}>
+              <div className={HINT}>
+                <span id="oa-inst-vis" className={LABEL}>
+                  Default visibility
+                </span>
+                <p className={muted}>
+                  For new artifacts from agents and uploads. Public is always
+                  chosen per artifact.
+                </p>
+              </div>
+              <div className="grid min-w-0 justify-items-start gap-[var(--oa-space-1)]">
+                <ToggleGroup
+                  type="single"
+                  variant="outline"
+                  size="sm"
+                  aria-label="Default visibility"
+                  disabled={saving}
+                  value={visibility}
+                  // Single toggle groups can deselect; keep one chosen.
+                  onValueChange={(v) =>
+                    v &&
+                    setDraft({
+                      ...draft,
+                      defaultVisibility: v as Settings["defaultVisibility"],
+                    })
+                  }
+                >
+                  {VISIBILITY.map((o) => (
+                    <ToggleGroupItem
+                      key={o.value}
+                      value={o.value}
+                      className="h-[30px] px-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]"
+                    >
+                      {o.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+                <p className={muted}>{HELP[visibility]}</p>
+              </div>
             </div>
-            <div className="grid min-w-0 justify-items-start gap-[var(--oa-space-1)]">
-              <ToggleGroup
-                type="single"
-                variant="outline"
-                size="sm"
-                aria-label="Default visibility"
-                disabled={saving}
-                value={visibility}
-                // Single toggle groups can deselect; keep one chosen.
-                onValueChange={(v) =>
-                  v &&
-                  setDraft({
-                    ...draft,
-                    defaultVisibility: v as Settings["defaultVisibility"],
-                  })
-                }
-              >
-                {VISIBILITY.map((o) => (
-                  <ToggleGroupItem
-                    key={o.value}
-                    value={o.value}
-                    className="h-[30px] px-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]"
-                  >
-                    {o.label}
-                  </ToggleGroupItem>
-                ))}
-              </ToggleGroup>
-              <p className={muted}>{HELP[visibility]}</p>
-            </div>
-          </div>
-        </CardContent>
-        <CardFooter
-          className={`justify-end gap-[var(--oa-space-2)] border-t ${INSET} [.border-t]:pt-[var(--oa-space-5)] max-[600px]:[.border-t]:pt-[var(--oa-space-4)]`}
-        >
-          <Button
-            variant="ghost"
-            type="button"
-            size="sm"
-            className="text-[length:var(--oa-text-sm)]"
-            disabled={!Object.keys(draft).length || saving}
-            onClick={() => setDraft({})}
+          </CardContent>
+          <CardFooter
+            className={`justify-end gap-[var(--oa-space-2)] border-t ${INSET} [.border-t]:pt-[var(--oa-space-5)] max-[600px]:[.border-t]:pt-[var(--oa-space-4)]`}
           >
-            Discard
-          </Button>
-          <Button
-            type="submit"
-            size="sm"
-            className="text-[length:var(--oa-text-sm)]"
-            disabled={!dirty || !valid || saving}
-          >
-            Save changes
-          </Button>
-        </CardFooter>
+            <Button
+              variant="ghost"
+              type="button"
+              size="sm"
+              className="text-[length:var(--oa-text-sm)]"
+              disabled={!Object.keys(draft).length || saving}
+              onClick={() => setDraft({})}
+            >
+              Discard
+            </Button>
+            <Button
+              type="submit"
+              size="sm"
+              className="text-[length:var(--oa-text-sm)]"
+              disabled={!dirty || !valid || saving}
+            >
+              Save changes
+            </Button>
+          </CardFooter>
+        </WriteLock>
       </form>
     </Card>
   );

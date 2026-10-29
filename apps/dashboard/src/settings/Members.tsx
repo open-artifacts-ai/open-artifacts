@@ -48,7 +48,7 @@ import { clearDenied, denyMember, useDenied } from "./denied";
 import { type Departed, useDeparted } from "./departed";
 import { restrictionReason } from "./restriction";
 import { TransferDialog } from "./Transfer";
-import { errorText, muted, SettingsCard, STACK } from "./ui";
+import { errorText, muted, ReadOnlyNote, SettingsCard, STACK } from "./ui";
 
 type Assignable = "admin" | "member";
 /** Owner is never offered, to anyone. */
@@ -592,6 +592,7 @@ export function Members() {
   const departed = useDeparted(state.status === "authed" ? state.me : null);
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       {departed.length > 0 && <DepartedCard people={departed} />}
       <SettingsCard
         id="oa-members-h"

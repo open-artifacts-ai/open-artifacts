@@ -1,6 +1,7 @@
 // A connected agent (Design ecAopo8RUyk2Xomu, contract #559): rows like
 // Members. The name and version are the agent's own claims (tagged), where it
 // runs and where it was approved are ours; nothing says "verified".
+
 import type { OAuthClient } from "@oa/shared";
 import { avatarHue } from "@oa/ui";
 import {
@@ -14,6 +15,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useState } from "react";
 import { useLabelOAuthClient } from "../api/queries";
+import { useFrozen } from "../auth/permissions";
 import { initials } from "../layout/UserAvatar";
 import { AppLink } from "../library/AppLink";
 import { relativeTime } from "../library/time";
@@ -73,6 +75,7 @@ export function AgentRow({
   canLabel: boolean;
   onRevoke: () => void;
 }) {
+  const frozen = useFrozen();
   const label = useLabelOAuthClient();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -272,7 +275,11 @@ export function AgentRow({
             {((canLabel && c.label) || versions > 0) && (
               <DropdownMenuSeparator />
             )}
-            <DropdownMenuItem variant="destructive" onSelect={onRevoke}>
+            <DropdownMenuItem
+              variant="destructive"
+              disabled={frozen}
+              onSelect={onRevoke}
+            >
               Revoke…
             </DropdownMenuItem>
           </DropdownMenuContent>

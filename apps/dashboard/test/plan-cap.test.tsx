@@ -182,6 +182,72 @@ it("tokens: a locked admin sees the token list; Create token is disabled", async
   expect(screen.getByRole("button", { name: "Create token" })).toBeDisabled();
 });
 
+it("reads stay enabled for a locked admin: Copy URL, snippet tabs, Retry", async () => {
+  lockedAdmin("/settings/agents");
+  expect(await screen.findByRole("button", { name: "Copy URL" })).toBeEnabled();
+  const tabs = await screen.findAllByRole("tab");
+  expect(tabs.length).toBeGreaterThan(1);
+  for (const t of tabs) expect(t).toBeEnabled();
+  // The write controls on the same page are off.
+  expect(screen.getByRole("button", { name: "Create token" })).toBeDisabled();
+});
+
+it("reads stay enabled for a locked admin: Retry on a failed spaces list", async () => {
+  mountHosted("/settings/spaces", OPTS, locked("admin"), [
+    http.get("*/api/v1/spaces", () =>
+      HttpResponse.json(
+        { error: { code: "internal", message: "down" } },
+        { status: 500 },
+      ),
+    ),
+  ]);
+  const retries = await screen.findAllByRole("button", { name: "Retry" });
+  for (const r of retries) expect(r).toBeEnabled();
+  expect(screen.getByRole("button", { name: "New space" })).toBeDisabled();
+});
+
+it("reads stay enabled for a locked admin: space people search and Load more", async () => {
+  const SPACE = "SpEngNpQrSt2uVwX";
+  const page = (from: number, n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      userId: `u${from + i}`,
+      user: {
+        id: `u${from + i}`,
+        name: `Person ${from + i}`,
+        email: `p${from + i}@example.com`,
+      },
+      role: "viewer",
+      status: "active",
+      source: "manual",
+      manualRole: "viewer",
+      syncRole: null,
+      groups: [],
+      cap: null,
+      allMembers: null,
+    }));
+  mountHosted(`/settings/spaces?space=${SPACE}`, OPTS, locked("admin"), [
+    http.get(`*/api/v1/spaces/${SPACE}/members`, ({ request }) =>
+      HttpResponse.json(
+        new URL(request.url).searchParams.get("cursor") === "c1"
+          ? { items: page(3, 2), nextCursor: null, total: 312 }
+          : { items: page(0, 3), nextCursor: "c1", total: 312 },
+      ),
+    ),
+  ]);
+  const card = await screen.findByRole("region", { name: "People" });
+  expect(await within(card).findByText("Showing 3 of 312")).toBeVisible();
+  expect(within(card).getByRole("button", { name: "Load more" })).toBeEnabled();
+  expect(
+    within(card).getByRole("searchbox", { name: /Search people/ }),
+  ).toBeEnabled();
+  expect(
+    within(card).getByRole("button", { name: "Add people" }),
+  ).toBeDisabled();
+  expect(
+    within(card).getAllByRole("combobox", { name: /^Role for / })[0],
+  ).toBeDisabled();
+});
+
 it("nothing is hidden: the members list is the same with and without the cap", async () => {
   mountHosted("/settings/members", true);
   await memberRow(BOB.name);

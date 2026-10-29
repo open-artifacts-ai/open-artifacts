@@ -133,22 +133,23 @@ export function Code({
 }
 
 /**
- * A settings page's write surface. Under the plan cap the fieldset turns
- * every control inside off and one muted line says why; lists stay visible.
+ * Write controls only. Under the plan cap the fieldset turns the controls
+ * inside off (it adds no box); reads, lists, pagers and Retry stay outside.
  */
 export function WriteLock({ children }: { children: ReactNode }) {
-  const frozen = useFrozen();
   return (
-    <fieldset
-      disabled={frozen}
-      className="m-0 grid min-w-0 gap-[var(--oa-space-3)] border-0 p-0"
-    >
-      {frozen && (
-        <p role="status" className={`m-0 ${muted}`}>
-          {READ_ONLY_NOTICE}
-        </p>
-      )}
+    <fieldset disabled={useFrozen()} className="contents">
       {children}
     </fieldset>
+  );
+}
+
+/** The one muted line a locked page shows, for the disabled controls. */
+export function ReadOnlyNote() {
+  if (!useFrozen()) return null;
+  return (
+    <p role="status" className={`m-0 ${muted}`}>
+      {READ_ONLY_NOTICE}
+    </p>
   );
 }
