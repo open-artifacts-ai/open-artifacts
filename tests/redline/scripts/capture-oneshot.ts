@@ -50,6 +50,10 @@ async function question(q: string): Promise<string | null> {
 
 const code = await oneShot(process.argv.slice(2), {
   env: process.env,
+  // Tests only: where the run dir goes (default ~/.open-artifacts/redline-capture).
+  ...(process.env.OA_REDLINE_RUN_BASE
+    ? { runBase: process.env.OA_REDLINE_RUN_BASE }
+    : {}),
   out: (l) => console.log(l),
   key,
   question,

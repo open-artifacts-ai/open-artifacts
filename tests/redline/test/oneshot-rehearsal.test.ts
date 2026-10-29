@@ -410,9 +410,14 @@ describe.skipIf(!on)(
           cwd: PKG,
           env: {
             PATH: process.env.PATH ?? "",
-            // The run dir goes under $HOME/.open-artifacts/redline-capture.
-            HOME: tmp,
+            HOME: process.env.HOME ?? "",
             TMPDIR: tmp,
+            // The run dir in this test's own dir (not the real kit dir).
+            OA_REDLINE_RUN_BASE: join(
+              tmp,
+              ".open-artifacts",
+              "redline-capture",
+            ),
           },
           stdio: ["ignore", "pipe", "pipe"],
         },
