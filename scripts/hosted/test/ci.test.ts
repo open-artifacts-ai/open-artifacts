@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { cfClient } from "@oa/provision";
 import { describe, expect, it, vi } from "vitest";
-import { main } from "../src/cli.ts";
+import { main, readTurnstile } from "../src/cli.ts";
 import { PUB, SECURITY, signed, world } from "./world.ts";
 
 const G = vi.hoisted(() => ({
@@ -280,6 +280,45 @@ describe("prod in CI: credentials from the 0600 files, with the same checks", ()
     expect(sc?.secrets.get("TURNSTILE_SECRET")).toBe(KEYS.secret);
     expect(w.execs.filter((e) => e.file === SECURITY)).toEqual([]);
     expect(w.lines.join("\n")).not.toContain(KEYS.secret);
+  });
+
+  it("readTurnstile itself refuses prod in ungated CI (its own layer, not only the token's)", async () => {
+    const pair = "0x4AAAAAAA0123456789abcdef:0x4AAAAAAAturnstileSecretValue";
+    const at = (extra: Record<string, string>) => {
+      const w = ciWorld("prod", {
+        OA_HOSTED_TURNSTILE_FILE: "/ci/turnstile",
+        ...extra,
+      });
+      w.files.set("/ci/turnstile", {
+        bytes: enc(`${pair}\n`),
+        info: { mode: 0o100600, uid: 501, isFile: true },
+      });
+      return w;
+    };
+    for (const ungated of [
+      {
+        GITHUB_ACTIONS: "true",
+        GITHUB_REF: "refs/heads/feature",
+        OA_HOSTED_ENVIRONMENT: "hosted-prod-deploy",
+      },
+      {
+        GITHUB_ACTIONS: "true",
+        GITHUB_REF: "refs/heads/main",
+        OA_HOSTED_ENVIRONMENT: "hosted-staging-deploy",
+      },
+      { CI: "true" },
+    ])
+      await expect(readTurnstile(at(ungated).deps, "prod")).rejects.toThrow(
+        /CI is staging only; prod refused/,
+      );
+    expect(await readTurnstile(at(GATED).deps, "prod")).toEqual({
+      sitekey: "0x4AAAAAAA0123456789abcdef",
+      secret: "0x4AAAAAAAturnstileSecretValue",
+    });
+    // Staging in CI is not held to the prod gate.
+    expect(
+      await readTurnstile(at({ GITHUB_ACTIONS: "true" }).deps, "staging"),
+    ).not.toBeNull();
   });
 
   it("prod Turnstile keys in CI only in the gated job; on a laptop never from a file", async () => {

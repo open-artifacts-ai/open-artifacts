@@ -553,7 +553,11 @@ function parseTurnstile(raw: string, label: string): TurnstileKeys {
   return { sitekey, secret };
 }
 
-async function readTurnstile(d: Deps, env: Env): Promise<TurnstileKeys | null> {
+/** Exported for its own tests: the second (Turnstile) layer of the prod-in-CI guard. */
+export async function readTurnstile(
+  d: Deps,
+  env: Env,
+): Promise<TurnstileKeys | null> {
   if (inCi(d.env)) {
     // CI: only the 0600 file the workflow wrote from TURNSTILE_KEYS, and for
     // prod only in the gated job (as the token). No file: no codes support.
