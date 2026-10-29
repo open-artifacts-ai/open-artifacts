@@ -521,3 +521,71 @@ Every hosted install operation and release publish runs from the `hosted-ops` wo
 - **The lease has a time-of-check to time-of-use window.** An operation renews its lease and then makes its Cloudflare call. If the process stalls for longer than the lease between the two (for example, a laptop sleeps), another operation can claim the row in the meantime, and the stalled call still lands once. Example: a create's `HOSTS` put lands after a delete has unmapped the hosts. The stalled operation's next step raises `LostLease`, so it goes no further. A stale `HOSTS` entry left this way points only at the deleted install's id, never at another install: the dispatch Worker finds no script and answers 404. To clear it, re-run delete, which removes the `HOSTS` keys first.
 - **A pending session cut** (`status(id).sessionCut.pending`) means google was turned on and the epoch bump that ends earlier sessions has not run yet. Re-run `updateVars` with the intended vars; any upgrade or rollback also settles it right after its upload. Rotation refuses while a cut is pending.
 - A lease left by a dead process: `releaseLease(id, confirm: id)` once it has expired, or with `force: true` only when you are sure nothing is running. Both are audited.
+
+## The provisioner (SS3, self-serve step 3)
+
+`oa-<p>-provisioner` (`apps/provisioner`) turns one signup into one hosted install: a Queue consumer admits the signup under the daily cap, then starts the `ProvisionInstall` Workflow (`oa-<p>-provision-install`, instance id = the signup id), which runs the same `WfpProvisioner.create` as the CLI. Spec: `docs/superpowers/specs/2026-10-29-ss3-provisioner-design.md`.
+
+### The queue contract
+
+- A message on `oa-<p>-signups` is exactly `{ "signupId": "<ULID>" }`. Anything else is acked and logged as `bad_shape`, never retried.
+- SS4 (the sign-up service) writes the `signups` row (status `pending`) and its `signup_secret` row (the owner's email) in platform D1 first, in one batch, and only then enqueues. Everything after `pending` belongs to the provisioner.
+- The owner's email is never in a message, a log line, a Workflow param, a step output or error, an alert or the dead-letter queue (`oa-<p>-signups-dlq`). It lives only in `signup_secret` (deleted by the `done` step) and `installs.owner_email`.
+- No row yet: the consumer retries (5 times, then the DLQ takes the id). `ready` or `failed`: acked, nothing else. Migration: `apps/platform-db/migrations/0007_signups.sql`, after 0006.
+
+### The Workflow
+
+1. `reserve`: picks the install id once and stores it on the row; a retry reads it back.
+2. `sweep`: revokes any active `ci-<signupId>` owner token a crashed attempt left.
+3. `create`: `WfpProvisioner.create` with that fixed install id, so a retry resumes the same install. A lease-held refusal is retried (backoff far past the 30-minute lease); every other refusal, `slug_taken` included, is terminal.
+4. `notify`: claims the welcome (`welcome_claimed_at`), sends it once, then sets `welcome_sent_at`.
+5. `done`: sweeps again, deletes `signup_secret`, sets the row `ready`.
+
+A step that runs out of retries sets the row `failed` with a fixed category in `error`. Nothing re-drives it automatically.
+
+### The daily cap
+
+- `SIGNUP_DAILY_CAP` (a var on the provisioner and the scheduler, the same value): staging `20`, prod `50`, parsed strictly (`^[1-9][0-9]{0,3}$`). An invalid value retries and logs `cap_config`; it never defers silently.
+- The cap counts admissions (`admitted_at` in the current UTC day), failed creates included. Over the cap a signup is deferred (`waiting_cap`), never failed; the scheduler re-sends `waiting_cap` rows after 00:00 UTC, oldest first, up to that day's cap.
+- The first cap hit of a UTC day sends one `signup_cap` alert (a demand or abuse signal), at most once a day.
+
+### The signup alerts
+
+All four come from the scheduler (`apps/scheduler/src/alerts.ts`), by email to the operator; their text holds counts and signup ids only.
+
+| Key | Fires when | First check |
+| --- | --- | --- |
+| `signup_cap` | the day's cap was reached | demand or abuse; raise `SIGNUP_DAILY_CAP` only on purpose |
+| `signup_stuck` | a `queued` row's Workflow instance is dead (errored, terminated or complete) | `signup-redrive` |
+| `signup_failed` | a signup failed in the last 24 hours | the row's `error` category, then `signup-redrive` or the CLI `delete` |
+| `welcome_unsent` | a welcome was claimed over 10 minutes ago and never marked sent | the send log first (below) |
+
+### Welcome email
+
+At most once per signup: the claim (`welcome_claimed_at`) comes before the send, so a crash between them never sends a second email. "Welcome unsent" means the claim landed and `welcome_sent_at` did not. Check the Email Sending log for the owner's address first: a send can succeed while its `welcome_sent_at` write fails. Send it by hand only if it never went out, then set `welcome_sent_at`.
+
+### `signup-redrive`
+
+`pnpm oa:hosted signup-redrive --env <env> --signup <ULID>` (laptop, or `hosted-ops.yml` with `op: signup-redrive`, `args: {"signup":"<ULID>"}`; prod in CI only from the gated job) re-runs a failed or stuck signup: the row goes back to `queued` (error cleared) and the same Workflow instance is restarted.
+
+- Refused unless the row is `failed`, `queued` or `creating` and its instance is errored, terminated or complete. A live instance is never restarted (that would cancel its steps), and `pending` or `waiting_cap` rows are not admitted yet (a redrive would skip the cap).
+- A `queued` row touched in the last 15 minutes is refused ("wait, then rerun"), and the update matches the `updated_at` it read, so two overlapping redrives restart the instance once.
+- A failed row whose instance has aged past the Workflows retention has no instance left, so `signup-redrive` refuses it ("has no ... instance"). The fallback: the CLI `delete` of its install (if `install_id` is set and an install row exists), then a fresh signup.
+
+### Deploy order
+
+`billing`, then `provisioner`, then `dispatch` and the scheduler, each with `scripts/ops/deploy-platform-worker.sh <app> <env>` (the provisioner's fills are in its header). The `provisioner` target in `deploy-hosted-platform.yml` lands in #847 after the freeze. The wrapper refuses a provisioner config that binds any secret but `oa-s-provision-token` and `oa-p-provision-token`, or whose `staging` or `prod` block binds the other env's token, and refuses `oa-<p>-provision-token` on any other Worker.
+
+### Prod enable gate
+
+The provisioner stays off in prod until one real staging create and delete of a throwaway install (`ss3-spike-<n>`, codes off) run through `hosted-ops.yml`, after #848 merges, with the wall time and API calls read from the run (spike part 2 in the spec).
+
+### Red-line cases (pending)
+
+`tests/redline/pending/provisioner.test.ts` holds two real probes: "a replayed signup creates nothing new" and "a signup for a taken slug fails cleanly". They sit outside `live/` and out of `live/manifest.json` until the staging provisioner is deployed, because a case that can't pass must not sit in the gate. To enable them:
+
+1. Make the replay fixture: one real staging signup through the provisioner that ends `ready` with its welcome sent. Keep its install.
+2. Configure `REDLINE_STG_PROVISIONER` in the `redline-staging` Environment: `{"accountId","platformDbId","signupsQueueId","tokenFile","replaySignupId"}`. The token (a 0600 file) needs D1 Edit on `oa-s-platform` and Queues Write on `oa-s-signups`, nothing else.
+3. Move the file to `tests/redline/live/` and add both cases (`provisioner > ...`) to `live/manifest.json`.
+
+The taken-slug probe signs up for rl-a's slug, expects `failed` with `slug_taken`, rl-a unchanged, and removes its own signup row afterwards. It uses one of the day's cap slots per run.
