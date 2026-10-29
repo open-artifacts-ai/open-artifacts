@@ -10,7 +10,7 @@ import {
 } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
-import { callerOf, capOfCaller, withCap } from "../auth/authz.js";
+import { callerOf, capOfCaller, planOfMember, withCap } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { sessionCredId, setCred } from "../auth/cred.js";
 import { verifyPat } from "../auth/pat.js";
@@ -20,6 +20,7 @@ import {
   type Session,
   sessionCookieName,
 } from "../auth/session.js";
+import { planError } from "../billing/plan.js";
 import { BANNER_AFTER_MS } from "../directory/health.js";
 import { type Cap, refundAll, sendEmail, takeAll } from "../email/send.js";
 import { directoryAlertEmail } from "../email/templates.js";
@@ -455,10 +456,16 @@ const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
  */
 export const readOnlyCap = (): MiddlewareHandler<AppEnv> => async (c, next) => {
   const m = c.req.method;
-  if (m !== "GET" && m !== "HEAD" && capOfCaller(callerOf(c.var.user))) {
+  const cap =
+    m !== "GET" && m !== "HEAD" ? capOfCaller(callerOf(c.var.user)) : null;
+  if (cap) {
     const path = c.req.path;
     if (CAPPED_ALLOWED.some(([am, re]) => am === m && re.test(path)))
       return next();
+    // Hosted billing's plan cap: a clear 403 (the caller can see what they
+    // can't change), never a 404.
+    const lock = cap === "plan" ? planOfMember(c.var.user)?.lock : null;
+    if (lock) return toErrorResponse(planError(lock));
     if (m === "POST" && path === R.artifacts)
       return toErrorResponse(
         new ApiError("space_forbidden", "Guests can't publish here"),

@@ -38,12 +38,15 @@ import {
   firstThumbnailEligible,
   levelSql,
   listFilterSql,
+  planOfMember,
   publishTarget,
   roleRankQuery,
   roleRankSql,
 } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { can, dataWritersOf } from "../auth/policy.js";
+import { creatorStmt } from "../billing/creators.js";
+import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -271,6 +274,8 @@ export async function publish(
   if (create && input.spaceId !== undefined && input.spaceId !== user.id) {
     // Another space needs the spaces feature (404 without it).
     requireSpaces(env);
+    // Hosted billing: a shared space is a team feature.
+    requireTeamPlan(planOfMember(user));
     spaceId = (
       await publishTarget(env, callerOf(user), input.spaceId, "create")
     ).id;
@@ -402,6 +407,11 @@ export async function publish(
   // on rename); the body is indexed asynchronously.
   if (visAudit) stmts.push(visAudit);
   stmts.push(seedSearchStmt(db, id));
+  // Hosted billing: the publisher is this month's creator once the version
+  // row exists (an agent's publish counts for its owner). restoreVersion
+  // never writes one.
+  const creator = creatorStmt(env, user.id, id, now);
+  if (creator) stmts.push(creator);
   if (!create && (input.title !== undefined || input.description !== undefined))
     stmts.push(syncTitleStmt(env, id));
   // Last: the guard above still sees every listed upload unconsumed.

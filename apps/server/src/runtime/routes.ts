@@ -23,12 +23,21 @@ import {
   caller,
   canCtx,
   dataWriteRefusal,
+  planRefusal,
   requireAccess,
 } from "../auth/authz.js";
-import { can, capsOf, namedEvents, type PolicyAction } from "../auth/policy.js";
+import {
+  can,
+  capsOf,
+  dataWriteCreates,
+  namedEvents,
+  type PolicyAction,
+} from "../auth/policy.js";
+import { recordDataCreator } from "../billing/creators.js";
+import { readPlan } from "../billing/plan.js";
 import { cappedJson, readCapped } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
-import type { AppEnv } from "../http/middleware.js";
+import { type AppEnv, execCtx } from "../http/middleware.js";
 import type { AppType } from "../routes/index.js";
 import { type AnonId, resolveAnonId } from "./anon-id.js";
 import {
@@ -77,6 +86,17 @@ type Gate = {
   actor: string;
   anon: AnonId | null;
   authzAt: number;
+  /** A signed-in writer at editor level or above: counted as a creator (billing/creators.ts). */
+  creator?: string;
+};
+
+/** After a successful data write: the writer counts as this month's creator (hosted). */
+const countCreator = (c: C, g: Gate) => {
+  if (!g.creator) return;
+  const p = recordDataCreator(c.env, g.creator, Date.now());
+  const ctx = execCtx(c);
+  if (ctx) ctx.waitUntil(p);
+  else return p;
 };
 
 /**
@@ -209,12 +229,20 @@ async function gate(
   const r = await accessLevel(c.env, who, artifactId);
   if (!r) throw new ApiError("not_found", "Not found");
   const a = r.artifact;
+  // Hosted billing: an anonymous write reads the instance's plan here (a
+  // signed-in caller carries it from their user load).
+  const plan =
+    who.kind !== "user" && kind === "write" ? await readPlan(c.env) : null;
   // Each gate kind is one policy action; checked after the anonymous 401s
   // below so their messages keep their order.
-  const ctx = canCtx(who, a);
+  const ctx = { ...canCtx(who, a, plan), personal: r.personal };
   const allowed = () => can(r.level, GATE_ACTION[kind], ctx);
-  /** A refused data write: data_editors_only when "editors" caused it, else 404. */
+  /**
+   * A refused write: plan_required / plan_read_only when only the plan lock
+   * stopped it, data_editors_only when "editors" caused it, else 404.
+   */
   const refused = () =>
+    planRefusal(who, r.level, GATE_ACTION[kind], ctx, plan) ??
     (kind === "write" ? dataWriteRefusal(r.level, ctx, a) : null) ??
     new ApiError("not_found", "Not found");
   const cap = METHOD_CAPABILITY[method];
@@ -226,7 +254,16 @@ async function gate(
   if (who.kind === "user") {
     // Signed-in callers asking for an anonId get the route's own 401 below.
     if (kind !== "anonId" && !allowed()) throw refused();
-    return { artifactId, actor: `u:${who.user.id}`, anon: null, authzAt };
+    return {
+      artifactId,
+      actor: `u:${who.user.id}`,
+      anon: null,
+      authzAt,
+      // CREATOR: a data write at editor level or above (a viewer's is free).
+      ...(kind === "write" && dataWriteCreates(r.level)
+        ? { creator: who.user.id }
+        : {}),
+    };
   }
   if (kind === "read") return { artifactId, actor: "", anon: null, authzAt };
   if (kind === "storage")
@@ -366,6 +403,7 @@ export function mountRuntime(app: AppType): void {
     const { updatedAt } = await runtimeCall(() =>
       stub(c, g).setRaw(col, id, toBuffer(body), g.actor),
     );
+    await countCreator(c, g);
     // The DataDoc, with the (DO-validated) body bytes spliced in unparsed.
     const [head, tail] = JSON.stringify({
       id,
@@ -387,12 +425,11 @@ export function mountRuntime(app: AppType): void {
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
     const body = await rawBody(c);
-    return withAnon(
-      g,
-      jsonText(
-        await runtimeCall(() => stub(c, g).updateRaw(col, id, body, g.actor)),
-      ),
+    const out = await runtimeCall(() =>
+      stub(c, g).updateRaw(col, id, body, g.actor),
     );
+    await countCreator(c, g);
+    return withAnon(g, jsonText(out));
   });
 
   app.delete(DOC, async (c) => {
@@ -400,6 +437,7 @@ export function mountRuntime(app: AppType): void {
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
     await runtimeCall(() => stub(c, g).delete(col, id, g.actor));
+    await countCreator(c, g);
     return withAnon(g, c.body(null, 204));
   });
 
@@ -433,10 +471,14 @@ export function mountRuntime(app: AppType): void {
       actor: `u:${who.user.id}`,
       anon: null,
       authzAt: authzAtOf(c),
+      // data.reset is owner or manager: always a creator (CREATOR).
+      creator: who.user.id,
     };
-    return c.json(
-      await runtimeCall(() => stub(c, g).replaceRaw(toBuffer(body), g.actor)),
+    const out = await runtimeCall(() =>
+      stub(c, g).replaceRaw(toBuffer(body), g.actor),
     );
+    await countCreator(c, g);
+    return c.json(out);
   });
 
   // WebSocket feed of DataChange frames, served by the artifact's DO.

@@ -496,6 +496,29 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+// Self-serve billing (hosted only): who was a creator in each UTC calendar
+// month, the list behind each bill (billing/creators.ts CREATOR). One row per
+// user and month, written once (insert or ignore) by a version publish or a
+// live-data write; restores, moves and transfers never write one. user_id is
+// the opaque per-install id billing receives (never an email).
+export const creatorMonths = sqliteTable(
+  "creator_months",
+  {
+    month: text("month").notNull(),
+    userId: text("user_id").notNull(),
+    /** What made them a creator first this month: "version" or "data". */
+    source: text("source").notNull(),
+    firstAt: integer("first_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.month, t.userId] }),
+    check(
+      "creator_months_source_check",
+      sql`${t.source} in ('version', 'data')`,
+    ),
+  ],
+);
+
 // Small D1 counters and markers (e.g. daily OAuth client registrations), kept
 // out of KV because KV writes are the scarcer Free-plan quota.
 export const counters = sqliteTable("counters", {

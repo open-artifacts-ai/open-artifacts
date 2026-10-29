@@ -1,6 +1,7 @@
 import { isId } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { matchedRoutes } from "hono/route";
+import { planError, requireTeamPlan } from "../billing/plan.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, resolveSession } from "../http/middleware.js";
 import {
@@ -9,6 +10,7 @@ import {
   type Caller,
   caller,
   capOfCaller,
+  planOfMember,
   withAccessCache,
 } from "./authz.js";
 import { authConfig } from "./config.js";
@@ -17,6 +19,7 @@ import {
   CONTENT_POLICY,
   type Policy,
   ROUTE_POLICY,
+  TEAM_ROUTES,
 } from "./route-policy-table.js";
 
 export {
@@ -69,12 +72,39 @@ function paramAt(c: Context, index: number, name: string): string {
 
 const notFound = () => new ApiError("not_found", "Not found");
 
+/**
+ * Whether `who` would pass this artifact rule without the billing plan cap
+ * (or is refused only by the plan lock itself). Refusals only: one more
+ * access read.
+ */
+async function allowedUncapped(
+  env: AppEnv["Bindings"],
+  who: Extract<Caller, { kind: "user" }>,
+  id: string,
+  p: Extract<Policy, { artifact: unknown }>,
+): Promise<boolean> {
+  try {
+    await authorize(env, { ...who, cap: null }, id, p.artifact, {
+      allowDeleted: p.allowDeleted,
+      ctx: p.ctx,
+    });
+    return true;
+  } catch (e) {
+    return (
+      e instanceof ApiError &&
+      (e.code === "plan_read_only" || e.code === "plan_required")
+    );
+  }
+}
+
 /** Applies one policy for `who`; resolves to nothing or throws (401/404). */
 export async function enforce(
   p: Policy | undefined,
   who: Caller,
   env: AppEnv["Bindings"],
   artifactId: () => string,
+  /** The request is a write (not GET/HEAD): hosted billing's plan 403 applies. */
+  write = true,
 ): Promise<void> {
   if (!p) throw notFound();
   if ("public" in p || "signed" in p) return;
@@ -91,6 +121,20 @@ export async function enforce(
         ctx: p.ctx,
       });
     } catch (e) {
+      // Hosted billing: a member under the plan cap whose role would allow
+      // this gets the clear 403, not 404 (they can see the artifact).
+      const lock =
+        write && who.kind === "user" && who.cap === "plan"
+          ? planOfMember(who.user)?.lock
+          : null;
+      if (
+        lock &&
+        who.kind === "user" &&
+        e instanceof ApiError &&
+        e.code === "not_found" &&
+        (await allowedUncapped(env, who, id, p))
+      )
+        throw planError(lock);
       // Keep the handler's order: an anonymous caller who may view gets 401.
       // A data write refused by dataWriters "editors" already threw 403
       // data_editors_only (authorize, #681).
@@ -112,6 +156,12 @@ export async function enforce(
   if (who.kind !== "user")
     throw new ApiError("unauthorized", "Sign in required");
   if ("org" in p && !orgCan(who.user, p.org, { cap: capOfCaller(who) })) {
+    // Hosted billing: an admin under the plan cap gets the clear 403 on a
+    // write their role would allow (their admin reads stay 404, as for any
+    // capped admin).
+    const lock =
+      who.cap === "plan" && write ? planOfMember(who.user)?.lock : null;
+    if (lock && orgCan(who.user, p.org, { cap: null })) throw planError(lock);
     // #359: any create by a capped caller (guests under direct sign-in, P3's
     // restricted members) is 403 space_forbidden, never 404.
     if (p.org === "artifact.create" && capOfCaller(who))
@@ -149,7 +199,19 @@ export const enforcePolicy = (
     const who: Caller =
       c.req.header("x-oa-embed") === "1" ? { kind: "anonymous" } : caller(c);
     await withAccessCache(async () => {
-      await enforce(p, who, c.env, () => paramAt(c, t.index, "id"));
+      await enforce(
+        p,
+        who,
+        c.env,
+        () => paramAt(c, t.index, "id"),
+        t.method !== "GET" && t.method !== "HEAD",
+      );
+      // Hosted billing: the org-level team features under a plan lock.
+      const route = `${t.method} ${t.path}`;
+      if (who.kind === "user" && TEAM_ROUTES.has(route))
+        requireTeamPlan(planOfMember(who.user), {
+          invite: route === "POST /api/v1/members",
+        });
       await next();
     });
   });

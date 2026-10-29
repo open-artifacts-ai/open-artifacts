@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { FORMATS } from "./formats.js";
+import { PlanViewSchema } from "./hosted/billing.js";
 import {
   ArtifactCanSchema,
   FeaturesSchema,
@@ -570,6 +571,11 @@ export const MeSchema = z.object({
     signIn: InstanceSignInSchema.optional(),
     features: FeaturesSchema.optional(),
     directory: InstanceDirectorySchema.optional(),
+    /**
+     * Self-serve billing: the billing plan (hosted only; absent self-hosted
+     * and on older servers). Not `plan`: that key is the Workers plan above.
+     */
+    billing: PlanViewSchema.optional(),
   }),
   /** The name the user chose (PATCH R.me), or null. */
   displayName: z.string().nullable(),

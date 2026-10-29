@@ -23,9 +23,10 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
-import { managesAdmins } from "../auth/authz.js";
+import { managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
+import { startTrial } from "../billing/store.js";
 import { getDb } from "../db/client.js";
 import {
   agentGrants,
@@ -181,6 +182,10 @@ export async function inviteMember(
     .onConflictDoNothing({ target: users.email })
     .returning();
   if (!row) throw new ApiError("conflict", "Already a member");
+  // Hosted billing: the first successful invite on a free instance starts
+  // the 14-day trial (signed POST /trial/start, idempotent). A failed call
+  // is retried by the scheduler tick (billing/store.ts billingTick).
+  if (planOfMember(inviter)?.trialEligible) await startTrial(env, Date.now());
   // What the email names, and the result reports: uncertain Google is still
   // the only way in, so it is named.
   const signInMethods: SignInProvider[] = reach.methods.length

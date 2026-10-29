@@ -1,5 +1,7 @@
 import { withBrokerProps } from "./auth/broker-transport.js";
 import { sweepLoginCodes } from "./auth/codes.js";
+import { usageTick } from "./billing/creators.js";
+import { billingTick } from "./billing/store.js";
 import { disconnectDirectory } from "./directory/connect.js";
 import { expirePending } from "./directory/store.js";
 import { sweepEmailCounters } from "./email/send.js";
@@ -86,6 +88,16 @@ async function run(
         sweepLostIndexJobs(env, Date.now(), "tick").catch((e) =>
           logError("cron_task_failed", e),
         ),
+      );
+      // Hosted billing: read the tier through this tick's BILLING gate (and
+      // retry a trial start an invite couldn't make), then the monthly
+      // creator report. Both never throw; nothing on a self-hosted install.
+      ctx.waitUntil(
+        (async () => {
+          const now = Date.now();
+          await billingTick(env, now);
+          await usageTick(env, now);
+        })().catch((e) => logError("cron_task_failed", e)),
       );
       const fed = await feedSync(env);
       if (fed === "fed" || fed === "mint_failed")
