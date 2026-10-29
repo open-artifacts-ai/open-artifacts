@@ -713,7 +713,8 @@ export function cfClient(o: {
     async workflowInstanceStatus(workflow, id) {
       const r = await call(
         "GET",
-        `${acct}/workflows/${seg(workflow)}/instances/${seg(id)}`,
+        // simple=true: the status without every step's output.
+        `${acct}/workflows/${seg(workflow)}/instances/${seg(id)}?simple=true`,
         {},
         [404],
       );

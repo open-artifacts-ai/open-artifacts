@@ -1114,6 +1114,8 @@ const DEAD = new Set(["errored", "terminated", "complete"]);
  * skip the daily cap.
  */
 const REDRIVABLE = new Set(["failed", "queued", "creating"]);
+/** A queued row younger than this may have a redrive or a start in flight. */
+const REDRIVE_QUIET_MS = 15 * 60_000;
 
 /**
  * signup-redrive: refuses unless the row is failed or stuck and its
@@ -1121,7 +1123,9 @@ const REDRIVABLE = new Set(["failed", "queued", "creating"]);
  * would cancel its steps). The row goes back to queued, error cleared, only
  * if it is still in the status read; then the instance is restarted. A
  * restart that fails leaves the row queued behind a dead instance, which the
- * stuck alert reports and a second redrive restarts.
+ * stuck alert reports and a second redrive restarts. A queued row touched in
+ * the last REDRIVE_QUIET_MS is refused, and the update matches the
+ * updated_at read, so two overlapping redrives never restart twice.
  */
 async function redrive(
   cf: Cf,
@@ -1132,15 +1136,22 @@ async function redrive(
 ): Promise<{ signup: string; was: string; instance: string }> {
   const workflow = `${ENV_PREFIX[env]}provision-install`;
   const row = (
-    await cf.d1Query(dbId, "SELECT status FROM signups WHERE signup_id = ?1", [
-      signup,
-    ])
-  )[0]?.results?.[0] as { status?: unknown } | undefined;
+    await cf.d1Query(
+      dbId,
+      "SELECT status, updated_at FROM signups WHERE signup_id = ?1",
+      [signup],
+    )
+  )[0]?.results?.[0] as { status?: unknown; updated_at?: unknown } | undefined;
   if (!row) throw new Refused(`no signup ${signup}`);
   const was = String(row.status);
   if (!REDRIVABLE.has(was))
     throw new Refused(
       `signup ${signup} is ${was}: only a failed or stuck signup is redriven`,
+    );
+  const touched = Number(row.updated_at);
+  if (was === "queued" && !(now() - touched >= REDRIVE_QUIET_MS))
+    throw new Refused(
+      `signup ${signup} was queued under 15 minutes ago: wait, then rerun`,
     );
   const instance = await cf.workflowInstanceStatus(workflow, signup);
   if (instance === null)
@@ -1151,8 +1162,8 @@ async function redrive(
     );
   const set = await cf.d1Query(
     dbId,
-    "UPDATE signups SET status = 'queued', error = NULL, updated_at = ?1 WHERE signup_id = ?2 AND status = ?3 RETURNING signup_id",
-    [now(), signup, was],
+    "UPDATE signups SET status = 'queued', error = NULL, updated_at = ?1 WHERE signup_id = ?2 AND status = ?3 AND updated_at = ?4 RETURNING signup_id",
+    [now(), signup, was, touched],
   );
   if (!set[0]?.results?.length)
     throw new Refused(`signup ${signup} changed while redriving; rerun`);

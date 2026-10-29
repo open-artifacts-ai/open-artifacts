@@ -194,6 +194,32 @@ describe("the prod-in-CI guard", () => {
     const w = ciWorld("staging");
     expect(await main(CREATE(), w.deps)).toBe(0);
   });
+
+  it("signup-redrive runs in prod CI under the gated job, from the token file", async () => {
+    const SIGNUP = "01JBQ7Z8X9Y0ABCDEFGHJKMNPQ";
+    const WF = "oa-p-provision-install";
+    const w = ciWorld("prod", GATED);
+    w.db()
+      .prepare(
+        `INSERT INTO signups (signup_id, owner_sub, slug, status, admitted_at, error, created_at, updated_at)
+         VALUES (?, 'sub-1', 'finqore', 'failed', 1, 'provision', 1, 1)`,
+      )
+      .run(SIGNUP);
+    w.fake.workflows.set(`${WF}/${SIGNUP}`, { status: "errored", restarts: 0 });
+    expect(
+      await main(
+        ["signup-redrive", "--env", "prod", "--signup", SIGNUP],
+        w.deps,
+      ),
+    ).toBe(0);
+    expect(w.parsed().find((l) => l.step === "signup-redrive")).toMatchObject({
+      step: "signup-redrive",
+      status: "ok",
+      data: { signup: SIGNUP, was: "failed", instance: "errored" },
+    });
+    expect(w.fake.workflows.get(`${WF}/${SIGNUP}`)?.restarts).toBe(1);
+    expect(w.execs.filter((x) => x.file === SECURITY)).toEqual([]);
+  });
 });
 
 describe("prod in CI: credentials from the 0600 files, with the same checks", () => {

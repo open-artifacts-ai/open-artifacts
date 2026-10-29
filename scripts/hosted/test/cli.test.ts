@@ -1560,7 +1560,15 @@ describe("signup-redrive", () => {
     });
     expect(row(w).updated_at).toBeGreaterThan(1);
     expect(restarts(w)).toBe(1);
-    // Through the Workflows REST API: one PATCH of the instance's status.
+    // Through the Workflows REST API: a GET of the status alone, then one
+    // PATCH of the instance's status.
+    expect(
+      w.fake.raw
+        .filter((r) => r.method === "GET" && r.path.includes("/workflows/"))
+        .map((r) => r.path),
+    ).toEqual([
+      `/accounts/${w.fake.accountId}/workflows/${WF.staging}/instances/${SIGNUP}?simple=true`,
+    ]);
     const patch = w.fake.raw.filter((r) => r.method === "PATCH");
     expect(patch).toEqual([
       {
@@ -1653,8 +1661,53 @@ describe("signup-redrive", () => {
     expect(await main(REDRIVE(), w.deps)).toBe(1);
     expect(row(w)).toMatchObject({ status: "queued", error: null });
     expect(restarts(w)).toBe(0);
+    // The row was just queued: a redrive waits out the quiet window first.
+    await w.deps.sleep?.(15 * 60_000);
     expect(await main(REDRIVE(), w.deps)).toBe(0);
     expect(restarts(w)).toBe(1);
+  });
+
+  it("a queued row touched under 15 minutes ago is refused, so overlapping redrives restart once", async () => {
+    const w = world();
+    seed(w, "failed", "errored");
+    expect(await main(REDRIVE(), w.deps)).toBe(0);
+    expect(restarts(w)).toBe(1);
+    // The restarted instance dies again before its first step lands.
+    w.fake.workflows.set(`${WF.staging}/${SIGNUP}`, {
+      status: "errored",
+      restarts: 1,
+    });
+    const before = row(w);
+    await w.deps.sleep?.(15 * 60_000 - 1);
+    expect(await main(REDRIVE(), w.deps)).toBe(1);
+    expect(
+      w
+        .parsed()
+        .filter((l) => l.step === "signup-redrive")
+        .at(-1),
+    ).toMatchObject({ status: "error", message: /under 15 minutes/ });
+    expect(row(w)).toEqual(before);
+    expect(restarts(w)).toBe(1);
+    await w.deps.sleep?.(1);
+    expect(await main(REDRIVE(), w.deps)).toBe(0);
+    expect(restarts(w)).toBe(2);
+  });
+
+  it("a redrive that loses the race to another (same status, newer updated_at) restarts nothing", async () => {
+    const w = world();
+    seed(w, "queued", "errored");
+    // The other redrive lands between this one's read and its update.
+    w.fake.inject((m, p) => {
+      if (m === "GET" && p.includes("/workflows/"))
+        w.db()
+          .prepare("UPDATE signups SET updated_at = 2 WHERE signup_id = ?")
+          .run(SIGNUP);
+      return false;
+    });
+    expect(await main(REDRIVE(), w.deps)).toBe(1);
+    expect(step(w).message).toMatch(/changed while redriving/);
+    expect(row(w)).toMatchObject({ status: "queued", updated_at: 2 });
+    expect(restarts(w)).toBe(0);
   });
 
   it("redrive refuses a non-ULID before any call", async () => {

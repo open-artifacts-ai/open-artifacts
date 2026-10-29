@@ -426,6 +426,29 @@ describe("deploy-platform-worker.sh", () => {
         expect(run(["provisioner", env], OK, tree(CONFIG)).code).toBe(0);
     });
 
+    it("swapped tokens are refused: each env block binds its own env's token", () => {
+      const swapped = tree(
+        CONFIG.replace(
+          '"secret_name": "oa-s-provision-token"',
+          '"secret_name": "@S@"',
+        )
+          .replace(
+            '"secret_name": "oa-p-provision-token"',
+            '"secret_name": "oa-s-provision-token"',
+          )
+          .replace(
+            '"secret_name": "@S@"',
+            '"secret_name": "oa-p-provision-token"',
+          ),
+      );
+      for (const env of ["staging", "prod"]) {
+        const r = run(["provisioner", env], OK, swapped);
+        expect(r.code, env).toBe(1);
+        expect(r.log).toEqual([]);
+        expect(r.err).toMatch(/block must bind/);
+      }
+    });
+
     it("a config that binds the provision token on any other target is refused", () => {
       const SCHED = readFileSync(
         join(root, "apps/scheduler/wrangler.jsonc"),

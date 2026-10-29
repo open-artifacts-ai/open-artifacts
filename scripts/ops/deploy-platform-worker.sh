@@ -131,6 +131,25 @@ if [ "$app" = provisioner ]; then
     echo "the provisioner may bind only oa-s-provision-token and oa-p-provision-token, once each, and no other secret" >&2
     exit 1
   fi
+  # Each env block binds its own env's token, so a swapped pair is refused. A
+  # line opening "staging": { or "prod": { starts that block.
+  p=${env:0:1}
+  bound=$(awk '
+    match($0, /"(staging|prod)"[[:space:]]*:[[:space:]]*[{]/) {
+      cur = substr($0, RSTART + 1, RLENGTH); sub(/".*/, "", cur)
+    }
+    {
+      s = $0
+      while (match(s, /"secret_name"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+        n = substr(s, RSTART, RLENGTH); sub(/"$/, "", n); sub(/.*"/, "", n)
+        print cur ":" n
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }' "$copy")
+  if ! printf '%s\n' "$bound" | grep -qx "${env}:oa-${p}-provision-token"; then
+    echo "the provisioner's ${env} block must bind oa-${p}-provision-token" >&2
+    exit 1
+  fi
 elif grep -q 'provision-token' "$copy"; then
   echo "only the provisioner may bind the provision token (oa-<p>-provision-token)" >&2
   exit 1
