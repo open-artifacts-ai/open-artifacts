@@ -314,11 +314,11 @@ export class Listener {
   /** Tests: every token-bearing request's path and raw body. */
   tap?: (path: string, body: string) => void;
   /** Accepts a connection only from our own Chrome (by its local port). */
-  verify?: (remotePort: number) => boolean;
+  verify?: (remotePort: number) => boolean | "unknown";
   /** A request from a process that isn't our Chrome (refused). */
   onForeign?: () => void;
   foreign = 0;
-  private verified = new Map<number, boolean>();
+  private verified = new Map<number, boolean | "unknown">();
 
   /** Resolves on the extension's next check-in (/hello with this run's token). */
   nextHello(): Promise<void> {
@@ -376,9 +376,12 @@ export class Listener {
         this.verified.set(port, ok);
         req.socket.once("close", () => this.verified.delete(port));
       }
-      if (!ok) {
-        this.foreign++;
-        this.onForeign?.();
+      if (ok !== true) {
+        // "unknown": the sender is gone (a closed Chrome): refused, not "another Chrome".
+        if (ok === false) {
+          this.foreign++;
+          this.onForeign?.();
+        }
         return this.reply(res, 403, {});
       }
     }

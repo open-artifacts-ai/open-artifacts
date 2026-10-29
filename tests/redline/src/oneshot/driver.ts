@@ -572,8 +572,11 @@ class Session {
     // its "clear" never touches their real Google cookies.
     // (Any Chrome this run started: a closed one's last requests aren't
     // "another Chrome".)
-    this.L.verify = (port) =>
-      groupsOnPort(port).some((g) => this.groups.has(g));
+    this.L.verify = (port) => {
+      const groups = groupsOnPort(port);
+      if (!groups.length) return "unknown";
+      return groups.some((g) => this.groups.has(g));
+    };
     let told = false;
     this.L.onForeign = () => {
       if (told) return;
