@@ -93,17 +93,25 @@ const EMPTY: Record<Scope, [string, React.ReactNode]> = {
  * The name of the caller's own connection behind `agentVia` (#589), from the
  * Settings › Agents queries: a grant's label, else its client name; a
  * token's label. Only the owner loads these, so the label stays theirs.
+ * "" while the list loads; "This connection" once loaded and not found.
  */
 function useConnectionName(via: string | undefined): string | undefined {
   const grant = via?.startsWith("g:") ? via.slice(2) : undefined;
   const token = via?.startsWith("t:") ? via.slice(2) : undefined;
   const clients = useOAuthClients(grant !== undefined);
   const tokens = useTokens(token !== undefined);
-  if (grant !== undefined) {
-    const c = clients.data?.find((x) => x.grantId === grant);
-    return c ? (c.label ?? c.clientName) : undefined;
-  }
-  return tokens.data?.find((x) => x.id === token)?.label;
+  if (via === undefined) return undefined;
+  // No label while the list loads, so the chip never flashes the fallback.
+  const q = grant !== undefined ? clients : tokens;
+  if (q.isPending) return "";
+  const name =
+    grant !== undefined
+      ? (() => {
+          const c = clients.data?.find((x) => x.grantId === grant);
+          return c ? (c.label ?? c.clientName) : undefined;
+        })()
+      : tokens.data?.find((x) => x.id === token)?.label;
+  return name ?? "This connection";
 }
 
 export function Library({ scope }: { scope: Scope }) {
@@ -238,11 +246,7 @@ export function Library({ scope }: { scope: Scope }) {
         format={s.format}
         agent={s.agent}
         agents={agents}
-        via={
-          agentVia === undefined
-            ? undefined
-            : { label: viaName ?? "This connection" }
-        }
+        via={agentVia === undefined ? undefined : { label: viaName ?? "" }}
         view={view}
         onFormat={(format) => set({ format })}
         onAgent={(agent) => set({ agent, agentVia: undefined })}

@@ -224,7 +224,7 @@ describe("list", () => {
     );
   });
 
-  it("MCP list_artifacts takes agentVia (the shared schema)", () => {
+  it("the schema keeps agentVia and appends it last", () => {
     const p = ListQuerySchema.parse({ agentVia: `g:${grant1}` });
     expect(p.agentVia).toBe(`g:${grant1}`);
     // The key is last: existing keys keep their order.
@@ -272,8 +272,11 @@ describe("rows_read stays bounded by the page, not the library", () => {
     const gOther = newId();
     const stmts: D1PreparedStatement[] = [];
     let t = Date.now() - 10_000_000;
+    // The caller's own artifacts: scope mine's candidate set.
+    let candidates = 0;
     const seed = (owner: U, v: string | null, visibility = "team") => {
       const id = newId();
+      if (owner === caller) candidates++;
       t += 1000;
       stmts.push(
         env.DB.prepare(
@@ -309,14 +312,17 @@ describe("rows_read stays bounded by the page, not the library", () => {
       expect(page.n).toBe(limit + 1);
       // The walk stops at the page: the EXISTS adds about one versions PK
       // probe per row walked (measured 60 -> 84, 135 -> 189 and 260 -> 364
-      // for limits 10, 25 and 50). A walk of the caller's 200 artifacts
-      // reads over 600 (642, the no-match case below).
+      // for limits 10, 25 and 50).
       expect(page.read).toBeLessThanOrEqual(2 * base.read);
     }
-    // What the bound catches: a via with no matches walks every candidate.
+    // Known v1 limit, not a guarantee (tracked in #852, like agent= and
+    // format): a via with few or no matches walks the caller's candidate set
+    // (measured 642 rows for 160 candidates: the owner index entry, the row
+    // and the versions PK probe each). The ceiling keeps it a walk of the
+    // candidates, never a versions scan per row (300+ rows each).
     const none = await mine(25, `g:${newId()}`);
     expect(none.n).toBe(0);
-    expect(none.read).toBeGreaterThan(2 * (await mine(25)).read);
+    expect(none.read).toBeLessThanOrEqual(5 * candidates);
     // scope all: the unfiltered page already reads the caller's visible set
     // (the MULTI-INDEX OR sorts it), and the EXISTS adds only its probes
     // over the rows walked (measured: 1567 -> 1690). A versions scan per row

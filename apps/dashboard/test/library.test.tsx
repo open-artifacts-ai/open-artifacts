@@ -210,6 +210,37 @@ describe("Library", () => {
       expect(sent("agentVia")).toContain(`t:${TOKEN.id}`);
     });
 
+    it("no fallback while the list loads; the label once it lands", async () => {
+      let release = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      let asked = false;
+      server.use(
+        http.get("*/api/v1/oauth-clients", async () => {
+          asked = true;
+          await gate;
+          return HttpResponse.json([{ ...GRANT, label: "Desk" }]);
+        }),
+      );
+      mount(`/?agentVia=g:${GRANT.grantId}`);
+      const box = await agentBox();
+      await waitFor(() => expect(asked).toBe(true));
+      expect(box).not.toHaveTextContent("This connection");
+      expect(box).not.toHaveTextContent("All agents");
+      release();
+      await waitFor(async () =>
+        expect(await agentBox()).toHaveTextContent("Desk"),
+      );
+    });
+
+    it("a connection not in the caller's list reads This connection once loaded", async () => {
+      mount("/?agentVia=g:NotMine123456789");
+      await waitFor(async () =>
+        expect(await agentBox()).toHaveTextContent("This connection"),
+      );
+    });
+
     it("Clear filters clears agentVia with the rest", async () => {
       const router = mount(`/?format=markdown&agentVia=g:${GRANT.grantId}`);
       fireEvent.click(
