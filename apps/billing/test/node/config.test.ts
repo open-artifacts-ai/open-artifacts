@@ -17,6 +17,10 @@ const strip = (s: string) =>
 const cfg: any = JSON.parse(
   strip(readFileSync(join(app, "wrangler.jsonc"), "utf8")),
 );
+// biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
+const broker: any = JSON.parse(
+  strip(readFileSync(join(app, "../auth-broker/wrangler.jsonc"), "utf8")),
+);
 const ENVS = ["staging", "prod"] as const;
 
 const ROUTING = ["route", "routes", "custom_domain", "custom_domains"];
@@ -36,12 +40,24 @@ describe("wrangler.jsonc", () => {
           database_id: `{{BILLING_DB_ID_${env.toUpperCase()}}}`,
         },
       ]);
+      // The install registry, for the POSTs' signatures: the same namespace
+      // (the same placeholder) the auth broker binds in this env.
+      expect(e.kv_namespaces).toEqual([
+        {
+          binding: "BROKER_REGISTRY",
+          id: `{{BROKER_REGISTRY_ID_${env.toUpperCase()}}}`,
+        },
+      ]);
+      expect(e.kv_namespaces).toEqual(
+        broker.env[env].kv_namespaces.filter(
+          (k: { binding: string }) => k.binding === "BROKER_REGISTRY",
+        ),
+      );
       // Workers Logs would record full URLs.
       expect(e.observability).toEqual({ enabled: false });
       for (const k of [
         "vars",
         "services",
-        "kv_namespaces",
         "r2_buckets",
         "durable_objects",
         "queues",
@@ -64,7 +80,14 @@ describe("wrangler.jsonc", () => {
   });
 
   it("has no top-level name, main or bindings (a deploy without --env can't run)", () => {
-    for (const k of ["name", "main", "vars", "d1_databases", "services"])
+    for (const k of [
+      "name",
+      "main",
+      "vars",
+      "d1_databases",
+      "kv_namespaces",
+      "services",
+    ])
       expect(cfg).not.toHaveProperty(k);
   });
 });

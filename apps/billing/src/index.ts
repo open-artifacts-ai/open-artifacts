@@ -6,12 +6,25 @@
 // the plain 404. The install id comes only from x-oa-gate-install, which
 // BillingGate sets to its own install; never from a query or a body.
 //
+// The two POSTs also carry the install's Ed25519 assertion (defense in
+// depth), the auth broker's redeem scheme: x-oa-kid names one of the gate
+// install's registry keys, x-oa-sig signs requestTranscript(path, kid, body)
+// over the exact body text, and the body's `ts` is within ASSERTION_SKEW_MS.
+// Anything else is 401 bad_signature and writes nothing.
+//
 // Logs carry fixed categories and install ids only: never bodies, headers or
 // URLs.
+import {
+  ASSERTION_SKEW_MS,
+  lookupInstall,
+  verifyAssertion,
+} from "@oa/broker-core";
 import { GATE_INSTALL_HEADER } from "@oa/broker-core/gate-header";
 
 export interface Env {
   BILLING_DB: D1Database;
+  /** The install registry (read-only): the namespace the auth broker reads. */
+  BROKER_REGISTRY: KVNamespace;
 }
 
 const DAY_MS = 86_400_000;
@@ -75,22 +88,59 @@ const TRIAL_SQL = `INSERT INTO tiers (install_id, tier, status, trial_ends_at, v
 const USAGE_SQL =
   "INSERT INTO usage (install_id, month, creators_json, count, received_at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (install_id, month) DO UPDATE SET creators_json = excluded.creators_json, count = excluded.count, received_at = excluded.received_at";
 
-/** The body as a JSON object, or null for anything else (or over MAX_BODY). */
-async function jsonObject(
-  req: Request,
-): Promise<Record<string, unknown> | null> {
+/** The body's exact text (JSON content type, UTF-8, at most MAX_BODY), or null. */
+async function bodyText(req: Request): Promise<string | null> {
   const type = req.headers.get("content-type") ?? "";
   if (!/^application\/json(\s*;|$)/i.test(type)) return null;
   const declared = req.headers.get("content-length");
   if (declared !== null && !(Number(declared) <= MAX_BODY)) return null;
-  let text: string;
   try {
     const buf = await req.arrayBuffer();
     if (buf.byteLength > MAX_BODY) return null;
-    text = new TextDecoder("utf-8", { fatal: true }).decode(buf);
+    return new TextDecoder("utf-8", { fatal: true }).decode(buf);
   } catch {
     return null;
   }
+}
+
+const sigLog = (outcome: string, install: string) =>
+  console.log("billing signature", outcome, install);
+const badSignature = () => bad("bad_signature", 401);
+
+/**
+ * A signed POST's body as a JSON object, or the refusal. The kid must be one
+ * of the GATE install's registry keys (never the body's install), the
+ * signature must cover this route's path and the exact body text, and the
+ * body's `ts` must be within ASSERTION_SKEW_MS of now. Runs before any write.
+ */
+async function signedBody(
+  req: Request,
+  env: Env,
+  install: string,
+  path: string,
+  now: number,
+): Promise<Record<string, unknown> | Response> {
+  const kid = req.headers.get("x-oa-kid") ?? "";
+  const sig = req.headers.get("x-oa-sig") ?? "";
+  const text = await bodyText(req);
+  if (text === null) return bad("bad_body");
+  if (!kid || !sig) return sigLog("missing", install), badSignature();
+  const entry = await lookupInstall(env.BROKER_REGISTRY, install, now);
+  if (!entry) return sigLog("unknown_install", install), badSignature();
+  if (!(await verifyAssertion(entry, path, kid, text, sig)))
+    return sigLog("bad", install), badSignature();
+  const body = jsonObject(text);
+  if (!body) return bad("bad_body");
+  if (
+    typeof body.ts !== "number" ||
+    !(Math.abs(now - body.ts) <= ASSERTION_SKEW_MS)
+  )
+    return sigLog("stale", install), badSignature();
+  return body;
+}
+
+/** The text as a JSON object, or null for anything else. */
+function jsonObject(text: string): Record<string, unknown> | null {
   let body: unknown;
   try {
     body = JSON.parse(text);
@@ -115,11 +165,9 @@ async function tier(db: D1Database, install: string, now: number) {
 async function trialStart(
   db: D1Database,
   install: string,
-  req: Request,
+  body: Record<string, unknown>,
   now: number,
 ) {
-  const body = await jsonObject(req);
-  if (!body) return bad("bad_body");
   if (mismatched(body, install)) return bad("install_mismatch", 403);
   const started = await db
     .prepare(TRIAL_SQL)
@@ -138,11 +186,9 @@ async function trialStart(
 async function usage(
   db: D1Database,
   install: string,
-  req: Request,
+  body: Record<string, unknown>,
   now: number,
 ) {
-  const body = await jsonObject(req);
-  if (!body) return bad("bad_body");
   if (mismatched(body, install)) return bad("install_mismatch", 403);
   const { month, creators, count } = body;
   if (typeof month !== "string" || !MONTH.test(month)) return bad("bad_month");
@@ -201,9 +247,12 @@ export default {
     try {
       if (route === "GET /tier")
         return await tier(env.BILLING_DB, install, now);
+      // Both POSTs: the install's signature first, before any write.
+      const body = await signedBody(req, env, install, url.pathname, now);
+      if (body instanceof Response) return body;
       if (route === "POST /trial/start")
-        return await trialStart(env.BILLING_DB, install, req, now);
-      return await usage(env.BILLING_DB, install, req, now);
+        return await trialStart(env.BILLING_DB, install, body, now);
+      return await usage(env.BILLING_DB, install, body, now);
     } catch {
       // Never the error text: it can carry a D1 message.
       console.error("billing db_error", install);

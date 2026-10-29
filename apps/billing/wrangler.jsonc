@@ -1,7 +1,8 @@
 // Hosted billing Worker (self-serve step 1): the tier store. One Worker per
 // env, oa-s-billing / oa-p-billing, with its own D1 (oa-s-billing /
-// oa-p-billing), separate from the sign-in registry and the platform D1, so a
-// billing bug can't touch either.
+// oa-p-billing), separate from the platform D1, so a billing bug can't touch
+// it. It reads the sign-in registry (BROKER_REGISTRY, the auth broker's
+// namespace) and never writes it.
 //
 // Installs reach it only through BillingGate stubs (@oa/broker-core's
 // billing-gate) that dispatch and the scheduler pass in ctx.props; the
@@ -32,6 +33,14 @@
           "database_name": "oa-s-billing",
           "database_id": "{{BILLING_DB_ID_STAGING}}"
         }
+      ],
+      // The install registry the auth broker reads (read-only here), for the
+      // POSTs' install signatures.
+      "kv_namespaces": [
+        {
+          "binding": "BROKER_REGISTRY",
+          "id": "{{BROKER_REGISTRY_ID_STAGING}}"
+        }
       ]
     },
     "prod": {
@@ -46,6 +55,9 @@
           "database_name": "oa-p-billing",
           "database_id": "{{BILLING_DB_ID_PROD}}"
         }
+      ],
+      "kv_namespaces": [
+        { "binding": "BROKER_REGISTRY", "id": "{{BROKER_REGISTRY_ID_PROD}}" }
       ]
     }
   }

@@ -10,14 +10,19 @@ import {
   it,
   vi,
 } from "vitest";
+import { keyId, publicFromPkcs8, signRequest } from "@oa/auth-core";
+import { clearRegistryCache } from "@oa/broker-core";
 import billing, { type Env, MAX_CREATORS, TRIAL_MS } from "../src/index.js";
 
 // The tier store's routes. Gate routes answer only over a binding (no
 // cf-connecting-ip) and only for the install in x-oa-gate-install; every
-// case also checks no other install's row is read or written.
+// case also checks no other install's row is read or written. The POSTs also
+// carry the install's Ed25519 signature (the auth broker's redeem scheme).
 
 const db = (testEnv as unknown as { BILLING_DB: D1Database }).BILLING_DB;
-const env = { BILLING_DB: db } as Env;
+const registry = (testEnv as unknown as { BROKER_REGISTRY: KVNamespace })
+  .BROKER_REGISTRY;
+const env = { BILLING_DB: db, BROKER_REGISTRY: registry } as Env;
 
 beforeAll(async () => {
   const m = (testEnv as unknown as { TEST_MIGRATIONS: D1Migration[] })
@@ -31,6 +36,8 @@ beforeEach(async () => {
     db.prepare("DELETE FROM usage"),
     db.prepare("DELETE FROM stripe_events"),
   ]);
+  clearRegistryCache();
+  await register();
 });
 
 afterEach(() => {
@@ -81,27 +88,98 @@ const usageOf = (install: string) =>
     .all()
     .then((r) => r.results);
 
-/** A request as the gate sends it: the install header, no cf-connecting-ip. */
-function gated(
+/** A PKCS#8 Ed25519 private key from a fixed seed, base64url. */
+const pk = (fill: number) =>
+  b64u(
+    new Uint8Array([
+      ...[0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65],
+      ...[0x70, 0x04, 0x22, 0x04, 0x20],
+      ...new Uint8Array(32).fill(fill),
+    ]),
+  );
+function b64u(bytes: Uint8Array) {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+const KEYS: Record<string, string> = { [A]: pk(1), [B]: pk(2) };
+const kidOf = async (key: string) => keyId(await publicFromPkcs8(key));
+
+/** The registry entries the auth broker reads: A and B, one key each. */
+async function register() {
+  for (const [id, key] of Object.entries(KEYS)) {
+    const x = await publicFromPkcs8(key);
+    await registry.put(
+      `install:${id}`,
+      JSON.stringify({
+        installId: id,
+        origin: `https://${id}.example.test`,
+        keys: [{ kid: await keyId(x), x }],
+      }),
+    );
+  }
+}
+
+type Sign = {
+  /** The key to sign with (default: the header install's). */
+  key?: string;
+  /** The path the signature covers (default: the request's). */
+  path?: string;
+  /** Sign this text instead of the body sent. */
+  text?: string;
+  /** Leave the request unsigned. */
+  none?: boolean;
+};
+
+/**
+ * A request as the gate sends it: the install header, no cf-connecting-ip.
+ * A POST is signed as an install signs it: its object body gets `ts` (now)
+ * unless it has one, and x-oa-kid/x-oa-sig cover the path and exact text.
+ */
+async function gated(
   method: string,
   path: string,
   body?: unknown,
   headers: Record<string, string> = { "x-oa-gate-install": A },
+  sign: Sign = {},
 ) {
+  const text =
+    body === undefined
+      ? undefined
+      : typeof body === "string"
+        ? body
+        : JSON.stringify(
+            typeof body === "object" && body !== null && !("ts" in body)
+              ? { ...body, ts: Date.now() }
+              : body,
+          );
+  const install = headers["x-oa-gate-install"] ?? A;
+  const key = sign.key ?? KEYS[install] ?? KEYS[A];
+  const sig: Record<string, string> =
+    method === "POST" && text !== undefined && !sign.none && key
+      ? {
+          "x-oa-kid": await kidOf(key),
+          "x-oa-sig": await signRequest(
+            key,
+            sign.path ?? path,
+            await kidOf(key),
+            sign.text ?? text,
+          ),
+        }
+      : {};
   return new Request(`${ORIGIN}${path}`, {
     method,
     headers: {
       ...(body === undefined ? {} : { "content-type": "application/json" }),
+      ...sig,
       ...headers,
     },
-    ...(body === undefined
-      ? {}
-      : { body: typeof body === "string" ? body : JSON.stringify(body) }),
+    ...(text === undefined ? {} : { body: text }),
   });
 }
 
-const call = (req: Request) =>
-  billing.fetch(req as Parameters<typeof billing.fetch>[0], env);
+const call = async (req: Request | Promise<Request>) =>
+  billing.fetch((await req) as Parameters<typeof billing.fetch>[0], env);
 
 const at = () => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -224,6 +302,165 @@ describe("the install id comes only from x-oa-gate-install", () => {
     expect(await rowOf(B)).toMatchObject({ tier: "team", version: 1 });
     expect(await usageOf(B)).toEqual([]);
     expect(await usageOf(A)).toEqual([]);
+  });
+});
+
+describe("the POSTs carry the gate install's signature", () => {
+  const usage = { month: "2026-10", creators: ["u1"], count: 1 };
+  const POSTS: [string, Record<string, unknown>][] = [
+    ["/trial/start", { install: A }],
+    ["/usage", { install: A, ...usage }],
+  ];
+
+  /** Nothing was written for A or B, and B's row is as seeded. */
+  async function nothingWritten() {
+    expect(await rowOf(A)).toMatchObject({ tier: "free", version: 1 });
+    expect(await rowOf(B)).toMatchObject({ tier: "team", version: 1 });
+    expect(await usageOf(A)).toEqual([]);
+    expect(await usageOf(B)).toEqual([]);
+  }
+
+  async function refused(req: Request | Promise<Request>) {
+    const r = await call(req);
+    expect(r.status).toBe(401);
+    expect(await r.json()).toEqual({ error: "bad_signature" });
+  }
+
+  beforeEach(async () => {
+    await seed([{ install: A }, { install: B, tier: "team" }]);
+  });
+
+  it("a signed POST passes (the baseline for every refusal below)", async () => {
+    at();
+    expect((await call(gated("POST", "/trial/start", { install: A }))).status)
+      .toBe(200);
+    expect(
+      (await call(gated("POST", "/usage", { install: A, ...usage }))).status,
+    ).toBe(200);
+    expect(await rowOf(A)).toMatchObject({ tier: "trial", version: 2 });
+    expect(await usageOf(A)).toHaveLength(1);
+  });
+
+  it("no signature, or only half of one: 401, nothing written", async () => {
+    for (const [path, body] of POSTS) {
+      await refused(gated("POST", path, body, undefined, { none: true }));
+      const full = await gated("POST", path, body);
+      for (const drop of ["x-oa-kid", "x-oa-sig"]) {
+        const h = new Headers(full.headers);
+        h.delete(drop);
+        await refused(
+          new Request(full.url, {
+            method: "POST",
+            headers: h,
+            body: await full.clone().text(),
+          }),
+        );
+      }
+    }
+    await nothingWritten();
+  });
+
+  it("a bad signature: garbage, or one for another route, 401, nothing written", async () => {
+    for (const [path, body] of POSTS) {
+      const good = await gated("POST", path, body);
+      const h = new Headers(good.headers);
+      h.set("x-oa-sig", "A".repeat(86));
+      await refused(
+        new Request(good.url, {
+          method: "POST",
+          headers: h,
+          body: await good.clone().text(),
+        }),
+      );
+      // Signed for the other POST, or for the auth broker's redeem.
+      for (const other of [
+        path === "/usage" ? "/trial/start" : "/usage",
+        "/google/redeem",
+      ])
+        await refused(gated("POST", path, body, undefined, { path: other }));
+    }
+    await nothingWritten();
+  });
+
+  it("a stale or missing ts: 401, nothing written", async () => {
+    at();
+    for (const [path, body] of POSTS)
+      for (const ts of [NOW - 60_001, NOW + 60_001, "x", null, undefined]) {
+        await refused(gated("POST", path, { ...body, ts }));
+      }
+    // At the edge of the window it still passes.
+    expect(
+      (await call(gated("POST", "/usage", { install: A, ...usage, ts: NOW - 60_000 })))
+        .status,
+    ).toBe(200);
+    await db.prepare("DELETE FROM usage").run();
+    await nothingWritten();
+  });
+
+  it("another install's kid and key: 401, nothing written (the kid is checked against the gate's install, never the body's)", async () => {
+    for (const [path, body] of POSTS) {
+      // B signs a body naming B, but the gate says A.
+      await refused(
+        gated("POST", path, { ...body, install: B }, undefined, {
+          key: KEYS[B],
+        }),
+      );
+      // B signs a body with no install at all.
+      const { install: _, ...rest } = body;
+      await refused(gated("POST", path, rest, undefined, { key: KEYS[B] }));
+      // A key the registry doesn't know.
+      await refused(gated("POST", path, body, undefined, { key: pk(9) }));
+    }
+    await nothingWritten();
+  });
+
+  it("an unknown or disabled install: 401, nothing written", async () => {
+    const C = "iccc111ccc11";
+    for (const [path, body] of POSTS)
+      await refused(
+        gated("POST", path, { ...body, install: C }, {
+          "x-oa-gate-install": C,
+        }, { key: KEYS[A] }),
+      );
+    const x = await publicFromPkcs8(KEYS[A] as string);
+    await registry.put(
+      `install:${A}`,
+      JSON.stringify({
+        installId: A,
+        origin: "https://a.example.test",
+        keys: [{ kid: await keyId(x), x }],
+        disabled: true,
+      }),
+    );
+    clearRegistryCache();
+    for (const [path, body] of POSTS) await refused(gated("POST", path, body));
+    expect(await rowOf(C)).toBeNull();
+    await nothingWritten();
+  });
+
+  it("a body tampered with after signing: 401, nothing written", async () => {
+    for (const [path, body] of POSTS) {
+      const signedText = JSON.stringify({ ...body, ts: Date.now() });
+      // The signature is over signedText; the body sent differs.
+      const tampered =
+        path === "/usage"
+          ? JSON.stringify({
+              ...body,
+              creators: ["u1", "u2"],
+              count: 2,
+              ts: Date.now(),
+            })
+          : `${signedText} `;
+      await refused(
+        gated("POST", path, tampered, undefined, { text: signedText }),
+      );
+    }
+    await nothingWritten();
+  });
+
+  it("GET /tier and GET /health need no signature", async () => {
+    expect((await call(gated("GET", "/tier"))).status).toBe(200);
+    expect((await call(gated("GET", "/health"))).status).toBe(200);
   });
 });
 
@@ -492,7 +729,7 @@ describe("logs", () => {
       },
     } as unknown as Env;
     const r = await billing.fetch(
-      gated("GET", "/tier") as Parameters<typeof billing.fetch>[0],
+      (await gated("GET", "/tier")) as Parameters<typeof billing.fetch>[0],
       broken,
     );
     expect(r.status).toBe(503);

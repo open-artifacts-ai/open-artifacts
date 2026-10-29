@@ -70,6 +70,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20261018.1
         version: 5.20261018.1
+      '@oa/auth-core':
+        specifier: workspace:*
+        version: link:../../packages/auth-core
       '@oa/provision':
         specifier: workspace:*
         version: link:../../packages/provision
