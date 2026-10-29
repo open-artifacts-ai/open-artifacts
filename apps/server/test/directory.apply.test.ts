@@ -13,13 +13,18 @@ import {
   applyUsers,
   DIFF_CHUNK,
 } from "../src/directory/apply.js";
+import { bindPage } from "../src/directory/binding.js";
 import type { GoogleUser } from "../src/directory/google.js";
 import { SignInRefused } from "../src/directory/signin.js";
 import { SyncEngine } from "../src/directory/sync.js";
 import type { DirectorySync } from "../src/directory/sync-do.js";
 import type { Env } from "../src/env.js";
 import { onGoogleSignIn, SYNC_DO_NAME } from "../src/services/directory.js";
-import { admit, resetIdentity } from "../src/services/identity.js";
+import {
+  admit,
+  PERSONAL_TENANT,
+  resetIdentity,
+} from "../src/services/identity.js";
 import { getUser } from "../src/services/users.js";
 import { direct, mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
 import {
@@ -1084,5 +1089,82 @@ describe("P2 item 4: an admin's link reset is never a recycled address", () => {
     await applyUsers(e, [gu(fresh, gone)], { tenant: "a.com" });
     expect((await userByIdentity(fresh))?.id).not.toBe(gid);
     expect(await statusOf(gid)).toBe("removed");
+  });
+});
+
+describe("personal Google accounts are never the directory's", () => {
+  const gu = (
+    id: string,
+    primaryEmail: string,
+    o: Partial<GoogleUser> = {},
+  ): GoogleUser => ({
+    id,
+    primaryEmail,
+    suspended: false,
+    deleted: false,
+    isAdmin: false,
+    customerId: "C0123",
+    ...o,
+  });
+  /** A row linked to a personal account (identities.tenant ''), as admit links one. */
+  const personal = async (email: string) => {
+    const sub = `p-${crypto.randomUUID()}`;
+    const uid = await seedUser(email, "member", {
+      googleSub: sub,
+      tenant: PERSONAL_TENANT,
+    });
+    await env.DB.prepare("update users set last_seen_at = ? where id = ?")
+      .bind(Date.now(), uid)
+      .run();
+    return { uid, sub };
+  };
+  const state = (uid: string) =>
+    one<{ email: string; status: string; bound: number; sub: string }>(
+      `select u.email, u.status, i.directory_bound bound, i.subject sub
+       from users u join identities i on i.user_id = u.id and i.provider = 'google'
+       where u.id = ?`,
+      uid,
+    );
+
+  it("applyUsers: never deletes, suspends, renames or recycles a personal account's row", async () => {
+    // In AUTH_DOMAINS (as if the domains changed after the link), so only
+    // the personal-account rule keeps it out.
+    const addr = uniq("pers");
+    const p = await personal(addr);
+    const before = await state(p.uid);
+    // A new directory id behind its address (the recycled-address signal).
+    await applyUsers(e, [gu(`g-new-${crypto.randomUUID()}`, addr)], {
+      tenant: "a.com",
+      lookup: async () => null,
+    });
+    // Its own sub listed as deleted, suspended, or renamed.
+    await applyUsers(e, [gu(p.sub, addr, { deleted: true })], {
+      tenant: "a.com",
+    });
+    await applyUsers(e, [gu(p.sub, addr, { suspended: true })], {
+      tenant: "a.com",
+    });
+    await applyUsers(e, [gu(p.sub, uniq("moved"))], { tenant: "a.com" });
+    expect(await state(p.uid)).toEqual(before);
+    expect(before).toMatchObject({ email: addr, status: "active", bound: 0 });
+    expect(await all("select id from users where email = ?", addr)).toEqual([
+      { id: p.uid },
+    ]);
+  });
+
+  it("bindPage: never binds or suspends a personal account's identity", async () => {
+    const addr = uniq("pers-b");
+    const p = await personal(addr);
+    await bindPage(e, [gu(p.sub, addr)], { tenant: "a.com", allowEmail: true });
+    await bindPage(e, [gu(p.sub, addr, { suspended: true })], {
+      tenant: "a.com",
+      allowEmail: true,
+    });
+    expect(await state(p.uid)).toMatchObject({
+      email: addr,
+      status: "active",
+      bound: 0,
+      sub: p.sub,
+    });
   });
 });
