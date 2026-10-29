@@ -1,6 +1,7 @@
 # Runs one oa:hosted operation (docs/ops/hosted.md, "The oa:hosted CLI") in
 # CI, by hand only: create, upgrade, rollback, update-vars, status, delete,
-# release-lease, turnstile-init, publish-release or publish-floor. Each env has
+# release-lease, turnstile-init, publish-release, publish-floor or
+# signup-redrive (args {"signup":"<ULID>"}). Each env has
 # its own Environment (hosted-staging-deploy, hosted-prod-deploy) holding
 # PROVISION_TOKEN and R2_TOKEN; every run waits for its required reviewer, and
 # prod runs only from main (checked here and again by the CLI). Inputs reach
@@ -32,6 +33,7 @@ on:
           - turnstile-init
           - publish-release
           - publish-floor
+          - signup-redrive
       install:
         description: "Install id (iXXXXXXXXXXX); empty for create and the env-level ops"
         required: false

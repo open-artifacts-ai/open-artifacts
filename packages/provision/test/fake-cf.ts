@@ -214,6 +214,8 @@ export class FakeCf {
   assetsPerBucket = 1;
   private completions = new Set<string>();
   readonly artifacts = new Map<string, { title: string; content: string }>();
+  /** Workflow instances by `<workflow>/<instance id>`; a restart sets queued. */
+  readonly workflows = new Map<string, { status: string; restarts: number }>();
   private faults: Fault[] = [];
   tokenInfo: Record<string, unknown>;
   scriptsReadStatus = 200;
@@ -495,6 +497,20 @@ export class FakeCf {
         return fail(500, "internal error");
       }
       return env({ sitekey, secret, name, domains, mode });
+    }
+    m = r.match(/^\/workflows\/([^/]+)\/instances\/([^/]+)(\/status)?$/);
+    if (m) {
+      const key = `${decodeURIComponent(m[1] as string)}/${decodeURIComponent(m[2] as string)}`;
+      const inst = this.workflows.get(key);
+      if (!inst) return fail(404, "instance not found", 10404);
+      if (!m[3] && req.method === "GET")
+        return env({ id: m[2], status: inst.status });
+      if (m[3] && req.method === "PATCH") {
+        if (json().status !== "restart") return fail(400, "unsupported status");
+        inst.status = "queued";
+        inst.restarts++;
+        return env({ status: "queued" });
+      }
     }
     m = r.match(/^\/challenges\/widgets\/([^/]+)$/);
     if (m && req.method === "GET") {

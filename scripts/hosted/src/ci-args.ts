@@ -11,6 +11,8 @@
 // - install: an install id where the op needs one, empty where it takes none.
 // - tag: a stable vX.Y.Z where the op needs one (create, upgrade: --to;
 //   publish-release: --tag), empty otherwise.
+// - signup-redrive: args.signup is the signup's ULID (no install, tag or
+//   confirm).
 // - args: a JSON object with only the op's keys (ARG_KEYS), each typed.
 //   update-vars and create take var: ["K=V", ...] with only the var names
 //   the CLI accepts (provision's hostedVarProblem).
@@ -44,6 +46,7 @@ export const OPS = [
   "turnstile-init",
   "publish-release",
   "publish-floor",
+  "signup-redrive",
 ] as const;
 export type Op = (typeof OPS)[number];
 
@@ -80,6 +83,7 @@ export const ARG_KEYS: Record<Op, readonly string[]> = {
   "turnstile-init": [],
   "publish-release": [],
   "publish-floor": ["floor"],
+  "signup-redrive": ["signup"],
 };
 
 export class ArgsRefused extends Error {
@@ -106,6 +110,8 @@ export interface Plan {
 }
 
 const STABLE_TAG = /^v\d+\.\d+\.\d+$/;
+/** A signup id: a ULID (Crockford base32, first character 0-7). */
+const ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 /** Printable ASCII only: no control characters, newlines or NULs anywhere. */
 const PRINTABLE = /^[\x20-\x7e]*$/;
 const MAX_ARGS = 16_384;
@@ -302,6 +308,13 @@ export function plan(i: Inputs, floorFile?: string): Plan {
       if (!floorFile?.startsWith("/"))
         refuse("publish-floor needs OPS_FLOOR_FILE (an absolute path)");
       argv.push("--floor", floorFile as string);
+      break;
+    }
+    case "signup-redrive": {
+      const signup = a.signup;
+      if (typeof signup !== "string" || !ULID.test(signup))
+        refuse("args.signup must be a signup id (a ULID)");
+      argv.push("--signup", signup as string);
       break;
     }
     default:

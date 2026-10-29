@@ -57,6 +57,7 @@ describe("hosted-ops.yml", () => {
         "turnstile-init",
         "publish-release",
         "publish-floor",
+        "signup-redrive",
       ].sort(),
     );
     expect(w.permissions).toEqual({ contents: "read" });

@@ -69,7 +69,7 @@ const INJECT = [
 ];
 
 describe("the op allowlist and env", () => {
-  it("accepts exactly the ten ops, all of them CLI commands", () => {
+  it("accepts exactly the eleven ops, all of them CLI commands", () => {
     expect([...OPS]).toEqual([
       "create",
       "upgrade",
@@ -81,6 +81,7 @@ describe("the op allowlist and env", () => {
       "turnstile-init",
       "publish-release",
       "publish-floor",
+      "signup-redrive",
     ]);
     for (const op of OPS)
       expect((COMMANDS as readonly string[]).includes(op)).toBe(true);
@@ -548,5 +549,45 @@ describe("the script: env in, one JSON argv out", () => {
     ]);
     expect(run({ OPS_ENV: "prod", OPS_OP: "status" }, io)).toBe(1);
     expect(errs).toEqual(["hosted-ops: refused: status needs an install"]);
+  });
+
+  it("signup-redrive: args.signup is a ULID; no install, tag or confirm", () => {
+    const SIGNUP = "01JBQ7Z8X9Y0ABCDEFGHJKMNPQ";
+    const R = (args: unknown, o: Partial<Inputs> = {}): Partial<Inputs> => ({
+      op: "signup-redrive",
+      install: "",
+      args: JSON.stringify(args),
+      ...o,
+    });
+    expect(ok(R({ signup: SIGNUP }))).toEqual({
+      argv: ["signup-redrive", "--env", "staging", "--signup", SIGNUP],
+      sweep: null,
+    });
+    expect(ok(R({ signup: SIGNUP }, { env: "prod" })).argv).toEqual([
+      "signup-redrive",
+      "--env",
+      "prod",
+      "--signup",
+      SIGNUP,
+    ]);
+    for (const signup of [
+      undefined,
+      "",
+      1,
+      [SIGNUP],
+      SIGNUP.toLowerCase(),
+      `${SIGNUP}0`,
+      SIGNUP.slice(1),
+      // Crockford base32 has no I, L, O or U; a ULID starts 0-7.
+      "01JBQ7Z8X9Y0ABCDEFGHJKMNPI",
+      "81JBQ7Z8X9Y0ABCDEFGHJKMNPQ",
+      `-${SIGNUP.slice(1)}`,
+      ...INJECT,
+    ])
+      refused(R(signup === undefined ? {} : { signup }), /signup/);
+    refused(R({ signup: SIGNUP, slug: "x" }), /not one of/);
+    refused(R({ signup: SIGNUP }, { install: ID }), /takes no install/);
+    refused(R({ signup: SIGNUP }, { tag: "v1.0.0" }), /takes no tag/);
+    refused(R({ signup: SIGNUP }, { confirm: SIGNUP }), /takes no confirm/);
   });
 });

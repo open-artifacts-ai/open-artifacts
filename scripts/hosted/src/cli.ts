@@ -20,6 +20,10 @@
 //   run their selftest on an owner PAT labelled ci-<GITHUB_RUN_ID>, minted
 //   under the lease, held in memory and revoked before the lease goes;
 //   ci-token-sweep revokes and verifies what a crashed run left.
+// - signup-redrive: the operator's only re-run of a failed or stuck signup
+//   (self-serve step 3). The row goes back to queued, error cleared, through
+//   platform D1; then the ProvisionInstall instance (id = the signup id) is
+//   restarted through the Workflows REST API.
 // - Before any write: flag refusals, then the provisioner's own token checks.
 // - Audit: a before row and an after row in hosted_audit, with the actor
 //   (git config user.email, or the CI run URL).
@@ -48,6 +52,7 @@ import { parseArgs } from "node:util";
 import {
   type Cf,
   cfClient,
+  ENV_PREFIX,
   type Env,
   googleNewlyEnabled,
   HOSTED_DOMAINS,
@@ -89,6 +94,7 @@ export const COMMANDS = [
   "redline-creds",
   "owner-token",
   "ci-token-sweep",
+  "signup-redrive",
 ] as const;
 type Command = (typeof COMMANDS)[number];
 
@@ -122,6 +128,10 @@ Commands:
   ci-token-sweep  --install <id> --run <GitHub run id>
                   revokes every active owner token labelled ci-<run id>, then lists them
                   again; exits 1 unless none remains
+  signup-redrive  --signup <ULID>
+                  re-runs a failed signup, or a stuck one (its ProvisionInstall instance
+                  errored, terminated or complete while the row isn't ready): the row goes
+                  back to queued with error cleared, then the instance is restarted
 
 Flags:
   --var K=V       repeatable; checked by provision's var allowlist. AUTH_PROVIDERS with
@@ -265,6 +275,8 @@ interface Flags {
   ciOwnerToken: boolean;
   /** ci-token-sweep: the GitHub run id whose ci-<run id> tokens to revoke. */
   run?: string;
+  /** signup-redrive: the signup id (a ULID). */
+  signup?: string;
 }
 
 /** The commands --ci-owner-token applies to: each runs an MCP selftest. */
@@ -276,6 +288,8 @@ export const CI_TOKEN_COMMANDS = [
 ] as const;
 
 const RUN_ID = /^[1-9][0-9]{0,19}$/;
+/** A signup id: a ULID (Crockford base32, first character 0-7). */
+const SIGNUP_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 /** Every refusal that needs no call: exits 1 before the token is read. */
 function parse(argv: string[]): { cmd: Command; f: Flags } {
@@ -300,6 +314,7 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
         var: { type: "string", multiple: true },
         "ci-owner-token": { type: "boolean" },
         run: { type: "string" },
+        signup: { type: "string" },
       },
     });
   } catch (e) {
@@ -344,6 +359,7 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
     vars,
     ciOwnerToken: v["ci-owner-token"] === true,
     run: v.run as string | undefined,
+    signup: v.signup as string | undefined,
   };
   const need = (k: keyof Flags, flag: string) => {
     if (typeof f[k] !== "string" || f[k] === "")
@@ -414,6 +430,12 @@ function parse(argv: string[]): { cmd: Command; f: Flags } {
       throw new Refused("--run must be a GitHub run id");
   } else if (f.run !== undefined)
     throw new Refused("--run is for ci-token-sweep only");
+  if (cmd === "signup-redrive") {
+    need("signup", "signup");
+    if (!SIGNUP_ID.test(f.signup as string))
+      throw new Refused("--signup must be a signup id (a ULID)");
+  } else if (f.signup !== undefined)
+    throw new Refused("--signup is for signup-redrive only");
   return { cmd, f };
 }
 
@@ -730,6 +752,7 @@ export async function main(argv: string[], d: Deps): Promise<number> {
     "release-lease",
     "status",
     "ci-token-sweep",
+    "signup-redrive",
   ];
   try {
     await prov.verifyToken(recovery.includes(cmd) ? "warn" : "refuse");
@@ -740,16 +763,22 @@ export async function main(argv: string[], d: Deps): Promise<number> {
   }
 
   let audit: PlatformDb;
+  let dbId: string;
   let startedAt = 0;
   const subject = f.install ?? "-";
+  // A signup has no install id yet: the audit rows name it in their detail.
+  const detail: Record<string, string> = f.signup
+    ? { cmd, signup: f.signup }
+    : { cmd };
   try {
     const db = platformNames(env).db;
     const id = await cf.d1Get(db);
     if (!id) throw new Refused(`platform D1 ${db} not found`);
+    dbId = id;
     audit = new PlatformDb(cf, { id, name: db }, env, d.now ?? Date.now);
     startedAt = (d.now ?? Date.now)();
     await recoverGaps(d, env, subject, audit, emit);
-    await audit.auditAs(actor, subject, `cli.${cmd}.start`, { cmd });
+    await audit.auditAs(actor, subject, `cli.${cmd}.start`, detail);
     emit({ step: "audit", status: "ok", message: "before row written" });
   } catch (e) {
     return fail("audit", e);
@@ -767,6 +796,7 @@ export async function main(argv: string[], d: Deps): Promise<number> {
       prov,
       emit,
       db: audit,
+      dbId,
       hide: (x) => secrets.push(x),
     });
     notes();
@@ -788,7 +818,8 @@ export async function main(argv: string[], d: Deps): Promise<number> {
   if (ciLabel && after !== "-")
     emit({ step: "ci-owner-token", status: "ok", install: after });
   const action = `cli.${cmd}.${code === 0 ? "done" : "failed"}`;
-  const write = () => audit.auditAs(actor, after, action, { cmd, exit: code });
+  const write = () =>
+    audit.auditAs(actor, after, action, { ...detail, exit: code });
   try {
     await write().catch(write);
     emit({ step: "audit", status: "ok", message: "after row written" });
@@ -896,6 +927,8 @@ async function run(
     prov: WfpProvisioner;
     emit: (l: Record<string, unknown>) => void;
     db: PlatformDb;
+    /** The platform D1's id. */
+    dbId: string;
     hide: (value: string) => void;
   },
 ): Promise<{ ok: boolean; id?: string; data: unknown }> {
@@ -993,6 +1026,11 @@ async function run(
         throw e;
       }
     }
+    case "signup-redrive":
+      return {
+        ok: true,
+        data: await redrive(cf, env, c.dbId, f.signup as string, d.now),
+      };
     case "turnstile-init": {
       if (inCi(d.env))
         throw new Refused("turnstile-init runs on a laptop only");
@@ -1066,6 +1104,60 @@ async function run(
       }
     }
   }
+}
+
+/** Instance statuses that never run the signup's create again on their own. */
+const DEAD = new Set(["errored", "terminated", "complete"]);
+/**
+ * Rows a redrive may set back to queued: failed, or admitted and not ready
+ * (stuck). pending and waiting_cap are not admitted yet, so a redrive would
+ * skip the daily cap.
+ */
+const REDRIVABLE = new Set(["failed", "queued", "creating"]);
+
+/**
+ * signup-redrive: refuses unless the row is failed or stuck and its
+ * ProvisionInstall instance is dead (a live one is never restarted: that
+ * would cancel its steps). The row goes back to queued, error cleared, only
+ * if it is still in the status read; then the instance is restarted. A
+ * restart that fails leaves the row queued behind a dead instance, which the
+ * stuck alert reports and a second redrive restarts.
+ */
+async function redrive(
+  cf: Cf,
+  env: Env,
+  dbId: string,
+  signup: string,
+  now: () => number = Date.now,
+): Promise<{ signup: string; was: string; instance: string }> {
+  const workflow = `${ENV_PREFIX[env]}provision-install`;
+  const row = (
+    await cf.d1Query(dbId, "SELECT status FROM signups WHERE signup_id = ?1", [
+      signup,
+    ])
+  )[0]?.results?.[0] as { status?: unknown } | undefined;
+  if (!row) throw new Refused(`no signup ${signup}`);
+  const was = String(row.status);
+  if (!REDRIVABLE.has(was))
+    throw new Refused(
+      `signup ${signup} is ${was}: only a failed or stuck signup is redriven`,
+    );
+  const instance = await cf.workflowInstanceStatus(workflow, signup);
+  if (instance === null)
+    throw new Refused(`signup ${signup} has no ${workflow} instance`);
+  if (!DEAD.has(instance))
+    throw new Refused(
+      `signup ${signup}'s instance is ${instance}: only an errored, terminated or complete one is restarted`,
+    );
+  const set = await cf.d1Query(
+    dbId,
+    "UPDATE signups SET status = 'queued', error = NULL, updated_at = ?1 WHERE signup_id = ?2 AND status = ?3 RETURNING signup_id",
+    [now(), signup, was],
+  );
+  if (!set[0]?.results?.length)
+    throw new Refused(`signup ${signup} changed while redriving; rerun`);
+  await cf.workflowInstanceRestart(workflow, signup);
+  return { signup, was, instance };
 }
 
 export function realDeps(): Deps {

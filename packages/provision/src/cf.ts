@@ -125,6 +125,13 @@ export interface Cf {
   turnstileWidget(sitekey: string): Promise<TurnstileWidget | null>;
   /** Every Turnstile widget on the account (no secrets), paginated. */
   turnstileList(): Promise<TurnstileWidget[]>;
+  /** A Workflow instance's status (queued, running, errored, ...); null when there is none. */
+  workflowInstanceStatus(workflow: string, id: string): Promise<string | null>;
+  /**
+   * Restarts a Workflow instance from the beginning (PATCH its status to
+   * restart), one try: a lost reply may still have restarted it.
+   */
+  workflowInstanceRestart(workflow: string, id: string): Promise<void>;
   /**
    * POST a widget (turnstile-init only), one try: a lost reply may still have
    * created it, so the caller lists by name before any retry.
@@ -702,6 +709,27 @@ export function cfClient(o: {
       if (r.status === 404) return null;
       return ((r.body as { result?: TurnstileWidget })?.result ??
         null) as TurnstileWidget | null;
+    },
+    async workflowInstanceStatus(workflow, id) {
+      const r = await call(
+        "GET",
+        `${acct}/workflows/${seg(workflow)}/instances/${seg(id)}`,
+        {},
+        [404],
+      );
+      if (r.status === 404) return null;
+      const status = (r.body as { result?: { status?: unknown } })?.result
+        ?.status;
+      if (typeof status !== "string")
+        throw new CfError("GET", "workflows instance", r.status, "no status");
+      return status;
+    },
+    async workflowInstanceRestart(workflow, id) {
+      await call(
+        "PATCH",
+        `${acct}/workflows/${seg(workflow)}/instances/${seg(id)}/status`,
+        { json: { status: "restart" }, once: true },
+      );
     },
     async turnstileList() {
       const out: TurnstileWidget[] = [];

@@ -187,6 +187,7 @@ describe("refusals before any call", () => {
       "redline-creds",
       "owner-token",
       "ci-token-sweep",
+      "signup-redrive",
     ]);
   });
 });
@@ -1503,5 +1504,208 @@ describe("health is this install's (review item 43)", () => {
   it("the same create passes when /healthz reports this install", async () => {
     const w = world();
     expect(await main(CREATE(), w.deps)).toBe(0);
+  });
+});
+
+describe("signup-redrive", () => {
+  const SIGNUP = "01JBQ7Z8X9Y0ABCDEFGHJKMNPQ";
+  const WF = {
+    staging: "oa-s-provision-install",
+    prod: "oa-p-provision-install",
+  };
+  const REDRIVE = (env = "staging", signup = SIGNUP) => [
+    "signup-redrive",
+    "--env",
+    env,
+    "--signup",
+    signup,
+  ];
+  const seed = (w: W, status: string, instance: string | null) => {
+    w.db()
+      .prepare(
+        `INSERT INTO signups (signup_id, owner_sub, slug, status, admitted_at, error, created_at, updated_at)
+         VALUES (?, 'sub-1', 'finqore', ?, 1, ?, 1, 1)`,
+      )
+      .run(SIGNUP, status, status === "failed" ? "provision" : null);
+    if (instance !== null)
+      w.fake.workflows.set(`${WF[w.env]}/${SIGNUP}`, {
+        status: instance,
+        restarts: 0,
+      });
+  };
+  const row = (w: W) =>
+    w
+      .db()
+      .prepare(
+        "SELECT status, error, admitted_at, updated_at FROM signups WHERE signup_id = ?",
+      )
+      .get(SIGNUP) as {
+      status: string;
+      error: string | null;
+      admitted_at: number;
+      updated_at: number;
+    };
+  const step = (w: W) => w.parsed().find((l) => l.step === "signup-redrive");
+  const restarts = (w: W) =>
+    w.fake.workflows.get(`${WF[w.env]}/${SIGNUP}`)?.restarts ?? 0;
+
+  it("redrive restarts only a failed signup", async () => {
+    const w = world();
+    seed(w, "failed", "errored");
+    expect(await main(REDRIVE(), w.deps)).toBe(0);
+    expect(row(w)).toMatchObject({
+      status: "queued",
+      error: null,
+      admitted_at: 1,
+    });
+    expect(row(w).updated_at).toBeGreaterThan(1);
+    expect(restarts(w)).toBe(1);
+    // Through the Workflows REST API: one PATCH of the instance's status.
+    const patch = w.fake.raw.filter((r) => r.method === "PATCH");
+    expect(patch).toEqual([
+      {
+        method: "PATCH",
+        path: `/accounts/${w.fake.accountId}/workflows/${WF.staging}/instances/${SIGNUP}/status`,
+        body: JSON.stringify({ status: "restart" }),
+      },
+    ]);
+    expect(step(w)).toMatchObject({
+      step: "signup-redrive",
+      status: "ok",
+      data: { signup: SIGNUP, was: "failed", instance: "errored" },
+    });
+    expect(w.audit()).toEqual([
+      { actor: ACTOR, install_id: "-", action: "cli.signup-redrive.start" },
+      { actor: ACTOR, install_id: "-", action: "cli.signup-redrive.done" },
+    ]);
+    const details = w
+      .db()
+      .prepare(
+        "SELECT detail FROM hosted_audit WHERE action LIKE 'cli.signup-redrive.%' ORDER BY id",
+      )
+      .all() as { detail: string }[];
+    for (const d of details)
+      expect(JSON.parse(d.detail)).toMatchObject({
+        cmd: "signup-redrive",
+        signup: SIGNUP,
+      });
+  });
+
+  it("a stuck signup (instance errored, terminated or complete, row not ready) is redriven", async () => {
+    for (const [status, instance] of [
+      ["queued", "errored"],
+      ["queued", "terminated"],
+      ["queued", "complete"],
+      ["creating", "errored"],
+      ["failed", "terminated"],
+      ["failed", "complete"],
+    ] as const) {
+      const w = world();
+      seed(w, status, instance);
+      expect(await main(REDRIVE(), w.deps), `${status}/${instance}`).toBe(0);
+      expect(row(w).status).toBe("queued");
+      expect(restarts(w)).toBe(1);
+    }
+  });
+
+  it("refuses a signup that is neither failed nor stuck: the row and the instance are untouched", async () => {
+    for (const [status, instance] of [
+      ["ready", "complete"],
+      ["ready", "errored"],
+      // Not admitted yet: a redrive would skip the daily cap.
+      ["pending", "errored"],
+      ["waiting_cap", "errored"],
+      // A live instance: a restart would cancel its in-progress steps.
+      ["failed", "running"],
+      ["failed", "queued"],
+      ["failed", "waiting"],
+      ["failed", "paused"],
+      ["queued", "running"],
+      ["creating", "waiting"],
+      // No instance to restart.
+      ["failed", null],
+      ["queued", null],
+    ] as const) {
+      const w = world();
+      seed(w, status, instance);
+      const before = row(w);
+      expect(await main(REDRIVE(), w.deps), `${status}/${instance}`).toBe(1);
+      expect(step(w)).toMatchObject({ status: "error" });
+      expect(row(w)).toEqual(before);
+      expect(restarts(w)).toBe(0);
+      expect(w.fake.raw.filter((r) => r.method === "PATCH")).toEqual([]);
+      expect(w.audit().map((a) => a.action)).toEqual([
+        "cli.signup-redrive.start",
+        "cli.signup-redrive.failed",
+      ]);
+    }
+    const w = world();
+    expect(await main(REDRIVE(), w.deps)).toBe(1);
+    expect(step(w).message).toMatch(/no signup/);
+  });
+
+  it("a restart that fails leaves the row queued, and the next redrive restarts it", async () => {
+    const w = world();
+    seed(w, "failed", "errored");
+    w.fake.inject((m, p) => m === "PATCH" && p.includes("/workflows/"), {
+      status: 400,
+    });
+    expect(await main(REDRIVE(), w.deps)).toBe(1);
+    expect(row(w)).toMatchObject({ status: "queued", error: null });
+    expect(restarts(w)).toBe(0);
+    expect(await main(REDRIVE(), w.deps)).toBe(0);
+    expect(restarts(w)).toBe(1);
+  });
+
+  it("redrive refuses a non-ULID before any call", async () => {
+    for (const bad of [
+      "",
+      SIGNUP.toLowerCase(),
+      `${SIGNUP}0`,
+      SIGNUP.slice(1),
+      "01JBQ7Z8X9Y0ABCDEFGHJKMNPI",
+      "81JBQ7Z8X9Y0ABCDEFGHJKMNPQ",
+      "../../etc",
+      `${SIGNUP.slice(0, 25)}/`,
+    ]) {
+      const w = world();
+      expect(await main(REDRIVE("staging", bad), w.deps), bad).toBe(1);
+      expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
+      noCalls(w);
+    }
+    for (const argv of [
+      ["signup-redrive", "--env", "staging"],
+      [...REDRIVE(), "--install", "iabcdefghijk"],
+      [
+        "status",
+        "--env",
+        "staging",
+        "--install",
+        "iabcdefghijk",
+        "--signup",
+        SIGNUP,
+      ],
+    ]) {
+      const w = world();
+      expect(await main(argv, w.deps)).toBe(1);
+      expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
+      noCalls(w);
+    }
+  });
+
+  it("prod: the prod Workflow from the keychain on a laptop; in CI only from the gated job", async () => {
+    const w = world({ env: "prod" });
+    seed(w, "failed", "errored");
+    expect(await main(REDRIVE("prod"), w.deps)).toBe(0);
+    expect(restarts(w)).toBe(1);
+    expect(
+      w.fake.raw.some((r) => r.path.includes(`/workflows/${WF.prod}/`)),
+    ).toBe(true);
+
+    const ci = world({ env: "prod", ci: true });
+    seed(ci, "failed", "errored");
+    expect(await main(REDRIVE("prod"), ci.deps)).toBe(1);
+    expect(lastLine(ci)).toMatchObject({ step: "token", status: "error" });
+    expect(restarts(ci)).toBe(0);
   });
 });
