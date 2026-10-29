@@ -292,19 +292,23 @@ Which tier applies (in this order):
    good read holds for 7 days (`PLAN_STALE_MS`; a good read of an older
    version counts as reachable but never applies its tier), then read-only.
    Nothing read yet: the provisioned `TIER`, else free.
-2. No BillingGate (before Platform's #849 is deployed): no billing
-   enforcement. The provisioned `TIER`; never `billing_unreachable`, no 7-day
-   clock, nothing recorded. No `TIER`: no plan (the provisioned `FEATURES`,
-   as before billing; `Me.instance.billing` absent).
-3. Hosted with the gate, no `TIER` and nothing cached: free (solo, the trial
-   allowed) until the first good read, never unenforced.
+2. No BillingGate (before Platform's #849 is deployed, or a context without
+   it): no billing enforcement from billing itself: never
+   `billing_unreachable`, no 7-day clock, nothing recorded. The cached answer
+   when there is one (never upward to the provisioned `TIER`), else the
+   provisioned `TIER`.
+3. Hosted with no `TIER` and nothing cached, gate or not: free (solo, the
+   trial allowed) until the first good read, never unenforced.
 
 Features (`Me.instance.features` and every check) follow that tier at read
 time through `TIER_FEATURES` (the trial and free report Business's; hosted
 adds `usage_off`), not the provisioned `FEATURES`. `Me.instance.tier` is the
 same tier (null for free). Business to Team swaps `sync_google` for
-`sync_frozen`: the binding and synced rows stay, sync stops (the scheduler
-skips the feed while locked or frozen). No transition deletes anything.
+`sync_frozen`: the binding and synced rows stay, sync stops. Every kick,
+feed and RPC hands DirectorySync the effective directory mode (frozen while
+locked too), so its alarm calls nothing and fails nothing (no
+`transport_no_feed`, no session cap, no alert) until the tier brings
+`sync_google` back. No transition deletes anything.
 
 `Me.instance.billing` (`PlanView`; not `plan`, which is the Workers plan):
 `{ tier, status, trialEndsAt, graceUntil, creatorsThisMonth?, readOnly, reason? }`.
@@ -326,19 +330,23 @@ Under free or read-only: everyone but the org owner is read-only (`Me.auth.cap`
 keeps their personal artifacts and loses the team features: invites, shares
 to others, shared spaces (create, settings, members, mappings, publishing and
 writing in them), moves and transfers, directory connect, sync now, a held
-group's confirm and restricted groups, and (free only) role changes. While
+group's confirm and restricted groups, and (free only) a promotion or a
+reactivation through `PATCH R.member` (a demotion passes). While
 read-only, anonymous live-data writes stop too. Removals (a member, a share,
 a demotion while read-only) always pass. Nothing is ever deleted. The plan
 cap hides the trash (as any cap does).
 
 The owner and admins can always pay and see their instance: the billing
 routes, Me's billing details, and the admin reads (`GET R.members`,
-`GET R.directory`, `GET R.audit`, `GET R.settings`) pass under the plan cap.
+`GET R.directory`, `GET R.audit`, `GET R.auditExport`) pass under the plan
+cap (`GET R.settings` is open to every member, capped or not).
 Their writes stay capped. A member of a locked team is read-only and has no
 billing access.
 
 Free-tier caps (configuration; each OFF until set, positive integers):
-`FREE_STORAGE_BYTES` (stored version bytes per instance),
+`FREE_STORAGE_BYTES` (stored content per instance: every version of every
+live artifact, history included, each distinct blob once (an inline file by
+its content digest, an upload by its key), trashed artifacts excluded),
 `FREE_DATA_DOCS` (live-data docs per artifact), `FREE_DATA_DAILY_WRITES`
 (live-data writes per artifact per UTC day). On the free tier only, past one:
 403 `plan_limit`, details `PlanLimitDetails { tier: "free", limit, max }`
@@ -354,7 +362,10 @@ off hosted):
 `POST R.billingCheckout` `BillingCheckoutInput { tier: team | business }` →
 `BillingUrl { url }` (Stripe Checkout); `POST R.billingPortal` → `BillingUrl`
 (Customer Portal); `POST R.billingUsage` → `BillingUsage { month, count }`.
-503 `billing_unavailable` when billing can't be reached. Checkout and Portal
+503 `billing_unavailable` when billing can't be reached. Billing's 503
+`{ error: "retry" }` (Stripe still running the same idempotent request) is
+retried once, with the same signed body, after a short backoff. Checkout
+sends billing `{ install, ts, plan }`. Checkout and Portal
 depend on Platform's billing routes (#849 gate allowlist for `POST /checkout`
 and `/portal`); until those ship they answer 503 `billing_unavailable`.
 
