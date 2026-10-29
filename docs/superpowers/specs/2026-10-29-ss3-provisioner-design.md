@@ -212,6 +212,22 @@ the same Workflow instance id) or removes a half-made install with the CLI
 and audit rows are create's own. "Welcome unsent" (claimed, not sent) is one
 more alert key in SS1b's scheduler `alerts.ts`.
 
+### On/off switch, stuck rows, email retention (final review, 2026-10-29)
+
+- `SIGNUPS_ENABLED` (per-env var on the provisioner and the scheduler, filled
+  at deploy, `true` or `false`): anything but `"true"` and the consumer acks
+  without admitting (rows stay `pending`), and the scheduler skips the requeue
+  and the sweep. Prod runs with it `false` until the real staging create and
+  delete through hosted-ops passes; provision's `PROD_UNLOCKED` also refuses
+  prod creates until #832.
+- A `creating` row counts as stuck (alerted, never re-sent) when its instance
+  is dead or it hasn't moved in 12 hours (past the create retry budget).
+- Plain errors from inside create (the healthz timeout, the selftest, a
+  "rerun to resume") retry within the step's budget; only config, a missing
+  secret and refusals (other than a held lease) are terminal.
+- `signup_secret` of a `failed` row is purged by the scheduler after 30 days
+  (the redrive window); a ready row's is deleted at `done`.
+
 ### Provision changes (small, upstreamed, no fork)
 
 - `ReleaseReader` over an R2 binding (`r2BindingReleaseReader`), next to
