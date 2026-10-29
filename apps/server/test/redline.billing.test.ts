@@ -106,16 +106,18 @@ describe("red line: billing unreachable never unlocks", () => {
     const b = fakeBilling();
     await cachePlan({ ...FREE, trialEndsAt: mid - DAY, version: 1 }, mid);
     b.s.down = true;
+    const plan = (t: number) =>
+      withBrokerProps({ props: b.props }, () => readPlan(H, t));
     for (const t of [mid + DAY, mid + PLAN_STALE_MS]) {
       vi.setSystemTime(t);
       expect(
         await withBrokerProps({ props: b.props }, () => refreshPlan(H, t)),
       ).toBe("failed");
-      expect((await readPlan(H, t))?.lock).toMatchObject({ mode: "solo" });
+      expect((await plan(t))?.lock).toMatchObject({ mode: "solo" });
     }
     const after = mid + PLAN_STALE_MS + 1;
     vi.setSystemTime(after);
-    expect((await readPlan(H, after))?.lock).toEqual({
+    expect((await plan(after))?.lock).toEqual({
       mode: "readOnly",
       tier: "free",
       reason: "billing_unreachable",
@@ -130,6 +132,35 @@ describe("red line: billing unreachable never unlocks", () => {
     expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
       "plan_read_only",
     );
+  });
+
+  it("no BILLING gate never unlocks a hosted install without a TIER: free and solo, whatever is missing", async () => {
+    // Nothing cached, no TIER, no gate: solo (never today's unenforced).
+    expect(await readPlan(H, mid)).toMatchObject({
+      tier: "free",
+      lock: { mode: "solo" },
+    });
+    const b = fakeBilling();
+    const member = await login(`rl-m-${tag}@a.com`, "member");
+    // Through the app, with the gate but nothing read yet: still solo.
+    const r = await send(b.props, R.artifacts, member.cookie, {
+      method: "POST",
+      body: { title: "t", format: "html", content: "<p>x</p>" },
+    });
+    expect(r.status).toBe(403);
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+      "plan_required",
+    );
+    // The good path: a paid tier read, and the same publish passes.
+    await cachePlan({ ...b.s.row, version: 1 }, mid);
+    expect(
+      (
+        await send(b.props, R.artifacts, member.cookie, {
+          method: "POST",
+          body: { title: "t", format: "html", content: "<p>x</p>" },
+        })
+      ).status,
+    ).toBe(201);
   });
 
   it("a real lapse is read-only at once, and an outage after it keeps it read-only", async () => {

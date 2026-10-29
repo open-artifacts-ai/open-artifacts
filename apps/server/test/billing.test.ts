@@ -319,14 +319,24 @@ describe("effectivePlan", () => {
     ).toBe("billing_unreachable");
   });
 
-  it("no answer and no TIER: unknown (today's behaviour) until 7 days of failures", () => {
-    expect(planOfRaw(H, null, null, mid)).toBeNull();
+  it("no answer and no TIER: free (solo, trial allowed), never unenforced (S3)", () => {
+    for (const gate of [true, false])
+      expect(planOfRaw(H, null, null, mid, { gate })).toMatchObject({
+        tier: "free",
+        reason: "solo",
+        lock: { mode: "solo" },
+        trialEligible: true,
+      });
     const failing = JSON.stringify({
       checkedAt: mid,
       failingSince: mid - PLAN_STALE_MS - 1,
     });
-    expect(planOfRaw(H, null, failing, mid)?.reason).toBe(
+    expect(planOfRaw(H, null, failing, mid, { gate: true })?.reason).toBe(
       "billing_unreachable",
+    );
+    // No BILLING gate: failures never make it unreachable.
+    expect(planOfRaw(H, null, failing, mid, { gate: false })?.reason).toBe(
+      "solo",
     );
     // Self-hosted: no gate, whatever is stored.
     const stored = JSON.stringify(at({ status: "lapsed" }, mid));
@@ -406,10 +416,62 @@ describe("tier read and cache", () => {
         }
       ).value,
     );
-    expect(check).toEqual({ checkedAt: mid + 2000, failingSince: mid + 1000 });
+    expect(check).toEqual({
+      checkedAt: mid + 2000,
+      failingSince: mid + 1000,
+      lastGoodAt: mid,
+    });
     expect((await stored()).tier).toBe("team");
-    // No gate at all (no props): unavailable, never an HTTPS fallback.
-    expect(await refreshPlan(H, mid + 3000)).toBe("failed");
+    // No gate at all (no props): no billing enforcement (B1). Nothing is
+    // recorded, the 7-day clock doesn't move, never an HTTPS fallback.
+    expect(await refreshPlan(H, mid + 3000)).toBe("skipped");
+    const after = JSON.parse(
+      (
+        (await env.DB.prepare("select value from settings where key = ?")
+          .bind(CHECK_KEY)
+          .first<{ value: string }>()) as { value: string }
+      ).value,
+    );
+    expect(after).toEqual(check);
+  });
+
+  it("no BILLING gate: nothing recorded, no 7-day clock, the provisioned TIER (B1)", async () => {
+    const TEAM = { ...H, TIER: "team" } as Env;
+    for (const t of [mid, mid + 30 * DAY])
+      expect(await refreshPlan(TEAM, t, { onDemand: true })).toBe("skipped");
+    expect(
+      await env.DB.prepare("select count(*) as n from settings where key = ?")
+        .bind(CHECK_KEY)
+        .first<{ n: number }>(),
+    ).toEqual({ n: 0 });
+    expect(calls).toEqual([]);
+    // Even with a lapse cached and 30 days of silence: TIER, unlocked.
+    await cache({ tier: "business", status: "lapsed", version: 4 }, mid);
+    expect(await readPlan(TEAM, mid + 30 * DAY)).toMatchObject({
+      tier: "team",
+      lock: null,
+    });
+  });
+
+  it("a good read of an older version stops the 7-day clock but never applies the older tier", async () => {
+    await cache({ tier: "team", version: 5 }, mid);
+    row = { ...row, tier: "business", version: 4 };
+    const t = mid + PLAN_STALE_MS + DAY;
+    vi.setSystemTime(t);
+    expect(
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, t)),
+    ).toBe("unchanged");
+    expect((await stored()).tier).toBe("team");
+    expect(
+      await withBrokerProps({ props: PROPS }, () => readPlan(H, t)),
+    ).toMatchObject({ tier: "team", lock: null });
+    // Without that read, the same moment is our outage: read-only.
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(CHECK_KEY)
+      .run();
+    expect(
+      (await withBrokerProps({ props: PROPS }, () => readPlan(H, t)))?.reason,
+    ).toBe("billing_unreachable");
   });
 
   it("billing's no-row default (version 0) never overrides a provisioned TIER", async () => {
@@ -502,6 +564,7 @@ describe("plan enforcement", () => {
   });
 
   it("read-only: no write path lets anyone but the owner change anything; reads and removals stay", async () => {
+    await cache({});
     const a = await idOf(await publish(owner.cookie, { visibility: "team" }));
     const shared = await idOf(
       await publish(member.cookie, { visibility: "team" }),
@@ -607,6 +670,7 @@ describe("plan enforcement", () => {
   });
 
   it("read-only: the owner can't write into a shared space, nor move into one", async () => {
+    await cache({});
     const r = await send(R.spaces, owner.cookie, {
       method: "POST",
       body: { name: `Sp ${tag}` },
@@ -671,6 +735,7 @@ describe("plan enforcement", () => {
   });
 
   it("MCP agents: the owner's agent is refused team writes and counted for its data writes", async () => {
+    await cache({});
     const sp = await send(R.spaces, owner.cookie, {
       method: "POST",
       body: { name: `Mcp ${tag}` },
@@ -869,7 +934,10 @@ describe("Me.instance.billing and the billing routes", () => {
       graceUntil: mid + DAY,
       version: 4,
     });
-    const o = (await getMe(owner.cookie)).instance.billing;
+    const me = await getMe(owner.cookie);
+    // B2: one tier everywhere.
+    expect(me.instance.tier).toBe("team");
+    const o = me.instance.billing;
     expect(o).toEqual({
       tier: "team",
       status: "past_due",
