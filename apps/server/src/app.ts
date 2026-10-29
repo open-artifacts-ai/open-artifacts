@@ -21,6 +21,7 @@ import {
   session,
 } from "./http/middleware.js";
 import { cancelUnreadOnRefusal } from "./http/unread-body.js";
+import { LLMS_PATH, serveLlms } from "./mcp/llms.js";
 import { SKILL_PATH, serveSkill } from "./mcp/skill.js";
 import { serveUpgrade, UPGRADE_PATH } from "./mcp/upgrade.js";
 import { type AppType, mountRoutes } from "./routes/index.js";
@@ -47,6 +48,18 @@ export const methodNotAllowed = () =>
 // reserved for platform internals (no route today): a JSON 404, never the SPA.
 const WORKER_PREFIX =
   /^\/(api|auth|oauth|\.well-known|mcp|_oa|__oa|__test)(\/|$)/;
+
+// Text and Markdown files the Worker doesn't serve (/robots.txt, /skill.md,
+// /upgrade.md and /llms.txt are routes, matched before the fallback): a plain
+// 404, never the SPA shell, so an agent that guesses a wrong file sees "not
+// found". The built bundle under /assets/ still goes to ASSETS; a missing one
+// is the same plain 404.
+const TEXT_FILE = /\.(txt|md)$/i;
+const textNotFound = () =>
+  new Response("Not found\n", {
+    status: 404,
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
 
 // Decode, collapse slashes and resolve dot segments; null if malformed.
 function normalizedPath(url: string): string | null {
@@ -135,6 +148,7 @@ export function createApp(
   if (hooks) hooks.mountTestHooks(app);
   app.get(SKILL_PATH, serveSkill);
   app.get(UPGRADE_PATH, serveUpgrade);
+  app.get(LLMS_PATH, serveLlms);
   // Public sign-in offering (#359 AuthProviders): config only, before the
   // /auth/* session middleware, so it never touches D1.
   app.get(AUTH.providers, (c) => {
@@ -147,6 +161,7 @@ export function createApp(
   app.all("/robots.txt", methodNotAllowed);
   app.all(SKILL_PATH, methodNotAllowed);
   app.all(UPGRADE_PATH, methodNotAllowed);
+  app.all(LLMS_PATH, methodNotAllowed);
 
   // c.var.user (Bearer PAT wins over the cookie) for Worker routes only, so
   // SPA/asset requests never touch D1 (beyond the shell's instance-name read). Elsewhere caller() sees anonymous.
@@ -166,6 +181,9 @@ export function createApp(
     if (path === null || WORKER_PREFIX.test(path) || !c.env.ASSETS) {
       return toErrorResponse(new ApiError("not_found", "Not found"));
     }
+    const bundle = path.startsWith("/assets/");
+    const text = TEXT_FILE.test(path);
+    if (text && !bundle) return textNotFound();
     // PUBLIC_HOME: a signed-out visitor at exactly "/" goes to a public
     // artifact. Signed in = a valid session cookie (HMAC only, no D1).
     if (
@@ -181,7 +199,17 @@ export function createApp(
         });
     }
     const res = await c.env.ASSETS.fetch(c.req.raw);
-    return path.startsWith("/assets/") ? res : withInstanceMeta(c.env, res);
+    // A missing bundle .txt/.md gets ASSETS' SPA fallback (200 text/html):
+    // answer the plain 404 instead. A 304 revalidation passes through.
+    if (
+      text &&
+      (res.status >= 400 ||
+        /^text\/html/i.test(res.headers.get("content-type") ?? ""))
+    ) {
+      await res.body?.cancel();
+      return textNotFound();
+    }
+    return bundle ? res : withInstanceMeta(c.env, res);
   });
   return app;
 }
