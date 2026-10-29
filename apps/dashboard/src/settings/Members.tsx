@@ -95,7 +95,9 @@ function RoleSelect({
   value,
   placeholder,
   onChange,
+  disabled,
 }: {
+  disabled?: boolean;
   label: string;
   value: Assignable | undefined;
   placeholder?: string;
@@ -104,6 +106,7 @@ function RoleSelect({
   return (
     <Select
       value={value ?? ""}
+      disabled={disabled}
       onValueChange={(v) => onChange(v as Assignable)}
     >
       <SelectTrigger
@@ -376,7 +379,10 @@ function Row({
   you,
   spaces,
   owner,
+  frozen,
 }: {
+  /** The plan locked the instance (cap "plan"): reads stay, every write control is off. */
+  frozen: boolean;
   m: Member;
   you: boolean;
   /** The spaces feature: only the copy names spaces (parity 1 ungates the rest). */
@@ -385,7 +391,7 @@ function Row({
   owner: boolean;
 }) {
   const denyAdmin = (id: string) => denyMember(id, ADMIN_ONLY);
-  const patch = usePatchMember(denyAdmin);
+  const patch = usePatchMember(denyAdmin, denyMember);
   const [confirm, setConfirm] = useState(false);
   const [moving, setMoving] = useState(false);
   const [restricting, setRestricting] = useState(false);
@@ -447,6 +453,7 @@ function Row({
           label={`Role for ${label}`}
           value={m.role === "admin" || m.role === "member" ? m.role : undefined}
           placeholder="Guest"
+          disabled={frozen}
           onChange={(role) => {
             clearDenied(m.id);
             patch.mutate({ id: m.id, role });
@@ -478,6 +485,7 @@ function Row({
               variant="ghost"
               size="sm"
               className="justify-self-end"
+              disabled={frozen}
               aria-label={`More for ${label}`}
             >
               <svg
@@ -661,6 +669,8 @@ export function Members() {
     state.status === "authed" &&
     state.me.user.role === "owner" &&
     state.me.auth?.cap == null;
+  // The plan locked the instance: this page still lists, nothing here writes.
+  const frozen = state.status === "authed" && state.me.auth?.cap === "plan";
   // Spaces only change copy here: restriction and the More menu are on every install (parity 1).
   const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
   const departed = useDeparted(state.status === "authed" ? state.me : null);
@@ -716,6 +726,7 @@ export function Members() {
             <Button
               size="sm"
               className="text-[length:var(--oa-text-sm)]"
+              disabled={frozen}
               onClick={() => setInviting(true)}
             >
               Add member
@@ -758,6 +769,7 @@ export function Members() {
                     you={m.id === me?.id}
                     spaces={spaces}
                     owner={owner}
+                    frozen={frozen}
                   />
                 ))}
               </ul>
