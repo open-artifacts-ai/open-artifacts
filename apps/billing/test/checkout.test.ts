@@ -228,7 +228,7 @@ describe("POST /checkout", () => {
     expect(out).toEqual({ url: "https://checkout.stripe.com/c/pay/cs_test_2" });
     expect(s.calls.map((c) => [c.path, c.key])).toEqual([
       [CUSTOMERS, `cust-${A}`],
-      [CHECKOUT, `checkout-${A}-${ts}`],
+      [CHECKOUT, `checkout-${A}-team-${ts}`],
     ]);
     expect(s.calls[0]?.form).toEqual({ "metadata[install_id]": A });
     expect(s.calls[1]?.form).toEqual({
@@ -284,9 +284,95 @@ describe("POST /checkout", () => {
     expect(r2).toEqual(r1);
     expect(s.calls.map((c) => c.key)).toEqual([
       `cust-${A}`,
-      `checkout-${A}-${body.ts}`,
-      `checkout-${A}-${body.ts}`,
+      `checkout-${A}-team-${body.ts}`,
+      `checkout-${A}-team-${body.ts}`,
     ]);
+  });
+
+  it("the same ts with another plan is another key and another session, not a 502", async () => {
+    const s = fakeStripe();
+    const ts = Date.now();
+    const r1 = await call(req("/checkout", { install: A, ts, plan: "team" }));
+    const r2 = await call(
+      req("/checkout", { install: A, ts, plan: "business" }),
+    );
+    expect([r1.status, r2.status]).toEqual([200, 200]);
+    const [u1, u2] = (await Promise.all([r1.json(), r2.json()])) as {
+      url: string;
+    }[];
+    expect(u1?.url).not.toBe(u2?.url);
+    expect(
+      s.calls.filter((c) => c.path === CHECKOUT).map((c) => c.key),
+    ).toEqual([`checkout-${A}-team-${ts}`, `checkout-${A}-business-${ts}`]);
+  });
+
+  it("an unfilled or malformed price for the plan: 500 config before any customer is made", async () => {
+    for (const e of [
+      { STRIPE_PRICE_TEAM: "{{STRIPE_PRICE_TEAM_STAGING}}" },
+      { STRIPE_PRICE_TEAM: "" },
+      { STRIPE_PRICE_TEAM: "prod_1abc" },
+    ]) {
+      const s = fakeStripe();
+      const r = await call(req("/checkout", { install: A, plan: "team" }), {
+        ...baseEnv(),
+        ...e,
+      });
+      expect([r.status, await r.json()]).toEqual([500, { error: "config" }]);
+      expect(s.calls).toEqual([]);
+      expect(await rowOf(A)).toBeNull();
+      vi.restoreAllMocks();
+    }
+    // Only the requested plan's price is checked.
+    const s = fakeStripe();
+    const r = await call(req("/checkout", { install: A, plan: "business" }), {
+      ...baseEnv(),
+      STRIPE_PRICE_TEAM: "{{STRIPE_PRICE_TEAM_STAGING}}",
+    });
+    expect(r.status).toBe(200);
+    expect(s.calls.map((c) => c.path)).toEqual([CUSTOMERS, CHECKOUT]);
+  });
+
+  it("the mapping write is retried once: a first failure, then success, is one customer, mapped", async () => {
+    const s = fakeStripe();
+    let fails = 1;
+    const flaky = {
+      prepare: (sql: string) => {
+        const st = db.prepare(sql);
+        if (!sql.startsWith("UPDATE tiers SET stripe_customer_id")) return st;
+        return {
+          bind: (...a: unknown[]) => {
+            const b = st.bind(...a);
+            return {
+              run: () =>
+                fails-- > 0
+                  ? Promise.reject(new Error("D1_ERROR: transient"))
+                  : b.run(),
+            };
+          },
+        };
+      },
+    } as unknown as D1Database;
+    const r = await call(req("/checkout", { install: A, plan: "team" }), {
+      ...baseEnv(),
+      BILLING_DB: flaky,
+    });
+    expect(r.status).toBe(200);
+    expect(s.calls.filter((c) => c.path === CUSTOMERS)).toHaveLength(1);
+    expect(await customerOf(A)).toBe("cus_fake1");
+    // Two failures: the route's 503, and no session.
+    vi.restoreAllMocks();
+    await db.prepare("DELETE FROM tiers").run();
+    const s2 = fakeStripe();
+    fails = 2;
+    const r2 = await call(req("/checkout", { install: A, plan: "team" }), {
+      ...baseEnv(),
+      BILLING_DB: flaky,
+    });
+    expect([r2.status, await r2.json()]).toEqual([
+      503,
+      { error: "unavailable" },
+    ]);
+    expect(s2.calls.map((c) => c.path)).toEqual([CUSTOMERS]);
   });
 
   it("concurrent first checkouts create one customer (cust-<install>) and both sessions use it", async () => {
@@ -663,6 +749,27 @@ describe("Stripe answers and errors", () => {
           { error: "upstream" },
         ]);
       }
+    }
+  });
+
+  it("Stripe's 409 (the same key still in progress) is 503 retry, on every call", async () => {
+    const busy = () =>
+      Response.json({ error: { type: "idempotency_error" } }, { status: 409 });
+    // The customer call, then the session calls with a mapping.
+    const s = fakeStripe(busy);
+    const r = await call(req("/checkout", { install: A, plan: "team" }));
+    expect([r.status, await r.json()]).toEqual([503, { error: "retry" }]);
+    expect(s.calls.map((c) => c.path)).toEqual([CUSTOMERS]);
+    await db.prepare("DELETE FROM tiers").run();
+    await seed(A, "cus_existingA");
+    for (const path of ["/checkout", "/portal"]) {
+      const x = await call(
+        req(
+          path,
+          path === "/checkout" ? { install: A, plan: "team" } : { install: A },
+        ),
+      );
+      expect([x.status, await x.json()]).toEqual([503, { error: "retry" }]);
     }
   });
 });

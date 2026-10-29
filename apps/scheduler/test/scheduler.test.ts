@@ -1328,3 +1328,44 @@ describe("scheduled: the email-quota alert", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("nightly: each call's billing gate carries the installs row's app host", () => {
+  it("appHost is the re-checked row's app_host, per install, never shared", async () => {
+    await seed([
+      { id: idOf(0), state: "active" },
+      { id: idOf(1), state: "active" },
+    ]);
+    const args: { script: string; args: unknown }[] = [];
+    const env = {
+      OA_ENV: "staging",
+      PLATFORM_DB: db,
+      DISPATCHER: {
+        get(script: string, a: unknown) {
+          args.push({ script, args: a });
+          return { scheduled: async () => undefined };
+        },
+      },
+    } as unknown as Env;
+    const gates = {
+      BrokerGate: (o: { props: unknown }) => ({ gate: o.props }),
+      BillingGate: (o: { props: unknown }) => ({ billingGate: o.props }),
+    };
+    const r = await nightly(env, Date.now(), { gates: gates as never });
+    expect(r.ok.sort()).toEqual([idOf(0), idOf(1)]);
+    // seed(): the n-th row's app_host is s<n>.app.test.
+    const billing = Object.fromEntries(
+      args.map((a) => [
+        a.script,
+        (a.args as { props: { BILLING: unknown } }).props.BILLING,
+      ]),
+    );
+    expect(billing).toEqual({
+      [`oa-s-${idOf(0)}`]: {
+        billingGate: { installId: idOf(0), appHost: "s0.app.test" },
+      },
+      [`oa-s-${idOf(1)}`]: {
+        billingGate: { installId: idOf(1), appHost: "s1.app.test" },
+      },
+    });
+  });
+});

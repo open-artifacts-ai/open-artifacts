@@ -202,6 +202,8 @@ const BODY_KEYS: Readonly<Record<string, readonly string[]>> = {
 /** Only a Stripe-hosted page is ever passed back. */
 const CHECKOUT_URL = /^https:\/\/checkout\.stripe\.com\//;
 const PORTAL_URL = /^https:\/\/billing\.stripe\.com\//;
+/** billing-core's price id shape; checked before any customer is made. */
+const PRICE_ID = /^price_[A-Za-z0-9]{1,255}$/;
 
 // The free/active row, created first when missing (as /trial/start does).
 // Version 0 is what GET /tier shows for no row, so the view is unchanged.
@@ -230,6 +232,12 @@ async function stripe<T>(install: string, fn: () => Promise<T>): Promise<T> {
     if (e instanceof StripeConfigError) {
       console.error("billing stripe config", install);
       throw new StripeFailure(bad("config", 500));
+    }
+    // An idempotent request still in progress (a concurrent call with the
+    // same key): the caller may retry it.
+    if (e instanceof StripeApiError && e.status === 409) {
+      console.error("billing stripe retry", install);
+      throw new StripeFailure(bad("retry", 503));
     }
     if (e instanceof StripeApiError && e.type === "bad_answer") {
       console.error("billing stripe bad_upstream", install);
@@ -278,7 +286,12 @@ async function customerFor(
       cfg,
     ),
   );
-  const wrote = await db.prepare(MAP_CUSTOMER_SQL).bind(id, install).run();
+  // One in-request retry of the write; a second failure is the route's 503.
+  const map = () => db.prepare(MAP_CUSTOMER_SQL).bind(id, install).run();
+  const wrote = await map().catch(() => {
+    console.error("billing customer map_retry", install);
+    return map();
+  });
   console.log(
     "billing customer",
     wrote.meta.changes === 1 ? "mapped" : "kept",
@@ -298,6 +311,13 @@ async function checkout(
   const { plan } = body;
   if (plan !== "team" && plan !== "business") return bad("bad_plan");
   const tier: CheckoutTier = plan;
+  const priceId =
+    tier === "team" ? env.STRIPE_PRICE_TEAM : env.STRIPE_PRICE_BUSINESS;
+  // An unfilled or malformed price never gets as far as a customer.
+  if (typeof priceId !== "string" || !PRICE_ID.test(priceId)) {
+    console.error("billing stripe config", install);
+    return bad("config", 500);
+  }
   const cfg: StripeConfig = { secretKey: env.STRIPE_SECRET_KEY ?? "" };
   const customerId = await customerFor(
     env.BILLING_DB,
@@ -310,12 +330,13 @@ async function checkout(
     createCheckoutSession(
       {
         customerId,
-        priceId:
-          tier === "team" ? env.STRIPE_PRICE_TEAM : env.STRIPE_PRICE_BUSINESS,
+        priceId,
         tier,
         successUrl: `${base}?checkout=done`,
         cancelUrl: `${base}?checkout=cancel`,
-        idempotencyKey: `checkout-${install}-${body.ts}`,
+        // Plan in the key: the same ts with another plan is a new session,
+        // never Stripe's 400 for a reused key with other params.
+        idempotencyKey: `checkout-${install}-${tier}-${body.ts}`,
       },
       cfg,
     ),
