@@ -15,7 +15,8 @@ import {
   mcpHandler,
   mcpUnauthorized,
 } from "./mcp/server.js";
-import type { AgentAttr } from "./services/agent-usage.js";
+import { withMcpSession } from "./mcp/session.js";
+import { type AgentAttr, viaKey } from "./services/agent-usage.js";
 import { getUserWithEpoch } from "./services/users.js";
 
 export { DirectorySync } from "./directory/sync-do.js";
@@ -70,15 +71,26 @@ async function mcpWithPat(
     version: null,
     via: { kind: "token", id: pat.tokenId },
   };
+  const connection = viaKey({ kind: "token", id: pat.tokenId });
   // Audit rows from these tools name the PAT (by id, never its text).
   return withCred({ kind: "pat", id: pat.tokenId }, () =>
-    mcpHandler(env, () =>
-      createServer({ env, user, sessionEpoch, agent, exec: ctx }),
-    ).fetch(capped, {
-      // token is deliberately empty: tools never need it, and the SDK must not
-      // be able to log or echo the PAT. clientId names the token row instead.
-      authInfo: { token: "", clientId: `pat:${pat.tokenId}`, scopes: [] },
-    }),
+    withMcpSession(capped, env, user.id, (session) =>
+      mcpHandler(env, () =>
+        createServer({
+          env,
+          user,
+          sessionEpoch,
+          agent,
+          connection,
+          session,
+          exec: ctx,
+        }),
+      ).fetch(capped, {
+        // token is deliberately empty: tools never need it, and the SDK must
+        // not be able to log or echo the PAT. clientId names the token row.
+        authInfo: { token: "", clientId: `pat:${pat.tokenId}`, scopes: [] },
+      }),
+    ),
   );
 }
 

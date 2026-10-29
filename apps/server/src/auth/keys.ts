@@ -21,6 +21,8 @@ const KEY_OWNERS = {
   "oa:directory-state": "session",
   // Viewer presence: the per-artifact opaque key a viewer shows under.
   "oa:viewer-presence": "session",
+  // MCP session ids (legacy-era Mcp-Session-Id), bound to the user.
+  "oa:mcp-session": "session",
   // From CONTENT_SIGNING_KEY instead (contentKey below), so a content token
   // and an upload signature can never verify as each other.
   "oa:content-url": "content",

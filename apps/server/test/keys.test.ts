@@ -46,6 +46,7 @@ describe("deriveKey", () => {
       "oa:audit-cursor",
       "oa:directory-state",
       "oa:viewer-presence",
+      "oa:mcp-session",
       "oa:content-url",
       "oa:upload",
       "oa:directory-token",

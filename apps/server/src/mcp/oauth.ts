@@ -40,6 +40,7 @@ import {
   setGrantLabel,
   touchGrant,
   uaFamily,
+  viaKey,
 } from "../services/agent-usage.js";
 import { getSettings } from "../services/members.js";
 import { getUser, getUserWithEpoch } from "../services/users.js";
@@ -65,6 +66,7 @@ import {
   mcpResource,
   mcpUnauthorized,
 } from "./server.js";
+import { withMcpSession } from "./session.js";
 import { escapeHtml, fillTemplate } from "./template.js";
 
 export { OAUTH, oauthApi } from "./oauth-api.js";
@@ -146,18 +148,24 @@ const apiHandler = {
     };
     let server: ReturnType<typeof createServer> | undefined;
     // Audit rows from these tools name the grant (by id, never the token).
+    // One face per grant; a grantless token is one face for its user.
+    const connection = agent.via ? viaKey(agent.via) : `c:${user.id}`;
     const res = await withCred({ kind: "oauth_grant", id: grantId }, () =>
-      mcpHandler(env, () => {
-        server = createServer({
-          env,
-          user,
-          sessionEpoch: row.sessionEpoch,
-          agent,
-          exec: ctx,
-          clientVersion: true,
-        });
-        return server;
-      })(capped, env, ctx),
+      withMcpSession(capped, env, user.id, (session) =>
+        mcpHandler(env, () => {
+          server = createServer({
+            env,
+            user,
+            sessionEpoch: row.sessionEpoch,
+            agent,
+            connection,
+            session,
+            exec: ctx,
+            clientVersion: true,
+          });
+          return server;
+        })(capped, env, ctx),
+      ),
     );
     if (grantId) {
       const version = clientVersionOf(

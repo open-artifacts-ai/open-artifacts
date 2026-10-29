@@ -158,6 +158,8 @@ describe("L2: MCP tools are enforced at dispatch", () => {
       user: viewer,
       sessionEpoch: 0,
       agent: null,
+      connection: `c:${viewer.id}`,
+      session: null,
     });
     server.registerTool("evil_tool", { description: "x" }, async () => ({
       content: [{ type: "text", text: "leaked" }],

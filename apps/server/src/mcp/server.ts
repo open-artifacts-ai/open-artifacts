@@ -37,6 +37,14 @@ export type McpContext = {
    * `via` names the token or grant (publish attribution).
    */
   agent: AgentAttr | null;
+  /**
+   * The connection an agent call came over: `t:<tokenId>` (PAT),
+   * `g:<grantId>` (OAuth grant), or `c:<userId>` for an OAuth token with no
+   * parseable grant id.
+   */
+  connection: string;
+  /** The verified legacy-era MCP session id (its random part), else null. */
+  session: string | null;
   /** For waitUntil work (search indexing after publish). */
   exec?: Pick<ExecutionContext, "waitUntil">;
   /** Fill agent.version from the MCP clientInfo.version (OAuth clients). */

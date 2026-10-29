@@ -678,7 +678,14 @@ export function scenarios(c: Ctx): Scenario[] {
           role: "owner",
         } as never;
         return async () =>
-          createServer({ env, user, sessionEpoch: 0, agent: null });
+          createServer({
+            env,
+            user,
+            sessionEpoch: 0,
+            agent: null,
+            connection: `c:${c.userId}`,
+            session: null,
+          });
       },
     },
     {
