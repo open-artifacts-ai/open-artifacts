@@ -12,7 +12,8 @@ import { cookieKeys } from "./keys.js";
 /**
  * The __Host-oa_session payload (#359 SessionPayload): uid, exp, iat (ms),
  * p (how they signed in), t (verified tenant: Google hd, or the email domain
- * of a domain-code session), e (users.session_epoch at issue). Signed with
+ * of a domain-code session), pd (a personal Google account's email domain),
+ * e (users.session_epoch at issue). Signed with
  * deriveKey("oa:session"). Cookies from before P2 ({ uid, exp }, raw
  * SESSION_SECRET) read as p "access", e 0 until LEGACY_KEY_UNTIL.
  */
@@ -43,6 +44,8 @@ export async function signSession(
      */
     epoch: number;
     tenant?: string;
+    /** A personal Google account's (no hd) email domain. */
+    personalDomain?: string;
     maxAgeS?: number;
     /** Google auth_time (ms) of a forced re-authentication (P3 T18 break-glass). */
     authAt?: number;
@@ -56,6 +59,7 @@ export async function signSession(
     iat: now,
     p: opts.provider,
     ...(opts.tenant ? { t: opts.tenant } : {}),
+    ...(opts.personalDomain ? { pd: opts.personalDomain } : {}),
     e: opts.epoch,
     ...(opts.authAt !== undefined ? { a: opts.authAt } : {}),
   };
@@ -94,6 +98,7 @@ export async function readSession(
     const prov = s.p ?? "access";
     if (!PROVIDERS.includes(prov)) return null;
     if (s.t !== undefined && typeof s.t !== "string") return null;
+    if (s.pd !== undefined && typeof s.pd !== "string") return null;
     const e = s.e ?? 0;
     if (!Number.isSafeInteger(e) || e < 0) return null;
     const iat =
@@ -107,6 +112,7 @@ export async function readSession(
       iat,
       p: prov,
       ...(s.t !== undefined ? { t: s.t } : {}),
+      ...(s.pd !== undefined ? { pd: s.pd } : {}),
       e,
       ...(a !== undefined ? { a } : {}),
     };

@@ -234,4 +234,61 @@ describe("red-line: personal Google accounts (no hd)", () => {
       expect(await count("identities where subject = ?", `b-${email}`)).toBe(0);
     }
   });
+  it("R1: an invited googlemail.com address is admitted; an invited bob@partner.com with no hd is refused (tenant)", async () => {
+    const e = workspace();
+    const gm = uniq("gm", "googlemail.com");
+    const gmUid = await seedUser(gm, "member");
+    const ok = await signIn(e, gmail(gm, `gm-${gm}`));
+    expect(loc(ok)).toBe("/a/x");
+    expect(await pinned(gmUid)).toBe(`gm-${gm}`);
+    for (const env of [workspace(), gmailOnly()]) {
+      const bob = uniq("bob", "partner.com");
+      const uid = await seedUser(bob, "member");
+      const r = await signIn(env, gmail(bob, `pb-${bob}`));
+      expect(loc(r)).toBe(refused("tenant"));
+      expect(
+        r.headers.getSetCookie().some((c) => c.startsWith(`${SESSION}=`)),
+      ).toBe(false);
+      expect(await pinned(uid)).toBeNull();
+    }
+  });
+
+  it("R2: a personal session dies once AUTH_DOMAINS covers its domain; Workspace (hd) then admits the person", async () => {
+    const before = workspace();
+    const email = uniq("pd", "gmail.com");
+    const sub = `pd-${email}`;
+    const uid = await seedUser(email, "member");
+    const r = await signIn(before, gmail(email, sub));
+    expect(loc(r)).toBe("/a/x");
+    const s = await sessionOf(before, r);
+    expect(s).toMatchObject({ uid, p: "google", pd: "gmail.com" });
+    expect(s).not.toHaveProperty("t");
+    const cookie = `${SESSION}=${
+      r.headers
+        .getSetCookie()
+        .find((c) => c.startsWith(`${SESSION}=`))
+        ?.slice(SESSION.length + 1)
+        .split(";")[0]
+    }`;
+    // Admitted case first: the session works while gmail.com isn't verified.
+    expect((await get(R.me, before, cookie)).status).toBe(200);
+    const after = direct({
+      AUTH_DOMAINS: "a.com,gmail.com",
+      AUTH_DOMAIN_JOIN: "member",
+    });
+    expect((await get(R.me, after, cookie)).status).toBe(401);
+    // A personal sign-in is now refused; the Workspace one (hd) admits them,
+    // and the identity becomes that tenant's (R3).
+    expect(loc(await signIn(after, gmail(email, sub)))).toBe(refused("tenant"));
+    const ws = await signIn(after, { email, sub, hd: "gmail.com" });
+    expect(loc(ws)).toBe("/a/x");
+    expect(await sessionOf(after, ws)).toMatchObject({ uid, t: "gmail.com" });
+    expect(
+      await count(
+        "identities where user_id = ? and tenant = ?",
+        uid,
+        "gmail.com",
+      ),
+    ).toBe(1);
+  });
 });

@@ -46,7 +46,8 @@ export type AuthProviders = z.infer<typeof AuthProvidersSchema>;
 /**
  * `?error=` on SIGN_IN_PAGE after a refused redirect sign-in.
  * tenant: Google account outside the verified domains, or a personal Google
- * account (no hd) for an address inside them; identity_conflict: the
+ * account (no hd) for an address inside them or outside gmail.com and
+ * googlemail.com; identity_conflict: the
  * account was replaced (admin resets the link); expired: attempt too old or in
  * another tab; failed: anything else; removed: the person was removed or
  * suspended; no_access: a valid identity that isn't admitted. Direct mode
@@ -178,7 +179,8 @@ export type CodeVerifyFailureDetails = z.infer<
 /**
  * Reference only (server-internal): the __Host-oa_session payload. p is the
  * sign-in method; t the tenant (the verified Google hd, or the email domain
- * of a domain-code session); e the per-user session epoch.
+ * of a domain-code session); pd a personal Google account's email domain; e
+ * the per-user session epoch.
  */
 export type SessionPayload = {
   uid: string;
@@ -186,6 +188,11 @@ export type SessionPayload = {
   iat: number;
   p: "access" | "google" | "code" | "dev" | "test";
   t?: string;
+  /**
+   * A personal Google account's (no hd) email domain: the session ends once
+   * that domain is one of AUTH_DOMAINS (they sign in through Workspace).
+   */
+  pd?: string;
   e: number;
   /**
    * Google auth_time (ms) of a forced re-authentication (max_age=0), set
