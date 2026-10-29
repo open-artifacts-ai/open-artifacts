@@ -19,10 +19,18 @@ import { createServer, type Server } from "node:http";
 //   expire after `codeTtlMs` (invalid_grant), measured on a clock tests can
 //   move forward (advance). Returns an RS256 ID token with Google's claims.
 // - certs: the JWKS (public key only).
+// - For a real browser (the one-shot rehearsal): the chooser is a form the
+//   test types into over CDP (email and password, as the person would); a
+//   signed-in account leaves a session cookie at the IdP (like Google's), so
+//   a test can prove one prompt's session never reaches the next profile;
+//   and `block` makes it answer like Google's automation block page.
 
 export const FAKE_AUTHORIZE = "/o/oauth2/v2/auth";
 export const FAKE_TOKEN = "/token";
 export const FAKE_CERTS = "/oauth2/v3/certs";
+/** Google's "This browser or app may not be secure" page, by path. */
+export const FAKE_REJECTED = "/v3/signin/rejected";
+export const FAKE_SESSION_COOKIE = "fake_gsid";
 
 export interface FakeClient {
   secret: string;
@@ -38,10 +46,12 @@ export interface FakeIdpOpts {
 }
 
 export interface FakeIdpEvent {
-  at: "authorize" | "token";
+  at: "authorize" | "token" | "chooser";
   ok: boolean;
   /** Why it was refused (never a code or token). */
   why?: string;
+  /** chooser only: the IdP session the browser arrived with (an email), or null. */
+  session?: string | null;
 }
 
 export interface FakeIdp {
@@ -52,6 +62,8 @@ export interface FakeIdp {
   /** Moves the IdP's clock forward (code expiry only; tokens use real time). */
   advance(ms: number): void;
   events: FakeIdpEvent[];
+  /** Answer the chooser like Google's automation block (the rejected page). */
+  block: boolean;
   stop(): Promise<void>;
 }
 
@@ -101,6 +113,7 @@ export async function startFakeIdp(o: FakeIdpOpts): Promise<FakeIdp> {
       offset += ms;
     },
     events,
+    block: false,
     stop: async () => {},
   };
   const json = (status: number, v: unknown): Reply => ({
@@ -116,7 +129,25 @@ export async function startFakeIdp(o: FakeIdpOpts): Promise<FakeIdp> {
     return json(status, { error: at === "token" ? "invalid_grant" : why });
   };
 
-  function authorize(q: URLSearchParams): Reply {
+  const esc = (v: string) =>
+    v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  /** The chooser: a sign-in form carrying the request's own parameters. */
+  function chooser(q: URLSearchParams, session: string | null): Reply {
+    events.push({ at: "chooser", ok: true, session });
+    const hidden = [...q]
+      .filter(([k]) => k !== "as" && k !== "pw" && k !== "form")
+      .map(
+        ([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`,
+      )
+      .join("");
+    return {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8" },
+      body: `<!doctype html><title>Sign in</title><p>Choose an account</p><form method="GET" action="${FAKE_AUTHORIZE}">${hidden}<input type="hidden" name="form" value="1"><input id="identifier" name="as" type="email"><input id="password" name="pw" type="password"><button id="next" type="submit">Next</button></form>`,
+    };
+  }
+
+  function authorize(q: URLSearchParams, session: string | null): Reply {
     const client = o.clients[q.get("client_id") ?? ""];
     const redirectUri = q.get("redirect_uri") ?? "";
     if (!client?.redirectUris.includes(redirectUri))
@@ -130,13 +161,18 @@ export async function startFakeIdp(o: FakeIdpOpts): Promise<FakeIdp> {
     )
       return refuse("authorize", "invalid_request");
     const as = (q.get("as") ?? "").toLowerCase();
-    // No account picked yet: Google's chooser (a page, no redirect).
-    if (!as)
+    if (idp.block && !as) {
+      events.push({ at: "authorize", ok: false, why: "blocked_browser" });
       return {
-        status: 200,
-        headers: { "content-type": "text/html" },
-        body: "<p>Choose an account</p>",
+        status: 302,
+        headers: { location: `${FAKE_REJECTED}?rrk=46` },
+        body: "",
       };
+    }
+    // No account picked yet: Google's chooser (a page, no redirect).
+    if (!as) return chooser(q, session);
+    // Typed into the form: a password is required, as at Google.
+    if (q.get("form") === "1" && !q.get("pw")) return chooser(q, session);
     if (!o.users.includes(as)) return refuse("authorize", "no_such_account");
     const hd = q.get("hd");
     if (hd && domainOf(as) !== hd)
@@ -159,7 +195,16 @@ export async function startFakeIdp(o: FakeIdpOpts): Promise<FakeIdp> {
     to.searchParams.set("hd", domainOf(as));
     to.searchParams.set("prompt", "consent");
     events.push({ at: "authorize", ok: true });
-    return { status: 302, headers: { location: to.toString() }, body: "" };
+    return {
+      status: 302,
+      headers: {
+        location: to.toString(),
+        // The IdP session (Google's own cookie): the next prompt's fresh
+        // profile must not carry it.
+        "set-cookie": `${FAKE_SESSION_COOKIE}=${encodeURIComponent(as)}; Path=/; HttpOnly; SameSite=Lax`,
+      },
+      body: "",
+    };
   }
 
   function token(form: URLSearchParams): Reply {
@@ -214,8 +259,16 @@ export async function startFakeIdp(o: FakeIdpOpts): Promise<FakeIdp> {
       res.writeHead(r.status, r.headers);
       res.end(r.body);
     };
+    const sid = /(?:^|;\s*)fake_gsid=([^;]+)/.exec(req.headers.cookie ?? "");
+    const session = sid ? decodeURIComponent(sid[1] as string) : null;
     if (req.method === "GET" && u.pathname === FAKE_AUTHORIZE)
-      return done(authorize(u.searchParams));
+      return done(authorize(u.searchParams, session));
+    if (req.method === "GET" && u.pathname === FAKE_REJECTED)
+      return done({
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: "<!doctype html><title>Sign in - Google Accounts</title><h1>Couldn't sign you in</h1><p>This browser or app may not be secure. Try using a different browser.</p>",
+      });
     if (req.method === "GET" && u.pathname === FAKE_CERTS)
       return done(json(200, { keys: [publicJwk] }));
     if (req.method === "POST" && u.pathname === FAKE_TOKEN) {
