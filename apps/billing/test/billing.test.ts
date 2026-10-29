@@ -324,11 +324,20 @@ describe("POST /trial/start", () => {
     }
   });
 
-  it("no row: 200 with the default, and no row is created", async () => {
+  it("no row (the free/active default): the trial starts and the row is created, once", async () => {
+    at();
     const r = await call(gated("POST", "/trial/start", { install: A }));
     expect(r.status).toBe(200);
-    expect(await r.json()).toMatchObject({ tier: "free", version: 0 });
-    expect(await rowOf(A)).toBeNull();
+    expect(await r.json()).toMatchObject({
+      tier: "trial",
+      status: "active",
+      trialEndsAt: NOW + TRIAL_MS,
+      version: 1,
+    });
+    expect(await rowOf(A)).toMatchObject({ tier: "trial", version: 1 });
+    const again = await call(gated("POST", "/trial/start", { install: A }));
+    expect(await again.json()).toMatchObject({ tier: "trial", version: 1 });
+    expect(await rowOf(B)).toBeNull();
   });
 
   it("concurrent starts bump the version once", async () => {

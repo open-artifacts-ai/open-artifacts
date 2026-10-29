@@ -28,6 +28,9 @@ export interface BillingGateEnv {
  * The billing Worker has no public origin for these routes (binding only), so
  * the forwarded URL's host is this fixed name; billing never reads it.
  */
+/** The /usage body cap: 10,000 creator ids of up to 128 chars (billing's own MAX_BODY). */
+export const USAGE_MAX_BODY = 2 * 1024 * 1024;
+
 export const BILLING_ORIGIN = "https://billing.oa.internal";
 
 /** The routes an install may call, by method; nothing else passes. */
@@ -90,7 +93,12 @@ export async function passBillingGate(
     }
     let t: string | null;
     try {
-      t = await boundedText(req, GATE_MAX_BODY);
+      // /usage carries the month's creator list (up to 10,000 ids); every
+      // other route stays at the broker gates' cap.
+      t = await boundedText(
+        req,
+        url.pathname === "/usage" ? USAGE_MAX_BODY : GATE_MAX_BODY,
+      );
     } catch {
       return refuse(400, "bad_body");
     }
