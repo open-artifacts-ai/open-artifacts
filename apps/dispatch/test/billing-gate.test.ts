@@ -143,7 +143,7 @@ describe("BillingGate: allowed calls", () => {
       },
       A,
     );
-    expect(out).toEqual({ billing: { gate: { installId: A } } });
+    expect(out).toEqual({ BILLING: { gate: { installId: A } } });
     expect(made).toEqual([{ installId: A }]);
   });
 });
