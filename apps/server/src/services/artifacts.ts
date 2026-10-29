@@ -2,6 +2,7 @@ import { normalizeEmail } from "@oa/auth-core";
 import {
   type AccessLevel,
   type AgentRef,
+  type AgentTouch,
   type ArtifactPatch,
   type ArtifactPatchResult,
   type ArtifactSummary,
@@ -51,6 +52,10 @@ import { ApiError, appOrigin } from "../http/errors.js";
 import { logError, logInfo, logWarn } from "../log.js";
 import { runtimeStub, type VersionEvent } from "../runtime/do.js";
 import { closeRuntimeSockets } from "../runtime/revoke.js";
+import {
+  type ViewerAgentFrom,
+  viewerAgentTouchOrNull,
+} from "../runtime/viewer-presence-agent.js";
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { audit, userActor } from "./audit.js";
 import { type ManifestEntry, materialize, planFiles } from "./manifest.js";
@@ -77,6 +82,8 @@ const later = async (ctx: Ctx | undefined, p: Promise<unknown>) => {
  * RPC pushes the `version` frame to the artifact's R.events sockets (best
  * effort: a lost one is caught up by the client's next hello). Request paths
  * run it in waitUntil (`later`): the RPC takes 0.5-1.2 s on hosted installs.
+ * With `touch` (an agent's publish or restore) the same RPC puts the agent on
+ * the viewer presence roster as Editing.
  */
 export async function enqueueIndex(
   env: Env,
@@ -84,14 +91,16 @@ export async function enqueueIndex(
   version: number,
   thumb = false,
   event?: VersionEvent,
+  touch?: AgentTouch,
 ): Promise<void> {
   // Wall time of the stub call (placement, cold start, round trip): slow
   // hosted installs need it measured.
   const t0 = Date.now();
   let doMs: number | undefined;
   try {
-    doMs = (await runtimeStub(env, id).scheduleIndex(id, version, thumb, event))
-      .ms;
+    doMs = (
+      await runtimeStub(env, id).scheduleIndex(id, version, thumb, event, touch)
+    ).ms;
   } catch (e) {
     logError("index_enqueue_failed", e, { artifactId: id, version });
   } finally {
@@ -106,6 +115,22 @@ export async function enqueueIndex(
       }),
     );
   }
+}
+
+/**
+ * enqueueIndex for a new version, with the publishing agent's touch (built
+ * here: a new artifact's id only exists once publish picks it). A touch that
+ * can't be built is logged and skipped, never the enqueue.
+ */
+async function enqueueVersion(
+  env: Env,
+  id: string,
+  version: number,
+  event: VersionEvent,
+  agent?: ViewerAgentFrom,
+): Promise<void> {
+  const touch = await viewerAgentTouchOrNull(env, id, agent ?? null);
+  await enqueueIndex(env, id, version, true, event, touch);
 }
 
 /** The R.events `version` attribution, from what the version row stores. */
@@ -147,6 +172,7 @@ export async function publish(
   agent: AgentAttr | null,
   ctx?: Ctx,
   mode: PublishMode = "any",
+  touch?: ViewerAgentFrom,
 ): Promise<PublishResult> {
   const plan = planFiles(input);
   const db = env.DB;
@@ -461,7 +487,7 @@ export async function publish(
   // now only the hand-off; index_enqueue logs the DO call's own wall time.
   await later(
     ctx,
-    enqueueIndex(env, id, version, true, versionEvent(user, agent, now)),
+    enqueueVersion(env, id, version, versionEvent(user, agent, now), touch),
   );
   mark();
   logPublishTiming(env, id, create, at);
@@ -1135,6 +1161,7 @@ export async function restoreVersion(
   v: number,
   agent: AgentAttr | null,
   ctx?: Ctx,
+  touch?: ViewerAgentFrom,
 ): Promise<PublishResult> {
   await authorize(env, asUser(user), id, "restore");
   const src = await env.DB.prepare(
@@ -1169,7 +1196,7 @@ export async function restoreVersion(
   if (version === undefined) throw notFound();
   await later(
     ctx,
-    enqueueIndex(env, id, version, true, versionEvent(user, agent, now, v)),
+    enqueueVersion(env, id, version, versionEvent(user, agent, now, v), touch),
   );
   return { id, version, url: appOrigin(env) + viewerPath(id) };
 }

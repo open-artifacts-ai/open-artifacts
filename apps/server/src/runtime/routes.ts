@@ -47,19 +47,12 @@ import {
   runtimeStub,
   VIEWER_PRESENCE_HEADER,
 } from "./do.js";
-import { cleanName, type PresenceIdentity } from "./roster.js";
+import { type PresenceIdentity, presenceName } from "./roster.js";
+import {
+  restViewerAgent,
+  viewerAgentTouchOrNull,
+} from "./viewer-presence-agent.js";
 import { viewerPresenceKey } from "./viewer-presence-key.js";
-
-/**
- * A member's name for the presence roster. Member.name falls back to the
- * email when the user has no real name (effectiveName), and an email never
- * goes to another viewer: that case is null (compared after cleaning, so
- * trailing spaces, zero-width characters and case do not hide it) (the roster shows "Member").
- */
-const presenceName = (u: { name: string | null; email: string }) => {
-  const n = cleanName(u.name);
-  return n !== null && n.toLowerCase() === u.email.toLowerCase() ? null : n;
-};
 
 // Literals so Hono infers params; must equal R.data* / R.storage* in @oa/shared.
 const ART = "/api/v1/artifacts/:id";
@@ -331,6 +324,16 @@ const jsonText = (text: string) =>
 
 const stub = (c: C, g: Gate) => runtimeStub(c.env, g.artifactId);
 
+/**
+ * Viewer presence for a PAT caller: the touch the data RPC carries (no extra
+ * DO call). Undefined for a cookie, embed or anonymous caller: the gate ran
+ * as that user only when its actor is theirs.
+ */
+const agentTouch = (c: C, g: Gate, write: boolean) =>
+  c.var.user && g.actor === `u:${c.var.user.id}`
+    ? viewerAgentTouchOrNull(c.env, g.artifactId, restViewerAgent(c.var, write))
+    : Promise.resolve(undefined);
+
 export function mountRuntime(app: AppType): void {
   // viewer.anonId() for an anonymous viewer: their per-artifact public id.
   app.get(ANON_ID, async (c) => {
@@ -348,8 +351,9 @@ export function mountRuntime(app: AppType): void {
     });
     if (!p.success) throw new ApiError("bad_request", "Invalid list request");
     const { collection, cursor, limit: n } = p.data;
+    const touch = await agentTouch(c, g, false);
     return c.json(
-      await runtimeCall(() => stub(c, g).list(collection, cursor, n)),
+      await runtimeCall(() => stub(c, g).list(collection, cursor, n, touch)),
     );
   });
 
@@ -358,7 +362,8 @@ export function mountRuntime(app: AppType): void {
   app.get(COUNT, async (c) => {
     const g = await gate(c, "db.list", "read");
     const col = name(c.req.param("col"), "collection");
-    return c.json(await runtimeCall(() => stub(c, g).count(col)));
+    const touch = await agentTouch(c, g, false);
+    return c.json(await runtimeCall(() => stub(c, g).count(col, touch)));
   });
 
   // A read, but POST: the query is a JSON body.
@@ -366,14 +371,16 @@ export function mountRuntime(app: AppType): void {
     const g = await gate(c, "db.query", "read");
     const col = name(c.req.param("col"), "collection");
     const q = await cappedJson(c, DataQuerySchema, MAX_QUERY_BODY);
-    return c.json(await runtimeCall(() => stub(c, g).query(col, q)));
+    const touch = await agentTouch(c, g, false);
+    return c.json(await runtimeCall(() => stub(c, g).query(col, q, touch)));
   });
 
   app.get(DOC, async (c) => {
     const g = await gate(c, "db.get", "read");
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
-    const d = await runtimeCall(() => stub(c, g).get(col, id));
+    const touch = await agentTouch(c, g, false);
+    const d = await runtimeCall(() => stub(c, g).get(col, id, touch));
     if (!d) throw new ApiError("not_found", "Not found");
     return c.json(d);
   });
@@ -383,8 +390,9 @@ export function mountRuntime(app: AppType): void {
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
     const body = await readDocBody(c);
+    const touch = await agentTouch(c, g, true);
     const { updatedAt } = await runtimeCall(() =>
-      stub(c, g).setRaw(col, id, toBuffer(body), g.actor),
+      stub(c, g).setRaw(col, id, toBuffer(body), g.actor, touch),
     );
     // The DataDoc, with the (DO-validated) body bytes spliced in unparsed.
     const [head, tail] = JSON.stringify({
@@ -407,10 +415,13 @@ export function mountRuntime(app: AppType): void {
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
     const body = await rawBody(c);
+    const touch = await agentTouch(c, g, true);
     return withAnon(
       g,
       jsonText(
-        await runtimeCall(() => stub(c, g).updateRaw(col, id, body, g.actor)),
+        await runtimeCall(() =>
+          stub(c, g).updateRaw(col, id, body, g.actor, touch),
+        ),
       ),
     );
   });
@@ -419,7 +430,8 @@ export function mountRuntime(app: AppType): void {
     const g = await gate(c, "db.delete", "write");
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
-    await runtimeCall(() => stub(c, g).delete(col, id, g.actor));
+    const touch = await agentTouch(c, g, true);
+    await runtimeCall(() => stub(c, g).delete(col, id, g.actor, touch));
     return withAnon(g, c.body(null, 204));
   });
 

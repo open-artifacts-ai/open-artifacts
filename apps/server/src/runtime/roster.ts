@@ -64,6 +64,21 @@ export const cleanName = (s: string | null): string | null => {
   return cut === "" ? null : cut;
 };
 
+/**
+ * A member's name for the presence roster. Member.name falls back to the
+ * email when the user has no real name (effectiveName), and an email never
+ * goes to another viewer: that case is null (compared after cleaning, so
+ * trailing spaces, zero-width characters and case do not hide it) (the
+ * roster shows "Member"). Viewers and agent owners both use it.
+ */
+export const presenceName = (u: {
+  name: string | null;
+  email: string;
+}): string | null => {
+  const n = cleanName(u.name);
+  return n !== null && n.toLowerCase() === u.email.toLowerCase() ? null : n;
+};
+
 const byArrival = <T extends { since: number; key: string }>(a: T, b: T) =>
   a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 

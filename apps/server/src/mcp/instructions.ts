@@ -92,7 +92,8 @@ export const SECTIONS = {
   reading: {
     title: "Reading",
     body: () => `- get_artifact returns metadata and, for text files up to 1 MB, the content; otherwise a downloadUrl valid for 10 minutes.
-- list_artifacts, search_artifacts and list_versions page with cursor; restore_version publishes an old version again.`,
+- list_artifacts, search_artifacts and list_versions page with cursor; restore_version publishes an old version again.
+- On get_artifact and the artifact_data_* tools, pass activity: a few words on what you are doing (at most 80 characters, for example "checking the chart"). People with the artifact open see it beside you.`,
   },
   sharing: {
     title: "Sharing and visibility",

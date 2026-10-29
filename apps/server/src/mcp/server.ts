@@ -1,5 +1,6 @@
 import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import {
+  type AgentTouch,
   dataLimits,
   MCP_PATH,
   type Member,
@@ -19,6 +20,11 @@ import {
 } from "../http/errors.js";
 import { logError } from "../log.js";
 import { toRuntimeApiError } from "../runtime/do.js";
+import {
+  touchViewerAgentLater,
+  type ViewerAgentFrom,
+  viewerAgentTouchOrNull,
+} from "../runtime/viewer-presence-agent.js";
 import { type AgentAttr, clientVersionOf } from "../services/agent-usage.js";
 import { cpuNudge } from "../services/usage.js";
 import { VERSION } from "../version.gen.js";
@@ -55,6 +61,16 @@ export type McpContext = {
 export type ToolEnv = McpContext & {
   caller: Caller;
   agentNow: () => AgentAttr | null;
+  /** Viewer presence: this agent, for a publish or restore (services build the touch). */
+  agentFrom: (write: boolean, activity?: string | null) => ViewerAgentFrom;
+  /** Viewer presence: the touch a data RPC carries (undefined if it can't be built). */
+  touch: (
+    id: string,
+    write: boolean,
+    activity?: string | null,
+  ) => Promise<AgentTouch | undefined>;
+  /** Viewer presence for a read that makes no DO call: the one extra call, in waitUntil. */
+  touchLater: (id: string, activity?: string | null) => void;
 };
 
 /** `{ content: [one-line summary], structuredContent }`. */
@@ -118,10 +134,26 @@ export function createServer(ctx: McpContext): McpServer {
       version: clientVersionOf(server.server.getClientVersion()?.version),
     };
   };
+  const agentFrom = (
+    write: boolean,
+    activity: string | null = null,
+  ): ViewerAgentFrom => ({
+    user: ctx.user,
+    agent: ctx.agent,
+    session: ctx.session,
+    connection: ctx.connection,
+    write,
+    activity,
+  });
   const t: ToolEnv = {
     ...ctx,
     caller: callerOf(ctx.user),
     agentNow,
+    agentFrom,
+    touch: (id, write, activity) =>
+      viewerAgentTouchOrNull(ctx.env, id, agentFrom(write, activity)),
+    touchLater: (id, activity) =>
+      touchViewerAgentLater(ctx.env, ctx.exec, id, agentFrom(false, activity)),
   };
   enforceToolPolicy(server, t);
   registerArtifactTools(server, t);

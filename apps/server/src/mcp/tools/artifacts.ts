@@ -80,7 +80,15 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
           const line = `Updated the settings of ${r.id} in place (still v${r.version}, no new version): ${r.url}`;
           return ok(r.warning ? `${line} Warning: ${r.warning}` : line, r);
         }
-        const r = await publish(env, user, input, t.agentNow(), t.exec, "any");
+        const r = await publish(
+          env,
+          user,
+          input,
+          t.agentNow(),
+          t.exec,
+          "any",
+          t.agentFrom(true, input.message ?? null),
+        );
         const line = `Published ${input.title ? `"${input.title}" ` : ""}${r.id} v${r.version}: ${r.url}`;
         return ok(r.warning ? `${line} Warning: ${r.warning}` : line, r);
       }),
@@ -122,6 +130,8 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
           contentViewer(env, user.id, t.sessionEpoch),
         );
       }
+      // A read reaches no DO otherwise: the one extra (background) call.
+      t.touchLater(artifact.id, input.activity ?? null);
       const what =
         out.content !== undefined
           ? `${path} inline`
@@ -196,6 +206,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
           input.version,
           t.agentNow(),
           t.exec,
+          t.agentFrom(true),
         );
         return ok(
           `Restored v${input.version} of ${r.id} as v${r.version}: ${r.url}`,

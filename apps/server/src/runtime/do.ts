@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  AGENT_PRESENT_MS,
+  type AgentTouch,
   accessChangedCloseReason,
   DATA_LIMIT_DEFAULTS,
   type DataChange,
@@ -20,6 +22,7 @@ import {
   type ErrorCode,
   LIMITS,
   type Page,
+  PRESENCE_ACTIVITY_MAX,
   PRESENCE_COALESCE_MS,
   PRESENCE_GRACE_MS,
   PRESENCE_NAME_MAX,
@@ -48,7 +51,12 @@ import {
   type ThumbResult,
 } from "../services/thumbs.js";
 import { presenceStub, SKEW_MS } from "./presence.js";
-import { buildRoster, type SeatRow } from "./roster.js";
+import {
+  type AgentRow,
+  buildRoster,
+  type Roster,
+  type SeatRow,
+} from "./roster.js";
 
 // Errors cross the RPC boundary as plain Error (subclass + fields are lost), so the
 // code rides in the message: "oa:<code>:<message>". B13 maps it back with toRuntimeApiError.
@@ -396,6 +404,11 @@ create table if not exists viewer_presence_left (
 create table if not exists viewer_presence_state (
   id integer primary key check (id = 1), hash text not null, sent_at integer not null
 );
+create table if not exists viewer_presence_agent (
+  key text primary key, product text, owner text not null,
+  owner_actor text not null, label text, since integer not null,
+  seen integer not null, last_write integer, activity text
+) without rowid;
 `;
 
 /** presence_unbound is logged once per isolate on the accept path. */
@@ -467,6 +480,39 @@ const ViewerPresenceIdentitySchema = z.strictObject({
     .nullable(),
   guest: z.boolean(),
 });
+/** touchViewerAgent's arg, bounded (cleaned again by buildRoster). */
+const AgentTouchSchema = z.strictObject({
+  key: PresenceKeySchema,
+  product: z
+    .string()
+    .max(PRESENCE_NAME_MAX * 4)
+    .nullable(),
+  owner: z.string().max(PRESENCE_NAME_MAX * 4),
+  ownerActor: z.string().regex(/^u:[\x21-\x7e]{1,250}$/),
+  label: z
+    .string()
+    .max(PRESENCE_NAME_MAX * 4)
+    .nullable(),
+  write: z.boolean(),
+  activity: z
+    .string()
+    .max(PRESENCE_ACTIVITY_MAX * 4)
+    .nullable(),
+});
+/** Agent rows one person can hold on an artifact (oldest seen dropped first). */
+const MAX_VIEWER_AGENTS_PER_OWNER = 20;
+type ViewerAgentDbRow = {
+  key: string;
+  product: string | null;
+  owner: string;
+  owner_actor: string;
+  label: string | null;
+  since: number;
+  seen: number;
+  last_write: number | null;
+  activity: string | null;
+};
+
 /** Why R.events sockets get `gone`: a soft delete, or any other access change. */
 export type GoneReason = "deleted" | "changed";
 const GONE_DELETED = '{"type":"gone","reason":"deleted"}';
@@ -739,11 +785,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return { json, bytes };
   }
 
-  get(collection: string, id: string): DataDoc | null {
+  get(collection: string, id: string, touch?: AgentTouch): DataDoc | null {
     const row = this.readDoc(
       dataName(collection, "collection"),
       dataName(id, "id"),
     );
+    this.viewerAgentTouched(touch, false);
     return row ? toDoc(row) : null;
   }
 
@@ -752,9 +799,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * (collection, id) (EXPLAIN QUERY PLAN: "SEARCH docs USING ... INDEX ...
    * (collection=?)"); no doc bodies are read.
    */
-  count(collection: string): DataCount {
+  count(collection: string, touch?: AgentTouch): DataCount {
     const c = dataName(collection, "collection");
-    return {
+    const out = {
       count: this.sql
         .exec<{ n: number }>(
           "select count(*) as n from docs where collection = ?",
@@ -762,10 +809,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
         )
         .one().n,
     };
+    this.viewerAgentTouched(touch, false);
+    return out;
   }
 
   /** Docs in (updated_at, id) order, keyset-paginated. */
-  list(collection: string, cursor?: string, limit?: number): Page<DataDoc> {
+  list(
+    collection: string,
+    cursor?: string,
+    limit?: number,
+    touch?: AgentTouch,
+  ): Page<DataDoc> {
     const c = dataName(collection, "collection");
     const n = limitOf(limit);
     const cur = decodeCursor(cursor, ["u", "i"] as const);
@@ -782,6 +836,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       .toArray();
     const items = rows.slice(0, n);
     const last = items[items.length - 1];
+    this.viewerAgentTouched(touch, false);
     return {
       items: items.map(toDoc),
       nextCursor:
@@ -792,7 +847,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
   }
 
   /** Typed equality filter, ordered by (orderBy value | updated_at, id), keyset-paginated. */
-  query(collection: string, q: DataQueryInput): Page<DataDoc> {
+  query(
+    collection: string,
+    q: DataQueryInput,
+    touch?: AgentTouch,
+  ): Page<DataDoc> {
     const c = dataName(collection, "collection");
     const parsed = DataQuerySchema.safeParse(q ?? {});
     if (!parsed.success) fail("bad_request", "invalid query");
@@ -921,16 +980,25 @@ export class ArtifactRuntime extends DurableObject<Env> {
           ? inline
           : encodeCursor({ ...base, u: last.updated_at, h: sortHash(lv) });
     }
+    this.viewerAgentTouched(touch, false);
     return { items: items.map(toDoc), nextCursor };
   }
 
-  set(collection: string, id: string, data: unknown, actor: string): DataDoc {
-    return this.writeDoc(
+  set(
+    collection: string,
+    id: string,
+    data: unknown,
+    actor: string,
+    touch?: AgentTouch,
+  ): DataDoc {
+    const { doc } = this.writeDoc(
       dataName(collection, "collection"),
       dataName(id, "id"),
       data,
       actorOf(actor),
-    ).doc;
+    );
+    this.viewerAgentTouched(touch, true);
+    return doc;
   }
 
   /**
@@ -943,12 +1011,15 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     body: RawBody,
     actor: string,
+    touch?: AgentTouch,
   ): { updatedAt: string } {
     const c = dataName(collection, "collection");
     const i = dataName(id, "id");
     const a = actorOf(actor);
     const { json, bytes } = this.rawJson(body);
-    return { updatedAt: this.writeJson(c, i, json, bytes, a) };
+    const updatedAt = this.writeJson(c, i, json, bytes, a);
+    this.viewerAgentTouched(touch, true);
+    return { updatedAt };
   }
 
   /** Shallow merge into the doc (non-object docs are replaced); a missing doc is created. */
@@ -957,8 +1028,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     patch: Record<string, unknown>,
     actor: string,
+    touch?: AgentTouch,
   ): DataDoc {
-    return this.merge(collection, id, patch, actor).doc;
+    const { doc } = this.merge(collection, id, patch, actor);
+    this.viewerAgentTouched(touch, true);
+    return doc;
   }
 
   /** update() from the raw request body; returns the DataDoc as JSON text. */
@@ -967,6 +1041,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     body: RawBody,
     actor: string,
+    touch?: AgentTouch,
   ): string {
     const { json } = this.rawJson(body);
     const { doc, json: data } = this.merge(
@@ -975,6 +1050,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       JSON.parse(json) as Record<string, unknown>,
       actor,
     );
+    this.viewerAgentTouched(touch, true);
     return docJson({ ...doc, data: null }, data);
   }
 
@@ -998,7 +1074,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return this.writeDoc(c, i, { ...base, ...p.data }, a);
   }
 
-  delete(collection: string, id: string, actor: string): void {
+  delete(
+    collection: string,
+    id: string,
+    actor: string,
+    touch?: AgentTouch,
+  ): void {
     const c = dataName(collection, "collection");
     const i = dataName(id, "id");
     const a = actorOf(actor);
@@ -1016,6 +1097,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       existed = old !== undefined;
       this.bump(-(old?.size ?? 0), c);
     });
+    this.viewerAgentTouched(touch, true);
     if (existed)
       this.broadcast(
         c,
@@ -1429,7 +1511,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       JSON.stringify({ type: "hello", version: o.version, you: who.key }),
     );
     try {
-      ws.send(JSON.stringify(this.viewerPresenceFrame(now)));
+      ws.send(this.viewerPresenceText(this.viewerPresenceRoster(now), o.actor));
     } catch (e) {
       logError("viewer_presence_flush_failed", e);
     }
@@ -1453,8 +1535,15 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return out;
   }
 
-  /** The roster now: joined sockets plus unexpired grace rows. */
-  private viewerPresenceFrame(now: number): PresenceFrame {
+  /**
+   * The roster now: joined sockets, unexpired grace rows and present agents.
+   * `labels` (owner actor to agent key to label) only ever reaches that
+   * owner's own sockets (viewerPresenceText).
+   */
+  private viewerPresenceRoster(now: number): {
+    frame: PresenceFrame;
+    labels: Roster["labels"];
+  } {
     const seats: SeatRow[] = this.viewerPresenceSockets().map(({ p }) => ({
       key: p.key,
       kind: p.kind,
@@ -1475,8 +1564,146 @@ export class ArtifactRuntime extends DurableObject<Env> {
         guest: r.guest === 1,
         since: r.since,
       });
-    const { viewers, total } = buildRoster(seats, [], now);
-    return { type: "presence", viewers, total };
+    const { viewers, total, labels } = buildRoster(
+      seats,
+      this.viewerAgentRows(now),
+      now,
+    );
+    return { frame: { type: "presence", viewers, total }, labels };
+  }
+
+  /**
+   * The frame one socket gets: the shared roster, or for the owner of
+   * labelled agents (by its server-only actor) the variant whose own agents
+   * carry `agent.label`. No other socket ever gets a label.
+   */
+  private viewerPresenceText(
+    r: ReturnType<ArtifactRuntime["viewerPresenceRoster"]>,
+    actor: string,
+  ): string {
+    const mine = r.labels.get(actor);
+    if (!mine) return JSON.stringify(r.frame);
+    return JSON.stringify({
+      ...r.frame,
+      viewers: r.frame.viewers.map((v) => {
+        const label = v.agent ? mine.get(v.key) : undefined;
+        return label && v.agent ? { ...v, agent: { ...v.agent, label } } : v;
+      }),
+    } satisfies PresenceFrame);
+  }
+
+  /** What the last flush is compared against: the shared frame plus every owner's labels. */
+  private viewerPresenceHash(
+    r: ReturnType<ArtifactRuntime["viewerPresenceRoster"]>,
+  ): string {
+    const frame = JSON.stringify(r.frame);
+    if (r.labels.size === 0) return frame;
+    const labels = [...r.labels].map(([a, m]) => [a, [...m]]);
+    return `${frame}\n${JSON.stringify(labels)}`;
+  }
+
+  /** Agent rows still present at `now` (seen within AGENT_PRESENT_MS). */
+  private viewerAgentRows(now: number): AgentRow[] {
+    return this.sql
+      .exec<ViewerAgentDbRow>(
+        `select key, product, owner, owner_actor, label, since, seen, last_write, activity
+         from viewer_presence_agent where seen + ? > ?`,
+        AGENT_PRESENT_MS,
+        now,
+      )
+      .toArray()
+      .map((r) => ({
+        key: r.key,
+        product: r.product,
+        owner: r.owner,
+        ownerActor: r.owner_actor,
+        label: r.label,
+        since: r.since,
+        seen: r.seen,
+        lastWrite: r.last_write,
+        activity: r.activity,
+      }));
+  }
+
+  /**
+   * An agent read (MCP get_artifact, REST GET with a PAT): the one DO call
+   * presence adds. Publishes and data calls pass the same touch to the RPC
+   * they already make instead.
+   */
+  async touchViewerAgent(t: AgentTouch): Promise<void> {
+    const p = AgentTouchSchema.safeParse(t);
+    if (!p.success) fail("bad_request", "invalid agent touch");
+    const seen = this.upsertViewerAgent(p.data, p.data.write);
+    await this.afterViewerAgentTouch(seen);
+  }
+
+  /**
+   * A data RPC's trailing touch: the row is written now (SQLite is sync, so
+   * the RPC stays sync); the broadcast and alarm run in waitUntil. `write`
+   * comes from the RPC, not the caller. Never fails the data call.
+   */
+  private viewerAgentTouched(t: AgentTouch | undefined, write: boolean): void {
+    if (t === undefined) return;
+    try {
+      const p = AgentTouchSchema.safeParse(t);
+      if (!p.success) throw new Error("invalid agent touch");
+      const seen = this.upsertViewerAgent(p.data, write);
+      this.ctx.waitUntil(
+        this.afterViewerAgentTouch(seen).catch((e) =>
+          logError("viewer_presence_touch_failed", e),
+        ),
+      );
+    } catch (e) {
+      logError("viewer_presence_touch_failed", e);
+    }
+  }
+
+  /**
+   * Upserts the agent's row: `since` kept (unless the row had expired),
+   * `seen` now, `last_write` now on a write, activity replaced when given.
+   * Keeps at most MAX_VIEWER_AGENTS_PER_OWNER rows per owner. Returns `seen`.
+   */
+  private upsertViewerAgent(t: AgentTouch, write: boolean): number {
+    const now = this.now();
+    this.sql.exec(
+      "delete from viewer_presence_agent where key = ? and seen + ? <= ?",
+      t.key,
+      AGENT_PRESENT_MS,
+      now,
+    );
+    this.sql.exec(
+      `insert into viewer_presence_agent
+         (key, product, owner, owner_actor, label, since, seen, last_write, activity)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       on conflict (key) do update set product = excluded.product,
+         owner = excluded.owner, owner_actor = excluded.owner_actor,
+         label = excluded.label, seen = excluded.seen,
+         last_write = coalesce(excluded.last_write, viewer_presence_agent.last_write),
+         activity = coalesce(excluded.activity, viewer_presence_agent.activity)`,
+      t.key,
+      t.product,
+      t.owner,
+      t.ownerActor,
+      t.label,
+      now,
+      now,
+      write ? now : null,
+      t.activity,
+    );
+    this.sql.exec(
+      `delete from viewer_presence_agent where owner_actor = ?1 and key not in
+         (select key from viewer_presence_agent where owner_actor = ?1
+          order by seen desc, key limit ?2)`,
+      t.ownerActor,
+      MAX_VIEWER_AGENTS_PER_OWNER,
+    );
+    return now;
+  }
+
+  /** After an agent touch: broadcast (coalesced) and arm its expiry. */
+  private async afterViewerAgentTouch(seen: number): Promise<void> {
+    await this.viewerPresenceChanged();
+    await this.armAt(seen + AGENT_PRESENT_MS);
   }
 
   private viewerPresenceSent(): { hash: string; sentAt: number } | null {
@@ -1521,12 +1748,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
 
   private flushViewerPresenceOrThrow(skip?: WebSocket): void {
     const now = this.now();
-    const frame = JSON.stringify(this.viewerPresenceFrame(now));
-    if (this.viewerPresenceSent()?.hash === frame) return;
-    for (const { ws } of this.viewerPresenceSockets()) {
+    const r = this.viewerPresenceRoster(now);
+    const hash = this.viewerPresenceHash(r);
+    if (this.viewerPresenceSent()?.hash === hash) return;
+    const shared = JSON.stringify(r.frame);
+    for (const { ws, p } of this.viewerPresenceSockets()) {
       if (ws === skip) continue;
       try {
-        ws.send(frame);
+        ws.send(
+          r.labels.has(p.actor) ? this.viewerPresenceText(r, p.actor) : shared,
+        );
       } catch {
         // closing socket
       }
@@ -1534,7 +1765,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.sql.exec(
       `insert into viewer_presence_state (id, hash, sent_at) values (1, ?, ?)
        on conflict (id) do update set hash = excluded.hash, sent_at = excluded.sent_at`,
-      frame,
+      hash,
       now,
     );
   }
@@ -1654,6 +1885,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     version: number,
     thumb = false,
     event?: VersionEvent,
+    touch?: AgentTouch,
   ): Promise<{ ms: number }> {
     if (typeof artifactId !== "string" || artifactId.length > 64)
       fail("bad_request", "invalid artifact id");
@@ -1688,6 +1920,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
         due,
       );
     await this.armAt(due);
+    // The publishing agent (publish, restore) rides this RPC: no extra call.
+    if (touch !== undefined) {
+      try {
+        const p = AgentTouchSchema.safeParse(touch);
+        if (!p.success) throw new Error("invalid agent touch");
+        await this.afterViewerAgentTouch(this.upsertViewerAgent(p.data, true));
+      } catch (e) {
+        logError("viewer_presence_touch_failed", e);
+      }
+    }
     // Returned, not logged: a DO's console doesn't reach the dispatch tail.
     return { ms: Date.now() - t0 };
   }
@@ -1839,6 +2081,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       !thumb &&
       sockets.length === 0 &&
       this.sql.exec("select 1 from viewer_presence_left limit 1").toArray()
+        .length === 0 &&
+      this.sql.exec("select 1 from viewer_presence_agent limit 1").toArray()
         .length === 0
     )
       return;
@@ -2032,10 +2276,25 @@ export class ArtifactRuntime extends DurableObject<Env> {
         )
         .one().u;
       if (until !== null) next = Math.min(next, until);
+      // An agent's expiry, and the end of its Editing (buildRoster: editing
+      // while now - last_write <= AGENT_PRESENT_MS) when that comes first.
+      const agent = this.sql
+        .exec<{ e: number | null; w: number | null }>(
+          `select min(seen + ?1) as e,
+             min(case when last_write is not null and last_write < seen
+               and last_write + ?1 + 1 > ?2 then last_write + ?1 + 1 end) as w
+           from viewer_presence_agent`,
+          AGENT_PRESENT_MS,
+          now,
+        )
+        .one();
+      if (agent.e !== null) next = Math.min(next, agent.e);
+      if (agent.w !== null) next = Math.min(next, agent.w);
       const sent = this.viewerPresenceSent();
       if (
         sent !== null &&
-        sent.hash !== JSON.stringify(this.viewerPresenceFrame(this.now()))
+        sent.hash !==
+          this.viewerPresenceHash(this.viewerPresenceRoster(this.now()))
       )
         next = Math.min(next, sent.sentAt + PRESENCE_COALESCE_MS);
     } catch (e) {
@@ -2080,6 +2339,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
   private viewerPresenceDue(now: number): void {
     try {
       this.sql.exec("delete from viewer_presence_left where until <= ?", now);
+      this.sql.exec(
+        "delete from viewer_presence_agent where seen + ? <= ?",
+        AGENT_PRESENT_MS,
+        now,
+      );
       // No frame ever sent: nobody joined since the last wipe.
       const sent = this.viewerPresenceSent();
       if (sent !== null && now - sent.sentAt >= PRESENCE_COALESCE_MS)
@@ -2162,8 +2426,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
         // already closed
       }
     }
+    // Agents re-prove access on their next call.
     this.sql.exec(
-      "delete from viewer_presence_left; delete from viewer_presence_state;",
+      `delete from viewer_presence_left; delete from viewer_presence_state;
+       delete from viewer_presence_agent;`,
     );
     return all.length;
   }
@@ -2193,6 +2459,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       }
     }
     this.sql.exec("delete from viewer_presence_left where actor = ?", a);
+    // Their agents leave at once too, not after AGENT_PRESENT_MS.
+    this.sql.exec("delete from viewer_presence_agent where owner_actor = ?", a);
     this.ctx.waitUntil(this.viewerPresenceChanged());
     return socks.size;
   }
@@ -2233,6 +2501,7 @@ type RpcMethods =
   | "closeSockets"
   | "closeActor"
   | "scheduleIndex"
+  | "touchViewerAgent"
   | "pendingIndex"
   | "pendingViewerPresence"
   | "storageDelete"

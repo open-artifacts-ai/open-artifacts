@@ -22,6 +22,10 @@ import {
 import { jsonBody, readCapped } from "../http/body.js";
 import { ApiError, contentOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
+import {
+  restViewerAgent,
+  touchViewerAgentLater,
+} from "../runtime/viewer-presence-agent.js";
 import type { AgentAttr } from "../services/agent-usage.js";
 import {
   getSummary,
@@ -107,6 +111,13 @@ const agentOf = (c: Context<AppEnv>): AgentAttr | null =>
       }
     : null;
 
+/** Viewer presence for a PAT caller (connection t:<tokenId>, no session), else null. */
+const presenceAgentOf = (
+  c: Context<AppEnv>,
+  write: boolean,
+  activity: string | null = null,
+) => restViewerAgent(c.var, write, activity);
+
 const notFound = () => new ApiError("not_found", "Not found");
 
 /** The :id param, or 404 for anything that isn't an id. */
@@ -162,9 +173,13 @@ export function mountArtifacts(app: AppType): void {
     return c.json(await listTrash(c.env, callerOf(user), q.data));
   });
 
-  app.get(ARTIFACT, async (c) =>
-    c.json(await getSummary(c.env, caller(c), idParam(c))),
-  );
+  app.get(ARTIFACT, async (c) => {
+    const summary = await getSummary(c.env, caller(c), idParam(c));
+    // A PAT read reaches no DO otherwise: the one extra (background) call.
+    const agent = presenceAgentOf(c, false);
+    if (agent) touchViewerAgentLater(c.env, execCtx(c), summary.id, agent);
+    return c.json(summary);
+  });
 
   app.patch(ARTIFACT, async (c) => {
     const user = requireUser(c);
@@ -308,7 +323,15 @@ export function mountArtifacts(app: AppType): void {
     const id = idParam(c);
     const v = versionParam(c);
     return c.json(
-      await restoreVersion(c.env, user, id, v, agentOf(c), execCtx(c)),
+      await restoreVersion(
+        c.env,
+        user,
+        id,
+        v,
+        agentOf(c),
+        execCtx(c),
+        presenceAgentOf(c, true) ?? undefined,
+      ),
       201,
     );
   });
@@ -376,7 +399,15 @@ export function mountArtifacts(app: AppType): void {
     const user = requireUser(c);
     const input = await publishInput(c);
     return c.json(
-      await publish(c.env, user, input, agentOf(c), execCtx(c), "create"),
+      await publish(
+        c.env,
+        user,
+        input,
+        agentOf(c),
+        execCtx(c),
+        "create",
+        presenceAgentOf(c, true, input.message ?? null) ?? undefined,
+      ),
       201,
     );
   });
@@ -387,7 +418,15 @@ export function mountArtifacts(app: AppType): void {
     if (!isId(id)) throw new ApiError("not_found", "Not found");
     const input = await publishInput(c, id);
     return c.json(
-      await publish(c.env, user, input, agentOf(c), execCtx(c), "version"),
+      await publish(
+        c.env,
+        user,
+        input,
+        agentOf(c),
+        execCtx(c),
+        "version",
+        presenceAgentOf(c, true, input.message ?? null) ?? undefined,
+      ),
       201,
     );
   });
