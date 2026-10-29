@@ -2,6 +2,7 @@
 import type { InstanceDirectory, Me } from "@oa/shared";
 import { R } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { HttpResponse, http } from "msw";
 import { afterEach, expect, it, vi } from "vitest";
 import { calls, installHarness, mount, mountHosted } from "./harness";
 
@@ -241,12 +242,46 @@ it("the dot sits on Settings and the Directory tab while unhealthy", async () =>
   ).toHaveAttribute("href", "/settings/directory");
 });
 
-it("all holds snoozed: heldSweeps 0, so no dot even though held is non-empty", async () => {
-  mountHosted("/settings/profile", true, dir({ heldSweeps: 0 }));
-  await screen.findByRole("navigation", { name: "Settings sections" });
-  expect(
-    (await screen.findAllByRole("link", { name: "Settings" })).length,
-  ).toBeGreaterThan(0);
+it("all holds snoozed: the row is listed but heldSweeps 0 keeps the dot off", async () => {
+  mountHosted("/settings/directory", true, dir({ heldSweeps: 0 }), [
+    http.get("*/api/v1/directory", () =>
+      HttpResponse.json({
+        mode: "google",
+        healthy: true,
+        state: "ok",
+        unhealthySince: null,
+        lastError: null,
+        nextRunAt: null,
+        alertedAt: null,
+        customerMismatch: null,
+        held: [
+          {
+            groupId: "gEng01",
+            email: "eng@example.com",
+            name: "Engineering",
+            wouldRemove: 6,
+            members: 10,
+            since: "2026-10-20T09:12:00.000Z",
+            snoozedUntil: "2026-11-19T09:12:00.000Z",
+            snoozeReason: null,
+          },
+        ],
+        binding: {
+          provider: "google",
+          customerId: "C01abc",
+          domain: "example.com",
+          connectedBy: "ada@example.com",
+          connectedAt: "2026-10-01T09:00:00.000Z",
+        },
+        lastSuccessAt: "2026-10-20T09:00:00.000Z",
+        staleAt: "2026-10-27T09:00:00.000Z",
+      }),
+    ),
+  ]);
+  const row = await screen.findByRole("region", {
+    name: "Waiting for your confirmation",
+  });
+  expect(row).toHaveTextContent("Snoozed until ");
   expect(screen.queryByRole("link", { name: /needs attention/ })).toBeNull();
 });
 

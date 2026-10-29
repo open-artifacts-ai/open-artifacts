@@ -819,6 +819,16 @@ const useHeldSnooze = <V>(fn: (v: V) => Promise<unknown>, failure: string) => {
         void qc.invalidateQueries({ queryKey: qk.directory });
         return;
       }
+      // 409: the hold or the sync moved on; reload so the page shows it.
+      if (e instanceof ApiClientError && e.status === 409) {
+        void qc.invalidateQueries({ queryKey: qk.me });
+        void qc.invalidateQueries({ queryKey: qk.directory });
+        if (e.code === "conflict")
+          return toast({
+            title: "This change is no longer waiting.",
+            tone: "danger",
+          });
+      }
       failureToast(qc, failure, e);
     },
     onSuccess: () =>

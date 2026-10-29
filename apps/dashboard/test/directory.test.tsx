@@ -5,7 +5,13 @@ import { type Me, R } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, onTestFinished, vi } from "vitest";
-import { calls, installHarness, lastClient, mountHosted } from "./harness";
+import {
+  calls,
+  findVisibleToast,
+  installHarness,
+  lastClient,
+  mountHosted,
+} from "./harness";
 
 installHarness();
 
@@ -1038,4 +1044,63 @@ it("closing the Snooze dialog clears the reason", async () => {
   expect(
     within(screen.getByRole("alertdialog")).getByLabelText("Reason (optional)"),
   ).toHaveValue("");
+});
+
+const SALES = {
+  groupId: "gSales03",
+  email: "sales@example.com",
+  name: "Sales",
+  wouldRemove: 4,
+  members: 4,
+  since: "2026-10-20T09:12:00.000Z",
+};
+const failSnooze = (status: number, code: string) =>
+  http.post(`*${snoozeRoute}`, () =>
+    HttpResponse.json({ error: { code, message: "server text" } }, { status }),
+  );
+const snoozeSales = async () => {
+  fireEvent.click(
+    within(await held()).getByRole("button", { name: "Snooze Sales" }),
+  );
+  fireEvent.click(
+    within(screen.getByRole("alertdialog")).getByRole("button", {
+      name: "Snooze",
+    }),
+  );
+};
+
+it("a 409 conflict on Snooze says the change is gone and reloads the status", async () => {
+  let reads = 0;
+  mountHosted("/settings/directory", true, undefined, [
+    failSnooze(409, "conflict"),
+    http.get("*/api/v1/directory", () => {
+      reads++;
+      return HttpResponse.json({
+        ...STATUS,
+        held: reads > 1 ? [] : [SALES],
+      });
+    }),
+  ]);
+  await snoozeSales();
+  expect(
+    await findVisibleToast("This change is no longer waiting."),
+  ).toBeVisible();
+  await waitFor(() => expect(reads).toBeGreaterThan(1));
+});
+
+it("a 409 directory_sync_off on Snooze toasts the failure and reloads", async () => {
+  let reads = 0;
+  mountHosted("/settings/directory", true, undefined, [
+    failSnooze(409, "directory_sync_off"),
+    http.get("*/api/v1/directory", () => {
+      reads++;
+      return HttpResponse.json({
+        ...STATUS,
+        ...(reads > 1 ? { mode: "off" } : { held: [SALES] }),
+      });
+    }),
+  ]);
+  await snoozeSales();
+  expect(await findVisibleToast("Couldn't snooze the change.")).toBeVisible();
+  await waitFor(() => expect(reads).toBeGreaterThan(1));
 });
