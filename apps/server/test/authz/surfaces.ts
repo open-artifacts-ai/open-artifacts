@@ -999,6 +999,8 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["GET /api/v1/directory/groups", org("org.mappings"), [400]],
   ["POST /api/v1/directory/sync", org("directory.manage")],
   ["POST /api/v1/directory/held/:groupId/confirm", org("directory.manage")],
+  ["POST /api/v1/directory/held/:groupId/snooze", org("directory.manage")],
+  ["DELETE /api/v1/directory/held/:groupId/snooze", org("directory.manage")],
   ["POST /api/v1/directory/disconnect", org("directory.disconnect")],
   ["DELETE /api/v1/directory", org("directory.disconnect")],
   ["POST /api/v1/admin/broker-check", org("broker.check")],

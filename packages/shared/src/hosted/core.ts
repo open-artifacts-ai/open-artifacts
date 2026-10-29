@@ -173,7 +173,7 @@ export const InstanceDirectorySchema = z.object({
   state: SyncStateSchema.nullable(),
   /** lastSuccessAt + 7 days once that has passed, else null. Informational: access is unchanged when stale. Org owner and admins only; null for others. */
   staleAt: z.string().nullable(),
-  /** Held sweeps waiting for the owner. 0 for non-admins. */
+  /** Held sweeps waiting for the owner, snoozed ones not counted (#412). 0 for non-admins. */
   heldSweeps: z.number().int(),
 });
 export type InstanceDirectory = z.infer<typeof InstanceDirectorySchema>;

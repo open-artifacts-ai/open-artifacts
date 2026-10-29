@@ -34,8 +34,48 @@ export const HeldSweepSchema = GroupRefSchema.extend({
   wouldRemove: z.number().int(),
   members: z.number().int(),
   since: z.string(),
+  /**
+   * Set while the owner snoozed this hold (R.directoryHeldSnooze), else
+   * null: the hold doesn't count in Me.instance.directory.heldSweeps until
+   * then. Visibility only: its removals stay held (not applied) until the
+   * owner applies them, the group's Google membership changes, or this
+   * passes. Defaulted so a payload from before it shipped still parses.
+   */
+  snoozedUntil: z.string().nullable().default(null),
+  /** The owner's note when snoozing (cleaned, at most HELD_SNOOZE_REASON_MAX), else null. */
+  snoozeReason: z.string().nullable().default(null),
 });
 export type HeldSweep = z.infer<typeof HeldSweepSchema>;
+
+/** How long a held-sweep snooze lasts (R.directoryHeldSnooze). */
+export const HELD_SNOOZE_MS = 30 * 86_400_000;
+/** A snooze reason's length after cleaning, in code points. */
+export const HELD_SNOOZE_REASON_MAX = 200;
+
+/**
+ * POST R.directoryHeldSnooze(groupId) body (org owner). `reason` is
+ * optional; the server makes it one plain line of at most
+ * HELD_SNOOZE_REASON_MAX code points (empty after cleaning: none).
+ */
+export const HeldSnoozeInputSchema = z
+  .object({ reason: z.string().max(1000).optional() })
+  .strict();
+export type HeldSnoozeInput = z.infer<typeof HeldSnoozeInputSchema>;
+
+/**
+ * Why a snooze ended (directory.sweep.unsnoozed detail.why): the group's
+ * Google membership changed, 30 days passed, the owner applied the hold or
+ * cancelled the snooze, or the hold itself ended (released, or the group
+ * became unreadable).
+ */
+export const HeldSnoozeEndSchema = z.enum([
+  "group_changed",
+  "expired",
+  "applied",
+  "owner_cancel",
+  "released",
+]);
+export type HeldSnoozeEnd = z.infer<typeof HeldSnoozeEndSchema>;
 
 /**
  * GET R.directory (org owner, admin) -> SyncStatus. Also the 202 body of
@@ -200,6 +240,8 @@ export const AuditActionSchema = z.enum([
   "directory.stale",
   "directory.sweep.held",
   "directory.sweep.confirmed",
+  "directory.sweep.snoozed",
+  "directory.sweep.unsnoozed",
   "directory.break_glass",
   "features.change",
   "settings.space_manager_mappings",

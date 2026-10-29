@@ -182,6 +182,20 @@ export async function readSyncState(
 const iso = (n: number | null) =>
   n === null ? null : new Date(n).toISOString();
 
+/** Snoozed at `now` (#412): until is still ahead. */
+const snoozedAt = (x: HeldSweep, now: number) =>
+  !!x.snoozedUntil && Date.parse(x.snoozedUntil) > now;
+
+/**
+ * The held list as readers see it: a snooze whose `until` passed shows as
+ * none even before the next alarm ends it (and an entry from before #412
+ * gets the snooze fields).
+ */
+export const heldAt = (h: Health, now: number): HeldSweep[] =>
+  h.held.map((x) =>
+    snoozedAt(x, now) ? x : { ...x, snoozedUntil: null, snoozeReason: null },
+  );
+
 /** The SyncStatus fields that come from health. */
 export function healthFields(h: Health, now = Date.now()) {
   return {
@@ -198,7 +212,7 @@ export function healthFields(h: Health, now = Date.now()) {
     staleAt: iso(staleAtOf(h, now)),
     alertedAt: iso(h.alertedAt),
     customerMismatch: h.customerMismatch,
-    held: h.held,
+    held: heldAt(h, now),
     liftsPaused: h.liftsPaused,
   };
 }
@@ -234,6 +248,7 @@ export function instanceDirectory(
     tokensUnverified: unhealthy,
     state: h.state,
     staleAt: f.staleAt,
-    heldSweeps: h.held.length,
+    // A snoozed hold doesn't light the Settings dot (#412).
+    heldSweeps: h.held.filter((x) => !snoozedAt(x, now)).length,
   };
 }

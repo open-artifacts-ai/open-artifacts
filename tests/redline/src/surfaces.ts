@@ -214,6 +214,8 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
   "POST /api/v1/directory/cancel": OWNER_ONLY,
   "POST /api/v1/directory/sync": OWNER_ONLY,
   "POST /api/v1/directory/held/:groupId/confirm": OWNER_ONLY,
+  "POST /api/v1/directory/held/:groupId/snooze": OWNER_ONLY,
+  "DELETE /api/v1/directory/held/:groupId/snooze": OWNER_ONLY,
   "POST /api/v1/directory/disconnect": OWNER_ONLY,
   "DELETE /api/v1/directory": OWNER_ONLY,
   "POST /api/v1/admin/broker-check":
@@ -253,6 +255,14 @@ export const DROPPED: Readonly<
     coveredBy: [INSTANCE],
   },
   "org POST /api/v1/directory/held/:groupId/confirm": {
+    why: "owner-only",
+    coveredBy: [INSTANCE],
+  },
+  "org POST /api/v1/directory/held/:groupId/snooze": {
+    why: "owner-only",
+    coveredBy: [INSTANCE],
+  },
+  "org DELETE /api/v1/directory/held/:groupId/snooze": {
     why: "owner-only",
     coveredBy: [INSTANCE],
   },
