@@ -241,6 +241,15 @@ it("the dot sits on Settings and the Directory tab while unhealthy", async () =>
   ).toHaveAttribute("href", "/settings/directory");
 });
 
+it("all holds snoozed: heldSweeps 0, so no dot even though held is non-empty", async () => {
+  mountHosted("/settings/profile", true, dir({ heldSweeps: 0 }));
+  await screen.findByRole("navigation", { name: "Settings sections" });
+  expect(
+    (await screen.findAllByRole("link", { name: "Settings" })).length,
+  ).toBeGreaterThan(0);
+  expect(screen.queryByRole("link", { name: /needs attention/ })).toBeNull();
+});
+
 it("a held sweep lights the dot but never raises the banner", async () => {
   mountHosted("/settings/profile"); // healthy; the mock holds gSales03
   expect(

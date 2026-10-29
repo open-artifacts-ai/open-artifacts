@@ -738,6 +738,7 @@ function HeldRow({
               variant="outline"
               className="text-[length:var(--oa-text-sm)]"
               disabled={unsnooze.isPending}
+              aria-label={`Unsnooze ${h.name}`}
               onClick={() => unsnooze.mutate(h.groupId)}
             >
               Unsnooze
@@ -747,6 +748,7 @@ function HeldRow({
               size="sm"
               variant="outline"
               className="text-[length:var(--oa-text-sm)]"
+              aria-label={`Snooze ${h.name}`}
               onClick={() => setSnoozing(true)}
             >
               Snooze
@@ -756,6 +758,7 @@ function HeldRow({
             size="sm"
             variant="outline"
             className="text-[length:var(--oa-text-sm)]"
+            aria-label={`Apply ${h.name}`}
             onClick={() => setAsking(true)}
           >
             Apply
@@ -764,7 +767,10 @@ function HeldRow({
       )}
       <Confirm
         open={snoozing}
-        onClose={() => setSnoozing(false)}
+        onClose={() => {
+          setSnoozing(false);
+          setReason("");
+        }}
         title={`Snooze ${h.name}?`}
         body={
           <>
