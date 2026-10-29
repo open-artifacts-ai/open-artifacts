@@ -12,7 +12,10 @@ export const AuthProviderSchema = z.discriminatedUnion("id", [
     id: z.literal("google"),
     /** AUTH.loginGoogle; navigate (full page) to `${start}?next=…`. */
     start: z.string(),
-    /** Verified Workspace domains, for "Use your @acme.com account" copy. */
+    /**
+     * Verified Workspace domains, for "Use your @acme.com account" copy. May
+     * be empty: Google then admits only invited personal accounts (no hd).
+     */
     domains: z.array(z.string()),
   }),
   z.object({
@@ -42,7 +45,8 @@ export type AuthProviders = z.infer<typeof AuthProvidersSchema>;
 
 /**
  * `?error=` on SIGN_IN_PAGE after a refused redirect sign-in.
- * tenant: Google account outside the verified domains; identity_conflict: the
+ * tenant: Google account outside the verified domains, or a personal Google
+ * account (no hd) for an address inside them; identity_conflict: the
  * account was replaced (admin resets the link); expired: attempt too old or in
  * another tab; failed: anything else; removed: the person was removed or
  * suspended; no_access: a valid identity that isn't admitted. Direct mode

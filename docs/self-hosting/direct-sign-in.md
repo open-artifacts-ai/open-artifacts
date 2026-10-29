@@ -71,6 +71,7 @@ Existing members keep their accounts and artifacts. On their first Google sign-i
 ## Security notes
 
 - Each install verifies Google's ID token itself: signature, issuer, audience, expiry, its own nonce, a verified email, and `hd` exactly in `AUTH_DOMAINS`.
+- A personal Google account (a token with no `hd`, such as Gmail) signs in only when its verified address exactly matches someone already invited or a member here, and that address isn't in `AUTH_DOMAINS` (people there sign in through Workspace). It never creates anyone and never joins by domain. Its first sign-in pins that Google account; a different account with the same address is refused, and the owner sees a sign-in problem. With `AUTH_DOMAINS` empty, Google is still offered, for invited people only.
 - Codes are 8 digits and expire after 10 minutes. Each code request allows 5 tries, there is a per-IP failure cap, and codes are stored only as keyed hashes.
 - Asking for a code answers the same way whether or not the address can sign in.
 - Code sends are capped per address and network (3 an hour, 5 a day), so someone on other networks can't stop a person getting codes. Those caps can't stop an attacker spread across many networks; Turnstile does. **Without Turnstile, emailed codes are weaker**: set `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET` if you turn codes on. Hosted installs refuse code sign-in without Turnstile.

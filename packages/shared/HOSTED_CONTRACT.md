@@ -81,7 +81,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `DirectoryModeSchema` | `off \| google \| frozen` |
 | `InstanceDirectorySchema` | `{ mode, healthy, unhealthySince, banner, tokensUnverified, state, staleAt, heldSweeps }`. `banner`: unhealthy ≥ 1 h (owner/admin only). `tokensUnverified`: true while unhealthy, since PATs and MCP grants aren't capped at 24 h. `state` (`SyncState`) and `staleAt` (lastSuccessAt + 7 d, informational only - no access effect): owner/admin only, null for others; `heldSweeps`: held sweeps waiting, 0 for non-admins |
 | `SyncStateSchema` | `ok \| backoff \| auth_failed \| customer_mismatch \| scope_missing \| never`. `scope_missing`: a granted scope was revoked (Admin SDK 403 insufficientPermissions); fix copy "reconnect and grant all scopes" |
-| `InstanceSignInSchema` | `{ mode: access \| direct, providers: (access \| google \| email)[] }` |
+| `InstanceSignInSchema` | `{ mode: access \| direct, providers: (access \| google \| email)[] }`; owners also get `problems: string[]` (full sentences, shown verbatim). Besides config problems, a Google sign-in refused for `identity_conflict` (another Google account than the one pinned) adds one sentence for 7 days, cleared when that person's Google link is reset; it names no one |
 | `AuthMethodSchema` | `access \| google \| code \| pat \| oauth \| dev \| test` |
 | `MeAuthSchema` | `{ method, readOnly, cap, expiresAt }` |
 | `ArtifactCanSchema`, `ARTIFACT_ACTIONS`, `ArtifactAction` | `{ edit, share, setVisibility, delete, transfer, move, dataWrite }`. P3's internal superset is `PolicyAction`, so the names don't clash |
@@ -120,7 +120,7 @@ Installs in one environment share a single Google client through the auth broker
 
 | Schema | Meaning |
 |---|---|
-| `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[], hosted? }`; only fully configured providers; `turnstileSiteKey` whenever Turnstile is configured; `hosted` true only on HOSTED=1 (the server always sends it; absent reads as false) |
+| `AuthProvidersSchema` | `{ mode, providers: (access{start} \| google{start, domains} \| email{domainCodes, guests, turnstileSiteKey?})[], hosted? }`; only fully configured providers; google's `domains` may be empty (a Gmail-only install: Google admits invited personal accounts only, which any install's Google does for invited addresses outside its domains); `turnstileSiteKey` whenever Turnstile is configured; `hosted` true only on HOSTED=1 (the server always sends it; absent reads as false) |
 | `SignInErrorSchema` | `tenant \| identity_conflict \| removed \| no_access \| expired \| failed` |
 | `SignInViaSchema` | `access \| google`: `?via=` on every `error=no_access` redirect (Access callback in direct mode: access; Google callback: google); absent on other errors |
 | `CODE_POLICY` | `{ length: 8, ttlSec: 600, resendAfterSec: 60, maxAttempts: 5 }` |
@@ -246,7 +246,7 @@ sync routes, after a fresh Google sign-in (10 min); else 401 `reauth_required`.
 | `DirectoryGroupSchema` | `{ groupId, email, name, memberCount }` |
 | `DirectoryConnectErrorSchema` | `not_super_admin \| domain_mismatch \| customer_mismatch \| scopes \| denied \| expired \| failed` |
 | `AuditReasonSchema` | why a status changed: `directory_suspend \| directory_unsuspend \| directory_delete \| directory_new_id \| directory_stale \| admin_suspend \| admin_remove \| admin_restore` |
-| `AuditActionSchema`, `AuditEventSchema` | audited actions (incl. `auth.signin`, `artifact.share`/`unshare`/`visibility`, `artifact.delete`/`undelete` (only when the row changed) and `artifact.purge` (system actor, by the trash sweep), `space.public_links`, `space.admin_self_add`, `restricted.set`/`restricted.remove`, `directory.break_glass`, `user.status` with `reason` and `detail { status }`, written only when the status changes, `user.role`) and the event row (target types add `group`, a Google group id) |
+| `AuditActionSchema`, `AuditEventSchema` | audited actions (incl. `auth.signin`, `auth.refused` (system actor, reason `identity_conflict`, `detail { provider }`, at most one per person an hour; never an address or `sub`), `artifact.share`/`unshare`/`visibility`, `artifact.delete`/`undelete` (only when the row changed) and `artifact.purge` (system actor, by the trash sweep), `space.public_links`, `space.admin_self_add`, `restricted.set`/`restricted.remove`, `directory.break_glass`, `user.status` with `reason` and `detail { status }`, written only when the status changes, `user.role`) and the event row (target types add `group`, a Google group id) |
 
 ## Error codes (appended to `ERROR_CODES`)
 
