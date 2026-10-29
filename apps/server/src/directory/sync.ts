@@ -1983,16 +1983,16 @@ export class SyncEngine {
             w.target,
             clicked,
           );
-        // No sweep hold left, so no snooze of one either (an RPC's written
-        // while this sweep ran included).
-        if (!hold && (release || unreadable))
-          this.sql.exec("delete from snoozed where group_id = ?", w.target);
         else if (clicked !== null)
           this.sql.exec(
             "update held set confirmed_at = null where group_id = ? and confirmed_at is ?",
             w.target,
             clicked,
           );
+        // No sweep hold left, so no snooze of one either (an RPC's written
+        // while this sweep ran included).
+        if (!hold && (release || unreadable))
+          this.sql.exec("delete from snoozed where group_id = ?", w.target);
       },
     };
   }
