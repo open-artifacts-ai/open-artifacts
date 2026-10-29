@@ -151,15 +151,14 @@ describe("precedence: BILLING present, then absent, then nothing", () => {
     ).toEqual(before);
   });
 
-  it("BILLING absent, no TIER: the cached answer with no clock; nothing cached, free and solo", async () => {
-    expect(await readPlan(H, mid)).toMatchObject({
-      tier: "free",
-      lock: { mode: "solo" },
-    });
-    await cachePlan(row({ tier: "team", version: 2 }), mid);
-    expect(await readPlan(H, mid + 30 * DAY)).toMatchObject({
-      tier: "team",
-      lock: null,
+  it("BILLING absent, no TIER: no plan at all (no enforcement), whatever is cached", async () => {
+    expect(await readPlan(H, mid)).toBeNull();
+    await cachePlan(row({ tier: "team", status: "lapsed", version: 2 }), mid);
+    expect(await readPlan(H, mid + 30 * DAY)).toBeNull();
+    // The same install with the gate: the cached lapse applies.
+    expect(await withGate(() => readPlan(H, mid))).toMatchObject({
+      readOnly: true,
+      reason: "lapsed",
     });
   });
 });

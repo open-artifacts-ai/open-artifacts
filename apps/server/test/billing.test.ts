@@ -320,13 +320,14 @@ describe("effectivePlan", () => {
   });
 
   it("no answer and no TIER: free (solo, trial allowed), never unenforced (S3)", () => {
-    for (const gate of [true, false])
-      expect(planOfRaw(H, null, null, mid, { gate })).toMatchObject({
-        tier: "free",
-        reason: "solo",
-        lock: { mode: "solo" },
-        trialEligible: true,
-      });
+    expect(planOfRaw(H, null, null, mid, { gate: true })).toMatchObject({
+      tier: "free",
+      reason: "solo",
+      lock: { mode: "solo" },
+      trialEligible: true,
+    });
+    // No BILLING gate: no billing enforcement at all (decision 3).
+    expect(planOfRaw(H, null, null, mid, { gate: false })).toBeNull();
     const failing = JSON.stringify({
       checkedAt: mid,
       failingSince: mid - PLAN_STALE_MS - 1,
@@ -335,9 +336,7 @@ describe("effectivePlan", () => {
       "billing_unreachable",
     );
     // No BILLING gate: failures never make it unreachable.
-    expect(planOfRaw(H, null, failing, mid, { gate: false })?.reason).toBe(
-      "solo",
-    );
+    expect(planOfRaw(H, null, failing, mid, { gate: false })).toBeNull();
     // Self-hosted: no gate, whatever is stored.
     const stored = JSON.stringify(at({ status: "lapsed" }, mid));
     expect(planOfRaw(SELF, stored, null, mid)).toBeNull();
@@ -494,7 +493,9 @@ describe("tier read and cache", () => {
     expect(
       await withBrokerProps({ props: PROPS }, () => refreshPlan(H, mid)),
     ).toBe("stored");
-    expect((await readPlan(H, mid))?.tier).toBe("free");
+    expect(
+      (await withBrokerProps({ props: PROPS }, () => readPlan(H, mid)))?.tier,
+    ).toBe("free");
   });
 
   it("self-hosted never calls billing", async () => {
@@ -751,7 +752,7 @@ describe("plan enforcement", () => {
     await readOnly();
     await env.DB.prepare("delete from creator_months").run();
     forgetRecordedCreators();
-    const client = await connect(pat, { env: H });
+    const client = await connect(pat, { env: H, props: PROPS });
     try {
       const refused = await tool(client, "artifact_data_set", {
         id: inSpace,

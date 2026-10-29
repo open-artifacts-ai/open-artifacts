@@ -50,6 +50,10 @@ afterEach(async () => {
   await clearBilling();
 });
 
+/** readPlan inside an invocation that carries a BILLING gate. */
+const gated = (e: Env, t: number) =>
+  withBrokerProps({ props: fakeBilling().props }, () => readPlan(e, t));
+
 const FREE = {
   tier: "free",
   status: "active",
@@ -66,7 +70,7 @@ describe("red line: an install speaks to billing only for itself", () => {
     expect(
       await withBrokerProps({ props: mine.props }, () => startTrial(H, mid)),
     ).toBe(true);
-    expect((await readPlan(H, mid))?.tier).toBe("trial");
+    expect((await gated(H, mid))?.tier).toBe("trial");
     // The same request to a gate stamped with another install: refused.
     await clearBilling();
     const other = fakeBilling("iotherinst001");
@@ -77,7 +81,7 @@ describe("red line: an install speaks to billing only for itself", () => {
     ).toBe(false);
     expect(other.s.calls.map((c) => c.status)).toEqual([403]);
     expect(other.s.row.tier).toBe("free");
-    expect((await readPlan(H, mid))?.tier).toBe("free");
+    expect((await gated(H, mid))?.tier).toBe("free");
   });
 
   it("another install's key never verifies: 401, no trial, no usage written", async () => {
@@ -134,9 +138,11 @@ describe("red line: billing unreachable never unlocks", () => {
     );
   });
 
-  it("no BILLING gate never unlocks a hosted install without a TIER: free and solo, whatever is missing", async () => {
-    // Nothing cached, no TIER, no gate: solo (never today's unenforced).
-    expect(await readPlan(H, mid)).toMatchObject({
+  it("a hosted install without a TIER and nothing read is solo while the gate is there", async () => {
+    // No gate at all: no billing enforcement (no plan; decision 3). With
+    // the gate and nothing read yet: solo (never unenforced).
+    expect(await readPlan(H, mid)).toBeNull();
+    expect(await gated(H, mid)).toMatchObject({
       tier: "free",
       lock: { mode: "solo" },
     });
@@ -166,17 +172,17 @@ describe("red line: billing unreachable never unlocks", () => {
   it("a real lapse is read-only at once, and an outage after it keeps it read-only", async () => {
     const b = fakeBilling();
     await cachePlan({ ...b.s.row, version: 1 }, mid);
-    expect((await readPlan(H, mid))?.lock).toBeNull();
+    expect((await gated(H, mid))?.lock).toBeNull();
     b.s.row = { ...b.s.row, status: "lapsed", version: 2 };
     expect(
       await withBrokerProps({ props: b.props }, () => refreshPlan(H, mid)),
     ).toBe("stored");
-    expect((await readPlan(H, mid))?.readOnly).toBe(true);
+    expect((await gated(H, mid))?.readOnly).toBe(true);
     b.s.down = true;
     expect(
       await withBrokerProps({ props: b.props }, () => refreshPlan(H, mid + 1)),
     ).toBe("failed");
-    expect((await readPlan(H, mid + 1))?.reason).toBe("lapsed");
+    expect((await gated(H, mid + 1))?.reason).toBe("lapsed");
   });
 
   it("HOSTED=1 only tightens: a self-hosted install ignores a cached lapse and calls nobody", async () => {
