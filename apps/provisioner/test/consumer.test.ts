@@ -130,6 +130,10 @@ afterEach(() => {
 describe("parseSignup", () => {
   it("accepts the message and nothing else", () => {
     expect(parseSignup(signup(1))).toEqual(signup(1));
+    // 254 characters is the longest address accepted; 255 is refused (below).
+    const longest = `${"a".repeat(248)}@b.com`;
+    expect(longest).toHaveLength(254);
+    expect(parseSignup(signup(1, { ownerEmail: longest }))).not.toBeNull();
     for (const bad of [
       null,
       "x",
@@ -145,6 +149,10 @@ describe("parseSignup", () => {
       { ...signup(1), ownerSub: "1".repeat(256) },
       { ...signup(1), ownerEmail: "no-at-sign" },
       { ...signup(1), ownerEmail: `${"a".repeat(250)}@b.co` },
+      { ...signup(1), ownerEmail: `${"a".repeat(249)}@b.com` },
+      { ...signup(1), ownerEmail: "a@b.co\r\nBcc: x@y.z" },
+      { ...signup(1), ownerEmail: "a@b.co\r\n" },
+      { ...signup(1), ownerEmail: "a\n@b.co" },
       { ...signup(1), ownerEmail: 7 },
     ])
       expect(parseSignup(bad)).toBeNull();
@@ -272,13 +280,87 @@ describe("handleSignup", () => {
     expect(await recordSignup(db, signup(4), 1, NOW)).toBe("waiting_cap");
   });
 
-  it("an unfilled or bad cap defers every signup", async () => {
-    for (const cap of ["{{SIGNUP_DAILY_CAP_STAGING}}", "", "-1", "1.5"]) {
-      await db.prepare("DELETE FROM signups").run();
-      await handleSignup(message(signup(1)), mkEnv(cap), NOW);
-      expect(await rows()).toMatchObject([{ status: "waiting_cap" }]);
+  it("a bad cap is a config error: logged and retried, never deferred", async () => {
+    for (const cap of [
+      "{{SIGNUP_DAILY_CAP_STAGING}}",
+      "",
+      "0",
+      "-1",
+      "1.5",
+      "020",
+      "10000",
+    ]) {
+      const m = message(signup(1));
+      await handleSignup(m, mkEnv(cap), NOW);
+      expect(m.retry, cap).toHaveBeenCalledOnce();
+      expect(m.ack, cap).not.toHaveBeenCalled();
     }
+    expect(await rows()).toEqual([]);
     expect(wf.creates).toEqual([]);
+    expect(logs.filter((l) => l.includes('"cap_config"'))).toHaveLength(7);
+    // The bounds themselves are fine.
+    for (const cap of ["1", "9999"]) {
+      const m = message(signup(cap.length));
+      await handleSignup(m, mkEnv(cap), NOW);
+      expect(m.ack).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("a redelivery with another slug or sub is dead-lettered, never started", async () => {
+    await handleSignup(message(signup(1)), env, NOW);
+    for (const over of [{ slug: "other" }, { ownerSub: "999" }]) {
+      const m = message(signup(1, over), 2);
+      await handleSignup(m, env, NOW);
+      expect(m.ack).toHaveBeenCalledOnce();
+      expect(m.retry).not.toHaveBeenCalled();
+    }
+    expect(dlq).toEqual([{ signupId: id(1) }, { signupId: id(1) }]);
+    expect(logs.filter((l) => l.includes('"mismatch"'))).toHaveLength(2);
+    // Only the first delivery started, with the stored values.
+    expect(wf.creates).toEqual([
+      {
+        id: id(1),
+        params: {
+          signupId: id(1),
+          slug: "team-1",
+          ownerSub: signup(1).ownerSub,
+        },
+      },
+    ]);
+    expect(await rows()).toMatchObject([{ slug: "team-1", status: "queued" }]);
+  });
+
+  it("a DLQ send failure retries; the last delivery is acked and dropped", async () => {
+    const down = {
+      ...mkEnv(),
+      SIGNUPS_DLQ: {
+        send: async () => {
+          throw new Error("queue unavailable");
+        },
+      } as unknown as Queue<DlqPayload>,
+    };
+    const bad = { ...signup(1), tier: "pro" };
+    const first = message(bad, 1);
+    await handleSignup(first, down, NOW);
+    expect(first.retry).toHaveBeenCalledOnce();
+    expect(first.ack).not.toHaveBeenCalled();
+    const last = message(bad, MAX_RETRIES + 1);
+    await handleSignup(last, down, NOW);
+    expect(last.retry).not.toHaveBeenCalled();
+    expect(last.ack).toHaveBeenCalledOnce();
+    expect(dlq).toEqual([]);
+    expect(logs.filter((l) => l.includes('"dropped"'))).toEqual([
+      JSON.stringify({ event: "signup", signupId: id(1), outcome: "dropped" }),
+    ]);
+    // A body with no parseable id is dropped with a null id.
+    const anon = message({ ownerEmail: EMAIL }, MAX_RETRIES + 1);
+    await handleSignup(anon, down, NOW);
+    expect(anon.ack).toHaveBeenCalledOnce();
+    expect(logs.at(-1)).toBe(
+      JSON.stringify({ event: "signup", signupId: null, outcome: "dropped" }),
+    );
+    expect(await rows()).toEqual([]);
+    expect(await secrets()).toEqual([]);
   });
 
   it("concurrent at the boundary", async () => {

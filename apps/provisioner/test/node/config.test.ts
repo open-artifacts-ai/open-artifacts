@@ -39,12 +39,13 @@ describe("wrangler.jsonc", () => {
             queue: `oa-${p}-signups`,
             max_batch_size: 1,
             max_retries: 5,
-            dead_letter_queue: `oa-${p}-signups-dlq`,
           },
         ],
+        // No runtime dead_letter_queue: it would receive the body (the email).
         // Bad shapes go to the DLQ as { signupId } only, written by us.
         producers: [{ binding: "SIGNUPS_DLQ", queue: `oa-${p}-signups-dlq` }],
       });
+      expect(e.queues.consumers[0]).not.toHaveProperty("dead_letter_queue");
       expect(e.workflows).toEqual([
         {
           name: `oa-${p}-provision-install`,
@@ -132,6 +133,7 @@ describe("wrangler.jsonc", () => {
       expect(c.workers_dev).toBe(false);
       expect(c.preview_urls).toBe(false);
     }
+    expect(JSON.stringify(cfg)).not.toMatch(/dead_letter_queue/);
     expect(JSON.stringify(cfg)).not.toMatch(/custom_domain|"pattern"|zone_/);
   });
 
