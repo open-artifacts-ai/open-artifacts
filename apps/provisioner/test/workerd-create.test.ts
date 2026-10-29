@@ -2,18 +2,7 @@ import { env as testEnv } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { cfClient } from "../../../packages/provision/src/cf.js";
 import { platformNames } from "../../../packages/provision/src/names.js";
-import {
-  FLOOR_KEY,
-  RECORD_FILE,
-  r2BindingReleaseReader,
-  releaseKey,
-  TEMPLATE_FILE,
-  WELCOME_FILE,
-} from "../../../packages/provision/src/publish.js";
-import type {
-  BundleVariant,
-  ReleaseReader,
-} from "../../../packages/provision/src/release.js";
+import { r2BindingReleaseReader } from "../../../packages/provision/src/publish.js";
 import {
   HOSTED_DOMAINS,
   hostsKvTitle,
@@ -27,6 +16,7 @@ import {
   TEST_PUBKEY,
 } from "../../../packages/provision/test/fixtures/release.js";
 import { d1Engines } from "./d1-engine.js";
+import { seedRelease } from "./seed-release.js";
 
 // A full WfpProvisioner.create inside workerd (nodejs_compat), as the hosted
 // provisioner Worker will run it: the fake Cloudflare answers every REST call,
@@ -54,31 +44,6 @@ const NOW = Date.parse("2026-10-22T00:00:00Z");
 const TS = { sitekey: "0x4AAAAAAAstagingSITEKEY", secret: "0x4AAAAAAAts-x" };
 /** The provisioner's owner token label: ss-<signup ULID>. */
 const SS_LABEL = "ss-01JBQ4ZKXW5V9R3M2N8P6T7Y0A";
-
-const json = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
-
-/** Publishes one release from `from` into `bucket`, at the keys publish.ts writes. */
-async function seedRelease(
-  bucket: R2Bucket,
-  from: ReleaseReader,
-  version: string,
-  variant: BundleVariant,
-): Promise<void> {
-  const at = (rel: string) => releaseKey(version, variant, rel);
-  const { modules } = await from.modules(version, variant);
-  for (const m of modules) await bucket.put(at(`modules/${m.name}`), m.bytes);
-  for (const a of await from.assets(version, variant))
-    await bucket.put(
-      at(`assets/${a.path}`),
-      await from.assetBytes(version, variant, a.path),
-    );
-  await bucket.put(at(TEMPLATE_FILE), await from.template(version, variant));
-  for (const f of await from.migrations(version, variant))
-    await bucket.put(at(`migrations/${f.name}`), f.bytes);
-  await bucket.put(at(WELCOME_FILE), await from.welcome(version, variant));
-  await bucket.put(FLOOR_KEY, json(await from.floor()));
-  await bucket.put(at(RECORD_FILE), json(await from.record(version, variant)));
-}
 
 describe("workerd", () => {
   it("a full create runs in workerd", async () => {

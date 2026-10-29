@@ -1,16 +1,12 @@
 import { type ConsumerEnv, handleSignup } from "./consumer.js";
+import type { WorkflowEnv } from "./workflow.js";
 
 export { ProvisionInstall } from "./workflow.js";
 
-export interface Env extends ConsumerEnv {
+export interface Env extends ConsumerEnv, WorkflowEnv {
   HOSTS: KVNamespace;
   BROKER_REGISTRY: KVNamespace;
   DIRECTORY_REGISTRY: KVNamespace;
-  RELEASES: R2Bucket;
-  WELCOME_EMAIL: SendEmail;
-  PROVISION_TOKEN: SecretsStoreSecret;
-  WELCOME_FROM: string;
-  ACCOUNT_ID: string;
 }
 
 export default {

@@ -661,7 +661,9 @@ describe("WfpProvisioner.create", () => {
       const e = await fails(
         s.p.create(input("finqore", { installId: "iabcdefghjkm" })),
       );
-      expect(e.message).toMatch(/slug finqore already exists as active install/);
+      expect(e.message).toMatch(
+        /slug finqore already exists as active install/,
+      );
       expect(nonReads(s.fake, n)).toEqual([]);
     });
 

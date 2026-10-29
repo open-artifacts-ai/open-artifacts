@@ -7,7 +7,7 @@
 // Deploy with --env staging or --env prod only: the top level has no name and
 // no main, so a deploy without --env is refused, even with --name. No routes,
 // custom domains or workers.dev: the Worker has no fetch handler. Each env's
-// ids, cap, sender and account are placeholders filled at deploy.
+// ids, cap, sender, account and release are placeholders filled at deploy.
 // Observability stays off: the Worker logs fixed categories and signup ids only.
 // The provision token is the Secrets Store secret oa-<p>-provision-token,
 // bound here and in no other Worker. Messages are { signupId } only, so the
@@ -30,7 +30,11 @@
       "vars": {
         "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}",
         "WELCOME_FROM": "{{WELCOME_FROM_STAGING}}",
-        "ACCOUNT_ID": "{{ACCOUNT_ID_STAGING}}"
+        "ACCOUNT_ID": "{{ACCOUNT_ID_STAGING}}",
+        // The Workflow's env: it refuses any other value.
+        "OA_ENV": "staging",
+        // The release each signup's install is created at.
+        "RELEASE_VERSION": "{{RELEASE_VERSION_STAGING}}"
       },
       "queues": {
         "consumers": [
@@ -89,7 +93,11 @@
       "vars": {
         "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",
         "WELCOME_FROM": "{{WELCOME_FROM_PROD}}",
-        "ACCOUNT_ID": "{{ACCOUNT_ID_PROD}}"
+        "ACCOUNT_ID": "{{ACCOUNT_ID_PROD}}",
+        // The Workflow's env: it refuses any other value.
+        "OA_ENV": "prod",
+        // The release each signup's install is created at.
+        "RELEASE_VERSION": "{{RELEASE_VERSION_PROD}}"
       },
       "queues": {
         "consumers": [

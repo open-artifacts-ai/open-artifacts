@@ -80,6 +80,9 @@ describe("wrangler.jsonc", () => {
         SIGNUP_DAILY_CAP: `{{SIGNUP_DAILY_CAP_${E}}}`,
         WELCOME_FROM: `{{WELCOME_FROM_${E}}}`,
         ACCOUNT_ID: `{{ACCOUNT_ID_${E}}}`,
+        // Literal, not filled: the Workflow refuses anything but these two.
+        OA_ENV: env,
+        RELEASE_VERSION: `{{RELEASE_VERSION_${E}}}`,
       });
       // Workers Logs would record message bodies' context.
       expect(e.observability).toEqual({ enabled: false });

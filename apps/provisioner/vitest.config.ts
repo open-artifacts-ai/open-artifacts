@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
@@ -32,5 +33,17 @@ export default defineConfig({
       },
     }),
   ],
+  // The Workflow imports @oa/provision; in tests that is provision's source,
+  // the same modules the tests (and their gates mock) use.
+  resolve: {
+    alias: [
+      {
+        find: /^@oa\/provision$/,
+        replacement: fileURLToPath(
+          new URL("packages/provision/src/index.ts", ROOT),
+        ),
+      },
+    ],
+  },
   test: { include: ["test/**/*.test.ts"], exclude: ["test/node/**"] },
 });
