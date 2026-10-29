@@ -4,6 +4,9 @@
 // which runs provision's WfpProvisioner.create. The owner's email is kept only
 // in `signup_secret` (SS4 writes it).
 //
+// SIGNUPS_ENABLED is the on/off gate: "true" admits signups, "false" acks
+// each message and leaves its row pending (prod stays "false" until the
+// staging create and delete through hosted-ops has passed).
 // Deploy with --env staging or --env prod only: the top level has no name and
 // no main, so a deploy without --env is refused, even with --name. No routes,
 // custom domains or workers.dev: the Worker has no fetch handler. Each env's
@@ -29,6 +32,8 @@
       "observability": { "enabled": false },
       "vars": {
         "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}",
+        // "true" admits signups; anything else acks them, rows left pending.
+        "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_STAGING}}",
         "WELCOME_FROM": "{{WELCOME_FROM_STAGING}}",
         "ACCOUNT_ID": "{{ACCOUNT_ID_STAGING}}",
         // The Workflow's env: it refuses any other value.
@@ -60,17 +65,6 @@
           "database_id": "{{PLATFORM_DB_ID_STAGING}}"
         }
       ],
-      "kv_namespaces": [
-        { "binding": "HOSTS", "id": "{{HOSTS_KV_ID_STAGING}}" },
-        {
-          "binding": "BROKER_REGISTRY",
-          "id": "{{BROKER_REGISTRY_ID_STAGING}}"
-        },
-        {
-          "binding": "DIRECTORY_REGISTRY",
-          "id": "{{DIRECTORY_REGISTRY_ID_STAGING}}"
-        }
-      ],
       "r2_buckets": [{ "binding": "RELEASES", "bucket_name": "oa-s-releases" }],
       "send_email": [{ "name": "WELCOME_EMAIL" }],
       "secrets_store_secrets": [
@@ -92,6 +86,8 @@
       "observability": { "enabled": false },
       "vars": {
         "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",
+        // "true" admits signups; anything else acks them, rows left pending.
+        "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}",
         "WELCOME_FROM": "{{WELCOME_FROM_PROD}}",
         "ACCOUNT_ID": "{{ACCOUNT_ID_PROD}}",
         // The Workflow's env: it refuses any other value.
@@ -121,14 +117,6 @@
           "binding": "PLATFORM_DB",
           "database_name": "oa-p-platform",
           "database_id": "{{PLATFORM_DB_ID_PROD}}"
-        }
-      ],
-      "kv_namespaces": [
-        { "binding": "HOSTS", "id": "{{HOSTS_KV_ID_PROD}}" },
-        { "binding": "BROKER_REGISTRY", "id": "{{BROKER_REGISTRY_ID_PROD}}" },
-        {
-          "binding": "DIRECTORY_REGISTRY",
-          "id": "{{DIRECTORY_REGISTRY_ID_PROD}}"
         }
       ],
       "r2_buckets": [{ "binding": "RELEASES", "bucket_name": "oa-p-releases" }],

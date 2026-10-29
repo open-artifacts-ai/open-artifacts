@@ -42,6 +42,7 @@ describe("wrangler.jsonc", () => {
         ALERT_FROM: `{{OPS_ALERT_FROM_${env.toUpperCase()}}}`,
         // The provisioner's placeholder (apps/provisioner/wrangler.jsonc).
         SIGNUP_DAILY_CAP: `{{SIGNUP_DAILY_CAP_${env.toUpperCase()}}}`,
+        SIGNUPS_ENABLED: `{{SIGNUPS_ENABLED_${env.toUpperCase()}}}`,
       });
       const p = env === "staging" ? "oa-s-" : "oa-p-";
       // The signups producer only: the provisioner is the one consumer.
@@ -102,7 +103,7 @@ describe("wrangler.jsonc", () => {
     expect(NAMESPACES).toEqual({ staging: "oa-staging", prod: "oa-prod" });
   });
 
-  it("matches the provisioner's cap var, queue and Workflow in each env", () => {
+  it("matches the provisioner's cap and gate vars, queue and Workflow in each env", () => {
     // biome-ignore lint/suspicious/noExplicitAny: untyped wrangler config
     const prov: any = JSON.parse(
       strip(readFileSync(join(app, "../provisioner/wrangler.jsonc"), "utf8")),
@@ -111,6 +112,7 @@ describe("wrangler.jsonc", () => {
       const e = cfg.env[env];
       const pe = prov.env[env];
       expect(e.vars.SIGNUP_DAILY_CAP).toBe(pe.vars.SIGNUP_DAILY_CAP);
+      expect(e.vars.SIGNUPS_ENABLED).toBe(pe.vars.SIGNUPS_ENABLED);
       expect(e.queues.producers[0].queue).toBe(pe.queues.consumers[0].queue);
       const [w] = e.workflows;
       const [pw] = pe.workflows;

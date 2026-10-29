@@ -84,10 +84,15 @@ const msg = (n: number, attempts = 1) => message({ signupId: id(n) }, attempts);
 let wf: FakeWorkflow;
 let logs: string[];
 let env: ConsumerEnv;
-const mkEnv = (cap = "20", platformDb: D1Database = db): ConsumerEnv => ({
+const mkEnv = (
+  cap = "20",
+  platformDb: D1Database = db,
+  enabled = "true",
+): ConsumerEnv => ({
   PLATFORM_DB: platformDb,
   PROVISION_INSTALL: wf as unknown as Workflow<ProvisionParams>,
   SIGNUP_DAILY_CAP: cap,
+  SIGNUPS_ENABLED: enabled,
 });
 const outcomes = () =>
   logs.map((l) => (JSON.parse(l) as { outcome: string }).outcome);
@@ -194,6 +199,26 @@ describe("handleSignup", () => {
     expect(m.retry).not.toHaveBeenCalled();
     // The secret is SS4's: the consumer neither writes nor removes it.
     expect(await secrets()).toEqual([{ signup_id: id(1), owner_email: EMAIL }]);
+  });
+
+  it("signups disabled: acked, logged disabled, the row stays pending and nothing starts", async () => {
+    for (const [n, enabled] of [
+      [1, "false"],
+      [2, ""],
+      [3, "TRUE"],
+      [4, "true "],
+    ] as const) {
+      await seed(n, NOW - 5000);
+      const before = await rows();
+      const m = msg(n);
+      logs = [];
+      await handleSignup(m, mkEnv("20", db, enabled), NOW);
+      expect(outcomes(), enabled).toEqual(["disabled"]);
+      expect(m.ack).toHaveBeenCalledOnce();
+      expect(m.retry).not.toHaveBeenCalled();
+      expect(await rows()).toEqual(before);
+    }
+    expect(wf.creates).toEqual([]);
   });
 
   it("redelivery during create: running, the start returns 'already exists', ack", async () => {

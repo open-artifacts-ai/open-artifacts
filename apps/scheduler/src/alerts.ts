@@ -289,7 +289,10 @@ export const welcomeUnsentAlert = (
       : `${signups(facts.count)} in ${env} claimed a welcome email over 10 minutes ago and never marked it sent (alert opened at ${iso(at)}). The welcome is sent at most once, so it is not retried. Check the send log first (a send can succeed while its welcome_sent_at write fails); send it by hand only if it never went out, then set welcome_sent_at.\n${idLines(facts)}`,
 });
 
-/** A queued signup's ProvisionInstall instance is dead and won't finish it. */
+/**
+ * A queued or creating signup's ProvisionInstall instance is dead, or a
+ * creating one has been untouched for 12 hours: nothing will finish it.
+ */
 export const signupStuckAlert = (
   env: string,
   facts: SignupFacts = { count: 0, ids: [] },
@@ -302,6 +305,6 @@ export const signupStuckAlert = (
   },
   text: (state, at) =>
     state === "clear"
-      ? `No ${env} signup is stuck queued behind a dead Workflow instance (cleared at ${iso(at)}).\n`
-      : `${signups(facts.count)} in ${env} stayed queued over 15 minutes while its ProvisionInstall instance errored, terminated or completed (alert opened at ${iso(at)}). They are not re-sent: redrive each with signup-redrive.\n${idLines(facts)}`,
+      ? `No ${env} signup is stuck queued or creating behind a dead Workflow instance (cleared at ${iso(at)}).\n`
+      : `${signups(facts.count)} in ${env} stayed queued or creating over 15 minutes while its ProvisionInstall instance errored, terminated or completed, or stayed creating over 12 hours (alert opened at ${iso(at)}). They are not re-sent: redrive each with signup-redrive.\n${idLines(facts)}`,
 });

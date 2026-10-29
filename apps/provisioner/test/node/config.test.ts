@@ -65,11 +65,8 @@ describe("wrangler.jsonc", () => {
           database_id: `{{PLATFORM_DB_ID_${E}}}`,
         },
       ]);
-      expect(e.kv_namespaces).toEqual([
-        { binding: "HOSTS", id: `{{HOSTS_KV_ID_${E}}}` },
-        { binding: "BROKER_REGISTRY", id: `{{BROKER_REGISTRY_ID_${E}}}` },
-        { binding: "DIRECTORY_REGISTRY", id: `{{DIRECTORY_REGISTRY_ID_${E}}}` },
-      ]);
+      // provision reaches KV over REST: no KV bindings.
+      expect(e).not.toHaveProperty("kv_namespaces");
       // A binding has no bucket name to check at runtime: this is the check.
       expect(e.r2_buckets).toEqual([
         { binding: "RELEASES", bucket_name: platformNames(env).releases },
@@ -78,6 +75,7 @@ describe("wrangler.jsonc", () => {
       expect(e.send_email).toEqual([{ name: "WELCOME_EMAIL" }]);
       expect(e.vars).toEqual({
         SIGNUP_DAILY_CAP: `{{SIGNUP_DAILY_CAP_${E}}}`,
+        SIGNUPS_ENABLED: `{{SIGNUPS_ENABLED_${E}}}`,
         WELCOME_FROM: `{{WELCOME_FROM_${E}}}`,
         ACCOUNT_ID: `{{ACCOUNT_ID_${E}}}`,
         // Literal, not filled: the Workflow refuses anything but these two.
@@ -88,26 +86,6 @@ describe("wrangler.jsonc", () => {
       expect(e.observability).toEqual({ enabled: false });
       for (const k of ["services", "durable_objects", "triggers"])
         expect(e).not.toHaveProperty(k);
-    }
-  });
-
-  it("the other platform Workers bind the same registries and HOSTS", () => {
-    const kv = (a: string, env: string, binding: string) =>
-      read(join(apps, a, "wrangler.jsonc")).env[env].kv_namespaces.filter(
-        (k: { binding: string }) => k.binding === binding,
-      );
-    for (const env of ENVS) {
-      const mine = (b: string) =>
-        cfg.env[env].kv_namespaces.filter(
-          (k: { binding: string }) => k.binding === b,
-        );
-      expect(mine("HOSTS")).toEqual(kv("dispatch", env, "HOSTS"));
-      expect(mine("BROKER_REGISTRY")).toEqual(
-        kv("auth-broker", env, "BROKER_REGISTRY"),
-      );
-      expect(mine("DIRECTORY_REGISTRY")).toEqual(
-        kv("directory-broker", env, "DIRECTORY_REGISTRY"),
-      );
     }
   });
 

@@ -8,6 +8,8 @@ export interface ConsumerEnv {
   PLATFORM_DB: D1Database;
   PROVISION_INSTALL: Workflow<ProvisionParams>;
   SIGNUP_DAILY_CAP: string;
+  /** "true" admits signups; anything else acks each one, row left pending. */
+  SIGNUPS_ENABLED: string;
 }
 
 const DAY_MS = 86_400_000;
@@ -110,7 +112,9 @@ const backoff = (msg: Message<unknown>) => ({
 });
 
 /**
- * One message: a bad shape is acked; otherwise admit, start the Workflow
+ * One message: a bad shape is acked, and so is every message while
+ * SIGNUPS_ENABLED isn't "true" (the row stays pending; the scheduler's sweep
+ * re-sends it once enabled). Otherwise admit, start the Workflow
  * when the row is queued or running, then ack. A missing row, a bad cap or a
  * D1 or Workflows error retries; after max_retries the runtime DLQ takes the
  * message, which holds the id only.
@@ -123,6 +127,11 @@ export async function handleSignup(
   const m = parseSignup(msg.body);
   if (!m) {
     log(signupIdOf(msg.body), "bad_shape");
+    msg.ack();
+    return;
+  }
+  if (env.SIGNUPS_ENABLED !== "true") {
+    log(m.signupId, "disabled");
     msg.ack();
     return;
   }

@@ -11,7 +11,10 @@ import {
   vi,
 } from "vitest";
 import {
+  FAILED_SECRET_RETENTION_MS,
+  purgeFailedSecrets,
   requeueWaiting,
+  SIGNUP_CREATING_STUCK_MS,
   SIGNUP_STALE_MS,
   type SignupsEnv,
   SWEEP_LIMIT,
@@ -100,6 +103,7 @@ function fakes(o: {
   /** Instances that exist: id to status (default running). */
   instances?: string[] | Record<string, string>;
   getError?: string;
+  enabled?: string;
 }) {
   const queued: unknown[] = [];
   const gets: string[] = [];
@@ -113,6 +117,7 @@ function fakes(o: {
     PLATFORM_DB: db,
     OA_ENV: "staging",
     SIGNUP_DAILY_CAP: o.cap ?? "3",
+    SIGNUPS_ENABLED: o.enabled ?? "true",
     ALERT_TO: "ops@example.test",
     ALERT_FROM: "alerts@example.test",
     ALERT_EMAIL: {
@@ -224,14 +229,14 @@ describe("sweepStale", () => {
       8: { status: "failed", created: stale },
     });
     const before = await snapshot();
-    const f = fakes({ instances: [id(4)] });
+    const f = fakes({ instances: [id(4), id(6)] });
     expect(await sweepStale(f.env, T0)).toEqual({
       sent: 2,
       stuck: { count: 0, ids: [] },
     });
     expect(f.queued).toEqual([{ signupId: id(1) }, { signupId: id(3) }]);
-    // Only stale queued rows are looked up.
-    expect(f.gets.sort()).toEqual([id(3), id(4)]);
+    // Only stale queued and creating rows are looked up.
+    expect(f.gets.sort()).toEqual([id(3), id(4), id(6)]);
     expect(await snapshot()).toEqual(before);
   });
 
@@ -284,6 +289,67 @@ describe("sweepStale", () => {
     expect(f.queued).toEqual([]);
   });
 
+  it("a creating row behind a dead instance is stuck: counted, never re-sent", async () => {
+    await seed({
+      1: { status: "creating", created: stale, admitted: stale },
+      2: { status: "creating", created: stale, admitted: stale },
+      3: { status: "creating", created: stale, admitted: stale },
+    });
+    const f = fakes({
+      instances: {
+        [id(1)]: "errored",
+        [id(2)]: "terminated",
+        [id(3)]: "complete",
+      },
+    });
+    expect(await sweepStale(f.env, T0)).toEqual({
+      sent: 0,
+      stuck: { count: 3, ids: [id(1), id(2), id(3)] },
+    });
+    expect(f.queued).toEqual([]);
+  });
+
+  it("a creating row untouched for over 12 hours is stuck, even with a running instance", async () => {
+    const old = T0 - 13 * H;
+    await seed({
+      1: { status: "creating", created: old, admitted: old },
+      // Inside the retry budget: still running, not stuck.
+      2: {
+        status: "creating",
+        created: T0 - SIGNUP_CREATING_STUCK_MS + MIN,
+        admitted: T0 - SIGNUP_CREATING_STUCK_MS + MIN,
+      },
+    });
+    const f = fakes({
+      instances: { [id(1)]: "running", [id(2)]: "running" },
+    });
+    expect(await sweepStale(f.env, T0)).toEqual({
+      sent: 0,
+      stuck: { count: 1, ids: [id(1)] },
+    });
+    expect(f.queued).toEqual([]);
+  });
+
+  it("a fresh creating row is neither stuck nor re-sent", async () => {
+    await seed({ 1: { status: "creating", created: fresh, admitted: fresh } });
+    const f = fakes({ instances: { [id(1)]: "errored" } });
+    expect(await sweepStale(f.env, T0)).toEqual({
+      sent: 0,
+      stuck: { count: 0, ids: [] },
+    });
+    expect(f.gets).toEqual([]);
+  });
+
+  it("a creating row whose instance can't be read is re-sent", async () => {
+    await seed({
+      1: { status: "creating", created: stale, admitted: stale },
+      2: { status: "creating", created: T0 - 13 * H, admitted: T0 - 13 * H },
+    });
+    const f = fakes({ instances: { [id(2)]: "throw" } });
+    expect((await sweepStale(f.env, T0)).sent).toBe(2);
+    expect(f.queued).toEqual([{ signupId: id(2) }, { signupId: id(1) }]);
+  });
+
   it("50 stuck queued rows still let a stale pending row through", async () => {
     const rows: Record<number, Row> = {};
     const dead: Record<string, string> = {};
@@ -310,6 +376,75 @@ describe("sweepStale", () => {
       sent: SWEEP_LIMIT,
       stuck: null,
     });
+  });
+});
+
+describe("purgeFailedSecrets", () => {
+  it("deletes the secret of a failed row older than 30 days, and no other", async () => {
+    const old = T0 - FAILED_SECRET_RETENTION_MS - 1;
+    const recent = T0 - FAILED_SECRET_RETENTION_MS + MIN;
+    await seed({
+      1: { status: "failed", updated: old },
+      2: { status: "failed", updated: recent },
+      3: { status: "pending", updated: old },
+      4: { status: "creating", updated: old },
+      5: { status: "waiting_cap", updated: old },
+    });
+    const before = await snapshot();
+    const f = fakes({});
+    expect(await purgeFailedSecrets(f.env, T0)).toBe(1);
+    const left = (
+      await db
+        .prepare("SELECT signup_id FROM signup_secret ORDER BY signup_id")
+        .all<{ signup_id: string }>()
+    ).results.map((r) => r.signup_id);
+    expect(left).toEqual([id(2), id(3), id(4), id(5)]);
+    // The rows themselves are untouched.
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("the tick purges, also while signups are disabled", async () => {
+    await seed({
+      1: { status: "failed", updated: T0 - FAILED_SECRET_RETENTION_MS - 1 },
+    });
+    await signupTick(fakes({ enabled: "false" }).env, T0);
+    expect(await db.prepare("SELECT * FROM signup_secret").all()).toMatchObject(
+      { results: [] },
+    );
+  });
+});
+
+describe("signups disabled", () => {
+  it("the tick neither re-enqueues nor sweeps while SIGNUPS_ENABLED isn't true", async () => {
+    const stale = T0 - SIGNUP_STALE_MS - 1;
+    for (const enabled of ["false", "", "TRUE", "true "]) {
+      await db.batch([
+        db.prepare("DELETE FROM signups"),
+        db.prepare("DELETE FROM signup_secret"),
+        db.prepare("DELETE FROM platform_state"),
+      ]);
+      await seed({
+        1: { status: "waiting_cap", created: D0 - H },
+        2: { status: "pending", created: stale },
+        3: { status: "queued", created: stale, admitted: stale },
+        4: { status: "creating", created: T0 - 13 * H },
+      });
+      const before = await snapshot();
+      const f = fakes({ enabled, cap: "100" });
+      await signupTick(f.env, T0);
+      expect(f.queued, enabled).toEqual([]);
+      expect(f.gets, enabled).toEqual([]);
+      expect(f.subjects()).not.toContain(
+        "Open Artifacts staging: signups stuck",
+      );
+      expect(await snapshot()).toEqual(before);
+    }
+    // Enabled, the same rows are re-sent.
+    const f = fakes({ cap: "100" });
+    await signupTick(f.env, T0);
+    expect(f.queued).toEqual(
+      expect.arrayContaining([{ signupId: id(1) }, { signupId: id(2) }]),
+    );
   });
 });
 

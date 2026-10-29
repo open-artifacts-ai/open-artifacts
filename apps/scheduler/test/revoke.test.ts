@@ -587,6 +587,7 @@ describe("H-DV review fixes", () => {
     const env = {
       ...f.env,
       SIGNUP_DAILY_CAP: "20",
+      SIGNUPS_ENABLED: "true",
       PLATFORM_DB: new Proxy(db, {
         get(t, k) {
           if (k === "prepare")
@@ -613,6 +614,7 @@ describe("H-DV review fixes", () => {
       "signups requeue failed",
       "signups sweep failed",
       "alert signup_stuck db_error",
+      "signups purge failed",
       "alert signup_cap db_error",
       "alert signup_failed db_error",
       "alert welcome_unsent db_error",

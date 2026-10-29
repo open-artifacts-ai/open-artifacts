@@ -38,7 +38,9 @@ export function classify(e: unknown): {
     return { retryable: false, category: "refused" };
   }
   if (e instanceof CfError) return { retryable: true, category: "cf_error" };
-  return { retryable: false, category: "internal" };
+  // Any other error (a /healthz timeout, an MCP selftest failure, "rerun to
+  // resume"): create is check-first and leased, so a retry resumes it.
+  return { retryable: true, category: "internal" };
 }
 
 const reEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

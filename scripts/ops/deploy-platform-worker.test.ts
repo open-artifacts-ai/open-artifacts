@@ -225,6 +225,7 @@ describe("deploy-platform-worker.sh", () => {
       OPS_ALERT_EMAIL: "ops+alerts@example.com",
       OPS_ALERT_FROM: "alerts@mail.open-artifacts.app",
       SIGNUP_DAILY_CAP: "20",
+      SIGNUPS_ENABLED: "false",
     };
 
     for (const env of ["staging", "prod"] as const)
@@ -240,6 +241,7 @@ describe("deploy-platform-worker.sh", () => {
         const up = env.toUpperCase();
         expect(snap).toContain(`"ALERT_TO": "${OK.OPS_ALERT_EMAIL}"`);
         expect(snap).toContain(`"ALERT_FROM": "${OK.OPS_ALERT_FROM}"`);
+        expect(snap).toContain('"SIGNUPS_ENABLED": "false"');
         expect(snap).toContain(`"database_id": "${DB}"`);
         expect(snap).not.toMatch(new RegExp(`\\{\\{[A-Z0-9_]*_${up}\\}\\}`));
         // Only this env's placeholders are filled.
@@ -293,6 +295,11 @@ describe("deploy-platform-worker.sh", () => {
         { SIGNUP_DAILY_CAP: "0" },
         { SIGNUP_DAILY_CAP: "10000" },
         { SIGNUP_DAILY_CAP: "020" },
+        { SIGNUPS_ENABLED: "" },
+        { SIGNUPS_ENABLED: "1" },
+        { SIGNUPS_ENABLED: "TRUE" },
+        { SIGNUPS_ENABLED: "true " },
+        { SIGNUPS_ENABLED: "yes" },
       ]) {
         const r = run(["scheduler", "staging"], { ...OK, ...o });
         expect(r.code).toBe(1);
@@ -312,9 +319,7 @@ describe("deploy-platform-worker.sh", () => {
       CLOUDFLARE_ACCOUNT_ID: ACCT,
       SECRETS_STORE_ID: "c".repeat(32),
       PLATFORM_DB_ID: DB,
-      HOSTS_KV_ID: "d".repeat(32),
-      BROKER_REGISTRY_ID: REG,
-      DIRECTORY_REGISTRY_ID: "e".repeat(32),
+      SIGNUPS_ENABLED: "true",
     };
     /** A copy of the repo's wrapper beside a provisioner config of our own. */
     const tree = (config: string) => {
@@ -345,8 +350,9 @@ describe("deploy-platform-worker.sh", () => {
         expect(snap).toContain(`"ACCOUNT_ID": "${ACCT}"`);
         expect(snap).toContain(`"store_id": "${OK.SECRETS_STORE_ID}"`);
         expect(snap).toContain(`"database_id": "${DB}"`);
-        for (const id of [OK.HOSTS_KV_ID, REG, OK.DIRECTORY_REGISTRY_ID])
-          expect(snap).toContain(`"id": "${id}"`);
+        expect(snap).toContain('"SIGNUPS_ENABLED": "true"');
+        // No KV bindings: provision reaches KV over REST.
+        expect(snap).not.toContain("kv_namespaces");
         expect(snap).not.toMatch(new RegExp(`\\{\\{[A-Z0-9_]*_${up}\\}\\}`));
         // Only this env's placeholders are filled.
         const other = env === "staging" ? "PROD" : "STAGING";
@@ -373,9 +379,7 @@ describe("deploy-platform-worker.sh", () => {
         CLOUDFLARE_ACCOUNT_ID: ["", "abc", ACCT.toUpperCase(), `${ACCT}0`],
         SECRETS_STORE_ID: ["", DB, `${REG}/x`],
         PLATFORM_DB_ID: ["", REG, DB.toUpperCase()],
-        HOSTS_KV_ID: ["", DB, "../../etc"],
-        BROKER_REGISTRY_ID: ["", DB],
-        DIRECTORY_REGISTRY_ID: ["", DB],
+        SIGNUPS_ENABLED: ["", "1", "TRUE", "true ", "on", "false/x"],
       };
       for (const [key, values] of Object.entries(bad)) {
         for (const v of [...values, `{{${key}_STAGING}}`]) {
@@ -475,6 +479,7 @@ describe("deploy-platform-worker.sh", () => {
           OPS_ALERT_EMAIL: "ops@example.com",
           OPS_ALERT_FROM: "alerts@example.com",
           SIGNUP_DAILY_CAP: "20",
+          SIGNUPS_ENABLED: "true",
         },
         join(t, "scripts/ops/deploy-platform-worker.sh"),
       );

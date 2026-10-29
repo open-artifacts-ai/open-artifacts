@@ -80,6 +80,16 @@
       "binding": "WF_INSTALL_DB_10",
       "database_name": "oa-wf-install-10-test",
       "database_id": "00000000-0000-0000-0000-000000000020"
+    },
+    {
+      "binding": "WF_INSTALL_DB_11",
+      "database_name": "oa-wf-install-11-test",
+      "database_id": "00000000-0000-0000-0000-000000000021"
+    },
+    {
+      "binding": "WF_INSTALL_DB_12",
+      "database_name": "oa-wf-install-12-test",
+      "database_id": "00000000-0000-0000-0000-000000000022"
     }
   ],
   "workflows": [

@@ -440,7 +440,7 @@ TODO (Platform): before directory sync is enabled on any env that already has br
 ### First-create checklist (per env)
 
 1. Create the KV namespaces `oa-<p>-broker-registry` and `oa-<p>-directory-registry` side by side, before any provision run on the env (any provision version that includes the directory copy). With the broker on, create and every lifecycle operation (status aside) refuse before any write if either is missing.
-2. Apply every platform D1 migration to `oa-<p>-platform` that it does not have yet, in order, before deploying the scheduler or running a CLI that needs it (0005 before the H-DV scheduler, whose 2-minute tick otherwise logs `directory-revoke aborted exception` every time; a delete run before 0005 moves the row to `deleting` and then fails on its first revoke write, so rerun it once 0005 is applied) (0004 adds a column, so it can't be re-run; check with `PRAGMA table_info(hosted_audit)` before applying it): `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal), then `0004_audit_actor.sql` (the `hosted_audit.actor` column the CLI writes), then `0005_directory_revoke.sql` (the four directory revoke columns and the `installs_revoke_pending` index; `owner_email` is unchanged; not re-runnable, so check `PRAGMA table_info(installs)` for `directory_revoke` first), then `0006_platform_state.sql` (the scheduler's `platform_state` row store for the operator alerts; re-runnable). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write; without 0004, every `oa:hosted` command fails closed on its first audit row; without 0005, delete stops at its first revoke write with the row already `deleting` (rerun after applying it). Without 0006, the scheduler's 2-minute tick logs `billing-health db_error` and `alert email_quota db_error`, and neither operator alert can fire. The scheduler and dispatch bind `oa-<p>-billing`, so deploy it first (`scripts/ops/deploy-platform-worker.sh billing <env>` with `BILLING_DB_ID` and `BROKER_REGISTRY_ID`, the auth broker's registry namespace id, which billing reads to check the install signatures on its POSTs; after applying `apps/billing/migrations` to `oa-<p>-billing`).
+2. Apply every platform D1 migration to `oa-<p>-platform` that it does not have yet, in order, before deploying the scheduler or running a CLI that needs it (0005 before the H-DV scheduler, whose 2-minute tick otherwise logs `directory-revoke aborted exception` every time; a delete run before 0005 moves the row to `deleting` and then fails on its first revoke write, so rerun it once 0005 is applied) (0004 adds a column, so it can't be re-run; check with `PRAGMA table_info(hosted_audit)` before applying it): `apps/platform-db/migrations/0001_installs.sql`, then `0002_release_floor.sql` (the `release_floor` cache), then `0003_lifecycle.sql` (per-version metadata, the operation lock and the session-cut journal), then `0004_audit_actor.sql` (the `hosted_audit.actor` column the CLI writes), then `0005_directory_revoke.sql` (the four directory revoke columns and the `installs_revoke_pending` index; `owner_email` is unchanged; not re-runnable, so check `PRAGMA table_info(installs)` for `directory_revoke` first), then `0006_platform_state.sql` (the scheduler's `platform_state` row store for the operator alerts; re-runnable), then `0007_signups.sql` (the provisioner's `signups` and `signup_secret` tables, before the provisioner or the SS3 scheduler is deployed). Without 0002, create fails closed on the floor_seq read; without 0003, create fails closed on its first metadata write; without 0004, every `oa:hosted` command fails closed on its first audit row; without 0005, delete stops at its first revoke write with the row already `deleting` (rerun after applying it). Without 0006, the scheduler's 2-minute tick logs `billing-health db_error` and `alert email_quota db_error`, and neither operator alert can fire. Without 0007, the provisioner's consumer retries every signup into the DLQ and the scheduler (while enabled) logs `signups requeue failed` and `signups sweep failed`. The scheduler and dispatch bind `oa-<p>-billing`, so deploy it first (`scripts/ops/deploy-platform-worker.sh billing <env>` with `BILLING_DB_ID` and `BROKER_REGISTRY_ID`, the auth broker's registry namespace id, which billing reads to check the install signatures on its POSTs; after applying `apps/billing/migrations` to `oa-<p>-billing`).
 3. Key ceremony done: `RELEASE_PUBKEY[env]` set in gates.ts (and `PROD_UNLOCKED` for prod).
    - Prod, before FinQore go-live: add the user back as a required reviewer on `hosted-prod` (admin bypass stays off), so every prod signing run waits for approval again.
 4. Create the env's R2 API token and keychain item `oa-hosted-<env>-r2` (see "R2 API token").
@@ -535,17 +535,16 @@ Every hosted install operation and release publish runs from the `hosted-ops` wo
 
 ### The Workflow
 
-1. `reserve`: picks the install id once and stores it on the row; a retry reads it back.
-2. `sweep`: revokes any active `ss-<signupId>` owner token (the selftest's, `PROVISIONER_TOKEN_LABEL_RE`) a crashed attempt left.
-3. `create`: `WfpProvisioner.create` with that fixed install id, so a retry resumes the same install. A lease-held refusal is retried (backoff far past the 30-minute lease); every other refusal, `slug_taken` included, is terminal.
-4. `notify`: claims the welcome (`welcome_claimed_at`), sends it once, then sets `welcome_sent_at`.
-5. `done`: sweeps again, deletes `signup_secret`, sets the row `ready`.
+1. `reserve`: picks the install id once and stores it on the row (a retry reads it back), and outputs the row's stored slug, which create uses (never the event's).
+2. `create`: each attempt first revokes any active `ss-<signupId>` owner token (the selftest's, `PROVISIONER_TOKEN_LABEL_RE`) a crashed attempt left, then runs `WfpProvisioner.create` with that fixed install id, so a retry resumes the same install. A lease-held refusal is retried (backoff far past the 30-minute lease); every other refusal, `slug_taken` included, is terminal. Any other error (a `/healthz` timeout, an MCP selftest failure, "rerun to resume", a Cloudflare or D1 error) is retried as `internal` or `cf_error` within the 6 retries: create is check-first and leased. Only a bad `OA_ENV` or `RELEASE_VERSION` and a missing `signup_secret` fail at once.
+3. `notify`: claims the welcome (`welcome_claimed_at`), sends it once, then sets `welcome_sent_at`.
+4. `done`: sweeps again, deletes `signup_secret`, sets the row `ready`.
 
-A step that runs out of retries sets the row `failed` with a fixed category in `error`. Nothing re-drives it automatically.
+A step that runs out of retries sets the row `failed` with a fixed category in `error`. Nothing re-drives it automatically. The scheduler deletes a failed row's `signup_secret` 30 days after it failed (the redrive window); a redrive after that fails `internal` (no email to create with), so use the fallback in `signup-redrive` below.
 
 ### The daily cap
 
-- `SIGNUP_DAILY_CAP` (a var on the provisioner and the scheduler, the same value): staging `20`, prod `50`, parsed strictly (`^[1-9][0-9]{0,3}$`). An invalid value retries and logs `cap_config`; it never defers silently.
+- `SIGNUP_DAILY_CAP` (a var on the provisioner and the scheduler, the same value) is a deploy input, not a code constant: the deployer passes it to the wrapper (planned: staging `20`, prod `50`). Parsed strictly (`^[1-9][0-9]{0,3}$`). An invalid value retries and logs `cap_config`; it never defers silently.
 - The cap counts admissions (`admitted_at` in the current UTC day), failed creates included. Over the cap a signup is deferred (`waiting_cap`), never failed; the scheduler re-sends `waiting_cap` rows after 00:00 UTC, oldest first, up to that day's cap.
 - The first cap hit of a UTC day sends one `signup_cap` alert (a demand or abuse signal), at most once a day.
 
@@ -556,7 +555,7 @@ All four come from the scheduler (`apps/scheduler/src/alerts.ts`), by email to t
 | Key | Fires when | First check |
 | --- | --- | --- |
 | `signup_cap` | the day's cap was reached | demand or abuse; raise `SIGNUP_DAILY_CAP` only on purpose |
-| `signup_stuck` | a `queued` row's Workflow instance is dead (errored, terminated or complete) | `signup-redrive` |
+| `signup_stuck` | a `queued` or `creating` row's Workflow instance is dead (errored, terminated or complete), or a `creating` row is untouched for over 12 hours (past create's retry budget) | `signup-redrive` |
 | `signup_failed` | a signup failed in the last 24 hours | the row's `error` category, then `signup-redrive` or the CLI `delete` |
 | `welcome_unsent` | a welcome was claimed over 10 minutes ago and never marked sent | the send log first (below) |
 
@@ -570,15 +569,35 @@ At most once per signup: the claim (`welcome_claimed_at`) comes before the send,
 
 - Refused unless the row is `failed`, `queued` or `creating` and its instance is errored, terminated or complete. A live instance is never restarted (that would cancel its steps), and `pending` or `waiting_cap` rows are not admitted yet (a redrive would skip the cap).
 - A `queued` row touched in the last 15 minutes is refused ("wait, then rerun"), and the update matches the `updated_at` it read, so two overlapping redrives restart the instance once.
+- The restart needs Workers Scripts Write on the account, which the provisioning token already has.
 - A failed row whose instance has aged past the Workflows retention has no instance left, so `signup-redrive` refuses it ("has no ... instance"). The fallback: the CLI `delete` of its install (if `install_id` is set and an install row exists), then a fresh signup.
+
+### Deploy prerequisites (per env, check-first)
+
+Before the first provisioner deploy, check each of these exists and create only the missing ones. They land in #847's `provisioner` target in `deploy-hosted-platform.yml`; until then, by hand:
+
+- Queue `oa-<p>-signups` (`wrangler queues info oa-<p>-signups`, else `wrangler queues create oa-<p>-signups`).
+- Its dead-letter queue `oa-<p>-signups-dlq` (same check, then create).
+- Secrets Store secret `oa-<p>-provision-token` in the account's store (`SECRETS_STORE_ID`): the provisioning token's value, never printed.
+- Platform D1 migration 0007 applied (the ordered list in "First-create checklist" above).
 
 ### Deploy order
 
-`billing`, then `provisioner`, then `dispatch` and the scheduler, each with `scripts/ops/deploy-platform-worker.sh <app> <env>` (the provisioner's fills are in its header). The `provisioner` target in `deploy-hosted-platform.yml` lands in #847 after the freeze. The wrapper refuses a provisioner config that binds any secret but `oa-s-provision-token` and `oa-p-provision-token`, or whose `staging` or `prod` block binds the other env's token, and refuses `oa-<p>-provision-token` on any other Worker.
+1. `billing`.
+2. The queue, its DLQ and the secret above, then the `provisioner` (it consumes the queue and defines the Workflow).
+3. `dispatch` and the `scheduler` (the scheduler binds the queue as a producer and the provisioner's Workflow, so it deploys after both).
+
+Each with `scripts/ops/deploy-platform-worker.sh <app> <env>` (the provisioner's fills are in its header). The `provisioner` target in `deploy-hosted-platform.yml` lands in #847 after the freeze. The wrapper refuses a provisioner config that binds any secret but `oa-s-provision-token` and `oa-p-provision-token`, or whose block for the env being deployed doesn't bind that env's token (`--env staging` checks the `staging` block for `oa-s-provision-token`, `--env prod` the `prod` block for `oa-p-provision-token`), and refuses `oa-<p>-provision-token` on any other Worker.
+
+### On/off gates
+
+- `SIGNUPS_ENABLED` (a var on the provisioner and the scheduler, filled per env by the wrapper, exactly `true` or `false`): anything but `true` and the consumer acks each message without admitting it (the row stays `pending`, logged `signup disabled`), and the scheduler skips its requeue and its sweep (the alerts and the failed-secret purge still run). Turned on later, the sweep re-sends the `pending` rows.
+- `PROD_UNLOCKED` (`packages/provision/src/internal/gates.ts`): while it is false, provision refuses every prod create, whatever `SIGNUPS_ENABLED` says.
+- Prod runs with `SIGNUPS_ENABLED=false` until the staging create and delete through `hosted-ops.yml` has passed (below).
 
 ### Prod enable gate
 
-The provisioner stays off in prod until one real staging create and delete of a throwaway install (`ss3-spike-<n>`, codes off) run through `hosted-ops.yml`, after #848 merges, with the wall time and API calls read from the run (spike part 2 in the spec).
+The provisioner stays off in prod (`SIGNUPS_ENABLED=false`) until one real staging create and delete of a throwaway install (`ss3-spike-<n>`, codes off) run through `hosted-ops.yml`, after #848 merges, with the wall time and API calls read from the run (spike part 2 in the spec). Then redeploy both prod Workers with `SIGNUPS_ENABLED=true` (provisioner first).
 
 ### Red-line cases (pending)
 

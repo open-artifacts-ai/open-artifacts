@@ -3,11 +3,7 @@ import type { WorkflowEnv } from "./workflow.js";
 
 export { ProvisionInstall } from "./workflow.js";
 
-export interface Env extends ConsumerEnv, WorkflowEnv {
-  HOSTS: KVNamespace;
-  BROKER_REGISTRY: KVNamespace;
-  DIRECTORY_REGISTRY: KVNamespace;
-}
+export interface Env extends ConsumerEnv, WorkflowEnv {}
 
 export default {
   // max_batch_size is 1; each message still settles on its own.

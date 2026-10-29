@@ -354,7 +354,6 @@ describe("ProvisionInstall", () => {
     expect(H.mail).toHaveLength(1);
     expect(out1.map((o) => o.name)).toEqual([
       "reserve",
-      "sweep",
       "create",
       "notify",
       "done",
@@ -368,8 +367,8 @@ describe("ProvisionInstall", () => {
   });
 
   it("crash mid-create with the lease held: retried, then one install, no active ss- token", async () => {
-    // The sweep step ran (cached); then an attempt took the lease, minted
-    // its ss- token and died in the MCP selftest.
+    // An attempt took the lease, minted its ss- token and died in the MCP
+    // selftest.
     const installId = "icrashedrun2";
     const { p, label, d } = await crashed(3, "crashco", installId);
     // Each lease-held refusal is followed by time passing past the lease.
@@ -382,9 +381,7 @@ describe("ProvisionInstall", () => {
         H.clock.t += LEASE_MS + 1;
       }
     });
-    await run(p, "complete", p.signupId, async (m) => {
-      await m.mockStepResult({ name: "sweep" }, { revoked: 0 });
-    });
+    await run(p);
     expect(leaseHeld).toBeGreaterThanOrEqual(1);
     expect(await installs("crashco")).toMatchObject([
       { id: installId, slug: "crashco", state: "active" },
@@ -454,7 +451,7 @@ describe("ProvisionInstall", () => {
     const badRun = await run(bad, "errored");
     const error = await badRun.getError();
     expect(error.message).toBe("cf_error");
-    expect(outputsOf(ok.signupId)).toHaveLength(5);
+    expect(outputsOf(ok.signupId)).toHaveLength(4);
     expect(errorsOf(bad.signupId)).toHaveLength(7);
     expect(await signup(7)).toMatchObject({
       status: "failed",
@@ -540,8 +537,8 @@ describe("ProvisionInstall", () => {
 
   it("a replay whose failing step's body doesn't re-run still ends failed with the stored category", async () => {
     // A run before this one reserved the row and its create attempt stored
-    // slug_taken; on this replay reserve and sweep are cached and create's
-    // body never runs (the engine replays its error).
+    // slug_taken; on this replay reserve is cached and create's body never
+    // runs (the engine replays its error).
     const p = await seedSignup(14, "replayco", {
       status: "creating",
       installId: "ireplayrun14",
@@ -553,9 +550,8 @@ describe("ProvisionInstall", () => {
     await run(p, "errored", p.signupId, async (m) => {
       await m.mockStepResult(
         { name: "reserve" },
-        { installId: "ireplayrun14" },
+        { installId: "ireplayrun14", slug: "replayco" },
       );
-      await m.mockStepResult({ name: "sweep" }, { revoked: 0 });
       await m.mockStepError({ name: "create" }, new Error("replayed"));
     });
     expect(
@@ -571,9 +567,7 @@ describe("ProvisionInstall", () => {
     const { p, label, d } = await crashed(15, "crashfail", "icrashfail15");
     await seedFloorRelease();
     H.vars = { RELEASE_VERSION: "0.0.9" };
-    await run(p, "errored", p.signupId, async (m) => {
-      await m.mockStepResult({ name: "sweep" }, { revoked: 0 });
-    });
+    await run(p, "errored");
     expect(errorsOf(p.signupId)).toMatchObject([
       { name: "create", retryable: false },
     ]);
@@ -595,6 +589,46 @@ describe("ProvisionInstall", () => {
     ]);
     expect(await signup(16)).toMatchObject({ status: "ready", error: null });
     expect(H.mail).toHaveLength(1);
+  });
+
+  it("a /healthz timeout on the first create attempt is retried: one install, ready", async () => {
+    // /healthz answers 503 until the first attempt has failed on it.
+    let unhealthy = true;
+    fake.health = () =>
+      unhealthy ? new Response(null, { status: 503 }) : undefined;
+    // A lease left by the failed attempt is waited out.
+    logSpy.mockImplementation((...a: unknown[]) => {
+      const line = a.join(" ");
+      logs.push(line);
+      if (line.includes('"step":"create","outcome":"internal"'))
+        unhealthy = false;
+      if (line.includes('"outcome":"lease_held"')) H.clock.t += LEASE_MS + 1;
+    });
+    const p = await seedSignup(17, "healthco");
+    await run(p);
+    expect(errorsOf(p.signupId)[0]).toEqual({
+      name: "create",
+      message: "internal",
+      retryable: true,
+    });
+    expect(unhealthy).toBe(false);
+    expect(await installs("healthco")).toMatchObject([
+      { slug: "healthco", state: "active" },
+    ]);
+    expect(await signup(17)).toMatchObject({ status: "ready", error: null });
+    expect(H.mail).toHaveLength(1);
+  });
+
+  it("create uses the row's stored slug, not the event's", async () => {
+    const p = await seedSignup(18, "storedco");
+    await run({ ...p, slug: "eventco" });
+    expect(outputsOf(p.signupId)[0]).toMatchObject({
+      name: "reserve",
+      output: { slug: "storedco" },
+    });
+    expect(await installs("storedco")).toMatchObject([{ state: "active" }]);
+    expect(await installs("eventco")).toEqual([]);
+    expect(await signup(18)).toMatchObject({ status: "ready" });
   });
 
   it("an OA_ENV other than staging or prod fails internal, nothing created", async () => {
@@ -636,8 +670,9 @@ describe("errors", () => {
       retryable: true,
       category: "cf_error",
     });
+    // Any other error retries: create is check-first and leased.
     expect(classify(new Error("boom"))).toEqual({
-      retryable: false,
+      retryable: true,
       category: "internal",
     });
   });

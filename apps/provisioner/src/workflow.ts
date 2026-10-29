@@ -5,14 +5,14 @@
 // output, error, log line or param carries it.
 //
 // 1. reserve: the install id, picked once and stored on the row (a rerun
-//    reads it back); status creating.
-// 2. sweep: revoke an ss-<signupId> owner token a crashed attempt left.
-// 3. create: each attempt sweeps first (a crashed attempt's token), then
-//    WfpProvisioner.create with the reserved install id (a rerun resumes
-//    it; an install already active under it is done). A lease-held refusal
-//    retries past LEASE_MS; every other refusal is terminal.
-// 4. notify: claim the welcome (a conditional write); send only on the claim.
-// 5. done: sweep again, delete signup_secret, status ready.
+//    reads it back), and the row's stored slug; status creating.
+// 2. create: each attempt sweeps first (an ss-<signupId> owner token a
+//    crashed attempt left), then WfpProvisioner.create with the reserved
+//    install id and the stored slug (a rerun resumes it; an install already
+//    active under it is done). A lease-held refusal retries past LEASE_MS;
+//    every other refusal is terminal; any other error retries.
+// 3. notify: claim the welcome (a conditional write); send only on the claim.
+// 4. done: sweep again, delete signup_secret, status ready.
 // Each failing attempt writes its category to the row's error (status
 // unchanged); a step that fails for good ends in the `fail` step, which
 // sweeps and sets status failed, keeping that error. Every decision is read
@@ -96,14 +96,11 @@ export class ProvisionInstall extends WorkflowEntrypoint<
     event: Readonly<WorkflowEvent<ProvisionParams>>,
     step: WorkflowStep,
   ): Promise<void> {
-    const { signupId, slug } = event.payload;
+    const { signupId } = event.payload;
     const label = `ss-${signupId}`;
     try {
-      const { installId } = await step.do("reserve", () =>
+      const { installId, slug } = await step.do("reserve", () =>
         this.guard(signupId, "reserve", () => this.reserve(signupId)),
-      );
-      await step.do("sweep", () =>
-        this.guard(signupId, "sweep", () => this.sweep(installId, label)),
       );
       const { appHost } = await step.do("create", CREATE_STEP, () =>
         this.create(signupId, slug, installId, label),
@@ -259,8 +256,13 @@ export class ProvisionInstall extends WorkflowEntrypoint<
     });
   }
 
-  /** The row's install id, set once (only while NULL); status creating. */
-  private async reserve(signupId: string): Promise<{ installId: string }> {
+  /**
+   * The row's install id, set once (only while NULL), and its stored slug
+   * (never the event's); status creating.
+   */
+  private async reserve(
+    signupId: string,
+  ): Promise<{ installId: string; slug: string }> {
     this.config();
     const r = await this.db
       .prepare(
@@ -268,13 +270,13 @@ export class ProvisionInstall extends WorkflowEntrypoint<
            status = CASE status WHEN 'ready' THEN 'ready' ELSE 'creating' END,
            error = NULL, updated_at = ?2
          WHERE signup_id = ?3 AND status IN ('queued', 'creating', 'failed', 'ready')
-         RETURNING install_id`,
+         RETURNING install_id, slug`,
       )
       .bind(newInstallId(), this.now(), signupId)
-      .first<{ install_id: string }>();
+      .first<{ install_id: string; slug: string }>();
     // No row, or one never admitted: the consumer starts neither.
     if (!r) throw internal();
-    return { installId: r.install_id };
+    return { installId: r.install_id, slug: r.slug };
   }
 
   /** Revokes the install's active ss-<signupId> tokens; none before it exists. */

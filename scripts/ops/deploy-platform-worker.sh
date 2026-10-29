@@ -11,9 +11,10 @@
 #   billing: BILLING_DB_ID=<D1 uuid> BROKER_REGISTRY_ID=<32 hex>
 #   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
 #              OPS_ALERT_EMAIL=<address> OPS_ALERT_FROM=<address> SIGNUP_DAILY_CAP=<1-9999>
-#   provisioner: SIGNUP_DAILY_CAP=<1-9999> WELCOME_FROM=<address> RELEASE_VERSION=<X.Y.Z>
-#                CLOUDFLARE_ACCOUNT_ID=<32 hex> SECRETS_STORE_ID=<32 hex> PLATFORM_DB_ID=<uuid>
-#                HOSTS_KV_ID=<32 hex> BROKER_REGISTRY_ID=<32 hex> DIRECTORY_REGISTRY_ID=<32 hex>
+#              SIGNUPS_ENABLED=true|false
+#   provisioner: SIGNUP_DAILY_CAP=<1-9999> SIGNUPS_ENABLED=true|false WELCOME_FROM=<address>
+#                RELEASE_VERSION=<X.Y.Z> CLOUDFLARE_ACCOUNT_ID=<32 hex> SECRETS_STORE_ID=<32 hex>
+#                PLATFORM_DB_ID=<uuid>
 # Only the provisioner may bind the provision token (oa-<p>-provision-token),
 # and it binds no other secret.
 set -euo pipefail
@@ -42,6 +43,8 @@ limit='^[1-9][0-9]{0,8}$'
 # it can't carry sed syntax or read as a list or display name.
 # The signups admitted per UTC day: 1 to 9999, no leading zero.
 cap='^[1-9][0-9]{0,3}$'
+# The signups on/off gate (provisioner and scheduler): exactly true or false.
+onoff='^(true|false)$'
 # A stable release version (no v, no pre-release).
 version='^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$'
 email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
@@ -107,18 +110,19 @@ case "$app" in
     fill "OPS_ALERT_FROM_${up}" "${OPS_ALERT_FROM:-}" "$email"
     # The same cap as the provisioner's (src/signups.ts re-enqueues under it).
     fill "SIGNUP_DAILY_CAP_${up}" "${SIGNUP_DAILY_CAP:-}" "$cap"
+    # The same gate as the provisioner's: off skips the requeue and the sweep.
+    fill "SIGNUPS_ENABLED_${up}" "${SIGNUPS_ENABLED:-}" "$onoff"
     ;;
   provisioner)
     fill "SIGNUP_DAILY_CAP_${up}" "${SIGNUP_DAILY_CAP:-}" "$cap"
+    # Off: each signup is acked and its row stays pending.
+    fill "SIGNUPS_ENABLED_${up}" "${SIGNUPS_ENABLED:-}" "$onoff"
     fill "WELCOME_FROM_${up}" "${WELCOME_FROM:-}" "$email"
     fill "RELEASE_VERSION_${up}" "${RELEASE_VERSION:-}" "$version"
     # The account wrangler deploys to is the one the Workflow provisions in.
     fill "ACCOUNT_ID_${up}" "${CLOUDFLARE_ACCOUNT_ID:-}" "$hex32"
     fill "SECRETS_STORE_ID_${up}" "${SECRETS_STORE_ID:-}" "$hex32"
     fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
-    fill "HOSTS_KV_ID_${up}" "${HOSTS_KV_ID:-}" "$hex32"
-    fill "BROKER_REGISTRY_ID_${up}" "${BROKER_REGISTRY_ID:-}" "$hex32"
-    fill "DIRECTORY_REGISTRY_ID_${up}" "${DIRECTORY_REGISTRY_ID:-}" "$hex32"
     ;;
 esac
 

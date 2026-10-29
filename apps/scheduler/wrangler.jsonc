@@ -23,8 +23,9 @@
 // and sweeps stale pending and queued rows onto oa-<p>-signups (the SIGNUPS
 // producer; messages are { signupId } only), looking queued rows up through
 // the provisioner's ProvisionInstall Workflow (PROVISION_INSTALL, script
-// oa-<p>-provisioner). SIGNUP_DAILY_CAP is the provisioner's placeholder, so
-// both Workers read one value.
+// oa-<p>-provisioner). SIGNUP_DAILY_CAP and SIGNUPS_ENABLED are the
+// provisioner's placeholders, so both Workers read one value; while
+// SIGNUPS_ENABLED isn't "true" the tick neither re-enqueues nor sweeps.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "compatibility_date": "2026-10-01",
@@ -44,7 +45,8 @@
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app",
         "ALERT_TO": "{{OPS_ALERT_EMAIL_STAGING}}",
         "ALERT_FROM": "{{OPS_ALERT_FROM_STAGING}}",
-        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}"
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}",
+        "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_STAGING}}"
       },
       "queues": {
         "producers": [{ "binding": "SIGNUPS", "queue": "oa-s-signups" }]
@@ -91,7 +93,8 @@
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app",
         "ALERT_TO": "{{OPS_ALERT_EMAIL_PROD}}",
         "ALERT_FROM": "{{OPS_ALERT_FROM_PROD}}",
-        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}"
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",
+        "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}"
       },
       "queues": {
         "producers": [{ "binding": "SIGNUPS", "queue": "oa-p-signups" }]
