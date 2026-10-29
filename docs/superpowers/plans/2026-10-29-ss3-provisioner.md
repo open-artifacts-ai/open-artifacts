@@ -98,10 +98,11 @@
   - "no patDir with ciOwnerToken": create succeeds and nothing is written under any directory.
   - "redline variant without patDir is refused".
   - "ss-<ULID> labels mint and sweep; other labels are refused" (`ss-short`, `ss-` followed by 26 lowercase characters, `ci-abc`).
+  - "a sweep revokes only its own exact label": with active tokens `ci-123`, `ci-1234`, `ss-<A>` and `ss-<B>`, `ciTokenSweep(id, "ci-123")` revokes only `ci-123`, and `ciTokenSweep(id, "ss-<A>")` revokes only `ss-<A>`. A sweep never matches by prefix or pattern (Manager, 2026-10-29).
 - [ ] **Step 2:** Run them. Expected: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run the provision, hosted and workerd tests. Expected: PASS.
-- [ ] **Step 5:** Mutation-check: accept any label in `ciTokenSweep` and confirm a test fails. Then commit `feat(provision): R2-binding reader, optional patDir, provisioner token labels`.
+- [ ] **Step 5:** Mutation-checks: accept any label in `ciTokenSweep`, and match labels by prefix in the sweep; confirm a test fails for each. Then commit `feat(provision): R2-binding reader, optional patDir, provisioner token labels`.
 
 ### Task 4: Platform migration 0007
 
