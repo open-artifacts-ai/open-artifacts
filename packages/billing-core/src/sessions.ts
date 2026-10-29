@@ -1,7 +1,8 @@
-// Stripe Checkout and Customer Portal sessions, for oa-<p>-billing's signed
-// POST /checkout and /portal routes (the install asks through BillingGate;
-// billing holds the secret key and answers only the URL). No Stripe SDK: one
-// form-encoded POST each, with an Idempotency-Key.
+// Stripe Checkout and Customer Portal sessions, and the install's Stripe
+// customer, for oa-<p>-billing's signed POST /checkout and /portal routes
+// (the install asks through BillingGate; billing holds the secret key and
+// answers only the URL). No Stripe SDK: one form-encoded POST each, with an
+// Idempotency-Key.
 //
 // Every URL is billing's own (passed in by billing, never taken from a
 // request), https only. Stripe test mode only: a key that isn't sk_test_ or
@@ -18,9 +19,16 @@ export interface StripeConfig {
   apiBase?: string;
 }
 
+export type CheckoutTier = "team" | "business";
+
 export interface CheckoutInput {
   customerId: string;
   priceId: string;
+  /**
+   * The paid tier this price buys. Written to the session's and the
+   * subscription's metadata[tier], which the webhook prefers over the price.
+   */
+  tier: CheckoutTier;
   successUrl: string;
   cancelUrl: string;
   idempotencyKey: string;
@@ -35,6 +43,13 @@ export interface PortalInput {
 }
 
 export type StripeSession = { id: string; url: string };
+
+export interface CustomerInput {
+  /** The install id (i + 11 of [a-z0-9]); Stripe keeps it as metadata[install_id]. */
+  installId: string;
+  /** Billing's key for this install, e.g. cust-<installId>: a retry is one customer. */
+  idempotencyKey: string;
+}
 
 /** A refused input or key, before any call. */
 export class StripeConfigError extends Error {
@@ -59,6 +74,9 @@ const TEST_KEY = /^(sk|rk)_test_[A-Za-z0-9]{8,255}$/;
 const CUSTOMER = /^cus_[A-Za-z0-9]{1,255}$/;
 const PRICE = /^price_[A-Za-z0-9]{1,255}$/;
 const IDEMPOTENCY = /^[A-Za-z0-9_:.-]{8,255}$/;
+const INSTALL = /^i[a-z0-9]{11}$/;
+const CHECKOUT_URL = /^https:\/\/checkout\.stripe\.com\//;
+const PORTAL_URL = /^https:\/\/billing\.stripe\.com\//;
 
 function https(field: string, v: string): string {
   let u: URL;
@@ -77,13 +95,13 @@ function check(re: RegExp, field: string, v: string): string {
   return v;
 }
 
+/** One form POST; Stripe's JSON answer (an error keeps status and type only). */
 async function post(
   cfg: StripeConfig,
   path: string,
   form: Record<string, string>,
   idempotencyKey: string,
-  urlHost: RegExp,
-): Promise<StripeSession> {
+): Promise<{ status: number; out: Record<string, unknown> | null }> {
   check(TEST_KEY, "secretKey", cfg.secretKey);
   check(IDEMPOTENCY, "idempotencyKey", idempotencyKey);
   const res = await (cfg.fetch ?? fetch)(
@@ -101,7 +119,11 @@ async function post(
   );
   let out: Record<string, unknown> | null = null;
   try {
-    out = (await res.json()) as Record<string, unknown>;
+    const j: unknown = await res.json();
+    out =
+      typeof j === "object" && j !== null
+        ? (j as Record<string, unknown>)
+        : null;
   } catch {
     out = null;
   }
@@ -112,10 +134,19 @@ async function post(
       typeof err?.type === "string" ? err.type : "unknown",
     );
   }
+  return { status: res.status, out };
+}
+
+/** A session answer: its id and a Stripe-hosted URL, else bad_answer. */
+async function session(
+  answer: Promise<{ status: number; out: Record<string, unknown> | null }>,
+  urlHost: RegExp,
+): Promise<StripeSession> {
+  const { status, out } = await answer;
   const id = out?.id;
   const url = out?.url;
   if (typeof id !== "string" || typeof url !== "string" || !urlHost.test(url))
-    throw new StripeApiError(res.status, "bad_answer");
+    throw new StripeApiError(status, "bad_answer");
   return { id, url };
 }
 
@@ -127,19 +158,25 @@ export function createCheckoutSession(
   const quantity = input.quantity ?? 1;
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10_000)
     throw new StripeConfigError("quantity");
-  return post(
-    cfg,
-    "/v1/checkout/sessions",
-    {
-      mode: "subscription",
-      customer: check(CUSTOMER, "customerId", input.customerId),
-      "line_items[0][price]": check(PRICE, "priceId", input.priceId),
-      "line_items[0][quantity]": String(quantity),
-      success_url: https("successUrl", input.successUrl),
-      cancel_url: https("cancelUrl", input.cancelUrl),
-    },
-    input.idempotencyKey,
-    /^https:\/\/checkout\.stripe\.com\//,
+  if (input.tier !== "team" && input.tier !== "business")
+    throw new StripeConfigError("tier");
+  return session(
+    post(
+      cfg,
+      "/v1/checkout/sessions",
+      {
+        mode: "subscription",
+        customer: check(CUSTOMER, "customerId", input.customerId),
+        "line_items[0][price]": check(PRICE, "priceId", input.priceId),
+        "line_items[0][quantity]": String(quantity),
+        success_url: https("successUrl", input.successUrl),
+        cancel_url: https("cancelUrl", input.cancelUrl),
+        "metadata[tier]": input.tier,
+        "subscription_data[metadata][tier]": input.tier,
+      },
+      input.idempotencyKey,
+    ),
+    CHECKOUT_URL,
   );
 }
 
@@ -148,14 +185,38 @@ export function createPortalSession(
   input: PortalInput,
   cfg: StripeConfig,
 ): Promise<StripeSession> {
-  return post(
-    cfg,
-    "/v1/billing_portal/sessions",
-    {
-      customer: check(CUSTOMER, "customerId", input.customerId),
-      return_url: https("returnUrl", input.returnUrl),
-    },
-    input.idempotencyKey,
-    /^https:\/\/billing\.stripe\.com\//,
+  return session(
+    post(
+      cfg,
+      "/v1/billing_portal/sessions",
+      {
+        customer: check(CUSTOMER, "customerId", input.customerId),
+        return_url: https("returnUrl", input.returnUrl),
+      },
+      input.idempotencyKey,
+    ),
+    PORTAL_URL,
   );
+}
+
+/**
+ * The install's Stripe customer, with metadata[install_id]. Billing calls it
+ * from /checkout before creating the session and writes the id with a
+ * conditional UPDATE; the Idempotency-Key (cust-<installId>) makes a retry
+ * the same customer. Answers the cus_ id only.
+ */
+export async function createCustomer(
+  input: CustomerInput,
+  cfg: StripeConfig,
+): Promise<{ id: string }> {
+  const { status, out } = await post(
+    cfg,
+    "/v1/customers",
+    { "metadata[install_id]": check(INSTALL, "installId", input.installId) },
+    input.idempotencyKey,
+  );
+  const id = out?.id;
+  if (typeof id !== "string" || !CUSTOMER.test(id))
+    throw new StripeApiError(status, "bad_answer");
+  return { id };
 }
