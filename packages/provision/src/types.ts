@@ -15,7 +15,8 @@ export interface Install {
   appHost: string;
   contentHost: string;
   version: string;
-  patFile: string;
+  /** The owner's 0600 PAT file; absent when CI's ephemeral token ran the selftest. */
+  patFile?: string;
 }
 
 export interface Release {
