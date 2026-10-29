@@ -346,11 +346,14 @@ describe("usage_off", () => {
 
   it('usage_off → me.instance.features contains "usage_off"', async () => {
     // Me.instance.features appears on hosted (or direct sign-in) installs.
-    const hosted = (f: string) => ({ ...withFeatures(f), HOSTED: "1" });
-    expect((await me(hosted("usage_off"))).instance.features).toContain(
-      "usage_off",
-    );
-    expect((await me(hosted(""))).instance.features).not.toContain("usage_off");
+    // Hosted billing: every tier sets it (planFeatures), whatever FEATURES says.
+    const hosted = (f: string) => ({
+      ...withFeatures(f),
+      HOSTED: "1",
+      TIER: "business",
+    });
+    for (const f of ["usage_off", ""])
+      expect((await me(hosted(f))).instance.features).toContain("usage_off");
   });
 
   it("no flag → owner still gets usage", async () => {

@@ -92,6 +92,15 @@ export interface Env {
    * 10,000). Clamped to 10,000 on Free, 1,000,000 on Paid.
    */
   DATA_DAILY_WRITES?: string;
+  /**
+   * Hosted billing's free-tier caps (billing/caps.ts): positive integers,
+   * each OFF until set (unset, empty or invalid never refuses). Free tier
+   * only: stored version bytes per instance, live-data docs per artifact,
+   * live-data writes per artifact per UTC day. 403 plan_limit past one.
+   */
+  FREE_STORAGE_BYTES?: string;
+  FREE_DATA_DOCS?: string;
+  FREE_DATA_DAILY_WRITES?: string;
   // vars
   APP_HOST: string;
   CONTENT_HOST: string;

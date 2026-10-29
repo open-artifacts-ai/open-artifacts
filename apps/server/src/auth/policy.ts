@@ -88,6 +88,8 @@ export type OrgAction =
   | "settings.read"
   | "settings.manage"
   | "usage.read"
+  /** Hosted billing: Checkout, Portal, the usage report and Me's billing details. Uncapped org owner or admin. */
+  | "billing.manage"
   | "tokens.create"
   | "mcp.connect";
 
@@ -125,7 +127,58 @@ export type CanCtx = {
   dataWriters?: DataWriters;
   /** Viewer-only first thumbnail: via a share or team access, and none stored yet. */
   firstThumbnail?: boolean;
+  /**
+   * Hosted billing's lock on this instance (billing/plan.ts PlanLock.mode),
+   * absent or null when none: shared-space artifacts are read-only, and so
+   * are the team actions on personal ones (share, move, transfer); while
+   * read-only, anonymous data writes too. Reads are never touched.
+   */
+  plan?: "solo" | "readOnly" | null;
 };
+
+/**
+ * A cap that also narrows reads (team artifacts, allMembersRole): guest and
+ * restricted. The billing "plan" cap only refuses writes: nothing a member
+ * could read before a lapse is hidden by it.
+ */
+export const capsReads = (cap: CapReason | null | undefined): boolean =>
+  cap === "guest" || cap === "restricted";
+
+/**
+ * Hosted billing: who a plan lock caps (read-only): everyone but the org
+ * owner, whose own artifacts stay writable.
+ */
+export const planCapsRole = (role: Role): boolean => role !== "owner";
+
+/**
+ * billing/creators.ts CREATOR: a data write at this level counts its writer
+ * as a creator. Editor and up; a viewer's write (a poll vote) is free.
+ */
+export const dataWriteCreates = (level: AccessLevel | null): boolean =>
+  level !== null && level !== "viewer";
+
+/** Team actions on a personal artifact that a plan lock refuses. */
+const PLAN_TEAM_ACTIONS: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
+  "move",
+  "transfer",
+]);
+/**
+ * Never refused here: "share" also gates reading the share list, and
+ * "unshare" is a removal (removing people is how a team drops back to free).
+ * A new share is refused by putShare itself (requireTeamPlan).
+ */
+const PLAN_EXEMPT: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
+  "share",
+  "unshare",
+]);
+
+/** Whether the instance's plan lock refuses `action` (reads never). */
+export function planRefuses(action: PolicyAction, ctx: CanCtx): boolean {
+  if (!ctx.plan || READ.has(action) || PLAN_EXEMPT.has(action)) return false;
+  if (!ctx.personal) return true;
+  if (PLAN_TEAM_ACTIONS.has(action)) return true;
+  return ctx.plan === "readOnly" && ctx.anonymous === true;
+}
 
 /** Roles that see `team` artifacts. Guests never do. */
 export const TEAM_ROLES: readonly Role[] = ["owner", "admin", "member"];
@@ -194,6 +247,9 @@ const SHARE_ROLES: ReadonlySet<unknown> = new Set(["viewer", "editor"]);
 function uncapped(i: DecisionInput): AccessLevel | null {
   const { artifact: a } = i;
   const capped = i.cap != null;
+  // Team and allMembersRole reads: narrowed by guest and restricted caps
+  // only (the billing plan cap keeps every read).
+  const readCapped = capsReads(i.cap);
   // Allowlists throughout: anything malformed falls to the narrower branch.
   const caller =
     i.caller && typeof i.caller.id === "string" && i.caller.id
@@ -204,7 +260,7 @@ function uncapped(i: DecisionInput): AccessLevel | null {
   const deleted = a.deleted !== false;
   const ownPersonal = personal && caller !== null && a.spaceId === caller.id;
   const allMembers =
-    member && !capped
+    member && !readCapped
       ? known<SpaceRole>(i.space.allMembersRole, SPACE_ROLES)
       : null;
   const spaceRole =
@@ -229,7 +285,7 @@ function uncapped(i: DecisionInput): AccessLevel | null {
   // `team` means every member (shared spaces too), but never capped callers:
   // restricted members and capped guests see team artifacts only through a
   // space role or a share.
-  if (a.visibility === "team" && member && !capped) return "viewer";
+  if (a.visibility === "team" && member && !readCapped) return "viewer";
   // Public links off only refuses new public links: an artifact that is
   // already public keeps its link (decided), whatever its space.
   if (a.visibility === "public") return "viewer";
@@ -273,6 +329,7 @@ export function can(
   ctx: CanCtx,
 ): boolean {
   if (!level) return false;
+  if (planRefuses(action, ctx)) return false;
   const capped = ctx.cap != null;
   const full = !capped && (level === "manager" || level === "owner");
   if (READ.has(action)) return true;
@@ -343,12 +400,38 @@ export const canBeRestricted = (role: Role): boolean =>
 export const isOrgAdmin = (role: string): boolean =>
   (ORG_ADMINS as readonly string[]).includes(role);
 
+/**
+ * Admin reads an org owner or admin keeps under the billing plan cap (on a
+ * GET only): the members list and directory status, the audit log, the
+ * settings.
+ */
+const PLAN_ADMIN_READS: ReadonlySet<OrgAction> = new Set<OrgAction>([
+  "members.manage",
+  "audit.read",
+  "settings.read",
+]);
+
 /** Instance and space administration (no artifact involved). */
 export function orgCan(
   m: Member,
   action: OrgAction,
-  opts: { spaceRole?: SpaceRole | null; cap?: CapReason | null } = {},
+  opts: {
+    spaceRole?: SpaceRole | null;
+    cap?: CapReason | null;
+    /** The request only reads (GET/HEAD): the billing plan cap keeps admin reads. */
+    read?: boolean;
+  } = {},
 ): boolean {
+  // Hosted billing's plan cap never locks the owner and admins out of
+  // paying (billing.manage) or out of seeing their instance (PLAN_ADMIN_READS
+  // on a read). Every write stays capped. Members get neither.
+  if (
+    opts.cap === "plan" &&
+    ORG_ADMINS.includes(m.role) &&
+    (action === "billing.manage" ||
+      (opts.read === true && PLAN_ADMIN_READS.has(action)))
+  )
+    return true;
   const capped = opts.cap != null;
   // Owners and admins can't be restricted (restrict_admin); a cap still
   // removes every admin power as belt and braces.
@@ -380,6 +463,8 @@ export function orgCan(
     // link reset): owner only (#475).
     case "members.manageAdmins":
       return m.role === "owner" && !capped;
+    // Capped callers never connect agents, the billing plan cap included
+    // (fail closed: the owner's agents keep working).
     case "tokens.create":
     case "mcp.connect":
       return TEAM_ROLES.includes(m.role) && !capped;

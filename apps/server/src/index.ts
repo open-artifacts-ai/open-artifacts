@@ -4,6 +4,7 @@ import { canConnect } from "./auth/agents.js";
 import { withBrokerProps } from "./auth/broker-transport.js";
 import { withCred } from "./auth/cred.js";
 import { verifyPat } from "./auth/pat.js";
+import { withPlanScope } from "./billing/features.js";
 import { contentApp } from "./content/app.js";
 import { scheduled } from "./cron.js";
 import type { Env } from "./env.js";
@@ -84,8 +85,11 @@ async function mcpWithPat(
 
 export default {
   fetch(req, env, ctx) {
-    // The platform's broker capabilities (ctx.props) for this invocation.
-    return withBrokerProps(ctx, () => serve(req, env, ctx));
+    // The platform's broker capabilities (ctx.props) for this invocation,
+    // then (hosted) the billing plan, read once for every features check.
+    return withBrokerProps(ctx, () =>
+      withPlanScope(env, () => serve(req, env, ctx)),
+    );
   },
   scheduled,
 } satisfies ExportedHandler<Env>;

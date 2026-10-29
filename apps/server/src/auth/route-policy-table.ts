@@ -215,6 +215,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "DELETE /api/v1/tokens/:id": { user: "the caller's tokens" },
   // P3 T19: hosted sets usage_off (no ANALYTICS_TOKEN there).
   "GET /api/v1/usage": { org: "usage.read", offWhen: "usage_off" },
+  // Self-serve billing: the uncapped org owner or admin (404 off hosted, the
+  // handler). Each answers only a Stripe URL or this month's count.
+  "POST /api/v1/billing/checkout": { org: "billing.manage" },
+  "POST /api/v1/billing/portal": { org: "billing.manage" },
+  "POST /api/v1/billing/usage": { org: "billing.manage" },
   "GET /api/v1/audit": { org: "audit.read" },
   "GET /api/v1/audit/export": { org: "audit.read" },
   "GET /oauth/authorize": {
@@ -232,6 +237,36 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /*": { public: "SPA and assets" },
   "HEAD /*": { public: "SPA and assets" },
 };
+
+/**
+ * Hosted billing: the org-level team-feature writes. Under a plan lock
+ * (billing/plan.ts) the gate refuses them, after the route's own rule, with
+ * 403 plan_required (a free, solo instance) or plan_read_only (team
+ * features read-only). Removals (DELETE, a suspension or demotion through
+ * PATCH members) are never listed: removing people is how a team drops back
+ * to free (on a free instance PATCH members refuses only a promotion or a
+ * reactivation: services/members.ts patchMember). The first invite on a
+ * free instance whose trial never ran passes
+ * and starts the trial. Artifact writes in shared spaces, shares, moves and
+ * transfers are refused per artifact (policy can, putShare).
+ */
+export const TEAM_ROUTES: ReadonlySet<string> = new Set([
+  "POST /api/v1/members",
+  "POST /api/v1/members/:id/transfer",
+  "POST /api/v1/spaces",
+  `PATCH ${SPACES}`,
+  `POST ${SPACES}/members/self`,
+  `PUT ${SPACES}/members/:userId`,
+  `PUT ${SPACES}/mappings/:groupId`,
+  "PUT /api/v1/directory/org-mappings/:groupId",
+  "GET /api/v1/directory/connect",
+  "POST /api/v1/directory/confirm",
+  // Sync now, a held group's confirm, a restricted group: directory sync is
+  // a team feature (the cron feed is skipped too: cron.ts).
+  "POST /api/v1/directory/sync",
+  "POST /api/v1/directory/held/:groupId/confirm",
+  "PUT /api/v1/directory/restricted-groups/:groupId",
+]);
 
 /** Content host routes: the handlers verify signed tokens or public visibility. */
 export const CONTENT_POLICY: Readonly<Record<string, Policy>> = {

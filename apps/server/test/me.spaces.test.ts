@@ -20,16 +20,25 @@ const app = createApp();
 const tag = newId().slice(0, 6).toLowerCase();
 
 const base = { ...(env as object), PLAN: "paid" };
-/** Hosted, spaces on. */
-const ON = { ...base, HOSTED: "1", FEATURES: "spaces" } as unknown as Env;
+/** Hosted, spaces on (no BILLING gate: the provisioned TIER sets the features). */
+const ON = {
+  ...base,
+  HOSTED: "1",
+  TIER: "business",
+  FEATURES: "spaces",
+} as unknown as Env;
 /** Hosted, spaces on, sync frozen (manual restriction allowed). */
 const FROZEN = {
   ...base,
   HOSTED: "1",
+  TIER: "team",
   FEATURES: "spaces,sync_frozen",
 } as unknown as Env;
-/** Hosted, spaces off. */
-const OFF = { ...base, HOSTED: "1", FEATURES: "" } as unknown as Env;
+/**
+ * Spaces off. Self-hosted: on hosted every billing tier has spaces
+ * (TIER_FEATURES), so there is no hosted install without them.
+ */
+const OFF = { ...base, FEATURES: "" } as unknown as Env;
 /** Access-only self-host with spaces: /me keeps today's shape. */
 const ACCESS = { ...base, FEATURES: "spaces" } as unknown as Env;
 
@@ -174,7 +183,6 @@ describe("GET /me spaces", () => {
 
   it("spaces off: no personalSpaceId and no spaces (today's shape)", async () => {
     const me = await getMe(OFF, member.cookie);
-    expect(me.instance.hosted).toBe(true);
     expect(me).not.toHaveProperty("personalSpaceId");
     expect(me).not.toHaveProperty("spaces");
   });

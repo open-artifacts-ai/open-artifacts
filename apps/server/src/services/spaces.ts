@@ -44,6 +44,7 @@ import {
 } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { canBeRestricted, capOf, isGuestRole, orgCan } from "../auth/policy.js";
+import { featuresOf } from "../billing/features.js";
 import { getDb } from "../db/client.js";
 import { spaces } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -87,11 +88,11 @@ type Ctx = Pick<ExecutionContext, "waitUntil"> | undefined;
 
 /** The `spaces` feature: every route here is 404 without it (authz is the same either way). */
 export const spacesOn = (env: Env): boolean =>
-  authConfig(env).features.includes("spaces");
+  featuresOf(env).includes("spaces");
 
 /** Directory sync mode from FEATURES: google (running), frozen (Team after trial) or off. */
 export const directoryMode = (env: Env): DirectoryMode =>
-  directoryModeOf(authConfig(env).features);
+  directoryModeOf(featuresOf(env));
 
 // Frozen edits (P3 T15), each in the batch of the edit, before its writes:
 // (space ?1, user ?2) at ?3; ?4 = 1 for an org admin, else never a manager row

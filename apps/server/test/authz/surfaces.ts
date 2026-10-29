@@ -1008,6 +1008,11 @@ const ORG: [string, OrgRule, number[]?, "data"?][] = [
   ["PATCH /api/v1/tokens/:id", U],
   ["DELETE /api/v1/tokens/:id", U],
   ["GET /api/v1/usage", org("usage.read"), [200]],
+  // Self-serve billing: writes, probed for the guard (404 off hosted, by
+  // the handler; the route rule is the same either way).
+  ["POST /api/v1/billing/checkout", org("billing.manage")],
+  ["POST /api/v1/billing/portal", org("billing.manage")],
+  ["POST /api/v1/billing/usage", org("billing.manage")],
   ["GET /api/v1/audit", org("audit.read"), [200]],
   ["GET /api/v1/audit/export", org("audit.read"), [200]],
   ["GET /api/v1/oauth-clients", U, [200]],

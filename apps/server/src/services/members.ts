@@ -23,9 +23,12 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
-import { managesAdmins } from "../auth/authz.js";
-import { authConfig, type SignInProvider } from "../auth/config.js";
+import { managesAdmins, planOfMember } from "../auth/authz.js";
+import type { SignInProvider } from "../auth/config.js";
 import { isOrgAdmin } from "../auth/policy.js";
+import { featuresOf } from "../billing/features.js";
+import { planError } from "../billing/plan.js";
+import { startTrial } from "../billing/store.js";
 import { getDb } from "../db/client.js";
 import {
   agentGrants,
@@ -181,6 +184,10 @@ export async function inviteMember(
     .onConflictDoNothing({ target: users.email })
     .returning();
   if (!row) throw new ApiError("conflict", "Already a member");
+  // Hosted billing: the first successful invite on a free instance starts
+  // the 14-day trial (signed POST /trial/start, idempotent). A failed call
+  // is retried by the scheduler tick (billing/store.ts billingTick).
+  if (planOfMember(inviter)?.trialEligible) await startTrial(env, Date.now());
   // What the email names, and the result reports: uncertain Google is still
   // the only way in, so it is named.
   const signInMethods: SignInProvider[] = reach.methods.length
@@ -351,6 +358,14 @@ export async function setUserStatus(
 
 // The target predicate both role statements share: never the owner, an admin
 // only when ?3 = 1 (the actor may act on admins, #475).
+/** Org roles by rank, for the solo lock (patchMember): a higher rank is a promotion. */
+const PROMOTE_RANK: Readonly<Record<string, number>> = {
+  guest: 0,
+  member: 1,
+  admin: 2,
+  owner: 3,
+};
+
 const ROLE_TARGET = "role <> 'owner' and (role <> 'admin' or ?3 = 1)";
 
 // A role change ends the member's sessions (they re-sign-in with the new role).
@@ -381,6 +396,16 @@ export async function patchMember(
   checkTarget(row.role, admins);
   if (row.role === "owner")
     throw new ApiError("bad_request", "The owner cannot be demoted");
+  // Hosted billing, a free (solo) instance: no promotion and no
+  // reactivation (a role change for someone not active). A demotion or a
+  // same-role write passes: dropping people is how a team gets back to free.
+  const lock = actor === SYSTEM_ACTOR ? null : planOfMember(actor)?.lock;
+  if (
+    lock?.mode === "solo" &&
+    (row.status !== "active" ||
+      (PROMOTE_RANK[patch.role] ?? 0) > (PROMOTE_RANK[row.role] ?? 0))
+  )
+    throw planError(lock);
   const db = getDb(env);
   const results = await env.DB.batch([
     // Owners and admins can't be restricted (ruling c): a promotion to admin
@@ -466,7 +491,7 @@ export async function removeMember(
     .from(shares)
     .where(eq(shares.email, row.email))
     .limit(MAX_CLOSE);
-  if (authConfig(env).features.includes("spaces"))
+  if (featuresOf(env).includes("spaces"))
     await setUserStatus(env, id, "removed", "admin_remove", actor, ctx);
   else await deleteMember(env, id, actor, ctx);
   await closeRuntimeSockets(

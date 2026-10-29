@@ -1,14 +1,17 @@
-import type {
-  DirectoryBinding,
-  HeldSweep,
-  LiftPaused,
-  LiftPausedReason,
-  SyncStatus,
+import {
+  type DirectoryBinding,
+  type DirectoryMode,
+  DirectoryModeSchema,
+  type HeldSweep,
+  type LiftPaused,
+  type LiftPausedReason,
+  type SyncStatus,
 } from "@oa/shared";
 import {
   brokerTransportKind,
   withoutBrokerProps,
 } from "../auth/broker-transport.js";
+import { billingOn } from "../billing/plan.js";
 import { stmt } from "../db/stmt.js";
 import type { DirectoryAlert } from "../email/templates.js";
 import type { Env } from "../env.js";
@@ -124,6 +127,13 @@ export const TOKEN_TTL_MS = 45 * 60_000;
 export const NO_FEED_MS = 15 * 60_000;
 /** DO kv: when a due lane first found no token in hand (cleared once one is). */
 const NOFEED_KEY = "nofeed.since";
+/**
+ * DO kv: the directory mode the last caller handed over (services/directory.ts
+ * syncModeFor: hosted, the billing tier's; a locked plan is frozen). The alarm
+ * follows it rather than the provisioned FEATURES, which this DO would read
+ * outside any request.
+ */
+const MODE_KEY = "mode";
 
 /**
  * The directory access token, in memory only: never written to DO storage,
@@ -561,10 +571,47 @@ export class SyncEngine {
     return Math.min(...LANES.map((l) => this.laneAt(l, now)));
   }
 
+  // ------------------------------------------------------------ mode
+
+  /**
+   * The directory mode to follow: `passed` (the caller's, kept in MODE_KEY
+   * for the alarms that follow), else the last one handed over, else the
+   * provisioned FEATURES (a caller that never passed one). Hosted only:
+   * self-hosted, FEATURES rules.
+   */
+  private follow(passed?: DirectoryMode): DirectoryMode {
+    // Self-hosted: FEATURES is the only source (a caller's mode is the same).
+    if (!billingOn(this.env)) return directoryMode(this.env);
+    const ok = DirectoryModeSchema.safeParse(passed);
+    if (ok.success) {
+      if (this.get<string>(MODE_KEY) !== ok.data) this.put(MODE_KEY, ok.data);
+      return ok.data;
+    }
+    const kept = DirectoryModeSchema.safeParse(this.get<string>(MODE_KEY));
+    return kept.success ? kept.data : directoryMode(this.env);
+  }
+
+  /**
+   * Hosted, frozen (a Team tier, or a locked plan): nothing feeds this DO by
+   * design, so it calls nothing and fails nothing (no transport_no_feed, so
+   * no unhealthy state, session cap or owner alert). The binding, runs in
+   * flight and synced rows stay; sync resumes when a caller hands google
+   * back. A self-hosted frozen install keeps syncing users (it mints
+   * itself), as before.
+   */
+  private paused(mode: DirectoryMode): boolean {
+    return mode === "frozen" && billingOn(this.env);
+  }
+
   // ------------------------------------------------------------ RPCs
 
-  /** Asks for a run; returns the status. */
-  async kick(reason: KickReason, now = Date.now()): Promise<SyncStatus> {
+  /** Asks for a run; returns the status. `mode`: the caller's (follow()). */
+  async kick(
+    reason: KickReason,
+    now = Date.now(),
+    mode?: DirectoryMode,
+  ): Promise<SyncStatus> {
+    this.follow(mode);
     const reasons = this.reasons();
     const lastRec = this.get<number>("reconcile.startedAt") ?? 0;
     const counts =
@@ -592,7 +639,9 @@ export class SyncEngine {
    * token is in hand: the caller should mint one and handToken it. Restarts
    * a lost alarm (like a cron kick). Reads only this DO's storage.
    */
-  async wantsToken(now = Date.now()): Promise<boolean> {
+  async wantsToken(now = Date.now(), mode?: DirectoryMode): Promise<boolean> {
+    const m = this.follow(mode);
+    if (m === "off" || this.paused(m)) return false;
     if ((await this.storage.getAlarm()) === null)
       await this.storage.setAlarm(now);
     const t = this.box.tok;
@@ -610,7 +659,9 @@ export class SyncEngine {
     forKey: string,
     h: { token: string } | { error: MintFault },
     now = Date.now(),
+    mode?: DirectoryMode,
   ): Promise<void> {
+    this.follow(mode);
     if ("token" in h) {
       this.box.tok = { token: h.token, exp: now + TOKEN_TTL_MS, for: forKey };
       this.box.fault = null;
@@ -629,7 +680,11 @@ export class SyncEngine {
     groupId: string,
     by: AuditActor = SYNC,
     now = Date.now(),
+    mode?: DirectoryMode,
   ): Promise<SyncStatus | null> {
+    // Hosted, group sync stopped (frozen or off): nothing can apply a
+    // confirm. (Self-hosted, the route checks FEATURES before calling.)
+    if (billingOn(this.env) && this.follow(mode) !== "google") return null;
     const ok = this.storage.transactionSync(() => {
       const r = this.sql
         .exec("select kind from held where group_id = ?", groupId)
@@ -653,7 +708,7 @@ export class SyncEngine {
       { type: "group", id: groupId },
       by,
     ).run();
-    return this.kick("confirm", now);
+    return this.kick("confirm", now, mode);
   }
 
   async enqueue(_job: SyncJob): Promise<void> {
@@ -773,7 +828,7 @@ export class SyncEngine {
       await revokeUsersLive(this.env, ids, "directory customer_mismatch");
       return now;
     }
-    const mode = directoryMode(this.env);
+    const mode = this.follow();
     const client = directoryClient(this.env);
     const { binding, sealed } = await readBinding(this.env);
     // Nothing to sync (off, unbound, no transport): stop until kicked. Runs
@@ -783,6 +838,10 @@ export class SyncEngine {
     // live binding until the confirm swaps it (P2.5 #15).
     if (mode === "off" || !client || !binding || !sealed) return null;
     if (!this.fresh()) return now;
+    if (this.paused(mode)) {
+      this.del(NOFEED_KEY);
+      return null;
+    }
     const groups = mode === "google";
     // Hosted with no token in hand: stop cleanly before planning anything
     // (no lane, run or bypass is touched); the run in flight stays and the

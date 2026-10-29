@@ -4,6 +4,7 @@ import {
   type FeatureFlag,
   type InstanceSignIn,
 } from "@oa/shared";
+import { featuresOf } from "../billing/features.js";
 import type { Env } from "../env.js";
 import { type AuthConfig, authConfig } from "./config.js";
 
@@ -72,9 +73,8 @@ export function instanceSignIn(env: Env, owner = false): InstanceSignIn {
 /** Me.instance.features: FEATURES plus guests_read_only when the guest cap is on (reported only). */
 export function instanceFeatures(env: Env): FeatureFlag[] {
   const cfg = authConfig(env);
-  return cfg.guestsReadOnly
-    ? [...cfg.features, "guests_read_only"]
-    : [...cfg.features];
+  const features = featuresOf(env);
+  return cfg.guestsReadOnly ? [...features, "guests_read_only"] : [...features];
 }
 
 /** Hosted sign-in fields appear in Me only on hosted or direct-sign-in installs. */

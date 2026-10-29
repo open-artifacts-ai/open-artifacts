@@ -39,6 +39,11 @@ export const ERROR_CODES = [
   // Runtime data query.
   "cursor_stale",
   "query_too_large",
+  // Self-serve billing (hosted/billing.ts).
+  "plan_required",
+  "plan_read_only",
+  "plan_limit",
+  "billing_unavailable",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -112,6 +117,14 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   cursor_stale: 409,
   /** db query() with where/orderBy on a collection over LIMITS.queryCollectionBytes; message QUERY_TOO_LARGE_MESSAGE. */
   query_too_large: 400,
+  /** A team feature on a free (solo) instance whose trial was already used: an invite, a share to someone else, a shared space; details PlanRefusalDetails. */
+  plan_required: 403,
+  /** A write refused because team features are read-only (trial ended, lapsed, payment failed past grace, suspended, or billing unreachable past 7 days); details PlanRefusalDetails. Nothing was deleted. */
+  plan_read_only: 403,
+  /** A free instance at one of its configured caps (storage, live-data docs or daily writes; unset caps never refuse); details PlanLimitDetails. */
+  plan_limit: 403,
+  /** R.billingCheckout / R.billingPortal / R.billingUsage while billing can't be reached. */
+  billing_unavailable: 503,
 };
 
 /**

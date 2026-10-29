@@ -490,6 +490,32 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return this.ctx.storage.sql;
   }
 
+  /**
+   * Hosted billing's free-tier data caps (billing/caps.ts): the doc count,
+   * today's writes, and whether `collection`/`id` exists. Reads only.
+   */
+  capUsage(
+    collection: string,
+    id: string,
+  ): { docs: number; writesToday: number; exists: boolean } {
+    const day = Math.floor(this.now() / DAY_MS);
+    const r = this.sql
+      .exec<{ docs: number; writes: number; exists: number }>(
+        `select (select count(*) from docs) as docs,
+           (select case when day = ? then writes else 0 end from totals where id = 1) as writes,
+           exists (select 1 from docs where collection = ? and id = ?) as "exists"`,
+        day,
+        dataName(collection, "collection"),
+        dataName(id, "id"),
+      )
+      .one();
+    return {
+      docs: r.docs,
+      writesToday: r.writes ?? 0,
+      exists: r.exists === 1,
+    };
+  }
+
   /** Total stored bytes (docs + storage), as tracked in the totals row. */
   totalBytes(): number {
     return this.sql
@@ -1793,6 +1819,7 @@ type RpcMethods =
   | "get"
   | "list"
   | "count"
+  | "capUsage"
   | "query"
   | "set"
   | "update"

@@ -306,6 +306,7 @@ const ADMIN_ACTIONS = new Set([
   "settings.manage",
   "usage.read",
   "audit.read",
+  "billing.manage",
 ]);
 
 /** Whether `who` passes an instance route's guard (`{ org }` or `{ user }`). */

@@ -6,6 +6,7 @@ import { mountAdmin } from "./admin.js";
 import { mountArtifacts } from "./artifacts.js";
 import { mountAudit } from "./audit.js";
 import { mountAuth } from "./auth.js";
+import { mountBilling } from "./billing.js";
 import { mountCodes } from "./codes.js";
 import { mountDirectory } from "./directory.js";
 import { mountMe } from "./me.js";
@@ -39,6 +40,7 @@ export function mountRoutes(app: AppType): void {
   mountTokens(app);
   mountUsage(app);
   mountAudit(app);
+  mountBilling(app);
   mountAdmin(app);
   mountOAuth(app);
   // /a/:id(/v/:v) OG shells; other /a/* paths fall to the SPA fallback.

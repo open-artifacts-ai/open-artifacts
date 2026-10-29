@@ -1,6 +1,8 @@
 import { isId } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { matchedRoutes } from "hono/route";
+import { featuresOf, planNow } from "../billing/features.js";
+import { planError, requireTeamPlan } from "../billing/plan.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, resolveSession } from "../http/middleware.js";
 import {
@@ -9,14 +11,15 @@ import {
   type Caller,
   caller,
   capOfCaller,
+  planOfMember,
   withAccessCache,
 } from "./authz.js";
-import { authConfig } from "./config.js";
 import { orgCan } from "./policy.js";
 import {
   CONTENT_POLICY,
   type Policy,
   ROUTE_POLICY,
+  TEAM_ROUTES,
 } from "./route-policy-table.js";
 
 export {
@@ -69,12 +72,39 @@ function paramAt(c: Context, index: number, name: string): string {
 
 const notFound = () => new ApiError("not_found", "Not found");
 
+/**
+ * Whether `who` would pass this artifact rule without the billing plan cap
+ * (or is refused only by the plan lock itself). Refusals only: one more
+ * access read.
+ */
+async function allowedUncapped(
+  env: AppEnv["Bindings"],
+  who: Extract<Caller, { kind: "user" }>,
+  id: string,
+  p: Extract<Policy, { artifact: unknown }>,
+): Promise<boolean> {
+  try {
+    await authorize(env, { ...who, cap: null }, id, p.artifact, {
+      allowDeleted: p.allowDeleted,
+      ctx: p.ctx,
+    });
+    return true;
+  } catch (e) {
+    return (
+      e instanceof ApiError &&
+      (e.code === "plan_read_only" || e.code === "plan_required")
+    );
+  }
+}
+
 /** Applies one policy for `who`; resolves to nothing or throws (401/404). */
 export async function enforce(
   p: Policy | undefined,
   who: Caller,
   env: AppEnv["Bindings"],
   artifactId: () => string,
+  /** The request is a write (not GET/HEAD): hosted billing's plan 403 applies. */
+  write = true,
 ): Promise<void> {
   if (!p) throw notFound();
   if ("public" in p || "signed" in p) return;
@@ -91,6 +121,20 @@ export async function enforce(
         ctx: p.ctx,
       });
     } catch (e) {
+      // Hosted billing: a member under the plan cap whose role would allow
+      // this gets the clear 403, not 404 (they can see the artifact).
+      const lock =
+        write && who.kind === "user" && who.cap === "plan"
+          ? planOfMember(who.user)?.lock
+          : null;
+      if (
+        lock &&
+        who.kind === "user" &&
+        e instanceof ApiError &&
+        e.code === "not_found" &&
+        (await allowedUncapped(env, who, id, p))
+      )
+        throw planError(lock);
       // Keep the handler's order: an anonymous caller who may view gets 401.
       // A data write refused by dataWriters "editors" already threw 403
       // data_editors_only (authorize, #681).
@@ -107,11 +151,20 @@ export async function enforce(
     return;
   }
   // A switched-off feature is absent for everyone, signed in or not.
-  if ("org" in p && p.offWhen && authConfig(env).features.includes(p.offWhen))
+  if ("org" in p && p.offWhen && featuresOf(env).includes(p.offWhen))
     throw notFound();
   if (who.kind !== "user")
     throw new ApiError("unauthorized", "Sign in required");
-  if ("org" in p && !orgCan(who.user, p.org, { cap: capOfCaller(who) })) {
+  if (
+    "org" in p &&
+    !orgCan(who.user, p.org, { cap: capOfCaller(who), read: !write })
+  ) {
+    // Hosted billing: an admin under the plan cap gets the clear 403 on a
+    // write their role would allow (their admin reads and billing pass
+    // above: orgCan PLAN_ADMIN_READS).
+    const lock =
+      who.cap === "plan" && write ? planOfMember(who.user)?.lock : null;
+    if (lock && orgCan(who.user, p.org, { cap: null })) throw planError(lock);
     // #359: any create by a capped caller (guests under direct sign-in, P3's
     // restricted members) is 403 space_forbidden, never 404.
     if (p.org === "artifact.create" && capOfCaller(who))
@@ -146,10 +199,38 @@ export const enforcePolicy = (
     // Registered first, so it reads the session itself when a rule needs a
     // caller (session() later is then a no-op).
     if (!("public" in p || "signed" in p)) await resolveSession(c);
+    // Hosted billing: this invocation's plan before any features check (a
+    // no-op once the user load above seeded it). The SPA and its assets
+    // never read it.
+    if (t.path !== "/*") await planNow(c.env);
     const who: Caller =
       c.req.header("x-oa-embed") === "1" ? { kind: "anonymous" } : caller(c);
     await withAccessCache(async () => {
-      await enforce(p, who, c.env, () => paramAt(c, t.index, "id"));
+      await enforce(
+        p,
+        who,
+        c.env,
+        () => paramAt(c, t.index, "id"),
+        t.method !== "GET" && t.method !== "HEAD",
+      );
       await next();
     });
+  });
+
+/**
+ * Hosted billing: the org-level team features (TEAM_ROUTES) under a plan
+ * lock, 403 plan_required / plan_read_only. Mounted on /api/v1/* after
+ * csrf() and readOnlyCap(), so a cookie write without X-OA-Request is still
+ * 403 csrf first.
+ */
+export const planGate = (): MiddlewareHandler<AppEnv> =>
+  mw(async (c, next) => {
+    const t = targetRoute(c);
+    const route = t ? `${t.method} ${t.path}` : "";
+    const user = c.var.user;
+    if (user && TEAM_ROUTES.has(route))
+      requireTeamPlan(planOfMember(user), {
+        invite: route === "POST /api/v1/members",
+      });
+    await next();
   });

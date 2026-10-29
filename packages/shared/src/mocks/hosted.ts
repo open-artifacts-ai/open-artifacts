@@ -37,6 +37,11 @@ import {
   normalizeCode,
 } from "../hosted/auth.js";
 import {
+  BillingCheckoutInputSchema,
+  type PlanRefusalDetails,
+  type PlanView,
+} from "../hosted/billing.js";
+import {
   artifactCan,
   type CapReason,
   type DirectoryMode,
@@ -129,6 +134,16 @@ export type HostedMockOptions = {
    * customer_mismatch removed.
    */
   pendingCustomerChange?: NonNullable<SyncStatus["pendingCustomerChange"]>;
+  /**
+   * Me.instance.billing (self-serve billing). Default: business, active, not
+   * read-only. Owner and admins see status, dates and creatorsThisMonth; the
+   * mock nulls them for everyone else, as the server does. With readOnly, or
+   * tier "free" and a trial already used (trialEndsAt set), POST members
+   * answers 403 plan_read_only / plan_required (details PlanRefusalDetails).
+   */
+  billing?: PlanView;
+  /** POST R.billingCheckout / R.billingPortal / R.billingUsage answer 503 billing_unavailable. */
+  billingDown?: boolean;
   /** Extra FEATURES flags beyond the defaults (spaces, content_revocation, usage_off, plus the sync flag). guests_read_only is ignored: it is reported from the sign-in config (on when google or email is enabled). */
   features?: FeatureFlag[];
 };
@@ -441,6 +456,40 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
 
   // ---- derived views --------------------------------------------------------
   const isAdmin = () => me.user.role === "owner" || me.user.role === "admin";
+  const billing: PlanView = o.billing ?? {
+    tier: "business",
+    status: "active",
+    trialEndsAt: null,
+    graceUntil: null,
+    creatorsThisMonth: 1,
+    readOnly: false,
+  };
+  /** Me.instance.billing: the details for the owner and admins only. */
+  const billingView = (): PlanView | undefined => {
+    if (o.selfHosted) return undefined;
+    if (isAdmin()) return { ...billing };
+    const { creatorsThisMonth: _, ...rest } = billing;
+    return { ...rest, status: null, trialEndsAt: null, graceUntil: null };
+  };
+  /** The server's plan refusal for an invite, or null. */
+  const planRefusal = (): Response | null => {
+    if (o.selfHosted) return null;
+    if (billing.readOnly)
+      return err("plan_read_only", "Team features are read-only", {
+        tier: billing.tier,
+        reason: billing.reason ?? "lapsed",
+      } satisfies PlanRefusalDetails);
+    if (billing.tier === "free" && billing.trialEndsAt !== null)
+      return err("plan_required", "Inviting people needs a team plan", {
+        tier: "free",
+        reason: "solo",
+      } satisfies PlanRefusalDetails);
+    return null;
+  };
+  const billingUrl = (kind: "checkout" | "portal") =>
+    HttpResponse.json({
+      url: `https://checkout.stripe.com/c/pay/cs_test_mock_${kind}`,
+    });
   /**
    * R.directoryDisconnect / DELETE R.directory: the binding and health go,
    * memberships stay (frozen). Nothing connected: no change, no audit row.
@@ -730,6 +779,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const refresh = () => {
     me.instance.hosted = !o.selfHosted;
     me.instance.tier = o.tier === undefined ? "business" : o.tier;
+    me.instance.billing = billingView();
     me.instance.signIn = {
       mode,
       providers: providers().providers.map((p) => p.id),
@@ -1102,7 +1152,36 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     // Workspace secondary domain, so signIn "uncertain"); codes admit
     // MOCK_DOMAIN only while Google is off (domainCodes). Reachable invites
     // fall through to the base handler.
+    // -- self-serve billing: Checkout, Portal and the usage report (owner
+    // and admins; others 404), and the plan refusal on invites.
+    http.post("*/api/v1/billing/checkout", async ({ request }) => {
+      if (o.selfHosted || c.isAnon(request) || !isAdmin()) return notFound();
+      const r = await c.body(request, BillingCheckoutInputSchema);
+      if (r.error) return r.error;
+      if (o.billingDown)
+        return err("billing_unavailable", "Billing is unavailable");
+      return billingUrl("checkout");
+    }),
+    http.post("*/api/v1/billing/portal", ({ request }) => {
+      if (o.selfHosted || c.isAnon(request) || !isAdmin()) return notFound();
+      if (o.billingDown)
+        return err("billing_unavailable", "Billing is unavailable");
+      return billingUrl("portal");
+    }),
+    http.post("*/api/v1/billing/usage", ({ request }) => {
+      if (o.selfHosted || c.isAnon(request) || !isAdmin()) return notFound();
+      if (o.billingDown)
+        return err("billing_unavailable", "Billing is unavailable");
+      return HttpResponse.json({
+        month: new Date().toISOString().slice(0, 7),
+        count: billing.creatorsThisMonth ?? 0,
+      });
+    }),
     http.post("*/api/v1/members", async ({ request }) => {
+      if (!c.isAnon(request) && isAdmin()) {
+        const refused = planRefusal();
+        if (refused) return refused;
+      }
       if (mode === "access" || c.isAnon(request)) return undefined;
       const r = await c.body(request.clone(), MemberInviteSchema);
       if (r.error) return undefined;

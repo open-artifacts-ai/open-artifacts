@@ -35,7 +35,10 @@ export const BROKER_PROPS = {
   directory: "DIRECTORY_BROKER",
 } as const satisfies Record<BrokerName, string>;
 
-type Gates = Partial<Record<BrokerName, BrokerGate>>;
+/** The ctx.props key carrying the billing gate (platform BillingGate, #849). */
+export const BILLING_PROPS = "BILLING";
+
+type Gates = Partial<Record<BrokerName | "billing", BrokerGate>>;
 
 const invocation = new AsyncLocalStorage<Gates>();
 
@@ -57,6 +60,8 @@ function gatesOf(ctx: { props?: unknown } | null | undefined): Gates {
     const g = (props as Record<string, unknown>)[BROKER_PROPS[which]];
     if (isGate(g)) out[which] = g;
   }
+  const b = (props as Record<string, unknown>)[BILLING_PROPS];
+  if (isGate(b)) out.billing = b;
   return out;
 }
 
@@ -75,6 +80,14 @@ export function withBrokerProps<T>(
 export function withoutBrokerProps<T>(f: () => T): T {
   return invocation.run({}, f);
 }
+
+/**
+ * This invocation's billing gate (ctx.props.BILLING), or null. Billing has
+ * no binding and no HTTPS fallback: only the platform's gate reaches it
+ * (billing/transport.ts sends through it).
+ */
+export const billingGate = (): BrokerGate | null =>
+  invocation.getStore()?.billing ?? null;
 
 const bindingOf = (env: Env, which: BrokerName): Fetcher | undefined =>
   which === "auth" ? env.BROKER : env.DIRECTORY_BROKER;
