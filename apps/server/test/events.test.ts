@@ -7,6 +7,10 @@ import {
   EVENTS_GONE_CLOSE,
   type Member,
   newId,
+  PRESENCE_COOKIE,
+  PRESENCE_KEY_RE,
+  type PresenceFrame,
+  PresenceFrameSchema,
   R,
 } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -53,17 +57,38 @@ const ip = () => `198.51.100.${(++ipSeq % 250) + 1}`;
 
 type Sock = {
   ws: WebSocket;
+  /** Every frame except presence (those are in `presence`). */
   frames: ArtifactEvent[];
+  /** Presence frames only, in order. */
+  presence: PresenceFrame[];
+  /** Raw JSON text of every frame, presence included. */
+  raw: string[];
+  /** The next non-presence frame. */
   next: () => Promise<ArtifactEvent>;
+  /** The next presence frame (skips the others). */
+  nextOf: (type: "presence") => Promise<PresenceFrame>;
   closed: Promise<number>;
 };
 
 function wrap(ws: WebSocket): Sock {
   const frames: ArtifactEvent[] = [];
+  const presence: PresenceFrame[] = [];
+  const raw: string[] = [];
   const waiters: ((f: ArtifactEvent) => void)[] = [];
+  const pWaiters: ((f: PresenceFrame) => void)[] = [];
   let read = 0;
+  let pRead = 0;
   ws.addEventListener("message", (e) => {
-    const f = ArtifactEventSchema.parse(JSON.parse(String(e.data)));
+    const text = String(e.data);
+    raw.push(text);
+    const j = JSON.parse(text);
+    if (j.type === "presence") {
+      const f = PresenceFrameSchema.parse(j);
+      presence.push(f);
+      pWaiters.shift()?.(f);
+      return;
+    }
+    const f = ArtifactEventSchema.parse(j);
     frames.push(f);
     waiters.shift()?.(f);
   });
@@ -74,12 +99,20 @@ function wrap(ws: WebSocket): Sock {
   return {
     ws,
     frames,
+    presence,
+    raw,
     closed,
     next: () => {
       const i = read++;
       const f = frames[i];
       if (f) return Promise.resolve(f);
       return new Promise((res) => waiters.push(res));
+    },
+    nextOf: () => {
+      const i = pRead++;
+      const f = presence[i];
+      if (f) return Promise.resolve(f);
+      return new Promise((res) => pWaiters.push(res));
     },
   };
 }
@@ -130,7 +163,11 @@ describe("events socket", () => {
     const id = await pub({ visibility: "team" });
     await restPublish(id, owner, "<p>2</p>");
     const s = await sock(id, viewer);
-    expect(await s.next()).toEqual({ type: "hello", version: 2 });
+    expect(await s.next()).toEqual({
+      type: "hello",
+      version: 2,
+      you: expect.stringMatching(PRESENCE_KEY_RE),
+    });
     const no = await api(app, R.events(id), viewer.cookie);
     expect(no.status).toBe(426);
     s.ws.close();
@@ -241,7 +278,11 @@ describe("events socket", () => {
     const id = await pub({ visibility: "team" });
     await restPublish(id, owner, "<p>2</p>");
     const s = await sock(id, viewer);
-    expect(await s.next()).toEqual({ type: "hello", version: 2 });
+    expect(await s.next()).toEqual({
+      type: "hello",
+      version: 2,
+      you: expect.stringMatching(PRESENCE_KEY_RE),
+    });
     const r = await api(app, R.restoreVersion(id, 1), owner.cookie, {
       method: "POST",
     });
@@ -476,4 +517,155 @@ describe("events socket: access changes and budgets", () => {
     expect(await status(open(id, owner))).toBe(101);
     for (const s of held) s.ws.close();
   }, 60_000); // ~100 upgrades: slow when the whole suite shares the CPU
+});
+
+describe("events socket: presence", () => {
+  const pid = (n: string) => `${n}${"x".repeat(20)}`;
+  const viewersOf = (f: PresenceFrame) => f.viewers.map((v) => v.name);
+  /** A third viewer's first roster, once `n` sockets are already open. */
+  const rosterSeenBy = async (id: string, u: U | null, h = {}) => {
+    const s = await sock(id, u, h);
+    return { s, roster: await s.nextOf("presence") };
+  };
+
+  it("two tabs of one signed-in person show once to a third viewer", async () => {
+    const id = await pub({ visibility: "team" });
+    const a1 = await sock(id, viewer);
+    const a2 = await sock(id, viewer);
+    await a1.next();
+    await a2.next();
+    const { s: c, roster } = await rosterSeenBy(id, owner);
+    // The person (two tabs) and the third viewer: two faces, three sockets.
+    expect(roster.viewers).toHaveLength(2);
+    expect(new Set(roster.viewers.map((v) => v.key)).size).toBe(2);
+    expect(roster.total).toBe(2);
+    for (const x of [a1, a2, c]) x.ws.close();
+  });
+
+  it("an anonymous viewer shows as Anonymous <Animal>; two tabs with one oa_pid show once", async () => {
+    const id = await pub({ visibility: "public" });
+    const cookie = { cookie: `${PRESENCE_COOKIE}=${pid("same")}` };
+    const a1 = await sock(id, null, cookie);
+    const a2 = await sock(id, null, cookie);
+    const { s: c, roster } = await rosterSeenBy(id, owner);
+    const anon = roster.viewers.filter((v) => v.kind === "anon");
+    expect(anon).toHaveLength(1);
+    expect(anon[0]?.name).toMatch(/^Anonymous [A-Z][a-z]+/);
+    for (const x of [a1, a2, c]) x.ws.close();
+  });
+
+  it("the anonymous frame never carries the anonId, the oa_pid or the IP", async () => {
+    const id = await pub({ visibility: "public" });
+    const addr = "198.51.100.77";
+    const secret = pid("secret");
+    const a = await sock(id, null, {
+      "cf-connecting-ip": addr,
+      cookie: `${PRESENCE_COOKIE}=${secret}; oa_anon=anon-${tag}`,
+    });
+    const { s: c } = await rosterSeenBy(id, owner);
+    await a.nextOf("presence");
+    for (const x of [a, c]) {
+      const all = x.raw.join("\n");
+      expect(all).not.toContain(secret);
+      expect(all).not.toContain("198.51.100.");
+      expect(all).not.toContain(`anon-${tag}`);
+      expect(all).not.toContain(owner.email);
+      expect(all).not.toContain(owner.userId);
+    }
+    a.ws.close();
+    c.ws.close();
+  });
+
+  it("a guest and a stranger on a public link see names but never emails", async () => {
+    const id = await pub({ visibility: "public" });
+    const o = await sock(id, owner);
+    const g = await sock(id, guest);
+    const { s: z, roster } = await rosterSeenBy(id, null);
+    await o.nextOf("presence");
+    await g.nextOf("presence");
+    for (const x of [o, g, z]) {
+      const all = x.raw.join("\n");
+      for (const u of [owner, guest, viewer])
+        expect(all).not.toContain(u.email);
+    }
+    // Neither has a real name: "Member" and "Guest", never the email.
+    expect(viewersOf(roster)).toEqual(
+      expect.arrayContaining(["Member", "Guest"]),
+    );
+    for (const x of [o, g, z]) x.ws.close();
+  });
+
+  it("the presence key differs per artifact for the same person", async () => {
+    const [i1, i2] = [
+      await pub({ visibility: "team" }),
+      await pub({ visibility: "team" }),
+    ];
+    const a = await sock(i1, viewer);
+    const b = await sock(i2, viewer);
+    const youA = (await a.next()) as { you?: string };
+    const youB = (await b.next()) as { you?: string };
+    expect(youA.you).toMatch(PRESENCE_KEY_RE);
+    expect(youB.you).toMatch(PRESENCE_KEY_RE);
+    expect(youA.you).not.toBe(youB.you);
+    a.ws.close();
+    b.ws.close();
+  });
+
+  it("a malformed or 65-char oa_pid gives a per-socket face, not an error", async () => {
+    const id = await pub({ visibility: "public" });
+    const bad = ["short", "x".repeat(65), `${"x".repeat(15)}!`];
+    const socks: Sock[] = [];
+    for (const v of bad)
+      socks.push(await sock(id, null, { cookie: `${PRESENCE_COOKIE}=${v}` }));
+    const { s: c, roster } = await rosterSeenBy(id, owner);
+    expect(roster.viewers.filter((v) => v.kind === "anon")).toHaveLength(3);
+    for (const x of [...socks, c]) x.ws.close();
+  });
+
+  it("embed sockets (?embed=1 alone, X-OA-Embed alone, and both) are not counted and get no presence frames", async () => {
+    const id = await pub({ visibility: "public" });
+    const e1 = await sock(id, null, {}, `${R.events(id)}?embed=1`);
+    const e2 = await sock(id, null, { "x-oa-embed": "1" });
+    const e3 = await sock(
+      id,
+      null,
+      { "x-oa-embed": "1" },
+      `${R.events(id)}?embed=1`,
+    );
+    const { s: c, roster } = await rosterSeenBy(id, owner);
+    expect(roster.total).toBe(1);
+    expect(viewersOf(roster)).toHaveLength(1);
+    for (const x of [e1, e2, e3]) {
+      expect(await x.next()).toEqual({ type: "hello", version: 1 });
+      expect(x.raw.filter((r) => r.includes('"presence"'))).toHaveLength(0);
+      x.ws.close();
+    }
+    c.ws.close();
+  });
+
+  it("?ping=1 reaches the DO as X-OA-Ping; any other value is treated as not pinging", async () => {
+    const pinging = async (q: string) => {
+      const id = await pub({ visibility: "team" });
+      const s = await sock(id, viewer, {}, `${R.events(id)}${q}`);
+      await s.nextOf("presence");
+      // The seat's flag is the DO's private state; the sweep alarm it arms
+      // is the only other trace, and other work shares that alarm.
+      const n = await runInDurableObject(
+        runtimeStub(env, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+        (i: ArtifactRuntime) =>
+          (
+            i as unknown as {
+              viewerPresenceSockets: () => { p: { ping: boolean } }[];
+            }
+          )
+            .viewerPresenceSockets()
+            .filter(({ p }) => p.ping).length,
+      );
+      s.ws.close();
+      return n;
+    };
+    expect(await pinging("?ping=1")).toBe(1);
+    for (const q of ["", "?ping=0", "?ping=2", "?ping=true"])
+      expect(await pinging(q)).toBe(0);
+  });
 });

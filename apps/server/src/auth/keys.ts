@@ -19,6 +19,8 @@ const KEY_OWNERS = {
   "oa:audit-cursor": "session",
   // P3 directory connect: the state cookie binding a consent to its browser.
   "oa:directory-state": "session",
+  // Viewer presence: the per-artifact opaque key a viewer shows under.
+  "oa:viewer-presence": "session",
   // From CONTENT_SIGNING_KEY instead (contentKey below), so a content token
   // and an upload signature can never verify as each other.
   "oa:content-url": "content",

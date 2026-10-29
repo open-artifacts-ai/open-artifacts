@@ -45,6 +45,7 @@ describe("deriveKey", () => {
       "oa:code-email",
       "oa:audit-cursor",
       "oa:directory-state",
+      "oa:viewer-presence",
       "oa:content-url",
       "oa:upload",
       "oa:directory-token",

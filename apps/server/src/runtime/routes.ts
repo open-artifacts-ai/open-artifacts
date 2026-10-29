@@ -8,6 +8,9 @@ import {
   dataResetTooLargeMessage,
   isId,
   METHOD_CAPABILITY,
+  newId,
+  PRESENCE_COOKIE,
+  PRESENCE_ID_RE,
   planOf,
   RUNTIME_PARAMS,
   type RuntimeMethod,
@@ -15,6 +18,7 @@ import {
   type Visibility,
 } from "@oa/shared";
 import type { Context } from "hono";
+import { getCookie } from "hono/cookie";
 import { HTTPException } from "hono/http-exception";
 import {
   accessLevel,
@@ -27,6 +31,7 @@ import {
 } from "../auth/authz.js";
 import { can, capsOf, namedEvents, type PolicyAction } from "../auth/policy.js";
 import { cappedJson, readCapped } from "../http/body.js";
+import { isEmbedRequest } from "../http/embed.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import type { AppType } from "../routes/index.js";
@@ -35,11 +40,25 @@ import {
   ACTOR_HEADER,
   AUTHZ_AT_HEADER,
   EVENTS_NAMED_HEADER,
+  EVENTS_PING_HEADER,
   EVENTS_VERSION_HEADER,
   publicActor,
   runtimeCall,
   runtimeStub,
+  VIEWER_PRESENCE_HEADER,
 } from "./do.js";
+import { cleanName, type PresenceIdentity } from "./roster.js";
+import { viewerPresenceKey } from "./viewer-presence-key.js";
+
+/**
+ * A member's name for the presence roster. Member.name falls back to the
+ * email when the user has no real name (effectiveName), and an email never
+ * goes to another viewer: that case is null (the roster shows "Member").
+ */
+const presenceName = (u: { name: string | null; email: string }) =>
+  u.name !== null && u.name.toLowerCase() === u.email.toLowerCase()
+    ? null
+    : cleanName(u.name);
 
 // Literals so Hono infers params; must equal R.data* / R.storage* in @oa/shared.
 const ART = "/api/v1/artifacts/:id";
@@ -494,6 +513,25 @@ export function mountRuntime(app: AppType): void {
     }
     if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
       return c.text("Expected WebSocket upgrade", 426);
+    // Embeds are never counted. A signed-in viewer shows by user id; an
+    // anonymous one by the opaque oa_pid cookie (never the anonId or IP), or
+    // a fresh face per socket when it is absent or malformed.
+    let presence: PresenceIdentity | null = null;
+    if (!isEmbedRequest(c.req.raw)) {
+      const pid = getCookie(c, PRESENCE_COOKIE);
+      const identity =
+        who.kind === "user"
+          ? `u:${who.user.id}`
+          : pid !== undefined && PRESENCE_ID_RE.test(pid)
+            ? `p:${pid}`
+            : `s:${newId()}`;
+      presence = {
+        key: await viewerPresenceKey(c.env, artifactId, identity),
+        kind: who.kind === "user" ? "person" : "anon",
+        name: who.kind === "user" ? presenceName(who.user) : null,
+        guest: who.kind === "user" && who.user.role === "guest",
+      };
+    }
     return runtimeStub(c.env, artifactId).fetch(
       "https://runtime.invalid/events",
       {
@@ -503,6 +541,10 @@ export function mountRuntime(app: AppType): void {
           [AUTHZ_AT_HEADER]: String(authzAt),
           [EVENTS_VERSION_HEADER]: String(r.artifact.currentVersion),
           [EVENTS_NAMED_HEADER]: named ? "1" : "0",
+          ...(presence
+            ? { [VIEWER_PRESENCE_HEADER]: JSON.stringify(presence) }
+            : {}),
+          [EVENTS_PING_HEADER]: c.req.query("ping") === "1" ? "1" : "0",
         },
       },
     );
