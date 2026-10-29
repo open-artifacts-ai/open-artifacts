@@ -2,8 +2,13 @@ import {
   type ArtifactEvent,
   ArtifactEventSchema,
   EVENTS_GONE_CLOSE,
+  PRESENCE_PING,
+  PRESENCE_PING_MS,
+  PRESENCE_PONG,
+  type PresenceFrame,
   R,
 } from "@oa/shared";
+import { presenceId } from "./presenceId";
 
 /** The server closes near its signed-URL TTL with this: reconnect at once. */
 export const EVENTS_TTL_CLOSE = 4408;
@@ -19,7 +24,12 @@ export interface ArtifactEventsOptions {
    * anonymous (browsers send cookies on WebSockets).
    */
   embed: boolean;
-  onEvent: (e: Exclude<ArtifactEvent, { type: "gone" }>) => void;
+  onEvent: (e: Exclude<ArtifactEvent, { type: "gone" | "presence" }>) => void;
+  /**
+   * A presence frame, with the `you` key this socket's hello reported. A
+   * gone sends an empty roster so a held one clears.
+   */
+  onPresence?: (f: PresenceFrame, you: string | undefined) => void;
   /**
    * A `gone` frame (or a bare 4403 close, read as "changed"). No reconnect
    * until `resume`.
@@ -43,7 +53,7 @@ export const clampRetryHint = (ms: number | null | undefined): number =>
 
 export const eventsUrl = (id: string, embed: boolean) => {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${location.host}${R.events(id)}${embed ? "?embed=1" : ""}`;
+  return `${proto}//${location.host}${R.events(id)}${embed ? "?embed=1" : "?ping=1"}`;
 };
 
 /**
@@ -65,8 +75,8 @@ export function onWake(cb: () => void) {
 }
 
 /**
- * One R.events socket per viewer. Server to client only: this never sends a
- * frame (the server closes with 1008 if it gets one). Reconnects on 4408 at
+ * One R.events socket per viewer. Server to client, except a `ping` every
+ * PRESENCE_PING_MS (not in embed mode; any other frame closes it with 1008). Reconnects on 4408 at
  * once, and with capped backoff once any connect has said hello (a failed
  * reconnect keeps backing off); each connect's hello carries the current
  * version, so missed ones catch up.
@@ -83,15 +93,35 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
   let everHello = false;
   /** A gone's retryAfterMs (#816): no reconnect before this time. */
   let notBefore = 0;
+  let pinger: ReturnType<typeof setInterval> | undefined;
+  const stopPing = () => {
+    clearInterval(pinger);
+    pinger = undefined;
+  };
 
   const open = () => {
     if (stopped || paused) return;
     idle = false;
     let hello = false;
+    let you: string | undefined;
+    if (!opts.embed) presenceId();
     const sock = new WebSocket(eventsUrl(opts.id, opts.embed));
     ws = sock;
+    stopPing();
+    if (!opts.embed) {
+      const tick = setInterval(() => {
+        if (ws !== sock || sock.readyState !== WebSocket.OPEN) {
+          clearInterval(tick);
+          if (pinger === tick) pinger = undefined;
+          return;
+        }
+        sock.send(PRESENCE_PING);
+      }, PRESENCE_PING_MS);
+      pinger = tick;
+    }
     sock.onmessage = (e) => {
       if (ws !== sock || typeof e.data !== "string") return;
+      if (e.data === PRESENCE_PONG) return;
       let raw: unknown;
       try {
         raw = JSON.parse(e.data);
@@ -104,7 +134,12 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
         gone(sock, f.data.reason, f.data.retryAfterMs);
         return;
       }
+      if (f.data.type === "presence") {
+        opts.onPresence?.(f.data, you);
+        return;
+      }
       if (f.data.type === "hello") {
+        you = f.data.you;
         hello = true;
         everHello = true;
         attempt = 0;
@@ -114,6 +149,7 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
     sock.onclose = (e) => {
       if (ws !== sock || stopped) return;
       ws = null;
+      stopPing();
       if (e?.code === EVENTS_GONE_CLOSE) {
         gone(sock, "changed");
         return;
@@ -138,7 +174,9 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
     paused = true;
     notBefore = Date.now() + clampRetryHint(retryAfterMs);
     if (ws === sock) ws = null;
+    stopPing();
     sock.close();
+    opts.onPresence?.({ type: "presence", viewers: [], total: 0 }, undefined);
     opts.onGone(reason);
   };
 
@@ -165,6 +203,7 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
     close() {
       stopped = true;
       clearTimeout(timer);
+      stopPing();
       const s = ws;
       ws = null;
       s?.close();

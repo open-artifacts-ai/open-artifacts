@@ -1,4 +1,9 @@
-import { type ArtifactSummary, ArtifactSummarySchema, R } from "@oa/shared";
+import {
+  type ArtifactSummary,
+  ArtifactSummarySchema,
+  type PresenceFrame,
+  R,
+} from "@oa/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiClientError, api } from "../api/client";
@@ -120,8 +125,12 @@ export function useLiveVersions(o: {
   frame: () => FrameState;
   /** A menu or dialog is open (not the side panel). */
   chromeOpen: () => boolean;
+  /** Presence frames; held in a ref, so a new identity never reconnects. */
+  onPresence?: (f: PresenceFrame, you: string | undefined) => void;
 }) {
   const { id, embed } = o;
+  const onPresence = useRef(o.onPresence);
+  onPresence.current = o.onPresence;
   const qc = useQueryClient();
   const { text: announcement, announce } = useAnnouncer();
   // The version shown while following Current: the first one seen, then
@@ -294,6 +303,7 @@ export function useLiveVersions(o: {
     const s = connectArtifactEvents({
       id,
       embed,
+      onPresence: (f, you) => onPresence.current?.(f, you),
       onEvent: (e) => {
         if (e.type === "hello") {
           down.current = false;

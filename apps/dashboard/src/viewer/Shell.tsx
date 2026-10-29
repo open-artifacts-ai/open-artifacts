@@ -38,6 +38,7 @@ import { TitleBar } from "./TitleBar";
 import { useArtifactSideEffects } from "./useArtifactSideEffects";
 import { prefetchContentUrl, useContentUrl } from "./useContentUrl";
 import { type FrameState, type Gone, useLiveVersions } from "./useLiveVersions";
+import { usePresence } from "./usePresence";
 import { useTheme } from "./useTheme";
 import "./viewer.css";
 import { toast } from "../layout/toast";
@@ -561,7 +562,9 @@ function ArtifactShell({
   /** The shown frame's last scroll position, carried into a live swap. */
   const lastScroll = useRef<ScrollPos | null>(null);
   const shownRef = useRef<number | undefined>(undefined);
+  const presence = usePresence();
   const live = useLiveVersions({
+    onPresence: presence.onPresence,
     id,
     data,
     explicit: v,
