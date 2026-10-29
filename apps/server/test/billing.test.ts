@@ -39,6 +39,7 @@ import {
   effectivePlan,
   PLAN_KEY,
   planOfRaw,
+  readPlan,
   type StoredPlan,
 } from "../src/billing/plan.js";
 import {
@@ -409,6 +410,29 @@ describe("tier read and cache", () => {
     expect((await stored()).tier).toBe("team");
     // No gate at all (no props): unavailable, never an HTTPS fallback.
     expect(await refreshPlan(H, mid + 3000)).toBe("failed");
+  });
+
+  it("billing's no-row default (version 0) never overrides a provisioned TIER", async () => {
+    const TEAM = { ...H, TIER: "team" } as Env;
+    row = {
+      tier: "free",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      version: 0,
+    };
+    expect(
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(TEAM, mid)),
+    ).toBe("unchanged");
+    expect(await readPlan(TEAM, mid)).toMatchObject({
+      tier: "team",
+      lock: null,
+    });
+    // Without a TIER, version 0 is the answer: free.
+    expect(
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, mid)),
+    ).toBe("stored");
+    expect((await readPlan(H, mid))?.tier).toBe("free");
   });
 
   it("self-hosted never calls billing", async () => {

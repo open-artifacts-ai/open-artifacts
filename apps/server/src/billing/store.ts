@@ -1,3 +1,4 @@
+import { parseTier } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
@@ -124,6 +125,14 @@ export async function refreshPlan(
     const raw = await billingCall(env, TIER_PATH, null, now);
     const r = TierAnswerSchema.safeParse(raw);
     if (!r.success) throw new BillingUnavailableError("bad_answer");
+    // Version 0 is billing's default for an install it has no row for
+    // (free, active). With a provisioned TIER (an install made before the
+    // tier store), that's no information: TIER stays the last good tier,
+    // and the read still counts as good (the 7-day clock stops).
+    if (r.data.version === 0 && parseTier(env.TIER) !== null) {
+      await env.DB.prepare(CHECK_OK).bind(now).run();
+      return "unchanged";
+    }
     return (await storePlan(env, r.data, now, o.ctx)) ? "stored" : "unchanged";
   } catch (e) {
     const why = e instanceof BillingUnavailableError ? e.why : "error";
