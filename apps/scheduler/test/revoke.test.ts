@@ -612,6 +612,7 @@ describe("H-DV review fixes", () => {
       "alert email_quota db_error",
       "signups requeue failed",
       "signups sweep failed",
+      "alert signup_stuck db_error",
       "alert signup_cap db_error",
       "alert signup_failed db_error",
       "alert welcome_unsent db_error",

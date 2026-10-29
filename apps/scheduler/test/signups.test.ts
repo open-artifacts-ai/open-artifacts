@@ -14,6 +14,7 @@ import {
   requeueWaiting,
   SIGNUP_STALE_MS,
   type SignupsEnv,
+  SWEEP_LIMIT,
   signupTick,
   sweepStale,
 } from "../src/signups.js";
@@ -94,11 +95,20 @@ const snapshot = async () =>
 
 type Sent = { from: string; to: string; subject: string; text: string };
 
-function fakes(o: { cap?: string; instances?: string[]; getError?: string }) {
+function fakes(o: {
+  cap?: string;
+  /** Instances that exist: id to status (default running). */
+  instances?: string[] | Record<string, string>;
+  getError?: string;
+}) {
   const queued: unknown[] = [];
   const gets: string[] = [];
   const mail: Sent[] = [];
-  const instances = new Set(o.instances ?? []);
+  const instances = new Map<string, string>(
+    Array.isArray(o.instances)
+      ? o.instances.map((i) => [i, "running"])
+      : Object.entries(o.instances ?? {}),
+  );
   const env = {
     PLATFORM_DB: db,
     OA_ENV: "staging",
@@ -123,8 +133,9 @@ function fakes(o: { cap?: string; instances?: string[]; getError?: string }) {
       get: async (iid: string) => {
         gets.push(iid);
         if (o.getError) throw new Error(o.getError);
-        if (!instances.has(iid)) throw new Error("instance.not_found");
-        return { id: iid };
+        const status = instances.get(iid);
+        if (status === undefined) throw new Error("instance.not_found");
+        return { id: iid, status: async () => ({ status }) };
       },
     },
   } as unknown as SignupsEnv;
@@ -192,9 +203,10 @@ describe("requeueWaiting", () => {
 });
 
 describe("sweepStale", () => {
+  const stale = T0 - SIGNUP_STALE_MS - 1;
+  const fresh = T0 - SIGNUP_STALE_MS + MIN;
+
   it("sweep re-sends a stale pending row and a queued row with no instance, but not a fresh one", async () => {
-    const stale = T0 - SIGNUP_STALE_MS - 1;
-    const fresh = T0 - SIGNUP_STALE_MS + MIN;
     await seed({
       1: { status: "pending", created: stale },
       2: { status: "pending", created: fresh },
@@ -207,22 +219,81 @@ describe("sweepStale", () => {
     });
     const before = await snapshot();
     const f = fakes({ instances: [id(4)] });
-    expect(await sweepStale(f.env, T0)).toBe(2);
+    expect(await sweepStale(f.env, T0)).toEqual({
+      sent: 2,
+      stuck: { count: 0, ids: [] },
+    });
     expect(f.queued).toEqual([{ signupId: id(1) }, { signupId: id(3) }]);
     // Only stale queued rows are looked up.
     expect(f.gets.sort()).toEqual([id(3), id(4)]);
     expect(await snapshot()).toEqual(before);
   });
 
-  it("a Workflows error other than not-found re-sends nothing", async () => {
+  it("any get error re-sends", async () => {
+    await seed({ 1: { status: "queued", created: T0 - H, admitted: T0 - H } });
+    for (const text of [
+      "internal error for x@example.test",
+      "network connection lost",
+    ]) {
+      const lines = logs();
+      const f = fakes({ getError: text });
+      expect((await sweepStale(f.env, T0)).sent).toBe(1);
+      expect(f.queued).toEqual([{ signupId: id(1) }]);
+      expect(lines.join("\n")).not.toContain("@");
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("a dead instance is stuck: counted, never re-sent", async () => {
     await seed({
-      1: { status: "queued", created: T0 - H, admitted: T0 - H },
+      1: { status: "queued", created: stale, admitted: stale },
+      2: { status: "queued", created: stale, admitted: stale },
+      3: { status: "queued", created: stale, admitted: stale },
+      4: { status: "queued", created: stale, admitted: stale },
+      5: { status: "queued", created: stale, admitted: stale },
     });
-    const lines = logs();
-    const f = fakes({ getError: "internal error for x@example.test" });
-    expect(await sweepStale(f.env, T0)).toBe(0);
+    const f = fakes({
+      instances: {
+        [id(1)]: "errored",
+        [id(2)]: "terminated",
+        [id(3)]: "complete",
+        [id(4)]: "running",
+        [id(5)]: "waiting",
+      },
+    });
+    expect(await sweepStale(f.env, T0)).toEqual({
+      sent: 0,
+      stuck: { count: 3, ids: [id(1), id(2), id(3)] },
+    });
     expect(f.queued).toEqual([]);
-    expect(lines.join("\n")).not.toContain("@");
+  });
+
+  it("50 stuck queued rows still let a stale pending row through", async () => {
+    const rows: Record<number, Row> = {};
+    const dead: Record<string, string> = {};
+    for (let n = 1; n <= SWEEP_LIMIT; n++) {
+      rows[n] = { status: "queued", created: stale - H, admitted: stale - H };
+      dead[id(n)] = "errored";
+    }
+    rows[100] = { status: "pending", created: stale };
+    await seed(rows);
+    const f = fakes({ instances: dead });
+    const r = await sweepStale(f.env, T0);
+    expect(f.queued).toEqual([{ signupId: id(100) }]);
+    expect(r.sent).toBe(1);
+    expect(r.stuck?.count).toBe(SWEEP_LIMIT - 1);
+  });
+
+  it("a sweep with no room for queued rows leaves the stuck alert unknown", async () => {
+    const rows: Record<number, Row> = {};
+    for (let n = 1; n <= SWEEP_LIMIT; n++)
+      rows[n] = { status: "pending", created: stale };
+    await seed(rows);
+    const f = fakes({});
+    expect(await sweepStale(f.env, T0)).toEqual({
+      sent: SWEEP_LIMIT,
+      stuck: null,
+    });
   });
 });
 
@@ -233,6 +304,21 @@ describe("signup alerts", () => {
   const FAIL_CLEAR = "Open Artifacts staging: no failed signups";
   const WELCOME_OPEN = "Open Artifacts staging: welcome email unsent";
   const WELCOME_CLEAR = "Open Artifacts staging: welcome emails sent";
+  const STUCK_OPEN = "Open Artifacts staging: signups stuck";
+  const STUCK_CLEAR = "Open Artifacts staging: no stuck signups";
+
+  it("stuck alert opens on a dead instance and clears once redriven", async () => {
+    const f = fakes({ instances: { [id(1)]: "errored" } });
+    await seed({ 1: { status: "queued", created: T0 - H, admitted: T0 - H } });
+    await signupTick(f.env, T0);
+    expect(f.subjects()).toEqual([STUCK_OPEN]);
+    expect(f.mail[0]?.text).toContain(id(1));
+    expect(f.mail[0]?.text).toContain("1 signup");
+    expect(f.queued).toEqual([]);
+    await setStatus(1, "ready", T0 + MIN);
+    await signupTick(f.env, T0 + 2 * MIN);
+    expect(f.subjects()).toEqual([STUCK_OPEN, STUCK_CLEAR]);
+  });
 
   const setStatus = (n: number, status: string, at: number) =>
     db
@@ -319,19 +405,20 @@ describe("signup alerts", () => {
 
   it("alert text has no email", async () => {
     const lines = logs();
-    const f = fakes({ cap: "1" });
+    const f = fakes({ cap: "1", instances: { [id(4)]: "errored" } });
     await seed({
       1: { status: "waiting_cap", updated: T0 },
       2: { status: "failed", updated: T0 - H },
       3: { status: "ready", claimed: T0 - H },
+      4: { status: "queued", updated: T0 - H, admitted: T0 - H },
     });
     await signupTick(f.env, T0);
     expect(f.subjects().sort()).toEqual(
-      [CAP_OPEN, FAIL_OPEN, WELCOME_OPEN].sort(),
+      [CAP_OPEN, FAIL_OPEN, STUCK_OPEN, WELCOME_OPEN].sort(),
     );
     await db.prepare("DELETE FROM signups").run();
     await signupTick(f.env, T0 + 2 * MIN);
-    expect(f.mail).toHaveLength(6);
+    expect(f.mail).toHaveLength(8);
     for (const m of f.mail) {
       expect(`${m.subject}\n${m.text}`).not.toMatch(/@/);
     }

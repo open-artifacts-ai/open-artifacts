@@ -1,7 +1,7 @@
 /**
  * Operator alerts by email (billing unreachable, email quota, and the signup
- * alerts: cap reached, failed, welcome unsent). An alert has a key; it opens,
- * reminds once a day while open, and clears. Each change of
+ * alerts: cap reached, stuck, failed, welcome unsent). An alert has a key; it
+ * opens, reminds once a day while open, and clears. Each change of
  * state is one log line, and each is one plain-text email to ALERT_TO through
  * the send_email binding ALERT_EMAIL:
  * - one when it opens,
@@ -286,5 +286,22 @@ export const welcomeUnsentAlert = (
   text: (state, at) =>
     state === "clear"
       ? `Every claimed ${env} welcome email is marked sent (cleared at ${iso(at)}).\n`
-      : `${signups(facts.count)} in ${env} claimed a welcome email over 10 minutes ago and never marked it sent (alert opened at ${iso(at)}). The welcome is sent at most once, so it is not retried: send it by hand, then set welcome_sent_at.\n${idLines(facts)}`,
+      : `${signups(facts.count)} in ${env} claimed a welcome email over 10 minutes ago and never marked it sent (alert opened at ${iso(at)}). The welcome is sent at most once, so it is not retried. Check the send log first (a send can succeed while its welcome_sent_at write fails); send it by hand only if it never went out, then set welcome_sent_at.\n${idLines(facts)}`,
+});
+
+/** A queued signup's ProvisionInstall instance is dead and won't finish it. */
+export const signupStuckAlert = (
+  env: string,
+  facts: SignupFacts = { count: 0, ids: [] },
+): Alert => ({
+  key: "signup_stuck",
+  subject: {
+    open: `Open Artifacts ${env}: signups stuck`,
+    remind: `Open Artifacts ${env}: signups still stuck`,
+    clear: `Open Artifacts ${env}: no stuck signups`,
+  },
+  text: (state, at) =>
+    state === "clear"
+      ? `No ${env} signup is stuck queued behind a dead Workflow instance (cleared at ${iso(at)}).\n`
+      : `${signups(facts.count)} in ${env} stayed queued over 15 minutes while its ProvisionInstall instance errored, terminated or completed (alert opened at ${iso(at)}). They are not re-sent: redrive each with signup-redrive.\n${idLines(facts)}`,
 });

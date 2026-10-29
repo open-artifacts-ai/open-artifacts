@@ -4,9 +4,10 @@
  *   UTC day's remaining SIGNUP_DAILY_CAP, so they are admitted after 00:00.
  * - sweepStale: re-sends a `pending` row older than 15 minutes (its message
  *   was lost) and a `queued` row older than 15 minutes whose ProvisionInstall
- *   instance doesn't exist (the consumer admitted it and died before start).
+ *   instance can't be read (the consumer admitted it and died before start).
+ *   A queued row whose instance is dead is stuck, and only alerted.
  * - the signup alerts (src/alerts.ts): cap reached (at most once a UTC day),
- *   failed in the last 24 h, and a welcome claimed but never sent.
+ *   stuck, failed in the last 24 h, and a welcome claimed but never sent.
  *
  * Messages are `{ signupId }` only. The provisioner's consumer does every
  * admission, so nothing here writes a signups row, and nothing reads
@@ -19,6 +20,7 @@ import {
   type SignupFacts,
   signupCapAlert,
   signupFailedAlert,
+  signupStuckAlert,
   stepAlert,
   welcomeUnsentAlert,
 } from "./alerts.js";
@@ -91,51 +93,89 @@ export async function requeueWaiting(
   }
 }
 
-/** True when the Workflows error says the instance doesn't exist. */
-const notFound = (e: unknown) =>
-  /not[_ ]?found/i.test(e instanceof Error ? e.message : String(e));
+/** Instance statuses that never start the row's create again. */
+const DEAD = new Set(["errored", "terminated", "complete"]);
+
+export interface SweepResult {
+  /** Rows re-sent. */
+  sent: number;
+  /**
+   * Stale queued rows whose instance is dead (errored, terminated, or
+   * complete while the row is still queued); null when the sweep didn't
+   * look at queued rows this tick.
+   */
+  stuck: SignupFacts | null;
+}
+
+const STALE = `SELECT signup_id FROM signups WHERE status = ?1 AND updated_at < ?2
+  ORDER BY updated_at, signup_id LIMIT ?3`;
 
 /**
- * Re-sends stale pending rows, and stale queued rows whose Workflow instance
- * doesn't exist. Any other Workflows error skips the row (the next tick
- * retries). Returns the count sent.
+ * Re-sends stale pending rows, then stale queued rows whose Workflow
+ * instance can't be read (any get() error: the consumer's start is
+ * idempotent). A queued row whose instance is dead is stuck: never re-sent
+ * (the operator redrives it), only counted for the stuck alert. Pending rows
+ * are read first, so stuck queued rows never use up the bound before them.
  */
 export async function sweepStale(
   env: SignupsEnv,
   now: number,
-): Promise<number> {
+): Promise<SweepResult> {
+  const db = env.PLATFORM_DB;
+  const cutoff = now - SIGNUP_STALE_MS;
   try {
-    const { results } = await env.PLATFORM_DB.prepare(
-      `SELECT signup_id, status FROM signups
-       WHERE status IN ('pending', 'queued') AND updated_at < ?1
-       ORDER BY updated_at, signup_id LIMIT ?2`,
-    )
-      .bind(now - SIGNUP_STALE_MS, SWEEP_LIMIT)
-      .all<{ signup_id: string; status: string }>();
-    const ids: string[] = [];
+    const pending = (
+      await db
+        .prepare(STALE)
+        .bind("pending", cutoff, SWEEP_LIMIT)
+        .all<{ signup_id: string }>()
+    ).results;
+    const ids = pending.map((r) => r.signup_id).filter((s) => ULID_RE.test(s));
+    const room = SWEEP_LIMIT - pending.length;
+    let stuck: string[] | null = null;
     let errors = 0;
-    for (const r of results) {
-      if (!ULID_RE.test(r.signup_id)) continue;
-      if (r.status === "queued") {
+    if (room > 0) {
+      stuck = [];
+      const queued = (
+        await db
+          .prepare(STALE)
+          .bind("queued", cutoff, room)
+          .all<{ signup_id: string }>()
+      ).results;
+      for (const { signup_id: id } of queued) {
+        if (!ULID_RE.test(id)) continue;
+        let instance: WorkflowInstance;
         try {
-          await env.PROVISION_INSTALL.get(r.signup_id);
+          instance = await env.PROVISION_INSTALL.get(id);
+        } catch {
+          ids.push(id);
           continue;
-        } catch (e) {
-          if (!notFound(e)) {
-            errors++;
-            continue;
-          }
+        }
+        try {
+          if (DEAD.has((await instance.status()).status)) stuck.push(id);
+        } catch {
+          errors++;
         }
       }
-      ids.push(r.signup_id);
     }
     await send(env, ids);
-    if (ids.length || errors)
-      console.log("signups sweep", `sent=${ids.length}`, `errors=${errors}`);
-    return ids.length;
+    if (ids.length || errors || stuck?.length)
+      console.log(
+        "signups sweep",
+        `sent=${ids.length}`,
+        `stuck=${stuck?.length ?? 0}`,
+        `errors=${errors}`,
+      );
+    return {
+      sent: ids.length,
+      stuck: stuck && {
+        count: stuck.length,
+        ids: stuck.slice(0, SIGNUP_IDS_SHOWN),
+      },
+    };
   } catch {
     console.error("signups sweep failed");
-    return 0;
+    return { sent: 0, stuck: null };
   }
 }
 
@@ -213,12 +253,19 @@ async function capStep(env: SignupsEnv, now: number): Promise<void> {
 }
 
 /**
- * One 2-minute tick: requeue, sweep, then the three alerts. Each part is
+ * One 2-minute tick: requeue, sweep (and its stuck alert), then the other
+ * three alerts. Each part is
  * bounded and never throws, so one failing never skips the others.
  */
 export async function signupTick(env: SignupsEnv, now: number): Promise<void> {
   await requeueWaiting(env, now);
-  await sweepStale(env, now);
+  const { stuck } = await sweepStale(env, now);
+  await stepAlert(
+    env,
+    signupStuckAlert(env.OA_ENV, stuck ?? undefined),
+    condition(stuck),
+    now,
+  );
   await capStep(env, now);
   const failed = await facts(
     env.PLATFORM_DB,
