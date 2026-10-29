@@ -6,8 +6,7 @@ import {
   CHECK_KEY,
   effectivePlan,
   PLAN_KEY,
-  PlanCheckSchema,
-  parseStored,
+  planOfRaw,
   type StoredPlan,
   TierAnswerSchema,
 } from "./plan.js";
@@ -76,12 +75,7 @@ export async function storePlan(
     plan: string | null;
     check: string | null;
   }>();
-  const prev = effectivePlan(
-    parseStored(TierAnswerSchema, before?.plan),
-    parseStored(PlanCheckSchema, before?.check),
-    env.TIER,
-    now,
-  );
+  const prev = planOfRaw(env, before?.plan, before?.check, now);
   const [stored] = await env.DB.batch([
     env.DB.prepare(STORE_PLAN).bind(JSON.stringify(answer)),
     env.DB.prepare(CHECK_OK).bind(now),
@@ -89,7 +83,7 @@ export async function storePlan(
   const applied = (stored?.results.length ?? 0) > 0;
   if (!applied) return false;
   const next = effectivePlan(answer, null, env.TIER, now);
-  if (next.lock && !prev.lock) {
+  if (next.lock && !prev?.lock) {
     logInfo("billing_plan_locked", { reason: next.lock.reason });
     const { results } = await env.DB.prepare(CAPPED_USERS)
       .bind(revokeFanoutCap(env) + 1)
@@ -183,12 +177,7 @@ export async function billingTick(env: Env, now: number): Promise<void> {
     plan: string | null;
     check: string | null;
   }>();
-  const plan = effectivePlan(
-    parseStored(TierAnswerSchema, row?.plan),
-    parseStored(PlanCheckSchema, row?.check),
-    env.TIER,
-    now,
-  );
-  if (plan.trialEligible && (await env.DB.prepare(TRIAL_PENDING).first()))
+  const plan = planOfRaw(env, row?.plan, row?.check, now);
+  if (plan?.trialEligible && (await env.DB.prepare(TRIAL_PENDING).first()))
     await startTrial(env, now);
 }

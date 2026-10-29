@@ -156,12 +156,18 @@ export function planOfRaw(
   now: number,
 ): EffectivePlan | null {
   if (!billingOn(env)) return null;
-  return effectivePlan(
-    parseStored(TierAnswerSchema, plan),
-    parseStored(PlanCheckSchema, check),
-    env.TIER,
-    now,
-  );
+  const last = parseStored(TierAnswerSchema, plan);
+  const c = parseStored(PlanCheckSchema, check);
+  // Unknown: no answer yet, no provisioned TIER, and not failing for 7 days.
+  // Today's behaviour until the first read (the scheduler tick, every 2
+  // min); the outage rule still applies to an install that never read one.
+  if (
+    !last &&
+    parseTier(env.TIER) === null &&
+    !(c?.failingSince != null && now - c.failingSince > PLAN_STALE_MS)
+  )
+    return null;
+  return effectivePlan(last, c, env.TIER, now);
 }
 
 const READ_PLAN = `select

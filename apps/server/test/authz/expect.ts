@@ -333,6 +333,7 @@ const ADMIN_ACTIONS = new Set([
   "settings.manage",
   "usage.read",
   "audit.read",
+  "billing.manage",
 ]);
 
 /**

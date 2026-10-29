@@ -206,12 +206,24 @@ export const enforcePolicy = (
         () => paramAt(c, t.index, "id"),
         t.method !== "GET" && t.method !== "HEAD",
       );
-      // Hosted billing: the org-level team features under a plan lock.
-      const route = `${t.method} ${t.path}`;
-      if (who.kind === "user" && TEAM_ROUTES.has(route))
-        requireTeamPlan(planOfMember(who.user), {
-          invite: route === "POST /api/v1/members",
-        });
       await next();
     });
+  });
+
+/**
+ * Hosted billing: the org-level team features (TEAM_ROUTES) under a plan
+ * lock, 403 plan_required / plan_read_only. Mounted on /api/v1/* after
+ * csrf() and readOnlyCap(), so a cookie write without X-OA-Request is still
+ * 403 csrf first.
+ */
+export const planGate = (): MiddlewareHandler<AppEnv> =>
+  mw(async (c, next) => {
+    const t = targetRoute(c);
+    const route = t ? `${t.method} ${t.path}` : "";
+    const user = c.var.user;
+    if (user && TEAM_ROUTES.has(route))
+      requireTeamPlan(planOfMember(user), {
+        invite: route === "POST /api/v1/members",
+      });
+    await next();
   });
