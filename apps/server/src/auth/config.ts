@@ -14,7 +14,11 @@ export type GoogleTransport =
 export type AuthConfig = {
   /** Enabled sign-in methods. Unset AUTH_PROVIDERS: access only. */
   providers: ReadonlySet<SignInProvider>;
-  /** Verified domains (lowercase): the Google `hd` allow-list and code domains. */
+  /**
+   * Verified domains (lowercase): the Google `hd` allow-list and code
+   * domains. Empty is allowed with Google on: then only invited personal
+   * accounts can sign in with Google.
+   */
   domains: readonly string[];
   domainJoin: "member" | "invite";
   /** Domain members may use emailed codes (trial): needs email, no google, Turnstile, domains. */
@@ -105,11 +109,9 @@ function googleConfig(
       "GOOGLE_CLIENT_ID isn't set",
       "Set it, or turn Google sign-in off",
     );
-  if (domains.length === 0)
-    return fail(
-      "AUTH_DOMAINS is empty",
-      "Set the Google Workspace domains that may sign in",
-    );
+  // An empty AUTH_DOMAINS still offers Google, to invited people only: a
+  // personal account (no hd) whose verified address is already a member
+  // (services/identity.ts admitPersonal). No Workspace account can pass.
   const clientId = env.GOOGLE_CLIENT_ID.trim();
   // Hosted installs never hold the shared Google client secret: the broker
   // alone does the code exchange. Fail closed, and never fall back to direct

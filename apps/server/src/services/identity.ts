@@ -49,13 +49,18 @@ const member = (r: UserRow) => toMember(r as Parameters<typeof toMember>[0]);
 
 const logDrift = () => logAuth({ evt: "email_drift", outcome: "kept" });
 
-/** Name, last-seen, guest promotion (hd verified) and owner role on sign-in. */
+/**
+ * Name, last-seen, guest promotion (hd verified) and owner role on sign-in.
+ * A personal account (no hd) proves no domain membership: a guest stays a
+ * guest.
+ */
 async function touch(
   env: Env,
   row: UserRow,
   id: VerifiedIdentity,
   now: number,
 ): Promise<Member | null> {
+  const promote = id.tenant ? 1 : 0;
   const owner = normalizeEmail(env.OWNER_EMAIL ?? "");
   // The role is promoted from the row's CURRENT role, in SQL (promotedRole:
   // guest becomes member, every other role is kept), never written back from
@@ -69,10 +74,10 @@ async function touch(
       env.DB,
       `update users set last_seen_at = ?1, name = coalesce(?2, name),
          role = case when ?4 = 1 and not exists (select 1 from users where role = 'owner') then 'owner'
-                     when role = 'guest' then 'member' else role end
+                     when role = 'guest' and ?5 = 1 then 'member' else role end
        where id = ?3 and status = 'active'
        returning id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, status`,
-    ).bind(now, id.name, row.id, owner && row.email === owner ? 1 : 0),
+    ).bind(now, id.name, row.id, owner && row.email === owner ? 1 : 0, promote),
     signInAudit(env, row.id, id.provider, id.tenant, {
       sql: "changes() > 0",
       args: [],
@@ -105,7 +110,8 @@ async function followDrift(
 }
 
 /**
- * Admits a verified Google identity:
+ * Admits a verified Google identity. No hd (a personal account): see
+ * admitPersonal. Otherwise:
  * 1. The tenant (hd) must still be a verified domain.
  * 2. Linked (provider, subject): that user, unless not active (removed);
  *    follow email drift when the new address is free.
@@ -121,6 +127,8 @@ export async function admit(
   id: VerifiedIdentity,
   now = Date.now(),
 ): Promise<AdmitResult> {
+  if (id.provider === "google" && id.tenant === null)
+    return admitPersonal(env, cfg, id, now);
   if (!googleTenantOk(cfg, id.tenant)) return { ok: false, reason: "tenant" };
   const email = normalizeEmail(id.email);
   if (!email) return { ok: false, reason: "no_access" };
@@ -140,7 +148,7 @@ export async function admit(
     .first<UserRow & { subject: string | null }>();
   if (existing && existing.status !== "active")
     return { ok: false, reason: "removed" };
-  if (existing?.subject) return { ok: false, reason: "identity_conflict" };
+  if (existing?.subject) return conflict(env, existing.id, now);
   // OWNER_EMAIL is special only while no owner exists; then normal join rules.
   const isOwner =
     email === normalizeEmail(env.OWNER_EMAIL ?? "") &&
@@ -161,9 +169,138 @@ export async function admit(
   const row = results[2]?.results[0];
   if (!row) return { ok: false, reason: "no_access" };
   if (row.status !== "active") return { ok: false, reason: "removed" };
-  if (row.subject !== id.subject)
-    return { ok: false, reason: "identity_conflict" };
+  if (row.subject !== id.subject) return conflict(env, row.id, now);
   return admitted(await touch(env, row, id, now));
+}
+
+/** identities.tenant of a personal Google account (no hd): never a domain. */
+export const PERSONAL_TENANT = "";
+
+const domainOf = (email: string) => email.slice(email.lastIndexOf("@") + 1);
+
+/**
+ * Links a personal account to the existing row ?2 (id) at ?3 (email): never
+ * inserts a user, only an identity, and only onto that same active row with
+ * no Google identity yet. The select after it reads what the link left.
+ */
+const PERSONAL_LINK = `insert into identities (provider, subject, tenant, user_id, created_at)
+  select 'google', ?1, '${PERSONAL_TENANT}', u.id, ?4 from users u
+  where u.id = ?2 and u.email = ?3 and u.status = 'active'
+    and not exists (select 1 from identities i where i.provider = 'google' and i.user_id = u.id)
+  on conflict do nothing`;
+const PERSONAL_ROW = `select ${USER_COLS},
+    (select subject from identities i where i.user_id = u.id and i.provider = 'google') as subject
+  from users u where u.id = ?1 and u.email = ?2`;
+const PERSONAL_RELINKED = `update users set google_relink = 0 where id = ?1 and google_relink = 1
+  and exists (select 1 from identities i where i.provider = 'google' and i.user_id = users.id)`;
+
+/**
+ * A personal Google account (verified email, no hd). Admitted only when all
+ * of these hold, and never creates a user:
+ * - the email's domain is not one of AUTH_DOMAINS (those sign in through
+ *   Workspace): else tenant;
+ * - the email is exactly an existing row here (an invite or a member; BY_EMAIL)
+ *   that is active (never a removed or lapsed guest): else no_access or removed;
+ * - the subject pin: a row linked to another Google account is refused
+ *   (identity_conflict, flagged to the owner); the first sign-in pins `sub`.
+ * The email is the row's: no drift is followed for a personal account.
+ */
+async function admitPersonal(
+  env: Env,
+  cfg: AuthConfig,
+  id: VerifiedIdentity,
+  now: number,
+): Promise<AdmitResult> {
+  const email = normalizeEmail(id.email);
+  if (!email) return { ok: false, reason: "no_access" };
+  if (inDomains(cfg.domains, domainOf(email)))
+    return { ok: false, reason: "tenant" };
+  const row = await stmt(env.DB, BY_EMAIL)
+    .bind(email)
+    .first<UserRow & { subject: string | null }>();
+  if (!row) return { ok: false, reason: "no_access" };
+  if (row.status !== "active") return { ok: false, reason: "removed" };
+  if (row.subject === id.subject)
+    return admitted(await touch(env, row, id, now));
+  if (row.subject) return conflict(env, row.id, now);
+  const results = await env.DB.batch<UserRow & { subject: string | null }>([
+    stmt(env.DB, PERSONAL_LINK).bind(id.subject, row.id, email, now),
+    stmt(env.DB, PERSONAL_ROW).bind(row.id, email),
+    stmt(env.DB, PERSONAL_RELINKED).bind(row.id),
+  ]);
+  const linked = results[1]?.results[0];
+  if (!linked) return { ok: false, reason: "no_access" };
+  if (linked.status !== "active") return { ok: false, reason: "removed" };
+  // Another row holds this subject, or a concurrent link pinned another.
+  if (linked.subject !== id.subject) return conflict(env, linked.id, now);
+  return admitted(await touch(env, linked, id, now));
+}
+
+/** The settings key behind the owner's identity-conflict sign-in problem. */
+export const CONFLICT_KEY = "signin_identity_conflict";
+/** One audit row per person per hour at most: a retry loop can't flood the log. */
+const CONFLICT_AUDIT_EVERY_MS = 60 * 60 * 1000;
+/** How long the owner's sign-in problem shows after the latest conflict. */
+export const CONFLICT_SHOWN_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * A refused sign-in by a Google account other than the one pinned to the
+ * person (user `uid`): an auth.refused audit row (reason identity_conflict;
+ * no email or subject) and the owner's sign-in problem (settings, CONFLICT_KEY:
+ * when and whose row, never an address). Best effort: a failed write never
+ * turns the refusal into anything else.
+ */
+async function conflict(
+  env: Env,
+  uid: string,
+  now: number,
+): Promise<AdmitResult> {
+  try {
+    await env.DB.batch([
+      audit(
+        env,
+        "auth.refused",
+        { type: "user", id: uid },
+        { kind: "system", id: null, cred: null },
+        {
+          reason: "identity_conflict",
+          detail: { provider: "google" },
+          when: {
+            sql: `not exists (select 1 from settings where key = ?
+              and json_extract(value, '$.uid') = ? and json_extract(value, '$.at') > ?)`,
+            args: [CONFLICT_KEY, uid, now - CONFLICT_AUDIT_EVERY_MS],
+          },
+        },
+      ),
+      stmt(
+        env.DB,
+        `insert into settings (key, value) values (?1, ?2)
+         on conflict(key) do update set value = excluded.value`,
+      ).bind(CONFLICT_KEY, JSON.stringify({ at: now, uid })),
+    ]);
+  } catch {
+    logAuth({ evt: "identity_conflict_flag_failed" });
+  }
+  return { ok: false, reason: "identity_conflict" };
+}
+
+/**
+ * The owner's sign-in problem for a recent identity conflict (CONFLICT_KEY's
+ * value), else null. Names no one: the audit log has the row.
+ */
+export function conflictProblem(
+  value: string | undefined,
+  now = Date.now(),
+): string | null {
+  if (!value) return null;
+  let at: unknown;
+  try {
+    at = (JSON.parse(value) as { at?: unknown }).at;
+  } catch {
+    return null;
+  }
+  if (typeof at !== "number" || at <= now - CONFLICT_SHOWN_MS) return null;
+  return "A Google sign-in was refused because the Google account didn't match the one already linked to that person. If they replaced their Google account, reset their Google link on the Members page. If they didn't, someone else may be trying to sign in as them.";
 }
 
 /** Google admission rule 1: the tenant (hd) is a verified domain. */
@@ -338,13 +475,19 @@ export async function resetIdentity(
         when: { sql: "changes() > 0", args: [] },
       },
     ),
+    // The owner's identity-conflict problem, when it names this person:
+    // the reset is the fix it asks for.
+    stmt(
+      env.DB,
+      `delete from settings where key = ?4 and json_extract(value, '$.uid') = ?1 and ${RESETTABLE}`,
+    ).bind(userId, null, owner, CONFLICT_KEY),
     stmt(
       env.DB,
       `delete from identities where provider = 'google'
        and user_id = (select u.id from users u where u.id = ?1 and ${TARGET_OK}) returning 1`,
     ).bind(userId, null, owner),
   ]);
-  if (!results[3]?.results.length) await refuse();
+  if (!results[4]?.results.length) await refuse();
   // Sessions and tokens are gone: their live sockets close now (P3 T7).
   await revokeUserLive(env, userId, "identity reset", ctx);
 }

@@ -227,7 +227,7 @@ describe("direct-mode sign-in routes", () => {
 
   it("Google is 404 when it isn't configured", async () => {
     expect(
-      (await get(AUTH.loginGoogle, direct({ AUTH_DOMAINS: "" }))).status,
+      (await get(AUTH.loginGoogle, direct({ GOOGLE_CLIENT_ID: "" }))).status,
     ).toBe(404);
     expect((await get(AUTH.loginGoogle, env)).status).toBe(404);
   });
@@ -491,6 +491,10 @@ describe("Me sign-in fields", () => {
 
   // Review item 35: owners see why configured sign-in is off; nobody else does.
   it("signIn.problems: owners only, verbatim; empty when nothing is wrong", async () => {
+    // Nothing wrong: no identity-conflict flag left by an earlier test here.
+    await env.DB.prepare("delete from settings where key = ?")
+      .bind(identity.CONFLICT_KEY)
+      .run();
     const owner = await login(uniq("own"), "owner");
     const member = await login(uniq("mem"));
     const off = direct({ EMAIL: undefined, EMAIL_FROM: undefined });

@@ -164,11 +164,15 @@ export const AuditReasonSchema = z.enum([
   "admin_suspend",
   "admin_remove",
   "admin_restore",
+  /** auth.refused: a Google account other than the one pinned to the person. */
+  "identity_conflict",
 ]);
 export type AuditReason = z.infer<typeof AuditReasonSchema>;
 
 export const AuditActionSchema = z.enum([
   "auth.signin",
+  /** A refused sign-in worth an owner's attention (reason: identity_conflict); system actor. */
+  "auth.refused",
   "auth.broker_check",
   "space.create",
   "space.update",

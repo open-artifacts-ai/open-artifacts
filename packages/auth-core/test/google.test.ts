@@ -126,8 +126,34 @@ describe("verifyGoogleIdToken", () => {
     );
   });
 
+  test("no hd claim (a personal account): hd null, admission is the caller's", async () => {
+    expect(
+      await verify(await mint({ hd: undefined, email: "bob@gmail.com" })),
+    ).toEqual({
+      sub: "S1",
+      email: "bob@gmail.com",
+      name: null,
+      hd: null,
+      authTime: null,
+    });
+  });
+
+  test("no hd claim still needs a verified email", async () => {
+    expect(
+      await stageOf(
+        verify(await mint({ hd: undefined, email_verified: false })),
+      ),
+    ).toBe("email_unverified");
+    expect(
+      await stageOf(
+        verify(await mint({ hd: undefined, email_verified: undefined })),
+      ),
+    ).toBe("email_unverified");
+  });
+
   test.each([
-    [{ hd: undefined }, "tenant"],
+    [{ hd: "" }, "tenant"],
+    [{ hd: null }, "tenant"],
     [{ hd: "b.com" }, "tenant"],
     [{ hd: "A.com" }, "tenant"],
     [{ hd: "a.com." }, "tenant"],
@@ -173,16 +199,15 @@ describe("verifyGoogleIdToken", () => {
     expect(await stageOf(verify("not.a.jwt"))).toBe("jwt_verify");
   });
 
-  test("an empty domain list admits nobody", async () => {
-    expect(
-      await stageOf(
-        verifyGoogleIdToken(
-          { clientId: CID, domains: [], jwks, now: NOW * 1000 },
-          await mint({}),
-          "n1",
-        ),
-      ),
-    ).toBe("tenant");
+  test("an empty domain list admits no Workspace token; a personal one returns hd null", async () => {
+    const empty = (t: string) =>
+      verifyGoogleIdToken(
+        { clientId: CID, domains: [], jwks, now: NOW * 1000 },
+        t,
+        "n1",
+      );
+    expect(await stageOf(empty(await mint({})))).toBe("tenant");
+    expect((await empty(await mint({ hd: undefined }))).hd).toBeNull();
   });
 
   test("name is trimmed, capped at 200, null when blank", async () => {

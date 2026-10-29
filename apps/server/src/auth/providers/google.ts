@@ -24,7 +24,9 @@ import { fail } from "../oidc.js";
 import type { OidcProvider, VerifiedIdentity } from "./types.js";
 
 // Sign in with Google. The install verifies the ID token itself (signature,
-// iss, aud, azp, exp, its own nonce, email_verified, hd in AUTH_DOMAINS),
+// iss, aud, azp, exp, its own nonce, email_verified, and hd in AUTH_DOMAINS
+// when the token has one; a token with no hd is a personal account, admitted
+// only by services/identity.ts's invited-person rule),
 // whichever transport fetched it:
 // - direct: this install holds its own client secret (self-hosted, or a
 //   dedicated client) and exchanges the code itself;
@@ -183,7 +185,8 @@ export const googleProvider: OidcProvider = {
       code_challenge_method: "S256",
       prompt: "select_account",
       // A hint for the account chooser only; the hd claim is what's checked.
-      hd: g.domains[0] as string,
+      // No domains (invited personal accounts only): no hint.
+      ...(g.domains[0] ? { hd: g.domains[0] } : {}),
       // Break-glass (T18): Google must re-authenticate; the callback checks
       // auth_time, so a silent SSO can't stand in for it.
       ...(a.reauth ? { max_age: "0" } : {}),
