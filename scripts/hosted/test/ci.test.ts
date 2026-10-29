@@ -307,7 +307,7 @@ describe("prod in CI: credentials from the 0600 files, with the same checks", ()
         OA_HOSTED_ENVIRONMENT: "hosted-staging-deploy",
       },
       { CI: "true" },
-    ])
+    ] as Record<string, string>[])
       await expect(readTurnstile(at(ungated).deps, "prod")).rejects.toThrow(
         /CI is staging only; prod refused/,
       );
