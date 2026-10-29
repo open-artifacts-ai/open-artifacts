@@ -28,6 +28,7 @@ export {
 export {
   changeFor,
   customerOf,
+  type EventStream,
   GRACE_MS,
   HANDLED,
   handleStripeWebhook,
@@ -36,6 +37,7 @@ export {
   parseEvent,
   type StripeEvent,
   statusFromSubscription,
+  streamOf,
   type TierStatus,
   tierFromSubscription,
   type WebhookEnv,
