@@ -1,4 +1,9 @@
-import { DirectoryGroupsQuerySchema, R } from "@oa/shared";
+import {
+  DirectoryGroupsQuerySchema,
+  HELD_SNOOZE_REASON_MAX,
+  HeldSnoozeInputSchema,
+  R,
+} from "@oa/shared";
 import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
 import { caller, capOfCaller, requireUser } from "../auth/authz.js";
@@ -16,13 +21,16 @@ import {
   startConnect,
 } from "../directory/connect.js";
 import { lookupGroups } from "../directory/groups.js";
+import { oneLine } from "../email/templates.js";
 import type { Env } from "../env.js";
+import { readCapped } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { userActor, withRequestCred } from "../services/audit.js";
 import { feedSync, SYNC_DO_NAME } from "../services/directory.js";
 import { directoryMode } from "../services/spaces.js";
+import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
 
 // Directory connection routes (P3 T12). T13 adds sync, groups and held
@@ -185,7 +193,60 @@ export function mountDirectory(app: AppType): void {
     await feedAfter(c);
     return c.json(status, 202);
   });
+
+  // #412: snooze a held sweep (org owner): visibility only, for
+  // HELD_SNOOZE_MS. Frozen or off: 409, as for a confirm. No snoozable hold:
+  // 409 conflict. DELETE cancels it (any mode; none: no change).
+  app.post("/api/v1/directory/held/:groupId/snooze", async (c) => {
+    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    if (directoryMode(c.env) !== "google")
+      throw new ApiError(
+        "directory_sync_off",
+        "Directory sync is off or frozen",
+      );
+    const raw = await readCapped(c, SNOOZE_BODY_MAX);
+    let body: unknown = {};
+    if (raw.byteLength) {
+      try {
+        body = JSON.parse(utf8Decoder.decode(raw));
+      } catch {
+        throw new ApiError("bad_request", "Invalid JSON body");
+      }
+    }
+    const input = HeldSnoozeInputSchema.safeParse(body);
+    if (!input.success)
+      throw new ApiError(
+        "bad_request",
+        "Invalid request body",
+        input.error.issues,
+      );
+    const reason = oneLine(input.data.reason ?? "", HELD_SNOOZE_REASON_MAX);
+    const status = await syncStub(c.env).snoozeHeld(
+      c.req.param("groupId"),
+      withRequestCred(userActor(requireUser(c).id)),
+      reason || null,
+    );
+    if (!status)
+      throw new ApiError(
+        "conflict",
+        "This group has no held sweep to snooze, or it is being re-checked; try again after the next sync",
+      );
+    return c.json(status);
+  });
+
+  app.delete("/api/v1/directory/held/:groupId/snooze", async (c) => {
+    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    return c.json(
+      await syncStub(c.env).unsnoozeHeld(
+        c.req.param("groupId"),
+        withRequestCred(userActor(requireUser(c).id)),
+      ),
+    );
+  });
 }
+
+/** A snooze body: an optional short reason (HeldSnoozeInputSchema). */
+const SNOOZE_BODY_MAX = 4096;
 
 /** After a kick: hands DirectorySync a token minted with this request's props. */
 const feedAfter = async (c: Context<AppEnv>) => {
