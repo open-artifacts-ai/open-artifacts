@@ -107,7 +107,9 @@ describe("migrations", () => {
     for (const t of ["tiers", "stripe_events", "usage"])
       expect(sql).toMatch(new RegExp(`CREATE TABLE ${t} \\(`));
     // The webhook's event ordering (@oa/billing-core): nullable, NULL is 0.
-    expect(sql).toMatch(/\n {2}last_event_created INTEGER\n\);/);
+    expect(sql).toMatch(
+      /\n {2}last_event_created INTEGER,\n {2}last_invoice_created INTEGER\n\);/,
+    );
   });
 
   it("is the schema @oa/billing-core tests against, byte for byte", () => {
