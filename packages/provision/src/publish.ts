@@ -141,12 +141,26 @@ const is412 = (e: unknown) => e instanceof CfError && e.status === 412;
 const same = (a: Uint8Array, b: Uint8Array) =>
   Buffer.from(a).equals(Buffer.from(b));
 
+/** One page of a listing: the objects under `prefix` from `cursor` on. */
+type ListPage = (
+  prefix: string,
+  cursor: string | undefined,
+) => Promise<{
+  objects: { key: string; size: number }[];
+  truncated: boolean;
+  cursor?: string;
+}>;
+
 /** Every object under `prefix`, paginated, refused past `max`. */
-async function listAll(cf: Cf, bucket: string, prefix: string, max: number) {
+function listAll(cf: Cf, bucket: string, prefix: string, max: number) {
+  return listPages((p, c) => cf.r2ObjectList(bucket, p, c), prefix, max);
+}
+
+async function listPages(listPage: ListPage, prefix: string, max: number) {
   const out: { key: string; size: number; name: string }[] = [];
   let cursor: string | undefined;
   for (let page = 0; page <= Math.ceil(max / 1000) + 1; page++) {
-    const r = await cf.r2ObjectList(bucket, prefix, cursor);
+    const r = await listPage(prefix, cursor);
     for (const x of r.objects) {
       if (!x.key.startsWith(prefix))
         throw new Error(`R2 listing for ${prefix} returned ${x.key}`);
@@ -516,19 +530,101 @@ export async function publishFloor(o: {
  */
 export function r2ReleaseReader(cf: Cf, env: Env): ReleaseReader {
   const bucket = bucketOf(env);
-  /** L6: the GET is aborted as soon as the body passes `max` (the listed or record size). */
+  return releaseReaderOver(
+    {
+      bucket,
+      // L6: the GET is aborted as soon as the body passes `max` (the listed or record size).
+      get: async (key, max) =>
+        (await cf.r2ObjectGet(bucket, key, { maxBytes: max }))?.bytes ?? null,
+      listPage: (prefix, cursor) => cf.r2ObjectList(bucket, prefix, cursor),
+    },
+    env,
+  );
+}
+
+/**
+ * The part of a Workers R2Bucket binding r2BindingReleaseReader uses; a
+ * real `R2Bucket` (the env's releases bucket) satisfies it.
+ */
+export interface R2ReleaseBucket {
+  get(key: string): Promise<{
+    size: number;
+    arrayBuffer(): Promise<ArrayBuffer>;
+    body?: { cancel(): Promise<void> };
+  } | null>;
+  list(o: { prefix: string; cursor?: string; limit?: number }): Promise<{
+    objects: { key: string; size: number }[];
+    truncated: boolean;
+    cursor?: string;
+  }>;
+}
+
+/**
+ * r2ReleaseReader over an R2 binding instead of the REST API (the hosted
+ * provisioner Worker): the same keys, record checks, listings and limits.
+ * An object over the size it may have (the listed or record size) is
+ * refused from its metadata, before its body is read.
+ */
+export function r2BindingReleaseReader(
+  bucket: R2ReleaseBucket,
+  env: Env,
+): ReleaseReader {
+  const name = bucketOf(env);
+  return releaseReaderOver(
+    {
+      bucket: name,
+      async get(key, max) {
+        const o = await bucket.get(key);
+        if (!o) return null;
+        if (o.size > max) {
+          await o.body?.cancel().catch(() => {});
+          throw new Error(`release object ${key}: size over ${max} bytes`);
+        }
+        const bytes = new Uint8Array(await o.arrayBuffer());
+        if (bytes.length > max)
+          throw new Error(`release object ${key}: size over ${max} bytes`);
+        return bytes;
+      },
+      async listPage(prefix, cursor) {
+        const r = await bucket.list({
+          prefix,
+          limit: 1000,
+          ...(cursor === undefined ? {} : { cursor }),
+        });
+        return {
+          objects: r.objects.map((x) => ({ key: x.key, size: x.size })),
+          truncated: r.truncated,
+          ...(r.truncated ? { cursor: r.cursor } : {}),
+        };
+      },
+    },
+    env,
+  );
+}
+
+/** Where a ReleaseReader reads from: the env's releases bucket, by REST or binding. */
+interface ReleaseStore {
+  /** The bucket name, for messages. */
+  bucket: string;
+  /** The object's bytes, refused past `max`; null when there is none. */
+  get(key: string, max: number): Promise<Uint8Array | null>;
+  listPage: ListPage;
+}
+
+function releaseReaderOver(store: ReleaseStore, env: Env): ReleaseReader {
+  const { bucket } = store;
   const get = async (key: string, max: number): Promise<Uint8Array> => {
-    const o = await cf.r2ObjectGet(bucket, key, { maxBytes: max });
+    const o = await store.get(key, max);
     if (!o) throw new Error(`release object ${key} is missing from ${bucket}`);
-    return o.bytes;
+    return o;
   };
   const list = (prefix: string, max: number) =>
-    listAll(cf, bucket, prefix, max);
+    listPages(store.listPage, prefix, max);
   const record = async (version: string, variant: BundleVariant) => {
     const key = releaseKey(version, variant, RECORD_FILE);
-    const o = await cf.r2ObjectGet(bucket, key, { maxBytes: SMALL_MAX });
+    const o = await store.get(key, SMALL_MAX);
     if (!o) return null;
-    return parseStored(o.bytes);
+    return parseStored(o);
   };
   const template = (version: string, variant: BundleVariant) =>
     get(releaseKey(version, variant, TEMPLATE_FILE), SMALL_MAX);
@@ -629,11 +725,9 @@ export function r2ReleaseReader(cf: Cf, env: Env): ReleaseReader {
     welcome: (version, variant) =>
       get(releaseKey(version, variant, WELCOME_FILE), SMALL_MAX),
     async floor() {
-      const o = await cf.r2ObjectGet(bucket, FLOOR_KEY, {
-        maxBytes: SMALL_MAX,
-      });
+      const o = await store.get(FLOOR_KEY, SMALL_MAX);
       if (!o) return null;
-      return parseStored(o.bytes);
+      return parseStored(o);
     },
   };
 }

@@ -16,5 +16,7 @@
       "database_name": "oa-install-test",
       "database_id": "00000000-0000-0000-0000-000000000001"
     }
-  ]
+  ],
+  // The releases bucket the provisioner reads through r2BindingReleaseReader.
+  "r2_buckets": [{ "binding": "RELEASES", "bucket_name": "oa-s-releases" }]
 }

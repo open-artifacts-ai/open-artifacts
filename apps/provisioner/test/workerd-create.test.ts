@@ -3,6 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import { cfClient } from "../../../packages/provision/src/cf.js";
 import { platformNames } from "../../../packages/provision/src/names.js";
 import {
+  FLOOR_KEY,
+  RECORD_FILE,
+  r2BindingReleaseReader,
+  releaseKey,
+  TEMPLATE_FILE,
+  WELCOME_FILE,
+} from "../../../packages/provision/src/publish.js";
+import type {
+  BundleVariant,
+  ReleaseReader,
+} from "../../../packages/provision/src/release.js";
+import {
   HOSTED_DOMAINS,
   hostsKvTitle,
   NAMESPACES,
@@ -33,12 +45,40 @@ vi.mock("../../../packages/provision/src/internal/gates.js", async (orig) => ({
 const E = testEnv as unknown as {
   PLATFORM_DB: D1Database;
   INSTALL_DB: D1Database;
+  RELEASES: R2Bucket;
   FIXTURE_TEMPLATE: string;
   FIXTURE_SERVER_MIGRATIONS: { name: string; text: string }[];
   FIXTURE_PLATFORM_SQL: string;
 };
 const NOW = Date.parse("2026-10-22T00:00:00Z");
 const TS = { sitekey: "0x4AAAAAAAstagingSITEKEY", secret: "0x4AAAAAAAts-x" };
+/** The provisioner's owner token label: ss-<signup ULID>. */
+const SS_LABEL = "ss-01JBQ4ZKXW5V9R3M2N8P6T7Y0A";
+
+const json = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
+
+/** Publishes one release from `from` into `bucket`, at the keys publish.ts writes. */
+async function seedRelease(
+  bucket: R2Bucket,
+  from: ReleaseReader,
+  version: string,
+  variant: BundleVariant,
+): Promise<void> {
+  const at = (rel: string) => releaseKey(version, variant, rel);
+  const { modules } = await from.modules(version, variant);
+  for (const m of modules) await bucket.put(at(`modules/${m.name}`), m.bytes);
+  for (const a of await from.assets(version, variant))
+    await bucket.put(
+      at(`assets/${a.path}`),
+      await from.assetBytes(version, variant, a.path),
+    );
+  await bucket.put(at(TEMPLATE_FILE), await from.template(version, variant));
+  for (const f of await from.migrations(version, variant))
+    await bucket.put(at(`migrations/${f.name}`), f.bytes);
+  await bucket.put(at(WELCOME_FILE), await from.welcome(version, variant));
+  await bucket.put(FLOOR_KEY, json(await from.floor()));
+  await bucket.put(at(RECORD_FILE), json(await from.record(version, variant)));
+}
 
 describe("workerd", () => {
   it("a full create runs in workerd", async () => {
@@ -66,6 +106,7 @@ describe("workerd", () => {
         bytes: enc(f.text),
       })),
     });
+    await seedRelease(E.RELEASES, makeRelease({ env }), "0.23.0", "release");
     let t = NOW;
     const p = new WfpProvisioner({
       cf: cfClient({
@@ -77,8 +118,10 @@ describe("workerd", () => {
       env,
       target: { kind: "namespace", ns: NAMESPACES[env] },
       domains: HOSTED_DOMAINS[env],
-      release: makeRelease({ env }),
-      patDir: "/tmp/oa-workerd-pat",
+      // As the provisioner Worker runs it: the R2 binding, no patDir, and
+      // the selftest on an ss-<ULID> owner token.
+      release: r2BindingReleaseReader(E.RELEASES, env),
+      ciOwnerToken: { label: SS_LABEL },
       fetch: fake.fetch,
       now: () => t,
       sleep: async (ms) => {
@@ -115,12 +158,16 @@ describe("workerd", () => {
     expect(rows.results.map((r) => r.host)).toEqual(
       [inst.appHost, inst.contentHost].sort(),
     );
-    // The install's own D1 is the Miniflare one: migrated, with the owner token
-    // the MCP selftest authenticated with.
+    // The install's own D1 is the Miniflare one: migrated, with the ss-<ULID>
+    // owner token the MCP selftest authenticated with, revoked before the
+    // lease was released.
     const tokens = await E.INSTALL_DB.prepare(
-      "SELECT count(*) AS n FROM tokens WHERE revoked_at IS NULL",
-    ).first<{ n: number }>();
-    expect(tokens?.n).toBeGreaterThan(0);
+      "SELECT label, revoked_at FROM tokens",
+    ).all<{ label: string; revoked_at: number | null }>();
+    expect(tokens.results).toEqual([
+      { label: SS_LABEL, revoked_at: expect.any(Number) },
+    ]);
+    expect(inst.patFile).toBeUndefined();
     expect(fake.log.length).toBeLessThan(400);
   });
 });

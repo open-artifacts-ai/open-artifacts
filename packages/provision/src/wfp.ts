@@ -186,13 +186,18 @@ export interface WfpOptions {
    * oa-hosted-<env>-turnstile). Required when codes are on.
    */
   turnstile?: { sitekey: string; secret: string };
-  patDir: string;
   /**
-   * CI only (the oa:hosted CLI's --ci-owner-token): create, upgrade, rollback
-   * and updateVars mint an owner PAT labelled `label` (ci-<run id>) into the
-   * install's D1 under the operation's lease, hold it in memory for the
-   * selftest and revoke it before the lease is released. No PAT file is read
-   * or written; ciTokenSweep revokes what a crashed run left.
+   * Where the owner PAT and a test-hook key are saved (0600). Required unless
+   * ciOwnerToken is set, and always for a redline (test-hook) create.
+   */
+  patDir?: string;
+  /**
+   * CI (the oa:hosted CLI's --ci-owner-token, label ci-<run id>) and the
+   * hosted provisioner (label ss-<signup ULID>): create, upgrade, rollback
+   * and updateVars mint an owner PAT labelled `label` into the install's D1
+   * under the operation's lease, hold it in memory for the selftest and
+   * revoke it before the lease is released. No PAT file is read or written;
+   * ciTokenSweep revokes what a crashed run left.
    */
   ciOwnerToken?: { label: string };
   /** Broker keypair (P2); off until the broker exists. */
@@ -561,6 +566,11 @@ interface CiToken {
 
 /** The CI owner token label: ci-<GitHub run id>. */
 export const CI_TOKEN_LABEL_RE = /^ci-[1-9][0-9]{0,19}$/;
+/** The hosted provisioner's owner token label: ss-<signup ULID>. */
+export const PROVISIONER_TOKEN_LABEL_RE = /^ss-[0-9A-HJKMNP-TV-Z]{26}$/;
+const isTokenLabel = (l: unknown): l is string =>
+  typeof l === "string" &&
+  (CI_TOKEN_LABEL_RE.test(l) || PROVISIONER_TOKEN_LABEL_RE.test(l));
 
 /** A pending session cut and the vars it was minted against. */
 interface Cut {
@@ -1300,6 +1310,8 @@ export class WfpProvisioner {
     const vars = i.vars ?? {};
     this.brokerVars(vars);
     this.checkVariant(i, vars);
+    // The owner PAT file without a CI token, and the test-hook key either way.
+    if (this.o.ciOwnerToken === undefined || testHooks) this.patDir();
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars, testHooks);
     this.checkEmailCodeDomain(vars, "domains");
@@ -1661,8 +1673,9 @@ export class WfpProvisioner {
         missing.map((k) => [k, fresh[k] as string]),
       );
       if (send.TEST_HOOK_KEY !== undefined) {
-        mkdirSync(this.o.patDir, { recursive: true, mode: 0o700 });
-        const f = join(this.o.patDir, `${m.appHost}-hook-key`);
+        const dir = this.patDir();
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const f = join(dir, `${m.appHost}-hook-key`);
         try {
           writeSecretFile(f, `${send.TEST_HOOK_KEY}\n`);
         } catch (e) {
@@ -2313,7 +2326,7 @@ export class WfpProvisioner {
 
   /** The owner PAT create saved; the selftest uses it, and nothing re-mints it. */
   private patFileOf(appHost: string): string {
-    const f = join(this.o.patDir, `${appHost}-pat-token`);
+    const f = join(this.patDir(), `${appHost}-pat-token`);
     if (!existsSync(f))
       throw new ProvisionRefused(
         `the owner token file ${f} is missing; the selftest needs it`,
@@ -3389,11 +3402,14 @@ export class WfpProvisioner {
           }
         }
         // L8: the owner PAT and hook key of a deleted host are dead weight.
-        for (const f of [
-          `${row.app_host}-pat-token`,
-          `${row.app_host}-hook-key`,
-        ])
-          rmSync(join(this.o.patDir, f), { force: true });
+        // With no patDir (the provisioner Worker) there is no file.
+        const dir = this.o.patDir;
+        if (dir !== undefined)
+          for (const f of [
+            `${row.app_host}-pat-token`,
+            `${row.app_host}-hook-key`,
+          ])
+            rmSync(join(dir, f), { force: true });
         await this.release("deleted");
         await this.platform.audit(id, "delete.done", {});
         return { id, ok: true, state: "deleted" };
@@ -3672,8 +3688,9 @@ export class WfpProvisioner {
     );
     if (!ok[0]?.results?.length)
       throw new Error(`token row ${tokenId} missing after the insert; rerun`);
-    mkdirSync(this.o.patDir, { recursive: true, mode: 0o700 });
-    const file = join(this.o.patDir, `${appHost}-pat-token`);
+    const dir = this.patDir();
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = join(dir, `${appHost}-pat-token`);
     try {
       writeSecretFile(file, `${pat}\n`);
     } catch (e) {
@@ -3697,9 +3714,21 @@ export class WfpProvisioner {
   private ciLabel(): string | undefined {
     const c = this.o.ciOwnerToken;
     if (c === undefined) return undefined;
-    if (typeof c?.label !== "string" || !CI_TOKEN_LABEL_RE.test(c.label))
-      throw new ProvisionRefused("ciOwnerToken.label must be ci-<run id>");
+    if (!isTokenLabel(c?.label))
+      throw new ProvisionRefused(
+        "ciOwnerToken.label must be ci-<run id> or ss-<ULID>",
+      );
     return c.label;
+  }
+
+  /** The PAT directory, for the files only a laptop or redline run writes. */
+  private patDir(): string {
+    const d = this.o.patDir;
+    if (typeof d !== "string" || d === "")
+      throw new ProvisionRefused(
+        "patDir is required without ciOwnerToken and for a redline (test-hook) install",
+      );
+    return d;
   }
 
   /** With ciOwnerToken: the CI token, right after the claim (under the lease). */
@@ -3801,9 +3830,9 @@ export class WfpProvisioner {
   }
 
   /**
-   * The CI backstop: revokes every still-active owner token labelled `label`
-   * (ci-<run id>) in the install's D1, then lists them again and refuses
-   * unless none remains. Takes no lease: it runs after the operation, which
+   * The CI backstop: revokes every still-active owner token labelled exactly
+   * `label` (ci-<run id> or ss-<ULID>; never a prefix or pattern) in the
+   * install's D1, then lists them again and refuses unless none remains. Takes no lease: it runs after the operation, which
    * may have crashed holding one. An install with no D1 has no token.
    */
   async ciTokenSweep(
@@ -3812,8 +3841,10 @@ export class WfpProvisioner {
   ): Promise<{ id: InstallId; label: string; revoked: number; active: 0 }> {
     return this.guarded(async () => {
       if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
-      if (typeof label !== "string" || !CI_TOKEN_LABEL_RE.test(label))
-        throw new ProvisionRefused("the sweep label must be ci-<run id>");
+      if (!isTokenLabel(label))
+        throw new ProvisionRefused(
+          "the sweep label must be ci-<run id> or ss-<ULID>",
+        );
       this.checkOptions();
       await this.checkToken("warn");
       await this.resolvePlatform();

@@ -448,6 +448,7 @@ function setup(o: { env?: Env; specs?: Record<string, Spec> } = {}) {
     mk,
     cfWith,
     opts,
+    patDir,
     pdb,
     hostsId,
     regId,
@@ -2035,7 +2036,7 @@ describe("fix round 2", () => {
         input("redqa", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
       ),
     );
-    const dir = s.opts().patDir;
+    const dir = s.patDir;
     const files = [`${inst.appHost}-pat-token`, `${inst.appHost}-hook-key`];
     for (const f of files) expect(existsSync(join(dir, f))).toBe(true);
     await s.p.delete(inst.id, inst.id);
@@ -2311,7 +2312,7 @@ describe("fix round 3", () => {
 
 describe("fix round 4", () => {
   const patOf = (s: S, appHost: string) =>
-    readFileSync(join(s.opts().patDir, `${appHost}-pat-token`), "utf8").trim();
+    readFileSync(join(s.patDir, `${appHost}-pat-token`), "utf8").trim();
 
   it("R2-L1: status() during a running op leaves its lease and redaction intact; a later error from the op is still scrubbed", async () => {
     const s = setup();
@@ -4049,7 +4050,7 @@ describe("Turnstile test keys (red-line installs only)", () => {
 
 describe("reissueOwnerToken", () => {
   const patPath = (s: ReturnType<typeof setup>, appHost: string) =>
-    join(s.opts().patDir, `${appHost}-pat-token`);
+    join(s.patDir, `${appHost}-pat-token`);
 
   it("mints a fresh provision PAT under the lease, writes it 0600, and retires the earlier provision ones only", async () => {
     const s = setup();
@@ -4140,7 +4141,7 @@ describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
   const ciTokens = (s: S, id: string) =>
     tokens(s, id).filter((t) => t.label === "ci-42");
   const patFiles = (s: S) =>
-    readdirSync(s.opts().patDir).filter((f) => f.endsWith("-pat-token"));
+    readdirSync(s.patDir).filter((f) => f.endsWith("-pat-token"));
   /** Raw request index of the first body matching `re`, from `from`. */
   const at = (s: S, re: RegExp, from = 0) =>
     s.fake.raw.findIndex((r, i) => i >= from && re.test(r.body));
@@ -4193,7 +4194,7 @@ describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
     // The laptop PAT file is gone: CI never has one.
-    rmSync(join(s.opts().patDir, `${inst.appHost}-pat-token`));
+    rmSync(join(s.patDir, `${inst.appHost}-pat-token`));
     let from = s.fake.raw.length;
     expect(keep(await s.mk(CI).upgrade(inst.id, "0.24.0"))).toMatchObject({
       ok: true,
@@ -4364,5 +4365,122 @@ describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
       expect(e.message).toMatch(/ci-<run id>/);
       expect(s.fake.log.length).toBe(n);
     }
+  });
+
+  // SS3: the hosted provisioner's label (ss-<signup ULID>) and no patDir.
+  const SS_A = "ss-01JBQ4ZKXW5V9R3M2N8P6T7Y0A";
+  const SS_B = "ss-01JBQ4ZKXW5V9R3M2N8P6T7Y0B";
+  /** The options with no patDir at all (the provisioner Worker has no disk). */
+  const noPatDir = (s: S, over: Partial<WfpOptions> = {}) => {
+    const o = s.opts(over);
+    delete (o as { patDir?: string }).patDir;
+    const p = new WfpProvisioner(o);
+    PROVS.push(p);
+    return p;
+  };
+
+  it("no patDir with ciOwnerToken: create succeeds and nothing is written under any directory", async () => {
+    const s = setup();
+    const before = readdirSync(s.patDir);
+    const inst = keep(
+      await noPatDir(s, { ciOwnerToken: { label: SS_A } }).create(input()),
+    );
+    expect(inst.patFile).toBeUndefined();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    expect(readdirSync(s.patDir)).toEqual(before);
+    // A delete with no patDir has no file to remove.
+    expect(
+      keep(
+        await noPatDir(s).delete(inst.id, inst.id, {
+          skipDirectoryRevoke: "test",
+        }),
+      ),
+    ).toMatchObject({ ok: true, state: "deleted" });
+  });
+
+  it("no patDir and no ciOwnerToken is refused before any call", async () => {
+    const s = setup();
+    const n = s.fake.log.length;
+    const e = await fails(noPatDir(s).create(input()));
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/patDir is required/);
+    expect(s.fake.log.length).toBe(n);
+  });
+
+  it("redline variant without patDir is refused", async () => {
+    const s = setup();
+    const n = s.fake.log.length;
+    const e = await fails(
+      noPatDir(s, { ciOwnerToken: { label: SS_A } }).create(
+        input("redqa", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
+      ),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(/patDir is required/);
+    expect(s.fake.log.length).toBe(n);
+  });
+
+  it("ss-<ULID> labels mint and sweep; other labels are refused", async () => {
+    const s = setup();
+    const inst = keep(
+      await s.mk({ ciOwnerToken: { label: SS_A } }).create(input()),
+    );
+    const ss = tokens(s, inst.id).filter((t) => t.label === SS_A);
+    expect(ss).toHaveLength(1);
+    expect(ss[0]?.revoked_at).not.toBeNull();
+    s.installDb(inst.id)
+      .prepare(
+        `INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tss', id, '${SS_A}', 'hss', 1 FROM users WHERE role = 'owner'`,
+      )
+      .run();
+    expect(keep(await s.p.ciTokenSweep(inst.id, SS_A))).toEqual({
+      id: inst.id,
+      label: SS_A,
+      revoked: 1,
+      active: 0,
+    });
+    for (const bad of [
+      "ss-short",
+      `ss-${"a".repeat(26)}`,
+      "ci-abc",
+      `ss-${"0".repeat(25)}I`,
+      `${SS_A}0`,
+    ]) {
+      const n = s.fake.log.length;
+      const e = await fails(
+        s.mk({ ciOwnerToken: { label: bad } }).create(input("other")),
+      );
+      expect(e.message, bad).toMatch(/ci-<run id> or ss-<ULID>/);
+      expect(s.fake.log.length).toBe(n);
+      expect(
+        (await fails(s.p.ciTokenSweep(inst.id, bad))).message,
+        bad,
+      ).toMatch(/ci-<run id> or ss-<ULID>/);
+    }
+  });
+
+  it("a sweep revokes only its own exact label", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    for (const [id, label] of [
+      ["t1", "ci-123"],
+      ["t2", "ci-1234"],
+      ["t3", SS_A],
+      ["t4", SS_B],
+    ])
+      s.installDb(inst.id)
+        .prepare(
+          `INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT '${id}', id, '${label}', 'h${id}', 1 FROM users WHERE role = 'owner'`,
+        )
+        .run();
+    const live = () =>
+      tokens(s, inst.id)
+        .filter((t) => t.revoked_at === null)
+        .map((t) => t.label)
+        .sort();
+    expect(keep(await s.p.ciTokenSweep(inst.id, "ci-123")).revoked).toBe(1);
+    expect(live()).toEqual(["ci-1234", "provision", SS_A, SS_B].sort());
+    expect(keep(await s.p.ciTokenSweep(inst.id, SS_A)).revoked).toBe(1);
+    expect(live()).toEqual(["ci-1234", "provision", SS_B].sort());
   });
 });
