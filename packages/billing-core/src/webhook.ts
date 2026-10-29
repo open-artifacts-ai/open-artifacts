@@ -13,11 +13,14 @@
 //    409 and its event id is NOT recorded, so Stripe retries it (billing's
 //    /checkout writes the customer id before the session exists; this is
 //    the backstop for the window in between).
-// 4. Ordering: Stripe delivers out of order. Each row keeps the newest
-//    applied event's `created` (last_event_created); an older event is
-//    recorded and skipped. At the same second, nothing changes a lapsed row,
-//    so a delayed update or a retried checkout never revives a deleted
-//    subscription.
+// 4. Ordering: Stripe delivers out of order. Two streams, each with its own
+//    key: the subscription (checkout and customer.subscription.*) keeps its
+//    newest applied event's `created` (last_event_created), invoices keep
+//    theirs (last_invoice_created). An older event is recorded and skipped.
+//    At the same second, nothing changes a lapsed row, so a delayed update
+//    or a retried checkout never revives a deleted subscription. An invoice
+//    never moves the subscription's key (a later-arriving tier change still
+//    applies) and never applies over a newer subscription change.
 // 5. The row's tier, status, trial_ends_at and grace_until move as below,
 //    with version = version + 1 (installs never accept an older version).
 //
@@ -271,11 +274,32 @@ const INSERT_KNOWN_EVENT =
 const KNOWN =
   "SELECT EXISTS (SELECT 1 FROM tiers WHERE stripe_customer_id = ?) AS known";
 /**
- * Newer than the row's last applied event; at the same second, never on a
- * lapsed row (a delayed update or retried checkout can't revive it).
+ * The two ordering streams (Stripe delivers out of order). The subscription
+ * (checkout.session.completed, customer.subscription.*) orders by its own
+ * last applied event (last_event_created); invoices by theirs
+ * (last_invoice_created), so an invoice never advances the subscription's
+ * key and never blocks a later-arriving genuine tier change.
  */
-const IN_ORDER =
-  "(?1 > coalesce(last_event_created, 0) OR (?1 = coalesce(last_event_created, 0) AND status IS NOT 'lapsed'))";
+export type EventStream = "subscription" | "invoice";
+export const streamOf = (type: string): EventStream =>
+  type.startsWith("invoice.") ? "invoice" : "subscription";
+
+/**
+ * Subscription: newer than its last applied event; at the same second,
+ * never on a lapsed row (a delayed update or retried checkout can't revive
+ * it). Invoice: not older than the last invoice applied, nor than the
+ * subscription's state (a delayed invoice never undoes a newer change).
+ */
+const IN_ORDER: Record<EventStream, string> = {
+  subscription:
+    "(?1 > coalesce(last_event_created, 0) OR (?1 = coalesce(last_event_created, 0) AND status IS NOT 'lapsed'))",
+  invoice:
+    "(?1 >= coalesce(last_invoice_created, 0) AND ?1 >= coalesce(last_event_created, 0))",
+};
+const ORDER_COLUMN: Record<EventStream, string> = {
+  subscription: "last_event_created",
+  invoice: "last_invoice_created",
+};
 
 /** The Stripe webhook route. Never throws: a D1 error is 500 (Stripe retries). */
 export async function handleStripeWebhook(
@@ -329,16 +353,17 @@ export async function handleStripeWebhook(
       log(!fresh ? "replay" : !change ? "ignored_type" : "no_customer");
       return json({ received: true });
     }
+    const stream = streamOf(ev.type);
     const sets = [
       ...change,
-      { sql: "last_event_created = ?", args: [ev.created] },
+      { sql: `${ORDER_COLUMN[stream]} = ?`, args: [ev.created] },
       { sql: "version = version + 1", args: [] },
       { sql: "updated_at = ?", args: [now] },
     ];
     // Positional binds after the numbered ?1 in IN_ORDER would collide, so
     // the ordering check binds its own copy of `created` by number last.
     const n = sets.reduce((k, s) => k + s.args.length, 0);
-    const order = IN_ORDER.replaceAll("?1", `?${n + 2}`);
+    const order = IN_ORDER[stream].replaceAll("?1", `?${n + 2}`);
     const res = await db.batch<{ known?: number; install_id?: string }>([
       db.prepare(KNOWN).bind(customer),
       db.prepare(INSERT_KNOWN_EVENT).bind(ev.id, now, customer),
