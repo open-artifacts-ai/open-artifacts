@@ -72,6 +72,7 @@ type Row = {
   version: number;
   updated_at: number;
   last_event_created: number | null;
+  last_invoice_created: number | null;
 };
 const row = async (install: string) =>
   db
@@ -490,6 +491,60 @@ describe("handleStripeWebhook", () => {
       expect(await row(A)).toMatchObject({
         status: "lapsed",
         last_event_created: T + 100,
+      });
+    });
+
+    it("an invoice newer than a delayed subscription.updated never blocks its tier change (R8)", async () => {
+      await deliver(event("customer.subscription.updated", sub(), at(T + 10)));
+      await deliver(
+        event("invoice.payment_failed", { customer: CUS_A }, at(T + 100)),
+      );
+      expect(await row(A)).toMatchObject({
+        tier: "team",
+        status: "past_due",
+        last_event_created: T + 10,
+        last_invoice_created: T + 100,
+      });
+      // Delayed: the Team to Business upgrade made at T+50.
+      const late = await deliver(
+        event(
+          "customer.subscription.updated",
+          sub({ status: "active", metadata: { tier: "business" } }),
+          at(T + 50),
+        ),
+      );
+      expect(late.status).toBe(200);
+      expect(await row(A)).toMatchObject({
+        tier: "business",
+        status: "active",
+        grace_until: null,
+        last_event_created: T + 50,
+        last_invoice_created: T + 100,
+      });
+    });
+
+    it("a delayed invoice never undoes a newer subscription change, nor an older invoice a newer one (R8)", async () => {
+      await deliver(event("customer.subscription.updated", sub(), at(T + 100)));
+      const before = await row(A);
+      // Older than the subscription's state: skipped.
+      await deliver(
+        event("invoice.payment_failed", { customer: CUS_A }, at(T + 60)),
+      );
+      expect(await row(A)).toEqual(before);
+      // Newer: applies. Then an older invoice of its own stream: skipped.
+      await deliver(
+        event("invoice.payment_failed", { customer: CUS_A }, at(T + 120)),
+      );
+      await deliver(event("invoice.paid", { customer: CUS_A }, at(T + 130)));
+      expect((await row(A)).status).toBe("active");
+      const paid = await row(A);
+      await deliver(
+        event("invoice.payment_failed", { customer: CUS_A }, at(T + 125)),
+      );
+      expect(await row(A)).toEqual(paid);
+      expect(paid).toMatchObject({
+        last_event_created: T + 100,
+        last_invoice_created: T + 130,
       });
     });
 
