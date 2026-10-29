@@ -33,6 +33,7 @@ import {
   namedEvents,
   type PolicyAction,
 } from "../auth/policy.js";
+import { requireFreeData } from "../billing/caps.js";
 import { recordDataCreator } from "../billing/creators.js";
 import { readPlan } from "../billing/plan.js";
 import { cappedJson, readCapped } from "../http/body.js";
@@ -348,6 +349,14 @@ const jsonText = (text: string) =>
 
 const stub = (c: C, g: Gate) => runtimeStub(c.env, g.artifactId);
 
+/** Hosted billing's free-tier data caps (billing/caps.ts), before a write. */
+const freeDataCap = (c: C, g: Gate, col: string, id: string, adds: boolean) =>
+  requireFreeData(
+    c.env,
+    () => runtimeCall(() => stub(c, g).capUsage(col, id)),
+    adds,
+  );
+
 export function mountRuntime(app: AppType): void {
   // viewer.anonId() for an anonymous viewer: their per-artifact public id.
   app.get(ANON_ID, async (c) => {
@@ -399,6 +408,7 @@ export function mountRuntime(app: AppType): void {
     const g = await gate(c, "db.set", "write");
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
+    await freeDataCap(c, g, col, id, true);
     const body = await readDocBody(c);
     const { updatedAt } = await runtimeCall(() =>
       stub(c, g).setRaw(col, id, toBuffer(body), g.actor),
@@ -424,6 +434,7 @@ export function mountRuntime(app: AppType): void {
     const g = await gate(c, "db.update", "write");
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
+    await freeDataCap(c, g, col, id, true);
     const body = await rawBody(c);
     const out = await runtimeCall(() =>
       stub(c, g).updateRaw(col, id, body, g.actor),
@@ -436,6 +447,7 @@ export function mountRuntime(app: AppType): void {
     const g = await gate(c, "db.delete", "write");
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
+    await freeDataCap(c, g, col, id, false);
     await runtimeCall(() => stub(c, g).delete(col, id, g.actor));
     await countCreator(c, g);
     return withAnon(g, c.body(null, 204));

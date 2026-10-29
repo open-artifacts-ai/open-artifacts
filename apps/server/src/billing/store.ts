@@ -1,4 +1,5 @@
 import { parseTier } from "@oa/shared";
+import { billingGate } from "../auth/broker-transport.js";
 import type { Env } from "../env.js";
 import { logInfo, logWarn } from "../log.js";
 import { revokeFanoutCap, revokeUsersLive } from "../runtime/revoke.js";
@@ -39,19 +40,23 @@ const READ_BOTH = `select
   (select value from settings where key = '${PLAN_KEY}') as plan,
   (select value from settings where key = '${CHECK_KEY}') as "check"`;
 
-/** A good read: the attempt time, and no failure run. */
-const CHECK_OK = `insert into settings (key, value) values ('${CHECK_KEY}', json_object('checkedAt', ?1, 'failingSince', null))
+/**
+ * A good read (of any version, applied or not): the attempt time, no
+ * failure run, and lastGoodAt (the 7-day clock's start).
+ */
+const CHECK_OK = `insert into settings (key, value) values ('${CHECK_KEY}', json_object('checkedAt', ?1, 'failingSince', null, 'lastGoodAt', ?1))
   on conflict (key) do update set value = excluded.value`;
-/** A failed read: the attempt time; the run's start kept, or set now. */
-const CHECK_FAIL = `insert into settings (key, value) values ('${CHECK_KEY}', json_object('checkedAt', ?1, 'failingSince', ?1))
+/** A failed read: the attempt time; the run's start and lastGoodAt kept, or set now. */
+const CHECK_FAIL = `insert into settings (key, value) values ('${CHECK_KEY}', json_object('checkedAt', ?1, 'failingSince', ?1, 'lastGoodAt', null))
   on conflict (key) do update set value = json_object('checkedAt', ?1,
-    'failingSince', coalesce(json_extract(settings.value, '$.failingSince'), ?1))`;
+    'failingSince', coalesce(json_extract(settings.value, '$.failingSince'), ?1),
+    'lastGoodAt', json_extract(settings.value, '$.lastGoodAt'))`;
 /**
  * The on-demand claim: one read per ON_DEMAND_MS across the instance. Takes
  * the slot only when the last attempt is older than ?2; RETURNING says
  * whether this call got it.
  */
-const CLAIM = `insert into settings (key, value) values ('${CHECK_KEY}', json_object('checkedAt', ?1, 'failingSince', null))
+const CLAIM = `insert into settings (key, value) values ('${CHECK_KEY}', json_object('checkedAt', ?1, 'failingSince', null, 'lastGoodAt', null))
   on conflict (key) do update set value = json_set(settings.value, '$.checkedAt', ?1)
   where coalesce(json_extract(settings.value, '$.checkedAt'), 0) <= ?2
   returning key`;
@@ -107,14 +112,16 @@ export async function recordFailure(env: Env, now: number): Promise<void> {
 /**
  * GET /tier and cache it. `onDemand`: at most once per ON_DEMAND_MS across
  * the instance (the claim); the scheduler tick always reads. Never throws:
- * a failure is recorded and logged by category.
+ * a failure is recorded and logged by category. No BILLING gate in this
+ * invocation (before #849 is deployed): skipped, nothing recorded, so the
+ * 7-day clock never starts (planOfRaw then uses the provisioned TIER).
  */
 export async function refreshPlan(
   env: Env,
   now: number,
   o: { onDemand?: boolean; ctx?: Ctx } = {},
 ): Promise<"stored" | "unchanged" | "skipped" | "failed"> {
-  if (!billingOn(env)) return "skipped";
+  if (!billingOn(env) || !billingGate()) return "skipped";
   try {
     if (o.onDemand) {
       const claimed = await env.DB.prepare(CLAIM)

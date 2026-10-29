@@ -43,9 +43,10 @@ import {
   roleRankQuery,
   roleRankSql,
 } from "../auth/authz.js";
-import { authConfig } from "../auth/config.js";
 import { can, dataWritersOf } from "../auth/policy.js";
+import { requireFreeStorage } from "../billing/caps.js";
 import { creatorStmt } from "../billing/creators.js";
+import { featuresOf } from "../billing/features.js";
 import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
@@ -321,6 +322,9 @@ export async function publish(
     (create ? (await getSettings(env)).defaultVisibility : undefined);
   if (create) dataWriters = resolveDataWriters(input, visibility) ?? "viewers";
 
+  // Hosted billing: a free instance at its storage cap (off until set)
+  // publishes nothing new; restores and renames never land here.
+  await requireFreeStorage(env, 1);
   mark();
   const { manifest, written, uploadIds } = await materialize(
     env,
@@ -882,7 +886,7 @@ export const spaceCols = (
  * anonymous). Without spaces, `decorate` still sets `can` (withCan).
  */
 export const decorates = (env: Env, caller: Caller): boolean =>
-  caller.kind === "user" && authConfig(env).features.includes("spaces");
+  caller.kind === "user" && featuresOf(env).includes("spaces");
 
 /**
  * Sets `out.space` (SpaceRef) and `out.can` (artifactCan of the caller's
@@ -1268,7 +1272,10 @@ export async function putThumbnail(
   const who = asUser(user);
   const r = await accessLevel(env, who, id);
   if (!r) throw notFound();
-  const editor = can(r.level, "publish", canCtx(who, r.artifact));
+  // The artifact's real space (canCtx alone says personal): a shared-space
+  // artifact under a plan lock is read-only, its thumbnail included.
+  const ctx = { ...canCtx(who, r.artifact), personal: r.personal };
+  const editor = can(r.level, "publish", ctx);
   let firstThumbnail = editor;
   if (!editor) {
     const email = normalizeEmail(user.email);
@@ -1283,7 +1290,7 @@ export async function putThumbnail(
   }
   if (
     !can(r.level, "thumbnail.write", {
-      ...canCtx(who, r.artifact),
+      ...ctx,
       firstThumbnail,
     })
   )
@@ -1647,7 +1654,7 @@ export async function undelete(
       .first<{ kind: string; deleted_at: number | null }>();
     if (
       sp?.kind === "shared" &&
-      (sp.deleted_at !== null || !authConfig(env).features.includes("spaces"))
+      (sp.deleted_at !== null || !featuresOf(env).includes("spaces"))
     )
       throw notFound();
     const cutoff = Date.now() - LIMITS.softDeleteDays * DAY;

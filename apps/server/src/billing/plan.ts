@@ -3,12 +3,15 @@ import {
   BillingStatusSchema,
   type BillingTier,
   BillingTierSchema,
+  type EnvFeatureFlag,
   PLAN_STALE_MS,
   type PlanReason,
   type PlanRefusalDetails,
   parseTier,
+  TIER_FEATURES,
 } from "@oa/shared";
 import { z } from "zod";
+import { billingGate } from "../auth/broker-transport.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 
@@ -23,9 +26,22 @@ import { ApiError } from "../http/errors.js";
 //
 // The last good tier is cached in D1 settings (PLAN_KEY, written only by
 // store.ts with the version rule). Billing unreachable (OUR outage): that
-// tier holds for PLAN_STALE_MS (7 days), then team features go read-only;
-// it never falls back upward. A real lapse arrives as status "lapsed" and
-// applies at once.
+// tier holds for PLAN_STALE_MS (7 days) from the last good read, then team
+// features go read-only; it never falls back upward. A real lapse arrives as
+// status "lapsed" and applies at once.
+//
+// Precedence (planOfRaw), hosted only:
+// 1. The BILLING gate is present (ctx.props.BILLING): the billing tier, i.e.
+//    the cached answer, with the 7-day last-good rule. With no answer yet,
+//    the provisioned TIER is the last good tier; with neither, free (solo,
+//    trial allowed), never unenforced.
+// 2. The gate is absent (before #849 is deployed, or a context without it):
+//    no billing enforcement: the provisioned TIER, never unreachable, and no
+//    7-day clock. Without a TIER, the cached answer (no clock); with neither,
+//    free (solo, trial allowed).
+//
+// Features (Me.instance.features and every check) follow the plan's tier at
+// read time through TIER_FEATURES, not the provisioned FEATURES (planFeatures).
 
 /** Hosted billing is on: HOSTED=1 only (self-hosted installs have no gate). */
 export const billingOn = (env: Pick<Env, "HOSTED">): boolean =>
@@ -47,10 +63,15 @@ export const TierAnswerSchema = z.object({
 });
 export type StoredPlan = z.infer<typeof TierAnswerSchema>;
 
-/** The read attempts: last attempt, and when the current failure run began. */
+/**
+ * The read attempts: last attempt, when the current failure run began, and
+ * the last good read of any version (an older version is reachable billing
+ * too: the 7-day clock stops, though the older tier is never applied).
+ */
 export const PlanCheckSchema = z.object({
   checkedAt: z.number().int(),
   failingSince: z.number().int().nullable(),
+  lastGoodAt: z.number().int().nullable().optional(),
 });
 export type PlanCheck = z.infer<typeof PlanCheckSchema>;
 
@@ -96,14 +117,17 @@ export type EffectivePlan = {
 
 /**
  * The plan from the cached answer and the read attempts. With no answer yet,
- * the provisioned TIER (today's behaviour; free when unset) is the last good
- * tier, and the 7 days run from the first failed read.
+ * the provisioned TIER (free when unset) is the last good tier. The 7 days
+ * run from the last good read (the answer's asOf, or a good read of an older
+ * version), else from the first failed read. `clock: false`: no outage rule
+ * (the BILLING gate is absent: nothing is unreachable).
  */
 export function effectivePlan(
   last: StoredPlan | null,
   check: PlanCheck | null,
   envTier: string | undefined,
   now: number,
+  o: { clock?: boolean } = {},
 ): EffectivePlan {
   const base = last ?? {
     tier: parseTier(envTier) ?? ("free" as const),
@@ -122,9 +146,11 @@ export function effectivePlan(
     trialEligible:
       mode === "solo" && base.tier === "free" && base.trialEndsAt === null,
   });
-  // OUR outage: the last good answer is over 7 days old (or, with none, the
+  // OUR outage: the last good read is over 7 days old (or, with none, the
   // failures began over 7 days ago). Never upward: read-only.
-  const since = last ? last.asOf : (check?.failingSince ?? null);
+  const good = Math.max(last?.asOf ?? -1, check?.lastGoodAt ?? -1);
+  const since =
+    o.clock === false ? null : good >= 0 ? good : (check?.failingSince ?? null);
   if (since !== null && now - since > PLAN_STALE_MS)
     return out("billing_unreachable", "readOnly");
   switch (base.status) {
@@ -148,26 +174,48 @@ export function effectivePlan(
   return out(null, null);
 }
 
-/** The plan from the two raw settings values (null when hosted billing is off). */
+/**
+ * The plan from the two raw settings values (null when hosted billing is
+ * off), by the precedence above. `gate`: whether this invocation carries
+ * the BILLING gate (default: billingGate()).
+ */
 export function planOfRaw(
   env: Pick<Env, "HOSTED" | "TIER">,
   plan: string | null | undefined,
   check: string | null | undefined,
   now: number,
+  o: { gate?: boolean } = {},
 ): EffectivePlan | null {
   if (!billingOn(env)) return null;
   const last = parseStored(TierAnswerSchema, plan);
   const c = parseStored(PlanCheckSchema, check);
-  // Unknown: no answer yet, no provisioned TIER, and not failing for 7 days.
-  // Today's behaviour until the first read (the scheduler tick, every 2
-  // min); the outage rule still applies to an install that never read one.
-  if (
-    !last &&
-    parseTier(env.TIER) === null &&
-    !(c?.failingSince != null && now - c.failingSince > PLAN_STALE_MS)
-  )
-    return null;
+  const gate = o.gate ?? billingGate() !== null;
+  if (!gate) {
+    // No BILLING: no billing enforcement. The provisioned TIER wins; else
+    // the cached answer; else free. Never unreachable, no 7-day clock.
+    const tier = parseTier(env.TIER);
+    return tier !== null
+      ? effectivePlan(null, null, tier, now, { clock: false })
+      : effectivePlan(last, null, undefined, now, { clock: false });
+  }
+  // The billing tier, with the last-good rule. No answer and no TIER: free
+  // (solo, trial allowed) until the first good read, never unenforced.
   return effectivePlan(last, c, env.TIER, now);
+}
+
+/** Hosted adds usage_off on every tier (no ANALYTICS_TOKEN there). */
+const HOSTED_FLAGS: readonly EnvFeatureFlag[] = ["usage_off"];
+
+/**
+ * The feature flags for `plan`'s tier (TIER_FEATURES; the trial is
+ * Business, and a free instance reports the trial's features: its team
+ * features are refused by the solo lock, so the paywall can show them). A
+ * downgrade to Team swaps sync_google for sync_frozen: nothing is deleted
+ * or disconnected. A lapse keeps the tier's features, read-only (the lock).
+ */
+export function planFeatures(plan: EffectivePlan): EnvFeatureFlag[] {
+  const tier = plan.tier === "free" ? "trial" : plan.tier;
+  return [...TIER_FEATURES[tier], ...HOSTED_FLAGS];
 }
 
 const READ_PLAN = `select

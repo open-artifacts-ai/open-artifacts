@@ -51,6 +51,7 @@ import {
   isOrgAdmin,
   orgCan,
 } from "../auth/policy.js";
+import { featuresOf } from "../billing/features.js";
 import { getDb } from "../db/client.js";
 import { spaces } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -95,7 +96,7 @@ type Ctx = Pick<ExecutionContext, "waitUntil"> | undefined;
 
 /** The `spaces` feature: every route here is 404 without it (authz is the same either way). */
 export const spacesOn = (env: Env): boolean =>
-  authConfig(env).features.includes("spaces");
+  featuresOf(env).includes("spaces");
 
 /**
  * Directory sync mode: google (running), frozen (Team after trial) or off.
@@ -109,7 +110,7 @@ export const spacesOn = (env: Env): boolean =>
  *   confirm, as on hosted.
  */
 export const directoryMode = (env: Env): DirectoryMode => {
-  const m = directoryModeOf(authConfig(env).features);
+  const m = directoryModeOf(featuresOf(env));
   if (m !== "off" || env.HOSTED === "1") return m;
   return directoryTransport(env).kind === "none" ? "off" : "google";
 };

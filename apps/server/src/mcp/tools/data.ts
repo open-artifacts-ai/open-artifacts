@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { authorize, canCtx } from "../../auth/authz.js";
 import { can, dataWriteCreates } from "../../auth/policy.js";
+import { requireFreeData } from "../../billing/caps.js";
 import { recordDataCreator } from "../../billing/creators.js";
 import { ApiError } from "../../http/errors.js";
 import {
@@ -27,6 +28,15 @@ export async function store(
 ): Promise<RuntimeStub> {
   return (await storeOf(t, id, action)).s;
 }
+
+/** Hosted billing's free-tier data caps (billing/caps.ts), before a write. */
+const freeDataCap = (
+  env: ToolEnv["env"],
+  s: RuntimeStub,
+  col: string,
+  id: string,
+  adds: boolean,
+) => requireFreeData(env, () => runtimeCall(() => s.capUsage(col, id)), adds);
 
 /** store(), and whether a write counts its caller as a creator (editor level or above). */
 async function storeOf(
@@ -111,6 +121,7 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     (i) =>
       guard(async () => {
         const { s, creator } = await storeOf(t, i.id, "data.write");
+        await freeDataCap(t.env, s, i.collection, i.docId, true);
         const doc = await runtimeCall(() =>
           s.set(i.collection, i.docId, i.data, actor),
         );
@@ -125,6 +136,7 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     (i) =>
       guard(async () => {
         const { s, creator } = await storeOf(t, i.id, "data.write");
+        await freeDataCap(t.env, s, i.collection, i.docId, true);
         const doc = await runtimeCall(() =>
           s.update(i.collection, i.docId, i.patch, actor),
         );
@@ -139,6 +151,7 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     (i) =>
       guard(async () => {
         const { s, creator } = await storeOf(t, i.id, "data.write");
+        await freeDataCap(t.env, s, i.collection, i.docId, false);
         await runtimeCall(() => s.delete(i.collection, i.docId, actor));
         await counted(creator);
         return ok(`Deleted "${i.docId}" from ${where(i.id, i.collection)}`, {

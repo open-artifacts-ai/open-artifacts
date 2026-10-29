@@ -35,7 +35,7 @@ const UrlAnswerSchema = z.object({ url: z.string().regex(STRIPE_URL) });
 const unavailable = () =>
   new ApiError("billing_unavailable", "Billing is unavailable; try again");
 
-/** Hosted, and the uncapped org owner or admin; else 404 (route hidden). */
+/** Hosted, and the org owner or an admin (the plan cap included: they can always pay); else 404 (route hidden). */
 function requireBillingManager(c: Parameters<typeof requireUser>[0]) {
   const user = requireUser(c);
   if (
