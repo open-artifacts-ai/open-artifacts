@@ -142,6 +142,7 @@ export function platformNames(env: Env): {
   manageInstall: string;
   signups: string;
   signupsDlq: string;
+  billing: string;
 } {
   if (!Object.hasOwn(ENV_PREFIX, env)) throw new ForeignResource("", env);
   const p = ENV_PREFIX[env];
@@ -175,6 +176,8 @@ export function platformNames(env: Env): {
     // self-serve queue (API producer, provisioner consumer) and its DLQ.
     signups: `${p}signups`,
     signupsDlq: `${p}signups-dlq`,
+    // The tier store: the billing Worker and its own D1 share this name.
+    billing: `${p}billing`,
   };
 }
 

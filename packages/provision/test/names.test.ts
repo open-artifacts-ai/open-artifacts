@@ -61,6 +61,7 @@ describe("provision names", () => {
       manageInstall: "oa-s-manage-install",
       signups: "oa-s-signups",
       signupsDlq: "oa-s-signups-dlq",
+      billing: "oa-s-billing",
     });
     // #859 apps/provisioner/wrangler.jsonc; design v7 2.4, 10.2.
     expect(platformNames("prod").signups).toBe("oa-p-signups");
@@ -72,6 +73,7 @@ describe("provision names", () => {
     );
     expect(platformNames("prod").manageInstall).toBe("oa-p-manage-install");
     expect(platformNames("prod").provisionToken).toBe("oa-p-provision-token");
+    expect(platformNames("prod").billing).toBe("oa-p-billing");
     expect(platformNames("prod").turnstile).toBe("oa-p-turnstile");
     expect(platformNames("prod").db).toBe("oa-p-platform");
     expect(platformNames("prod").hosts).toBe("oa-p-hosts");

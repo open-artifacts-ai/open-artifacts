@@ -1,0 +1,52 @@
+// Hosted billing Worker (self-serve step 1): the tier store. One Worker per
+// env, oa-s-billing / oa-p-billing, with its own D1 (oa-s-billing /
+// oa-p-billing), separate from the sign-in registry and the platform D1, so a
+// billing bug can't touch either.
+//
+// Installs reach it only through BillingGate stubs (@oa/broker-core's
+// billing-gate) that dispatch and the scheduler pass in ctx.props; the
+// scheduler also calls /health over its own BILLING binding. The Stripe
+// webhook route is wired later by the gated ops step, never from this file.
+//
+// Deploy with --env staging or --env prod only (scripts/ops/
+// deploy-platform-worker.sh billing <env>): the top level has no name and no
+// main, so a deploy without --env is refused, even with --name. No routes,
+// custom domains or workers.dev here. Each env's BILLING_DB id has its own
+// placeholder, filled at deploy. Observability stays off: Workers Logs would
+// record full URLs; the Worker logs fixed categories and install ids only.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "env": {
+    "staging": {
+      "name": "oa-s-billing",
+      "main": "src/index.ts",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": false },
+      "d1_databases": [
+        {
+          "binding": "BILLING_DB",
+          "database_name": "oa-s-billing",
+          "database_id": "{{BILLING_DB_ID_STAGING}}"
+        }
+      ]
+    },
+    "prod": {
+      "name": "oa-p-billing",
+      "main": "src/index.ts",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": false },
+      "d1_databases": [
+        {
+          "binding": "BILLING_DB",
+          "database_name": "oa-p-billing",
+          "database_id": "{{BILLING_DB_ID_PROD}}"
+        }
+      ]
+    }
+  }
+}
