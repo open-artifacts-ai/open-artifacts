@@ -182,7 +182,7 @@ describe("the */2 revoke tick", () => {
     expect(REVOKE_JOB).toBe("oa:directory-disconnect");
     expect(REVOKE_MAX_ATTEMPTS).toBe(5);
     expect(REVOKE_SQL).toBe(
-      "SELECT id, version FROM installs WHERE state='deleting' AND directory_revoke='pending' LIMIT 10",
+      "SELECT id, version, app_host FROM installs WHERE state='deleting' AND directory_revoke='pending' LIMIT 10",
     );
   });
 
@@ -748,7 +748,14 @@ describe("broker gates on every install call", () => {
     props: {
       AUTH_BROKER: { gate: { installId: id, kind: "auth" } },
       DIRECTORY_BROKER: { gate: { installId: id, kind: "directory" } },
-      BILLING: { billingGate: { installId: id } },
+      // appHost is the installs row's app_host (seed: s<n>.app.test for
+      // idOf(n) seeded n-th), never anything from a request.
+      BILLING: {
+        billingGate: {
+          installId: id,
+          appHost: `s${Number.parseInt(id.slice(1), 36)}.app.test`,
+        },
+      },
     },
   });
 

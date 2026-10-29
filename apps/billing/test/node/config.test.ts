@@ -55,8 +55,15 @@ describe("wrangler.jsonc", () => {
       );
       // Workers Logs would record full URLs.
       expect(e.observability).toEqual({ enabled: false });
+      // The env (the app domain the gate's app host must be on) and this
+      // env's own price placeholders; the Stripe key is a secret, never here.
+      const up = env.toUpperCase();
+      expect(e.vars).toEqual({
+        OA_ENV: env,
+        STRIPE_PRICE_TEAM: `{{STRIPE_PRICE_TEAM_${up}}}`,
+        STRIPE_PRICE_BUSINESS: `{{STRIPE_PRICE_BUSINESS_${up}}}`,
+      });
       for (const k of [
-        "vars",
         "services",
         "r2_buckets",
         "durable_objects",
@@ -99,6 +106,17 @@ describe("migrations", () => {
     const sql = readFileSync(join(dir, "0001_init.sql"), "utf8");
     for (const t of ["tiers", "stripe_events", "usage"])
       expect(sql).toMatch(new RegExp(`CREATE TABLE ${t} \\(`));
+    // The webhook's event ordering (@oa/billing-core): nullable, NULL is 0.
+    expect(sql).toMatch(/\n {2}last_event_created INTEGER\n\);/);
+  });
+
+  it("is the schema @oa/billing-core tests against, byte for byte", () => {
+    expect(readFileSync(join(app, "migrations/0001_init.sql"), "utf8")).toBe(
+      readFileSync(
+        join(app, "../../packages/billing-core/test/migrations/0001_init.sql"),
+        "utf8",
+      ),
+    );
   });
 });
 

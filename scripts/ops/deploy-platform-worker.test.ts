@@ -157,13 +157,15 @@ describe("deploy-platform-worker.sh", () => {
   describe("billing", () => {
     const DIR = join(root, "apps/billing");
     const DB = "0123abcd-4567-89ef-0123-456789abcdef";
+    const IDS = { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: REG };
+    const PRICES = {
+      STRIPE_PRICE_TEAM: "price_1TeamAbc",
+      STRIPE_PRICE_BUSINESS: "price_1BizXyz",
+    };
 
     for (const env of ["staging", "prod"] as const)
       it(`${env}: deploys from apps/billing with exact argv and fills its D1 and registry ids`, () => {
-        const r = run(["billing", env], {
-          BILLING_DB_ID: DB,
-          BROKER_REGISTRY_ID: REG,
-        });
+        const r = run(["billing", env], { ...PRICES, ...IDS });
         expect(r.code).toBe(0);
         expect(r.log).toEqual([
           `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
@@ -176,10 +178,19 @@ describe("deploy-platform-worker.sh", () => {
         expect(snap).toContain(`"id": "${REG}"`);
         expect(snap).not.toContain(`{{BILLING_DB_ID_${up}}}`);
         expect(snap).not.toContain(`{{BROKER_REGISTRY_ID_${up}}}`);
+        expect(snap).toContain(
+          `"STRIPE_PRICE_TEAM": "${PRICES.STRIPE_PRICE_TEAM}"`,
+        );
+        expect(snap).toContain(
+          `"STRIPE_PRICE_BUSINESS": "${PRICES.STRIPE_PRICE_BUSINESS}"`,
+        );
+        expect(snap).not.toMatch(new RegExp(`\\{\\{[A-Z0-9_]*_${up}\\}\\}`));
         // Only this env's placeholders are filled.
         const other = env === "staging" ? "PROD" : "STAGING";
         expect(snap).toContain(`{{BILLING_DB_ID_${other}}}`);
         expect(snap).toContain(`{{BROKER_REGISTRY_ID_${other}}}`);
+        expect(snap).toContain(`{{STRIPE_PRICE_TEAM_${other}}}`);
+        expect(snap).toContain(`{{STRIPE_PRICE_BUSINESS_${other}}}`);
         expect(r.out + r.err).not.toContain(DB);
         expect(r.out + r.err).not.toContain(REG);
         expect(existsSync(join(DIR, "wrangler.deploy.jsonc"))).toBe(false);
@@ -203,7 +214,25 @@ describe("deploy-platform-worker.sh", () => {
         { BILLING_DB_ID: DB, BROKER_REGISTRY_ID: `${REG}/x` },
         { BILLING_DB_ID: DB, DIRECTORY_REGISTRY_ID: REG },
       ] as Record<string, string>[]) {
-        const r = run(["billing", "staging"], env);
+        const r = run(["billing", "staging"], { ...PRICES, ...env });
+        expect(r.code).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
+
+    it("refuses a missing or malformed price id", () => {
+      for (const p of [
+        {},
+        { STRIPE_PRICE_TEAM: PRICES.STRIPE_PRICE_TEAM },
+        { STRIPE_PRICE_BUSINESS: PRICES.STRIPE_PRICE_BUSINESS },
+        { ...PRICES, STRIPE_PRICE_TEAM: "" },
+        { ...PRICES, STRIPE_PRICE_TEAM: "prod_1Abc" },
+        { ...PRICES, STRIPE_PRICE_TEAM: "price_1Abc/x" },
+        { ...PRICES, STRIPE_PRICE_BUSINESS: "price_" },
+        { ...PRICES, STRIPE_PRICE_BUSINESS: "price_1Abc&x" },
+        { ...PRICES, STRIPE_PRICE_BUSINESS: "price_1Abc x" },
+      ] as Record<string, string>[]) {
+        const r = run(["billing", "staging"], { ...IDS, ...p });
         expect(r.code).toBe(1);
         expect(r.log).toEqual([]);
       }

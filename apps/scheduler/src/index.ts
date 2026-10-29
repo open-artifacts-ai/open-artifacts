@@ -38,9 +38,22 @@ export interface GateExports {
  * A call's args: the install's broker and billing gates in props when this
  * run has them, built per call so each holds that install only.
  */
-const withGates = (gates: GateExports | undefined, id: string) =>
+const withGates = (
+  gates: GateExports | undefined,
+  id: string,
+  appHost: unknown,
+) =>
   gates
-    ? { props: { ...brokerProps(gates, id), ...billingProps(gates, id) } }
+    ? {
+        props: {
+          ...brokerProps(gates, id),
+          ...billingProps(
+            gates,
+            id,
+            typeof appHost === "string" ? appHost : "",
+          ),
+        },
+      }
     : undefined;
 
 export interface Env extends QuotaEnv, AlertEnv, BrokerGateEnv, BillingGateEnv {
@@ -124,9 +137,10 @@ const PAGE_SQL =
   "SELECT id FROM installs WHERE state = 'active' AND id > ?1 ORDER BY id LIMIT ?2";
 
 // Right before each call: still active, and no live lifecycle lease
-// (provision holds one through upgrade, rollback and delete).
+// (provision holds one through upgrade, rollback and delete). Its app_host
+// is the billing gate's appHost (the installs row, never a request).
 const RECHECK_SQL =
-  "SELECT 1 AS ok FROM installs WHERE id = ?1 AND state = 'active' AND (lease_until IS NULL OR lease_until <= ?2)";
+  "SELECT 1 AS ok, app_host FROM installs WHERE id = ?1 AND state = 'active' AND (lease_until IS NULL OR lease_until <= ?2)";
 
 /**
  * Measured on staging through a dispatch namespace (2026-10-24): scheduled()
@@ -443,7 +457,7 @@ export async function runNightly(
         const r = await (
           env.DISPATCHER.get(
             names(id, env.OA_ENV).script,
-            withGates(gates, id),
+            withGates(gates, id, (still as { app_host?: unknown }).app_host),
           ) as unknown as ScheduledFetcher
         ).scheduled({ cron: job, scheduledTime: new Date(now) });
         checkOutcome(r);
@@ -509,7 +523,7 @@ export const REVOKE_JOB = "oa:directory-disconnect";
 export const REVOKE_MAX_ATTEMPTS = 5;
 /** One query, on the partial index installs_revoke_pending (0005). */
 export const REVOKE_SQL =
-  "SELECT id, version FROM installs WHERE state='deleting' AND directory_revoke='pending' LIMIT 10";
+  "SELECT id, version, app_host FROM installs WHERE state='deleting' AND directory_revoke='pending' LIMIT 10";
 // The only writes: the three revoke columns, on rows still deleting whose
 // revoke is still pending (L2: a late result never overwrites an operator's
 // skip, and never bumps row_version under a teardown).
@@ -600,10 +614,10 @@ async function runRevokeTick(
   const db = env.PLATFORM_DB;
   const { results } = await db
     .prepare(REVOKE_SQL)
-    .all<{ id: unknown; version: unknown }>();
+    .all<{ id: unknown; version: unknown; app_host: unknown }>();
   if (results.length === 0) return;
   const rows = results.filter(
-    (r): r is { id: string; version: unknown } =>
+    (r): r is { id: string; version: unknown; app_host: unknown } =>
       typeof r.id === "string" && isInstallId(r.id),
   );
   if (rows.length < results.length)
@@ -613,7 +627,15 @@ async function runRevokeTick(
     );
   // An unknown OA_ENV throws before any call.
   for (const r of rows) names(r.id, env.OA_ENV);
-  const one = async ({ id, version }: { id: string; version: unknown }) => {
+  const one = async ({
+    id,
+    version,
+    app_host,
+  }: {
+    id: string;
+    version: unknown;
+    app_host: unknown;
+  }) => {
     const unsupported = async () => {
       await db.prepare(REVOKE_UNSUPPORTED_SQL).bind(id).run();
       console.log("directory-revoke unsupported", id);
@@ -630,7 +652,7 @@ async function runRevokeTick(
           (
             env.DISPATCHER.get(
               names(id, env.OA_ENV).script,
-              withGates(gates, id),
+              withGates(gates, id, app_host),
             ) as unknown as ScheduledFetcher
           ).scheduled({ cron: REVOKE_JOB, scheduledTime: new Date(now) }),
           timeoutMs,
@@ -659,7 +681,7 @@ async function runRevokeTick(
   let next = 0;
   const lane = async () => {
     while (next < rows.length) {
-      const row = rows[next++] as { id: string; version: unknown };
+      const row = rows[next++] as (typeof rows)[number];
       try {
         await one(row);
       } catch {

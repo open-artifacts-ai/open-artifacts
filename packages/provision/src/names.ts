@@ -38,6 +38,49 @@ export function newInstallId(): InstallId {
 
 export type Env = "staging" | "prod";
 
+/** The tenant domain pair of each env (user decision, 2026-10-21). Dispatch,
+ * the scheduler and billing build and check an install's app host from it. */
+export const HOSTED_DOMAINS: Readonly<
+  Record<Env, Readonly<{ app: string; content: string }>>
+> = Object.freeze({
+  staging: Object.freeze({
+    app: "open-artifacts-staging.app",
+    content: "open-artifacts-staging.page",
+  }),
+  prod: Object.freeze({
+    app: "open-artifacts.app",
+    content: "open-artifacts.page",
+  }),
+});
+
+const APP_LABEL = /^[a-z0-9-]+$/;
+
+/**
+ * True only for `<label>.<env app domain>`, the shape of an install's app
+ * host. Billing accepts the gate's app host only in this shape.
+ */
+export function isAppHost(host: unknown, env: Env): host is string {
+  if (typeof host !== "string" || !Object.hasOwn(HOSTED_DOMAINS, env))
+    return false;
+  const suffix = `.${HOSTED_DOMAINS[env].app}`;
+  return host.endsWith(suffix) && APP_LABEL.test(host.slice(0, -suffix.length));
+}
+
+/**
+ * The app host of the install that holds `host` (its app or its content
+ * host: both are <slug>.<domain>, the same slug), or null for any other
+ * name. Dispatch calls it only with a host HOSTS maps to the install.
+ */
+export function appHostFor(host: string, env: Env): string | null {
+  if (!Object.hasOwn(HOSTED_DOMAINS, env)) return null;
+  const { app, content } = HOSTED_DOMAINS[env];
+  for (const d of [app, content]) {
+    const slug = host.endsWith(`.${d}`) ? host.slice(0, -d.length - 1) : "";
+    if (APP_LABEL.test(slug)) return `${slug}.${app}`;
+  }
+  return null;
+}
+
 /** Every hosted resource name carries its environment; the account is shared. */
 export const ENV_PREFIX: Readonly<Record<Env, string>> = Object.freeze({
   staging: "oa-s-",

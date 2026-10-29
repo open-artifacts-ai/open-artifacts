@@ -9,6 +9,7 @@
 #   auth-broker: BROKER_REGISTRY_ID=<32 hex> [GOOGLE_CLIENT_ID_PROD=<client id>, prod]
 #   directory-broker: DIRECTORY_REGISTRY_ID=<32 hex> [GOOGLE_DIRECTORY_CLIENT_ID_PROD=<client id>, prod]
 #   billing: BILLING_DB_ID=<D1 uuid> BROKER_REGISTRY_ID=<32 hex>
+#            STRIPE_PRICE_TEAM=<price_...> STRIPE_PRICE_BUSINESS=<price_...>
 #   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
 #              OPS_ALERT_EMAIL=<address> OPS_ALERT_FROM=<address>
 set -euo pipefail
@@ -33,6 +34,7 @@ google_id='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
 uuid='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 zones='^[0-9a-f]{32}(,[0-9a-f]{32}){0,9}$'
 limit='^[1-9][0-9]{0,8}$'
+price='^price_[A-Za-z0-9]{1,255}$'
 # One plain address: no slash, ampersand, backslash, quote, comma or space, so
 # it can't carry sed syntax or read as a list or display name.
 email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
@@ -87,6 +89,9 @@ case "$app" in
     # The auth broker's registry namespace (read-only here): same variable,
     # same id as the auth-broker deploy.
     fill "BROKER_REGISTRY_ID_${up}" "${BROKER_REGISTRY_ID:-}" "$hex32"
+    # This env's Stripe test-mode price per paid plan (/checkout).
+    fill "STRIPE_PRICE_TEAM_${up}" "${STRIPE_PRICE_TEAM:-}" "$price"
+    fill "STRIPE_PRICE_BUSINESS_${up}" "${STRIPE_PRICE_BUSINESS:-}" "$price"
     ;;
   scheduler)
     fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"

@@ -60,9 +60,15 @@ importers:
 
   apps/billing:
     dependencies:
+      '@oa/billing-core':
+        specifier: workspace:*
+        version: link:../../packages/billing-core
       '@oa/broker-core':
         specifier: workspace:*
         version: link:../../packages/broker-core
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: ^1.4.4
@@ -73,9 +79,6 @@ importers:
       '@oa/auth-core':
         specifier: workspace:*
         version: link:../../packages/auth-core
-      '@oa/provision':
-        specifier: workspace:*
-        version: link:../../packages/provision
       '@types/node':
         specifier: ^20.19.43
         version: 20.19.43

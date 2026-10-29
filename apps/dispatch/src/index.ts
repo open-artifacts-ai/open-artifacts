@@ -8,7 +8,12 @@ import {
   type BrokerGateProps,
   brokerProps,
 } from "@oa/broker-core/gate";
-import { isInstallId, names, type Env as OaEnv } from "@oa/provision/names";
+import {
+  appHostFor,
+  isInstallId,
+  names,
+  type Env as OaEnv,
+} from "@oa/provision/names";
 
 // And its only path to the tier store (see @oa/broker-core/billing-gate).
 export { BillingGate } from "@oa/broker-core/billing-gate";
@@ -79,7 +84,15 @@ export default {
       // with this install's broker and billing gates in ctx.props for this
       // request only.
       const gates = ctx.exports as unknown as GateExports;
-      const props = { ...brokerProps(gates, id), ...billingProps(gates, id) };
+      // The install's app host comes from the HOSTS lookup: `host` is a key
+      // HOSTS maps to this install (its app or content host, one slug), so
+      // the app host is that slug on the env's app domain. "" for any other
+      // mapping: the gate then refuses /checkout and /portal.
+      const appHost = appHostFor(host, env.OA_ENV) ?? "";
+      const props = {
+        ...brokerProps(gates, id),
+        ...billingProps(gates, id, appHost),
+      };
       return await env.DISPATCHER.get(names(id, env.OA_ENV).script, {
         props,
       }).fetch(req);

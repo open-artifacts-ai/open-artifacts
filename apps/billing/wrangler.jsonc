@@ -24,6 +24,14 @@
     "staging": {
       "name": "oa-s-billing",
       "main": "src/index.ts",
+      // OA_ENV picks the app domain the gate's app host must be on; the
+      // price ids are this env's Stripe test-mode prices (filled at deploy).
+      // STRIPE_SECRET_KEY is a Worker secret, never in this file.
+      "vars": {
+        "OA_ENV": "staging",
+        "STRIPE_PRICE_TEAM": "{{STRIPE_PRICE_TEAM_STAGING}}",
+        "STRIPE_PRICE_BUSINESS": "{{STRIPE_PRICE_BUSINESS_STAGING}}"
+      },
       "workers_dev": false,
       "preview_urls": false,
       "observability": { "enabled": false },
@@ -46,6 +54,14 @@
     "prod": {
       "name": "oa-p-billing",
       "main": "src/index.ts",
+      // OA_ENV picks the app domain the gate's app host must be on; the
+      // price ids are this env's Stripe test-mode prices (filled at deploy).
+      // STRIPE_SECRET_KEY is a Worker secret, never in this file.
+      "vars": {
+        "OA_ENV": "prod",
+        "STRIPE_PRICE_TEAM": "{{STRIPE_PRICE_TEAM_PROD}}",
+        "STRIPE_PRICE_BUSINESS": "{{STRIPE_PRICE_BUSINESS_PROD}}"
+      },
       "workers_dev": false,
       "preview_urls": false,
       "observability": { "enabled": false },

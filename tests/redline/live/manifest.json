@@ -991,6 +991,18 @@
     {
       "file": "live/edge.test.ts",
       "name": "cross-site isolation > state-changing app requests without X-OA-Request are refused, and accepted with it"
+    },
+    {
+      "file": "live/billing.test.ts",
+      "name": "billing > A's signed checkout never yields B's customer or B's origin"
+    },
+    {
+      "file": "live/billing.test.ts",
+      "name": "billing > A's signed portal never yields B's customer or B's origin"
+    },
+    {
+      "file": "live/billing.test.ts",
+      "name": "billing > a URL field in a checkout or portal request is refused"
     }
   ],
   "notes": [
