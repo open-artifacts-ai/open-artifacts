@@ -5,7 +5,13 @@
 import type { Me } from "@oa/shared";
 import { R } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, vi } from "vitest";
 import { canPublishTo } from "../src/auth/permissions";
@@ -35,6 +41,16 @@ globalThis.ResizeObserver ??= class {
   disconnect() {}
 } as unknown as typeof ResizeObserver;
 
+const LOCKED_PLAN = {
+  tier: "trial" as const,
+  status: "lapsed" as const,
+  trialEndsAt: null,
+  graceUntil: null,
+  readOnly: true,
+  reason: "trial_ended" as const,
+};
+const OPTS = { billing: LOCKED_PLAN };
+const NOTICE = "This instance is read-only right now. Ask your instance owner.";
 const locked =
   (role: "member" | "admin") =>
   (m: Me): Me => ({
@@ -47,16 +63,6 @@ const locked =
       expiresAt: null,
     },
   });
-const none = {
-  edit: false,
-  share: false,
-  setVisibility: false,
-  delete: false,
-  transfer: false,
-  move: false,
-  dataWrite: false,
-};
-const live = { db: true, viewer: false, storage: false };
 
 it("canPublishTo is false under the plan cap", () => {
   expect(canPublishTo({ kind: "personal", myRole: null }, "plan")).toBe(false);
@@ -65,11 +71,29 @@ it("canPublishTo is false under the plan cap", () => {
   );
 });
 
-it("a locked member lists the same artifacts as with no cap, and can't create", async () => {
-  mountHosted("/", true, locked("member"));
+const itemsOf = async () => {
   await screen.findByRole("heading", { name: "Library" });
-  for (const a of arts.slice(0, 2))
-    expect((await screen.findAllByText(a.title))[0]).toBeVisible();
+  await screen.findAllByText(arts[0].title);
+  return screen
+    .getAllByRole("link")
+    .map((l) => l.textContent)
+    .filter(Boolean)
+    .sort();
+};
+
+it("nothing is hidden: a locked member's library lists what the uncapped one does", async () => {
+  mountHosted("/", true);
+  const uncapped = await itemsOf();
+  cleanup();
+  mountHosted("/", OPTS, locked("member"));
+  expect(await itemsOf()).toEqual(uncapped);
+  expect(uncapped.length).toBeGreaterThan(1);
+});
+
+it("a locked member can't create; the library and artifacts still open", async () => {
+  mountHosted("/", OPTS, locked("member"));
+  await screen.findByRole("heading", { name: "Library" });
+  expect((await screen.findAllByText(arts[0].title))[0]).toBeVisible();
   expect(screen.queryByRole("button", { name: "Create artifact" })).toBeNull();
   fireEvent.drop(document.body, {
     dataTransfer: { files: [new File(["# x"], "a.md")], types: ["Files"] },
@@ -77,27 +101,26 @@ it("a locked member lists the same artifacts as with no cap, and can't create", 
   expect(screen.queryByRole("dialog", { name: "Create artifact" })).toBeNull();
 });
 
-it("a locked member opens an artifact; edit, share, delete and live-data writes are off", async () => {
-  mountHosted(`/a/${arts[0].id}`, true, locked("member"), [
+it("a locked member opens a normal artifact: the cap, not the mock, turns writes off", async () => {
+  // The artifact is served as the server serves an owner's: full `can`.
+  const full = {
+    edit: true,
+    share: true,
+    setVisibility: true,
+    delete: true,
+    transfer: false,
+    move: true,
+    dataWrite: true,
+  };
+  mountHosted(`/a/${arts[0].id}`, OPTS, locked("member"), [
     http.get(`*${R.artifact(arts[0].id)}`, () =>
-      HttpResponse.json({
-        ...arts[0],
-        access: "viewer",
-        can: none,
-        capabilities: live,
-      }),
+      HttpResponse.json({ ...arts[0], access: "owner", can: full }),
     ),
   ]);
   await screen.findByRole("heading", { name: arts[0].title });
-  expect(await screen.findByText("View only")).toBeVisible();
+  // Write controls are withdrawn exactly as for a restricted member.
   for (const name of ["Rename", "Share", "Delete", "Move"])
     expect(screen.queryByRole("button", { name })).toBeNull();
-});
-
-it("a locked member gets no label controls on connected agents", async () => {
-  mountHosted("/settings/agents", true, locked("member"));
-  await screen.findByText("Example MCP client 1.2.0");
-  expect(screen.queryByRole("button", { name: "Add label" })).toBeNull();
 });
 
 const memberRow = async (name: string) => {
@@ -107,30 +130,90 @@ const memberRow = async (name: string) => {
 };
 const BOB = fixtures.members[1] as { id: string; name: string };
 
-it("a locked admin still lists members, with write controls disabled", async () => {
-  mountHosted("/settings/members", true, locked("admin"));
+const lockedAdmin = (path: string) => mountHosted(path, OPTS, locked("admin"));
+const NOTE = () => screen.getAllByText(NOTICE)[0];
+
+it("members: a locked admin sees the list, a notice, and every write control disabled", async () => {
+  lockedAdmin("/settings/members");
   const r = await memberRow(BOB.name);
+  expect(NOTE()).toBeVisible();
   expect(screen.getByRole("button", { name: "Add member" })).toBeDisabled();
-  const role = within(r).queryByRole("combobox", {
-    name: `Role for ${BOB.name}`,
-  });
-  if (role) expect(role).toBeDisabled();
-  const more = within(r).queryByRole("button", {
-    name: `More for ${BOB.name}`,
-  });
-  if (more) expect(more).toBeDisabled();
-  const rm = within(r).queryByRole("button", { name: `Remove ${BOB.name}` });
-  if (rm) expect(rm).toBeDisabled();
-  expect(role ?? more ?? rm).not.toBeNull();
+  expect(
+    within(r).getByRole("combobox", { name: `Role for ${BOB.name}` }),
+  ).toBeDisabled();
+  expect(
+    within(r).getByRole("button", { name: `More for ${BOB.name}` }),
+  ).toBeDisabled();
 });
 
-it("an unlocked admin keeps Add member enabled", async () => {
-  mountHosted("/settings/members", true, (m) => ({
+it("spaces: a locked admin sees the list; New space is disabled", async () => {
+  lockedAdmin("/settings/spaces");
+  expect(await screen.findByRole("list", { name: "Spaces" })).toBeVisible();
+  expect(NOTE()).toBeVisible();
+  expect(screen.getByRole("button", { name: "New space" })).toBeDisabled();
+});
+
+it("directory: a locked admin sees the page; its write controls are disabled", async () => {
+  lockedAdmin("/settings/directory");
+  expect(
+    await screen.findByRole("status", { name: "Sync status" }),
+  ).toBeVisible();
+  expect(NOTE()).toBeVisible();
+  expect(
+    await screen.findByRole("combobox", { name: "Add a restricted group" }),
+  ).toBeDisabled();
+});
+
+it("instance: a locked admin sees the settings; the fields are disabled", async () => {
+  lockedAdmin("/settings/instance");
+  const name = await screen.findByLabelText(/instance name/i);
+  expect(name).toBeVisible();
+  expect(NOTE()).toBeVisible();
+  expect(name).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+});
+
+it("tokens: a locked admin sees the token list; Create token is disabled", async () => {
+  lockedAdmin("/settings/agents");
+  expect(
+    await screen.findByRole("region", { name: "Personal access tokens" }),
+  ).toBeVisible();
+  expect(NOTE()).toBeVisible();
+  expect(screen.getByRole("button", { name: "Create token" })).toBeDisabled();
+});
+
+it("nothing is hidden: the members list is the same with and without the cap", async () => {
+  mountHosted("/settings/members", true);
+  await memberRow(BOB.name);
+  const names = () => screen.getAllByRole("listitem").map((l) => l.textContent);
+  const uncapped = names();
+  cleanup();
+  lockedAdmin("/settings/members");
+  await memberRow(BOB.name);
+  expect(names()).toEqual(uncapped);
+});
+
+it("the locked owner isn't read-only: controls stay enabled and refusals use the owner copy", async () => {
+  const posts = calls("POST");
+  mountHosted("/settings/members", OPTS, (m) => ({
     ...m,
-    user: { ...m.user, role: "admin" },
+    user: { ...m.user, role: "owner" },
   }));
   await memberRow(BOB.name);
+  expect(screen.queryByText(NOTICE)).toBeNull();
   expect(screen.getByRole("button", { name: "Add member" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Add member" }));
+  const dialog = await screen.findByRole("dialog");
+  fireEvent.change(within(dialog).getByLabelText("Email"), {
+    target: { value: "new@example.com" },
+  });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+  await waitFor(() => expect(posts.length).toBe(1));
+  expect(
+    await screen.findByText(
+      "Your trial ended, so this instance is read-only until you pick a plan.",
+    ),
+  ).toBeVisible();
 });
 
 it("on free, a promotion refused with plan_limit shows by the member row, not as a toast", async () => {

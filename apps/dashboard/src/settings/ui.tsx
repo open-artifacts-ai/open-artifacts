@@ -9,6 +9,8 @@ import {
   Button as ShButton,
 } from "@oa/ui/shadcn";
 import type { ReactNode } from "react";
+import { READ_ONLY_NOTICE } from "../api/errorCopy";
+import { useFrozen } from "../auth/permissions";
 import { toast } from "../layout/toast";
 
 /** The settings pages' 880px measure, centered in the shell gutter. */
@@ -127,5 +129,26 @@ export function Code({
         <code>{code}</code>
       </pre>
     </CodeBlock>
+  );
+}
+
+/**
+ * A settings page's write surface. Under the plan cap the fieldset turns
+ * every control inside off and one muted line says why; lists stay visible.
+ */
+export function WriteLock({ children }: { children: ReactNode }) {
+  const frozen = useFrozen();
+  return (
+    <fieldset
+      disabled={frozen}
+      className="m-0 grid min-w-0 gap-[var(--oa-space-3)] border-0 p-0"
+    >
+      {frozen && (
+        <p role="status" className={`m-0 ${muted}`}>
+          {READ_ONLY_NOTICE}
+        </p>
+      )}
+      {children}
+    </fieldset>
   );
 }

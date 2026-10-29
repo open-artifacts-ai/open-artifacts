@@ -1,4 +1,4 @@
-import type { ErrorCode } from "@oa/shared";
+import type { ErrorCode, Me } from "@oa/shared";
 import { heicCopy, KINDS } from "../upload/openable";
 import { ApiClientError } from "./client";
 
@@ -66,11 +66,10 @@ const planCopy = (e: ApiClientError, owner: boolean): string | undefined => {
             : `This instance is read-only right now. ${ASK}.`;
       }
     case "plan_limit": {
-      const what =
-        typeof d?.max === "number" && typeof d.limit === "string"
-          ? `The free plan allows up to ${d.max} ${PLAN_LIMIT_NOUN[d.limit] ?? d.limit}.`
-          : "The free plan's limit is reached.";
-      const raise = typeof d?.max === "number" && typeof d.limit === "string";
+      const raise = typeof d?.max === "number" && typeof d?.limit === "string";
+      const what = raise
+        ? `The free plan allows up to ${d.max} ${PLAN_LIMIT_NOUN[d.limit as string] ?? d.limit}.`
+        : "The free plan's limit is reached.";
       return owner
         ? `${what} Choose a paid plan${raise ? " to raise it" : ""}.`
         : `${what} ${ASK} about a paid plan.`;
@@ -82,6 +81,8 @@ const planCopy = (e: ApiClientError, owner: boolean): string | undefined => {
 
 /** Asking a space manager can't help a guest or restricted member. */
 const CAPPED_FORBIDDEN = "Your account can only view, so you can't publish.";
+/** What a locked admin reads by disabled write controls. */
+export const READ_ONLY_NOTICE = `This instance is read-only right now. ${ASK}.`;
 const PLAN_FORBIDDEN =
   "This instance is read-only right now, so you can't publish.";
 
@@ -92,7 +93,7 @@ export type ErrorContext = {
   /** Me.auth.cap is set (a guest or restricted member). */
   capped?: boolean;
   /** Me.auth.cap, when capped: "plan" is a locked instance, not a view-only account. */
-  cap?: "guest" | "restricted" | "plan" | null;
+  cap?: NonNullable<Me["auth"]>["cap"];
   /** The caller is the org owner (uncapped): billing copy says what they can do. */
   owner?: boolean;
   /** The error shows on the Directory page itself. */
