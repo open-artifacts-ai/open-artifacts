@@ -1753,11 +1753,11 @@ describe("F: r2ReleaseReader", () => {
 // ---------- G: gates ----------
 
 describe("G: gates", () => {
-  it("PROD_UNLOCKED stays false, RELEASE_PUBKEY is pinned (key ceremony 2026-10-24), FLOOR_MIN_SEQ starts at 1", async () => {
+  it("PROD_UNLOCKED is open, RELEASE_PUBKEY is pinned (key ceremony 2026-10-24), FLOOR_MIN_SEQ starts at 1", async () => {
     const real = await vi.importActual<
       typeof import("../src/internal/gates.js")
     >("../src/internal/gates.js");
-    expect(real.PROD_UNLOCKED).toBe(false);
+    expect(real.PROD_UNLOCKED).toBe(true);
     expect(real.RELEASE_PUBKEY.staging).not.toBe(
       real.RELEASE_PUBKEY_PLACEHOLDER,
     );
