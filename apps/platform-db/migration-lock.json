@@ -1,0 +1,11 @@
+{
+  "_doc": "Platform D1 migration lock (scripts/ops/check-migration-lock.mjs). Frozen: 0001 to 0005 are deployed to staging and prod, and installs record applied migrations by name only, so an edited pinned file never reaches an existing database. A pinned file never changes: add a new migration, and add its sha256 to the pins in the same PR (CI fails on an unpinned file).",
+  "frozen": true,
+  "pins": {
+    "0001_installs.sql": "8754a77a2a0a6bf07a09d8f0f01354a28df90937a75e98976234050e2f2b8d41",
+    "0002_release_floor.sql": "9bdb5f6b8c744fe0c04dd4fa4e81882ed972a13756cfd95e86518c80dd27e99c",
+    "0003_lifecycle.sql": "57f69a6daa8629314cc80d4c961909af9c588180f2824b83c30ea28757bc16f5",
+    "0004_audit_actor.sql": "646c44560d1218c7f54c43d82796d5a08b23e0c5e1738f118a0cf53bfdbd6e0f",
+    "0005_directory_revoke.sql": "6409b882966d9368a7068d5c328c383513c03505b4d3da05d72319080beb2118"
+  }
+}
