@@ -364,7 +364,7 @@ esac`;
         { VERIFY_STATUS: "disabled" },
         { VERIFY_STATUS: "expired" },
         { TOK_EXPECT: "some-other-token" },
-      ]) {
+      ] as Record<string, string>[]) {
         const r = step("publish-release", env);
         expect(r.code, JSON.stringify(env)).toBe(1);
         expect(existsSync(r.file("r2"))).toBe(false);

@@ -62,7 +62,7 @@ const INJECT = [
   "a\u0000b",
   "--env=prod",
   "-x",
-  "${{ secrets.PROVISION_TOKEN }}",
+  "${{ secrets.CLOUDFLARE_API_TOKEN }}",
   "' OR 1=1 --",
   "a|b",
   "é",

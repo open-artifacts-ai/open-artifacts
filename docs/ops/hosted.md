@@ -363,35 +363,48 @@ A failed or skipped alert never changes the nightly lines above.
 
 The platform Workers and the zone wiring deploy from CI, never a laptop: `deploy-hosted-platform.yml` is dispatch-only and takes an env (`staging` or `prod`), a stable release tag and a comma-separated target list in dependency order (`auth-broker,directory-broker,dispatch,scheduler,inventory,inventory-key,zones`). Prod runs only from main: the workflow checks `github.ref`, and the script refuses a CI prod run unless `GITHUB_REF` is `refs/heads/main` and the Environment is `hosted-prod-deploy`. The workflow file and its deploy scripts come from main; everything deployed comes from the tag. It runs `scripts/ops/deploy-hosted-platform.sh <env> <target>`, which deploys through `deploy-platform-worker.sh` (the allowlist, placeholders filled and checked), sets secrets only after the Worker exists, then reads the live settings back and refuses on any mismatch: bindings, vars, the dispatch namespace, service bindings, observability (off on the brokers and dispatch), the scheduler's two schedules, and the exact secret names. `verify_only` deploys and sets nothing: it reads the live Workers back and runs every check (a read-only rehearsal). Before deploying, `auth-broker` refuses unless `GOOGLE_CLIENT_ID` equals provision's pin, `BROKER_GOOGLE_CLIENT_ID[<env>]` in main's `packages/provision/src/wfp.ts` (a `null` pin is a refusal too). The inventory Worker deploys through the same wrapper (its config has per-env blocks); `inventory-key` sets its key from the Environment secret.
 
-`zones` runs `scripts/ops/hosted-zones.sh <env> plan`, then `apply`, in its own step, the only one that sees `ZONE_TOKEN`. It wires both zones exactly as the dispatch section says (the two `AAAA * → 100::` records, the four routes, and `ssl` strict, `always_use_https` on, `min_tls_version` 1.2; no HSTS). Every run plans, then applies in the same job (`verify_only` stays plan only); the plan, with "ok" for what already matches, and the result go to the job summary. Before writing, it refuses unless every planned change is an addition or a setting change from that fixed set, and both modes refuse a different `*` record, one of our route patterns on another Worker, or a route that isn't ours but one of our patterns matches (other routes on the zone are left alone). After applying, it reads the records, routes and settings back and fails unless they equal the set exactly. Secrets reach wrangler on stdin and the API token reaches curl on stdin; none is in argv or printed.
+`zones` runs `scripts/ops/hosted-zones.sh <env> plan`, then `apply`, in its own step, with the same `CLOUDFLARE_API_TOKEN`. It wires both zones exactly as the dispatch section says (the two `AAAA * → 100::` records, the four routes, and `ssl` strict, `always_use_https` on, `min_tls_version` 1.2; no HSTS). Every run plans, then applies in the same job (`verify_only` stays plan only); the plan, with "ok" for what already matches, and the result go to the job summary. Before writing, it refuses unless every planned change is an addition or a setting change from that fixed set, and both modes refuse a different `*` record, one of our route patterns on another Worker, or a route that isn't ours but one of our patterns matches (other routes on the zone are left alone). After applying, it reads the records, routes and settings back and fails unless they equal the set exactly. Secrets reach wrangler on stdin and the API token reaches curl on stdin; none is in argv or printed.
 
 No one approves a run. Before anything is checked out or deployed, the release gate (`scripts/ci/tag-passed-checks.sh <env> <tag>`, main's copy, read-only with `github.token`: `contents: read`, `actions: read`) refuses the tag unless it is a published, non-draft, non-prerelease release; its commit is on `main`; the `release-please.yml` push run for that commit concluded `success`, with `verify-release`, `hosted-check` and `hosted-attach-<env>` each `success`; and the release has an `oa-release-<env>-*` asset. Any API error fails the gate. If a release was not safe, one of those checks failed first.
 
-Each env has its own GitHub Environment, `hosted-staging-deploy` or `hosted-prod-deploy`: deployment branch `main` only, admin bypass off, no approval step. They stay separate from `hosted-staging` and `hosted-prod`, so release signing can't read the deploy tokens and deploys can't read the signing key. Both hold the same names:
+Each env has its own GitHub Environment, `hosted-staging-deploy` or `hosted-prod-deploy`: deployment branch `main` only, admin bypass off, no approval step. They stay separate from `hosted-staging` and `hosted-prod`, so release signing can't read the deploy token and deploys can't read the signing key. Both hold the same secret names and no variables:
 
-| Kind | Name | Value |
-| --- | --- | --- |
-| Secret | `DEPLOY_TOKEN` | A Cloudflare API token for the hosted account: Workers Scripts Edit (account), nothing else; set a TTL |
-| Secret | `GOOGLE_CLIENT_SECRET` | The env's sign-in client secret |
-| Secret | `GOOGLE_DIRECTORY_CLIENT_SECRET` | The env's Directory client secret |
-| Secret | `INVENTORY_KEY` | `oa-<p>-inventory`'s key (32+ chars); only the `inventory-key` target uses it. For prod it must equal the red-line `REDLINE_PROD_INVENTORY_KEY`: generate it once and set both from one shell (below) |
-| Secret | `ZONE_TOKEN` | A Cloudflare API token: Zone Read, Zone Settings Edit, DNS Edit, Workers Routes Edit, the env's two zones only; set a TTL. Only the `zones` step sees it |
-| Variable | `HOSTED_ACCOUNT_ID` | The hosted account id |
-| Variable | `GOOGLE_CLIENT_ID`, `GOOGLE_DIRECTORY_CLIENT_ID` | The env's two client ids (public) |
-| Variable | `BROKER_REGISTRY_ID`, `DIRECTORY_REGISTRY_ID`, `HOSTS_KV_ID` | The ids of `oa-<p>-broker-registry`, `oa-<p>-directory-registry`, `oa-<p>-hosts` |
-| Variable | `PLATFORM_DB_ID` | The id of `oa-<p>-platform` |
-| Variable | `EMAIL_ZONE_TAGS`, `EMAIL_DAILY_LIMIT` | The sending zone tag(s) and the account's daily sending limit (see the scheduler section) |
+| Secret | Value |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | The env's one Cloudflare token, the keychain item `oa-hosted-<env>`. Every Cloudflare call in `deploy-hosted-platform` and `hosted-ops` uses it: the deploys, the zones, the resource id and Turnstile lookups, and R2 (its S3 key is derived from it in the run) |
+| `GOOGLE_CLIENT_SECRET` | The env's sign-in client secret |
+| `GOOGLE_DIRECTORY_CLIENT_SECRET` | The env's Directory client secret |
+| `INVENTORY_KEY` | `oa-<p>-inventory`'s key (32+ chars); only the `inventory-key` target uses it. For prod it must equal the red-line `REDLINE_PROD_INVENTORY_KEY` (step 3 below sets both) |
+| `CREATE_OWNER_EMAIL` | `hosted-ops` `create` only: the new install's owner email |
 
-The broker state keys (`BROKER_STATE_KEY`, `DIRECTORY_STATE_KEY`) are never stored anywhere: the first run generates each one inside the runner, and later runs keep it (a failed secrets listing stops the run instead of reading as "absent"). The Google secrets are set on every run, so rotating one is: update the Environment secret, then re-run that target. Setting the shared inventory key, from your own terminal (nothing is printed or saved):
+Everything else CI derives, and fails closed:
 
-```sh
-K=$(openssl rand -base64 48)
-printf %s "$K" | gh secret set INVENTORY_KEY --env hosted-prod-deploy -R open-artifacts-ai/open-artifacts
-printf %s "$K" | gh secret set REDLINE_PROD_INVENTORY_KEY --env redline-staging -R open-artifacts-ai/open-artifacts
-unset K
-```
+- Constants: `.github/hosted/<env>.json` (main's copy) holds `account_id`, `email_zone_tags`, `email_daily_limit`, `google_client_id` and `google_directory_client_id`. `scripts/ci/hosted-constants.sh` loads them into the job (`CLOUDFLARE_ACCOUNT_ID`, `EMAIL_ZONE_TAGS`, `EMAIL_DAILY_LIMIT`, `GOOGLE_CLIENT_ID`, `GOOGLE_DIRECTORY_CLIENT_ID`); a missing or empty key fails. Tests pin `google_client_id` to provision's `BROKER_GOOGLE_CLIENT_ID[<env>]` and `account_id` to the hosted account (`docs/ops/staging.md`). Staging's `email_zone_tags` is a placeholder that the scheduler target refuses until the staging sending zone's tag is committed.
+- Resource ids: `scripts/ci/hosted-resource-ids.sh <env>` lists the account's D1 databases and KV namespaces (every page) and resolves `oa-<p>-platform` (`PLATFORM_DB_ID`), `oa-<p>-hosts` (`HOSTS_KV_ID`), `oa-<p>-broker-registry` (`BROKER_REGISTRY_ID`) and `oa-<p>-directory-registry` (`DIRECTORY_REGISTRY_ID`) by exact name. Each must match exactly one; none, two or more, a failed call or a network error stops the run naming the resource.
 
-Then run the `inventory-key` target.
+The broker state keys (`BROKER_STATE_KEY`, `DIRECTORY_STATE_KEY`) are never stored anywhere: the first run generates each one inside the runner, and later runs keep it (a failed secrets listing stops the run instead of reading as "absent"). The Google secrets are set on every run, so rotating one is: update the Environment secret, then re-run that target.
+
+What a person sets for prod, from their own terminal (nothing is printed or saved):
+
+1. The token, from the keychain straight into the Environment:
+
+   ```sh
+   security find-generic-password -s oa-hosted-prod -a open-artifacts -w | gh secret set CLOUDFLARE_API_TOKEN --env hosted-prod-deploy -R open-artifacts-ai/open-artifacts
+   ```
+
+2. Before a `create`, the owner's email (it prompts):
+
+   ```sh
+   gh secret set CREATE_OWNER_EMAIL --env hosted-prod-deploy -R open-artifacts-ai/open-artifacts
+   ```
+
+3. The inventory key, generated once and set in both Environments from one shell variable, on stdin:
+
+   ```sh
+   ( K=$(openssl rand -base64 48); printf %s "$K" | gh secret set INVENTORY_KEY --env hosted-prod-deploy -R open-artifacts-ai/open-artifacts && printf %s "$K" | gh secret set REDLINE_PROD_INVENTORY_KEY --env redline-staging -R open-artifacts-ai/open-artifacts )
+   ```
+
+   Then run `deploy-hosted-platform` with the `inventory-key` target, which puts it on the Worker.
 
 ## Hosted release files (T3b)
 
@@ -526,8 +539,11 @@ Every hosted install operation and release publish runs from the `hosted-ops` wo
 
 - Inputs: `env` (staging or prod), `op` (`create`, `upgrade`, `rollback`, `update-vars`, `status`, `delete`, `release-lease`, `turnstile-init`, `publish-release`, `publish-floor`), `install`, `tag` (a stable `vX.Y.Z`: the version for `create` and `upgrade`, the release for `publish-release`), `args` (JSON) and `confirm` (the install id again, for `delete` and `release-lease`).
 - `args` per op: `create` `{"slug","owner","to"?,"var"?:["K=V"],"testHooks"?}` (`testHooks` staging only; `to` must equal the tag when both are given), `update-vars` `{"var":["K=V",...]}` (the full set; only names `HOSTED_VARS` accepts), `delete` `{"skipDirectoryRevoke"?:"<reason>"}`, `release-lease` `{"force"?:true}`, `publish-floor` `{"floor":{"record","signature"}}` (the signed floor from a `hosted-floor` run's artifact; `publishFloor` verifies it). Every other op takes `{}`.
-- Environment: `hosted-prod-deploy` for prod, `hosted-staging-deploy` for staging (main only, no required reviewer: no run waits for a person). Secrets in each: `PROVISION_TOKEN` (the env's provisioning token, the keychain item `oa-hosted-<env>`) and `R2_TOKEN` (`<accessKeyId>:<secretAccessKey>`, Object Read & Write on `oa-<p>-releases` only). They are separate from `deploy-hosted-platform`'s `DEPLOY_TOKEN`. Variable: `HOSTED_ACCOUNT_ID`. `TURNSTILE_KEYS` (`<sitekey>:<secret>`, the env's one widget): the CLI reads it from a 0600 file, only for the ops that render an install's vars (create, upgrade, rollback, update-vars), never in args or output; without it, provision refuses an install with codes on. For `create`, also `CREATE_OWNER_EMAIL`: the repo is public and so are a run's inputs, so the owner's email is never an input. Set it just before the create (`gh secret set CREATE_OWNER_EMAIL --env hosted-<env>-deploy`, which prompts), and `args` refuses an `owner` key.
-- Steps: prod checks `github.ref` is main; checkout of the workflow's commit; `scripts/hosted/src/ci-args.ts` validates the inputs (passed through env, never shell text) and prints the CLI argv as a JSON array; one step writes `PROVISION_TOKEN` (and `R2_TOKEN` for the publish ops only) to 0600 files under `umask 077` with `set +x`; `pnpm -s oa:hosted <argv>` runs with `--ci-owner-token` for `create`, `upgrade`, `rollback` and `update-vars`; then, always: `ci-token-sweep` for those ops, removal of the files, and a job summary of every JSON line (already redacted).
+- Environment: `hosted-prod-deploy` for prod, `hosted-staging-deploy` for staging (main only, no required reviewer: no run waits for a person), the same one `deploy-hosted-platform` uses. Secret: `CLOUDFLARE_API_TOKEN` (the env's provisioning token, the keychain item `oa-hosted-<env>`). The account id comes from `.github/hosted/<env>.json`. Derived in the run, each into a 0600 file the CLI reads, never in args or output:
+  - R2 (`publish-release`, `publish-floor` only): `scripts/ci/hosted-r2-key.sh` reads the token's id from `GET /user/tokens/verify` and writes `<token id>:<sha256 hex of the token>`, Cloudflare's S3 credentials for an API token ([R2 API tokens](https://developers.cloudflare.com/r2/api/tokens/), "Get S3 API credentials from an API token"). Both halves are masked first. A status other than `active` or any API error fails the step.
+  - Turnstile (`create`, `upgrade`, `rollback`, `update-vars`, the ops that render an install's vars): `scripts/ci/hosted-turnstile-keys.sh` finds the widget named `oa-<p>-turnstile` in the account's widget list (every page, exactly one), reads its secret from the widget's own GET (the list omits it), masks it and writes `<sitekey>:<secret>`. An empty secret or any error fails the step.
+- For `create`, also `CREATE_OWNER_EMAIL`: the repo is public and so are a run's inputs, so the owner's email is never an input. Set it just before the create (`gh secret set CREATE_OWNER_EMAIL --env hosted-<env>-deploy`, which prompts), and `args` refuses an `owner` key.
+- Steps: prod checks `github.ref` is main; checkout of the workflow's commit; `scripts/hosted/src/ci-args.ts` validates the inputs (passed through env, never shell text) and prints the CLI argv as a JSON array; one step, the only one that sees the token, writes it (and the derived R2 or Turnstile keys) to 0600 files under `umask 077` with `set +x`; `pnpm -s oa:hosted <argv>` runs with `--ci-owner-token` for `create`, `upgrade`, `rollback` and `update-vars`; then, always: `ci-token-sweep` for those ops, removal of the files, and a job summary of every JSON line (already redacted).
 - Concurrency: one run per `hosted-ops-<env>-<install or env>`. Audit actor: the run URL.
 - Gates (user ruling, 2026-10-30: no person approves a release to prod; a check that should have caught a problem fails first):
   - Release gate: every `create`, `upgrade` and `publish-release` run (both envs) runs `scripts/ci/tag-passed-checks.sh <env> <tag>` right after the inputs check, before any token is read. The tag is the version being installed (create, upgrade, from `tag` or `args.to`) or published; `ci-args.ts` hands it over as the `release` step output. It fails closed: a tag that is not a published stable release on `main` whose release-please run and checks passed, or any API error, stops the run. The workflow gets `actions: read` for it.
