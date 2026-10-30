@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.75.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.74.1...v0.75.0) (2026-10-30)
+
+
+### Features
+
+* **ci:** migration locks: platform-db lock, guard holds edited server migrations ([#868](https://github.com/open-artifacts-ai/open-artifacts/issues/868)) ([d098c61](https://github.com/open-artifacts-ai/open-artifacts/commit/d098c6188861e3f7e80f703256a49f620dbdffe5))
+* **provision:** unlock prod (PROD_UNLOCKED = true) ([#832](https://github.com/open-artifacts-ai/open-artifacts/issues/832)) ([866fe47](https://github.com/open-artifacts-ai/open-artifacts/commit/866fe470ce42bc7bd957d44077237c383c048c41))
+
 ## [0.74.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.74.0...v0.74.1) (2026-10-28)
 
 
