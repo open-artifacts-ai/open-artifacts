@@ -297,7 +297,7 @@ const PROD_FILES = {
  * _INVENTORY_KEY, and env REDLINE_PROD_ACCOUNT_ID). Undefined when neither
  * is configured.
  */
-function parseProd(
+export function parseProd(
   raw: Record<string, unknown> | undefined,
   secretsDir: string | undefined,
   env: Record<string, string | undefined>,
