@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: literal workflow expressions
 // deploy-hosted-platform.yml: one env's hosted platform Workers deploy by hand
 // only, from a stable tag that passed the release gate, in that env's
 // main-only Environment (no approval step), with main's deploy scripts and the
@@ -44,11 +45,9 @@ describe("deploy-hosted-platform.yml", () => {
     ]);
     expect(job.permissions).toBeUndefined();
     expect(job.environment).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       "${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}",
     );
     expect(w.concurrency).toEqual({
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       group: "hosted-platform-${{ inputs.env }}",
       "cancel-in-progress": false,
     });
@@ -70,13 +69,12 @@ describe("deploy-hosted-platform.yml", () => {
       String(s.uses).startsWith("actions/checkout@"),
     );
     expect(outs).toHaveLength(3);
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(outs[1]?.with.ref).toBe("refs/tags/${{ inputs.tag }}");
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(outs[2]?.with).toMatchObject({
       ref: "${{ github.sha }}",
       path: ".deploy-logic",
-      "sparse-checkout": "scripts/ops\npackages/provision/src\n",
+      "sparse-checkout":
+        "scripts/ops\nscripts/ci\npackages/provision/src\n.github/hosted\n",
     });
     expect(named("The checkout is exactly the tag").run).toContain(
       'test "$(git describe --tags --exact-match)" = "$TAG"',
@@ -90,30 +88,100 @@ describe("deploy-hosted-platform.yml", () => {
       'cp .deploy-logic/packages/provision/src/wfp.ts "$RUNNER_TEMP/main-wfp.ts"',
     );
     expect(named("Deploy and verify").env.BROKER_PIN_FILE).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       "${{ runner.temp }}/main-wfp.ts",
     );
     expect(steps.indexOf(named("Use main's deploy scripts"))).toBeLessThan(
       steps.indexOf(named("Deploy and verify")),
     );
+    // The constants and the id lookup are main's too, never the tag's.
+    expect(use).toContain(
+      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh; do",
+    );
+    expect(use).toContain(
+      'cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"',
+    );
   });
 
-  it("only the deploy step sees secrets, through env, exactly these", () => {
+  it("loads main's committed constants, then resolves the resource ids, before deploying; no variables", () => {
+    const i = (n: string) => steps.indexOf(named(n));
+    expect(i("Use main's deploy scripts")).toBeLessThan(
+      i("Load the hosted constants"),
+    );
+    expect(i("Load the hosted constants")).toBe(
+      i("Resolve the resource ids") - 1,
+    );
+    expect(i("Resolve the resource ids")).toBe(i("Deploy and verify") - 1);
+    expect(named("Load the hosted constants")).toMatchObject({
+      env: { DEPLOY_ENV: "${{ inputs.env }}" },
+      run: 'bash "$RUNNER_TEMP/main-ci/hosted-constants.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"',
+    });
+    expect(named("Resolve the resource ids")).toMatchObject({
+      env: {
+        DEPLOY_ENV: "${{ inputs.env }}",
+        CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+      },
+      run: 'bash "$RUNNER_TEMP/main-ci/hosted-resource-ids.sh" "$DEPLOY_ENV"',
+    });
+    expect(Object.keys(named("Resolve the resource ids").env)).toHaveLength(2);
+    expect(named("Load the hosted constants").if).toBeUndefined();
+    // Only the targets that bind an id (or the zone tag) look them up.
+    const cond = named("Resolve the resource ids").if as string;
+    const runsFor = (targets: string) => {
+      const js = cond
+        .replace(/^\$\{\{\s*/, "")
+        .replace(/\s*\}\}$/, "")
+        .replace(
+          /contains\(format\(',\{0\},', inputs\.targets\), '([^']*)'\)/g,
+          (_, t) => JSON.stringify(`,${targets},`.includes(t)),
+        );
+      expect(js).toMatch(/^(true|false|\|\|| )+$/);
+      return new Function(`return (${js});`)() as boolean;
+    };
+    for (const t of [
+      "auth-broker",
+      "directory-broker",
+      "dispatch",
+      "scheduler",
+      "inventory",
+      "auth-broker,directory-broker,dispatch,scheduler",
+      "inventory,inventory-key,zones",
+    ])
+      expect(runsFor(t), t).toBe(true);
+    for (const t of ["inventory-key", "zones", "inventory-key,zones"])
+      expect(runsFor(t), t).toBe(false);
+    // Everything the user used to copy into the Environment comes from these.
+    expect(text).not.toContain("vars.");
+    for (const k of [
+      "CLOUDFLARE_ACCOUNT_ID",
+      "PLATFORM_DB_ID",
+      "HOSTS_KV_ID",
+      "BROKER_REGISTRY_ID",
+      "DIRECTORY_REGISTRY_ID",
+      "EMAIL_ZONE_TAGS",
+      "EMAIL_DAILY_LIMIT",
+      "GOOGLE_CLIENT_ID",
+      "GOOGLE_DIRECTORY_CLIENT_ID",
+    ])
+      expect(named("Deploy and verify").env[k], k).toBeUndefined();
+  });
+
+  it("only the id lookup, deploy and zones steps see secrets, through env, exactly these", () => {
     const withSecrets = steps.filter((s) =>
       JSON.stringify(s).includes("secrets."),
     );
     expect(withSecrets.map((s) => s.name)).toEqual([
+      "Resolve the resource ids",
       "Deploy and verify",
       "Zones",
     ]);
-    // The zone token is in the Zones step only.
-    expect(JSON.stringify(named("Deploy and verify"))).not.toContain(
-      "ZONE_TOKEN",
-    );
-    expect(named("Zones").env.ZONE_TOKEN).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ secrets.ZONE_TOKEN }}",
-    );
+    // One Cloudflare token for everything; the old names are gone.
+    for (const old of ["DEPLOY_TOKEN", "ZONE_TOKEN", "PROVISION_TOKEN"])
+      expect(text).not.toContain(old);
+    expect(named("Zones").env).toEqual({
+      DEPLOY_ENV: "${{ inputs.env }}",
+      VERIFY_ONLY: "${{ inputs.verify_only && '1' || '' }}",
+      CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+    });
     const env = named("Deploy and verify").env as Record<string, string>;
     const secrets = Object.entries(env)
       .filter(([, v]) => v.includes("secrets."))
@@ -127,7 +195,9 @@ describe("deploy-hosted-platform.yml", () => {
     ]);
     // The same names in each env's Environment: no env-specific secret names.
     expect(JSON.stringify(env)).not.toMatch(/PROD_|STAGING_/);
-    expect(env.CLOUDFLARE_API_TOKEN).toBe("${{ secrets.DEPLOY_TOKEN }}");
+    expect(env.CLOUDFLARE_API_TOKEN).toBe(
+      "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+    );
     expect(env.VERIFY_ONLY).toBe("${{ inputs.verify_only && '1' || '' }}");
     expect(named("Deploy and verify").run).not.toContain("secrets.");
     expect(named("Deploy and verify").run).toContain(
@@ -140,14 +210,12 @@ describe("deploy-hosted-platform.yml", () => {
     const i = steps.indexOf(gate);
     expect(steps.indexOf(named("Check the inputs"))).toBe(i - 2);
     expect(steps[i - 1]?.with).toMatchObject({
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       ref: "${{ github.sha }}",
       path: ".release-gate",
       "sparse-checkout": "scripts/ci",
       "persist-credentials": false,
     });
     expect(gate.if).toBeUndefined();
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(gate.env).toEqual({
       DEPLOY_ENV: "${{ inputs.env }}",
       TAG: "${{ inputs.tag }}",
@@ -159,7 +227,6 @@ describe("deploy-hosted-platform.yml", () => {
     const tagOut = steps.find(
       (s) =>
         String(s.uses).startsWith("actions/checkout@") &&
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
         s.with.ref === "refs/tags/${{ inputs.tag }}",
     );
     expect(i).toBeLessThan(steps.indexOf(tagOut as Record<string, unknown>));
@@ -167,10 +234,7 @@ describe("deploy-hosted-platform.yml", () => {
 
   it("zones plan, then apply in the same job; verify_only stays plan only", () => {
     const z = named("Zones");
-    expect(z.env.VERIFY_ONLY).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ inputs.verify_only && '1' || '' }}",
-    );
+    expect(z.env.VERIFY_ONLY).toBe("${{ inputs.verify_only && '1' || '' }}");
     expect(text).not.toContain("apply_zones");
     const lines = (z.run as string).trim().split("\n");
     expect(lines).toEqual([
@@ -188,7 +252,6 @@ describe("deploy-hosted-platform.yml", () => {
     expect(s.if).toBe("${{ inputs.env == 'prod' }}");
     expect(s.run).toBe('test "$REF" = refs/heads/main');
     expect(named("Deploy and verify").env.DEPLOY_ENVIRONMENT).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       "${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}",
     );
   });

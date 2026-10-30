@@ -5,6 +5,7 @@
 // the step that writes the 0600 token files, an always() sweep of the
 // ephemeral CI owner token, and the "prod is clean" precheck before a prod
 // create or upgrade.
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -115,7 +116,7 @@ describe("hosted-ops.yml", () => {
     );
   });
 
-  it("only the token-file step sees secrets, exactly PROVISION_TOKEN and (publish ops only) R2_TOKEN", () => {
+  it("only the token-file step sees a token, exactly CLOUDFLARE_API_TOKEN; R2 and Turnstile are derived from it", () => {
     const withSecrets = steps.filter((s) =>
       JSON.stringify(s).includes("secrets."),
     );
@@ -133,12 +134,21 @@ describe("hosted-ops.yml", () => {
     );
     const s = named("Write the token files");
     expect(s.env).toEqual({
-      PROVISION_TOKEN: "${{ secrets.PROVISION_TOKEN }}",
-      R2_TOKEN:
-        "${{ (inputs.op == 'publish-release' || inputs.op == 'publish-floor') && secrets.R2_TOKEN || '' }}",
-      TURNSTILE_KEYS:
-        '${{ contains(fromJSON(\'["create","upgrade","rollback","update-vars"]\'), inputs.op) && secrets.TURNSTILE_KEYS || \'\' }}',
+      CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+      OPS_ENV: "${{ inputs.env }}",
+      OPS_OP: "${{ inputs.op }}",
     });
+    // The old per-purpose secrets are gone (the precheck's read-only
+    // REDLINE_PROD_R2_TOKEN is another secret).
+    expect(text).not.toMatch(
+      /(^|[^A-Z_])(PROVISION_TOKEN|R2_TOKEN|TURNSTILE_KEYS|ZONE_TOKEN)\b/m,
+    );
+    expect(s.run).toContain(
+      'publish-release | publish-floor) bash scripts/ci/hosted-r2-key.sh "$dir/r2" ;;',
+    );
+    expect(s.run).toContain(
+      'bash scripts/ci/hosted-turnstile-keys.sh "$OPS_ENV" "$dir/turnstile"',
+    );
     // The CLI step learns the Turnstile file exists from a plain flag, never a secret.
     expect(named("Run the operation").env.OA_HOSTED_TURNSTILE_FILE).toBe(
       "${{ steps.tok.outputs.turnstile == '1' && format('{0}/hosted-ops-secrets/turnstile', runner.temp) || '' }}",
@@ -146,6 +156,17 @@ describe("hosted-ops.yml", () => {
     expect(s.run).toMatch(/^set \+x\n/);
     expect(s.run).toContain("umask 077");
     expect(JSON.stringify(w)).not.toContain("DEPLOY_TOKEN");
+    // The op job reads no variables: the constants are committed.
+    expect(JSON.stringify(job)).not.toContain("vars.");
+    const load = named("Load the hosted constants");
+    expect(load.env).toEqual({ OPS_ENV: "${{ inputs.env }}" });
+    expect(load.run).toBe(
+      'bash scripts/ci/hosted-constants.sh "$OPS_ENV" .github/hosted',
+    );
+    expect(load.if).toBeUndefined();
+    expect(steps.indexOf(load)).toBeLessThan(
+      steps.indexOf(named("Check the inputs")),
+    );
     // The CLI step gets file paths, never a secret value.
     const run = named("Run the operation").env;
     expect(run.OA_HOSTED_TOKEN_FILE).toBe(
@@ -166,7 +187,26 @@ describe("hosted-ops.yml", () => {
     );
     const rm = named("Remove the token files");
     expect(rm.if).toBe("${{ always() }}");
-    expect(rm.run).toContain('"$RUNNER_TEMP/hosted-ops-secrets"');
+    expect(rm.run).toContain('d="$RUNNER_TEMP/hosted-ops-secrets"');
+    expect(rm.run).toContain('rm -f "$d/r2" "$d/turnstile" "$d/token"');
+    // Run it: the derived R2 and Turnstile files (and the token) are gone.
+    const sb = sandbox({});
+    const temp = join(sb.dir, "runner-temp");
+    const d = join(temp, "hosted-ops-secrets");
+    mkdirSync(d, { recursive: true });
+    for (const f of ["token", "r2", "turnstile"])
+      writeFileSync(join(d, f), "x");
+    const r = sb.run(["bash", "-c", rm.run], { env: { RUNNER_TEMP: temp } });
+    expect(r.code, r.err).toBe(0);
+    expect(existsSync(d)).toBe(false);
+    // The step names the same files the CLI step reads.
+    const cli = named("Run the operation").env;
+    expect(cli.OA_HOSTED_R2_FILE).toBe(
+      "${{ runner.temp }}/hosted-ops-secrets/r2",
+    );
+    expect(cli.OA_HOSTED_TURNSTILE_FILE).toContain(
+      "'{0}/hosted-ops-secrets/turnstile'",
+    );
     expect(named("Summary").if).toBe("${{ always() }}");
     const i = (n: string) => steps.indexOf(named(n));
     expect(i("Run the operation")).toBeLessThan(i("Sweep the CI owner token"));
@@ -262,57 +302,132 @@ describe("the steps' shell, run", () => {
     }
   });
 
-  it("the token-file step writes 0600 files in a 0700 dir, prints nothing, and skips R2 when unset", () => {
-    const { sb, temp } = box();
+  describe("the token-file step", () => {
     const tok = "cfut_SECRETVALUE_never_printed_123";
-    const r = bash(sb, named("Write the token files").run, {
-      RUNNER_TEMP: temp,
-      PROVISION_TOKEN: tok,
-      R2_TOKEN: "",
+    const TOKEN_ID = "f".repeat(32);
+    const SITEKEY = "0x4AAAAAAA0123456789";
+    // Cloudflare: verify, the widget list and the widget's own GET; any call
+    // without the token on stdin fails. VERIFY_STATUS: the token's status.
+    const curl = `cfg="$(cat)"
+case "$cfg" in *"$TOK_EXPECT"*) ;; *) echo '{"success":false}'; exit 0 ;; esac
+case "\${@: -1}" in
+  */user/tokens/verify) printf '{"success":true,"result":{"id":"%s","status":"%s"}}' "$TOKEN_ID" "$VERIFY_STATUS" ;;
+  */challenges/widgets\\?*) printf '{"success":true,"result":[{"sitekey":"%s","name":"%s"},{"sitekey":"0x4other","name":"%s"}],"result_info":{"total_pages":1}}' "$SITEKEY" "\${WIDGET1:-oa-p-turnstile}" "\${WIDGET2:-oa-s-turnstile}" ;;
+  */challenges/widgets/*) printf '{"success":true,"result":{"sitekey":"%s","secret":"SECRETturnstile"}}' "$SITEKEY" ;;
+  *) echo '{"success":false}' ;;
+esac`;
+    const step = (op: string, env: Record<string, string> = {}) => {
+      const sb = sandbox({ curl });
+      const temp = join(sb.dir, "runner-temp");
+      mkdirSync(temp);
+      const output = join(temp, "github-output");
+      writeFileSync(output, "");
+      const r = sb.run(["bash", "-c", named("Write the token files").run], {
+        cwd: root,
+        env: {
+          RUNNER_TEMP: temp,
+          GITHUB_OUTPUT: output,
+          CLOUDFLARE_API_TOKEN: tok,
+          TOK_EXPECT: tok,
+          TOKEN_ID,
+          SITEKEY,
+          VERIFY_STATUS: "active",
+          CLOUDFLARE_ACCOUNT_ID: "26ac346086d4405f7a976d48747a2a75",
+          OPS_ENV: "prod",
+          OPS_OP: op,
+          ...env,
+        },
+      });
+      const dir = join(temp, "hosted-ops-secrets");
+      const file = (n: string) => join(dir, n);
+      const curls = sb.log().filter((l) => l.startsWith("curl "));
+      return { ...r, dir, file, output, curls };
+    };
+    const masksOnly = (out: string) =>
+      out
+        .split("\n")
+        .filter(Boolean)
+        .every((l) => l.startsWith("::add-mask::"));
+
+    it("writes the token to a 0600 file in a 0700 dir, prints nothing, and reads nothing else for a plain op", () => {
+      const r = step("status");
+      expect(r.code, r.err).toBe(0);
+      expect(r.out + r.err).toBe("");
+      expect(statSync(r.dir).mode & 0o777).toBe(0o700);
+      expect(statSync(r.file("token")).mode & 0o777).toBe(0o600);
+      expect(readFileSync(r.file("token"), "utf8")).toBe(`${tok}\n`);
+      expect(existsSync(r.file("r2"))).toBe(false);
+      expect(existsSync(r.file("turnstile"))).toBe(false);
+      expect(readFileSync(r.output, "utf8")).toBe("");
+      expect(r.curls).toEqual([]);
     });
-    expect(r.code).toBe(0);
-    expect(r.out + r.err).toBe("");
-    const dir = join(temp, "hosted-ops-secrets");
-    expect(statSync(dir).mode & 0o777).toBe(0o700);
-    expect(statSync(join(dir, "token")).mode & 0o777).toBe(0o600);
-    expect(readFileSync(join(dir, "token"), "utf8")).toBe(`${tok}\n`);
-    expect(existsSync(join(dir, "r2"))).toBe(false);
-    const { sb: sb2, temp: t2 } = box();
-    const r2 = bash(sb2, named("Write the token files").run, {
-      RUNNER_TEMP: t2,
-      PROVISION_TOKEN: tok,
-      R2_TOKEN: "AKIDAKIDAKIDAKID:SECRETSECRETSECRET",
+
+    it("publish ops: the R2 key is <token id>:<sha256 of the token>, 0600, both halves masked first", () => {
+      const sha = createHash("sha256").update(tok).digest("hex");
+      for (const op of ["publish-release", "publish-floor"]) {
+        const r = step(op);
+        expect(r.code, r.err).toBe(0);
+        expect(readFileSync(r.file("r2"), "utf8")).toBe(`${TOKEN_ID}:${sha}\n`);
+        expect(statSync(r.file("r2")).mode & 0o777).toBe(0o600);
+        expect(r.out).toBe(`::add-mask::${TOKEN_ID}\n::add-mask::${sha}\n`);
+        expect(r.err).toBe("");
+        expect(r.out + r.err).not.toContain(tok);
+        // The token went to curl on stdin only.
+        expect(r.curls.join("\n")).not.toContain(tok);
+        expect(existsSync(r.file("turnstile"))).toBe(false);
+      }
     });
-    expect(r2.code).toBe(0);
-    expect(statSync(join(t2, "hosted-ops-secrets", "r2")).mode & 0o777).toBe(
-      0o600,
-    );
-    const { sb: sb3, temp: t3 } = box();
-    const r3 = bash(sb3, named("Write the token files").run, {
-      RUNNER_TEMP: t3,
-      PROVISION_TOKEN: "",
-      R2_TOKEN: "",
+
+    it("publish ops fail closed on a token that is not active or a failed verify", () => {
+      for (const env of [
+        { VERIFY_STATUS: "disabled" },
+        { VERIFY_STATUS: "expired" },
+        { TOK_EXPECT: "some-other-token" },
+      ] as Record<string, string>[]) {
+        const r = step("publish-release", env);
+        expect(r.code, JSON.stringify(env)).toBe(1);
+        expect(existsSync(r.file("r2"))).toBe(false);
+        expect(masksOnly(r.out)).toBe(true);
+        expect(r.out + r.err).not.toContain(tok);
+      }
     });
-    expect(r3.code).toBe(1);
-    expect(r3.out).toMatch(/PROVISION_TOKEN is not set/);
-    // Turnstile keys: a 0600 file and the flag, only when the secret is set.
-    const { sb: sb4, temp: t4 } = box();
-    const outFile = join(t4, "github-output");
-    writeFileSync(outFile, "");
-    const r4 = bash(sb4, named("Write the token files").run, {
-      RUNNER_TEMP: t4,
-      GITHUB_OUTPUT: outFile,
-      PROVISION_TOKEN: tok,
-      R2_TOKEN: "",
-      TURNSTILE_KEYS: "0x4AAAAAAA0123456789:SECRETturnstile",
+
+    it("the vars ops: the Turnstile keys from the env's widget, 0600, the secret masked, and the flag", () => {
+      for (const op of ["create", "upgrade", "rollback", "update-vars"]) {
+        const r = step(op);
+        expect(r.code, r.err).toBe(0);
+        expect(readFileSync(r.file("turnstile"), "utf8")).toBe(
+          `${SITEKEY}:SECRETturnstile\n`,
+        );
+        expect(statSync(r.file("turnstile")).mode & 0o777).toBe(0o600);
+        expect(r.out).toBe("::add-mask::SECRETturnstile\n");
+        expect(readFileSync(r.output, "utf8")).toBe("turnstile=1\n");
+        expect(existsSync(r.file("r2"))).toBe(false);
+      }
+      // No widget: the step passes with no file and no flag (provision then
+      // refuses a codes-on install). Two, or a failed lookup, fail the step.
+      const none = step("create", { WIDGET1: "oa-p-turnstile-old" });
+      expect(none.code, none.err).toBe(0);
+      expect(existsSync(none.file("turnstile"))).toBe(false);
+      expect(readFileSync(none.output, "utf8")).toBe("");
+      const two = step("create", { WIDGET2: "oa-p-turnstile" });
+      expect(two.code).toBe(1);
+      expect(two.err).toMatch(/oa-p-turnstile: 2 found/);
+      expect(existsSync(two.file("turnstile"))).toBe(false);
+      expect(readFileSync(two.output, "utf8")).toBe("");
+      // A failed lookup fails the step: no file, no flag.
+      const bad = step("create", { TOK_EXPECT: "some-other-token" });
+      expect(bad.code).toBe(1);
+      expect(existsSync(bad.file("turnstile"))).toBe(false);
+      expect(readFileSync(bad.output, "utf8")).toBe("");
     });
-    expect(r4.code).toBe(0);
-    expect(r4.out + r4.err).toBe("");
-    expect(
-      statSync(join(t4, "hosted-ops-secrets", "turnstile")).mode & 0o777,
-    ).toBe(0o600);
-    expect(readFileSync(outFile, "utf8")).toBe("turnstile=1\n");
-    expect(existsSync(join(dir, "turnstile"))).toBe(false);
+
+    it("refuses an unset token", () => {
+      const r = step("status", { CLOUDFLARE_API_TOKEN: "" });
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/CLOUDFLARE_API_TOKEN is not set/);
+      expect(existsSync(r.file("token"))).toBe(false);
+    });
   });
 
   describe("the sweep step", () => {

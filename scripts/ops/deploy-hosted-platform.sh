@@ -20,7 +20,8 @@
 #   dispatch         HOSTS_KV_ID (both brokers must exist)
 #   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT (both brokers must exist)
 #   inventory        PLATFORM_DB_ID HOSTS_KV_ID
-#   inventory-key    INVENTORY_KEY (sets oa-<p>-inventory's key; the Worker must exist)
+#   inventory-key    INVENTORY_KEY (sets oa-<p>-inventory's key: CI puts the key a
+#                    human seeded and never mints one; the Worker must exist)
 # Always: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
 set -euo pipefail
 

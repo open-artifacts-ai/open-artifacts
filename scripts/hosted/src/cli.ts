@@ -12,8 +12,8 @@
 //   child's environment or the output.
 // - R2 credentials (publish-release, publish-floor only): the env's R2 API
 //   token, keychain item oa-hosted-<env>-r2 holding <accessKeyId>:<secret>;
-//   CI uses a 0600 file named by OA_HOSTED_R2_FILE, under the same prod
-//   guard. Same rules as the token; both halves are redacted. Publish writes
+//   CI uses a 0600 file named by OA_HOSTED_R2_FILE (derived from the
+//   Environment's CLOUDFLARE_API_TOKEN), under the same prod guard. Same rules as the token; both halves are redacted. Publish writes
 //   go through R2's S3 API with it, the only endpoint that enforces
 //   conditional writes.
 // - --ci-owner-token (CI only): create, upgrade, rollback and update-vars
@@ -559,8 +559,9 @@ export async function readTurnstile(
   env: Env,
 ): Promise<TurnstileKeys | null> {
   if (inCi(d.env)) {
-    // CI: only the 0600 file the workflow wrote from TURNSTILE_KEYS, and for
-    // prod only in the gated job (as the token). No file: no codes support.
+    // CI: only the 0600 file the workflow wrote (the env's widget, read with
+    // the Environment token), and for prod only in the gated job (as the
+    // token). No file: no codes support.
     const file = d.env.OA_HOSTED_TURNSTILE_FILE;
     if (!file) return null;
     if (env === "prod" && !prodCiAllowed(d.env))

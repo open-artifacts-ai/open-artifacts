@@ -5,7 +5,9 @@
 # run: the release gate (scripts/ci/tag-passed-checks.sh) refuses a tag unless
 # every earlier check on it passed. Each env has its own Environment
 # (hosted-staging-deploy, hosted-prod-deploy) holding the same-named secrets
-# and variables; only main may run it. The code deployed is the tag's, never
+# (one Cloudflare token, CLOUDFLARE_API_TOKEN); only main may run it. The
+# constants are main's .github/hosted/<env>.json and the resource ids are
+# looked up by name in the run. The code deployed is the tag's, never
 # the branch's. verify_only deploys and sets nothing: it reads the live Workers
 # back and runs every check, and the zones stay plan only.
 name: deploy-hosted-platform
@@ -111,7 +113,9 @@ jobs:
           path: .deploy-logic
           sparse-checkout: |
             scripts/ops
+            scripts/ci
             packages/provision/src
+            .github/hosted
           persist-credentials: false
       # main's provision pins the broker's Google client; the auth-broker
       # target refuses any other.
@@ -122,6 +126,11 @@ jobs:
             cp ".deploy-logic/scripts/ops/$f" "scripts/ops/$f"
           done
           cp .deploy-logic/packages/provision/src/wfp.ts "$RUNNER_TEMP/main-wfp.ts"
+          mkdir "$RUNNER_TEMP/main-ci"
+          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh; do
+            cp ".deploy-logic/scripts/ci/$f" "$RUNNER_TEMP/main-ci/$f"
+          done
+          cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"
           rm -rf .deploy-logic
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -133,22 +142,26 @@ jobs:
           set -euo pipefail
           pnpm --filter @oa/provision build
           pnpm --filter @oa/auth-broker --filter @oa/directory-broker --filter @oa/dispatch --filter @oa/scheduler --filter @oa/inventory test
+      # main's committed constants (account id, email, Google client ids).
+      - name: Load the hosted constants
+        env:
+          DEPLOY_ENV: ${{ inputs.env }}
+        run: bash "$RUNNER_TEMP/main-ci/hosted-constants.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"
+      # The D1 and KV ids and the sending zone's tag, by exact name on the
+      # account (exactly one each); only for the targets that bind them.
+      - name: Resolve the resource ids
+        if: ${{ contains(format(',{0},', inputs.targets), ',auth-broker,') || contains(format(',{0},', inputs.targets), ',directory-broker,') || contains(format(',{0},', inputs.targets), ',dispatch,') || contains(format(',{0},', inputs.targets), ',scheduler,') || contains(format(',{0},', inputs.targets), ',inventory,') }}
+        env:
+          DEPLOY_ENV: ${{ inputs.env }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash "$RUNNER_TEMP/main-ci/hosted-resource-ids.sh" "$DEPLOY_ENV"
       - name: Deploy and verify
         env:
           DEPLOY_ENV: ${{ inputs.env }}
           DEPLOY_ENVIRONMENT: ${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}
           TARGETS: ${{ inputs.targets }}
           VERIFY_ONLY: ${{ inputs.verify_only && '1' || '' }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.HOSTED_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
-          BROKER_REGISTRY_ID: ${{ vars.BROKER_REGISTRY_ID }}
-          DIRECTORY_REGISTRY_ID: ${{ vars.DIRECTORY_REGISTRY_ID }}
-          HOSTS_KV_ID: ${{ vars.HOSTS_KV_ID }}
-          PLATFORM_DB_ID: ${{ vars.PLATFORM_DB_ID }}
-          EMAIL_ZONE_TAGS: ${{ vars.EMAIL_ZONE_TAGS }}
-          EMAIL_DAILY_LIMIT: ${{ vars.EMAIL_DAILY_LIMIT }}
-          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
-          GOOGLE_DIRECTORY_CLIENT_ID: ${{ vars.GOOGLE_DIRECTORY_CLIENT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_DIRECTORY_CLIENT_SECRET: ${{ secrets.GOOGLE_DIRECTORY_CLIENT_SECRET }}
           INVENTORY_KEY: ${{ secrets.INVENTORY_KEY }}
@@ -162,17 +175,15 @@ jobs:
             bash scripts/ops/deploy-hosted-platform.sh "$DEPLOY_ENV" "$t"
             echo "::endgroup::"
           done
-      # Only this step sees the zone token. Plan, then apply (hosted-zones.sh
-      # refuses anything outside its fixed set and reads every change back);
+      # Plan, then apply (hosted-zones.sh refuses anything outside its fixed
+      # set and reads every change back);
       # verify_only stays plan only. Both go to the job summary.
       - name: Zones
         if: ${{ contains(format(',{0},', inputs.targets), ',zones,') }}
         env:
           DEPLOY_ENV: ${{ inputs.env }}
           VERIFY_ONLY: ${{ inputs.verify_only && '1' || '' }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.HOSTED_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
-          ZONE_TOKEN: ${{ secrets.ZONE_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
           bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" plan
