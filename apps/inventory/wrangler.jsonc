@@ -1,25 +1,43 @@
+// The read-only inventory Worker (red-line `GET /installs`, `GET /hosts`).
+// Deploy with --env staging or --env prod only, through
+// scripts/ops/deploy-platform-worker.sh (docs/ops/hosted.md): the top level has
+// no name and no main, so a deploy without --env is refused. Each env's
+// PLATFORM_DB and HOSTS ids have their own placeholder, filled at deploy (the
+// ids of oa-<p>-platform and oa-<p>-hosts). Both bindings are read-only in
+// code. INVENTORY_KEY is a secret, so it is not listed here.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Deploys use --name <platformNames(env).inventory> (oa-s-inventory / oa-p-inventory).
-  "name": "oa-inventory",
-  "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
-  "workers_dev": true,
+  "workers_dev": false,
   "preview_urls": false,
-  // INVENTORY_KEY is a secret (wrangler secret put INVENTORY_KEY), so it is not listed here.
-  // Two bindings, both read-only in code: PLATFORM_DB and HOSTS. database_id and the
-  // HOSTS id are filled at deploy (oa-<p>-platform, oa-<p>-hosts).
-  "d1_databases": [
-    {
-      "binding": "PLATFORM_DB",
-      "database_name": "oa-platform",
-      "database_id": "00000000-0000-0000-0000-000000000000"
+  "env": {
+    "staging": {
+      "name": "oa-s-inventory",
+      "main": "src/index.ts",
+      "workers_dev": true,
+      "preview_urls": false,
+      "d1_databases": [
+        {
+          "binding": "PLATFORM_DB",
+          "database_name": "oa-s-platform",
+          "database_id": "{{PLATFORM_DB_ID_STAGING}}"
+        }
+      ],
+      "kv_namespaces": [{ "binding": "HOSTS", "id": "{{HOSTS_KV_ID_STAGING}}" }]
+    },
+    "prod": {
+      "name": "oa-p-inventory",
+      "main": "src/index.ts",
+      "workers_dev": true,
+      "preview_urls": false,
+      "d1_databases": [
+        {
+          "binding": "PLATFORM_DB",
+          "database_name": "oa-p-platform",
+          "database_id": "{{PLATFORM_DB_ID_PROD}}"
+        }
+      ],
+      "kv_namespaces": [{ "binding": "HOSTS", "id": "{{HOSTS_KV_ID_PROD}}" }]
     }
-  ],
-  "kv_namespaces": [
-    {
-      "binding": "HOSTS",
-      "id": "00000000000000000000000000000000"
-    }
-  ]
+  }
 }

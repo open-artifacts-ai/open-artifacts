@@ -72,7 +72,7 @@ describe("deploy-platform-worker.sh", () => {
   });
 
   it("refuses an app that isn't in the allowlist", () => {
-    for (const a of ["dispatch", "../auth-broker", "apps/auth-broker", ""]) {
+    for (const a of ["landing", "../auth-broker", "apps/auth-broker", ""]) {
       const r = run([a, "staging"], { BROKER_REGISTRY_ID: REG });
       expect(r.code).toBe(2);
       expect(r.log).toEqual([]);
@@ -102,6 +102,66 @@ describe("deploy-platform-worker.sh", () => {
     });
     expect(r.code).toBe(1);
     expect(r.log).toEqual([]);
+  });
+
+  describe("dispatch and scheduler", () => {
+    const UUID = "6ca9103e-507e-4541-b3bb-2485e699512b";
+    const SCHED = {
+      PLATFORM_DB_ID: UUID,
+      EMAIL_ZONE_TAGS: `${REG},${REG}`,
+      EMAIL_DAILY_LIMIT: "1000",
+    };
+
+    it("dispatch: deploys from apps/dispatch with its HOSTS id, for either env", () => {
+      for (const env of ["staging", "prod"]) {
+        const r = run(["dispatch", env], { HOSTS_KV_ID: REG });
+        expect(r.code, env).toBe(0);
+        expect(r.log).toEqual([
+          `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
+          join(root, "apps/dispatch"),
+          "copy-present",
+        ]);
+        expect(readFileSync(r.snap, "utf8")).not.toContain(
+          `{{HOSTS_KV_ID_${env.toUpperCase()}}}`,
+        );
+      }
+      expect(
+        existsSync(join(root, "apps/dispatch/wrangler.deploy.jsonc")),
+      ).toBe(false);
+    });
+
+    it("scheduler: fills the D1 id, the zone tags and the daily limit", () => {
+      const r = run(["scheduler", "prod"], SCHED);
+      expect(r.code).toBe(0);
+      const snap = readFileSync(r.snap, "utf8");
+      expect(snap).toContain(`"database_id": "${UUID}"`);
+      expect(snap).toContain(`"EMAIL_QUOTA_ZONES": "${REG},${REG}"`);
+      expect(snap).toContain(`"EMAIL_DAILY_LIMIT": "1000"`);
+      expect(snap).not.toMatch(/\{\{[A-Z0-9_]*_PROD\}\}/);
+      expect(
+        existsSync(join(root, "apps/scheduler/wrangler.deploy.jsonc")),
+      ).toBe(false);
+    });
+
+    it("refuses malformed or missing values without deploying", () => {
+      for (const [app, env] of [
+        ["dispatch", { HOSTS_KV_ID: "" }],
+        ["dispatch", { HOSTS_KV_ID: `${REG}/x` }],
+        ["scheduler", { ...SCHED, PLATFORM_DB_ID: "not-a-uuid" }],
+        ["scheduler", { ...SCHED, EMAIL_ZONE_TAGS: "" }],
+        [
+          "scheduler",
+          { ...SCHED, EMAIL_ZONE_TAGS: Array(11).fill(REG).join(",") },
+        ],
+        ["scheduler", { ...SCHED, EMAIL_DAILY_LIMIT: "0" }],
+        ["scheduler", { ...SCHED, EMAIL_DAILY_LIMIT: "1e9" }],
+        ["scheduler", { ...SCHED, EMAIL_DAILY_LIMIT: "1234567890" }],
+      ] as const) {
+        const r = run([app, "prod"], env);
+        expect(r.code, `${app} ${JSON.stringify(env)}`).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
   });
 
   describe("directory-broker", () => {
