@@ -232,10 +232,13 @@ describe("args: JSON against each op's schema", () => {
         "--ci-owner-token",
       ],
       sweep: null,
+      release: "v0.74.1",
     });
-    expect(ok({ ...CREATE({ to: "0.74.1" }), tag: "" }).argv).toContain(
-      "0.74.1",
-    );
+    // The release gate checks the version installed, from args.to too.
+    expect(ok({ ...CREATE({ to: "0.74.1" }), tag: "" })).toMatchObject({
+      argv: expect.arrayContaining(["0.74.1"]),
+      release: "v0.74.1",
+    });
     refused(CREATE({ to: "0.74.2" }), /different versions/);
     refused({ ...CREATE(), tag: "" }, /needs a tag/);
     expect(ok(CREATE({ testHooks: true })).argv).toContain("--test-hooks");
@@ -315,6 +318,7 @@ describe("args: JSON against each op's schema", () => {
         "--ci-owner-token",
       ],
       sweep: ID,
+      release: "v0.75.0",
     });
     expect(ok({ op: "rollback" })).toEqual({
       argv: [
@@ -366,6 +370,7 @@ describe("args: JSON against each op's schema", () => {
     expect(ok({ op: "publish-release", install: "", tag: "v0.74.1" })).toEqual({
       argv: ["publish-release", "--env", "staging", "--tag", "v0.74.1"],
       sweep: null,
+      release: "v0.74.1",
     });
     for (const op of OPS)
       expect(CI_TOKEN_OPS.includes(op)).toBe(
@@ -481,7 +486,7 @@ describe("the script: env in, one JSON argv out", () => {
       "0.75.0",
       "--ci-owner-token",
     ]);
-    expect(readFileSync(out, "utf8")).toBe(`install=${ID}\n`);
+    expect(readFileSync(out, "utf8")).toBe(`install=${ID}\nrelease=v0.75.0\n`);
   });
 
   it("a refusal exits 1, prints no argv and names the field, not the value", () => {

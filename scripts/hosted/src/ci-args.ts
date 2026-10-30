@@ -103,6 +103,11 @@ export interface Plan {
   sweep: string | null;
   /** publish-floor: the canonical signed floor JSON to write. */
   floor?: string;
+  /**
+   * create, upgrade, publish-release: the release tag (vX.Y.Z) the workflow's
+   * release gate checks; for create and upgrade, the version installed.
+   */
+  release?: string;
 }
 
 const STABLE_TAG = /^v\d+\.\d+\.\d+$/;
@@ -310,10 +315,12 @@ export function plan(i: Inputs, floorFile?: string): Plan {
 
   const ci = CI_TOKEN_OPS.includes(op);
   if (ci) argv.push("--ci-owner-token");
+  const gated = op === "create" || op === "upgrade" || op === "publish-release";
   return {
     argv,
     sweep: ci && i.install !== "" ? i.install : null,
     ...(floor === undefined ? {} : { floor }),
+    ...(gated ? { release: `v${version as string}` } : {}),
   };
 }
 
@@ -348,7 +355,10 @@ export function run(
   if (p.floor !== undefined)
     io.writeFile(env.OPS_FLOOR_FILE as string, p.floor);
   if (env.GITHUB_OUTPUT)
-    io.appendFile(env.GITHUB_OUTPUT, `install=${p.sweep ?? ""}\n`);
+    io.appendFile(
+      env.GITHUB_OUTPUT,
+      `install=${p.sweep ?? ""}\nrelease=${p.release ?? ""}\n`,
+    );
   io.out(JSON.stringify(p.argv));
   return 0;
 }
