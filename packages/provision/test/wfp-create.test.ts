@@ -2984,12 +2984,12 @@ describe("H-T4b round 1", () => {
       expect(pkg.exports["./names"].import).toBe("./dist/names.js");
     });
 
-    it("the real gates: prod locked, no account target, both keys pinned and distinct", async () => {
+    it("the real gates: prod unlocked, no account target, both keys pinned and distinct", async () => {
       const real = await vi.importActual<
         typeof import("../src/internal/gates.js")
       >("../src/internal/gates.js");
-      // Prod unlocks in its own PR, after the red-line suite passes on staging.
-      expect(real.PROD_UNLOCKED).toBe(false);
+      // Prod unlocked in its own PR, after the red-line suite passed on staging.
+      expect(real.PROD_UNLOCKED).toBe(true);
       expect(real.ALLOW_ACCOUNT_TARGET).toBe(false);
       expect(real.RELEASE_PUBKEY_PLACEHOLDER).toMatch(/placeholder/i);
       expect(real.RELEASE_PUBKEY.staging).not.toBe(
