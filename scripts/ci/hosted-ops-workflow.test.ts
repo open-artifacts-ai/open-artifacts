@@ -431,6 +431,20 @@ describe("the release gate: every release op checks its tag first", () => {
       expect(st.if, st.name).toBeUndefined();
   });
 
+  it("fails closed on an empty release (an op the inputs check gave none)", () => {
+    const sb = sandbox({});
+    const r = sb.run(["bash", "-c", gate().run], {
+      cwd: root,
+      env: {
+        OPS_ENV: "prod",
+        RELEASE: "",
+        GH_TOKEN: "x",
+        GITHUB_REPOSITORY: "o/r",
+      },
+    });
+    expect(r.code).not.toBe(0);
+  });
+
   it("the inputs check writes the version to install or publish as release=vX.Y.Z", () => {
     const sb = sandbox({});
     const temp = join(sb.dir, "runner-temp");
