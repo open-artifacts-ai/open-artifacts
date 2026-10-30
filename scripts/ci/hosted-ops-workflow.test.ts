@@ -1,8 +1,10 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: literal workflow expressions
 // hosted-ops.yml (OPS-B): one oa:hosted operation by hand, in the env's
-// reviewer-gated Environment, inputs only through env and the ci-args
-// validator, secrets only in the step that writes the 0600 token files, and
-// an always() sweep of the ephemeral CI owner token.
+// Environment (main only, no person approves a run: the automated gates
+// decide), inputs only through env and the ci-args validator, secrets only in
+// the step that writes the 0600 token files, an always() sweep of the
+// ephemeral CI owner token, and the "prod is clean" precheck before a prod
+// create or upgrade.
 import {
   existsSync,
   mkdirSync,
@@ -384,5 +386,146 @@ describe("the steps' shell, run", () => {
       expect(r.out).toMatch(/::error::.*ci-4242/);
       expect(r.args).toEqual([]);
     });
+  });
+});
+
+describe("the precheck job: prod is clean before a prod create or upgrade", () => {
+  const pre = w.jobs.precheck;
+  // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+  const psteps: Record<string, any>[] = pre.steps;
+  // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+  const pnamed = (n: string): Record<string, any> => {
+    const s = psteps.find((x) => x.name === n);
+    if (!s) throw new Error(`no precheck step ${n}`);
+    return s;
+  };
+  const GATED =
+    "inputs.env == 'prod' && (inputs.op == 'create' || inputs.op == 'upgrade')";
+
+  /** Evaluates a job `if` for one dispatch (==, &&, ||, !, parens, 'strings'). */
+  const evalIf = (
+    expr: string,
+    v: { env: string; op: string; precheck: string; cancelled?: boolean },
+  ): boolean => {
+    const js = expr
+      .replace(/^\$\{\{\s*/, "")
+      .replace(/\s*\}\}$/, "")
+      .replace(/!cancelled\(\)/g, String(!v.cancelled))
+      .replace(/needs\.precheck\.result/g, JSON.stringify(v.precheck))
+      .replace(/inputs\.env/g, JSON.stringify(v.env))
+      .replace(/inputs\.op/g, JSON.stringify(v.op))
+      .replace(/'([^']*)'/g, (_, x) => JSON.stringify(x))
+      .replace(/==/g, "===");
+    expect(js).toMatch(/^[\s"a-z\-()!&|=]+$/);
+    return new Function(`return (${js});`)() as boolean;
+  };
+  const OPS: string[] = w.on.workflow_dispatch.inputs.op.options;
+
+  it("runs only for prod create and upgrade, in redline-staging, from main", () => {
+    expect(pre.if).toBe(`\${{ ${GATED} }}`);
+    expect(pre.environment).toBe("redline-staging");
+    expect(pre.permissions).toBeUndefined();
+    expect(pre["timeout-minutes"]).toBeLessThanOrEqual(15);
+    const main = pnamed("Prod runs only from main");
+    expect(psteps.indexOf(main)).toBe(0);
+    expect(main.run).toBe('test "$REF" = refs/heads/main');
+    expect(main.env).toEqual({ REF: "${{ github.ref }}" });
+    for (const s of psteps.filter((s) => s.uses)) {
+      expect(s.uses).toMatch(/@[0-9a-f]{40}$/);
+      if (String(s.uses).startsWith("actions/checkout@")) {
+        expect(s.with["persist-credentials"]).toBe(false);
+        expect(s.with.ref).toBe("${{ github.sha }}");
+      }
+    }
+    for (const s of psteps)
+      if (typeof s.run === "string") expect(s.run, s.name).not.toContain("${{");
+  });
+
+  it("only the token-file step sees secrets; the check reads them by path and runs the CLI", () => {
+    expect(
+      psteps
+        .filter((s) => JSON.stringify(s).includes("secrets."))
+        .map((s) => s.name),
+    ).toEqual(["Write the prod probe's token files"]);
+    expect(pnamed("Write the prod probe's token files").env).toEqual({
+      PROD_R2_TOKEN: "${{ secrets.REDLINE_PROD_R2_TOKEN }}",
+      PROD_SCRIPTS_TOKEN: "${{ secrets.REDLINE_PROD_SCRIPTS_TOKEN }}",
+      PROD_INVENTORY_KEY: "${{ secrets.REDLINE_PROD_INVENTORY_KEY }}",
+    });
+    const check = pnamed("Prod is clean");
+    expect(check.env).toEqual({
+      OPS_OP: "${{ inputs.op }}",
+      REDLINE_PROD_SECRETS_DIR: "${{ runner.temp }}/prod-clean-secrets",
+      REDLINE_PROD_ACCOUNT_ID: "${{ vars.REDLINE_PROD_ACCOUNT_ID }}",
+      REDLINE_PROD_INVENTORY_URL: "${{ vars.REDLINE_PROD_INVENTORY_URL }}",
+    });
+    expect(check.run).toBe("node tests/redline/src/prod-clean-cli.ts");
+    expect(existsSync(join(root, "tests/redline/src/prod-clean-cli.ts"))).toBe(
+      true,
+    );
+    const rm = pnamed("Remove the token files");
+    expect(rm.if).toBe("${{ always() }}");
+    expect(rm.run).toContain('"$RUNNER_TEMP/prod-clean-secrets"');
+    const i = (n: string) => psteps.indexOf(pnamed(n));
+    expect(i("Write the prod probe's token files")).toBeLessThan(
+      i("Prod is clean"),
+    );
+    expect(i("Prod is clean")).toBeLessThan(i("Remove the token files"));
+  });
+
+  it("op needs precheck: a prod create or upgrade runs only after it passed", () => {
+    expect(job.needs).toBe("precheck");
+    for (const env of ["staging", "prod"])
+      for (const op of OPS) {
+        const gated = env === "prod" && (op === "create" || op === "upgrade");
+        expect(evalIf(pre.if, { env, op, precheck: "" }), `${env} ${op}`).toBe(
+          gated,
+        );
+        const ran = (precheck: string) => evalIf(job.if, { env, op, precheck });
+        if (gated) {
+          expect(ran("success"), `${env} ${op}`).toBe(true);
+          for (const r of ["failure", "skipped", "cancelled"])
+            expect(ran(r), `${env} ${op} ${r}`).toBe(false);
+        } else expect(ran("skipped"), `${env} ${op}`).toBe(true);
+        expect(
+          evalIf(job.if, { env, op, precheck: "success", cancelled: true }),
+        ).toBe(false);
+      }
+  });
+
+  it("the token-file step writes 0600 files in a 0700 dir, prints nothing, and refuses an empty secret", () => {
+    const sb = sandbox({});
+    const temp = join(sb.dir, "runner-temp");
+    mkdirSync(temp);
+    const run = pnamed("Write the prod probe's token files").run;
+    const env = {
+      RUNNER_TEMP: temp,
+      PROD_R2_TOKEN: "r2-SECRET",
+      PROD_SCRIPTS_TOKEN: "scripts-SECRET",
+      PROD_INVENTORY_KEY: "inv-SECRET",
+    };
+    const r = sb.run(["bash", "-c", run], { cwd: root, env });
+    expect(r.code).toBe(0);
+    expect(r.out + r.err).toBe("");
+    const d = join(temp, "prod-clean-secrets");
+    expect(statSync(d).mode & 0o777).toBe(0o700);
+    for (const f of [
+      "REDLINE_PROD_R2_TOKEN",
+      "REDLINE_PROD_SCRIPTS_TOKEN",
+      "REDLINE_PROD_INVENTORY_KEY",
+    ])
+      expect(statSync(join(d, f)).mode & 0o777).toBe(0o600);
+    expect(readFileSync(join(d, "REDLINE_PROD_R2_TOKEN"), "utf8")).toBe(
+      "r2-SECRET",
+    );
+    const sb2 = sandbox({});
+    const t2 = join(sb2.dir, "runner-temp");
+    mkdirSync(t2);
+    const r2 = sb2.run(["bash", "-c", run], {
+      cwd: root,
+      env: { ...env, RUNNER_TEMP: t2, PROD_INVENTORY_KEY: "" },
+    });
+    expect(r2.code).toBe(1);
+    expect(r2.out).toContain("empty secret file: REDLINE_PROD_INVENTORY_KEY");
   });
 });

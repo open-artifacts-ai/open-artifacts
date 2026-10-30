@@ -2,9 +2,11 @@
 # CI, by hand only: create, upgrade, rollback, update-vars, status, delete,
 # release-lease, turnstile-init, publish-release or publish-floor. Each env has
 # its own Environment (hosted-staging-deploy, hosted-prod-deploy) holding
-# PROVISION_TOKEN and R2_TOKEN; every run waits for its required reviewer, and
-# prod runs only from main (checked here and again by the CLI). Inputs reach
-# the CLI only through env and the ci-args validator, never as shell text.
+# PROVISION_TOKEN and R2_TOKEN. No run waits for a person: automated gates
+# decide. Prod runs only from main (checked here and again by the CLI), and a
+# prod create or upgrade first needs the precheck job ("prod is clean").
+# Inputs reach the CLI only through env and the ci-args validator, never as
+# shell text.
 # create, upgrade, rollback and update-vars selftest on an ephemeral owner
 # token (ci-<run id>) that the always() sweep revokes and verifies.
 name: hosted-ops
@@ -61,7 +63,60 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Prod create and upgrade only: prodClean (tests/redline/src/prod-clean-cli.ts)
+  # in redline-staging, where the read-only REDLINE_PROD_* secrets live. Any
+  # result but a pass (or, for a create, an inventory listing no install)
+  # fails it, and op does not run.
+  precheck:
+    if: ${{ inputs.env == 'prod' && (inputs.op == 'create' || inputs.op == 'upgrade') }}
+    runs-on: ubuntu-latest
+    environment: redline-staging
+    timeout-minutes: 15
+    steps:
+      - name: Prod runs only from main
+        env:
+          REF: ${{ github.ref }}
+        run: test "$REF" = refs/heads/main
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @oa/provision build
+      # Only this step sees the secrets: all three, none empty.
+      - name: Write the prod probe's token files
+        env:
+          PROD_R2_TOKEN: ${{ secrets.REDLINE_PROD_R2_TOKEN }}
+          PROD_SCRIPTS_TOKEN: ${{ secrets.REDLINE_PROD_SCRIPTS_TOKEN }}
+          PROD_INVENTORY_KEY: ${{ secrets.REDLINE_PROD_INVENTORY_KEY }}
+        run: |
+          set +x
+          set -euo pipefail
+          umask 077
+          d="$RUNNER_TEMP/prod-clean-secrets"
+          mkdir -m 700 "$d"
+          printf '%s' "$PROD_R2_TOKEN" > "$d/REDLINE_PROD_R2_TOKEN"
+          printf '%s' "$PROD_SCRIPTS_TOKEN" > "$d/REDLINE_PROD_SCRIPTS_TOKEN"
+          printf '%s' "$PROD_INVENTORY_KEY" > "$d/REDLINE_PROD_INVENTORY_KEY"
+          for f in "$d"/*; do test -s "$f" || { echo "empty secret file: ${f##*/}"; exit 1; }; done
+      - name: Prod is clean
+        env:
+          OPS_OP: ${{ inputs.op }}
+          REDLINE_PROD_SECRETS_DIR: ${{ runner.temp }}/prod-clean-secrets
+          REDLINE_PROD_ACCOUNT_ID: ${{ vars.REDLINE_PROD_ACCOUNT_ID }}
+          REDLINE_PROD_INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
+        run: node tests/redline/src/prod-clean-cli.ts
+      - name: Remove the token files
+        if: ${{ always() }}
+        run: rm -rf "$RUNNER_TEMP/prod-clean-secrets"
   op:
+    needs: precheck
+    # A skipped precheck is fine only for the runs it does not gate.
+    if: ${{ !cancelled() && (needs.precheck.result == 'success' || (needs.precheck.result == 'skipped' && !(inputs.env == 'prod' && (inputs.op == 'create' || inputs.op == 'upgrade')))) }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}
     timeout-minutes: 45
