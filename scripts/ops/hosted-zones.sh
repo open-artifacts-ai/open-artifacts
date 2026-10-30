@@ -63,9 +63,11 @@ done
 status="$(cf "$CLOUDFLARE_API_TOKEN" GET "$CF/user/tokens/verify" | must "verify CLOUDFLARE_API_TOKEN" | jq -r '.result.status')"
 [ "$status" = active ] || { echo "CLOUDFLARE_API_TOKEN is $status, not active" >&2; exit 1; }
 
+# zone_id <name>: the id of the one zone of that name on the hosted account.
 zone_id() {
-  cf "$CLOUDFLARE_API_TOKEN" GET "$CF/zones?name=$1" | must "look up zone $1" |
-    jq -r --arg n "$1" '[.result[] | select(.name == $n)] | if length == 1 then .[0].id else "" end'
+  cf "$CLOUDFLARE_API_TOKEN" GET "$CF/zones?name=$1&account.id=$CLOUDFLARE_ACCOUNT_ID" | must "look up zone $1" |
+    jq -r --arg n "$1" --arg a "$CLOUDFLARE_ACCOUNT_ID" \
+      '[.result[] | select(.name == $n and .account.id == $a)] | if length == 1 then .[0].id else "" end'
 }
 APP_ZONE="$(zone_id "$APP")"
 PAGE_ZONE="$(zone_id "$PAGE")"

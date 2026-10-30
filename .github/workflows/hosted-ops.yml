@@ -196,7 +196,8 @@ jobs:
           case "$OPS_OP" in
             create | upgrade | rollback | update-vars)
               bash scripts/ci/hosted-turnstile-keys.sh "$OPS_ENV" "$dir/turnstile"
-              echo "turnstile=1" >> "$GITHUB_OUTPUT"
+              # No widget: no file and no flag, as before.
+              if [ -s "$dir/turnstile" ]; then echo "turnstile=1" >> "$GITHUB_OUTPUT"; fi
               ;;
           esac
       - name: Run the operation

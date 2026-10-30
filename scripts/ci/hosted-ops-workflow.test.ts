@@ -312,7 +312,7 @@ describe("the steps' shell, run", () => {
 case "$cfg" in *"$TOK_EXPECT"*) ;; *) echo '{"success":false}'; exit 0 ;; esac
 case "\${@: -1}" in
   */user/tokens/verify) printf '{"success":true,"result":{"id":"%s","status":"%s"}}' "$TOKEN_ID" "$VERIFY_STATUS" ;;
-  */challenges/widgets\\?*) printf '{"success":true,"result":[{"sitekey":"%s","name":"oa-p-turnstile"},{"sitekey":"0x4other","name":"oa-s-turnstile"}],"result_info":{"total_pages":1}}' "$SITEKEY" ;;
+  */challenges/widgets\\?*) printf '{"success":true,"result":[{"sitekey":"%s","name":"%s"},{"sitekey":"0x4other","name":"%s"}],"result_info":{"total_pages":1}}' "$SITEKEY" "\${WIDGET1:-oa-p-turnstile}" "\${WIDGET2:-oa-s-turnstile}" ;;
   */challenges/widgets/*) printf '{"success":true,"result":{"sitekey":"%s","secret":"SECRETturnstile"}}' "$SITEKEY" ;;
   *) echo '{"success":false}' ;;
 esac`;
@@ -404,6 +404,17 @@ esac`;
         expect(readFileSync(r.output, "utf8")).toBe("turnstile=1\n");
         expect(existsSync(r.file("r2"))).toBe(false);
       }
+      // No widget: the step passes with no file and no flag (provision then
+      // refuses a codes-on install). Two, or a failed lookup, fail the step.
+      const none = step("create", { WIDGET1: "oa-p-turnstile-old" });
+      expect(none.code, none.err).toBe(0);
+      expect(existsSync(none.file("turnstile"))).toBe(false);
+      expect(readFileSync(none.output, "utf8")).toBe("");
+      const two = step("create", { WIDGET2: "oa-p-turnstile" });
+      expect(two.code).toBe(1);
+      expect(two.err).toMatch(/oa-p-turnstile: 2 found/);
+      expect(existsSync(two.file("turnstile"))).toBe(false);
+      expect(readFileSync(two.output, "utf8")).toBe("");
       // A failed lookup fails the step: no file, no flag.
       const bad = step("create", { TOK_EXPECT: "some-other-token" });
       expect(bad.code).toBe(1);

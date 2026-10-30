@@ -124,7 +124,31 @@ describe("deploy-hosted-platform.yml", () => {
     });
     expect(Object.keys(named("Resolve the resource ids").env)).toHaveLength(2);
     expect(named("Load the hosted constants").if).toBeUndefined();
-    expect(named("Resolve the resource ids").if).toBeUndefined();
+    // Only the targets that bind an id (or the zone tag) look them up.
+    const cond = named("Resolve the resource ids").if as string;
+    const runsFor = (targets: string) => {
+      const js = cond
+        .replace(/^\$\{\{\s*/, "")
+        .replace(/\s*\}\}$/, "")
+        .replace(
+          /contains\(format\(',\{0\},', inputs\.targets\), '([^']*)'\)/g,
+          (_, t) => JSON.stringify(`,${targets},`.includes(t)),
+        );
+      expect(js).toMatch(/^(true|false|\|\|| )+$/);
+      return new Function(`return (${js});`)() as boolean;
+    };
+    for (const t of [
+      "auth-broker",
+      "directory-broker",
+      "dispatch",
+      "scheduler",
+      "inventory",
+      "auth-broker,directory-broker,dispatch,scheduler",
+      "inventory,inventory-key,zones",
+    ])
+      expect(runsFor(t), t).toBe(true);
+    for (const t of ["inventory-key", "zones", "inventory-key,zones"])
+      expect(runsFor(t), t).toBe(false);
     // Everything the user used to copy into the Environment comes from these.
     expect(text).not.toContain("vars.");
     for (const k of [

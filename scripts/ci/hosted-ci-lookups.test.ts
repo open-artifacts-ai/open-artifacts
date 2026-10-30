@@ -12,6 +12,7 @@ import { sandbox, script } from "./stubs.ts";
 const TOK = "cfut_TOKEN_never_printed_0123456789";
 const ACCT = "26ac346086d4405f7a976d48747a2a75";
 const UUID = "0d6a2a8e-1c2b-4c3d-8e4f-5a6b7c8d9e0f";
+const ZONE = "9".repeat(32);
 const KV = {
   hosts: "a".repeat(32),
   broker: "b".repeat(32),
@@ -38,6 +39,7 @@ case "$path" in
   "/accounts/$STUB_ACCT/storage/kv/namespaces?per_page=100&page="*) k=kv ;;
   "/accounts/$STUB_ACCT/challenges/widgets?per_page=50&page="*) k=widgets ;;
   "/accounts/$STUB_ACCT/challenges/widgets/"*) k=widget ;;
+  "/zones?name=$EMAIL_ZONE&account.id=$STUB_ACCT&per_page=50&page="*) k=zones ;;
   /user/tokens/verify) k=verify ;;
   *) echo "UNEXPECTED $path" >> "$STUB_LOG"; echo '{"success":false}'; exit 0 ;;
 esac
@@ -68,6 +70,7 @@ const run = (
       CLOUDFLARE_ACCOUNT_ID: ACCT,
       STUB_ACCT: ACCT,
       GITHUB_ENV: ghEnv,
+      EMAIL_ZONE: "open-artifacts.app",
       ...env,
     },
   });
@@ -91,9 +94,26 @@ describe("hosted-resource-ids.sh", () => {
     { id: "e".repeat(32), title: "oa-p-hosts-2" },
     ...extra,
   ];
+  const mine = { account: { id: ACCT } };
+  const zones = (extra: unknown[] = []) => [
+    { id: ZONE, name: "open-artifacts.app", ...mine },
+    // Same name on another account: never ours.
+    {
+      id: "8".repeat(32),
+      name: "open-artifacts.app",
+      account: { id: "7".repeat(32) },
+    },
+    ...extra,
+  ];
+  const lists: Record<string, (extra?: unknown[]) => unknown[]> = {
+    d1,
+    kv,
+    zones,
+  };
   const good = () => ({
     d1: [ok(d1(), { total_pages: 1 })],
     kv: [ok(kv(), { total_pages: 1 })],
+    zones: [ok(zones(), { total_pages: 1 })],
   });
   const ids = (o: Record<string, Page[]> = good(), env = "prod") =>
     run(["bash", script("hosted-resource-ids.sh"), env], o);
@@ -102,10 +122,11 @@ describe("hosted-resource-ids.sh", () => {
     `HOSTS_KV_ID=${KV.hosts}`,
     `BROKER_REGISTRY_ID=${KV.broker}`,
     `DIRECTORY_REGISTRY_ID=${KV.directory}`,
+    `EMAIL_ZONE_TAGS=${ZONE}`,
     "",
   ].join("\n");
 
-  it("resolves all four by exact name and writes them to GITHUB_ENV", () => {
+  it("resolves all five by exact name on the account and writes them to GITHUB_ENV", () => {
     const r = ids();
     expect(r.code, r.err).toBe(0);
     expect(r.ghEnv).toBe(WANT);
@@ -123,6 +144,7 @@ describe("hosted-resource-ids.sh", () => {
             { id: KV.directory, title: "oa-s-directory-registry" },
           ]),
         ],
+        zones: [ok(zones())],
       },
       "staging",
     );
@@ -147,6 +169,7 @@ describe("hosted-resource-ids.sh", () => {
         ok(d1(), { total_pages: 3 }),
       ],
       kv: [ok(full(100, "z-")), ok(kv())],
+      zones: [ok(zones())],
     });
     expect(r.code, r.err).toBe(0);
     expect(r.ghEnv).toBe(WANT);
@@ -157,17 +180,18 @@ describe("hosted-resource-ids.sh", () => {
     for (const u of urls) expect(u).toMatch(/^curl -sS -K - https:\/\//);
   });
 
-  const RESOURCES: [string, "d1" | "kv", string, string, string][] = [
+  const RESOURCES: [string, "d1" | "kv" | "zones", string, string, string][] = [
     ["oa-p-platform", "d1", "name", "uuid", UUID],
     ["oa-p-hosts", "kv", "title", "id", KV.hosts],
     ["oa-p-broker-registry", "kv", "title", "id", KV.broker],
     ["oa-p-directory-registry", "kv", "title", "id", KV.directory],
+    ["open-artifacts.app", "zones", "name", "id", ZONE],
   ];
 
   for (const [name, kind, nameKey, idKey, id] of RESOURCES) {
     it(`${name}: none found fails, naming it, and writes nothing`, () => {
       const o = good();
-      const list = (kind === "d1" ? d1() : kv()).filter(
+      const list = lists[kind]().filter(
         (x) => (x as Record<string, string>)[nameKey] !== name,
       );
       o[kind] = [ok(list, { total_pages: 1 })];
@@ -179,9 +203,9 @@ describe("hosted-resource-ids.sh", () => {
 
     it(`${name}: two found (even on different pages) fails, naming it`, () => {
       const o = good();
-      const dup = { [nameKey]: name, [idKey]: id };
+      const dup = { [nameKey]: name, [idKey]: id, ...mine };
       o[kind] = [
-        ok(kind === "d1" ? d1() : kv(), { total_pages: 2 }),
+        ok(lists[kind](), { total_pages: 2 }),
         ok([dup], { total_pages: 2 }),
       ];
       const r = ids(o);
@@ -198,7 +222,7 @@ describe("hosted-resource-ids.sh", () => {
       ]) {
         const o = good();
         // The failure is on the listing's second page.
-        o[kind] = [ok(kind === "d1" ? d1() : kv(), { total_pages: 2 }), bad];
+        o[kind] = [ok(lists[kind](), { total_pages: 2 }), bad];
         const r = ids(o);
         expect(r.code, bad).toBe(1);
         expect(r.err).toContain(name);
@@ -207,6 +231,25 @@ describe("hosted-resource-ids.sh", () => {
       }
     });
   }
+
+  it("the sending zone: a zone of that name on another account never counts", () => {
+    const o = good();
+    o.zones = [ok(zones().slice(1))];
+    const r = ids(o);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain(
+      "zone open-artifacts.app: 0 found, want exactly one",
+    );
+    expect(r.ghEnv).toBe("");
+    // The query is account-scoped too.
+    expect(
+      r.sb
+        .log()
+        .some((l) =>
+          l.includes(`/zones?name=open-artifacts.app&account.id=${ACCT}&`),
+        ),
+    ).toBe(true);
+  });
 
   it("refuses an id of the wrong shape, a bad env and a bad account id", () => {
     const o = good();
@@ -280,12 +323,27 @@ describe("hosted-turnstile-keys.sh", () => {
     expect(r.file).toBe(`${SK}:SECRETturnstile\n`);
   });
 
-  it("fails closed: none, two, a failed listing, a network error, a failed GET or an empty secret", () => {
+  it("no widget: no file, exit 0, and no widget GET (provision refuses codes-on by itself)", () => {
+    for (const list of [
+      [],
+      widgets().filter(
+        (w) => (w as { name: string }).name !== "oa-p-turnstile",
+      ),
+    ]) {
+      const r = keys({ widgets: [ok(list)], widget: WIDGET });
+      expect(r.code, r.err).toBe(0);
+      expect(r.file).toBeNull();
+      expect(r.out).toMatch(
+        /^no Turnstile widget oa-p-turnstile: no keys file/,
+      );
+      expect(r.sb.log().some((l) => /\/challenges\/widgets\/0x/.test(l))).toBe(
+        false,
+      );
+    }
+  });
+
+  it("fails closed: two, a failed listing, a network error, a failed GET or an empty secret", () => {
     const cases: [Record<string, Page[]>, RegExp][] = [
-      [
-        { widgets: [ok(widgets().slice(0, 1))], widget: WIDGET },
-        /oa-p-turnstile: 0 found/,
-      ],
       [
         {
           widgets: [

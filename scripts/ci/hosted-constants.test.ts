@@ -9,7 +9,7 @@ import { root, sandbox, script } from "./stubs.ts";
 const KEYS = [
   "account_id",
   "email_daily_limit",
-  "email_zone_tags",
+  "email_zone",
   "google_client_id",
   "google_directory_client_id",
 ];
@@ -67,9 +67,36 @@ describe(".github/hosted/<env>.json", () => {
     expect(read("staging").google_directory_client_id).toBe(m?.[1]);
   });
 
-  it("prod's email values are the account's", () => {
-    expect(read("prod").email_zone_tags).toMatch(/^[0-9a-f]{32}$/);
+  // The prod Directory client is the one made in project open-artifacts-prod
+  // during setup C (2026-10-24); deploy fills it into the broker's
+  // {{GOOGLE_DIRECTORY_CLIENT_ID_PROD}}. It is not the staging client.
+  it("prod's directory client is the setup C client, distinct from staging's", () => {
+    expect(read("prod").google_directory_client_id).toBe(
+      "206295999771-6cr3mbfc7g2ejnvdoqhlf2v8v6sdm023.apps.googleusercontent.com",
+    );
+    expect(read("prod").google_directory_client_id).not.toBe(
+      read("staging").google_directory_client_id,
+    );
+  });
+
+  // Hosted mail is sent as noreply@mail.<app domain> (provision's
+  // metadata.ts), so the sending zone is the app zone; its tag is looked up
+  // in the run (hosted-resource-ids.sh), never committed.
+  it("email_zone is the env's app zone, and no zone tag is committed", () => {
+    const wfp = readFileSync(
+      join(root, "packages/provision/src/wfp.ts"),
+      "utf8",
+    );
+    for (const env of ["prod", "staging"]) {
+      const m = new RegExp(
+        `${env}: Object\\.freeze\\(\\{\\s*app: "([^"]+)"`,
+      ).exec(wfp);
+      expect(m, env).not.toBeNull();
+      expect(read(env).email_zone, env).toBe(m?.[1]);
+      expect(Object.keys(read(env))).not.toContain("email_zone_tags");
+    }
     expect(read("prod").email_daily_limit).toBe(5000);
+    expect(read("staging").email_daily_limit).toBe(500);
   });
 });
 
@@ -100,7 +127,7 @@ describe("hosted-constants.sh", () => {
     expect(r.ghEnv).toBe(
       [
         "CLOUDFLARE_ACCOUNT_ID=26ac346086d4405f7a976d48747a2a75",
-        "EMAIL_ZONE_TAGS=eb90975c0a329d0c743fa4f33f917934",
+        "EMAIL_ZONE=open-artifacts.app",
         "EMAIL_DAILY_LIMIT=5000",
         "GOOGLE_CLIENT_ID=206295999771-ntbp6nlf5ospa45ovc73aur4f05fpp5s.apps.googleusercontent.com",
         "GOOGLE_DIRECTORY_CLIENT_ID=206295999771-6cr3mbfc7g2ejnvdoqhlf2v8v6sdm023.apps.googleusercontent.com",
@@ -144,6 +171,30 @@ describe("hosted-constants.sh", () => {
         expect(r.err).toContain(k);
         expect(r.ghEnv).toBe("");
       }
+    }
+  });
+
+  it("refuses a placeholder or malformed value in any key, before writing anything", () => {
+    const bad: [string, unknown][] = [
+      ["account_id", "UNCONFIRMED-account"],
+      ["account_id", "A".repeat(32)],
+      ["email_zone", "UNCONFIRMED-set-the-sending-zone"],
+      ["email_zone", "{{EMAIL_ZONE_PROD}}"],
+      ["email_zone", "open-artifacts.app/x"],
+      ["email_daily_limit", "UNCONFIRMED"],
+      ["email_daily_limit", 0],
+      ["email_daily_limit", "5000;x"],
+      ["email_daily_limit", 1234567890],
+      ["google_client_id", "{{GOOGLE_CLIENT_ID_PROD}}"],
+      ["google_client_id", "UNCONFIRMED.apps.googleusercontent.com"],
+      ["google_directory_client_id", "TODO"],
+      ["google_directory_client_id", "1-x.apps.googleusercontent.com.evil"],
+    ];
+    for (const [k, v] of bad) {
+      const r = load({ ...PROD(), [k]: v });
+      expect(r.code, `${k}=${v}`).toBe(1);
+      expect(r.err).toContain(`${k} is not a valid value`);
+      expect(r.ghEnv, `${k}=${v}`).toBe("");
     }
   });
 

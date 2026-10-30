@@ -147,8 +147,10 @@ jobs:
         env:
           DEPLOY_ENV: ${{ inputs.env }}
         run: bash "$RUNNER_TEMP/main-ci/hosted-constants.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"
-      # The D1 and KV ids, by exact name on the account (exactly one each).
+      # The D1 and KV ids and the sending zone's tag, by exact name on the
+      # account (exactly one each); only for the targets that bind them.
       - name: Resolve the resource ids
+        if: ${{ contains(format(',{0},', inputs.targets), ',auth-broker,') || contains(format(',{0},', inputs.targets), ',directory-broker,') || contains(format(',{0},', inputs.targets), ',dispatch,') || contains(format(',{0},', inputs.targets), ',scheduler,') || contains(format(',{0},', inputs.targets), ',inventory,') }}
         env:
           DEPLOY_ENV: ${{ inputs.env }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

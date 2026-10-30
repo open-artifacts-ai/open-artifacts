@@ -33,9 +33,11 @@ case "$path" in
   /user/tokens/verify) [ "$tok" = ok ] && ok '{"status":"active"}' || echo '{"success":false}' ;;
   "/zones?name="*)
     [ "$tok" = ok ] || { echo '{"success":false}'; exit 0; }
-    n="\${path#*name=}"
+    q="\${path#*name=}"; n="\${q%%&*}"
+    # Only the account-scoped lookup answers; ZONE_OWNER fakes another account's zone.
+    case "$q" in *"&account.id=$STUB_ACCT") ;; *) echo '{"success":false}'; exit 0 ;; esac
     case "$n" in *.page) id="$PAGEZ" ;; *) id="$APPZ" ;; esac
-    ok "[{\\"id\\":\\"$id\\",\\"name\\":\\"$n\\"}]" ;;
+    ok "[{\\"id\\":\\"$id\\",\\"name\\":\\"$n\\",\\"account\\":{\\"id\\":\\"\${ZONE_OWNER:-$STUB_ACCT}\\"}}]" ;;
   /zones/*/dns_records\\?name=*)
     z="\${path#/zones/}"; z="\${z%%/*}"; ok "$(cat "$STATE/wild-$z.json" 2>/dev/null || echo '[]')" ;;
   /zones/*/dns_records)
@@ -101,6 +103,7 @@ const setup = (
         CLOUDFLARE_API_TOKEN: TOK,
         TOK_EXPECT: TOK,
         CLOUDFLARE_ACCOUNT_ID: "26ac346086d4405f7a976d48747a2a75",
+        STUB_ACCT: "26ac346086d4405f7a976d48747a2a75",
         APPZ,
         PAGEZ,
         GITHUB_STEP_SUMMARY: summary,
@@ -234,6 +237,14 @@ describe("hosted-zones.sh", () => {
     expect(setup().run("plan", "dev").code).toBe(2);
     expect(setup().run("destroy").code).toBe(2);
   });
+  it("finds each zone on the hosted account only, refusing a same-named zone elsewhere", () => {
+    const r = setup().run("plan", "prod", { ZONE_OWNER: "f".repeat(32) });
+    expect(r.code).toBe(1);
+    expect(r.err).toMatch(/not found \(or not unique\)/);
+    expect(r.writes).toEqual([]);
+    clean(r);
+  });
+
   it("staging uses the staging zones and oa-s Workers", () => {
     const r = setup({}, [
       "oa-s-dispatch",
