@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.77.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.76.0...v0.77.0) (2026-10-30)
+
+
+### Features
+
+* **hosted:** run oa:hosted in CI (hosted-ops.yml), prod gated, ephemeral owner tokens ([#848](https://github.com/open-artifacts-ai/open-artifacts/issues/848)) ([c93781e](https://github.com/open-artifacts-ai/open-artifacts/commit/c93781e982ffedeab91ffa84228830b6f07f4b44))
+
 ## [0.76.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.75.0...v0.76.0) (2026-10-30)
 
 
