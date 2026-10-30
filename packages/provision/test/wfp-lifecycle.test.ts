@@ -2909,7 +2909,9 @@ describe("fix round 3 (T8): the env's broker Google client id", () => {
       "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
     );
     expect(BROKER_GOOGLE_CLIENT_ID.staging).toBe(STAGING_CLIENT);
-    expect(BROKER_GOOGLE_CLIENT_ID.prod).toBeNull();
+    expect(BROKER_GOOGLE_CLIENT_ID.prod).toBe(
+      "206295999771-ntbp6nlf5ospa45ovc73aur4f05fpp5s.apps.googleusercontent.com",
+    );
   });
 
   it("with the broker on, a staging create renders GOOGLE_CLIENT_ID as the broker's client; the same caller value is accepted", async () => {
@@ -2962,14 +2964,30 @@ describe("fix round 3 (T8): the env's broker Google client id", () => {
     expect(s.fake.writes().length).toBe(w);
   });
 
-  it("prod with the broker on is refused before any write: no prod Google client yet", async () => {
+  it("with the broker on, a prod create renders GOOGLE_CLIENT_ID as prod's broker client, never staging's", async () => {
     const s = setup({ env: "prod" });
+    const inst = keep(
+      await s
+        .mk({ brokerEnabled: true })
+        .create(input("leo", { vars: GOOGLE })),
+    );
+    expect(plainOf(s, inst.id, "GOOGLE_CLIENT_ID")).toMatchObject({
+      type: "plain_text",
+      text: BROKER_GOOGLE_CLIENT_ID.prod,
+    });
+    expect(plainOf(s, inst.id, "AUTH_BROKER_URL")?.text).toBe(
+      "https://auth.open-artifacts.app",
+    );
     const w = s.fake.writes().length;
     const e = await fails(
-      s.mk({ brokerEnabled: true }).create(input("finqore", { vars: GOOGLE })),
+      s.mk({ brokerEnabled: true }).create(
+        input("acme", {
+          vars: { ...GOOGLE, GOOGLE_CLIENT_ID: STAGING_CLIENT },
+        }),
+      ),
     );
     expect(e).toBeInstanceOf(ProvisionRefused);
-    expect(e.message).toMatch(/no prod Google client yet/);
+    expect(e.message).toContain(BROKER_GOOGLE_CLIENT_ID.prod as string);
     expect(s.fake.writes().length).toBe(w);
   });
 
