@@ -12,9 +12,9 @@
 # everything back and fails unless it equals the set exactly. Both refuse when
 # a `*` record or one of these routes exists but differs (nothing is replaced),
 # or when a route that isn't ours matches one of our patterns.
-# Tokens: ZONE_TOKEN (Zone Read, Zone Settings Edit, DNS Edit, Workers Routes
-# Edit, these two zones only) for the zones; CLOUDFLARE_API_TOKEN (Workers
-# Scripts) only to check the target Workers exist. Both reach curl on stdin.
+# Token: CLOUDFLARE_API_TOKEN, the env's one Cloudflare token (Zone Read, Zone
+# Settings Edit, DNS Edit and Workers Routes Edit on these two zones, and
+# Workers Scripts to check the target Workers exist). It reaches curl on stdin.
 # Usage: scripts/ops/hosted-zones.sh staging|prod plan|apply
 set -euo pipefail
 
@@ -30,7 +30,6 @@ case "$env" in
   *) echo "env must be staging or prod" >&2; exit 2 ;;
 esac
 case "$mode" in plan | apply) ;; *) echo "mode must be plan or apply" >&2; exit 2 ;; esac
-: "${ZONE_TOKEN:?ZONE_TOKEN is required}"
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
 [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]] || { echo "CLOUDFLARE_ACCOUNT_ID must be 32 hex" >&2; exit 2; }
@@ -61,11 +60,11 @@ for w in "oa-$P-dispatch" "oa-$P-auth-broker" "oa-$P-directory-broker"; do
   ok="$(cf "$CLOUDFLARE_API_TOKEN" GET "$CF/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$w/settings" | jq -r '.success' 2> /dev/null)"
   [ "$ok" = true ] || { echo "$w does not exist: deploy it first" >&2; exit 1; }
 done
-status="$(cf "$ZONE_TOKEN" GET "$CF/user/tokens/verify" | must "verify ZONE_TOKEN" | jq -r '.result.status')"
-[ "$status" = active ] || { echo "ZONE_TOKEN is $status, not active" >&2; exit 1; }
+status="$(cf "$CLOUDFLARE_API_TOKEN" GET "$CF/user/tokens/verify" | must "verify CLOUDFLARE_API_TOKEN" | jq -r '.result.status')"
+[ "$status" = active ] || { echo "CLOUDFLARE_API_TOKEN is $status, not active" >&2; exit 1; }
 
 zone_id() {
-  cf "$ZONE_TOKEN" GET "$CF/zones?name=$1" | must "look up zone $1" |
+  cf "$CLOUDFLARE_API_TOKEN" GET "$CF/zones?name=$1" | must "look up zone $1" |
     jq -r --arg n "$1" '[.result[] | select(.name == $n)] | if length == 1 then .[0].id else "" end'
 }
 APP_ZONE="$(zone_id "$APP")"
@@ -95,7 +94,7 @@ inspect() {
     name="${pair%%:*}"
     zid="${pair#*:}"
     base="$CF/zones/$zid"
-    wild="$(cf "$ZONE_TOKEN" GET "$base/dns_records?name=*.$name" | must "read the * record on $name" |
+    wild="$(cf "$CLOUDFLARE_API_TOKEN" GET "$base/dns_records?name=*.$name" | must "read the * record on $name" |
       jq -c '[.result[] | {type, content, proxied}]')"
     case "$wild" in
       '[]') CHANGES+=("dns $zid $name"); [ -z "$rep" ] || say "$name: create AAAA * -> 100:: (proxied)" ;;
@@ -105,7 +104,7 @@ inspect() {
     for s in "${SETTINGS[@]}"; do
       k="${s%%:*}"
       v="${s#*:}"
-      cur="$(cf "$ZONE_TOKEN" GET "$base/settings/$k" | must "read $k on $name" | jq -c '.result.value')"
+      cur="$(cf "$CLOUDFLARE_API_TOKEN" GET "$base/settings/$k" | must "read $k on $name" | jq -c '.result.value')"
       if [ "$cur" = "$v" ]; then
         [ -z "$rep" ] || say "$name: $k = $v ok"
       else
@@ -115,7 +114,7 @@ inspect() {
     done
   done
   for zid in "$APP_ZONE" "$PAGE_ZONE"; do
-    routes="$(cf "$ZONE_TOKEN" GET "$CF/zones/$zid/workers/routes" | must "list routes" | jq -c '[.result[] | {pattern, script}]')"
+    routes="$(cf "$CLOUDFLARE_API_TOKEN" GET "$CF/zones/$zid/workers/routes" | must "list routes" | jq -c '[.result[] | {pattern, script}]')"
     for r in "${ROUTES[@]}"; do
       read -r rz pat scr <<< "$r"
       [ "$rz" = "$zid" ] || continue
@@ -164,13 +163,13 @@ for c in ${CHANGES[@]+"${CHANGES[@]}"}; do
   read -r kind zid a b <<< "$c"
   case "$kind" in
     dns)
-      cf "$ZONE_TOKEN" POST "$CF/zones/$zid/dns_records" -d '{"type":"AAAA","name":"*","content":"100::","proxied":true}' |
+      cf "$CLOUDFLARE_API_TOKEN" POST "$CF/zones/$zid/dns_records" -d '{"type":"AAAA","name":"*","content":"100::","proxied":true}' |
         must "create AAAA * on $a" > /dev/null ;;
     setting)
-      got="$(cf "$ZONE_TOKEN" PATCH "$CF/zones/$zid/settings/$a" -d "{\"value\":$b}" | must "set $a" | jq -c '.result.value')"
+      got="$(cf "$CLOUDFLARE_API_TOKEN" PATCH "$CF/zones/$zid/settings/$a" -d "{\"value\":$b}" | must "set $a" | jq -c '.result.value')"
       [ "$got" = "$b" ] || { echo "$a is $got after the change, not $b" >&2; exit 1; } ;;
     route)
-      cf "$ZONE_TOKEN" POST "$CF/zones/$zid/workers/routes" -d "{\"pattern\":\"$a\",\"script\":\"$b\"}" |
+      cf "$CLOUDFLARE_API_TOKEN" POST "$CF/zones/$zid/workers/routes" -d "{\"pattern\":\"$a\",\"script\":\"$b\"}" |
         must "add route $a" > /dev/null ;;
   esac
 done

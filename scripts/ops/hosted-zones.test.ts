@@ -6,19 +6,18 @@ import { root, sandbox } from "../ci/stubs.ts";
 // hosted-zones.sh: plan reads only and lists each change; apply makes exactly
 // those; a different `*` record or route stops both. Tokens reach curl on stdin.
 const SCRIPT = join(root, "scripts/ops/hosted-zones.sh");
-const ZT = "zone-token-SHOULD-NEVER-APPEAR";
-const DT = "deploy-token-SHOULD-NEVER-APPEAR";
+const TOK = "cf-token-SHOULD-NEVER-APPEAR";
 const APPZ = "a".repeat(32);
 const PAGEZ = "b".repeat(32);
 
-// curl: the zone token for zone calls, the deploy token for Worker checks.
+// curl: every call must carry the one token (CLOUDFLARE_API_TOKEN) on stdin.
 // State: $STATE/wild-<zone>.json, setting-<zone>-<k>.json, routes-<zone>.json,
 // workers (names that exist); writes are logged as "WRITE <method> <path> <body>"
 // and land in the state, unless $DROP names the kind (dns, setting, route):
 // then the API says success and nothing changes.
 const curl = `
 cfg="$(cat)"
-tok=""; case "$cfg" in *"$ZT_EXPECT"*) tok=zone ;; *"$DT_EXPECT"*) tok=deploy ;; esac
+tok=""; case "$cfg" in *"$TOK_EXPECT"*) tok=ok ;; esac
 m=GET; body=""
 for ((i = 1; i <= $#; i++)); do
   [ "\${!i}" = -X ] && { j=$((i + 1)); m="\${!j}"; }
@@ -30,10 +29,10 @@ ok() { printf '{"success":true,"result":%s}' "$1"; }
 case "$path" in
   /accounts/*/workers/scripts/*/settings)
     w="\${path#*/workers/scripts/}"; w="\${w%%/*}"
-    [ "$tok" = deploy ] && grep -qx "$w" "$STATE/workers" && ok '{}' || echo '{"success":false}' ;;
-  /user/tokens/verify) [ "$tok" = zone ] && ok '{"status":"active"}' || echo '{"success":false}' ;;
+    [ "$tok" = ok ] && grep -qx "$w" "$STATE/workers" && ok '{}' || echo '{"success":false}' ;;
+  /user/tokens/verify) [ "$tok" = ok ] && ok '{"status":"active"}' || echo '{"success":false}' ;;
   "/zones?name="*)
-    [ "$tok" = zone ] || { echo '{"success":false}'; exit 0; }
+    [ "$tok" = ok ] || { echo '{"success":false}'; exit 0; }
     n="\${path#*name=}"
     case "$n" in *.page) id="$PAGEZ" ;; *) id="$APPZ" ;; esac
     ok "[{\\"id\\":\\"$id\\",\\"name\\":\\"$n\\"}]" ;;
@@ -99,10 +98,8 @@ const setup = (
     const r = sb.run(["bash", SCRIPT, env, mode], {
       env: {
         STATE: state,
-        ZONE_TOKEN: ZT,
-        ZT_EXPECT: ZT,
-        CLOUDFLARE_API_TOKEN: DT,
-        DT_EXPECT: DT,
+        CLOUDFLARE_API_TOKEN: TOK,
+        TOK_EXPECT: TOK,
         CLOUDFLARE_ACCOUNT_ID: "26ac346086d4405f7a976d48747a2a75",
         APPZ,
         PAGEZ,
@@ -127,8 +124,7 @@ const clean = (r: {
   log: string[];
   summary: string;
 }) => {
-  for (const s of [ZT, DT])
-    expect([r.out, r.err, r.summary, ...r.log].join("\n")).not.toContain(s);
+  expect([r.out, r.err, r.summary, ...r.log].join("\n")).not.toContain(TOK);
 };
 
 describe("hosted-zones.sh", () => {

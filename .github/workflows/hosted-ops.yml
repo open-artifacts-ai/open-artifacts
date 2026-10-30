@@ -1,8 +1,10 @@
 # Runs one oa:hosted operation (docs/ops/hosted.md, "The oa:hosted CLI") in
 # CI, by hand only: create, upgrade, rollback, update-vars, status, delete,
 # release-lease, turnstile-init, publish-release or publish-floor. Each env has
-# its own Environment (hosted-staging-deploy, hosted-prod-deploy) holding
-# PROVISION_TOKEN and R2_TOKEN. No run waits for a person: automated gates
+# its own Environment (hosted-staging-deploy, hosted-prod-deploy) holding one
+# Cloudflare token, CLOUDFLARE_API_TOKEN; the R2 key and the Turnstile keys are
+# derived from it in the run, and the constants are committed
+# (.github/hosted/<env>.json). No run waits for a person: automated gates
 # decide. Prod runs only from main (checked here and again by the CLI), and a
 # prod create or upgrade first needs the precheck job ("prod is clean").
 # Inputs reach the CLI only through env and the ci-args validator, never as
@@ -139,6 +141,11 @@ jobs:
           node-version-file: .nvmrc
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @oa/provision build
+      # The committed constants (account id and the rest), into GITHUB_ENV.
+      - name: Load the hosted constants
+        env:
+          OPS_ENV: ${{ inputs.env }}
+        run: bash scripts/ci/hosted-constants.sh "$OPS_ENV" .github/hosted
       # Every input goes through env to the validator, which prints the argv
       # as a JSON array (and the install the sweep needs to GITHUB_OUTPUT).
       - name: Check the inputs
@@ -166,37 +173,40 @@ jobs:
           OPS_ENV: ${{ inputs.env }}
           RELEASE: ${{ steps.args.outputs.release }}
         run: scripts/ci/tag-passed-checks.sh "$OPS_ENV" "$RELEASE"
-      # Only this step sees the secrets. R2_TOKEN only for the publish ops.
+      # Only this step sees the secret, the env's one Cloudflare token. From it:
+      # the R2 key (publish ops only) and the Turnstile keys (the ops that
+      # render an install's vars), each fail closed.
       - name: Write the token files
         id: tok
         env:
-          PROVISION_TOKEN: ${{ secrets.PROVISION_TOKEN }}
-          R2_TOKEN: ${{ (inputs.op == 'publish-release' || inputs.op == 'publish-floor') && secrets.R2_TOKEN || '' }}
-          # Only the ops that render an install's vars (codes on needs the pair).
-          TURNSTILE_KEYS: ${{ contains(fromJSON('["create","upgrade","rollback","update-vars"]'), inputs.op) && secrets.TURNSTILE_KEYS || '' }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          OPS_ENV: ${{ inputs.env }}
+          OPS_OP: ${{ inputs.op }}
         run: |
           set +x
           set -euo pipefail
           umask 077
           dir="$RUNNER_TEMP/hosted-ops-secrets"
           mkdir -m 700 "$dir"
-          [ -n "$PROVISION_TOKEN" ] || { echo "PROVISION_TOKEN is not set in this Environment"; exit 1; }
-          printf '%s\n' "$PROVISION_TOKEN" > "$dir/token"
-          if [ -n "$R2_TOKEN" ]; then printf '%s\n' "$R2_TOKEN" > "$dir/r2"; fi
-          if [ -n "${TURNSTILE_KEYS:-}" ]; then
-            printf '%s\n' "$TURNSTILE_KEYS" > "$dir/turnstile"
-            echo "turnstile=1" >> "$GITHUB_OUTPUT"
-          fi
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "CLOUDFLARE_API_TOKEN is not set in this Environment"; exit 1; }
+          printf '%s\n' "$CLOUDFLARE_API_TOKEN" > "$dir/token"
+          case "$OPS_OP" in
+            publish-release | publish-floor) bash scripts/ci/hosted-r2-key.sh "$dir/r2" ;;
+          esac
+          case "$OPS_OP" in
+            create | upgrade | rollback | update-vars)
+              bash scripts/ci/hosted-turnstile-keys.sh "$OPS_ENV" "$dir/turnstile"
+              echo "turnstile=1" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
       - name: Run the operation
         id: run
         env:
           OA_HOSTED_TOKEN_FILE: ${{ runner.temp }}/hosted-ops-secrets/token
           OA_HOSTED_R2_FILE: ${{ runner.temp }}/hosted-ops-secrets/r2
-          # Named only when the file was written (the secret is set); with no
-          # keys, provision refuses an install with codes on.
+          # Named only when the file was written (the ops that render vars).
           OA_HOSTED_TURNSTILE_FILE: ${{ steps.tok.outputs.turnstile == '1' && format('{0}/hosted-ops-secrets/turnstile', runner.temp) || '' }}
           OA_HOSTED_ENVIRONMENT: ${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.HOSTED_ACCOUNT_ID }}
           GH_TOKEN: ${{ inputs.op == 'publish-release' && github.token || '' }}
         run: |
           set -euo pipefail
@@ -212,7 +222,6 @@ jobs:
         env:
           OA_HOSTED_TOKEN_FILE: ${{ runner.temp }}/hosted-ops-secrets/token
           OA_HOSTED_ENVIRONMENT: ${{ inputs.env == 'prod' && 'hosted-prod-deploy' || 'hosted-staging-deploy' }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.HOSTED_ACCOUNT_ID }}
           OPS_ENV: ${{ inputs.env }}
           INSTALL: ${{ steps.args.outputs.install }}
           RUN_OUTCOME: ${{ steps.run.outcome }}
