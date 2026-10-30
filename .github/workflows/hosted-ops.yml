@@ -57,6 +57,8 @@ on:
 
 permissions:
   contents: read
+  # The release gate reads the tag's release-please run and jobs.
+  actions: read
 
 concurrency:
   group: hosted-ops-${{ inputs.env }}-${{ inputs.install || inputs.env }}
@@ -154,6 +156,16 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/hosted/src/ci-args.ts > "$RUNNER_TEMP/hosted-ops-argv.json"
+      # Before any token is read: the release being installed (create,
+      # upgrade) or published passed every earlier check on its tag. Fails
+      # closed, also on an empty tag or an API error.
+      - name: Release gate
+        if: ${{ contains(fromJSON('["create","upgrade","publish-release"]'), inputs.op) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPS_ENV: ${{ inputs.env }}
+          RELEASE: ${{ steps.args.outputs.release }}
+        run: scripts/ci/tag-passed-checks.sh "$OPS_ENV" "$RELEASE"
       # Only this step sees the secrets. R2_TOKEN only for the publish ops.
       - name: Write the token files
         id: tok

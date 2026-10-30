@@ -61,7 +61,7 @@ describe("hosted-ops.yml", () => {
         "publish-floor",
       ].sort(),
     );
-    expect(w.permissions).toEqual({ contents: "read" });
+    expect(w.permissions).toEqual({ contents: "read", actions: "read" });
     expect(job.permissions).toBeUndefined();
     expect(job.environment).toBe(ENVIRONMENT);
     expect(w.concurrency).toEqual({
@@ -386,6 +386,88 @@ describe("the steps' shell, run", () => {
       expect(r.out).toMatch(/::error::.*ci-4242/);
       expect(r.args).toEqual([]);
     });
+  });
+});
+
+describe("the release gate: every release op checks its tag first", () => {
+  const GATE_OPS = ["create", "upgrade", "publish-release"];
+  const gate = () => named("Release gate");
+  /** Whether a step `if` of the contains(fromJSON([...]), inputs.op) shape runs for op. */
+  const runsFor = (expr: string, op: string): boolean => {
+    const m =
+      /^\$\{\{ contains\(fromJSON\('(\[[^']*\])'\), inputs\.op\) \}\}$/.exec(
+        expr,
+      );
+    if (!m) throw new Error(`unexpected if: ${expr}`);
+    return (JSON.parse(m[1] as string) as string[]).includes(op);
+  };
+
+  it("runs main's tag-passed-checks.sh on the validated tag, for every release op", () => {
+    const s = gate();
+    expect(s.run).toBe('scripts/ci/tag-passed-checks.sh "$OPS_ENV" "$RELEASE"');
+    expect(existsSync(join(root, "scripts/ci/tag-passed-checks.sh"))).toBe(
+      true,
+    );
+    expect(s.env).toEqual({
+      GH_TOKEN: "${{ github.token }}",
+      OPS_ENV: "${{ inputs.env }}",
+      RELEASE: "${{ steps.args.outputs.release }}",
+    });
+    for (const op of w.on.workflow_dispatch.inputs.op.options as string[])
+      expect(runsFor(s.if, op), op).toBe(GATE_OPS.includes(op));
+    expect(s["continue-on-error"]).toBeUndefined();
+  });
+
+  it("comes right after the inputs check, before any token is read or the CLI runs", () => {
+    const i = (n: string) => steps.indexOf(named(n));
+    expect(i("Release gate")).toBe(i("Check the inputs") + 1);
+    expect(i("Release gate")).toBeLessThan(i("Write the token files"));
+    expect(i("Release gate")).toBeLessThan(i("Run the operation"));
+    // The steps between the gate and the CLI all run for every gated op.
+    for (const st of steps.slice(
+      i("Release gate") + 1,
+      i("Run the operation") + 1,
+    ))
+      expect(st.if, st.name).toBeUndefined();
+  });
+
+  it("the inputs check writes the version to install or publish as release=vX.Y.Z", () => {
+    const sb = sandbox({});
+    const temp = join(sb.dir, "runner-temp");
+    mkdirSync(temp);
+    const cases: [Record<string, string>, string][] = [
+      [
+        { OPS_OP: "upgrade", OPS_INSTALL: "iabcdefghijk", OPS_TAG: "v0.75.0" },
+        "v0.75.0",
+      ],
+      [
+        {
+          OPS_OP: "create",
+          OPS_TAG: "",
+          OPS_ARGS: '{"slug":"finqore","to":"0.74.1"}',
+          OPS_OWNER: "ops@finqore.test",
+        },
+        "v0.74.1",
+      ],
+      [{ OPS_OP: "publish-release", OPS_TAG: "v0.74.1" }, "v0.74.1"],
+      [{ OPS_OP: "status", OPS_INSTALL: "iabcdefghijk" }, ""],
+    ];
+    for (const [env, want] of cases) {
+      const out = join(temp, `out-${env.OPS_OP}`);
+      writeFileSync(out, "");
+      const r = sb.run(["bash", "-c", named("Check the inputs").run], {
+        cwd: root,
+        env: {
+          RUNNER_TEMP: temp,
+          GITHUB_OUTPUT: out,
+          OPS_ENV: "staging",
+          OPS_ARGS: "{}",
+          ...env,
+        },
+      });
+      expect(r.code, r.err).toBe(0);
+      expect(readFileSync(out, "utf8")).toContain(`release=${want}\n`);
+    }
   });
 });
 
