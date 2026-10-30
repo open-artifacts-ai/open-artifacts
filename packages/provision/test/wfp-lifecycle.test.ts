@@ -4125,3 +4125,240 @@ describe("reissueOwnerToken", () => {
     expect(s.row(inst.id).lease).toBe("x");
   });
 });
+
+describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
+  const CI = { ciOwnerToken: { label: "ci-42" } };
+  const tokens = (s: S, id: string) =>
+    s
+      .installDb(id)
+      .prepare("SELECT id, label, revoked_at FROM tokens ORDER BY created_at")
+      .all() as { id: string; label: string; revoked_at: number | null }[];
+  const ciTokens = (s: S, id: string) =>
+    tokens(s, id).filter((t) => t.label === "ci-42");
+  const patFiles = (s: S) =>
+    readdirSync(s.opts().patDir).filter((f) => f.endsWith("-pat-token"));
+  /** Raw request index of the first body matching `re`, from `from`. */
+  const at = (s: S, re: RegExp, from = 0) =>
+    s.fake.raw.findIndex((r, i) => i >= from && re.test(r.body));
+  const MINT = /INSERT INTO tokens/;
+  const REVOKE = /UPDATE tokens SET revoked_at = \?1 WHERE id = \?2/;
+  const CLAIM = /UPDATE installs SET state = \?1, lease = \?2/;
+  const FINISH = /lease = NULL, lease_until = NULL/;
+  /** Mint after the claim, revoke before the lease is dropped. */
+  const underLease = (s: S, from: number) => {
+    const claim = at(s, CLAIM, from);
+    const mint = at(s, MINT, from);
+    const revoke = at(s, REVOKE, from);
+    const finish = at(s, FINISH, from);
+    expect(claim).toBeGreaterThanOrEqual(0);
+    expect(mint).toBeGreaterThan(claim);
+    expect(revoke).toBeGreaterThan(mint);
+    expect(finish).toBeGreaterThan(revoke);
+  };
+  /** MCP never answers: the process "crashes" between mint and revoke. */
+  const hangMcp =
+    (s: S): typeof fetch =>
+    (u, init) =>
+      String(u).endsWith("/mcp")
+        ? new Promise<Response>(() => {})
+        : s.fake.fetch(u, init);
+
+  it("create: the selftest runs on a ci-<run> PAT minted under the lease and revoked before it is released; no PAT file, no provision token", async () => {
+    const s = setup();
+    const from = s.fake.raw.length;
+    const inst = keep(await s.mk(CI).create(input()));
+    expect(inst.patFile).toBeUndefined();
+    expect(patFiles(s)).toEqual([]);
+    const ts = tokens(s, inst.id);
+    expect(ts.map((t) => t.label)).toEqual(["ci-42"]);
+    expect(ts[0]?.revoked_at).not.toBeNull();
+    // The selftest published the welcome artifact with it.
+    expect(s.fake.artifacts.size).toBe(1);
+    underLease(s, from);
+    expect(s.audit(inst.id)).toEqual(
+      expect.arrayContaining([
+        "ci_token.mint",
+        "ci_token.revoke",
+        "create.active",
+      ]),
+    );
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("upgrade, rollback and updateVars: no PAT file is read; each mints its own ci token under the lease and revokes it", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    // The laptop PAT file is gone: CI never has one.
+    rmSync(join(s.opts().patDir, `${inst.appHost}-pat-token`));
+    let from = s.fake.raw.length;
+    expect(keep(await s.mk(CI).upgrade(inst.id, "0.24.0"))).toMatchObject({
+      ok: true,
+    });
+    underLease(s, from);
+    from = s.fake.raw.length;
+    const back = keep(await s.mk(CI).rollback(inst.id));
+    expect(back).toMatchObject({ ok: true, rolledBack: true });
+    // The selftest ran (not skipped as with a refused PAT).
+    expect(back.note).toBeUndefined();
+    underLease(s, from);
+    from = s.fake.raw.length;
+    expect(
+      keep(await s.mk(CI).updateVars(inst.id, { FEATURES: "beta" })),
+    ).toMatchObject({ ok: true });
+    underLease(s, from);
+    const ci = ciTokens(s, inst.id);
+    expect(ci).toHaveLength(3);
+    expect(ci.every((t) => t.revoked_at !== null)).toBe(true);
+    // The owner's provision token from the laptop create is untouched.
+    expect(
+      tokens(s, inst.id).filter(
+        (t) => t.label === "provision" && t.revoked_at === null,
+      ),
+    ).toHaveLength(1);
+    // Without the flag, the same upgrade still needs the PAT file.
+    expect((await fails(s.p.upgrade(inst.id, "0.24.0"))).message).toMatch(
+      /owner token file .* is missing/,
+    );
+  });
+
+  it("a failed upgrade's automatic rollback selftests with the same ci token, then revokes it", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    unhealthyAt(s, "0.24.0");
+    const r = keep(await s.mk(CI).upgrade(inst.id, "0.24.0"));
+    expect(r).toMatchObject({ ok: false, rolledBack: true });
+    const ci = ciTokens(s, inst.id);
+    expect(ci).toHaveLength(1);
+    expect(ci[0]?.revoked_at).not.toBeNull();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("an upgrade that fails after the mint still revokes the ci token before the lease is dropped", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const from = s.fake.raw.length;
+    // The script upload is refused: the upgrade aborts after the mint.
+    s.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-[^/]+$/.test(p));
+    await fails(s.mk(CI).upgrade(inst.id, "0.24.0"));
+    const ci = ciTokens(s, inst.id);
+    expect(ci).toHaveLength(1);
+    expect(ci[0]?.revoked_at).not.toBeNull();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    underLease(s, from);
+  });
+
+  it("a revoke that fails is a note naming the sweep, never the token; the sweep then revokes and verifies it", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const flaky: typeof fetch = async (u, init) => {
+      if (REVOKE.test(String(init?.body ?? "")))
+        return Response.json(
+          { success: false, errors: [{ code: 7500, message: "boom" }] },
+          { status: 400 },
+        );
+      return s.fake.fetch(u, init);
+    };
+    const p = s.mk({ ...CI, cf: s.cfWith(flaky) });
+    expect(keep(await p.upgrade(inst.id, "0.24.0"))).toMatchObject({
+      ok: true,
+    });
+    expect(p.notes.join("\n")).toMatch(
+      /CI owner token was not revoked .*ci-token-sweep revokes it/,
+    );
+    expect(
+      ciTokens(s, inst.id).filter((t) => t.revoked_at === null),
+    ).toHaveLength(1);
+    expect(keep(await s.mk().ciTokenSweep(inst.id, "ci-42"))).toEqual({
+      id: inst.id,
+      label: "ci-42",
+      revoked: 1,
+      active: 0,
+    });
+    expect(ciTokens(s, inst.id).every((t) => t.revoked_at !== null)).toBe(true);
+  });
+
+  it("a crash between mint and revoke leaves the token live; ci-token-sweep revokes it, and a second sweep finds none", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    void s.mk({ ...CI, fetch: hangMcp(s) }).upgrade(inst.id, "0.24.0");
+    // Wait until the upgrade is past the mint and stuck (the hang is at
+    // the pre-upload MCP-free path's end: the health check or selftest).
+    for (let i = 0; i < 5000 && s.row(inst.id).version !== "0.24.0"; i++)
+      await new Promise((r) => setImmediate(r));
+    expect(s.row(inst.id).version).toBe("0.24.0");
+    const live = ciTokens(s, inst.id).filter((t) => t.revoked_at === null);
+    expect(live).toHaveLength(1);
+    // Another run's ci token and the owner's own tokens are left alone.
+    s.installDb(inst.id)
+      .prepare(
+        "INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tother', id, 'ci-7', 'h7', 1 FROM users WHERE role = 'owner'",
+      )
+      .run();
+    const r = keep(await s.mk().ciTokenSweep(inst.id, "ci-42"));
+    expect(r).toEqual({ id: inst.id, label: "ci-42", revoked: 1, active: 0 });
+    expect(
+      ciTokens(s, inst.id).filter((t) => t.revoked_at === null),
+    ).toHaveLength(0);
+    const rest = tokens(s, inst.id).filter((t) => t.label !== "ci-42");
+    expect(rest.every((t) => t.revoked_at === null)).toBe(true);
+    expect(rest.map((t) => t.label).sort()).toEqual(["ci-7", "provision"]);
+    expect(s.audit(inst.id)).toContain("ci_token.sweep");
+    expect(keep(await s.mk().ciTokenSweep(inst.id, "ci-42")).revoked).toBe(0);
+  });
+
+  it("the sweep verifies by reading again: a revoke that silently did nothing fails the sweep", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    s.installDb(inst.id)
+      .prepare(
+        "INSERT INTO tokens (id, user_id, label, token_hash, created_at) SELECT 'tleft', id, 'ci-42', 'h42', 1 FROM users WHERE role = 'owner'",
+      )
+      .run();
+    // The label UPDATE "succeeds" but changes nothing.
+    const lossy: typeof fetch = async (u, init) => {
+      const body = String(init?.body ?? "");
+      if (/UPDATE tokens SET revoked_at = \?1 WHERE label = \?2/.test(body))
+        return s.fake.fetch(u, {
+          ...init,
+          body: JSON.stringify({ sql: "SELECT 1", params: [] }),
+        });
+      return s.fake.fetch(u, init);
+    };
+    const e = await fails(
+      s.mk({ cf: s.cfWith(lossy) }).ciTokenSweep(inst.id, "ci-42"),
+    );
+    expect(e).toBeInstanceOf(ProvisionRefused);
+    expect(e.message).toMatch(
+      /1 owner token\(s\) labelled ci-42 are still active after the sweep/,
+    );
+  });
+
+  it("the sweep refuses a malformed label or id, and a deleted install has nothing to sweep", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    for (const bad of ["ci-", "ci-0", "provision", "ci-42 OR 1=1", "ci-4x"])
+      expect((await fails(s.p.ciTokenSweep(inst.id, bad))).message).toMatch(
+        /ci-<run id>/,
+      );
+    expect(await fails(s.p.ciTokenSweep("not-an-id", "ci-42"))).toBeInstanceOf(
+      ProvisionRefused,
+    );
+    keep(await s.p.delete(inst.id, inst.id, { skipDirectoryRevoke: "test" }));
+    expect(keep(await s.p.ciTokenSweep(inst.id, "ci-42"))).toEqual({
+      id: inst.id,
+      label: "ci-42",
+      revoked: 0,
+      active: 0,
+    });
+  });
+
+  it("a malformed ciOwnerToken label is refused before any call", async () => {
+    const s = setup();
+    for (const label of ["ci-", "provision", "ci-1;DROP", ""]) {
+      const n = s.fake.log.length;
+      const e = await fails(s.mk({ ciOwnerToken: { label } }).create(input()));
+      expect(e.message).toMatch(/ci-<run id>/);
+      expect(s.fake.log.length).toBe(n);
+    }
+  });
+});

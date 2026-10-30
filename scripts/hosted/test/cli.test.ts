@@ -148,6 +148,7 @@ describe("refusals before any call", () => {
       "turnstile-init",
       "redline-creds",
       "owner-token",
+      "ci-token-sweep",
     ]);
   });
 });
