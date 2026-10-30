@@ -1,11 +1,13 @@
 # Deploys one env's hosted platform Workers (docs/ops/hosted.md) from a stable
 # release tag, by hand only: the auth and directory brokers, dispatch, the
 # scheduler, the inventory Worker and its key, and the zone wiring (DNS,
-# routes, settings: plan by default, apply only with apply_zones). Each env has its own Environment
+# routes, settings: planned, then applied in the same run). No one approves a
+# run: the release gate (scripts/ci/tag-passed-checks.sh) refuses a tag unless
+# every earlier check on it passed. Each env has its own Environment
 # (hosted-staging-deploy, hosted-prod-deploy) holding the same-named secrets
-# and variables; every run waits for its required reviewer, and only main may
-# run it. The code deployed is the tag's, never the branch's. verify_only
-# deploys and sets nothing: it reads the live Workers back and runs every check.
+# and variables; only main may run it. The code deployed is the tag's, never
+# the branch's. verify_only deploys and sets nothing: it reads the live Workers
+# back and runs every check, and the zones stay plan only.
 name: deploy-hosted-platform
 
 on:
@@ -25,19 +27,16 @@ on:
         required: true
         default: "auth-broker,directory-broker,dispatch,scheduler"
         type: string
-      apply_zones:
-        description: "zones: apply the changes (default: plan only, shown in the summary)"
-        required: true
-        default: false
-        type: boolean
       verify_only:
         description: "Read back and check only; deploy and set nothing"
         required: true
         default: false
         type: boolean
 
+# actions: read lets the release gate read release-please.yml's run and jobs.
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: hosted-platform-${{ inputs.env }}
@@ -71,6 +70,23 @@ jobs:
             [ "$pos" -gt "$last" ] || { echo "targets out of order: $TARGETS"; exit 1; }
             last=$pos; seen="$seen $t"
           done
+      # The gate is main's, like the deploy scripts; it runs before the tag's
+      # code is checked out.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          path: .release-gate
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+      - name: The tag passed every earlier check
+        env:
+          DEPLOY_ENV: ${{ inputs.env }}
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash .release-gate/scripts/ci/tag-passed-checks.sh "$DEPLOY_ENV" "$TAG"
+          rm -rf .release-gate
       - name: Prod runs only from main
         if: ${{ inputs.env == 'prod' }}
         env:
@@ -140,14 +156,18 @@ jobs:
             bash scripts/ops/deploy-hosted-platform.sh "$DEPLOY_ENV" "$t"
             echo "::endgroup::"
           done
-      # Only this step sees the zone token. Plan unless apply_zones; the exact
-      # changes go to the job summary either way.
+      # Only this step sees the zone token. Plan, then apply (hosted-zones.sh
+      # refuses anything outside its fixed set and reads every change back);
+      # verify_only stays plan only. Both go to the job summary.
       - name: Zones
         if: ${{ contains(format(',{0},', inputs.targets), ',zones,') }}
         env:
           DEPLOY_ENV: ${{ inputs.env }}
-          ZONE_MODE: ${{ inputs.apply_zones && !inputs.verify_only && 'apply' || 'plan' }}
+          VERIFY_ONLY: ${{ inputs.verify_only && '1' || '' }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.HOSTED_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
           ZONE_TOKEN: ${{ secrets.ZONE_TOKEN }}
-        run: bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" "$ZONE_MODE"
+        run: |
+          set -euo pipefail
+          bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" plan
+          [ -n "$VERIFY_ONLY" ] || bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" apply

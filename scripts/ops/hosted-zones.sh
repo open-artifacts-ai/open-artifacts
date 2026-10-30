@@ -7,8 +7,11 @@
 #   routes: *.<app>/* and *.<page>/* -> oa-<p>-dispatch; auth.<app>/* ->
 #           oa-<p>-auth-broker; directory.<app>/* -> oa-<p>-directory-broker
 # `plan` reads only and prints each change (and "ok" for what already matches),
-# also to $GITHUB_STEP_SUMMARY. `apply` makes the same changes. Both refuse when
-# a `*` record or one of these routes exists but differs: nothing is replaced.
+# also to $GITHUB_STEP_SUMMARY. `apply` plans first, refuses unless every change
+# is an addition or setting change from that fixed set, makes them, then reads
+# everything back and fails unless it equals the set exactly. Both refuse when
+# a `*` record or one of these routes exists but differs (nothing is replaced),
+# or when a route that isn't ours matches one of our patterns.
 # Tokens: ZONE_TOKEN (Zone Read, Zone Settings Edit, DNS Edit, Workers Routes
 # Edit, these two zones only) for the zones; CLOUDFLARE_API_TOKEN (Workers
 # Scripts) only to check the target Workers exist. Both reach curl on stdin.
@@ -69,57 +72,114 @@ APP_ZONE="$(zone_id "$APP")"
 PAGE_ZONE="$(zone_id "$PAGE")"
 [[ "$APP_ZONE" =~ ^[0-9a-f]{32}$ && "$PAGE_ZONE" =~ ^[0-9a-f]{32}$ ]] || { echo "zones $APP / $PAGE not found (or not unique)" >&2; exit 1; }
 
+# The fixed expected set. Nothing outside it is ever written.
+WILD='[{"type":"AAAA","content":"100::","proxied":true}]'
+SETTINGS=('ssl:"strict"' 'always_use_https:"on"' 'min_tls_version:"1.2"')
+ROUTES=("$APP_ZONE auth.$APP/* oa-$P-auth-broker" "$APP_ZONE directory.$APP/* oa-$P-directory-broker"
+  "$APP_ZONE *.$APP/* oa-$P-dispatch" "$PAGE_ZONE *.$PAGE/* oa-$P-dispatch")
+EXPECTED=()
 for pair in "$APP:$APP_ZONE" "$PAGE:$PAGE_ZONE"; do
-  name="${pair%%:*}"
-  zid="${pair#*:}"
-  base="$CF/zones/$zid"
-  wild="$(cf "$ZONE_TOKEN" GET "$base/dns_records?name=*.$name" | must "read the * record on $name" |
-    jq -c '[.result[] | {type, content, proxied}]')"
-  case "$wild" in
-    '[]')
-      say "$name: create AAAA * -> 100:: (proxied)"
-      if [ "$mode" = apply ]; then
-        cf "$ZONE_TOKEN" POST "$base/dns_records" -d '{"type":"AAAA","name":"*","content":"100::","proxied":true}' |
-          must "create AAAA * on $name" > /dev/null
-      fi ;;
-    '[{"type":"AAAA","content":"100::","proxied":true}]') say "$name: AAAA * -> 100:: ok" ;;
-    *) echo "$name has a different * record: $wild; refusing" >&2; exit 1 ;;
-  esac
-  for s in 'ssl:"strict"' 'always_use_https:"on"' 'min_tls_version:"1.2"'; do
-    k="${s%%:*}"
-    v="${s#*:}"
-    cur="$(cf "$ZONE_TOKEN" GET "$base/settings/$k" | must "read $k on $name" | jq -c '.result.value')"
-    if [ "$cur" = "$v" ]; then
-      say "$name: $k = $v ok"
-    else
-      say "$name: set $k $cur -> $v"
-      if [ "$mode" = apply ]; then
-        got="$(cf "$ZONE_TOKEN" PATCH "$base/settings/$k" -d "{\"value\":$v}" | must "set $k on $name" | jq -c '.result.value')"
-        [ "$got" = "$v" ] || { echo "$k on $name is $got after the change, not $v" >&2; exit 1; }
+  EXPECTED+=("dns ${pair#*:} ${pair%%:*}")
+  for s in "${SETTINGS[@]}"; do EXPECTED+=("setting ${pair#*:} ${s%%:*} ${s#*:}"); done
+done
+for r in "${ROUTES[@]}"; do EXPECTED+=("route $r"); done
+
+# inspect <report>: reads only. Fills CHANGES with what differs from the
+# expected set (one EXPECTED entry each); refuses a different `*` record, one of
+# our patterns on another Worker, or another route our patterns match. With
+# report, each line goes to the summary.
+inspect() {
+  local rep="$1" pair name zid base wild s k v cur r rz pat scr have routes foreign
+  CHANGES=()
+  for pair in "$APP:$APP_ZONE" "$PAGE:$PAGE_ZONE"; do
+    name="${pair%%:*}"
+    zid="${pair#*:}"
+    base="$CF/zones/$zid"
+    wild="$(cf "$ZONE_TOKEN" GET "$base/dns_records?name=*.$name" | must "read the * record on $name" |
+      jq -c '[.result[] | {type, content, proxied}]')"
+    case "$wild" in
+      '[]') CHANGES+=("dns $zid $name"); [ -z "$rep" ] || say "$name: create AAAA * -> 100:: (proxied)" ;;
+      "$WILD") [ -z "$rep" ] || say "$name: AAAA * -> 100:: ok" ;;
+      *) echo "$name has a different * record: $wild; refusing" >&2; exit 1 ;;
+    esac
+    for s in "${SETTINGS[@]}"; do
+      k="${s%%:*}"
+      v="${s#*:}"
+      cur="$(cf "$ZONE_TOKEN" GET "$base/settings/$k" | must "read $k on $name" | jq -c '.result.value')"
+      if [ "$cur" = "$v" ]; then
+        [ -z "$rep" ] || say "$name: $k = $v ok"
+      else
+        CHANGES+=("setting $zid $k $v")
+        [ -z "$rep" ] || say "$name: set $k $cur -> $v"
       fi
-    fi
+    done
   done
+  for zid in "$APP_ZONE" "$PAGE_ZONE"; do
+    routes="$(cf "$ZONE_TOKEN" GET "$CF/zones/$zid/workers/routes" | must "list routes" | jq -c '[.result[] | {pattern, script}]')"
+    for r in "${ROUTES[@]}"; do
+      read -r rz pat scr <<< "$r"
+      [ "$rz" = "$zid" ] || continue
+      have="$(jq -r --arg p "$pat" '[.[] | select(.pattern == $p) | .script] | join(",")' <<< "$routes")"
+      if [ -z "$have" ]; then
+        CHANGES+=("route $r")
+        [ -z "$rep" ] || say "route $pat -> $scr: add"
+      elif [ "$have" = "$scr" ]; then
+        [ -z "$rep" ] || say "route $pat -> $scr ok"
+      else
+        echo "route $pat points at $have, not $scr; refusing" >&2
+        exit 1
+      fi
+    done
+    # Routes that aren't ours stay, unless one of our patterns matches them:
+    # a more specific route would take traffic from ours.
+    while IFS= read -r foreign; do
+      [ -n "$foreign" ] || continue
+      for r in "${ROUTES[@]}"; do
+        read -r rz pat scr <<< "$r"
+        [ "$rz" = "$zid" ] || continue
+        # shellcheck disable=SC2053 # $pat is a glob on purpose
+        if [[ "$foreign" == $pat ]]; then
+          echo "route $foreign is not ours but matches $pat; refusing" >&2
+          exit 1
+        fi
+      done
+    done < <(jq -r --argjson ours "$(printf '%s\n' "${ROUTES[@]}" | jq -R 'split(" ")[1]' | jq -s .)" \
+      '.[] | select(.pattern as $p | $ours | index($p) | not) | .pattern' <<< "$routes")
+  done
+}
+
+inspect report
+# Every planned change must be one of the expected set; else nothing is written.
+for c in ${CHANGES[@]+"${CHANGES[@]}"}; do
+  ok=""
+  for e in "${EXPECTED[@]}"; do [ "$c" = "$e" ] && ok=1; done
+  [ -n "$ok" ] || { echo "planned change outside the expected set: $c; refusing" >&2; exit 1; }
+done
+if [ "$mode" = plan ]; then
+  say "plan only: nothing changed"
+  exit 0
+fi
+
+for c in ${CHANGES[@]+"${CHANGES[@]}"}; do
+  read -r kind zid a b <<< "$c"
+  case "$kind" in
+    dns)
+      cf "$ZONE_TOKEN" POST "$CF/zones/$zid/dns_records" -d '{"type":"AAAA","name":"*","content":"100::","proxied":true}' |
+        must "create AAAA * on $a" > /dev/null ;;
+    setting)
+      got="$(cf "$ZONE_TOKEN" PATCH "$CF/zones/$zid/settings/$a" -d "{\"value\":$b}" | must "set $a" | jq -c '.result.value')"
+      [ "$got" = "$b" ] || { echo "$a is $got after the change, not $b" >&2; exit 1; } ;;
+    route)
+      cf "$ZONE_TOKEN" POST "$CF/zones/$zid/workers/routes" -d "{\"pattern\":\"$a\",\"script\":\"$b\"}" |
+        must "add route $a" > /dev/null ;;
+  esac
 done
 
-route() { # zone id, pattern, script
-  local have
-  have="$(cf "$ZONE_TOKEN" GET "$CF/zones/$1/workers/routes" | must "list routes" |
-    jq -r --arg p "$2" '[.result[] | select(.pattern == $p) | .script] | join(",")')"
-  if [ -z "$have" ]; then
-    say "route $2 -> $3: add"
-    if [ "$mode" = apply ]; then
-      cf "$ZONE_TOKEN" POST "$CF/zones/$1/workers/routes" -d "{\"pattern\":\"$2\",\"script\":\"$3\"}" |
-        must "add route $2" > /dev/null
-    fi
-  elif [ "$have" = "$3" ]; then
-    say "route $2 -> $3 ok"
-  else
-    echo "route $2 points at $have, not $3; refusing" >&2
-    exit 1
-  fi
-}
-route "$APP_ZONE" "auth.$APP/*" "oa-$P-auth-broker"
-route "$APP_ZONE" "directory.$APP/*" "oa-$P-directory-broker"
-route "$APP_ZONE" "*.$APP/*" "oa-$P-dispatch"
-route "$PAGE_ZONE" "*.$PAGE/*" "oa-$P-dispatch"
-if [ "$mode" = plan ]; then say "plan only: nothing changed"; else say "applied"; fi
+# Read back: the live records, routes and settings must now equal the expected
+# set exactly.
+inspect ""
+if [ "${#CHANGES[@]}" -ne 0 ]; then
+  echo "after apply, still not as expected: ${CHANGES[*]}" >&2
+  exit 1
+fi
+say "applied and read back: matches the expected set"
