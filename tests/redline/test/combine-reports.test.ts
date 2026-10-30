@@ -5,7 +5,12 @@ import {
   ID_TOKEN_FILE,
   NEEDS_CAPTURE,
 } from "../src/capture.ts";
-import { combineReports } from "../src/combine-reports.ts";
+import {
+  combineReports,
+  PROD_CLEAN,
+  PROD_RULE_LABEL,
+  parseCiLog,
+} from "../src/combine-reports.ts";
 import { buildReport, type CaseResult, type Report } from "../src/report.ts";
 
 // The laptop full run standing in for verdicts.json: only CI's two
@@ -172,5 +177,161 @@ describe("combineReports", () => {
       ok: false,
       reason: expect.stringMatching(/same cases/),
     });
+  });
+});
+
+// The user's rule (2026-10-30): zero prod results count as a passing check,
+// only for CI's exact "prod not brought up" and only when the CI run's log
+// proves the probe ran with all three secrets and the inventory URL.
+describe("combineReports: prod is clean, zero prod installs", () => {
+  const SHA = BINDING.suiteSha;
+  const ACCT = "0123456789abcdef0123456789abcdef";
+  const T = "2026-10-30T10:00:00.0000000Z";
+  const log = (
+    o: {
+      sha?: string;
+      r2?: string;
+      scripts?: string;
+      inv?: string;
+      url?: string;
+      acct?: string;
+    } = {},
+  ) =>
+    [
+      `redline\tRun actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\t${T} ${o.sha ?? SHA}`,
+      `redline\tWrite the suite's secrets as 0600 files\t${T} env:`,
+      `redline\tWrite the suite's secrets as 0600 files\t${T}   RL_A_PAT: ***`,
+      `redline\tWrite the suite's secrets as 0600 files\t${T}   PROD_R2_TOKEN:${o.r2 ?? " ***"}`,
+      `redline\tWrite the suite's secrets as 0600 files\t${T}   PROD_SCRIPTS_TOKEN:${o.scripts ?? " ***"}`,
+      `redline\tWrite the suite's secrets as 0600 files\t${T}   PROD_INVENTORY_KEY:${o.inv ?? " ***"}`,
+      `redline\tRun the suite\t${T} env:`,
+      `redline\tRun the suite\t${T}   REDLINE_PROD_ACCOUNT_ID:${o.acct ?? ` ${ACCT}`}`,
+      `redline\tRun the suite\t${T}   REDLINE_PROD_INVENTORY_URL:${o.url ?? " https://inventory.example.dev"}`,
+    ].join("\n");
+  const withProd = (prod: Partial<CaseResult>) => {
+    const add = (r: Report): Report => {
+      const cases = [
+        ...r.cases,
+        {
+          file: PROD_CLEAN.file,
+          name: PROD_CLEAN.name,
+          level: "pass",
+          ...prod,
+        } as CaseResult,
+      ];
+      return {
+        ...buildReport(cases, "staging"),
+        finishedAt: r.finishedAt,
+        binding: r.binding,
+      };
+    };
+    return {
+      ci: add(ciReport()),
+      local: {
+        ...localReport(),
+        cases: [
+          ...localReport().cases,
+          {
+            file: PROD_CLEAN.file,
+            name: PROD_CLEAN.name,
+            level: "not-applicable",
+            reason: "prod probe not configured",
+          } as CaseResult,
+        ],
+      },
+    };
+  };
+  const exact = {
+    level: "not-applicable",
+    reason: "prod not brought up",
+  } as const;
+  const prodCase = (r: ReturnType<typeof combineReports>) =>
+    r.ok ? r.report.cases.find((c) => c.name === PROD_CLEAN.name) : undefined;
+
+  it("exact reason, all three secrets and the inventory URL: pass by the user rule", () => {
+    const { ci, local } = withProd(exact);
+    const r = combineReports(ci, local, NOW, parseCiLog(log()));
+    if (!r.ok) throw new Error(r.reason);
+    expect(prodCase(r)).toMatchObject({
+      level: "pass",
+      label: PROD_RULE_LABEL,
+    });
+    expect(r.prodRule).toEqual({ applied: true });
+    expect(r.report.gate.passed).toBe(true);
+    expect(r.sources.find((s) => s.name === PROD_CLEAN.name)?.source).toBe(
+      "ci-rule",
+    );
+  });
+
+  it.each([
+    [
+      "the inventory-not-configured variant",
+      {
+        level: "not-applicable",
+        reason: "prod not brought up (inventory not configured)",
+      },
+    ],
+    [
+      "probe not configured",
+      { level: "not-applicable", reason: "prod probe not configured" },
+    ],
+    [
+      "a fail",
+      { level: "fail", reason: "prodClean x: /healthz testHooks is true" },
+    ],
+  ] as const)("%s is never mapped: the gate fails", (_, prod) => {
+    const { ci, local } = withProd(prod);
+    const r = combineReports(ci, local, NOW, parseCiLog(log()));
+    if (!r.ok) throw new Error(r.reason);
+    expect(prodCase(r)).toMatchObject(prod);
+    expect(r.prodRule).toBeNull();
+    expect(r.report.gate.passed).toBe(false);
+  });
+
+  it.each([
+    ["the inventory URL missing", { url: "" }, /REDLINE_PROD_INVENTORY_URL/],
+    ["the inventory key missing", { inv: "" }, /REDLINE_PROD_INVENTORY_KEY/],
+    ["the R2 token missing", { r2: "" }, /REDLINE_PROD_R2_TOKEN/],
+    [
+      "the scripts token missing",
+      { scripts: "" },
+      /REDLINE_PROD_SCRIPTS_TOKEN/,
+    ],
+    ["the account id missing", { acct: "" }, /REDLINE_PROD_ACCOUNT_ID/],
+    [
+      "another commit's log",
+      { sha: "456b3d387d8c231f478a0597f3359b647a6054e0" },
+      /checkout is not/,
+    ],
+  ] as const)("exact reason but %s: stays not-applicable", (_, o, why) => {
+    const { ci, local } = withProd(exact);
+    const r = combineReports(ci, local, NOW, parseCiLog(log(o)));
+    if (!r.ok) throw new Error(r.reason);
+    expect(prodCase(r)).toMatchObject(exact);
+    expect(r.prodRule).toMatchObject({
+      applied: false,
+      reason: expect.stringMatching(why),
+    });
+    expect(r.report.gate.passed).toBe(false);
+  });
+
+  it("exact reason without a CI log: stays not-applicable", () => {
+    const { ci, local } = withProd(exact);
+    const r = combineReports(ci, local, NOW);
+    if (!r.ok) throw new Error(r.reason);
+    expect(prodCase(r)).toMatchObject(exact);
+    expect(r.report.gate.passed).toBe(false);
+  });
+
+  it("only the redline job's own env lines count", () => {
+    const other = log().replaceAll("redline\t", "t19\t");
+    const env = parseCiLog(other);
+    expect(env.prodSecrets).toEqual({
+      r2: false,
+      scripts: false,
+      inventoryKey: false,
+    });
+    expect(env.prodInventoryUrl).toBe("");
+    expect(env.checkoutShas).toEqual([]);
   });
 });
