@@ -1,6 +1,7 @@
 // deploy-hosted-platform.yml: one env's hosted platform Workers deploy by hand
-// only, from a stable tag, in that env's reviewer-gated Environment, with
-// main's deploy scripts and the tag's code.
+// only, from a stable tag that passed the release gate, in that env's
+// main-only Environment (no approval step), with main's deploy scripts and the
+// tag's code.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ const named = (n: string) =>
   steps.find((s) => s.name === n) as Record<string, any>;
 
 describe("deploy-hosted-platform.yml", () => {
-  it("runs only on dispatch, read-only, one at a time, in the gated Environment", () => {
+  it("runs only on dispatch, read-only, one at a time, in the env's Environment", () => {
     expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
     const inputs = w.on.workflow_dispatch.inputs;
     expect(inputs.tag.required).toBe(true);
@@ -34,7 +35,13 @@ describe("deploy-hosted-platform.yml", () => {
       type: "boolean",
       default: false,
     });
-    expect(w.permissions).toEqual({ contents: "read" });
+    expect(w.permissions).toEqual({ contents: "read", actions: "read" });
+    expect(Object.keys(inputs).sort()).toEqual([
+      "env",
+      "tag",
+      "targets",
+      "verify_only",
+    ]);
     expect(job.permissions).toBeUndefined();
     expect(job.environment).toBe(
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
@@ -62,11 +69,11 @@ describe("deploy-hosted-platform.yml", () => {
     const outs = steps.filter((s) =>
       String(s.uses).startsWith("actions/checkout@"),
     );
-    expect(outs).toHaveLength(2);
+    expect(outs).toHaveLength(3);
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(outs[0]?.with.ref).toBe("refs/tags/${{ inputs.tag }}");
+    expect(outs[1]?.with.ref).toBe("refs/tags/${{ inputs.tag }}");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    expect(outs[1]?.with).toMatchObject({
+    expect(outs[2]?.with).toMatchObject({
       ref: "${{ github.sha }}",
       path: ".deploy-logic",
       "sparse-checkout": "scripts/ops",
@@ -120,19 +127,49 @@ describe("deploy-hosted-platform.yml", () => {
     );
   });
 
-  it("zones plan by default; apply only with apply_zones and never with verify_only", () => {
-    expect(w.on.workflow_dispatch.inputs.apply_zones).toMatchObject({
-      type: "boolean",
-      default: false,
-    });
-    const z = named("Zones");
-    expect(z.env.ZONE_MODE).toBe(
+  it("the release gate runs main's script right after the input check, before the tag checkout, for both envs", () => {
+    const gate = named("The tag passed every earlier check");
+    const i = steps.indexOf(gate);
+    expect(steps.indexOf(named("Check the inputs"))).toBe(i - 2);
+    expect(steps[i - 1]?.with).toMatchObject({
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ inputs.apply_zones && !inputs.verify_only && 'apply' || 'plan' }}",
+      ref: "${{ github.sha }}",
+      path: ".release-gate",
+      "sparse-checkout": "scripts/ci",
+      "persist-credentials": false,
+    });
+    expect(gate.if).toBeUndefined();
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(gate.env).toEqual({
+      DEPLOY_ENV: "${{ inputs.env }}",
+      TAG: "${{ inputs.tag }}",
+      GH_TOKEN: "${{ github.token }}",
+    });
+    expect(gate.run).toContain(
+      'bash .release-gate/scripts/ci/tag-passed-checks.sh "$DEPLOY_ENV" "$TAG"',
     );
-    expect(z.run).toBe(
-      'bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" "$ZONE_MODE"',
+    const tagOut = steps.find(
+      (s) =>
+        String(s.uses).startsWith("actions/checkout@") &&
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        s.with.ref === "refs/tags/${{ inputs.tag }}",
     );
+    expect(i).toBeLessThan(steps.indexOf(tagOut as Record<string, unknown>));
+  });
+
+  it("zones plan, then apply in the same job; verify_only stays plan only", () => {
+    const z = named("Zones");
+    expect(z.env.VERIFY_ONLY).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ inputs.verify_only && '1' || '' }}",
+    );
+    expect(text).not.toContain("apply_zones");
+    const lines = (z.run as string).trim().split("\n");
+    expect(lines).toEqual([
+      "set -euo pipefail",
+      'bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" plan',
+      '[ -n "$VERIFY_ONLY" ] || bash scripts/ops/hosted-zones.sh "$DEPLOY_ENV" apply',
+    ]);
     expect(steps.indexOf(z)).toBeGreaterThan(
       steps.indexOf(named("Deploy and verify")),
     );
