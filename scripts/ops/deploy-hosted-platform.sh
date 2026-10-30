@@ -98,6 +98,7 @@ expect() {
 
 # broker_pin: provision's BROKER_GOOGLE_CLIENT_ID[$env] from $BROKER_PIN_FILE
 # (main's wfp.ts), or "null". Exit 1 when the pin can't be read.
+# shellcheck disable=SC2016 # the JS template literal is single-quoted on purpose
 broker_pin() {
   node -e '
     const src = require("node:fs").readFileSync(process.argv[1], "utf8");
