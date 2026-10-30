@@ -187,7 +187,26 @@ describe("hosted-ops.yml", () => {
     );
     const rm = named("Remove the token files");
     expect(rm.if).toBe("${{ always() }}");
-    expect(rm.run).toContain('"$RUNNER_TEMP/hosted-ops-secrets"');
+    expect(rm.run).toContain('d="$RUNNER_TEMP/hosted-ops-secrets"');
+    expect(rm.run).toContain('rm -f "$d/r2" "$d/turnstile" "$d/token"');
+    // Run it: the derived R2 and Turnstile files (and the token) are gone.
+    const sb = sandbox({});
+    const temp = join(sb.dir, "runner-temp");
+    const d = join(temp, "hosted-ops-secrets");
+    mkdirSync(d, { recursive: true });
+    for (const f of ["token", "r2", "turnstile"])
+      writeFileSync(join(d, f), "x");
+    const r = sb.run(["bash", "-c", rm.run], { env: { RUNNER_TEMP: temp } });
+    expect(r.code, r.err).toBe(0);
+    expect(existsSync(d)).toBe(false);
+    // The step names the same files the CLI step reads.
+    const cli = named("Run the operation").env;
+    expect(cli.OA_HOSTED_R2_FILE).toBe(
+      "${{ runner.temp }}/hosted-ops-secrets/r2",
+    );
+    expect(cli.OA_HOSTED_TURNSTILE_FILE).toContain(
+      "'{0}/hosted-ops-secrets/turnstile'",
+    );
     expect(named("Summary").if).toBe("${{ always() }}");
     const i = (n: string) => steps.indexOf(named(n));
     expect(i("Run the operation")).toBeLessThan(i("Sweep the CI owner token"));

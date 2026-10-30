@@ -244,9 +244,16 @@ jobs:
           fi
           [[ "$id" =~ ^i[a-z0-9]{11}$ ]] || { echo "::error::not an install id"; exit 1; }
           pnpm -s oa:hosted ci-token-sweep --env "$OPS_ENV" --install "$id" --run "$GITHUB_RUN_ID" | tee -a "$out"
+      # The derived R2 and Turnstile files (OA_HOSTED_R2_FILE,
+      # OA_HOSTED_TURNSTILE_FILE) and the token go, whatever happened.
       - name: Remove the token files
         if: ${{ always() }}
-        run: rm -rf "$RUNNER_TEMP/hosted-ops-secrets" "$RUNNER_TEMP/hosted-ops-floor.sig.json"
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/hosted-ops-secrets"
+          rm -f "$d/r2" "$d/turnstile" "$d/token"
+          rm -rf "$d" "$RUNNER_TEMP/hosted-ops-floor.sig.json"
+          test ! -e "$d"
       # Audit: the CLI's actor is this run's URL; the summary lists each
       # step's JSON line (already redacted by the CLI).
       - name: Summary

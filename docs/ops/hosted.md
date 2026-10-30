@@ -361,7 +361,7 @@ A failed or skipped alert never changes the nightly lines above.
 
 ## Platform Workers through CI (`deploy-hosted-platform.yml`)
 
-The platform Workers and the zone wiring deploy from CI, never a laptop: `deploy-hosted-platform.yml` is dispatch-only and takes an env (`staging` or `prod`), a stable release tag and a comma-separated target list in dependency order (`auth-broker,directory-broker,dispatch,scheduler,inventory,inventory-key,zones`). Prod runs only from main: the workflow checks `github.ref`, and the script refuses a CI prod run unless `GITHUB_REF` is `refs/heads/main` and the Environment is `hosted-prod-deploy`. The workflow file and its deploy scripts come from main; everything deployed comes from the tag. It runs `scripts/ops/deploy-hosted-platform.sh <env> <target>`, which deploys through `deploy-platform-worker.sh` (the allowlist, placeholders filled and checked), sets secrets only after the Worker exists, then reads the live settings back and refuses on any mismatch: bindings, vars, the dispatch namespace, service bindings, observability (off on the brokers and dispatch), the scheduler's two schedules, and the exact secret names. `verify_only` deploys and sets nothing: it reads the live Workers back and runs every check (a read-only rehearsal). Before deploying, `auth-broker` refuses unless `GOOGLE_CLIENT_ID` equals provision's pin, `BROKER_GOOGLE_CLIENT_ID[<env>]` in main's `packages/provision/src/wfp.ts` (a `null` pin is a refusal too). The inventory Worker deploys through the same wrapper (its config has per-env blocks); `inventory-key` sets its key from the Environment secret.
+The platform Workers and the zone wiring deploy from CI, never a laptop: `deploy-hosted-platform.yml` is dispatch-only and takes an env (`staging` or `prod`), a stable release tag and a comma-separated target list in dependency order (`auth-broker,directory-broker,dispatch,scheduler,inventory,inventory-key,zones`). Prod runs only from main: the workflow checks `github.ref`, and the script refuses a CI prod run unless `GITHUB_REF` is `refs/heads/main` and the Environment is `hosted-prod-deploy`. The workflow file and its deploy scripts come from main; everything deployed comes from the tag. It runs `scripts/ops/deploy-hosted-platform.sh <env> <target>`, which deploys through `deploy-platform-worker.sh` (the allowlist, placeholders filled and checked), sets secrets only after the Worker exists, then reads the live settings back and refuses on any mismatch: bindings, vars, the dispatch namespace, service bindings, observability (off on the brokers and dispatch), the scheduler's two schedules, and the exact secret names. `verify_only` deploys and sets nothing: it reads the live Workers back and runs every check (a read-only rehearsal). Before deploying, `auth-broker` refuses unless `GOOGLE_CLIENT_ID` equals provision's pin, `BROKER_GOOGLE_CLIENT_ID[<env>]` in main's `packages/provision/src/wfp.ts` (a `null` pin is a refusal too). The inventory Worker deploys through the same wrapper (its config has per-env blocks); `inventory-key` sets its key from the Environment secret: CI puts the key a human seeded and never mints one.
 
 `zones` runs `scripts/ops/hosted-zones.sh <env> plan`, then `apply`, in its own step, with the same `CLOUDFLARE_API_TOKEN`. It wires both zones exactly as the dispatch section says (the two `AAAA * → 100::` records, the four routes, and `ssl` strict, `always_use_https` on, `min_tls_version` 1.2; no HSTS). Every run plans, then applies in the same job (`verify_only` stays plan only); the plan, with "ok" for what already matches, and the result go to the job summary. Before writing, it refuses unless every planned change is an addition or a setting change from that fixed set, and both modes refuse a different `*` record, one of our route patterns on another Worker, or a route that isn't ours but one of our patterns matches (other routes on the zone are left alone). After applying, it reads the records, routes and settings back and fails unless they equal the set exactly. Secrets reach wrangler on stdin and the API token reaches curl on stdin; none is in argv or printed.
 
@@ -374,8 +374,7 @@ Each env has its own GitHub Environment, `hosted-staging-deploy` or `hosted-prod
 | `CLOUDFLARE_API_TOKEN` | The env's one Cloudflare token, the keychain item `oa-hosted-<env>`. Every Cloudflare call in `deploy-hosted-platform` and `hosted-ops` uses it: the deploys, the zones, the resource id and Turnstile lookups, and R2 (its S3 key is derived from it in the run) |
 | `GOOGLE_CLIENT_SECRET` | The env's sign-in client secret |
 | `GOOGLE_DIRECTORY_CLIENT_SECRET` | The env's Directory client secret |
-| `INVENTORY_KEY` | `oa-<p>-inventory`'s key (32+ chars); only the `inventory-key` target uses it. For prod it must equal the red-line `REDLINE_PROD_INVENTORY_KEY` (step 3 below sets both) |
-| `CREATE_OWNER_EMAIL` | `hosted-ops` `create` only: the new install's owner email |
+| `INVENTORY_KEY` | `oa-<p>-inventory`'s key (32+ chars); only the `inventory-key` target uses it. For prod it must equal the red-line `REDLINE_PROD_INVENTORY_KEY`. CI puts the key a human seeded and never mints one |
 
 Everything else CI derives, and fails closed:
 
@@ -384,27 +383,12 @@ Everything else CI derives, and fails closed:
 
 The broker state keys (`BROKER_STATE_KEY`, `DIRECTORY_STATE_KEY`) are never stored anywhere: the first run generates each one inside the runner, and later runs keep it (a failed secrets listing stops the run instead of reading as "absent"). The Google secrets are set on every run, so rotating one is: update the Environment secret, then re-run that target.
 
-What a person sets for prod, from their own terminal (nothing is printed or saved):
+The one thing a person sets for prod is the token, from the keychain straight into the Environment (nothing is printed or saved, and the value is never in argv):
 
-1. The token, from the keychain straight into the Environment:
-
-   ```sh
-   security find-generic-password -s oa-hosted-prod -a open-artifacts -w | gh secret set CLOUDFLARE_API_TOKEN --env hosted-prod-deploy -R open-artifacts-ai/open-artifacts
-   ```
-
-2. Before a `create`, the owner's email (it prompts):
-
-   ```sh
-   gh secret set CREATE_OWNER_EMAIL --env hosted-prod-deploy -R open-artifacts-ai/open-artifacts
-   ```
-
-3. The inventory key, generated once and set in both Environments from one shell variable, on stdin:
-
-   ```sh
-   ( K=$(openssl rand -base64 48); printf %s "$K" | gh secret set INVENTORY_KEY --env hosted-prod-deploy -R open-artifacts-ai/open-artifacts && printf %s "$K" | gh secret set REDLINE_PROD_INVENTORY_KEY --env redline-staging -R open-artifacts-ai/open-artifacts )
-   ```
-
-   Then run `deploy-hosted-platform` with the `inventory-key` target, which puts it on the Worker.
+```sh
+security find-generic-password -s oa-hosted-prod -a open-artifacts -w |
+  gh secret set CLOUDFLARE_API_TOKEN --env hosted-prod-deploy -R open-artifacts-ai/open-artifacts
+```
 
 ## Hosted release files (T3b)
 
