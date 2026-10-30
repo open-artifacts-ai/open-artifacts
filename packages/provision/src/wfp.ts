@@ -148,15 +148,17 @@ export const HOSTED_DOMAINS: Readonly<
 });
 
 /**
- * The env's broker Google sign-in client (public), equal to
- * apps/auth-broker/wrangler.jsonc's env.<env>.vars.GOOGLE_CLIENT_ID (a test
- * pins it). null: that env has no broker client yet.
+ * The env's broker Google sign-in client (public). Staging's equals
+ * apps/auth-broker/wrangler.jsonc's env.staging.vars.GOOGLE_CLIENT_ID; prod's
+ * is the client in project open-artifacts-prod, which the prod deploy fills
+ * into the broker's {{GOOGLE_CLIENT_ID_PROD}} (tests pin both). null: that env
+ * has no broker client yet.
  */
 export const BROKER_GOOGLE_CLIENT_ID: Readonly<Record<Env, string | null>> =
   Object.freeze({
     staging:
       "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
-    prod: null,
+    prod: "206295999771-ntbp6nlf5ospa45ovc73aur4f05fpp5s.apps.googleusercontent.com",
   });
 
 /** The platform HOSTS KV namespace title (host -> install id). */
@@ -1073,7 +1075,7 @@ export class WfpProvisioner {
     };
     if (!client)
       refuse(
-        `the broker is on but there is no ${this.env} broker Google client: no prod Google client yet`,
+        `the broker is on but there is no ${this.env} broker Google client`,
       );
     if (vars.AUTH_BROKER_URL !== undefined && vars.AUTH_BROKER_URL !== want)
       refuse(`AUTH_BROKER_URL must be ${want}, the ${this.env} broker`);
