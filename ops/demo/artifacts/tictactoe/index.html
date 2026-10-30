@@ -122,7 +122,9 @@
 
   .board {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    /* Fixed tracks: a mark must never grow its row or column (minmax(0, 1fr), not auto). */
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: repeat(3, minmax(0, 1fr));
     gap: 8px;
     width: 100%;
     aspect-ratio: 1;
