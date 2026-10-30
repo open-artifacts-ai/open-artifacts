@@ -436,7 +436,8 @@ describe("deploy-staging.yml", () => {
     expect(step).toContain(
       'wrangler secret delete "$name" -c wrangler.staging.jsonc --env staging',
     );
-    expect(step).toContain("echo y |");
+    expect(step).toContain("--env staging <<< y");
+    expect(step).not.toContain("echo y |");
   });
   it("ensures dashboard dist exists before wrangler deploy", () => {
     const e = idx("deploy", "ensure-dashboard-dist.sh");
