@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.76.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.75.0...v0.76.0) (2026-10-30)
+
+
+### Features
+
+* **provision:** pin prod's broker Google sign-in client ([#875](https://github.com/open-artifacts-ai/open-artifacts/issues/875)) ([d44996e](https://github.com/open-artifacts-ai/open-artifacts/commit/d44996ee0e742096cb372dd7d1f1e0f62e5507dc))
+
 ## [0.75.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.74.1...v0.75.0) (2026-10-30)
 
 
