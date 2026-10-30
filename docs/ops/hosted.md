@@ -371,7 +371,7 @@ Each env has its own GitHub Environment, `hosted-staging-deploy` or `hosted-prod
 
 | Secret | Value |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | The env's one Cloudflare token, the keychain item `oa-hosted-<env>`. Every Cloudflare call in `deploy-hosted-platform` and `hosted-ops` uses it: the deploys, the zones, the resource id and Turnstile lookups, and R2 (its S3 key is derived from it in the run) |
+| `CLOUDFLARE_API_TOKEN` | The env's one Cloudflare token (user-owned; rolled in the dashboard and pasted here). Every Cloudflare call in `deploy-hosted-platform` and `hosted-ops` uses it: the deploys, the zones, the resource id and Turnstile lookups, and R2 (its S3 key is derived from it in the run) |
 | `GOOGLE_CLIENT_SECRET` | The env's sign-in client secret |
 | `GOOGLE_DIRECTORY_CLIENT_SECRET` | The env's Directory client secret |
 | `INVENTORY_KEY` | `oa-<p>-inventory`'s key (32+ chars); only the `inventory-key` target uses it. For prod it must equal the red-line `REDLINE_PROD_INVENTORY_KEY`. CI puts the key a human seeded and never mints one |
@@ -383,7 +383,18 @@ Everything else CI derives, and fails closed:
 
 The broker state keys (`BROKER_STATE_KEY`, `DIRECTORY_STATE_KEY`) are never stored anywhere: the first run generates each one inside the runner, and later runs keep it (a failed secrets listing stops the run instead of reading as "absent"). The Google secrets are set on every run, so rotating one is: update the Environment secret, then re-run that target.
 
-The one thing a person sets for prod is the token, from the keychain straight into the Environment (nothing is printed or saved, and the value is never in argv):
+The one thing a person sets for prod is the token, in two dashboards (no laptop):
+
+1. **Scopes.** At https://dash.cloudflare.com/profile/api-tokens, open the prod token (user-owned) > ⋯ > Edit and check it has:
+   - Account (the hosted account): Workers Scripts Edit, Workers KV Storage Edit, D1 Edit, Workers R2 Storage Edit, Turnstile Edit, Queues Edit, Workflows Edit, Secrets Store Edit. (Read-only check 2026-10-30: prod lacked only Secrets Store.)
+   - Zone, with Include > Specific zone for `open-artifacts.app` and again for `open-artifacts.page`: Zone Read, Zone Settings Edit, DNS Edit, Workers Routes Edit.
+   - Continue to summary > Update token. The edit page has no prefill link.
+2. **Roll.** On the same list: the token > ⋯ > Roll > confirm, and copy the new value (Cloudflare shows it once). Rolling replaces the old value, so nothing else should still be using it.
+3. **Paste.** At https://github.com/open-artifacts-ai/open-artifacts/settings/environments/25812490011/edit (the `hosted-prod-deploy` Environment), under Environment secrets: Add environment secret (or the pencil on an existing one), name `CLOUDFLARE_API_TOKEN`, paste the value, Add secret. The form can't be prefilled with a value.
+
+The first deploy run (`verify_only`) then checks every scope it needs and stops at the first one that's missing.
+
+Optional alternative, from a terminal that already holds the value in the keychain (nothing is printed, and the value never reaches argv):
 
 ```sh
 security find-generic-password -s oa-hosted-prod -a open-artifacts -w |
