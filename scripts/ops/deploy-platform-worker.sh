@@ -8,6 +8,9 @@
 # Usage: <PLACEHOLDER VARS> scripts/ops/deploy-platform-worker.sh <app> staging|prod
 #   auth-broker: BROKER_REGISTRY_ID=<32 hex> [GOOGLE_CLIENT_ID_PROD=<client id>, prod]
 #   directory-broker: DIRECTORY_REGISTRY_ID=<32 hex> [GOOGLE_DIRECTORY_CLIENT_ID_PROD=<client id>, prod]
+#   dispatch: HOSTS_KV_ID=<32 hex>
+#   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
+#   inventory: PLATFORM_DB_ID=<uuid> HOSTS_KV_ID=<32 hex>
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -27,11 +30,17 @@ esac
 
 hex32='^[0-9a-f]{32}$'
 google_id='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
+uuid='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+zones='^[0-9a-f]{32}(,[0-9a-f]{32}){0,9}$'
+limit='^[1-9][0-9]{0,8}$'
 
 # The allowlist: app -> dir, plus the placeholders filled below.
 case "$app" in
   auth-broker) dir=apps/auth-broker ;;
   directory-broker) dir=apps/directory-broker ;;
+  dispatch) dir=apps/dispatch ;;
+  scheduler) dir=apps/scheduler ;;
+  inventory) dir=apps/inventory ;;
   *)
     echo "unknown app: not in the allowlist" >&2
     exit 2
@@ -69,6 +78,18 @@ case "$app" in
     if [ "$env" = prod ] && [ -n "${GOOGLE_DIRECTORY_CLIENT_ID_PROD:-}" ]; then
       fill GOOGLE_DIRECTORY_CLIENT_ID_PROD "$GOOGLE_DIRECTORY_CLIENT_ID_PROD" "$google_id"
     fi
+    ;;
+  dispatch)
+    fill "HOSTS_KV_ID_${up}" "${HOSTS_KV_ID:-}" "$hex32"
+    ;;
+  scheduler)
+    fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
+    fill "EMAIL_ZONE_TAG_${up}" "${EMAIL_ZONE_TAGS:-}" "$zones"
+    fill "EMAIL_DAILY_LIMIT_${up}" "${EMAIL_DAILY_LIMIT:-}" "$limit"
+    ;;
+  inventory)
+    fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
+    fill "HOSTS_KV_ID_${up}" "${HOSTS_KV_ID:-}" "$hex32"
     ;;
 esac
 

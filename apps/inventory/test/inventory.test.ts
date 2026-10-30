@@ -312,39 +312,56 @@ describe("read-only by construction", () => {
 });
 
 describe("wrangler.jsonc", () => {
-  it("binds PLATFORM_DB and HOSTS only", () => {
-    const raw = readFileSync(
-      new URL("../wrangler.jsonc", import.meta.url),
-      "utf8",
-    );
-    const cfg = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, "")) as Record<
-      string,
-      unknown
-    >;
-    expect(cfg.d1_databases).toEqual([
-      expect.objectContaining({
-        binding: "PLATFORM_DB",
-        database_name: "oa-platform",
-      }),
-    ]);
-    expect(cfg.kv_namespaces).toEqual([
-      expect.objectContaining({ binding: "HOSTS" }),
-    ]);
-    for (const k of [
-      "r2_buckets",
-      "services",
-      "durable_objects",
-      "vars",
-      "routes",
-      "route",
-      "triggers",
-      "queues",
-      "ai",
-      "analytics_engine_datasets",
-    ]) {
-      expect(cfg, k).not.toHaveProperty(k);
-    }
-    expect(cfg.workers_dev).toBe(true);
-    expect(cfg.preview_urls).toBe(false);
+  const raw = readFileSync(
+    new URL("../wrangler.jsonc", import.meta.url),
+    "utf8",
+  );
+  const cfg = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, "")) as {
+    name?: string;
+    main?: string;
+    env: Record<string, Record<string, unknown>>;
+  };
+  it("deploys only per env: no top-level name or main", () => {
+    expect(cfg.name).toBeUndefined();
+    expect(cfg.main).toBeUndefined();
+    expect(Object.keys(cfg.env).sort()).toEqual(["prod", "staging"]);
   });
+  for (const [env, p] of [
+    ["staging", "s"],
+    ["prod", "p"],
+  ] as const) {
+    it(`${env}: binds its own PLATFORM_DB and HOSTS only, ids as placeholders`, () => {
+      const e = cfg.env[env] as Record<string, unknown>;
+      const up = env.toUpperCase();
+      expect(e.name).toBe(`oa-${p}-inventory`);
+      expect(e.main).toBe("src/index.ts");
+      expect(e.d1_databases).toEqual([
+        {
+          binding: "PLATFORM_DB",
+          database_name: `oa-${p}-platform`,
+          database_id: `{{PLATFORM_DB_ID_${up}}}`,
+        },
+      ]);
+      expect(e.kv_namespaces).toEqual([
+        { binding: "HOSTS", id: `{{HOSTS_KV_ID_${up}}}` },
+      ]);
+      for (const k of [
+        "r2_buckets",
+        "services",
+        "durable_objects",
+        "vars",
+        "routes",
+        "route",
+        "triggers",
+        "queues",
+        "ai",
+        "analytics_engine_datasets",
+        "observability",
+      ]) {
+        expect(e, k).not.toHaveProperty(k);
+      }
+      expect(e.workers_dev).toBe(true);
+      expect(e.preview_urls).toBe(false);
+    });
+  }
 });
