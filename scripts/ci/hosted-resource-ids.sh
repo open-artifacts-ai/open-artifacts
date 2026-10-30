@@ -51,7 +51,7 @@ done
 EMAIL_ZONE_TAGS="$(one "$zones" name "$EMAIL_ZONE" id "zone")" || exit 1
 [[ "$EMAIL_ZONE_TAGS" =~ $hex32 ]] || { echo "zone $EMAIL_ZONE: its id is not 32 hex" >&2; exit 1; }
 
-# Only once all four resolved. Ids are not secrets.
+# Only once all five resolved. Ids are not secrets.
 {
   echo "PLATFORM_DB_ID=$PLATFORM_DB_ID"
   echo "HOSTS_KV_ID=${ids[0]}"

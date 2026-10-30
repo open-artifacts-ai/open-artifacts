@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { sandbox, script } from "./stubs.ts";
+import { root, sandbox, script } from "./stubs.ts";
 
 const TOK = "cfut_TOKEN_never_printed_0123456789";
 const ACCT = "26ac346086d4405f7a976d48747a2a75";
@@ -231,6 +231,53 @@ describe("hosted-resource-ids.sh", () => {
       }
     });
   }
+
+  // Guard: the tag derived from the committed email_zone must equal the last
+  // known one. Read back 2026-10-30: prod open-artifacts.app is
+  // eb90975c0a329d0c743fa4f33f917934, and staging open-artifacts-staging.app is
+  // ac9bf5324b302ca21082b8b4751e5e1b, which is the deployed oa-s-scheduler's
+  // EMAIL_QUOTA_ZONES. The lookup is stubbed with those zones (and decoys).
+  it("the derived sending zone tag is the last known one, per env", () => {
+    const KNOWN = {
+      prod: {
+        zone: "open-artifacts.app",
+        tag: "eb90975c0a329d0c743fa4f33f917934",
+      },
+      staging: {
+        zone: "open-artifacts-staging.app",
+        tag: "ac9bf5324b302ca21082b8b4751e5e1b",
+      },
+    } as const;
+    const p = (env: string) => (env === "prod" ? "p" : "s");
+    for (const env of ["prod", "staging"] as const) {
+      const committed = JSON.parse(
+        readFileSync(join(root, `.github/hosted/${env}.json`), "utf8"),
+      ) as { email_zone: string };
+      expect(committed.email_zone, env).toBe(KNOWN[env].zone);
+      const zoneList = [
+        { id: KNOWN.prod.tag, name: KNOWN.prod.zone, ...mine },
+        { id: KNOWN.staging.tag, name: KNOWN.staging.zone, ...mine },
+        { id: "1".repeat(32), name: "open-artifacts.page", ...mine },
+      ];
+      const r = run(
+        ["bash", script("hosted-resource-ids.sh"), env],
+        {
+          d1: [ok([{ uuid: UUID, name: `oa-${p(env)}-platform` }])],
+          kv: [
+            ok([
+              { id: KV.hosts, title: `oa-${p(env)}-hosts` },
+              { id: KV.broker, title: `oa-${p(env)}-broker-registry` },
+              { id: KV.directory, title: `oa-${p(env)}-directory-registry` },
+            ]),
+          ],
+          zones: [ok(zoneList)],
+        },
+        { EMAIL_ZONE: committed.email_zone },
+      );
+      expect(r.code, r.err).toBe(0);
+      expect(r.ghEnv, env).toContain(`EMAIL_ZONE_TAGS=${KNOWN[env].tag}\n`);
+    }
+  });
 
   it("the sending zone: a zone of that name on another account never counts", () => {
     const o = good();
