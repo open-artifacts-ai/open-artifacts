@@ -14,6 +14,8 @@
 # runs every check (a read-only rehearsal against what is deployed).
 # Usage (env as below): scripts/ops/deploy-hosted-platform.sh staging|prod <target>
 #   auth-broker      BROKER_REGISTRY_ID GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
+#                    BROKER_PIN_FILE (main's packages/provision/src/wfp.ts: the
+#                    client must equal its BROKER_GOOGLE_CLIENT_ID[<env>])
 #   directory-broker DIRECTORY_REGISTRY_ID GOOGLE_DIRECTORY_CLIENT_ID GOOGLE_DIRECTORY_CLIENT_SECRET
 #   dispatch         HOSTS_KV_ID (both brokers must exist)
 #   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT (both brokers must exist)
@@ -94,9 +96,25 @@ expect() {
   [ "$got" = "$3" ] || { echo "$4: got '$got', want '$3'" >&2; exit 1; }
 }
 
+# broker_pin: provision's BROKER_GOOGLE_CLIENT_ID[$env] from $BROKER_PIN_FILE
+# (main's wfp.ts), or "null". Exit 1 when the pin can't be read.
+broker_pin() {
+  node -e '
+    const src = require("node:fs").readFileSync(process.argv[1], "utf8");
+    const m = /export const BROKER_GOOGLE_CLIENT_ID\b[^=]*=\s*Object\.freeze\(\{([^}]*)\}\)/.exec(src);
+    const v = m && new RegExp(`(?:^|[\\s,])${process.argv[2]}:\\s*("[^"\\n]*"|null)\\s*,?`).exec(m[1]);
+    if (!v) process.exit(1);
+    console.log(v[1] === "null" ? "null" : JSON.parse(v[1]));
+  ' "$BROKER_PIN_FILE" "$env"
+}
+
 case "$target" in
   auth-broker)
-    need BROKER_REGISTRY_ID; need GOOGLE_CLIENT_ID; [ -n "$VERIFY_ONLY" ] || need GOOGLE_CLIENT_SECRET
+    need BROKER_REGISTRY_ID; need GOOGLE_CLIENT_ID; need BROKER_PIN_FILE; [ -n "$VERIFY_ONLY" ] || need GOOGLE_CLIENT_SECRET
+    # Before anything is deployed: the client must be provision's pin.
+    pin="$(broker_pin)" || { echo "can't read BROKER_GOOGLE_CLIENT_ID[$env] from $BROKER_PIN_FILE; refusing" >&2; exit 1; }
+    [ "$pin" != null ] || { echo "BROKER_GOOGLE_CLIENT_ID[$env] is null in provision: pin the client first; refusing" >&2; exit 1; }
+    [ "$pin" = "$GOOGLE_CLIENT_ID" ] || { echo "GOOGLE_CLIENT_ID differs from provision's BROKER_GOOGLE_CLIENT_ID[$env] ($pin); refusing" >&2; exit 1; }
     BROKER_REGISTRY_ID="$BROKER_REGISTRY_ID" GOOGLE_CLIENT_ID_PROD="$GOOGLE_CLIENT_ID" \
       deploy auth-broker
     printf '%s' "${GOOGLE_CLIENT_SECRET:-}" | put_secret oa-$P-auth-broker auth-broker GOOGLE_CLIENT_SECRET

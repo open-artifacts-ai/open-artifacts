@@ -112,15 +112,43 @@ describe("tag-passed-checks.sh", () => {
   });
 
   const cases: [string, State, RegExp][] = [
-    ["no release", edit((s) => delete s.release), /release v0\.80\.0: GitHub API error/],
+    [
+      "no release",
+      edit((s) => delete s.release),
+      /release v0\.80\.0: GitHub API error/,
+    ],
     ["a draft", edit((s) => (s.release.draft = true)), /is a draft/],
-    ["a prerelease", edit((s) => (s.release.prerelease = true)), /is a prerelease/],
-    ["not published", edit((s) => (s.release.published_at = null)), /not published/],
+    [
+      "a prerelease",
+      edit((s) => (s.release.prerelease = true)),
+      /is a prerelease/,
+    ],
+    [
+      "not published",
+      edit((s) => (s.release.published_at = null)),
+      /not published/,
+    ],
     ["another tag", edit((s) => (s.release.tag_name = "v0.79.0")), /not found/],
-    ["no commit", edit((s) => delete s.commit), /commit of v0\.80\.0: GitHub API error/],
-    ["off main (ahead)", edit((s) => (s.compare.status = "ahead")), /not on main \(ahead\)/],
-    ["off main (diverged)", edit((s) => (s.compare.status = "diverged")), /not on main/],
-    ["compare error", edit((s) => delete s.compare), /on main: GitHub API error/],
+    [
+      "no commit",
+      edit((s) => delete s.commit),
+      /commit of v0\.80\.0: GitHub API error/,
+    ],
+    [
+      "off main (ahead)",
+      edit((s) => (s.compare.status = "ahead")),
+      /not on main \(ahead\)/,
+    ],
+    [
+      "off main (diverged)",
+      edit((s) => (s.compare.status = "diverged")),
+      /not on main/,
+    ],
+    [
+      "compare error",
+      edit((s) => delete s.compare),
+      /on main: GitHub API error/,
+    ],
     ["no push run", edit((s) => (s.runs.workflow_runs = [])), /no push run/],
     [
       "a run for another commit",
@@ -154,20 +182,54 @@ describe("tag-passed-checks.sh", () => {
       ),
       /concluded failure/,
     ],
-    ["runs error", edit((s) => delete s.runs), /release-please run: GitHub API error/],
-    ["jobs error", edit((s) => delete s.jobs), /release-please jobs: GitHub API error/],
-    ["verify-release failed", jobIs("verify-release", "failure"), /job verify-release: failure/],
-    ["verify-release skipped", jobIs("verify-release", "skipped"), /job verify-release: skipped/],
-    ["hosted-check failed", jobIs("hosted-check", "failure"), /job hosted-check: failure/],
-    ["hosted-attach-prod failed", jobIs("hosted-attach-prod", "failure"), /job hosted-attach-prod: failure/],
+    [
+      "runs error",
+      edit((s) => delete s.runs),
+      /release-please run: GitHub API error/,
+    ],
+    [
+      "jobs error",
+      edit((s) => delete s.jobs),
+      /release-please jobs: GitHub API error/,
+    ],
+    [
+      "verify-release failed",
+      jobIs("verify-release", "failure"),
+      /job verify-release: failure/,
+    ],
+    [
+      "verify-release skipped",
+      jobIs("verify-release", "skipped"),
+      /job verify-release: skipped/,
+    ],
+    [
+      "hosted-check failed",
+      jobIs("hosted-check", "failure"),
+      /job hosted-check: failure/,
+    ],
+    [
+      "hosted-attach-prod failed",
+      jobIs("hosted-attach-prod", "failure"),
+      /job hosted-attach-prod: failure/,
+    ],
     [
       "hosted-attach-prod missing",
-      edit((s) => (s.jobs.jobs = s.jobs.jobs.filter((j: { name: string }) => j.name !== "hosted-attach-prod"))),
+      edit(
+        (s) =>
+          (s.jobs.jobs = s.jobs.jobs.filter(
+            (j: { name: string }) => j.name !== "hosted-attach-prod",
+          )),
+      ),
       /job hosted-attach-prod: missing/,
     ],
     [
       "no prod asset",
-      edit((s) => (s.release.assets = [{ name: "oa-release-staging-0.80.0.tar", state: "uploaded" }])),
+      edit(
+        (s) =>
+          (s.release.assets = [
+            { name: "oa-release-staging-0.80.0.tar", state: "uploaded" },
+          ]),
+      ),
       /no oa-release-prod-\* asset/,
     ],
     [
@@ -175,7 +237,11 @@ describe("tag-passed-checks.sh", () => {
       edit((s) => (s.release.assets[1].state = "open")),
       /no oa-release-prod-\* asset/,
     ],
-    ["unparsable release", { ...good(), release: "<html>" }, /unparsable response/],
+    [
+      "unparsable release",
+      { ...good(), release: "<html>" },
+      /unparsable response/,
+    ],
   ];
   it.each(cases)("fails closed on %s, naming the check", (_n, state, msg) => {
     const r = run(state);

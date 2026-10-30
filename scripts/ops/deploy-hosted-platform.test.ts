@@ -154,6 +154,7 @@ const setup = (
     secrets?: Record<string, string[]>;
     next?: Record<string, string>;
     failSecrets?: boolean;
+    pins?: { staging?: string | null; prod?: string | null };
   } = {},
 ) => {
   const sb = sandbox({ pnpm, curl, openssl });
@@ -176,6 +177,13 @@ const setup = (
   for (const [w, names] of Object.entries(opts.secrets ?? {}))
     writeFileSync(join(state, `${w}.secrets`), `${names.join("\n")}\n`);
   if (opts.failSecrets) writeFileSync(join(state, "fail-secrets"), "");
+  // Provision's pin, as main's wfp.ts states it (stubbed: prod's real pin is
+  // PR #875's).
+  const pinFile = join(sb.dir, "wfp.ts");
+  writeFileSync(
+    pinFile,
+    `export const BROKER_GOOGLE_CLIENT_ID: Readonly<Record<Env, string | null>> =\n  Object.freeze({\n    staging:\n      ${JSON.stringify(opts.pins?.staging === undefined ? CLIENT : opts.pins.staging)},\n    prod: ${JSON.stringify(opts.pins?.prod === undefined ? CLIENT : opts.pins.prod)},\n  });\n`,
+  );
   const run = (
     target: string,
     env: Record<string, string> = {},
@@ -186,6 +194,7 @@ const setup = (
         ...ENV,
         STATE: state,
         DEPLOY_WRAPPER: wrapperStub(sb.dir),
+        BROKER_PIN_FILE: pinFile,
         ...env,
       },
     });
@@ -203,6 +212,34 @@ const puts = (log: string[]) =>
   log.filter((l) => l.startsWith("stdin-len")).map((l) => l.split(" ")[1]);
 
 describe("deploy-hosted-platform.sh", () => {
+  it("auth-broker refuses a client that isn't provision's pin, or a null pin, before any wrangler call", () => {
+    for (const [pins, msg] of [
+      [
+        { prod: "other.apps.googleusercontent.com" },
+        "differs from provision's BROKER_GOOGLE_CLIENT_ID[prod]",
+      ],
+      [{ prod: null }, "BROKER_GOOGLE_CLIENT_ID[prod] is null in provision"],
+    ] as const) {
+      for (const verify of ["", "1"]) {
+        const r = setup({ pins }).run("auth-broker", { VERIFY_ONLY: verify });
+        expect(r.code, msg).toBe(1);
+        expect(r.err).toContain(msg);
+        expect(r.log.filter((l) => /^(pnpm|wrapper|curl) /.test(l))).toEqual(
+          [],
+        );
+      }
+    }
+    // Staging's own pin, checked for staging only.
+    const r = setup({ pins: { staging: "other" } }).run("auth-broker");
+    expect(r.code, r.err).toBe(0);
+  });
+  it("auth-broker refuses when the pin can't be read", () => {
+    for (const BROKER_PIN_FILE of ["/nonexistent/wfp.ts", ""]) {
+      const r = setup().run("auth-broker", { BROKER_PIN_FILE });
+      expect(r.code).not.toBe(0);
+      expect(r.log.filter((l) => /^(pnpm|wrapper) /.test(l))).toEqual([]);
+    }
+  });
   it("auth-broker, first run: deploys prod, sets the Google secret and a new state key, verifies", () => {
     const s = setup();
     const r = s.run("auth-broker");

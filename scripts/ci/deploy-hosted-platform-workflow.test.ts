@@ -76,7 +76,7 @@ describe("deploy-hosted-platform.yml", () => {
     expect(outs[2]?.with).toMatchObject({
       ref: "${{ github.sha }}",
       path: ".deploy-logic",
-      "sparse-checkout": "scripts/ops",
+      "sparse-checkout": "scripts/ops\npackages/provision/src\n",
     });
     expect(named("The checkout is exactly the tag").run).toContain(
       'test "$(git describe --tags --exact-match)" = "$TAG"',
@@ -84,6 +84,14 @@ describe("deploy-hosted-platform.yml", () => {
     const use = named("Use main's deploy scripts").run as string;
     expect(use).toContain(
       "deploy-hosted-platform.sh deploy-platform-worker.sh",
+    );
+    // The broker's Google client pin is main's, never the tag's.
+    expect(use).toContain(
+      'cp .deploy-logic/packages/provision/src/wfp.ts "$RUNNER_TEMP/main-wfp.ts"',
+    );
+    expect(named("Deploy and verify").env.BROKER_PIN_FILE).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ runner.temp }}/main-wfp.ts",
     );
     expect(steps.indexOf(named("Use main's deploy scripts"))).toBeLessThan(
       steps.indexOf(named("Deploy and verify")),

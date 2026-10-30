@@ -91,7 +91,11 @@ const setup = (
   for (const [f, v] of Object.entries(files)) writeFileSync(join(state, f), v);
   const summary = join(sb.dir, "summary.md");
   writeFileSync(summary, "");
-  const run = (mode: string, env = "prod", extra: Record<string, string> = {}) => {
+  const run = (
+    mode: string,
+    env = "prod",
+    extra: Record<string, string> = {},
+  ) => {
     const r = sb.run(["bash", SCRIPT, env, mode], {
       env: {
         STATE: state,

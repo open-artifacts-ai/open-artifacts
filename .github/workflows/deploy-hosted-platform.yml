@@ -109,14 +109,19 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: .deploy-logic
-          sparse-checkout: scripts/ops
+          sparse-checkout: |
+            scripts/ops
+            packages/provision/src
           persist-credentials: false
+      # main's provision pins the broker's Google client; the auth-broker
+      # target refuses any other.
       - name: Use main's deploy scripts
         run: |
           set -euo pipefail
           for f in deploy-hosted-platform.sh deploy-platform-worker.sh hosted-zones.sh; do
             cp ".deploy-logic/scripts/ops/$f" "scripts/ops/$f"
           done
+          cp .deploy-logic/packages/provision/src/wfp.ts "$RUNNER_TEMP/main-wfp.ts"
           rm -rf .deploy-logic
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -147,6 +152,7 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_DIRECTORY_CLIENT_SECRET: ${{ secrets.GOOGLE_DIRECTORY_CLIENT_SECRET }}
           INVENTORY_KEY: ${{ secrets.INVENTORY_KEY }}
+          BROKER_PIN_FILE: ${{ runner.temp }}/main-wfp.ts
         run: |
           set -euo pipefail
           IFS=, read -ra list <<< "$TARGETS"
