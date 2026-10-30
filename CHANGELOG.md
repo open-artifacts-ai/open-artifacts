@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.77.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.77.0...v0.77.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **ci:** no SIGPIPE flake in staging-clear-conflicts ([#880](https://github.com/open-artifacts-ai/open-artifacts/issues/880)) ([d43f182](https://github.com/open-artifacts-ai/open-artifacts/commit/d43f1827f4ae25f068be418cdd7c101dd923a1f1))
+
 ## [0.77.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.76.0...v0.77.0) (2026-10-30)
 
 
