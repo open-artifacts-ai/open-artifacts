@@ -28,6 +28,7 @@ import {
 } from "./flow.js";
 import { BROKER_GOOGLE_CLIENT_ID } from "./google.js";
 import { matchIdentity } from "./identities.js";
+import { revokeLibraryGrants } from "./oauth/server.js";
 import { REAUTH_MAX_AGE_MS } from "./reauth.js";
 import {
   adminOrigin,
@@ -39,6 +40,7 @@ import {
   renewSession,
   revokeSession,
   SESSION_COOKIE,
+  SESSION_RENEW_UNDER_MS,
   sessionCookie,
   sessionPrincipal,
 } from "./session.js";
@@ -69,16 +71,16 @@ export type SigninDeps = {
   /** Google's JWKS unless set. */
   jwks?: Parameters<typeof verifyGoogleIdTokenAnyDomain>[0]["jwks"];
   /**
-   * Revokes an OAuth grant in the library's store (R24). W13b wires the
-   * library's revokeGrant on OAUTH_KV; until then the D1 row's revoked_at
-   * already ends the grant at the next /mcp call or refresh (9A.3.3).
+   * Revokes an OAuth grant in the library's store (R24): the library's
+   * revokeGrant on OAUTH_KV. The D1 row's revoked_at already ends the grant
+   * at the next /mcp call or refresh (9A.3.3).
    */
   revokeGrant: (env: Env, g: LibraryGrant) => Promise<void>;
 };
 const DEFAULTS: SigninDeps = {
   now: () => Date.now(),
   audit,
-  revokeGrant: async () => {},
+  revokeGrant: (env, g) => revokeLibraryGrants(env, [g]),
 };
 
 const brokerOrigin = (env: Env) => `https://auth.${env.APP_DOMAIN}`;
@@ -337,12 +339,20 @@ async function callback(
   };
   // The session already in the browser (4.5): for the same pair it is kept
   // (reauth moves auth_at), so its tokens and grants stay bound to the sid
-  // logout ends; another identity's is revoked with them. The audit row
-  // comes before any session write, so a failed audit leaves none.
+  // logout ends; another identity's is revoked with them, and so is the
+  // same pair's under SESSION_RENEW_UNDER_MS (9A.3.2 step 4: a new session,
+  // or consent would send the admin back here forever), except on a reauth,
+  // which only moves auth_at. The audit row comes before any session write,
+  // so a failed audit leaves none.
   const priorSid = readCookie(req, SESSION_COOKIE);
   const prior = priorSid ? await liveSession(env, priorSid, now) : null;
   let sid: string;
-  if (priorSid && prior?.email === id.email && prior.sub === id.sub) {
+  if (
+    priorSid &&
+    prior?.email === id.email &&
+    prior.sub === id.sub &&
+    (flow.reauth || prior.expires_at - now >= SESSION_RENEW_UNDER_MS)
+  ) {
     await d.audit(env, ok);
     await renewSession(env, prior.id_hash, authAt);
     sid = priorSid;
