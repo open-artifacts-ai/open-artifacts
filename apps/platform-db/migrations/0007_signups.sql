@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS signups (
   updated_at INTEGER NOT NULL,
   CHECK (source = 'admin' OR owner_sub IS NOT NULL)
 );
+-- Abort on #859's older signups shape (IF NOT EXISTS would keep it): no such column.
+SELECT source, job_id, vars, version, test_hooks, send_welcome FROM signups LIMIT 0;
 CREATE TABLE IF NOT EXISTS signup_secret (
   signup_id TEXT NOT NULL PRIMARY KEY,
   owner_email TEXT NOT NULL

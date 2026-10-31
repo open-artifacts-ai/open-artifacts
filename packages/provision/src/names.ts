@@ -1,5 +1,10 @@
 import { parseDomains } from "@oa/auth-core/domains";
-import { RESERVED_SLUGS, slugRule } from "@oa/shared/provisioning/slugs";
+import {
+  isValidSlug,
+  RESERVED_SLUGS,
+  SLUG_RE,
+  slugRule,
+} from "@oa/shared/provisioning/slugs";
 import type { InstallId } from "./types.js";
 
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
@@ -8,7 +13,7 @@ const ID_RE = /^i[a-z0-9]{11}$/;
 const HOSTS_VALUE_RE = /^(?:(paused|closed):)?(i[a-z0-9]{11})$/;
 
 // Moved to @oa/shared/provisioning (design v7 section 3); re-exported here.
-export { RESERVED_SLUGS };
+export { isValidSlug, RESERVED_SLUGS, SLUG_RE, slugRule };
 
 export function isInstallId(s: string): s is InstallId {
   return ID_RE.test(s);

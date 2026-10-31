@@ -103,7 +103,38 @@ describe("0006_platform_state", () => {
   });
 });
 
+// #859's 0007 signups shape (origin/pl/ss3-provisioner), before the amendment.
+const SIGNUPS_859 = `CREATE TABLE signups (
+  signup_id TEXT NOT NULL PRIMARY KEY,
+  owner_sub TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  install_id TEXT UNIQUE,
+  status TEXT NOT NULL CHECK (status IN ('pending','queued','waiting_cap','creating','ready','failed')),
+  admitted_at INTEGER,
+  welcome_claimed_at INTEGER,
+  welcome_sent_at INTEGER,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE signup_secret (signup_id TEXT NOT NULL PRIMARY KEY, owner_email TEXT NOT NULL);
+CREATE INDEX signups_admitted_at ON signups (admitted_at);`;
+
 describe("0007_signups (amended)", () => {
+  it("aborts on #859's older signups shape, before 0008", () => {
+    const db = platformDb(migrationFiles.slice(0, 6));
+    db.exec(SIGNUPS_859);
+    expect(() => apply(db, ["0007_signups.sql"])).toThrow(
+      /no such column: source/,
+    );
+  });
+
+  it("passes on a fresh database, and on a re-run", () => {
+    const db = platformDb(migrationFiles.slice(0, 6));
+    expect(() => apply(db, ["0007_signups.sql"])).not.toThrow();
+    expect(() => apply(db, ["0007_signups.sql"])).not.toThrow();
+  });
+
   it("self-serve rows need an owner sub; admin rows do not", () => {
     const db = platformDb();
     signup(db, { source: "admin" });
@@ -310,8 +341,11 @@ describe("0008_provisioning: install_lifecycle", () => {
     });
     install(db, "i42fdk7ahvs2", { state: "upgrading" });
     install(db, "idel", { state: "deleted" });
-    install(db, "idelg", { state: "deleting" });
+    install(db, "idelg", { state: "deleting", updated_at: 7 });
+    install(db, "icre", { state: "creating" });
+    const before = Math.floor(Date.now() / 1000) * 1000;
     apply(db, NEW);
+    const after = Date.now();
     const rows = db
       .prepare(
         "SELECT install_id, source, serving_mode, health, created_at, updated_at FROM install_lifecycle ORDER BY install_id",
@@ -327,6 +361,14 @@ describe("0008_provisioning: install_lifecycle", () => {
         updated_at: 1,
       },
       {
+        install_id: "icre",
+        source: "admin",
+        serving_mode: null,
+        health: "unknown",
+        created_at: 1,
+        updated_at: 1,
+      },
+      {
         install_id: "idel",
         source: "admin",
         serving_mode: "unmapped",
@@ -337,10 +379,10 @@ describe("0008_provisioning: install_lifecycle", () => {
       {
         install_id: "idelg",
         source: "admin",
-        serving_mode: null,
+        serving_mode: "closed",
         health: "unknown",
         created_at: 1,
-        updated_at: 1,
+        updated_at: 7,
       },
       {
         install_id: "ijzbmraouh5r",
@@ -352,6 +394,20 @@ describe("0008_provisioning: install_lifecycle", () => {
       },
     ]);
     expect(status(db, "ijzbmraouh5r")?.state).toBe("active");
+    // A deleting install's grace is over: purge is due at migration time.
+    const g = status(db, "idelg");
+    expect(g?.state).toBe("deleting");
+    expect(g?.deleted_at).toBe(7);
+    expect(g?.purge_at).toBeGreaterThanOrEqual(before);
+    expect(g?.purge_at).toBeLessThanOrEqual(after);
+    // A creating install with no signup and no job is failed, unmapped.
+    const c = status(db, "icre");
+    expect(c?.state).toBe("failed");
+    expect(c?.serving_mode).toBeNull();
+    expect(c?.deleted_at).toBeNull();
+    expect(c?.purge_at).toBeNull();
+    for (const id of ["ijzbmraouh5r", "i42fdk7ahvs2", "idel"])
+      expect(status(db, id)?.purge_at, id).toBeNull();
   });
 });
 

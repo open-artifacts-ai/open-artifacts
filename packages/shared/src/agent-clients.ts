@@ -5,6 +5,7 @@
 export const TOKEN_PLACEHOLDER = "<YOUR_TOKEN>";
 const DEFAULT_NAME = "open-artifacts";
 const DEFAULT_VERIFY_TOOL = "publish_artifact";
+const NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export type Snippet = {
   agent: string;
@@ -30,7 +31,7 @@ export type AgentClientOpts = {
    * (OAuth only). Without it: the dashboard's OA_TOKEN env-var snippets.
    */
   tokenFile?: string;
-  /** The MCP server name in every snippet. Default "open-artifacts". */
+  /** The MCP server name in every snippet: /^[a-z0-9][a-z0-9-]{0,62}$/, else it throws. Default "open-artifacts". */
   name?: string;
   /** The tool the generic verify text names. Default "publish_artifact". */
   verifyTool?: string;
@@ -66,6 +67,8 @@ export function agentClients(
   opts: AgentClientOpts = {},
 ): Snippet[] {
   const name = opts.name ?? DEFAULT_NAME;
+  // Goes unquoted into shell commands and TOML table keys.
+  if (!NAME_RE.test(name)) throw new Error(`invalid MCP server name: ${name}`);
   const verify = genericVerify(name, opts.verifyTool ?? DEFAULT_VERIFY_TOOL);
   return opts.tokenFile
     ? fileClients(mcpUrl, opts.tokenFile, name, verify)

@@ -37,4 +37,11 @@ describe("agentClients snapshots", () => {
       "claude mcp add --transport http oa-admin https://api.open-artifacts.app/mcp",
     );
   });
+
+  it("refuses a name that is not shell- and TOML-safe", () => {
+    for (const name of ["a b", "x;rm -rf", "a.b", "-x", "", "A"])
+      expect(() => agentClients(URL_, { name }), name).toThrow(
+        /invalid MCP server name/,
+      );
+  });
 });

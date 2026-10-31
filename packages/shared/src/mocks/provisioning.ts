@@ -9,15 +9,30 @@
  * - Stateful per call: writes validate the route's body schema (400
  *   invalid_input), check TRANSITIONS (409 invalid_state), the active job
  *   (409 job_in_progress) and confirmSlug (400 confirm_mismatch), then return
- *   202 with a queued job. The same requestId on the same route and install
- *   replays (header `oa-idempotent-replay: 1`). Jobs never advance.
+ *   202 with a queued job. R4 also checks the admin field rules (3.3) and the
+ *   slug rule. Idempotency as 3.1: the same requestId with the same body hash
+ *   replays the job as it is now (header `oa-idempotent-replay: 1`); with any
+ *   other route, install or body it is 409 idempotency_conflict.
+ * - Jobs stay `queued` until a test moves them: `advanceJob(id, status)` or
+ *   `finishAllJobs()` on createProvisioningMock(). A finished job frees the
+ *   install and applies its TRANSITIONS state; a failed create or retry
+ *   leaves the install `failed`.
+ * - R25 cancels only the install's active job (else 409 invalid_state): the
+ *   job fails `canceled` and a `cleanup` job becomes the active one. When the
+ *   cleanup finishes or fails the install is free again (a canceled create or
+ *   retry settles `failed`).
  * - R27 world is computed from the store (attention from the fixtures);
  *   `world: "empty"` starts with no installs.
  */
 import { type HttpHandler, HttpResponse, http } from "msw";
-import { TRANSITIONS } from "../provisioning/authz.js";
+import { checkCreateFields, TRANSITIONS } from "../provisioning/authz.js";
+import { bodyHash } from "../provisioning/bodyhash.js";
 import { JOB_STEPS, type ProvisioningEnv } from "../provisioning/enums.js";
-import { API_ERROR_STATUS, type ApiErrorCode } from "../provisioning/errors.js";
+import {
+  API_ERROR_STATUS,
+  type ApiErrorCode,
+  type JobErrorCode,
+} from "../provisioning/errors.js";
 import { FAKE_RELEASES } from "../provisioning/fakes.js";
 import {
   emptyWorld,
@@ -31,17 +46,35 @@ import {
 import { ROUTE_IDS, ROUTES, type RouteDef } from "../provisioning/routes.js";
 import type {
   Accepted,
+  CreateInstall,
   InstallDetail,
   InstallSummary,
   Job,
   Token,
   World,
 } from "../provisioning/schemas.js";
-import { slugRule } from "../provisioning/slugs.js";
+import { slugError, slugRule } from "../provisioning/slugs.js";
 
 export type ProvisioningMockOptions = {
   env?: ProvisioningEnv;
   world?: "fixtures" | "empty";
+};
+
+export type ProvisioningMock = {
+  /** Spread into setupServer/setupWorker. */
+  handlers: HttpHandler[];
+  /**
+   * Moves a job on: `running` from queued; `done` or `failed` from queued or
+   * running (`code` defaults to `internal`). Settles the install as the API
+   * would. Throws on an unknown job or a move from a finished one.
+   */
+  advanceJob(
+    id: string,
+    status: "running" | "done" | "failed",
+    code?: JobErrorCode,
+  ): Job;
+  /** Finishes every queued or running job, oldest first. Returns how many. */
+  finishAllJobs(status?: "done" | "failed"): number;
 };
 
 const BASES = ["*/api/v1", "*/v1"];
@@ -80,6 +113,12 @@ const mockInstallId = (n: number) => `imock${n.toString(36).padStart(7, "0")}`;
 export function createProvisioningHandlers(
   opts: ProvisioningMockOptions = {},
 ): HttpHandler[] {
+  return createProvisioningMock(opts).handlers;
+}
+
+export function createProvisioningMock(
+  opts: ProvisioningMockOptions = {},
+): ProvisioningMock {
   const env = opts.env ?? "prod";
   const T0 = fixtureWorld().at;
   let seq = 0;
@@ -88,7 +127,14 @@ export function createProvisioningHandlers(
   const installs = new Map<string, InstallDetail>();
   const jobs = new Map<string, Job>();
   const tokens: Token[] = [];
-  const replays = new Map<string, Accepted>();
+  const replays = new Map<
+    string,
+    { hash: string; jobId: string; installId: string }
+  >();
+  const accepted = (jobId: string, installId: string): Accepted => ({
+    job: jobs.get(jobId) as Job,
+    install: summaryOf(installs.get(installId) as InstallDetail),
+  });
   if (opts.world !== "empty") {
     for (const s of fixtureWorld().installs.items)
       installs.set(
@@ -154,6 +200,145 @@ export function createProvisioningHandlers(
     };
     jobs.set(j.id, j);
     return j;
+  };
+
+  const fail = (j: Job, code: JobErrorCode, message: string) => {
+    j.status = "failed";
+    j.error = { code, message };
+    j.lastErrorCode = code;
+    j.finishedAt = now();
+  };
+
+  // The install side of a finished job: the TRANSITIONS target on done, a
+  // failed create or retry settles `failed`, and the install is free again
+  // unless the job handed it on (a cancel's cleanup).
+  const settle = (j: Job) => {
+    const d = installs.get(j.installId);
+    if (!d) return;
+    if (d.activeJobId === j.id) d.activeJobId = null;
+    const created = (k: string) => k === "create" || k === "retry";
+    if (j.kind === "cleanup") {
+      const canceled = jobs.get(String(j.args.jobId));
+      if (canceled && created(canceled.kind)) d.state = "failed";
+      return;
+    }
+    if (j.status === "failed") {
+      if (created(j.kind)) d.state = "failed";
+      return;
+    }
+    const at = now();
+    const v = (j.args.version as InstallDetail["version"] | undefined) ?? null;
+    const latest = FAKE_RELEASES.find((r) => r.latest)?.version ?? null;
+    switch (j.kind) {
+      case "create":
+      case "retry":
+        Object.assign(d, {
+          state: "active",
+          servingMode: "serving",
+          version: v ?? latest,
+          health: "ok",
+        });
+        break;
+      case "upgrade":
+        Object.assign(d, { previousVersion: d.version, version: v ?? latest });
+        break;
+      case "rollback":
+        Object.assign(d, {
+          previousVersion: d.version,
+          version: d.previousVersion,
+        });
+        break;
+      case "suspend":
+        Object.assign(d, {
+          state: "suspended",
+          servingMode: "paused",
+          suspendedAt: at,
+          suspendReason: (j.args.reason as string | undefined) ?? null,
+        });
+        break;
+      case "resume":
+        Object.assign(d, {
+          state: "active",
+          servingMode: "serving",
+          suspendedAt: null,
+          suspendReason: null,
+        });
+        break;
+      case "delete":
+        Object.assign(d, {
+          state: "deleting",
+          servingMode: "closed",
+          deletedAt: at,
+          purgeAt: at + 30 * 86_400_000,
+          restorable: true,
+        });
+        break;
+      case "restore":
+        Object.assign(d, {
+          state: d.suspendedAt ? "suspended" : "active",
+          servingMode: d.suspendedAt ? "paused" : "serving",
+          deletedAt: null,
+          purgeAt: null,
+          restorable: false,
+        });
+        break;
+      case "purge":
+      case "discard":
+        Object.assign(d, {
+          state: "deleted",
+          servingMode: "unmapped",
+          restorable: false,
+        });
+        break;
+      case "release_lease":
+        d.lease = { held: false, until: null };
+        break;
+      default: {
+        const to = TRANSITIONS[d.state][j.kind]?.to[0];
+        if (to) d.state = to;
+      }
+    }
+  };
+
+  const advanceJob: ProvisioningMock["advanceJob"] = (
+    id,
+    status,
+    code = "internal",
+  ) => {
+    const j = jobs.get(id);
+    if (!j) throw new Error(`advanceJob: no job ${id}`);
+    if (j.status === "done" || j.status === "failed")
+      throw new Error(`advanceJob: job ${id} is already ${j.status}`);
+    if (status === "running" && j.status === "running")
+      throw new Error(`advanceJob: job ${id} is already running`);
+    j.startedAt ??= now();
+    if (status === "running") {
+      j.status = "running";
+      j.step = j.steps[0] ?? null;
+      j.stepIndex = 0;
+      return j;
+    }
+    if (status === "done") {
+      j.status = "done";
+      j.stepIndex = j.steps.length - 1;
+      j.step = j.steps[j.stepIndex] ?? null;
+      j.finishedAt = now();
+    } else {
+      j.step ??= j.steps[0] ?? null;
+      fail(j, code, `${j.step ?? "job"} failed`);
+    }
+    settle(j);
+    return j;
+  };
+
+  const finishAllJobs: ProvisioningMock["finishAllJobs"] = (
+    status = "done",
+  ) => {
+    const open = [...jobs.values()]
+      .filter((j) => j.status === "queued" || j.status === "running")
+      .sort((a, b) => a.createdAt - b.createdAt);
+    for (const j of open) advanceJob(j.id, status);
+    return open.length;
   };
 
   const world = (): World => {
@@ -229,6 +414,7 @@ export function createProvisioningHandlers(
           sessionExpiresAt: T0 + 8 * 3_600_000,
           authAt: T0,
           provisioningToken: "active",
+          tokenId: null,
           tokenKind: null,
           tokenExpiresAt: null,
         }),
@@ -251,7 +437,8 @@ export function createProvisioningHandlers(
       if (!installs.has(params.id)) return err("not_found", "No such install.");
       const items = [...jobs.values()]
         .filter((j) => j.installId === params.id)
-        .sort((a, b) => b.createdAt - a.createdAt);
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map(({ sealed: _s, ...j }) => j);
       return page(items, url);
     },
     R15: ({ params }) => {
@@ -278,17 +465,39 @@ export function createProvisioningHandlers(
     const parsed = r.body.safeParse(c.body);
     if (!parsed.success) return err("invalid_input", "Invalid body.");
     const body = parsed.data as Record<string, unknown> & { requestId: string };
-    const key = `${r.id}:${c.params.id ?? c.params.jobId ?? ""}:${body.requestId}`;
+    const key = body.requestId;
+    const hash = await bodyHash(
+      r.id,
+      c.params.id ?? c.params.jobId ?? null,
+      body,
+    );
     const prior = replays.get(key);
+    if (prior && prior.hash !== hash)
+      return err(
+        "idempotency_conflict",
+        "That requestId was used with another request.",
+      );
     if (prior)
-      return HttpResponse.json(prior, {
+      return HttpResponse.json(accepted(prior.jobId, prior.installId), {
         status: 202,
         headers: { "oa-idempotent-replay": "1" },
       });
 
     let install: InstallDetail | undefined;
     if (r.id === "R4") {
+      const refused = checkCreateFields(
+        body as Partial<CreateInstall>,
+        "admin",
+        env,
+        "",
+      );
+      if (refused)
+        return err(refused.code, `${refused.field}: not allowed as sent.`, {
+          field: refused.field,
+        });
       const slug = body.slug as string;
+      const bad = slugError(slug);
+      if (bad) return err(bad, "That slug is not allowed.");
       if (
         [...installs.values()].some(
           (d) => d.slug === slug && d.state !== "deleted",
@@ -318,11 +527,10 @@ export function createProvisioningHandlers(
       if (!install) return err("not_found", "No such install.");
       if (body.confirmSlug !== install.slug)
         return err("confirm_mismatch", "confirmSlug does not match.");
-      if (j.status !== "queued" && j.status !== "running")
+      if (install.activeJobId !== j.id)
         return err("invalid_state", "The job is not active.");
-      j.status = "failed";
-      j.error = { code: "canceled", message: "Canceled." };
-      j.lastErrorCode = "canceled";
+      fail(j, "canceled", "Canceled.");
+      body.jobId = j.id;
     } else {
       install = installs.get(c.params.id);
       if (!install) return err("not_found", "No such install.");
@@ -349,9 +557,8 @@ export function createProvisioningHandlers(
     } = body;
     const job = newJob(r, install.id, args);
     install.activeJobId = job.id;
-    const out: Accepted = { job, install: summaryOf(install) };
-    replays.set(key, out);
-    return HttpResponse.json(out, { status: 202 });
+    replays.set(key, { hash, jobId: job.id, installId: install.id });
+    return HttpResponse.json(accepted(job.id, install.id), { status: 202 });
   };
 
   const handlers: HttpHandler[] = [];
@@ -382,15 +589,21 @@ export function createProvisioningHandlers(
           lastUsedAt: null,
         };
         tokens.push(t);
+        // Fails the oat_ format on purpose: never a live-looking token.
         return HttpResponse.json(
-          { ...t, token: `oat_${"m".repeat(43)}` },
+          { ...t, token: "oat_MOCK_not_a_token" },
           { status: 201 },
         );
       }
       if (id === "R21") {
-        const t = tokens.find((x) => x.id === c.params.tokenId);
+        const at = now();
+        if (!c.params.id) {
+          for (const t of tokens) t.revokedAt ??= at;
+          return new HttpResponse(null, { status: 204 });
+        }
+        const t = tokens.find((x) => x.id === c.params.id);
         if (!t) return err("not_found", "No such token.");
-        t.revokedAt = now();
+        t.revokedAt = at;
         return new HttpResponse(null, { status: 204 });
       }
       return accept(r, c);
@@ -418,5 +631,5 @@ export function createProvisioningHandlers(
       );
     }
   }
-  return handlers;
+  return { handlers, advanceJob, finishAllJobs };
 }
