@@ -301,7 +301,12 @@ describe("R4 field rules (3.3)", () => {
   });
 
   it("oidc: testHooks true and an @STAGING_TEST_DOMAIN owner", () => {
-    const o = { ...full, ownerEmail: "ci@test.example", testHooks: true };
+    const o = {
+      ...full,
+      slug: "rl-a",
+      ownerEmail: "ci@test.example",
+      testHooks: true,
+    };
     expect(checkCreateFields(o, "oidc", "staging", D)).toBeNull();
     expect(
       checkCreateFields(
@@ -317,6 +322,34 @@ describe("R4 field rules (3.3)", () => {
     expect(
       checkCreateFields({ ...o, testHooks: undefined }, "oidc", "staging", D),
     ).toEqual({ field: "testHooks", code: "invalid_input" });
+  });
+
+  it("oidc slug: rl- only on staging, refused on prod; one call enforces it", () => {
+    const o = {
+      ...full,
+      slug: "rl-a",
+      ownerEmail: "ci@test.example",
+      testHooks: true,
+    };
+    expect(checkCreateFields(o, "oidc", "staging", D)).toBeNull();
+    expect(
+      checkCreateFields({ ...o, slug: "rl-q-123" }, "oidc", "staging", D),
+    ).toBeNull();
+    expect(
+      checkCreateFields({ ...o, slug: "acme" }, "oidc", "staging", D),
+    ).toEqual({ field: "slug", code: "forbidden" });
+    expect(
+      checkCreateFields({ ...o, slug: undefined }, "oidc", "staging", D),
+    ).toEqual({ field: "slug", code: "invalid_input" });
+    expect(checkCreateFields(o, "oidc", "prod", D)).toEqual({
+      field: "slug",
+      code: "forbidden",
+    });
+    // Other principals: any slug.
+    for (const p of ["admin", "token"] as const)
+      expect(
+        checkCreateFields({ ...full, slug: "acme" }, p, "prod", D),
+      ).toBeNull();
   });
 
   it("user: server-set and forbidden fields are 403 if present; turnstile is its own step", () => {

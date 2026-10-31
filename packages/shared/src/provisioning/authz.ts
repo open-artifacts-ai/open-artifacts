@@ -71,7 +71,7 @@ export const AUTHZ: Readonly<Record<RouteId, Record<AuthzColumn, AuthzRule>>> =
       tok("installs:write", "3.3 field rules (checkCreateFields)"),
       {
         ...own,
-        note: "rl- slug, testHooks: true, @STAGING_TEST_DOMAIN owner (oidcMayCreate)",
+        note: "rl- slug, testHooks: true, @STAGING_TEST_DOMAIN owner (checkCreateFields)",
       },
       { ...own, note: "self-serve policy (4.2)" },
     ),
@@ -163,7 +163,11 @@ export const OIDC_LIMITS = {
   testHooks: true,
 } as const;
 
-/** O's R4 limits (3.3): `rl-` slug, testHooks true, owner @STAGING_TEST_DOMAIN. */
+/**
+ * O's own R4 limits (3.3): `rl-` slug, testHooks true, owner
+ * @STAGING_TEST_DOMAIN. checkCreateFields enforces the same (and staging
+ * only) with every other field rule, so the policy step needs only that call.
+ */
 export const oidcMayCreate = (
   b: { slug: string; testHooks?: boolean; ownerEmail?: string },
   stagingTestDomain: string,
@@ -204,6 +208,8 @@ export const PROTOCOL_AUTHZ = {
  *   `auth.domains` (403).
  * - `required_staging_test_domain`: required, and the email must be
  *   `@<STAGING_TEST_DOMAIN>` (403).
+ * - `required_test_prefix`: required, and must start `rl-` (403).
+ * - `any`: no field rule (the body schema and slug rules still apply).
  * - `{ staging, prod }`: the rule differs by environment.
  */
 export type FieldRule =
@@ -211,6 +217,8 @@ export type FieldRule =
   | "required_true"
   | "required_in_auth_domains"
   | "required_staging_test_domain"
+  | "required_test_prefix"
+  | "any"
   | "optional"
   | "forbidden"
   | "ignored"
@@ -219,6 +227,7 @@ export type EnvFieldRule =
   | FieldRule
   | Readonly<Record<ProvisioningEnv, FieldRule>>;
 export const CREATE_FIELDS = [
+  "slug",
   "ownerEmail",
   "tier",
   "auth",
@@ -233,6 +242,13 @@ export type CreatePrincipal = "admin" | "token" | "oidc" | "user";
 export const CREATE_FIELD_RULES: Readonly<
   Record<CreateField, Record<CreatePrincipal, EnvFieldRule>>
 > = {
+  // O squats nothing: `rl-` only, and nothing at all outside staging (4.4).
+  slug: {
+    admin: "any",
+    token: "any",
+    oidc: { staging: "required_test_prefix", prod: "forbidden" },
+    user: "any",
+  },
   ownerEmail: {
     admin: "required",
     token: "required_in_auth_domains",
@@ -268,7 +284,7 @@ export const CREATE_FIELD_RULES: Readonly<
   testHooks: {
     admin: { staging: "optional", prod: "forbidden" },
     token: "forbidden",
-    oidc: "required_true",
+    oidc: { staging: "required_true", prod: "forbidden" },
     user: "forbidden",
   },
   // U's token is checked in its own step (turnstile_failed, 4.2).
@@ -298,8 +314,9 @@ export type CreateFieldRefusal = {
 /**
  * The 3.3 field rules on a parsed R4 body, in the 4.2 order: any present
  * forbidden or server-set field first (403), then missing required fields
- * (400), then value rules (403). U's turnstile is left to its own step. O's
- * slug prefix is oidcMayCreate's. Null when the body passes.
+ * (400), then value rules (403). U's turnstile is left to its own step. O
+ * is held to `rl-` slugs on staging and refused on prod here too, so this one
+ * call enforces every 3.3 rule. Null when the body passes.
  */
 export function checkCreateFields(
   body: Readonly<Partial<Record<CreateField, unknown>>> & {
@@ -322,6 +339,11 @@ export function checkCreateFields(
   for (const [f, r] of rules) {
     const v = body[f];
     if (r === "required_true" && v !== true)
+      return { field: f, code: "forbidden" };
+    if (
+      r === "required_test_prefix" &&
+      !(typeof v === "string" && v.startsWith(OIDC_LIMITS.slugPrefix))
+    )
       return { field: f, code: "forbidden" };
     if (
       r === "required_in_auth_domains" &&
