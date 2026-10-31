@@ -56,6 +56,9 @@ case "$kind" in
     if [ -f "$STATE/fail-secrets" ]; then echo '{"success":false,"errors":[{"code":1}]}'
     else touch "$STATE/$w.secrets"; jq -nR '{success: true, result: [inputs | select(length > 0) | {name: .}]}' < "$STATE/$w.secrets"; fi ;;
   schedules) cat "$STATE/$w.schedules.json" ;;
+  queues\\?*)
+    if [ -f "$STATE/queues.json" ]; then cat "$STATE/queues.json"
+    else echo '{"success":false,"errors":[{"code":1}]}'; fi ;;
 esac`;
 const openssl = `echo "c3RhdGVrZXlzdGF0ZWtleXN0YXRla2V5c3RhdGVrZXk="`;
 // The deploy wrapper has its own tests; here a stub records its argv and the
@@ -79,6 +82,48 @@ const settings = (bindings: Record<string, unknown>[], obs = false) =>
   JSON.stringify({
     success: true,
     result: { bindings, observability: { enabled: obs } },
+  });
+// The scheduler's bindings as Cloudflare reads them back (apps/scheduler
+// wrangler.jsonc, per env).
+function schedulerBindings(p: "s" | "p"): Record<string, unknown>[] {
+  return [
+    { type: "d1", name: "PLATFORM_DB", id: DB },
+    {
+      type: "dispatch_namespace",
+      name: "DISPATCHER",
+      namespace: p === "s" ? "oa-staging" : "oa-prod",
+    },
+    {
+      type: "plain_text",
+      name: "OA_ENV",
+      text: p === "s" ? "staging" : "prod",
+    },
+    { type: "plain_text", name: "EMAIL_QUOTA_ZONES", text: ZONE },
+    { type: "plain_text", name: "EMAIL_DAILY_LIMIT", text: "1000" },
+    {
+      type: "service",
+      name: "PROVISIONER",
+      service: `oa-${p}-provisioner`,
+      entrypoint: "ProvisionerRpc",
+    },
+    { type: "queue", name: "SIGNUPS", queue_name: `oa-${p}-signups` },
+    { type: "workflow", name: "PROVISION_INSTALL" },
+    { type: "workflow", name: "MANAGE_INSTALL" },
+    { type: "send_email", name: "ALERT_EMAIL" },
+  ];
+}
+// A queue listing (GET /accounts/{id}/queues) of these names.
+const queueList = (names: string[], total = names.length, pages = 1) =>
+  JSON.stringify({
+    success: true,
+    result: names.map((queue_name) => ({ queue_name })),
+    result_info: {
+      page: 1,
+      per_page: 100,
+      count: names.length,
+      total_count: total,
+      total_pages: pages,
+    },
   });
 const NEXT: Record<string, string> = {
   "oa-p-auth-broker": settings([
@@ -115,16 +160,8 @@ const NEXT: Record<string, string> = {
     { type: "kv_namespace", name: "HOSTS", namespace_id: HOSTS },
     { type: "secret_text", name: "INVENTORY_KEY" },
   ]),
-  "oa-p-scheduler": settings(
-    [
-      { type: "d1", name: "PLATFORM_DB", id: DB },
-      { type: "dispatch_namespace", name: "DISPATCHER", namespace: "oa-prod" },
-      { type: "plain_text", name: "OA_ENV", text: "prod" },
-      { type: "plain_text", name: "EMAIL_QUOTA_ZONES", text: ZONE },
-      { type: "plain_text", name: "EMAIL_DAILY_LIMIT", text: "1000" },
-    ],
-    true,
-  ),
+  "oa-p-scheduler": settings(schedulerBindings("p"), true),
+  "oa-s-scheduler": settings(schedulerBindings("s"), true),
 };
 
 const ENV = {
@@ -148,6 +185,13 @@ const ENV = {
   INVENTORY_KEY: "k".repeat(64),
 };
 
+// What the scheduler needs deployed first.
+const SCHED_DEPS = (p: "s" | "p") => [
+  `oa-${p}-auth-broker`,
+  `oa-${p}-directory-broker`,
+  `oa-${p}-provisioner`,
+];
+
 const setup = (
   opts: {
     exists?: string[];
@@ -155,6 +199,8 @@ const setup = (
     next?: Record<string, string>;
     failSecrets?: boolean;
     pins?: { staging?: string | null; prod?: string | null };
+    // The account's queue listing; null: the listing fails.
+    queues?: string | null;
   } = {},
 ) => {
   const sb = sandbox({ pnpm, curl, openssl });
@@ -162,13 +208,21 @@ const setup = (
   mkdirSync(state);
   for (const [w, s] of Object.entries({ ...NEXT, ...opts.next }))
     writeFileSync(join(state, `${w}.next.json`), s);
-  writeFileSync(
-    join(state, "oa-p-scheduler.schedules.json"),
-    JSON.stringify({
-      success: true,
-      result: { schedules: [{ cron: "17 3 * * *" }, { cron: "*/2 * * * *" }] },
-    }),
-  );
+  for (const p of ["s", "p"])
+    writeFileSync(
+      join(state, `oa-${p}-scheduler.schedules.json`),
+      JSON.stringify({
+        success: true,
+        result: {
+          schedules: [{ cron: "17 3 * * *" }, { cron: "*/2 * * * *" }],
+        },
+      }),
+    );
+  const queues =
+    opts.queues === undefined
+      ? queueList(["oa-p-signups", "oa-s-signups", "other"])
+      : opts.queues;
+  if (queues !== null) writeFileSync(join(state, "queues.json"), queues);
   for (const w of opts.exists ?? []) {
     writeFileSync(join(state, `${w}.exists`), "");
     if (NEXT[w])
@@ -208,6 +262,9 @@ const clean = (r: { out: string; err: string; log: string[] }) => {
   for (const s of [TOKEN, SECRET, DSECRET, "k".repeat(64), "c3RhdGVrZXlz"])
     expect(all).not.toContain(s);
 };
+// Nothing deployed or set: no wrapper, pnpm or wrangler call.
+const noDeploy = (log: string[]) =>
+  log.filter((l) => /^(pnpm|wrapper|wrangler) /.test(l));
 const puts = (log: string[]) =>
   log.filter((l) => l.startsWith("stdin-len")).map((l) => l.split(" ")[1]);
 
@@ -301,16 +358,162 @@ describe("deploy-hosted-platform.sh", () => {
       expect(none.code, t).toBe(1);
       expect(none.err).toContain("oa-p-auth-broker does not exist");
       expect(none.log.some((l) => l.startsWith("wrapper"))).toBe(false);
-      const ok = setup({
-        exists: ["oa-p-auth-broker", "oa-p-directory-broker"],
-      }).run(t);
+      const ok = setup({ exists: SCHED_DEPS("p") }).run(t);
       expect(ok.err, t).toBe("");
       expect(ok.code, t).toBe(0);
+      expect(ok.out).toContain(`prod ${t}: deployed and verified`);
       clean(ok);
     }
   });
+  it("the scheduler refuses before any deploy until the provisioner exists", () => {
+    for (const verify of ["", "1"]) {
+      const r = setup({
+        exists: ["oa-p-auth-broker", "oa-p-directory-broker"],
+      }).run("scheduler", { VERIFY_ONLY: verify });
+      expect(r.code, verify).toBe(1);
+      expect(r.err).toContain(
+        "oa-p-provisioner does not exist: deploy it first",
+      );
+      expect(noDeploy(r.log)).toEqual([]);
+    }
+  });
+  it("the scheduler refuses before any deploy unless exactly one oa-<p>-signups queue is listed, on one page", () => {
+    const missing = "oa-p-signups queue does not exist: create it first";
+    const paged = "more than one page of queues; refusing";
+    for (const [queues, msg] of [
+      [queueList(["other"]), missing],
+      [queueList([]), missing],
+      // Staging's queue is not prod's.
+      [queueList(["oa-s-signups"]), missing],
+      [queueList(["oa-p-signups", "oa-p-signups"]), missing],
+      [queueList(["oa-p-signups"], 101), paged],
+      [queueList(["oa-p-signups"], 1, 2), paged],
+      // No result_info: can't tell the listing is whole.
+      [
+        JSON.stringify({
+          success: true,
+          result: [{ queue_name: "oa-p-signups" }],
+        }),
+        paged,
+      ],
+      [null, "list queues failed"],
+    ] as const) {
+      for (const verify of ["", "1"]) {
+        const r = setup({ exists: SCHED_DEPS("p"), queues }).run("scheduler", {
+          VERIFY_ONLY: verify,
+        });
+        expect(r.code, `${msg} ${verify}`).toBe(1);
+        expect(r.err).toContain(msg);
+        expect(noDeploy(r.log)).toEqual([]);
+        clean(r);
+      }
+    }
+    const ok = setup({ exists: SCHED_DEPS("p") }).run("scheduler");
+    expect(ok.code, ok.err).toBe(0);
+    expect(ok.log).toContain(
+      `curl -sS -K - https://api.cloudflare.com/client/v4/accounts/${ACCT}/queues?per_page=100`,
+    );
+  });
+  it("the scheduler fails on a readback mismatch in each provisioning binding, deployed or verify only", () => {
+    // The scheduler's bindings with one changed (null: removed).
+    const with_ = (name: string, v: Record<string, unknown> | null) =>
+      settings(
+        schedulerBindings("p").flatMap((b) =>
+          b.name !== name ? [b] : v === null ? [] : [{ ...b, ...v }],
+        ),
+        true,
+      );
+    for (const [name, v, msg] of [
+      ["PROVISIONER", { service: "oa-s-provisioner" }, "PROVISIONER: got"],
+      ["PROVISIONER", { entrypoint: "default" }, "PROVISIONER entrypoint: got"],
+      ["PROVISIONER", { type: "plain_text" }, "PROVISIONER type: got"],
+      ["PROVISIONER", null, "PROVISIONER type: got ''"],
+      ["SIGNUPS", { queue_name: "oa-s-signups" }, "SIGNUPS: got"],
+      ["SIGNUPS", { type: "service" }, "SIGNUPS type: got"],
+      ["SIGNUPS", null, "SIGNUPS type: got ''"],
+      ["PROVISION_INSTALL", { type: "service" }, "PROVISION_INSTALL: got"],
+      ["PROVISION_INSTALL", null, "PROVISION_INSTALL: got ''"],
+      ["MANAGE_INSTALL", { type: "queue" }, "MANAGE_INSTALL: got"],
+      ["MANAGE_INSTALL", null, "MANAGE_INSTALL: got ''"],
+      ["ALERT_EMAIL", { type: "plain_text" }, "ALERT_EMAIL: got"],
+      ["ALERT_EMAIL", null, "ALERT_EMAIL: got ''"],
+    ] as const) {
+      const bad = with_(name, v);
+      const r = setup({
+        exists: SCHED_DEPS("p"),
+        next: { "oa-p-scheduler": bad },
+      }).run("scheduler");
+      expect(r.code, msg).toBe(1);
+      expect(r.err).toContain(msg);
+      // Verify only runs the same check against the live Worker.
+      const live = setup({ exists: SCHED_DEPS("p") });
+      writeFileSync(join(live.state, "oa-p-scheduler.exists"), "");
+      writeFileSync(join(live.state, "oa-p-scheduler.settings.json"), bad);
+      const vr = live.run("scheduler", { VERIFY_ONLY: "1" });
+      expect(vr.code, `verify ${msg}`).toBe(1);
+      expect(vr.err).toContain(msg);
+      expect(noDeploy(vr.log)).toEqual([]);
+    }
+  });
+  it("the scheduler, verify only: no deploy, every check passes on a matching live Worker", () => {
+    const s = setup({ exists: SCHED_DEPS("p") });
+    writeFileSync(join(s.state, "oa-p-scheduler.exists"), "");
+    writeFileSync(
+      join(s.state, "oa-p-scheduler.settings.json"),
+      NEXT["oa-p-scheduler"] as string,
+    );
+    const r = s.run("scheduler", { VERIFY_ONLY: "1" });
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(noDeploy(r.log)).toEqual([]);
+    expect(r.out).toContain("prod scheduler: verified (verify only)");
+  });
+  it("the scheduler, staging: the oa-s provisioner, queue and bindings", () => {
+    const r = setup({ exists: SCHED_DEPS("s") }).run(
+      "scheduler",
+      {},
+      "staging",
+    );
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.log.some((l) => l.startsWith("wrapper scheduler staging "))).toBe(
+      true,
+    );
+    expect(r.out).toContain("staging scheduler: deployed and verified");
+    clean(r);
+    // Prod's provisioner or queue don't stand in for staging's.
+    const noProv = setup({
+      exists: [...SCHED_DEPS("p"), "oa-s-auth-broker", "oa-s-directory-broker"],
+    }).run("scheduler", {}, "staging");
+    expect(noProv.code).toBe(1);
+    expect(noProv.err).toContain("oa-s-provisioner does not exist");
+    expect(noDeploy(noProv.log)).toEqual([]);
+    const noQueue = setup({
+      exists: SCHED_DEPS("s"),
+      queues: queueList(["oa-p-signups"]),
+    }).run("scheduler", {}, "staging");
+    expect(noQueue.code).toBe(1);
+    expect(noQueue.err).toContain(
+      "oa-s-signups queue does not exist: create it first",
+    );
+    expect(noDeploy(noQueue.log)).toEqual([]);
+    // A staging Worker bound to prod's provisioner fails the readback.
+    const cross = setup({
+      exists: SCHED_DEPS("s"),
+      next: {
+        "oa-s-scheduler": (NEXT["oa-s-scheduler"] as string).replace(
+          '"service":"oa-s-provisioner"',
+          '"service":"oa-p-provisioner"',
+        ),
+      },
+    }).run("scheduler", {}, "staging");
+    expect(cross.code).toBe(1);
+    expect(cross.err).toContain(
+      "PROVISIONER: got 'oa-p-provisioner', want 'oa-s-provisioner'",
+    );
+  });
   it("the scheduler checks its two schedules exactly", () => {
-    const s = setup({ exists: ["oa-p-auth-broker", "oa-p-directory-broker"] });
+    const s = setup({ exists: SCHED_DEPS("p") });
     writeFileSync(
       join(s.state, "oa-p-scheduler.schedules.json"),
       JSON.stringify({

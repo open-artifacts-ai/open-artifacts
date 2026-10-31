@@ -385,6 +385,9 @@ importers:
       '@oa/provision':
         specifier: workspace:*
         version: link:../../packages/provision
+      '@oa/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: ^1.4.4
