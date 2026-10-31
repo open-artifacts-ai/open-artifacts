@@ -791,14 +791,34 @@ describe("sweep: failures", () => {
     expect(settled).toEqual([]);
   });
 
-  it("settleFailed failing (today's W3 stub throws) settles nothing and inserts no cleanup", async () => {
+  it("settleFailed failing settles nothing and inserts no cleanup", async () => {
+    const f = fakes();
+    const id = await job(installId(), { status: "running" });
+    const lines = captureLogs(vi.spyOn);
+    const throws: SettleFailed = async () => {
+      throw new Error("settle failed");
+    };
+    await sweep(f.env, NOW, { settleFailed: throws });
+    expect(lines).toEqual([`provapi sweep settle_failed exception ${id}`]);
+    expect(await cleanups()).toEqual([]);
+    expect((await jobRow(id))?.status).toBe("running");
+  });
+
+  it("the real settleFailed (W3) settles a dead run and inserts its one cleanup", async () => {
     const f = fakes();
     const id = await job(installId(), { status: "running" });
     const lines = captureLogs(vi.spyOn);
     await sweep(f.env, NOW);
-    expect(lines).toEqual([`provapi sweep settle_failed exception ${id}`]);
-    expect(await cleanups()).toEqual([]);
-    expect((await jobRow(id))?.status).toBe("running");
+    expect(lines[0]).toBe(`provapi sweep settled ${id} run_dead`);
+    expect(lines[1]).toMatch(new RegExp(`^provapi sweep cleanup \\S+ ${id}$`));
+    expect(await cleanups()).toHaveLength(1);
+    expect(await jobRow(id)).toMatchObject({
+      status: "failed",
+      error_code: "run_dead",
+    });
+    // The next tick: already settled, no second cleanup.
+    await sweep(f.env, NOW);
+    expect(await cleanups()).toHaveLength(1);
   });
 
   it("an unbound Workflow binding fails the duty as unbound", async () => {
