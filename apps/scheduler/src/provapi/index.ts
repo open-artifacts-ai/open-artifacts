@@ -1,0 +1,73 @@
+// The Provisioning API's scheduler duties (design v7 5.8), run on the */2
+// tick after the revoke tick and the directory sync.
+import { ALERT_KEYS } from "@oa/shared/provisioning";
+import { alertFor, factsOf, stepAlert } from "./alerts.js";
+import { alertConditions, signupDailyCap } from "./conditions.js";
+import type { ProvapiEnv } from "./env.js";
+import { healthDue } from "./health.js";
+import { prune } from "./prune.js";
+import { purgeDue } from "./purge.js";
+import { type Duty, type DutyOutcome, runDuties } from "./run.js";
+import { type SweepDeps, sweep } from "./sweep.js";
+
+export type { ProvapiEnv } from "./env.js";
+export { SCHEDULER_TICK_KEY, writeTick } from "./run.js";
+
+/** Each duty's budget; together well inside the 2 minutes. */
+export const DUTY_TIMEOUT_MS = {
+  sweep: 20_000,
+  purge: 10_000,
+  health: 40_000,
+  alerts: 30_000,
+  prune: 5_000,
+} as const satisfies Record<Duty["name"], number>;
+
+/** The scheduler opens and clears every alert here, and only here. */
+export async function alertsTick(env: ProvapiEnv, now: number): Promise<void> {
+  const c = await alertConditions(env.PLATFORM_DB, env.PROVISIONER, {
+    now,
+    signupDailyCap: signupDailyCap(env.SIGNUP_DAILY_CAP),
+  });
+  for (const k of ALERT_KEYS) {
+    const cond = c[k];
+    const facts = {
+      ...factsOf(cond.rows),
+      ...(cond.daysLeft === undefined ? {} : { daysLeft: cond.daysLeft }),
+    };
+    // stepAlert never throws: one key's failure never stops the next.
+    await stepAlert(env, alertFor(k, env.OA_ENV, facts), cond.open, now);
+  }
+}
+
+export interface ProvapiOptions extends SweepDeps {
+  /** Tests only: per-duty budgets. */
+  timeoutMs?: Partial<Record<Duty["name"], number>>;
+}
+
+/**
+ * Sweep, purge, health, alerts, prune: in that order, so the alerts read the
+ * tick's own sweep, purge and health writes. Never throws.
+ */
+export function provapiTick(
+  env: ProvapiEnv,
+  now: number,
+  o: ProvapiOptions = {},
+): Promise<Record<string, DutyOutcome>> {
+  const t = { ...DUTY_TIMEOUT_MS, ...o.timeoutMs };
+  const sweepDeps: SweepDeps = o.settleFailed
+    ? { settleFailed: o.settleFailed }
+    : {};
+  return runDuties([
+    { name: "sweep", timeoutMs: t.sweep, run: () => sweep(env, now, sweepDeps) },
+    { name: "purge", timeoutMs: t.purge, run: () => purgeDue(env, now) },
+    {
+      name: "health",
+      timeoutMs: t.health,
+      run: async () => {
+        await healthDue(env, now);
+      },
+    },
+    { name: "alerts", timeoutMs: t.alerts, run: () => alertsTick(env, now) },
+    { name: "prune", timeoutMs: t.prune, run: () => prune(env, now) },
+  ]);
+}

@@ -1,0 +1,206 @@
+import {
+  canTransition,
+  PURGE_STUCK_FAILURES,
+  REQUEST_ID_RE,
+} from "@oa/shared/provisioning";
+import { FakeWorkflow } from "@oa/shared/provisioning/fakes";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { sqlConditions } from "../src/provapi/conditions.js";
+import type { ProvapiEnv } from "../src/provapi/env.js";
+import { SYSTEM_ACTOR } from "../src/provapi/jobs.js";
+import { purgeDue, purgeRequestId } from "../src/provapi/purge.js";
+import {
+  captureLogs,
+  db,
+  install,
+  installId,
+  job,
+  lifecycle,
+  migrate,
+  reset,
+  rows,
+} from "./provapi/db.js";
+
+beforeAll(migrate);
+beforeEach(reset);
+afterEach(() => vi.restoreAllMocks());
+
+const NOW = Date.UTC(2026, 9, 31, 12, 0);
+const DAY = 24 * 60 * 60_000;
+const PURGE_AT = NOW - 1;
+
+function fakes() {
+  const manage = new FakeWorkflow();
+  const env = {
+    PLATFORM_DB: db,
+    OA_ENV: "staging",
+    MANAGE_INSTALL: manage,
+  } as unknown as ProvapiEnv;
+  return { env, manage };
+}
+
+/** A soft-deleted install in grace until purgeAt. */
+async function deleting(
+  purgeAt: number | null = PURGE_AT,
+  over: Record<string, number | null> = {},
+) {
+  const id = installId();
+  await install(id, { state: "active" });
+  await lifecycle(id, {
+    deleted_at: purgeAt === null ? null : purgeAt - 7 * DAY,
+    purge_at: purgeAt,
+    serving_mode: "closed",
+    ...over,
+  });
+  return id;
+}
+
+const purges = (id: string) =>
+  rows(
+    "SELECT * FROM jobs WHERE install_id = ?1 AND kind = 'purge' ORDER BY created_at, request_id",
+    id,
+  );
+const fail = (jobId: unknown) =>
+  db
+    .prepare(
+      "UPDATE jobs SET status = 'failed', error_code = 'revoke_pending', finished_at = ?2, updated_at = ?2 WHERE id = ?1",
+    )
+    .bind(jobId, NOW)
+    .run();
+
+describe("purge after grace", () => {
+  it("the scheduler may purge a deleting install (TRANSITIONS)", () => {
+    expect(canTransition("deleting", "purge", "S")).toBe(true);
+  });
+
+  it("purge_at passed: one purge job, started, with the try-1 request id", async () => {
+    const f = fakes();
+    const id = await deleting();
+    const lines = captureLogs(vi.spyOn);
+    await purgeDue(f.env, NOW);
+    const [p, ...rest] = await purges(id);
+    expect(rest).toEqual([]);
+    expect(p).toMatchObject({
+      kind: "purge",
+      workflow: "manage_install",
+      actor_kind: SYSTEM_ACTOR.kind,
+      actor_key: SYSTEM_ACTOR.key,
+      request_id: `purge-${id}-${PURGE_AT}-1`,
+      status: "queued",
+    });
+    expect(p?.request_id).toMatch(REQUEST_ID_RE);
+    expect(f.manage.created).toEqual([{ id: p?.id, params: { jobId: p?.id } }]);
+    expect(lines).toEqual([`provapi purge queued ${id} ${p?.id} try=1`]);
+  });
+
+  it("not before purge_at", async () => {
+    const f = fakes();
+    const id = await deleting(NOW + 1);
+    await purgeDue(f.env, NOW);
+    expect(await purges(id)).toEqual([]);
+  });
+
+  it("never while suspended", async () => {
+    const f = fakes();
+    const id = await deleting(PURGE_AT, { suspended_at: NOW - DAY });
+    for (let t = NOW; t < NOW + 30 * DAY; t += DAY) await purgeDue(f.env, t);
+    expect(await purges(id)).toEqual([]);
+  });
+
+  it("blocked by an active job", async () => {
+    const f = fakes();
+    const id = await deleting();
+    await job(id, { kind: "release_lease", workflow: "manage_install" });
+    await purgeDue(f.env, NOW);
+    expect(await purges(id)).toEqual([]);
+  });
+
+  it("restore (purge_at cleared) stops it", async () => {
+    const f = fakes();
+    const id = await deleting();
+    await db
+      .prepare(
+        "UPDATE install_lifecycle SET deleted_at = NULL, purge_at = NULL WHERE install_id = ?1",
+      )
+      .bind(id)
+      .run();
+    await purgeDue(f.env, NOW);
+    expect(await purges(id)).toEqual([]);
+  });
+
+  it(`tries 1 to ${PURGE_STUCK_FAILURES}, then no more, and purge_stuck opens`, async () => {
+    const f = fakes();
+    const id = await deleting();
+    for (let n = 1; n <= PURGE_STUCK_FAILURES + 2; n++) {
+      await purgeDue(f.env, NOW + n);
+      const all = await purges(id);
+      expect(all).toHaveLength(Math.min(n, PURGE_STUCK_FAILURES));
+      const last = all.at(-1);
+      if (n <= PURGE_STUCK_FAILURES) {
+        expect(last?.request_id).toBe(purgeRequestId(id, PURGE_AT, n));
+        expect(last?.request_id).toMatch(REQUEST_ID_RE);
+        await fail(last?.id);
+      }
+    }
+    const c = await sqlConditions(db, { now: NOW, signupDailyCap: 0 });
+    expect(c.purge_stuck.open).toBe(true);
+    expect(c.purge_stuck.rows.map((r) => r.install_id)).toEqual([id]);
+  });
+
+  it("a later grace end (restore, delete again) starts its tries over", async () => {
+    const f = fakes();
+    const id = await deleting();
+    for (let n = 1; n <= PURGE_STUCK_FAILURES; n++) {
+      await purgeDue(f.env, NOW);
+      await fail((await purges(id)).at(-1)?.id);
+    }
+    const later = NOW + 8 * DAY;
+    await db
+      .prepare(
+        "UPDATE install_lifecycle SET deleted_at = ?2, purge_at = ?3 WHERE install_id = ?1",
+      )
+      .bind(id, later - 7 * DAY, later)
+      .run();
+    await purgeDue(f.env, later);
+    expect((await purges(id)).at(-1)?.request_id).toBe(
+      purgeRequestId(id, later, 1),
+    );
+  });
+
+  it("overlapping ticks make one job", async () => {
+    const f = fakes();
+    const id = await deleting();
+    await Promise.all(Array.from({ length: 4 }, () => purgeDue(f.env, NOW)));
+    expect(await purges(id)).toHaveLength(1);
+    expect(f.manage.created).toHaveLength(1);
+  });
+
+  it("a failed start leaves the job queued (the sweep starts it)", async () => {
+    const f = fakes();
+    const id = await deleting();
+    f.manage.failNextCreate(new Error("boom"));
+    const lines = captureLogs(vi.spyOn);
+    await purgeDue(f.env, NOW);
+    expect((await purges(id))[0]?.status).toBe("queued");
+    expect(lines.at(-1)).toBe(`provapi purge install_failed rpc_error ${id}`);
+  });
+
+  it("a deleted install is never purged again", async () => {
+    const f = fakes();
+    const id = await deleting();
+    await db
+      .prepare("UPDATE installs SET state = 'deleted' WHERE id = ?1")
+      .bind(id)
+      .run();
+    await purgeDue(f.env, NOW);
+    expect(await purges(id)).toEqual([]);
+  });
+});
