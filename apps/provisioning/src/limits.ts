@@ -1,3 +1,4 @@
+import { bump } from "./auth/counters.js";
 import type { Env } from "./env.js";
 import { type Refusal, refusal } from "./principal.js";
 
@@ -25,4 +26,27 @@ export async function limit(
   const rl = env[RATE_LIMIT_BINDINGS[bucket]];
   if (!rl) return refusal("unavailable");
   return (await rl.limit({ key })).success ? null : refusal("rate_limited");
+}
+
+/** The D1 counters (4.7, `rate_counters`): fixed windows, per key. */
+export const D1_LIMITS = {
+  /** Token mints per admin, `oat_` and OAuth consents together. */
+  mint: { limit: 20, windowMs: 3_600_000 },
+} as const satisfies Record<string, { limit: number; windowMs: number }>;
+
+/**
+ * Charges one hit on a fixed-window D1 counter (auth/counters.ts bump, the
+ * one upsert). Null while the count is within `max`; `rate_limited` past it.
+ * `key` must not hold a raw email or IP (hash it with hmac16).
+ */
+export async function countD1(
+  env: Pick<Env, "PLATFORM_DB">,
+  key: string,
+  max: number,
+  windowMs: number,
+  now: number = Date.now(),
+): Promise<Refusal | null> {
+  return (await bump(env.PLATFORM_DB, key, windowMs, now)) > max
+    ? refusal("rate_limited")
+    : null;
 }
