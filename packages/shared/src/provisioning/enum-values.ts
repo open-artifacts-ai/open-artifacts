@@ -103,7 +103,30 @@ export const JOB_STEPS = {
   release_lease: ["recheck", "release", "done"],
   cleanup: ["release_lease", "sweep_tokens", "settle", "done"],
   redline_creds: ["recheck", "rotate_hook_key", "mint", "seal", "done"],
-} as const satisfies Record<JobKind, readonly string[]>;
+  /**
+   * R26 with `revoke: true` (10.1): the same job kind (0008's CHECK is
+   * unchanged), not a JobKind. Revokes the install's live redline-* PATs
+   * only (redlinePatsToRevoke); with none left it is a no-op `done`.
+   */
+  redline_creds_revoke: ["recheck", "revoke", "done"],
+} as const satisfies Record<
+  JobKind | "redline_creds_revoke",
+  readonly string[]
+>;
+
+/**
+ * A job's steps from its kind and `jobs.args`: `redline_creds` with
+ * `args.revoke === true` runs JOB_STEPS.redline_creds_revoke; every other
+ * case is JOB_STEPS[kind].
+ */
+export function jobStepsFor(
+  kind: JobKind,
+  args?: { readonly revoke?: unknown } | null,
+): readonly string[] {
+  if (kind === "redline_creds" && args?.revoke === true)
+    return JOB_STEPS.redline_creds_revoke;
+  return JOB_STEPS[kind];
+}
 
 /**
  * The scheduler's alert keys (5.8). C2 ships the condition SQL per key; the

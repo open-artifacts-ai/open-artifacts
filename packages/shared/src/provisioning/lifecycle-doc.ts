@@ -92,7 +92,11 @@ export function lifecycleDoc(): string {
     "",
     table(
       ["Job", "Steps"],
-      Object.entries(JOB_STEPS).map(([k, s]) => [k, s.join(" > ")]),
+      Object.entries(JOB_STEPS).map(([k, s]) => [
+        // Not a job kind: R26's revoke variant of redline_creds.
+        k === "redline_creds_revoke" ? "redline_creds (revoke: true)" : k,
+        s.join(" > "),
+      ]),
     ),
     "",
     "## Polling",

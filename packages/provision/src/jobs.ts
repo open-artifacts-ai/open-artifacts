@@ -111,13 +111,42 @@ export interface SettleOptions {
    * cannot tell this call's settle from an R25 cancel that already settled
    * the job and queued its own cleanup. So every extra must
    * - guard on the parent having been settled with exactly the code this
-   *   call wrote (`settledWith(parentSql, code)`, e.g. `run_dead` for the
-   *   sweep); a cancel's `canceled` never matches, and
+   *   call ends up writing (`settledWith(parentSql, code)`; the settle
+   *   never overwrites a stored code, so that is the stored code when there
+   *   is one, else `code`), and
    * - be `INSERT OR IGNORE`, so `jobs_one_active` (a cleanup already open)
    *   and `(actor_key, request_id)` (an earlier tick's `cleanup-<jobId>`)
    *   skip the row instead of failing the batch.
+   * Every extra MUST be idempotent: a unique id plus INSERT OR IGNORE,
+   * guarded by settledWith on the stored code. W3 builds to it.
    */
   extra?: readonly unknown[];
+  /**
+   * Compare-and-set on the code the caller read (C6, W7 review). When
+   * present (a string or null), the settle UPDATE also requires
+   * `error_code IS ?` bound to `expectCode` (SQL `IS`, so null matches
+   * null). Only a provision error code or null is accepted (as `code`);
+   * anything else is refused. On a mismatch (the row's code changed since
+   * the caller read it) the settle writes nothing and `settled` is false;
+   * extras still run in the batch and are deduplicated by their own guards
+   * (settledWith plus NOT EXISTS cleanup plus INSERT OR IGNORE). The caller
+   * retries next tick. Absent: unchanged behaviour.
+   *
+   * With expectCode 'canceled' the code written stays 'canceled', and the
+   * cancel's own path may already have queued the cleanup. To keep exactly
+   * one cleanup in total, the extra guards on both this call's code and no
+   * cleanup for the parent yet, as an INSERT OR IGNORE:
+   *
+   * ```sql
+   * INSERT OR IGNORE INTO jobs (...) SELECT ... WHERE
+   *   EXISTS (SELECT 1 FROM jobs p WHERE p.id = ?1 AND p.status = 'failed' AND p.error_code = 'canceled')
+   *   AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?1 AND c.kind = 'cleanup')
+   * ```
+   *
+   * (the first line is `settledWith("?1", "canceled")`). Pinned on the real
+   * 0008 schema in test/jobs-settle-expect-code.test.ts.
+   */
+  expectCode?: ProvisionErrorCode | null;
 }
 
 /**
@@ -161,6 +190,8 @@ export interface SettleResult {
 // failed, by whichever settle gets there.
 const SETTLE_JOB = `UPDATE jobs SET status = 'failed', error_code = COALESCE(error_code, ?2), error_message = COALESCE(error_message, ?2), finished_at = COALESCE(finished_at, ?3), retry_at = NULL, updated_at = ?3
 WHERE id = ?1 AND status IN ('queued', 'running')`;
+// expectCode's compare-and-set (C6): `IS`, so a null expectation matches null.
+const SETTLE_JOB_CAS = `${SETTLE_JOB} AND error_code IS ?4`;
 // Only the signup whose current job this is (a retry moves job_id on).
 const SETTLE_SIGNUP = `UPDATE signups SET status = 'failed', error = COALESCE(error, (SELECT error_code FROM jobs WHERE id = ?1)), updated_at = ?2
 WHERE job_id = ?1 AND status NOT IN ('ready', 'failed')
@@ -186,10 +217,13 @@ export function settleFailedStatements<S>(
   jobId: string,
   code: ProvisionErrorCode,
   now: number = Date.now(),
+  expectCode?: ProvisionErrorCode | null,
 ): S[] {
   checkCode(code);
   return [
-    db.prepare(SETTLE_JOB).bind(jobId, code, now),
+    expectCode === undefined
+      ? db.prepare(SETTLE_JOB).bind(jobId, code, now)
+      : db.prepare(SETTLE_JOB_CAS).bind(jobId, code, now, expectCode),
     db.prepare(SETTLE_SIGNUP).bind(jobId, now),
     db.prepare(FREE_ACCOUNT).bind(jobId, now),
   ];
@@ -212,8 +246,16 @@ export async function settleFailed(
   checkCode(code);
   if (opts?.extra !== undefined && !Array.isArray(opts.extra))
     throw new Error("settleFailed: extra must be an array of statements");
-  // TODO(C6): expectCode (`error_code IS ?` compare-and-set) lands with C6.
-  const own = settleFailedStatements(db, jobId, code, Date.now());
+  const expectCode = opts?.expectCode;
+  if (
+    expectCode !== undefined &&
+    expectCode !== null &&
+    !(PROVISION_ERROR_CODES as readonly unknown[]).includes(expectCode)
+  )
+    throw new Error(
+      `settleFailed: expectCode must be a provision error code or null, not ${String(expectCode)}`,
+    );
+  const own = settleFailedStatements(db, jobId, code, Date.now(), expectCode);
   const extra = opts?.extra ?? [];
   const results = (await db.batch([...own, ...extra])) as
     | readonly unknown[]

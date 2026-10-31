@@ -286,6 +286,18 @@ describe("settleFailed (3.6)", () => {
     expect(INDEX.settleFailed).toBe(settleFailed);
   });
 
+  it("expectCode is a provision error code or null; anything else is refused", async () => {
+    const id = "01JBQ4ZKXW5V9R3M2N8P6T7Y0A";
+    for (const expectCode of [null, "canceled", "run_dead"] as const)
+      await expect(
+        settleFailed(db, id, "run_dead", { expectCode }),
+      ).resolves.toEqual({ settled: false, extra: [] });
+    for (const bad of ["nope", "", "CANCELED", 0, false, {}])
+      await expect(
+        settleFailed(db, id, "run_dead", { expectCode: bad as never }),
+      ).rejects.toThrow(/expectCode must be a provision error code or null/);
+  });
+
   it("takes extra statements for the same batch and says whether it settled", async () => {
     const f: SettleFailed = settleFailed;
     const extra = [{ sql: "INSERT cleanup" }];
