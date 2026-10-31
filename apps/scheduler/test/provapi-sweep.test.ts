@@ -247,6 +247,21 @@ describe("sweep: dead runs", () => {
       ]);
     });
 
+  it("an open job already holding a code (a cancel that died before its settle): settled, the code kept, one cleanup, started", async () => {
+    const f = fakes();
+    const { id } = await started(f, "complete", { error_code: "canceled" });
+    await run(f.env);
+    expect(settled).toEqual([{ jobId: id, code: RUN_DEAD }]);
+    expect(await jobRow(id)).toMatchObject({
+      status: "failed",
+      error_code: "canceled",
+    });
+    const [c, ...rest] = await cleanups();
+    expect(rest).toEqual([]);
+    expect(c).toMatchObject({ parent_job_id: id, status: "queued" });
+    expect(f.manage.created).toEqual([{ id: c?.id, params: { jobId: c?.id } }]);
+  });
+
   it("a cancel between terminate and its own settle wins: the sweep neither settles nor adds a cleanup", async () => {
     const f = fakes();
     const { id, inst } = await started(f, "terminated");

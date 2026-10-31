@@ -2,7 +2,7 @@
 // EXPIRED_AUTH_RETENTION_MS (7 days; a revoked one stays until then, so its
 // revoked state is never lost while a grant or a session check could still
 // read it), unclaimed OAuth clients (0008), D1
-// rate counters (2 h; the DCR UTC-day counters 48 h), audit_refusals over 90 days, and
+// rate counters (48 h for now, see RATE_COUNTER_RETENTION), audit_refusals over 90 days, and
 // a failed signup's owner email 30 days on. Bounded deletes, so a backlog drains over ticks. Never admin_audit
 // (append-only; its triggers refuse a delete).
 import {
@@ -16,13 +16,16 @@ import { d1, type ProvapiEnv } from "./env.js";
 /** Rows deleted per table per tick. */
 export const PRUNE_BATCH = 500;
 /**
- * The `rate_counters.key` prefix of the DCR UTC-day counters, which keep
- * DCR_COUNTER_RETENTION_MS; every other counter keeps
- * RATE_COUNTER_RETENTION_MS. TODO(contract): C5 exports the 48 h retention
- * but no key (or prefix) for the DCR day counters; this one is W7's.
+ * How long every `rate_counters` row is kept. Fails safe: the DCR UTC-day
+ * counters need DCR_COUNTER_RETENTION_MS (48 h), and pruning one live resets
+ * the daily DCR cap, so every counter keeps that until the contract names
+ * the DCR key. TODO(contract): with C5's DCR key export, prune the other
+ * counters at RATE_COUNTER_RETENTION_MS (2 h) and the DCR ones at 48 h.
  */
-export const DCR_COUNTER_KEY_PREFIX = "dcr:";
-const IS_DCR = `substr(key, 1, ${DCR_COUNTER_KEY_PREFIX.length}) = '${DCR_COUNTER_KEY_PREFIX}'`;
+export const RATE_COUNTER_RETENTION = Math.max(
+  RATE_COUNTER_RETENTION_MS,
+  DCR_COUNTER_RETENTION_MS,
+);
 /**
  * A failed signup's owner email (signup_secret) outlives the redrive window
  * by no more (#859's purgeFailedSecrets). TODO(contract): not exported.
@@ -50,7 +53,7 @@ export const PRUNES = {
   ),
   rate_counters: bounded(
     "rate_counters",
-    `(NOT ${IS_DCR} AND window_start <= ?1 - ${RATE_COUNTER_RETENTION_MS}) OR (${IS_DCR} AND window_start <= ?1 - ${DCR_COUNTER_RETENTION_MS})`,
+    `window_start <= ?1 - ${RATE_COUNTER_RETENTION}`,
   ),
   audit_refusals: bounded(
     "audit_refusals",

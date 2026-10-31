@@ -102,11 +102,12 @@ const STILL_OPEN =
 const stillOpen = async (db: D1Database, id: string) =>
   (await d1(db.prepare(STILL_OPEN).bind(id).first())) !== null;
 
-// The cleanup goes in only when the sweep's own settle failed its parent (?5
-// parent; only the sweep sets run_dead), never after a cancel or the run's
-// own fail step settled it first.
+// The cleanup goes in only once its parent (?5) is failed and has no
+// cleanup yet (a cancel's own, open or finished). Never keyed on the code:
+// settleFailed never writes over a stored one, so a job that already held
+// one (a cancel that died before its settle) still gets its cleanup.
 const PARENT_FAILED: JobGuard = {
-  sql: `EXISTS (SELECT 1 FROM jobs WHERE id = ?5 AND status = 'failed' AND error_code = '${RUN_DEAD}')`,
+  sql: "EXISTS (SELECT 1 FROM jobs WHERE id = ?5 AND status = 'failed') AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?5 AND c.kind = 'cleanup')",
   params: [],
 };
 
