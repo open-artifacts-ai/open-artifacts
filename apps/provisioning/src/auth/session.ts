@@ -101,10 +101,11 @@ export async function sessionPrincipal(
     email: row.email,
     sub: row.sub,
     authAt: row.auth_at,
-    sessionHash: row.id_hash,
     session: {
+      hash: row.id_hash,
       csrf: await csrfToken(env, sid),
       expiresAt: row.expires_at,
+      authAt: row.auth_at,
     },
   };
 }

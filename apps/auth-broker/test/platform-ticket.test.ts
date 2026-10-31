@@ -229,6 +229,41 @@ describe("platform-principal redeem", () => {
     expect(tokenCalls).toBe(0);
   });
 
+  it("junk-bstate redeems through the gate never drain the shared gate bucket: the real redeem still succeeds", async () => {
+    const admin = await bstateFor("admin");
+    ipLimit = limiter(3);
+    installLimit = limiter(3);
+    for (let i = 0; i < 6; i++)
+      expect((await redeem(`junk-${i}`)).status).toBe(401);
+    expect((await redeem(admin)).status).toBe(400);
+    expect(tokenCalls).toBe(1);
+    expect(ipLimit.keys).not.toContain("gate:i000000admin");
+    expect(installLimit.keys).toEqual([
+      expect.stringMatching(/^redeem:.+:install:i000000admin$/),
+    ]);
+  });
+
+  it("a public redeem naming a platform id is still charged per IP first", async () => {
+    ipLimit = limiter(0);
+    const r = await broker.fetch(
+      new Request(`${BROKER}/google/redeem`, {
+        method: "POST",
+        headers: { "cf-connecting-ip": "198.51.100.9" },
+        body: JSON.stringify({
+          install: "i000000admin",
+          code: "x",
+          verifier: "v",
+          ts: Date.now(),
+          bstate: "junk",
+          h: "h",
+        }),
+      }) as never,
+      E(),
+    );
+    expect(r.status).toBe(429);
+    expect(ipLimit.keys).toEqual(["ip:198.51.100.9"]);
+  });
+
   it("the install bucket is per flow: replaying one flow's redeem never drains another's", async () => {
     const mine = await bstateFor("attacker");
     const admin = await bstateFor("admin");

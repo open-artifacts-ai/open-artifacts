@@ -15,7 +15,7 @@ import {
   SignJWT,
 } from "jose";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { handle } from "../src/app.js";
+import { handle as appHandle } from "../src/app.js";
 import type { AuditEntry } from "../src/audit.js";
 import { csrfToken } from "../src/auth/csrf.js";
 import { FLOW_COOKIE, readFlow, writeFlow } from "../src/auth/flow.js";
@@ -29,8 +29,23 @@ import {
 import type { SigninDeps } from "../src/auth/signin.js";
 import type { Env } from "../src/env.js";
 import { platformDb } from "./db.js";
-import { ADMIN, ADMIN_BROKER_KEY, ctx, fakeEnv } from "./fakes.js";
+import { ADMIN, ADMIN_BROKER_KEY, API, ctx, fakeEnv } from "./fakes.js";
 import { authorizeUrl, kv, pkce, randomIp, register } from "./oauth-helpers.js";
+
+// Every edge request carries cf-connecting-ip (the adapter 403s without
+// one, 4.7); a test that sets its own keeps it.
+const handle = (
+  req: Request,
+  ...rest: Parameters<typeof appHandle> extends [unknown, ...infer R]
+    ? R
+    : never
+) => {
+  if (!req.headers.has("cf-connecting-ip")) {
+    req = new Request(req);
+    req.headers.set("cf-connecting-ip", "192.0.2.10");
+  }
+  return appHandle(req, ...rest);
+};
 
 // Sign-in through the broker (design v7 4.3), R22 /auth/start and R23
 // /auth/callback/google, on the admin host.
@@ -567,6 +582,48 @@ describe("R23 /auth/callback/google", () => {
   });
 });
 
+describe("rate_limited by route kind (3.5)", () => {
+  // R22 and R23 are browser navigations: the sign-in screen, never JSON.
+  it("R22 over RL_PV_SIGNIN_IP: 303 /sign-in?error=rate_limited", async () => {
+    const e = env();
+    e.limits.RL_PV_SIGNIN_IP.allow = false;
+    const r = await call(e, `${ADMIN}/auth/start`);
+    expect(r.status).toBe(303);
+    expect(r.headers.get("location")).toBe(
+      `${ADMIN}/sign-in?error=rate_limited`,
+    );
+  });
+
+  it("R23 over RL_PV_SIGNIN_IP: 303 /sign-in?error=rate_limited, no redeem", async () => {
+    const e = env();
+    const s = await start(e);
+    e.limits.RL_PV_SIGNIN_IP.allow = false;
+    const r = await call(
+      e,
+      `${ADMIN}/auth/callback/google?code=C&state=${s.loc.searchParams.get("state")}`,
+      { headers: { cookie: `${FLOW_COOKIE}=${cookieValue(s.flow)}` } },
+    );
+    expect(r.status).toBe(303);
+    expect(r.headers.get("location")).toBe(
+      `${ADMIN}/sign-in?error=rate_limited`,
+    );
+    expect(redeems).toEqual([]);
+  });
+
+  it("API routes: 429 with the rate_limited envelope, on both hosts", async () => {
+    for (const url of [`${API}/v1/me`, `${ADMIN}/api/v1/me`]) {
+      const e = env();
+      e.limits.RL_PV_PRE_IP.allow = false;
+      const r = await call(e, url);
+      expect(r.status).toBe(429);
+      expect(r.headers.get("location")).toBeNull();
+      expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+        "rate_limited",
+      );
+    }
+  });
+});
+
 describe("identity pinning (4.3 step 5)", () => {
   it("email listed, sub differs: 303 /sign-in?error=no_access with the sub, audit unknown_sub", async () => {
     const { res } = await signIn(env(), { claims: { sub: "999" } });
@@ -603,6 +660,52 @@ describe("identity pinning (4.3 step 5)", () => {
     });
     expect(a.actor).toEqual({ kind: "signin" });
     expect(JSON.stringify(a.detail ?? {})).not.toContain("x@gmail.com");
+  });
+
+  it("the match is the exact (email, sub) pair: another entry's sub is unknown_sub, a listed sub under an unlisted email is not_listed", async () => {
+    const two = "me@example.com:123,you@example.com:456";
+    const a = await signIn(env({ ADMIN_IDENTITIES: two }), {
+      claims: { email: EMAIL, sub: "456" },
+    });
+    expect(a.res.headers.get("location")).toBe(
+      `${ADMIN}/sign-in?error=no_access&sub=456`,
+    );
+    const b = await signIn(env({ ADMIN_IDENTITIES: two }), {
+      claims: { email: "them@example.com", sub: "123" },
+    });
+    expect(b.res.headers.get("location")).toBe(
+      `${ADMIN}/sign-in?error=no_access`,
+    );
+    expect(audits.map((x) => x.code)).toEqual(["unknown_sub", "not_listed"]);
+    // Each listed pair still signs in as itself.
+    const ok = await signIn(env({ ADMIN_IDENTITIES: two }), {
+      claims: { email: "you@example.com", sub: "456" },
+    });
+    expect(cookieOf(ok.res, SESSION_COOKIE)).not.toBeNull();
+  });
+
+  it("refusal buckets: unknown_sub and not_listed each add one to the email and ipKey counters; a sign-in adds none", async () => {
+    const e = env();
+    const counts = async () =>
+      (
+        await e.env.PLATFORM_DB.prepare(
+          "SELECT key, count FROM rate_counters WHERE key LIKE 'signin_refused:%' ORDER BY key",
+        ).all<{ key: string; count: number }>()
+      ).results.map((r) => [r.key.split(":")[1], r.count]);
+    await signIn(e);
+    expect(await counts()).toEqual([]);
+    await signIn(e, { claims: { sub: "999" } });
+    expect(await counts()).toEqual([
+      ["email", 1],
+      ["ip", 1],
+    ]);
+    await signIn(e, { claims: { email: "x@gmail.com", sub: "5" } });
+    // Another email: its own counter; the same client: one ipKey counter.
+    expect((await counts()).sort()).toEqual([
+      ["email", 1],
+      ["email", 1],
+      ["ip", 2],
+    ]);
   });
 
   it("the account id is query-encoded", async () => {

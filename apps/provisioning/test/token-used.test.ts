@@ -163,4 +163,26 @@ describe("token.used (4.1, 4.9): one row per token per route per 10 minutes", ()
     await Promise.all(waits);
     expect(await used(db, m.tokenId)).toHaveLength(1);
   });
+
+  it("a failed token.used write never fails the call", async () => {
+    const { env, p } = await tokenCaller();
+    const waits: Promise<unknown>[] = [];
+    const c = {
+      waitUntil: (x: Promise<unknown>) => waits.push(x),
+      passThroughOnException: () => {},
+      props: {},
+    } as unknown as ExecutionContext;
+    const broken = {
+      ...env,
+      PLATFORM_DB: new Proxy(env.PLATFORM_DB, {
+        get: (t, k) =>
+          k === "batch"
+            ? () => Promise.reject(new Error("d1 down"))
+            : Reflect.get(t, k).bind(t),
+      }),
+    };
+    const r = await invokeRoute(broken, c, p, "R2", {}, HTTP);
+    expect(r.status).toBe(200);
+    await expect(Promise.all(waits)).resolves.toBeDefined();
+  });
 });

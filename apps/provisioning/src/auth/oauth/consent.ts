@@ -284,7 +284,7 @@ async function allow(
   }
   const props: GrantProps = {
     tokenId: minted.tokenId,
-    sessionHash: p.sessionHash ?? "",
+    sessionHash: p.session?.hash ?? "",
   };
   let redirectTo: string;
   try {
