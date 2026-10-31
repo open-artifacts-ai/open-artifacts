@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { tokens } from "../src/mocks/fixtures";
+import { mcpUrlFor } from "../src/pages/Tokens";
 import { http, json, renderApp, use, writes } from "./harness";
 
 const mint = async (label = "ci run") => {
@@ -114,12 +115,42 @@ it("shows the token_limit refusal in plain words", async () => {
   expect(screen.queryByTestId("secret")).toBeNull();
 });
 
-it("has a Connect any AI agent card with the MCP address for the environment", async () => {
+it("has a Connect any AI agent card built from agentClients, named oa-admin", async () => {
   renderApp("/tokens");
   const card = await screen.findByRole("region", {
     name: "Connect any AI agent",
   });
-  expect(card).toHaveTextContent("https://api.open-artifacts-staging.app/mcp");
-  expect(card).toHaveTextContent("claude mcp add --transport http");
+  const url = "https://api.open-artifacts-staging.app/mcp";
+  expect(card).toHaveTextContent(url);
+  const snip = () => screen.getByTestId("snippet");
+  // Default: Claude Code, browser sign-in.
+  expect(snip()).toHaveTextContent(
+    `claude mcp add --transport http oa-admin ${url}`,
+  );
+  expect(snip()).not.toHaveTextContent("open-artifacts ");
+  fireEvent.change(screen.getByLabelText("Agent"), {
+    target: { value: "Generic" },
+  });
+  expect(snip()).toHaveTextContent(
+    "list the oa-admin tools. You should see get_world.",
+  );
+  fireEvent.change(screen.getByLabelText("Agent"), {
+    target: { value: "Codex CLI" },
+  });
+  fireEvent.change(screen.getByLabelText(/Sign in with/), {
+    target: { value: "token" },
+  });
+  expect(snip()).toHaveTextContent("[mcp_servers.oa-admin]");
+  expect(snip()).toHaveTextContent("bearer_token_env_var");
+  expect(snip()).toHaveTextContent("Restart Codex");
   expect(card).not.toHaveTextContent(String.fromCharCode(0x2014));
+});
+
+it("derives the MCP address from the admin host", () => {
+  expect(mcpUrlFor("prod", "admin.open-artifacts.app")).toBe(
+    "https://api.open-artifacts.app/mcp",
+  );
+  expect(mcpUrlFor("staging", "localhost")).toBe(
+    "https://api.open-artifacts-staging.app/mcp",
+  );
 });
