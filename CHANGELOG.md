@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.83.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.82.0...v0.83.0) (2026-10-31)
+
+
+### Features
+
+* **provisioning:** W5a API sign-in for the Provisioning API ([#891](https://github.com/open-artifacts-ai/open-artifacts/issues/891)) ([ba0f90a](https://github.com/open-artifacts-ai/open-artifacts/commit/ba0f90a380c75ab9c7357fabda730671fd3ca9d5))
+
 ## [0.82.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.81.0...v0.82.0) (2026-10-31)
 
 
