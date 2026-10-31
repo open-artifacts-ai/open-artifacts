@@ -3,6 +3,7 @@
 // spec's pure parts, the onStep step names, and the pause/unpause and
 // registryDisabled surface W2 builds on.
 import { describe, expect, it } from "vitest";
+import { CfError } from "../src/cf.js";
 import * as INDEX from "../src/index.js";
 import {
   CREATE_SECRETS,
@@ -12,9 +13,14 @@ import {
   PROVISION_ERROR_CODES,
   PROVISION_JOB_KINDS,
   PROVISION_RETRY_CODES,
+  PROVISIONER_TOKEN_LABEL_RE,
   ProdLocked,
   ProvisionRefused,
   ProvisionRetry,
+  provisionErrorCode,
+  type SettleDb,
+  type SettleFailed,
+  settleFailed,
   VERIFY_CLEAN_REFUSED_BINDING_TYPES,
   WFP_STEPS,
 } from "../src/wfp.js";
@@ -171,5 +177,61 @@ describe("verify_clean spec (5.2)", () => {
       testHooks: true,
     });
     expect(new Set(all).size).toBe(all.length);
+  });
+});
+
+describe("provisionErrorCode (3.5)", () => {
+  it("reads the property: a refusal's code, cf_error, else internal", () => {
+    expect(provisionErrorCode(new ProvisionRefused("x", "slug_taken"))).toBe(
+      "slug_taken",
+    );
+    expect(provisionErrorCode(new ProvisionRetry("x", "token_invalid"))).toBe(
+      "token_invalid",
+    );
+    expect(provisionErrorCode(new ProvisionRefused("x"))).toBe("internal");
+    expect(provisionErrorCode(new CfError("GET", "/x", 500, "boom"))).toBe(
+      "cf_error",
+    );
+    expect(provisionErrorCode(new Error("slug_taken: no"))).toBe("internal");
+    expect(provisionErrorCode("slug_taken")).toBe("internal");
+  });
+
+  it("is exported from @oa/provision", () => {
+    expect(INDEX.provisionErrorCode).toBe(provisionErrorCode);
+  });
+});
+
+describe("settleFailed (3.6)", () => {
+  const db: SettleDb = {
+    prepare: () => ({ bind: () => ({}) }),
+    batch: async () => [],
+  };
+  it("takes (db, jobId, code) and is not built yet (W3)", async () => {
+    const f: SettleFailed = settleFailed;
+    expect(f.length).toBe(3);
+    await expect(
+      f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "canceled"),
+    ).rejects.toThrow(/not built yet \(W3\)/);
+    await expect(
+      f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "nope" as never),
+    ).rejects.toThrow(/unknown provision error code/);
+    expect(INDEX.settleFailed).toBe(settleFailed);
+  });
+});
+
+describe("PROVISIONER_TOKEN_LABEL_RE (3.1 ULID)", () => {
+  it("accepts ss-<ULID> and refuses a first character above 7", () => {
+    expect(
+      PROVISIONER_TOKEN_LABEL_RE.test("ss-01JBQ4ZKXW5V9R3M2N8P6T7Y0A"),
+    ).toBe(true);
+    expect(
+      PROVISIONER_TOKEN_LABEL_RE.test("ss-7ZZZZZZZZZZZZZZZZZZZZZZZZZ"),
+    ).toBe(true);
+    for (const bad of [
+      "ss-81JBQ4ZKXW5V9R3M2N8P6T7Y0A",
+      "ss-Z1JBQ4ZKXW5V9R3M2N8P6T7Y0A",
+      "ss-01JBQ4ZKXW5V9R3M2N8P6T7Y0",
+    ])
+      expect(PROVISIONER_TOKEN_LABEL_RE.test(bad)).toBe(false);
   });
 });

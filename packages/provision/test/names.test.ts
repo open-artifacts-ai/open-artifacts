@@ -170,6 +170,10 @@ describe("HOSTS values (5.5)", () => {
     "paused:closed:iabc123def45",
     "iABC123def45",
     "unmapped:iabc123def45",
+    "i000000admin",
+    "paused:i000000admin",
+    "i00000signup",
+    "closed:i00000signup",
   ])("anything else is null: %j", (v) => {
     expect(parseHostsValue(v)).toBeNull();
   });
@@ -185,6 +189,9 @@ describe("HOSTS values (5.5)", () => {
       });
     expect(hostsValue(ID, "serving")).toBe(ID);
     expect(() => hostsValue("nope" as never, "paused")).toThrow(/install id/);
+    expect(() => hostsValue("i000000admin", "serving")).toThrow(
+      /platform principal/,
+    );
   });
   it("is on the workerd-safe @oa/provision/names entry", () => {
     expect(namesEntry.parseHostsValue).toBe(parseHostsValue);

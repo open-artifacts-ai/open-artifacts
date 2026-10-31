@@ -227,12 +227,13 @@ const PRINTABLE: string[] = [];
 const FAKES: Fake[] = [];
 const PROVS: WfpProvisioner[] = [];
 
-async function fails(p: Promise<unknown>): Promise<Error> {
+/** The rejection; `code` is a ProvisionRefused's job error code. */
+async function fails(p: Promise<unknown>): Promise<Error & { code?: unknown }> {
   try {
     await p;
   } catch (e) {
     THROWN.push(String((e as Error).message), String(e), JSON.stringify(e));
-    return e as Error;
+    return e as Error & { code?: unknown };
   }
   throw new Error("expected a failure");
 }
@@ -650,6 +651,7 @@ describe("WfpProvisioner.create", () => {
         expect(e.message).toMatch(
           /slug finqore is already taken by install iabcdefghjkm/,
         );
+        expect(e.code).toBe("slug_taken");
         expect(nonReads(s.fake, n)).toEqual([]);
         expect(s.rows().map((r) => r.id)).toEqual([ID]);
       });
@@ -662,6 +664,7 @@ describe("WfpProvisioner.create", () => {
         expect(e.message).toMatch(
           /slug finqore already exists as active install/,
         );
+        expect(e.code).toBe("slug_taken");
         expect(nonReads(s.fake, n)).toEqual([]);
       });
 
@@ -1699,6 +1702,7 @@ describe("WfpProvisioner.create", () => {
         .set("finqore.open-artifacts-staging.page", "izzzzzzzzzzz");
       const e = await fails(s.p.create(input()));
       expect(e.message).toMatch(/taken/);
+      expect(e.code).toBe("slug_taken");
       expect(s.fake.writes()).toEqual([]);
     });
     it("a slug held by an active install", async () => {
@@ -2392,14 +2396,26 @@ describe("WfpProvisioner.create", () => {
       });
     });
 
-    it("the near-expiry refusal says to roll the token and paste it into Secrets Store", async () => {
+    it("the provisioner's near-expiry refusal says to roll the token and paste it into Secrets Store", async () => {
+      const s = setup();
+      s.fake.tokenInfo.expires_on = new Date(NOW + 86_400_000).toISOString();
+      const e = await fails(
+        s.mk({ maxTokenDays: PROVISIONER_MAX_TOKEN_DAYS }).create(input()),
+      );
+      expect(e.message).toContain(
+        "roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and paste it into Secrets Store (`oa-s-provision-token`)",
+      );
+      expect(e.message).not.toMatch(/keychain|CLOUDFLARE_API_TOKEN/);
+    });
+
+    it("the CLI's near-expiry refusal points at CLOUDFLARE_API_TOKEN, never Secrets Store", async () => {
       const s = setup();
       s.fake.tokenInfo.expires_on = new Date(NOW + 86_400_000).toISOString();
       const e = await fails(s.p.create(input()));
       expect(e.message).toContain(
-        "roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and paste it into Secrets Store (`oa-s-provision-token`)",
+        "roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and update CLOUDFLARE_API_TOKEN (the deploy Environment secret in CI, the keychain item on a laptop)",
       );
-      expect(e.message).not.toMatch(/keychain/);
+      expect(e.message).not.toMatch(/Secrets Store|provision-token/);
     });
 
     it("never calls a zone, DNS or email API", async () => {

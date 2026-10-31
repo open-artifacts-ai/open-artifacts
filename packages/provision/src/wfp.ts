@@ -191,7 +191,8 @@ export interface WfpOptions {
   turnstile?: { sitekey: string; secret: string };
   /**
    * Where the owner PAT and a test-hook key are saved (0600). Required unless
-   * ciOwnerToken is set, and always for a redline (test-hook) create.
+   * ciOwnerToken is set; with ciOwnerToken and no patDir (the provisioner
+   * Worker) a test-hook key is never written (redline_creds rotates it).
    */
   patDir?: string;
   /**
@@ -221,13 +222,14 @@ export interface WfpOptions {
   /**
    * Called as create, upgrade and rollback reach each WFP_STEPS step, so the
    * Workflow can record it (design v7 5.2). Awaited; a throw fails the
-   * operation.
+   * operation. Not built yet (W2): passing it is refused.
    */
   onStep?: (step: WfpStep) => void | Promise<void>;
   /**
    * Keep the sign-in registry copy `disabled: true` on every rewrite
    * (upgrade, rollback, updateVars of a suspended or deleting install;
-   * design v7 5.4). The directory copy is never disabled.
+   * design v7 5.4). The directory copy is never disabled. Not built yet
+   * (W2): `true` is refused, so a suspended install is never re-enabled.
    */
   registryDisabled?: boolean;
 }
@@ -249,7 +251,7 @@ export type WfpStep = (typeof WFP_STEPS)[number];
 
 /** The CLI's cap on a Cloudflare token's end date, in days. */
 export const DEFAULT_MAX_TOKEN_DAYS = 30;
-/** The hosted provisioner's cap: a one-year end date, required (design v7 Q2). */
+/** The hosted provisioner's cap: an end date at most 400 days out, required (design v7 Q2). */
 export const PROVISIONER_MAX_TOKEN_DAYS = 400;
 
 /**
@@ -324,16 +326,30 @@ export const NEAR_EXPIRY_MODE: Readonly<
   cleanup: "warn",
 });
 
+/** The platform D1 as a Worker binding sees it (the subset settleFailed uses). */
+export interface SettleDb {
+  prepare(sql: string): { bind(...values: unknown[]): unknown };
+  batch(statements: unknown[]): Promise<unknown>;
+}
+
 /**
  * Settles a failed job (design v7 3.6), shared by every fail step, cancel
  * and the scheduler sweep: `jobs` to failed with `code` (never over a stored
  * code), `signups.status = failed`, and `signup_accounts` freed for a
- * self-serve install that was never created. One D1 batch. W3 builds it.
+ * self-serve install that was never created. One D1 batch on `db` (the
+ * platform D1 binding). W3 builds the body; until then it throws.
  */
-export type SettleFailed = (
+export async function settleFailed(
+  db: SettleDb,
   jobId: string,
   code: ProvisionErrorCode,
-) => Promise<void>;
+): Promise<void> {
+  void db;
+  if (!(PROVISION_ERROR_CODES as readonly string[]).includes(code))
+    throw new Error(`unknown provision error code ${String(code)}`);
+  throw new Error(`settleFailed is not built yet (W3); job ${jobId}`);
+}
+export type SettleFailed = typeof settleFailed;
 
 /** The binding types verify_clean refuses on any install (design v7 5.2 e). */
 export const VERIFY_CLEAN_REFUSED_BINDING_TYPES = Object.freeze([
@@ -419,6 +435,18 @@ export class ProvisionRetry extends ProvisionRefused {
       throw new Error(`${String(code)} is not a retry code`);
     super(message, code);
   }
+}
+
+/**
+ * The job error code for anything an operation threw (design v7 3.5): a
+ * ProvisionRefused's own code, `cf_error` for a Cloudflare API error, and
+ * `internal` for everything else, an uncoded refusal included. W3 and W7
+ * classify through this, never a message.
+ */
+export function provisionErrorCode(e: unknown): ProvisionErrorCode {
+  if (e instanceof ProvisionRefused) return e.code ?? "internal";
+  if (e instanceof CfError) return "cf_error";
+  return "internal";
 }
 
 /** An MCP call the install answered with an HTTP error. */
@@ -772,7 +800,7 @@ interface CiToken {
 /** The CI owner token label: ci-<GitHub run id>. */
 export const CI_TOKEN_LABEL_RE = /^ci-[1-9][0-9]{0,19}$/;
 /** The hosted provisioner's owner token label: ss-<signup ULID>. */
-export const PROVISIONER_TOKEN_LABEL_RE = /^ss-[0-9A-HJKMNP-TV-Z]{26}$/;
+export const PROVISIONER_TOKEN_LABEL_RE = /^ss-[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 const isTokenLabel = (l: unknown): l is string =>
   typeof l === "string" &&
   (CI_TOKEN_LABEL_RE.test(l) || PROVISIONER_TOKEN_LABEL_RE.test(l));
@@ -1000,6 +1028,12 @@ export class WfpProvisioner {
       typeof o.registryDisabled !== "boolean"
     )
       throw new ProvisionRefused("registryDisabled must be a boolean");
+    // Fail closed until W2 wires them: a silent no-op would re-enable a
+    // suspended install's sign-in or drop the Workflow's step record.
+    if (o.onStep !== undefined)
+      throw new ProvisionRefused("onStep is not built yet (W2)");
+    if (o.registryDisabled === true)
+      throw new ProvisionRefused("registryDisabled is not built yet (W2)");
     const d = HOSTED_DOMAINS[env];
     if (o.domains?.app !== d.app || o.domains?.content !== d.content)
       throw new ProvisionRefused(
@@ -1533,8 +1567,9 @@ export class WfpProvisioner {
     const vars = i.vars ?? {};
     this.brokerVars(vars);
     this.checkVariant(i, vars);
-    // The owner PAT file without a CI token, and the test-hook key either way.
-    if (this.o.ciOwnerToken === undefined || testHooks) this.patDir();
+    // The owner PAT and test-hook key files without a CI token; with one,
+    // both stay in memory (no patDir in the provisioner Worker).
+    if (this.o.ciOwnerToken === undefined) this.patDir();
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars, testHooks);
     this.checkEmailCodeDomain(vars, "domains");
@@ -1590,11 +1625,13 @@ export class WfpProvisioner {
       if (row.state === "active")
         throw new ProvisionRefused(
           `slug ${i.slug} already exists as active install ${row.id}`,
+          "slug_taken",
         );
       // Covers deleted too: its slug and hosts stay held until a purge.
       if (row.state !== "creating")
         throw new ProvisionRefused(
           `install ${row.id} is ${row.state}; only a creating install can be resumed (a deleted install keeps its slug and hosts until a purge)`,
+          "invalid_state",
         );
       if (row.inputs_hash !== hash)
         throw new ProvisionRefused(
@@ -1604,6 +1641,7 @@ export class WfpProvisioner {
       if (row.version && compareVersions(rel.rec.version, row.version) < 0)
         throw new ProvisionRefused(
           `install ${row.id} is at ${row.version}; ${rel.rec.version} would be a downgrade`,
+          "downgrade_refused",
         );
       if (row.app_host !== appHost || row.content_host !== contentHost)
         throw new ProvisionRefused(
@@ -1616,6 +1654,7 @@ export class WfpProvisioner {
       if (held.length > 0)
         throw new ProvisionRefused(
           `host ${held[0]?.host} is already taken by ${held[0]?.install_id}`,
+          "slug_taken",
         );
       res = await this.resources(row);
     } else {
@@ -1623,12 +1662,16 @@ export class WfpProvisioner {
       if (holders.length > 0)
         throw new ProvisionRefused(
           `host or broker origin already taken by install ${holders[0]?.id} (slug ${i.slug})`,
+          "slug_taken",
         );
     }
     for (const h of [appHost, contentHost]) {
       const cur = await this.cf.kvGet(this.hostsKv.id, h);
       if (cur !== null && cur !== row?.id)
-        throw new ProvisionRefused(`host ${h} is already taken by ${cur}`);
+        throw new ProvisionRefused(
+          `host ${h} is already taken by ${cur}`,
+          "slug_taken",
+        );
     }
     if (raiseFloor) await this.platform.raiseFloorSeq(rel.floor.seq);
     const fresh = !row;
@@ -1731,6 +1774,7 @@ export class WfpProvisioner {
       if (bySlug && bySlug.id !== i.installId && bySlug.state !== "active")
         throw new ProvisionRefused(
           `slug ${i.slug} is already taken by install ${bySlug.id}`,
+          "slug_taken",
         );
       return bySlug;
     }
@@ -1754,7 +1798,10 @@ export class WfpProvisioner {
     const t = await this.cf.tokenVerify();
     const now = this.now();
     if (t?.status !== "active")
-      throw new ProvisionRefused("Cloudflare token is not active");
+      throw new ProvisionRetry(
+        "Cloudflare token is not active",
+        "token_invalid",
+      );
     if (t.not_before && Date.parse(t.not_before) > now)
       throw new ProvisionRefused(
         "Cloudflare token is not valid yet (not_before is in the future)",
@@ -1766,13 +1813,13 @@ export class WfpProvisioner {
       );
     const exp = Date.parse(t.expires_on);
     if (!Number.isFinite(exp) || exp <= now)
-      throw new ProvisionRefused("Cloudflare token has expired");
+      throw new ProvisionRetry("Cloudflare token has expired", "token_invalid");
     if (exp > now + maxDays * DAY)
       throw new ProvisionRefused(
         `Cloudflare token expires more than ${maxDays} days out; mint one with a shorter expiry`,
       );
     if (exp <= now + REFUSE_TOKEN_DAYS * DAY) {
-      const why = `the Cloudflare token expires on ${new Date(exp).toISOString().slice(0, 10)}, within ${REFUSE_TOKEN_DAYS} days; roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and paste it into Secrets Store (\`${platformNames(this.env).provisionToken}\`)`;
+      const why = `the Cloudflare token expires on ${new Date(exp).toISOString().slice(0, 10)}, within ${REFUSE_TOKEN_DAYS} days; roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and ${this.tokenHome()}`;
       if (nearExpiry === "refuse")
         throw new ProvisionRefused(`${why}, then retry`);
       this.notes.push(`WARNING: ${why}`);
@@ -1909,8 +1956,12 @@ export class WfpProvisioner {
       const send = Object.fromEntries(
         missing.map((k) => [k, fresh[k] as string]),
       );
-      if (send.TEST_HOOK_KEY !== undefined) {
-        const dir = this.patDir();
+      // With ciOwnerToken and no patDir the key is not saved: redline_creds
+      // rotates and delivers it (design v7 3.3).
+      const hookDir =
+        this.o.ciOwnerToken === undefined ? this.patDir() : this.o.patDir;
+      if (send.TEST_HOOK_KEY !== undefined && hookDir !== undefined) {
+        const dir = hookDir;
         mkdirSync(dir, { recursive: true, mode: 0o700 });
         const f = join(dir, `${m.appHost}-hook-key`);
         try {
@@ -1977,7 +2028,10 @@ export class WfpProvisioner {
       const cur = await cf.kvGet(this.hostsKv.id, h);
       if (cur === id) continue;
       if (cur !== null)
-        throw new ProvisionRefused(`host ${h} is already taken by ${cur}`);
+        throw new ProvisionRefused(
+          `host ${h} is already taken by ${cur}`,
+          "slug_taken",
+        );
       assertOwnResource(this.hostsKv.title, env);
       await this.hold();
       await cf.kvPut(this.hostsKv.id, h, id);
@@ -2254,10 +2308,12 @@ export class WfpProvisioner {
     if (cur && !from.includes(cur.state))
       throw new ProvisionRefused(
         `install ${row.id} is ${cur.state}; another operation got there first`,
+        "invalid_state",
       );
     if (cur && cur.lease_until !== null && cur.lease_until > this.now())
-      throw new ProvisionRefused(
+      throw new ProvisionRetry(
         `install ${row.id} is busy: another operation holds it`,
+        "lease_held",
       );
     throw new ProvisionRefused(
       `install ${row.id} changed since pre-flight read it; re-run`,
@@ -2623,10 +2679,12 @@ export class WfpProvisioner {
   async pause(
     id: InstallId,
     mode: "paused" | "closed",
+    o: { kind: ProvisionJobKind },
   ): Promise<{ id: InstallId; mode: "paused" | "closed" }> {
     if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
     if (mode !== "paused" && mode !== "closed")
       throw new ProvisionRefused("pause mode must be paused or closed");
+    this.jobKind(o);
     throw new Error("pause is not built yet (W2)");
   }
 
@@ -2634,8 +2692,12 @@ export class WfpProvisioner {
    * Design v7 5.5: HOSTS back to `<id>`, then the sign-in registry copy
    * re-enabled. Idempotent. W2 builds the body.
    */
-  async unpause(id: InstallId): Promise<{ id: InstallId; mode: "serving" }> {
+  async unpause(
+    id: InstallId,
+    o: { kind: ProvisionJobKind },
+  ): Promise<{ id: InstallId; mode: "serving" }> {
     if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
+    this.jobKind(o);
     throw new Error("unpause is not built yet (W2)");
   }
 
@@ -2784,7 +2846,10 @@ export class WfpProvisioner {
         `install ${id} is at ${from}; ${to} would be a downgrade`,
       );
     if (c === 0)
-      throw new ProvisionRefused(`install ${id} is already at ${to}`);
+      throw new ProvisionRefused(
+        `install ${id} is already at ${to}`,
+        "downgrade_refused",
+      );
     await this.storedOf(row, from);
     const vars = this.currentVars(row);
     const m = this.renderInputs(row, vars);
@@ -3487,8 +3552,9 @@ export class WfpProvisioner {
         row.lease_until !== null &&
         row.lease_until > this.now()
       )
-        throw new ProvisionRefused(
+        throw new ProvisionRetry(
           `install ${id} is creating and its create still holds the lease; retry once it ends or the lease expires`,
+          "lease_held",
         );
 
       // H-DV phase 1: deleting + pending (or skipped), hosts still mapped,
@@ -3589,8 +3655,9 @@ export class WfpProvisioner {
               `install ${id}: the directory revoke failed after ${st.attempts} attempts; the row stays deleting. Rerun delete with --skip-directory-revoke "<reason>" to tear down anyway (${DIRECTORY_REVOKE_SKIPPED_NOTE})`,
             );
           if (waited >= REVOKE_WAIT_MS)
-            throw new ProvisionRefused(
+            throw new ProvisionRetry(
               `install ${id}: the directory revoke is still pending after 10 minutes; rerun delete to resume (the scheduler retries every 2 minutes)`,
+              "revoke_pending",
             );
           await this.sleep(REVOKE_POLL_MS);
         }
@@ -3987,6 +4054,35 @@ export class WfpProvisioner {
   }
 
   /** The token end-date cap in days, checked (an integer, 1 to 400). */
+  /**
+   * The job kind pause and unpause run under: it names the lease and picks
+   * the near-expiry mode (NEAR_EXPIRY_MODE: suspend and delete warn,
+   * resume and restore refuse).
+   */
+  private jobKind(o: { kind: ProvisionJobKind } | undefined): {
+    kind: ProvisionJobKind;
+    nearExpiry: "refuse" | "warn";
+  } {
+    const kind = o?.kind;
+    if (!(PROVISION_JOB_KINDS as readonly string[]).includes(kind as string))
+      throw new ProvisionRefused(`unknown job kind ${String(kind)}`);
+    return {
+      kind: kind as ProvisionJobKind,
+      nearExpiry: NEAR_EXPIRY_MODE[kind as ProvisionJobKind],
+    };
+  }
+
+  /**
+   * Where an operator puts a rolled token: the provisioner's Secrets Store
+   * secret (maxTokenDays above the CLI's cap), else the CLI's
+   * CLOUDFLARE_API_TOKEN (deploy Environment in CI, the keychain on a laptop).
+   */
+  private tokenHome(): string {
+    return this.maxTokenDays() > DEFAULT_MAX_TOKEN_DAYS
+      ? `paste it into Secrets Store (\`${platformNames(this.env).provisionToken}\`)`
+      : "update CLOUDFLARE_API_TOKEN (the deploy Environment secret in CI, the keychain item on a laptop)";
+  }
+
   private maxTokenDays(): number {
     const d = this.o.maxTokenDays ?? DEFAULT_MAX_TOKEN_DAYS;
     if (!Number.isSafeInteger(d) || d < 1 || d > PROVISIONER_MAX_TOKEN_DAYS)
@@ -4000,9 +4096,7 @@ export class WfpProvisioner {
   private patDir(): string {
     const d = this.o.patDir;
     if (typeof d !== "string" || d === "")
-      throw new ProvisionRefused(
-        "patDir is required without ciOwnerToken and for a redline (test-hook) install",
-      );
+      throw new ProvisionRefused("patDir is required without ciOwnerToken");
     return d;
   }
 

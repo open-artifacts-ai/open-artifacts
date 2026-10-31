@@ -46,6 +46,7 @@ import {
   NAMESPACES,
   ProdLocked,
   ProvisionRefused,
+  ProvisionRetry,
   TURNSTILE_TEST_KEYS,
   type WfpOptions,
   WfpProvisioner,
@@ -149,12 +150,13 @@ const PRINTABLE: string[] = [];
 const FAKES: Fake[] = [];
 const PROVS: WfpProvisioner[] = [];
 
-async function fails(p: Promise<unknown>): Promise<Error> {
+/** The rejection; `code` is a ProvisionRefused's job error code. */
+async function fails(p: Promise<unknown>): Promise<Error & { code?: unknown }> {
   try {
     await p;
   } catch (e) {
     THROWN.push(String((e as Error).message), String(e), JSON.stringify(e));
-    return e as Error;
+    return e as Error & { code?: unknown };
   }
   throw new Error("expected a failure");
 }
@@ -1193,6 +1195,7 @@ describe("concurrency", () => {
     expect(second).toHaveLength(2);
     for (const e of second) expect(e).toBeInstanceOf(ProvisionRefused);
     expect(second[0]?.message).toMatch(/busy/);
+    expect((second[0] as ProvisionRefused).code).toBe("lease_held");
     expect(s.row(inst.id).state).toBe("deleted");
   });
 });
@@ -2181,9 +2184,9 @@ describe("fix round 3", () => {
     s.db()
       .prepare("UPDATE installs SET lease = 'c', lease_until = ? WHERE id = ?")
       .run(s.clock.now() + 60_000, id);
-    expect((await fails(s.p.delete(id, id))).message).toMatch(
-      /create still holds the lease/,
-    );
+    const held = await fails(s.p.delete(id, id));
+    expect(held.message).toMatch(/create still holds the lease/);
+    expect(held.code).toBe("lease_held");
     s.db()
       .prepare("UPDATE installs SET lease_until = ? WHERE id = ?")
       .run(s.clock.now() - 1, id);
@@ -2696,6 +2699,8 @@ describe("token within 5 days of expiry", () => {
     s.fake.tokenInfo.expires_on = new Date(NOW - 1000).toISOString();
     const e = await fails(s.p.rollback(inst.id));
     expect(e.message).toMatch(/expired/);
+    expect(e).toBeInstanceOf(ProvisionRetry);
+    expect(e.code).toBe("token_invalid");
     expect(s.row(inst.id)).toMatchObject({ version: "0.24.0" });
   });
 });
@@ -2787,7 +2792,10 @@ describe("P1 Task 8 follow-ups", () => {
     await q.verifyToken("warn");
     expect(q.notes.join("\n")).toMatch(/WARNING/);
     s.fake.tokenInfo.status = "disabled";
-    await expect(s.mk().verifyToken("warn")).rejects.toThrow(/not active/);
+    const inactive = await fails(s.mk().verifyToken("warn"));
+    expect(inactive.message).toMatch(/not active/);
+    expect(inactive).toBeInstanceOf(ProvisionRetry);
+    expect(inactive.code).toBe("token_invalid");
   });
 
   it("an actor audit row lands in hosted_audit.actor, and the table refuses UPDATE and DELETE", async () => {
@@ -3451,6 +3459,8 @@ describe("H-DV: delete revokes the directory grant first", () => {
     expect(e.message).toMatch(
       /still pending after 10 minutes; rerun delete to resume/,
     );
+    expect(e).toBeInstanceOf(ProvisionRetry);
+    expect(e.code).toBe("revoke_pending");
     expect(s.clock.now() - t0).toBeGreaterThanOrEqual(10 * 60_000);
     expect(polls).toBe(41);
     expect(revokeRow(s, inst.id)).toMatchObject({
@@ -4500,17 +4510,19 @@ describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
     expect(s.fake.log.length).toBe(n);
   });
 
-  it("redline variant without patDir is refused", async () => {
+  it("a ciOwnerToken redline create with no patDir succeeds and writes no file", async () => {
     const s = setup();
-    const n = s.fake.log.length;
-    const e = await fails(
-      noPatDir(s, { ciOwnerToken: { label: SS_A } }).create(
+    const before = readdirSync(s.patDir);
+    FSW.WRITES.length = 0;
+    const inst = keep(
+      await noPatDir(s, { ciOwnerToken: { label: SS_A } }).create(
         input("redqa", { testHooks: true, bundle: "redline", vars: HOOK_VARS }),
       ),
     );
-    expect(e).toBeInstanceOf(ProvisionRefused);
-    expect(e.message).toMatch(/patDir is required/);
-    expect(s.fake.log.length).toBe(n);
+    expect(inst.patFile).toBeUndefined();
+    expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+    expect(FSW.WRITES).toEqual([]);
+    expect(readdirSync(s.patDir)).toEqual(before);
   });
 
   it("ss-<ULID> labels mint and sweep; other labels are refused", async () => {
@@ -4583,9 +4595,15 @@ describe("OPS-B: the CI owner token (ciOwnerToken)", () => {
 describe("pause, unpause and the W2 options (5.4, 5.5)", () => {
   const ID = "iabcdefghjkm";
   it.each([
-    ["pause", (p: WfpProvisioner) => p.pause(ID, "paused")],
-    ["pause closed", (p: WfpProvisioner) => p.pause(ID, "closed")],
-    ["unpause", (p: WfpProvisioner) => p.unpause(ID)],
+    [
+      "pause",
+      (p: WfpProvisioner) => p.pause(ID, "paused", { kind: "suspend" }),
+    ],
+    [
+      "pause closed",
+      (p: WfpProvisioner) => p.pause(ID, "closed", { kind: "delete" }),
+    ],
+    ["unpause", (p: WfpProvisioner) => p.unpause(ID, { kind: "resume" })],
   ])(
     "%s is declared and refuses before any call until W2 builds it",
     async (_n, call) => {
@@ -4600,16 +4618,25 @@ describe("pause, unpause and the W2 options (5.4, 5.5)", () => {
   it("pause refuses a bad id or a mode other than paused or closed", async () => {
     const s = setup();
     const n = s.fake.log.length;
-    expect((await fails(s.p.pause("nope", "paused"))).message).toMatch(
+    const kind = { kind: "suspend" } as const;
+    expect((await fails(s.p.pause("nope", "paused", kind))).message).toMatch(
       /not an install id/,
     );
     for (const mode of ["serving", "unmapped", ""])
-      expect((await fails(s.p.pause(ID, mode as "paused"))).message).toMatch(
-        /mode must be paused or closed/,
+      expect(
+        (await fails(s.p.pause(ID, mode as "paused", kind))).message,
+      ).toMatch(/mode must be paused or closed/);
+    expect(
+      (await fails(s.p.unpause("nope", { kind: "resume" }))).message,
+    ).toMatch(/not an install id/);
+    for (const bad of [undefined, {}, { kind: "nope" }]) {
+      expect(
+        (await fails(s.p.pause(ID, "paused", bad as never))).message,
+      ).toMatch(/unknown job kind/);
+      expect((await fails(s.p.unpause(ID, bad as never))).message).toMatch(
+        /unknown job kind/,
       );
-    expect((await fails(s.p.unpause("nope"))).message).toMatch(
-      /not an install id/,
-    );
+    }
     expect(s.fake.log.length).toBe(n);
   });
 
@@ -4630,13 +4657,24 @@ describe("pause, unpause and the W2 options (5.4, 5.5)", () => {
     expect(s.fake.log.length).toBe(n);
   });
 
-  it("a create with onStep and registryDisabled: false still succeeds", async () => {
+  it("onStep and registryDisabled: true are refused before any call until W2 wires them", async () => {
     const s = setup();
-    const steps: string[] = [];
-    keep(
-      await s
-        .mk({ onStep: (st) => void steps.push(st), registryDisabled: false })
-        .create(input()),
-    );
+    const n = s.fake.log.length;
+    for (const over of [
+      { onStep: () => {} },
+      { registryDisabled: true },
+    ] as Partial<WfpOptions>[]) {
+      const e = await fails(s.mk(over).create(input()));
+      expect(e).toBeInstanceOf(ProvisionRefused);
+      expect(e.message).toMatch(/not built yet \(W2\)/);
+    }
+    expect(s.fake.log.length).toBe(n);
+  });
+
+  it("a create with registryDisabled: false still succeeds", async () => {
+    const s = setup();
+    expect(
+      keep(await s.mk({ registryDisabled: false }).create(input())),
+    ).toMatchObject({ slug: "finqore" });
   });
 });

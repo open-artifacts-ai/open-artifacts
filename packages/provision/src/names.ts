@@ -63,14 +63,16 @@ export type HostsMode = "serving" | "paused" | "closed";
 
 /**
  * The one HOSTS value parser: `<id>` serves, `paused:<id>` and `closed:<id>`
- * answer the 503 page. Anything else is null (dispatch's single 404).
+ * answer the 503 page. Anything else, a platform principal id included, is
+ * null (dispatch's single 404).
  */
 export function parseHostsValue(
   v: unknown,
 ): { installId: InstallId; mode: HostsMode } | null {
   if (typeof v !== "string") return null;
   const m = HOSTS_VALUE_RE.exec(v);
-  if (!m) return null;
+  // A platform principal is never an install (4.1), so never a serving host.
+  if (!m || isPlatformPrincipalId(m[2])) return null;
   return {
     installId: m[2] as InstallId,
     mode: (m[1] as "paused" | "closed" | undefined) ?? "serving",
@@ -80,6 +82,8 @@ export function parseHostsValue(
 /** The HOSTS value for `id` in `mode`; parseHostsValue reads it back. */
 export function hostsValue(id: InstallId, mode: HostsMode): string {
   if (!isInstallId(id)) throw new Error("hostsValue needs an install id");
+  if (isPlatformPrincipalId(id))
+    throw new Error("hostsValue: a platform principal is never an install");
   if (mode === "serving") return id;
   if (mode === "paused" || mode === "closed") return `${mode}:${id}`;
   throw new Error(`unknown HOSTS mode ${String(mode)}`);
