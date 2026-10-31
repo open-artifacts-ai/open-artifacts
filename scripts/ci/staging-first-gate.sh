@@ -7,7 +7,8 @@
 #
 # The contract (W12's redline-staging.yml builds to it):
 #   1. A run of .github/workflows/redline-staging.yml, event workflow_dispatch,
-#      on main, of this repository, completed with conclusion success, created
+#      on main (head_branch main and head_sha on main: compare/main...<sha> is
+#      "behind" or "identical"), of this repository, completed with conclusion success, created
 #      within the last 7 days.
 #   2. Its `tag` input is this tag. The REST API does not return a run's
 #      inputs, so the workflow sets `run-name: redline-staging ${{ inputs.tag }}`
@@ -42,10 +43,22 @@ run="$(jq -r --arg title "redline-staging $tag" --arg since "$since" --arg repo 
     | select(.event == "workflow_dispatch" and (.head_repository.full_name // "") == $repo)
     | select((.created_at // "") >= $since)
     | select((.display_title // "") == $title)]
-  | sort_by(.created_at) | last | if . == null then "" else "\(.id)" end' <<< "$body")" ||
+  | sort_by(.created_at) | last | if . == null then "" else "\(.id) \(.head_sha // "")" end' <<< "$body")" ||
   fail "unparsable redline-staging.yml runs"
 [ -n "$run" ] || fail "no successful redline-staging.yml run for $tag on main since $since"
+sha="${run#* }"
+run="${run%% *}"
 [[ "$run" =~ ^[1-9][0-9]{0,19}$ ]] || fail "unparsable redline-staging.yml runs"
+# head_branch is only a name (a tag called main matches it): the run's commit
+# must be on main, so it ran main's redline-staging.yml.
+# compare/main...<sha> is "behind" or "identical" exactly when it is.
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "run $run has no head_sha"
+st="$(gh api -X GET "$R/compare/main...$sha" 2> /dev/null | jq -r '.status // ""' 2> /dev/null)" ||
+  fail "GitHub API error comparing run $run's head_sha with main"
+case "$st" in
+  behind | identical) ;;
+  *) fail "run $run's head_sha $sha is not on main (${st:-no status})" ;;
+esac
 
 # The run's own record of what staging runs: redline-staged-version/version.txt.
 arts="$(gh api -X GET "$R/actions/runs/$run/artifacts?name=redline-staged-version&per_page=100" 2> /dev/null)" ||

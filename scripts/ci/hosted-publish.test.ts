@@ -18,6 +18,7 @@ p="\${@: -1}"; p="\${p#repos/$GITHUB_REPOSITORY/}"
 case "$p" in
   releases\\?*) cat "$STATE/releases.json" ;;
   actions/workflows/hosted-publish.yml/runs\\?*) cat "$STATE/runs.json" 2> /dev/null || echo '{"workflow_runs":[]}' ;;
+  compare/main...*) [ -f "$STATE/fail-compare" ] && exit 1; echo "{\\"status\\":\\"$(cat "$STATE/compare" 2> /dev/null || echo behind)\\"}" ;;
   actions/runs/*/jobs\\?*) id="\${p#actions/runs/}"; id="\${id%%/*}"; cat "$STATE/jobs-$id.json" ;;
   commits/*) t="\${p#commits/}"; [ -f "$STATE/commit-$t" ] || exit 1; echo "{\\"sha\\":\\"$(cat "$STATE/commit-$t")\\"}" ;;
   *) exit 1 ;;
@@ -37,6 +38,8 @@ esac`;
       /** hosted-publish.yml runs: id -> its jobs (name, conclusion). */
       runs?: Record<string, { name: string; conclusion: string }[]>;
       runsRaw?: string;
+      /** compare/main...<head_sha>'s status (default behind); null: the API fails. */
+      compare?: string | null;
     } = {},
   ) => {
     const sb = sandbox({ gh });
@@ -50,9 +53,13 @@ esac`;
               head_branch: "main",
               status: "completed",
               head_repository: { full_name: REPO },
+              head_sha: "d".repeat(40),
             })),
           }),
       );
+    if (state.compare === null) writeFileSync(join(sb.dir, "fail-compare"), "");
+    else if (state.compare !== undefined)
+      writeFileSync(join(sb.dir, "compare"), state.compare);
     for (const [id, jobs] of Object.entries(state.runs ?? {}))
       writeFileSync(join(sb.dir, `jobs-${id}.json`), JSON.stringify({ jobs }));
     writeFileSync(
@@ -163,6 +170,49 @@ esac`;
     expect(r.code, r.err).toBe(0);
     expect(r.o).toMatchObject({ staging: "false", prod: "true" });
     expect(r.out).toContain("v0.80.0 was published to staging (run 41)");
+  });
+  it("dispatch to prod alone: the staging record's run must be on main (identical or behind pass; ahead, diverged, an API error or no head_sha refuse)", () => {
+    const d = {
+      EVENT: "workflow_dispatch",
+      TAG: "v0.80.0",
+      DEPLOY_ENV: "prod",
+    };
+    const runs = {
+      "41": [
+        { name: "publish-staging release v0.80.0", conclusion: "success" },
+      ],
+    };
+    for (const compare of ["identical", "behind"]) {
+      const r = resolve(d, { runs, compare });
+      expect(r.code, compare).toBe(0);
+      expect(r.log).toContain(
+        `gh api -X GET repos/${REPO}/compare/main...${"d".repeat(40)}`,
+      );
+    }
+    for (const compare of ["ahead", "diverged", null]) {
+      const r = resolve(d, { runs, compare });
+      expect(r.code, String(compare)).toBe(1);
+      expect(r.o).toEqual({});
+      expect(r.err).toContain(
+        compare === null ? "comparing" : "is not on main",
+      );
+    }
+    const noSha = resolve(d, {
+      runs,
+      runsRaw: JSON.stringify({
+        workflow_runs: [
+          {
+            id: 41,
+            head_branch: "main",
+            status: "completed",
+            head_repository: { full_name: REPO },
+          },
+        ],
+      }),
+    });
+    expect(noSha.code).toBe(1);
+    expect(noSha.err).toContain("hosted-publish.yml run 41 has no head_sha");
+    expect(noSha.log.some((l) => l.includes("/compare/"))).toBe(false);
   });
   it("dispatch to prod alone refuses a tag with no successful staging publish, writing no output", () => {
     const d = {
