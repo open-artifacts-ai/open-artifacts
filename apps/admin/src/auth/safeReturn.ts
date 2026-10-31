@@ -1,17 +1,16 @@
-/** Control characters, DEL or any whitespace (browsers strip tabs and newlines from URLs). */
-const unsafeChar = (c: string) => {
-  const n = c.charCodeAt(0);
-  return n <= 0x1f || n === 0x7f || /\s/.test(c);
-};
+/** Where sign-in lands when the return path is missing or unsafe. */
+export const DEFAULT_RETURN = "/installs";
+
+// Mirrors the server's rule: one leading "/", then printable ASCII, no "//" or "/\".
+const SAFE = /^\/(?![/\\])[\x21-\x7e]*$/;
 
 /**
- * A same-origin path to send someone to after sign-in, or "/". Only a string
- * with exactly one leading "/" passes: no "//" or "/\" (protocol-relative to
- * another host), no scheme, and no control or whitespace characters.
+ * A same-origin path to send someone to after sign-in, or "/installs". Same
+ * rule as the server: printable ASCII only, not protocol-relative, and never
+ * under /auth/.
  */
 export const safeReturn = (raw: unknown): string => {
-  if (typeof raw !== "string" || raw[0] !== "/") return "/";
-  if (raw[1] === "/" || raw[1] === "\\") return "/";
-  if ([...raw].some(unsafeChar)) return "/";
+  if (typeof raw !== "string" || !SAFE.test(raw)) return DEFAULT_RETURN;
+  if (raw.startsWith("/auth/")) return DEFAULT_RETURN;
   return raw;
 };
