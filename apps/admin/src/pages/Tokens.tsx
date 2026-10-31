@@ -1,3 +1,4 @@
+import { agentClients } from "@oa/shared";
 import { type Token, TokenScopeSchema } from "@oa/shared/provisioning";
 import { Button, Input, Label } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
@@ -47,25 +48,74 @@ function CopyButton({ text, label }: { text: string; label: string }) {
   );
 }
 
+/** https://api.<app>/mcp: the admin host's sibling, else the per-environment default. */
+export function mcpUrlFor(env: "prod" | "staging", host: string): string {
+  if (host.startsWith("admin.") && host.includes(".", 6))
+    return `https://api.${host.slice("admin.".length)}/mcp`;
+  return MCP_URL[env];
+}
+
 function ConnectCard({ env }: { env: "prod" | "staging" }) {
-  const url = MCP_URL[env];
-  const cmd = `claude mcp add --transport http open-artifacts ${url}`;
+  const url = mcpUrlFor(env, globalThis.location?.hostname ?? "");
+  const snippets = agentClients(url, {
+    name: "oa-admin",
+    verifyTool: "get_world",
+  });
+  const agents = [...new Set(snippets.map((s) => s.agent))];
+  const [agent, setAgent] = useState(agents[0]);
+  const [variant, setVariant] = useState<"oauth" | "token">("oauth");
+  const snip =
+    snippets.find((s) => s.agent === agent && s.variant === variant) ??
+    snippets.find((s) => s.agent === agent);
   return (
     <section className="oa-card" aria-label="Connect any AI agent">
       <h2>Connect any AI agent</h2>
       <p>
         Any AI agent that speaks MCP can sign in with your admin account and
-        manage installs. Claude Code, Claude.ai, Codex, Cursor and OpenCode all
-        work.
+        manage installs.
       </p>
       <p>
         Server address: <code>{url}</code>{" "}
         <CopyButton text={url} label="Copy address" />
       </p>
-      <p>
-        Claude Code: <code>{cmd}</code>{" "}
-        <CopyButton text={cmd} label="Copy command" />
-      </p>
+      <div className="oa-filter">
+        <label>
+          Agent{" "}
+          <select value={agent} onChange={(e) => setAgent(e.target.value)}>
+            {agents.map((a) => (
+              <option key={a}>{a}</option>
+            ))}
+          </select>
+        </label>{" "}
+        <label>
+          Sign in with{" "}
+          <select
+            value={variant}
+            onChange={(e) => setVariant(e.target.value as "oauth" | "token")}
+          >
+            <option value="oauth">Browser (OAuth)</option>
+            <option value="token">Token</option>
+          </select>
+        </label>
+      </div>
+      {snip && (
+        <div data-testid="snippet">
+          {snip.file && (
+            <p>
+              Put this in <code>{snip.file}</code>
+            </p>
+          )}
+          <pre>
+            <code>{snip.code}</code>
+          </pre>
+          {snip.language !== "text" && (
+            <CopyButton text={snip.code} label="Copy snippet" />
+          )}
+          {snip.hint && <p>{snip.hint}</p>}
+          {snip.verify && <p>Check: {snip.verify}</p>}
+          {snip.reload && <p>{snip.reload}</p>}
+        </div>
+      )}
     </section>
   );
 }
