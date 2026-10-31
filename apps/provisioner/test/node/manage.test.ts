@@ -156,10 +156,8 @@ describe("upgrade and rollback (5.4)", () => {
       "upload",
       "done",
     ]);
-    // The lease the upgrade claimed, recorded for the fail step (5.4).
-    expect(JSON.parse(r.job?.args as string).claimedLease).toMatch(
-      /^[0-9a-f]{32}$/,
-    );
+    // jobs.args stays the request (8.3): no run state is written into it.
+    expect(JSON.parse(r.job?.args as string)).toEqual({ from: V1, to: V2 });
     expect(w.install(s.installId)).toMatchObject({
       version: V2,
       previous_version: V1,
@@ -266,39 +264,47 @@ describe("upgrade and rollback (5.4)", () => {
     expect(r.log.map((l) => l.name)).not.toContain("fail_release");
   });
 
-  it("an upgrade that died under its own lease: fail sleeps to lease_until, then releases without force", async () => {
-    const s = await active({ slug: "crashco", version: V1 });
-    const until = w.clock.t + 20 * 60_000;
+  it("an upgrade whose lease was taken mid-run: fail goes by the lease this run claimed, never the newer one", async () => {
+    const s = await active({ slug: "stolenco", version: V1 });
     const id = seedJob(w, {
       kind: "upgrade",
       installId: s.installId,
       args: { from: V1, to: V2 },
     });
-    // Each upload attempt claims, records its lease, then the isolate dies.
-    const r = stepRunner(w.clock, {
-      onStep: (n) => {
-        if (n !== "upload") return;
-        w.db
-          .prepare(
-            "UPDATE installs SET state = 'upgrading', lease = 'mine', lease_until = ? WHERE id = ?",
-          )
-          .run(until, s.installId);
-        w.db
-          .prepare(
-            "UPDATE jobs SET args = json_set(args, '$.claimedLease', 'mine') WHERE id = ?",
-          )
-          .run(id);
-        throw new Error("isolate evicted");
-      },
-    });
+    // jobs.step = upload is written twice per attempt: by the step wrapper
+    // before the body, then by the provisioner's report after its claim.
+    // At that second write another holder takes the row (a lost lease).
+    const db = w.env.PLATFORM_DB;
+    const prepare = db.prepare.bind(db);
+    let marks = 0;
+    let mine: string | null = null;
+    db.prepare = (sql: string) => {
+      const st = prepare(sql);
+      if (!sql.startsWith("UPDATE jobs SET step = ?2")) return st;
+      const bind = st.bind.bind(st);
+      st.bind = (...a: unknown[]) => {
+        if (a[0] === id && a[1] === "upload" && ++marks === 2) {
+          mine = w.install(s.installId)?.lease as string | null;
+          w.db
+            .prepare(
+              "UPDATE installs SET lease = 'stolen', lease_until = ? WHERE id = ?",
+            )
+            .run(w.clock.t + 30 * 60_000, s.installId);
+        }
+        return bind(...a);
+      };
+      return st;
+    };
+    const r = stepRunner(w.clock);
     await runManage(w.ctx, event(id), r.step).catch(() => {});
-    expect(r.log.map((l) => l.name)).toContain("fail_release");
-    expect(w.clock.t).toBeGreaterThan(until);
-    expect(w.install(s.installId)).toMatchObject({
-      state: "active",
-      lease: null,
-    });
+    db.prepare = prepare;
+    expect(mine).toMatch(/^[0-9a-f]{32}$/);
     expect(w.job(id)?.status).toBe("failed");
+    // The stolen lease was claimed after the job started, so the started_at
+    // rule alone would release it; the run's own claim says it is not ours.
+    expect(r.log.map((l) => l.name)).not.toContain("fail_release");
+    expect(w.install(s.installId)).toMatchObject({ lease: "stolen" });
+    expect(JSON.parse(w.job(id)?.args as string)).toEqual({ from: V1, to: V2 });
   });
 
   it("an upgrade refused while another job's lease holds the row upgrading leaves that lease alone", async () => {
@@ -310,7 +316,8 @@ describe("upgrade and rollback (5.4)", () => {
       )
       .run(until, s.installId);
     const r = await manage("upgrade", s.installId, {
-      args: { from: V1, to: V2, claimedLease: "forged" },
+      // A claimedLease in args is never read: args is the request (8.3).
+      args: { from: V1, to: V2, claimedLease: "theirs" },
     });
     expect(r.job?.status).toBe("failed");
     expect(r.log.map((l) => l.name)).not.toContain("fail_release");
@@ -795,16 +802,24 @@ describe("redline_creds (10.1, R26)", () => {
     expect(seen).toContain("POST /__test/session");
   });
 
-  it("revoke: the run's redline- PATs are revoked; nothing is minted or sealed", async () => {
+  it("C1: recipientKey is required; a job without one (a revoke) is refused before any write", async () => {
+    // TODO(contract): design v7 10.1's `revoke: true` call is contract
+    // follow-up C6; until then R26 always mints and seals.
     const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
     const { deleted, seen } = stubInstall(s.installId);
+    const script = w.fake.script(NAMESPACES[ENV], `oa-s-${s.installId}`);
+    const oldKey = script?.secrets.get("TEST_HOOK_KEY");
     const r = await manage("redline_creds", s.installId, {
       actor: "oidc",
       args: { revoke: true },
     });
-    expect(r.error).toBeNull();
-    expect(deleted).toEqual(["t1"]);
-    expect(seen).not.toContain("POST /api/v1/tokens");
+    expect(r.job).toMatchObject({
+      status: "failed",
+      error_code: "invalid_state",
+    });
+    expect(deleted).toEqual([]);
+    expect(seen).toEqual([]);
+    expect(script?.secrets.get("TEST_HOOK_KEY")).toBe(oldKey);
     expect(r.job?.sealed).toBeNull();
   });
 
@@ -830,8 +845,15 @@ describe("near-expiry token mode per kind (5.7)", () => {
       expires_on: new Date(w.clock.t + 2 * 86_400_000).toISOString(),
     };
   };
+  // Past its end date: token_invalid, retried (3.5).
+  const expiredToken = () => {
+    w.fake.tokenInfo = {
+      ...w.fake.tokenInfo,
+      expires_on: new Date(w.clock.t - 86_400_000).toISOString(),
+    };
+  };
 
-  it("warn: suspend goes on; refuse: upgrade fails token_invalid, unchanged", async () => {
+  it("warn: suspend goes on; refuse: upgrade fails invalid_state (terminal, #882), unchanged", async () => {
     const s = await active({ slug: "nearco", version: V1 });
     nearExpiry();
     expect(
@@ -843,7 +865,7 @@ describe("near-expiry token mode per kind (5.7)", () => {
     });
     expect(up.job).toMatchObject({
       status: "failed",
-      error_code: "token_invalid",
+      error_code: "invalid_state",
     });
     expect(w.install(s.installId)?.version).toBe(V1);
   });
@@ -865,13 +887,13 @@ describe("near-expiry token mode per kind (5.7)", () => {
       const r = await manage(kind, installId, o);
       return r.job?.status === "done" ? "done" : r.job?.error_code;
     };
-    expect(await outcome("resume", sus.installId)).toBe("token_invalid");
+    expect(await outcome("resume", sus.installId)).toBe("invalid_state");
     // D1 went up first (5.5); HOSTS still pauses it, and the fail step's
     // reconcile says so.
     expect(w.hosts("nx-sus")[0]).toBe(`paused:${sus.installId}`);
     expect(w.lifecycle(sus.installId)?.serving_mode).toBe("paused");
     expect(await outcome("delete", del.installId)).toBe("done");
-    expect(await outcome("restore", del.installId)).toBe("token_invalid");
+    expect(await outcome("restore", del.installId)).toBe("invalid_state");
     // A refused restore still cleared purge_at first (5.6); purge another.
     expect(await outcome("delete", gone.installId)).toBe("done");
     expect(await outcome("purge", gone.installId)).toBe("done");
@@ -900,7 +922,7 @@ describe("near-expiry token mode per kind (5.7)", () => {
 
   it("token_invalid retries every 15 minutes for 2 hours, then fails", async () => {
     const s = await active({ slug: "nxwait", version: V1 });
-    nearExpiry();
+    expiredToken();
     const t0 = w.clock.t;
     const up = await manage("upgrade", s.installId, {
       args: { from: V1, to: V2 },
@@ -920,7 +942,7 @@ describe("near-expiry token mode per kind (5.7)", () => {
   it("token_invalid: a token rolled during a wait lets the job finish", async () => {
     const s = await active({ slug: "nxroll", version: V1 });
     const good = w.fake.tokenInfo;
-    nearExpiry();
+    expiredToken();
     const id = seedJob(w, {
       kind: "upgrade",
       installId: s.installId,
@@ -939,7 +961,7 @@ describe("near-expiry token mode per kind (5.7)", () => {
     expect(w.install(s.installId)?.version).toBe(V2);
   });
 
-  it("refuse: redline_creds fails token_invalid before the hook key is rotated", async () => {
+  it("refuse: redline_creds fails invalid_state before the hook key is rotated", async () => {
     const s = await active({ slug: "rl-n", actor: "oidc", testHooks: true });
     const { script } = stubInstall(s.installId);
     const key = script?.secrets.get("TEST_HOOK_KEY");
@@ -950,7 +972,7 @@ describe("near-expiry token mode per kind (5.7)", () => {
     });
     expect(r.job).toMatchObject({
       status: "failed",
-      error_code: "token_invalid",
+      error_code: "invalid_state",
     });
     expect(script?.secrets.get("TEST_HOOK_KEY")).toBe(key);
   });
@@ -970,6 +992,27 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
       action,
       kind,
     );
+
+  it("4.9: WfpProvisioner's own rows go to hosted_audit through auditAs, as job:<jobId>, never actorless", async () => {
+    const s = await active({ slug: "actorco", version: V1 });
+    const up = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2 },
+    });
+    expect(up.job?.status).toBe("done");
+    const rows = w.all(
+      "SELECT actor, action FROM hosted_audit WHERE install_id = ? ORDER BY id",
+      s.installId,
+    ) as { actor: string | null; action: string }[];
+    const by = (a: string) => rows.filter((x) => x.action === a);
+    expect(by("create.start").map((x) => x.actor)).toEqual([`job:${s.jobId}`]);
+    expect(by("upgrade.start").map((x) => x.actor)).toEqual([`job:${up.id}`]);
+    expect(by("upgrade.done").map((x) => x.actor)).toEqual([`job:${up.id}`]);
+    expect(rows.filter((x) => x.actor === null)).toEqual([]);
+    // Nothing of provision's lands in admin_audit (4.9's table).
+    expect(
+      w.all("SELECT 1 FROM admin_audit WHERE detail LIKE ?", `%${up.id}%`),
+    ).toEqual([]);
+  });
 
   it("job.done is written once on a replay; job.failed once with its kind and code, as job:<id>", async () => {
     const s = await active({ slug: "auditco", version: V1 });
@@ -1027,58 +1070,94 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
     expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
   });
 
-  it("a dirty upgrade whose prodDirty write failed still pauses (pause_dirty writes it again)", async () => {
+  it("a dirty upgrade replayed after its upload result: pause_dirty from the step result, prod_dirty, args clean", async () => {
     const s = await active({ slug: "dirtylost", version: V1 });
     w.fake.settingsEdit = (_x, b) => [...b, { name: "EXTRA", type: "service" }];
-    const db = w.env.PLATFORM_DB;
-    const prepare = db.prepare.bind(db);
-    let failed = 0;
-    db.prepare = (sql: string) => {
-      if (sql.includes("'$.prodDirty'") && failed++ === 0)
-        throw new Error("D1 went away");
-      return prepare(sql);
-    };
-    const r = await manage("upgrade", s.installId, {
+    const id = seedJob(w, {
+      kind: "upgrade",
+      installId: s.installId,
       args: { from: V1, to: V2 },
     });
-    db.prepare = prepare;
+    const results = new Map<string, unknown>();
+    // The isolate dies after upload's result is stored, before the pause.
+    const first = stepRunner(w.clock, { results, evictBefore: "pause_dirty" });
+    void runManage(w.ctx, event(id), first.step);
+    await first.evicted;
     w.fake.settingsEdit = undefined;
-    expect(failed).toBeGreaterThan(1);
-    expect(r.job).toMatchObject({ status: "failed", error_code: "prod_dirty" });
-    expect(JSON.parse(r.job?.args as string).prodDirty).toBe(true);
+    const writes = w.fake.writes().length;
+    const again = stepRunner(w.clock, { results });
+    await runManage(w.ctx, event(id), again.step).catch(() => {});
+    const replayed = again.log.filter((l) => l.replayed).map((l) => l.name);
+    expect(replayed).toEqual(["load", "recheck", "release_gate", "upload"]);
+    expect(w.job(id)).toMatchObject({
+      status: "failed",
+      error_code: "prod_dirty",
+    });
+    // Never rendered again: no script upload or settings write after it.
     expect(audits(s.installId, "upgrade.start")).toHaveLength(1);
+    expect(
+      w.fake
+        .writes()
+        .slice(writes)
+        .filter((x) => x.includes("/scripts/")),
+    ).toEqual([]);
     expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
+    expect(JSON.parse(w.job(id)?.args as string)).toEqual({ from: V1, to: V2 });
   });
 
-  it("a job that rendered `to` and never saw it verified clean: the retry pauses it, never done", async () => {
+  it("a replay after the upload's result was lost: `to` serves, unverified in this run, so it is paused, never done", async () => {
     const s = await active({ slug: "dirtydied", version: V1 });
-    await manage("upgrade", s.installId, { args: { from: V1, to: V2 } });
+    const id = seedJob(w, {
+      kind: "upgrade",
+      installId: s.installId,
+      args: { from: V1, to: V2 },
+    });
+    const results = new Map<string, unknown>();
+    const first = stepRunner(w.clock, { results, evictAfter: "upload" });
+    void runManage(w.ctx, event(id), first.step);
+    await first.evicted;
     expect(w.install(s.installId)).toMatchObject({
       version: V2,
       state: "active",
     });
-    // The state a run leaves when it dies after the upload, before its
-    // result: rendered, no verifiedClean, `to` serving.
-    const r = await manage("upgrade", s.installId, {
-      args: { from: V1, to: V2, rendered: V2 },
+    const again = stepRunner(w.clock, { results });
+    await runManage(w.ctx, event(id), again.step).catch(() => {});
+    expect(again.log.filter((l) => l.replayed).map((l) => l.name)).toEqual([
+      "load",
+      "recheck",
+      "release_gate",
+    ]);
+    expect(w.job(id)).toMatchObject({
+      status: "failed",
+      error_code: "prod_dirty",
     });
-    expect(r.job).toMatchObject({ status: "failed", error_code: "prod_dirty" });
-    expect(r.log.map((l) => l.name)).toContain("pause_dirty");
+    expect(again.log.map((l) => l.name)).toContain("pause_dirty");
     expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
+    expect(JSON.parse(w.job(id)?.args as string)).toEqual({ from: V1, to: V2 });
   });
 
-  it("a clean upgrade is marked verifiedClean; its replay is done, never paused", async () => {
+  it("a clean upgrade: done, never paused, args clean; a replay of the whole run changes nothing", async () => {
     const s = await active({ slug: "cleanmark", version: V1 });
-    const r = await manage("upgrade", s.installId, {
+    const id = seedJob(w, {
+      kind: "upgrade",
+      installId: s.installId,
       args: { from: V1, to: V2 },
-      twice: true,
     });
-    expect(r.job?.status).toBe("done");
-    expect(JSON.parse(r.job?.args as string)).toMatchObject({
-      rendered: V2,
-      verifiedClean: V2,
-    });
+    const results = new Map<string, unknown>();
+    await runManage(
+      w.ctx,
+      event(id),
+      stepRunner(w.clock, { results, twice: true }).step,
+    );
+    expect(w.job(id)?.status).toBe("done");
+    expect(JSON.parse(w.job(id)?.args as string)).toEqual({ from: V1, to: V2 });
     expect(w.lifecycle(s.installId)?.serving_mode).not.toBe("paused");
+    const writes = w.fake.writes().length;
+    const again = stepRunner(w.clock, { results });
+    await runManage(w.ctx, event(id), again.step);
+    expect(again.log.every((l) => l.replayed)).toBe(true);
+    expect(w.fake.writes().length).toBe(writes);
+    expect(w.job(id)?.status).toBe("done");
   });
 
   it("the dirty pause warns near expiry (a suspend), whatever the parent kind", async () => {

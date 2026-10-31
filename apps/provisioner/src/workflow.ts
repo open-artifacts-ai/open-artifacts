@@ -394,7 +394,7 @@ async function create(
   const label = `ss-${job.signupId}`;
   // A crashed attempt's token goes first, even if this attempt then fails
   // for good.
-  await sweepTokens(ctx, label, installId);
+  await sweepTokens(ctx, label, installId, job.jobId);
   const appHost = appHostOf(ctx.env, job.slug);
   // A rerun after create finished: the install is already this job's.
   const have = await installRow(ctx, installId);
@@ -505,7 +505,7 @@ async function done(
   job: CreateJob,
   installId: string,
 ): Promise<{ ready: true }> {
-  await sweepTokens(ctx, `ss-${job.signupId}`, installId);
+  await sweepTokens(ctx, `ss-${job.signupId}`, installId, job.jobId);
   const db = ctx.env.PLATFORM_DB;
   const now = ctx.io.now();
   // The job first: the rest only follow a job this run finished.
@@ -568,7 +568,7 @@ async function fail(
       // Left queued: the scheduler's sweep starts it (5.8).
     });
   if (job.signup_id && row)
-    await sweepTokens(ctx, `ss-${job.signup_id}`, job.install_id).catch(
+    await sweepTokens(ctx, `ss-${job.signup_id}`, job.install_id, jobId).catch(
       () => {},
     );
   return { failed: true };

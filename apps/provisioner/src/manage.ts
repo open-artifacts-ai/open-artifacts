@@ -142,6 +142,21 @@ export class ManageInstall extends WorkflowEntrypoint<
   }
 }
 
+/**
+ * What one run of a job knows beyond its step results: the lease its
+ * upgrade or rollback claimed, the version that passed verify_clean, and
+ * whether what serves is dirty. Never in jobs.args, which stays the request
+ * {version, from, to, reason} (8.3). `dirty` comes back on a replay from
+ * upload's step result; the other two are lost with the isolate, and the
+ * fallbacks are safe: ownLease's started_at rule, and an unverified `to`
+ * paused as dirty.
+ */
+export type RunState = {
+  claimedLease?: string | null;
+  verified?: string;
+  dirty: boolean;
+};
+
 /** ManageInstall.run, on any CreateCtx. */
 export async function runManage(
   ctx: CreateCtx,
@@ -151,12 +166,13 @@ export async function runManage(
   const params = WorkflowParamsSchema.safeParse(event.payload);
   if (!params.success) throw new NonRetryableError("internal");
   const { jobId } = params.data;
+  const run: RunState = { dirty: false };
   try {
-    await operate(ctx, jobId, step);
+    await operate(ctx, jobId, step, run);
   } catch (e) {
     const f = await step.do("fail", async () => {
       try {
-        return await fail(ctx, jobId);
+        return await fail(ctx, jobId, run);
       } catch (x) {
         throw new Error(codeOf(x));
       }
@@ -168,7 +184,7 @@ export async function runManage(
         await step.sleepUntil("lease_expiry", new Date(f.leaseUntil + 1));
       await step.do("fail_release", async () => {
         try {
-          return await releaseExpired(ctx, jobId);
+          return await releaseExpired(ctx, jobId, run);
         } catch (x) {
           throw new Error(codeOf(x));
         }
@@ -186,6 +202,7 @@ async function operate(
   ctx: CreateCtx,
   jobId: string,
   step: WorkflowStep,
+  run: RunState,
 ): Promise<void> {
   const { kind } = await step.do("load", async () => {
     const job = await readJob(ctx, jobId);
@@ -201,7 +218,9 @@ async function operate(
   if (kind === "cleanup") return cleanup(ctx, jobId, step);
   const job = await s("recheck", undefined, () => recheck(ctx, jobId));
   const p = (j: ManageJob) =>
-    provisionerWith(ctx, labelOf(j), { registryDisabled: j.registryDisabled });
+    provisionerWith(ctx, labelOf(j), j.jobId, {
+      registryDisabled: j.registryDisabled,
+    });
   switch (job.kind) {
     case "upgrade": {
       if (!job.already) {
@@ -220,18 +239,18 @@ async function operate(
           }),
         );
         const u = await s("upload", MANAGE_UPLOAD_STEP, () =>
-          render(ctx, job, "upgrade", g.version),
+          render(ctx, job, "upgrade", g.version, run),
         );
-        if (u.dirty) await pauseDirty(ctx, step, job, "upgrade");
+        if (u.dirty) await pauseDirty(ctx, step, job, "upgrade", run);
       }
       break;
     }
     case "rollback":
       if (!job.already) {
         const u = await s("upload", MANAGE_UPLOAD_STEP, () =>
-          render(ctx, job, "rollback", job.args.to as string),
+          render(ctx, job, "rollback", job.args.to as string, run),
         );
-        if (u.dirty) await pauseDirty(ctx, step, job, "rollback");
+        if (u.dirty) await pauseDirty(ctx, step, job, "rollback", run);
       }
       break;
     case "suspend":
@@ -376,36 +395,29 @@ async function record(
 
 /**
  * upgrade or rollback with the CLI's derived options (5.4) and the outcome
- * mapping: ok is done; a dirty serving script is marked on the job
- * (args.prodDirty) and returned, for pause_dirty; a forward fix is
- * `upgrade_incomplete`; a rollback is `upgrade_rolled_back`. Check-first:
- * an install already on `to` and active is done, no call; a job already
- * marked dirty returns that, never renders again.
+ * mapping: ok is done; a dirty serving script is returned (the step result
+ * carries it to pause_dirty, and on a replay too); a forward fix is
+ * `upgrade_incomplete`; a rollback is `upgrade_rolled_back`. recheck found
+ * the install off `to` (else upload never runs), and jobs_one_active keeps
+ * other jobs off it, so `to` serving here is this job's render: an earlier
+ * attempt's. It is done only if this run saw it pass verify_clean; else
+ * (the isolate died after the render) it is paused as dirty.
  */
 async function render(
   ctx: CreateCtx,
   job: ManageJob,
   kind: "upgrade" | "rollback",
   to: string,
+  run: RunState,
 ): Promise<{ version: string; dirty?: true }> {
-  const j = await readJob(ctx, job.jobId);
-  if (j && argsOf(j).prodDirty === true) return { version: to, dirty: true };
+  // An earlier attempt in this run found it dirty: never render again.
+  if (run.dirty) return { version: to, dirty: true };
   const row = await installRow(ctx, job.installId);
   if (!row) throw refused("no installs row");
   if (row.version === to && row.state === "active")
-    return j && unverified(argsOf(j), to)
-      ? { version: to, dirty: true }
-      : { version: to };
+    return run.verified === to ? { version: to } : { version: to, dirty: true };
   if (row.version !== job.args.from) throw refused("the version moved");
-  // Marked before the call: a retry that finds `to` serving and no
-  // verifiedClean (the run died, or the prodDirty write failed) pauses it.
-  await transient(
-    ctx.env.PLATFORM_DB.prepare(
-      "UPDATE jobs SET args = json_set(args, '$.rendered', ?3), updated_at = ?2 WHERE id = ?1 AND status = 'running'",
-    )
-      .bind(job.jobId, ctx.io.now(), to)
-      .run(),
-  );
+  run.verified = undefined;
   const w = await renderOptions(ctx, {
     jobId: job.jobId,
     label: labelOf(job),
@@ -414,8 +426,12 @@ async function render(
     vars: storedVars(row.vars),
     testHooks: row.test_hooks === 1,
     registryDisabled: job.registryDisabled,
-    recordLease: true,
-    verifiedClean: to,
+    onClaim: (lease) => {
+      run.claimedLease = lease;
+    },
+    onVerified: () => {
+      run.verified = to;
+    },
   });
   const r: UpgradeResult =
     kind === "upgrade"
@@ -423,9 +439,7 @@ async function render(
       : await w.rollback(job.installId);
   if (r.ok) return { version: r.to };
   if (r.prodDirty) {
-    // The step's output carries it to pause_dirty, which writes the marker
-    // again: a failed write here never retries the render into a success.
-    await markDirty(ctx, job.jobId).catch(() => {});
+    run.dirty = true;
     return { version: to, dirty: true };
   }
   if (kind === "upgrade" && r.rolledBack && !r.forwardFix)
@@ -439,23 +453,6 @@ async function render(
   );
 }
 
-/** jobs.args.prodDirty: what serves failed verify_clean (fail keeps the code). */
-const markDirty = async (ctx: CreateCtx, jobId: string) =>
-  transient(
-    ctx.env.PLATFORM_DB.prepare(
-      "UPDATE jobs SET args = json_set(args, '$.prodDirty', json('true')), updated_at = ?2 WHERE id = ?1 AND status = 'running'",
-    )
-      .bind(jobId, ctx.io.now())
-      .run(),
-  );
-
-/**
- * This job rendered `to` and never saw it pass verify_clean (onStep's
- * health report, ops.ts verifiedClean): what serves may be dirty.
- */
-const unverified = (args: Record<string, unknown>, to: string): boolean =>
-  args.rendered === to && args.verifiedClean !== to;
-
 /**
  * A dirty serving script, paused (its own step, so a retry only pauses
  * again), then `prod_dirty`. jobs.step stays upload (JOB_STEPS).
@@ -465,7 +462,10 @@ async function pauseDirty(
   step: WorkflowStep,
   job: ManageJob,
   kind: "upgrade" | "rollback",
+  run: RunState,
 ): Promise<never> {
+  // Set before the pause: a pause that fails still fails prod_dirty.
+  run.dirty = true;
   await jobStep(
     ctx,
     step,
@@ -473,11 +473,10 @@ async function pauseDirty(
     "pause_dirty",
     LEASED_STEP,
     async () => {
-      await markDirty(ctx, job.jobId);
       // Lowering exposure only warns near expiry (5.5, 5.7): the pause runs
       // as a suspend whatever the parent kind, so an upgrade's "refuse"
       // never keeps the dirty script serving.
-      await (await provisionerWith(ctx, labelOf(job))).pause(
+      await (await provisionerWith(ctx, labelOf(job), job.jobId)).pause(
         job.installId,
         "paused",
         { kind: "suspend" },
@@ -555,10 +554,8 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
         row.version !== args.to
       )
         throw refused("to is not the previous version");
-      if (row.version === args.to && row.state === "active") {
-        // A `to` this job rendered and never verified clean: upload pauses it.
-        if (!unverified(args, args.to)) out.already = true;
-      } else if (row.version !== args.from) throw refused("the version moved");
+      if (row.version === args.to && row.state === "active") out.already = true;
+      else if (row.version !== args.from) throw refused("the version moved");
       break;
     }
     case "suspend":
@@ -760,7 +757,7 @@ async function cleanup(
     released = e;
   }
   await s("sweep_tokens", undefined, async () =>
-    label ? sweepTokens(ctx, label, job.installId) : { revoked: 0 },
+    label ? sweepTokens(ctx, label, job.installId, jobId) : { revoked: 0 },
   );
   await s("settle", undefined, async () => {
     const p = await readJob(ctx, parentId);
@@ -820,7 +817,7 @@ async function releaseWhenExpired(
             "lease_held",
           );
         }
-        const w = await provisionerWith(ctx, label);
+        const w = await provisionerWith(ctx, label, jobId);
         await w.releaseLease(installId, installId);
         return { released: true, until: null };
       },
@@ -841,11 +838,12 @@ async function releaseWhenExpired(
 async function fail(
   ctx: CreateCtx,
   jobId: string,
+  run: RunState,
 ): Promise<{ failed: boolean; leaseUntil: number | null }> {
   const job = await readJob(ctx, jobId);
   if (!job || job.status === "done") return { failed: false, leaseUntil: null };
   // A dirty script stays prod_dirty even when its pause failed.
-  const code = dirtyOf(job)
+  const code = run.dirty
     ? "prod_dirty"
     : jobCode(job.last_error_code ?? job.error_code ?? "internal");
   const db = ctx.env.PLATFORM_DB;
@@ -859,41 +857,30 @@ async function fail(
   let leaseUntil: number | null = null;
   if (job.kind === "upgrade" || job.kind === "rollback") {
     const row = await installRow(ctx, job.install_id);
-    if (row && ownLease(job, row)) leaseUntil = row.lease_until ?? 0;
+    if (row && ownLease(job, row, run.claimedLease))
+      leaseUntil = row.lease_until ?? 0;
   }
   return { failed: true, leaseUntil };
 }
-
-const dirtyOf = (job: JobRow): boolean => {
-  try {
-    return argsOf(job).prodDirty === true;
-  } catch {
-    return false;
-  }
-};
 
 /** WfpProvisioner's lease length (wfp.ts LEASE_MS; not exported). */
 export const CLAIM_LEASE_MS = 30 * 60_000;
 
 /**
  * The row is upgrading under the lease this job's operation claimed: the
- * one recorded (claimedLease), or, when the run died between its claim and
- * the first onStep report, a lease claimed (or renewed) after the job
- * started. recheck saw the row active then, and jobs_one_active keeps any
+ * one this run read at its first step report (RunState.claimedLease), or,
+ * when the run never read it (it died between its claim and the first
+ * report, or a replay lost the isolate), a lease claimed (or renewed) after
+ * the job started. recheck saw the row active then, and jobs_one_active keeps any
  * other job off the install, so that claim is this job's.
  */
 function ownLease(
   job: JobRow,
   row: { state: string; lease: string | null; lease_until: number | null },
+  claimed: string | null | undefined,
 ): boolean {
   if (row.state !== "upgrading" || row.lease === null) return false;
-  let claimed: unknown;
-  try {
-    claimed = argsOf(job).claimedLease;
-  } catch {
-    return false;
-  }
-  if (claimed !== undefined) return claimed === row.lease;
+  if (claimed !== undefined && claimed !== null) return claimed === row.lease;
   return (
     job.started_at !== null &&
     row.lease_until !== null &&
@@ -905,12 +892,13 @@ function ownLease(
 async function releaseExpired(
   ctx: CreateCtx,
   jobId: string,
+  run: RunState,
 ): Promise<{ released: boolean }> {
   const job = await readJob(ctx, jobId);
   if (!job) return { released: false };
   const row = await installRow(ctx, job.install_id);
-  if (!row || !ownLease(job, row)) return { released: false };
-  const w = await provisionerWith(ctx, `ss-${job.signup_id ?? jobId}`);
+  if (!row || !ownLease(job, row, run.claimedLease)) return { released: false };
+  const w = await provisionerWith(ctx, `ss-${job.signup_id ?? jobId}`, jobId);
   await w.releaseLease(job.install_id, job.install_id);
   return { released: true };
 }

@@ -73,9 +73,10 @@ export const appHostOf = (env: OpsEnv, slug: string): string =>
 export async function provisionerWith(
   ctx: OpsCtx,
   label: string,
+  jobId: string,
   extra: Partial<WfpOptions> = {},
 ): Promise<WfpProvisioner> {
-  const o = await provisionerOptions(ctx.env, label, ctx.io);
+  const o = await provisionerOptions(ctx.env, label, ctx.io, jobId);
   return new WfpProvisioner({ ...o, ...extra });
 }
 
@@ -96,17 +97,20 @@ export async function renderOptions(
     vars: Record<string, string>;
     testHooks: boolean;
     registryDisabled?: boolean;
-    /** upgrade, rollback: record the lease the operation claimed (5.4 fail). */
-    recordLease?: boolean;
     /**
-     * upgrade, rollback: the version rendered; its health report (sent
-     * only once verify_clean passed) sets jobs.args.verifiedClean to it.
+     * upgrade, rollback: the lease the operation claimed, read at the first
+     * step report (5.4 fail). Run-local: jobs.args stays the request (8.3).
      */
-    verifiedClean?: string;
+    onClaim?: (lease: string | null) => void;
+    /**
+     * upgrade, rollback: the health report, sent only once verify_clean
+     * passed on what serves. Run-local, like onClaim.
+     */
+    onVerified?: () => void;
   },
 ): Promise<WfpProvisioner> {
   const e = deployEnv(ctx.env.OA_ENV);
-  const base = await provisionerOptions(ctx.env, o.label, ctx.io);
+  const base = await provisionerOptions(ctx.env, o.label, ctx.io, o.jobId);
   const turnstile =
     codesOn(o.vars) && !o.testHooks
       ? await turnstilePair(base.cf, e)
@@ -120,39 +124,17 @@ export async function renderOptions(
     }),
     onStep: async (s: WfpStep) => {
       // The first report comes right after the claim: the lease is ours.
-      if (o.recordLease && !claimed) {
+      if (o.onClaim && !claimed) {
         claimed = true;
-        await recordLease(ctx, o.jobId, o.installId);
+        o.onClaim((await installRow(ctx, o.installId))?.lease ?? null);
       }
       await markStep(ctx, o.jobId, s);
-      if (o.verifiedClean !== undefined && s === "health")
-        await transient(
-          ctx.env.PLATFORM_DB.prepare(
-            "UPDATE jobs SET args = json_set(args, '$.verifiedClean', ?3), updated_at = ?2 WHERE id = ?1 AND status = 'running'",
-          )
-            .bind(o.jobId, ctx.io.now(), o.verifiedClean)
-            .run(),
-        );
+      if (s === "health") o.onVerified?.();
     },
     brokerEnabled: googleNewlyEnabled({}, o.vars),
     ...(turnstile ? { turnstile } : {}),
     ...(o.registryDisabled ? { registryDisabled: true } : {}),
   });
-}
-
-/** jobs.args.claimedLease: the lease this job's operation holds now. */
-async function recordLease(
-  ctx: OpsCtx,
-  jobId: string,
-  installId: string,
-): Promise<void> {
-  await transient(
-    ctx.env.PLATFORM_DB.prepare(
-      "UPDATE jobs SET args = json_set(args, '$.claimedLease', (SELECT lease FROM installs WHERE id = ?2)), updated_at = ?3 WHERE id = ?1 AND status = 'running'",
-    )
-      .bind(jobId, installId, ctx.io.now())
-      .run(),
-  );
 }
 
 /** The stored vars of an install (installs.vars), as strings. */
@@ -171,9 +153,10 @@ export async function sweepTokens(
   ctx: OpsCtx,
   label: string,
   installId: string,
+  jobId: string,
 ): Promise<{ revoked: number }> {
   if (!(await installRow(ctx, installId))) return { revoked: 0 };
-  const p = await provisionerWith(ctx, label);
+  const p = await provisionerWith(ctx, label, jobId);
   const { revoked } = await p.ciTokenSweep(installId, label);
   return { revoked };
 }

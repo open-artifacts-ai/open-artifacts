@@ -255,6 +255,12 @@ export interface WfpOptions {
    * copy is never disabled. Set from install_lifecycle.
    */
   registryDisabled?: boolean;
+  /**
+   * The actor of every hosted_audit row the operation writes (design v7 4.9:
+   * the provisioner's `job:<jobId>`, through PlatformDb.auditAs). Unset (the
+   * CLI): the rows carry no actor, the CLI's own auditAs rows frame them.
+   */
+  auditActor?: string;
 }
 
 /**
@@ -1875,6 +1881,7 @@ export class WfpProvisioner {
       { id: dbId, name: dbName },
       env,
       this.now,
+      this.o.auditActor ?? null,
     );
     const hostsTitle = hostsKvTitle(env);
     const hostsId = await this.cf.kvFind(hostsTitle);
@@ -3061,6 +3068,7 @@ export class WfpProvisioner {
         { id: dbId, name: dbName },
         this.env,
         this.now,
+        this.o.auditActor ?? null,
       );
       const row = await platform.byId(id);
       if (!row)

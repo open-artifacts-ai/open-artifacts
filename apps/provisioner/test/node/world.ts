@@ -73,6 +73,8 @@ export type StepLog = {
   name: string;
   output?: unknown;
   error?: { name: string; message: string };
+  /** Returned from `results`, the body not run (an engine replay). */
+  replayed?: true;
 };
 
 /**
@@ -80,14 +82,41 @@ export type StepLog = {
  * NonRetryableError, or runs out of its retries (the clock moves by each
  * delay); `twice` runs every body a second time after it succeeds (a
  * replay after a lost result) and returns the second output.
+ *
+ * Engine replay: `results` holds each step's durable result, by name; a run
+ * given another run's `results` returns those without running the body, as
+ * the Workflows engine replays a new isolate. `evictAfter` ends the run
+ * when that step's body has returned, before its result is stored, and
+ * `evictBefore` as that step starts: the isolate died. The run's promise
+ * then never settles; `evicted` resolves.
  */
 export function stepRunner(
   clock: { t: number },
-  o: { twice?: boolean; onStep?: (name: string) => void } = {},
+  o: {
+    twice?: boolean;
+    onStep?: (name: string) => void;
+    results?: Map<string, unknown>;
+    evictAfter?: string;
+    evictBefore?: string;
+  } = {},
 ) {
   const log: StepLog[] = [];
+  let evict: () => void = () => {};
+  const evicted = new Promise<void>((r) => {
+    evict = r;
+  });
+  const dead = () => new Promise<never>(() => {});
   const step = {
     async do(name: string, a: unknown, b?: unknown) {
+      if (o.results?.has(name)) {
+        const out = o.results.get(name);
+        log.push({ name, output: out, replayed: true });
+        return out === undefined ? undefined : structuredClone(out);
+      }
+      if (o.evictBefore === name) {
+        evict();
+        return dead();
+      }
       const fn = (b ?? a) as () => Promise<unknown>;
       const config = (b === undefined ? {} : a) as {
         retries?: { limit?: number; delay?: string | number };
@@ -99,7 +128,12 @@ export function stepRunner(
         try {
           let out = await fn();
           if (o.twice) out = await fn();
+          if (o.evictAfter === name) {
+            evict();
+            return dead();
+          }
           log.push({ name, output: out });
+          o.results?.set(name, out);
           return out === undefined ? undefined : structuredClone(out);
         } catch (e) {
           const err = e as Error;
@@ -116,7 +150,7 @@ export function stepRunner(
       clock.t = Math.max(clock.t, typeof at === "number" ? at : at.getTime());
     },
   };
-  return { step: step as unknown as WorkflowStep, log };
+  return { step: step as unknown as WorkflowStep, log, evicted };
 }
 
 export type World = Awaited<ReturnType<typeof world>>;
