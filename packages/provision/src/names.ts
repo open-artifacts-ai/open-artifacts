@@ -1,30 +1,19 @@
 import { parseDomains } from "@oa/auth-core/domains";
+import {
+  isValidSlug,
+  RESERVED_SLUGS,
+  SLUG_RE,
+  slugRule,
+} from "@oa/shared/provisioning/slugs";
 import type { InstallId } from "./types.js";
 
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const ID_RE = /^i[a-z0-9]{11}$/;
 /** A HOSTS value: an install id, optionally `paused:` or `closed:` first. */
 const HOSTS_VALUE_RE = /^(?:(paused|closed):)?(i[a-z0-9]{11})$/;
-const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
-export const RESERVED_SLUGS: readonly string[] = [
-  "www",
-  "api",
-  "admin",
-  "app",
-  "mail",
-  "status",
-  "docs",
-  "staging",
-  "content",
-  // Platform hosts on the tenant domains (P2 auth broker at auth.<app-domain>,
-  // P3 directory broker at directory.<app-domain>).
-  "auth",
-  "broker",
-  "login",
-  "sso",
-  "directory",
-];
+// Moved to @oa/shared/provisioning (design v7 section 3); re-exported here.
+export { isValidSlug, RESERVED_SLUGS, SLUG_RE, slugRule };
 
 export function isInstallId(s: string): s is InstallId {
   return ID_RE.test(s);
@@ -170,15 +159,9 @@ export function hosts(
   slug: string,
   domains: { app: string; content: string },
 ): { appHost: string; contentHost: string } {
-  // "--" at positions 3-4 is IDNA-reserved ("xn--" is punycode): a slug
-  // like that could render as another name (homograph).
-  if (
-    !SLUG_RE.test(slug) ||
-    RESERVED_SLUGS.includes(slug) ||
-    slug.slice(2, 4) === "--"
-  ) {
-    throw new Error(`invalid slug: ${slug}`);
-  }
+  // The slug rule lives in @oa/shared (it also refuses "--" at positions
+  // 3-4: IDNA-reserved, so "xn--" punycode could render as another name).
+  if (slugRule(slug) !== "ok") throw new Error(`invalid slug: ${slug}`);
   const { app, content } = domains;
   if (
     app === content ||
