@@ -5090,7 +5090,7 @@ describe("W2 create order (5.2)", () => {
       expect(s.fake.writes().length).toBe(writes);
     });
 
-    it("a replay with another version is refused (version is one of the inputs)", async () => {
+    it("a replay with another version is refused (the replay check compares installs.version)", async () => {
       const s = setup();
       await s.mk().create(input("finqore", { installId: W2_ID }));
       const e = await fails(

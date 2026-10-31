@@ -142,6 +142,10 @@ describe("wrangler.jsonc", () => {
         if (env === "prod")
           expect(e.vars.SIGNUPS_ENABLED).not.toBe("test-users");
         expect(e.vars.SELF_SERVE_TIER).toBe("trial");
+        // The provisioner's placeholder, one deploy value for both (9A.5).
+        expect(e.vars.SIGNUP_DAILY_CAP).toBe(
+          `{{SIGNUP_DAILY_CAP_${env.toUpperCase()}}}`,
+        );
         expect(e.vars.MCP_REDIRECT_URIS.length).toBeGreaterThan(0);
         for (const k of OIDC)
           if (env === "staging") expect(e.vars[k]).toBeTruthy();

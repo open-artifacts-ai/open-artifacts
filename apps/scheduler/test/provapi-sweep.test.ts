@@ -50,13 +50,23 @@ const RUN_DEAD = "run_dead";
  * `settled` from the jobs UPDATE's changes, `extra` the extra results.
  */
 const settled: { jobId: string; code: string }[] = [];
+/** Each call's opts.expectCode (C6), in call order. */
+const expects: unknown[] = [];
 const fakeSettle: SettleFailed = async (d, jobId, code, opts) => {
+  expects.push(opts?.expectCode);
+  // C6 expectCode: present, the UPDATE also needs `error_code IS ?4`.
+  const guard = opts?.expectCode === undefined ? "" : " AND error_code IS ?4";
   const res = (await d.batch([
     d
       .prepare(
-        "UPDATE jobs SET status = 'failed', error_code = COALESCE(error_code, ?2), finished_at = ?3, updated_at = ?3 WHERE id = ?1 AND status IN ('queued', 'running')",
+        `UPDATE jobs SET status = 'failed', error_code = COALESCE(error_code, ?2), finished_at = ?3, updated_at = ?3 WHERE id = ?1 AND status IN ('queued', 'running')${guard}`,
       )
-      .bind(jobId, code, NOW),
+      .bind(
+        jobId,
+        code,
+        NOW,
+        ...(opts?.expectCode === undefined ? [] : [opts.expectCode]),
+      ),
     ...((opts?.extra ?? []) as D1PreparedStatement[]),
   ])) as D1Result[];
   const ok = (res[0]?.meta.changes ?? 0) > 0;
@@ -148,6 +158,7 @@ const cleanups = () =>
 
 beforeEach(() => {
   settled.length = 0;
+  expects.length = 0;
 });
 
 describe("sweep: unstarted jobs", () => {
@@ -186,20 +197,38 @@ describe("sweep: unstarted jobs", () => {
     expect(f.provision.created).toEqual([]);
   });
 
-  it("'already exists' counts as started", async () => {
+  it("the binding's already-exists error counts as started (and its not-found get is a missing instance)", async () => {
     const id = await job(installId(), { created_at: OLD });
+    // The local binding's errors (C6 createWorkflowInstance, getWorkflowInstance).
     const racy: WorkflowLike = {
-      get: async (i) => {
-        throw new WorkflowNotFoundError(i);
+      get: async () => {
+        throw new Error("instance.not_found");
       },
       create: async (o) => {
-        throw new Error(`instance ${o.id} already exists`);
+        throw new Error(
+          `(instance.already_exists) Workflow instance with id "${o.id}" already exists`,
+        );
       },
     };
     const env = { ...fakes().env, PROVISION_INSTALL: racy } as ProvapiEnv;
     const lines = captureLogs(vi.spyOn);
     await run(env);
     expect(lines).toEqual([`provapi sweep started ${id}`]);
+  });
+
+  it("a create error that only says 'already exists' is an rpc_error (no message matching)", async () => {
+    const f = fakes();
+    const id = await job(installId(), { created_at: OLD });
+    const loose: WorkflowLike = {
+      get: (i) => f.provision.get(i),
+      create: async (o) => {
+        throw new Error(`instance ${o.id} already exists`);
+      },
+    };
+    const env = { ...f.env, PROVISION_INSTALL: loose } as ProvapiEnv;
+    const lines = captureLogs(vi.spyOn);
+    await run(env);
+    expect(lines).toEqual([`provapi sweep start_failed rpc_error ${id}`]);
   });
 
   it("a manage_install job starts on MANAGE_INSTALL", async () => {
@@ -612,6 +641,53 @@ describe("sweep: dead runs", () => {
     expect(settled).toEqual([]);
     await run(f.env, NOW + JOB_START_GRACE_MS - 1 + JOB_TERMINATED_GRACE_MS);
     expect(settled).toEqual([{ jobId: dead, code: RUN_DEAD }]);
+  });
+
+  it("settleFailed gets expectCode: the code the still-open read saw (null when none)", async () => {
+    const f = fakes();
+    await started(f, "complete");
+    await started(f, "complete", { error_code: "canceled" });
+    await run(f.env);
+    expect(expects.sort()).toEqual(["canceled", null]);
+  });
+
+  it("a cancel storing canceled between the read and the settle: settled:false, no cleanup this tick; the next tick settles with canceled and adds exactly one cleanup", async () => {
+    const f = fakes();
+    const { id } = await started(f, "complete");
+    let raced = false;
+    const racing: SettleFailed = async (d, jobId, code, opts) => {
+      if (!raced) {
+        raced = true;
+        // R25 cancel: it stored canceled; its own settle has not run yet.
+        await db
+          .prepare("UPDATE jobs SET error_code = 'canceled' WHERE id = ?1")
+          .bind(jobId)
+          .run();
+      }
+      return fakeSettle(d, jobId, code, opts);
+    };
+    const lines = captureLogs(vi.spyOn);
+    await sweep(f.env, NOW, { settleFailed: racing });
+    expect(expects).toEqual([null]);
+    expect(settled).toEqual([]);
+    expect(lines).toEqual([]);
+    expect(await cleanups()).toEqual([]);
+    expect(await jobRow(id)).toMatchObject({
+      status: "running",
+      error_code: "canceled",
+    });
+    expect(f.manage.created).toEqual([]);
+    await sweep(f.env, NOW + TICK, { settleFailed: racing });
+    expect(expects).toEqual([null, "canceled"]);
+    expect(settled).toEqual([{ jobId: id, code: RUN_DEAD }]);
+    expect(await jobRow(id)).toMatchObject({
+      status: "failed",
+      error_code: "canceled",
+    });
+    const all = await cleanups();
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ parent_job_id: id, status: "queued" });
+    expect(f.manage.created.map((c) => c.id)).toEqual([all[0]?.id]);
   });
 
   it("settleFailed saying it did not settle (another settle got there first): no settled line, no cleanup", async () => {

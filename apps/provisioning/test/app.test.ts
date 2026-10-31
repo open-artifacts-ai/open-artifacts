@@ -8,7 +8,13 @@ async function call(
   init: RequestInit = {},
   e = fakeEnv(),
 ): Promise<{ res: Response; body: Body | string }> {
-  const req = new Request(url, init) as Parameters<typeof worker.fetch>[0];
+  // Cloudflare sets cf-connecting-ip on every edge request; tests do too.
+  const headers = new Headers(init.headers);
+  if (!headers.has("cf-connecting-ip"))
+    headers.set("cf-connecting-ip", "192.0.2.9");
+  const req = new Request(url, { ...init, headers }) as Parameters<
+    typeof worker.fetch
+  >[0];
   const res = await worker.fetch(req, e.env, ctx());
   const text = await res.text();
   let body: Body | string = text;
@@ -84,6 +90,34 @@ describe("pre-authn IP limit (4.2)", () => {
       e,
     );
     expect(e.limits.RL_PV_PRE_IP.keys).toEqual(["192.0.2.1", "192.0.2.2"]);
+  });
+
+  it("no or an unparseable cf-connecting-ip is 403, never a shared bucket", async () => {
+    const e = fakeEnv();
+    for (const headers of [
+      {} as Record<string, string>,
+      { "cf-connecting-ip": "" },
+      { "cf-connecting-ip": "unknown" },
+      { "cf-connecting-ip": "not-an-ip" },
+    ]) {
+      const req = new Request(`${API}/v1/me`, { headers }) as Parameters<
+        typeof worker.fetch
+      >[0];
+      const res = await worker.fetch(req, e.env, ctx());
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as Body).error.code).toBe("forbidden");
+    }
+    expect(e.limits.RL_PV_PRE_IP.keys).toEqual([]);
+  });
+
+  it("the pre-authn key is ipKey: IPv6 by /64", async () => {
+    const e = fakeEnv();
+    await call(
+      `${API}/v1/me`,
+      { headers: { "cf-connecting-ip": "2001:db8:1:2:3:4:5:6" } },
+      e,
+    );
+    expect(e.limits.RL_PV_PRE_IP.keys).toEqual(["2001:db8:1:2::/64"]);
   });
 
   it("over the limit is 429; unbound is 503", async () => {
@@ -211,6 +245,12 @@ describe("MCP and OAuth stubs (9A.2, 9A.3.1)", () => {
     const t = await call(`${API}/oauth/token`, { method: "GET" });
     expect(t.res.status).toBe(405);
     expect(t.res.headers.get("allow")).toBe("POST");
+    // The 3.5 envelope shape, no-store.
+    expect(t.body).toEqual({
+      error: { code: "method_not_allowed", message: "Method not allowed." },
+    });
+    expect(t.res.headers.get("cache-control")).toBe("no-store");
+    expect(t.res.headers.get("content-type")).toBe("application/json");
     const w = await call(`${API}/.well-known/oauth-authorization-server`, {
       method: "POST",
     });

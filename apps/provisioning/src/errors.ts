@@ -48,3 +48,15 @@ export const NOT_IMPLEMENTED_BODY = {
   error: { code: "not_implemented", message: "Not implemented yet." },
 } as const;
 export const notImplemented = () => json(NOT_IMPLEMENTED_BODY, 501);
+
+/**
+ * A protocol route's 405 (9A.3.1) in the 3.5 envelope shape. 3.5 has no 405
+ * code, so like the 501 stub it is not an ApiErrorCode; `allow` lists the
+ * route's methods.
+ */
+export const methodNotAllowed = (allow: string) =>
+  json(
+    { error: { code: "method_not_allowed", message: "Method not allowed." } },
+    405,
+    { allow },
+  );

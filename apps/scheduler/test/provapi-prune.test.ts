@@ -1,5 +1,10 @@
 import { AUDIT_REFUSAL_WINDOW_MS } from "@oa/shared/provisioning/alerts";
 import {
+  DCR_COUNTER_PREFIX,
+  FAILED_SECRET_RETENTION_MS,
+  OAUTH_CLIENT_UNCLAIMED_MS,
+} from "@oa/shared/provisioning/constants";
+import {
   AUDIT_REFUSAL_RETENTION_MS,
   DCR_COUNTER_RETENTION_MS,
   EXPIRED_AUTH_RETENTION_MS,
@@ -15,12 +20,7 @@ import {
   vi,
 } from "vitest";
 import type { ProvapiEnv } from "../src/provapi/env.js";
-import {
-  FAILED_SECRET_RETENTION_MS,
-  OAUTH_CLIENT_UNCLAIMED_MS,
-  PRUNE_BATCH,
-  prune,
-} from "../src/provapi/prune.js";
+import { PRUNE_BATCH, prune } from "../src/provapi/prune.js";
 import {
   captureLogs,
   db,
@@ -90,10 +90,12 @@ describe("prune", () => {
     await token("oauth", NOW + 1, NOW - 1); // revoked, not expired: kept
     await token("oat", KEEP, NOW - 1);
     await token("oat", GONE, NOW - 1);
-    const rc = (w: number) =>
-      insert("rate_counters", { key: `k${++n}`, window_start: w, count: 1 });
-    await rc(NOW - DCR_COUNTER_RETENTION_MS);
-    await rc(NOW - DCR_COUNTER_RETENTION_MS + 1);
+    const rc = (w: number, key = `k${++n}`) =>
+      insert("rate_counters", { key, window_start: w, count: 1 });
+    await rc(NOW - RATE_COUNTER_RETENTION_MS);
+    await rc(NOW - RATE_COUNTER_RETENTION_MS + 1);
+    await rc(NOW - DCR_COUNTER_RETENTION_MS, `${DCR_COUNTER_PREFIX}a`);
+    await rc(NOW - DCR_COUNTER_RETENTION_MS + 1, `${DCR_COUNTER_PREFIX}b`);
     const ar = (w: number) =>
       insert("audit_refusals", {
         bucket: "signin",
@@ -116,7 +118,7 @@ describe("prune", () => {
     const lines = captureLogs(vi.spyOn);
     await prune(env, NOW);
     expect(lines).toEqual([
-      "provapi prune sessions=2 agent_tokens=3 rate_counters=1 audit_refusals=1 signup_secret=0 oauth_clients=0",
+      "provapi prune sessions=2 agent_tokens=3 rate_counters=1 dcr_counters=1 audit_refusals=1 signup_secret=0 oauth_clients=0",
     ]);
     expect(
       await rows(
@@ -137,8 +139,11 @@ describe("prune", () => {
       { kind: "oauth", expires_at: KEEP, revoked_at: null },
       { kind: "oauth", expires_at: NOW + 1, revoked_at: NOW - 1 },
     ]);
-    expect(await ids("SELECT window_start FROM rate_counters")).toEqual([
+    expect(
+      await ids("SELECT window_start FROM rate_counters ORDER BY window_start"),
+    ).toEqual([
       NOW - DCR_COUNTER_RETENTION_MS + 1,
+      NOW - RATE_COUNTER_RETENTION_MS + 1,
     ]);
     expect(await ids("SELECT window_start FROM audit_refusals")).toEqual([
       NOW - AUDIT_REFUSAL_RETENTION_MS + AUDIT_REFUSAL_WINDOW_MS,
@@ -200,23 +205,30 @@ describe("prune", () => {
     ]);
   });
 
-  it("fails safe: every rate counter, whatever its key, keeps DCR_COUNTER_RETENTION_MS (48 h), so a DCR UTC-day counter is never pruned live", async () => {
+  it("rate counters go after RATE_COUNTER_RETENTION_MS (2 h); the DCR UTC-day ones (DCR_COUNTER_PREFIX) after DCR_COUNTER_RETENTION_MS (48 h)", async () => {
     expect(RATE_COUNTER_RETENTION_MS).toBe(2 * 60 * 60_000);
     expect(DCR_COUNTER_RETENTION_MS).toBe(48 * 60 * 60_000);
+    expect(DCR_COUNTER_PREFIX).toBe("dcr:");
     const rc = (key: string, w: number) =>
       insert("rate_counters", { key, window_start: w, count: 1 });
-    // Keys the DCR day counter might use (the contract names none yet).
+    await rc("ip:a", NOW - RATE_COUNTER_RETENTION_MS + 1); // kept
+    await rc("ip:b", NOW - RATE_COUNTER_RETENTION_MS); // pruned
+    await rc("xdcr:b", NOW - RATE_COUNTER_RETENTION_MS); // pruned
     await rc("dcr:a", NOW - RATE_COUNTER_RETENTION_MS); // kept
-    await rc("oauth_register:day", NOW - RATE_COUNTER_RETENTION_MS); // kept
-    await rc("ip:b", NOW - DCR_COUNTER_RETENTION_MS + 1); // kept
+    await rc("dcr:b", NOW - DCR_COUNTER_RETENTION_MS + 1); // kept
     await rc("dcr:c", NOW - DCR_COUNTER_RETENTION_MS); // pruned
-    await rc("ip:c", NOW - DCR_COUNTER_RETENTION_MS); // pruned
     const lines = captureLogs(vi.spyOn);
     await prune(env, NOW);
-    expect(lines[0]).toContain(" rate_counters=2 ");
-    expect(await ids("SELECT key FROM rate_counters ORDER BY key")).toEqual(
-      ["dcr:a", "ip:b", "oauth_register:day"].sort(),
-    );
+    expect(lines[0]).toContain(" rate_counters=2 dcr_counters=1 ");
+    expect(await ids("SELECT key FROM rate_counters ORDER BY key")).toEqual([
+      "dcr:a",
+      "dcr:b",
+      "ip:a",
+    ]);
+  });
+
+  it("a failed signup's owner email: 30 days", () => {
+    expect(FAILED_SECRET_RETENTION_MS).toBe(30 * 24 * 60 * 60_000);
   });
 
   it("90 days of audit_refusals", () => {

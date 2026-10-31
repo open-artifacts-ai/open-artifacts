@@ -891,6 +891,8 @@ export class FakeCf {
    * The settings GET's bindings, as Cloudflare answers them (the shape of
    * tests/redline/src/prod.ts's read): every binding the script runs with,
    * plain_text and json with their values, secret_text by name only.
+   * TODO(S8): replace this hand-built shape with S8's captured rl-b settings
+   * GET fixture once the spikes run lands.
    */
   private settingsOf(
     s: FakeScript,

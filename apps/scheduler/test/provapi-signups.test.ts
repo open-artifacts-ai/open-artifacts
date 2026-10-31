@@ -9,11 +9,7 @@ import {
   vi,
 } from "vitest";
 import { DutyFailure, type ProvapiEnv } from "../src/provapi/env.js";
-import {
-  SIGNUPS_LIMIT,
-  SIGNUPS_ON,
-  signupsDue,
-} from "../src/provapi/signups.js";
+import { SIGNUPS_LIMIT, signupsDue } from "../src/provapi/signups.js";
 import { captureLogs, db, migrate, reset, signup } from "./provapi/db.js";
 
 beforeAll(migrate);
@@ -114,7 +110,7 @@ describe("signups duty", () => {
       expect(f.sent()).toEqual([]);
     });
 
-  for (const v of SIGNUPS_ON)
+  for (const v of ["true", "test-users"])
     it(`SIGNUPS_ENABLED ${v}: on`, async () => {
       await selfServe({ status: "pending", updated_at: 1 });
       const f = fakes({ SIGNUPS_ENABLED: v });
