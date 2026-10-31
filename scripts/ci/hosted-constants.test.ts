@@ -10,6 +10,7 @@ const KEYS = [
   "account_id",
   "app_zone",
   "content_zone",
+  "deploy_token_id",
   "dispatch_namespace",
   "email_daily_limit",
   "email_zone",
@@ -17,7 +18,12 @@ const KEYS = [
   "google_directory_client_id",
 ];
 // Read by provapi-spikes.sh only; hosted-constants.sh does not load them.
-const SPIKE_KEYS = ["app_zone", "content_zone", "dispatch_namespace"];
+const SPIKE_KEYS = [
+  "app_zone",
+  "content_zone",
+  "deploy_token_id",
+  "dispatch_namespace",
+];
 const LOADED = KEYS.filter((k) => !SPIKE_KEYS.includes(k));
 const read = (env: string): Record<string, unknown> =>
   JSON.parse(readFileSync(join(root, `.github/hosted/${env}.json`), "utf8"));

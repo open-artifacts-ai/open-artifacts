@@ -30,6 +30,7 @@ const RUN = "4242";
 const ZAPP = "a".repeat(32);
 const ZPAGE = "b".repeat(32);
 const STORE = "c".repeat(32);
+const TID = "7".repeat(32);
 const NS = `/accounts/${ACCT}/workers/dispatch/namespaces/oa-staging/scripts`;
 
 /** The body of a shell function in provapi-spikes.sh. */
@@ -85,10 +86,11 @@ describe("provapi-staging-spikes.yml", () => {
   });
 
   it("writes the token to a 0600 file under RUNNER_TEMP, masked, never echoed", () => {
-    expect(wf.jobs.spikes.env.TOKEN_FILE).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: workflow expression
-      "${{ runner.temp }}/cf-token",
-    );
+    // runner.* is not available in job-level env: the first step sets it.
+    expect(wf.jobs.spikes.env.TOKEN_FILE).toBeUndefined();
+    expect(steps[0].name).toBe("Set the paths");
+    expect(steps[0].run).toContain('echo "TOKEN_FILE=$RUNNER_TEMP/cf-token"');
+    expect(steps[0].run).toContain('} >> "$GITHUB_ENV"');
     const w = steps.find((s) => s.name === "Write the Cloudflare token file");
     expect(w.run).toContain(
       "printf '::add-mask::%s\\n' \"$CLOUDFLARE_API_TOKEN\"",
@@ -162,8 +164,8 @@ describe("provapi-spikes.sh guards (static)", () => {
   it("every write is cf_write, which refuses the namespace, rl-a and rl-b", () => {
     const w = fn("cf_write");
     expect(w).toContain('spike_name_ok "$n" || refuse');
-    expect(w).toMatch(
-      /\*dispatch\/namespaces\* \| \*"\$RLA"\* \| \*"\$RLB"\*\) refuse/,
+    expect(w).toContain(
+      '*dispatch/namespaces* | *"$RLA"* | *"$RLB"* | *..* | *%*) refuse',
     );
     // Only cf_get and cf_write call curl.
     const curls = sh.split("\n").filter((l) => /\bcurl -sS\b/.test(l));
@@ -173,15 +175,31 @@ describe("provapi-spikes.sh guards (static)", () => {
   });
 
   it("the provisioning token secret is read from the list (metadata) endpoint only", () => {
-    const v = fn("spike_verify");
-    const uses = v
+    const st = fn("store_id");
+    const uses = [fn("spike_verify"), st]
+      .join("\n")
       .split("\n")
       .filter((l) => l.includes("PROVISION_TOKEN_SECRET") && l.includes("cf_"));
     expect(uses).toEqual([
-      '    cf_get "$ACCT/secrets_store/stores/$STORE/secrets?search=$PROVISION_TOKEN_SECRET&per_page=100"',
+      '    cf_get "$ACCT/secrets_store/stores/$sid/secrets?search=$PROVISION_TOKEN_SECRET&per_page=100"',
     ]);
-    expect(v).not.toMatch(/cf_write/);
-    expect(v).toContain("{name, scopes, modified}");
+    expect(fn("spike_verify")).not.toMatch(/cf_write/);
+    expect(st).not.toMatch(/cf_write/);
+    expect(st).toContain("{name, scopes, modified}");
+  });
+
+  it("the staging store is the one holding oa-s-provision-token, never the first", () => {
+    const st = fn("store_id");
+    expect(st).toContain('[ "$hits" = 1 ] || {');
+    expect(st).not.toMatch(/first/);
+  });
+
+  it("every id from Cloudflare is checked before it reaches a path", () => {
+    expect(sh).toContain("ID_RE='^[0-9a-f-]{32,36}$'");
+    expect(sh).toContain('know_id "$D1_ID" "D1 $name"');
+    expect(sh).toContain('know_id "$sid" "secret $name"');
+    expect(fn("guarded_delete")).toContain('know_id "$4"');
+    expect(fn("cf_write")).toContain("*..* | *%*) refuse");
   });
 
   it("cleanup filters by the prefix and a 1 h age, and every delete is guarded", () => {
@@ -217,6 +235,25 @@ describe("the spike Worker", () => {
     expect(wfn("s7")).toContain(
       'fetch(env.RLA_HEALTHZ, { redirect: "manual" })',
     );
+  });
+
+  it("after its first run, every cron tick returns at the done row", () => {
+    const b = wfn("runOnce");
+    const first = b.indexOf(
+      'SELECT 1 AS d FROM done LIMIT 1").first()) return;',
+    );
+    expect(first).toBeGreaterThan(-1);
+    expect(first).toBeLessThan(b.indexOf("CREATE TABLE IF NOT EXISTS results"));
+    expect(
+      b
+        .trimEnd()
+        .endsWith('"INSERT OR IGNORE INTO done (id) VALUES (1)").run();'),
+    ).toBe(true);
+    const cfg = readFileSync(
+      join(root, "spikes/provapi-staging/wrangler.jsonc"),
+      "utf8",
+    );
+    expect(cfg).toContain('"crons": ["* * * * *"]');
   });
 
   it("S3 records what a missing get and a duplicate create throw", () => {
@@ -279,7 +316,7 @@ const setup = (
   );
   writeFileSync(
     join(hostedDir, "staging.json"),
-    JSON.stringify({ ...real, ...hosted }),
+    JSON.stringify({ ...real, deploy_token_id: TID, ...hosted }),
   );
   const tokenFile = join(sb.dir, "cf-token");
   writeFileSync(tokenFile, TOK, { mode: 0o600 });
@@ -316,10 +353,28 @@ const setup = (
 const iso = (msAgo: number) =>
   new Date(Date.now() - msAgo).toISOString().replace(/\.\d+Z$/, "Z");
 
+/** One store holding oa-s-provision-token (how store_id picks staging's). */
+const storeFx = (): Record<string, string> => ({
+  [key("GET", `/accounts/${ACCT}/secrets_store/stores`)]: ok([{ id: STORE }]),
+  [key(
+    "GET",
+    `/accounts/${ACCT}/secrets_store/stores/${STORE}/secrets?search=oa-s-provision-token&per_page=100`,
+  )]: ok([
+    {
+      id: "d".repeat(32),
+      name: "oa-s-provision-token",
+      scopes: ["workers"],
+      modified: "2026-10-30T00:00:00Z",
+      created: "2026-10-30T00:00:00Z",
+    },
+  ]),
+});
+
 const verifyFx = (days: number): Record<string, string> => {
   const A = `/accounts/${ACCT}`;
   const fx: Record<string, string> = {
     [key("GET", "/user/tokens/verify")]: ok({
+      id: TID,
       status: "active",
       expires_on: iso(-days * 86400_000 - 3600_000),
     }),
@@ -447,6 +502,64 @@ describe("provapi-spikes.sh verify", () => {
     ).toBe(false);
     expect(res.find((x) => x.check === "account").pass).toBe(true);
   });
+
+  it("fails when the token id is not the pinned one, or the pin is unset (and prints the id)", () => {
+    const other = setup(verifyFx(365), { deploy_token_id: "8".repeat(32) });
+    expect(other.run("verify").code).toBe(1);
+    expect(
+      other.results("verify").find((x) => x.check === "token id"),
+    ).toMatchObject({
+      pass: false,
+      observed: `id=${TID}; pinned=${"8".repeat(32)}`,
+    });
+    const unset = setup(verifyFx(365), {
+      deploy_token_id: "UNSET-printed-by-the-first-spikes-run",
+    });
+    const r = unset.run("verify");
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`this token's id is ${TID}`);
+  });
+
+  it("picks the store holding oa-s-provision-token, and refuses 0 or 2 matches", () => {
+    const A = `/accounts/${ACCT}`;
+    const S2 = "9".repeat(32);
+    const search = (id: string) =>
+      key(
+        "GET",
+        `${A}/secrets_store/stores/${id}/secrets?search=oa-s-provision-token&per_page=100`,
+      );
+    const hit = ok([
+      { name: "oa-s-provision-token", scopes: ["workers"], modified: "m" },
+    ]);
+    // The second store holds it: the first is never taken by default.
+    const fx = verifyFx(365);
+    fx[key("GET", `${A}/secrets_store/stores`)] = ok([
+      { id: S2 },
+      { id: STORE },
+    ]);
+    fx[search(S2)] = ok([{ name: "oa-p-provision-token" }]);
+    fx[search(STORE)] = hit;
+    const t = setup(fx);
+    expect(t.run("verify").code).toBe(0);
+    expect(
+      t.results("verify").find((x) => x.check === "secret oa-s-provision-token")
+        .observed,
+    ).toContain(`store ${STORE}`);
+    // Both stores hold it: refused.
+    fx[search(S2)] = hit;
+    const two = setup(fx);
+    expect(two.run("verify").code).toBe(1);
+    expect(
+      two
+        .results("verify")
+        .find((x) => x.check === "secret oa-s-provision-token").observed,
+    ).toBe("oa-s-provision-token is in 2 stores, want exactly 1");
+    // A store id that is not an id: refused, never used in a path.
+    fx[key("GET", `${A}/secrets_store/stores`)] = ok([{ id: "../../x" }]);
+    const bad = setup(fx);
+    expect(bad.run("verify").code).toBe(1);
+    expect(bad.reqs().some((q) => q.includes("../"))).toBe(false);
+  });
 });
 
 describe("provapi-spikes.sh refuses prod and leo", () => {
@@ -550,7 +663,7 @@ describe("provapi-spikes.sh S4", () => {
     const A = `/accounts/${ACCT}`;
     const name = `oa-s-spike-${RUN}`;
     const t = setup({
-      [key("GET", `${A}/secrets_store/stores`)]: ok([{ id: STORE }]),
+      ...storeFx(),
       [key("POST", `${A}/secrets_store/stores/${STORE}/secrets`)]: ok([
         { id: "e".repeat(32) },
       ]),
@@ -587,11 +700,7 @@ describe("provapi-spikes.sh S4", () => {
   });
 
   it("fails the create check when the write is refused", () => {
-    const t = setup({
-      [key("GET", `/accounts/${ACCT}/secrets_store/stores`)]: ok([
-        { id: STORE },
-      ]),
-    });
+    const t = setup(storeFx());
     expect(t.run("s4").code).toBe(1);
     const c = t.results("s4").find((x) => x.check.startsWith("create"));
     expect(c).toMatchObject({ pass: false, observed: "HTTP 404" });
@@ -605,12 +714,34 @@ describe("provapi-spikes.sh S4", () => {
     expect(t.results("s4")[0].observed).toMatch(/^no store/);
     expect(t.reqs()).toEqual([`GET /accounts/${ACCT}/secrets_store/stores`]);
   });
+
+  for (const bad of ["../../workers/scripts/oa-s-dispatch", "..%2F..%2Fx"])
+    it(`refuses a returned secret id ${bad} before any delete`, () => {
+      const A = `/accounts/${ACCT}`;
+      const name = `oa-s-spike-${RUN}`;
+      const t = setup({
+        ...storeFx(),
+        [key("POST", `${A}/secrets_store/stores/${STORE}/secrets`)]: ok([]),
+        [key(
+          "GET",
+          `${A}/secrets_store/stores/${STORE}/secrets?search=${name}&per_page=100`,
+        )]: ok([{ id: bad, name, modified: "m" }]),
+      });
+      const r = t.run("s4");
+      expect(r.code).toBe(3);
+      expect(r.err).toContain("not an id");
+      expect(t.reqs().some((q) => q.startsWith("DELETE "))).toBe(false);
+    });
 });
 
 describe("provapi-spikes.sh cleanup", () => {
   const A = `/accounts/${ACCT}`;
   const mine = `oa-s-spike-${RUN}`;
+  const UMINE = "11111111-2222-4333-8444-555555555555";
+  const UOLD = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const SOLD = "4".repeat(32);
   const fx = (): Record<string, string> => ({
+    ...storeFx(),
     [key("GET", `${A}/workers/scripts`)]: ok([
       { id: mine, created_on: iso(60_000) },
       { id: `${mine}-wf`, created_on: iso(60_000) },
@@ -624,23 +755,28 @@ describe("provapi-spikes.sh cleanup", () => {
       { name: "oa-s-provision-install", created_on: iso(9 * 86400_000) },
     ]),
     [key("GET", `${A}/d1/database?name=oa-s-spike-&per_page=100`)]: ok([
-      { name: mine, uuid: "u-mine", created_at: iso(60_000) },
-      { name: "oa-s-spike-999", uuid: "u-old", created_at: iso(5 * 3600_000) },
+      { name: mine, uuid: UMINE, created_at: iso(60_000) },
+      { name: "oa-s-spike-999", uuid: UOLD, created_at: iso(5 * 3600_000) },
+      {
+        name: "oa-s-spike-996",
+        uuid: "../../workers/scripts/oa-s-dispatch",
+        created_at: iso(5 * 3600_000),
+      },
       {
         name: "oa-s-platform",
-        uuid: "u-platform",
+        uuid: "0".repeat(32),
         created_at: iso(99 * 86400_000),
       },
     ]),
-    [key("GET", `${A}/secrets_store/stores`)]: ok([{ id: STORE }]),
     [key(
       "GET",
       `${A}/secrets_store/stores/${STORE}/secrets?search=oa-s-spike-&per_page=100`,
     )]: ok([
-      { id: "s-old", name: "oa-s-spike-998", created: iso(3 * 3600_000) },
-      { id: "s-new", name: "oa-s-spike-997", created: iso(5 * 60_000) },
+      { id: SOLD, name: "oa-s-spike-998", created: iso(3 * 3600_000) },
+      { id: "..%2F..%2Fx", name: "oa-s-spike-995", created: iso(3 * 3600_000) },
+      { id: "5".repeat(32), name: "oa-s-spike-997", created: iso(5 * 60_000) },
       {
-        id: "s-prov",
+        id: "6".repeat(32),
         name: "oa-s-provision-token",
         created: iso(99 * 86400_000),
       },
@@ -650,24 +786,25 @@ describe("provapi-spikes.sh cleanup", () => {
     [key("DELETE", `${A}/workers/scripts/oa-s-spike-1000?force=true`)]:
       ok(null),
     [key("DELETE", `${A}/workflows/${mine}`)]: ok(null),
-    [key("DELETE", `${A}/d1/database/u-mine`)]: ok(null),
-    [key("DELETE", `${A}/d1/database/u-old`)]: ok(null),
-    [key("DELETE", `${A}/secrets_store/stores/${STORE}/secrets/s-old`)]:
+    [key("DELETE", `${A}/d1/database/${UMINE}`)]: ok(null),
+    [key("DELETE", `${A}/d1/database/${UOLD}`)]: ok(null),
+    [key("DELETE", `${A}/secrets_store/stores/${STORE}/secrets/${SOLD}`)]:
       ok(null),
   });
 
   it("deletes this run's resources and oa-s-spike-* over 1 h old, nothing else, logging each name", () => {
     const t = setup(fx());
     const r = t.run("cleanup");
-    expect(r.code, r.err + r.out).toBe(0);
+    // 1: two leftovers had ids that are not ids (refused, recorded).
+    expect(r.code, r.err + r.out).toBe(1);
     expect(t.reqs().filter((q) => !q.startsWith("GET "))).toEqual([
       `DELETE ${A}/workers/scripts/oa-s-spike-1000?force=true`,
       `DELETE ${A}/workers/scripts/${mine}?force=true`,
       `DELETE ${A}/workers/scripts/${mine}-wf?force=true`,
       `DELETE ${A}/workflows/${mine}`,
-      `DELETE ${A}/d1/database/u-mine`,
-      `DELETE ${A}/d1/database/u-old`,
-      `DELETE ${A}/secrets_store/stores/${STORE}/secrets/s-old`,
+      `DELETE ${A}/d1/database/${UMINE}`,
+      `DELETE ${A}/d1/database/${UOLD}`,
+      `DELETE ${A}/secrets_store/stores/${STORE}/secrets/${SOLD}`,
     ]);
     for (const n of [
       mine,
@@ -684,8 +821,18 @@ describe("provapi-spikes.sh cleanup", () => {
       `workflow ${mine}`,
       `d1 ${mine}`,
       "d1 oa-s-spike-999",
+      "d1 oa-s-spike-996",
       "secret oa-s-spike-998",
+      "secret oa-s-spike-995",
     ]);
+    for (const c of ["d1 oa-s-spike-996", "secret oa-s-spike-995"])
+      expect(t.results("cleanup").find((x) => x.check === c)).toMatchObject({
+        pass: false,
+        observed: "refused: its id is not an id",
+      });
+    expect(t.reqs().some((q) => q.includes("..") || q.includes("%2F"))).toBe(
+      false,
+    );
   });
 
   it("guarded_delete and cf_write refuse a name without oa-s-spike-", () => {
@@ -694,13 +841,21 @@ describe("provapi-spikes.sh cleanup", () => {
       `guarded_delete d1 oa-s-spike ${A}/d1/database/u`,
       `cf_write DELETE ${A}/workers/scripts/oa-s-platform oa-s-platform`,
       `cf_write POST ${NS}/oa-s-spike-1/secrets oa-s-spike-1`,
+      // A guarded name with a foreign path.
+      `cf_write DELETE ${A}/workers/scripts/oa-s-dispatch oa-s-spike-1`,
+      `cf_write DELETE ${A}/d1/database/${UOLD} oa-s-spike-1`,
+      `cf_write DELETE ${A}/d1/database/${UOLD} oa-s-spike-1 ${UOLD}x`,
+      `cf_write POST ${A}/workers/scripts/oa-s-spike-1 oa-s-spike-1`,
+      `cf_write POST ${A}/d1/database/${UOLD}/query oa-s-spike-1 ${UOLD}`,
+      `cf_write DELETE ${A}/workers/scripts/oa-s-spike-1/../oa-s-dispatch oa-s-spike-1`,
+      `guarded_delete d1 oa-s-spike-1 ${A}/d1/database/x ../x`,
     ]) {
       const t = setup({});
       const r = t.sb.run(
         [
           "bash",
           "-c",
-          `set -euo pipefail; . "${script(SH)}"; RESULTS_DIR="$RESULTS_DIR"; ${call} < /dev/null`,
+          `set -euo pipefail; . "${script(SH)}"; ACCT=/accounts/${ACCT}; ${call} < /dev/null`,
         ],
         { env: t.env },
       );
@@ -802,7 +957,10 @@ describe("provapi-spikes.sh collect", () => {
       json: JSON.stringify({ spike, pass, observed }),
     });
     const t = setup({
-      [key("POST", `${A}/d1/database/u-spike/query`)]: ok([
+      [key(
+        "POST",
+        `${A}/d1/database/99999999-8888-4777-8666-555555555555/query`,
+      )]: ok([
         {
           results: [
             row("s1", true, "verify=true"),
@@ -812,7 +970,10 @@ describe("provapi-spikes.sh collect", () => {
       ]),
     });
     mkdirSync(t.env.STATE_DIR, { recursive: true });
-    writeFileSync(join(t.env.STATE_DIR, "d1_id"), "u-spike");
+    writeFileSync(
+      join(t.env.STATE_DIR, "d1_id"),
+      "99999999-8888-4777-8666-555555555555",
+    );
     const r = t.run("collect", {
       SPIKES: "verify,s1,s3,s7",
       COLLECT_DEADLINE_S: "0",
@@ -828,6 +989,8 @@ describe("provapi-spikes.sh collect", () => {
     expect(t.results("s7")[0].observed).toMatch(
       /^no result before the deadline/,
     );
-    expect(t.reqs()).toEqual([`POST ${A}/d1/database/u-spike/query`]);
+    expect(t.reqs()).toEqual([
+      `POST ${A}/d1/database/99999999-8888-4777-8666-555555555555/query`,
+    ]);
   });
 });

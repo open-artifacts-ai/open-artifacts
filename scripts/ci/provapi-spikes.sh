@@ -64,6 +64,7 @@ load_constants() {
   APP_ZONE="$(jq -r '.app_zone // ""' "$f")"
   CONTENT_ZONE="$(jq -r '.content_zone // ""' "$f")"
   EMAIL_ZONE="$(jq -r '.email_zone // ""' "$f")"
+  DEPLOY_TOKEN_ID="$(jq -r '.deploy_token_id // ""' "$f")"
   NAMESPACE="$(jq -r '.dispatch_namespace // ""' "$f")"
   [[ "$ACCOUNT" =~ ^[0-9a-f]{32}$ ]] || refuse "account_id is not 32 hex"
   for v in APP_ZONE CONTENT_ZONE EMAIL_ZONE; do
@@ -126,17 +127,45 @@ cf_get() {
 
 spike_name_ok() { [[ "$1" =~ $SPIKE_NAME_RE ]]; }
 
-# cf_write <POST|PUT|PATCH|DELETE> <path> <oa-s-spike- name>: body on stdin
-# (none for DELETE). Refuses any other name and the dispatch namespace.
+# Ids that Cloudflare returns are checked before they reach a URL path: a
+# D1 uuid, or 32 hex (zone, store, secret). Anything else ("../", "%2F") is
+# refused. KNOWN_IDS holds the ids this run created or validated for one of
+# its own oa-s-spike- resources; cf_write accepts only those.
+ID_RE='^[0-9a-f-]{32,36}$'
+KNOWN_IDS=" "
+id_ok() { [[ "$1" =~ $ID_RE ]]; }
+valid_id() { id_ok "$1" || refuse "$2: not an id ($1)"; }
+know_id() {
+  valid_id "$1" "$2"
+  KNOWN_IDS="$KNOWN_IDS$1 "
+}
+id_known() { [ -n "$1" ] && case "$KNOWN_IDS" in *" $1 "*) true ;; *) false ;; esac; }
+
+# cf_write <POST|PUT|PATCH|DELETE> <path> <oa-s-spike- name> [id]: body on
+# stdin (none for DELETE). Refuses any other name, the dispatch namespace,
+# rl-a and rl-b, and any path that is not one of: a DELETE ending in the
+# name or in a known id; a POST creating a D1 database or a secret in the
+# staging store; a POST querying a known D1 id.
 cf_write() {
-  local m="$1" p="$2" n="$3" out
+  local m="$1" p="$2" n="$3" id="${4:-}" out base
   HTTP=000
   BODY='{}'
-  case "$m" in POST | PUT | PATCH | DELETE) ;; *) refuse "cf_write: method $m" ;; esac
+  case "$m" in POST | DELETE) ;; *) refuse "cf_write: method $m" ;; esac
   spike_name_ok "$n" || refuse "$m $p: $n does not start with $PREFIX"
   _guard_path "$p"
   case "$p" in
-    *dispatch/namespaces* | *"$RLA"* | *"$RLB"*) refuse "no writes to the dispatch namespace, rl-a or rl-b ($p)" ;;
+    *dispatch/namespaces* | *"$RLA"* | *"$RLB"* | *..* | *%*) refuse "no writes to the dispatch namespace, rl-a or rl-b, and no encoded or dot paths ($p)" ;;
+  esac
+  base="${p%%\?*}"
+  case "$m" in
+    DELETE)
+      [[ "$base" == */"$n" ]] || { id_known "$id" && [[ "$base" == */"$id" ]]; } ||
+        refuse "DELETE $p: the path ends in neither $n nor a known id" ;;
+    POST)
+      [ "$base" = "$ACCT/d1/database" ] ||
+        { [ -n "${STORE:-}" ] && id_known "$STORE" && [ "$base" = "$ACCT/secrets_store/stores/$STORE/secrets" ]; } ||
+        { id_known "$id" && [ "$base" = "$ACCT/d1/database/$id/query" ]; } ||
+        refuse "POST $p: not a create or query of $n" ;;
   esac
   local data=()
   [ "$m" = DELETE ] || data=(-H 'Content-Type: application/json' --data-binary @-)
@@ -153,11 +182,33 @@ cf_write() {
 ok() { [ "$HTTP" = 200 ] && [ "$(jq -r '.success' <<< "$BODY")" = true ]; }
 tf() { if "$@"; then echo true; else echo false; fi; }
 
-# The account's Secrets Store store id ("" when there is none).
+# The staging Secrets Store store: the one store holding
+# oa-s-provision-token (the account is shared with prod, so never just the
+# first store). STORE is "" and STORE_WHY says why when there is not
+# exactly one. PROV_META is that secret's metadata (name, scopes, modified).
 store_id() {
+  STORE=""
+  PROV_META=null
   cf_get "$ACCT/secrets_store/stores"
-  ok || { STORE=""; return 1; }
-  STORE="$(jq -r '[.result[]?.id] | first // ""' <<< "$BODY")"
+  ok || { STORE_WHY="stores list HTTP $HTTP"; return 1; }
+  local ids sid m hits=0 found="" meta=null
+  ids="$(jq -r '.result[]?.id // ""' <<< "$BODY")"
+  [ -n "$ids" ] || { STORE_WHY="no store"; return 1; }
+  while IFS= read -r sid; do
+    id_ok "$sid" || { STORE_WHY="refused a store id that is not an id"; return 1; }
+    # Metadata only: the list endpoint (no endpoint returns a value).
+    cf_get "$ACCT/secrets_store/stores/$sid/secrets?search=$PROVISION_TOKEN_SECRET&per_page=100"
+    m="$(jq -c --arg n "$PROVISION_TOKEN_SECRET" '[.result[]? | select(.name == $n) | {name, scopes, modified}] | if length == 1 then .[0] else null end' <<< "$BODY")"
+    if [ "$m" != null ]; then
+      hits=$((hits + 1))
+      found="$sid"
+      meta="$m"
+    fi
+  done <<< "$ids"
+  [ "$hits" = 1 ] || { STORE_WHY="$PROVISION_TOKEN_SECRET is in $hits stores, want exactly 1"; return 1; }
+  know_id "$found" "store"
+  STORE="$found"
+  PROV_META="$meta"
 }
 
 # ---- verify (read-only) ----
@@ -173,6 +224,15 @@ spike_verify() {
   days="$(jq -r --argjson now "$(date +%s)" '.result.expires_on // "" | sub("\\.[0-9]+"; "") | try ((fromdateiso8601 - $now) / 86400 | floor) catch ""' <<< "$BODY")"
   record $s token "$(tf test "$st" = active -a -n "$days" -a "${days:-0}" -ge 300 -a "${days:-0}" -le 400)" \
     "HTTP $HTTP; status=${st:-none}; expires_on=${exp:-none}; days out=${days:-none} (want 300-400)"
+  # The environment's token, not a repo-level fallback: its id (not a
+  # secret) must be the one pinned in staging.json.
+  local tid
+  tid="$(jq -r '.result.id // ""' <<< "$BODY")"
+  if [[ ! "$DEPLOY_TOKEN_ID" =~ ^[0-9a-f]{32}$ ]]; then
+    record $s "token id" false "deploy_token_id is not pinned yet ($DEPLOY_TOKEN_ID); this token's id is ${tid:-none}"
+  else
+    record $s "token id" "$(tf test "$tid" = "$DEPLOY_TOKEN_ID")" "id=${tid:-none}; pinned=$DEPLOY_TOKEN_ID"
+  fi
 
   local z n id
   ZONE_APP=""
@@ -181,6 +241,7 @@ spike_verify() {
     z="${!n}"
     cf_get "/zones?name=$z&account.id=$ACCOUNT"
     id="$(jq -r --arg z "$z" --arg a "$ACCOUNT" '[.result[]? | select(.name == $z and .account.id == $a) | .id] | if length == 1 then .[0] else "" end' <<< "$BODY")"
+    [ -z "$id" ] || [[ "$id" =~ ^[0-9a-f]{32}$ ]] || refuse "zone $z: not an id ($id)"
     record $s "zone $z" "$(tf test -n "$id")" "HTTP $HTTP; $([ -n "$id" ] && echo "found $id" || echo "not found")"
     [ "$n" = APP_ZONE ] && ZONE_APP="$id" || ZONE_CONTENT="$id"
   done
@@ -229,17 +290,14 @@ Workers Routes Read|/zones/$id/workers/routes
 EOF
   done
 
-  # The provisioning token secret: metadata only, from the list endpoint
-  # (Secrets Store has no endpoint that returns a value).
-  if store_id && [ -n "$STORE" ]; then
-    cf_get "$ACCT/secrets_store/stores/$STORE/secrets?search=$PROVISION_TOKEN_SECRET&per_page=100"
-    local meta
-    meta="$(jq -c --arg n "$PROVISION_TOKEN_SECRET" '[.result[]? | select(.name == $n) | {name, scopes, modified}] | if length == 1 then .[0] else null end' <<< "$BODY")"
+  # The provisioning token secret: metadata only, from the list endpoint in
+  # store_id (Secrets Store has no endpoint that returns a value).
+  if store_id; then
     record $s "secret $PROVISION_TOKEN_SECRET" \
-      "$(tf has_workers_scope "$meta")" \
-      "HTTP $HTTP; $(jq -r 'if . == null then "not found" else "scopes=\((.scopes // []) | join(",")) modified=\(.modified)" end' <<< "$meta")" "$meta"
+      "$(tf has_workers_scope "$PROV_META")" \
+      "store $STORE; $(jq -r '"scopes=\((.scopes // []) | join(",")) modified=\(.modified)"' <<< "$PROV_META")" "$PROV_META"
   else
-    record $s "secret $PROVISION_TOKEN_SECRET" false "HTTP $HTTP; no store"
+    record $s "secret $PROVISION_TOKEN_SECRET" false "$STORE_WHY"
   fi
 }
 
@@ -282,8 +340,8 @@ spike_s6() {
 
 spike_s4() {
   local s=s4 name="${PREFIX}$RUN_ID" vf sid meta
-  if ! store_id || [ -z "$STORE" ]; then
-    record $s "store" false "no store (HTTP $HTTP); not created"
+  if ! store_id; then
+    record $s "store" false "no store: $STORE_WHY; nothing created"
     return 0
   fi
   record $s "store" true "found $STORE"
@@ -304,7 +362,8 @@ spike_s4() {
     "$(jq -c 'if . == null then null else {name, modified} end' <<< "$meta")"
   sid="$(jq -r '.id // ""' <<< "$meta")"
   if [ -n "$sid" ]; then
-    cf_write DELETE "$ACCT/secrets_store/stores/$STORE/secrets/$sid" "$name"
+    know_id "$sid" "secret $name"
+    cf_write DELETE "$ACCT/secrets_store/stores/$STORE/secrets/$sid" "$name" "$sid"
     record $s "delete" "$(tf ok)" "HTTP $HTTP"
   fi
 }
@@ -312,6 +371,9 @@ spike_s4() {
 # ---- deploy: throwaway Workers and D1 for s1 s2 s3 s5 s7 ----
 
 # wrangler with the token in its environment only (never argv, never printed).
+# The one accepted exception to "the token is only in a 0600 file or on a
+# pipe": wrangler reads CLOUDFLARE_API_TOKEN from its environment and has no
+# file or stdin option, so it is set for this one command (and its children).
 wrangler_run() {
   CLOUDFLARE_API_TOKEN="$(cat "$TOKEN_FILE")" CLOUDFLARE_ACCOUNT_ID="$ACCOUNT" \
     pnpm --dir "$root/apps/dispatch" exec wrangler "$@"
@@ -352,6 +414,7 @@ spike_deploy() {
     fail_worker_spikes "D1 create failed (HTTP $HTTP)"
     return 1
   fi
+  know_id "$D1_ID" "D1 $name"
   printf '%s' "$D1_ID" > "$STATE_DIR/d1_id"
   SPIKES="$SPIKES_W"
   render "$dir/wrangler.workflow.jsonc" "$dir/wrangler.workflow.rendered.jsonc"
@@ -374,10 +437,11 @@ spike_collect() {
   local name="${PREFIX}$RUN_ID" want n rows=null deadline t
   [ -s "$STATE_DIR/d1_id" ] || { fail_worker_spikes "no D1 database (deploy failed)"; return 1; }
   D1_ID="$(cat "$STATE_DIR/d1_id")"
+  know_id "$D1_ID" "D1 $name"
   want="$(tr ',' '\n' <<< "$SPIKES_W" | grep -c .)"
   deadline=$(($(date +%s) + ${COLLECT_DEADLINE_S:-480}))
   while :; do
-    cf_write POST "$ACCT/d1/database/$D1_ID/query" "$name" < <(jq -nc '{sql: "SELECT spike, json FROM results"}')
+    cf_write POST "$ACCT/d1/database/$D1_ID/query" "$name" "$D1_ID" < <(jq -nc '{sql: "SELECT spike, json FROM results"}')
     if ok; then
       rows="$(jq -c '[.result[0].results[]?]' <<< "$BODY")"
       n="$(jq 'length' <<< "$rows")"
@@ -411,11 +475,21 @@ doomed() {
     | "\(.n)\t\(.i)"' <<< "$BODY"
 }
 
-# guarded_delete <kind> <name> <path>: refuses any name without the prefix.
+# guarded_delete <kind> <name> <path> [id]: refuses any name without the
+# prefix, and an id that is not an id.
 guarded_delete() {
   spike_name_ok "$2" || refuse "cleanup: refusing to delete $1 $2 (not $PREFIX)"
-  cf_write DELETE "$3" "$2"
+  [ -z "${4:-}" ] || know_id "$4" "cleanup: $1 $2"
+  cf_write DELETE "$3" "$2" "${4:-}"
   record cleanup "$1 $2" "$(tf ok)" "deleted (HTTP $HTTP)"
+}
+
+# skip_bad_id <kind> <name> <id>: true (and recorded) when the listed id is
+# not an id, so it is never used and the other leftovers are still deleted.
+skip_bad_id() {
+  id_ok "$3" && return 1
+  record cleanup "$1 $2" false "refused: its id is not an id"
+  return 0
 }
 
 spike_cleanup() {
@@ -432,13 +506,15 @@ spike_cleanup() {
   done
   cf_get "$ACCT/d1/database?name=$PREFIX&per_page=100"
   doomed name uuid created_at | while IFS=$'\t' read -r n i; do
-    [ -z "$n" ] || [ -z "$i" ] || guarded_delete d1 "$n" "$ACCT/d1/database/$i"
+    [ -z "$n" ] || [ -z "$i" ] || skip_bad_id d1 "$n" "$i" || guarded_delete d1 "$n" "$ACCT/d1/database/$i" "$i"
   done
-  if store_id && [ -n "$STORE" ]; then
+  if store_id; then
     cf_get "$ACCT/secrets_store/stores/$STORE/secrets?search=$PREFIX&per_page=100"
     doomed name id created | while IFS=$'\t' read -r n i; do
-      [ -z "$n" ] || [ -z "$i" ] || guarded_delete secret "$n" "$ACCT/secrets_store/stores/$STORE/secrets/$i"
+      [ -z "$n" ] || [ -z "$i" ] || skip_bad_id secret "$n" "$i" || guarded_delete secret "$n" "$ACCT/secrets_store/stores/$STORE/secrets/$i" "$i"
     done
+  else
+    record cleanup "secrets" false "not listed: $STORE_WHY"
   fi
   rm -f "$root"/spikes/provapi-staging/*.rendered.jsonc
   [ -s "$RESULTS_DIR/cleanup.jsonl" ] || echo "cleanup: nothing to delete"

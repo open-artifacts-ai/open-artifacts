@@ -51,12 +51,19 @@ jobs:
     env:
       SPIKES: ${{ inputs.spikes }}
       RUN_ID: ${{ github.run_id }}
-      TOKEN_FILE: ${{ runner.temp }}/cf-token
-      RESULTS_DIR: ${{ runner.temp }}/spike-results
-      RESULTS_OUT: ${{ runner.temp }}/spike-results.json
-      STATE_DIR: ${{ runner.temp }}/spike-state
       HOSTED_DIR: ${{ github.workspace }}/.github/hosted
     steps:
+      # The runner context is not available in job-level env, so the paths
+      # under $RUNNER_TEMP are set here, for every later step.
+      - name: Set the paths
+        run: |
+          set -euo pipefail
+          {
+            echo "TOKEN_FILE=$RUNNER_TEMP/cf-token"
+            echo "RESULTS_DIR=$RUNNER_TEMP/spike-results"
+            echo "RESULTS_OUT=$RUNNER_TEMP/spike-results.json"
+            echo "STATE_DIR=$RUNNER_TEMP/spike-state"
+          } >> "$GITHUB_ENV"
       - name: Check the inputs
         run: |
           set -euo pipefail

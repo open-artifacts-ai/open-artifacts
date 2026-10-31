@@ -1566,3 +1566,31 @@ describe("demo instance workflows", () => {
     });
   });
 });
+
+// GitHub evaluates workflow- and job-level env before a runner exists: the
+// runner and steps contexts are not available there, and a dispatch fails
+// with "Unrecognized named-value". actionlint (ci.yml lint job) also catches
+// this; this keeps it in the test suite.
+describe("workflow and job env use only contexts available there", () => {
+  const dir = join(root, ".github/workflows");
+  for (const file of readdirSync(dir).filter((f) => /\.ya?ml$/.test(f))) {
+    it(file, () => {
+      const w = wf(file);
+      const bad: string[] = [];
+      const check = (where: string, env: unknown) => {
+        for (const [k, v] of Object.entries(
+          (env ?? {}) as Record<string, unknown>,
+        ))
+          if (/\$\{\{[^}]*\b(runner|steps)\./.test(String(v)))
+            bad.push(`${where}.env.${k}`);
+      };
+      check("workflow", w.env);
+      for (const [job, def] of Object.entries(
+        // biome-ignore lint/suspicious/noExplicitAny: workflow YAML is untyped
+        (w.jobs ?? {}) as Record<string, any>,
+      ))
+        check(`jobs.${job}`, def.env);
+      expect(bad).toEqual([]);
+    });
+  }
+});

@@ -5,7 +5,9 @@
 // - oa-s-spike-<run> (wrangler.jsonc) binds it cross-script, plus the
 //   staging dispatch namespace and a throwaway D1 database.
 // Neither has a route, workers.dev or preview URL. The caller runs once, on
-// its first cron tick, and writes each spike's result to its own D1 database;
+// its first cron tick (every minute, the shortest cron), and writes each
+// spike's result to its own D1 database, then a done row; every later tick
+// returns at that row;
 // CI reads them back over the D1 REST API. Reads only against rl-a and rl-b:
 // every fetch below is a plain GET with no body.
 import { WorkflowEntrypoint } from "cloudflare:workers";
@@ -194,6 +196,13 @@ const SPIKES: Record<string, (env: Env) => Promise<Result>> = {
 
 /** Runs each requested spike once; a throw is that spike's failure only. */
 export async function runOnce(env: Env): Promise<void> {
+  // After the first run, every later cron tick returns here (one read), so a
+  // failed cleanup leaves a Worker that does nothing until it is deleted.
+  try {
+    if (await env.DB.prepare("SELECT 1 AS d FROM done LIMIT 1").first()) return;
+  } catch {
+    // No done table yet: the first run.
+  }
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS results (spike TEXT PRIMARY KEY, json TEXT NOT NULL)",
   ).run();
@@ -222,6 +231,10 @@ export async function runOnce(env: Env): Promise<void> {
       .bind(name, JSON.stringify(r))
       .run();
   }
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS done (id INTEGER PRIMARY KEY)",
+  ).run();
+  await env.DB.prepare("INSERT OR IGNORE INTO done (id) VALUES (1)").run();
 }
 
 export default {
