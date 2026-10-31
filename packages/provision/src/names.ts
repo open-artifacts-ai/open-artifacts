@@ -9,6 +9,8 @@ import type { InstallId } from "./types.js";
 
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 const ID_RE = /^i[a-z0-9]{11}$/;
+/** A HOSTS value: an install id, optionally `paused:` or `closed:` first. */
+const HOSTS_VALUE_RE = /^(?:(paused|closed):)?(i[a-z0-9]{11})$/;
 
 // Moved to @oa/shared/provisioning (design v7 section 3); re-exported here.
 export { isValidSlug, RESERVED_SLUGS, SLUG_RE, slugRule };
@@ -23,6 +25,57 @@ export function newInstallId(): InstallId {
   let out = "i";
   for (const b of bytes) out += ALPHABET[b & 31];
   return out;
+}
+
+/**
+ * Platform principals on the broker registries (design v7 4.1): valid install
+ * ids that newInstallId can never mint (its alphabet has no 0, 1, 8 or 9).
+ * No install is ever created with one.
+ */
+export const PLATFORM_PRINCIPAL_IDS: readonly InstallId[] = Object.freeze([
+  "i000000admin",
+  "i00000signup",
+]);
+
+export const isPlatformPrincipalId = (id: unknown): boolean =>
+  typeof id === "string" && PLATFORM_PRINCIPAL_IDS.includes(id);
+
+/**
+ * TEST_DOMAIN of every API-created test-hook install on staging (design v7
+ * 3.3); prod refuses TEST_DOMAIN. rl-a's value in tests/redline's local pair;
+ * the staging installs' stored value is unverified until W2 reads it (14.4).
+ */
+export const STAGING_TEST_DOMAIN = "oa-redline-a.fyi";
+
+/** What a HOSTS value says dispatch does with its host (design v7 5.5). */
+export type HostsMode = "serving" | "paused" | "closed";
+
+/**
+ * The one HOSTS value parser: `<id>` serves, `paused:<id>` and `closed:<id>`
+ * answer the 503 page. Anything else, a platform principal id included, is
+ * null (dispatch's single 404).
+ */
+export function parseHostsValue(
+  v: unknown,
+): { installId: InstallId; mode: HostsMode } | null {
+  if (typeof v !== "string") return null;
+  const m = HOSTS_VALUE_RE.exec(v);
+  // A platform principal is never an install (4.1), so never a serving host.
+  if (!m || isPlatformPrincipalId(m[2])) return null;
+  return {
+    installId: m[2] as InstallId,
+    mode: (m[1] as "paused" | "closed" | undefined) ?? "serving",
+  };
+}
+
+/** The HOSTS value for `id` in `mode`; parseHostsValue reads it back. */
+export function hostsValue(id: InstallId, mode: HostsMode): string {
+  if (!isInstallId(id)) throw new Error("hostsValue needs an install id");
+  if (isPlatformPrincipalId(id))
+    throw new Error("hostsValue: a platform principal is never an install");
+  if (mode === "serving") return id;
+  if (mode === "paused" || mode === "closed") return `${mode}:${id}`;
+  throw new Error(`unknown HOSTS mode ${String(mode)}`);
 }
 
 export type Env = "staging" | "prod";
@@ -75,6 +128,7 @@ export function platformNames(env: Env): {
   dispatch: string;
   hosts: string;
   turnstile: string;
+  provisionToken: string;
 } {
   if (!Object.hasOwn(ENV_PREFIX, env)) throw new ForeignResource("", env);
   const p = ENV_PREFIX[env];
@@ -95,6 +149,9 @@ export function platformNames(env: Env): {
     hosts: `${p}hosts`,
     // The one Turnstile widget of the env (created once by Task 8's init).
     turnstile: `${p}turnstile`,
+    // The provisioner's Cloudflare token: a Secrets Store secret, bound by
+    // oa-<p>-provisioner only (design v7 2.5).
+    provisionToken: `${p}provision-token`,
   };
 }
 

@@ -14,6 +14,12 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./jobs": {
+      "types": "./dist/jobs.d.ts",
+      "workerd": "./src/jobs.ts",
+      "import": "./dist/jobs.js",
+      "default": "./dist/jobs.js"
+    },
     "./names": {
       "types": "./dist/names.d.ts",
       "workerd": "./src/names.ts",

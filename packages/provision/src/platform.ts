@@ -3,7 +3,7 @@
 // customer data and no secret; every write checks the env prefix first.
 import { createHash } from "node:crypto";
 import type { Cf, D1Result } from "./cf.js";
-import { assertOwnResource, type Env } from "./names.js";
+import { assertOwnResource, type Env, isPlatformPrincipalId } from "./names.js";
 import type { InstallId } from "./types.js";
 
 export interface InstallRow {
@@ -181,6 +181,9 @@ export class PlatformDb {
     testHooks: boolean;
     inputsHash: string;
   }): Promise<InstallRow> {
+    // 4.1: a platform principal's id is never an install.
+    if (isPlatformPrincipalId(r.id))
+      throw new Error(`${r.id} is a platform principal id, never an install`);
     const base = RL_BASE[this.env];
     const now = this.now();
     assertOwnResource(this.db.name, this.env);
