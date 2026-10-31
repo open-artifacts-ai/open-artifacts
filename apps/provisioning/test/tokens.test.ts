@@ -772,7 +772,8 @@ describe("principalByBearer: token hashes compared in constant time (4.1)", () =
                   bind: () => ({
                     first: async () => ({
                       ...row,
-                      token_hash: `${row?.token_hash?.slice(0, -1)}0`,
+                      // Flip the last hex digit: never equal to the original.
+                      token_hash: `${row?.token_hash?.slice(0, -1)}${row?.token_hash?.endsWith("0") ? "1" : "0"}`,
                     }),
                   }),
                 };

@@ -725,6 +725,20 @@ describe("code exchange and tokens", () => {
     ).toBeLessThanOrEqual(1);
   });
 
+  it("a session row ending past 8 h still caps the refresh chain at 8 h (Q3)", async () => {
+    const w = await oauthWorld({}, 12 * HOUR);
+    const before = Math.floor(Date.now() / 1000);
+    const { tokens } = await grant(w);
+    const after = Math.floor(Date.now() / 1000);
+    const row = await rowOf(w, tokens);
+    const { items } = await authServer(w.env)
+      .getOAuthApi(w.env)
+      .listUserGrants(row?.oauth_user ?? "");
+    const end = items.find((i) => i.id === row?.grant_id)?.expiresAt ?? 0;
+    expect(end).toBeGreaterThanOrEqual(before + 8 * 3600 - 1);
+    expect(end).toBeLessThanOrEqual(after + 8 * 3600);
+  });
+
   it("exchange refused for a revoked row; no grant left", async () => {
     const w = await oauthWorld();
     const { exchange, clientId } = await authorized(w);
@@ -783,6 +797,27 @@ describe("per-call D1 check (oauthPrincipal, 9A.3.3)", () => {
       scopes: ["installs:read", "audit:read"],
       authAt: null,
     });
+  });
+
+  it("a 15-minute access token is re-checked in D1 on every call: a D1-only revoke refuses the next one", async () => {
+    const w = await oauthWorld();
+    const { tokens } = await grant(w);
+    expect(tokens.expires_in).toBe(15 * 60);
+    expect(isRefusal(await mcpPrincipal(w, tokens))).toBe(false);
+    const row = await rowOf(w, tokens);
+    await w.db
+      .prepare("UPDATE agent_tokens SET revoked_at = ?1 WHERE id = ?2")
+      .bind(Date.now(), row?.id)
+      .run();
+    // KV still holds a valid token; only the per-call D1 read refuses it.
+    expect(
+      await authServer(w.env).validateToken(
+        RESOURCE,
+        tokens.access_token,
+        w.env,
+      ),
+    ).not.toBeNull();
+    expect(isRefusal(await mcpPrincipal(w, tokens))).toBe(true);
   });
 
   it("an OAuth bearer on /v1 is 401", async () => {
