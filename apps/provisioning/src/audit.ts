@@ -1,6 +1,5 @@
 import type { RouteId } from "@oa/shared/provisioning";
 import type { Env } from "./env.js";
-import { NotImplemented } from "./errors.js";
 import type { Principal } from "./principal.js";
 import type { Surface } from "./routes/invoke.js";
 
@@ -35,11 +34,82 @@ export type AuditEntry = {
   detail?: Record<string, unknown>;
 };
 
+/** HMAC-SHA256(ADMIN_SESSION_KEY, value), first 16 bytes, hex (4.9: no raw IPs). */
+export async function hmac16(env: Env, value: string): Promise<string> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(env.ADMIN_SESSION_KEY),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, enc.encode(value)),
+  );
+  return Array.from(mac.subarray(0, 16), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+const actorOf = (a: AuditEntry["actor"]) => {
+  if (typeof a === "string")
+    return { kind: "system", label: a.slice("system:".length), tokenId: null };
+  if (a.kind === "signin")
+    return { kind: "admin", label: a.email ?? null, tokenId: null };
+  return { kind: a.kind, label: a.label, tokenId: a.tokenId ?? null };
+};
+
 /**
- * Appends one admin_audit row. W4 builds the body: `ip_hmac` and
- * `email_hmac` are HMAC-SHA256(ADMIN_SESSION_KEY, value) truncated to 16
- * bytes, computed here so no caller keeps its own copy.
+ * The detail column: the caller's detail, the route, and for a token the
+ * minting admin; an MCP call adds surface, tool and clientVersion (9A.8).
  */
-export async function audit(_env: Env, _entry: AuditEntry): Promise<void> {
-  throw new NotImplemented("audit");
+function detailOf(e: AuditEntry): Record<string, unknown> | null {
+  const d: Record<string, unknown> = { ...e.detail };
+  if (e.route) d.route = e.route;
+  if (typeof e.actor !== "string" && e.actor.kind === "token")
+    d.admin = e.actor.email ?? null;
+  if (e.surface?.kind === "mcp") {
+    d.surface = "mcp";
+    d.tool = e.surface.tool;
+    d.clientVersion = e.surface.clientVersion;
+  }
+  return Object.keys(d).length ? d : null;
+}
+
+/**
+ * The INSERT for one admin_audit row, for a caller that writes it in the
+ * same D1 batch as the change it records (job.accepted with its job).
+ * `ip_hmac` and `email_hmac` are HMAC-SHA256(ADMIN_SESSION_KEY, value)
+ * truncated to 16 bytes, computed here so no caller keeps its own copy.
+ */
+export async function auditStatement(
+  env: Env,
+  e: AuditEntry,
+): Promise<D1PreparedStatement> {
+  const a = actorOf(e.actor);
+  const detail = detailOf(e);
+  return env.PLATFORM_DB.prepare(
+    `INSERT INTO admin_audit (at, actor_kind, actor_label, token_id, action, install_id, job_id, request_id, outcome, code, ip_hmac, email_hmac, detail)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
+  ).bind(
+    Date.now(),
+    a.kind,
+    a.label,
+    a.tokenId,
+    e.action,
+    e.installId ?? null,
+    e.jobId ?? null,
+    e.requestId ?? null,
+    e.outcome,
+    e.code ?? null,
+    e.ip ? await hmac16(env, e.ip) : null,
+    e.email ? await hmac16(env, e.email) : null,
+    detail ? JSON.stringify(detail) : null,
+  );
+}
+
+/** Appends one admin_audit row (4.9). */
+export async function audit(env: Env, entry: AuditEntry): Promise<void> {
+  await (await auditStatement(env, entry)).run();
 }

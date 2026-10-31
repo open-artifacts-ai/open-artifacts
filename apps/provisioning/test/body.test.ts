@@ -4,7 +4,10 @@ import { ApiError } from "../src/errors.js";
 
 // 3.1: writes need application/json (415), at most 16 KiB (413), and parse.
 
-const post = (body: BodyInit | null, type: string | null = "application/json") =>
+const post = (
+  body: BodyInit | null,
+  type: string | null = "application/json",
+) =>
   new Request("https://api.hosted.test/v1/installs", {
     method: "POST",
     body,

@@ -2,8 +2,10 @@ import {
   type AdminToolName,
   type ApiRouteId,
   authorize,
+  type RouteDef,
   ROUTES,
 } from "@oa/shared/provisioning";
+import { type AuditEntry, audit } from "../audit.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { limit } from "../limits.js";
@@ -13,7 +15,7 @@ import { HANDLERS } from "./handlers.js";
 // The one entry point both surfaces call (design v7 9A.4). It runs the
 // post-authn part of the 4.2 check order: rate limit -> authz (authz.ts) ->
 // schema -> policy -> business -> handler -> audit, and throws ApiError on
-// any refusal. C4 wires the limit and authz; W4 adds schema through audit.
+// any refusal.
 // The browser routes (R22-R24: cookies, Set-Cookie, redirects) never come
 // here: W5a builds them beside it in src/auth/, and the adapter short-circuits
 // them, so the type leaves them out: `route` is ApiRouteId (shared), the
@@ -40,6 +42,43 @@ export type RouteResult = {
   headers: Record<string, string>;
 };
 
+type Parsed = { ok: true; input: RouteInput } | { ok: false; fields: string[] };
+
+/** The schema step: the route's params, query and body zod, defaults applied. */
+export function parseInput(def: RouteDef, input: RouteInput): Parsed {
+  const fields: string[] = [];
+  const one = (where: string, schema: RouteDef["body"], v: unknown) => {
+    const r = schema.safeParse(v);
+    if (r.success) return r.data as Record<string, unknown>;
+    for (const i of r.error.issues)
+      fields.push([where, ...i.path.map(String)].join("."));
+    return undefined;
+  };
+  const params = one("params", def.params, input.params ?? {});
+  const query = one("query", def.query, input.query ?? {});
+  // A route without body fields takes none; a write with fields needs one.
+  const body =
+    def.method === "GET"
+      ? undefined
+      : one(
+          "body",
+          def.body,
+          Object.keys(def.body.shape).length === 0 ? {} : input.body,
+        );
+  if (fields.length) return { ok: false, fields };
+  return {
+    ok: true,
+    input: {
+      params: params as Record<string, string>,
+      query: query as Record<string, string>,
+      body,
+    },
+  };
+}
+
+/** Audit never masks the refusal it records. */
+const tryAudit = (env: Env, e: AuditEntry) => audit(env, e).catch(() => {});
+
 export async function invokeRoute(
   env: Env,
   ctx: ExecutionContext,
@@ -48,20 +87,53 @@ export async function invokeRoute(
   input: RouteInput,
   surface: Surface,
 ): Promise<RouteResult> {
-  const r = await limit(
-    env,
-    ROUTES[route].write ? "write" : "read",
-    principal.rateKey,
-  );
+  const def = ROUTES[route];
+  const r = await limit(env, def.write ? "write" : "read", principal.rateKey);
   if (r) throw new ApiError(r.code);
   const d = authorize(route, principal, env.OA_ENV);
-  if (!d.ok) throw new ApiError(d.code);
-  return HANDLERS[route]({
-    env,
-    ctx,
-    principal,
-    input,
-    surface,
-    reach: d.reach,
-  });
+  if (!d.ok) {
+    await tryAudit(env, {
+      action: "authz.refused",
+      actor: principal,
+      outcome: "refused",
+      route,
+      code: d.code,
+      surface,
+    });
+    throw new ApiError(d.code);
+  }
+  const parsed = parseInput(def, input);
+  if (!parsed.ok)
+    throw new ApiError("invalid_input", "invalid input", {
+      fields: parsed.fields,
+    });
+  try {
+    return await HANDLERS[route]({
+      env,
+      ctx,
+      principal,
+      route,
+      input: parsed.input,
+      surface,
+      reach: d.reach,
+    });
+  } catch (e) {
+    // A refused job write (policy or business) is job.refused (4.9).
+    if (e instanceof ApiError && def.job) {
+      const body = parsed.input.body as { requestId?: string } | undefined;
+      const params = parsed.input.params ?? {};
+      await tryAudit(env, {
+        action: "job.refused",
+        actor: principal,
+        outcome: "refused",
+        route,
+        code: e.code,
+        installId: params.id,
+        requestId: body?.requestId,
+        surface,
+        detail: params.jobId ? { jobId: params.jobId } : undefined,
+      });
+    }
+    throw e;
+  }
 }

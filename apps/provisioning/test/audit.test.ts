@@ -70,7 +70,11 @@ describe("audit()", () => {
       actor_kind: "admin",
       actor_label: "a@b.test",
     });
-    await audit(env, { action: "test.four", actor: "system:scheduler", outcome: "ok" });
+    await audit(env, {
+      action: "test.four",
+      actor: "system:scheduler",
+      outcome: "ok",
+    });
     expect(await last("test.four")).toMatchObject({
       actor_kind: "system",
       actor_label: "scheduler",

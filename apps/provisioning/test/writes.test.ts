@@ -104,7 +104,10 @@ describe("R4 create by an admin session", () => {
       TIER: "business",
     });
     expect(
-      await row("SELECT owner_email FROM signup_secret WHERE signup_id = ?", job.id),
+      await row(
+        "SELECT owner_email FROM signup_secret WHERE signup_id = ?",
+        job.id,
+      ),
     ).toEqual({ owner_email: "me@leourbina.com" });
     const j = await row<Record<string, string>>(
       "SELECT * FROM jobs WHERE id = ?",
@@ -196,13 +199,13 @@ describe("R4 create by an admin session", () => {
   it("slug_taken by an installs row or a live signup; a failed signup frees it", async () => {
     const e = fakeEnv();
     await seedInstall({ slug: "held" });
-    expect((await call(e, ADMIN_P, "R4", { body: leo({ slug: "held" }) })).code).toBe(
-      "slug_taken",
-    );
+    expect(
+      (await call(e, ADMIN_P, "R4", { body: leo({ slug: "held" }) })).code,
+    ).toBe("slug_taken");
     await call(e, ADMIN_P, "R4", { body: leo({ slug: "live" }) });
-    expect((await call(e, ADMIN_P, "R4", { body: leo({ slug: "live" }) })).code).toBe(
-      "slug_taken",
-    );
+    expect(
+      (await call(e, ADMIN_P, "R4", { body: leo({ slug: "live" }) })).code,
+    ).toBe("slug_taken");
     await seedFailedCreate({ slug: "freed" });
     expect(
       (await call(e, ADMIN_P, "R4", { body: leo({ slug: "freed" }) })).status,
@@ -244,7 +247,9 @@ describe("R4 create by an admin session", () => {
       leo({ auth: { providers: ["google"], domains: [] } }),
       leo({ version: "1.42" }),
     ])
-      expect((await call(e, ADMIN_P, "R4", { body })).code).toBe("invalid_input");
+      expect((await call(e, ADMIN_P, "R4", { body })).code).toBe(
+        "invalid_input",
+      );
   });
 
   it("a version absent from GET /releases is 422 release_not_published", async () => {
@@ -297,11 +302,17 @@ describe("R4 create by a token and by OIDC", () => {
   it("an MCP call records surface, tool and clientVersion in audit detail", async () => {
     const e = fakeEnv();
     const { sendWelcome: _s, ...body } = leo();
-    await call(e, WRITE, "R4", { body }, {
-      kind: "mcp",
-      tool: "create_install",
-      clientVersion: "1.2.3",
-    });
+    await call(
+      e,
+      WRITE,
+      "R4",
+      { body },
+      {
+        kind: "mcp",
+        tool: "create_install",
+        clientVersion: "1.2.3",
+      },
+    );
     const [a] = await auditRows(body.requestId);
     expect(JSON.parse(a?.detail as string)).toMatchObject({
       surface: "mcp",
@@ -352,9 +363,9 @@ describe("R4 self-serve policy (4.2 order)", () => {
 
   it("forbidden fields first (403), before signups_closed", async () => {
     const e = fakeEnv();
-    expect((await call(e, u(), "R4", { body: ss({ tier: "team" }) })).code).toBe(
-      "forbidden",
-    );
+    expect(
+      (await call(e, u(), "R4", { body: ss({ tier: "team" }) })).code,
+    ).toBe("forbidden");
     expect((await call(e, u(), "R4", { body: ss() })).code).toBe(
       "signups_closed",
     );
@@ -365,9 +376,8 @@ describe("R4 self-serve policy (4.2 order)", () => {
     expect((await call(e, u(), "R4", { body: ss() })).code).toBe(
       "signups_closed",
     );
-    expect(
-      (await call(e, { ...u(), testUser: true }, "R4", { body: ss() })).status,
-    ).toBe(202);
+    const tester = { ...u(), testUser: true };
+    expect((await call(e, tester, "R4", { body: ss() })).status).toBe(202);
   });
 
   it("Turnstile next: missing or refused is 403 turnstile_failed", async () => {
@@ -376,9 +386,9 @@ describe("R4 self-serve policy (4.2 order)", () => {
     expect((await call(e, u(), "R4", { body: none })).code).toBe(
       "turnstile_failed",
     );
-    expect((await call(e, u(), "R4", { body: ss({ turnstile: "" }) })).code).toBe(
-      "turnstile_failed",
-    );
+    expect(
+      (await call(e, u(), "R4", { body: ss({ turnstile: "" }) })).code,
+    ).toBe("turnstile_failed");
     expect(e.provisioner.calls.at(-1)).toEqual({
       method: "verifyTurnstile",
       arg: {
@@ -426,12 +436,18 @@ describe("R4 self-serve policy (4.2 order)", () => {
       TIER: "trial",
     });
     expect(
-      await row("SELECT owner_email FROM signup_secret WHERE signup_id = ?", id),
+      await row(
+        "SELECT owner_email FROM signup_secret WHERE signup_id = ?",
+        id,
+      ),
     ).toEqual({ owner_email: "u1@acme.test" });
     expect(
       await row("SELECT signup_id FROM signup_accounts WHERE owner_sub = 'u3'"),
     ).toEqual({ signup_id: id });
-    expect(r.body.install).toMatchObject({ source: "self-serve", tier: "trial" });
+    expect(r.body.install).toMatchObject({
+      source: "self-serve",
+      tier: "trial",
+    });
   });
 
   it("per-/64 create counter: the 4th in an hour is 429", async () => {
@@ -500,7 +516,10 @@ describe("lifecycle writes (R5-R13)", () => {
     });
     expect(r.code).toBe("job_in_progress");
     expect(r.details).toEqual({ jobId: running });
-    await db.prepare("UPDATE jobs SET status = 'done' WHERE id = ?").bind(running).run();
+    await db
+      .prepare("UPDATE jobs SET status = 'done' WHERE id = ?")
+      .bind(running)
+      .run();
     expect(
       (
         await call(e, ADMIN_P, "R7", {
@@ -579,7 +598,10 @@ describe("lifecycle writes (R5-R13)", () => {
   it("R10 restore within grace; after purge_at or once a purge started: grace_expired", async () => {
     const e = fakeEnv();
     const restore = (id: string) =>
-      call(e, ADMIN_P, "R10", { params: { id }, body: { requestId: requestId() } });
+      call(e, ADMIN_P, "R10", {
+        params: { id },
+        body: { requestId: requestId() },
+      });
     const grace = { deleted_at: NOW - DAY, purge_at: NOW + DAY };
     const a = await seedInstall({ state: "deleting", lifecycle: grace });
     expect((await restore(a.id)).body.job.kind).toBe("restore");
@@ -646,7 +668,9 @@ describe("lifecycle writes (R5-R13)", () => {
       });
     const old = await purge(NOW - 11 * MIN);
     expect(old.code).toBe("reauth_required");
-    expect(old.details).toMatchObject({ reauthUrl: expect.stringContaining("reauth=1") });
+    expect(old.details).toMatchObject({
+      reauthUrl: expect.stringContaining("reauth=1"),
+    });
     const fresh = await purge(NOW - 9 * MIN);
     expect(fresh.body.job.kind).toBe("purge");
   });
@@ -698,7 +722,10 @@ describe("lifecycle writes (R5-R13)", () => {
 
   it("R6 rollback goes to previous_version; none is invalid_state", async () => {
     const e = fakeEnv();
-    const a = await seedInstall({ version: "1.41.2", previousVersion: "1.40.0" });
+    const a = await seedInstall({
+      version: "1.41.2",
+      previousVersion: "1.40.0",
+    });
     const r = await call(e, ADMIN_P, "R6", {
       params: { id: a.id },
       body: { requestId: requestId() },
@@ -723,7 +750,9 @@ describe("lifecycle writes (R5-R13)", () => {
       body: { requestId: requestId() },
     });
     expect(r.body.job.kind).toBe("retry");
-    expect(e.provisionInstall.created.map((c) => c.id)).toEqual([r.body.job.id]);
+    expect(e.provisionInstall.created.map((c) => c.id)).toEqual([
+      r.body.job.id,
+    ]);
     expect(
       await row("SELECT signup_id FROM jobs WHERE id = ?", r.body.job.id),
     ).toEqual({ signup_id: f.jobId });
@@ -770,9 +799,16 @@ describe("R25 cancel and R26 redline-creds", () => {
       ).code,
     ).toBe("confirm_mismatch");
     const body = { requestId: requestId(), confirmSlug: slug };
-    const r = await call(e, ADMIN_P, "R25", { params: { jobId: target }, body });
+    const r = await call(e, ADMIN_P, "R25", {
+      params: { jobId: target },
+      body,
+    });
     expect(r.status).toBe(202);
-    expect(r.body.job).toMatchObject({ kind: "cleanup", status: "queued", installId: id });
+    expect(r.body.job).toMatchObject({
+      kind: "cleanup",
+      status: "queued",
+      installId: id,
+    });
     expect(
       await row(
         "SELECT status, error_code, finished_at FROM jobs WHERE id = ?",
@@ -782,15 +818,18 @@ describe("R25 cancel and R26 redline-creds", () => {
     expect(
       await row("SELECT parent_job_id FROM jobs WHERE id = ?", r.body.job.id),
     ).toEqual({ parent_job_id: target });
-    expect(
-      (await (await e.manageInstall.get(target)).status()).status,
-    ).toBe("terminated");
+    expect((await (await e.manageInstall.get(target)).status()).status).toBe(
+      "terminated",
+    );
     expect(e.manageInstall.created.map((c) => c.id)).toContain(r.body.job.id);
     expect((await auditRows(body.requestId)).map((a) => a.action)).toEqual([
       "job.canceled",
     ]);
     // Replay answers the same cleanup job.
-    const again = await call(e, ADMIN_P, "R25", { params: { jobId: target }, body });
+    const again = await call(e, ADMIN_P, "R25", {
+      params: { jobId: target },
+      body,
+    });
     expect(again.body.job.id).toBe(r.body.job.id);
   });
 

@@ -142,9 +142,9 @@ describe("R2 list and R3 detail", () => {
       restorable: false,
       testHooks: false,
     });
-    expect((await call(e, READ, "R3", { params: { id } })).body.ownerEmail).toBe(
-      null,
-    );
+    expect(
+      (await call(e, READ, "R3", { params: { id } })).body.ownerEmail,
+    ).toBe(null);
     expect((await call(e, PII, "R3", { params: { id } })).body.ownerEmail).toBe(
       "boss@acme.test",
     );
@@ -181,9 +181,9 @@ describe("R2 list and R3 detail", () => {
 
   it("R3 on a bad id is invalid_input; unknown is 404", async () => {
     const e = fakeEnv();
-    expect((await call(e, ADMIN_P, "R3", { params: { id: "nope" } })).code).toBe(
-      "invalid_input",
-    );
+    expect(
+      (await call(e, ADMIN_P, "R3", { params: { id: "nope" } })).code,
+    ).toBe("invalid_input");
     expect(
       (await call(e, ADMIN_P, "R3", { params: { id: "izzzzzzzzzzz" } })).code,
     ).toBe("not_found");
@@ -259,9 +259,9 @@ describe("R14 and R15 jobs", () => {
     const e = fakeEnv();
     const { id } = await seedInstall({ source: "self-serve", ownerSub: "u2" });
     const j = await seedJob(id, {});
-    expect((await call(e, userP("u1"), "R15", { params: { jobId: j } })).code).toBe(
-      "not_found",
-    );
+    expect(
+      (await call(e, userP("u1"), "R15", { params: { jobId: j } })).code,
+    ).toBe("not_found");
   });
 });
 
@@ -271,7 +271,8 @@ describe("R16 releases", () => {
     const r = await call(e, ADMIN_P, "R16");
     expect(r.body).toEqual({ items: FAKE_RELEASES });
     await call(e, ADMIN_P, "R16");
-    const n = () => e.provisioner.calls.filter((c) => c.method === "releases").length;
+    const n = () =>
+      e.provisioner.calls.filter((c) => c.method === "releases").length;
     expect(n()).toBe(1);
     now += 61_000;
     await call(e, ADMIN_P, "R16");
@@ -296,9 +297,9 @@ describe("R18 slug check", () => {
     await call(e, userP(), "R18", { params: { slug: "x" } });
     expect(e.limits.RL_PV_SLUG_IP.keys).toEqual(["192.0.2.1"]);
     e.limits.RL_PV_SLUG_IP.allow = false;
-    expect((await call(e, userP(), "R18", { params: { slug: "x" } })).code).toBe(
-      "rate_limited",
-    );
+    expect(
+      (await call(e, userP(), "R18", { params: { slug: "x" } })).code,
+    ).toBe("rate_limited");
   });
 });
 
@@ -312,7 +313,11 @@ describe("R17 audit", () => {
       action: "job.accepted",
       install_id: installId,
       outcome: "ok",
-      detail: JSON.stringify({ admin: "other@example.com", ownerEmail: "o@acme.test", kind: "create" }),
+      detail: JSON.stringify({
+        admin: "other@example.com",
+        ownerEmail: "o@acme.test",
+        kind: "create",
+      }),
     });
     await insert("hosted_audit", {
       at: NOW - 2,
@@ -336,25 +341,26 @@ describe("R17 audit", () => {
     await seedAudit(id);
     const all = await call(e, PII, "R17", { query: { limit: "100" } });
     for (const x of all.body.items) AuditEntrySchema.parse(x);
-    const mine = all.body.items.filter(
-      (x: { at: number }) => x.at >= NOW - 3,
-    );
+    const mine = all.body.items.filter((x: { at: number }) => x.at >= NOW - 3);
     expect(mine.map((x: { source: string }) => x.source)).toEqual([
       "refusals",
       "provision",
       "api",
     ]);
-    expect(mine[0]).toMatchObject({ count: 7, outcome: "refused", code: "unauthenticated" });
+    expect(mine[0]).toMatchObject({
+      count: 7,
+      outcome: "refused",
+      code: "unauthenticated",
+    });
     const p1 = await call(e, PII, "R17", { query: { limit: "1" } });
     const p2 = await call(e, PII, "R17", {
       query: { limit: "1", cursor: p1.body.nextCursor },
     });
     expect(p2.body.items[0].id).not.toBe(p1.body.items[0].id);
     const byInstall = await call(e, PII, "R17", { query: { installId: id } });
-    expect(byInstall.body.items.map((x: { source: string }) => x.source)).toEqual([
-      "provision",
-      "api",
-    ]);
+    expect(
+      byInstall.body.items.map((x: { source: string }) => x.source),
+    ).toEqual(["provision", "api"]);
   });
 
   it("email detail fields are null for a token without installs:pii", async () => {
@@ -363,8 +369,14 @@ describe("R17 audit", () => {
     await seedAudit(id);
     const t = tokenP(["audit:read"]);
     const r = await call(e, t, "R17", { query: { installId: id } });
-    const api = r.body.items.find((x: { source: string }) => x.source === "api");
-    expect(api.detail).toEqual({ admin: null, ownerEmail: null, kind: "create" });
+    const api = r.body.items.find(
+      (x: { source: string }) => x.source === "api",
+    );
+    expect(api.detail).toEqual({
+      admin: null,
+      ownerEmail: null,
+      kind: "create",
+    });
     const p = await call(e, PII, "R17", { query: { installId: id } });
     expect(
       p.body.items.find((x: { source: string }) => x.source === "api").detail
@@ -388,7 +400,8 @@ describe("R17 audit", () => {
 
   it("a bad cursor is invalid_input", async () => {
     expect(
-      (await call(fakeEnv(), ADMIN_P, "R17", { query: { cursor: "e30" } })).code,
+      (await call(fakeEnv(), ADMIN_P, "R17", { query: { cursor: "e30" } }))
+        .code,
     ).toBe("invalid_input");
   });
 });

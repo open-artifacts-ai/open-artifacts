@@ -46,7 +46,9 @@ describe("R27 /world", () => {
   it("authz: A and T installs:read; O and U 403", async () => {
     const e = fakeEnv();
     expect((await call(e, tokenP(["installs:read"]), "R27")).status).toBe(200);
-    expect((await call(e, tokenP(["audit:read"]), "R27")).code).toBe("forbidden");
+    expect((await call(e, tokenP(["audit:read"]), "R27")).code).toBe(
+      "forbidden",
+    );
     expect((await call(e, OIDC_P, "R27")).code).toBe("forbidden");
     expect((await call(e, userP(), "R27")).code).toBe("forbidden");
   });
@@ -96,7 +98,13 @@ describe("R27 /world", () => {
       value: NOW - 5 * MIN,
       updated_at: NOW,
     });
-    await insert("prodclean_reports", { at: NOW - 100, ok: 0, code: "dirty", install_id: "ix", detail: "d" });
+    await insert("prodclean_reports", {
+      at: NOW - 100,
+      ok: 0,
+      code: "dirty",
+      install_id: "ix",
+      detail: "d",
+    });
     await insert("prodclean_reports", { at: NOW - 50, ok: 1, code: "clean" });
     const w = await world();
     const counts = await db
@@ -173,24 +181,39 @@ describe("R27 /world", () => {
     });
     const f = await seedFailedCreate({ slug: "nofail" });
     await db
-      .prepare("UPDATE jobs SET finished_at = ?, updated_at = ? WHERE install_id = ?")
+      .prepare(
+        "UPDATE jobs SET finished_at = ?, updated_at = ? WHERE install_id = ?",
+      )
       .bind(NOW - 3 * MIN, NOW - 3 * MIN, f.id)
       .run();
     // Older than the 24 h lookback: no job_failed row, so install_failed.
     const old = await seedFailedCreate({ slug: "oldfail" });
     await db
-      .prepare("UPDATE jobs SET finished_at = 5, updated_at = 5 WHERE install_id = ?")
+      .prepare(
+        "UPDATE jobs SET finished_at = 5, updated_at = 5 WHERE install_id = ?",
+      )
       .bind(old.id)
       .run();
     const h = await seedInstall({
       slug: "sick",
       lifecycle: { health: "failing", health_at: NOW - 4 * MIN },
     });
-    await seedJob(h.id, { kind: "upgrade", workflow: "manage_install", status: "done" });
-    const m = await seedInstall({ slug: "odd", lifecycle: { serving_mode: "paused" } });
+    await seedJob(h.id, {
+      kind: "upgrade",
+      workflow: "manage_install",
+      status: "done",
+    });
+    const m = await seedInstall({
+      slug: "odd",
+      lifecycle: { serving_mode: "paused" },
+    });
     const e = fakeEnv({
       PROVISIONER: fakeProvisionerRpc({
-        tokenStatus: { status: "expiring", expiresAt: NOW + 10 * 86_400_000, daysLeft: 10 },
+        tokenStatus: {
+          status: "expiring",
+          expiresAt: NOW + 10 * 86_400_000,
+          daysLeft: 10,
+        },
       }),
     });
     const w = await world(e);
@@ -227,7 +250,10 @@ describe("R27 /world", () => {
 
   it("caps installs.items and attention at 50 with truncated", async () => {
     for (let i = 0; i < 51; i++)
-      await seedInstall({ lifecycle: { serving_mode: "closed" }, createdAt: i });
+      await seedInstall({
+        lifecycle: { serving_mode: "closed" },
+        createdAt: i,
+      });
     const w = await world();
     expect(w.installs.total).toBe(51);
     expect(w.installs.items).toHaveLength(50);
@@ -237,7 +263,11 @@ describe("R27 /world", () => {
   });
 
   it("recent jobs never carry sealed; no email-shaped string anywhere", async () => {
-    const t = await seedInstall({ slug: "rl-a", testHooks: true, ownerEmail: "x@y.test" });
+    const t = await seedInstall({
+      slug: "rl-a",
+      testHooks: true,
+      ownerEmail: "x@y.test",
+    });
     await seedJob(t.id, {
       kind: "redline_creds",
       workflow: "manage_install",
