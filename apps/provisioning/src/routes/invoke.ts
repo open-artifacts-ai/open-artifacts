@@ -2,10 +2,10 @@ import {
   type AdminToolName,
   type ApiRouteId,
   authorize,
+  bodyVariants,
   INSTALL_ID_RE,
   REQUEST_ID_RE,
   ROUTES,
-  type RouteBody,
   type RouteDef,
   ULID_RE,
 } from "@oa/shared/provisioning";
@@ -18,10 +18,6 @@ import type { Principal } from "../principal.js";
 import { countRateLimited } from "../refuse.js";
 import { HANDLERS } from "./handlers.js";
 import { onAuthenticated } from "./hooks.js";
-
-/** Whether a route body has fields: a union (R26 mint | revoke) always does. */
-export const hasBodyFields = (b: RouteBody) =>
-  "shape" in b ? Object.keys(b.shape).length > 0 : true;
 
 // The one entry point both surfaces call (design v7 9A.4). It runs the
 // post-authn part of the 4.2 check order: rate limit -> authz (authz.ts) ->
@@ -57,6 +53,10 @@ export type RouteResult = {
 type Parsed = { ok: true; input: RouteInput } | { ok: false; fields: string[] };
 
 /** The schema step: the route's params, query and body zod, defaults applied. */
+/** Every key any body variant takes; empty means the route takes no body. */
+export const bodyKeys = (def: RouteDef): ReadonlySet<string> =>
+  new Set(bodyVariants(def).flatMap((v) => Object.keys(v.shape)));
+
 export function parseInput(def: RouteDef, input: RouteInput): Parsed {
   const fields: string[] = [];
   const one = (where: string, schema: RouteDef["body"], v: unknown) => {
@@ -72,7 +72,7 @@ export function parseInput(def: RouteDef, input: RouteInput): Parsed {
   const body =
     def.method === "GET"
       ? undefined
-      : one("body", def.body, !hasBodyFields(def.body) ? {} : input.body);
+      : one("body", def.body, bodyKeys(def).size === 0 ? {} : input.body);
   if (fields.length) return { ok: false, fields };
   return {
     ok: true,

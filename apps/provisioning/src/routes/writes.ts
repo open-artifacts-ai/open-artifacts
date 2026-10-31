@@ -224,14 +224,11 @@ const PLANS: Partial<Record<ApiRouteId, Planner>> = {
   },
   R26: async (a, row) => {
     refuseUnless(can(row, "redline_creds", a.principal));
-    // C6 (#906): R26 is mint | revoke. The mint keeps W4's recipientKey
-    // arg; the revoke variant records only `revoke: true`.
-    const b = bodyOf<typeof RedlineCredsSchema>(a);
+    // Mint or revoke (C6): the shared helper narrows on `revoke` and owns
+    // the args shape, so a mint's key travels however C7 defines it.
     return {
       kind: "redline_creds",
-      args: b.revoke
-        ? redlineCredsJobArgs(b)
-        : { ...redlineCredsJobArgs(b), recipientKey: b.recipientKey },
+      args: redlineCredsJobArgs(bodyOf<typeof RedlineCredsSchema>(a)),
     };
   },
 };
