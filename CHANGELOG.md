@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.80.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.79.0...v0.80.0) (2026-10-31)
+
+
+### Features
+
+* **admin:** platform admin panel on the Provisioning API (W10, W11 option A) ([#887](https://github.com/open-artifacts-ai/open-artifacts/issues/887)) ([7b77554](https://github.com/open-artifacts-ai/open-artifacts/commit/7b77554c486768cfbec24504fc8d591fcd2d859c))
+* **shared,provision:** C5 contract follow-ups for the scheduler ([#896](https://github.com/open-artifacts-ai/open-artifacts/issues/896)) ([23042ec](https://github.com/open-artifacts-ai/open-artifacts/commit/23042eccba79ee8c3e278d24f2950becdc10e86b))
+
+## [0.79.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.78.0...v0.79.0) (2026-10-31)
+
+
+### Features
+
+* **dispatch:** W6 HOSTS modes, paused and closed 503 pages ([#885](https://github.com/open-artifacts-ai/open-artifacts/issues/885)) ([2520cf5](https://github.com/open-artifacts-ai/open-artifacts/commit/2520cf597736c65d4a412afb17a0aa7bcef78311))
+* **platform-db:** provisioning migrations 0006-0008 and ALERT_KEYS (migration, Manager arms) ([#883](https://github.com/open-artifacts-ai/open-artifacts/issues/883)) ([52a7ff3](https://github.com/open-artifacts-ai/open-artifacts/commit/52a7ff397e7b8afc7cdfca54f54ef337ed938d4c))
+* **provision:** C3 provision base for the Provisioning API ([#882](https://github.com/open-artifacts-ai/open-artifacts/issues/882)) ([c1175e4](https://github.com/open-artifacts-ai/open-artifacts/commit/c1175e4c39abd311c174e0d3133c377d26f8efb7))
+* **provisioning:** C4 API skeleton for the Provisioning API ([#886](https://github.com/open-artifacts-ai/open-artifacts/issues/886)) ([987bae1](https://github.com/open-artifacts-ai/open-artifacts/commit/987bae1494666288bee0dfc343faa089f8d0962e))
+
+
+### Bug Fixes
+
+* **dashboard:** an expiring "Updated to vN" note never clears a newer one ([#898](https://github.com/open-artifacts-ai/open-artifacts/issues/898)) ([c600109](https://github.com/open-artifacts-ai/open-artifacts/commit/c6001092ea68a091751f45c1700c7916e10dbedb))
+
 ## [0.78.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.77.1...v0.78.0) (2026-10-31)
 
 
