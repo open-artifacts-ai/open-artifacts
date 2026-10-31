@@ -173,8 +173,7 @@ if (
     let out: unknown;
     if (what === "vars") out = committedVars(src, env, process.env);
     else if (what === "ratelimits") out = committedRateLimits(src, env);
-    else if (what === "signups")
-      out = committedSignups(src, env, process.env);
+    else if (what === "signups") out = committedSignups(src, env, process.env);
     else if (what === "alert-pins") {
       if (!alertWired(src, env)) out = "absent";
       else {

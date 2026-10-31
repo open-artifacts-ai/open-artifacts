@@ -153,7 +153,11 @@ esac`;
     ).toMatchObject({ staging: "true", prod: "false" });
     // Prod alone: only once the tag's staging publish succeeded.
     const staged = {
-      runs: { "41": [{ name: "publish-staging release v0.80.0", conclusion: "success" }] },
+      runs: {
+        "41": [
+          { name: "publish-staging release v0.80.0", conclusion: "success" },
+        ],
+      },
     };
     const r = resolve({ ...d, TAG: "v0.80.0", DEPLOY_ENV: "prod" }, staged);
     expect(r.code, r.err).toBe(0);
@@ -161,8 +165,15 @@ esac`;
     expect(r.out).toContain("v0.80.0 was published to staging (run 41)");
   });
   it("dispatch to prod alone refuses a tag with no successful staging publish, writing no output", () => {
-    const d = { EVENT: "workflow_dispatch", TAG: "v0.80.0", DEPLOY_ENV: "prod" };
-    const job = (name: string, conclusion = "success") => ({ name, conclusion });
+    const d = {
+      EVENT: "workflow_dispatch",
+      TAG: "v0.80.0",
+      DEPLOY_ENV: "prod",
+    };
+    const job = (name: string, conclusion = "success") => ({
+      name,
+      conclusion,
+    });
     for (const [label, state] of [
       ["no runs", {}],
       ["no staging job", { runs: { "1": [job("resolve")] } }],
@@ -178,23 +189,32 @@ esac`;
         "failed",
         { runs: { "1": [job("publish-staging release v0.80.0", "failure")] } },
       ],
-      [
-        "a floor",
-        { runs: { "1": [job("publish-staging floor ")] } },
-      ],
+      ["a floor", { runs: { "1": [job("publish-staging floor ")] } }],
       ["only prod's", { runs: { "1": [job("publish-prod")] } }],
     ] as [string, Parameters<typeof resolve>[1]][]) {
       const r = resolve(d, state);
       expect(r.code, label).toBe(1);
-      expect(r.err, label).toContain("v0.80.0 has no successful staging publish");
+      expect(r.err, label).toContain(
+        "v0.80.0 has no successful staging publish",
+      );
       expect(r.o, label).toEqual({});
     }
     // Runs of another branch or a fork don't count.
     const other = resolve(d, {
       runsRaw: JSON.stringify({
         workflow_runs: [
-          { id: 1, head_branch: "feature", status: "completed", head_repository: { full_name: REPO } },
-          { id: 2, head_branch: "main", status: "completed", head_repository: { full_name: "evil/x" } },
+          {
+            id: 1,
+            head_branch: "feature",
+            status: "completed",
+            head_repository: { full_name: REPO },
+          },
+          {
+            id: 2,
+            head_branch: "main",
+            status: "completed",
+            head_repository: { full_name: "evil/x" },
+          },
         ],
       }),
     });

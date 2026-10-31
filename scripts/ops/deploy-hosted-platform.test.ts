@@ -633,16 +633,19 @@ describe("deploy-hosted-platform.sh", () => {
         exists: SCHED_DEPS(p),
         next: { [`oa-${p}-scheduler`]: next },
       });
-      const r = s.sb.run(["bash", tree({ scheduler: config }), env, "scheduler"], {
-        env: {
-          ...ENV,
-          ...ALERTS,
-          STATE: s.state,
-          DEPLOY_WRAPPER: wrapperStub(s.sb.dir),
-          BROKER_PIN_FILE: "/dev/null",
-          ...vars,
+      const r = s.sb.run(
+        ["bash", tree({ scheduler: config }), env, "scheduler"],
+        {
+          env: {
+            ...ENV,
+            ...ALERTS,
+            STATE: s.state,
+            DEPLOY_WRAPPER: wrapperStub(s.sb.dir),
+            BROKER_PIN_FILE: "/dev/null",
+            ...vars,
+          },
         },
-      });
+      );
       const log = s.sb.log();
       return { ...r, log };
     };
@@ -658,14 +661,22 @@ describe("deploy-hosted-platform.sh", () => {
             /\{ "name": "ALERT_EMAIL", "destination_address": "\{\{ALERT_TO_[A-Z]+\}\}" \}/g,
             '{ "name": "ALERT_EMAIL" }',
           );
-      for (const BARE of [strip(F915), ...(pinned(REAL_SCHED) ? [] : [REAL_SCHED])]) {
+      for (const BARE of [
+        strip(F915),
+        ...(pinned(REAL_SCHED) ? [] : [REAL_SCHED]),
+      ]) {
         expect(BARE).not.toContain("{{ALERT_");
         for (const env of ["prod", "staging"] as const)
           for (const VERIFY_ONLY of ["", "1"]) {
             const p = env[0] as "s" | "p";
-            const r = go(BARE, env, settings(schedulerBindings(p, null), true), {
-              VERIFY_ONLY,
-            });
+            const r = go(
+              BARE,
+              env,
+              settings(schedulerBindings(p, null), true),
+              {
+                VERIFY_ONLY,
+              },
+            );
             expect(r.code, `${env} ${VERIFY_ONLY}`).toBe(1);
             expect(r.err).toContain(
               `the tag's scheduler config doesn't pin the ${env} alerts`,
@@ -706,11 +717,18 @@ describe("deploy-hosted-platform.sh", () => {
             }
             // A deployed gate other than the env's (true allowed here, so the
             // signups rule isn't what refuses it).
-            const gate = go(config, env, wired(p, { SIGNUPS_ENABLED: "true" }), {
-              ALLOW_SIGNUPS: "1",
-            });
+            const gate = go(
+              config,
+              env,
+              wired(p, { SIGNUPS_ENABLED: "true" }),
+              {
+                ALLOW_SIGNUPS: "1",
+              },
+            );
             expect(gate.code, `${env} gate`).toBe(1);
-            expect(gate.err).toContain("SIGNUPS_ENABLED: got 'true', want 'false'");
+            expect(gate.err).toContain(
+              "SIGNUPS_ENABLED: got 'true', want 'false'",
+            );
             for (const k of Object.keys(ALERTS)) {
               const r = go(config, env, wired(p), { [k]: "" });
               expect(r.code, `${env} ${k}`).toBe(2);
@@ -1080,8 +1098,8 @@ describe("deploy-hosted-platform.sh", () => {
       ]),
       "r2-oa-p-releases": "",
     };
-    const TARGETS = [
-      ["provisioner", cfg("provisioner"), [] as string[], {}],
+    const TARGETS: [string, string, string[], Record<string, string[]>][] = [
+      ["provisioner", cfg("provisioner"), [], {}],
       [
         "provisioning",
         cfg("provisioning"),
@@ -1089,7 +1107,7 @@ describe("deploy-hosted-platform.sh", () => {
         { "oa-p-provisioning": ["ADMIN_BROKER_KEY", "ADMIN_SESSION_KEY"] },
       ],
       ["scheduler", SCHED_CONFIG, SCHED_DEPS("p"), {}],
-    ] as const;
+    ];
     for (const [app, src, exists, secrets] of TARGETS) {
       const W = `oa-p-${app}`;
       const go = (
@@ -1115,7 +1133,8 @@ describe("deploy-hosted-platform.sh", () => {
           expect(noDeploy(r.log)).toEqual([]);
         }
         const yes = app === "scheduler" ? src : literalTrue(app, src);
-        const want = app === "scheduler" ? { SIGNUPS_ENABLED: "true" } : {};
+        const want: Record<string, string> =
+          app === "scheduler" ? { SIGNUPS_ENABLED: "true" } : {};
         for (const VERIFY_ONLY of ["", "1"]) {
           const r = go(yes, "true", { ...want, VERIFY_ONLY });
           expect(r.code, `${app} ${VERIFY_ONLY}`).toBe(1);

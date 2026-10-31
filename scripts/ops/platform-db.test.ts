@@ -353,7 +353,9 @@ describe("platform-db.ts", () => {
 
   describe("main's lock against the tag's (pinDrift)", () => {
     /** A tag's tree: the repo's migrations and lock, then `edit` applied. */
-    const tagTree = (edit: (dir: string, lock: Record<string, string>) => void) => {
+    const tagTree = (
+      edit: (dir: string, lock: Record<string, string>) => void,
+    ) => {
       const t = mkdtempSync(join(tmpdir(), "oa-tag-db-"));
       cpSync(DIR, join(t, "migrations"), { recursive: true });
       const lock = JSON.parse(readFileSync(LOCK, "utf8"));
@@ -430,7 +432,10 @@ describe("platform-db.ts", () => {
     expect(cli(["dev"], ok).status).toBe(2);
     expect(cli(["prod"], { ...ok, MAIN_MIGRATION_LOCK: "" }).status).toBe(2);
     // main pins a file the tag re-pinned: refused before any call to D1.
-    const main = join(mkdtempSync(join(tmpdir(), "oa-main-lock-")), "lock.json");
+    const main = join(
+      mkdtempSync(join(tmpdir(), "oa-main-lock-")),
+      "lock.json",
+    );
     const lock = JSON.parse(readFileSync(LOCK, "utf8"));
     lock.pins["0007_signups.sql"] = "0".repeat(64);
     writeFileSync(main, JSON.stringify(lock));

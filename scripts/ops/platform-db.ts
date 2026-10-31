@@ -85,7 +85,11 @@ export function pinDrift(mainLockFile: string, tagLockFile: string): string[] {
     } catch {
       throw new Refused(`${what} migration lock is missing or not JSON`);
     }
-    if (!lock?.pins || typeof lock.pins !== "object" || Array.isArray(lock.pins))
+    if (
+      !lock?.pins ||
+      typeof lock.pins !== "object" ||
+      Array.isArray(lock.pins)
+    )
       throw new Refused(`${what} migration lock has no pins`);
     return lock.pins as Record<string, unknown>;
   };
@@ -501,7 +505,8 @@ if (
     fail("PLATFORM_DB_ID must be a uuid", 2);
   // main's lock (deploy-hosted-platform.yml copies it from main's checkout).
   const mainLock = process.env.MAIN_MIGRATION_LOCK;
-  if (!mainLock) fail("MAIN_MIGRATION_LOCK (main's migration-lock.json) is required", 2);
+  if (!mainLock)
+    fail("MAIN_MIGRATION_LOCK (main's migration-lock.json) is required", 2);
   const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
   const lockFile = join(root, "apps/platform-db/migration-lock.json");
   const verifyOnly = Boolean(process.env.VERIFY_ONLY);
