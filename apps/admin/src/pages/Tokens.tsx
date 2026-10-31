@@ -35,6 +35,15 @@ const MCP_URL = {
   staging: "https://api.open-artifacts-staging.app/mcp",
 } as const;
 const REVOKE_ALL = "revoke all";
+/** Design's consent labels for the scopes (the codes are C1's TokenScopeSchema). */
+const SCOPE_LABEL = [
+  ["installs:read", "Read installs"],
+  ["audit:read", "Read the audit log"],
+  ["installs:write", "Create and change installs"],
+  ["installs:delete", "Delete and restore installs"],
+  ["installs:pii", "See owner emails"],
+] as const;
+const LIFETIMES = [15, 30, 60] as const;
 
 const isLive = (t: Token, now: number) => !t.revokedAt && t.expiresAt > now;
 
@@ -163,8 +172,11 @@ function MintDialog({
   onMinted: (m: Minted) => void;
 }) {
   const [label, setLabel] = useState("");
-  const [scopes, setScopes] = useState<string[]>(["installs:read"]);
-  const [ttl, setTtl] = useState(15);
+  const [scopes, setScopes] = useState<string[]>([
+    "installs:read",
+    "audit:read",
+  ]);
+  const [ttl, setTtl] = useState<number>(15);
   const picked = TokenScopeSchema.options.filter((s) => scopes.includes(s));
   const mint = useAction(
     async (_: undefined, requestId) => {
@@ -180,15 +192,12 @@ function MintDialog({
   const ok =
     LABEL_RE.test(label) &&
     scopes.length > 0 &&
-    Number.isInteger(ttl) &&
-    ttl >= 5 &&
-    ttl <= 60;
+    LIFETIMES.some((m) => m === ttl);
   return (
     <ActionDialog
       open
       onClose={onClose}
-      title="Mint token"
-      description="For a script. It ends when its time is up or when you sign out."
+      title="Mint a token"
       submitLabel="Mint token"
       canSubmit={ok}
       pending={mint.isPending}
@@ -203,10 +212,11 @@ function MintDialog({
           maxLength={40}
           onChange={(e) => setLabel(e.target.value)}
         />
+        <small className="oa-hint">Shown in the audit log.</small>
       </div>
       <fieldset>
         <legend>Scopes</legend>
-        {TokenScopeSchema.options.map((s) => (
+        {SCOPE_LABEL.map(([s, name]) => (
           <label key={s} className="oa-check">
             <input
               type="checkbox"
@@ -217,21 +227,26 @@ function MintDialog({
                 )
               }
             />{" "}
-            {s}
+            {name} <code>{s}</code>
           </label>
         ))}
       </fieldset>
-      <div>
-        <Label htmlFor="tok-ttl">Lasts (5 to 60 minutes)</Label>
-        <Input
-          id="tok-ttl"
-          type="number"
-          min={5}
-          max={60}
-          value={ttl}
-          onChange={(e) => setTtl(Number(e.target.value))}
-        />
-      </div>
+      <fieldset className="oa-seg-field">
+        <legend>Lifetime</legend>
+        <div className="oa-seg">
+          {LIFETIMES.map((m) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={ttl === m}
+              onClick={() => setTtl(m)}
+            >
+              {m} min
+            </button>
+          ))}
+        </div>
+        <small className="oa-hint">It also ends when you sign out.</small>
+      </fieldset>
     </ActionDialog>
   );
 }

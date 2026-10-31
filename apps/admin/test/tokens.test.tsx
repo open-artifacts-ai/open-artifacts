@@ -1,4 +1,4 @@
-import type { Token } from "@oa/shared/provisioning";
+import { type Token, TokenScopeSchema } from "@oa/shared/provisioning";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse } from "msw";
 import { expect, it, vi } from "vitest";
@@ -118,14 +118,14 @@ it("mints a token and shows the secret once in a dialog, with Copy; Done removes
   expect(box).toHaveTextContent("Copy it now. It won't be shown again.");
   expect(box).toHaveTextContent("oat_MOCK_not_a_token");
   expect(box).toHaveTextContent("Labelci run");
-  expect(box).toHaveTextContent("Scopesinstalls:read");
+  expect(box).toHaveTextContent("Scopesinstalls:read audit:read");
   expect(box).toHaveTextContent("Endsin 15 min, or when you sign out");
   const [w] = writes();
   expect(w.path).toBe("/api/v1/tokens");
   expect(w.csrf).toBe("mock-csrf");
   expect(w.body).toMatchObject({
     label: "ci run",
-    scopes: ["installs:read"],
+    scopes: ["installs:read", "audit:read"],
     ttlMinutes: 15,
   });
 
@@ -148,6 +148,56 @@ it("mints a token and shows the secret once in a dialog, with Copy; Done removes
   );
 });
 
+it("the mint dialog follows Design: copy, consent labels with C1's scope codes, 15/30/60 min", async () => {
+  renderApp("/tokens");
+  const dialog = await openMint();
+  expect(within(dialog).getByText("Mint a token")).toBeInTheDocument();
+  expect(
+    within(dialog).getByText("Shown in the audit log."),
+  ).toBeInTheDocument();
+  expect(
+    within(dialog).getByText("It also ends when you sign out."),
+  ).toBeInTheDocument();
+  const boxes = within(dialog).getAllByRole("checkbox");
+  const rows = boxes.map((b) => ({
+    on: (b as HTMLInputElement).checked,
+    text: b.closest("label")?.textContent?.replace(/\s+/g, " ").trim(),
+  }));
+  expect(rows).toEqual([
+    { on: true, text: "Read installs installs:read" },
+    { on: true, text: "Read the audit log audit:read" },
+    { on: false, text: "Create and change installs installs:write" },
+    { on: false, text: "Delete and restore installs installs:delete" },
+    { on: false, text: "See owner emails installs:pii" },
+  ]);
+  // Every code is one of C1's scopes, and every C1 scope is offered.
+  const codes = [...dialog.querySelectorAll("label code")].map(
+    (c) => c.textContent,
+  );
+  expect([...codes].sort()).toEqual([...TokenScopeSchema.options].sort());
+  const life = (m: number) =>
+    within(dialog).getByRole("button", { name: `${m} min` });
+  expect(life(15)).toHaveAttribute("aria-pressed", "true");
+  expect(life(30)).toHaveAttribute("aria-pressed", "false");
+  expect(
+    within(dialog).getByRole("button", { name: "Cancel" }),
+  ).toBeInTheDocument();
+  fireEvent.click(life(60));
+  expect(life(60)).toHaveAttribute("aria-pressed", "true");
+  await mintIn(dialog, "sixty");
+  const box = await screen.findByTestId("secret");
+  expect(box).toHaveTextContent("Endsin 60 min, or when you sign out");
+  expect(writes()[0].body).toMatchObject({ ttlMinutes: 60 });
+});
+
+it("Cancel closes the mint dialog without minting", async () => {
+  renderApp("/tokens");
+  const dialog = await openMint();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(writes()).toHaveLength(0);
+});
+
 it("validates the label and needs a scope in the mint dialog", async () => {
   renderApp("/tokens");
   const dialog = await openMint();
@@ -161,7 +211,12 @@ it("validates the label and needs a scope in the mint dialog", async () => {
     target: { value: "ok label" },
   });
   expect(go).toBeEnabled();
-  fireEvent.click(within(dialog).getByLabelText("installs:read"));
+  fireEvent.click(
+    within(dialog).getByRole("checkbox", { name: /Read installs/ }),
+  );
+  fireEvent.click(
+    within(dialog).getByRole("checkbox", { name: /Read the audit log/ }),
+  );
   expect(go).toBeDisabled();
 });
 

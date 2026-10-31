@@ -403,3 +403,8 @@ fieldset.oa-seg {
   border: 0;
   padding: 0;
 }
+fieldset.oa-seg-field {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
