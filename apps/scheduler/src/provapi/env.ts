@@ -7,7 +7,6 @@ import type { ProvisionerRpc, WorkflowLike } from "@oa/shared/provisioning";
  */
 export interface ProvapiEnv {
   PLATFORM_DB: D1Database;
-  DISPATCHER: DispatchNamespace;
   OA_ENV: OaEnv;
   /** oa-<p>-provision-install (ProvisionInstall on oa-<p>-provisioner). */
   PROVISION_INSTALL?: WorkflowLike;
@@ -78,7 +77,5 @@ export async function lanes<T>(
   const lane = async () => {
     while (next < items.length) await f(items[next++] as T);
   };
-  await Promise.all(
-    Array.from({ length: Math.min(n, items.length) }, lane),
-  );
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, lane));
 }

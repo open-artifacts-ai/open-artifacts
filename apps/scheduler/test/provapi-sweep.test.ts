@@ -254,7 +254,9 @@ describe("sweep: dead runs", () => {
     const lines = captureLogs(vi.spyOn);
     await run(f.env);
     const [c] = await cleanups();
-    expect(lines.at(-1)).toBe(`provapi sweep cleanup_failed rpc_error ${f.provision.created[0]?.id}`);
+    expect(lines.at(-1)).toBe(
+      `provapi sweep cleanup_failed rpc_error ${f.provision.created[0]?.id}`,
+    );
     expect(f.manage.created).toEqual([]);
     await run(f.env, NOW + START_GRACE_MS);
     expect(f.manage.created.map((x) => x.id)).toEqual([c?.id]);

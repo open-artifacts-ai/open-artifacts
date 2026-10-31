@@ -4,7 +4,7 @@ import { ALERT_KEYS } from "@oa/shared/provisioning";
 import { alertFor, factsOf, stepAlert } from "./alerts.js";
 import { alertConditions, signupDailyCap } from "./conditions.js";
 import type { ProvapiEnv } from "./env.js";
-import { healthDue } from "./health.js";
+import { type HealthProbe, healthDue } from "./health.js";
 import { prune } from "./prune.js";
 import { purgeDue } from "./purge.js";
 import { type Duty, type DutyOutcome, runDuties } from "./run.js";
@@ -42,6 +42,8 @@ export async function alertsTick(env: ProvapiEnv, now: number): Promise<void> {
 export interface ProvapiOptions extends SweepDeps {
   /** Tests only: per-duty budgets. */
   timeoutMs?: Partial<Record<Duty["name"], number>>;
+  /** Tests only: the /healthz request (default publicRouteProbe). */
+  healthProbe?: HealthProbe;
 }
 
 /**
@@ -58,13 +60,21 @@ export function provapiTick(
     ? { settleFailed: o.settleFailed }
     : {};
   return runDuties([
-    { name: "sweep", timeoutMs: t.sweep, run: () => sweep(env, now, sweepDeps) },
+    {
+      name: "sweep",
+      timeoutMs: t.sweep,
+      run: () => sweep(env, now, sweepDeps),
+    },
     { name: "purge", timeoutMs: t.purge, run: () => purgeDue(env, now) },
     {
       name: "health",
       timeoutMs: t.health,
       run: async () => {
-        await healthDue(env, now);
+        await healthDue(
+          env,
+          now,
+          o.healthProbe ? { probe: o.healthProbe } : {},
+        );
       },
     },
     { name: "alerts", timeoutMs: t.alerts, run: () => alertsTick(env, now) },

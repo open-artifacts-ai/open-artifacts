@@ -3,18 +3,28 @@
 // job (lease, owner tokens, signups) on ManageInstall.
 import {
   type ProvisionErrorCode,
-  type SettleFailed,
   settleFailed as realSettleFailed,
+  type SettleFailed,
 } from "@oa/provision/jobs";
-import type { WorkflowInstanceStatus, WorkflowLike } from "@oa/shared/provisioning";
-import { bound, d1, DutyFailure, lanes, type ProvapiEnv, Stall } from "./env.js";
-import { dutyCategory } from "./run.js";
+import type {
+  WorkflowInstanceStatus,
+  WorkflowLike,
+} from "@oa/shared/provisioning";
+import {
+  bound,
+  DutyFailure,
+  d1,
+  lanes,
+  type ProvapiEnv,
+  Stall,
+} from "./env.js";
 import {
   insertSystemJob,
   isWorkflowNotFound,
   startJob,
   wfCall,
 } from "./jobs.js";
+import { dutyCategory } from "./run.js";
 
 /** Open jobs looked at per tick, oldest change first. */
 export const SWEEP_LIMIT = 50;
@@ -55,7 +65,10 @@ export interface SweepDeps {
   settleFailed?: SettleFailed;
 }
 
-const DEAD = new Set<WorkflowInstanceStatus["status"]>(["errored", "terminated"]);
+const DEAD = new Set<WorkflowInstanceStatus["status"]>([
+  "errored",
+  "terminated",
+]);
 
 /** What one open job needs: start it, settle it, or nothing. */
 async function look(

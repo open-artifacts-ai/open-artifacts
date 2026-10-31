@@ -2,12 +2,9 @@
 // passed, with no open job and not suspended, gets a purge job on
 // ManageInstall. Each grace end gets PURGE_STUCK_FAILURES tries; then the
 // purge_stuck alert (C2's query) asks an operator.
-import {
-  canTransition,
-  PURGE_STUCK_FAILURES,
-} from "@oa/shared/provisioning";
+import { canTransition, PURGE_STUCK_FAILURES } from "@oa/shared/provisioning";
 import { bound, d1, lanes, type ProvapiEnv } from "./env.js";
-import { insertSystemJob, startJob, SYSTEM_ACTOR } from "./jobs.js";
+import { insertSystemJob, SYSTEM_ACTOR, startJob } from "./jobs.js";
 import { dutyCategory } from "./run.js";
 
 /** Installs looked at per tick, earliest purge_at first. */
@@ -67,7 +64,11 @@ export async function purgeDue(env: ProvapiEnv, now: number): Promise<void> {
       // A failed start leaves it queued; the sweep starts it.
       await startJob(manage, id);
     } catch (e) {
-      console.error("provapi purge install_failed", dutyCategory(e), r.install_id);
+      console.error(
+        "provapi purge install_failed",
+        dutyCategory(e),
+        r.install_id,
+      );
     }
   });
 }

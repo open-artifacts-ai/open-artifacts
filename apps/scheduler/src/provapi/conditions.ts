@@ -68,7 +68,10 @@ export async function tokenConditions(
   }
   let raw: unknown;
   try {
-    raw = await within(Promise.resolve().then(() => rpc.tokenStatus()), timeoutMs);
+    raw = await within(
+      Promise.resolve().then(() => rpc.tokenStatus()),
+      timeoutMs,
+    );
   } catch {
     console.error("provapi alert token_status rpc_error");
     return unknown;
@@ -83,7 +86,9 @@ export async function tokenConditions(
     token_expiring: {
       open: status === "expiring",
       rows: [],
-      ...(daysLeft === null ? {} : { daysLeft: Math.max(0, Math.floor(daysLeft)) }),
+      ...(daysLeft === null
+        ? {}
+        : { daysLeft: Math.max(0, Math.floor(daysLeft)) }),
     },
     token_invalid: { open: status === "invalid", rows: [] },
   };

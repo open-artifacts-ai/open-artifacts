@@ -23,7 +23,8 @@ afterEach(() => vi.restoreAllMocks());
 
 const NOW = Date.UTC(2026, 9, 31, 12, 0);
 const env = { PLATFORM_DB: db, OA_ENV: "staging" } as unknown as ProvapiEnv;
-const ids = async (sql: string) => (await rows(sql)).map((r) => Object.values(r)[0]);
+const ids = async (sql: string) =>
+  (await rows(sql)).map((r) => Object.values(r)[0]);
 
 let n = 0;
 const session = (expires: number, revoked: number | null = null) =>
@@ -38,7 +39,11 @@ const session = (expires: number, revoked: number | null = null) =>
     expires_at: expires,
     revoked_at: revoked,
   });
-const token = (kind: "oat" | "oauth", expires: number, revoked: number | null = null) =>
+const token = (
+  kind: "oat" | "oauth",
+  expires: number,
+  revoked: number | null = null,
+) =>
   insert("agent_tokens", {
     id: `t${++n}`,
     kind,
@@ -95,7 +100,9 @@ describe("prune", () => {
       { expires_at: NOW + 1, revoked_at: null },
     ]);
     expect(
-      await rows("SELECT kind, expires_at, revoked_at FROM agent_tokens ORDER BY kind"),
+      await rows(
+        "SELECT kind, expires_at, revoked_at FROM agent_tokens ORDER BY kind",
+      ),
     ).toEqual([
       { kind: "oat", expires_at: NOW + 1, revoked_at: null },
       { kind: "oauth", expires_at: NOW + 1, revoked_at: null },
@@ -126,8 +133,12 @@ describe("prune", () => {
     );
     captureLogs(vi.spyOn);
     await prune(env, NOW);
-    expect((await rows("SELECT COUNT(*) AS n FROM rate_counters"))[0]?.n).toBe(5);
+    expect((await rows("SELECT COUNT(*) AS n FROM rate_counters"))[0]?.n).toBe(
+      5,
+    );
     await prune(env, NOW);
-    expect((await rows("SELECT COUNT(*) AS n FROM rate_counters"))[0]?.n).toBe(0);
+    expect((await rows("SELECT COUNT(*) AS n FROM rate_counters"))[0]?.n).toBe(
+      0,
+    );
   });
 });

@@ -27,7 +27,11 @@ afterEach(() => vi.restoreAllMocks());
 const NOW = Date.UTC(2026, 9, 31, 12, 0);
 const LINE = /^provapi (sweep|purge|health|alerts|prune) failed [a-z_]+$/;
 
-const duty = (name: Duty["name"], run: () => Promise<void>, timeoutMs = 50) => ({
+const duty = (
+  name: Duty["name"],
+  run: () => Promise<void>,
+  timeoutMs = 50,
+) => ({
   name,
   run,
   timeoutMs,

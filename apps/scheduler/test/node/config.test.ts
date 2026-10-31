@@ -3,7 +3,12 @@ import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOSTED_DOMAINS, NAMESPACES, platformNames } from "@oa/provision";
+import {
+  ENV_PREFIX,
+  HOSTED_DOMAINS,
+  NAMESPACES,
+  platformNames,
+} from "@oa/provision";
 import { describe, expect, it } from "vitest";
 
 const app = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -38,14 +43,41 @@ describe("wrangler.jsonc", () => {
         AUTH_BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
         DIRECTORY_BROKER_ORIGIN: `https://directory.${HOSTED_DOMAINS[env].app}`,
       });
-      // BrokerGate's bindings: this env's two brokers, never the other env's.
+      // TODO(contract): platformNames has no provisioner name yet.
+      const provisioner = `${ENV_PREFIX[env]}provisioner`;
+      // BrokerGate's bindings: this env's two brokers, never the other env's;
+      // and the provisioner's ProvisionerRpc entrypoint (tokenStatus).
       expect(e.services).toEqual([
         { binding: "AUTH_BROKER", service: platformNames(env).broker },
         {
           binding: "DIRECTORY_BROKER",
           service: platformNames(env).directoryBroker,
         },
+        {
+          binding: "PROVISIONER",
+          service: provisioner,
+          entrypoint: "ProvisionerRpc",
+        },
       ]);
+      // The provisioner's two Workflows, on its script, this env's only.
+      expect(e.workflows).toEqual([
+        {
+          name: `${ENV_PREFIX[env]}provision-install`,
+          binding: "PROVISION_INSTALL",
+          class_name: "ProvisionInstall",
+          script_name: provisioner,
+        },
+        {
+          name: `${ENV_PREFIX[env]}manage-install`,
+          binding: "MANAGE_INSTALL",
+          class_name: "ManageInstall",
+          script_name: provisioner,
+        },
+      ]);
+      // The operator alerts' one sending binding (src/provapi/alerts.ts).
+      // ALERT_TO, ALERT_FROM and SIGNUP_DAILY_CAP are Platform's deploy
+      // wiring, not vars here yet.
+      expect(e.send_email).toEqual([{ name: "ALERT_EMAIL" }]);
       expect(e.vars).not.toHaveProperty("EMAIL_QUOTA_TOKEN");
       // The nightly run, and H-DV's directory revoke tick every 2 minutes.
       expect(e.triggers).toEqual({ crons: ["17 3 * * *", "*/2 * * * *"] });
@@ -99,6 +131,8 @@ describe("wrangler.jsonc", () => {
       "d1_databases",
       "dispatch_namespaces",
       "services",
+      "workflows",
+      "send_email",
     ])
       expect(cfg).not.toHaveProperty(k);
   });
@@ -126,7 +160,9 @@ describe("bundle", () => {
     ).toThrow(/entry-point/);
   });
 
-  it("wrangler deploy --dry-run is under 50 KB per env", () => {
+  // The provisioning contract (@oa/shared/provisioning) brings zod with its
+  // locales (about 850 KB unminified); it exports no narrower entry yet.
+  it("wrangler deploy --dry-run is under 1 MB per env", () => {
     for (const env of ENVS) {
       const out = mkdtempSync(join(tmpdir(), "oa-scheduler-"));
       wrangler(["--env", env, "--outdir", out]);
@@ -135,7 +171,7 @@ describe("bundle", () => {
         .reduce((n, f) => n + statSync(join(out, f)).size, 0);
       console.log(`scheduler bundle (${env}): ${bytes} bytes`);
       expect(bytes).toBeGreaterThan(0);
-      expect(bytes).toBeLessThan(50 * 1024);
+      expect(bytes).toBeLessThan(1024 * 1024);
     }
   });
 });

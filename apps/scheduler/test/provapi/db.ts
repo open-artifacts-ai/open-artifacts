@@ -141,7 +141,10 @@ export async function rows(sql: string, ...bind: unknown[]): Promise<Row[]> {
 
 /** Every log line, captured; console is restored by vi.restoreAllMocks. */
 export function captureLogs(
-  spyOn: (o: Console, k: "log" | "warn" | "error") => {
+  spyOn: (
+    o: Console,
+    k: "log" | "warn" | "error",
+  ) => {
     mockImplementation(f: (...a: unknown[]) => void): unknown;
   },
 ): string[] {

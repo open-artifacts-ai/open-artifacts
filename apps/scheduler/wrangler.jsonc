@@ -15,6 +15,13 @@
 // zone tags and the account's daily limit are per-env vars with placeholders
 // filled at deploy; its token is the secret EMAIL_QUOTA_TOKEN (wrangler secret
 // put, never a var).
+// Provisioning API duties (src/provapi, design v7 5.8) on the */2 tick: the
+// job sweep and purge after grace start the provisioner's Workflows
+// (PROVISION_INSTALL, MANAGE_INSTALL, script oa-<p>-provisioner, which must
+// deploy first), the alerts read PROVISIONER's ProvisionerRpc and email
+// through the send_email binding ALERT_EMAIL. Its ALERT_TO, ALERT_FROM and
+// SIGNUP_DAILY_CAP vars are Platform's deploy wiring; unset, alerts log
+// no_destination and the cap alert is off.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "compatibility_date": "2026-10-01",
@@ -33,11 +40,32 @@
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },
-      // The BrokerGate stubs each install call carries (see the gate).
+      // The BrokerGate stubs each install call carries (see the gate), and
+      // the provisioner's RPC entrypoint (tokenStatus for the token alerts).
       "services": [
         { "binding": "AUTH_BROKER", "service": "oa-s-auth-broker" },
-        { "binding": "DIRECTORY_BROKER", "service": "oa-s-directory-broker" }
+        { "binding": "DIRECTORY_BROKER", "service": "oa-s-directory-broker" },
+        {
+          "binding": "PROVISIONER",
+          "service": "oa-s-provisioner",
+          "entrypoint": "ProvisionerRpc"
+        }
       ],
+      "workflows": [
+        {
+          "name": "oa-s-provision-install",
+          "binding": "PROVISION_INSTALL",
+          "class_name": "ProvisionInstall",
+          "script_name": "oa-s-provisioner"
+        },
+        {
+          "name": "oa-s-manage-install",
+          "binding": "MANAGE_INSTALL",
+          "class_name": "ManageInstall",
+          "script_name": "oa-s-provisioner"
+        }
+      ],
+      "send_email": [{ "name": "ALERT_EMAIL" }],
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [
@@ -63,11 +91,32 @@
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
       },
-      // The BrokerGate stubs each install call carries (see the gate).
+      // The BrokerGate stubs each install call carries (see the gate), and
+      // the provisioner's RPC entrypoint (tokenStatus for the token alerts).
       "services": [
         { "binding": "AUTH_BROKER", "service": "oa-p-auth-broker" },
-        { "binding": "DIRECTORY_BROKER", "service": "oa-p-directory-broker" }
+        { "binding": "DIRECTORY_BROKER", "service": "oa-p-directory-broker" },
+        {
+          "binding": "PROVISIONER",
+          "service": "oa-p-provisioner",
+          "entrypoint": "ProvisionerRpc"
+        }
       ],
+      "workflows": [
+        {
+          "name": "oa-p-provision-install",
+          "binding": "PROVISION_INSTALL",
+          "class_name": "ProvisionInstall",
+          "script_name": "oa-p-provisioner"
+        },
+        {
+          "name": "oa-p-manage-install",
+          "binding": "MANAGE_INSTALL",
+          "class_name": "ManageInstall",
+          "script_name": "oa-p-provisioner"
+        }
+      ],
+      "send_email": [{ "name": "ALERT_EMAIL" }],
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [

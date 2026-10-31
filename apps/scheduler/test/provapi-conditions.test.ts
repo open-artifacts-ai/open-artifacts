@@ -148,7 +148,10 @@ const FIXTURES: Record<AlertKey, Fixture> = {
   },
   job_stuck: {
     async open(c) {
-      await job(c.install, { status: "running", updated_at: c.now - JOB_STUCK_MS });
+      await job(c.install, {
+        status: "running",
+        updated_at: c.now - JOB_STUCK_MS,
+      });
       return undefined;
     },
     async clear(c) {
@@ -172,7 +175,11 @@ const FIXTURES: Record<AlertKey, Fixture> = {
       return undefined;
     },
     async clear(c) {
-      await insert("prodclean_reports", { at: c.now + MIN, ok: 1, code: "pass" });
+      await insert("prodclean_reports", {
+        at: c.now + MIN,
+        ok: 1,
+        code: "pass",
+      });
       return undefined;
     },
   },
@@ -201,7 +208,10 @@ const FIXTURES: Record<AlertKey, Fixture> = {
       return undefined;
     },
     async clear(c) {
-      await set("UPDATE install_lifecycle SET health = 'ok', health_at = ?1", c.now);
+      await set(
+        "UPDATE install_lifecycle SET health = 'ok', health_at = ?1",
+        c.now,
+      );
       return undefined;
     },
   },
@@ -291,11 +301,10 @@ const ACTIVE: TokenStatus = {
 };
 
 async function evaluate(now: number, token: TokenStatus = ACTIVE) {
-  return alertConditions(
-    db,
-    fakeProvisionerRpc({ tokenStatus: token }),
-    { now, signupDailyCap: CAP },
-  );
+  return alertConditions(db, fakeProvisionerRpc({ tokenStatus: token }), {
+    now,
+    signupDailyCap: CAP,
+  });
 }
 
 describe("alert conditions", () => {
@@ -394,7 +403,14 @@ describe("unknown conditions are null", () => {
 
   it("SIGNUP_DAILY_CAP: a positive integer, else 0 (the cap alert is off)", () => {
     expect(signupDailyCap("25")).toBe(25);
-    for (const v of [undefined, "", "0", "-1", "2.5", "{{SIGNUP_DAILY_CAP_PROD}}"])
+    for (const v of [
+      undefined,
+      "",
+      "0",
+      "-1",
+      "2.5",
+      "{{SIGNUP_DAILY_CAP_PROD}}",
+    ])
       expect(signupDailyCap(v)).toBe(0);
   });
 });

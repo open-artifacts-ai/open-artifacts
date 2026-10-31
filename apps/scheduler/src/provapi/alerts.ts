@@ -20,8 +20,8 @@
  * fixed categories only. stepAlert never throws.
  */
 import {
-  ALERT_LOOKBACK_MS,
   ALERT_KEYS,
+  ALERT_LOOKBACK_MS,
   type AlertKey,
   type AlertRow,
   INSTALL_ID_RE,
@@ -109,9 +109,7 @@ class SendTimeout extends Error {}
 function sendCategory(e: unknown): string {
   if (e instanceof SendTimeout) return "timeout";
   const code = (e as { code?: unknown } | null)?.code;
-  return typeof code === "string" && SEND_CODE.test(code)
-    ? code
-    : "send_error";
+  return typeof code === "string" && SEND_CODE.test(code) ? code : "send_error";
 }
 
 /**

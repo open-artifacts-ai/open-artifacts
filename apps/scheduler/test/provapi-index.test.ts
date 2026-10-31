@@ -1,6 +1,9 @@
 import { createExecutionContext } from "cloudflare:test";
 import { REVOKE_MIN_VERSION } from "@oa/provision/versions";
-import { FakeWorkflow, fakeProvisionerRpc } from "@oa/shared/provisioning/fakes";
+import {
+  FakeWorkflow,
+  fakeProvisionerRpc,
+} from "@oa/shared/provisioning/fakes";
 import {
   afterEach,
   beforeAll,
@@ -17,7 +20,11 @@ import scheduler, {
   REVOKE_JOB,
   SYNC_JOB,
 } from "../src/index.js";
-import { DUTY_TIMEOUT_MS, provapiTick, SCHEDULER_TICK_KEY } from "../src/provapi/index.js";
+import {
+  DUTY_TIMEOUT_MS,
+  provapiTick,
+  SCHEDULER_TICK_KEY,
+} from "../src/provapi/index.js";
 import { getState } from "../src/provapi/state.js";
 import { START_GRACE_MS } from "../src/provapi/sweep.js";
 import {
@@ -120,7 +127,11 @@ describe("scheduled() and the provapi duties", () => {
     const f = fakes({ broken: true });
     await job(installId(), { created_at: NOW - START_GRACE_MS });
     const lines = captureLogs(vi.spyOn);
-    await scheduler.scheduled(controller(REVOKE_CRON), f.env, createExecutionContext());
+    await scheduler.scheduled(
+      controller(REVOKE_CRON),
+      f.env,
+      createExecutionContext(),
+    );
     expect(await getState(db, SCHEDULER_TICK_KEY)).toBe(NOW);
     const provapi = lines.filter((l) => l.startsWith("provapi "));
     expect(provapi.length).toBeGreaterThan(0);
@@ -135,7 +146,11 @@ describe("scheduled() and the provapi duties", () => {
       const { del, act } = await seedRevokeAndSync();
       const f = fakes({ broken });
       captureLogs(vi.spyOn);
-      await scheduler.scheduled(controller(REVOKE_CRON), f.env, createExecutionContext());
+      await scheduler.scheduled(
+        controller(REVOKE_CRON),
+        f.env,
+        createExecutionContext(),
+      );
       vi.restoreAllMocks();
       results.push({
         calls: f.calls.map((c) => ({
@@ -164,7 +179,11 @@ describe("scheduled() and the provapi duties", () => {
       updated_at: NOW - START_GRACE_MS,
     });
     const lines = captureLogs(vi.spyOn);
-    await scheduler.scheduled(controller(REVOKE_CRON), f.env, createExecutionContext());
+    await scheduler.scheduled(
+      controller(REVOKE_CRON),
+      f.env,
+      createExecutionContext(),
+    );
     for (const l of lines.filter((x) => x.startsWith("provapi ")))
       expect(l).toMatch(LINE);
     expect(f.provision.created.map((c) => c.id)).toEqual([id]);
@@ -178,7 +197,11 @@ describe("scheduled() and the provapi duties", () => {
     const f = fakes();
     await job(installId(), { created_at: NOW - START_GRACE_MS });
     const lines = captureLogs(vi.spyOn);
-    await scheduler.scheduled(controller(CRON), f.env, createExecutionContext());
+    await scheduler.scheduled(
+      controller(CRON),
+      f.env,
+      createExecutionContext(),
+    );
     expect(await getState(db, SCHEDULER_TICK_KEY)).toBeNull();
     expect(f.provision.created).toEqual([]);
     expect(f.sent).toEqual([]);
@@ -187,14 +210,22 @@ describe("scheduled() and the provapi duties", () => {
 
   it("an unknown cron writes no tick", async () => {
     const f = fakes();
-    await scheduler.scheduled(controller("0 0 * * *"), f.env, createExecutionContext());
+    await scheduler.scheduled(
+      controller("0 0 * * *"),
+      f.env,
+      createExecutionContext(),
+    );
     expect(await getState(db, SCHEDULER_TICK_KEY)).toBeNull();
   });
 
   it("a late tick never lowers scheduler_tick_at", async () => {
     const f = fakes();
     captureLogs(vi.spyOn);
-    await scheduler.scheduled(controller(REVOKE_CRON, NOW), f.env, createExecutionContext());
+    await scheduler.scheduled(
+      controller(REVOKE_CRON, NOW),
+      f.env,
+      createExecutionContext(),
+    );
     await scheduler.scheduled(
       controller(REVOKE_CRON, NOW - 2 * 60_000),
       f.env,

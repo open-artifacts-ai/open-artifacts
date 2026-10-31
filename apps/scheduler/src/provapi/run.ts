@@ -37,7 +37,10 @@ export interface Duty {
   run(): Promise<void>;
 }
 
-export type DutyOutcome = "ok" | DutyCategory | ReturnType<typeof provisionErrorCode>;
+export type DutyOutcome =
+  | "ok"
+  | DutyCategory
+  | ReturnType<typeof provisionErrorCode>;
 
 /** A fixed category for anything a duty threw. */
 export function dutyCategory(e: unknown): DutyOutcome {
