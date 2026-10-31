@@ -11,6 +11,11 @@
 #   dispatch: HOSTS_KV_ID=<32 hex>
 #   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
 #   inventory: PLATFORM_DB_ID=<uuid> HOSTS_KV_ID=<32 hex>
+#   provisioner: SIGNUP_DAILY_CAP=<1-9999> SIGNUPS_ENABLED=true|false (staging also test-users)
+#                WELCOME_FROM=<address> CLOUDFLARE_ACCOUNT_ID=<32 hex> SECRETS_STORE_ID=<32 hex>
+#                PLATFORM_DB_ID=<uuid>
+# Only the provisioner may bind the provision token (oa-<p>-provision-token),
+# and it binds no other secret.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -33,6 +38,13 @@ google_id='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
 uuid='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 zones='^[0-9a-f]{32}(,[0-9a-f]{32}){0,9}$'
 limit='^[1-9][0-9]{0,8}$'
+# The signups admitted per UTC day: 1 to 9999, no leading zero.
+cap='^[1-9][0-9]{0,3}$'
+# The signups gate: true or false; staging also test-users (design v7 7).
+if [ "$env" = staging ]; then onoff='^(true|false|test-users)$'; else onoff='^(true|false)$'; fi
+# One plain address: no slash, ampersand, backslash, quote, comma or space, so
+# it can't carry sed syntax or read as a list or display name.
+email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
 
 # The allowlist: app -> dir, plus the placeholders filled below.
 case "$app" in
@@ -41,6 +53,7 @@ case "$app" in
   dispatch) dir=apps/dispatch ;;
   scheduler) dir=apps/scheduler ;;
   inventory) dir=apps/inventory ;;
+  provisioner) dir=apps/provisioner ;;
   *)
     echo "unknown app: not in the allowlist" >&2
     exit 2
@@ -91,7 +104,50 @@ case "$app" in
     fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
     fill "HOSTS_KV_ID_${up}" "${HOSTS_KV_ID:-}" "$hex32"
     ;;
+  provisioner)
+    fill "SIGNUP_DAILY_CAP_${up}" "${SIGNUP_DAILY_CAP:-}" "$cap"
+    # Closed: each signup is acked and its row stays pending.
+    fill "SIGNUPS_ENABLED_${up}" "${SIGNUPS_ENABLED:-}" "$onoff"
+    fill "WELCOME_FROM_${up}" "${WELCOME_FROM:-}" "$email"
+    # The account wrangler deploys to is the one the Workflows provision in.
+    fill "ACCOUNT_ID_${up}" "${CLOUDFLARE_ACCOUNT_ID:-}" "$hex32"
+    fill "SECRETS_STORE_ID_${up}" "${SECRETS_STORE_ID:-}" "$hex32"
+    fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
+    ;;
 esac
+
+# The provision token: bound by the provisioner and no other Worker. The
+# provisioner binds exactly its two (one per env) and no other secret.
+if [ "$app" = provisioner ]; then
+  names=$(grep -Eo '"secret_name"[[:space:]]*:[[:space:]]*"[^"]*"' "$copy" | sed -E 's/.*"([^"]*)"$/\1/' | sort)
+  if [ "$names" != "$(printf 'oa-p-provision-token\noa-s-provision-token')" ] ||
+    [ "$(grep -c 'secret_name' "$copy")" -ne 2 ]; then
+    echo "the provisioner may bind only oa-s-provision-token and oa-p-provision-token, once each, and no other secret" >&2
+    exit 1
+  fi
+  # Each env block binds its own env's token, so a swapped pair is refused. A
+  # line opening "staging": { or "prod": { starts that block.
+  p=${env:0:1}
+  bound=$(awk '
+    match($0, /"(staging|prod)"[[:space:]]*:[[:space:]]*[{]/) {
+      cur = substr($0, RSTART + 1, RLENGTH); sub(/".*/, "", cur)
+    }
+    {
+      s = $0
+      while (match(s, /"secret_name"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+        n = substr(s, RSTART, RLENGTH); sub(/"$/, "", n); sub(/.*"/, "", n)
+        print cur ":" n
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }' "$copy")
+  if ! printf '%s\n' "$bound" | grep -qx "${env}:oa-${p}-provision-token"; then
+    echo "the provisioner's ${env} block must bind oa-${p}-provision-token" >&2
+    exit 1
+  fi
+elif grep -q 'provision-token' "$copy"; then
+  echo "only the provisioner may bind the provision token (oa-<p>-provision-token)" >&2
+  exit 1
+fi
 
 # Fail closed: no placeholder for this env may remain (comments included, so
 # the check needs no JSONC parser).
