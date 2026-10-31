@@ -15,11 +15,11 @@ async function startMocks() {
       import("msw"),
       import("./mocks/handlers"),
     ]);
-  // ?mock=unauth: GET /v1/me answers 401.
+  // ?mock=unauth: GET /api/v1/me answers 401.
   const extra =
     new URLSearchParams(location.search).get("mock") === "unauth"
       ? [
-          http.get("*/v1/me", () =>
+          http.get("*/api/v1/me", () =>
             HttpResponse.json({ error: "unauthenticated" }, { status: 401 }),
           ),
         ]

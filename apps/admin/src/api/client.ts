@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { safeNext } from "../auth/safeNext";
+import { safeReturn } from "../auth/safeReturn";
 
 /** Error body from the Provisioning API: `{ error: <code> }`. */
 const ErrorBodySchema = z.object({ error: z.string() });
@@ -14,7 +14,7 @@ export class ApiError extends Error {
   }
 }
 
-// TODO(C1): replace with the contract type for GET /v1/me.
+// TODO(C1): replace with the contract type for GET /api/v1/me.
 export const MeSchema = z.object({
   email: z.string(),
   role: z.string(),
@@ -25,6 +25,9 @@ export type Me = z.infer<typeof MeSchema>;
 
 export const SIGN_IN_PATH = "/sign-in";
 export const NO_ACCESS_PATH = "/no-access";
+/** Auth lives outside /api (design 3.1). */
+export const AUTH_START = "/auth/start";
+export const AUTH_LOGOUT = "/auth/logout";
 
 export interface ClientOptions {
   /** API prefix; same-origin by default. */
@@ -39,7 +42,7 @@ export interface ClientOptions {
 const WRITE_METHODS = /^(?!GET$|HEAD$|OPTIONS$)/i;
 
 export function createClient(opts: ClientOptions = {}) {
-  const base = (opts.base ?? "/v1").replace(/\/+$/, "");
+  const base = (opts.base ?? "/api/v1").replace(/\/+$/, "");
   const doFetch =
     opts.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   const redirect =
@@ -51,20 +54,21 @@ export function createClient(opts: ClientOptions = {}) {
 
   const goSignIn = () => {
     const here = currentPath();
-    // Already on the sign-in screen: no loop.
-    if (here.split("?")[0] === SIGN_IN_PATH) return;
-    redirect(`${SIGN_IN_PATH}?next=${encodeURIComponent(safeNext(here))}`);
+    // Already on a signed-out screen: no loop.
+    const at = here.split("?")[0];
+    if (at === SIGN_IN_PATH || at === NO_ACCESS_PATH) return;
+    redirect(`${SIGN_IN_PATH}?return=${encodeURIComponent(safeReturn(here))}`);
   };
 
   async function request<T = unknown>(
     path: string,
-    init: { method?: string; body?: unknown } = {},
+    init: { method?: string; body?: unknown; root?: boolean } = {},
   ): Promise<T> {
     const method = (init.method ?? "GET").toUpperCase();
     const headers: Record<string, string> = { accept: "application/json" };
     if (init.body !== undefined) headers["content-type"] = "application/json";
     if (WRITE_METHODS.test(method) && csrf) headers["x-csrf-token"] = csrf;
-    const res = await doFetch(`${base}${path}`, {
+    const res = await doFetch(`${init.root ? "" : base}${path}`, {
       method,
       headers,
       credentials: "same-origin",
@@ -88,15 +92,20 @@ export function createClient(opts: ClientOptions = {}) {
     throw err;
   }
 
-  /** GET /v1/me; keeps the CSRF token for later writes. */
+  /** GET /api/v1/me; keeps the CSRF token for later writes. */
   async function me(): Promise<Me> {
     const body = MeSchema.parse(await request("/me"));
     csrf = body.csrf;
     return body;
   }
 
+  /** POST /auth/logout (204; needs the session and the CSRF token from me). */
+  const logout = () =>
+    request<void>(AUTH_LOGOUT, { method: "POST", root: true });
+
   return {
     request,
+    logout,
     me,
     get: <T>(path: string) => request<T>(path),
     post: <T>(path: string, body?: unknown) =>

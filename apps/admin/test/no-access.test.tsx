@@ -1,25 +1,10 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { NoAccess } from "../src/pages/NoAccess";
 
 afterEach(() => vi.unstubAllGlobals());
 
-const wrap = (ui: React.ReactNode) =>
-  render(
-    <QueryClientProvider client={new QueryClient()}>{ui}</QueryClientProvider>,
-  );
-
-it("shows the signed-in email and a way to switch accounts", () => {
-  wrap(<NoAccess email="x@example.com" />);
-  expect(screen.getByText(/x@example\.com/)).toBeInTheDocument();
-  expect(
-    screen.getByRole("button", { name: "Use another account?" }),
-  ).toBeInTheDocument();
-});
-
-it("on /no-access with a 403 me: no navigation, fallback copy", async () => {
-  window.history.pushState({}, "", "/no-access");
+const stub = (...responses: Response[]) => {
   const assign = vi.fn();
   vi.stubGlobal("location", {
     ...window.location,
@@ -27,16 +12,63 @@ it("on /no-access with a 403 me: no navigation, fallback copy", async () => {
     search: "",
     assign,
   });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(
-      async () =>
-        new Response(JSON.stringify({ error: "no_access" }), { status: 403 }),
-    ),
+  const fetchMock = vi.fn();
+  for (const r of responses) fetchMock.mockResolvedValueOnce(r);
+  vi.stubGlobal("fetch", fetchMock);
+  return { assign, fetchMock };
+};
+
+it("not_listed shows copy and makes no API call", () => {
+  const { fetchMock } = stub();
+  render(<NoAccess error="not_listed" />);
+  expect(screen.getByRole("alert")).toHaveTextContent(/not on the admin list/);
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("unknown_sub shows the account id", () => {
+  render(<NoAccess error="unknown_sub" sub="1234567890" />);
+  expect(screen.getByText("1234567890")).toBeInTheDocument();
+});
+
+it("an unknown error and a hostile sub fall back to plain copy", () => {
+  render(<NoAccess error="<b>" sub="<b>x</b>" />);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "This account is not on the admin list.",
   );
-  wrap(<NoAccess />);
-  expect(
-    await screen.findByText("This account is not an admin here."),
-  ).toBeInTheDocument();
-  expect(assign).not.toHaveBeenCalled();
+  expect(screen.queryByText("<b>x</b>")).toBeNull();
+});
+
+it("Use another account with no session (me 401): no logout, no loop, goes to start", async () => {
+  const { assign, fetchMock } = stub(
+    new Response(JSON.stringify({ error: "unauthenticated" }), { status: 401 }),
+  );
+  render(<NoAccess error="not_listed" />);
+  fireEvent.click(screen.getByRole("button", { name: "Use another account?" }));
+  await waitFor(() =>
+    expect(assign).toHaveBeenCalledWith("/auth/start?return=%2F"),
+  );
+  expect(assign).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it("Use another account while signed in: logout with CSRF first, then start", async () => {
+  const { assign, fetchMock } = stub(
+    new Response(
+      JSON.stringify({
+        email: "a@example.com",
+        role: "r",
+        env: "prod",
+        csrf: "tok",
+      }),
+    ),
+    new Response(null, { status: 204 }),
+  );
+  render(<NoAccess error="not_listed" />);
+  fireEvent.click(screen.getByRole("button", { name: "Use another account?" }));
+  await waitFor(() =>
+    expect(assign).toHaveBeenCalledWith("/auth/start?return=%2F"),
+  );
+  const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+  expect(url).toBe("/auth/logout");
+  expect((init.headers as Record<string, string>)["x-csrf-token"]).toBe("tok");
 });

@@ -10,7 +10,7 @@ import { router as appRouter } from "../src/router";
 
 afterEach(() => vi.unstubAllGlobals());
 
-it("shows a load error with retry when /v1/me answers 500", async () => {
+it("shows a load error with retry when /api/v1/me answers 500", async () => {
   const fetchMock = vi
     .fn()
     .mockResolvedValueOnce(
