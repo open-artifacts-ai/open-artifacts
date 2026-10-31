@@ -6,6 +6,10 @@ import { defineConfig } from "vitest/config";
 
 // TODO(C1): the Provisioning API origin for dev; the Worker that serves this build is decided later.
 const target = "http://api.localhost:8787";
+// apps/provisioning serves the build as its ASSETS (wrangler `./dist-assets`).
+const outDir = fileURLToPath(
+  new URL("../provisioning/dist-assets", import.meta.url),
+);
 
 export default defineConfig({
   plugins: [
@@ -17,9 +21,7 @@ export default defineConfig({
       name: "oa-drop-mock-worker",
       apply: "build",
       closeBundle() {
-        rmSync(new URL("./dist/mockServiceWorker.js", import.meta.url), {
-          force: true,
-        });
+        rmSync(`${outDir}/mockServiceWorker.js`, { force: true });
       },
     },
   ],
@@ -49,7 +51,7 @@ export default defineConfig({
     ],
   },
   server: { port: 5174, proxy: { "/api": target, "/auth": target } },
-  build: { outDir: "dist", emptyOutDir: true },
+  build: { outDir, emptyOutDir: true },
   test: {
     env: { TZ: "UTC" },
     projects: [

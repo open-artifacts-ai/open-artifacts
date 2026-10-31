@@ -337,6 +337,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20261018.1
         version: 5.20261018.1
+      '@oa/admin':
+        specifier: workspace:*
+        version: link:../admin
       '@oa/provision':
         specifier: workspace:*
         version: link:../../packages/provision
