@@ -379,6 +379,11 @@ jobs:
       - name: Landing real-browser checks (no horizontal overflow)
         if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh landing
+      # Design v7 9A.3.2 step 3: the Strict admin cookie survives a cross-site
+      # arrival at /oauth/authorize (its own Miniflare, about a minute).
+      - name: Provisioning consent checks (cross-site, Strict cookie)
+        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
+        run: bash scripts/ci/e2e.sh provisioning
       - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' }}
         uses: actions/upload-artifact@v4
         with:

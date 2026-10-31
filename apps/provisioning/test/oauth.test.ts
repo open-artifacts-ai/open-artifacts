@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { handle } from "../src/app.js";
+import { hmac16 } from "../src/auth/crypto.js";
 import { csrfToken } from "../src/auth/csrf.js";
 import {
   authServer,
@@ -7,6 +8,7 @@ import {
   refreshTtlFor,
 } from "../src/auth/oauth/index.js";
 import { sessionPrincipal } from "../src/auth/session.js";
+import { D1_LIMITS } from "../src/limits.js";
 import { isRefusal } from "../src/principal.js";
 import { mintAgentToken } from "../src/services/tokens.js";
 import { ADMIN, API, ctx } from "./fakes.js";
@@ -599,6 +601,37 @@ describe("POST /oauth/authorize", () => {
     );
   });
 
+  it("a spent mint budget (20/h, shared with oat_) shows the 429 page and mints nothing", async () => {
+    const w = await oauthWorld();
+    const key = `mint:${await hmac16(w.env.ADMIN_SESSION_KEY, `mint\n${w.email}`)}`;
+    // This window and the next, so a rollover mid-test changes nothing.
+    const H = D1_LIMITS.mint.windowMs;
+    const start = Date.now() - (Date.now() % H);
+    for (const ws of [start, start + H])
+      await w.db
+        .prepare(
+          "INSERT INTO rate_counters (key, window_start, count) VALUES (?1, ?2, ?3)",
+        )
+        .bind(key, ws, D1_LIMITS.mint.limit)
+        .run();
+    const clientId = await register(w);
+    const { challenge } = await pkce();
+    const p = await getConsent(w, authorizeUrl(clientId, challenge));
+    const res = await postConsent(w, p, "approve");
+    expect(res.status).toBe(429);
+    expect(await res.text()).toContain(
+      "token budget is spent. Try again later.",
+    );
+    expect(
+      await w.db
+        .prepare(
+          "SELECT count(*) AS n FROM agent_tokens WHERE admin_email = ?1",
+        )
+        .bind(w.email)
+        .first<number>("n"),
+    ).toBe(0);
+  });
+
   it("the 5-live limit counts both kinds: 3 oat_ (R19's mint) and 2 grants, then 409", async () => {
     const w = await oauthWorld();
     // R19's handler is this call; the adapter's JSON body parse is W4's.
@@ -784,10 +817,20 @@ describe("revocation (D1 first, KV too)", () => {
   it("refresh works while the session lives and keeps the chain end", async () => {
     const w = await oauthWorld();
     const { clientId, tokens } = await grant(w);
+    const row = await rowOf(w, tokens);
+    const ends = async () =>
+      (
+        await authServer(w.env)
+          .getOAuthApi(w.env)
+          .listUserGrants(row?.oauth_user ?? "")
+      ).items.map((g) => [g.id, g.expiresAt]);
+    const before = await ends();
+    expect(before).toEqual([[row?.grant_id, expect.any(Number)]]);
     const res = await refresh(w, clientId, tokens);
     expect(res.status).toBe(200);
     const next = (await res.json()) as Tokens;
     expect(isRefusal(await mcpPrincipal(w, next))).toBe(false);
+    expect(await ends()).toEqual(before);
   });
 
   it("logout (R24) ends it: D1 row, KV grant, refresh", async () => {
@@ -904,6 +947,41 @@ describe("revocation (D1 first, KV too)", () => {
     ).toBe(true);
   });
 
+  it("a superseding consent whose completeAuthorization fails leaves the old KV grant", async () => {
+    const w = await oauthWorld();
+    const first = await grant(w);
+    const row = await rowOf(w, first.tokens);
+    const page = await getConsent(
+      w,
+      authorizeUrl(first.clientId, (await pkce()).challenge),
+    );
+    expect(page.status).toBe(200);
+    const store = w.env.OAUTH_KV;
+    const put = store.put.bind(store);
+    store.put = ((key: string, ...rest: unknown[]) =>
+      key.startsWith("grant:") && !key.endsWith(row?.grant_id ?? "")
+        ? Promise.reject(new Error("kv down"))
+        : (put as (...a: unknown[]) => Promise<void>)(
+            key,
+            ...rest,
+          )) as typeof store.put;
+    const post = await postConsent(w, page, "approve");
+    expect(post.status).toBe(400);
+    store.put = put;
+    // The new row never counts as live; the old one's D1 end stands.
+    const live = await w.db
+      .prepare(
+        "SELECT count(*) AS n FROM agent_tokens WHERE admin_email = ?1 AND revoked_at IS NULL",
+      )
+      .bind(w.email)
+      .first<number>("n");
+    expect(live).toBe(0);
+    const grants = await authServer(w.env)
+      .getOAuthApi(w.env)
+      .listUserGrants(row?.oauth_user ?? "");
+    expect(grants.items.map((g) => g.id)).toEqual([row?.grant_id]);
+  });
+
   const revoke = (w: World, clientId: string, t: string, hint: string) =>
     w.call(
       new Request(`${API}/oauth/token`, {
@@ -953,6 +1031,31 @@ describe("revocation (D1 first, KV too)", () => {
     ).toBe(200);
     expect((await rowOf(w, tokens))?.revoked_at).toBeNull();
     expect((await refresh(w, clientId, tokens)).status).toBe(200);
+  });
+
+  it("RFC 7009 revocation by another client leaves the row even when the KV grant reads null (lag)", async () => {
+    const w = await oauthWorld();
+    const { tokens } = await grant(w);
+    const row = await rowOf(w, tokens);
+    await w.env.OAUTH_KV.delete(`grant:${row?.oauth_user}:${row?.grant_id}`);
+    const other = await register(w);
+    expect(
+      (await revoke(w, other, tokens.refresh_token ?? "", "refresh_token"))
+        .status,
+    ).toBe(200);
+    expect((await rowOf(w, tokens))?.revoked_at).toBeNull();
+  });
+
+  it("RFC 7009 revocation of a forged token naming a grant KV no longer holds leaves its row", async () => {
+    const w = await oauthWorld();
+    const { clientId, tokens } = await grant(w);
+    const row = await rowOf(w, tokens);
+    await w.env.OAUTH_KV.delete(`grant:${row?.oauth_user}:${row?.grant_id}`);
+    const forged = `${row?.oauth_user}:${row?.grant_id}:forged`;
+    expect((await revoke(w, clientId, forged, "refresh_token")).status).toBe(
+      200,
+    );
+    expect((await rowOf(w, tokens))?.revoked_at).toBeNull();
   });
 
   it("RFC 7009 revocation by another client leaves the grant and its row", async () => {

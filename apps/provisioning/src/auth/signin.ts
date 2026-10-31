@@ -341,8 +341,9 @@ async function callback(
   // (reauth moves auth_at), so its tokens and grants stay bound to the sid
   // logout ends; another identity's is revoked with them, and so is the
   // same pair's under SESSION_RENEW_UNDER_MS (9A.3.2 step 4: a new session,
-  // or consent would send the admin back here forever). The audit row
-  // comes before any session write, so a failed audit leaves none.
+  // or consent would send the admin back here forever), except on a reauth,
+  // which only moves auth_at. The audit row comes before any session write,
+  // so a failed audit leaves none.
   const priorSid = readCookie(req, SESSION_COOKIE);
   const prior = priorSid ? await liveSession(env, priorSid, now) : null;
   let sid: string;
@@ -350,7 +351,7 @@ async function callback(
     priorSid &&
     prior?.email === id.email &&
     prior.sub === id.sub &&
-    prior.expires_at - now >= SESSION_RENEW_UNDER_MS
+    (flow.reauth || prior.expires_at - now >= SESSION_RENEW_UNDER_MS)
   ) {
     await d.audit(env, ok);
     await renewSession(env, prior.id_hash, authAt);

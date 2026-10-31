@@ -110,39 +110,68 @@ export async function tokenEndpoint(
   if (lim) return lim;
   const r = await capped(req);
   if (!r) return tooLarge();
-  const revoking = await revocationOf(r);
+  const revoking = await revocationOf(r, env);
   const res = await authServer(env).fetch(r, env, ctx);
   if (revoking && res.status === 200) await endRevokedGrant(env, revoking);
   return res;
 }
 
-/** The `token` of an RFC 7009 request (no grant_type, as the library tells them apart). */
-async function revocationOf(r: Request): Promise<string | null> {
+/**
+ * An RFC 7009 request (no grant_type, as the library tells them apart)
+ * whose token names a grant KV holds for the requesting client. The library
+ * answers 200 for every token (foreign and garbage ones too), so only a
+ * grant that was there before, and is gone after, was its revoke.
+ */
+type Revocation = { grantId: string; oauthUser: string; clientId: string };
+async function revocationOf(r: Request, env: Env): Promise<Revocation | null> {
   if (
     !(r.headers.get("content-type") ?? "").startsWith(
       "application/x-www-form-urlencoded",
     )
   )
     return null;
+  let f: URLSearchParams;
   try {
-    const f = new URLSearchParams(await r.clone().text());
-    return !f.get("grant_type") && f.get("token") ? f.get("token") : null;
+    f = new URLSearchParams(await r.clone().text());
   } catch {
     return null;
   }
+  const token = f.get("token");
+  if (f.get("grant_type") || !token) return null;
+  const [oauthUser, grantId, secret, extra] = token.split(":");
+  if (!oauthUser || !grantId || !secret || extra !== undefined) return null;
+  const clientId = requestClientId(r, f);
+  if (!clientId) return null;
+  const g = await env.OAUTH_KV.get<{ clientId?: unknown }>(
+    `grant:${oauthUser}:${grantId}`,
+    "json",
+  );
+  return g?.clientId === clientId ? { grantId, oauthUser, clientId } : null;
+}
+
+/** The client of a token-endpoint request: Basic auth, else the form's client_id. */
+function requestClientId(r: Request, f: URLSearchParams): string | null {
+  const auth = r.headers.get("authorization") ?? "";
+  if (auth.toLowerCase().startsWith("basic ")) {
+    try {
+      const id = atob(auth.slice(6).trim()).split(":")[0];
+      return id ? decodeURIComponent(id) : null;
+    } catch {
+      return null;
+    }
+  }
+  return f.get("client_id") || null;
 }
 
 /**
- * After the library answered a revocation: when the grant the token names
- * is gone from KV (a refresh token ends the grant; an access token alone
- * does not), its D1 row is revoked too.
+ * After the library answered a revocation: when the grant it named is now
+ * gone from KV (a refresh token ends the grant; an access token alone does
+ * not), its D1 row is revoked too, if that client's.
  */
-async function endRevokedGrant(env: Env, token: string): Promise<void> {
-  const [oauthUser, grantId, secret, extra] = token.split(":");
-  if (!oauthUser || !grantId || !secret || extra !== undefined) return;
-  if ((await env.OAUTH_KV.get(`grant:${oauthUser}:${grantId}`)) !== null)
+async function endRevokedGrant(env: Env, g: Revocation): Promise<void> {
+  if ((await env.OAUTH_KV.get(`grant:${g.oauthUser}:${g.grantId}`)) !== null)
     return;
-  await revokeGrantRow(env, { grantId, oauthUser });
+  await revokeGrantRow(env, g);
 }
 
 /** Gives back a slot bump reserved in `key`'s current window. */

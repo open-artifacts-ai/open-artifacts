@@ -772,6 +772,39 @@ describe("a session already in the browser (4.5: logout ends every grant)", () =
     ).toBe(NOW);
   });
 
+  it("a reauth for the same pair with under 60 min left still keeps the sid and its tokens (4.5: reauth moves auth_at only)", async () => {
+    const e = env();
+    const created = NOW - SESSION_TTL_MS + 30 * 60_000;
+    const a = await createSession(
+      e.env,
+      { email: EMAIL, sub: SUB, authAt: created },
+      created,
+    );
+    await oat("t4", await sessionHash(a.sid));
+    const { res } = await signIn(e, {
+      q: "?reauth=1",
+      claims: { auth_time: NOW / 1000 - 5 },
+      sid: a.sid,
+    });
+    expect(res.status).toBe(303);
+    expect(cookieValue(cookieOf(res, SESSION_COOKIE))).toBe(a.sid);
+    const rows = await db
+      .prepare("SELECT auth_at, expires_at, revoked_at FROM sessions")
+      .all();
+    expect(rows.results).toEqual([
+      {
+        auth_at: NOW - 5000,
+        expires_at: created + SESSION_TTL_MS,
+        revoked_at: null,
+      },
+    ]);
+    expect(
+      await db
+        .prepare("SELECT revoked_at FROM agent_tokens WHERE id = 't4'")
+        .first("revoked_at"),
+    ).toBeNull();
+  });
+
   it("the same pair with under 60 min left: the old session ends with its tokens, a new 8 h one starts, and consent renders (9A.3.2 step 4)", async () => {
     // showConsent reads the wall clock, so this case runs on it.
     const T = Date.now();

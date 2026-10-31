@@ -282,9 +282,6 @@ async function allow(
     if (e instanceof ApiError) return mintRefused(e);
     throw e;
   }
-  // The older grant of this client: D1 revoked it in the mint batch; the
-  // library drops it too (revokeExistingGrants, the default).
-  await revokeLibraryGrants(env, minted.superseded ?? []);
   const props: GrantProps = {
     tokenId: minted.tokenId,
     sessionHash: p.sessionHash ?? "",
@@ -303,6 +300,12 @@ async function allow(
     await revokeToken(env, p.email ?? "", minted.tokenId).catch(() => null);
     throw e;
   }
+  // The older grant of this client: D1 revoked it in the mint batch; the
+  // library drops it too (revokeExistingGrants, the default), and this
+  // catches one that call missed. Only after the new grant is written, so a
+  // failed completeAuthorization leaves the old KV grant (its D1 row stays
+  // ended: the admin approves again).
+  await revokeLibraryGrants(env, minted.superseded ?? []);
   await env.PLATFORM_DB.prepare(
     "UPDATE oauth_clients SET first_grant_at = ?2 WHERE client_id = ?1 AND first_grant_at IS NULL",
   )
