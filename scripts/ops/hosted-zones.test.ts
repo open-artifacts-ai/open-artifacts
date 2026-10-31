@@ -70,6 +70,8 @@ const DONE: Record<string, string> = {
       script: "oa-p-directory-broker",
     },
     { pattern: "*.open-artifacts.app/*", script: "oa-p-dispatch" },
+    { pattern: "admin.open-artifacts.app/*", script: "oa-p-provisioning" },
+    { pattern: "api.open-artifacts.app/*", script: "oa-p-provisioning" },
   ]),
   [`routes-${PAGEZ}.json`]: JSON.stringify([
     { pattern: "*.open-artifacts.page/*", script: "oa-p-dispatch" },
@@ -83,7 +85,12 @@ for (const z of [APPZ, PAGEZ]) {
 
 const setup = (
   files: Record<string, string> = {},
-  workers = ["oa-p-dispatch", "oa-p-auth-broker", "oa-p-directory-broker"],
+  workers = [
+    "oa-p-dispatch",
+    "oa-p-auth-broker",
+    "oa-p-directory-broker",
+    "oa-p-provisioning",
+  ],
 ) => {
   const sb = sandbox({ curl });
   const state = join(sb.dir, "state");
@@ -140,6 +147,8 @@ describe("hosted-zones.sh", () => {
       'open-artifacts.page: set ssl "off" -> "strict"',
       "route *.open-artifacts.page/* -> oa-p-dispatch: add",
       "route auth.open-artifacts.app/* -> oa-p-auth-broker: add",
+      "route admin.open-artifacts.app/* -> oa-p-provisioning: add",
+      "route api.open-artifacts.app/* -> oa-p-provisioning: add",
       "plan only: nothing changed",
     ]) {
       expect(r.out).toContain(line);
@@ -147,7 +156,7 @@ describe("hosted-zones.sh", () => {
     }
     clean(r);
   });
-  it("apply makes exactly the planned writes: 2 records, 6 settings, 4 routes", () => {
+  it("apply makes exactly the planned writes: 2 records, 6 settings, 6 routes", () => {
     const r = setup().run("apply");
     expect(r.code).toBe(0);
     expect(r.writes.filter((w) => w.includes("/dns_records "))).toHaveLength(2);
@@ -157,7 +166,7 @@ describe("hosted-zones.sh", () => {
       ),
     ).toHaveLength(6);
     expect(r.writes.filter((w) => w.includes("/workers/routes "))).toHaveLength(
-      4,
+      6,
     );
     expect(r.writes.join("\n")).toContain(
       '{"type":"AAAA","name":"*","content":"100::","proxied":true}',
@@ -234,6 +243,14 @@ describe("hosted-zones.sh", () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain("oa-p-auth-broker does not exist");
     expect(r.writes).toEqual([]);
+    // The provisioning Worker too: its two routes need it.
+    const np = setup({}, [
+      "oa-p-dispatch",
+      "oa-p-auth-broker",
+      "oa-p-directory-broker",
+    ]).run("plan");
+    expect(np.code).toBe(1);
+    expect(np.err).toContain("oa-p-provisioning does not exist");
     expect(setup().run("plan", "dev").code).toBe(2);
     expect(setup().run("destroy").code).toBe(2);
   });
@@ -250,6 +267,7 @@ describe("hosted-zones.sh", () => {
       "oa-s-dispatch",
       "oa-s-auth-broker",
       "oa-s-directory-broker",
+      "oa-s-provisioning",
     ]).run("plan", "staging");
     expect(r.code).toBe(0);
     expect(r.out).toContain(
@@ -257,6 +275,12 @@ describe("hosted-zones.sh", () => {
     );
     expect(r.out).toContain(
       "route *.open-artifacts-staging.page/* -> oa-s-dispatch: add",
+    );
+    expect(r.out).toContain(
+      "route admin.open-artifacts-staging.app/* -> oa-s-provisioning: add",
+    );
+    expect(r.out).toContain(
+      "route api.open-artifacts-staging.app/* -> oa-s-provisioning: add",
     );
   });
 });

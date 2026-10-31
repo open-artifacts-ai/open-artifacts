@@ -5,7 +5,8 @@
 #   both zones: ssl=strict, always_use_https=on, min_tls_version=1.2 (no HSTS)
 #   DNS: AAAA * -> 100:: proxied, on the app zone and the page zone
 #   routes: *.<app>/* and *.<page>/* -> oa-<p>-dispatch; auth.<app>/* ->
-#           oa-<p>-auth-broker; directory.<app>/* -> oa-<p>-directory-broker
+#           oa-<p>-auth-broker; directory.<app>/* -> oa-<p>-directory-broker;
+#           admin.<app>/* and api.<app>/* -> oa-<p>-provisioning
 # `plan` reads only and prints each change (and "ok" for what already matches),
 # also to $GITHUB_STEP_SUMMARY. `apply` plans first, refuses unless every change
 # is an addition or setting change from that fixed set, makes them, then reads
@@ -56,7 +57,7 @@ must() {
 say() { echo "$1"; echo "- $1" >> "$SUMMARY"; }
 
 echo "### Zones for $env ($mode)" >> "$SUMMARY"
-for w in "oa-$P-dispatch" "oa-$P-auth-broker" "oa-$P-directory-broker"; do
+for w in "oa-$P-dispatch" "oa-$P-auth-broker" "oa-$P-directory-broker" "oa-$P-provisioning"; do
   ok="$(cf "$CLOUDFLARE_API_TOKEN" GET "$CF/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$w/settings" | jq -r '.success' 2> /dev/null)"
   [ "$ok" = true ] || { echo "$w does not exist: deploy it first" >&2; exit 1; }
 done
@@ -77,7 +78,8 @@ PAGE_ZONE="$(zone_id "$PAGE")"
 WILD='[{"type":"AAAA","content":"100::","proxied":true}]'
 SETTINGS=('ssl:"strict"' 'always_use_https:"on"' 'min_tls_version:"1.2"')
 ROUTES=("$APP_ZONE auth.$APP/* oa-$P-auth-broker" "$APP_ZONE directory.$APP/* oa-$P-directory-broker"
-  "$APP_ZONE *.$APP/* oa-$P-dispatch" "$PAGE_ZONE *.$PAGE/* oa-$P-dispatch")
+  "$APP_ZONE *.$APP/* oa-$P-dispatch" "$PAGE_ZONE *.$PAGE/* oa-$P-dispatch"
+  "$APP_ZONE admin.$APP/* oa-$P-provisioning" "$APP_ZONE api.$APP/* oa-$P-provisioning")
 EXPECTED=()
 for pair in "$APP:$APP_ZONE" "$PAGE:$PAGE_ZONE"; do
   EXPECTED+=("dns ${pair#*:} ${pair%%:*}")

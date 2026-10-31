@@ -1,0 +1,244 @@
+# Publishes signed releases (and floors) to each env's releases bucket,
+# oa-<p>-releases (design v7 6.4): the only CI step on the provisioning path.
+# After every successful release-please run on main, the release whose tag's
+# commit is that run's head goes to staging, then prod; most runs cut no
+# release and publish nothing. By hand (workflow_dispatch on main): a tag
+# (both envs, or the one named), or a hosted-floor.yml run id with its env.
+# Each env's job runs in its deploy Environment (hosted-staging-deploy,
+# hosted-prod-deploy: main only, no approval), behind the release gate
+# (scripts/ci/tag-passed-checks.sh: every earlier check on the tag passed),
+# and derives the R2 key from the one Cloudflare token (hosted-r2-key.sh).
+# `oa:hosted publish-release` verifies against RELEASE_PUBKEY[env], writes
+# create-only and record.sig.json last; `publish-floor` verifies the floor.
+name: hosted-publish
+
+on:
+  workflow_run:
+    workflows: [release-please]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable release tag to publish (vX.Y.Z); empty with floor_run_id"
+        required: false
+        default: ""
+        type: string
+      env:
+        description: "Only this env (required with floor_run_id); empty: staging, then prod"
+        required: false
+        default: ""
+        type: choice
+        options: ["", staging, prod]
+      floor_run_id:
+        description: "A hosted-floor.yml run id whose signed floor to publish"
+        required: false
+        default: ""
+        type: string
+
+permissions: {}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    outputs:
+      kind: ${{ steps.what.outputs.kind }}
+      tag: ${{ steps.what.outputs.tag }}
+      floor_run_id: ${{ steps.what.outputs.floor_run_id }}
+      staging: ${{ steps.what.outputs.staging }}
+      prod: ${{ steps.what.outputs.prod }}
+    steps:
+      - name: Runs only from main
+        env:
+          REF: ${{ github.ref }}
+        run: test "$REF" = refs/heads/main
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+      - id: what
+        name: What to publish
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TAG: ${{ inputs.tag }}
+          DEPLOY_ENV: ${{ inputs.env }}
+          FLOOR_RUN_ID: ${{ inputs.floor_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/hosted-publish-resolve.sh
+
+  publish-staging:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.staging == 'true' }}
+    runs-on: ubuntu-latest
+    environment: hosted-staging-deploy
+    # actions: read lets the release gate read release-please's run and jobs,
+    # and the floor fetch read and download the hosted-floor run.
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: hosted-publish-staging
+      cancel-in-progress: false
+    timeout-minutes: 30
+    steps:
+      - name: Runs only from main
+        env:
+          REF: ${{ github.ref }}
+        run: test "$REF" = refs/heads/main
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @oa/provision build
+      - name: Load the hosted constants
+        run: bash scripts/ci/hosted-constants.sh staging .github/hosted
+      # Before any token is read: the tag passed every earlier check.
+      - name: Release gate
+        if: ${{ needs.resolve.outputs.kind == 'release' }}
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/tag-passed-checks.sh staging "$TAG"
+      - name: Fetch the floor
+        id: floor
+        if: ${{ needs.resolve.outputs.kind == 'floor' }}
+        env:
+          RUN: ${{ needs.resolve.outputs.floor_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          f="$(bash scripts/ci/hosted-floor-fetch.sh staging "$RUN" "$RUNNER_TEMP/floor")"
+          echo "file=$f" >> "$GITHUB_OUTPUT"
+      # Only this step sees the secret: the token file and the R2 key from it.
+      - name: Write the token files
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          umask 077
+          dir="$RUNNER_TEMP/hosted-publish-secrets"
+          mkdir -m 700 "$dir"
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "CLOUDFLARE_API_TOKEN is not set in this Environment"; exit 1; }
+          printf '%s\n' "$CLOUDFLARE_API_TOKEN" > "$dir/token"
+          bash scripts/ci/hosted-r2-key.sh "$dir/r2"
+      - name: Publish
+        env:
+          KIND: ${{ needs.resolve.outputs.kind }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          FLOOR: ${{ steps.floor.outputs.file }}
+          OA_HOSTED_TOKEN_FILE: ${{ runner.temp }}/hosted-publish-secrets/token
+          OA_HOSTED_R2_FILE: ${{ runner.temp }}/hosted-publish-secrets/r2
+          OA_HOSTED_ENVIRONMENT: hosted-staging-deploy
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$KIND" in
+            release) pnpm -s oa:hosted publish-release --env staging --tag "$TAG" ;;
+            floor) pnpm -s oa:hosted publish-floor --env staging --floor "$FLOOR" ;;
+            *) echo "nothing to publish ($KIND)"; exit 1 ;;
+          esac
+      - name: Remove the token files
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/hosted-publish-secrets"
+          rm -f "$d/r2" "$d/token"
+          rm -rf "$d" "$RUNNER_TEMP/floor"
+          test ! -e "$d"
+
+  publish-prod:
+    needs: [resolve, publish-staging]
+    # Staging first: prod runs after a green staging publish, or alone only
+    # when staging was not asked for (a dispatch naming prod).
+    if: ${{ !cancelled() && needs.resolve.outputs.prod == 'true' && (needs.publish-staging.result == 'success' || (needs.publish-staging.result == 'skipped' && needs.resolve.outputs.staging != 'true')) }}
+    runs-on: ubuntu-latest
+    environment: hosted-prod-deploy
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: hosted-publish-prod
+      cancel-in-progress: false
+    timeout-minutes: 30
+    steps:
+      - name: Runs only from main
+        env:
+          REF: ${{ github.ref }}
+        run: test "$REF" = refs/heads/main
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @oa/provision build
+      - name: Load the hosted constants
+        run: bash scripts/ci/hosted-constants.sh prod .github/hosted
+      - name: Release gate
+        if: ${{ needs.resolve.outputs.kind == 'release' }}
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci/tag-passed-checks.sh prod "$TAG"
+      - name: Fetch the floor
+        id: floor
+        if: ${{ needs.resolve.outputs.kind == 'floor' }}
+        env:
+          RUN: ${{ needs.resolve.outputs.floor_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          f="$(bash scripts/ci/hosted-floor-fetch.sh prod "$RUN" "$RUNNER_TEMP/floor")"
+          echo "file=$f" >> "$GITHUB_OUTPUT"
+      - name: Write the token files
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          umask 077
+          dir="$RUNNER_TEMP/hosted-publish-secrets"
+          mkdir -m 700 "$dir"
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "CLOUDFLARE_API_TOKEN is not set in this Environment"; exit 1; }
+          printf '%s\n' "$CLOUDFLARE_API_TOKEN" > "$dir/token"
+          bash scripts/ci/hosted-r2-key.sh "$dir/r2"
+      - name: Publish
+        env:
+          KIND: ${{ needs.resolve.outputs.kind }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          FLOOR: ${{ steps.floor.outputs.file }}
+          OA_HOSTED_TOKEN_FILE: ${{ runner.temp }}/hosted-publish-secrets/token
+          OA_HOSTED_R2_FILE: ${{ runner.temp }}/hosted-publish-secrets/r2
+          OA_HOSTED_ENVIRONMENT: hosted-prod-deploy
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$KIND" in
+            release) pnpm -s oa:hosted publish-release --env prod --tag "$TAG" ;;
+            floor) pnpm -s oa:hosted publish-floor --env prod --floor "$FLOOR" ;;
+            *) echo "nothing to publish ($KIND)"; exit 1 ;;
+          esac
+      - name: Remove the token files
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/hosted-publish-secrets"
+          rm -f "$d/r2" "$d/token"
+          rm -rf "$d" "$RUNNER_TEMP/floor"
+          test ! -e "$d"
