@@ -137,6 +137,7 @@ function Actions({ install }: { install: Install }) {
     },
     { label: "Retry", show: can(install, "retry"), run: retry },
   ];
+  const live = !!install.lease.until && install.lease.until > Date.now();
   const close = () => {
     setDialog(null);
     setForce(false);
@@ -300,14 +301,16 @@ function Actions({ install }: { install: Install }) {
           error={lease.error}
           onSubmit={() => lease.mutate()}
         >
-          <label className="oa-check">
-            <input
-              type="checkbox"
-              checked={force}
-              onChange={(e) => setForce(e.target.checked)}
-            />{" "}
-            Force (the lease is held until {fmtTime(install.lease.until)})
-          </label>
+          {live && (
+            <label className="oa-check">
+              <input
+                type="checkbox"
+                checked={force}
+                onChange={(e) => setForce(e.target.checked)}
+              />{" "}
+              Force (the lease is held until {fmtTime(install.lease.until)})
+            </label>
+          )}
         </ActionDialog>
       )}
       {dialog === "cancel" && (

@@ -80,6 +80,17 @@ for (const force of [false, true]) {
   });
 }
 
+it("offers Force only while the lease is live", async () => {
+  const i = {
+    ...installsByState.active,
+    lease: { held: true, until: Date.now() - 1000 },
+  };
+  await open(i);
+  fireEvent.click(screen.getByRole("button", { name: "Release lease" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).queryByRole("checkbox")).toBeNull();
+});
+
 it("hides Restore when the grace window is over", async () => {
   await open({ ...installsByState.deleting, restorable: false });
   expect(buttons()).toEqual(["Purge"]);
