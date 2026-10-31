@@ -1,4 +1,5 @@
 import type { ProvisioningEnv } from "@oa/shared/provisioning";
+import { clientDisplayName } from "../../services/tokens.js";
 
 // Server-rendered pages on the admin host for MCP consent (design v7
 // 9A.3.2), from Design's admin-consent handoff (W11 layout A): consent, the
@@ -75,6 +76,8 @@ main{flex:1;width:100%;display:flex;align-items:center;justify-content:center;pa
 .client div{min-width:0;line-height:1.35}
 .client b{display:block;font-weight:600;font-size:14px;overflow-wrap:anywhere}
 .client small{display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.client .given{font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.client .cname{font-family:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;font-weight:500;unicode-bidi:isolate}
 h1{margin:0 0 6px;font-size:20px;line-height:1.25;font-weight:600;letter-spacing:-.02em;overflow-wrap:anywhere}
 p{margin:0 0 16px;color:var(--text-2)}
 ul{list-style:none;margin:0 0 20px;padding:0;border-top:1px solid var(--divider)}
@@ -228,7 +231,7 @@ const CONSENT =
     <input type="hidden" name="consent_token" value="{{consent_token}}">
     <div class="client">
       <span class="ico" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M6 2.5v3M10 2.5v3M4.5 5.5h7v2.5a3.5 3.5 0 0 1-7 0zM8 11.5v2"/></svg></span>
-      <div><b>Calls itself "{{client_name}}"</b><small>Client <span class="mono">{{client_id}}</span> · registered {{registered_ago}} · redirects to <span class="mono">{{redirect_host}}</span>{{local_app}}</small></div>
+      <div><small class="given">Name the client gave, not verified</small><b class="cname">"<bdi>{{client_name}}</bdi>"</b><small>Client <span class="mono">{{client_id}}</span> · registered {{registered_ago}} · redirects to <span class="mono">{{redirect_host}}</span>{{local_app}}</small></div>
     </div>
     <h1>Connect this agent to the {{env_name}} admin?</h1>
     <p>It acts as you, with only what you tick:</p>
@@ -284,7 +287,7 @@ export const consentPage = (
       form_action: "/oauth/authorize",
       request: v.handle,
       consent_token: v.consentToken,
-      client_name: v.clientName,
+      client_name: clientDisplayName(v.clientName),
       client_id: v.clientId,
       registered_ago:
         v.registeredSecondsAgo === null

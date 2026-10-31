@@ -582,7 +582,9 @@ describe("the consent page", () => {
       `<span class="mono">admin.${w.env.APP_DOMAIN}</span>`,
     );
     expect(html).toContain("<h1>Connect this agent to the staging admin?</h1>");
-    expect(html).toContain('<b>Calls itself "Test agent"</b>');
+    expect(html).toContain(
+      '<small class="given">Name the client gave, not verified</small><b class="cname">"<bdi>Test agent</bdi>"</b>',
+    );
     expect(html).toContain(`Client <span class="mono">${clientId}</span>`);
     expect(html).toContain("registered just now");
     expect(html).toContain(
@@ -660,7 +662,7 @@ describe("the consent page", () => {
     ).text();
     expect(html).not.toContain("<img");
     expect(html).toContain(
-      'Calls itself "&lt;img src=x onerror=&quot;a()&quot;&gt;"',
+      '<small class="given">Name the client gave, not verified</small><b class="cname">"<bdi>&lt;img src=x onerror=&quot;a()&quot;&gt;</bdi>"</b>',
     );
   });
 

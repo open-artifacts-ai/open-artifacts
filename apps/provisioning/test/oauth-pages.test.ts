@@ -125,7 +125,9 @@ describe("consent page", () => {
     expect(html).toContain(
       `<input type="hidden" name="consent_token" value="${"a".repeat(64)}">`,
     );
-    expect(html).toContain('<b>Calls itself "Test agent"</b>');
+    expect(html).toContain(
+      '<small class="given">Name the client gave, not verified</small><b class="cname">"<bdi>Test agent</bdi>"</b>',
+    );
     expect(html).toContain(
       'Client <span class="mono">cl_123</span> · registered 3 minutes ago · redirects to <span class="mono">127.0.0.1</span> (Local app)',
     );
@@ -203,8 +205,73 @@ describe("consent page", () => {
       { ...VIEW, clientName: "{{consent_token}}" },
       new Headers(),
     ).text();
-    expect(html).toContain('Calls itself "{{consent_token}}"');
+    expect(html).toContain("<bdi>{{consent_token}}</bdi>");
     expect(html.split("a".repeat(64)).length - 1).toBe(1);
+  });
+});
+
+describe("the client's name (L1)", () => {
+  const nameOf = async (clientName: string, c: Chrome = STAGING) => {
+    const html = await consentPage(
+      c,
+      { ...VIEW, clientName },
+      new Headers(),
+    ).text();
+    const m = html.match(/<b class="cname">"<bdi>(.*?)<\/bdi>"<\/b>/);
+    expect(m).not.toBeNull();
+    return { html, name: (m as RegExpMatchArray)[1] as string };
+  };
+
+  it("is labelled as the client's own, apart from the page's provenance", async () => {
+    const { html } = await nameOf("Test agent");
+    expect(html).toContain(
+      '<small class="given">Name the client gave, not verified</small>',
+    );
+    expect(html).not.toContain("Calls itself");
+  });
+
+  it("truncates a 16 KiB name to 64 characters with an ellipsis", async () => {
+    const { name } = await nameOf("A".repeat(16 * 1024));
+    expect(Array.from(name)).toHaveLength(64);
+    expect(name).toBe(`${"A".repeat(63)}\u2026`);
+  });
+
+  it("strips bidi overrides, isolates, marks and control characters", async () => {
+    const hostile =
+      "\u202eevil\u202c\u2066x\u2069\u200e\u200f\u061c\u0000\u0007\u001b[31m\u007f\u0085\u009b ok";
+    const { name } = await nameOf(hostile);
+    expect(name).toBe("evilx[31m ok");
+    for (const c of hostile.replace(/[a-z[\]0-9 ]/g, ""))
+      expect(name).not.toContain(c);
+  });
+
+  it("collapses whitespace", async () => {
+    const { name } = await nameOf("  My\t\n\r  agent \u00a0 ");
+    expect(name).toBe("My agent");
+  });
+
+  it("still escapes quotes and <", async () => {
+    const { name } = await nameOf(`"x" 'y' <b>`);
+    expect(name).toBe("&quot;x&quot; &#39;y&#39; &lt;b&gt;");
+    expect(name).not.toMatch(/[<>"']/);
+  });
+
+  it("an empty or all-control name gives the fallback", async () => {
+    expect((await nameOf("")).name).toBe("Unnamed client");
+    expect((await nameOf(" \u202e\u0000\t ")).name).toBe("Unnamed client");
+  });
+
+  it("a hostile name leaves the host and env badge untouched", async () => {
+    const header = (h: string) =>
+      h.match(/<header>.*?<\/header>/gs) as RegExpMatchArray;
+    const clean = header((await nameOf("Test agent", PROD)).html);
+    const hostile = `\u202e</header><header>Open Artifacts admin<span class="env staging">Staging</span><span class="mono">evil.test</span>`;
+    const { html } = await nameOf(hostile, PROD);
+    expect(header(html)).toEqual(clean);
+    expect(clean).toHaveLength(1);
+    expect(clean[0]).toContain('<span class="env prod">Production</span>');
+    expect(clean[0]).toContain('<span class="mono">admin.example.test</span>');
+    expect(html.match(/class="env /g)).toHaveLength(1);
   });
 });
 

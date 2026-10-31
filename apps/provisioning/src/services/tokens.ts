@@ -130,11 +130,49 @@ export type Minted = {
   superseded?: RevokedGrant[];
 };
 
-/** An `oauth` row's label (9A.3.3): the DCR client_name if it fits, else `unnamed`. */
-export const oauthLabel = (clientName: string | null) =>
-  clientName !== null && OAUTH_LABEL_RE.test(clientName)
-    ? clientName
-    : "unnamed";
+// C0, DEL and C1 controls, bidi embeddings, overrides, isolates and marks
+// (U+202A-202E, U+2066-2069, U+200E/F, U+061C), and zero-width characters.
+export const strippedFromClientName = (cp: number) =>
+  cp <= 0x1f ||
+  (cp >= 0x7f && cp <= 0x9f) ||
+  cp === 0x61c ||
+  (cp >= 0x200b && cp <= 0x200f) ||
+  (cp >= 0x202a && cp <= 0x202e) ||
+  (cp >= 0x2060 && cp <= 0x2069) ||
+  cp === 0xfeff;
+/** Longest DCR client_name shown, in code points, the ellipsis included. */
+export const CLIENT_NAME_MAX = 64;
+
+/** A DCR client_name with controls and bidi stripped and whitespace collapsed. */
+const cleanClientName = (name: string | null) =>
+  (name ?? "")
+    .replace(/\s+/gu, " ")
+    .replace(/./gsu, (c) =>
+      strippedFromClientName(c.codePointAt(0) as number) ? "" : c,
+    )
+    .replace(/\s+/gu, " ")
+    .trim();
+
+/**
+ * The DCR client_name as shown on consent (L1): cleaned, at most
+ * CLIENT_NAME_MAX code points with an ellipsis, else "Unnamed client".
+ */
+export function clientDisplayName(name: string | null): string {
+  const cps = Array.from(cleanClientName(name));
+  if (cps.length === 0) return "Unnamed client";
+  return cps.length > CLIENT_NAME_MAX
+    ? `${cps.slice(0, CLIENT_NAME_MAX - 1).join("")}\u2026`
+    : cps.join("");
+}
+
+/**
+ * An `oauth` row's label (9A.3.3), also the audit label: the cleaned DCR
+ * client_name if it fits, else `unnamed`.
+ */
+export const oauthLabel = (clientName: string | null) => {
+  const name = cleanClientName(clientName);
+  return OAUTH_LABEL_RE.test(name) ? name : "unnamed";
+};
 
 const b64u = (b: Uint8Array) =>
   btoa(String.fromCharCode(...b))
