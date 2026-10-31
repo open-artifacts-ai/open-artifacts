@@ -14,13 +14,24 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./provisioning": {
-      "types": "./dist/provisioning/index.d.ts",
-      "import": "./dist/provisioning/index.js"
-    },
     "./mocks": {
       "types": "./dist/mocks/index.d.ts",
       "import": "./dist/mocks/index.js"
+    },
+    "./provisioning": {
+      "types": "./dist/provisioning/index.d.ts",
+      "import": "./dist/provisioning/index.js",
+      "default": "./dist/provisioning/index.js"
+    },
+    "./provisioning/slugs": {
+      "types": "./dist/provisioning/slugs.d.ts",
+      "import": "./dist/provisioning/slugs.js",
+      "default": "./dist/provisioning/slugs.js"
+    },
+    "./provisioning/fakes": {
+      "types": "./dist/provisioning/fakes.d.ts",
+      "import": "./dist/provisioning/fakes.js",
+      "default": "./dist/provisioning/fakes.js"
     }
   },
   "files": [

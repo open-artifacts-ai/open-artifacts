@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   ALERT_CONDITIONS,
-  ALERT_KEYS,
+  AUDIT_REFUSAL_BUCKETS,
   alertParams,
   RPC_ALERT_KEYS,
+  SIGNIN_REFUSAL_BUCKET,
   SQL_ALERT_KEYS,
 } from "../src/provisioning/alerts.js";
+import { ALERT_KEYS } from "../src/provisioning/enums.js";
 
 describe("ALERT_KEYS", () => {
   it("is the scheduler's alert list (design 5.8), once each", () => {
@@ -65,5 +67,19 @@ describe("ALERT_CONDITIONS", () => {
     expect(alertParams("job_stuck", at)).toEqual([1_000]);
     expect(alertParams("prodclean_failed", at)).toEqual([]);
     expect(alertParams("signup_cap", at)).toEqual([1_000, 7]);
+  });
+});
+
+describe("AUDIT_REFUSAL_BUCKETS", () => {
+  it("names each audit_refusals bucket once, sign-in among them", () => {
+    expect(new Set(AUDIT_REFUSAL_BUCKETS).size).toBe(
+      AUDIT_REFUSAL_BUCKETS.length,
+    );
+    for (const b of AUDIT_REFUSAL_BUCKETS) expect(b).toMatch(/^[a-z_]+$/);
+    expect(AUDIT_REFUSAL_BUCKETS).toContain(SIGNIN_REFUSAL_BUCKET);
+    expect(AUDIT_REFUSAL_BUCKETS).toContain("oauth_register");
+    expect(ALERT_CONDITIONS.signin_refused_burst.sql).toContain(
+      `bucket = '${SIGNIN_REFUSAL_BUCKET}'`,
+    );
   });
 });

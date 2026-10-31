@@ -8,27 +8,11 @@
  * Every query is read-only and returns rows of one shape (`AlertRow`): no
  * row means the condition does not hold. Times are epoch milliseconds; a
  * query that takes `now` binds it as `?1` (`alertParams`). `token_expiring` and `token_invalid` come from
- * `PROVISIONER.tokenStatus()`, not D1, so they have no query.
+ * `PROVISIONER.tokenStatus()`, not D1, so they have no query. The key list
+ * is `ALERT_KEYS` (enums.ts).
  */
 
-export const ALERT_KEYS = [
-  "signin_refused_burst",
-  "admin_unknown_sub",
-  "job_failed",
-  "job_retrying",
-  "job_stuck",
-  "prod_dirty",
-  "prodclean_failed",
-  "upgrade_incomplete",
-  "unreachable_after_route",
-  "purge_stuck",
-  "welcome_unsent",
-  "signup_cap",
-  "oauth_register_flood",
-  "token_expiring",
-  "token_invalid",
-] as const;
-export type AlertKey = (typeof ALERT_KEYS)[number];
+import { ALERT_KEYS, type AlertKey } from "./enums.js";
 
 /** Keys read from `PROVISIONER.tokenStatus()` rather than D1. */
 export const RPC_ALERT_KEYS = [
@@ -44,11 +28,28 @@ export const SQL_ALERT_KEYS = ALERT_KEYS.filter(
 export const SIGNIN_BURST_WINDOW_MS = 10 * 60_000;
 export const SIGNIN_BURST_MIN = 5;
 /**
- * The `audit_refusals` bucket of sign-in refusals (`signin.bad_flow` and the
- * `RL_PV_SIGNIN_IP` 429s). The refusal writer imports this; any other name
- * is invisible to `signin_refused_burst`.
+ * The `audit_refusals` buckets (4.9): `refuse(env, bucket, code, req)` takes
+ * one of these, so the alert queries and R17 see every refusal.
+ * - `pre`: `RL_PV_PRE_IP` 429s.
+ * - `auth`: `auth.refused`.
+ * - `csrf`: `csrf.refused`.
+ * - `signin`: `signin.bad_flow` and the `RL_PV_SIGNIN_IP` 429s.
+ * - `slug`: `RL_PV_SLUG_IP` 429s.
+ * - `oauth`: `RL_PV_OAUTH_IP` 429s on `/oauth/token` and consent.
+ * - `oauth_register`: refused `/oauth/register` calls, its 429s included.
  */
-export const SIGNIN_REFUSAL_BUCKET = "signin";
+export const AUDIT_REFUSAL_BUCKETS = [
+  "pre",
+  "auth",
+  "csrf",
+  "signin",
+  "slug",
+  "oauth",
+  "oauth_register",
+] as const;
+export type AuditRefusalBucket = (typeof AUDIT_REFUSAL_BUCKETS)[number];
+/** The bucket `signin_refused_burst` sums. */
+export const SIGNIN_REFUSAL_BUCKET = "signin" satisfies AuditRefusalBucket;
 /** `audit_refusals` rows aggregate refusals per window of this length (4.9). */
 export const AUDIT_REFUSAL_WINDOW_MS = 10 * 60_000;
 /** How long an `unknown_sub` refusal and a failed job stay in attention. */
@@ -67,8 +68,6 @@ export const PURGE_STUCK_FAILURES = 3;
 export const WELCOME_CLAIM_MS = 15 * 60_000;
 /** MCP client registrations in a UTC day over this open `oauth_register_flood`. */
 export const OAUTH_REGISTER_FLOOD = 500;
-/** `token_expiring` this many days before the provisioning token's end date. */
-export const TOKEN_EXPIRING_DAYS = 30;
 
 const DAY_MS = 24 * 60 * 60_000;
 // The start of now's UTC day.
@@ -132,7 +131,7 @@ export const ALERT_CONDITIONS: Record<SqlAlertKey, AlertCondition> = {
   job_failed: {
     // An admin cancel (code canceled) alerts too: the job did not finish.
     sql: `SELECT ${FAILED_JOB} FROM jobs j
-WHERE j.status = 'failed' AND j.finished_at > ?1 - ${ALERT_LOOKBACK_MS}
+WHERE j.status = 'failed' AND COALESCE(j.finished_at, j.updated_at) > ?1 - ${ALERT_LOOKBACK_MS}
   AND COALESCE(j.error_code, '') NOT IN ('prod_dirty', 'upgrade_incomplete')
   AND ${FIXED_BY(STATE_KINDS)}
   AND NOT (j.kind = 'purge' AND (SELECT COUNT(*) FROM jobs p WHERE p.install_id = j.install_id AND p.kind = 'purge' AND p.status = 'failed') >= ${PURGE_STUCK_FAILURES})

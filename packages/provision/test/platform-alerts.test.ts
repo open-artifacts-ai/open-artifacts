@@ -208,6 +208,16 @@ describe("alert conditions", () => {
     ]);
   });
 
+  it("job_failed: a failed job with no finished_at falls back to updated_at", () => {
+    const db = platformDb();
+    job(db, "old", { status: "failed", updated_at: NOW - 25 * HOUR });
+    expect(run(db, "job_failed")).toEqual([]);
+    const id = job(db, "i1", { status: "failed", updated_at: NOW - MIN });
+    expect(run(db, "job_failed")).toMatchObject([
+      { install_id: "i1", job_id: id, since: NOW - MIN },
+    ]);
+  });
+
   it("job_retrying: an open job on its 3rd attempt (2 failed), not yet stuck", () => {
     const db = platformDb();
     job(db, "i1", { status: "running", attempt: 1, updated_at: NOW });
