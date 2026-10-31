@@ -1,4 +1,6 @@
 import {
+  type RouteId,
+  type Token,
   type TokenKind,
   type TokenScope,
   TokenScopeSchema,
@@ -9,6 +11,7 @@ import { ApiError } from "../errors.js";
 import { hmac16, sha256Hex } from "../hmac.js";
 import { countD1, D1_LIMITS } from "../limits.js";
 import type { Principal, Refusal } from "../principal.js";
+import type { Surface } from "../routes/invoke.js";
 import { ulid } from "../ulid.js";
 
 // The one token service for both kinds (design v7 9A.4): R19 and the MCP
@@ -426,4 +429,139 @@ export async function principalByBearer(
   if (!OAT_RE.test(bearer))
     return { refusal: true, code: "unauthenticated", reason: "revoked" };
   return principalWhere(env, "token_hash", await tokenHash(bearer), "oat");
+}
+
+/** R20 keeps a token this long after it ends (revoked or expired). */
+export const TOKEN_LIST_KEEP_MS = 24 * 3_600_000;
+
+/** A row as the API shows it (TokenSchema): never the hash or oauth_user. */
+export const tokenView = (r: AgentTokenRow): Token => ({
+  id: r.id,
+  kind: r.kind,
+  label: r.label,
+  clientName: r.client_name,
+  scopes: rowScopes(r),
+  createdAt: r.created_at,
+  expiresAt: r.expires_at,
+  revokedAt: r.revoked_at,
+  lastUsedAt: r.last_used_at,
+});
+
+/** R20: this admin's tokens of both kinds, live or ended within 24 h, newest first. */
+export async function listTokens(env: Env, email: string): Promise<Token[]> {
+  const now = Date.now();
+  const r = await env.PLATFORM_DB.prepare(
+    `SELECT * FROM agent_tokens
+     WHERE admin_email = ?1 AND min(expires_at, coalesce(revoked_at, expires_at)) > ?2
+     ORDER BY created_at DESC, id DESC LIMIT 100`,
+  )
+    .bind(email, now - TOKEN_LIST_KEEP_MS)
+    .all<AgentTokenRow>();
+  return r.results.map(tokenView);
+}
+
+export async function getToken(
+  env: Env,
+  id: string,
+): Promise<AgentTokenRow | null> {
+  return env.PLATFORM_DB.prepare("SELECT * FROM agent_tokens WHERE id = ?1")
+    .bind(id)
+    .first<AgentTokenRow>();
+}
+
+/**
+ * R21 with an id: revokes one of this admin's tokens (either kind) and
+ * audits `token.revoke` in the same batch. False when the admin has no such
+ * token (404); revoking an ended token again is a no-op. The D1 row is what
+ * every call checks, so an OAuth grant still in KV is refused at once.
+ */
+export async function revokeToken(
+  env: Env,
+  email: string,
+  id: string,
+): Promise<boolean> {
+  const now = Date.now();
+  const db = env.PLATFORM_DB;
+  const where = "WHERE id = ?1 AND admin_email = ?2 AND revoked_at IS NULL";
+  const res = await db.batch([
+    db
+      .prepare("SELECT 1 FROM agent_tokens WHERE id = ?1 AND admin_email = ?2")
+      .bind(id, email),
+    db
+      .prepare(
+        `${AUDIT_INSERT} SELECT ?3, 'admin', ?2, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'kind', kind, 'label', label) FROM agent_tokens ${where}`,
+      )
+      .bind(id, email, now),
+    db
+      .prepare(`UPDATE agent_tokens SET revoked_at = ?3 ${where}`)
+      .bind(id, email, now),
+  ]);
+  return (res[0]?.results.length ?? 0) > 0;
+}
+
+/** R21 without an id: revokes all of this admin's tokens, both kinds; one `token.revoke_all` row. */
+export async function revokeAllTokens(env: Env, email: string): Promise<void> {
+  const now = Date.now();
+  const db = env.PLATFORM_DB;
+  const where = "WHERE admin_email = ?1 AND revoked_at IS NULL";
+  await db.batch([
+    db
+      .prepare(
+        `${AUDIT_INSERT} VALUES (?2, 'admin', ?1, NULL, 'token.revoke_all', NULL, 'ok', json_object('count', (SELECT count(*) FROM agent_tokens ${where})))`,
+      )
+      .bind(email, now),
+    db
+      .prepare(`UPDATE agent_tokens SET revoked_at = ?2 ${where}`)
+      .bind(email, now),
+  ]);
+}
+
+/** `token.used` dedup window (4.1): one row per token per route per 10 min. */
+export const TOKEN_USED_WINDOW_MS = 10 * 60_000;
+
+/**
+ * Records a token principal's use of a route after authz passed: the first
+ * use per token, route and 10-minute window writes one `token.used` row
+ * (detail: the minting admin, route, surface; MCP adds tool and
+ * clientVersion, 9A.8) and bumps `last_used_at`. One D1 batch, so
+ * concurrent first uses write one row. Other principals: nothing.
+ */
+export async function recordTokenUse(
+  env: Env,
+  principal: Principal,
+  route: RouteId,
+  surface: Surface,
+): Promise<void> {
+  if (principal.kind !== "token" || !principal.tokenId) return;
+  const now = Date.now();
+  const windowStart = now - (now % TOKEN_USED_WINDOW_MS);
+  const key = `used:${principal.tokenId}:${route}`;
+  const detail = JSON.stringify({
+    admin: principal.email ?? null,
+    route,
+    surface: surface.kind,
+    ...(surface.kind === "mcp"
+      ? { tool: surface.tool, clientVersion: surface.clientVersion }
+      : {}),
+  });
+  const first = `(SELECT count FROM rate_counters WHERE key = ?1 AND window_start = ?2) = 1`;
+  const db = env.PLATFORM_DB;
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO rate_counters (key, window_start, count) VALUES (?1, ?2, 1)
+         ON CONFLICT (key, window_start) DO UPDATE SET count = count + 1`,
+      )
+      .bind(key, windowStart),
+    db
+      .prepare(
+        `${AUDIT_INSERT} SELECT ?3, 'token', ?4, ?5, 'token.used', NULL, 'ok', ?6 WHERE ${first}`,
+      )
+      .bind(key, windowStart, now, principal.label, principal.tokenId, detail),
+    db
+      .prepare(
+        `UPDATE agent_tokens SET last_used_at = ?3 WHERE id = ?4 AND ${first}`,
+      )
+      .bind(key, windowStart, now, principal.tokenId),
+  ]);
 }

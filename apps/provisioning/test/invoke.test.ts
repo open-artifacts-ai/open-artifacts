@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../src/errors.js";
 import type { Principal } from "../src/principal.js";
+import { HANDLERS, stub } from "../src/routes/handlers.js";
 import { invokeRoute, type Surface } from "../src/routes/invoke.js";
 import { ctx, fakeEnv } from "./fakes.js";
 
@@ -73,11 +74,19 @@ describe("invokeRoute (9A.4): authz.ts row, then the 501 stub", () => {
                   code: (r.body as { error: { code: string } }).error.code,
                 };
               } catch (err) {
-                if (!(err instanceof ApiError)) throw err;
-                got = { status: API_ERROR_STATUS[err.code], code: err.code };
+                // A built handler on fake bindings (no D1) fails past authz.
+                if (err instanceof ApiError)
+                  got = { status: API_ERROR_STATUS[err.code], code: err.code };
+                else if (HANDLERS[route] !== stub)
+                  got = { status: 500, code: "internal" };
+                else throw err;
               }
-              if (d.ok)
+              if (d.ok && HANDLERS[route] === stub)
                 expect(got).toEqual({ status: 501, code: "not_implemented" });
+              else if (d.ok)
+                // Built handlers (R19-R21, R27): authz passed, whatever the
+                // handler then answers on fake bindings.
+                expect(got.code).not.toMatch(/^(unauthenticated|forbidden)$/);
               else
                 expect(got).toEqual({
                   status: API_ERROR_STATUS[d.code],

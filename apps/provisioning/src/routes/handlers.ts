@@ -3,6 +3,7 @@ import type { Env } from "../env.js";
 import { NOT_IMPLEMENTED_BODY } from "../errors.js";
 import type { Principal } from "../principal.js";
 import type { RouteInput, RouteResult, Surface } from "./invoke.js";
+import { listTokensHandler, mintToken, revokeTokens } from "./tokens.js";
 import { world } from "./world.js";
 
 /** What a handler gets once invokeRoute has passed authz. */
@@ -43,9 +44,9 @@ export const HANDLERS: Readonly<Record<ApiRouteId, Handler>> = {
   R16: stub,
   R17: stub,
   R18: stub,
-  R19: stub,
-  R20: stub,
-  R21: stub,
+  R19: mintToken,
+  R20: listTokensHandler,
+  R21: revokeTokens,
   R25: stub,
   R26: stub,
   R27: world,

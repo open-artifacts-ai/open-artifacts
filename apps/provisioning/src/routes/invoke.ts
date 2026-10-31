@@ -8,6 +8,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { limit } from "../limits.js";
 import type { Principal } from "../principal.js";
+import { recordTokenUse } from "../services/tokens.js";
 import { HANDLERS } from "./handlers.js";
 
 // The one entry point both surfaces call (design v7 9A.4). It runs the
@@ -56,6 +57,8 @@ export async function invokeRoute(
   if (r) throw new ApiError(r.code);
   const d = authorize(route, principal, env.OA_ENV);
   if (!d.ok) throw new ApiError(d.code);
+  // token.used (4.9): off the response path; a failed write never fails the call.
+  ctx.waitUntil(recordTokenUse(env, principal, route, surface).catch(() => {}));
   return HANDLERS[route]({
     env,
     ctx,

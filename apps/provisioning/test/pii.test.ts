@@ -1,0 +1,75 @@
+import type { AuditEntry } from "@oa/shared/provisioning";
+import { describe, expect, it } from "vitest";
+import type { Principal } from "../src/principal.js";
+import {
+  isEmailValue,
+  mayReadPii,
+  redactAuditEntry,
+} from "../src/services/pii.js";
+
+const P = (kind: Principal["kind"], scopes: Principal["scopes"] = []) =>
+  ({ kind, actorKey: "x", rateKey: "x", label: "x", scopes }) as Principal;
+const entry = (detail: AuditEntry["detail"]): AuditEntry => ({
+  id: "api:1",
+  at: 1,
+  source: "api",
+  actor: { kind: "token", label: "ci" },
+  action: "token.used",
+  installId: null,
+  jobId: null,
+  outcome: "ok",
+  code: null,
+  count: 1,
+  detail,
+});
+
+describe("R17 email rule (4.9): tokens without installs:pii see no email detail", () => {
+  it("only a token principal without installs:pii is redacted", () => {
+    expect(mayReadPii(P("admin"))).toBe(true);
+    expect(mayReadPii(P("oidc"))).toBe(true);
+    expect(mayReadPii(P("token", ["audit:read", "installs:pii"]))).toBe(true);
+    expect(mayReadPii(P("token", ["audit:read"]))).toBe(false);
+  });
+
+  it("recognizes email values, not other strings", () => {
+    for (const v of ["me@leourbina.com", "A.B+c@x.co", " me@x.io "])
+      expect(isEmailValue(v), v).toBe(true);
+    for (const v of ["@me", "me@", "user:abc", "a@b", "x", 1, null, "a b@c.d"])
+      expect(isEmailValue(v), String(v)).toBe(false);
+  });
+
+  it("nulls every email-valued field, nested and in arrays, by value not by key", () => {
+    const d = {
+      admin: "me@leourbina.com",
+      ownerEmail: "owner@acme.test",
+      // Post-M1 rows may carry emails under any key (14.4).
+      args: { to: "new@acme.test", version: "1.2.3" },
+      cc: ["a@acme.test", "n/a"],
+      route: "R2",
+      count: 3,
+    };
+    expect(
+      redactAuditEntry(entry(d), P("token", ["audit:read"])).detail,
+    ).toEqual({
+      admin: null,
+      ownerEmail: null,
+      args: { to: null, version: "1.2.3" },
+      cc: [null, "n/a"],
+      route: "R2",
+      count: 3,
+    });
+  });
+
+  it("leaves everything as is for a principal that may read PII", () => {
+    const e = entry({ admin: "me@leourbina.com" });
+    expect(redactAuditEntry(e, P("admin"))).toBe(e);
+    expect(
+      redactAuditEntry(e, P("token", ["audit:read", "installs:pii"])),
+    ).toBe(e);
+  });
+
+  it("null detail stays null; nothing else in the entry changes", () => {
+    const e = entry(null);
+    expect(redactAuditEntry(e, P("token", ["audit:read"]))).toEqual(e);
+  });
+});
