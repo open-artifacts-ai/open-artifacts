@@ -259,13 +259,17 @@ LEFT JOIN signups s ON s.signup_id = COALESCE(
 LEFT JOIN jobs a ON a.install_id = l.install_id AND a.status IN ('queued', 'running');
 
 -- Every existing install (staging rl-a and rl-b) gets an admin lifecycle row.
--- Routed states are serving and a deleted install is unmapped; anything else
--- is left for the provisioner's next HOSTS write.
-INSERT OR IGNORE INTO install_lifecycle (install_id, source, serving_mode, created_at, updated_at)
+-- Routed states are serving, a deleted install is unmapped and a deleting one
+-- is closed; anything else is left for the provisioner's next HOSTS write.
+-- installs has no deleted_at, so a deleting install's grace is over: it was
+-- deleted when it entered deleting (updated_at) and its purge is due now (ms).
+INSERT OR IGNORE INTO install_lifecycle (install_id, source, deleted_at, purge_at, serving_mode, created_at, updated_at)
 SELECT
   id,
   'admin',
-  CASE WHEN state IN ('active', 'upgrading') THEN 'serving' WHEN state = 'deleted' THEN 'unmapped' END,
+  CASE WHEN state = 'deleting' THEN updated_at END,
+  CASE WHEN state = 'deleting' THEN CAST(strftime('%s', 'now') AS INTEGER) * 1000 END,
+  CASE WHEN state IN ('active', 'upgrading') THEN 'serving' WHEN state = 'deleted' THEN 'unmapped' WHEN state = 'deleting' THEN 'closed' END,
   created_at,
   updated_at
 FROM installs;
