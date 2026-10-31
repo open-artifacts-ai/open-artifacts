@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.78.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.77.1...v0.78.0) (2026-10-31)
+
+
+### Features
+
+* **shared:** Provisioning API contract, @oa/shared/provisioning (C1) ([#884](https://github.com/open-artifacts-ai/open-artifacts/issues/884)) ([00c1924](https://github.com/open-artifacts-ai/open-artifacts/commit/00c1924f9fcd5c326a31c6ed078008b536c9ee6a))
+
 ## [0.77.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.77.0...v0.77.1) (2026-10-30)
 
 
