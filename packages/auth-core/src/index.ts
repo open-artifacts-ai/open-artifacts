@@ -31,3 +31,4 @@ export {
   hasDirectoryScopes,
   verifyGoogleIdToken,
 } from "./google.js";
+export { ipKey, ipKeyOf } from "./ip.js";
