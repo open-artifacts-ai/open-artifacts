@@ -438,6 +438,8 @@ describe("prodclean_failed", () => {
     const open = m.sent.filter((x) => x.subject.includes("prod-clean"));
     expect(open).toHaveLength(1);
     const text = open[0]?.text ?? "";
+    // Manager (design owner): code, install id and detail of the latest failed report.
+    expect(text).toContain("Codes: dirty");
     expect(text).toContain("i00000000042");
     expect(text).not.toContain("i00000000077");
     expect(text).toContain("binding KV_EXTRA on (redacted)");
