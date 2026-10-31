@@ -28,6 +28,36 @@
       "import": "./dist/provisioning/slugs.js",
       "default": "./dist/provisioning/slugs.js"
     },
+    "./provisioning/alerts": {
+      "types": "./dist/provisioning/alerts.d.ts",
+      "import": "./dist/provisioning/alerts.js",
+      "default": "./dist/provisioning/alerts.js"
+    },
+    "./provisioning/enums": {
+      "types": "./dist/provisioning/enum-values.d.ts",
+      "import": "./dist/provisioning/enum-values.js",
+      "default": "./dist/provisioning/enum-values.js"
+    },
+    "./provisioning/errors": {
+      "types": "./dist/provisioning/error-codes.d.ts",
+      "import": "./dist/provisioning/error-codes.js",
+      "default": "./dist/provisioning/error-codes.js"
+    },
+    "./provisioning/state": {
+      "types": "./dist/provisioning/state.d.ts",
+      "import": "./dist/provisioning/state.js",
+      "default": "./dist/provisioning/state.js"
+    },
+    "./provisioning/system": {
+      "types": "./dist/provisioning/system.d.ts",
+      "import": "./dist/provisioning/system.js",
+      "default": "./dist/provisioning/system.js"
+    },
+    "./provisioning/workflow": {
+      "types": "./dist/provisioning/workflow.d.ts",
+      "import": "./dist/provisioning/workflow.js",
+      "default": "./dist/provisioning/workflow.js"
+    },
     "./provisioning/fakes": {
       "types": "./dist/provisioning/fakes.d.ts",
       "import": "./dist/provisioning/fakes.js",
