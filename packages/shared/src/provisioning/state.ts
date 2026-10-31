@@ -70,6 +70,13 @@ export function sweepTerminatedKey(jobId: string): string {
  * `jobs.started_at` (8.3), written when the run starts.
  */
 export const JOB_START_GRACE_MS = 60_000;
+/**
+ * The settle grace for a dead run: the sweep settles a job (`run_dead`, plus
+ * its cleanup job) only once its instance has been `errored` or
+ * `terminated` this long, so an R25 cancel that terminates and then
+ * settles the job itself is never pre-empted (Manager C5).
+ */
+export const JOB_TERMINATED_GRACE_MS = 120_000;
 /** A self-serve signup pending this long is re-enqueued (5.8, #859 sweepStale). */
 export const SELF_SERVE_STALE_MS = 15 * MIN;
 

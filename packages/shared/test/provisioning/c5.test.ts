@@ -40,6 +40,7 @@ import {
   HEALTH_INTERVAL_MS,
   HEALTH_ROUND_KEY,
   JOB_START_GRACE_MS,
+  JOB_TERMINATED_GRACE_MS,
   PLATFORM_STATE_0006_KEYS,
   RATE_COUNTER_RETENTION_MS,
   SCHEDULER_STALE_MS,
@@ -139,6 +140,7 @@ describe("platform_state keys (5.8, 0006)", () => {
 describe("scheduler intervals and retention (3.6, 4.9, 5.8)", () => {
   it("are the design's values", () => {
     expect(JOB_START_GRACE_MS).toBe(60_000);
+    expect(JOB_TERMINATED_GRACE_MS).toBe(120_000);
     expect(SELF_SERVE_STALE_MS).toBe(15 * MIN);
     expect(HEALTH_INTERVAL_MS).toBe(60 * MIN);
     expect(AUDIT_REFUSAL_RETENTION_MS).toBe(90 * DAY);
@@ -225,6 +227,16 @@ describe("system jobs (3.1, 4.1, 5.8)", () => {
     await expect(
       systemJobBodyHash("upgrade" as never, "iabc123def45", {} as never),
     ).rejects.toThrow(/system job kind/);
+  });
+});
+
+describe("run_dead (Manager C5)", () => {
+  it("is a terminal job error code that job_failed alerts on", () => {
+    expect(JOB_ERROR_RETRY.run_dead).toBe("terminal");
+    expect(JobErrorCodeSchema.parse("run_dead")).toBe("run_dead");
+    const sql = ALERTS.ALERT_CONDITIONS.job_failed.sql;
+    expect(sql).toMatch(/NOT IN \('prod_dirty', 'upgrade_incomplete'\)/);
+    expect(sql).not.toMatch(/run_dead/);
   });
 });
 

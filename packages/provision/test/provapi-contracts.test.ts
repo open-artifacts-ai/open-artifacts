@@ -4,6 +4,10 @@
 // registryDisabled surface W2 builds on.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import {
+  JOB_ERROR_CODES,
+  JOB_ERROR_RETRY,
+} from "@oa/shared/provisioning/errors";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { CfError } from "../src/cf.js";
 import * as INDEX from "../src/index.js";
@@ -44,9 +48,12 @@ describe("ProvisionRefused.code and ProvisionRetry (3.5)", () => {
       "upgrade_rolled_back",
       "upgrade_incomplete",
       "canceled",
+      "run_dead",
       "cf_error",
       "internal",
     ]);
+    // One list: jobs.error_code's JobErrorCode (@oa/shared) in the same order.
+    expect([...PROVISION_ERROR_CODES]).toEqual([...JOB_ERROR_CODES]);
     expect([...PROVISION_RETRY_CODES]).toEqual([
       "lease_held",
       "revoke_pending",
@@ -236,6 +243,32 @@ describe("@oa/provision/jobs (node-free, for the scheduler)", () => {
       workerd: "./src/jobs.ts",
       import: "./dist/jobs.js",
     });
+  });
+});
+
+describe("run_dead (Manager C5): a dead Workflow run", () => {
+  it("is terminal: never a retry code, never what classification yields", () => {
+    expect(PROVISION_ERROR_CODES).toContain("run_dead");
+    expect(PROVISION_RETRY_CODES).not.toContain("run_dead" as never);
+    expect(JOB_ERROR_RETRY.run_dead).toBe("terminal");
+    expect(new ProvisionRefused("run is dead", "run_dead").code).toBe(
+      "run_dead",
+    );
+    expect(
+      () => new ProvisionRetry("run is dead", "run_dead" as never),
+    ).toThrow(/not a retry code/);
+    // Only the sweep sets it, through settleFailed; a throw never maps to it.
+    expect(provisionErrorCode(new Error("run_dead"))).toBe("internal");
+  });
+
+  it("settleFailed takes it", async () => {
+    const db: SettleDb = {
+      prepare: () => ({ bind: () => ({}) }),
+      batch: async () => [],
+    };
+    await expect(
+      settleFailed(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "run_dead"),
+    ).rejects.toThrow(/not built yet \(W3\)/);
   });
 });
 

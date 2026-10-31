@@ -36,6 +36,10 @@ export const PROVISION_ERROR_CODES = Object.freeze([
   "upgrade_rolled_back",
   "upgrade_incomplete",
   "canceled",
+  // A dead Workflow run (errored, terminated, or complete with the job still
+  // open): set only by the scheduler sweep through settleFailed. Terminal;
+  // job_failed alerts and the sweep's cleanup job still runs.
+  "run_dead",
   "cf_error",
   "internal",
 ] as const);

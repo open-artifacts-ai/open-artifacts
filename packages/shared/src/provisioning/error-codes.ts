@@ -58,6 +58,12 @@ export const JOB_ERROR_RETRY = {
   upgrade_rolled_back: "terminal",
   upgrade_incomplete: "terminal_alert",
   canceled: "terminal",
+  /**
+   * A dead Workflow run (errored, terminated, or complete with the job
+   * open), settled by the scheduler sweep; never retried. job_failed alerts
+   * and the sweep's cleanup job runs (Manager C5).
+   */
+  run_dead: "terminal",
   cf_error: "retry",
   internal: "retry",
 } as const satisfies Record<string, "retry" | "terminal" | "terminal_alert">;
