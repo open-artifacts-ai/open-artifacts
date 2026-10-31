@@ -4,17 +4,31 @@
 // `@oa/shared/provisioning/workflow`.
 import type { WorkflowParams } from "./ids.js";
 
+/** Every Workflow instance status, as workers-types' InstanceStatus (pinned in test-workerd/). */
+export const WORKFLOW_INSTANCE_STATUSES = [
+  "queued",
+  "running",
+  "paused",
+  "errored",
+  "terminated",
+  "complete",
+  "waiting",
+  "waitingForPause",
+  "rollingBack",
+  "unknown",
+] as const;
+export type WorkflowStatus = (typeof WORKFLOW_INSTANCE_STATUSES)[number];
+/** The statuses an instance never leaves; all others (rollingBack, unknown included) may still change. */
+export const WORKFLOW_TERMINAL_STATUSES = [
+  "errored",
+  "terminated",
+  "complete",
+] as const satisfies readonly WorkflowStatus[];
+export const isTerminalWorkflowStatus = (s: WorkflowStatus): boolean =>
+  (WORKFLOW_TERMINAL_STATUSES as readonly WorkflowStatus[]).includes(s);
+
 export type WorkflowInstanceStatus = {
-  status:
-    | "queued"
-    | "running"
-    | "paused"
-    | "errored"
-    | "terminated"
-    | "complete"
-    | "waiting"
-    | "waitingForPause"
-    | "unknown";
+  status: WorkflowStatus;
   error?: { name: string; message: string };
   output?: unknown;
 };
