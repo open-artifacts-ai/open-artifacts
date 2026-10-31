@@ -1,10 +1,12 @@
-// The read-only inventory Worker (red-line `GET /installs`, `GET /hosts`).
+// The inventory Worker (design v7 6.3): `GET /installs`, `GET /hosts`,
+// `GET /health` and the monitor's `POST /prodclean`, every route behind a
+// GitHub Actions OIDC bearer pinned by the five OIDC_* vars.
 // Deploy with --env staging or --env prod only, through
 // scripts/ops/deploy-platform-worker.sh (docs/ops/hosted.md): the top level has
 // no name and no main, so a deploy without --env is refused. Each env's
-// PLATFORM_DB and HOSTS ids have their own placeholder, filled at deploy (the
-// ids of oa-<p>-platform and oa-<p>-hosts). Both bindings are read-only in
-// code. INVENTORY_KEY is a secret, so it is not listed here.
+// PLATFORM_DB, HOSTS and repository ids have their own placeholder, filled at
+// deploy (the ids of oa-<p>-platform and oa-<p>-hosts). HOSTS is read-only in
+// code; PLATFORM_DB's one write is the prodclean_reports insert. No secrets.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "compatibility_date": "2026-10-01",
@@ -16,6 +18,13 @@
       "main": "src/index.ts",
       "workers_dev": true,
       "preview_urls": false,
+      "vars": {
+        "OIDC_AUDIENCE": "oa-s-inventory",
+        "OIDC_REPOSITORY": "open-artifacts-ai/open-artifacts",
+        "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_STAGING}}",
+        "OIDC_JOB_WORKFLOW_REFS": "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main",
+        "OIDC_ENVIRONMENT": "redline-staging"
+      },
       "d1_databases": [
         {
           "binding": "PLATFORM_DB",
@@ -30,6 +39,15 @@
       "main": "src/index.ts",
       "workers_dev": true,
       "preview_urls": false,
+      // The monitor and red-line's prodClean both run in redline-staging,
+      // where the REDLINE_PROD_* tokens live.
+      "vars": {
+        "OIDC_AUDIENCE": "oa-p-inventory",
+        "OIDC_REPOSITORY": "open-artifacts-ai/open-artifacts",
+        "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_PROD}}",
+        "OIDC_JOB_WORKFLOW_REFS": "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main,open-artifacts-ai/open-artifacts/.github/workflows/prodclean-monitor.yml@refs/heads/main",
+        "OIDC_ENVIRONMENT": "redline-staging"
+      },
       "d1_databases": [
         {
           "binding": "PLATFORM_DB",
