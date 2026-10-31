@@ -2,6 +2,7 @@ import {
   API_ERROR_STATUS,
   type AuthzColumn,
   authorize,
+  isApiRoute,
   ROUTE_IDS,
   ROUTES,
   TokenScopeSchema,
@@ -9,7 +10,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../src/errors.js";
 import type { Principal } from "../src/principal.js";
-import { invokeRoute, isApiRoute, type Surface } from "../src/routes/invoke.js";
+import { invokeRoute, type Surface } from "../src/routes/invoke.js";
 import { ctx, fakeEnv } from "./fakes.js";
 
 const P = (kind: Principal["kind"], scopes: Principal["scopes"] = []) =>

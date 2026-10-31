@@ -1,7 +1,6 @@
-import { ROUTE_IDS, ROUTES } from "@oa/shared/provisioning";
+import { isApiRoute, ROUTE_IDS, ROUTES } from "@oa/shared/provisioning";
 import { describe, expect, it } from "vitest";
 import { HANDLERS } from "../src/routes/handlers.js";
-import { isApiRoute } from "../src/routes/invoke.js";
 import { matchRoute } from "../src/routes/table.js";
 
 const SAMPLE: Record<string, string> = {

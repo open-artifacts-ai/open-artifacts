@@ -87,13 +87,14 @@ describe("C4 service stubs", () => {
 
   it("tokenPrincipal fails closed until W5b", () => {
     const { env } = fakeEnv();
-    expect(tokenPrincipal(row, session, env)).toEqual({
+    expect(tokenPrincipal(row, session, env)).toMatchObject({
       refusal: true,
       code: "unauthenticated",
     });
     expect(tokenPrincipal(row, null, env)).toEqual({
       refusal: true,
       code: "unauthenticated",
+      reason: "session_ended",
     });
   });
 });

@@ -1,7 +1,8 @@
+import type { ApiRouteId } from "@oa/shared/provisioning";
 import type { Env } from "../env.js";
 import { NOT_IMPLEMENTED_BODY } from "../errors.js";
 import type { Principal } from "../principal.js";
-import type { ApiRouteId, RouteInput, RouteResult, Surface } from "./invoke.js";
+import type { RouteInput, RouteResult, Surface } from "./invoke.js";
 import { world } from "./world.js";
 
 /** What a handler gets once invokeRoute has passed authz. */

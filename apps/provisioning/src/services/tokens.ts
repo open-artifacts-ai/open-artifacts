@@ -1,7 +1,7 @@
 import type { TokenKind, TokenScope } from "@oa/shared/provisioning";
 import type { Env } from "../env.js";
 import { NotImplemented } from "../errors.js";
-import { type Principal, type Refusal, refusal } from "../principal.js";
+import type { Principal, Refusal } from "../principal.js";
 
 // The one token service for both kinds (design v7 9A.4): R19 and the MCP
 // consent mint through mintAgentToken; authenticate() (both bearer kinds)
@@ -98,14 +98,38 @@ export async function mintAgentToken(
 }
 
 /**
+ * Why tokenPrincipal refused. authenticate() answers every one with 401
+ * `unauthenticated`; the W13b refresh callback maps it onto the
+ * `oauth.refresh_refused` audit reason (9A.8: `revoked`, `session_ended`,
+ * `identity_removed`; `chain_ended` is the refresh TTL, which the library
+ * enforces before this runs).
+ */
+export type TokenRefusalReason =
+  | "wrong_kind"
+  | "revoked"
+  | "expired"
+  | "session_ended"
+  | "identity_removed";
+export type TokenRefusal = Refusal & {
+  code: "unauthenticated";
+  reason: TokenRefusalReason;
+};
+
+/**
  * The token principal for a row and its minting session (9A.3.3): row of the
  * right kind, not revoked, unexpired; session not revoked, unexpired; its
- * `(email, sub)` still in ADMIN_IDENTITIES. Any failure: unauthenticated.
+ * `(email, sub)` still in ADMIN_IDENTITIES. Any failure: unauthenticated,
+ * with the reason.
  */
 export function tokenPrincipal(
   _row: AgentTokenRow,
-  _session: SessionRow | null,
+  session: SessionRow | null,
   _env: Pick<Env, "ADMIN_IDENTITIES">,
-): Principal | Refusal {
-  return refusal("unauthenticated");
+): Principal | TokenRefusal {
+  // Fails closed until W5b; the stub's reason for a live session is a placeholder.
+  return {
+    refusal: true,
+    code: "unauthenticated",
+    reason: session ? "revoked" : "session_ended",
+  };
 }

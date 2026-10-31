@@ -1,8 +1,8 @@
 import {
   type AdminToolName,
+  type ApiRouteId,
   authorize,
   ROUTES,
-  type RouteId,
 } from "@oa/shared/provisioning";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
@@ -16,13 +16,8 @@ import { HANDLERS } from "./handlers.js";
 // any refusal. C4 wires the limit and authz; W4 adds schema through audit.
 // The browser routes (R22-R24: cookies, Set-Cookie, redirects) never come
 // here: W5a builds them beside it in src/auth/, and the adapter short-circuits
-// them, so the type leaves them out.
-
-/** The routes invokeRoute serves: every route on the "api" base. */
-export type ApiRouteId = Exclude<RouteId, BrowserRouteId>;
-export type BrowserRouteId = "R22" | "R23" | "R24";
-export const isApiRoute = (id: RouteId): id is ApiRouteId =>
-  ROUTES[id].base === "api";
+// them, so the type leaves them out: `route` is ApiRouteId (shared), the
+// same type AdminToolDef.route carries, so the MCP adapter passes tool.route.
 
 export type RouteInput = {
   params?: Record<string, string>;

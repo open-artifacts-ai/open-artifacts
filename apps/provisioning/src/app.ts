@@ -1,4 +1,8 @@
-import { PROTOCOL_ROUTES } from "@oa/shared/provisioning";
+import {
+  type ApiRouteId,
+  isApiRoute,
+  PROTOCOL_ROUTES,
+} from "@oa/shared/provisioning";
 import { authenticate } from "./auth/authenticate.js";
 import { checkCsrf, checkOrigin } from "./auth/csrf.js";
 import { handleOAuth, isOAuthPath } from "./auth/oauth/index.js";
@@ -15,7 +19,7 @@ import { limit } from "./limits.js";
 import { handleMcp } from "./mcp/index.js";
 import { isRefusal } from "./principal.js";
 import { refuse } from "./refuse.js";
-import { type ApiRouteId, invokeRoute, isApiRoute } from "./routes/invoke.js";
+import { invokeRoute } from "./routes/invoke.js";
 import { matchRoute } from "./routes/table.js";
 
 // The HTTP adapter (design v7 4.2 check order): host policy -> pre-authn IP
