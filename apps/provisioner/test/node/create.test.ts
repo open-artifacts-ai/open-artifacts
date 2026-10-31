@@ -2,6 +2,7 @@
 // and retry steps against the real platform schema, the rechecks, the
 // release gate, the 5.3 inputs, the step bookkeeping, the fail step.
 import { HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
+import { JOB_STEPS } from "@oa/shared/provisioning";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
 import { runCreate } from "../../src/workflow.js";
@@ -132,6 +133,27 @@ describe("ProvisionInstall: create", () => {
       test_hooks: 1,
       version: V2,
     });
+    // 5.2 step 4: the version a create with none actually installed.
+    expect(JSON.parse(w.job(b.jobId)?.args as string)).toEqual({
+      resolvedVersion: V2,
+    });
+  });
+
+  it("jobs.step only ever holds JOB_STEPS.create values (pre-flight is upload)", async () => {
+    const s = seedCreate(w, { slug: "stepco" });
+    const during: unknown[] = [];
+    w.fake.inject(
+      (_m, p) => {
+        if (p.endsWith("/user/tokens/verify"))
+          during.push(w.job(s.jobId)?.step);
+        return false;
+      },
+      { times: 1 },
+    );
+    expect((await run(w, s.jobId)).error).toBeNull();
+    expect(during).not.toHaveLength(0);
+    for (const step of during)
+      expect(JOB_STEPS.create as readonly unknown[]).toContain(step);
   });
 
   it("sendWelcome: one email, and a replay of every step changes nothing", async () => {
@@ -231,6 +253,24 @@ describe("ProvisionInstall: rechecks (2.5)", () => {
       await refusedWith(
         seedCreate(w, { slug: `ss-bad-${i}`, source: "self-serve", vars }),
       );
+  });
+
+  it("the 3.3 testHooks matrix: never a token or self-serve; OIDC needs it and an rl- slug", async () => {
+    await refusedWith(
+      seedCreate(w, { slug: "rl-tok", actor: "token", testHooks: true }),
+    );
+    await refusedWith(
+      seedCreate(w, {
+        slug: "rl-ss",
+        source: "self-serve",
+        tier: "trial",
+        testHooks: true,
+      }),
+    );
+    await refusedWith(seedCreate(w, { slug: "rl-nohooks", actor: "oidc" }));
+    await refusedWith(
+      seedCreate(w, { slug: "plainrl", actor: "oidc", testHooks: true }),
+    );
   });
 
   it("a self-serve create from a non-user actor, or a job already settled, is refused", async () => {
@@ -371,6 +411,25 @@ describe("ProvisionInstall: release gate and failures", () => {
       { id: purge?.id, params: { jobId: purge?.id } },
     ]);
     expect(w.lifecycle(s.installId)?.serving_mode).toBe("unmapped");
+  });
+
+  it("prod_dirty: a fail step replayed after its batch committed adds no second snapshot", async () => {
+    const s = seedCreate(w, { slug: "dirtytwice" });
+    w.fake.settingsEdit = (_s, b) => [...b, { name: "EXTRA", type: "service" }];
+    await run(w, s.jobId, { twice: true });
+    expect(w.job(s.jobId)?.error_code).toBe("prod_dirty");
+    expect(
+      w.all(
+        "SELECT 1 FROM hosted_audit WHERE install_id = ? AND action = 'prod_dirty.snapshot'",
+        s.installId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      w.all(
+        "SELECT 1 FROM jobs WHERE install_id = ? AND kind = 'purge'",
+        s.installId,
+      ),
+    ).toHaveLength(1);
   });
 
   it("a job canceled mid-run (R25) stops at its next step and keeps its code", async () => {

@@ -75,6 +75,21 @@ export function actorOf(kind: JobRow["actor_kind"]): TransitionActor {
   }
 }
 
+/**
+ * OIDC's scope (4.4, 5.1): staging only, and only an `rl-` install with test
+ * hooks. TRANSITIONS reads OIDC as A, so this is the rest of its check.
+ */
+export function checkOidcScope(
+  job: JobRow,
+  env: DeployEnv,
+  install: { slug: string | null; testHooks: boolean },
+): void {
+  if (job.actor_kind !== "oidc") return;
+  if (env !== "staging") throw refused("OIDC is staging only");
+  if (!install.slug?.startsWith("rl-") || !install.testHooks)
+    throw refused("OIDC acts only on rl- test installs");
+}
+
 /** The kind is allowed from `from` for the job's actor (TRANSITIONS). */
 export function checkTransition(
   from: TransitionFrom,

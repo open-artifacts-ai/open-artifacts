@@ -42,6 +42,33 @@ export async function turnstilePair(
   return { sitekey, secret: w.secret };
 }
 
+/** How long verifyTurnstile reuses the widget pair (2.6). */
+export const TURNSTILE_PAIR_TTL_MS = 5 * 60_000;
+// Per isolate, module scope (never on an RPC class): a signup flood must not
+// drive two Cloudflare REST calls per request on PROVISION_TOKEN.
+const pairs = new Map<
+  string,
+  { at: number; pair: { sitekey: string; secret: string } }
+>();
+
+/** turnstilePair, cached per account and env for TURNSTILE_PAIR_TTL_MS. */
+export async function cachedTurnstilePair(
+  key: { accountId: string; env: DeployEnv },
+  now: number,
+  cf: () => Promise<Cf>,
+): Promise<{ sitekey: string; secret: string }> {
+  const k = `${key.accountId}:${key.env}`;
+  const hit = pairs.get(k);
+  if (hit && now >= hit.at && now - hit.at < TURNSTILE_PAIR_TTL_MS)
+    return hit.pair;
+  const pair = await turnstilePair(await cf(), key.env);
+  pairs.set(k, { at: now, pair });
+  return pair;
+}
+
+/** Tests only: forget every cached pair. */
+export const clearTurnstilePairs = (): void => pairs.clear();
+
 /**
  * Siteverify one token. With the widget's secret the answer must also name
  * `action` and `hostname`; Turnstile's test secret answers neither, so with

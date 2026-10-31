@@ -96,6 +96,8 @@ export async function renderOptions(
     vars: Record<string, string>;
     testHooks: boolean;
     registryDisabled?: boolean;
+    /** upgrade, rollback: record the lease the operation claimed (5.4 fail). */
+    recordLease?: boolean;
   },
 ): Promise<WfpProvisioner> {
   const e = deployEnv(ctx.env.OA_ENV);
@@ -104,17 +106,40 @@ export async function renderOptions(
     codesOn(o.vars) && !o.testHooks
       ? await turnstilePair(base.cf, e)
       : undefined;
+  let claimed = false;
   return new WfpProvisioner({
     ...base,
     fetch: directFetch(ctx.env.DISPATCHER, {
       appHost: o.appHost,
       script: names(o.installId, e).script,
     }),
-    onStep: (s: WfpStep) => markStep(ctx, o.jobId, s),
+    onStep: async (s: WfpStep) => {
+      // The first report comes right after the claim: the lease is ours.
+      if (o.recordLease && !claimed) {
+        claimed = true;
+        await recordLease(ctx, o.jobId, o.installId);
+      }
+      await markStep(ctx, o.jobId, s);
+    },
     brokerEnabled: googleNewlyEnabled({}, o.vars),
     ...(turnstile ? { turnstile } : {}),
     ...(o.registryDisabled ? { registryDisabled: true } : {}),
   });
+}
+
+/** jobs.args.claimedLease: the lease this job's operation holds now. */
+async function recordLease(
+  ctx: OpsCtx,
+  jobId: string,
+  installId: string,
+): Promise<void> {
+  await transient(
+    ctx.env.PLATFORM_DB.prepare(
+      "UPDATE jobs SET args = json_set(args, '$.claimedLease', (SELECT lease FROM installs WHERE id = ?2)), updated_at = ?3 WHERE id = ?1 AND status = 'running'",
+    )
+      .bind(jobId, installId, ctx.io.now())
+      .run(),
+  );
 }
 
 /** The stored vars of an install (installs.vars), as strings. */

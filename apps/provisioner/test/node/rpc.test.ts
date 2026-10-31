@@ -10,6 +10,10 @@ import {
   provisionTokenStatus,
   verifyTurnstileToken,
 } from "../../src/rpc.js";
+import {
+  clearTurnstilePairs,
+  TURNSTILE_PAIR_TTL_MS,
+} from "../../src/turnstile.js";
 import { NOW, TS, V1, V2, type World, world } from "./world.js";
 
 vi.mock(
@@ -29,6 +33,7 @@ const TEST_SECRET = "1x0000000000000000000000000000000AA";
 let w: World;
 beforeEach(async () => {
   w = await world();
+  clearTurnstilePairs();
 });
 
 /** fake-cf, with siteverify answered by `answer` (it sees the form). */
@@ -108,6 +113,31 @@ describe("verifyTurnstile()", () => {
     expect(await verifyTurnstileToken(w.env, input(), no.io)).toEqual({
       ok: false,
     });
+  });
+
+  it("the widget pair is read once per TURNSTILE_PAIR_TTL_MS, not per request (2.6)", async () => {
+    const { io } = withSiteverify(() => ({
+      success: true,
+      action: "signup",
+      hostname: "signup.open-artifacts-staging.app",
+    }));
+    let widgetCalls = 0;
+    const counted = {
+      ...io,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const u = String(input instanceof Request ? input.url : input);
+        if (u.includes("/challenges/widgets")) widgetCalls++;
+        return io.fetch(input, init);
+      }) as typeof fetch,
+    };
+    for (let i = 0; i < 3; i++)
+      expect(await verifyTurnstileToken(w.env, input(), counted)).toEqual({
+        ok: true,
+      });
+    expect(widgetCalls).toBe(2);
+    w.clock.t += TURNSTILE_PAIR_TTL_MS;
+    await verifyTurnstileToken(w.env, input(), counted);
+    expect(widgetCalls).toBe(4);
   });
 
   it("testUser on staging uses the always-pass test secret; on prod it is ignored", async () => {

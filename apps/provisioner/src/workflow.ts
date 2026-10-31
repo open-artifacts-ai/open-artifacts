@@ -53,6 +53,7 @@ import {
 import { deployEnv, type ProvisionerIo, transient } from "./provisioner.js";
 import {
   checkJob,
+  checkOidcScope,
   checkSlug,
   checkTransition,
   readStatus,
@@ -178,6 +179,8 @@ export async function runCreate(
           email = e;
         }),
       () => email,
+      // jobs.step holds JOB_STEPS values only; onStep reports the rest.
+      "upload",
     );
     await s("reachable", REACHABLE_STEP, () =>
       reachable(ctx, installId, appHost),
@@ -279,6 +282,15 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<CreateJob> {
     throw refused("only a self-serve owner creates a self-serve install");
   const slug = checkSlug(s.slug);
   const testHooks = s.test_hooks === 1;
+  // The 3.3 testHooks matrix: never self-serve or a token, always OIDC.
+  if (
+    testHooks &&
+    (s.source === "self-serve" ||
+      job.actor_kind === "user" ||
+      job.actor_kind === "token")
+  )
+    throw refused("test hooks are not allowed for this principal");
+  checkOidcScope(job, env, { slug, testHooks });
   if (testHooks && s.send_welcome === 1)
     throw refused("a test-hooks install gets no welcome");
   const vars = strictVars(s.vars, {
@@ -337,12 +349,15 @@ const releaseReader = (ctx: CreateCtx) =>
     deployEnv(ctx.env.OA_ENV),
   );
 
-/** The release record, floor and variant; no Cloudflare writes. */
+/**
+ * The release record, floor and variant; no Cloudflare writes. Stores
+ * args.resolvedVersion (5.2 step 4) while the job is open.
+ */
 async function releaseGate(
   ctx: CreateCtx,
   job: CreateJob,
 ): Promise<ReleaseGate> {
-  return gate({
+  const g = await gate({
     release: releaseReader(ctx),
     env: deployEnv(ctx.env.OA_ENV),
     version: job.version,
@@ -350,6 +365,14 @@ async function releaseGate(
     versions: () =>
       bucketVersions(ctx.env.RELEASES as unknown as R2CatalogBucket),
   });
+  await transient(
+    ctx.env.PLATFORM_DB.prepare(
+      "UPDATE jobs SET args = json_set(args, '$.resolvedVersion', ?2), updated_at = ?3 WHERE id = ?1 AND status IN ('queued', 'running')",
+    )
+      .bind(job.jobId, g.version, ctx.io.now())
+      .run(),
+  );
+  return g;
 }
 
 /**
@@ -518,7 +541,9 @@ async function fail(
   const db = ctx.env.PLATFORM_DB;
   const row = await installRow(ctx, job.install_id);
   const dirty = code === "prod_dirty" && row !== null;
-  const snapshot = dirty ? [await snapshotStatement(ctx, job.install_id)] : [];
+  const snapshot = dirty
+    ? [await snapshotStatement(ctx, job.install_id, jobId)]
+    : [];
   const purge = dirty ? await purgeJob(ctx, job.install_id, jobId) : null;
   const res = await transient(
     db.batch<{ id: string }>([
@@ -552,6 +577,7 @@ async function fail(
 async function snapshotStatement(
   ctx: CreateCtx,
   installId: string,
+  jobId: string,
 ): Promise<D1PreparedStatement> {
   const e = deployEnv(ctx.env.OA_ENV);
   const row = await installRow(ctx, installId);
@@ -584,7 +610,8 @@ async function snapshotStatement(
       .catch(() => null);
     detail.record = rec ? sha256Hex(canonicalJson(rec)) : "";
   }
-  return auditStatement(ctx, installId, "prod_dirty.snapshot", detail);
+  // Before settleFailed in the batch: a retry after it committed adds none.
+  return auditStatement(ctx, installId, "prod_dirty.snapshot", detail, jobId);
 }
 
 /** The purge job a prod_dirty create leaves (actor system:provisioner). */

@@ -45,6 +45,7 @@ import {
 import { deployEnv, transient } from "./provisioner.js";
 import {
   checkJob,
+  checkOidcScope,
   checkTransition,
   readStatus,
   refused,
@@ -61,7 +62,12 @@ import {
   markStep,
   readJob,
 } from "./steps.js";
-import { type CreateCtx, RUNTIME_IO, type WorkflowEnv } from "./workflow.js";
+import {
+  type CreateCtx,
+  RELEASE_GATE_STEP,
+  RUNTIME_IO,
+  type WorkflowEnv,
+} from "./workflow.js";
 
 export type ManageEnv = WorkflowEnv;
 type ManageKind = Exclude<JobKind, "create" | "retry">;
@@ -194,7 +200,7 @@ async function operate(
   switch (job.kind) {
     case "upgrade": {
       if (!job.already) {
-        const g = await s("release_gate", undefined, () =>
+        const g = await s("release_gate", RELEASE_GATE_STEP, () =>
           releaseGate({
             release: r2BindingReleaseReader(
               ctx.env.RELEASES as unknown as R2CatalogBucket,
@@ -376,6 +382,7 @@ async function render(
     vars: storedVars(row.vars),
     testHooks: row.test_hooks === 1,
     registryDisabled: job.registryDisabled,
+    recordLease: true,
   });
   const r: UpgradeResult =
     kind === "upgrade"
@@ -446,6 +453,7 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
     suspended: st.suspended_at !== null,
     args: {},
   };
+  checkOidcScope(job, env, out);
   const now = ctx.io.now();
   switch (kind) {
     case "upgrade":
@@ -487,12 +495,16 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
       if (row) throw refused("discard needs a create with no installs row");
       break;
     case "release_lease":
+      // 4.4: OIDC never releases a lease.
+      if (job.actor_kind === "oidc") throw refused("OIDC has no release_lease");
       if (args.force !== undefined && typeof args.force !== "boolean")
         throw refused("force is not a boolean");
       out.args = { force: args.force === true };
       if (!row) throw refused("no installs row");
       break;
     case "redline_creds":
+      // R26 is O only (3.4); TRANSITIONS reads OIDC as A.
+      if (job.actor_kind !== "oidc") throw refused("redline_creds is OIDC's");
       if (env !== "staging") throw refused("redline_creds is staging only");
       if (!row || !row.slug.startsWith("rl-") || row.test_hooks !== 1)
         throw refused("not a red-line test install");
@@ -540,6 +552,18 @@ const purgeSince = async (ctx: CreateCtx, installId: string, since: number) =>
   )) !== null;
 
 /**
+ * R11's skipDirectoryRevoke ({reason}, 3.3), or the flattened reason string;
+ * null when absent or malformed.
+ */
+function skipReason(v: unknown): string | null {
+  const r =
+    v !== null && typeof v === "object" && !Array.isArray(v)
+      ? (v as { reason?: unknown }).reason
+      : v;
+  return STRING(r, 200) ? r : null;
+}
+
+/**
  * 2.5 item 4: a deleting install needs its grace over (purge_at <= now) or
  * an admin purge; a failed create needs installs.state creating (no row is
  * discard's). WfpProvisioner.delete accepts active, so this is the guard.
@@ -554,22 +578,25 @@ async function purgePreconditions(
   now: number,
 ): Promise<string | undefined> {
   const admin = job.actor_kind === "admin" || job.actor_kind === "oidc";
-  const skip = args.skipDirectoryRevoke;
-  if (skip !== undefined && (!admin || !STRING(skip, 200)))
+  const skip = skipReason(args.skipDirectoryRevoke);
+  if (args.skipDirectoryRevoke !== undefined && (!admin || skip === null))
     throw refused("skipDirectoryRevoke is an admin's, with a reason");
   if (st.state === "deleting") {
+    // 5.1: S at purge_at unless suspended_at is set.
+    if (!admin && st.suspended_at !== null)
+      throw refused("a suspended install waits for an admin purge");
     if (
       !admin &&
       !(st.deleted_at !== null && st.purge_at !== null && st.purge_at <= now)
     )
       throw refused("the grace period is not over");
-    return skip as string | undefined;
+    return skip ?? undefined;
   }
   if (st.state === "failed") {
     const row = await installRow(ctx, job.install_id);
     if (!row || row.state !== "creating")
       throw refused("a failed purge needs a creating installs row");
-    if (skip !== undefined) return skip as string;
+    if (skip !== null) return skip;
     return (await liveMode(ctx, row)) === "unmapped" ? NEVER_ROUTED : undefined;
   }
   throw refused(`purge is not allowed from ${st.state}`);
@@ -645,8 +672,9 @@ async function cleanup(
 
 /**
  * settleFailed with the stored code and the live serving mode. Returns the
- * lease end when an upgrade or rollback left the row upgrading under a
- * lease (released by fail_release once it expires).
+ * lease end when an upgrade or rollback left the row upgrading under this
+ * job's lease (released by fail_release once it expires); a lease another
+ * job left is not this one's to release.
  */
 async function fail(
   ctx: CreateCtx,
@@ -665,10 +693,22 @@ async function fail(
   let leaseUntil: number | null = null;
   if (job.kind === "upgrade" || job.kind === "rollback") {
     const row = await installRow(ctx, job.install_id);
-    if (row?.state === "upgrading" && row.lease !== null)
-      leaseUntil = row.lease_until ?? 0;
+    if (row && ownLease(job, row)) leaseUntil = row.lease_until ?? 0;
   }
   return { failed: true, leaseUntil };
+}
+
+/** The row is upgrading under the lease this job's operation claimed. */
+function ownLease(
+  job: JobRow,
+  row: { state: string; lease: string | null },
+): boolean {
+  if (row.state !== "upgrading" || row.lease === null) return false;
+  try {
+    return argsOf(job).claimedLease === row.lease;
+  } catch {
+    return false;
+  }
 }
 
 /** The expired lease of a row still upgrading, released without force. */
@@ -679,8 +719,7 @@ async function releaseExpired(
   const job = await readJob(ctx, jobId);
   if (!job) return { released: false };
   const row = await installRow(ctx, job.install_id);
-  if (row?.state !== "upgrading" || row.lease === null)
-    return { released: false };
+  if (!row || !ownLease(job, row)) return { released: false };
   const w = await provisionerWith(ctx, `ss-${job.signup_id ?? jobId}`);
   await w.releaseLease(job.install_id, job.install_id);
   return { released: true };

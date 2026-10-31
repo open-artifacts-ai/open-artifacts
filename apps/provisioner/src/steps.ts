@@ -140,7 +140,8 @@ WHERE id = ?1 AND status = 'running'`,
 /**
  * One job step: `step.do(name, config?, fn)` with the 3.6 bookkeeping. An
  * error leaves as stepError's (a job code; a terminal refusal keeps its
- * message, `email` scrubbed); a NonRetryableError stays as it is.
+ * message, `email` scrubbed); a NonRetryableError stays as it is. `mark` is
+ * the JOB_STEPS value written to jobs.step (the step's name by default).
  */
 export function jobStep<T>(
   ctx: StepCtx,
@@ -150,9 +151,10 @@ export function jobStep<T>(
   config: WorkflowStepConfig | undefined,
   fn: () => Promise<T>,
   email: () => string | null = () => null,
+  mark: string = name,
 ): Promise<T> {
   const body = async (): Promise<T> => {
-    await markStep(ctx, jobId, name);
+    await markStep(ctx, jobId, mark);
     let out: T;
     try {
       out = await fn();
@@ -195,17 +197,32 @@ WHERE id = ?1 AND status IN ('queued', 'running')`,
   ).bind(jobId, ctx.io.now());
 }
 
-/** A provisioner audit row (hosted_audit; never a secret or an email). */
+/**
+ * A provisioner audit row (hosted_audit; never a secret or an email). With
+ * `whileOpen`, only while that job is still open, so a retried batch that
+ * already settled it appends nothing (hosted_audit is append-only).
+ */
 export function auditStatement(
   ctx: StepCtx,
   installId: string,
   action: string,
   detail: Record<string, string | number>,
+  whileOpen?: string,
 ): D1PreparedStatement {
   const sorted = Object.fromEntries(
     Object.entries(detail).sort(([a], [b]) => (a < b ? -1 : 1)),
   );
-  return ctx.env.PLATFORM_DB.prepare(
-    "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, 'system:provisioner', ?2, ?3, ?4)",
-  ).bind(ctx.io.now(), installId, action, JSON.stringify(sorted));
+  const db = ctx.env.PLATFORM_DB;
+  const binds = [ctx.io.now(), installId, action, JSON.stringify(sorted)];
+  if (whileOpen === undefined)
+    return db
+      .prepare(
+        "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, 'system:provisioner', ?2, ?3, ?4)",
+      )
+      .bind(...binds);
+  return db
+    .prepare(
+      "INSERT INTO hosted_audit (at, actor, install_id, action, detail) SELECT ?1, 'system:provisioner', ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM jobs WHERE id = ?5 AND status IN ('queued', 'running'))",
+    )
+    .bind(...binds, whileOpen);
 }

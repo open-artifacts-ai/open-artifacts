@@ -4,9 +4,11 @@
 // PUT), a session for the suite's admin test user is opened through
 // DISPATCHER (POST /__test/session, as the laptop command did), every older
 // redline-* PAT is revoked and one labelled redline-<jobId> is minted, then
-// {pat, hookKey} is sealed. The three steps run in one step.do, so no
-// credential is ever a step output; D1 holds only the ciphertext, and no
-// log line, error or audit row carries a value.
+// {pat, hookKey} is sealed. With args.revoke (the run's end, 10.1) the
+// redline-* PATs are revoked and nothing is minted or sealed. The
+// provisioning token is checked first in `refuse` mode (5.7). The steps run
+// in one step.do, so no credential is ever a step output; D1 holds only the
+// ciphertext, and no log line, error or audit row carries a value.
 import type { WorkflowStep } from "cloudflare:workers";
 import {
   directFetch,
@@ -17,7 +19,7 @@ import {
   STAGING_TEST_DOMAIN,
 } from "@oa/provision";
 import type { ManageJob } from "./manage.js";
-import { cfFor, installRow, storedVars } from "./ops.js";
+import { cfFor, installRow, provisionerWith, storedVars } from "./ops.js";
 import { deployEnv, transient } from "./provisioner.js";
 import { sealTo } from "./seal.js";
 import { argsOf, jobStep, markStep, readJob } from "./steps.js";
@@ -64,7 +66,7 @@ async function rotateMintSeal(
   ctx: CreateCtx,
   jobId: string,
   job: ManageJob,
-): Promise<{ sealed: true }> {
+): Promise<{ sealed: boolean }> {
   const e = deployEnv(ctx.env.OA_ENV);
   if (e !== "staging")
     throw new ProvisionRefused(
@@ -72,10 +74,15 @@ async function rotateMintSeal(
       "invalid_state",
     );
   const j = await readJob(ctx, jobId);
-  const recipientKey = j ? argsOf(j).recipientKey : undefined;
+  const args = j ? argsOf(j) : {};
+  if (args.revoke !== undefined && typeof args.revoke !== "boolean")
+    throw new ProvisionRefused("revoke is not a boolean", "invalid_state");
+  const revoke = args.revoke === true;
+  const recipientKey = args.recipientKey;
   if (
-    typeof recipientKey !== "string" ||
-    !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(recipientKey)
+    !revoke &&
+    (typeof recipientKey !== "string" ||
+      !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/.test(recipientKey))
   )
     throw new ProvisionRefused("no recipient key", "invalid_state");
   const row = await installRow(ctx, job.installId);
@@ -93,6 +100,11 @@ async function rotateMintSeal(
   const script = names(row.id, e).script;
   const app = `https://${row.app_host}`;
   const f = directFetch(ctx.env.DISPATCHER, { appHost: row.app_host, script });
+
+  // 5.7: redline_creds refuses a near-expiry token, before any write.
+  await (await provisionerWith(ctx, `ss-${job.signupId ?? jobId}`)).verifyToken(
+    "refuse",
+  );
 
   // rotate_hook_key: a fresh key, live on the script before it is used.
   const hookKey = newSecret();
@@ -157,6 +169,7 @@ async function rotateMintSeal(
         "revoke an earlier token",
         [204, 404],
       );
+  if (revoke) return { sealed: false };
   const m = await call(
     f,
     `${app}/api/v1/tokens`,
@@ -182,7 +195,10 @@ async function rotateMintSeal(
 
   // seal: only the ciphertext reaches D1, and only while the job is open.
   await markStep(ctx, jobId, "seal");
-  const sealed = await sealTo(recipientKey, JSON.stringify({ pat, hookKey }));
+  const sealed = await sealTo(
+    recipientKey as string,
+    JSON.stringify({ pat, hookKey }),
+  );
   await transient(
     ctx.env.PLATFORM_DB.prepare(
       "UPDATE jobs SET sealed = ?2, updated_at = ?3 WHERE id = ?1 AND status = 'running'",

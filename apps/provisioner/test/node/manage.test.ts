@@ -86,6 +86,10 @@ describe("upgrade and rollback (5.4)", () => {
       "upload",
       "done",
     ]);
+    // The lease the upgrade claimed, recorded for the fail step (5.4).
+    expect(JSON.parse(r.job?.args as string).claimedLease).toMatch(
+      /^[0-9a-f]{32}$/,
+    );
     expect(w.install(s.installId)).toMatchObject({
       version: V2,
       previous_version: V1,
@@ -144,6 +148,106 @@ describe("upgrade and rollback (5.4)", () => {
       version: V1,
       lease: null,
       state: "active",
+    });
+  });
+
+  it("an upgrade whose script and rollback both fail verify_clean: paused, prod_dirty", async () => {
+    const s = await active({ slug: "dirtyup", version: V1 });
+    w.fake.settingsEdit = (_x, b) => [...b, { name: "EXTRA", type: "service" }];
+    const r = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2 },
+    });
+    w.fake.settingsEdit = undefined;
+    expect(r.job).toMatchObject({ status: "failed", error_code: "prod_dirty" });
+    expect(w.hosts("dirtyup")).toEqual([
+      `paused:${s.installId}`,
+      `paused:${s.installId}`,
+    ]);
+    expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
+    expect(w.install(s.installId)).toMatchObject({
+      state: "active",
+      lease: null,
+    });
+  });
+
+  it("an upgrade with no rollback (the DO tag moved): upgrade_incomplete, on `to`", async () => {
+    const s = await active({ slug: "fwdco", version: V1 });
+    w.db
+      .prepare(
+        "UPDATE install_versions SET do_migration_tag = 'v-older' WHERE install_id = ? AND version = ?",
+      )
+      .run(s.installId, V1);
+    w.fake.health = (sc) =>
+      (sc.metadata.tags as string[]).includes(`v${V2}`)
+        ? new Response(null, { status: 503 })
+        : undefined;
+    const r = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2 },
+    });
+    w.fake.health = undefined;
+    expect(r.job).toMatchObject({
+      status: "failed",
+      error_code: "upgrade_incomplete",
+    });
+    expect(w.install(s.installId)).toMatchObject({
+      version: V2,
+      lease: null,
+    });
+    expect(r.log.map((l) => l.name)).not.toContain("fail_release");
+  });
+
+  it("an upgrade that died under its own lease: fail sleeps to lease_until, then releases without force", async () => {
+    const s = await active({ slug: "crashco", version: V1 });
+    const until = w.clock.t + 20 * 60_000;
+    const id = seedJob(w, {
+      kind: "upgrade",
+      installId: s.installId,
+      args: { from: V1, to: V2 },
+    });
+    // Each upload attempt claims, records its lease, then the isolate dies.
+    const r = stepRunner(w.clock, {
+      onStep: (n) => {
+        if (n !== "upload") return;
+        w.db
+          .prepare(
+            "UPDATE installs SET state = 'upgrading', lease = 'mine', lease_until = ? WHERE id = ?",
+          )
+          .run(until, s.installId);
+        w.db
+          .prepare(
+            "UPDATE jobs SET args = json_set(args, '$.claimedLease', 'mine') WHERE id = ?",
+          )
+          .run(id);
+        throw new Error("isolate evicted");
+      },
+    });
+    await runManage(w.ctx, event(id), r.step).catch(() => {});
+    expect(r.log.map((l) => l.name)).toContain("fail_release");
+    expect(w.clock.t).toBeGreaterThan(until);
+    expect(w.install(s.installId)).toMatchObject({
+      state: "active",
+      lease: null,
+    });
+    expect(w.job(id)?.status).toBe("failed");
+  });
+
+  it("an upgrade refused while another job's lease holds the row upgrading leaves that lease alone", async () => {
+    const s = await active({ slug: "otherco", version: V1 });
+    const until = w.clock.t + 20 * 60_000;
+    w.db
+      .prepare(
+        "UPDATE installs SET state = 'upgrading', lease = 'theirs', lease_until = ? WHERE id = ?",
+      )
+      .run(until, s.installId);
+    const r = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2, claimedLease: "forged" },
+    });
+    expect(r.job?.status).toBe("failed");
+    expect(r.log.map((l) => l.name)).not.toContain("fail_release");
+    expect(w.clock.t).toBeLessThan(until);
+    expect(w.install(s.installId)).toMatchObject({
+      state: "upgrading",
+      lease: "theirs",
     });
   });
 
@@ -241,6 +345,34 @@ describe("suspend, resume, delete, restore (5.5, 5.6)", () => {
     expect(w.lifecycle(s.installId)?.serving_mode).toBe("closed");
   });
 
+  it("OIDC acts only on rl- test installs on staging, and never releases a lease (4.4)", async () => {
+    const plainOne = await active({ slug: "notrl" });
+    const up = await manage("upgrade", plainOne.installId, {
+      actor: "oidc",
+      args: { from: V2, to: V2 },
+    });
+    expect(up.job?.error_code).toBe("invalid_state");
+    const del = await manage("delete", plainOne.installId, { actor: "oidc" });
+    expect(del.job?.error_code).toBe("invalid_state");
+    expect(w.status(plainOne.installId)?.state).toBe("active");
+    const rl = await active({ slug: "rl-x", actor: "oidc", testHooks: true });
+    expect(
+      (await manage("release_lease", rl.installId, { actor: "oidc" })).job
+        ?.error_code,
+    ).toBe("invalid_state");
+    // On a prod config the recheck refuses OIDC before anything else.
+    (w.env as { OA_ENV: string }).OA_ENV = "prod";
+    const prod = await manage("suspend", rl.installId, {
+      actor: "oidc",
+      args: { reason: "r" },
+    });
+    w.env.OA_ENV = ENV;
+    expect(prod.log.find((l) => l.name === "recheck")?.error?.message).toBe(
+      "invalid_state: OIDC is staging only",
+    );
+    expect(w.status(rl.installId)?.state).toBe("active");
+  });
+
   it("a token may not run an admin-only kind (TRANSITIONS)", async () => {
     const s = await active({ slug: "tokco" });
     const r = await manage("release_lease", s.installId, { actor: "token" });
@@ -270,6 +402,39 @@ describe("purge and discard (5.6, 2.5 item 4)", () => {
     expect(
       (await manage("purge", s.installId, { actor: "system" })).error,
     ).toBeNull();
+    expect(w.install(s.installId)?.state).toBe("deleted");
+  });
+
+  it("the scheduler never purges a suspended install in grace; an admin does (5.1)", async () => {
+    const s = await active({ slug: "susdel" });
+    await manage("suspend", s.installId, { args: { reason: "billing" } });
+    await manage("delete", s.installId);
+    w.clock.t += GRACE_MS + 1;
+    const sys = await manage("purge", s.installId, { actor: "system" });
+    expect(sys.job?.error_code).toBe("invalid_state");
+    expect(w.install(s.installId)?.state).toBe("active");
+    expect((await manage("purge", s.installId)).error).toBeNull();
+    expect(w.install(s.installId)?.state).toBe("deleted");
+  });
+
+  it("skipDirectoryRevoke: R11's {reason} from an admin passes; from the scheduler it is refused", async () => {
+    const s = await active({ slug: "skipco" });
+    await manage("delete", s.installId);
+    w.clock.t += GRACE_MS + 1;
+    const skip = { reason: "directory broker down, ticket 42" };
+    const sys = await manage("purge", s.installId, {
+      actor: "system",
+      args: { skipDirectoryRevoke: skip },
+    });
+    expect(sys.job?.error_code).toBe("invalid_state");
+    const bad = await manage("purge", s.installId, {
+      args: { skipDirectoryRevoke: { reason: 7 } },
+    });
+    expect(bad.job?.error_code).toBe("invalid_state");
+    const r = await manage("purge", s.installId, {
+      args: { skipDirectoryRevoke: skip },
+    });
+    expect(r.error).toBeNull();
     expect(w.install(s.installId)?.state).toBe("deleted");
   });
 
@@ -421,52 +586,57 @@ describe("release_lease and cleanup (3.6, R13, R25)", () => {
   });
 });
 
+/** The rl- install's own API, as the CLI's test stubbed it. */
+function stubInstall(installId: string) {
+  const script = w.fake.script(NAMESPACES[ENV], `oa-s-${installId}`);
+  const tokens = [
+    { id: "t1", label: "redline-old" },
+    { id: "t2", label: "ci-1" },
+  ];
+  const deleted: string[] = [];
+  const seen: string[] = [];
+  const real = w.env.DISPATCHER;
+  w.env.DISPATCHER = {
+    get: (name: string) => ({
+      fetch: async (req: Request) => {
+        const u = new URL(req.url);
+        seen.push(`${req.method} ${u.pathname}`);
+        const key = script?.secrets.get("TEST_HOOK_KEY");
+        if (u.pathname === "/__test/session")
+          return req.headers.get("authorization") === `Bearer ${key}`
+            ? Response.json({ cookie: "sess" })
+            : new Response(null, { status: 401 });
+        if (u.pathname === "/api/v1/tokens" && req.method === "GET")
+          return Response.json(tokens);
+        if (
+          u.pathname.startsWith("/api/v1/tokens/") &&
+          req.method === "DELETE"
+        ) {
+          deleted.push(u.pathname.split("/").at(-1) as string);
+          return new Response(null, { status: 204 });
+        }
+        if (u.pathname === "/api/v1/tokens" && req.method === "POST")
+          return Response.json(
+            { token: "oa_pat_minted_secret_value" },
+            { status: 201 },
+          );
+        if (u.pathname === "/api/v1/me")
+          return req.headers.get("authorization") ===
+            "Bearer oa_pat_minted_secret_value"
+            ? Response.json({})
+            : new Response(null, { status: 401 });
+        return real.get(name).fetch(req);
+      },
+    }),
+  } as unknown as DispatchNamespace;
+  return { script, deleted, seen };
+}
+
 describe("redline_creds (10.1, R26)", () => {
   it("rotates TEST_HOOK_KEY, mints one redline- PAT after revoking older ones, seals {pat, hookKey}", async () => {
     const s = await active({ slug: "rl-a", actor: "oidc", testHooks: true });
-    const script = w.fake.script(NAMESPACES[ENV], `oa-s-${s.installId}`);
+    const { script, deleted, seen } = stubInstall(s.installId);
     const oldKey = script?.secrets.get("TEST_HOOK_KEY");
-    // The install's own API, as the CLI's test stubbed it.
-    const tokens = [
-      { id: "t1", label: "redline-old" },
-      { id: "t2", label: "ci-1" },
-    ];
-    const deleted: string[] = [];
-    const real = w.env.DISPATCHER;
-    const seen: string[] = [];
-    w.env.DISPATCHER = {
-      get: (name: string) => ({
-        fetch: async (req: Request) => {
-          const u = new URL(req.url);
-          seen.push(`${req.method} ${u.pathname}`);
-          const key = script?.secrets.get("TEST_HOOK_KEY");
-          if (u.pathname === "/__test/session")
-            return req.headers.get("authorization") === `Bearer ${key}`
-              ? Response.json({ cookie: "sess" })
-              : new Response(null, { status: 401 });
-          if (u.pathname === "/api/v1/tokens" && req.method === "GET")
-            return Response.json(tokens);
-          if (
-            u.pathname.startsWith("/api/v1/tokens/") &&
-            req.method === "DELETE"
-          ) {
-            deleted.push(u.pathname.split("/").at(-1) as string);
-            return new Response(null, { status: 204 });
-          }
-          if (u.pathname === "/api/v1/tokens" && req.method === "POST")
-            return Response.json(
-              { token: "oa_pat_minted_secret_value" },
-              { status: 201 },
-            );
-          if (u.pathname === "/api/v1/me")
-            return req.headers.get("authorization") ===
-              "Bearer oa_pat_minted_secret_value"
-              ? Response.json({})
-              : new Response(null, { status: 401 });
-          return real.get(name).fetch(req);
-        },
-      }),
-    } as unknown as DispatchNamespace;
     const pair = (await crypto.subtle.generateKey({ name: "X25519" }, true, [
       "deriveBits",
     ])) as CryptoKeyPair;
@@ -502,11 +672,72 @@ describe("redline_creds (10.1, R26)", () => {
     expect(seen).toContain("POST /__test/session");
   });
 
-  it("is refused for a non-test install and in prod", async () => {
+  it("revoke: the run's redline- PATs are revoked; nothing is minted or sealed", async () => {
+    const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+    const { deleted, seen } = stubInstall(s.installId);
+    const r = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { revoke: true },
+    });
+    expect(r.error).toBeNull();
+    expect(deleted).toEqual(["t1"]);
+    expect(seen).not.toContain("POST /api/v1/tokens");
+    expect(r.job?.sealed).toBeNull();
+  });
+
+  it("is refused for a non-test install, and for any actor but OIDC", async () => {
     const s = await active({ slug: "plainco" });
     const r = await manage("redline_creds", s.installId, {
       args: { recipientKey: "A".repeat(43) },
     });
     expect(r.job?.error_code).toBe("invalid_state");
+    const rl = await active({ slug: "rl-c", actor: "oidc", testHooks: true });
+    const admin = await manage("redline_creds", rl.installId, {
+      args: { recipientKey: "A".repeat(43) },
+    });
+    expect(admin.job?.error_code).toBe("invalid_state");
+  });
+});
+
+describe("near-expiry token mode per kind (5.7)", () => {
+  // Within REFUSE_TOKEN_DAYS (5) of expiry.
+  const nearExpiry = () => {
+    w.fake.tokenInfo = {
+      ...w.fake.tokenInfo,
+      expires_on: new Date(w.clock.t + 2 * 86_400_000).toISOString(),
+    };
+  };
+
+  it("warn: suspend goes on; refuse: upgrade fails token_invalid, unchanged", async () => {
+    const s = await active({ slug: "nearco", version: V1 });
+    nearExpiry();
+    expect(
+      (await manage("suspend", s.installId, { args: { reason: "r" } })).error,
+    ).toBeNull();
+    await manage("resume", s.installId);
+    const up = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2 },
+    });
+    expect(up.job).toMatchObject({
+      status: "failed",
+      error_code: "token_invalid",
+    });
+    expect(w.install(s.installId)?.version).toBe(V1);
+  });
+
+  it("refuse: redline_creds fails token_invalid before the hook key is rotated", async () => {
+    const s = await active({ slug: "rl-n", actor: "oidc", testHooks: true });
+    const { script } = stubInstall(s.installId);
+    const key = script?.secrets.get("TEST_HOOK_KEY");
+    nearExpiry();
+    const r = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { recipientKey: "A".repeat(43) },
+    });
+    expect(r.job).toMatchObject({
+      status: "failed",
+      error_code: "token_invalid",
+    });
+    expect(script?.secrets.get("TEST_HOOK_KEY")).toBe(key);
   });
 });

@@ -26,7 +26,7 @@ import {
   type ProvisionerIo,
   transient,
 } from "./provisioner.js";
-import { siteverify, turnstilePair } from "./turnstile.js";
+import { cachedTurnstilePair, siteverify } from "./turnstile.js";
 
 /** The releases bucket, the token, the env (Turnstile widget GET over REST). */
 export type RpcEnv = ProvisionerEnv;
@@ -88,7 +88,13 @@ export async function verifyTurnstileToken(
   const secret =
     i.testUser === true && e === "staging"
       ? TURNSTILE_TEST_KEYS.secret
-      : (await turnstilePair(await cfOf(env, io), e)).secret;
+      : (
+          await cachedTurnstilePair(
+            { accountId: env.ACCOUNT_ID, env: e },
+            io.now(),
+            () => cfOf(env, io),
+          )
+        ).secret;
   const ok = await siteverify(io.fetch, {
     secret,
     token: i.token,
