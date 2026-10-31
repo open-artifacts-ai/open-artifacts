@@ -129,7 +129,7 @@ export const bindingCookies = (res: Response) =>
 export function formFields(html: string) {
   const field = (name: string) =>
     new RegExp(`name="${name}" value="([^"]*)"`).exec(html)?.[1] ?? "";
-  return { request: field("request"), consent: field("consent") };
+  return { request: field("request"), consent: field("consent_token") };
 }
 
 export const getConsent = (
@@ -161,7 +161,7 @@ export async function postConsent(
   const f = formFields(await page.text());
   const form = new URLSearchParams({
     request: f.request,
-    consent: over.consent ?? f.consent,
+    consent_token: over.consent ?? f.consent,
     decision,
   });
   for (const s of scope) form.append("scope", s);

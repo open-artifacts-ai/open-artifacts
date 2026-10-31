@@ -3,11 +3,17 @@ import { handle } from "../src/app.js";
 import { hmac16 } from "../src/auth/crypto.js";
 import { csrfToken } from "../src/auth/csrf.js";
 import {
+  sweepOAuthClients,
+  sweepOAuthClientsAll,
+} from "../src/auth/oauth/endpoints.js";
+import {
   authServer,
   oauthPrincipal,
   refreshTtlFor,
 } from "../src/auth/oauth/index.js";
+import { PAGE_CSP } from "../src/auth/oauth/pages.js";
 import { sessionPrincipal } from "../src/auth/session.js";
+import worker from "../src/index.js";
 import { D1_LIMITS } from "../src/limits.js";
 import { isRefusal } from "../src/principal.js";
 import { mintAgentToken } from "../src/services/tokens.js";
@@ -329,6 +335,134 @@ describe("DCR (/oauth/register)", () => {
   });
 });
 
+describe("the MCP client sweep (8.3, 9A.7; hourly cron)", () => {
+  const DAY = 24 * HOUR;
+  const age = (w: World, clientId: string, ms: number) =>
+    w.db
+      .prepare(
+        "UPDATE oauth_clients SET registered_at = ?2 WHERE client_id = ?1",
+      )
+      .bind(clientId, Date.now() - ms)
+      .run();
+  const hasRow = async (w: World, clientId: string) =>
+    (await w.db
+      .prepare("SELECT 1 FROM oauth_clients WHERE client_id = ?1")
+      .bind(clientId)
+      .first()) !== null;
+  /** This test's clients' oauth.client_expired rows (the D1 is per file). */
+  const expired = async (w: World, ...ids: string[]) =>
+    (
+      await w.db
+        .prepare(
+          "SELECT detail FROM admin_audit WHERE action = 'oauth.client_expired' ORDER BY id",
+        )
+        .all<{ detail: string }>()
+    ).results
+      .map((r) => JSON.parse(r.detail) as Record<string, unknown>)
+      .filter((d) => ids.includes(d.clientId as string));
+
+  it("deletes an unclaimed 25 h client and keeps a 23 h one", async () => {
+    const w = await oauthWorld();
+    const old = await register(w);
+    const young = await register(w);
+    await age(w, old, 25 * HOUR);
+    await age(w, young, 23 * HOUR);
+    await sweepOAuthClientsAll(w.env);
+    const oauth = authServer(w.env).getOAuthApi(w.env);
+    expect(await oauth.lookupClient(old)).toBeNull();
+    expect(await hasRow(w, old)).toBe(false);
+    expect(await oauth.lookupClient(young)).not.toBeNull();
+    expect(await hasRow(w, young)).toBe(true);
+    expect(await expired(w, old, young)).toEqual([
+      {
+        clientId: old,
+        clientName: "Test agent",
+        reason: "unclaimed",
+        grantsRevoked: 0,
+      },
+    ]);
+  });
+
+  it("deletes a claimed client at 31 d and revokes its grants, D1 and KV", async () => {
+    const w = await oauthWorld();
+    const { clientId, tokens } = await grant(w);
+    const row = await rowOf(w, tokens);
+    await age(w, clientId, 31 * DAY);
+    await sweepOAuthClientsAll(w.env);
+    const oauth = authServer(w.env).getOAuthApi(w.env);
+    expect(await oauth.lookupClient(clientId)).toBeNull();
+    expect(await hasRow(w, clientId)).toBe(false);
+    expect((await rowOf(w, tokens))?.revoked_at).toEqual(expect.any(Number));
+    expect((await oauth.listUserGrants(row?.oauth_user ?? "")).items).toEqual(
+      [],
+    );
+    expect(
+      await authServer(w.env).validateToken(
+        RESOURCE,
+        tokens.access_token,
+        w.env,
+      ),
+    ).toBeNull();
+    expect(isRefusal(await mcpPrincipal(w, tokens))).toBe(true);
+    const revoke = await w.db
+      .prepare(
+        "SELECT detail FROM admin_audit WHERE action = 'token.revoke' AND token_id = ?1",
+      )
+      .bind(row?.id)
+      .first<{ detail: string }>();
+    expect(JSON.parse(revoke?.detail ?? "{}").via).toBe("client_expired");
+    expect(await expired(w, clientId)).toEqual([
+      {
+        clientId,
+        clientName: "Test agent",
+        reason: "expired",
+        grantsRevoked: 1,
+      },
+    ]);
+  });
+
+  it("keeps a claimed client at 29 d, its grant live", async () => {
+    const w = await oauthWorld();
+    const { clientId, tokens } = await grant(w);
+    await age(w, clientId, 29 * DAY);
+    await sweepOAuthClientsAll(w.env);
+    const oauth = authServer(w.env).getOAuthApi(w.env);
+    expect(await oauth.lookupClient(clientId)).not.toBeNull();
+    expect((await rowOf(w, tokens))?.revoked_at).toBeNull();
+    expect(isRefusal(await mcpPrincipal(w, tokens))).toBe(false);
+  });
+
+  it("is idempotent: a second run deletes and audits nothing", async () => {
+    const w = await oauthWorld();
+    const a = await register(w);
+    const { clientId: b } = await grant(w);
+    await age(w, a, 25 * HOUR);
+    await age(w, b, 31 * DAY);
+    await sweepOAuthClientsAll(w.env);
+    expect(await expired(w, a, b)).toHaveLength(2);
+    // Nothing is due any more: the next runs delete and audit nothing.
+    expect(await sweepOAuthClientsAll(w.env)).toBe(0);
+    expect(await sweepOAuthClients(w.env)).toBe(0);
+    expect(await expired(w, a, b)).toHaveLength(2);
+  });
+
+  it("the Worker's scheduled export runs it", async () => {
+    const w = await oauthWorld();
+    const old = await register(w);
+    await age(w, old, 25 * HOUR);
+    const waits: Promise<unknown>[] = [];
+    const c = { ...ctx(), waitUntil: (p: Promise<unknown>) => waits.push(p) };
+    expect(worker.scheduled).toBeTypeOf("function");
+    await worker.scheduled?.(
+      { scheduledTime: Date.now(), cron: "41 * * * *", noRetry() {} },
+      w.env,
+      c as unknown as ExecutionContext,
+    );
+    await Promise.all(waits);
+    expect(await hasRow(w, old)).toBe(false);
+  });
+});
+
 describe("GET /oauth/authorize: cookie, bounce, session left", () => {
   it("no session, cross-site: 200 bounce page to the same URL plus b=1", async () => {
     const w = await oauthWorld();
@@ -352,7 +486,7 @@ describe("GET /oauth/authorize: cookie, bounce, session left", () => {
     expect(html).toContain("Continue");
   });
 
-  it("no session with b=1, or same-origin: 302 to /auth/start with the query, b dropped", async () => {
+  it("no session with b=1, or same-origin: the sign-in page links /auth/start with the query, b dropped", async () => {
     const w = await oauthWorld();
     const clientId = await register(w);
     const { challenge } = await pkce();
@@ -367,24 +501,34 @@ describe("GET /oauth/authorize: cookie, bounce, session left", () => {
       const res = await w.call(
         new Request(u, { headers: { "sec-fetch-site": site } }),
       );
-      expect(res.status).toBe(302);
-      const loc = new URL(res.headers.get("location") ?? "");
-      expect(`${loc.origin}${loc.pathname}`).toBe(`${ADMIN}/auth/start`);
-      expect(loc.searchParams.get("return")).toBe(
-        `${url.pathname}${url.search}`,
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-security-policy")).toBe(PAGE_CSP);
+      const html = await res.text();
+      expect(html).toContain("<h1>Sign in to continue</h1>");
+      expect(html).toContain(
+        `<a class="button primary" href="/auth/start?return=${encodeURIComponent(`${url.pathname}${url.search}`)}">Sign in with Google</a>`,
       );
+      expect(html).not.toContain("{{");
     }
   });
 
-  it("a session with under 60 min left goes to sign-in first", async () => {
+  it("a session with under 60 min left gets the sign-in-again page first", async () => {
     const w = await oauthWorld({}, 30 * 60_000);
     const clientId = await register(w);
     const { challenge } = await pkce();
-    const res = await getConsent(w, authorizeUrl(clientId, challenge));
-    expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toMatch(
-      new RegExp(`^${ADMIN}/auth/start\\?return=%2Foauth%2Fauthorize%3F`),
+    const url = authorizeUrl(clientId, challenge);
+    const res = await getConsent(w, url);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toBe(PAGE_CSP);
+    const html = await res.text();
+    expect(html).toContain("<h1>Sign in again first</h1>");
+    expect(html).toMatch(/Your admin session ends in (29|30) minutes,/);
+    expect(html).toContain('<a class="button" href="/">Cancel</a>');
+    expect(html).toContain(
+      `<a class="button primary" href="/auth/start?return=${encodeURIComponent(`${url.pathname}${url.search}`)}">Sign in again</a>`,
     );
+    expect(html).not.toContain("{{");
+    expect(html).not.toContain("Approve");
   });
 
   it("an identity removed from ADMIN_IDENTITIES has no session", async () => {
@@ -393,7 +537,8 @@ describe("GET /oauth/authorize: cookie, bounce, session left", () => {
     const { challenge } = await pkce();
     w.env.ADMIN_IDENTITIES = "other@example.com:9";
     const res = await getConsent(w, authorizeUrl(clientId, challenge));
-    expect(res.status).toBe(302);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("<h1>Sign in to continue</h1>");
   });
 
   it("a request without code_challenge (confidential client) is invalid_request", async () => {
@@ -418,7 +563,8 @@ describe("the consent page", () => {
     const w = await oauthWorld();
     const clientId = await register(w);
     const { challenge } = await pkce();
-    const res = await getConsent(w, authorizeUrl(clientId, challenge));
+    const url = authorizeUrl(clientId, challenge);
+    const res = await getConsent(w, url);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-security-policy")).toBe(
       "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'",
@@ -428,24 +574,36 @@ describe("the consent page", () => {
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(res.headers.getSetCookie().join("\n")).toMatch(/__Host-oauth-/);
     const html = await res.text();
-    expect(html).toContain("Connect any AI agent to Open Artifacts admin");
-    expect(html).toContain("Staging");
-    expect(html).toContain("Calls itself <b>Test agent</b>");
-    expect(html).toContain(clientId);
-    expect(html).toContain("registered 0 minutes ago");
-    expect(html).toContain("127.0.0.1");
-    expect(html).toContain("Local app");
     expect(html).toContain(
-      "Only continue if you just started this from your own agent.",
+      "<title>Connect any AI agent · Open Artifacts admin</title>",
     );
-    expect(html).toContain("Can delete installs and purge failed creates");
-    expect(html).toContain("Can read owner email");
-    expect(html).toMatch(
-      /Ends at \d\d:\d\d UTC, when your admin session ends\./,
+    expect(html).toContain('<span class="env staging">Staging</span>');
+    expect(html).toContain(
+      `<span class="mono">admin.${w.env.APP_DOMAIN}</span>`,
     );
-    expect(html).toContain(">Allow<");
+    expect(html).toContain("<h1>Connect this agent to the staging admin?</h1>");
+    expect(html).toContain('<b>Calls itself "Test agent"</b>');
+    expect(html).toContain(`Client <span class="mono">${clientId}</span>`);
+    expect(html).toContain("registered just now");
+    expect(html).toContain(
+      'redirects to <span class="mono">127.0.0.1</span> (Local app)',
+    );
+    expect(html).toContain(`Signed in as <b>${w.email}</b>`);
+    const ret = `${url.pathname}${url.search}`;
+    expect(html).toContain(
+      `<a href="/auth/start?return=${encodeURIComponent(ret)}">Not you?</a>`,
+    );
+    expect(html).toContain(
+      '<form class="card" method="post" action="/oauth/authorize">',
+    );
+    expect(html).toContain(
+      "Only approve if you just started this from your own agent.",
+    );
+    expect(html).toContain(">Approve<");
     expect(html).toContain(">Deny<");
+    expect(html).not.toContain("{{");
     expect(html).not.toContain("<script");
+    expect(html).not.toMatch(/https?:/);
     expect(html).not.toContain("—");
   });
 
@@ -473,6 +631,15 @@ describe("the consent page", () => {
       expect(box(s)).not.toBeNull();
       expect(box(s)?.[1]).toBeUndefined();
     }
+    // delete and pii stand apart, in their own list after write.
+    const [first, apart] = html.split('<ul class="sensitive">');
+    for (const s of ["installs:read", "audit:read", "installs:write"])
+      expect(first).toContain(`value="${s}"`);
+    for (const s of ["installs:delete", "installs:pii"]) {
+      expect(first).not.toContain(`value="${s}"`);
+      expect(apart).toContain(`value="${s}"`);
+    }
+    expect(html.match(/ checked>/g)).toHaveLength(2);
   });
 
   it("escapes the DCR client name", async () => {
@@ -488,7 +655,27 @@ describe("the consent page", () => {
       await getConsent(w, authorizeUrl(client_id, challenge))
     ).text();
     expect(html).not.toContain("<img");
-    expect(html).toContain("&lt;img src=x onerror=&quot;a()&quot;&gt;");
+    expect(html).toContain(
+      'Calls itself "&lt;img src=x onerror=&quot;a()&quot;&gt;"',
+    );
+  });
+
+  it("hostile requested scopes are never echoed", async () => {
+    const w = await oauthWorld();
+    const clientId = await register(w);
+    const { challenge } = await pkce();
+    const res = await getConsent(
+      w,
+      authorizeUrl(
+        clientId,
+        challenge,
+        'installs:read "><script>alert(1)</script> <img src=x>',
+      ),
+    );
+    const html = await res.text();
+    expect(html).not.toContain("<script");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("alert(1)");
   });
 
   it("prod shows the Production badge", async () => {
@@ -498,7 +685,11 @@ describe("the consent page", () => {
     const html = await (
       await getConsent(w, authorizeUrl(clientId, challenge))
     ).text();
-    expect(html).toContain("Production");
+    expect(html).toContain('<span class="env prod">Production</span>');
+    expect(html).toContain(
+      "<h1>Connect this agent to the production admin?</h1>",
+    );
+    expect(html).not.toContain("Staging");
   });
 });
 

@@ -3,12 +3,12 @@ import type { Env } from "../../env.js";
 // The OAuth admin_audit rows (design v7 4.9, 9A.8) the token service does
 // not write itself (it writes oauth.grant and token.revoke in its batch):
 // oauth.denied (actor: the admin) and oauth.refresh_refused (actor: the
-// token). Written here as the token service writes its rows, so they need
+// token), and oauth.client_expired (actor: the client sweep). Written here as the token service writes its rows, so they need
 // no principal (the refresh callback has none).
 
 export type OAuthAuditEntry = {
-  action: "oauth.denied" | "oauth.refresh_refused";
-  actor: { kind: "admin" | "token"; label: string };
+  action: "oauth.denied" | "oauth.refresh_refused" | "oauth.client_expired";
+  actor: { kind: "admin" | "token" | "system"; label: string };
   tokenId?: string;
   outcome: "ok" | "refused";
   code?: string;

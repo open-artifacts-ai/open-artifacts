@@ -123,6 +123,10 @@ describe("wrangler.jsonc", () => {
         );
       });
 
+      it("runs the MCP client sweep hourly (one cron)", () => {
+        expect(cfg.env[env].triggers).toEqual({ crons: ["41 * * * *"] });
+      });
+
       it("binds OAUTH_KV, the library's store", () => {
         expect(e.kv_namespaces).toEqual([
           {
@@ -176,6 +180,7 @@ describe("wrangler.jsonc", () => {
             "queues",
             "ratelimits",
             "services",
+            "triggers",
             "vars",
             "workers_dev",
             "workflows",

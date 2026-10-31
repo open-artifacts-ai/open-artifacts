@@ -16,7 +16,7 @@ import {
 } from "../../services/tokens.js";
 import { hmac, sameString } from "../crypto.js";
 import {
-  adminOrigin,
+  adminHost,
   readCookie,
   SESSION_COOKIE,
   SESSION_RENEW_UNDER_MS,
@@ -24,7 +24,14 @@ import {
 } from "../session.js";
 import { oauthAudit } from "./audit.js";
 import { capped } from "./endpoints.js";
-import { bouncePage, consentPage, messagePage } from "./pages.js";
+import {
+  bouncePage,
+  type Chrome,
+  consentPage,
+  messagePage,
+  reauthPage,
+  signinPage,
+} from "./pages.js";
 import { authServer, type GrantProps, revokeLibraryGrants } from "./server.js";
 
 // GET and POST /oauth/authorize on the admin host (design v7 9A.3.2): the
@@ -60,6 +67,12 @@ async function consentTokenOk(
   return sameString(got, await consentToken(env, sid, handle));
 }
 
+/** The header every page shows: the env badge and the admin host. */
+const chrome = (env: Env): Chrome => ({
+  env: env.OA_ENV,
+  adminHost: adminHost(env),
+});
+
 /** RL_PV_OAUTH_IP by ipKey on the consent routes (9A.7); a refusal page or null. */
 async function limited(req: Request, env: Env): Promise<Response | null> {
   const ip = ipKey(req);
@@ -72,11 +85,17 @@ async function limited(req: Request, env: Env): Promise<Response | null> {
   }
   return r.code === "rate_limited"
     ? messagePage(
+        chrome(env),
         "Too many requests",
         "Wait a minute, then start connecting again from your agent.",
         429,
       )
-    : messagePage("Unavailable", "Try again in a few minutes.", 503);
+    : messagePage(
+        chrome(env),
+        "Unavailable",
+        "Try again in a few minutes.",
+        503,
+      );
 }
 
 /** The query without the bounce marker: what /auth/start returns to. */
@@ -90,17 +109,12 @@ function authorizeReturn(url: URL): string {
   return `${url.pathname}${s ? `?${s}` : ""}`;
 }
 
-const signIn = (env: Env, url: URL) =>
-  new Response(null, {
-    status: 302,
-    headers: {
-      location: `${adminOrigin(env)}/auth/start?return=${encodeURIComponent(authorizeReturn(url))}`,
-      "cache-control": "no-store",
-    },
-  });
+/** /auth/start back to this request, relative: the pages link it on the admin host. */
+const signInPath = (url: URL) =>
+  `/auth/start?return=${encodeURIComponent(authorizeReturn(url))}`;
 
 /** parseAuthRequest/approve/deny failures: a redirect only when the library says it is safe. */
-function authorizeError(e: unknown): Response {
+function authorizeError(env: Env, e: unknown): Response {
   if (e instanceof AuthorizationError) {
     if (e.redirectTo)
       return new Response(null, {
@@ -108,6 +122,7 @@ function authorizeError(e: unknown): Response {
         headers: { location: e.redirectTo, "cache-control": "no-store" },
       });
     return messagePage(
+      chrome(env),
       "Cannot connect this agent",
       `${e.description || e.code}. Start connecting again from your agent.`,
       400,
@@ -116,6 +131,7 @@ function authorizeError(e: unknown): Response {
   // An unknown client and other parse failures throw plain errors.
   if (e instanceof Error)
     return messagePage(
+      chrome(env),
       "Cannot connect this agent",
       "This request is not valid. Start connecting again from your agent.",
       400,
@@ -123,8 +139,9 @@ function authorizeError(e: unknown): Response {
   throw e;
 }
 
-const signedOut = () =>
+const signedOut = (env: Env) =>
   messagePage(
+    chrome(env),
     "Signed out",
     "Your admin session ended. Start connecting again from your agent.",
     401,
@@ -145,12 +162,20 @@ export async function showConsent(req: Request, env: Env): Promise<Response> {
     const sameSite = site === "same-origin" || site === "none";
     if (!sameSite && url.searchParams.get("b") !== "1") {
       const ret = authorizeReturn(url);
-      return bouncePage(`${ret}${ret.includes("?") ? "&" : "?"}b=1`);
+      return bouncePage(
+        chrome(env),
+        `${ret}${ret.includes("?") ? "&" : "?"}b=1`,
+      );
     }
-    return signIn(env, url);
+    return signinPage(chrome(env), signInPath(url));
   }
-  const endsAt = p.session?.expiresAt ?? 0;
-  if (endsAt - now < CONSENT_MIN_SESSION_MS) return signIn(env, url);
+  const left = (p.session?.expiresAt ?? 0) - now;
+  if (left < CONSENT_MIN_SESSION_MS)
+    return reauthPage(chrome(env), {
+      leftMs: left,
+      cancelUrl: "/",
+      reauthUrl: signInPath(url),
+    });
 
   const oauth = authServer(env).getOAuthApi(env);
   try {
@@ -158,6 +183,7 @@ export async function showConsent(req: Request, env: Env): Promise<Response> {
     // The library requires PKCE only for public clients (9A.3.1).
     if (!request.codeChallenge || request.codeChallengeMethod !== "S256")
       return messagePage(
+        chrome(env),
         "Cannot connect this agent",
         "invalid_request: PKCE S256 is required. Start connecting again from your agent.",
         400,
@@ -167,24 +193,22 @@ export async function showConsent(req: Request, env: Env): Promise<Response> {
     const tx = await oauth.beginConsent(request);
     const reg = client?.registrationDate;
     return consentPage(
+      chrome(env),
       {
-        prod: env.OA_ENV === "prod",
         clientName: d.clientName,
         clientId: d.clientId,
-        registeredMinutesAgo:
-          typeof reg === "number"
-            ? Math.max(0, Math.floor((now / 1000 - reg) / 60))
-            : null,
+        registeredSecondsAgo: typeof reg === "number" ? now / 1000 - reg : null,
         redirectHost: d.redirectHost,
         loopback: d.redirectIsLoopback,
-        endsAt,
+        adminEmail: p.email ?? p.label,
+        switchUrl: signInPath(url),
         handle: tx.handle,
         consentToken: await consentToken(env, sid, tx.handle),
       },
       tx.headers,
     );
   } catch (e) {
-    return authorizeError(e);
+    return authorizeError(env, e);
   }
 }
 
@@ -193,26 +217,47 @@ export async function decideConsent(req: Request, env: Env): Promise<Response> {
   // No Origin check: the page's no-referrer policy makes browsers send
   // `Origin: null`. The consent token and the Strict cookie cover CSRF.
   if (req.headers.get("sec-fetch-site") === "cross-site")
-    return messagePage("Cannot connect this agent", "Cross-site request.", 403);
+    return messagePage(
+      chrome(env),
+      "Cannot connect this agent",
+      "Cross-site request.",
+      403,
+    );
   const lim = await limited(req, env);
   if (lim) return lim;
   const p = await sessionPrincipal(req, env, Date.now());
   const sid = readCookie(req, SESSION_COOKIE);
-  if (isRefusal(p) || !sid) return signedOut();
+  if (isRefusal(p) || !sid) return signedOut(env);
   const body = await capped(req);
   if (!body)
-    return messagePage("Cannot connect this agent", "Invalid form.", 400);
+    return messagePage(
+      chrome(env),
+      "Cannot connect this agent",
+      "Invalid form.",
+      400,
+    );
   let form: FormData;
   try {
     form = await body.formData();
   } catch {
-    return messagePage("Cannot connect this agent", "Invalid form.", 400);
+    return messagePage(
+      chrome(env),
+      "Cannot connect this agent",
+      "Invalid form.",
+      400,
+    );
   }
   const handle = String(form.get("request") ?? "");
   if (
-    !(await consentTokenOk(env, sid, handle, String(form.get("consent") ?? "")))
+    !(await consentTokenOk(
+      env,
+      sid,
+      handle,
+      String(form.get("consent_token") ?? ""),
+    ))
   )
     return messagePage(
+      chrome(env),
       "This page expired",
       "Start connecting again from your agent.",
       403,
@@ -225,13 +270,14 @@ export async function decideConsent(req: Request, env: Env): Promise<Response> {
     // The library accepts [] ([].every is true): a grant with no scopes.
     if (scopes.length === 0)
       return messagePage(
+        chrome(env),
         "Pick at least one permission",
         "Start connecting again from your agent and pick at least one.",
         400,
       );
     return await allow(env, oauth, p, req, handle, scopes);
   } catch (e) {
-    return authorizeError(e);
+    return authorizeError(env, e);
   }
 }
 
@@ -279,7 +325,7 @@ async function allow(
       redirectHost: redirect.hostname,
     });
   } catch (e) {
-    if (e instanceof ApiError) return mintRefused(e);
+    if (e instanceof ApiError) return mintRefused(env, e);
     throw e;
   }
   const props: GrantProps = {
@@ -316,19 +362,26 @@ async function allow(
   return new Response(null, { status: 302, headers: approved.headers });
 }
 
-function mintRefused(e: ApiError): Response {
+function mintRefused(env: Env, e: ApiError): Response {
   if (e.code === "token_limit")
     return messagePage(
+      chrome(env),
       "Too many agent tokens",
       "5 agent tokens are live. Revoke one at /tokens.",
       409,
     );
   if (e.code === "rate_limited")
     return messagePage(
+      chrome(env),
       "Too many new tokens",
       "This hour's token budget is spent. Try again later.",
       429,
     );
-  if (e.code === "unauthenticated") return signedOut();
-  return messagePage("Cannot connect this agent", "Try again later.", 500);
+  if (e.code === "unauthenticated") return signedOut(env);
+  return messagePage(
+    chrome(env),
+    "Cannot connect this agent",
+    "Try again later.",
+    500,
+  );
 }

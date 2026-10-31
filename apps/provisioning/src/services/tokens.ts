@@ -625,6 +625,35 @@ export async function revokeGrantRow(
 }
 
 /**
+ * The client sweep (8.3): revokes every live oauth row of a client, each
+ * with its token.revoke row (via `client_expired`). Returns the grants to
+ * end in KV.
+ */
+export async function revokeClientGrants(
+  env: Env,
+  clientId: string,
+  now: number = Date.now(),
+): Promise<RevokedGrant[]> {
+  const db = env.PLATFORM_DB;
+  const where =
+    "WHERE client_id = ?1 AND kind = 'oauth' AND revoked_at IS NULL";
+  const res = await db.batch([
+    db
+      .prepare(`${GRANTS_SELECT} ${where} AND grant_id IS NOT NULL`)
+      .bind(clientId),
+    db
+      .prepare(
+        `${AUDIT_INSERT} SELECT ?2, 'token', label, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'kind', kind, 'label', label, 'scopes', json(scopes), 'admin', admin_email, 'via', 'client_expired') FROM agent_tokens ${where}`,
+      )
+      .bind(clientId, now),
+    db
+      .prepare(`UPDATE agent_tokens SET revoked_at = ?2 ${where}`)
+      .bind(clientId, now),
+  ]);
+  return (res[0]?.results ?? []) as RevokedGrant[];
+}
+
+/**
  * R21 without an id: revokes all of this admin's tokens, both kinds; one
  * `token.revoke_all` row. Returns the oauth grants to end in KV.
  */

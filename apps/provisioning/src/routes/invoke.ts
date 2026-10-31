@@ -5,6 +5,7 @@ import {
   INSTALL_ID_RE,
   REQUEST_ID_RE,
   ROUTES,
+  type RouteBody,
   type RouteDef,
   ULID_RE,
 } from "@oa/shared/provisioning";
@@ -17,6 +18,10 @@ import type { Principal } from "../principal.js";
 import { countRateLimited } from "../refuse.js";
 import { HANDLERS } from "./handlers.js";
 import { onAuthenticated } from "./hooks.js";
+
+/** Whether a route body has fields: a union (R26 mint | revoke) always does. */
+export const hasBodyFields = (b: RouteBody) =>
+  "shape" in b ? Object.keys(b.shape).length > 0 : true;
 
 // The one entry point both surfaces call (design v7 9A.4). It runs the
 // post-authn part of the 4.2 check order: rate limit -> authz (authz.ts) ->
@@ -67,11 +72,7 @@ export function parseInput(def: RouteDef, input: RouteInput): Parsed {
   const body =
     def.method === "GET"
       ? undefined
-      : one(
-          "body",
-          def.body,
-          Object.keys(def.body.shape).length === 0 ? {} : input.body,
-        );
+      : one("body", def.body, !hasBodyFields(def.body) ? {} : input.body);
   if (fields.length) return { ok: false, fields };
   return {
     ok: true,

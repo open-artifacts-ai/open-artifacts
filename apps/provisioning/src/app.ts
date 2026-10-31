@@ -28,7 +28,7 @@ import { limit } from "./limits.js";
 import { handleMcp } from "./mcp/index.js";
 import { isRefusal } from "./principal.js";
 import { refuse } from "./refuse.js";
-import { invokeRoute } from "./routes/invoke.js";
+import { hasBodyFields, invokeRoute } from "./routes/invoke.js";
 import { matchRoute } from "./routes/table.js";
 import { ipKeyOf } from "./services/counters.js";
 
@@ -148,7 +148,7 @@ async function apiRoute(
     // by invokeRoute after the rate limit and authz (4.2).
     const def = ROUTES[route];
     const body =
-      def.method !== "GET" && Object.keys(def.body.shape).length > 0
+      def.method !== "GET" && hasBodyFields(def.body)
         ? new LazyBody(() => readJsonBody(req))
         : undefined;
     const r = await invokeRoute(

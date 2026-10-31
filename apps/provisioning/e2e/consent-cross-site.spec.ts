@@ -73,9 +73,9 @@ function authorizeLog(page: Page) {
 
 async function expectConsent(page: Page) {
   await expect(page.getByRole("heading")).toHaveText(
-    "Connect any AI agent to Open Artifacts admin",
+    "Connect this agent to the staging admin?",
   );
-  await expect(page.getByRole("button", { name: "Allow" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve" })).toBeVisible();
   expect(new URL(page.url()).searchParams.get("b")).toBe("1");
 }
 
@@ -109,7 +109,7 @@ test("same-origin arrival with the cookie renders consent at once", async () => 
   const { page } = await session();
   const log = authorizeLog(page);
   await page.goto(`${w.admin}${w.authorizePath}`);
-  await expect(page.getByRole("button", { name: "Allow" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Approve" })).toBeVisible();
   expect(await log.entries()).toEqual([
     { status: 200, cookie: true, bounced: false },
   ]);

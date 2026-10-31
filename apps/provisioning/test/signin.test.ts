@@ -940,10 +940,11 @@ describe("a session already in the browser (4.5: logout ends every grant)", () =
         }),
       );
     const first = await consent(a.sid);
-    expect(first.status).toBe(302);
-    const ret = new URL(first.headers.get("location") ?? "").searchParams.get(
-      "return",
-    );
+    expect(first.status).toBe(200);
+    const href = /href="(\/auth\/start\?[^"]*)">Sign in again</.exec(
+      await first.text(),
+    )?.[1];
+    const ret = new URL(href ?? "", ADMIN).searchParams.get("return");
     const { res } = await signIn(e, {
       q: `?return=${encodeURIComponent(ret ?? "")}`,
       claims: { iat: T / 1000, exp: T / 1000 + 3600 },
@@ -973,7 +974,7 @@ describe("a session already in the browser (4.5: logout ends every grant)", () =
     ).toBe(T);
     const again = await consent(sid);
     expect(again.status).toBe(200);
-    expect(await again.text()).toContain("Allow");
+    expect(await again.text()).toContain(">Approve<");
   });
 
   it("a live session of another identity is revoked with its tokens before the new one", async () => {

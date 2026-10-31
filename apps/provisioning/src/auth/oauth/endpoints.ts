@@ -1,15 +1,24 @@
 import { ipKey } from "@oa/auth-core";
+import {
+  OAUTH_CLIENT_TTL_MS,
+  OAUTH_CLIENT_UNCLAIMED_MS,
+} from "@oa/shared/provisioning/constants";
 import type { Env } from "../../env.js";
 import { limit } from "../../limits.js";
 import { countRefusal } from "../../refuse.js";
-import { oauthLabel, revokeGrantRow } from "../../services/tokens.js";
+import {
+  oauthLabel,
+  revokeClientGrants,
+  revokeGrantRow,
+} from "../../services/tokens.js";
 import { bump } from "../counters.js";
 import { hmac16 } from "../crypto.js";
-import { authServer, redirectHosts } from "./server.js";
+import { oauthAudit } from "./audit.js";
+import { authServer, redirectHosts, revokeLibraryGrants } from "./server.js";
 
 // The api-host AS endpoints in front of the library (design v7 9A.3.1,
 // 9A.7): RL_PV_OAUTH_IP by ipKey, the 16 KiB body cap, the DCR per-IP daily
-// cap and the unclaimed-client sweep, and the oauth_clients bookkeeping the
+// cap and the MCP client sweep (also hourly by cron), and the oauth_clients bookkeeping the
 // scheduler's oauth_register_flood alert reads.
 
 /** Token and registration bodies are small (9A.7). */
@@ -17,10 +26,10 @@ export const MAX_OAUTH_BODY = 16 * 1024;
 /** DCR registrations per ipKey per UTC day (4.7). */
 export const DCR_PER_IP_PER_DAY = 10;
 const DAY_MS = 86_400_000;
-/** Unclaimed clients older than this are swept (8.3). */
-export const UNCLAIMED_CLIENT_MS = DAY_MS;
 /** At most this many per registration. */
 export const SWEEP_BATCH = 10;
+/** Per batch in the hourly cron. */
+export const CRON_SWEEP_BATCH = 50;
 
 /** RFC 6749 5.2 error body. */
 export const oauthError = (
@@ -187,31 +196,74 @@ const dcrKey = async (env: Env, ip: string) =>
   `dcr:${await hmac16(env.ADMIN_SESSION_KEY, `dcr\n${ip}`)}`;
 
 /**
- * Deletes up to SWEEP_BATCH clients that never completed a grant within a
- * day, from KV and D1 (install pattern, apps/server/src/mcp/registrations.ts).
+ * The one MCP client sweep (8.3, 9A.7), from each /oauth/register (up to
+ * SWEEP_BATCH) and the hourly cron: a client that never completed a grant
+ * within OAUTH_CLIENT_UNCLAIMED_MS, and any client older than
+ * OAUTH_CLIENT_TTL_MS. Its live grants end first (D1 row with token.revoke,
+ * then the KV grant), then the KV client and its row, audited
+ * `oauth.client_expired`. Idempotent: a swept client has no row left.
  */
-export async function sweepUnclaimedClients(
+export async function sweepOAuthClients(
   env: Env,
   now: number = Date.now(),
+  batch: number = SWEEP_BATCH,
 ): Promise<number> {
   const { results } = await env.PLATFORM_DB.prepare(
-    `SELECT client_id FROM oauth_clients WHERE first_grant_at IS NULL AND registered_at < ?1
-     ORDER BY registered_at LIMIT ?2`,
+    `SELECT client_id, client_name, first_grant_at FROM oauth_clients
+     WHERE (first_grant_at IS NULL AND registered_at < ?1) OR registered_at < ?2
+     ORDER BY registered_at LIMIT ?3`,
   )
-    .bind(now - UNCLAIMED_CLIENT_MS, SWEEP_BATCH)
-    .all<{ client_id: string }>();
+    .bind(now - OAUTH_CLIENT_UNCLAIMED_MS, now - OAUTH_CLIENT_TTL_MS, batch)
+    .all<{
+      client_id: string;
+      client_name: string;
+      first_grant_at: number | null;
+    }>();
   const oauth = authServer(env).getOAuthApi(env);
   let done = 0;
-  for (const { client_id } of results) {
-    await oauth.deleteClient(client_id);
-    await env.PLATFORM_DB.prepare(
-      "DELETE FROM oauth_clients WHERE client_id = ?1 AND first_grant_at IS NULL",
+  for (const c of results) {
+    const grants = await revokeClientGrants(env, c.client_id, now);
+    await revokeLibraryGrants(env, grants);
+    await oauth.deleteClient(c.client_id);
+    const del = await env.PLATFORM_DB.prepare(
+      "DELETE FROM oauth_clients WHERE client_id = ?1",
     )
-      .bind(client_id)
+      .bind(c.client_id)
       .run();
+    // A concurrent sweep already took it: one audit row per client.
+    if ((del.meta.changes ?? 0) === 0) continue;
+    await oauthAudit(
+      env,
+      {
+        action: "oauth.client_expired",
+        actor: { kind: "system", label: "sweep" },
+        outcome: "ok",
+        detail: {
+          clientId: c.client_id,
+          clientName: c.client_name,
+          reason: c.first_grant_at === null ? "unclaimed" : "expired",
+          grantsRevoked: grants.length,
+        },
+      },
+      now,
+    );
     done++;
   }
   return done;
+}
+
+/** Cron: sweep in batches until none is due, at most 10 batches a run. */
+export async function sweepOAuthClientsAll(
+  env: Env,
+  now: number = Date.now(),
+): Promise<number> {
+  let total = 0;
+  for (let i = 0; i < 10; i++) {
+    const n = await sweepOAuthClients(env, now, CRON_SWEEP_BATCH);
+    total += n;
+    if (n < CRON_SWEEP_BATCH) break;
+  }
+  return total;
 }
 
 /** POST /oauth/register (RFC 7591 DCR). */
@@ -240,7 +292,7 @@ export async function registerEndpoint(
   }
   let res: Response;
   try {
-    await sweepUnclaimedClients(env, now);
+    await sweepOAuthClients(env, now);
     res = await authServer(env).fetch(r, env, ctx);
   } catch (e) {
     await refund(env, key, now);
