@@ -122,7 +122,9 @@ export function storedVars(raw: string | null): Record<string, string> {
   if (raw === null) return {};
   const v = JSON.parse(raw) as Record<string, unknown>;
   return Object.fromEntries(
-    Object.entries(v).filter((x): x is [string, string] => typeof x[1] === "string"),
+    Object.entries(v).filter(
+      (x): x is [string, string] => typeof x[1] === "string",
+    ),
   );
 }
 

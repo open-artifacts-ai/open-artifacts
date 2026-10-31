@@ -26,13 +26,13 @@ import {
   type BundleVariant,
   bucketVersions,
   canonicalJson,
+  releaseGate as gate,
   NAMESPACES,
   names,
   type R2CatalogBucket,
   r2BindingReleaseReader,
-  releaseGate as gate,
-  sha256Hex,
   settleFailedStatements,
+  sha256Hex,
 } from "@oa/provision";
 import {
   bodyHash,
@@ -50,11 +50,7 @@ import {
   renderOptions,
   sweepTokens,
 } from "./ops.js";
-import {
-  deployEnv,
-  type ProvisionerIo,
-  transient,
-} from "./provisioner.js";
+import { deployEnv, type ProvisionerIo, transient } from "./provisioner.js";
 import {
   checkJob,
   checkSlug,
@@ -294,7 +290,11 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<CreateJob> {
   const args = argsOf(job);
   const v = args.version ?? s.version ?? null;
   if (v !== null && typeof v !== "string") throw refused("bad version");
-  if (args.version !== undefined && s.version !== null && args.version !== s.version)
+  if (
+    args.version !== undefined &&
+    s.version !== null &&
+    args.version !== s.version
+  )
     throw refused("the job and signup versions disagree");
   return {
     jobId,

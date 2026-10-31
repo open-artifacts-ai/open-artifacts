@@ -131,7 +131,8 @@ export function strictVars(
   const allowed = ["AUTH_PROVIDERS", "AUTH_DOMAINS", "TIER"];
   if (o.testHooks) allowed.push("TEST_DOMAIN");
   for (const k of Object.keys(vars))
-    if (!allowed.includes(k)) throw refused(`var ${k.slice(0, 40)} is not allowed`);
+    if (!allowed.includes(k))
+      throw refused(`var ${k.slice(0, 40)} is not allowed`);
   for (const k of allowed)
     if (typeof vars[k] !== "string") throw refused(`var ${k} is missing`);
   const providers = (vars.AUTH_PROVIDERS as string).split(",");

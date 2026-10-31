@@ -19,14 +19,17 @@ import {
   world,
 } from "./world.js";
 
-vi.mock("../../../../packages/provision/src/internal/gates.js", async (orig) => ({
-  ...(await orig<
-    typeof import("../../../../packages/provision/src/internal/gates.js")
-  >()),
-  get RELEASE_PUBKEY() {
-    return { staging: TEST_PUBKEY, prod: TEST_PUBKEY };
-  },
-}));
+vi.mock(
+  "../../../../packages/provision/src/internal/gates.js",
+  async (orig) => ({
+    ...(await orig<
+      typeof import("../../../../packages/provision/src/internal/gates.js")
+    >()),
+    get RELEASE_PUBKEY() {
+      return { staging: TEST_PUBKEY, prod: TEST_PUBKEY };
+    },
+  }),
+);
 
 const app = (slug: string) => `${slug}.${HOSTED_DOMAINS[ENV].app}`;
 const plain = (w: World, id: string, name: string) =>
@@ -75,7 +78,9 @@ describe("ProvisionInstall: create", () => {
       status: "ready",
       install_id: s.installId,
     });
-    expect(w.get("SELECT * FROM signup_secret WHERE signup_id = ?", s.signupId)).toBeUndefined();
+    expect(
+      w.get("SELECT * FROM signup_secret WHERE signup_id = ?", s.signupId),
+    ).toBeUndefined();
     expect(w.install(s.installId)).toMatchObject({
       state: "active",
       version: V2,
@@ -97,10 +102,15 @@ describe("ProvisionInstall: create", () => {
     expect(plain(w, s.installId, "TIER")?.text).toBe("business");
     expect(w.mail).toEqual([]);
     expect(
-      w.all("SELECT action FROM hosted_audit WHERE install_id = ? AND action LIKE 'job.%'", s.installId),
+      w.all(
+        "SELECT action FROM hosted_audit WHERE install_id = ? AND action LIKE 'job.%'",
+        s.installId,
+      ),
     ).toEqual([{ action: "job.create.done" }]);
     // No step output carries the owner's email.
-    expect(JSON.stringify(log).toLowerCase()).not.toContain(EMAIL.toLowerCase());
+    expect(JSON.stringify(log).toLowerCase()).not.toContain(
+      EMAIL.toLowerCase(),
+    );
   });
 
   it("the latest installable release unless the job names one; redline iff testHooks", async () => {
@@ -118,7 +128,10 @@ describe("ProvisionInstall: create", () => {
       version: V2,
       bundle: "redline",
     });
-    expect(w.install(b.installId)).toMatchObject({ test_hooks: 1, version: V2 });
+    expect(w.install(b.installId)).toMatchObject({
+      test_hooks: 1,
+      version: V2,
+    });
   });
 
   it("sendWelcome: one email, and a replay of every step changes nothing", async () => {
@@ -156,7 +169,11 @@ describe("ProvisionInstall: create", () => {
 });
 
 describe("ProvisionInstall: rechecks (2.5)", () => {
-  const refusedWith = async (s: { jobId: string; signupId: string; installId: string }) => {
+  const refusedWith = async (s: {
+    jobId: string;
+    signupId: string;
+    installId: string;
+  }) => {
     const before = w.fake.writes().length;
     const r = await run(w, s.jobId);
     expect(r.error).not.toBeNull();
@@ -171,7 +188,12 @@ describe("ProvisionInstall: rechecks (2.5)", () => {
   };
 
   it("an extra var key is invalid_state, before any Cloudflare write", async () => {
-    for (const extra of ["FEATURES", "EMAIL_DAILY_CAP", "AUTH_DOMAIN_JOIN", "TEST_DOMAIN"]) {
+    for (const extra of [
+      "FEATURES",
+      "EMAIL_DAILY_CAP",
+      "AUTH_DOMAIN_JOIN",
+      "TEST_DOMAIN",
+    ]) {
       const s = seedCreate(w, {
         slug: `extra-${extra.toLowerCase().replace(/_/g, "")}`,
         vars: {
@@ -190,15 +212,36 @@ describe("ProvisionInstall: rechecks (2.5)", () => {
 
   it("self-serve: TIER must be SELF_SERVE_TIER, google only, one domain", async () => {
     for (const [i, vars] of [
-      { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "finqore.test", TIER: "business" },
-      { AUTH_PROVIDERS: "google,email", AUTH_DOMAINS: "finqore.test", TIER: "trial" },
-      { AUTH_PROVIDERS: "google", AUTH_DOMAINS: "a.test,b.test", TIER: "trial" },
+      {
+        AUTH_PROVIDERS: "google",
+        AUTH_DOMAINS: "finqore.test",
+        TIER: "business",
+      },
+      {
+        AUTH_PROVIDERS: "google,email",
+        AUTH_DOMAINS: "finqore.test",
+        TIER: "trial",
+      },
+      {
+        AUTH_PROVIDERS: "google",
+        AUTH_DOMAINS: "a.test,b.test",
+        TIER: "trial",
+      },
     ].entries())
-      await refusedWith(seedCreate(w, { slug: `ss-bad-${i}`, source: "self-serve", vars }));
+      await refusedWith(
+        seedCreate(w, { slug: `ss-bad-${i}`, source: "self-serve", vars }),
+      );
   });
 
   it("a self-serve create from a non-user actor, or a job already settled, is refused", async () => {
-    await refusedWith(seedCreate(w, { slug: "ss-admin", source: "self-serve", actor: "admin", tier: "trial" }));
+    await refusedWith(
+      seedCreate(w, {
+        slug: "ss-admin",
+        source: "self-serve",
+        actor: "admin",
+        tier: "trial",
+      }),
+    );
     const s = seedCreate(w, { slug: "settled" });
     w.db.prepare("UPDATE jobs SET status = 'done' WHERE id = ?").run(s.jobId);
     const r = await run(w, s.jobId);
@@ -208,21 +251,38 @@ describe("ProvisionInstall: rechecks (2.5)", () => {
   });
 
   it("a self-serve create the consumer admitted runs; one it did not is refused", async () => {
-    const ok = seedCreate(w, { slug: "ssok", source: "self-serve", tier: "trial" });
+    const ok = seedCreate(w, {
+      slug: "ssok",
+      source: "self-serve",
+      tier: "trial",
+    });
     expect((await run(w, ok.jobId)).error).toBeNull();
     expect(w.job(ok.jobId)?.status).toBe("done");
-    const no = seedCreate(w, { slug: "ssno", source: "self-serve", tier: "trial" });
+    const no = seedCreate(w, {
+      slug: "ssno",
+      source: "self-serve",
+      tier: "trial",
+    });
     w.db
-      .prepare("UPDATE signups SET status = 'pending', admitted_at = NULL WHERE signup_id = ?")
+      .prepare(
+        "UPDATE signups SET status = 'pending', admitted_at = NULL WHERE signup_id = ?",
+      )
       .run(no.signupId);
     const r = await run(w, no.jobId);
-    expect(r.log.find((l) => l.name === "admit")?.error?.message).toMatch(/^invalid_state/);
+    expect(r.log.find((l) => l.name === "admit")?.error?.message).toMatch(
+      /^invalid_state/,
+    );
   });
 });
 
 describe("ProvisionInstall: release gate and failures", () => {
   it("an unpublished version: release_not_published, terminal, nothing created; the claim is freed", async () => {
-    const s = seedCreate(w, { slug: "nover", source: "self-serve", tier: "trial", version: "0.30.0" });
+    const s = seedCreate(w, {
+      slug: "nover",
+      source: "self-serve",
+      tier: "trial",
+      version: "0.30.0",
+    });
     const before = w.fake.writes().length;
     const r = await run(w, s.jobId);
     expect(r.error).not.toBeNull();
@@ -293,7 +353,12 @@ describe("ProvisionInstall: release gate and failures", () => {
     expect(d.metadata).toMatch(/^[0-9a-f]{64}$/);
     expect(d.record).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(d)).not.toMatch(/@/);
-    const purge = w.get<{ id: string; status: string; actor_key: string; parent_job_id: string }>(
+    const purge = w.get<{
+      id: string;
+      status: string;
+      actor_key: string;
+      parent_job_id: string;
+    }>(
       "SELECT id, status, actor_key, parent_job_id FROM jobs WHERE install_id = ? AND kind = 'purge'",
       s.installId,
     );

@@ -222,7 +222,9 @@ async function operate(
       break;
     case "suspend":
       await s("pause", LEASED_STEP, async () => {
-        await (await p(job)).pause(job.installId, "paused", { kind: "suspend" });
+        await (await p(job)).pause(job.installId, "paused", {
+          kind: "suspend",
+        });
         await transient(modeStatement(ctx, job.installId, "paused").run());
         return { mode: "paused" };
       });
@@ -452,7 +454,11 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
         throw refused("the job has no from and to");
       if (!row) throw refused("no installs row");
       out.args = { from: args.from, to: args.to };
-      if (kind === "rollback" && row.previous_version !== args.to && row.version !== args.to)
+      if (
+        kind === "rollback" &&
+        row.previous_version !== args.to &&
+        row.version !== args.to
+      )
         throw refused("to is not the previous version");
       if (row.version === args.to && row.state === "active") out.already = true;
       else if (row.version !== args.from) throw refused("the version moved");
@@ -469,7 +475,13 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
         throw refused("a purge started");
       break;
     case "purge":
-      out.skipDirectoryRevoke = await purgePreconditions(ctx, job, st, args, now);
+      out.skipDirectoryRevoke = await purgePreconditions(
+        ctx,
+        job,
+        st,
+        args,
+        now,
+      );
       break;
     case "discard":
       if (row) throw refused("discard needs a create with no installs row");
@@ -546,7 +558,10 @@ async function purgePreconditions(
   if (skip !== undefined && (!admin || !STRING(skip, 200)))
     throw refused("skipDirectoryRevoke is an admin's, with a reason");
   if (st.state === "deleting") {
-    if (!admin && !(st.deleted_at !== null && st.purge_at !== null && st.purge_at <= now))
+    if (
+      !admin &&
+      !(st.deleted_at !== null && st.purge_at !== null && st.purge_at <= now)
+    )
       throw refused("the grace period is not over");
     return skip as string | undefined;
   }
@@ -581,7 +596,11 @@ async function cleanup(
       "cleanup",
     ]);
     const parent = j.parent_job_id ? await readJob(ctx, j.parent_job_id) : null;
-    if (!parent || parent.install_id !== j.install_id || parent.kind === "cleanup")
+    if (
+      !parent ||
+      parent.install_id !== j.install_id ||
+      parent.kind === "cleanup"
+    )
       throw refused("a cleanup needs its parent job");
     const row = await installRow(ctx, j.install_id);
     return {

@@ -13,7 +13,10 @@ const shim = (f: string) =>
 export default defineConfig({
   resolve: {
     alias: [
-      { find: /^cloudflare:workers$/, replacement: shim("cloudflare-workers.ts") },
+      {
+        find: /^cloudflare:workers$/,
+        replacement: shim("cloudflare-workers.ts"),
+      },
       {
         find: /^cloudflare:workflows$/,
         replacement: shim("cloudflare-workflows.ts"),

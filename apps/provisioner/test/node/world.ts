@@ -4,6 +4,9 @@
 // bucket in memory, seeded with signed releases; a pinned clock; and a step
 // runner that runs each step.do body like the engine (retries per config,
 // NonRetryableError final), recording every result.
+
+import type { WorkflowStep } from "cloudflare:workers";
+import { NonRetryableError } from "cloudflare:workflows";
 import { readdirSync, readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import {
@@ -15,8 +18,6 @@ import {
   registryKey,
 } from "@oa/provision";
 import { FakeWorkflow } from "@oa/shared/provisioning/fakes";
-import type { WorkflowStep } from "cloudflare:workers";
-import { NonRetryableError } from "cloudflare:workflows";
 import { nodeD1 } from "../../../../packages/provision/test/d1-node.js";
 import { FakeCf } from "../../../../packages/provision/test/fake-cf.js";
 import {
@@ -118,7 +119,7 @@ export function stepRunner(
   return { step: step as unknown as WorkflowStep, log };
 }
 
-export type World = ReturnType<typeof world>;
+export type World = Awaited<ReturnType<typeof world>>;
 
 /** One fresh world per test. */
 export async function world(
@@ -265,7 +266,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
     o.slug,
     jobId,
     JSON.stringify(
-      Object.fromEntries(Object.entries(vars).sort(([a], [b]) => (a < b ? -1 : 1))),
+      Object.fromEntries(
+        Object.entries(vars).sort(([a], [b]) => (a < b ? -1 : 1)),
+      ),
     ),
     o.version ?? null,
     o.testHooks ? 1 : 0,

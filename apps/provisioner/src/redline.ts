@@ -67,7 +67,10 @@ async function rotateMintSeal(
 ): Promise<{ sealed: true }> {
   const e = deployEnv(ctx.env.OA_ENV);
   if (e !== "staging")
-    throw new ProvisionRefused("redline_creds is staging only", "invalid_state");
+    throw new ProvisionRefused(
+      "redline_creds is staging only",
+      "invalid_state",
+    );
   const j = await readJob(ctx, jobId);
   const recipientKey = j ? argsOf(j).recipientKey : undefined;
   if (
@@ -83,7 +86,10 @@ async function rotateMintSeal(
     );
   const testDomain = storedVars(row.vars).TEST_DOMAIN;
   if (testDomain !== STAGING_TEST_DOMAIN)
-    throw new ProvisionRefused("the install has no TEST_DOMAIN", "invalid_state");
+    throw new ProvisionRefused(
+      "the install has no TEST_DOMAIN",
+      "invalid_state",
+    );
   const script = names(row.id, e).script;
   const app = `https://${row.app_host}`;
   const f = directFetch(ctx.env.DISPATCHER, { appHost: row.app_host, script });
@@ -129,9 +135,13 @@ async function rotateMintSeal(
       "x-oa-request": "1",
     },
   });
-  const l = await call(f, `${app}/api/v1/tokens`, asAdmin(), "list tokens", [
-    200,
-  ]);
+  const l = await call(
+    f,
+    `${app}/api/v1/tokens`,
+    asAdmin(),
+    "list tokens",
+    [200],
+  );
   const listed = (await l.json().catch(() => null)) as unknown;
   if (!Array.isArray(listed)) throw new Error("list tokens: not a list");
   for (const t of listed)

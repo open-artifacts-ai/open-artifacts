@@ -52,7 +52,13 @@ export async function sealTo(
   const recipient = fromB64u(recipientKey);
   if (recipient.length !== 32)
     throw new Error("the recipient key is not 32 bytes");
-  const pub = await crypto.subtle.importKey("raw", recipient, X25519, false, []);
+  const pub = await crypto.subtle.importKey(
+    "raw",
+    recipient,
+    X25519,
+    false,
+    [],
+  );
   const eph = (await crypto.subtle.generateKey(X25519, true, [
     "deriveBits",
   ])) as CryptoKeyPair;
@@ -60,7 +66,10 @@ export async function sealTo(
     (await crypto.subtle.exportKey("raw", eph.publicKey)) as ArrayBuffer,
   );
   const shared = await crypto.subtle.deriveBits(
-    { name: "X25519", public: pub } as unknown as SubtleCryptoDeriveKeyAlgorithm,
+    {
+      name: "X25519",
+      public: pub,
+    } as unknown as SubtleCryptoDeriveKeyAlgorithm,
     eph.privateKey,
     256,
   );
@@ -85,7 +94,10 @@ export async function openSealed(
   const epk = fromB64u(e);
   const pub = await crypto.subtle.importKey("raw", epk, X25519, false, []);
   const shared = await crypto.subtle.deriveBits(
-    { name: "X25519", public: pub } as unknown as SubtleCryptoDeriveKeyAlgorithm,
+    {
+      name: "X25519",
+      public: pub,
+    } as unknown as SubtleCryptoDeriveKeyAlgorithm,
     recipient.privateKey,
     256,
   );
