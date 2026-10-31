@@ -50,15 +50,23 @@ describe("liveFetch (xt:live, flake server #2)", () => {
   });
 
   it("bounds every attempt", async () => {
-    const hang = ((r: Request) =>
-      new Promise((_, rej) =>
+    // A real fetch holds its in-flight Request. This fake must too: if only
+    // the abort listener points at it, a GC in a busy full run collects the
+    // Request with its signal and listener, the abort never reaches it, and
+    // the test hangs to vitest's 30 s limit.
+    const inFlight: Request[] = [];
+    const hang = ((r: Request) => {
+      inFlight.push(r);
+      return new Promise((_, rej) =>
         r.signal.addEventListener("abort", () => rej(r.signal.reason)),
-      )) as typeof fetch;
+      );
+    }) as typeof fetch;
     await expect(
       liveFetch(new Request("https://x.test/", { method: "POST" }), {
         fetch: hang,
         timeoutMs: 20,
       }),
     ).rejects.toThrow();
+    expect(inFlight).toHaveLength(1);
   });
 });
