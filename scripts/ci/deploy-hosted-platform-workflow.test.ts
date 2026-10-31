@@ -23,6 +23,16 @@ const named = (n: string) =>
   steps.find((s) => s.name === n) as Record<string, any>;
 
 describe("deploy-hosted-platform.yml", () => {
+  it("defaults to scheduler only once both envs commit alert_to (it refuses without one)", () => {
+    const def: string[] =
+      w.on.workflow_dispatch.inputs.targets.default.split(",");
+    const alertTo = ["staging", "prod"].every(
+      (e) =>
+        JSON.parse(readFileSync(join(root, `.github/hosted/${e}.json`), "utf8"))
+          .alert_to !== undefined,
+    );
+    expect(def.includes("scheduler")).toBe(alertTo);
+  });
   it("runs only on dispatch, read-only, one at a time, in the env's Environment", () => {
     expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
     const inputs = w.on.workflow_dispatch.inputs;

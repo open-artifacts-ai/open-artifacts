@@ -186,7 +186,7 @@ fi
 # The provisioning Worker serves the admin build as ASSETS: never deploy
 # without it (deploy-hosted-platform.sh runs the build first).
 if [ "$app" = provisioning ] && [ ! -f dist-assets/index.html ]; then
-  echo "$dir/dist-assets/index.html is missing: build @oa/provisioning... first" >&2
+  echo "$dir/dist-assets/index.html is missing: build @oa/admin... and @oa/provisioning... first" >&2
   exit 1
 fi
 

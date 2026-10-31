@@ -265,10 +265,11 @@ case "$target" in
       [ "$(jq -r '.SIGNUPS_ENABLED // ""' <<< "$pre")" != test-users ] ||
         { echo "prod provisioning commits SIGNUPS_ENABLED=test-users (staging only); refusing" >&2; exit 1; }
     fi
-    # The Worker and what it depends on, the admin SPA among them: its vite
-    # build writes apps/provisioning/dist-assets (ASSETS) itself, nothing is
-    # copied, and the wrapper refuses a deploy without its index.html.
-    if [ -z "$VERIFY_ONLY" ]; then (cd "$root" && pnpm --filter "@oa/provisioning..." build); fi
+    # The Worker and what it depends on, plus the admin SPA (named on its own:
+    # it is not a dependency of @oa/provisioning). Its vite build writes
+    # apps/provisioning/dist-assets (ASSETS) itself, nothing is copied, and the
+    # wrapper refuses a deploy without its index.html.
+    if [ -z "$VERIFY_ONLY" ]; then (cd "$root" && pnpm --filter "@oa/admin..." --filter "@oa/provisioning..." build); fi
     # The OAuth KV namespace: check first, create only when absent.
     ns="oa-$P-provisioning-oauth"
     kvs="$(list_all "/storage/kv/namespaces?" "list KV namespaces")"

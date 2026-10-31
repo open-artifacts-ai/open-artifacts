@@ -32,7 +32,7 @@ on:
       targets:
         description: "Comma-separated, in order: platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones"
         required: true
-        default: "auth-broker,directory-broker,dispatch,scheduler"
+        default: "auth-broker,directory-broker,dispatch"
         type: string
       verify_only:
         description: "Read back and check only; deploy and set nothing"

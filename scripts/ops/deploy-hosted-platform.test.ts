@@ -899,7 +899,9 @@ describe("deploy-hosted-platform.sh", () => {
       const r = setup({ exists: brokers }).run("provisioning");
       expect(r.err).toBe("");
       expect(r.code).toBe(0);
-      const build = r.log.indexOf("pnpm --filter @oa/provisioning... build");
+      const build = r.log.indexOf(
+        "pnpm --filter @oa/admin... --filter @oa/provisioning... build",
+      );
       const wrap = r.log.findIndex((l) =>
         l.startsWith("wrapper provisioning prod "),
       );
