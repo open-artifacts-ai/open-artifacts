@@ -150,7 +150,8 @@ CREATE TABLE IF NOT EXISTS agent_tokens (
   revoked_at INTEGER,
   last_used_at INTEGER,
   CHECK ((kind = 'oat') = (token_hash IS NOT NULL)),
-  CHECK ((kind = 'oauth') = (client_id IS NOT NULL AND oauth_user IS NOT NULL))
+  CHECK ((kind = 'oauth') = (client_id IS NOT NULL AND oauth_user IS NOT NULL)),
+  CHECK (kind = 'oauth' OR (client_id IS NULL AND oauth_user IS NULL AND grant_id IS NULL))
 );
 CREATE INDEX IF NOT EXISTS agent_tokens_admin ON agent_tokens (admin_email, expires_at);
 CREATE INDEX IF NOT EXISTS agent_tokens_session ON agent_tokens (session_hash);
@@ -208,7 +209,8 @@ CREATE TABLE IF NOT EXISTS platform_migrations (
 -- suspended, active, failed, provisioning. A signup is found by its
 -- install_id, or before reserve writes that, through the install's latest
 -- job. With no signup, an install is provisioning while a job is open and
--- failed otherwise. jobs_one_active keeps the active job to one row.
+-- failed otherwise; so is a ready signup whose install never reached active.
+-- jobs_one_active keeps the active job to one row.
 CREATE VIEW IF NOT EXISTS install_status AS
 SELECT
   l.install_id AS install_id,
@@ -229,6 +231,10 @@ SELECT
   COALESCE(l.owner_sub, s.owner_sub) AS owner_sub,
   l.tier AS tier,
   i.version AS version,
+  i.previous_version AS previous_version,
+  COALESCE(i.test_hooks, s.test_hooks) AS test_hooks,
+  i.lease_until AS lease_until,
+  i.directory_revoke AS directory_revoke,
   i.state AS install_state,
   s.signup_id AS signup_id,
   s.status AS signup_status,

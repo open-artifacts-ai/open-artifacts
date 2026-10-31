@@ -43,12 +43,22 @@ export const SQL_ALERT_KEYS = ALERT_KEYS.filter(
 /** Refused sign-ins over this window open `signin_refused_burst` (4.8). */
 export const SIGNIN_BURST_WINDOW_MS = 10 * 60_000;
 export const SIGNIN_BURST_MIN = 5;
-/** The `audit_refusals` bucket of sign-in refusals (`RL_PV_SIGNIN_IP` routes). */
+/**
+ * The `audit_refusals` bucket of sign-in refusals (`signin.bad_flow` and the
+ * `RL_PV_SIGNIN_IP` 429s). The refusal writer imports this; any other name
+ * is invisible to `signin_refused_burst`.
+ */
 export const SIGNIN_REFUSAL_BUCKET = "signin";
+/** `audit_refusals` rows aggregate refusals per window of this length (4.9). */
+export const AUDIT_REFUSAL_WINDOW_MS = 10 * 60_000;
 /** How long an `unknown_sub` refusal and a failed job stay in attention. */
 export const ALERT_LOOKBACK_MS = 24 * 60 * 60_000;
-/** `job_retrying` from this attempt on. */
-export const JOB_RETRYING_ATTEMPT = 3;
+/**
+ * `job_retrying` from the 3rd attempt on. `jobs.attempt` counts failed
+ * attempts (the step wrapper writes it in its catch, 3.6), so the 3rd
+ * attempt is running once it reaches 2.
+ */
+export const JOB_RETRYING_ATTEMPT = 2;
 /** An open job unchanged this long, with no future retry, is stuck. */
 export const JOB_STUCK_MS = 2 * 60 * 60_000;
 /** Failed purge jobs before `purge_stuck` (the scheduler's cap). */
@@ -90,20 +100,25 @@ const NOW: AlertCondition["params"] = ["now"];
 const NONE: AlertCondition["params"] = [];
 
 // A failed job's row; message is cut to AttentionSchema's 200.
-const FAILED_JOB = `j.install_id AS install_id, j.id AS job_id, j.kind AS job_kind, j.error_code AS code, substr(j.error_message, 1, 200) AS message, j.finished_at AS since`;
+const FAILED_JOB = `j.install_id AS install_id, j.id AS job_id, j.kind AS job_kind, j.error_code AS code, substr(j.error_message, 1, 200) AS message, COALESCE(j.finished_at, j.updated_at) AS since`;
 const OPEN_JOB = `j.install_id AS install_id, j.id AS job_id, j.kind AS job_kind, j.last_error_code AS code, substr(j.error_message, 1, 200) AS message, j.updated_at AS since`;
 const STUCK = `j.updated_at <= ?1 - ${JOB_STUCK_MS} AND (j.retry_at IS NULL OR j.retry_at <= ?1)`;
 // A later job of these kinds on the install finished the job's trouble.
 const FIXED_BY = (kinds: string) =>
-  `NOT EXISTS (SELECT 1 FROM jobs f WHERE f.install_id = j.install_id AND f.status = 'done' AND f.created_at >= j.created_at AND f.id <> j.id${kinds ? ` AND f.kind IN (${kinds})` : ""})`;
+  `NOT EXISTS (SELECT 1 FROM jobs f WHERE f.install_id = j.install_id AND f.status = 'done' AND f.created_at >= j.created_at AND f.id <> j.id AND f.kind IN (${kinds}))`;
+// Kinds that act on the install's state. Never cleanup, release_lease,
+// redline_creds or update: the sweep and cancel insert a cleanup for every
+// failure, so counting one would clear the failure it cleans up.
+const STATE_KINDS = `'create', 'retry', 'upgrade', 'rollback', 'suspend', 'resume', 'delete', 'restore', 'purge', 'discard'`;
 
 export const ALERT_CONDITIONS: Record<SqlAlertKey, AlertCondition> = {
   signin_refused_burst: {
     sql: `SELECT NULL AS install_id, NULL AS job_id, NULL AS job_kind, NULL AS code, NULL AS message, since FROM (
+  -- An aggregate window that overlaps the window's start counts whole.
   SELECT MIN(since) AS since, SUM(n) AS total FROM (
     SELECT at AS since, 1 AS n FROM admin_audit WHERE action = 'signin.refused' AND at > ?1 - ${SIGNIN_BURST_WINDOW_MS}
     UNION ALL
-    SELECT window_start AS since, count AS n FROM audit_refusals WHERE bucket = '${SIGNIN_REFUSAL_BUCKET}' AND window_start > ?1 - ${SIGNIN_BURST_WINDOW_MS}
+    SELECT window_start AS since, count AS n FROM audit_refusals WHERE bucket = '${SIGNIN_REFUSAL_BUCKET}' AND window_start > ?1 - ${SIGNIN_BURST_WINDOW_MS + AUDIT_REFUSAL_WINDOW_MS}
   )
 ) WHERE total >= ${SIGNIN_BURST_MIN}`,
     params: NOW,
@@ -115,12 +130,13 @@ export const ALERT_CONDITIONS: Record<SqlAlertKey, AlertCondition> = {
     params: NOW,
   },
   job_failed: {
+    // An admin cancel (code canceled) alerts too: the job did not finish.
     sql: `SELECT ${FAILED_JOB} FROM jobs j
 WHERE j.status = 'failed' AND j.finished_at > ?1 - ${ALERT_LOOKBACK_MS}
   AND COALESCE(j.error_code, '') NOT IN ('prod_dirty', 'upgrade_incomplete')
-  AND ${FIXED_BY("")}
+  AND ${FIXED_BY(STATE_KINDS)}
   AND NOT (j.kind = 'purge' AND (SELECT COUNT(*) FROM jobs p WHERE p.install_id = j.install_id AND p.kind = 'purge' AND p.status = 'failed') >= ${PURGE_STUCK_FAILURES})
-ORDER BY j.finished_at, j.id`,
+ORDER BY since, j.id`,
     params: NOW,
   },
   job_retrying: {
@@ -139,7 +155,7 @@ ORDER BY j.updated_at, j.id`,
     sql: `SELECT ${FAILED_JOB} FROM jobs j
 WHERE j.status = 'failed' AND j.error_code = 'prod_dirty'
   AND ${FIXED_BY("'purge', 'discard'")}
-ORDER BY j.finished_at, j.id`,
+ORDER BY since, j.id`,
     params: NONE,
   },
   prodclean_failed: {
@@ -152,7 +168,7 @@ WHERE r.id = (SELECT MAX(id) FROM prodclean_reports) AND r.ok = 0`,
     sql: `SELECT ${FAILED_JOB} FROM jobs j
 WHERE j.status = 'failed' AND j.error_code = 'upgrade_incomplete'
   AND ${FIXED_BY("'upgrade', 'rollback', 'purge', 'discard'")}
-ORDER BY j.finished_at, j.id`,
+ORDER BY since, j.id`,
     params: NONE,
   },
   unreachable_after_route: {
@@ -169,7 +185,7 @@ ORDER BY since, l.install_id`,
   purge_stuck: {
     // code is the latest failed purge's (SQLite takes bare columns from the
     // MAX row).
-    sql: `SELECT j.install_id AS install_id, NULL AS job_id, 'purge' AS job_kind, j.error_code AS code, NULL AS message, MAX(j.finished_at) AS since
+    sql: `SELECT j.install_id AS install_id, NULL AS job_id, 'purge' AS job_kind, j.error_code AS code, NULL AS message, MAX(COALESCE(j.finished_at, j.updated_at)) AS since
 FROM jobs j WHERE j.kind = 'purge' AND j.status = 'failed'
 GROUP BY j.install_id
 HAVING COUNT(*) >= ${PURGE_STUCK_FAILURES}

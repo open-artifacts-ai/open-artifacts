@@ -245,6 +245,8 @@ describe("0008_provisioning: tokens and clients", () => {
       { kind: "oat" },
       { kind: "oauth", token_hash: "h2", client_id: "c", oauth_user: "adm_1" },
       { kind: "oauth", client_id: "c" },
+      { kind: "oat", token_hash: "h4", client_id: "c" },
+      { kind: "oat", token_hash: "h5", grant_id: "g" },
       { kind: "pat", token_hash: "h3" },
     ] as Record<string, string>[])
       expect(() =>
@@ -410,6 +412,45 @@ describe("0008_provisioning: install_status (5.1 precedence)", () => {
     job(db, "x2", { status: "failed" });
     expect(status(db, "x1")?.state).toBe("provisioning");
     expect(status(db, "x2")?.state).toBe("failed");
+  });
+
+  it("a ready signup whose install never reached active, with no open job, is failed", () => {
+    const db = platformDb();
+    install(db, "r1", { state: "creating" });
+    lifecycle(db, "r1");
+    signup(db, { install_id: "r1", status: "ready" });
+    job(db, "r1", { status: "done" });
+    lifecycle(db, "r2");
+    signup(db, { install_id: "r2", status: "ready" });
+    expect(status(db, "r1")?.state).toBe("failed");
+    expect(status(db, "r2")?.state).toBe("failed");
+  });
+
+  it("carries the installs columns InstallDetail needs; test_hooks falls back to the signup's", () => {
+    const db = platformDb();
+    install(db, "v1", {
+      version: "1.2.0",
+      previous_version: "1.1.0",
+      test_hooks: 1,
+      lease_until: 9,
+      directory_revoke: "pending",
+    });
+    lifecycle(db, "v1");
+    lifecycle(db, "v2");
+    signup(db, { install_id: "v2", status: "creating", test_hooks: 1 });
+    expect(status(db, "v1")).toMatchObject({
+      version: "1.2.0",
+      previous_version: "1.1.0",
+      test_hooks: 1,
+      lease_until: 9,
+      directory_revoke: "pending",
+    });
+    expect(status(db, "v2")).toMatchObject({
+      previous_version: null,
+      test_hooks: 1,
+      lease_until: null,
+      directory_revoke: null,
+    });
   });
 
   it("carries slug, hosts, owner sub, serving mode and the active job; never an email", () => {

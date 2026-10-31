@@ -2,14 +2,15 @@
 // real platform schema: each opens on its fixture and stays shut on a near
 // miss. The scheduler (W7) and R27 run these same queries.
 import type { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
 import {
   ALERT_CONDITIONS,
   type AlertRow,
   alertParams,
+  SIGNIN_REFUSAL_BUCKET,
   SQL_ALERT_KEYS,
   type SqlAlertKey,
-} from "../../shared/src/provisioning/alerts.ts";
+} from "@oa/shared/provisioning";
+import { describe, expect, it } from "vitest";
 import { insert, job, lifecycle, platformDb, signup } from "./platform-db.js";
 
 const NOW = Date.parse("2026-10-31T12:00:00Z");
@@ -100,6 +101,29 @@ describe("alert conditions", () => {
     ]);
   });
 
+  it("signin_refused_burst: counts the aggregate window that overlaps the window's start", () => {
+    const db = platformDb();
+    // 4 refusals in the window that ended at DAY + 10 min, 4 in the next;
+    // the tick at DAY + 11 min looks back to DAY + 1 min.
+    const now = DAY + 11 * MIN;
+    const agg = (window_start: number, ip_hmac: string, count: number) =>
+      insert(db, "audit_refusals", {
+        bucket: SIGNIN_REFUSAL_BUCKET,
+        code: "signin.bad_flow",
+        ip_hmac,
+        window_start,
+        count,
+        updated_at: now,
+      });
+    agg(DAY - 10 * MIN, "old", 9);
+    agg(DAY, "a", 4);
+    expect(run(db, "signin_refused_burst", now)).toEqual([]);
+    agg(DAY + 10 * MIN, "b", 4);
+    expect(run(db, "signin_refused_burst", now)).toMatchObject([
+      { since: DAY },
+    ]);
+  });
+
   it("admin_unknown_sub: an unknown_sub refusal in the last day", () => {
     const db = platformDb();
     refused(db, NOW - 25 * HOUR, "unknown_sub");
@@ -143,6 +167,27 @@ describe("alert conditions", () => {
     };
     for (let i = 0; i < 3; i++) job(db, "ps", stuck);
     expect(run(db, "job_failed")).toEqual([]);
+    // The cleanup the sweep or a cancel inserts, and jobs that leave the
+    // install's state alone, do not fix a failure.
+    const failed = job(db, "cl", {
+      status: "failed",
+      error_code: "canceled",
+      created_at: 1,
+      finished_at: NOW - HOUR,
+    });
+    for (const kind of ["cleanup", "release_lease", "redline_creds", "update"])
+      job(db, "cl", {
+        kind,
+        workflow: "manage_install",
+        status: "done",
+        parent_job_id: failed,
+        created_at: 2,
+        finished_at: NOW - MIN,
+      });
+    expect(run(db, "job_failed")).toMatchObject([
+      { install_id: "cl", job_id: failed, code: "canceled" },
+    ]);
+    db.prepare("DELETE FROM jobs WHERE install_id = 'cl'").run();
     const id = job(db, "i1", {
       kind: "upgrade",
       workflow: "manage_install",
@@ -163,18 +208,18 @@ describe("alert conditions", () => {
     ]);
   });
 
-  it("job_retrying: an open job on its 3rd attempt, not yet stuck", () => {
+  it("job_retrying: an open job on its 3rd attempt (2 failed), not yet stuck", () => {
     const db = platformDb();
-    job(db, "i1", { status: "running", attempt: 2, updated_at: NOW });
+    job(db, "i1", { status: "running", attempt: 1, updated_at: NOW });
     job(db, "i2", {
       status: "running",
-      attempt: 3,
+      attempt: 2,
       updated_at: NOW - 3 * HOUR,
     });
     expect(run(db, "job_retrying")).toEqual([]);
     const id = job(db, "i3", {
       status: "running",
-      attempt: 3,
+      attempt: 2,
       last_error_code: "cf_5xx",
       updated_at: NOW - MIN,
     });
@@ -234,6 +279,16 @@ describe("alert conditions", () => {
     });
     expect(run(db, "prod_dirty")).toMatchObject([
       { install_id: "i2", job_id: id, code: "prod_dirty", since: 2 },
+    ]);
+    // since is never NULL: a failed row with no finished_at uses updated_at.
+    const unfinished = job(db, "i3", {
+      status: "failed",
+      error_code: "prod_dirty",
+      updated_at: 5,
+    });
+    expect(run(db, "prod_dirty")).toMatchObject([
+      { job_id: id, since: 2 },
+      { job_id: unfinished, since: 5 },
     ]);
   });
 
