@@ -7,11 +7,11 @@ import {
   ROUTES,
   TokenScopeSchema,
 } from "@oa/shared/provisioning";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { ApiError } from "../src/errors.js";
 import type { Principal } from "../src/principal.js";
 import { invokeRoute, type Surface } from "../src/routes/invoke.js";
-import { ctx, fakeEnv } from "./fakes.js";
+import { ctx, fakeEnv, migrate } from "./fakes.js";
 
 const P = (kind: Principal["kind"], scopes: Principal["scopes"] = []) =>
   ({
@@ -48,7 +48,7 @@ async function run(
     const r = await invokeRoute(env, ctx(), principal, route, {}, s);
     return {
       status: r.status,
-      code: (r.body as { error?: { code: string } }).error?.code,
+      code: (r.body as { error?: { code: string } } | null)?.error?.code,
     };
   } catch (e) {
     if (!(e instanceof ApiError)) throw e;
@@ -56,7 +56,9 @@ async function run(
   }
 }
 
-describe("invokeRoute (9A.4): authz.ts row, then the 501 stub", () => {
+beforeAll(() => migrate());
+
+describe("invokeRoute (9A.4): the authz.ts row decides", () => {
   for (const route of ROUTE_IDS.filter(isApiRoute))
     for (const [col, ps] of Object.entries(PRINCIPALS))
       for (const [i, p] of ps.entries())
@@ -70,14 +72,19 @@ describe("invokeRoute (9A.4): authz.ts row, then the 501 stub", () => {
                 const r = await invokeRoute(e, ctx(), p, route, {}, s);
                 got = {
                   status: r.status,
-                  code: (r.body as { error: { code: string } }).error.code,
+                  code: (r.body as { error?: { code: string } } | null)?.error
+                    ?.code,
                 };
               } catch (err) {
                 if (!(err instanceof ApiError)) throw err;
                 got = { status: API_ERROR_STATUS[err.code], code: err.code };
               }
+              // Allowed: whatever the handler answers (empty input is
+              // mostly invalid_input), never the authz refusal codes.
               if (d.ok)
-                expect(got).toEqual({ status: 501, code: "not_implemented" });
+                expect(["forbidden", "unauthenticated"]).not.toContain(
+                  got.code,
+                );
               else
                 expect(got).toEqual({
                   status: API_ERROR_STATUS[d.code],
@@ -98,7 +105,8 @@ describe("invokeRoute (9A.4): authz.ts row, then the 501 stub", () => {
     const { env, limits } = fakeEnv();
     const p = P("admin");
     await invokeRoute(env, ctx(), p, "R2", {}, HTTP);
-    await invokeRoute(env, ctx(), p, "R7", {}, HTTP);
+    // Empty input: invalid_input, after the charge.
+    await invokeRoute(env, ctx(), p, "R7", {}, HTTP).catch(() => {});
     expect(ROUTES.R2.write).toBe(false);
     expect(ROUTES.R7.write).toBe(true);
     expect(limits.RL_PV_READ.keys).toEqual([p.rateKey]);

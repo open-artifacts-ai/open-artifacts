@@ -11,8 +11,8 @@ import {
   SQL_ALERT_KEYS,
   type SqlAlertKey,
 } from "@oa/shared/provisioning/alerts";
+import { isTokenStatus } from "@oa/shared/provisioning/constants";
 import type { AlertKey } from "@oa/shared/provisioning/enum-values";
-import { TokenStatusSchema } from "./contract.js";
 import { within } from "./env.js";
 
 type RpcAlertKey = (typeof RPC_ALERT_KEYS)[number];
@@ -76,12 +76,11 @@ export async function tokenConditions(
     console.error("provapi alert token_status rpc_error");
     return unknown;
   }
-  const s = TokenStatusSchema.safeParse(raw);
-  if (!s.success) {
+  if (!isTokenStatus(raw)) {
     console.error("provapi alert token_status parse_error");
     return unknown;
   }
-  const { status, daysLeft } = s.data;
+  const { status, daysLeft } = raw;
   return {
     // Invalid says nothing about the end date: left as it is, so an
     // expiring token that expires never mails "no longer near its end

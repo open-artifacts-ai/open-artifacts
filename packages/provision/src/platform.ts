@@ -81,7 +81,11 @@ export function canonicalJson(v: unknown): string {
   return JSON.stringify(v);
 }
 
-/** sha256 of the canonical JSON of what a resume must not change. */
+/**
+ * sha256 of the canonical JSON of what a resume or a replay must not change:
+ * owner, vars and testHooks. Not the version: a `creating` resume may move up
+ * (never down, F2/I1), and a replay compares installs.version itself (5.7).
+ */
 export function inputsHash(o: {
   ownerEmail: string;
   vars?: Record<string, string>;

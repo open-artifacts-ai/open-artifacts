@@ -182,3 +182,39 @@ describe("layout (9A.4)", () => {
     expect(r).toContain("src/routes/invoke.ts");
   });
 });
+
+describe("the API never writes provision's tables (W4 static SQL test)", () => {
+  // installs and hosts belong to provision, hosted_audit to its auditAs,
+  // release_floor to the release gate and platform_state to the scheduler.
+  const re =
+    /\b(?:insert\s+(?:or\s+\w+\s+)?into|replace\s+into|update|delete\s+from)\s+["`]?(installs|hosts|hosted_audit|release_floor|platform_state)\b/i;
+
+  it("no src module writes installs, hosts, hosted_audit, release_floor or platform_state", () => {
+    expect(src.length).toBeGreaterThan(10);
+    const hits = src.flatMap((f) => {
+      const m = re.exec(readFileSync(f, "utf8"));
+      return m ? [`${rel(f)}: ${m[0]}`] : [];
+    });
+    expect(hits).toEqual([]);
+  });
+
+  it("the rule catches every write form and lets reads through", () => {
+    for (const sql of [
+      "INSERT INTO installs (id) VALUES (?)",
+      "insert or ignore into hosts",
+      "REPLACE INTO platform_state",
+      'UPDATE "installs" SET state = ?',
+      "DELETE FROM hosted_audit",
+      "update release_floor set floor_seq = 1",
+    ])
+      expect(re.test(sql), sql).toBe(true);
+    for (const sql of [
+      "SELECT * FROM installs",
+      "LEFT JOIN hosts h",
+      "SELECT value FROM platform_state",
+      "UPDATE install_lifecycle SET x = 1",
+      "INSERT INTO jobs",
+    ])
+      expect(re.test(sql), sql).toBe(false);
+  });
+});
