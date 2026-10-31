@@ -638,4 +638,3 @@ describe("prodClean (spec 2026-10-26)", () => {
     for (const m of HOOK_SQL_MARKERS) expect(src).toContain(JSON.stringify(m));
   });
 });
-

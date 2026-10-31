@@ -87,7 +87,10 @@ describe("refusals before any call", () => {
     for (const cmd of RETIRED_COMMANDS) {
       const w = world();
       expect(
-        await main([cmd, "--env", "staging", "--install", "iaaaaaaaaaaa"], w.deps),
+        await main(
+          [cmd, "--env", "staging", "--install", "iaaaaaaaaaaa"],
+          w.deps,
+        ),
         cmd,
       ).toBe(1);
       expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
@@ -428,17 +431,7 @@ describe("commands", () => {
         "iaaaaaaaaaaa",
       ],
     ],
-    [
-      [
-        "publish-floor",
-        "--env",
-        "staging",
-        "--floor",
-        "/f",
-        "--tag",
-        "v1.0.0",
-      ],
-    ],
+    [["publish-floor", "--env", "staging", "--floor", "/f", "--tag", "v1.0.0"]],
   ])("refused at parse, before any call: %j", async (argv) => {
     const w = world();
     expect(await main(argv, w.deps)).toBe(1);
