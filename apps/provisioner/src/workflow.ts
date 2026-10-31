@@ -76,7 +76,7 @@ export const RELEASE_GATE_STEP = {
   retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
 } as const;
 
-/** 2 retries (5.2 step 7); the delay is the runtime default's. */
+/** 2 retries, 10 seconds, exponential (5.2 step 7). */
 export const REACHABLE_STEP = {
   retries: { limit: 2, delay: "10 seconds", backoff: "exponential" },
 } as const;

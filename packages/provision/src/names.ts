@@ -129,6 +129,11 @@ export function platformNames(env: Env): {
   hosts: string;
   turnstile: string;
   provisionToken: string;
+  provisioner: string;
+  provisionInstall: string;
+  manageInstall: string;
+  signups: string;
+  signupsDlq: string;
 } {
   if (!Object.hasOwn(ENV_PREFIX, env)) throw new ForeignResource("", env);
   const p = ENV_PREFIX[env];
@@ -152,6 +157,16 @@ export function platformNames(env: Env): {
     // The provisioner's Cloudflare token: a Secrets Store secret, bound by
     // oa-<p>-provisioner only (design v7 2.5).
     provisionToken: `${p}provision-token`,
+    // design v7 2.4: the provisioner script and the two Workflows it hosts
+    // (classes ProvisionInstall, ManageInstall); the API and the scheduler
+    // bind them with script_name = provisioner.
+    provisioner: `${p}provisioner`,
+    provisionInstall: `${p}provision-install`,
+    manageInstall: `${p}manage-install`,
+    // design v7 2.4, 10.2 (#859 apps/provisioner/wrangler.jsonc): the
+    // self-serve queue (API producer, provisioner consumer) and its DLQ.
+    signups: `${p}signups`,
+    signupsDlq: `${p}signups-dlq`,
   };
 }
 

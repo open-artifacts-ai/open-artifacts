@@ -172,6 +172,40 @@ describe("inventory schemas", () => {
     ).toBe(true);
   });
 
+  it("a creating install with no hosts row parses; every other field is still checked", () => {
+    const row = {
+      id: "iabcdefgh234",
+      appHost: null,
+      contentHost: null,
+      state: "provisioning",
+      testHooks: false,
+      mode: null,
+    };
+    expect(InventoryInstallsSchema.parse({ installs: [row] })).toEqual({
+      installs: [row],
+    });
+    const bad = (o: Record<string, unknown>) =>
+      InventoryInstallsSchema.safeParse({ installs: [{ ...row, ...o }] })
+        .success;
+    for (const o of [
+      { id: "nope" },
+      { id: undefined },
+      { state: "creating" },
+      { state: undefined },
+      { testHooks: null },
+      { testHooks: "false" },
+      { mode: "nope" },
+      // No host: nothing can route to it.
+      { mode: "serving" },
+      // Both hosts come from one hosts row: both or neither.
+      { appHost: "leo.open-artifacts.app" },
+      { contentHost: "leo.oa-content.app" },
+      { appHost: undefined },
+      { appHost: 7 },
+    ])
+      expect(bad(o), JSON.stringify(o)).toBe(false);
+  });
+
   it("hosts keep installId and add mode", () => {
     const h = {
       host: "leo.open-artifacts.app",

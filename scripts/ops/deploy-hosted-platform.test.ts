@@ -68,9 +68,15 @@ path="$(printf %s "$url" | sed -E 's#^.*/accounts/[0-9a-f]+/##')"
 ok() { echo "{\\"success\\":true,\\"result\\":$1}"; }
 bad() { echo '{"success":false,"errors":[{"code":1}]}'; }
 case "$path" in
-  queues\\?*) [ -f "$STATE/fail-queues" ] && { bad; exit 0; }; ok "$(cat "$STATE/queues.json" 2>/dev/null || echo '[]')"; exit 0 ;;
+  # queues.json: a whole listing (an envelope) or just its result array; no
+  # file is a failed listing.
+  queues\\?*) [ -f "$STATE/fail-queues" ] && { bad; exit 0; }
+    if [ ! -f "$STATE/queues.json" ]; then bad
+    elif jq -e 'type == "object"' "$STATE/queues.json" > /dev/null 2>&1; then cat "$STATE/queues.json"
+    else ok "$(cat "$STATE/queues.json")"; fi
+    exit 0 ;;
   queues)
-    jq -c --argjson b "$body" '. + [{queue_name: $b.queue_name}]' "$STATE/queues.json" 2>/dev/null > "$STATE/q.new" || jq -nc --argjson b "$body" '[{queue_name: $b.queue_name}]' > "$STATE/q.new"
+    jq -c --argjson b "$body" 'if type == "object" then .result += [{queue_name: $b.queue_name}] else . + [{queue_name: $b.queue_name}] end' "$STATE/queues.json" 2>/dev/null > "$STATE/q.new" || jq -nc --argjson b "$body" '[{queue_name: $b.queue_name}]' > "$STATE/q.new"
     mv "$STATE/q.new" "$STATE/queues.json"; ok '{}'; exit 0 ;;
   r2/buckets/*) n="\${path#r2/buckets/}"
     if [ -f "$STATE/fail-r2" ]; then bad; elif [ -f "$STATE/r2-$n" ]; then ok '{}'; else echo '{"success":false,"errors":[{"code":10006}]}'; fi; exit 0 ;;
@@ -127,6 +133,48 @@ const settings = (bindings: Record<string, unknown>[], obs = false) =>
     success: true,
     result: { bindings, observability: { enabled: obs } },
   });
+// The scheduler's bindings as Cloudflare reads them back (apps/scheduler
+// wrangler.jsonc, per env).
+function schedulerBindings(p: "s" | "p"): Record<string, unknown>[] {
+  return [
+    { type: "d1", name: "PLATFORM_DB", id: DB },
+    {
+      type: "dispatch_namespace",
+      name: "DISPATCHER",
+      namespace: p === "s" ? "oa-staging" : "oa-prod",
+    },
+    {
+      type: "plain_text",
+      name: "OA_ENV",
+      text: p === "s" ? "staging" : "prod",
+    },
+    { type: "plain_text", name: "EMAIL_QUOTA_ZONES", text: ZONE },
+    { type: "plain_text", name: "EMAIL_DAILY_LIMIT", text: "1000" },
+    {
+      type: "service",
+      name: "PROVISIONER",
+      service: `oa-${p}-provisioner`,
+      entrypoint: "ProvisionerRpc",
+    },
+    { type: "queue", name: "SIGNUPS", queue_name: `oa-${p}-signups` },
+    { type: "workflow", name: "PROVISION_INSTALL" },
+    { type: "workflow", name: "MANAGE_INSTALL" },
+    { type: "send_email", name: "ALERT_EMAIL" },
+  ];
+}
+// A queue listing (GET /accounts/{id}/queues) of these names.
+const queueList = (names: string[], total = names.length, pages = 1) =>
+  JSON.stringify({
+    success: true,
+    result: names.map((queue_name) => ({ queue_name })),
+    result_info: {
+      page: 1,
+      per_page: 100,
+      count: names.length,
+      total_count: total,
+      total_pages: pages,
+    },
+  });
 const NEXT: Record<string, string> = {
   "oa-p-auth-broker": settings([
     { type: "kv_namespace", name: "BROKER_REGISTRY", namespace_id: REG },
@@ -161,50 +209,8 @@ const NEXT: Record<string, string> = {
     { type: "d1", name: "PLATFORM_DB", id: DB },
     { type: "kv_namespace", name: "HOSTS", namespace_id: HOSTS },
   ]),
-  "oa-p-scheduler": settings(
-    [
-      { type: "d1", name: "PLATFORM_DB", id: DB },
-      { type: "dispatch_namespace", name: "DISPATCHER", namespace: "oa-prod" },
-      { type: "plain_text", name: "OA_ENV", text: "prod" },
-      { type: "plain_text", name: "EMAIL_QUOTA_ZONES", text: ZONE },
-      { type: "plain_text", name: "EMAIL_DAILY_LIMIT", text: "1000" },
-      { type: "plain_text", name: "ALERT_TO", text: "ops@example.com" },
-      {
-        type: "plain_text",
-        name: "ALERT_FROM",
-        text: "alerts@open-artifacts.app",
-      },
-      { type: "plain_text", name: "SIGNUP_DAILY_CAP", text: "20" },
-      { type: "plain_text", name: "SIGNUPS_ENABLED", text: "false" },
-      {
-        type: "send_email",
-        name: "ALERT_EMAIL",
-        destination_address: "ops@example.com",
-      },
-      {
-        type: "service",
-        name: "PROVISIONER",
-        service: "oa-p-provisioner",
-        entrypoint: "ProvisionerRpc",
-      },
-      { type: "queue", name: "SIGNUPS", queue_name: "oa-p-signups" },
-      {
-        type: "workflow",
-        name: "PROVISION_INSTALL",
-        workflow_name: "oa-p-provision-install",
-        class_name: "ProvisionInstall",
-        script_name: "oa-p-provisioner",
-      },
-      {
-        type: "workflow",
-        name: "MANAGE_INSTALL",
-        workflow_name: "oa-p-manage-install",
-        class_name: "ManageInstall",
-        script_name: "oa-p-provisioner",
-      },
-    ],
-    true,
-  ),
+  "oa-p-scheduler": settings(schedulerBindings("p"), true),
+  "oa-s-scheduler": settings(schedulerBindings("s"), true),
 };
 
 // The Provisioning API Workers (design v7 10.2): vars and rate limits as the
@@ -329,6 +335,13 @@ const ENV = {
   NEW_KV: OAUTH,
 };
 
+// What the scheduler needs deployed first.
+const SCHED_DEPS = (p: "s" | "p") => [
+  `oa-${p}-auth-broker`,
+  `oa-${p}-directory-broker`,
+  `oa-${p}-provisioner`,
+];
+
 const setup = (
   opts: {
     exists?: string[];
@@ -340,6 +353,8 @@ const setup = (
     files?: Record<string, string>;
     /** Stub node (logs its argv, exits $NODE_EXIT). */
     node?: boolean;
+    // The account's queue listing; null: the listing fails.
+    queues?: string | null;
   } = {},
 ) => {
   const sb = sandbox({
@@ -352,13 +367,21 @@ const setup = (
   mkdirSync(state);
   for (const [w, s] of Object.entries({ ...NEXT, ...opts.next }))
     writeFileSync(join(state, `${w}.next.json`), s);
-  writeFileSync(
-    join(state, "oa-p-scheduler.schedules.json"),
-    JSON.stringify({
-      success: true,
-      result: { schedules: [{ cron: "17 3 * * *" }, { cron: "*/2 * * * *" }] },
-    }),
-  );
+  for (const p of ["s", "p"])
+    writeFileSync(
+      join(state, `oa-${p}-scheduler.schedules.json`),
+      JSON.stringify({
+        success: true,
+        result: {
+          schedules: [{ cron: "17 3 * * *" }, { cron: "*/2 * * * *" }],
+        },
+      }),
+    );
+  const queues =
+    opts.queues === undefined
+      ? queueList(["oa-p-signups", "oa-s-signups", "other"])
+      : opts.queues;
+  if (queues !== null) writeFileSync(join(state, "queues.json"), queues);
   for (const w of opts.exists ?? []) {
     writeFileSync(join(state, `${w}.exists`), "");
     if (NEXT[w])
@@ -401,6 +424,9 @@ const clean = (r: { out: string; err: string; log: string[] }) => {
   for (const s of [TOKEN, SECRET, DSECRET, "k".repeat(64), "c3RhdGVrZXlz"])
     expect(all).not.toContain(s);
 };
+// Nothing deployed or set: no wrapper, pnpm or wrangler call.
+const noDeploy = (log: string[]) =>
+  log.filter((l) => /^(pnpm|wrapper|wrangler) /.test(l));
 const puts = (log: string[]) =>
   log.filter((l) => l.startsWith("stdin-len")).map((l) => l.split(" ")[1]);
 
@@ -495,11 +521,10 @@ describe("deploy-hosted-platform.sh", () => {
       expect(none.code, t).toBe(1);
       expect(none.err).toContain("oa-p-auth-broker does not exist");
       expect(none.log.some((l) => l.startsWith("wrapper"))).toBe(false);
-      const ok = setup({
-        exists: [...brokers, "oa-p-provisioner"],
-      }).run(t);
+      const ok = setup({ exists: SCHED_DEPS("p") }).run(t);
       expect(ok.err, t).toBe("");
       expect(ok.code, t).toBe(0);
+      expect(ok.out).toContain(`prod ${t}: deployed and verified`);
       clean(ok);
     }
     const noProv = setup({ exists: brokers }).run("scheduler");
@@ -507,79 +532,355 @@ describe("deploy-hosted-platform.sh", () => {
     expect(noProv.err).toContain("oa-p-provisioner does not exist");
     expect(noProv.log.some((l) => l.startsWith("wrapper"))).toBe(false);
   });
-  it("the scheduler reads back its alert vars, the pinned ALERT_EMAIL destination and the provisioner's bindings", () => {
-    const exists = [
-      "oa-p-auth-broker",
-      "oa-p-directory-broker",
-      "oa-p-provisioner",
-    ];
-    const base = NEXT["oa-p-scheduler"] as string;
-    const swap = (from: string, to: string) => base.replace(from, to);
-    for (const [label, next, msg] of [
-      [
-        "destination",
-        swap(
-          '"destination_address":"ops@example.com"',
-          '"destination_address":"x@example.com"',
-        ),
-        "ALERT_EMAIL",
-      ],
-      [
-        "unpinned",
-        swap(',"destination_address":"ops@example.com"', ""),
-        "ALERT_EMAIL",
-      ],
-      ["alert to", swap('"text":"ops@example.com"', '"text":""'), "ALERT_TO"],
-      [
-        "alert from",
-        swap('"alerts@open-artifacts.app"', '"x@open-artifacts.app"'),
-        "ALERT_FROM",
-      ],
-      [
-        "cap",
-        swap(
-          '"name":"SIGNUP_DAILY_CAP","text":"20"',
-          '"name":"SIGNUP_DAILY_CAP","text":"21"',
-        ),
-        "SIGNUP_DAILY_CAP",
-      ],
-      [
-        "workflow",
-        swap(
-          '"script_name":"oa-p-provisioner"',
-          '"script_name":"oa-s-provisioner"',
-        ),
-        "PROVISION_INSTALL",
-      ],
-      [
-        "rpc",
-        swap('"entrypoint":"ProvisionerRpc"', '"entrypoint":"Other"'),
-        "PROVISIONER",
-      ],
-    ] as const) {
-      const r = setup({ exists, next: { "oa-p-scheduler": next } }).run(
-        "scheduler",
+  describe("the scheduler's alert wiring (#915's placeholders, or none before it)", () => {
+    type Env = "staging" | "prod";
+    const F915 = readFileSync(
+      join(root, "scripts/ops/testdata/scheduler-915.wrangler.jsonc"),
+      "utf8",
+    );
+    const REAL = readFileSync(
+      join(root, "apps/scheduler/wrangler.jsonc"),
+      "utf8",
+    );
+    const pinned = (src: string) => src.includes("{{ALERT_TO_PROD}}");
+    // #915's config, and the repo's own once it carries the placeholders.
+    const PINNED = [
+      ["#915's config", F915],
+      ...(pinned(REAL) ? [["apps/scheduler", REAL] as const] : []),
+    ] as const;
+    /** The repo's deploy script and wrangler-env.ts beside this scheduler config. */
+    const tree = (config: string) => {
+      const t = mkdtempSync(join(tmpdir(), "oa-hosted-tree-"));
+      for (const f of ["deploy-hosted-platform.sh", "wrangler-env.ts"])
+        write(
+          join(t, "scripts/ops", f),
+          readFileSync(join(root, "scripts/ops", f), "utf8"),
+        );
+      write(join(t, "apps/scheduler/wrangler.jsonc"), config);
+      return join(t, "scripts/ops/deploy-hosted-platform.sh");
+    };
+    const ALERTS = {
+      ALERT_TO: "me@leourbina.com",
+      ALERT_FROM: "alerts@open-artifacts.app",
+      SIGNUP_DAILY_CAP: "50",
+      SIGNUPS_ENABLED: "false",
+    };
+    // The deployed scheduler with its alert wiring filled.
+    const wired = (
+      p: "s" | "p",
+      over: Record<string, string | null> = {},
+      dest: string | null = ALERTS.ALERT_TO,
+    ) =>
+      settings(
+        [
+          ...schedulerBindings(p).map((b) =>
+            b.name === "ALERT_EMAIL" && dest !== null
+              ? { ...b, destination_address: dest }
+              : b,
+          ),
+          ...Object.entries({ ...ALERTS, ...over }).flatMap(([name, text]) =>
+            text === null ? [] : [{ type: "plain_text", name, text }],
+          ),
+        ],
+        true,
       );
-      expect(r.code, label).toBe(1);
-      expect(r.err, label).toContain(`${msg}: got`);
+    const go = (
+      config: string,
+      env: Env,
+      next: string,
+      vars: Record<string, string> = {},
+    ) => {
+      const p = env[0] as "s" | "p";
+      const s = setup({
+        exists: SCHED_DEPS(p),
+        next: { [`oa-${p}-scheduler`]: next },
+      });
+      const r = s.sb.run(["bash", tree(config), env, "scheduler"], {
+        env: {
+          ...ENV,
+          ...ALERTS,
+          STATE: s.state,
+          DEPLOY_WRAPPER: wrapperStub(s.sb.dir),
+          BROKER_PIN_FILE: "/dev/null",
+          ...vars,
+        },
+      });
+      const log = s.sb.log();
+      return { ...r, log };
+    };
+    it("before #915 (no placeholders): deploys, and refuses any deployed alert var or ALERT_EMAIL destination", () => {
+      // #915's config with its alert lines cut, and the repo's own until #915.
+      const strip = (c: string) =>
+        c
+          .replace(
+            /\n\s*"(ALERT_TO|ALERT_FROM|SIGNUP_DAILY_CAP|SIGNUPS_ENABLED)": "\{\{[A-Z_]+\}\}",/g,
+            "",
+          )
+          .replace(
+            /\{ "name": "ALERT_EMAIL", "destination_address": "\{\{ALERT_TO_[A-Z]+\}\}" \}/g,
+            '{ "name": "ALERT_EMAIL" }',
+          );
+      for (const BARE of [strip(F915), ...(pinned(REAL) ? [] : [REAL])]) {
+        expect(BARE).not.toContain("{{ALERT_");
+        for (const env of ["prod", "staging"] as const) {
+          const p = env[0] as "s" | "p";
+          const ok = go(BARE, env, settings(schedulerBindings(p), true));
+          expect(ok.err, env).toBe("");
+          expect(ok.code, env).toBe(0);
+          expect(ok.out).toContain(`${env} scheduler: deployed and verified`);
+          for (const [label, next, msg] of [
+            [
+              "a var",
+              wired(
+                p,
+                {
+                  ALERT_FROM: null,
+                  SIGNUP_DAILY_CAP: null,
+                  SIGNUPS_ENABLED: null,
+                },
+                null,
+              ),
+              "alert vars (the tag commits none)",
+            ],
+            [
+              "a destination",
+              settings(
+                schedulerBindings(p).map((b) =>
+                  b.name === "ALERT_EMAIL"
+                    ? { ...b, destination_address: "x@example.com" }
+                    : b,
+                ),
+                true,
+              ),
+              "ALERT_EMAIL destination (the tag commits none)",
+            ],
+          ] as const) {
+            const r = go(BARE, env, next);
+            expect(r.code, `${env} ${label}`).toBe(1);
+            expect(r.err).toContain(`${msg}: got`);
+          }
+        }
+      }
+    });
+    for (const [label, config] of PINNED) {
+      for (const env of ["prod", "staging"] as const)
+        it(`${label}, ${env}: reads back every alert var and ALERT_EMAIL's destination`, () => {
+          {
+            const p = env[0] as "s" | "p";
+            const ok = go(config, env, wired(p));
+            expect(ok.err, env).toBe("");
+            expect(ok.code, env).toBe(0);
+            expect(ok.out).toContain(`${env} scheduler: deployed and verified`);
+            for (const [what, next, msg] of [
+              [
+                "destination",
+                wired(p, {}, "x@example.com"),
+                "ALERT_EMAIL destination",
+              ],
+              ["unpinned", wired(p, {}, null), "ALERT_EMAIL destination"],
+              ["alert to", wired(p, { ALERT_TO: "x@example.com" }), "ALERT_TO"],
+              ["no alert to", wired(p, { ALERT_TO: null }), "ALERT_TO"],
+              [
+                "alert from",
+                wired(p, { ALERT_FROM: "x@open-artifacts.app" }),
+                "ALERT_FROM",
+              ],
+              ["cap", wired(p, { SIGNUP_DAILY_CAP: "51" }), "SIGNUP_DAILY_CAP"],
+              [
+                "gate",
+                wired(p, { SIGNUPS_ENABLED: "true" }),
+                "SIGNUPS_ENABLED",
+              ],
+            ] as const) {
+              const r = go(config, env, next);
+              expect(r.code, `${env} ${what}`).toBe(1);
+              expect(r.err, `${env} ${what}`).toContain(`${msg}: got`);
+            }
+            for (const k of Object.keys(ALERTS)) {
+              const r = go(config, env, wired(p), { [k]: "" });
+              expect(r.code, `${env} ${k}`).toBe(2);
+              expect(r.err).toContain(`${k} is required for scheduler`);
+              expect(
+                r.log.some((l) => l.startsWith("wrapper")),
+                k,
+              ).toBe(false);
+            }
+          }
+        });
+      it(`${label}: a half-pinned config refuses before any deploy`, () => {
+        for (const cut of [
+          (c: string) => c.replace('"ALERT_FROM": "{{ALERT_FROM_PROD}}",', ""),
+          (c: string) =>
+            c.replace(
+              '"destination_address": "{{ALERT_TO_PROD}}"',
+              '"destination_address": "ops@example.com"',
+            ),
+          (c: string) =>
+            c.replace(
+              '"SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}"',
+              '"SIGNUPS_ENABLED": "false"',
+            ),
+        ]) {
+          const half = cut(config);
+          expect(half).not.toBe(config);
+          const r = go(half, "prod", wired("p"));
+          expect(r.code).toBe(1);
+          expect(r.err).toContain("half pins the prod alerts; refusing");
+          expect(r.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+        }
+      });
     }
-    for (const k of ["ALERT_TO", "ALERT_FROM", "SIGNUP_DAILY_CAP"]) {
-      const r = setup({ exists }).run("scheduler", { [k]: "" });
-      expect(r.code, k).toBe(2);
-      expect(
-        r.log.some((l) => l.startsWith("wrapper")),
-        k,
-      ).toBe(false);
+  });
+  it("the scheduler refuses before any deploy until the provisioner exists", () => {
+    for (const verify of ["", "1"]) {
+      const r = setup({
+        exists: ["oa-p-auth-broker", "oa-p-directory-broker"],
+      }).run("scheduler", { VERIFY_ONLY: verify });
+      expect(r.code, verify).toBe(1);
+      expect(r.err).toContain(
+        "oa-p-provisioner does not exist: deploy it first",
+      );
+      expect(noDeploy(r.log)).toEqual([]);
     }
-    const ok = setup({ exists }).run("scheduler");
-    const w = ok.log.find((l) => l.startsWith("wrapper scheduler prod "));
-    expect(w).toBeDefined();
+  });
+  it("the scheduler refuses before any deploy unless exactly one oa-<p>-signups queue is listed, on one page", () => {
+    const missing = "oa-p-signups queue does not exist: create it first";
+    const paged = "more than one page of queues; refusing";
+    for (const [queues, msg] of [
+      [queueList(["other"]), missing],
+      [queueList([]), missing],
+      // Staging's queue is not prod's.
+      [queueList(["oa-s-signups"]), missing],
+      [queueList(["oa-p-signups", "oa-p-signups"]), missing],
+      [queueList(["oa-p-signups"], 101), paged],
+      [queueList(["oa-p-signups"], 1, 2), paged],
+      // No result_info: can't tell the listing is whole.
+      [
+        JSON.stringify({
+          success: true,
+          result: [{ queue_name: "oa-p-signups" }],
+        }),
+        paged,
+      ],
+      [null, "list queues failed"],
+    ] as const) {
+      for (const verify of ["", "1"]) {
+        const r = setup({ exists: SCHED_DEPS("p"), queues }).run("scheduler", {
+          VERIFY_ONLY: verify,
+        });
+        expect(r.code, `${msg} ${verify}`).toBe(1);
+        expect(r.err).toContain(msg);
+        expect(noDeploy(r.log)).toEqual([]);
+        clean(r);
+      }
+    }
+    const ok = setup({ exists: SCHED_DEPS("p") }).run("scheduler");
     expect(ok.code, ok.err).toBe(0);
+    expect(ok.log).toContain(
+      `curl -sS -K - https://api.cloudflare.com/client/v4/accounts/${ACCT}/queues?per_page=100`,
+    );
+  });
+  describe("the scheduler fails on a readback mismatch in each provisioning binding, deployed or verify only", () => {
+    // The scheduler's bindings with one changed (null: removed).
+    const with_ = (name: string, v: Record<string, unknown> | null) =>
+      settings(
+        schedulerBindings("p").flatMap((b) =>
+          b.name !== name ? [b] : v === null ? [] : [{ ...b, ...v }],
+        ),
+        true,
+      );
+    for (const [name, v, msg] of [
+      ["PROVISIONER", { service: "oa-s-provisioner" }, "PROVISIONER: got"],
+      ["PROVISIONER", { entrypoint: "default" }, "PROVISIONER entrypoint: got"],
+      ["PROVISIONER", { type: "plain_text" }, "PROVISIONER type: got"],
+      ["PROVISIONER", null, "PROVISIONER type: got ''"],
+      ["SIGNUPS", { queue_name: "oa-s-signups" }, "SIGNUPS: got"],
+      ["SIGNUPS", { type: "service" }, "SIGNUPS type: got"],
+      ["SIGNUPS", null, "SIGNUPS type: got ''"],
+      ["PROVISION_INSTALL", { type: "service" }, "PROVISION_INSTALL: got"],
+      ["PROVISION_INSTALL", null, "PROVISION_INSTALL: got ''"],
+      ["MANAGE_INSTALL", { type: "queue" }, "MANAGE_INSTALL: got"],
+      ["MANAGE_INSTALL", null, "MANAGE_INSTALL: got ''"],
+      ["ALERT_EMAIL", { type: "plain_text" }, "ALERT_EMAIL: got"],
+      ["ALERT_EMAIL", null, "ALERT_EMAIL: got ''"],
+    ] as const)
+      it(`${msg}${v === null ? " (removed)" : ` (${JSON.stringify(v)})`}`, () => {
+        const bad = with_(name, v);
+        const r = setup({
+          exists: SCHED_DEPS("p"),
+          next: { "oa-p-scheduler": bad },
+        }).run("scheduler");
+        expect(r.code, msg).toBe(1);
+        expect(r.err).toContain(msg);
+        // Verify only runs the same check against the live Worker.
+        const live = setup({ exists: SCHED_DEPS("p") });
+        writeFileSync(join(live.state, "oa-p-scheduler.exists"), "");
+        writeFileSync(join(live.state, "oa-p-scheduler.settings.json"), bad);
+        const vr = live.run("scheduler", { VERIFY_ONLY: "1" });
+        expect(vr.code, `verify ${msg}`).toBe(1);
+        expect(vr.err).toContain(msg);
+        expect(noDeploy(vr.log)).toEqual([]);
+      });
+  });
+  it("the scheduler, verify only: no deploy, every check passes on a matching live Worker", () => {
+    const s = setup({ exists: SCHED_DEPS("p") });
+    writeFileSync(join(s.state, "oa-p-scheduler.exists"), "");
+    writeFileSync(
+      join(s.state, "oa-p-scheduler.settings.json"),
+      NEXT["oa-p-scheduler"] as string,
+    );
+    const r = s.run("scheduler", { VERIFY_ONLY: "1" });
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(noDeploy(r.log)).toEqual([]);
+    expect(r.out).toContain("prod scheduler: verified (verify only)");
+  });
+  it("the scheduler, staging: the oa-s provisioner, queue and bindings", () => {
+    const r = setup({ exists: SCHED_DEPS("s") }).run(
+      "scheduler",
+      {},
+      "staging",
+    );
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.log.some((l) => l.startsWith("wrapper scheduler staging "))).toBe(
+      true,
+    );
+    expect(r.out).toContain("staging scheduler: deployed and verified");
+    clean(r);
+    // Prod's provisioner or queue don't stand in for staging's.
+    const noProv = setup({
+      exists: [...SCHED_DEPS("p"), "oa-s-auth-broker", "oa-s-directory-broker"],
+    }).run("scheduler", {}, "staging");
+    expect(noProv.code).toBe(1);
+    expect(noProv.err).toContain("oa-s-provisioner does not exist");
+    expect(noDeploy(noProv.log)).toEqual([]);
+    const noQueue = setup({
+      exists: SCHED_DEPS("s"),
+      queues: queueList(["oa-p-signups"]),
+    }).run("scheduler", {}, "staging");
+    expect(noQueue.code).toBe(1);
+    expect(noQueue.err).toContain(
+      "oa-s-signups queue does not exist: create it first",
+    );
+    expect(noDeploy(noQueue.log)).toEqual([]);
+    // A staging Worker bound to prod's provisioner fails the readback.
+    const cross = setup({
+      exists: SCHED_DEPS("s"),
+      next: {
+        "oa-s-scheduler": (NEXT["oa-s-scheduler"] as string).replace(
+          '"service":"oa-s-provisioner"',
+          '"service":"oa-p-provisioner"',
+        ),
+      },
+    }).run("scheduler", {}, "staging");
+    expect(cross.code).toBe(1);
+    expect(cross.err).toContain(
+      "PROVISIONER: got 'oa-p-provisioner', want 'oa-s-provisioner'",
+    );
   });
   it("the scheduler checks its two schedules exactly", () => {
-    const s = setup({
-      exists: ["oa-p-auth-broker", "oa-p-directory-broker", "oa-p-provisioner"],
-    });
+    const s = setup({ exists: SCHED_DEPS("p") });
     writeFileSync(
       join(s.state, "oa-p-scheduler.schedules.json"),
       JSON.stringify({
@@ -603,7 +904,6 @@ describe("deploy-hosted-platform.sh", () => {
       ["inventory", { GITHUB_REPOSITORY: "" }],
       ["inventory", { GITHUB_REPOSITORY: "o/r/x" }],
       ["inventory", { GITHUB_REPOSITORY_ID: "01" }],
-      ["inventory-key", {}],
       ["scheduler", { ALERT_TO: "" }],
       ["dispatch", { HOSTS_KV_ID: "" }],
       ["bogus", {}],
@@ -810,7 +1110,7 @@ describe("deploy-hosted-platform.sh", () => {
       "r2-oa-p-releases": "",
     };
     it("first run: creates the queues and the releases bucket, deploys, reads every binding back", () => {
-      const r = setup().run("provisioner");
+      const r = setup({ queues: queueList([]) }).run("provisioner");
       expect(r.err).toBe("");
       expect(r.code).toBe(0);
       expect(r.writes).toEqual([
@@ -827,7 +1127,10 @@ describe("deploy-hosted-platform.sh", () => {
       const again = setup({ files: ready }).run("provisioner");
       expect(again.code, again.err).toBe(0);
       expect(again.writes).toEqual([]);
-      const v = setup({ exists: ["oa-p-provisioner"] }).run("provisioner", {
+      const v = setup({
+        exists: ["oa-p-provisioner"],
+        queues: queueList([]),
+      }).run("provisioner", {
         VERIFY_ONLY: "1",
       });
       expect(v.code).toBe(1);
@@ -910,9 +1213,23 @@ describe("deploy-hosted-platform.sh", () => {
       const r = setup({ exists: brokers }).run("provisioning");
       expect(r.err).toBe("");
       expect(r.code).toBe(0);
-      const build = r.log.indexOf(
-        "pnpm --filter @oa/admin... --filter @oa/provisioning... build",
-      );
+      // One build, by the Worker's dependency closure: @oa/admin is its
+      // devDependency, so it builds too, straight into dist-assets (no copy).
+      const build = r.log.indexOf("pnpm --filter @oa/provisioning... build");
+      expect(r.log.filter((l) => l.startsWith("pnpm --filter"))).toEqual([
+        "pnpm --filter @oa/provisioning... build",
+      ]);
+      expect(
+        JSON.parse(
+          readFileSync(join(root, "apps/provisioning/package.json"), "utf8"),
+        ).devDependencies["@oa/admin"],
+      ).toBe("workspace:*");
+      expect(
+        readFileSync(
+          join(root, "scripts/ops/deploy-hosted-platform.sh"),
+          "utf8",
+        ),
+      ).not.toMatch(/\bcp\b[^\n]*dist-assets/);
       const wrap = r.log.findIndex((l) =>
         l.startsWith("wrapper provisioning prod "),
       );
@@ -1345,7 +1662,15 @@ describe("deploy-hosted-platform.sh", () => {
           const ok = go(config, env, deployed(VARS));
           expect(ok.err).toBe("");
           expect(ok.code).toBe(0);
-          // The string the tag commits, exactly (vars_are), even reordered.
+          // W8's refs as the Manager approved them (6.3 amended).
+          const base = "open-artifacts-ai/open-artifacts/.github/workflows";
+          expect(VARS.OIDC_JOB_WORKFLOW_REFS).toBe(
+            env === "prod"
+              ? `${base}/redline-staging.yml@refs/heads/main,${base}/prodclean-monitor.yml@refs/heads/main`
+              : `${base}/redline-staging.yml@refs/heads/main`,
+          );
+          expect(VARS.OIDC_AUDIENCE).toBe(`https://oa-${env[0]}-inventory`);
+          // The string the tag commits, exactly, even reordered.
           if (refs.length > 1) {
             const reordered = go(
               config,
@@ -1356,7 +1681,7 @@ describe("deploy-hosted-platform.sh", () => {
               }),
             );
             expect(reordered.code).toBe(1);
-            expect(reordered.err).toContain("inventory vars: got");
+            expect(reordered.err).toContain("OIDC_JOB_WORKFLOW_REFS: got");
           }
         });
 
@@ -1444,7 +1769,7 @@ describe("deploy-hosted-platform.sh", () => {
         });
       }
 
-    it("refuses before deploying a tag whose committed refs aren't 6.3's", () => {
+    it("refuses before deploying a tag whose committed refs aren't exactly W8's", () => {
       const prodRefs = varsFor(W8, "prod").OIDC_JOB_WORKFLOW_REFS as string;
       const stagingRefs = varsFor(W8, "staging")
         .OIDC_JOB_WORKFLOW_REFS as string;
@@ -1452,24 +1777,43 @@ describe("deploy-hosted-platform.sh", () => {
       const ref = (f: string) =>
         `${repo}/.github/workflows/${f}@refs/heads/main`;
       const swap = (from: string, to: string) => W8.replace(from, to);
+      const differs = "committed OIDC_JOB_WORKFLOW_REFS is";
       for (const [what, config, env, msg] of [
         [
           "prod without the monitor",
           swap(prodRefs, ref("redline-staging.yml")),
           "prod",
-          "lacks",
+          differs,
         ],
         [
-          "staging without red-line",
+          "prod without red-line",
+          swap(prodRefs, ref("prodclean-monitor.yml")),
+          "prod",
+          differs,
+        ],
+        [
+          "prod reordered",
+          swap(prodRefs, prodRefs.split(",").reverse().join(",")),
+          "prod",
+          differs,
+        ],
+        [
+          "staging with the monitor",
+          swap(stagingRefs, `${stagingRefs},${ref("prodclean-monitor.yml")}`),
+          "staging",
+          differs,
+        ],
+        [
+          "staging, the monitor instead",
           swap(stagingRefs, ref("prodclean-monitor.yml")),
           "staging",
-          "lacks",
+          differs,
         ],
         [
           "another workflow",
           swap(prodRefs, `${prodRefs},${ref("x.yml")}`),
           "prod",
-          "not a 6.3 workflow",
+          differs,
         ],
         [
           "a branch ref",
@@ -1478,7 +1822,7 @@ describe("deploy-hosted-platform.sh", () => {
             prodRefs.replaceAll("refs/heads/main", "refs/heads/dev"),
           ),
           "prod",
-          "not a 6.3 workflow",
+          differs,
         ],
         [
           "no refs",

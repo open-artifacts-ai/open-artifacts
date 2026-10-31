@@ -9,6 +9,11 @@ import { root, sandbox, script } from "./stubs.ts";
 const KEYS = [
   "account_id",
   "alert_from",
+  "alert_to",
+  "app_zone",
+  "content_zone",
+  "deploy_token_id",
+  "dispatch_namespace",
   "email_daily_limit",
   "email_zone",
   "google_client_id",
@@ -17,9 +22,14 @@ const KEYS = [
   "signups_enabled",
   "welcome_from",
 ];
-// The scheduler's alert destination: committed by a person (design v7 4.8);
-// until then the key is absent and the scheduler target refuses (ALERT_TO).
-const OPTIONAL = ["alert_to"];
+// Read by provapi-spikes.sh only; hosted-constants.sh does not load them.
+const SPIKE_KEYS = [
+  "app_zone",
+  "content_zone",
+  "deploy_token_id",
+  "dispatch_namespace",
+];
+const LOADED = KEYS.filter((k) => !SPIKE_KEYS.includes(k));
 const read = (env: string): Record<string, unknown> =>
   JSON.parse(readFileSync(join(root, `.github/hosted/${env}.json`), "utf8"));
 
@@ -45,15 +55,30 @@ const brokerPin = (env: string): string => {
 
 describe(".github/hosted/<env>.json", () => {
   it("prod and staging hold exactly the same keys", () => {
-    const req = (env: string) =>
-      Object.keys(read(env))
-        .filter((k) => !OPTIONAL.includes(k))
-        .sort();
-    expect(req("prod")).toEqual(KEYS);
-    expect(req("staging")).toEqual(KEYS);
-    expect(Object.keys(read("prod")).sort()).toEqual(
-      Object.keys(read("staging")).sort(),
+    expect(Object.keys(read("prod")).sort()).toEqual(KEYS);
+    expect(Object.keys(read("staging")).sort()).toEqual(KEYS);
+  });
+
+  // Read by provapi-spikes.sh (the staging spikes); pinned to provision's
+  // HOSTED_DOMAINS and NAMESPACES so the two never drift.
+  it("app_zone, content_zone and dispatch_namespace are provision's, per env", () => {
+    const wfp = readFileSync(
+      join(root, "packages/provision/src/wfp.ts"),
+      "utf8",
     );
+    for (const env of ["prod", "staging"]) {
+      const d = new RegExp(
+        `${env}: Object\\.freeze\\(\\{\\s*app: "([^"]+)",\\s*content: "([^"]+)"`,
+      ).exec(wfp);
+      expect(d, env).not.toBeNull();
+      expect(read(env).app_zone, env).toBe(d?.[1]);
+      expect(read(env).content_zone, env).toBe(d?.[2]);
+      const ns = new RegExp(
+        `NAMESPACES[^=]*= Object\\.freeze\\(\\{[^}]*${env}: "([^"]+)"`,
+      ).exec(wfp);
+      expect(read(env).dispatch_namespace, env).toBe(ns?.[1]);
+    }
+    expect(read("staging").dispatch_namespace).toBe("oa-staging");
   });
 
   it("google_client_id is provision's broker pin, per env", () => {
@@ -112,12 +137,19 @@ describe(".github/hosted/<env>.json", () => {
     expect(read("prod").email_daily_limit).toBe(5000);
     expect(read("staging").email_daily_limit).toBe(500);
   });
-  it("the provisioner's signups stay closed (staging: test users only, P29), and its sender is on the env's sending zone", () => {
+  // The Manager's values (2026-10-31), filled into the provisioner's and the
+  // scheduler's placeholders.
+  it("signups stay closed, the caps and alert addresses are the Manager's, and each sender is on the env's sending zone", () => {
+    expect(read("prod").signup_daily_cap).toBe(50);
+    expect(read("staging").signup_daily_cap).toBe(20);
+    expect(read("prod").alert_from).toBe("alerts@open-artifacts.app");
+    expect(read("staging").alert_from).toBe(
+      "alerts@open-artifacts-staging.app",
+    );
     for (const env of ["prod", "staging"]) {
       const c = read(env);
-      expect(c.signups_enabled, env).toBe(
-        env === "staging" ? "test-users" : "false",
-      );
+      expect(c.signups_enabled, env).toBe("false");
+      expect(c.alert_to, env).toBe("me@leourbina.com");
       expect(String(c.welcome_from).split("@")[1], env).toBe(c.email_zone);
       expect(String(c.alert_from).split("@")[1], env).toBe(c.email_zone);
     }
@@ -152,11 +184,12 @@ describe("hosted-constants.sh", () => {
       [
         "CLOUDFLARE_ACCOUNT_ID=26ac346086d4405f7a976d48747a2a75",
         "ALERT_FROM=alerts@open-artifacts.app",
+        "ALERT_TO=me@leourbina.com",
         "EMAIL_ZONE=open-artifacts.app",
         "EMAIL_DAILY_LIMIT=5000",
         "GOOGLE_CLIENT_ID=206295999771-ntbp6nlf5ospa45ovc73aur4f05fpp5s.apps.googleusercontent.com",
         "GOOGLE_DIRECTORY_CLIENT_ID=206295999771-6cr3mbfc7g2ejnvdoqhlf2v8v6sdm023.apps.googleusercontent.com",
-        "SIGNUP_DAILY_CAP=20",
+        "SIGNUP_DAILY_CAP=50",
         "SIGNUPS_ENABLED=false",
         "WELCOME_FROM=welcome@open-artifacts.app",
         "",
@@ -180,14 +213,12 @@ describe("hosted-constants.sh", () => {
       );
       expect(r.code, r.err).toBe(0);
       const lines = readFileSync(ghEnv, "utf8").split("\n");
-      expect(lines).toHaveLength(
-        10 + OPTIONAL.filter((k) => k in read(env)).length,
-      );
+      expect(lines).toHaveLength(LOADED.length + 1);
     }
   });
 
   it("a missing, null, empty or multi-line value fails and writes nothing", () => {
-    for (const k of KEYS) {
+    for (const k of LOADED) {
       const missing = PROD();
       delete missing[k];
       for (const files of [
@@ -225,6 +256,7 @@ describe("hosted-constants.sh", () => {
       ["signup_daily_cap", "20 "],
       ["signups_enabled", "test-users"],
       ["signups_enabled", "TRUE"],
+      ["signups_enabled", "true"],
       ["welcome_from", "welcome"],
       ["welcome_from", "W <a@b.com>"],
       ["welcome_from", "a@b.com/x"],
@@ -237,19 +269,11 @@ describe("hosted-constants.sh", () => {
     }
   });
 
-  it("alert_to loads when committed, is skipped when absent, and is checked like any other", () => {
-    const to = load({ ...PROD(), alert_to: "ops@example.com" });
-    expect(to.code, to.err).toBe(0);
-    expect(to.ghEnv).toContain("ALERT_TO=ops@example.com\n");
-    const none = PROD();
-    delete none.alert_to;
-    const r = load(none);
-    expect(r.code, r.err).toBe(0);
-    expect(r.ghEnv).not.toContain("ALERT_TO");
-    for (const v of [null, "", "ops", "A <a@b.com>", ["a@b.com"]]) {
+  it("alert_to is required and checked like any other address", () => {
+    for (const v of ["ops", "A <a@b.com>", "a@b.com,c@d.com", "a@b.com/x"]) {
       const bad = load({ ...PROD(), alert_to: v });
       expect(bad.code, JSON.stringify(v)).toBe(1);
-      expect(bad.err).toContain("alert_to");
+      expect(bad.err).toContain("alert_to is not a valid value");
       expect(bad.ghEnv).toBe("");
     }
   });
@@ -261,6 +285,9 @@ describe("hosted-constants.sh", () => {
     );
     expect(st.code, st.err).toBe(0);
     expect(st.ghEnv).toContain("SIGNUPS_ENABLED=test-users\n");
+    expect(
+      load({ ...read("staging"), signups_enabled: "true" }, "staging").code,
+    ).toBe(1);
     expect(
       load({ ...read("staging"), signups_enabled: "TEST-USERS" }, "staging")
         .code,

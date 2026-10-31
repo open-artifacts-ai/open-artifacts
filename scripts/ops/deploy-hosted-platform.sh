@@ -23,8 +23,8 @@
 #   provisioner      PLATFORM_DB_ID SECRETS_STORE_ID SIGNUP_DAILY_CAP SIGNUPS_ENABLED WELCOME_FROM
 #   dispatch         HOSTS_KV_ID (both brokers must exist)
 #   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT ALERT_TO ALERT_FROM
-#                    SIGNUP_DAILY_CAP SIGNUPS_ENABLED (both brokers and the
-#                    provisioner must exist)
+#                    SIGNUP_DAILY_CAP SIGNUPS_ENABLED (both brokers,
+#                    oa-<p>-provisioner and the oa-<p>-signups queue must exist)
 #   inventory        PLATFORM_DB_ID HOSTS_KV_ID GITHUB_REPOSITORY_ID GITHUB_REPOSITORY
 #                    (owner/repo: the OIDC principal, design v7 6.3)
 #   provisioning     PLATFORM_DB_ID BROKER_REGISTRY_ID DIRECTORY_REGISTRY_ID
@@ -81,6 +81,18 @@ must() {
 worker_exists() { [ "$(cf_get "/workers/scripts/$1/settings" | jq -r '.success' 2> /dev/null)" = true ]; }
 need_workers() {
   for w in "$@"; do worker_exists "$w" || { echo "$w does not exist: deploy it first" >&2; exit 1; }; done
+}
+# need_queue <name>: exactly one queue of that name in the account's listing,
+# read whole on one page (a listing that pages refuses rather than guess).
+need_queue() {
+  local body
+  body="$(cf_get "/queues?per_page=100" | must "list queues")"
+  jq -e '(.result_info.total_count | type) == "number" and .result_info.total_count <= 100
+    and (.result_info.total_pages // 1) <= 1 and .result_info.total_count == (.result | length)' \
+    <<< "$body" > /dev/null || { echo "more than one page of queues; refusing" >&2; exit 1; }
+  local n
+  n="$(jq --arg q "$1" '[.result[] | select(.queue_name == $q)] | length' <<< "$body")"
+  [ "$n" = 1 ] || { echo "$1 queue does not exist: create it first ($n listed)" >&2; exit 1; }
 }
 need() { # name: a required, non-empty env var
   [ -n "${!1:-}" ] || { echo "$1 is required for $target" >&2; exit 2; }
@@ -265,11 +277,11 @@ case "$target" in
       [ "$(jq -r '.SIGNUPS_ENABLED // ""' <<< "$pre")" != test-users ] ||
         { echo "prod provisioning commits SIGNUPS_ENABLED=test-users (staging only); refusing" >&2; exit 1; }
     fi
-    # The Worker and what it depends on, plus the admin SPA (named on its own:
-    # it is not a dependency of @oa/provisioning). Its vite build writes
-    # apps/provisioning/dist-assets (ASSETS) itself, nothing is copied, and the
-    # wrapper refuses a deploy without its index.html.
-    if [ -z "$VERIFY_ONLY" ]; then (cd "$root" && pnpm --filter "@oa/admin..." --filter "@oa/provisioning..." build); fi
+    # The Worker and what it depends on, the admin SPA among them (@oa/admin
+    # is a devDependency). Its vite build writes apps/provisioning/dist-assets
+    # (ASSETS) itself, nothing is copied, and the wrapper refuses a deploy
+    # without its index.html.
+    if [ -z "$VERIFY_ONLY" ]; then (cd "$root" && pnpm --filter "@oa/provisioning..." build); fi
     # The OAuth KV namespace: check first, create only when absent.
     ns="oa-$P-provisioning-oauth"
     kvs="$(list_all "/storage/kv/namespaces?" "list KV namespaces")"
@@ -361,8 +373,9 @@ case "$target" in
     # No secret given and none there (a new Worker has none): refuse before
     # deploying, so no broker runs without its client secret.
     if [ -z "${GOOGLE_CLIENT_SECRET:-}" ] && [ -z "$VERIFY_ONLY" ]; then
-      worker_exists oa-$P-auth-broker && grep -qx GOOGLE_CLIENT_SECRET <<< "$(secret_names oa-$P-auth-broker)" ||
-        { echo "oa-$P-auth-broker has no GOOGLE_CLIENT_SECRET: set it in the Environment and rerun" >&2; exit 1; }
+      if ! { worker_exists oa-$P-auth-broker && grep -qx GOOGLE_CLIENT_SECRET <<< "$(secret_names oa-$P-auth-broker)"; }; then
+        echo "oa-$P-auth-broker has no GOOGLE_CLIENT_SECRET: set it in the Environment and rerun" >&2; exit 1
+      fi
     fi
     BROKER_REGISTRY_ID="$BROKER_REGISTRY_ID" GOOGLE_CLIENT_ID_PROD="$GOOGLE_CLIENT_ID" \
       deploy auth-broker
@@ -422,30 +435,52 @@ case "$target" in
     need PLATFORM_DB_ID; need EMAIL_ZONE_TAGS; need EMAIL_DAILY_LIMIT
     # An empty ALERT_TO fails the run (4.8): no alert is ever "sent" nowhere.
     need ALERT_TO; need ALERT_FROM; need SIGNUP_DAILY_CAP; need SIGNUPS_ENABLED
-    # It binds the provisioner's RPC and Workflows (10.2's order).
+    # Its Workflows, RPC and producer bindings point at these: deploying first
+    # would ship a scheduler bound to nothing.
     need_workers oa-$P-auth-broker oa-$P-directory-broker oa-$P-provisioner
+    need_queue oa-$P-signups
+    # The tag's alert wiring (#915): "pinned" (every alert var and ALERT_EMAIL's
+    # destination is this env's placeholder) or "absent" (none of them, before
+    # #915); a half-pinned config refuses here.
+    alerts="$(committed scheduler alert-pins | jq -r .)" || alerts=""
+    case "$alerts" in
+      pinned | absent) ;;
+      *) echo "the tag's scheduler config half pins the $env alerts; refusing" >&2; exit 1 ;;
+    esac
     PLATFORM_DB_ID="$PLATFORM_DB_ID" EMAIL_ZONE_TAGS="$EMAIL_ZONE_TAGS" EMAIL_DAILY_LIMIT="$EMAIL_DAILY_LIMIT" \
       ALERT_TO="$ALERT_TO" ALERT_FROM="$ALERT_FROM" SIGNUP_DAILY_CAP="$SIGNUP_DAILY_CAP" SIGNUPS_ENABLED="$SIGNUPS_ENABLED" \
       deploy scheduler
     S="$(settings oa-$P-scheduler)"
+    expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | .type' service "PROVISIONER type"
+    expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | .service' oa-$P-provisioner "PROVISIONER"
+    expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | .entrypoint' ProvisionerRpc "PROVISIONER entrypoint"
+    expect "$S" '.result.bindings[] | select(.name == "SIGNUPS") | .type' queue "SIGNUPS type"
+    expect "$S" '.result.bindings[] | select(.name == "SIGNUPS") | .queue_name' oa-$P-signups "SIGNUPS"
+    # Workflow bindings: the read-back field names for the workflow's name and
+    # script are not documented, so only the type is checked.
+    expect "$S" '.result.bindings[] | select(.name == "PROVISION_INSTALL") | .type' workflow "PROVISION_INSTALL"
+    expect "$S" '.result.bindings[] | select(.name == "MANAGE_INSTALL") | .type' workflow "MANAGE_INSTALL"
+    expect "$S" '.result.bindings[] | select(.name == "ALERT_EMAIL") | .type' send_email "ALERT_EMAIL"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
     expect "$S" '.result.bindings[] | select(.name == "DISPATCHER") | .namespace' "$NS" "DISPATCHER"
     expect "$S" '.result.bindings[] | select(.name == "OA_ENV") | .text' "$env" "OA_ENV"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_QUOTA_ZONES") | .text' "$EMAIL_ZONE_TAGS" "EMAIL_QUOTA_ZONES"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_DAILY_LIMIT") | .text' "$EMAIL_DAILY_LIMIT" "EMAIL_DAILY_LIMIT"
-    expect "$S" '.result.bindings[] | select(.name == "ALERT_TO") | .text' "$ALERT_TO" "ALERT_TO"
-    expect "$S" '.result.bindings[] | select(.name == "ALERT_FROM") | .text' "$ALERT_FROM" "ALERT_FROM"
-    expect "$S" '.result.bindings[] | select(.name == "SIGNUP_DAILY_CAP") | .text' "$SIGNUP_DAILY_CAP" "SIGNUP_DAILY_CAP"
-    expect "$S" '.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text' "$SIGNUPS_ENABLED" "SIGNUPS_ENABLED"
-    # The alert mail goes to ALERT_TO and nowhere else.
-    expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | "\(.type) \(.destination_address)"] | join(",")' \
-      "send_email $ALERT_TO" "ALERT_EMAIL"
-    expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | "\(.service) \(.entrypoint)"' "oa-$P-provisioner ProvisionerRpc" "PROVISIONER"
-    expect "$S" '.result.bindings[] | select(.name == "SIGNUPS") | .queue_name' "oa-$P-signups" "SIGNUPS"
-    for wf in "PROVISION_INSTALL oa-$P-provision-install ProvisionInstall" "MANAGE_INSTALL oa-$P-manage-install ManageInstall"; do
-      read -r b n c <<< "$wf"
-      expect "$S" ".result.bindings[] | select(.name == \"$b\") | \"\\(.workflow_name) \\(.class_name) \\(.script_name)\"" "$n $c oa-$P-provisioner" "$b"
-    done
+    if [ "$alerts" = pinned ]; then
+      expect "$S" '[.result.bindings[] | select(.name == "ALERT_TO") | .text] | join(",")' "$ALERT_TO" "ALERT_TO"
+      expect "$S" '[.result.bindings[] | select(.name == "ALERT_FROM") | .text] | join(",")' "$ALERT_FROM" "ALERT_FROM"
+      expect "$S" '[.result.bindings[] | select(.name == "SIGNUP_DAILY_CAP") | .text] | join(",")' "$SIGNUP_DAILY_CAP" "SIGNUP_DAILY_CAP"
+      expect "$S" '[.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text] | join(",")' "$SIGNUPS_ENABLED" "SIGNUPS_ENABLED"
+      # The alert mail goes to ALERT_TO and nowhere else.
+      expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address // ""] | join(",")' \
+        "$ALERT_TO" "ALERT_EMAIL destination"
+    else
+      # Before #915: none of them is deployed (alerts log no_destination).
+      expect "$S" '[.result.bindings[] | select(.name == "ALERT_TO" or .name == "ALERT_FROM" or .name == "SIGNUP_DAILY_CAP" or .name == "SIGNUPS_ENABLED") | .name] | join(",")' \
+        "" "alert vars (the tag commits none)"
+      expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address // ""] | join(",")' \
+        "" "ALERT_EMAIL destination (the tag commits none)"
+    fi
     crons="$(cf_get /workers/scripts/oa-$P-scheduler/schedules | must "read oa-$P-scheduler schedules" | jq -r '[.result.schedules[].cron] | sort | join(",")')"
     [ "$crons" = "*/2 * * * *,17 3 * * *" ] || { echo "oa-$P-scheduler schedules are '$crons'" >&2; exit 1; }
     ;;
@@ -453,23 +488,16 @@ case "$target" in
     need PLATFORM_DB_ID; need HOSTS_KV_ID; need GITHUB_REPOSITORY_ID; need GITHUB_REPOSITORY
     [[ "$GITHUB_REPOSITORY_ID" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "GITHUB_REPOSITORY_ID must be digits" >&2; exit 2; }
     [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "GITHUB_REPOSITORY must be owner/repo" >&2; exit 2; }
-    # The refs are the tag's committed list (W8 owns it): each a full ref on
-    # main to one of 6.3's two workflows, prod's holding the monitor's
-    # (POST /prodclean) and staging's red-line's. Checked before deploying;
-    # the deployed list must equal it.
-    refs_want="$(ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" committed inventory vars | jq -r '.OIDC_JOB_WORKFLOW_REFS // empty')" || refs_want=""
-    [ -n "$refs_want" ] || { echo "the tag commits no OIDC_JOB_WORKFLOW_REFS for $env inventory" >&2; exit 1; }
-    base="$GITHUB_REPOSITORY/.github/workflows"
-    IFS=, read -ra refs <<< "$refs_want"
-    for ref in "${refs[@]}"; do
-      case "$ref" in
-        "$base/prodclean-monitor.yml@refs/heads/main" | "$base/redline-staging.yml@refs/heads/main") ;;
-        *) echo "committed OIDC_JOB_WORKFLOW_REFS has '$ref': not a 6.3 workflow's full ref on main" >&2; exit 1 ;;
-      esac
-    done
-    if [ "$env" = prod ]; then need_ref="$base/prodclean-monitor.yml@refs/heads/main"; else need_ref="$base/redline-staging.yml@refs/heads/main"; fi
-    printf '%s\n' "${refs[@]}" | grep -qxF "$need_ref" ||
-      { echo "committed OIDC_JOB_WORKFLOW_REFS lacks '$need_ref'" >&2; exit 1; }
+    # The refs (design v7 6.3, amended): full refs on main, exactly W8's
+    # committed list. Prod's adds the monitor's (POST /prodclean). The tag's
+    # committed list must equal it before deploying; the deployed one after.
+    base="open-artifacts-ai/open-artifacts/.github/workflows"
+    refs_want="$base/redline-staging.yml@refs/heads/main"
+    [ "$env" = staging ] || refs_want="$refs_want,$base/prodclean-monitor.yml@refs/heads/main"
+    refs_committed="$(ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" committed inventory vars | jq -r '.OIDC_JOB_WORKFLOW_REFS // empty')" || refs_committed=""
+    [ -n "$refs_committed" ] || { echo "the tag commits no OIDC_JOB_WORKFLOW_REFS for $env inventory" >&2; exit 1; }
+    [ "$refs_committed" = "$refs_want" ] ||
+      { echo "committed OIDC_JOB_WORKFLOW_REFS is '$refs_committed', want '$refs_want'" >&2; exit 1; }
     PLATFORM_DB_ID="$PLATFORM_DB_ID" HOSTS_KV_ID="$HOSTS_KV_ID" GITHUB_REPOSITORY_ID="$GITHUB_REPOSITORY_ID" deploy inventory
     S="$(settings oa-$P-inventory)"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
@@ -483,9 +511,8 @@ case "$target" in
     [ "$(oidc OIDC_REPOSITORY)" = "$GITHUB_REPOSITORY" ] || { echo "OIDC_REPOSITORY: got '$(oidc OIDC_REPOSITORY)', want '$GITHUB_REPOSITORY'" >&2; exit 1; }
     [ "$(oidc OIDC_REPOSITORY_ID)" = "$GITHUB_REPOSITORY_ID" ] || { echo "OIDC_REPOSITORY_ID: got '$(oidc OIDC_REPOSITORY_ID)', want '$GITHUB_REPOSITORY_ID'" >&2; exit 1; }
     [ "$(oidc OIDC_ENVIRONMENT)" = redline-staging ] || { echo "OIDC_ENVIRONMENT: got '$(oidc OIDC_ENVIRONMENT)', want 'redline-staging'" >&2; exit 1; }
-    want="$(tr , '\n' <<< "$refs_want" | sort | paste -sd , -)"
-    got="$(oidc OIDC_JOB_WORKFLOW_REFS | tr , '\n' | sort | paste -sd , -)"
-    [ "$got" = "$want" ] || { echo "OIDC_JOB_WORKFLOW_REFS: got '$got', want '$want'" >&2; exit 1; }
+    [ "$(oidc OIDC_JOB_WORKFLOW_REFS)" = "$refs_want" ] ||
+      { echo "OIDC_JOB_WORKFLOW_REFS: got '$(oidc OIDC_JOB_WORKFLOW_REFS)', want '$refs_want'" >&2; exit 1; }
     vars_are "$S" inventory
     no_secret_bindings "$S" oa-$P-inventory
     names="$(secret_names oa-$P-inventory | tr '\n' ' ')"

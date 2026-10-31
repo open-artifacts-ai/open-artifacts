@@ -1,16 +1,22 @@
 // @oa/shared/provisioning: the Provisioning API contract (design v7 section 3,
-// 4.2, 9A.5). Fakes and fixtures: @oa/shared/provisioning/fakes.
+// 4.2, 9A.5). Fakes and fixtures: @oa/shared/provisioning/fakes. Constants
+// with no zod (for the scheduler): ./provisioning/{alerts,enum-values,
+// constants,error-codes,state,system,workflow}.
 export * from "./alerts.js";
 export * from "./authz.js";
 export * from "./bodyhash.js";
+export * from "./constants.js";
 export * from "./enums.js";
 export * from "./errors.js";
 export * from "./ids.js";
 export * from "./inventory.js";
 export * from "./lifecycle-doc.js";
 export * from "./mcp-tools.js";
+export * from "./redline.js";
 export * from "./return.js";
 export * from "./routes.js";
 export * from "./rpc.js";
 export * from "./schemas.js";
 export * from "./slugs.js";
+export * from "./state.js";
+export * from "./system.js";

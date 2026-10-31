@@ -5,9 +5,10 @@
 // environment variable NAME (the value deploy-platform-worker.sh filled); an
 // unset or empty one exits 1, so a read-back never compares to a placeholder.
 // Usage: node scripts/ops/wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits|alert-pins
-// alert-pins (the scheduler, design v7 4.8): exit 1 unless the env block's
-// alert vars and ALERT_EMAIL's destination are this env's placeholders, so
-// deploy-platform-worker.sh's fills always land.
+// alert-pins (the scheduler, design v7 4.8): "pinned" when the env block's
+// alert vars and ALERT_EMAIL's destination are all this env's placeholders,
+// "absent" when it holds none of them (before #915), else exit 1, so
+// deploy-platform-worker.sh's fills land on all of them or none.
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -87,6 +88,27 @@ export function committedRateLimits(src: string, env: Env): RateLimit[] {
     .sort((a, b) => (a.name < b.name ? -1 : 1));
 }
 
+export const ALERT_VARS = [
+  "ALERT_TO",
+  "ALERT_FROM",
+  "SIGNUP_DAILY_CAP",
+  "SIGNUPS_ENABLED",
+] as const;
+
+/**
+ * Whether the env block wires the scheduler's alerts at all: true when any
+ * alert var or ALERT_EMAIL's destination_address is present.
+ */
+export function alertWired(src: string, env: Env): boolean {
+  const b = block(src, env);
+  return (
+    ALERT_VARS.some((k) => b.vars?.[k] !== undefined) ||
+    (b.send_email ?? []).some(
+      (m) => m.name === "ALERT_EMAIL" && m.destination_address !== undefined,
+    )
+  );
+}
+
 /**
  * What keeps the scheduler's alert wiring from being this env's placeholders:
  * the ALERT_TO, ALERT_FROM, SIGNUP_DAILY_CAP and SIGNUPS_ENABLED vars, and one
@@ -97,12 +119,7 @@ export function alertPinProblems(src: string, env: Env): string[] {
   const up = env.toUpperCase();
   const b = block(src, env);
   const out: string[] = [];
-  for (const k of [
-    "ALERT_TO",
-    "ALERT_FROM",
-    "SIGNUP_DAILY_CAP",
-    "SIGNUPS_ENABLED",
-  ])
+  for (const k of ALERT_VARS)
     if (b.vars?.[k] !== `{{${k}_${up}}}`)
       out.push(`vars.${k} is not {{${k}_${up}}}`);
   const mail = (b.send_email ?? []).filter((m) => m.name === "ALERT_EMAIL");
@@ -134,9 +151,12 @@ if (
     if (what === "vars") out = committedVars(src, env, process.env);
     else if (what === "ratelimits") out = committedRateLimits(src, env);
     else if (what === "alert-pins") {
-      const problems = alertPinProblems(src, env);
-      if (problems.length) throw new Error(problems.join("; "));
-      out = "pinned";
+      if (!alertWired(src, env)) out = "absent";
+      else {
+        const problems = alertPinProblems(src, env);
+        if (problems.length) throw new Error(problems.join("; "));
+        out = "pinned";
+      }
     } else throw new Error(`unknown section ${what}`);
     process.stdout.write(`${JSON.stringify(out)}\n`);
   } catch (e) {

@@ -3,9 +3,9 @@
 # .github/hosted) into $GITHUB_ENV: CLOUDFLARE_ACCOUNT_ID, EMAIL_ZONE (the
 # sending zone's name; hosted-resource-ids.sh resolves its tag),
 # EMAIL_DAILY_LIMIT, GOOGLE_CLIENT_ID, GOOGLE_DIRECTORY_CLIENT_ID, and the
-# provisioner's SIGNUP_DAILY_CAP, SIGNUPS_ENABLED and WELCOME_FROM, the
-# scheduler's ALERT_FROM and, once committed, ALERT_TO (an absent alert_to is
-# skipped: the scheduler target then refuses). None is a secret. Every value is checked against its consumer's rule
+# provisioner's and scheduler's SIGNUP_DAILY_CAP and SIGNUPS_ENABLED, the
+# provisioner's WELCOME_FROM, and the scheduler's ALERT_TO and ALERT_FROM. None
+# is a secret. Every value is checked against its consumer's rule
 # (deploy-platform-worker.sh) before anything is written: a missing, null,
 # empty, multi-line or malformed value (a placeholder included) exits 1 and
 # writes nothing.
@@ -24,14 +24,14 @@ zone='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
 limit='^[1-9][0-9]{0,8}$'
 google_id='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
 # deploy-platform-worker.sh's cap, onoff (staging also test-users, design v7
-# 7) and email.
+# 7; true needs ALLOW_SIGNUPS there, so it is never a committed constant) and
+# email.
 cap='^[1-9][0-9]{0,3}$'
-if [ "$1" = staging ]; then onoff='^(true|false|test-users)$'; else onoff='^(true|false)$'; fi
+if [ "$1" = staging ]; then onoff='^(false|test-users)$'; else onoff='^false$'; fi
 email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
 lines=""
-# key ENV_NAME rule [optional], one per line.
-while read -r k name rule opt; do
-  if [ -n "${opt:-}" ] && [ "$(jq -r --arg k "$k" 'has($k)' "$file")" != true ]; then continue; fi
+# key ENV_NAME rule, one per line.
+while read -r k name rule; do
   v="$(jq -r --arg k "$k" '.[$k] | if type == "string" or type == "number" then tostring else "" end' "$file")" || exit 1
   [ -n "$v" ] || { echo "$file: $k is missing" >&2; exit 1; }
   [[ "$v" != *$'\n'* && "$v" != *$'\r'* ]] || { echo "$file: $k spans lines" >&2; exit 1; }
@@ -40,6 +40,7 @@ while read -r k name rule opt; do
 done << EOF
 account_id CLOUDFLARE_ACCOUNT_ID $hex32
 alert_from ALERT_FROM $email
+alert_to ALERT_TO $email
 email_zone EMAIL_ZONE $zone
 email_daily_limit EMAIL_DAILY_LIMIT $limit
 google_client_id GOOGLE_CLIENT_ID $google_id
@@ -47,7 +48,6 @@ google_directory_client_id GOOGLE_DIRECTORY_CLIENT_ID $google_id
 signup_daily_cap SIGNUP_DAILY_CAP $cap
 signups_enabled SIGNUPS_ENABLED $onoff
 welcome_from WELCOME_FROM $email
-alert_to ALERT_TO $email optional
 EOF
 printf '%s' "$lines" >> "$GITHUB_ENV"
 printf '%s' "$lines"

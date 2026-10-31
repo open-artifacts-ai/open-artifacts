@@ -32,22 +32,17 @@ const run = (
 };
 
 // The scheduler's alert wiring as placeholders the deploy fills (design
-// v7 2.4, 4.8): W7's config plus the vars and ALERT_EMAIL's pinned
-// destination. The repo's own config once it pins them (alertPinProblems).
+// v7 2.4, 4.8): Backend's #915 config (the vars and ALERT_EMAIL's pinned
+// destination), and the repo's own once #915 lands (alertPinProblems).
 const REAL = readFileSync(join(root, "apps/scheduler/wrangler.jsonc"), "utf8");
 const pinned = (src: string) =>
   alertPinProblems(src, "staging").length === 0 &&
   alertPinProblems(src, "prod").length === 0;
-const PINNED = pinned(REAL)
-  ? REAL
-  : REAL.replace(/"OA_ENV": "(staging|prod)",/g, (m, e: string) => {
-      const up = e.toUpperCase();
-      return `${m} "ALERT_TO": "{{ALERT_TO_${up}}}", "ALERT_FROM": "{{ALERT_FROM_${up}}}", "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_${up}}}", "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_${up}}}",`;
-    }).replace(
-      /("observability": \{ "enabled": true \},)(\s*"triggers": \{ "crons": \[[^\]]*\] \},\s*"dispatch_namespaces": \[\s*\{ "binding": "DISPATCHER", "namespace": "oa-(staging|prod)" \})/g,
-      (_, obs: string, rest: string, e: string) =>
-        `"send_email": [{ "name": "ALERT_EMAIL", "destination_address": "{{ALERT_TO_${e === "staging" ? "STAGING" : "PROD"}}}" }], ${obs}${rest}`,
-    );
+const F915 = readFileSync(
+  join(root, "scripts/ops/testdata/scheduler-915.wrangler.jsonc"),
+  "utf8",
+);
+const PINNED = pinned(REAL) ? REAL : F915;
 
 afterEach(() => expect(existsSync(COPY)).toBe(false));
 
@@ -154,23 +149,74 @@ describe("deploy-platform-worker.sh", () => {
       expect(pinned(PINNED)).toBe(true);
     });
 
-    it("scheduler: the repo's config deploys only if it pins the alerts; otherwise it's refused before wrangler", () => {
+    it("#915's fixture pins both envs, and the real config is either pinned or holds none of the alert placeholders", () => {
+      expect(pinned(F915)).toBe(true);
+      expect(pinned(REAL) || !REAL.includes("{{ALERT_")).toBe(true);
+    });
+
+    it("scheduler: the repo's config deploys either way (before #915 the alert fills are no-ops; after, every one lands)", () => {
       for (const env of ["staging", "prod"]) {
         const r = run(["scheduler", env], {
           ...SCHED,
           ...(env === "staging" ? { SIGNUPS_ENABLED: "test-users" } : {}),
         });
-        if (pinned(REAL)) {
-          expect(r.code, env).toBe(0);
-          expect(readFileSync(r.snap, "utf8")).toContain(
-            '"destination_address": "ops@example.com"',
-          );
-        } else {
-          expect(r.code, env).toBe(1);
-          expect(r.log, env).toEqual([]);
-          expect(r.err, env).toContain(`doesn't pin the ${env} alerts`);
+        expect(r.err, env).toBe("");
+        expect(r.code, env).toBe(0);
+        const snap = readFileSync(r.snap, "utf8");
+        expect(snap).not.toMatch(
+          new RegExp(`\\{\\{[A-Z0-9_]*_${env.toUpperCase()}\\}\\}`),
+        );
+        if (pinned(REAL))
+          expect(snap).toContain('"destination_address": "ops@example.com"');
+        else {
+          expect(snap).not.toContain("ops@example.com");
+          expect(snap).not.toContain(`"ALERT_TO":`);
         }
         expect(r.out + r.err).not.toContain("ops@example.com");
+      }
+    });
+
+    it("scheduler: before #915 the alert values are still checked", () => {
+      const BARE = F915.replace(
+        /\n\s*"(ALERT_TO|ALERT_FROM|SIGNUP_DAILY_CAP|SIGNUPS_ENABLED)": "\{\{[A-Z_]+\}\}",/g,
+        "",
+      ).replace(
+        /\{ "name": "ALERT_EMAIL", "destination_address": "\{\{ALERT_TO_[A-Z]+\}\}" \}/g,
+        '{ "name": "ALERT_EMAIL" }',
+      );
+      expect(BARE).not.toContain("{{ALERT_");
+      expect(run(["scheduler", "prod"], SCHED, schedTree(BARE)).code).toBe(0);
+      for (const bad of [
+        { ALERT_TO: "" },
+        { ALERT_FROM: "x" },
+        { SIGNUP_DAILY_CAP: "0" },
+        { SIGNUPS_ENABLED: "true" },
+      ]) {
+        const r = run(
+          ["scheduler", "prod"],
+          { ...SCHED, ...bad },
+          schedTree(BARE),
+        );
+        expect(r.code, JSON.stringify(bad)).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
+
+    it("scheduler: any leftover placeholder, of this env or none, fails closed", () => {
+      for (const extra of [
+        "{{ALERT_TO}}",
+        "{{ALERT_TO_DEV}}",
+        "{{NEW_THING_PROD}}",
+      ]) {
+        const config = PINNED.replace(
+          '"OA_ENV": "prod",',
+          `"OA_ENV": "prod", "X": "${extra}",`,
+        );
+        expect(config).not.toBe(PINNED);
+        const r = run(["scheduler", "prod"], SCHED, schedTree(config));
+        expect(r.code, extra).toBe(1);
+        expect(r.log, extra).toEqual([]);
+        expect(r.err, extra).toContain("a placeholder is still unfilled");
       }
     });
 
@@ -376,7 +422,7 @@ describe("deploy-platform-worker.sh", () => {
       CLOUDFLARE_ACCOUNT_ID: ACCT,
       SECRETS_STORE_ID: "c".repeat(32),
       PLATFORM_DB_ID: DB,
-      SIGNUPS_ENABLED: "true",
+      SIGNUPS_ENABLED: "false",
     };
     /** A copy of the repo's wrapper beside an app config of our own. */
     const tree = (config: string, app = "provisioner") => {
@@ -407,7 +453,7 @@ describe("deploy-platform-worker.sh", () => {
         expect(snap).toContain(`"ACCOUNT_ID": "${ACCT}"`);
         expect(snap).toContain(`"store_id": "${OK.SECRETS_STORE_ID}"`);
         expect(snap).toContain(`"database_id": "${DB}"`);
-        expect(snap).toContain('"SIGNUPS_ENABLED": "true"');
+        expect(snap).toContain('"SIGNUPS_ENABLED": "false"');
         // The release is a job argument (design v7 2.4), never a var.
         expect(snap).not.toContain("RELEASE_VERSION");
         // No KV bindings: provision reaches KV over REST.
@@ -421,6 +467,29 @@ describe("deploy-platform-worker.sh", () => {
         expect(r.out + r.err).not.toContain(OK.SECRETS_STORE_ID);
         expect(existsSync(join(DIR, "wrangler.deploy.jsonc"))).toBe(false);
       });
+
+    it("SIGNUPS_ENABLED true needs ALLOW_SIGNUPS=1", () => {
+      for (const env of ["staging", "prod"] as const) {
+        const r = run(["provisioner", env], { ...OK, SIGNUPS_ENABLED: "true" });
+        expect(r.code, env).toBe(1);
+        expect(r.log).toEqual([]);
+        const ok = run(["provisioner", env], {
+          ...OK,
+          SIGNUPS_ENABLED: "true",
+          ALLOW_SIGNUPS: "1",
+        });
+        expect(ok.code, env).toBe(0);
+        expect(readFileSync(ok.snap, "utf8")).toContain(
+          '"SIGNUPS_ENABLED": "true"',
+        );
+      }
+      const other = run(["provisioner", "prod"], {
+        ...OK,
+        SIGNUPS_ENABLED: "true",
+        ALLOW_SIGNUPS: "yes",
+      });
+      expect(other.code).toBe(1);
+    });
 
     it("SIGNUPS_ENABLED test-users is staging only", () => {
       const s = run(["provisioner", "staging"], {

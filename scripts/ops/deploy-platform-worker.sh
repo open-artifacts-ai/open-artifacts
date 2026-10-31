@@ -10,10 +10,12 @@
 #   directory-broker: DIRECTORY_REGISTRY_ID=<32 hex> [GOOGLE_DIRECTORY_CLIENT_ID_PROD=<client id>, prod]
 #   dispatch: HOSTS_KV_ID=<32 hex>
 #   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
-#              ALERT_TO=<address> (the vars and the pinned ALERT_EMAIL destination)
-#              ALERT_FROM=<address> SIGNUP_DAILY_CAP=<1-9999> SIGNUPS_ENABLED=true|false (staging also test-users)
+#              ALERT_TO=<address> ALERT_FROM=<address> SIGNUP_DAILY_CAP=<1-9999>
+#              SIGNUPS_ENABLED (as the provisioner's): filled where the config holds
+#              them (#915), and then all of them plus ALERT_EMAIL's destination
 #   inventory: PLATFORM_DB_ID=<uuid> HOSTS_KV_ID=<32 hex> GITHUB_REPOSITORY_ID=<digits>
-#   provisioner: SIGNUP_DAILY_CAP=<1-9999> SIGNUPS_ENABLED=true|false (staging also test-users)
+#   provisioner: SIGNUP_DAILY_CAP=<1-9999> SIGNUPS_ENABLED=false (staging also test-users;
+#   true only with ALLOW_SIGNUPS=1)
 #                WELCOME_FROM=<address> CLOUDFLARE_ACCOUNT_ID=<32 hex> SECRETS_STORE_ID=<32 hex>
 #                PLATFORM_DB_ID=<uuid>
 #   provisioning: PLATFORM_DB_ID=<uuid> PROVISIONING_OAUTH_KV_ID=<32 hex>
@@ -46,8 +48,11 @@ zones='^[0-9a-f]{32}(,[0-9a-f]{32}){0,9}$'
 limit='^[1-9][0-9]{0,8}$'
 # The signups admitted per UTC day: 1 to 9999, no leading zero.
 cap='^[1-9][0-9]{0,3}$'
-# The signups gate: true or false; staging also test-users (design v7 7).
-if [ "$env" = staging ]; then onoff='^(true|false|test-users)$'; else onoff='^(true|false)$'; fi
+# The signups gate: false; staging also test-users (design v7 7). true opens
+# self-serve, which waits until after M1: it needs ALLOW_SIGNUPS=1 (a change the
+# Manager approves), so a deploy can't admit real signups into stub Workflow steps.
+if [ "${ALLOW_SIGNUPS:-}" = 1 ]; then on='true|'; else on=''; fi
+if [ "$env" = staging ]; then onoff="^(${on}false|test-users)\$"; else onoff="^(${on}false)\$"; fi
 # One plain address: no slash, ampersand, backslash, quote, comma or space, so
 # it can't carry sed syntax or read as a list or display name.
 email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
@@ -110,9 +115,10 @@ case "$app" in
     fill "EMAIL_ZONE_TAG_${up}" "${EMAIL_ZONE_TAGS:-}" "$zones"
     fill "EMAIL_DAILY_LIMIT_${up}" "${EMAIL_DAILY_LIMIT:-}" "$limit"
     # The alerts (design v7 4.8): the vars and ALERT_EMAIL's pinned
-    # destination share {{ALERT_TO_<ENV>}}. A config that doesn't hold this
-    # env's placeholders in all of them is refused here, before wrangler, so
-    # no fill is a silent no-op and no scheduler deploys unpinned.
+    # destination share {{ALERT_TO_<ENV>}}. Before #915 the config holds none
+    # of them and these fills only check the values; a config that holds some
+    # but not all of this env's placeholders is refused here, before wrangler,
+    # so no scheduler deploys half pinned.
     node --experimental-strip-types --no-warnings "$here/wrangler-env.ts" wrangler.jsonc "$env" alert-pins > /dev/null ||
       { echo "apps/scheduler/wrangler.jsonc doesn't pin the $env alerts; refusing" >&2; exit 1; }
     fill "ALERT_TO_${up}" "${ALERT_TO:-}" "$email"
