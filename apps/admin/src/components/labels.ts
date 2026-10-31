@@ -144,3 +144,12 @@ export const fmtLeft = (ms: number) =>
     : `${Math.max(1, Math.round(ms / 60_000))} min`;
 /** "01JC7X…" */
 export const shortId = (id: string) => `${id.slice(0, 6)}…`;
+
+/** "just now", "2 min ago", else the UTC clock time today or the day. */
+export const fmtAgo = (ms: number | null, now: number) => {
+  if (ms === null) return "Never";
+  const d = now - ms;
+  if (d < 60_000) return "just now";
+  if (d < 3_600_000) return `${Math.round(d / 60_000)} min ago`;
+  return d < 86_400_000 ? fmtClock(ms) : fmtDay(ms);
+};

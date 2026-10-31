@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.81.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.80.0...v0.81.0) (2026-10-31)
+
+
+### Features
+
+* **admin:** Agent tokens page and minted dialog in Design's layout A ([#908](https://github.com/open-artifacts-ai/open-artifacts/issues/908)) ([d6172f2](https://github.com/open-artifacts-ai/open-artifacts/commit/d6172f211b66c5db8f8f3aa76bf2ea21277658a3))
+* **dispatch:** 503 pages match Design's W11 layout A ([#905](https://github.com/open-artifacts-ai/open-artifacts/issues/905)) ([670e11b](https://github.com/open-artifacts-ai/open-artifacts/commit/670e11be7688f713badab0b663af14c32b735424))
+* **scheduler:** W7 provisioning duties: sweep, purge, alerts, dead-man, health, prune ([#894](https://github.com/open-artifacts-ai/open-artifacts/issues/894)) ([2a7c6f1](https://github.com/open-artifacts-ai/open-artifacts/commit/2a7c6f198b717698c8750ea70ce6c47c7267b735))
+* **shared,provision:** C6 contract follow-ups (redline revoke, Workflow wrapper) ([#906](https://github.com/open-artifacts-ai/open-artifacts/issues/906)) ([fd4c1d8](https://github.com/open-artifacts-ai/open-artifacts/commit/fd4c1d8d360cbe0b492fc4a1f9aa3885a4099a61))
+
+## [0.80.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.79.0...v0.80.0) (2026-10-31)
+
+
+### Features
+
+* **admin:** platform admin panel on the Provisioning API (W10, W11 option A) ([#887](https://github.com/open-artifacts-ai/open-artifacts/issues/887)) ([7b77554](https://github.com/open-artifacts-ai/open-artifacts/commit/7b77554c486768cfbec24504fc8d591fcd2d859c))
+* **shared,provision:** C5 contract follow-ups for the scheduler ([#896](https://github.com/open-artifacts-ai/open-artifacts/issues/896)) ([23042ec](https://github.com/open-artifacts-ai/open-artifacts/commit/23042eccba79ee8c3e278d24f2950becdc10e86b))
+
 ## [0.79.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.78.0...v0.79.0) (2026-10-31)
 
 

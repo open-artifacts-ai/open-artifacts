@@ -33,6 +33,11 @@
       "import": "./dist/provisioning/alerts.js",
       "default": "./dist/provisioning/alerts.js"
     },
+    "./provisioning/constants": {
+      "types": "./dist/provisioning/constants.d.ts",
+      "import": "./dist/provisioning/constants.js",
+      "default": "./dist/provisioning/constants.js"
+    },
     "./provisioning/enum-values": {
       "types": "./dist/provisioning/enum-values.d.ts",
       "import": "./dist/provisioning/enum-values.js",
@@ -79,14 +84,17 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json"
+    "test": "vitest run && vitest run -c vitest.workerd.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json && tsc --noEmit -p tsconfig.workerd.json"
   },
   "dependencies": {
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "msw": "^2.15.0"
+    "@cloudflare/vitest-plugin": "^1.4.4",
+    "@cloudflare/workers-types": "^5.20261018.1",
+    "msw": "^2.15.0",
+    "wrangler": "^4.151.1"
   },
   "peerDependencies": {
     "msw": "^2.15.0"

@@ -8,6 +8,7 @@ import type {
 } from "./rpc.js";
 import type { Release } from "./schemas.js";
 import {
+  WorkflowExistsError,
   type WorkflowInstanceLike,
   type WorkflowInstanceStatus,
   type WorkflowLike,
@@ -69,7 +70,7 @@ export function fakeProvisionerRpc(
 /**
  * An in-memory Workflow binding: create (params exactly { jobId }), get,
  * status, terminate. get and setStatus throw WorkflowNotFoundError for an
- * unknown id.
+ * unknown id; a duplicate create throws WorkflowExistsError.
  */
 export class FakeWorkflow implements WorkflowLike {
   readonly created: { id: string; params: unknown }[] = [];
@@ -83,8 +84,7 @@ export class FakeWorkflow implements WorkflowLike {
       throw e;
     }
     const params = WorkflowParamsSchema.parse(o.params);
-    if (this.#status.has(o.id))
-      throw new Error(`instance ${o.id} already exists`);
+    if (this.#status.has(o.id)) throw new WorkflowExistsError(o.id);
     this.created.push({ id: o.id, params });
     this.#status.set(o.id, { status: "queued" });
     return this.#instance(o.id);

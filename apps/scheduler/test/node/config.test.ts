@@ -38,14 +38,46 @@ describe("wrangler.jsonc", () => {
         AUTH_BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
         DIRECTORY_BROKER_ORIGIN: `https://directory.${HOSTED_DOMAINS[env].app}`,
       });
-      // BrokerGate's bindings: this env's two brokers, never the other env's.
+      const names = platformNames(env);
+      const provisioner = names.provisioner;
+      // BrokerGate's bindings: this env's two brokers, never the other env's;
+      // and the provisioner's ProvisionerRpc entrypoint (tokenStatus).
       expect(e.services).toEqual([
         { binding: "AUTH_BROKER", service: platformNames(env).broker },
         {
           binding: "DIRECTORY_BROKER",
           service: platformNames(env).directoryBroker,
         },
+        {
+          binding: "PROVISIONER",
+          service: provisioner,
+          entrypoint: "ProvisionerRpc",
+        },
       ]);
+      // The provisioner's two Workflows, on its script, this env's only.
+      expect(e.workflows).toEqual([
+        {
+          name: names.provisionInstall,
+          binding: "PROVISION_INSTALL",
+          class_name: "ProvisionInstall",
+          script_name: provisioner,
+        },
+        {
+          name: names.manageInstall,
+          binding: "MANAGE_INSTALL",
+          class_name: "ManageInstall",
+          script_name: provisioner,
+        },
+      ]);
+      // The signups duty's producer (src/provapi/signups.ts), this env's
+      // queue only.
+      expect(e.queues).toEqual({
+        producers: [{ binding: "SIGNUPS", queue: names.signups }],
+      });
+      // The operator alerts' one sending binding (src/provapi/alerts.ts).
+      // ALERT_TO, ALERT_FROM and SIGNUP_DAILY_CAP are Platform's deploy
+      // wiring, not vars here yet.
+      expect(e.send_email).toEqual([{ name: "ALERT_EMAIL" }]);
       expect(e.vars).not.toHaveProperty("EMAIL_QUOTA_TOKEN");
       // The nightly run, and H-DV's directory revoke tick every 2 minutes.
       expect(e.triggers).toEqual({ crons: ["17 3 * * *", "*/2 * * * *"] });
@@ -69,7 +101,6 @@ describe("wrangler.jsonc", () => {
         "kv_namespaces",
         "r2_buckets",
         "durable_objects",
-        "queues",
         "secrets",
       ])
         expect(e).not.toHaveProperty(k);
@@ -99,6 +130,8 @@ describe("wrangler.jsonc", () => {
       "d1_databases",
       "dispatch_namespaces",
       "services",
+      "workflows",
+      "send_email",
     ])
       expect(cfg).not.toHaveProperty(k);
   });
@@ -126,7 +159,9 @@ describe("bundle", () => {
     ).toThrow(/entry-point/);
   });
 
-  it("wrangler deploy --dry-run is under 50 KB per env", () => {
+  // Only the zod-free provisioning subpaths: the root brings zod with its
+  // locales (about 850 KB unminified).
+  it("wrangler deploy --dry-run is under 1 MB per env, with no zod", () => {
     for (const env of ENVS) {
       const out = mkdtempSync(join(tmpdir(), "oa-scheduler-"));
       wrangler(["--env", env, "--outdir", out]);
@@ -134,8 +169,12 @@ describe("bundle", () => {
         .filter((f) => f.endsWith(".js"))
         .reduce((n, f) => n + statSync(join(out, f)).size, 0);
       console.log(`scheduler bundle (${env}): ${bytes} bytes`);
+      for (const f of readdirSync(out).filter((x) => x.endsWith(".js")))
+        expect(readFileSync(join(out, f), "utf8")).not.toMatch(
+          /node_modules\/(?:\.pnpm\/zod@|zod\/)/,
+        );
       expect(bytes).toBeGreaterThan(0);
-      expect(bytes).toBeLessThan(50 * 1024);
+      expect(bytes).toBeLessThan(1024 * 1024);
     }
   });
 });

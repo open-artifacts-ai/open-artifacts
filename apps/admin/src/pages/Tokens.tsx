@@ -1,13 +1,30 @@
 import { agentClients } from "@oa/shared";
 import { type Token, TokenScopeSchema } from "@oa/shared/provisioning";
-import { Button, Input, Label } from "@oa/ui/shadcn";
+import { LIVE_TOKENS_PER_ADMIN } from "@oa/shared/provisioning/constants";
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Label,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { tokensQuery } from "../api/queries";
 import { ActionDialog } from "../components/ActionDialog";
 import { ErrorLine } from "../components/Bits";
-import { fmtTime } from "../components/format";
+import { fmtAgo, fmtIn, fmtLeft } from "../components/labels";
 import { useAction } from "../hooks/useAction";
 import { LoadError } from "../layout/LoadError";
 
@@ -17,9 +34,17 @@ const MCP_URL = {
   staging: "https://api.open-artifacts-staging.app/mcp",
 } as const;
 const REVOKE_ALL = "revoke all";
+/** Design's consent labels for the scopes (the codes are C1's TokenScopeSchema). */
+const SCOPE_LABEL = [
+  ["installs:read", "Read installs"],
+  ["audit:read", "Read the audit log"],
+  ["installs:write", "Create and change installs"],
+  ["installs:delete", "Delete and restore installs"],
+  ["installs:pii", "See owner emails"],
+] as const;
+const LIFETIMES = [15, 30, 60] as const;
 
-const status = (t: Token, now: number) =>
-  t.revokedAt ? "revoked" : t.expiresAt <= now ? "expired" : "active";
+const isLive = (t: Token, now: number) => !t.revokedAt && t.expiresAt > now;
 
 async function copy(text: string) {
   try {
@@ -64,39 +89,52 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
   const agents = [...new Set(snippets.map((s) => s.agent))];
   const [agent, setAgent] = useState(agents[0]);
   const [variant, setVariant] = useState<"oauth" | "token">("oauth");
-  const snip =
-    snippets.find((s) => s.agent === agent && s.variant === variant) ??
-    snippets.find((s) => s.agent === agent);
+  const has = (v: "oauth" | "token") =>
+    snippets.some((s) => s.agent === agent && s.variant === v);
+  // An agent without the chosen variant falls back to the one it has.
+  const shown = has(variant)
+    ? variant
+    : variant === "oauth"
+      ? "token"
+      : "oauth";
+  const snip = snippets.find((s) => s.agent === agent && s.variant === shown);
   return (
     <section className="oa-card" aria-label="Connect any AI agent">
       <h2>Connect any AI agent</h2>
       <p>
-        Any AI agent that speaks MCP can sign in with your admin account and
-        manage installs.
+        It signs in through you and gets only the access you approve. Server{" "}
+        <code>{url}</code>
       </p>
-      <p>
-        Server address: <code>{url}</code>{" "}
-        <CopyButton text={url} label="Copy address" />
-      </p>
-      <div className="oa-filter">
-        <label>
-          Agent{" "}
-          <select value={agent} onChange={(e) => setAgent(e.target.value)}>
-            {agents.map((a) => (
-              <option key={a}>{a}</option>
-            ))}
-          </select>
-        </label>{" "}
-        <label>
-          Sign in with{" "}
-          <select
-            value={variant}
-            onChange={(e) => setVariant(e.target.value as "oauth" | "token")}
+      <fieldset className="oa-seg">
+        <legend className="sr-only">How it signs in</legend>
+        {(
+          [
+            ["oauth", "Sign in with browser"],
+            ["token", "Use a token"],
+          ] as const
+        ).map(([v, label]) => (
+          <button
+            key={v}
+            type="button"
+            aria-pressed={shown === v}
+            disabled={!has(v)}
+            onClick={() => setVariant(v)}
           >
-            <option value="oauth">Browser (OAuth)</option>
-            <option value="token">Token</option>
-          </select>
-        </label>
+            {label}
+          </button>
+        ))}
+      </fieldset>
+      <div className="oa-seg">
+        {agents.map((a) => (
+          <button
+            key={a}
+            type="button"
+            aria-pressed={agent === a}
+            onClick={() => setAgent(a)}
+          >
+            {a}
+          </button>
+        ))}
       </div>
       {snip && (
         <div data-testid="snippet">
@@ -109,57 +147,68 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
             <code>{snip.code}</code>
           </pre>
           {snip.language !== "text" && (
-            <CopyButton text={snip.code} label="Copy snippet" />
+            <CopyButton text={snip.code} label="Copy" />
           )}
           {snip.hint && <p>{snip.hint}</p>}
-          {snip.verify && <p>Check: {snip.verify}</p>}
+          {snip.verify && <p>{snip.verify}</p>}
           {snip.reload && <p>{snip.reload}</p>}
         </div>
       )}
+      <p className="oa-hint">
+        Claude.ai: Settings, Connectors, Add custom connector, same server
+        address.
+      </p>
     </section>
   );
 }
 
-function Mint({ onMinted }: { onMinted: (secret: string) => void }) {
+type Minted = {
+  secret: string;
+  label: string;
+  scopes: string[];
+  ttl: number;
+};
+
+function MintDialog({
+  onClose,
+  onMinted,
+}: {
+  onClose: () => void;
+  onMinted: (m: Minted) => void;
+}) {
   const [label, setLabel] = useState("");
-  const [scopes, setScopes] = useState<string[]>(["installs:read"]);
-  const [ttl, setTtl] = useState(15);
+  const [scopes, setScopes] = useState<string[]>([
+    "installs:read",
+    "audit:read",
+  ]);
+  const [ttl, setTtl] = useState<number>(15);
+  const picked = TokenScopeSchema.options.filter((s) => scopes.includes(s));
   const mint = useAction(
-    async (_: void, requestId) => {
+    async (_: undefined, requestId) => {
       const r = await api.call("R19", {
-        body: {
-          requestId,
-          label,
-          scopes: TokenScopeSchema.options.filter((s) => scopes.includes(s)),
-          ttlMinutes: ttl,
-        },
+        body: { requestId, label, scopes: picked, ttlMinutes: ttl },
       });
       // The secret goes to the page and never stays in the mutation result.
-      onMinted(r.token);
+      onMinted({ secret: r.token, label, scopes: picked, ttl });
       return r.id;
     },
-    {
-      invalidate: [["tokens"]],
-      onSuccess: () => setLabel(""),
-      key: [label, scopes, ttl],
-    },
+    { invalidate: [["tokens"]], key: [label, scopes, ttl] },
   );
   const ok =
     LABEL_RE.test(label) &&
     scopes.length > 0 &&
-    Number.isInteger(ttl) &&
-    ttl >= 5 &&
-    ttl <= 60;
+    LIFETIMES.some((m) => m === ttl);
   return (
-    <form
-      className="oa-form"
-      aria-label="Mint a token"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (ok) mint.mutate();
-      }}
+    <ActionDialog
+      open
+      onClose={onClose}
+      title="Mint a token"
+      submitLabel="Mint token"
+      canSubmit={ok}
+      pending={mint.isPending}
+      error={mint.error}
+      onSubmit={() => mint.mutate(undefined)}
     >
-      <h2>Mint a token</h2>
       <div>
         <Label htmlFor="tok-label">Label</Label>
         <Input
@@ -168,10 +217,11 @@ function Mint({ onMinted }: { onMinted: (secret: string) => void }) {
           maxLength={40}
           onChange={(e) => setLabel(e.target.value)}
         />
+        <small className="oa-hint">Shown in the audit log.</small>
       </div>
       <fieldset>
         <legend>Scopes</legend>
-        {TokenScopeSchema.options.map((s) => (
+        {SCOPE_LABEL.map(([s, name]) => (
           <label key={s} className="oa-check">
             <input
               type="checkbox"
@@ -182,67 +232,132 @@ function Mint({ onMinted }: { onMinted: (secret: string) => void }) {
                 )
               }
             />{" "}
-            {s}
+            {name} <code>{s}</code>
           </label>
         ))}
       </fieldset>
-      <div>
-        <Label htmlFor="tok-ttl">Lasts (5 to 60 minutes)</Label>
-        <Input
-          id="tok-ttl"
-          type="number"
-          min={5}
-          max={60}
-          value={ttl}
-          onChange={(e) => setTtl(Number(e.target.value))}
-        />
-      </div>
-      <ErrorLine error={mint.error} />
-      <Button type="submit" disabled={!ok || mint.isPending}>
-        Mint token
-      </Button>
-    </form>
+      <fieldset className="oa-seg-field">
+        <legend>Lifetime</legend>
+        <div className="oa-seg">
+          {LIFETIMES.map((m) => (
+            <button
+              key={m}
+              type="button"
+              aria-pressed={ttl === m}
+              onClick={() => setTtl(m)}
+            >
+              {m} min
+            </button>
+          ))}
+        </div>
+        <small className="oa-hint">It also ends when you sign out.</small>
+      </fieldset>
+    </ActionDialog>
   );
 }
 
+function MintedDialog({ m, onDone }: { m: Minted; onDone: () => void }) {
+  return (
+    // Only Done closes it: the secret is never shown again, so Escape, an outside
+    // click and the corner X must not drop it before it is copied.
+    <Dialog open>
+      <DialogContent
+        data-testid="secret"
+        showCloseButton={false}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        onInteractOutside={(e) => e.preventDefault()}
+      >
+        <DialogHeader>
+          <DialogTitle>Token minted</DialogTitle>
+          <DialogDescription>
+            Copy it now. It won't be shown again.
+          </DialogDescription>
+        </DialogHeader>
+        <code className="oa-secret-code">{m.secret}</code>
+        <div>
+          <CopyButton text={m.secret} label="Copy" />
+        </div>
+        <dl className="oa-fields">
+          <dt>Label</dt>
+          <dd>{m.label}</dd>
+          <dt>Scopes</dt>
+          <dd>{m.scopes.join(" ")}</dd>
+          <dt>Ends</dt>
+          <dd>in {m.ttl} min, or when you sign out</dd>
+        </dl>
+        <DialogFooter>
+          <Button onClick={onDone}>Done</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** The current time, refreshed every `ms`, so "in 38 min" and the live list stay right. */
+function useNow(ms: number) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+  return now;
+}
+
+/** "Signed in (OAuth)" for a consent grant, "Token (oat_)" for a minted bearer. */
+export const kindLabel = (t: Token) =>
+  t.kind === "oauth" ? "Signed in (OAuth)" : "Token (oat_)";
+/** "With your session · 6 h" for a grant, "in 38 min" for a bearer. */
+export const endsLabel = (t: Token, now: number) =>
+  t.kind === "oauth"
+    ? `With your session · ${fmtLeft(t.expiresAt - now)}`
+    : `in ${fmtIn(t.expiresAt - now)}`;
+
 export function Tokens({ env }: { env: "prod" | "staging" }) {
   const q = useQuery(tokensQuery());
-  const [secret, setSecret] = useState<string | null>(null);
+  const [minting, setMinting] = useState(false);
+  const [minted, setMinted] = useState<Minted | null>(null);
   const [revokingAll, setRevokingAll] = useState(false);
   const revoke = useAction(
     (id: string, _r) => api.call("R21", { params: { id } }),
     { invalidate: [["tokens"]] },
   );
-  const revokeAll = useAction((_: void, _r) => api.call("R21"), {
+  const revokeAll = useAction((_: undefined, _r) => api.call("R21"), {
     invalidate: [["tokens"]],
     onSuccess: () => setRevokingAll(false),
   });
-  const now = Date.now();
+  const now = useNow(30_000);
+  const live = (q.data?.items ?? []).filter((t) => isLive(t, now));
+  const full = live.length >= LIVE_TOKENS_PER_ADMIN;
   return (
     <>
-      <h1>Agent tokens</h1>
-      <ConnectCard env={env} />
-      {secret !== null && (
-        <div className="oa-secret" role="alert" data-testid="secret">
-          <strong>Copy this token now. It is shown only once.</strong>
-          <code>{secret}</code>
-          <CopyButton text={secret} label="Copy token" />{" "}
-          <Button variant="outline" size="sm" onClick={() => setSecret(null)}>
-            I have copied it
-          </Button>
-        </div>
-      )}
-      <Mint onMinted={setSecret} />
       <div className="oa-head">
-        <h2>Tokens</h2>
+        <div style={{ flex: 1 }}>
+          <h1>Agent tokens</h1>
+          {q.data && (
+            <p className="oa-sub">
+              {live.length} of {LIVE_TOKENS_PER_ADMIN} live. Every token ends
+              with your admin session.
+            </p>
+          )}
+        </div>
         <Button
           variant="destructive"
-          size="sm"
           onClick={() => setRevokingAll(true)}
+          disabled={live.length === 0}
         >
           Revoke all
         </Button>
+        <Button onClick={() => setMinting(true)} disabled={full}>
+          Mint token
+        </Button>
       </div>
+      {full && (
+        <p className="oa-note" data-testid="token-limit">
+          You have {LIVE_TOKENS_PER_ADMIN} live tokens and agents. Revoke one to
+          add another.
+        </p>
+      )}
+      <ConnectCard env={env} />
       <ErrorLine error={revoke.error} />
       {q.isError ? (
         <LoadError
@@ -250,33 +365,63 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
           error={q.error}
           onRetry={() => void q.refetch()}
         />
-      ) : q.data && q.data.items.length === 0 ? (
-        <p className="oa-placeholder">No tokens.</p>
+      ) : q.data && live.length === 0 ? (
+        <div className="oa-placeholder">
+          <p>
+            <strong>No agents yet</strong>
+          </p>
+          <p>Connect any AI agent above, or mint a token for a script.</p>
+        </div>
       ) : q.data ? (
-        <ul className="oa-tokens">
-          {q.data.items.map((t) => {
-            const st = status(t, now);
-            return (
-              <li key={t.id} data-status={st}>
-                <strong>{t.clientName ?? t.label}</strong> ({t.kind}, {st}){" "}
-                {t.scopes.join(", ")}. Created {fmtTime(t.createdAt)}, ends{" "}
-                {fmtTime(t.expiresAt)}, last used {fmtTime(t.lastUsedAt)}.{" "}
-                {st === "active" && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={revoke.isPending}
-                    aria-label={`Revoke ${t.clientName ?? t.label}`}
-                    onClick={() => revoke.mutate(t.id)}
-                  >
-                    Revoke
-                  </Button>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        <div className="oa-tablewrap">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Label</TableHead>
+                <TableHead>Kind</TableHead>
+                <TableHead>Scopes</TableHead>
+                <TableHead>Ends</TableHead>
+                <TableHead>Last used</TableHead>
+                <TableHead>
+                  <span className="sr-only">Revoke</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {live.map((t) => (
+                <TableRow key={t.id} data-kind={t.kind}>
+                  <TableCell>{t.clientName ?? t.label}</TableCell>
+                  <TableCell>{kindLabel(t)}</TableCell>
+                  <TableCell>{t.scopes.join(" ")}</TableCell>
+                  <TableCell>{endsLabel(t, now)}</TableCell>
+                  <TableCell>{fmtAgo(t.lastUsedAt, now)}</TableCell>
+                  <TableCell>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={revoke.isPending}
+                      aria-label={`Revoke ${t.clientName ?? t.label}`}
+                      onClick={() => revoke.mutate(t.id)}
+                    >
+                      Revoke
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       ) : null}
+      {minting && (
+        <MintDialog
+          onClose={() => setMinting(false)}
+          onMinted={(m) => {
+            setMinting(false);
+            setMinted(m);
+          }}
+        />
+      )}
+      {minted && <MintedDialog m={minted} onDone={() => setMinted(null)} />}
       {revokingAll && (
         <ActionDialog
           open
@@ -291,7 +436,7 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
           destructive
           pending={revokeAll.isPending}
           error={revokeAll.error}
-          onSubmit={() => revokeAll.mutate()}
+          onSubmit={() => revokeAll.mutate(undefined)}
         />
       )}
     </>

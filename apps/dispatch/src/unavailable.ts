@@ -19,22 +19,36 @@ export const CLOSED_COPY: UnavailableCopy = Object.freeze({
   body: "If you use this workspace, ask its admin about it.",
 });
 
-// Inline styles only, nothing fetched; light by default, dark on request.
+// Design's W11 layout A. Inline styles and SVG only, nothing fetched; the
+// colors are the design tokens (packages/ui tokens.css), light and dark.
 const STYLE =
-  ":root{color-scheme:light dark;--bg:#fafaf9;--fg:#1c1917;--muted:#57534e}" +
-  "@media (prefers-color-scheme: dark){:root{--bg:#1c1917;--fg:#f5f5f4;--muted:#a8a29e}}" +
+  ":root{color-scheme:light dark;--bg:#ffffff;--fg:#15181c;--muted:#5f6670;--sunken:#eceef1}" +
+  "@media (prefers-color-scheme: dark){:root{--bg:#1c1f23;--fg:#e9ebee;--muted:#9097a1;--sunken:#181a1e}}" +
   "body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;" +
-  "background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,sans-serif}" +
-  "main{max-width:32rem;padding:24px 16px}" +
-  "h1{font-size:1.5rem;line-height:1.25;margin:0 0 .75rem}" +
-  "p{margin:0;color:var(--muted)}" +
-  "footer{margin-top:2rem;font-size:.875rem;color:var(--muted)}";
+  "background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,sans-serif}" +
+  "main{max-width:32rem;padding:24px 16px;text-align:center;display:flex;flex-direction:column;align-items:center}" +
+  ".icon{width:40px;height:40px;border-radius:12px;background:var(--sunken);color:var(--muted);" +
+  "display:flex;align-items:center;justify-content:center;margin:0 0 14px}" +
+  "h1{font-size:17px;font-weight:600;line-height:1.3;margin:0 0 6px}" +
+  "p{margin:0;max-width:300px;color:var(--muted)}" +
+  "footer{margin-top:22px;font-size:11.5px;color:var(--muted)}";
 
-const page = (c: UnavailableCopy) =>
+// 16px stroke icons, decorative.
+const svg = (d: string) =>
+  `<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const ICONS = {
+  paused: svg('<path d="M6 3.5v9M10 3.5v9"/>'),
+  closed: svg(
+    '<rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/>',
+  ),
+} as const;
+
+const page = (c: UnavailableCopy, mode: "paused" | "closed") =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
   `<meta name="viewport" content="width=device-width,initial-scale=1">` +
   `<meta name="robots" content="noindex"><title>${c.title}</title>` +
-  `<style>${STYLE}</style></head><body><main><h1>${c.title}</h1>` +
+  `<style>${STYLE}</style></head><body><main>` +
+  `<div class="icon">${ICONS[mode]}</div><h1>${c.title}</h1>` +
   `<p>${c.body}</p><footer>Open Artifacts</footer></main></body></html>`;
 
 const HEADERS = {
@@ -56,7 +70,7 @@ export function unavailable(req: Request, mode: "paused" | "closed") {
   const html = (req.headers.get("accept") ?? "")
     .toLowerCase()
     .includes("text/html");
-  const body = html ? page(copy) : `${copy.title}. ${copy.body}\n`;
+  const body = html ? page(copy, mode) : `${copy.title}. ${copy.body}\n`;
   return new Response(req.method === "HEAD" ? null : body, {
     status: 503,
     headers: {
