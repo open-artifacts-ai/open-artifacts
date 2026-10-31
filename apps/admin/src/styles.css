@@ -1,0 +1,108 @@
+@import "@oa/ui/tokens.css";
+
+html {
+  background: var(--oa-bg);
+}
+body {
+  margin: 0;
+  background: var(--oa-bg);
+  color: var(--oa-text);
+  font: 400 var(--oa-text-sm) / 1.45 var(--oa-font-sans);
+}
+.oa-page {
+  padding: var(--oa-space-6);
+}
+@media (max-width: 600px) {
+  .oa-page {
+    padding: var(--oa-space-4);
+  }
+}
+.oa-edge {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+.oa-panel {
+  width: 100%;
+  max-width: 420px;
+  background: var(--oa-surface);
+  border-radius: var(--oa-radius-lg);
+  box-shadow: var(--oa-shadow-1);
+  padding: 32px;
+}
+.oa-panel h1 {
+  margin: 0 0 8px;
+  font-size: 1.25rem;
+  overflow-wrap: anywhere;
+}
+.oa-panel p {
+  margin: 0 0 16px;
+  color: var(--oa-text-muted, var(--oa-text));
+}
+.oa-error {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: var(--oa-radius-md, 6px);
+  border: 1px solid var(--oa-danger, #c0392b);
+}
+.oa-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--oa-accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.oa-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+.oa-env {
+  min-height: 0;
+}
+.oa-topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--oa-surface);
+  box-shadow: var(--oa-shadow-1);
+}
+.oa-topbar strong {
+  font-size: 1rem;
+}
+.oa-spacer {
+  flex: 1;
+}
+.oa-body {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+}
+@media (max-width: 600px) {
+  .oa-body {
+    grid-template-columns: 1fr;
+  }
+}
+.oa-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px;
+}
+.oa-nav a {
+  padding: 6px 10px;
+  border-radius: var(--oa-radius-md, 6px);
+  color: var(--oa-text);
+  text-decoration: none;
+}
+.oa-nav a[aria-current="page"] {
+  background: var(--oa-surface);
+  font-weight: 600;
+}
+.oa-placeholder {
+  color: var(--oa-text-muted, var(--oa-text));
+}
