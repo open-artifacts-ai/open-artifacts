@@ -49,13 +49,17 @@ test("create an install, land on its job, open the install", async ({
 
 test("mint a token and see its secret once", async ({ page }) => {
   await page.goto("/tokens");
-  await page.getByLabel("Label").fill("e2e token");
+  await expect(page.getByText("No agents yet")).toBeVisible();
   await page.getByRole("button", { name: "Mint token" }).click();
-  const secret = page.getByTestId("secret");
-  await expect(secret).toContainText("shown only once");
-  await page.getByRole("button", { name: "I have copied it" }).click();
-  await expect(secret).toHaveCount(0);
-  await expect(page.getByText("e2e token")).toBeVisible();
+  const form = page.getByRole("dialog");
+  await form.getByLabel("Label").fill("e2e token");
+  await form.getByRole("button", { name: "Mint token" }).click();
+  const minted = page.getByTestId("secret");
+  await expect(minted).toContainText("Token minted");
+  await expect(minted).toContainText("Copy it now. It won't be shown again.");
+  await expect(minted).toContainText("or when you sign out");
+  await minted.getByRole("button", { name: "Done" }).click();
+  await expect(minted).toHaveCount(0);
 });
 
 // The dev mock keeps its state in the page: use in-app links, not page.goto, between steps.
