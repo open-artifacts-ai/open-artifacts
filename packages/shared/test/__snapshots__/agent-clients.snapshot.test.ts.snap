@@ -1,0 +1,428 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`agentClients snapshots > admin snippets: oa-admin with get_world 1`] = `
+[
+  {
+    "agent": "Claude Code",
+    "code": "claude mcp add --transport http oa-admin https://api.open-artifacts.app/mcp",
+    "language": "bash",
+    "reload": "Start a new Claude Code session, or reconnect from \`/mcp\`.",
+    "variant": "oauth",
+    "verify": "In a Claude Code session, run \`/mcp\`, pick oa-admin and sign in with your browser. Claude Code then lists its tools.",
+  },
+  {
+    "agent": "Codex CLI",
+    "code": "[mcp_servers.oa-admin]
+url = "https://api.open-artifacts.app/mcp"",
+    "file": "~/.codex/config.toml",
+    "language": "toml",
+    "reload": "Restart Codex. It reads config.toml when it starts.",
+    "variant": "oauth",
+    "verify": "Run \`codex mcp login oa-admin\` to sign in with your browser. Then \`codex mcp list\` shows oa-admin.",
+  },
+  {
+    "agent": "Cursor",
+    "code": "{
+  "mcpServers": {
+    "oa-admin": {
+      "url": "https://api.open-artifacts.app/mcp"
+    }
+  }
+}",
+    "file": "~/.cursor/mcp.json",
+    "language": "json",
+    "reload": "Turn the server off and on again in Customize, or restart Cursor.",
+    "variant": "oauth",
+    "verify": "Find oa-admin under Customize in the sidebar. When Cursor asks you to sign in, finish in your browser. Cursor then lists its tools.",
+  },
+  {
+    "agent": "OpenCode",
+    "code": "{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "oa-admin": {
+      "type": "remote",
+      "url": "https://api.open-artifacts.app/mcp",
+      "enabled": true
+    }
+  }
+}",
+    "file": "opencode.json",
+    "language": "json",
+    "reload": "Restart OpenCode. It reads its config when it starts.",
+    "variant": "oauth",
+    "verify": "Run \`opencode mcp auth oa-admin\` to sign in with your browser. Then \`opencode mcp list\` shows oa-admin.",
+  },
+  {
+    "agent": "Generic",
+    "code": "{
+  "mcpServers": {
+    "oa-admin": {
+      "type": "http",
+      "url": "https://api.open-artifacts.app/mcp"
+    }
+  }
+}",
+    "language": "json",
+    "reload": "Restart your AI agent, or reload its MCP servers.",
+    "variant": "oauth",
+    "verify": "Ask your AI agent to list the oa-admin tools. You should see get_world.",
+  },
+  {
+    "agent": "Claude Code",
+    "code": "read -rs OA_TOKEN
+claude mcp add --transport http oa-admin https://api.open-artifacts.app/mcp --header "Authorization: Bearer $OA_TOKEN"
+unset OA_TOKEN",
+    "hint": "Paste your token when prompted. It stays hidden as you type, and Claude Code saves it in its own config.",
+    "language": "bash",
+    "reload": "Start a new Claude Code session, or reconnect from \`/mcp\`.",
+    "variant": "token",
+    "verify": "Run \`claude mcp list\`. It shows oa-admin as connected.",
+  },
+  {
+    "agent": "Codex CLI",
+    "code": "[mcp_servers.oa-admin]
+url = "https://api.open-artifacts.app/mcp"
+bearer_token_env_var = "OA_TOKEN"",
+    "file": "~/.codex/config.toml",
+    "hint": "Export OA_TOKEN in the shell that starts Codex.",
+    "language": "toml",
+    "reload": "Restart Codex. It reads config.toml when it starts.",
+    "variant": "token",
+    "verify": "Run \`codex mcp list\`. It shows oa-admin.",
+  },
+  {
+    "agent": "Cursor",
+    "code": "{
+  "mcpServers": {
+    "oa-admin": {
+      "url": "https://api.open-artifacts.app/mcp",
+      "headers": {
+        "Authorization": "Bearer \${env:OA_TOKEN}"
+      }
+    }
+  }
+}",
+    "file": "~/.cursor/mcp.json",
+    "hint": "Export OA_TOKEN before you open Cursor.",
+    "language": "json",
+    "reload": "Turn the server off and on again in Customize, or restart Cursor.",
+    "variant": "token",
+    "verify": "Customize in the sidebar shows oa-admin turned on, with its tools.",
+  },
+  {
+    "agent": "OpenCode",
+    "code": "{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "oa-admin": {
+      "type": "remote",
+      "url": "https://api.open-artifacts.app/mcp",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:OA_TOKEN}"
+      }
+    }
+  }
+}",
+    "file": "opencode.json",
+    "hint": "Export OA_TOKEN before you start OpenCode. If it isn't set, OpenCode sends an empty token.",
+    "language": "json",
+    "reload": "Restart OpenCode. It reads its config when it starts.",
+    "variant": "token",
+    "verify": "Run \`opencode mcp list\`. It shows oa-admin as connected.",
+  },
+  {
+    "agent": "Generic",
+    "code": "{
+  "mcpServers": {
+    "oa-admin": {
+      "type": "http",
+      "url": "https://api.open-artifacts.app/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_TOKEN>"
+      }
+    }
+  }
+}",
+    "hint": "If your client can read the token from a file or an environment variable, use that. If it can't, replace <YOUR_TOKEN> with your token and keep this file out of git.",
+    "language": "json",
+    "reload": "Restart your AI agent, or reload its MCP servers.",
+    "variant": "token",
+    "verify": "Ask your AI agent to list the oa-admin tools. You should see get_world.",
+  },
+]
+`;
+
+exports[`agentClients snapshots > default output is unchanged (dashboard form) 1`] = `
+[
+  {
+    "agent": "Claude Code",
+    "code": "claude mcp add --transport http open-artifacts https://oa.example.com/mcp",
+    "language": "bash",
+    "reload": "Start a new Claude Code session, or reconnect from \`/mcp\`.",
+    "variant": "oauth",
+    "verify": "In a Claude Code session, run \`/mcp\`, pick open-artifacts and sign in with your browser. Claude Code then lists its tools.",
+  },
+  {
+    "agent": "Codex CLI",
+    "code": "[mcp_servers.open-artifacts]
+url = "https://oa.example.com/mcp"",
+    "file": "~/.codex/config.toml",
+    "language": "toml",
+    "reload": "Restart Codex. It reads config.toml when it starts.",
+    "variant": "oauth",
+    "verify": "Run \`codex mcp login open-artifacts\` to sign in with your browser. Then \`codex mcp list\` shows open-artifacts.",
+  },
+  {
+    "agent": "Cursor",
+    "code": "{
+  "mcpServers": {
+    "open-artifacts": {
+      "url": "https://oa.example.com/mcp"
+    }
+  }
+}",
+    "file": "~/.cursor/mcp.json",
+    "language": "json",
+    "reload": "Turn the server off and on again in Customize, or restart Cursor.",
+    "variant": "oauth",
+    "verify": "Find open-artifacts under Customize in the sidebar. When Cursor asks you to sign in, finish in your browser. Cursor then lists its tools.",
+  },
+  {
+    "agent": "OpenCode",
+    "code": "{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "open-artifacts": {
+      "type": "remote",
+      "url": "https://oa.example.com/mcp",
+      "enabled": true
+    }
+  }
+}",
+    "file": "opencode.json",
+    "language": "json",
+    "reload": "Restart OpenCode. It reads its config when it starts.",
+    "variant": "oauth",
+    "verify": "Run \`opencode mcp auth open-artifacts\` to sign in with your browser. Then \`opencode mcp list\` shows open-artifacts.",
+  },
+  {
+    "agent": "Generic",
+    "code": "{
+  "mcpServers": {
+    "open-artifacts": {
+      "type": "http",
+      "url": "https://oa.example.com/mcp"
+    }
+  }
+}",
+    "language": "json",
+    "reload": "Restart your AI agent, or reload its MCP servers.",
+    "variant": "oauth",
+    "verify": "Ask your AI agent to list the open-artifacts tools. You should see publish_artifact.",
+  },
+  {
+    "agent": "Claude Code",
+    "code": "read -rs OA_TOKEN
+claude mcp add --transport http open-artifacts https://oa.example.com/mcp --header "Authorization: Bearer $OA_TOKEN"
+unset OA_TOKEN",
+    "hint": "Paste your token when prompted. It stays hidden as you type, and Claude Code saves it in its own config.",
+    "language": "bash",
+    "reload": "Start a new Claude Code session, or reconnect from \`/mcp\`.",
+    "variant": "token",
+    "verify": "Run \`claude mcp list\`. It shows open-artifacts as connected.",
+  },
+  {
+    "agent": "Codex CLI",
+    "code": "[mcp_servers.open-artifacts]
+url = "https://oa.example.com/mcp"
+bearer_token_env_var = "OA_TOKEN"",
+    "file": "~/.codex/config.toml",
+    "hint": "Export OA_TOKEN in the shell that starts Codex.",
+    "language": "toml",
+    "reload": "Restart Codex. It reads config.toml when it starts.",
+    "variant": "token",
+    "verify": "Run \`codex mcp list\`. It shows open-artifacts.",
+  },
+  {
+    "agent": "Cursor",
+    "code": "{
+  "mcpServers": {
+    "open-artifacts": {
+      "url": "https://oa.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer \${env:OA_TOKEN}"
+      }
+    }
+  }
+}",
+    "file": "~/.cursor/mcp.json",
+    "hint": "Export OA_TOKEN before you open Cursor.",
+    "language": "json",
+    "reload": "Turn the server off and on again in Customize, or restart Cursor.",
+    "variant": "token",
+    "verify": "Customize in the sidebar shows open-artifacts turned on, with its tools.",
+  },
+  {
+    "agent": "OpenCode",
+    "code": "{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "open-artifacts": {
+      "type": "remote",
+      "url": "https://oa.example.com/mcp",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:OA_TOKEN}"
+      }
+    }
+  }
+}",
+    "file": "opencode.json",
+    "hint": "Export OA_TOKEN before you start OpenCode. If it isn't set, OpenCode sends an empty token.",
+    "language": "json",
+    "reload": "Restart OpenCode. It reads its config when it starts.",
+    "variant": "token",
+    "verify": "Run \`opencode mcp list\`. It shows open-artifacts as connected.",
+  },
+  {
+    "agent": "Generic",
+    "code": "{
+  "mcpServers": {
+    "open-artifacts": {
+      "type": "http",
+      "url": "https://oa.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_TOKEN>"
+      }
+    }
+  }
+}",
+    "hint": "If your client can read the token from a file or an environment variable, use that. If it can't, replace <YOUR_TOKEN> with your token and keep this file out of git.",
+    "language": "json",
+    "reload": "Restart your AI agent, or reload its MCP servers.",
+    "variant": "token",
+    "verify": "Ask your AI agent to list the open-artifacts tools. You should see publish_artifact.",
+  },
+]
+`;
+
+exports[`agentClients snapshots > default output is unchanged (file form) 1`] = `
+[
+  {
+    "agent": "Claude Code",
+    "code": "claude mcp add --transport http -s user open-artifacts https://oa.example.com/mcp",
+    "language": "bash",
+    "reload": "Start a new Claude Code session, or reconnect from \`/mcp\`.",
+    "variant": "oauth",
+    "verify": "In a Claude Code session, run \`/mcp\` (or \`claude mcp login open-artifacts\`) and sign in with your browser. Then \`claude mcp list\` shows open-artifacts as connected.",
+  },
+  {
+    "agent": "Codex CLI",
+    "code": "codex mcp add open-artifacts --url https://oa.example.com/mcp",
+    "language": "bash",
+    "reload": "Restart Codex (the CLI, IDE extension or app). It reads its config when it starts.",
+    "variant": "oauth",
+    "verify": "Run \`codex mcp login open-artifacts\` to sign in with your browser. Then \`codex mcp list\` shows open-artifacts.",
+  },
+  {
+    "agent": "Cursor",
+    "code": "{
+  "mcpServers": {
+    "open-artifacts": {
+      "url": "https://oa.example.com/mcp"
+    }
+  }
+}",
+    "file": "~/.cursor/mcp.json",
+    "language": "json",
+    "reload": "Turn the server off and on again in Customize, or restart Cursor.",
+    "variant": "oauth",
+    "verify": "Find open-artifacts under Customize in the sidebar. When Cursor asks you to sign in, finish in your browser. Cursor then lists its tools.",
+  },
+  {
+    "agent": "OpenCode",
+    "code": "{
+  "mcp": {
+    "open-artifacts": {
+      "type": "remote",
+      "url": "https://oa.example.com/mcp"
+    }
+  }
+}",
+    "file": "opencode.json",
+    "language": "json",
+    "reload": "Restart OpenCode. It reads its config when it starts.",
+    "variant": "oauth",
+    "verify": "Run \`opencode mcp auth open-artifacts\` to sign in with your browser. Then \`opencode mcp list\` shows open-artifacts.",
+  },
+  {
+    "agent": "Generic",
+    "code": "{
+  "mcpServers": {
+    "open-artifacts": {
+      "type": "http",
+      "url": "https://oa.example.com/mcp"
+    }
+  }
+}",
+    "language": "json",
+    "reload": "Restart your AI agent, or reload its MCP servers.",
+    "variant": "oauth",
+    "verify": "Ask your AI agent to list the open-artifacts tools. You should see publish_artifact.",
+  },
+  {
+    "agent": "Claude Code",
+    "code": "claude mcp add-json -s user open-artifacts '{"type":"http","url":"https://oa.example.com/mcp","headersHelper":"T=$(cat ~/.open-artifacts/oa-example-com-pat-token) && printf '\\''{\\"Authorization\\":\\"Bearer %s\\"}'\\'' \\"$T\\""}'",
+    "hint": "Claude Code reads the token from ~/.open-artifacts/oa-example-com-pat-token each time it connects. It's added for your user, so it works in every project.",
+    "language": "bash",
+    "reload": "Start a new Claude Code session, or reconnect from \`/mcp\`.",
+    "variant": "token",
+    "verify": "Run \`claude mcp list\`. It shows open-artifacts as connected.",
+  },
+  {
+    "agent": "Codex CLI",
+    "code": "[mcp_servers.open-artifacts]
+url = "https://oa.example.com/mcp"
+http_headers_helper = "T=$(cat ~/.open-artifacts/oa-example-com-pat-token) && printf '{\\"Authorization\\":\\"Bearer %s\\"}' \\"$T\\""",
+    "file": "~/.codex/config.toml",
+    "hint": "This needs Codex 0.163 or later. On older versions, use OAuth.",
+    "language": "toml",
+    "reload": "Restart Codex (the CLI, IDE extension or app). It reads its config when it starts.",
+    "variant": "token",
+    "verify": "Run \`codex mcp list\`. It shows open-artifacts.",
+  },
+  {
+    "agent": "OpenCode",
+    "code": "{
+  "mcp": {
+    "open-artifacts": {
+      "type": "remote",
+      "url": "https://oa.example.com/mcp",
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {file:~/.open-artifacts/oa-example-com-pat-token}"
+      }
+    }
+  }
+}",
+    "file": "opencode.json",
+    "hint": "OpenCode reads the token file even when it runs in the background. Don't run \`opencode service\` from inside an OpenCode session, because it restarts the server.",
+    "language": "json",
+    "reload": "Restart OpenCode. It reads its config when it starts.",
+    "variant": "token",
+    "verify": "Run \`opencode mcp list\`. It shows open-artifacts as connected.",
+  },
+  {
+    "agent": "Generic",
+    "code": "Use your client's option to read the token from ~/.open-artifacts/oa-example-com-pat-token when it connects. If it has none, use OAuth. Never paste the token into a config file.",
+    "language": "text",
+    "reload": "Restart your AI agent, or reload its MCP servers.",
+    "variant": "token",
+    "verify": "Ask your AI agent to list the open-artifacts tools. You should see publish_artifact.",
+  },
+]
+`;
