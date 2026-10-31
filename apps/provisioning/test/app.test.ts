@@ -196,12 +196,20 @@ describe("browser-host headers (4.5)", () => {
       [`${ADMIN}/mcp`, { method: "POST" }],
       [`${ADMIN}/auth/logout`, { method: "POST" }],
       [`${ADMIN}/api/v1/me`, { headers: { authorization: "x" } }],
-      [`${ADMIN}/oauth/authorize`, {}],
     ] as const) {
       const { res } = await call(url, init);
       for (const [k, v] of Object.entries(H))
         expect(res.headers.get(k), `${url} ${k}`).toBe(v);
     }
+  });
+
+  it("are on /oauth/authorize too, with its own CSP (9A.3.2)", async () => {
+    const { res } = await call(`${ADMIN}/oauth/authorize`, {});
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    const csp = res.headers.get("content-security-policy") ?? "";
+    expect(csp).not.toBe(H["content-security-policy"]);
+    expect(csp).toContain("frame-ancestors 'none'");
   });
 
   it("override what the SPA sent", async () => {
@@ -245,7 +253,7 @@ describe("a throw in a protocol handler or the SPA is the 3.5 envelope", () => {
   });
 });
 
-describe("MCP and OAuth stubs (9A.2, 9A.3.1)", () => {
+describe("MCP stub and OAuth routes (9A.2, 9A.3.1)", () => {
   it("protocol paths follow PROTOCOL_ROUTES: wrong method 405, unknown path 404", async () => {
     const t = await call(`${API}/oauth/token`, { method: "GET" });
     expect(t.res.status).toBe(405);
@@ -276,7 +284,7 @@ describe("MCP and OAuth stubs (9A.2, 9A.3.1)", () => {
     }
   });
 
-  it("/oauth/* and the well-known documents are 501", async () => {
+  it("/oauth/* and the well-known documents are served, not 501 (W13b)", async () => {
     for (const [method, url] of [
       ["POST", `${API}/oauth/token`],
       ["POST", `${API}/oauth/register`],
@@ -285,9 +293,8 @@ describe("MCP and OAuth stubs (9A.2, 9A.3.1)", () => {
       ["GET", `${ADMIN}/oauth/authorize`],
       ["POST", `${ADMIN}/oauth/authorize`],
     ] as const) {
-      const { res, body } = await call(url, { method });
-      expect(res.status, `${method} ${url}`).toBe(501);
-      expect(code(body)).toBe("not_implemented");
+      const { res } = await call(url, { method });
+      expect(res.status, `${method} ${url}`).not.toBe(501);
     }
   });
 });

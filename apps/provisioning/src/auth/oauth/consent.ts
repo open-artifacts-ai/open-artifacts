@@ -1,0 +1,387 @@
+import {
+  AuthorizationError,
+  type OAuthHelpers,
+} from "@cloudflare/workers-oauth-provider";
+import { ipKey } from "@oa/auth-core";
+import { type TokenScope, TokenScopeSchema } from "@oa/shared/provisioning";
+import type { Env } from "../../env.js";
+import { ApiError } from "../../errors.js";
+import { limit } from "../../limits.js";
+import { isRefusal, type Principal } from "../../principal.js";
+import { countRefusal } from "../../refuse.js";
+import {
+  mintAgentToken,
+  oauthLabel,
+  revokeToken,
+} from "../../services/tokens.js";
+import { hmac, sameString } from "../crypto.js";
+import {
+  adminHost,
+  readCookie,
+  SESSION_COOKIE,
+  SESSION_RENEW_UNDER_MS,
+  sessionPrincipal,
+} from "../session.js";
+import { oauthAudit } from "./audit.js";
+import { capped } from "./endpoints.js";
+import {
+  bouncePage,
+  type Chrome,
+  consentPage,
+  messagePage,
+  reauthPage,
+  signinPage,
+} from "./pages.js";
+import { authServer, type GrantProps, revokeLibraryGrants } from "./server.js";
+
+// GET and POST /oauth/authorize on the admin host (design v7 9A.3.2): the
+// admin session cookie (SameSite=Strict, so a cross-site arrival gets a
+// same-origin bounce first), PKCE S256, the server-rendered consent page,
+// and on Allow the one token service mint (mintAgentToken) before the
+// library's completeAuthorization.
+
+/** Consent needs this much session left, so a grant never dies minutes after Allow. */
+export const CONSENT_MIN_SESSION_MS = SESSION_RENEW_UNDER_MS;
+
+const isScope = (s: string): s is TokenScope =>
+  TokenScopeSchema.safeParse(s).success;
+
+const hex = (b: Uint8Array) =>
+  Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+
+/**
+ * HMAC-SHA256(ADMIN_SESSION_KEY, "consent\n" + sid + "\n" + handle), hex. It
+ * lives as long as the library's handle (10 min, single use).
+ */
+export const consentToken = async (env: Env, sid: string, handle: string) =>
+  hex(await hmac(env.ADMIN_SESSION_KEY, `consent\n${sid}\n${handle}`));
+
+/** Constant-time check of the posted token against this session and handle. */
+async function consentTokenOk(
+  env: Env,
+  sid: string,
+  handle: string,
+  got: string,
+): Promise<boolean> {
+  if (!/^[0-9a-f]{64}$/.test(got) || !handle) return false;
+  return sameString(got, await consentToken(env, sid, handle));
+}
+
+/** The header every page shows: the env badge and the admin host. */
+const chrome = (env: Env): Chrome => ({
+  env: env.OA_ENV,
+  adminHost: adminHost(env),
+});
+
+/** RL_PV_OAUTH_IP by ipKey on the consent routes (9A.7); a refusal page or null. */
+async function limited(req: Request, env: Env): Promise<Response | null> {
+  const ip = ipKey(req);
+  const r = await limit(env, "oauth_ip", ip);
+  if (!r) return null;
+  try {
+    await countRefusal(env, "oauth", r.code, ip);
+  } catch {
+    // The refusal stands without its count.
+  }
+  return r.code === "rate_limited"
+    ? messagePage(
+        chrome(env),
+        "Too many requests",
+        "Wait a minute, then start connecting again from your agent.",
+        429,
+      )
+    : messagePage(
+        chrome(env),
+        "Unavailable",
+        "Try again in a few minutes.",
+        503,
+      );
+}
+
+/** The query without the bounce marker: what /auth/start returns to. */
+function authorizeReturn(url: URL): string {
+  // Verbatim (4.3), only the `b` pairs dropped.
+  const s = url.search
+    .slice(1)
+    .split("&")
+    .filter((kv) => kv !== "" && !/^b(=|$)/.test(kv))
+    .join("&");
+  return `${url.pathname}${s ? `?${s}` : ""}`;
+}
+
+/** /auth/start back to this request, relative: the pages link it on the admin host. */
+const signInPath = (url: URL) =>
+  `/auth/start?return=${encodeURIComponent(authorizeReturn(url))}`;
+
+/** parseAuthRequest/approve/deny failures: a redirect only when the library says it is safe. */
+function authorizeError(env: Env, e: unknown): Response {
+  if (e instanceof AuthorizationError) {
+    if (e.redirectTo)
+      return new Response(null, {
+        status: 302,
+        headers: { location: e.redirectTo, "cache-control": "no-store" },
+      });
+    return messagePage(
+      chrome(env),
+      "Cannot connect this agent",
+      `${e.description || e.code}. Start connecting again from your agent.`,
+      400,
+    );
+  }
+  // An unknown client and other parse failures throw plain errors.
+  if (e instanceof Error)
+    return messagePage(
+      chrome(env),
+      "Cannot connect this agent",
+      "This request is not valid. Start connecting again from your agent.",
+      400,
+    );
+  throw e;
+}
+
+const signedOut = (env: Env) =>
+  messagePage(
+    chrome(env),
+    "Signed out",
+    "Your admin session ended. Start connecting again from your agent.",
+    401,
+  );
+
+/** GET /oauth/authorize. */
+export async function showConsent(req: Request, env: Env): Promise<Response> {
+  const lim = await limited(req, env);
+  if (lim) return lim;
+  const url = new URL(req.url);
+  const now = Date.now();
+  const p = await sessionPrincipal(req, env, now);
+  const sid = readCookie(req, SESSION_COOKIE);
+  if (isRefusal(p) || !sid) {
+    // No session cookie on a cross-site arrival (a link from claude.ai, or
+    // the 303 at the end of the sign-in chain): bounce once, same-origin.
+    const site = req.headers.get("sec-fetch-site");
+    const sameSite = site === "same-origin" || site === "none";
+    if (!sameSite && url.searchParams.get("b") !== "1") {
+      const ret = authorizeReturn(url);
+      return bouncePage(
+        chrome(env),
+        `${ret}${ret.includes("?") ? "&" : "?"}b=1`,
+      );
+    }
+    return signinPage(chrome(env), signInPath(url));
+  }
+  const left = (p.session?.expiresAt ?? 0) - now;
+  if (left < CONSENT_MIN_SESSION_MS)
+    return reauthPage(chrome(env), {
+      leftMs: left,
+      cancelUrl: "/",
+      reauthUrl: signInPath(url),
+    });
+
+  const oauth = authServer(env).getOAuthApi(env);
+  try {
+    const request = await oauth.parseAuthRequest(req);
+    // The library requires PKCE only for public clients (9A.3.1).
+    if (!request.codeChallenge || request.codeChallengeMethod !== "S256")
+      return messagePage(
+        chrome(env),
+        "Cannot connect this agent",
+        "invalid_request: PKCE S256 is required. Start connecting again from your agent.",
+        400,
+      );
+    const d = await oauth.describeConsent(request);
+    const client = await oauth.lookupClient(request.clientId);
+    const tx = await oauth.beginConsent(request);
+    const reg = client?.registrationDate;
+    return consentPage(
+      chrome(env),
+      {
+        clientName: d.clientName,
+        clientId: d.clientId,
+        registeredSecondsAgo: typeof reg === "number" ? now / 1000 - reg : null,
+        redirectHost: d.redirectHost,
+        loopback: d.redirectIsLoopback,
+        adminEmail: p.email ?? p.label,
+        switchUrl: signInPath(url),
+        handle: tx.handle,
+        consentToken: await consentToken(env, sid, tx.handle),
+      },
+      tx.headers,
+    );
+  } catch (e) {
+    return authorizeError(env, e);
+  }
+}
+
+/** POST /oauth/authorize: Allow or Deny. */
+export async function decideConsent(req: Request, env: Env): Promise<Response> {
+  // No Origin check: the page's no-referrer policy makes browsers send
+  // `Origin: null`. The consent token and the Strict cookie cover CSRF.
+  if (req.headers.get("sec-fetch-site") === "cross-site")
+    return messagePage(
+      chrome(env),
+      "Cannot connect this agent",
+      "Cross-site request.",
+      403,
+    );
+  const lim = await limited(req, env);
+  if (lim) return lim;
+  const p = await sessionPrincipal(req, env, Date.now());
+  const sid = readCookie(req, SESSION_COOKIE);
+  if (isRefusal(p) || !sid) return signedOut(env);
+  const body = await capped(req);
+  if (!body)
+    return messagePage(
+      chrome(env),
+      "Cannot connect this agent",
+      "Invalid form.",
+      400,
+    );
+  let form: FormData;
+  try {
+    form = await body.formData();
+  } catch {
+    return messagePage(
+      chrome(env),
+      "Cannot connect this agent",
+      "Invalid form.",
+      400,
+    );
+  }
+  const handle = String(form.get("request") ?? "");
+  if (
+    !(await consentTokenOk(
+      env,
+      sid,
+      handle,
+      String(form.get("consent_token") ?? ""),
+    ))
+  )
+    return messagePage(
+      chrome(env),
+      "This page expired",
+      "Start connecting again from your agent.",
+      403,
+    );
+  const oauth = authServer(env).getOAuthApi(env);
+  try {
+    if (form.get("decision") !== "approve")
+      return await deny(env, oauth, p, req, handle);
+    const scopes = form.getAll("scope").map(String).filter(isScope);
+    // The library accepts [] ([].every is true): a grant with no scopes.
+    if (scopes.length === 0)
+      return messagePage(
+        chrome(env),
+        "Pick at least one permission",
+        "Start connecting again from your agent and pick at least one.",
+        400,
+      );
+    return await allow(env, oauth, p, req, handle, scopes);
+  } catch (e) {
+    return authorizeError(env, e);
+  }
+}
+
+async function deny(
+  env: Env,
+  oauth: OAuthHelpers,
+  p: Principal,
+  req: Request,
+  handle: string,
+): Promise<Response> {
+  const denied = await oauth.denyConsent(req, handle);
+  const client = await oauth.lookupClient(denied.request.clientId);
+  await oauthAudit(env, {
+    action: "oauth.denied",
+    actor: { kind: "admin", label: p.email ?? p.label },
+    outcome: "ok",
+    detail: {
+      clientId: denied.request.clientId,
+      clientName: oauthLabel(client?.clientName ?? null),
+    },
+  });
+  return new Response(null, { status: 302, headers: denied.headers });
+}
+
+async function allow(
+  env: Env,
+  oauth: OAuthHelpers,
+  p: Principal,
+  req: Request,
+  handle: string,
+  scopes: TokenScope[],
+): Promise<Response> {
+  const approved = await oauth.approveConsent(req, handle, { scope: scopes });
+  const request = approved.request;
+  const client = await oauth.lookupClient(request.clientId);
+  const clientName = client?.clientName ?? null;
+  const redirect = new URL(request.redirectUri);
+  let minted: Awaited<ReturnType<typeof mintAgentToken>>;
+  try {
+    minted = await mintAgentToken(env, p, {
+      kind: "oauth",
+      scopes: request.scope.filter(isScope),
+      clientId: request.clientId,
+      clientName,
+      redirectHost: redirect.hostname,
+    });
+  } catch (e) {
+    if (e instanceof ApiError) return mintRefused(env, e);
+    throw e;
+  }
+  const props: GrantProps = {
+    tokenId: minted.tokenId,
+    sessionHash: p.session?.hash ?? "",
+  };
+  let redirectTo: string;
+  try {
+    ({ redirectTo } = await oauth.completeAuthorization({
+      request,
+      userId: minted.oauthUser ?? "",
+      metadata: {},
+      scope: request.scope,
+      props,
+    }));
+  } catch (e) {
+    // No grant was written: the row must not count as live.
+    await revokeToken(env, p.email ?? "", minted.tokenId).catch(() => null);
+    throw e;
+  }
+  // The older grant of this client: D1 revoked it in the mint batch; the
+  // library drops it too (revokeExistingGrants, the default), and this
+  // catches one that call missed. Only after the new grant is written, so a
+  // failed completeAuthorization leaves the old KV grant (its D1 row stays
+  // ended: the admin approves again).
+  await revokeLibraryGrants(env, minted.superseded ?? []);
+  await env.PLATFORM_DB.prepare(
+    "UPDATE oauth_clients SET first_grant_at = ?2 WHERE client_id = ?1 AND first_grant_at IS NULL",
+  )
+    .bind(request.clientId, Date.now())
+    .run();
+  approved.headers.set("location", redirectTo);
+  approved.headers.set("cache-control", "no-store");
+  return new Response(null, { status: 302, headers: approved.headers });
+}
+
+function mintRefused(env: Env, e: ApiError): Response {
+  if (e.code === "token_limit")
+    return messagePage(
+      chrome(env),
+      "Too many agent tokens",
+      "5 agent tokens are live. Revoke one at /tokens.",
+      409,
+    );
+  if (e.code === "rate_limited")
+    return messagePage(
+      chrome(env),
+      "Too many new tokens",
+      "This hour's token budget is spent. Try again later.",
+      429,
+    );
+  if (e.code === "unauthenticated") return signedOut(env);
+  return messagePage(
+    chrome(env),
+    "Cannot connect this agent",
+    "Try again later.",
+    500,
+  );
+}

@@ -30,6 +30,7 @@ import type { SigninDeps } from "../src/auth/signin.js";
 import type { Env } from "../src/env.js";
 import { platformDb } from "./db.js";
 import { ADMIN, ADMIN_BROKER_KEY, API, ctx, fakeEnv } from "./fakes.js";
+import { authorizeUrl, kv, pkce, randomIp, register } from "./oauth-helpers.js";
 
 // Every edge request carries cf-connecting-ip (the adapter 403s without
 // one, 4.7); a test that sets its own keeps it.
@@ -872,6 +873,108 @@ describe("a session already in the browser (4.5: logout ends every grant)", () =
         .prepare("SELECT revoked_at FROM agent_tokens WHERE id = 't1'")
         .first("revoked_at"),
     ).toBe(NOW);
+  });
+
+  it("a reauth for the same pair with under 60 min left still keeps the sid and its tokens (4.5: reauth moves auth_at only)", async () => {
+    const e = env();
+    const created = NOW - SESSION_TTL_MS + 30 * 60_000;
+    const a = await createSession(
+      e.env,
+      { email: EMAIL, sub: SUB, authAt: created },
+      created,
+    );
+    await oat("t4", await sessionHash(a.sid));
+    const { res } = await signIn(e, {
+      q: "?reauth=1",
+      claims: { auth_time: NOW / 1000 - 5 },
+      sid: a.sid,
+    });
+    expect(res.status).toBe(303);
+    expect(cookieValue(cookieOf(res, SESSION_COOKIE))).toBe(a.sid);
+    const rows = await db
+      .prepare("SELECT auth_at, expires_at, revoked_at FROM sessions")
+      .all();
+    expect(rows.results).toEqual([
+      {
+        auth_at: NOW - 5000,
+        expires_at: created + SESSION_TTL_MS,
+        revoked_at: null,
+      },
+    ]);
+    expect(
+      await db
+        .prepare("SELECT revoked_at FROM agent_tokens WHERE id = 't4'")
+        .first("revoked_at"),
+    ).toBeNull();
+  });
+
+  it("the same pair with under 60 min left: the old session ends with its tokens, a new 8 h one starts, and consent renders (9A.3.2 step 4)", async () => {
+    // showConsent reads the wall clock, so this case runs on it.
+    const T = Date.now();
+    const d = deps({ now: () => T });
+    const e = env({ OAUTH_KV: kv() });
+    const a = await createSession(
+      e.env,
+      { email: EMAIL, sub: SUB, authAt: T - 7.5 * 3600_000 },
+      T - 7.5 * 3600_000,
+    );
+    const ah = await sessionHash(a.sid);
+    await oat("t3", ah);
+    const ip = randomIp();
+    const w = {
+      call: (r: Request) => {
+        r.headers.set("cf-connecting-ip", ip);
+        return handle(r, e.env, ctx(), d);
+      },
+    };
+    const clientId = await register(w);
+    const { challenge } = await pkce();
+    const url = authorizeUrl(clientId, challenge);
+    const consent = (sid: string) =>
+      w.call(
+        new Request(url, {
+          headers: {
+            cookie: `${SESSION_COOKIE}=${sid}`,
+            "sec-fetch-site": "same-origin",
+          },
+        }),
+      );
+    const first = await consent(a.sid);
+    expect(first.status).toBe(200);
+    const href = /href="(\/auth\/start\?[^"]*)">Sign in again</.exec(
+      await first.text(),
+    )?.[1];
+    const ret = new URL(href ?? "", ADMIN).searchParams.get("return");
+    const { res } = await signIn(e, {
+      q: `?return=${encodeURIComponent(ret ?? "")}`,
+      claims: { iat: T / 1000, exp: T / 1000 + 3600 },
+      sid: a.sid,
+      d,
+    });
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe(`${ADMIN}${ret}`);
+    const sid = cookieValue(cookieOf(res, SESSION_COOKIE));
+    expect(sid).not.toBe(a.sid);
+    expect(
+      await db
+        .prepare("SELECT revoked_at FROM sessions WHERE id_hash = ?")
+        .bind(ah)
+        .first("revoked_at"),
+    ).toBe(T);
+    expect(
+      await db
+        .prepare("SELECT expires_at FROM sessions WHERE id_hash = ?")
+        .bind(await sessionHash(sid))
+        .first("expires_at"),
+    ).toBe(T + SESSION_TTL_MS);
+    expect(
+      await db
+        .prepare("SELECT revoked_at FROM agent_tokens WHERE id = 't3'")
+        .first("revoked_at"),
+    ).toBe(T);
+    const again = await consent(sid);
+    expect(again.status).toBe(200);
+    expect(await again.text()).toContain(">Approve<");
   });
 
   it("a live session of another identity is revoked with its tokens before the new one", async () => {
