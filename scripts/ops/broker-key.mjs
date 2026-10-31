@@ -6,6 +6,8 @@
 // The caller writes the registry entry from {kid, x} and puts pkcs8 as a
 // secret on stdin; nothing here is ever printed elsewhere.
 import { createHash, generateKeyPairSync } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export function brokerKey() {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -20,8 +22,9 @@ export function brokerKey() {
   return { kid, x, pkcs8 };
 }
 
+// Run as a script (paths compared after symlinks, as macOS's /var is one).
 if (
   process.argv[1] &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
 )
   process.stdout.write(`${JSON.stringify(brokerKey())}\n`);

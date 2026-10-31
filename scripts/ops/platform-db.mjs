@@ -23,7 +23,7 @@
 // Usage: CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID PLATFORM_DB_ID [VERIFY_ONLY]
 //   node scripts/ops/platform-db.mjs staging|prod
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -343,9 +343,10 @@ export function d1({ token, accountId, databaseId, fetch: f = fetch }) {
   };
 }
 
+// Run as a script (paths compared after symlinks, as macOS's /var is one).
 if (
   process.argv[1] &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
 ) {
   const env = process.argv[2];
   const fail = (msg, code = 1) => {

@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -275,6 +276,22 @@ describe("platform-db.mjs", () => {
       await expect(bad.exec("x")).rejects.toThrow(/D1 query failed/);
       await expect(bad.exec("x")).rejects.not.toThrow(TOKEN);
     }
+  });
+
+  it("the CLI refuses a bad env or missing inputs before any call", () => {
+    const cli = (args: string[], env: Record<string, string>) =>
+      spawnSync("node", [join(import.meta.dirname, "platform-db.mjs"), ...args], {
+        env: { PATH: process.env.PATH as string, ...env },
+        encoding: "utf8",
+      });
+    const ok = {
+      CLOUDFLARE_API_TOKEN: "t",
+      CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
+      PLATFORM_DB_ID: "6ca9103e-507e-4541-b3bb-2485e699512b",
+    };
+    expect(cli(["dev"], ok).status).toBe(2);
+    expect(cli(["prod"], { ...ok, PLATFORM_DB_ID: "x" }).status).toBe(2);
+    expect(cli(["prod"], { ...ok, CLOUDFLARE_API_TOKEN: "" }).status).toBe(2);
   });
 
   it("the CLI never prints the token", () => {

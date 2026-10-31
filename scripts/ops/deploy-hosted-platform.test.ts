@@ -1,7 +1,10 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { root, sandbox } from "../ci/stubs.ts";
+import { root, sandbox, write } from "../ci/stubs.ts";
+// @ts-expect-error untyped .mjs
+import { envSection } from "./wrangler-env.mjs";
 
 // deploy-hosted-platform.sh: deploy through the allowlisted wrapper, secrets only
 // after the Worker exists (Google secrets every run, state keys only when
@@ -40,11 +43,45 @@ case "$*" in
     touch "$STATE/$w.secrets"; grep -qx "$5" "$STATE/$w.secrets" || echo "$5" >> "$STATE/$w.secrets"
     ;;
 esac`;
-// curl: the -K - config must carry the token; answers by path.
+// curl: the -K - config must carry the token; answers by path. Writes are
+// logged as "WRITE <method> /<path> <body>".
 const curl = `
 cfg="$(cat)"
 case "$cfg" in *"Bearer $EXPECT_TOKEN"*) ;; *) echo '{"success":false,"errors":[{"code":10000}]}'; exit 0 ;; esac
 url="\${@: -1}"
+m=GET; body=""; wcode=""
+for ((i = 1; i <= $#; i++)); do
+  case "\${!i}" in
+    -X) j=$((i + 1)); m="\${!j}" ;;
+    --data-binary) j=$((i + 1)); body="\${!j}" ;;
+    -w) wcode=1 ;;
+  esac
+done
+path="$(printf %s "$url" | sed -E 's#^.*/accounts/[0-9a-f]+/##')"
+[ "$m" = GET ] || echo "WRITE $m /$path $body" >> "$STUB_LOG"
+ok() { echo "{\\"success\\":true,\\"result\\":$1}"; }
+bad() { echo '{"success":false,"errors":[{"code":1}]}'; }
+case "$path" in
+  queues\\?*) [ -f "$STATE/fail-queues" ] && { bad; exit 0; }; ok "$(cat "$STATE/queues.json" 2>/dev/null || echo '[]')"; exit 0 ;;
+  queues)
+    jq -c --argjson b "$body" '. + [{queue_name: $b.queue_name}]' "$STATE/queues.json" 2>/dev/null > "$STATE/q.new" || jq -nc --argjson b "$body" '[{queue_name: $b.queue_name}]' > "$STATE/q.new"
+    mv "$STATE/q.new" "$STATE/queues.json"; ok '{}'; exit 0 ;;
+  r2/buckets/*) n="\${path#r2/buckets/}"
+    if [ -f "$STATE/fail-r2" ]; then bad; elif [ -f "$STATE/r2-$n" ]; then ok '{}'; else echo '{"success":false,"errors":[{"code":10006}]}'; fi; exit 0 ;;
+  r2/buckets) touch "$STATE/r2-$(jq -r .name <<< "$body")"; ok '{}'; exit 0 ;;
+  storage/kv/namespaces\\?*) [ -f "$STATE/fail-kvns" ] && { bad; exit 0; }; ok "$(cat "$STATE/kvns.json" 2>/dev/null || echo '[]')"; exit 0 ;;
+  storage/kv/namespaces)
+    jq -c --argjson b "$body" --arg id "$NEW_KV" '. + [{id: $id, title: $b.title}]' "$STATE/kvns.json" 2>/dev/null > "$STATE/k.new" || jq -nc --argjson b "$body" --arg id "$NEW_KV" '[{id: $id, title: $b.title}]' > "$STATE/k.new"
+    mv "$STATE/k.new" "$STATE/kvns.json"; ok "{\\"id\\":\\"$NEW_KV\\"}"; exit 0 ;;
+  storage/kv/namespaces/*/values/*)
+    ns="\${path#storage/kv/namespaces/}"; ns="\${ns%%/*}"; key="\${path##*/values/}"; f="$STATE/kv-$ns-$key"
+    if [ "$m" = PUT ]; then printf %s "$body" > "$f"; ok '{}'
+    elif [ -f "$f" ]; then cat "$f"; [ -z "$wcode" ] || printf '\\n200'
+    else echo '{"success":false,"errors":[{"code":10009}]}'; [ -z "$wcode" ] || printf '\\n404'; fi
+    exit 0 ;;
+  secrets_store/stores/*/secrets\\?*) [ -f "$STATE/fail-store" ] && { bad; exit 0; }; ok "$(cat "$STATE/store-secrets.json" 2>/dev/null || echo '[]')"; exit 0 ;;
+  workers/scripts/*/content/v2) w="\${path#workers/scripts/}"; w="\${w%%/*}"; cat "$STATE/$w.content" 2>/dev/null || echo 'export default {};'; exit 0 ;;
+esac
 w="$(printf %s "$url" | sed -E 's#.*/workers/scripts/([^/]+)/.*#\\1#')"
 kind="\${url##*/}"
 case "$kind" in
@@ -113,7 +150,6 @@ const NEXT: Record<string, string> = {
   "oa-p-inventory": settings([
     { type: "d1", name: "PLATFORM_DB", id: DB },
     { type: "kv_namespace", name: "HOSTS", namespace_id: HOSTS },
-    { type: "secret_text", name: "INVENTORY_KEY" },
   ]),
   "oa-p-scheduler": settings(
     [
@@ -126,6 +162,103 @@ const NEXT: Record<string, string> = {
     true,
   ),
 };
+
+// The Provisioning API Workers (design v7 10.2): vars and rate limits as the
+// tag commits them, placeholders filled as the deploy fills them.
+const STORE = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e";
+const OAUTH = "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a";
+const REPO_ID = "1012345678";
+const FILLS = {
+  SIGNUP_DAILY_CAP: "20",
+  SIGNUPS_ENABLED: "false",
+  WELCOME_FROM: "welcome@open-artifacts.app",
+  ACCOUNT_ID: ACCT,
+  GITHUB_REPOSITORY_ID: REPO_ID,
+};
+const committedVars = (app: string, env: "staging" | "prod") =>
+  Object.entries(
+    envSection(
+      readFileSync(join(root, "apps", app, "wrangler.jsonc"), "utf8"),
+      env,
+      "vars",
+      FILLS,
+    ) as Record<string, string>,
+  ).map(([name, text]) => ({ type: "plain_text", name, text }));
+const ratelimits = (env: "staging" | "prod") =>
+  (
+    envSection(
+      readFileSync(join(root, "apps/provisioning/wrangler.jsonc"), "utf8"),
+      env,
+      "ratelimits",
+      {},
+    ) as { name: string; namespace_id: string; limit: number; period: number }[]
+  ).map((r) => ({
+    type: "ratelimit",
+    name: r.name,
+    namespace_id: r.namespace_id,
+    simple: { limit: r.limit, period: r.period },
+  }));
+const provisionerSettings = (p = "p", env: "staging" | "prod" = "prod") =>
+  settings([
+    { type: "d1", name: "PLATFORM_DB", id: DB },
+    {
+      type: "dispatch_namespace",
+      name: "DISPATCHER",
+      namespace: `oa-${env}`,
+    },
+    { type: "r2_bucket", name: "RELEASES", bucket_name: `oa-${p}-releases` },
+    { type: "send_email", name: "WELCOME_EMAIL" },
+    {
+      type: "secrets_store_secret",
+      name: "PROVISION_TOKEN",
+      store_id: STORE,
+      secret_name: `oa-${p}-provision-token`,
+    },
+    {
+      type: "workflow",
+      name: "PROVISION_INSTALL",
+      workflow_name: `oa-${p}-provision-install`,
+      class_name: "ProvisionInstall",
+    },
+    {
+      type: "workflow",
+      name: "MANAGE_INSTALL",
+      workflow_name: `oa-${p}-manage-install`,
+      class_name: "ManageInstall",
+    },
+    ...committedVars("provisioner", env),
+  ]);
+const provisioningBindings = (p = "p", env: "staging" | "prod" = "prod") => [
+  { type: "d1", name: "PLATFORM_DB", id: DB },
+  { type: "kv_namespace", name: "OAUTH_KV", namespace_id: OAUTH },
+  {
+    type: "service",
+    name: "PROVISIONER",
+    service: `oa-${p}-provisioner`,
+    entrypoint: "ProvisionerRpc",
+  },
+  { type: "service", name: "AUTH_BROKER", service: `oa-${p}-auth-broker` },
+  { type: "queue", name: "SIGNUPS", queue_name: `oa-${p}-signups` },
+  { type: "assets", name: "ASSETS" },
+  ...["PROVISION_INSTALL:ProvisionInstall:provision", "MANAGE_INSTALL:ManageInstall:manage"].map(
+    (w) => {
+      const [name, cls, n] = w.split(":");
+      return {
+        type: "workflow",
+        name,
+        workflow_name: `oa-${p}-${n}-install`,
+        class_name: cls,
+        script_name: `oa-${p}-provisioner`,
+      };
+    },
+  ),
+  ...ratelimits(env),
+  ...committedVars("provisioning", env),
+  { type: "secret_text", name: "ADMIN_SESSION_KEY" },
+  { type: "secret_text", name: "ADMIN_BROKER_KEY" },
+];
+NEXT["oa-p-provisioner"] = provisionerSettings();
+NEXT["oa-p-provisioning"] = settings(provisioningBindings());
 
 const ENV = {
   // Not in CI by default (CI sets these, and prod there needs main).
@@ -146,6 +279,12 @@ const ENV = {
   EMAIL_ZONE_TAGS: ZONE,
   EMAIL_DAILY_LIMIT: "1000",
   INVENTORY_KEY: "k".repeat(64),
+  SECRETS_STORE_ID: STORE,
+  SIGNUP_DAILY_CAP: FILLS.SIGNUP_DAILY_CAP,
+  SIGNUPS_ENABLED: FILLS.SIGNUPS_ENABLED,
+  WELCOME_FROM: FILLS.WELCOME_FROM,
+  GITHUB_REPOSITORY_ID: REPO_ID,
+  NEW_KV: OAUTH,
 };
 
 const setup = (
@@ -155,9 +294,18 @@ const setup = (
     next?: Record<string, string>;
     failSecrets?: boolean;
     pins?: { staging?: string | null; prod?: string | null };
+    /** Extra state files (name -> content). */
+    files?: Record<string, string>;
+    /** Stub node (logs its argv, exits $NODE_EXIT). */
+    node?: boolean;
   } = {},
 ) => {
-  const sb = sandbox({ pnpm, curl, openssl });
+  const sb = sandbox({
+    pnpm,
+    curl,
+    openssl,
+    ...(opts.node ? { node: `exit "\${NODE_EXIT:-0}"` } : {}),
+  });
   const state = join(sb.dir, "state");
   mkdirSync(state);
   for (const [w, s] of Object.entries({ ...NEXT, ...opts.next }))
@@ -177,6 +325,8 @@ const setup = (
   for (const [w, names] of Object.entries(opts.secrets ?? {}))
     writeFileSync(join(state, `${w}.secrets`), `${names.join("\n")}\n`);
   if (opts.failSecrets) writeFileSync(join(state, "fail-secrets"), "");
+  for (const [f, v] of Object.entries(opts.files ?? {}))
+    writeFileSync(join(state, f), v);
   // Provision's pin, as main's wfp.ts states it (stubbed: prod's real pin is
   // PR #875's).
   const pinFile = join(sb.dir, "wfp.ts");
@@ -198,7 +348,8 @@ const setup = (
         ...env,
       },
     });
-    return { ...r, log: sb.log() };
+    const log = sb.log();
+    return { ...r, log, writes: log.filter((l) => l.startsWith("WRITE")) };
   };
   return { run, state, sb };
 };
@@ -271,7 +422,7 @@ describe("deploy-hosted-platform.sh", () => {
     const s = setup({ failSecrets: true });
     const r = s.run("auth-broker");
     expect(r.code).toBe(1);
-    expect(puts(r.log)).toEqual(["GOOGLE_CLIENT_SECRET"]);
+    expect(puts(r.log)).toEqual([]);
     expect(r.err).toContain("list oa-p-auth-broker secrets failed");
     clean(r);
   });
@@ -339,8 +490,13 @@ describe("deploy-hosted-platform.sh", () => {
   });
   it("missing inputs, a bad account id or an unknown target refuse before any call", () => {
     for (const [t, env] of [
-      ["auth-broker", { GOOGLE_CLIENT_SECRET: "" }],
+      ["auth-broker", { GOOGLE_CLIENT_ID: "" }],
       ["auth-broker", { CLOUDFLARE_ACCOUNT_ID: "nope" }],
+      ["platform-db", { PLATFORM_DB_ID: "" }],
+      ["provision-token", { SECRETS_STORE_ID: "" }],
+      ["provisioner", { WELCOME_FROM: "" }],
+      ["provisioning", { GITHUB_REPOSITORY_ID: "" }],
+      ["inventory", { GITHUB_REPOSITORY_ID: "" }],
       ["dispatch", { HOSTS_KV_ID: "" }],
       ["bogus", {}],
     ] as const) {
@@ -454,5 +610,406 @@ describe("deploy-hosted-platform.sh", () => {
       'wrapper="${DEPLOY_WRAPPER:-$root/scripts/ops/deploy-platform-worker.sh}"',
     );
     expect(src).not.toMatch(/Bearer \$|-H "Authorization/);
+  });
+
+  describe("platform-db", () => {
+    it("runs main's platform-db.mjs for the env, passing its exit code", () => {
+      const r = setup({ node: true }).run("platform-db");
+      expect(r.code).toBe(0);
+      expect(r.log).toContain(
+        `node ${join(root, "scripts/ops/platform-db.mjs")} prod`,
+      );
+      expect(r.out).toContain("prod platform-db: deployed and verified");
+      const bad = setup({ node: true }).run("platform-db", { NODE_EXIT: "1" });
+      expect(bad.code).toBe(1);
+      expect(bad.out).not.toContain("verified");
+    });
+  });
+
+  describe("provision-token", () => {
+    const secret = (over: Record<string, unknown> = {}) =>
+      JSON.stringify([
+        {
+          id: "x",
+          name: "oa-p-provision-token",
+          modified: "2026-10-30T10:00:00Z",
+          ...over,
+        },
+      ]);
+    it("reads back the secret's name and modified time, and writes nothing", () => {
+      for (const verify of ["", "1"]) {
+        const r = setup({ files: { "store-secrets.json": secret() } }).run(
+          "provision-token",
+          { VERIFY_ONLY: verify },
+        );
+        expect(r.err).toBe("");
+        expect(r.code).toBe(0);
+        expect(r.out).toContain(
+          "oa-p-provision-token: present in Secrets Store, modified 2026-10-30T10:00:00Z",
+        );
+        expect(r.writes).toEqual([]);
+        expect(r.log.filter((l) => /^(pnpm|wrapper) /.test(l))).toEqual([]);
+        expect(
+          r.log.some((l) =>
+            l.includes(
+              `/secrets_store/stores/${STORE}/secrets?search=oa-p-provision-token&`,
+            ),
+          ),
+        ).toBe(true);
+        clean(r);
+      }
+    });
+    it("a missing secret fails with the Secrets Store link; a failed listing or a twin fails", () => {
+      const none = setup().run("provision-token");
+      expect(none.code).toBe(1);
+      expect(none.err).toContain(
+        "oa-p-provision-token is not in Secrets Store",
+      );
+      expect(none.err).toContain(
+        "https://dash.cloudflare.com/?to=/:account/secrets-store",
+      );
+      // Another env's secret is not this one.
+      expect(
+        setup({
+          files: {
+            "store-secrets.json": secret({ name: "oa-s-provision-token" }),
+          },
+        }).run("provision-token").code,
+      ).toBe(1);
+      const failed = setup({ files: { "fail-store": "" } }).run(
+        "provision-token",
+      );
+      expect(failed.code).toBe(1);
+      expect(failed.err).toContain("list Secrets Store secrets failed");
+      const two = JSON.stringify([
+        ...JSON.parse(secret()),
+        ...JSON.parse(secret()),
+      ]);
+      expect(
+        setup({ files: { "store-secrets.json": two } }).run("provision-token")
+          .code,
+      ).toBe(1);
+    });
+  });
+
+  describe("provisioner", () => {
+    const ready = {
+      "queues.json": JSON.stringify([
+        { queue_name: "oa-p-signups" },
+        { queue_name: "oa-p-signups-dlq" },
+      ]),
+      "r2-oa-p-releases": "",
+    };
+    it("first run: creates the queues and the releases bucket, deploys, reads every binding back", () => {
+      const r = setup().run("provisioner");
+      expect(r.err).toBe("");
+      expect(r.code).toBe(0);
+      expect(r.writes).toEqual([
+        'WRITE POST /queues {"queue_name":"oa-p-signups"}',
+        'WRITE POST /queues {"queue_name":"oa-p-signups-dlq"}',
+        'WRITE POST /r2/buckets {"name":"oa-p-releases"}',
+      ]);
+      const w = r.log.find((l) => l.startsWith("wrapper provisioner prod "));
+      expect(w).toContain(`db=${DB}`);
+      expect(r.out).toContain("prod provisioner: deployed and verified");
+      clean(r);
+    });
+    it("a rerun creates nothing; verify only refuses a missing queue and writes nothing", () => {
+      const again = setup({ files: ready }).run("provisioner");
+      expect(again.code, again.err).toBe(0);
+      expect(again.writes).toEqual([]);
+      const v = setup({ exists: ["oa-p-provisioner"] }).run("provisioner", {
+        VERIFY_ONLY: "1",
+      });
+      expect(v.code).toBe(1);
+      expect(v.err).toContain("queue oa-p-signups does not exist");
+      expect(v.writes).toEqual([]);
+    });
+    it("a failed queue or bucket read stops before any create or deploy", () => {
+      for (const f of ["fail-queues", "fail-r2"]) {
+        const r = setup({ files: { [f]: "" } }).run("provisioner");
+        expect(r.code, f).toBe(1);
+        expect(r.writes.filter((w) => w.includes("/r2/buckets "))).toEqual(
+          [],
+        );
+        expect(r.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+      }
+    });
+    it("refuses a deployed binding, var or secret that isn't the committed one", () => {
+      const base = NEXT["oa-p-provisioner"] as string;
+      for (const [label, next, msg] of [
+        ["store", base.replace(STORE, "f".repeat(32)), "PROVISION_TOKEN: got"],
+        [
+          "workflow",
+          base.replace("oa-p-manage-install", "oa-p-other"),
+          "MANAGE_INSTALL: got",
+        ],
+        [
+          "var",
+          base.replace('"text":"20"', '"text":"21"'),
+          "provisioner vars: got",
+        ],
+        [
+          "extra",
+          settings([
+            ...JSON.parse(base).result.bindings,
+            { type: "kv_namespace", name: "X", namespace_id: "y" },
+          ]),
+          "bindings: got",
+        ],
+        [
+          "observability",
+          settings(JSON.parse(base).result.bindings, true),
+          "observability",
+        ],
+      ] as const) {
+        const r = setup({ files: ready, next: { "oa-p-provisioner": next } }).run(
+          "provisioner",
+        );
+        expect(r.code, label).toBe(1);
+        expect(r.err, label).toContain(msg);
+      }
+      const sec = setup({
+        files: ready,
+        secrets: { "oa-p-provisioner": ["LEAK"] },
+      }).run("provisioner");
+      expect(sec.code).toBe(1);
+      expect(sec.err).toContain("oa-p-provisioner has secrets 'LEAK '");
+    });
+  });
+
+  describe("provisioning", () => {
+    const KEY = "install:i000000admin";
+    const brokers = ["oa-p-provisioner", "oa-p-auth-broker"];
+    const entry = (over: Record<string, unknown> = {}) =>
+      JSON.stringify({
+        installId: "i000000admin",
+        origin: "https://admin.open-artifacts.app",
+        keys: [{ kid: "k".repeat(16), x: "x".repeat(43) }],
+        domains: [],
+        ...over,
+      });
+    const live = {
+      "kvns.json": JSON.stringify([
+        { id: OAUTH, title: "oa-p-provisioning-oauth" },
+      ]),
+      [`kv-${REG}-${KEY}`]: entry(),
+    };
+    const liveSecrets = {
+      "oa-p-provisioning": ["ADMIN_BROKER_KEY", "ADMIN_SESSION_KEY"],
+    };
+    it("first run: builds the SPA, creates the OAuth KV, deploys, makes both keys and the admin entry, reads back", () => {
+      const r = setup({ exists: brokers }).run("provisioning");
+      expect(r.err).toBe("");
+      expect(r.code).toBe(0);
+      const build = r.log.indexOf("pnpm --filter @oa/admin build");
+      const wrap = r.log.findIndex((l) =>
+        l.startsWith("wrapper provisioning prod "),
+      );
+      expect(build).toBeGreaterThanOrEqual(0);
+      expect(build).toBeLessThan(wrap);
+      expect(r.writes[0]).toBe(
+        'WRITE POST /storage/kv/namespaces {"title":"oa-p-provisioning-oauth"}',
+      );
+      // The entry carries only the public half, and is written before the secret.
+      const put = r.writes.find((w) => w.startsWith(`WRITE PUT /storage/kv/namespaces/${REG}/values/${KEY} `)) as string;
+      const body = JSON.parse(put.slice(put.indexOf("{")));
+      expect(Object.keys(body)).toEqual(["installId", "origin", "keys", "domains"]);
+      expect(body).toMatchObject({
+        installId: "i000000admin",
+        origin: "https://admin.open-artifacts.app",
+        domains: [],
+      });
+      expect(Object.keys(body.keys[0])).toEqual(["kid", "x"]);
+      expect(r.writes).toHaveLength(2);
+      expect(puts(r.log)).toEqual(["ADMIN_SESSION_KEY", "ADMIN_BROKER_KEY"]);
+      expect(
+        r.log.indexOf(put) < r.log.findIndex((l) => l === "stdin-len ADMIN_BROKER_KEY" || l.startsWith("stdin-len ADMIN_BROKER_KEY ")),
+      ).toBe(true);
+      // An Ed25519 pkcs8 (base64url) never shows.
+      expect([r.out, r.err, ...r.log].join("\n")).not.toContain("MC4CAQAwBQYDK2Vw");
+      expect(r.out).toContain("prod provisioning: deployed and verified");
+      clean(r);
+    });
+    it("a rerun writes nothing; a missing entry gets a new key, entry first", () => {
+      const again = setup({ exists: brokers, files: live, secrets: liveSecrets }).run(
+        "provisioning",
+      );
+      expect(again.err).toBe("");
+      expect(again.code).toBe(0);
+      expect(again.writes).toEqual([]);
+      expect(puts(again.log)).toEqual([]);
+      const { [`kv-${REG}-${KEY}`]: _, ...noEntry } = live;
+      const r = setup({ exists: brokers, files: noEntry, secrets: liveSecrets }).run(
+        "provisioning",
+      );
+      expect(r.code, r.err).toBe(0);
+      expect(r.writes.map((w) => w.split(" ").slice(0, 3).join(" "))).toEqual([
+        `WRITE PUT /storage/kv/namespaces/${REG}/values/${KEY}`,
+      ]);
+      expect(puts(r.log)).toEqual(["ADMIN_BROKER_KEY"]);
+    });
+    it("refuses until the provisioner and the auth broker exist", () => {
+      const r = setup({ exists: ["oa-p-auth-broker"] }).run("provisioning");
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("oa-p-provisioner does not exist");
+      expect(r.writes).toEqual([]);
+      expect(r.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+    });
+    it("a failed KV listing stops before any create; two namespaces of the name refuse", () => {
+      const f = setup({ exists: brokers, files: { "fail-kvns": "" } }).run(
+        "provisioning",
+      );
+      expect(f.code).toBe(1);
+      expect(f.err).toContain("list KV namespaces failed");
+      expect(f.writes).toEqual([]);
+      const two = setup({
+        exists: brokers,
+        files: {
+          "kvns.json": JSON.stringify([
+            { id: OAUTH, title: "oa-p-provisioning-oauth" },
+            { id: "b".repeat(32), title: "oa-p-provisioning-oauth" },
+          ]),
+        },
+      }).run("provisioning");
+      expect(two.code).toBe(1);
+      expect(two.err).toContain("want exactly one");
+      expect(two.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+    });
+    it("verify only: builds, creates and sets nothing, and still reads everything back", () => {
+      const r = setup({
+        exists: [...brokers, "oa-p-provisioning"],
+        files: live,
+        secrets: liveSecrets,
+      }).run("provisioning", { VERIFY_ONLY: "1" });
+      expect(r.code, r.err).toBe(0);
+      expect(r.writes).toEqual([]);
+      expect(r.log.filter((l) => /^(pnpm|wrapper) /.test(l))).toEqual([]);
+      const none = setup({ exists: brokers }).run("provisioning", {
+        VERIFY_ONLY: "1",
+      });
+      expect(none.code).toBe(1);
+      expect(none.writes).toEqual([]);
+    });
+    it("refuses every read-back that differs", () => {
+      const b = provisioningBindings();
+      const swap = (name: string, over: Record<string, unknown>) =>
+        settings(b.map((x) => (x.name === name ? { ...x, ...over } : x)));
+      const cases: [string, Record<string, string>, string][] = [
+        ["oauth kv", { next: swap("OAUTH_KV", { namespace_id: "f".repeat(32) }) }, "OAUTH_KV: got"],
+        ["rate limit", { next: swap("RL_PV_OAUTH_IP", { simple: { limit: 999, period: 60 } }) }, "rate limits: got"],
+        ["rate limit id", { next: swap("RL_PV_OAUTH_IP", { namespace_id: "1146" }) }, "rate limits: got"],
+        ["redirects", { next: swap("MCP_REDIRECT_URIS", { text: "https://evil.example/cb" }) }, "provisioning vars: got"],
+        ["identities", { next: swap("ADMIN_IDENTITIES", { text: "a@b.c:1" }) }, "provisioning vars: got"],
+        ["entrypoint", { next: swap("PROVISIONER", { entrypoint: "Other" }) }, "PROVISIONER: got"],
+        ["prod oidc", { next: settings([...b, { type: "plain_text", name: "OIDC_AUDIENCE", text: "x" }]) }, "prod oa-p-provisioning binds OIDC_AUDIENCE"],
+        ["test-users", { next: swap("SIGNUPS_ENABLED", { text: "test-users" }) }, "SIGNUPS_ENABLED (test-users is staging only)"],
+        ["bundle", { content: "x; fetch('/auth/test-signin')" }, "bundle contains test-signin"],
+        ["directory", { [`kv-${DIRREG}-${KEY}`]: entry() }, "is in oa-p-directory-registry"],
+        ["entry origin", { [`kv-${REG}-${KEY}`]: entry({ origin: "https://evil.example" }) }, "is not the admin entry"],
+        ["entry domains", { [`kv-${REG}-${KEY}`]: entry({ domains: ["leourbina.com"] }) }, "is not the admin entry"],
+        ["entry disabled", { [`kv-${REG}-${KEY}`]: entry({ disabled: true }) }, "is not the admin entry"],
+      ];
+      for (const [label, over, msg] of cases) {
+        const { next, content, ...files } = over;
+        const s = setup({
+          exists: brokers,
+          files: { ...live, ...files, ...(content ? { "oa-p-provisioning.content": content } : {}) },
+          secrets: liveSecrets,
+          ...(next ? { next: { "oa-p-provisioning": next } } : {}),
+        });
+        const r = s.run("provisioning");
+        expect(r.code, label).toBe(1);
+        expect(r.err, label).toContain(msg);
+      }
+      const extra = setup({
+        exists: brokers,
+        files: live,
+        secrets: { "oa-p-provisioning": [...liveSecrets["oa-p-provisioning"], "X"] },
+      }).run("provisioning");
+      expect(extra.code).toBe(1);
+      expect(extra.err).toContain("secrets are 'ADMIN_BROKER_KEY ADMIN_SESSION_KEY X '");
+    });
+    it("staging: the staging names and OIDC vars, the staging admin origin", () => {
+      const s = setup({
+        exists: ["oa-s-provisioner", "oa-s-auth-broker"],
+        next: { "oa-s-provisioning": settings(provisioningBindings("s", "staging")) },
+      });
+      const r = s.run("provisioning", { NEW_KV: OAUTH }, "staging");
+      expect(r.err).toBe("");
+      expect(r.code).toBe(0);
+      const put = r.writes.find((w) => w.includes(`/values/${KEY} `)) as string;
+      expect(put).toContain('"origin":"https://admin.open-artifacts-staging.app"');
+    });
+  });
+
+  it("auth-broker: the Google secret only when given or absent", () => {
+    const keep = setup({
+      secrets: { "oa-p-auth-broker": ["BROKER_STATE_KEY", "GOOGLE_CLIENT_SECRET"] },
+    }).run("auth-broker", { GOOGLE_CLIENT_SECRET: "" });
+    expect(keep.err).toBe("");
+    expect(keep.code).toBe(0);
+    expect(puts(keep.log)).toEqual([]);
+    const absent = setup().run("auth-broker", { GOOGLE_CLIENT_SECRET: "" });
+    expect(absent.code).toBe(1);
+    expect(absent.err).toContain("oa-p-auth-broker has no GOOGLE_CLIENT_SECRET");
+    expect(puts(absent.log)).toEqual([]);
+  });
+
+  describe("inventory read-back (W8's OIDC vars)", () => {
+    const INV = readFileSync(join(root, "apps/inventory/wrangler.jsonc"), "utf8");
+    const W8 = INV.replace(
+      '"name": "oa-p-inventory",',
+      `"name": "oa-p-inventory", "vars": { "OIDC_AUDIENCE": "oa-p-inventory", "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_PROD}}", "OIDC_JOB_WORKFLOW_REFS": "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main" },`,
+    );
+    /** The repo's deploy script and wrangler-env.mjs beside our own inventory config. */
+    const tree = (config: string) => {
+      const t = mkdtempSync(join(tmpdir(), "oa-hosted-tree-"));
+      for (const f of ["deploy-hosted-platform.sh", "wrangler-env.mjs"])
+        write(join(t, "scripts/ops", f), readFileSync(join(root, "scripts/ops", f), "utf8"));
+      write(join(t, "apps/inventory/wrangler.jsonc"), config);
+      return join(t, "scripts/ops/deploy-hosted-platform.sh");
+    };
+    const deployed = (vars: Record<string, string>, extra: Record<string, unknown>[] = []) =>
+      settings([
+        { type: "d1", name: "PLATFORM_DB", id: DB },
+        { type: "kv_namespace", name: "HOSTS", namespace_id: HOSTS },
+        ...Object.entries(vars).map(([name, text]) => ({ type: "plain_text", name, text })),
+        ...extra,
+      ]);
+    const VARS = {
+      OIDC_AUDIENCE: "oa-p-inventory",
+      OIDC_REPOSITORY_ID: REPO_ID,
+      OIDC_JOB_WORKFLOW_REFS: "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main",
+    };
+    const go = (next: string) => {
+      const s = setup({ next: { "oa-p-inventory": next } });
+      const r = s.sb.run(["bash", tree(W8), "prod", "inventory"], {
+        env: {
+          ...ENV,
+          STATE: s.state,
+          DEPLOY_WRAPPER: wrapperStub(s.sb.dir),
+          BROKER_PIN_FILE: "/dev/null",
+        },
+      });
+      return r;
+    };
+    it("the deployed OIDC vars equal the committed ones, the repository id filled", () => {
+      const r = go(deployed(VARS));
+      expect(r.err).toBe("");
+      expect(r.code).toBe(0);
+    });
+    it("refuses a var that differs, a missing one, or any secret", () => {
+      for (const [label, next] of [
+        ["refs", deployed({ ...VARS, OIDC_JOB_WORKFLOW_REFS: "o/r/.github/workflows/x.yml@refs/heads/main" })],
+        ["repo id", deployed({ ...VARS, OIDC_REPOSITORY_ID: "1" })],
+        ["missing", deployed({ OIDC_AUDIENCE: VARS.OIDC_AUDIENCE, OIDC_REPOSITORY_ID: REPO_ID })],
+        ["secret", deployed(VARS, [{ type: "secret_text", name: "INVENTORY_KEY" }])],
+      ] as const) {
+        const r = go(next);
+        expect(r.code, label).toBe(1);
+        expect(r.err, label).toMatch(/inventory vars: got|has secret bindings/);
+      }
+    });
   });
 });

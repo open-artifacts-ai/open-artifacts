@@ -5,7 +5,8 @@
 // environment variable NAME (the value deploy-platform-worker.sh filled); an
 // unset or empty one exits 1, so a read-back never compares to a placeholder.
 // Usage: node scripts/ops/wrangler-env.mjs <wrangler.jsonc> staging|prod vars|ratelimits
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /** JSONC to JSON: comments outside strings, then trailing commas. */
 export function stripJsonc(src) {
@@ -56,9 +57,10 @@ export function envSection(src, env, what, values) {
   return out;
 }
 
+// Run as a script (paths compared after symlinks, as macOS's /var is one).
 if (
   process.argv[1] &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
 ) {
   const [file, env, what] = process.argv.slice(2);
   if (!file || (env !== "staging" && env !== "prod") || !what) {
