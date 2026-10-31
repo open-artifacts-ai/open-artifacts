@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { handle } from "../src/app.js";
+import { handle as appHandle } from "../src/app.js";
 import type { AuditEntry } from "../src/audit.js";
 import { authenticate } from "../src/auth/authenticate.js";
 import { hmacB64 } from "../src/auth/crypto.js";
@@ -16,6 +16,21 @@ import type { SigninDeps } from "../src/auth/signin.js";
 import { isRefusal, type Principal } from "../src/principal.js";
 import { platformDb } from "./db.js";
 import { ADMIN, API, ctx, fakeEnv } from "./fakes.js";
+
+// Every edge request carries cf-connecting-ip (the adapter 403s without
+// one, 4.7); a test that sets its own keeps it.
+const handle = (
+  req: Request,
+  ...rest: Parameters<typeof appHandle> extends [unknown, ...infer R]
+    ? R
+    : never
+) => {
+  if (!req.headers.has("cf-connecting-ip")) {
+    req = new Request(req);
+    req.headers.set("cf-connecting-ip", "192.0.2.10");
+  }
+  return appHandle(req, ...rest);
+};
 
 // Sessions, cookies, CSRF and Origin (design v7 4.5), and R24 logout.
 
@@ -86,10 +101,11 @@ describe("authenticate on the admin host (4.5)", () => {
       email: "me@example.com",
       sub: "123",
       authAt: NOW - 5000,
-      sessionHash: await sessionHash(s.sid),
       session: {
+        hash: await sessionHash(s.sid),
         csrf: await csrfToken(e.env, s.sid),
         expiresAt: NOW + SESSION_TTL_MS,
+        authAt: NOW - 5000,
       },
     });
   });
@@ -372,7 +388,7 @@ describe("R24 POST /auth/logout", () => {
 });
 
 describe("app wiring", () => {
-  it("an /api/v1 read with a session reaches invokeRoute as the admin (501 stub, not 401)", async () => {
+  it("an /api/v1 read with a session reaches invokeRoute as the admin (200, not 401)", async () => {
     const e = fakeEnv();
     const s = await session(e, { now: Date.now() });
     const res = await handle(
@@ -380,11 +396,11 @@ describe("app wiring", () => {
       e.env,
       ctx(),
     );
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(200);
     expect(e.limits.RL_PV_READ.keys).toEqual(["admin:me@example.com"]);
   });
 
-  it("an /api/v1 write needs Origin and x-csrf-token", async () => {
+  it("an /api/v1 write needs Origin and x-csrf-token, then reaches invokeRoute", async () => {
     const e = fakeEnv();
     const s = await session(e, { now: Date.now() });
     const post = (h: Record<string, string>) =>
@@ -404,6 +420,7 @@ describe("app wiring", () => {
           "x-csrf-token": await csrfToken(e.env, s.sid),
         })
       ).status,
-    ).toBe(501);
+      // Past CSRF: invokeRoute's body step (no JSON content type) answers.
+    ).toBe(415);
   });
 });

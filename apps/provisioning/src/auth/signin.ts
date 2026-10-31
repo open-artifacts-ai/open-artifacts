@@ -417,13 +417,13 @@ async function logout(
   const p = await sessionPrincipal(req, env, now);
   if (isRefusal(p)) return refuse(env, "auth", p.code, req);
   const c = checkCsrf(req, env, p);
-  if (c || !p.sessionHash) return refuse(env, "csrf", "csrf_failed", req);
+  if (c || !p.session) return refuse(env, "csrf", "csrf_failed", req);
   // RL_PV_WRITE, as every write route (4.7); an authenticated 429 counts
   // in bucket `auth` (4.9).
   const w = await limit(env, "write", p.rateKey);
   if (w) return refuse(env, "auth", w.code, req);
   const ip = ipKey(req);
-  await endSession(env, d, p.sessionHash, now, {
+  await endSession(env, d, p.session.hash, now, {
     actor: p,
     route: "R24",
     ip,
