@@ -9,7 +9,14 @@ import {
   TEST_HOOKS_DEFINE,
 } from "@oa/provision";
 import { afterEach, describe, expect, it } from "vitest";
-import { HOOK_SQL_MARKERS, ProdDirty, prodClean } from "../src/prod.ts";
+import {
+  guardProdClean,
+  HOOK_SQL_MARKERS,
+  PROD_CLEAN_CODES,
+  PROD_CLEAN_LINE_RE,
+  ProdDirty,
+  prodClean,
+} from "../src/prod.ts";
 import { prodCleanGate, run } from "../src/prod-clean-cli.ts";
 import { parseTargets } from "../src/targets.ts";
 import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
@@ -38,6 +45,8 @@ interface World {
   healthz: Record<string, unknown>;
   secretNames: string[];
   bindings: string[];
+  /** The authorization header of each /installs read. */
+  inventoryAuth?: (string | undefined)[];
 }
 
 function signedRecord(o: {
@@ -104,8 +113,9 @@ const cleanWorld = (): World => ({
       id: ID,
       appHost: "acme.open-artifacts.app",
       contentHost: "c",
-      state: "live",
+      state: "active",
       testHooks: false,
+      mode: "serving",
     },
   ],
   healthz: { ok: true, installId: ID },
@@ -138,8 +148,10 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
       if (!b) return json(res, 404, { success: false });
       return res.writeHead(200, { etag: '"e"' }).end(Buffer.from(b));
     }
-    if (u.pathname === "/installs")
+    if (u.pathname === "/installs") {
+      w.inventoryAuth = [...(w.inventoryAuth ?? []), req.headers.authorization];
       return json(res, 200, { installs: w.installs });
+    }
     if (u.pathname === "/healthz") return json(res, 200, w.healthz);
     if (u.pathname === `${script}/secrets`)
       return json(res, 200, {
@@ -198,6 +210,16 @@ async function check(w: World, o: { inventory?: boolean } = {}) {
   return prodClean(probe(o), { fetch, pubkey: PUB });
 }
 
+/** The ProdDirty code a rejected promise carries. */
+async function failCode(p: Promise<unknown>): Promise<string> {
+  const e = await p.then(
+    () => null,
+    (x: unknown) => x,
+  );
+  if (!(e instanceof ProdDirty)) throw new Error(`not ProdDirty: ${String(e)}`);
+  return e.code;
+}
+
 describe("prodClean (spec 2026-10-26)", () => {
   it("reads the CI layout: REDLINE_PROD_R2_TOKEN, _SCRIPTS_TOKEN and REDLINE_PROD_ACCOUNT_ID", () => {
     const p = probe();
@@ -215,26 +237,144 @@ describe("prodClean (spec 2026-10-26)", () => {
     expect(await check(w)).toEqual({ level: "pass", releases: 1, installs: 1 });
   });
 
-  it("a missing bucket is not-applicable, never pass", async () => {
+  it("a missing bucket fails bucket_missing, never pass", async () => {
     const w = cleanWorld();
     w.objects = null;
-    expect(await check(w)).toEqual({
-      level: "not-applicable",
-      reason: "prod not brought up",
-    });
+    expect(await failCode(check(w))).toBe("bucket_missing");
   });
 
-  it("an empty bucket is not-applicable", async () => {
-    expect((await check(cleanWorld())).level).toBe("not-applicable");
-  });
-
-  it("0 inventory rows is not-applicable", async () => {
+  it("configured with an empty bucket and 0 rows passes", async () => {
     const w = cleanWorld();
-    publish(w, { version: "1.2.3" });
     w.installs = [];
-    expect(await check(w)).toEqual({
-      level: "not-applicable",
-      reason: "prod not brought up",
+    expect(await check(w)).toEqual({ level: "pass", releases: 0, installs: 0 });
+  });
+
+  it("an inventory that is not the installs schema fails inventory_bad", async () => {
+    const w = cleanWorld();
+    w.installs = [{ id: ID, appHost: "a", testHooks: false }];
+    expect(await failCode(check(w))).toBe("inventory_bad");
+  });
+
+  it("the inventory bearer: opts.inventoryBearer, else the probe's token file", async () => {
+    const w = cleanWorld();
+    const { fetch } = await serve(w);
+    await prodClean(probe(), { fetch, pubkey: PUB });
+    await prodClean(probe(), {
+      fetch,
+      pubkey: PUB,
+      inventoryBearer: "jwt.x.y",
+    });
+    expect(w.inventoryAuth).toEqual(["Bearer inv-key", "Bearer jwt.x.y"]);
+  });
+
+  it("an unconfigured probe fails before any request", async () => {
+    let calls = 0;
+    const f = (async () => {
+      calls++;
+      throw new Error("no");
+    }) as unknown as typeof fetch;
+    expect(await failCode(prodClean(undefined, { fetch: f }))).toBe(
+      "not_configured",
+    );
+    expect(
+      await failCode(prodClean(probe({ inventory: false }), { fetch: f })),
+    ).toBe("inventory_unconfigured");
+    expect(calls).toBe(0);
+  });
+
+  it("a dirty install carries its code, id and a detail of at most 200", async () => {
+    const w = cleanWorld();
+    w.secretNames = ["TEST_HOOK_KEY"];
+    const e = await check(w).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ProdDirty);
+    expect((e as ProdDirty).code).toBe("install_dirty");
+    expect((e as ProdDirty).installId).toBe(ID);
+    expect(new ProdDirty("unreachable", "x".repeat(300)).message).toHaveLength(
+      200,
+    );
+    for (const c of PROD_CLEAN_CODES)
+      expect(c).toMatch(/^[a-z][a-z0-9_]{0,39}$/);
+  });
+
+  describe("truth table (2026-10-30: configured + zero = pass, unconfigured = fail)", () => {
+    type Bucket = "404" | "empty" | "releases";
+    const cases: {
+      r2: boolean;
+      bucket: Bucket;
+      inv: boolean;
+      rows: number;
+      dirty: boolean;
+    }[] = [];
+    // Dirty needs something to be dirty: a release or a row.
+    for (const r2 of [true, false])
+      for (const bucket of ["404", "empty", "releases"] as Bucket[])
+        for (const inv of [true, false])
+          for (const rows of [0, 1])
+            for (const dirty of [false, true])
+              if (!dirty || bucket === "releases" || rows > 0)
+                cases.push({ r2, bucket, inv, rows, dirty });
+    const expected = (c: (typeof cases)[number]) => {
+      if (!c.r2) return "not_configured";
+      if (!c.inv) return "inventory_unconfigured";
+      if (c.bucket === "404") return "bucket_missing";
+      if (c.dirty)
+        return c.bucket === "releases" ? "release_dirty" : "install_dirty";
+      return "pass";
+    };
+    for (const c of cases) {
+      const want = expected(c);
+      it(`R2 ${c.r2 ? "yes" : "no"}, bucket ${c.bucket}, inventory ${c.inv ? "yes" : "no"}, rows ${c.rows}, dirty ${c.dirty ? "yes" : "no"} -> ${want}`, async () => {
+        const w = cleanWorld();
+        if (c.bucket === "404") w.objects = null;
+        if (c.bucket === "releases")
+          publish(w, {
+            version: "1.2.3",
+            ...(c.dirty ? { js: `const q = "${HOOK_SQL_MARKERS[0]}";` } : {}),
+          });
+        if (c.rows === 0) w.installs = [];
+        if (c.dirty && c.bucket !== "releases") w.bindings = ["TEST_HOOKS"];
+        const { fetch } = await serve(w);
+        const p = c.r2 ? probe({ inventory: c.inv }) : undefined;
+        const r = prodClean(p, { fetch, pubkey: PUB });
+        if (want === "pass")
+          expect(await r).toEqual({
+            level: "pass",
+            releases: c.bucket === "releases" ? 1 : 0,
+            installs: c.rows,
+          });
+        else expect(await failCode(r)).toBe(want);
+      });
+    }
+  });
+
+  describe("the red-line guard", () => {
+    const pass = { level: "pass", releases: 0, installs: 0 } as const;
+    it("local mode is not-applicable and never probes", async () => {
+      let n = 0;
+      const r = await guardProdClean({ mode: "local" }, async () => {
+        n++;
+        return pass;
+      });
+      expect(r).toBe("not-applicable");
+      expect(n).toBe(0);
+    });
+    it("staging with no prod probe fails: prod probe not configured", async () => {
+      await expect(guardProdClean({ mode: "staging" })).rejects.toThrow(
+        "prod probe not configured",
+      );
+    });
+    it("staging with a probe runs prodClean on it", async () => {
+      const p = probe();
+      const seen: unknown[] = [];
+      const r = await guardProdClean(
+        { mode: "staging", prod: p },
+        async (x) => {
+          seen.push(x);
+          return pass;
+        },
+      );
+      expect(r).toEqual(pass);
+      expect(seen).toEqual([p]);
     });
   });
 
@@ -294,10 +434,12 @@ describe("prodClean (spec 2026-10-26)", () => {
     await expect(check(w)).rejects.toThrow(/installId differs/);
   });
 
-  it("a release with no inventory configured is not-applicable", async () => {
+  it("a release with no inventory configured fails inventory_unconfigured", async () => {
     const w = cleanWorld();
     publish(w, { version: "1.2.3" });
-    expect((await check(w, { inventory: false })).level).toBe("not-applicable");
+    expect(await failCode(check(w, { inventory: false }))).toBe(
+      "inventory_unconfigured",
+    );
   });
 
   it("the hook SQL markers equal the server's strip test", () => {
@@ -331,57 +473,62 @@ describe("prod-clean-cli: the hosted-ops precheck", () => {
     for (const op of ["create", "upgrade"])
       expect(await gate(released(), op)).toEqual({
         code: 0,
-        line: "prod-clean: pass (1 releases, 1 installs)",
+        line: "prod-clean: pass",
       });
   });
 
-  it("a dirty prod is exit 1", async () => {
+  it("a dirty prod is exit 1 with only its code", async () => {
     const w = cleanWorld();
     publish(w, { version: "1.2.3", variant: "redline" });
-    for (const op of ["create", "upgrade"]) {
-      const v = await gate(w, op);
-      expect(v.code).toBe(1);
-      expect(v.line).toMatch(/^prod-clean: fail: .*variant redline/);
-    }
+    for (const op of ["create", "upgrade"])
+      expect(await gate(w, op)).toEqual({
+        code: 1,
+        line: "prod-clean: fail (release_dirty)",
+      });
   });
 
-  it("not-applicable on an empty inventory: create exit 0, upgrade exit 1", async () => {
+  it("configured with no install or no release passes, for create and upgrade", async () => {
     const w = released();
     w.installs = [];
     expect((await gate(w, "create")).code).toBe(0);
-    expect(await gate(w, "upgrade")).toEqual({
-      code: 1,
-      line: "prod-clean: unproven for upgrade: not a pass",
-    });
-    // No release yet either: still only create.
-    const bare = cleanWorld();
-    bare.installs = [];
-    expect((await gate(bare, "create")).code).toBe(0);
-    expect((await gate(bare, "upgrade")).code).toBe(1);
+    expect((await gate(w, "upgrade")).code).toBe(0);
+    expect((await gate(cleanWorld(), "create")).code).toBe(0);
   });
 
-  it("not-applicable without an empty inventory read is exit 1, even for create", async () => {
-    // Inventory not configured: nothing proves there is no install.
-    expect((await gate(released(), "create", { inventory: false })).code).toBe(
-      1,
-    );
-    // Installs listed but no release in the bucket.
-    expect((await gate(cleanWorld(), "create")).code).toBe(1);
+  it("no inventory configured is exit 1", async () => {
+    expect(await gate(released(), "create", { inventory: false })).toEqual({
+      code: 1,
+      line: "prod-clean: fail (inventory_unconfigured)",
+    });
   });
 
   it("an error (network, inventory down) is exit 1", async () => {
     const down: typeof fetch = () => Promise.reject(new TypeError("down"));
-    const v = await gate(released(), "create", { fetch: down });
-    expect(v.code).toBe(1);
-    expect(v.line).toMatch(/^prod-clean: error: .*network/);
+    expect(await gate(released(), "create", { fetch: down })).toEqual({
+      code: 1,
+      line: "prod-clean: fail (error)",
+    });
     const w = released();
     w.installs = "nope" as unknown as Record<string, unknown>[];
-    expect((await gate(w, "create")).code).toBe(1);
+    expect(await gate(w, "create")).toEqual({
+      code: 1,
+      line: "prod-clean: fail (inventory_bad)",
+    });
   });
 
   it("any other op is exit 1", async () => {
     expect((await gate(released(), "rollback")).code).toBe(1);
     expect((await gate(released(), "")).code).toBe(1);
+  });
+
+  it("every line is one of the two fixed forms, never a detail", async () => {
+    const w = cleanWorld();
+    publish(w, { version: "1.2.3" });
+    w.secretNames = ["TEST_HOOK_KEY"];
+    const v = await gate(w, "create");
+    expect(v.line).toBe("prod-clean: fail (install_dirty)");
+    expect(v.line).toMatch(PROD_CLEAN_LINE_RE);
+    expect(v.line).not.toContain(ID);
   });
 
   it("run: reads the CI layout from env; an unconfigured probe is exit 1", async () => {
@@ -406,7 +553,11 @@ describe("prod-clean-cli: the hosted-ops precheck", () => {
     expect(await run(env, io, { fetch, pubkey: PUB })).toBe(0);
     expect(await run({ ...env, REDLINE_PROD_SECRETS_DIR: "" }, io)).toBe(1);
     expect(await run({ ...env, REDLINE_PROD_ACCOUNT_ID: "x" }, io)).toBe(1);
-    expect(lines.join("\n")).not.toMatch(/r2-token|scripts-token|inv-key/);
+    expect(lines).toEqual([
+      "prod-clean: pass",
+      "prod-clean: fail (not_configured)",
+      "prod-clean: fail (not_configured)",
+    ]);
   });
 
   it("runs under plain node: no probe is exit 1", () => {
@@ -418,9 +569,8 @@ describe("prod-clean-cli: the hosted-ops precheck", () => {
         encoding: "utf8",
       },
     );
-    expect(r.stderr).toContain(
-      "prod-clean: error: the prod probe is not configured",
-    );
+    expect(r.stderr).toBe("prod-clean: fail (not_configured)\n");
+    expect(r.stdout).toBe("");
     expect(r.status).toBe(1);
   });
 });

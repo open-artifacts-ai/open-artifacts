@@ -7,7 +7,7 @@ import {
   readBody,
   withCred,
 } from "../src/http.ts";
-import { prodClean } from "../src/prod.ts";
+import { guardProdClean } from "../src/prod.ts";
 import { crossCheck, prepareSide, type Side } from "../src/refused.ts";
 import { proof } from "../src/report.ts";
 import {
@@ -50,12 +50,9 @@ describe("guard", () => {
   });
 
   it("prod is clean (no test hooks on any prod install)", async (ctx) => {
-    if (T.mode !== "staging") return proof(ctx, "not-applicable", "local mode");
-    if (!T.prod)
-      return proof(ctx, "not-applicable", "prod probe not configured");
-    const r = await prodClean(T.prod);
-    if (r.level === "not-applicable")
-      return proof(ctx, "not-applicable", r.reason);
+    // Staging with no prod probe throws ProdDirty("prod probe not configured").
+    if ((await guardProdClean(T)) === "not-applicable")
+      return proof(ctx, "not-applicable", "local mode");
   });
 });
 
