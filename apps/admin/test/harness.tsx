@@ -8,7 +8,7 @@ import { render } from "@testing-library/react";
 import { type HttpHandler, HttpResponse, http, type JsonBodyType } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
-import { createHandlers } from "../src/mocks/handlers";
+import { createMock } from "../src/mocks/handlers";
 import { router as appRouter } from "../src/router";
 
 const ORIGIN = "http://localhost";
@@ -46,6 +46,8 @@ server.events.on("request:start", async ({ request }) => {
     csrf: request.headers.get("x-csrf-token"),
   });
 });
+/** The contract mock of the current test: advanceJob, finishAllJobs. */
+export let mock: ReturnType<typeof createMock>;
 export const writes = () => seen.filter((s) => s.method !== "GET");
 
 // Captured after listen(): msw patches the global fetch there. The panel's
@@ -57,7 +59,8 @@ beforeAll(() => {
 });
 beforeEach(() => {
   seen = [];
-  server.use(...createHandlers());
+  mock = createMock();
+  server.use(...mock.handlers);
   vi.stubGlobal("fetch", (u: RequestInfo | URL, init?: RequestInit) =>
     realFetch(new URL(u as string, ORIGIN).href, init),
   );

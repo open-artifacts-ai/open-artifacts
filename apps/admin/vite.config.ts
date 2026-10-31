@@ -32,6 +32,16 @@ export default defineConfig({
           new URL("../../packages/shared/src/index.ts", import.meta.url),
         ),
       },
+      // The public specifier for the mock; its file is not at the same path.
+      {
+        find: /^@oa\/shared\/provisioning\/mocks$/,
+        replacement: fileURLToPath(
+          new URL(
+            "../../packages/shared/src/mocks/provisioning.ts",
+            import.meta.url,
+          ),
+        ),
+      },
       {
         find: /^@oa\/shared\/(.*)$/,
         replacement: `${fileURLToPath(new URL("../../packages/shared/src", import.meta.url))}/$1`,

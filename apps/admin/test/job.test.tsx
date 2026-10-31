@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { JOB_POLL_MS, jobIsTerminal, jobQuery } from "../src/api/queries";
 import { FIXTURE_IDS, jobsByStatus } from "../src/mocks/fixtures";
-import { http, json, renderApp, seen, use, writes } from "./harness";
+import { http, json, mock, renderApp, seen, use, writes } from "./harness";
 
 const JOB = FIXTURE_IDS.jobLeo;
 const serve = (j: Job) => use(http.get(`*/api/v1/jobs/${j.id}`, () => json(j)));
@@ -75,29 +75,68 @@ it("polls every 2 s while the job is active and not once it is done or failed", 
   }
 });
 
-it("keeps polling a running job, then stops once it is done", async () => {
+/** Start a create job on the mock, as the create screen would. */
+async function startJob(slug = "polled") {
+  const res = await fetch("/api/v1/installs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      requestId: `req-${slug}-0123456789`,
+      slug,
+      ownerEmail: "o@example.com",
+      tier: "team",
+      auth: { providers: ["google"], domains: ["example.com"] },
+    }),
+  });
+  return ((await res.json()) as { job: Job }).job.id;
+}
+
+it("keeps polling an active job, then stops once it is done", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
-    let n = 0;
-    use(
-      http.get(`*/api/v1/jobs/${JOB}`, () =>
-        json(++n < 3 ? jobsByStatus.running : jobsByStatus.done),
-      ),
-    );
-    renderApp(`/jobs/${JOB}`);
-    await screen.findByTestId("status");
+    const id = await startJob();
+    seen.length = 0;
+    renderApp(`/jobs/${id}`);
+    expect(await screen.findByTestId("status")).toHaveTextContent("queued");
     const calls = () =>
-      seen.filter((s) => s.path.endsWith(`/jobs/${JOB}`)).length;
+      seen.filter((s) => s.path.endsWith(`/jobs/${id}`)).length;
     expect(calls()).toBe(1);
-    for (const want of [2, 3]) {
-      await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
-      await waitFor(() => expect(calls()).toBe(want));
-    }
+    mock.advanceJob(id, "running");
+    await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
+    await waitFor(() =>
+      expect(screen.getByTestId("status")).toHaveTextContent("running"),
+    );
+    expect(calls()).toBe(2);
+    mock.advanceJob(id, "done");
+    await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
     await waitFor(() =>
       expect(screen.getByTestId("status")).toHaveTextContent("done"),
     );
+    const settled = calls();
     await vi.advanceTimersByTimeAsync(JOB_POLL_MS * 5);
-    expect(calls()).toBe(3);
+    expect(calls()).toBe(settled);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("stops polling at a failed job and shows its error", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const id = await startJob("doomed");
+    renderApp(`/jobs/${id}`);
+    await screen.findByTestId("status");
+    mock.advanceJob(id, "failed", "prod_dirty");
+    await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
+    await waitFor(() =>
+      expect(screen.getByTestId("status")).toHaveTextContent("failed"),
+    );
+    expect(screen.getByTestId("job-error")).toHaveTextContent(/leftovers/);
+    const calls = () =>
+      seen.filter((s) => s.path.endsWith(`/jobs/${id}`)).length;
+    const settled = calls();
+    await vi.advanceTimersByTimeAsync(JOB_POLL_MS * 5);
+    expect(calls()).toBe(settled);
   } finally {
     vi.useRealTimers();
   }
@@ -128,9 +167,9 @@ it("stops polling when the job cannot be loaded", async () => {
   }
 });
 
-it("cancels with the install slug typed", async () => {
-  serve(jobsByStatus.running);
-  renderApp(`/jobs/${JOB}`);
+it("cancels with the install slug typed, and the job settles failed", async () => {
+  const id = await startJob("cancelme");
+  renderApp(`/jobs/${id}`);
   const open = await screen.findByRole("button", { name: "Cancel job" });
   await waitFor(() => expect(open).toBeEnabled());
   fireEvent.click(open);
@@ -138,12 +177,16 @@ it("cancels with the install slug typed", async () => {
   const go = within(dialog).getByRole("button", { name: "Cancel job" });
   expect(go).toBeDisabled();
   fireEvent.change(within(dialog).getByRole("textbox"), {
-    target: { value: "leo" },
+    target: { value: "cancelme" },
   });
   fireEvent.click(go);
-  await waitFor(() => expect(writes()).toHaveLength(1));
-  expect(writes()[0].path).toBe(`/api/v1/jobs/${JOB}/cancel`);
-  expect(writes()[0].body).toMatchObject({ confirmSlug: "leo" });
+  await waitFor(() =>
+    expect(writes().at(-1)?.path).toBe(`/api/v1/jobs/${id}/cancel`),
+  );
+  expect(writes().at(-1)?.body).toMatchObject({ confirmSlug: "cancelme" });
+  await waitFor(() =>
+    expect(screen.getByTestId("status")).toHaveTextContent("failed"),
+  );
 });
 
 it("says a missing job is not found", async () => {
