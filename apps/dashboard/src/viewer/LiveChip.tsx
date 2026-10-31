@@ -101,9 +101,10 @@ function SwappedChip({
   onExpire,
 }: {
   swapped: Swapped;
-  onExpire: () => void;
+  onExpire: (version: number) => void;
 }) {
-  const pause = usePausableTimer(NOTE_MS, onExpire);
+  // Names its own version: a newer note may already have replaced it.
+  const pause = usePausableTimer(NOTE_MS, () => onExpire(swapped.version));
   return (
     <span className="oa-lchip oa-lchip-done" {...pause}>
       <Copy {...swappedLabel(swapped)} />
@@ -130,7 +131,7 @@ export function TitleLive({
   current: number | null;
   onView: () => void;
   onCurrent: () => void;
-  onExpire: () => void;
+  onExpire: (version: number) => void;
 }) {
   if (held)
     return (
@@ -179,9 +180,9 @@ function FullSwapped({
   onExpire,
 }: {
   swapped: Swapped;
-  onExpire: () => void;
+  onExpire: (version: number) => void;
 }) {
-  const pause = usePausableTimer(FULL_NOTE_MS, onExpire);
+  const pause = usePausableTimer(FULL_NOTE_MS, () => onExpire(swapped.version));
   return (
     <span className="oa-lpill oa-lpill-note" data-open="true" {...pause}>
       {swappedLabel(swapped).long}
@@ -209,7 +210,7 @@ export function FullLive({
   held: LiveUpdate | null;
   swapped: Swapped | null;
   onView: () => void;
-  onExpire: () => void;
+  onExpire: (version: number) => void;
 }) {
   const [revealed, setRevealed] = useState(!embed);
   const [hover, setHover] = useState(false);
