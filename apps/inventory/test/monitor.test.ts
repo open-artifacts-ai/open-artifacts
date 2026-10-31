@@ -65,7 +65,7 @@ const world = (): World => ({
   healthz: { ok: true, installId: ID },
   tokens: {
     [R2_TOKEN]: { status: "active", expires_on: "2027-10-01T00:00:00Z" },
-    [SCRIPTS_TOKEN]: { status: "active" },
+    [SCRIPTS_TOKEN]: { status: "active", expires_on: "2027-10-01T00:00:00Z" },
   },
   report: 204,
 });
@@ -291,8 +291,10 @@ describe("prodclean-monitor", () => {
     );
   });
 
-  it("an inactive or unverifiable red-line token -> redline_token_invalid", async () => {
-    for (const t of [{ status: "disabled" }, 401, 500] as const) {
+  it("an inactive, unverifiable or expiry-less red-line token -> redline_token_invalid", async () => {
+    // The red-line prod tokens are rotated per expiry (design 7), so a token
+    // with no expires_on is a misconfigured one, never a silent pass.
+    for (const t of [{ status: "disabled" }, { status: "active" }, 401, 500]) {
       const w = world();
       w.tokens[R2_TOKEN] = t;
       expect((await monitor(w)).line).toBe(

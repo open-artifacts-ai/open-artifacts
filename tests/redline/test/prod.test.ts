@@ -205,9 +205,14 @@ function probe(o: { inventory?: boolean } = {}) {
   return T.prod;
 }
 
+/** The minted GitHub OIDC JWT a configured caller passes (never a stored key). */
+const JWT = "jwt.x.y";
+const bearerOf = (o: { inventory?: boolean }) =>
+  o.inventory === false ? {} : { inventoryBearer: JWT };
+
 async function check(w: World, o: { inventory?: boolean } = {}) {
   const { fetch } = await serve(w);
-  return prodClean(probe(o), { fetch, pubkey: PUB });
+  return prodClean(probe(o), { fetch, pubkey: PUB, ...bearerOf(o) });
 }
 
 /** The ProdDirty code a rejected promise carries. */
@@ -255,16 +260,23 @@ describe("prodClean (spec 2026-10-26)", () => {
     expect(await failCode(check(w))).toBe("inventory_bad");
   });
 
-  it("the inventory bearer: opts.inventoryBearer, else the probe's token file", async () => {
+  it("the inventory bearer is only opts.inventoryBearer (OIDC), never the stored key", async () => {
     const w = cleanWorld();
     const { fetch } = await serve(w);
-    await prodClean(probe(), { fetch, pubkey: PUB });
-    await prodClean(probe(), {
-      fetch,
-      pubkey: PUB,
-      inventoryBearer: "jwt.x.y",
-    });
-    expect(w.inventoryAuth).toEqual(["Bearer inv-key", "Bearer jwt.x.y"]);
+    await prodClean(probe(), { fetch, pubkey: PUB, inventoryBearer: JWT });
+    expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    // A probe that loaded REDLINE_PROD_INVENTORY_KEY but has no OIDC bearer is
+    // unconfigured: it fails before any request and never sends the key.
+    let calls = 0;
+    const counted: typeof fetch = (i, init) => {
+      calls++;
+      return fetch(i, init);
+    };
+    expect(
+      await failCode(prodClean(probe(), { fetch: counted, pubkey: PUB })),
+    ).toBe("inventory_unconfigured");
+    expect(calls).toBe(0);
+    expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
   });
 
   it("an unconfigured probe fails before any request", async () => {
@@ -335,7 +347,11 @@ describe("prodClean (spec 2026-10-26)", () => {
         if (c.dirty && c.bucket !== "releases") w.bindings = ["TEST_HOOKS"];
         const { fetch } = await serve(w);
         const p = c.r2 ? probe({ inventory: c.inv }) : undefined;
-        const r = prodClean(p, { fetch, pubkey: PUB });
+        const r = prodClean(p, {
+          fetch,
+          pubkey: PUB,
+          ...bearerOf({ inventory: c.inv }),
+        });
         if (want === "pass")
           expect(await r).toEqual({
             level: "pass",
@@ -362,6 +378,11 @@ describe("prodClean (spec 2026-10-26)", () => {
       await expect(guardProdClean({ mode: "staging" })).rejects.toThrow(
         "prod probe not configured",
       );
+    });
+    it("staging with a probe but no OIDC bearer fails inventory_unconfigured", async () => {
+      expect(
+        await failCode(guardProdClean({ mode: "staging", prod: probe() })),
+      ).toBe("inventory_unconfigured");
     });
     it("staging with a probe runs prodClean on it", async () => {
       const p = probe();
@@ -461,6 +482,7 @@ describe("prod-clean-cli: the hosted-ops precheck", () => {
     return prodCleanGate(op, probe(o), {
       fetch: o.fetch ?? fetch,
       pubkey: PUB,
+      ...bearerOf(o),
     });
   }
   const released = () => {
@@ -550,11 +572,16 @@ describe("prod-clean-cli: the hosted-ops precheck", () => {
       REDLINE_PROD_ACCOUNT_ID: ACCT,
       REDLINE_PROD_INVENTORY_URL: "https://inventory.example",
     };
-    expect(await run(env, io, { fetch, pubkey: PUB })).toBe(0);
+    expect(
+      await run(env, io, { fetch, pubkey: PUB, inventoryBearer: JWT }),
+    ).toBe(0);
+    // The stored key file alone is not an inventory bearer.
+    expect(await run(env, io, { fetch, pubkey: PUB })).toBe(1);
     expect(await run({ ...env, REDLINE_PROD_SECRETS_DIR: "" }, io)).toBe(1);
     expect(await run({ ...env, REDLINE_PROD_ACCOUNT_ID: "x" }, io)).toBe(1);
     expect(lines).toEqual([
       "prod-clean: pass",
+      "prod-clean: fail (inventory_unconfigured)",
       "prod-clean: fail (not_configured)",
       "prod-clean: fail (not_configured)",
     ]);

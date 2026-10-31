@@ -85,8 +85,10 @@ export interface ProdCleanOpts {
   /** The prod release public key (tests sign with their own). */
   pubkey?: string;
   /**
-   * The inventory's GitHub OIDC bearer (the monitor's minted JWT); otherwise
-   * the probe's loaded inventory token file.
+   * The inventory's GitHub OIDC bearer (a JWT the caller minted for the prod
+   * inventory's audience). The only inventory credential: inventory accepts
+   * no stored key, so a probe's loaded REDLINE_PROD_INVENTORY_KEY is never
+   * sent, and without this the probe is inventory_unconfigured.
    */
   inventoryBearer?: string;
 }
@@ -224,9 +226,9 @@ export async function prodClean(
   const s = prodSecretsOf(p);
   const f = o.fetch ?? fetch;
   const pubkey = o.pubkey ?? RELEASE_PUBKEY.prod;
-  // A GitHub OIDC JWT for the prod inventory's audience. The loaded file is
-  // still named REDLINE_PROD_INVENTORY_KEY (targets.ts) until W9 renames it.
-  const bearer = o.inventoryBearer ?? s.inventoryKey;
+  // Only a GitHub OIDC JWT for the prod inventory's audience; never the
+  // stored inventory key, which inventory rejects.
+  const bearer = o.inventoryBearer;
   if (!p.inventoryUrl || !bearer)
     throw new ProdDirty(
       "inventory_unconfigured",
@@ -311,7 +313,8 @@ export async function prodClean(
 
 /**
  * The red-line guard's case: local mode has no prod (not-applicable); staging
- * always runs prodClean, so a missing prod probe fails (not_configured).
+ * always runs prodClean, so a missing prod probe fails (not_configured) and
+ * a probe with no OIDC inventory bearer fails (inventory_unconfigured).
  */
 export async function guardProdClean(
   t: { mode: "local" | "staging"; prod?: ProdProbe },

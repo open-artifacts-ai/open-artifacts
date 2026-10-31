@@ -34,7 +34,9 @@ import {
 // says "over 10 min"); the scheduler, R27 and this should share one.
 export const SCHEDULER_STALE_MS = 10 * 60_000;
 // TODO(contract): the design says "issue 10 days ahead" with no method; this
-// reads expires_on from Cloudflare's token verify.
+// reads expires_on from Cloudflare's token verify and fails 10 days ahead, so
+// the warning reaches the scheduler's prod-clean email (no issue is opened:
+// the workflow has no issues: write).
 export const REDLINE_TOKEN_WARN_MS = 10 * 24 * 60 * 60_000;
 
 const CF_API = "https://api.cloudflare.com/client/v4";
@@ -173,8 +175,10 @@ async function checkTokens(p: ProdProbe, d: Deps): Promise<void> {
     const r = await verifyToken(token, p.accountId, d.fetch);
     if (!r || r.status !== "active")
       throw new Fail("redline_token_invalid", `${name} is not active`);
-    if (r.expires_on === undefined || r.expires_on === null) continue;
-    const exp = Date.parse(String(r.expires_on));
+    // Rotated per expiry (design 7): a token without one is misconfigured.
+    if (typeof r.expires_on !== "string")
+      throw new Fail("redline_token_invalid", `${name} has no expiry`);
+    const exp = Date.parse(r.expires_on);
     if (!Number.isFinite(exp))
       throw new Fail("redline_token_invalid", `${name} expiry unreadable`);
     if (exp - d.now() < REDLINE_TOKEN_WARN_MS)

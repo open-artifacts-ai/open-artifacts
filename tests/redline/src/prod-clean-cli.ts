@@ -13,7 +13,9 @@ import { type ProdProbe, parseProd } from "./targets.ts";
 // The repo is public, so the one line is `prod-clean: pass` or
 // `prod-clean: fail (<code>)`, never a detail. Env: OPS_OP,
 // REDLINE_PROD_SECRETS_DIR (the 0600 token files), REDLINE_PROD_ACCOUNT_ID,
-// REDLINE_PROD_INVENTORY_URL.
+// REDLINE_PROD_INVENTORY_URL. Inventory takes only a GitHub OIDC bearer
+// (opts.inventoryBearer); the hosted-ops job mints none, so until W9b retires
+// it this gate fails inventory_unconfigured (fail closed).
 
 export const GATED_OPS = ["create", "upgrade"] as const;
 
