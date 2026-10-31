@@ -24,6 +24,7 @@ import {
   fmtDay,
   HEALTH_LABEL,
   JOB_VERB,
+  jobTarget,
   STATE_LABEL,
   stepCount,
 } from "../components/labels";
@@ -32,6 +33,16 @@ import { LoadError } from "../layout/LoadError";
 
 const TIER = { trial: "Trial", team: "Team", business: "Business" } as const;
 const SEARCH_DELAY_MS = 300;
+const ALERT_LABEL: Record<string, string> = {
+  job_failed: "Job failed",
+  install_failed: "Create failed",
+  health_failing: "Health failing",
+  mismatch: "Routing mismatch",
+};
+const sentence = (kind: string) => {
+  const t = kind.replaceAll("_", " ");
+  return t[0].toUpperCase() + t.slice(1);
+};
 
 function Tiles({ world }: { world: World }) {
   const by = world.installs.byState;
@@ -109,8 +120,8 @@ function StateCell({
       {STATE_LABEL[i.state]}
       {job && i.state === "active" && job.status !== "done" && (
         <span className="oa-mut">
-          {JOB_VERB[job.kind].ing}{" "}
-          {typeof job.args.to === "string" ? `to ${job.args.to}` : ""} ·{" "}
+          {JOB_VERB[job.kind].ing}
+          {jobTarget(job.args) ? ` to ${jobTarget(job.args)}` : ""} ·{" "}
           {stepCount(job).n}/{stepCount(job).of}
         </span>
       )}
@@ -205,8 +216,8 @@ export function Installs() {
       <div className="oa-tools">
         <input
           type="search"
-          aria-label="Search slug or host"
-          placeholder="Search slug or host"
+          aria-label="Search slug"
+          placeholder="Search slug"
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
         />
@@ -229,6 +240,10 @@ export function Installs() {
           </select>
         </label>
       </div>
+      <p className="oa-hint">Matches part of a slug, ignoring case.</p>
+      {sort && list.data && list.data.items.length > 0 && (
+        <p className="oa-hint">Sorted within this page only.</p>
+      )}
       {list.isError ? (
         <LoadError
           title="Couldn't load installs"
@@ -294,18 +309,30 @@ export function Installs() {
                           }
                           alerts={alerts}
                         />
-                        {alerts.map((a) => (
-                          <span
-                            key={`${a.kind}:${a.since}`}
-                            className={`oa-chip ${a.kind === "job_failed" || a.kind === "health_failing" ? "oa-chip-danger" : ""}`}
-                            title={a.message ?? undefined}
-                          >
-                            {a.kind.replaceAll("_", " ")}
-                          </span>
-                        ))}
+                        {alerts
+                          .filter(
+                            (a) =>
+                              !(
+                                i.state === "failed" &&
+                                (a.kind === "job_failed" ||
+                                  a.kind === "install_failed")
+                              ),
+                          )
+                          .map((a) => (
+                            <span
+                              key={`${a.kind}:${a.since}`}
+                              className={`oa-chip ${a.kind === "job_failed" || a.kind === "health_failing" ? "oa-chip-danger" : ""}`}
+                              title={a.message ?? undefined}
+                            >
+                              {ALERT_LABEL[a.kind] ?? sentence(a.kind)}
+                            </span>
+                          ))}
                       </TableCell>
                       <TableCell>
-                        {i.state === "provisioning" || i.state === "failed"
+                        {i.state === "provisioning" ||
+                        i.state === "failed" ||
+                        i.state === "deleting" ||
+                        i.state === "deleted"
                           ? "–"
                           : HEALTH_LABEL[i.health]}
                       </TableCell>

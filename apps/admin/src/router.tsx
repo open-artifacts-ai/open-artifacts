@@ -87,15 +87,18 @@ const routeTree = root.addChildren([
     createRoute({
       getParentRoute: () => shell,
       path: "/audit",
-      validateSearch: (s: Record<string, unknown>): { installId?: string } => {
-        const installId = str(s.installId);
-        return installId ? { installId } : {};
-      },
+      validateSearch: (
+        s: Record<string, unknown>,
+      ): { installId?: string; actor?: string; action?: string } => ({
+        ...(str(s.installId) ? { installId: str(s.installId) } : {}),
+        ...(str(s.actor) ? { actor: str(s.actor) } : {}),
+        ...(str(s.action) ? { action: str(s.action) } : {}),
+      }),
       component: function AuditRoute() {
-        const { installId } = useSearch({ strict: false }) as {
-          installId?: string;
-        };
-        return <Audit installId={installId} />;
+        const { installId, actor, action } = useSearch({
+          strict: false,
+        }) as { installId?: string; actor?: string; action?: string };
+        return <Audit installId={installId} actor={actor} action={action} />;
       },
     }),
     inShell("/tokens", TokensRoute),

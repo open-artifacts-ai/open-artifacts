@@ -61,7 +61,12 @@ export const jobQuery = (jobId: string) =>
           ? false
           : JOB_POLL_MS,
   });
-export const auditQuery = (o: { cursor?: string; installId?: string }) =>
+export const auditQuery = (o: {
+  cursor?: string;
+  installId?: string;
+  actor?: string;
+  action?: string;
+}) =>
   queryOptions({
     queryKey: ["audit", o],
     queryFn: () => api.call("R17", { query: { ...o, limit: PAGE_SIZE } }),

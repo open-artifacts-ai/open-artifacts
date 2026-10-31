@@ -91,8 +91,18 @@ export const JOB_VERB: Record<JobKind, { ing: string; noun: string }> = {
   redline_creds: { ing: "Minting credentials for", noun: "Credentials" },
 };
 
-/** Create jobs get 4 attempts, 1 min apart, exponential (design 3.5, "Retries"). */
-export const CREATE_ATTEMPTS = 4;
+/** The version an upgrade-like job moves to: the API stores `version`, fixtures use `to`. */
+export const jobTarget = (args: Record<string, unknown>): string | null => {
+  const v = args.to ?? args.version;
+  return typeof v === "string" ? v : null;
+};
+
+export const SERVING_LABEL = {
+  serving: "Serving",
+  paused: "Paused",
+  closed: "Closed",
+  unmapped: "Not routed",
+} as const;
 
 const MONTHS = [
   "Jan",

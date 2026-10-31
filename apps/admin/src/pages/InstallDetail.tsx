@@ -4,14 +4,15 @@ import {
   type JobKind,
 } from "@oa/shared/provisioning";
 import { Button, Label, Textarea } from "@oa/ui/shadcn";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ApiError, api } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
 import {
   installJobsQuery,
   installQuery,
+  jobIsTerminal,
   jobQuery,
   releasesQuery,
 } from "../api/queries";
@@ -23,6 +24,8 @@ import {
   fmtDay,
   HEALTH_LABEL,
   JOB_VERB,
+  jobTarget,
+  SERVING_LABEL,
   STATE_LABEL,
   stepCount,
   visibleSteps,
@@ -56,7 +59,10 @@ function Actions({ install }: { install: Install }) {
   const id = install.id;
   // Purge needs a Google sign-in from the last 10 minutes (authz: reauth_required).
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
-  const fresh = !!me.data?.authAt && Date.now() - me.data.authAt < REAUTH_MS;
+  // Only a deleting install's purge needs it (authz R11); a failed create does not.
+  const fresh =
+    install.state !== "deleting" ||
+    (!!me.data?.authAt && Date.now() - me.data.authAt < REAUTH_MS);
   const busy = install.activeJobId !== null;
   const done = {
     invalidate: [
@@ -354,9 +360,18 @@ function Actions({ install }: { install: Install }) {
 }
 
 /** "Upgrading to 0.77.1, step 3 of 11, Reserve slug and hosts. Open job" */
-function ActiveJob({ jobId }: { jobId: string }) {
+function ActiveJob({ jobId, installId }: { jobId: string; installId: string }) {
   const q = useQuery(jobQuery(jobId));
+  const qc = useQueryClient();
   const job = q.data;
+  const settled = !!job && jobIsTerminal(job.status);
+  // The job is over: refetch the install so its actions unlock.
+  useEffect(() => {
+    if (settled) {
+      void qc.invalidateQueries({ queryKey: ["install", installId] });
+      void qc.invalidateQueries({ queryKey: ["install-jobs", installId] });
+    }
+  }, [settled, qc, installId]);
   const { n, of } = job ? stepCount(job) : { n: 0, of: 0 };
   const at = job
     ? visibleSteps(job.steps).find((s) => s.index === job.stepIndex)
@@ -366,8 +381,8 @@ function ActiveJob({ jobId }: { jobId: string }) {
       {job ? (
         <>
           {JOB_VERB[job.kind].ing}
-          {typeof job.args.to === "string" ? ` to ${job.args.to}` : ""}, step{" "}
-          {n} of {of}
+          {jobTarget(job.args) ? ` to ${jobTarget(job.args)}` : ""}, step {n} of{" "}
+          {of}
           {at ? `, ${at.label}` : ""}.{" "}
         </>
       ) : (
@@ -414,7 +429,7 @@ export function InstallDetail({ id }: { id: string }) {
         </div>
         <StateBadge state={i.state} />
       </div>
-      {i.activeJobId && <ActiveJob jobId={i.activeJobId} />}
+      {i.activeJobId && <ActiveJob jobId={i.activeJobId} installId={i.id} />}
       {i.mismatch && (
         <p
           className="oa-banner oa-banner-warn"
@@ -432,7 +447,7 @@ export function InstallDetail({ id }: { id: string }) {
         >
           <strong>
             Serving {i.version ?? "an older version"}
-            {typeof last.args.to === "string" ? `, not ${last.args.to}` : ""}.
+            {jobTarget(last.args) ? `, not ${jobTarget(last.args)}` : ""}.
           </strong>{" "}
           The last upgrade rolled back.{" "}
           <Link to="/jobs/$id" params={{ id: last.id }}>
@@ -475,7 +490,7 @@ export function InstallDetail({ id }: { id: string }) {
           {i.previousVersion && ` (previous ${i.previousVersion})`}
         </dd>
         <dt>Routing</dt>
-        <dd>{i.servingMode}</dd>
+        <dd>{SERVING_LABEL[i.servingMode]}</dd>
         <dt>Tier · Sign-in</dt>
         <dd>
           {i.tier ? i.tier[0].toUpperCase() + i.tier.slice(1) : "None"} ·{" "}

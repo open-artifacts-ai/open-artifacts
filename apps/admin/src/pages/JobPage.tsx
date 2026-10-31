@@ -1,7 +1,7 @@
 import type { Job } from "@oa/shared/provisioning";
 import { Button } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { ApiError, api } from "../api/client";
 import { codeCopy, errorCopy } from "../api/errorCopy";
@@ -9,9 +9,7 @@ import { installQuery, jobIsTerminal, jobQuery } from "../api/queries";
 import { ActionDialog } from "../components/ActionDialog";
 import { ErrorLine, StatusBadge } from "../components/Bits";
 import {
-  CREATE_ATTEMPTS,
   fmtClock,
-  fmtIn,
   JOB_VERB,
   shortId,
   stepCount,
@@ -32,24 +30,17 @@ const stepState = (job: Job, index: number) =>
           ? "current"
           : "waiting";
 
-/** "Attempt 2 of 4 · cf_error · retrying in 1 min" */
+/** "Attempt 2 · cf_error · next try at 11:42" */
 function attemptLine(job: Job, now: number) {
-  const of =
-    job.kind === "create" || job.kind === "retry"
-      ? ` of ${CREATE_ATTEMPTS}`
-      : "";
-  const parts = [`Attempt ${job.attempt}${of}`];
+  const parts = [`Attempt ${job.attempt}`];
   if (job.lastErrorCode) parts.push(job.lastErrorCode);
   if (job.retryAt && job.status !== "failed")
-    parts.push(
-      job.retryAt <= now
-        ? "retrying now"
-        : `retrying in ${fmtIn(job.retryAt - now)}`,
-    );
+    parts.push(`next try at ${fmtClock(job.retryAt)}`);
   return parts.join(" · ");
 }
 
 export function JobPage({ id }: { id: string }) {
+  const navigate = useNavigate();
   const q = useQuery(jobQuery(id));
   const job = q.data;
   const install = useQuery({
@@ -75,7 +66,11 @@ export function JobPage({ id }: { id: string }) {
         params: { id: job?.installId ?? "" },
         body: { requestId },
       }),
-    { invalidate: [["job", id], ["install"], ["installs"], ["world"]] },
+    {
+      invalidate: [["job", id], ["install"], ["installs"], ["world"]],
+      onSuccess: (r) =>
+        void navigate({ to: "/jobs/$id", params: { id: r.job.id } }),
+    },
   );
   if (q.isError)
     return q.error instanceof ApiError && q.error.status === 404 ? (
@@ -137,11 +132,12 @@ export function JobPage({ id }: { id: string }) {
               return (
                 <li key={s.id} data-step={st}>
                   {s.label}
-                  {st === "current" && job.lastErrorCode && (
-                    <small data-testid="attempt-line">
-                      {attemptLine(job, now)}
-                    </small>
-                  )}
+                  {(st === "current" || (live && s.index === job.stepIndex)) &&
+                    job.lastErrorCode && (
+                      <small data-testid="attempt-line">
+                        {attemptLine(job, now)}
+                      </small>
+                    )}
                 </li>
               );
             })}
@@ -152,7 +148,7 @@ export function JobPage({ id }: { id: string }) {
             {job.retryAt && live && (
               <>
                 <dt>Next retry</dt>
-                <dd data-testid="retry-at">in {fmtIn(job.retryAt - now)}</dd>
+                <dd data-testid="retry-at">at {fmtClock(job.retryAt)}</dd>
               </>
             )}
           </dl>

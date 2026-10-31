@@ -2,6 +2,7 @@ import { JOB_STEPS, type Job } from "@oa/shared/provisioning";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { JOB_POLL_MS, jobIsTerminal, jobQuery } from "../src/api/queries";
+import { fmtClock } from "../src/components/labels";
 import { FIXTURE_IDS, jobsByStatus } from "../src/mocks/fixtures";
 import { http, json, mock, renderApp, seen, use, writes } from "./harness";
 
@@ -25,6 +26,7 @@ it("shows steps, attempt, the last error in plain words and the next retry", asy
 });
 
 it("shows Design's step labels, step count and the attempt line", async () => {
+  const retryAt = Date.now() + 60_000;
   serve({
     ...jobsByStatus.running,
     kind: "create",
@@ -33,7 +35,7 @@ it("shows Design's step labels, step count and the attempt line", async () => {
     step: "verify_clean",
     attempt: 2,
     lastErrorCode: "cf_error",
-    retryAt: Date.now() + 60_000,
+    retryAt,
   });
   renderApp(`/jobs/${JOB}`);
   expect(
@@ -57,7 +59,7 @@ it("shows Design's step labels, step count and the attempt line", async () => {
   ]);
   expect(screen.getByText(/· step 6 of 11/)).toBeInTheDocument();
   expect(screen.getByTestId("attempt-line")).toHaveTextContent(
-    "Attempt 2 of 4 · cf_error · retrying in 1 min",
+    `Attempt 2 · cf_error · next try at ${fmtClock(retryAt)}`,
   );
 });
 
@@ -79,6 +81,37 @@ it("a failed create names the step and says nothing was routed; Retry is offered
   fireEvent.click(await within(err).findByRole("button", { name: "Retry" }));
   await waitFor(() => expect(writes()).toHaveLength(1));
   expect(writes()[0].path).toBe(`/api/v1/installs/${FIXTURE_IDS.broken}/retry`);
+});
+
+it("shows the attempt line on a queued job waiting for a retry", async () => {
+  serve({
+    ...jobsByStatus.queued,
+    attempt: 2,
+    lastErrorCode: "cf_error",
+    retryAt: Date.now() + 90_000,
+  });
+  renderApp(`/jobs/${JOB}`);
+  expect(await screen.findByTestId("attempt-line")).toHaveTextContent(
+    /^Attempt 2 · cf_error · next try at \d\d:\d\d$/,
+  );
+});
+
+it("Retry on a failed create opens the new job", async () => {
+  serve({
+    ...jobsByStatus.failed,
+    kind: "create",
+    installId: FIXTURE_IDS.broken,
+    steps: [...JOB_STEPS.create],
+    stepIndex: 3,
+    lastErrorCode: "release_unverified",
+    error: { code: "release_unverified", message: "x" },
+  });
+  const { router } = renderApp(`/jobs/${JOB}`);
+  fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+  await waitFor(() =>
+    expect(router.state.location.pathname).not.toBe(`/jobs/${JOB}`),
+  );
+  expect(router.state.location.pathname).toMatch(/^\/jobs\/[0-9A-Z]{26}$/);
 });
 
 it("shows a queued job, a done job and a failed job", async () => {

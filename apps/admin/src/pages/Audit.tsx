@@ -32,14 +32,23 @@ const VERB: Record<string, string> = {
 export const actionPhrase = (action: string) =>
   Object.hasOwn(VERB, action) ? VERB[action] : action;
 
-export function Audit({ installId }: { installId?: string }) {
+export function Audit({
+  installId,
+  actor,
+  action,
+}: {
+  installId?: string;
+  actor?: string;
+  action?: string;
+}) {
   const navigate = useNavigate();
   const paging = usePaging();
   const [draft, setDraft] = useState(installId ?? "");
+  const [actorDraft, setActorDraft] = useState(actor ?? "");
   const valid = !installId || InstallIdSchema.safeParse(installId).success;
   const [bad, setBad] = useState(false);
   const q = useQuery({
-    ...auditQuery({ cursor: paging.cursor, installId }),
+    ...auditQuery({ cursor: paging.cursor, installId, actor, action }),
     enabled: valid,
   });
   return (
@@ -59,7 +68,11 @@ export function Audit({ installId }: { installId?: string }) {
           paging.reset();
           void navigate({
             to: "/audit",
-            search: { installId: draft.trim() || undefined },
+            search: {
+              installId: id || undefined,
+              actor: actorDraft.trim() || undefined,
+              action: action || undefined,
+            },
           });
         }}
       >
@@ -70,15 +83,51 @@ export function Audit({ installId }: { installId?: string }) {
         <button type="submit" className="oa-link">
           Filter
         </button>
-        {installId && (
+        <label>
+          Actor{" "}
+          <input
+            value={actorDraft}
+            onChange={(e) => setActorDraft(e.target.value)}
+          />
+        </label>{" "}
+        <label>
+          Action{" "}
+          <select
+            value={action ?? ""}
+            onChange={(e) => {
+              paging.reset();
+              void navigate({
+                to: "/audit",
+                search: {
+                  installId,
+                  actor,
+                  action: e.target.value || undefined,
+                },
+              });
+            }}
+          >
+            <option value="">Any action</option>
+            {Object.keys(VERB).map((a) => (
+              <option key={a} value={a}>
+                {actionPhrase(a)}
+              </option>
+            ))}
+          </select>
+        </label>{" "}
+        {(installId || actor || action) && (
           <>
             {" "}
             <Link
               to="/audit"
-              search={{ installId: undefined }}
+              search={{
+                installId: undefined,
+                actor: undefined,
+                action: undefined,
+              }}
               onClick={() => {
                 paging.reset();
                 setDraft("");
+                setActorDraft("");
                 setBad(false);
               }}
             >

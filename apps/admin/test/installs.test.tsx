@@ -44,7 +44,36 @@ it("shows a failed create and its attention badges in the table", async () => {
   const r = within(row as HTMLElement);
   expect(r.getByTestId("state")).toHaveTextContent("Create failed");
   expect(r.getByTestId("state")).toHaveTextContent("prod_dirty");
-  expect(r.getByTestId("state")).toHaveTextContent("job failed");
+  // The state cell already says it failed: no second chip for the same thing.
+  expect(r.getByTestId("state")).not.toHaveTextContent(/job failed/i);
+  const acme = (
+    await screen.findAllByRole("link", { name: "acme" })
+  )[0].closest("tr");
+  expect(within(acme as HTMLElement).getByTestId("state")).toHaveTextContent(
+    "Routing mismatch",
+  );
+});
+
+it("shows an upgrade target from args.version", async () => {
+  const w = fixtureWorld();
+  const job = { ...w.jobs.recent[0], args: { version: "1.43.0" } };
+  use(
+    http.get("*/api/v1/world", () =>
+      json({ ...w, jobs: { ...w.jobs, recent: [job] } }),
+    ),
+    http.get("*/api/v1/installs", () =>
+      json({ items: [w.installs.items[0]], nextCursor: null }),
+    ),
+  );
+  renderApp("/installs");
+  const row = (await screen.findAllByRole("link", { name: "leo" }))[0].closest(
+    "tr",
+  );
+  await waitFor(() =>
+    expect(within(row as HTMLElement).getByTestId("state")).toHaveTextContent(
+      "to 1.43.0",
+    ),
+  );
 });
 
 it("sorts the page by a column", async () => {
@@ -82,7 +111,7 @@ it("says there are no installs yet when there are none", async () => {
 it("searches on the server and says so when nothing matches", async () => {
   renderApp("/installs");
   await screen.findAllByRole("link", { name: "leo" });
-  fireEvent.change(screen.getByLabelText("Search slug or host"), {
+  fireEvent.change(screen.getByLabelText("Search slug"), {
     target: { value: "zzz" },
   });
   expect(await screen.findByText("No installs match.")).toBeInTheDocument();

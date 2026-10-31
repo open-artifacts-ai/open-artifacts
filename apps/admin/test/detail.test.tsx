@@ -53,6 +53,38 @@ it("shows Design's labels, the pause reason and the fields", async () => {
   expect(screen.getAllByText("Paused").length).toBeGreaterThan(0);
 });
 
+it("reads the upgrade target from args.version", async () => {
+  const i = { ...installsByState.active, activeJobId: FIXTURE_IDS.jobLeo };
+  use(
+    http.get(`*/api/v1/jobs/${FIXTURE_IDS.jobLeo}`, () =>
+      json({ ...jobsByStatus.running, args: { version: "1.43.0" } }),
+    ),
+  );
+  await open(i);
+  expect(await screen.findByTestId("active-job")).toHaveTextContent(
+    "Upgrading to 1.43.0, step 5 of 5, Health check.",
+  );
+});
+
+it("unlocks the actions when the active job settles", async () => {
+  const i = { ...installsByState.active, activeJobId: FIXTURE_IDS.jobLeo };
+  let settled = false;
+  use(
+    http.get(`*/api/v1/installs/${i.id}`, () =>
+      json(settled ? { ...i, activeJobId: null } : i),
+    ),
+    http.get(`*/api/v1/jobs/${FIXTURE_IDS.jobLeo}`, () => {
+      settled = true;
+      return json(jobsByStatus.done);
+    }),
+  );
+  renderApp(`/installs/${i.id}`);
+  await screen.findByRole("heading", { name: i.slug });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled(),
+  );
+});
+
 it("explains a routing mismatch and a rolled-back upgrade", async () => {
   const i = { ...installsByState.active, mismatch: "mode_paused" };
   use(
@@ -62,7 +94,7 @@ it("explains a routing mismatch and a rolled-back upgrade", async () => {
           {
             ...jobsByStatus.failed,
             lastErrorCode: "upgrade_rolled_back",
-            args: { from: "1.41.2", to: "1.43.0" },
+            args: { version: "1.43.0" },
           },
         ],
         nextCursor: null,
@@ -234,8 +266,8 @@ it("explains job_in_progress and links the running job", async () => {
   ).toHaveAttribute("href", `/jobs/${FIXTURE_IDS.jobLeo}`);
 });
 
-it("purge asks for a fresh sign-in first, then for the slug", async () => {
-  const i = installsByState.failed;
+it("a deleting install's purge asks for a fresh sign-in first", async () => {
+  const i = installsByState.deleting;
   const assign = vi.fn();
   await open(i);
   vi.stubGlobal("location", {
@@ -246,7 +278,7 @@ it("purge asks for a fresh sign-in first, then for the slug", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: "Purge" }));
   const dialog = await screen.findByRole("dialog");
-  expect(dialog).toHaveTextContent("Delete broken for good?");
+  expect(dialog).toHaveTextContent("Delete deleting for good?");
   expect(dialog).toHaveTextContent("Sign in again to continue.");
   expect(within(dialog).queryByRole("textbox")).toBeNull();
   fireEvent.click(
@@ -256,6 +288,22 @@ it("purge asks for a fresh sign-in first, then for the slug", async () => {
     `/auth/start?reauth=1&return=${encodeURIComponent(`/installs/${i.id}`)}`,
   );
   expect(writes()).toHaveLength(0);
+});
+
+it("a failed create's purge goes straight to type-to-confirm, even when the sign-in is old", async () => {
+  const i = installsByState.failed;
+  await open(i);
+  fireEvent.click(screen.getByRole("button", { name: "Purge" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).not.toHaveTextContent("Sign in again");
+  const go = within(dialog).getByRole("button", { name: "Purge" });
+  expect(go).toBeDisabled();
+  fireEvent.change(within(dialog).getByRole("textbox"), {
+    target: { value: i.slug },
+  });
+  fireEvent.click(go);
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  expect(writes()[0].path).toBe(`/api/v1/installs/${i.id}/purge`);
 });
 
 it("purge with a fresh sign-in is type-to-confirm", async () => {

@@ -27,6 +27,11 @@ const APP_DOMAIN = {
   prod: "open-artifacts.app",
   staging: "open-artifacts-staging.app",
 } as const;
+/** The app domain: the admin host minus "admin.", else the per-environment default. */
+export const appDomainFor = (env: "prod" | "staging", host: string) =>
+  host.startsWith("admin.") && host.includes(".", 6)
+    ? host.slice("admin.".length)
+    : APP_DOMAIN[env];
 
 /** Slug rules on the client, then (after a pause) the live check. */
 function useSlugStatus(slug: string, domain: string) {
@@ -65,7 +70,10 @@ export function CreateInstall() {
   const [picked, setPicked] = useState("");
   const version = picked || latest;
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
-  const domain = APP_DOMAIN[me.data?.env ?? "prod"];
+  const domain = appDomainFor(
+    me.data?.env ?? "prod",
+    globalThis.location?.hostname ?? "",
+  );
   const check = useSlugStatus(slug, domain);
   const [ownerEmail, setOwnerEmail] = useState("");
   const [tier, setTier] = useState<Tier>("team");
