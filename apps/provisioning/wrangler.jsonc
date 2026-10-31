@@ -16,7 +16,7 @@
 // Claude.ai callback is unverified until acceptance (14.4).
 // OIDC_* (4.4) are staging only; the prod deploy read-back refuses them.
 // Ratelimit namespace ids: staging 1141-1146, prod 1151-1156 (4.7, 9A.7).
-// ASSETS: the admin SPA build (apps/admin), copied into dist-assets by CI.
+// ASSETS: the admin SPA build: `pnpm --filter @oa/admin build` writes straight into dist-assets (@oa/admin is a devDependency, so `pnpm --filter @oa/provisioning... build` builds it first).
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "compatibility_date": "2026-10-01",
