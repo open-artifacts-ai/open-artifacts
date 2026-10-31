@@ -21,9 +21,10 @@
 // deploy first), the alerts read PROVISIONER's ProvisionerRpc and email
 // through the send_email binding ALERT_EMAIL; the signups duty re-sends
 // waiting_cap and lost pending signups on oa-<p>-signups (SIGNUPS, which
-// must exist first). Its ALERT_TO, ALERT_FROM, SIGNUP_DAILY_CAP and
-// SIGNUPS_ENABLED vars are Platform's deploy wiring; unset, alerts log
-// no_destination, the cap alert is off and the signups duty does nothing.
+// must exist first). ALERT_TO, ALERT_FROM and SIGNUP_DAILY_CAP are per-env
+// placeholders filled at deploy (ALERT_TO is also ALERT_EMAIL's only
+// destination_address); SIGNUPS_ENABLED is "false" until a deploy turns
+// signups on, so the signups duty does nothing.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "compatibility_date": "2026-10-01",
@@ -40,7 +41,11 @@
         "EMAIL_QUOTA_ZONES": "{{EMAIL_ZONE_TAG_STAGING}}",
         "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_STAGING}}",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
-        "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
+        "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app",
+        "ALERT_TO": "{{ALERT_TO_STAGING}}",
+        "ALERT_FROM": "{{ALERT_FROM_STAGING}}",
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}",
+        "SIGNUPS_ENABLED": "false"
       },
       // The BrokerGate stubs each install call carries (see the gate), and
       // the provisioner's RPC entrypoint (tokenStatus for the token alerts).
@@ -72,7 +77,9 @@
       "queues": {
         "producers": [{ "binding": "SIGNUPS", "queue": "oa-s-signups" }]
       },
-      "send_email": [{ "name": "ALERT_EMAIL" }],
+      "send_email": [
+        { "name": "ALERT_EMAIL", "destination_address": "{{ALERT_TO_STAGING}}" }
+      ],
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [
@@ -96,7 +103,11 @@
         "EMAIL_QUOTA_ZONES": "{{EMAIL_ZONE_TAG_PROD}}",
         "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_PROD}}",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
-        "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
+        "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app",
+        "ALERT_TO": "{{ALERT_TO_PROD}}",
+        "ALERT_FROM": "{{ALERT_FROM_PROD}}",
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",
+        "SIGNUPS_ENABLED": "false"
       },
       // The BrokerGate stubs each install call carries (see the gate), and
       // the provisioner's RPC entrypoint (tokenStatus for the token alerts).
@@ -128,7 +139,9 @@
       "queues": {
         "producers": [{ "binding": "SIGNUPS", "queue": "oa-p-signups" }]
       },
-      "send_email": [{ "name": "ALERT_EMAIL" }],
+      "send_email": [
+        { "name": "ALERT_EMAIL", "destination_address": "{{ALERT_TO_PROD}}" }
+      ],
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [
