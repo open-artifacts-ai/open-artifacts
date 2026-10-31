@@ -500,24 +500,45 @@ describe("oauth grants to end in KV (3.4 R21, 4.6)", () => {
     ]);
   });
 
-  it("a consent that loses the limit to a concurrent mint keeps the older grant", async () => {
+  it("a consent that loses the limit to concurrent mints keeps the older grant", async () => {
     const db = await platformDb();
-    const { env, principal } = await seedAdmin(db, T);
+    const { env, principal, session } = await seedAdmin(db, T);
     const old = await mintAgentToken(env, principal, oauth("same"));
-    for (let i = 0; i < 4; i++) await mintAgentToken(env, principal, oat());
-    // Between the pre-check (4 others live) and the batch, another mint
-    // takes the fifth slot.
+    for (let i = 0; i < 3; i++) await mintAgentToken(env, principal, oat());
+    // Between the pre-check (3 others live) and the batch, two concurrent
+    // mints (both past their own pre-checks) land; 5 others are now live.
+    const raced = (n: number) =>
+      db
+        .prepare(
+          `INSERT INTO agent_tokens (id, kind, token_hash, session_hash, admin_email, label, scopes, client_id, client_name, oauth_user, grant_id, created_at, expires_at)
+           VALUES (?1, 'oat', ?2, ?3, ?4, 'raced', '[]', NULL, NULL, NULL, NULL, ?5, ?6)`,
+        )
+        .bind(
+          `race${n}`,
+          `h${n}`,
+          session.id_hash,
+          session.email,
+          T,
+          T + 60 * M,
+        );
     const racing = {
       prepare: (q: string) => db.prepare(q),
       batch: async (stmts: D1PreparedStatement[]) => {
-        await mintAgentToken(env, principal, oat());
+        await db.batch([raced(1), raced(2)]);
         return db.batch(stmts);
       },
     } as unknown as D1Database;
-    const e2 = { ...env, PLATFORM_DB: racing };
     vi.setSystemTime(T + M);
     expect(
-      (await apiCode(mintAgentToken(e2, principal, oauth("same")))).code,
+      (
+        await apiCode(
+          mintAgentToken(
+            { ...env, PLATFORM_DB: racing },
+            principal,
+            oauth("same"),
+          ),
+        )
+      ).code,
     ).toBe("token_limit");
     expect((await rowOf(db, old.tokenId))?.revoked_at).toBeNull();
     expect((await auditOf(db, old.tokenId)).map((x) => x.action)).toEqual([
