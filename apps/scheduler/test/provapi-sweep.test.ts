@@ -309,6 +309,8 @@ describe("sweep: dead runs", () => {
     const { id, inst } = await started(f, "complete", {
       error_code: "canceled",
     });
+    // Mutation: a plain INSERT (no OR IGNORE, no ON CONFLICT) fails this
+    // batch on jobs_one_active.
     let result: Awaited<ReturnType<SettleFailed>> | undefined;
     // The sweep read the stored canceled, so its guard is
     // settledWith(?5, canceled), true once the cancel settles: only
@@ -366,6 +368,10 @@ describe("sweep: dead runs", () => {
   it("a sweep landing after an R25 cancel (parent canceled, its cleanup open): no second cleanup, the batch does not fail", async () => {
     const f = fakes();
     const { id, inst } = await started(f, "complete");
+    // Mutation: the guard dropped AND a plain INSERT fails this batch on
+    // jobs_one_active. Either alone passes here (the guard is false, so no
+    // insert is tried); a plain INSERT alone is caught by the stored-canceled
+    // R25 test above.
     let result: Awaited<ReturnType<SettleFailed>> | undefined;
     const afterCancel: SettleFailed = async (d, jobId, code, opts) => {
       // R25: one batch marks it canceled and queues the admin's cleanup.
@@ -422,6 +428,10 @@ describe("sweep: dead runs", () => {
   it("two ticks both reaching the settle: one cleanup, started once, neither batch fails", async () => {
     const f = fakes();
     const { id } = await started(f, "complete");
+    // Mutation: a plain INSERT fails the second tick's batch (the first
+    // tick's cleanup-<jobId> is already in). The guard dropped passes here (both ticks' guards are
+    // true either way); that mutation is caught by the settled-elsewhere and
+    // finished-cleanup tests.
     // Both ticks pass the still-open check before either settles.
     let arrived = 0;
     let release: () => void = () => {};
