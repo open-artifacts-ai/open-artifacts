@@ -3,6 +3,7 @@ import {
   InventoryHealthSchema,
   type ProdcleanReport,
 } from "@oa/shared/provisioning";
+import { SCHEDULER_STALE_MS } from "@oa/shared/provisioning/state";
 import {
   type ProdCleanOpts,
   ProdDirty,
@@ -30,9 +31,8 @@ import {
 // _SCRIPTS_TOKEN files) and the runner's ACTIONS_ID_TOKEN_REQUEST_URL and
 // _TOKEN (id-token: write).
 
-// TODO(contract): no @oa/shared constant for the 10 min dead-man (WorldSchema
-// says "over 10 min"); the scheduler, R27 and this should share one.
-export const SCHEDULER_STALE_MS = 10 * 60_000;
+// The 10 min dead-man, shared with the scheduler and R27.
+export { SCHEDULER_STALE_MS };
 // TODO(contract): the design says "issue 10 days ahead" with no method; this
 // reads expires_on from Cloudflare's token verify and fails 10 days ahead, so
 // the warning reaches the scheduler's prod-clean email (no issue is opened:

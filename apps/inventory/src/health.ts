@@ -1,12 +1,11 @@
 import { InventoryHealthSchema } from "@oa/shared/provisioning";
+import { SCHEDULER_TICK_KEY } from "@oa/shared/provisioning/state";
 import { type D1Like, json } from "./http.ts";
 
 // GET /health: the scheduler's dead-man (design v7 5.8). The monitor fails
 // when the tick is absent or stale.
 
-// TODO(contract): the key is only named in 0006's comment; no @oa/shared
-// constant.
-export const SCHEDULER_TICK_KEY = "scheduler_tick_at";
+export { SCHEDULER_TICK_KEY };
 export const HEALTH_SQL = "SELECT value FROM platform_state WHERE key = ?1";
 
 export async function health(db: D1Like): Promise<Response> {

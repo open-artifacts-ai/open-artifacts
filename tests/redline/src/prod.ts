@@ -311,8 +311,11 @@ export async function prodClean(
     // the script. A paused or closed host (suspended, deleting) answers the
     // dispatch 503 page, and an unmapped row (deleted, failed) is not routed;
     // their script, while it exists, must still list no hook, and a purged
-    // script has nothing to run.
-    const serving = r.mode === "serving";
+    // script has nothing to run. A hostless row (a signup before its installs
+    // row; the schema gives it mode null) has no route either: never fetch
+    // https://null/healthz, but check its script all the same.
+    const appHost = r.appHost;
+    const serving = r.mode === "serving" && appHost !== null;
     const secretNames = await scripts
       .secretList({ kind: "namespace", ns }, script)
       .catch((e: unknown) => {
@@ -334,7 +337,7 @@ export async function prodClean(
     }
     const h = await getJson(
       f,
-      `https://${r.appHost}/healthz`,
+      `https://${appHost}/healthz`,
       null,
       `${id} /healthz`,
       { code: "unreachable", installId: id },

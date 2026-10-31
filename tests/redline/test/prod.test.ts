@@ -53,6 +53,8 @@ interface World {
   scriptMissing?: boolean;
   /** Paths requested, in order. */
   seen?: string[];
+  /** Full URLs requested through the injected fetch, in order. */
+  urls?: string[];
 }
 
 function signedRecord(o: {
@@ -177,7 +179,9 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
   });
   dispose.push(() => f.close());
   const routed: typeof fetch = (input, init) => {
-    const u = new URL(input instanceof Request ? input.url : String(input));
+    const raw = input instanceof Request ? input.url : String(input);
+    w.urls = [...(w.urls ?? []), raw];
+    const u = new URL(raw);
     return fetch(`${f.origin}${u.pathname}${u.search}`, init);
   };
   return { f, fetch: routed };
@@ -547,6 +551,76 @@ describe("prodClean (spec 2026-10-26)", () => {
       const w2 = cleanWorld();
       w2.scriptMissing = true;
       await expect(check(w2)).rejects.toThrow();
+    });
+  });
+
+  describe("a hostless install (a signup before its installs row): no route", () => {
+    const hostless = () => ({
+      ...cleanWorld().installs[0],
+      state: "provisioning",
+      appHost: null,
+      contentHost: null,
+      mode: null,
+    });
+    const noHealthz = (w: World) => {
+      expect(w.seen).not.toContain("/healthz");
+      expect(
+        (w.urls ?? []).filter((u) => /healthz|\/\/null\b/.test(u)),
+      ).toEqual([]);
+    };
+    it("clean data passes with no /healthz request, but its script is still read", async () => {
+      const w = cleanWorld();
+      w.installs = [hostless()];
+      expect(await check(w)).toEqual({
+        level: "pass",
+        releases: 0,
+        installs: 1,
+      });
+      noHealthz(w);
+      expect(w.seen?.some((x) => x.endsWith(`oa-p-${ID}/secrets`))).toBe(true);
+      expect(w.seen?.some((x) => x.endsWith(`oa-p-${ID}/settings`))).toBe(true);
+    });
+    it("no script yet passes with no /healthz request", async () => {
+      const w = cleanWorld();
+      w.installs = [hostless()];
+      w.scriptMissing = true;
+      expect((await check(w)).level).toBe("pass");
+      noHealthz(w);
+    });
+    it("testHooks not false fails install_dirty", async () => {
+      const w = cleanWorld();
+      w.installs = [{ ...hostless(), testHooks: true }];
+      expect(await failCode(check(w))).toBe("install_dirty");
+      noHealthz(w);
+    });
+    it("a script that lists a hook secret or binds TEST_HOOKS fails install_dirty", async () => {
+      const w = cleanWorld();
+      w.installs = [hostless()];
+      w.secretNames = ["TEST_HOOK_KEY"];
+      expect(await failCode(check(w))).toBe("install_dirty");
+      noHealthz(w);
+      const w2 = cleanWorld();
+      w2.installs = [hostless()];
+      w2.bindings = ["DB", "TEST_HOOKS"];
+      expect(await failCode(check(w2))).toBe("install_dirty");
+      noHealthz(w2);
+    });
+    it("one host null and the other set is inventory_bad, never probed", async () => {
+      for (const hosts of [
+        { appHost: "a.test", contentHost: null },
+        { appHost: null, contentHost: "c.test" },
+      ]) {
+        const w = cleanWorld();
+        w.installs = [{ ...hostless(), ...hosts }];
+        expect(await failCode(check(w))).toBe("inventory_bad");
+        noHealthz(w);
+      }
+    });
+    it("a hostless row with a serving mode is inventory_bad (the schema), never https://null", async () => {
+      const w = cleanWorld();
+      w.installs = [{ ...hostless(), mode: "serving" }];
+      expect(await failCode(check(w))).toBe("inventory_bad");
+      noHealthz(w);
     });
   });
 

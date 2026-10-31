@@ -131,20 +131,69 @@ describe("GET /installs", () => {
     expect(kv.calls.writes).toBe(0);
   });
 
-  it("a hostless install_status row (a signup, no installs row) is a fixed 500, never dropped", async () => {
-    // TODO(contract): InventoryInstallSchema hosts nullable. Until then the
-    // listing fails closed rather than hide an install from prodClean.
+  it("a hostless install_status row (a signup, no installs row) is listed with null hosts and mode, no HOSTS lookup", async () => {
     const sq = platformDb();
     install(sq, id("a"), { app_host: "a.test", content_host: "a-c.test" });
     lifecycle(sq, id("a"));
     lifecycle(sq, id("g"));
     signup(sq, { install_id: id("g"), status: "creating" });
-    const r = await worker().w.fetch(
-      req("/installs", {}, BEARER),
-      makeEnv({ PLATFORM_DB: sqliteD1(sq), HOSTS: makeKv({}).kv }),
+    const kv = makeKv({ "a.test": id("a") });
+    const body = await getJson(
+      makeEnv({ PLATFORM_DB: sqliteD1(sq), HOSTS: kv.kv }),
+      "/installs",
     );
-    expect(r.status).toBe(500);
-    expect(await r.json()).toEqual({ error: "internal" });
+    expect(InventoryInstallsSchema.safeParse(body).success).toBe(true);
+    const installs = body.installs as Record<string, unknown>[];
+    expect(installs.map((i) => i.id)).toEqual([id("a"), id("g")]);
+    expect(installs[0]).toMatchObject({ appHost: "a.test", mode: "serving" });
+    expect(installs[1]).toMatchObject({
+      id: id("g"),
+      appHost: null,
+      contentHost: null,
+      mode: null,
+    });
+    for (const i of installs)
+      expect(
+        InventoryInstallsSchema.shape.installs.element.safeParse(i).success,
+      ).toBe(true);
+    // Only the routed host is read.
+    expect(kv.calls.keys).toEqual(["a.test"]);
+  });
+
+  it("one host null and the other set is refused by the schema, and the listing fails closed", async () => {
+    const El = InventoryInstallsSchema.shape.installs.element;
+    const base = {
+      id: id("a"),
+      state: "active",
+      testHooks: false,
+      mode: null,
+    };
+    expect(
+      El.safeParse({ ...base, appHost: "a.test", contentHost: null }).success,
+    ).toBe(false);
+    expect(
+      El.safeParse({ ...base, appHost: null, contentHost: "c.test" }).success,
+    ).toBe(false);
+    for (const [app_host, content_host] of [
+      ["a.test", null],
+      [null, "c.test"],
+    ])
+      await expect(
+        getJson(
+          makeEnv({
+            PLATFORM_DB: makeDb([
+              {
+                install_id: id("a"),
+                app_host,
+                content_host,
+                state: "active",
+                test_hooks: 0,
+              },
+            ]).db,
+          }),
+          "/installs",
+        ),
+      ).rejects.toThrow("/installs: 500");
   });
 
   it("an empty table is an empty list", async () => {

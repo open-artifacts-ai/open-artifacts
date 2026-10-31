@@ -14,11 +14,10 @@ interface Row {
   test_hooks: number | null;
 }
 
-// Every row, hostless ones too: prodClean must see every install.
-// TODO(contract): InventoryInstallSchema hosts nullable. install_status has
-// null hosts before the installs row exists (a signup, or a create before
-// reserve); the schema refuses them, so until then such a row fails the whole
-// listing (the fixed 500), never a partial list.
+// Every row, hostless ones too: prodClean must see every install. A row
+// before its installs row exists (a signup, or a create before reserve) has
+// both hosts null, no HOSTS lookup and mode null. One host null and not the
+// other fails the schema: the whole listing is the fixed 500.
 export const INSTALLS_SQL =
   "SELECT install_id, app_host, content_host, state, test_hooks FROM install_status ORDER BY install_id";
 
