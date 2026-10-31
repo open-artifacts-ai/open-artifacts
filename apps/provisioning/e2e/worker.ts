@@ -44,7 +44,9 @@ export type Harness = {
 
 const b64url = (b: Buffer) => b.toString("base64url");
 
-export async function startWorker(): Promise<Harness> {
+export async function startWorker(
+  opts: { env?: "staging" | "prod" } = {},
+): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "oa-prov-e2e-"));
   const out = join(dir, "worker.js");
   await build({
@@ -95,7 +97,7 @@ export async function startWorker(): Promise<Harness> {
                 },
               ]),
             ),
-            OA_ENV: text("staging"),
+            OA_ENV: text(opts.env ?? "staging"),
             APP_DOMAIN: text("localhost"),
             ADMIN_IDENTITIES: text(`${EMAIL}:${SUB}`),
             SIGNUPS_ENABLED: text("false"),

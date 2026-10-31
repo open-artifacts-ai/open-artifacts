@@ -567,7 +567,7 @@ describe("the consent page", () => {
     const res = await getConsent(w, url);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-security-policy")).toBe(
-      "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
     );
     expect(res.headers.get("x-frame-options")).toBe("DENY");
     expect(res.headers.get("cache-control")).toBe("no-store");
@@ -631,14 +631,18 @@ describe("the consent page", () => {
       expect(box(s)).not.toBeNull();
       expect(box(s)?.[1]).toBeUndefined();
     }
-    // delete and pii stand apart, in their own list after write.
-    const [first, apart] = html.split('<ul class="sensitive">');
-    for (const s of ["installs:read", "audit:read", "installs:write"])
-      expect(first).toContain(`value="${s}"`);
-    for (const s of ["installs:delete", "installs:pii"]) {
-      expect(first).not.toContain(`value="${s}"`);
-      expect(apart).toContain(`value="${s}"`);
-    }
+    // One list, Design's order: delete and pii last.
+    const order = [...html.matchAll(/name="scope" value="([a-z:]+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(order).toEqual([
+      "installs:read",
+      "audit:read",
+      "installs:write",
+      "installs:delete",
+      "installs:pii",
+    ]);
+    expect(html.match(/<ul[ >]/g)).toHaveLength(1);
     expect(html.match(/ checked>/g)).toHaveLength(2);
   });
 

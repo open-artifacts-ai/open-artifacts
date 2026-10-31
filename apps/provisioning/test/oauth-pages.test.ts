@@ -5,9 +5,7 @@ import {
   bouncePage,
   type Chrome,
   type ConsentView,
-  connectedPage,
   consentPage,
-  deniedPage,
   fill,
   messagePage,
   minutesLeft,
@@ -47,8 +45,6 @@ const pages: [string, () => Response][] = [
         reauthUrl: "/auth/start?return=x",
       }),
   ],
-  ["denied", () => deniedPage(STAGING)],
-  ["connected", () => connectedPage(STAGING)],
   ["message", () => messagePage(STAGING, "Signed out", "Start again.", 401)],
 ];
 
@@ -81,9 +77,10 @@ describe("every page", () => {
       "content-security-policy",
     );
     expect(csp).toBe(
-      "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
     );
     expect(csp).toBe(PAGE_CSP);
+    expect(csp).not.toContain("img-src");
     expect(csp).not.toContain("form-action");
     expect(csp).not.toContain("script-src");
   });
@@ -103,6 +100,21 @@ describe("every page", () => {
     expect(html).toContain("the production admin?");
     const signin = await signinPage(PROD, "/s").text();
     expect(signin).toContain("connect to the production admin.");
+  });
+
+  it("the narrow-screen rule hides the host span, never the env badge", async () => {
+    const html = await consentPage(PROD, VIEW, new Headers()).text();
+    const narrow = html.match(/@media \(max-width:480px\)\{(.*)\}\n/)?.[1];
+    expect(narrow).toBeDefined();
+    const hidden = [
+      ...(narrow as string).matchAll(/([^{}]+)\{display:none\}/g),
+    ].map((m) => (m[1] as string).trim());
+    expect(hidden).toEqual(["header span.mono"]);
+    // No hiding rule anywhere in the page matches the badge.
+    for (const [, sel] of html.matchAll(
+      /([^{}]+)\{[^{}]*display:none[^{}]*\}/g,
+    ))
+      expect(sel).not.toMatch(/\.env|header span(?!\.mono)/);
   });
 });
 
@@ -141,7 +153,7 @@ describe("consent page", () => {
     expect(html).toContain("registered at an unknown time");
   });
 
-  it("pre-checks read and audit only; delete and pii sit apart", async () => {
+  it("one list of five: read and audit pre-checked, delete and pii last and never", async () => {
     const html = await consentPage(STAGING, VIEW, new Headers()).text();
     const boxes = [
       ...html.matchAll(
@@ -155,11 +167,8 @@ describe("consent page", () => {
       ["installs:delete", false],
       ["installs:pii", false],
     ]);
-    const [main, apart] = html.split('<ul class="sensitive">');
-    expect(main).not.toContain("installs:delete");
-    expect(main).not.toContain("installs:pii");
-    expect(apart).toContain("Delete and restore installs");
-    expect(apart).toContain("See owner emails");
+    expect(html.match(/<ul[ >]/g)).toHaveLength(1);
+    expect(html).not.toContain("sensitive");
   });
 
   it("escapes every interpolated value", async () => {
@@ -238,17 +247,6 @@ describe("the other pages", () => {
     expect(html).toContain('<a class="button" href="/">Cancel</a>');
     expect(html).toContain(
       '<a class="button primary" href="/auth/start?return=x">Sign in again</a>',
-    );
-  });
-
-  it("denied and connected carry Design's copy", async () => {
-    const denied = await deniedPage(STAGING).text();
-    expect(denied).toContain("<h1>Not connected</h1>");
-    expect(denied).toContain("You denied the agent. You can close this tab.");
-    const ok = await connectedPage(STAGING).text();
-    expect(ok).toContain("<h1>Connected</h1>");
-    expect(ok).toContain(
-      "Go back to your agent. Revoke it anytime in Agent tokens.",
     );
   });
 

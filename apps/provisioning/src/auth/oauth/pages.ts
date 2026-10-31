@@ -5,9 +5,12 @@ import type { ProvisioningEnv } from "@oa/shared/provisioning";
 // same-origin bounce, sign in, sign in again, and the message pages. No
 // script, no external font or URL; every interpolated value is escaped.
 
-/** The install's PAGE_CSP (apps/server/src/mcp/oauth.ts): no form-action, so the 302 to the client is not blocked. */
+/**
+ * Design's PAGE_CSP for consent. No form-action, so the 302 to the client
+ * is not blocked; the POST checks the consent token and Sec-Fetch-Site.
+ */
 export const PAGE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'";
+  "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'";
 /** The bounce page has styles and a link, nothing to submit. */
 export const BOUNCE_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
@@ -91,7 +94,7 @@ button:hover{border-color:var(--border-strong)}
 button.primary{background:var(--text);border-color:var(--text);color:var(--surface)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .foot{margin:16px 0 0;font-size:12px;color:var(--muted);text-align:center}
-@media (max-width:480px){.card{padding:20px}.actions button{flex:1}header span{display:none}}
+@media (max-width:480px){.card{padding:20px}.actions button{flex:1}header span.mono{display:none}}
 
 .env{margin-left:8px;font:600 10.5px "Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:5px;white-space:nowrap}
 .env.prod{background:#fbe3e1;color:#a3261b}
@@ -143,31 +146,13 @@ const MESSAGE = shell(`  <div class="card">
     <p>{{message}}</p>
   </div>`);
 
-/** A card with a heading and a line: errors, and Design's denied and connected pages. */
+/** A card with a heading and a line: every error, an invalid redirect_uri included. */
 export const messagePage = (
   c: Chrome,
   title: string,
   message: string,
   status: number,
 ) => html(render(c, MESSAGE, { title, heading: title, message }), status);
-
-/** Design's denied.html. Unreached: Deny redirects to the client with access_denied (9A.3.2 step 7). */
-export const deniedPage = (c: Chrome) =>
-  messagePage(
-    c,
-    "Not connected",
-    "You denied the agent. You can close this tab.",
-    200,
-  );
-
-/** Design's connected.html. Unreached: Allow redirects to the client (9A.3.2 step 7). */
-export const connectedPage = (c: Chrome) =>
-  messagePage(
-    c,
-    "Connected",
-    "Go back to your agent. Revoke it anytime in Agent tokens.",
-    200,
-  );
 
 // Design's form GET would drop the query from its action; a link keeps it.
 const BOUNCE = shell(
@@ -235,8 +220,8 @@ export const reauthPage = (
     200,
   );
 
-// Read and audit are pre-checked, write is not; delete and pii stand apart
-// in their own list and are never pre-checked, whatever the client asks.
+// Design's one list of five. Read and audit are pre-checked; write, delete
+// and pii (last) never are, whatever the client asks.
 const CONSENT =
   shell(`  <form class="card" method="post" action="{{form_action}}">
     <input type="hidden" name="request" value="{{request}}">
@@ -251,8 +236,6 @@ const CONSENT =
       <li><label><input type="checkbox" name="scope" value="installs:read" checked><div><b>Read installs<span class="mono code">installs:read</span></b><small>Installs, jobs, releases and the status of the world.</small></div></label></li>
       <li><label><input type="checkbox" name="scope" value="audit:read" checked><div><b>Read the audit log<span class="mono code">audit:read</span></b><small>Owner emails stay hidden.</small></div></label></li>
       <li><label><input type="checkbox" name="scope" value="installs:write"><div><b>Create and change installs<span class="mono code">installs:write</span></b><small>Create, upgrade, roll back, pause, resume and retry.</small></div></label></li>
-    </ul>
-    <ul class="sensitive">
       <li><label><input type="checkbox" name="scope" value="installs:delete"><div><b>Delete and restore installs<span class="mono code">installs:delete</span></b><small>Soft delete with the typed slug, restore, and remove failed creates.</small></div></label></li>
       <li><label><input type="checkbox" name="scope" value="installs:pii"><div><b>See owner emails<span class="mono code">installs:pii</span></b><small>On installs and in the audit log.</small></div></label></li>
     </ul>
