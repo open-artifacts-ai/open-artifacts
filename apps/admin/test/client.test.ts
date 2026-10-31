@@ -1,12 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, createClient } from "../src/api/client";
+import { adminMe, apiError } from "./me";
 
-const ME = {
-  email: "a@example.com",
-  role: "platform_admin",
-  env: "prod",
-  csrf: "tok",
-};
+const ME = adminMe("tok");
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -70,7 +66,7 @@ describe("client", () => {
 
   it("401 goes to sign-in with a safe return", async () => {
     const { client, redirect } = setup([
-      json({ error: "unauthenticated" }, 401),
+      json(apiError("unauthenticated"), 401),
     ]);
     await expect(client.get("/x")).rejects.toMatchObject({
       status: 401,
@@ -83,7 +79,7 @@ describe("client", () => {
 
   it("401 from a hostile location falls back to /", async () => {
     const { client, redirect } = setup(
-      [json({ error: "unauthenticated" }, 401)],
+      [json(apiError("unauthenticated"), 401)],
       "//evil.example",
     );
     await expect(client.get("/x")).rejects.toBeInstanceOf(ApiError);
@@ -92,25 +88,16 @@ describe("client", () => {
 
   it("401 on the sign-in screen does not loop", async () => {
     const { client, redirect } = setup(
-      [json({ error: "unauthenticated" }, 401)],
+      [json(apiError("unauthenticated"), 401)],
       "/sign-in?error=denied",
     );
     await expect(client.get("/x")).rejects.toBeInstanceOf(ApiError);
     expect(redirect).not.toHaveBeenCalled();
   });
 
-  it("403 no_access goes to /no-access", async () => {
-    const { client, redirect } = setup([json({ error: "no_access" }, 403)]);
-    await expect(client.get("/x")).rejects.toMatchObject({
-      status: 403,
-      code: "no_access",
-    });
-    expect(redirect).toHaveBeenCalledWith("/no-access");
-  });
-
   it("401 on /no-access does not redirect", async () => {
     const { client, redirect } = setup(
-      [json({ error: "unauthenticated" }, 401)],
+      [json(apiError("unauthenticated"), 401)],
       "/no-access?error=not_listed",
     );
     await expect(client.me()).rejects.toMatchObject({ status: 401 });
@@ -133,30 +120,38 @@ describe("client", () => {
     );
   });
 
-  it("403 no_access while on /no-access does not redirect", async () => {
-    const { client, redirect } = setup(
-      [json({ error: "no_access" }, 403)],
-      "/no-access",
-    );
-    await expect(client.me()).rejects.toMatchObject({
+  it("other 403s stay put and keep their code", async () => {
+    const { client, redirect } = setup([json(apiError("csrf_failed"), 403)]);
+    await expect(client.post("/x")).rejects.toMatchObject({
       status: 403,
-      code: "no_access",
+      code: "csrf_failed",
     });
     expect(redirect).not.toHaveBeenCalled();
   });
 
-  it("other 403s stay put and keep their code", async () => {
-    const { client, redirect } = setup([json({ error: "csrf" }, 403)]);
-    await expect(client.post("/x")).rejects.toMatchObject({
-      status: 403,
-      code: "csrf",
+  it("keeps the envelope's message and details", async () => {
+    const { client } = setup([
+      json(
+        {
+          error: {
+            code: "job_in_progress",
+            message: "busy",
+            details: { jobId: "J" },
+          },
+        },
+        409,
+      ),
+    ]);
+    await expect(client.get("/x")).rejects.toMatchObject({
+      code: "job_in_progress",
+      message: "busy",
+      details: { jobId: "J" },
     });
-    expect(redirect).not.toHaveBeenCalled();
   });
 
   it("parses { error } and tolerates a non-JSON error body", async () => {
     const { client } = setup([
-      json({ error: "slug_taken" }, 409),
+      json(apiError("slug_taken"), 409),
       new Response("boom", { status: 500 }),
     ]);
     await expect(client.get("/x")).rejects.toMatchObject({

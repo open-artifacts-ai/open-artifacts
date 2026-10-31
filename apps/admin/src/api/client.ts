@@ -1,27 +1,66 @@
-import { z } from "zod";
+import {
+  type Accepted,
+  type AuditEntry,
+  type InstallDetail,
+  type InstallSummary,
+  type Job,
+  type JobListItem,
+  type Me,
+  MeSchema,
+  ProvisioningErrorSchema,
+  type Release,
+  ROUTES,
+  type RouteId,
+  type SlugCheck,
+  type Token,
+  type World,
+} from "@oa/shared/provisioning";
 import { safeReturn } from "../auth/safeReturn";
 
-/** Error body from the Provisioning API: `{ error: <code> }`. */
-const ErrorBodySchema = z.object({ error: z.string() });
+export { type Me, MeSchema } from "@oa/shared/provisioning";
+
+/** A non-2xx answer: the contract envelope `{ error: { code, message, details } }`. */
+type Page<T> = { items: T[]; nextCursor: string | null };
+type Minted = Token & { token: string };
+/** The 2xx body of each route (parsed with the route's schema). */
+export interface Results {
+  R1: Me;
+  R2: Page<InstallSummary>;
+  R3: InstallDetail;
+  R4: Accepted;
+  R5: Accepted;
+  R6: Accepted;
+  R7: Accepted;
+  R8: Accepted;
+  R9: Accepted;
+  R10: Accepted;
+  R11: Accepted;
+  R12: Accepted;
+  R13: Accepted;
+  R14: Page<JobListItem>;
+  R15: Job;
+  R16: { items: Release[] };
+  R17: Page<AuditEntry>;
+  R18: SlugCheck;
+  R19: Minted;
+  R20: { items: Token[] };
+  R21: null;
+  R25: Accepted;
+  R27: World;
+}
+export type CallId = keyof Results & RouteId;
 
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    message?: string,
+    readonly details?: unknown,
   ) {
-    super(`${status} ${code}`);
+    super(message ?? `${status} ${code}`);
     this.name = "ApiError";
   }
 }
-
-// TODO(C1): replace with the contract type for GET /api/v1/me.
-export const MeSchema = z.object({
-  email: z.string(),
-  role: z.string(),
-  env: z.string(),
-  csrf: z.string(),
-});
-export type Me = z.infer<typeof MeSchema>;
 
 export const SIGN_IN_PATH = "/sign-in";
 export const NO_ACCESS_PATH = "/no-access";
@@ -75,21 +114,47 @@ export function createClient(opts: ClientOptions = {}) {
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     });
     if (res.ok) return (res.status === 204 ? undefined : await res.json()) as T;
-    const parsed = ErrorBodySchema.safeParse(
+    const parsed = ProvisioningErrorSchema.safeParse(
       await res.json().catch(() => null),
     );
-    const err = new ApiError(
-      res.status,
-      parsed.success ? parsed.data.error : "unknown",
-    );
+    const err = parsed.success
+      ? new ApiError(
+          res.status,
+          parsed.data.error.code,
+          parsed.data.error.message,
+          parsed.data.error.details,
+        )
+      : new ApiError(res.status, "unknown");
     if (res.status === 401) goSignIn();
-    else if (
-      res.status === 403 &&
-      err.code === "no_access" &&
-      currentPath().split("?")[0] !== NO_ACCESS_PATH
-    )
-      redirect(NO_ACCESS_PATH);
     throw err;
+  }
+
+  /**
+   * Call a contract route: the path from the route table, the 2xx body parsed
+   * with the route's zod schema.
+   */
+  async function call<I extends CallId>(
+    id: I,
+    args: {
+      params?: Record<string, string | undefined>;
+      query?: Record<string, string | number | undefined>;
+      body?: unknown;
+    } = {},
+  ): Promise<Results[I]> {
+    const r = ROUTES[id];
+    let path = r.path.replace(/\/:(\w+)(\?)?/g, (_m, name: string) => {
+      const v = args.params?.[name];
+      return v === undefined ? "" : `/${encodeURIComponent(v)}`;
+    });
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(args.query ?? {}))
+      if (v !== undefined && v !== "") q.set(k, String(v));
+    if (q.size) path += `?${q}`;
+    const out = await request<unknown>(path, {
+      method: r.method,
+      body: args.body,
+    });
+    return r.response.parse(out ?? null) as Results[I];
   }
 
   /** GET /api/v1/me; keeps the CSRF token for later writes. */
@@ -105,6 +170,7 @@ export function createClient(opts: ClientOptions = {}) {
 
   return {
     request,
+    call,
     logout,
     me,
     get: <T>(path: string) => request<T>(path),
