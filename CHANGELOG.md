@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.85.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.84.0...v0.85.0) (2026-10-31)
+
+
+### Features
+
+* **provisioner:** W3 Workflows for the Provisioning API ([#897](https://github.com/open-artifacts-ai/open-artifacts/issues/897)) ([b1b4869](https://github.com/open-artifacts-ai/open-artifacts/commit/b1b4869f565865336347ee084596a5e08d620795))
+* **provisioning:** W13a admin MCP: tools for the Provisioning API ([#899](https://github.com/open-artifacts-ai/open-artifacts/issues/899)) ([d97cdfa](https://github.com/open-artifacts-ai/open-artifacts/commit/d97cdfa7a1cf8849c47fba2c63c5815b0dec7fcd))
+
 ## [0.84.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.83.0...v0.84.0) (2026-10-31)
 
 

@@ -6,6 +6,7 @@ import { HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
 import { REDLINE_SCOPE_FIXTURE } from "@oa/shared/provisioning/fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
+import { JOB_ERROR_TEXT } from "../../src/errors.js";
 import { GRACE_MS, NEVER_ROUTED, runManage } from "../../src/manage.js";
 import { openSealed } from "../../src/seal.js";
 import { runCreate } from "../../src/workflow.js";
@@ -35,9 +36,15 @@ vi.mock(
 );
 
 let w: World;
+let warn: { mock: { calls: unknown[][] }; mockRestore(): void } | undefined;
 beforeEach(async () => {
   w = await world();
+  warn?.mockRestore();
+  warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
+/** The failure log lines so far (console only). */
+const logged = () =>
+  (warn?.mock.calls ?? []).map((c) => String(c[0])).join("\n");
 
 async function active(o: CreateSeed) {
   const s = seedCreate(w, o);
@@ -446,8 +453,9 @@ describe("suspend, resume, delete, restore (5.5, 5.6)", () => {
     });
     w.env.OA_ENV = ENV;
     expect(prod.log.find((l) => l.name === "recheck")?.error?.message).toBe(
-      "invalid_state: OIDC is staging only",
+      `invalid_state: ${JOB_ERROR_TEXT.invalid_state}`,
     );
+    expect(logged()).toContain('"detail":"OIDC is staging only"');
     expect(w.status(rl.installId)?.state).toBe("active");
   });
 
@@ -915,6 +923,93 @@ describe("redline_creds (10.1, R26)", () => {
     });
     expect(deleted).toEqual(["t1", "t2"]);
     expect(again.job?.sealed).toBeNull();
+  });
+
+  it("a seal that matches no row (the job closed): sealed false, the minted PAT revoked in the same step", async () => {
+    const s = await active({ slug: "rl-a", actor: "oidc", testHooks: true });
+    const { deleted, tokens } = stubInstall(s.installId);
+    const pair = (await crypto.subtle.generateKey({ name: "X25519" }, true, [
+      "deriveBits",
+    ])) as CryptoKeyPair;
+    const recipientKey = Buffer.from(
+      new Uint8Array(
+        (await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer,
+      ),
+    ).toString("base64url");
+    // An R25 cancel lands just before the seal UPDATE.
+    const db = w.env.PLATFORM_DB;
+    const prepare = db.prepare.bind(db);
+    let jobId = "";
+    db.prepare = ((sql: string) => {
+      if (sql.startsWith("UPDATE jobs SET sealed"))
+        w.db
+          .prepare(
+            "UPDATE jobs SET status = 'failed', error_code = 'canceled' WHERE id = ?",
+          )
+          .run(jobId);
+      return prepare(sql);
+    }) as typeof db.prepare;
+    jobId = seedJob(w, {
+      kind: "redline_creds",
+      installId: s.installId,
+      actor: "oidc",
+      args: { recipientKey },
+    });
+    const r = stepRunner(w.clock);
+    await runManage(w.ctx, event(jobId), r.step).catch(() => {});
+    db.prepare = prepare;
+    expect(r.log.find((l) => l.name === "rotate_hook_key")?.output).toEqual({
+      sealed: false,
+    });
+    expect(deleted).toEqual(["t1", "t-new"]);
+    expect(tokens.filter((t) => t.id === "t-new")).toEqual([]);
+    expect(w.job(jobId)).toMatchObject({
+      status: "failed",
+      error_code: "canceled",
+      sealed: null,
+    });
+  });
+
+  it("revoke rotates TEST_HOOK_KEY to a key nobody is given: not sealed, not in any output or job column", async () => {
+    const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+    const { script } = stubInstall(s.installId);
+    const oldKey = script?.secrets.get("TEST_HOOK_KEY");
+    const r = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { revoke: true },
+    });
+    expect(r.error).toBeNull();
+    const newKey = script?.secrets.get("TEST_HOOK_KEY") as string;
+    expect(newKey).toEqual(expect.any(String));
+    expect(newKey).not.toBe(oldKey);
+    expect(r.job?.sealed).toBeNull();
+    expect(JSON.stringify(r.log) + JSON.stringify(r.job)).not.toContain(newKey);
+    expect(
+      JSON.stringify(
+        w.all("SELECT * FROM hosted_audit WHERE install_id = ?", s.installId),
+      ),
+    ).not.toContain(newKey);
+  });
+
+  it("a repeat revoke stays harmless: it rotates again, no error, done", async () => {
+    const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+    const { script } = stubInstall(s.installId);
+    const keys: unknown[] = [script?.secrets.get("TEST_HOOK_KEY")];
+    for (let i = 0; i < 2; i++) {
+      const r = await manage("redline_creds", s.installId, {
+        actor: "oidc",
+        args: { revoke: true },
+      });
+      expect(r.error).toBeNull();
+      expect(r.job).toMatchObject({
+        status: "done",
+        step: "done",
+        error_code: null,
+        sealed: null,
+      });
+      keys.push(script?.secrets.get("TEST_HOOK_KEY"));
+    }
+    expect(new Set(keys).size).toBe(3);
   });
 
   it("absent revoke is a mint: a job with no recipientKey is refused at recheck, before any write", async () => {
@@ -1580,7 +1675,11 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
     });
     expect(r.job?.error_code).toBe("invalid_state");
     expect(r.log.find((l) => l.name === "recheck")?.error?.message).toBe(
-      "invalid_state: skipDirectoryRevoke is an admin's, with a reason",
+      `invalid_state: ${JOB_ERROR_TEXT.invalid_state}`,
+    );
+    // Its args keys are request values: redacted in the log line.
+    expect(logged()).toContain(
+      `"detail":"[value] is an admin's, with a [value]"`,
     );
   });
 });

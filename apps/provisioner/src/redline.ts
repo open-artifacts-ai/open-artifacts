@@ -6,10 +6,13 @@
 // admin test user is opened through DISPATCHER (POST /__test/session, as
 // the laptop command did), one PAT labelled redline-<jobId> is minted, every
 // other live redline-* PAT of this install is revoked (redlinePatsToRevoke,
-// keep = the new one), then {pat, hookKey} is sealed. Revoke (`revoke:
-// true`, the run's end): the same session, then every live redline-* PAT of
-// this install is revoked; nothing is minted or sealed, and a repeat with
-// nothing left is a no-op `done`. The provisioning token is checked first
+// keep = the new one), then {pat, hookKey} is sealed; a job closed by then
+// (the seal matches no row) gets `sealed: false` and the new PAT revoked. Revoke (`revoke:
+// true`, the run's end): the same session (so TEST_HOOK_KEY is rotated too,
+// to a key delivered to nobody), then every live redline-* PAT of this
+// install is revoked; nothing is minted or sealed, so the run's end kills
+// both its PAT and its hook key. A repeat rotates again and is a harmless
+// `done`. The provisioning token is checked first
 // in `refuse` mode (5.7). Each variant runs in one step.do, so no
 // credential is ever a step output; D1 holds only the ciphertext, and no
 // log line, error or audit row carries a value.
@@ -223,7 +226,12 @@ async function revokeRedline(s: Session, keep?: string): Promise<number> {
   return ids.length;
 }
 
-/** R26 `revoke: true`: mints and seals nothing; none left is a no-op. */
+/**
+ * R26 `revoke: true`: mints and seals nothing; none left revokes nothing.
+ * openSession rotates TEST_HOOK_KEY to a key no one is given, which ends the
+ * run's hook key with its PAT. Red-line runs on one install never overlap
+ * (one suite per rl- install), so this rotation cannot cut off another run.
+ */
 async function revokeAll(
   ctx: CreateCtx,
   jobId: string,
@@ -282,12 +290,22 @@ async function rotateMintSeal(
     recipientKey,
     JSON.stringify({ pat, hookKey: s.hookKey }),
   );
-  await transient(
+  const r = await transient(
     ctx.env.PLATFORM_DB.prepare(
       "UPDATE jobs SET sealed = ?2, updated_at = ?3 WHERE id = ?1 AND status = 'running'",
     )
       .bind(jobId, sealed, ctx.io.now())
       .run(),
   );
-  return { sealed: true };
+  if ((r.meta.changes ?? 0) > 0) return { sealed: true };
+  // The job closed under us (an R25 cancel, the sweep): no one can read the
+  // PAT, so it is revoked here, before the step ends, never left live.
+  await call(
+    s.f,
+    `${s.app}/api/v1/tokens/${encodeURIComponent(minted.id)}`,
+    s.asAdmin({ method: "DELETE" }),
+    "revoke the unsealed token",
+    [204, 404],
+  );
+  return { sealed: false };
 }

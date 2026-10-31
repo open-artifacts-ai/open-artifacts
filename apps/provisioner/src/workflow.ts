@@ -34,6 +34,7 @@ import {
   settleFailedStatements,
   sha256Hex,
 } from "@oa/provision";
+import { settledWith } from "@oa/provision/jobs";
 import {
   bodyHash,
   type WorkflowParams,
@@ -173,18 +174,13 @@ export async function runCreate(
     const g = await s("release_gate", RELEASE_GATE_STEP, () =>
       releaseGate(ctx, job),
     );
-    let email: string | null = null;
     const { appHost } = await jobStep(
       ctx,
       step,
       jobId,
       "create",
       CREATE_STEP,
-      () =>
-        create(ctx, job, installId, g, (e) => {
-          email = e;
-        }),
-      () => email,
+      () => create(ctx, job, installId, g),
       // jobs.step holds JOB_STEPS values only; onStep reports the rest.
       "upload",
     );
@@ -210,7 +206,7 @@ export async function runCreate(
 
 /** The owner's email (the API wrote it); null once done has deleted it. */
 export async function ownerEmail(
-  ctx: CreateCtx,
+  ctx: { env: { PLATFORM_DB: D1Database } },
   signupId: string,
 ): Promise<string | null> {
   const r = await transient(
@@ -381,16 +377,12 @@ async function releaseGate(
   return g;
 }
 
-/**
- * Sweep, then WfpProvisioner.create with the 5.3 inputs. `onEmail` hands
- * the address to the step wrapper for redaction only.
- */
+/** Sweep, then WfpProvisioner.create with the 5.3 inputs. */
 async function create(
   ctx: CreateCtx,
   job: CreateJob,
   installId: string,
   g: ReleaseGate,
-  onEmail: (email: string) => void,
 ): Promise<{ appHost: string }> {
   const label = `ss-${job.signupId}`;
   // A crashed attempt's token goes first, even if this attempt then fails
@@ -405,7 +397,6 @@ async function create(
   }
   const email = await ownerEmail(ctx, job.signupId);
   if (email === null) throw new NonRetryableError("internal");
-  onEmail(email);
   const p = await renderOptions(ctx, {
     jobId: job.jobId,
     label,
@@ -620,7 +611,12 @@ async function snapshotStatement(
   return auditStatement(ctx, installId, "prod_dirty.snapshot", detail, jobId);
 }
 
-/** The purge job a prod_dirty create leaves (actor system:provisioner). */
+/**
+ * The purge job a prod_dirty create leaves (actor system:provisioner): a
+ * settleFailed extra (C6), so only when this settle left the parent failed
+ * with prod_dirty (a canceled parent keeps its code and gets none), and
+ * INSERT OR IGNORE, so jobs_one_active and an earlier attempt's row skip it.
+ */
 async function purgeJob(
   ctx: CreateCtx,
   installId: string,
@@ -633,9 +629,10 @@ async function purgeJob(
   return {
     id,
     statement: ctx.env.PLATFORM_DB.prepare(
-      `INSERT INTO jobs (id, kind, workflow, install_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
-VALUES (?1, 'purge', 'manage_install', ?2, ?3, 'system', 'system:provisioner', 'provisioner', ?4, ?5, '{}', 'queued', ?6, ?6)
-ON CONFLICT DO NOTHING RETURNING id`,
+      `INSERT OR IGNORE INTO jobs (id, kind, workflow, install_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
+SELECT ?1, 'purge', 'manage_install', ?2, ?3, 'system', 'system:provisioner', 'provisioner', ?4, ?5, '{}', 'queued', ?6, ?6
+WHERE ${settledWith("?3", "prod_dirty")}
+RETURNING id`,
     ).bind(id, installId, parentJobId, requestId, hash, now),
   };
 }

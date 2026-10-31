@@ -25,6 +25,7 @@ import {
   otherHash,
   PROP_CASES,
   PROP_SEED,
+  PROP_TIMEOUT_MS,
   rng,
   secret43,
 } from "./prop.js";
@@ -799,91 +800,100 @@ describe("principalByBearer: token hashes compared in constant time (4.1)", () =
   // Seeded property (seed PROP_SEED, PROP_CASES cases): whatever row the
   // lookup hands back, a stored hash that differs from sha256(bearer) is
   // refused and the exact one is accepted.
-  it(`property: a differing stored hash is refused, the exact one accepted (seed ${PROP_SEED.toString(16)}, ${PROP_CASES} cases)`, async () => {
-    const db = await platformDb();
-    const { env, principal } = await seedAdmin(db, T);
-    const m = await mintAgentToken(env, principal, oat());
-    const row = (await rowOf(db, m.tokenId)) as AgentTokenRow;
-    let stored = "";
-    const lying = {
-      ...env,
-      PLATFORM_DB: new Proxy(db, {
-        get: (t, k) =>
-          k === "prepare"
-            ? (sql: string) =>
-                sql.includes("WHERE token_hash")
-                  ? {
-                      bind: () => ({
-                        first: async () => ({ ...row, token_hash: stored }),
-                      }),
-                    }
-                  : t.prepare(sql)
-            : Reflect.get(t, k),
-      }),
-    } as typeof env;
-    const r = rng(PROP_SEED);
-    const refused = {
-      refusal: true,
-      code: "unauthenticated",
-      reason: "revoked",
-    };
-    for (let i = 0; i < PROP_CASES; i++) {
-      const bearer = `oat_${secret43(r)}`;
-      const h = await sha256Hex(bearer);
-      stored = otherHash(r, h);
-      expect(stored, `case ${i}`).not.toBe(h);
-      expect(await principalByBearer(lying, bearer), `case ${i}`).toEqual(
-        refused,
-      );
-      stored = h;
-      expect(await principalByBearer(lying, bearer), `case ${i}`).toMatchObject(
-        { kind: "token", tokenId: m.tokenId },
-      );
-      // The real D1 lookup: a random bearer finds nothing.
-      expect(await principalByBearer(env, bearer), `case ${i}`).toEqual(
-        refused,
-      );
-    }
-    expect(await principalByBearer(env, m.token as string)).toMatchObject({
-      kind: "token",
-      tokenId: m.tokenId,
-    });
-  });
+  it(
+    `property: a differing stored hash is refused, the exact one accepted (seed ${PROP_SEED.toString(16)}, ${PROP_CASES} cases)`,
+    async () => {
+      const db = await platformDb();
+      const { env, principal } = await seedAdmin(db, T);
+      const m = await mintAgentToken(env, principal, oat());
+      const row = (await rowOf(db, m.tokenId)) as AgentTokenRow;
+      let stored = "";
+      const lying = {
+        ...env,
+        PLATFORM_DB: new Proxy(db, {
+          get: (t, k) =>
+            k === "prepare"
+              ? (sql: string) =>
+                  sql.includes("WHERE token_hash")
+                    ? {
+                        bind: () => ({
+                          first: async () => ({ ...row, token_hash: stored }),
+                        }),
+                      }
+                    : t.prepare(sql)
+              : Reflect.get(t, k),
+        }),
+      } as typeof env;
+      const r = rng(PROP_SEED);
+      const refused = {
+        refusal: true,
+        code: "unauthenticated",
+        reason: "revoked",
+      };
+      for (let i = 0; i < PROP_CASES; i++) {
+        const bearer = `oat_${secret43(r)}`;
+        const h = await sha256Hex(bearer);
+        stored = otherHash(r, h);
+        expect(stored, `case ${i}`).not.toBe(h);
+        expect(await principalByBearer(lying, bearer), `case ${i}`).toEqual(
+          refused,
+        );
+        stored = h;
+        expect(
+          await principalByBearer(lying, bearer),
+          `case ${i}`,
+        ).toMatchObject({ kind: "token", tokenId: m.tokenId });
+        // The real D1 lookup: a random bearer finds nothing.
+        expect(await principalByBearer(env, bearer), `case ${i}`).toEqual(
+          refused,
+        );
+      }
+      expect(await principalByBearer(env, m.token as string)).toMatchObject({
+        kind: "token",
+        tokenId: m.tokenId,
+      });
+    },
+    PROP_TIMEOUT_MS,
+  );
 
   // The session the minting principal names is re-read by its hash; a row
   // whose id_hash differs is refused by the explicit compare (4.1).
-  it(`property: mint refuses a session row whose id_hash differs (seed ${PROP_SEED.toString(16)}, ${PROP_CASES} cases)`, async () => {
-    const db = await platformDb();
-    const { env, principal, session } = await seedAdmin(db, T);
-    let stored = "";
-    const lying = {
-      ...env,
-      PLATFORM_DB: new Proxy(db, {
-        get: (t, k) =>
-          k === "prepare"
-            ? (sql: string) =>
-                sql === "SELECT * FROM sessions WHERE id_hash = ?1"
-                  ? {
-                      bind: () => ({
-                        first: async () => ({ ...session, id_hash: stored }),
-                      }),
-                    }
-                  : t.prepare(sql)
-            : Reflect.get(t, k),
-      }),
-    } as typeof env;
-    const r = rng(PROP_SEED + 1);
-    for (let i = 0; i < PROP_CASES; i++) {
-      stored = otherHash(r, session.id_hash);
-      expect(stored, `case ${i}`).not.toBe(session.id_hash);
-      expect(
-        (await apiCode(mintAgentToken(lying, principal, oat()))).code,
-        `case ${i}`,
-      ).toBe("unauthenticated");
-    }
-    stored = session.id_hash;
-    expect((await mintAgentToken(lying, principal, oat())).tokenId).toMatch(
-      ULID_RE,
-    );
-  });
+  it(
+    `property: mint refuses a session row whose id_hash differs (seed ${PROP_SEED.toString(16)}, ${PROP_CASES} cases)`,
+    async () => {
+      const db = await platformDb();
+      const { env, principal, session } = await seedAdmin(db, T);
+      let stored = "";
+      const lying = {
+        ...env,
+        PLATFORM_DB: new Proxy(db, {
+          get: (t, k) =>
+            k === "prepare"
+              ? (sql: string) =>
+                  sql === "SELECT * FROM sessions WHERE id_hash = ?1"
+                    ? {
+                        bind: () => ({
+                          first: async () => ({ ...session, id_hash: stored }),
+                        }),
+                      }
+                    : t.prepare(sql)
+              : Reflect.get(t, k),
+        }),
+      } as typeof env;
+      const r = rng(PROP_SEED + 1);
+      for (let i = 0; i < PROP_CASES; i++) {
+        stored = otherHash(r, session.id_hash);
+        expect(stored, `case ${i}`).not.toBe(session.id_hash);
+        expect(
+          (await apiCode(mintAgentToken(lying, principal, oat()))).code,
+          `case ${i}`,
+        ).toBe("unauthenticated");
+      }
+      stored = session.id_hash;
+      expect((await mintAgentToken(lying, principal, oat())).tokenId).toMatch(
+        ULID_RE,
+      );
+    },
+    PROP_TIMEOUT_MS,
+  );
 });

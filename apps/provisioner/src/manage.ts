@@ -553,7 +553,6 @@ async function pauseDirty(
         "prod_dirty",
       );
     },
-    undefined,
     "upload",
   );
   throw new NonRetryableError("prod_dirty");
@@ -888,7 +887,6 @@ async function releaseWhenExpired(
         await w.releaseLease(installId, installId);
         return { released: true, until: null };
       },
-      undefined,
       "release_lease",
     );
     if (r.until === null) return;
