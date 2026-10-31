@@ -1,0 +1,15 @@
+// The workerd test of the Workflow wrapper (test-workerd/): one real local
+// Workflow binding, so the test pins what it throws for an unknown id and a
+// duplicate create. Never deployed.
+{
+  "name": "oa-shared-workflow-test",
+  "main": "test-workerd/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "workflows": [
+    {
+      "binding": "WF",
+      "name": "oa-shared-test-wf",
+      "class_name": "TestWorkflow"
+    }
+  ]
+}

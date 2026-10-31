@@ -1,6 +1,7 @@
 // Fixture data for the contract tests, the MSW mocks and the admin panel's
 // component tests. Every free-text field carries a FREE_TEXT marker so tests
 // can prove it never reaches an MCP content line.
+import type { RedlinePat } from "./redline.js";
 import type {
   AuditEntry,
   InstallDetail,
@@ -234,3 +235,74 @@ export function emptyWorld(env: World["env"] = "prod"): World {
     prodClean: null,
   });
 }
+
+/**
+ * R26 scope (10.1): two installs, each with redline-* and other PATs. W3's
+ * mint and revoke must touch only `target`'s live redline-* PATs, exactly
+ * `expect.mint` (after minting `minted`) and `expect.revoke`.
+ */
+export const REDLINE_SCOPE_FIXTURE: {
+  target: string;
+  other: string;
+  minted: string;
+  pats: readonly RedlinePat[];
+  expect: { mint: readonly string[]; revoke: readonly string[] };
+} = {
+  target: FIXTURE_IDS.leo,
+  other: FIXTURE_IDS.acme,
+  minted: "pat-t-new",
+  pats: [
+    {
+      id: "pat-t-old1",
+      installId: FIXTURE_IDS.leo,
+      label: "redline-101",
+      revokedAt: null,
+    },
+    {
+      id: "pat-t-old2",
+      installId: FIXTURE_IDS.leo,
+      label: "redline-102",
+      revokedAt: null,
+    },
+    {
+      id: "pat-t-gone",
+      installId: FIXTURE_IDS.leo,
+      label: "redline-100",
+      revokedAt: T0,
+    },
+    {
+      id: "pat-t-new",
+      installId: FIXTURE_IDS.leo,
+      label: "redline-103",
+      revokedAt: null,
+    },
+    {
+      id: "pat-t-owner",
+      installId: FIXTURE_IDS.leo,
+      label: "ss-01JD7Z9W5Q8X3N4M2K1H0G9F8E",
+      revokedAt: null,
+    },
+    {
+      id: "pat-t-human",
+      installId: FIXTURE_IDS.leo,
+      label: "laptop",
+      revokedAt: null,
+    },
+    {
+      id: "pat-o-run",
+      installId: FIXTURE_IDS.acme,
+      label: "redline-103",
+      revokedAt: null,
+    },
+    {
+      id: "pat-o-human",
+      installId: FIXTURE_IDS.acme,
+      label: "ci",
+      revokedAt: null,
+    },
+  ],
+  expect: {
+    mint: ["pat-t-old1", "pat-t-old2"],
+    revoke: ["pat-t-old1", "pat-t-old2", "pat-t-new"],
+  },
+};
