@@ -633,6 +633,35 @@ describe("WfpProvisioner.create", () => {
         expect(s.rows().map((r) => [r.id, r.state])).toEqual([[ID, "active"]]);
       });
 
+      it("fixed id: rerunning a finished create (lost step result) returns the install with no write", async () => {
+        const s = setup();
+        const first = await s.p.create(input("finqore", { installId: ID }));
+        const n = s.fake.writes().length;
+        const again = await s.p.create(input("finqore", { installId: ID }));
+        expect(again).toEqual({
+          id: ID,
+          slug: "finqore",
+          appHost: first.appHost,
+          contentHost: first.contentHost,
+          version: first.version,
+        });
+        expect(nonReads(s.fake, n)).toEqual([]);
+        expect(s.rows().map((r) => [r.id, r.state])).toEqual([[ID, "active"]]);
+      });
+
+      it("fixed id: a rerun of a finished create with other inputs is refused", async () => {
+        const s = setup();
+        await s.p.create(input("finqore", { installId: ID }));
+        const n = s.fake.writes().length;
+        const e = await fails(
+          s.p.create(
+            input("finqore", { installId: ID, ownerEmail: "x@example.com" }),
+          ),
+        );
+        expect(provisionErrorCode(e)).toBe("invalid_state");
+        expect(nonReads(s.fake, n)).toEqual([]);
+      });
+
       it("fixed id: a resume with the same id proceeds", async () => {
         const s = await halfMade();
         expect(s.rows().map((r) => [r.id, r.state])).toEqual([
