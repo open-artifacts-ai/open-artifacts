@@ -34,10 +34,11 @@ describe("hosted-publish.yml", () => {
       "tag",
     ]);
     expect(w.on.workflow_dispatch.inputs.env.options).toEqual([
-      "",
+      "both",
       "staging",
       "prod",
     ]);
+    expect(w.on.workflow_dispatch.inputs.env.default).toBe("both");
     expect(Object.keys(w.on).sort()).toEqual([
       "workflow_dispatch",
       "workflow_run",

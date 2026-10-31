@@ -5,7 +5,7 @@
 #   workflow_run (release-please on main, success): the release whose tag's
 #     commit is the run's head_sha, to staging then prod; none is kind=none
 #     (most pushes cut no release), exit 0.
-#   workflow_dispatch: exactly one of TAG (vX.Y.Z; DEPLOY_ENV empty for both;
+#   workflow_dispatch: exactly one of TAG (vX.Y.Z; DEPLOY_ENV both or unset for both;
 #     prod alone needs the tag's staging publish first, see staged) or
 #     FLOOR_RUN_ID (a hosted-floor.yml run id; DEPLOY_ENV required).
 # Read-only (`gh api`); an API error is exit 1, never "no release".
@@ -98,19 +98,19 @@ case "${EVENT:-}" in
   workflow_dispatch)
     tag="${TAG:-}"
     run="${FLOOR_RUN_ID:-}"
-    env="${DEPLOY_ENV:-}"
-    case "$env" in "" | staging | prod) ;; *) echo "env must be staging, prod or empty" >&2; exit 2 ;; esac
+    env="${DEPLOY_ENV:-both}"
+    case "$env" in both | staging | prod) ;; *) echo "env must be both, staging or prod" >&2; exit 2 ;; esac
     if [ -n "$tag" ] && [ -n "$run" ]; then echo "give a tag or a floor run id, not both" >&2; exit 2; fi
     if [ -n "$tag" ]; then
       [[ "$tag" =~ $stable ]] || { echo "tag must be a stable vX.Y.Z" >&2; exit 2; }
       case "$env" in
-        "") out release "$tag" "" true true ;;
+        both) out release "$tag" "" true true ;;
         staging) out release "$tag" "" true false ;;
         prod) staged "$tag"; out release "$tag" "" false true ;;
       esac
     elif [ -n "$run" ]; then
       [[ "$run" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "floor_run_id must be a run id" >&2; exit 2; }
-      [ -n "$env" ] || { echo "a floor is one env's: give env" >&2; exit 2; }
+      [ "$env" != both ] || { echo "a floor is one env's: give env staging or prod" >&2; exit 2; }
       if [ "$env" = staging ]; then out floor "" "$run" true false; else out floor "" "$run" false true; fi
     else
       echo "give a tag or a floor run id" >&2

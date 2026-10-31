@@ -17,6 +17,13 @@ const CLIENT = "123456-abcdef.apps.googleusercontent.com";
 // pnpm stub: records its cwd and whether the copy exists, and snapshots it.
 const pnpm = `pwd >> "$STUB_LOG"; test -f wrangler.deploy.jsonc && echo copy-present >> "$STUB_LOG"; cp wrangler.deploy.jsonc "$SNAP" 2>/dev/null || true`;
 
+// The runner's own GITHUB_* (GitHub Actions sets GITHUB_REPOSITORY_ID and
+// more) never reach the script: each case gives the ones it means.
+const HERMETIC = Object.fromEntries(
+  Object.keys(process.env)
+    .filter((k) => k.startsWith("GITHUB_"))
+    .map((k) => [k, ""]),
+);
 const run = (
   args: string[],
   env: Record<string, string> = {},
@@ -26,7 +33,7 @@ const run = (
   const snap = join(sb.dir, "snap.jsonc");
   const r = sb.run(["bash", script, ...args], {
     cwd: sb.dir,
-    env: { SNAP: snap, ...env },
+    env: { ...HERMETIC, SNAP: snap, ...env },
   });
   return { ...r, log: sb.log(), snap };
 };
