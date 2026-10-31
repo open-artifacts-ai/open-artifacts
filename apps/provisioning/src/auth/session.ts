@@ -1,7 +1,7 @@
 import type { Env } from "../env.js";
 import { type Principal, type Refusal, refusal } from "../principal.js";
 import type { SessionRow } from "../services/tokens.js";
-import { randomToken, sha256Hex } from "./crypto.js";
+import { randomToken, sameString, sha256Hex } from "./crypto.js";
 import { csrfToken } from "./csrf.js";
 import { isAdminIdentity } from "./identities.js";
 
@@ -69,12 +69,15 @@ export async function liveSession(
   sid: string,
   now: number,
 ): Promise<SessionRow | null> {
-  return env.PLATFORM_DB.prepare(
+  const hash = await sessionHash(sid);
+  const row = await env.PLATFORM_DB.prepare(
     `SELECT * FROM sessions WHERE id_hash = ? AND kind = 'admin' AND host = ?
        AND revoked_at IS NULL AND expires_at > ?`,
   )
-    .bind(await sessionHash(sid), adminHost(env), now)
+    .bind(hash, adminHost(env), now)
     .first<SessionRow>();
+  // The lookup finds the row; the constant-time compare decides (4.1).
+  return row && sameString(row.id_hash, hash) ? row : null;
 }
 
 /**

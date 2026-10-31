@@ -14,9 +14,15 @@ Two conditions, both required:
 2. **Code CPU ≤ 2 ms per route (p95)**, pinned by `pnpm test:cpu`
    (`apps/server/test/code-cpu/routes.test.ts`): the real Worker in Node
    against in-process bindings, thread CPU minus D1, R2 and DO time (DO rows
-   meter the DO invocation), p95 of 20 requests, median of 5 runs. A stall
-   in a handler fails its row. The 2 ms is on the reference laptop; a slower
-   runner (CI is about 3×) scales it by its own `GET /api/v1/me` p95, at most 4×.
+   meter the DO invocation), p95 of 20 requests, 5 rounds. A stall in a
+   handler fails its row. The 2 ms is on the reference laptop, where
+   `GET /api/v1/me` takes 0.56 ms, so each row is asserted as a ratio: every
+   round measures the row's p95 and `GET /api/v1/me`'s p95 back to back (the
+   order alternating), and the median of row / me must stay at or under
+   budget / 0.56. Both run in the same process at the same moment, so a
+   slower runner (CI is about 3×) or load that changes mid-suite cancels out.
+   `GET /api/v1/me` itself keeps an absolute bar of 2 ms × 4 (the most a runner
+   may be slower), so a regression there can't widen every other row's bar.
 
 This replaces the earlier bar, "staging cpuTime p95 ≤ 10 ms". Staging
 `cpuTime` includes **8–15 ms of runtime overhead** that our code doesn't

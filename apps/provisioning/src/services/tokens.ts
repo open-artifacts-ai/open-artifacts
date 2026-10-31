@@ -210,6 +210,7 @@ async function liveAdminSession(
     .first<SessionRow>();
   if (
     !s ||
+    !sameString(s.id_hash, hash) ||
     s.kind !== "admin" ||
     s.revoked_at !== null ||
     s.expires_at <= now ||
