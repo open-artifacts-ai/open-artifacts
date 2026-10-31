@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+    "paths": {
+      "@oa/shared": ["../../packages/shared/src/index.ts"],
+      "@oa/shared/provisioning/mocks": [
+        "../../packages/shared/src/mocks/provisioning.ts"
+      ],
+      "@oa/shared/*": ["../../packages/shared/src/*"]
+    }
+  },
+  "include": ["src", "test", "e2e", "vite.config.ts", "playwright.config.ts"]
+}
