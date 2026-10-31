@@ -184,12 +184,15 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
 }
 
 /** A staging REDLINE_TARGETS with the CI layout for prod. */
-function probe(o: { inventory?: boolean } = {}) {
+function probe(o: { inventory?: boolean; jwtFile?: string } = {}) {
   const s = secretDir({
     REDLINE_RL_A_HOOK_KEY: "a".repeat(40),
     REDLINE_RL_B_HOOK_KEY: "b".repeat(40),
     REDLINE_PROD_R2_TOKEN: "r2-token",
     REDLINE_PROD_SCRIPTS_TOKEN: "scripts-token",
+    ...(o.jwtFile === undefined
+      ? {}
+      : { REDLINE_PROD_INVENTORY_OIDC: o.jwtFile }),
   });
   dispose.push(s.cleanup);
   const t = (n: string, d: string) => ({
@@ -403,6 +406,28 @@ describe("prodClean (spec 2026-10-26)", () => {
       expect(
         await failCode(guardProdClean({ mode: "staging", prod: probe() })),
       ).toBe("inventory_unconfigured");
+    });
+    it("staging reads the minted OIDC JWT from the secrets dir (REDLINE_PROD_INVENTORY_OIDC)", async () => {
+      const w = cleanWorld();
+      publish(w, { version: "1.2.3" });
+      const { fetch } = await serve(w);
+      const p = probe({ jwtFile: `${JWT}\n` });
+      expect(JSON.stringify(p)).not.toContain(JWT);
+      const r = await guardProdClean({ mode: "staging", prod: p }, (x) =>
+        prodClean(x, { fetch, pubkey: PUB }),
+      );
+      expect(r).toEqual({ level: "pass", releases: 1, installs: 1 });
+      expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
+    });
+    it("an explicit opts.inventoryBearer wins over the secrets-dir JWT", async () => {
+      const w = cleanWorld();
+      const { fetch } = await serve(w);
+      await prodClean(probe({ jwtFile: "file.jwt.z" }), {
+        fetch,
+        pubkey: PUB,
+        inventoryBearer: JWT,
+      });
+      expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
     });
     it("staging with a probe runs prodClean on it", async () => {
       const p = probe();

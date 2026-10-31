@@ -146,7 +146,7 @@ interface Secrets {
 const SECRETS = new WeakMap<object, Secrets>();
 const PROD_SECRETS = new WeakMap<
   object,
-  { r2Token: string; scriptsToken: string }
+  { r2Token: string; scriptsToken: string; inventoryBearer?: string }
 >();
 
 /** @internal Secrets of a loaded target (http.ts only). */
@@ -292,9 +292,16 @@ const PROD_FILES = {
 } as const;
 
 /**
+ * The GitHub OIDC JWT the red-line job mints for the prod inventory's
+ * audience and writes into the scanned secrets dir (design 4.4). Optional:
+ * absent, prodClean fails inventory_unconfigured.
+ */
+export const PROD_INVENTORY_OIDC_FILE = "REDLINE_PROD_INVENTORY_OIDC";
+
+/**
  * The prod probe: from REDLINE_TARGETS.prod, else the CI layout
- * (<secretsDir>/REDLINE_PROD_R2_TOKEN, _SCRIPTS_TOKEN, and env
- * REDLINE_PROD_ACCOUNT_ID). Undefined when neither
+ * (<secretsDir>/REDLINE_PROD_R2_TOKEN, _SCRIPTS_TOKEN, optional
+ * _INVENTORY_OIDC, and env REDLINE_PROD_ACCOUNT_ID). Undefined when neither
  * is configured.
  */
 export function parseProd(
@@ -322,7 +329,11 @@ export function parseProd(
   if (!r2TokenFile || !scriptsTokenFile)
     throw new Error("prod: the R2 and scripts token files are required");
   const p: ProdProbe = { accountId, r2TokenFile, scriptsTokenFile };
-  const secrets: { r2Token: string; scriptsToken: string } = {
+  const secrets: {
+    r2Token: string;
+    scriptsToken: string;
+    inventoryBearer?: string;
+  } = {
     r2Token: readSecretFile(r2TokenFile, "REDLINE_PROD_R2_TOKEN"),
     scriptsToken: readSecretFile(
       scriptsTokenFile,
@@ -331,6 +342,11 @@ export function parseProd(
   };
   if (r.inventoryUrl !== undefined)
     p.inventoryUrl = origin(r.inventoryUrl, "prod.inventoryUrl", "staging");
+  const jwtFile = secretsDir
+    ? join(secretsDir, PROD_INVENTORY_OIDC_FILE)
+    : undefined;
+  if (jwtFile && exists(jwtFile))
+    secrets.inventoryBearer = readSecretFile(jwtFile, PROD_INVENTORY_OIDC_FILE);
   PROD_SECRETS.set(p, secrets);
   return p;
 }

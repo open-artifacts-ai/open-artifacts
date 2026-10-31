@@ -51,7 +51,9 @@ describe("guard", () => {
 
   it("prod is clean (no test hooks on any prod install)", async (ctx) => {
     // Staging with no prod probe throws ProdDirty("prod probe not configured");
-    // with no OIDC inventory bearer (W12 mints it) it fails inventory_unconfigured.
+    // prodClean reads the OIDC inventory JWT from the secrets dir
+    // (REDLINE_PROD_INVENTORY_OIDC, minted by the redline job in W12); without
+    // it the case fails inventory_unconfigured.
     if ((await guardProdClean(T)) === "not-applicable")
       return proof(ctx, "not-applicable", "local mode");
   });

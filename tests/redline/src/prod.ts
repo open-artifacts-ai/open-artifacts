@@ -253,9 +253,10 @@ export async function prodClean(
   const s = prodSecretsOf(p);
   const f = o.fetch ?? fetch;
   const pubkey = o.pubkey ?? RELEASE_PUBKEY.prod;
-  // Only a GitHub OIDC JWT for the prod inventory's audience; never the
+  // Only a GitHub OIDC JWT for the prod inventory's audience (the caller's,
+  // else the one the red-line job wrote to the secrets dir); never the
   // stored inventory key, which inventory rejects.
-  const bearer = o.inventoryBearer;
+  const bearer = o.inventoryBearer ?? s.inventoryBearer;
   if (!p.inventoryUrl || !bearer)
     throw new ProdDirty(
       "inventory_unconfigured",
@@ -357,7 +358,8 @@ export async function prodClean(
 /**
  * The red-line guard's case: local mode has no prod (not-applicable); staging
  * always runs prodClean, so a missing prod probe fails (not_configured) and
- * a probe with no OIDC inventory bearer fails (inventory_unconfigured).
+ * a probe with no OIDC inventory bearer (no REDLINE_PROD_INVENTORY_OIDC in the
+ * secrets dir) fails (inventory_unconfigured).
  */
 export async function guardProdClean(
   t: { mode: "local" | "staging"; prod?: ProdProbe },
