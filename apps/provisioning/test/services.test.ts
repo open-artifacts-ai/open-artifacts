@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { audit } from "../src/audit.js";
 import { NotImplemented } from "../src/errors.js";
 import type { Principal } from "../src/principal.js";
 import {
@@ -51,19 +50,6 @@ const session: SessionRow = {
 };
 
 describe("C4 service stubs", () => {
-  it("audit rejects until W4", async () => {
-    const { env } = fakeEnv();
-    await expect(
-      audit(env, {
-        action: "authz.refused",
-        actor: admin,
-        outcome: "refused",
-        route: "R2",
-        code: "forbidden",
-      }),
-    ).rejects.toBeInstanceOf(NotImplemented);
-  });
-
   it("mintAgentToken rejects until W5b, for both kinds", async () => {
     const { env } = fakeEnv();
     await expect(

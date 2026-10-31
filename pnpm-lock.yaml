@@ -355,9 +355,15 @@ importers:
       '@oa/gh-oidc':
         specifier: workspace:*
         version: link:../../packages/gh-oidc
+      '@oa/provision':
+        specifier: workspace:*
+        version: link:../../packages/provision
       '@oa/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: ^1.4.4
@@ -368,9 +374,6 @@ importers:
       '@oa/admin':
         specifier: workspace:*
         version: link:../admin
-      '@oa/provision':
-        specifier: workspace:*
-        version: link:../../packages/provision
       '@types/node':
         specifier: ^20.19.43
         version: 20.19.43

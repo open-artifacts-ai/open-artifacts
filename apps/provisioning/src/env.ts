@@ -37,6 +37,11 @@ export interface Env {
   APP_DOMAIN: string;
   SIGNUPS_ENABLED: "false" | "true" | "test-users";
   SELF_SERVE_TIER: Tier;
+  /**
+   * The scheduler's and consumer's daily self-serve cap, so R27 runs the
+   * `signup_cap` condition with the same value (9A.5); unset is 0 (off).
+   */
+  SIGNUP_DAILY_CAP?: string;
   /** Exact redirect URIs besides loopback (9A.3.1), comma list. */
   MCP_REDIRECT_URIS: string;
   /** Staging only (4.4). */
