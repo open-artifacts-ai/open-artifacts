@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.82.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.81.0...v0.82.0) (2026-10-31)
+
+
+### Features
+
+* **provisioner:** W1 provisioner port for the Provisioning API ([#888](https://github.com/open-artifacts-ai/open-artifacts/issues/888)) ([58bd2a3](https://github.com/open-artifacts-ai/open-artifacts/commit/58bd2a334a2afad8946af418b4b073964fed357d))
+* **provisioning:** W4 API core for the Provisioning API ([#893](https://github.com/open-artifacts-ai/open-artifacts/issues/893)) ([2cb9311](https://github.com/open-artifacts-ai/open-artifacts/commit/2cb93116f342f9cd91526236cd40d333e8a23554))
+* **provision:** W2 provision create order and lifecycle for the Provisioning API ([#892](https://github.com/open-artifacts-ai/open-artifacts/issues/892)) ([8d9435d](https://github.com/open-artifacts-ai/open-artifacts/commit/8d9435dd67542c3af4daa63563a756b693c0dbd5))
+* **shared:** C7 redline mint args carry recipientKey; Workflow rollingBack status ([#916](https://github.com/open-artifacts-ai/open-artifacts/issues/916)) ([b707f7b](https://github.com/open-artifacts-ai/open-artifacts/commit/b707f7b854693b1dacc6dd3ca79cad6dd165fdbd))
+
 ## [0.81.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.80.0...v0.81.0) (2026-10-31)
 
 
