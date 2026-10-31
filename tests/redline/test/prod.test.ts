@@ -47,6 +47,12 @@ interface World {
   bindings: string[];
   /** The authorization header of each /installs read. */
   inventoryAuth?: (string | undefined)[];
+  /** /healthz status (a paused or closed host answers 503). */
+  healthzStatus?: number;
+  /** The dispatch script is gone (purged): its routes answer 404. */
+  scriptMissing?: boolean;
+  /** Paths requested, in order. */
+  seen?: string[];
 }
 
 function signedRecord(o: {
@@ -129,6 +135,9 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
   const script = `/client/v4/accounts/${ACCT}/workers/dispatch/namespaces/oa-prod/scripts/oa-p-${ID}`;
   const f = await fakeServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://x");
+    w.seen = [...(w.seen ?? []), u.pathname];
+    if (w.scriptMissing && u.pathname.startsWith(`${script}/`))
+      return json(res, 404, { success: false, errors: [{ code: 10007 }] });
     if (u.pathname === r2) {
       if (!w.objects)
         return json(res, 404, { success: false, errors: [{ code: 10006 }] });
@@ -152,7 +161,8 @@ async function serve(w: World): Promise<{ f: Fake; fetch: typeof fetch }> {
       w.inventoryAuth = [...(w.inventoryAuth ?? []), req.headers.authorization];
       return json(res, 200, { installs: w.installs });
     }
-    if (u.pathname === "/healthz") return json(res, 200, w.healthz);
+    if (u.pathname === "/healthz")
+      return json(res, w.healthzStatus ?? 200, w.healthz);
     if (u.pathname === `${script}/secrets`)
       return json(res, 200, {
         success: true,
@@ -180,7 +190,6 @@ function probe(o: { inventory?: boolean } = {}) {
     REDLINE_RL_B_HOOK_KEY: "b".repeat(40),
     REDLINE_PROD_R2_TOKEN: "r2-token",
     REDLINE_PROD_SCRIPTS_TOKEN: "scripts-token",
-    REDLINE_PROD_INVENTORY_KEY: "inv-key",
   });
   dispose.push(s.cleanup);
   const t = (n: string, d: string) => ({
@@ -236,6 +245,17 @@ describe("prodClean (spec 2026-10-26)", () => {
     expect(JSON.stringify(p)).not.toContain("r2-token");
   });
 
+  it("an inventory URL needs no REDLINE_PROD_INVENTORY_KEY file (OIDC only)", () => {
+    const p = probe();
+    expect(p.inventoryUrl).toBe("https://inventory.example");
+    expect(Object.keys(p).sort()).toEqual([
+      "accountId",
+      "inventoryUrl",
+      "r2TokenFile",
+      "scriptsTokenFile",
+    ]);
+  });
+
   it("a clean prod (signed release, clean install) passes", async () => {
     const w = cleanWorld();
     publish(w, { version: "1.2.3" });
@@ -265,7 +285,7 @@ describe("prodClean (spec 2026-10-26)", () => {
     const { fetch } = await serve(w);
     await prodClean(probe(), { fetch, pubkey: PUB, inventoryBearer: JWT });
     expect(w.inventoryAuth).toEqual([`Bearer ${JWT}`]);
-    // A probe that loaded REDLINE_PROD_INVENTORY_KEY but has no OIDC bearer is
+    // A probe with an inventory URL but no OIDC bearer is
     // unconfigured: it fails before any request and never sends the key.
     let calls = 0;
     const counted: typeof fetch = (i, init) => {
@@ -455,6 +475,56 @@ describe("prodClean (spec 2026-10-26)", () => {
     await expect(check(w)).rejects.toThrow(/installId differs/);
   });
 
+  describe("rows that do not serve (suspended, deleting, deleted, failed, unmapped)", () => {
+    const row = (state: string, mode: string | null) => ({
+      ...cleanWorld().installs[0],
+      state,
+      mode,
+    });
+    const notServing: [string, string | null][] = [
+      ["suspended", "paused"],
+      ["deleting", "closed"],
+      ["deleted", null],
+      ["failed", null],
+      ["active", null],
+    ];
+    for (const [state, mode] of notServing) {
+      it(`${state}/${mode ?? "unmapped"}: no /healthz probe; a 503 page or a purged script passes`, async () => {
+        const w = cleanWorld();
+        w.installs = [row(state, mode)];
+        w.healthzStatus = 503;
+        w.scriptMissing = true;
+        expect(await check(w)).toEqual({
+          level: "pass",
+          releases: 0,
+          installs: 1,
+        });
+        expect(w.seen).not.toContain("/healthz");
+      });
+      it(`${state}/${mode ?? "unmapped"}: a script that still lists a hook fails`, async () => {
+        const w = cleanWorld();
+        w.installs = [row(state, mode)];
+        w.healthzStatus = 503;
+        w.secretNames = ["TEST_HOOK_KEY"];
+        expect(await failCode(check(w))).toBe("install_dirty");
+      });
+      it(`${state}/${mode ?? "unmapped"}: testHooks not false fails`, async () => {
+        const w = cleanWorld();
+        w.installs = [{ ...row(state, mode), testHooks: true }];
+        w.scriptMissing = true;
+        expect(await failCode(check(w))).toBe("install_dirty");
+      });
+    }
+    it("a serving row still needs /healthz 200 and its script", async () => {
+      const w = cleanWorld();
+      w.healthzStatus = 503;
+      expect(await failCode(check(w))).toBe("unreachable");
+      const w2 = cleanWorld();
+      w2.scriptMissing = true;
+      await expect(check(w2)).rejects.toThrow();
+    });
+  });
+
   it("a release with no inventory configured fails inventory_unconfigured", async () => {
     const w = cleanWorld();
     publish(w, { version: "1.2.3" });
@@ -557,7 +627,6 @@ describe("prod-clean-cli: the hosted-ops precheck", () => {
     const s = secretDir({
       REDLINE_PROD_R2_TOKEN: "r2-token",
       REDLINE_PROD_SCRIPTS_TOKEN: "scripts-token",
-      REDLINE_PROD_INVENTORY_KEY: "inv-key",
     });
     dispose.push(s.cleanup);
     const { fetch } = await serve(released());

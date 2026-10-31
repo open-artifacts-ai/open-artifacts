@@ -116,6 +116,22 @@ describe("GET /installs", () => {
     ).toEqual({ installs: [] });
   });
 
+  it("an unknown (NULL) test_hooks reads as true, so prodClean fails closed", async () => {
+    const { db } = makeDb([
+      {
+        install_id: id("a"),
+        app_host: "a.test",
+        content_host: "c.test",
+        state: "active",
+        test_hooks: null,
+      },
+    ]);
+    const body = await getJson(makeEnv({ PLATFORM_DB: db }), "/installs");
+    expect(
+      (body.installs as { testHooks: boolean }[]).map((i) => i.testHooks),
+    ).toEqual([true]);
+  });
+
   it("a row the schema refuses is a fixed 500, never a partial list", async () => {
     const { db } = makeDb([
       {

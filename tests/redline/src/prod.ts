@@ -86,9 +86,8 @@ export interface ProdCleanOpts {
   pubkey?: string;
   /**
    * The inventory's GitHub OIDC bearer (a JWT the caller minted for the prod
-   * inventory's audience). The only inventory credential: inventory accepts
-   * no stored key, so a probe's loaded REDLINE_PROD_INVENTORY_KEY is never
-   * sent, and without this the probe is inventory_unconfigured.
+   * inventory's audience). The only inventory credential (inventory accepts
+   * no stored key); without it the probe is inventory_unconfigured.
    */
   inventoryBearer?: string;
 }
@@ -214,6 +213,34 @@ async function getJson(
   }
 }
 
+/** The script's secret names and settings bindings hold no hook name. */
+async function checkScript(
+  f: typeof fetch,
+  accountId: string,
+  token: string,
+  ns: string,
+  script: string,
+  id: string,
+  secretNames: string[],
+): Promise<void> {
+  const dirty = (msg: string) =>
+    new ProdDirty("install_dirty", `prodClean ${id}: ${msg}`, id);
+  const set = await getJson(
+    f,
+    `${API}/accounts/${accountId}/workers/dispatch/namespaces/${encodeURIComponent(ns)}/scripts/${encodeURIComponent(script)}/settings`,
+    token,
+    `${id} settings`,
+    { code: "unreachable", installId: id },
+  );
+  const bindings = (
+    set.result as { bindings?: { name?: unknown }[] } | undefined
+  )?.bindings;
+  if (!Array.isArray(bindings)) throw dirty("settings unreadable");
+  for (const n of [...secretNames, ...bindings.map((b) => b.name)])
+    if (HOOK_NAMES.includes(String(n)))
+      throw dirty(`script lists ${String(n)}`);
+}
+
 /**
  * pass, or throws ProdDirty (fail). An undefined probe (no R2 config) and a
  * probe without its inventory URL or bearer fail before any request.
@@ -279,6 +306,31 @@ export async function prodClean(
       new ProdDirty("install_dirty", `prodClean ${id}: ${msg}`, id);
     const script = names(id, "prod").script;
     if (r.testHooks !== false) throw dirty("inventory testHooks is not false");
+    // Only a serving host reaches the script: probe its /healthz and require
+    // the script. A paused or closed host (suspended, deleting) answers the
+    // dispatch 503 page, and an unmapped row (deleted, failed) is not routed;
+    // their script, while it exists, must still list no hook, and a purged
+    // script has nothing to run.
+    const serving = r.mode === "serving";
+    const secretNames = await scripts
+      .secretList({ kind: "namespace", ns }, script)
+      .catch((e: unknown) => {
+        if (!serving && e instanceof CfError && e.status === 404) return null;
+        throw e;
+      });
+    if (secretNames === null) continue;
+    if (!serving) {
+      await checkScript(
+        f,
+        p.accountId,
+        s.scriptsToken,
+        ns,
+        script,
+        id,
+        secretNames,
+      );
+      continue;
+    }
     const h = await getJson(
       f,
       `https://${r.appHost}/healthz`,
@@ -288,24 +340,15 @@ export async function prodClean(
     );
     if (h.testHooks === true) throw dirty("/healthz testHooks is true");
     if (h.installId !== id) throw dirty("/healthz installId differs");
-    const secretNames = await scripts.secretList(
-      { kind: "namespace", ns },
-      script,
-    );
-    const set = await getJson(
+    await checkScript(
       f,
-      `${API}/accounts/${p.accountId}/workers/dispatch/namespaces/${encodeURIComponent(ns)}/scripts/${encodeURIComponent(script)}/settings`,
+      p.accountId,
       s.scriptsToken,
-      `${id} settings`,
-      { code: "unreachable", installId: id },
+      ns,
+      script,
+      id,
+      secretNames,
     );
-    const bindings = (
-      set.result as { bindings?: { name?: unknown }[] } | undefined
-    )?.bindings;
-    if (!Array.isArray(bindings)) throw dirty("settings unreadable");
-    for (const n of [...secretNames, ...bindings.map((b) => b.name)])
-      if (HOOK_NAMES.includes(String(n)))
-        throw dirty(`script lists ${String(n)}`);
   }
 
   return { level: "pass", releases: releases.size, installs: rows.length };

@@ -34,7 +34,8 @@ export async function listInstalls(
       appHost: r.app_host,
       contentHost: r.content_host,
       state: r.state,
-      testHooks: Boolean(r.test_hooks),
+      // Unknown (NULL) reads as hooks on: prodClean fails closed on it.
+      testHooks: r.test_hooks !== 0,
       // The host serves this install only when HOSTS names this install.
       mode: p && p.installId === r.install_id ? p.mode : null,
     };
