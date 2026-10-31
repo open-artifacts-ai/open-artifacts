@@ -7,9 +7,11 @@
 // the laptop command did), one PAT labelled redline-<jobId> is minted, every
 // other live redline-* PAT of this install is revoked (redlinePatsToRevoke,
 // keep = the new one), then {pat, hookKey} is sealed. Revoke (`revoke:
-// true`, the run's end): the same session, then every live redline-* PAT of
-// this install is revoked; nothing is minted or sealed, and a repeat with
-// nothing left is a no-op `done`. The provisioning token is checked first
+// true`, the run's end): the same session (so TEST_HOOK_KEY is rotated too,
+// to a key delivered to nobody), then every live redline-* PAT of this
+// install is revoked; nothing is minted or sealed, so the run's end kills
+// both its PAT and its hook key. A repeat rotates again and is a harmless
+// `done`. The provisioning token is checked first
 // in `refuse` mode (5.7). Each variant runs in one step.do, so no
 // credential is ever a step output; D1 holds only the ciphertext, and no
 // log line, error or audit row carries a value.
@@ -223,7 +225,12 @@ async function revokeRedline(s: Session, keep?: string): Promise<number> {
   return ids.length;
 }
 
-/** R26 `revoke: true`: mints and seals nothing; none left is a no-op. */
+/**
+ * R26 `revoke: true`: mints and seals nothing; none left revokes nothing.
+ * openSession rotates TEST_HOOK_KEY to a key no one is given, which ends the
+ * run's hook key with its PAT. Red-line runs on one install never overlap
+ * (one suite per rl- install), so this rotation cannot cut off another run.
+ */
 async function revokeAll(
   ctx: CreateCtx,
   jobId: string,

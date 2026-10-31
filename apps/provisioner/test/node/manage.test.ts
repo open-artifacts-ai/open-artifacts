@@ -917,6 +917,48 @@ describe("redline_creds (10.1, R26)", () => {
     expect(again.job?.sealed).toBeNull();
   });
 
+  it("revoke rotates TEST_HOOK_KEY to a key nobody is given: not sealed, not in any output or job column", async () => {
+    const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+    const { script } = stubInstall(s.installId);
+    const oldKey = script?.secrets.get("TEST_HOOK_KEY");
+    const r = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { revoke: true },
+    });
+    expect(r.error).toBeNull();
+    const newKey = script?.secrets.get("TEST_HOOK_KEY") as string;
+    expect(newKey).toEqual(expect.any(String));
+    expect(newKey).not.toBe(oldKey);
+    expect(r.job?.sealed).toBeNull();
+    expect(JSON.stringify(r.log) + JSON.stringify(r.job)).not.toContain(newKey);
+    expect(
+      JSON.stringify(
+        w.all("SELECT * FROM hosted_audit WHERE install_id = ?", s.installId),
+      ),
+    ).not.toContain(newKey);
+  });
+
+  it("a repeat revoke stays harmless: it rotates again, no error, done", async () => {
+    const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+    const { script } = stubInstall(s.installId);
+    const keys: unknown[] = [script?.secrets.get("TEST_HOOK_KEY")];
+    for (let i = 0; i < 2; i++) {
+      const r = await manage("redline_creds", s.installId, {
+        actor: "oidc",
+        args: { revoke: true },
+      });
+      expect(r.error).toBeNull();
+      expect(r.job).toMatchObject({
+        status: "done",
+        step: "done",
+        error_code: null,
+        sealed: null,
+      });
+      keys.push(script?.secrets.get("TEST_HOOK_KEY"));
+    }
+    expect(new Set(keys).size).toBe(3);
+  });
+
   it("absent revoke is a mint: a job with no recipientKey is refused at recheck, before any write", async () => {
     const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
     const { deleted, seen } = stubInstall(s.installId);
