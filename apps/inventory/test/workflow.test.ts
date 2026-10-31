@@ -85,7 +85,15 @@ describe("prodclean-monitor.yml", () => {
       "pnpm install --frozen-lockfile",
       "pnpm --filter @oa/provision build",
       "pnpm --filter @oa/inventory bundle:monitor",
+      expect.stringContaining(
+        'env -i PATH="$PATH" node apps/inventory/dist/prodclean-monitor.mjs',
+      ),
     ]);
+    // The smoke step expects the fail-closed line and a non-zero exit, so a
+    // bundle that never runs its entry point fails the build job.
+    const smoke = runs.at(-1) ?? "";
+    expect(smoke).toContain('[ "$out" = "prod-clean: fail (not_configured)" ]');
+    expect(smoke).toContain('[ "$code" -ne 0 ]');
     // One self-contained ESM file for node, at the .nvmrc version.
     expect(pkg.scripts["bundle:monitor"]).toBe(
       "esbuild scripts/prodclean-monitor.ts --bundle --platform=node --format=esm --target=node$(cat ../../.nvmrc) --log-level=warning --outfile=dist/prodclean-monitor.mjs",

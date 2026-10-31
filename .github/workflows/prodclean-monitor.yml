@@ -6,11 +6,13 @@
 # /prodclean), and the scheduler alerts and emails from there. A failed run
 # is the alert here: no issue is opened (that needs issues: write).
 #
-# Two jobs, so no dependency code ever runs where an OIDC token can be minted:
+# Two jobs, so no installer or build tool runs where an OIDC token can be
+# minted:
 # - build: contents: read only, no environment, no secrets. It installs,
 #   builds and bundles the monitor script into one self-contained ESM file,
-#   and uploads it. A compromised dependency here cannot mint a JWT for the
-#   prod inventory (and so cannot post a fake pass).
+#   smoke-runs it, and uploads it. Nothing here can mint a JWT, but the
+#   monitor job trusts this bundle as built (and the runtime dependencies
+#   inlined in it), so this whole job is inside the trust boundary.
 # - monitor: id-token: write only, in the redline-staging Environment (main
 #   only). No checkout, no install, no build: only setup-node and
 #   download-artifact, then node runs the bundle. Secrets come only from the
@@ -48,6 +50,15 @@ jobs:
       - run: pnpm --filter @oa/provision build
       # One ESM file with every dependency inlined (node builtins only).
       - run: pnpm --filter @oa/inventory bundle:monitor
+      # The bundle must run as a script: with no env it fails closed, before
+      # any network call. A bundle that silently does nothing would show green.
+      - name: Smoke-run the bundle
+        run: |
+          set +e
+          out="$(env -i PATH="$PATH" node apps/inventory/dist/prodclean-monitor.mjs 2>&1)"
+          code=$?
+          set -e
+          [ "$out" = "prod-clean: fail (not_configured)" ] && [ "$code" -ne 0 ]
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: prodclean-monitor
