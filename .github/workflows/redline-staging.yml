@@ -10,6 +10,9 @@
 # that need prod credentials report not-applicable, never a pass. T19 (the M1
 # gate's dashboard suite) runs in this job after the red-line suite, never
 # beside it: it needs this run's rl-a hook key, which only this job holds.
+# Deviation from 4.4 ("id-token on the redline job only, not t19"): T19 is a
+# step of the id-token job, so before it runs every JWT and prod token file
+# is deleted; the runner may still hand it the OIDC request variables.
 name: redline-staging
 
 on:
@@ -43,39 +46,14 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-      - run: pnpm install --frozen-lockfile
+      # No lifecycle scripts: every step of this job can reach the OIDC
+      # request token (id-token: write is job-wide), and an install script
+      # could mint as O. pnpm 10 already skips dependency scripts.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       # Before any secret file exists: only the probes and suites run while they do.
       - run: pnpm --filter @oa/provision build
       - run: pnpm --filter @oa/shared build
       - run: pnpm --filter @oa/dashboard exec playwright install --with-deps chromium
-      - name: Check the tag and set the targets
-        env:
-          TAG: ${{ inputs.tag }}
-          REDLINE_TARGETS_BASE: ${{ vars.REDLINE_TARGETS }}
-          REDLINE_PROD_INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
-          RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || { echo "tag must be vX.Y.Z"; exit 1; }
-          [[ "$RUN_ID" =~ ^[0-9]{1,20}-[0-9]{1,3}$ ]] || { echo "bad run id"; exit 1; }
-          umask 077
-          d="$RUNNER_TEMP/redline-secrets"
-          mkdir -p "$d"
-          # Cloudflare's dummy Turnstile token, which the always-pass test
-          # secret on rl-a and rl-b accepts (#676, #677). Public, not a secret.
-          t="$RUNNER_TEMP/redline-turnstile-token"
-          printf '%s' 'XXXX.DUMMY.TOKEN.XXXX' > "$t"
-          targets=$(jq -c --arg d "$d" --arg t "$t" '. + {secretsDir: $d} | .a.turnstileFile = $t | .b.turnstileFile = $t' <<< "$REDLINE_TARGETS_BASE")
-          # The prod probe reads its files from secretsDir; the inventory
-          # origin is the only prod field it needs from here.
-          if [ -n "${REDLINE_PROD_INVENTORY_URL:-}" ]; then
-            targets=$(jq -c --arg u "$REDLINE_PROD_INVENTORY_URL" '.prod = {inventoryUrl: $u}' <<< "$targets")
-          fi
-          {
-            echo "REDLINE_TARGETS=$targets"
-            echo "REDLINE_RELEASE=${TAG#v}"
-            echo "REDLINE_RUN_ID=$RUN_ID"
-          } >> "$GITHUB_ENV"
       - name: Write the suite's secrets as 0600 files
         env:
           # The "prod is clean" probe: read-only tokens, both or none (its
@@ -95,14 +73,51 @@ jobs:
             [ -e "$f" ] || continue
             test -s "$f" || { echo "empty secret file: ${f##*/}"; exit 1; }
           done
+      - name: Check the tag and set the targets
+        env:
+          TAG: ${{ inputs.tag }}
+          REDLINE_TARGETS_BASE: ${{ vars.REDLINE_TARGETS }}
+          REDLINE_PROD_INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
+          RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || { echo "tag must be vX.Y.Z"; exit 1; }
+          [[ "$RUN_ID" =~ ^[0-9]{1,20}-[0-9]{1,3}$ ]] || { echo "bad run id"; exit 1; }
+          umask 077
+          d="$RUNNER_TEMP/redline-secrets"
+          mkdir -p "$d"
+          # Cloudflare's dummy Turnstile token, which the always-pass test
+          # secret on rl-a and rl-b accepts (#676, #677). Public, not a secret.
+          t="$RUNNER_TEMP/redline-turnstile-token"
+          printf '%s' 'XXXX.DUMMY.TOKEN.XXXX' > "$t"
+          targets=$(jq -c --arg d "$d" --arg t "$t" '. + {secretsDir: $d} | .a.turnstileFile = $t | .b.turnstileFile = $t' <<< "$REDLINE_TARGETS_BASE")
+          # The prod probe reads its files from secretsDir; the inventory
+          # origin is the only prod field it needs from here. Only with its
+          # tokens: a .prod without them fails loadTargets for the whole suite.
+          if [ -n "${REDLINE_PROD_INVENTORY_URL:-}" ] && [ -s "$d/REDLINE_PROD_R2_TOKEN" ]; then
+            targets=$(jq -c --arg u "$REDLINE_PROD_INVENTORY_URL" '.prod = {inventoryUrl: $u}' <<< "$targets")
+          fi
+          {
+            echo "REDLINE_TARGETS=$targets"
+            echo "REDLINE_RELEASE=${TAG#v}"
+            echo "REDLINE_RUN_ID=$RUN_ID"
+          } >> "$GITHUB_ENV"
       # Each JWT is masked before it is written, never echoed; the suite
       # re-mints one into the same file when it nears expiry (600 s at most).
       - id: mint
         name: Mint the OIDC JWTs as 0600 files
-        run: pnpm --filter @oa/redline provisioning mint-oidc provisioning stagingInventory prodInventory
+        run: pnpm --filter @oa/redline provisioning mint-oidc provisioning stagingInventory
       - id: bringup
         name: Upgrade rl-a and rl-b to the tag (R5) and take this run's credentials (R26)
         run: pnpm --filter @oa/redline provisioning bringup
+      # After bring-up (up to 4 jobs of 20 min), only with the prod tokens;
+      # the suite re-mints it near expiry (600 s at most) like the others.
+      - name: Mint the prod inventory OIDC JWT
+        run: |
+          set -euo pipefail
+          if [ -s "$RUNNER_TEMP/redline-secrets/REDLINE_PROD_R2_TOKEN" ]; then
+            pnpm --filter @oa/redline provisioning mint-oidc prodInventory
+          fi
       - name: Run the suite
         env:
           REDLINE_STG_INVENTORY_URL: ${{ vars.REDLINE_STG_INVENTORY_URL }}
@@ -115,10 +130,31 @@ jobs:
           export REDLINE_REPORT="$RUNNER_TEMP/redline-report/report.json"
           mkdir -p "$RUNNER_TEMP/redline-report"
           pnpm --filter @oa/redline live
+      # The red-line report is scanned now, while every file still exists:
+      # the next step deletes the JWT and prod files before T19 runs.
+      - id: scan-suite
+        name: No secret in the red-line report
+        if: always()
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/redline-secrets"
+          r="$RUNNER_TEMP/redline-report"
+          [ -d "$d" ] && [ -d "$r" ] || exit 0
+          for f in "$d"/*; do
+            [ -s "$f" ] || continue
+            # -f reads the pattern from the file: the key never reaches argv.
+            if grep -rqF -f "$f" "$r"; then echo "secret in report: ${f##*/}"; exit 1; fi
+          done
+      # T19 needs only rl-a's hook key. The revoke re-mints the provisioning
+      # JWT itself (the file is missing, so jwtSource mints a new one).
+      - name: Delete the JWT and prod files before T19
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/redline-secrets/REDLINE_*_OIDC "$RUNNER_TEMP"/redline-secrets/REDLINE_PROD_*
       # T19: the dashboard against rl-a (apps/dashboard/e2e/staging), after
       # the red-line suite, never beside it: both write to rl-a through its
       # hooks (per-IP code caps, the hook audit log the red-line cases read).
-      # It is not handed the runner's OIDC request credentials.
+      # The blank OIDC request variables are best effort only: the runner may
+      # set them again for a job with id-token: write.
       - id: t19
         name: Run T19
         if: ${{ !cancelled() && steps.bringup.outcome == 'success' }}
@@ -149,7 +185,7 @@ jobs:
             if grep -rqF -f "$f" "${dirs[@]}"; then echo "secret in report: ${f##*/}"; exit 1; fi
           done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always() && steps.scan.outcome == 'success'
+        if: always() && steps.scan-suite.outcome == 'success' && steps.scan.outcome == 'success'
         with:
           name: redline-report
           path: ${{ runner.temp }}/redline-report

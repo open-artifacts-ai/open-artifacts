@@ -161,3 +161,11 @@ export function jwtSource(
 
 /** The GitHub log command that masks a value (written to stdout by the job only). */
 export const maskLine = (v: string) => `::add-mask::${v}\n`;
+
+/** In the job, every value this process learns is masked in the log first. */
+export const mask = (env: Record<string, string | undefined>) =>
+  env.GITHUB_ACTIONS === "true"
+    ? (v: string) => {
+        process.stdout.write(maskLine(v));
+      }
+    : () => {};

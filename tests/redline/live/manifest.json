@@ -1098,10 +1098,6 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P25: 15 rapid GET /auth/start: at least one 429"
-    },
-    {
-      "file": "live/provisioning.test.ts",
       "name": "provisioning > P26: GET /auth/test-signin: 404 (staging; prod when applicable)"
     },
     {
@@ -1114,7 +1110,7 @@
     },
     {
       "file": "live/provisioning.test.ts",
-      "name": "provisioning > P29: SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete frees it"
+      "name": "provisioning > P29: SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting"
     },
     {
       "file": "live/provisioning.test.ts",
@@ -1179,6 +1175,10 @@
     {
       "file": "live/provisioning.test.ts",
       "name": "provisioning > P47: /v1/me with an OAuth-shaped bearer: 401 unauthenticated"
+    },
+    {
+      "file": "live/provisioning.test.ts",
+      "name": "provisioning > P25: 15 rapid GET /auth/start: at least one 429"
     }
   ],
   "notes": [

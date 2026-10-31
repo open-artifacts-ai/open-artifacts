@@ -28,6 +28,7 @@ import {
 } from "../src/provisioning.ts";
 import { rawTargets } from "../src/provisioning-live.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
+import { parseProd, prodInventoryBearer } from "../src/targets.ts";
 import { sealTo } from "./provisioner-seal.ts";
 import {
   API_JWT,
@@ -39,8 +40,9 @@ import {
 } from "./provisioning-fake.ts";
 
 // The probes, bring-up and revoke on the in-memory staging fake (no network,
-// pinned clock). A conforming fake passes every probe; each fault makes one
-// probe fail, so every probe is shown to judge what it claims to.
+// pinned clock). A conforming fake passes every probe; each fault below makes
+// one probe fail. Only the probes listed in the fault cases are shown to
+// judge what they claim; the rest are exercised on the happy path only.
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -101,6 +103,7 @@ describe("the probes on a conforming staging fake", () => {
     Object.assign(expected, {
       P7: "not-applicable",
       P46: "not-applicable",
+      P29: "unproven-live",
       P30: "unproven-live",
       P35: "unproven-live",
     });
@@ -148,6 +151,11 @@ describe("each probe fails on the behaviour it guards", () => {
     ["p27_no_token_ok", "P27", /P27 no token: want 404/],
     ["p34_admin_429", "P34", /P34 \/auth\/start: status 429/],
     ["p37_no_header", "P37", /WWW-Authenticate lacks/],
+    [
+      "p38_prm_no_scopes",
+      "P38",
+      /protected resource scopes_supported is not exactly the five/,
+    ],
     ["p44_no_limit", "P44", /the 11th registration was status 201/],
     ["p45_extra_tool", "P45", /tools\/list names differ/],
     [
@@ -173,10 +181,29 @@ describe("each probe fails on the behaviour it guards", () => {
     );
   });
 
-  it("P29 is not-applicable while signups are closed", async () => {
+  it("P29 is not-applicable while signups are closed (503)", async () => {
     const f = fakeApi();
     f.faults.add("signups_closed");
     expect(level((await runAll(f)).get("P29"))).toBe("not-applicable");
+  });
+
+  it("P29 deletes to deleting, U's purge is 403, and a later run's create meets signup_limit", async () => {
+    const f = fakeApi();
+    const p29 = PROBES.find((p) => p.id === "P29");
+    const first = await p29?.run(new Run(CONFIG, f.io));
+    expect(first).toMatchObject({
+      level: "unproven-live",
+      reason: expect.stringMatching(/^create job \S+ done and deleted/),
+    });
+    const mine = [...f.installs.values()].filter(
+      (i) => i.owner === "user:rl-test-b",
+    );
+    expect(mine.map((i) => i.state)).toEqual(["deleting"]);
+    const later = await p29?.run(new Run({ ...CONFIG, runId: "5678" }, f.io));
+    expect(later).toMatchObject({
+      level: "unproven-live",
+      reason: expect.stringMatching(/signup_accounts from an earlier run/),
+    });
   });
 
   it("P16 is unproven when the create already finished; P15 fails on a 200 /healthz", async () => {
@@ -228,6 +255,36 @@ describe("bring-up and revoke (R5, R26)", () => {
     expect([...f.pats.keys()]).toEqual([c.pat]);
     await revokeCreds(run, CONFIG.rlA.id, "rl-a", CONFIG.rlA.app, c.pat);
     expect(f.pats.get(c.pat)?.revoked).toBe(true);
+  });
+
+  it("R26 mint keeps the sealed creds from a read while the job still runs", async () => {
+    const f = fakeApi();
+    const seen: { status: string; sealed: boolean }[] = [];
+    const io = {
+      ...f.io,
+      fetch: (async (u: string | URL | Request, init?: RequestInit) => {
+        const r = await f.io.fetch(u, init);
+        if (String(u).includes("/v1/jobs/")) {
+          const j = (await r.clone().json()) as {
+            status: string;
+            sealed: string | null;
+          };
+          seen.push({ status: j.status, sealed: j.sealed !== null });
+        }
+        return r;
+      }) as typeof fetch,
+    };
+    const run = new Run(CONFIG, io);
+    const r = await newRecipient();
+    const c = await mintCreds(run, CONFIG.rlA.id, "rl-a", {
+      publicKey: r.publicKey,
+      open: async (s) => parseCreds(await openSealed(r, s)),
+    });
+    expect(c.pat).toMatch(/^oa_pat_/);
+    expect(seen.filter((x) => x.sealed)).toEqual([
+      { status: "running", sealed: true },
+    ]);
+    expect(seen.at(-1)).toEqual({ status: "done", sealed: false });
   });
 
   it("revoke fails when the PAT still works afterwards", async () => {
@@ -370,6 +427,22 @@ describe("OIDC JWT files", () => {
       env: {},
     });
     await expect(missing()).rejects.toThrow(/file missing/);
+  });
+
+  it("the prod inventory bearer is re-read (and re-minted) on use in the job, not only at load", async () => {
+    const d = tmp();
+    for (const n of ["REDLINE_PROD_R2_TOKEN", "REDLINE_PROD_SCRIPTS_TOKEN"])
+      writeFileSync(join(d, n), "t", { mode: 0o600 });
+    const jwtFile = join(d, "REDLINE_PROD_INVENTORY_OIDC");
+    const v1 = jwt("https://oa-p-inventory");
+    writeFileSync(jwtFile, v1, { mode: 0o600 });
+    const base = { REDLINE_PROD_ACCOUNT_ID: "a".repeat(32) };
+    const job = parseProd(undefined, d, { ...base, ...env });
+    const v2 = jwt("https://oa-p-inventory", 4_102_444_801);
+    writeFileSync(jwtFile, v2, { mode: 0o600 });
+    expect(await prodInventoryBearer(job as never)).toBe(v2);
+    const local = parseProd(undefined, d, base);
+    expect(await prodInventoryBearer(local as never)).toBeUndefined();
   });
 
   it("refuses a group-readable JWT file", async () => {

@@ -6,7 +6,7 @@ import {
   AUDIENCES,
   type AudienceKey,
   jwtSource,
-  maskLine,
+  mask,
   OIDC_FILES,
   writeSecretFile,
 } from "./oidc.ts";
@@ -57,9 +57,7 @@ export function rawTargets(json: string | undefined): RawTargets {
 
 const out = (s: string) => process.stdout.write(s);
 
-/** In the job, every value this process learns is masked in the log first. */
-export const mask = (env: Record<string, string | undefined>) =>
-  env.GITHUB_ACTIONS === "true" ? (v: string) => out(maskLine(v)) : () => {};
+export { mask };
 
 export function liveRun(
   env: Record<string, string | undefined>,

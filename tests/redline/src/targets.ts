@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describeRes, readBody, retryIdempotent } from "./http.ts";
-import { AUDIENCES, jwtSource, OIDC_FILES } from "./oidc.ts";
+import { AUDIENCES, canMint, jwtSource, mask, OIDC_FILES } from "./oidc.ts";
 
 // REDLINE_TARGETS: the two installs (and the prod probe) the suite runs
 // against. Secrets are never in the JSON: only paths of 0600 files, read here
@@ -118,7 +118,10 @@ function parseInventory(
   readSecretFile(i.oidcFile, "inventory OIDC JWT");
   INVENTORY_SECRETS.set(
     i,
-    jwtSource(i.oidcFile, AUDIENCES.stagingInventory, { env }),
+    jwtSource(i.oidcFile, AUDIENCES.stagingInventory, {
+      env,
+      onMint: mask(env),
+    }),
   );
   return i;
 }
@@ -177,6 +180,19 @@ export function secretsOf(t: Target): Secrets {
 /** @internal */
 export function setPat(t: Target, pat: string): void {
   secretsOf(t).pat = pat;
+}
+
+/** In the job only: the prod inventory JWT, re-minted near expiry. */
+const PROD_BEARER = new WeakMap<object, () => Promise<string>>();
+
+/**
+ * @internal The prod inventory bearer, fresh when the job can re-mint it;
+ * undefined elsewhere (the static secrets-dir read then stands).
+ */
+export async function prodInventoryBearer(
+  p: ProdProbe,
+): Promise<string | undefined> {
+  return PROD_BEARER.get(p)?.();
 }
 
 /** @internal */
@@ -365,6 +381,13 @@ export function parseProd(
     : undefined;
   if (jwtFile && exists(jwtFile))
     secrets.inventoryBearer = readSecretFile(jwtFile, PROD_INVENTORY_OIDC_FILE);
+  // The job runs bring-up and other suites before prodClean: a 600 s JWT
+  // read once at load may have expired by then, so re-mint near expiry.
+  if (jwtFile && exists(jwtFile) && canMint(env))
+    PROD_BEARER.set(
+      p,
+      jwtSource(jwtFile, AUDIENCES.prodInventory, { env, onMint: mask(env) }),
+    );
   PROD_SECRETS.set(p, secrets);
   return p;
 }

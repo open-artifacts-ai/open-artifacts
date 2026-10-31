@@ -76,6 +76,7 @@ export type Fault =
   | "p27_no_token_ok"
   | "p34_admin_429"
   | "p37_no_header"
+  | "p38_prm_no_scopes"
   | "p44_no_limit"
   | "p45_extra_tool"
   | "p47_wrong_code"
@@ -118,6 +119,7 @@ export function fakeApi(): FakeApi {
   const audit: FakeApi["audit"] = [];
   const replays = new Map<string, Response>();
   const log: string[] = [];
+  const signupAccounts = new Set<string>();
   const authStarts = new Map<number, number>();
   let registrations = 0;
   let n = 0;
@@ -351,8 +353,9 @@ export function fakeApi(): FakeApi {
       const j = jobs.get(m[1] as string);
       if (!j || j.owner !== p) return err(404, "not_found");
       advance(j);
-      const withSealed =
-        j.status === "done" && !j.sealedRead && j.sealed !== null;
+      // As W3/W5b: sealed is written while the job is still running (step
+      // seal, before done) and handed out once, whatever the status.
+      const withSealed = !j.sealedRead && j.sealed !== null;
       if (withSealed) j.sealedRead = true;
       return ok(jobView(j, withSealed));
     }
@@ -367,7 +370,7 @@ export function fakeApi(): FakeApi {
     }
     if (path === "/installs" && method === "POST") {
       if (user) {
-        if (faults.has("signups_closed")) return err(403, "signups_closed");
+        if (faults.has("signups_closed")) return err(503, "signups_closed");
         if (body.ownerEmail !== undefined || body.tier !== undefined)
           return err(403, "forbidden");
       } else if (
@@ -375,6 +378,9 @@ export function fakeApi(): FakeApi {
         body.testHooks !== true
       )
         return err(403, "forbidden");
+      // One live install per account (signup_accounts): freed only on a
+      // failed create or 7 days after a purge, never within a run.
+      if (user && signupAccounts.has(p)) return err(409, "signup_limit");
       if ([...installs.values()].some((i) => i.slug === body.slug))
         return err(409, "slug_taken");
       const version = (body.version as string | undefined) ?? "0.82.0";
@@ -389,6 +395,7 @@ export function fakeApi(): FakeApi {
         source: user ? "self-serve" : "admin",
         owner: p,
       });
+      if (user) signupAccounts.add(p);
       const j = startJob(i, "create", p, {
         failAt: rel.installable
           ? undefined
@@ -409,7 +416,12 @@ export function fakeApi(): FakeApi {
     const i = installs.get(m[1] as string);
     const op = m[2];
     if (op === "release-lease") return err(403, "forbidden");
-    if (user && op === "upgrade") return err(403, "forbidden");
+    // 4.2: U has no R5-R8, R12 and no R11 purge.
+    if (
+      user &&
+      ["upgrade", "purge", "retry", "suspend", "resume"].includes(op ?? "")
+    )
+      return err(403, "forbidden");
     if (!i || !sees(p, i)) return err(404, "not_found");
     if (!op) return ok(detail(i));
     if (op === "jobs")
@@ -465,7 +477,6 @@ export function fakeApi(): FakeApi {
           onDone: () => {
             i.mode = "closed";
             i.state = "deleting";
-            if (user) installs.delete(i.id);
           },
         });
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
@@ -509,9 +520,10 @@ export function fakeApi(): FakeApi {
           JSON.stringify({ pat, hookKey: "h".repeat(43) }),
         );
         const j = startJob(i, "redline_creds", p, {
-          onDone: () => {
-            j.sealed = sealed;
+          onStep: (s) => {
+            if (s !== "mint") return;
             pats.set(pat, { install: i.id, revoked: false });
+            j.sealed = sealed;
           },
         });
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
@@ -623,7 +635,9 @@ export function fakeApi(): FakeApi {
         return ok({
           resource: `${CONFIG.api}/mcp`,
           authorization_servers: [CONFIG.api],
-          scopes_supported: [...TOKEN_SCOPES],
+          ...(faults.has("p38_prm_no_scopes")
+            ? {}
+            : { scopes_supported: [...TOKEN_SCOPES] }),
         });
       if (url.pathname === "/.well-known/oauth-authorization-server")
         return ok({

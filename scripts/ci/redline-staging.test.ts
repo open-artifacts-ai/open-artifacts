@@ -120,10 +120,17 @@ describe("redline-staging.yml", () => {
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(st.env.TAG).toBe("${{ inputs.tag }}");
     expect(st.run).not.toContain("${{");
-    const go = (env: Record<string, string>) => {
+    const go = (env: Record<string, string>, prodTokens = false) => {
       const tmp = mkdtempSync(join(tmpdir(), "rl-targets-"));
       const ghEnv = join(tmp, "env");
       writeFileSync(ghEnv, "");
+      if (prodTokens) {
+        mkdirSync(join(tmp, "redline-secrets"));
+        writeFileSync(
+          join(tmp, "redline-secrets", "REDLINE_PROD_R2_TOKEN"),
+          "r",
+        );
+      }
       try {
         const r = runBash(String(st.run), {
           RUNNER_TEMP: tmp,
@@ -143,10 +150,10 @@ describe("redline-staging.yml", () => {
         rmSync(tmp, { recursive: true, force: true });
       }
     };
-    const ok = go({
-      TAG: "v0.82.0",
-      REDLINE_PROD_INVENTORY_URL: "https://inv.p",
-    });
+    const ok = go(
+      { TAG: "v0.82.0", REDLINE_PROD_INVENTORY_URL: "https://inv.p" },
+      true,
+    );
     expect(ok.code).toBe(0);
     const lines = Object.fromEntries(
       ok.env
@@ -160,6 +167,19 @@ describe("redline-staging.yml", () => {
     expect(t.secretsDir).toBe(join(ok.tmp, "redline-secrets"));
     expect(t.a.turnstileFile).toBe(join(ok.tmp, "redline-turnstile-token"));
     expect(t.prod).toEqual({ inventoryUrl: "https://inv.p" });
+    // No prod tokens: no .prod, so loadTargets reports prod not-applicable
+    // instead of failing on the missing token files.
+    const noTokens = go({
+      TAG: "v0.82.0",
+      REDLINE_PROD_INVENTORY_URL: "https://inv.p",
+    });
+    expect(noTokens.code).toBe(0);
+    const t2 = JSON.parse(
+      (
+        noTokens.env.match(/^REDLINE_TARGETS=(.*)$/m) as RegExpMatchArray
+      )[1] as string,
+    );
+    expect(t2.prod).toBeUndefined();
     for (const bad of ["0.82.0", "v0.82", "v1.2.3; echo x", "main"]) {
       const r = go({ TAG: bad });
       expect(r.code).toBe(1);
@@ -167,9 +187,17 @@ describe("redline-staging.yml", () => {
     }
   });
 
-  it("mints the three audiences, brings rl-a and rl-b up through the API, then the suite and T19", () => {
+  it("mints the staging audiences, brings rl-a and rl-b up, mints prod's after bring-up, then the suite and T19", () => {
     expect(named("mint").run).toBe(
-      "pnpm --filter @oa/redline provisioning mint-oidc provisioning stagingInventory prodInventory",
+      "pnpm --filter @oa/redline provisioning mint-oidc provisioning stagingInventory",
+    );
+    const prodMint = named("Mint the prod inventory OIDC JWT");
+    expect(prodMint.run).toContain(
+      'if [ -s "$RUNNER_TEMP/redline-secrets/REDLINE_PROD_R2_TOKEN" ]; then',
+    );
+    expect(prodMint.run).toContain("mint-oidc prodInventory");
+    expect(steps.indexOf(prodMint)).toBeGreaterThan(
+      steps.indexOf(named("bringup")),
     );
     expect(named("bringup").run).toBe(
       "pnpm --filter @oa/redline provisioning bringup",
@@ -182,22 +210,68 @@ describe("redline-staging.yml", () => {
     expect(t19.if).toBe(
       "${{ !cancelled() && steps.bringup.outcome == 'success' }}",
     );
-    expect(t19.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN).toBe("");
-    expect(t19.env.ACTIONS_ID_TOKEN_REQUEST_URL).toBe("");
     expect(t19.run).toContain('T19_EXPECT_VERSION="$REDLINE_RELEASE"');
   });
 
-  it("order: install, builds, targets, secrets, mint, bring-up, suite, T19, scan, uploads, revoke, remove", () => {
+  it("T19 shares the id-token job (a recorded deviation from 4.4), so every JWT and prod file is gone before it runs", () => {
+    expect(text).toContain(
+      'Deviation from 4.4 ("id-token on the redline job only, not t19")',
+    );
+    const drop = named("Delete the JWT and prod files before T19");
+    expect(drop.if).toBe("always()");
+    expect(steps.indexOf(drop)).toBe(steps.indexOf(named("t19")) - 1);
+    expect(steps.indexOf(named("scan-suite"))).toBeLessThan(
+      steps.indexOf(drop),
+    );
+    const tmp = mkdtempSync(join(tmpdir(), "rl-drop-"));
+    try {
+      const d = join(tmp, "redline-secrets");
+      mkdirSync(d);
+      for (const f of [
+        "REDLINE_PROVISIONING_OIDC",
+        "REDLINE_STG_INVENTORY_OIDC",
+        "REDLINE_PROD_INVENTORY_OIDC",
+        "REDLINE_PROD_R2_TOKEN",
+        "REDLINE_PROD_SCRIPTS_TOKEN",
+        "REDLINE_RL_A_HOOK_KEY",
+        "REDLINE_RL_A_PAT",
+      ])
+        writeFileSync(join(d, f), "x");
+      expect(runBash(String(drop.run), { RUNNER_TEMP: tmp }).status).toBe(0);
+      expect(readdirSync(d).sort()).toEqual([
+        "REDLINE_RL_A_HOOK_KEY",
+        "REDLINE_RL_A_PAT",
+      ]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("installs without lifecycle scripts: every step of the job can reach the OIDC request token", () => {
+    expect(
+      steps.some(
+        (s) => s.run === "pnpm install --frozen-lockfile --ignore-scripts",
+      ),
+    ).toBe(true);
+    expect(steps.some((s) => s.run === "pnpm install --frozen-lockfile")).toBe(
+      false,
+    );
+  });
+
+  it("order: install, builds, secrets, targets, mint, bring-up, prod mint, suite, suite scan, drop, T19, scan, uploads, revoke, remove", () => {
     const at = (pred: (s: Record<string, any>) => boolean) =>
       steps.findIndex(pred);
     const order = [
-      at((s) => s.run === "pnpm install --frozen-lockfile"),
+      at((s) => s.run === "pnpm install --frozen-lockfile --ignore-scripts"),
       at((s) => s.run === "pnpm --filter @oa/provision build"),
-      at((s) => s.name === "Check the tag and set the targets"),
       at((s) => JSON.stringify(s).includes("secrets.")),
+      at((s) => s.name === "Check the tag and set the targets"),
       at((s) => s.id === "mint"),
       at((s) => s.id === "bringup"),
+      at((s) => s.name === "Mint the prod inventory OIDC JWT"),
       at((s) => (s.run ?? "").includes("@oa/redline live")),
+      at((s) => s.id === "scan-suite"),
+      at((s) => s.name === "Delete the JWT and prod files before T19"),
       at((s) => s.id === "t19"),
       at((s) => s.id === "scan"),
       at((s) => String(s.uses ?? "").startsWith("actions/upload-artifact")),
@@ -236,9 +310,12 @@ describe("redline-staging.yml", () => {
     );
     expect(up).toHaveLength(2);
     for (const u of up) {
-      expect(u.if).toMatch(/^always\(\) && steps\.scan\.outcome == 'success'/);
+      expect(u.if).toMatch(
+        /^always\(\) && (steps\.scan-suite\.outcome == 'success' && )?steps\.scan\.outcome == 'success'/,
+      );
       expect(steps.indexOf(u)).toBeGreaterThan(steps.indexOf(scan));
     }
+    expect(up[0]?.if).toContain("steps.scan-suite.outcome == 'success'");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
     expect(up.map((u) => u.with?.path)).toEqual([
       "${{ runner.temp }}/redline-report",

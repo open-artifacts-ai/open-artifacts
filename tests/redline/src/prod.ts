@@ -17,7 +17,11 @@ import { InventoryInstallsSchema } from "@oa/shared/provisioning";
 // src/internal/gates.ts, not exported; a test there pins the two equal).
 import { RELEASE_PUBKEY } from "../../../scripts/ci/release-pubkeys.mjs";
 import { describeRes, readBody } from "./http.ts";
-import { type ProdProbe, prodSecretsOf } from "./targets.ts";
+import {
+  type ProdProbe,
+  prodInventoryBearer,
+  prodSecretsOf,
+} from "./targets.ts";
 
 // prodClean (manager-approved spec, 2026-10-26). The positive proof that no
 // prod install can run test hooks: every published prod release is the
@@ -256,7 +260,8 @@ export async function prodClean(
   // Only a GitHub OIDC JWT for the prod inventory's audience (the caller's,
   // else the one the red-line job wrote to the secrets dir); never the
   // stored inventory key, which inventory rejects.
-  const bearer = o.inventoryBearer ?? s.inventoryBearer;
+  const bearer =
+    o.inventoryBearer ?? (await prodInventoryBearer(p)) ?? s.inventoryBearer;
   if (!p.inventoryUrl || !bearer)
     throw new ProdDirty(
       "inventory_unconfigured",

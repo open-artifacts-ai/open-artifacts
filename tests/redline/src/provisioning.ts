@@ -1088,20 +1088,6 @@ export const PROBES: readonly Probe[] = [
     },
   },
   {
-    id: "P25",
-    title: "15 rapid GET /auth/start: at least one 429",
-    run: async (run) => {
-      const out = await Promise.all(
-        Array.from({ length: P25_REQUESTS }, () =>
-          run.raw(`${run.c.admin}/auth/start`, { auth: "none" }),
-        ),
-      );
-      if (!out.some((r) => r.status === 429))
-        throw new ProbeFail("P25: no 429 in 15 requests");
-      return pass();
-    },
-  },
-  {
     id: "P26",
     title: "GET /auth/test-signin: 404 (staging; prod when applicable)",
     run: async (run) => {
@@ -1169,15 +1155,22 @@ export const PROBES: readonly Probe[] = [
   {
     id: "P29",
     title:
-      "SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete frees it",
+      "SIGNUPS_ENABLED=test-users: test user b self-serve create reaches done; delete leaves it deleting",
     run: async (run) => {
       const slug = run.slug("s");
       const c = await run.v1("/installs", {
         testUser: "b",
         body: { requestId: run.rid("p29"), slug, turnstile: DUMMY_TURNSTILE },
       });
-      if (c.status === 403 && errCode(c) === "signups_closed")
+      if (c.status === 503 && errCode(c) === "signups_closed")
         return na("SIGNUPS_ENABLED is not test-users on staging");
+      // Design gap: no principal can purge a test user's install within a
+      // run (U's R11 is 403, O cannot reach a self-serve install, the
+      // scheduler purges at purge_at), so an earlier run's claim holds.
+      if (c.status === 409 && errCode(c) === "signup_limit")
+        return unproven(
+          "test user b still holds signup_accounts from an earlier run: no principal can purge a self-serve install within a run",
+        );
       const a = run.accepted(c, "P29 create", { asTestUser: true });
       const j = await run.done(a.job.id, "P29 create", "b");
       const d = await detail(run, a.install.id, "b");
@@ -1194,10 +1187,22 @@ export const PROBES: readonly Probe[] = [
         { asTestUser: true },
       );
       await run.done(del.job.id, "P29 delete", "b");
-      const gone = await detail(run, a.install.id, "b");
-      if (gone.status !== 404)
-        throw new ProbeFail(`P29: after delete, R3 is ${desc(gone)}, want 404`);
-      return pass(`create job ${j.id}`);
+      const after = await detail(run, a.install.id, "b");
+      expect(after, 200, "P29 R3 after delete");
+      const st = (after.json as InstallDetail).state;
+      if (st !== "deleting")
+        throw new ProbeFail(`P29: after delete, state is ${st}, want deleting`);
+      expect(
+        await run.v1(`/installs/${a.install.id}/purge`, {
+          testUser: "b",
+          body: { requestId: run.rid("p29-purge"), confirmSlug: slug },
+        }),
+        403,
+        "P29 R11 as the user",
+      );
+      return unproven(
+        `create job ${j.id} done and deleted; the purge that frees signup_accounts is not runnable by any principal in a run (design gap)`,
+      );
     },
   },
   {
@@ -1430,14 +1435,12 @@ export const PROBES: readonly Probe[] = [
         ["protected resource", p],
       ] as const)
         if (
-          d.scopes_supported !== undefined &&
+          !Array.isArray(d.scopes_supported) ||
           JSON.stringify([...(d.scopes_supported as string[])].sort()) !== five
         )
           throw new ProbeFail(
             `P38: ${n} scopes_supported is not exactly the five`,
           );
-      if (a.scopes_supported === undefined)
-        throw new ProbeFail("P38: no scopes_supported");
       if (JSON.stringify(a.code_challenge_methods_supported) !== '["S256"]')
         throw new ProbeFail(
           "P38: code_challenge_methods_supported is not [S256]",
@@ -1611,6 +1614,22 @@ export const PROBES: readonly Probe[] = [
       return pass();
     },
   },
+  {
+    id: "P25",
+    title: "15 rapid GET /auth/start: at least one 429",
+    // Last: it spends RL_PV_SIGNIN_IP (10 per 60 s), which P30's callbacks
+    // and P34's /auth/start share; nothing after it signs in.
+    run: async (run) => {
+      const out = await Promise.all(
+        Array.from({ length: P25_REQUESTS }, () =>
+          run.raw(`${run.c.admin}/auth/start`, { auth: "none" }),
+        ),
+      );
+      if (!out.some((r) => r.status === 429))
+        throw new ProbeFail("P25: no 429 in 15 requests");
+      return pass();
+    },
+  },
 ];
 
 /**
@@ -1693,11 +1712,22 @@ export async function mintCreds(
     }),
     `R26 ${slug}`,
   );
-  const j = await run.done(a.job.id, `R26 ${slug}`);
-  // R15 hands `sealed` out once: the done read above may be the one.
-  const sealed =
-    j.sealed ??
-    ((await run.v1(`/jobs/${a.job.id}`)).json as Job | undefined)?.sealed;
+  // R15 hands `sealed` out once, on the first read after the seal step, and
+  // the job is still `running` then (done is a later step): keep it from
+  // whichever read carries it, then require done.
+  let sealed: string | null = null;
+  const first = await run.waitJob(a.job.id, {
+    until: (j) => {
+      if (sealed === null) sealed = j.sealed ?? null;
+      return sealed !== null || j.status === "done" || j.status === "failed";
+    },
+  });
+  if (first.status !== "done" && first.status !== "failed")
+    await run.done(a.job.id, `R26 ${slug}`);
+  else if (first.status !== "done")
+    throw new ProbeFail(
+      `R26 ${slug}: job failed (${first.lastErrorCode ?? first.error?.code ?? "no code"})`,
+    );
   if (!sealed) throw new ProbeFail(`R26 ${slug}: no sealed creds on the job`);
   return recipient.open(sealed);
 }
