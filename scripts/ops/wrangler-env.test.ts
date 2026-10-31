@@ -8,6 +8,7 @@ import {
   committedRateLimits,
   committedSignups,
   committedVars,
+  stripJsonc,
 } from "./wrangler-env.ts";
 
 // The read-backs compare to the committed config through wrangler-env.ts;
@@ -53,17 +54,42 @@ describe("wrangler-env.ts", () => {
     expect(() => committedVars(src, "prod", { X: "1" })).toThrow(/no value/);
   });
   it("the rate limits, sorted by name, ids as strings", () => {
-    const r = committedRateLimits(cfg("provisioning"), "prod");
-    expect(r).toContainEqual({
+    // The expected list comes from the committed config, read here without
+    // wrangler-env.ts, so a new binding needs no edit to this test.
+    const raw = (env: "staging" | "prod") =>
+      (
+        JSON.parse(stripJsonc(cfg("provisioning"))).env[env].ratelimits as {
+          name: string;
+          namespace_id: string | number;
+          simple: { limit: number; period: number };
+        }[]
+      )
+        .map((x) => ({
+          name: x.name,
+          namespace_id: `${x.namespace_id}`,
+          limit: x.simple.limit,
+          period: x.simple.period,
+        }))
+        .sort((a, b) => (a.name < b.name ? -1 : 1));
+    for (const env of ["staging", "prod"] as const) {
+      const want = raw(env);
+      expect(want.length).toBeGreaterThan(0);
+      expect(committedRateLimits(cfg("provisioning"), env)).toEqual(want);
+    }
+    expect(committedRateLimits(cfg("provisioning"), "prod")).toContainEqual({
       name: "RL_PV_OAUTH_IP",
       namespace_id: "1156",
       limit: 20,
       period: 60,
     });
-    expect(r.map((x: { name: string }) => x.name)).toEqual(
-      [...r.map((x: { name: string }) => x.name)].sort(),
-    );
-    expect(r).toHaveLength(6);
+    // Numeric ids and unsorted input come out as strings, sorted by name.
+    const src = `{"env":{"prod":{"ratelimits":[
+      {"name":"B","namespace_id":2,"simple":{"limit":1,"period":10}},
+      {"name":"A","namespace_id":"1","simple":{"limit":3,"period":60}}]}}}`;
+    expect(committedRateLimits(src, "prod")).toEqual([
+      { name: "A", namespace_id: "1", limit: 3, period: 60 },
+      { name: "B", namespace_id: "2", limit: 1, period: 10 },
+    ]);
   });
   it("strips comments outside strings only, and trailing commas", () => {
     const src = `{

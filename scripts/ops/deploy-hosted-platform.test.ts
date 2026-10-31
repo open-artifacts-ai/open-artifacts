@@ -1543,6 +1543,18 @@ describe("deploy-hosted-platform.sh", () => {
           "rate limits: got",
         ],
         [
+          "admin-escape id (staging's on prod)",
+          { next: swap("RL_PV_ADMIN_ESCAPE", { namespace_id: "1147" }) },
+          "rate limits: got",
+        ],
+        [
+          "token-write missing",
+          {
+            next: settings(b.filter((x) => x.name !== "RL_PV_TOKEN_WRITE")),
+          },
+          "rate limits: got",
+        ],
+        [
           "redirects",
           {
             next: swap("MCP_REDIRECT_URIS", {
@@ -1697,6 +1709,20 @@ describe("deploy-hosted-platform.sh", () => {
       expect(extra.err).toContain(
         "secrets are 'ADMIN_BROKER_KEY ADMIN_SESSION_KEY X '",
       );
+    });
+    it("the read-back expects every committed rate limit, W5b's included", () => {
+      const ids = (env: "staging" | "prod") =>
+        Object.fromEntries(
+          ratelimits(env).map((r) => [r.name, r.namespace_id]),
+        );
+      expect(ids("staging")).toMatchObject({
+        RL_PV_ADMIN_ESCAPE: "1147",
+        RL_PV_TOKEN_WRITE: "1148",
+      });
+      expect(ids("prod")).toMatchObject({
+        RL_PV_ADMIN_ESCAPE: "1157",
+        RL_PV_TOKEN_WRITE: "1158",
+      });
     });
     it("staging: the staging names and OIDC vars, the staging admin origin", () => {
       const s = setup({
