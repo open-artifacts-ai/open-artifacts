@@ -8,7 +8,9 @@ import worker, {
   ACCESS_TTL_S,
   ADMIN,
   API,
+  authOptions,
   authServer,
+  consentToken,
   type Env,
   grantIds,
   oauthUserId,
@@ -16,6 +18,7 @@ import worker, {
   RESOURCE,
   refreshTtlFor,
   SCOPES,
+  sessionHashOf,
   sessions,
 } from "../src/index.js";
 
@@ -49,46 +52,58 @@ async function pkce() {
   return { verifier, challenge };
 }
 
-async function register(): Promise<string> {
-  const res = await call(
+const registerRaw = (body: Record<string, unknown>) =>
+  call(
     new Request(`${API}/oauth/register`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        client_name: "Spike agent",
-        redirect_uris: [REDIRECT],
-        token_endpoint_auth_method: "none",
-      }),
+      body: JSON.stringify({ client_name: "Spike agent", ...body }),
     }),
   );
+
+async function register(
+  authMethod: "none" | "client_secret_basic" = "none",
+): Promise<string> {
+  const res = await registerRaw({
+    redirect_uris: [REDIRECT],
+    token_endpoint_auth_method: authMethod,
+  });
   expect(res.status).toBe(201);
   return ((await res.json()) as { client_id: string }).client_id;
 }
 
-function newSession(msLeft: number): string {
+async function newSession(msLeft: number, email = EMAIL): Promise<string> {
   const sid = crypto.randomUUID();
-  sessions.set(sid, { email: EMAIL, expiresAt: Date.now() + msLeft });
+  sessions.set(await sessionHashOf(sid), {
+    email,
+    expiresAt: Date.now() + msLeft,
+  });
   return sid;
 }
+
+const sessionOf = async (sid: string) => sessions.get(await sessionHashOf(sid));
 
 const cookieOf = (setCookie: string[]) =>
   setCookie.map((c) => c.split(";")[0]).join("; ");
 
-function authorizeUrl(clientId: string, challenge: string) {
+function authorizeUrl(clientId: string, challenge: string | null) {
   const u = new URL(`${ADMIN}/oauth/authorize`);
   u.searchParams.set("response_type", "code");
   u.searchParams.set("client_id", clientId);
   u.searchParams.set("redirect_uri", REDIRECT);
   u.searchParams.set("scope", "installs:read audit:read installs:delete");
   u.searchParams.set("state", "st-1");
-  u.searchParams.set("code_challenge", challenge);
-  u.searchParams.set("code_challenge_method", "S256");
+  if (challenge !== null) {
+    u.searchParams.set("code_challenge", challenge);
+    u.searchParams.set("code_challenge_method", "S256");
+  }
   u.searchParams.set("resource", RESOURCE);
   return u;
 }
 
 type Consent = {
   handle: string;
+  consentToken: string;
   clientName: string;
   redirectHost: string;
   redirectIsLoopback: boolean;
@@ -102,6 +117,7 @@ async function consent(
   challenge: string,
   decision: "approve" | "deny",
   scope: string[] = ["installs:read", "audit:read"],
+  postSid = sid,
 ) {
   const get = await call(
     new Request(authorizeUrl(clientId, challenge), {
@@ -111,13 +127,17 @@ async function consent(
   expect(get.status).toBe(200);
   const page = (await get.json()) as Consent;
   const binding = cookieOf(get.headers.getSetCookie());
-  const form = new URLSearchParams({ request: page.handle, decision });
+  const form = new URLSearchParams({
+    request: page.handle,
+    consent: page.consentToken,
+    decision,
+  });
   for (const s of scope) form.append("scope", s);
   const post = await call(
     new Request(`${ADMIN}/oauth/authorize`, {
       method: "POST",
       headers: {
-        cookie: `__Host-oa-admin=${sid}; ${binding}`,
+        cookie: `__Host-oa-admin=${postSid}; ${binding}`,
         "content-type": "application/x-www-form-urlencoded",
         "sec-fetch-site": "same-origin",
       },
@@ -144,27 +164,58 @@ async function token(body: Record<string, string>) {
   );
 }
 
-/** Register, consent with Allow, exchange the code: a live grant. */
-async function grant(sessionMsLeft: number) {
-  const clientId = await register();
-  const sid = newSession(sessionMsLeft);
+/** Register (unless given a client), consent with Allow: a code, not yet exchanged. */
+async function authorized(
+  sessionMsLeft: number,
+  opts: { clientId?: string; sid?: string; email?: string } = {},
+) {
+  const clientId = opts.clientId ?? (await register());
+  const sid = opts.sid ?? (await newSession(sessionMsLeft, opts.email));
   const { verifier, challenge } = await pkce();
   const { post } = await consent(clientId, sid, challenge, "approve");
   expect(post.status).toBe(302);
   const loc = new URL(post.headers.get("location") ?? "");
-  const code = loc.searchParams.get("code") ?? "";
-  const res = await token({
-    grant_type: "authorization_code",
-    code,
-    redirect_uri: REDIRECT,
-    client_id: clientId,
-    code_verifier: verifier,
-    resource: RESOURCE,
-  });
+  const exchange = () =>
+    token({
+      grant_type: "authorization_code",
+      code: loc.searchParams.get("code") ?? "",
+      redirect_uri: REDIRECT,
+      client_id: clientId,
+      code_verifier: verifier,
+      resource: RESOURCE,
+    });
+  return { clientId, sid, loc, exchange };
+}
+
+/** Register, consent with Allow, exchange the code: a live grant. */
+async function grant(
+  sessionMsLeft: number,
+  opts: { clientId?: string; sid?: string } = {},
+) {
+  const { clientId, sid, loc, exchange } = await authorized(
+    sessionMsLeft,
+    opts,
+  );
+  const res = await exchange();
   expect(res.status).toBe(200);
   const tokens = (await res.json()) as Tokens;
   return { clientId, sid, tokens, loc };
 }
+
+const refresh = (clientId: string, tokens: Tokens) =>
+  token({
+    grant_type: "refresh_token",
+    refresh_token: tokens.refresh_token ?? "",
+    client_id: clientId,
+  });
+
+const mcp = (accessToken: string) =>
+  call(
+    new Request(`${API}/mcp`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+    }),
+  );
 
 /** The grant's expiresAt (s), from listUserGrants (KV is shared across tests). */
 async function grantExpiry(tokens: Tokens): Promise<number> {
@@ -237,7 +288,7 @@ describe("S9: refreshTtlFor (Q3)", () => {
 describe("S9: parseAuthRequest and consent on the admin origin", () => {
   it("parses on the admin host and describes the consent", async () => {
     const clientId = await register();
-    const sid = newSession(2 * HOUR);
+    const sid = await newSession(2 * HOUR);
     const { challenge } = await pkce();
     const res = await call(
       new Request(authorizeUrl(clientId, challenge), {
@@ -270,7 +321,7 @@ describe("S9: parseAuthRequest and consent on the admin origin", () => {
 
   it("Deny redirects to the client with access_denied, state and iss", async () => {
     const clientId = await register();
-    const sid = newSession(2 * HOUR);
+    const sid = await newSession(2 * HOUR);
     const { challenge } = await pkce();
     const { post } = await consent(clientId, sid, challenge, "deny");
     expect(post.status).toBe(302);
@@ -283,7 +334,7 @@ describe("S9: parseAuthRequest and consent on the admin origin", () => {
 
   it("approveConsent refuses a reused handle", async () => {
     const clientId = await register();
-    const sid = newSession(2 * HOUR);
+    const sid = await newSession(2 * HOUR);
     const { challenge } = await pkce();
     const get = await call(
       new Request(authorizeUrl(clientId, challenge), {
@@ -302,6 +353,7 @@ describe("S9: parseAuthRequest and consent on the admin origin", () => {
           },
           body: new URLSearchParams({
             request: page.handle,
+            consent: page.consentToken,
             decision: "approve",
             scope: "installs:read",
           }),
@@ -322,6 +374,10 @@ describe("S9: completeAuthorization, code exchange, tokens", () => {
     expect(tokens.access_token.startsWith(`${userId}:`)).toBe(true);
     expect(tokens.refresh_token?.startsWith(`${userId}:`)).toBe(true);
     expect(tokens.expires_in).toBe(ACCESS_TTL_S);
+    for (const t of [tokens.access_token, tokens.refresh_token ?? ""]) {
+      expect(t).not.toContain("@");
+      expect(t).not.toContain(EMAIL);
+    }
     // The admin's pick, not the client's ask (installs:delete dropped).
     expect(tokens.scope.split(" ").sort()).toEqual([
       "audit:read",
@@ -358,7 +414,7 @@ describe("S9: completeAuthorization, code exchange, tokens", () => {
 describe("S9: per-grant refreshTokenTTL (Q3)", () => {
   it("a session with 2 h left gives a grant that ends with the session", async () => {
     const { sid, tokens } = await grant(2 * HOUR);
-    const end = Math.floor((sessions.get(sid)?.expiresAt ?? 0) / 1000);
+    const end = Math.floor(((await sessionOf(sid))?.expiresAt ?? 0) / 1000);
     expect(Math.abs((await grantExpiry(tokens)) - end)).toBeLessThanOrEqual(1);
   });
 
@@ -371,26 +427,21 @@ describe("S9: per-grant refreshTokenTTL (Q3)", () => {
     expect(exp).toBeLessThanOrEqual(after + REFRESH_CAP_S);
   });
 
-  it("refresh works while the session lives", async () => {
+  it("refresh works while the session lives and leaves the chain end alone", async () => {
+    expect(authOptions.refreshTokenIdleTTL).toBeUndefined();
     const { clientId, tokens } = await grant(2 * HOUR);
-    const res = await token({
-      grant_type: "refresh_token",
-      refresh_token: tokens.refresh_token ?? "",
-      client_id: clientId,
-    });
+    const end = await grantExpiry(tokens);
+    const res = await refresh(clientId, tokens);
     expect(res.status).toBe(200);
     const next = (await res.json()) as Tokens;
     expect(next.access_token).not.toBe(tokens.access_token);
+    expect(await grantExpiry(next)).toBe(end);
   });
 
   it("refresh after the session is revoked is invalid_grant and the grant is gone", async () => {
     const { clientId, sid, tokens } = await grant(2 * HOUR);
-    sessions.delete(sid);
-    const res = await token({
-      grant_type: "refresh_token",
-      refresh_token: tokens.refresh_token ?? "",
-      client_id: clientId,
-    });
+    sessions.delete(await sessionHashOf(sid));
+    const res = await refresh(clientId, tokens);
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe(
       "invalid_grant",
@@ -398,6 +449,199 @@ describe("S9: per-grant refreshTokenTTL (Q3)", () => {
     expect(
       await authServer.validateToken(RESOURCE, tokens.access_token, e),
     ).toBeNull();
+  });
+});
+
+describe("S9: code exchange refusals", () => {
+  const userGrants = async (email: string) =>
+    (
+      await authServer
+        .getOAuthApi(e)
+        .listUserGrants(await oauthUserId(e.ADMIN_SESSION_KEY, email))
+    ).items;
+
+  it("session ended between consent and exchange: invalid_grant, no grant left", async () => {
+    const email = `ended-${crypto.randomUUID()}@example.com`;
+    const { sid, exchange } = await authorized(2 * HOUR, { email });
+    sessions.delete(await sessionHashOf(sid));
+    const res = await exchange();
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "invalid_grant",
+    );
+    expect(await userGrants(email)).toEqual([]);
+  });
+
+  it("under 60 s of session left at exchange: invalid_grant, no grant left", async () => {
+    const email = `short-${crypto.randomUUID()}@example.com`;
+    const { sid, exchange } = await authorized(2 * HOUR, { email });
+    const s = await sessionOf(sid);
+    if (s) s.expiresAt = Date.now() + 30_000;
+    const res = await exchange();
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "invalid_grant",
+    );
+    expect(await userGrants(email)).toEqual([]);
+  });
+});
+
+describe("S9: authorize and consent refusals", () => {
+  const status = async (clientId: string, challenge: string | null) => {
+    const sid = await newSession(2 * HOUR);
+    const res = await call(
+      new Request(authorizeUrl(clientId, challenge), {
+        headers: { cookie: `__Host-oa-admin=${sid}` },
+      }),
+    );
+    return { res, body: (await res.json()) as { error: string } };
+  };
+
+  it("a confidential client with no code_challenge is invalid_request", async () => {
+    const { res, body } = await status(
+      await register("client_secret_basic"),
+      null,
+    );
+    expect(res.status).toBe(400);
+    expect(body.error).toBe("invalid_request");
+  });
+
+  it("a confidential client with code_challenge_method=plain is refused", async () => {
+    const clientId = await register("client_secret_basic");
+    const sid = await newSession(2 * HOUR);
+    const u = authorizeUrl(clientId, "x".repeat(43));
+    u.searchParams.set("code_challenge_method", "plain");
+    const res = await call(
+      new Request(u, { headers: { cookie: `__Host-oa-admin=${sid}` } }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("a session with under 60 min left goes to /auth/start first", async () => {
+    const clientId = await register();
+    const sid = await newSession(30 * 60_000);
+    const { challenge } = await pkce();
+    const res = await call(
+      new Request(authorizeUrl(clientId, challenge), {
+        headers: { cookie: `__Host-oa-admin=${sid}` },
+      }),
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toMatch(/^\/auth\/start\?return=/);
+  });
+
+  it("Allow with no scope picked is invalid_scope", async () => {
+    const clientId = await register();
+    const sid = await newSession(2 * HOUR);
+    const { challenge } = await pkce();
+    const { post } = await consent(clientId, sid, challenge, "approve", []);
+    expect(post.status).toBe(400);
+    expect(((await post.json()) as { error: string }).error).toBe(
+      "invalid_scope",
+    );
+  });
+
+  it("a handle opened under one session cannot be approved under another", async () => {
+    const clientId = await register();
+    const sidA = await newSession(2 * HOUR);
+    const sidB = await newSession(2 * HOUR);
+    const { challenge } = await pkce();
+    const { post } = await consent(
+      clientId,
+      sidA,
+      challenge,
+      "approve",
+      undefined,
+      sidB,
+    );
+    expect(post.status).toBe(403);
+  });
+
+  it("the consent token is bound to sid and handle", async () => {
+    const t = await consentToken(e.ADMIN_SESSION_KEY, "sid-a", "h");
+    expect(t).toMatch(/^[0-9a-f]{64}$/);
+    expect(await consentToken(e.ADMIN_SESSION_KEY, "sid-b", "h")).not.toBe(t);
+    expect(await consentToken(e.ADMIN_SESSION_KEY, "sid-a", "h2")).not.toBe(t);
+  });
+});
+
+describe("S9: DCR redirect allowlist (clientRegistrationCallback)", () => {
+  it("refuses a non-loopback redirect off the allowlist", async () => {
+    const res = await registerRaw({
+      redirect_uris: ["https://claude.ai.evil.example/api/mcp/auth_callback"],
+      token_endpoint_auth_method: "none",
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "invalid_redirect_uri",
+    );
+  });
+
+  it("refuses a loopback redirect with no port, and https loopback", async () => {
+    for (const uri of [
+      "http://127.0.0.1/callback",
+      "https://127.0.0.1:33418/callback",
+    ]) {
+      const res = await registerRaw({
+        redirect_uris: [uri],
+        token_endpoint_auth_method: "none",
+      });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it("accepts loopback and an exact allowlist entry", async () => {
+    const res = await registerRaw({
+      redirect_uris: [REDIRECT, "https://claude.ai/api/mcp/auth_callback"],
+      token_endpoint_auth_method: "none",
+    });
+    expect(res.status).toBe(201);
+  });
+});
+
+describe("S9: revokeExistingGrants (default true)", () => {
+  it("a newer consent of the same client drops the older grant", async () => {
+    const first = await grant(2 * HOUR);
+    const second = await grant(2 * HOUR, {
+      clientId: first.clientId,
+      sid: first.sid,
+    });
+    expect(
+      await authServer.validateToken(RESOURCE, first.tokens.access_token, e),
+    ).toBeNull();
+    expect((await refresh(first.clientId, first.tokens)).status).toBe(400);
+    expect(
+      await authServer.validateToken(RESOURCE, second.tokens.access_token, e),
+    ).not.toBeNull();
+  });
+});
+
+describe("S9: RFC 7009 revocation at /oauth/token", () => {
+  it("revoking the refresh token ends the refresh chain", async () => {
+    const { clientId, tokens } = await grant(2 * HOUR);
+    const res = await token({
+      token: tokens.refresh_token ?? "",
+      token_type_hint: "refresh_token",
+      client_id: clientId,
+    });
+    expect(res.status).toBe(200);
+    expect((await refresh(clientId, tokens)).status).toBe(400);
+  });
+});
+
+describe("S9: /mcp 401", () => {
+  it("is the API envelope with WWW-Authenticate naming the resource metadata", async () => {
+    const res = await mcp("adm_x:y:z");
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({
+      error: {
+        code: "unauthenticated",
+        message: "A valid bearer token is required",
+      },
+    });
+    expect(res.headers.get("www-authenticate")).toBe(
+      `Bearer realm="OAuth", error="invalid_token", resource_metadata="${API}/.well-known/oauth-protected-resource/mcp"`,
+    );
   });
 });
 
