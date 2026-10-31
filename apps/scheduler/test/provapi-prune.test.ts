@@ -11,11 +11,20 @@ import {
 import type { ProvapiEnv } from "../src/provapi/env.js";
 import {
   AUDIT_REFUSAL_RETENTION_MS,
+  FAILED_SECRET_RETENTION_MS,
   PRUNE_BATCH,
   prune,
   RATE_COUNTER_RETENTION_MS,
 } from "../src/provapi/prune.js";
-import { captureLogs, db, insert, migrate, reset, rows } from "./provapi/db.js";
+import {
+  captureLogs,
+  db,
+  insert,
+  migrate,
+  reset,
+  rows,
+  signup,
+} from "./provapi/db.js";
 
 beforeAll(migrate);
 beforeEach(reset);
@@ -94,7 +103,7 @@ describe("prune", () => {
     const lines = captureLogs(vi.spyOn);
     await prune(env, NOW);
     expect(lines).toEqual([
-      "provapi prune sessions=2 agent_tokens=2 rate_counters=1 audit_refusals=1",
+      "provapi prune sessions=2 agent_tokens=2 rate_counters=1 audit_refusals=1 signup_secret=0",
     ]);
     expect(await rows("SELECT expires_at, revoked_at FROM sessions")).toEqual([
       { expires_at: NOW + 1, revoked_at: null },
@@ -117,6 +126,23 @@ describe("prune", () => {
     expect((await rows("SELECT COUNT(*) AS n FROM admin_audit"))[0]?.n).toBe(
       Number(audit[0]?.n) + 1,
     );
+  });
+
+  it("a failed signup's owner email goes once it is past the redrive window; others stay", async () => {
+    const at = NOW - FAILED_SECRET_RETENTION_MS;
+    const gone = await signup({ status: "failed", updated_at: at });
+    const recent = await signup({ status: "failed", updated_at: at + 1 });
+    const live = await signup({ status: "pending", updated_at: at - 1 });
+    for (const id of [gone, recent, live])
+      await insert("signup_secret", {
+        signup_id: id,
+        owner_email: "o@customer.test",
+      });
+    captureLogs(vi.spyOn);
+    await prune(env, NOW);
+    expect(
+      await ids("SELECT signup_id FROM signup_secret ORDER BY signup_id"),
+    ).toEqual([recent, live].sort());
   });
 
   it("90 days of audit_refusals; counters past the longest window (a day)", () => {

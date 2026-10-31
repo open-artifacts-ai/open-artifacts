@@ -23,7 +23,15 @@ import {
   stepAlert,
 } from "../src/provapi/alerts.js";
 import type { ProvapiEnv } from "../src/provapi/env.js";
-import { captureLogs, db, jobId, migrate, reset } from "./provapi/db.js";
+import { alertsTick } from "../src/provapi/index.js";
+import {
+  captureLogs,
+  db,
+  insert,
+  jobId,
+  migrate,
+  reset,
+} from "./provapi/db.js";
 
 // The alert machine (ported from #859's alerts.test.ts): open, no repeat,
 // the reminder, clear, a failed send retried, no destination, and the burst
@@ -214,7 +222,7 @@ describe("stepAlert", () => {
     expect(ALERT_SEND_TIMEOUT_MS).toBe(5_000);
   });
 
-  it("no destination: logged, and the machine runs on without retrying every tick", async () => {
+  it("no destination: logged each tick, nothing claimed, so no clear is owed", async () => {
     for (const o of [
       { ALERT_TO: "" },
       { ALERT_TO: undefined },
@@ -235,13 +243,26 @@ describe("stepAlert", () => {
         `${P} ${KEY} opened`,
         `${P} ${KEY} skipped no_destination`,
         `${P} ${KEY} skipped no_destination`,
-        `${P} ${KEY} cleared`,
         `${P} ${KEY} skipped no_destination`,
+        `${P} ${KEY} cleared`,
       ]);
       expect(await state("opened_at")).toBeNull();
+      expect(await state("notified_at")).toBeNull();
       expect(await state("cleared_at")).toBeNull();
       vi.restoreAllMocks();
     }
+  });
+
+  it("an alert that opened before the destination was set emails once it is", async () => {
+    const m = mail();
+    captureLogs(vi.spyOn);
+    await stepAlert(m.env({ ALERT_TO: undefined }), ALERT, true, T0);
+    await stepAlert(m.env({ ALERT_TO: undefined }), ALERT, true, T0 + TICK);
+    expect(m.sent).toEqual([]);
+    await stepAlert(m.env(), ALERT, true, T0 + 2 * TICK);
+    await stepAlert(m.env(), ALERT, true, T0 + 3 * TICK);
+    expect(m.subjects()).toEqual([OPEN]);
+    expect(await state("notified_at")).toBe(T0 + 2 * TICK);
   });
 
   it("overlapping ticks open, remind and clear once", async () => {
@@ -371,5 +392,51 @@ describe("email text", () => {
     expect(text.split("\n").filter((l) => l.startsWith("i0"))).toHaveLength(
       IDS_SHOWN,
     );
+  });
+});
+
+describe("prodclean_failed", () => {
+  it("the email carries the latest report's install id and detail, sanitized", async () => {
+    const m = mail();
+    captureLogs(vi.spyOn);
+    await insert("prodclean_reports", {
+      at: T0 - H,
+      ok: 0,
+      code: "dirty",
+      install_id: "i00000000077",
+      detail: "older",
+    });
+    await insert("prodclean_reports", {
+      at: T0,
+      ok: 0,
+      code: "dirty",
+      install_id: "i00000000042",
+      detail: `binding KV_EXTRA on owner@customer.test, see https://x.test/a\u0007\n${"y".repeat(1000)}`,
+    });
+    await alertsTick(m.env(), T0);
+    const open = m.sent.filter((x) => x.subject.includes("prod-clean"));
+    expect(open).toHaveLength(1);
+    const text = open[0]?.text ?? "";
+    expect(text).toContain("i00000000042");
+    expect(text).not.toContain("i00000000077");
+    expect(text).toContain("binding KV_EXTRA on owner");
+    expect(text).not.toMatch(/@|:\/\/|\u0007|\u2014/);
+    expect(text.length).toBeLessThan(1000);
+  });
+
+  it("a report with a malformed install id leaves it out", async () => {
+    const m = mail();
+    captureLogs(vi.spyOn);
+    await insert("prodclean_reports", {
+      at: T0,
+      ok: 0,
+      code: "dirty",
+      install_id: "owner@customer.test",
+      detail: null,
+    });
+    await alertsTick(m.env(), T0);
+    const text = m.sent.find((x) => x.subject.includes("prod-clean"))?.text;
+    expect(text).toBeDefined();
+    expect(text).not.toContain("customer");
   });
 });

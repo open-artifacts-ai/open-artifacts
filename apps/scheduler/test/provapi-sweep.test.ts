@@ -41,17 +41,49 @@ const NOW = Date.UTC(2026, 9, 31, 12, 0);
 const TICK = 2 * 60_000;
 const OLD = NOW - START_GRACE_MS;
 
-/** W3's settleFailed, as far as the sweep relies on it: the job to failed. */
+/**
+ * W3's settleFailed, as far as the sweep relies on it: the job to failed,
+ * in one D1 batch on the db it is given (its contract).
+ */
 const settled: { jobId: string; code: string }[] = [];
 const fakeSettle: SettleFailed = async (d, jobId, code) => {
   settled.push({ jobId, code });
-  await (d as D1Database)
-    .prepare(
-      "UPDATE jobs SET status = 'failed', error_code = COALESCE(error_code, ?2), finished_at = ?3, updated_at = ?3 WHERE id = ?1 AND status IN ('queued', 'running')",
-    )
-    .bind(jobId, code, NOW)
-    .run();
+  await d.batch([
+    d
+      .prepare(
+        "UPDATE jobs SET status = 'failed', error_code = COALESCE(error_code, ?2), finished_at = ?3, updated_at = ?3 WHERE id = ?1 AND status IN ('queued', 'running')",
+      )
+      .bind(jobId, code, NOW),
+  ]);
 };
+
+const BAD = Symbol("bad");
+/** The platform D1, but the first job insert fails (alone or in a batch). */
+function failFirstJobInsert(real: D1Database): D1Database {
+  let armed = true;
+  return new Proxy(real, {
+    get(t, k) {
+      if (k === "prepare")
+        return (sql: string) => {
+          const s = t.prepare(sql);
+          if (!armed || !sql.startsWith("INSERT INTO jobs")) return s;
+          armed = false;
+          const boom = () => Promise.reject(new Error("D1_ERROR"));
+          return {
+            bind: () => ({ first: boom, run: boom, all: boom, [BAD]: true }),
+          };
+        };
+      if (k === "batch")
+        return async (st: unknown[]) => {
+          if (st.some((x) => (x as Record<symbol, unknown>)[BAD]))
+            throw new Error("D1_ERROR");
+          return t.batch(st as D1PreparedStatement[]);
+        };
+      const v = Reflect.get(t, k);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+}
 
 function fakes() {
   const provision = new FakeWorkflow();
@@ -253,6 +285,24 @@ describe("sweep: dead runs", () => {
     expect((await jobRow(id))?.status).toBe("done");
   });
 
+  it("settle and cleanup are one batch: a failed cleanup insert leaves the job open, and the next sweep settles it with its cleanup", async () => {
+    const f = fakes();
+    const { id } = await started(f, "errored");
+    const flaky = {
+      ...f.env,
+      PLATFORM_DB: failFirstJobInsert(db),
+    } as ProvapiEnv;
+    await run(flaky);
+    expect(await cleanups()).toEqual([]);
+    expect((await jobRow(id))?.status).toBe("running");
+    await run(f.env, NOW + TICK);
+    expect((await jobRow(id))?.status).toBe("failed");
+    const [c, ...rest] = await cleanups();
+    expect(rest).toEqual([]);
+    expect(c).toMatchObject({ parent_job_id: id, request_id: `cleanup-${id}` });
+    expect(f.manage.created.map((x) => x.id)).toEqual([c?.id]);
+  });
+
   it("a dead cleanup job is settled only, never given another cleanup", async () => {
     const f = fakes();
     const { id } = await started(f, "errored", {
@@ -312,6 +362,22 @@ describe("sweep: failures", () => {
   it("an unbound Workflow binding fails the duty as unbound", async () => {
     const env = { ...fakes().env, MANAGE_INSTALL: undefined } as ProvapiEnv;
     await expect(run(env)).rejects.toEqual(new DutyFailure("unbound"));
+  });
+
+  it(`an unstarted job is started behind ${SWEEP_LIMIT} older live runs`, async () => {
+    const f = fakes();
+    for (let n = 0; n < SWEEP_LIMIT; n++) {
+      const id = await job(installId(), {
+        status: "running",
+        created_at: OLD - 1,
+        updated_at: n,
+      });
+      await f.provision.create({ id, params: { jobId: id } });
+      f.provision.setStatus(id, "running");
+    }
+    const fresh = await job(installId(), { created_at: OLD, updated_at: NOW });
+    await run(f.env);
+    expect(f.provision.created.map((c) => c.id)).toContain(fresh);
   });
 
   it("looks at SWEEP_LIMIT jobs per tick", async () => {

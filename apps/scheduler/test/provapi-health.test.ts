@@ -181,6 +181,52 @@ describe("health", () => {
     expect(later.unreachable_after_route.open).toBe(false);
   });
 
+  it("the least recently checked rows go first, so a tick cut short never skips the same tail", async () => {
+    const recent = await mapped();
+    const older = await mapped();
+    const never = await mapped();
+    const set = (id: string, at: number) =>
+      db
+        .prepare("UPDATE install_lifecycle SET health_at = ?2 WHERE install_id = ?1")
+        .bind(id, at)
+        .run();
+    await set(recent.id, NOW - HEALTH_INTERVAL_MS);
+    await set(older.id, NOW - 2 * HEALTH_INTERVAL_MS);
+    const f = fakes();
+    captureLogs(vi.spyOn);
+    await healthDue(env, NOW, { probe: f.probe });
+    expect(f.calls.map((c) => c.id)).toEqual([never.id, older.id, recent.id]);
+  });
+
+  it("a failed read of the mapped rows gives the hourly gate back", async () => {
+    await mapped();
+    const broken = new Proxy(db, {
+      get(t, k) {
+        if (k === "prepare")
+          return (q: string) =>
+            q.startsWith("SELECT l.install_id")
+              ? {
+                  all: () => Promise.reject(new Error("D1_ERROR")),
+                  bind: () => ({
+                    all: () => Promise.reject(new Error("D1_ERROR")),
+                  }),
+                }
+              : t.prepare(q);
+        const v = Reflect.get(t, k);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const f = fakes();
+    captureLogs(vi.spyOn);
+    await expect(
+      healthDue({ ...env, PLATFORM_DB: broken } as ProvapiEnv, NOW, {
+        probe: f.probe,
+      }),
+    ).rejects.toThrow();
+    expect(await healthDue(env, NOW + TICK, { probe: f.probe })).toBe(true);
+    expect(f.calls).toHaveLength(1);
+  });
+
   it("the default probe is a plain public-route GET of /healthz", async () => {
     const seen: string[] = [];
     vi.stubGlobal(
