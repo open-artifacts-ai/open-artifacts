@@ -1,135 +1,73 @@
-interface D1Like {
-  prepare(sql: string): {
-    bind(...values: unknown[]): {
-      all(): Promise<{ results?: unknown[] }>;
-    };
-    all(): Promise<{ results?: unknown[] }>;
+import { verify as ghVerify } from "@oa/gh-oidc";
+import { authenticate, type OidcVars, type Verify } from "./auth.ts";
+import { health } from "./health.ts";
+import { listHosts, oneHost } from "./hosts.ts";
+import {
+  type D1Like,
+  internal,
+  type KvReadLike,
+  methodNotAllowed,
+  notFound,
+} from "./http.ts";
+import { listInstalls } from "./installs.ts";
+import { postProdclean } from "./prodclean.ts";
+
+// The inventory Worker (design v7 6.3): GET /installs, /hosts, /health and the
+// monitor's POST /prodclean, every route behind a GitHub Actions OIDC bearer.
+
+export type { D1Like, KvReadLike } from "./http.ts";
+
+export interface Env extends OidcVars {
+  PLATFORM_DB: D1Like;
+  /** host -> HOSTS value (oa-<p>-hosts), the namespace dispatch reads. */
+  HOSTS: KvReadLike;
+}
+
+const ROUTES: Record<string, string> = {
+  "/installs": "GET",
+  "/hosts": "GET",
+  "/health": "GET",
+  "/prodclean": "POST",
+};
+
+export function makeWorker(deps: { verify: Verify; now: () => number }) {
+  return {
+    async fetch(request: Request, env: Env): Promise<Response> {
+      // Auth first: an unauthenticated caller learns nothing, not even routes.
+      const auth = await authenticate(request, env, deps.verify);
+      if (auth instanceof Response) return auth;
+      const url = new URL(request.url);
+      const method = Object.hasOwn(ROUTES, url.pathname)
+        ? ROUTES[url.pathname]
+        : undefined;
+      if (!method) return notFound();
+      if (request.method !== method) return methodNotAllowed(method);
+      try {
+        switch (url.pathname) {
+          case "/hosts": {
+            const host = url.searchParams.get("host");
+            return host === null
+              ? await listHosts(env.HOSTS)
+              : await oneHost(env.HOSTS, host);
+          }
+          case "/installs":
+            return await listInstalls(env.PLATFORM_DB, env.HOSTS);
+          case "/health":
+            return await health(env.PLATFORM_DB);
+          default:
+            return await postProdclean(
+              request,
+              auth,
+              env.PLATFORM_DB,
+              deps.now,
+            );
+        }
+      } catch {
+        // A schema or binding failure: fixed body, nothing echoed.
+        return internal();
+      }
+    },
   };
 }
 
-/** The read half of a KV namespace: this Worker never writes HOSTS. */
-interface KvReadLike {
-  list(opts?: { cursor?: string; limit?: number }): Promise<{
-    keys: { name: string }[];
-    list_complete: boolean;
-    cursor?: string;
-  }>;
-  get(key: string): Promise<string | null>;
-  get(keys: string[]): Promise<Map<string, string | null>>;
-}
-
-export interface Env {
-  PLATFORM_DB: D1Like;
-  /** host -> install id (oa-<p>-hosts), the namespace dispatch reads. */
-  HOSTS: KvReadLike;
-  /** Secret. Not listed in wrangler.jsonc. */
-  INVENTORY_KEY?: string;
-}
-
-interface Row {
-  id: string;
-  app_host: string;
-  content_host: string;
-  state: string;
-  test_hooks: number;
-}
-
-const SQL =
-  "SELECT id, app_host, content_host, state, test_hooks FROM installs ORDER BY id";
-
-/** A HOSTS value is the bare install id (same shape as @oa/provision's isInstallId). */
-const INSTALL_ID = /^i[a-z0-9]{11}$/;
-const MAX_HOSTS = 10_000;
-const LIST_PAGE = 1000;
-const GET_BULK = 100;
-
-const installIdOf = (v: string | null | undefined): string | null =>
-  typeof v === "string" && INSTALL_ID.test(v) ? v : null;
-
-const json = (body: unknown) =>
-  new Response(JSON.stringify(body), {
-    headers: {
-      "content-type": "application/json",
-      "cache-control": "no-store",
-    },
-  });
-
-async function listHosts(kv: KvReadLike): Promise<Response> {
-  const names: string[] = [];
-  let complete = true;
-  let cursor: string | undefined;
-  for (;;) {
-    const page = await kv.list({
-      cursor,
-      limit: Math.min(LIST_PAGE, MAX_HOSTS - names.length + 1),
-    });
-    for (const k of page.keys) names.push(k.name);
-    if (page.list_complete) break;
-    if (names.length > MAX_HOSTS) {
-      complete = false;
-      break;
-    }
-    cursor = page.cursor;
-  }
-  names.sort();
-  if (names.length > MAX_HOSTS) {
-    complete = false;
-    names.length = MAX_HOSTS;
-  }
-  const hosts: { host: string; installId: string | null }[] = [];
-  for (let i = 0; i < names.length; i += GET_BULK) {
-    const chunk = names.slice(i, i + GET_BULK);
-    const values = await kv.get(chunk);
-    for (const host of chunk)
-      hosts.push({ host, installId: installIdOf(values.get(host)) });
-  }
-  return json({ hosts, complete });
-}
-
-const notFound = () => new Response("Not found", { status: 404 });
-
-async function sha256(s: string): Promise<Uint8Array> {
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
-  return new Uint8Array(d);
-}
-
-async function keyMatches(
-  presented: string,
-  expected: string,
-): Promise<boolean> {
-  const [a, b] = await Promise.all([sha256(presented), sha256(expected)]);
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ (b[i] ?? 0);
-  return diff === 0;
-}
-
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const key = env.INVENTORY_KEY;
-    if (typeof key !== "string" || key.length < 32) return notFound();
-    const url = new URL(request.url);
-    if (
-      request.method !== "GET" ||
-      (url.pathname !== "/installs" && url.pathname !== "/hosts")
-    )
-      return notFound();
-    const m = /^Bearer (.+)$/.exec(request.headers.get("authorization") ?? "");
-    if (!m || !(await keyMatches(m[1], key))) return notFound();
-
-    if (url.pathname === "/hosts") {
-      const host = url.searchParams.get("host");
-      if (host === null) return listHosts(env.HOSTS);
-      return json({ host, installId: installIdOf(await env.HOSTS.get(host)) });
-    }
-
-    const { results } = await env.PLATFORM_DB.prepare(SQL).all();
-    const installs = ((results ?? []) as Row[]).map((r) => ({
-      id: r.id,
-      appHost: r.app_host,
-      contentHost: r.content_host,
-      state: r.state,
-      testHooks: Boolean(r.test_hooks),
-    }));
-    return json({ installs });
-  },
-};
+export default makeWorker({ verify: ghVerify, now: Date.now });
