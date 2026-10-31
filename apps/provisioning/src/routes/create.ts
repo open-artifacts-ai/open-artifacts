@@ -173,7 +173,9 @@ VALUES (?1, ?2, ?3, ?4, ?1, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)`,
     },
     start: ss
       ? async (jobId) => {
-          await env.SIGNUPS.send({ jobId });
+          // W1's parseSignup takes exactly { signupId }; the signup id is the
+          // job id (0007).
+          await env.SIGNUPS.send({ signupId: jobId });
         }
       : undefined,
   });

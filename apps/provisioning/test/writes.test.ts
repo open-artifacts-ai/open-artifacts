@@ -420,7 +420,8 @@ describe("R4 self-serve policy (4.2 order)", () => {
     expect(r.status).toBe(202);
     const id = r.body.job.id;
     expect(e.provisionInstall.created).toEqual([]);
-    expect(e.queued).toEqual([{ jobId: id }]);
+    // W1's parseSignup: exactly { signupId }, the job id (0007).
+    expect(e.queued).toEqual([{ signupId: id }]);
     const s = await row<Record<string, unknown>>(
       "SELECT * FROM signups WHERE signup_id = ?",
       id,
@@ -546,6 +547,27 @@ describe("lifecycle writes (R5-R13)", () => {
         code: "invalid_state",
         install_id: id,
       }),
+    ]);
+  });
+
+  it("a schema refusal writes job.refused too, with only well-formed ids", async () => {
+    const e = fakeEnv();
+    const { id } = await seedInstall();
+    const body = { requestId: requestId(), reason: 5 };
+    expect((await call(e, ADMIN_P, "R7", { params: { id }, body })).code).toBe(
+      "invalid_input",
+    );
+    expect(await auditRows(body.requestId)).toEqual([
+      expect.objectContaining({
+        action: "job.refused",
+        code: "invalid_input",
+        install_id: id,
+      }),
+    ]);
+    const bad = { requestId: requestId(), reason: "x" };
+    await call(e, ADMIN_P, "R7", { params: { id: "../x" }, body: bad });
+    expect(await auditRows(bad.requestId)).toEqual([
+      expect.objectContaining({ code: "invalid_input", install_id: null }),
     ]);
   });
 

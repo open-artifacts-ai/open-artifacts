@@ -112,6 +112,9 @@ export async function world(a: HandlerArgs): Promise<RouteResult> {
     releases(env).catch(() => []),
     knownTokenStatus(env),
   ]);
+  // The enum has no "unknown": with tokenStatus() failing and nothing
+  // cached, the field reads invalid (fail closed) while attention, which
+  // can leave an item out, carries no token item.
   const token = known ?? { status: "invalid" as const, daysLeft: null };
   const attention = await attentionOf(env, now, openedAt, known?.status);
   const tickAt = kv.get("scheduler_tick_at") ?? null;
@@ -245,11 +248,38 @@ async function attentionOf(
     const at = openedAt(k);
     if (at !== null && !keys.has(k)) out.push(item(k, null, { since: at }));
   }
+  // A failed install no row covers: its latest failed job, read like the
+  // job_failed rows (AttentionSchema: code is the job's error code).
+  const failedIds = [...installs.values()]
+    .filter((r) => r.state === "failed" && !covered.has(r.install_id))
+    .map((r) => r.install_id);
+  const lastFailed = new Map(
+    failedIds.length
+      ? (
+          await env.PLATFORM_DB.prepare(
+            `SELECT j.install_id AS install_id, j.id AS job_id, j.kind AS job_kind, j.error_code AS code, substr(j.error_message, 1, 200) AS message FROM jobs j
+WHERE j.status = 'failed' AND j.install_id IN (SELECT value FROM json_each(?1))
+  AND j.id = (SELECT k.id FROM jobs k WHERE k.install_id = j.install_id AND k.status = 'failed' ORDER BY COALESCE(k.finished_at, k.updated_at) DESC, k.id DESC LIMIT 1)`,
+          )
+            .bind(JSON.stringify(failedIds))
+            .all<Omit<AlertRow, "since">>()
+        ).results.map((r) => [r.install_id, r])
+      : [],
+  );
   for (const r of installs.values()) {
     if (covered.has(r.install_id)) continue;
     const m = mismatchOf(r);
+    const f = lastFailed.get(r.install_id);
     if (r.state === "failed")
-      out.push(item("install_failed", r.install_id, { since: r.updated_at }));
+      out.push(
+        item("install_failed", r.install_id, {
+          jobId: f?.job_id ?? null,
+          jobKind: jobKind(f?.job_kind ?? null),
+          code: f?.code ?? null,
+          message: f?.message ?? null,
+          since: r.updated_at,
+        }),
+      );
     else if (r.health === "failing")
       out.push(
         item("health_failing", r.install_id, {

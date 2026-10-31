@@ -77,6 +77,26 @@ describe("R1 /me", () => {
     expect((await call(fakeEnv(), oauth, "R1")).body.tokenKind).toBe("oauth");
   });
 
+  it("an oauth token's tokenExpiresAt is its row's expires_at (the grant chain's end)", async () => {
+    const oauth = { ...READ, tokenKind: "oauth" as const };
+    await insert("agent_tokens", {
+      id: READ.tokenId,
+      kind: "oauth",
+      session_hash: "h",
+      admin_email: "me@example.com",
+      label: "claude",
+      scopes: "installs:read",
+      client_id: "c1",
+      oauth_user: "adm_1",
+      created_at: NOW,
+      expires_at: NOW + 3600_000,
+    });
+    expect((await call(fakeEnv(), oauth, "R1")).body).toMatchObject({
+      tokenKind: "oauth",
+      tokenExpiresAt: NOW + 3600_000,
+    });
+  });
+
   it("a user: role user", async () => {
     const r = await call(fakeEnv(), userP(), "R1");
     expect(r.body).toMatchObject({ principal: "user", role: "user" });
@@ -479,6 +499,38 @@ describe("R17 audit", () => {
       p.body.items.find((x: { source: string }) => x.source === "api").actor
         .label,
     ).toBe("other@example.com");
+  });
+
+  it("an email actor filter without installs:pii is forbidden unless it is the token's own", async () => {
+    const e = fakeEnv();
+    const { id } = await seedInstall();
+    await insert("admin_audit", {
+      at: NOW - 4,
+      actor_kind: "admin",
+      actor_label: "other@example.com",
+      action: "job.accepted",
+      install_id: id,
+      outcome: "ok",
+    });
+    const t = tokenP(["audit:read"]);
+    const r = await call(e, t, "R17", {
+      query: { actor: "other@example.com" },
+    });
+    expect(r.code).toBe("forbidden");
+    const own = await call(e, t, "R17", {
+      query: { actor: t.email as string },
+    });
+    expect(own.status).toBe(200);
+    const tok = await call(e, t, "R17", {
+      query: { actor: `token:${t.tokenId}` },
+    });
+    expect(tok.status).toBe(200);
+    const p = await call(e, PII, "R17", {
+      query: { actor: "other@example.com" },
+    });
+    expect(p.body.items.length).toBeGreaterThan(0);
+    for (const x of p.body.items)
+      expect(x.actor.label).toBe("other@example.com");
   });
 
   it("O sees its own actor rows only", async () => {

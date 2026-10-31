@@ -233,6 +233,13 @@ describe("R27 /world", () => {
       installId: null,
       since: NOW - 2 * MIN,
     });
+    // Not covered by a row: the install's latest failed job fills it in.
+    expect(w.attention.find((x) => x.kind === "install_failed")).toMatchObject({
+      installId: old.id,
+      jobId: old.jobId,
+      jobKind: "create",
+      code: "cf_error",
+    });
     expect(w.attention.find((x) => x.kind === "mismatch")).toMatchObject({
       installId: m.id,
       code: "mismatch",

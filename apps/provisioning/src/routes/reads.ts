@@ -36,7 +36,7 @@ import {
 } from "../model.js";
 import type { Principal } from "../principal.js";
 import { releases, tokenStatus } from "../services/cache.js";
-import { ipPrefix } from "../services/counters.js";
+import { ipKeyOf } from "../services/counters.js";
 import type { HandlerArgs } from "./handlers.js";
 import type { RouteResult } from "./invoke.js";
 
@@ -72,9 +72,9 @@ export async function me(a: HandlerArgs): Promise<RouteResult> {
       p.kind === "admin" ? (await tokenStatus(a.env)).status : null,
     tokenId: p.tokenId ?? null,
     tokenKind,
-    // oauth: the grant chain's end is the session's, which the row does not
-    // hold (W5b concern); oat: the row's expiry.
-    tokenExpiresAt: tokenKind === "oat" ? (t?.expires_at ?? null) : null,
+    // oat: the row's expiry; oauth: the grant chain's end, which W5b's
+    // mintAgentToken stores as the row's expiry (min(session end, now+8h)).
+    tokenExpiresAt: t?.expires_at ?? null,
   };
   return ok(body);
 }
@@ -216,7 +216,7 @@ export async function checkSlug(a: HandlerArgs): Promise<RouteResult> {
     const r = await rateLimit(
       a.env,
       "slug_ip",
-      ipPrefix(a.surface.client.ip, 64),
+      ipKeyOf(a.surface.client.ip, 64),
     );
     if (r) throw new ApiError(r.code);
   }
@@ -343,6 +343,14 @@ export async function queryAudit(a: HandlerArgs): Promise<RouteResult> {
       where.push("token_id = ?");
       binds.push(actor.slice("token:".length));
     } else {
+      // 9A.8: whether rows come back must not tell a token without
+      // installs:pii that some other email is an audit actor.
+      if (
+        hidesPii(p) &&
+        EMAIL_RE.test(actor) &&
+        actor.toLowerCase() !== p.email?.toLowerCase()
+      )
+        throw new ApiError("forbidden");
       where.push("actor_label = ?");
       binds.push(actor);
     }

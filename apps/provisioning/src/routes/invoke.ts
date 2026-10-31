@@ -2,8 +2,11 @@ import {
   type AdminToolName,
   type ApiRouteId,
   authorize,
+  INSTALL_ID_RE,
+  REQUEST_ID_RE,
   ROUTES,
   type RouteDef,
+  ULID_RE,
 } from "@oa/shared/provisioning";
 import { type AuditEntry, audit } from "../audit.js";
 import { LazyBody } from "../body.js";
@@ -108,15 +111,18 @@ export async function invokeRoute(
     });
     throw new ApiError(d.code);
   }
-  // The HTTP body step (415, 413, JSON) runs here, as part of schema.
-  const body =
-    input.body instanceof LazyBody ? await input.body.read() : input.body;
-  const parsed = parseInput(def, { ...input, body });
-  if (!parsed.ok)
-    throw new ApiError("invalid_input", "invalid input", {
-      fields: parsed.fields,
-    });
+  let input2: RouteInput = input;
   try {
+    // The HTTP body step (415, 413, JSON) runs here, as part of schema.
+    const body =
+      input.body instanceof LazyBody ? await input.body.read() : input.body;
+    input2 = { ...input, body };
+    const parsed = parseInput(def, input2);
+    if (!parsed.ok)
+      throw new ApiError("invalid_input", "invalid input", {
+        fields: parsed.fields,
+      });
+    input2 = parsed.input;
     return await HANDLERS[route]({
       env,
       ctx,
@@ -130,20 +136,24 @@ export async function invokeRoute(
     // A handler's own limit (R18, R4 self-serve) is a 429 like any other.
     if (e instanceof ApiError && e.code === "rate_limited")
       await countRateLimited(env, principal.rateKey);
-    // A refused job write (policy or business) is job.refused (4.9).
+    // A refused job write (schema, policy or business) is job.refused (4.9).
+    // A schema refusal records only the raw input's well-formed ids.
     if (e instanceof ApiError && def.job) {
-      const body = parsed.input.body as { requestId?: string } | undefined;
-      const params = parsed.input.params ?? {};
+      const body = input2.body as { requestId?: unknown } | undefined;
+      const params = input2.params ?? {};
+      const id = (v: unknown, re: RegExp) =>
+        typeof v === "string" && re.test(v) ? v : undefined;
+      const jobId = id(params.jobId, ULID_RE);
       await tryAudit(env, {
         action: "job.refused",
         actor: principal,
         outcome: "refused",
         route,
         code: e.code,
-        installId: params.id,
-        requestId: body?.requestId,
+        installId: id(params.id, INSTALL_ID_RE),
+        requestId: id(body?.requestId, REQUEST_ID_RE),
         surface,
-        detail: params.jobId ? { jobId: params.jobId } : undefined,
+        detail: jobId ? { jobId } : undefined,
       });
     }
     throw e;
