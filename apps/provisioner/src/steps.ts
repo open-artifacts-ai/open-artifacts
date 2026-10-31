@@ -81,8 +81,7 @@ export function delayMs(d: string | number): number {
 
 /**
  * Records that the job is at `name`: step, running, started_at once,
- * updated_at; attempt counts this step's failures, so it starts over at a
- * new step. A job no longer open (an R25 cancel, the sweep) is never
+ * updated_at. A job no longer open (an R25 cancel, the sweep) is never
  * reopened: the step fails for good with its stored code.
  */
 export async function markStep(
@@ -93,7 +92,7 @@ export async function markStep(
   const now = ctx.io.now();
   const r = await transient(
     ctx.env.PLATFORM_DB.prepare(
-      `UPDATE jobs SET attempt = CASE WHEN step IS ?2 THEN attempt ELSE 0 END, step = ?2, status = 'running', retry_at = NULL, started_at = COALESCE(started_at, ?3), updated_at = ?3
+      `UPDATE jobs SET step = ?2, status = 'running', retry_at = NULL, started_at = COALESCE(started_at, ?3), updated_at = ?3
 WHERE id = ?1 AND status IN ('queued', 'running')`,
     )
       .bind(jobId, name, now)
@@ -101,6 +100,8 @@ WHERE id = ?1 AND status IN ('queued', 'running')`,
   );
   if ((r.meta.changes ?? 0) > 0) return;
   const job = await readJob(ctx, jobId);
+  // A replay of the last step after its result was lost: nothing to reopen.
+  if (job?.status === "done" && name === "done") return;
   throw new NonRetryableError(
     job?.status === "failed" ? jobCode(job.error_code) : "internal",
   );
@@ -155,8 +156,9 @@ export function jobStep<T>(
 ): Promise<T> {
   const body = async (): Promise<T> => {
     await markStep(ctx, jobId, name);
+    let out: T;
     try {
-      return await fn();
+      out = await fn();
     } catch (e) {
       const err =
         e instanceof NonRetryableError
@@ -167,6 +169,16 @@ export function jobStep<T>(
       await noteFailure(ctx, jobId, err, config);
       throw err;
     }
+    // attempt counts the failures of the step running now (3.6, the
+    // job_retrying alert): a step that succeeded starts it over.
+    await transient(
+      ctx.env.PLATFORM_DB.prepare(
+        "UPDATE jobs SET attempt = 0, updated_at = ?2 WHERE id = ?1 AND status = 'running' AND attempt <> 0",
+      )
+        .bind(jobId, ctx.io.now())
+        .run(),
+    );
+    return out;
   };
   return (
     config === undefined
