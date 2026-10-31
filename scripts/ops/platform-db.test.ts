@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { d1, loadMigrations, run } from "./platform-db.ts";
+import { d1, loadMigrations, pinDrift, run } from "./platform-db.ts";
 
 // platform-db.ts (design v7 8.4) against a local SQLite standing in for D1:
 // bootstrap by schema, the shape check before any record, apply in order,
@@ -349,6 +351,61 @@ describe("platform-db.ts", () => {
     }
   });
 
+  describe("main's lock against the tag's (pinDrift)", () => {
+    /** A tag's tree: the repo's migrations and lock, then `edit` applied. */
+    const tagTree = (edit: (dir: string, lock: Record<string, string>) => void) => {
+      const t = mkdtempSync(join(tmpdir(), "oa-tag-db-"));
+      cpSync(DIR, join(t, "migrations"), { recursive: true });
+      const lock = JSON.parse(readFileSync(LOCK, "utf8"));
+      edit(join(t, "migrations"), lock.pins);
+      writeFileSync(join(t, "lock.json"), JSON.stringify(lock));
+      return { dir: join(t, "migrations"), lock: join(t, "lock.json") };
+    };
+    const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+    it("refuses an edited pinned migration whose pin the tag updated (its own lock holds)", () => {
+      const t = tagTree((dir, pins) => {
+        const f = join(dir, "0007_signups.sql");
+        const sql = `${readFileSync(f, "utf8")}\n-- edited\n`;
+        writeFileSync(f, sql);
+        pins["0007_signups.sql"] = sha(sql);
+      });
+      // The tag's own lock vouches for the edit...
+      expect(() => loadMigrations(t.dir, t.lock)).not.toThrow();
+      // ...main's doesn't.
+      expect(pinDrift(LOCK, t.lock)).toEqual([
+        "0007_signups.sql's pin differs from main's (an edited migration)",
+      ]);
+    });
+    it("refuses a pin main has that the tag dropped", () => {
+      const t = tagTree((_, pins) => {
+        delete pins["0008_provisioning.sql"];
+      });
+      expect(pinDrift(LOCK, t.lock)).toEqual([
+        "0008_provisioning.sql is pinned on main, not in the tag",
+      ]);
+    });
+    it("accepts a new migration the tag pins", () => {
+      const t = tagTree((dir, pins) => {
+        const sql = "CREATE TABLE IF NOT EXISTS x (id TEXT PRIMARY KEY);\n";
+        writeFileSync(join(dir, "0009_x.sql"), sql);
+        pins["0009_x.sql"] = sha(sql);
+      });
+      expect(() => loadMigrations(t.dir, t.lock)).not.toThrow();
+      expect(pinDrift(LOCK, t.lock)).toEqual([]);
+      expect(pinDrift(LOCK, LOCK)).toEqual([]);
+    });
+    it("refuses a lock it can't read", () => {
+      expect(() => pinDrift("/nonexistent/lock.json", LOCK)).toThrow(
+        "main's migration lock is missing or not JSON",
+      );
+      const t = tagTree(() => {});
+      writeFileSync(t.lock, "{}");
+      expect(() => pinDrift(LOCK, t.lock)).toThrow(
+        "the tag's migration lock has no pins",
+      );
+    });
+  });
+
   it("the CLI refuses a bad env or missing inputs before any call", () => {
     const cli = (args: string[], env: Record<string, string>) =>
       spawnSync(
@@ -368,8 +425,20 @@ describe("platform-db.ts", () => {
       CLOUDFLARE_API_TOKEN: "t",
       CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
       PLATFORM_DB_ID: "6ca9103e-507e-4541-b3bb-2485e699512b",
+      MAIN_MIGRATION_LOCK: LOCK,
     };
     expect(cli(["dev"], ok).status).toBe(2);
+    expect(cli(["prod"], { ...ok, MAIN_MIGRATION_LOCK: "" }).status).toBe(2);
+    // main pins a file the tag re-pinned: refused before any call to D1.
+    const main = join(mkdtempSync(join(tmpdir(), "oa-main-lock-")), "lock.json");
+    const lock = JSON.parse(readFileSync(LOCK, "utf8"));
+    lock.pins["0007_signups.sql"] = "0".repeat(64);
+    writeFileSync(main, JSON.stringify(lock));
+    const drift = cli(["prod"], { ...ok, MAIN_MIGRATION_LOCK: main });
+    expect(drift.status).toBe(1);
+    expect(drift.stderr).toContain(
+      "0007_signups.sql's pin differs from main's (an edited migration); refusing",
+    );
     expect(cli(["prod"], { ...ok, PLATFORM_DB_ID: "x" }).status).toBe(2);
     expect(cli(["prod"], { ...ok, CLOUDFLARE_API_TOKEN: "" }).status).toBe(2);
   });

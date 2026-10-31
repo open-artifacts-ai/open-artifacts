@@ -2,7 +2,9 @@
 // The platform-db target of deploy-hosted-platform.sh (design v7 8.4): brings
 // oa-<p>-platform up to every pinned migration in apps/platform-db, and reads
 // it back. First in the deploy order.
-//   1. The lock holds (check-migration-lock.mjs): every file pinned, unchanged.
+//   1. The lock holds (check-migration-lock.mjs): every file pinned, unchanged;
+//      and every pin on main's lock (MAIN_MIGRATION_LOCK) is the tag's too: a
+//      tag may add a migration, never edit one and re-pin it (pinDrift).
 //   2. Tracker platform_migrations (name, sha256, applied_at). A tracker row
 //      that isn't a pinned prefix stops the run. Every 0001-0005 file not in
 //      the tracker (all of them when it is empty or absent) is detected by
@@ -25,7 +27,7 @@
 // The tracker is created first with 0008's own statement, so 0001-0005 can be
 // recorded before 0008 runs.
 // The token goes in a request header, never argv, and is never printed.
-// Usage: CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID PLATFORM_DB_ID [VERIFY_ONLY]
+// Usage: CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID PLATFORM_DB_ID MAIN_MIGRATION_LOCK [VERIFY_ONLY]
 //   node scripts/ops/platform-db.ts staging|prod
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -67,6 +69,36 @@ interface Obj {
 /** Files 0006 onward are shape-checked; earlier ones are detected by schema. */
 const FIRST_CHECKED = "0006";
 const TRACKER = /CREATE TABLE IF NOT EXISTS platform_migrations \([^;]*\);/;
+
+/**
+ * main's lock against the tag's (design v7 8.4): the tag's own lock vouches
+ * only for itself, so every file main pins must keep exactly that pin in the
+ * tag's lock. A changed or dropped pin is an edited migration re-pinned,
+ * which never reaches a database that recorded the old file. The tag may pin
+ * new files. Problems, empty when none.
+ */
+export function pinDrift(mainLockFile: string, tagLockFile: string): string[] {
+  const pins = (f: string, what: string): Record<string, unknown> => {
+    let lock: { pins?: unknown };
+    try {
+      lock = JSON.parse(readFileSync(f, "utf8"));
+    } catch {
+      throw new Refused(`${what} migration lock is missing or not JSON`);
+    }
+    if (!lock?.pins || typeof lock.pins !== "object" || Array.isArray(lock.pins))
+      throw new Refused(`${what} migration lock has no pins`);
+    return lock.pins as Record<string, unknown>;
+  };
+  const main = pins(mainLockFile, "main's");
+  const tag = pins(tagLockFile, "the tag's");
+  const out: string[] = [];
+  for (const [name, sha] of Object.entries(main)) {
+    if (!(name in tag)) out.push(`${name} is pinned on main, not in the tag`);
+    else if (tag[name] !== sha)
+      out.push(`${name}'s pin differs from main's (an edited migration)`);
+  }
+  return out;
+}
 
 /** The pinned migrations in `dir`, in order. */
 export function loadMigrations(dir: string, lockFile: string): Migration[] {
@@ -467,9 +499,15 @@ if (
     )
   )
     fail("PLATFORM_DB_ID must be a uuid", 2);
+  // main's lock (deploy-hosted-platform.yml copies it from main's checkout).
+  const mainLock = process.env.MAIN_MIGRATION_LOCK;
+  if (!mainLock) fail("MAIN_MIGRATION_LOCK (main's migration-lock.json) is required", 2);
   const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
+  const lockFile = join(root, "apps/platform-db/migration-lock.json");
   const verifyOnly = Boolean(process.env.VERIFY_ONLY);
   try {
+    const drift = pinDrift(mainLock as string, lockFile);
+    if (drift.length) throw new Refused(drift.join("; "));
     await run({
       db: d1({
         token: CLOUDFLARE_API_TOKEN as string,
@@ -478,7 +516,7 @@ if (
       }),
       migrations: loadMigrations(
         join(root, "apps/platform-db/migrations"),
-        join(root, "apps/platform-db/migration-lock.json"),
+        lockFile,
       ),
       verifyOnly,
       now: () => Date.now(),

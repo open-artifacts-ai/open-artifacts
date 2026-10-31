@@ -14,7 +14,8 @@
 # VERIFY_ONLY=1 deploys and sets nothing: it only reads the live Worker back and
 # runs every check (a read-only rehearsal against what is deployed).
 # Usage (env as below): scripts/ops/deploy-hosted-platform.sh staging|prod <target>
-#   platform-db      PLATFORM_DB_ID (migrations, scripts/ops/platform-db.ts)
+#   platform-db      PLATFORM_DB_ID MAIN_MIGRATION_LOCK (main's migration-lock.json;
+#                    migrations, scripts/ops/platform-db.ts)
 #   auth-broker      BROKER_REGISTRY_ID GOOGLE_CLIENT_ID [GOOGLE_CLIENT_SECRET]
 #                    BROKER_PIN_FILE (main's packages/provision/src/wfp.ts: the
 #                    client must equal its BROKER_GOOGLE_CLIENT_ID[<env>])
@@ -231,7 +232,9 @@ broker_pin() {
 
 case "$target" in
   platform-db)
-    need PLATFORM_DB_ID
+    # MAIN_MIGRATION_LOCK: main's migration-lock.json; every pin on it must be
+    # the tag's too (platform-db.ts refuses an edited, re-pinned migration).
+    need PLATFORM_DB_ID; need MAIN_MIGRATION_LOCK
     node --experimental-strip-types --no-warnings "$root/scripts/ops/platform-db.ts" "$env"
     ;;
   provision-token)
