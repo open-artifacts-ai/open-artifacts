@@ -1,6 +1,9 @@
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createProvisioningHandlers } from "../../src/mocks/provisioning.js";
+import {
+  createProvisioningHandlers,
+  createProvisioningMock,
+} from "../../src/mocks/provisioning.js";
 import {
   AcceptedSchema,
   InstallDetailSchema,
@@ -198,6 +201,157 @@ describe("provisioning MSW mocks", () => {
     expect(ProvisioningErrorSchema.parse(await r.json()).error.code).toBe(
       "confirm_mismatch",
     );
+  });
+
+  it("admin /me carries no token fields", async () => {
+    server.use(...createProvisioningHandlers());
+    const me = MeSchema.parse(await (await fetch(`${ADMIN}/me`)).json());
+    expect(me.principal).toBe("admin");
+    expect([me.tokenId, me.tokenKind, me.tokenExpiresAt]).toEqual([
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  const install = async (id: string) =>
+    InstallDetailSchema.parse(
+      await (await fetch(`${ADMIN}/installs/${id}`)).json(),
+    );
+  const job = async (id: string) =>
+    JobSchema.parse(await (await fetch(`${ADMIN}/jobs/${id}`)).json());
+  const create = async (slug: string, rid: string) =>
+    AcceptedSchema.parse(
+      await (
+        await post(`${ADMIN}/installs`, {
+          requestId: rid,
+          slug,
+          ownerEmail: "owner@newco.com",
+          tier: "team",
+          auth: { providers: ["google"], domains: ["newco.com"] },
+        })
+      ).json(),
+    );
+
+  it("advanceJob: queued, running, done frees the install in its TRANSITIONS state", async () => {
+    const m = createProvisioningMock();
+    server.use(...m.handlers);
+    const a = await create("newco", "req_adv_create_000001");
+    expect((await install(a.install.id)).activeJobId).toBe(a.job.id);
+    const busy = await post(`${ADMIN}/installs/${a.install.id}/upgrade`, {
+      requestId: "req_adv_busy_00000001",
+    });
+    expect(ProvisioningErrorSchema.parse(await busy.json()).error.code).toBe(
+      "job_in_progress",
+    );
+    m.advanceJob(a.job.id, "running");
+    expect((await job(a.job.id)).status).toBe("running");
+    m.advanceJob(a.job.id, "done");
+    const j = await job(a.job.id);
+    expect([j.status, j.step, j.finishedAt !== null]).toEqual([
+      "done",
+      "done",
+      true,
+    ]);
+    const d = await install(a.install.id);
+    expect([d.state, d.activeJobId]).toEqual(["active", null]);
+    const s = AcceptedSchema.parse(
+      await (
+        await post(`${ADMIN}/installs/${a.install.id}/suspend`, {
+          requestId: "req_adv_suspend_00001",
+          reason: "billing",
+        })
+      ).json(),
+    );
+    expect(m.finishAllJobs()).toBe(1);
+    expect((await install(a.install.id)).state).toBe("suspended");
+    expect(() => m.advanceJob(s.job.id, "done")).toThrow();
+  });
+
+  it("advanceJob failed: a create settles failed with the code; the install is free", async () => {
+    const m = createProvisioningMock();
+    server.use(...m.handlers);
+    const a = await create("newco", "req_fail_create_00001");
+    m.advanceJob(a.job.id, "failed", "prod_dirty");
+    const j = await job(a.job.id);
+    expect([j.status, j.lastErrorCode]).toEqual(["failed", "prod_dirty"]);
+    const d = await install(a.install.id);
+    expect([d.state, d.activeJobId]).toEqual(["failed", null]);
+    const retry = await post(`${ADMIN}/installs/${a.install.id}/retry`, {
+      requestId: "req_fail_retry_000001",
+    });
+    expect(retry.status).toBe(202);
+  });
+
+  it("R25: only the active job; cleanup becomes active, then frees the install", async () => {
+    const m = createProvisioningMock();
+    server.use(...m.handlers);
+    const a = await create("newco", "req_cancel_create_001");
+    const cancel = (jobId: string, rid: string) =>
+      post(`${ADMIN}/jobs/${jobId}/cancel`, {
+        requestId: rid,
+        confirmSlug: "newco",
+      });
+    const r = await cancel(a.job.id, "req_cancel_ok_0000001");
+    expect(r.status).toBe(202);
+    const c = AcceptedSchema.parse(await r.json());
+    expect([c.job.kind, c.job.status]).toEqual(["cleanup", "queued"]);
+    const canceled = await job(a.job.id);
+    expect([canceled.status, canceled.lastErrorCode]).toEqual([
+      "failed",
+      "canceled",
+    ]);
+    expect((await install(a.install.id)).activeJobId).toBe(c.job.id);
+    // The canceled job is no longer active: invalid_state.
+    const again = await cancel(a.job.id, "req_cancel_again_00001");
+    expect(again.status).toBe(409);
+    expect(ProvisioningErrorSchema.parse(await again.json()).error.code).toBe(
+      "invalid_state",
+    );
+    m.advanceJob(c.job.id, "done");
+    const d = await install(a.install.id);
+    expect([d.state, d.activeJobId]).toEqual(["failed", null]);
+  });
+
+  it("R25: a job that is not the install's active one is 409 invalid_state", async () => {
+    server.use(...createProvisioningHandlers());
+    const list = (await (await fetch(`${ADMIN}/installs`)).json()) as {
+      items: { id: string; slug: string; state: string }[];
+    };
+    const failed = list.items.find((i) => i.state === "failed");
+    if (!failed) throw new Error("fixture has no failed install");
+    const jobs = (await (
+      await fetch(`${ADMIN}/installs/${failed.id}/jobs`)
+    ).json()) as { items: { id: string }[] };
+    const r = await post(`${ADMIN}/jobs/${jobs.items[0].id}/cancel`, {
+      requestId: "req_cancel_done_000001",
+      confirmSlug: failed.slug,
+    });
+    expect(r.status).toBe(409);
+    expect(ProvisioningErrorSchema.parse(await r.json()).error.code).toBe(
+      "invalid_state",
+    );
+  });
+
+  it("an idempotent replay returns the job as it is now", async () => {
+    const m = createProvisioningMock();
+    server.use(...m.handlers);
+    const body = {
+      requestId: "req_replay_now_000001",
+      slug: "newco",
+      ownerEmail: "owner@newco.com",
+      tier: "team",
+      auth: { providers: ["google"], domains: ["newco.com"] },
+    };
+    const a = AcceptedSchema.parse(
+      await (await post(`${ADMIN}/installs`, body)).json(),
+    );
+    m.advanceJob(a.job.id, "done");
+    const r = await post(`${ADMIN}/installs`, body);
+    expect(r.headers.get("oa-idempotent-replay")).toBe("1");
+    const b = AcceptedSchema.parse(await r.json());
+    expect(b.job.id).toBe(a.job.id);
+    expect([b.job.status, b.install.state]).toEqual(["done", "active"]);
   });
 
   it("R14 jobs never carry sealed; DELETE /tokens revokes all", async () => {
