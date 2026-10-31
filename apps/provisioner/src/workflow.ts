@@ -39,10 +39,7 @@ import {
   type WorkflowParams,
   WorkflowParamsSchema,
 } from "@oa/shared/provisioning";
-import {
-  createWorkflowInstance,
-  type WorkflowLike,
-} from "@oa/shared/provisioning/workflow";
+import { createWorkflowInstance } from "@oa/shared/provisioning/workflow";
 import { codeOf } from "./errors.js";
 import {
   appHostOf,
@@ -565,14 +562,10 @@ async function fail(
   // Inserted by this batch (not an earlier attempt's, nor refused by
   // jobs_one_active): start it.
   if (purge && res.at(-1)?.results[0]?.id === purge.id)
-    // C6's WorkflowLike (workers-types' InstanceStatus adds `rollingBack`).
-    await createWorkflowInstance(
-      ctx.env.MANAGE_INSTALL as unknown as WorkflowLike<WorkflowParams>,
-      {
-        id: purge.id,
-        params: { jobId: purge.id },
-      },
-    ).catch(() => {
+    await createWorkflowInstance(ctx.env.MANAGE_INSTALL, {
+      id: purge.id,
+      params: { jobId: purge.id },
+    }).catch(() => {
       // Left queued: the scheduler's sweep starts it (5.8).
     });
   if (job.signup_id && row)
