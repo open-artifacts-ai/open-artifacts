@@ -434,7 +434,11 @@ describe("R17 audit", () => {
     await seedAudit(id);
     const all = await call(e, PII, "R17", { query: { limit: "100" } });
     for (const x of all.body.items) AuditEntrySchema.parse(x);
-    const mine = all.body.items.filter((x: { at: number }) => x.at >= NOW - 3);
+    // The call's own token.used row (W5b, 4.9) is not one of the seeds.
+    const mine = all.body.items.filter(
+      (x: { at: number; action: string }) =>
+        x.at >= NOW - 3 && x.action !== "token.used",
+    );
     expect(mine.map((x: { source: string }) => x.source)).toEqual([
       "refusals",
       "provision",

@@ -7,7 +7,7 @@ import type { Principal } from "./principal.js";
  * `client` (W5b). Absent until those merge, then this cast is a no-op.
  */
 export type PrincipalFacts = {
-  session?: { hash: string; csrf: string; expiresAt: number };
+  session?: { csrf: string; expiresAt: number };
   hd?: string;
   tokenKind?: TokenKind;
   client?: string | null;
