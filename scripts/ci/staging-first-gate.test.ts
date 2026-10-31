@@ -54,34 +54,33 @@ describe("staging-first-gate.sh", () => {
       `gh api -X GET repos/${REPO}/actions/workflows/redline-staging.yml/runs?branch=main&status=success&per_page=100&created=%3E%3D2026-10-24T12:00:00Z`,
     ]);
   });
-  it("refuses another tag, a near-miss tag, a failed run, another branch or an old run", () => {
-    for (const [label, run] of [
-      ["other tag", runOf({ display_title: "redline-staging v0.79.0" })],
-      ["longer", runOf({ display_title: "redline-staging v0.80.01" })],
-      ["rc", runOf({ display_title: "redline-staging v0.80.0-rc.1" })],
-      ["no tag", runOf({ display_title: "redline-staging" })],
-      ["failed", runOf({ conclusion: "failure" })],
-      ["branch", runOf({ head_branch: "feature" })],
-      ["old", runOf({ created_at: "2026-10-24T11:59:59Z" })],
-      ["push", runOf({ event: "push" })],
-      [
-        "fork",
-        runOf({ head_repository: { full_name: "evil/open-artifacts" } }),
-      ],
-      ["no repo", runOf({ head_repository: null })],
-      ["two tags", runOf({ display_title: `redline-staging v0.79.0 ${TAG}` })],
-      [
-        "two tags, ours first",
-        runOf({ display_title: `redline-staging ${TAG} v1.0.0` }),
-      ],
-    ] as const) {
-      const r = gate([run]);
+  // One test per case: each is a whole gate run.
+  for (const [label, run] of [
+    ["other tag", runOf({ display_title: "redline-staging v0.79.0" })],
+    ["longer", runOf({ display_title: "redline-staging v0.80.01" })],
+    ["rc", runOf({ display_title: "redline-staging v0.80.0-rc.1" })],
+    ["no tag", runOf({ display_title: "redline-staging" })],
+    ["failed", runOf({ conclusion: "failure" })],
+    ["branch", runOf({ head_branch: "feature" })],
+    ["old", runOf({ created_at: "2026-10-24T11:59:59Z" })],
+    ["push", runOf({ event: "push" })],
+    ["fork", runOf({ head_repository: { full_name: "evil/open-artifacts" } })],
+    ["no repo", runOf({ head_repository: null })],
+    ["two tags", runOf({ display_title: `redline-staging v0.79.0 ${TAG}` })],
+    [
+      "two tags, ours first",
+      runOf({ display_title: `redline-staging ${TAG} v1.0.0` }),
+    ],
+    ["none", null],
+  ] as const)
+    it(`refuses a run that isn't this tag's green dispatch on main this week: ${label}`, () => {
+      const r = gate(run ? [run] : []);
       expect(r.code, label).toBe(1);
       expect(r.err, label).toContain(
         `no successful redline-staging.yml run for ${TAG}`,
       );
-    }
-    expect(gate([]).code).toBe(1);
+    });
+  it("finds the tag anywhere in the name, as a word", () => {
     // The tag anywhere in the name, as a word.
     expect(gate([runOf({ display_title: `rl (${TAG}) staging` })]).code).toBe(
       0,
