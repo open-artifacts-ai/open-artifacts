@@ -2,7 +2,7 @@ import path from "node:path";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
-// The real platform schema, so sessions and agent_tokens queries run against
+// The real platform schema, so token, refusal and counter SQL runs against
 // the real tables.
 const migrations = await readD1Migrations(
   path.join(import.meta.dirname, "../platform-db/migrations"),

@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../src/errors.js";
 import type { Principal } from "../src/principal.js";
+import { HANDLERS, stub } from "../src/routes/handlers.js";
 import { invokeRoute, type Surface } from "../src/routes/invoke.js";
 import { ctx, fakeEnv } from "./fakes.js";
 
@@ -42,8 +43,9 @@ async function run(
   principal: Principal,
   route: Parameters<typeof invokeRoute>[3],
   s: Surface,
+  oaEnv: "staging" | "prod" = "staging",
 ) {
-  const { env } = fakeEnv();
+  const { env } = fakeEnv({ OA_ENV: oaEnv });
   try {
     const r = await invokeRoute(env, ctx(), principal, route, {}, s);
     return {
@@ -51,7 +53,8 @@ async function run(
       code: (r.body as { error?: { code: string } }).error?.code,
     };
   } catch (e) {
-    if (!(e instanceof ApiError)) throw e;
+    // A built handler on fake bindings (no D1) fails past authz.
+    if (!(e instanceof ApiError)) return { status: 500, code: "internal" };
     return { status: API_ERROR_STATUS[e.code], code: e.code };
   }
 }
@@ -73,11 +76,19 @@ describe("invokeRoute (9A.4): authz.ts row, then the 501 stub", () => {
                   code: (r.body as { error: { code: string } }).error.code,
                 };
               } catch (err) {
-                if (!(err instanceof ApiError)) throw err;
-                got = { status: API_ERROR_STATUS[err.code], code: err.code };
+                // A built handler on fake bindings (no D1) fails past authz.
+                if (err instanceof ApiError)
+                  got = { status: API_ERROR_STATUS[err.code], code: err.code };
+                else if (HANDLERS[route] !== stub)
+                  got = { status: 500, code: "internal" };
+                else throw err;
               }
-              if (d.ok)
+              if (d.ok && HANDLERS[route] === stub)
                 expect(got).toEqual({ status: 501, code: "not_implemented" });
+              else if (d.ok)
+                // Built handlers (R19-R21, R27): authz passed, whatever the
+                // handler then answers on fake bindings.
+                expect(got.code).not.toMatch(/^(unauthenticated|forbidden)$/);
               else
                 expect(got).toEqual({
                   status: API_ERROR_STATUS[d.code],
@@ -122,4 +133,27 @@ describe("invokeRoute (9A.4): authz.ts row, then the 501 stub", () => {
     );
     expect((err as ApiError).code).toBe("unavailable");
   });
+});
+
+describe("an OIDC test user (4.4, Q1) is staging only, like the oidc principal", () => {
+  const testUser: Principal = {
+    ...P("user"),
+    actorKey: "user:rl-test-a",
+    rateKey: "user:rl-test-a",
+    email: "rl-test-a@test.invalid",
+    sub: "rl-test-a",
+    hd: "test.invalid",
+  };
+  for (const route of ROUTE_IDS.filter(isApiRoute))
+    it(`${route}: 401 on prod on both surfaces; on staging the user row decides`, async () => {
+      for (const s of SURFACES) {
+        expect(await run(testUser, route, s, "prod")).toEqual({
+          status: 401,
+          code: "unauthenticated",
+        });
+        expect(await run(testUser, route, s, "staging")).toEqual(
+          await run(P("user"), route, s, "staging"),
+        );
+      }
+    });
 });
