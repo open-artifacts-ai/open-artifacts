@@ -12,6 +12,9 @@ const KEYS = [
   "email_zone",
   "google_client_id",
   "google_directory_client_id",
+  "signup_daily_cap",
+  "signups_enabled",
+  "welcome_from",
 ];
 const read = (env: string): Record<string, unknown> =>
   JSON.parse(readFileSync(join(root, `.github/hosted/${env}.json`), "utf8"));
@@ -98,6 +101,13 @@ describe(".github/hosted/<env>.json", () => {
     expect(read("prod").email_daily_limit).toBe(5000);
     expect(read("staging").email_daily_limit).toBe(500);
   });
+  it("the provisioner's signups stay closed, and its sender is on the env's sending zone", () => {
+    for (const env of ["prod", "staging"]) {
+      const c = read(env);
+      expect(c.signups_enabled, env).toBe("false");
+      expect(String(c.welcome_from).split("@")[1], env).toBe(c.email_zone);
+    }
+  });
 });
 
 describe("hosted-constants.sh", () => {
@@ -131,6 +141,9 @@ describe("hosted-constants.sh", () => {
         "EMAIL_DAILY_LIMIT=5000",
         "GOOGLE_CLIENT_ID=206295999771-ntbp6nlf5ospa45ovc73aur4f05fpp5s.apps.googleusercontent.com",
         "GOOGLE_DIRECTORY_CLIENT_ID=206295999771-6cr3mbfc7g2ejnvdoqhlf2v8v6sdm023.apps.googleusercontent.com",
+        "SIGNUP_DAILY_CAP=20",
+        "SIGNUPS_ENABLED=false",
+        "WELCOME_FROM=welcome@open-artifacts.app",
         "",
       ].join("\n"),
     );
@@ -151,7 +164,7 @@ describe("hosted-constants.sh", () => {
         { env: { GITHUB_ENV: ghEnv } },
       );
       expect(r.code, r.err).toBe(0);
-      expect(readFileSync(ghEnv, "utf8").split("\n")).toHaveLength(6);
+      expect(readFileSync(ghEnv, "utf8").split("\n")).toHaveLength(9);
     }
   });
 
@@ -189,6 +202,14 @@ describe("hosted-constants.sh", () => {
       ["google_client_id", "UNCONFIRMED.apps.googleusercontent.com"],
       ["google_directory_client_id", "TODO"],
       ["google_directory_client_id", "1-x.apps.googleusercontent.com.evil"],
+      ["signup_daily_cap", 0],
+      ["signup_daily_cap", 10000],
+      ["signup_daily_cap", "20 "],
+      ["signups_enabled", "test-users"],
+      ["signups_enabled", "TRUE"],
+      ["welcome_from", "welcome"],
+      ["welcome_from", "W <a@b.com>"],
+      ["welcome_from", "a@b.com/x"],
     ];
     for (const [k, v] of bad) {
       const r = load({ ...PROD(), [k]: v });

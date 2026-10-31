@@ -13,6 +13,7 @@ const TOK = "cfut_TOKEN_never_printed_0123456789";
 const ACCT = "26ac346086d4405f7a976d48747a2a75";
 const UUID = "0d6a2a8e-1c2b-4c3d-8e4f-5a6b7c8d9e0f";
 const ZONE = "9".repeat(32);
+const STORE = "5".repeat(32);
 const KV = {
   hosts: "a".repeat(32),
   broker: "b".repeat(32),
@@ -37,6 +38,7 @@ page=1; case "$path" in *page=*) page="\${path##*page=}" ;; esac
 case "$path" in
   "/accounts/$STUB_ACCT/d1/database?per_page=100&page="*) k=d1 ;;
   "/accounts/$STUB_ACCT/storage/kv/namespaces?per_page=100&page="*) k=kv ;;
+  "/accounts/$STUB_ACCT/secrets_store/stores?per_page=100&page="*) k=stores ;;
   "/accounts/$STUB_ACCT/challenges/widgets?per_page=50&page="*) k=widgets ;;
   "/accounts/$STUB_ACCT/challenges/widgets/"*) k=widget ;;
   "/zones?name=$EMAIL_ZONE&account.id=$STUB_ACCT&per_page=50&page="*) k=zones ;;
@@ -105,15 +107,23 @@ describe("hosted-resource-ids.sh", () => {
     },
     ...extra,
   ];
+  // The account's Secrets Store (the provisioner's PROVISION_TOKEN lives there).
+  const stores = (extra: unknown[] = []) => [
+    { id: STORE, name: "default_secrets_store" },
+    { id: "6".repeat(32), name: "other_store" },
+    ...extra,
+  ];
   const lists: Record<string, (extra?: unknown[]) => unknown[]> = {
     d1,
     kv,
     zones,
+    stores,
   };
   const good = () => ({
     d1: [ok(d1(), { total_pages: 1 })],
     kv: [ok(kv(), { total_pages: 1 })],
     zones: [ok(zones(), { total_pages: 1 })],
+    stores: [ok(stores(), { total_pages: 1 })],
   });
   const ids = (o: Record<string, Page[]> = good(), env = "prod") =>
     run(["bash", script("hosted-resource-ids.sh"), env], o);
@@ -123,10 +133,11 @@ describe("hosted-resource-ids.sh", () => {
     `BROKER_REGISTRY_ID=${KV.broker}`,
     `DIRECTORY_REGISTRY_ID=${KV.directory}`,
     `EMAIL_ZONE_TAGS=${ZONE}`,
+    `SECRETS_STORE_ID=${STORE}`,
     "",
   ].join("\n");
 
-  it("resolves all five by exact name on the account and writes them to GITHUB_ENV", () => {
+  it("resolves all six by exact name on the account and writes them to GITHUB_ENV", () => {
     const r = ids();
     expect(r.code, r.err).toBe(0);
     expect(r.ghEnv).toBe(WANT);
@@ -145,6 +156,7 @@ describe("hosted-resource-ids.sh", () => {
           ]),
         ],
         zones: [ok(zones())],
+        stores: [ok(stores())],
       },
       "staging",
     );
@@ -170,6 +182,7 @@ describe("hosted-resource-ids.sh", () => {
       ],
       kv: [ok(full(100, "z-")), ok(kv())],
       zones: [ok(zones())],
+      stores: [ok(stores())],
     });
     expect(r.code, r.err).toBe(0);
     expect(r.ghEnv).toBe(WANT);
@@ -180,12 +193,19 @@ describe("hosted-resource-ids.sh", () => {
     for (const u of urls) expect(u).toMatch(/^curl -sS -K - https:\/\//);
   });
 
-  const RESOURCES: [string, "d1" | "kv" | "zones", string, string, string][] = [
+  const RESOURCES: [
+    string,
+    "d1" | "kv" | "zones" | "stores",
+    string,
+    string,
+    string,
+  ][] = [
     ["oa-p-platform", "d1", "name", "uuid", UUID],
     ["oa-p-hosts", "kv", "title", "id", KV.hosts],
     ["oa-p-broker-registry", "kv", "title", "id", KV.broker],
     ["oa-p-directory-registry", "kv", "title", "id", KV.directory],
     ["open-artifacts.app", "zones", "name", "id", ZONE],
+    ["default_secrets_store", "stores", "name", "id", STORE],
   ];
 
   for (const [name, kind, nameKey, idKey, id] of RESOURCES) {
@@ -271,6 +291,7 @@ describe("hosted-resource-ids.sh", () => {
             ]),
           ],
           zones: [ok(zoneList)],
+          stores: [ok(stores())],
         },
         { EMAIL_ZONE: committed.email_zone },
       );

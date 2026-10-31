@@ -6,10 +6,12 @@
 #   BROKER_REGISTRY_ID     KV oa-<p>-broker-registry
 #   DIRECTORY_REGISTRY_ID  KV oa-<p>-directory-registry
 #   EMAIL_ZONE_TAGS        the id of the sending zone $EMAIL_ZONE, on this account
+#   SECRETS_STORE_ID       the account's Secrets Store default_secrets_store
+#                          (the provisioner's PROVISION_TOKEN, design v7 2.5)
 # (names from packages/provision/src/names.ts, platformNames; EMAIL_ZONE from
 # .github/hosted/<env>.json). Each must match exactly one resource by exact
 # name: 0 or 2+, a failed call or a network error exits 1 naming it, and
-# nothing is written. All five go to $GITHUB_ENV.
+# nothing is written. All six go to $GITHUB_ENV.
 # Needs CLOUDFLARE_API_TOKEN (to curl on stdin), CLOUDFLARE_ACCOUNT_ID,
 # EMAIL_ZONE, GITHUB_ENV.
 # Usage: scripts/ci/hosted-resource-ids.sh staging|prod
@@ -35,6 +37,8 @@ kvs=("oa-$P-hosts" "oa-$P-broker-registry" "oa-$P-directory-registry")
 d1="$(list_all "$ACCT/d1/database?" 100 "list D1 databases (for $db)")" || exit 1
 kv="$(list_all "$ACCT/storage/kv/namespaces?" 100 "list KV namespaces (for ${kvs[*]})")" || exit 1
 # Account-scoped twice: in the query and on each result.
+store="default_secrets_store"
+stores="$(list_all "$ACCT/secrets_store/stores?" 100 "list Secrets Store stores (for $store)")" || exit 1
 zones="$(list_all "/zones?name=$EMAIL_ZONE&account.id=$CLOUDFLARE_ACCOUNT_ID&" 50 "look up zone $EMAIL_ZONE")" || exit 1
 zones="$(jq -c --arg a "$CLOUDFLARE_ACCOUNT_ID" '[.[] | select(.account.id == $a)]' <<< "$zones")" || exit 1
 
@@ -50,15 +54,19 @@ for n in "${kvs[@]}"; do
 done
 EMAIL_ZONE_TAGS="$(one "$zones" name "$EMAIL_ZONE" id "zone")" || exit 1
 [[ "$EMAIL_ZONE_TAGS" =~ $hex32 ]] || { echo "zone $EMAIL_ZONE: its id is not 32 hex" >&2; exit 1; }
+SECRETS_STORE_ID="$(one "$stores" name "$store" id "Secrets Store")" || exit 1
+[[ "$SECRETS_STORE_ID" =~ $hex32 ]] || { echo "Secrets Store $store: its id is not 32 hex" >&2; exit 1; }
 
-# Only once all five resolved. Ids are not secrets.
+# Only once all six resolved. Ids are not secrets.
 {
   echo "PLATFORM_DB_ID=$PLATFORM_DB_ID"
   echo "HOSTS_KV_ID=${ids[0]}"
   echo "BROKER_REGISTRY_ID=${ids[1]}"
   echo "DIRECTORY_REGISTRY_ID=${ids[2]}"
   echo "EMAIL_ZONE_TAGS=$EMAIL_ZONE_TAGS"
+  echo "SECRETS_STORE_ID=$SECRETS_STORE_ID"
 } >> "$GITHUB_ENV"
 echo "$db: $PLATFORM_DB_ID"
 for i in 0 1 2; do echo "${kvs[$i]}: ${ids[$i]}"; done
 echo "$EMAIL_ZONE: $EMAIL_ZONE_TAGS"
+echo "$store: $SECRETS_STORE_ID"

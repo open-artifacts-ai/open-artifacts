@@ -2,7 +2,8 @@
 # Loads one env's committed hosted constants (<dir>/<env>.json, normally
 # .github/hosted) into $GITHUB_ENV: CLOUDFLARE_ACCOUNT_ID, EMAIL_ZONE (the
 # sending zone's name; hosted-resource-ids.sh resolves its tag),
-# EMAIL_DAILY_LIMIT, GOOGLE_CLIENT_ID, GOOGLE_DIRECTORY_CLIENT_ID. None is a
+# EMAIL_DAILY_LIMIT, GOOGLE_CLIENT_ID, GOOGLE_DIRECTORY_CLIENT_ID, and the
+# provisioner's SIGNUP_DAILY_CAP, SIGNUPS_ENABLED and WELCOME_FROM. None is a
 # secret. Every value is checked against its consumer's rule
 # (deploy-platform-worker.sh) before anything is written: a missing, null,
 # empty, multi-line or malformed value (a placeholder included) exits 1 and
@@ -21,6 +22,11 @@ hex32='^[0-9a-f]{32}$'
 zone='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
 limit='^[1-9][0-9]{0,8}$'
 google_id='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
+# deploy-platform-worker.sh's cap, onoff (prod's: staging's test-users is set
+# only by hand) and email.
+cap='^[1-9][0-9]{0,3}$'
+onoff='^(true|false)$'
+email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
 lines=""
 # key ENV_NAME rule, one per line.
 while read -r k name rule; do
@@ -35,6 +41,9 @@ email_zone EMAIL_ZONE $zone
 email_daily_limit EMAIL_DAILY_LIMIT $limit
 google_client_id GOOGLE_CLIENT_ID $google_id
 google_directory_client_id GOOGLE_DIRECTORY_CLIENT_ID $google_id
+signup_daily_cap SIGNUP_DAILY_CAP $cap
+signups_enabled SIGNUPS_ENABLED $onoff
+welcome_from WELCOME_FROM $email
 EOF
 printf '%s' "$lines" >> "$GITHUB_ENV"
 printf '%s' "$lines"
