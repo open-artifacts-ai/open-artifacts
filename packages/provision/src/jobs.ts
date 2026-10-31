@@ -121,9 +121,12 @@ export interface SettleOptions {
 }
 
 /**
- * The SQL guard for a settleFailed extra: true iff the job `parentSql` (a
- * bind placeholder such as `?5`, or a column) is failed with exactly
- * `code`, the code this settle call wrote.
+ * The SQL guard for a settleFailed extra: true iff the parent job is failed
+ * with exactly `code`, the code this settle call wrote. `parentSql` is a
+ * `?N` bind placeholder or `<alias>.<column>` of the outer query, with an
+ * alias other than `jobs` and `p` (the guard's own table): an unqualified
+ * or self-qualified column would read the subquery's own row (`p.id =
+ * p.id`), true whenever any job has `code`, so it is refused.
  */
 export function settledWith(
   parentSql: string,
@@ -131,13 +134,16 @@ export function settledWith(
 ): string {
   if (!(PROVISION_ERROR_CODES as readonly string[]).includes(code))
     throw new Error(`unknown provision error code ${String(code)}`);
-  if (
-    !/^(?:\?\d{1,3}|[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?)$/.test(parentSql)
-  )
-    throw new Error(
-      "settledWith: parentSql must be a ?N placeholder or a column",
+  const m =
+    /^(?:\?[1-9]\d{0,2}|([A-Za-z_][A-Za-z0-9_]*)\.[a-z_][a-z0-9_]*)$/.exec(
+      parentSql,
     );
-  return `EXISTS (SELECT 1 FROM jobs WHERE id = ${parentSql} AND status = 'failed' AND error_code = '${code}')`;
+  const alias = m?.[1]?.toLowerCase();
+  if (!m || alias === "jobs" || alias === "p")
+    throw new Error(
+      "settledWith: parentSql must be a ?N placeholder or <alias>.<column> (alias not jobs or p)",
+    );
+  return `EXISTS (SELECT 1 FROM jobs p WHERE p.id = ${parentSql} AND p.status = 'failed' AND p.error_code = '${code}')`;
 }
 
 /** What settleFailed did. */

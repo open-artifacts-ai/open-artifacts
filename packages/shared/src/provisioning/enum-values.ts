@@ -1,6 +1,6 @@
 // Provisioning enum values and job steps (design v7 3.2, 5.8) as plain
 // constants: no zod, so the scheduler imports them through
-// `@oa/shared/provisioning/enums` without bundling zod. enums.ts builds the
+// `@oa/shared/provisioning/enum-values` without bundling zod. enums.ts builds the
 // schemas from these arrays and re-exports them.
 
 export const INSTALL_STATES = [
