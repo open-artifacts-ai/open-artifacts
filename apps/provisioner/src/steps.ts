@@ -9,7 +9,13 @@ import type { WorkflowStep, WorkflowStepConfig } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { PROVISION_ERROR_CODES, type ProvisionErrorCode } from "@oa/provision";
 import type { JobKind } from "@oa/shared/provisioning";
-import { codeOf, JOB_ERROR_TEXT, stepError } from "./errors.js";
+import {
+  codeOf,
+  detailOf,
+  JOB_ERROR_TEXT,
+  redactDetail,
+  stepError,
+} from "./errors.js";
 import { type ProvisionerIo, Transient, transient } from "./provisioner.js";
 
 /** The jobs row a step reads (0008); never an email. */
@@ -148,6 +154,92 @@ WHERE id = ?1 AND status = 'running'`,
     .catch(() => {});
 }
 
+/** Every key and scalar value under `v` (a parsed JSON request field). */
+function scalars(v: unknown, out: string[]): void {
+  if (v === null || v === undefined) return;
+  if (typeof v === "string" || typeof v === "number") out.push(String(v));
+  else if (Array.isArray(v)) for (const x of v) scalars(x, out);
+  else if (typeof v === "object")
+    for (const [k, x] of Object.entries(v)) {
+      out.push(k);
+      scalars(x, out);
+    }
+}
+
+const parsed = (raw: unknown): unknown => {
+  if (typeof raw !== "string") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+};
+
+/**
+ * The request-provided values of a job (best effort): its args, the
+ * signup's slug, vars and owner, the owner's email, the install's slug and
+ * vars. They are redacted from the failure log line.
+ */
+async function requestValues(ctx: StepCtx, jobId: string): Promise<string[]> {
+  const out: string[] = [];
+  const db = ctx.env.PLATFORM_DB;
+  const one = <T>(sql: string, ...p: unknown[]) =>
+    db
+      .prepare(sql)
+      .bind(...p)
+      .first<T>()
+      .catch(() => null);
+  const job = await one<{
+    args: string;
+    signup_id: string | null;
+    install_id: string;
+  }>("SELECT args, signup_id, install_id FROM jobs WHERE id = ?", jobId);
+  if (!job) return out;
+  scalars(parsed(job.args), out);
+  if (job.signup_id) {
+    const su = await one<Record<string, unknown>>(
+      "SELECT slug, vars, owner_sub FROM signups WHERE signup_id = ?",
+      job.signup_id,
+    );
+    if (su) scalars([su.slug, parsed(su.vars), su.owner_sub], out);
+    const sec = await one<{ owner_email: string }>(
+      "SELECT owner_email FROM signup_secret WHERE signup_id = ?",
+      job.signup_id,
+    );
+    if (sec) out.push(sec.owner_email);
+  }
+  const ins = await one<Record<string, unknown>>(
+    "SELECT slug, vars FROM installs WHERE id = ?",
+    job.install_id,
+  );
+  if (ins) scalars([ins.slug, parsed(ins.vars)], out);
+  return out;
+}
+
+/**
+ * One console line per step failure: code, step, job id and the error's
+ * detail with every request value, email, URL and IP redacted, capped.
+ * The Worker's own log only: never D1, the API or the audit log.
+ */
+async function logFailure(
+  ctx: StepCtx,
+  jobId: string,
+  step: string,
+  code: string,
+  e: unknown,
+): Promise<void> {
+  const values = await requestValues(ctx, jobId).catch(() => []);
+  console.warn(
+    JSON.stringify({
+      evt: "job_step_failed",
+      code,
+      step,
+      jobId,
+      detail: redactDetail(detailOf(e), values),
+    }),
+  );
+}
+
 /** 3.5: a Cloudflare token not active is retried every 15 min, up to 2 h. */
 export const TOKEN_WAIT = "15 minutes";
 export const TOKEN_WAITS = 8;
@@ -214,6 +306,7 @@ function stepOnce<T>(
         !(e instanceof NonRetryableError) &&
         codeOf(err) === "token_invalid";
       if (waits) err = new NonRetryableError(TOKEN_WAITING);
+      await logFailure(ctx, jobId, name, codeOf(err), e);
       await noteFailure(
         ctx,
         jobId,

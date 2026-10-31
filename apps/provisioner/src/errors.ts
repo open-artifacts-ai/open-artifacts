@@ -41,6 +41,34 @@ export function redactEmail(text: string, email: string): string {
   return out;
 }
 
+/** The failure log line's detail cap, in characters. */
+export const LOG_DETAIL_MAX = 200;
+
+/**
+ * `text` for the Worker's own log: every request value in `values` (raw or
+ * URL-encoded, any case, longest first), then any email, URL or IP address,
+ * replaced by a placeholder; at most LOG_DETAIL_MAX characters.
+ */
+export function redactDetail(text: string, values: readonly string[]): string {
+  let out = text;
+  const forms = new Set<string>();
+  for (const v of values) {
+    const t = v.trim();
+    if (!t) continue;
+    forms.add(t);
+    forms.add(encodeURIComponent(t));
+  }
+  for (const f of [...forms].sort((a, b) => b.length - a.length))
+    out = out.replace(new RegExp(reEscape(f), "gi"), "[value]");
+  out = out
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, "[url]")
+    .replace(/[^\s@"'<>()]+(?:@|%40)[^\s@"'<>()]+/gi, "[email]")
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[ip]")
+    // IPv6 (and anything with two or more hex:colon groups).
+    .replace(/(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}/gi, "[ip]");
+  return out.slice(0, LOG_DETAIL_MAX);
+}
+
 /**
  * jobs.error_message per job code: a short, neutral sentence, never
  * interpolated, so a stored message carries no request value or inner
@@ -73,6 +101,12 @@ export function stepError(e: unknown): Error {
   const { retryable, code } = classify(e);
   if (retryable) return new Error(code);
   return new NonRetryableError(`${code}: ${JOB_ERROR_TEXT[code]}`);
+}
+
+/** An error's own text, for the redacted log line only. */
+export function detailOf(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  return String(e);
 }
 
 /** The code a step's error carries (its text up to the first ":"). */

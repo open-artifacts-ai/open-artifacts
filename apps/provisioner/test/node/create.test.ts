@@ -1,11 +1,12 @@
 // ProvisionInstall (design v7 5.2, 5.3, 2.5, 3.6) on fake-cf: the create
 // and retry steps against the real platform schema, the rechecks, the
 // release gate, the 5.3 inputs, the step bookkeeping, the fail step.
-import { HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
+import { HOSTED_DOMAINS, NAMESPACES, ProvisionRefused } from "@oa/provision";
 import { JOB_STEPS } from "@oa/shared/provisioning";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
-import { JOB_ERROR_TEXT } from "../../src/errors.js";
+import { JOB_ERROR_TEXT, LOG_DETAIL_MAX } from "../../src/errors.js";
+import { jobStep } from "../../src/steps.js";
 import { REACHABLE_MS, runCreate } from "../../src/workflow.js";
 import {
   EMAIL,
@@ -372,6 +373,57 @@ describe("ProvisionInstall: release gate and failures", () => {
     });
     expect(job?.error_message).toBe(JOB_ERROR_TEXT.invalid_state);
     expect(job?.last_error_code).toBe("invalid_state");
+  });
+
+  it("a failure logs one console line: code, step, job id, detail redacted and capped", async () => {
+    const key = "LEAK_KEY_ACME";
+    const s = seedCreate(w, {
+      slug: "leakyslug",
+      vars: {
+        AUTH_PROVIDERS: "google",
+        AUTH_DOMAINS: "finqore.test",
+        TIER: "business",
+        [key]: "leakvalue",
+      },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const url = "https://evil.example/path?q=1";
+    const ip = "203.0.113.77";
+    const ip6 = "2001:db8::1";
+    const other = "someone.else@elsewhere.example";
+    const detail = `var ${key}=leakvalue for leakyslug by ${EMAIL} (${encodeURIComponent(EMAIL)}) ${other} at ${url} from ${ip} and ${ip6} ${"z".repeat(400)}`;
+    const { step } = stepRunner(w.clock);
+    const e = await jobStep(w.ctx, step, s.jobId, "recheck", undefined, () =>
+      Promise.reject(new ProvisionRefused(detail, "invalid_state")),
+    ).catch((x: unknown) => x as Error);
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    warn.mockRestore();
+    expect(e).toBeInstanceOf(Error);
+    expect(lines).toHaveLength(1);
+    const line = JSON.parse(lines[0] as string);
+    expect(line).toMatchObject({
+      evt: "job_step_failed",
+      code: "invalid_state",
+      step: "recheck",
+      jobId: s.jobId,
+    });
+    expect(line.detail.length).toBeLessThanOrEqual(LOG_DETAIL_MAX);
+    expect(line.detail).toContain("[value]");
+    for (const leak of [
+      key,
+      "leakvalue",
+      "leakyslug",
+      EMAIL,
+      EMAIL.toLowerCase(),
+      encodeURIComponent(EMAIL),
+      other,
+      "evil.example",
+      ip,
+      ip6,
+    ])
+      expect(lines[0]).not.toContain(leak);
+    // Never in D1: the job keeps the fixed text.
+    expect(w.job(s.jobId)?.error_message).toBe(JOB_ERROR_TEXT.invalid_state);
   });
 
   it("a retryable failure records attempt, last_error_code and retry_at on the job", async () => {
