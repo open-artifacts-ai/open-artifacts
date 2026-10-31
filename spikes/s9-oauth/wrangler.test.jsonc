@@ -1,0 +1,10 @@
+// Spike S9 (design v7, 13.1): workerd test only, never deployed. OAUTH_KV is
+// the library's store; ADMIN_SESSION_KEY is a test value.
+{
+  "name": "oa-spike-s9-oauth-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "oa-spike-s9-kv" }],
+  "vars": { "ADMIN_SESSION_KEY": "test-admin-session-key-0123456789abcdef" }
+}
