@@ -433,7 +433,12 @@ describe("JWKS cache (4.4: 10 min; unknown kid refetch once per 60 s)", () => {
       exp: S + 700,
     });
     const jwks = new JwksCache();
-    const o = (now: number) => ({ fetch: srv.fetch, now: () => now, jwks, cache });
+    const o = (now: number) => ({
+      fetch: srv.fetch,
+      now: () => now,
+      jwks,
+      cache,
+    });
     await verify(late, pins, o(T + 540_000));
     expect(srv.calls).toBe(1);
     await verify(late, pins, o(T + 600_000));

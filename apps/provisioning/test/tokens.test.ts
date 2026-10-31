@@ -1,7 +1,6 @@
 import { ULID_RE } from "@oa/shared/provisioning";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { revokeOAuthGrants } from "../src/auth/oauth/index.js";
-import { ApiError, NotImplemented } from "../src/errors.js";
+import { ApiError } from "../src/errors.js";
 import { hmac16, sha256Hex } from "../src/hmac.js";
 import type { Principal } from "../src/principal.js";
 import {
@@ -375,7 +374,7 @@ describe("mintAgentToken: who may mint", () => {
   it("refuses without a live session row", async () => {
     const db = await platformDb();
     const a = await seedAdmin(db, T);
-    const { sessionHash: _drop, ...noHash } = a.principal;
+    const { session: _drop, ...noHash } = a.principal;
     expect((await apiCode(mintAgentToken(a.env, noHash, oat()))).code).toBe(
       "unauthenticated",
     );
@@ -475,7 +474,7 @@ describe("oauth grants to end in KV (3.4 R21, 4.6)", () => {
     await withGrant(db, o.tokenId, "g1");
     const t = await mintAgentToken(env, principal, oat());
     expect(await revokeToken(env, session.email, o.tokenId)).toEqual([
-      { grantId: "g1", userId: o.oauthUser },
+      { grantId: "g1", oauthUser: o.oauthUser },
     ]);
     // Already revoked: no grant to end twice.
     expect(await revokeToken(env, session.email, o.tokenId)).toEqual([]);
@@ -496,29 +495,34 @@ describe("oauth grants to end in KV (3.4 R21, 4.6)", () => {
     await withGrant(db, b.tokenId, "gb");
     const g = await revokeAllTokens(env, session.email);
     expect([...g].sort((x, y) => x.grantId.localeCompare(y.grantId))).toEqual([
-      { grantId: "ga", userId: a.oauthUser },
-      { grantId: "gb", userId: b.oauthUser },
+      { grantId: "ga", oauthUser: a.oauthUser },
+      { grantId: "gb", oauthUser: b.oauthUser },
     ]);
   });
 
-  it("a superseding consent returns the older grant", async () => {
+  it("a consent that loses the limit to a concurrent mint keeps the older grant", async () => {
     const db = await platformDb();
     const { env, principal } = await seedAdmin(db, T);
     const old = await mintAgentToken(env, principal, oauth("same"));
-    await withGrant(db, old.tokenId, "gold");
-    const next = await mintAgentToken(env, principal, oauth("same"));
-    expect(next.superseded).toEqual([
-      { grantId: "gold", userId: old.oauthUser },
+    for (let i = 0; i < 4; i++) await mintAgentToken(env, principal, oat());
+    // Between the pre-check (4 others live) and the batch, another mint
+    // takes the fifth slot.
+    const racing = {
+      prepare: (q: string) => db.prepare(q),
+      batch: async (stmts: D1PreparedStatement[]) => {
+        await mintAgentToken(env, principal, oat());
+        return db.batch(stmts);
+      },
+    } as unknown as D1Database;
+    const e2 = { ...env, PLATFORM_DB: racing };
+    vi.setSystemTime(T + M);
+    expect(
+      (await apiCode(mintAgentToken(e2, principal, oauth("same")))).code,
+    ).toBe("token_limit");
+    expect((await rowOf(db, old.tokenId))?.revoked_at).toBeNull();
+    expect((await auditOf(db, old.tokenId)).map((x) => x.action)).toEqual([
+      "token.mint",
     ]);
-    expect(old.superseded).toBeUndefined();
-  });
-
-  it("revokeOAuthGrants is W13b's: a no-op without grants, NotImplemented with", async () => {
-    const { env } = fakeEnv();
-    await expect(revokeOAuthGrants(env, [])).resolves.toBeUndefined();
-    await expect(
-      revokeOAuthGrants(env, [{ grantId: "g", userId: "adm_00" }]),
-    ).rejects.toBeInstanceOf(NotImplemented);
   });
 });
 
@@ -580,6 +584,7 @@ describe("tokenPrincipal (9A.3.3)", () => {
       tokenId: R.id,
       tokenKind: "oat",
       client: null,
+      tokenExpiresAt: R.expires_at,
       authAt: null,
     });
     expect(tokenPrincipal(O, S, env, "oauth")).toMatchObject({

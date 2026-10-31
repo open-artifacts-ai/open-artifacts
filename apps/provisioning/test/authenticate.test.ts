@@ -52,6 +52,7 @@ describe("authenticate: oat_ bearer (api host)", () => {
       tokenId: m.tokenId,
       tokenKind: "oat",
       client: null,
+      tokenExpiresAt: m.expiresAt,
       authAt: null,
     });
   });

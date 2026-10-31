@@ -1,3 +1,4 @@
+import { normalizeEmail } from "@oa/auth-core";
 import {
   type RouteId,
   type Token,
@@ -105,24 +106,21 @@ export type MintOpts =
 
 /**
  * An `oauth` row whose D1 revoke must also end its library grant in
- * OAUTH_KV (3.4 R21, 4.6): `revokeGrant(grantId, userId)`, W13b's
- * revokeOAuthGrants. The per-call D1 check refuses the token either way.
+ * OAUTH_KV (3.4 R21, 4.6): the library's `revokeGrant(grantId, userId)`.
+ * W13b owns that KV revoke (src/auth/oauth, one function for R21, R24 and a
+ * superseding consent); the token service only returns the grants. The
+ * per-call D1 check refuses the token either way.
  */
-export type RevokedGrant = { grantId: string; userId: string };
+export type RevokedGrant = { grantId: string; oauthUser: string };
 const GRANTS_SELECT =
-  'SELECT grant_id AS "grantId", oauth_user AS "userId" FROM agent_tokens';
+  'SELECT grant_id AS "grantId", oauth_user AS "oauthUser" FROM agent_tokens';
 
-/**
- * oat: the bearer, shown once. oauth: the library userId for
- * completeAuthorization, and the grants a supersession ended (the consent
- * handler passes them to revokeOAuthGrants).
- */
+/** oat: the bearer, shown once. oauth: the library userId for completeAuthorization (9A.4). */
 export type Minted = {
   tokenId: string;
   expiresAt: number;
   token?: string;
   oauthUser?: string;
-  superseded?: RevokedGrant[];
 };
 
 /** An `oauth` row's label (9A.3.3): the DCR client_name if it fits, else `unnamed`. */
@@ -140,9 +138,16 @@ const b64u = (b: Uint8Array) =>
 /** The bearer's stored form: sha256 hex (agent_tokens.token_hash). */
 export const tokenHash = (bearer: string) => sha256Hex(bearer);
 
+/** ADMIN_IDENTITIES still lists this `(email, sub)` (W5a's matcher). */
+const listed = (
+  env: Pick<Env, "ADMIN_IDENTITIES">,
+  email: string,
+  sub: string,
+) => isAdminIdentity(env.ADMIN_IDENTITIES, normalizeEmail(email) ?? "", sub);
+
 /**
  * The live session behind an admin principal, re-read from D1: the row its
- * `sessionHash` names, of kind admin, not revoked, unexpired, for the same
+ * `session.hash` names, of kind admin, not revoked, unexpired, for the same
  * `(email, sub)`, which is still in ADMIN_IDENTITIES.
  */
 async function liveAdminSession(
@@ -151,12 +156,12 @@ async function liveAdminSession(
   now: number,
 ): Promise<SessionRow> {
   if (p.kind !== "admin") throw new ApiError("forbidden");
-  if (!p.sessionHash || !p.email || !p.sub)
-    throw new ApiError("unauthenticated");
+  const hash = p.session?.hash;
+  if (!hash || !p.email || !p.sub) throw new ApiError("unauthenticated");
   const s = await env.PLATFORM_DB.prepare(
     "SELECT * FROM sessions WHERE id_hash = ?1",
   )
-    .bind(p.sessionHash)
+    .bind(hash)
     .first<SessionRow>();
   if (
     !s ||
@@ -165,7 +170,7 @@ async function liveAdminSession(
     s.expires_at <= now ||
     s.email.toLowerCase() !== p.email.toLowerCase() ||
     s.sub !== p.sub ||
-    !isAdminIdentity(env, s.email, s.sub)
+    !listed(env, s.email, s.sub)
   )
     throw new ApiError("unauthenticated");
   return s;
@@ -277,20 +282,24 @@ export async function mintAgentToken(
   const stmts: D1PreparedStatement[] = [];
   if (opts.kind === "oauth") {
     // A newer consent of the same client ends the older grant (4.6). This
-    // runs first, so a superseding consent always fits under the limit.
-    const where = `WHERE admin_email = ?1 AND kind = 'oauth' AND client_id = ?2 AND revoked_at IS NULL`;
+    // runs first, so a superseding consent always fits under the limit, and
+    // only when the insert below will fit: the guard counts the live rows
+    // other than this client's, as the insert does after this revoke, so a
+    // concurrent mint that fills the limit leaves the old grant alone.
+    const where = `WHERE admin_email = ?1 AND kind = 'oauth' AND client_id = ?2 AND revoked_at IS NULL
+      AND (SELECT count(*) FROM agent_tokens WHERE admin_email = ?1 AND revoked_at IS NULL AND expires_at > ?3 AND NOT (kind = 'oauth' AND client_id = ?2)) < ?4`;
     stmts.push(
       db
         .prepare(`${GRANTS_SELECT} ${where} AND grant_id IS NOT NULL`)
-        .bind(email, opts.clientId),
+        .bind(email, opts.clientId, now, TOKEN_LIVE_LIMIT),
       db
         .prepare(
-          `${AUDIT_INSERT} SELECT ?3, 'admin', ?1, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'reason', 'superseded', 'supersededBy', ?4) FROM agent_tokens ${where}`,
+          `${AUDIT_INSERT} SELECT ?3, 'admin', ?1, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'reason', 'superseded', 'supersededBy', ?5) FROM agent_tokens ${where}`,
         )
-        .bind(email, opts.clientId, now, id),
+        .bind(email, opts.clientId, now, TOKEN_LIVE_LIMIT, id),
       db
         .prepare(`UPDATE agent_tokens SET revoked_at = ?3 ${where}`)
-        .bind(email, opts.clientId, now),
+        .bind(email, opts.clientId, now, TOKEN_LIVE_LIMIT),
     );
   }
   stmts.push(
@@ -327,8 +336,7 @@ export async function mintAgentToken(
       .bind(now, email, id, requestId, detail),
   );
   const res = await db.batch(stmts);
-  const superseded =
-    opts.kind === "oauth" ? ((res[0]?.results ?? []) as RevokedGrant[]) : [];
+  // The superseded grants (res[0]) are W13b's to end in KV; D1 refuses them now.
   const inserted = res[stmts.length - 2]?.meta.changes ?? 0;
   if (inserted === 0) {
     if (requestId !== null)
@@ -340,7 +348,6 @@ export async function mintAgentToken(
     expiresAt: row.expires_at,
     ...(token ? { token } : {}),
     ...(oauthUser ? { oauthUser } : {}),
-    ...(superseded.length ? { superseded } : {}),
   };
 }
 
@@ -421,8 +428,7 @@ export function tokenPrincipal(
     session.email.toLowerCase() !== row.admin_email.toLowerCase()
   )
     return no("session_ended");
-  if (!isAdminIdentity(env, session.email, session.sub))
-    return no("identity_removed");
+  if (!listed(env, session.email, session.sub)) return no("identity_removed");
   return {
     kind: "token",
     actorKey: `token:${row.id}`,
@@ -434,6 +440,7 @@ export function tokenPrincipal(
     tokenId: row.id,
     tokenKind: row.kind,
     client: row.kind === "oauth" ? row.label : null,
+    tokenExpiresAt: row.expires_at,
     authAt: null,
   };
 }

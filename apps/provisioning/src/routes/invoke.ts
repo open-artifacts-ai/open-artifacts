@@ -2,9 +2,11 @@ import {
   type AdminToolName,
   type ApiRouteId,
   authorize,
+  OIDC_LIMITS,
   ROUTES,
 } from "@oa/shared/provisioning";
 import { audit } from "../audit.js";
+import { isOidcTestUser } from "../auth/oidc.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { limit } from "../limits.js";
@@ -62,7 +64,12 @@ export async function invokeRoute(
       await countRateLimited(env, principal.rateKey);
     throw new ApiError(r.code);
   }
-  const d = authorize(route, principal, env.OA_ENV);
+  // authorize() refuses the oidc kind outside staging (Q1); an OIDC test
+  // user is kind "user", so it gets the same refusal here (4.4).
+  const d =
+    isOidcTestUser(principal) && !OIDC_LIMITS.envs.includes(env.OA_ENV)
+      ? ({ ok: false, code: "unauthenticated" } as const)
+      : authorize(route, principal, env.OA_ENV);
   if (!d.ok) {
     // 4.9 `authz.refused` (route, code), off the response path; a failed
     // write never changes the answer.

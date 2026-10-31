@@ -141,7 +141,12 @@ async function loadJwks(
     res = await o.cache.match(JWKS_CACHE_KEY).catch(() => undefined);
     const at = Number(res?.headers.get(FETCHED_AT) ?? Number.NaN);
     // A copy with no fetch time, from the future, or past 10 min is a miss.
-    if (res && Number.isSafeInteger(at) && at <= fetchedAt && fetchedAt - at < JWKS_TTL_MS)
+    if (
+      res &&
+      Number.isSafeInteger(at) &&
+      at <= fetchedAt &&
+      fetchedAt - at < JWKS_TTL_MS
+    )
       fetchedAt = at;
     else res = undefined;
   }

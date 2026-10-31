@@ -191,7 +191,7 @@ describe("R21 DELETE /tokens/:id?", () => {
     expect(items[0]?.revokedAt).toBe(T);
   });
 
-  it("an oauth row's library grant is ended off the response path", async () => {
+  it("an oauth row with a grant: D1 revoke only; the KV revoke is W13b's", async () => {
     const db = await platformDb();
     const a = await seedAdmin(db, T);
     const o = await oauth(a);
@@ -210,9 +210,20 @@ describe("R21 DELETE /tokens/:id?", () => {
         .then(() => Promise.allSettled(queued))
         .then(() => queued.length);
     };
-    // invokeRoute queues token.used for every call; R21 adds the grant revoke.
+    // invokeRoute queues token.used for every call; R21 adds nothing.
     expect(await waits(t.id)).toBe(1);
-    expect(await waits(o.tokenId)).toBe(2);
+    expect(await waits(o.tokenId)).toBe(1);
+    const items = TokensSchema.parse((await call(a, "R20")).body).items;
+    expect(items.every((x) => x.revokedAt === T)).toBe(true);
+  });
+
+  it("a malformed id is 400 invalid_input (the C1 params schema)", async () => {
+    const db = await platformDb();
+    const a = await seedAdmin(db, T);
+    for (const id of ["nope", "01J0000000000000000000000!", "x".repeat(200)])
+      expect((await call(a, "R21", { params: { id } })).status).toBe(
+        "invalid_input",
+      );
   });
 
   it("another admin's token, or an unknown id, is 404", async () => {

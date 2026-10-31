@@ -43,8 +43,9 @@ async function run(
   principal: Principal,
   route: Parameters<typeof invokeRoute>[3],
   s: Surface,
+  oaEnv: "staging" | "prod" = "staging",
 ) {
-  const { env } = fakeEnv();
+  const { env } = fakeEnv({ OA_ENV: oaEnv });
   try {
     const r = await invokeRoute(env, ctx(), principal, route, {}, s);
     return {
@@ -52,7 +53,8 @@ async function run(
       code: (r.body as { error?: { code: string } }).error?.code,
     };
   } catch (e) {
-    if (!(e instanceof ApiError)) throw e;
+    // A built handler on fake bindings (no D1) fails past authz.
+    if (!(e instanceof ApiError)) return { status: 500, code: "internal" };
     return { status: API_ERROR_STATUS[e.code], code: e.code };
   }
 }
@@ -131,4 +133,27 @@ describe("invokeRoute (9A.4): authz.ts row, then the 501 stub", () => {
     );
     expect((err as ApiError).code).toBe("unavailable");
   });
+});
+
+describe("an OIDC test user (4.4, Q1) is staging only, like the oidc principal", () => {
+  const testUser: Principal = {
+    ...P("user"),
+    actorKey: "user:rl-test-a",
+    rateKey: "user:rl-test-a",
+    email: "rl-test-a@test.invalid",
+    sub: "rl-test-a",
+    hd: "test.invalid",
+  };
+  for (const route of ROUTE_IDS.filter(isApiRoute))
+    it(`${route}: 401 on prod on both surfaces; on staging the user row decides`, async () => {
+      for (const s of SURFACES) {
+        expect(await run(testUser, route, s, "prod")).toEqual({
+          status: 401,
+          code: "unauthenticated",
+        });
+        expect(await run(testUser, route, s, "staging")).toEqual(
+          await run(P("user"), route, s, "staging"),
+        );
+      }
+    });
 });

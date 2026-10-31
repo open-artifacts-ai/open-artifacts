@@ -4,7 +4,8 @@ import { type Principal, type Refusal, refusal } from "../principal.js";
 
 // The GitHub OIDC principal (design v7 4.4, Q1): staging only, on the
 // staging api host only, with every OIDC_* var set; prod refuses it here and
-// again in authorize(). Any failure is 401 and never says why.
+// again in invokeRoute (authorize() for kind oidc, isOidcTestUser for an
+// `x-oa-test-user` caller). Any failure is 401 and never says why.
 
 /** The one host that accepts an OIDC JWT. */
 export const STAGING_API_HOST = "api.open-artifacts-staging.app";
@@ -12,6 +13,10 @@ export const STAGING_API_HOST = "api.open-artifacts-staging.app";
 export const TEST_USER_HEADER = "x-oa-test-user";
 const TEST_USERS = new Set(["a", "b", "c"]);
 export const TEST_USER_DOMAIN = "test.invalid";
+
+/** An `x-oa-test-user` principal: kind user on the reserved test domain. */
+export const isOidcTestUser = (p: Principal) =>
+  p.kind === "user" && p.hd === TEST_USER_DOMAIN;
 
 /** The caller's pins, or null unless staging and every OIDC_* var is set. */
 export function oidcPins(env: Env): Pins | null {
