@@ -55,7 +55,16 @@ describe("provision names", () => {
       hosts: "oa-s-hosts",
       turnstile: "oa-s-turnstile",
       provisionToken: "oa-s-provision-token",
+      provisioner: "oa-s-provisioner",
+      provisionInstall: "oa-s-provision-install",
+      manageInstall: "oa-s-manage-install",
     });
+    // design v7 2.4: the provisioner script and its two Workflows.
+    expect(platformNames("prod").provisioner).toBe("oa-p-provisioner");
+    expect(platformNames("prod").provisionInstall).toBe(
+      "oa-p-provision-install",
+    );
+    expect(platformNames("prod").manageInstall).toBe("oa-p-manage-install");
     expect(platformNames("prod").provisionToken).toBe("oa-p-provision-token");
     expect(platformNames("prod").turnstile).toBe("oa-p-turnstile");
     expect(platformNames("prod").db).toBe("oa-p-platform");

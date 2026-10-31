@@ -4,9 +4,10 @@
 // registryDisabled surface W2 builds on.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { CfError } from "../src/cf.js";
 import * as INDEX from "../src/index.js";
+import type { SettleOptions, SettleResult } from "../src/jobs.js";
 import * as JOBS from "../src/jobs.js";
 import {
   CREATE_SECRETS,
@@ -243,9 +244,9 @@ describe("settleFailed (3.6)", () => {
     prepare: () => ({ bind: () => ({}) }),
     batch: async () => [],
   };
-  it("takes (db, jobId, code) and is not built yet (W3)", async () => {
+  it("takes (db, jobId, code, opts?) and is not built yet (W3)", async () => {
     const f: SettleFailed = settleFailed;
-    expect(f.length).toBe(3);
+    expect(f.length).toBe(4);
     await expect(
       f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "canceled"),
     ).rejects.toThrow(/not built yet \(W3\)/);
@@ -253,6 +254,29 @@ describe("settleFailed (3.6)", () => {
       f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "nope" as never),
     ).rejects.toThrow(/unknown provision error code/);
     expect(INDEX.settleFailed).toBe(settleFailed);
+  });
+
+  it("takes extra statements for the same batch and says whether it settled", async () => {
+    const f: SettleFailed = settleFailed;
+    const extra = [{ sql: "INSERT cleanup" }];
+    // The option is checked before the (W3) body.
+    await expect(
+      f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "internal", { extra }),
+    ).rejects.toThrow(/not built yet \(W3\)/);
+    await expect(
+      f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "internal", {
+        extra: "INSERT" as never,
+      }),
+    ).rejects.toThrow(/extra must be an array/);
+    // The result type: settled (the jobs row changed) and the extra results.
+    type R = Awaited<ReturnType<SettleFailed>>;
+    const r: R = { settled: false, extra: [] };
+    const s: SettleResult = r;
+    expect(s.settled).toBe(false);
+    expectTypeOf<R>().toEqualTypeOf<SettleResult>();
+    expectTypeOf<SettleOptions["extra"]>().toEqualTypeOf<
+      readonly unknown[] | undefined
+    >();
   });
 });
 
