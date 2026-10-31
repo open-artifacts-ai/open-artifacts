@@ -39,12 +39,15 @@ import {
   WELCOME_CLAIM_MS,
 } from "@oa/shared/provisioning/alerts";
 import {
+  TOKEN_EXPIRING_DAYS,
+  ULID_RE,
+} from "@oa/shared/provisioning/constants";
+import {
   ALERT_KEYS,
   type AlertKey,
   JOB_KINDS,
 } from "@oa/shared/provisioning/enum-values";
 import { alertStateKey } from "@oa/shared/provisioning/state";
-import { TOKEN_EXPIRING_DAYS, ULID_RE } from "./contract.js";
 import type { ProvapiEnv } from "./env.js";
 import { claimState, getState, raiseState, unclaimState } from "./state.js";
 
