@@ -102,6 +102,8 @@ export type MintOpts =
       clientId: string;
       /** DCR `client_name` is optional (TokenSchema.clientName nullable). */
       clientName: string | null;
+      /** The consent's redirect host, for `oauth.grant` (9A.8). */
+      redirectHost?: string | null;
     };
 
 /**
@@ -256,8 +258,8 @@ export async function mintAgentToken(
     };
   } else {
     // Stable per admin, so the library can list one admin's grants; never
-    // the email itself.
-    oauthUser = `adm_${await hmac16(env.ADMIN_SESSION_KEY, `oauth_user\n${email.toLowerCase()}`)}`;
+    // the email itself (9A.3.1: the "oauth-user\n" domain).
+    oauthUser = `adm_${await hmac16(env.ADMIN_SESSION_KEY, `oauth-user\n${email.toLowerCase()}`)}`;
     const label = oauthLabel(opts.clientName);
     row = {
       id,
@@ -275,8 +277,7 @@ export async function mintAgentToken(
       expires_at: Math.min(s.expires_at, now + OAUTH_GRANT_MAX_MS),
     };
   }
-  // oat: `token.mint` (4.9). oauth: `oauth.grant` with the 9A.8 fields; the
-  // redirect host is not in the 9A.4 opts, so it is null until C4 adds it.
+  // oat: `token.mint` (4.9). oauth: `oauth.grant` with the 9A.8 fields.
   const action = opts.kind === "oauth" ? "oauth.grant" : "token.mint";
   const detail = JSON.stringify(
     opts.kind === "oauth"
@@ -285,7 +286,7 @@ export async function mintAgentToken(
           clientId: opts.clientId,
           clientName: row.client_name,
           scopes: JSON.parse(scopes),
-          redirectHost: null,
+          redirectHost: opts.redirectHost ?? null,
           grantEnd: row.expires_at,
         }
       : {

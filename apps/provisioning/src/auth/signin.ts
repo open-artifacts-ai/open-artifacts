@@ -28,6 +28,7 @@ import {
 } from "./flow.js";
 import { BROKER_GOOGLE_CLIENT_ID } from "./google.js";
 import { matchIdentity } from "./identities.js";
+import { revokeLibraryGrants } from "./oauth/server.js";
 import { REAUTH_MAX_AGE_MS } from "./reauth.js";
 import {
   adminOrigin,
@@ -69,16 +70,16 @@ export type SigninDeps = {
   /** Google's JWKS unless set. */
   jwks?: Parameters<typeof verifyGoogleIdTokenAnyDomain>[0]["jwks"];
   /**
-   * Revokes an OAuth grant in the library's store (R24). W13b wires the
-   * library's revokeGrant on OAUTH_KV; until then the D1 row's revoked_at
-   * already ends the grant at the next /mcp call or refresh (9A.3.3).
+   * Revokes an OAuth grant in the library's store (R24): the library's
+   * revokeGrant on OAUTH_KV. The D1 row's revoked_at already ends the grant
+   * at the next /mcp call or refresh (9A.3.3).
    */
   revokeGrant: (env: Env, g: LibraryGrant) => Promise<void>;
 };
 const DEFAULTS: SigninDeps = {
   now: () => Date.now(),
   audit,
-  revokeGrant: async () => {},
+  revokeGrant: (env, g) => revokeLibraryGrants(env, [g]),
 };
 
 const brokerOrigin = (env: Env) => `https://auth.${env.APP_DOMAIN}`;
