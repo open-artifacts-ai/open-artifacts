@@ -10,6 +10,7 @@ import {
 import { beforeAll, describe, expect, it } from "vitest";
 import { ApiError } from "../src/errors.js";
 import type { Principal } from "../src/principal.js";
+import { HANDLERS, stub } from "../src/routes/handlers.js";
 import { invokeRoute, type Surface } from "../src/routes/invoke.js";
 import { ctx, fakeEnv, migrate } from "./fakes.js";
 
@@ -42,8 +43,9 @@ async function run(
   principal: Principal,
   route: Parameters<typeof invokeRoute>[3],
   s: Surface,
+  oaEnv: "staging" | "prod" = "staging",
 ) {
-  const { env } = fakeEnv();
+  const { env } = fakeEnv({ OA_ENV: oaEnv });
   try {
     const r = await invokeRoute(env, ctx(), principal, route, {}, s);
     return {
@@ -51,7 +53,8 @@ async function run(
       code: (r.body as { error?: { code: string } } | null)?.error?.code,
     };
   } catch (e) {
-    if (!(e instanceof ApiError)) throw e;
+    // A built handler on fake bindings (no D1) fails past authz.
+    if (!(e instanceof ApiError)) return { status: 500, code: "internal" };
     return { status: API_ERROR_STATUS[e.code], code: e.code };
   }
 }
@@ -76,8 +79,12 @@ describe("invokeRoute (9A.4): the authz.ts row decides", () => {
                     ?.code,
                 };
               } catch (err) {
-                if (!(err instanceof ApiError)) throw err;
-                got = { status: API_ERROR_STATUS[err.code], code: err.code };
+                // A built handler on fake bindings (no D1) fails past authz.
+                if (err instanceof ApiError)
+                  got = { status: API_ERROR_STATUS[err.code], code: err.code };
+                else if (HANDLERS[route] !== stub)
+                  got = { status: 500, code: "internal" };
+                else throw err;
               }
               // Allowed: whatever the handler answers (empty input is
               // mostly invalid_input), never the authz refusal codes.

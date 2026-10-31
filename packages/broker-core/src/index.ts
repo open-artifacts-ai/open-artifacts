@@ -13,6 +13,7 @@ export {
   logger,
   MAX_BODY,
   notFound,
+  rateKeyOf,
   readState,
   refused,
   s256,
