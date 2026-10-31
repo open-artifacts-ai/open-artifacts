@@ -368,6 +368,7 @@ function graph(entry: string): Set<string> {
 
 const CONST_SUBPATHS = {
   "./provisioning/alerts": "provisioning/alerts.ts",
+  "./provisioning/constants": "provisioning/constants.ts",
   "./provisioning/enum-values": "provisioning/enum-values.ts",
   "./provisioning/error-codes": "provisioning/error-codes.ts",
   "./provisioning/state": "provisioning/state.ts",
@@ -389,6 +390,15 @@ describe("narrow subpath exports (no zod)", () => {
         default: js,
       });
     }
+  });
+
+  it("the constants subpath carries the C6 values with no zod", async () => {
+    const C = await import("../../src/provisioning/constants.js");
+    expect(C.FAILED_SECRET_RETENTION_MS).toBe(30 * DAY);
+    expect(C.LIVE_TOKENS_PER_ADMIN).toBe(5);
+    expect(graph(join(SRC, "provisioning/constants.ts")).has("zod")).toBe(
+      false,
+    );
   });
 
   it("no constants module imports zod, directly or through another module", () => {

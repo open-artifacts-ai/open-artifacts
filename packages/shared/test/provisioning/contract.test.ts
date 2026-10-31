@@ -13,6 +13,7 @@ import {
   AttentionSchema,
   AuthSchema,
   bodyHash,
+  bodyVariants,
   CreateInstallSchema,
   canonicalJson,
   DeleteSchema,
@@ -205,7 +206,7 @@ describe("enums and JOB_STEPS", () => {
     }
     expect(JOB_STEPS.retry).toEqual(JOB_STEPS.create);
     expect(Object.keys(JOB_STEPS).sort()).toEqual(
-      [...JobKindSchema.options].sort(),
+      [...JobKindSchema.options, "redline_creds_revoke"].sort(),
     );
   });
 
@@ -428,7 +429,8 @@ describe("routes", () => {
       const r = ROUTES[id];
       if (r.method === "GET") expect(r.write, id).toBe(false);
       if (r.write && r.method === "POST" && r.base === "api")
-        expect(Object.keys(r.body.shape), id).toContain("requestId");
+        for (const b of bodyVariants(r))
+          expect(Object.keys(b.shape), id).toContain("requestId");
     }
   });
 

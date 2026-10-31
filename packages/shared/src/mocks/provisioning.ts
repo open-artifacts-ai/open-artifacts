@@ -27,7 +27,12 @@
 import { type HttpHandler, HttpResponse, http } from "msw";
 import { checkCreateFields, TRANSITIONS } from "../provisioning/authz.js";
 import { bodyHash } from "../provisioning/bodyhash.js";
-import { JOB_STEPS, type ProvisioningEnv } from "../provisioning/enums.js";
+import { LIVE_TOKENS_PER_ADMIN } from "../provisioning/constants.js";
+import {
+  JOB_STEPS,
+  jobStepsFor,
+  type ProvisioningEnv,
+} from "../provisioning/enums.js";
 import {
   API_ERROR_STATUS,
   type ApiErrorCode,
@@ -58,6 +63,15 @@ import { slugError, slugRule } from "../provisioning/slugs.js";
 export type ProvisioningMockOptions = {
   env?: ProvisioningEnv;
   world?: "fixtures" | "empty";
+  /**
+   * The clock for time-of-write fields (token createdAt/expiresAt, job and
+   * audit times, the token_limit liveness check). Default: the fixed
+   * fixture clock (T0, then +1 s per write), so tests stay deterministic;
+   * dev and Playwright pass Date.now.
+   */
+  now?: () => number;
+  /** Tokens the mock starts with (e.g. an `oauth` grant, which R19 never mints). */
+  tokens?: readonly Token[];
 };
 
 export type ProvisioningMock = {
@@ -122,11 +136,11 @@ export function createProvisioningMock(
   const env = opts.env ?? "prod";
   const T0 = fixtureWorld().at;
   let seq = 0;
-  const now = () => T0 + ++seq * 1000;
+  const now = opts.now ?? (() => T0 + ++seq * 1000);
 
   const installs = new Map<string, InstallDetail>();
   const jobs = new Map<string, Job>();
-  const tokens: Token[] = [];
+  const tokens: Token[] = (opts.tokens ?? []).map((t) => ({ ...t }));
   const replays = new Map<
     string,
     { hash: string; jobId: string; installId: string }
@@ -178,7 +192,7 @@ export function createProvisioningMock(
     args: Record<string, unknown>,
   ): Job => {
     const kind = r.job ?? "create";
-    const steps = [...JOB_STEPS[kind]];
+    const steps = [...jobStepsFor(kind, args)];
     const j: Job = {
       id: mockUlid(++seq),
       kind,
@@ -577,6 +591,14 @@ export function createProvisioningMock(
           ttlMinutes: number;
         };
         const at = now();
+        const live = tokens.filter(
+          (x) => x.revokedAt === null && x.expiresAt > at,
+        ).length;
+        if (live >= LIVE_TOKENS_PER_ADMIN)
+          return err(
+            "token_limit",
+            `At most ${LIVE_TOKENS_PER_ADMIN} live tokens per admin.`,
+          );
         const t: Token = {
           id: mockUlid(++seq),
           kind: "oat",

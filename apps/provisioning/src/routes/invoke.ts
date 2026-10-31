@@ -2,6 +2,7 @@ import {
   type AdminToolName,
   type ApiRouteId,
   authorize,
+  bodyVariants,
   INSTALL_ID_RE,
   REQUEST_ID_RE,
   ROUTES,
@@ -52,6 +53,10 @@ export type RouteResult = {
 type Parsed = { ok: true; input: RouteInput } | { ok: false; fields: string[] };
 
 /** The schema step: the route's params, query and body zod, defaults applied. */
+/** Every key any body variant takes; empty means the route takes no body. */
+export const bodyKeys = (def: RouteDef): ReadonlySet<string> =>
+  new Set(bodyVariants(def).flatMap((v) => Object.keys(v.shape)));
+
 export function parseInput(def: RouteDef, input: RouteInput): Parsed {
   const fields: string[] = [];
   const one = (where: string, schema: RouteDef["body"], v: unknown) => {
@@ -67,11 +72,7 @@ export function parseInput(def: RouteDef, input: RouteInput): Parsed {
   const body =
     def.method === "GET"
       ? undefined
-      : one(
-          "body",
-          def.body,
-          Object.keys(def.body.shape).length === 0 ? {} : input.body,
-        );
+      : one("body", def.body, bodyKeys(def).size === 0 ? {} : input.body);
   if (fields.length) return { ok: false, fields };
   return {
     ok: true,
