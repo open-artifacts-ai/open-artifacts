@@ -56,6 +56,7 @@ import {
   argsOf,
   auditStatement,
   doneStatement,
+  failedAuditStatement,
   type JobRow,
   jobCode,
   jobStep,
@@ -105,7 +106,10 @@ export type ManageJob = {
   skipDirectoryRevoke?: string;
 };
 
-/** upgrade and rollback: 2 attempts, 2 minutes; an attempt up to 45 minutes. */
+/**
+ * upgrade and rollback: 2 retries, 2 minutes; an attempt up to 45 minutes
+ * (3.6 says "2 attempts"; read as retries, like 5.2's Retries column).
+ */
 export const MANAGE_UPLOAD_STEP = {
   retries: { limit: 2, delay: "2 minutes", backoff: "exponential" },
   timeout: "45 minutes",
@@ -214,17 +218,20 @@ async function operate(
             above: job.args.from as string,
           }),
         );
-        await s("upload", MANAGE_UPLOAD_STEP, () =>
+        const u = await s("upload", MANAGE_UPLOAD_STEP, () =>
           render(ctx, job, "upgrade", g.version),
         );
+        if (u.dirty) await pauseDirty(ctx, step, job, "upgrade");
       }
       break;
     }
     case "rollback":
-      if (!job.already)
-        await s("upload", MANAGE_UPLOAD_STEP, () =>
+      if (!job.already) {
+        const u = await s("upload", MANAGE_UPLOAD_STEP, () =>
           render(ctx, job, "rollback", job.args.to as string),
         );
+        if (u.dirty) await pauseDirty(ctx, step, job, "rollback");
+      }
       break;
     case "suspend":
       await s("pause", LEASED_STEP, async () => {
@@ -303,7 +310,15 @@ async function operate(
           ...(job.skipDirectoryRevoke
             ? { skipDirectoryRevoke: job.skipDirectoryRevoke }
             : {}),
-          onPoll: () => markStep(ctx, jobId, "revoke_directory"),
+          // A settled revoke goes straight on to teardown.
+          onPoll: (p) =>
+            markStep(
+              ctx,
+              jobId,
+              p.state === "done" || p.state === "skipped"
+                ? "teardown"
+                : "revoke_directory",
+            ),
         });
         await markStep(ctx, jobId, "teardown");
         await transient(modeStatement(ctx, job.installId, "unmapped").run());
@@ -360,16 +375,20 @@ async function record(
 
 /**
  * upgrade or rollback with the CLI's derived options (5.4) and the outcome
- * mapping: ok is done; a dirty serving script is paused, then `prod_dirty`;
- * a forward fix is `upgrade_incomplete`; a rollback is `upgrade_rolled_back`.
- * Check-first: an install already on `to` and active is done, no call.
+ * mapping: ok is done; a dirty serving script is marked on the job
+ * (args.prodDirty) and returned, for pause_dirty; a forward fix is
+ * `upgrade_incomplete`; a rollback is `upgrade_rolled_back`. Check-first:
+ * an install already on `to` and active is done, no call; a job already
+ * marked dirty returns that, never renders again.
  */
 async function render(
   ctx: CreateCtx,
   job: ManageJob,
   kind: "upgrade" | "rollback",
   to: string,
-): Promise<{ version: string }> {
+): Promise<{ version: string; dirty?: true }> {
+  const j = await readJob(ctx, job.jobId);
+  if (j && argsOf(j).prodDirty === true) return { version: to, dirty: true };
   const row = await installRow(ctx, job.installId);
   if (!row) throw refused("no installs row");
   if (row.version === to && row.state === "active") return { version: to };
@@ -390,16 +409,14 @@ async function render(
       : await w.rollback(job.installId);
   if (r.ok) return { version: r.to };
   if (r.prodDirty) {
-    await (await provisionerWith(ctx, labelOf(job))).pause(
-      job.installId,
-      "paused",
-      { kind },
+    await transient(
+      ctx.env.PLATFORM_DB.prepare(
+        "UPDATE jobs SET args = json_set(args, '$.prodDirty', json('true')), updated_at = ?2 WHERE id = ?1 AND status = 'running'",
+      )
+        .bind(job.jobId, ctx.io.now())
+        .run(),
     );
-    await transient(modeStatement(ctx, job.installId, "paused").run());
-    throw new ProvisionRefused(
-      `${kind} left a script that fails verify_clean; paused`,
-      "prod_dirty",
-    );
+    return { version: to, dirty: true };
   }
   if (kind === "upgrade" && r.rolledBack && !r.forwardFix)
     throw new ProvisionRefused(
@@ -412,17 +429,59 @@ async function render(
   );
 }
 
-/** The job done, audited; only while it is open. */
+/**
+ * A dirty serving script, paused (its own step, so a retry only pauses
+ * again), then `prod_dirty`. jobs.step stays upload (JOB_STEPS).
+ */
+async function pauseDirty(
+  ctx: CreateCtx,
+  step: WorkflowStep,
+  job: ManageJob,
+  kind: "upgrade" | "rollback",
+): Promise<never> {
+  await jobStep(
+    ctx,
+    step,
+    job.jobId,
+    "pause_dirty",
+    LEASED_STEP,
+    async () => {
+      await (await provisionerWith(ctx, labelOf(job))).pause(
+        job.installId,
+        "paused",
+        { kind },
+      );
+      await transient(modeStatement(ctx, job.installId, "paused").run());
+      throw new ProvisionRefused(
+        `${kind} left a script that fails verify_clean; paused`,
+        "prod_dirty",
+      );
+    },
+    undefined,
+    "upload",
+  );
+  throw new NonRetryableError("prod_dirty");
+}
+
+/**
+ * The job done, audited; only while it is open. The audit comes first, on
+ * the job still open, so it follows only the batch that marks it done (not
+ * a cancel that won the race, nor a replay).
+ */
 async function finish(
   ctx: CreateCtx,
   job: { jobId: string; kind: string; installId: string },
 ): Promise<{ done: true }> {
   await transient(
     ctx.env.PLATFORM_DB.batch([
+      auditStatement(
+        ctx,
+        job.installId,
+        `job.${job.kind}.done`,
+        { jobId: job.jobId },
+        job.jobId,
+      ),
       doneStatement(ctx, job.jobId),
-      auditStatement(ctx, job.installId, `job.${job.kind}.done`, {
-        jobId: job.jobId,
-      }),
     ]),
   );
   return { done: true };
@@ -577,9 +636,14 @@ async function purgePreconditions(
   args: Record<string, unknown>,
   now: number,
 ): Promise<string | undefined> {
+  // OIDC purges its own rl- installs as an admin would (4.4), but a
+  // skipped directory revoke is an admin's only (5.6, PURGE_FIELD_RULES).
   const admin = job.actor_kind === "admin" || job.actor_kind === "oidc";
   const skip = skipReason(args.skipDirectoryRevoke);
-  if (args.skipDirectoryRevoke !== undefined && (!admin || skip === null))
+  if (
+    args.skipDirectoryRevoke !== undefined &&
+    (job.actor_kind !== "admin" || skip === null)
+  )
     throw refused("skipDirectoryRevoke is an admin's, with a reason");
   if (st.state === "deleting") {
     // 5.1: S at purge_at unless suspended_at is set.
@@ -638,16 +702,21 @@ async function cleanup(
     };
   });
   const { parentId, signupId } = job;
-  const until = { until: job.until };
-  if (until.until !== null && until.until >= ctx.io.now())
-    await step.sleepUntil("lease_expiry", new Date(until.until + 1));
-  await s("release_lease", LEASED_STEP, async () => {
-    const row = await installRow(ctx, job.installId);
-    if (!row?.lease) return { released: false };
-    const w = await provisionerWith(ctx, `ss-${signupId ?? jobId}`);
-    await w.releaseLease(job.installId, job.installId);
-    return { released: true };
-  });
+  // The release never blocks the settle: a lease that failed to go still
+  // leaves the parent settled and the tokens swept, then fails the cleanup.
+  let released: unknown = null;
+  try {
+    await releaseWhenExpired(
+      ctx,
+      step,
+      jobId,
+      signupId,
+      job.installId,
+      job.until,
+    );
+  } catch (e) {
+    released = e;
+  }
   await s("sweep_tokens", undefined, async () =>
     signupId
       ? sweepTokens(ctx, `ss-${signupId}`, job.installId)
@@ -659,15 +728,68 @@ async function cleanup(
     const db = ctx.env.PLATFORM_DB;
     await transient(
       db.batch([
+        ...(p ? [failedAuditStatement(ctx, p, code)] : []),
         ...settleFailedStatements(db, parentId, code, ctx.io.now()),
         ...(await reconcile(ctx, job.installId)),
       ]),
     );
     return { settled: parentId };
   });
+  if (released !== null) throw released;
   await s("done", undefined, () =>
     finish(ctx, { jobId, kind: "cleanup", installId: job.installId }),
   );
+}
+
+/** How many times cleanup waits again for a lease renewed while it slept. */
+export const CLEANUP_LEASE_WAITS = 3;
+
+/**
+ * cleanup's lease: sleep until it expires, then release it without force.
+ * A lease renewed meanwhile (a step of the canceled run still going) is
+ * read again and slept out again, up to CLEANUP_LEASE_WAITS times; then
+ * lease_held.
+ */
+async function releaseWhenExpired(
+  ctx: CreateCtx,
+  step: WorkflowStep,
+  jobId: string,
+  signupId: string | null,
+  installId: string,
+  first: number | null,
+): Promise<void> {
+  let until = first;
+  for (let i = 0; ; i++) {
+    const n = i === 0 ? "" : `_${i}`;
+    if (until !== null && until >= ctx.io.now())
+      await step.sleepUntil(`lease_expiry${n}`, new Date(until + 1));
+    const r = await jobStep(
+      ctx,
+      step,
+      jobId,
+      `release_lease${n}`,
+      LEASED_STEP,
+      async () => {
+        const row = await installRow(ctx, installId);
+        if (!row?.lease) return { released: false, until: null };
+        const live = row.lease_until ?? 0;
+        if (live >= ctx.io.now()) {
+          if (i < CLEANUP_LEASE_WAITS) return { released: false, until: live };
+          throw new ProvisionRefused(
+            "the lease is still held after cleanup waited it out",
+            "lease_held",
+          );
+        }
+        const w = await provisionerWith(ctx, labelOf({ signupId, jobId }));
+        await w.releaseLease(installId, installId);
+        return { released: true, until: null };
+      },
+      undefined,
+      "release_lease",
+    );
+    if (r.until === null) return;
+    until = r.until;
+  }
 }
 
 /**
@@ -682,10 +804,14 @@ async function fail(
 ): Promise<{ failed: boolean; leaseUntil: number | null }> {
   const job = await readJob(ctx, jobId);
   if (!job || job.status === "done") return { failed: false, leaseUntil: null };
-  const code = jobCode(job.last_error_code ?? job.error_code ?? "internal");
+  // A dirty script stays prod_dirty even when its pause failed.
+  const code = dirtyOf(job)
+    ? "prod_dirty"
+    : jobCode(job.last_error_code ?? job.error_code ?? "internal");
   const db = ctx.env.PLATFORM_DB;
   await transient(
     db.batch([
+      failedAuditStatement(ctx, job, code),
       ...settleFailedStatements(db, jobId, code, ctx.io.now()),
       ...(await reconcile(ctx, job.install_id)),
     ]),
@@ -698,17 +824,41 @@ async function fail(
   return { failed: true, leaseUntil };
 }
 
-/** The row is upgrading under the lease this job's operation claimed. */
-function ownLease(
-  job: JobRow,
-  row: { state: string; lease: string | null },
-): boolean {
-  if (row.state !== "upgrading" || row.lease === null) return false;
+const dirtyOf = (job: JobRow): boolean => {
   try {
-    return argsOf(job).claimedLease === row.lease;
+    return argsOf(job).prodDirty === true;
   } catch {
     return false;
   }
+};
+
+/** WfpProvisioner's lease length (wfp.ts LEASE_MS; not exported). */
+export const CLAIM_LEASE_MS = 30 * 60_000;
+
+/**
+ * The row is upgrading under the lease this job's operation claimed: the
+ * one recorded (claimedLease), or, when the run died between its claim and
+ * the first onStep report, a lease claimed (or renewed) after the job
+ * started. recheck saw the row active then, and jobs_one_active keeps any
+ * other job off the install, so that claim is this job's.
+ */
+function ownLease(
+  job: JobRow,
+  row: { state: string; lease: string | null; lease_until: number | null },
+): boolean {
+  if (row.state !== "upgrading" || row.lease === null) return false;
+  let claimed: unknown;
+  try {
+    claimed = argsOf(job).claimedLease;
+  } catch {
+    return false;
+  }
+  if (claimed !== undefined) return claimed === row.lease;
+  return (
+    job.started_at !== null &&
+    row.lease_until !== null &&
+    row.lease_until - CLAIM_LEASE_MS >= job.started_at
+  );
 }
 
 /** The expired lease of a row still upgrading, released without force. */

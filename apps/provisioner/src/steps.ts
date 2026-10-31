@@ -26,13 +26,14 @@ export type JobRow = {
   attempt: number;
   last_error_code: string | null;
   error_code: string | null;
+  started_at: number | null;
 };
 
 /** What a step function reads: the platform D1 and the clock. */
 export type StepCtx = { env: { PLATFORM_DB: D1Database }; io: ProvisionerIo };
 
 const JOB =
-  "SELECT id, kind, workflow, install_id, signup_id, parent_job_id, actor_kind, args, status, step, attempt, last_error_code, error_code FROM jobs WHERE id = ?";
+  "SELECT id, kind, workflow, install_id, signup_id, parent_job_id, actor_kind, args, status, step, attempt, last_error_code, error_code, started_at FROM jobs WHERE id = ?";
 
 export async function readJob(
   ctx: StepCtx,
@@ -225,4 +226,23 @@ export function auditStatement(
       "INSERT INTO hosted_audit (at, actor, install_id, action, detail) SELECT ?1, 'system:provisioner', ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM jobs WHERE id = ?5 AND status IN ('queued', 'running'))",
     )
     .bind(...binds, whileOpen);
+}
+
+/**
+ * `job.<kind>.failed` with its code (4.9), only while the job is open: put
+ * before the settle in the same batch, it follows only the settle that
+ * moves the job to failed (not a cancel's, nor a retried fail step's).
+ */
+export function failedAuditStatement(
+  ctx: StepCtx,
+  job: { id: string; kind: string; install_id: string },
+  code: string,
+): D1PreparedStatement {
+  return auditStatement(
+    ctx,
+    job.install_id,
+    `job.${job.kind}.failed`,
+    { code, jobId: job.id },
+    job.id,
+  );
 }

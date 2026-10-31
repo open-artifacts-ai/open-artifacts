@@ -64,6 +64,7 @@ import {
   argsOf,
   auditStatement,
   doneStatement,
+  failedAuditStatement,
   jobCode,
   jobStep,
   readJob,
@@ -99,18 +100,21 @@ export type CreateJob = {
 /** release_gate's output: the release create runs (5.2 step 4). */
 export type ReleaseGate = { version: string; bundle: BundleVariant };
 
-/** 4 attempts, 1 minute, exponential; an attempt may not pass 45 minutes. */
+/**
+ * 4 retries, 1 minute, exponential (5.2's Retries column; 3.6 says "4
+ * attempts"); an attempt may not pass 45 minutes.
+ */
 export const CREATE_STEP = {
   retries: { limit: 4, delay: "1 minute", backoff: "exponential" },
   timeout: "45 minutes",
 } as const;
 
-/** 3 attempts, 30 seconds, exponential (5.2 step 4). */
+/** 3 retries, 30 seconds, exponential (5.2 step 4). */
 export const RELEASE_GATE_STEP = {
   retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
 } as const;
 
-/** 2 retries (5.2 step 7); the delay is the runtime default's. */
+/** 2 retries, 10 seconds, exponential (5.2 step 7). */
 export const REACHABLE_STEP = {
   retries: { limit: 2, delay: "10 seconds", backoff: "exponential" },
 } as const;
@@ -507,6 +511,14 @@ async function done(
   const mine = "EXISTS (SELECT 1 FROM jobs WHERE id = ?2 AND status = 'done')";
   await transient(
     db.batch([
+      // Audited only by the batch that marks it done (4.9).
+      auditStatement(
+        ctx,
+        installId,
+        `job.${job.kind}.done`,
+        { jobId: job.jobId },
+        job.jobId,
+      ),
       doneStatement(ctx, job.jobId),
       db
         .prepare(`DELETE FROM signup_secret WHERE signup_id = ?1 AND ${mine}`)
@@ -516,9 +528,6 @@ async function done(
           `UPDATE signups SET status = 'ready', error = NULL, updated_at = ?3 WHERE signup_id = ?1 AND job_id = ?2 AND ${mine}`,
         )
         .bind(job.signupId, job.jobId, now),
-      auditStatement(ctx, installId, `job.${job.kind}.done`, {
-        jobId: job.jobId,
-      }),
     ]),
   );
   return { ready: true };
@@ -548,6 +557,7 @@ async function fail(
   const res = await transient(
     db.batch<{ id: string }>([
       ...snapshot,
+      failedAuditStatement(ctx, job, code),
       ...settleFailedStatements(db, jobId, code, ctx.io.now()),
       ...(await reconcile(ctx, job.install_id)),
       ...(purge ? [purge.statement] : []),
