@@ -355,6 +355,9 @@ importers:
       '@cloudflare/workers-oauth-provider':
         specifier: 1.2.3
         version: 1.2.3
+      '@modelcontextprotocol/server':
+        specifier: 2.3.1
+        version: 2.3.1
       '@oa/auth-core':
         specifier: workspace:*
         version: link:../../packages/auth-core
@@ -367,6 +370,9 @@ importers:
       '@oa/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      agents:
+        specifier: 0.28.1
+        version: 0.28.1(@babel/core@7.29.7)(@babel/runtime@7.29.10)(@modelcontextprotocol/client@2.3.1)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(@modelcontextprotocol/server@2.3.1)(react@19.3.1)(rolldown@1.2.14)(vite@8.3.4(@types/node@20.19.43)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))(zod@4.6.7)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -377,6 +383,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20261018.1
         version: 5.20261018.1
+      '@modelcontextprotocol/client':
+        specifier: 2.3.1
+        version: 2.3.1
       '@oa/admin':
         specifier: workspace:*
         version: link:../admin

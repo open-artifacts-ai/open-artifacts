@@ -275,8 +275,8 @@ describe("MCP stub and OAuth routes (9A.2, 9A.3.1)", () => {
       expect((await call(url)).res.status, url).toBe(404);
   });
 
-  it("POST /mcp is 501; GET and DELETE are 405 with allow: POST", async () => {
-    expect((await call(`${API}/mcp`, { method: "POST" })).res.status).toBe(501);
+  it("POST /mcp without a bearer is 401 (W13a); GET and DELETE are 405 with allow: POST", async () => {
+    expect((await call(`${API}/mcp`, { method: "POST" })).res.status).toBe(401);
     for (const method of ["GET", "DELETE"]) {
       const { res } = await call(`${API}/mcp`, { method });
       expect(res.status).toBe(405);
