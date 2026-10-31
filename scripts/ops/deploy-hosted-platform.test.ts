@@ -269,24 +269,29 @@ const puts = (log: string[]) =>
   log.filter((l) => l.startsWith("stdin-len")).map((l) => l.split(" ")[1]);
 
 describe("deploy-hosted-platform.sh", () => {
-  it("auth-broker refuses a client that isn't provision's pin, or a null pin, before any wrangler call", () => {
-    for (const [pins, msg] of [
-      [
-        { prod: "other.apps.googleusercontent.com" },
-        "differs from provision's BROKER_GOOGLE_CLIENT_ID[prod]",
-      ],
-      [{ prod: null }, "BROKER_GOOGLE_CLIENT_ID[prod] is null in provision"],
-    ] as const) {
-      for (const verify of ["", "1"]) {
+  // Each script run spawns dozens of stub processes (about 0.5 s on an idle
+  // machine, several times that under load). So each case below is its own
+  // test, bounded by its own one or two runs rather than by the case count
+  // (a 26-run test took 13 s idle and hit the 30 s testTimeout under load).
+  for (const [pins, msg] of [
+    [
+      { prod: "other.apps.googleusercontent.com" },
+      "differs from provision's BROKER_GOOGLE_CLIENT_ID[prod]",
+    ],
+    [{ prod: null }, "BROKER_GOOGLE_CLIENT_ID[prod] is null in provision"],
+  ] as const) {
+    for (const verify of ["", "1"]) {
+      it(`auth-broker refuses before any wrangler call (${verify ? "verify only" : "deploy"}): ${msg}`, () => {
         const r = setup({ pins }).run("auth-broker", { VERIFY_ONLY: verify });
         expect(r.code, msg).toBe(1);
         expect(r.err).toContain(msg);
         expect(r.log.filter((l) => /^(pnpm|wrapper|curl) /.test(l))).toEqual(
           [],
         );
-      }
+      });
     }
-    // Staging's own pin, checked for staging only.
+  }
+  it("auth-broker checks staging's own pin for staging only", () => {
     const r = setup({ pins: { staging: "other" } }).run("auth-broker");
     expect(r.code, r.err).toBe(0);
   });
@@ -352,8 +357,8 @@ describe("deploy-hosted-platform.sh", () => {
     ]);
     clean(r);
   });
-  it("dispatch and the scheduler refuse until both brokers exist, then deploy and verify", () => {
-    for (const t of ["dispatch", "scheduler"]) {
+  for (const t of ["dispatch", "scheduler"]) {
+    it(`${t} refuses until both brokers exist, then deploys and verifies`, () => {
       const none = setup().run(t);
       expect(none.code, t).toBe(1);
       expect(none.err).toContain("oa-p-auth-broker does not exist");
@@ -363,8 +368,8 @@ describe("deploy-hosted-platform.sh", () => {
       expect(ok.code, t).toBe(0);
       expect(ok.out).toContain(`prod ${t}: deployed and verified`);
       clean(ok);
-    }
-  });
+    });
+  }
   it("the scheduler refuses before any deploy until the provisioner exists", () => {
     for (const verify of ["", "1"]) {
       const r = setup({
@@ -377,28 +382,31 @@ describe("deploy-hosted-platform.sh", () => {
       expect(noDeploy(r.log)).toEqual([]);
     }
   });
-  it("the scheduler refuses before any deploy unless exactly one oa-<p>-signups queue is listed, on one page", () => {
-    const missing = "oa-p-signups queue does not exist: create it first";
-    const paged = "more than one page of queues; refusing";
-    for (const [queues, msg] of [
-      [queueList(["other"]), missing],
-      [queueList([]), missing],
-      // Staging's queue is not prod's.
-      [queueList(["oa-s-signups"]), missing],
-      [queueList(["oa-p-signups", "oa-p-signups"]), missing],
-      [queueList(["oa-p-signups"], 101), paged],
-      [queueList(["oa-p-signups"], 1, 2), paged],
-      // No result_info: can't tell the listing is whole.
-      [
-        JSON.stringify({
-          success: true,
-          result: [{ queue_name: "oa-p-signups" }],
-        }),
-        paged,
-      ],
-      [null, "list queues failed"],
-    ] as const) {
-      for (const verify of ["", "1"]) {
+  // The scheduler refuses before any deploy unless exactly one oa-<p>-signups
+  // queue is listed, on one page.
+  const missing = "oa-p-signups queue does not exist: create it first";
+  const paged = "more than one page of queues; refusing";
+  for (const [label, queues, msg] of [
+    ["only another queue", queueList(["other"]), missing],
+    ["no queues", queueList([]), missing],
+    // Staging's queue is not prod's.
+    ["only staging's queue", queueList(["oa-s-signups"]), missing],
+    ["two oa-p-signups", queueList(["oa-p-signups", "oa-p-signups"]), missing],
+    ["total_count over a page", queueList(["oa-p-signups"], 101), paged],
+    ["two pages", queueList(["oa-p-signups"], 1, 2), paged],
+    // No result_info: can't tell the listing is whole.
+    [
+      "no result_info",
+      JSON.stringify({
+        success: true,
+        result: [{ queue_name: "oa-p-signups" }],
+      }),
+      paged,
+    ],
+    ["a failed listing", null, "list queues failed"],
+  ] as const) {
+    for (const verify of ["", "1"]) {
+      it(`the scheduler refuses before any deploy (${verify ? "verify only" : "deploy"}): ${label}`, () => {
         const r = setup({ exists: SCHED_DEPS("p"), queues }).run("scheduler", {
           VERIFY_ONLY: verify,
         });
@@ -406,38 +414,41 @@ describe("deploy-hosted-platform.sh", () => {
         expect(r.err).toContain(msg);
         expect(noDeploy(r.log)).toEqual([]);
         clean(r);
-      }
+      });
     }
+  }
+  it("the scheduler lists queues on one page of 100 and deploys on exactly one oa-p-signups", () => {
     const ok = setup({ exists: SCHED_DEPS("p") }).run("scheduler");
     expect(ok.code, ok.err).toBe(0);
     expect(ok.log).toContain(
       `curl -sS -K - https://api.cloudflare.com/client/v4/accounts/${ACCT}/queues?per_page=100`,
     );
   });
-  it("the scheduler fails on a readback mismatch in each provisioning binding, deployed or verify only", () => {
-    // The scheduler's bindings with one changed (null: removed).
-    const with_ = (name: string, v: Record<string, unknown> | null) =>
-      settings(
-        schedulerBindings("p").flatMap((b) =>
-          b.name !== name ? [b] : v === null ? [] : [{ ...b, ...v }],
-        ),
-        true,
-      );
-    for (const [name, v, msg] of [
-      ["PROVISIONER", { service: "oa-s-provisioner" }, "PROVISIONER: got"],
-      ["PROVISIONER", { entrypoint: "default" }, "PROVISIONER entrypoint: got"],
-      ["PROVISIONER", { type: "plain_text" }, "PROVISIONER type: got"],
-      ["PROVISIONER", null, "PROVISIONER type: got ''"],
-      ["SIGNUPS", { queue_name: "oa-s-signups" }, "SIGNUPS: got"],
-      ["SIGNUPS", { type: "service" }, "SIGNUPS type: got"],
-      ["SIGNUPS", null, "SIGNUPS type: got ''"],
-      ["PROVISION_INSTALL", { type: "service" }, "PROVISION_INSTALL: got"],
-      ["PROVISION_INSTALL", null, "PROVISION_INSTALL: got ''"],
-      ["MANAGE_INSTALL", { type: "queue" }, "MANAGE_INSTALL: got"],
-      ["MANAGE_INSTALL", null, "MANAGE_INSTALL: got ''"],
-      ["ALERT_EMAIL", { type: "plain_text" }, "ALERT_EMAIL: got"],
-      ["ALERT_EMAIL", null, "ALERT_EMAIL: got ''"],
-    ] as const) {
+  // The scheduler fails on a readback mismatch in each provisioning binding,
+  // deployed or verify only. Its bindings with one changed (null: removed).
+  const with_ = (name: string, v: Record<string, unknown> | null) =>
+    settings(
+      schedulerBindings("p").flatMap((b) =>
+        b.name !== name ? [b] : v === null ? [] : [{ ...b, ...v }],
+      ),
+      true,
+    );
+  for (const [name, v, msg] of [
+    ["PROVISIONER", { service: "oa-s-provisioner" }, "PROVISIONER: got"],
+    ["PROVISIONER", { entrypoint: "default" }, "PROVISIONER entrypoint: got"],
+    ["PROVISIONER", { type: "plain_text" }, "PROVISIONER type: got"],
+    ["PROVISIONER", null, "PROVISIONER type: got ''"],
+    ["SIGNUPS", { queue_name: "oa-s-signups" }, "SIGNUPS: got"],
+    ["SIGNUPS", { type: "service" }, "SIGNUPS type: got"],
+    ["SIGNUPS", null, "SIGNUPS type: got ''"],
+    ["PROVISION_INSTALL", { type: "service" }, "PROVISION_INSTALL: got"],
+    ["PROVISION_INSTALL", null, "PROVISION_INSTALL: got ''"],
+    ["MANAGE_INSTALL", { type: "queue" }, "MANAGE_INSTALL: got"],
+    ["MANAGE_INSTALL", null, "MANAGE_INSTALL: got ''"],
+    ["ALERT_EMAIL", { type: "plain_text" }, "ALERT_EMAIL: got"],
+    ["ALERT_EMAIL", null, "ALERT_EMAIL: got ''"],
+  ] as const) {
+    it(`the scheduler fails on a readback mismatch, deployed or verify only: ${name} ${v === null ? "removed" : JSON.stringify(v)}`, () => {
       const bad = with_(name, v);
       const r = setup({
         exists: SCHED_DEPS("p"),
@@ -453,8 +464,8 @@ describe("deploy-hosted-platform.sh", () => {
       expect(vr.code, `verify ${msg}`).toBe(1);
       expect(vr.err).toContain(msg);
       expect(noDeploy(vr.log)).toEqual([]);
-    }
-  });
+    });
+  }
   it("the scheduler, verify only: no deploy, every check passes on a matching live Worker", () => {
     const s = setup({ exists: SCHED_DEPS("p") });
     writeFileSync(join(s.state, "oa-p-scheduler.exists"), "");
