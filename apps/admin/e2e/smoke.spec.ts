@@ -33,10 +33,13 @@ test("create an install, land on its job, open the install", async ({
   await page.getByRole("button", { name: "Create install" }).click();
   await expect(page).toHaveURL(/\/jobs\/[0-9A-Z]{26}$/);
   await expect(page.getByRole("heading", { name: "create job" })).toBeVisible();
+  // The dev mock moves the job on by itself: queued, running, then done.
+  await expect(page.getByTestId("status")).toHaveText("done", {
+    timeout: 15_000,
+  });
   await page.getByRole("link", { name: "e2e-fresh" }).click();
   await expect(page.getByRole("heading", { name: "e2e-fresh" })).toBeVisible();
-  await expect(page.getByTestId("state")).toHaveText("provisioning");
-  await expect(page.getByRole("link", { name: "View the job" })).toBeVisible();
+  await expect(page.getByTestId("state")).toHaveText("active");
 });
 
 test("mint a token and see its secret once", async ({ page }) => {

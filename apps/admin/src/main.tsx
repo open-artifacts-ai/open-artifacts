@@ -9,12 +9,17 @@ import "./shadcn.css";
 /** Dev-only: serve the API from in-browser MSW handlers. Dead-code-eliminated from production builds. */
 async function startMocks() {
   if (import.meta.env.VITE_MOCK !== "1") return;
-  const [{ setupWorker }, { http, HttpResponse }, { handlers }] =
-    await Promise.all([
-      import("msw/browser"),
-      import("msw"),
-      import("./mocks/handlers"),
-    ]);
+  const [
+    { setupWorker },
+    { http, HttpResponse },
+    { createMock },
+    { autoAdvance },
+  ] = await Promise.all([
+    import("msw/browser"),
+    import("msw"),
+    import("./mocks/handlers"),
+    import("./mocks/autoAdvance"),
+  ]);
   // ?mock=unauth: GET /api/v1/me answers 401.
   const extra =
     new URLSearchParams(location.search).get("mock") === "unauth"
@@ -24,7 +29,10 @@ async function startMocks() {
           ),
         ]
       : [];
-  await setupWorker(...extra, ...handlers).start({
+  const mock = createMock();
+  const worker = setupWorker(...extra, ...mock.handlers);
+  autoAdvance(worker.events, mock, 1500);
+  await worker.start({
     onUnhandledRequest: "bypass",
   });
 }

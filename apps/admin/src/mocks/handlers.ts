@@ -5,4 +5,3 @@ import { createProvisioningMock } from "@oa/shared/provisioning/mocks";
  * call; `advanceJob` and `finishAllJobs` move jobs on (tests).
  */
 export const createMock = () => createProvisioningMock({ env: "staging" });
-export const handlers = createMock().handlers;

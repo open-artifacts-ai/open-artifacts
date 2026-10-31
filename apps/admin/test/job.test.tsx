@@ -187,6 +187,9 @@ it("cancels with the install slug typed, and the job settles failed", async () =
   await waitFor(() =>
     expect(screen.getByTestId("status")).toHaveTextContent("failed"),
   );
+  expect(screen.getByTestId("job-error")).toHaveTextContent(
+    "The job was canceled.",
+  );
 });
 
 it("says a missing job is not found", async () => {
