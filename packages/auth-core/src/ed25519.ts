@@ -84,11 +84,23 @@ export function signRedeem(
 }
 
 /** Signs requestTranscript(path, kid, body); base64url signature (X-OA-Sig). */
-export async function signRequest(
+export function signRequest(
   pkcs8: string,
   path: string,
   kid: string,
   body: string,
+): Promise<string> {
+  return signTranscript(pkcs8, requestTranscript(path, kid, body));
+}
+
+/**
+ * Signs exactly `transcript`'s UTF-8 bytes; base64url signature. The caller's
+ * transcript carries its own domain-separation prefix (`oa-redeem-v1`,
+ * `oa-broker-ticket-v1`).
+ */
+export async function signTranscript(
+  pkcs8: string,
+  transcript: string,
 ): Promise<string> {
   const k = await crypto.subtle.importKey(
     "pkcs8",
@@ -98,13 +110,7 @@ export async function signRequest(
     ["sign"],
   );
   return b64.enc(
-    new Uint8Array(
-      await crypto.subtle.sign(
-        ED,
-        k,
-        enc.encode(requestTranscript(path, kid, body)),
-      ),
-    ),
+    new Uint8Array(await crypto.subtle.sign(ED, k, enc.encode(transcript))),
   );
 }
 
@@ -119,11 +125,20 @@ export function verifyRedeem(
 }
 
 /** Verifies `sig` over requestTranscript(path, kid, body); false on any error. */
-export async function verifyRequest(
+export function verifyRequest(
   x: string,
   path: string,
   kid: string,
   body: string,
+  sig: string,
+): Promise<boolean> {
+  return verifyTranscript(x, requestTranscript(path, kid, body), sig);
+}
+
+/** Verifies `sig` over exactly `transcript`; false on any error. */
+export async function verifyTranscript(
+  x: string,
+  transcript: string,
   sig: string,
 ): Promise<boolean> {
   try {
@@ -131,12 +146,7 @@ export async function verifyRequest(
     const s = b64.dec(sig);
     if (!raw || raw.length !== 32 || !s || s.length !== 64) return false;
     const k = await crypto.subtle.importKey("raw", raw, ED, false, ["verify"]);
-    return await crypto.subtle.verify(
-      ED,
-      k,
-      s,
-      enc.encode(requestTranscript(path, kid, body)),
-    );
+    return await crypto.subtle.verify(ED, k, s, enc.encode(transcript));
   } catch {
     return false;
   }
