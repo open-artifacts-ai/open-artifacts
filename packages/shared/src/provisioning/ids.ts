@@ -1,11 +1,8 @@
 import { z } from "zod";
 
-/** "i" + 11 base32 chars (@oa/provision newInstallId). */
-export const INSTALL_ID_RE = /^i[a-z0-9]{11}$/;
-/** Crockford base32 ULID; the first char caps the 48-bit time. */
-export const ULID_RE = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
-/** Client-chosen idempotency key, scoped to the principal's actorKey. */
-export const REQUEST_ID_RE = /^[A-Za-z0-9_-]{16,64}$/;
+import { INSTALL_ID_RE, REQUEST_ID_RE, ULID_RE } from "./id-patterns.js";
+
+export { INSTALL_ID_RE, REQUEST_ID_RE, ULID_RE };
 
 export const InstallIdSchema = z.string().regex(INSTALL_ID_RE);
 export type InstallId = z.infer<typeof InstallIdSchema>;

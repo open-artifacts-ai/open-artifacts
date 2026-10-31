@@ -1,5 +1,4 @@
 import { z } from "zod";
-import type { WorkflowParams } from "./ids.js";
 import { ProvisioningTokenStatusSchema, type Release } from "./schemas.js";
 
 // ProvisionerRpc (design v7 2.6): the provisioner's WorkerEntrypoint has
@@ -45,28 +44,5 @@ export interface ProvisionerRpc {
   tokenStatus(): Promise<TokenStatus>;
 }
 
-// Workflow bindings (ProvisionInstall, ManageInstall): the subset the API and
-// scheduler call. Structural, so @oa/shared needs no workers-types.
-export type WorkflowInstanceStatus = {
-  status:
-    | "queued"
-    | "running"
-    | "paused"
-    | "errored"
-    | "terminated"
-    | "complete"
-    | "waiting"
-    | "waitingForPause"
-    | "unknown";
-  error?: { name: string; message: string };
-  output?: unknown;
-};
-export interface WorkflowInstanceLike {
-  id: string;
-  status(): Promise<WorkflowInstanceStatus>;
-  terminate(): Promise<void>;
-}
-export interface WorkflowLike<P = WorkflowParams> {
-  create(o: { id: string; params: P }): Promise<WorkflowInstanceLike>;
-  get(id: string): Promise<WorkflowInstanceLike>;
-}
+// The Workflow binding types moved to workflow.ts (zod-free).
+export * from "./workflow.js";
