@@ -1,3 +1,4 @@
+import { ipKey } from "@oa/auth-core";
 import {
   type ApiRouteId,
   type BrowserRouteId,
@@ -26,10 +27,6 @@ import { matchRoute } from "./routes/table.js";
 
 // The HTTP adapter (design v7 4.2 check order): host policy -> pre-authn IP
 // limit -> Origin (browser writes) -> authn -> CSRF -> invokeRoute.
-
-// W5b replaces this with the shared ipKey (IPv6 by /64, 4.7).
-const clientIp = (req: Request) =>
-  req.headers.get("cf-connecting-ip") ?? "unknown";
 
 const notFound = () => errorResponse("not_found");
 
@@ -76,7 +73,7 @@ async function route(
   if (host === "admin" && req.headers.has("authorization"))
     return refuse(env, "auth", "unauthenticated", req);
 
-  const pre = await limit(env, "pre_ip", clientIp(req));
+  const pre = await limit(env, "pre_ip", ipKey(req));
   if (pre) return refuse(env, "pre", pre.code, req);
 
   // Protocol routes: method, path and host from PROTOCOL_ROUTES (9A.3.1).
@@ -141,7 +138,7 @@ async function apiRoute(
       p,
       route,
       { params, query: Object.fromEntries(url.searchParams) },
-      { kind: "http", client: { ip: clientIp(req), host: url.hostname } },
+      { kind: "http", client: { ip: ipKey(req), host: url.hostname } },
     );
     return new Response(r.body === null ? null : JSON.stringify(r.body), {
       status: r.status,

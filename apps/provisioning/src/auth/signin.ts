@@ -227,7 +227,13 @@ async function callback(
     },
     now,
   );
-  if (!idToken) return signInError(env, "expired");
+  if (!idToken) {
+    // Anyone may replay a callback with their own flow: each failed redeem
+    // is a refused sign-in for this ipKey, so the peek above stops it (4.7).
+    await bump(db, ipCounter, byIp.windowMs, now);
+    await refuse(env, "signin", "unauthenticated", req);
+    return signInError(env, "expired");
+  }
 
   let id: Awaited<ReturnType<typeof verifyGoogleIdTokenAnyDomain>>;
   try {

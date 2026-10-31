@@ -19,7 +19,7 @@ export const PLATFORM_PRINCIPAL_IDS: readonly string[] = Object.freeze([
   "i000000admin",
   "i00000signup",
 ]);
-export const isPlatformPrincipal = (id: string) =>
+export const isPlatformPrincipalId = (id: string) =>
   PLATFORM_PRINCIPAL_IDS.includes(id);
 
 /** A ticket's exp may be at most this far ahead (ms). */

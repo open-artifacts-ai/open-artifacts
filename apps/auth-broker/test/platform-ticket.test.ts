@@ -1,13 +1,16 @@
 import { env } from "cloudflare:workers";
 import {
   BROKER_TICKET_TTL_MS,
+  flowHash,
+  GOOGLE_TOKEN_URL,
   keyId,
   PLATFORM_PRINCIPAL_IDS,
   publicFromPkcs8,
   signBrokerTicket,
+  signRedeem,
 } from "@oa/auth-core";
 import { PLATFORM_PRINCIPAL_IDS as PROVISION_IDS } from "@oa/provision/names";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import broker, { type Env } from "../src/index.js";
 import { clearRegistryCache } from "../src/registry.js";
 
@@ -158,5 +161,83 @@ describe("platform-principal ticket", () => {
     const r = await authorize({ install: "iabcdefghijk" });
     expect(r.status).toBe(302);
     expect(installLimit.keys).toEqual(["authorize:install:iabcdefghijk"]);
+  });
+});
+
+describe("platform-principal redeem", () => {
+  let tokenCalls = 0;
+  beforeEach(() => {
+    tokenCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const req = new Request(input, init);
+      if (req.url !== GOOGLE_TOKEN_URL)
+        throw new Error(`unexpected fetch ${req.url}`);
+      tokenCalls++;
+      return Response.json({ error: "invalid_grant" }, { status: 400 });
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  /** A broker state for the admin flow `state`, as authorize mints it. */
+  async function bstateFor(state: string) {
+    const r = await authorize({
+      install: "i000000admin",
+      state,
+      ticket: await ticket({ state }),
+    });
+    return (
+      new URL(r.headers.get("location") ?? "").searchParams.get("state") ?? ""
+    );
+  }
+
+  // The admin's redeem reaches the broker over a service binding with no
+  // cf-connecting-ip, so it carries the gate header (4.3 step 3).
+  async function redeem(bstate: string, h?: string) {
+    const kid = await keyId(await publicFromPkcs8(ADMIN_KEY));
+    const text = JSON.stringify({
+      install: "i000000admin",
+      code: "x",
+      verifier: "v",
+      ts: Date.now(),
+      bstate,
+      h: h ?? (await flowHash("n", CH)),
+    });
+    return broker.fetch(
+      new Request(`${BROKER}/google/redeem`, {
+        method: "POST",
+        headers: {
+          "x-oa-kid": kid,
+          "x-oa-sig": await signRedeem(ADMIN_KEY, kid, text),
+          "x-oa-gate-install": "i000000admin",
+          "content-type": "application/json",
+        },
+        body: text,
+      }) as never,
+      E(),
+    );
+  }
+
+  it("a bad flow is refused before the install bucket is charged", async () => {
+    const bs = await bstateFor("st");
+    installLimit = limiter();
+    for (const r of [
+      await redeem("x"),
+      await redeem(bs, await flowHash("other", CH)),
+    ])
+      expect(r.status).toBe(401);
+    expect(installLimit.keys).toEqual([]);
+    expect(tokenCalls).toBe(0);
+  });
+
+  it("the install bucket is per flow: replaying one flow's redeem never drains another's", async () => {
+    const mine = await bstateFor("attacker");
+    const admin = await bstateFor("admin");
+    installLimit = limiter(3);
+    for (let i = 0; i < 3; i++) expect((await redeem(mine)).status).toBe(400);
+    expect((await redeem(mine)).status).toBe(429);
+    // The admin's own flow still reaches Google.
+    expect((await redeem(admin)).status).toBe(400);
+    expect(tokenCalls).toBe(4);
+    expect(installLimit.keys).not.toContain("redeem:install:i000000admin");
   });
 });

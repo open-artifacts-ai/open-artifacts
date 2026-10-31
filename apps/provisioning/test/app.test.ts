@@ -86,6 +86,16 @@ describe("pre-authn IP limit (4.2)", () => {
     expect(e.limits.RL_PV_PRE_IP.keys).toEqual(["192.0.2.1", "192.0.2.2"]);
   });
 
+  it("keys IPv6 by /64 (ipKey, 4.7): addresses inside one /64 share a bucket", async () => {
+    const e = fakeEnv();
+    for (const ip of ["2001:db8:1:2::1", "2001:db8:1:2:ffff::9"])
+      await call(`${API}/v1/me`, { headers: { "cf-connecting-ip": ip } }, e);
+    expect(e.limits.RL_PV_PRE_IP.keys).toEqual([
+      "2001:db8:1:2::/64",
+      "2001:db8:1:2::/64",
+    ]);
+  });
+
   it("over the limit is 429; unbound is 503", async () => {
     const e = fakeEnv();
     e.limits.RL_PV_PRE_IP.allow = false;

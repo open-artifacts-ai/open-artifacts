@@ -522,6 +522,43 @@ describe("R23 /auth/callback/google", () => {
     expect(res.headers.get("location")).toBe(`${ADMIN}/sign-in?error=expired`);
   });
 
+  it("a failed redeem counts as a refused sign-in: per /64, the 31st within the hour is rate_limited before redeem", async () => {
+    const e = env({
+      AUTH_BROKER: {
+        fetch: async (r: Request) => {
+          redeems.push(r);
+          return Response.json({ error: "exchange_failed" }, { status: 400 });
+        },
+      } as unknown as Fetcher,
+    });
+    for (let i = 0; i < 31; i++) {
+      const s = await start(e);
+      const before = redeems.length;
+      const res = await call(
+        e,
+        `${ADMIN}/auth/callback/google?code=x&bstate=x&state=${s.loc.searchParams.get("state")}`,
+        {
+          headers: {
+            cookie: `${FLOW_COOKIE}=${cookieValue(s.flow)}`,
+            // Rotating inside one /64 is one client.
+            "cf-connecting-ip": `2001:db8:7:7::${(i + 1).toString(16)}`,
+          },
+        },
+      );
+      if (i < 30) {
+        expect(res.headers.get("location")).toBe(
+          `${ADMIN}/sign-in?error=expired`,
+        );
+        expect(redeems.length).toBe(before + 1);
+      } else {
+        expect(res.headers.get("location")).toBe(
+          `${ADMIN}/sign-in?error=rate_limited`,
+        );
+        expect(redeems.length).toBe(before);
+      }
+    }
+  });
+
   it("charges RL_PV_SIGNIN_IP", async () => {
     const e = env();
     await signIn(e);
