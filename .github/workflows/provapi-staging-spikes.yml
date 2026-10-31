@@ -13,9 +13,13 @@
 #   preview URL (spikes/provapi-staging): oa-s-spike-<run>-wf hosts Workflow
 #   oa-s-spike-<run> (class SpikeWorkflow); oa-s-spike-<run> binds it
 #   cross-script, the staging dispatch namespace and the throwaway D1
-#   database oa-s-spike-<run>. The caller runs the spikes on its first cron
-#   tick and writes the results to that D1 database; the job reads them back
-#   over the D1 REST API (no fetch handler, so nothing is reachable).
+#   database oa-s-spike-<run>. deploy creates that database's results table
+#   first; the caller writes a "started" row on every cron tick, runs the
+#   spikes on its first and writes each result (a throw is an error row);
+#   the job reads them back over the D1 REST API for up to 18 min, since a
+#   new Cron Trigger can take up to 15 min to propagate (no fetch handler,
+#   so nothing is reachable). A spike with no row names why: "D1 error:
+#   <message>", "cron never fired", or "fired, no row for sN".
 # Cleanup (always) deletes this run's Workers, Workflow, D1 database and
 # secret, and any oa-s-spike-* left over from an earlier run (over 1 h old);
 # it refuses any name without that prefix.
@@ -61,7 +65,7 @@ jobs:
     if: ${{ github.ref == 'refs/heads/main' && inputs.env == 'staging' }}
     runs-on: ubuntu-latest
     environment: hosted-staging-deploy
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       SPIKES: ${{ inputs.spikes }}
       RUN_ID: ${{ github.run_id }}

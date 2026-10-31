@@ -263,13 +263,17 @@ describe("the spike Worker", () => {
     );
   });
 
-  it("after its first run, every cron tick returns at the done row", () => {
+  it("every tick writes a started row; after the first run it returns at the done row", () => {
     const b = wfn("runOnce");
+    const ddl = b.indexOf("await env.DB.prepare(RESULTS_DDL).run();");
+    const started = b.indexOf('await put(env, "started", {');
     const first = b.indexOf(
       'SELECT 1 AS d FROM done LIMIT 1").first()) return;',
     );
-    expect(first).toBeGreaterThan(-1);
-    expect(first).toBeLessThan(b.indexOf("CREATE TABLE IF NOT EXISTS results"));
+    expect(ddl).toBeGreaterThan(-1);
+    expect(started).toBeGreaterThan(ddl);
+    expect(first).toBeGreaterThan(started);
+    expect(first).toBeLessThan(b.indexOf("INSERT OR IGNORE INTO claim"));
     expect(
       b
         .trimEnd()
@@ -280,6 +284,26 @@ describe("the spike Worker", () => {
       "utf8",
     );
     expect(cfg).toContain('"crons": ["* * * * *"]');
+  });
+
+  it("creates the same results table as deploy does", () => {
+    const shDdl = /^RESULTS_TABLE_SQL='([^']+)'$/m.exec(sh)?.[1];
+    expect(shDdl).toMatch(/^CREATE TABLE IF NOT EXISTS results \(/);
+    expect(worker).toContain(`const RESULTS_DDL =\n  "${shDdl}";`);
+  });
+
+  it("a thrown spike, or a row that will not write, is an {ok: false, error} row", () => {
+    const b = wfn("runOnce");
+    expect(b).toContain("error: errText(e),");
+    expect(b).toContain("error: `result row not written: ${errText(e)}`,");
+    expect(b.match(/ok: false,/g)).toHaveLength(2);
+    expect(worker).toContain(
+      "const errText = (e: unknown) => `${errOf(e).name}: ${errOf(e).message}`;",
+    );
+    // A throw outside any spike still reports, as tick_error.
+    expect(worker).toContain(
+      'await put(env, "tick_error", { ok: false, error: errText(e) })',
+    );
   });
 
   it("S3 records what a missing get and a duplicate create throw", () => {
@@ -1260,6 +1284,13 @@ describe("provapi-spikes.sh deploy render", () => {
     const d1 = "11111111-2222-4333-8444-555555555555";
     const t = setup({
       [key("POST", `/accounts/${ACCT}/d1/database`)]: ok({ uuid: d1 }),
+      [key("POST", `/accounts/${ACCT}/d1/database/${d1}/query`)]: ok([
+        { results: [], success: true },
+      ]),
+      [key(
+        "GET",
+        `/accounts/${ACCT}/workers/scripts/oa-s-spike-${runId}/schedules`,
+      )]: ok({ schedules: [{ cron: "* * * * *" }] }),
     });
     // wrangler (through pnpm) keeps a copy of each config it is given.
     const pnpm = `while [ $# -gt 0 ]; do [ "$1" = -c ] && cp "$2" "$STATE/deployed-$(basename "$2")"; shift; done`;
@@ -1290,6 +1321,19 @@ describe("provapi-spikes.sh deploy render", () => {
       expect(caller).toContain(`"database_id": "${d1}"`);
       expect(caller).toContain('"SPIKES": "s1,s2,s3,s5,s7"');
       expect(caller).toContain('"namespace": "oa-staging"');
+      // The results table first (through cf_write's allowlist), then the
+      // Workers; the schedules are only read back.
+      expect(t.reqs()).toEqual([
+        `POST /accounts/${ACCT}/d1/database`,
+        `POST /accounts/${ACCT}/d1/database/${d1}/query`,
+        `GET /accounts/${ACCT}/workers/scripts/oa-s-spike-${runId}/schedules`,
+      ]);
+      const ddl = /^RESULTS_TABLE_SQL='([^']+)'$/m.exec(sh)?.[1];
+      expect(readFileSync(join(t.sb.dir, "bodies"), "utf8")).toContain(
+        JSON.stringify({ sql: ddl }),
+      );
+      expect(r.out).toContain("crons=[* * * * *]");
+      expect(existsSync(join(t.env.STATE_DIR, "deployed_at"))).toBe(true);
     } finally {
       spawnSync("/bin/rm", [
         "-f",
@@ -1333,6 +1377,7 @@ describe("provapi-spikes.sh collect", () => {
           results: [
             row("s1", true, "verify=true"),
             row("s3", true, "get(missing) -> Error: instance.not_found"),
+            { spike: "started", json: '{"at":"2026-10-31T12:00:00.000Z"}' },
           ],
         },
       ]),
@@ -1355,10 +1400,194 @@ describe("provapi-spikes.sh collect", () => {
     expect(t.results("s3")[0].observed).toContain("instance.not_found");
     expect(t.results("s7")[0]).toMatchObject({ pass: false });
     expect(t.results("s7")[0].observed).toMatch(
-      /^no result before the deadline/,
+      /^no result: fired, no row for s7 \(last tick 2026-10-31T12:00:00.000Z\)$/,
     );
     expect(t.reqs()).toEqual([
       `POST ${A}/d1/database/99999999-8888-4777-8666-555555555555/query`,
     ]);
+  });
+
+  const D1 = "99999999-8888-4777-8666-555555555555";
+  const Q = key("POST", `/accounts/${ACCT}/d1/database/${D1}/query`);
+  const row = (spike: string, json: unknown) => ({
+    spike,
+    json: JSON.stringify(json),
+  });
+  const collect = (fx: string, spikes = "s1,s3") => {
+    const t = setup({ [Q]: fx });
+    mkdirSync(t.env.STATE_DIR, { recursive: true });
+    writeFileSync(join(t.env.STATE_DIR, "d1_id"), D1);
+    // Deployed two minutes ago.
+    writeFileSync(
+      join(t.env.STATE_DIR, "deployed_at"),
+      String(Math.floor(Date.now() / 1000) - 120),
+    );
+    const r = t.run("collect", {
+      SPIKES: spikes,
+      COLLECT_DEADLINE_S: "0",
+      COLLECT_POLL_S: "0",
+    });
+    return { t, r };
+  };
+
+  it("names D1's error message and code on a 400, and still withholds the token", () => {
+    const { t, r } = collect(
+      `400\n${JSON.stringify({
+        success: false,
+        errors: [
+          { code: 7500, message: "no such table: results: SQLITE_ERROR" },
+        ],
+        result: [],
+      })}`,
+    );
+    expect(r.code, r.err + r.out).toBe(1);
+    for (const s of ["s1", "s3"])
+      expect(t.results(s)[0]).toMatchObject({
+        pass: false,
+        observed:
+          "no result: D1 error: no such table: results: SQLITE_ERROR (code 7500)",
+      });
+    // The summary's existing guard still refuses a leaked token.
+    const s = t.run("summary", { SPIKES: "s1,s3" });
+    expect(s.code).toBe(1);
+    expect(readFileSync(t.env.GITHUB_STEP_SUMMARY, "utf8")).toContain(
+      "D1 error: no such table: results",
+    );
+    expect(readFileSync(t.env.RESULTS_OUT, "utf8")).not.toContain(TOK);
+  });
+
+  it("names the HTTP status when D1's error has no message", () => {
+    const { t } = collect('502\n{"success":false,"errors":[]}');
+    expect(t.results("s1")[0].observed).toBe(
+      "no result: D1 error: HTTP 502, no error message",
+    );
+  });
+
+  it("says the cron never fired when the table has no started row", () => {
+    const { t } = collect(ok([{ results: [], success: true }]));
+    for (const s of ["s1", "s3"])
+      expect(t.results(s)[0].observed).toMatch(
+        /^no result: cron never fired \(no started row 1[2-9]\ds after deploy\)$/,
+      );
+  });
+
+  it("says it fired with no row for sN when only the started row is there", () => {
+    const at = "2026-10-31T12:00:00.000Z";
+    const { t } = collect(
+      ok([
+        {
+          results: [
+            row("started", { at, cron: "* * * * *" }),
+            row("s1", { spike: "s1", ok: true, pass: true, observed: "ok" }),
+            row("tick_error", { ok: false, error: "Error: D1_ERROR" }),
+          ],
+          success: true,
+        },
+      ]),
+    );
+    expect(t.results("s1")[0]).toMatchObject({ pass: true, observed: "ok" });
+    expect(t.results("s3")[0]).toMatchObject({
+      pass: false,
+      observed: `no result: fired, no row for s3 (last tick ${at}; tick error: Error: D1_ERROR)`,
+    });
+  });
+
+  it("reports a spike that threw from its error row, name and message", () => {
+    const { t, r } = collect(
+      ok([
+        {
+          results: [
+            row("started", { at: "2026-10-31T12:00:00.000Z" }),
+            row("s1", {
+              spike: "s1",
+              ok: false,
+              pass: false,
+              error: "TypeError: Ed25519 is not supported",
+            }),
+            row("s3", {
+              spike: "s3",
+              pass: true,
+              observed:
+                "status=queued; get(missing) -> WorkflowError: instance.not_found",
+              detail: {
+                get_missing: {
+                  name: "WorkflowError",
+                  message: "instance.not_found",
+                },
+              },
+            }),
+          ],
+          success: true,
+        },
+      ]),
+    );
+    expect(r.code, r.err + r.out).toBe(1);
+    expect(t.results("s1")[0]).toMatchObject({
+      pass: false,
+      observed: "threw TypeError: Ed25519 is not supported",
+    });
+    expect(t.results("s3")[0]).toMatchObject({
+      pass: true,
+      detail: {
+        get_missing: { name: "WorkflowError", message: "instance.not_found" },
+      },
+    });
+    // All rows were there: one read, no polling.
+    expect(t.reqs()).toHaveLength(1);
+  });
+});
+
+describe("provapi-spikes.sh deploy results table", () => {
+  it("fails every worker spike with D1's message when the table create fails, before any Worker", () => {
+    const d1 = "11111111-2222-4333-8444-555555555555";
+    const t = setup({
+      [key("POST", `/accounts/${ACCT}/d1/database`)]: ok({ uuid: d1 }),
+      [key("POST", `/accounts/${ACCT}/d1/database/${d1}/query`)]:
+        `400\n${JSON.stringify({
+          success: false,
+          errors: [{ code: 7400, message: "not authorized" }],
+        })}`,
+    });
+    writeFileSync(
+      join(t.sb.dir, "bin", "pnpm"),
+      '#!/usr/bin/env bash\necho pnpm >> "$STUB_LOG"\n',
+      {
+        mode: 0o755,
+      },
+    );
+    const r = t.run("deploy", { SPIKES: "s1,s7" });
+    expect(r.code).toBe(1);
+    for (const s of ["s1", "s7"])
+      expect(t.results(s)[0]).toMatchObject({
+        pass: false,
+        observed:
+          "results table create failed: D1 error: not authorized (code 7400)",
+      });
+    expect(t.sb.log()).not.toContain("pnpm");
+  });
+
+  it("creates the table only through cf_write, which refuses an unknown D1 id", () => {
+    expect(fn("d1_query")).toContain(
+      'cf_write POST "$ACCT/d1/database/$D1_ID/query" "${PREFIX}$RUN_ID" "$D1_ID"',
+    );
+    const b = fn("spike_deploy");
+    expect(b.indexOf('d1_query "$RESULTS_TABLE_SQL"')).toBeGreaterThan(
+      b.indexOf('know_id "$D1_ID"'),
+    );
+    expect(b.indexOf('d1_query "$RESULTS_TABLE_SQL"')).toBeLessThan(
+      b.indexOf("wrangler_run deploy"),
+    );
+    const t = setup({});
+    const r = t.sb.run(
+      [
+        "bash",
+        "-c",
+        `set -euo pipefail; . "${script(SH)}"; load_constants; D1_ID=${"e".repeat(8)}-0000-4000-8000-${"e".repeat(12)}; d1_query "$RESULTS_TABLE_SQL"`,
+      ],
+      { env: { ...t.env } },
+    );
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("not a create or query");
+    expect(t.reqs()).toEqual([]);
   });
 });
