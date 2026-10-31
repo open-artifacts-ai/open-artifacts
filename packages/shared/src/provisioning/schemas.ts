@@ -178,10 +178,33 @@ export const CancelJobSchema = z.object({
   requestId,
   confirmSlug: SlugInputSchema,
 });
-/** recipientKey: a 32-byte X25519 public key, base64url without padding. */
-export const RedlineCredsSchema = z.object({
-  requestId,
-  recipientKey: z.string().regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/),
+/**
+ * R26 (10.1): mint (revoke absent or false; recipientKey is a 32-byte X25519
+ * public key, base64url without padding, max 200 chars as approved) or
+ * revoke (`revoke: true`, no key). Mint parses to `revoke: false`, so the
+ * body hash covers the variant: a mint and a revoke with one requestId are
+ * 409 idempotency_conflict, and a mint with or without `revoke: false` is
+ * one request. Both act on the target install's redline-* PATs only
+ * (redlinePatsToRevoke).
+ */
+export const RedlineCredsSchema = z.union([
+  z
+    .object({
+      requestId,
+      revoke: z.literal(false).default(false),
+      recipientKey: z
+        .string()
+        .min(1)
+        .max(200)
+        .regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/),
+    })
+    .strict(),
+  z.object({ requestId, revoke: z.literal(true) }).strict(),
+]);
+export type RedlineCreds = z.infer<typeof RedlineCredsSchema>;
+/** `jobs.args` of an R26 job: which variant ran (audit), never the key. */
+export const redlineCredsJobArgs = (b: RedlineCreds): { revoke: boolean } => ({
+  revoke: b.revoke === true,
 });
 
 export const JobSchema = z.object({

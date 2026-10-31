@@ -58,7 +58,12 @@ describe("provision names", () => {
       provisioner: "oa-s-provisioner",
       provisionInstall: "oa-s-provision-install",
       manageInstall: "oa-s-manage-install",
+      signups: "oa-s-signups",
+      signupsDlq: "oa-s-signups-dlq",
     });
+    // #859 apps/provisioner/wrangler.jsonc; design v7 2.4, 10.2.
+    expect(platformNames("prod").signups).toBe("oa-p-signups");
+    expect(platformNames("prod").signupsDlq).toBe("oa-p-signups-dlq");
     // design v7 2.4: the provisioner script and its two Workflows.
     expect(platformNames("prod").provisioner).toBe("oa-p-provisioner");
     expect(platformNames("prod").provisionInstall).toBe(

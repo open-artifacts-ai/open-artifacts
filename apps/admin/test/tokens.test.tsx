@@ -1,15 +1,11 @@
 import { type Token, TokenScopeSchema } from "@oa/shared/provisioning";
+import { LIVE_TOKENS_PER_ADMIN } from "@oa/shared/provisioning/constants";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse } from "msw";
 import { expect, it, vi } from "vitest";
 import { fmtAgo } from "../src/components/labels";
 import { tokens } from "../src/mocks/fixtures";
-import {
-  endsLabel,
-  kindLabel,
-  mcpUrlFor,
-  TOKEN_LIVE_LIMIT,
-} from "../src/pages/Tokens";
+import { endsLabel, kindLabel, mcpUrlFor } from "../src/pages/Tokens";
 import { http, json, renderApp, seen, use, writes } from "./harness";
 
 const serve = (items: Token[]) =>
@@ -87,7 +83,7 @@ it("says there are no agents yet when there are none", async () => {
 });
 
 it("at the limit, Mint is off and the page says why", async () => {
-  expect(TOKEN_LIVE_LIMIT).toBe(5);
+  expect(LIVE_TOKENS_PER_ADMIN).toBe(5);
   serve(live(5));
   renderApp("/tokens");
   expect(await screen.findByTestId("token-limit")).toHaveTextContent(

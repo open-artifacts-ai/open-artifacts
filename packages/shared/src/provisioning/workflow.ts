@@ -36,11 +36,73 @@ export class WorkflowNotFoundError extends Error {
 export const isWorkflowNotFound = (e: unknown): e is WorkflowNotFoundError =>
   e instanceof WorkflowNotFoundError;
 
+/** WorkflowLike.create: an instance with this id already exists. */
+export class WorkflowExistsError extends Error {
+  override name = "WorkflowExistsError";
+  constructor(readonly instanceId: string) {
+    super(`workflow instance ${instanceId} already exists`);
+  }
+}
+
+/** True only for WorkflowExistsError; never matches a message. */
+export const isWorkflowExists = (e: unknown): e is WorkflowExistsError =>
+  e instanceof WorkflowExistsError;
+
+// What the binding throws, pinned for the LOCAL binding (miniflare) by
+// test-workerd/workflow.test.ts: a plain Error (name "Error") whose message
+// is `instance.not_found` (get) or `(instance.already_exists) Workflow
+// instance with id "<id>" already exists` (create). The code is matched
+// bare or as a "(code) " prefix, nothing looser. The REAL Cloudflare
+// binding's errors are UNVERIFIED until spike S3 on staging.
+const hasCode = (e: unknown, code: string): boolean => {
+  if (!(e instanceof Error)) return false;
+  const m = e.message;
+  return m === code || m === `(${code})` || m.startsWith(`(${code}) `);
+};
+
+/**
+ * `binding.get(id)`, with the binding's not-found error translated to
+ * WorkflowNotFoundError; every other error is rethrown unchanged. Call it in
+ * the caller's own isolate, around the binding it holds (the scheduler, W3).
+ */
+export async function getWorkflowInstance<P>(
+  binding: WorkflowLike<P>,
+  id: string,
+): Promise<WorkflowInstanceLike> {
+  try {
+    return await binding.get(id);
+  } catch (e) {
+    if (hasCode(e, "instance.not_found")) throw new WorkflowNotFoundError(id);
+    throw e;
+  }
+}
+
+/**
+ * `binding.create(opts)`, with the binding's already-exists error
+ * translated to WorkflowExistsError; every other error (an invalid id
+ * included) is rethrown unchanged.
+ */
+export async function createWorkflowInstance<P>(
+  binding: WorkflowLike<P>,
+  opts: { id: string; params: P },
+): Promise<WorkflowInstanceLike> {
+  try {
+    return await binding.create(opts);
+  } catch (e) {
+    if (hasCode(e, "instance.already_exists"))
+      throw new WorkflowExistsError(opts.id);
+    throw e;
+  }
+}
+
 export interface WorkflowLike<P = WorkflowParams> {
   create(o: { id: string; params: P }): Promise<WorkflowInstanceLike>;
   /**
    * The instance with this id. Throws WorkflowNotFoundError when there is
-   * none (the C1 fakes do). UNVERIFIED for the real Cloudflare binding:
+   * none (the C1 fakes do); around a real binding use getWorkflowInstance,
+   * which translates the binding's error (pinned for the local binding;
+   * the rest of this note still holds for the real one, spike S3).
+   * UNVERIFIED for the real Cloudflare binding:
    * what `get` does for an unknown id (throw, and with what name or
    * message, or return an instance whose status() fails) is not checked; a
    * wrapper around the real binding must translate it to

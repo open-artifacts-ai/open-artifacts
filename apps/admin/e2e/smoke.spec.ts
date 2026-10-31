@@ -49,7 +49,10 @@ test("create an install, land on its job, open the install", async ({
 
 test("mint a token and see its secret once", async ({ page }) => {
   await page.goto("/tokens");
-  await expect(page.getByText("No agents yet")).toBeVisible();
+  // Dev seeds one OAuth grant; both Kinds show once the token is minted.
+  await expect(page.getByRole("row", { name: /Claude Code/ })).toContainText(
+    "Signed in (OAuth)",
+  );
   await page.getByRole("button", { name: "Mint token" }).click();
   const form = page.getByRole("dialog");
   await form.getByLabel("Label").fill("e2e token");
@@ -60,6 +63,12 @@ test("mint a token and see its secret once", async ({ page }) => {
   await expect(minted).toContainText("or when you sign out");
   await minted.getByRole("button", { name: "Done" }).click();
   await expect(minted).toHaveCount(0);
+  await expect(page.getByRole("row", { name: /e2e token/ })).toContainText(
+    "Token (oat_)",
+  );
+  await expect(
+    page.getByText("2 of 5 live. Every token ends with your admin session."),
+  ).toBeVisible();
 });
 
 // The dev mock keeps its state in the page: use in-app links, not page.goto, between steps.
