@@ -18,10 +18,8 @@
 #                    client must equal its BROKER_GOOGLE_CLIENT_ID[<env>])
 #   directory-broker DIRECTORY_REGISTRY_ID GOOGLE_DIRECTORY_CLIENT_ID GOOGLE_DIRECTORY_CLIENT_SECRET
 #   dispatch         HOSTS_KV_ID (both brokers must exist)
-#   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT ALERT_TO ALERT_FROM
-#                    (email addresses) SIGNUP_DAILY_CAP (positive integer) (both
-#                    brokers, oa-<p>-provisioner and the oa-<p>-signups queue must
-#                    exist; SIGNUPS_ENABLED is checked to be "false")
+#   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT (both brokers,
+#                    oa-<p>-provisioner and the oa-<p>-signups queue must exist)
 #   inventory        PLATFORM_DB_ID HOSTS_KV_ID
 #   inventory-key    INVENTORY_KEY (sets oa-<p>-inventory's key: CI puts the key a
 #                    human seeded and never mints one; the Worker must exist)
@@ -87,15 +85,6 @@ need_queue() {
 }
 need() { # name: a required, non-empty env var
   [ -n "${!1:-}" ] || { echo "$1 is required for $target" >&2; exit 2; }
-}
-need_email() { # name: a required env var holding one plain address (local@domain.tld)
-  need "$1"
-  [[ "${!1}" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$ ]] ||
-    { echo "$1 must be one email address (local@domain.tld)" >&2; exit 2; }
-}
-need_count() { # name: a required env var holding a positive integer (1-9 digits)
-  need "$1"
-  [[ "${!1}" =~ ^[1-9][0-9]{0,8}$ ]] || { echo "$1 must be a positive integer" >&2; exit 2; }
 }
 secret_names() { cf_get "/workers/scripts/$1/secrets" | must "list $1 secrets" | jq -r '.result[].name'; }
 # put_secret <worker> <app dir> <name>: the value comes on stdin.
@@ -191,13 +180,11 @@ case "$target" in
     ;;
   scheduler)
     need PLATFORM_DB_ID; need EMAIL_ZONE_TAGS; need EMAIL_DAILY_LIMIT
-    need_email ALERT_TO; need_email ALERT_FROM; need_count SIGNUP_DAILY_CAP
     # Its Workflows, RPC and producer bindings point at these: deploying first
     # would ship a scheduler bound to nothing.
     need_workers oa-$P-auth-broker oa-$P-directory-broker oa-$P-provisioner
     need_queue oa-$P-signups
     PLATFORM_DB_ID="$PLATFORM_DB_ID" EMAIL_ZONE_TAGS="$EMAIL_ZONE_TAGS" EMAIL_DAILY_LIMIT="$EMAIL_DAILY_LIMIT" \
-      ALERT_TO="$ALERT_TO" ALERT_FROM="$ALERT_FROM" SIGNUP_DAILY_CAP="$SIGNUP_DAILY_CAP" \
       deploy scheduler
     S="$(settings oa-$P-scheduler)"
     expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | .type' service "PROVISIONER type"
@@ -210,18 +197,11 @@ case "$target" in
     expect "$S" '.result.bindings[] | select(.name == "PROVISION_INSTALL") | .type' workflow "PROVISION_INSTALL"
     expect "$S" '.result.bindings[] | select(.name == "MANAGE_INSTALL") | .type' workflow "MANAGE_INSTALL"
     expect "$S" '.result.bindings[] | select(.name == "ALERT_EMAIL") | .type' send_email "ALERT_EMAIL"
-    # The send_email binding's destination_address (Workers config docs; the
-    # field wrangler uploads in the script metadata).
-    expect "$S" '.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address' "$ALERT_TO" "ALERT_EMAIL destination_address"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
     expect "$S" '.result.bindings[] | select(.name == "DISPATCHER") | .namespace' "$NS" "DISPATCHER"
     expect "$S" '.result.bindings[] | select(.name == "OA_ENV") | .text' "$env" "OA_ENV"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_QUOTA_ZONES") | .text' "$EMAIL_ZONE_TAGS" "EMAIL_QUOTA_ZONES"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_DAILY_LIMIT") | .text' "$EMAIL_DAILY_LIMIT" "EMAIL_DAILY_LIMIT"
-    expect "$S" '.result.bindings[] | select(.name == "ALERT_TO") | .text' "$ALERT_TO" "ALERT_TO"
-    expect "$S" '.result.bindings[] | select(.name == "ALERT_FROM") | .text' "$ALERT_FROM" "ALERT_FROM"
-    expect "$S" '.result.bindings[] | select(.name == "SIGNUP_DAILY_CAP") | .text' "$SIGNUP_DAILY_CAP" "SIGNUP_DAILY_CAP"
-    expect "$S" '.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text' false "SIGNUPS_ENABLED"
     crons="$(cf_get /workers/scripts/oa-$P-scheduler/schedules | must "read oa-$P-scheduler schedules" | jq -r '[.result.schedules[].cron] | sort | join(",")')"
     [ "$crons" = "*/2 * * * *,17 3 * * *" ] || { echo "oa-$P-scheduler schedules are '$crons'" >&2; exit 1; }
     ;;

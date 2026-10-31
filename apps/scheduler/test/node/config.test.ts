@@ -43,11 +43,11 @@ describe("wrangler.jsonc", () => {
         AUTH_BROKER_ORIGIN: `https://auth.${HOSTED_DOMAINS[env].app}`,
         DIRECTORY_BROKER_ORIGIN: `https://directory.${HOSTED_DOMAINS[env].app}`,
         // Platform's deploy wiring (W9a fills these, failing closed on any
-        // leftover); signups stay off until a deploy turns them on.
+        // leftover).
         ALERT_TO: `{{ALERT_TO_${env.toUpperCase()}}}`,
         ALERT_FROM: `{{ALERT_FROM_${env.toUpperCase()}}}`,
         SIGNUP_DAILY_CAP: `{{SIGNUP_DAILY_CAP_${env.toUpperCase()}}}`,
-        SIGNUPS_ENABLED: "false",
+        SIGNUPS_ENABLED: `{{SIGNUPS_ENABLED_${env.toUpperCase()}}}`,
       });
       const names = platformNames(env);
       const provisioner = names.provisioner;

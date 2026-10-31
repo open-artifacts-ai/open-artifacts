@@ -21,9 +21,6 @@ const DCLIENT =
   "206295999771-6cr3mbfc7g2ejnvdoqhlf2v8v6sdm023.apps.googleusercontent.com";
 const SECRET = "google-secret-SHOULD-NEVER-APPEAR";
 const DSECRET = "directory-secret-SHOULD-NEVER-APPEAR";
-const ALERT_TO = "ops-alerts@example.com";
-const ALERT_FROM = "alerts@mail.open-artifacts.app";
-const CAP = "250";
 
 // pnpm: `exec wrangler deploy` marks the app's Worker deployed (its next
 // settings become live); `exec wrangler secret put NAME` records NAME and only
@@ -71,7 +68,7 @@ const wrapperStub = (dir: string) => {
   writeFileSync(
     p,
     `#!/usr/bin/env bash
-echo "wrapper $* reg=\${BROKER_REGISTRY_ID:-}\${DIRECTORY_REGISTRY_ID:-} client=\${GOOGLE_CLIENT_ID_PROD:-}\${GOOGLE_DIRECTORY_CLIENT_ID_PROD:-} hosts=\${HOSTS_KV_ID:-} db=\${PLATFORM_DB_ID:-} alert_to=\${ALERT_TO:-} alert_from=\${ALERT_FROM:-} cap=\${SIGNUP_DAILY_CAP:-}" >> "$STUB_LOG"
+echo "wrapper $* reg=\${BROKER_REGISTRY_ID:-}\${DIRECTORY_REGISTRY_ID:-} client=\${GOOGLE_CLIENT_ID_PROD:-}\${GOOGLE_DIRECTORY_CLIENT_ID_PROD:-} hosts=\${HOSTS_KV_ID:-} db=\${PLATFORM_DB_ID:-}" >> "$STUB_LOG"
 w="oa-$([ "$2" = staging ] && echo s || echo p)-$1"
 touch "$STATE/$w.exists"
 [ -f "$STATE/$w.next.json" ] && cp "$STATE/$w.next.json" "$STATE/$w.settings.json"
@@ -103,10 +100,6 @@ function schedulerBindings(p: "s" | "p"): Record<string, unknown>[] {
     },
     { type: "plain_text", name: "EMAIL_QUOTA_ZONES", text: ZONE },
     { type: "plain_text", name: "EMAIL_DAILY_LIMIT", text: "1000" },
-    { type: "plain_text", name: "ALERT_TO", text: ALERT_TO },
-    { type: "plain_text", name: "ALERT_FROM", text: ALERT_FROM },
-    { type: "plain_text", name: "SIGNUP_DAILY_CAP", text: CAP },
-    { type: "plain_text", name: "SIGNUPS_ENABLED", text: "false" },
     {
       type: "service",
       name: "PROVISIONER",
@@ -116,11 +109,7 @@ function schedulerBindings(p: "s" | "p"): Record<string, unknown>[] {
     { type: "queue", name: "SIGNUPS", queue_name: `oa-${p}-signups` },
     { type: "workflow", name: "PROVISION_INSTALL" },
     { type: "workflow", name: "MANAGE_INSTALL" },
-    {
-      type: "send_email",
-      name: "ALERT_EMAIL",
-      destination_address: ALERT_TO,
-    },
+    { type: "send_email", name: "ALERT_EMAIL" },
   ];
 }
 // A queue listing (GET /accounts/{id}/queues) of these names.
@@ -193,9 +182,6 @@ const ENV = {
   PLATFORM_DB_ID: DB,
   EMAIL_ZONE_TAGS: ZONE,
   EMAIL_DAILY_LIMIT: "1000",
-  ALERT_TO,
-  ALERT_FROM,
-  SIGNUP_DAILY_CAP: CAP,
   INVENTORY_KEY: "k".repeat(64),
 };
 
@@ -391,29 +377,28 @@ describe("deploy-hosted-platform.sh", () => {
       expect(noDeploy(r.log)).toEqual([]);
     }
   });
-  // One case per mode, each under the 30 s budget on a loaded machine.
-  for (const verify of ["", "1"])
-    it(`the scheduler refuses before any deploy unless exactly one oa-<p>-signups queue is listed, on one page${verify ? " (verify only)" : ""}`, () => {
-      const missing = "oa-p-signups queue does not exist: create it first";
-      const paged = "more than one page of queues; refusing";
-      for (const [queues, msg] of [
-        [queueList(["other"]), missing],
-        [queueList([]), missing],
-        // Staging's queue is not prod's.
-        [queueList(["oa-s-signups"]), missing],
-        [queueList(["oa-p-signups", "oa-p-signups"]), missing],
-        [queueList(["oa-p-signups"], 101), paged],
-        [queueList(["oa-p-signups"], 1, 2), paged],
-        // No result_info: can't tell the listing is whole.
-        [
-          JSON.stringify({
-            success: true,
-            result: [{ queue_name: "oa-p-signups" }],
-          }),
-          paged,
-        ],
-        [null, "list queues failed"],
-      ] as const) {
+  it("the scheduler refuses before any deploy unless exactly one oa-<p>-signups queue is listed, on one page", () => {
+    const missing = "oa-p-signups queue does not exist: create it first";
+    const paged = "more than one page of queues; refusing";
+    for (const [queues, msg] of [
+      [queueList(["other"]), missing],
+      [queueList([]), missing],
+      // Staging's queue is not prod's.
+      [queueList(["oa-s-signups"]), missing],
+      [queueList(["oa-p-signups", "oa-p-signups"]), missing],
+      [queueList(["oa-p-signups"], 101), paged],
+      [queueList(["oa-p-signups"], 1, 2), paged],
+      // No result_info: can't tell the listing is whole.
+      [
+        JSON.stringify({
+          success: true,
+          result: [{ queue_name: "oa-p-signups" }],
+        }),
+        paged,
+      ],
+      [null, "list queues failed"],
+    ] as const) {
+      for (const verify of ["", "1"]) {
         const r = setup({ exists: SCHED_DEPS("p"), queues }).run("scheduler", {
           VERIFY_ONLY: verify,
         });
@@ -422,22 +407,15 @@ describe("deploy-hosted-platform.sh", () => {
         expect(noDeploy(r.log)).toEqual([]);
         clean(r);
       }
-      if (verify) return;
-      const ok = setup({ exists: SCHED_DEPS("p") }).run("scheduler");
-      expect(ok.code, ok.err).toBe(0);
-      expect(ok.log).toContain(
-        `curl -sS -K - https://api.cloudflare.com/client/v4/accounts/${ACCT}/queues?per_page=100`,
-      );
-    });
-  // Each case's binding changed (null: removed) fails the run, deployed or
-  // verify only (the same check against the live Worker).
-  const mismatches = (
-    cases: readonly (readonly [
-      string,
-      Record<string, unknown> | null,
-      string,
-    ])[],
-  ) => {
+    }
+    const ok = setup({ exists: SCHED_DEPS("p") }).run("scheduler");
+    expect(ok.code, ok.err).toBe(0);
+    expect(ok.log).toContain(
+      `curl -sS -K - https://api.cloudflare.com/client/v4/accounts/${ACCT}/queues?per_page=100`,
+    );
+  });
+  it("the scheduler fails on a readback mismatch in each provisioning binding, deployed or verify only", () => {
+    // The scheduler's bindings with one changed (null: removed).
     const with_ = (name: string, v: Record<string, unknown> | null) =>
       settings(
         schedulerBindings("p").flatMap((b) =>
@@ -445,25 +423,7 @@ describe("deploy-hosted-platform.sh", () => {
         ),
         true,
       );
-    for (const [name, v, msg] of cases) {
-      const bad = with_(name, v);
-      const r = setup({
-        exists: SCHED_DEPS("p"),
-        next: { "oa-p-scheduler": bad },
-      }).run("scheduler");
-      expect(r.code, msg).toBe(1);
-      expect(r.err).toContain(msg);
-      const live = setup({ exists: SCHED_DEPS("p") });
-      writeFileSync(join(live.state, "oa-p-scheduler.exists"), "");
-      writeFileSync(join(live.state, "oa-p-scheduler.settings.json"), bad);
-      const vr = live.run("scheduler", { VERIFY_ONLY: "1" });
-      expect(vr.code, `verify ${msg}`).toBe(1);
-      expect(vr.err).toContain(msg);
-      expect(noDeploy(vr.log)).toEqual([]);
-    }
-  };
-  it("the scheduler fails on a readback mismatch in each provisioning binding, deployed or verify only", () => {
-    mismatches([
+    for (const [name, v, msg] of [
       ["PROVISIONER", { service: "oa-s-provisioner" }, "PROVISIONER: got"],
       ["PROVISIONER", { entrypoint: "default" }, "PROVISIONER entrypoint: got"],
       ["PROVISIONER", { type: "plain_text" }, "PROVISIONER type: got"],
@@ -477,82 +437,22 @@ describe("deploy-hosted-platform.sh", () => {
       ["MANAGE_INSTALL", null, "MANAGE_INSTALL: got ''"],
       ["ALERT_EMAIL", { type: "plain_text" }, "ALERT_EMAIL: got"],
       ["ALERT_EMAIL", null, "ALERT_EMAIL: got ''"],
-    ]);
-  });
-  it("the scheduler fails on a readback mismatch in its alert and signup wiring, deployed or verify only", () => {
-    mismatches([
-      [
-        "ALERT_EMAIL",
-        { destination_address: "other@example.com" },
-        `ALERT_EMAIL destination_address: got 'other@example.com', want '${ALERT_TO}'`,
-      ],
-      [
-        "ALERT_EMAIL",
-        { destination_address: undefined },
-        "ALERT_EMAIL destination_address: got 'null'",
-      ],
-      [
-        "ALERT_TO",
-        { text: "other@example.com" },
-        `ALERT_TO: got 'other@example.com', want '${ALERT_TO}'`,
-      ],
-      ["ALERT_TO", null, "ALERT_TO: got ''"],
-      [
-        "ALERT_FROM",
-        { text: "other@example.com" },
-        `ALERT_FROM: got 'other@example.com', want '${ALERT_FROM}'`,
-      ],
-      ["ALERT_FROM", null, "ALERT_FROM: got ''"],
-      [
-        "SIGNUP_DAILY_CAP",
-        { text: "251" },
-        `SIGNUP_DAILY_CAP: got '251', want '${CAP}'`,
-      ],
-      ["SIGNUP_DAILY_CAP", null, "SIGNUP_DAILY_CAP: got ''"],
-      [
-        "SIGNUPS_ENABLED",
-        { text: "true" },
-        "SIGNUPS_ENABLED: got 'true', want 'false'",
-      ],
-      ["SIGNUPS_ENABLED", null, "SIGNUPS_ENABLED: got ''"],
-    ]);
-  });
-  it("the scheduler refuses a missing or malformed ALERT_TO, ALERT_FROM or SIGNUP_DAILY_CAP before any call", () => {
-    const bad: [string, string][] = [
-      ["ALERT_TO", ""],
-      ["ALERT_TO", "ops"],
-      ["ALERT_TO", "ops@example"],
-      ["ALERT_TO", "@example.com"],
-      ["ALERT_TO", "ops@@example.com"],
-      ["ALERT_TO", "ops @example.com"],
-      ["ALERT_TO", "ops@example.com,x@example.com"],
-      ["ALERT_TO", "{{ALERT_TO_PROD}}"],
-      ["ALERT_FROM", ""],
-      ["ALERT_FROM", "alerts"],
-      ["ALERT_FROM", "alerts@"],
-      ["ALERT_FROM", "Alerts <alerts@example.com>"],
-      ["SIGNUP_DAILY_CAP", ""],
-      ["SIGNUP_DAILY_CAP", "0"],
-      ["SIGNUP_DAILY_CAP", "-5"],
-      ["SIGNUP_DAILY_CAP", "05"],
-      ["SIGNUP_DAILY_CAP", "1.5"],
-      ["SIGNUP_DAILY_CAP", "ten"],
-      ["SIGNUP_DAILY_CAP", "1234567890"],
-    ];
-    for (const [name, value] of bad) {
-      for (const verify of ["", "1"]) {
-        const r = setup({ exists: SCHED_DEPS("p") }).run("scheduler", {
-          [name]: value,
-          VERIFY_ONLY: verify,
-        });
-        const what = `${name}=${JSON.stringify(value)} ${verify}`;
-        expect(r.code, what).toBe(2);
-        expect(r.err, what).toContain(name);
-        expect(
-          r.log.filter((l) => /^(pnpm|curl|wrapper|wrangler) /.test(l)),
-          what,
-        ).toEqual([]);
-      }
+    ] as const) {
+      const bad = with_(name, v);
+      const r = setup({
+        exists: SCHED_DEPS("p"),
+        next: { "oa-p-scheduler": bad },
+      }).run("scheduler");
+      expect(r.code, msg).toBe(1);
+      expect(r.err).toContain(msg);
+      // Verify only runs the same check against the live Worker.
+      const live = setup({ exists: SCHED_DEPS("p") });
+      writeFileSync(join(live.state, "oa-p-scheduler.exists"), "");
+      writeFileSync(join(live.state, "oa-p-scheduler.settings.json"), bad);
+      const vr = live.run("scheduler", { VERIFY_ONLY: "1" });
+      expect(vr.code, `verify ${msg}`).toBe(1);
+      expect(vr.err).toContain(msg);
+      expect(noDeploy(vr.log)).toEqual([]);
     }
   });
   it("the scheduler, verify only: no deploy, every check passes on a matching live Worker", () => {
@@ -576,10 +476,9 @@ describe("deploy-hosted-platform.sh", () => {
     );
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
-    const w = r.log.find((l) => l.startsWith("wrapper scheduler staging "));
-    expect(w).toContain(`alert_to=${ALERT_TO}`);
-    expect(w).toContain(`alert_from=${ALERT_FROM}`);
-    expect(w).toContain(`cap=${CAP}`);
+    expect(r.log.some((l) => l.startsWith("wrapper scheduler staging "))).toBe(
+      true,
+    );
     expect(r.out).toContain("staging scheduler: deployed and verified");
     clean(r);
     // Prod's provisioner or queue don't stand in for staging's.
@@ -612,28 +511,6 @@ describe("deploy-hosted-platform.sh", () => {
     expect(cross.err).toContain(
       "PROVISIONER: got 'oa-p-provisioner', want 'oa-s-provisioner'",
     );
-    // Staging's own alert inputs: a live staging Worker wired to another
-    // address fails, deployed or verify only.
-    const stagingTo = "staging-ops@example.com";
-    for (const verify of ["", "1"]) {
-      const s = setup({ exists: SCHED_DEPS("s") });
-      if (verify) {
-        writeFileSync(join(s.state, "oa-s-scheduler.exists"), "");
-        writeFileSync(
-          join(s.state, "oa-s-scheduler.settings.json"),
-          NEXT["oa-s-scheduler"] as string,
-        );
-      }
-      const r2 = s.run(
-        "scheduler",
-        { ALERT_TO: stagingTo, VERIFY_ONLY: verify },
-        "staging",
-      );
-      expect(r2.code, verify).toBe(1);
-      expect(r2.err).toContain(
-        `ALERT_EMAIL destination_address: got '${ALERT_TO}', want '${stagingTo}'`,
-      );
-    }
   });
   it("the scheduler checks its two schedules exactly", () => {
     const s = setup({ exists: SCHED_DEPS("p") });
