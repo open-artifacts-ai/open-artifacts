@@ -139,7 +139,16 @@ export class PlatformDb {
     private readonly db: { id: string; name: string },
     private readonly env: Env,
     private readonly now: () => number,
-  ) {}
+    /**
+     * Who the operation's own hosted_audit rows are written as (design v7
+     * 4.9: the provisioner's `job:<jobId>`, through auditAs); none for the
+     * CLI, which writes its before and after rows with auditAs itself.
+     */
+    private readonly actor: string | null = null,
+  ) {
+    if (actor !== null && (actor === "" || actor.length > 300))
+      throw new Error("an audit actor is one to 300 characters");
+  }
 
   private async read(sql: string, params: unknown[]): Promise<InstallRow[]> {
     const r = await this.cf.d1Query(this.db.id, sql, params);
@@ -218,8 +227,8 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
         params: [r.contentHost, r.id],
       },
       {
-        sql: "INSERT INTO hosted_audit (at, install_id, action, detail) VALUES (?1, ?2, 'create.start', ?3)",
-        params: [now, r.id, canonicalJson({ slug: r.slug })],
+        sql: "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, ?4, ?2, 'create.start', ?3)",
+        params: [now, r.id, canonicalJson({ slug: r.slug }), this.actor],
       },
     ]);
     const row = await this.byId(r.id);
@@ -289,8 +298,8 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
         params: [r.contentHost, r.id],
       },
       {
-        sql: "INSERT INTO hosted_audit (at, install_id, action, detail) VALUES (?1, ?2, 'create.resume', ?3)",
-        params: [now, r.id, canonicalJson({ slug: r.slug })],
+        sql: "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, ?4, ?2, 'create.resume', ?3)",
+        params: [now, r.id, canonicalJson({ slug: r.slug }), this.actor],
       },
     ]);
   }
@@ -487,12 +496,17 @@ FROM installs WHERE rl_ns >= ?8 AND rl_ns < ?10`,
     return (r[0]?.results ?? []).length > 0;
   }
 
-  /** Appends an audit row; `detail` must never carry a secret or an email. */
+  /**
+   * Appends an audit row, as the operation's actor when it has one (auditAs);
+   * `detail` must never carry a secret or an email.
+   */
   async audit(
     id: InstallId,
     action: string,
     detail: Record<string, string | number> = {},
   ): Promise<void> {
+    if (this.actor !== null)
+      return this.auditAs(this.actor, id, action, detail);
     await this.write(
       "INSERT INTO hosted_audit (at, install_id, action, detail) VALUES (?1, ?2, ?3, ?4)",
       [this.now(), id, action, canonicalJson(detail)],

@@ -65,7 +65,7 @@ describe("ProvisionerRpc", () => {
     );
   });
 
-  it("each method delegates to its module function, which W3 builds", async () => {
+  it("each method delegates to its module function (an env with no OA_ENV is refused)", async () => {
     const self = { env: {} };
     const p = ProvisionerRpc.prototype;
     for (const call of [
@@ -80,7 +80,7 @@ describe("ProvisionerRpc", () => {
         }),
       () => p.tokenStatus.call(self),
     ])
-      await expect(call()).rejects.toThrow(/not built yet \(W3\)/);
+      await expect(call()).rejects.toThrow(/^internal$/);
   });
 });
 
