@@ -129,8 +129,9 @@ const median = (xs: number[]) =>
  * counter. Measured medians (REPEATS pairs, order alternated): 1.00-1.11
  * idle, 0.89-1.00 under 2x-cores busy loops; single pairs ranged 0.07-1.98
  * under load and a 3-pair median hit 1.86 (one pair 4.17), hence REPEATS
- * pairs, not 3. 2.0 is ~2x the worst REPEATS median seen and still fails a
- * sweep that doubles its D1 work or adds per-row Worker work.
+ * pairs, not 3. 2.0 is ~2x the worst REPEATS median seen. Extra or
+ * unbounded statements are the counted tests' job; this only catches gross
+ * Worker-side overhead, such as per-row work.
  */
 const MAX_RATIO = 2.0;
 
