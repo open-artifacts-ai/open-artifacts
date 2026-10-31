@@ -8,11 +8,17 @@ import { root, sandbox, script } from "./stubs.ts";
 
 const KEYS = [
   "account_id",
+  "app_zone",
+  "content_zone",
+  "dispatch_namespace",
   "email_daily_limit",
   "email_zone",
   "google_client_id",
   "google_directory_client_id",
 ];
+// Read by provapi-spikes.sh only; hosted-constants.sh does not load them.
+const SPIKE_KEYS = ["app_zone", "content_zone", "dispatch_namespace"];
+const LOADED = KEYS.filter((k) => !SPIKE_KEYS.includes(k));
 const read = (env: string): Record<string, unknown> =>
   JSON.parse(readFileSync(join(root, `.github/hosted/${env}.json`), "utf8"));
 
@@ -40,6 +46,28 @@ describe(".github/hosted/<env>.json", () => {
   it("prod and staging hold exactly the same keys", () => {
     expect(Object.keys(read("prod")).sort()).toEqual(KEYS);
     expect(Object.keys(read("staging")).sort()).toEqual(KEYS);
+  });
+
+  // Read by provapi-spikes.sh (the staging spikes); pinned to provision's
+  // HOSTED_DOMAINS and NAMESPACES so the two never drift.
+  it("app_zone, content_zone and dispatch_namespace are provision's, per env", () => {
+    const wfp = readFileSync(
+      join(root, "packages/provision/src/wfp.ts"),
+      "utf8",
+    );
+    for (const env of ["prod", "staging"]) {
+      const d = new RegExp(
+        `${env}: Object\\.freeze\\(\\{\\s*app: "([^"]+)",\\s*content: "([^"]+)"`,
+      ).exec(wfp);
+      expect(d, env).not.toBeNull();
+      expect(read(env).app_zone, env).toBe(d?.[1]);
+      expect(read(env).content_zone, env).toBe(d?.[2]);
+      const ns = new RegExp(
+        `NAMESPACES[^=]*= Object\\.freeze\\(\\{[^}]*${env}: "([^"]+)"`,
+      ).exec(wfp);
+      expect(read(env).dispatch_namespace, env).toBe(ns?.[1]);
+    }
+    expect(read("staging").dispatch_namespace).toBe("oa-staging");
   });
 
   it("google_client_id is provision's broker pin, per env", () => {
@@ -156,7 +184,7 @@ describe("hosted-constants.sh", () => {
   });
 
   it("a missing, null, empty or multi-line value fails and writes nothing", () => {
-    for (const k of KEYS) {
+    for (const k of LOADED) {
       const missing = PROD();
       delete missing[k];
       for (const files of [
