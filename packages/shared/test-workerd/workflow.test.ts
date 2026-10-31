@@ -2,13 +2,15 @@
 // unknown id and a duplicate create, and that the wrapper translates exactly
 // those. The real Cloudflare binding is UNVERIFIED (spike S3, staging).
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   createWorkflowInstance,
   getWorkflowInstance,
   isWorkflowExists,
   isWorkflowNotFound,
+  WORKFLOW_INSTANCE_STATUSES,
   WorkflowExistsError,
+  type WorkflowInstanceStatus,
   type WorkflowLike,
   WorkflowNotFoundError,
 } from "../src/provisioning/workflow.js";
@@ -77,5 +79,17 @@ describe("the wrapper on the local binding", () => {
     expect(e).not.toBeInstanceOf(WorkflowExistsError);
     expect(e).not.toBeInstanceOf(WorkflowNotFoundError);
     expect(e.message).toBe("Workflow instance has invalid id");
+  });
+});
+
+describe("WorkflowInstanceStatus matches workers-types' InstanceStatus", () => {
+  it("has exactly the same status values (rollingBack included)", () => {
+    expectTypeOf<WorkflowInstanceStatus["status"]>().toEqualTypeOf<
+      InstanceStatus["status"]
+    >();
+    expectTypeOf<(typeof WORKFLOW_INSTANCE_STATUSES)[number]>().toEqualTypeOf<
+      InstanceStatus["status"]
+    >();
+    expect(WORKFLOW_INSTANCE_STATUSES).toContain("rollingBack");
   });
 });

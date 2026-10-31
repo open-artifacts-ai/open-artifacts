@@ -17,9 +17,11 @@ import {
   sweepTerminatedKey,
 } from "@oa/shared/provisioning/state";
 import { cleanupRequestId } from "@oa/shared/provisioning/system";
-import type {
-  WorkflowInstanceStatus,
-  WorkflowLike,
+import {
+  getWorkflowInstance,
+  isWorkflowNotFound,
+  type WorkflowInstanceStatus,
+  type WorkflowLike,
 } from "@oa/shared/provisioning/workflow";
 import {
   bound,
@@ -30,7 +32,6 @@ import {
   Stall,
 } from "./env.js";
 import {
-  isWorkflowNotFound,
   type JobGuard,
   type SystemJob,
   startJob,
@@ -117,9 +118,9 @@ const isCode = (c: string): c is ProvisionErrorCode =>
 // cancel settling and running its own cleanup between the read and here).
 // INSERT OR IGNORE: jobs_one_active (a cleanup already open, e.g. that
 // cancel's own) and cleanup-<jobId> (an earlier tick's) skip the row
-// instead of failing the settle's batch.
-// Known gap (Platform's contract): the read sees null, then a cancel stores
-// canceled before this batch; C6's settleFailed expectCode closes it.
+// instead of failing the settle's batch. The settle passes the code it read
+// as expectCode (C6), so a code stored between the read and the batch (a
+// cancel storing canceled) settles nothing and inserts nothing this tick.
 const settledAs = (code: ProvisionErrorCode): JobGuard => ({
   sql: `${settledWith("?5", code)} AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?5 AND c.kind = 'cleanup')`,
   params: [],
@@ -135,7 +136,7 @@ async function look(
 ): Promise<"start" | "dead" | "alive"> {
   let status: WorkflowInstanceStatus["status"];
   try {
-    const inst = await wfCall(() => wf.get(j.id));
+    const inst = await wfCall(() => getWorkflowInstance(wf, j.id));
     status = (await wfCall(() => inst.status())).status;
   } catch (e) {
     if (!isWorkflowNotFound(e))
@@ -239,15 +240,19 @@ export async function sweep(
             ),
           ]
         : [];
-      const r = await settleFailed(db, j.id, RUN_DEAD, { extra });
-      if (r.settled) {
-        console.warn("provapi sweep settled", j.id, RUN_DEAD);
-        await db
-          .prepare("DELETE FROM platform_state WHERE key = ?1")
-          .bind(sweepTerminatedKey(j.id))
-          .run()
-          .catch(() => {});
-      }
+      const r = await settleFailed(db, j.id, RUN_DEAD, {
+        extra,
+        expectCode: stored,
+      });
+      // Not settled: settled elsewhere, or the code changed since the read
+      // (expectCode). Nothing more this tick; the next tick reads again.
+      if (!r.settled) return;
+      console.warn("provapi sweep settled", j.id, RUN_DEAD);
+      await db
+        .prepare("DELETE FROM platform_state WHERE key = ?1")
+        .bind(sweepTerminatedKey(j.id))
+        .run()
+        .catch(() => {});
       if (cleanup === null) return;
       step = "cleanup";
       const row = (r.extra[0] as D1Result<{ id?: unknown }> | undefined)

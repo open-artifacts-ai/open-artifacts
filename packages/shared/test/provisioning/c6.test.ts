@@ -80,13 +80,16 @@ describe("RedlineCreds: mint or revoke (R26)", () => {
     expect(ok({ revoke: true })).toBe(false);
   });
 
-  it("the job args record which variant ran, never the key", () => {
+  it("the job args record which variant ran (a mint also its recipientKey)", () => {
     const mint = RedlineCredsSchema.parse({
       requestId: rid,
       recipientKey: key,
     });
     const rev = RedlineCredsSchema.parse({ requestId: rid, revoke: true });
-    expect(redlineCredsJobArgs(mint)).toEqual({ revoke: false });
+    expect(redlineCredsJobArgs(mint)).toEqual({
+      revoke: false,
+      recipientKey: key,
+    });
     expect(redlineCredsJobArgs(rev)).toEqual({ revoke: true });
   });
 

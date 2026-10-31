@@ -9,12 +9,11 @@ import {
   systemJobBodyHash,
 } from "@oa/shared/provisioning/system";
 import {
-  isWorkflowNotFound,
+  createWorkflowInstance,
+  isWorkflowExists,
   type WorkflowLike,
 } from "@oa/shared/provisioning/workflow";
 import { DutyFailure, Stall, within } from "./env.js";
-
-export { isWorkflowNotFound };
 
 /** One Workflow call (create, get, status) past this counts as an rpc_error. */
 export const WORKFLOW_CALL_TIMEOUT_MS = 5_000;
@@ -112,20 +111,12 @@ export function wfCall<T>(
   return within(Promise.resolve().then(f), ms);
 }
 
-const message = (e: unknown) =>
-  e instanceof Error ? e.message : typeof e === "string" ? e : "";
-
-// isWorkflowNotFound (C5) matches only WorkflowNotFoundError, never a
-// message, so anything else fails closed (rpc_error, the job left alone).
-// UNVERIFIED for the real Cloudflare binding: what its get() throws for an
-// unknown id is not checked, and nothing here translates it yet, so until a
-// wrapper does, a real missing instance is an rpc_error (never settled or
-// started by the sweep).
-
-// TODO(contract): no typed "already exists" error for WorkflowLike.create;
-// this matches the fake's and the binding's message.
-const isAlreadyExists = (e: unknown) =>
-  !(e instanceof Stall) && /already exists/i.test(message(e));
+// Workflow get and create go through C6's getWorkflowInstance and
+// createWorkflowInstance, which translate the binding's not-found and
+// already-exists errors (pinned for the local binding; the real one is
+// spike S3's) to WorkflowNotFoundError and WorkflowExistsError. Only those
+// types count (isWorkflowNotFound, isWorkflowExists, never a message), so
+// anything else fails closed: rpc_error, the job left alone.
 
 /**
  * Starts the job's Workflow instance (id = job id). An instance that
@@ -134,9 +125,9 @@ const isAlreadyExists = (e: unknown) =>
 export async function startJob(wf: WorkflowLike, jobId: string): Promise<void> {
   const params: WorkflowParams = { jobId };
   try {
-    await wfCall(() => wf.create({ id: jobId, params }));
+    await wfCall(() => createWorkflowInstance(wf, { id: jobId, params }));
   } catch (e) {
-    if (isAlreadyExists(e)) return;
+    if (isWorkflowExists(e)) return;
     throw new DutyFailure(e instanceof Stall ? "timeout" : "rpc_error");
   }
 }
