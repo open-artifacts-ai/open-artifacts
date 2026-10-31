@@ -2,6 +2,7 @@ import { AUDIT_REFUSAL_WINDOW_MS } from "@oa/shared/provisioning/alerts";
 import {
   AUDIT_REFUSAL_RETENTION_MS,
   DCR_COUNTER_RETENTION_MS,
+  EXPIRED_AUTH_RETENTION_MS,
   RATE_COUNTER_RETENTION_MS,
 } from "@oa/shared/provisioning/state";
 import {
@@ -75,15 +76,21 @@ const token = (
 
 describe("prune", () => {
   it("each table: rows on each side of its boundary", async () => {
-    await session(NOW); // expired at now: pruned
+    expect(EXPIRED_AUTH_RETENTION_MS).toBe(7 * 24 * 60 * 60_000);
+    const GONE = NOW - EXPIRED_AUTH_RETENTION_MS; // expired 7 days: pruned
+    const KEEP = GONE + 1; // expired just under 7 days: kept
+    await session(GONE);
+    await session(KEEP);
     await session(NOW + 1); // live
     await session(NOW + 1, NOW - 1); // revoked, not expired: kept
-    await session(NOW, NOW - 1); // revoked and expired: pruned
-    await token("oat", NOW);
-    await token("oauth", NOW + 1);
+    await session(KEEP, NOW - 1); // revoked, expired under 7 days: kept
+    await session(GONE, NOW - 1); // revoked, expired 7 days: pruned
+    await token("oat", GONE);
+    await token("oauth", GONE);
+    await token("oauth", KEEP);
     await token("oauth", NOW + 1, NOW - 1); // revoked, not expired: kept
-    await token("oat", NOW, NOW - 1);
-    await token("oat", NOW + 1);
+    await token("oat", KEEP, NOW - 1);
+    await token("oat", GONE, NOW - 1);
     const rc = (w: number) =>
       insert("rate_counters", { key: `k${++n}`, window_start: w, count: 1 });
     await rc(NOW - RATE_COUNTER_RETENTION_MS);
@@ -110,23 +117,25 @@ describe("prune", () => {
     const lines = captureLogs(vi.spyOn);
     await prune(env, NOW);
     expect(lines).toEqual([
-      "provapi prune sessions=2 agent_tokens=2 rate_counters=1 audit_refusals=1 signup_secret=0 oauth_clients=0",
+      "provapi prune sessions=2 agent_tokens=3 rate_counters=1 audit_refusals=1 signup_secret=0 oauth_clients=0",
     ]);
     expect(
       await rows(
-        "SELECT expires_at, revoked_at FROM sessions ORDER BY revoked_at",
+        "SELECT expires_at, revoked_at FROM sessions ORDER BY revoked_at, expires_at",
       ),
     ).toEqual([
+      { expires_at: KEEP, revoked_at: null },
       { expires_at: NOW + 1, revoked_at: null },
+      { expires_at: KEEP, revoked_at: NOW - 1 },
       { expires_at: NOW + 1, revoked_at: NOW - 1 },
     ]);
     expect(
       await rows(
-        "SELECT kind, expires_at, revoked_at FROM agent_tokens ORDER BY kind, revoked_at",
+        "SELECT kind, expires_at, revoked_at FROM agent_tokens ORDER BY kind, revoked_at, expires_at",
       ),
     ).toEqual([
-      { kind: "oat", expires_at: NOW + 1, revoked_at: null },
-      { kind: "oauth", expires_at: NOW + 1, revoked_at: null },
+      { kind: "oat", expires_at: KEEP, revoked_at: NOW - 1 },
+      { kind: "oauth", expires_at: KEEP, revoked_at: null },
       { kind: "oauth", expires_at: NOW + 1, revoked_at: NOW - 1 },
     ]);
     expect(await ids("SELECT window_start FROM rate_counters")).toEqual([

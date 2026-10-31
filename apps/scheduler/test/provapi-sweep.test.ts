@@ -352,6 +352,35 @@ describe("sweep: dead runs", () => {
     expect(f.manage.created).toEqual([]);
   });
 
+  it("a cancel settling first whose cleanup already finished: the sweep inserts and starts no cleanup", async () => {
+    const f = fakes();
+    const { id, inst } = await started(f, "complete");
+    const lost: SettleFailed = async (d, jobId, code, opts) => {
+      await db
+        .prepare(
+          "UPDATE jobs SET status = 'failed', error_code = 'canceled' WHERE id = ?1",
+        )
+        .bind(jobId)
+        .run();
+      await job(inst, {
+        kind: "cleanup",
+        workflow: "manage_install",
+        parent_job_id: jobId,
+        request_id: `cancel-${jobId}`,
+        status: "done",
+      });
+      return fakeSettle(d, jobId, code, opts);
+    };
+    const lines = captureLogs(vi.spyOn);
+    await sweep(f.env, NOW, { settleFailed: lost });
+    expect(settled).toEqual([]);
+    expect(lines).toEqual([]);
+    expect((await cleanups()).map((c) => c.request_id)).toEqual([
+      `cancel-${id}`,
+    ]);
+    expect(f.manage.created).toEqual([]);
+  });
+
   it("a running job whose instance is missing is dead", async () => {
     const f = fakes();
     const id = await job(installId(), { status: "running" });

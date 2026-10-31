@@ -102,9 +102,11 @@ const STILL_OPEN =
 const stillOpen = async (db: D1Database, id: string) =>
   (await d1(db.prepare(STILL_OPEN).bind(id).first())) !== null;
 
-// The cleanup goes in only when its parent settled failed (?5 parent).
+// The cleanup goes in only when the sweep's own settle failed its parent (?5
+// parent; only the sweep sets run_dead), never after a cancel or the run's
+// own fail step settled it first.
 const PARENT_FAILED: JobGuard = {
-  sql: "EXISTS (SELECT 1 FROM jobs WHERE id = ?5 AND status = 'failed')",
+  sql: `EXISTS (SELECT 1 FROM jobs WHERE id = ?5 AND status = 'failed' AND error_code = '${RUN_DEAD}')`,
   params: [],
 };
 
@@ -219,9 +221,10 @@ export async function sweep(
       step = "cleanup";
       const row = (r.extra[0] as D1Result<{ id?: unknown }> | undefined)
         ?.results?.[0];
-      // No id: an overlapping tick got there first, or another job is open
-      // on the install (a cancel's own cleanup). One that went in without
-      // this call settling (its parent failed meanwhile) is started too.
+      // No id: an overlapping tick got there first, another job is open on
+      // the install (a cancel's own cleanup), or another settler won. One
+      // that went in without this call settling (an overlapping sweep's
+      // run_dead settle) is started too.
       const id = typeof row?.id === "string" ? row.id : null;
       if (id === null) return;
       console.log("provapi sweep cleanup", id, j.id);
