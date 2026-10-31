@@ -10,6 +10,8 @@ it.each([
   ["/%2f/evil.example", "/%2f/evil.example"],
   ["/%5cevil.example", "/%5cevil.example"],
   // Fallbacks.
+  ["//x", "/installs"],
+  ["/\\x", "/installs"],
   ["//evil.example", "/installs"],
   ["/\\evil.example", "/installs"],
   ["https://evil.example", "/installs"],
