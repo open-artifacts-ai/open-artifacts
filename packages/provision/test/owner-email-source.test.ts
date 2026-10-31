@@ -49,7 +49,8 @@ const ALLOWED: Record<string, RegExp[]> = {
     /^\s*const v = row\.owner_email;$/,
     /^export function ownerEmailOf\(row: \{ owner_email\?: unknown \}\): string \| null \{$/,
   ],
-  // signup_secret.owner_email, not installs': deleted when done, never ''.
+  // signup_secret.owner_email, not installs': read once to create the install;
+  // the row is deleted when the create is done, never purged to ''.
   "apps/provisioner/src/workflow.ts": [
     /^\s*"SELECT owner_email AS email FROM signup_secret WHERE signup_id = \?";$/,
   ],
