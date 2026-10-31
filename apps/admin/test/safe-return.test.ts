@@ -32,7 +32,7 @@ it.each([
   ["/x\u0000y", "/installs"],
   ["/\u007f", "/installs"],
   ["/café", "/installs"],
-  ["/‮evil", "/installs"],
+  ["/\u202eevil", "/installs"],
 ])("safeReturn(%j) is %j", (raw, out) => {
   expect(safeReturn(raw)).toBe(out);
 });
