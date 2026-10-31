@@ -4,6 +4,12 @@
 /** Fixed seed for the 4.1 hash-compare property tests. */
 export const PROP_SEED = 0x4f41_0401;
 export const PROP_CASES = 1000;
+/**
+ * Per-test timeout for a PROP_CASES loop. Each case is CPU-bound (two sha256
+ * lookups, no I/O wait): about 1.2 s locally, over vitest's 5 s default on a
+ * busy CI runner. 60 s leaves 50x headroom without hiding a hang.
+ */
+export const PROP_TIMEOUT_MS = 60_000;
 
 /** mulberry32: a small deterministic PRNG in [0, 1). */
 export function rng(seed: number) {
