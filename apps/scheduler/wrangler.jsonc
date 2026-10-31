@@ -21,9 +21,10 @@
 // deploy first), the alerts read PROVISIONER's ProvisionerRpc and email
 // through the send_email binding ALERT_EMAIL; the signups duty re-sends
 // waiting_cap and lost pending signups on oa-<p>-signups (SIGNUPS, which
-// must exist first). Its ALERT_TO, ALERT_FROM, SIGNUP_DAILY_CAP and
-// SIGNUPS_ENABLED vars are Platform's deploy wiring; unset, alerts log
-// no_destination, the cap alert is off and the signups duty does nothing.
+// must exist first). ALERT_TO, ALERT_FROM, SIGNUP_DAILY_CAP and
+// SIGNUPS_ENABLED are per-env placeholders that deploy-platform-worker.sh
+// fills (ALERT_TO is also ALERT_EMAIL's only destination_address); it
+// refuses a config without all of them.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "compatibility_date": "2026-10-01",
@@ -39,6 +40,10 @@
         "OA_ENV": "staging",
         "EMAIL_QUOTA_ZONES": "{{EMAIL_ZONE_TAG_STAGING}}",
         "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_STAGING}}",
+        "ALERT_TO": "{{ALERT_TO_STAGING}}",
+        "ALERT_FROM": "{{ALERT_FROM_STAGING}}",
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}",
+        "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_STAGING}}",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },
@@ -72,7 +77,9 @@
       "queues": {
         "producers": [{ "binding": "SIGNUPS", "queue": "oa-s-signups" }]
       },
-      "send_email": [{ "name": "ALERT_EMAIL" }],
+      "send_email": [
+        { "name": "ALERT_EMAIL", "destination_address": "{{ALERT_TO_STAGING}}" }
+      ],
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [
@@ -95,6 +102,10 @@
         "OA_ENV": "prod",
         "EMAIL_QUOTA_ZONES": "{{EMAIL_ZONE_TAG_PROD}}",
         "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_PROD}}",
+        "ALERT_TO": "{{ALERT_TO_PROD}}",
+        "ALERT_FROM": "{{ALERT_FROM_PROD}}",
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",
+        "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}",
         "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
       },
@@ -128,7 +139,9 @@
       "queues": {
         "producers": [{ "binding": "SIGNUPS", "queue": "oa-p-signups" }]
       },
-      "send_email": [{ "name": "ALERT_EMAIL" }],
+      "send_email": [
+        { "name": "ALERT_EMAIL", "destination_address": "{{ALERT_TO_PROD}}" }
+      ],
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
       "dispatch_namespaces": [
