@@ -360,11 +360,17 @@ describe("ProvisionInstall: release gate and failures", () => {
         [key]: "x",
       },
     });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const r = await run(w, s.jobId);
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    warn.mockRestore();
     expect(r.error).not.toBeNull();
-    // The refusal's own message (the engine's record) names the key.
-    expect(r.log.find((l) => l.name === "recheck")?.error?.message).toContain(
-      key,
+    // recheck's detail reaches only the log line, the key redacted.
+    expect(lines.join("\n")).toContain("var [value] is not allowed");
+    expect(lines.join("\n")).not.toContain(key);
+    // The engine's record is the fixed text too: no detail.
+    expect(r.log.find((l) => l.name === "recheck")?.error?.message).toBe(
+      `invalid_state: ${JOB_ERROR_TEXT.invalid_state}`,
     );
     const job = w.job(s.jobId);
     expect(job).toMatchObject({

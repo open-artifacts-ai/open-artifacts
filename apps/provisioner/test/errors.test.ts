@@ -9,11 +9,14 @@ import { describe, expect, it } from "vitest";
 import {
   classify,
   codeOf,
+  detailOf,
   ERROR_MESSAGE_MAX,
   JOB_ERROR_TEXT,
   redactEmail,
+  StepRefusal,
   stepError,
 } from "../src/errors.js";
+import { refused } from "../src/recheck.js";
 
 // A step's error says a job code (design v7 3.5), read from the thrown
 // error's own code, never its message; a refusal adds the code's fixed
@@ -92,6 +95,18 @@ describe("stepError", () => {
       expect(e).not.toBeInstanceOf(NonRetryableError);
       expect(e.message).toBe(code);
     }
+  });
+});
+
+describe("refused (recheck)", () => {
+  it("a NonRetryableError of exactly '<code>: <fixed text>'; the detail only via detailOf", () => {
+    const e = refused("var LEAK_KEY is not allowed");
+    expect(e).toBeInstanceOf(NonRetryableError);
+    expect(e).toBeInstanceOf(StepRefusal);
+    expect(e.message).toBe(`invalid_state: ${JOB_ERROR_TEXT.invalid_state}`);
+    expect(e.message).not.toContain("LEAK_KEY");
+    expect(detailOf(e)).toBe("var LEAK_KEY is not allowed");
+    expect(codeOf(e)).toBe("invalid_state");
   });
 });
 

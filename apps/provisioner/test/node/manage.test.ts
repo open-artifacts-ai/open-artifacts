@@ -6,6 +6,7 @@ import { HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
 import { REDLINE_SCOPE_FIXTURE } from "@oa/shared/provisioning/fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
+import { JOB_ERROR_TEXT } from "../../src/errors.js";
 import { GRACE_MS, NEVER_ROUTED, runManage } from "../../src/manage.js";
 import { openSealed } from "../../src/seal.js";
 import { runCreate } from "../../src/workflow.js";
@@ -35,9 +36,15 @@ vi.mock(
 );
 
 let w: World;
+let warn: { mock: { calls: unknown[][] }; mockRestore(): void } | undefined;
 beforeEach(async () => {
   w = await world();
+  warn?.mockRestore();
+  warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
+/** The failure log lines so far (console only). */
+const logged = () =>
+  (warn?.mock.calls ?? []).map((c) => String(c[0])).join("\n");
 
 async function active(o: CreateSeed) {
   const s = seedCreate(w, o);
@@ -446,8 +453,9 @@ describe("suspend, resume, delete, restore (5.5, 5.6)", () => {
     });
     w.env.OA_ENV = ENV;
     expect(prod.log.find((l) => l.name === "recheck")?.error?.message).toBe(
-      "invalid_state: OIDC is staging only",
+      `invalid_state: ${JOB_ERROR_TEXT.invalid_state}`,
     );
+    expect(logged()).toContain('"detail":"OIDC is staging only"');
     expect(w.status(rl.installId)?.state).toBe("active");
   });
 
@@ -1667,7 +1675,11 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
     });
     expect(r.job?.error_code).toBe("invalid_state");
     expect(r.log.find((l) => l.name === "recheck")?.error?.message).toBe(
-      "invalid_state: skipDirectoryRevoke is an admin's, with a reason",
+      `invalid_state: ${JOB_ERROR_TEXT.invalid_state}`,
+    );
+    // Its args keys are request values: redacted in the log line.
+    expect(logged()).toContain(
+      `"detail":"[value] is an admin's, with a [value]"`,
     );
   });
 });

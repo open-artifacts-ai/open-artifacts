@@ -14,6 +14,7 @@ import {
   detailOf,
   JOB_ERROR_TEXT,
   redactDetail,
+  StepRefusal,
   stepError,
 } from "./errors.js";
 import { type ProvisionerIo, Transient, transient } from "./provisioner.js";
@@ -59,7 +60,7 @@ export function argsOf(job: JobRow): Record<string, unknown> {
     if (a && typeof a === "object" && !Array.isArray(a))
       return a as Record<string, unknown>;
   } catch {}
-  throw new NonRetryableError("invalid_state: the job args are not an object");
+  throw new StepRefusal("invalid_state", "the job args are not an object");
 }
 
 /** A job code, or `internal` for anything else (a stored value is a request). */

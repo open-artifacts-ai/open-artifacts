@@ -93,6 +93,19 @@ export const JOB_ERROR_TEXT = Object.freeze({
 } as const satisfies Record<ProvisionErrorCode, string>);
 
 /**
+ * A terminal refusal raised inside the provisioner (a recheck): its message
+ * is exactly `<code>: <JOB_ERROR_TEXT>`, so the Workflow engine's instance
+ * error holds no detail; `detail` goes only to the redacted log line.
+ */
+export class StepRefusal extends NonRetryableError {
+  readonly detail: string;
+  constructor(code: ProvisionErrorCode, detail: string) {
+    super(`${code}: ${JOB_ERROR_TEXT[code]}`);
+    this.detail = detail;
+  }
+}
+
+/**
  * The error a step throws for `e`: `new Error(code)`, as a
  * NonRetryableError unless the code is retryable; a terminal one adds
  * ": <JOB_ERROR_TEXT>". Never the refusal's own message.
@@ -105,6 +118,7 @@ export function stepError(e: unknown): Error {
 
 /** An error's own text, for the redacted log line only. */
 export function detailOf(e: unknown): string {
+  if (e instanceof StepRefusal) return e.detail;
   if (e instanceof Error) return e.message;
   return String(e);
 }
