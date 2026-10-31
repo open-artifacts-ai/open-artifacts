@@ -39,10 +39,7 @@ import {
   type WorkflowParams,
   WorkflowParamsSchema,
 } from "@oa/shared/provisioning";
-import {
-  createWorkflowInstance,
-  type WorkflowLike,
-} from "@oa/shared/provisioning/workflow";
+import { createWorkflowInstance } from "@oa/shared/provisioning/workflow";
 import { codeOf } from "./errors.js";
 import {
   appHostOf,

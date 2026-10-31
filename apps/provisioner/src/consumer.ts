@@ -108,9 +108,7 @@ async function start(env: ConsumerEnv, signupId: string): Promise<void> {
   if (!row) throw new Error("signups row vanished");
   const jobId = row.job_id;
   const params: WorkflowParams = { jobId };
-  // The binding as C6's WorkflowLike: workers-types' InstanceStatus also
-  // has `rollingBack`, which WorkflowInstanceStatus lacks (status() is unused).
-  const wf = env.PROVISION_INSTALL as unknown as WorkflowLike<WorkflowParams>;
+  const wf = env.PROVISION_INSTALL;
   try {
     await createWorkflowInstance(wf, { id: jobId, params });
   } catch (e) {
