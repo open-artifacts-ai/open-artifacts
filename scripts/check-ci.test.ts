@@ -1607,3 +1607,69 @@ describe("workflow and job env use only contexts available there", () => {
     });
   }
 });
+
+// W9b (design 10.1): install writes are the Provisioning API's. The
+// hosted-ops workflow, the CLI's write commands and the laptop red-line
+// scripts stay gone, and no workflow names their secrets again.
+describe("W9b: the retired hosted writes stay retired", () => {
+  const RETIRED_FILES = [
+    ".github/workflows/hosted-ops.yml",
+    "scripts/ci/hosted-ops-workflow.test.ts",
+    "scripts/ci/hosted-turnstile-keys.sh",
+    "scripts/hosted/src/ci-args.ts",
+    "scripts/hosted/src/redline-creds.ts",
+    "scripts/ops/redline-deploy.sh",
+    "tests/redline/src/prod-clean-cli.ts",
+  ];
+  const RETIRED_COMMANDS = [
+    "create",
+    "upgrade",
+    "rollback",
+    "update-vars",
+    "delete",
+    "release-lease",
+    "owner-token",
+    "turnstile-init",
+    "ci-token-sweep",
+    "signup-redrive",
+    "redline-creds",
+  ];
+  const workflows = readdirSync(join(root, ".github/workflows")).filter((f) =>
+    /\.ya?ml$/.test(f),
+  );
+
+  it("the retired files do not exist", () => {
+    for (const f of RETIRED_FILES)
+      expect(existsSync(join(root, f)), f).toBe(false);
+  });
+
+  it("no workflow names a retired file, target or secret", () => {
+    const banned =
+      /hosted-ops|ci-args|redline-creds|redline-deploy|hosted-turnstile-keys|prod-clean-cli|inventory-key|INVENTORY_KEY|secrets\.REDLINE_RL_|CREATE_OWNER_EMAIL|TURNSTILE_KEYS/;
+    for (const f of workflows)
+      expect(read(`.github/workflows/${f}`), f).not.toMatch(banned);
+  });
+
+  it("the CLI has only status and the two publishes, and refuses each retired command", () => {
+    const src = read("scripts/hosted/src/cli.ts");
+    const m = src.match(/export const COMMANDS = \[([^\]]*)\]/);
+    const cmds = [...(m?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map((x) => x[1]);
+    expect(cmds).toEqual(["status", "publish-release", "publish-floor"]);
+    const r = src.match(/export const RETIRED_COMMANDS = \[([^\]]*)\]/);
+    const retired = [...(r?.[1] ?? "").matchAll(/"([a-z-]+)"/g)].map(
+      (x) => x[1],
+    );
+    expect(retired).toEqual(RETIRED_COMMANDS);
+  });
+
+  it("every oa:hosted call in a workflow is a kept command", () => {
+    for (const f of workflows)
+      for (const [, cmd] of read(`.github/workflows/${f}`).matchAll(
+        /oa:hosted\s+(?:"\$\{[^}]*\}"|([a-z-]+))/g,
+      ))
+        expect(
+          ["status", "publish-release", "publish-floor"],
+          `${f}: ${cmd}`,
+        ).toContain(cmd ?? "(argv)");
+  });
+});

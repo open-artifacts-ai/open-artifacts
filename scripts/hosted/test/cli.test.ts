@@ -1,5 +1,6 @@
 // P1 Task 8: the oa:hosted CLI against provision's in-memory Cloudflare.
-// No live call: the keychain, git and gh are stubs (world.ts).
+// No live call: the keychain, git and gh are stubs (world.ts). Since W9b the
+// CLI is status plus the two publishes; installs are seeded by world.seed.
 import {
   mkdtempSync,
   readdirSync,
@@ -13,7 +14,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cfClient } from "@oa/provision";
 import { describe, expect, it, vi } from "vitest";
-import { COMMANDS, DOMAINS, HELP, main, openNoFollow } from "../src/cli.ts";
+import {
+  COMMANDS,
+  DOMAINS,
+  HELP,
+  main,
+  openNoFollow,
+  RETIRED_COMMANDS,
+} from "../src/cli.ts";
 import { ACTOR, PUB, SECURITY, signed, world } from "./world.ts";
 
 const G = vi.hoisted(() => ({
@@ -33,16 +41,20 @@ vi.mock("../../../packages/provision/src/internal/gates.ts", async (orig) => {
 G.RELEASE_PUBKEY = { staging: PUB, prod: PUB };
 
 type W = ReturnType<typeof world>;
-const CREATE = (env = "staging") => [
-  "create",
+const STATUS = (id: string, env = "staging") => [
+  "status",
   "--env",
   env,
-  "--slug",
-  "finqore",
-  "--owner",
-  "owner@finqore.test",
-  "--to",
-  "0.23.0",
+  "--install",
+  id,
+];
+/** A command that refuses a near-expiry token (status only warns). */
+const FLOOR_CMD = (env = "staging") => [
+  "publish-floor",
+  "--env",
+  env,
+  "--floor",
+  "/f/none.sig.json",
 ];
 
 const noCalls = (w: W) => {
@@ -53,10 +65,8 @@ const noCalls = (w: W) => {
 const lastLine = (w: W) => w.parsed().at(-1);
 
 async function created(w: W) {
-  expect(await main(CREATE(w.env), w.deps)).toBe(0);
-  const id = w.parsed().find((l) => l.step === "create")?.data?.id as string;
+  const id = await w.seed();
   expect(id).toMatch(/^i[a-z0-9]{11}$/);
-  w.lines.length = 0;
   return id;
 }
 
@@ -73,58 +83,30 @@ describe("domains", () => {
 });
 
 describe("refusals before any call", () => {
-  it("--test-hooks with --env prod exits 1 before any call", async () => {
-    const w = world({ env: "prod" });
-    expect(await main([...CREATE("prod"), "--test-hooks"], w.deps)).toBe(1);
-    expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
-    expect(lastLine(w).message).toMatch(/--test-hooks/);
-    noCalls(w);
-  });
-
-  it.each([
-    ["delete", []],
-    ["delete", ["--confirm", "iaaaaaaaaaab"]],
-    ["release-lease", []],
-    ["release-lease", ["--confirm", "iaaaaaaaaaab"]],
-  ])(
-    "%s without --confirm, or with a different id, exits 1 before any call",
-    async (cmd, extra) => {
+  it("every retired write command is refused before any call (design 10.1)", async () => {
+    for (const cmd of RETIRED_COMMANDS) {
       const w = world();
-      const argv = [
+      expect(
+        await main([cmd, "--env", "staging", "--install", "iaaaaaaaaaaa"], w.deps),
         cmd,
-        "--env",
-        "staging",
-        "--install",
-        "iaaaaaaaaaaa",
-        ...extra,
-      ];
-      expect(await main(argv, w.deps)).toBe(1);
-      expect(lastLine(w).message).toMatch(/--confirm/);
+      ).toBe(1);
+      expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
+      expect(lastLine(w).message).toBe(
+        `${cmd} is retired: use the Provisioning API`,
+      );
       noCalls(w);
-    },
-  );
+    }
+  });
 
   it.each([
     [["status"]],
     [["status", "--env", "dev", "--install", "iaaaaaaaaaaa"]],
     [["nope", "--env", "staging"]],
-    [["upgrade", "--env", "staging", "--install", "iaaaaaaaaaaa"]],
-    [
-      [
-        "create",
-        "--env",
-        "staging",
-        "--slug",
-        "x",
-        "--owner",
-        "a@b.co",
-        "--to",
-        "latest",
-      ],
-    ],
-    [[...CREATE(), "--var", "AUTH_DOMAIN_JOIN=member"]],
-    [[...CREATE(), "--var", "lower=x"]],
-    [[...CREATE(), "--var", "FEATURES=spaces", "--var", "FEATURES=x"]],
+    [[...STATUS("iaaaaaaaaaaa"), "--tag", "v1.0.0"]],
+    [[...STATUS("iaaaaaaaaaaa"), "--force"]],
+    [[...STATUS("iaaaaaaaaaaa"), "--ci-owner-token"]],
+    [[...STATUS("iaaaaaaaaaaa"), "--skip-directory-revoke", "x"]],
+    [["publish-floor", "--env", "staging"]],
     [["publish-release", "--env", "staging", "--tag", "main"]],
     [["status", "--env", "staging", "--install", "../etc"]],
   ])("bad flags exit 1 before any call: %j", async (argv) => {
@@ -135,21 +117,7 @@ describe("refusals before any call", () => {
   });
 
   it("every documented command is accepted", () => {
-    expect(COMMANDS).toEqual([
-      "create",
-      "upgrade",
-      "rollback",
-      "update-vars",
-      "delete",
-      "release-lease",
-      "status",
-      "publish-release",
-      "publish-floor",
-      "turnstile-init",
-      "redline-creds",
-      "owner-token",
-      "ci-token-sweep",
-    ]);
+    expect(COMMANDS).toEqual(["status", "publish-release", "publish-floor"]);
   });
 });
 
@@ -176,6 +144,7 @@ describe("token source", () => {
   it("prod reads only from the keychain, never a file", async () => {
     const w = world({ env: "prod" });
     const id = await created(w);
+    expect(await main(STATUS(id, "prod"), w.deps)).toBe(0);
     const sec = w.execs.filter((e) => e.file === SECURITY);
     expect(sec.length).toBeGreaterThan(0);
     expect(sec[0]?.args).toEqual([
@@ -197,6 +166,7 @@ describe("token source", () => {
 
   it("staging in CI reads a 0600 file it owns, and refuses any other", async () => {
     const w = world({ ci: true });
+    const id = await created(w);
     w.keychain.clear();
     const set = (mode: number, uid = 501, isFile = true) =>
       w.files.set("/ci/token", {
@@ -210,12 +180,12 @@ describe("token source", () => {
       [0o120600, 501, false],
     ] as const) {
       set(mode, uid, isFile);
-      expect(await main(CREATE(), w.deps)).toBe(1);
+      expect(await main(STATUS(id), w.deps)).toBe(1);
       expect(lastLine(w).step).toBe("token");
     }
     expect(w.fake.log).toEqual([]);
     set(0o100600);
-    expect(await main(CREATE(), w.deps)).toBe(0);
+    expect(await main(STATUS(id), w.deps)).toBe(0);
     expect(w.execs.filter((e) => /security/.test(e.file))).toEqual([]);
     expect(w.audit()[0]?.actor).toBe(
       "https://github.com/open-artifacts-ai/open-artifacts/actions/runs/42",
@@ -231,7 +201,7 @@ describe("token source", () => {
     ]) {
       const w = world();
       Object.assign(w.fake.tokenInfo, bad);
-      expect(await main(CREATE(), w.deps)).toBe(1);
+      expect(await main(FLOOR_CMD(), w.deps)).toBe(1);
       expect(lastLine(w)).toMatchObject({ step: "token", status: "error" });
       expect(w.fake.writes()).toEqual([]);
       expect(w.audit()).toEqual([]);
@@ -243,22 +213,13 @@ describe("audit", () => {
   it("every command writes a before and after hosted_audit row, and the table refuses UPDATE and DELETE", async () => {
     const w = world();
     const id = await created(w);
-    expect(
-      await main(["status", "--env", "staging", "--install", id], w.deps),
-    ).toBe(0);
-    expect(
-      await main(
-        ["upgrade", "--env", "staging", "--install", id, "--to", "0.22.0"],
-        w.deps,
-      ),
-    ).toBe(1);
+    expect(await main(STATUS(id), w.deps)).toBe(0);
+    expect(await main(FLOOR_CMD(), w.deps)).toBe(1);
     expect(w.audit()).toEqual([
-      { actor: ACTOR, install_id: "-", action: "cli.create.start" },
-      { actor: ACTOR, install_id: id, action: "cli.create.done" },
       { actor: ACTOR, install_id: id, action: "cli.status.start" },
       { actor: ACTOR, install_id: id, action: "cli.status.done" },
-      { actor: ACTOR, install_id: id, action: "cli.upgrade.start" },
-      { actor: ACTOR, install_id: id, action: "cli.upgrade.failed" },
+      { actor: ACTOR, install_id: "-", action: "cli.publish-floor.start" },
+      { actor: ACTOR, install_id: "-", action: "cli.publish-floor.failed" },
     ]);
     expect(() =>
       w.db().prepare("UPDATE hosted_audit SET actor = 'x'").run(),
@@ -271,8 +232,8 @@ describe("audit", () => {
   it("no git email: refused before any Cloudflare call", async () => {
     const w = world();
     const exec = w.deps.execFile;
-    w.deps.execFile = async (f, a, o) => (f === "git" ? "" : exec(f, a, o));
-    expect(await main(CREATE(), w.deps)).toBe(1);
+    w.deps.execFile = async (f, a) => (f === "git" ? "" : exec(f, a));
+    expect(await main(STATUS("iaaaaaaaaaaa"), w.deps)).toBe(1);
     expect(lastLine(w).message).toMatch(/user\.email/);
     expect(w.fake.log).toEqual([]);
   });
@@ -281,34 +242,13 @@ describe("audit", () => {
 describe("output", () => {
   it("no secret or PAT value appears in stdout", async () => {
     const w = world();
-    await created(w);
-    const id = await (async () => {
-      // A second create, with the full output kept this time.
-      expect(
-        await main(
-          [
-            "create",
-            "--env",
-            "staging",
-            "--slug",
-            "acme",
-            "--owner",
-            "owner@acme.test",
-            "--to",
-            "0.23.0",
-            "--var",
-            "FEATURES=spaces",
-          ],
-          w.deps,
-        ),
-      ).toBe(0);
-      return w.parsed().find((l) => l.step === "create")?.data?.id as string;
-    })();
+    const id = await created(w);
+    expect(await main(STATUS(id), w.deps)).toBe(0);
     const out = w.lines.join("\n");
     for (const l of w.lines) expect(() => JSON.parse(l)).not.toThrow();
     const generated = new Set<string>([w.fake.token]);
-    for (const s of w.fake.scripts.values())
-      for (const v of s.secrets.values()) generated.add(v);
+    for (const sc of w.fake.scripts.values())
+      for (const v of sc.secrets.values()) generated.add(v);
     const patDir = join(w.home, ".open-artifacts", "hosted-staging");
     for (const f of readdirSync(patDir))
       generated.add(readFileSync(join(patDir, f), "utf8").trim());
@@ -318,10 +258,10 @@ describe("output", () => {
       expect(out).not.toContain(v);
     }
     expect(out).not.toMatch(/oa_pat_[1-9A-HJ-NP-Za-km-z]{8}/);
-    expect(w.parsed().find((l) => l.step === "create")?.data).toMatchObject({
+    expect(w.parsed().find((l) => l.step === "status")?.data).toMatchObject({
       id,
-      slug: "acme",
-      appHost: "acme.open-artifacts-staging.app",
+      state: "active",
+      version: "0.23.0",
     });
   });
 
@@ -332,7 +272,7 @@ describe("output", () => {
       message: `bad token ${w.fake.token}`,
       times: 1,
     });
-    expect(await main(CREATE(), w.deps)).toBe(1);
+    expect(await main(STATUS("iaaaaaaaaaaa"), w.deps)).toBe(1);
     expect(lastLine(w)).toMatchObject({ step: "token", status: "error" });
     expect(lastLine(w).message).toContain("bad token [redacted]");
     expect(w.lines.join("\n")).not.toContain(w.fake.token);
@@ -360,225 +300,12 @@ describe("commands", () => {
     });
   });
 
-  it("upgrade, rollback, update-vars and release-lease go through the provisioner", async () => {
-    const w = world();
-    const id = await created(w);
-    expect(
-      await main(
-        ["upgrade", "--env", "staging", "--install", id, "--to", "0.24.0"],
-        w.deps,
-      ),
-    ).toBe(0);
-    expect(w.parsed().find((l) => l.step === "upgrade")?.data).toMatchObject({
-      from: "0.23.0",
-      to: "0.24.0",
-      ok: true,
-    });
-    expect(
-      await main(["rollback", "--env", "staging", "--install", id], w.deps),
-    ).toBe(0);
-    expect(
-      await main(
-        [
-          "update-vars",
-          "--env",
-          "staging",
-          "--install",
-          id,
-          "--var",
-          "FEATURES=spaces",
-        ],
-        w.deps,
-      ),
-    ).toBe(0);
-    expect(
-      w.parsed().find((l) => l.step === "update-vars")?.data,
-    ).toMatchObject({
-      ok: true,
-    });
-    // No lease is held: release-lease is the provisioner's refusal.
-    expect(
-      await main(
-        ["release-lease", "--env", "staging", "--install", id, "--confirm", id],
-        w.deps,
-      ),
-    ).toBe(1);
-    expect(lastLine(w).message).toMatch(/after row/);
-    expect(w.parsed().find((l) => l.step === "release-lease")?.message).toMatch(
-      /holds no lease/,
-    );
-  });
-
-  it("delete with the matching --confirm deletes the install", async () => {
-    const w = world();
-    const id = await created(w);
-    expect(
-      await main(
-        ["delete", "--env", "staging", "--install", id, "--confirm", id],
-        w.deps,
-      ),
-    ).toBe(0);
-    expect(w.parsed().find((l) => l.step === "delete")?.data).toEqual({
-      id,
-      ok: true,
-      state: "deleted",
-    });
-  });
-
-  it("create with --test-hooks on staging uses the redline bundle", async () => {
-    const w = world();
-    expect(
-      await main(
-        [...CREATE(), "--test-hooks", "--var", "TEST_DOMAIN=redline.test"],
-        w.deps,
-      ),
-    ).toBe(0);
-    const sc = [...w.fake.scripts.values()][0];
-    expect(
-      new TextDecoder().decode(sc?.modules.get("index.js")?.bytes),
-    ).toContain("hooksAllowed = true");
-    expect(sc?.secrets.has("TEST_HOOK_KEY")).toBe(true);
-  });
-
-  it("turnstile-init creates the env's widget once and stores it in the keychain over stdin", async () => {
-    const w = world();
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
-    const [wd] = [...w.fake.turnstile.values()];
-    expect(w.keychain.get("oa-hosted-staging-turnstile")).toBe(
-      `${wd?.sitekey}:${wd?.secret}`,
-    );
-    for (const e of w.execs)
-      expect(e.args.join(" ")).not.toContain(String(wd?.secret));
-    expect(w.lines.join("\n")).not.toContain(String(wd?.secret));
-    expect(w.parsed().find((l) => l.step === "turnstile-init")?.data).toEqual({
-      created: true,
-      stored: true,
-    });
-    w.lines.length = 0;
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
-    expect(w.parsed().find((l) => l.step === "turnstile-init")?.data).toEqual({
-      created: false,
-      stored: false,
-    });
-    expect(lastLine(w)).toMatchObject({ step: "audit" });
-    expect(w.fake.turnstile.size).toBe(1);
-  });
-
-  it("turnstile-init refuses a same-named widget that differs", async () => {
-    const w = world();
-    w.fake.turnstile.set("0xEXISTING", {
-      sitekey: "0xEXISTING",
-      name: "oa-s-turnstile",
-      domains: ["example.com"],
-      mode: "managed",
-      secret: "0xexisting-secret",
-    });
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(1);
-    expect(
-      w.parsed().find((l) => l.step === "turnstile-init")?.message,
-    ).toMatch(/differs/);
-    expect(w.fake.turnstile.size).toBe(1);
-  });
-
-  it("create with codes on reads the env's Turnstile keys from the keychain", async () => {
-    const w = world();
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
-    expect(
-      await main([...CREATE(), "--var", "AUTH_PROVIDERS=email"], w.deps),
-    ).toBe(0);
-    const [wd] = [...w.fake.turnstile.values()];
-    const s = [...w.fake.scripts.values()][0];
-    expect(s?.secrets.get("TURNSTILE_SECRET")).toBe(wd?.secret);
-    expect(w.lines.join("\n")).not.toContain(String(wd?.secret));
-  });
-
-  it("upgrade and rollback of a codes-on install read the env's Turnstile keys too", async () => {
-    const w = world();
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
-    expect(
-      await main([...CREATE(), "--var", "AUTH_PROVIDERS=email"], w.deps),
-    ).toBe(0);
-    const id = w.parsed().find((l) => l.step === "create")?.data?.id as string;
-    const [wd] = [...w.fake.turnstile.values()];
-    w.lines.length = 0;
-    expect(
-      await main(
-        ["upgrade", "--env", "staging", "--install", id, "--to", "0.24.0"],
-        w.deps,
-      ),
-    ).toBe(0);
-    expect(
-      await main(["rollback", "--env", "staging", "--install", id], w.deps),
-    ).toBe(0);
-    expect(w.lines.join("\n")).not.toContain(String(wd?.secret));
-  });
-
-  it("owner-token re-mints the owner PAT file without printing it; refused in CI and without --confirm", async () => {
-    const w = world();
-    const id = await created(w);
-    const file = join(
-      w.home,
-      ".open-artifacts",
-      "hosted-staging",
-      "finqore.open-artifacts-staging.app-pat-token",
-    );
-    const before = readFileSync(file, "utf8").trim();
-    expect(
-      await main(
-        ["owner-token", "--env", "staging", "--install", id, "--confirm", id],
-        w.deps,
-      ),
-    ).toBe(0);
-    const after = readFileSync(file, "utf8").trim();
-    expect(after).toMatch(/^oa_pat_/);
-    expect(after).not.toBe(before);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
-    expect(w.parsed().find((l) => l.step === "owner-token")?.data).toEqual({
-      id,
-      patFile: file,
-    });
-    const seen = [...w.lines, ...w.errLines, ...w.execs.flatMap((e) => e.args)];
-    expect(seen.join("\n")).not.toContain(after);
-    expect(w.audit().map((r) => r.action)).toContain("cli.owner-token.done");
-
-    const n = w.lines.length;
-    expect(
-      await main(["owner-token", "--env", "staging", "--install", id], w.deps),
-    ).toBe(1);
-    expect(w.parsed().at(-1)).toMatchObject({ step: "args", status: "error" });
-    expect(w.lines.length).toBe(n + 1);
-
-    const ci = world({ ci: true });
-    ci.files.set("/ci/token", {
-      bytes: new TextEncoder().encode(ci.fake.token),
-      info: { mode: 0o100600, uid: 501, isFile: true },
-    });
-    ci.deps.env.OA_HOSTED_TOKEN_FILE = "/ci/token";
-    expect(
-      await main(
-        [
-          "owner-token",
-          "--env",
-          "staging",
-          "--install",
-          "iaaaaaaaaaaa",
-          "--confirm",
-          "iaaaaaaaaaaa",
-        ],
-        ci.deps,
-      ),
-    ).toBe(1);
-    expect(ci.parsed().find((l) => l.step === "owner-token")?.message).toBe(
-      "owner-token runs on a laptop only",
-    );
-  });
-
   it("publish-release downloads the env's tar and .sig.json with gh, then hands them to publishRelease", async () => {
     const w = world();
     const exec = w.deps.execFile;
     let dir = "";
-    w.deps.execFile = async (f, a, o) => {
-      if (f !== "gh") return exec(f, a, o);
+    w.deps.execFile = async (f, a) => {
+      if (f !== "gh") return exec(f, a);
       w.execs.push({ file: f, args: a });
       dir = a[a.indexOf("--dir") + 1] as string;
       writeFileSync(
@@ -668,80 +395,14 @@ describe("commands", () => {
     ).toBe(true);
   });
 
-  it("release-lease --force releases a live lease; --force elsewhere is refused before any call", async () => {
-    const w = world();
-    const id = await created(w);
-    w.db()
-      .prepare("UPDATE installs SET lease = 'x', lease_until = ? WHERE id = ?")
-      .run(Date.parse("2026-10-27T00:00:00Z"), id);
-    const rl = [
-      "release-lease",
-      "--env",
-      "staging",
-      "--install",
-      id,
-      "--confirm",
-      id,
-    ];
-    expect(await main(rl, w.deps)).toBe(1);
-    expect(w.parsed().find((l) => l.step === "release-lease")?.message).toMatch(
-      /has not expired/,
-    );
-    w.lines.length = 0;
-    expect(await main([...rl, "--force"], w.deps)).toBe(0);
-    expect(
-      w.parsed().find((l) => l.step === "release-lease")?.data,
-    ).toMatchObject({
-      released: true,
-      forced: true,
-    });
-    const v = world();
-    expect(
-      await main(
-        ["status", "--env", "staging", "--install", id, "--force"],
-        v.deps,
-      ),
-    ).toBe(1);
-    expect(lastLine(v).message).toMatch(/--force is for release-lease only/);
-    noCalls(v);
-  });
-
   it("keychain calls use /usr/bin/security, never a PATH lookup", async () => {
     const w = world();
-    await created(w);
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    const id = await created(w);
+    expect(await main(STATUS(id), w.deps)).toBe(0);
+    expect(await main(FLOOR_CMD(), w.deps)).toBe(1);
     const sec = w.execs.filter((e) => /security/.test(e.file));
     expect(sec.length).toBeGreaterThan(2);
     for (const e of sec) expect(e.file).toBe("/usr/bin/security");
-  });
-
-  it("turnstile-init reads the keychain item back: a write that did not land is an error", async () => {
-    const w = world({ keychainWriteNoop: true });
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(1);
-    expect(
-      w.parsed().find((l) => l.step === "turnstile-init")?.message,
-    ).toMatch(/keychain item oa-hosted-staging-turnstile did not store/);
-  });
-
-  it("a create that fails after its id is minted writes the failed row under that id", async () => {
-    const w = world();
-    w.fake.inject((m, p) => m === "PUT" && /\/scripts\/oa-s-[^/]+$/.test(p), {
-      status: 400,
-      times: 5,
-    });
-    expect(await main(CREATE(), w.deps)).toBe(1);
-    const id = (
-      w
-        .db()
-        .prepare("SELECT id FROM installs WHERE slug = 'finqore'")
-        .get() as {
-        id: string;
-      }
-    ).id;
-    expect(w.audit().map((r) => [r.install_id, r.action])).toEqual([
-      ["-", "cli.create.start"],
-      [id, "cli.create.failed"],
-    ]);
   });
 
   it.each([
@@ -767,8 +428,17 @@ describe("commands", () => {
         "iaaaaaaaaaaa",
       ],
     ],
-    [["turnstile-init", "--env", "staging", "--install", "iaaaaaaaaaaa"]],
-    [[...CREATE(), "--var", "NOT_A_VAR=1"]],
+    [
+      [
+        "publish-floor",
+        "--env",
+        "staging",
+        "--floor",
+        "/f",
+        "--tag",
+        "v1.0.0",
+      ],
+    ],
   ])("refused at parse, before any call: %j", async (argv) => {
     const w = world();
     expect(await main(argv, w.deps)).toBe(1);
@@ -777,75 +447,15 @@ describe("commands", () => {
   });
 });
 
-describe("broker: on exactly when the vars turn google on", () => {
-  const GOOGLE = [
-    "--var",
-    "AUTH_PROVIDERS=google",
-    "--var",
-    "AUTH_DOMAINS=finqore.test",
-  ];
-  const entry = (w: W, kv: string, id: string) =>
-    w.fake.kvValues(kv).get(`install:${id}`);
-  const idOf = (w: W, step: string) =>
-    w.parsed().find((l) => l.step === step)?.data?.id as string;
-
-  it("create with google registers the install with the broker (both registry copies, the signing key)", async () => {
-    const w = world();
-    expect(await main([...CREATE(), ...GOOGLE], w.deps)).toBe(0);
-    const id = idOf(w, "create");
-    const reg = entry(w, w.regId, id);
-    expect(reg).toBeDefined();
-    expect(entry(w, w.dirId, id)).toBe(reg);
-    expect(JSON.parse(String(reg))).toMatchObject({
-      installId: id,
-      origin: "https://finqore.open-artifacts-staging.app",
-      domains: ["finqore.test"],
-    });
-    const script = [...w.fake.scripts.values()][0];
-    expect(script?.secrets.has("BROKER_SIGNING_KEY")).toBe(true);
-    // provision derives the env's broker URL; the operator never types it.
-    expect(
-      (
-        (script?.metadata.bindings ?? []) as { name: string; text?: string }[]
-      ).find((b) => b.name === "AUTH_BROKER_URL")?.text,
-    ).toBe("https://auth.open-artifacts-staging.app");
-    expect(
-      (
-        (script?.metadata.bindings ?? []) as { name: string; text?: string }[]
-      ).find((b) => b.name === "GOOGLE_CLIENT_ID")?.text,
-    ).toBe(
-      "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
-    );
-
-    // update-vars keeps the registry in step (the broker stays on).
-    w.lines.length = 0;
-    const next = GOOGLE.map((v) =>
-      v === "AUTH_DOMAINS=finqore.test"
-        ? "AUTH_DOMAINS=finqore.test,fq.test"
-        : v,
-    );
-    expect(
-      await main(
-        ["update-vars", "--env", "staging", "--install", id, ...next],
-        w.deps,
-      ),
-    ).toBe(0);
-    expect(JSON.parse(String(entry(w, w.regId, id))).domains).toEqual([
-      "finqore.test",
-      "fq.test",
-    ]);
-    expect(entry(w, w.dirId, id)).toBe(entry(w, w.regId, id));
-  });
-
+describe("broker: status checks the registry when the vars turn google on", () => {
   it("status of a google install reads with the broker on: a missing entry is drift", async () => {
     const w = world();
-    expect(await main([...CREATE(), ...GOOGLE], w.deps)).toBe(0);
-    const id = idOf(w, "create");
+    const id = await w.seed({
+      AUTH_PROVIDERS: "google",
+      AUTH_DOMAINS: "finqore.test",
+    });
     w.fake.kvValues(w.dirId).delete(`install:${id}`);
-    w.lines.length = 0;
-    expect(
-      await main(["status", "--env", "staging", "--install", id], w.deps),
-    ).toBe(0);
+    expect(await main(STATUS(id), w.deps)).toBe(0);
     expect(
       w.parsed().find((l) => l.step === "status")?.data.registryDrift,
     ).toEqual({
@@ -854,34 +464,13 @@ describe("broker: on exactly when the vars turn google on", () => {
     });
   });
 
-  it("create without google leaves the broker off: no registry entry, no signing key", async () => {
+  it("status of a non-google install: no registry, no drift", async () => {
     const w = world();
-    expect(await main([...CREATE(), "--var", "FEATURES=spaces"], w.deps)).toBe(
-      0,
-    );
-    const id = idOf(w, "create");
-    expect(entry(w, w.regId, id)).toBeUndefined();
-    expect(entry(w, w.dirId, id)).toBeUndefined();
-    expect(
-      [...w.fake.scripts.values()][0]?.secrets.has("BROKER_SIGNING_KEY"),
-    ).toBe(false);
-    w.lines.length = 0;
-    expect(
-      await main(["status", "--env", "staging", "--install", id], w.deps),
-    ).toBe(0);
+    const id = await w.seed({ FEATURES: "spaces" });
+    expect(await main(STATUS(id), w.deps)).toBe(0);
     expect(
       w.parsed().find((l) => l.step === "status")?.data.registryDrift,
     ).toBeNull();
-  });
-
-  it("a google create needs both registry KVs, and refuses before any write without them", async () => {
-    const w = world();
-    w.fake.kv.delete(w.dirId);
-    expect(await main([...CREATE(), ...GOOGLE], w.deps)).toBe(1);
-    expect(w.parsed().find((l) => l.step === "create")?.message).toMatch(
-      /directory registry KV/,
-    );
-    expect(w.fake.scripts.size).toBe(0);
   });
 });
 
@@ -892,82 +481,10 @@ describe("--help", () => {
     const out = w.lines.join("\n");
     expect(out).toBe(HELP);
     for (const c of COMMANDS) expect(out).toContain(c);
-    for (const f of [
-      "--tag",
-      "--floor",
-      "--force",
-      "--confirm",
-      "--test-hooks",
-      "--var",
-    ])
-      expect(out).toContain(f);
+    for (const f of ["--tag", "--floor", "--install"]) expect(out).toContain(f);
+    expect(out).toContain("Provisioning API");
     expect(out).toContain("CLOUDFLARE_ACCOUNT_ID");
     noCalls(w);
-  });
-});
-
-describe("output, with every generated value in play", () => {
-  it("no secret, PAT or broker key appears in stdout for a google + codes create", async () => {
-    const w = world();
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
-    expect(
-      await main(
-        [
-          ...CREATE(),
-          "--var",
-          "AUTH_PROVIDERS=email,google",
-          "--var",
-          "AUTH_DOMAINS=finqore.test",
-        ],
-        w.deps,
-      ),
-    ).toBe(0);
-    const sc = [...w.fake.scripts.values()][0];
-    for (const k of [
-      "BROKER_SIGNING_KEY",
-      "TURNSTILE_SECRET",
-      "SESSION_SECRET",
-    ])
-      expect(sc?.secrets.has(k), k).toBe(true);
-    const generated = new Set<string>([
-      w.fake.token,
-      ...(sc?.secrets.values() ?? []),
-    ]);
-    const patDir = join(w.home, ".open-artifacts", "hosted-staging");
-    for (const f of readdirSync(patDir))
-      generated.add(readFileSync(join(patDir, f), "utf8").trim());
-    const out = w.lines.join("\n");
-    for (const v of generated) {
-      expect(v.length).toBeGreaterThan(8);
-      expect(out).not.toContain(v);
-    }
-  });
-});
-
-describe("L8: a failed create's after row", () => {
-  it("never names another install that holds the slug", async () => {
-    const w = world();
-    const id = await created(w);
-    await w.deps.sleep?.(1000);
-    expect(await main(CREATE(), w.deps)).toBe(1);
-    expect(w.parsed().find((l) => l.step === "create")?.message).toMatch(
-      /already exists as active install/,
-    );
-    expect(
-      w
-        .audit()
-        .slice(-2)
-        .map((r) => [r.install_id, r.action]),
-    ).toEqual([
-      ["-", "cli.create.start"],
-      ["-", "cli.create.failed"],
-    ]);
-    expect(
-      w
-        .audit()
-        .filter((r) => r.install_id === id)
-        .map((r) => r.action),
-    ).toEqual(["cli.create.done"]);
   });
 });
 
@@ -1000,7 +517,7 @@ describe("final round: token file, audit gap, keychain account", () => {
         ...f,
       });
       w.deps.env.OA_HOSTED_TOKEN_FILE = "/ci/token";
-      expect(await main(CREATE(), w.deps)).toBe(1);
+      expect(await main(STATUS("iaaaaaaaaaaa"), w.deps)).toBe(1);
       expect(lastLine(w)).toMatchObject({ step: "token", status: "error" });
       expect(w.fake.log).toEqual([]);
     }
@@ -1104,105 +621,26 @@ describe("final round: token file, audit gap, keychain account", () => {
     await main(["status", "--env", "staging", "--install", id], w.deps);
     w.deps.cf = (c) =>
       cfClient({ ...c, fetch: w.fake.fetch, sleep: async () => {} });
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    const other = await w.seed({}, "acme");
+    expect(await main(STATUS(other), w.deps)).toBe(0);
     expect(readdirSync(pendingDir(w))).toHaveLength(1);
   });
 
-  it("every keychain read and write uses the account open-artifacts", async () => {
+  it("every keychain read uses the account open-artifacts", async () => {
     const w = world();
-    await created(w);
-    expect(await main(["turnstile-init", "--env", "staging"], w.deps)).toBe(0);
+    const id = await created(w);
+    expect(await main(STATUS(id), w.deps)).toBe(0);
+    expect(await main(FLOOR_CMD(), w.deps)).toBe(1);
     const sec = w.execs.filter((e) => e.file === SECURITY);
-    for (const e of sec)
-      if (e.args[0] === "find-generic-password")
-        expect(e.args.slice(1, 3)).toEqual(["-a", "open-artifacts"]);
-      else
-        expect(e.input).toMatch(
-          /^add-generic-password -U -a open-artifacts -s /,
-        );
-    expect(sec.some((e) => e.args[0] === "-i")).toBe(true);
+    expect(sec.length).toBeGreaterThan(1);
+    for (const e of sec) {
+      expect(e.args[0]).toBe("find-generic-password");
+      expect(e.args.slice(1, 3)).toEqual(["-a", "open-artifacts"]);
+    }
   });
 });
 
-describe("H-DV: delete waits for the directory revoke", () => {
-  const DEL = (id: string, ...extra: string[]) => [
-    "delete",
-    "--env",
-    "staging",
-    "--install",
-    id,
-    "--confirm",
-    id,
-    ...extra,
-  ];
-
-  it("prints phase-2 progress, one line per poll at most every 60 s", async () => {
-    const w = world();
-    const id = await created(w);
-    let polls = 0;
-    w.fake.revoker = (db, rid) => {
-      if (++polls === 6)
-        db.prepare(
-          "UPDATE installs SET directory_revoke = 'done', directory_revoked_at = directory_revoke_requested_at WHERE id = ?",
-        ).run(rid);
-    };
-    expect(await main(DEL(id), w.deps)).toBe(0);
-    const prog = w.parsed().filter((l) => l.step === "directory-revoke");
-    expect(prog.map((l) => l.data)).toEqual([
-      { state: "pending", attempts: 0, waitedMs: 0 },
-      { state: "pending", attempts: 0, waitedMs: 60_000 },
-    ]);
-    expect(w.parsed().find((l) => l.step === "delete")?.data).toMatchObject({
-      state: "deleted",
-    });
-  });
-
-  it("--skip-directory-revoke <reason> skips the wait and prints that the grant stays live", async () => {
-    const w = world();
-    const id = await created(w);
-    w.fake.revoker = null;
-    expect(
-      await main(DEL(id, "--skip-directory-revoke", "tenant closed"), w.deps),
-    ).toBe(0);
-    const out = w.lines.join("\n");
-    expect(out).toContain(
-      "the Google grant stays live; revoke it in the customer's Google Admin console",
-    );
-    expect(w.parsed().filter((l) => l.step === "directory-revoke")).toEqual([]);
-  });
-
-  it.each([
-    [["--skip-directory-revoke", ""]],
-    [["--skip-directory-revoke", "   "]],
-  ])("an empty skip reason is refused before any call: %j", async (extra) => {
-    const w = world();
-    expect(await main(DEL("iaaaaaaaaaaa", ...extra), w.deps)).toBe(1);
-    expect(lastLine(w)).toMatchObject({ step: "args", status: "error" });
-    noCalls(w);
-  });
-
-  it("--skip-directory-revoke on another command is refused before any call", async () => {
-    const w = world();
-    expect(
-      await main(
-        [
-          "status",
-          "--env",
-          "staging",
-          "--install",
-          "iaaaaaaaaaaa",
-          "--skip-directory-revoke",
-          "x",
-        ],
-        w.deps,
-      ),
-    ).toBe(1);
-    expect(lastLine(w).message).toMatch(
-      /--skip-directory-revoke is for delete only/,
-    );
-    noCalls(w);
-  });
-
+describe("H-DV: status shows the directory revoke", () => {
   it("status shows directory_revoke", async () => {
     const w = world();
     const id = await created(w);
@@ -1211,9 +649,7 @@ describe("H-DV: delete waits for the directory revoke", () => {
         "UPDATE installs SET state = 'deleting', directory_revoke = 'pending', directory_revoke_attempts = 2 WHERE id = ?",
       )
       .run(id);
-    expect(
-      await main(["status", "--env", "staging", "--install", id], w.deps),
-    ).toBe(0);
+    expect(await main(STATUS(id), w.deps)).toBe(0);
     expect(
       w.parsed().find((l) => l.step === "status")?.data.directoryRevoke,
     ).toEqual({
@@ -1300,7 +736,7 @@ describe("H-S3: R2 credentials for publish", () => {
 
   it("only publish commands read the R2 item", async () => {
     const w = world();
-    await created(w);
+    expect(await main(STATUS(await created(w)), w.deps)).toBe(0);
     expect(r2Reads(w)).toEqual([]);
   });
 
@@ -1439,31 +875,12 @@ describe("H-S3: R2 credentials for publish", () => {
       ...first,
       ...w.lines,
       ...w.errLines,
-      ...w.execs.flatMap((e) => [...e.args, e.input ?? ""]),
+      ...w.execs.flatMap((e) => e.args),
       JSON.stringify(w.db().prepare("SELECT * FROM hosted_audit").all()),
     ].join("\n");
     for (const v of halves(w)) {
       expect(v.length).toBeGreaterThan(8);
       expect(seen).not.toContain(v);
     }
-  });
-});
-
-describe("health is this install's (review item 43)", () => {
-  it("a create whose /healthz reports another install's id fails at the health check", async () => {
-    const w = world();
-    w.fake.health = () => ({
-      ok: true,
-      plan: "paid",
-      version: "0.23.0",
-      installId: "izzzzzzzzzzz",
-    });
-    expect(await main(CREATE(), w.deps)).not.toBe(0);
-    expect(w.parsed().some((l) => l.status === "error")).toBe(true);
-  });
-
-  it("the same create passes when /healthz reports this install", async () => {
-    const w = world();
-    expect(await main(CREATE(), w.deps)).toBe(0);
   });
 });

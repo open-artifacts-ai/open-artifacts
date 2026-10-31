@@ -83,8 +83,9 @@ export function fileGap(path: string | undefined, what: string): string | null {
 /** The red-line tenants' letters (docs/ops/redline-signin.md): rl-a is A, rl-b is C. */
 const TENANT = { a: "A", b: "C" } as const;
 
+/** R26 on the staging Provisioning API (the CLI's redline-creds is retired, W9b). */
 const CREDS_CMD = (installId: string) =>
-  `pnpm oa:hosted redline-creds --install ${installId} --confirm ${installId}`;
+  `POST /v1/installs/${installId}/redline-creds on the staging Provisioning API (R26)`;
 
 interface RawTarget {
   name?: unknown;
@@ -133,7 +134,7 @@ export function fileChecks(env: Record<string, string | undefined>): Check[] {
           ? {
               name: `${name} PAT file`,
               status: "gap",
-              detail: `${g}; run \`${CREDS_CMD(id)}\` (writes the 0600 copy)`,
+              detail: `${g}; mint it with \`${CREDS_CMD(id)}\` and write the 0600 copy`,
             }
           : { name: `${name} PAT file`, status: "ok", detail: "0600" },
       );
@@ -409,7 +410,7 @@ export async function networkChecks(
       out.push({
         name: `${t.name} members`,
         status: "gap",
-        detail: `no admin PAT to read members: run \`${CREDS_CMD(t.installId)}\``,
+        detail: `no admin PAT to read members: mint it with \`${CREDS_CMD(t.installId)}\``,
       });
       continue;
     }

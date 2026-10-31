@@ -1,6 +1,8 @@
 // The CLI's test world: provision's in-memory Cloudflare, a signed release
 // store (the shape of wfp-lifecycle.test.ts's harness), a stub keychain and
 // git, and every value a run generates or holds secret, for the output scan.
+// Installs are seeded through WfpProvisioner directly (the CLI has no
+// create since W9b).
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,13 +14,16 @@ import {
   canonicalJson,
   cfClient,
   type Env,
+  HOSTED_DOMAINS,
   hostsKvTitle,
   migrationsSha256,
   platformNames,
   type ReleaseReader,
   type ReleaseRecord,
+  NAMESPACES,
   r2S3Client,
   TEST_HOOKS_DEFINE,
+  WfpProvisioner,
 } from "@oa/provision";
 import { FakeCf } from "../../../packages/provision/test/fake-cf.ts";
 import type { Deps } from "../src/cli.ts";
@@ -127,9 +132,7 @@ function releases(env: Env): ReleaseReader {
 
 export const ACTOR = "ops@example.com";
 
-export function world(
-  o: { env?: Env; ci?: boolean; keychainWriteNoop?: boolean } = {},
-) {
+export function world(o: { env?: Env; ci?: boolean } = {}) {
   const env = o.env ?? "staging";
   const fake = new FakeCf({ now: NOW });
   const pdb = fake.seedD1(platformNames(env).db, PLATFORM_SQL);
@@ -143,7 +146,7 @@ export function world(
   const home = mkdtempSync(join(tmpdir(), "oa-hosted-home-"));
   const lines: string[] = [];
   const errLines: string[] = [];
-  const execs: { file: string; args: string[]; input?: string }[] = [];
+  const execs: { file: string; args: string[] }[] = [];
   /** Keychain items by service name. */
   const keychain = new Map<string, string>([
     [`oa-hosted-${env}`, fake.token],
@@ -162,7 +165,7 @@ export function world(
   >();
   const cfCalls: { accountId: string }[] = [];
   let t = NOW;
-  const deps: Deps = {
+  const deps: Deps & { now: () => number } = {
     out: (l) => lines.push(l),
     err: (l) => errLines.push(l),
     env: {
@@ -178,8 +181,8 @@ export function world(
     },
     home,
     uid: 501,
-    execFile: async (file, args, opt) => {
-      execs.push({ file, args, ...(opt?.input ? { input: opt.input } : {}) });
+    execFile: async (file, args) => {
+      execs.push({ file, args });
       if (file === "git") return `${ACTOR}\n`;
       if (file === SECURITY && args[0] === "find-generic-password") {
         // The real items carry the account open-artifacts; another misses.
@@ -191,14 +194,6 @@ export function world(
         const v = keychain.get(args[args.indexOf("-s") + 1] as string);
         if (v === undefined) throw new Error("security exited 44");
         return `${v}\n`;
-      }
-      if (file === SECURITY && args[0] === "-i") {
-        if (o.keychainWriteNoop) return "";
-        const m = opt?.input?.match(/-a (\S+) -s (\S+) -w (\S+)\n$/);
-        if (!m) throw new Error("bad security -i input");
-        if (m[1] !== KEYCHAIN_ACCOUNT) throw new Error("wrong account");
-        keychain.set(m[2] as string, m[3] as string);
-        return "";
       }
       throw new Error(`unexpected exec ${file}`);
     },
@@ -229,7 +224,48 @@ export function world(
     },
   };
   const db = () => (fake.d1.get(pdb) as { db: DatabaseSync }).db;
+  /** An active install on 0.23.0, created by the provisioner itself. */
+  const seed = async (
+    vars: Record<string, string> = {},
+    slug = "finqore",
+  ): Promise<string> => {
+    const broker = /google/.test(vars.AUTH_PROVIDERS ?? "");
+    const prov = new WfpProvisioner({
+      cf: cfClient({
+        accountId: fake.accountId,
+        token: fake.token,
+        fetch: fake.fetch,
+        sleep: async () => {},
+      }),
+      env,
+      target: { kind: "namespace", ns: NAMESPACES[env] },
+      domains: HOSTED_DOMAINS[env],
+      release: releases(env),
+      patDir: join(home, ".open-artifacts", `hosted-${env}`),
+      brokerEnabled: broker,
+      requireInstallId: true,
+      fetch: fake.fetch,
+      now: deps.now,
+      sleep: async (ms) => {
+        t += ms;
+      },
+    });
+    const inst = await prov.create({
+      slug,
+      ownerEmail: `owner@${slug}.test`,
+      plan: "paid",
+      vars,
+      testHooks: false,
+      bundle: "release",
+      version: "0.23.0",
+    });
+    // The seed's own Cloudflare calls are not the CLI's.
+    fake.log.length = 0;
+    fake.raw.length = 0;
+    return inst.id;
+  };
   return {
+    seed,
     env,
     fake,
     deps,

@@ -1,4 +1,5 @@
-// The one-time per-env Turnstile widget (`oa:hosted turnstile-init`, Task 8).
+// The one-time per-env Turnstile widget (Task 8; the CLI's turnstile-init is
+// retired, W9b).
 // One widget per env, named platformNames(env).turnstile, managed, with
 // exactly the env's app domain (a hostname covers its subdomains). Its keys
 // go to the caller's store (the keychain item oa-hosted-<env>-turnstile);

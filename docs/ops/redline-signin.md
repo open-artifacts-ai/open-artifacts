@@ -21,8 +21,10 @@ a green preflight leave only the Google sign-ins to you.
 
 - A Mac with this repo, `REDLINE_TARGETS` for `rl-a`/`rl-b` (the kit's
   `targets.json`, with `strayHost`) and its 0600 secret files. The admin PAT
-  copies come from `pnpm oa:hosted redline-creds --install <id> --confirm <id>`
-  (one run per install; it writes `~/.open-artifacts/redline-capture/secrets/`).
+  copies come from R26 (`POST /v1/installs/<id>/redline-creds` on the staging
+  Provisioning API, one call per install), written as 0600 files in
+  `~/.open-artifacts/redline-capture/secrets/`. The CLI's `redline-creds` is
+  retired (W9b).
 - The passwords of `alice@oa-redline-a.fyi` and `dave@oa-redline-c.fyi`
   (password manager).
 - Once, by an admin: `rl-a` has Google sign-in on, `AUTH_DOMAINS=oa-redline-a.fyi`
@@ -42,7 +44,7 @@ only, and nothing secret is printed.
 
 | Check | Gap means |
 |---|---|
-| Each install's admin PAT file exists, mode 0600 | run the `redline-creds` command it prints |
+| Each install's admin PAT file exists, mode 0600 | mint it with the R26 call it prints |
 | Each install's Turnstile token file exists, mode 0600 | set `turnstileFile` on that target |
 | `strayHost` is set in `REDLINE_TARGETS` | add it to the kit's `targets.json` |
 | Both `/healthz` versions are equal and at least the suite's release | upgrade the installs first |

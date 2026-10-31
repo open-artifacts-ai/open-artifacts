@@ -1,8 +1,7 @@
 # shellcheck shell=bash
-# Sourced by the hosted CI scripts (hosted-resource-ids.sh,
-# hosted-turnstile-keys.sh, hosted-r2-key.sh): Cloudflare API reads with the
-# one Environment token, CLOUDFLARE_API_TOKEN. The token reaches curl on stdin
-# (-K -), never argv, and is never printed. Every failure exits 1. Callers
+# Sourced by the hosted CI scripts (hosted-resource-ids.sh, hosted-r2-key.sh):
+# Cloudflare API reads with the one Environment token, CLOUDFLARE_API_TOKEN.
+# The token reaches curl on stdin (-K -), never argv, and is never printed. Every failure exits 1. Callers
 # add `|| exit 1` to each $(...) of these: bash 3.2 has no inherit_errexit.
 
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
