@@ -12,7 +12,7 @@ import { type AuditEntry, audit } from "../audit.js";
 import { LazyBody } from "../body.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
-import { limit } from "../limits.js";
+import { limitRoute } from "../limits.js";
 import type { Principal } from "../principal.js";
 import { countRateLimited } from "../refuse.js";
 import { HANDLERS } from "./handlers.js";
@@ -95,7 +95,12 @@ export async function invokeRoute(
   surface: Surface,
 ): Promise<RouteResult> {
   const def = ROUTES[route];
-  const r = await limit(env, def.write ? "write" : "read", principal.rateKey);
+  const r = await limitRoute(
+    env,
+    def.write ? "write" : "read",
+    principal,
+    route,
+  );
   if (r) {
     if (r.code === "rate_limited")
       await countRateLimited(env, principal.rateKey);
