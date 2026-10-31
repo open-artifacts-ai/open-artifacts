@@ -28,6 +28,8 @@ const RL = [
   ["RL_PV_READ", 300],
   ["RL_PV_SLUG_IP", 30],
   ["RL_PV_OAUTH_IP", 20],
+  ["RL_PV_ADMIN_ESCAPE", 60],
+  ["RL_PV_TOKEN_WRITE", 10],
 ] as const;
 const NS0 = { staging: 1141, prod: 1151 } as const;
 const OIDC = [
@@ -113,7 +115,7 @@ describe("wrangler.jsonc", () => {
         });
       });
 
-      it("binds the six rate limits with their namespace ids", () => {
+      it("binds the eight rate limits with their namespace ids", () => {
         expect(e.ratelimits).toEqual(
           RL.map(([name, limit], i) => ({
             name,
