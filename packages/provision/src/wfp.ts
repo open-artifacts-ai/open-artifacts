@@ -15,8 +15,10 @@
 //   -> KV (ids resolved by name and checked against the row) -> server
 //   migrations (re-read and re-checked) -> upload (modules, assets and
 //   template re-read and re-checked; secret_text bindings, DO tag probe)
-//   -> subdomain off (account only) -> broker keypair (flag) -> HOSTS
-//   -> /healthz -> owner PAT (0600) -> MCP selftest -> active.
+//   -> subdomain off (account only) -> broker keypair (flag; the sign-in
+//   copy disabled) -> verify_clean -> /healthz, owner PAT (0600) and MCP
+//   selftest through a directFetch -> HOSTS -> enable_signin -> active.
+//   With the public route (the CLI), HOSTS comes before /healthz.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import {
