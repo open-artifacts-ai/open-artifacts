@@ -171,6 +171,7 @@ export function createClient(opts: ClientOptions = {}) {
   return {
     request,
     call,
+    redirect,
     logout,
     me,
     get: <T>(path: string) => request<T>(path),

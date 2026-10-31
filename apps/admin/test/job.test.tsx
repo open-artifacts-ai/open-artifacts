@@ -1,6 +1,6 @@
 import type { Job } from "@oa/shared/provisioning";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { JOB_POLL_MS, jobIsTerminal, jobQuery } from "../src/api/queries";
 import { FIXTURE_IDS, jobsByStatus } from "../src/mocks/fixtures";
 import { http, json, renderApp, seen, use, writes } from "./harness";
@@ -76,26 +76,56 @@ it("polls every 2 s while the job is active and not once it is done or failed", 
 });
 
 it("keeps polling a running job, then stops once it is done", async () => {
-  let n = 0;
-  use(
-    http.get(`*/api/v1/jobs/${JOB}`, () =>
-      json(++n < 3 ? jobsByStatus.running : jobsByStatus.done),
-    ),
-  );
-  renderApp(`/jobs/${JOB}`);
-  await screen.findByTestId("status");
-  await waitFor(
-    () => expect(screen.getByTestId("status")).toHaveTextContent("done"),
-    {
-      timeout: 9000,
-    },
-  );
-  const calls = () =>
-    seen.filter((s) => s.path.endsWith(`/jobs/${JOB}`)).length;
-  const settled = calls();
-  expect(settled).toBe(3);
-  await new Promise((r) => setTimeout(r, JOB_POLL_MS + 500));
-  expect(calls()).toBe(settled);
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    let n = 0;
+    use(
+      http.get(`*/api/v1/jobs/${JOB}`, () =>
+        json(++n < 3 ? jobsByStatus.running : jobsByStatus.done),
+      ),
+    );
+    renderApp(`/jobs/${JOB}`);
+    await screen.findByTestId("status");
+    const calls = () =>
+      seen.filter((s) => s.path.endsWith(`/jobs/${JOB}`)).length;
+    expect(calls()).toBe(1);
+    for (const want of [2, 3]) {
+      await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
+      await waitFor(() => expect(calls()).toBe(want));
+    }
+    await waitFor(() =>
+      expect(screen.getByTestId("status")).toHaveTextContent("done"),
+    );
+    await vi.advanceTimersByTimeAsync(JOB_POLL_MS * 5);
+    expect(calls()).toBe(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("stops polling when the job cannot be loaded", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    use(
+      http.get(`*/api/v1/jobs/${JOB}`, () =>
+        json({ error: { code: "not_found", message: "x" } }, 404),
+      ),
+    );
+    renderApp(`/jobs/${JOB}`);
+    await screen.findByText("Job not found");
+    const calls = () =>
+      seen.filter((s) => s.path.endsWith(`/jobs/${JOB}`)).length;
+    const once = calls();
+    await vi.advanceTimersByTimeAsync(JOB_POLL_MS * 5);
+    expect(calls()).toBe(once);
+    const interval = jobQuery(JOB).refetchInterval as (q: {
+      state: { data?: Job; status: string };
+    }) => number | false;
+    expect(interval({ state: { status: "error" } })).toBe(false);
+    expect(interval({ state: { status: "pending" } })).toBe(2000);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("cancels with the install slug typed", async () => {

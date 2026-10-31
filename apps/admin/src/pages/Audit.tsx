@@ -1,3 +1,4 @@
+import { InstallIdSchema } from "@oa/shared/provisioning";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -11,7 +12,12 @@ export function Audit({ installId }: { installId?: string }) {
   const navigate = useNavigate();
   const paging = usePaging();
   const [draft, setDraft] = useState(installId ?? "");
-  const q = useQuery(auditQuery({ cursor: paging.cursor, installId }));
+  const valid = !installId || InstallIdSchema.safeParse(installId).success;
+  const [bad, setBad] = useState(false);
+  const q = useQuery({
+    ...auditQuery({ cursor: paging.cursor, installId }),
+    enabled: valid,
+  });
   return (
     <>
       <h1>Audit</h1>
@@ -19,6 +25,9 @@ export function Audit({ installId }: { installId?: string }) {
         className="oa-filter"
         onSubmit={(e) => {
           e.preventDefault();
+          const id = draft.trim();
+          setBad(id !== "" && !InstallIdSchema.safeParse(id).success);
+          if (id !== "" && !InstallIdSchema.safeParse(id).success) return;
           paging.reset();
           void navigate({
             to: "/audit",
@@ -36,12 +45,25 @@ export function Audit({ installId }: { installId?: string }) {
         {installId && (
           <>
             {" "}
-            <Link to="/audit" search={{ installId: undefined }}>
+            <Link
+              to="/audit"
+              search={{ installId: undefined }}
+              onClick={() => {
+                paging.reset();
+                setDraft("");
+                setBad(false);
+              }}
+            >
               Clear filter
             </Link>
           </>
         )}
       </form>
+      {(bad || !valid) && (
+        <p className="oa-error" role="alert">
+          That is not an install id.
+        </p>
+      )}
       {q.isError ? (
         <LoadError
           title="Couldn't load the audit log"

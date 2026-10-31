@@ -34,7 +34,7 @@ it("says there are no instances yet when there are none", async () => {
     http.get("*/api/v1/world", () => json(emptyWorld("staging"))),
   );
   renderApp("/installs");
-  expect(await screen.findByText("No instances yet.")).toBeInTheDocument();
+  expect(await screen.findByText("No installs yet.")).toBeInTheDocument();
 });
 
 it("filters by state and says so when nothing matches", async () => {
@@ -97,7 +97,7 @@ it("shows a load error with retry", async () => {
   fireEvent.click(
     within(alert as HTMLElement).getByRole("button", { name: "Retry" }),
   );
-  expect(await screen.findByText("No instances yet.")).toBeInTheDocument();
+  expect(await screen.findByText("No installs yet.")).toBeInTheDocument();
   await waitFor(() =>
     expect(screen.queryByText("Couldn't load installs")).toBeNull(),
   );
