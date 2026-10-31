@@ -27,7 +27,11 @@
 import { type HttpHandler, HttpResponse, http } from "msw";
 import { checkCreateFields, TRANSITIONS } from "../provisioning/authz.js";
 import { bodyHash } from "../provisioning/bodyhash.js";
-import { JOB_STEPS, type ProvisioningEnv } from "../provisioning/enums.js";
+import {
+  JOB_STEPS,
+  jobStepsFor,
+  type ProvisioningEnv,
+} from "../provisioning/enums.js";
 import {
   API_ERROR_STATUS,
   type ApiErrorCode,
@@ -178,7 +182,7 @@ export function createProvisioningMock(
     args: Record<string, unknown>,
   ): Job => {
     const kind = r.job ?? "create";
-    const steps = [...JOB_STEPS[kind]];
+    const steps = [...jobStepsFor(kind, args)];
     const j: Job = {
       id: mockUlid(++seq),
       kind,

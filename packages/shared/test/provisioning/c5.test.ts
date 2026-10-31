@@ -368,6 +368,7 @@ function graph(entry: string): Set<string> {
 
 const CONST_SUBPATHS = {
   "./provisioning/alerts": "provisioning/alerts.ts",
+  "./provisioning/constants": "provisioning/constants.ts",
   "./provisioning/enum-values": "provisioning/enum-values.ts",
   "./provisioning/error-codes": "provisioning/error-codes.ts",
   "./provisioning/state": "provisioning/state.ts",
