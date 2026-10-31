@@ -289,6 +289,34 @@ describe("R27 /world", () => {
     expect(JSON.stringify(w)).not.toContain("ciphertext");
   });
 
+  it("owner emails: R27 carries none, with or without installs:pii (R3 is where pii shows one)", async () => {
+    const a = await seedInstall({ ownerEmail: "owner@pii.test" });
+    await seedInstall({
+      ownerEmail: "failing@pii.test",
+      lifecycle: { health: "failing" },
+    });
+    const f = await seedFailedCreate();
+    await insert("signup_secret", {
+      signup_id: f.jobId,
+      owner_email: "pending@pii.test",
+    });
+    const e = fakeEnv();
+    const READ = tokenP(["installs:read"]);
+    const PII = tokenP(["installs:read", "installs:pii"]);
+    for (const p of [READ, PII, ADMIN_P]) {
+      const r = await call(e, p, "R27");
+      expect(r.status).toBe(200);
+      const w = WorldSchema.parse(r.body);
+      expect(w.attention.length).toBeGreaterThan(0);
+      expect(JSON.stringify(w)).not.toContain("pii.test");
+    }
+    // The gate itself: R3 shows the email only with installs:pii.
+    const r3 = async (p: typeof READ) =>
+      (await call(e, p, "R3", { params: { id: a.id } })).body.ownerEmail;
+    expect(await r3(READ)).toBeNull();
+    expect(await r3(PII)).toBe("owner@pii.test");
+  });
+
   it("jobs: active and failed24h", async () => {
     const a = await seedInstall();
     await seedJob(a.id, { status: "running" });

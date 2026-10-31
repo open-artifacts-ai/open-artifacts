@@ -161,6 +161,32 @@ describe("GitHub OIDC principal (4.4)", () => {
     ).toEqual(unauth);
   });
 
+  it("prod refuses the oidc kind and an x-oa-test-user caller at authn, before any JWKS fetch", async () => {
+    for (const OA_ENV of ["prod"] as const)
+      for (const headers of [
+        {} as Record<string, string>,
+        { "x-oa-test-user": "a" },
+      ]) {
+        let calls = 0;
+        const o: VerifyOptions = {
+          ...vopts(),
+          fetch: (async () => {
+            calls++;
+            return new Response(JSON.stringify({ keys: [jwk] }));
+          }) as typeof fetch,
+        };
+        expect(
+          await oidcPrincipal(
+            req(headers),
+            stagingEnv({ OA_ENV }),
+            await jwt(),
+            o,
+          ),
+        ).toEqual(unauth);
+        expect(calls).toBe(0);
+      }
+  });
+
   it("another host refuses (the prod api host, a staging tenant)", async () => {
     for (const host of ["api.open-artifacts.app", "api.hosted.test"])
       expect(

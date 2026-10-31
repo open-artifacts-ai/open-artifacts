@@ -9,6 +9,7 @@ import {
   OAUTH_ACCESS_TTL_S,
   OAUTH_GRANT_MAX_MS,
   oauthLabel,
+  principalByBearer,
   principalByTokenId,
   revokeAllTokens,
   revokeToken,
@@ -394,7 +395,7 @@ describe("mintAgentToken: who may mint", () => {
   it("refuses without a live session row", async () => {
     const db = await platformDb();
     const a = await seedAdmin(db, T);
-    const { sessionHash: _drop, ...noHash } = a.principal;
+    const { session: _drop, ...noHash } = a.principal;
     expect((await apiCode(mintAgentToken(a.env, noHash, oat()))).code).toBe(
       "unauthenticated",
     );
@@ -743,5 +744,46 @@ describe("principalByTokenId (the oauth path's D1 check per call)", () => {
     expect(
       await principalByTokenId(env, "01J00000000000000000000000", "oauth"),
     ).toEqual({ refusal: true, code: "unauthenticated", reason: "revoked" });
+  });
+});
+
+describe("principalByBearer: token hashes compared in constant time (4.1)", () => {
+  it("the row's token_hash must equal the bearer's hash, checked after the lookup", async () => {
+    const db = await platformDb();
+    const { env, principal } = await seedAdmin(db, T);
+    const m = await mintAgentToken(env, principal, oat());
+    const bearer = m.token as string;
+    expect(await principalByBearer(env, bearer)).toMatchObject({
+      kind: "token",
+      tokenId: m.tokenId,
+    });
+    // A lookup that hands back a row for another hash (case-folding, a bad
+    // index) is refused by the explicit compare, not trusted.
+    const row = await rowOf(db, m.tokenId);
+    const lying = {
+      ...env,
+      PLATFORM_DB: new Proxy(db, {
+        get: (t, k) =>
+          k === "prepare"
+            ? (sql: string) => {
+                const st = t.prepare(sql);
+                if (!sql.includes("WHERE token_hash")) return st;
+                return {
+                  bind: () => ({
+                    first: async () => ({
+                      ...row,
+                      token_hash: `${row?.token_hash?.slice(0, -1)}0`,
+                    }),
+                  }),
+                };
+              }
+            : Reflect.get(t, k),
+      }),
+    } as typeof env;
+    expect(await principalByBearer(lying, bearer)).toEqual({
+      refusal: true,
+      code: "unauthenticated",
+      reason: "revoked",
+    });
   });
 });

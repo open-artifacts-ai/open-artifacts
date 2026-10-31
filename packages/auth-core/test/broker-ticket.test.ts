@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   BROKER_TICKET_TTL_MS,
-  isPlatformPrincipal,
+  isPlatformPrincipalId,
   PLATFORM_PRINCIPAL_IDS,
   signBrokerTicket,
   ticketTranscript,
@@ -137,7 +137,7 @@ describe("broker ticket", () => {
 
   test("platform principals", () => {
     expect(PLATFORM_PRINCIPAL_IDS).toEqual(["i000000admin", "i00000signup"]);
-    expect(isPlatformPrincipal("i000000admin")).toBe(true);
-    expect(isPlatformPrincipal("iabcdefghijk")).toBe(false);
+    expect(isPlatformPrincipalId("i000000admin")).toBe(true);
+    expect(isPlatformPrincipalId("iabcdefghijk")).toBe(false);
   });
 });

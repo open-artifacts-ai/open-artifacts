@@ -3,27 +3,26 @@ import {
   type ApiRouteId,
   authorize,
   INSTALL_ID_RE,
-  OIDC_LIMITS,
   REQUEST_ID_RE,
   ROUTES,
   type RouteDef,
   ULID_RE,
 } from "@oa/shared/provisioning";
 import { type AuditEntry, audit } from "../audit.js";
-import { isOidcTestUser } from "../auth/oidc.js";
 import { LazyBody } from "../body.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { limit } from "../limits.js";
 import type { Principal } from "../principal.js";
 import { countRateLimited } from "../refuse.js";
-import { recordTokenUse } from "../services/tokens.js";
 import { HANDLERS } from "./handlers.js";
+import { onAuthenticated } from "./hooks.js";
 
 // The one entry point both surfaces call (design v7 9A.4). It runs the
 // post-authn part of the 4.2 check order: rate limit -> authz (authz.ts) ->
 // schema -> policy -> business -> handler -> audit, and throws ApiError on
-// any refusal.
+// any refusal. W4 writes authz.refused and job.refused here; other streams
+// plug in through onAuthenticated (hooks.ts), never by editing this body.
 // The browser routes (R22-R24: cookies, Set-Cookie, redirects) never come
 // here: W5a builds them beside it in src/auth/, and the adapter short-circuits
 // them, so the type leaves them out: `route` is ApiRouteId (shared), the
@@ -98,17 +97,11 @@ export async function invokeRoute(
   const def = ROUTES[route];
   const r = await limit(env, def.write ? "write" : "read", principal.rateKey);
   if (r) {
-    // 4.9: any 429 is counted (audit_refusals), on both surfaces.
     if (r.code === "rate_limited")
       await countRateLimited(env, principal.rateKey);
     throw new ApiError(r.code);
   }
-  // authorize() refuses the oidc kind outside staging (Q1); an OIDC test
-  // user is kind "user", so it gets the same refusal here (4.4).
-  const d =
-    isOidcTestUser(principal) && !OIDC_LIMITS.envs.includes(env.OA_ENV)
-      ? ({ ok: false, code: "unauthenticated" } as const)
-      : authorize(route, principal, env.OA_ENV);
+  const d = authorize(route, principal, env.OA_ENV);
   if (!d.ok) {
     await tryAudit(env, {
       action: "authz.refused",
@@ -120,8 +113,10 @@ export async function invokeRoute(
     });
     throw new ApiError(d.code);
   }
-  // token.used (4.9): off the response path; a failed write never fails the call.
-  ctx.waitUntil(recordTokenUse(env, principal, route, surface).catch(() => {}));
+  // The one hook (hooks.ts): W5b's token.used. It never fails the call.
+  try {
+    onAuthenticated({ env, ctx, principal, route, surface });
+  } catch {}
   let input2: RouteInput = input;
   try {
     // The HTTP body step (415, 413, JSON) runs here, as part of schema.

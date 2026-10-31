@@ -14,6 +14,47 @@ export const GITHUB_OIDC_EVENT_NAMES = [
   "workflow_dispatch",
 ] as const;
 
+/** The one GitHub environment 4.4 admits; OIDC_ENVIRONMENT must equal it. */
+export const GITHUB_OIDC_ENVIRONMENT = "redline-staging";
+
+/** The OIDC_* vars every caller (provisioning 4.4, inventory 6.3) sets. */
+export type OidcEnv = {
+  OIDC_AUDIENCE?: string;
+  OIDC_REPOSITORY?: string;
+  OIDC_REPOSITORY_ID?: string;
+  /** Comma-separated `job_workflow_ref` values. */
+  OIDC_JOB_WORKFLOW_REFS?: string;
+  OIDC_ENVIRONMENT?: string;
+};
+
+/**
+ * The pins from a Worker's OIDC_* vars, or null (fail closed) when any is
+ * missing or empty, or OIDC_ENVIRONMENT is not GITHUB_OIDC_ENVIRONMENT, so a
+ * config edit can drop OIDC but never widen it.
+ */
+export function pinsFromEnv(env: OidcEnv): Pins | null {
+  const refs = (env.OIDC_JOB_WORKFLOW_REFS ?? "")
+    .split(",")
+    .map((r) => r.trim())
+    .filter(Boolean);
+  const { OIDC_AUDIENCE, OIDC_REPOSITORY, OIDC_REPOSITORY_ID } = env;
+  if (
+    !OIDC_AUDIENCE ||
+    !OIDC_REPOSITORY ||
+    !OIDC_REPOSITORY_ID ||
+    env.OIDC_ENVIRONMENT !== GITHUB_OIDC_ENVIRONMENT ||
+    refs.length === 0
+  )
+    return null;
+  return {
+    audience: OIDC_AUDIENCE,
+    repository: OIDC_REPOSITORY,
+    repositoryId: OIDC_REPOSITORY_ID,
+    jobWorkflowRefs: refs,
+    environment: GITHUB_OIDC_ENVIRONMENT,
+  };
+}
+
 /** What a caller pins; every field must match the token exactly. */
 export type Pins = {
   /** `aud` (OIDC_AUDIENCE). */

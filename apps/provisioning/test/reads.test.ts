@@ -67,7 +67,7 @@ describe("R1 /me", () => {
   it("session and token facts by the W5a/W5b Principal names", async () => {
     const admin = {
       ...ADMIN_P,
-      session: { hash: "h", csrf: "c1", expiresAt: NOW + 1000 },
+      session: { hash: "h", csrf: "c1", expiresAt: NOW + 1000, authAt: 0 },
     };
     expect((await call(fakeEnv(), admin, "R1")).body).toMatchObject({
       csrf: "c1",
@@ -130,6 +130,17 @@ describe("R2 list and R3 detail", () => {
     expect(failed.body.items[0].appHost).toBe("lsfail.hosted.test");
     const q = await call(e, ADMIN_P, "R2", { query: { q: "ls3" } });
     expect(q.body.items).toHaveLength(1);
+    const slugsFor = async (v: string) =>
+      (await call(e, ADMIN_P, "R2", { query: { q: v } })).body.items.map(
+        (i: { slug: string }) => i.slug,
+      );
+    // A slug substring, case-insensitive; never a host, never a wildcard.
+    expect(await slugsFor("S3")).toEqual(["ls3"]);
+    expect(await slugsFor("fai")).toEqual(["lsfail"]);
+    expect(await slugsFor("hosted")).toEqual([]);
+    expect(await slugsFor("ls3.hosted.test")).toEqual([]);
+    expect(await slugsFor("%")).toEqual([]);
+    expect(await slugsFor("l_3")).toEqual([]);
     expect(
       (await call(e, ADMIN_P, "R2", { query: { source: "self-serve" } })).body
         .items,
@@ -434,7 +445,7 @@ describe("R17 audit", () => {
     await seedAudit(id);
     const all = await call(e, PII, "R17", { query: { limit: "100" } });
     for (const x of all.body.items) AuditEntrySchema.parse(x);
-    // The call's own token.used row (W5b, 4.9) is not one of the seeds.
+    // The seeded rows only: the token's own token.used (W5b hook) is at NOW.
     const mine = all.body.items.filter(
       (x: { at: number; action: string }) =>
         x.at >= NOW - 3 && x.action !== "token.used",

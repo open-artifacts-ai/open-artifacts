@@ -14,7 +14,7 @@ import {
   flowHash,
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_TOKEN_URL,
-  isPlatformPrincipal,
+  isPlatformPrincipalId,
   verifyBrokerTicket,
 } from "@oa/auth-core";
 import {
@@ -125,7 +125,7 @@ async function authorize(
   // Platform principals (the Provisioning API's admin sign-in, design v7
   // 4.3): a ticket signed by the entry's key over this flow, checked before
   // the install bucket, so nobody can drain it and lock the admin out.
-  const platform = isPlatformPrincipal(install);
+  const platform = isPlatformPrincipalId(install);
   if (
     platform &&
     !(await verifyBrokerTicket(
@@ -249,8 +249,21 @@ async function redeem(req: Request, env: Env, now: number): Promise<Response> {
   const origin = fixedOrigin(env);
   if (!origin)
     return log("redeem", "misconfigured"), json({ error: "server_error" }, 500);
-  const limited = await ipLimited(env, req);
-  if (limited) return limited;
+  // A platform principal's redeem arrives over the gate (no
+  // cf-connecting-ip), so its IP key is the one shared `gate:<id>` bucket,
+  // and the Provisioning API signs anyone's callback (4.3): charging it
+  // before the flow check would let junk bstates lock the admin out. That
+  // redeem is charged per flow below instead; every other caller (a public
+  // one naming a platform id included) pays its IP bucket first.
+  const platform = isPlatformPrincipalId(body.install);
+  const gated = platform && rateKeyOf(req).startsWith("gate:");
+  if (gated) {
+    if (!env.RL_BROKER_IP || !env.RL_BROKER_INSTALL)
+      return log("rate_limit", "unbound"), json({ error: "unavailable" }, 503);
+  } else {
+    const limited = await ipLimited(env, req);
+    if (limited) return limited;
+  }
   const entry = await lookupInstall(env.BROKER_REGISTRY, body.install, now);
   if (!entry) return log("redeem", "unknown_install"), refused();
   // The kid must be one of this install's keys AND derive from its x. The
@@ -260,10 +273,9 @@ async function redeem(req: Request, env: Env, now: number): Promise<Response> {
     return log("redeem", "bad_signature"), refused();
   if (Math.abs(now - body.ts) > ASSERTION_SKEW_MS)
     return log("redeem", "stale"), staleAssertion();
-  const busy = await installLimited(env, body.install, "redeem");
-  if (busy) return busy;
   // The broker state must be this install's, unexpired, and bind the flow
   // the install holds: H(client nonce || challenge), compared in constant time.
+  // Checked before the install bucket, so a bad flow charges nothing.
   const st = await readState(env, body.bstate, now);
   if (
     !st ||
@@ -271,6 +283,16 @@ async function redeem(req: Request, env: Env, now: number): Promise<Response> {
     !same(enc.encode(st.h), enc.encode(body.h))
   )
     return log("redeem", "bad_flow"), badFlow();
+  // A platform principal's redeem is signed by the Provisioning API for
+  // anyone's callback (design v7 4.3), so its bucket is per flow: replaying
+  // one flow (anyone may start one) never drains the admin's. The flow is
+  // its state, which the ticket binds (authorize).
+  const busy = await installLimited(
+    env,
+    body.install,
+    platform ? `redeem:${st.s}` : "redeem",
+  );
+  if (busy) return busy;
 
   const res = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",

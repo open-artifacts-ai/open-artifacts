@@ -37,6 +37,7 @@ import {
 import type { Principal } from "../principal.js";
 import { releases, tokenStatus } from "../services/cache.js";
 import { ipKeyOf } from "../services/counters.js";
+import { redactAuditEntry } from "../services/pii.js";
 import type { HandlerArgs } from "./handlers.js";
 import type { RouteResult } from "./invoke.js";
 
@@ -96,7 +97,9 @@ export async function listInstalls(a: HandlerArgs): Promise<RouteResult> {
     binds.push(query.source);
   }
   if (query.q) {
-    where.push("instr(st.slug, ?) > 0");
+    // A slug substring, case-insensitive; no LIKE wildcards. Hosts derive
+    // from the slug, so q never matches them separately.
+    where.push("instr(lower(st.slug), ?) > 0");
     binds.push(String(query.q).toLowerCase());
   }
   const tag = queryTag("R2", {
@@ -375,24 +378,28 @@ export async function queryAudit(a: HandlerArgs): Promise<RouteResult> {
       .bind(...binds, n + 1)
       .all<AuditRow>()
   ).results;
-  const items: AuditEntry[] = rows.slice(0, n).map((r) => ({
-    id: `${AUDIT_SOURCES[r.source]}:${r.id}`,
-    at: r.at,
-    source: r.source,
-    actor: {
-      kind: PrincipalKindSchema.catch("system").parse(r.actor_kind),
-      label: labelFor(p, r.actor_label),
-    },
-    action: r.action,
-    installId: InstallIdSchema.safeParse(r.install_id).success
-      ? r.install_id
-      : null,
-    jobId: JobIdSchema.safeParse(r.job_id).success ? r.job_id : null,
-    outcome: r.outcome,
-    code: r.code,
-    count: r.count,
-    detail: detailFor(p, r.detail),
-  }));
+  const items: AuditEntry[] = rows
+    .slice(0, n)
+    .map((r) => ({
+      id: `${AUDIT_SOURCES[r.source]}:${r.id}`,
+      at: r.at,
+      source: r.source,
+      actor: {
+        kind: PrincipalKindSchema.catch("system").parse(r.actor_kind),
+        label: labelFor(p, r.actor_label),
+      },
+      action: r.action,
+      installId: InstallIdSchema.safeParse(r.install_id).success
+        ? r.install_id
+        : null,
+      jobId: JobIdSchema.safeParse(r.job_id).success ? r.job_id : null,
+      outcome: r.outcome,
+      code: r.code,
+      count: r.count,
+      detail: detailFor(p, r.detail),
+    }))
+    // W5b's R17 rule (9A.8): by value, so unlisted keys and embedded emails too.
+    .map((e) => redactAuditEntry(e, p));
   const last = rows.length > n ? rows[n - 1] : undefined;
   return ok({
     items,

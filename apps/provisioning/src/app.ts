@@ -1,4 +1,3 @@
-import { ipKey } from "@oa/auth-core";
 import {
   type ApiRouteId,
   type BrowserRouteId,
@@ -15,6 +14,7 @@ import type { Env } from "./env.js";
 import {
   ApiError,
   errorResponse,
+  methodNotAllowed,
   NotImplemented,
   notImplemented,
 } from "./errors.js";
@@ -26,14 +26,15 @@ import { isRefusal } from "./principal.js";
 import { refuse } from "./refuse.js";
 import { invokeRoute } from "./routes/invoke.js";
 import { matchRoute } from "./routes/table.js";
+import { ipKeyOf } from "./services/counters.js";
 
 // The HTTP adapter (design v7 4.2 check order): host policy -> pre-authn IP
 // limit -> Origin (browser writes) -> authn -> CSRF -> invokeRoute.
 
-// The raw address, for the policy step only (Turnstile's remoteIp, the /48
-// counter); rate keys use ipKey (IPv6 by /64, 4.7).
-const clientIp = (req: Request) =>
-  req.headers.get("cf-connecting-ip") ?? "unknown";
+// The raw address (Cloudflare sets it on every edge request); rate keys use
+// ipKeyOf (IPv6 by /64, 4.7). A request without a parseable one is refused,
+// so no two callers ever share an "unknown" bucket.
+const clientIp = (req: Request) => req.headers.get("cf-connecting-ip") ?? "";
 
 const notFound = () => errorResponse("not_found");
 
@@ -80,7 +81,9 @@ async function route(
   if (host === "admin" && req.headers.has("authorization"))
     return refuse(env, "auth", "unauthenticated", req);
 
-  const pre = await limit(env, "pre_ip", ipKey(req));
+  const ipKey = ipKeyOf(clientIp(req));
+  if (ipKey === "unknown") return refuse(env, "pre", "forbidden", req);
+  const pre = await limit(env, "pre_ip", ipKey);
   if (pre) return refuse(env, "pre", pre.code, req);
 
   // Protocol routes: method, path and host from PROTOCOL_ROUTES (9A.3.1).
@@ -91,10 +94,7 @@ async function route(
     const here = proto.filter((r) => r.host === host);
     if (here.length === 0) return notFound();
     if (!here.some((r) => r.method === req.method))
-      return new Response(null, {
-        status: 405,
-        headers: { allow: here.map((r) => r.method).join(", ") },
-      });
+      return methodNotAllowed(here.map((r) => r.method).join(", "));
     return guard(() =>
       path === "/mcp" ? handleMcp(req, env, ctx) : handleOAuth(req, env, ctx),
     );
