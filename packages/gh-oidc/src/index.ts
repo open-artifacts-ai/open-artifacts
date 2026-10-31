@@ -81,13 +81,24 @@ export type VerifyOptions = {
   /** Epoch ms. */
   now?: () => number;
   jwks?: JwksCache;
-  /** The Cache API store; null skips it. Default `caches.default` when present. */
+  /** The Cache API store; null skips it. Default the named cache `oa-gh-oidc`. */
   cache?: Cache | null;
 };
 
-const defaultCache = (): Cache | null => {
-  const c = (globalThis as { caches?: { default?: Cache } }).caches;
-  return c?.default ?? null;
+/**
+ * The Cache API copy lives in a named cache under a private `.invalid` key,
+ * never `caches.default` under GitHub's URL (a zone-wide entry any Worker or
+ * a fetch through the zone could fill). Its fetch time rides with it, so a
+ * fresh isolate keeps the 10-minute bound from the original fetch.
+ */
+export const JWKS_CACHE_NAME = "oa-gh-oidc";
+export const JWKS_CACHE_KEY = "https://jwks.gh-oidc.invalid/github-actions";
+const FETCHED_AT = "x-oa-fetched-at";
+
+const defaultCache = async (): Promise<Cache | null> => {
+  const c = (globalThis as { caches?: CacheStorage }).caches;
+  if (!c?.open) return null;
+  return c.open(JWKS_CACHE_NAME).catch(() => null);
 };
 
 const b64uBytes = (s: string): Uint8Array<ArrayBuffer> => {
@@ -125,7 +136,15 @@ async function loadJwks(
 ): Promise<void> {
   const j = o.jwks;
   let res: Response | undefined;
-  if (!force && o.cache) res = await o.cache.match(GITHUB_OIDC_JWKS_URL);
+  let fetchedAt = o.now();
+  if (!force && o.cache) {
+    res = await o.cache.match(JWKS_CACHE_KEY).catch(() => undefined);
+    const at = Number(res?.headers.get(FETCHED_AT) ?? Number.NaN);
+    // A copy with no fetch time, from the future, or past 10 min is a miss.
+    if (res && Number.isSafeInteger(at) && at <= fetchedAt && fetchedAt - at < JWKS_TTL_MS)
+      fetchedAt = at;
+    else res = undefined;
+  }
   if (!res) {
     try {
       res = await o.fetch(GITHUB_OIDC_JWKS_URL);
@@ -146,11 +165,12 @@ async function loadJwks(
     if (o.cache)
       await o.cache
         .put(
-          GITHUB_OIDC_JWKS_URL,
+          JWKS_CACHE_KEY,
           new Response(text, {
             headers: {
               "content-type": "application/json",
               "cache-control": `max-age=${JWKS_TTL_MS / 1000}`,
+              [FETCHED_AT]: String(fetchedAt),
             },
           }),
         )
@@ -158,7 +178,7 @@ async function loadJwks(
   } else {
     j.keys = parseJwks(await res.json().catch(() => null));
   }
-  j.fetchedAt = o.now();
+  j.fetchedAt = fetchedAt;
   j.imported.clear();
 }
 
@@ -218,7 +238,7 @@ export async function verify(
     fetch: opts.fetch ?? ((u, i) => fetch(u, i)),
     now: opts.now ?? Date.now,
     jwks: opts.jwks ?? isolateJwks,
-    cache: opts.cache === undefined ? defaultCache() : opts.cache,
+    cache: opts.cache === undefined ? await defaultCache() : opts.cache,
   };
   const parts = jwt.split(".");
   if (parts.length !== 3 || parts.some((p) => p === ""))

@@ -5,6 +5,7 @@ import {
   GITHUB_OIDC_ISSUER,
   GITHUB_OIDC_JWKS_URL,
   GITHUB_OIDC_REF,
+  JWKS_CACHE_KEY,
   JwksCache,
   OidcError,
   type Pins,
@@ -396,11 +397,66 @@ describe("JWKS cache (4.4: 10 min; unknown kid refetch once per 60 s)", () => {
     });
     await verify(jwt, pins, o());
     expect(srv.calls).toBe(1);
-    expect(store.get(GITHUB_OIDC_JWKS_URL)?.headers.get("cache-control")).toBe(
-      "max-age=600",
-    );
+    expect(store.has(GITHUB_OIDC_JWKS_URL)).toBe(false);
+    const put = store.get(JWKS_CACHE_KEY);
+    expect(put?.headers.get("cache-control")).toBe("max-age=600");
+    expect(put?.headers.get("x-oa-fetched-at")).toBe(String(T));
     // A fresh isolate (new JwksCache) reads the cached copy, no fetch.
     await verify(jwt, pins, o());
     expect(srv.calls).toBe(1);
+  });
+
+  it("a cached copy keeps its fetch time: 10 min from the fetch, not the read", async () => {
+    const store = new Map<string, Response>();
+    const url = (r: RequestInfo) => (r instanceof Request ? r.url : String(r));
+    const cache = {
+      match: async (r: RequestInfo) => store.get(url(r))?.clone(),
+      put: async (r: RequestInfo, res: Response) => {
+        store.set(url(r), res.clone());
+      },
+    } as unknown as Cache;
+    const srv = jwksServer(() => [key.jwk]);
+    const jwt = await sign(good());
+    await verify(jwt, pins, {
+      fetch: srv.fetch,
+      now: () => T,
+      jwks: new JwksCache(),
+      cache,
+    });
+    expect(srv.calls).toBe(1);
+    // A fresh isolate at 9 min reads the copy; at 10 min from the original
+    // fetch it refetches, though it read the copy only a minute earlier.
+    const late = await sign({
+      ...good(),
+      iat: S + 540,
+      nbf: S + 540,
+      exp: S + 700,
+    });
+    const jwks = new JwksCache();
+    const o = (now: number) => ({ fetch: srv.fetch, now: () => now, jwks, cache });
+    await verify(late, pins, o(T + 540_000));
+    expect(srv.calls).toBe(1);
+    await verify(late, pins, o(T + 600_000));
+    expect(srv.calls).toBe(2);
+  });
+
+  it("ignores a cached copy with no fetch time, a future one, or one past 10 min", async () => {
+    const body = JSON.stringify({ keys: [key.jwk] });
+    for (const at of [null, String(T + 1), String(T - 600_000)]) {
+      const headers: Record<string, string> = {};
+      if (at !== null) headers["x-oa-fetched-at"] = at;
+      const cache = {
+        match: async () => new Response(body, { headers }),
+        put: async () => {},
+      } as unknown as Cache;
+      const srv = jwksServer(() => [key.jwk]);
+      await verify(await sign(good()), pins, {
+        fetch: srv.fetch,
+        now: () => T,
+        jwks: new JwksCache(),
+        cache,
+      });
+      expect(srv.calls).toBe(1);
+    }
   });
 });
