@@ -67,7 +67,7 @@ describe("R1 /me", () => {
   it("session and token facts by the W5a/W5b Principal names", async () => {
     const admin = {
       ...ADMIN_P,
-      session: { hash: "h", csrf: "c1", expiresAt: NOW + 1000 },
+      session: { hash: "h", csrf: "c1", expiresAt: NOW + 1000, authAt: 0 },
     };
     expect((await call(fakeEnv(), admin, "R1")).body).toMatchObject({
       csrf: "c1",
