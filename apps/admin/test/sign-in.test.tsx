@@ -19,7 +19,7 @@ describe("SignIn", () => {
     render(<SignIn error={error} />);
     expect(screen.getByRole("alert")).toHaveTextContent(copy);
     expect(
-      screen.getByRole("link", { name: "Use another account?" }),
+      screen.getByRole("button", { name: "Use another account?" }),
     ).toBeInTheDocument();
   });
 
@@ -33,5 +33,15 @@ describe("SignIn", () => {
     expect(
       screen.getByRole("link", { name: "Sign in with Google" }),
     ).toHaveAttribute("href", "/v1/auth/google/start?next=%2F");
+  });
+
+  it("carries a normal next path into the href", () => {
+    render(<SignIn next="/installs/abc?x=1" />);
+    expect(
+      screen.getByRole("link", { name: "Sign in with Google" }),
+    ).toHaveAttribute(
+      "href",
+      `/v1/auth/google/start?next=${encodeURIComponent("/installs/abc?x=1")}`,
+    );
   });
 });

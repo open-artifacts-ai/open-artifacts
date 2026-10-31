@@ -108,6 +108,18 @@ describe("client", () => {
     expect(redirect).toHaveBeenCalledWith("/no-access");
   });
 
+  it("403 no_access while on /no-access does not redirect", async () => {
+    const { client, redirect } = setup(
+      [json({ error: "no_access" }, 403)],
+      "/no-access",
+    );
+    await expect(client.me()).rejects.toMatchObject({
+      status: 403,
+      code: "no_access",
+    });
+    expect(redirect).not.toHaveBeenCalled();
+  });
+
   it("other 403s stay put and keep their code", async () => {
     const { client, redirect } = setup([json({ error: "csrf" }, 403)]);
     await expect(client.post("/x")).rejects.toMatchObject({

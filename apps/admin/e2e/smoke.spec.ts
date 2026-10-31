@@ -9,7 +9,7 @@ test("signed in: / shows the shell and Installs", async ({ page }) => {
 
 test("401 on /v1/me sends / to sign-in", async ({ page }) => {
   await page.goto("/?mock=unauth");
-  await expect(page).toHaveURL(/\/sign-in\?next=/);
+  await expect(page).toHaveURL(/\/sign-in\?next=%2F%3Fmock%3Dunauth$/);
   await expect(
     page.getByRole("link", { name: "Sign in with Google" }),
   ).toBeVisible();

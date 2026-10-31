@@ -2,6 +2,7 @@ import { Button } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet } from "@tanstack/react-router";
 import { api } from "../api/client";
+import { LoadError } from "./LoadError";
 
 export function Shell() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
@@ -26,7 +27,17 @@ export function Shell() {
           <Link to="/audit">Audit</Link>
           <Link to="/tokens">Tokens</Link>
         </nav>
-        <main className="oa-page">{me.data ? <Outlet /> : null}</main>
+        <main className="oa-page">
+          {me.data ? (
+            <Outlet />
+          ) : me.isError ? (
+            <LoadError
+              title="Couldn't load your session"
+              error={me.error}
+              onRetry={() => void me.refetch()}
+            />
+          ) : null}
+        </main>
       </div>
     </div>
   );
