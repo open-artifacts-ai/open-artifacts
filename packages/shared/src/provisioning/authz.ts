@@ -88,9 +88,9 @@ export const AUTHZ: Readonly<Record<RouteId, Record<AuthzColumn, AuthzRule>>> =
       { ...all, note: "deleting needs authAt within 10 min (reauth_required)" },
       tok(
         "installs:delete",
-        "failed creates only; deleting: 403 forbidden with details.needs admin_session",
+        "failed creates only (TRANSITIONS actor T); deleting: 403 forbidden with details.needs admin_session; skipDirectoryRevoke: PURGE_FIELD_RULES",
       ),
-      own,
+      { ...own, note: "skipDirectoryRevoke: PURGE_FIELD_RULES" },
       no,
     ),
     R12: opRow,
@@ -339,11 +339,45 @@ export function checkCreateFields(
   return null;
 }
 
+/**
+ * Field rules for R11 per principal (3.4, 4.2): `skipDirectoryRevoke` is
+ * admin session only; any other principal sending it is 403 forbidden. The
+ * purge_install tool leaves it out of its input (9A.5), so on /mcp it is
+ * -32602 before policy runs.
+ */
+export const PURGE_FIELDS = ["skipDirectoryRevoke"] as const;
+export type PurgeField = (typeof PURGE_FIELDS)[number];
+export const PURGE_FIELD_RULES: Readonly<
+  Record<PurgeField, Record<CreatePrincipal, "optional" | "forbidden">>
+> = {
+  skipDirectoryRevoke: {
+    admin: "optional",
+    token: "forbidden",
+    oidc: "forbidden",
+    user: "forbidden",
+  },
+};
+
+/** The R11 field rules on a parsed body. Null when the body passes. */
+export function checkPurgeFields(
+  body: Readonly<Partial<Record<PurgeField, unknown>>>,
+  principal: CreatePrincipal,
+): { field: PurgeField; code: "forbidden" } | null {
+  for (const f of PURGE_FIELDS)
+    if (
+      PURGE_FIELD_RULES[f][principal] === "forbidden" &&
+      body[f] !== undefined
+    )
+      return { field: f, code: "forbidden" };
+  return null;
+}
+
 // TRANSITIONS (5.1): used by the API, re-checked by the provisioner. A =
-// admin, agent token or OIDC within its scope; U = self-serve owner; S =
-// scheduler. `cleanup` is compensation inserted by R25 and the sweep, never
-// checked here.
-export type TransitionActor = "A" | "U" | "S";
+// admin session or OIDC within its scope; T = agent token (4.1: A's rows
+// except purging a soft-deleted install, and the admin-only R13 and R26 rows
+// its authz row already refuses); U = self-serve owner; S = scheduler.
+// `cleanup` is compensation inserted by R25 and the sweep, never checked here.
+export type TransitionActor = "A" | "T" | "U" | "S";
 export type Transition = {
   actors: readonly TransitionActor[];
   to: readonly InstallState[];
@@ -362,38 +396,52 @@ const lease = (s: InstallState) => ({ release_lease: t(["A"], s) });
 export const TRANSITIONS: Readonly<
   Record<TransitionFrom, Partial<Record<JobKind, Transition>>>
 > = {
-  none: { create: t(["A", "U"], "provisioning") },
+  none: { create: t(["A", "T", "U"], "provisioning") },
   provisioning: { ...lease("provisioning") },
   failed: {
-    retry: t(["A"], "provisioning"),
-    purge: t(["A"], "deleted"),
-    discard: t(["A"], "deleted"),
+    retry: t(["A", "T"], "provisioning"),
+    purge: t(["A", "T"], "deleted"),
+    discard: t(["A", "T"], "deleted"),
     ...lease("failed"),
   },
   active: {
-    upgrade: t(["A"], "active"),
-    rollback: t(["A"], "active"),
-    suspend: t(["A"], "suspended"),
-    delete: t(["A", "U"], "deleting"),
+    upgrade: t(["A", "T"], "active"),
+    rollback: t(["A", "T"], "active"),
+    suspend: t(["A", "T"], "suspended"),
+    delete: t(["A", "T", "U"], "deleting"),
     redline_creds: t(["A"], "active"),
     ...lease("active"),
   },
   suspended: {
-    resume: t(["A"], "active"),
-    upgrade: t(["A"], "suspended"),
-    rollback: t(["A"], "suspended"),
-    delete: t(["A"], "deleting"),
+    resume: t(["A", "T"], "active"),
+    upgrade: t(["A", "T"], "suspended"),
+    rollback: t(["A", "T"], "suspended"),
+    delete: t(["A", "T"], "deleting"),
     ...lease("suspended"),
   },
   // Grace: restore goes back to active, or to suspended if it was. The
-  // scheduler purges at purge_at unless suspended_at is set.
+  // scheduler purges at purge_at unless suspended_at is set. A token may not
+  // purge here (4.1): the API answers 403 forbidden with
+  // details.needs admin_session (TOKEN_DELETING_PURGE), not invalid_state.
   deleting: {
-    restore: t(["A", "U"], "active", "suspended"),
+    restore: t(["A", "T", "U"], "active", "suspended"),
     purge: t(["A", "S"], "deleted"),
     ...lease("deleting"),
   },
   deleted: {},
 };
+
+/**
+ * R11 by a token on a `deleting` install (4.1, 4.2): 403 forbidden with these
+ * details instead of 409 invalid_state, on /v1 and /mcp alike.
+ */
+export const TOKEN_DELETING_PURGE = {
+  code: "forbidden",
+  details: (adminOrigin: string, installId: string) => ({
+    needs: "admin_session" as const,
+    url: `${adminOrigin}/installs/${installId}`,
+  }),
+} as const;
 
 /** Anything not in TRANSITIONS is 409 invalid_state. */
 export function canTransition(

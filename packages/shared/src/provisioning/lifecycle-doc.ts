@@ -74,7 +74,7 @@ export function lifecycleDoc(): string {
     "",
     "## Transitions",
     "",
-    "A is an admin session, an agent token or OIDC within its scope; U is the self-serve owner; S is the scheduler. Anything not listed is 409 invalid_state.",
+    "A is an admin session or OIDC within its scope; T is an agent token; U is the self-serve owner; S is the scheduler. Anything not listed is 409 invalid_state, except a token purging a deleting install: 403 forbidden with details.needs admin_session.",
     "",
     table(
       ["From", "Job", "Actors", "To"],

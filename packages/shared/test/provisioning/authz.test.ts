@@ -6,6 +6,7 @@ import {
   CREATE_FIELDS,
   canTransition,
   checkCreateFields,
+  checkPurgeFields,
   createFieldRule,
   InstallStateSchema,
   JobKindSchema,
@@ -13,8 +14,10 @@ import {
   oidcMayCreate,
   oidcOwns,
   PROTOCOL_ROUTES,
+  PURGE_FIELD_RULES,
   ROUTE_IDS,
   ROUTES,
+  TOKEN_DELETING_PURGE,
   TokenScopeSchema,
   TRANSITIONS,
 } from "../../src/provisioning/index.js";
@@ -234,6 +237,18 @@ describe("TRANSITIONS", () => {
     expect(TRANSITIONS.deleting.restore?.to).toEqual(["active", "suspended"]);
   });
 
+  it("tokens (T): A's rows, but never purge a deleting install (4.1)", () => {
+    expect(canTransition("failed", "purge", "T")).toBe(true);
+    expect(canTransition("failed", "discard", "T")).toBe(true);
+    expect(canTransition("deleting", "purge", "T")).toBe(false);
+    expect(canTransition("active", "redline_creds", "T")).toBe(false);
+    expect(canTransition("active", "release_lease", "T")).toBe(false);
+    for (const [from, row] of Object.entries(TRANSITIONS))
+      for (const [kind, t] of Object.entries(row))
+        if (t?.actors.includes("T"))
+          expect(t.actors, `${from} ${kind}`).toContain("A");
+  });
+
   it("refuses what the table does not list", () => {
     expect(canTransition("active", "resume", "A")).toBe(false);
     expect(canTransition("active", "purge", "A")).toBe(false);
@@ -337,5 +352,34 @@ describe("R4 field rules (3.3)", () => {
           expect(typeof createFieldRule(f, p, e), `${f} ${p} ${e}`).toBe(
             "string",
           );
+  });
+});
+
+describe("R11 field rules (3.4, 4.2)", () => {
+  it("skipDirectoryRevoke is admin session only", () => {
+    const body = { skipDirectoryRevoke: { reason: "directory gone" } };
+    expect(PURGE_FIELD_RULES.skipDirectoryRevoke).toEqual({
+      admin: "optional",
+      token: "forbidden",
+      oidc: "forbidden",
+      user: "forbidden",
+    });
+    expect(checkPurgeFields(body, "admin")).toBeNull();
+    for (const p of ["token", "oidc", "user"] as const)
+      expect(checkPurgeFields(body, p), p).toEqual({
+        field: "skipDirectoryRevoke",
+        code: "forbidden",
+      });
+    expect(checkPurgeFields({}, "token")).toBeNull();
+  });
+
+  it("a token purging a deleting install gets details.needs admin_session", () => {
+    expect(TOKEN_DELETING_PURGE.code).toBe("forbidden");
+    expect(
+      TOKEN_DELETING_PURGE.details("https://admin.example.com", "iabcdefgh234"),
+    ).toEqual({
+      needs: "admin_session",
+      url: "https://admin.example.com/installs/iabcdefgh234",
+    });
   });
 });

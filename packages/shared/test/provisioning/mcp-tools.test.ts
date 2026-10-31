@@ -22,6 +22,8 @@ import {
   REQUEST_ID_HINT,
   ROUTE_IDS,
   ROUTES,
+  type RouteId,
+  TOOL_OMIT,
   toolAnnotations,
   toolInput,
   toolOutput,
@@ -103,7 +105,7 @@ describe("derived schemas", () => {
     }
   });
 
-  it("input = params + query + body, strict; purge keeps skipDirectoryRevoke for policy", () => {
+  it("input = params + query + body less TOOL_OMIT, strict; purge has no skipDirectoryRevoke (9A.5)", () => {
     expect(Object.keys(toolInput(byName("get_install")).shape)).toEqual(["id"]);
     expect(Object.keys(toolInput(byName("get_job")).shape)).toEqual(["jobId"]);
     expect(Object.keys(toolInput(byName("whoami")).shape)).toEqual([]);
@@ -112,7 +114,25 @@ describe("derived schemas", () => {
     ).toEqual(["id", "reason", "requestId"]);
     expect(
       Object.keys(toolInput(byName("purge_install")).shape).sort(),
-    ).toEqual(["confirmSlug", "id", "requestId", "skipDirectoryRevoke"]);
+    ).toEqual(["confirmSlug", "id", "requestId"]);
+    // Parity note: sent anyway, it is -32602 on /mcp, 403 forbidden on /v1.
+    expect(
+      toolInput(byName("purge_install")).safeParse({
+        id: "iabcdefgh234",
+        requestId: "r".repeat(16),
+        confirmSlug: "acme",
+        skipDirectoryRevoke: { reason: "directory gone" },
+      }).success,
+    ).toBe(false);
+    expect(byName("purge_install").description).not.toContain(
+      "skipDirectoryRevoke",
+    );
+    for (const [route, fields] of Object.entries(TOOL_OMIT))
+      for (const f of fields ?? [])
+        expect(
+          Object.keys(ROUTES[route as RouteId].body.shape),
+          `${route}.${f}`,
+        ).toContain(f);
     expect(
       Object.keys(toolInput(byName("list_installs")).shape).sort(),
     ).toEqual(["cursor", "limit", "q", "source", "state"]);

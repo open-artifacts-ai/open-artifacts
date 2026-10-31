@@ -84,15 +84,25 @@ export function toolAnnotations(t: { route: RouteId }): ToolAnnotations {
 }
 
 /**
- * One strict object of the route's path params, query and body. Fields a
- * principal may not send stay in: policy refuses them with the same 403 on
- * /v1 and /mcp (4.2 parity).
+ * Body fields a tool leaves out (9A.5): admin-session-only fields no token
+ * may send. Sent anyway, they are -32602 on /mcp and 403 forbidden on /v1
+ * (PURGE_FIELD_RULES).
+ */
+export const TOOL_OMIT: Readonly<Partial<Record<RouteId, readonly string[]>>> =
+  { R11: ["skipDirectoryRevoke"] };
+
+/**
+ * One strict object of the route's path params, query and body, less
+ * TOOL_OMIT. Other fields a principal may not send stay in: policy refuses
+ * them with the same 403 on /v1 and /mcp (4.2 parity).
  */
 export function toolInput(t: { route: RouteId }) {
   const r = ROUTES[t.route];
-  return z
-    .object({ ...r.params.shape, ...r.query.shape, ...r.body.shape })
-    .strict();
+  const omit = TOOL_OMIT[t.route] ?? [];
+  const body = Object.fromEntries(
+    Object.entries(r.body.shape).filter(([k]) => !omit.includes(k)),
+  );
+  return z.object({ ...r.params.shape, ...r.query.shape, ...body }).strict();
 }
 
 /** The route's 2xx response schema (register with z.toJSONSchema). */
@@ -257,7 +267,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
   write(
     "purge_install",
     "R11",
-    "Purge a failed create. A soft-deleted install is refused with details.needs admin_session: an admin purges it in the panel with a fresh sign-in. skipDirectoryRevoke is admin session only.",
+    "Purge a failed create. A soft-deleted install is refused with details.needs admin_session: an admin purges it in the panel with a fresh sign-in.",
     [CONFIRM_HINT],
   ),
 ];
