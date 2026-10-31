@@ -22,7 +22,7 @@ const KEYS = [
   "signups_enabled",
   "welcome_from",
 ];
-// Read by provapi-spikes.sh only; hosted-constants.sh does not load them.
+// Read by provapi-spikes.sh and provapi-token-verify.sh only; hosted-constants.sh does not load them.
 const SPIKE_KEYS = [
   "app_zone",
   "content_zone",

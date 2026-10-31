@@ -183,14 +183,59 @@ export interface SettleResult {
   extra: unknown[];
 }
 
+// The job's settle runs first: a job the same batch then inserts for the
+// install (a cleanup, a purge) fits jobs_one_active. The job update is
+// conditional on it being open, so a stored code (an R25 cancel's) is never
+// overwritten; the signup and the account claim follow the job once it is
+// failed, by whichever settle gets there.
+const SETTLE_JOB = `UPDATE jobs SET status = 'failed', error_code = COALESCE(error_code, ?2), error_message = COALESCE(error_message, ?2), finished_at = COALESCE(finished_at, ?3), retry_at = NULL, updated_at = ?3
+WHERE id = ?1 AND status IN ('queued', 'running')`;
+// expectCode's compare-and-set (C6): `IS`, so a null expectation matches null.
+const SETTLE_JOB_CAS = `${SETTLE_JOB} AND error_code IS ?4`;
+// Only the signup whose current job this is (a retry moves job_id on).
+const SETTLE_SIGNUP = `UPDATE signups SET status = 'failed', error = COALESCE(error, (SELECT error_code FROM jobs WHERE id = ?1)), updated_at = ?2
+WHERE job_id = ?1 AND status NOT IN ('ready', 'failed')
+  AND EXISTS (SELECT 1 FROM jobs WHERE id = ?1 AND status = 'failed')`;
+// A self-serve install that was never created (no installs row) frees the
+// account's one-install claim; one with an installs row keeps it until purge.
+const FREE_ACCOUNT = `UPDATE signup_accounts SET freed_at = ?2
+WHERE freed_at IS NULL
+  AND signup_id = (SELECT signup_id FROM signups WHERE job_id = ?1 AND source = 'self-serve' AND status = 'failed')
+  AND NOT EXISTS (SELECT 1 FROM installs WHERE id = (SELECT install_id FROM jobs WHERE id = ?1))`;
+
+const checkCode = (code: unknown): void => {
+  if (!(PROVISION_ERROR_CODES as readonly string[]).includes(code as string))
+    throw new Error(`unknown provision error code ${String(code)}`);
+};
+
+/**
+ * settleFailed's statements, in order, for a caller that adds its own to
+ * the same batch (the create fail step's snapshot and purge job).
+ */
+export function settleFailedStatements<S>(
+  db: { prepare(sql: string): { bind(...values: unknown[]): S } },
+  jobId: string,
+  code: ProvisionErrorCode,
+  now: number = Date.now(),
+  expectCode?: ProvisionErrorCode | null,
+): S[] {
+  checkCode(code);
+  return [
+    expectCode === undefined
+      ? db.prepare(SETTLE_JOB).bind(jobId, code, now)
+      : db.prepare(SETTLE_JOB_CAS).bind(jobId, code, now, expectCode),
+    db.prepare(SETTLE_SIGNUP).bind(jobId, now),
+    db.prepare(FREE_ACCOUNT).bind(jobId, now),
+  ];
+}
+
 /**
  * Settles a failed job (design v7 3.6), shared by every fail step, cancel
  * and the scheduler sweep: `jobs` to failed with `code` (never over a stored
  * code), `signups.status = failed`, and `signup_accounts` freed for a
  * self-serve install that was never created. One D1 batch on `db` (the
  * platform D1 binding), with `opts.extra` appended. `settled` reads the
- * jobs UPDATE's `meta.changes`: false when the job was no longer open. W3
- * builds the body; until then it throws.
+ * jobs UPDATE's `meta.changes`: false when the job was no longer open.
  */
 export async function settleFailed(
   db: SettleDb,
@@ -198,20 +243,28 @@ export async function settleFailed(
   code: ProvisionErrorCode,
   opts?: SettleOptions,
 ): Promise<SettleResult> {
-  void db;
-  if (!(PROVISION_ERROR_CODES as readonly string[]).includes(code))
-    throw new Error(`unknown provision error code ${String(code)}`);
+  checkCode(code);
   if (opts?.extra !== undefined && !Array.isArray(opts.extra))
     throw new Error("settleFailed: extra must be an array of statements");
+  const expectCode = opts?.expectCode;
   if (
-    opts?.expectCode !== undefined &&
-    opts.expectCode !== null &&
-    !(PROVISION_ERROR_CODES as readonly unknown[]).includes(opts.expectCode)
+    expectCode !== undefined &&
+    expectCode !== null &&
+    !(PROVISION_ERROR_CODES as readonly unknown[]).includes(expectCode)
   )
     throw new Error(
-      `settleFailed: expectCode must be a provision error code or null, not ${String(opts.expectCode)}`,
+      `settleFailed: expectCode must be a provision error code or null, not ${String(expectCode)}`,
     );
-  throw new Error(`settleFailed is not built yet (W3); job ${jobId}`);
+  const own = settleFailedStatements(db, jobId, code, Date.now(), expectCode);
+  const extra = opts?.extra ?? [];
+  const results = (await db.batch([...own, ...extra])) as
+    | readonly unknown[]
+    | undefined;
+  const first = results?.[0] as { meta?: { changes?: number } } | undefined;
+  return {
+    settled: (first?.meta?.changes ?? 0) > 0,
+    extra: results ? results.slice(own.length) : [],
+  };
 }
 export type SettleFailed = typeof settleFailed;
 
