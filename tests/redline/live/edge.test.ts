@@ -31,7 +31,7 @@ import {
   pendingCode,
 } from "../src/signin.ts";
 import {
-  inventoryKeyOf,
+  inventoryBearer,
   loadTargets,
   type Target,
   type Targets,
@@ -314,13 +314,13 @@ describe("mapping integrity", () => {
   });
 });
 
-/** GET <inventory><path> with its key; status and body hash on failure. */
+/** GET <inventory><path> with its OIDC bearer; status and body hash on failure. */
 async function inventory(path: string): Promise<unknown> {
   const inv = T.inventory;
   if (!inv) throw new Error("no inventory configured");
   const res = await fetchT(`${inv.url}${path}`, {
     redirect: "manual",
-    headers: { authorization: `Bearer ${inventoryKeyOf(inv)}` },
+    headers: { authorization: `Bearer ${await inventoryBearer(inv)}` },
   });
   const text = await readBody(res);
   if (res.status !== 200)

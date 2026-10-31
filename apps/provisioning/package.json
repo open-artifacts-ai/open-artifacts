@@ -11,15 +11,18 @@
     "typecheck": "pnpm --filter @oa/provision build && tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
     "@oa/auth-core": "workspace:*",
     "@oa/gh-oidc": "workspace:*",
     "@oa/provision": "workspace:*",
     "@oa/shared": "workspace:*",
+    "agents": "0.28.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.4",
     "@cloudflare/workers-types": "^5.20261018.1",
+    "@modelcontextprotocol/client": "2.3.1",
     "@oa/admin": "workspace:*",
     "@types/node": "^20.19.43",
     "jose": "^6.2.12",

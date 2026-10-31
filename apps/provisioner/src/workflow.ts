@@ -9,8 +9,8 @@
 // Steps, in order (JOB_STEPS.create): admit, recheck, reserve, release_gate,
 // create (provision reports upload, verify_clean, health, route,
 // enable_signin and active through onStep), reachable, notify, done; a step
-// that fails for good ends in `fail`. The step bodies are W3's: each is a
-// typed stub until then.
+// that fails for good ends in `fail`, which settles the job (settleFailed)
+// and, for prod_dirty, snapshots the script and queues its purge.
 //
 // The class is an exported entrypoint, so any Worker bound to it with this
 // entrypoint can call every prototype method (TS `protected` is not enforced
@@ -22,27 +22,67 @@ import {
   type WorkflowStep,
 } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
-import type { BundleVariant, WfpProvisioner } from "@oa/provision";
 import {
+  type BundleVariant,
+  bucketVersions,
+  canonicalJson,
+  releaseGate as gate,
+  NAMESPACES,
+  names,
+  type R2CatalogBucket,
+  r2BindingReleaseReader,
+  settleFailedStatements,
+  sha256Hex,
+} from "@oa/provision";
+import {
+  bodyHash,
   type WorkflowParams,
   WorkflowParamsSchema,
 } from "@oa/shared/provisioning";
 import {
-  type ProvisionerEnv,
-  type ProvisionerIo,
-  provisionerFor,
-  transient,
-} from "./provisioner.js";
-import { notBuilt } from "./stub.js";
+  createWorkflowInstance,
+  type WorkflowLike,
+} from "@oa/shared/provisioning/workflow";
+import { codeOf } from "./errors.js";
+import {
+  appHostOf,
+  cfFor,
+  installRow,
+  modeStatement,
+  type OpsEnv,
+  reconcile,
+  renderOptions,
+  sweepTokens,
+} from "./ops.js";
+import { deployEnv, type ProvisionerIo, transient } from "./provisioner.js";
+import {
+  checkJob,
+  checkOidcScope,
+  checkSlug,
+  checkTransition,
+  readStatus,
+  refused,
+  strictVars,
+} from "./recheck.js";
+import {
+  argsOf,
+  auditStatement,
+  doneAuditStatement,
+  doneStatement,
+  failedAuditStatement,
+  jobCode,
+  jobStep,
+  readJob,
+} from "./steps.js";
+import { welcomeEmail } from "./welcome.js";
 
-export interface WorkflowEnv extends ProvisionerEnv {
-  PLATFORM_DB: D1Database;
+export interface WorkflowEnv extends OpsEnv {
   WELCOME_EMAIL: SendEmail;
-  /** The install's script before any HOSTS mapping (5.2 f, directFetch). */
-  DISPATCHER: DispatchNamespace;
   /** The tier a self-serve row must carry (2.5 recheck). */
   SELF_SERVE_TIER: string;
   WELCOME_FROM: string;
+  /** A prod_dirty create's purge job starts here (5.2 fail). */
+  MANAGE_INSTALL: Workflow<WorkflowParams>;
 }
 
 /** The rechecked create job (2.5): what the later steps read. */
@@ -52,8 +92,8 @@ export type CreateJob = {
   signupId: string;
   source: "admin" | "self-serve";
   slug: string;
-  /** Set once reserve has run (a rerun reads it back). */
-  installId: string | null;
+  /** The install id the API assigned (jobs.install_id); reserve stores it. */
+  installId: string;
   /** The strict-schema install vars (5.3). */
   vars: Record<string, string>;
   /** args.version, or null for the latest installable. */
@@ -65,13 +105,16 @@ export type CreateJob = {
 /** release_gate's output: the release create runs (5.2 step 4). */
 export type ReleaseGate = { version: string; bundle: BundleVariant };
 
-/** 4 attempts, 1 minute, exponential; an attempt may not pass 45 minutes. */
+/**
+ * 4 retries, 1 minute, exponential (5.2's Retries column; 3.6 says "4
+ * attempts"); an attempt may not pass 45 minutes.
+ */
 export const CREATE_STEP = {
   retries: { limit: 4, delay: "1 minute", backoff: "exponential" },
   timeout: "45 minutes",
 } as const;
 
-/** 3 attempts, 30 seconds, exponential (5.2 step 4). */
+/** 3 retries, 30 seconds, exponential (5.2 step 4). */
 export const RELEASE_GATE_STEP = {
   retries: { limit: 3, delay: "30 seconds", backoff: "exponential" },
 } as const;
@@ -80,6 +123,10 @@ export const RELEASE_GATE_STEP = {
 export const REACHABLE_STEP = {
   retries: { limit: 2, delay: "10 seconds", backoff: "exponential" },
 } as const;
+
+/** reachable polls the public /healthz this long (HOSTS is cached 60 s). */
+export const REACHABLE_MS = 180_000;
+const REACHABLE_POLL_MS = 5_000;
 
 const SECRET_EMAIL =
   "SELECT owner_email AS email FROM signup_secret WHERE signup_id = ?";
@@ -115,21 +162,51 @@ export async function runCreate(
   const params = WorkflowParamsSchema.safeParse(event.payload);
   if (!params.success) throw new NonRetryableError("internal");
   const { jobId } = params.data;
+  const s = <T>(
+    name: string,
+    config: Parameters<typeof jobStep>[4],
+    fn: () => Promise<T>,
+  ) => jobStep(ctx, step, jobId, name, config, fn);
   try {
-    await step.do("admit", () => admit(ctx, jobId));
-    const job = await step.do("recheck", () => recheck(ctx, jobId));
-    const { installId } = await step.do("reserve", () => reserve(ctx, job));
-    const gate = await step.do("release_gate", RELEASE_GATE_STEP, () =>
+    await s("admit", undefined, () => admit(ctx, jobId));
+    const job = await s("recheck", undefined, () => recheck(ctx, jobId));
+    const { installId } = await s("reserve", undefined, () =>
+      reserve(ctx, job),
+    );
+    const g = await s("release_gate", RELEASE_GATE_STEP, () =>
       releaseGate(ctx, job),
     );
-    const { appHost } = await step.do("create", CREATE_STEP, () =>
-      create(ctx, job, installId, gate),
+    let email: string | null = null;
+    const { appHost } = await jobStep(
+      ctx,
+      step,
+      jobId,
+      "create",
+      CREATE_STEP,
+      () =>
+        create(ctx, job, installId, g, (e) => {
+          email = e;
+        }),
+      () => email,
+      // jobs.step holds JOB_STEPS values only; onStep reports the rest.
+      "upload",
     );
-    await step.do("reachable", REACHABLE_STEP, () => reachable(ctx, appHost));
-    await step.do("notify", () => notify(ctx, job, appHost));
-    await step.do("done", () => done(ctx, job, installId));
+    await s("reachable", REACHABLE_STEP, () =>
+      reachable(ctx, installId, appHost),
+    );
+    await s("notify", undefined, () => notify(ctx, job, appHost));
+    await s("done", undefined, () => done(ctx, job, installId));
   } catch (e) {
-    await step.do("fail", () => fail(ctx, jobId));
+    // e is the engine's error (a NonRetryableError may arrive without its
+    // message): the code is the one the failing attempt stored on the job.
+    await step.do("fail", async () => {
+      try {
+        return await fail(ctx, jobId);
+      } catch (f) {
+        // Retried; never overwrites the stored code.
+        throw new Error(codeOf(f));
+      }
+    });
     throw e;
   }
 }
@@ -147,29 +224,111 @@ export async function ownerEmail(
   return r?.email ?? null;
 }
 
-/** The job's WfpProvisioner, its owner token labelled `ss-<signupId>`. */
-export function provisioner(
-  ctx: CreateCtx,
-  signupId: string,
-): Promise<WfpProvisioner> {
-  return provisionerFor(ctx.env, `ss-${signupId}`, ctx.io);
-}
+type SignupRow = {
+  signup_id: string;
+  source: "admin" | "self-serve";
+  slug: string;
+  install_id: string | null;
+  job_id: string;
+  vars: string;
+  version: string | null;
+  test_hooks: number;
+  send_welcome: number;
+  status: string;
+  admitted_at: number | null;
+};
+
+const signupOf = (ctx: CreateCtx, signupId: string) =>
+  transient(
+    ctx.env.PLATFORM_DB.prepare(
+      "SELECT signup_id, source, slug, install_id, job_id, vars, version, test_hooks, send_welcome, status, admitted_at FROM signups WHERE signup_id = ?",
+    )
+      .bind(signupId)
+      .first<SignupRow>(),
+  );
 
 /** Admin and OIDC: a no-op; self-serve: the consumer's admit() ran. */
 async function admit(
   ctx: CreateCtx,
   jobId: string,
 ): Promise<{ admitted: true }> {
-  void ctx;
-  void jobId;
-  throw notBuilt("admit");
+  const job = checkJob(await readJob(ctx, jobId), "provision_install", [
+    "create",
+    "retry",
+  ]);
+  if (!job.signup_id) throw refused("the job has no signup");
+  const s = await signupOf(ctx, job.signup_id);
+  if (!s) throw refused("no signup");
+  if (
+    s.source === "self-serve" &&
+    (s.admitted_at === null || !["queued", "creating"].includes(s.status))
+  )
+    throw refused("the signup was not admitted");
+  return { admitted: true };
 }
 
 /** The 2.5 rechecks: state, transition, strict vars, self-serve tier. */
 async function recheck(ctx: CreateCtx, jobId: string): Promise<CreateJob> {
-  void ctx;
-  void jobId;
-  throw notBuilt("recheck");
+  const env = deployEnv(ctx.env.OA_ENV);
+  const job = checkJob(await readJob(ctx, jobId), "provision_install", [
+    "create",
+    "retry",
+  ]);
+  const kind = job.kind as "create" | "retry";
+  if (!job.signup_id) throw refused("the job has no signup");
+  const s = await signupOf(ctx, job.signup_id);
+  if (!s || s.job_id !== jobId) throw refused("the signup is not this job's");
+  if (s.install_id !== null && s.install_id !== job.install_id)
+    throw refused("the signup holds another install");
+  const st = await readStatus(ctx, job.install_id);
+  if (!st || st.state !== "provisioning")
+    throw refused(`the install is ${st?.state ?? "missing"}`);
+  if (st.source !== s.source) throw refused("the sources disagree");
+  // The API checked the kind against the state before its write: none for
+  // a create, failed for a retry.
+  checkTransition(kind === "create" ? "none" : "failed", kind, job);
+  if ((job.actor_kind === "user") !== (s.source === "self-serve"))
+    throw refused("only a self-serve owner creates a self-serve install");
+  const slug = checkSlug(s.slug);
+  const testHooks = s.test_hooks === 1;
+  // The 3.3 testHooks matrix: never self-serve or a token, always OIDC.
+  if (
+    testHooks &&
+    (s.source === "self-serve" ||
+      job.actor_kind === "user" ||
+      job.actor_kind === "token")
+  )
+    throw refused("test hooks are not allowed for this principal");
+  checkOidcScope(job, env, { slug, testHooks });
+  if (testHooks && s.send_welcome === 1)
+    throw refused("a test-hooks install gets no welcome");
+  const vars = strictVars(s.vars, {
+    source: s.source,
+    selfServeTier: ctx.env.SELF_SERVE_TIER,
+    testHooks,
+    env,
+  });
+  const args = argsOf(job);
+  const v = args.version ?? s.version ?? null;
+  if (v !== null && typeof v !== "string") throw refused("bad version");
+  if (
+    args.version !== undefined &&
+    s.version !== null &&
+    args.version !== s.version
+  )
+    throw refused("the job and signup versions disagree");
+  return {
+    jobId,
+    kind,
+    signupId: s.signup_id,
+    source: s.source,
+    slug,
+    installId: job.install_id,
+    vars,
+    version: v,
+    testHooks,
+    sendWelcome: s.send_welcome === 1,
+  };
 }
 
 /** install_id = COALESCE(install_id, ?), signups.status creating. */
@@ -177,43 +336,137 @@ async function reserve(
   ctx: CreateCtx,
   job: CreateJob,
 ): Promise<{ installId: string }> {
-  void ctx;
-  void job;
-  throw notBuilt("reserve");
+  const r = await transient(
+    ctx.env.PLATFORM_DB.prepare(
+      `UPDATE signups SET install_id = COALESCE(install_id, ?2),
+   status = CASE status WHEN 'ready' THEN 'ready' ELSE 'creating' END,
+   error = NULL, updated_at = ?3
+ WHERE signup_id = ?1 AND job_id = ?4 AND status IN ('queued', 'creating', 'ready')
+ RETURNING install_id`,
+    )
+      .bind(job.signupId, job.installId, ctx.io.now(), job.jobId)
+      .first<{ install_id: string }>(),
+  );
+  if (!r || r.install_id !== job.installId)
+    throw refused("the signup could not be reserved");
+  return { installId: r.install_id };
 }
 
-/** The release record, floor and variant; no Cloudflare writes. */
+const releaseReader = (ctx: CreateCtx) =>
+  r2BindingReleaseReader(
+    ctx.env.RELEASES as unknown as R2CatalogBucket,
+    deployEnv(ctx.env.OA_ENV),
+  );
+
+/**
+ * The release record, floor and variant; no Cloudflare writes. Stores
+ * args.resolvedVersion (5.2 step 4) while the job is open.
+ */
 async function releaseGate(
   ctx: CreateCtx,
   job: CreateJob,
 ): Promise<ReleaseGate> {
-  void ctx;
-  void job;
-  throw notBuilt("release_gate");
+  const g = await gate({
+    release: releaseReader(ctx),
+    env: deployEnv(ctx.env.OA_ENV),
+    version: job.version,
+    testHooks: job.testHooks,
+    versions: () =>
+      bucketVersions(ctx.env.RELEASES as unknown as R2CatalogBucket),
+  });
+  await transient(
+    ctx.env.PLATFORM_DB.prepare(
+      "UPDATE jobs SET args = json_set(args, '$.resolvedVersion', ?2), updated_at = ?3 WHERE id = ?1 AND status IN ('queued', 'running')",
+    )
+      .bind(job.jobId, g.version, ctx.io.now())
+      .run(),
+  );
+  return g;
 }
 
-/** Sweep, then WfpProvisioner.create with the 5.3 inputs. */
+/**
+ * Sweep, then WfpProvisioner.create with the 5.3 inputs. `onEmail` hands
+ * the address to the step wrapper for redaction only.
+ */
 async function create(
   ctx: CreateCtx,
   job: CreateJob,
   installId: string,
-  gate: ReleaseGate,
+  g: ReleaseGate,
+  onEmail: (email: string) => void,
 ): Promise<{ appHost: string }> {
-  void ctx;
-  void job;
-  void installId;
-  void gate;
-  throw notBuilt("create");
+  const label = `ss-${job.signupId}`;
+  // A crashed attempt's token goes first, even if this attempt then fails
+  // for good.
+  await sweepTokens(ctx, label, installId, job.jobId);
+  const appHost = appHostOf(ctx.env, job.slug);
+  // A rerun after create finished: the install is already this job's.
+  const have = await installRow(ctx, installId);
+  if (have && have.slug === job.slug && have.state === "active") {
+    await transient(modeStatement(ctx, installId, "serving").run());
+    return { appHost: have.app_host };
+  }
+  const email = await ownerEmail(ctx, job.signupId);
+  if (email === null) throw new NonRetryableError("internal");
+  onEmail(email);
+  const p = await renderOptions(ctx, {
+    jobId: job.jobId,
+    label,
+    installId,
+    appHost,
+    vars: job.vars,
+    testHooks: job.testHooks,
+  });
+  const inst = await p.create({
+    slug: job.slug,
+    ownerEmail: email,
+    plan: "paid",
+    vars: job.vars,
+    testHooks: job.testHooks,
+    bundle: g.bundle,
+    version: g.version,
+    installId,
+  });
+  await transient(modeStatement(ctx, installId, "serving").run());
+  return { appHost: inst.appHost };
 }
 
-/** Public /healthz through dispatch; records, never fails the job. */
+/**
+ * Public /healthz through dispatch, up to REACHABLE_MS; records the result
+ * on the lifecycle row and never fails the job (the scheduler opens
+ * unreachable_after_route on `failing`).
+ */
 async function reachable(
   ctx: CreateCtx,
+  installId: string,
   appHost: string,
 ): Promise<{ ok: boolean }> {
-  void ctx;
-  void appHost;
-  throw notBuilt("reachable");
+  const until = ctx.io.now() + REACHABLE_MS;
+  let ok = false;
+  for (;;) {
+    try {
+      const res = await ctx.io.fetch(`https://${appHost}/healthz`, {
+        redirect: "manual",
+      });
+      const b = (await res.json().catch(() => null)) as {
+        ok?: unknown;
+        installId?: unknown;
+      } | null;
+      ok = res.status === 200 && b?.ok === true && b.installId === installId;
+    } catch {
+      ok = false;
+    }
+    if (ok || ctx.io.now() >= until) break;
+    await ctx.io.sleep(REACHABLE_POLL_MS);
+  }
+  const now = ctx.io.now();
+  await ctx.env.PLATFORM_DB.prepare(
+    "UPDATE install_lifecycle SET health = ?2, health_at = ?3, updated_at = ?3 WHERE install_id = ?1",
+  )
+    .bind(installId, ok ? "ok" : "failing", now)
+    .run()
+    .catch(() => {});
+  return { ok };
 }
 
 /** At most one welcome, only when send_welcome = 1 (claim before send). */
@@ -222,10 +475,32 @@ async function notify(
   job: CreateJob,
   appHost: string,
 ): Promise<{ sent: boolean }> {
-  void ctx;
-  void job;
-  void appHost;
-  throw notBuilt("notify");
+  if (!job.sendWelcome) return { sent: false };
+  const db = ctx.env.PLATFORM_DB;
+  const claim = await transient(
+    db
+      .prepare(
+        "UPDATE signups SET welcome_claimed_at = ? WHERE signup_id = ? AND send_welcome = 1 AND welcome_claimed_at IS NULL",
+      )
+      .bind(ctx.io.now(), job.signupId)
+      .run(),
+  );
+  if (claim.meta.changes !== 1) return { sent: false };
+  const to = await ownerEmail(ctx, job.signupId);
+  // Claimed, never sent: the scheduler's welcome_unsent alert says so.
+  if (to === null) throw new NonRetryableError("internal");
+  await ctx.env.WELCOME_EMAIL.send(
+    welcomeEmail({ from: ctx.env.WELCOME_FROM, to, appHost }),
+  );
+  await transient(
+    db
+      .prepare(
+        "UPDATE signups SET welcome_sent_at = ?1, updated_at = ?1 WHERE signup_id = ?2",
+      )
+      .bind(ctx.io.now(), job.signupId)
+      .run(),
+  );
+  return { sent: true };
 }
 
 /** Sweep, delete signup_secret, signups ready, job done, audit. */
@@ -234,30 +509,155 @@ async function done(
   job: CreateJob,
   installId: string,
 ): Promise<{ ready: true }> {
-  void ctx;
-  void job;
-  void installId;
-  throw notBuilt("done");
+  await sweepTokens(ctx, `ss-${job.signupId}`, installId, job.jobId);
+  const db = ctx.env.PLATFORM_DB;
+  const now = ctx.io.now();
+  // The job first: the rest only follow a job this run finished.
+  const mine = "EXISTS (SELECT 1 FROM jobs WHERE id = ?2 AND status = 'done')";
+  await transient(
+    db.batch([
+      // Audited only by the batch that marks it done (4.9).
+      doneAuditStatement(ctx, { ...job, installId }),
+      doneStatement(ctx, job.jobId),
+      db
+        .prepare(`DELETE FROM signup_secret WHERE signup_id = ?1 AND ${mine}`)
+        .bind(job.signupId, job.jobId),
+      db
+        .prepare(
+          `UPDATE signups SET status = 'ready', error = NULL, updated_at = ?3 WHERE signup_id = ?1 AND job_id = ?2 AND ${mine}`,
+        )
+        .bind(job.signupId, job.jobId, now),
+    ]),
+  );
+  return { ready: true };
 }
 
-/** settleFailed (and for prod_dirty the snapshot and purge job), sweep. */
+/**
+ * The end of a failed run (5.2 x): one D1 batch, in order, of the
+ * prod_dirty snapshot (secret names, typed bindings, release record and
+ * metadata hashes), settleFailed with the stored code, the live serving
+ * mode, and for prod_dirty a purge job (system:provisioner); then the purge
+ * starts and the ss- tokens are swept.
+ */
 async function fail(
   ctx: CreateCtx,
   jobId: string,
 ): Promise<{ failed: boolean }> {
-  void ctx;
-  void jobId;
-  throw notBuilt("fail");
+  const job = await readJob(ctx, jobId);
+  if (!job || job.status === "done") return { failed: false };
+  const code = jobCode(job.last_error_code ?? job.error_code ?? "internal");
+  const db = ctx.env.PLATFORM_DB;
+  const row = await installRow(ctx, job.install_id);
+  const dirty = code === "prod_dirty" && row !== null;
+  const snapshot = dirty
+    ? [await snapshotStatement(ctx, job.install_id, jobId)]
+    : [];
+  const purge = dirty ? await purgeJob(ctx, job.install_id, jobId) : null;
+  const res = await transient(
+    db.batch<{ id: string }>([
+      ...snapshot,
+      failedAuditStatement(ctx, job, code),
+      ...settleFailedStatements(db, jobId, code, ctx.io.now()),
+      ...(await reconcile(ctx, job.install_id)),
+      ...(purge ? [purge.statement] : []),
+    ]),
+  );
+  // Inserted by this batch (not an earlier attempt's, nor refused by
+  // jobs_one_active): start it.
+  if (purge && res.at(-1)?.results[0]?.id === purge.id)
+    // C6's WorkflowLike (workers-types' InstanceStatus adds `rollingBack`).
+    await createWorkflowInstance(
+      ctx.env.MANAGE_INSTALL as unknown as WorkflowLike<WorkflowParams>,
+      {
+        id: purge.id,
+        params: { jobId: purge.id },
+      },
+    ).catch(() => {
+      // Left queued: the scheduler's sweep starts it (5.8).
+    });
+  if (job.signup_id && row)
+    await sweepTokens(ctx, `ss-${job.signup_id}`, job.install_id, jobId).catch(
+      () => {},
+    );
+  return { failed: true };
 }
 
-/** Revokes the install's active ss-<signupId> owner tokens. */
-export async function sweep(
+/**
+ * The prod_dirty snapshot (hosted_audit, append-only): the script's secret
+ * names and binding (name, type) pairs as served now, and the hashes of the
+ * release record and the stored metadata. No value of any binding.
+ */
+async function snapshotStatement(
   ctx: CreateCtx,
-  signupId: string,
   installId: string,
-): Promise<{ revoked: number }> {
-  void ctx;
-  void signupId;
-  void installId;
-  throw notBuilt("sweep");
+  jobId: string,
+): Promise<D1PreparedStatement> {
+  const e = deployEnv(ctx.env.OA_ENV);
+  const row = await installRow(ctx, installId);
+  const detail: Record<string, string> = {};
+  try {
+    const cf = await cfFor(ctx);
+    const target = { kind: "namespace" as const, ns: NAMESPACES[e] };
+    const script = names(installId, e).script;
+    const { bindings } = await cf.scriptSettings(target, script);
+    detail.bindings = bindings
+      .map((b) => `${b.name}:${b.type}`)
+      .sort()
+      .join(",");
+    detail.secrets = (await cf.secretList(target, script)).sort().join(",");
+  } catch {
+    detail.settings = "unavailable";
+  }
+  const v = row?.version
+    ? await ctx.env.PLATFORM_DB.prepare(
+        "SELECT metadata FROM install_versions WHERE install_id = ? AND version = ?",
+      )
+        .bind(installId, row.version)
+        .first<{ metadata: string }>()
+        .catch(() => null)
+    : null;
+  detail.metadata = v ? sha256Hex(v.metadata) : "";
+  if (row?.version) {
+    const rec = await releaseReader(ctx)
+      .record(row.version, row.test_hooks === 1 ? "redline" : "release")
+      .catch(() => null);
+    detail.record = rec ? sha256Hex(canonicalJson(rec)) : "";
+  }
+  // Before settleFailed in the batch: a retry after it committed adds none.
+  return auditStatement(ctx, installId, "prod_dirty.snapshot", detail, jobId);
+}
+
+/** The purge job a prod_dirty create leaves (actor system:provisioner). */
+async function purgeJob(
+  ctx: CreateCtx,
+  installId: string,
+  parentJobId: string,
+): Promise<{ id: string; statement: D1PreparedStatement }> {
+  const now = ctx.io.now();
+  const id = jobUlid(now);
+  const requestId = `prod-dirty-${parentJobId}`;
+  const hash = await bodyHash("R11", installId, { requestId });
+  return {
+    id,
+    statement: ctx.env.PLATFORM_DB.prepare(
+      `INSERT INTO jobs (id, kind, workflow, install_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
+VALUES (?1, 'purge', 'manage_install', ?2, ?3, 'system', 'system:provisioner', 'provisioner', ?4, ?5, '{}', 'queued', ?6, ?6)
+ON CONFLICT DO NOTHING RETURNING id`,
+    ).bind(id, installId, parentJobId, requestId, hash, now),
+  };
+}
+
+const B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/** A ULID for a job the provisioner inserts. */
+export function jobUlid(now: number): string {
+  let t = "";
+  let n = now;
+  for (let i = 0; i < 10; i++) {
+    t = B32[n % 32] + t;
+    n = Math.floor(n / 32);
+  }
+  const r = crypto.getRandomValues(new Uint8Array(16));
+  let rand = "";
+  for (const b of r) rand += B32[b % 32];
+  return t + rand;
 }

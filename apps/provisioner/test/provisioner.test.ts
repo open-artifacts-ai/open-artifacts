@@ -68,10 +68,17 @@ describe("deployEnv", () => {
   });
 });
 
+const JOB = "01JOB0000000000000000000AA";
+
 describe("provisionerOptions", () => {
   it("for each env: namespace target, hosted domains, ss- owner token, install id required, maxTokenDays 400", async () => {
     for (const env of ["staging", "prod"] as const) {
-      const o = await provisionerOptions(mkEnv({ OA_ENV: env }), LABEL, io());
+      const o = await provisionerOptions(
+        mkEnv({ OA_ENV: env }),
+        LABEL,
+        io(),
+        JOB,
+      );
       expect(o.env).toBe(env);
       expect(o.target).toEqual({ kind: "namespace", ns: NAMESPACES[env] });
       expect(o.domains).toEqual(HOSTED_DOMAINS[env]);
@@ -82,13 +89,15 @@ describe("provisionerOptions", () => {
       // No PAT file on a Worker; Turnstile and onStep are W3's.
       expect(o).not.toHaveProperty("patDir");
       expect(o.release).toBeDefined();
+      // 4.9: provision's own hosted_audit rows are the job's.
+      expect(o.auditActor).toBe(`job:${JOB}`);
     }
   });
 
   it("reads PROVISION_TOKEN once and calls Cloudflare with it on ACCOUNT_ID", async () => {
     const gets: string[] = [];
     const calls: { url: string; auth: string | null }[] = [];
-    const o = await provisionerOptions(mkEnv({}, gets), LABEL, io(calls));
+    const o = await provisionerOptions(mkEnv({}, gets), LABEL, io(calls), JOB);
     expect(gets).toEqual(["get"]);
     await o.cf.tokenVerify();
     expect(calls).toHaveLength(1);
@@ -104,7 +113,7 @@ describe("provisionerOptions", () => {
         },
       } as SecretsStoreSecret,
     });
-    const e = await provisionerOptions(env, LABEL, io()).catch((x) => x);
+    const e = await provisionerOptions(env, LABEL, io(), JOB).catch((x) => x);
     expect(e).toBeInstanceOf(Error);
     expect(e).not.toBeInstanceOf(NonRetryableError);
     expect(e.message).toBe("internal");
@@ -116,13 +125,14 @@ describe("provisionerOptions", () => {
       mkEnv({ OA_ENV: "dev" }, gets),
       LABEL,
       io(),
+      JOB,
     ).catch((x) => x);
     expect(e).toBeInstanceOf(NonRetryableError);
     expect(gets).toEqual([]);
   });
 
   it("provisionerFor builds a WfpProvisioner from those options", async () => {
-    expect(await provisionerFor(mkEnv(), LABEL, io())).toBeInstanceOf(
+    expect(await provisionerFor(mkEnv(), LABEL, io(), JOB)).toBeInstanceOf(
       WfpProvisioner,
     );
   });
