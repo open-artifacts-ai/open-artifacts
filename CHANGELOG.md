@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.80.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.79.0...v0.80.0) (2026-10-31)
+
+
+### Features
+
+* **admin:** platform admin panel on the Provisioning API (W10, W11 option A) ([#887](https://github.com/open-artifacts-ai/open-artifacts/issues/887)) ([7b77554](https://github.com/open-artifacts-ai/open-artifacts/commit/7b77554c486768cfbec24504fc8d591fcd2d859c))
+* **shared,provision:** C5 contract follow-ups for the scheduler ([#896](https://github.com/open-artifacts-ai/open-artifacts/issues/896)) ([23042ec](https://github.com/open-artifacts-ai/open-artifacts/commit/23042eccba79ee8c3e278d24f2950becdc10e86b))
+
 ## [0.79.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.78.0...v0.79.0) (2026-10-31)
 
 
