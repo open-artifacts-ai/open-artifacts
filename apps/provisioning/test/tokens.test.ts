@@ -374,7 +374,7 @@ describe("mintAgentToken: who may mint", () => {
   it("refuses without a live session row", async () => {
     const db = await platformDb();
     const a = await seedAdmin(db, T);
-    const { session: _drop, ...noHash } = a.principal;
+    const { sessionHash: _drop, ...noHash } = a.principal;
     expect((await apiCode(mintAgentToken(a.env, noHash, oat()))).code).toBe(
       "unauthenticated",
     );

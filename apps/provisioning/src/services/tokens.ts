@@ -147,7 +147,7 @@ const listed = (
 
 /**
  * The live session behind an admin principal, re-read from D1: the row its
- * `session.hash` names, of kind admin, not revoked, unexpired, for the same
+ * `sessionHash` names, of kind admin, not revoked, unexpired, for the same
  * `(email, sub)`, which is still in ADMIN_IDENTITIES.
  */
 async function liveAdminSession(
@@ -156,7 +156,7 @@ async function liveAdminSession(
   now: number,
 ): Promise<SessionRow> {
   if (p.kind !== "admin") throw new ApiError("forbidden");
-  const hash = p.session?.hash;
+  const hash = p.sessionHash;
   if (!hash || !p.email || !p.sub) throw new ApiError("unauthenticated");
   const s = await env.PLATFORM_DB.prepare(
     "SELECT * FROM sessions WHERE id_hash = ?1",

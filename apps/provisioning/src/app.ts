@@ -1,12 +1,14 @@
 import { ipKey } from "@oa/auth-core";
 import {
   type ApiRouteId,
+  type BrowserRouteId,
   isApiRoute,
   PROTOCOL_ROUTES,
 } from "@oa/shared/provisioning";
 import { authenticate } from "./auth/authenticate.js";
 import { checkCsrf, checkOrigin } from "./auth/csrf.js";
 import { handleOAuth, isOAuthPath } from "./auth/oauth/index.js";
+import { browserRoute, type SigninDeps } from "./auth/signin.js";
 import type { Env } from "./env.js";
 import {
   ApiError,
@@ -45,18 +47,20 @@ async function guard(f: () => Promise<Response>): Promise<Response> {
   }
 }
 
+/** `signin`: the sign-in routes' clock and seams (tests only). */
 export async function handle(
   req: Request,
   env: Env,
   ctx: ExecutionContext,
+  signin: Partial<SigninDeps> = {},
 ): Promise<Response> {
   const url = new URL(req.url);
   const host = hostKind(url.hostname, env);
   if (!host) return notFound();
-  if (host === "api") return route(req, env, ctx, "api", url);
+  if (host === "api") return route(req, env, ctx, "api", url, signin);
   // Every admin-host response, SPA and errors alike, carries the 4.5
   // browser-host headers; the consent page keeps its own CSP (9A.3.2).
-  return browserHeaders(await route(req, env, ctx, "admin", url), {
+  return browserHeaders(await route(req, env, ctx, "admin", url, signin), {
     ownCsp: url.pathname === "/oauth/authorize",
   });
 }
@@ -67,6 +71,7 @@ async function route(
   ctx: ExecutionContext,
   host: HostKind,
   url: URL,
+  signin: Partial<SigninDeps>,
 ): Promise<Response> {
   // Host policy first: browser hosts refuse Authorization; api.<app> ignores
   // Cookie (4.5).
@@ -104,7 +109,7 @@ async function route(
   if (m)
     return isApiRoute(m.route)
       ? apiRoute(req, env, ctx, host, m.route, m.params, url)
-      : notImplemented();
+      : guard(() => browserRoute(req, env, m.route as BrowserRouteId, signin));
   if (
     host === "admin" &&
     !path.startsWith("/api/") &&

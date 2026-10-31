@@ -2,12 +2,22 @@ import { applyD1Migrations } from "cloudflare:test";
 import { env as testEnv } from "cloudflare:workers";
 import type { D1Migration } from "@cloudflare/vitest-plugin";
 
-/** The local PLATFORM_DB with the platform-db migrations applied (idempotent). */
+type TestEnv = { PLATFORM_DB: D1Database; TEST_MIGRATIONS: D1Migration[] };
+const t = testEnv as unknown as TestEnv;
+
+let ready: Promise<void> | undefined;
+/**
+ * The local PLATFORM_DB with every platform-db migration applied, and the
+ * session and token tables emptied (admin_audit is append-only and never
+ * written here: tests record audit through SigninDeps).
+ */
 export async function platformDb(): Promise<D1Database> {
-  const e = testEnv as unknown as {
-    PLATFORM_DB: D1Database;
-    TEST_MIGRATIONS: D1Migration[];
-  };
-  await applyD1Migrations(e.PLATFORM_DB, e.TEST_MIGRATIONS);
-  return e.PLATFORM_DB;
+  ready ??= applyD1Migrations(t.PLATFORM_DB, t.TEST_MIGRATIONS);
+  await ready;
+  await t.PLATFORM_DB.batch(
+    ["sessions", "agent_tokens", "rate_counters"].map((x) =>
+      t.PLATFORM_DB.prepare(`DELETE FROM ${x}`),
+    ),
+  );
+  return t.PLATFORM_DB;
 }

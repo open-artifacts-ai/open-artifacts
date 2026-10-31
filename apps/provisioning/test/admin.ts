@@ -48,8 +48,8 @@ export async function seedAdmin(
     email: session.email,
     sub: session.sub,
     authAt: session.auth_at,
+    sessionHash: session.id_hash,
     session: {
-      hash: session.id_hash,
       csrf: "csrf",
       expiresAt: session.expires_at,
     },

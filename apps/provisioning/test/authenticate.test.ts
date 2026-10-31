@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { authenticate } from "../src/auth/authenticate.js";
 import { STAGING_API_HOST } from "../src/auth/oidc.js";
+import { createSession, SESSION_COOKIE } from "../src/auth/session.js";
 import { isRefusal } from "../src/principal.js";
 import { mintAgentToken } from "../src/services/tokens.js";
 import { requestId, seedAdmin } from "./admin.js";
@@ -159,11 +160,45 @@ describe("authenticate: OIDC JWT", () => {
 });
 
 describe("authenticate: admin host (W5a session)", () => {
-  it("fails closed until W5a", async () => {
+  it("an unknown session cookie refuses", async () => {
+    await platformDb();
     const { env } = fakeEnv();
     const r = new Request(`${ADMIN}/api/v1/me`, {
-      headers: { cookie: "__Host-oa-admin=x" },
+      headers: { cookie: `${SESSION_COOKIE}=x` },
     });
     expect(await authenticate(r, env, "admin")).toEqual(unauth);
+  });
+
+  it("the real session principal mints, and its token authenticates on api", async () => {
+    await platformDb();
+    const { env } = fakeEnv();
+    const s = await createSession(
+      env,
+      { email: "me@example.com", sub: "123", authAt: T },
+      T,
+    );
+    const admin = await authenticate(
+      new Request(`${ADMIN}/api/v1/me`, {
+        headers: { cookie: `${SESSION_COOKIE}=${s.sid}` },
+      }),
+      env,
+      "admin",
+      T,
+    );
+    if (isRefusal(admin)) throw new Error("no admin principal");
+    const m = await mintAgentToken(env, admin, {
+      kind: "oat",
+      scopes: ["installs:read"],
+      label: "ci",
+      ttlMinutes: 15,
+      requestId: requestId(),
+    });
+    expect(await authenticate(bearer(m.token as string), env, "api")).toEqual(
+      expect.objectContaining({
+        kind: "token",
+        tokenId: m.tokenId,
+        rateKey: "admin:me@example.com",
+      }),
+    );
   });
 });

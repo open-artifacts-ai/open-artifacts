@@ -14,6 +14,8 @@ import {
   flowHash,
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_TOKEN_URL,
+  isPlatformPrincipal,
+  verifyBrokerTicket,
 } from "@oa/auth-core";
 import {
   ASSERTION_SKEW_MS,
@@ -26,6 +28,7 @@ import {
   MAX_BODY,
   notFound,
   fixedOrigin as originOf,
+  rateKeyOf,
   readState as readSigned,
   refused,
   same,
@@ -89,11 +92,8 @@ const ipLimited = (env: Env, req: Request) => limitIp(limits(env), req, log);
  * install (its id is public in /healthz) can't block its sign-ins. The
  * directory broker scopes its routes the same way.
  */
-const installLimited = (
-  env: Env,
-  install: string,
-  scope: "authorize" | "redeem",
-) => limitInstall(limits(env), install, log, scope);
+const installLimited = (env: Env, install: string, scope: string) =>
+  limitInstall(limits(env), install, log, scope);
 
 async function authorize(
   req: Request,
@@ -122,7 +122,29 @@ async function authorize(
   if (limited) return limited;
   const entry = await lookupInstall(env.BROKER_REGISTRY, install, now);
   if (!entry) return log("authorize", "unknown_install"), notFound();
-  const busy = await installLimited(env, install, "authorize");
+  // Platform principals (the Provisioning API's admin sign-in, design v7
+  // 4.3): a ticket signed by the entry's key over this flow, checked before
+  // the install bucket, so nobody can drain it and lock the admin out.
+  const platform = isPlatformPrincipal(install);
+  if (
+    platform &&
+    !(await verifyBrokerTicket(
+      entry.keys,
+      q.get("ticket") ?? "",
+      { install, state, challenge },
+      now,
+    ))
+  )
+    return log("authorize", "bad_ticket"), notFound();
+  // A ticket is still anonymous (anyone may start a sign-in) and replayable
+  // until exp, so a platform principal's authorize bucket is per client
+  // (rateKeyOf, IPv6 by /64), never one shared bucket: replays drain only
+  // the replayer's own key and the admin's sign-in stays open.
+  const busy = await installLimited(
+    env,
+    install,
+    platform ? `authorize:${rateKeyOf(req)}` : "authorize",
+  );
   if (busy) return busy;
   const u = new URL(GOOGLE_AUTHORIZE_URL);
   u.search = new URLSearchParams({
