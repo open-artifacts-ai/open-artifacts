@@ -1,7 +1,11 @@
 {
   "account_id": "26ac346086d4405f7a976d48747a2a75",
+  "app_zone": "open-artifacts-staging.app",
+  "content_zone": "open-artifacts-staging.page",
+  "dispatch_namespace": "oa-staging",
   "email_zone": "open-artifacts-staging.app",
   "email_daily_limit": 500,
   "google_client_id": "1032390278908-nmf0n63n51u57dtvanu7bphes1lpi6pk.apps.googleusercontent.com",
-  "google_directory_client_id": "1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com"
+  "google_directory_client_id": "1032390278908-keuivn889b7c1rrisf4rbbgdtpu876vm.apps.googleusercontent.com",
+  "deploy_token_id": "UNSET-printed-by-the-first-spikes-run"
 }
