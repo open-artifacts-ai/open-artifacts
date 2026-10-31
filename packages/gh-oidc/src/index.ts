@@ -244,8 +244,8 @@ export async function verify(
   pin(claims, "aud", pins.audience);
   pin(claims, "repository_id", pins.repositoryId);
   pin(claims, "repository", pins.repository);
-  // GitHub's default subject for an environment job; derived from the pins.
-  pin(claims, "sub", `repo:${pins.repository}:environment:${pins.environment}`);
+  // Present, not pinned (4.4): a custom sub template must not lock out a caller.
+  str(claims, "sub");
   pin(claims, "ref", GITHUB_OIDC_REF);
   if (!pins.jobWorkflowRefs.includes(str(claims, "job_workflow_ref")))
     throw new OidcError("job_workflow_ref");

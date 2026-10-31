@@ -224,7 +224,6 @@ describe("verify (4.4)", () => {
     ["iss", { iss: "https://evil.example" }, "iss"],
     ["aud", { aud: "https://api.open-artifacts.app" }, "aud"],
     ["aud array", { aud: [pins.audience] }, "aud"],
-    ["sub", { sub: "repo:x/y:environment:redline-staging" }, "sub"],
     ["repository_id", { repository_id: "2" }, "repository_id"],
     ["repository_id number", { repository_id: 1 }, "repository_id"],
     ["repository", { repository: "evil/open-artifacts" }, "repository"],
@@ -254,6 +253,14 @@ describe("verify (4.4)", () => {
         ),
       ).toBe(code);
     });
+
+  it("accepts any sub (not a 4.4 pin: a custom OIDC sub template still verifies)", async () => {
+    const srv = jwksServer(() => [key.jwk]);
+    const sub = "repo:open-artifacts-ai/open-artifacts:ref:refs/heads/main";
+    await expect(
+      verify(await sign({ ...good(), sub }), pins, opts(srv)),
+    ).resolves.toMatchObject({ sub });
+  });
 
   it("refuses a token missing any claim", async () => {
     for (const k of Object.keys(good())) {

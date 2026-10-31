@@ -50,8 +50,22 @@ describe("authenticate: oat_ bearer (api host)", () => {
       email: session.email,
       sub: session.sub,
       tokenId: m.tokenId,
+      tokenKind: "oat",
+      client: null,
       authAt: null,
     });
+  });
+
+  it("the auth scheme is case-insensitive (RFC 7235)", async () => {
+    const { env, token } = await minted();
+    for (const scheme of ["bearer", "BEARER", "bEaReR"]) {
+      const r = new Request(`${API}/v1/me`, {
+        headers: { authorization: `${scheme} ${token}` },
+      });
+      expect(await authenticate(r, env, "api")).toMatchObject({
+        kind: "token",
+      });
+    }
   });
 
   it("checks D1 on every call: revoke, session end, expiry, identity removal", async () => {

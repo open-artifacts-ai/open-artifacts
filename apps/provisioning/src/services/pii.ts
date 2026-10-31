@@ -2,8 +2,8 @@ import type { AuditEntry } from "@oa/shared/provisioning";
 import type { Principal } from "../principal.js";
 
 // The R17 email rule (design v7 4.2, 4.9): a token principal without
-// `installs:pii` gets every email-valued `detail` field as null, on /v1 and
-// /mcp alike. By value, not by key, so rows that carry an email under a key
+// `installs:pii` gets every email-valued `detail` field as null (`admin`
+// only on rows of another admin), on /v1 and /mcp alike. By value, not by key, so rows that carry an email under a key
 // nobody listed (post-M1 owner emails, 14.4) are covered too. W4's R17
 // handler maps each merged entry through redactAuditEntry.
 
@@ -14,6 +14,14 @@ export const isEmailValue = (v: unknown): boolean =>
 
 export const mayReadPii = (p: Principal) =>
   p.kind !== "token" || p.scopes.includes("installs:pii");
+
+/** What a hidden email actor label reads as (the label column is NOT NULL). */
+export const REDACTED_LABEL = "hidden";
+
+const sameEmail = (a: unknown, b: string | undefined) =>
+  typeof a === "string" &&
+  b !== undefined &&
+  a.trim().toLowerCase() === b.trim().toLowerCase();
 
 function redact(v: unknown): unknown {
   if (isEmailValue(v)) return null;
@@ -28,10 +36,26 @@ function redact(v: unknown): unknown {
   return v;
 }
 
+/**
+ * Also hides an email-valued `actor.label` (admin and self-serve rows). The
+ * caller's own admin is not "another admin" (9A.8): its `detail.admin` and
+ * actor label stay.
+ */
 export function redactAuditEntry(
   e: AuditEntry,
   principal: Principal,
 ): AuditEntry {
-  if (mayReadPii(principal) || e.detail === null) return e;
-  return { ...e, detail: redact(e.detail) as AuditEntry["detail"] };
+  if (mayReadPii(principal)) return e;
+  const own = principal.email;
+  let out = e;
+  if (isEmailValue(e.actor.label) && !sameEmail(e.actor.label, own))
+    out = { ...out, actor: { ...e.actor, label: REDACTED_LABEL } };
+  if (e.detail !== null) {
+    const { admin, ...rest } = e.detail;
+    const detail = redact(rest) as Record<string, unknown>;
+    if ("admin" in e.detail)
+      detail.admin = sameEmail(admin, own) ? admin : redact(admin);
+    out = { ...out, detail };
+  }
+  return out;
 }

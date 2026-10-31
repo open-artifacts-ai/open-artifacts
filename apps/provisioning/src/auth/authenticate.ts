@@ -21,7 +21,7 @@ export async function authenticate(
   host: HostKind,
 ): Promise<Principal | Refusal> {
   if (host !== "api") return refusal("unauthenticated");
-  const m = /^Bearer (\S+)$/.exec(req.headers.get("authorization") ?? "");
+  const m = /^Bearer (\S+)$/i.exec(req.headers.get("authorization") ?? "");
   const token = m?.[1];
   if (!token) return refusal("unauthenticated");
   if (token.startsWith("oat_")) return principalByBearer(env, token);

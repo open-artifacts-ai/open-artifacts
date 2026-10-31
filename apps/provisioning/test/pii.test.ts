@@ -4,6 +4,7 @@ import type { Principal } from "../src/principal.js";
 import {
   isEmailValue,
   mayReadPii,
+  REDACTED_LABEL,
   redactAuditEntry,
 } from "../src/services/pii.js";
 
@@ -58,6 +59,42 @@ describe("R17 email rule (4.9): tokens without installs:pii see no email detail"
       route: "R2",
       count: 3,
     });
+  });
+
+  it("keeps detail.admin on the caller's own admin's rows (9A.8)", () => {
+    const me = {
+      ...P("token", ["audit:read"]),
+      email: "Me@LeoUrbina.com",
+    } as Principal;
+    const d = { admin: "me@leourbina.com", ownerEmail: "owner@acme.test" };
+    expect(redactAuditEntry(entry(d), me).detail).toEqual({
+      admin: "me@leourbina.com",
+      ownerEmail: null,
+    });
+    expect(
+      redactAuditEntry(entry({ admin: "other@leourbina.com" }), me).detail,
+    ).toEqual({ admin: null });
+  });
+
+  it("an email actor label is hidden, unless it is the caller's own admin", () => {
+    const me = {
+      ...P("token", ["audit:read"]),
+      email: "me@leourbina.com",
+    } as Principal;
+    const other = {
+      ...entry(null),
+      actor: { kind: "user", label: "owner@acme.test" },
+    } as AuditEntry;
+    expect(redactAuditEntry(other, me).actor).toEqual({
+      kind: "user",
+      label: REDACTED_LABEL,
+    });
+    const own = {
+      ...entry(null),
+      actor: { kind: "admin", label: "me@leourbina.com" },
+    } as AuditEntry;
+    expect(redactAuditEntry(own, me)).toEqual(own);
+    expect(redactAuditEntry(other, P("admin"))).toBe(other);
   });
 
   it("leaves everything as is for a principal that may read PII", () => {

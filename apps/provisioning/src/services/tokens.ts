@@ -11,6 +11,7 @@ import { ApiError } from "../errors.js";
 import { hmac16, sha256Hex } from "../hmac.js";
 import { countD1, D1_LIMITS } from "../limits.js";
 import type { Principal, Refusal } from "../principal.js";
+import { countRateLimited } from "../refuse.js";
 import type { Surface } from "../routes/invoke.js";
 import { ulid } from "../ulid.js";
 
@@ -102,12 +103,26 @@ export type MintOpts =
       clientName: string | null;
     };
 
-/** oat: the bearer, shown once. oauth: the library userId for completeAuthorization. */
+/**
+ * An `oauth` row whose D1 revoke must also end its library grant in
+ * OAUTH_KV (3.4 R21, 4.6): `revokeGrant(grantId, userId)`, W13b's
+ * revokeOAuthGrants. The per-call D1 check refuses the token either way.
+ */
+export type RevokedGrant = { grantId: string; userId: string };
+const GRANTS_SELECT =
+  'SELECT grant_id AS "grantId", oauth_user AS "userId" FROM agent_tokens';
+
+/**
+ * oat: the bearer, shown once. oauth: the library userId for
+ * completeAuthorization, and the grants a supersession ended (the consent
+ * handler passes them to revokeOAuthGrants).
+ */
 export type Minted = {
   tokenId: string;
   expiresAt: number;
   token?: string;
   oauthUser?: string;
+  superseded?: RevokedGrant[];
 };
 
 /** An `oauth` row's label (9A.3.3): the DCR client_name if it fits, else `unnamed`. */
@@ -177,6 +192,20 @@ export async function mintAgentToken(
   const now = Date.now();
   const s = await liveAdminSession(env, principal, now);
   const email = s.email;
+  const requestId = opts.kind === "oat" ? opts.requestId : null;
+  const clientId = opts.kind === "oauth" ? opts.clientId : null;
+  const db = env.PLATFORM_DB;
+  // Replays and token_limit answer before the mint counter, so they never
+  // spend the admin's mint budget. The batch below re-checks both
+  // atomically; this read only decides what to charge.
+  if (requestId !== null) await refuseReplay(env, principal, email, requestId);
+  const live = await db
+    .prepare(
+      `SELECT count(*) AS n FROM agent_tokens WHERE admin_email = ?1 AND revoked_at IS NULL AND expires_at > ?2 AND NOT (kind = 'oauth' AND client_id IS ?3)`,
+    )
+    .bind(email, now, clientId)
+    .first<{ n: number }>();
+  if ((live?.n ?? 0) >= TOKEN_LIVE_LIMIT) throw new ApiError("token_limit");
   const over = await countD1(
     env,
     `mint:${await hmac16(env, `mint\n${email.toLowerCase()}`)}`,
@@ -184,7 +213,10 @@ export async function mintAgentToken(
     D1_LIMITS.mint.windowMs,
     now,
   );
-  if (over) throw new ApiError(over.code);
+  if (over) {
+    await countRateLimited(env, principal.rateKey);
+    throw new ApiError(over.code);
+  }
 
   const id = ulid(now);
   const scopes = JSON.stringify([...new Set(opts.scopes)]);
@@ -241,15 +273,16 @@ export async function mintAgentToken(
     expiresAt: row.expires_at,
     ...(opts.kind === "oauth" ? { clientId: opts.clientId } : {}),
   });
-  const requestId = opts.kind === "oat" ? opts.requestId : null;
 
-  const db = env.PLATFORM_DB;
   const stmts: D1PreparedStatement[] = [];
   if (opts.kind === "oauth") {
     // A newer consent of the same client ends the older grant (4.6). This
     // runs first, so a superseding consent always fits under the limit.
     const where = `WHERE admin_email = ?1 AND kind = 'oauth' AND client_id = ?2 AND revoked_at IS NULL`;
     stmts.push(
+      db
+        .prepare(`${GRANTS_SELECT} ${where} AND grant_id IS NOT NULL`)
+        .bind(email, opts.clientId),
       db
         .prepare(
           `${AUDIT_INSERT} SELECT ?3, 'admin', ?1, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'reason', 'superseded', 'supersededBy', ?4) FROM agent_tokens ${where}`,
@@ -266,7 +299,8 @@ export async function mintAgentToken(
         `INSERT INTO agent_tokens (id, kind, token_hash, session_hash, admin_email, label, scopes, client_id, client_name, oauth_user, grant_id, created_at, expires_at)
          SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
          WHERE (SELECT count(*) FROM agent_tokens WHERE admin_email = ?5 AND revoked_at IS NULL AND expires_at > ?12) < ?14
-           AND (?15 IS NULL OR NOT EXISTS (SELECT 1 FROM admin_audit WHERE action = 'token.mint' AND actor_label = ?5 AND request_id = ?15))`,
+           AND (?15 IS NULL OR NOT EXISTS (SELECT 1 FROM admin_audit WHERE action = 'token.mint' AND actor_label = ?5 AND request_id = ?15))
+           AND (?15 IS NULL OR NOT EXISTS (SELECT 1 FROM jobs WHERE actor_key = ?16 AND request_id = ?15))`,
       )
       .bind(
         row.id,
@@ -284,6 +318,7 @@ export async function mintAgentToken(
         row.expires_at,
         TOKEN_LIVE_LIMIT,
         requestId,
+        principal.actorKey,
       ),
     db
       .prepare(
@@ -292,20 +327,12 @@ export async function mintAgentToken(
       .bind(now, email, id, requestId, detail),
   );
   const res = await db.batch(stmts);
+  const superseded =
+    opts.kind === "oauth" ? ((res[0]?.results ?? []) as RevokedGrant[]) : [];
   const inserted = res[stmts.length - 2]?.meta.changes ?? 0;
   if (inserted === 0) {
-    if (requestId !== null) {
-      const prior = await db
-        .prepare(
-          "SELECT token_id FROM admin_audit WHERE action = 'token.mint' AND actor_label = ?1 AND request_id = ?2",
-        )
-        .bind(email, requestId)
-        .first<{ token_id: string }>();
-      if (prior)
-        throw new ApiError("idempotency_conflict", "idempotency_conflict", {
-          tokenId: prior.token_id,
-        });
-    }
+    if (requestId !== null)
+      await refuseReplay(env, principal, email, requestId);
     throw new ApiError("token_limit");
   }
   return {
@@ -313,7 +340,37 @@ export async function mintAgentToken(
     expiresAt: row.expires_at,
     ...(token ? { token } : {}),
     ...(oauthUser ? { oauthUser } : {}),
+    ...(superseded.length ? { superseded } : {}),
   };
+}
+
+/**
+ * R19's requestId is the admin's actorKey's, as on every write (3.1): one
+ * already used for a mint (details.tokenId; the bearer is never shown twice)
+ * or for a job is 409 `idempotency_conflict`.
+ */
+async function refuseReplay(
+  env: Env,
+  principal: Principal,
+  email: string,
+  requestId: string,
+): Promise<void> {
+  const db = env.PLATFORM_DB;
+  const prior = await db
+    .prepare(
+      "SELECT token_id FROM admin_audit WHERE action = 'token.mint' AND actor_label = ?1 AND request_id = ?2",
+    )
+    .bind(email, requestId)
+    .first<{ token_id: string }>();
+  if (prior)
+    throw new ApiError("idempotency_conflict", "idempotency_conflict", {
+      tokenId: prior.token_id,
+    });
+  const job = await db
+    .prepare("SELECT 1 FROM jobs WHERE actor_key = ?1 AND request_id = ?2")
+    .bind(principal.actorKey, requestId)
+    .first();
+  if (job) throw new ApiError("idempotency_conflict");
 }
 
 /**
@@ -375,6 +432,8 @@ export function tokenPrincipal(
     email: row.admin_email,
     sub: session.sub,
     tokenId: row.id,
+    tokenKind: row.kind,
+    client: row.kind === "oauth" ? row.label : null,
     authAt: null,
   };
 }
@@ -471,21 +530,27 @@ export async function getToken(
 
 /**
  * R21 with an id: revokes one of this admin's tokens (either kind) and
- * audits `token.revoke` in the same batch. False when the admin has no such
+ * audits `token.revoke` in the same batch. Null when the admin has no such
  * token (404); revoking an ended token again is a no-op. The D1 row is what
- * every call checks, so an OAuth grant still in KV is refused at once.
+ * every call checks, so an OAuth grant still in KV is refused at once; the
+ * result is the grant to end in KV too (empty for oat).
  */
 export async function revokeToken(
   env: Env,
   email: string,
   id: string,
-): Promise<boolean> {
+): Promise<RevokedGrant[] | null> {
   const now = Date.now();
   const db = env.PLATFORM_DB;
   const where = "WHERE id = ?1 AND admin_email = ?2 AND revoked_at IS NULL";
   const res = await db.batch([
     db
       .prepare("SELECT 1 FROM agent_tokens WHERE id = ?1 AND admin_email = ?2")
+      .bind(id, email),
+    db
+      .prepare(
+        `${GRANTS_SELECT} ${where} AND kind = 'oauth' AND grant_id IS NOT NULL`,
+      )
       .bind(id, email),
     db
       .prepare(
@@ -496,15 +561,27 @@ export async function revokeToken(
       .prepare(`UPDATE agent_tokens SET revoked_at = ?3 ${where}`)
       .bind(id, email, now),
   ]);
-  return (res[0]?.results.length ?? 0) > 0;
+  if ((res[0]?.results.length ?? 0) === 0) return null;
+  return (res[1]?.results ?? []) as RevokedGrant[];
 }
 
-/** R21 without an id: revokes all of this admin's tokens, both kinds; one `token.revoke_all` row. */
-export async function revokeAllTokens(env: Env, email: string): Promise<void> {
+/**
+ * R21 without an id: revokes all of this admin's tokens, both kinds; one
+ * `token.revoke_all` row. Returns the oauth grants to end in KV.
+ */
+export async function revokeAllTokens(
+  env: Env,
+  email: string,
+): Promise<RevokedGrant[]> {
   const now = Date.now();
   const db = env.PLATFORM_DB;
   const where = "WHERE admin_email = ?1 AND revoked_at IS NULL";
-  await db.batch([
+  const res = await db.batch([
+    db
+      .prepare(
+        `${GRANTS_SELECT} ${where} AND kind = 'oauth' AND grant_id IS NOT NULL`,
+      )
+      .bind(email),
     db
       .prepare(
         `${AUDIT_INSERT} VALUES (?2, 'admin', ?1, NULL, 'token.revoke_all', NULL, 'ok', json_object('count', (SELECT count(*) FROM agent_tokens ${where})))`,
@@ -514,6 +591,7 @@ export async function revokeAllTokens(env: Env, email: string): Promise<void> {
       .prepare(`UPDATE agent_tokens SET revoked_at = ?2 ${where}`)
       .bind(email, now),
   ]);
+  return (res[0]?.results ?? []) as RevokedGrant[];
 }
 
 /** `token.used` dedup window (4.1): one row per token per route per 10 min. */
@@ -522,8 +600,8 @@ export const TOKEN_USED_WINDOW_MS = 10 * 60_000;
 /**
  * Records a token principal's use of a route after authz passed: the first
  * use per token, route and 10-minute window writes one `token.used` row
- * (detail: the minting admin, route, surface; MCP adds tool and
- * clientVersion, 9A.8) and bumps `last_used_at`. One D1 batch, so
+ * (detail: the minting admin, route, surface, `via` and `client`; MCP adds
+ * tool and clientVersion, 9A.8) and bumps `last_used_at`. One D1 batch, so
  * concurrent first uses write one row. Other principals: nothing.
  */
 export async function recordTokenUse(
@@ -540,6 +618,8 @@ export async function recordTokenUse(
     admin: principal.email ?? null,
     route,
     surface: surface.kind,
+    via: principal.tokenKind ?? null,
+    client: principal.client ?? null,
     ...(surface.kind === "mcp"
       ? { tool: surface.tool, clientVersion: surface.clientVersion }
       : {}),

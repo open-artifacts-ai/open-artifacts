@@ -71,6 +71,8 @@ describe("token.used (4.1, 4.9): one row per token per route per 10 minutes", ()
       admin: session.email,
       route: "R2",
       surface: "http",
+      via: "oat",
+      client: null,
     });
     const r = await db
       .prepare("SELECT last_used_at FROM agent_tokens WHERE id = ?1")
@@ -87,8 +89,29 @@ describe("token.used (4.1, 4.9): one row per token per route per 10 minutes", ()
     ).toMatchObject({
       surface: "mcp",
       tool: "list_installs",
+      via: "oat",
       clientVersion: "1.2.3",
     });
+  });
+
+  it("an oauth token records via oauth and its sanitized client name (9A.8)", async () => {
+    const db = await platformDb();
+    const a = await seedAdmin(db, T);
+    const m = await mintAgentToken(a.env, a.principal, {
+      kind: "oauth",
+      scopes: ["installs:read"],
+      clientId: "client-a",
+      clientName: "Claude",
+    });
+    const p = (await principalByTokenId(
+      a.env,
+      m.tokenId,
+      "oauth",
+    )) as Principal;
+    await recordTokenUse(a.env, p, "R2", MCP);
+    expect(
+      JSON.parse((await used(db, m.tokenId))[0]?.detail as string),
+    ).toMatchObject({ via: "oauth", client: "Claude" });
   });
 
   it("repeats inside the window add nothing; another route or window does", async () => {

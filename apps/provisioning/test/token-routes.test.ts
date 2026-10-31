@@ -191,6 +191,30 @@ describe("R21 DELETE /tokens/:id?", () => {
     expect(items[0]?.revokedAt).toBe(T);
   });
 
+  it("an oauth row's library grant is ended off the response path", async () => {
+    const db = await platformDb();
+    const a = await seedAdmin(db, T);
+    const o = await oauth(a);
+    await db
+      .prepare("UPDATE agent_tokens SET grant_id = 'g' WHERE id = ?1")
+      .bind(o.tokenId)
+      .run();
+    const t = (await call(a, "R19", { body: mintBody() })).body as {
+      id: string;
+    };
+    const waits = (id: string) => {
+      const c = ctx();
+      const queued: Promise<unknown>[] = [];
+      c.waitUntil = (p) => void queued.push(p);
+      return invokeRoute(a.env, c, a.principal, "R21", { params: { id } }, HTTP)
+        .then(() => Promise.allSettled(queued))
+        .then(() => queued.length);
+    };
+    // invokeRoute queues token.used for every call; R21 adds the grant revoke.
+    expect(await waits(t.id)).toBe(1);
+    expect(await waits(o.tokenId)).toBe(2);
+  });
+
   it("another admin's token, or an unknown id, is 404", async () => {
     const db = await platformDb();
     const a = await seedAdmin(db, T);

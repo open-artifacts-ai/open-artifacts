@@ -4,10 +4,12 @@ import {
   authorize,
   ROUTES,
 } from "@oa/shared/provisioning";
+import { audit } from "../audit.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { limit } from "../limits.js";
 import type { Principal } from "../principal.js";
+import { countRateLimited } from "../refuse.js";
 import { recordTokenUse } from "../services/tokens.js";
 import { HANDLERS } from "./handlers.js";
 
@@ -54,9 +56,28 @@ export async function invokeRoute(
     ROUTES[route].write ? "write" : "read",
     principal.rateKey,
   );
-  if (r) throw new ApiError(r.code);
+  if (r) {
+    // 4.9: any 429 is counted (audit_refusals), on both surfaces.
+    if (r.code === "rate_limited")
+      await countRateLimited(env, principal.rateKey);
+    throw new ApiError(r.code);
+  }
   const d = authorize(route, principal, env.OA_ENV);
-  if (!d.ok) throw new ApiError(d.code);
+  if (!d.ok) {
+    // 4.9 `authz.refused` (route, code), off the response path; a failed
+    // write never changes the answer.
+    ctx.waitUntil(
+      audit(env, {
+        action: "authz.refused",
+        actor: principal,
+        outcome: "refused",
+        route,
+        code: d.code,
+        surface,
+      }).catch(() => {}),
+    );
+    throw new ApiError(d.code);
+  }
   // token.used (4.9): off the response path; a failed write never fails the call.
   ctx.waitUntil(recordTokenUse(env, principal, route, surface).catch(() => {}));
   return HANDLERS[route]({

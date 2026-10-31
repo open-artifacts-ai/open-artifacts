@@ -1,6 +1,7 @@
 import type {
   ApiErrorCode,
   PrincipalKind,
+  TokenKind,
   TokenScope,
 } from "@oa/shared/provisioning";
 
@@ -15,6 +16,9 @@ import type {
  * - sessionHash: admin sessions only, `sessions.id_hash`; mintAgentToken
  *   binds the token to it (4.5, 9A.3.2).
  * - hd: self-serve users only (the verified Workspace domain, 4.2 policy).
+ * - tokenKind, client: tokens only, from the row; audit `via` and `client`
+ *   (9A.8), and R1's token kind. `client` is the sanitized client name
+ *   (oauth), null for `oat`.
  */
 export type Principal = {
   kind: PrincipalKind;
@@ -28,6 +32,8 @@ export type Principal = {
   authAt?: number | null;
   sessionHash?: string;
   hd?: string;
+  tokenKind?: TokenKind;
+  client?: string | null;
 };
 
 /** A refusal before a handler runs; answered with the 3.5 envelope. */

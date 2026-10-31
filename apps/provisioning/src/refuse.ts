@@ -8,6 +8,9 @@ import type { Env } from "./env.js";
 import { errorResponse } from "./errors.js";
 import { hmac16 } from "./hmac.js";
 
+/** The C4 name, kept for streams that import it; the buckets are 4.9's. */
+export type RefusalBucket = AuditRefusalBucket;
+
 /**
  * Answers a pre-authn or unauthenticated refusal, after counting it in
  * audit_refusals (4.9): one row per bucket, code, IP HMAC and 10-minute
@@ -50,4 +53,22 @@ export async function countRefusal(
       now,
     )
     .run();
+}
+
+/**
+ * Counts an authenticated caller's 429 (4.9: audit_refusals holds any 429)
+ * in bucket `auth`, keyed by the HMAC of its rate key (no IP on /mcp), so a
+ * flood adds one row per caller per window. Never throws: the refusal
+ * stands without its count. invokeRoute (both surfaces) and the mint
+ * counter call it.
+ */
+export async function countRateLimited(
+  env: Pick<Env, "PLATFORM_DB" | "ADMIN_SESSION_KEY">,
+  rateKey: string,
+): Promise<void> {
+  try {
+    await countRefusal(env, "auth", "rate_limited", rateKey);
+  } catch {
+    // D1 down or unbound.
+  }
 }

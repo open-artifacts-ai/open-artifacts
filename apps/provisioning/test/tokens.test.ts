@@ -1,7 +1,8 @@
 import { ULID_RE } from "@oa/shared/provisioning";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../src/errors.js";
-import { sha256Hex } from "../src/hmac.js";
+import { revokeOAuthGrants } from "../src/auth/oauth/index.js";
+import { ApiError, NotImplemented } from "../src/errors.js";
+import { hmac16, sha256Hex } from "../src/hmac.js";
 import type { Principal } from "../src/principal.js";
 import {
   type AgentTokenRow,
@@ -10,6 +11,8 @@ import {
   OAUTH_GRANT_MAX_MS,
   oauthLabel,
   principalByTokenId,
+  revokeAllTokens,
+  revokeToken,
   type SessionRow,
   TOKEN_LIVE_LIMIT,
   tokenPrincipal,
@@ -178,6 +181,32 @@ describe("mintAgentToken: oat (R19)", () => {
     expect(n?.n).toBe(1);
   });
 
+  it("a requestId this admin already used on a job route is idempotency_conflict (3.1)", async () => {
+    const db = await platformDb();
+    const { env, principal, session } = await seedAdmin(db, T);
+    const o = oat();
+    await db
+      .prepare(
+        `INSERT INTO jobs (id, kind, workflow, install_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
+         VALUES (?1, 'suspend', 'manage_install', 'iaaaaaaaaaaa', 'admin', ?2, ?3, ?4, 'h', '{}', 'done', ?5, ?5)`,
+      )
+      .bind(
+        `J${crypto.randomUUID()}`,
+        principal.actorKey,
+        session.email,
+        o.requestId,
+        T,
+      )
+      .run();
+    const e = await apiCode(mintAgentToken(env, principal, o));
+    expect(e.code).toBe("idempotency_conflict");
+    const n = await db
+      .prepare("SELECT count(*) AS n FROM agent_tokens WHERE admin_email = ?1")
+      .bind(session.email)
+      .first<{ n: number }>();
+    expect(n?.n).toBe(0);
+  });
+
   it("the same requestId from another admin is not a replay", async () => {
     const db = await platformDb();
     const a = await seedAdmin(db, T);
@@ -245,6 +274,61 @@ describe("mintAgentToken: limits (4.1, 4.7)", () => {
       reason: "superseded",
       supersededBy: next.tokenId,
     });
+  });
+
+  it("replays and token_limit refusals do not spend the mint budget", async () => {
+    const db = await platformDb();
+    const { env, principal } = await seedAdmin(db, T);
+    const o = oat();
+    const ids = [(await mintAgentToken(env, principal, o)).tokenId];
+    for (let i = 0; i < 25; i++)
+      expect((await apiCode(mintAgentToken(env, principal, o))).code).toBe(
+        "idempotency_conflict",
+      );
+    for (let i = 0; i < 4; i++)
+      ids.push((await mintAgentToken(env, principal, oat())).tokenId);
+    for (let i = 0; i < 25; i++)
+      expect((await apiCode(mintAgentToken(env, principal, oat()))).code).toBe(
+        "token_limit",
+      );
+    // 5 mints charged so far: 15 more fit in the hour.
+    for (let i = 0; i < 15; i++) {
+      await db
+        .prepare("UPDATE agent_tokens SET revoked_at = ?2 WHERE id = ?1")
+        .bind(ids.shift(), T)
+        .run();
+      ids.push((await mintAgentToken(env, principal, oat())).tokenId);
+    }
+    await db
+      .prepare("UPDATE agent_tokens SET revoked_at = ?2 WHERE id = ?1")
+      .bind(ids.shift(), T)
+      .run();
+    expect((await apiCode(mintAgentToken(env, principal, oat()))).code).toBe(
+      "rate_limited",
+    );
+  });
+
+  it("a mint over the counter is counted in audit_refusals (4.9)", async () => {
+    const db = await platformDb();
+    const { env, principal } = await seedAdmin(db, T);
+    for (let i = 0; i < 20; i++) {
+      const m = await mintAgentToken(env, principal, oat());
+      await db
+        .prepare("UPDATE agent_tokens SET revoked_at = ?2 WHERE id = ?1")
+        .bind(m.tokenId, T)
+        .run();
+    }
+    await apiCode(mintAgentToken(env, principal, oat()));
+    await apiCode(mintAgentToken(env, principal, oat()));
+    const r = await db
+      .prepare(
+        "SELECT bucket, code, count FROM audit_refusals WHERE ip_hmac = ?1",
+      )
+      .bind(await hmac16(env, principal.rateKey))
+      .all();
+    expect(r.results).toEqual([
+      { bucket: "auth", code: "rate_limited", count: 2 },
+    ]);
   });
 
   it("20 mints per admin per hour, both kinds together: rate_limited", async () => {
@@ -377,6 +461,67 @@ describe("mintAgentToken: oauth (MCP consent)", () => {
   });
 });
 
+describe("oauth grants to end in KV (3.4 R21, 4.6)", () => {
+  const withGrant = async (db: D1Database, id: string, grant: string) =>
+    db
+      .prepare("UPDATE agent_tokens SET grant_id = ?2 WHERE id = ?1")
+      .bind(id, grant)
+      .run();
+
+  it("revokeToken returns an oauth row's grant; an oat row has none; unknown is null", async () => {
+    const db = await platformDb();
+    const { env, principal, session } = await seedAdmin(db, T);
+    const o = await mintAgentToken(env, principal, oauth("c1"));
+    await withGrant(db, o.tokenId, "g1");
+    const t = await mintAgentToken(env, principal, oat());
+    expect(await revokeToken(env, session.email, o.tokenId)).toEqual([
+      { grantId: "g1", userId: o.oauthUser },
+    ]);
+    // Already revoked: no grant to end twice.
+    expect(await revokeToken(env, session.email, o.tokenId)).toEqual([]);
+    expect(await revokeToken(env, session.email, t.tokenId)).toEqual([]);
+    expect(
+      await revokeToken(env, session.email, "01J00000000000000000000000"),
+    ).toBeNull();
+  });
+
+  it("revokeAllTokens returns every live oauth grant", async () => {
+    const db = await platformDb();
+    const { env, principal, session } = await seedAdmin(db, T);
+    const a = await mintAgentToken(env, principal, oauth("c1"));
+    const b = await mintAgentToken(env, principal, oauth("c2"));
+    await mintAgentToken(env, principal, oauth("c3")); // no grant yet
+    await mintAgentToken(env, principal, oat());
+    await withGrant(db, a.tokenId, "ga");
+    await withGrant(db, b.tokenId, "gb");
+    const g = await revokeAllTokens(env, session.email);
+    expect([...g].sort((x, y) => x.grantId.localeCompare(y.grantId))).toEqual([
+      { grantId: "ga", userId: a.oauthUser },
+      { grantId: "gb", userId: b.oauthUser },
+    ]);
+  });
+
+  it("a superseding consent returns the older grant", async () => {
+    const db = await platformDb();
+    const { env, principal } = await seedAdmin(db, T);
+    const old = await mintAgentToken(env, principal, oauth("same"));
+    await withGrant(db, old.tokenId, "gold");
+    const next = await mintAgentToken(env, principal, oauth("same"));
+    expect(next.superseded).toEqual([
+      { grantId: "gold", userId: old.oauthUser },
+    ]);
+    expect(old.superseded).toBeUndefined();
+  });
+
+  it("revokeOAuthGrants is W13b's: a no-op without grants, NotImplemented with", async () => {
+    const { env } = fakeEnv();
+    await expect(revokeOAuthGrants(env, [])).resolves.toBeUndefined();
+    await expect(
+      revokeOAuthGrants(env, [{ grantId: "g", userId: "adm_00" }]),
+    ).rejects.toBeInstanceOf(NotImplemented);
+  });
+});
+
 describe("tokenPrincipal (9A.3.3)", () => {
   const S: SessionRow = {
     id_hash: "s",
@@ -433,12 +578,16 @@ describe("tokenPrincipal (9A.3.3)", () => {
       email: "me@example.com",
       sub: "123",
       tokenId: R.id,
+      tokenKind: "oat",
+      client: null,
       authAt: null,
     });
     expect(tokenPrincipal(O, S, env, "oauth")).toMatchObject({
       kind: "token",
       label: "Claude",
       tokenId: R.id,
+      tokenKind: "oauth",
+      client: "Claude",
     });
   });
 

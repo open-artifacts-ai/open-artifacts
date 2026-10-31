@@ -1,9 +1,11 @@
 import { MintTokenSchema, TokenIdSchema } from "@oa/shared/provisioning";
+import { revokeOAuthGrants } from "../auth/oauth/index.js";
 import { ApiError } from "../errors.js";
 import {
   getToken,
   listTokens,
   mintAgentToken,
+  type RevokedGrant,
   revokeAllTokens,
   revokeToken,
   tokenView,
@@ -41,15 +43,19 @@ export const listTokensHandler: Handler = async ({ env, principal }) => ({
   headers: {},
 });
 
-/** R21 DELETE /tokens/:id?: one (404 if not this admin's) or all, both kinds. */
-export const revokeTokens: Handler = async ({ env, principal, input }) => {
+/**
+ * R21 DELETE /tokens/:id?: one (404 if not this admin's) or all, both kinds.
+ * An oauth row's library grant ends too, off the response path.
+ */
+export const revokeTokens: Handler = async ({ env, ctx, principal, input }) => {
   const email = adminEmail(principal.email);
   const id = input.params?.id;
-  if (id === undefined || id === "") await revokeAllTokens(env, email);
-  else if (
-    !TokenIdSchema.safeParse(id).success ||
-    !(await revokeToken(env, email, id))
-  )
-    throw new ApiError("not_found");
+  let grants: RevokedGrant[] | null;
+  if (id === undefined || id === "") grants = await revokeAllTokens(env, email);
+  else if (!TokenIdSchema.safeParse(id).success) grants = null;
+  else grants = await revokeToken(env, email, id);
+  if (grants === null) throw new ApiError("not_found");
+  if (grants.length > 0)
+    ctx.waitUntil(revokeOAuthGrants(env, grants).catch(() => {}));
   return { status: 204, body: null, headers: {} };
 };
