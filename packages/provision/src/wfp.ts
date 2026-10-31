@@ -1627,7 +1627,12 @@ export class WfpProvisioner {
     this.checkEmailCodeDomain(vars, "domains");
     this.checkGoogleBroker(vars);
     if (this.o.brokerEnabled) this.registryDomainsOf(vars);
-    const hash = inputsHash({ ownerEmail, vars, testHooks });
+    const hash = inputsHash({
+      ownerEmail,
+      vars,
+      testHooks,
+      version: i.version,
+    });
     // 5.7 replay, before the release pre-flight (a fixed id only): the
     // create finished but its step result was lost, so a release pulled
     // since must not fail it. No release read, no write, no PAT re-minted.
@@ -1702,7 +1707,7 @@ export class WfpProvisioner {
         );
       if (row.inputs_hash !== hash)
         throw new ProvisionRefused(
-          `install ${row.id}: resume inputs differ from the first run (owner, vars or testHooks); use the original inputs`,
+          `install ${row.id}: resume inputs differ from the first run (owner, vars, testHooks or version); use the original inputs`,
           "invalid_state",
         );
       // F2/I1: never move an install to an older release.
@@ -1791,6 +1796,7 @@ export class WfpProvisioner {
     hash: string,
   ): Install | undefined {
     if (row?.state !== "active" || row.id !== i.installId) return undefined;
+    // The hash covers the version; installs.version also catches an upgrade since.
     if (row.inputs_hash !== hash || row.version !== i.version)
       throw new ProvisionRefused(
         `install ${row.id}: rerun inputs differ from the first run (owner, vars, testHooks or version); use the original inputs`,
@@ -1982,8 +1988,9 @@ export class WfpProvisioner {
       );
     if (exp <= now + REFUSE_TOKEN_DAYS * DAY) {
       const why = `the Cloudflare token expires on ${new Date(exp).toISOString().slice(0, 10)}, within ${REFUSE_TOKEN_DAYS} days; roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and ${this.tokenHome()}`;
+      // 3.5, 5.7 (#882): terminal; a retry within the backoff would not roll it.
       if (nearExpiry === "refuse")
-        throw new ProvisionRetry(`${why}, then retry`, "token_invalid");
+        throw new ProvisionRefused(`${why}, then start again`, "invalid_state");
       this.notes.push(`WARNING: ${why}`);
     }
     try {
@@ -3555,8 +3562,10 @@ export class WfpProvisioner {
     if (report) await this.step("upload");
     this.assertHooksAllowed(rel.rec.variant, p.m.testHooks);
     const mods = await this.readModules(rel.rec);
-    // Check-first: every file again, before the probe or any write.
-    const assets = await this.readAssets(rel.rec, true);
+    // planRollback's readRelease verified every file in this run; the list
+    // is re-checked here and a bucket read re-checks its file (#882: not
+    // every file twice).
+    const assets = await this.readAssets(rel.rec);
     // L5: the live tag, not only the journal; a rollback never crosses it.
     await this.hold();
     let live: string | null | undefined;

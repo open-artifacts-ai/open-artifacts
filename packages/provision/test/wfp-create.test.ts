@@ -765,10 +765,22 @@ describe("WfpProvisioner.create", () => {
         expect(e.message).toMatch(/inputs/);
         expect(nonReads(s.fake, n)).toEqual([]);
         expect(s.rows()[0].inputs_hash).toBe(
-          inputsHash({ ownerEmail: OWNER, vars: {}, testHooks: false }),
+          inputsHash({
+            ownerEmail: OWNER,
+            vars: {},
+            testHooks: false,
+            version: "0.23.0",
+          }),
         );
       },
     );
+
+    it("#882: the inputs hash covers the version, so a rerun at another version is another input", () => {
+      const base = { ownerEmail: OWNER, vars: {}, testHooks: false };
+      expect(inputsHash({ ...base, version: "0.23.0" })).not.toBe(
+        inputsHash({ ...base, version: "0.24.0" }),
+      );
+    });
 
     it("the owner email is normalized (trim, lowercase), so a resume in other casing is the same input", async () => {
       const s = setup();
@@ -2429,8 +2441,10 @@ describe("WfpProvisioner.create", () => {
         expect(e.message).toMatch(/expires/);
         expect(e.message).toMatch(/roll/i);
         expect(e.message).toMatch(/My Profile > API Tokens/);
-        expect(e).toBeInstanceOf(ProvisionRetry);
-        expect(provisionErrorCode(e)).toBe("token_invalid");
+        // 3.5, 5.7 (#882): terminal, never a retryable token_invalid.
+        expect(e).toBeInstanceOf(ProvisionRefused);
+        expect(e).not.toBeInstanceOf(ProvisionRetry);
+        expect(provisionErrorCode(e)).toBe("invalid_state");
         expect(s.fake.writes()).toEqual([]);
         expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
       },
@@ -3432,14 +3446,15 @@ describe("H-T4b round 1", () => {
       expect(s.fake.log).toEqual([]);
     });
 
-    it("a downgrade below the install's current version is refused before any write", async () => {
+    it("a resume at another version is refused before any write (#882: the version is an input)", async () => {
       const s = setup();
       await failAtHealth(s);
       const writes = s.fake.writes().length;
       const e = await fails(
         s.p.create(input("finqore", { version: "0.22.9" })),
       );
-      expect(e.message).toMatch(/downgrade/);
+      expect(e.message).toMatch(/inputs differ.*version/);
+      expect(provisionErrorCode(e)).toBe("invalid_state");
       expect(s.fake.writes().length).toBe(writes);
       // The same version resumes.
       await s.p.create(input());
