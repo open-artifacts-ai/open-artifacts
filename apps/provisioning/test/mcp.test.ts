@@ -764,6 +764,43 @@ describe("errors (9A.6) and limits (9A.7)", () => {
     expect(r429.status).toBe(429);
   });
 
+  it("a POST the SDK refuses whole before any handler spends one RL_PV_READ", async () => {
+    const c = await caller();
+    const keys = c.limits.RL_PV_READ.keys;
+    const spent = async (req: Request, status: number) => {
+      const before = keys.length;
+      const res = await fetchWorker(req, c.env, c.ctx);
+      expect(res.status).toBe(status);
+      // The SDK's own answer, intact; a 429 is the API envelope.
+      const out = (await res.json()) as {
+        error: { code: number | string };
+      };
+      expect(out.error.code).toBe(
+        status === 429 ? "rate_limited" : status === 400 ? -32600 : -32000,
+      );
+      return keys.length - before;
+    };
+    const one = call(1, "whoami", {});
+    // Accept without text/event-stream: 406.
+    expect(
+      await spent(mcpReq(c.bearer, one, { accept: "application/json" }), 406),
+    ).toBe(1);
+    // Wrong Content-Type: 415.
+    expect(
+      await spent(mcpReq(c.bearer, one, { "content-type": "text/plain" }), 415),
+    ).toBe(1);
+    // A batch over the SDK's 100: 400.
+    const big = Array.from({ length: 101 }, (_, i) =>
+      call(i + 1, "whoami", {}),
+    );
+    expect(await spent(mcpReq(c.bearer, big), 400)).toBe(1);
+    // That charge is a limit like any other: 429.
+    c.limits.RL_PV_READ.allow = false;
+    expect(
+      await spent(mcpReq(c.bearer, one, { accept: "application/json" }), 429),
+    ).toBe(1);
+  });
+
   it("valid tools/calls are charged once each, inside invokeRoute", async () => {
     const c = await caller();
     const keys = c.limits.RL_PV_READ.keys;

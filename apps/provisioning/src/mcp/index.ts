@@ -5,8 +5,8 @@ import {
   toolInput,
 } from "@oa/shared/provisioning";
 import { createMcpHandler } from "agents/mcp/server";
+import { chargeTransport, countUnauthenticated } from "../auth/mcp-gate.js";
 import type { Env } from "../env.js";
-import { chargeTransport, countUnauthenticated } from "../routes/invoke.js";
 import { mcpPrincipal, mcpUnauthorized, type OAuthPrincipal } from "./auth.js";
 import { createAdminServer } from "./server.js";
 
@@ -15,8 +15,8 @@ import { createAdminServer } from "./server.js";
 // (a fresh stateless server per request) -> invokeRoute(..., { kind: "mcp",
 // tool }) per tools/call. CSRF does not apply: no cookie is read on the api
 // host. A foreign browser Origin is 403 first, before the body is read.
-// This directory imports only routes/invoke.ts, auth/ and the tool table
-// (test/node/layout.test.ts).
+// This directory imports only routes/invoke.ts, auth/ (the charge and the
+// refusal count: auth/mcp-gate.ts) and the tool table (test/node/layout.test.ts).
 
 /** The API's 16 KiB body cap plus the JSON-RPC envelope (9A.2). */
 export const MCP_BODY_CAP = 32 * 1024;
@@ -45,7 +45,7 @@ const tooLarge = () =>
  */
 async function capBody(
   req: Request,
-): Promise<{ req: Request; buf: Uint8Array } | Response> {
+): Promise<{ req: Request; buf: Uint8Array<ArrayBuffer> } | Response> {
   if (Number(req.headers.get("content-length") ?? 0) > MCP_BODY_CAP)
     return tooLarge();
   const chunks: Uint8Array[] = [];
@@ -104,8 +104,9 @@ function reachesHandler(m: RpcPeek): boolean {
  * prompts/*, ping, notifications), and one for each tools/call the SDK
  * refuses before its handler (an unknown tool, input failing the derived
  * schema), which never reaches invokeRoute. A tools/call that reaches its
- * handler is charged inside invokeRoute. So no authenticated POST is free.
- * An unparsable or empty body is one charge; the SDK answers it.
+ * handler is charged inside invokeRoute. An unparsable or empty body is one
+ * charge; the SDK answers it. A body of only valid tools/calls is 0 here,
+ * and handleMcp charges once more if the SDK then refuses the whole POST.
  */
 export function transportCharges(buf: Uint8Array): number {
   let msg: unknown;
@@ -146,15 +147,36 @@ export async function handleMcp(
     return mcpUnauthorized(env);
   }
   // A 429 or 503 here is the API envelope (the app's guard renders it).
-  for (let n = transportCharges(capped.buf); n > 0; n--)
-    await chargeTransport(env, principal);
-  return createMcpHandler(() => createAdminServer(env, ctx, principal), {
-    route: "/mcp",
-    corsOptions: false,
-    allowedOriginHostnames: allowedOrigins(env),
-    maxRequestBodySize: MCP_BODY_CAP,
-  }).fetch(capped.req, {
-    // The bearer never reaches the SDK, so no handler can log or echo it.
-    authInfo: { token: "", clientId: principal.actorKey, scopes: [] },
-  });
+  const charges = transportCharges(capped.buf);
+  for (let n = charges; n > 0; n--) await chargeTransport(env, principal);
+  // The bearer never reaches the SDK, so no handler can log or echo it:
+  // neither in authInfo nor in the request it hands them (requestInfo).
+  const headers = new Headers(capped.req.headers);
+  headers.delete("authorization");
+  const res = await createMcpHandler(
+    () => createAdminServer(env, ctx, principal),
+    {
+      route: "/mcp",
+      corsOptions: false,
+      allowedOriginHostnames: allowedOrigins(env),
+      maxRequestBodySize: MCP_BODY_CAP,
+    },
+  ).fetch(
+    new Request(capped.req.url, {
+      method: "POST",
+      headers,
+      body: capped.buf,
+    }),
+    { authInfo: { token: "", clientId: principal.actorKey, scopes: [] } },
+  );
+  // The SDK refused the whole POST before any handler (406 Accept, 415
+  // Content-Type, 400 protocol version, batch size or JSON-RPC shape), so
+  // invokeRoute charged nothing: one charge, so no authenticated POST is free.
+  // Nothing ran, so its 429 replaces the SDK's answer.
+  if (charges === 0 && res.status >= 400)
+    await chargeTransport(env, principal).catch(async (e: unknown) => {
+      await res.body?.cancel().catch(() => {});
+      throw e;
+    });
+  return res;
 }

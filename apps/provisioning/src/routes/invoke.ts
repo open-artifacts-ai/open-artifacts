@@ -1,7 +1,5 @@
-import { ipKey } from "@oa/auth-core";
 import {
   type AdminToolName,
-  type ApiErrorCode,
   type ApiRouteId,
   authorize,
   INSTALL_ID_RE,
@@ -18,7 +16,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { limit } from "../limits.js";
 import type { Principal } from "../principal.js";
-import { countRateLimited, countRefusal } from "../refuse.js";
+import { countRateLimited } from "../refuse.js";
 import { recordTokenUse } from "../services/tokens.js";
 import { HANDLERS } from "./handlers.js";
 
@@ -172,47 +170,3 @@ export async function invokeRoute(
     throw e;
   }
 }
-
-/**
- * The MCP adapter's one charge for a request that is not a `tools/call`
- * (`initialize`, `tools/list`, `resources/*`, `prompts/*`; 9A.7): one
- * `RL_PV_READ` hit on the principal's rate key, its 429 counted (4.9).
- * A `tools/call` is charged inside invokeRoute instead.
- */
-export async function chargeTransport(
-  env: Env,
-  principal: Principal,
-): Promise<void> {
-  const r = await limit(env, "read", principal.rateKey);
-  if (!r) return;
-  if (r.code === "rate_limited") await countRateLimited(env, principal.rateKey);
-  throw new ApiError(r.code);
-}
-
-/**
- * The MCP adapter's unauthenticated refusal, counted in audit_refusals
- * (bucket auth, 4.9) as /v1's refuse() counts it. The adapter answers its
- * own 401 (the challenge header); a failed count never changes it.
- */
-export async function countUnauthenticated(
-  env: Env,
-  req: Request,
-): Promise<void> {
-  try {
-    await countRefusal(env, "auth", "unauthenticated", ipKey(req));
-  } catch {
-    // The refusal stands without its count (D1 down or unbound).
-  }
-}
-
-/** A refusal invokeRoute threw, as the 3.1 envelope's fields; null for any other error. */
-export const refusalOf = (
-  e: unknown,
-): { code: ApiErrorCode; message: string; details?: unknown } | null =>
-  e instanceof ApiError
-    ? {
-        code: e.code,
-        message: e.message,
-        ...(e.details === undefined ? {} : { details: e.details }),
-      }
-    : null;

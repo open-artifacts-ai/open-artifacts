@@ -13,9 +13,10 @@ import {
   toolText,
 } from "@oa/shared/provisioning";
 import type { z } from "zod";
+import { refusalOf } from "../auth/mcp-gate.js";
 import type { Env } from "../env.js";
 import type { Principal } from "../principal.js";
-import { invokeRoute, type RouteInput, refusalOf } from "../routes/invoke.js";
+import { invokeRoute, type RouteInput } from "../routes/invoke.js";
 
 // The admin MCP server (design v7 9A.5): one tool per ADMIN_TOOLS row, each
 // a call of its route through invokeRoute (same limit, authz row, zod,
