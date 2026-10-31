@@ -2,10 +2,10 @@
 // 5.8; 0006_platform_state.sql). Plain constants, no zod: the scheduler, W8
 // (the monitor's dead-man) and R27 import `@oa/shared/provisioning/state`.
 import { ALERT_KEYS, type AlertKey } from "./enum-values.js";
+import { ULID_RE } from "./id-patterns.js";
 
 const MIN = 60_000;
 const DAY = 24 * 60 * MIN;
-const ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 /** The keys 0006's comment lists, verbatim (`<alert>` is an ALERT_KEYS key). */
 export const PLATFORM_STATE_0006_KEYS = [
@@ -59,7 +59,7 @@ export const SWEEP_CURSOR_KEY = "sweep_open_cursor";
 /** `sweep_terminated:<jobId>`: when the sweep first saw the run terminated (W7). Not in 0006. */
 export const SWEEP_TERMINATED_PREFIX = "sweep_terminated:";
 export function sweepTerminatedKey(jobId: string): string {
-  if (typeof jobId !== "string" || !ULID.test(jobId))
+  if (typeof jobId !== "string" || !ULID_RE.test(jobId))
     throw new Error("sweepTerminatedKey needs a job id (ULID)");
   return `${SWEEP_TERMINATED_PREFIX}${jobId}`;
 }
