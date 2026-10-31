@@ -40,12 +40,12 @@
         "OA_ENV": "staging",
         "EMAIL_QUOTA_ZONES": "{{EMAIL_ZONE_TAG_STAGING}}",
         "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_STAGING}}",
-        "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
-        "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app",
         "ALERT_TO": "{{ALERT_TO_STAGING}}",
         "ALERT_FROM": "{{ALERT_FROM_STAGING}}",
         "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}",
-        "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_STAGING}}"
+        "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_STAGING}}",
+        "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts-staging.app",
+        "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },
       // The BrokerGate stubs each install call carries (see the gate), and
       // the provisioner's RPC entrypoint (tokenStatus for the token alerts).
@@ -102,12 +102,12 @@
         "OA_ENV": "prod",
         "EMAIL_QUOTA_ZONES": "{{EMAIL_ZONE_TAG_PROD}}",
         "EMAIL_DAILY_LIMIT": "{{EMAIL_DAILY_LIMIT_PROD}}",
-        "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
-        "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app",
         "ALERT_TO": "{{ALERT_TO_PROD}}",
         "ALERT_FROM": "{{ALERT_FROM_PROD}}",
         "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",
-        "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}"
+        "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}",
+        "AUTH_BROKER_ORIGIN": "https://auth.open-artifacts.app",
+        "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
       },
       // The BrokerGate stubs each install call carries (see the gate), and
       // the provisioner's RPC entrypoint (tokenStatus for the token alerts).
