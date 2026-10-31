@@ -2,8 +2,8 @@ import { ipKey } from "@oa/auth-core";
 import type { Env } from "../../env.js";
 import { limit } from "../../limits.js";
 import { countRefusal } from "../../refuse.js";
-import { oauthLabel } from "../../services/tokens.js";
-import { bump, peek } from "../counters.js";
+import { oauthLabel, revokeGrantRow } from "../../services/tokens.js";
+import { bump } from "../counters.js";
 import { hmac16 } from "../crypto.js";
 import { authServer, redirectHosts } from "./server.js";
 
@@ -110,8 +110,49 @@ export async function tokenEndpoint(
   if (lim) return lim;
   const r = await capped(req);
   if (!r) return tooLarge();
-  return authServer(env).fetch(r, env, ctx);
+  const revoking = await revocationOf(r);
+  const res = await authServer(env).fetch(r, env, ctx);
+  if (revoking && res.status === 200) await endRevokedGrant(env, revoking);
+  return res;
 }
+
+/** The `token` of an RFC 7009 request (no grant_type, as the library tells them apart). */
+async function revocationOf(r: Request): Promise<string | null> {
+  if (
+    !(r.headers.get("content-type") ?? "").startsWith(
+      "application/x-www-form-urlencoded",
+    )
+  )
+    return null;
+  try {
+    const f = new URLSearchParams(await r.clone().text());
+    return !f.get("grant_type") && f.get("token") ? f.get("token") : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After the library answered a revocation: when the grant the token names
+ * is gone from KV (a refresh token ends the grant; an access token alone
+ * does not), its D1 row is revoked too.
+ */
+async function endRevokedGrant(env: Env, token: string): Promise<void> {
+  const [oauthUser, grantId, secret, extra] = token.split(":");
+  if (!oauthUser || !grantId || !secret || extra !== undefined) return;
+  if ((await env.OAUTH_KV.get(`grant:${oauthUser}:${grantId}`)) !== null)
+    return;
+  await revokeGrantRow(env, { grantId, oauthUser });
+}
+
+/** Gives back a slot bump reserved in `key`'s current window. */
+const refund = (env: Env, key: string, now: number) =>
+  env.PLATFORM_DB.prepare(
+    "UPDATE rate_counters SET count = count - 1 WHERE key = ?1 AND window_start = ?2 AND count > 0",
+  )
+    .bind(key, now - (now % DAY_MS))
+    .run()
+    .catch(() => null);
 
 const dcrKey = async (env: Env, ip: string) =>
   `dcr:${await hmac16(env.ADMIN_SESSION_KEY, `dcr\n${ip}`)}`;
@@ -153,10 +194,14 @@ export async function registerEndpoint(
   const ip = ipKey(req);
   const lim = await ipLimited(env, ip, "oauth_register");
   if (lim) return lim;
+  const r = await capped(req);
+  if (!r) return tooLarge();
   const now = Date.now();
   const key = await dcrKey(env, ip);
-  // Read only: refused attempts do not spend the day's cap.
-  if ((await peek(env.PLATFORM_DB, key, DAY_MS, now)) >= DCR_PER_IP_PER_DAY) {
+  // Reserve the slot atomically, so concurrent registrations cannot all
+  // pass a read; a refused attempt gives it back (it does not spend the cap).
+  if ((await bump(env.PLATFORM_DB, key, DAY_MS, now)) > DCR_PER_IP_PER_DAY) {
+    await refund(env, key, now);
     await count(env, "oauth_register", "rate_limited", ip);
     return oauthError(
       429,
@@ -164,11 +209,16 @@ export async function registerEndpoint(
       "Registration limit reached; try tomorrow",
     );
   }
-  const r = await capped(req);
-  if (!r) return tooLarge();
-  await sweepUnclaimedClients(env, now);
-  const res = await authServer(env).fetch(r, env, ctx);
+  let res: Response;
+  try {
+    await sweepUnclaimedClients(env, now);
+    res = await authServer(env).fetch(r, env, ctx);
+  } catch (e) {
+    await refund(env, key, now);
+    throw e;
+  }
   if (res.status !== 201) {
+    await refund(env, key, now);
     let code = "invalid_client_metadata";
     try {
       const e = ((await res.clone().json()) as { error?: unknown }).error;
@@ -185,22 +235,29 @@ export async function registerEndpoint(
     redirect_uris?: unknown;
   };
   if (typeof c.client_id === "string") {
-    await bump(env.PLATFORM_DB, key, DAY_MS, now);
     const uris = Array.isArray(c.redirect_uris)
       ? c.redirect_uris.filter((u): u is string => typeof u === "string")
       : [];
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO oauth_clients (client_id, client_name, redirect_hosts, ip_hmac, registered_at)
-       VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (client_id) DO NOTHING`,
-    )
-      .bind(
-        c.client_id,
-        oauthLabel(typeof c.client_name === "string" ? c.client_name : null),
-        JSON.stringify(redirectHosts(uris)),
-        await hmac16(env.ADMIN_SESSION_KEY, ip),
-        now,
+    try {
+      await env.PLATFORM_DB.prepare(
+        `INSERT INTO oauth_clients (client_id, client_name, redirect_hosts, ip_hmac, registered_at)
+         VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (client_id) DO NOTHING`,
       )
-      .run();
+        .bind(
+          c.client_id,
+          oauthLabel(typeof c.client_name === "string" ? c.client_name : null),
+          JSON.stringify(redirectHosts(uris)),
+          await hmac16(env.ADMIN_SESSION_KEY, ip),
+          now,
+        )
+        .run();
+    } catch (e) {
+      // No oauth_clients row: the sweep, the flood count and this cap would
+      // never see the client, so it must not stay in KV either.
+      await authServer(env).getOAuthApi(env).deleteClient(c.client_id);
+      await refund(env, key, now);
+      throw e;
+    }
   }
   return res;
 }

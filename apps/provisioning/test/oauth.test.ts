@@ -6,15 +6,19 @@ import {
   oauthPrincipal,
   refreshTtlFor,
 } from "../src/auth/oauth/index.js";
+import { sessionPrincipal } from "../src/auth/session.js";
 import { isRefusal } from "../src/principal.js";
+import { mintAgentToken } from "../src/services/tokens.js";
 import { ADMIN, API, ctx } from "./fakes.js";
 import {
   authorized,
   authorizeUrl,
   CLAUDE_AI,
+  cookieHeader,
   getConsent,
   grant,
   HOUR,
+  kv,
   oauthWorld,
   pkce,
   postConsent,
@@ -175,6 +179,87 @@ describe("DCR (/oauth/register)", () => {
     const over = await registerRaw(w, body, ip);
     expect(over.status).toBe(429);
     expect((await registerRaw(w, body, randomIp())).status).toBe(201);
+  });
+
+  it("concurrent registrations from one IP: exactly 10 succeed", async () => {
+    const w = await oauthWorld();
+    const ip = randomIp();
+    const body = {
+      redirect_uris: [REDIRECT],
+      token_endpoint_auth_method: "none",
+    };
+    const all = await Promise.all(
+      Array.from({ length: 15 }, () => registerRaw(w, body, ip)),
+    );
+    expect(all.filter((r) => r.status === 201)).toHaveLength(10);
+    expect(all.filter((r) => r.status === 429)).toHaveLength(5);
+  });
+
+  it("refused registrations do not spend the IP's day", async () => {
+    const w = await oauthWorld();
+    const ip = randomIp();
+    for (let i = 0; i < 10; i++)
+      expect(
+        (
+          await registerRaw(
+            w,
+            {
+              redirect_uris: ["https://evil.example/cb"],
+              token_endpoint_auth_method: "none",
+            },
+            ip,
+          )
+        ).status,
+      ).toBe(400);
+    for (let i = 0; i < 10; i++)
+      expect(
+        (
+          await registerRaw(
+            w,
+            { redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" },
+            ip,
+          )
+        ).status,
+      ).toBe(201);
+  });
+
+  it("a failed oauth_clients insert removes the client from KV and refunds the slot", async () => {
+    const w = await oauthWorld();
+    const ip = randomIp();
+    const real = w.env.PLATFORM_DB;
+    w.env.PLATFORM_DB = new Proxy(real, {
+      get(t, k) {
+        if (k === "prepare")
+          return (sql: string) => {
+            if (sql.includes("INSERT INTO oauth_clients"))
+              throw new Error("d1 down");
+            return t.prepare(sql);
+          };
+        const v = Reflect.get(t, k);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const clients = async () =>
+      (await kv().list({ prefix: "client:" })).keys.map((k) => k.name);
+    const before = await clients();
+    const res = await registerRaw(
+      w,
+      { redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" },
+      ip,
+    );
+    expect(res.status).toBe(500);
+    expect(await clients()).toEqual(before);
+    w.env.PLATFORM_DB = real;
+    for (let i = 0; i < 10; i++)
+      expect(
+        (
+          await registerRaw(
+            w,
+            { redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" },
+            ip,
+          )
+        ).status,
+      ).toBe(201);
   });
 
   it("RL_PV_OAUTH_IP keyed by ipKey; unbound is 503", async () => {
@@ -514,6 +599,34 @@ describe("POST /oauth/authorize", () => {
     );
   });
 
+  it("the 5-live limit counts both kinds: 3 oat_ (R19's mint) and 2 grants, then 409", async () => {
+    const w = await oauthWorld();
+    // R19's handler is this call; the adapter's JSON body parse is W4's.
+    const p0 = await sessionPrincipal(
+      new Request(ADMIN, { headers: { cookie: cookieHeader(w.sid) } }),
+      w.env,
+      Date.now(),
+    );
+    if (isRefusal(p0)) throw new Error("no session");
+    for (let i = 0; i < 3; i++)
+      await mintAgentToken(w.env, p0, {
+        kind: "oat",
+        label: `ci-${i}`,
+        scopes: ["installs:read"],
+        ttlMinutes: 15,
+        requestId: `req_${crypto.randomUUID().replace(/-/g, "")}`,
+      });
+    for (let i = 0; i < 2; i++) await authorized(w);
+    const clientId = await register(w);
+    const { challenge } = await pkce();
+    const p = await getConsent(w, authorizeUrl(clientId, challenge));
+    const res = await postConsent(w, p, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.text()).toContain(
+      "5 agent tokens are live. Revoke one at /tokens.",
+    );
+  });
+
   it("the consent routes charge RL_PV_OAUTH_IP by ipKey", async () => {
     const w = await oauthWorld();
     const { page: p } = await page(w);
@@ -791,21 +904,65 @@ describe("revocation (D1 first, KV too)", () => {
     ).toBe(true);
   });
 
-  it("RFC 7009 revocation at /oauth/token ends the refresh chain", async () => {
-    const w = await oauthWorld();
-    const { clientId, tokens } = await grant(w);
-    const r = await w.call(
+  const revoke = (w: World, clientId: string, t: string, hint: string) =>
+    w.call(
       new Request(`${API}/oauth/token`, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
-          token: tokens.refresh_token ?? "",
-          token_type_hint: "refresh_token",
+          token: t,
+          token_type_hint: hint,
           client_id: clientId,
         }),
       }),
     );
+
+  it("RFC 7009 revocation at /oauth/token ends the refresh chain and the D1 row, with token.revoke", async () => {
+    const w = await oauthWorld();
+    const { clientId, tokens } = await grant(w);
+    const r = await revoke(
+      w,
+      clientId,
+      tokens.refresh_token ?? "",
+      "refresh_token",
+    );
     expect(r.status).toBe(200);
     expect((await refresh(w, clientId, tokens)).status).toBe(400);
+    const row = await rowOf(w, tokens);
+    expect(row?.revoked_at).not.toBeNull();
+    const audit = await w.db
+      .prepare(
+        "SELECT * FROM admin_audit WHERE action = 'token.revoke' AND token_id = ?1",
+      )
+      .bind(row?.id)
+      .all<Record<string, any>>();
+    expect(audit.results).toHaveLength(1);
+    expect(audit.results[0]?.actor_kind).toBe("token");
+    expect(JSON.parse(audit.results[0]?.detail)).toMatchObject({
+      tokenId: row?.id,
+      kind: "oauth",
+      via: "oauth_revocation",
+    });
+  });
+
+  it("RFC 7009 revocation of an access token alone keeps the grant and its row", async () => {
+    const w = await oauthWorld();
+    const { clientId, tokens } = await grant(w);
+    expect(
+      (await revoke(w, clientId, tokens.access_token, "access_token")).status,
+    ).toBe(200);
+    expect((await rowOf(w, tokens))?.revoked_at).toBeNull();
+    expect((await refresh(w, clientId, tokens)).status).toBe(200);
+  });
+
+  it("RFC 7009 revocation by another client leaves the grant and its row", async () => {
+    const w = await oauthWorld();
+    const { tokens } = await grant(w);
+    const other = await register(w);
+    expect(
+      (await revoke(w, other, tokens.refresh_token ?? "", "refresh_token"))
+        .status,
+    ).toBe(200);
+    expect((await rowOf(w, tokens))?.revoked_at).toBeNull();
   });
 });

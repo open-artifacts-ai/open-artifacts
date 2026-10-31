@@ -594,6 +594,33 @@ export async function revokeToken(
 }
 
 /**
+ * A client's RFC 7009 revocation ended this grant in the library's store
+ * (9A.3.1): revokes its live row, so it stops counting toward the 5-live
+ * limit and /tokens shows it revoked; one `token.revoke` row, the token as
+ * actor. True when a row was revoked.
+ */
+export async function revokeGrantRow(
+  env: Env,
+  grant: RevokedGrant,
+): Promise<boolean> {
+  const now = Date.now();
+  const db = env.PLATFORM_DB;
+  const where =
+    "WHERE grant_id = ?1 AND oauth_user = ?2 AND kind = 'oauth' AND revoked_at IS NULL";
+  const res = await db.batch([
+    db
+      .prepare(
+        `${AUDIT_INSERT} SELECT ?3, 'token', label, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'kind', kind, 'label', label, 'scopes', json(scopes), 'admin', admin_email, 'via', 'oauth_revocation') FROM agent_tokens ${where}`,
+      )
+      .bind(grant.grantId, grant.oauthUser, now),
+    db
+      .prepare(`UPDATE agent_tokens SET revoked_at = ?3 ${where}`)
+      .bind(grant.grantId, grant.oauthUser, now),
+  ]);
+  return (res[1]?.meta.changes ?? 0) > 0;
+}
+
+/**
  * R21 without an id: revokes all of this admin's tokens, both kinds; one
  * `token.revoke_all` row. Returns the oauth grants to end in KV.
  */

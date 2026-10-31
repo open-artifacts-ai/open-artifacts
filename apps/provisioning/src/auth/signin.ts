@@ -40,6 +40,7 @@ import {
   renewSession,
   revokeSession,
   SESSION_COOKIE,
+  SESSION_RENEW_UNDER_MS,
   sessionCookie,
   sessionPrincipal,
 } from "./session.js";
@@ -338,12 +339,19 @@ async function callback(
   };
   // The session already in the browser (4.5): for the same pair it is kept
   // (reauth moves auth_at), so its tokens and grants stay bound to the sid
-  // logout ends; another identity's is revoked with them. The audit row
+  // logout ends; another identity's is revoked with them, and so is the
+  // same pair's under SESSION_RENEW_UNDER_MS (9A.3.2 step 4: a new session,
+  // or consent would send the admin back here forever). The audit row
   // comes before any session write, so a failed audit leaves none.
   const priorSid = readCookie(req, SESSION_COOKIE);
   const prior = priorSid ? await liveSession(env, priorSid, now) : null;
   let sid: string;
-  if (priorSid && prior?.email === id.email && prior.sub === id.sub) {
+  if (
+    priorSid &&
+    prior?.email === id.email &&
+    prior.sub === id.sub &&
+    prior.expires_at - now >= SESSION_RENEW_UNDER_MS
+  ) {
     await d.audit(env, ok);
     await renewSession(env, prior.id_hash, authAt);
     sid = priorSid;

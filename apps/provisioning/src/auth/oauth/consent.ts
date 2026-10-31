@@ -19,6 +19,7 @@ import {
   adminOrigin,
   readCookie,
   SESSION_COOKIE,
+  SESSION_RENEW_UNDER_MS,
   sessionPrincipal,
 } from "../session.js";
 import { oauthAudit } from "./audit.js";
@@ -33,7 +34,7 @@ import { authServer, type GrantProps, revokeLibraryGrants } from "./server.js";
 // library's completeAuthorization.
 
 /** Consent needs this much session left, so a grant never dies minutes after Allow. */
-export const CONSENT_MIN_SESSION_MS = 3_600_000;
+export const CONSENT_MIN_SESSION_MS = SESSION_RENEW_UNDER_MS;
 
 const isScope = (s: string): s is TokenScope =>
   TokenScopeSchema.safeParse(s).success;
