@@ -1,0 +1,25 @@
+{
+  "name": "@oa/provisioner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provision build && vitest run && vitest run -c vitest.node.config.ts",
+    "typecheck": "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provision build && tsc --noEmit && tsc --noEmit -p test/tsconfig.json"
+  },
+  "dependencies": {
+    "@oa/provision": "workspace:*",
+    "@oa/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.4.4",
+    "@cloudflare/workers-types": "^5.20261018.1",
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12",
+    "wrangler": "^4.151.1"
+  }
+}
