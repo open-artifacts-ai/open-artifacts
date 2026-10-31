@@ -11,7 +11,7 @@ import {
   SQL_ALERT_KEYS,
   type SqlAlertKey,
 } from "@oa/shared/provisioning/alerts";
-import type { AlertKey } from "@oa/shared/provisioning/enums";
+import type { AlertKey } from "@oa/shared/provisioning/enum-values";
 import { TokenStatusSchema } from "./contract.js";
 import { within } from "./env.js";
 

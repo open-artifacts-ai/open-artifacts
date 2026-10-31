@@ -23,12 +23,13 @@ export const WORKFLOW_CALL_TIMEOUT_MS = 5_000;
 // (actor_key, request_id) idempotency key and jobs_one_active. The guard is
 // checked in the same statement, so what it reads cannot change between
 // the check and the insert. (SQLite needs a WHERE on an INSERT ... SELECT
-// with ON CONFLICT.)
-const insertJob = (guard: string) =>
-  `INSERT INTO jobs (id, kind, workflow, install_id, signup_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
+// with ON CONFLICT.) `orIgnore` writes INSERT OR IGNORE instead, the form a
+// settleFailed extra must take (C5, SettleOptions.extra).
+const insertJob = (guard: string, orIgnore = false) =>
+  `INSERT ${orIgnore ? "OR IGNORE " : ""}INTO jobs (id, kind, workflow, install_id, signup_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
 SELECT ?1, ?2, 'manage_install', ?3, ?4, ?5, '${SYSTEM_ACTOR.kind}', '${SYSTEM_ACTOR.key}', '${SYSTEM_ACTOR.label}', ?6, ?7, ?10, 'queued', ?8, ?8
 WHERE ${guard}
-ON CONFLICT DO NOTHING RETURNING id`;
+${orIgnore ? "" : "ON CONFLICT DO NOTHING "}RETURNING id`;
 
 export type SystemJob = {
   [K in SystemJobKind]: {
@@ -50,6 +51,8 @@ export type SystemJob = {
 export interface JobGuard {
   sql: string;
   params: readonly unknown[];
+  /** INSERT OR IGNORE in place of ON CONFLICT DO NOTHING. */
+  orIgnore?: boolean;
 }
 
 const NO_GUARD: JobGuard = { sql: "1", params: [] };
@@ -65,7 +68,7 @@ export async function systemJobStatement(
     throw new Error("systemJobStatement: a guard binds at most ?9");
   const hash = await systemJobBodyHash(j.kind, j.installId, j.args as never);
   return db
-    .prepare(insertJob(guard.sql))
+    .prepare(insertJob(guard.sql, guard.orIgnore))
     .bind(
       newJobId(now),
       j.kind,

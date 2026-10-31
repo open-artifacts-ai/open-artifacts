@@ -6,6 +6,7 @@ import {
   type ProvisionErrorCode,
   settleFailed as realSettleFailed,
   type SettleFailed,
+  settledWith,
 } from "@oa/provision/jobs";
 import {
   JOB_START_GRACE_MS,
@@ -102,13 +103,15 @@ const STILL_OPEN =
 const stillOpen = async (db: D1Database, id: string) =>
   (await d1(db.prepare(STILL_OPEN).bind(id).first())) !== null;
 
-// The cleanup goes in only once its parent (?5) is failed and has no
-// cleanup yet (a cancel's own, open or finished). Never keyed on the code:
-// settleFailed never writes over a stored one, so a job that already held
-// one (a cancel that died before its settle) still gets its cleanup.
-const PARENT_FAILED: JobGuard = {
-  sql: "EXISTS (SELECT 1 FROM jobs WHERE id = ?5 AND status = 'failed') AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?5 AND c.kind = 'cleanup')",
+// The cleanup goes in only if this call settled its parent (?5, the
+// insert's parent job id) with run_dead (C5 settledWith): a cancel's
+// canceled, or any other settler's code, never matches. INSERT OR IGNORE:
+// jobs_one_active (a cleanup already open) and cleanup-<jobId> (an earlier
+// tick's) skip the row instead of failing the settle's batch.
+const SETTLED_DEAD: JobGuard = {
+  sql: settledWith("?5", RUN_DEAD),
   params: [],
+  orIgnore: true,
 };
 
 /** What one open job needs: start it, settle it, or nothing. */
@@ -207,7 +210,7 @@ export async function sweep(
       // design v7 3.6), so a failure, an evicted tick or another job opening
       // in between never leaves a failed job without its cleanup.
       const extra = cleanup
-        ? [await systemJobStatement(db, cleanup, now, PARENT_FAILED)]
+        ? [await systemJobStatement(db, cleanup, now, SETTLED_DEAD)]
         : [];
       const r = await settleFailed(db, j.id, RUN_DEAD, { extra });
       if (r.settled) {
@@ -222,10 +225,9 @@ export async function sweep(
       step = "cleanup";
       const row = (r.extra[0] as D1Result<{ id?: unknown }> | undefined)
         ?.results?.[0];
-      // No id: an overlapping tick got there first, another job is open on
-      // the install (a cancel's own cleanup), or another settler won. One
-      // that went in without this call settling (an overlapping sweep's
-      // run_dead settle) is started too.
+      // No id: not inserted (another settler's code, a cleanup already open
+      // on the install, or an overlapping tick's cleanup-<jobId>). Only a
+      // row this batch inserted is started.
       const id = typeof row?.id === "string" ? row.id : null;
       if (id === null) return;
       console.log("provapi sweep cleanup", id, j.id);

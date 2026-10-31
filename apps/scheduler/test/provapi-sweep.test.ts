@@ -1,4 +1,4 @@
-import type { SettleFailed } from "@oa/provision/jobs";
+import { type SettleFailed, settledWith } from "@oa/provision/jobs";
 import { REQUEST_ID_RE, ULID_RE } from "@oa/shared/provisioning";
 import { FakeWorkflow } from "@oa/shared/provisioning/fakes";
 import {
@@ -73,7 +73,7 @@ function failFirstJobInsert(real: D1Database): D1Database {
       if (k === "prepare")
         return (sql: string) => {
           const s = t.prepare(sql);
-          if (!armed || !sql.startsWith("INSERT INTO jobs")) return s;
+          if (!armed || !/^INSERT (OR IGNORE )?INTO jobs\b/.test(sql)) return s;
           armed = false;
           const boom = () => Promise.reject(new Error("D1_ERROR"));
           return {
@@ -90,6 +90,40 @@ function failFirstJobInsert(real: D1Database): D1Database {
       return typeof v === "function" ? v.bind(t) : v;
     },
   });
+}
+
+/** The platform D1, recording the SQL of each batch it runs. */
+function recording(real: D1Database) {
+  const sqlOf = new WeakMap<object, string>();
+  const batches: string[][] = [];
+  const wrapped = new Proxy(real, {
+    get(t, k) {
+      if (k === "prepare")
+        return (sql: string) => {
+          const s = t.prepare(sql);
+          return new Proxy(s, {
+            get(ps, pk) {
+              if (pk === "bind")
+                return (...v: unknown[]) => {
+                  const b = ps.bind(...v);
+                  sqlOf.set(b, sql);
+                  return b;
+                };
+              const pv = Reflect.get(ps, pk);
+              return typeof pv === "function" ? pv.bind(ps) : pv;
+            },
+          });
+        };
+      if (k === "batch")
+        return (st: D1PreparedStatement[]) => {
+          batches.push(st.map((x) => sqlOf.get(x) ?? ""));
+          return t.batch(st);
+        };
+      const v = Reflect.get(t, k);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  return { db: wrapped, batches };
 }
 
 function fakes() {
@@ -247,7 +281,7 @@ describe("sweep: dead runs", () => {
       ]);
     });
 
-  it("an open job already holding a code (a cancel that died before its settle): settled, the code kept, one cleanup, started", async () => {
+  it("an open job already holding another code (a cancel that died before its settle): settled, the code kept, no cleanup", async () => {
     const f = fakes();
     const { id } = await started(f, "complete", { error_code: "canceled" });
     await run(f.env);
@@ -256,10 +290,118 @@ describe("sweep: dead runs", () => {
       status: "failed",
       error_code: "canceled",
     });
+    expect(await cleanups()).toEqual([]);
+    expect(f.manage.created).toEqual([]);
+  });
+
+  it("the cleanup rides in the settle's batch as INSERT OR IGNORE, guarded by settledWith(?5, run_dead)", async () => {
+    const f = fakes();
+    const { id } = await started(f, "complete");
+    const rec = recording(db);
+    const lines = captureLogs(vi.spyOn);
+    await run({ ...f.env, PLATFORM_DB: rec.db } as ProvapiEnv);
+    const settleBatch = rec.batches.find((b) =>
+      b.some((q) => q.startsWith("UPDATE jobs SET status = 'failed'")),
+    );
+    const inserts = (settleBatch ?? []).filter((q) =>
+      /^INSERT\b.*\bINTO jobs\b/.test(q),
+    );
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]).toMatch(/^INSERT OR IGNORE INTO jobs /);
+    expect(inserts[0]).toContain(settledWith("?5", RUN_DEAD));
     const [c, ...rest] = await cleanups();
     expect(rest).toEqual([]);
-    expect(c).toMatchObject({ parent_job_id: id, status: "queued" });
     expect(f.manage.created).toEqual([{ id: c?.id, params: { jobId: c?.id } }]);
+    expect(lines).toEqual([
+      `provapi sweep settled ${id} ${RUN_DEAD}`,
+      `provapi sweep cleanup ${c?.id} ${id}`,
+    ]);
+  });
+
+  it("a sweep landing after an R25 cancel (parent canceled, its cleanup open): no second cleanup, the batch does not fail", async () => {
+    const f = fakes();
+    const { id, inst } = await started(f, "complete");
+    let result: Awaited<ReturnType<SettleFailed>> | undefined;
+    const afterCancel: SettleFailed = async (d, jobId, code, opts) => {
+      // R25: one batch marks it canceled and queues the admin's cleanup.
+      await db.batch([
+        db
+          .prepare(
+            "UPDATE jobs SET status = 'failed', error_code = 'canceled' WHERE id = ?1",
+          )
+          .bind(jobId),
+      ]);
+      await job(inst, {
+        kind: "cleanup",
+        workflow: "manage_install",
+        parent_job_id: jobId,
+        request_id: `admin-cancel-${jobId}`,
+      });
+      result = await fakeSettle(d, jobId, code, opts);
+      return result;
+    };
+    const lines = captureLogs(vi.spyOn);
+    await sweep(f.env, NOW, { settleFailed: afterCancel });
+    expect(result?.settled).toBe(false);
+    expect(result?.extra).toHaveLength(1);
+    expect(lines).toEqual([]);
+    expect((await jobRow(id))?.error_code).toBe("canceled");
+    expect((await cleanups()).map((c) => [c.request_id, c.status])).toEqual([
+      [`admin-cancel-${id}`, "queued"],
+    ]);
+    expect(f.manage.created).toEqual([]);
+  });
+
+  for (const other of ["canceled", "cf_error", "internal"] as const)
+    it(`the parent settled elsewhere with ${other} (no cleanup of its own): the sweep adds none`, async () => {
+      const f = fakes();
+      const { id } = await started(f, "complete");
+      const elsewhere: SettleFailed = async (d, jobId, code, opts) => {
+        await db
+          .prepare(
+            "UPDATE jobs SET status = 'failed', error_code = ?2 WHERE id = ?1",
+          )
+          .bind(jobId, other)
+          .run();
+        return fakeSettle(d, jobId, code, opts);
+      };
+      const lines = captureLogs(vi.spyOn);
+      await sweep(f.env, NOW, { settleFailed: elsewhere });
+      expect(settled).toEqual([]);
+      expect(lines).toEqual([]);
+      expect((await jobRow(id))?.error_code).toBe(other);
+      expect(await cleanups()).toEqual([]);
+      expect(f.manage.created).toEqual([]);
+    });
+
+  it("two ticks both reaching the settle: one cleanup, started once, neither batch fails", async () => {
+    const f = fakes();
+    const { id } = await started(f, "complete");
+    // Both ticks pass the still-open check before either settles.
+    let arrived = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const results: Awaited<ReturnType<SettleFailed>>[] = [];
+    const both: SettleFailed = async (d, jobId, code, opts) => {
+      if (++arrived === 2) release();
+      await gate;
+      const r = await fakeSettle(d, jobId, code, opts);
+      results.push(r);
+      return r;
+    };
+    const lines = captureLogs(vi.spyOn);
+    await Promise.all([
+      sweep(f.env, NOW, { settleFailed: both }),
+      sweep(f.env, NOW, { settleFailed: both }),
+    ]);
+    expect(results.map((r) => r.settled).sort()).toEqual([false, true]);
+    const [c, ...rest] = await cleanups();
+    expect(rest).toEqual([]);
+    expect(c).toMatchObject({ parent_job_id: id, request_id: `cleanup-${id}` });
+    expect(f.manage.created).toEqual([{ id: c?.id, params: { jobId: c?.id } }]);
+    expect(lines.filter((l) => l.includes("_failed"))).toEqual([]);
   });
 
   it("a cancel between terminate and its own settle wins: the sweep neither settles nor adds a cleanup", async () => {

@@ -1,6 +1,6 @@
 // The Provisioning API's scheduler duties (design v7 5.8), run on the */2
 // tick after the revoke tick and the directory sync.
-import { ALERT_KEYS } from "@oa/shared/provisioning/enums";
+import { ALERT_KEYS } from "@oa/shared/provisioning/enum-values";
 import { alertFor, factsOf, prodcleanReport, stepAlert } from "./alerts.js";
 import { alertConditions, signupDailyCap } from "./conditions.js";
 import type { ProvapiEnv } from "./env.js";

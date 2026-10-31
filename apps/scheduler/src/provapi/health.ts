@@ -5,7 +5,7 @@
 // starting probes and gives the gate back, so the next */2 tick checks the
 // rows this round has not (health_at before the round's start).
 import { isInstallId } from "@oa/provision/names";
-import type { Health } from "@oa/shared/provisioning/enums";
+import type { Health } from "@oa/shared/provisioning/enum-values";
 import {
   HEALTH_GATE_KEY,
   HEALTH_INTERVAL_MS,
