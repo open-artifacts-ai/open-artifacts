@@ -1,5 +1,6 @@
 import { agentClients } from "@oa/shared";
 import { type Token, TokenScopeSchema } from "@oa/shared/provisioning";
+import { LIVE_TOKENS_PER_ADMIN } from "@oa/shared/provisioning/constants";
 import {
   Button,
   Dialog,
@@ -28,8 +29,6 @@ import { useAction } from "../hooks/useAction";
 import { LoadError } from "../layout/LoadError";
 
 const LABEL_RE = /^[A-Za-z0-9 ._-]{1,40}$/;
-/** Live tokens and agents allowed at once, both kinds (the API answers token_limit past it; C1 does not export the number). */
-export const TOKEN_LIVE_LIMIT = 5;
 const MCP_URL = {
   prod: "https://api.open-artifacts.app/mcp",
   staging: "https://api.open-artifacts-staging.app/mcp",
@@ -328,7 +327,7 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
   });
   const now = useNow(30_000);
   const live = (q.data?.items ?? []).filter((t) => isLive(t, now));
-  const full = live.length >= TOKEN_LIVE_LIMIT;
+  const full = live.length >= LIVE_TOKENS_PER_ADMIN;
   return (
     <>
       <div className="oa-head">
@@ -336,8 +335,8 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
           <h1>Agent tokens</h1>
           {q.data && (
             <p className="oa-sub">
-              {live.length} of {TOKEN_LIVE_LIMIT} live. Every token ends with
-              your admin session.
+              {live.length} of {LIVE_TOKENS_PER_ADMIN} live. Every token ends
+              with your admin session.
             </p>
           )}
         </div>
@@ -354,8 +353,8 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
       </div>
       {full && (
         <p className="oa-note" data-testid="token-limit">
-          You have {TOKEN_LIVE_LIMIT} live tokens and agents. Revoke one to add
-          another.
+          You have {LIVE_TOKENS_PER_ADMIN} live tokens and agents. Revoke one to
+          add another.
         </p>
       )}
       <ConnectCard env={env} />
