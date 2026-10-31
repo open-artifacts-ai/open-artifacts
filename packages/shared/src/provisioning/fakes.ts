@@ -5,11 +5,14 @@ import type {
   ProvisionerRpc,
   TokenStatus,
   VerifyTurnstileInput,
-  WorkflowInstanceLike,
-  WorkflowInstanceStatus,
-  WorkflowLike,
 } from "./rpc.js";
 import type { Release } from "./schemas.js";
+import {
+  type WorkflowInstanceLike,
+  type WorkflowInstanceStatus,
+  type WorkflowLike,
+  WorkflowNotFoundError,
+} from "./workflow.js";
 
 export const FAKE_RELEASES: Release[] = [
   {
@@ -63,7 +66,11 @@ export function fakeProvisionerRpc(
   };
 }
 
-/** An in-memory Workflow binding: create (params exactly { jobId }), get, status, terminate. */
+/**
+ * An in-memory Workflow binding: create (params exactly { jobId }), get,
+ * status, terminate. get and setStatus throw WorkflowNotFoundError for an
+ * unknown id.
+ */
 export class FakeWorkflow implements WorkflowLike {
   readonly created: { id: string; params: unknown }[] = [];
   #status = new Map<string, WorkflowInstanceStatus>();
@@ -84,7 +91,7 @@ export class FakeWorkflow implements WorkflowLike {
   }
 
   async get(id: string) {
-    if (!this.#status.has(id)) throw new Error(`instance ${id} not found`);
+    if (!this.#status.has(id)) throw new WorkflowNotFoundError(id);
     return this.#instance(id);
   }
 
@@ -94,7 +101,7 @@ export class FakeWorkflow implements WorkflowLike {
     status: WorkflowInstanceStatus["status"],
     error?: WorkflowInstanceStatus["error"],
   ) {
-    if (!this.#status.has(id)) throw new Error(`instance ${id} not found`);
+    if (!this.#status.has(id)) throw new WorkflowNotFoundError(id);
     this.#status.set(id, { status, ...(error ? { error } : {}) });
   }
 
