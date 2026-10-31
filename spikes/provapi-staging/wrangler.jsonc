@@ -1,6 +1,6 @@
 // Spike caller Worker (S1, S2, S3, S5, S7): staging only, throwaway, one per
-// run. scripts/ci/provapi-spikes.sh renders this file (every {{...}} filled,
-// any left is refused) into wrangler.rendered.jsonc and deploys that. No
+// run. scripts/ci/provapi-spikes.sh renders this file (every placeholder
+// filled, any left is refused) into wrangler.rendered.jsonc and deploys that. No
 // route, custom domain, workers.dev or preview URL: it runs on its cron tick
 // and writes its results to its own D1 database. Observability stays off.
 {

@@ -180,6 +180,14 @@ cf_write() {
 }
 
 ok() { [ "$HTTP" = 200 ] && [ "$(jq -r '.success' <<< "$BODY")" = true ]; }
+# deleted: a DELETE's success. 202 is Cloudflare's async accept and 204 has no
+# body; a body that says success false is still a failure.
+deleted() {
+  case "$HTTP" in
+    200 | 202 | 204) [ "$(jq -r '.success' <<< "$BODY")" != false ] ;;
+    *) false ;;
+  esac
+}
 tf() { if "$@"; then echo true; else echo false; fi; }
 
 # The staging Secrets Store store: the one store holding
@@ -364,7 +372,7 @@ spike_s4() {
   if [ -n "$sid" ]; then
     know_id "$sid" "secret $name"
     cf_write DELETE "$ACCT/secrets_store/stores/$STORE/secrets/$sid" "$name" "$sid"
-    record $s "delete" "$(tf ok)" "HTTP $HTTP"
+    record $s "delete" "$(tf deleted)" "HTTP $HTTP"
   fi
 }
 
@@ -387,7 +395,7 @@ render() {
     [[ "$v" =~ ^[A-Za-z0-9:/._,-]+$ ]] || refuse "render: $k has unexpected characters"
     sed -i.bak "s|{{$k}}|$v|g" "$dst" && rm -f "$dst.bak"
   done
-  ! grep -q '{{' "$dst" || refuse "render: $dst has a placeholder left"
+  ! grep -q '{{' "$dst" || refuse "render: $dst has a placeholder left (line $(grep -n '{{' "$dst" | head -n1 | cut -d: -f1))"
   not_prod "$(cat "$dst")" "$dst"
 }
 
@@ -481,7 +489,7 @@ guarded_delete() {
   spike_name_ok "$2" || refuse "cleanup: refusing to delete $1 $2 (not $PREFIX)"
   [ -z "${4:-}" ] || know_id "$4" "cleanup: $1 $2"
   cf_write DELETE "$3" "$2" "${4:-}"
-  record cleanup "$1 $2" "$(tf ok)" "deleted (HTTP $HTTP)"
+  record cleanup "$1 $2" "$(tf deleted)" "deleted (HTTP $HTTP)"
 }
 
 # skip_bad_id <kind> <name> <id>: true (and recorded) when the listed id is
