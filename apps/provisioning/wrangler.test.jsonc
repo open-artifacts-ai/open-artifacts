@@ -1,0 +1,7 @@
+// Tests call the Worker with fake bindings built per case (test/fakes.ts);
+// this config only gives the pool a script to load.
+{
+  "name": "oa-provisioning-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01"
+}

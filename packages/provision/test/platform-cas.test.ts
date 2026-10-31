@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { cfClient } from "../src/cf.js";
 import { platformNames } from "../src/names.js";
 import { PlatformDb } from "../src/platform.js";
+import type { InstallId } from "../src/types.js";
 import { FakeCf } from "./fake-cf.js";
 
 const ROOT = new URL("../../../", import.meta.url);
@@ -29,7 +30,7 @@ function world() {
     sleep: async () => {},
   });
   const db = new PlatformDb(cf, { id, name }, "staging", () => t);
-  return { cf, id, db, tick: (ms: number) => (t += ms) };
+  return { cf, fake, id, db, tick: (ms: number) => (t += ms) };
 }
 
 async function row(w: ReturnType<typeof world>) {
@@ -127,4 +128,26 @@ describe("install CAS writes on D1's real meta.changes", () => {
       ),
     ).toBe(false);
   });
+});
+
+describe("insertCreating and platform principals (4.1)", () => {
+  it.each(["i000000admin", "i00000signup"])(
+    "refuses %s before any write",
+    async (id) => {
+      const w = world();
+      const n = w.fake.log.length;
+      await expect(
+        w.db.insertCreating({
+          id: id as InstallId,
+          slug: "acme",
+          appHost: "acme.open-artifacts-staging.app",
+          contentHost: "acme.open-artifacts-staging.page",
+          ownerEmail: "owner@acme.test",
+          testHooks: false,
+          inputsHash: "h",
+        }),
+      ).rejects.toThrow(/platform principal/);
+      expect(w.fake.log.length).toBe(n);
+    },
+  );
 });
