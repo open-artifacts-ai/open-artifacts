@@ -114,8 +114,15 @@ const envOf = (over: Partial<Env> = {}) =>
 
 beforeEach(() => resetDb());
 
+/** Cloudflare sets cf-connecting-ip on every edge request; tests do too. */
+const withIp = (r: Request) => {
+  if (r.headers.has("cf-connecting-ip")) return r;
+  const out = new Request(r);
+  out.headers.set("cf-connecting-ip", "192.0.2.9");
+  return out;
+};
 const fetchWorker = (r: Request, env: Env) =>
-  worker.fetch(r as Parameters<typeof worker.fetch>[0], env, ctx());
+  worker.fetch(withIp(r) as Parameters<typeof worker.fetch>[0], env, ctx());
 
 async function connect(env: Env, bearer: string, headers = {}) {
   const client = new Client({ name: "redline", version: "1" });

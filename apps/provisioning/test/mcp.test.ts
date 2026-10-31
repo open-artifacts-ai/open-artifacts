@@ -6,6 +6,7 @@ import {
   ADMIN_TOOL_NAMES,
   ADMIN_TOOLS,
   type AdminToolName,
+  AUTHZ,
   LIFECYCLE_DOC_URI,
   lifecycleDoc,
   MCP_PROMPTS,
@@ -129,8 +130,15 @@ async function rpcOut(res: Response): Promise<RpcOut[]> {
     : [JSON.parse(body) as RpcOut | RpcOut[]];
   return msgs.flat();
 }
+/** Cloudflare sets cf-connecting-ip on every edge request; tests do too. */
+const withIp = (r: Request) => {
+  if (r.headers.has("cf-connecting-ip")) return r;
+  const out = new Request(r);
+  out.headers.set("cf-connecting-ip", "192.0.2.9");
+  return out;
+};
 const fetchWorker = (r: Request, env: Env, ctx: ExecutionContext) =>
-  worker.fetch(r as Parameters<typeof worker.fetch>[0], env, ctx);
+  worker.fetch(withIp(r) as Parameters<typeof worker.fetch>[0], env, ctx);
 
 async function connect(
   c: Pick<Caller, "env" | "ctx">,
@@ -940,5 +948,96 @@ describe("audit (9A.8)", () => {
       surface: "mcp",
       tool: "query_audit",
     });
+  });
+});
+
+describe("every tool goes through invokeRoute and its route's authz (9A.4)", () => {
+  /** Schema-valid input for every tool; business outcome does not matter. */
+  async function argsByTool(): Promise<
+    Record<AdminToolName, Record<string, unknown>>
+  > {
+    const { id, slug } = await seedInstall();
+    const jobId = await seedJob(id, { kind: "upgrade", status: "done" });
+    const w = () => ({ requestId: requestId(), id });
+    return {
+      whoami: {},
+      get_world: {},
+      list_installs: {},
+      get_install: { id },
+      list_install_jobs: { id },
+      get_job: { jobId },
+      list_releases: {},
+      query_audit: {},
+      check_slug: { slug },
+      create_install: {
+        requestId: requestId(),
+        slug: "authzparity",
+        ownerEmail: "a@acme.test",
+        tier: "team",
+        auth: { providers: ["google"], domains: ["acme.test"] },
+      },
+      upgrade_install: w(),
+      rollback_install: w(),
+      suspend_install: { ...w(), reason: "late" },
+      resume_install: w(),
+      retry_install: w(),
+      restore_install: w(),
+      delete_install: { ...w(), confirmSlug: slug },
+      purge_install: { ...w(), confirmSlug: slug },
+    };
+  }
+  const rowsOf = async (tokenId: string, action: string) =>
+    (
+      await db
+        .prepare(
+          "SELECT detail FROM admin_audit WHERE token_id = ?1 AND action = ?2",
+        )
+        .bind(tokenId, action)
+        .all<{ detail: string }>()
+    ).results.map((r) => JSON.parse(r.detail) as Record<string, unknown>);
+
+  it("one tool per route, every tool covered", async () => {
+    const args = await argsByTool();
+    expect(Object.keys(args).sort()).toEqual([...ADMIN_TOOL_NAMES].sort());
+    const routes = ADMIN_TOOLS.map((t) => t.route);
+    expect(new Set(routes).size).toBe(routes.length);
+  });
+
+  it("with the scope: authz admits the tool's own route (token.used names it)", async () => {
+    const c = await caller();
+    const client = await connect(c, c.bearer);
+    const args = await argsByTool();
+    for (const t of ADMIN_TOOLS) await callTool(client, t.name, args[t.name]);
+    await c.flush();
+    const used = await rowsOf(c.tokenId, "token.used");
+    for (const t of ADMIN_TOOLS)
+      expect(
+        used.some((d) => d.route === t.route && d.tool === t.name),
+        t.name,
+      ).toBe(true);
+  });
+
+  it("without the route's scope: forbidden, with the route's authz.refused row", async () => {
+    const args = await argsByTool();
+    for (const t of ADMIN_TOOLS) {
+      const scope = AUTHZ[t.route].token;
+      if (!scope.allow) throw new Error(`${t.name}: tokens refused`);
+      if (!scope.scope) continue; // whoami: every token
+      const c = await caller(ALL.filter((s) => s !== scope.scope));
+      const client = await connect(c, c.bearer);
+      const r = await callTool(client, t.name, args[t.name]);
+      expect(r.isError, t.name).toBe(true);
+      expect(r.structuredContent.error.code, t.name).toBe("forbidden");
+      expect(await rowsOf(c.tokenId, "authz.refused"), t.name).toEqual([
+        expect.objectContaining({
+          route: t.route,
+          surface: "mcp",
+          tool: t.name,
+        }),
+      ]);
+      // The refusal is invokeRoute's: no hook, no business ran.
+      await c.flush();
+      expect(await rowsOf(c.tokenId, "token.used"), t.name).toEqual([]);
+    }
   });
 });
