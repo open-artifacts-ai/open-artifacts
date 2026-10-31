@@ -23,6 +23,16 @@ const named = (n: string) =>
   steps.find((s) => s.name === n) as Record<string, any>;
 
 describe("deploy-hosted-platform.yml", () => {
+  it("defaults to scheduler only once both envs commit alert_to (it refuses without one)", () => {
+    const def: string[] =
+      w.on.workflow_dispatch.inputs.targets.default.split(",");
+    const alertTo = ["staging", "prod"].every(
+      (e) =>
+        JSON.parse(readFileSync(join(root, `.github/hosted/${e}.json`), "utf8"))
+          .alert_to !== undefined,
+    );
+    expect(def.includes("scheduler")).toBe(alertTo);
+  });
   it("runs only on dispatch, read-only, one at a time, in the env's Environment", () => {
     expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
     const inputs = w.on.workflow_dispatch.inputs;
@@ -36,7 +46,11 @@ describe("deploy-hosted-platform.yml", () => {
       type: "boolean",
       default: false,
     });
-    expect(w.permissions).toEqual({ contents: "read", actions: "read" });
+    expect(w.permissions).toEqual({
+      contents: "read",
+      actions: "read",
+      issues: "write",
+    });
     expect(Object.keys(inputs).sort()).toEqual([
       "env",
       "tag",
@@ -81,7 +95,7 @@ describe("deploy-hosted-platform.yml", () => {
     );
     const use = named("Use main's deploy scripts").run as string;
     expect(use).toContain(
-      "deploy-hosted-platform.sh deploy-platform-worker.sh",
+      "for f in deploy-hosted-platform.sh deploy-platform-worker.sh hosted-zones.sh platform-db.ts check-migration-lock.mjs wrangler-env.ts broker-key.ts; do",
     );
     // The broker's Google client pin is main's, never the tag's.
     expect(use).toContain(
@@ -95,7 +109,7 @@ describe("deploy-hosted-platform.yml", () => {
     );
     // The constants and the id lookup are main's too, never the tag's.
     expect(use).toContain(
-      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh; do",
+      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh deploy-token-expiry.sh; do",
     );
     expect(use).toContain(
       'cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"',
@@ -118,11 +132,13 @@ describe("deploy-hosted-platform.yml", () => {
     expect(named("Resolve the resource ids")).toMatchObject({
       env: {
         DEPLOY_ENV: "${{ inputs.env }}",
+        // The Secrets Store id only for provision-token and provisioner.
+        TARGETS: "${{ inputs.targets }}",
         CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
       },
       run: 'bash "$RUNNER_TEMP/main-ci/hosted-resource-ids.sh" "$DEPLOY_ENV"',
     });
-    expect(Object.keys(named("Resolve the resource ids").env)).toHaveLength(2);
+    expect(Object.keys(named("Resolve the resource ids").env)).toHaveLength(3);
     expect(named("Load the hosted constants").if).toBeUndefined();
     // Only the targets that bind an id (or the zone tag) look them up.
     const cond = named("Resolve the resource ids").if as string;
@@ -138,17 +154,20 @@ describe("deploy-hosted-platform.yml", () => {
       return new Function(`return (${js});`)() as boolean;
     };
     for (const t of [
+      "platform-db",
       "auth-broker",
       "directory-broker",
+      "provision-token",
+      "provisioner",
       "dispatch",
       "scheduler",
       "inventory",
+      "provisioning",
       "auth-broker,directory-broker,dispatch,scheduler",
-      "inventory,inventory-key,zones",
+      "inventory,zones",
     ])
       expect(runsFor(t), t).toBe(true);
-    for (const t of ["inventory-key", "zones", "inventory-key,zones"])
-      expect(runsFor(t), t).toBe(false);
+    for (const t of ["zones"]) expect(runsFor(t), t).toBe(false);
     // Everything the user used to copy into the Environment comes from these.
     expect(text).not.toContain("vars.");
     for (const k of [
@@ -173,6 +192,7 @@ describe("deploy-hosted-platform.yml", () => {
       "Resolve the resource ids",
       "Deploy and verify",
       "Zones",
+      "The deploy token's expiry",
     ]);
     // One Cloudflare token for everything; the old names are gone.
     for (const old of ["DEPLOY_TOKEN", "ZONE_TOKEN", "PROVISION_TOKEN"])
@@ -191,8 +211,10 @@ describe("deploy-hosted-platform.yml", () => {
       "CLOUDFLARE_API_TOKEN",
       "GOOGLE_CLIENT_SECRET",
       "GOOGLE_DIRECTORY_CLIENT_SECRET",
-      "INVENTORY_KEY",
     ]);
+    // The inventory key is gone (design v7 6.3): OIDC replaces it.
+    expect(text).not.toContain("INVENTORY_KEY");
+    expect(text).not.toContain("inventory-key");
     // The same names in each env's Environment: no env-specific secret names.
     expect(JSON.stringify(env)).not.toMatch(/PROD_|STAGING_/);
     expect(env.CLOUDFLARE_API_TOKEN).toBe(
@@ -266,9 +288,18 @@ describe("deploy-hosted-platform.yml", () => {
     expect(
       go("v0.74.1", "auth-broker,directory-broker,dispatch,scheduler"),
     ).toBe(0);
-    expect(go("v0.74.1", "inventory-key")).toBe(0);
-    expect(go("v0.74.1", "inventory,inventory-key,zones")).toBe(0);
+    expect(go("v0.74.1", "inventory,zones")).toBe(0);
+    expect(go("v0.74.1", "inventory-key")).toBe(1);
     expect(go("v0.74.1", "zones,dispatch")).toBe(1);
+    expect(
+      go(
+        "v0.74.1",
+        "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,scheduler,inventory,provisioning,zones",
+      ),
+    ).toBe(0);
+    expect(go("v0.74.1", "provisioning,provisioner")).toBe(1);
+    expect(go("v0.74.1", "provisioner,provision-token")).toBe(1);
+    expect(go("v0.74.1", "auth-broker,platform-db")).toBe(1);
     expect(go("v0.74.1", "dispatch,scheduler")).toBe(0);
     for (const [tag, t] of [
       ["0.74.1", "dispatch"],
@@ -281,5 +312,125 @@ describe("deploy-hosted-platform.yml", () => {
       ["v0.74.1", ""],
     ])
       expect(go(tag as string, t as string), `${tag} ${t}`).toBe(1);
+  });
+
+  it("the order puts every bound target before its binder (design v7 10.2)", () => {
+    const check = named("Check the inputs").run as string;
+    const order = (/order="([^"]+)"/.exec(check)?.[1] ?? "").split(" ");
+    expect(order).toEqual([
+      "platform-db",
+      "auth-broker",
+      "directory-broker",
+      "provision-token",
+      "provisioner",
+      "dispatch",
+      "scheduler",
+      "inventory",
+      "provisioning",
+      "zones",
+    ]);
+    // What each app binds, from its committed config (prod block).
+    const strip = (src: string) =>
+      src
+        .replace(
+          /("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+          (m, q) => q ?? "",
+        )
+        .replace(/,(\s*[}\]])/g, "$1");
+    const bound = (app: string): string[] => {
+      const cfg = JSON.parse(
+        strip(readFileSync(join(root, `apps/${app}/wrangler.jsonc`), "utf8")),
+      ).env.prod;
+      const out = new Set<string>();
+      if (cfg.d1_databases?.length) out.add("platform-db");
+      for (const s of cfg.services ?? [])
+        out.add(String(s.service).replace(/^oa-p-/, ""));
+      for (const wf of cfg.workflows ?? [])
+        if (wf.script_name)
+          out.add(String(wf.script_name).replace(/^oa-p-/, ""));
+      for (const s of cfg.secrets_store_secrets ?? [])
+        if (String(s.secret_name).endsWith("-provision-token"))
+          out.add("provision-token");
+      return [...out];
+    };
+    const apps = [
+      "auth-broker",
+      "directory-broker",
+      "provisioner",
+      "dispatch",
+      "scheduler",
+      "inventory",
+      "provisioning",
+    ];
+    for (const app of apps)
+      for (const dep of bound(app)) {
+        expect(order, `${app} binds ${dep}`).toContain(dep);
+        expect(order.indexOf(dep), `${dep} before ${app}`).toBeLessThan(
+          order.indexOf(app),
+        );
+      }
+    expect(bound("provisioning")).toEqual(
+      expect.arrayContaining(["platform-db", "provisioner", "auth-broker"]),
+    );
+    expect(bound("provisioner")).toEqual(
+      expect.arrayContaining(["platform-db", "provision-token"]),
+    );
+    // The zones route to every Worker, so they come last.
+    expect(order.at(-1)).toBe("zones");
+  });
+
+  it("prod's provisioner and provisioning wait for a green staging run of the tag, before anything deploys", () => {
+    const g = named("Staging passed this tag");
+    expect(g.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/staging-first-gate.sh" "$TAG"',
+    );
+    expect(g.env).toEqual({
+      TAG: "${{ inputs.tag }}",
+      GH_TOKEN: "${{ github.token }}",
+    });
+    const runsFor = (env: string, targets: string) =>
+      new Function(
+        "inputs",
+        `return (${(g.if as string)
+          .replace(/^\$\{\{\s*/, "")
+          .replace(/\s*\}\}$/, "")
+          .replace(
+            /contains\(format\(',\{0\},', inputs\.targets\), '([^']*)'\)/g,
+            (_, t) => JSON.stringify(`,${targets},`.includes(t)),
+          )});`,
+      )({ env }) as boolean;
+    expect(runsFor("prod", "provisioner")).toBe(true);
+    expect(runsFor("prod", "platform-db,provisioning,zones")).toBe(true);
+    expect(runsFor("prod", "provision-token,dispatch")).toBe(false);
+    expect(runsFor("staging", "provisioner,provisioning")).toBe(false);
+    const i = (n: string) => steps.indexOf(named(n));
+    expect(i("Use main's deploy scripts")).toBeLessThan(
+      i("Staging passed this tag"),
+    );
+    expect(i("Staging passed this tag")).toBeLessThan(i("Deploy and verify"));
+  });
+
+  it("builds and tests the Provisioning API Workers and the admin SPA too", () => {
+    const run = named("Build and test the Workers being deployed")
+      .run as string;
+    for (const p of ["@oa/provisioner", "@oa/provisioning", "@oa/admin"])
+      expect(run).toContain(`--filter ${p}`);
+  });
+
+  it("passes the repository id for the OIDC principals, and reads back the token's expiry last", () => {
+    expect(named("Deploy and verify").env.GITHUB_REPOSITORY_ID).toBe(
+      "${{ github.repository_id }}",
+    );
+    const e = named("The deploy token's expiry");
+    expect(steps.at(-1)).toBe(e);
+    expect(e.if).toBe("${{ !cancelled() }}");
+    expect(e.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/deploy-token-expiry.sh" "$DEPLOY_ENV"',
+    );
+    expect(e.env).toEqual({
+      DEPLOY_ENV: "${{ inputs.env }}",
+      CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+      GH_TOKEN: "${{ github.token }}",
+    });
   });
 });
