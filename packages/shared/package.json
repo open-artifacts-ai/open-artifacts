@@ -33,12 +33,12 @@
       "import": "./dist/provisioning/alerts.js",
       "default": "./dist/provisioning/alerts.js"
     },
-    "./provisioning/enums": {
+    "./provisioning/enum-values": {
       "types": "./dist/provisioning/enum-values.d.ts",
       "import": "./dist/provisioning/enum-values.js",
       "default": "./dist/provisioning/enum-values.js"
     },
-    "./provisioning/errors": {
+    "./provisioning/error-codes": {
       "types": "./dist/provisioning/error-codes.d.ts",
       "import": "./dist/provisioning/error-codes.js",
       "default": "./dist/provisioning/error-codes.js"

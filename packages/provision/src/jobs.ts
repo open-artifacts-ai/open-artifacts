@@ -106,9 +106,44 @@ export interface SettleOptions {
    * Prepared statements on the same `db`, run after the settle's own
    * statements in its one D1 batch (the sweep's cleanup-job insert), so the
    * settle and they commit or fail together. They run even when the job was
-   * already settled; guard them in SQL (e.g. on the parent's status).
+   * already settled, and always after the settle UPDATE, so the parent is
+   * `failed` by then whoever settled it: a guard on the parent's status
+   * cannot tell this call's settle from an R25 cancel that already settled
+   * the job and queued its own cleanup. So every extra must
+   * - guard on the parent having been settled with exactly the code this
+   *   call wrote (`settledWith(parentSql, code)`, e.g. `run_dead` for the
+   *   sweep); a cancel's `canceled` never matches, and
+   * - be `INSERT OR IGNORE`, so `jobs_one_active` (a cleanup already open)
+   *   and `(actor_key, request_id)` (an earlier tick's `cleanup-<jobId>`)
+   *   skip the row instead of failing the batch.
    */
   extra?: readonly unknown[];
+}
+
+/**
+ * The SQL guard for a settleFailed extra: true iff the parent job is failed
+ * with exactly `code`, the code this settle call wrote. `parentSql` is a
+ * `?N` bind placeholder or `<alias>.<column>` of the outer query, with an
+ * alias other than `jobs` and `p` (the guard's own table): an unqualified
+ * or self-qualified column would read the subquery's own row (`p.id =
+ * p.id`), true whenever any job has `code`, so it is refused.
+ */
+export function settledWith(
+  parentSql: string,
+  code: ProvisionErrorCode,
+): string {
+  if (!(PROVISION_ERROR_CODES as readonly string[]).includes(code))
+    throw new Error(`unknown provision error code ${String(code)}`);
+  const m =
+    /^(?:\?[1-9]\d{0,2}|([A-Za-z_][A-Za-z0-9_]*)\.[a-z_][a-z0-9_]*)$/.exec(
+      parentSql,
+    );
+  const alias = m?.[1]?.toLowerCase();
+  if (!m || alias === "jobs" || alias === "p")
+    throw new Error(
+      "settledWith: parentSql must be a ?N placeholder or <alias>.<column> (alias not jobs or p)",
+    );
+  return `EXISTS (SELECT 1 FROM jobs p WHERE p.id = ${parentSql} AND p.status = 'failed' AND p.error_code = '${code}')`;
 }
 
 /** What settleFailed did. */

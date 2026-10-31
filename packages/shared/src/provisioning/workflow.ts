@@ -45,7 +45,10 @@ export interface WorkflowLike<P = WorkflowParams> {
    * message, or return an instance whose status() fails) is not checked; a
    * wrapper around the real binding must translate it to
    * WorkflowNotFoundError, and must not translate a binding-level error
-   * (the Workflow or its script missing).
+   * (the Workflow or its script missing). isWorkflowNotFound is an
+   * instanceof check, which does not survive an RPC or service-binding
+   * boundary (the error arrives as a plain Error), so that wrapper must run
+   * in the caller's own isolate, around the binding it calls.
    */
   get(id: string): Promise<WorkflowInstanceLike>;
 }

@@ -28,7 +28,12 @@ import {
   JobErrorCodeSchema,
 } from "../../src/provisioning/errors.js";
 import { FakeWorkflow } from "../../src/provisioning/fakes.js";
-import { REQUEST_ID_RE, ULID_RE } from "../../src/provisioning/ids.js";
+import * as PATTERNS from "../../src/provisioning/id-patterns.js";
+import {
+  INSTALL_ID_RE,
+  REQUEST_ID_RE,
+  ULID_RE,
+} from "../../src/provisioning/ids.js";
 import * as INDEX from "../../src/provisioning/index.js";
 import {
   ALERT_STATE_SUFFIXES,
@@ -240,6 +245,34 @@ describe("run_dead (Manager C5)", () => {
   });
 });
 
+describe("id patterns: one copy (C5 review)", () => {
+  it("ids.ts exports the zod-free id-patterns.ts objects, with the 3.1 sources", () => {
+    expect(ULID_RE).toBe(PATTERNS.ULID_RE);
+    expect(INSTALL_ID_RE).toBe(PATTERNS.INSTALL_ID_RE);
+    expect(REQUEST_ID_RE).toBe(PATTERNS.REQUEST_ID_RE);
+    expect(ULID_RE.source).toBe("^[0-7][0-9A-HJKMNP-TV-Z]{25}$");
+    expect(INSTALL_ID_RE.source).toBe("^i[a-z0-9]{11}$");
+  });
+
+  it("state.ts and system.ts import them; neither keeps a copy", () => {
+    for (const f of ["provisioning/state.ts", "provisioning/system.ts"]) {
+      const src = readFileSync(join(SRC, f), "utf8");
+      expect(src).toMatch(/from "\.\/id-patterns\.js"/);
+      expect(src).not.toContain(ULID_RE.source);
+      expect(src).not.toContain(INSTALL_ID_RE.source);
+    }
+  });
+});
+
+describe("systemJobBodyHash checks the install id (C5 review)", () => {
+  it("refuses anything that is not an install id", async () => {
+    for (const bad of ["nope", "", "I0123456789a", null])
+      await expect(
+        systemJobBodyHash("purge", bad as never, { purgeAt: 1, n: 0 }),
+      ).rejects.toThrow(/install id/);
+  });
+});
+
 describe("WorkflowLike.get not found (C1 fakes)", () => {
   it("the fake throws WorkflowNotFoundError for an unknown id", async () => {
     const wf = new FakeWorkflow();
@@ -335,8 +368,8 @@ function graph(entry: string): Set<string> {
 
 const CONST_SUBPATHS = {
   "./provisioning/alerts": "provisioning/alerts.ts",
-  "./provisioning/enums": "provisioning/enum-values.ts",
-  "./provisioning/errors": "provisioning/error-codes.ts",
+  "./provisioning/enum-values": "provisioning/enum-values.ts",
+  "./provisioning/error-codes": "provisioning/error-codes.ts",
   "./provisioning/state": "provisioning/state.ts",
   "./provisioning/system": "provisioning/system.ts",
   "./provisioning/workflow": "provisioning/workflow.ts",

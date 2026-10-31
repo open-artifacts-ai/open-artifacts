@@ -1,5 +1,5 @@
 // Provisioning error codes (design v7 3.5) as plain constants: no zod, so
-// the scheduler imports them through `@oa/shared/provisioning/errors`.
+// the scheduler imports them through `@oa/shared/provisioning/error-codes`.
 // errors.ts builds the schemas from these and re-exports them.
 
 /** ApiErrorCode -> its one HTTP status (design v7 3.5). */

@@ -1,8 +1,10 @@
 // Jobs the scheduler inserts itself (design v7 3.1, 4.1, 5.8): purge after
 // grace and the sweep's cleanup. No zod: `@oa/shared/provisioning/system`.
+
 import { PURGE_STUCK_FAILURES } from "./alerts.js";
 import { bodyHash, type SystemRouteKey } from "./bodyhash.js";
 import type { JobKind } from "./enum-values.js";
+import { INSTALL_ID_RE, ULID_RE } from "./id-patterns.js";
 
 /** The scheduler's principal on its jobs (4.1: `system:<name>`, 5.8). */
 export const SYSTEM_ACTOR = Object.freeze({
@@ -37,8 +39,6 @@ export type SystemJobArgs = {
 };
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const ULID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
-const INSTALL_ID = /^i[a-z0-9]{11}$/;
 
 /**
  * A job id (3.1 `ULID_RE`): 48-bit ms time `now`, then 80 random bits. Ids
@@ -69,7 +69,7 @@ export function purgeRequestId(
   purgeAt: number,
   n: number,
 ): string {
-  if (typeof installId !== "string" || !INSTALL_ID.test(installId))
+  if (typeof installId !== "string" || !INSTALL_ID_RE.test(installId))
     throw new Error("purgeRequestId needs an install id");
   if (!Number.isInteger(purgeAt) || purgeAt < 0)
     throw new Error("purgeRequestId: purge_at must be epoch ms");
@@ -85,7 +85,7 @@ export function purgeRequestId(
  * (one per parent; W7's format, the design names none).
  */
 export function cleanupRequestId(parentJobId: string): string {
-  if (typeof parentJobId !== "string" || !ULID.test(parentJobId))
+  if (typeof parentJobId !== "string" || !ULID_RE.test(parentJobId))
     throw new Error("cleanupRequestId needs a job id (ULID)");
   return `cleanup-${parentJobId}`;
 }
@@ -103,5 +103,7 @@ export async function systemJobBodyHash<K extends SystemJobKind>(
   installId: string,
   args: SystemJobArgs[K],
 ): Promise<string> {
+  if (typeof installId !== "string" || !INSTALL_ID_RE.test(installId))
+    throw new Error("systemJobBodyHash needs an install id");
   return bodyHash(systemRouteKey(kind), installId, args);
 }
