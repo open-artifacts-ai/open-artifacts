@@ -32,7 +32,7 @@ import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
 
 const TIER = { trial: "Trial", team: "Team", business: "Business" } as const;
-const SEARCH_DELAY_MS = 300;
+export const SEARCH_DELAY_MS = 300;
 const ALERT_LABEL: Record<string, string> = {
   job_failed: "Job failed",
   install_failed: "Create failed",
@@ -153,12 +153,16 @@ export function Installs() {
   const paging = usePaging();
   // The search runs on the server (R2 `q`) once typing pauses.
   useEffect(() => {
+    const next = typed.trim();
+    // Nothing typed yet (or back to the applied search): leave the page alone.
+    // Resetting here would undo a Next click made before the first tick.
+    if (next === q) return;
     const t = setTimeout(() => {
-      setQ(typed.trim());
+      setQ(next);
       paging.reset();
     }, SEARCH_DELAY_MS);
     return () => clearTimeout(t);
-  }, [typed, paging.reset]);
+  }, [typed, q, paging.reset]);
   const list = useQuery(
     installsQuery({
       cursor: paging.cursor,

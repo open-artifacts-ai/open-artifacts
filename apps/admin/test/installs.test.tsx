@@ -1,7 +1,14 @@
 import { emptyWorld, fixtureWorld } from "@oa/shared/provisioning/fixtures";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { expect, it } from "vitest";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { expect, it, vi } from "vitest";
 import { fmtClock } from "../src/components/labels";
+import { SEARCH_DELAY_MS } from "../src/pages/Installs";
 import { http, json, renderApp, seen, use } from "./harness";
 
 it("lists installs with state, release, sign-in and health, and six tiles from the world", async () => {
@@ -128,7 +135,8 @@ it("filters by state and says so when nothing matches", async () => {
   expect(seen.some((s) => s.path.includes("state=suspended"))).toBe(true);
 });
 
-it("pages with the cursor from the API", async () => {
+/** Two pages: "first" with a next cursor, then "second". */
+const twoPages = () => {
   use(
     http.get("*/api/v1/installs", ({ request }) => {
       const c = new URL(request.url).searchParams.get("cursor");
@@ -152,6 +160,10 @@ it("pages with the cursor from the API", async () => {
         : json({ items: [mk("first", "ifirst000001")], nextCursor: "c2" });
     }),
   );
+};
+
+it("pages with the cursor from the API", async () => {
+  twoPages();
   renderApp("/installs");
   await screen.findByRole("link", { name: "first" });
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
@@ -160,6 +172,47 @@ it("pages with the cursor from the API", async () => {
   expect(screen.getByRole("button", { name: "Next" })).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: "Previous" }));
   await screen.findByRole("link", { name: "first" });
+});
+
+// Root cause of a CI flake: the search debounce used to reset the cursor stack
+// when it first fired (300 ms after mount) even though nothing had been typed,
+// so a Next click made in that window was undone. Drive the timer, don't race it.
+it("keeps page 2 when the unchanged search debounce fires after Next", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    twoPages();
+    renderApp("/installs");
+    await screen.findByRole("link", { name: "first" });
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await screen.findByRole("link", { name: "second" });
+    // Let the debounce fire. If it reset the cursor, page 1 is requested again
+    // (the request is logged when the fetch starts, inside this act).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SEARCH_DELAY_MS * 3);
+    });
+    const pageOne = seen.filter(
+      (r) =>
+        r.path.startsWith("/api/v1/installs?") && !r.path.includes("cursor="),
+    );
+    expect(pageOne).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "second" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "first" })).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("going back to page 1 after typing a search resets the cursor", async () => {
+  twoPages();
+  renderApp("/installs");
+  await screen.findByRole("link", { name: "first" });
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  await screen.findByRole("link", { name: "second" });
+  fireEvent.change(screen.getByLabelText("Search slug"), {
+    target: { value: "f" },
+  });
+  await screen.findByRole("link", { name: "first" });
+  expect(screen.getByRole("button", { name: "Previous" })).toBeDisabled();
 });
 
 it("shows a load error with retry", async () => {
