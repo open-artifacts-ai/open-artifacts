@@ -7,11 +7,7 @@
 // the real one).
 import type { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import {
-  type SettleOptions,
-  settledWith,
-  settleFailed,
-} from "../src/jobs.js";
+import { type SettleOptions, settledWith, settleFailed } from "../src/jobs.js";
 import { nodeD1 } from "./d1-node.js";
 import { job, platformDb } from "./platform-db.js";
 
@@ -206,25 +202,25 @@ describe("settleFailed with expectCode (real body)", () => {
   it("expected null, still null: settles and adds one cleanup", async () => {
     const db = platformDb();
     const parent = job(db, "i1", { status: "running" });
-    expect(await run(db, parent, { expectCode: null }, ONE("run_dead"))).toEqual(
-      {
-        settled: true,
-        row: { status: "failed", error_code: "run_dead" },
-        cleanups: 1,
-      },
-    );
+    expect(
+      await run(db, parent, { expectCode: null }, ONE("run_dead")),
+    ).toEqual({
+      settled: true,
+      row: { status: "failed", error_code: "run_dead" },
+      cleanups: 1,
+    });
   });
 
   it("expected null, now 'canceled': writes nothing, settled=false", async () => {
     const db = platformDb();
     const parent = job(db, "i1", { status: "running", error_code: "canceled" });
-    expect(await run(db, parent, { expectCode: null }, ONE("run_dead"))).toEqual(
-      {
-        settled: false,
-        row: { status: "running", error_code: "canceled" },
-        cleanups: 0,
-      },
-    );
+    expect(
+      await run(db, parent, { expectCode: null }, ONE("run_dead")),
+    ).toEqual({
+      settled: false,
+      row: { status: "running", error_code: "canceled" },
+      cleanups: 0,
+    });
   });
 
   it("expected 'canceled', is 'canceled': settles, exactly one cleanup", async () => {

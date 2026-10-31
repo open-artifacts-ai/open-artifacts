@@ -3,6 +3,7 @@
 // fail and cleanup compensation, redline_creds sealing. Each install is made
 // by ProvisionInstall first, as in production.
 import { HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
+import { REDLINE_SCOPE_FIXTURE } from "@oa/shared/provisioning/fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
 import { GRACE_MS, NEVER_ROUTED, runManage } from "../../src/manage.js";
@@ -717,18 +718,27 @@ describe("cleanup sweeps the parent's owner-token label (3.6, R25)", () => {
 });
 
 /** The rl- install's own API, as the CLI's test stubbed it. */
-function stubInstall(installId: string) {
-  const script = w.fake.script(NAMESPACES[ENV], `oa-s-${installId}`);
-  const tokens = [
+/**
+ * The install's dispatch stub: its token API over `tokens` (live PATs;
+ * DELETE removes one, POST adds `t-new`). Stubs chain, one per install, so
+ * a test can hold two installs.
+ */
+function stubInstall(
+  installId: string,
+  tokens: { id: string; label: string }[] = [
     { id: "t1", label: "redline-old" },
     { id: "t2", label: "ci-1" },
-  ];
+  ],
+) {
+  const scriptName = `oa-s-${installId}`;
+  const script = w.fake.script(NAMESPACES[ENV], scriptName);
   const deleted: string[] = [];
   const seen: string[] = [];
   const real = w.env.DISPATCHER;
   w.env.DISPATCHER = {
     get: (name: string) => ({
       fetch: async (req: Request) => {
+        if (name !== scriptName) return real.get(name).fetch(req);
         const u = new URL(req.url);
         seen.push(`${req.method} ${u.pathname}`);
         const key = script?.secrets.get("TEST_HOOK_KEY");
@@ -742,14 +752,21 @@ function stubInstall(installId: string) {
           u.pathname.startsWith("/api/v1/tokens/") &&
           req.method === "DELETE"
         ) {
-          deleted.push(u.pathname.split("/").at(-1) as string);
+          const id = u.pathname.split("/").at(-1) as string;
+          deleted.push(id);
+          const i = tokens.findIndex((t) => t.id === id);
+          if (i < 0) return new Response(null, { status: 404 });
+          tokens.splice(i, 1);
           return new Response(null, { status: 204 });
         }
-        if (u.pathname === "/api/v1/tokens" && req.method === "POST")
+        if (u.pathname === "/api/v1/tokens" && req.method === "POST") {
+          const { label } = (await req.json()) as { label: string };
+          tokens.push({ id: "t-new", label });
           return Response.json(
-            { token: "oa_pat_minted_secret_value" },
+            { id: "t-new", label, token: "oa_pat_minted_secret_value" },
             { status: 201 },
           );
+        }
         if (u.pathname === "/api/v1/me")
           return req.headers.get("authorization") ===
             "Bearer oa_pat_minted_secret_value"
@@ -759,7 +776,7 @@ function stubInstall(installId: string) {
       },
     }),
   } as unknown as DispatchNamespace;
-  return { script, deleted, seen };
+  return { script, deleted, seen, tokens };
 }
 
 describe("redline_creds (10.1, R26)", () => {
@@ -802,25 +819,124 @@ describe("redline_creds (10.1, R26)", () => {
     expect(seen).toContain("POST /__test/session");
   });
 
-  it("C1: recipientKey is required; a job without one (a revoke) is refused before any write", async () => {
-    // TODO(contract): design v7 10.1's `revoke: true` call is contract
-    // follow-up C6; until then R26 always mints and seals.
+  it("revoke (C6): revokes the install's live redline-* PATs, mints and seals nothing; a repeat is a no-op done", async () => {
     const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
-    const { deleted, seen } = stubInstall(s.installId);
-    const script = w.fake.script(NAMESPACES[ENV], `oa-s-${s.installId}`);
-    const oldKey = script?.secrets.get("TEST_HOOK_KEY");
+    const { deleted, seen, tokens } = stubInstall(s.installId, [
+      { id: "t1", label: "redline-101" },
+      { id: "t2", label: "redline-102" },
+      { id: "t3", label: "ci-1" },
+    ]);
     const r = await manage("redline_creds", s.installId, {
       actor: "oidc",
       args: { revoke: true },
     });
-    expect(r.job).toMatchObject({
-      status: "failed",
-      error_code: "invalid_state",
+    expect(r.error).toBeNull();
+    expect(r.log.map((l) => l.name)).toEqual([
+      "load",
+      "recheck",
+      "revoke",
+      "done",
+    ]);
+    // args.revoke is recorded on the rechecked job (never a key).
+    expect(r.log.find((l) => l.name === "recheck")?.output).toMatchObject({
+      args: { revoke: true },
     });
+    expect(r.log.find((l) => l.name === "revoke")?.output).toEqual({
+      revoked: 2,
+    });
+    expect(r.job).toMatchObject({ status: "done", step: "done" });
+    expect(r.job?.sealed).toBeNull();
+    expect(deleted).toEqual(["t1", "t2"]);
+    expect(tokens).toEqual([{ id: "t3", label: "ci-1" }]);
+    expect(seen).not.toContain("POST /api/v1/tokens");
+
+    const again = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { revoke: true },
+    });
+    expect(again.error).toBeNull();
+    expect(again.job).toMatchObject({ status: "done", step: "done" });
+    expect(again.log.find((l) => l.name === "revoke")?.output).toEqual({
+      revoked: 0,
+    });
+    expect(deleted).toEqual(["t1", "t2"]);
+    expect(again.job?.sealed).toBeNull();
+  });
+
+  it("absent revoke is a mint: a job with no recipientKey is refused at recheck, before any write", async () => {
+    const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+    const { deleted, seen } = stubInstall(s.installId);
+    const script = w.fake.script(NAMESPACES[ENV], `oa-s-${s.installId}`);
+    const oldKey = script?.secrets.get("TEST_HOOK_KEY");
+    for (const args of [{}, { revoke: false }, { revoke: "yes" }]) {
+      const r = await manage("redline_creds", s.installId, {
+        actor: "oidc",
+        args,
+      });
+      expect(r.job).toMatchObject({
+        status: "failed",
+        error_code: "invalid_state",
+      });
+      expect(r.log.map((l) => l.name)).toEqual(["load", "recheck", "fail"]);
+      expect(r.job?.sealed).toBeNull();
+    }
     expect(deleted).toEqual([]);
     expect(seen).toEqual([]);
     expect(script?.secrets.get("TEST_HOOK_KEY")).toBe(oldKey);
-    expect(r.job?.sealed).toBeNull();
+  });
+
+  it("REDLINE_SCOPE_FIXTURE (C6): mint and revoke touch only the target install's live redline-* PATs", async () => {
+    const F = REDLINE_SCOPE_FIXTURE;
+    const t = await active({ slug: "rl-a", actor: "oidc", testHooks: true });
+    const o = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
+    // The fixture's installs are these two; its live PATs are what each
+    // install's token API lists (the minted one appears once minted).
+    const live = (installId: string, skip?: string) =>
+      F.pats
+        .filter(
+          (p) =>
+            p.installId === installId && p.revokedAt === null && p.id !== skip,
+        )
+        .map((p) => ({ id: p.id, label: p.label }));
+    const target = stubInstall(t.installId, live(F.target, F.minted));
+    const other = stubInstall(o.installId, live(F.other));
+    const otherBefore = [...other.tokens];
+    const pair = (await crypto.subtle.generateKey({ name: "X25519" }, true, [
+      "deriveBits",
+    ])) as CryptoKeyPair;
+    const recipientKey = Buffer.from(
+      new Uint8Array(
+        (await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer,
+      ),
+    ).toString("base64url");
+    // The stub mints `t-new`; the fixture's minted PAT is F.minted.
+    target.tokens.length = 0;
+    target.tokens.push(...live(F.target, F.minted));
+    const mint = await manage("redline_creds", t.installId, {
+      actor: "oidc",
+      args: { recipientKey },
+    });
+    expect(mint.error).toBeNull();
+    expect(target.deleted).toEqual([...F.expect.mint]);
+    expect(other.deleted).toEqual([]);
+    expect(other.seen).toEqual([]);
+
+    // Revoke: the target's live redline-* PATs, the minted one included.
+    target.tokens.length = 0;
+    target.tokens.push(...live(F.target));
+    target.deleted.length = 0;
+    const rev = await manage("redline_creds", t.installId, {
+      actor: "oidc",
+      args: { revoke: true },
+    });
+    expect(rev.error).toBeNull();
+    expect(target.deleted).toEqual([...F.expect.revoke]);
+    expect(target.tokens.map((p) => p.id)).toEqual([
+      "pat-t-owner",
+      "pat-t-human",
+    ]);
+    expect(other.deleted).toEqual([]);
+    expect(other.tokens).toEqual(otherBefore);
   });
 
   it("is refused for a non-test install, and for any actor but OIDC", async () => {

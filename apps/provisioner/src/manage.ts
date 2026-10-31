@@ -29,6 +29,7 @@ import {
 } from "@oa/provision";
 import {
   type JobKind,
+  redlineCredsJobArgs,
   type WorkflowParams,
   WorkflowParamsSchema,
 } from "@oa/shared/provisioning";
@@ -52,7 +53,7 @@ import {
   refused,
   type StatusRow,
 } from "./recheck.js";
-import { redlineCreds } from "./redline.js";
+import { redlineArgs, redlineCreds } from "./redline.js";
 import {
   argsOf,
   doneAuditStatement,
@@ -100,7 +101,14 @@ export type ManageJob = {
   /** The sign-in copy stays disabled on rewrites (5.4 registryDisabled). */
   registryDisabled: boolean;
   suspended: boolean;
-  args: { from?: string; to?: string; reason?: string; force?: boolean };
+  args: {
+    from?: string;
+    to?: string;
+    reason?: string;
+    force?: boolean;
+    /** redline_creds: the R26 variant (C6 RedlineCredsSchema; never the key). */
+    revoke?: boolean;
+  };
   /** upgrade, rollback: the install is already on `to`; nothing to do. */
   already?: boolean;
   /** purge: the skip reason for the directory revoke, if any. */
@@ -653,6 +661,7 @@ async function recheck(ctx: CreateCtx, jobId: string): Promise<ManageJob> {
       if (!row || !row.slug.startsWith("rl-") || row.test_hooks !== 1)
         throw refused("not a red-line test install");
       if (row.state !== "active") throw refused("the install is not active");
+      out.args = redlineCredsJobArgs(redlineArgs(job));
       break;
     default:
       break;
