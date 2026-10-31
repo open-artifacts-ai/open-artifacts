@@ -3,7 +3,10 @@ import {
   AUTHZ,
   AUTHZ_COLUMNS,
   authorize,
+  CREATE_FIELDS,
   canTransition,
+  checkCreateFields,
+  createFieldRule,
   InstallStateSchema,
   JobKindSchema,
   OIDC_LIMITS,
@@ -151,15 +154,25 @@ describe("OIDC principal (Q1: staging only, rl- test installs)", () => {
       expect(o(id), id).toEqual({ ok: false, code: "forbidden" });
   });
 
-  it("limits: rl- slug with testHooks only", () => {
+  it("limits: rl- slug, testHooks and a @STAGING_TEST_DOMAIN owner", () => {
     expect(OIDC_LIMITS).toEqual({
       envs: ["staging"],
       slugPrefix: "rl-",
       testHooks: true,
     });
-    expect(oidcMayCreate({ slug: "rl-a", testHooks: true })).toBe(true);
-    expect(oidcMayCreate({ slug: "rl-a" })).toBe(false);
-    expect(oidcMayCreate({ slug: "acme", testHooks: true })).toBe(false);
+    const D = "test.example";
+    const ok = { slug: "rl-a", testHooks: true, ownerEmail: "ci@test.example" };
+    expect(oidcMayCreate(ok, D)).toBe(true);
+    expect(oidcMayCreate({ ...ok, ownerEmail: "CI@Test.Example" }, D)).toBe(
+      true,
+    );
+    expect(oidcMayCreate({ ...ok, testHooks: undefined }, D)).toBe(false);
+    expect(oidcMayCreate({ ...ok, slug: "acme" }, D)).toBe(false);
+    expect(oidcMayCreate({ ...ok, ownerEmail: "ci@acme.com" }, D)).toBe(false);
+    expect(
+      oidcMayCreate({ ...ok, ownerEmail: "ci@evil.test.example" }, D),
+    ).toBe(false);
+    expect(oidcMayCreate({ ...ok, ownerEmail: undefined }, D)).toBe(false);
     expect(oidcOwns({ slug: "rl-b", testHooks: true })).toBe(true);
     expect(oidcOwns({ slug: "rl-b", testHooks: false })).toBe(false);
     expect(oidcOwns({ slug: "leo", testHooks: true })).toBe(false);
@@ -173,6 +186,14 @@ describe("protocol routes", () => {
     expect(at("/oauth/authorize")).toBe("admin");
     expect(at("/oauth/token")).toBe("api");
     expect(at("/oauth/register")).toBe("api");
+    expect(
+      PROTOCOL_ROUTES.filter((r) => r.path === "/oauth/authorize").map(
+        (r) => `${r.method} ${r.host}`,
+      ),
+    ).toEqual(["GET admin", "POST admin"]);
+    // RFC 9728, the path WWW-Authenticate's resource_metadata names (9A.3).
+    expect(at("/.well-known/oauth-protected-resource/mcp")).toBe("api");
+    expect(at("/.well-known/oauth-protected-resource")).toBeUndefined();
     for (const r of PROTOCOL_ROUTES)
       expect(
         Object.values(ROUTES).some((x) => x.path === r.path),
@@ -221,5 +242,100 @@ describe("TRANSITIONS", () => {
     expect(canTransition("suspended", "suspend", "A")).toBe(false);
     for (const k of JobKindSchema.options)
       expect(canTransition("deleted", k, "A"), k).toBe(false);
+  });
+});
+
+describe("R4 field rules (3.3)", () => {
+  const D = "test.example";
+  const auth = { providers: ["google"], domains: ["acme.com"] };
+  const full = { ownerEmail: "o@acme.com", tier: "team", auth };
+
+  it("admin testHooks: staging allowed, prod 403 forbidden", () => {
+    expect(createFieldRule("testHooks", "admin", "staging")).toBe("optional");
+    expect(createFieldRule("testHooks", "admin", "prod")).toBe("forbidden");
+    expect(
+      checkCreateFields({ ...full, testHooks: true }, "admin", "staging", D),
+    ).toBeNull();
+    expect(
+      checkCreateFields({ ...full, testHooks: true }, "admin", "prod", D),
+    ).toEqual({ field: "testHooks", code: "forbidden" });
+  });
+
+  it("token: ownerEmail's domain must be in auth.domains", () => {
+    expect(checkCreateFields(full, "token", "prod", D)).toBeNull();
+    expect(
+      checkCreateFields(
+        { ...full, ownerEmail: "o@ACME.com" },
+        "token",
+        "prod",
+        D,
+      ),
+    ).toBeNull();
+    expect(
+      checkCreateFields(
+        { ...full, ownerEmail: "o@evil.com" },
+        "token",
+        "prod",
+        D,
+      ),
+    ).toEqual({ field: "ownerEmail", code: "forbidden" });
+    for (const f of ["sendWelcome", "testHooks"] as const)
+      expect(
+        checkCreateFields({ ...full, [f]: true }, "token", "prod", D),
+      ).toEqual({ field: f, code: "forbidden" });
+  });
+
+  it("oidc: testHooks true and an @STAGING_TEST_DOMAIN owner", () => {
+    const o = { ...full, ownerEmail: "ci@test.example", testHooks: true };
+    expect(checkCreateFields(o, "oidc", "staging", D)).toBeNull();
+    expect(
+      checkCreateFields(
+        { ...o, ownerEmail: "o@acme.com" },
+        "oidc",
+        "staging",
+        D,
+      ),
+    ).toEqual({ field: "ownerEmail", code: "forbidden" });
+    expect(
+      checkCreateFields({ ...o, testHooks: false }, "oidc", "staging", D),
+    ).toEqual({ field: "testHooks", code: "forbidden" });
+    expect(
+      checkCreateFields({ ...o, testHooks: undefined }, "oidc", "staging", D),
+    ).toEqual({ field: "testHooks", code: "invalid_input" });
+  });
+
+  it("user: server-set and forbidden fields are 403 if present; turnstile is its own step", () => {
+    expect(checkCreateFields({}, "user", "prod", D)).toBeNull();
+    for (const f of [
+      "ownerEmail",
+      "tier",
+      "auth",
+      "version",
+      "sendWelcome",
+      "testHooks",
+    ] as const)
+      expect(checkCreateFields({ [f]: "x" }, "user", "prod", D), f).toEqual({
+        field: f,
+        code: "forbidden",
+      });
+  });
+
+  it("missing required fields are 400; forbidden ones come first", () => {
+    expect(
+      checkCreateFields({ tier: "team", auth }, "admin", "prod", D),
+    ).toEqual({ field: "ownerEmail", code: "invalid_input" });
+    expect(checkCreateFields({ testHooks: true }, "admin", "prod", D)).toEqual({
+      field: "testHooks",
+      code: "forbidden",
+    });
+  });
+
+  it("every field has a rule for every principal and env", () => {
+    for (const f of CREATE_FIELDS)
+      for (const p of ["admin", "token", "oidc", "user"] as const)
+        for (const e of ["staging", "prod"] as const)
+          expect(typeof createFieldRule(f, p, e), `${f} ${p} ${e}`).toBe(
+            "string",
+          );
   });
 });

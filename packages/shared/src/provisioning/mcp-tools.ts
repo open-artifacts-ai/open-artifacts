@@ -8,6 +8,7 @@ import type {
   InstallDetail,
   InstallSummary,
   Job,
+  JobListItem,
   Me,
   Release,
   SlugCheck,
@@ -26,8 +27,32 @@ export type ToolAnnotations = {
   openWorldHint: boolean;
 };
 
+/** Every tool name, in catalog order (ADMIN_TOOLS follows it; tested). */
+export const ADMIN_TOOL_NAMES = [
+  "whoami",
+  "get_world",
+  "list_installs",
+  "get_install",
+  "list_install_jobs",
+  "get_job",
+  "list_releases",
+  "query_audit",
+  "check_slug",
+  "create_install",
+  "upgrade_install",
+  "rollback_install",
+  "suspend_install",
+  "resume_install",
+  "retry_install",
+  "restore_install",
+  "delete_install",
+  "purge_install",
+] as const;
+export const AdminToolNameSchema = z.enum(ADMIN_TOOL_NAMES);
+export type AdminToolName = z.infer<typeof AdminToolNameSchema>;
+
 export interface AdminToolDef {
-  name: string;
+  name: AdminToolName;
   route: RouteId;
   description: string;
   annotations: ToolAnnotations;
@@ -35,8 +60,6 @@ export interface AdminToolDef {
   summary(body: unknown): string;
   /** Merged into the input before invokeRoute (list tools only). */
   defaults?: { limit: number };
-  /** Route body fields a token may not send, dropped from the derived input. */
-  omit?: readonly string[];
 }
 
 export const REQUEST_ID_HINT =
@@ -60,16 +83,16 @@ export function toolAnnotations(t: { route: RouteId }): ToolAnnotations {
   };
 }
 
-/** One strict object of the route's path params, query and body. */
-export function toolInput(t: { route: RouteId; omit?: readonly string[] }) {
+/**
+ * One strict object of the route's path params, query and body. Fields a
+ * principal may not send stay in: policy refuses them with the same 403 on
+ * /v1 and /mcp (4.2 parity).
+ */
+export function toolInput(t: { route: RouteId }) {
   const r = ROUTES[t.route];
-  const shape: Record<string, z.core.$ZodType> = {
-    ...r.params.shape,
-    ...r.query.shape,
-    ...r.body.shape,
-  };
-  for (const k of t.omit ?? []) delete shape[k];
-  return z.object(shape).strict();
+  return z
+    .object({ ...r.params.shape, ...r.query.shape, ...r.body.shape })
+    .strict();
 }
 
 /** The route's 2xx response schema (register with z.toJSONSchema). */
@@ -96,18 +119,16 @@ function tool<B>(
   };
 }
 const write = (
-  name: string,
+  name: AdminToolName,
   route: RouteId,
   what: string,
   extra: string[] = [],
-  omit?: readonly string[],
 ) =>
   tool<Accepted>({
     name,
     route,
     description: [what, ...extra, REQUEST_ID_HINT, POLL_HINT].join(" "),
     summary: accepted,
-    ...(omit ? { omit } : {}),
   });
 
 export const ADMIN_TOOLS: readonly AdminToolDef[] = [
@@ -118,7 +139,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
       "Who you are on this server: principal, token kind, scopes, environment and when your access ends.",
     summary: (m) =>
       [
-        m.principal,
+        ...(m.tokenId ? [`token ${m.tokenId}`] : [m.principal]),
         ...(m.tokenKind ? [m.tokenKind] : []),
         `scopes ${m.scopes.join(" ") || "none"}`,
         m.env,
@@ -155,7 +176,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
     summary: (d) =>
       `${d.slug}: ${d.state}, ${d.servingMode}, ${d.version ?? "no version"}, health ${d.health}, ${d.activeJobId ? `job ${d.activeJobId}` : "no job"}`,
   }),
-  tool<{ items: Job[]; nextCursor: string | null }>({
+  tool<{ items: JobListItem[]; nextCursor: string | null }>({
     name: "list_install_jobs",
     route: "R14",
     description: "An install's jobs, newest first.",
@@ -236,16 +257,10 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
   write(
     "purge_install",
     "R11",
-    "Purge a failed create. A soft-deleted install is refused with details.needs admin_session: an admin purges it in the panel with a fresh sign-in.",
+    "Purge a failed create. A soft-deleted install is refused with details.needs admin_session: an admin purges it in the panel with a fresh sign-in. skipDirectoryRevoke is admin session only.",
     [CONFIRM_HINT],
-    ["skipDirectoryRevoke"],
   ),
 ];
-
-export const AdminToolNameSchema = z.enum(
-  ADMIN_TOOLS.map((t) => t.name) as [string, ...string[]],
-);
-export type AdminToolName = z.infer<typeof AdminToolNameSchema>;
 
 /** Routes with no tool, and why (9A.5). */
 export const NO_TOOL: Readonly<Partial<Record<RouteId, string>>> = {

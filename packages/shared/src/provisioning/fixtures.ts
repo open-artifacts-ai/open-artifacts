@@ -109,6 +109,7 @@ export function fixtureMe(o: Partial<Me> = {}): Me {
     sessionExpiresAt: null,
     authAt: null,
     provisioningToken: null,
+    tokenId: FIXTURE_IDS.token,
     tokenKind: "oauth",
     tokenExpiresAt: T0 + 8 * 3_600_000,
     ...o,

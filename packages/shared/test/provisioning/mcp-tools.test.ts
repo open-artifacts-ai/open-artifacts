@@ -103,7 +103,7 @@ describe("derived schemas", () => {
     }
   });
 
-  it("input = params + query + body, strict; purge drops skipDirectoryRevoke", () => {
+  it("input = params + query + body, strict; purge keeps skipDirectoryRevoke for policy", () => {
     expect(Object.keys(toolInput(byName("get_install")).shape)).toEqual(["id"]);
     expect(Object.keys(toolInput(byName("get_job")).shape)).toEqual(["jobId"]);
     expect(Object.keys(toolInput(byName("whoami")).shape)).toEqual([]);
@@ -112,7 +112,7 @@ describe("derived schemas", () => {
     ).toEqual(["id", "reason", "requestId"]);
     expect(
       Object.keys(toolInput(byName("purge_install")).shape).sort(),
-    ).toEqual(["confirmSlug", "id", "requestId"]);
+    ).toEqual(["confirmSlug", "id", "requestId", "skipDirectoryRevoke"]);
     expect(
       Object.keys(toolInput(byName("list_installs")).shape).sort(),
     ).toEqual(["cursor", "limit", "q", "source", "state"]);
@@ -277,10 +277,10 @@ describe("errors, identity, prompts", () => {
       const named = [...p.text.matchAll(/\b([a-z]+_[a-z_]+|whoami)\b/g)].map(
         (m) => m[1],
       );
-      for (const n of named.filter(
-        (n) => AdminToolNameSchema.safeParse(n).success,
-      ))
-        expect(reads.has(n), `${p.name}: ${n}`).toBe(true);
+      for (const n of named) {
+        const t = AdminToolNameSchema.safeParse(n);
+        if (t.success) expect(reads.has(t.data), `${p.name}: ${n}`).toBe(true);
+      }
       expect(p.text).toContain("Do not write anything.");
     }
     expect(MCP_PROMPTS.map((p) => p.name)).toEqual([

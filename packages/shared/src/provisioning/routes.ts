@@ -9,6 +9,7 @@ import {
   DeleteSchema,
   InstallDetailSchema,
   InstallSummarySchema,
+  JobListItemSchema,
   JobSchema,
   MeSchema,
   MintedTokenSchema,
@@ -150,7 +151,7 @@ export const ROUTES: Readonly<Record<RouteId, RouteDef>> = {
     "release_lease",
     ReleaseLeaseSchema,
   ),
-  R14: read("R14", "/installs/:id/jobs", PageSchema(JobSchema), {
+  R14: read("R14", "/installs/:id/jobs", PageSchema(JobListItemSchema), {
     params: id,
     query: z.object({ cursor, limit }),
   }),
@@ -183,13 +184,13 @@ export const ROUTES: Readonly<Record<RouteId, RouteDef>> = {
     write: true,
   },
   R20: read("R20", "/tokens", TokensSchema),
-  // `DELETE /tokens` (no id) revokes all of both kinds; C4 routes it to R21.
+  // Optional id: `DELETE /tokens` (no id) revokes all of both kinds.
   R21: {
     id: "R21",
     method: "DELETE",
-    path: "/tokens/:tokenId",
+    path: "/tokens/:id?",
     base: "api",
-    params: z.object({ tokenId: TokenIdSchema }),
+    params: z.object({ id: TokenIdSchema.optional() }),
     query: none,
     body: none,
     response: z.null(),
@@ -202,6 +203,7 @@ export const ROUTES: Readonly<Record<RouteId, RouteDef>> = {
     path: "/auth/start",
     base: "browser",
     params: none,
+    // Checked with safeReturn (return.ts), at start and at the callback.
     query: z.object({
       return: z.string().max(2048).optional(),
       reauth: z.enum(["1"]).optional(),
@@ -253,6 +255,7 @@ export const ROUTES: Readonly<Record<RouteId, RouteDef>> = {
 export const PROTOCOL_ROUTES = [
   { method: "POST", path: "/mcp", host: "api" },
   { method: "GET", path: "/oauth/authorize", host: "admin" },
+  { method: "POST", path: "/oauth/authorize", host: "admin" },
   { method: "POST", path: "/oauth/token", host: "api" },
   { method: "POST", path: "/oauth/register", host: "api" },
   {
@@ -260,5 +263,10 @@ export const PROTOCOL_ROUTES = [
     path: "/.well-known/oauth-authorization-server",
     host: "api",
   },
-  { method: "GET", path: "/.well-known/oauth-protected-resource", host: "api" },
+  // RFC 9728, as WWW-Authenticate's resource_metadata names it.
+  {
+    method: "GET",
+    path: "/.well-known/oauth-protected-resource/mcp",
+    host: "api",
+  },
 ] as const;

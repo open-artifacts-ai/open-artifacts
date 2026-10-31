@@ -20,13 +20,24 @@ import {
   RequestIdSchema,
   TokenIdSchema,
 } from "./ids.js";
-import { slugRule } from "./slugs.js";
+import { SLUG_RE, slugRule } from "./slugs.js";
 
 // Design v7 3.3. Times are epoch ms.
 
+/** The full slug rule, for clients that check before they send. */
 export const SlugSchema = z
   .string()
+  .regex(SLUG_RE)
   .refine((s) => slugRule(s) === "ok", "invalid or reserved slug");
+/**
+ * A slug on input. Any short string: policy maps slugRule to slug_invalid or
+ * slug_reserved (4.2: slug is checked last), and confirmSlug mismatches are
+ * confirm_mismatch, never invalid_input.
+ */
+export const SlugInputSchema = z
+  .string()
+  .max(64)
+  .describe(`Lowercase a-z 0-9 and -, 1 to 32 characters (${SLUG_RE.source})`);
 /** Stable releases only (#859 STABLE_VERSION). */
 export const VersionSchema = z.string().regex(/^\d{1,6}\.\d{1,6}\.\d{1,6}$/);
 export const DomainSchema = z
@@ -69,6 +80,8 @@ export const MeSchema = z.object({
   /** Admin only: the provisioning token banner. */
   provisioningToken: ProvisioningTokenStatusSchema.nullable(),
   /** Token principals only. */
+  tokenId: TokenIdSchema.nullable(),
+  /** Token principals only. */
   tokenKind: TokenKindSchema.nullable(),
   /** oat: the token's expiry; oauth: the grant chain's end. */
   tokenExpiresAt: z.number().nullable(),
@@ -77,7 +90,8 @@ export type Me = z.infer<typeof MeSchema>;
 
 export const InstallSummarySchema = z.object({
   id: InstallIdSchema,
-  slug: SlugSchema,
+  /** Output: plain string, so a since-reserved slug still parses. */
+  slug: z.string(),
   appHost: z.string(),
   contentHost: z.string(),
   state: InstallStateSchema,
@@ -115,7 +129,7 @@ export type InstallDetail = z.infer<typeof InstallDetailSchema>;
 /** Field rules per principal: authz.ts CREATE_FIELD_RULES. */
 export const CreateInstallSchema = z.object({
   requestId: RequestIdSchema,
-  slug: SlugSchema,
+  slug: SlugInputSchema,
   ownerEmail: z.string().email().max(254).optional(),
   tier: TierSchema.optional(),
   auth: AuthSchema.optional(),
@@ -141,11 +155,14 @@ export const SuspendSchema = z.object({
   reason: z.string().min(1).max(200),
 });
 export const ResumeSchema = z.object({ requestId });
-export const DeleteSchema = z.object({ requestId, confirmSlug: SlugSchema });
+export const DeleteSchema = z.object({
+  requestId,
+  confirmSlug: SlugInputSchema,
+});
 export const RestoreSchema = z.object({ requestId });
 export const PurgeSchema = z.object({
   requestId,
-  confirmSlug: SlugSchema,
+  confirmSlug: SlugInputSchema,
   /** Admin session only. */
   skipDirectoryRevoke: z
     .object({ reason: z.string().min(8).max(200) })
@@ -154,14 +171,17 @@ export const PurgeSchema = z.object({
 export const RetrySchema = z.object({ requestId });
 export const ReleaseLeaseSchema = z.object({
   requestId,
-  confirmSlug: SlugSchema,
+  confirmSlug: SlugInputSchema,
   force: z.boolean().optional(),
 });
-export const CancelJobSchema = z.object({ requestId, confirmSlug: SlugSchema });
-/** recipientKey: X25519 public key, base64url. */
+export const CancelJobSchema = z.object({
+  requestId,
+  confirmSlug: SlugInputSchema,
+});
+/** recipientKey: a 32-byte X25519 public key, base64url without padding. */
 export const RedlineCredsSchema = z.object({
   requestId,
-  recipientKey: z.string().max(200),
+  recipientKey: z.string().regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/),
 });
 
 export const JobSchema = z.object({
@@ -190,6 +210,9 @@ export const JobSchema = z.object({
   finishedAt: z.number().nullable(),
 });
 export type Job = z.infer<typeof JobSchema>;
+/** A job in a list (R14, World): `sealed` is only ever on R15. */
+export const JobListItemSchema = JobSchema.omit({ sealed: true });
+export type JobListItem = z.infer<typeof JobListItemSchema>;
 
 export const AcceptedSchema = z.object({
   job: JobSchema,
@@ -293,9 +316,7 @@ export const WorldSchema = z.object({
     active: z.number(),
     failed24h: z.number(),
     /** Newest first, any install; never `sealed`. */
-    recent: z
-      .array(JobSchema.omit({ sealed: true }))
-      .max(WORLD_CAPS.recentJobs),
+    recent: z.array(JobListItemSchema).max(WORLD_CAPS.recentJobs),
   }),
   /** Newest first. */
   attention: z.array(AttentionSchema).max(WORLD_CAPS.attention),

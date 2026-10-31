@@ -9,13 +9,16 @@
  * - Stateful per call: writes validate the route's body schema (400
  *   invalid_input), check TRANSITIONS (409 invalid_state), the active job
  *   (409 job_in_progress) and confirmSlug (400 confirm_mismatch), then return
- *   202 with a queued job. The same requestId on the same route and install
- *   replays (header `oa-idempotent-replay: 1`). Jobs never advance.
+ *   202 with a queued job. R4 also checks the admin field rules (3.3) and the
+ *   slug rule. Idempotency as 3.1: the same requestId with the same body hash
+ *   replays (header `oa-idempotent-replay: 1`); with any other route, install
+ *   or body it is 409 idempotency_conflict. Jobs never advance.
  * - R27 world is computed from the store (attention from the fixtures);
  *   `world: "empty"` starts with no installs.
  */
 import { type HttpHandler, HttpResponse, http } from "msw";
-import { TRANSITIONS } from "../provisioning/authz.js";
+import { checkCreateFields, TRANSITIONS } from "../provisioning/authz.js";
+import { bodyHash } from "../provisioning/bodyhash.js";
 import { JOB_STEPS, type ProvisioningEnv } from "../provisioning/enums.js";
 import { API_ERROR_STATUS, type ApiErrorCode } from "../provisioning/errors.js";
 import { FAKE_RELEASES } from "../provisioning/fakes.js";
@@ -31,13 +34,14 @@ import {
 import { ROUTE_IDS, ROUTES, type RouteDef } from "../provisioning/routes.js";
 import type {
   Accepted,
+  CreateInstall,
   InstallDetail,
   InstallSummary,
   Job,
   Token,
   World,
 } from "../provisioning/schemas.js";
-import { slugRule } from "../provisioning/slugs.js";
+import { slugError, slugRule } from "../provisioning/slugs.js";
 
 export type ProvisioningMockOptions = {
   env?: ProvisioningEnv;
@@ -88,7 +92,7 @@ export function createProvisioningHandlers(
   const installs = new Map<string, InstallDetail>();
   const jobs = new Map<string, Job>();
   const tokens: Token[] = [];
-  const replays = new Map<string, Accepted>();
+  const replays = new Map<string, { hash: string; out: Accepted }>();
   if (opts.world !== "empty") {
     for (const s of fixtureWorld().installs.items)
       installs.set(
@@ -251,7 +255,8 @@ export function createProvisioningHandlers(
       if (!installs.has(params.id)) return err("not_found", "No such install.");
       const items = [...jobs.values()]
         .filter((j) => j.installId === params.id)
-        .sort((a, b) => b.createdAt - a.createdAt);
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map(({ sealed: _s, ...j }) => j);
       return page(items, url);
     },
     R15: ({ params }) => {
@@ -278,17 +283,39 @@ export function createProvisioningHandlers(
     const parsed = r.body.safeParse(c.body);
     if (!parsed.success) return err("invalid_input", "Invalid body.");
     const body = parsed.data as Record<string, unknown> & { requestId: string };
-    const key = `${r.id}:${c.params.id ?? c.params.jobId ?? ""}:${body.requestId}`;
+    const key = body.requestId;
+    const hash = await bodyHash(
+      r.id,
+      c.params.id ?? c.params.jobId ?? null,
+      body,
+    );
     const prior = replays.get(key);
+    if (prior && prior.hash !== hash)
+      return err(
+        "idempotency_conflict",
+        "That requestId was used with another request.",
+      );
     if (prior)
-      return HttpResponse.json(prior, {
+      return HttpResponse.json(prior.out, {
         status: 202,
         headers: { "oa-idempotent-replay": "1" },
       });
 
     let install: InstallDetail | undefined;
     if (r.id === "R4") {
+      const refused = checkCreateFields(
+        body as Partial<CreateInstall>,
+        "admin",
+        env,
+        "",
+      );
+      if (refused)
+        return err(refused.code, `${refused.field}: not allowed as sent.`, {
+          field: refused.field,
+        });
       const slug = body.slug as string;
+      const bad = slugError(slug);
+      if (bad) return err(bad, "That slug is not allowed.");
       if (
         [...installs.values()].some(
           (d) => d.slug === slug && d.state !== "deleted",
@@ -350,7 +377,7 @@ export function createProvisioningHandlers(
     const job = newJob(r, install.id, args);
     install.activeJobId = job.id;
     const out: Accepted = { job, install: summaryOf(install) };
-    replays.set(key, out);
+    replays.set(key, { hash, out });
     return HttpResponse.json(out, { status: 202 });
   };
 
@@ -382,15 +409,21 @@ export function createProvisioningHandlers(
           lastUsedAt: null,
         };
         tokens.push(t);
+        // Fails the oat_ format on purpose: never a live-looking token.
         return HttpResponse.json(
-          { ...t, token: `oat_${"m".repeat(43)}` },
+          { ...t, token: "oat_MOCK_not_a_token" },
           { status: 201 },
         );
       }
       if (id === "R21") {
-        const t = tokens.find((x) => x.id === c.params.tokenId);
+        const at = now();
+        if (!c.params.id) {
+          for (const t of tokens) t.revokedAt ??= at;
+          return new HttpResponse(null, { status: 204 });
+        }
+        const t = tokens.find((x) => x.id === c.params.id);
         if (!t) return err("not_found", "No such token.");
-        t.revokedAt = now();
+        t.revokedAt = at;
         return new HttpResponse(null, { status: 204 });
       }
       return accept(r, c);
