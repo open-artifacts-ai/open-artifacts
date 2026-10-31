@@ -26,6 +26,9 @@ export interface Env {
   RL_PV_READ?: RateLimit;
   RL_PV_SLUG_IP?: RateLimit;
   RL_PV_OAUTH_IP?: RateLimit;
+  /** Admin R21/R24 escape and per-token write sub-bucket (limits.ts). */
+  RL_PV_ADMIN_ESCAPE?: RateLimit;
+  RL_PV_TOKEN_WRITE?: RateLimit;
   /** MCP OAuth clients, grants and tokens; the library's store (9A.3.1). */
   OAUTH_KV: KVNamespace;
   /** Secrets (4.6). */

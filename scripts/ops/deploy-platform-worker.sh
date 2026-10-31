@@ -2,7 +2,7 @@
 # Deploys one env of a platform Worker (docs/ops/hosted.md). The app must be in
 # the allowlist below. Runs from the app's dir, fills this env's placeholders
 # from environment variables into the gitignored wrangler.deploy.jsonc, refuses
-# if any {{..._<ENV>}} is left, then runs `wrangler deploy --env <env>` with
+# if any placeholder but the other env's is left, then runs `wrangler deploy --env <env>` with
 # that copy: never a positional entry, never --name. The copy is removed on
 # exit. Values are never echoed.
 # Usage: <PLACEHOLDER VARS> scripts/ops/deploy-platform-worker.sh <app> staging|prod
@@ -10,11 +10,18 @@
 #   directory-broker: DIRECTORY_REGISTRY_ID=<32 hex> [GOOGLE_DIRECTORY_CLIENT_ID_PROD=<client id>, prod]
 #   dispatch: HOSTS_KV_ID=<32 hex>
 #   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
-#   inventory: PLATFORM_DB_ID=<uuid> HOSTS_KV_ID=<32 hex>
+#              ALERT_TO=<address> ALERT_FROM=<address> SIGNUP_DAILY_CAP=<1-9999>
+#              SIGNUPS_ENABLED (as the provisioner's): filled where the config holds
+#              them (#915), and then all of them plus ALERT_EMAIL's destination
+#   inventory: PLATFORM_DB_ID=<uuid> HOSTS_KV_ID=<32 hex> GITHUB_REPOSITORY_ID=<digits>
 #   provisioner: SIGNUP_DAILY_CAP=<1-9999> SIGNUPS_ENABLED=false (staging also test-users;
 #   true only with ALLOW_SIGNUPS=1)
 #                WELCOME_FROM=<address> CLOUDFLARE_ACCOUNT_ID=<32 hex> SECRETS_STORE_ID=<32 hex>
 #                PLATFORM_DB_ID=<uuid>
+#   provisioning: PLATFORM_DB_ID=<uuid> PROVISIONING_OAUTH_KV_ID=<32 hex> SIGNUP_DAILY_CAP=<1-9999>
+#                 GITHUB_REPOSITORY_ID=<digits> (the OIDC principal; only staging's
+#                 block has one), and the admin build's dist-assets/index.html
+#                 (deploy-hosted-platform.sh builds it first)
 # Only the provisioner may bind the provision token (oa-<p>-provision-token),
 # and it binds no other secret.
 set -euo pipefail
@@ -26,8 +33,8 @@ fi
 app="$1"
 env="$2"
 case "$env" in
-  staging) up=STAGING ;;
-  prod) up=PROD ;;
+  staging) up=STAGING; other=PROD ;;
+  prod) up=PROD; other=STAGING ;;
   *)
     echo "env must be staging or prod" >&2
     exit 2
@@ -49,6 +56,8 @@ if [ "$env" = staging ]; then onoff="^(${on}false|test-users)\$"; else onoff="^(
 # One plain address: no slash, ampersand, backslash, quote, comma or space, so
 # it can't carry sed syntax or read as a list or display name.
 email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
+# A GitHub repository id: digits, no leading zero.
+repo_id='^[1-9][0-9]{0,19}$'
 
 # The allowlist: app -> dir, plus the placeholders filled below.
 case "$app" in
@@ -58,13 +67,15 @@ case "$app" in
   scheduler) dir=apps/scheduler ;;
   inventory) dir=apps/inventory ;;
   provisioner) dir=apps/provisioner ;;
+  provisioning) dir=apps/provisioning ;;
   *)
     echo "unknown app: not in the allowlist" >&2
     exit 2
     ;;
 esac
 
-cd "$(dirname "${BASH_SOURCE[0]}")/../../$dir"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$here/../../$dir"
 
 copy=wrangler.deploy.jsonc
 trap 'command rm -f "$copy" "$copy.bak"' EXIT
@@ -75,7 +86,7 @@ fill() {
     echo "value for {{$1}} is missing or malformed" >&2
     exit 1
   fi
-  sed -i.bak "s/{{$1}}/$2/" "$copy"
+  sed -i.bak "s/{{$1}}/$2/g" "$copy"
   command rm -f "$copy.bak"
 }
 
@@ -103,10 +114,23 @@ case "$app" in
     fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
     fill "EMAIL_ZONE_TAG_${up}" "${EMAIL_ZONE_TAGS:-}" "$zones"
     fill "EMAIL_DAILY_LIMIT_${up}" "${EMAIL_DAILY_LIMIT:-}" "$limit"
+    # The alerts (design v7 4.8): the vars and ALERT_EMAIL's pinned
+    # destination share {{ALERT_TO_<ENV>}}. Before #915 the config holds none
+    # of them and these fills only check the values; a config that holds some
+    # but not all of this env's placeholders is refused here, before wrangler,
+    # so no scheduler deploys half pinned.
+    node --experimental-strip-types --no-warnings "$here/wrangler-env.ts" wrangler.jsonc "$env" alert-pins > /dev/null ||
+      { echo "apps/scheduler/wrangler.jsonc doesn't pin the $env alerts; refusing" >&2; exit 1; }
+    fill "ALERT_TO_${up}" "${ALERT_TO:-}" "$email"
+    fill "ALERT_FROM_${up}" "${ALERT_FROM:-}" "$email"
+    fill "SIGNUP_DAILY_CAP_${up}" "${SIGNUP_DAILY_CAP:-}" "$cap"
+    fill "SIGNUPS_ENABLED_${up}" "${SIGNUPS_ENABLED:-}" "$onoff"
     ;;
   inventory)
     fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
     fill "HOSTS_KV_ID_${up}" "${HOSTS_KV_ID:-}" "$hex32"
+    # The OIDC principal's repository (design v7 6.3).
+    fill "GITHUB_REPOSITORY_ID_${up}" "${GITHUB_REPOSITORY_ID:-}" "$repo_id"
     ;;
   provisioner)
     fill "SIGNUP_DAILY_CAP_${up}" "${SIGNUP_DAILY_CAP:-}" "$cap"
@@ -117,6 +141,15 @@ case "$app" in
     fill "ACCOUNT_ID_${up}" "${CLOUDFLARE_ACCOUNT_ID:-}" "$hex32"
     fill "SECRETS_STORE_ID_${up}" "${SECRETS_STORE_ID:-}" "$hex32"
     fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
+    ;;
+  provisioning)
+    fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
+    fill "PROVISIONING_OAUTH_KV_ID_${up}" "${PROVISIONING_OAUTH_KV_ID:-}" "$hex32"
+    # The API's per-day signup cap, the provisioner's value (#893).
+    fill "SIGNUP_DAILY_CAP_${up}" "${SIGNUP_DAILY_CAP:-}" "$cap"
+    # Only staging has the OIDC principal (4.4); prod's block names no
+    # repository, but the value is checked either way.
+    fill "GITHUB_REPOSITORY_ID_${up}" "${GITHUB_REPOSITORY_ID:-}" "$repo_id"
     ;;
 esac
 
@@ -153,11 +186,19 @@ elif grep -q 'provision-token' "$copy"; then
   exit 1
 fi
 
-# Fail closed: no placeholder for this env may remain (comments included, so
-# the check needs no JSONC parser).
-if grep -Eq "\{\{[A-Z0-9_]*_${up}\}\}" "$copy"; then
-  echo "a {{..._${up}}} placeholder is still unfilled in $copy:" >&2
-  grep -Eo "\{\{[A-Z0-9_]*_${up}\}\}" "$copy" | sort -u >&2
+# Fail closed: no placeholder may remain but the other env's (comments
+# included, so the check needs no JSONC parser).
+left=$(grep -Eo '\{\{[A-Z][A-Z0-9_]*\}\}' "$copy" | grep -Ev "_${other}\}\}$" | sort -u || true)
+if [ -n "$left" ]; then
+  echo "a placeholder is still unfilled in $copy:" >&2
+  printf '%s\n' "$left" >&2
+  exit 1
+fi
+
+# The provisioning Worker serves the admin build as ASSETS: never deploy
+# without it (deploy-hosted-platform.sh runs the build first).
+if [ "$app" = provisioning ] && [ ! -f dist-assets/index.html ]; then
+  echo "$dir/dist-assets/index.html is missing: build @oa/admin... and @oa/provisioning... first" >&2
   exit 1
 fi
 

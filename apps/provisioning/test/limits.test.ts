@@ -11,6 +11,8 @@ describe("limit (4.7)", () => {
       read: "RL_PV_READ",
       slug_ip: "RL_PV_SLUG_IP",
       oauth_ip: "RL_PV_OAUTH_IP",
+      admin_escape: "RL_PV_ADMIN_ESCAPE",
+      token_write: "RL_PV_TOKEN_WRITE",
     });
   });
 
