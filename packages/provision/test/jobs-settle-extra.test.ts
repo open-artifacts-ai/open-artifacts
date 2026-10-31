@@ -101,13 +101,45 @@ describe("settleFailed extras: guard on this call's code, INSERT OR IGNORE", () 
     expect(cleanups(db)).toHaveLength(1);
   });
 
-  it("settledWith takes a placeholder or column and a known code only", () => {
+  it("settledWith takes a ?N placeholder or an outer alias's column, a known code only", () => {
     expect(settledWith("?5", "run_dead")).toBe(
-      "EXISTS (SELECT 1 FROM jobs WHERE id = ?5 AND status = 'failed' AND error_code = 'run_dead')",
+      "EXISTS (SELECT 1 FROM jobs p WHERE p.id = ?5 AND p.status = 'failed' AND p.error_code = 'run_dead')",
     );
-    expect(settledWith("j.id", "canceled")).toContain("id = j.id");
+    expect(settledWith("?1", "canceled")).toContain("p.id = ?1");
+    expect(settledWith("c.parent_id", "run_dead")).toContain(
+      "p.id = c.parent_id",
+    );
     expect(() => settledWith("?1", "nope" as never)).toThrow(/unknown/);
-    for (const bad of ["1); DROP TABLE jobs; --", "'x'", ""])
-      expect(() => settledWith(bad, "run_dead")).toThrow(/placeholder/);
+    // These resolve to the subquery's own row (p.id = p.id): a void guard.
+    for (const bad of [
+      "id",
+      "jobs.id",
+      "p.id",
+      "P.id",
+      "JOBS.id",
+      "1); DROP TABLE jobs; --",
+      "'x'",
+      "",
+      "?",
+      "?1234",
+    ])
+      expect(() => settledWith(bad, "run_dead"), bad).toThrow(/placeholder/);
+  });
+
+  it("a column guard reads the outer row, never the subquery's own", () => {
+    const db = platformDb();
+    const dead = job(db, "i1", { status: "running" });
+    db.prepare(SETTLE).run(dead, "run_dead", 9);
+    const other = job(db, "i2", { status: "running" });
+    db.prepare(SETTLE).run(other, "canceled", 9);
+    const hit = (id: string) =>
+      db
+        .prepare(
+          `SELECT ${settledWith("c.id", "run_dead")} AS ok FROM jobs c WHERE c.id = ?`,
+        )
+        .get(id);
+    expect(hit(dead)).toEqual({ ok: 1 });
+    // A run_dead job exists, but not this one: false.
+    expect(hit(other)).toEqual({ ok: 0 });
   });
 });

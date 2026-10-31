@@ -1,7 +1,7 @@
 // @oa/shared/provisioning: the Provisioning API contract (design v7 section 3,
 // 4.2, 9A.5). Fakes and fixtures: @oa/shared/provisioning/fakes. Constants
-// with no zod (for the scheduler): ./provisioning/{alerts,enums,errors,state,
-// system,workflow}.
+// with no zod (for the scheduler): ./provisioning/{alerts,enum-values,
+// error-codes,state,system,workflow}.
 export * from "./alerts.js";
 export * from "./authz.js";
 export * from "./bodyhash.js";
