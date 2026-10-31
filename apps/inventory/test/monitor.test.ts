@@ -18,11 +18,14 @@ const HOST = "acme.open-artifacts.app";
 const INV = "https://oa-p-inventory.example.workers.dev";
 const MINT = "https://pipelines.actions.test/idtoken?api-version=2.0";
 const JWT =
-  "eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJvYS1wLWludmVudG9yeSJ9.c2lnbmF0dXJl";
+  "eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJodHRwczovL29hLXAtaW52ZW50b3J5In0.c2lnbmF0dXJl";
 const REQ_TOKEN = "gh-request-token-value";
 const R2_TOKEN = "r2-token-value";
 const SCRIPTS_TOKEN = "scripts-token-value";
-const LINE = /^prod-clean: (pass|fail \([a-z][a-z0-9_]{0,39}\))\n$/;
+const NO_END = "prod-clean: warning: a red-line prod token has no end date";
+// The only public lines: the optional no-end-date warning, then the result.
+const LINE =
+  /^(prod-clean: warning: a red-line prod token has no end date\n)?prod-clean: (pass|fail \([a-z][a-z0-9_]{0,39}\))\n$/;
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -41,7 +44,7 @@ function secrets() {
 
 const baseEnv = () => ({
   INVENTORY_URL: INV,
-  INVENTORY_OIDC_AUDIENCE: "oa-p-inventory",
+  INVENTORY_OIDC_AUDIENCE: "https://oa-p-inventory",
   REDLINE_PROD_ACCOUNT_ID: ACCT,
   REDLINE_PROD_SECRETS_DIR: secrets(),
   ACTIONS_ID_TOKEN_REQUEST_URL: MINT,
@@ -143,7 +146,7 @@ async function monitor(
     { fetch: f, now: () => now },
   );
   const text = out.join("");
-  // The one public line: one of the two fixed forms, nothing else.
+  // The fixed public lines only: the optional warning, then the result.
   expect(text).toMatch(LINE);
   for (const leak of [ID, HOST, ACCT, JWT, REQ_TOKEN, R2_TOKEN, SCRIPTS_TOKEN])
     expect(text).not.toContain(leak);
@@ -153,7 +156,14 @@ async function monitor(
   const posted = calls
     .filter((c) => c.url === `${INV}/prodclean`)
     .map((c) => JSON.parse(c.body ?? "null"));
-  return { code, line: text.trimEnd(), posted, calls };
+  const lines = text.trimEnd().split("\n");
+  return {
+    code,
+    line: lines.at(-1) ?? "",
+    warned: lines.length === 2 && lines[0] === NO_END,
+    posted,
+    calls,
+  };
 }
 
 const dirtyInstall = (w: World) => {
@@ -177,7 +187,7 @@ describe("prodclean-monitor", () => {
     expect(r.posted).toEqual([{ ok: true, code: "pass" }]);
     const mint = r.calls.find((c) => c.url.startsWith(MINT));
     expect(new URL(mint?.url ?? "").searchParams.get("audience")).toBe(
-      "oa-p-inventory",
+      "https://oa-p-inventory",
     );
   });
 
@@ -291,16 +301,37 @@ describe("prodclean-monitor", () => {
     );
   });
 
-  it("an inactive, unverifiable or expiry-less red-line token -> redline_token_invalid", async () => {
-    // The red-line prod tokens are rotated per expiry (design 7), so a token
-    // with no expires_on is a misconfigured one, never a silent pass.
-    for (const t of [{ status: "disabled" }, { status: "active" }, 401, 500]) {
+  it("an inactive, unverifiable or unreadable-expiry red-line token -> redline_token_invalid", async () => {
+    for (const t of [
+      { status: "disabled" },
+      { status: "active", expires_on: "not-a-date" },
+      401,
+      500,
+    ]) {
       const w = world();
       w.tokens[R2_TOKEN] = t;
-      expect((await monitor(w)).line).toBe(
-        "prod-clean: fail (redline_token_invalid)",
-      );
+      const r = await monitor(w);
+      expect(r.line).toBe("prod-clean: fail (redline_token_invalid)");
+      expect(r.warned).toBe(false);
     }
+  });
+
+  it("a red-line token with no end date passes, with one warning line naming no token", async () => {
+    const w = world();
+    w.tokens[R2_TOKEN] = { status: "active" };
+    const r = await monitor(w);
+    expect(r).toMatchObject({
+      code: 0,
+      line: "prod-clean: pass",
+      warned: true,
+    });
+    expect(r.posted).toEqual([{ ok: true, code: "pass" }]);
+    // Both without one: still the one warning line.
+    w.tokens[SCRIPTS_TOKEN] = { status: "active" };
+    const both = await monitor(w);
+    expect(both).toMatchObject({ code: 0, warned: true });
+    // A clean pass with end dates prints no warning.
+    expect((await monitor(world())).warned).toBe(false);
   });
 
   it("a dirty prod outranks a stale scheduler and an expiring token", async () => {

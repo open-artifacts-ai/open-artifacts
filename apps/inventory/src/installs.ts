@@ -3,22 +3,24 @@ import { InventoryInstallsSchema } from "@oa/shared/provisioning";
 import { getMany } from "./hosts.ts";
 import { type D1Like, internal, json, type KvReadLike } from "./http.ts";
 
-// GET /installs: every install with a routed host, its API state from the
-// install_status view (0008) and its live HOSTS mode.
+// GET /installs: every install, its API state from the install_status view
+// (0008) and its live HOSTS mode.
 
 interface Row {
   install_id: string;
-  app_host: string;
-  content_host: string;
+  app_host: string | null;
+  content_host: string | null;
   state: string;
   test_hooks: number | null;
 }
 
-// TODO(contract): InventoryInstallSchema's appHost and contentHost are
-// non-null, but install_status has null hosts before the installs row
-// exists (a signup, or a create before reserve); those rows are left out.
+// Every row, hostless ones too: prodClean must see every install.
+// TODO(contract): InventoryInstallSchema hosts nullable. install_status has
+// null hosts before the installs row exists (a signup, or a create before
+// reserve); the schema refuses them, so until then such a row fails the whole
+// listing (the fixed 500), never a partial list.
 export const INSTALLS_SQL =
-  "SELECT install_id, app_host, content_host, state, test_hooks FROM install_status WHERE app_host IS NOT NULL AND content_host IS NOT NULL ORDER BY install_id";
+  "SELECT install_id, app_host, content_host, state, test_hooks FROM install_status ORDER BY install_id";
 
 /**
  * An installs row with no install_lifecycle row (created outside the
@@ -39,9 +41,11 @@ export async function listInstalls(
   }
   const { results } = await db.prepare(INSTALLS_SQL).all();
   const rows = (results ?? []) as Row[];
-  const values = await getMany(kv, [...new Set(rows.map((r) => r.app_host))]);
+  const hosts = rows.flatMap((r) => (r.app_host === null ? [] : [r.app_host]));
+  const values = await getMany(kv, [...new Set(hosts)]);
   const installs = rows.map((r) => {
-    const p = parseHostsValue(values.get(r.app_host));
+    const p =
+      r.app_host === null ? null : parseHostsValue(values.get(r.app_host));
     return {
       id: r.install_id,
       appHost: r.app_host,

@@ -47,11 +47,11 @@ describe("GET /installs", () => {
     await getJson(makeEnv({ PLATFORM_DB: db }), "/installs");
     expect(sqls).toEqual([UNTRACKED_SQL, INSTALLS_SQL]);
     expect(INSTALLS_SQL).toBe(
-      "SELECT install_id, app_host, content_host, state, test_hooks FROM install_status WHERE app_host IS NOT NULL AND content_host IS NOT NULL ORDER BY install_id",
+      "SELECT install_id, app_host, content_host, state, test_hooks FROM install_status ORDER BY install_id",
     );
   });
 
-  it("all six states and every mode, on the real view; hostless rows dropped", async () => {
+  it("all six states and every mode, on the real view", async () => {
     const sq = platformDb();
     // active, serving
     install(sq, id("a"), { app_host: "a.test", content_host: "a-c.test" });
@@ -88,10 +88,6 @@ describe("GET /installs", () => {
       state: "creating",
     });
     lifecycle(sq, id("f"));
-    // A signup with no installs row yet: no hosts, left out.
-    lifecycle(sq, id("g"));
-    signup(sq, { install_id: id("g"), status: "creating" });
-
     const kv = makeKv({
       "a.test": id("a"),
       "b.test": `paused:${id("b")}`,
@@ -133,6 +129,22 @@ describe("GET /installs", () => {
           .success,
       ).toBe(true);
     expect(kv.calls.writes).toBe(0);
+  });
+
+  it("a hostless install_status row (a signup, no installs row) is a fixed 500, never dropped", async () => {
+    // TODO(contract): InventoryInstallSchema hosts nullable. Until then the
+    // listing fails closed rather than hide an install from prodClean.
+    const sq = platformDb();
+    install(sq, id("a"), { app_host: "a.test", content_host: "a-c.test" });
+    lifecycle(sq, id("a"));
+    lifecycle(sq, id("g"));
+    signup(sq, { install_id: id("g"), status: "creating" });
+    const r = await worker().w.fetch(
+      req("/installs", {}, BEARER),
+      makeEnv({ PLATFORM_DB: sqliteD1(sq), HOSTS: makeKv({}).kv }),
+    );
+    expect(r.status).toBe(500);
+    expect(await r.json()).toEqual({ error: "internal" });
   });
 
   it("an empty table is an empty list", async () => {

@@ -1,4 +1,3 @@
-import { GITHUB_OIDC_REF } from "@oa/gh-oidc";
 import { ProdcleanReportSchema } from "@oa/shared/provisioning";
 import type { Authed } from "./auth.ts";
 import { badRequest, type D1Like, forbidden } from "./http.ts";
@@ -12,11 +11,19 @@ export const MAX_REPORT_BYTES = 4096;
 export const PRODCLEAN_SQL =
   "INSERT INTO prodclean_reports (at, ok, code, install_id, detail) VALUES (?1, ?2, ?3, ?4, ?5)";
 
-// TODO(contract): the five OIDC vars carry no monitor ref, so it is derived
-// here and must also be listed in OIDC_JOB_WORKFLOW_REFS.
-/** The monitor's job_workflow_ref for a pinned repository. */
-export const monitorRef = (repository: string) =>
-  `${repository}/${MONITOR_WORKFLOW}@${GITHUB_OIDC_REF}`;
+/** The monitor's workflow path and ref, after `<owner>/<repo>/` in a job_workflow_ref. */
+export const MONITOR_PATH = `${MONITOR_WORKFLOW}@refs/heads/main`;
+
+/**
+ * True when `ref` is `<owner>/<repo>/` (two non-empty segments) followed by
+ * exactly MONITOR_PATH. The repository itself is the verifier's pin.
+ */
+export function isMonitorRef(ref: string): boolean {
+  const a = ref.indexOf("/");
+  const b = a < 0 ? -1 : ref.indexOf("/", a + 1);
+  if (a <= 0 || b <= a + 1) return false;
+  return ref.slice(b + 1) === MONITOR_PATH;
+}
 
 /** The body as text, or null past `max` bytes. */
 async function readCapped(req: Request, max: number): Promise<string | null> {
@@ -56,9 +63,11 @@ export async function postProdclean(
   now: () => number,
 ): Promise<Response> {
   const ref = auth.claims.job_workflow_ref;
+  // Only the monitor job: a listed ref (exact match) whose path is the monitor's.
   if (
-    ref !== monitorRef(auth.pins.repository) ||
-    !auth.pins.jobWorkflowRefs.includes(ref)
+    typeof ref !== "string" ||
+    !auth.pins.jobWorkflowRefs.includes(ref) ||
+    !isMonitorRef(ref)
   )
     return forbidden();
   const type = (request.headers.get("content-type") ?? "")

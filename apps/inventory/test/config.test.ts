@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { pinsFromEnv } from "../src/auth.ts";
-import { monitorRef } from "../src/prodclean.ts";
 
 const raw = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
 const cfg = JSON.parse(raw.replace(/^\s*\/\/.*$/gm, "")) as {
@@ -72,7 +71,8 @@ describe("wrangler.jsonc", () => {
       const v = e.vars as Record<string, string>;
       const pins = pinsFromEnv(v);
       expect(pins).not.toBeNull();
-      expect(pins?.audience).toBe(`oa-${p}-inventory`);
+      // Design 6.3: the audience is the https URI form.
+      expect(pins?.audience).toBe(`https://oa-${p}-inventory`);
       expect(pins?.repository).toBe(REPO);
       expect(v.OIDC_REPOSITORY_ID).toBe(`{{GITHUB_REPOSITORY_ID_${up}}}`);
       expect(pins?.environment).toBe("redline-staging");
@@ -81,8 +81,6 @@ describe("wrangler.jsonc", () => {
           ? [ref("redline-staging.yml"), ref("prodclean-monitor.yml")]
           : [ref("redline-staging.yml")];
       expect(pins?.jobWorkflowRefs).toEqual(refs);
-      if (env === "prod")
-        expect(pins?.jobWorkflowRefs).toContain(monitorRef(REPO));
     });
   }
 });

@@ -11,7 +11,7 @@ export const REDLINE = `${WF}/redline-staging.yml@refs/heads/main`;
 export const NOW = Date.parse("2026-10-31T12:00:00Z");
 
 export const VARS = {
-  OIDC_AUDIENCE: "oa-p-inventory",
+  OIDC_AUDIENCE: "https://oa-p-inventory",
   OIDC_REPOSITORY: REPO,
   OIDC_REPOSITORY_ID: "123456",
   OIDC_JOB_WORKFLOW_REFS: `${REDLINE}, ${MONITOR}`,

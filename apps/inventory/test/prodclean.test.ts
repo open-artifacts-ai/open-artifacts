@@ -1,7 +1,7 @@
 import { ALERT_CONDITIONS } from "@oa/shared/provisioning";
 import { describe, expect, it } from "vitest";
 import { platformDb } from "../../../packages/provision/test/platform-db.ts";
-import { MAX_REPORT_BYTES, monitorRef } from "../src/prodclean.ts";
+import { MAX_REPORT_BYTES } from "../src/prodclean.ts";
 import {
   BEARER,
   MONITOR,
@@ -44,10 +44,6 @@ const FAIL = JSON.stringify({
 });
 
 describe("POST /prodclean", () => {
-  it("the monitor ref is derived from the pinned repository", () => {
-    expect(monitorRef(REPO)).toBe(MONITOR);
-  });
-
   it("a valid report writes exactly one row at the pinned clock -> 204", async () => {
     const { res, runs } = await send(FAIL);
     expect(res.status).toBe(204);
@@ -87,10 +83,32 @@ describe("POST /prodclean", () => {
     expect(runs).toEqual([]);
   });
 
-  it("a monitor ref on another branch or repository -> 403", async () => {
+  it("the monitor path is parsed from the listed ref, never rebuilt from OIDC_REPOSITORY", async () => {
+    // The verifier pins the repository; this route only parses the ref.
+    const { res, runs } = await send(FAIL, {
+      env: { OIDC_REPOSITORY: "renamed-org/renamed-repo" },
+    });
+    expect(res.status).toBe(204);
+    expect(runs).toHaveLength(1);
+  });
+
+  it("an unlisted monitor ref (another repository) -> 403", async () => {
+    const ref = `evil/repo/.github/workflows/prodclean-monitor.yml@refs/heads/main`;
+    const { res, runs } = await send(FAIL, { ref });
+    expect(res.status).toBe(403);
+    expect(runs).toEqual([]);
+  });
+
+  it("a listed ref whose workflow path after owner/repo is not the monitor's on main -> 403", async () => {
     for (const ref of [
       MONITOR.replace("refs/heads/main", "refs/heads/dev"),
-      `evil/repo/.github/workflows/prodclean-monitor.yml@refs/heads/main`,
+      `${REPO}/.github/workflows/prodclean-monitor.yml@refs/heads/main2`,
+      `${REPO}/x/.github/workflows/prodclean-monitor.yml@refs/heads/main`,
+      `${REPO}/.github/workflows/other/prodclean-monitor.yml@refs/heads/main`,
+      `${REPO}.github/workflows/prodclean-monitor.yml@refs/heads/main`,
+      `/${REPO}/.github/workflows/prodclean-monitor.yml@refs/heads/main`,
+      `open-artifacts-ai//.github/workflows/prodclean-monitor.yml@refs/heads/main`,
+      ".github/workflows/prodclean-monitor.yml@refs/heads/main",
     ]) {
       const { res, runs } = await send(FAIL, {
         ref,

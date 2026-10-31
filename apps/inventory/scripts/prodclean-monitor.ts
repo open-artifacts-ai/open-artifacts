@@ -17,8 +17,8 @@ import {
 
 // The hourly prod-clean monitor (design v7 6, 5.8), run by
 // .github/workflows/prodclean-monitor.yml. The repo is public: stdout is one
-// line, `prod-clean: pass` or `prod-clean: fail (<code>)`, and nothing goes
-// to stderr. The detail goes only to inventory's POST /prodclean, which the
+// line, `prod-clean: pass` or `prod-clean: fail (<code>)`, after at most the
+// one fixed NO_END_DATE_WARNING line, and nothing goes to stderr. The detail goes only to inventory's POST /prodclean, which the
 // scheduler alerts and emails from.
 //
 // Checks: prodClean (the red-line probe) with a GitHub OIDC bearer for the
@@ -38,6 +38,10 @@ export const SCHEDULER_STALE_MS = 10 * 60_000;
 // the warning reaches the scheduler's prod-clean email (no issue is opened:
 // the workflow has no issues: write).
 export const REDLINE_TOKEN_WARN_MS = 10 * 24 * 60 * 60_000;
+
+/** The one public warning: a red-line prod token has no end date. Names no token. */
+export const NO_END_DATE_WARNING =
+  "prod-clean: warning: a red-line prod token has no end date";
 
 const CF_API = "https://api.cloudflare.com/client/v4";
 
@@ -166,7 +170,12 @@ async function verifyToken(
   return null;
 }
 
-async function checkTokens(p: ProdProbe, d: Deps): Promise<void> {
+/** `onNoEnd` runs for a token with no end date (a pass, with the warning). */
+async function checkTokens(
+  p: ProdProbe,
+  d: Deps,
+  onNoEnd: () => void,
+): Promise<void> {
   const s = prodSecretsOf(p);
   for (const [name, token] of [
     ["REDLINE_PROD_R2_TOKEN", s.r2Token],
@@ -175,9 +184,13 @@ async function checkTokens(p: ProdProbe, d: Deps): Promise<void> {
     const r = await verifyToken(token, p.accountId, d.fetch);
     if (!r || r.status !== "active")
       throw new Fail("redline_token_invalid", `${name} is not active`);
-    // Rotated per expiry (design 7): a token without one is misconfigured.
+    // No end date: it passes, and the public log warns (never naming it).
+    if (r.expires_on === undefined || r.expires_on === null) {
+      onNoEnd();
+      continue;
+    }
     if (typeof r.expires_on !== "string")
-      throw new Fail("redline_token_invalid", `${name} has no expiry`);
+      throw new Fail("redline_token_invalid", `${name} expiry unreadable`);
     const exp = Date.parse(r.expires_on);
     if (!Number.isFinite(exp))
       throw new Fail("redline_token_invalid", `${name} expiry unreadable`);
@@ -257,11 +270,15 @@ export async function run(
     ...(d.pubkey ? { pubkey: d.pubkey } : {}),
   };
   const probe = p;
+  let noEnd = false;
   const results = await Promise.all(
     [
       () => prodClean(probe, opts),
       () => checkScheduler(url, jwt, d),
-      () => checkTokens(probe, d),
+      () =>
+        checkTokens(probe, d, () => {
+          noEnd = true;
+        }),
     ].map((c) =>
       c().then(
         () => null,
@@ -280,6 +297,7 @@ export async function run(
     : { ok: true, code: "pass" };
   const sent = await report(url, jwt, body, d.fetch);
   const code = fail ? fail.code : sent ? undefined : "report_failed";
+  if (noEnd) io.out(NO_END_DATE_WARNING);
   io.out(prodCleanLine(code));
   return code === undefined ? 0 : 1;
 }

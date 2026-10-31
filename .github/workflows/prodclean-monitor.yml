@@ -60,7 +60,7 @@ jobs:
         env:
           INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
           # The prod inventory's OIDC_AUDIENCE (apps/inventory/wrangler.jsonc).
-          INVENTORY_OIDC_AUDIENCE: oa-p-inventory
+          INVENTORY_OIDC_AUDIENCE: https://oa-p-inventory
           REDLINE_PROD_ACCOUNT_ID: ${{ vars.REDLINE_PROD_ACCOUNT_ID }}
           REDLINE_PROD_SECRETS_DIR: ${{ runner.temp }}/prodclean-secrets
           NODE_NO_WARNINGS: "1"

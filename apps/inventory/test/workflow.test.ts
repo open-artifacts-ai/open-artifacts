@@ -127,6 +127,7 @@ describe("prodclean-monitor.yml", () => {
       REDLINE_PROD_SECRETS_DIR: "${{ runner.temp }}/prodclean-secrets",
       NODE_NO_WARNINGS: "1",
     });
+    expect(run?.env?.INVENTORY_OIDC_AUDIENCE).toBe("https://oa-p-inventory");
     const last = steps.at(-1);
     expect(last?.if).toBe("${{ always() }}");
     expect(last?.run).toBe('rm -rf "$RUNNER_TEMP/prodclean-secrets"');
