@@ -1,4 +1,6 @@
 import { api } from "../api/client";
+import { DEFAULT_RETURN } from "../auth/safeReturn";
+import { signOut } from "../auth/signOut";
 import { EdgePanel } from "../layout/Edge";
 import { startHref } from "./SignIn";
 
@@ -13,13 +15,15 @@ const FALLBACK = "This account is not on the admin list.";
 
 /** A signed-in admin may land here; end that session before the account chooser. */
 async function useAnother() {
+  const to = startHref(DEFAULT_RETURN);
   try {
     await api.me();
-    await api.logout();
   } catch {
     // No session (the usual case): nothing to end.
+    window.location.assign(to);
+    return;
   }
-  window.location.assign(startHref("/"));
+  await signOut(to);
 }
 
 export function NoAccess({ error, sub }: { error?: string; sub?: string }) {

@@ -3,6 +3,7 @@ import {
   createRoute,
   createRouter,
   Outlet,
+  redirect,
   useParams,
   useSearch,
 } from "@tanstack/react-router";
@@ -32,6 +33,14 @@ const inShell = <P extends string>(path: P, component: () => React.ReactNode) =>
   createRoute({ getParentRoute: () => shell, path, component });
 
 const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+
+const index = createRoute({
+  getParentRoute: () => root,
+  path: "/",
+  beforeLoad: () => {
+    throw redirect({ to: "/installs", replace: true });
+  },
+});
 
 const signIn = createRoute({
   getParentRoute: () => root,
@@ -64,11 +73,12 @@ function Param({ title, goes }: { title: string; goes: string }) {
 }
 
 const routeTree = root.addChildren([
+  index,
   signIn,
   noAccess,
   shell.addChildren([
     inShell(
-      "/",
+      "/installs",
       page(
         "Installs",
         "The installs list goes here: counts, active jobs, attention list.",

@@ -6,7 +6,7 @@ describe("SignIn", () => {
   it("shows the Google button without an error", () => {
     render(<SignIn />);
     const link = screen.getByRole("link", { name: "Sign in with Google" });
-    expect(link).toHaveAttribute("href", "/auth/start?return=%2F");
+    expect(link).toHaveAttribute("href", "/auth/start?return=%2Finstalls");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -32,7 +32,7 @@ describe("SignIn", () => {
     render(<SignIn returnTo="//evil.example" />);
     expect(
       screen.getByRole("link", { name: "Sign in with Google" }),
-    ).toHaveAttribute("href", "/auth/start?return=%2F");
+    ).toHaveAttribute("href", "/auth/start?return=%2Finstalls");
   });
 
   it("carries a normal return path into the href", () => {

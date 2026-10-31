@@ -87,7 +87,7 @@ describe("client", () => {
       "//evil.example",
     );
     await expect(client.get("/x")).rejects.toBeInstanceOf(ApiError);
-    expect(redirect).toHaveBeenCalledWith("/sign-in?return=%2F");
+    expect(redirect).toHaveBeenCalledWith("/sign-in?return=%2Finstalls");
   });
 
   it("401 on the sign-in screen does not loop", async () => {

@@ -45,7 +45,7 @@ it("Use another account with no session (me 401): no logout, no loop, goes to st
   render(<NoAccess error="not_listed" />);
   fireEvent.click(screen.getByRole("button", { name: "Use another account?" }));
   await waitFor(() =>
-    expect(assign).toHaveBeenCalledWith("/auth/start?return=%2F"),
+    expect(assign).toHaveBeenCalledWith("/auth/start?return=%2Finstalls"),
   );
   expect(assign).toHaveBeenCalledTimes(1);
   expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -66,7 +66,7 @@ it("Use another account while signed in: logout with CSRF first, then start", as
   render(<NoAccess error="not_listed" />);
   fireEvent.click(screen.getByRole("button", { name: "Use another account?" }));
   await waitFor(() =>
-    expect(assign).toHaveBeenCalledWith("/auth/start?return=%2F"),
+    expect(assign).toHaveBeenCalledWith("/auth/start?return=%2Finstalls"),
   );
   const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
   expect(url).toBe("/auth/logout");
