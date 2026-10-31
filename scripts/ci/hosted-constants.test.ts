@@ -139,19 +139,31 @@ describe(".github/hosted/<env>.json", () => {
   });
   // The Manager's values (2026-10-31), filled into the provisioner's and the
   // scheduler's placeholders.
-  it("signups stay closed, the caps and alert addresses are the Manager's, and each sender is on the env's sending zone", () => {
+  it("signups stay closed, the caps and alert addresses are the Manager's", () => {
     expect(read("prod").signup_daily_cap).toBe(50);
     expect(read("staging").signup_daily_cap).toBe(20);
-    expect(read("prod").alert_from).toBe("alerts@open-artifacts.app");
-    expect(read("staging").alert_from).toBe(
-      "alerts@open-artifacts-staging.app",
-    );
     for (const env of ["prod", "staging"]) {
       const c = read(env);
       expect(c.signups_enabled, env).toBe("false");
       expect(c.alert_to, env).toBe("me@leourbina.com");
-      expect(String(c.welcome_from).split("@")[1], env).toBe(c.email_zone);
-      expect(String(c.alert_from).split("@")[1], env).toBe(c.email_zone);
+    }
+  });
+  // Email Sending only sends from an onboarded domain: mail.<app_zone> (#967),
+  // never the apex.
+  it("every sender (*_from) is on mail.<app_zone>, the env's onboarded sending domain", () => {
+    for (const env of ["prod", "staging"]) {
+      const c = read(env);
+      const senders = Object.keys(c).filter((k) => k.endsWith("_from"));
+      expect(senders.sort(), env).toEqual(["alert_from", "welcome_from"]);
+      expect(c.app_zone, env).toMatch(/^[a-z0-9-]+(\.[a-z0-9-]+)+$/);
+      for (const k of senders) {
+        const v = String(c[k]);
+        expect(
+          v.endsWith(`@mail.${String(c.app_zone)}`),
+          `${env} ${k}: ${v}`,
+        ).toBe(true);
+        expect(v.split("@")[0], `${env} ${k}`).toMatch(/^[a-z0-9._-]+$/);
+      }
     }
   });
 });
@@ -183,7 +195,7 @@ describe("hosted-constants.sh", () => {
     expect(r.ghEnv).toBe(
       [
         "CLOUDFLARE_ACCOUNT_ID=26ac346086d4405f7a976d48747a2a75",
-        "ALERT_FROM=alerts@open-artifacts.app",
+        "ALERT_FROM=alerts@mail.open-artifacts.app",
         "ALERT_TO=me@leourbina.com",
         "EMAIL_ZONE=open-artifacts.app",
         "EMAIL_DAILY_LIMIT=5000",
@@ -191,7 +203,7 @@ describe("hosted-constants.sh", () => {
         "GOOGLE_DIRECTORY_CLIENT_ID=206295999771-6cr3mbfc7g2ejnvdoqhlf2v8v6sdm023.apps.googleusercontent.com",
         "SIGNUP_DAILY_CAP=50",
         "SIGNUPS_ENABLED=false",
-        "WELCOME_FROM=welcome@open-artifacts.app",
+        "WELCOME_FROM=welcome@mail.open-artifacts.app",
         "",
       ].join("\n"),
     );
