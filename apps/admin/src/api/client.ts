@@ -79,7 +79,11 @@ export function createClient(opts: ClientOptions = {}) {
       parsed.success ? parsed.data.error : "unknown",
     );
     if (res.status === 401) goSignIn();
-    else if (res.status === 403 && err.code === "no_access")
+    else if (
+      res.status === 403 &&
+      err.code === "no_access" &&
+      currentPath().split("?")[0] !== NO_ACCESS_PATH
+    )
       redirect(NO_ACCESS_PATH);
     throw err;
   }
