@@ -107,7 +107,8 @@ export function makeDb(rows: object[] = []) {
       sqls.push(sql);
       const stmt = (values: unknown[]) => ({
         async all() {
-          return { results: rows };
+          // The untracked-install check finds none unless a test says so.
+          return { results: sql.includes("AS untracked") ? [] : rows };
         },
         async run() {
           runs.push({ sql, values });

@@ -8,16 +8,44 @@ import {
   platformDb,
   signup,
 } from "../../../packages/provision/test/platform-db.ts";
-import { INSTALLS_SQL } from "../src/installs.ts";
-import { getJson, makeDb, makeEnv, makeKv, sqliteD1 } from "./support.ts";
+import { INSTALLS_SQL, UNTRACKED_SQL } from "../src/installs.ts";
+import {
+  BEARER,
+  getJson,
+  makeDb,
+  makeEnv,
+  makeKv,
+  req,
+  sqliteD1,
+  worker,
+} from "./support.ts";
 
 const id = (c: string) => `i${c.repeat(11)}`;
 
 describe("GET /installs", () => {
+  it("an installs row with no lifecycle row fails closed, so prodClean cannot pass over it", async () => {
+    const sq = platformDb();
+    install(sq, id("a"), { app_host: "a.test", content_host: "a-c.test" });
+    lifecycle(sq, id("a"));
+    // Created outside the Provisioning API (no install_lifecycle row): the
+    // install_status view never lists it.
+    install(sq, id("b"), {
+      app_host: "b.test",
+      content_host: "b-c.test",
+      test_hooks: 1,
+    });
+    const r = await worker().w.fetch(
+      req("/installs", {}, BEARER),
+      makeEnv({ PLATFORM_DB: sqliteD1(sq), HOSTS: makeKv({}).kv }),
+    );
+    expect(r.status).toBe(500);
+    expect(await r.json()).toEqual({ error: "internal" });
+  });
+
   it("reads install_status, only the five columns it maps", async () => {
     const { db, sqls } = makeDb([]);
     await getJson(makeEnv({ PLATFORM_DB: db }), "/installs");
-    expect(sqls).toEqual([INSTALLS_SQL]);
+    expect(sqls).toEqual([UNTRACKED_SQL, INSTALLS_SQL]);
     expect(INSTALLS_SQL).toBe(
       "SELECT install_id, app_host, content_host, state, test_hooks FROM install_status WHERE app_host IS NOT NULL AND content_host IS NOT NULL ORDER BY install_id",
     );
