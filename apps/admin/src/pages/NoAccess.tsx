@@ -1,28 +1,41 @@
-import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { EdgePanel } from "../layout/Edge";
-import { UseAnotherAccount } from "./SignIn";
+import { startHref } from "./SignIn";
 
-export function NoAccess({ email }: { email?: string }) {
-  // A 403 no_access here is the expected state; the client does not redirect from /no-access.
-  const me = useQuery({
-    queryKey: ["me"],
-    queryFn: api.me,
-    retry: false,
-    enabled: email === undefined,
-  });
-  const shown = email ?? me.data?.email;
+// TODO(C1): confirm the callback's query shape (design 3.4: error=unknown_sub&sub=, error=not_listed).
+const COPY: Record<string, string> = {
+  unknown_sub:
+    "This email is already on the admin list under a different Google account. Ask an admin to check it.",
+  not_listed:
+    "This Google account is not on the admin list. Ask an admin to add it.",
+};
+const FALLBACK = "This account is not on the admin list.";
+
+/** A signed-in admin may land here; end that session before the account chooser. */
+async function useAnother() {
+  try {
+    await api.me();
+    await api.logout();
+  } catch {
+    // No session (the usual case): nothing to end.
+  }
+  window.location.assign(startHref("/"));
+}
+
+export function NoAccess({ error, sub }: { error?: string; sub?: string }) {
+  const copy = (error && Object.hasOwn(COPY, error) && COPY[error]) || FALLBACK;
   return (
     <EdgePanel>
       <h1>No access</h1>
-      {shown ? (
-        <p>Signed in as {shown}. This account is not an admin here.</p>
-      ) : (
-        <p>This account is not an admin here.</p>
+      <p role="alert">{copy}</p>
+      {error === "unknown_sub" && sub && (
+        <p>
+          Account id: <code>{sub}</code>
+        </p>
       )}
-      <p>
-        <UseAnotherAccount />
-      </p>
+      <button type="button" className="oa-link" onClick={useAnother}>
+        Use another account?
+      </button>
     </EdgePanel>
   );
 }

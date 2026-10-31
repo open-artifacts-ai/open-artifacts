@@ -6,7 +6,7 @@ describe("SignIn", () => {
   it("shows the Google button without an error", () => {
     render(<SignIn />);
     const link = screen.getByRole("link", { name: "Sign in with Google" });
-    expect(link).toHaveAttribute("href", "/v1/auth/google/start?next=%2F");
+    expect(link).toHaveAttribute("href", "/auth/start?return=%2F");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -19,7 +19,7 @@ describe("SignIn", () => {
     render(<SignIn error={error} />);
     expect(screen.getByRole("alert")).toHaveTextContent(copy);
     expect(
-      screen.getByRole("button", { name: "Use another account?" }),
+      screen.getByRole("link", { name: "Use another account?" }),
     ).toBeInTheDocument();
   });
 
@@ -28,20 +28,20 @@ describe("SignIn", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("carries only a safe next", () => {
-    render(<SignIn next="//evil.example" />);
+  it("carries only a safe return", () => {
+    render(<SignIn returnTo="//evil.example" />);
     expect(
       screen.getByRole("link", { name: "Sign in with Google" }),
-    ).toHaveAttribute("href", "/v1/auth/google/start?next=%2F");
+    ).toHaveAttribute("href", "/auth/start?return=%2F");
   });
 
-  it("carries a normal next path into the href", () => {
-    render(<SignIn next="/installs/abc?x=1" />);
+  it("carries a normal return path into the href", () => {
+    render(<SignIn returnTo="/installs/abc?x=1" />);
     expect(
       screen.getByRole("link", { name: "Sign in with Google" }),
     ).toHaveAttribute(
       "href",
-      `/v1/auth/google/start?next=${encodeURIComponent("/installs/abc?x=1")}`,
+      `/auth/start?return=${encodeURIComponent("/installs/abc?x=1")}`,
     );
   });
 });

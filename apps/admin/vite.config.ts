@@ -38,7 +38,7 @@ export default defineConfig({
       },
     ],
   },
-  server: { port: 5174, proxy: { "/v1": target } },
+  server: { port: 5174, proxy: { "/api": target, "/auth": target } },
   build: { outDir: "dist", emptyOutDir: true },
   test: {
     env: { TZ: "UTC" },

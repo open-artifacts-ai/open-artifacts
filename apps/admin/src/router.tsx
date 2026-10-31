@@ -38,17 +38,24 @@ const signIn = createRoute({
   path: "/sign-in",
   validateSearch: (s: Record<string, unknown>) => ({
     error: str(s.error),
-    next: str(s.next),
+    return: str(s.return),
   }),
   component: function SignInRoute() {
-    const { error, next } = useSearch({ from: "/sign-in" });
-    return <SignIn error={error} next={next} />;
+    const { error, return: ret } = useSearch({ from: "/sign-in" });
+    return <SignIn error={error} returnTo={ret} />;
   },
 });
 const noAccess = createRoute({
   getParentRoute: () => root,
   path: "/no-access",
-  component: () => <NoAccess />,
+  validateSearch: (s: Record<string, unknown>) => ({
+    error: str(s.error),
+    sub: str(s.sub),
+  }),
+  component: function NoAccessRoute() {
+    const { error, sub } = useSearch({ from: "/no-access" });
+    return <NoAccess error={error} sub={sub} />;
+  },
 });
 
 function Param({ title, goes }: { title: string; goes: string }) {

@@ -9,7 +9,7 @@ const unsafeChar = (c: string) => {
  * with exactly one leading "/" passes: no "//" or "/\" (protocol-relative to
  * another host), no scheme, and no control or whitespace characters.
  */
-export const safeNext = (raw: unknown): string => {
+export const safeReturn = (raw: unknown): string => {
   if (typeof raw !== "string" || raw[0] !== "/") return "/";
   if (raw[1] === "/" || raw[1] === "\\") return "/";
   if ([...raw].some(unsafeChar)) return "/";

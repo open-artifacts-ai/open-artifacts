@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { safeNext } from "../src/auth/safeNext";
+import { safeReturn } from "../src/auth/safeReturn";
 
 it.each([
   ["/mine", "/mine"],
@@ -25,6 +25,6 @@ it.each([
   // Percent-encoded slashes stay literal path text in a browser, so they are same-origin.
   ["/%2f/evil.example", "/%2f/evil.example"],
   ["/%5cevil.example", "/%5cevil.example"],
-])("safeNext(%j) is %j", (raw, out) => {
-  expect(safeNext(raw)).toBe(out);
+])("safeReturn(%j) is %j", (raw, out) => {
+  expect(safeReturn(raw)).toBe(out);
 });

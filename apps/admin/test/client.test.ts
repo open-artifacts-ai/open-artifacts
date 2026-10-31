@@ -28,10 +28,10 @@ const setup = (responses: Response[], here = "/installs/x?y=1") => {
 };
 
 describe("client", () => {
-  it("calls /v1 with same-origin credentials", async () => {
+  it("calls /api/v1 with same-origin credentials", async () => {
     const { client, fetch, lastInit } = setup([json(ME)]);
     await client.me();
-    expect((fetch.mock.calls[0] as unknown as [string])[0]).toBe("/v1/me");
+    expect((fetch.mock.calls[0] as unknown as [string])[0]).toBe("/api/v1/me");
     expect(lastInit().credentials).toBe("same-origin");
   });
 
@@ -60,7 +60,7 @@ describe("client", () => {
     );
   });
 
-  it("sends no CSRF token before /v1/me", async () => {
+  it("sends no CSRF token before /api/v1/me", async () => {
     const { client, lastInit } = setup([json({})]);
     await client.post("/x", {});
     expect(
@@ -68,7 +68,7 @@ describe("client", () => {
     ).toBeUndefined();
   });
 
-  it("401 goes to sign-in with a safe next", async () => {
+  it("401 goes to sign-in with a safe return", async () => {
     const { client, redirect } = setup([
       json({ error: "unauthenticated" }, 401),
     ]);
@@ -77,7 +77,7 @@ describe("client", () => {
       code: "unauthenticated",
     });
     expect(redirect).toHaveBeenCalledWith(
-      `/sign-in?next=${encodeURIComponent("/installs/x?y=1")}`,
+      `/sign-in?return=${encodeURIComponent("/installs/x?y=1")}`,
     );
   });
 
@@ -87,7 +87,7 @@ describe("client", () => {
       "//evil.example",
     );
     await expect(client.get("/x")).rejects.toBeInstanceOf(ApiError);
-    expect(redirect).toHaveBeenCalledWith("/sign-in?next=%2F");
+    expect(redirect).toHaveBeenCalledWith("/sign-in?return=%2F");
   });
 
   it("401 on the sign-in screen does not loop", async () => {
@@ -106,6 +106,31 @@ describe("client", () => {
       code: "no_access",
     });
     expect(redirect).toHaveBeenCalledWith("/no-access");
+  });
+
+  it("401 on /no-access does not redirect", async () => {
+    const { client, redirect } = setup(
+      [json({ error: "unauthenticated" }, 401)],
+      "/no-access?error=not_listed",
+    );
+    await expect(client.me()).rejects.toMatchObject({ status: 401 });
+    expect(redirect).not.toHaveBeenCalled();
+  });
+
+  it("logout POSTs /auth/logout (outside /api) with the CSRF token", async () => {
+    const { client, fetch, lastInit } = setup([
+      json(ME),
+      new Response(null, { status: 204 }),
+    ]);
+    await client.me();
+    await client.logout();
+    expect((fetch.mock.calls.at(-1) as unknown as [string])[0]).toBe(
+      "/auth/logout",
+    );
+    expect(lastInit().method).toBe("POST");
+    expect((lastInit().headers as Record<string, string>)["x-csrf-token"]).toBe(
+      "tok",
+    );
   });
 
   it("403 no_access while on /no-access does not redirect", async () => {
