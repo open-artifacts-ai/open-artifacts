@@ -47,6 +47,7 @@ import {
   ProdLocked,
   ProvisionRefused,
   ProvisionRetry,
+  provisionErrorCode,
   TURNSTILE_TEST_KEYS,
   type WfpOptions,
   WfpProvisioner,
@@ -729,6 +730,7 @@ describe("upgrade", () => {
     const older = await fails(s.p.upgrade(inst.id, "0.22.0"));
     expect(older).toBeInstanceOf(ProvisionRefused);
     expect(older.message).toMatch(/downgrade/);
+    expect(provisionErrorCode(older)).toBe("downgrade_refused");
     const same = await fails(s.p.upgrade(inst.id, "0.23.0"));
     expect(same.message).toMatch(/already at 0\.23\.0/);
     expect(s.fake.writes().length).toBe(w);
@@ -772,6 +774,7 @@ describe("upgrade", () => {
     s.rel.st.floor = signFloor("staging", { seq: 2, minVersion: "0.25.0" });
     const low = await fails(s.p.upgrade(inst.id, "0.24.0"));
     expect(low.message).toMatch(/below the release floor/);
+    expect(provisionErrorCode(low)).toBe("release_unverified");
     s.rel.st.floor = signFloor("staging", { seq: 2, revoked: ["0.24.0"] });
     const rev = await fails(s.p.upgrade(inst.id, "0.24.0"));
     expect(rev.message).toMatch(/revoked/);
@@ -947,6 +950,7 @@ describe("rollback", () => {
     const e = await fails(s.p.rollback(inst.id));
     expect(e).toBeInstanceOf(ProvisionRefused);
     expect(e.message).toMatch(/assets do not match the signed record/);
+    expect(provisionErrorCode(e)).toBe("release_unverified");
     expect(reads).toBe(2);
     expect(uploads(s.fake, from)).toHaveLength(0);
     expect(probes(s.fake, from)).toHaveLength(0);
@@ -3711,6 +3715,8 @@ describe("H-DV fix 2: delete unmaps first and needs a fresh confirmed revoke", (
     });
     const e = await fails(p.delete(inst.id, inst.id));
     expect(e.message).toMatch(/not confirmed for this attempt/);
+    expect(e).toBeInstanceOf(ProvisionRetry);
+    expect(provisionErrorCode(e)).toBe("revoke_pending");
     expect(row(s, inst.id).directory_revoke).toBe("pending");
     expect(s.scriptOf(inst.id)).toBeDefined();
   });
@@ -3945,6 +3951,8 @@ describe("H-DV review fixes", () => {
     });
     const e = await fails(p.delete(inst.id, inst.id));
     expect(e.message).toMatch(/no longer settled/);
+    expect(e).toBeInstanceOf(ProvisionRetry);
+    expect(provisionErrorCode(e)).toBe("revoke_pending");
     expect(s.scriptOf(inst.id)).toBeDefined();
   });
 

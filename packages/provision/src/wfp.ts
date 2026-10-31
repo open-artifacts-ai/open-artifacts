@@ -1174,6 +1174,7 @@ export class WfpProvisioner {
     if (got === null || got === undefined)
       throw new ProvisionRefused(
         `the ${this.env} release floor (releases/floor.json) is missing; publish one before any create`,
+        "release_unverified",
       );
     let f: FloorRecord;
     try {
@@ -1181,10 +1182,11 @@ export class WfpProvisioner {
     } catch (e) {
       throw new ProvisionRefused(
         `the ${this.env} release floor: ${(e as Error).message}`,
+        "release_unverified",
       );
     }
     const why = floorRefusal(f, rec.version, FLOOR_MIN_SEQ[this.env]);
-    if (why) throw new ProvisionRefused(why);
+    if (why) throw new ProvisionRefused(why, "release_unverified");
     return f;
   }
 
@@ -1198,6 +1200,7 @@ export class WfpProvisioner {
     if (floor.seq < cached)
       throw new ProvisionRefused(
         `the release floor seq ${floor.seq} is below ${cached}, the highest this env has accepted`,
+        "release_unverified",
       );
     return floor.seq > cached;
   }
@@ -1206,6 +1209,7 @@ export class WfpProvisioner {
   private refuse(rec: ReleaseRecord, what: string, why?: string): never {
     throw new ProvisionRefused(
       `release ${rec.version} (${rec.variant}): the ${what} do not match the signed record${why ? ` (${why})` : ""}`,
+      "release_unverified",
     );
   }
 
@@ -2844,6 +2848,7 @@ export class WfpProvisioner {
     if (c < 0)
       throw new ProvisionRefused(
         `install ${id} is at ${from}; ${to} would be a downgrade`,
+        "downgrade_refused",
       );
     if (c === 0)
       throw new ProvisionRefused(
@@ -3671,13 +3676,15 @@ export class WfpProvisioner {
       // Defense in depth: the revoke must still be settled, and fresh.
       if (now.directory_revoke === "done" && !freshDone(now)) {
         await this.platform.redispatchRevoke(id);
-        throw new ProvisionRefused(
+        throw new ProvisionRetry(
           `install ${id}: the directory revoke was not confirmed for this attempt; a fresh one is dispatched, rerun delete`,
+          "revoke_pending",
         );
       }
       if (now.directory_revoke !== "done" && now.directory_revoke !== "skipped")
-        throw new ProvisionRefused(
+        throw new ProvisionRetry(
           `install ${id}: the directory revoke is no longer settled (${now.directory_revoke ?? "none"}); rerun delete`,
+          "revoke_pending",
         );
       row = now;
       const { cf, env, target } = this;
