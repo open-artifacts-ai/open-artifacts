@@ -446,6 +446,42 @@ describe("ProvisionInstall: release gate and failures", () => {
     expect(w.lifecycle(s.installId)?.serving_mode).toBe("unmapped");
   });
 
+  it("prod_dirty purge (C6 extra): one job when this settle wrote prod_dirty, none for a parent canceled first", async () => {
+    const purges = (installId: string) =>
+      w.all(
+        "SELECT id FROM jobs WHERE install_id = ? AND kind = 'purge'",
+        installId,
+      );
+    const ok = seedCreate(w, { slug: "dirtyone" });
+    w.fake.settingsEdit = (_s, b) => [...b, { name: "EXTRA", type: "service" }];
+    await run(w, ok.jobId);
+    expect(w.job(ok.jobId)?.error_code).toBe("prod_dirty");
+    expect(purges(ok.installId)).toHaveLength(1);
+
+    const c = seedCreate(w, { slug: "dirtycancel" });
+    const r = stepRunner(w.clock, {
+      onStep: (n) => {
+        // An R25 cancel lands after create failed, before the fail step.
+        if (n === "fail")
+          w.db
+            .prepare(
+              "UPDATE jobs SET status = 'failed', error_code = 'canceled', finished_at = 1 WHERE id = ? AND status = 'running'",
+            )
+            .run(c.jobId);
+      },
+    });
+    await runCreate(w.ctx, event(c.jobId), r.step).catch(() => {});
+    expect(w.job(c.jobId)).toMatchObject({
+      status: "failed",
+      error_code: "canceled",
+      last_error_code: "prod_dirty",
+    });
+    expect(purges(c.installId)).toHaveLength(0);
+    expect(w.manage.created.map((x) => x.id)).toEqual(
+      purges(ok.installId).map((p) => p.id),
+    );
+  });
+
   it("prod_dirty: a fail step replayed after its batch committed adds no second snapshot", async () => {
     const s = seedCreate(w, { slug: "dirtytwice" });
     w.fake.settingsEdit = (_s, b) => [...b, { name: "EXTRA", type: "service" }];

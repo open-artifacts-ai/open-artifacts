@@ -34,6 +34,7 @@ import {
   settleFailedStatements,
   sha256Hex,
 } from "@oa/provision";
+import { settledWith } from "@oa/provision/jobs";
 import {
   bodyHash,
   type WorkflowParams,
@@ -610,7 +611,12 @@ async function snapshotStatement(
   return auditStatement(ctx, installId, "prod_dirty.snapshot", detail, jobId);
 }
 
-/** The purge job a prod_dirty create leaves (actor system:provisioner). */
+/**
+ * The purge job a prod_dirty create leaves (actor system:provisioner): a
+ * settleFailed extra (C6), so only when this settle left the parent failed
+ * with prod_dirty (a canceled parent keeps its code and gets none), and
+ * INSERT OR IGNORE, so jobs_one_active and an earlier attempt's row skip it.
+ */
 async function purgeJob(
   ctx: CreateCtx,
   installId: string,
@@ -623,9 +629,10 @@ async function purgeJob(
   return {
     id,
     statement: ctx.env.PLATFORM_DB.prepare(
-      `INSERT INTO jobs (id, kind, workflow, install_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
-VALUES (?1, 'purge', 'manage_install', ?2, ?3, 'system', 'system:provisioner', 'provisioner', ?4, ?5, '{}', 'queued', ?6, ?6)
-ON CONFLICT DO NOTHING RETURNING id`,
+      `INSERT OR IGNORE INTO jobs (id, kind, workflow, install_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
+SELECT ?1, 'purge', 'manage_install', ?2, ?3, 'system', 'system:provisioner', 'provisioner', ?4, ?5, '{}', 'queued', ?6, ?6
+WHERE ${settledWith("?3", "prod_dirty")}
+RETURNING id`,
     ).bind(id, installId, parentJobId, requestId, hash, now),
   };
 }
