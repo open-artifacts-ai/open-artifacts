@@ -87,14 +87,41 @@ describe("C4 service stubs", () => {
 
   it("tokenPrincipal fails closed until W5b", () => {
     const { env } = fakeEnv();
-    expect(tokenPrincipal(row, session, env)).toMatchObject({
+    expect(tokenPrincipal(row, session, env, "oat")).toMatchObject({
       refusal: true,
       code: "unauthenticated",
     });
-    expect(tokenPrincipal(row, null, env)).toEqual({
+    expect(tokenPrincipal(row, null, env, "oat")).toEqual({
       refusal: true,
       code: "unauthenticated",
       reason: "session_ended",
+    });
+  });
+
+  it("tokenPrincipal refuses an oat row on the oauth path", () => {
+    const { env } = fakeEnv();
+    expect(tokenPrincipal(row, session, env, "oauth")).toEqual({
+      refusal: true,
+      code: "unauthenticated",
+      reason: "wrong_kind",
+    });
+  });
+
+  it("tokenPrincipal refuses an oauth row on the oat path", () => {
+    const { env } = fakeEnv();
+    const oauthRow: AgentTokenRow = {
+      ...row,
+      kind: "oauth",
+      token_hash: null,
+      client_id: "c",
+      client_name: "Claude",
+      oauth_user: "adm_00",
+      grant_id: "g",
+    };
+    expect(tokenPrincipal(oauthRow, session, env, "oat")).toEqual({
+      refusal: true,
+      code: "unauthenticated",
+      reason: "wrong_kind",
     });
   });
 });

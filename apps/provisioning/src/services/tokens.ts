@@ -11,8 +11,11 @@ import type { Principal, Refusal } from "../principal.js";
 //
 // These signatures are the 9A.4 contract (amended to match): both take `env`
 // (this app has no global env; mintAgentToken's is first, like
-// invokeRoute's), and tokenPrincipal takes the session as nullable (a missing
-// row is a refusal, not a caller's branch).
+// invokeRoute's), tokenPrincipal takes the session as nullable (a missing
+// row is a refusal, not a caller's branch), and it takes the expected token
+// kind as a fourth argument: the caller names the path (authenticate()'s
+// `oat_` bearer: "oat"; `/mcp` and the refresh callback: "oauth"), and a row
+// of the other kind is refused `wrong_kind` before any other check.
 
 /** An agent_tokens row (0008). */
 export type AgentTokenRow = {
@@ -117,15 +120,19 @@ export type TokenRefusal = Refusal & {
 
 /**
  * The token principal for a row and its minting session (9A.3.3): row of the
- * right kind, not revoked, unexpired; session not revoked, unexpired; its
+ * `expected` kind (else `wrong_kind`, checked first), not revoked, unexpired; session not revoked, unexpired; its
  * `(email, sub)` still in ADMIN_IDENTITIES. Any failure: unauthenticated,
  * with the reason.
  */
 export function tokenPrincipal(
-  _row: AgentTokenRow,
+  row: AgentTokenRow,
   session: SessionRow | null,
   _env: Pick<Env, "ADMIN_IDENTITIES">,
+  expected: TokenKind,
 ): Principal | TokenRefusal {
+  if (row.kind !== expected) {
+    return { refusal: true, code: "unauthenticated", reason: "wrong_kind" };
+  }
   // Fails closed until W5b; the stub's reason for a live session is a placeholder.
   return {
     refusal: true,
