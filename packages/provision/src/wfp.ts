@@ -32,7 +32,14 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { newId, newPat } from "@oa/shared";
-import { type Cf, CfError, type Module, type Target } from "./cf.js";
+import {
+  type AssetFile,
+  assetHash,
+  type Cf,
+  CfError,
+  type Module,
+  type Target,
+} from "./cf.js";
 import {
   ALLOW_ACCOUNT_TARGET,
   FLOOR_MIN_SEQ,
@@ -58,6 +65,7 @@ import {
   ForeignResource,
   hosts,
   isInstallId,
+  isPlatformPrincipalId,
   names,
   newInstallId,
   ownerEmailOf,
@@ -80,7 +88,6 @@ import {
 import {
   ASSET_LIMITS,
   assertAssetPath,
-  assetEntries,
   type BundleVariant,
   bundleSha256,
   compareVersions,
@@ -91,7 +98,6 @@ import {
   migrationsSha256,
   openFloor,
   openReleaseRecord,
-  type ReleaseAsset,
   type ReleaseAssetEntry,
   type ReleaseFile,
   type ReleaseReader,
@@ -183,13 +189,18 @@ export interface WfpOptions {
    * oa-hosted-<env>-turnstile). Required when codes are on.
    */
   turnstile?: { sitekey: string; secret: string };
-  patDir: string;
   /**
-   * CI only (the oa:hosted CLI's --ci-owner-token): create, upgrade, rollback
-   * and updateVars mint an owner PAT labelled `label` (ci-<run id>) into the
-   * install's D1 under the operation's lease, hold it in memory for the
-   * selftest and revoke it before the lease is released. No PAT file is read
-   * or written; ciTokenSweep revokes what a crashed run left.
+   * Where the owner PAT and a test-hook key are saved (0600). Required unless
+   * ciOwnerToken is set, and always for a redline (test-hook) create.
+   */
+  patDir?: string;
+  /**
+   * CI (the oa:hosted CLI's --ci-owner-token, label ci-<run id>) and the
+   * hosted provisioner (label ss-<signup ULID>): create, upgrade, rollback
+   * and updateVars mint an owner PAT labelled `label` into the install's D1
+   * under the operation's lease, hold it in memory for the selftest and
+   * revoke it before the lease is released. No PAT file is read or written;
+   * ciTokenSweep revokes what a crashed run left.
    */
   ciOwnerToken?: { label: string };
   /** Broker keypair (P2); off until the broker exists. */
@@ -201,10 +212,213 @@ export interface WfpOptions {
   healthTimeoutMs?: number;
   /** Require /healthz to report installId (Task 6b, Backend). */
   requireInstallId?: boolean;
+  /**
+   * The longest a Cloudflare token may run before its end date, in days
+   * (1 to PROVISIONER_MAX_TOKEN_DAYS). The CLI keeps DEFAULT_MAX_TOKEN_DAYS;
+   * the hosted provisioner passes PROVISIONER_MAX_TOKEN_DAYS (design v7 Q2).
+   */
+  maxTokenDays?: number;
+  /**
+   * Called as create, upgrade and rollback reach each WFP_STEPS step, so the
+   * Workflow can record it (design v7 5.2). Awaited; a throw fails the
+   * operation.
+   */
+  onStep?: (step: WfpStep) => void | Promise<void>;
+  /**
+   * Keep the sign-in registry copy `disabled: true` on every rewrite
+   * (upgrade, rollback, updateVars of a suspended or deleting install;
+   * design v7 5.4). The directory copy is never disabled.
+   */
+  registryDisabled?: boolean;
+}
+
+/**
+ * The job steps provision reports through onStep, in create order (design
+ * v7 3.2 JOB_STEPS): upgrade and rollback report upload, verify_clean and
+ * health only.
+ */
+export const WFP_STEPS = Object.freeze([
+  "upload",
+  "verify_clean",
+  "health",
+  "route",
+  "enable_signin",
+  "active",
+] as const);
+export type WfpStep = (typeof WFP_STEPS)[number];
+
+/** The CLI's cap on a Cloudflare token's end date, in days. */
+export const DEFAULT_MAX_TOKEN_DAYS = 30;
+/** The hosted provisioner's cap: a one-year end date, required (design v7 Q2). */
+export const PROVISIONER_MAX_TOKEN_DAYS = 400;
+
+/**
+ * Every job error code (design v7 3.5, `JobErrorCode`): a ProvisionRefused
+ * carries one where it is thrown, and classification reads that property,
+ * never the message.
+ */
+export const PROVISION_ERROR_CODES = Object.freeze([
+  "release_not_published",
+  "release_unverified",
+  "downgrade_refused",
+  "prod_dirty",
+  "invalid_state",
+  "slug_taken",
+  "lease_held",
+  "revoke_pending",
+  "token_invalid",
+  "upgrade_rolled_back",
+  "upgrade_incomplete",
+  "canceled",
+  "cf_error",
+  "internal",
+] as const);
+export type ProvisionErrorCode = (typeof PROVISION_ERROR_CODES)[number];
+
+/** The codes a ProvisionRetry carries: a rerun may succeed (bounded backoff). */
+export const PROVISION_RETRY_CODES = Object.freeze([
+  "lease_held",
+  "revoke_pending",
+  "token_invalid",
+] as const);
+export type ProvisionRetryCode = (typeof PROVISION_RETRY_CODES)[number];
+
+/** Every job kind (design v7 3.2 `JobKindSchema`). */
+export const PROVISION_JOB_KINDS = Object.freeze([
+  "create",
+  "retry",
+  "upgrade",
+  "rollback",
+  "suspend",
+  "resume",
+  "delete",
+  "restore",
+  "purge",
+  "discard",
+  "release_lease",
+  "cleanup",
+  "redline_creds",
+] as const);
+export type ProvisionJobKind = (typeof PROVISION_JOB_KINDS)[number];
+
+/**
+ * What each job kind does with a token within REFUSE_TOKEN_DAYS of its end
+ * date (design v7 5.7): forward changes refuse, recovery goes on with a
+ * WARNING note. Passed to verifyToken and the operations' nearExpiry.
+ */
+export const NEAR_EXPIRY_MODE: Readonly<
+  Record<ProvisionJobKind, "refuse" | "warn">
+> = Object.freeze({
+  create: "refuse",
+  retry: "refuse",
+  upgrade: "refuse",
+  resume: "refuse",
+  restore: "refuse",
+  redline_creds: "refuse",
+  suspend: "warn",
+  delete: "warn",
+  purge: "warn",
+  discard: "warn",
+  release_lease: "warn",
+  rollback: "warn",
+  cleanup: "warn",
+});
+
+/**
+ * Settles a failed job (design v7 3.6), shared by every fail step, cancel
+ * and the scheduler sweep: `jobs` to failed with `code` (never over a stored
+ * code), `signups.status = failed`, and `signup_accounts` freed for a
+ * self-serve install that was never created. One D1 batch. W3 builds it.
+ */
+export type SettleFailed = (
+  jobId: string,
+  code: ProvisionErrorCode,
+) => Promise<void>;
+
+/** The binding types verify_clean refuses on any install (design v7 5.2 e). */
+export const VERIFY_CLEAN_REFUSED_BINDING_TYPES = Object.freeze([
+  "secrets_store_secret",
+  "service",
+  "dispatch_namespace",
+] as const);
+
+/**
+ * The exact secret names verify_clean expects on an install (design v7 5.2
+ * e, rule 4), sorted: CREATE_SECRETS, BROKER_SIGNING_KEY with the broker,
+ * TURNSTILE_SECRET with codes on, TEST_HOOK_KEY iff test hooks.
+ */
+export function expectedSecretNames(o: {
+  broker: boolean;
+  codes: boolean;
+  testHooks: boolean;
+}): string[] {
+  return [
+    ...CREATE_SECRETS,
+    ...(o.broker ? ["BROKER_SIGNING_KEY"] : []),
+    ...(o.codes ? ["TURNSTILE_SECRET"] : []),
+    ...(o.testHooks ? ["TEST_HOOK_KEY"] : []),
+  ].sort();
+}
+
+/**
+ * verify_clean (design v7 5.2 e), run after the upload and before health,
+ * route or any sign-in; W2 builds it. A refusal is `prod_dirty` (terminal,
+ * never routed). In order:
+ * 1. Live settings (GET .../dispatch/namespaces/<ns>/scripts/<script>/settings)
+ *    and cf.secretList.
+ * 2. Refuse any binding of a VERIFY_CLEAN_REFUSED_BINDING_TYPES type.
+ * 3. Non-secret bindings minus OWNER_EMAIL equal `sent`'s by (name, type);
+ *    for plain_text and json, sha256 of the value equals the render's.
+ * 4. Secret names equal expectedSecretNames(...) exactly.
+ * 5. TEST_HOOK_KEY, TEST_HOOKS and TEST_DOMAIN absent unless testHooks
+ *    (keyed on testHooks, not OA_ENV).
+ * 6. The release record's variant is `release` unless testHooks, and the
+ *    live do_migration_tag equals the template's last tag.
+ */
+export interface VerifyCleanInput {
+  id: InstallId;
+  /**
+   * The rendered metadata of this upload, or install_versions.metadata on a
+   * resumed attempt (secrets and OWNER_EMAIL stripped).
+   */
+  sent: {
+    bindings: { name: string; type: string; text?: string; json?: unknown }[];
+  };
+  rec: ReleaseRecord;
+  broker: boolean;
+  codes: boolean;
+  testHooks: boolean;
+  /** The template's last Durable Object migration tag. */
+  lastTag: string;
 }
 
 export class ProvisionRefused extends Error {
   override name = "ProvisionRefused";
+  /** The job error code, set where it is thrown (design v7 3.5). */
+  readonly code: ProvisionErrorCode | undefined;
+  constructor(message: string, code?: ProvisionErrorCode) {
+    super(message);
+    if (
+      code !== undefined &&
+      !(PROVISION_ERROR_CODES as readonly string[]).includes(code)
+    )
+      throw new Error(`unknown provision error code ${String(code)}`);
+    this.code = code;
+  }
+}
+
+/**
+ * A refusal a rerun may clear (a held lease, a pending directory revoke, a
+ * token that is not active): the Workflow retries it with bounded backoff.
+ */
+export class ProvisionRetry extends ProvisionRefused {
+  override name = "ProvisionRetry";
+  declare readonly code: ProvisionRetryCode;
+  constructor(message: string, code: ProvisionRetryCode) {
+    if (!(PROVISION_RETRY_CODES as readonly string[]).includes(code))
+      throw new Error(`${String(code)} is not a retry code`);
+    super(message, code);
+  }
 }
 
 /** An MCP call the install answered with an HTTP error. */
@@ -234,7 +448,6 @@ interface Checked {
   rec: ReleaseRecord;
   mainModule: string;
   modules: Module[];
-  assets: ReleaseAsset[];
   template: Template;
   migrations: ReleaseFile[];
   /** The env's signed floor, checked against FLOOR_MIN_SEQ and the version. */
@@ -268,7 +481,6 @@ const HEALTH_TIMEOUT_MS = 120_000;
 const HEALTH_INTERVAL_MS = 2_000;
 const MAX_ACTIVE_TOKENS = 50;
 const TOKEN_LABEL = "provision";
-const MAX_TOKEN_DAYS = 30;
 const REFUSE_TOKEN_DAYS = 5;
 const DAY = 86_400_000;
 const HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
@@ -559,6 +771,11 @@ interface CiToken {
 
 /** The CI owner token label: ci-<GitHub run id>. */
 export const CI_TOKEN_LABEL_RE = /^ci-[1-9][0-9]{0,19}$/;
+/** The hosted provisioner's owner token label: ss-<signup ULID>. */
+export const PROVISIONER_TOKEN_LABEL_RE = /^ss-[0-9A-HJKMNP-TV-Z]{26}$/;
+const isTokenLabel = (l: unknown): l is string =>
+  typeof l === "string" &&
+  (CI_TOKEN_LABEL_RE.test(l) || PROVISIONER_TOKEN_LABEL_RE.test(l));
 
 /** A pending session cut and the vars it was minted against. */
 interface Cut {
@@ -659,6 +876,8 @@ export class ProbeAccepted extends Error {
 
 export class WfpProvisioner {
   readonly notes: string[] = [];
+  /** Each verified asset's assetHash, by its record sha256 and path. */
+  private readonly assetHashes = new Map<string, string>();
   private readonly cf: Cf;
   private readonly env: Env;
   private readonly target: Target;
@@ -773,6 +992,14 @@ export class WfpProvisioner {
       );
     // A malformed CI label is refused before any call, not at the mint.
     this.ciLabel();
+    this.maxTokenDays();
+    if (o.onStep !== undefined && typeof o.onStep !== "function")
+      throw new ProvisionRefused("onStep must be a function");
+    if (
+      o.registryDisabled !== undefined &&
+      typeof o.registryDisabled !== "boolean"
+    )
+      throw new ProvisionRefused("registryDisabled must be a boolean");
     const d = HOSTED_DOMAINS[env];
     if (o.domains?.app !== d.app || o.domains?.content !== d.content)
       throw new ProvisionRefused(
@@ -965,15 +1192,28 @@ export class WfpProvisioner {
     return copy;
   }
 
-  private async readAssets(rec: ReleaseRecord): Promise<ReleaseAsset[]> {
+  /**
+   * The assets list, checked against the signed record, as an upload
+   * manifest whose bytes are read only when used: every read is a private
+   * copy checked against the record's size and sha256, so a file changed
+   * since an earlier read is refused. Each file's assetHash comes from its
+   * verify read: with `verify` (pre-flight, rollback apply) every file is
+   * read and checked now, one at a time, and dropped; without, only a file
+   * not verified yet in this run is.
+   */
+  private async readAssets(
+    rec: ReleaseRecord,
+    verify = false,
+  ): Promise<AssetFile[]> {
     const list = await this.o.release.assets(rec.version, rec.variant);
-    const copy = (list ?? []).map((a) => ({
+    const got = (Array.isArray(list) ? list : []).map((a) => ({
       path: a?.path,
-      bytes: new Uint8Array(a?.bytes ?? []),
+      size: a?.size,
+      sha256: a?.sha256,
     }));
-    let got: ReturnType<typeof assetEntries>;
     try {
-      got = assetEntries(copy);
+      for (const a of got) assertAssetEntry(a);
+      got.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     } catch (e) {
       throw new ProvisionRefused(
         `release ${rec.version} (${rec.variant}): ${(e as Error).message}`,
@@ -981,7 +1221,27 @@ export class WfpProvisioner {
     }
     if (canonicalJson(got) !== canonicalJson(rec.assets))
       this.refuse(rec, "assets", "an extra, missing or changed file");
-    return copy;
+    const read = async (a: ReleaseAssetEntry) => {
+      const bytes = new Uint8Array(
+        (await this.o.release.assetBytes(rec.version, rec.variant, a.path)) ??
+          [],
+      );
+      if (bytes.byteLength !== a.size || sha256Hex(bytes) !== a.sha256)
+        this.refuse(rec, "assets", `${a.path} changed`);
+      return bytes;
+    };
+    const files: AssetFile[] = [];
+    for (const a of rec.assets) {
+      // The hash is of the bytes with this sha256, so it is reused safely.
+      const key = `${a.sha256}\0${a.path}`;
+      let hash = this.assetHashes.get(key);
+      if (verify || hash === undefined) {
+        hash = assetHash(await read(a), a.path);
+        this.assetHashes.set(key, hash);
+      }
+      files.push({ path: a.path, size: a.size, hash, bytes: () => read(a) });
+    }
+    return files;
   }
 
   private async readTemplate(rec: ReleaseRecord): Promise<Template> {
@@ -1040,11 +1300,11 @@ export class WfpProvisioner {
     const rec = await this.readRecord(i);
     const floor = await this.readFloor(rec);
     const { mainModule, modules } = await this.readModules(rec);
-    const assets = await this.readAssets(rec);
+    await this.readAssets(rec, true);
     const template = await this.readTemplate(rec);
     const migrations = await this.readMigrations(rec);
     await this.readWelcome(rec);
-    return { rec, mainModule, modules, assets, template, migrations, floor };
+    return { rec, mainModule, modules, template, migrations, floor };
   }
 
   /**
@@ -1259,10 +1519,22 @@ export class WfpProvisioner {
     const { appHost, contentHost } = hosts(i.slug, this.o.domains);
     if (i.resumeId !== undefined && !isInstallId(i.resumeId))
       throw new ProvisionRefused("resumeId is not an install id");
+    if (i.installId !== undefined && !isInstallId(i.installId))
+      throw new ProvisionRefused("installId is not an install id");
+    if (i.installId !== undefined && i.resumeId !== undefined)
+      throw new ProvisionRefused("pass installId or resumeId, not both");
+    // 4.1: the admin and signup principals are never installs.
+    for (const id of [i.installId, i.resumeId])
+      if (isPlatformPrincipalId(id))
+        throw new ProvisionRefused(
+          `${id} is a platform principal id, never an install`,
+        );
     const testHooks = i.testHooks === true;
     const vars = i.vars ?? {};
     this.brokerVars(vars);
     this.checkVariant(i, vars);
+    // The owner PAT file without a CI token, and the test-hook key either way.
+    if (this.o.ciOwnerToken === undefined || testHooks) this.patDir();
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars, testHooks);
     this.checkEmailCodeDomain(vars, "domains");
@@ -1362,7 +1634,7 @@ export class WfpProvisioner {
     const fresh = !row;
     if (!row)
       row = await this.platform.insertCreating({
-        id: newInstallId(),
+        id: i.installId ?? newInstallId(),
         slug: i.slug,
         appHost,
         contentHost,
@@ -1449,6 +1721,19 @@ export class WfpProvisioner {
 
   private async findRow(i: WfpCreateInput): Promise<InstallRow | undefined> {
     const bySlug = await this.platform.bySlug(i.slug);
+    if (i.installId !== undefined) {
+      const byId = await this.platform.byId(i.installId);
+      if (byId && byId.slug !== i.slug)
+        throw new ProvisionRefused(
+          `installId ${i.installId} is not the install for slug ${i.slug}`,
+        );
+      // An active row keeps its own refusal (slug ... already exists).
+      if (bySlug && bySlug.id !== i.installId && bySlug.state !== "active")
+        throw new ProvisionRefused(
+          `slug ${i.slug} is already taken by install ${bySlug.id}`,
+        );
+      return bySlug;
+    }
     if (i.resumeId === undefined) return bySlug;
     const byId = await this.platform.byId(i.resumeId);
     if (!byId || byId.slug !== i.slug || bySlug?.id !== byId.id)
@@ -1474,19 +1759,20 @@ export class WfpProvisioner {
       throw new ProvisionRefused(
         "Cloudflare token is not valid yet (not_before is in the future)",
       );
+    const maxDays = this.maxTokenDays();
     if (!t.expires_on)
       throw new ProvisionRefused(
-        `Cloudflare token has no expiry; set expires_on at most ${MAX_TOKEN_DAYS} days out`,
+        `Cloudflare token has no expiry; set an end date at most ${maxDays} days out`,
       );
     const exp = Date.parse(t.expires_on);
     if (!Number.isFinite(exp) || exp <= now)
       throw new ProvisionRefused("Cloudflare token has expired");
-    if (exp > now + MAX_TOKEN_DAYS * DAY)
+    if (exp > now + maxDays * DAY)
       throw new ProvisionRefused(
-        `Cloudflare token expires more than ${MAX_TOKEN_DAYS} days out; mint one with a shorter expiry`,
+        `Cloudflare token expires more than ${maxDays} days out; mint one with a shorter expiry`,
       );
     if (exp <= now + REFUSE_TOKEN_DAYS * DAY) {
-      const why = `the Cloudflare token expires on ${new Date(exp).toISOString().slice(0, 10)}, within ${REFUSE_TOKEN_DAYS} days; roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and update the keychain item`;
+      const why = `the Cloudflare token expires on ${new Date(exp).toISOString().slice(0, 10)}, within ${REFUSE_TOKEN_DAYS} days; roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and paste it into Secrets Store (\`${platformNames(this.env).provisionToken}\`)`;
       if (nearExpiry === "refuse")
         throw new ProvisionRefused(`${why}, then retry`);
       this.notes.push(`WARNING: ${why}`);
@@ -1624,8 +1910,9 @@ export class WfpProvisioner {
         missing.map((k) => [k, fresh[k] as string]),
       );
       if (send.TEST_HOOK_KEY !== undefined) {
-        mkdirSync(this.o.patDir, { recursive: true, mode: 0o700 });
-        const f = join(this.o.patDir, `${m.appHost}-hook-key`);
+        const dir = this.patDir();
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const f = join(dir, `${m.appHost}-hook-key`);
         try {
           writeSecretFile(f, `${send.TEST_HOOK_KEY}\n`);
         } catch (e) {
@@ -2182,6 +2469,8 @@ export class WfpProvisioner {
         throw new ProvisionRefused(
           "reissueOwnerToken needs confirm to be exactly the install id",
         );
+      // The new PAT goes to a file: no patDir is refused before any write.
+      this.patDir();
       const row = await this.openInstall(id, ["active"]);
       const raw = ownerEmailOf(row);
       const ownerEmail = raw === null ? null : normOwnerEmail(raw);
@@ -2276,7 +2565,7 @@ export class WfpProvisioner {
 
   /** The owner PAT create saved; the selftest uses it, and nothing re-mints it. */
   private patFileOf(appHost: string): string {
-    const f = join(this.o.patDir, `${appHost}-pat-token`);
+    const f = join(this.patDir(), `${appHost}-pat-token`);
     if (!existsSync(f))
       throw new ProvisionRefused(
         `the owner token file ${f} is missing; the selftest needs it`,
@@ -2317,12 +2606,37 @@ export class WfpProvisioner {
 
   /**
    * The token checks every operation runs first (active, not_before, an
-   * expiry at most MAX_TOKEN_DAYS out, Workers Scripts Read), on their own
+   * expiry at most maxTokenDays out, Workers Scripts Read), on their own
    * and with no write, so a caller (the oa:hosted CLI) can refuse a token
    * before its own first write. `nearExpiry` as in each operation.
    */
   async verifyToken(nearExpiry: "refuse" | "warn"): Promise<void> {
     await this.checkToken(nearExpiry === "warn" ? "warn" : "refuse");
+  }
+
+  /**
+   * Design v7 5.5, under a lease claim(row, ["active"], "active", kind):
+   * both HOSTS keys to `<mode>:<id>` (hostsValue), then the sign-in registry
+   * copy `disabled: true`; the directory copy is never disabled, so a later
+   * purge's directory revoke still works. Idempotent. W2 builds the body.
+   */
+  async pause(
+    id: InstallId,
+    mode: "paused" | "closed",
+  ): Promise<{ id: InstallId; mode: "paused" | "closed" }> {
+    if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
+    if (mode !== "paused" && mode !== "closed")
+      throw new ProvisionRefused("pause mode must be paused or closed");
+    throw new Error("pause is not built yet (W2)");
+  }
+
+  /**
+   * Design v7 5.5: HOSTS back to `<id>`, then the sign-in registry copy
+   * re-enabled. Idempotent. W2 builds the body.
+   */
+  async unpause(id: InstallId): Promise<{ id: InstallId; mode: "serving" }> {
+    if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
+    throw new Error("unpause is not built yet (W2)");
   }
 
   /**
@@ -2780,7 +3094,8 @@ export class WfpProvisioner {
     await this.logged("rollback.start", { from, to });
     this.assertHooksAllowed(rel.rec.variant, p.m.testHooks);
     const mods = await this.readModules(rel.rec);
-    const assets = await this.readAssets(rel.rec);
+    // Check-first: every file again, before the probe or any write.
+    const assets = await this.readAssets(rel.rec, true);
     // L5: the live tag, not only the journal; a rollback never crosses it.
     await this.hold();
     let live: string | null | undefined;
@@ -3351,11 +3666,14 @@ export class WfpProvisioner {
           }
         }
         // L8: the owner PAT and hook key of a deleted host are dead weight.
-        for (const f of [
-          `${row.app_host}-pat-token`,
-          `${row.app_host}-hook-key`,
-        ])
-          rmSync(join(this.o.patDir, f), { force: true });
+        // With no patDir (the provisioner Worker) there is no file.
+        const dir = this.o.patDir;
+        if (dir !== undefined)
+          for (const f of [
+            `${row.app_host}-pat-token`,
+            `${row.app_host}-hook-key`,
+          ])
+            rmSync(join(dir, f), { force: true });
         await this.release("deleted");
         await this.platform.audit(id, "delete.done", {});
         return { id, ok: true, state: "deleted" };
@@ -3607,6 +3925,8 @@ export class WfpProvisioner {
     email: string,
     appHost: string,
   ): Promise<string> {
+    // Before the token row: a PAT with no file to go to is never minted.
+    const dir = this.patDir();
     const pat = newPat();
     this.sensitive.add(pat);
     const tokenId = newId();
@@ -3634,8 +3954,8 @@ export class WfpProvisioner {
     );
     if (!ok[0]?.results?.length)
       throw new Error(`token row ${tokenId} missing after the insert; rerun`);
-    mkdirSync(this.o.patDir, { recursive: true, mode: 0o700 });
-    const file = join(this.o.patDir, `${appHost}-pat-token`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = join(dir, `${appHost}-pat-token`);
     try {
       writeSecretFile(file, `${pat}\n`);
     } catch (e) {
@@ -3659,9 +3979,31 @@ export class WfpProvisioner {
   private ciLabel(): string | undefined {
     const c = this.o.ciOwnerToken;
     if (c === undefined) return undefined;
-    if (typeof c?.label !== "string" || !CI_TOKEN_LABEL_RE.test(c.label))
-      throw new ProvisionRefused("ciOwnerToken.label must be ci-<run id>");
+    if (!isTokenLabel(c?.label))
+      throw new ProvisionRefused(
+        "ciOwnerToken.label must be ci-<run id> or ss-<ULID>",
+      );
     return c.label;
+  }
+
+  /** The token end-date cap in days, checked (an integer, 1 to 400). */
+  private maxTokenDays(): number {
+    const d = this.o.maxTokenDays ?? DEFAULT_MAX_TOKEN_DAYS;
+    if (!Number.isSafeInteger(d) || d < 1 || d > PROVISIONER_MAX_TOKEN_DAYS)
+      throw new ProvisionRefused(
+        `maxTokenDays must be an integer from 1 to ${PROVISIONER_MAX_TOKEN_DAYS}`,
+      );
+    return d;
+  }
+
+  /** The PAT directory, for the files only a laptop or redline run writes. */
+  private patDir(): string {
+    const d = this.o.patDir;
+    if (typeof d !== "string" || d === "")
+      throw new ProvisionRefused(
+        "patDir is required without ciOwnerToken and for a redline (test-hook) install",
+      );
+    return d;
   }
 
   /** With ciOwnerToken: the CI token, right after the claim (under the lease). */
@@ -3763,9 +4105,9 @@ export class WfpProvisioner {
   }
 
   /**
-   * The CI backstop: revokes every still-active owner token labelled `label`
-   * (ci-<run id>) in the install's D1, then lists them again and refuses
-   * unless none remains. Takes no lease: it runs after the operation, which
+   * The CI backstop: revokes every still-active owner token labelled exactly
+   * `label` (ci-<run id> or ss-<ULID>; never a prefix or pattern) in the
+   * install's D1, then lists them again and refuses unless none remains. Takes no lease: it runs after the operation, which
    * may have crashed holding one. An install with no D1 has no token.
    */
   async ciTokenSweep(
@@ -3774,8 +4116,10 @@ export class WfpProvisioner {
   ): Promise<{ id: InstallId; label: string; revoked: number; active: 0 }> {
     return this.guarded(async () => {
       if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
-      if (typeof label !== "string" || !CI_TOKEN_LABEL_RE.test(label))
-        throw new ProvisionRefused("the sweep label must be ci-<run id>");
+      if (!isTokenLabel(label))
+        throw new ProvisionRefused(
+          "the sweep label must be ci-<run id> or ss-<ULID>",
+        );
       this.checkOptions();
       await this.checkToken("warn");
       await this.resolvePlatform();
