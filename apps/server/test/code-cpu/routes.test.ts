@@ -1,8 +1,10 @@
 // The CPU bar, half 2 (docs/ops/cpu-budget.md): CODE CPU ≤ 2 ms per route.
 // Node proxy like scripts/bench.ts: the real Worker against in-process
 // bindings, metered with the thread CPU clock minus D1/R2 shims and DO
-// methods (DO rows meter the DO invocation itself). Per route: p95 of RUNS
-// requests after warm-up, median of 5 such runs. Part of `pnpm test:cpu`.
+// methods (DO rows meter the DO invocation itself). Per route: REPEATS
+// rounds, each a p95 of RUNS requests after warm-up for the route and for
+// GET /api/v1/me back to back; the bar is the median per-round ratio.
+// Part of `pnpm test:cpu`.
 import { GOOGLE_JWKS_URL, GOOGLE_TOKEN_URL } from "@oa/auth-core";
 import { AUTH, LIMITS, newId } from "@oa/shared";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
@@ -37,14 +39,22 @@ const CID = "cid.apps.googleusercontent.com";
 const RESET_DO_MS = 8;
 /**
  * The bar is in reference-machine ms (the dev laptop the rows in
- * docs/ops/cpu-budget.md came from). A slower runner (CI is about 3×) scales
- * it by its own `GET /api/v1/me` p95 versus REF_ME_MS. That's the same
- * harness and code path as the rows, which a synthetic workload under-
- * estimated (1.5× against 3.2×). Capped at MAX_SCALE so a pathological
- * runner can't hide a regression.
+ * docs/ops/cpu-budget.md came from), asserted as a ratio: each round measures
+ * the row's p95 and `GET /api/v1/me`'s p95 back to back (order alternating),
+ * and the median of rowP95 / meP95 must stay at or under budgetMs / REF_ME_MS.
+ * Same process, same moment, so a slower or busier runner (CI is about 3×,
+ * and shared-runner load changes mid-suite) cancels out. A one-off scale
+ * measured in beforeAll didn't: load that changed later skewed every row.
  */
 const REF_ME_MS = 0.56;
+/**
+ * The calibration route can't be checked by ratio against itself, and a
+ * regression in it would widen every other row's bar. So GET /api/v1/me
+ * alone keeps an absolute bar: budgetMs × MAX_SCALE (the most a runner may
+ * be slower than the reference laptop).
+ */
 const MAX_SCALE = 4;
+const CALIBRATION = "GET /api/v1/me";
 /** Open R.events sockets on the "publish with event sockets" rows. */
 const EVENTS_SOCKETS = 50;
 const RUNS = 20;
@@ -56,7 +66,6 @@ const escapeHeavy = (bytes: number) =>
   `<p class="a\\b">${'"\\'.repeat(bytes / 2)}</p>`.slice(0, bytes);
 
 let c: Ctx;
-let scale = 1;
 /** The fake Google: one RS256 key; the next token response is set per iteration. */
 let gKey: CryptoKeyPair;
 let gJwk: Record<string, unknown>;
@@ -75,9 +84,6 @@ beforeAll(async () => {
   for (const k of ["log", "warn"] as const)
     vi.spyOn(console, k).mockImplementation(() => {});
   c = await setup();
-  const me = routes().find((r) => r.name === "GET /api/v1/me");
-  if (!me) throw new Error("no calibration scenario");
-  scale = Math.min(MAX_SCALE, Math.max(1, (await p95Median(me)) / REF_ME_MS));
 }, 120_000);
 afterAll(() => vi.restoreAllMocks());
 
@@ -211,12 +217,32 @@ function signInRoutes(): Scenario[] {
   ];
 }
 
-/** p95 of RUNS requests after warm-up, median of REPEATS runs. */
-async function p95Median(s: Scenario, p95s: number[] = []): Promise<number> {
-  for (let i = 0; i < REPEATS; i++)
-    p95s.push(summarize(s, await sample(s, RUNS, 5)).p95);
-  p95s.sort((a, b) => a - b);
-  return p95s[Math.floor(REPEATS / 2)] ?? Number.POSITIVE_INFINITY;
+/** p95 of RUNS requests after warm-up. */
+const p95Of = async (s: Scenario) => summarize(s, await sample(s, RUNS, 5)).p95;
+const median = (xs: number[]) =>
+  [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] ??
+  Number.POSITIVE_INFINITY;
+
+/**
+ * REPEATS rounds of the row's p95 and the calibration's p95, back to back,
+ * the order alternating so neither always runs first. Returns each round's
+ * rowP95 / meP95.
+ */
+async function ratios(s: Scenario, me: Scenario) {
+  const out: { row: number; me: number; ratio: number }[] = [];
+  for (let i = 0; i < REPEATS; i++) {
+    let row: number;
+    let cal: number;
+    if (i % 2 === 0) {
+      cal = await p95Of(me);
+      row = await p95Of(s);
+    } else {
+      row = await p95Of(s);
+      cal = await p95Of(me);
+    }
+    out.push({ row, me: cal, ratio: row / cal });
+  }
+  return out;
 }
 
 const json = (x: unknown) => JSON.stringify(x);
@@ -524,14 +550,29 @@ describe(`code CPU ≤ ${BAR_MS} ms per route (p95, median of ${REPEATS})`, () =
   ];
   for (const name of names)
     it(name, async ({ annotate }) => {
-      const s = [...routes(), ...signInRoutes()].find((r) => r.name === name);
-      if (!s) throw new Error(`no scenario ${name}`);
-      const p95s: number[] = [];
-      const median = await p95Median(s, p95s);
-      const limit = s.budgetMs * scale;
+      const all = [...routes(), ...signInRoutes()];
+      const s = all.find((r) => r.name === name);
+      const me = all.find((r) => r.name === CALIBRATION);
+      if (!s || !me) throw new Error(`no scenario ${name}`);
+      const f = (x: number) => x.toFixed(2);
+      if (s === me) {
+        // Absolute: the calibration route can't hide behind its own ratio.
+        const p95s: number[] = [];
+        for (let i = 0; i < REPEATS; i++) p95s.push(await p95Of(s));
+        const p95 = median(p95s);
+        const limit = s.budgetMs * MAX_SCALE;
+        await annotate(
+          `p95 ${f(p95)} ms, absolute bar ${f(limit)} (${s.budgetMs} × ${MAX_SCALE}) (runs: ${p95s.map(f).join(", ")})`,
+        );
+        expect(p95).toBeLessThanOrEqual(limit);
+        return;
+      }
+      const rounds = await ratios(s, me);
+      const ratio = median(rounds.map((r) => r.ratio));
+      const bar = s.budgetMs / REF_ME_MS;
       await annotate(
-        `p95 ${median.toFixed(2)} ms, bar ${limit.toFixed(2)} (×${scale.toFixed(2)}) (runs: ${p95s.map((x) => x.toFixed(2)).join(", ")})`,
+        `ratio ${f(ratio)} (≈ ${f(ratio * REF_ME_MS)} ms on the reference laptop), bar ${f(bar)} (${s.budgetMs} / ${REF_ME_MS}) (runs, row / me ms: ${rounds.map((r) => `${f(r.row)} / ${f(r.me)}`).join(", ")})`,
       );
-      expect(median).toBeLessThanOrEqual(limit);
+      expect(ratio).toBeLessThanOrEqual(bar);
     }, 120_000);
 });
