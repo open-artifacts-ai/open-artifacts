@@ -32,7 +32,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { newId, newPat } from "@oa/shared";
-import { type Cf, CfError, type Module, type Target } from "./cf.js";
+import {
+  type AssetFile,
+  assetHash,
+  type Cf,
+  type Module,
+  type Target,
+} from "./cf.js";
 import {
   ALLOW_ACCOUNT_TARGET,
   FLOOR_MIN_SEQ,
@@ -40,6 +46,14 @@ import {
   RELEASE_PUBKEY,
   RELEASE_PUBKEY_PLACEHOLDER,
 } from "./internal/gates.js";
+import {
+  CfError,
+  NEAR_EXPIRY_MODE,
+  PROVISION_JOB_KINDS,
+  type ProvisionJobKind,
+  ProvisionRefused,
+  ProvisionRetry,
+} from "./jobs.js";
 import {
   assertSafeMigrations,
   assertUniqueBindings,
@@ -58,6 +72,7 @@ import {
   ForeignResource,
   hosts,
   isInstallId,
+  isPlatformPrincipalId,
   names,
   newInstallId,
   ownerEmailOf,
@@ -80,7 +95,6 @@ import {
 import {
   ASSET_LIMITS,
   assertAssetPath,
-  assetEntries,
   type BundleVariant,
   bundleSha256,
   compareVersions,
@@ -91,7 +105,6 @@ import {
   migrationsSha256,
   openFloor,
   openReleaseRecord,
-  type ReleaseAsset,
   type ReleaseAssetEntry,
   type ReleaseFile,
   type ReleaseReader,
@@ -183,13 +196,19 @@ export interface WfpOptions {
    * oa-hosted-<env>-turnstile). Required when codes are on.
    */
   turnstile?: { sitekey: string; secret: string };
-  patDir: string;
   /**
-   * CI only (the oa:hosted CLI's --ci-owner-token): create, upgrade, rollback
-   * and updateVars mint an owner PAT labelled `label` (ci-<run id>) into the
-   * install's D1 under the operation's lease, hold it in memory for the
-   * selftest and revoke it before the lease is released. No PAT file is read
-   * or written; ciTokenSweep revokes what a crashed run left.
+   * Where the owner PAT and a test-hook key are saved (0600). Required unless
+   * ciOwnerToken is set; with ciOwnerToken and no patDir (the provisioner
+   * Worker) a test-hook key is never written (redline_creds rotates it).
+   */
+  patDir?: string;
+  /**
+   * CI (the oa:hosted CLI's --ci-owner-token, label ci-<run id>) and the
+   * hosted provisioner (label ss-<signup ULID>): create, upgrade, rollback
+   * and updateVars mint an owner PAT labelled `label` into the install's D1
+   * under the operation's lease, hold it in memory for the selftest and
+   * revoke it before the lease is released. No PAT file is read or written;
+   * ciTokenSweep revokes what a crashed run left.
    */
   ciOwnerToken?: { label: string };
   /** Broker keypair (P2); off until the broker exists. */
@@ -201,10 +220,118 @@ export interface WfpOptions {
   healthTimeoutMs?: number;
   /** Require /healthz to report installId (Task 6b, Backend). */
   requireInstallId?: boolean;
+  /**
+   * The longest a Cloudflare token may run before its end date, in days
+   * (1 to PROVISIONER_MAX_TOKEN_DAYS). The CLI keeps DEFAULT_MAX_TOKEN_DAYS;
+   * the hosted provisioner passes PROVISIONER_MAX_TOKEN_DAYS (design v7 Q2).
+   */
+  maxTokenDays?: number;
+  /**
+   * Called as create, upgrade and rollback reach each WFP_STEPS step, so the
+   * Workflow can record it (design v7 5.2). Awaited; a throw fails the
+   * operation. Not built yet (W2): passing it is refused.
+   */
+  onStep?: (step: WfpStep) => void | Promise<void>;
+  /**
+   * Keep the sign-in registry copy `disabled: true` on every rewrite
+   * (upgrade, rollback, updateVars of a suspended or deleting install;
+   * design v7 5.4). The directory copy is never disabled. Not built yet
+   * (W2): `true` is refused, so a suspended install is never re-enabled.
+   */
+  registryDisabled?: boolean;
 }
 
-export class ProvisionRefused extends Error {
-  override name = "ProvisionRefused";
+/**
+ * The job steps provision reports through onStep, in create order (design
+ * v7 3.2 JOB_STEPS): upgrade and rollback report upload, verify_clean and
+ * health only.
+ */
+export const WFP_STEPS = Object.freeze([
+  "upload",
+  "verify_clean",
+  "health",
+  "route",
+  "enable_signin",
+  "active",
+] as const);
+export type WfpStep = (typeof WFP_STEPS)[number];
+
+export {
+  NEAR_EXPIRY_MODE,
+  PROVISION_ERROR_CODES,
+  PROVISION_JOB_KINDS,
+  PROVISION_RETRY_CODES,
+  type ProvisionErrorCode,
+  type ProvisionJobKind,
+  ProvisionRefused,
+  ProvisionRetry,
+  type ProvisionRetryCode,
+  provisionErrorCode,
+  type SettleDb,
+  type SettleFailed,
+  settleFailed,
+} from "./jobs.js";
+
+/** The CLI's cap on a Cloudflare token's end date, in days. */
+export const DEFAULT_MAX_TOKEN_DAYS = 30;
+/** The hosted provisioner's cap: an end date at most 400 days out, required (design v7 Q2). */
+export const PROVISIONER_MAX_TOKEN_DAYS = 400;
+
+/** The binding types verify_clean refuses on any install (design v7 5.2 e). */
+export const VERIFY_CLEAN_REFUSED_BINDING_TYPES = Object.freeze([
+  "secrets_store_secret",
+  "service",
+  "dispatch_namespace",
+] as const);
+
+/**
+ * The exact secret names verify_clean expects on an install (design v7 5.2
+ * e, rule 4), sorted: CREATE_SECRETS, BROKER_SIGNING_KEY with the broker,
+ * TURNSTILE_SECRET with codes on, TEST_HOOK_KEY iff test hooks.
+ */
+export function expectedSecretNames(o: {
+  broker: boolean;
+  codes: boolean;
+  testHooks: boolean;
+}): string[] {
+  return [
+    ...CREATE_SECRETS,
+    ...(o.broker ? ["BROKER_SIGNING_KEY"] : []),
+    ...(o.codes ? ["TURNSTILE_SECRET"] : []),
+    ...(o.testHooks ? ["TEST_HOOK_KEY"] : []),
+  ].sort();
+}
+
+/**
+ * verify_clean (design v7 5.2 e), run after the upload and before health,
+ * route or any sign-in; W2 builds it. A refusal is `prod_dirty` (terminal,
+ * never routed). In order:
+ * 1. Live settings (GET .../dispatch/namespaces/<ns>/scripts/<script>/settings)
+ *    and cf.secretList.
+ * 2. Refuse any binding of a VERIFY_CLEAN_REFUSED_BINDING_TYPES type.
+ * 3. Non-secret bindings minus OWNER_EMAIL equal `sent`'s by (name, type);
+ *    for plain_text and json, sha256 of the value equals the render's.
+ * 4. Secret names equal expectedSecretNames(...) exactly.
+ * 5. TEST_HOOK_KEY, TEST_HOOKS and TEST_DOMAIN absent unless testHooks
+ *    (keyed on testHooks, not OA_ENV).
+ * 6. The release record's variant is `release` unless testHooks, and the
+ *    live do_migration_tag equals the template's last tag.
+ */
+export interface VerifyCleanInput {
+  id: InstallId;
+  /**
+   * The rendered metadata of this upload, or install_versions.metadata on a
+   * resumed attempt (secrets and OWNER_EMAIL stripped).
+   */
+  sent: {
+    bindings: { name: string; type: string; text?: string; json?: unknown }[];
+  };
+  rec: ReleaseRecord;
+  broker: boolean;
+  codes: boolean;
+  testHooks: boolean;
+  /** The template's last Durable Object migration tag. */
+  lastTag: string;
 }
 
 /** An MCP call the install answered with an HTTP error. */
@@ -221,6 +348,9 @@ class McpError extends Error {
 /** Prod creates are refused until the T3b release-record writer exists. */
 export class ProdLocked extends ProvisionRefused {
   override name = "ProdLocked";
+  constructor(message: string) {
+    super(message, "invalid_state");
+  }
 }
 
 /** As the server: codes are on with AUTH_PROVIDERS containing email, or EMAIL_CODE_DOMAIN=on. */
@@ -234,7 +364,6 @@ interface Checked {
   rec: ReleaseRecord;
   mainModule: string;
   modules: Module[];
-  assets: ReleaseAsset[];
   template: Template;
   migrations: ReleaseFile[];
   /** The env's signed floor, checked against FLOOR_MIN_SEQ and the version. */
@@ -268,7 +397,6 @@ const HEALTH_TIMEOUT_MS = 120_000;
 const HEALTH_INTERVAL_MS = 2_000;
 const MAX_ACTIVE_TOKENS = 50;
 const TOKEN_LABEL = "provision";
-const MAX_TOKEN_DAYS = 30;
 const REFUSE_TOKEN_DAYS = 5;
 const DAY = 86_400_000;
 const HOST_RE = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
@@ -451,6 +579,7 @@ export function assertMigrationOrder(
   if (ahead.length > 0)
     throw new ProvisionRefused(
       `the install's D1 has migration ${ahead[0]}, which release ${version} does not; forward-fix only`,
+      "invalid_state",
     );
   const last = files.reduce((n, f, i) => (done.has(f) ? i : n), -1);
   const early =
@@ -458,12 +587,17 @@ export function assertMigrationOrder(
   if (early !== undefined)
     throw new ProvisionRefused(
       `release ${version}: unapplied migration ${early} sorts before applied ${files[last]}; refusing to apply out of order`,
+      "invalid_state",
     );
 }
 
 /** M3: another operation holds the install now; this one stopped. */
-export class LostLease extends ProvisionRefused {
+/** Another operation took the lease: a rerun may succeed (`lease_held`). */
+export class LostLease extends ProvisionRetry {
   override name = "LostLease";
+  constructor(message: string) {
+    super(message, "lease_held");
+  }
 }
 
 export interface VarsResult {
@@ -520,10 +654,14 @@ function skipReason(v: unknown): string | undefined {
   if (v === undefined) return undefined;
   const r = typeof v === "string" ? v.trim() : "";
   if (r === "")
-    throw new ProvisionRefused("skipDirectoryRevoke needs a non-empty reason");
+    throw new ProvisionRefused(
+      "skipDirectoryRevoke needs a non-empty reason",
+      "invalid_state",
+    );
   if (r.length > 200 || /[\r\n@]/.test(r))
     throw new ProvisionRefused(
       "the skip reason must be one line, at most 200 characters, with no email (it goes to hosted_audit)",
+      "invalid_state",
     );
   return r;
 }
@@ -559,6 +697,11 @@ interface CiToken {
 
 /** The CI owner token label: ci-<GitHub run id>. */
 export const CI_TOKEN_LABEL_RE = /^ci-[1-9][0-9]{0,19}$/;
+/** The hosted provisioner's owner token label: ss-<signup ULID>. */
+export const PROVISIONER_TOKEN_LABEL_RE = /^ss-[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+const isTokenLabel = (l: unknown): l is string =>
+  typeof l === "string" &&
+  (CI_TOKEN_LABEL_RE.test(l) || PROVISIONER_TOKEN_LABEL_RE.test(l));
 
 /** A pending session cut and the vars it was minted against. */
 interface Cut {
@@ -659,6 +802,8 @@ export class ProbeAccepted extends Error {
 
 export class WfpProvisioner {
   readonly notes: string[] = [];
+  /** Each verified asset's assetHash, by its record sha256 and path. */
+  private readonly assetHashes = new Map<string, string>();
   private readonly cf: Cf;
   private readonly env: Env;
   private readonly target: Target;
@@ -685,6 +830,7 @@ export class WfpProvisioner {
       if (GATE_LIKE.test(k))
         throw new ProvisionRefused(
           `${JSON.stringify(k)} is not an option; gates are code constants`,
+          "invalid_state",
         );
     this.cf = o.cf;
     this.env = o.env;
@@ -759,24 +905,55 @@ export class WfpProvisioner {
       if (t.ns !== NAMESPACES[env])
         throw new ProvisionRefused(
           `namespace ${JSON.stringify(t.ns)} is not the ${env} dispatch namespace (${NAMESPACES[env]})`,
+          "invalid_state",
         );
     } else if (t.kind === "account") {
       // L3: live envs always use the namespace.
       if (ALLOW_ACCOUNT_TARGET !== true)
         throw new ProvisionRefused(
           "the account target is for tests only; live envs use the dispatch namespace",
+          "invalid_state",
         );
-    } else throw new ProvisionRefused("target must be account or namespace");
+    } else
+      throw new ProvisionRefused(
+        "target must be account or namespace",
+        "invalid_state",
+      );
     if (this.pubkey() === RELEASE_PUBKEY_PLACEHOLDER)
       throw new ProvisionRefused(
         `RELEASE_PUBKEY.${env} is still the placeholder; T3b must set the release signing key before any create`,
+        "invalid_state",
       );
     // A malformed CI label is refused before any call, not at the mint.
     this.ciLabel();
+    this.maxTokenDays();
+    if (o.onStep !== undefined && typeof o.onStep !== "function")
+      throw new ProvisionRefused("onStep must be a function", "invalid_state");
+    if (
+      o.registryDisabled !== undefined &&
+      typeof o.registryDisabled !== "boolean"
+    )
+      throw new ProvisionRefused(
+        "registryDisabled must be a boolean",
+        "invalid_state",
+      );
+    // Fail closed until W2 wires them: a silent no-op would re-enable a
+    // suspended install's sign-in or drop the Workflow's step record.
+    if (o.onStep !== undefined)
+      throw new ProvisionRefused(
+        "onStep is not built yet (W2)",
+        "invalid_state",
+      );
+    if (o.registryDisabled === true)
+      throw new ProvisionRefused(
+        "registryDisabled is not built yet (W2)",
+        "invalid_state",
+      );
     const d = HOSTED_DOMAINS[env];
     if (o.domains?.app !== d.app || o.domains?.content !== d.content)
       throw new ProvisionRefused(
         `domains must be the ${env} pair (${d.app}, ${d.content})`,
+        "invalid_state",
       );
   }
 
@@ -791,25 +968,36 @@ export class WfpProvisioner {
       this.target.kind === "namespace" &&
       this.target.ns === NAMESPACES.staging;
     if (hooks && this.env === "prod")
-      throw new ProvisionRefused("test hooks are not allowed in prod");
+      throw new ProvisionRefused(
+        "test hooks are not allowed in prod",
+        "invalid_state",
+      );
     if (i.bundle === "redline") {
       if (!stagingNs || !hooks)
         throw new ProvisionRefused(
           "the redline (hooks-enabled) bundle is only for test-hook installs in the oa-staging namespace",
+          "invalid_state",
         );
     } else if (i.bundle === "release") {
       if (hooks)
         throw new ProvisionRefused(
           "a test-hook install needs the redline bundle, not release",
+          "invalid_state",
         );
-    } else throw new ProvisionRefused("bundle must be release or redline");
+    } else
+      throw new ProvisionRefused(
+        "bundle must be release or redline",
+        "invalid_state",
+      );
     if (vars.TEST_DOMAIN !== undefined && (!hooks || this.env === "prod"))
       throw new ProvisionRefused(
         "TEST_DOMAIN is only allowed on test-hook installs outside prod",
+        "invalid_state",
       );
     if (hooks && typeof vars.TEST_DOMAIN !== "string")
       throw new ProvisionRefused(
         "a test-hook install needs vars.TEST_DOMAIN (hooks act only on emails @TEST_DOMAIN)",
+        "invalid_state",
       );
   }
 
@@ -827,6 +1015,7 @@ export class WfpProvisioner {
     if (!got)
       throw new ProvisionRefused(
         `no release record for ${want}; the bundle step (T3b) must write one before any create`,
+        "release_not_published",
       );
     // F4: verify and use a private, frozen copy; the reader keeps nothing.
     // T3b: the record is the exact signed string, parsed strictly after the
@@ -843,28 +1032,34 @@ export class WfpProvisioner {
     } catch (e) {
       throw new ProvisionRefused(
         `release record ${want}: ${(e as Error).message}`,
+        "release_unverified",
       );
     }
     if (rec.env !== this.env)
       throw new ProvisionRefused(
         `release record ${want} is for env ${String(rec.env)}, not ${this.env}`,
+        "release_unverified",
       );
     if (!isReleaseVersion(i.version))
       throw new ProvisionRefused(
         `version ${i.version} is not a release version`,
+        "release_not_published",
       );
     if (rec.version !== i.version || rec.variant !== i.bundle)
       throw new ProvisionRefused(
         `the release record read for ${want} is for ${String(rec.version)} (${String(rec.variant)})`,
+        "release_unverified",
       );
     const d = rec.defines?.[TEST_HOOKS_DEFINE];
     if (typeof d !== "boolean")
       throw new ProvisionRefused(
         `release record ${want}: ${TEST_HOOKS_DEFINE} must be a boolean literal`,
+        "release_unverified",
       );
     if (d !== (i.bundle === "redline"))
       throw new ProvisionRefused(
         `release record ${want}: ${TEST_HOOKS_DEFINE} must be ${i.bundle === "redline"}`,
+        "release_unverified",
       );
     for (const k of [
       "sha256",
@@ -873,9 +1068,15 @@ export class WfpProvisioner {
       "welcomeSha256",
     ] as const)
       if (typeof rec[k] !== "string" || !HEX64.test(rec[k]))
-        throw new ProvisionRefused(`release record ${want} has no valid ${k}`);
+        throw new ProvisionRefused(
+          `release record ${want} has no valid ${k}`,
+          "release_unverified",
+        );
     if (!Array.isArray(rec.assets))
-      throw new ProvisionRefused(`release record ${want} has no assets list`);
+      throw new ProvisionRefused(
+        `release record ${want} has no assets list`,
+        "release_unverified",
+      );
     try {
       // F8: limits before any other read, so a huge record fails early.
       if (rec.assets.length > ASSET_LIMITS.files)
@@ -896,6 +1097,7 @@ export class WfpProvisioner {
     } catch (e) {
       throw new ProvisionRefused(
         `release record ${want}: ${(e as Error).message}`,
+        "release_unverified",
       );
     }
     return rec;
@@ -913,6 +1115,7 @@ export class WfpProvisioner {
     if (got === null || got === undefined)
       throw new ProvisionRefused(
         `the ${this.env} release floor (releases/floor.json) is missing; publish one before any create`,
+        "release_unverified",
       );
     let f: FloorRecord;
     try {
@@ -920,10 +1123,11 @@ export class WfpProvisioner {
     } catch (e) {
       throw new ProvisionRefused(
         `the ${this.env} release floor: ${(e as Error).message}`,
+        "release_unverified",
       );
     }
     const why = floorRefusal(f, rec.version, FLOOR_MIN_SEQ[this.env]);
-    if (why) throw new ProvisionRefused(why);
+    if (why) throw new ProvisionRefused(why, "release_unverified");
     return f;
   }
 
@@ -937,6 +1141,7 @@ export class WfpProvisioner {
     if (floor.seq < cached)
       throw new ProvisionRefused(
         `the release floor seq ${floor.seq} is below ${cached}, the highest this env has accepted`,
+        "release_unverified",
       );
     return floor.seq > cached;
   }
@@ -945,6 +1150,7 @@ export class WfpProvisioner {
   private refuse(rec: ReleaseRecord, what: string, why?: string): never {
     throw new ProvisionRefused(
       `release ${rec.version} (${rec.variant}): the ${what} do not match the signed record${why ? ` (${why})` : ""}`,
+      "release_unverified",
     );
   }
 
@@ -965,23 +1171,57 @@ export class WfpProvisioner {
     return copy;
   }
 
-  private async readAssets(rec: ReleaseRecord): Promise<ReleaseAsset[]> {
+  /**
+   * The assets list, checked against the signed record, as an upload
+   * manifest whose bytes are read only when used: every read is a private
+   * copy checked against the record's size and sha256, so a file changed
+   * since an earlier read is refused. Each file's assetHash comes from its
+   * verify read: with `verify` (pre-flight, rollback apply) every file is
+   * read and checked now, one at a time, and dropped; without, only a file
+   * not verified yet in this run is.
+   */
+  private async readAssets(
+    rec: ReleaseRecord,
+    verify = false,
+  ): Promise<AssetFile[]> {
     const list = await this.o.release.assets(rec.version, rec.variant);
-    const copy = (list ?? []).map((a) => ({
+    const got = (Array.isArray(list) ? list : []).map((a) => ({
       path: a?.path,
-      bytes: new Uint8Array(a?.bytes ?? []),
+      size: a?.size,
+      sha256: a?.sha256,
     }));
-    let got: ReturnType<typeof assetEntries>;
     try {
-      got = assetEntries(copy);
+      for (const a of got) assertAssetEntry(a);
+      got.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     } catch (e) {
       throw new ProvisionRefused(
         `release ${rec.version} (${rec.variant}): ${(e as Error).message}`,
+        "release_unverified",
       );
     }
     if (canonicalJson(got) !== canonicalJson(rec.assets))
       this.refuse(rec, "assets", "an extra, missing or changed file");
-    return copy;
+    const read = async (a: ReleaseAssetEntry) => {
+      const bytes = new Uint8Array(
+        (await this.o.release.assetBytes(rec.version, rec.variant, a.path)) ??
+          [],
+      );
+      if (bytes.byteLength !== a.size || sha256Hex(bytes) !== a.sha256)
+        this.refuse(rec, "assets", `${a.path} changed`);
+      return bytes;
+    };
+    const files: AssetFile[] = [];
+    for (const a of rec.assets) {
+      // The hash is of the bytes with this sha256, so it is reused safely.
+      const key = `${a.sha256}\0${a.path}`;
+      let hash = this.assetHashes.get(key);
+      if (verify || hash === undefined) {
+        hash = assetHash(await read(a), a.path);
+        this.assetHashes.set(key, hash);
+      }
+      files.push({ path: a.path, size: a.size, hash, bytes: () => read(a) });
+    }
+    return files;
   }
 
   private async readTemplate(rec: ReleaseRecord): Promise<Template> {
@@ -995,12 +1235,13 @@ export class WfpProvisioner {
       if (Object.hasOwn(t.vars ?? {}, k))
         throw new ProvisionRefused(
           `the release template sets ${k} in vars; only create may set it`,
+          "release_unverified",
         );
     // L5: only additive Durable Object migrations, before any call.
     try {
       assertSafeMigrations(t);
     } catch (e) {
-      throw new ProvisionRefused((e as Error).message);
+      throw new ProvisionRefused((e as Error).message, "release_unverified");
     }
     return t;
   }
@@ -1017,6 +1258,7 @@ export class WfpProvisioner {
     } catch (e) {
       throw new ProvisionRefused(
         `release ${rec.version} (${rec.variant}): ${(e as Error).message}`,
+        "release_unverified",
       );
     }
     if (h !== rec.migrationsSha256) this.refuse(rec, "migrations");
@@ -1036,15 +1278,16 @@ export class WfpProvisioner {
     version: string;
     bundle: BundleVariant;
   }): Promise<Checked> {
-    if (!this.o.release) throw new ProvisionRefused("no release reader");
+    if (!this.o.release)
+      throw new ProvisionRefused("no release reader", "invalid_state");
     const rec = await this.readRecord(i);
     const floor = await this.readFloor(rec);
     const { mainModule, modules } = await this.readModules(rec);
-    const assets = await this.readAssets(rec);
+    await this.readAssets(rec, true);
     const template = await this.readTemplate(rec);
     const migrations = await this.readMigrations(rec);
     await this.readWelcome(rec);
-    return { rec, mainModule, modules, assets, template, migrations, floor };
+    return { rec, mainModule, modules, template, migrations, floor };
   }
 
   /**
@@ -1070,7 +1313,7 @@ export class WfpProvisioner {
     // L7: only create and updateVars refuse; a render (upgrade, rollback)
     // replaces a stale stored value with the derived one, noted.
     const refuse = (why: string) => {
-      if (mode === "check") throw new ProvisionRefused(why);
+      if (mode === "check") throw new ProvisionRefused(why, "invalid_state");
       this.notes.push(`render: ${why}; rendering the derived value`);
     };
     if (!client)
@@ -1119,10 +1362,12 @@ export class WfpProvisioner {
     )
       throw new ProvisionRefused(
         "google sign-in on a hosted install needs the sign-in broker (brokerEnabled)",
+        "invalid_state",
       );
     if (google && this.registryDomainsOf(vars).length === 0)
       throw new ProvisionRefused(
         "google needs AUTH_DOMAINS: the server refuses google when it is empty",
+        "invalid_state",
       );
   }
 
@@ -1138,6 +1383,7 @@ export class WfpProvisioner {
     )
       throw new ProvisionRefused(
         "refusing to upload a hooks-enabled bundle outside a staging test-hook install",
+        "invalid_state",
       );
   }
 
@@ -1158,15 +1404,20 @@ export class WfpProvisioner {
       if (!providers.includes("email"))
         throw new ProvisionRefused(
           "EMAIL_CODE_DOMAIN=on needs email in AUTH_PROVIDERS",
+          "invalid_state",
         );
       if (providers.includes("google"))
         throw new ProvisionRefused(
           "EMAIL_CODE_DOMAIN=on needs google out of AUTH_PROVIDERS",
+          "invalid_state",
         );
     } else if (
       !(vars.AUTH_DOMAINS ?? "").split(",").some((d) => d.trim() !== "")
     )
-      throw new ProvisionRefused("EMAIL_CODE_DOMAIN=on needs AUTH_DOMAINS");
+      throw new ProvisionRefused(
+        "EMAIL_CODE_DOMAIN=on needs AUTH_DOMAINS",
+        "invalid_state",
+      );
   }
 
   /**
@@ -1181,7 +1432,10 @@ export class WfpProvisioner {
     if (!codesOn(vars)) return null;
     if (testHooks) {
       if (this.env === "prod")
-        throw new ProvisionRefused("a test Turnstile key is refused on prod");
+        throw new ProvisionRefused(
+          "a test Turnstile key is refused on prod",
+          "invalid_state",
+        );
       return { ...TURNSTILE_TEST_KEYS };
     }
     const ts = this.o.turnstile;
@@ -1194,15 +1448,20 @@ export class WfpProvisioner {
     )
       throw new ProvisionRefused(
         `codes are on (AUTH_PROVIDERS has email, or EMAIL_CODE_DOMAIN=on) but the ${this.env} Turnstile sitekey and secret are missing; run the Turnstile init for ${this.env} first`,
+        "invalid_state",
       );
     if (!SITEKEY_RE.test(ts.sitekey))
-      throw new ProvisionRefused("the Turnstile sitekey is malformed");
+      throw new ProvisionRefused(
+        "the Turnstile sitekey is malformed",
+        "invalid_state",
+      );
     if (
       TURNSTILE_TEST_KEY.test(ts.sitekey) ||
       TURNSTILE_TEST_KEY.test(ts.secret)
     )
       throw new ProvisionRefused(
         `a test Turnstile key is refused for the ${this.env} widget: only a test-hooks install gets one`,
+        "invalid_state",
       );
     this.sensitive.add(ts.secret);
     return { sitekey: ts.sitekey, secret: ts.secret };
@@ -1220,12 +1479,14 @@ export class WfpProvisioner {
       if (sitekey !== TURNSTILE_TEST_KEYS.sitekey)
         throw new ProvisionRefused(
           "a test-hooks install's Turnstile sitekey must be the test key",
+          "invalid_state",
         );
       return;
     }
     if (TURNSTILE_TEST_KEY.test(sitekey))
       throw new ProvisionRefused(
         "a test Turnstile key is refused: only a test-hooks install gets one",
+        "invalid_state",
       );
     const name = platformNames(this.env).turnstile;
     const domain = HOSTED_DOMAINS[this.env].app;
@@ -1233,10 +1494,12 @@ export class WfpProvisioner {
     if (!w || w.sitekey !== sitekey)
       throw new ProvisionRefused(
         `Turnstile widget ${sitekey} not found on the account`,
+        "invalid_state",
       );
     if (w.name !== name)
       throw new ProvisionRefused(
         `Turnstile widget ${sitekey} is not ${name} (the ${this.env} widget)`,
+        "invalid_state",
       );
     if (
       !Array.isArray(w.domains) ||
@@ -1245,6 +1508,7 @@ export class WfpProvisioner {
     )
       throw new ProvisionRefused(
         `Turnstile widget ${sitekey} must list exactly [${domain}]`,
+        "invalid_state",
       );
   }
 
@@ -1252,17 +1516,44 @@ export class WfpProvisioner {
 
   private async run(i: WfpCreateInput): Promise<Install> {
     this.checkOptions();
-    if (i.plan !== "paid") throw new ProvisionRefused("plan must be paid");
+    if (i.plan !== "paid")
+      throw new ProvisionRefused("plan must be paid", "invalid_state");
     const ownerEmail = normOwnerEmail(i.ownerEmail);
     if (!ownerEmail)
-      throw new ProvisionRefused("ownerEmail is not a valid email");
+      throw new ProvisionRefused(
+        "ownerEmail is not a valid email",
+        "invalid_state",
+      );
     const { appHost, contentHost } = hosts(i.slug, this.o.domains);
     if (i.resumeId !== undefined && !isInstallId(i.resumeId))
-      throw new ProvisionRefused("resumeId is not an install id");
+      throw new ProvisionRefused(
+        "resumeId is not an install id",
+        "invalid_state",
+      );
+    if (i.installId !== undefined && !isInstallId(i.installId))
+      throw new ProvisionRefused(
+        "installId is not an install id",
+        "invalid_state",
+      );
+    if (i.installId !== undefined && i.resumeId !== undefined)
+      throw new ProvisionRefused(
+        "pass installId or resumeId, not both",
+        "invalid_state",
+      );
+    // 4.1: the admin and signup principals are never installs.
+    for (const id of [i.installId, i.resumeId])
+      if (isPlatformPrincipalId(id))
+        throw new ProvisionRefused(
+          `${id} is a platform principal id, never an install`,
+          "invalid_state",
+        );
     const testHooks = i.testHooks === true;
     const vars = i.vars ?? {};
     this.brokerVars(vars);
     this.checkVariant(i, vars);
+    // The owner PAT and test-hook key files without a CI token; with one,
+    // both stay in memory (no patDir in the provisioner Worker).
+    if (this.o.ciOwnerToken === undefined) this.patDir();
     this.checkEmailCodeDomain(vars, "providers");
     const ts = this.turnstileInput(vars, testHooks);
     this.checkEmailCodeDomain(vars, "domains");
@@ -1318,24 +1609,29 @@ export class WfpProvisioner {
       if (row.state === "active")
         throw new ProvisionRefused(
           `slug ${i.slug} already exists as active install ${row.id}`,
+          "slug_taken",
         );
       // Covers deleted too: its slug and hosts stay held until a purge.
       if (row.state !== "creating")
         throw new ProvisionRefused(
           `install ${row.id} is ${row.state}; only a creating install can be resumed (a deleted install keeps its slug and hosts until a purge)`,
+          "invalid_state",
         );
       if (row.inputs_hash !== hash)
         throw new ProvisionRefused(
           `install ${row.id}: resume inputs differ from the first run (owner, vars or testHooks); use the original inputs`,
+          "invalid_state",
         );
       // F2/I1: never move an install to an older release.
       if (row.version && compareVersions(rel.rec.version, row.version) < 0)
         throw new ProvisionRefused(
           `install ${row.id} is at ${row.version}; ${rel.rec.version} would be a downgrade`,
+          "downgrade_refused",
         );
       if (row.app_host !== appHost || row.content_host !== contentHost)
         throw new ProvisionRefused(
           `install ${row.id}: hosts differ from the first run`,
+          "invalid_state",
         );
       const held = await this.platform.hostsHeldByOthers(row.id, [
         appHost,
@@ -1344,6 +1640,7 @@ export class WfpProvisioner {
       if (held.length > 0)
         throw new ProvisionRefused(
           `host ${held[0]?.host} is already taken by ${held[0]?.install_id}`,
+          "slug_taken",
         );
       res = await this.resources(row);
     } else {
@@ -1351,18 +1648,22 @@ export class WfpProvisioner {
       if (holders.length > 0)
         throw new ProvisionRefused(
           `host or broker origin already taken by install ${holders[0]?.id} (slug ${i.slug})`,
+          "slug_taken",
         );
     }
     for (const h of [appHost, contentHost]) {
       const cur = await this.cf.kvGet(this.hostsKv.id, h);
       if (cur !== null && cur !== row?.id)
-        throw new ProvisionRefused(`host ${h} is already taken by ${cur}`);
+        throw new ProvisionRefused(
+          `host ${h} is already taken by ${cur}`,
+          "slug_taken",
+        );
     }
     if (raiseFloor) await this.platform.raiseFloorSeq(rel.floor.seq);
     const fresh = !row;
     if (!row)
       row = await this.platform.insertCreating({
-        id: newInstallId(),
+        id: i.installId ?? newInstallId(),
         slug: i.slug,
         appHost,
         contentHost,
@@ -1399,7 +1700,11 @@ export class WfpProvisioner {
     const env = this.env;
     const dbName = platformNames(env).db;
     const dbId = await this.cf.d1Get(dbName);
-    if (!dbId) throw new ProvisionRefused(`platform D1 ${dbName} not found`);
+    if (!dbId)
+      throw new ProvisionRefused(
+        `platform D1 ${dbName} not found`,
+        "invalid_state",
+      );
     this.platform = new PlatformDb(
       this.cf,
       { id: dbId, name: dbName },
@@ -1409,19 +1714,26 @@ export class WfpProvisioner {
     const hostsTitle = hostsKvTitle(env);
     const hostsId = await this.cf.kvFind(hostsTitle);
     if (!hostsId)
-      throw new ProvisionRefused(`HOSTS KV ${hostsTitle} not found`);
+      throw new ProvisionRefused(
+        `HOSTS KV ${hostsTitle} not found`,
+        "invalid_state",
+      );
     this.hostsKv = { id: hostsId, title: hostsTitle };
     if (this.o.brokerEnabled) {
       const regTitle = platformNames(env).registry;
       const regId = await this.cf.kvFind(regTitle);
       if (!regId)
-        throw new ProvisionRefused(`broker registry KV ${regTitle} not found`);
+        throw new ProvisionRefused(
+          `broker registry KV ${regTitle} not found`,
+          "invalid_state",
+        );
       this.registryKv = { id: regId, title: regTitle };
       const dirTitle = platformNames(env).directoryRegistry;
       const dirId = await this.cf.kvFind(dirTitle);
       if (!dirId)
         throw new ProvisionRefused(
           `directory registry KV ${dirTitle} not found`,
+          "invalid_state",
         );
       this.directoryKv = { id: dirId, title: dirTitle };
     }
@@ -1438,22 +1750,40 @@ export class WfpProvisioner {
     if (row.d1_id !== null && row.d1_id !== d1 && !(allowGone && d1 === null))
       throw new ProvisionRefused(
         `install ${row.id}: installs.d1_id is not the id of D1 ${n.d1}; refusing to touch another database`,
+        "invalid_state",
       );
     const kv = await this.cf.kvFind(n.kv);
     if (row.kv_id !== null && row.kv_id !== kv && !(allowGone && kv === null))
       throw new ProvisionRefused(
         `install ${row.id}: installs.kv_id is not the id of KV ${n.kv}; refusing to touch another namespace`,
+        "invalid_state",
       );
     return { d1, kv };
   }
 
   private async findRow(i: WfpCreateInput): Promise<InstallRow | undefined> {
     const bySlug = await this.platform.bySlug(i.slug);
+    if (i.installId !== undefined) {
+      const byId = await this.platform.byId(i.installId);
+      if (byId && byId.slug !== i.slug)
+        throw new ProvisionRefused(
+          `installId ${i.installId} is not the install for slug ${i.slug}`,
+          "invalid_state",
+        );
+      // An active row keeps its own refusal (slug ... already exists).
+      if (bySlug && bySlug.id !== i.installId && bySlug.state !== "active")
+        throw new ProvisionRefused(
+          `slug ${i.slug} is already taken by install ${bySlug.id}`,
+          "slug_taken",
+        );
+      return bySlug;
+    }
     if (i.resumeId === undefined) return bySlug;
     const byId = await this.platform.byId(i.resumeId);
     if (!byId || byId.slug !== i.slug || bySlug?.id !== byId.id)
       throw new ProvisionRefused(
         `resumeId ${i.resumeId} is not the install for slug ${i.slug}`,
+        "invalid_state",
       );
     return byId;
   }
@@ -1469,26 +1799,33 @@ export class WfpProvisioner {
     const t = await this.cf.tokenVerify();
     const now = this.now();
     if (t?.status !== "active")
-      throw new ProvisionRefused("Cloudflare token is not active");
-    if (t.not_before && Date.parse(t.not_before) > now)
-      throw new ProvisionRefused(
-        "Cloudflare token is not valid yet (not_before is in the future)",
+      throw new ProvisionRetry(
+        "Cloudflare token is not active",
+        "token_invalid",
       );
+    if (t.not_before && Date.parse(t.not_before) > now)
+      throw new ProvisionRetry(
+        "Cloudflare token is not valid yet (not_before is in the future)",
+        "token_invalid",
+      );
+    const maxDays = this.maxTokenDays();
     if (!t.expires_on)
       throw new ProvisionRefused(
-        `Cloudflare token has no expiry; set expires_on at most ${MAX_TOKEN_DAYS} days out`,
+        `Cloudflare token has no expiry; set an end date at most ${maxDays} days out`,
+        "invalid_state",
       );
     const exp = Date.parse(t.expires_on);
     if (!Number.isFinite(exp) || exp <= now)
-      throw new ProvisionRefused("Cloudflare token has expired");
-    if (exp > now + MAX_TOKEN_DAYS * DAY)
+      throw new ProvisionRetry("Cloudflare token has expired", "token_invalid");
+    if (exp > now + maxDays * DAY)
       throw new ProvisionRefused(
-        `Cloudflare token expires more than ${MAX_TOKEN_DAYS} days out; mint one with a shorter expiry`,
+        `Cloudflare token expires more than ${maxDays} days out; mint one with a shorter expiry`,
+        "invalid_state",
       );
     if (exp <= now + REFUSE_TOKEN_DAYS * DAY) {
-      const why = `the Cloudflare token expires on ${new Date(exp).toISOString().slice(0, 10)}, within ${REFUSE_TOKEN_DAYS} days; roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and update the keychain item`;
+      const why = `the Cloudflare token expires on ${new Date(exp).toISOString().slice(0, 10)}, within ${REFUSE_TOKEN_DAYS} days; roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and ${this.tokenHome()}`;
       if (nearExpiry === "refuse")
-        throw new ProvisionRefused(`${why}, then retry`);
+        throw new ProvisionRetry(`${why}, then retry`, "token_invalid");
       this.notes.push(`WARNING: ${why}`);
     }
     try {
@@ -1497,6 +1834,7 @@ export class WfpProvisioner {
       if (e instanceof CfError && (e.status === 401 || e.status === 403))
         throw new ProvisionRefused(
           `Cloudflare token lacks Workers Scripts Read on the account (HTTP ${e.status})`,
+          "invalid_state",
         );
       throw e;
     }
@@ -1560,7 +1898,7 @@ export class WfpProvisioner {
     try {
       assertUniqueBindings(meta.bindings);
     } catch (e) {
-      throw new ProvisionRefused((e as Error).message);
+      throw new ProvisionRefused((e as Error).message, "invalid_state");
     }
     return meta;
   }
@@ -1623,9 +1961,14 @@ export class WfpProvisioner {
       const send = Object.fromEntries(
         missing.map((k) => [k, fresh[k] as string]),
       );
-      if (send.TEST_HOOK_KEY !== undefined) {
-        mkdirSync(this.o.patDir, { recursive: true, mode: 0o700 });
-        const f = join(this.o.patDir, `${m.appHost}-hook-key`);
+      // With ciOwnerToken and no patDir the key is not saved: redline_creds
+      // rotates and delivers it (design v7 3.3).
+      const hookDir =
+        this.o.ciOwnerToken === undefined ? this.patDir() : this.o.patDir;
+      if (send.TEST_HOOK_KEY !== undefined && hookDir !== undefined) {
+        const dir = hookDir;
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+        const f = join(dir, `${m.appHost}-hook-key`);
         try {
           writeSecretFile(f, `${send.TEST_HOOK_KEY}\n`);
         } catch (e) {
@@ -1690,7 +2033,10 @@ export class WfpProvisioner {
       const cur = await cf.kvGet(this.hostsKv.id, h);
       if (cur === id) continue;
       if (cur !== null)
-        throw new ProvisionRefused(`host ${h} is already taken by ${cur}`);
+        throw new ProvisionRefused(
+          `host ${h} is already taken by ${cur}`,
+          "slug_taken",
+        );
       assertOwnResource(this.hostsKv.title, env);
       await this.hold();
       await cf.kvPut(this.hostsKv.id, h, id);
@@ -1889,6 +2235,7 @@ export class WfpProvisioner {
     if (this.inFlight)
       throw new ProvisionRefused(
         "this provisioner is already running an operation; use one instance per concurrent operation",
+        "invalid_state",
       );
     this.inFlight = true;
     try {
@@ -1922,15 +2269,18 @@ export class WfpProvisioner {
     states: InstallState[],
     nearExpiry: "refuse" | "warn" = "refuse",
   ): Promise<InstallRow> {
-    if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
+    if (!isInstallId(id))
+      throw new ProvisionRefused("not an install id", "invalid_state");
     this.checkOptions();
     await this.checkToken(nearExpiry);
     await this.resolvePlatform();
     const row = await this.platform.byId(id);
-    if (!row) throw new ProvisionRefused(`install ${id} not found`);
+    if (!row)
+      throw new ProvisionRefused(`install ${id} not found`, "invalid_state");
     if (!states.includes(row.state))
       throw new ProvisionRefused(
         `install ${id} is ${row.state}; this operation needs ${states.join(" or ")}`,
+        "invalid_state",
       );
     // Never the purged '': splitting on it would shred every message.
     const owner = ownerEmailOf(row);
@@ -1967,13 +2317,16 @@ export class WfpProvisioner {
     if (cur && !from.includes(cur.state))
       throw new ProvisionRefused(
         `install ${row.id} is ${cur.state}; another operation got there first`,
+        "invalid_state",
       );
     if (cur && cur.lease_until !== null && cur.lease_until > this.now())
-      throw new ProvisionRefused(
+      throw new ProvisionRetry(
         `install ${row.id} is busy: another operation holds it`,
+        "lease_held",
       );
-    throw new ProvisionRefused(
+    throw new ProvisionRetry(
       `install ${row.id} changed since pre-flight read it; re-run`,
+      "lease_held",
     );
   }
 
@@ -2050,7 +2403,10 @@ export class WfpProvisioner {
       Array.isArray(vars) ||
       Object.values(vars).some((v) => typeof v !== "string")
     )
-      throw new ProvisionRefused("vars must map names to strings");
+      throw new ProvisionRefused(
+        "vars must map names to strings",
+        "invalid_state",
+      );
     const testHooks = row.test_hooks === 1;
     this.checkVariant(
       { bundle: testHooks ? "redline" : "release", testHooks },
@@ -2063,10 +2419,14 @@ export class WfpProvisioner {
     if (raw === null)
       throw new ProvisionRefused(
         `install ${row.id}: the owner email is purged (or missing); it is never rendered`,
+        "invalid_state",
       );
     const ownerEmail = normOwnerEmail(raw);
     if (!ownerEmail)
-      throw new ProvisionRefused(`install ${row.id} has no valid owner email`);
+      throw new ProvisionRefused(
+        `install ${row.id} has no valid owner email`,
+        "invalid_state",
+      );
     this.sensitive.add(ownerEmail);
     return {
       appHost: row.app_host,
@@ -2083,6 +2443,7 @@ export class WfpProvisioner {
     if (row.vars === null)
       throw new ProvisionRefused(
         `install ${row.id} has no stored vars (created before per-version metadata)`,
+        "invalid_state",
       );
     let v: unknown;
     try {
@@ -2098,6 +2459,7 @@ export class WfpProvisioner {
     )
       throw new ProvisionRefused(
         `install ${row.id}: installs.vars is not an object of strings; refusing to render it`,
+        "invalid_state",
       );
     return v as Record<string, string>;
   }
@@ -2181,16 +2543,21 @@ export class WfpProvisioner {
       if (typeof confirm !== "string" || confirm !== id)
         throw new ProvisionRefused(
           "reissueOwnerToken needs confirm to be exactly the install id",
+          "invalid_state",
         );
+      // The new PAT goes to a file: no patDir is refused before any write.
+      this.patDir();
       const row = await this.openInstall(id, ["active"]);
       const raw = ownerEmailOf(row);
       const ownerEmail = raw === null ? null : normOwnerEmail(raw);
       if (!ownerEmail)
         throw new ProvisionRefused(
           `install ${id} has no valid owner email (purged or missing)`,
+          "invalid_state",
         );
       const { d1 } = await this.resources(row);
-      if (!d1) throw new ProvisionRefused(`install ${id} has no D1`);
+      if (!d1)
+        throw new ProvisionRefused(`install ${id} has no D1`, "invalid_state");
       await this.claim(row, ["active"], "active", "owner-token");
       try {
         await this.hold();
@@ -2230,6 +2597,7 @@ export class WfpProvisioner {
       if (typeof confirm !== "string" || confirm !== id)
         throw new ProvisionRefused(
           "releaseLease needs confirm to be exactly the install id",
+          "invalid_state",
         );
       const row = await this.openInstall(
         id,
@@ -2237,7 +2605,10 @@ export class WfpProvisioner {
         "warn",
       );
       if (row.lease === null)
-        throw new ProvisionRefused(`install ${id} holds no lease`);
+        throw new ProvisionRefused(
+          `install ${id} holds no lease`,
+          "invalid_state",
+        );
       const live = row.lease_until !== null && row.lease_until > this.now();
       if (live && o?.force !== true) {
         await this.platform.audit(id, "lease.release_refused", {
@@ -2245,13 +2616,15 @@ export class WfpProvisioner {
         });
         throw new ProvisionRefused(
           `install ${id}: the lease has not expired (until ${new Date(row.lease_until as number).toISOString()}); pass force: true only when no operation is running`,
+          "invalid_state",
         );
       }
       const state: InstallState =
         row.state === "upgrading" ? "active" : row.state;
       if (!(await this.platform.finish(id, row.lease, state)))
-        throw new ProvisionRefused(
+        throw new ProvisionRetry(
           `install ${id}: the lease changed while releasing it; retry`,
+          "lease_held",
         );
       await this.platform.audit(
         id,
@@ -2270,16 +2643,18 @@ export class WfpProvisioner {
     if (!v)
       throw new ProvisionRefused(
         `install ${row.id}: no stored metadata for ${version} (the install was created before per-version metadata; it cannot be upgraded or rolled back)`,
+        "invalid_state",
       );
     return v;
   }
 
   /** The owner PAT create saved; the selftest uses it, and nothing re-mints it. */
   private patFileOf(appHost: string): string {
-    const f = join(this.o.patDir, `${appHost}-pat-token`);
+    const f = join(this.patDir(), `${appHost}-pat-token`);
     if (!existsSync(f))
       throw new ProvisionRefused(
         `the owner token file ${f} is missing; the selftest needs it`,
+        "invalid_state",
       );
     return f;
   }
@@ -2305,6 +2680,7 @@ export class WfpProvisioner {
         if (!allowRefused)
           throw new ProvisionRefused(
             `${why}; restore it before any lifecycle operation`,
+            "invalid_state",
           );
         return { patFile, refused: why };
       }
@@ -2317,12 +2693,48 @@ export class WfpProvisioner {
 
   /**
    * The token checks every operation runs first (active, not_before, an
-   * expiry at most MAX_TOKEN_DAYS out, Workers Scripts Read), on their own
+   * expiry at most maxTokenDays out, Workers Scripts Read), on their own
    * and with no write, so a caller (the oa:hosted CLI) can refuse a token
    * before its own first write. `nearExpiry` as in each operation.
    */
   async verifyToken(nearExpiry: "refuse" | "warn"): Promise<void> {
     await this.checkToken(nearExpiry === "warn" ? "warn" : "refuse");
+  }
+
+  /**
+   * Design v7 5.5, under a lease claim(row, ["active"], "active", kind):
+   * both HOSTS keys to `<mode>:<id>` (hostsValue), then the sign-in registry
+   * copy `disabled: true`; the directory copy is never disabled, so a later
+   * purge's directory revoke still works. Idempotent. W2 builds the body.
+   */
+  async pause(
+    id: InstallId,
+    mode: "paused" | "closed",
+    o: { kind: ProvisionJobKind },
+  ): Promise<{ id: InstallId; mode: "paused" | "closed" }> {
+    if (!isInstallId(id))
+      throw new ProvisionRefused("not an install id", "invalid_state");
+    if (mode !== "paused" && mode !== "closed")
+      throw new ProvisionRefused(
+        "pause mode must be paused or closed",
+        "invalid_state",
+      );
+    this.jobKind(o);
+    throw new Error("pause is not built yet (W2)");
+  }
+
+  /**
+   * Design v7 5.5: HOSTS back to `<id>`, then the sign-in registry copy
+   * re-enabled. Idempotent. W2 builds the body.
+   */
+  async unpause(
+    id: InstallId,
+    o: { kind: ProvisionJobKind },
+  ): Promise<{ id: InstallId; mode: "serving" }> {
+    if (!isInstallId(id))
+      throw new ProvisionRefused("not an install id", "invalid_state");
+    this.jobKind(o);
+    throw new Error("unpause is not built yet (W2)");
   }
 
   /**
@@ -2333,12 +2745,17 @@ export class WfpProvisioner {
     // R2-L1: not an operation: no re-entry check, and it never touches an
     // operation's lock or redaction set. It reads through its own PlatformDb.
     {
-      if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
+      if (!isInstallId(id))
+        throw new ProvisionRefused("not an install id", "invalid_state");
       if (this.env !== "staging" && this.env !== "prod")
         throw new ForeignResource("", this.env);
       const dbName = platformNames(this.env).db;
       const dbId = await this.cf.d1Get(dbName);
-      if (!dbId) throw new ProvisionRefused(`platform D1 ${dbName} not found`);
+      if (!dbId)
+        throw new ProvisionRefused(
+          `platform D1 ${dbName} not found`,
+          "invalid_state",
+        );
       const platform = new PlatformDb(
         this.cf,
         { id: dbId, name: dbName },
@@ -2346,7 +2763,8 @@ export class WfpProvisioner {
         this.now,
       );
       const row = await platform.byId(id);
-      if (!row) throw new ProvisionRefused(`install ${id} not found`);
+      if (!row)
+        throw new ProvisionRefused(`install ${id} not found`, "invalid_state");
       const cut = this.pendingCut(row);
       const registryDrift = await this.registryDrift(row);
       return {
@@ -2411,10 +2829,16 @@ export class WfpProvisioner {
   ): Promise<{ d1Id: string; kvId: string }> {
     const res = await this.resources(row);
     if (!res.d1 || !res.kv)
-      throw new ProvisionRefused(`install ${row.id} has no D1 or KV`);
+      throw new ProvisionRefused(
+        `install ${row.id} has no D1 or KV`,
+        "invalid_state",
+      );
     const script = names(row.id, this.env).script;
     if (!(await this.cf.scriptExists(this.target, script)))
-      throw new ProvisionRefused(`install ${row.id} has no script`);
+      throw new ProvisionRefused(
+        `install ${row.id} has no script`,
+        "invalid_state",
+      );
     const have = await this.cf.secretList(this.target, script);
     const missing = [
       ...CREATE_SECRETS,
@@ -2423,6 +2847,7 @@ export class WfpProvisioner {
     if (missing.length > 0)
       throw new ProvisionRefused(
         `install ${row.id} is missing secret ${missing.join(", ")}; repair it first`,
+        "invalid_state",
       );
     return { d1Id: res.d1, kvId: res.kv };
   }
@@ -2443,7 +2868,7 @@ export class WfpProvisioner {
       try {
         assertDoClassesShipFirst(t, live);
       } catch (e) {
-        throw new ProvisionRefused((e as Error).message);
+        throw new ProvisionRefused((e as Error).message, "invalid_state");
       }
     };
   }
@@ -2460,17 +2885,28 @@ export class WfpProvisioner {
   private async runUpgrade(id: InstallId, to: string): Promise<UpgradeResult> {
     const row = await this.openInstall(id, ["active"]);
     const from = row.version;
-    if (!from) throw new ProvisionRefused(`install ${id} has no version`);
+    if (!from)
+      throw new ProvisionRefused(
+        `install ${id} has no version`,
+        "invalid_state",
+      );
     if (!isReleaseVersion(to))
-      throw new ProvisionRefused(`version ${to} is not a release version`);
+      throw new ProvisionRefused(
+        `version ${to} is not a release version`,
+        "release_not_published",
+      );
     // Constraints: never --allow-downgrade.
     const c = compareVersions(to, from);
     if (c < 0)
       throw new ProvisionRefused(
         `install ${id} is at ${from}; ${to} would be a downgrade`,
+        "downgrade_refused",
       );
     if (c === 0)
-      throw new ProvisionRefused(`install ${id} is already at ${to}`);
+      throw new ProvisionRefused(
+        `install ${id} is already at ${to}`,
+        "downgrade_refused",
+      );
     await this.storedOf(row, from);
     const vars = this.currentVars(row);
     const m = this.renderInputs(row, vars);
@@ -2675,16 +3111,19 @@ export class WfpProvisioner {
     if (!from || !to)
       throw new ProvisionRefused(
         `install ${id} has no previous version to roll back to`,
+        "invalid_state",
       );
     // L3: a rollback never moves forward; that is an upgrade, with its checks.
     if (compareVersions(to, from) > 0)
       throw new ProvisionRefused(
         `install ${id}: the previous version ${to} is newer than ${from}; use upgrade`,
+        "invalid_state",
       );
     const stored = await this.storedOf(row, to);
     if (stored.do_migration_tag !== row.do_migration_tag)
       throw new ProvisionRefused(
         `install ${id}: the Durable Object migration tag moved from ${String(stored.do_migration_tag)} (${to}) to ${String(row.do_migration_tag)} (${from}); rollback is refused (forward-fix only)`,
+        "invalid_state",
       );
     // The previous version's code, bindings, compat and tag, with the
     // install's CURRENT vars, re-validated against that release as create and
@@ -2693,6 +3132,7 @@ export class WfpProvisioner {
     const unfit = (e: unknown) =>
       new ProvisionRefused(
         `install ${id}: the current vars do not fit ${to}: ${(e as Error).message}`,
+        "invalid_state",
       );
     const m = this.renderInputs(row, vars);
     const rel = await this.readRelease({
@@ -2709,6 +3149,7 @@ export class WfpProvisioner {
     )
       throw new ProvisionRefused(
         `install ${id}: the stored metadata for ${to} is not a render of that release`,
+        "invalid_state",
       );
     const tok = own ?? (await this.ownerToken(row, m.appHost, true));
     const { d1Id, kvId } = await this.liveInstall(row, m);
@@ -2745,6 +3186,7 @@ export class WfpProvisioner {
     if (notVars(storedMetadata(fresh)) !== notVars(stored.metadata))
       throw new ProvisionRefused(
         `install ${id}: release ${to} no longer renders the metadata stored for it`,
+        "invalid_state",
       );
     const { jwt: _j, ...assets } = fresh.assets;
     const { migrations: _m, ...upload } = { ...fresh, assets };
@@ -2780,7 +3222,8 @@ export class WfpProvisioner {
     await this.logged("rollback.start", { from, to });
     this.assertHooksAllowed(rel.rec.variant, p.m.testHooks);
     const mods = await this.readModules(rel.rec);
-    const assets = await this.readAssets(rel.rec);
+    // Check-first: every file again, before the probe or any write.
+    const assets = await this.readAssets(rel.rec, true);
     // L5: the live tag, not only the journal; a rollback never crosses it.
     await this.hold();
     let live: string | null | undefined;
@@ -2797,6 +3240,7 @@ export class WfpProvisioner {
     if (live !== undefined && live !== row.do_migration_tag)
       throw new ProvisionRefused(
         `install ${id}: the live Durable Object migration tag is ${live ?? "none"}, the journal says ${row.do_migration_tag ?? "none"}; rollback is refused (forward-fix only)`,
+        "invalid_state",
       );
     const { jwt } = await this.cf.assetsUpload(this.target, n.script, assets);
     const meta: UploadMetadata = {
@@ -2806,7 +3250,7 @@ export class WfpProvisioner {
     try {
       assertUniqueBindings(meta.bindings);
     } catch (e) {
-      throw new ProvisionRefused((e as Error).message);
+      throw new ProvisionRefused((e as Error).message, "invalid_state");
     }
     assertOwnResource(n.script, this.env);
     await this.hold();
@@ -2853,10 +3297,17 @@ export class WfpProvisioner {
   ): Promise<VarsResult> {
     return this.guarded(async () => {
       if (!nextVars || typeof nextVars !== "object" || Array.isArray(nextVars))
-        throw new ProvisionRefused("vars must be an object of strings");
+        throw new ProvisionRefused(
+          "vars must be an object of strings",
+          "invalid_state",
+        );
       const row = await this.openInstall(id, ["active"]);
       const version = row.version;
-      if (!version) throw new ProvisionRefused(`install ${id} has no version`);
+      if (!version)
+        throw new ProvisionRefused(
+          `install ${id} has no version`,
+          "invalid_state",
+        );
       await this.storedOf(row, version);
       // H1: computed from the snapshot the claim pins.
       const prev = this.currentVars(row);
@@ -2872,6 +3323,7 @@ export class WfpProvisioner {
       if (googleNewlyEnabled(prev, vars) && row.broker_kid === null)
         throw new ProvisionRefused(
           `install ${id} has no broker key; the broker key is only issued at create, so turning google on for an existing install is a follow-up (Platform)`,
+          "invalid_state",
         );
       // H-RD: only the paths that write the registry check its domains (here
       // and create); upgrade and rollback never do, so a rollback is never
@@ -3049,6 +3501,7 @@ export class WfpProvisioner {
       if (env !== this.env)
         throw new ProvisionRefused(
           `this provisioner is for ${this.env}, not ${String(env)}`,
+          "invalid_state",
         );
       // The pair codes-on needs, checked as create checks it.
       const ts = this.turnstileInput({ AUTH_PROVIDERS: "email" }, false);
@@ -3075,10 +3528,12 @@ export class WfpProvisioner {
           if (row.state !== "active")
             throw new ProvisionRefused(
               `install ${row.id} is ${row.state}; rerun the rotation once it is active`,
+              "invalid_state",
             );
           if (row.session_cut !== null)
             throw new ProvisionRefused(
               `install ${row.id}: pending session cut: re-run updateVars first`,
+              "invalid_state",
             );
           this.currentVars(row);
           const cur = await this.storedOf(row, row.version as string);
@@ -3088,6 +3543,7 @@ export class WfpProvisioner {
           if (site !== ts.sitekey)
             throw new ProvisionRefused(
               `install ${row.id} uses another Turnstile sitekey; a var change sets the new one`,
+              "invalid_state",
             );
           await this.claim(row, ["active"], "active", "turnstile");
           try {
@@ -3143,6 +3599,7 @@ export class WfpProvisioner {
       if (typeof confirm !== "string" || confirm !== id)
         throw new ProvisionRefused(
           "delete needs confirm to be exactly the install id",
+          "invalid_state",
         );
       const skip = skipReason(o?.skipDirectoryRevoke);
       let row = await this.openInstall(
@@ -3172,8 +3629,9 @@ export class WfpProvisioner {
         row.lease_until !== null &&
         row.lease_until > this.now()
       )
-        throw new ProvisionRefused(
+        throw new ProvisionRetry(
           `install ${id} is creating and its create still holds the lease; retry once it ends or the lease expires`,
+          "lease_held",
         );
 
       // H-DV phase 1: deleting + pending (or skipped), hosts still mapped,
@@ -3236,7 +3694,11 @@ export class WfpProvisioner {
       if (!wroteSkip)
         for (let waited = 0; ; waited += REVOKE_POLL_MS) {
           const st = await this.platform.revokeState(id);
-          if (!st) throw new ProvisionRefused(`install ${id} not found`);
+          if (!st)
+            throw new ProvisionRefused(
+              `install ${id} not found`,
+              "invalid_state",
+            );
           await o?.onPoll?.({
             state: st.state,
             attempts: st.attempts,
@@ -3246,6 +3708,7 @@ export class WfpProvisioner {
             if (!(await this.platform.hasSkipAudit(id)))
               throw new ProvisionRefused(
                 `install ${id}: the directory revoke was skipped with no recorded reason; rerun with --skip-directory-revoke "<reason>"`,
+                "invalid_state",
               );
             this.notes.push(DIRECTORY_REVOKE_SKIPPED_NOTE);
             break;
@@ -3255,6 +3718,7 @@ export class WfpProvisioner {
             await this.platform.audit(id, "delete.revoke_unsupported", {});
             throw new ProvisionRefused(
               `install ${id} is below ${REVOKE_MIN_VERSION} and can't confirm the Google revoke; upgrade it or pass --skip-directory-revoke <reason>`,
+              "invalid_state",
             );
           }
           if (st.state === "done") {
@@ -3272,10 +3736,12 @@ export class WfpProvisioner {
           if (st.state === "failed")
             throw new ProvisionRefused(
               `install ${id}: the directory revoke failed after ${st.attempts} attempts; the row stays deleting. Rerun delete with --skip-directory-revoke "<reason>" to tear down anyway (${DIRECTORY_REVOKE_SKIPPED_NOTE})`,
+              "invalid_state",
             );
           if (waited >= REVOKE_WAIT_MS)
-            throw new ProvisionRefused(
+            throw new ProvisionRetry(
               `install ${id}: the directory revoke is still pending after 10 minutes; rerun delete to resume (the scheduler retries every 2 minutes)`,
+              "revoke_pending",
             );
           await this.sleep(REVOKE_POLL_MS);
         }
@@ -3285,17 +3751,20 @@ export class WfpProvisioner {
       if (now?.state !== "deleting")
         throw new ProvisionRefused(
           `install ${id} is ${now?.state ?? "gone"}; it is no longer deleting`,
+          "invalid_state",
         );
       // Defense in depth: the revoke must still be settled, and fresh.
       if (now.directory_revoke === "done" && !freshDone(now)) {
         await this.platform.redispatchRevoke(id);
-        throw new ProvisionRefused(
+        throw new ProvisionRetry(
           `install ${id}: the directory revoke was not confirmed for this attempt; a fresh one is dispatched, rerun delete`,
+          "revoke_pending",
         );
       }
       if (now.directory_revoke !== "done" && now.directory_revoke !== "skipped")
-        throw new ProvisionRefused(
+        throw new ProvisionRetry(
           `install ${id}: the directory revoke is no longer settled (${now.directory_revoke ?? "none"}); rerun delete`,
+          "revoke_pending",
         );
       row = now;
       const { cf, env, target } = this;
@@ -3351,11 +3820,14 @@ export class WfpProvisioner {
           }
         }
         // L8: the owner PAT and hook key of a deleted host are dead weight.
-        for (const f of [
-          `${row.app_host}-pat-token`,
-          `${row.app_host}-hook-key`,
-        ])
-          rmSync(join(this.o.patDir, f), { force: true });
+        // With no patDir (the provisioner Worker) there is no file.
+        const dir = this.o.patDir;
+        if (dir !== undefined)
+          for (const f of [
+            `${row.app_host}-pat-token`,
+            `${row.app_host}-hook-key`,
+          ])
+            rmSync(join(dir, f), { force: true });
         await this.release("deleted");
         await this.platform.audit(id, "delete.done", {});
         return { id, ok: true, state: "deleted" };
@@ -3437,7 +3909,7 @@ export class WfpProvisioner {
     try {
       return registryDomains(vars.AUTH_DOMAINS);
     } catch (e) {
-      throw new ProvisionRefused((e as Error).message);
+      throw new ProvisionRefused((e as Error).message, "invalid_state");
     }
   }
 
@@ -3480,6 +3952,7 @@ export class WfpProvisioner {
     if (entry.installId !== id || entry.origin !== brokerOrigin(appHost))
       throw new ProvisionRefused(
         `broker registry entry for ${id} has another origin or id`,
+        "invalid_state",
       );
     const text = JSON.stringify(
       registryEntry({ ...entry, domains, disabled: entry.disabled === true }),
@@ -3515,6 +3988,7 @@ export class WfpProvisioner {
     if (entry && (entry.installId !== id || entry.origin !== origin))
       throw new ProvisionRefused(
         `broker registry entry for ${id} has another origin or id`,
+        "invalid_state",
       );
     const row = await this.platform.byId(id);
     const kid = row?.broker_kid ?? null;
@@ -3607,6 +4081,8 @@ export class WfpProvisioner {
     email: string,
     appHost: string,
   ): Promise<string> {
+    // Before the token row: a PAT with no file to go to is never minted.
+    const dir = this.patDir();
     const pat = newPat();
     this.sensitive.add(pat);
     const tokenId = newId();
@@ -3627,6 +4103,7 @@ export class WfpProvisioner {
     if (!ins[0]?.meta?.changes)
       throw new ProvisionRefused(
         `the owner already has ${MAX_ACTIVE_TOKENS} active tokens; revoke some, then rerun`,
+        "invalid_state",
       );
     const ok = await q(
       "SELECT id FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
@@ -3634,8 +4111,8 @@ export class WfpProvisioner {
     );
     if (!ok[0]?.results?.length)
       throw new Error(`token row ${tokenId} missing after the insert; rerun`);
-    mkdirSync(this.o.patDir, { recursive: true, mode: 0o700 });
-    const file = join(this.o.patDir, `${appHost}-pat-token`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = join(dir, `${appHost}-pat-token`);
     try {
       writeSecretFile(file, `${pat}\n`);
     } catch (e) {
@@ -3659,9 +4136,66 @@ export class WfpProvisioner {
   private ciLabel(): string | undefined {
     const c = this.o.ciOwnerToken;
     if (c === undefined) return undefined;
-    if (typeof c?.label !== "string" || !CI_TOKEN_LABEL_RE.test(c.label))
-      throw new ProvisionRefused("ciOwnerToken.label must be ci-<run id>");
+    if (!isTokenLabel(c?.label))
+      throw new ProvisionRefused(
+        "ciOwnerToken.label must be ci-<run id> or ss-<ULID>",
+        "invalid_state",
+      );
     return c.label;
+  }
+
+  /** The token end-date cap in days, checked (an integer, 1 to 400). */
+  /**
+   * The job kind pause and unpause run under: it names the lease and picks
+   * the near-expiry mode (NEAR_EXPIRY_MODE: suspend and delete warn,
+   * resume and restore refuse).
+   */
+  private jobKind(o: { kind: ProvisionJobKind } | undefined): {
+    kind: ProvisionJobKind;
+    nearExpiry: "refuse" | "warn";
+  } {
+    const kind = o?.kind;
+    if (!(PROVISION_JOB_KINDS as readonly string[]).includes(kind as string))
+      throw new ProvisionRefused(
+        `unknown job kind ${String(kind)}`,
+        "invalid_state",
+      );
+    return {
+      kind: kind as ProvisionJobKind,
+      nearExpiry: NEAR_EXPIRY_MODE[kind as ProvisionJobKind],
+    };
+  }
+
+  /**
+   * Where an operator puts a rolled token: the provisioner's Secrets Store
+   * secret (maxTokenDays above the CLI's cap), else the CLI's
+   * CLOUDFLARE_API_TOKEN (deploy Environment in CI, the keychain on a laptop).
+   */
+  private tokenHome(): string {
+    return this.maxTokenDays() > DEFAULT_MAX_TOKEN_DAYS
+      ? `paste it into Secrets Store (\`${platformNames(this.env).provisionToken}\`)`
+      : "update CLOUDFLARE_API_TOKEN (the deploy Environment secret in CI, the keychain item on a laptop)";
+  }
+
+  private maxTokenDays(): number {
+    const d = this.o.maxTokenDays ?? DEFAULT_MAX_TOKEN_DAYS;
+    if (!Number.isSafeInteger(d) || d < 1 || d > PROVISIONER_MAX_TOKEN_DAYS)
+      throw new ProvisionRefused(
+        `maxTokenDays must be an integer from 1 to ${PROVISIONER_MAX_TOKEN_DAYS}`,
+        "invalid_state",
+      );
+    return d;
+  }
+
+  /** The PAT directory, for the files only a laptop or redline run writes. */
+  private patDir(): string {
+    const d = this.o.patDir;
+    if (typeof d !== "string" || d === "")
+      throw new ProvisionRefused(
+        "patDir is required without ciOwnerToken",
+        "invalid_state",
+      );
+    return d;
   }
 
   /** With ciOwnerToken: the CI token, right after the claim (under the lease). */
@@ -3711,6 +4245,7 @@ export class WfpProvisioner {
       if (!u[0]?.results?.length)
         throw new ProvisionRefused(
           "the install has no owner user for the CI selftest token",
+          "invalid_state",
         );
     }
     // Recorded before the insert: a lost reply still gets revoked by id.
@@ -3722,6 +4257,7 @@ export class WfpProvisioner {
     if (!ins[0]?.meta?.changes)
       throw new ProvisionRefused(
         `the owner already has ${MAX_ACTIVE_TOKENS} active tokens; revoke some, then rerun`,
+        "invalid_state",
       );
     await this.logged("ci_token.mint", { label });
   }
@@ -3763,9 +4299,9 @@ export class WfpProvisioner {
   }
 
   /**
-   * The CI backstop: revokes every still-active owner token labelled `label`
-   * (ci-<run id>) in the install's D1, then lists them again and refuses
-   * unless none remains. Takes no lease: it runs after the operation, which
+   * The CI backstop: revokes every still-active owner token labelled exactly
+   * `label` (ci-<run id> or ss-<ULID>; never a prefix or pattern) in the
+   * install's D1, then lists them again and refuses unless none remains. Takes no lease: it runs after the operation, which
    * may have crashed holding one. An install with no D1 has no token.
    */
   async ciTokenSweep(
@@ -3773,14 +4309,19 @@ export class WfpProvisioner {
     label: string,
   ): Promise<{ id: InstallId; label: string; revoked: number; active: 0 }> {
     return this.guarded(async () => {
-      if (!isInstallId(id)) throw new ProvisionRefused("not an install id");
-      if (typeof label !== "string" || !CI_TOKEN_LABEL_RE.test(label))
-        throw new ProvisionRefused("the sweep label must be ci-<run id>");
+      if (!isInstallId(id))
+        throw new ProvisionRefused("not an install id", "invalid_state");
+      if (!isTokenLabel(label))
+        throw new ProvisionRefused(
+          "the sweep label must be ci-<run id> or ss-<ULID>",
+          "invalid_state",
+        );
       this.checkOptions();
       await this.checkToken("warn");
       await this.resolvePlatform();
       const row = await this.platform.byId(id);
-      if (!row) throw new ProvisionRefused(`install ${id} not found`);
+      if (!row)
+        throw new ProvisionRefused(`install ${id} not found`, "invalid_state");
       // A deleted install's D1 is gone, and its tokens with it.
       const { d1 } = await this.resources(row, true);
       if (!d1) return { id, label, revoked: 0, active: 0 as const };
@@ -3810,6 +4351,7 @@ export class WfpProvisioner {
       if (left !== 0)
         throw new ProvisionRefused(
           `install ${id}: ${left} owner token(s) labelled ${label} are still active after the sweep; revoke them by label`,
+          "invalid_state",
         );
       return { id, label, revoked: before, active: 0 as const };
     });
