@@ -187,7 +187,9 @@ describe("health", () => {
     const never = await mapped();
     const set = (id: string, at: number) =>
       db
-        .prepare("UPDATE install_lifecycle SET health_at = ?2 WHERE install_id = ?1")
+        .prepare(
+          "UPDATE install_lifecycle SET health_at = ?2 WHERE install_id = ?1",
+        )
         .bind(id, at)
         .run();
     await set(recent.id, NOW - HEALTH_INTERVAL_MS);

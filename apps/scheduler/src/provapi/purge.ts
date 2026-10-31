@@ -1,7 +1,8 @@
 // Purge after grace (design v7 5.8): a deleting install whose purge_at has
 // passed, with no open job and not suspended, gets a purge job on
-// ManageInstall. Each grace end gets PURGE_STUCK_FAILURES tries; then the
-// purge_stuck alert (C2's query) asks an operator.
+// ManageInstall. Tries stop once the install has PURGE_STUCK_FAILURES failed
+// purges, counted as C2's purge_stuck counts them (any actor, any grace
+// end), so the scheduler stops exactly when that alert opens.
 import { canTransition, PURGE_STUCK_FAILURES } from "@oa/shared/provisioning";
 import { bound, d1, lanes, type ProvapiEnv } from "./env.js";
 import { insertSystemJob, SYSTEM_ACTOR, startJob } from "./jobs.js";
@@ -14,8 +15,16 @@ export const PURGE_CONCURRENCY = 3;
 // Never while suspended (5.4): an operator suspended it for a reason.
 const DUE =
   "SELECT install_id, signup_id, purge_at FROM install_status WHERE state = 'deleting' AND purge_at IS NOT NULL AND purge_at <= ?1 AND suspended_at IS NULL AND active_job_id IS NULL ORDER BY purge_at, install_id LIMIT ?2";
-// Tries for this grace end only: a restore and a later delete start over.
-const TRIES = `SELECT COUNT(*) AS n FROM jobs WHERE install_id = ?1 AND kind = 'purge' AND status = 'failed' AND actor_key = '${SYSTEM_ACTOR.key}' AND request_id LIKE ?2`;
+// failed: every failed purge on the install (purge_stuck's count). mine: the
+// scheduler's tries for this grace end, any status; they number the next.
+const TRIES = `SELECT
+  (SELECT COUNT(*) FROM jobs WHERE install_id = ?1 AND kind = 'purge' AND status = 'failed') AS failed,
+  (SELECT COUNT(*) FROM jobs WHERE install_id = ?1 AND kind = 'purge' AND actor_key = '${SYSTEM_ACTOR.key}' AND request_id LIKE ?2) AS mine`;
+// The insert's own check, in the same statement: still due for this grace
+// end (not restored, suspended, purged or deleted again since the due
+// read). ?3 install id, ?8 now, ?9 purge_at.
+const STILL_DUE =
+  "EXISTS (SELECT 1 FROM install_status WHERE install_id = ?3 AND state = 'deleting' AND suspended_at IS NULL AND purge_at = ?9 AND purge_at <= ?8)";
 
 /**
  * The idempotency key of the n-th try for one grace end. TODO(contract): no
@@ -41,12 +50,15 @@ export async function purgeDue(env: ProvapiEnv, now: number): Promise<void> {
   await lanes(results, PURGE_CONCURRENCY, async (r) => {
     try {
       const prefix = `${purgeRequestId(r.install_id, r.purge_at, 0).slice(0, -1)}%`;
-      const done = await d1(
-        db.prepare(TRIES).bind(r.install_id, prefix).first<{ n: number }>(),
+      const t = await d1(
+        db
+          .prepare(TRIES)
+          .bind(r.install_id, prefix)
+          .first<{ failed: number; mine: number }>(),
       );
-      const n = (done?.n ?? 0) + 1;
       // The purge_stuck alert has it from here.
-      if (n > PURGE_STUCK_FAILURES) return;
+      if ((t?.failed ?? 0) >= PURGE_STUCK_FAILURES) return;
+      const n = (t?.mine ?? 0) + 1;
       const id = await insertSystemJob(
         db,
         {
@@ -57,8 +69,10 @@ export async function purgeDue(env: ProvapiEnv, now: number): Promise<void> {
           requestId: purgeRequestId(r.install_id, r.purge_at, n),
         },
         now,
+        { sql: STILL_DUE, params: [r.purge_at] },
       );
-      // null: an overlapping tick inserted it, or a job opened meanwhile.
+      // null: an overlapping tick inserted it, a job opened meanwhile, or
+      // the install is no longer due.
       if (id === null) return;
       console.log("provapi purge queued", r.install_id, id, `try=${n}`);
       // A failed start leaves it queued; the sweep starts it.

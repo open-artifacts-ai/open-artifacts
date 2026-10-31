@@ -56,9 +56,14 @@ export async function systemBodyHash(
 }
 
 // ON CONFLICT DO NOTHING with no target covers every unique index: the
-// (actor_key, request_id) idempotency key and jobs_one_active.
-const INSERT_JOB = `INSERT INTO jobs (id, kind, workflow, install_id, signup_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
-VALUES (?1, ?2, 'manage_install', ?3, ?4, ?5, '${SYSTEM_ACTOR.kind}', '${SYSTEM_ACTOR.key}', '${SYSTEM_ACTOR.label}', ?6, ?7, '{}', 'queued', ?8, ?8)
+// (actor_key, request_id) idempotency key and jobs_one_active. The guard is
+// checked in the same statement, so what it reads cannot change between
+// the check and the insert. (SQLite needs a WHERE on an INSERT ... SELECT
+// with ON CONFLICT.)
+const insertJob = (guard: string) =>
+  `INSERT INTO jobs (id, kind, workflow, install_id, signup_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
+SELECT ?1, ?2, 'manage_install', ?3, ?4, ?5, '${SYSTEM_ACTOR.kind}', '${SYSTEM_ACTOR.key}', '${SYSTEM_ACTOR.label}', ?6, ?7, '{}', 'queued', ?8, ?8
+WHERE ${guard}
 ON CONFLICT DO NOTHING RETURNING id`;
 
 export interface SystemJob {
@@ -69,32 +74,58 @@ export interface SystemJob {
   requestId: string;
 }
 
-/** Inserts a queued manage_install job; its id, or null when one exists. */
-export async function insertSystemJob(
+/**
+ * A condition the insert also needs: SQL over the insert's own params (?3
+ * install id, ?5 parent job id, ?8 now) plus `params` bound from ?9 on.
+ */
+export interface JobGuard {
+  sql: string;
+  params: readonly unknown[];
+}
+
+const NO_GUARD: JobGuard = { sql: "1", params: [] };
+
+/** The insert of a queued manage_install job, not yet run. */
+export async function systemJobStatement(
   db: D1Database,
   j: SystemJob,
   now: number,
-): Promise<string | null> {
-  const id = newJobId(now);
+  guard: JobGuard = NO_GUARD,
+): Promise<D1PreparedStatement> {
   const hash = await systemBodyHash(j.kind, j.installId, {
     parentJobId: j.parentJobId,
     requestId: j.requestId,
   });
+  return db
+    .prepare(insertJob(guard.sql))
+    .bind(
+      newJobId(now),
+      j.kind,
+      j.installId,
+      j.signupId,
+      j.parentJobId,
+      j.requestId,
+      hash,
+      now,
+      ...guard.params,
+    );
+}
+
+/**
+ * Inserts a queued manage_install job; its id, or null when one exists or
+ * the guard does not hold.
+ */
+export async function insertSystemJob(
+  db: D1Database,
+  j: SystemJob,
+  now: number,
+  guard: JobGuard = NO_GUARD,
+): Promise<string | null> {
   let r: { id: unknown } | null;
   try {
-    r = await db
-      .prepare(INSERT_JOB)
-      .bind(
-        id,
-        j.kind,
-        j.installId,
-        j.signupId,
-        j.parentJobId,
-        j.requestId,
-        hash,
-        now,
-      )
-      .first<{ id: unknown }>();
+    r = await (await systemJobStatement(db, j, now, guard)).first<{
+      id: unknown;
+    }>();
   } catch {
     throw new DutyFailure("db_error");
   }

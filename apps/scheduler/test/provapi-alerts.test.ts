@@ -420,7 +420,8 @@ describe("prodclean_failed", () => {
     expect(text).toContain("i00000000042");
     expect(text).not.toContain("i00000000077");
     expect(text).toContain("binding KV_EXTRA on owner");
-    expect(text).not.toMatch(/@|:\/\/|\u0007|\u2014/);
+    expect(text).not.toMatch(/@|:\/\/|\u2014/);
+    expect(text).not.toContain(String.fromCharCode(7));
     expect(text.length).toBeLessThan(1000);
   });
 

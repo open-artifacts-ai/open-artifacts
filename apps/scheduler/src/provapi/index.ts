@@ -1,7 +1,7 @@
 // The Provisioning API's scheduler duties (design v7 5.8), run on the */2
 // tick after the revoke tick and the directory sync.
 import { ALERT_KEYS } from "@oa/shared/provisioning";
-import { alertFor, factsOf, stepAlert } from "./alerts.js";
+import { alertFor, factsOf, prodcleanReport, stepAlert } from "./alerts.js";
 import { alertConditions, signupDailyCap } from "./conditions.js";
 import type { ProvapiEnv } from "./env.js";
 import { type HealthProbe, healthDue } from "./health.js";
@@ -30,9 +30,14 @@ export async function alertsTick(env: ProvapiEnv, now: number): Promise<void> {
   });
   for (const k of ALERT_KEYS) {
     const cond = c[k];
+    const report =
+      k === "prodclean_failed" && cond.open
+        ? await prodcleanReport(env.PLATFORM_DB)
+        : undefined;
     const facts = {
       ...factsOf(cond.rows),
       ...(cond.daysLeft === undefined ? {} : { daysLeft: cond.daysLeft }),
+      ...(report === undefined ? {} : { report }),
     };
     // stepAlert never throws: one key's failure never stops the next.
     await stepAlert(env, alertFor(k, env.OA_ENV, facts), cond.open, now);

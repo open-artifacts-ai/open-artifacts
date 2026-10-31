@@ -15,8 +15,9 @@
  * failed send gives its claim back, so the next tick retries it.
  *
  * Emails carry a fixed subject per key and state, and text built from
- * counts, windows, install ids, job ids, job kinds and enum codes only:
- * never AlertRow.message, an email address or a URL. Logs carry the key and
+ * counts, windows, install ids, job ids, job kinds and enum codes, plus
+ * the latest prod-clean report's detail cut to plain characters (design
+ * v7 6): never AlertRow.message, an email address or a URL. Logs carry the key and
  * fixed categories only. stepAlert never throws.
  */
 import {
@@ -113,9 +114,9 @@ function sendCategory(e: unknown): string {
 }
 
 /**
- * True when the email went out, or when there is no destination (logged,
- * and the machine carries on as if sent, so it isn't retried every tick).
- * False on a failed send, so the caller gives its claim back.
+ * True when the email went out. False on a failed send or with no
+ * destination (logged), so the caller gives its claim back and the email
+ * goes out once the destination is configured.
  */
 async function send(
   env: ProvapiEnv,
@@ -128,7 +129,7 @@ async function send(
   const from = env.ALERT_FROM ?? "";
   if (!env.ALERT_EMAIL || !ADDRESS.test(to) || !ADDRESS.test(from)) {
     console.log("provapi alert", alert.key, "skipped no_destination");
-    return true;
+    return false;
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -226,6 +227,59 @@ export interface AlertFacts {
   codes: string[];
   /** token_expiring: whole days left. */
   daysLeft?: number;
+  /** prodclean_failed: the latest report's install id and detail, sanitized. */
+  report?: ProdcleanReport;
+}
+
+export interface ProdcleanReport {
+  installId: string | null;
+  detail: string | null;
+}
+
+/** At most this many characters of a prod-clean report's detail. */
+export const REPORT_DETAIL_MAX = 200;
+// Kept: letters, digits and plain punctuation. Everything else (control
+// characters, '@', '/', quotes, non-ASCII) becomes a space, so no address,
+// URL or line break reaches the email.
+const DETAIL_DROP = /[^A-Za-z0-9 _.,:;=()+-]+/g;
+
+/** A report detail for an email: allowed characters only, capped. */
+export function cleanDetail(d: unknown): string | null {
+  if (typeof d !== "string") return null;
+  const s = d.replace(DETAIL_DROP, " ").replace(/\s+/g, " ").trim();
+  if (!s) return null;
+  return s.length > REPORT_DETAIL_MAX
+    ? `${s.slice(0, REPORT_DETAIL_MAX).trimEnd()} (cut)`
+    : s;
+}
+
+const LATEST_REPORT =
+  "SELECT install_id, detail FROM prodclean_reports WHERE id = (SELECT MAX(id) FROM prodclean_reports)";
+
+/**
+ * The latest prod-clean report's details (design v7 6: the monitor's output
+ * says pass or fail only; details go to inventory, then this email). A D1
+ * error is one fixed line and no details.
+ */
+export async function prodcleanReport(
+  db: D1Database,
+): Promise<ProdcleanReport | undefined> {
+  try {
+    const r = await db
+      .prepare(LATEST_REPORT)
+      .first<{ install_id: unknown; detail: unknown }>();
+    if (!r) return undefined;
+    return {
+      installId:
+        typeof r.install_id === "string" && INSTALL_ID_RE.test(r.install_id)
+          ? r.install_id
+          : null,
+      detail: cleanDetail(r.detail),
+    };
+  } catch {
+    console.error("provapi alert prodclean_failed report_error");
+    return undefined;
+  }
 }
 
 /** At most this many ids per email. */
@@ -334,8 +388,11 @@ const COPY: Record<AlertKey, Copy> = {
   },
   prodclean_failed: {
     title: "prod-clean check failed",
-    open: () =>
-      "The latest hourly prod-clean report failed. Its details are in inventory.",
+    open: (f) => {
+      const on = f.report?.installId ? ` on install ${f.report.installId}` : "";
+      const why = f.report?.detail ? ` Detail: ${f.report.detail}.` : "";
+      return `The latest hourly prod-clean report failed${on}.${why} The full report is in inventory.`;
+    },
     clear: "The latest hourly prod-clean report passed.",
   },
   upgrade_incomplete: {

@@ -4,8 +4,8 @@
 // query reads them.
 import { isInstallId } from "@oa/provision/names";
 import type { Health } from "@oa/shared/provisioning";
-import { d1, lanes, type ProvapiEnv, within } from "./env.js";
-import { claimState } from "./state.js";
+import { DutyFailure, d1, lanes, type ProvapiEnv, within } from "./env.js";
+import { claimState, getState, unclaimState } from "./state.js";
 
 /** TODO(contract): no exported health interval. */
 export const HEALTH_INTERVAL_MS = 60 * 60_000;
@@ -21,7 +21,7 @@ export const HEALTH_TIMEOUT_MS = 10_000;
  * checked. Unmapped and null rows never are.
  */
 export const HEALTH_MODES = ["serving"] as const;
-const MAPPED = `SELECT l.install_id AS id, i.app_host AS app_host FROM install_lifecycle l JOIN installs i ON i.id = l.install_id WHERE l.serving_mode IN (${HEALTH_MODES.map((m) => `'${m}'`).join(", ")}) ORDER BY l.install_id`;
+const MAPPED = `SELECT l.install_id AS id, i.app_host AS app_host FROM install_lifecycle l JOIN installs i ON i.id = l.install_id WHERE l.serving_mode IN (${HEALTH_MODES.map((m) => `'${m}'`).join(", ")}) ORDER BY l.health_at IS NOT NULL, l.health_at, l.install_id`;
 const WRITE =
   "UPDATE install_lifecycle SET health = ?2, health_at = ?3 WHERE install_id = ?1";
 
@@ -78,13 +78,21 @@ export async function healthDue(
   }: { timeoutMs?: number; probe?: HealthProbe } = {},
 ): Promise<boolean> {
   const db = env.PLATFORM_DB;
+  const prev = await d1(getState(db, HEALTH_GATE_KEY));
   if (
     !(await d1(claimState(db, HEALTH_GATE_KEY, now, now - HEALTH_INTERVAL_MS)))
   )
     return false;
-  const { results } = await d1(
-    db.prepare(MAPPED).all<{ id: unknown; app_host: unknown }>(),
-  );
+  let results: { id: unknown; app_host: unknown }[];
+  try {
+    ({ results } = await db
+      .prepare(MAPPED)
+      .all<{ id: unknown; app_host: unknown }>());
+  } catch {
+    // Nothing was checked: give the hour back, so the next tick runs it.
+    await unclaimState(db, HEALTH_GATE_KEY, now, prev).catch(() => {});
+    throw new DutyFailure("db_error");
+  }
   const rows = results.filter(
     (r): r is { id: string; app_host: string } =>
       typeof r.id === "string" &&
