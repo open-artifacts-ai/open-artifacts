@@ -1,7 +1,7 @@
 /**
  * The 503 a paused or closing install answers from dispatch itself (design
- * v7 5.5); the install's script is never called. One copy constant per mode,
- * so Design's final copy is a one-line swap. Plain text only: no <, >, &,
+ * v7 5.5); the install's script is never called. Design's W11 copy, one
+ * constant per mode. Plain text only: no <, >, &,
  * quotes or em dashes (pinned by a test).
  */
 export interface UnavailableCopy {
@@ -11,12 +11,12 @@ export interface UnavailableCopy {
 
 export const PAUSED_COPY: UnavailableCopy = Object.freeze({
   title: "This workspace is paused",
-  body: "Its owner or the Open Artifacts team has paused it. Your work is kept. Try again later, or contact the person who invited you.",
+  body: "Nothing in it has been deleted. If you use this workspace, ask its admin when it will be back.",
 });
 
 export const CLOSED_COPY: UnavailableCopy = Object.freeze({
-  title: "This workspace is closing",
-  body: "It was deleted and will be removed for good soon. If this is a mistake, its owner can ask to restore it.",
+  title: "This workspace is closed",
+  body: "If you use this workspace, ask its admin about it.",
 });
 
 // Inline styles only, nothing fetched; light by default, dark on request.
@@ -27,14 +27,15 @@ const STYLE =
   "background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,sans-serif}" +
   "main{max-width:32rem;padding:24px 16px}" +
   "h1{font-size:1.5rem;line-height:1.25;margin:0 0 .75rem}" +
-  "p{margin:0;color:var(--muted)}";
+  "p{margin:0;color:var(--muted)}" +
+  "footer{margin-top:2rem;font-size:.875rem;color:var(--muted)}";
 
 const page = (c: UnavailableCopy) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
   `<meta name="viewport" content="width=device-width,initial-scale=1">` +
   `<meta name="robots" content="noindex"><title>${c.title}</title>` +
   `<style>${STYLE}</style></head><body><main><h1>${c.title}</h1>` +
-  `<p>${c.body}</p></main></body></html>`;
+  `<p>${c.body}</p><footer>Open Artifacts</footer></main></body></html>`;
 
 const HEADERS = {
   "cache-control": "no-store",
@@ -42,6 +43,7 @@ const HEADERS = {
     "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
+  "x-robots-tag": "noindex",
 };
 
 /**

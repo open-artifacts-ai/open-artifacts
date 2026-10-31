@@ -61,6 +61,8 @@ describe("HOSTS modes", () => {
         expect(body).toContain(`<title>${copy.title}</title>`);
         expect(body).toContain(`<h1>${copy.title}</h1>`);
         expect(body).toContain(copy.body);
+        // Design's footer: the product name, nothing clickable (no href below).
+        expect(body).toContain("<footer>Open Artifacts</footer>");
         expect(body).toContain("prefers-color-scheme: dark");
         expect(body).toContain('name="viewport"');
         // Self-contained: nothing for the browser to fetch.
@@ -114,6 +116,7 @@ describe("HOSTS modes", () => {
           const r = await call(f.env, "/", { method: "HEAD", headers });
           expect(r.status).toBe(503);
           expect(r.headers.get("cache-control")).toBe("no-store");
+          expect(r.headers.get("x-robots-tag")).toBe("noindex");
           expect(r.body).toBeNull();
           expect(f.scripts).toEqual([]);
         }
@@ -128,6 +131,7 @@ describe("HOSTS modes", () => {
           );
           expect(r.headers.get("x-content-type-options")).toBe("nosniff");
           expect(r.headers.get("referrer-policy")).toBe("no-referrer");
+          expect(r.headers.get("x-robots-tag")).toBe("noindex");
           expect(r.headers.has("retry-after")).toBe(false);
           expect(r.headers.has("set-cookie")).toBe(false);
         }
@@ -143,6 +147,29 @@ describe("HOSTS modes", () => {
       });
     });
   }
+
+  it("a WebSocket upgrade and /__oa/* get the 503 too, never the install", async () => {
+    for (const mode of ["paused", "closed"] as const) {
+      for (const [path, init] of [
+        ["/ws", { headers: { upgrade: "websocket", connection: "Upgrade" } }],
+        ["/__oa/health", {}],
+      ] as const) {
+        const f = fakes(hostsValue(A, mode));
+        const r = await call(f.env, path, init);
+        expect(r.status).toBe(503);
+        expect(f.scripts).toEqual([]);
+      }
+    }
+  });
+
+  it("a HOSTS value with a trailing newline is the 404", async () => {
+    for (const mode of ["serving", "paused", "closed"] as const) {
+      const f = fakes(`${hostsValue(A, mode)}\n`);
+      const r = await call(f.env, "/", { headers: HTML });
+      expect(r.status).toBe(404);
+      expect(f.scripts).toEqual([]);
+    }
+  });
 
   it("paused and closed pages differ", async () => {
     const page = async (mode: "paused" | "closed") =>
@@ -185,6 +212,17 @@ describe("HOSTS modes", () => {
 });
 
 describe("copy", () => {
+  it("is Design's W11 copy", () => {
+    expect(PAUSED_COPY).toEqual({
+      title: "This workspace is paused",
+      body: "Nothing in it has been deleted. If you use this workspace, ask its admin when it will be back.",
+    });
+    expect(CLOSED_COPY).toEqual({
+      title: "This workspace is closed",
+      body: "If you use this workspace, ask its admin about it.",
+    });
+  });
+
   it("has no em dash or en dash", () => {
     for (const c of [PAUSED_COPY, CLOSED_COPY])
       expect(`${c.title}${c.body}`).not.toMatch(/[–—]/);
