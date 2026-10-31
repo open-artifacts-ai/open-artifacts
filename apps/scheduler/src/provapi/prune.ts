@@ -2,9 +2,14 @@
 // EXPIRED_AUTH_RETENTION_MS (7 days; a revoked one stays until then, so its
 // revoked state is never lost while a grant or a session check could still
 // read it), unclaimed OAuth clients (0008), D1
-// rate counters (48 h for now, see RATE_COUNTER_RETENTION), audit_refusals over 90 days, and
+// rate counters (2 h; the DCR UTC-day ones 48 h), audit_refusals over 90 days, and
 // a failed signup's owner email 30 days on. Bounded deletes, so a backlog drains over ticks. Never admin_audit
 // (append-only; its triggers refuse a delete).
+import {
+  DCR_COUNTER_PREFIX,
+  FAILED_SECRET_RETENTION_MS,
+  OAUTH_CLIENT_UNCLAIMED_MS,
+} from "@oa/shared/provisioning/constants";
 import {
   AUDIT_REFUSAL_RETENTION_MS,
   DCR_COUNTER_RETENTION_MS,
@@ -15,29 +20,11 @@ import { d1, type ProvapiEnv } from "./env.js";
 
 /** Rows deleted per table per tick. */
 export const PRUNE_BATCH = 500;
-/**
- * How long every `rate_counters` row is kept. Fails safe: the DCR UTC-day
- * counters need DCR_COUNTER_RETENTION_MS (48 h), and pruning one live resets
- * the daily DCR cap, so every counter keeps that until the contract names
- * the DCR key. TODO(contract): with C5's DCR key export, prune the other
- * counters at RATE_COUNTER_RETENTION_MS (2 h) and the DCR ones at 48 h.
- */
-export const RATE_COUNTER_RETENTION = Math.max(
-  RATE_COUNTER_RETENTION_MS,
-  DCR_COUNTER_RETENTION_MS,
-);
-/**
- * A failed signup's owner email (signup_secret) outlives the redrive window
- * by no more (#859's purgeFailedSecrets). TODO(contract): not exported.
- */
-export const FAILED_SECRET_RETENTION_MS = 30 * 24 * 60 * 60_000;
-
-/**
- * An OAuth client with no grant this long after registering goes (0008:
- * "Unclaimed clients are swept after 24 h"; the library's KV copy expires
- * on its own TTL). TODO(contract): not exported.
- */
-export const OAUTH_CLIENT_UNCLAIMED_MS = 24 * 60 * 60_000;
+// A DCR UTC-day counter (C6 DCR_COUNTER_PREFIX): pruning one live resets
+// the daily DCR cap, so these keep DCR_COUNTER_RETENTION_MS (48 h) and every
+// other counter RATE_COUNTER_RETENTION_MS (2 h). A literal prefix compare,
+// no LIKE wildcards.
+const IS_DCR = `substr(key, 1, ${DCR_COUNTER_PREFIX.length}) = '${DCR_COUNTER_PREFIX}'`;
 
 const bounded = (table: string, where: string) =>
   `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${where} LIMIT ${PRUNE_BATCH})`;
@@ -53,7 +40,12 @@ export const PRUNES = {
   ),
   rate_counters: bounded(
     "rate_counters",
-    `window_start <= ?1 - ${RATE_COUNTER_RETENTION}`,
+    `NOT ${IS_DCR} AND window_start <= ?1 - ${RATE_COUNTER_RETENTION_MS}`,
+  ),
+  // The same table: its own key, so each half has its own PRUNE_BATCH.
+  dcr_counters: bounded(
+    "rate_counters",
+    `${IS_DCR} AND window_start <= ?1 - ${DCR_COUNTER_RETENTION_MS}`,
   ),
   audit_refusals: bounded(
     "audit_refusals",

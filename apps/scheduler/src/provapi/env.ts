@@ -25,7 +25,7 @@ export interface ProvapiEnv {
   SIGNUP_DAILY_CAP?: string;
   /** The producer of oa-<p>-signups (the provisioner consumes it). */
   SIGNUPS?: Queue<{ signupId: string }>;
-  /** The provisioner's self-serve gate; see signups.ts SIGNUPS_ON. */
+  /** The provisioner's self-serve gate; see signups.ts signupsOn. */
   SIGNUPS_ENABLED?: string;
 }
 
