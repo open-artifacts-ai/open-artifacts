@@ -268,7 +268,7 @@ describe("run_dead (Manager C5): a dead Workflow run", () => {
     };
     await expect(
       settleFailed(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "run_dead"),
-    ).rejects.toThrow(/not built yet \(W3\)/);
+    ).resolves.toEqual({ settled: false, extra: [] });
   });
 });
 
@@ -277,12 +277,9 @@ describe("settleFailed (3.6)", () => {
     prepare: () => ({ bind: () => ({}) }),
     batch: async () => [],
   };
-  it("takes (db, jobId, code, opts?) and is not built yet (W3)", async () => {
+  it("takes (db, jobId, code, opts?) and refuses an unknown code (body: settle-failed.test.ts)", async () => {
     const f: SettleFailed = settleFailed;
     expect(f.length).toBe(4);
-    await expect(
-      f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "canceled"),
-    ).rejects.toThrow(/not built yet \(W3\)/);
     await expect(
       f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "nope" as never),
     ).rejects.toThrow(/unknown provision error code/);
@@ -294,7 +291,7 @@ describe("settleFailed (3.6)", () => {
     for (const expectCode of [null, "canceled", "run_dead"] as const)
       await expect(
         settleFailed(db, id, "run_dead", { expectCode }),
-      ).rejects.toThrow(/not built yet \(W3\)/);
+      ).resolves.toEqual({ settled: false, extra: [] });
     for (const bad of ["nope", "", "CANCELED", 0, false, {}])
       await expect(
         settleFailed(db, id, "run_dead", { expectCode: bad as never }),
@@ -304,10 +301,20 @@ describe("settleFailed (3.6)", () => {
   it("takes extra statements for the same batch and says whether it settled", async () => {
     const f: SettleFailed = settleFailed;
     const extra = [{ sql: "INSERT cleanup" }];
-    // The option is checked before the (W3) body.
+    // The extras ride the settle's one batch, after its own statements.
+    const sent: unknown[][] = [];
+    const rec: SettleDb = {
+      prepare: () => ({ bind: () => ({}) }),
+      batch: async (st) => {
+        sent.push(st);
+        return st.map((_, i) => ({ meta: { changes: i === 0 ? 1 : 0 } }));
+      },
+    };
     await expect(
-      f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "internal", { extra }),
-    ).rejects.toThrow(/not built yet \(W3\)/);
+      f(rec, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "internal", { extra }),
+    ).resolves.toEqual({ settled: true, extra: [{ meta: { changes: 0 } }] });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.at(-1)).toBe(extra[0]);
     await expect(
       f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "internal", {
         extra: "INSERT" as never,

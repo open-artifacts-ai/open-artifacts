@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describeRes, readBody, retryIdempotent } from "./http.ts";
+import { AUDIENCES, canMint, jwtSource, mask, OIDC_FILES } from "./oidc.ts";
 
 // REDLINE_TARGETS: the two installs (and the prod probe) the suite runs
 // against. Secrets are never in the JSON: only paths of 0600 files, read here
@@ -36,10 +37,11 @@ export interface ProdProbe {
   r2TokenFile: string;
   /** REDLINE_PROD_SCRIPTS_TOKEN: Workers Scripts Read for the prod namespace. */
   scriptsTokenFile: string;
-  /** The P1 inventory Worker origin (GET /installs); absent until deployed. */
+  /**
+   * The prod inventory origin (GET /installs). Read with a GitHub OIDC
+   * bearer only (prodClean's inventoryBearer); there is no stored key.
+   */
   inventoryUrl?: string;
-  /** REDLINE_PROD_INVENTORY_KEY. */
-  inventoryKeyFile?: string;
 }
 
 export interface Targets {
@@ -49,9 +51,10 @@ export interface Targets {
   /** Staging mode only: present when the prod credentials are configured. */
   prod?: ProdProbe;
   /**
-   * Staging mode only: Platform's inventory Worker for this env (Bearer key):
-   * GET /hosts, GET /hosts?host=, GET /installs. From REDLINE_TARGETS.inventory,
-   * else env REDLINE_STG_INVENTORY_URL with <secretsDir>/REDLINE_STG_INVENTORY_KEY.
+   * Staging mode only: Platform's inventory Worker for this env (GitHub OIDC
+   * bearer): GET /hosts, GET /hosts?host=, GET /installs. From
+   * REDLINE_TARGETS.inventory, else env REDLINE_STG_INVENTORY_URL with
+   * <secretsDir>/REDLINE_STG_INVENTORY_OIDC.
    */
   inventory?: Inventory;
   /** Staging mode only: hosts of a deleted install (REDLINE_DELETED_HOSTS, a JSON list). */
@@ -66,16 +69,27 @@ export interface Targets {
 
 export interface Inventory {
   url: string;
-  keyFile: string;
+  /**
+   * A 0600 file holding a GitHub OIDC JWT for the staging inventory's
+   * audience (design v7 6.3), minted by the redline job; there is no stored
+   * inventory key.
+   */
+  oidcFile: string;
 }
 
-const INVENTORY_SECRETS = new WeakMap<object, string>();
+/** The CI layout's staging inventory JWT file, under secretsDir. */
+export const STG_INVENTORY_OIDC_FILE = OIDC_FILES.stagingInventory;
 
-/** @internal The inventory key of a loaded target set. */
-export function inventoryKeyOf(i: Inventory): string {
+const INVENTORY_SECRETS = new WeakMap<object, () => Promise<string>>();
+
+/**
+ * @internal The inventory's OIDC bearer for a loaded target set: the file's
+ * JWT, re-minted into the file in the job when it is near expiry.
+ */
+export function inventoryBearer(i: Inventory): Promise<string> {
   const k = INVENTORY_SECRETS.get(i);
   if (!k) throw new Error("inventory was not loaded with loadTargets");
-  return k;
+  return k();
 }
 
 function parseInventory(
@@ -84,23 +98,31 @@ function parseInventory(
   env: Record<string, string | undefined>,
 ): Inventory | undefined {
   let url: unknown;
-  let keyFile: unknown;
+  let oidcFile: unknown;
   if (v !== undefined && v !== null) {
     if (typeof v !== "object")
       throw new Error("REDLINE_TARGETS: inventory must be an object");
-    ({ url, keyFile } = v as Record<string, unknown>);
+    ({ url, oidcFile } = v as Record<string, unknown>);
   } else {
     url = env.REDLINE_STG_INVENTORY_URL;
     if (!url) return undefined;
-    keyFile = secretsDir
-      ? join(secretsDir, "REDLINE_STG_INVENTORY_KEY")
+    oidcFile = secretsDir
+      ? join(secretsDir, STG_INVENTORY_OIDC_FILE)
       : undefined;
   }
   const i: Inventory = {
     url: origin(url, "inventory.url", "staging"),
-    keyFile: str(keyFile, "inventory.keyFile"),
+    oidcFile: str(oidcFile, "inventory.oidcFile"),
   };
-  INVENTORY_SECRETS.set(i, readSecretFile(i.keyFile, "inventory key"));
+  // Present and 0600 now; read again (and refreshed) on each use.
+  readSecretFile(i.oidcFile, "inventory OIDC JWT");
+  INVENTORY_SECRETS.set(
+    i,
+    jwtSource(i.oidcFile, AUDIENCES.stagingInventory, {
+      env,
+      onMint: mask(env),
+    }),
+  );
   return i;
 }
 
@@ -145,7 +167,7 @@ interface Secrets {
 const SECRETS = new WeakMap<object, Secrets>();
 const PROD_SECRETS = new WeakMap<
   object,
-  { r2Token: string; scriptsToken: string; inventoryKey?: string }
+  { r2Token: string; scriptsToken: string; inventoryBearer?: string }
 >();
 
 /** @internal Secrets of a loaded target (http.ts only). */
@@ -158,6 +180,19 @@ export function secretsOf(t: Target): Secrets {
 /** @internal */
 export function setPat(t: Target, pat: string): void {
   secretsOf(t).pat = pat;
+}
+
+/** In the job only: the prod inventory JWT, re-minted near expiry. */
+const PROD_BEARER = new WeakMap<object, () => Promise<string>>();
+
+/**
+ * @internal The prod inventory bearer, fresh when the job can re-mint it;
+ * undefined elsewhere (the static secrets-dir read then stands).
+ */
+export async function prodInventoryBearer(
+  p: ProdProbe,
+): Promise<string | undefined> {
+  return PROD_BEARER.get(p)?.();
 }
 
 /** @internal */
@@ -288,13 +323,19 @@ function exists(p: string): boolean {
 const PROD_FILES = {
   r2TokenFile: "REDLINE_PROD_R2_TOKEN",
   scriptsTokenFile: "REDLINE_PROD_SCRIPTS_TOKEN",
-  inventoryKeyFile: "REDLINE_PROD_INVENTORY_KEY",
 } as const;
+
+/**
+ * The GitHub OIDC JWT the red-line job mints for the prod inventory's
+ * audience and writes into the scanned secrets dir (design 4.4). Optional:
+ * absent, prodClean fails inventory_unconfigured.
+ */
+export const PROD_INVENTORY_OIDC_FILE = "REDLINE_PROD_INVENTORY_OIDC";
 
 /**
  * The prod probe: from REDLINE_TARGETS.prod, else the CI layout
  * (<secretsDir>/REDLINE_PROD_R2_TOKEN, _SCRIPTS_TOKEN, optional
- * _INVENTORY_KEY, and env REDLINE_PROD_ACCOUNT_ID). Undefined when neither
+ * _INVENTORY_OIDC, and env REDLINE_PROD_ACCOUNT_ID). Undefined when neither
  * is configured.
  */
 export function parseProd(
@@ -325,7 +366,7 @@ export function parseProd(
   const secrets: {
     r2Token: string;
     scriptsToken: string;
-    inventoryKey?: string;
+    inventoryBearer?: string;
   } = {
     r2Token: readSecretFile(r2TokenFile, "REDLINE_PROD_R2_TOKEN"),
     scriptsToken: readSecretFile(
@@ -333,13 +374,20 @@ export function parseProd(
       "REDLINE_PROD_SCRIPTS_TOKEN",
     ),
   };
-  if (r.inventoryUrl !== undefined) {
+  if (r.inventoryUrl !== undefined)
     p.inventoryUrl = origin(r.inventoryUrl, "prod.inventoryUrl", "staging");
-    const kf = file("inventoryKeyFile");
-    if (!kf) throw new Error("prod: the inventory key file is required");
-    p.inventoryKeyFile = kf;
-    secrets.inventoryKey = readSecretFile(kf, "REDLINE_PROD_INVENTORY_KEY");
-  }
+  const jwtFile = secretsDir
+    ? join(secretsDir, PROD_INVENTORY_OIDC_FILE)
+    : undefined;
+  if (jwtFile && exists(jwtFile))
+    secrets.inventoryBearer = readSecretFile(jwtFile, PROD_INVENTORY_OIDC_FILE);
+  // The job runs bring-up and other suites before prodClean: a 600 s JWT
+  // read once at load may have expired by then, so re-mint near expiry.
+  if (jwtFile && exists(jwtFile) && canMint(env))
+    PROD_BEARER.set(
+      p,
+      jwtSource(jwtFile, AUDIENCES.prodInventory, { env, onMint: mask(env) }),
+    );
   PROD_SECRETS.set(p, secrets);
   return p;
 }

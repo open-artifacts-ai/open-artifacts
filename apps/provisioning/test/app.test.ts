@@ -144,12 +144,17 @@ describe("API routes", () => {
     expect((await call(`${API}/v1/nope`)).res.status).toBe(404);
   });
 
-  it("sign-in routes are 501 stubs on the admin host", async () => {
-    expect((await call(`${ADMIN}/auth/start`)).res.status).toBe(501);
-    expect((await call(`${ADMIN}/auth/callback/google`)).res.status).toBe(501);
+  it("sign-in routes are served on the admin host (W5a; test/signin.test.ts)", async () => {
+    expect((await call(`${ADMIN}/auth/start`)).res.status).toBe(302);
+    // No flow cookie: back to the sign-in screen.
+    const cb = await call(`${ADMIN}/auth/callback/google`);
+    expect(cb.res.status).toBe(303);
+    expect(cb.res.headers.get("location")).toBe(
+      `${ADMIN}/sign-in?error=expired`,
+    );
   });
 
-  it("admin-host writes fail closed on Origin until W5a (403 csrf_failed)", async () => {
+  it("admin-host writes without Origin are 403 csrf_failed", async () => {
     for (const [method, path] of [
       ["POST", "/auth/logout"],
       ["POST", "/api/v1/installs"],
@@ -262,8 +267,8 @@ describe("MCP and OAuth stubs (9A.2, 9A.3.1)", () => {
       expect((await call(url)).res.status, url).toBe(404);
   });
 
-  it("POST /mcp is 501; GET and DELETE are 405 with allow: POST", async () => {
-    expect((await call(`${API}/mcp`, { method: "POST" })).res.status).toBe(501);
+  it("POST /mcp without a bearer is 401 (W13a); GET and DELETE are 405 with allow: POST", async () => {
+    expect((await call(`${API}/mcp`, { method: "POST" })).res.status).toBe(401);
     for (const method of ["GET", "DELETE"]) {
       const { res } = await call(`${API}/mcp`, { method });
       expect(res.status).toBe(405);

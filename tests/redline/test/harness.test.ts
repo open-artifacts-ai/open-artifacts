@@ -14,8 +14,27 @@ import {
   NotRefused,
   registerMarker,
 } from "../src/refused.ts";
-import { loadTargets, parseTargets, type Target } from "../src/targets.ts";
+import {
+  type Inventory,
+  inventoryBearer,
+  loadTargets,
+  parseTargets,
+  type Target,
+} from "../src/targets.ts";
 import { type Fake, fakeServer, json, secretDir } from "./fake.ts";
+
+/** An inventory OIDC JWT shape (unsigned: only the inventory verifies). */
+const INV_JWT = [
+  { alg: "RS256" },
+  { aud: "https://oa-s-inventory", exp: 4_102_444_800 },
+  "sig",
+]
+  .map((p) =>
+    Buffer.from(typeof p === "string" ? p : JSON.stringify(p)).toString(
+      "base64url",
+    ),
+  )
+  .join(".");
 
 const KEY_A = "a".repeat(40);
 const KEY_B = "b".repeat(40);
@@ -262,12 +281,12 @@ describe("loadTargets", () => {
     expect(JSON.stringify(T)).not.toContain("oa_pat_a");
   });
 
-  it("parses inventory and deletedHosts in staging mode; the key stays off the object", () => {
+  it("parses inventory and deletedHosts in staging mode; the OIDC JWT stays off the object", async () => {
     const s = secrets({
       k: KEY_A,
       k2: KEY_B,
-      inv: "INVENTORY-KEY-VALUE-0123456789abcdef",
-      REDLINE_STG_INVENTORY_KEY: "INVENTORY-KEY-VALUE-0123456789abcdef",
+      inv: INV_JWT,
+      REDLINE_STG_INVENTORY_OIDC: INV_JWT,
     });
     const t = (n: string, f: string) => ({
       name: n,
@@ -281,13 +300,16 @@ describe("loadTargets", () => {
       REDLINE_TARGETS: JSON.stringify({
         a: t("rl-a", "k"),
         b: t("rl-b", "k2"),
-        inventory: { url: "https://inv.x.app", keyFile: s.path("inv") },
+        inventory: { url: "https://inv.x.app", oidcFile: s.path("inv") },
         deletedHosts: ["Gone.x.app", "gone.x.page"],
       }),
     });
     expect(T.inventory?.url).toBe("https://inv.x.app");
     expect(T.deletedHosts).toEqual(["Gone.x.app", "gone.x.page"]);
-    expect(JSON.stringify(T)).not.toContain("INVENTORY-KEY-VALUE");
+    expect(JSON.stringify(T)).not.toContain(INV_JWT);
+    await expect(inventoryBearer(T.inventory as Inventory)).resolves.toBe(
+      INV_JWT,
+    );
     expect(() =>
       parseTargets({
         REDLINE_TARGETS: JSON.stringify({
@@ -297,7 +319,7 @@ describe("loadTargets", () => {
         }),
       }),
     ).toThrow(/deletedHosts/);
-    // The CI layout: env URL, key file in secretsDir, deleted hosts as JSON.
+    // The CI layout: env URL, JWT file in secretsDir, deleted hosts as JSON.
     const T2 = parseTargets({
       REDLINE_TARGETS: JSON.stringify({
         secretsDir: s.dir,
@@ -307,7 +329,7 @@ describe("loadTargets", () => {
       REDLINE_STG_INVENTORY_URL: "https://inv.x.app",
       REDLINE_DELETED_HOSTS: '["rl-del.x.app"]',
     });
-    expect(T2.inventory?.keyFile).toBe(s.path("REDLINE_STG_INVENTORY_KEY"));
+    expect(T2.inventory?.oidcFile).toBe(s.path("REDLINE_STG_INVENTORY_OIDC"));
     expect(T2.deletedHosts).toEqual(["rl-del.x.app"]);
   });
 
