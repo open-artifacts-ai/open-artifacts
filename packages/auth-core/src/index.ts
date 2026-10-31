@@ -11,7 +11,7 @@ export {
 } from "./broker-redeem.js";
 export {
   BROKER_TICKET_TTL_MS,
-  isPlatformPrincipal,
+  isPlatformPrincipalId,
   PLATFORM_PRINCIPAL_IDS,
   signBrokerTicket,
   type TicketFlow,

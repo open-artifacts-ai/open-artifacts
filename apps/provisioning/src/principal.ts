@@ -17,12 +17,19 @@ import type {
  *   `via` and `client` (9A.8), R1's token kind and expiry. `client` is the
  *   sanitized client name (oauth), null for `oat`.
  * - scopes: tokens only, always from the row, never the request.
- * - authAt: the session's sign-in time (R11 reauth); null for tokens.
- * - sessionHash: admin sessions only, `sessions.id_hash`; mintAgentToken
- *   binds the token to it (4.5, 9A.3.2).
- * - session: admin and user sessions only (W5a): the CSRF token /me
- *   returns and the session's end (/me sessionExpiresAt, the OAuth refresh
- *   cap).
+ * - authAt: the session's sign-in time (R11 reauth); null for tokens. For a
+ *   session it always equals `session.authAt` (kept top-level so authz and
+ *   /me read one field for every kind).
+ * - session: admin and user sessions only; W5a owns this shape and W5b
+ *   adopts it. Absent for every bearer and OIDC principal.
+ *   - hash: `sessions.id_hash` (sha256 of the sid, 4.5); mintAgentToken and
+ *     the OAuth grant bind to it, logout revokes by it.
+ *   - csrf: the session's CSRF token (HMAC of the sid, 4.5), the one /me
+ *     returns and checkCsrf compares.
+ *   - expiresAt: the session's end (ms; /me sessionExpiresAt, the OAuth
+ *     refresh cap).
+ *   - authAt: the last Google sign-in for this session (ms; a reauth moves
+ *     it, the sid and expiry stay).
  */
 export type Principal = {
   kind: PrincipalKind;
@@ -38,8 +45,15 @@ export type Principal = {
   sub?: string;
   tokenId?: string;
   authAt?: number | null;
-  sessionHash?: string;
-  session?: { csrf: string; expiresAt: number };
+  session?: PrincipalSession;
+};
+
+/** A browser session behind a principal (see Principal.session). */
+export type PrincipalSession = {
+  hash: string;
+  csrf: string;
+  expiresAt: number;
+  authAt: number;
 };
 
 /** A refusal before a handler runs; answered with the 3.5 envelope. */
