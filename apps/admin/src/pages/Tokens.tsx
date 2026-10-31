@@ -18,7 +18,7 @@ import {
   TableRow,
 } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { tokensQuery } from "../api/queries";
 import { ActionDialog } from "../components/ActionDialog";
@@ -90,9 +90,15 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
   const agents = [...new Set(snippets.map((s) => s.agent))];
   const [agent, setAgent] = useState(agents[0]);
   const [variant, setVariant] = useState<"oauth" | "token">("oauth");
-  const snip =
-    snippets.find((s) => s.agent === agent && s.variant === variant) ??
-    snippets.find((s) => s.agent === agent);
+  const has = (v: "oauth" | "token") =>
+    snippets.some((s) => s.agent === agent && s.variant === v);
+  // An agent without the chosen variant falls back to the one it has.
+  const shown = has(variant)
+    ? variant
+    : variant === "oauth"
+      ? "token"
+      : "oauth";
+  const snip = snippets.find((s) => s.agent === agent && s.variant === shown);
   return (
     <section className="oa-card" aria-label="Connect any AI agent">
       <h2>Connect any AI agent</h2>
@@ -111,20 +117,20 @@ function ConnectCard({ env }: { env: "prod" | "staging" }) {
           <button
             key={v}
             type="button"
-            aria-pressed={variant === v}
+            aria-pressed={shown === v}
+            disabled={!has(v)}
             onClick={() => setVariant(v)}
           >
             {label}
           </button>
         ))}
       </fieldset>
-      <div className="oa-seg" role="tablist" aria-label="Agent">
+      <div className="oa-seg">
         {agents.map((a) => (
           <button
             key={a}
             type="button"
-            role="tab"
-            aria-selected={agent === a}
+            aria-pressed={agent === a}
             onClick={() => setAgent(a)}
           >
             {a}
@@ -253,8 +259,15 @@ function MintDialog({
 
 function MintedDialog({ m, onDone }: { m: Minted; onDone: () => void }) {
   return (
-    <Dialog open onOpenChange={(o) => !o && onDone()}>
-      <DialogContent data-testid="secret">
+    // Only Done closes it: the secret is never shown again, so Escape, an outside
+    // click and the corner X must not drop it before it is copied.
+    <Dialog open>
+      <DialogContent
+        data-testid="secret"
+        showCloseButton={false}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        onInteractOutside={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>Token minted</DialogTitle>
           <DialogDescription>
@@ -281,6 +294,16 @@ function MintedDialog({ m, onDone }: { m: Minted; onDone: () => void }) {
   );
 }
 
+/** The current time, refreshed every `ms`, so "in 38 min" and the live list stay right. */
+function useNow(ms: number) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+  return now;
+}
+
 /** "Signed in (OAuth)" for a consent grant, "Token (oat_)" for a minted bearer. */
 export const kindLabel = (t: Token) =>
   t.kind === "oauth" ? "Signed in (OAuth)" : "Token (oat_)";
@@ -303,7 +326,7 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
     invalidate: [["tokens"]],
     onSuccess: () => setRevokingAll(false),
   });
-  const now = Date.now();
+  const now = useNow(30_000);
   const live = (q.data?.items ?? []).filter((t) => isLive(t, now));
   const full = live.length >= TOKEN_LIVE_LIMIT;
   return (
@@ -318,7 +341,11 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
             </p>
           )}
         </div>
-        <Button variant="destructive" onClick={() => setRevokingAll(true)}>
+        <Button
+          variant="destructive"
+          onClick={() => setRevokingAll(true)}
+          disabled={live.length === 0}
+        >
           Revoke all
         </Button>
         <Button onClick={() => setMinting(true)} disabled={full}>

@@ -236,9 +236,18 @@ it("revokes a live token", async () => {
   });
 });
 
-it("revoke all is type-to-confirm", async () => {
+it("revoke all is off when nothing is live", async () => {
   renderApp("/tokens");
-  fireEvent.click(await screen.findByRole("button", { name: "Revoke all" }));
+  expect(
+    await screen.findByRole("button", { name: "Revoke all" }),
+  ).toBeDisabled();
+});
+
+it("revoke all is type-to-confirm", async () => {
+  serve(tokens);
+  renderApp("/tokens");
+  await screen.findByRole("table");
+  fireEvent.click(screen.getByRole("button", { name: "Revoke all" }));
   const dialog = await screen.findByRole("dialog");
   const go = within(dialog).getByRole("button", { name: "Revoke all" });
   expect(go).toBeDisabled();
@@ -283,12 +292,12 @@ it("the Connect any AI agent card: variant toggle and agent tabs drive the snipp
     "Claude.ai: Settings, Connectors, Add custom connector, same server address.",
   );
   const snip = () => screen.getByTestId("snippet");
-  const tab = (name: string) => within(card).getByRole("tab", { name });
+  const tab = (name: string) => within(card).getByRole("button", { name });
   const pressed = (name: string) =>
     within(card).getByRole("button", { name }).getAttribute("aria-pressed");
 
   // Default: Claude Code, browser sign-in.
-  expect(tab("Claude Code")).toHaveAttribute("aria-selected", "true");
+  expect(tab("Claude Code")).toHaveAttribute("aria-pressed", "true");
   expect(pressed("Sign in with browser")).toBe("true");
   expect(snip()).toHaveTextContent(
     `claude mcp add --transport http oa-admin ${url}`,
@@ -300,7 +309,7 @@ it("the Connect any AI agent card: variant toggle and agent tabs drive the snipp
 
   // Another agent tab.
   fireEvent.click(tab("Codex CLI"));
-  expect(tab("Codex CLI")).toHaveAttribute("aria-selected", "true");
+  expect(tab("Codex CLI")).toHaveAttribute("aria-pressed", "true");
   expect(snip()).toHaveTextContent("[mcp_servers.oa-admin]");
   expect(snip()).toHaveTextContent("~/.codex/config.toml");
   expect(snip()).not.toHaveTextContent("bearer_token_env_var");
@@ -362,4 +371,56 @@ it("a network failure on mint keeps the request id for the same form and drops i
   fireEvent.click(go());
   await waitFor(() => expect(writes()).toHaveLength(3));
   expect(ids()[2]).not.toBe(ids()[1]);
+});
+
+it("Escape, an outside click and the corner X leave the minted secret on screen; only Done removes it", async () => {
+  renderApp("/tokens");
+  await mintIn(await openMint());
+  const box = await screen.findByTestId("secret");
+  fireEvent.keyDown(box, { key: "Escape", code: "Escape" });
+  fireEvent.pointerDown(document.body);
+  fireEvent.click(document.body);
+  // Nothing closes it; no corner X is offered either.
+  expect(within(box).queryByRole("button", { name: "Close" })).toBeNull();
+  await waitFor(() => expect(screen.getByTestId("secret")).toBeInTheDocument());
+  expect(screen.getByTestId("secret")).toHaveTextContent(
+    "oat_MOCK_not_a_token",
+  );
+  fireEvent.click(within(box).getByRole("button", { name: "Done" }));
+  await waitFor(() => expect(screen.queryByTestId("secret")).toBeNull());
+});
+
+it("the secret is never held in the query or mutation cache", async () => {
+  const { qc } = renderApp("/tokens");
+  await mintIn(await openMint());
+  await screen.findByTestId("secret");
+  await waitFor(() => expect(qc.isMutating()).toBe(0));
+  const held = JSON.stringify([
+    qc
+      .getQueryCache()
+      .getAll()
+      .map((q) => q.state.data),
+    qc
+      .getMutationCache()
+      .getAll()
+      .map((m) => [m.state.data, m.state.variables]),
+  ]);
+  expect(held).not.toContain("oat_");
+});
+
+it("the list's remaining time ticks without a refetch", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const t0 = Date.now();
+    serve([{ ...tokens[0], expiresAt: t0 + 300_000 }]);
+    renderApp("/tokens");
+    await screen.findByRole("table");
+    expect(screen.getByText("in 5 min")).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(330_000);
+    await waitFor(() =>
+      expect(screen.getByText("No agents yet")).toBeInTheDocument(),
+    );
+  } finally {
+    vi.useRealTimers();
+  }
 });
