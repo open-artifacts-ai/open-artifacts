@@ -148,6 +148,78 @@ describe("platform-db.ts", () => {
     expect(writes(f)).toEqual([]);
   });
 
+  it("refuses a partial index with another WHERE, and a view with another body", async () => {
+    const idx = applied(6);
+    idx.sqlite.exec(
+      migrations[6]?.sql.replace(
+        "WHERE status <> 'failed'",
+        "WHERE status = 'ready'",
+      ) as string,
+    );
+    const r = await go(idx);
+    expect(r.ok).toBe(false);
+    expect(r.err).toContain("signups_live_slug is");
+    expect(writes(idx)).toEqual([]);
+    // The same columns, another body: only the sql tells them apart.
+    const view = applied(7);
+    const body = "ORDER BY created_at DESC, id DESC LIMIT 1)";
+    expect(migrations[7]?.sql).toContain(body);
+    view.sqlite.exec(
+      migrations[7]?.sql.replace(
+        body,
+        "ORDER BY created_at ASC, id DESC LIMIT 1)",
+      ) as string,
+    );
+    const v = await go(view);
+    expect(v.ok).toBe(false);
+    expect(v.err).toContain("install_status is");
+    expect(writes(view)).toEqual([]);
+  });
+
+  it("a run stopped between applying 0001-0005 and recording them converges: the tracker lists 0001-0002, the schema has 0001-0005", async () => {
+    const f = fakeDb();
+    // A fresh env: 0008's tracker, 0001-0005 applied, only 0001-0002 recorded.
+    const ddl =
+      /CREATE TABLE IF NOT EXISTS platform_migrations \([^;]*\);/.exec(
+        migrations[7]?.sql as string,
+      )?.[0] as string;
+    f.sqlite.exec(ddl);
+    for (const m of migrations.slice(0, 5)) f.sqlite.exec(m.sql);
+    for (const m of migrations.slice(0, 2))
+      f.sqlite
+        .prepare(
+          "INSERT INTO platform_migrations (name, sha256, applied_at) VALUES (?, ?, 1)",
+        )
+        .run(m.name, m.sha256);
+    const r = await go(f);
+    expect(r.err).toBe("");
+    expect(r.log).toEqual([
+      ...names.slice(2, 5).map((n) => `${n}: present, recorded`),
+      ...names.slice(5).map((n) => `${n}: applied`),
+      `${names.length} migrations tracked, shapes match`,
+    ]);
+    // 0003-0005 (ADD COLUMN) never run again.
+    expect(f.calls.filter((c) => c.startsWith("exec"))).toHaveLength(3);
+    expect(tracker(f)).toHaveLength(names.length);
+    // The tracker lists 0001-0003 and 0004 is absent: 0004 onward applied.
+    const g = fakeDb();
+    g.sqlite.exec(ddl);
+    for (const m of migrations.slice(0, 3)) {
+      g.sqlite.exec(m.sql);
+      g.sqlite
+        .prepare(
+          "INSERT INTO platform_migrations (name, sha256, applied_at) VALUES (?, ?, 1)",
+        )
+        .run(m.name, m.sha256);
+    }
+    const r2 = await go(g);
+    expect(r2.err).toBe("");
+    expect(r2.log.slice(0, 2)).toEqual([
+      `${names[3]}: applied`,
+      `${names[4]}: applied`,
+    ]);
+  });
+
   it("a hand-applied 0006 and 0007 with the right shape are recorded, not refused", async () => {
     const f = applied(7);
     const r = await go(f);

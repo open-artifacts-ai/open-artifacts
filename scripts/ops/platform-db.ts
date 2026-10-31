@@ -3,15 +3,20 @@
 // oa-<p>-platform up to every pinned migration in apps/platform-db, and reads
 // it back. First in the deploy order.
 //   1. The lock holds (check-migration-lock.mjs): every file pinned, unchanged.
-//   2. Tracker platform_migrations (name, sha256, applied_at). When it is
-//      empty or absent, 0001-0005 are detected by schema (each file's own
-//      tables, indexes, triggers and added columns, derived by applying the
-//      files here) and recorded with their pins; a file only partly there, or
-//      a gap, stops the run. A tracker row that isn't a pinned prefix stops it.
+//   2. Tracker platform_migrations (name, sha256, applied_at). A tracker row
+//      that isn't a pinned prefix stops the run. Every 0001-0005 file not in
+//      the tracker (all of them when it is empty or absent) is detected by
+//      schema (each file's own tables, indexes, triggers and added columns,
+//      derived by applying the files here) and recorded with its pin when
+//      fully there; a file only partly there, or a gap, stops the run. So a
+//      run that stopped between applying or detecting a file and recording it
+//      converges on the next (those files ADD COLUMN, which can't rerun).
 //   3. Shape check, before any file is recorded: every table, view and index
 //      that 0006-0008 create and that exists must match PRAGMA table_info,
-//      index_list and index_info exactly. IF NOT EXISTS would keep an old
-//      shape (#859's hand-applied signups); the fix is a new migration.
+//      index_list and index_info exactly, and each index and view its
+//      sqlite_master.sql (whitespace collapsed: a partial index's WHERE, a
+//      view's body). IF NOT EXISTS would keep an old shape (#859's
+//      hand-applied signups); the fix is a new migration.
 //   4. Each pinned file not in the tracker, in order: apply, insert its row,
 //      read the row back. Every statement is IF NOT EXISTS, so a rerun is safe.
 //   5. Read back: the tracker lists every pinned file with its pin, and every
@@ -50,6 +55,8 @@ interface Shape {
 interface Expected {
   markers: Record<string, string[]>;
   shapes: Record<string, Shape>;
+  /** Index and view name -> its normalized sqlite_master.sql (0006 onward). */
+  sqls: Record<string, string>;
 }
 interface Obj {
   type: string;
@@ -107,6 +114,14 @@ const indexes = async (all: All, t: string) => {
   }
   return out;
 };
+/** An object's sqlite_master.sql, whitespace collapsed; "" when it has none. */
+const sqlOf = async (all: All, name: string): Promise<string> => {
+  const r = await all("SELECT sql FROM sqlite_master WHERE name = ?", [name]);
+  const v = r[0]?.sql;
+  return typeof v === "string"
+    ? v.replace(/\s+/g, " ").trim().replace(/;$/, "")
+    : "";
+};
 // Names come from sqlite_master of the files we ship; quoted all the same.
 const q = (n: string) => `"${n.replaceAll('"', '""')}"`;
 
@@ -153,6 +168,7 @@ export async function expected(migrations: Migration[]): Promise<Expected> {
   const all = local(db);
   const markers: Record<string, string[]> = {};
   const checked: string[] = [];
+  const texts: string[] = [];
   for (const m of migrations) {
     const before = await snapshot(db);
     db.exec(m.sql);
@@ -162,8 +178,11 @@ export async function expected(migrations: Migration[]): Promise<Expected> {
       for (const k of ks) {
         const [type, name] = k.split(":") as [string, string];
         if (type === "table" || type === "view") checked.push(name);
+        if (type === "index" || type === "view") texts.push(name);
       }
   }
+  const sqls: Record<string, string> = {};
+  for (const n of texts) sqls[n] = await sqlOf(all, n);
   const shapes: Record<string, Shape> = {};
   for (const t of checked)
     shapes[t] = {
@@ -171,7 +190,7 @@ export async function expected(migrations: Migration[]): Promise<Expected> {
       indexes: await indexes(all, t),
     };
   db.close();
-  return { markers, shapes };
+  return { markers, shapes, sqls };
 }
 
 /** The live database's shape problems against `want` (missing objects only when strict). */
@@ -204,13 +223,21 @@ async function shapeProblems(
       for (const n of Object.keys(w.indexes))
         if (idx[n] === undefined) out.push(`index ${n} on ${t} is missing`);
   }
+  for (const [n, w] of Object.entries(want.sqls)) {
+    if (!live.has(n)) continue;
+    const got = await sqlOf(all, n);
+    if (got !== w) out.push(`${n} is \`${got}\`; want \`${w}\``);
+  }
   return out;
 }
 
-/** 0001-0005 present on the live database, by schema: a prefix, never partial. */
+/**
+ * Which of `candidates` (untracked 0001-0005 files, in order) the live
+ * database has, by schema: a prefix of them, never partial.
+ */
 async function detect(
   all: All,
-  migrations: Migration[],
+  candidates: Migration[],
   want: Expected,
 ): Promise<Migration[]> {
   const live = new Set((await objects(all)).map((o) => `${o.type}:${o.name}`));
@@ -224,7 +251,7 @@ async function detect(
   };
   const found: Migration[] = [];
   let gap: string | null = null;
-  for (const m of migrations.filter((m) => m.name < FIRST_CHECKED)) {
+  for (const m of candidates) {
     const ks = want.markers[m.name] ?? [];
     let n = 0;
     for (const k of ks) if (await has(k)) n++;
@@ -275,7 +302,7 @@ export async function run({
   };
   const rows = await tracked();
   let recorded: Set<string>;
-  let bootstrap: Migration[] = [];
+  let bootstrap: Migration[];
   if (rows && rows.length > 0) {
     rows.forEach((r, i) => {
       if (!pins.has(r.name))
@@ -289,9 +316,13 @@ export async function run({
     });
     recorded = new Set(rows.map((r) => r.name));
   } else {
-    bootstrap = await detect(all, migrations, want);
     recorded = new Set();
   }
+  bootstrap = await detect(
+    all,
+    migrations.filter((m) => m.name < FIRST_CHECKED && !recorded.has(m.name)),
+    want,
+  );
 
   const before = await shapeProblems(all, want, false);
   if (before.length)
