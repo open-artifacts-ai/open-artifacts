@@ -33,8 +33,7 @@ export class Refused extends Error {}
 
 /** Files 0006 onward are shape-checked; earlier ones are detected by schema. */
 const FIRST_CHECKED = "0006";
-const TRACKER =
-  /CREATE TABLE IF NOT EXISTS platform_migrations \([^;]*\);/;
+const TRACKER = /CREATE TABLE IF NOT EXISTS platform_migrations \([^;]*\);/;
 
 /**
  * The pinned migrations in `dir`, in order: { name, sql, sha256 }.
@@ -136,7 +135,10 @@ export async function expected(migrations) {
   }
   const shapes = {};
   for (const t of checked)
-    shapes[t] = { columns: await columns(all, t), indexes: await indexes(all, t) };
+    shapes[t] = {
+      columns: await columns(all, t),
+      indexes: await indexes(all, t),
+    };
   db.close();
   return { markers, shapes };
 }
@@ -152,7 +154,9 @@ async function shapeProblems(all, want, strict) {
     }
     const cols = await columns(all, t);
     if (JSON.stringify(cols) !== JSON.stringify(w.columns))
-      out.push(`${t} has columns ${cols.join(", ")}; want ${w.columns.join(", ")}`);
+      out.push(
+        `${t} has columns ${cols.join(", ")}; want ${w.columns.join(", ")}`,
+      );
     const idx = await indexes(all, t);
     for (const [n, s] of Object.entries(idx))
       if (w.indexes[n] !== s)
@@ -266,9 +270,7 @@ export async function run({ db, migrations, verifyOnly, now, log }) {
         throw new Refused(`${m.name}: the tracker row did not read back`);
     };
     if (!rows) {
-      const ddl = migrations
-        .map((m) => TRACKER.exec(m.sql)?.[0])
-        .find(Boolean);
+      const ddl = migrations.map((m) => TRACKER.exec(m.sql)?.[0]).find(Boolean);
       if (!ddl) throw new Refused("no migration creates platform_migrations");
       await db.exec(ddl);
     }
@@ -304,8 +306,7 @@ export async function run({ db, migrations, verifyOnly, now, log }) {
         : [];
       if (!cs.includes(c)) shapes.push(`${k} is missing`);
     }
-  if (shapes.length)
-    throw new Refused(`read back: ${shapes.join("; ")}`);
+  if (shapes.length) throw new Refused(`read back: ${shapes.join("; ")}`);
   log(`${migrations.length} migrations tracked, shapes match`);
 }
 
@@ -325,14 +326,17 @@ export function d1({ token, accountId, databaseId, fetch: f = fetch }) {
       });
       body = await res.json();
     } catch {
-      throw new Refused("D1 query failed: network error or unparsable response");
+      throw new Refused(
+        "D1 query failed: network error or unparsable response",
+      );
     }
     if (body?.success !== true || !Array.isArray(body.result))
       throw new Refused(
         `D1 query failed: ${JSON.stringify(body?.errors ?? null)}`,
       );
     for (const r of body.result)
-      if (r?.success === false) throw new Refused("D1 query failed: a statement failed");
+      if (r?.success === false)
+        throw new Refused("D1 query failed: a statement failed");
     return body.result;
   };
   return {

@@ -55,9 +55,7 @@ describe("hosted-publish.yml", () => {
     );
     const what = named("resolve", "What to publish");
     expect(what.run).toBe("bash scripts/ci/hosted-publish-resolve.sh");
-    expect(what.env.HEAD_SHA).toBe(
-      "${{ github.event.workflow_run.head_sha }}",
-    );
+    expect(what.env.HEAD_SHA).toBe("${{ github.event.workflow_run.head_sha }}");
     expect(what.env.CONCLUSION).toBe(
       "${{ github.event.workflow_run.conclusion }}",
     );

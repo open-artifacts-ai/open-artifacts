@@ -61,7 +61,12 @@ esac`;
     );
     return { ...r, o, log: sb.log() };
   };
-  const run = { EVENT: "workflow_run", HEAD_BRANCH: "main", CONCLUSION: "success", HEAD_SHA: SHA };
+  const run = {
+    EVENT: "workflow_run",
+    HEAD_BRANCH: "main",
+    CONCLUSION: "success",
+    HEAD_SHA: SHA,
+  };
 
   it("after release-please: the release at the run's head commit, to both envs", () => {
     const r = resolve(run, {
@@ -79,9 +84,27 @@ esac`;
   });
   it("no release at that commit (most pushes), a failed run or another branch: nothing", () => {
     for (const [label, env, state] of [
-      ["no release", run, { releases: [release("v0.80.0")], commits: { "v0.80.0": OTHER } }],
-      ["draft", run, { releases: [release("v0.80.0", { draft: true })], commits: { "v0.80.0": SHA } }],
-      ["prerelease", run, { releases: [release("v0.80.0-rc.1", { prerelease: true })], commits: { "v0.80.0-rc.1": SHA } }],
+      [
+        "no release",
+        run,
+        { releases: [release("v0.80.0")], commits: { "v0.80.0": OTHER } },
+      ],
+      [
+        "draft",
+        run,
+        {
+          releases: [release("v0.80.0", { draft: true })],
+          commits: { "v0.80.0": SHA },
+        },
+      ],
+      [
+        "prerelease",
+        run,
+        {
+          releases: [release("v0.80.0-rc.1", { prerelease: true })],
+          commits: { "v0.80.0-rc.1": SHA },
+        },
+      ],
       ["failed", { ...run, CONCLUSION: "failure" }, {}],
       ["branch", { ...run, HEAD_BRANCH: "feature" }, {}],
     ] as const) {
@@ -99,13 +122,24 @@ esac`;
   });
   it("dispatch with a tag: both envs, or the one named", () => {
     const d = { EVENT: "workflow_dispatch" };
-    expect(resolve({ ...d, TAG: "v0.80.0" }).o).toMatchObject({ kind: "release", tag: "v0.80.0", staging: "true", prod: "true" });
-    expect(resolve({ ...d, TAG: "v0.80.0", DEPLOY_ENV: "staging" }).o).toMatchObject({ staging: "true", prod: "false" });
-    expect(resolve({ ...d, TAG: "v0.80.0", DEPLOY_ENV: "prod" }).o).toMatchObject({ staging: "false", prod: "true" });
+    expect(resolve({ ...d, TAG: "v0.80.0" }).o).toMatchObject({
+      kind: "release",
+      tag: "v0.80.0",
+      staging: "true",
+      prod: "true",
+    });
+    expect(
+      resolve({ ...d, TAG: "v0.80.0", DEPLOY_ENV: "staging" }).o,
+    ).toMatchObject({ staging: "true", prod: "false" });
+    expect(
+      resolve({ ...d, TAG: "v0.80.0", DEPLOY_ENV: "prod" }).o,
+    ).toMatchObject({ staging: "false", prod: "true" });
   });
   it("dispatch with a floor run: its env only, which it needs", () => {
     const d = { EVENT: "workflow_dispatch" };
-    expect(resolve({ ...d, FLOOR_RUN_ID: "123", DEPLOY_ENV: "prod" }).o).toEqual({
+    expect(
+      resolve({ ...d, FLOOR_RUN_ID: "123", DEPLOY_ENV: "prod" }).o,
+    ).toEqual({
       kind: "floor",
       tag: "",
       floor_run_id: "123",
@@ -151,25 +185,35 @@ esac`;
     opts: { env?: string; fail?: boolean } = {},
   ) => {
     const sb = sandbox({ gh });
-    if (runJson) writeFileSync(join(sb.dir, "run.json"), JSON.stringify(runJson));
+    if (runJson)
+      writeFileSync(join(sb.dir, "run.json"), JSON.stringify(runJson));
     mkdirSync(join(sb.dir, "files"));
     for (const [f, v] of Object.entries(files)) {
-      mkdirSync(join(sb.dir, "files", f.split("/").slice(0, -1).join("/")), { recursive: true });
+      mkdirSync(join(sb.dir, "files", f.split("/").slice(0, -1).join("/")), {
+        recursive: true,
+      });
       writeFileSync(join(sb.dir, "files", f), v);
     }
     if (opts.fail) writeFileSync(join(sb.dir, "fail-download"), "");
     const dir = join(sb.dir, "floor");
-    const r = sb.run(["bash", script("hosted-floor-fetch.sh"), opts.env ?? "prod", "42", dir], {
-      env: { STATE: sb.dir, GH_TOKEN: "t", GITHUB_REPOSITORY: REPO },
-    });
+    const r = sb.run(
+      ["bash", script("hosted-floor-fetch.sh"), opts.env ?? "prod", "42", dir],
+      {
+        env: { STATE: sb.dir, GH_TOKEN: "t", GITHUB_REPOSITORY: REPO },
+      },
+    );
     return { ...r, dir, log: sb.log() };
   };
   it("the one signed floor of the env, from a successful hosted-floor.yml dispatch on main", () => {
     const r = fetch(goodRun, { "floor-prod-3/floor-prod-3.sig.json": "{}" });
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
-    expect(r.out.trim()).toBe(join(r.dir, "floor-prod-3/floor-prod-3.sig.json"));
-    expect(r.log).toContain(`gh run download 42 --repo ${REPO} --pattern floor-prod-* --dir ${r.dir}`);
+    expect(r.out.trim()).toBe(
+      join(r.dir, "floor-prod-3/floor-prod-3.sig.json"),
+    );
+    expect(r.log).toContain(
+      `gh run download 42 --repo ${REPO} --pattern floor-prod-* --dir ${r.dir}`,
+    );
   });
   it("refuses a run that isn't hosted-floor.yml, dispatched on main, successful", () => {
     for (const over of [
@@ -179,7 +223,10 @@ esac`;
       { conclusion: "failure" },
       { status: "in_progress" },
     ]) {
-      const r = fetch({ ...goodRun, ...over }, { "floor-prod-3.sig.json": "{}" });
+      const r = fetch(
+        { ...goodRun, ...over },
+        { "floor-prod-3.sig.json": "{}" },
+      );
       expect(r.code, JSON.stringify(over)).toBe(1);
       expect(r.log.some((l) => l.startsWith("gh run download"))).toBe(false);
     }
@@ -187,9 +234,16 @@ esac`;
   });
   it("refuses none, two, or another env's floor; a failed download fails", () => {
     expect(fetch(goodRun, {}).code).toBe(1);
-    expect(fetch(goodRun, { "a/floor-prod-3.sig.json": "{}", "b/floor-prod-4.sig.json": "{}" }).code).toBe(1);
+    expect(
+      fetch(goodRun, {
+        "a/floor-prod-3.sig.json": "{}",
+        "b/floor-prod-4.sig.json": "{}",
+      }).code,
+    ).toBe(1);
     expect(fetch(goodRun, { "floor-staging-3.sig.json": "{}" }).code).toBe(1);
-    expect(fetch(goodRun, { "floor-prod-3.sig.json": "{}" }, { fail: true }).code).toBe(1);
+    expect(
+      fetch(goodRun, { "floor-prod-3.sig.json": "{}" }, { fail: true }).code,
+    ).toBe(1);
     expect(fetch(goodRun, {}, { env: "dev" }).code).toBe(2);
   });
 });

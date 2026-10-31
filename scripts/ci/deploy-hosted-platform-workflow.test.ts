@@ -320,7 +320,10 @@ describe("deploy-hosted-platform.yml", () => {
     // What each app binds, from its committed config (prod block).
     const strip = (src: string) =>
       src
-        .replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m, q) => q ?? "")
+        .replace(
+          /("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+          (m, q) => q ?? "",
+        )
         .replace(/,(\s*[}\]])/g, "$1");
     const bound = (app: string): string[] => {
       const cfg = JSON.parse(
@@ -328,18 +331,31 @@ describe("deploy-hosted-platform.yml", () => {
       ).env.prod;
       const out = new Set<string>();
       if (cfg.d1_databases?.length) out.add("platform-db");
-      for (const s of cfg.services ?? []) out.add(String(s.service).replace(/^oa-p-/, ""));
+      for (const s of cfg.services ?? [])
+        out.add(String(s.service).replace(/^oa-p-/, ""));
       for (const wf of cfg.workflows ?? [])
-        if (wf.script_name) out.add(String(wf.script_name).replace(/^oa-p-/, ""));
+        if (wf.script_name)
+          out.add(String(wf.script_name).replace(/^oa-p-/, ""));
       for (const s of cfg.secrets_store_secrets ?? [])
-        if (String(s.secret_name).endsWith("-provision-token")) out.add("provision-token");
+        if (String(s.secret_name).endsWith("-provision-token"))
+          out.add("provision-token");
       return [...out];
     };
-    const apps = ["auth-broker", "directory-broker", "provisioner", "dispatch", "scheduler", "inventory", "provisioning"];
+    const apps = [
+      "auth-broker",
+      "directory-broker",
+      "provisioner",
+      "dispatch",
+      "scheduler",
+      "inventory",
+      "provisioning",
+    ];
     for (const app of apps)
       for (const dep of bound(app)) {
         expect(order, `${app} binds ${dep}`).toContain(dep);
-        expect(order.indexOf(dep), `${dep} before ${app}`).toBeLessThan(order.indexOf(app));
+        expect(order.indexOf(dep), `${dep} before ${app}`).toBeLessThan(
+          order.indexOf(app),
+        );
       }
     expect(bound("provisioning")).toEqual(
       expect.arrayContaining(["platform-db", "provisioner", "auth-broker"]),
@@ -353,7 +369,9 @@ describe("deploy-hosted-platform.yml", () => {
 
   it("prod's provisioner and provisioning wait for a green staging run of the tag, before anything deploys", () => {
     const g = named("Staging passed this tag");
-    expect(g.run).toBe('bash "$RUNNER_TEMP/main-ci/staging-first-gate.sh" "$TAG"');
+    expect(g.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/staging-first-gate.sh" "$TAG"',
+    );
     expect(g.env).toEqual({
       TAG: "${{ inputs.tag }}",
       GH_TOKEN: "${{ github.token }}",
@@ -374,12 +392,15 @@ describe("deploy-hosted-platform.yml", () => {
     expect(runsFor("prod", "provision-token,dispatch")).toBe(false);
     expect(runsFor("staging", "provisioner,provisioning")).toBe(false);
     const i = (n: string) => steps.indexOf(named(n));
-    expect(i("Use main's deploy scripts")).toBeLessThan(i("Staging passed this tag"));
+    expect(i("Use main's deploy scripts")).toBeLessThan(
+      i("Staging passed this tag"),
+    );
     expect(i("Staging passed this tag")).toBeLessThan(i("Deploy and verify"));
   });
 
   it("builds and tests the Provisioning API Workers and the admin SPA too", () => {
-    const run = named("Build and test the Workers being deployed").run as string;
+    const run = named("Build and test the Workers being deployed")
+      .run as string;
     for (const p of ["@oa/provisioner", "@oa/provisioning", "@oa/admin"])
       expect(run).toContain(`--filter ${p}`);
   });
@@ -391,7 +412,9 @@ describe("deploy-hosted-platform.yml", () => {
     const e = named("The deploy token's expiry");
     expect(steps.at(-1)).toBe(e);
     expect(e.if).toBe("${{ !cancelled() }}");
-    expect(e.run).toBe('bash "$RUNNER_TEMP/main-ci/deploy-token-expiry.sh" "$DEPLOY_ENV"');
+    expect(e.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/deploy-token-expiry.sh" "$DEPLOY_ENV"',
+    );
     expect(e.env).toEqual({
       DEPLOY_ENV: "${{ inputs.env }}",
       CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",

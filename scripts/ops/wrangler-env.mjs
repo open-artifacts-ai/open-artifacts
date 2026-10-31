@@ -64,7 +64,9 @@ if (
 ) {
   const [file, env, what] = process.argv.slice(2);
   if (!file || (env !== "staging" && env !== "prod") || !what) {
-    console.error("usage: wrangler-env.mjs <wrangler.jsonc> staging|prod vars|ratelimits");
+    console.error(
+      "usage: wrangler-env.mjs <wrangler.jsonc> staging|prod vars|ratelimits",
+    );
     process.exit(2);
   }
   try {

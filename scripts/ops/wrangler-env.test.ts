@@ -27,7 +27,9 @@ describe("wrangler-env.mjs", () => {
     expect(Object.keys(p).filter((k) => k.startsWith("OIDC_"))).toEqual([]);
   });
   it("refuses a placeholder with no value, or another env's", () => {
-    expect(() => envSection(cfg("provisioning"), "staging", "vars", {})).toThrow(
+    expect(() =>
+      envSection(cfg("provisioning"), "staging", "vars", {}),
+    ).toThrow(
       /OIDC_REPOSITORY_ID: \{\{GITHUB_REPOSITORY_ID_STAGING\}\} has no value/,
     );
     const src = `{"env":{"prod":{"vars":{"A":"{{X_STAGING}}"}}}}`;

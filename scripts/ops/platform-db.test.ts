@@ -239,10 +239,11 @@ describe("platform-db.mjs", () => {
   it("d1: the token only in the header; a failed statement or call throws", async () => {
     const TOKEN = "tok-SHOULD-NEVER-APPEAR";
     const seen: { url: string; init: RequestInit }[] = [];
-    const answer = (body: unknown) => async (url: string, init: RequestInit) => {
-      seen.push({ url, init });
-      return new Response(JSON.stringify(body));
-    };
+    const answer =
+      (body: unknown) => async (url: string, init: RequestInit) => {
+        seen.push({ url, init });
+        return new Response(JSON.stringify(body));
+      };
     const ok = d1({
       token: TOKEN,
       accountId: "a".repeat(32),
@@ -260,9 +261,8 @@ describe("platform-db.mjs", () => {
       sql: "SELECT 1 AS x",
       params: [1],
     });
-    expect(
-      (seen[0]?.init.headers as Record<string, string>).authorization,
-    ).toBe(`Bearer ${TOKEN}`);
+    const headers = seen[0]?.init.headers as Record<string, string>;
+    expect(headers.authorization).toBe(`Bearer ${TOKEN}`);
     for (const body of [
       { success: false, errors: [{ code: 7500 }] },
       { success: true, result: [{ success: false }] },
@@ -280,10 +280,14 @@ describe("platform-db.mjs", () => {
 
   it("the CLI refuses a bad env or missing inputs before any call", () => {
     const cli = (args: string[], env: Record<string, string>) =>
-      spawnSync("node", [join(import.meta.dirname, "platform-db.mjs"), ...args], {
-        env: { PATH: process.env.PATH as string, ...env },
-        encoding: "utf8",
-      });
+      spawnSync(
+        "node",
+        [join(import.meta.dirname, "platform-db.mjs"), ...args],
+        {
+          env: { PATH: process.env.PATH as string, ...env },
+          encoding: "utf8",
+        },
+      );
     const ok = {
       CLOUDFLARE_API_TOKEN: "t",
       CLOUDFLARE_ACCOUNT_ID: "a".repeat(32),
@@ -295,7 +299,10 @@ describe("platform-db.mjs", () => {
   });
 
   it("the CLI never prints the token", () => {
-    const src = readFileSync(join(import.meta.dirname, "platform-db.mjs"), "utf8");
+    const src = readFileSync(
+      join(import.meta.dirname, "platform-db.mjs"),
+      "utf8",
+    );
     expect(src).not.toMatch(/console\.\w+\([^)]*TOKEN/);
   });
 });

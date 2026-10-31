@@ -64,11 +64,15 @@ describe("staging-first-gate.sh", () => {
     ] as const) {
       const r = gate([run]);
       expect(r.code, label).toBe(1);
-      expect(r.err, label).toContain(`no successful redline-staging.yml run for ${TAG}`);
+      expect(r.err, label).toContain(
+        `no successful redline-staging.yml run for ${TAG}`,
+      );
     }
     expect(gate([]).code).toBe(1);
     // The tag anywhere in the name, as a word.
-    expect(gate([runOf({ display_title: `rl (${TAG}) staging` })]).code).toBe(0);
+    expect(gate([runOf({ display_title: `rl (${TAG}) staging` })]).code).toBe(
+      0,
+    );
   });
   it("fails closed on an API error or an unparsable answer", () => {
     expect(gate([runOf()], { fail: true }).code).toBe(1);
