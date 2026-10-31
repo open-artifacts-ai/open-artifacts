@@ -235,6 +235,24 @@ describe("sweep: dead runs", () => {
     expect((await jobRow(id))?.status).toBe("failed");
   });
 
+  it("a run that finished its job after the select is left alone (no settle, no cleanup)", async () => {
+    const f = fakes();
+    const { id } = await started(f, "complete");
+    const real = f.provision.get.bind(f.provision);
+    f.provision.get = async (i) => {
+      // The run's last step marks the job done meanwhile.
+      await db
+        .prepare("UPDATE jobs SET status = 'done' WHERE id = ?1")
+        .bind(id)
+        .run();
+      return real(i);
+    };
+    await run(f.env);
+    expect(settled).toEqual([]);
+    expect(await cleanups()).toEqual([]);
+    expect((await jobRow(id))?.status).toBe("done");
+  });
+
   it("a dead cleanup job is settled only, never given another cleanup", async () => {
     const f = fakes();
     const { id } = await started(f, "errored", {

@@ -70,6 +70,11 @@ const DEAD = new Set<WorkflowInstanceStatus["status"]>([
   "terminated",
 ]);
 
+const STILL_OPEN =
+  "SELECT 1 AS open FROM jobs WHERE id = ?1 AND status IN ('queued', 'running')";
+const stillOpen = async (db: D1Database, id: string) =>
+  (await d1(db.prepare(STILL_OPEN).bind(id).first())) !== null;
+
 /** What one open job needs: start it, settle it, or nothing. */
 async function look(
   wf: WorkflowLike,
@@ -118,7 +123,12 @@ export async function sweep(
       }
       if (what !== "dead") return;
       step = "settle";
+      // The run may have settled the job itself since the select (a
+      // complete run's last step marks it done): still open, or leave it.
+      // TODO(contract): settleFailed does not say whether it settled.
+      if (!(await stillOpen(db, j.id))) return;
       await settleFailed(db, j.id, DEAD_RUN_CODE);
+      if (await stillOpen(db, j.id)) return;
       console.warn("provapi sweep settled", j.id, DEAD_RUN_CODE);
       // A dead cleanup is settled only, never given another cleanup.
       if (j.kind === "cleanup") return;
