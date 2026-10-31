@@ -1627,12 +1627,8 @@ export class WfpProvisioner {
     this.checkEmailCodeDomain(vars, "domains");
     this.checkGoogleBroker(vars);
     if (this.o.brokerEnabled) this.registryDomainsOf(vars);
-    const hash = inputsHash({
-      ownerEmail,
-      vars,
-      testHooks,
-      version: i.version,
-    });
+    // Without the version: replayOf compares it; a resume only refuses a downgrade.
+    const hash = inputsHash({ ownerEmail, vars, testHooks });
     // 5.7 replay, before the release pre-flight (a fixed id only): the
     // create finished but its step result was lost, so a release pulled
     // since must not fail it. No release read, no write, no PAT re-minted.
@@ -1707,10 +1703,11 @@ export class WfpProvisioner {
         );
       if (row.inputs_hash !== hash)
         throw new ProvisionRefused(
-          `install ${row.id}: resume inputs differ from the first run (owner, vars, testHooks or version); use the original inputs`,
+          `install ${row.id}: resume inputs differ from the first run (owner, vars or testHooks); use the original inputs`,
           "invalid_state",
         );
-      // F2/I1: never move an install to an older release.
+      // F2/I1: never move an install to an older release. A newer one is
+      // allowed; the Workflow pins args.resolvedVersion across retries (W3).
       if (row.version && compareVersions(rel.rec.version, row.version) < 0)
         throw new ProvisionRefused(
           `install ${row.id} is at ${row.version}; ${rel.rec.version} would be a downgrade`,
@@ -1796,7 +1793,7 @@ export class WfpProvisioner {
     hash: string,
   ): Install | undefined {
     if (row?.state !== "active" || row.id !== i.installId) return undefined;
-    // The hash covers the version; installs.version also catches an upgrade since.
+    // The version is part of the replay check only (not the hash).
     if (row.inputs_hash !== hash || row.version !== i.version)
       throw new ProvisionRefused(
         `install ${row.id}: rerun inputs differ from the first run (owner, vars, testHooks or version); use the original inputs`,

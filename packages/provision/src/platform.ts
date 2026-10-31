@@ -83,13 +83,13 @@ export function canonicalJson(v: unknown): string {
 
 /**
  * sha256 of the canonical JSON of what a resume or a replay must not change:
- * owner, vars, testHooks and the release version (#882).
+ * owner, vars and testHooks. Not the version: a `creating` resume may move up
+ * (never down, F2/I1), and a replay compares installs.version itself (5.7).
  */
 export function inputsHash(o: {
   ownerEmail: string;
   vars?: Record<string, string>;
   testHooks?: boolean;
-  version: string;
 }): string {
   return createHash("sha256")
     .update(
@@ -97,7 +97,6 @@ export function inputsHash(o: {
         ownerEmail: o.ownerEmail,
         vars: o.vars ?? {},
         testHooks: o.testHooks === true,
-        version: o.version,
       }),
     )
     .digest("hex");
