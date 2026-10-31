@@ -351,20 +351,24 @@ describe("R24 POST /auth/logout", () => {
     });
   });
 
-  it("charges RL_PV_WRITE by the admin's rate key after CSRF; over it 429, nothing revoked", async () => {
+  it("charges the admin's escape bucket, never RL_PV_WRITE, after CSRF; over it 429, nothing revoked", async () => {
     const e = fakeEnv();
     const s = await session(e);
     const ok = { origin: ADMIN, "x-csrf-token": await csrfToken(e.env, s.sid) };
     // A failed CSRF check spends no write charge.
     await logout(e, s.sid, { origin: ADMIN });
-    expect(e.limits.RL_PV_WRITE.keys).toEqual([]);
+    expect(e.limits.RL_PV_ADMIN_ESCAPE.keys).toEqual([]);
     e.limits.RL_PV_WRITE.allow = false;
+    e.limits.RL_PV_ADMIN_ESCAPE.allow = false;
     expect((await logout(e, s.sid, ok)).status).toBe(429);
-    expect(e.limits.RL_PV_WRITE.keys).toEqual(["admin:me@example.com"]);
+    expect(e.limits.RL_PV_ADMIN_ESCAPE.keys).toEqual([
+      "admin-escape:me@example.com",
+    ]);
+    expect(e.limits.RL_PV_WRITE.keys).toEqual([]);
     expect(
       await db.prepare("SELECT revoked_at FROM sessions").first("revoked_at"),
     ).toBeNull();
-    e.limits.RL_PV_WRITE.allow = true;
+    e.limits.RL_PV_ADMIN_ESCAPE.allow = true;
     expect((await logout(e, s.sid, ok)).status).toBe(204);
   });
 

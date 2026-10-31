@@ -141,6 +141,22 @@
             "limit": 20,
             "period": 60
           }
+        },
+        {
+          "name": "RL_PV_ADMIN_ESCAPE",
+          "namespace_id": "1147",
+          "simple": {
+            "limit": 60,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_TOKEN_WRITE",
+          "namespace_id": "1148",
+          "simple": {
+            "limit": 10,
+            "period": 60
+          }
         }
       ],
       "kv_namespaces": [
@@ -259,6 +275,22 @@
           "namespace_id": "1156",
           "simple": {
             "limit": 20,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_ADMIN_ESCAPE",
+          "namespace_id": "1157",
+          "simple": {
+            "limit": 60,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_TOKEN_WRITE",
+          "namespace_id": "1158",
+          "simple": {
+            "limit": 10,
             "period": 60
           }
         }

@@ -445,7 +445,11 @@ describe("R17 audit", () => {
     await seedAudit(id);
     const all = await call(e, PII, "R17", { query: { limit: "100" } });
     for (const x of all.body.items) AuditEntrySchema.parse(x);
-    const mine = all.body.items.filter((x: { at: number }) => x.at >= NOW - 3);
+    // The seeded rows only: the token's own token.used (W5b hook) is at NOW.
+    const mine = all.body.items.filter(
+      (x: { at: number; action: string }) =>
+        x.at >= NOW - 3 && x.action !== "token.used",
+    );
     expect(mine.map((x: { source: string }) => x.source)).toEqual([
       "refusals",
       "provision",

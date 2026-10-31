@@ -14,6 +14,7 @@ import {
   me,
   queryAudit,
 } from "./reads.js";
+import { listTokensHandler, mintToken, revokeTokens } from "./tokens.js";
 import { world } from "./world.js";
 import { cancelJob, lifecycleWrite } from "./writes.js";
 
@@ -57,9 +58,9 @@ export const HANDLERS: Readonly<Record<ApiRouteId, Handler>> = {
   R16: listReleases,
   R17: queryAudit,
   R18: checkSlug,
-  R19: stub,
-  R20: stub,
-  R21: stub,
+  R19: mintToken,
+  R20: listTokensHandler,
+  R21: revokeTokens,
   R25: cancelJob,
   R26: lifecycleWrite,
   R27: world,
