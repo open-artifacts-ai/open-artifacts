@@ -30,7 +30,9 @@ const limiter = () => {
   const keys: string[] = [];
   return {
     keys,
-    limit: async ({ key }: { key: string }) => (keys.push(key), { success: true }),
+    limit: async ({ key }: { key: string }) => (
+      keys.push(key), { success: true }
+    ),
   };
 };
 let ipLimit: ReturnType<typeof limiter>;
@@ -87,7 +89,10 @@ describe("platform-principal ticket", () => {
   });
 
   it("a valid ticket goes to Google with no hd hint, one install charge", async () => {
-    const r = await authorize({ install: "i000000admin", ticket: await ticket() });
+    const r = await authorize({
+      install: "i000000admin",
+      ticket: await ticket(),
+    });
     expect(r.status).toBe(302);
     const u = new URL(r.headers.get("location") ?? "");
     expect(u.searchParams.has("hd")).toBe(false);
@@ -101,17 +106,23 @@ describe("platform-principal ticket", () => {
       ticket: await ticket(),
       reauth: "1",
     });
-    expect(new URL(r.headers.get("location") ?? "").searchParams.get("max_age")).toBe("0");
+    expect(
+      new URL(r.headers.get("location") ?? "").searchParams.get("max_age"),
+    ).toBe("0");
   });
 
   it("no ticket, a bad one, another flow's, another key's or an expired one: 404, no install charge", async () => {
-    const bad = [
+    const bad: Record<string, string>[] = [
       {},
       { ticket: "junk" },
       { ticket: await ticket({ state: "other" }) },
       { ticket: await ticket({ key: OTHER_KEY }) },
       { ticket: await ticket({ exp: Date.now() - 1 }) },
-      { ticket: await ticket({ exp: Date.now() + BROKER_TICKET_TTL_MS + 60_000 }) },
+      {
+        ticket: await ticket({
+          exp: Date.now() + BROKER_TICKET_TTL_MS + 60_000,
+        }),
+      },
     ];
     for (const q of bad) {
       const r = await authorize({ install: "i000000admin", ...q });
