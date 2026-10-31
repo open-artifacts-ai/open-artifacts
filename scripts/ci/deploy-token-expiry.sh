@@ -2,7 +2,9 @@
 # The deploy token's own expiry (design v7 10.2, 4.6): deploy-hosted-platform.yml
 # reads its CLOUDFLARE_API_TOKEN back (/user/tokens/verify) and, 30 days or
 # less before its end date, opens an issue naming only the secret and its
-# Environment (one open issue at a time; a later run finds it). provision's
+# Environment (one open issue at a time; a later run finds it, and only an
+# issue the workflow itself opened counts: the repo is public, so anyone's
+# issue of that title must not silence the alert). provision's
 # checkToken never runs on this token. A token that is not active, or a failed
 # verify, exits 1; no end date is a warning (H2 sets one a year out).
 # Needs CLOUDFLARE_API_TOKEN (to curl on stdin), GH_TOKEN (issues: write),
@@ -39,9 +41,11 @@ fi
 
 prefix="Roll CLOUDFLARE_API_TOKEN in $environment"
 echo "::warning::CLOUDFLARE_API_TOKEN ($environment) ends $day, in $left days: roll it"
-open="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$prefix\" in:title" --json number,title --limit 100)" ||
+# The workflow's own issues (GITHUB_TOKEN opens them as github-actions).
+bot="app/github-actions"
+open="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --author "$bot" --search "\"$prefix\" in:title" --json number,title,author --limit 100)" ||
   { echo "listing issues failed" >&2; exit 1; }
-n="$(jq -r --arg p "$prefix" '[.[] | select(.title | startswith($p)) | .number] | first // ""' <<< "$open")" ||
+n="$(jq -r --arg p "$prefix" --arg b "$bot" '[.[] | select((.title | startswith($p)) and .author.login == $b) | .number] | first // ""' <<< "$open")" ||
   { echo "listing issues failed: unparsable" >&2; exit 1; }
 if [ -n "$n" ]; then
   echo "issue #$n is already open"

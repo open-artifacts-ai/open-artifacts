@@ -22,10 +22,10 @@ hex32='^[0-9a-f]{32}$'
 zone='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
 limit='^[1-9][0-9]{0,8}$'
 google_id='^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$'
-# deploy-platform-worker.sh's cap, onoff (prod's: staging's test-users is set
-# only by hand) and email.
+# deploy-platform-worker.sh's cap, onoff (staging also test-users, design v7
+# 7) and email.
 cap='^[1-9][0-9]{0,3}$'
-onoff='^(true|false)$'
+if [ "$1" = staging ]; then onoff='^(true|false|test-users)$'; else onoff='^(true|false)$'; fi
 email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
 lines=""
 # key ENV_NAME rule, one per line.

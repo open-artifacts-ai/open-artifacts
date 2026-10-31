@@ -300,6 +300,34 @@ describe("hosted-resource-ids.sh", () => {
     }
   });
 
+  it("the Secrets Store only for provision-token or provisioner: other targets never list it", () => {
+    for (const TARGETS of [
+      "auth-broker,dispatch,scheduler,inventory,provisioning",
+      "zones",
+    ]) {
+      const o = good();
+      o.stores = ["NETERR"];
+      const r = run(["bash", script("hosted-resource-ids.sh"), "prod"], o, {
+        TARGETS,
+      });
+      expect(r.code, r.err).toBe(0);
+      expect(r.ghEnv).toBe(WANT.replace(`SECRETS_STORE_ID=${STORE}\n`, ""));
+      expect(r.sb.log().some((l) => l.includes("secrets_store"))).toBe(false);
+    }
+    for (const TARGETS of [
+      "provision-token",
+      "platform-db,provisioner,provisioning",
+    ]) {
+      const r = run(
+        ["bash", script("hosted-resource-ids.sh"), "prod"],
+        good(),
+        { TARGETS },
+      );
+      expect(r.code, r.err).toBe(0);
+      expect(r.ghEnv).toBe(WANT);
+    }
+  });
+
   it("the sending zone: a zone of that name on another account never counts", () => {
     const o = good();
     o.zones = [ok(zones().slice(1))];

@@ -122,11 +122,13 @@ describe("deploy-hosted-platform.yml", () => {
     expect(named("Resolve the resource ids")).toMatchObject({
       env: {
         DEPLOY_ENV: "${{ inputs.env }}",
+        // The Secrets Store id only for provision-token and provisioner.
+        TARGETS: "${{ inputs.targets }}",
         CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}",
       },
       run: 'bash "$RUNNER_TEMP/main-ci/hosted-resource-ids.sh" "$DEPLOY_ENV"',
     });
-    expect(Object.keys(named("Resolve the resource ids").env)).toHaveLength(2);
+    expect(Object.keys(named("Resolve the resource ids").env)).toHaveLength(3);
     expect(named("Load the hosted constants").if).toBeUndefined();
     // Only the targets that bind an id (or the zone tag) look them up.
     const cond = named("Resolve the resource ids").if as string;

@@ -21,6 +21,8 @@ const runOf = (over: Record<string, unknown> = {}) => ({
   status: "completed",
   conclusion: "success",
   head_branch: "main",
+  event: "workflow_dispatch",
+  head_repository: { full_name: REPO },
   created_at: "2026-10-30T09:00:00Z",
   ...over,
 });
@@ -61,6 +63,17 @@ describe("staging-first-gate.sh", () => {
       ["failed", runOf({ conclusion: "failure" })],
       ["branch", runOf({ head_branch: "feature" })],
       ["old", runOf({ created_at: "2026-10-24T11:59:59Z" })],
+      ["push", runOf({ event: "push" })],
+      [
+        "fork",
+        runOf({ head_repository: { full_name: "evil/open-artifacts" } }),
+      ],
+      ["no repo", runOf({ head_repository: null })],
+      ["two tags", runOf({ display_title: `redline-staging v0.79.0 ${TAG}` })],
+      [
+        "two tags, ours first",
+        runOf({ display_title: `redline-staging ${TAG} v1.0.0` }),
+      ],
     ] as const) {
       const r = gate([run]);
       expect(r.code, label).toBe(1);

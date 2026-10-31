@@ -3,7 +3,9 @@
 # provisioning targets of deploy-hosted-platform.yml deploy a tag only after a
 # successful redline-staging.yml run on main whose run name carries that same
 # tag (the workflow takes a `tag` input and sets run-name), created within the
-# last 7 days. Read-only (`gh api`, GH_TOKEN with actions: read). Fails
+# last 7 days: a workflow_dispatch run of this repository whose run name holds
+# exactly one stable tag, that one (a name built from a free-form input never
+# vouches for a second tag). Read-only (`gh api`, GH_TOKEN with actions: read). Fails
 # closed: an API error, an unparsable answer or no such run is exit 1.
 # GATE_NOW (epoch seconds) pins the clock in tests.
 # Usage: scripts/ci/staging-first-gate.sh vX.Y.Z
@@ -23,12 +25,14 @@ since="$(jq -nr --argjson t "$((now - 7 * 86400))" '$t | todate')"
 body="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/redline-staging.yml/runs?branch=main&status=success&per_page=100&created=%3E%3D$since" 2> /dev/null)" ||
   fail "GitHub API error reading redline-staging.yml runs"
 jq -e '.workflow_runs | type == "array"' > /dev/null 2>&1 <<< "$body" || fail "unparsable redline-staging.yml runs"
-# The tag as a whole word of the run name: v1.2.3 is not v1.2.30 or v1.2.3-rc.1.
-run="$(jq -r --arg t "$tag" --arg since "$since" '
+# The tag as a whole word of the run name, and the only stable tag in it:
+# v1.2.3 is not v1.2.30 or v1.2.3-rc.1.
+run="$(jq -r --arg t "$tag" --arg since "$since" --arg repo "$GITHUB_REPOSITORY" '
   [.workflow_runs[]
     | select(.conclusion == "success" and .status == "completed" and .head_branch == "main")
+    | select(.event == "workflow_dispatch" and (.head_repository.full_name // "") == $repo)
     | select((.created_at // "") >= $since)
-    | select([(.display_title // "") | scan("(?<![0-9A-Za-z.-])v[0-9]+\\.[0-9]+\\.[0-9]+(?![0-9A-Za-z.-])")] | index($t) != null)]
+    | select([(.display_title // "") | scan("(?<![0-9A-Za-z.-])v[0-9]+\\.[0-9]+\\.[0-9]+(?![0-9A-Za-z.-])")] == [$t])]
   | sort_by(.created_at) | last | if . == null then "" else "\(.id) \(.html_url // "")" end' <<< "$body")" ||
   fail "unparsable redline-staging.yml runs"
 [ -n "$run" ] || fail "no successful redline-staging.yml run for $tag on main since $since"

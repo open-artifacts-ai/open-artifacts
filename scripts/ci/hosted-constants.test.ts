@@ -101,10 +101,12 @@ describe(".github/hosted/<env>.json", () => {
     expect(read("prod").email_daily_limit).toBe(5000);
     expect(read("staging").email_daily_limit).toBe(500);
   });
-  it("the provisioner's signups stay closed, and its sender is on the env's sending zone", () => {
+  it("the provisioner's signups stay closed (staging: test users only, P29), and its sender is on the env's sending zone", () => {
     for (const env of ["prod", "staging"]) {
       const c = read(env);
-      expect(c.signups_enabled, env).toBe("false");
+      expect(c.signups_enabled, env).toBe(
+        env === "staging" ? "test-users" : "false",
+      );
       expect(String(c.welcome_from).split("@")[1], env).toBe(c.email_zone);
     }
   });
@@ -217,6 +219,19 @@ describe("hosted-constants.sh", () => {
       expect(r.err).toContain(`${k} is not a valid value`);
       expect(r.ghEnv, `${k}=${v}`).toBe("");
     }
+  });
+
+  it("SIGNUPS_ENABLED test-users loads for staging only", () => {
+    const st = load(
+      { ...read("staging"), signups_enabled: "test-users" },
+      "staging",
+    );
+    expect(st.code, st.err).toBe(0);
+    expect(st.ghEnv).toContain("SIGNUPS_ENABLED=test-users\n");
+    expect(
+      load({ ...read("staging"), signups_enabled: "TEST-USERS" }, "staging")
+        .code,
+    ).toBe(1);
   });
 
   it("refuses a bad account id, a missing file, bad JSON and a bad env", () => {

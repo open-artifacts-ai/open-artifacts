@@ -80,9 +80,11 @@ describe("deploy-token-expiry.sh", () => {
   });
   it("an open issue for this Environment is not opened again; another env's is not this one", () => {
     const soon = { status: "active", expires_on: "2026-11-20T00:00:00Z" };
+    const bot = { login: "app/github-actions", is_bot: true };
     const mine = run(soon, [
       {
         number: 12,
+        author: bot,
         title:
           "Roll CLOUDFLARE_API_TOKEN in hosted-staging-deploy: it ends 2026-11-20",
       },
@@ -90,9 +92,28 @@ describe("deploy-token-expiry.sh", () => {
     expect(mine.code).toBe(0);
     expect(mine.creates).toEqual([]);
     expect(mine.out).toContain("issue #12 is already open");
+    expect(
+      mine.log.some(
+        (l) =>
+          l.startsWith("gh issue list") &&
+          l.includes("--author app/github-actions"),
+      ),
+    ).toBe(true);
+    // Anyone can open an issue of that title in a public repo: only the
+    // workflow's own counts.
+    const outsider = run(soon, [
+      {
+        number: 14,
+        author: { login: "someone", is_bot: false },
+        title:
+          "Roll CLOUDFLARE_API_TOKEN in hosted-staging-deploy: it ends 2026-11-20",
+      },
+    ]);
+    expect(outsider.creates).toHaveLength(1);
     const other = run(soon, [
       {
         number: 13,
+        author: bot,
         title:
           "Roll CLOUDFLARE_API_TOKEN in hosted-prod-deploy: it ends 2026-11-20",
       },
