@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { authenticate } from "../src/auth/authenticate.js";
 import { isRefusal } from "../src/principal.js";
+import { platformDb } from "./db.js";
 import { ADMIN, API, fakeEnv } from "./fakes.js";
 
-describe("authenticate (C4 stub, W5a/W5b bodies)", () => {
-  it("fails closed: every credential is unauthenticated", async () => {
+// The admin session path is W5a (test/session.test.ts); the api bearers are
+// W5b and still fail closed.
+describe("authenticate", () => {
+  it("fails closed for every api credential and an unknown admin cookie", async () => {
+    await platformDb();
     const { env } = fakeEnv();
     const reqs: [Request, "admin" | "api"][] = [
       [new Request(`${API}/v1/me`), "api"],
