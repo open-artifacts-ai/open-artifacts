@@ -12,7 +12,7 @@ import { type BrowserRouteId, safeReturn } from "@oa/shared/provisioning";
 import { type AuditEntry, audit, type SigninActor } from "../audit.js";
 import type { Env } from "../env.js";
 import { errorResponse } from "../errors.js";
-import { limit } from "../limits.js";
+import { limit, limitRoute } from "../limits.js";
 import { isRefusal, type Principal } from "../principal.js";
 import { refuse } from "../refuse.js";
 import { bump, peek, SIGNIN_REFUSALS } from "./counters.js";
@@ -428,9 +428,9 @@ async function logout(
   if (isRefusal(p)) return refuse(env, "auth", p.code, req);
   const c = checkCsrf(req, env, p);
   if (c || !p.session) return refuse(env, "csrf", "csrf_failed", req);
-  // RL_PV_WRITE, as every write route (4.7); an authenticated 429 counts
-  // in bucket `auth` (4.9).
-  const w = await limit(env, "write", p.rateKey);
+  // An admin's logout spends its escape bucket, never the write bucket its
+  // tokens share (limits.ts); an authenticated 429 counts in `auth` (4.9).
+  const w = await limitRoute(env, "write", p, "R24");
   if (w) return refuse(env, "auth", w.code, req);
   const ip = ipKey(req);
   await endSession(env, d, p.session.hash, now, {

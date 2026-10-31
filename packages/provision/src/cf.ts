@@ -92,6 +92,12 @@ export interface Cf {
     text: string,
   ): Promise<void>;
   secretList(t: Target, script: string): Promise<string[]>;
+  /**
+   * GET the script's settings (read-only): the bindings it runs with,
+   * plain_text and json with their values, secrets by name and type only.
+   * verify_clean reads it (design v7 5.2 e).
+   */
+  scriptSettings(t: Target, script: string): Promise<ScriptSettings>;
   scriptSubdomain(
     t: Target,
     script: string,
@@ -193,6 +199,19 @@ const extOf = (path: string) => {
 
 export function assetContentType(path: string): string {
   return ASSET_TYPES[extOf(path)] ?? "application/octet-stream";
+}
+
+/** A live binding as the settings GET reports it (other fields kept as given). */
+export interface SettingsBinding {
+  name: string;
+  type: string;
+  text?: string;
+  json?: unknown;
+  [k: string]: unknown;
+}
+
+export interface ScriptSettings {
+  bindings: SettingsBinding[];
 }
 
 /**
@@ -537,6 +556,21 @@ export function cfClient(o: {
         `${acct}${scriptBase(t, script)}/secrets`,
       );
       return r.map((s) => s.name);
+    },
+    async scriptSettings(t, script) {
+      const r = await result<{ bindings?: unknown }>(
+        "GET",
+        `${acct}${scriptBase(t, script)}/settings`,
+      );
+      const b = r?.bindings;
+      if (
+        !Array.isArray(b) ||
+        b.some(
+          (x) => typeof x?.name !== "string" || typeof x?.type !== "string",
+        )
+      )
+        throw new Error(`the settings of ${script} have no bindings list`);
+      return { bindings: b as SettingsBinding[] };
     },
     async scriptSubdomain(t, script, body) {
       await call("POST", `${acct}${scriptBase(t, script)}/subdomain`, {
