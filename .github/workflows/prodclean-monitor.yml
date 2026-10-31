@@ -5,8 +5,16 @@
 # `prod-clean: fail (<code>)`; the detail goes to the prod inventory (POST
 # /prodclean), and the scheduler alerts and emails from there. A failed run
 # is the alert here: no issue is opened (that needs issues: write).
-# Secrets come only from the redline-staging Environment (main only), as 0600
-# files under RUNNER_TEMP, never as argv.
+#
+# Two jobs, so no dependency code ever runs where an OIDC token can be minted:
+# - build: contents: read only, no environment, no secrets. It installs,
+#   builds and bundles the monitor script into one self-contained ESM file,
+#   and uploads it. A compromised dependency here cannot mint a JWT for the
+#   prod inventory (and so cannot post a fake pass).
+# - monitor: id-token: write only, in the redline-staging Environment (main
+#   only). No checkout, no install, no build: only setup-node and
+#   download-artifact, then node runs the bundle. Secrets come only from the
+#   Environment, as 0600 files under RUNNER_TEMP, never as argv.
 name: prodclean-monitor
 
 on:
@@ -21,14 +29,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  monitor:
+  build:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: redline-staging
     timeout-minutes: 15
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -38,8 +44,34 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: pnpm install --frozen-lockfile
-      # Builds @oa/shared too. Before any secret file exists.
+      # Builds @oa/shared too.
       - run: pnpm --filter @oa/provision build
+      # One ESM file with every dependency inlined (node builtins only).
+      - run: pnpm --filter @oa/inventory bundle:monitor
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: prodclean-monitor
+          path: apps/inventory/dist/prodclean-monitor.mjs
+          retention-days: 1
+          if-no-files-found: error
+
+  monitor:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: redline-staging
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+    steps:
+      # The same version as .nvmrc (a test checks it): no checkout here.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: prodclean-monitor
+          path: ${{ runner.temp }}/prodclean-bundle
       # Only this step sees the secrets. An empty one writes no file, and the
       # monitor fails not_configured.
       - name: Write the red-line prod token files
@@ -64,7 +96,7 @@ jobs:
           REDLINE_PROD_ACCOUNT_ID: ${{ vars.REDLINE_PROD_ACCOUNT_ID }}
           REDLINE_PROD_SECRETS_DIR: ${{ runner.temp }}/prodclean-secrets
           NODE_NO_WARNINGS: "1"
-        run: node apps/inventory/scripts/prodclean-monitor.ts
+        run: node "$RUNNER_TEMP/prodclean-bundle/prodclean-monitor.mjs"
       - name: Remove the token files
         if: ${{ always() }}
         run: rm -rf "$RUNNER_TEMP/prodclean-secrets"

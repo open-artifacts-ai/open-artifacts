@@ -137,6 +137,9 @@ describe("POST /prodclean", () => {
       JSON.stringify({ ok: false, code: "x", installId: "nope" }),
     ],
     ["no ok", JSON.stringify({ code: "pass" })],
+    // ok and code must agree: a pass is ok:true with code "pass", only.
+    ["ok: true with a fail code", JSON.stringify({ ok: true, code: "x" })],
+    ["ok: false with code pass", JSON.stringify({ ok: false, code: "pass" })],
     ["not JSON", "ok=true"],
     ["an array", "[]"],
     ["empty", ""],
@@ -157,6 +160,18 @@ describe("POST /prodclean", () => {
       expect(await res.text()).toBe('{"error":"bad_request"}');
       expect(runs).toEqual([]);
     });
+
+  it("ok and code agree -> written: ok true with pass, ok false with any other code", async () => {
+    for (const [body, values] of [
+      [{ ok: true, code: "pass" }, [NOW, 1, "pass", null, null]],
+      [{ ok: false, code: "x" }, [NOW, 0, "x", null, null]],
+      [{ ok: false, code: "passed" }, [NOW, 0, "passed", null, null]],
+    ] as const) {
+      const { res, runs } = await send(JSON.stringify(body));
+      expect(res.status, JSON.stringify(body)).toBe(204);
+      expect(runs.map((r) => r.values)).toEqual([values]);
+    }
+  });
 
   it("the stored rows feed C2's prodclean_failed alert: the latest one only", async () => {
     const sq = platformDb();
