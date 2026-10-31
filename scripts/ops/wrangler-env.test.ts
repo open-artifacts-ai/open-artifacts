@@ -1,0 +1,84 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+// @ts-expect-error untyped .mjs
+import { brokerKey } from "./broker-key.mjs";
+// @ts-expect-error untyped .mjs
+import { envSection } from "./wrangler-env.mjs";
+
+// The read-backs compare to the committed config through wrangler-env.mjs;
+// the provisioning target's admin broker key comes from broker-key.mjs.
+const root = join(import.meta.dirname, "../..");
+const cfg = (app: string) =>
+  readFileSync(join(root, "apps", app, "wrangler.jsonc"), "utf8");
+
+describe("wrangler-env.mjs", () => {
+  it("the provisioning vars: committed values, the repository id filled", () => {
+    const v = envSection(cfg("provisioning"), "staging", "vars", {
+      GITHUB_REPOSITORY_ID: "123456",
+    });
+    expect(v.OA_ENV).toBe("staging");
+    expect(v.OIDC_REPOSITORY_ID).toBe("123456");
+    expect(v.MCP_REDIRECT_URIS).toBe("https://claude.ai/api/mcp/auth_callback");
+    expect(JSON.stringify(v)).not.toContain("{{");
+    // Prod has no OIDC_* and needs no value.
+    const p = envSection(cfg("provisioning"), "prod", "vars", {});
+    expect(Object.keys(p).filter((k) => k.startsWith("OIDC_"))).toEqual([]);
+  });
+  it("refuses a placeholder with no value, or another env's", () => {
+    expect(() => envSection(cfg("provisioning"), "staging", "vars", {})).toThrow(
+      /OIDC_REPOSITORY_ID: \{\{GITHUB_REPOSITORY_ID_STAGING\}\} has no value/,
+    );
+    const src = `{"env":{"prod":{"vars":{"A":"{{X_STAGING}}"}}}}`;
+    expect(() => envSection(src, "prod", "vars", { X: "1" })).toThrow(
+      /no value/,
+    );
+  });
+  it("the rate limits, sorted by name, ids as strings", () => {
+    const r = envSection(cfg("provisioning"), "prod", "ratelimits", {});
+    expect(r).toContainEqual({
+      name: "RL_PV_OAUTH_IP",
+      namespace_id: "1156",
+      limit: 20,
+      period: 60,
+    });
+    expect(r.map((x: { name: string }) => x.name)).toEqual(
+      [...r.map((x: { name: string }) => x.name)].sort(),
+    );
+    expect(r).toHaveLength(6);
+  });
+  it("strips comments outside strings only, and trailing commas", () => {
+    const src = `{
+      // a comment
+      "env": { "prod": { "vars": { "U": "https://x/y", /* b */ "V": "a//b", }, }, },
+    }`;
+    expect(envSection(src, "prod", "vars", {})).toEqual({
+      U: "https://x/y",
+      V: "a//b",
+    });
+  });
+});
+
+describe("broker-key.mjs", () => {
+  it("kid derives from x as provision's brokerKid; pkcs8 is the matching private key", async () => {
+    const k = brokerKey();
+    // packages/provision/src/wfp.ts brokerKid.
+    const kid = createHash("sha256")
+      .update(Buffer.from(k.x, "base64url"))
+      .digest("base64url")
+      .slice(0, 16);
+    expect(k.kid).toBe(kid);
+    expect(k.x).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const priv = await crypto.subtle.importKey(
+      "pkcs8",
+      Buffer.from(k.pkcs8, "base64url"),
+      { name: "Ed25519" },
+      true,
+      ["sign"],
+    );
+    const jwk = (await crypto.subtle.exportKey("jwk", priv)) as JsonWebKey;
+    expect(jwk.x).toBe(k.x);
+    expect(brokerKey().kid).not.toBe(k.kid);
+  });
+});
