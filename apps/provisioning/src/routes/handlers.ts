@@ -1,8 +1,7 @@
-import type { RouteId } from "@oa/shared/provisioning";
 import type { Env } from "../env.js";
 import { NOT_IMPLEMENTED_BODY } from "../errors.js";
 import type { Principal } from "../principal.js";
-import type { RouteInput, RouteResult, Surface } from "./invoke.js";
+import type { ApiRouteId, RouteInput, RouteResult, Surface } from "./invoke.js";
 import { world } from "./world.js";
 
 /** What a handler gets once invokeRoute has passed authz. */
@@ -17,14 +16,14 @@ export type HandlerArgs = {
 };
 export type Handler = (a: HandlerArgs) => Promise<RouteResult>;
 
-/** The C4 stub: 501 until W4 (R1-R21, R25-R27) and W5a (R22-R24) land. */
+/** The C4 stub: 501 until W4 (R1-R21, R25, R26) lands. */
 export const stub: Handler = async () => ({
   status: 501,
   body: NOT_IMPLEMENTED_BODY,
   headers: {},
 });
 
-export const HANDLERS: Readonly<Record<RouteId, Handler>> = {
+export const HANDLERS: Readonly<Record<ApiRouteId, Handler>> = {
   R1: stub,
   R2: stub,
   R3: stub,
@@ -46,9 +45,6 @@ export const HANDLERS: Readonly<Record<RouteId, Handler>> = {
   R19: stub,
   R20: stub,
   R21: stub,
-  R22: stub,
-  R23: stub,
-  R24: stub,
   R25: stub,
   R26: stub,
   R27: world,

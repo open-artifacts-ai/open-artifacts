@@ -65,6 +65,12 @@ describe("host policy (2.2)", () => {
 });
 
 describe("pre-authn IP limit (4.2)", () => {
+  it("runs after host policy: a refused Authorization is not charged", async () => {
+    const e = fakeEnv();
+    await call(`${ADMIN}/api/v1/me`, { headers: { authorization: "x" } }, e);
+    expect(e.limits.RL_PV_PRE_IP.keys).toEqual([]);
+  });
+
   it("charges RL_PV_PRE_IP on every request", async () => {
     const e = fakeEnv();
     await call(
@@ -107,9 +113,23 @@ describe("API routes", () => {
   it("sign-in routes are 501 stubs on the admin host", async () => {
     expect((await call(`${ADMIN}/auth/start`)).res.status).toBe(501);
     expect((await call(`${ADMIN}/auth/callback/google`)).res.status).toBe(501);
+  });
+
+  it("admin-host writes fail closed on Origin until W5a (403 csrf_failed)", async () => {
+    for (const [method, path] of [
+      ["POST", "/auth/logout"],
+      ["POST", "/api/v1/installs"],
+      ["DELETE", "/api/v1/tokens"],
+    ] as const) {
+      const e = fakeEnv();
+      const { res, body } = await call(`${ADMIN}${path}`, { method }, e);
+      expect(res.status, `${method} ${path}`).toBe(403);
+      expect(code(body)).toBe("csrf_failed");
+    }
+    // api.<app> has no Origin or CSRF step: no cookie is read there.
     expect(
-      (await call(`${ADMIN}/auth/logout`, { method: "POST" })).res.status,
-    ).toBe(501);
+      (await call(`${API}/v1/installs`, { method: "POST" })).res.status,
+    ).toBe(401);
   });
 
   it("other admin paths go to the SPA", async () => {
@@ -121,7 +141,87 @@ describe("API routes", () => {
   });
 });
 
+describe("browser-host headers (4.5)", () => {
+  const H = {
+    "content-security-policy":
+      "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    "x-frame-options": "DENY",
+    "referrer-policy": "no-referrer",
+  };
+
+  it("are on the SPA and on every admin-host error", async () => {
+    for (const [url, init] of [
+      [`${ADMIN}/installs`, {}],
+      [`${ADMIN}/api/v1/installs`, {}],
+      [`${ADMIN}/api/v1/nope`, {}],
+      [`${ADMIN}/mcp`, { method: "POST" }],
+      [`${ADMIN}/auth/logout`, { method: "POST" }],
+      [`${ADMIN}/api/v1/me`, { headers: { authorization: "x" } }],
+      [`${ADMIN}/oauth/authorize`, {}],
+    ] as const) {
+      const { res } = await call(url, init);
+      for (const [k, v] of Object.entries(H))
+        expect(res.headers.get(k), `${url} ${k}`).toBe(v);
+    }
+  });
+
+  it("override what the SPA sent", async () => {
+    const { env } = fakeEnv({
+      ASSETS: {
+        fetch: async () =>
+          new Response("spa", {
+            headers: { "x-frame-options": "SAMEORIGIN" },
+          }),
+      } as unknown as Fetcher,
+    });
+    const { res } = await call(`${ADMIN}/installs`, {}, { ...fakeEnv(), env });
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
+  });
+
+  it("are not added on the api host", async () => {
+    const { res } = await call(`${API}/v1/installs`);
+    expect(res.headers.get("x-frame-options")).toBeNull();
+  });
+});
+
+describe("a throw in a protocol handler or the SPA is the 3.5 envelope", () => {
+  it("is 500 internal, not an uncaught Worker error", async () => {
+    const { env } = fakeEnv({
+      ASSETS: {
+        fetch: async () => {
+          throw new Error("boom");
+        },
+      } as unknown as Fetcher,
+    });
+    const { res, body } = await call(
+      `${ADMIN}/installs`,
+      {},
+      {
+        ...fakeEnv(),
+        env,
+      },
+    );
+    expect(res.status).toBe(500);
+    expect(code(body)).toBe("internal");
+  });
+});
+
 describe("MCP and OAuth stubs (9A.2, 9A.3.1)", () => {
+  it("protocol paths follow PROTOCOL_ROUTES: wrong method 405, unknown path 404", async () => {
+    const t = await call(`${API}/oauth/token`, { method: "GET" });
+    expect(t.res.status).toBe(405);
+    expect(t.res.headers.get("allow")).toBe("POST");
+    const w = await call(`${API}/.well-known/oauth-authorization-server`, {
+      method: "POST",
+    });
+    expect(w.res.status).toBe(405);
+    expect(w.res.headers.get("allow")).toBe("GET");
+    const a = await call(`${ADMIN}/oauth/authorize`, { method: "PUT" });
+    expect(a.res.headers.get("allow")).toBe("GET, POST");
+    for (const url of [`${API}/oauth/nope`, `${ADMIN}/oauth/nope`])
+      expect((await call(url)).res.status, url).toBe(404);
+  });
+
   it("POST /mcp is 501; GET and DELETE are 405 with allow: POST", async () => {
     expect((await call(`${API}/mcp`, { method: "POST" })).res.status).toBe(501);
     for (const method of ["GET", "DELETE"]) {

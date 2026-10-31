@@ -6,7 +6,13 @@ import { type Principal, type Refusal, refusal } from "../principal.js";
 // The one token service for both kinds (design v7 9A.4): R19 and the MCP
 // consent mint through mintAgentToken; authenticate() (both bearer kinds)
 // and the OAuth refresh callback check through tokenPrincipal. No other
-// module inserts into agent_tokens. W5b builds both bodies.
+// module inserts into agent_tokens (test/node/layout.test.ts). W5b builds
+// both bodies.
+//
+// Deviations from the 9A.4 text, on purpose: both take `env` (this app has no
+// global env; mintAgentToken's is first, like invokeRoute's), and
+// tokenPrincipal takes the session as nullable (a missing row is a refusal,
+// not a caller's branch). The W13b refresh callback passes env.
 
 /** An agent_tokens row (0008). */
 export type AgentTokenRow = {
@@ -52,12 +58,20 @@ export type MintOpts =
       scopes: readonly TokenScope[];
       label: string;
       ttlMinutes: number;
+      /**
+       * R19's body requestId. The replay check lives here, in the same D1
+       * batch as the insert, so two concurrent retries cannot both mint.
+       * 3.1 defines replay for jobs only; W5b fixes a token replay's answer
+       * (never the bearer a second time).
+       */
+      requestId: string;
     }
   | {
       kind: "oauth";
       scopes: readonly TokenScope[];
       clientId: string;
-      clientName: string;
+      /** DCR `client_name` is optional (TokenSchema.clientName nullable). */
+      clientName: string | null;
     };
 
 /** oat: the bearer, shown once. oauth: the library userId for completeAuthorization. */
@@ -72,6 +86,8 @@ export type Minted = {
  * Mints one token for an admin session principal: the per-admin mint counter
  * (4.7), the 5-live limit across both kinds (`token_limit`), and one D1 batch
  * (row, supersession of an older oauth row of the same client, audit).
+ * Throws `ApiError("token_limit")` (409) at the limit, which R19 renders and
+ * the consent page detects; `rate_limited` over the mint counter.
  */
 export async function mintAgentToken(
   _env: Env,

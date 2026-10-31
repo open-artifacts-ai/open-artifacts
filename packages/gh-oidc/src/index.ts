@@ -6,6 +6,12 @@
 // exp/nbf/iat with 60 s skew, `exp - iat <= 600`, and every pin below.
 
 export const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+/** Fixed by 4.4 for every caller, so no caller can loosen them. */
+export const GITHUB_OIDC_REF = "refs/heads/main";
+export const GITHUB_OIDC_EVENT_NAMES = [
+  "schedule",
+  "workflow_dispatch",
+] as const;
 
 /** What a caller pins; every field must match the token exactly. */
 export type Pins = {
@@ -15,17 +21,16 @@ export type Pins = {
   repository: string;
   /** `repository_id` (OIDC_REPOSITORY_ID), survives a rename. */
   repositoryId: string;
-  /** `ref`, `refs/heads/main`. */
-  ref: string;
   /** `job_workflow_ref` must be one of these (OIDC_JOB_WORKFLOW_REFS). */
   jobWorkflowRefs: readonly string[];
   /** `environment` (OIDC_ENVIRONMENT), `redline-staging`. */
   environment: string;
-  /** `event_name` must be one of these. */
-  eventNames: readonly string[];
 };
 
-/** The verified claims; `runner_environment` is always `github-hosted`. */
+/**
+ * The verified claims; `iss`, `ref`, `event_name` and `runner_environment`
+ * are the library constants above.
+ */
 export type Claims = {
   iss: typeof GITHUB_OIDC_ISSUER;
   aud: string;
@@ -35,10 +40,10 @@ export type Claims = {
   exp: number;
   repository: string;
   repository_id: string;
-  ref: string;
+  ref: typeof GITHUB_OIDC_REF;
   job_workflow_ref: string;
   environment: string;
-  event_name: string;
+  event_name: (typeof GITHUB_OIDC_EVENT_NAMES)[number];
   runner_environment: "github-hosted";
 };
 

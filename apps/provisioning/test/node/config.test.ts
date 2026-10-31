@@ -150,6 +150,15 @@ describe("wrangler.jsonc", () => {
           expect(e.vars.OIDC_AUDIENCE).toBe(`https://api.${APP.staging}`);
       });
 
+      it("every placeholder carries this env's suffix (the deploy leftover check)", () => {
+        const ph = [...JSON.stringify(e).matchAll(/\{\{([A-Z0-9_]+)\}\}/g)].map(
+          (m) => m[1] as string,
+        );
+        expect(ph.length).toBeGreaterThan(0);
+        for (const k of ph)
+          expect(k).toMatch(new RegExp(`_${env.toUpperCase()}$`));
+      });
+
       it("binds nothing else (no dispatcher, releases, email or token)", () => {
         expect(Object.keys(e).sort()).toEqual(
           [

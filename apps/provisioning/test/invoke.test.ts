@@ -9,7 +9,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../src/errors.js";
 import type { Principal } from "../src/principal.js";
-import { invokeRoute, type Surface } from "../src/routes/invoke.js";
+import { invokeRoute, isApiRoute, type Surface } from "../src/routes/invoke.js";
 import { ctx, fakeEnv } from "./fakes.js";
 
 const P = (kind: Principal["kind"], scopes: Principal["scopes"] = []) =>
@@ -22,8 +22,12 @@ const P = (kind: Principal["kind"], scopes: Principal["scopes"] = []) =>
     ...(kind === "token" ? { tokenId: "t", authAt: null } : {}),
   }) satisfies Principal;
 const ALL = TokenScopeSchema.options;
+const HTTP: Surface = {
+  kind: "http",
+  client: { ip: "192.0.2.1", host: "api.hosted.test" },
+};
 const SURFACES: Surface[] = [
-  { kind: "http" },
+  HTTP,
   { kind: "mcp", tool: "list_installs", clientVersion: null },
 ];
 const PRINCIPALS: Record<Exclude<AuthzColumn, "none">, Principal[]> = {
@@ -35,7 +39,7 @@ const PRINCIPALS: Record<Exclude<AuthzColumn, "none">, Principal[]> = {
 
 async function run(
   principal: Principal,
-  route: (typeof ROUTE_IDS)[number],
+  route: Parameters<typeof invokeRoute>[3],
   s: Surface,
 ) {
   const { env } = fakeEnv();
@@ -52,7 +56,7 @@ async function run(
 }
 
 describe("invokeRoute (9A.4): authz.ts row, then the 501 stub", () => {
-  for (const route of ROUTE_IDS)
+  for (const route of ROUTE_IDS.filter(isApiRoute))
     for (const [col, ps] of Object.entries(PRINCIPALS))
       for (const [i, p] of ps.entries())
         it(`${route} x ${col}#${i}: the authz row decides, same on both surfaces`, async () => {
@@ -92,8 +96,8 @@ describe("invokeRoute (9A.4): authz.ts row, then the 501 stub", () => {
   it("charges RL_PV_WRITE on writes and RL_PV_READ on reads, by rateKey", async () => {
     const { env, limits } = fakeEnv();
     const p = P("admin");
-    await invokeRoute(env, ctx(), p, "R2", {}, { kind: "http" });
-    await invokeRoute(env, ctx(), p, "R7", {}, { kind: "http" });
+    await invokeRoute(env, ctx(), p, "R2", {}, HTTP);
+    await invokeRoute(env, ctx(), p, "R7", {}, HTTP);
     expect(ROUTES.R2.write).toBe(false);
     expect(ROUTES.R7.write).toBe(true);
     expect(limits.RL_PV_READ.keys).toEqual([p.rateKey]);
@@ -103,28 +107,18 @@ describe("invokeRoute (9A.4): authz.ts row, then the 501 stub", () => {
   it("the rate limit runs before authz", async () => {
     const { env, limits } = fakeEnv();
     limits.RL_PV_WRITE.allow = false;
-    const err = await invokeRoute(
-      env,
-      ctx(),
-      P("user"),
-      "R19",
-      {},
-      { kind: "http" },
-    ).catch((e: unknown) => e);
+    const err = await invokeRoute(env, ctx(), P("user"), "R19", {}, HTTP).catch(
+      (e: unknown) => e,
+    );
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).code).toBe("rate_limited");
   });
 
   it("an unbound limit fails closed", async () => {
     const { env } = fakeEnv({ RL_PV_READ: undefined });
-    const err = await invokeRoute(
-      env,
-      ctx(),
-      P("admin"),
-      "R1",
-      {},
-      { kind: "http" },
-    ).catch((e: unknown) => e);
+    const err = await invokeRoute(env, ctx(), P("admin"), "R1", {}, HTTP).catch(
+      (e: unknown) => e,
+    );
     expect((err as ApiError).code).toBe("unavailable");
   });
 });

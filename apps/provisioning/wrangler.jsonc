@@ -40,7 +40,7 @@
         "MCP_REDIRECT_URIS": "https://claude.ai/api/mcp/auth_callback",
         "OIDC_AUDIENCE": "https://api.open-artifacts-staging.app",
         "OIDC_REPOSITORY": "open-artifacts-ai/open-artifacts",
-        "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID}}",
+        "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_STAGING}}",
         "OIDC_JOB_WORKFLOW_REFS": "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main",
         "OIDC_ENVIRONMENT": "redline-staging"
       },

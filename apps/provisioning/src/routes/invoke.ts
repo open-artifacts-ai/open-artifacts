@@ -14,14 +14,30 @@ import { HANDLERS } from "./handlers.js";
 // post-authn part of the 4.2 check order: rate limit -> authz (authz.ts) ->
 // schema -> policy -> business -> handler -> audit, and throws ApiError on
 // any refusal. C4 wires the limit and authz; W4 adds schema through audit.
+// The browser routes (R22-R24: cookies, Set-Cookie, redirects) never come
+// here: W5a builds them beside it in src/auth/, and the adapter short-circuits
+// them, so the type leaves them out.
+
+/** The routes invokeRoute serves: every route on the "api" base. */
+export type ApiRouteId = Exclude<RouteId, BrowserRouteId>;
+export type BrowserRouteId = "R22" | "R23" | "R24";
+export const isApiRoute = (id: RouteId): id is ApiRouteId =>
+  ROUTES[id].base === "api";
 
 export type RouteInput = {
   params?: Record<string, string>;
   query?: Record<string, string>;
   body?: unknown;
 };
+/**
+ * `client` is what W4's policy step needs and the adapter alone knows: `ip`
+ * (cf-connecting-ip; R18's RL_PV_SLUG_IP, the self-serve /64 and /48
+ * counters, Turnstile's remoteIp) and `host` (the request hostname,
+ * Turnstile's hostname check). MCP carries none: self-serve users get 401
+ * on /mcp (4.2).
+ */
 export type Surface =
-  | { kind: "http" }
+  | { kind: "http"; client: { ip: string; host: string } }
   | { kind: "mcp"; tool: AdminToolName; clientVersion: string | null };
 export type RouteResult = {
   status: number;
@@ -33,7 +49,7 @@ export async function invokeRoute(
   env: Env,
   ctx: ExecutionContext,
   principal: Principal,
-  route: RouteId,
+  route: ApiRouteId,
   input: RouteInput,
   surface: Surface,
 ): Promise<RouteResult> {

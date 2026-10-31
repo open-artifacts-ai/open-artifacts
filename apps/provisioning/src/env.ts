@@ -1,6 +1,7 @@
 import type {
   ProvisionerRpc,
   ProvisioningEnv,
+  Tier,
   WorkflowLike,
 } from "@oa/shared/provisioning";
 
@@ -35,7 +36,7 @@ export interface Env {
   ADMIN_IDENTITIES: string;
   APP_DOMAIN: string;
   SIGNUPS_ENABLED: "false" | "true" | "test-users";
-  SELF_SERVE_TIER: string;
+  SELF_SERVE_TIER: Tier;
   /** Exact redirect URIs besides loopback (9A.3.1), comma list. */
   MCP_REDIRECT_URIS: string;
   /** Staging only (4.4). */

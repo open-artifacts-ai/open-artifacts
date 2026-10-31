@@ -1,6 +1,7 @@
 import { ROUTE_IDS, ROUTES } from "@oa/shared/provisioning";
 import { describe, expect, it } from "vitest";
 import { HANDLERS } from "../src/routes/handlers.js";
+import { isApiRoute } from "../src/routes/invoke.js";
 import { matchRoute } from "../src/routes/table.js";
 
 const SAMPLE: Record<string, string> = {
@@ -12,8 +13,15 @@ const fill = (path: string) =>
   path.replace(/:(\w+)\??/g, (_m, k: string) => SAMPLE[k] ?? "x");
 
 describe("route table (3.4)", () => {
-  it("has a handler for every route", () => {
-    expect(Object.keys(HANDLERS).sort()).toEqual([...ROUTE_IDS].sort());
+  it("has a handler for every api route; browser routes stay out of invokeRoute", () => {
+    expect(Object.keys(HANDLERS).sort()).toEqual(
+      ROUTE_IDS.filter((id) => ROUTES[id].base === "api").sort(),
+    );
+    expect(ROUTE_IDS.filter((id) => !isApiRoute(id))).toEqual([
+      "R22",
+      "R23",
+      "R24",
+    ]);
   });
 
   for (const id of ROUTE_IDS) {

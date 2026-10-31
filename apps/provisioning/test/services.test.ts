@@ -54,7 +54,13 @@ describe("C4 service stubs", () => {
   it("audit rejects until W4", async () => {
     const { env } = fakeEnv();
     await expect(
-      audit(env, { action: "authz.refused", actor: admin, route: "R2" }),
+      audit(env, {
+        action: "authz.refused",
+        actor: admin,
+        outcome: "refused",
+        route: "R2",
+        code: "forbidden",
+      }),
     ).rejects.toBeInstanceOf(NotImplemented);
   });
 
@@ -66,6 +72,7 @@ describe("C4 service stubs", () => {
         scopes: ["installs:read"],
         label: "ci",
         ttlMinutes: 15,
+        requestId: "req_0123456789abcdef",
       }),
     ).rejects.toBeInstanceOf(NotImplemented);
     await expect(

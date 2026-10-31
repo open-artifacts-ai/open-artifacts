@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   type Claims,
+  GITHUB_OIDC_EVENT_NAMES,
   GITHUB_OIDC_ISSUER,
+  GITHUB_OIDC_REF,
   OidcError,
   type Pins,
   verify,
@@ -11,18 +13,33 @@ const pins: Pins = {
   audience: "https://api.open-artifacts-staging.app",
   repository: "open-artifacts-ai/open-artifacts",
   repositoryId: "1",
-  ref: "refs/heads/main",
   jobWorkflowRefs: [
     "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main",
   ],
   environment: "redline-staging",
-  eventNames: ["schedule", "workflow_dispatch"],
 };
 
 describe("verify (C4 stub)", () => {
   it("pins GitHub's issuer", () => {
     expect(GITHUB_OIDC_ISSUER).toBe(
       "https://token.actions.githubusercontent.com",
+    );
+  });
+
+  it("fixes ref and event_name in the library, not the caller (4.4)", () => {
+    expect(GITHUB_OIDC_REF).toBe("refs/heads/main");
+    expect([...GITHUB_OIDC_EVENT_NAMES]).toEqual([
+      "schedule",
+      "workflow_dispatch",
+    ]);
+    expect(Object.keys(pins).sort()).toEqual(
+      [
+        "audience",
+        "environment",
+        "jobWorkflowRefs",
+        "repository",
+        "repositoryId",
+      ].sort(),
     );
   });
 
@@ -44,7 +61,7 @@ describe("verify (C4 stub)", () => {
       exp: 600,
       repository: pins.repository,
       repository_id: pins.repositoryId,
-      ref: pins.ref,
+      ref: GITHUB_OIDC_REF,
       job_workflow_ref: pins.jobWorkflowRefs[0] ?? "",
       environment: pins.environment,
       event_name: "schedule",

@@ -19,16 +19,42 @@ const files = walk(app);
 const src = files.filter((f) => rel(f).startsWith("src/") && f.endsWith(".ts"));
 const mcp = src.filter((f) => rel(f).startsWith("src/mcp/"));
 
-/** Every import of a file: `{ spec, typeOnly }`. */
-function imports(file: string) {
-  const text = readFileSync(file, "utf8");
-  const re =
-    /\b(import|export)\s+(type\s+)?(?:[^'";]*?\sfrom\s+)?["']([^"']+)["']/g;
-  return [...text.matchAll(re)].map((m) => ({
-    spec: m[3] as string,
-    typeOnly: Boolean(m[2]),
-  }));
+/**
+ * Every import in `text`: `{ spec, typeOnly }`. Static `import`/`export ...
+ * from` (type-only only when the whole clause is), side-effect imports,
+ * `import("x")` and `require("x")`. A dynamic import of anything but a string
+ * literal is `spec: null`, always refused.
+ */
+function importsOf(text: string) {
+  const out: { spec: string | null; typeOnly: boolean }[] = [];
+  const staticRe =
+    /\b(?:import|export)\s+([^'";]*?)\s*\bfrom\s*["']([^"']+)["']/g;
+  for (const m of text.matchAll(staticRe))
+    out.push({
+      spec: m[2] as string,
+      typeOnly: typeOnlyClause(m[1] as string),
+    });
+  for (const m of text.matchAll(/\bimport\s*["']([^"']+)["']/g))
+    out.push({ spec: m[1] as string, typeOnly: false });
+  for (const m of text.matchAll(/\b(?:import|require)\s*\(\s*([^)]*)\)/g)) {
+    const lit = /^["']([^"']+)["']$/.exec((m[1] as string).trim());
+    out.push({ spec: lit ? (lit[1] as string) : null, typeOnly: false });
+  }
+  return out;
 }
+/** `type X`, `type { X }`, or `{ type X, type Y }`; `x, { type Y }` is not. */
+function typeOnlyClause(clause: string) {
+  const c = clause.trim();
+  if (/^type\b/.test(c)) return true;
+  const braces = /^\{([^}]*)\}$/.exec(c);
+  if (!braces) return false;
+  const names = (braces[1] as string)
+    .split(",")
+    .map((n) => n.trim())
+    .filter(Boolean);
+  return names.length > 0 && names.every((n) => /^type\s/.test(n));
+}
+const imports = (file: string) => importsOf(readFileSync(file, "utf8"));
 
 describe("the provisioning token never reaches this app (2.5)", () => {
   // Built so this file does not contain the string itself.
@@ -63,7 +89,8 @@ describe("src/mcp is only a transport adapter (9A.4)", () => {
     for (const f of mcp)
       for (const { spec, typeOnly } of imports(f)) {
         if (typeOnly) continue;
-        if (spec.startsWith(".")) {
+        if (spec === null) bad.push(`${rel(f)} -> dynamic import`);
+        else if (spec.startsWith(".")) {
           const target = rel(resolve(dirname(f), spec)).replace(/\.js$/, ".ts");
           if (!allowed(target)) bad.push(`${rel(f)} -> ${spec}`);
         } else if (!allowedPkg(spec)) bad.push(`${rel(f)} -> ${spec}`);
@@ -93,6 +120,56 @@ describe("src/mcp is only a transport adapter (9A.4)", () => {
     );
     expect(allowed(target)).toBe(false);
     expect(allowed("src/routes/invoke.ts")).toBe(true);
+  });
+
+  it("the scanner sees every import form", () => {
+    const got = importsOf(`
+      import { invokeRoute } from "../routes/invoke.js";
+      import type { Env } from "../env.js";
+      import { type A, type B } from "../a.js";
+      import x, { type Y } from "../services/x.js";
+      import { type C, D } from "../services/d.js";
+      export { e } from "../services/e.js";
+      import "../services/side.js";
+      const t = await import('../services/tokens.js');
+      const r = require("../services/r.js");
+      const v = await import(name);
+    `);
+    expect(got).toEqual([
+      { spec: "../routes/invoke.js", typeOnly: false },
+      { spec: "../env.js", typeOnly: true },
+      { spec: "../a.js", typeOnly: true },
+      { spec: "../services/x.js", typeOnly: false },
+      { spec: "../services/d.js", typeOnly: false },
+      { spec: "../services/e.js", typeOnly: false },
+      { spec: "../services/side.js", typeOnly: false },
+      { spec: "../services/tokens.js", typeOnly: false },
+      { spec: "../services/r.js", typeOnly: false },
+      { spec: null, typeOnly: false },
+    ]);
+  });
+});
+
+describe("only mintAgentToken inserts into agent_tokens (9A.4)", () => {
+  const re = /\binsert\s+(?:or\s+\w+\s+)?into\s+["`]?agent_tokens\b/i;
+
+  it("no other src module has an INSERT INTO agent_tokens", () => {
+    expect(
+      src
+        .filter((f) => re.test(readFileSync(f, "utf8")))
+        .map(rel)
+        .filter((r) => r !== "src/services/tokens.ts"),
+    ).toEqual([]);
+  });
+
+  it("the rule catches the forms SQL allows", () => {
+    for (const sql of [
+      "INSERT INTO agent_tokens (id) VALUES (?)",
+      "insert or replace into agent_tokens",
+      'INSERT INTO "agent_tokens"',
+    ])
+      expect(re.test(sql), sql).toBe(true);
+    expect(re.test("SELECT * FROM agent_tokens")).toBe(false);
   });
 });
 
