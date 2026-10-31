@@ -1,7 +1,8 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { root, sandbox } from "../ci/stubs.ts";
+import { root, sandbox, write } from "../ci/stubs.ts";
 
 // The platform Worker deploy wrapper: an allowlisted app and one env, always from the app's dir,
 // this env's placeholders filled into a copy that is removed on exit, and
@@ -15,10 +16,14 @@ const CLIENT = "123456-abcdef.apps.googleusercontent.com";
 // pnpm stub: records its cwd and whether the copy exists, and snapshots it.
 const pnpm = `pwd >> "$STUB_LOG"; test -f wrangler.deploy.jsonc && echo copy-present >> "$STUB_LOG"; cp wrangler.deploy.jsonc "$SNAP" 2>/dev/null || true`;
 
-const run = (args: string[], env: Record<string, string> = {}) => {
+const run = (
+  args: string[],
+  env: Record<string, string> = {},
+  script = SCRIPT,
+) => {
   const sb = sandbox({ pnpm });
   const snap = join(sb.dir, "snap.jsonc");
-  const r = sb.run(["bash", SCRIPT, ...args], {
+  const r = sb.run(["bash", script, ...args], {
     cwd: sb.dir,
     env: { SNAP: snap, ...env },
   });
@@ -212,6 +217,221 @@ describe("deploy-platform-worker.sh", () => {
         expect(r.code).toBe(1);
         expect(r.log).toEqual([]);
       }
+    });
+  });
+
+  describe("provisioner", () => {
+    const DIR = join(root, "apps/provisioner");
+    const DB = "0123abcd-4567-89ef-0123-456789abcdef";
+    const ACCT = "a".repeat(32);
+    const OK = {
+      SIGNUP_DAILY_CAP: "20",
+      WELCOME_FROM: "welcome@mail.open-artifacts.app",
+      CLOUDFLARE_ACCOUNT_ID: ACCT,
+      SECRETS_STORE_ID: "c".repeat(32),
+      PLATFORM_DB_ID: DB,
+      SIGNUPS_ENABLED: "false",
+    };
+    /** A copy of the repo's wrapper beside an app config of our own. */
+    const tree = (config: string, app = "provisioner") => {
+      const t = mkdtempSync(join(tmpdir(), "oa-deploy-tree-"));
+      write(
+        join(t, "scripts/ops/deploy-platform-worker.sh"),
+        readFileSync(SCRIPT, "utf8"),
+      );
+      write(join(t, `apps/${app}/wrangler.jsonc`), config);
+      return join(t, "scripts/ops/deploy-platform-worker.sh");
+    };
+    const CONFIG = readFileSync(join(DIR, "wrangler.jsonc"), "utf8");
+
+    for (const env of ["staging", "prod"] as const)
+      it(`${env}: the wrapper fills and verifies provisioner placeholders`, () => {
+        const r = run(["provisioner", env], OK);
+        expect(r.code).toBe(0);
+        expect(r.log).toEqual([
+          `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
+          DIR,
+          "copy-present",
+        ]);
+        const snap = readFileSync(r.snap, "utf8");
+        const up = env.toUpperCase();
+        expect(snap).toContain('"SIGNUP_DAILY_CAP": "20"');
+        expect(snap).toContain(`"WELCOME_FROM": "${OK.WELCOME_FROM}"`);
+        expect(snap).toContain(`"ACCOUNT_ID": "${ACCT}"`);
+        expect(snap).toContain(`"store_id": "${OK.SECRETS_STORE_ID}"`);
+        expect(snap).toContain(`"database_id": "${DB}"`);
+        expect(snap).toContain('"SIGNUPS_ENABLED": "false"');
+        // The release is a job argument (design v7 2.4), never a var.
+        expect(snap).not.toContain("RELEASE_VERSION");
+        // No KV bindings: provision reaches KV over REST.
+        expect(snap).not.toContain("kv_namespaces");
+        expect(snap).not.toMatch(new RegExp(`\\{\\{[A-Z0-9_]*_${up}\\}\\}`));
+        // Only this env's placeholders are filled.
+        const other = env === "staging" ? "PROD" : "STAGING";
+        expect(snap).toContain(`{{SIGNUP_DAILY_CAP_${other}}}`);
+        expect(snap).toContain(`{{SECRETS_STORE_ID_${other}}}`);
+        expect(r.out + r.err).not.toContain(OK.WELCOME_FROM);
+        expect(r.out + r.err).not.toContain(OK.SECRETS_STORE_ID);
+        expect(existsSync(join(DIR, "wrangler.deploy.jsonc"))).toBe(false);
+      });
+
+    it("SIGNUPS_ENABLED true needs ALLOW_SIGNUPS=1", () => {
+      for (const env of ["staging", "prod"] as const) {
+        const r = run(["provisioner", env], { ...OK, SIGNUPS_ENABLED: "true" });
+        expect(r.code, env).toBe(1);
+        expect(r.log).toEqual([]);
+        const ok = run(["provisioner", env], {
+          ...OK,
+          SIGNUPS_ENABLED: "true",
+          ALLOW_SIGNUPS: "1",
+        });
+        expect(ok.code, env).toBe(0);
+        expect(readFileSync(ok.snap, "utf8")).toContain(
+          '"SIGNUPS_ENABLED": "true"',
+        );
+      }
+      const other = run(["provisioner", "prod"], {
+        ...OK,
+        SIGNUPS_ENABLED: "true",
+        ALLOW_SIGNUPS: "yes",
+      });
+      expect(other.code).toBe(1);
+    });
+
+    it("SIGNUPS_ENABLED test-users is staging only", () => {
+      const s = run(["provisioner", "staging"], {
+        ...OK,
+        SIGNUPS_ENABLED: "test-users",
+      });
+      expect(s.code).toBe(0);
+      expect(readFileSync(s.snap, "utf8")).toContain(
+        '"SIGNUPS_ENABLED": "test-users"',
+      );
+      const p = run(["provisioner", "prod"], {
+        ...OK,
+        SIGNUPS_ENABLED: "test-users",
+      });
+      expect(p.code).toBe(1);
+      expect(p.log).toEqual([]);
+      expect(
+        run(["provisioner", "prod"], { ...OK, SIGNUPS_ENABLED: "false" }).code,
+      ).toBe(0);
+    });
+
+    it("refuses an unfilled or invalid value", () => {
+      const bad: Record<string, string[]> = {
+        SIGNUP_DAILY_CAP: ["", "0", "10000", "020", "1e3", "-1", "20 "],
+        WELCOME_FROM: ["", "welcome", "a@b", "a@b.com/x", "W <a@b.com>"],
+        CLOUDFLARE_ACCOUNT_ID: ["", "abc", ACCT.toUpperCase(), `${ACCT}0`],
+        SECRETS_STORE_ID: ["", DB, `${REG}/x`],
+        PLATFORM_DB_ID: ["", REG, DB.toUpperCase()],
+        SIGNUPS_ENABLED: [
+          "",
+          "1",
+          "TRUE",
+          "true ",
+          "on",
+          "false/x",
+          "test-users ",
+        ],
+      };
+      for (const [key, values] of Object.entries(bad)) {
+        for (const v of [...values, `{{${key}_STAGING}}`]) {
+          const r = run(["provisioner", "staging"], { ...OK, [key]: v });
+          expect(r.code, `${key}=${v}`).toBe(1);
+          expect(r.log).toEqual([]);
+        }
+        const { [key as keyof typeof OK]: _, ...rest } = OK;
+        const r = run(["provisioner", "staging"], { ...rest, [key]: "" });
+        expect(r.code, `${key} unset`).toBe(1);
+        expect(r.log).toEqual([]);
+      }
+    });
+
+    it("refuses a placeholder the fills don't cover", () => {
+      const script = tree(
+        CONFIG.replace(
+          '"OA_ENV": "staging",',
+          '"OA_ENV": "staging", "EXTRA": "{{EXTRA_STAGING}}",',
+        ),
+      );
+      const r = run(["provisioner", "staging"], OK, script);
+      expect(r.code).toBe(1);
+      expect(r.log).toEqual([]);
+      expect(r.err).toContain("{{EXTRA_STAGING}}");
+      expect(r.err).not.toContain(OK.SECRETS_STORE_ID);
+    });
+
+    it("a provisioner config binding another secret is refused", () => {
+      for (const name of [
+        "oa-s-billing-webhook-secret",
+        "oa-p-provision-token",
+        "oa-s-provision-token-2",
+      ]) {
+        const script = tree(
+          CONFIG.replace(
+            '"secret_name": "oa-s-provision-token"',
+            `"secret_name": "oa-s-provision-token" }, { "binding": "X", "store_id": "{{SECRETS_STORE_ID_STAGING}}", "secret_name": "${name}"`,
+          ),
+        );
+        const r = run(["provisioner", "staging"], OK, script);
+        expect(r.code, name).toBe(1);
+        expect(r.log).toEqual([]);
+        expect(r.err).toMatch(/secret/);
+      }
+      // The repo's own config passes the same check (both envs).
+      for (const env of ["staging", "prod"])
+        expect(run(["provisioner", env], OK, tree(CONFIG)).code).toBe(0);
+    });
+
+    it("swapped tokens are refused: each env block binds its own env's token", () => {
+      const swapped = tree(
+        CONFIG.replace(
+          '"secret_name": "oa-s-provision-token"',
+          '"secret_name": "@S@"',
+        )
+          .replace(
+            '"secret_name": "oa-p-provision-token"',
+            '"secret_name": "oa-s-provision-token"',
+          )
+          .replace(
+            '"secret_name": "@S@"',
+            '"secret_name": "oa-p-provision-token"',
+          ),
+      );
+      for (const env of ["staging", "prod"]) {
+        const r = run(["provisioner", env], OK, swapped);
+        expect(r.code, env).toBe(1);
+        expect(r.log).toEqual([]);
+        expect(r.err).toMatch(/block must bind/);
+      }
+    });
+
+    it("a config that names the provision token on any other target is refused", () => {
+      const SCHED = readFileSync(
+        join(root, "apps/scheduler/wrangler.jsonc"),
+        "utf8",
+      );
+      const script = tree(
+        SCHED.replace(
+          '"d1_databases"',
+          '"secrets_store_secrets": [{ "binding": "T", "store_id": "x", "secret_name": "oa-s-provision-token" }], "d1_databases"',
+        ),
+        "scheduler",
+      );
+      const env = {
+        PLATFORM_DB_ID: DB,
+        EMAIL_ZONE_TAGS: REG,
+        EMAIL_DAILY_LIMIT: "3000",
+      };
+      const r = run(["scheduler", "staging"], env, script);
+      expect(r.code).toBe(1);
+      expect(r.log).toEqual([]);
+      expect(r.err).toMatch(/provision token/);
+      // The same tree without the binding deploys.
+      expect(
+        run(["scheduler", "staging"], env, tree(SCHED, "scheduler")).code,
+      ).toBe(0);
     });
   });
 });
