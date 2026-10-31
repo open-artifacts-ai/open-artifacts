@@ -4,6 +4,12 @@
 // row's job (instance id = job id, params { jobId }), and never reads or
 // writes the email.
 import type { WorkflowParams } from "@oa/shared/provisioning";
+import {
+  createWorkflowInstance,
+  getWorkflowInstance,
+  isWorkflowExists,
+  type WorkflowLike,
+} from "@oa/shared/provisioning/workflow";
 import { parseSignup, signupIdOf } from "./message.js";
 
 export interface ConsumerEnv {
@@ -103,12 +109,17 @@ async function start(env: ConsumerEnv, signupId: string): Promise<void> {
   if (!row) throw new Error("signups row vanished");
   const jobId = row.job_id;
   const params: WorkflowParams = { jobId };
+  // The binding as C6's WorkflowLike: workers-types' InstanceStatus also
+  // has `rollingBack`, which WorkflowInstanceStatus lacks (status() is unused).
+  const wf = env.PROVISION_INSTALL as unknown as WorkflowLike<WorkflowParams>;
   try {
-    await env.PROVISION_INSTALL.create({ id: jobId, params });
+    await createWorkflowInstance(wf, { id: jobId, params });
   } catch (e) {
-    // create throws on an id in use; get finds that instance, or rethrows.
+    if (isWorkflowExists(e)) return;
+    // Any other create error: an instance that get finds is success (the
+    // real binding's errors are unverified, C6 S3); not found rethrows e.
     try {
-      await env.PROVISION_INSTALL.get(jobId);
+      await getWorkflowInstance(wf, jobId);
     } catch {
       throw e;
     }

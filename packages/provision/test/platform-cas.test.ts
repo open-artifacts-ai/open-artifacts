@@ -151,3 +151,58 @@ describe("insertCreating and platform principals (4.1)", () => {
     },
   );
 });
+
+describe("the operation's audit actor (design v7 4.9)", () => {
+  const actors = async (w: ReturnType<typeof world>) =>
+    (
+      await w.cf.d1Query(
+        w.id,
+        "SELECT actor, action FROM hosted_audit ORDER BY id",
+        [],
+      )
+    )[0]?.results;
+
+  it("with an actor, every row (create.start included) goes through auditAs as it", async () => {
+    const w = world();
+    const db = new PlatformDb(
+      w.cf,
+      { id: w.id, name: platformNames("staging").db },
+      "staging",
+      () => 1,
+      "job:01JOB",
+    );
+    await db.insertCreating({
+      id: "iaaaaaaaaaaa",
+      slug: "acme",
+      appHost: "acme.open-artifacts-staging.app",
+      contentHost: "acme.open-artifacts-staging.page",
+      ownerEmail: "owner@acme.test",
+      testHooks: false,
+      inputsHash: "h",
+    });
+    await db.audit("iaaaaaaaaaaa" as InstallId, "upgrade.start", {});
+    expect(await actors(w)).toEqual([
+      { actor: "job:01JOB", action: "create.start" },
+      { actor: "job:01JOB", action: "upgrade.start" },
+    ]);
+  });
+
+  it("without one (the CLI) the rows carry none, as before", async () => {
+    const w = world();
+    await row(w);
+    await w.db.audit("iaaaaaaaaaaa" as InstallId, "upgrade.start", {});
+    expect(await actors(w)).toEqual([
+      { actor: null, action: "create.start" },
+      { actor: null, action: "upgrade.start" },
+    ]);
+  });
+
+  it("an empty or overlong actor is refused", () => {
+    const w = world();
+    for (const a of ["", "x".repeat(301)])
+      expect(
+        () =>
+          new PlatformDb(w.cf, { id: w.id, name: "n" }, "staging", () => 1, a),
+      ).toThrow(/audit actor/);
+  });
+});
