@@ -311,6 +311,24 @@ describe("purge after grace", () => {
     expect(lines.at(-1)).toBe(`provapi purge install_failed rpc_error ${id}`);
   });
 
+  it("the binding's already-exists error counts as started; a create error that only says 'already exists' is an rpc_error", async () => {
+    const f = fakes();
+    const a = await deleting();
+    f.manage.failNextCreate(
+      new Error(
+        '(instance.already_exists) Workflow instance with id "x" already exists',
+      ),
+    );
+    const lines = captureLogs(vi.spyOn);
+    await purgeDue(f.env, NOW);
+    expect(lines.filter((l) => l.includes("install_failed"))).toEqual([]);
+    const b = await deleting();
+    f.manage.failNextCreate(new Error("instance x already exists"));
+    await purgeDue(f.env, NOW);
+    expect(lines.at(-1)).toBe(`provapi purge install_failed rpc_error ${b}`);
+    expect((await purges(a))[0]?.status).toBe("queued");
+  });
+
   it("a deleted install is never purged again", async () => {
     const f = fakes();
     const id = await deleting();

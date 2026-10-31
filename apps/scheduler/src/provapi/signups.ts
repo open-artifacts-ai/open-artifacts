@@ -13,18 +13,16 @@
 //
 // Messages are { signupId } only. Nothing here writes a signups row; the
 // provisioner's consumer does every admission. Logs carry counts only.
+
+import {
+  parseSignupsEnabled,
+  ULID_RE,
+} from "@oa/shared/provisioning/constants";
 import { SELF_SERVE_STALE_MS } from "@oa/shared/provisioning/state";
 import { signupDailyCap } from "./conditions.js";
-import { ULID_RE } from "./contract.js";
 import { bound, DutyFailure, d1, type ProvapiEnv } from "./env.js";
 /** Rows re-sent per list per tick. */
 export const SIGNUPS_LIMIT = 50;
-/**
- * The SIGNUPS_ENABLED values that run the duty: #859's "true", and the
- * design's staging "test-users" (design v7 7, P29). Anything else (unset
- * included) is off. TODO(contract): C2 exports no SIGNUPS_ENABLED parser.
- */
-export const SIGNUPS_ON = ["true", "test-users"] as const;
 
 const DAY_MS = 86_400_000;
 // Queues' sendBatch takes at most 100 messages.
@@ -37,8 +35,13 @@ LIMIT min(?3, max(0, ?1 - (SELECT count(*) FROM signups WHERE source = 'self-ser
 const STALE = `SELECT signup_id FROM signups WHERE source = 'self-serve' AND status = 'pending' AND updated_at < ?1
 ORDER BY updated_at, signup_id LIMIT ?2`;
 
+/**
+ * SIGNUPS_ENABLED runs the duty when "true" (#859) or staging's
+ * "test-users" (design v7 7, P29); anything else, unset included, is off
+ * (C6 parseSignupsEnabled).
+ */
 export function signupsOn(v: string | undefined): boolean {
-  return (SIGNUPS_ON as readonly string[]).includes(v ?? "");
+  return parseSignupsEnabled(v) !== "false";
 }
 
 async function send(
