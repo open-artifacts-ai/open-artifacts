@@ -1,4 +1,6 @@
-// Prune (design v7 5.8): expired or revoked sessions and agent tokens, D1
+// Prune (design v7 5.8): expired sessions and agent tokens (a revoked one
+// stays until it expires, so its revoked state is never lost while a grant
+// or a session check could still read it), unclaimed OAuth clients (0008), D1
 // rate counters past their longest window, audit_refusals over 90 days, and
 // a failed signup's owner email 30 days on. Bounded deletes, so a backlog drains over ticks. Never admin_audit
 // (append-only; its triggers refuse a delete).
@@ -19,15 +21,19 @@ export const RATE_COUNTER_RETENTION_MS = 24 * 60 * 60_000;
  */
 export const FAILED_SECRET_RETENTION_MS = 30 * 24 * 60 * 60_000;
 
+/**
+ * An OAuth client with no grant this long after registering goes (0008:
+ * "Unclaimed clients are swept after 24 h"; the library's KV copy expires
+ * on its own TTL). TODO(contract): not exported.
+ */
+export const OAUTH_CLIENT_UNCLAIMED_MS = 24 * 60 * 60_000;
+
 const bounded = (table: string, where: string) =>
   `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE ${where} LIMIT ${PRUNE_BATCH})`;
 
 export const PRUNES = {
-  sessions: bounded("sessions", "expires_at <= ?1 OR revoked_at IS NOT NULL"),
-  agent_tokens: bounded(
-    "agent_tokens",
-    "expires_at <= ?1 OR revoked_at IS NOT NULL",
-  ),
+  sessions: bounded("sessions", "expires_at <= ?1"),
+  agent_tokens: bounded("agent_tokens", "expires_at <= ?1"),
   rate_counters: bounded(
     "rate_counters",
     `window_start <= ?1 - ${RATE_COUNTER_RETENTION_MS}`,
@@ -39,6 +45,10 @@ export const PRUNES = {
   signup_secret: bounded(
     "signup_secret",
     `signup_id IN (SELECT signup_id FROM signups WHERE status = 'failed' AND updated_at <= ?1 - ${FAILED_SECRET_RETENTION_MS})`,
+  ),
+  oauth_clients: bounded(
+    "oauth_clients",
+    `first_grant_at IS NULL AND registered_at <= ?1 - ${OAUTH_CLIENT_UNCLAIMED_MS}`,
   ),
 } as const;
 

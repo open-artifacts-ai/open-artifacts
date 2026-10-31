@@ -11,6 +11,11 @@
  *   survives a clear, so a per-key minimum interval holds across reopens
  *   (signin_refused_burst: one email per hour at most).
  * - `<key>_cleared_at`: a clear email is owed.
+ * - `<key>_sending_at`: an open or reminder email in flight. notified_at
+ *   moves only once the send succeeded, so a tick that ends mid-send (the
+ *   duty's budget, an eviction) never marks an email it did not send; a
+ *   marker older than the send timeout is taken over. TODO(contract): not
+ *   in 0006's key list.
  * Every claim is one conditional write, so overlapping ticks send once. A
  * failed send gives its claim back, so the next tick retries it.
  *
@@ -38,7 +43,7 @@ import {
   WELCOME_CLAIM_MS,
 } from "@oa/shared/provisioning";
 import type { ProvapiEnv } from "./env.js";
-import { claimState, getState, unclaimState } from "./state.js";
+import { claimState, getState, raiseState, unclaimState } from "./state.js";
 
 export type AlertState = "open" | "remind" | "clear";
 
@@ -176,6 +181,7 @@ export async function stepAlert(
   const opened = `${alert.key}_opened_at`;
   const notified = `${alert.key}_notified_at`;
   const cleared = `${alert.key}_cleared_at`;
+  const sending = `${alert.key}_sending_at`;
   const db = env.PLATFORM_DB;
   try {
     if (condition === true) {
@@ -207,11 +213,18 @@ export async function stepAlert(
     const cutoff =
       now - (state === "open" ? policy.minIntervalMs : (policy.remindMs ?? 0));
     if (prev !== null && prev > cutoff) return;
-    // Claim over the value read (or as the first row), so of overlapping
-    // ticks only one moves it.
-    if (!(await claimState(db, notified, now, prev ?? -1))) return;
-    if (!(await send(env, alert, state, open, timeoutMs)))
-      await unclaimState(db, notified, now, prev);
+    // Phase 1: the in-flight marker. Of overlapping ticks only one holds
+    // it; one left by a tick that ended mid-send is stale after the timeout.
+    if (!(await claimState(db, sending, now, now - timeoutMs))) return;
+    try {
+      // Another tick may have sent between the read and the claim.
+      if ((await getState(db, notified)) !== prev) return;
+      // Phase 2: notified moves only once the email went out.
+      if (await send(env, alert, state, open, timeoutMs))
+        await raiseState(db, notified, now);
+    } finally {
+      await unclaimState(db, sending, now, null);
+    }
   } catch {
     console.error("provapi alert", alert.key, "db_error");
   }
@@ -238,15 +251,24 @@ export interface ProdcleanReport {
 
 /** At most this many characters of a prod-clean report's detail. */
 export const REPORT_DETAIL_MAX = 200;
-// Kept: letters, digits and plain punctuation. Everything else (control
-// characters, '@', '/', quotes, non-ASCII) becomes a space, so no address,
-// URL or line break reaches the email.
+// First, whole tokens that are an email address, a URL, or an IPv4 or IPv6
+// address become REDACTED. Then only letters, digits and plain punctuation
+// are kept; everything else (control characters, '@', '/', quotes,
+// non-ASCII) becomes a space, so no line break reaches the email.
+const REDACTED = "(redacted)";
+const DETAIL_REDACT = [
+  /\S*@\S*/g,
+  /[A-Za-z][A-Za-z0-9+.-]*:\/\/\S*/g,
+  /(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w.])/g,
+  /(?<![\w:])(?=[0-9A-Fa-f:]*::|(?:[0-9A-Fa-f]{1,4}:){2,})[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![\w:])/g,
+];
 const DETAIL_DROP = /[^A-Za-z0-9 _.,:;=()+-]+/g;
 
-/** A report detail for an email: allowed characters only, capped. */
+/** A report detail for an email: addresses redacted, allowed characters only, capped. */
 export function cleanDetail(d: unknown): string | null {
   if (typeof d !== "string") return null;
-  const s = d.replace(DETAIL_DROP, " ").replace(/\s+/g, " ").trim();
+  const r = DETAIL_REDACT.reduce((s, re) => s.replace(re, REDACTED), d);
+  const s = r.replace(DETAIL_DROP, " ").replace(/\s+/g, " ").trim();
   if (!s) return null;
   return s.length > REPORT_DETAIL_MAX
     ? `${s.slice(0, REPORT_DETAIL_MAX).trimEnd()} (cut)`

@@ -166,7 +166,10 @@ describe("prune", () => {
       });
     await client(NOW - OAUTH_CLIENT_UNCLAIMED_MS, null); // pruned
     await client(NOW - OAUTH_CLIENT_UNCLAIMED_MS + 1, null);
-    await client(NOW - 2 * OAUTH_CLIENT_UNCLAIMED_MS, NOW - OAUTH_CLIENT_UNCLAIMED_MS);
+    await client(
+      NOW - 2 * OAUTH_CLIENT_UNCLAIMED_MS,
+      NOW - OAUTH_CLIENT_UNCLAIMED_MS,
+    );
     captureLogs(vi.spyOn);
     await prune(env, NOW);
     expect(
@@ -178,7 +181,10 @@ describe("prune", () => {
         registered_at: NOW - 2 * OAUTH_CLIENT_UNCLAIMED_MS,
         first_grant_at: NOW - OAUTH_CLIENT_UNCLAIMED_MS,
       },
-      { registered_at: NOW - OAUTH_CLIENT_UNCLAIMED_MS + 1, first_grant_at: null },
+      {
+        registered_at: NOW - OAUTH_CLIENT_UNCLAIMED_MS + 1,
+        first_grant_at: null,
+      },
     ]);
   });
 

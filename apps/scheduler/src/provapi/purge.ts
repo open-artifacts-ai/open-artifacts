@@ -12,9 +12,11 @@ import { dutyCategory } from "./run.js";
 export const PURGE_LIMIT = 20;
 export const PURGE_CONCURRENCY = 3;
 
-// Never while suspended (5.4): an operator suspended it for a reason.
-const DUE =
-  "SELECT install_id, signup_id, purge_at FROM install_status WHERE state = 'deleting' AND purge_at IS NOT NULL AND purge_at <= ?1 AND suspended_at IS NULL AND active_job_id IS NULL ORDER BY purge_at, install_id LIMIT ?2";
+// Never while suspended (5.4): an operator suspended it for a reason. A
+// stuck install (purge_stuck) is left out here, not only in the loop, so
+// PURGE_LIMIT stuck installs with the oldest purge_at never crowd out one
+// that comes due later.
+const DUE = `SELECT install_id, signup_id, purge_at FROM install_status WHERE state = 'deleting' AND purge_at IS NOT NULL AND purge_at <= ?1 AND suspended_at IS NULL AND active_job_id IS NULL AND (SELECT COUNT(*) FROM jobs p WHERE p.install_id = install_status.install_id AND p.kind = 'purge' AND p.status = 'failed') < ${PURGE_STUCK_FAILURES} ORDER BY purge_at, install_id LIMIT ?2`;
 // failed: every failed purge on the install (purge_stuck's count). mine: the
 // scheduler's tries for this grace end, any status; they number the next.
 const TRIES = `SELECT
@@ -56,7 +58,8 @@ export async function purgeDue(env: ProvapiEnv, now: number): Promise<void> {
           .bind(r.install_id, prefix)
           .first<{ failed: number; mine: number }>(),
       );
-      // The purge_stuck alert has it from here.
+      // The purge_stuck alert has it from here (a guard: DUE leaves these
+      // out, but a try may have failed since).
       if ((t?.failed ?? 0) >= PURGE_STUCK_FAILURES) return;
       const n = (t?.mine ?? 0) + 1;
       const id = await insertSystemJob(

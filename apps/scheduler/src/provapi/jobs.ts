@@ -143,12 +143,25 @@ export function wfCall<T>(
 const message = (e: unknown) =>
   e instanceof Error ? e.message : typeof e === "string" ? e : "";
 
+// A missing instance only: the real binding's "instance.not_found" or the
+// fake's "instance <id> not found". A binding-level error (the Workflow or
+// its script not deployed yet: "workflow.not_found") is not one, so a live
+// run is never settled on it.
+const INSTANCE_NOT_FOUND =
+  /\binstance(?:[._ ]not[_ ]?found|\s+\S+\s+not\s+found)\b/i;
+
 /**
- * TODO(contract): WorkflowLike.get has no typed not-found error; the fake
- * and (unverified) the real binding say "not found" in the message.
+ * TODO(contract): WorkflowLike.get has no typed not-found error; this
+ * matches the instance-specific message only, so anything else fails
+ * closed (rpc_error, the job left alone).
  */
 export function isWorkflowNotFound(e: unknown): boolean {
-  return !(e instanceof Stall) && /not[ _]?found/i.test(message(e));
+  const m = message(e);
+  return (
+    !(e instanceof Stall) &&
+    !/\bworkflow[._ ]not[_ ]?found/i.test(m) &&
+    INSTANCE_NOT_FOUND.test(m)
+  );
 }
 
 const isAlreadyExists = (e: unknown) =>

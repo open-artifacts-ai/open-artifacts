@@ -400,7 +400,8 @@ describe("sweep: failures", () => {
     await f.provision.create({ id: dead, params: { jobId: dead } });
     f.provision.setStatus(dead, "errored");
     captureLogs(vi.spyOn);
-    for (let t = 0; t < 3 && !settled.length; t++) await run(f.env, NOW + t * TICK);
+    for (let t = 0; t < 3 && !settled.length; t++)
+      await run(f.env, NOW + t * TICK);
     expect(settled.map((x) => x.jobId)).toEqual([dead]);
   });
 

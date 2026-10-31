@@ -203,7 +203,8 @@ describe("health", () => {
 
   it("a round that would outrun its budget stops starting probes; the next */2 tick checks only the rest", async () => {
     const all = new Set<string>();
-    for (let i = 0; i < 4 * HEALTH_CONCURRENCY; i++) all.add((await mapped()).id);
+    for (let i = 0; i < 4 * HEALTH_CONCURRENCY; i++)
+      all.add((await mapped()).id);
     // A pinned clock: each probe takes the whole timeout, then fails.
     let clock = 0;
     const calls: string[] = [];
@@ -235,7 +236,9 @@ describe("health", () => {
     for (const id of all) expect((await health(id))?.health).toBe("failing");
     // The round is done: the gate holds until the next hour.
     const done = calls.length;
-    expect(await healthDue(env, NOW + HEALTH_INTERVAL_MS - TICK, o)).toBe(false);
+    expect(await healthDue(env, NOW + HEALTH_INTERVAL_MS - TICK, o)).toBe(
+      false,
+    );
     expect(calls).toHaveLength(done);
   });
 

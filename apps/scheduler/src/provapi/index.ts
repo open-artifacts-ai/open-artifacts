@@ -75,11 +75,10 @@ export function provapiTick(
       name: "health",
       timeoutMs: t.health,
       run: async () => {
-        await healthDue(
-          env,
-          now,
-          o.healthProbe ? { probe: o.healthProbe } : {},
-        );
+        await healthDue(env, now, {
+          budgetMs: t.health,
+          ...(o.healthProbe ? { probe: o.healthProbe } : {}),
+        });
       },
     },
     { name: "alerts", timeoutMs: t.alerts, run: () => alertsTick(env, now) },

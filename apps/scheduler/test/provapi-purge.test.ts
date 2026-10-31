@@ -16,11 +16,7 @@ import {
 import { sqlConditions } from "../src/provapi/conditions.js";
 import type { ProvapiEnv } from "../src/provapi/env.js";
 import { SYSTEM_ACTOR } from "../src/provapi/jobs.js";
-import {
-  PURGE_LIMIT,
-  purgeDue,
-  purgeRequestId,
-} from "../src/provapi/purge.js";
+import { PURGE_LIMIT, purgeDue, purgeRequestId } from "../src/provapi/purge.js";
 import {
   captureLogs,
   db,

@@ -5,6 +5,8 @@ const GET = "SELECT value FROM platform_state WHERE key = ?1";
 // Monotonic: an older or replayed write never lowers a newer value.
 const RAISE =
   "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT (key) DO UPDATE SET value = MAX(platform_state.value, excluded.value), updated_at = excluded.updated_at";
+const SET =
+  "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
 // Inserted, or moved to ?2 only while the stored value is at or before ?3.
 const CLAIM =
   "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE platform_state.value <= ?3 RETURNING value";
@@ -19,6 +21,16 @@ export async function getState(
 ): Promise<number | null> {
   const r = await db.prepare(GET).bind(key).first<{ value: unknown }>();
   return typeof r?.value === "number" ? r.value : null;
+}
+
+/** Sets key to value, lower or higher. */
+export async function setState(
+  db: D1Database,
+  key: string,
+  value: number,
+  now: number,
+): Promise<void> {
+  await db.prepare(SET).bind(key, value, now).run();
 }
 
 /** Sets key to MAX(stored, value). */

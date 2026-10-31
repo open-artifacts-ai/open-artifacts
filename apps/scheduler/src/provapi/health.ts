@@ -1,18 +1,29 @@
 // Health (design v7 5.8): once an hour, gated on the */2 tick (the crons
 // stay pinned), each routed install's /healthz (HealthProbe). Writes only
 // install_lifecycle.health and health_at; C2's unreachable_after_route
-// query reads them.
+// query reads them. A round that would outrun the duty's budget stops
+// starting probes and gives the gate back, so the next */2 tick checks the
+// rows this round has not (health_at before the round's start).
 import { isInstallId } from "@oa/provision/names";
 import type { Health } from "@oa/shared/provisioning";
 import { DutyFailure, d1, lanes, type ProvapiEnv, within } from "./env.js";
-import { claimState, getState, unclaimState } from "./state.js";
+import { claimState, getState, raiseState, unclaimState } from "./state.js";
 
 /** TODO(contract): no exported health interval. */
 export const HEALTH_INTERVAL_MS = 60 * 60_000;
 /** TODO(contract): no gate key in 0006's key list. */
 export const HEALTH_GATE_KEY = "health_checked_at";
+/**
+ * While a round is cut short: its start, so the next tick checks only the
+ * rows not yet checked in it. TODO(contract): not in 0006's key list.
+ */
+export const HEALTH_ROUND_KEY = "health_round_at";
 export const HEALTH_CONCURRENCY = 3;
 export const HEALTH_TIMEOUT_MS = 10_000;
+/** The default round budget (index.ts passes the duty's own). */
+export const HEALTH_BUDGET_MS = 40_000;
+/** Kept back from the budget for the D1 writes after the probes. */
+export const HEALTH_BUDGET_SLACK_MS = 2_000;
 
 /**
  * The rows checked. TODO(contract): "mapped row" is not defined (serving_mode
@@ -21,7 +32,7 @@ export const HEALTH_TIMEOUT_MS = 10_000;
  * checked. Unmapped and null rows never are.
  */
 export const HEALTH_MODES = ["serving"] as const;
-const MAPPED = `SELECT l.install_id AS id, i.app_host AS app_host FROM install_lifecycle l JOIN installs i ON i.id = l.install_id WHERE l.serving_mode IN (${HEALTH_MODES.map((m) => `'${m}'`).join(", ")}) ORDER BY l.health_at IS NOT NULL, l.health_at, l.install_id`;
+const MAPPED = `SELECT l.install_id AS id, i.app_host AS app_host FROM install_lifecycle l JOIN installs i ON i.id = l.install_id WHERE l.serving_mode IN (${HEALTH_MODES.map((m) => `'${m}'`).join(", ")}) AND (l.health_at IS NULL OR l.health_at < ?1) ORDER BY l.health_at IS NOT NULL, l.health_at, l.install_id`;
 const WRITE =
   "UPDATE install_lifecycle SET health = ?2, health_at = ?3 WHERE install_id = ?1";
 
@@ -75,18 +86,31 @@ export async function healthDue(
   {
     timeoutMs = HEALTH_TIMEOUT_MS,
     probe = publicRouteProbe,
-  }: { timeoutMs?: number; probe?: HealthProbe } = {},
+    budgetMs = HEALTH_BUDGET_MS,
+    clock = Date.now,
+  }: {
+    timeoutMs?: number;
+    probe?: HealthProbe;
+    /** The duty's budget: no probe starts that could end past it. */
+    budgetMs?: number;
+    /** Tests only: elapsed time (default Date.now). */
+    clock?: () => number;
+  } = {},
 ): Promise<boolean> {
   const db = env.PLATFORM_DB;
+  const started = clock();
   const prev = await d1(getState(db, HEALTH_GATE_KEY));
   if (
     !(await d1(claimState(db, HEALTH_GATE_KEY, now, now - HEALTH_INTERVAL_MS)))
   )
     return false;
+  let round: number;
   let results: { id: unknown; app_host: unknown }[];
   try {
+    round = (await getState(db, HEALTH_ROUND_KEY)) ?? now;
     ({ results } = await db
       .prepare(MAPPED)
+      .bind(round)
       .all<{ id: unknown; app_host: unknown }>());
   } catch {
     // Nothing was checked: give the hour back, so the next tick runs it.
@@ -101,7 +125,13 @@ export async function healthDue(
       r.app_host !== "",
   );
   let failing = 0;
+  let left = 0;
   await lanes(rows, HEALTH_CONCURRENCY, async (r) => {
+    // A probe that could end past the budget waits for the next tick.
+    if (clock() - started + timeoutMs > budgetMs - HEALTH_BUDGET_SLACK_MS) {
+      left++;
+      return;
+    }
     const h = await healthOf(probe, r.id, r.app_host, timeoutMs);
     if (h === "failing") failing++;
     try {
@@ -110,6 +140,20 @@ export async function healthDue(
       console.error("provapi health db_error", r.id);
     }
   });
+  if (left > 0) {
+    // Cut short: keep the round's start and give the hour back, so the next
+    // */2 tick checks the rest.
+    await d1(raiseState(db, HEALTH_ROUND_KEY, round, now));
+    await d1(unclaimState(db, HEALTH_GATE_KEY, now, prev));
+    console.log(
+      "provapi health checked",
+      `mapped=${rows.length - left}`,
+      `failing=${failing}`,
+      `left=${left}`,
+    );
+    return true;
+  }
+  await d1(unclaimState(db, HEALTH_ROUND_KEY, round, null));
   console.log(
     "provapi health checked",
     `mapped=${rows.length}`,

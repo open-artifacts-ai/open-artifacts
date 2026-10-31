@@ -30,6 +30,7 @@ import {
   wfCall,
 } from "./jobs.js";
 import { dutyCategory } from "./run.js";
+import { getState, setState } from "./state.js";
 
 /** Jobs looked at per tick in each list (unstarted, then all open). */
 export const SWEEP_LIMIT = 50;
@@ -48,16 +49,29 @@ export const START_GRACE_MS = 2 * 60_000;
  */
 export const DEAD_RUN_CODE: ProvisionErrorCode = "internal";
 
+/**
+ * platform_state: the last jobs rowid the open-jobs list reached; the next
+ * tick resumes after it, and 0 starts over. TODO(contract): not in 0006's
+ * key list.
+ */
+export const SWEEP_CURSOR_KEY = "sweep_open_cursor";
+
 const COLS =
-  "id, kind, workflow, install_id, signup_id, status, created_at FROM jobs";
+  "rowid AS rid, id, kind, workflow, install_id, signup_id, status, created_at FROM jobs";
+// A self-serve create the queue consumer has not admitted yet (design v7 7
+// step 1: the daily cap) is the consumer's, never the sweep's to start.
+const NOT_UNADMITTED =
+  "NOT EXISTS (SELECT 1 FROM signups s WHERE s.job_id = jobs.id AND s.status IN ('pending', 'waiting_cap'))";
 // Queued past the start grace, oldest first: its own list, so open jobs
 // with long runs or retries never crowd out a create the API failed to start.
-const UNSTARTED = `SELECT ${COLS} WHERE status = 'queued' AND workflow <> 'none' AND created_at <= ?1 ORDER BY created_at, id LIMIT ?2`;
-// Every other open job, least recently changed first: dead runs. The two
-// lists never overlap.
-const OPEN_JOBS = `SELECT ${COLS} WHERE status IN ('queued', 'running') AND workflow <> 'none' AND NOT (status = 'queued' AND created_at <= ?1) ORDER BY updated_at, id LIMIT ?2`;
+const UNSTARTED = `SELECT ${COLS} WHERE status = 'queued' AND workflow <> 'none' AND created_at <= ?1 AND ${NOT_UNADMITTED} ORDER BY created_at, id LIMIT ?2`;
+// Every other open job, in rowid order from the cursor (?3), so live runs
+// that rarely change never keep a dead run out of the list. The two lists
+// never overlap.
+const OPEN_JOBS = `SELECT ${COLS} WHERE status IN ('queued', 'running') AND workflow <> 'none' AND NOT (status = 'queued' AND created_at <= ?1) AND ${NOT_UNADMITTED} AND rowid > ?3 ORDER BY rowid LIMIT ?2`;
 
 interface OpenJob {
+  rid: number;
   id: string;
   kind: string;
   workflow: string;
@@ -148,11 +162,23 @@ export async function sweep(
     manage_install: bound(env.MANAGE_INSTALL),
   };
   const manage = flows.manage_install as WorkflowLike;
+  const cursor = (await d1(getState(db, SWEEP_CURSOR_KEY))) ?? 0;
   const [unstarted, open] = await d1(
     db.batch<OpenJob>([
       db.prepare(UNSTARTED).bind(now - START_GRACE_MS, SWEEP_LIMIT),
-      db.prepare(OPEN_JOBS).bind(now - START_GRACE_MS, SWEEP_LIMIT),
+      db.prepare(OPEN_JOBS).bind(now - START_GRACE_MS, SWEEP_LIMIT, cursor),
     ]),
+  );
+  // A full page resumes after its last row; a short one starts over.
+  const page = open?.results ?? [];
+  const last = page.at(-1)?.rid;
+  await d1(
+    setState(
+      db,
+      SWEEP_CURSOR_KEY,
+      page.length === SWEEP_LIMIT && typeof last === "number" ? last : 0,
+      now,
+    ),
   );
   const todo = [...(unstarted?.results ?? []), ...(open?.results ?? [])];
   const one = async (j: OpenJob) => {
