@@ -15,8 +15,10 @@ import {
   bodyHash,
   CreateInstallSchema,
   canonicalJson,
+  DeleteSchema,
   InstallDetailSchema,
   InstallIdSchema,
+  InstallSummarySchema,
   JOB_ERROR_CODES,
   JOB_ERROR_RETRY,
   JOB_STEPS,
@@ -30,10 +32,15 @@ import {
   ProvisioningErrorSchema,
   PurgeSchema,
   RESERVED_SLUGS,
+  RETURN_FALLBACK,
+  RETURN_RE,
+  RedlineCredsSchema,
   RequestIdSchema,
   ROUTE_IDS,
   ROUTES,
   SlugSchema,
+  safeReturn,
+  slugError,
   slugRule,
   TokenKindSchema,
   TokenSchema,
@@ -116,6 +123,64 @@ describe("slugs", () => {
     expect(SlugSchema.safeParse("acme").success).toBe(true);
     expect(SlugSchema.safeParse("admin").success).toBe(false);
     expect(SlugSchema.safeParse("xn--abc").success).toBe(false);
+    expect(slugError("acme")).toBeNull();
+    expect(slugError("Bad")).toBe("slug_invalid");
+    expect(slugError("billing")).toBe("slug_reserved");
+  });
+
+  it("inputs take any short slug, so policy can say slug_* or confirm_mismatch", () => {
+    const rid = "req_0123456789abcdef";
+    for (const slug of ["admin", "Bad_Slug", "xn--abc"])
+      expect(CreateInstallSchema.shape.slug.safeParse(slug).success, slug).toBe(
+        true,
+      );
+    expect(
+      CreateInstallSchema.shape.slug.safeParse("a".repeat(65)).success,
+    ).toBe(false);
+    expect(
+      DeleteSchema.safeParse({ requestId: rid, confirmSlug: "Leo" }).success,
+    ).toBe(true);
+    // Outputs: a since-reserved slug still parses.
+    expect(
+      InstallSummarySchema.safeParse(fixtureSummary({ slug: "billing" }))
+        .success,
+    ).toBe(true);
+  });
+
+  it("safeReturn (4.3)", () => {
+    const O = "https://admin.open-artifacts.app";
+    for (const ok of ["/installs/i1", "/oauth/authorize?client_id=a&state=b"])
+      expect(safeReturn(ok, O), ok).toBe(ok);
+    for (const bad of [
+      "//evil.com",
+      "/\\evil.com",
+      "/a\tb",
+      "/a\nb",
+      "/a b",
+      "/auth/start",
+      "https://evil.com/",
+      "installs",
+      "",
+      undefined,
+      `/${"a".repeat(2048)}`,
+    ])
+      expect(safeReturn(bad, O), String(bad)).toBe(RETURN_FALLBACK);
+    expect(RETURN_RE.test("/ok")).toBe(true);
+  });
+
+  it("RedlineCreds.recipientKey is a 32-byte base64url key", () => {
+    const rid = "req_0123456789abcdef";
+    const key = Buffer.alloc(32, 7).toString("base64url");
+    expect(
+      RedlineCredsSchema.safeParse({ requestId: rid, recipientKey: key })
+        .success,
+    ).toBe(true);
+    for (const bad of ["", "x".repeat(43), `${key}=`, key.slice(1), `${key}A`])
+      expect(
+        RedlineCredsSchema.safeParse({ requestId: rid, recipientKey: bad })
+          .success,
+        bad,
+      ).toBe(false);
   });
 
   it("the slugs module stands alone (no zod), for @oa/provision", () => {
@@ -124,6 +189,7 @@ describe("slugs", () => {
       "RESERVED_SLUGS",
       "SLUG_RE",
       "isValidSlug",
+      "slugError",
       "slugRule",
     ]);
   });
@@ -301,7 +367,7 @@ describe("shapes", () => {
     );
   });
 
-  it("Me carries tokenKind and tokenExpiresAt", () => {
+  it("Me carries tokenId, tokenKind and tokenExpiresAt", () => {
     const me = {
       principal: "token",
       email: null,
@@ -312,6 +378,7 @@ describe("shapes", () => {
       sessionExpiresAt: null,
       authAt: null,
       provisioningToken: null,
+      tokenId: "01JD7Z9W5Q8X3N4M2K1H0G9F8G",
       tokenKind: "oauth",
       tokenExpiresAt: 1_800_000_000_000,
     };

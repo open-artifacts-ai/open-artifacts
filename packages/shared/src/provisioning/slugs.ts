@@ -38,3 +38,14 @@ export function slugRule(slug: string): "ok" | "invalid" | "reserved" {
 }
 
 export const isValidSlug = (slug: string): boolean => slugRule(slug) === "ok";
+
+/**
+ * The 3.5 code for a slug that fails the rule, or null. Schemas take any
+ * short string so these codes come from policy, not invalid_input.
+ */
+export function slugError(
+  slug: string,
+): "slug_invalid" | "slug_reserved" | null {
+  const r = slugRule(slug);
+  return r === "ok" ? null : r === "invalid" ? "slug_invalid" : "slug_reserved";
+}
