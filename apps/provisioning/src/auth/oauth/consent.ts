@@ -1,16 +1,20 @@
-import { ipKey } from "@oa/auth-core";
 import {
   AuthorizationError,
   type OAuthHelpers,
 } from "@cloudflare/workers-oauth-provider";
+import { ipKey } from "@oa/auth-core";
 import { type TokenScope, TokenScopeSchema } from "@oa/shared/provisioning";
 import type { Env } from "../../env.js";
 import { ApiError } from "../../errors.js";
 import { limit } from "../../limits.js";
 import { isRefusal, type Principal } from "../../principal.js";
 import { countRefusal } from "../../refuse.js";
-import { mintAgentToken, oauthLabel, revokeToken } from "../../services/tokens.js";
-import { hmac } from "../crypto.js";
+import {
+  mintAgentToken,
+  oauthLabel,
+  revokeToken,
+} from "../../services/tokens.js";
+import { hmac, sameString } from "../crypto.js";
 import {
   adminOrigin,
   readCookie,
@@ -44,7 +48,7 @@ const hex = (b: Uint8Array) =>
 export const consentToken = async (env: Env, sid: string, handle: string) =>
   hex(await hmac(env.ADMIN_SESSION_KEY, `consent\n${sid}\n${handle}`));
 
-/** Constant-time check: HMAC both sides with a fresh key, compare those. */
+/** Constant-time check of the posted token against this session and handle. */
 async function consentTokenOk(
   env: Env,
   sid: string,
@@ -52,11 +56,7 @@ async function consentTokenOk(
   got: string,
 ): Promise<boolean> {
   if (!/^[0-9a-f]{64}$/.test(got) || !handle) return false;
-  const want = await consentToken(env, sid, handle);
-  const k = hex(crypto.getRandomValues(new Uint8Array(16)));
-  return (
-    hex(await hmac(k, want)) === hex(await hmac(k, got))
-  );
+  return sameString(got, await consentToken(env, sid, handle));
 }
 
 /** RL_PV_OAUTH_IP by ipKey on the consent routes (9A.7); a refusal page or null. */
@@ -75,11 +75,7 @@ async function limited(req: Request, env: Env): Promise<Response | null> {
         "Wait a minute, then start connecting again from your agent.",
         429,
       )
-    : messagePage(
-        "Unavailable",
-        "Try again in a few minutes.",
-        503,
-      );
+    : messagePage("Unavailable", "Try again in a few minutes.", 503);
 }
 
 /** The query without the bounce marker: what /auth/start returns to. */
@@ -192,10 +188,7 @@ export async function showConsent(req: Request, env: Env): Promise<Response> {
 }
 
 /** POST /oauth/authorize: Allow or Deny. */
-export async function decideConsent(
-  req: Request,
-  env: Env,
-): Promise<Response> {
+export async function decideConsent(req: Request, env: Env): Promise<Response> {
   // No Origin check: the page's no-referrer policy makes browsers send
   // `Origin: null`. The consent token and the Strict cookie cover CSRF.
   if (req.headers.get("sec-fetch-site") === "cross-site")
@@ -215,7 +208,9 @@ export async function decideConsent(
     return messagePage("Cannot connect this agent", "Invalid form.", 400);
   }
   const handle = String(form.get("request") ?? "");
-  if (!(await consentTokenOk(env, sid, handle, String(form.get("consent") ?? ""))))
+  if (
+    !(await consentTokenOk(env, sid, handle, String(form.get("consent") ?? "")))
+  )
     return messagePage(
       "This page expired",
       "Start connecting again from your agent.",
@@ -223,7 +218,8 @@ export async function decideConsent(
     );
   const oauth = authServer(env).getOAuthApi(env);
   try {
-    if (form.get("decision") !== "approve") return await deny(env, oauth, p, req, handle);
+    if (form.get("decision") !== "approve")
+      return await deny(env, oauth, p, req, handle);
     const scopes = form.getAll("scope").map(String).filter(isScope);
     // The library accepts [] ([].every is true): a grant with no scopes.
     if (scopes.length === 0)
@@ -332,4 +328,3 @@ function mintRefused(e: ApiError): Response {
   if (e.code === "unauthenticated") return signedOut();
   return messagePage("Cannot connect this agent", "Try again later.", 500);
 }
-

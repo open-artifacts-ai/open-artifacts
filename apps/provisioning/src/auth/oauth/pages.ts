@@ -61,10 +61,7 @@ const shell = (title: string, body: string, extraHead = "") =>
 /** A small static page; `title` and `message` are escaped. */
 export const messagePage = (title: string, message: string, status: number) =>
   html(
-    shell(
-      title,
-      `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>`,
-    ),
+    shell(title, `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>`),
     status,
   );
 
@@ -88,7 +85,11 @@ export function bouncePage(next: string): Response {
 
 /** Pre-checked: read and audit; write unchecked; delete and pii apart, never pre-checked. */
 const SCOPE_ROWS: { scope: TokenScope; text: string; checked: boolean }[] = [
-  { scope: "installs:read", text: "Can read installs, jobs and releases", checked: true },
+  {
+    scope: "installs:read",
+    text: "Can read installs, jobs and releases",
+    checked: true,
+  },
   { scope: "audit:read", text: "Can read the audit log", checked: true },
   {
     scope: "installs:write",
@@ -97,7 +98,10 @@ const SCOPE_ROWS: { scope: TokenScope; text: string; checked: boolean }[] = [
   },
 ];
 const SENSITIVE_ROWS: { scope: TokenScope; text: string }[] = [
-  { scope: "installs:delete", text: "Can delete installs and purge failed creates" },
+  {
+    scope: "installs:delete",
+    text: "Can delete installs and purge failed creates",
+  },
   { scope: "installs:pii", text: "Can read owner email" },
 ];
 
@@ -138,5 +142,9 @@ export function consentPage(v: ConsentView, headers: Headers): Response {
 <p>Ends at ${hhmm(v.endsAt)} UTC, when your admin session ends.</p>
 <div class="actions"><button type="submit" name="decision" value="deny">Deny</button><button type="submit" name="decision" value="approve" class="primary">Allow</button></div>
 </form>`;
-  return html(shell("Connect any AI agent to Open Artifacts admin", body), 200, headers);
+  return html(
+    shell("Connect any AI agent to Open Artifacts admin", body),
+    200,
+    headers,
+  );
 }

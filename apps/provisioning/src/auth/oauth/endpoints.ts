@@ -60,7 +60,11 @@ async function ipLimited(
   if (!r) return null;
   await count(env, bucket, r.code, ip);
   return r.code === "rate_limited"
-    ? oauthError(429, "temporarily_unavailable", "Too many requests; try again in a minute")
+    ? oauthError(
+        429,
+        "temporarily_unavailable",
+        "Too many requests; try again in a minute",
+      )
     : oauthError(503, "temporarily_unavailable", "Temporarily unavailable");
 }
 
@@ -154,7 +158,11 @@ export async function registerEndpoint(
   // Read only: refused attempts do not spend the day's cap.
   if ((await peek(env.PLATFORM_DB, key, DAY_MS, now)) >= DCR_PER_IP_PER_DAY) {
     await count(env, "oauth_register", "rate_limited", ip);
-    return oauthError(429, "temporarily_unavailable", "Registration limit reached; try tomorrow");
+    return oauthError(
+      429,
+      "temporarily_unavailable",
+      "Registration limit reached; try tomorrow",
+    );
   }
   const r = await capped(req);
   if (!r) return tooLarge();

@@ -104,7 +104,11 @@ async function rowAndSession(
 }
 
 /** 9A.8 `oauth.refresh_refused` reasons. */
-type RefreshRefusal = "session_ended" | "identity_removed" | "revoked" | "chain_ended";
+type RefreshRefusal =
+  | "session_ended"
+  | "identity_removed"
+  | "revoked"
+  | "chain_ended";
 const refusalReason = (r: TokenRefusalReason): RefreshRefusal =>
   r === "session_ended" || r === "identity_removed"
     ? r
@@ -147,7 +151,8 @@ async function onTokenExchange(
     if (!row || row.kind !== "oauth" || row.grant_id !== null)
       throw invalidGrant("The grant was revoked");
     const p = tokenPrincipal(row, session, env, "oauth");
-    if (isRefusal(p)) throw invalidGrant("The grant was revoked or the admin session ended");
+    if (isRefusal(p))
+      throw invalidGrant("The grant was revoked or the admin session ended");
     const ttl = refreshTtlFor(row.expires_at, now);
     if (ttl < MIN_REFRESH_TTL_S)
       throw invalidGrant("The admin session ends too soon");
@@ -156,7 +161,8 @@ async function onTokenExchange(
     )
       .bind(row.id, opts.grantId)
       .run();
-    if ((set.meta.changes ?? 0) === 0) throw invalidGrant("The grant was revoked");
+    if ((set.meta.changes ?? 0) === 0)
+      throw invalidGrant("The grant was revoked");
     return {
       refreshTokenTTL: ttl,
       accessTokenTTL: Math.min(OAUTH_ACCESS_TTL_S, ttl),

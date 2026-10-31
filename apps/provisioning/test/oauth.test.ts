@@ -117,7 +117,12 @@ describe("DCR (/oauth/register)", () => {
   it("loopback with a port and the exact MCP_REDIRECT_URIS entry are accepted", async () => {
     const w = await oauthWorld();
     const res = await registerRaw(w, {
-      redirect_uris: [REDIRECT, "http://localhost:9/cb", "http://[::1]:7/cb", CLAUDE_AI],
+      redirect_uris: [
+        REDIRECT,
+        "http://localhost:9/cb",
+        "http://[::1]:7/cb",
+        CLAUDE_AI,
+      ],
       token_endpoint_auth_method: "none",
     });
     expect(res.status).toBe(201);
@@ -139,26 +144,32 @@ describe("DCR (/oauth/register)", () => {
     "http://127.0.0.1/callback",
     "https://127.0.0.1:33418/callback",
     "http://localhost.evil.example:8/cb",
-  ])("refuses %s with invalid_redirect_uri, counted in oauth_register", async (uri) => {
-    const w = await oauthWorld();
-    const res = await registerRaw(w, {
-      redirect_uris: [REDIRECT, uri],
-      token_endpoint_auth_method: "none",
-    });
-    expect(res.status).toBe(400);
-    expect((await bodyOf(res)).error).toBe("invalid_redirect_uri");
-    const n = await w.db
-      .prepare(
-        "SELECT sum(count) AS n FROM audit_refusals WHERE bucket = 'oauth_register' AND code = 'invalid_redirect_uri'",
-      )
-      .first<{ n: number }>();
-    expect(n?.n ?? 0).toBeGreaterThan(0);
-  });
+  ])(
+    "refuses %s with invalid_redirect_uri, counted in oauth_register",
+    async (uri) => {
+      const w = await oauthWorld();
+      const res = await registerRaw(w, {
+        redirect_uris: [REDIRECT, uri],
+        token_endpoint_auth_method: "none",
+      });
+      expect(res.status).toBe(400);
+      expect((await bodyOf(res)).error).toBe("invalid_redirect_uri");
+      const n = await w.db
+        .prepare(
+          "SELECT sum(count) AS n FROM audit_refusals WHERE bucket = 'oauth_register' AND code = 'invalid_redirect_uri'",
+        )
+        .first<{ n: number }>();
+      expect(n?.n ?? 0).toBeGreaterThan(0);
+    },
+  );
 
   it("10 per ipKey per UTC day; the 11th is refused; another IP is not blocked", async () => {
     const w = await oauthWorld();
     const ip = randomIp();
-    const body = { redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" };
+    const body = {
+      redirect_uris: [REDIRECT],
+      token_endpoint_auth_method: "none",
+    };
     for (let i = 0; i < 10; i++)
       expect((await registerRaw(w, body, ip)).status).toBe(201);
     const over = await registerRaw(w, body, ip);
@@ -168,7 +179,10 @@ describe("DCR (/oauth/register)", () => {
 
   it("RL_PV_OAUTH_IP keyed by ipKey; unbound is 503", async () => {
     const w = await oauthWorld();
-    const body = { redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" };
+    const body = {
+      redirect_uris: [REDIRECT],
+      token_endpoint_auth_method: "none",
+    };
     await registerRaw(w, body);
     expect(w.limits.RL_PV_OAUTH_IP.keys).toContain(w.ip);
     w.limits.RL_PV_OAUTH_IP.allow = false;
@@ -229,7 +243,9 @@ describe("GET /oauth/authorize: cookie, bounce, session left", () => {
     );
     const html = await res.text();
     const next = `${url.pathname}${url.search}&b=1`.replaceAll("&", "&amp;");
-    expect(html).toContain(`<meta http-equiv="refresh" content="0;url=${next}">`);
+    expect(html).toContain(
+      `<meta http-equiv="refresh" content="0;url=${next}">`,
+    );
     expect(html).toContain(`href="${next}"`);
     expect(html).toContain("Continue");
   });
@@ -252,7 +268,9 @@ describe("GET /oauth/authorize: cookie, bounce, session left", () => {
       expect(res.status).toBe(302);
       const loc = new URL(res.headers.get("location") ?? "");
       expect(`${loc.origin}${loc.pathname}`).toBe(`${ADMIN}/auth/start`);
-      expect(loc.searchParams.get("return")).toBe(`${url.pathname}${url.search}`);
+      expect(loc.searchParams.get("return")).toBe(
+        `${url.pathname}${url.search}`,
+      );
     }
   });
 
@@ -320,7 +338,9 @@ describe("the consent page", () => {
     );
     expect(html).toContain("Can delete installs and purge failed creates");
     expect(html).toContain("Can read owner email");
-    expect(html).toMatch(/Ends at \d\d:\d\d UTC, when your admin session ends\./);
+    expect(html).toMatch(
+      /Ends at \d\d:\d\d UTC, when your admin session ends\./,
+    );
     expect(html).toContain(">Allow<");
     expect(html).toContain(">Deny<");
     expect(html).not.toContain("<script");
@@ -342,7 +362,9 @@ describe("the consent page", () => {
       )
     ).text();
     const box = (s: string) =>
-      new RegExp(`<input type="checkbox" name="scope" value="${s}"( checked)?>`).exec(html);
+      new RegExp(
+        `<input type="checkbox" name="scope" value="${s}"( checked)?>`,
+      ).exec(html);
     expect(box("installs:read")?.[1]).toBe(" checked");
     expect(box("audit:read")?.[1]).toBe(" checked");
     for (const s of ["installs:write", "installs:delete", "installs:pii"]) {
@@ -382,7 +404,10 @@ describe("POST /oauth/authorize", () => {
   const page = async (w: World) => {
     const clientId = await register(w);
     const { challenge } = await pkce();
-    return { clientId, page: await getConsent(w, authorizeUrl(clientId, challenge)) };
+    return {
+      clientId,
+      page: await getConsent(w, authorizeUrl(clientId, challenge)),
+    };
   };
 
   it("approves with Origin: null, the cookie, the consent token and same-origin", async () => {
@@ -507,7 +532,10 @@ describe("code exchange and tokens", () => {
     for (const t of [tokens.access_token, tokens.refresh_token ?? ""])
       expect(t).not.toContain("@");
     expect(tokens.expires_in).toBe(900);
-    expect(tokens.scope.split(" ").sort()).toEqual(["audit:read", "installs:read"]);
+    expect(tokens.scope.split(" ").sort()).toEqual([
+      "audit:read",
+      "installs:read",
+    ]);
     expect(row?.grant_id).toBe(tokens.access_token.split(":")[1]);
   });
 

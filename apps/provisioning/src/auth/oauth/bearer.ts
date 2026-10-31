@@ -1,7 +1,16 @@
 import type { Env } from "../../env.js";
 import { errorResponse } from "../../errors.js";
-import { type Principal, type Refusal, refusal } from "../../principal.js";
-import { getToken, type SessionRow, tokenPrincipal } from "../../services/tokens.js";
+import {
+  isRefusal,
+  type Principal,
+  type Refusal,
+  refusal,
+} from "../../principal.js";
+import {
+  getToken,
+  type SessionRow,
+  tokenPrincipal,
+} from "../../services/tokens.js";
 import {
   authServer,
   type GrantProps,
@@ -46,7 +55,7 @@ export async function oauthPrincipal(
     .bind(row.session_hash)
     .first<SessionRow>();
   const p = tokenPrincipal(row, session, env, "oauth");
-  return "refusal" in p ? no : p;
+  return isRefusal(p) ? no : p;
 }
 
 /** RFC 9728 for /mcp (9A.3.1), ours: the library's options have no resourceMetadata. */

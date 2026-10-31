@@ -152,7 +152,11 @@ export async function postConsent(
   page: Response,
   decision: "approve" | "deny",
   scope: string[] = ["installs:read", "audit:read"],
-  over: { sid?: string; headers?: Record<string, string>; consent?: string } = {},
+  over: {
+    sid?: string;
+    headers?: Record<string, string>;
+    consent?: string;
+  } = {},
 ) {
   const f = formFields(await page.text());
   const form = new URLSearchParams({
