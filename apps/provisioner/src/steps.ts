@@ -3,12 +3,13 @@
 // `attempt`, `last_error_code`, `retry_at` and the redacted message, all
 // conditional on the job still being open, so a canceled or settled job is
 // never written back to running. Fixed categories only: a step's error is a
-// job code (and a terminal refusal's own message), never an error's text.
+// job code, and jobs.error_message that code's JOB_ERROR_TEXT, never an
+// error's text.
 import type { WorkflowStep, WorkflowStepConfig } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import { PROVISION_ERROR_CODES, type ProvisionErrorCode } from "@oa/provision";
 import type { JobKind } from "@oa/shared/provisioning";
-import { codeOf, ERROR_MESSAGE_MAX, stepError } from "./errors.js";
+import { codeOf, JOB_ERROR_TEXT, stepError } from "./errors.js";
 import { type ProvisionerIo, Transient, transient } from "./provisioner.js";
 
 /** The jobs row a step reads (0008); never an email. */
@@ -116,9 +117,8 @@ async function noteFailure(
 ): Promise<void> {
   const terminal = err instanceof NonRetryableError;
   const code = codeOf(err);
-  const message = terminal
-    ? err.message.slice(0, ERROR_MESSAGE_MAX)
-    : (code as string);
+  // The code's fixed text: a refusal's message can echo request values.
+  const message = JOB_ERROR_TEXT[code];
   const r = { ...DEFAULT_RETRIES, ...(config?.retries ?? {}) };
   const base = typeof r.delay === "function" ? 0 : delayMs(r.delay);
   // retry_at for the next attempt: delay, then doubled (exponential),
@@ -158,8 +158,8 @@ const TOKEN_WAITING =
 
 /**
  * One job step: `step.do(name, config?, fn)` with the 3.6 bookkeeping. An
- * error leaves as stepError's (a job code; a terminal refusal keeps its
- * message, `email` scrubbed); a NonRetryableError stays as it is. `mark` is
+ * error leaves as stepError's (a job code and its fixed text); a
+ * NonRetryableError stays as it is. `mark` is
  * the JOB_STEPS value written to jobs.step (the step's name by default).
  * token_invalid skips the step's own retries: the step is run again as
  * `<name>_token<n>` after a TOKEN_WAIT sleep, TOKEN_WAITS times, and the
@@ -172,13 +172,12 @@ export async function jobStep<T>(
   name: string,
   config: WorkflowStepConfig | undefined,
   fn: () => Promise<T>,
-  email: () => string | null = () => null,
   mark: string = name,
 ): Promise<T> {
   for (let round = 0; ; round++) {
     const n = round === 0 ? name : `${name}_token${round}`;
     try {
-      return await stepOnce(ctx, step, jobId, n, config, fn, email, mark, {
+      return await stepOnce(ctx, step, jobId, n, config, fn, mark, {
         wait: round < TOKEN_WAITS,
       });
     } catch (e) {
@@ -195,7 +194,6 @@ function stepOnce<T>(
   name: string,
   config: WorkflowStepConfig | undefined,
   fn: () => Promise<T>,
-  email: () => string | null,
   mark: string,
   o: { wait: boolean },
 ): Promise<T> {
@@ -210,7 +208,7 @@ function stepOnce<T>(
           ? e
           : e instanceof Transient
             ? new Error("internal")
-            : stepError(e, email());
+            : stepError(e);
       const waits =
         o.wait &&
         !(e instanceof NonRetryableError) &&

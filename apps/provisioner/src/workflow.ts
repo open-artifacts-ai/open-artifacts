@@ -173,18 +173,13 @@ export async function runCreate(
     const g = await s("release_gate", RELEASE_GATE_STEP, () =>
       releaseGate(ctx, job),
     );
-    let email: string | null = null;
     const { appHost } = await jobStep(
       ctx,
       step,
       jobId,
       "create",
       CREATE_STEP,
-      () =>
-        create(ctx, job, installId, g, (e) => {
-          email = e;
-        }),
-      () => email,
+      () => create(ctx, job, installId, g),
       // jobs.step holds JOB_STEPS values only; onStep reports the rest.
       "upload",
     );
@@ -381,16 +376,12 @@ async function releaseGate(
   return g;
 }
 
-/**
- * Sweep, then WfpProvisioner.create with the 5.3 inputs. `onEmail` hands
- * the address to the step wrapper for redaction only.
- */
+/** Sweep, then WfpProvisioner.create with the 5.3 inputs. */
 async function create(
   ctx: CreateCtx,
   job: CreateJob,
   installId: string,
   g: ReleaseGate,
-  onEmail: (email: string) => void,
 ): Promise<{ appHost: string }> {
   const label = `ss-${job.signupId}`;
   // A crashed attempt's token goes first, even if this attempt then fails
@@ -405,7 +396,6 @@ async function create(
   }
   const email = await ownerEmail(ctx, job.signupId);
   if (email === null) throw new NonRetryableError("internal");
-  onEmail(email);
   const p = await renderOptions(ctx, {
     jobId: job.jobId,
     label,

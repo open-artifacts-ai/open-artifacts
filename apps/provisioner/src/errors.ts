@@ -1,14 +1,12 @@
 // What a Workflow step may say about a failure: a job code (design v7 3.5),
 // read from the error's own `code` (provisionErrorCode), never its message,
-// and only for a terminal refusal that refusal's message (create has already
-// scrubbed its own secrets from it; the owner's email is scrubbed again
-// here), capped like jobs.error_message. Never an error's own text otherwise:
-// a Cloudflare or D1 message could quote input.
+// and the code's fixed text (JOB_ERROR_TEXT). Never an error's own text: a
+// refusal's message can echo request values (a slug, a key name) and a
+// Cloudflare or D1 message can quote input.
 import { NonRetryableError } from "cloudflare:workflows";
 import {
   PROVISION_ERROR_CODES,
   type ProvisionErrorCode,
-  ProvisionRefused,
   ProvisionRetry,
   provisionErrorCode,
 } from "@oa/provision";
@@ -44,18 +42,37 @@ export function redactEmail(text: string, email: string): string {
 }
 
 /**
- * The error a step throws for `e`: `new Error(code)`, with ": <message>" for
- * a terminal refusal, as a NonRetryableError unless the code is retryable.
+ * jobs.error_message per job code: a short, neutral sentence, never
+ * interpolated, so a stored message carries no request value or inner
+ * error text.
  */
-export function stepError(e: unknown, email: string | null): Error {
+export const JOB_ERROR_TEXT = Object.freeze({
+  release_not_published: "The requested release is not published.",
+  release_unverified: "The release could not be verified.",
+  downgrade_refused: "A downgrade to an older release is refused.",
+  prod_dirty: "The install failed its clean-state check.",
+  invalid_state: "The install is not in a state that allows this job.",
+  slug_taken: "The requested name is already taken.",
+  lease_held: "Another job holds the install's lease.",
+  revoke_pending: "A token revoke is still pending.",
+  token_invalid: "The Cloudflare token is not active.",
+  upgrade_rolled_back: "The upgrade failed and was rolled back.",
+  upgrade_incomplete: "The upgrade did not complete.",
+  canceled: "The job was canceled.",
+  run_dead: "The job's Workflow run stopped.",
+  cf_error: "A Cloudflare API call failed.",
+  internal: "An internal error occurred.",
+} as const satisfies Record<ProvisionErrorCode, string>);
+
+/**
+ * The error a step throws for `e`: `new Error(code)`, as a
+ * NonRetryableError unless the code is retryable; a terminal one adds
+ * ": <JOB_ERROR_TEXT>". Never the refusal's own message.
+ */
+export function stepError(e: unknown): Error {
   const { retryable, code } = classify(e);
   if (retryable) return new Error(code);
-  let text: string = code;
-  if (e instanceof ProvisionRefused) {
-    const m = email ? redactEmail(e.message, email) : e.message;
-    text = `${code}: ${m}`.slice(0, ERROR_MESSAGE_MAX);
-  }
-  return new NonRetryableError(text);
+  return new NonRetryableError(`${code}: ${JOB_ERROR_TEXT[code]}`);
 }
 
 /** The code a step's error carries (its text up to the first ":"). */

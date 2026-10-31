@@ -5,6 +5,7 @@ import { HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
 import { JOB_STEPS } from "@oa/shared/provisioning";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
+import { JOB_ERROR_TEXT } from "../../src/errors.js";
 import { REACHABLE_MS, runCreate } from "../../src/workflow.js";
 import {
   EMAIL,
@@ -337,7 +338,7 @@ describe("ProvisionInstall: release gate and failures", () => {
       status: "failed",
       error_code: "release_not_published",
       last_error_code: "release_not_published",
-      error_message: expect.stringMatching(/^release_not_published: /),
+      error_message: JOB_ERROR_TEXT.release_not_published,
       retry_at: null,
     });
     expect(w.signup(s.signupId)?.status).toBe("failed");
@@ -345,6 +346,32 @@ describe("ProvisionInstall: release gate and failures", () => {
       w.get("SELECT freed_at FROM signup_accounts WHERE owner_sub = ?", s.sub),
     ).toEqual({ freed_at: expect.any(Number) });
     expect(w.fake.writes().length).toBe(before);
+  });
+
+  it("a refusal echoing request values: jobs.error_message is the code's fixed text only", async () => {
+    const key = "LEAK_KEY_ACME";
+    const s = seedCreate(w, {
+      slug: "leakyslug",
+      vars: {
+        AUTH_PROVIDERS: "google",
+        AUTH_DOMAINS: "finqore.test",
+        TIER: "business",
+        [key]: "x",
+      },
+    });
+    const r = await run(w, s.jobId);
+    expect(r.error).not.toBeNull();
+    // The refusal's own message (the engine's record) names the key.
+    expect(r.log.find((l) => l.name === "recheck")?.error?.message).toContain(
+      key,
+    );
+    const job = w.job(s.jobId);
+    expect(job).toMatchObject({
+      status: "failed",
+      error_code: "invalid_state",
+    });
+    expect(job?.error_message).toBe(JOB_ERROR_TEXT.invalid_state);
+    expect(job?.last_error_code).toBe("invalid_state");
   });
 
   it("a retryable failure records attempt, last_error_code and retry_at on the job", async () => {

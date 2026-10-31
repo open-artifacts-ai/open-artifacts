@@ -6,11 +6,18 @@ import {
   ProvisionRetry,
 } from "@oa/provision";
 import { describe, expect, it } from "vitest";
-import { classify, codeOf, redactEmail, stepError } from "../src/errors.js";
+import {
+  classify,
+  codeOf,
+  ERROR_MESSAGE_MAX,
+  JOB_ERROR_TEXT,
+  redactEmail,
+  stepError,
+} from "../src/errors.js";
 
 // A step's error says a job code (design v7 3.5), read from the thrown
-// error's own code, never its message; only a refusal adds its (redacted)
-// message.
+// error's own code, never its message; a refusal adds the code's fixed
+// text.
 
 const EMAIL = "Owner+Tag@Example.COM";
 
@@ -60,19 +67,19 @@ describe("redactEmail", () => {
 });
 
 describe("stepError", () => {
-  it("a terminal refusal: NonRetryableError '<code>: <redacted message>', at most 300 characters", () => {
+  it("a terminal refusal: NonRetryableError '<code>: <fixed text>', never its own message", () => {
     const e = stepError(
-      new ProvisionRefused(`owner ${EMAIL} refused`, "invalid_state"),
-      EMAIL,
+      new ProvisionRefused(
+        `owner ${EMAIL} slug acme key FOO refused`,
+        "invalid_state",
+      ),
     );
     expect(e).toBeInstanceOf(NonRetryableError);
-    expect(e.message).toBe("invalid_state: owner [email] refused");
+    expect(e.message).toBe(`invalid_state: ${JOB_ERROR_TEXT.invalid_state}`);
     const long = stepError(
       new ProvisionRefused("y".repeat(1000), "prod_dirty"),
-      null,
     );
-    expect(long.message.length).toBeLessThanOrEqual(300);
-    expect(long.message.startsWith("prod_dirty: yyy")).toBe(true);
+    expect(long.message).toBe(`prod_dirty: ${JOB_ERROR_TEXT.prod_dirty}`);
   });
 
   it("anything retryable: a plain Error with the code alone", () => {
@@ -81,9 +88,21 @@ describe("stepError", () => {
       [new CfError("GET", "/x", 500, EMAIL), "cf_error"],
       [new Error(`D1_ERROR ${EMAIL}`), "internal"],
     ] as const) {
-      const e = stepError(x, EMAIL);
+      const e = stepError(x);
       expect(e).not.toBeInstanceOf(NonRetryableError);
       expect(e.message).toBe(code);
+    }
+  });
+});
+
+describe("JOB_ERROR_TEXT", () => {
+  it("one short fixed sentence per job code, no placeholder", () => {
+    expect(Object.keys(JOB_ERROR_TEXT).sort()).toEqual(
+      [...PROVISION_ERROR_CODES].sort(),
+    );
+    for (const t of Object.values(JOB_ERROR_TEXT)) {
+      expect(t.length).toBeLessThanOrEqual(ERROR_MESSAGE_MAX);
+      expect(t).toMatch(/^[A-Z][^${}]*\.$/);
     }
   });
 });
