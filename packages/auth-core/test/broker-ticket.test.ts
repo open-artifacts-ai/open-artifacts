@@ -1,5 +1,4 @@
 import { describe, expect, test } from "vitest";
-import { keyId, publicFromPkcs8 } from "../src/ed25519.js";
 import {
   BROKER_TICKET_TTL_MS,
   isPlatformPrincipal,
@@ -8,6 +7,12 @@ import {
   ticketTranscript,
   verifyBrokerTicket,
 } from "../src/broker-ticket.js";
+import {
+  keyId,
+  publicFromPkcs8,
+  verifyRequest,
+  verifyTranscript,
+} from "../src/ed25519.js";
 
 // The platform-principal ticket (design v7 4.3, "Broker change"): an Ed25519
 // signature by ADMIN_BROKER_KEY over install, state, challenge and exp.
@@ -42,6 +47,29 @@ describe("broker ticket", () => {
     );
   });
 
+  test("the signature covers exactly the transcript, not a request transcript", async () => {
+    const [k] = await keys(KEY);
+    const f = { ...FLOW, exp: NOW + 1000 };
+    const [, kid, sig] = (await signBrokerTicket(KEY, f)).split(".") as [
+      string,
+      string,
+      string,
+    ];
+    expect(kid).toBe(k?.kid);
+    expect(await verifyTranscript(k?.x ?? "", ticketTranscript(f), sig)).toBe(
+      true,
+    );
+    expect(
+      await verifyRequest(
+        k?.x ?? "",
+        "/google/authorize",
+        kid,
+        ticketTranscript(f),
+        sig,
+      ),
+    ).toBe(false);
+  });
+
   test("a fresh ticket verifies against the entry's keys", async () => {
     const t = await signBrokerTicket(KEY, { ...FLOW, exp: NOW + 60_000 });
     expect(await verifyBrokerTicket(await keys(OTHER, KEY), t, FLOW, NOW)).toBe(
@@ -63,7 +91,12 @@ describe("broker ticket", () => {
   test("expired, or exp beyond now + 10 min, is refused", async () => {
     const k = await keys(KEY);
     const at = async (exp: number) =>
-      verifyBrokerTicket(k, await signBrokerTicket(KEY, { ...FLOW, exp }), FLOW, NOW);
+      verifyBrokerTicket(
+        k,
+        await signBrokerTicket(KEY, { ...FLOW, exp }),
+        FLOW,
+        NOW,
+      );
     expect(await at(NOW - 1)).toBe(false);
     expect(await at(NOW + BROKER_TICKET_TTL_MS)).toBe(true);
     expect(await at(NOW + BROKER_TICKET_TTL_MS + 1)).toBe(false);
@@ -75,7 +108,12 @@ describe("broker ticket", () => {
     const good = await signBrokerTicket(KEY, { ...FLOW, exp: NOW + 1000 });
     const [, kid, sig] = good.split(".");
     expect(
-      await verifyBrokerTicket(await keys(KEY), `${NOW + 2000}.${kid}.${sig}`, FLOW, NOW),
+      await verifyBrokerTicket(
+        await keys(KEY),
+        `${NOW + 2000}.${kid}.${sig}`,
+        FLOW,
+        NOW,
+      ),
     ).toBe(false);
     for (const junk of ["", "x", "1.2", "a.b.c", `${NOW + 1}..`, `${good}.x`])
       expect(await verifyBrokerTicket(await keys(KEY), junk, FLOW, NOW)).toBe(

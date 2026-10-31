@@ -7,8 +7,8 @@
 import {
   keyId,
   publicFromPkcs8,
-  signRequest,
-  verifyRequest,
+  signTranscript,
+  verifyTranscript,
 } from "./ed25519.js";
 
 /**
@@ -30,9 +30,8 @@ export type TicketFlow = { install: string; state: string; challenge: string };
 export const ticketTranscript = (f: TicketFlow & { exp: number }) =>
   `oa-broker-ticket-v1\n${f.install}\n${f.state}\n${f.challenge}\n${f.exp}`;
 
-// The signature reuses the Ed25519 request signer under its own "path", so
-// a ticket can never verify as a redeem or any other signed broker POST.
-const TICKET_PATH = "/google/authorize#ticket";
+// The signature covers exactly ticketTranscript (4.3); its prefix keeps a
+// ticket from ever verifying as a redeem (`oa-redeem-v1`), and vice versa.
 
 /** The `ticket` query value: `<exp>.<kid>.<sig>` (exp in epoch ms). */
 export async function signBrokerTicket(
@@ -40,7 +39,7 @@ export async function signBrokerTicket(
   f: TicketFlow & { exp: number },
 ): Promise<string> {
   const kid = await keyId(await publicFromPkcs8(pkcs8));
-  const sig = await signRequest(pkcs8, TICKET_PATH, kid, ticketTranscript(f));
+  const sig = await signTranscript(pkcs8, ticketTranscript(f));
   return `${f.exp}.${kid}.${sig}`;
 }
 
@@ -67,15 +66,7 @@ export async function verifyBrokerTicket(
     } catch {
       continue;
     }
-    if (
-      await verifyRequest(
-        k.x,
-        TICKET_PATH,
-        kid,
-        ticketTranscript({ ...f, exp }),
-        sig,
-      )
-    )
+    if (await verifyTranscript(k.x, ticketTranscript({ ...f, exp }), sig))
       return true;
   }
   return false;

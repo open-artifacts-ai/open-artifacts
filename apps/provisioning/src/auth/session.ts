@@ -104,6 +104,9 @@ export async function sessionPrincipal(
   };
 }
 
+/** An OAuth grant in the library's store (R24 revokes it with its row). */
+export type LibraryGrant = { grantId: string; oauthUser: string };
+
 /** A token row revoked with its session (R24). */
 export type RevokedToken = {
   id: string;

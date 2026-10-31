@@ -28,8 +28,10 @@ export {
   requestTranscript,
   signRedeem,
   signRequest,
+  signTranscript,
   verifyRedeem,
   verifyRequest,
+  verifyTranscript,
 } from "./ed25519.js";
 export { isAsciiEmail, normalizeEmail } from "./email.js";
 export {
@@ -47,4 +49,4 @@ export {
   verifyGoogleIdToken,
   verifyGoogleIdTokenAnyDomain,
 } from "./google.js";
-export { ipKey, ipKeyOf } from "./ipkey.js";
+export { ipKey, ipKeyOf } from "./ip.js";

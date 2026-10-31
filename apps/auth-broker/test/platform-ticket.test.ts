@@ -26,12 +26,13 @@ const pk = (fill: number) =>
 const ADMIN_KEY = pk(11);
 const OTHER_KEY = pk(12);
 
-const limiter = () => {
+/** A fake binding; each key allows `max` hits. */
+const limiter = (max = Number.POSITIVE_INFINITY) => {
   const keys: string[] = [];
   return {
     keys,
     limit: async ({ key }: { key: string }) => (
-      keys.push(key), { success: true }
+      keys.push(key), { success: keys.filter((k) => k === key).length <= max }
     ),
   };
 };
@@ -66,11 +67,11 @@ beforeEach(async () => {
   );
 });
 
-const authorize = (q: Record<string, string>) =>
+const authorize = (q: Record<string, string>, ip = "198.51.100.7") =>
   broker.fetch(
     new Request(
       `${BROKER}/google/authorize?${new URLSearchParams({ state: "st", nonce: "n", code_challenge: CH, ...q })}`,
-      { headers: { "x-oa-gate-install": "i000000admin" } },
+      { headers: { "cf-connecting-ip": ip } },
     ) as never,
     E(),
   );
@@ -88,7 +89,7 @@ describe("platform-principal ticket", () => {
     expect([...PLATFORM_PRINCIPAL_IDS]).toEqual([...PROVISION_IDS]);
   });
 
-  it("a valid ticket goes to Google with no hd hint, one install charge", async () => {
+  it("a valid ticket goes to Google with no hd hint, one install charge on the client's key", async () => {
     const r = await authorize({
       install: "i000000admin",
       ticket: await ticket(),
@@ -97,7 +98,29 @@ describe("platform-principal ticket", () => {
     const u = new URL(r.headers.get("location") ?? "");
     expect(u.searchParams.has("hd")).toBe(false);
     expect(u.searchParams.get("prompt")).toBe("select_account");
-    expect(installLimit.keys).toEqual(["authorize:install:i000000admin"]);
+    expect(installLimit.keys).toEqual([
+      "authorize:ip:198.51.100.7:install:i000000admin",
+    ]);
+  });
+
+  it("replaying one ticket drains only the replayer's key (IPv6 by /64), never a shared bucket", async () => {
+    installLimit = limiter(3);
+    const t = await ticket();
+    const from = (ip: string) =>
+      authorize({ install: "i000000admin", ticket: t }, ip);
+    for (let i = 0; i < 3; i++)
+      expect((await from(`2001:db8:1:2::${i + 1}`)).status).toBe(302);
+    // The same /64 is one key: the 4th replay is refused.
+    expect((await from("2001:db8:1:2::ff")).status).toBe(429);
+    // Another client still signs in with the same ticket.
+    expect((await from("203.0.113.9")).status).toBe(302);
+    expect(installLimit.keys).not.toContain("authorize:install:i000000admin");
+    expect(new Set(installLimit.keys)).toEqual(
+      new Set([
+        "authorize:ip:2001:db8:1:2::/64:install:i000000admin",
+        "authorize:ip:203.0.113.9:install:i000000admin",
+      ]),
+    );
   });
 
   it("reauth=1 still adds max_age=0", async () => {

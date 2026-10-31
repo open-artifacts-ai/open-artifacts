@@ -139,6 +139,30 @@ async function signIn(
   return { start: s, res };
 }
 
+/** signIn from one client address. */
+async function signInFrom(
+  e: ReturnType<typeof fakeEnv>,
+  ip: string,
+  claims: Record<string, unknown>,
+) {
+  const hdr = { "cf-connecting-ip": ip };
+  const res = await call(e, `${ADMIN}/auth/start`, { headers: hdr });
+  const loc = new URL(res.headers.get("location") ?? "");
+  const nonce = loc.searchParams.get("nonce") ?? "";
+  idToken = async () =>
+    mint({ nonce: await brokerNonce("i000000admin", nonce), ...claims });
+  return call(
+    e,
+    `${ADMIN}/auth/callback/google?code=C&state=${loc.searchParams.get("state")}`,
+    {
+      headers: {
+        cookie: `${FLOW_COOKIE}=${cookieValue(cookieOf(res, FLOW_COOKIE))}`,
+        ...hdr,
+      },
+    },
+  );
+}
+
 describe("R22 /auth/start", () => {
   it("302 to the broker with install, state, nonce, challenge and a ticket", async () => {
     const e = env();
@@ -201,7 +225,6 @@ describe("R22 /auth/start", () => {
       headers: { "cf-connecting-ip": "2001:db8:1:2::7" },
     });
     expect(e.limits.RL_PV_SIGNIN_IP.keys).toEqual(["2001:db8:1:2::/64"]);
-    expect(e.limits.RL_PV_PRE_IP.keys).toEqual(["2001:db8:1:2::/64"]);
     e.limits.RL_PV_SIGNIN_IP.allow = false;
     const r = await call(e, `${ADMIN}/auth/start`);
     expect(r.status).toBe(303);
@@ -367,11 +390,11 @@ describe("R23 /auth/callback/google", () => {
     ]);
   });
 
-  it("without auth_time, auth_at is the sign-in time", async () => {
+  it("without auth_time, auth_at is 0: never a recent sign-in for R11", async () => {
     await signIn(env());
     expect(
       (await db.prepare("SELECT auth_at FROM sessions").first())?.auth_at,
-    ).toBe(NOW);
+    ).toBe(0);
   });
 
   it("no hd rule: a consumer account and any Workspace domain both sign in", async () => {
@@ -492,14 +515,15 @@ describe("R23 /auth/callback/google", () => {
 });
 
 describe("identity pinning (4.3 step 5)", () => {
-  it("email listed, sub differs: 403 No access with the account id, audit unknown_sub", async () => {
+  it("email listed, sub differs: 303 /sign-in?error=no_access with the sub, audit unknown_sub", async () => {
     const { res } = await signIn(env(), { claims: { sub: "999" } });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(303);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    const html = await res.text();
-    expect(html).toContain("Account id: 999");
-    expect(html).toContain('href="/auth/start"');
+    expect(res.headers.get("location")).toBe(
+      `${ADMIN}/sign-in?error=no_access&sub=999`,
+    );
     expect(cookieOf(res, SESSION_COOKIE)).toBeNull();
+    expect(cookieOf(res, FLOW_COOKIE)).toContain("Max-Age=0");
     expect(audits).toEqual([
       expect.objectContaining({
         action: "signin.refused",
@@ -511,14 +535,13 @@ describe("identity pinning (4.3 step 5)", () => {
     ]);
   });
 
-  it("email not listed: 403, audit not_listed with the email HMAC only (no actor email)", async () => {
+  it("email not listed: 303 error=no_access (no sub), audit not_listed with the email HMAC only (no actor email)", async () => {
     const { res } = await signIn(env(), {
       claims: { email: "x@gmail.com", sub: "5" },
     });
-    expect(res.status).toBe(403);
-    const html = await res.text();
-    expect(html).not.toContain("Account id");
-    expect(html).not.toContain("x@gmail.com");
+    expect(res.headers.get("location")).toBe(
+      `${ADMIN}/sign-in?error=no_access`,
+    );
     const a = audits[0] as AuditEntry;
     expect(a).toMatchObject({
       action: "signin.refused",
@@ -529,11 +552,11 @@ describe("identity pinning (4.3 step 5)", () => {
     expect(JSON.stringify(a.detail ?? {})).not.toContain("x@gmail.com");
   });
 
-  it("the account id is HTML-escaped", async () => {
-    const { res } = await signIn(env(), { claims: { sub: "<b>&" } });
-    const html = await res.text();
-    expect(html).toContain("Account id: &lt;b&gt;&amp;");
-    expect(html).not.toContain("<b>&");
+  it("the account id is query-encoded", async () => {
+    const { res } = await signIn(env(), { claims: { sub: "<b>&x=1" } });
+    const loc = new URL(res.headers.get("location") ?? "");
+    expect(loc.searchParams.get("sub")).toBe("<b>&x=1");
+    expect([...loc.searchParams.keys()]).toEqual(["error", "sub"]);
   });
 
   it("an email domain or hd never admits: only the exact pair", async () => {
@@ -541,31 +564,40 @@ describe("identity pinning (4.3 step 5)", () => {
     const { res } = await signIn(e, {
       claims: { email: "you@example.com", hd: "example.com" },
     });
-    expect(res.status).toBe(403);
+    expect(res.headers.get("location")).toBe(
+      `${ADMIN}/sign-in?error=no_access`,
+    );
   });
 
   it("empty ADMIN_IDENTITIES admits no one", async () => {
     const { res } = await signIn(env({ ADMIN_IDENTITIES: "" }));
-    expect(res.status).toBe(403);
+    expect(res.headers.get("location")).toBe(
+      `${ADMIN}/sign-in?error=no_access`,
+    );
   });
 
-  it("refused sign-ins per email HMAC: the 21st within the hour is 303 error=rate_limited", async () => {
+  it("refused sign-ins per email HMAC: the 21st within the hour is 303 error=rate_limited, with no audit row", async () => {
     const e = env();
+    const noAccess = `${ADMIN}/sign-in?error=no_access&sub=999`;
     for (let i = 0; i < 20; i++) {
       const { res } = await signIn(e, { claims: { sub: "999" } });
-      expect(res.status).toBe(403);
+      expect(res.headers.get("location")).toBe(noAccess);
     }
-    const { res } = await signIn(e, { claims: { sub: "999" } });
-    expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe(
-      `${ADMIN}/sign-in?error=rate_limited`,
-    );
+    expect(audits.length).toBe(20);
+    for (const ip of ["198.51.100.1", "198.51.100.2"]) {
+      const res = await signInFrom(e, ip, { sub: "999" });
+      expect(res.headers.get("location")).toBe(
+        `${ADMIN}/sign-in?error=rate_limited`,
+      );
+    }
+    // Rotating IPs adds no audit rows past the limit.
+    expect(audits.length).toBe(20);
     // The next hour's window starts over.
     const later = await signIn(e, {
       claims: { sub: "999", iat: NOW / 1000 + 3600, exp: NOW / 1000 + 7200 },
       d: deps({ now: () => NOW + 3600_000 }),
     });
-    expect(later.res.status).toBe(403);
+    expect(later.res.headers.get("location")).toBe(noAccess);
   });
 
   it("refused sign-ins per ipKey HMAC: the 31st within the hour is rate_limited, before redeem", async () => {
@@ -586,7 +618,10 @@ describe("identity pinning (4.3 step 5)", () => {
           headers: { cookie: `${FLOW_COOKIE}=${cookieValue(s.flow)}`, ...hdr },
         },
       );
-      if (i < 30) expect(res.status).toBe(403);
+      if (i < 30)
+        expect(res.headers.get("location")).toBe(
+          `${ADMIN}/sign-in?error=no_access`,
+        );
       else {
         expect(res.headers.get("location")).toBe(
           `${ADMIN}/sign-in?error=rate_limited`,
@@ -609,13 +644,21 @@ describe("reauth (4.3 step 4, R11)", () => {
     ).toBe(NOW - 599_000);
   });
 
-  it("with reauth, an older or missing auth_time is refused (303 error=expired, no session)", async () => {
+  it("with reauth, an older or missing auth_time is refused (303 error=expired, no session, audit token_invalid)", async () => {
     for (const claims of [{ auth_time: NOW / 1000 - 601 }, {}]) {
       const { res } = await signIn(env(), { q: "?reauth=1", claims });
       expect(res.headers.get("location")).toBe(
         `${ADMIN}/sign-in?error=expired`,
       );
     }
+    expect(audits).toEqual([
+      expect.objectContaining({
+        action: "signin.refused",
+        code: "token_invalid",
+        detail: { stage: "auth_time" },
+      }),
+      expect.objectContaining({ code: "token_invalid" }),
+    ]);
     expect(
       await db.prepare("SELECT COUNT(*) AS n FROM sessions").first("n"),
     ).toBe(0);

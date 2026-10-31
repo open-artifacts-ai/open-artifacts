@@ -102,7 +102,9 @@ async function sameString(a: string, b: string): Promise<boolean> {
 }
 
 /** What verifyGoogleIdTokenAnyDomain returns: hd, when sent, is reported, never checked. */
-export type GoogleAnyIdentity = Omit<GoogleIdentity, "hd"> & { hd: string | null };
+export type GoogleAnyIdentity = Omit<GoogleIdentity, "hd"> & {
+  hd: string | null;
+};
 
 type VerifyOpts = {
   clientId: string;

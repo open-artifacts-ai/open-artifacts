@@ -27,12 +27,12 @@ import {
 } from "./flow.js";
 import { BROKER_GOOGLE_CLIENT_ID } from "./google.js";
 import { matchIdentity } from "./identities.js";
-import { type LibraryGrant, revokeLibraryGrant } from "./oauth/grants.js";
 import { REAUTH_MAX_AGE_MS } from "./reauth.js";
 import {
   adminOrigin,
   clearSessionCookie,
   createSession,
+  type LibraryGrant,
   readCookie,
   revokeSession,
   sessionCookie,
@@ -60,18 +60,23 @@ export type SigninDeps = {
   audit: (env: Env, e: AuditEntry) => Promise<void>;
   /** Google's JWKS unless set. */
   jwks?: Parameters<typeof verifyGoogleIdTokenAnyDomain>[0]["jwks"];
+  /**
+   * Revokes an OAuth grant in the library's store (R24). W13b wires the
+   * library's revokeGrant on OAUTH_KV; until then the D1 row's revoked_at
+   * already ends the grant at the next /mcp call or refresh (9A.3.3).
+   */
   revokeGrant: (env: Env, g: LibraryGrant) => Promise<void>;
 };
 const DEFAULTS: SigninDeps = {
   now: () => Date.now(),
   audit,
-  revokeGrant: revokeLibraryGrant,
+  revokeGrant: async () => {},
 };
 
 const brokerOrigin = (env: Env) => `https://auth.${env.APP_DOMAIN}`;
 
-/** The Sign-in screen's states (9.2). */
-type SignInError = "expired" | "denied" | "rate_limited";
+/** The Sign-in screen's states (3.5, 9.2). */
+type SignInError = "expired" | "denied" | "no_access" | "rate_limited";
 
 function redirect(
   location: string,
@@ -83,37 +88,17 @@ function redirect(
   return new Response(null, { status, headers: h });
 }
 
-const signInError = (env: Env, why: SignInError) =>
-  redirect(`${adminOrigin(env)}/sign-in?error=${why}`, 303, [
-    clearFlowCookie(),
-  ]);
-
-const escapeHtml = (s: string) =>
-  s.replace(
-    /[&<>"']/g,
-    (c) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
-        c
-      ] as string,
+/** `extra`: more query, e.g. the `sub` the No access screen shows. */
+const signInError = (
+  env: Env,
+  why: SignInError,
+  extra: Record<string, string> = {},
+) =>
+  redirect(
+    `${adminOrigin(env)}/sign-in?${new URLSearchParams({ error: why, ...extra })}`,
+    303,
+    [clearFlowCookie()],
   );
-
-/**
- * The No access page (9.2), server-rendered: a refused identity never gets
- * a session, so the SPA has nothing to call. For `unknown_sub` it shows the
- * account id, which the admin sends for the first pin (4.3 step 5).
- */
-function noAccess(sub: string | null): Response {
-  const id = sub
-    ? `<p>Send this to the platform owner to be added: Account id: ${escapeHtml(sub)}</p>`
-    : "";
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>No access</title></head><body><main><h1>No access</h1><p>This Google account cannot sign in to Open Artifacts admin.</p>${id}<p><a href="/auth/start">Use another account</a></p></main></body></html>`;
-  const h = new Headers({
-    "content-type": "text/html; charset=utf-8",
-    "cache-control": "no-store",
-  });
-  h.append("set-cookie", clearFlowCookie());
-  return new Response(html, { status: 403, headers: h });
-}
 
 /** RL_PV_SIGNIN_IP; null when allowed, else the response. */
 async function signinLimited(req: Request, env: Env): Promise<Response | null> {
@@ -261,6 +246,14 @@ async function callback(
   // Exactly one (email, sub) pair; nothing reads hd or the email domain.
   const match = matchIdentity(env.ADMIN_IDENTITIES, id.email, id.sub);
   if (match !== "ok") {
+    // Past the per-email limit, stop before another audit row (4.7).
+    const emailCounter = `signin_refused:email:${await hmac16(env.ADMIN_SESSION_KEY, id.email)}`;
+    if (
+      (await peek(db, emailCounter, byEmail.windowMs, now)) >= byEmail.limit
+    ) {
+      await refuse(env, "signin_ip", "rate_limited", req);
+      return signInError(env, "rate_limited");
+    }
     await d.audit(
       env,
       match === "unknown_sub"
@@ -285,14 +278,19 @@ async function callback(
             email: id.email,
           },
     );
-    const emailCounter = `signin_refused:email:${await hmac16(env.ADMIN_SESSION_KEY, id.email)}`;
     const [ne, ni] = await Promise.all([
       bump(db, emailCounter, byEmail.windowMs, now),
       bump(db, ipCounter, byIp.windowMs, now),
     ]);
     if (ne > byEmail.limit || ni > byIp.limit)
       return signInError(env, "rate_limited");
-    return noAccess(match === "unknown_sub" ? id.sub : null);
+    // The No access screen (9.2); for unknown_sub it shows the account id,
+    // which the admin sends for the first pin (4.3 step 5).
+    return signInError(
+      env,
+      "no_access",
+      match === "unknown_sub" ? { sub: id.sub } : {},
+    );
   }
 
   // A fresh sign-in (R11 purge): Google must have authenticated just now.
@@ -305,15 +303,18 @@ async function callback(
       actor: { kind: "signin", email: id.email, sub: id.sub },
       outcome: "refused",
       route: "R23",
-      code: "reauth_required",
+      code: "token_invalid",
       ip,
+      detail: { stage: "auth_time" },
     });
     return signInError(env, "expired");
   }
 
   const s = await createSession(
     env,
-    { email: id.email, sub: id.sub, authAt: id.authTime ?? now },
+    // No auth_time: 0, never a recent sign-in, so R11 purge always goes
+    // through /auth/start?reauth=1 (hasRecentAuth).
+    { email: id.email, sub: id.sub, authAt: id.authTime ?? 0 },
     now,
   );
   await d.audit(env, {
@@ -341,6 +342,9 @@ async function logout(
   if (isRefusal(p)) return refuse(env, "auth", p.code, req);
   const c = checkCsrf(req, env, p);
   if (c || !p.session) return refuse(env, "csrf", "csrf_failed", req);
+  // RL_PV_WRITE, as every write route (4.7).
+  const w = await limit(env, "write", p.rateKey);
+  if (w) return refuse(env, "write", w.code, req);
   const ip = ipKey(req);
   for (const t of await revokeSession(env, p.session.hash, now)) {
     if (t.kind === "oauth" && t.grant_id && t.oauth_user)

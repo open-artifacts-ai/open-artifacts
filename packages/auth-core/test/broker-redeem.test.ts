@@ -1,11 +1,11 @@
 import { describe, expect, test } from "vitest";
+import { brokerRedeemRequest, pkceChallenge } from "../src/broker-redeem.js";
 import {
   flowHash,
   keyId,
   publicFromPkcs8,
   verifyRedeem,
 } from "../src/ed25519.js";
-import { brokerRedeemRequest, pkceChallenge } from "../src/broker-redeem.js";
 
 // brokerRedeemRequest moved from apps/server (design v7 4.3 step 3): the
 // server and the provisioning Worker sign a redeem the same way.
@@ -18,7 +18,11 @@ const KEY = Buffer.concat([
 describe("brokerRedeemRequest", () => {
   test("a signed POST /google/redeem binding the flow", async () => {
     const req = await brokerRedeemRequest(
-      { url: "https://auth.hosted.test", installId: "i000000admin", signingKey: KEY },
+      {
+        url: "https://auth.hosted.test",
+        installId: "i000000admin",
+        signingKey: KEY,
+      },
       { code: "c", verifier: "v", nonce: "n", bstate: "b" },
       1234,
     );

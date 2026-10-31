@@ -1,4 +1,3 @@
-import { ipKey } from "@oa/auth-core";
 import {
   type ApiRouteId,
   type BrowserRouteId,
@@ -28,8 +27,9 @@ import { matchRoute } from "./routes/table.js";
 // The HTTP adapter (design v7 4.2 check order): host policy -> pre-authn IP
 // limit -> Origin (browser writes) -> authn -> CSRF -> invokeRoute.
 
-// The shared ipKey: IPv4 whole, IPv6 by its /64 (4.7).
-const clientIp = ipKey;
+// W5b replaces this with the shared ipKey (IPv6 by /64, 4.7).
+const clientIp = (req: Request) =>
+  req.headers.get("cf-connecting-ip") ?? "unknown";
 
 const notFound = () => errorResponse("not_found");
 

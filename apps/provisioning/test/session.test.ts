@@ -335,6 +335,23 @@ describe("R24 POST /auth/logout", () => {
     });
   });
 
+  it("charges RL_PV_WRITE by the admin's rate key after CSRF; over it 429, nothing revoked", async () => {
+    const e = fakeEnv();
+    const s = await session(e);
+    const ok = { origin: ADMIN, "x-csrf-token": await csrfToken(e.env, s.sid) };
+    // A failed CSRF check spends no write charge.
+    await logout(e, s.sid, { origin: ADMIN });
+    expect(e.limits.RL_PV_WRITE.keys).toEqual([]);
+    e.limits.RL_PV_WRITE.allow = false;
+    expect((await logout(e, s.sid, ok)).status).toBe(429);
+    expect(e.limits.RL_PV_WRITE.keys).toEqual(["admin:me@example.com"]);
+    expect(
+      await db.prepare("SELECT revoked_at FROM sessions").first("revoked_at"),
+    ).toBeNull();
+    e.limits.RL_PV_WRITE.allow = true;
+    expect((await logout(e, s.sid, ok)).status).toBe(204);
+  });
+
   it("no session: 401; no CSRF token: 403; no Origin: 403; nothing revoked", async () => {
     const e = fakeEnv();
     const s = await session(e);

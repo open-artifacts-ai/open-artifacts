@@ -7,11 +7,11 @@ import {
   SignJWT,
 } from "jose";
 import { beforeAll, describe, expect, test } from "vitest";
-import * as core from "../src/index.js";
 import {
   GoogleTokenError,
   verifyGoogleIdTokenAnyDomain,
 } from "../src/google.js";
+import * as core from "../src/index.js";
 
 // The provisioning admin sign-in (design v7 4.3 step 4): every check of
 // verifyGoogleIdToken except the hd one.
