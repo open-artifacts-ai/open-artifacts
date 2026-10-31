@@ -71,6 +71,7 @@ import {
   PROVISIONER_MAX_TOKEN_DAYS,
   ProdLocked,
   ProvisionRefused,
+  ProvisionRetry,
   provisionErrorCode,
   type WfpOptions,
   WfpProvisioner,
@@ -1009,11 +1010,12 @@ describe("WfpProvisioner.create", () => {
         expect(raw).not.toContain(v);
     });
 
-    it("H-DR: create writes the identical entry to the directory registry, after the broker registry", async () => {
+    it("H-DR: create writes the directory copy after each sign-in write; only the sign-in copy is disabled, until enable_signin", async () => {
       const s = setup({ brokerEnabled: true });
       const inst = await s.p.create(input());
       const raw = s.fake.kvValues(s.regId).get(registryKey(inst.id)) as string;
       expect(raw).toBeTruthy();
+      expect(JSON.parse(raw).disabled).toBeUndefined();
       expect(s.fake.kvValues(s.dirId).get(registryKey(inst.id))).toBe(raw);
       // The same key the broker reads: install:<id> (registryKey).
       expect([...s.fake.kvValues(s.dirId).keys()]).toEqual([
@@ -1029,11 +1031,16 @@ describe("WfpProvisioner.create", () => {
               e.path.includes(`/namespaces/${s.dirId}/values/`)),
         )
         .map((e) => ({ dir: e.path.includes(s.dirId), body: e.body }));
-      expect(puts.length).toBe(4);
-      for (let k = 0; k < puts.length; k += 2) {
+      // Two broker writes (sign-in disabled, copy enabled), then enable_signin.
+      expect(puts.length).toBe(5);
+      for (let k = 0; k < 4; k += 2) {
         expect(puts[k]?.dir).toBe(false);
-        expect(puts[k + 1]).toEqual({ dir: true, body: puts[k]?.body });
+        const signin = JSON.parse(puts[k]?.body as string);
+        expect(signin.disabled).toBe(true);
+        const { disabled: _d, ...on } = signin;
+        expect(puts[k + 1]).toEqual({ dir: true, body: JSON.stringify(on) });
       }
+      expect(puts[4]).toEqual({ dir: false, body: raw });
       expect(await s.p.status(inst.id)).toMatchObject({ registryDrift: null });
     });
 
@@ -1061,9 +1068,16 @@ describe("WfpProvisioner.create", () => {
       });
       const inst = await s.p.create(input());
       expect(inst.id).toBe(row.id);
-      // The broker entry was healthy, so it stays; only the copy is rewritten.
-      expect(s.fake.kvValues(s.regId).get(registryKey(row.id))).toBe(reg);
-      expect(s.fake.kvValues(s.dirId).get(registryKey(row.id))).toBe(reg);
+      // The broker entry was healthy, so its keys stay; only the copy is
+      // rewritten, and enable_signin turns the sign-in copy on.
+      const { disabled: _d, ...on } = JSON.parse(reg);
+      expect(JSON.parse(reg).disabled).toBe(true);
+      expect(s.fake.kvValues(s.regId).get(registryKey(row.id))).toBe(
+        JSON.stringify(on),
+      );
+      expect(s.fake.kvValues(s.dirId).get(registryKey(row.id))).toBe(
+        JSON.stringify(on),
+      );
       expect(await s.p.status(row.id)).toMatchObject({ registryDrift: null });
     });
 
@@ -1214,7 +1228,9 @@ describe("WfpProvisioner.create", () => {
       await failAtHealth(s, i);
       const [row] = s.rows();
       const key = registryKey(row.id);
-      const before = JSON.parse(s.fake.kvValues(s.regId).get(key) as string);
+      const { disabled: _d, ...before } = JSON.parse(
+        s.fake.kvValues(s.regId).get(key) as string,
+      );
       // An entry written before domains existed.
       const legacy = JSON.stringify({ ...before, domains: undefined });
       s.fake.kvValues(s.regId).set(key, legacy);
@@ -1703,15 +1719,21 @@ describe("WfpProvisioner.create", () => {
     ]);
   });
 
-  it("hosts are written last: kvPut(HOSTS) comes after the script upload", async () => {
+  it("hosts come after the upload, the broker and verify_clean; then only D1 and enable_signin", async () => {
     const s = setup({ brokerEnabled: true });
     await s.p.create(input());
+    const at = (re: RegExp) =>
+      s.fake.log.findIndex((e) => re.test(`${e.method} ${e.path}`));
+    expect(at(/^GET .*\/settings$/)).toBeLessThan(
+      at(new RegExp(`^PUT .*/namespaces/${s.hostsId}/values/`)),
+    );
     const w = s.fake.writes();
     const hostIdx = w.findIndex((x) =>
       x.includes(`/namespaces/${s.hostsId}/values/`),
     );
     const upIdx = w.findIndex((x) => /^PUT .*\/scripts\/[^/]+$/.test(x));
     const brokerIdx = w
+      .slice(0, hostIdx)
       .map((x) => x.includes(`/namespaces/${s.regId}/values/`))
       .lastIndexOf(true);
     expect(upIdx).toBeGreaterThanOrEqual(0);
@@ -1724,7 +1746,9 @@ describe("WfpProvisioner.create", () => {
         (x) =>
           !x.includes("/query") && !x.includes(`/namespaces/${s.hostsId}/`),
       );
-    expect(after).toEqual([]);
+    // enable_signin: the sign-in copy only.
+    expect(after).toHaveLength(1);
+    expect(after[0]).toContain(`/namespaces/${s.regId}/values/`);
   });
 
   describe("slug or host already taken fails before any Cloudflare write", () => {
@@ -2405,7 +2429,10 @@ describe("WfpProvisioner.create", () => {
         expect(e.message).toMatch(/expires/);
         expect(e.message).toMatch(/roll/i);
         expect(e.message).toMatch(/My Profile > API Tokens/);
-        expect(provisionErrorCode(e)).toBe("token_invalid");
+        // 3.5, 5.7 (#882): terminal, never a retryable token_invalid.
+        expect(e).toBeInstanceOf(ProvisionRefused);
+        expect(e).not.toBeInstanceOf(ProvisionRetry);
+        expect(provisionErrorCode(e)).toBe("invalid_state");
         expect(s.fake.writes()).toEqual([]);
         expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
       },
