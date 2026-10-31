@@ -1,3 +1,4 @@
+import { RESERVED_SLUGS as SHARED_RESERVED } from "@oa/shared/provisioning/slugs";
 import { describe, expect, it } from "vitest";
 import {
   assertOwnResource,
@@ -9,6 +10,7 @@ import {
   names,
   newInstallId,
   platformNames,
+  RESERVED_SLUGS,
 } from "../src/index.js";
 
 const D = { app: "app.test", content: "content.test" };
@@ -118,6 +120,11 @@ describe("provision names", () => {
       appHost: "finqore.app.test",
       contentHost: "finqore.content.test",
     });
+  });
+  it("re-exports the shared slug rule (design v7 section 3), new reserved names included", () => {
+    expect(RESERVED_SLUGS).toBe(SHARED_RESERVED);
+    for (const s of ["signup", "billing", "provisioning", "provisioner"])
+      expect(() => hosts(s, D), s).toThrow(/slug/);
   });
   it("refuses punycode and IDNA-reserved slugs (H-T4b L4)", () => {
     for (const s of ["xn--80ak6aa92e", "xn--a", "ab--c", "a1--", "zz--zz"])
