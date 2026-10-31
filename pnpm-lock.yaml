@@ -220,6 +220,9 @@ importers:
       '@oa/provision':
         specifier: workspace:*
         version: link:../../packages/provision
+      '@oa/redline':
+        specifier: workspace:*
+        version: link:../../tests/redline
       '@oa/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@oa/gh-oidc": "workspace:*",
+    "@oa/redline": "workspace:*",
     "@oa/provision": "workspace:*",
     "@oa/shared": "workspace:*",
     "zod": "^4.6.7"
