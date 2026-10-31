@@ -18,7 +18,8 @@
 #                    client must equal its BROKER_GOOGLE_CLIENT_ID[<env>])
 #   directory-broker DIRECTORY_REGISTRY_ID GOOGLE_DIRECTORY_CLIENT_ID GOOGLE_DIRECTORY_CLIENT_SECRET
 #   dispatch         HOSTS_KV_ID (both brokers must exist)
-#   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT (both brokers must exist)
+#   scheduler        PLATFORM_DB_ID EMAIL_ZONE_TAGS EMAIL_DAILY_LIMIT (both brokers,
+#                    oa-<p>-provisioner and the oa-<p>-signups queue must exist)
 #   inventory        PLATFORM_DB_ID HOSTS_KV_ID
 #   inventory-key    INVENTORY_KEY (sets oa-<p>-inventory's key: CI puts the key a
 #                    human seeded and never mints one; the Worker must exist)
@@ -69,6 +70,18 @@ must() {
 worker_exists() { [ "$(cf_get "/workers/scripts/$1/settings" | jq -r '.success' 2> /dev/null)" = true ]; }
 need_workers() {
   for w in "$@"; do worker_exists "$w" || { echo "$w does not exist: deploy it first" >&2; exit 1; }; done
+}
+# need_queue <name>: exactly one queue of that name in the account's listing,
+# read whole on one page (a listing that pages refuses rather than guess).
+need_queue() {
+  local body
+  body="$(cf_get "/queues?per_page=100" | must "list queues")"
+  jq -e '(.result_info.total_count | type) == "number" and .result_info.total_count <= 100
+    and (.result_info.total_pages // 1) <= 1 and .result_info.total_count == (.result | length)' \
+    <<< "$body" > /dev/null || { echo "more than one page of queues; refusing" >&2; exit 1; }
+  local n
+  n="$(jq --arg q "$1" '[.result[] | select(.queue_name == $q)] | length' <<< "$body")"
+  [ "$n" = 1 ] || { echo "$1 queue does not exist: create it first ($n listed)" >&2; exit 1; }
 }
 need() { # name: a required, non-empty env var
   [ -n "${!1:-}" ] || { echo "$1 is required for $target" >&2; exit 2; }
@@ -167,10 +180,23 @@ case "$target" in
     ;;
   scheduler)
     need PLATFORM_DB_ID; need EMAIL_ZONE_TAGS; need EMAIL_DAILY_LIMIT
-    need_workers oa-$P-auth-broker oa-$P-directory-broker
+    # Its Workflows, RPC and producer bindings point at these: deploying first
+    # would ship a scheduler bound to nothing.
+    need_workers oa-$P-auth-broker oa-$P-directory-broker oa-$P-provisioner
+    need_queue oa-$P-signups
     PLATFORM_DB_ID="$PLATFORM_DB_ID" EMAIL_ZONE_TAGS="$EMAIL_ZONE_TAGS" EMAIL_DAILY_LIMIT="$EMAIL_DAILY_LIMIT" \
       deploy scheduler
     S="$(settings oa-$P-scheduler)"
+    expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | .type' service "PROVISIONER type"
+    expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | .service' oa-$P-provisioner "PROVISIONER"
+    expect "$S" '.result.bindings[] | select(.name == "PROVISIONER") | .entrypoint' ProvisionerRpc "PROVISIONER entrypoint"
+    expect "$S" '.result.bindings[] | select(.name == "SIGNUPS") | .type' queue "SIGNUPS type"
+    expect "$S" '.result.bindings[] | select(.name == "SIGNUPS") | .queue_name' oa-$P-signups "SIGNUPS"
+    # Workflow bindings: the read-back field names for the workflow's name and
+    # script are not documented, so only the type is checked.
+    expect "$S" '.result.bindings[] | select(.name == "PROVISION_INSTALL") | .type' workflow "PROVISION_INSTALL"
+    expect "$S" '.result.bindings[] | select(.name == "MANAGE_INSTALL") | .type' workflow "MANAGE_INSTALL"
+    expect "$S" '.result.bindings[] | select(.name == "ALERT_EMAIL") | .type' send_email "ALERT_EMAIL"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
     expect "$S" '.result.bindings[] | select(.name == "DISPATCHER") | .namespace' "$NS" "DISPATCHER"
     expect "$S" '.result.bindings[] | select(.name == "OA_ENV") | .text' "$env" "OA_ENV"
