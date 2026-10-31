@@ -13,6 +13,7 @@ const SCRIPT = script("staging-first-gate.sh");
 const REPO = "open-artifacts-ai/open-artifacts";
 const NOW = Date.parse("2026-10-31T12:00:00Z") / 1000;
 const TAG = "v0.80.0";
+const SHA = "c".repeat(40);
 
 /** A one-file zip, stored (what upload-artifact's download holds). */
 const zipOf = (name: string, body: string) => {
@@ -50,6 +51,7 @@ p="\${@: -1}"; p="\${p#repos/$GITHUB_REPOSITORY/}"
 [ -f "$STATE/fail" ] && { echo "HTTP 502" >&2; exit 1; }
 case "$p" in
   actions/workflows/redline-staging.yml/runs\\?*) cat "$STATE/runs.json" ;;
+  compare/main...*) [ -f "$STATE/fail-compare" ] && exit 1; cat "$STATE/compare.json" ;;
   actions/runs/*/artifacts\\?*) [ -f "$STATE/fail-arts" ] && exit 1; id="\${p#actions/runs/}"; cat "$STATE/arts-\${id%%/*}.json" ;;
   actions/artifacts/*/zip) [ -f "$STATE/fail-zip" ] && exit 1; id="\${p#actions/artifacts/}"; cat "$STATE/zip-\${id%%/*}" ;;
   *) exit 1 ;;
@@ -64,6 +66,7 @@ const runOf = (over: Record<string, unknown> = {}) => ({
   event: "workflow_dispatch",
   head_repository: { full_name: REPO },
   created_at: "2026-10-30T09:00:00Z",
+  head_sha: SHA,
   ...over,
 });
 type Art = { id: number; name: string; expired: boolean };
@@ -76,7 +79,9 @@ const art = (over: Partial<Art> = {}): Art => ({
 const gate = (
   runs: unknown,
   opts: {
-    fail?: "fail" | "fail-arts" | "fail-zip";
+    fail?: "fail" | "fail-arts" | "fail-zip" | "fail-compare";
+    /** compare/main...<head_sha>'s status (default behind). */
+    compare?: string;
     tag?: string;
     /** run id -> its artifacts (default: run 7's one artifact). */
     arts?: Record<string, Art[] | string>;
@@ -98,6 +103,10 @@ const gate = (
     opts.zips ?? { "70": zipOf("version.txt", "0.80.0\n") },
   ))
     writeFileSync(join(sb.dir, `zip-${id}`), z);
+  writeFileSync(
+    join(sb.dir, "compare.json"),
+    JSON.stringify({ status: opts.compare ?? "behind" }),
+  );
   if (opts.fail) writeFileSync(join(sb.dir, opts.fail), "");
   const r = sb.run(["bash", SCRIPT, opts.tag ?? TAG], {
     env: {
@@ -121,9 +130,31 @@ describe("staging-first-gate.sh", () => {
     );
     expect(r.log).toEqual([
       `gh api -X GET repos/${REPO}/actions/workflows/redline-staging.yml/runs?branch=main&status=success&per_page=100&created=%3E%3D2026-10-24T12:00:00Z`,
+      `gh api -X GET repos/${REPO}/compare/main...${SHA}`,
       `gh api -X GET repos/${REPO}/actions/runs/7/artifacts?name=redline-staged-version&per_page=100`,
       `gh api repos/${REPO}/actions/artifacts/70/zip`,
     ]);
+  });
+  it("the run's head_sha must be on main: identical or behind pass; ahead, diverged, an API error or no head_sha refuse", () => {
+    for (const compare of ["identical", "behind"]) {
+      const r = gate([runOf()], { compare });
+      expect(r.code, compare).toBe(0);
+    }
+    for (const compare of ["ahead", "diverged", ""]) {
+      const r = gate([runOf()], { compare });
+      expect(r.code, compare).toBe(1);
+      expect(r.err).toContain(`run 7's head_sha ${SHA} is not on main`);
+      expect(r.log.some((l) => l.includes("/artifacts"))).toBe(false);
+    }
+    const err = gate([runOf()], { fail: "fail-compare" });
+    expect(err.code).toBe(1);
+    expect(err.err).toContain("GitHub API error comparing run 7's head_sha");
+    for (const head_sha of [null, "", "main"]) {
+      const r = gate([runOf({ head_sha })]);
+      expect(r.code, String(head_sha)).toBe(1);
+      expect(r.err).toContain("run 7 has no head_sha");
+      expect(r.log.some((l) => l.includes("/compare/"))).toBe(false);
+    }
   });
   it("refuses when there is no run", () => {
     const r = gate([]);

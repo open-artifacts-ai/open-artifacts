@@ -21,27 +21,49 @@ out() {
   echo "publish: kind=$1 tag=${2:-none} floor_run_id=${3:-none} staging=$4 prod=$5"
 }
 stable='^v[0-9]+\.[0-9]+\.[0-9]+$'
+# on_main <sha> <what>: the commit is main's or an ancestor of it. head_branch
+# is only a name (a tag called main matches it), so the run's head_sha must be
+# on main: compare/main...<sha> is "behind" or "identical". Any other status,
+# a missing sha or an API error is exit 1.
+on_main() {
+  local st
+  [[ "$1" =~ ^[0-9a-f]{40}$ ]] || { echo "$2 has no head_sha; refusing" >&2; exit 1; }
+  st="$(gh api -X GET "$R/compare/main...$1" 2> /dev/null | jq -r '.status // ""' 2> /dev/null)" ||
+    { echo "comparing $2's head_sha with main failed; refusing" >&2; exit 1; }
+  case "$st" in
+    behind | identical) ;;
+    *) echo "$2's head_sha $1 is not on main (${st:-no status}); refusing" >&2; exit 1 ;;
+  esac
+}
 # staged <tag>: staging first for a release dispatched to prod alone. The
 # tag's staging publish record must exist: a completed hosted-publish.yml run
-# on main, of this repository, whose publish-staging job (named
-# "publish-staging release <tag>" by the workflow) succeeded. Exit 1 when
+# on main (its head_sha on main, see on_main), of this repository, whose
+# publish-staging job (named "publish-staging release <tag>" by the workflow)
+# succeeded. Exit 1 when
 # there is none or on any API error.
 staged() {
-  local runs ids id jobs n
+  local runs ids id sha jobs n
   : "${GH_TOKEN:?GH_TOKEN is required}"
   runs="$(gh api -X GET "$R/actions/workflows/hosted-publish.yml/runs?branch=main&status=completed&per_page=100" 2> /dev/null)" ||
     { echo "listing hosted-publish.yml runs failed" >&2; exit 1; }
   ids="$(jq -r --arg repo "$GITHUB_REPOSITORY" '.workflow_runs
     | if type == "array" then . else error("no runs") end
-    | .[] | select(.head_branch == "main" and .status == "completed" and (.head_repository.full_name // "") == $repo) | .id' <<< "$runs")" ||
+    | .[] | select(.head_branch == "main" and .status == "completed" and (.head_repository.full_name // "") == $repo) | "\(.id):\(.head_sha // "")"' <<< "$runs")" ||
     { echo "listing hosted-publish.yml runs failed: unparsable" >&2; exit 1; }
   for id in $ids; do
+    sha="${id#*:}"
+    id="${id%%:*}"
     [[ "$id" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "listing hosted-publish.yml runs failed: a bad run id" >&2; exit 1; }
     jobs="$(gh api -X GET "$R/actions/runs/$id/jobs?per_page=100" 2> /dev/null)" ||
       { echo "reading run $id's jobs failed" >&2; exit 1; }
     n="$(jq -r --arg n "publish-staging release $1" '[.jobs[] | select(.name == $n and .conclusion == "success")] | length' <<< "$jobs" 2> /dev/null)" ||
       { echo "reading run $id's jobs failed: unparsable" >&2; exit 1; }
-    if [ "$n" -gt 0 ]; then echo "staging first: $1 was published to staging (run $id)"; return 0; fi
+    if [ "$n" -gt 0 ]; then
+      # The record counts only from a run of main's own workflow file.
+      on_main "$sha" "hosted-publish.yml run $id"
+      echo "staging first: $1 was published to staging (run $id)"
+      return 0
+    fi
   done
   echo "staging first: $1 has no successful staging publish (hosted-publish.yml on main); publish it to staging first, then rerun" >&2
   exit 1
