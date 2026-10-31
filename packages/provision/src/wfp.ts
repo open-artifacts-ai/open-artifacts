@@ -286,6 +286,7 @@ export {
   type SettleDb,
   type SettleFailed,
   settleFailed,
+  settleFailedStatements,
 } from "./jobs.js";
 
 /** The CLI's cap on a Cloudflare token's end date, in days. */

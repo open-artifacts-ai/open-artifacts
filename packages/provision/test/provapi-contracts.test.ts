@@ -243,12 +243,9 @@ describe("settleFailed (3.6)", () => {
     prepare: () => ({ bind: () => ({}) }),
     batch: async () => [],
   };
-  it("takes (db, jobId, code) and is not built yet (W3)", async () => {
+  it("takes (db, jobId, code) and refuses an unknown code (body: settle-failed.test.ts)", async () => {
     const f: SettleFailed = settleFailed;
     expect(f.length).toBe(3);
-    await expect(
-      f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "canceled"),
-    ).rejects.toThrow(/not built yet \(W3\)/);
     await expect(
       f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "nope" as never),
     ).rejects.toThrow(/unknown provision error code/);
