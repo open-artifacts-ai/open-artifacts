@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { boundFetch } from "./fetch-timeout.ts";
 import {
@@ -18,6 +18,7 @@ import {
   provConfig,
   Run,
   revokeCreds,
+  stagedVersion,
 } from "./provisioning.ts";
 import { newRecipient, openSealed, parseCreds } from "./seal.ts";
 import { readSecretFile, secretFileName } from "./targets.ts";
@@ -155,4 +156,20 @@ export async function revokeAll(
     }
   }
   return failed ? 1 : 0;
+}
+
+/**
+ * The staging-first record: once rl-a's and rl-b's /healthz both report
+ * REDLINE_RELEASE, writes it (X.Y.Z) to `file` for the
+ * redline-staged-version artifact.
+ */
+export async function writeStagedVersion(
+  env: Record<string, string | undefined>,
+  t: RawTargets,
+  file: string,
+): Promise<void> {
+  const v = await stagedVersion(liveRun(env, t));
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${v}\n`);
+  out(`rl-a and rl-b report ${v}\n`);
 }

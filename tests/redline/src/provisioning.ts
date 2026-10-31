@@ -806,6 +806,10 @@ export const PROBES: readonly Probe[] = [
     title:
       "during the create: inventory mode null and public /healthz 404 until route",
     run: async (run) => {
+      // Without the inventory, p15Check reads mode as null: /healthz alone
+      // would pass the probe.
+      if (!run.c.inventory || !run.io.stgInventoryJwt)
+        throw new ProbeFail("P15: no staging inventory configured");
       const p = run.s.p15;
       if (!p) throw new ProbeFail("P15: P13 never ran its create");
       if (p.violations.length)
@@ -1570,24 +1574,32 @@ export const PROBES: readonly Probe[] = [
         "P44 unlisted claude.ai",
         "invalid_redirect_uri",
       );
-      // 1-10 must register (else the 11th's refusal proves no limit);
-      // the 11th must be the limit's 429, not any other refusal.
-      for (let i = 1; i < P44_REGISTRATIONS; i++) {
+      // The cap is 10 per ipKey per UTC day (9A.7); refused registrations
+      // give their slot back, so only an earlier 201 from this egress IP today
+      // spends it. 10 x 201 then 429 proves the limit; fewer 201s before the
+      // 429 cannot tell a lower cap from a spent one, so that is unproven. OAuth
+      // endpoints answer RFC 6749 errors (3.5): 429 is temporarily_unavailable.
+      let ok = 0;
+      for (let i = 1; i <= P44_REGISTRATIONS; i++) {
         const r = await reg([run.c.mcpRedirectUri]);
+        if (r.status === 429) {
+          expect(r, 429, `P44 registration ${i}`, "temporarily_unavailable");
+          if (ok === P44_REGISTRATIONS - 1) return pass();
+          return unproven(
+            `the 429 came after ${ok} registration(s): this IP's daily cap was partly spent earlier`,
+          );
+        }
         const id = (r.json as { client_id?: unknown } | undefined)?.client_id;
         if (r.status !== 201 || typeof id !== "string" || !id)
           throw new ProbeFail(
-            `P44: registration ${i} want 201 with a client_id, got ${desc(r)}`,
+            `P44: registration ${i} want 201 with a client_id or 429, got ${desc(r)}`,
           );
-        if (i === 1) run.s.clientId = id;
+        if (ok === 0) run.s.clientId = id;
+        ok++;
       }
-      expect(
-        await reg([run.c.mcpRedirectUri]),
-        429,
-        `P44 registration ${P44_REGISTRATIONS}`,
-        "rate_limited",
+      throw new ProbeFail(
+        `P44 registration ${P44_REGISTRATIONS}: want 429 temporarily_unavailable, got 201`,
       );
-      return pass();
     },
   },
   {
@@ -1728,6 +1740,26 @@ export async function bringUpgrade(
   );
   await run.done(a.job.id, `R5 ${slug}`);
   return "upgraded";
+}
+
+/**
+ * The staging-first record (W9a's scripts/ci/staging-first-gate.sh): after
+ * bring-up, rl-a's and rl-b's public /healthz must both report the release
+ * under test; returns it (X.Y.Z) for version.txt. Any other answer fails.
+ */
+export async function stagedVersion(run: Run): Promise<string> {
+  for (const [slug, app] of [
+    ["rl-a", run.c.rlA.app],
+    ["rl-b", run.c.rlB.app],
+  ] as const) {
+    const r = await run.raw(`${app}/healthz`, { auth: "none" });
+    const v = (r.json as { version?: unknown } | undefined)?.version;
+    if (r.status !== 200 || v !== run.c.version)
+      throw new ProbeFail(
+        `${slug} /healthz: want 200 version ${run.c.version}, got ${r.status === 200 ? `version ${typeof v === "string" ? v.slice(0, 20) : "none"}` : desc(r)}`,
+      );
+  }
+  return run.c.version;
 }
 
 /** R26 mint for one install: the sealed {pat, hookKey}, opened with this run's key. */

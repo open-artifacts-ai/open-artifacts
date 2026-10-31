@@ -222,6 +222,26 @@ describe("redline-staging.yml", () => {
     expect(t19.run).toContain('T19_EXPECT_VERSION="$REDLINE_RELEASE"');
   });
 
+  it("uploads redline-staged-version (version.txt) after bring-up, only once rl-a and rl-b /healthz report the tag", () => {
+    const staged = named("staged");
+    expect(staged.run).toBe(
+      'pnpm --filter @oa/redline provisioning staged-version "$RUNNER_TEMP/redline-staged/version.txt"',
+    );
+    expect(staged.if).toBeUndefined();
+    expect(steps.indexOf(staged)).toBe(steps.indexOf(named("bringup")) + 1);
+    const up = steps.filter((s) => s.with?.name === "redline-staged-version");
+    expect(up).toHaveLength(1);
+    expect(String(up[0]?.uses)).toMatch(SHA_PIN);
+    expect(up[0]?.if).toBe("steps.staged.outcome == 'success'");
+    expect(up[0]?.with).toEqual({
+      name: "redline-staged-version",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      path: "${{ runner.temp }}/redline-staged/version.txt",
+      "if-no-files-found": "error",
+    });
+    expect(steps.indexOf(up[0] ?? {})).toBe(steps.indexOf(staged) + 1);
+  });
+
   it("T19 shares the id-token job (a recorded deviation from 4.4), so every JWT and prod file is gone before it runs", () => {
     expect(text).toContain(
       'Deviation from 4.4 ("id-token on the redline job only, not t19")',
@@ -309,7 +329,7 @@ describe("redline-staging.yml", () => {
       at((s) => s.name === "Delete the JWT and prod files before T19"),
       at((s) => s.id === "t19"),
       at((s) => s.id === "scan"),
-      at((s) => String(s.uses ?? "").startsWith("actions/upload-artifact")),
+      at((s) => s.with?.name === "redline-report"),
       at((s) => (s.run ?? "").includes("provisioning revoke")),
       at((s) => (s.run ?? "").includes("rm -rf")),
     ];
@@ -340,8 +360,11 @@ describe("redline-staging.yml", () => {
       'if grep -rqF -f "$f" "${dirs[@]}"; then echo "secret in report: ${f##*/}"; exit 1; fi',
     );
     expect(scan.run).not.toContain("$(cat");
-    const up = steps.filter((s) =>
-      String(s.uses ?? "").startsWith("actions/upload-artifact"),
+    // The reports; redline-staged-version holds only the version.
+    const up = steps.filter(
+      (s) =>
+        String(s.uses ?? "").startsWith("actions/upload-artifact") &&
+        s.with?.name !== "redline-staged-version",
     );
     expect(up).toHaveLength(2);
     for (const u of up) {

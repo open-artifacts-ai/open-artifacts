@@ -113,6 +113,18 @@ jobs:
       - id: bringup
         name: Upgrade rl-a and rl-b to the tag (R5) and take this run's credentials (R26)
         run: pnpm --filter @oa/redline provisioning bringup
+      # The staging-first record (scripts/ci/staging-first-gate.sh): version.txt
+      # = X.Y.Z, written only once rl-a's and rl-b's /healthz both report it.
+      # The prod deploy gate also requires this run to succeed as a whole.
+      - id: staged
+        name: Check rl-a and rl-b report the tag
+        run: pnpm --filter @oa/redline provisioning staged-version "$RUNNER_TEMP/redline-staged/version.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.staged.outcome == 'success'
+        with:
+          name: redline-staged-version
+          path: ${{ runner.temp }}/redline-staged/version.txt
+          if-no-files-found: error
       # After bring-up (up to 4 jobs of 20 min), only with the prod tokens;
       # the suite re-mints it near expiry (600 s at most) like the others.
       - name: Mint the prod inventory OIDC JWT

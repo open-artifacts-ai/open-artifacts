@@ -82,6 +82,8 @@ export type Fault =
   | "p37_no_header"
   | "p38_prm_no_scopes"
   | "p44_no_limit"
+  | "p44_cap_spent"
+  | "p44_wrong_code"
   | "p45_extra_tool"
   | "p47_wrong_code"
   | "signups_closed"
@@ -639,7 +641,12 @@ export function fakeApi(): FakeApi {
         status: faults.has("p22_closed_404") ? 404 : 503,
       });
     return path === "/healthz"
-      ? ok({ ok: true, testHooks: i.testHooks, installId: i.id })
+      ? ok({
+          ok: true,
+          version: i.version,
+          testHooks: i.testHooks,
+          installId: i.id,
+        })
       : new Response("app");
   };
 
@@ -675,8 +682,17 @@ export function fakeApi(): FakeApi {
           faults.has("p44_unlisted_redirect")
         )
           return ok({ error: "invalid_redirect_uri" }, 400);
-        if (++registrations > 10 && !faults.has("p44_no_limit"))
-          return ok({ error: "rate_limited" }, 429);
+        // An earlier run today from this IP spent 4 of the 10 (9A.7).
+        const spent = faults.has("p44_cap_spent") ? 4 : 0;
+        if (++registrations + spent > 10 && !faults.has("p44_no_limit"))
+          return ok(
+            {
+              error: faults.has("p44_wrong_code")
+                ? "rate_limited"
+                : "temporarily_unavailable",
+            },
+            429,
+          );
         return ok({ client_id: `c${registrations}` }, 201);
       }
       if (url.pathname === "/oauth/authorize")

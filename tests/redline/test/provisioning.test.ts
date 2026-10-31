@@ -26,6 +26,7 @@ import {
   provConfig,
   Run,
   revokeCreds,
+  stagedVersion,
 } from "../src/provisioning.ts";
 import { rawTargets } from "../src/provisioning-live.ts";
 import { newRecipient, openSealed, parseCreds } from "../src/seal.ts";
@@ -160,12 +161,17 @@ describe("each probe fails on the behaviour it guards", () => {
     [
       "p44_no_limit",
       "P44",
-      /P44 registration 11: want 429 rate_limited, got status 201/,
+      /P44 registration 11: want 429 temporarily_unavailable, got 201/,
+    ],
+    [
+      "p44_wrong_code",
+      "P44",
+      /P44 registration 11: want 429 temporarily_unavailable, got status 429.*code rate_limited/,
     ],
     [
       "p44_unlisted_redirect",
       "P44",
-      /P44: registration 1 want 201 with a client_id, got status 400/,
+      /P44: registration 1 want 201 with a client_id or 429, got status 400/,
     ],
     ["p22_closed_404", "P22", /P22 closed page/],
     ["p23_no_row", "P23", /P23: inventory has no row for it/],
@@ -183,6 +189,26 @@ describe("each probe fails on the behaviour it guards", () => {
       const out = await runAll(f);
       expect(out.get(id)).toMatch(re);
     });
+
+  it("P44 is unproven when this IP's daily DCR cap was partly spent earlier", async () => {
+    const f = fakeApi();
+    f.faults.add("p44_cap_spent");
+    expect((await runAll(f)).get("P44")).toEqual({
+      level: "unproven-live",
+      reason: expect.stringMatching(/429 came after 6 registration/),
+    });
+  });
+
+  it("P15 fails without a staging inventory, whatever /healthz said", async () => {
+    const f = fakeApi();
+    const { inventory: _, ...noInv } = CONFIG;
+    const run = new Run(noInv, f.io);
+    run.s.p15 = { checked: 3, violations: [] };
+    const p15 = PROBES.find((p) => p.id === "P15");
+    await expect(p15?.run(run)).rejects.toThrow(
+      /P15: no staging inventory configured/,
+    );
+  });
 
   it("P24 fails when an install is not on the release under test", async () => {
     const f = fakeApi();
@@ -275,6 +301,16 @@ describe("bring-up and revoke (R5, R26)", () => {
     await expect(bringUpgrade(run, CONFIG.rlA.id, "rl-b")).rejects.toThrow(
       /is rl-a, not rl-b/,
     );
+  });
+
+  it("the staged version is written only once rl-a and rl-b both report the release", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, f.io);
+    await expect(stagedVersion(run)).rejects.toThrow(
+      /rl-a \/healthz: want 200 version 0\.82\.0, got version 0\.81\.0/,
+    );
+    await bringUpgrade(run, CONFIG.rlA.id, "rl-a");
+    expect(await stagedVersion(run)).toBe("0.82.0");
   });
 
   it("R26 mint opens the sealed creds; revoke makes the PAT 401", async () => {
