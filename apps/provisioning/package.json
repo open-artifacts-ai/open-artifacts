@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@oa/auth-core": "workspace:*",
     "@oa/gh-oidc": "workspace:*",
     "@oa/shared": "workspace:*"
   },

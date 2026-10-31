@@ -12,6 +12,9 @@ import type {
  * - rateKey: the rate-limit key; a token shares its admin's (`admin:<email>`).
  * - scopes: tokens only, always from the row, never the request.
  * - authAt: the session's sign-in time (R11 reauth); null for tokens.
+ * - sessionHash: admin sessions only, `sessions.id_hash`; mintAgentToken
+ *   binds the token to it (4.5, 9A.3.2).
+ * - hd: self-serve users only (the verified Workspace domain, 4.2 policy).
  */
 export type Principal = {
   kind: PrincipalKind;
@@ -23,6 +26,8 @@ export type Principal = {
   sub?: string;
   tokenId?: string;
   authAt?: number | null;
+  sessionHash?: string;
+  hd?: string;
 };
 
 /** A refusal before a handler runs; answered with the 3.5 envelope. */

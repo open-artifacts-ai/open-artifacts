@@ -254,6 +254,9 @@ importers:
 
   apps/provisioning:
     dependencies:
+      '@oa/auth-core':
+        specifier: workspace:*
+        version: link:../../packages/auth-core
       '@oa/gh-oidc':
         specifier: workspace:*
         version: link:../../packages/gh-oidc

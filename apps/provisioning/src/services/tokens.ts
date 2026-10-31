@@ -1,7 +1,15 @@
-import type { TokenKind, TokenScope } from "@oa/shared/provisioning";
+import {
+  type TokenKind,
+  type TokenScope,
+  TokenScopeSchema,
+} from "@oa/shared/provisioning";
+import { isAdminIdentity } from "../auth/identities.js";
 import type { Env } from "../env.js";
-import { NotImplemented } from "../errors.js";
+import { ApiError } from "../errors.js";
+import { hmac16, sha256Hex } from "../hmac.js";
+import { countD1, D1_LIMITS } from "../limits.js";
 import type { Principal, Refusal } from "../principal.js";
+import { ulid } from "../ulid.js";
 
 // The one token service for both kinds (design v7 9A.4): R19 and the MCP
 // consent mint through mintAgentToken; authenticate() (both bearer kinds)
@@ -16,6 +24,20 @@ import type { Principal, Refusal } from "../principal.js";
 // kind as a fourth argument: the caller names the path (authenticate()'s
 // `oat_` bearer: "oat"; `/mcp` and the refresh callback: "oauth"), and a row
 // of the other kind is refused `wrong_kind` before any other check.
+
+/** At most this many live tokens per admin, both kinds together (4.1). */
+export const TOKEN_LIVE_LIMIT = 5;
+/** oat lifetimes (4.1): 15 min default (the R19 schema), 5 to 60. */
+export const OAT_TTL_MIN_MINUTES = 5;
+export const OAT_TTL_MAX_MINUTES = 60;
+/** An OAuth grant chain ends with the admin session, at most 8 h (Q3). */
+export const OAUTH_GRANT_MAX_MS = 8 * 3_600_000;
+/** OAuth access tokens (the library's accessTokenTTL, W13b): 15 minutes. */
+export const OAUTH_ACCESS_TTL_S = 15 * 60;
+/** `oat_` + 32 random bytes, base64url (43 chars). */
+export const OAT_RE = /^oat_[A-Za-z0-9_-]{43}$/;
+const OAUTH_LABEL_RE = /^[A-Za-z0-9 ._-]{1,40}$/;
+const MINUTE = 60_000;
 
 /** An agent_tokens row (0008). */
 export type AgentTokenRow = {
@@ -85,19 +107,210 @@ export type Minted = {
   oauthUser?: string;
 };
 
+/** An `oauth` row's label (9A.3.3): the DCR client_name if it fits, else `unnamed`. */
+export const oauthLabel = (clientName: string | null) =>
+  clientName !== null && OAUTH_LABEL_RE.test(clientName)
+    ? clientName
+    : "unnamed";
+
+const b64u = (b: Uint8Array) =>
+  btoa(String.fromCharCode(...b))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+/** The bearer's stored form: sha256 hex (agent_tokens.token_hash). */
+export const tokenHash = (bearer: string) => sha256Hex(bearer);
+
+/**
+ * The live session behind an admin principal, re-read from D1: the row its
+ * `sessionHash` names, of kind admin, not revoked, unexpired, for the same
+ * `(email, sub)`, which is still in ADMIN_IDENTITIES.
+ */
+async function liveAdminSession(
+  env: Env,
+  p: Principal,
+  now: number,
+): Promise<SessionRow> {
+  if (p.kind !== "admin") throw new ApiError("forbidden");
+  if (!p.sessionHash || !p.email || !p.sub)
+    throw new ApiError("unauthenticated");
+  const s = await env.PLATFORM_DB.prepare(
+    "SELECT * FROM sessions WHERE id_hash = ?1",
+  )
+    .bind(p.sessionHash)
+    .first<SessionRow>();
+  if (
+    !s ||
+    s.kind !== "admin" ||
+    s.revoked_at !== null ||
+    s.expires_at <= now ||
+    s.email.toLowerCase() !== p.email.toLowerCase() ||
+    s.sub !== p.sub ||
+    !isAdminIdentity(env, s.email, s.sub)
+  )
+    throw new ApiError("unauthenticated");
+  return s;
+}
+
+const AUDIT_INSERT = `INSERT INTO admin_audit (at, actor_kind, actor_label, token_id, action, request_id, outcome, detail)`;
+
 /**
  * Mints one token for an admin session principal: the per-admin mint counter
  * (4.7), the 5-live limit across both kinds (`token_limit`), and one D1 batch
- * (row, supersession of an older oauth row of the same client, audit).
+ * (supersession of an older oauth row of the same client, the row, audit).
  * Throws `ApiError("token_limit")` (409) at the limit, which R19 renders and
- * the consent page detects; `rate_limited` over the mint counter.
+ * the consent page detects; `rate_limited` over the mint counter;
+ * `idempotency_conflict` (details.tokenId) on a replayed oat requestId,
+ * which never shows a bearer twice; `forbidden` for any principal but an
+ * admin session (tokens cannot mint tokens); `unauthenticated` when the
+ * session has ended.
  */
 export async function mintAgentToken(
-  _env: Env,
-  _principal: Principal,
-  _opts: MintOpts,
+  env: Env,
+  principal: Principal,
+  opts: MintOpts,
 ): Promise<Minted> {
-  throw new NotImplemented("mintAgentToken");
+  const now = Date.now();
+  const s = await liveAdminSession(env, principal, now);
+  const email = s.email;
+  const over = await countD1(
+    env,
+    `mint:${await hmac16(env, `mint\n${email.toLowerCase()}`)}`,
+    D1_LIMITS.mint.limit,
+    D1_LIMITS.mint.windowMs,
+    now,
+  );
+  if (over) throw new ApiError(over.code);
+
+  const id = ulid(now);
+  const scopes = JSON.stringify([...new Set(opts.scopes)]);
+  let token: string | undefined;
+  let oauthUser: string | undefined;
+  let row: Omit<AgentTokenRow, "revoked_at" | "last_used_at">;
+  if (opts.kind === "oat") {
+    token = `oat_${b64u(crypto.getRandomValues(new Uint8Array(32)))}`;
+    const ttl = Math.min(
+      OAT_TTL_MAX_MINUTES,
+      Math.max(OAT_TTL_MIN_MINUTES, Math.floor(opts.ttlMinutes)),
+    );
+    row = {
+      id,
+      kind: "oat",
+      token_hash: await tokenHash(token),
+      session_hash: s.id_hash,
+      admin_email: email,
+      label: opts.label,
+      scopes,
+      client_id: null,
+      client_name: null,
+      oauth_user: null,
+      grant_id: null,
+      created_at: now,
+      expires_at: Math.min(s.expires_at, now + ttl * MINUTE),
+    };
+  } else {
+    // Stable per admin, so the library can list one admin's grants; never
+    // the email itself.
+    oauthUser = `adm_${await hmac16(env, `oauth_user\n${email.toLowerCase()}`)}`;
+    const label = oauthLabel(opts.clientName);
+    row = {
+      id,
+      kind: "oauth",
+      token_hash: null,
+      session_hash: s.id_hash,
+      admin_email: email,
+      label,
+      scopes,
+      client_id: opts.clientId,
+      client_name: opts.clientName === null ? null : label,
+      oauth_user: oauthUser,
+      grant_id: null,
+      created_at: now,
+      expires_at: Math.min(s.expires_at, now + OAUTH_GRANT_MAX_MS),
+    };
+  }
+  const detail = JSON.stringify({
+    tokenId: id,
+    kind: row.kind,
+    label: row.label,
+    scopes: JSON.parse(scopes),
+    expiresAt: row.expires_at,
+    ...(opts.kind === "oauth" ? { clientId: opts.clientId } : {}),
+  });
+  const requestId = opts.kind === "oat" ? opts.requestId : null;
+
+  const db = env.PLATFORM_DB;
+  const stmts: D1PreparedStatement[] = [];
+  if (opts.kind === "oauth") {
+    // A newer consent of the same client ends the older grant (4.6). This
+    // runs first, so a superseding consent always fits under the limit.
+    const where = `WHERE admin_email = ?1 AND kind = 'oauth' AND client_id = ?2 AND revoked_at IS NULL`;
+    stmts.push(
+      db
+        .prepare(
+          `${AUDIT_INSERT} SELECT ?3, 'admin', ?1, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'reason', 'superseded', 'supersededBy', ?4) FROM agent_tokens ${where}`,
+        )
+        .bind(email, opts.clientId, now, id),
+      db
+        .prepare(`UPDATE agent_tokens SET revoked_at = ?3 ${where}`)
+        .bind(email, opts.clientId, now),
+    );
+  }
+  stmts.push(
+    db
+      .prepare(
+        `INSERT INTO agent_tokens (id, kind, token_hash, session_hash, admin_email, label, scopes, client_id, client_name, oauth_user, grant_id, created_at, expires_at)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13
+         WHERE (SELECT count(*) FROM agent_tokens WHERE admin_email = ?5 AND revoked_at IS NULL AND expires_at > ?12) < ?14
+           AND (?15 IS NULL OR NOT EXISTS (SELECT 1 FROM admin_audit WHERE action = 'token.mint' AND actor_label = ?5 AND request_id = ?15))`,
+      )
+      .bind(
+        row.id,
+        row.kind,
+        row.token_hash,
+        row.session_hash,
+        row.admin_email,
+        row.label,
+        row.scopes,
+        row.client_id,
+        row.client_name,
+        row.oauth_user,
+        row.grant_id,
+        row.created_at,
+        row.expires_at,
+        TOKEN_LIVE_LIMIT,
+        requestId,
+      ),
+    db
+      .prepare(
+        `${AUDIT_INSERT} SELECT ?1, 'admin', ?2, ?3, 'token.mint', ?4, 'ok', ?5 WHERE EXISTS (SELECT 1 FROM agent_tokens WHERE id = ?3)`,
+      )
+      .bind(now, email, id, requestId, detail),
+  );
+  const res = await db.batch(stmts);
+  const inserted = res[stmts.length - 2]?.meta.changes ?? 0;
+  if (inserted === 0) {
+    if (requestId !== null) {
+      const prior = await db
+        .prepare(
+          "SELECT token_id FROM admin_audit WHERE action = 'token.mint' AND actor_label = ?1 AND request_id = ?2",
+        )
+        .bind(email, requestId)
+        .first<{ token_id: string }>();
+      if (prior)
+        throw new ApiError("idempotency_conflict", "idempotency_conflict", {
+          tokenId: prior.token_id,
+        });
+    }
+    throw new ApiError("token_limit");
+  }
+  return {
+    tokenId: id,
+    expiresAt: row.expires_at,
+    ...(token ? { token } : {}),
+    ...(oauthUser ? { oauthUser } : {}),
+  };
 }
 
 /**
@@ -127,16 +340,90 @@ export type TokenRefusal = Refusal & {
 export function tokenPrincipal(
   row: AgentTokenRow,
   session: SessionRow | null,
-  _env: Pick<Env, "ADMIN_IDENTITIES">,
+  env: Pick<Env, "ADMIN_IDENTITIES">,
   expected: TokenKind,
 ): Principal | TokenRefusal {
-  if (row.kind !== expected) {
-    return { refusal: true, code: "unauthenticated", reason: "wrong_kind" };
-  }
-  // Fails closed until W5b; the stub's reason for a live session is a placeholder.
-  return {
+  const no = (reason: TokenRefusalReason): TokenRefusal => ({
     refusal: true,
     code: "unauthenticated",
-    reason: session ? "revoked" : "session_ended",
+    reason,
+  });
+  if (row.kind !== expected) return no("wrong_kind");
+  const now = Date.now();
+  if (row.revoked_at !== null) return no("revoked");
+  if (row.expires_at <= now) return no("expired");
+  if (
+    !session ||
+    session.id_hash !== row.session_hash ||
+    session.kind !== "admin" ||
+    session.revoked_at !== null ||
+    session.expires_at <= now ||
+    session.email.toLowerCase() !== row.admin_email.toLowerCase()
+  )
+    return no("session_ended");
+  if (!isAdminIdentity(env, session.email, session.sub))
+    return no("identity_removed");
+  return {
+    kind: "token",
+    actorKey: `token:${row.id}`,
+    rateKey: `admin:${row.admin_email}`,
+    label: row.label,
+    scopes: rowScopes(row),
+    email: row.admin_email,
+    sub: session.sub,
+    tokenId: row.id,
+    authAt: null,
   };
+}
+
+/** The row's scopes; anything the enum does not know is dropped. */
+function rowScopes(row: Pick<AgentTokenRow, "scopes">): TokenScope[] {
+  let v: unknown;
+  try {
+    v = JSON.parse(row.scopes);
+  } catch {
+    return [];
+  }
+  return Array.isArray(v)
+    ? v.filter((x): x is TokenScope => TokenScopeSchema.safeParse(x).success)
+    : [];
+}
+
+async function principalWhere(
+  env: Env,
+  where: "id" | "token_hash",
+  value: string,
+  expected: TokenKind,
+): Promise<Principal | TokenRefusal> {
+  // Read on every call: KV grant revocation may lag, this D1 check does not.
+  const row = await env.PLATFORM_DB.prepare(
+    `SELECT * FROM agent_tokens WHERE ${where} = ?1`,
+  )
+    .bind(value)
+    .first<AgentTokenRow>();
+  if (!row)
+    return { refusal: true, code: "unauthenticated", reason: "revoked" };
+  const session = await env.PLATFORM_DB.prepare(
+    "SELECT * FROM sessions WHERE id_hash = ?1",
+  )
+    .bind(row.session_hash)
+    .first<SessionRow>();
+  return tokenPrincipal(row, session, env, expected);
+}
+
+/** The `oauth` path (/mcp after validateToken, the refresh callback): by row id. */
+export const principalByTokenId = (
+  env: Env,
+  tokenId: string,
+  expected: TokenKind,
+) => principalWhere(env, "id", tokenId, expected);
+
+/** The `oat_` path: by the bearer's hash. A malformed bearer is `revoked`. */
+export async function principalByBearer(
+  env: Env,
+  bearer: string,
+): Promise<Principal | TokenRefusal> {
+  if (!OAT_RE.test(bearer))
+    return { refusal: true, code: "unauthenticated", reason: "revoked" };
+  return principalWhere(env, "token_hash", await tokenHash(bearer), "oat");
 }

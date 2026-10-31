@@ -1,3 +1,4 @@
+import { ipKey } from "@oa/auth-core";
 import {
   type ApiRouteId,
   isApiRoute,
@@ -25,7 +26,8 @@ import { matchRoute } from "./routes/table.js";
 // The HTTP adapter (design v7 4.2 check order): host policy -> pre-authn IP
 // limit -> Origin (browser writes) -> authn -> CSRF -> invokeRoute.
 
-// W5b replaces this with the shared ipKey (IPv6 by /64, 4.7).
+// The raw address, for the policy step only (Turnstile's remoteIp, the /48
+// counter); rate keys use ipKey (IPv6 by /64, 4.7).
 const clientIp = (req: Request) =>
   req.headers.get("cf-connecting-ip") ?? "unknown";
 
@@ -71,8 +73,8 @@ async function route(
   if (host === "admin" && req.headers.has("authorization"))
     return refuse(env, "auth", "unauthenticated", req);
 
-  const pre = await limit(env, "pre_ip", clientIp(req));
-  if (pre) return refuse(env, "pre_ip", pre.code, req);
+  const pre = await limit(env, "pre_ip", ipKey(req));
+  if (pre) return refuse(env, "pre", pre.code, req);
 
   // Protocol routes: method, path and host from PROTOCOL_ROUTES (9A.3.1).
   // Their own checks (the consent POST's Sec-Fetch-Site, 4.5) replace Origin.
