@@ -781,6 +781,26 @@ describe("upgrade", () => {
     expect(s.fake.writes().length).toBe(w);
   });
 
+  it("upgrade to a version with no release record is release_not_published; a bad signature on it is release_unverified", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const w = s.fake.writes().length;
+    const good = s.rel.reader.record;
+    s.rel.reader.record = async (v, variant) =>
+      v === "0.24.0" ? null : good(v, variant);
+    const none = await fails(s.p.upgrade(inst.id, "0.24.0"));
+    expect(none.message).toMatch(/no release record/);
+    expect(provisionErrorCode(none)).toBe("release_not_published");
+    s.rel.reader.record = async (v, variant) => {
+      const r = await good(v, variant);
+      return v === "0.24.0" && r ? { ...r, signature: "" } : r;
+    };
+    const bad = await fails(s.p.upgrade(inst.id, "0.24.0"));
+    expect(bad.message).toMatch(/signature/);
+    expect(provisionErrorCode(bad)).toBe("release_unverified");
+    expect(s.fake.writes().length).toBe(w);
+  });
+
   it("upgrade runs checkFloorSeq: a floor below the env's cached seq is refused, a higher one raises it", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
@@ -2791,7 +2811,9 @@ describe("P1 Task 8 follow-ups", () => {
     expect(s.fake.writes().length).toBe(w);
     s.fake.tokenInfo.expires_on = new Date(NOW + 2 * 86_400_000).toISOString();
     const p = s.mk();
-    await expect(p.verifyToken("refuse")).rejects.toThrow(/within 5 days/);
+    const near = await fails(p.verifyToken("refuse"));
+    expect(near.message).toMatch(/within 5 days/);
+    expect(provisionErrorCode(near)).toBe("token_invalid");
     const q = s.mk();
     await q.verifyToken("warn");
     expect(q.notes.join("\n")).toMatch(/WARNING/);
@@ -3489,6 +3511,8 @@ describe("H-DV: delete revokes the directory grant first", () => {
     const e = await fails(s.p.delete(inst.id, inst.id));
     expect(e.message).toMatch(/directory revoke failed/);
     expect(e.message).toMatch(/--skip-directory-revoke/);
+    // 5.6: a failed revoke needs an admin; never an automatic retry.
+    expect(provisionErrorCode(e)).toBe("invalid_state");
     expect(revokeRow(s, inst.id).state).toBe("deleting");
     expect(s.scriptOf(inst.id)).toBeDefined();
   });
@@ -3733,6 +3757,7 @@ describe("H-DV fix 2: delete unmaps first and needs a fresh confirmed revoke", (
     };
     const e = await fails(s.p.delete(inst.id, inst.id));
     expect(e.message).toMatch(/directory revoke failed after 5 attempts/);
+    expect(provisionErrorCode(e)).toBe("invalid_state");
     expect(e.message).toMatch(/--skip-directory-revoke/);
     s.fake.revoker = null;
     await fails(s.mk().delete(inst.id, inst.id));

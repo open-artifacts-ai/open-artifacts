@@ -3,6 +3,7 @@
 // from an install id. Errors carry method, route, status and Cloudflare's own
 // error text, never a request body, header or token.
 import { createHash } from "node:crypto";
+import { CfError } from "./jobs.js";
 import type { UploadMetadata } from "./metadata.js";
 import { assertAssetPath } from "./release.js";
 
@@ -11,20 +12,7 @@ const TRIES = 3;
 
 export type Target = { kind: "account" } | { kind: "namespace"; ns: string };
 
-export class CfError extends Error {
-  override name = "CfError";
-  constructor(
-    readonly method: string,
-    readonly route: string,
-    readonly status: number,
-    /** Cloudflare's error codes and messages (never the request body). */
-    readonly cfMessage: string,
-  ) {
-    super(
-      `Cloudflare ${method} ${route}: HTTP ${status}${cfMessage ? ` (${cfMessage})` : ""}`,
-    );
-  }
-}
+export { CfError } from "./jobs.js";
 
 export interface Module {
   name: string;

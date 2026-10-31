@@ -2,9 +2,12 @@
 // codes on refusals, the near-expiry mode per job kind, the verify_clean
 // spec's pure parts, the onStep step names, and the pause/unpause and
 // registryDisabled surface W2 builds on.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CfError } from "../src/cf.js";
 import * as INDEX from "../src/index.js";
+import * as JOBS from "../src/jobs.js";
 import {
   CREATE_SECRETS,
   expectedSecretNames,
@@ -52,12 +55,14 @@ describe("ProvisionRefused.code and ProvisionRetry (3.5)", () => {
       expect(PROVISION_ERROR_CODES).toContain(c);
   });
 
-  it("a refusal carries its code as a property, and none when not given", () => {
+  it("a refusal carries its code as a property; the code is required", () => {
     const e = new ProvisionRefused("slug acme is taken", "slug_taken");
     expect(e.code).toBe("slug_taken");
     expect(e.message).toBe("slug acme is taken");
     expect(e.name).toBe("ProvisionRefused");
-    expect(new ProvisionRefused("plain").code).toBeUndefined();
+    expect(() => new ProvisionRefused("plain", undefined as never)).toThrow(
+      /unknown provision error code/,
+    );
   });
 
   it("an unknown code is refused at construction, never stored", () => {
@@ -85,9 +90,11 @@ describe("ProvisionRefused.code and ProvisionRetry (3.5)", () => {
     expect(e.code).toBe("prod_dirty");
   });
 
-  it("the existing subclasses still construct from a message", () => {
-    expect(new ProdLocked("locked").code).toBeUndefined();
-    expect(new LostLease("lost")).toBeInstanceOf(ProvisionRefused);
+  it("the existing subclasses construct from a message with a fixed code", () => {
+    expect(new ProdLocked("locked").code).toBe("invalid_state");
+    const lost = new LostLease("lost");
+    expect(lost).toBeInstanceOf(ProvisionRetry);
+    expect(provisionErrorCode(lost)).toBe("lease_held");
   });
 
   it("is exported from @oa/provision", () => {
@@ -188,7 +195,6 @@ describe("provisionErrorCode (3.5)", () => {
     expect(provisionErrorCode(new ProvisionRetry("x", "token_invalid"))).toBe(
       "token_invalid",
     );
-    expect(provisionErrorCode(new ProvisionRefused("x"))).toBe("internal");
     expect(provisionErrorCode(new CfError("GET", "/x", 500, "boom"))).toBe(
       "cf_error",
     );
@@ -198,6 +204,37 @@ describe("provisionErrorCode (3.5)", () => {
 
   it("is exported from @oa/provision", () => {
     expect(INDEX.provisionErrorCode).toBe(provisionErrorCode);
+  });
+});
+
+describe("@oa/provision/jobs (node-free, for the scheduler)", () => {
+  it("imports nothing, so a Worker gets it without WfpProvisioner", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../src/jobs.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(src).not.toMatch(/^\s*import\b|\bfrom\s+["']/m);
+  });
+
+  it("is the same module wfp.ts and the index re-export", () => {
+    expect(JOBS.settleFailed).toBe(settleFailed);
+    expect(JOBS.provisionErrorCode).toBe(provisionErrorCode);
+    expect(JOBS.ProvisionRefused).toBe(ProvisionRefused);
+    expect(JOBS.CfError).toBe(CfError);
+    expect(INDEX.CfError).toBe(CfError);
+  });
+
+  it("is a package export with a workerd source condition", () => {
+    const pkg = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("../package.json", import.meta.url)),
+        "utf8",
+      ),
+    );
+    expect(pkg.exports["./jobs"]).toMatchObject({
+      workerd: "./src/jobs.ts",
+      import: "./dist/jobs.js",
+    });
   });
 });
 

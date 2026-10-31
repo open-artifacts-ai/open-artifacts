@@ -72,6 +72,7 @@ import {
   PROVISIONER_MAX_TOKEN_DAYS,
   ProdLocked,
   ProvisionRefused,
+  provisionErrorCode,
   type WfpOptions,
   WfpProvisioner,
 } from "../src/wfp.js";
@@ -675,6 +676,7 @@ describe("WfpProvisioner.create", () => {
         expect(e.message).toMatch(
           /installId iabcdefghjkm is not the install for slug other/,
         );
+        expect(provisionErrorCode(e)).toBe("invalid_state");
         expect(nonReads(s.fake, n)).toEqual([]);
         expect(s.rows().map((r) => r.slug)).toEqual(["finqore"]);
       });
@@ -701,6 +703,7 @@ describe("WfpProvisioner.create", () => {
             const e = await fails(s.p.create(input("finqore", { [key]: id })));
             expect(e).toBeInstanceOf(ProvisionRefused);
             expect(e.message).toMatch(/platform principal/);
+            expect(provisionErrorCode(e)).toBe("invalid_state");
           }
         expect(s.fake.log).toEqual([]);
       });
@@ -1389,6 +1392,7 @@ describe("WfpProvisioner.create", () => {
         });
         const e = await fails(s.p.create(input()));
         expect(e.message).toMatch(/no release record/);
+        expect(provisionErrorCode(e)).toBe("release_not_published");
         expect(s.fake.log).toEqual([]);
       },
     );
@@ -1417,7 +1421,8 @@ describe("WfpProvisioner.create", () => {
           },
         ),
       });
-      await fails(s.p.create(input()));
+      const e = await fails(s.p.create(input()));
+      expect(provisionErrorCode(e)).toBe("release_unverified");
       expect(s.fake.log).toEqual([]);
     });
 
@@ -2278,27 +2283,37 @@ describe("WfpProvisioner.create", () => {
 
   describe("token check (decision 9)", () => {
     it.each([
-      ["inactive", { status: "disabled" }],
+      ["inactive", { status: "disabled" }, "token_invalid"],
       [
         "not yet valid",
         { not_before: new Date(NOW + 3_600_000).toISOString() },
+        "token_invalid",
       ],
-      ["no expiry", { expires_on: undefined }],
+      ["no expiry", { expires_on: undefined }, "invalid_state"],
       [
         "expiry over 30 days out",
         { expires_on: new Date(NOW + 31 * 86_400_000).toISOString() },
+        "invalid_state",
       ],
-      ["expired", { expires_on: new Date(NOW - 1000).toISOString() }],
-    ])("a token that is %s is refused before any write", async (_n, over) => {
-      const s = setup();
-      Object.assign(s.fake.tokenInfo, over);
-      for (const [k, v] of Object.entries(over))
-        if (v === undefined) delete s.fake.tokenInfo[k];
-      const e = await fails(s.p.create(input()));
-      expect(e.message).toMatch(/token/);
-      expect(s.fake.writes()).toEqual([]);
-      expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
-    });
+      [
+        "expired",
+        { expires_on: new Date(NOW - 1000).toISOString() },
+        "token_invalid",
+      ],
+    ] as const)(
+      "a token that is %s is refused before any write",
+      async (_n, over, code) => {
+        const s = setup();
+        Object.assign(s.fake.tokenInfo, over);
+        for (const [k, v] of Object.entries(over))
+          if (v === undefined) delete s.fake.tokenInfo[k];
+        const e = await fails(s.p.create(input()));
+        expect(e.message).toMatch(/token/);
+        expect(provisionErrorCode(e)).toBe(code);
+        expect(s.fake.writes()).toEqual([]);
+        expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
+      },
+    );
 
     it.each([401, 403])(
       "a %s on the Workers Scripts read is refused before any write",
@@ -2307,6 +2322,7 @@ describe("WfpProvisioner.create", () => {
         s.fake.scriptsReadStatus = status;
         const e = await fails(s.p.create(input()));
         expect(e.message).toMatch(/Workers Scripts/);
+        expect(provisionErrorCode(e)).toBe("invalid_state");
         expect(s.fake.log.map((e) => e.path)).toEqual([
           "/user/tokens/verify",
           `/accounts/${s.fake.accountId}/workers/scripts?per_page=1`,
@@ -2328,6 +2344,7 @@ describe("WfpProvisioner.create", () => {
         expect(e.message).toMatch(/expires/);
         expect(e.message).toMatch(/roll/i);
         expect(e.message).toMatch(/My Profile > API Tokens/);
+        expect(provisionErrorCode(e)).toBe("token_invalid");
         expect(s.fake.writes()).toEqual([]);
         expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
       },
@@ -2650,6 +2667,7 @@ describe("release record integrity (H-T4b M1)", () => {
       });
       const e = await fails(s.p.create(input()));
       expect(e.message).toMatch(/asset path/);
+      expect(provisionErrorCode(e)).toBe("release_unverified");
       expect(s.fake.log).toEqual([]);
       const unlisted = setup({
         release: makeRelease({}, assetsOf(assets)),
@@ -2843,12 +2861,50 @@ describe("prod lock and signed records (H-T4b L2)", () => {
     });
     const e = await fails(s.p.create(input()));
     expect(e.message).toMatch(/signature/);
+    expect(provisionErrorCode(e)).toBe("release_unverified");
     expect(s.fake.log).toEqual([]);
     // Nothing else of the release is read before the signature checks out.
     const c = (s.release as ReturnType<typeof makeRelease>).calls;
     expect([c.modules, c.assets, c.template, c.migrations]).toEqual([
       0, 0, 0, 0,
     ]);
+  });
+
+  it.each([
+    "sha256",
+    "templateSha256",
+    "migrationsSha256",
+    "welcomeSha256",
+  ] as const)(
+    "a signed record with no valid %s is release_unverified, with zero calls",
+    async (k) => {
+      const s = setup({
+        release: makeRelease(
+          {},
+          {
+            record: async () =>
+              signRecord({ ...recordOf("release"), [k]: "x" }),
+          },
+        ),
+      });
+      const e = await fails(s.p.create(input()));
+      expect(e.message).toMatch(new RegExp(`has no valid ${k}`));
+      expect(provisionErrorCode(e)).toBe("release_unverified");
+      expect(s.fake.log).toEqual([]);
+    },
+  );
+
+  it("a signed record with no assets list is release_unverified", async () => {
+    const rec = { ...recordOf("release"), assets: "none" };
+    const s = setup({
+      release: makeRelease(
+        {},
+        { record: async () => signRecord(rec as unknown as ReleaseRecord) },
+      ),
+    });
+    const e = await fails(s.p.create(input()));
+    expect(e.message).toMatch(/no assets list/);
+    expect(provisionErrorCode(e)).toBe("release_unverified");
   });
 
   it("the signature is checked before any field: a bad signature on a wrong-version record names the signature", async () => {
@@ -3190,10 +3246,16 @@ describe("H-T4b round 1", () => {
       const pkg = JSON.parse(
         readFileSync(new URL("../package.json", import.meta.url), "utf8"),
       );
-      // "./names" and "./versions" (H-DV: the scheduler's version order) are
-      // the Worker-safe entries (no node:*, no gates); nothing else is
-      // reachable by subpath.
-      expect(Object.keys(pkg.exports)).toEqual([".", "./names", "./versions"]);
+      // "./jobs" (design v7 3.6: job codes and settleFailed), "./names" and
+      // "./versions" (H-DV: the scheduler's version order) are the
+      // Worker-safe entries (no node:*, no gates); nothing else is reachable
+      // by subpath.
+      expect(Object.keys(pkg.exports)).toEqual([
+        ".",
+        "./jobs",
+        "./names",
+        "./versions",
+      ]);
       expect(pkg.exports["./versions"].import).toBe("./dist/versions.js");
       expect(pkg.exports["./names"].import).toBe("./dist/names.js");
     });
@@ -3242,6 +3304,7 @@ describe("H-T4b round 1", () => {
         });
         const e = await fails(s.p.create(input()));
         expect(e.message, n).toMatch(/signature|env/);
+        expect(provisionErrorCode(e), n).toBe("release_unverified");
         expect(s.fake.log, n).toEqual([]);
       }
     });
@@ -3266,6 +3329,7 @@ describe("H-T4b round 1", () => {
         });
         const e = await fails(s.p.create(input()));
         expect(e.message).toMatch(/signature|env/);
+        expect(provisionErrorCode(e)).toBe("release_unverified");
         expect(s.fake.log).toEqual([]);
       }
     });
