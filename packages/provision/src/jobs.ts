@@ -36,6 +36,10 @@ export const PROVISION_ERROR_CODES = Object.freeze([
   "upgrade_rolled_back",
   "upgrade_incomplete",
   "canceled",
+  // A dead Workflow run (errored, terminated, or complete with the job still
+  // open): set only by the scheduler sweep through settleFailed. Terminal;
+  // job_failed alerts and the sweep's cleanup job still runs.
+  "run_dead",
   "cf_error",
   "internal",
 ] as const);
@@ -96,21 +100,74 @@ export interface SettleDb {
   batch(statements: unknown[]): Promise<unknown>;
 }
 
+/** settleFailed's options. */
+export interface SettleOptions {
+  /**
+   * Prepared statements on the same `db`, run after the settle's own
+   * statements in its one D1 batch (the sweep's cleanup-job insert), so the
+   * settle and they commit or fail together. They run even when the job was
+   * already settled, and always after the settle UPDATE, so the parent is
+   * `failed` by then whoever settled it: a guard on the parent's status
+   * cannot tell this call's settle from an R25 cancel that already settled
+   * the job and queued its own cleanup. So every extra must
+   * - guard on the parent having been settled with exactly the code this
+   *   call wrote (`settledWith(parentSql, code)`, e.g. `run_dead` for the
+   *   sweep); a cancel's `canceled` never matches, and
+   * - be `INSERT OR IGNORE`, so `jobs_one_active` (a cleanup already open)
+   *   and `(actor_key, request_id)` (an earlier tick's `cleanup-<jobId>`)
+   *   skip the row instead of failing the batch.
+   */
+  extra?: readonly unknown[];
+}
+
+/**
+ * The SQL guard for a settleFailed extra: true iff the job `parentSql` (a
+ * bind placeholder such as `?5`, or a column) is failed with exactly
+ * `code`, the code this settle call wrote.
+ */
+export function settledWith(
+  parentSql: string,
+  code: ProvisionErrorCode,
+): string {
+  if (!(PROVISION_ERROR_CODES as readonly string[]).includes(code))
+    throw new Error(`unknown provision error code ${String(code)}`);
+  if (
+    !/^(?:\?\d{1,3}|[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?)$/.test(parentSql)
+  )
+    throw new Error(
+      "settledWith: parentSql must be a ?N placeholder or a column",
+    );
+  return `EXISTS (SELECT 1 FROM jobs WHERE id = ${parentSql} AND status = 'failed' AND error_code = '${code}')`;
+}
+
+/** What settleFailed did. */
+export interface SettleResult {
+  /** True iff this call moved the job to failed (the jobs row changed). */
+  settled: boolean;
+  /** The D1 batch results of `extra`, in order ([] without it). */
+  extra: unknown[];
+}
+
 /**
  * Settles a failed job (design v7 3.6), shared by every fail step, cancel
  * and the scheduler sweep: `jobs` to failed with `code` (never over a stored
  * code), `signups.status = failed`, and `signup_accounts` freed for a
  * self-serve install that was never created. One D1 batch on `db` (the
- * platform D1 binding). W3 builds the body; until then it throws.
+ * platform D1 binding), with `opts.extra` appended. `settled` reads the
+ * jobs UPDATE's `meta.changes`: false when the job was no longer open. W3
+ * builds the body; until then it throws.
  */
 export async function settleFailed(
   db: SettleDb,
   jobId: string,
   code: ProvisionErrorCode,
-): Promise<void> {
+  opts?: SettleOptions,
+): Promise<SettleResult> {
   void db;
   if (!(PROVISION_ERROR_CODES as readonly string[]).includes(code))
     throw new Error(`unknown provision error code ${String(code)}`);
+  if (opts?.extra !== undefined && !Array.isArray(opts.extra))
+    throw new Error("settleFailed: extra must be an array of statements");
   throw new Error(`settleFailed is not built yet (W3); job ${jobId}`);
 }
 export type SettleFailed = typeof settleFailed;
