@@ -230,7 +230,7 @@ describe("deploy-platform-worker.sh", () => {
       CLOUDFLARE_ACCOUNT_ID: ACCT,
       SECRETS_STORE_ID: "c".repeat(32),
       PLATFORM_DB_ID: DB,
-      SIGNUPS_ENABLED: "true",
+      SIGNUPS_ENABLED: "false",
     };
     /** A copy of the repo's wrapper beside an app config of our own. */
     const tree = (config: string, app = "provisioner") => {
@@ -260,7 +260,7 @@ describe("deploy-platform-worker.sh", () => {
         expect(snap).toContain(`"ACCOUNT_ID": "${ACCT}"`);
         expect(snap).toContain(`"store_id": "${OK.SECRETS_STORE_ID}"`);
         expect(snap).toContain(`"database_id": "${DB}"`);
-        expect(snap).toContain('"SIGNUPS_ENABLED": "true"');
+        expect(snap).toContain('"SIGNUPS_ENABLED": "false"');
         // The release is a job argument (design v7 2.4), never a var.
         expect(snap).not.toContain("RELEASE_VERSION");
         // No KV bindings: provision reaches KV over REST.
@@ -274,6 +274,29 @@ describe("deploy-platform-worker.sh", () => {
         expect(r.out + r.err).not.toContain(OK.SECRETS_STORE_ID);
         expect(existsSync(join(DIR, "wrangler.deploy.jsonc"))).toBe(false);
       });
+
+    it("SIGNUPS_ENABLED true needs ALLOW_SIGNUPS=1", () => {
+      for (const env of ["staging", "prod"] as const) {
+        const r = run(["provisioner", env], { ...OK, SIGNUPS_ENABLED: "true" });
+        expect(r.code, env).toBe(1);
+        expect(r.log).toEqual([]);
+        const ok = run(["provisioner", env], {
+          ...OK,
+          SIGNUPS_ENABLED: "true",
+          ALLOW_SIGNUPS: "1",
+        });
+        expect(ok.code, env).toBe(0);
+        expect(readFileSync(ok.snap, "utf8")).toContain(
+          '"SIGNUPS_ENABLED": "true"',
+        );
+      }
+      const other = run(["provisioner", "prod"], {
+        ...OK,
+        SIGNUPS_ENABLED: "true",
+        ALLOW_SIGNUPS: "yes",
+      });
+      expect(other.code).toBe(1);
+    });
 
     it("SIGNUPS_ENABLED test-users is staging only", () => {
       const s = run(["provisioner", "staging"], {

@@ -11,7 +11,8 @@
 #   dispatch: HOSTS_KV_ID=<32 hex>
 #   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
 #   inventory: PLATFORM_DB_ID=<uuid> HOSTS_KV_ID=<32 hex>
-#   provisioner: SIGNUP_DAILY_CAP=<1-9999> SIGNUPS_ENABLED=true|false (staging also test-users)
+#   provisioner: SIGNUP_DAILY_CAP=<1-9999> SIGNUPS_ENABLED=false (staging also test-users;
+#   true only with ALLOW_SIGNUPS=1)
 #                WELCOME_FROM=<address> CLOUDFLARE_ACCOUNT_ID=<32 hex> SECRETS_STORE_ID=<32 hex>
 #                PLATFORM_DB_ID=<uuid>
 # Only the provisioner may bind the provision token (oa-<p>-provision-token),
@@ -40,8 +41,11 @@ zones='^[0-9a-f]{32}(,[0-9a-f]{32}){0,9}$'
 limit='^[1-9][0-9]{0,8}$'
 # The signups admitted per UTC day: 1 to 9999, no leading zero.
 cap='^[1-9][0-9]{0,3}$'
-# The signups gate: true or false; staging also test-users (design v7 7).
-if [ "$env" = staging ]; then onoff='^(true|false|test-users)$'; else onoff='^(true|false)$'; fi
+# The signups gate: false; staging also test-users (design v7 7). true opens
+# self-serve, which waits until after M1: it needs ALLOW_SIGNUPS=1 (a change the
+# Manager approves), so a deploy can't admit real signups into stub Workflow steps.
+if [ "${ALLOW_SIGNUPS:-}" = 1 ]; then on='true|'; else on=''; fi
+if [ "$env" = staging ]; then onoff="^(${on}false|test-users)\$"; else onoff="^(${on}false)\$"; fi
 # One plain address: no slash, ampersand, backslash, quote, comma or space, so
 # it can't carry sed syntax or read as a list or display name.
 email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
