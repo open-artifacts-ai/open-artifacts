@@ -2,7 +2,6 @@ import {
   createHash,
   createPrivateKey,
   createPublicKey,
-  randomBytes,
   sign,
   verify,
 } from "node:crypto";
@@ -2041,51 +2040,84 @@ describe("WfpProvisioner.create", () => {
     };
 
     it("assets are read one at a time", async () => {
-      // 16 files of 2 MiB: holding them all would be 32 MiB of ArrayBuffers.
-      const MiB = 1024 * 1024;
+      // Every read is held until the test releases it, so a second read that
+      // started before the first was released would be seen in flight.
       const files = Array.from({ length: 16 }, (_, i) => ({
         path: `f${String(i).padStart(2, "0")}.bin`,
-        bytes: new Uint8Array(randomBytes(2 * MiB)),
+        bytes: enc(`asset ${i}`),
       }));
-      // vitest.config.ts runs this suite with --expose-gc.
-      const gc = globalThis.gc as () => void;
-      const held = async () => {
-        // The fake's own request log keeps every body; that is not create's.
-        s.fake.raw.length = 0;
-        // Freed ArrayBuffers are released by a background sweeper, so the
-        // least of a few collections, each after a macrotask, is what is held.
-        let least = Number.POSITIVE_INFINITY;
-        for (let i = 0; i < 3; i++) {
-          await new Promise((r) => setImmediate(r));
-          gc();
-          least = Math.min(least, process.memoryUsage().arrayBuffers);
-        }
-        return least;
-      };
-      let base: number | undefined;
-      let peak = 0;
-      const r = counting((path) => {
-        const f = files.find((x) => x.path === path) as ReleaseAsset;
-        return f.bytes.slice();
-      });
+      const r = counting(
+        (path) => (files.find((x) => x.path === path) as ReleaseAsset).bytes,
+      );
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const events: string[] = [];
+      const held: { path: string; release: () => void }[] = [];
+      let wake: (() => void) | undefined;
       const s = setup({
         release: makeRelease(
           { assets: files },
           {
-            assetBytes: async (v, b, path) => {
-              const now = await held();
-              base ??= now;
-              peak = Math.max(peak, now - base);
-              return r.assetBytes(v, b, path);
+            assetBytes: (v, b, path) => {
+              inFlight++;
+              maxInFlight = Math.max(maxInFlight, inFlight);
+              events.push(`start ${path}`);
+              return new Promise<Uint8Array>((resolve, reject) => {
+                held.push({
+                  path,
+                  release: () => {
+                    inFlight--;
+                    events.push(`release ${path}`);
+                    r.assetBytes(v, b, path).then(resolve, reject);
+                  },
+                });
+                wake?.();
+              });
             },
           },
         ),
       });
-      await s.p.create(input());
-      // The fake asks for one file per bucket, so one bucket is 2 MiB; 256 KiB
-      // is room for the other buffers of a create.
-      expect(peak).toBeLessThan(2 * MiB + 256 * 1024);
+      let settled = false;
+      let failure: unknown;
+      const run = s.p.create(input()).then(
+        () => {
+          settled = true;
+          wake?.();
+        },
+        (e) => {
+          failure = e;
+          settled = true;
+          wake?.();
+        },
+      );
+      let released = 0;
+      for (;;) {
+        const next = held.shift();
+        if (next) {
+          expect(inFlight).toBe(1);
+          expect(held).toEqual([]);
+          released++;
+          next.release();
+          continue;
+        }
+        if (settled) break;
+        await new Promise<void>((w) => {
+          wake = w;
+        });
+        wake = undefined;
+      }
+      await run;
+      expect(failure).toBeUndefined();
+      expect(maxInFlight).toBe(1);
+      // Read k+1 starts only after read k is released.
+      const paired = events.flatMap((e, k) =>
+        k % 2 === 0 && e.startsWith("start ")
+          ? [e, `release ${e.slice("start ".length)}`]
+          : [],
+      );
+      expect(events).toEqual(paired);
       // Pre-flight, and the bucket Cloudflare asked for.
+      expect(released).toBe(files.length * 2);
       expect([...r.reads.values()]).toEqual(files.map(() => 2));
     });
 
