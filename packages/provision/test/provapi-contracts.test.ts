@@ -4,9 +4,14 @@
 // registryDisabled surface W2 builds on.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import {
+  JOB_ERROR_CODES,
+  JOB_ERROR_RETRY,
+} from "@oa/shared/provisioning/error-codes";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { CfError } from "../src/cf.js";
 import * as INDEX from "../src/index.js";
+import type { SettleOptions, SettleResult } from "../src/jobs.js";
 import * as JOBS from "../src/jobs.js";
 import {
   CREATE_SECRETS,
@@ -43,9 +48,12 @@ describe("ProvisionRefused.code and ProvisionRetry (3.5)", () => {
       "upgrade_rolled_back",
       "upgrade_incomplete",
       "canceled",
+      "run_dead",
       "cf_error",
       "internal",
     ]);
+    // One list: jobs.error_code's JobErrorCode (@oa/shared) in the same order.
+    expect([...PROVISION_ERROR_CODES]).toEqual([...JOB_ERROR_CODES]);
     expect([...PROVISION_RETRY_CODES]).toEqual([
       "lease_held",
       "revoke_pending",
@@ -238,18 +246,77 @@ describe("@oa/provision/jobs (node-free, for the scheduler)", () => {
   });
 });
 
+describe("run_dead (Manager C5): a dead Workflow run", () => {
+  it("is terminal: never a retry code, never what classification yields", () => {
+    expect(PROVISION_ERROR_CODES).toContain("run_dead");
+    expect(PROVISION_RETRY_CODES).not.toContain("run_dead" as never);
+    expect(JOB_ERROR_RETRY.run_dead).toBe("terminal");
+    expect(new ProvisionRefused("run is dead", "run_dead").code).toBe(
+      "run_dead",
+    );
+    expect(
+      () => new ProvisionRetry("run is dead", "run_dead" as never),
+    ).toThrow(/not a retry code/);
+    // Only the sweep sets it, through settleFailed; a throw never maps to it.
+    expect(provisionErrorCode(new Error("run_dead"))).toBe("internal");
+  });
+
+  it("settleFailed takes it", async () => {
+    const db: SettleDb = {
+      prepare: () => ({ bind: () => ({}) }),
+      batch: async () => [],
+    };
+    await expect(
+      settleFailed(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "run_dead"),
+    ).resolves.toEqual({ settled: false, extra: [] });
+  });
+});
+
 describe("settleFailed (3.6)", () => {
   const db: SettleDb = {
     prepare: () => ({ bind: () => ({}) }),
     batch: async () => [],
   };
-  it("takes (db, jobId, code) and refuses an unknown code (body: settle-failed.test.ts)", async () => {
+  it("takes (db, jobId, code, opts?) and refuses an unknown code (body: settle-failed.test.ts)", async () => {
     const f: SettleFailed = settleFailed;
-    expect(f.length).toBe(3);
+    expect(f.length).toBe(4);
     await expect(
       f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "nope" as never),
     ).rejects.toThrow(/unknown provision error code/);
     expect(INDEX.settleFailed).toBe(settleFailed);
+  });
+
+  it("takes extra statements for the same batch and says whether it settled", async () => {
+    const f: SettleFailed = settleFailed;
+    const extra = [{ sql: "INSERT cleanup" }];
+    // The extras ride the settle's one batch, after its own statements.
+    const sent: unknown[][] = [];
+    const rec: SettleDb = {
+      prepare: () => ({ bind: () => ({}) }),
+      batch: async (st) => {
+        sent.push(st);
+        return st.map((_, i) => ({ meta: { changes: i === 0 ? 1 : 0 } }));
+      },
+    };
+    await expect(
+      f(rec, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "internal", { extra }),
+    ).resolves.toEqual({ settled: true, extra: [{ meta: { changes: 0 } }] });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.at(-1)).toBe(extra[0]);
+    await expect(
+      f(db, "01JBQ4ZKXW5V9R3M2N8P6T7Y0A", "internal", {
+        extra: "INSERT" as never,
+      }),
+    ).rejects.toThrow(/extra must be an array/);
+    // The result type: settled (the jobs row changed) and the extra results.
+    type R = Awaited<ReturnType<SettleFailed>>;
+    const r: R = { settled: false, extra: [] };
+    const s: SettleResult = r;
+    expect(s.settled).toBe(false);
+    expectTypeOf<R>().toEqualTypeOf<SettleResult>();
+    expectTypeOf<SettleOptions["extra"]>().toEqualTypeOf<
+      readonly unknown[] | undefined
+    >();
   });
 });
 

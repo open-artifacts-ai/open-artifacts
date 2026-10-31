@@ -1,9 +1,10 @@
 // settleFailed (design v7 3.6) on the real platform schema: the job, its
 // signup and a never-created self-serve install's account claim, in one D1
 // batch; idempotent, never over a stored code.
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type SettleDb,
+  settledWith,
   settleFailed,
   settleFailedStatements,
 } from "../src/jobs.js";
@@ -63,6 +64,13 @@ const row = (
   >;
 
 describe("settleFailed (3.6)", () => {
+  beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(NOW);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("fails the job and its signup and frees a never-created self-serve claim, in one batch", async () => {
     const w = world();
     const batches: number[] = [];
@@ -73,7 +81,7 @@ describe("settleFailed (3.6)", () => {
         return w.d1.batch(st);
       },
     };
-    await settleFailed(db, w.jid, "release_unverified", NOW);
+    await settleFailed(db, w.jid, "release_unverified");
     expect(batches).toHaveLength(1);
     expect(row(w, "jobs", "id", w.jid)).toMatchObject({
       status: "failed",
@@ -91,14 +99,14 @@ describe("settleFailed (3.6)", () => {
 
   it("keeps the claim of a self-serve install whose installs row exists", async () => {
     const w = world({ installRow: true });
-    await settleFailed(w.d1, w.jid, "prod_dirty", NOW);
+    await settleFailed(w.d1, w.jid, "prod_dirty");
     expect(row(w, "signup_accounts", "owner_sub", "sub-1").freed_at).toBeNull();
     expect(row(w, "signups", "signup_id", w.sid).status).toBe("failed");
   });
 
   it("an admin create has no claim; the signup is failed", async () => {
     const w = world({ source: "admin" });
-    await settleFailed(w.d1, w.jid, "internal", NOW);
+    await settleFailed(w.d1, w.jid, "internal");
     expect(row(w, "signups", "signup_id", w.sid).status).toBe("failed");
   });
 
@@ -109,7 +117,7 @@ describe("settleFailed (3.6)", () => {
         "UPDATE jobs SET status = 'failed', error_code = 'canceled', error_message = 'canceled by an admin', finished_at = 5 WHERE id = ?",
       )
       .run(w.jid);
-    await settleFailed(w.d1, w.jid, "internal", NOW);
+    await settleFailed(w.d1, w.jid, "internal");
     expect(row(w, "jobs", "id", w.jid)).toMatchObject({
       status: "failed",
       error_code: "canceled",
@@ -129,7 +137,7 @@ describe("settleFailed (3.6)", () => {
     w.db
       .prepare("UPDATE signups SET status = 'ready' WHERE signup_id = ?")
       .run(w.sid);
-    await settleFailed(w.d1, w.jid, "internal", NOW);
+    await settleFailed(w.d1, w.jid, "internal");
     expect(row(w, "jobs", "id", w.jid).status).toBe("done");
     expect(row(w, "signups", "signup_id", w.sid).status).toBe("ready");
     expect(row(w, "signup_accounts", "owner_sub", "sub-1").freed_at).toBeNull();
@@ -144,21 +152,22 @@ describe("settleFailed (3.6)", () => {
     v.db
       .prepare("UPDATE signups SET job_id = ? WHERE signup_id = ?")
       .run(retry, v.sid);
-    await settleFailed(v.d1, v.jid, "internal", NOW);
+    await settleFailed(v.d1, v.jid, "internal");
     expect(row(v, "jobs", "id", v.jid).status).toBe("failed");
     expect(row(v, "signups", "signup_id", v.sid).status).toBe("creating");
   });
 
   it("is idempotent", async () => {
     const w = world();
-    await settleFailed(w.d1, w.jid, "cf_error", NOW);
+    await settleFailed(w.d1, w.jid, "cf_error");
     const snap = () => ({
       j: row(w, "jobs", "id", w.jid),
       s: row(w, "signups", "signup_id", w.sid),
       a: row(w, "signup_accounts", "owner_sub", "sub-1"),
     });
     const before = snap();
-    await settleFailed(w.d1, w.jid, "internal", NOW + 1);
+    vi.spyOn(Date, "now").mockReturnValue(NOW + 1);
+    await settleFailed(w.d1, w.jid, "internal");
     expect(snap()).toEqual(before);
   });
 
@@ -193,6 +202,67 @@ describe("settleFailed (3.6)", () => {
     await expect(settleFailed(w.d1, w.jid, "nope" as never)).rejects.toThrow(
       /unknown provision error code/,
     );
+    expect(row(w, "jobs", "id", w.jid).status).toBe("running");
+  });
+
+  // The C5 extras rules (jobs-settle-extra.test.ts) on the real body.
+  const cleanup = (w: ReturnType<typeof world>, id: string) =>
+    w.d1
+      .prepare(
+        `INSERT OR IGNORE INTO jobs (id, kind, workflow, install_id, parent_job_id, actor_kind, actor_key, actor_label, request_id, body_hash, args, status, created_at, updated_at)
+SELECT ?2, 'cleanup', 'manage_install', ?3, ?1, 'system', 'system:scheduler', 'scheduler', 'cleanup-' || ?1, 'h', '{}', 'queued', 1, 1
+WHERE ${settledWith("?1", "run_dead")}`,
+      )
+      .bind(w.jid, id, w.iid);
+  const cleanups = (w: ReturnType<typeof world>) =>
+    w.db.prepare("SELECT id FROM jobs WHERE kind = 'cleanup'").all();
+
+  it("runs extras in the same batch; settled is whether the job UPDATE changed a row", async () => {
+    const w = world();
+    const r = await settleFailed(w.d1, w.jid, "run_dead", {
+      extra: [cleanup(w, "c1")],
+    });
+    expect(r.settled).toBe(true);
+    expect(r.extra).toHaveLength(1);
+    expect(r.extra[0]).toMatchObject({ meta: { changes: 1 } });
+    // The next tick: already settled, cleanup-<jobId> taken.
+    const again = await settleFailed(w.d1, w.jid, "run_dead", {
+      extra: [cleanup(w, "c2")],
+    });
+    expect(again.settled).toBe(false);
+    expect(again.extra[0]).toMatchObject({ meta: { changes: 0 } });
+    expect(cleanups(w)).toEqual([{ id: "c1" }]);
+  });
+
+  it("a sweep settle after an R25 cancel adds no cleanup and does not fail", async () => {
+    const w = world();
+    w.db
+      .prepare(
+        "UPDATE jobs SET status = 'failed', error_code = 'canceled' WHERE id = ?",
+      )
+      .run(w.jid);
+    const r = await settleFailed(w.d1, w.jid, "run_dead", {
+      extra: [cleanup(w, "c1")],
+    });
+    expect(r).toEqual({
+      settled: false,
+      extra: [
+        expect.objectContaining({
+          meta: expect.objectContaining({ changes: 0 }),
+        }),
+      ],
+    });
+    expect(cleanups(w)).toEqual([]);
+    expect(row(w, "jobs", "id", w.jid).error_code).toBe("canceled");
+  });
+
+  it("an extra that fails rolls the settle back", async () => {
+    const w = world();
+    await expect(
+      settleFailed(w.d1, w.jid, "internal", {
+        extra: [w.d1.prepare("INSERT INTO nope VALUES (1)")],
+      }),
+    ).rejects.toThrow();
     expect(row(w, "jobs", "id", w.jid).status).toBe("running");
   });
 });
