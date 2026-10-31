@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { NoAccess } from "../src/pages/NoAccess";
+import { adminMe, apiError } from "./me";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -40,7 +41,7 @@ it("an unknown error and a hostile sub fall back to plain copy", () => {
 
 it("Use another account with no session (me 401): no logout, no loop, goes to start", async () => {
   const { assign, fetchMock } = stub(
-    new Response(JSON.stringify({ error: "unauthenticated" }), { status: 401 }),
+    new Response(JSON.stringify(apiError("unauthenticated")), { status: 401 }),
   );
   render(<NoAccess error="not_listed" />);
   fireEvent.click(screen.getByRole("button", { name: "Use another account?" }));
@@ -53,14 +54,7 @@ it("Use another account with no session (me 401): no logout, no loop, goes to st
 
 it("Use another account while signed in: logout with CSRF first, then start", async () => {
   const { assign, fetchMock } = stub(
-    new Response(
-      JSON.stringify({
-        email: "a@example.com",
-        role: "r",
-        env: "prod",
-        csrf: "tok",
-      }),
-    ),
+    new Response(JSON.stringify(adminMe("tok"))),
     new Response(null, { status: 204 }),
   );
   render(<NoAccess error="not_listed" />);

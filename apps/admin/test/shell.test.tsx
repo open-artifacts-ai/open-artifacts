@@ -7,6 +7,7 @@ import {
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { router as appRouter } from "../src/router";
+import { adminMe, apiError } from "./me";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -14,18 +15,13 @@ it("shows a load error with retry when /api/v1/me answers 500", async () => {
   const fetchMock = vi
     .fn()
     .mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: "internal" }), { status: 500 }),
+      new Response(JSON.stringify(apiError("internal")), { status: 500 }),
     )
     .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          email: "a@example.com",
-          role: "platform_admin",
-          env: "prod",
-          csrf: "t",
-        }),
-        { status: 200 },
-      ),
+      new Response(JSON.stringify(adminMe("t")), { status: 200 }),
+    )
+    .mockResolvedValue(
+      new Response(JSON.stringify({ items: [], nextCursor: null })),
     );
   vi.stubGlobal("fetch", fetchMock);
   const router = createRouter({
@@ -57,15 +53,7 @@ it("Sign out POSTs /auth/logout with the CSRF token, then goes to /sign-in", asy
   const fetchMock = vi
     .fn()
     .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          email: "a@example.com",
-          role: "platform_admin",
-          env: "prod",
-          csrf: "tok",
-        }),
-        { status: 200 },
-      ),
+      new Response(JSON.stringify(adminMe("tok")), { status: 200 }),
     )
     .mockResolvedValueOnce(new Response(null, { status: 204 }));
   vi.stubGlobal("fetch", fetchMock);

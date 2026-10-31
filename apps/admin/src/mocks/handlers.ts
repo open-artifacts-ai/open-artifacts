@@ -1,11 +1,9 @@
-import { HttpResponse, http } from "msw";
+import { createProvisioningHandlers } from "@oa/shared/mocks";
 
-// TODO(C1): replace with the mocks generated from the contract.
-export const me = {
-  email: "admin@example.com",
-  role: "platform_admin",
-  env: "staging",
-  csrf: "csrf-token",
-};
-
-export const handlers = [http.get("*/api/v1/me", () => HttpResponse.json(me))];
+/**
+ * The contract's MSW handlers (C1), as an admin session on staging. Fresh state
+ * per call; the C1 mock keeps installs, jobs and tokens in memory.
+ */
+export const createHandlers = () =>
+  createProvisioningHandlers({ env: "staging" });
+export const handlers = createHandlers();

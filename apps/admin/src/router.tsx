@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   createRootRoute,
   createRoute,
@@ -7,18 +8,16 @@ import {
   useParams,
   useSearch,
 } from "@tanstack/react-router";
+import { api } from "./api/client";
 import { Shell } from "./layout/Shell";
+import { Audit } from "./pages/Audit";
+import { CreateInstall } from "./pages/CreateInstall";
+import { InstallDetail } from "./pages/InstallDetail";
+import { Installs } from "./pages/Installs";
+import { JobPage } from "./pages/JobPage";
 import { NoAccess } from "./pages/NoAccess";
 import { SignIn } from "./pages/SignIn";
-
-function Placeholder({ title, goes }: { title: string; goes: string }) {
-  return (
-    <>
-      <h1>{title}</h1>
-      <p className="oa-placeholder">{goes}</p>
-    </>
-  );
-}
+import { Tokens } from "./pages/Tokens";
 
 const root = createRootRoute({ component: Outlet });
 const shell = createRoute({
@@ -26,9 +25,6 @@ const shell = createRoute({
   id: "shell",
   component: Shell,
 });
-const page = (title: string, goes: string) => () => (
-  <Placeholder title={title} goes={goes} />
-);
 const inShell = <P extends string>(path: P, component: () => React.ReactNode) =>
   createRoute({ getParentRoute: () => shell, path, component });
 
@@ -50,7 +46,10 @@ const signIn = createRoute({
     return: str(s.return),
   }),
   component: function SignInRoute() {
-    const { error, return: ret } = useSearch({ from: "/sign-in" });
+    const { error, return: ret } = useSearch({ strict: false }) as {
+      error?: string;
+      return?: string;
+    };
     return <SignIn error={error} returnTo={ret} />;
   },
 });
@@ -62,14 +61,18 @@ const noAccess = createRoute({
     sub: str(s.sub),
   }),
   component: function NoAccessRoute() {
-    const { error, sub } = useSearch({ from: "/no-access" });
+    const { error, sub } = useSearch({ strict: false }) as {
+      error?: string;
+      sub?: string;
+    };
     return <NoAccess error={error} sub={sub} />;
   },
 });
 
-function Param({ title, goes }: { title: string; goes: string }) {
-  const { id } = useParams({ strict: false }) as { id: string };
-  return <Placeholder title={`${title} ${id}`} goes={goes} />;
+const useId = () => (useParams({ strict: false }) as { id: string }).id;
+function TokensRoute() {
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  return <Tokens env={me.data?.env ?? "prod"} />;
 }
 
 const routeTree = root.addChildren([
@@ -77,37 +80,25 @@ const routeTree = root.addChildren([
   signIn,
   noAccess,
   shell.addChildren([
-    inShell(
-      "/installs",
-      page(
-        "Installs",
-        "The installs list goes here: counts, active jobs, attention list.",
-      ),
-    ),
-    inShell(
-      "/installs/new",
-      page("Create install", "Version select and live slug check go here."),
-    ),
-    inShell("/installs/$id", () => (
-      <Param
-        title="Install"
-        goes="Install detail and lifecycle actions go here."
-      />
-    )),
-    inShell("/jobs/$id", () => (
-      <Param
-        title="Job"
-        goes="Job steps, attempt, last error and next retry go here."
-      />
-    )),
-    inShell("/audit", page("Audit", "The audit log goes here.")),
-    inShell(
-      "/tokens",
-      page(
-        "Tokens",
-        "Token mint, revoke and the connect-any-AI-agent card go here.",
-      ),
-    ),
+    inShell("/installs", Installs),
+    inShell("/installs/new", CreateInstall),
+    inShell("/installs/$id", () => <InstallDetail id={useId()} />),
+    inShell("/jobs/$id", () => <JobPage id={useId()} />),
+    createRoute({
+      getParentRoute: () => shell,
+      path: "/audit",
+      validateSearch: (s: Record<string, unknown>): { installId?: string } => {
+        const installId = str(s.installId);
+        return installId ? { installId } : {};
+      },
+      component: function AuditRoute() {
+        const { installId } = useSearch({ strict: false }) as {
+          installId?: string;
+        };
+        return <Audit installId={installId} />;
+      },
+    }),
+    inShell("/tokens", TokensRoute),
   ]),
 ]);
 
