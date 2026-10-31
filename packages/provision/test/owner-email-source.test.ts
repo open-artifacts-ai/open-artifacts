@@ -49,6 +49,11 @@ const ALLOWED: Record<string, RegExp[]> = {
     /^\s*const v = row\.owner_email;$/,
     /^export function ownerEmailOf\(row: \{ owner_email\?: unknown \}\): string \| null \{$/,
   ],
+  // signup_secret.owner_email, not installs': the address the signup typed,
+  // read once to create the install (it is never purged to '').
+  "apps/provisioner/src/workflow.ts": [
+    /^\s*"SELECT owner_email AS email FROM signup_secret WHERE signup_id = \?";$/,
+  ],
   // The purge (a write).
   "apps/scheduler/src/index.ts": [
     /^\s*"UPDATE installs SET owner_email = '', inputs_hash = '' WHERE state='deleted' AND updated_at < \?1 AND owner_email <> '' RETURNING id";$/,
