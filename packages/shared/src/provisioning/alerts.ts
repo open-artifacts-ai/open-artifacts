@@ -9,10 +9,10 @@
  * row means the condition does not hold. Times are epoch milliseconds; a
  * query that takes `now` binds it as `?1` (`alertParams`). `token_expiring` and `token_invalid` come from
  * `PROVISIONER.tokenStatus()`, not D1, so they have no query. The key list
- * is `ALERT_KEYS` (enums.ts).
+ * is `ALERT_KEYS` (enum-values.ts).
  */
 
-import { ALERT_KEYS, type AlertKey } from "./enums.js";
+import { ALERT_KEYS, type AlertKey } from "./enum-values.js";
 
 /** Keys read from `PROVISIONER.tokenStatus()` rather than D1. */
 export const RPC_ALERT_KEYS = [
