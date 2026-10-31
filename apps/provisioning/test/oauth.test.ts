@@ -48,7 +48,7 @@ const SCOPES = [
 const bodyOf = async (r: Response) => (await r.json()) as Record<string, any>;
 
 const mcpPrincipal = (w: World, t: Tokens) =>
-  oauthPrincipal(w.env, t.access_token);
+  oauthPrincipal(new Request(RESOURCE), w.env, t.access_token);
 
 const v1 = (w: World, t: Tokens) =>
   w.call(
@@ -141,6 +141,21 @@ describe("DCR (/oauth/register)", () => {
     expect(JSON.parse(row?.redirect_hosts)).toEqual(["loopback", "claude.ai"]);
     expect(row?.ip_hmac).toMatch(/^[0-9a-f]{32}$/);
     expect(row?.first_grant_at).toBeNull();
+  });
+
+  it("a registration lasts 30 days (clientRegistrationTTL 2592000 s)", async () => {
+    const w = await oauthWorld();
+    const res = await registerRaw(w, {
+      redirect_uris: [REDIRECT],
+      token_endpoint_auth_method: "client_secret_basic",
+    });
+    expect(res.status).toBe(201);
+    const b = await bodyOf(res);
+    expect(b.client_secret_expires_at).toBe(b.client_id_issued_at + 2_592_000);
+    const rec = (await kv().get(`client:${b.client_id}`, {
+      type: "json",
+    })) as { registrationExpiresAt?: number } | null;
+    expect(rec?.registrationExpiresAt).toBe(b.client_id_issued_at + 2_592_000);
   });
 
   it.each([
@@ -829,11 +844,17 @@ describe("per-call D1 check (oauthPrincipal, 9A.3.3)", () => {
   it("garbage and a staging token on a prod-configured Worker are refused", async () => {
     const w = await oauthWorld();
     const { tokens } = await grant(w);
-    expect(isRefusal(await oauthPrincipal(w.env, "adm_x:y:z"))).toBe(true);
+    expect(
+      isRefusal(
+        await oauthPrincipal(new Request(RESOURCE), w.env, "adm_x:y:z"),
+      ),
+    ).toBe(true);
     const prod = { ...w.env, APP_DOMAIN: "prod.test", OA_ENV: "prod" as const };
-    expect(isRefusal(await oauthPrincipal(prod, tokens.access_token))).toBe(
-      true,
-    );
+    expect(
+      isRefusal(
+        await oauthPrincipal(new Request(RESOURCE), prod, tokens.access_token),
+      ),
+    ).toBe(true);
   });
 });
 

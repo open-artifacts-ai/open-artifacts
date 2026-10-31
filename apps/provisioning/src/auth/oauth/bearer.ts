@@ -23,11 +23,13 @@ import {
 // library validates the token for the mcp resource, then tokenPrincipal
 // checks the row it names in D1 on every call, so logout, revoke, session
 // end and identity removal take effect at once whatever KV still holds.
-// W13a's adapter calls oauthPrincipal for a non-`oat_` bearer and answers
-// a refusal with mcpUnauthorized.
+// It has the shape of W13a's `OAuthPrincipal` seam (src/mcp/auth.ts), and
+// app.ts passes it to handleMcp as `deps.oauthPrincipal`, so production
+// /mcp uses it for every non-`oat_` bearer; a refusal is mcpUnauthorized.
 
 /** The principal for an OAuth access token at /mcp, or 401. */
 export async function oauthPrincipal(
+  _req: Request,
   env: Env,
   bearer: string,
 ): Promise<Principal | Refusal> {
