@@ -12,6 +12,7 @@ import type { ProvapiEnv } from "../src/provapi/env.js";
 import {
   HEALTH_CONCURRENCY,
   HEALTH_INTERVAL_MS,
+  HEALTH_TIMEOUT_MS,
   type HealthProbe,
   healthDue,
   publicRouteProbe,
@@ -198,6 +199,44 @@ describe("health", () => {
     captureLogs(vi.spyOn);
     await healthDue(env, NOW, { probe: f.probe });
     expect(f.calls.map((c) => c.id)).toEqual([never.id, older.id, recent.id]);
+  });
+
+  it("a round that would outrun its budget stops starting probes; the next */2 tick checks only the rest", async () => {
+    const all = new Set<string>();
+    for (let i = 0; i < 4 * HEALTH_CONCURRENCY; i++) all.add((await mapped()).id);
+    // A pinned clock: each probe takes the whole timeout, then fails.
+    let clock = 0;
+    const calls: string[] = [];
+    const probe: HealthProbe = async (id) => {
+      calls.push(id);
+      clock += HEALTH_TIMEOUT_MS;
+      throw new Error("unreachable");
+    };
+    const o = {
+      probe,
+      clock: () => clock,
+      budgetMs: 2 * HEALTH_TIMEOUT_MS,
+    };
+    const lines = captureLogs(vi.spyOn);
+    expect(await healthDue(env, NOW, o)).toBe(true);
+    const first = calls.length;
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThan(all.size);
+    expect(lines.at(-1)).toBe(
+      `provapi health checked mapped=${first} failing=${first} left=${all.size - first}`,
+    );
+    // Later ticks finish the round, never re-probing a row this round checked.
+    for (let t = NOW + TICK; calls.length < all.size; t += TICK) {
+      expect(t).toBeLessThan(NOW + HEALTH_INTERVAL_MS);
+      expect(await healthDue(env, t, o)).toBe(true);
+    }
+    expect(new Set(calls)).toEqual(all);
+    expect(calls).toHaveLength(all.size);
+    for (const id of all) expect((await health(id))?.health).toBe("failing");
+    // The round is done: the gate holds until the next hour.
+    const done = calls.length;
+    expect(await healthDue(env, NOW + HEALTH_INTERVAL_MS - TICK, o)).toBe(false);
+    expect(calls).toHaveLength(done);
   });
 
   it("a failed read of the mapped rows gives the hourly gate back", async () => {

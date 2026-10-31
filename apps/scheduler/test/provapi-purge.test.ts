@@ -16,7 +16,11 @@ import {
 import { sqlConditions } from "../src/provapi/conditions.js";
 import type { ProvapiEnv } from "../src/provapi/env.js";
 import { SYSTEM_ACTOR } from "../src/provapi/jobs.js";
-import { purgeDue, purgeRequestId } from "../src/provapi/purge.js";
+import {
+  PURGE_LIMIT,
+  purgeDue,
+  purgeRequestId,
+} from "../src/provapi/purge.js";
 import {
   captureLogs,
   db,
@@ -262,6 +266,26 @@ describe("purge after grace", () => {
       expect(await purges(id)).toEqual([]);
       expect(f.manage.created).toEqual([]);
     });
+
+  it(`${PURGE_LIMIT} stuck installs never crowd out one that comes due later`, async () => {
+    const f = fakes();
+    for (let i = 0; i < PURGE_LIMIT; i++) {
+      const stuck = await deleting(PURGE_AT - DAY - i);
+      for (let n = 0; n < PURGE_STUCK_FAILURES; n++)
+        await job(stuck, {
+          kind: "purge",
+          workflow: "manage_install",
+          status: "failed",
+          error_code: "revoke_pending",
+          finished_at: NOW - DAY,
+          updated_at: NOW - DAY,
+        });
+    }
+    const due = await deleting(PURGE_AT);
+    await purgeDue(f.env, NOW);
+    expect(await purges(due)).toHaveLength(1);
+    expect(f.manage.created).toHaveLength(1);
+  });
 
   it("overlapping ticks make one job", async () => {
     const f = fakes();

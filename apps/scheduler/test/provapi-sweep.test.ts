@@ -31,6 +31,7 @@ import {
   migrate,
   reset,
   rows,
+  signup,
 } from "./provapi/db.js";
 
 beforeAll(migrate);
@@ -378,6 +379,91 @@ describe("sweep: failures", () => {
     const fresh = await job(installId(), { created_at: OLD, updated_at: NOW });
     await run(f.env);
     expect(f.provision.created.map((c) => c.id)).toContain(fresh);
+  });
+
+  it(`a dead run behind ${SWEEP_LIMIT} idle live runs is settled within a few ticks`, async () => {
+    const f = fakes();
+    for (let n = 0; n < SWEEP_LIMIT; n++) {
+      const id = await job(installId(), {
+        status: "running",
+        created_at: OLD - 1,
+        updated_at: n,
+      });
+      await f.provision.create({ id, params: { jobId: id } });
+      f.provision.setStatus(id, "running");
+    }
+    const dead = await job(installId(), {
+      status: "running",
+      created_at: OLD - 1,
+      updated_at: NOW,
+    });
+    await f.provision.create({ id: dead, params: { jobId: dead } });
+    f.provision.setStatus(dead, "errored");
+    captureLogs(vi.spyOn);
+    for (let t = 0; t < 3 && !settled.length; t++) await run(f.env, NOW + t * TICK);
+    expect(settled.map((x) => x.jobId)).toEqual([dead]);
+  });
+
+  it("a Workflow binding error that is not a missing instance (workflow.not_found) leaves the job alone", async () => {
+    const id = await job(installId(), { status: "running", created_at: OLD });
+    const undeployed: WorkflowLike = {
+      get: async () => {
+        throw new Error("workflow.not_found");
+      },
+      create: async () => {
+        throw new Error("workflow.not_found");
+      },
+    };
+    const env = { ...fakes().env, PROVISION_INSTALL: undeployed } as ProvapiEnv;
+    const lines = captureLogs(vi.spyOn);
+    await run(env);
+    expect(lines).toEqual([`provapi sweep status_failed rpc_error ${id}`]);
+    expect(settled).toEqual([]);
+    expect(await cleanups()).toEqual([]);
+    expect((await jobRow(id))?.status).toBe("running");
+  });
+
+  it("the real binding's instance.not_found is a missing instance", async () => {
+    const f = fakes();
+    const id = await job(installId(), { created_at: OLD });
+    const missing: WorkflowLike = {
+      get: async () => {
+        throw new Error("instance.not_found");
+      },
+      create: (o) => f.provision.create(o),
+    };
+    const env = { ...f.env, PROVISION_INSTALL: missing } as ProvapiEnv;
+    captureLogs(vi.spyOn);
+    await run(env);
+    expect(f.provision.created.map((c) => c.id)).toEqual([id]);
+  });
+
+  for (const status of ["pending", "waiting_cap"] as const)
+    it(`a self-serve create whose signup is ${status} is never started by the sweep (the queue consumer admits it)`, async () => {
+      const f = fakes();
+      const id = installId();
+      const sg = await signup({
+        source: "self-serve",
+        owner_sub: "sub",
+        status,
+      });
+      await job(id, { id: sg, signup_id: sg, created_at: OLD });
+      captureLogs(vi.spyOn);
+      for (let t = 0; t < 3; t++) await run(f.env, NOW + t * TICK);
+      expect(f.provision.created).toEqual([]);
+    });
+
+  it("a self-serve create whose signup was admitted (queued) is started", async () => {
+    const f = fakes();
+    const sg = await signup({
+      source: "self-serve",
+      owner_sub: "sub",
+      status: "queued",
+    });
+    await job(installId(), { id: sg, signup_id: sg, created_at: OLD });
+    captureLogs(vi.spyOn);
+    await run(f.env);
+    expect(f.provision.created.map((c) => c.id)).toEqual([sg]);
   });
 
   it("looks at SWEEP_LIMIT jobs per tick", async () => {

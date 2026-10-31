@@ -18,6 +18,7 @@ import {
   ALERT_SEND_TIMEOUT_MS,
   alertFor,
   BURST_EMAIL_INTERVAL_MS,
+  cleanDetail,
   factsOf,
   IDS_SHOWN,
   stepAlert,
@@ -222,6 +223,26 @@ describe("stepAlert", () => {
     expect(ALERT_SEND_TIMEOUT_MS).toBe(5_000);
   });
 
+  it("a tick that ends between the claim and the send (duty budget, eviction) never loses the open email", async () => {
+    const m = mail();
+    captureLogs(vi.spyOn);
+    m.set("hang");
+    // Abandoned mid-send, as the duty's budget abandons it.
+    void stepAlert(m.env(), ALERT, true, T0, { timeoutMs: 10 * DAY });
+    await vi.waitFor(async () => expect(await state("opened_at")).toBe(T0));
+    await vi.waitFor(async () =>
+      expect(await state("sending_at")).not.toBeNull(),
+    );
+    m.set("ok");
+    // Inside the send timeout the claim holds: no second send.
+    await stepAlert(m.env(), ALERT, true, T0 + 1);
+    expect(m.sent).toEqual([]);
+    await stepAlert(m.env(), ALERT, true, T0 + TICK);
+    expect(m.subjects()).toEqual([OPEN]);
+    expect(await state("notified_at")).toBe(T0 + TICK);
+    expect(await state("sending_at")).toBeNull();
+  });
+
   it("no destination: logged each tick, nothing claimed, so no clear is owed", async () => {
     for (const o of [
       { ALERT_TO: "" },
@@ -419,10 +440,22 @@ describe("prodclean_failed", () => {
     const text = open[0]?.text ?? "";
     expect(text).toContain("i00000000042");
     expect(text).not.toContain("i00000000077");
-    expect(text).toContain("binding KV_EXTRA on owner");
+    expect(text).toContain("binding KV_EXTRA on (redacted)");
+    expect(text).not.toContain("customer");
     expect(text).not.toMatch(/@|:\/\/|\u2014/);
     expect(text).not.toContain(String.fromCharCode(7));
     expect(text.length).toBeLessThan(1000);
+  });
+
+  it("cleanDetail redacts email addresses, IPv4 and IPv6 addresses and URLs", () => {
+    expect(
+      cleanDetail(
+        "seen alice@example.com from 1.2.3.4 and 2001:db8::1 via http://h.test/x ok",
+      ),
+    ).toBe("seen (redacted) from (redacted) and (redacted) via (redacted) ok");
+    expect(cleanDetail("binding KV_EXTRA v1.2 key=a.b")).toBe(
+      "binding KV_EXTRA v1.2 key=a.b",
+    );
   });
 
   it("a report with a malformed install id leaves it out", async () => {
