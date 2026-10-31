@@ -297,6 +297,8 @@ export interface RlP {
   contentHost: string;
   /** The version it was created at. */
   createdAt: string;
+  /** The version it runs now (P16's late upgrade, P45 move it). */
+  version: string;
 }
 
 export interface RunState {
@@ -307,7 +309,7 @@ export interface RunState {
   createJobId?: string;
   /** P15: what was seen before the route step ran. */
   p15?: { checked: number; violations: string[] };
-  /** P16: the upgrade sent while the create ran. */
+  /** P16: the upgrade sent while the create ran ("late": it was accepted). */
   p16?: Res | "late";
   /** A non-rl install id from inventory (P10, P45). */
   panelInstall?: string | null;
@@ -472,11 +474,17 @@ async function detail(
 async function panelInstall(run: Run): Promise<string | null> {
   if (run.s.panelInstall !== undefined) return run.s.panelInstall;
   const v = (await run.inventory("/installs")) as {
-    installs?: { id: string; appHost: string | null }[];
+    installs?: { id: string; appHost: string | null; state?: string }[];
   };
-  const i = (v?.installs ?? []).find(
-    (x) => x.appHost && !bare(x.appHost).startsWith("rl-"),
+  // A live one only: a deleted or purged install's 404 proves no scoping.
+  const live = (v?.installs ?? []).filter(
+    (x) =>
+      x.appHost &&
+      !bare(x.appHost).startsWith("rl-") &&
+      x.state !== undefined &&
+      !["deleted", "deleting"].includes(x.state),
   );
+  const i = live.find((x) => x.state === "active") ?? live[0];
   run.s.panelInstall = i?.id ?? null;
   return run.s.panelInstall;
 }
@@ -722,15 +730,18 @@ export const PROBES: readonly Probe[] = [
         appHost: a.install.appHost,
         contentHost: a.install.contentHost,
         createdAt: version,
+        version,
       };
       run.s.createJobId = a.job.id;
       // P16 rides on the running create.
       const up = await run.v1(`/installs/${a.install.id}/upgrade`, {
         body: { requestId: run.rid("p16"), version: run.c.version },
       });
-      // A 202 means the create had already finished: P16 is then unproven.
+      // A 202 means the create had already finished: P16 is then unproven,
+      // and the upgrade runs to done below before the later probes.
+      let lateJob: string | undefined;
       if (up.status === 202) {
-        run.accepted(up, "P16 upgrade");
+        lateJob = run.accepted(up, "P16 upgrade").job.id;
         run.s.p16 = "late";
       } else run.s.p16 = up;
       const again = await run.v1("/installs", { body });
@@ -751,6 +762,10 @@ export const PROBES: readonly Probe[] = [
         }
       }
       const final = await run.done(a.job.id, "P13 create");
+      if (lateJob) {
+        await run.done(lateJob, "P16 late upgrade");
+        run.s.rlp.version = run.c.version;
+      }
       const after = await run.v1(`/installs?q=${slug}`);
       const n1 = (after.json as { items: { slug: string }[] }).items.filter(
         (i) => i.slug === slug,
@@ -828,7 +843,7 @@ export const PROBES: readonly Probe[] = [
     run: async (run) => {
       const p = rlp(run);
       const r = await run.v1(`/installs/${p.id}/upgrade`, {
-        body: { requestId: run.rid("p18"), version: p.createdAt },
+        body: { requestId: run.rid("p18"), version: p.version },
       });
       expect(r, 409, "P18", "downgrade_refused");
       return pass();
@@ -909,9 +924,11 @@ export const PROBES: readonly Probe[] = [
         throw new ProbeFail(`P45 delete_install: ${toolCode(del) ?? "ok"}`);
       if (((await detail(run, p.id)).json as InstallDetail).state !== "active")
         throw new ProbeFail("P45: delete_install changed the install");
-      if (p.createdAt === run.c.version)
+      if (p.version === run.c.version)
         return unproven(
-          "no older installable release: upgrade_install has nothing to upgrade to",
+          p.createdAt === run.c.version
+            ? "no older installable release: upgrade_install has nothing to upgrade to"
+            : "P16's upgrade was accepted (the create had finished): upgrade_install has nothing to upgrade to",
         );
       const up = await tool(run, "upgrade_install", {
         id: p.id,
@@ -926,6 +943,7 @@ export const PROBES: readonly Probe[] = [
       if (job.actor.kind !== "oidc" || job.actor.label !== run.s.actor)
         throw new ProbeFail("P45: the job's actor is not the OIDC actor");
       await run.done(job.id, "P45 upgrade_install");
+      p.version = run.c.version;
       return pass(
         other ? undefined : "no non-rl install for the not_found leg",
       );
@@ -939,6 +957,8 @@ export const PROBES: readonly Probe[] = [
       const p = rlp(run);
       if (p.createdAt === run.c.version)
         return na("no older installable release, so no upgrade to roll back");
+      if (p.version === p.createdAt)
+        return unproven("no upgrade reached done, so none to roll back");
       const a = run.accepted(
         await run.v1(`/installs/${p.id}/rollback`, {
           body: { requestId: run.rid("p31") },
@@ -949,6 +969,7 @@ export const PROBES: readonly Probe[] = [
       const v = ((await detail(run, p.id)).json as InstallDetail).version;
       if (v !== p.createdAt)
         throw new ProbeFail(`P31: version ${v}, want ${p.createdAt}`);
+      p.version = v;
       return pass();
     },
   },
@@ -1000,7 +1021,7 @@ export const PROBES: readonly Probe[] = [
   },
   {
     id: "P22",
-    title: "delete, then restore: closed page, then serving",
+    title: "delete, then restore: 503 closed page on both hosts, then serving",
     run: async (run) => {
       const p = rlp(run);
       const d = run.accepted(
@@ -1013,7 +1034,9 @@ export const PROBES: readonly Probe[] = [
       await run.within(
         PAGE_WITHIN_MS,
         "P22 closed page",
-        async () => (await run.page(p.appHost, "/")).status !== 200,
+        async () =>
+          (await run.page(p.appHost, "/")).status === 503 &&
+          (await run.page(p.contentHost, "/")).status === 503,
       );
       if ((await run.hostMode(p.appHost)).mode !== "closed")
         throw new ProbeFail("P22: inventory mode is not closed");
@@ -1062,7 +1085,8 @@ export const PROBES: readonly Probe[] = [
         installs?: { id: string; state: string }[];
       };
       const row = inv?.installs?.find((i) => i.id === p.id);
-      if (row && row.state !== "deleted")
+      if (!row) throw new ProbeFail("P23: inventory has no row for it");
+      if (row.state !== "deleted")
         throw new ProbeFail(`P23: inventory state ${row.state}`);
       const m = await run.hostMode(p.appHost);
       if (m.installId !== null || m.mode !== null)
@@ -1162,8 +1186,11 @@ export const PROBES: readonly Probe[] = [
         testUser: "b",
         body: { requestId: run.rid("p29"), slug, turnstile: DUMMY_TURNSTILE },
       });
+      // 7 and 12.2: staging runs SIGNUPS_ENABLED=test-users; closed is drift.
       if (c.status === 503 && errCode(c) === "signups_closed")
-        return na("SIGNUPS_ENABLED is not test-users on staging");
+        throw new ProbeFail(
+          "P29: 503 signups_closed: staging's SIGNUPS_ENABLED must be test-users (7)",
+        );
       // Design gap: no principal can purge a test user's install within a
       // run (U's R11 is 403, O cannot reach a self-serve install, the
       // scheduler purges at purge_at), so an earlier run's claim holds.
@@ -1543,16 +1570,23 @@ export const PROBES: readonly Probe[] = [
         "P44 unlisted claude.ai",
         "invalid_redirect_uri",
       );
-      let last: Res | undefined;
-      for (let i = 0; i < P44_REGISTRATIONS; i++) {
-        last = await reg([run.c.mcpRedirectUri]);
-        const id = (last.json as { client_id?: string } | undefined)?.client_id;
-        if (i === 0 && last.status === 201 && id) run.s.clientId = id;
+      // 1-10 must register (else the 11th's refusal proves no limit);
+      // the 11th must be the limit's 429, not any other refusal.
+      for (let i = 1; i < P44_REGISTRATIONS; i++) {
+        const r = await reg([run.c.mcpRedirectUri]);
+        const id = (r.json as { client_id?: unknown } | undefined)?.client_id;
+        if (r.status !== 201 || typeof id !== "string" || !id)
+          throw new ProbeFail(
+            `P44: registration ${i} want 201 with a client_id, got ${desc(r)}`,
+          );
+        if (i === 1) run.s.clientId = id;
       }
-      if (!last || last.status < 400)
-        throw new ProbeFail(
-          `P44: the 11th registration was ${last ? desc(last) : "not sent"}`,
-        );
+      expect(
+        await reg([run.c.mcpRedirectUri]),
+        429,
+        `P44 registration ${P44_REGISTRATIONS}`,
+        "rate_limited",
+      );
       return pass();
     },
   },

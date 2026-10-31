@@ -57,6 +57,15 @@ describe("redline-staging.yml", () => {
     });
   });
 
+  it("names each run after its tag, the shape staging-first-gate.sh matches", () => {
+    expect(w["run-name"]).toBe("redline-staging ${{ inputs.tag }}");
+    const gateTest = readFileSync(
+      join(root, "scripts/ci/staging-first-gate.test.ts"),
+      "utf8",
+    );
+    expect(gateTest).toContain("display_title: `redline-staging ${TAG}`");
+  });
+
   it("pins every action by SHA and keeps no git credentials", () => {
     for (const s of steps) if (s.uses) expect(s.uses).toMatch(SHA_PIN);
     expect(steps[0]?.with?.["persist-credentials"]).toBe(false);
@@ -231,6 +240,7 @@ describe("redline-staging.yml", () => {
         "REDLINE_PROVISIONING_OIDC",
         "REDLINE_STG_INVENTORY_OIDC",
         "REDLINE_PROD_INVENTORY_OIDC",
+        "REDLINE_MINTED_OIDC",
         "REDLINE_PROD_R2_TOKEN",
         "REDLINE_PROD_SCRIPTS_TOKEN",
         "REDLINE_RL_A_HOOK_KEY",
@@ -245,6 +255,31 @@ describe("redline-staging.yml", () => {
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  it("T19's shell unsets the OIDC request variables and refuses to start if either survives", () => {
+    const t19 = named("t19");
+    expect(t19.env).toMatchObject({
+      ACTIONS_ID_TOKEN_REQUEST_URL: "",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "",
+    });
+    const run = String(t19.run);
+    const pre = run.slice(0, run.indexOf("export T19_EXPECT_VERSION"));
+    expect(pre).toContain(
+      "unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    );
+    const vars = {
+      ACTIONS_ID_TOKEN_REQUEST_URL: "https://runner.example/token",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "tok",
+    };
+    const r = runBash(`${pre}\nenv`, vars);
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain("ACTIONS_ID_TOKEN_REQUEST_");
+    // The guard itself: without the unset, a surviving variable stops T19.
+    const guard = pre.replace(/^\s*unset ACTIONS_ID_TOKEN_REQUEST_URL.*$/m, "");
+    const g = runBash(guard, vars);
+    expect(g.status).toBe(1);
+    expect(g.stdout).toContain("T19 can reach the OIDC request variables");
   });
 
   it("installs without lifecycle scripts: every step of the job can reach the OIDC request token", () => {
@@ -349,6 +384,15 @@ describe("redline-staging.yml", () => {
       expect(run().stdout).toContain(
         "secret in report: REDLINE_PROVISIONING_OIDC",
       );
+      // A JWT a re-mint replaced lives on only in the minted list.
+      writeFileSync(
+        join(tmp, "redline-secrets", "REDLINE_MINTED_OIDC"),
+        "eyJ.old.sig\neyJ.eyJ.sig\n",
+      );
+      writeFileSync(join(tmp, "redline-report", "r.txt"), "jwt eyJ.old.sig");
+      const old = run();
+      expect(old.status).toBe(1);
+      expect(old.stdout).toContain("secret in report: REDLINE_MINTED_OIDC");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

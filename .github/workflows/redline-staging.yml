@@ -12,8 +12,11 @@
 # beside it: it needs this run's rl-a hook key, which only this job holds.
 # Deviation from 4.4 ("id-token on the redline job only, not t19"): T19 is a
 # step of the id-token job, so before it runs every JWT and prod token file
-# is deleted; the runner may still hand it the OIDC request variables.
+# is deleted, and its shell unsets the OIDC request variables and fails if
+# they survive, so no process it starts can mint.
 name: redline-staging
+# scripts/ci/staging-first-gate.sh finds this run by the tag in its name.
+run-name: redline-staging ${{ inputs.tag }}
 
 on:
   workflow_dispatch:
@@ -153,8 +156,8 @@ jobs:
       # T19: the dashboard against rl-a (apps/dashboard/e2e/staging), after
       # the red-line suite, never beside it: both write to rl-a through its
       # hooks (per-IP code caps, the hook audit log the red-line cases read).
-      # The blank OIDC request variables are best effort only: the runner may
-      # set them again for a job with id-token: write.
+      # The step env blanks the OIDC request variables; the shell then unsets
+      # them and fails if either survives, before Playwright starts.
       - id: t19
         name: Run T19
         if: ${{ !cancelled() && steps.bringup.outcome == 'success' }}
@@ -164,6 +167,8 @@ jobs:
           T19_EXPECT_TIER: team
         run: |
           set -euo pipefail
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL+x}${ACTIONS_ID_TOKEN_REQUEST_TOKEN+x}" ]; then echo "T19 can reach the OIDC request variables"; exit 1; fi
           export T19_EXPECT_VERSION="$REDLINE_RELEASE"
           pnpm --filter @oa/dashboard exec playwright test -c playwright.staging.config.ts
       # Artifacts are not masked: a secret echoed into a report stops the upload.

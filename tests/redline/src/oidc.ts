@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   chmodSync,
   lstatSync,
   readFileSync,
@@ -29,6 +30,21 @@ export const OIDC_FILES: Readonly<Record<AudienceKey, string>> = {
   stagingInventory: "REDLINE_STG_INVENTORY_OIDC",
   prodInventory: "REDLINE_PROD_INVENTORY_OIDC",
 };
+
+/**
+ * Every JWT minted in the job, one per line, 0600 in the same dir: a re-mint
+ * replaces a file's JWT, so the report scans read this too and catch an
+ * earlier one. Its name matches the workflow's REDLINE_*_OIDC drop before T19.
+ */
+export const MINTED_FILE = "REDLINE_MINTED_OIDC";
+
+/** Appends `jwt` to the dir's MINTED_FILE (0600). */
+export function recordMinted(dir: string, jwt: string): void {
+  if (!JWT_RE.test(jwt)) throw new Error("OIDC: not a JWT");
+  const f = join(dir, MINTED_FILE);
+  appendFileSync(f, `${jwt}\n`, { mode: 0o600 });
+  chmodSync(f, 0o600);
+}
 
 /** A reader asks for a new JWT when the current one has less than this left. */
 export const REFRESH_MARGIN_S = 90;
@@ -154,6 +170,7 @@ export function jwtSource(
     }
     const fresh = await mintJwt(audience, env, opts.fetch);
     opts.onMint?.(fresh);
+    recordMinted(dirname(file), fresh);
     writeSecretFile(file, fresh);
     return fresh;
   };

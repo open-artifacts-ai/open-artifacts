@@ -72,6 +72,10 @@ export type Fault =
   | "p6_alg_none_ok"
   | "p13_replay_new_job"
   | "p15_mode_early"
+  | "p16_late"
+  | "p22_closed_404"
+  | "p23_no_row"
+  | "p44_unlisted_redirect"
   | "p24_old"
   | "p27_no_token_ok"
   | "p34_admin_429"
@@ -120,6 +124,7 @@ export function fakeApi(): FakeApi {
   const replays = new Map<string, Response>();
   const log: string[] = [];
   const signupAccounts = new Set<string>();
+  const purged = new Map<string, FInstall>();
   const authStarts = new Map<number, number>();
   let registrations = 0;
   let n = 0;
@@ -166,6 +171,8 @@ export function fakeApi(): FakeApi {
   };
   add({ id: CONFIG.rlA.id, slug: "rl-a", version: "0.81.0" });
   add({ id: CONFIG.rlB.id, slug: "rl-b", version: "0.82.0" });
+  // Listed first: a deleted panel install P10 and P45 must skip.
+  add({ slug: "gone", testHooks: false, owner: "admin", state: "deleted" });
   const panel = add({ slug: "acme", testHooks: false, owner: "admin" });
 
   const summary = (i: FInstall) => ({
@@ -409,6 +416,9 @@ export function fakeApi(): FakeApi {
           i.version = version;
         },
       });
+      // The create finishes before the probe's next request.
+      if (faults.has("p16_late") && !user)
+        while (j.status === "running") advance(j);
       return ok({ job: jobView(j, false), install: summary(i) }, 202);
     }
     m = path.match(/^\/installs\/([^/]+)(?:\/([a-z-]+))?$/);
@@ -493,7 +503,15 @@ export function fakeApi(): FakeApi {
       case "purge": {
         if (!confirm()) return err(400, "confirm_mismatch");
         const kind = i.state === "failed" ? "discard" : "purge";
-        const j = startJob(i, kind, p, { onDone: () => installs.delete(i.id) });
+        // Inventory keeps the row as deleted (install_status); HOSTS and
+        // the API forget it.
+        const j = startJob(i, kind, p, {
+          onDone: () => {
+            installs.delete(i.id);
+            if (!faults.has("p23_no_row"))
+              purged.set(i.id, { ...i, state: "deleted", mode: null });
+          },
+        });
         return ok({ job: jobView(j, false), install: summary(i) }, 202);
       }
       case "retry": {
@@ -615,7 +633,11 @@ export function fakeApi(): FakeApi {
       return new Response(null, { status: 401 });
     if (!i || i.mode === null) return new Response("nf", { status: 404 });
     if (i.mode === "paused") return new Response("paused", { status: 503 });
-    if (i.mode === "closed") return new Response("closed", { status: 410 });
+    // Dispatch serves the closed page as 503 too (apps/dispatch/src/unavailable.ts).
+    if (i.mode === "closed")
+      return new Response("closed", {
+        status: faults.has("p22_closed_404") ? 404 : 503,
+      });
     return path === "/healthz"
       ? ok({ ok: true, testHooks: i.testHooks, installId: i.id })
       : new Response("app");
@@ -648,7 +670,10 @@ export function fakeApi(): FakeApi {
         });
       if (url.pathname === "/oauth/register") {
         const b = (await req.json()) as { redirect_uris: string[] };
-        if (b.redirect_uris[0] !== CONFIG.mcpRedirectUri)
+        if (
+          b.redirect_uris[0] !== CONFIG.mcpRedirectUri ||
+          faults.has("p44_unlisted_redirect")
+        )
           return ok({ error: "invalid_redirect_uri" }, 400);
         if (++registrations > 10 && !faults.has("p44_no_limit"))
           return ok({ error: "rate_limited" }, 429);
@@ -725,7 +750,7 @@ export function fakeApi(): FakeApi {
         return new Response(null, { status: 404 });
       if (url.pathname === "/installs")
         return ok({
-          installs: [...installs.values()].map((i) => ({
+          installs: [...installs.values(), ...purged.values()].map((i) => ({
             id: i.id,
             appHost: i.appHost,
             contentHost: i.contentHost,

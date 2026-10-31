@@ -12,6 +12,7 @@ import {
   AUDIENCES,
   jwtClaims,
   jwtSource,
+  MINTED_FILE,
   mintJwt,
   REFRESH_MARGIN_S,
 } from "../src/oidc.ts";
@@ -156,7 +157,18 @@ describe("each probe fails on the behaviour it guards", () => {
       "P38",
       /protected resource scopes_supported is not exactly the five/,
     ],
-    ["p44_no_limit", "P44", /the 11th registration was status 201/],
+    [
+      "p44_no_limit",
+      "P44",
+      /P44 registration 11: want 429 rate_limited, got status 201/,
+    ],
+    [
+      "p44_unlisted_redirect",
+      "P44",
+      /P44: registration 1 want 201 with a client_id, got status 400/,
+    ],
+    ["p22_closed_404", "P22", /P22 closed page/],
+    ["p23_no_row", "P23", /P23: inventory has no row for it/],
     ["p45_extra_tool", "P45", /tools\/list names differ/],
     [
       "p47_wrong_code",
@@ -181,10 +193,33 @@ describe("each probe fails on the behaviour it guards", () => {
     );
   });
 
-  it("P29 is not-applicable while signups are closed (503)", async () => {
+  it("P29 fails while signups are closed (503): staging must run test-users", async () => {
     const f = fakeApi();
     f.faults.add("signups_closed");
-    expect(level((await runAll(f)).get("P29"))).toBe("not-applicable");
+    expect((await runAll(f)).get("P29")).toMatch(
+      /P29: 503 signups_closed: staging's SIGNUPS_ENABLED must be test-users/,
+    );
+  });
+
+  it("P16 late: the accepted upgrade runs to done, so P18, P45 and P31 test what they guard", async () => {
+    const f = fakeApi();
+    f.faults.add("p16_late");
+    const out = await runAll(f);
+    expect(level(out.get("P16"))).toBe("unproven-live");
+    expect(level(out.get("P18"))).toBe("pass");
+    expect(out.get("P45")).toMatchObject({
+      level: "unproven-live",
+      reason: expect.stringMatching(/P16's upgrade was accepted/),
+    });
+    expect(level(out.get("P31"))).toBe("pass");
+  });
+
+  it("the panel install for P10 and P45 is a live one, never a deleted row", async () => {
+    const f = fakeApi();
+    const run = new Run(CONFIG, f.io);
+    await PROBES.find((p) => p.id === "P10")?.run(run);
+    const acme = [...f.installs.values()].find((i) => i.slug === "acme");
+    expect(run.s.panelInstall).toBe(acme?.id);
   });
 
   it("P29 deletes to deleting, U's purge is 403, and a later run's create meets signup_limit", async () => {
@@ -418,6 +453,12 @@ describe("OIDC JWT files", () => {
     expect(masked).toEqual([second]);
     expect(readFileSync(file, "utf8")).toBe(second);
     expect(statSync(file).mode & 0o777).toBe(0o600);
+    // Every mint is kept for the report scans, one per line, 0600.
+    t.now += 600_000;
+    const third = await src();
+    const minted = join(d, MINTED_FILE);
+    expect(readFileSync(minted, "utf8")).toBe(`${second}\n${third}\n`);
+    expect(statSync(minted).mode & 0o777).toBe(0o600);
     const offline = jwtSource(file, AUDIENCES.stagingInventory, {
       env: {},
       now: () => 1_800_000_600_000,
