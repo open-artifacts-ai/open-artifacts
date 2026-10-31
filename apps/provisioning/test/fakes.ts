@@ -14,6 +14,14 @@ export const APP = "hosted.test";
 export const ADMIN = `https://admin.${APP}`;
 export const API = `https://api.${APP}`;
 
+/** An Ed25519 PKCS#8 key (base64url) from one fill byte. */
+export const pkcs8 = (fill: number) =>
+  Buffer.concat([
+    Buffer.from("302e020100300506032b657004220420", "hex"),
+    Buffer.alloc(32, fill),
+  ]).toString("base64url");
+export const ADMIN_BROKER_KEY = pkcs8(21);
+
 export type FakeLimiter = RateLimit & { keys: string[]; allow: boolean };
 export const limiter = (allow = true): FakeLimiter => {
   const keys: string[] = [];
@@ -79,7 +87,7 @@ export function fakeEnv(over: Partial<Env> = {}) {
     SELF_SERVE_TIER: "trial",
     MCP_REDIRECT_URIS: "https://claude.ai/api/mcp/auth_callback",
     ADMIN_SESSION_KEY: "k".repeat(32),
-    ADMIN_BROKER_KEY: "unused",
+    ADMIN_BROKER_KEY,
     PLATFORM_DB: db,
     PROVISION_INSTALL: provisionInstall,
     MANAGE_INSTALL: manageInstall,

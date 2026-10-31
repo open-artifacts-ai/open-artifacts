@@ -33,6 +33,11 @@
       "observability": {
         "enabled": false
       },
+      // Hourly MCP client sweep (sweepOAuthClients): unclaimed after 24 h,
+      // any client after 30 days, with its grants.
+      "triggers": {
+        "crons": ["41 * * * *"]
+      },
       "vars": {
         "OA_ENV": "staging",
         "APP_DOMAIN": "open-artifacts-staging.app",
@@ -141,6 +146,22 @@
             "limit": 20,
             "period": 60
           }
+        },
+        {
+          "name": "RL_PV_ADMIN_ESCAPE",
+          "namespace_id": "1147",
+          "simple": {
+            "limit": 60,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_TOKEN_WRITE",
+          "namespace_id": "1148",
+          "simple": {
+            "limit": 10,
+            "period": 60
+          }
         }
       ],
       "kv_namespaces": [
@@ -157,6 +178,11 @@
       "preview_urls": false,
       "observability": {
         "enabled": false
+      },
+      // Hourly MCP client sweep (sweepOAuthClients): unclaimed after 24 h,
+      // any client after 30 days, with its grants.
+      "triggers": {
+        "crons": ["41 * * * *"]
       },
       "vars": {
         "OA_ENV": "prod",
@@ -259,6 +285,22 @@
           "namespace_id": "1156",
           "simple": {
             "limit": 20,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_ADMIN_ESCAPE",
+          "namespace_id": "1157",
+          "simple": {
+            "limit": 60,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_TOKEN_WRITE",
+          "namespace_id": "1158",
+          "simple": {
+            "limit": 10,
             "period": 60
           }
         }
