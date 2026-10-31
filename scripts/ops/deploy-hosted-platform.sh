@@ -14,7 +14,8 @@
 # VERIFY_ONLY=1 deploys and sets nothing: it only reads the live Worker back and
 # runs every check (a read-only rehearsal against what is deployed).
 # Usage (env as below): scripts/ops/deploy-hosted-platform.sh staging|prod <target>
-#   platform-db      PLATFORM_DB_ID (migrations, scripts/ops/platform-db.ts)
+#   platform-db      PLATFORM_DB_ID MAIN_MIGRATION_LOCK (main's migration-lock.json;
+#                    migrations, scripts/ops/platform-db.ts)
 #   auth-broker      BROKER_REGISTRY_ID GOOGLE_CLIENT_ID [GOOGLE_CLIENT_SECRET]
 #                    BROKER_PIN_FILE (main's packages/provision/src/wfp.ts: the
 #                    client must equal its BROKER_GOOGLE_CLIENT_ID[<env>])
@@ -28,7 +29,7 @@
 #   inventory        PLATFORM_DB_ID HOSTS_KV_ID GITHUB_REPOSITORY_ID GITHUB_REPOSITORY
 #                    (owner/repo: the OIDC principal, design v7 6.3)
 #   provisioning     PLATFORM_DB_ID BROKER_REGISTRY_ID DIRECTORY_REGISTRY_ID
-#                    GITHUB_REPOSITORY_ID (the provisioner and auth broker must exist)
+#                    GITHUB_REPOSITORY_ID SIGNUP_DAILY_CAP (the provisioner and auth broker must exist)
 # Always: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
 set -euo pipefail
 
@@ -172,6 +173,32 @@ vars_are() {
   got="$(jq -S -c '[.result.bindings[] | select(.type == "plain_text") | {(.name): .text}] | add // {}' <<< "$1")"
   [ "$got" = "$want" ] || { echo "$2 vars: got $got, want $want" >&2; exit 1; }
 }
+# The signups gate (design v7 7), on every Worker that reads it (provisioner,
+# provisioning, scheduler): false; staging also test-users. true opens
+# self-serve, which waits until after M1: it needs ALLOW_SIGNUPS=1 (a change
+# the Manager approves), whatever the tag commits or the env asks for.
+# signups_ok <value> <what>: refuses (exit 1) any other value.
+signups_ok() {
+  case "$1" in
+    false) return 0 ;;
+    test-users) [ "$env" = staging ] || { echo "$2: SIGNUPS_ENABLED=test-users is staging only; refusing" >&2; exit 1; } ;;
+    true) [ "${ALLOW_SIGNUPS:-}" = 1 ] || { echo "$2: SIGNUPS_ENABLED=true opens self-serve signups and needs ALLOW_SIGNUPS=1; refusing" >&2; exit 1; } ;;
+    *) echo "$2: SIGNUPS_ENABLED is '$1', want false (staging also test-users); refusing" >&2; exit 1 ;;
+  esac
+}
+# signups_committed <app>: before deploying, the tag's committed value for
+# this env (a literal, or the placeholder as SIGNUPS_ENABLED fills it).
+signups_committed() {
+  local v
+  v="$(node --experimental-strip-types --no-warnings "$root/scripts/ops/wrangler-env.ts" "$root/apps/$1/wrangler.jsonc" "$env" signups)" ||
+    { echo "can't read $1's committed SIGNUPS_ENABLED" >&2; exit 1; }
+  signups_ok "$(jq -r '. // ""' <<< "$v")" "the tag's $env $1 config"
+}
+# signups_deployed <settings json> <worker>: after deploying (or verify only),
+# the live value; exactly one binding.
+signups_deployed() {
+  signups_ok "$(jq -r '[.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text // ""] | join(",")' <<< "$1")" "deployed $2"
+}
 # names_are <settings json> <want>: the non-var, non-secret binding names, sorted, comma-joined.
 names_are() {
   local got
@@ -205,7 +232,9 @@ broker_pin() {
 
 case "$target" in
   platform-db)
-    need PLATFORM_DB_ID
+    # MAIN_MIGRATION_LOCK: main's migration-lock.json; every pin on it must be
+    # the tag's too (platform-db.ts refuses an edited, re-pinned migration).
+    need PLATFORM_DB_ID; need MAIN_MIGRATION_LOCK
     node --experimental-strip-types --no-warnings "$root/scripts/ops/platform-db.ts" "$env"
     ;;
   provision-token)
@@ -227,6 +256,7 @@ case "$target" in
     ;;
   provisioner)
     need PLATFORM_DB_ID; need SECRETS_STORE_ID; need SIGNUP_DAILY_CAP; need SIGNUPS_ENABLED; need WELCOME_FROM
+    signups_committed provisioner
     # Check first, create only when absent; a failed listing stops the run.
     queues="$(list_all "/queues?" "list queues" | jq -r '.[].queue_name')"
     for q in "oa-$P-signups" "oa-$P-signups-dlq"; do
@@ -258,6 +288,7 @@ case "$target" in
     expect "$S" '.result.bindings[] | select(.name == "MANAGE_INSTALL") | "\(.workflow_name) \(.class_name)"' \
       "oa-$P-manage-install ManageInstall" "MANAGE_INSTALL"
     names_are "$S" "DISPATCHER,MANAGE_INSTALL,PLATFORM_DB,PROVISION_INSTALL,PROVISION_TOKEN,RELEASES,WELCOME_EMAIL"
+    signups_deployed "$S" oa-$P-provisioner
     vars_are "$S" provisioner
     expect "$S" '.result.observability.enabled // false' false "observability"
     no_secret_bindings "$S" oa-$P-provisioner
@@ -265,7 +296,7 @@ case "$target" in
     [ -z "$names" ] || { echo "oa-$P-provisioner has secrets '$names'; want none" >&2; exit 1; }
     ;;
   provisioning)
-    need PLATFORM_DB_ID; need BROKER_REGISTRY_ID; need DIRECTORY_REGISTRY_ID; need GITHUB_REPOSITORY_ID
+    need PLATFORM_DB_ID; need BROKER_REGISTRY_ID; need DIRECTORY_REGISTRY_ID; need GITHUB_REPOSITORY_ID; need SIGNUP_DAILY_CAP
     need_workers oa-$P-provisioner oa-$P-auth-broker
     # Prod, before anything is deployed: the tag's committed vars carry no OIDC
     # principal and no test-users gate (4.4); the read-back checks them again.
@@ -277,6 +308,7 @@ case "$target" in
       [ "$(jq -r '.SIGNUPS_ENABLED // ""' <<< "$pre")" != test-users ] ||
         { echo "prod provisioning commits SIGNUPS_ENABLED=test-users (staging only); refusing" >&2; exit 1; }
     fi
+    signups_committed provisioning
     # The Worker and what it depends on, the admin SPA among them (@oa/admin
     # is a devDependency). Its vite build writes apps/provisioning/dist-assets
     # (ASSETS) itself, nothing is copied, and the wrapper refuses a deploy
@@ -294,7 +326,7 @@ case "$target" in
     [[ "$found" =~ ^[0-9a-f]{32}$ ]] || { echo "KV namespace $ns: want exactly one, with a 32 hex id" >&2; exit 1; }
     OAUTH_KV_ID="$found"
     PLATFORM_DB_ID="$PLATFORM_DB_ID" PROVISIONING_OAUTH_KV_ID="$OAUTH_KV_ID" GITHUB_REPOSITORY_ID="$GITHUB_REPOSITORY_ID" \
-      deploy provisioning
+      SIGNUP_DAILY_CAP="$SIGNUP_DAILY_CAP" deploy provisioning
     W="oa-$P-provisioning"
     have="$(secret_names "$W")"
     if ! grep -qx ADMIN_SESSION_KEY <<< "$have"; then
@@ -346,6 +378,7 @@ case "$target" in
       [ -z "$oidc" ] || { echo "prod $W binds $oidc; prod has no OIDC principal" >&2; exit 1; }
       expect "$S" '.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text | . == "test-users"' false "SIGNUPS_ENABLED (test-users is staging only)"
     fi
+    signups_deployed "$S" "$W"
     # ADMIN_IDENTITIES and MCP_REDIRECT_URIS among them.
     vars_are "$S" provisioning
     expect "$S" '.result.observability.enabled // false' false "observability"
@@ -439,14 +472,17 @@ case "$target" in
     # would ship a scheduler bound to nothing.
     need_workers oa-$P-auth-broker oa-$P-directory-broker oa-$P-provisioner
     need_queue oa-$P-signups
-    # The tag's alert wiring (#915): "pinned" (every alert var and ALERT_EMAIL's
-    # destination is this env's placeholder) or "absent" (none of them, before
-    # #915); a half-pinned config refuses here.
+    # The tag's alert wiring (#915) must be "pinned": every alert var and
+    # ALERT_EMAIL's destination is this env's placeholder. "absent" (none of
+    # them, a tag before #915) refuses: an alert must have somewhere to go
+    # (4.8). A half-pinned config refuses too.
     alerts="$(committed scheduler alert-pins | jq -r .)" || alerts=""
     case "$alerts" in
-      pinned | absent) ;;
+      pinned) ;;
+      absent) echo "the tag's scheduler config doesn't pin the $env alerts (ALERT_TO, ALERT_EMAIL's destination_address: #915); alerts need a destination (4.8); refusing" >&2; exit 1 ;;
       *) echo "the tag's scheduler config half pins the $env alerts; refusing" >&2; exit 1 ;;
     esac
+    signups_committed scheduler
     PLATFORM_DB_ID="$PLATFORM_DB_ID" EMAIL_ZONE_TAGS="$EMAIL_ZONE_TAGS" EMAIL_DAILY_LIMIT="$EMAIL_DAILY_LIMIT" \
       ALERT_TO="$ALERT_TO" ALERT_FROM="$ALERT_FROM" SIGNUP_DAILY_CAP="$SIGNUP_DAILY_CAP" SIGNUPS_ENABLED="$SIGNUPS_ENABLED" \
       deploy scheduler
@@ -466,21 +502,14 @@ case "$target" in
     expect "$S" '.result.bindings[] | select(.name == "OA_ENV") | .text' "$env" "OA_ENV"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_QUOTA_ZONES") | .text' "$EMAIL_ZONE_TAGS" "EMAIL_QUOTA_ZONES"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_DAILY_LIMIT") | .text' "$EMAIL_DAILY_LIMIT" "EMAIL_DAILY_LIMIT"
-    if [ "$alerts" = pinned ]; then
-      expect "$S" '[.result.bindings[] | select(.name == "ALERT_TO") | .text] | join(",")' "$ALERT_TO" "ALERT_TO"
-      expect "$S" '[.result.bindings[] | select(.name == "ALERT_FROM") | .text] | join(",")' "$ALERT_FROM" "ALERT_FROM"
-      expect "$S" '[.result.bindings[] | select(.name == "SIGNUP_DAILY_CAP") | .text] | join(",")' "$SIGNUP_DAILY_CAP" "SIGNUP_DAILY_CAP"
-      expect "$S" '[.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text] | join(",")' "$SIGNUPS_ENABLED" "SIGNUPS_ENABLED"
-      # The alert mail goes to ALERT_TO and nowhere else.
-      expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address // ""] | join(",")' \
-        "$ALERT_TO" "ALERT_EMAIL destination"
-    else
-      # Before #915: none of them is deployed (alerts log no_destination).
-      expect "$S" '[.result.bindings[] | select(.name == "ALERT_TO" or .name == "ALERT_FROM" or .name == "SIGNUP_DAILY_CAP" or .name == "SIGNUPS_ENABLED") | .name] | join(",")' \
-        "" "alert vars (the tag commits none)"
-      expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address // ""] | join(",")' \
-        "" "ALERT_EMAIL destination (the tag commits none)"
-    fi
+    signups_deployed "$S" oa-$P-scheduler
+    expect "$S" '[.result.bindings[] | select(.name == "ALERT_TO") | .text] | join(",")' "$ALERT_TO" "ALERT_TO"
+    expect "$S" '[.result.bindings[] | select(.name == "ALERT_FROM") | .text] | join(",")' "$ALERT_FROM" "ALERT_FROM"
+    expect "$S" '[.result.bindings[] | select(.name == "SIGNUP_DAILY_CAP") | .text] | join(",")' "$SIGNUP_DAILY_CAP" "SIGNUP_DAILY_CAP"
+    expect "$S" '[.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text] | join(",")' "$SIGNUPS_ENABLED" "SIGNUPS_ENABLED"
+    # The alert mail goes to ALERT_TO and nowhere else: never empty (4.8).
+    expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address // ""] | join(",")' \
+      "$ALERT_TO" "ALERT_EMAIL destination"
     crons="$(cf_get /workers/scripts/oa-$P-scheduler/schedules | must "read oa-$P-scheduler schedules" | jq -r '[.result.schedules[].cron] | sort | join(",")')"
     [ "$crons" = "*/2 * * * *,17 3 * * *" ] || { echo "oa-$P-scheduler schedules are '$crons'" >&2; exit 1; }
     ;;

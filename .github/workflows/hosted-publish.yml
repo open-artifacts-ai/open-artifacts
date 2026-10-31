@@ -41,8 +41,11 @@ permissions: {}
 jobs:
   resolve:
     runs-on: ubuntu-latest
+    # actions: read lets a prod-only release dispatch find the tag's staging
+    # publish (a publish-staging job of an earlier run).
     permissions:
       contents: read
+      actions: read
     timeout-minutes: 10
     outputs:
       kind: ${{ steps.what.outputs.kind }}
@@ -74,6 +77,9 @@ jobs:
         run: bash scripts/ci/hosted-publish-resolve.sh
 
   publish-staging:
+    # The name is the staging publish record a prod-only dispatch looks for
+    # (hosted-publish-resolve.sh, staged).
+    name: publish-staging ${{ needs.resolve.outputs.kind }} ${{ needs.resolve.outputs.tag }}
     needs: resolve
     if: ${{ needs.resolve.outputs.staging == 'true' }}
     runs-on: ubuntu-latest

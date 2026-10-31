@@ -5,8 +5,9 @@
 #   workflow_run (release-please on main, success): the release whose tag's
 #     commit is the run's head_sha, to staging then prod; none is kind=none
 #     (most pushes cut no release), exit 0.
-#   workflow_dispatch: exactly one of TAG (vX.Y.Z; DEPLOY_ENV empty for both)
-#     or FLOOR_RUN_ID (a hosted-floor.yml run id; DEPLOY_ENV required).
+#   workflow_dispatch: exactly one of TAG (vX.Y.Z; DEPLOY_ENV empty for both;
+#     prod alone needs the tag's staging publish first, see staged) or
+#     FLOOR_RUN_ID (a hosted-floor.yml run id; DEPLOY_ENV required).
 # Read-only (`gh api`); an API error is exit 1, never "no release".
 # Env: EVENT, HEAD_SHA, HEAD_BRANCH, CONCLUSION (workflow_run); TAG,
 # DEPLOY_ENV, FLOOR_RUN_ID (dispatch); GH_TOKEN, GITHUB_REPOSITORY, GITHUB_OUTPUT.
@@ -20,6 +21,31 @@ out() {
   echo "publish: kind=$1 tag=${2:-none} floor_run_id=${3:-none} staging=$4 prod=$5"
 }
 stable='^v[0-9]+\.[0-9]+\.[0-9]+$'
+# staged <tag>: staging first for a release dispatched to prod alone. The
+# tag's staging publish record must exist: a completed hosted-publish.yml run
+# on main, of this repository, whose publish-staging job (named
+# "publish-staging release <tag>" by the workflow) succeeded. Exit 1 when
+# there is none or on any API error.
+staged() {
+  local runs ids id jobs n
+  : "${GH_TOKEN:?GH_TOKEN is required}"
+  runs="$(gh api -X GET "$R/actions/workflows/hosted-publish.yml/runs?branch=main&status=completed&per_page=100" 2> /dev/null)" ||
+    { echo "listing hosted-publish.yml runs failed" >&2; exit 1; }
+  ids="$(jq -r --arg repo "$GITHUB_REPOSITORY" '.workflow_runs
+    | if type == "array" then . else error("no runs") end
+    | .[] | select(.head_branch == "main" and .status == "completed" and (.head_repository.full_name // "") == $repo) | .id' <<< "$runs")" ||
+    { echo "listing hosted-publish.yml runs failed: unparsable" >&2; exit 1; }
+  for id in $ids; do
+    [[ "$id" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "listing hosted-publish.yml runs failed: a bad run id" >&2; exit 1; }
+    jobs="$(gh api -X GET "$R/actions/runs/$id/jobs?per_page=100" 2> /dev/null)" ||
+      { echo "reading run $id's jobs failed" >&2; exit 1; }
+    n="$(jq -r --arg n "publish-staging release $1" '[.jobs[] | select(.name == $n and .conclusion == "success")] | length' <<< "$jobs" 2> /dev/null)" ||
+      { echo "reading run $id's jobs failed: unparsable" >&2; exit 1; }
+    if [ "$n" -gt 0 ]; then echo "staging first: $1 was published to staging (run $id)"; return 0; fi
+  done
+  echo "staging first: $1 has no successful staging publish (hosted-publish.yml on main); publish it to staging first, then rerun" >&2
+  exit 1
+}
 
 case "${EVENT:-}" in
   workflow_run)
@@ -58,7 +84,7 @@ case "${EVENT:-}" in
       case "$env" in
         "") out release "$tag" "" true true ;;
         staging) out release "$tag" "" true false ;;
-        prod) out release "$tag" "" false true ;;
+        prod) staged "$tag"; out release "$tag" "" false true ;;
       esac
     elif [ -n "$run" ]; then
       [[ "$run" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "floor_run_id must be a run id" >&2; exit 2; }

@@ -17,6 +17,8 @@ p="\${@: -1}"; p="\${p#repos/$GITHUB_REPOSITORY/}"
 [ -f "$STATE/fail" ] && exit 1
 case "$p" in
   releases\\?*) cat "$STATE/releases.json" ;;
+  actions/workflows/hosted-publish.yml/runs\\?*) cat "$STATE/runs.json" 2> /dev/null || echo '{"workflow_runs":[]}' ;;
+  actions/runs/*/jobs\\?*) id="\${p#actions/runs/}"; id="\${id%%/*}"; cat "$STATE/jobs-$id.json" ;;
   commits/*) t="\${p#commits/}"; [ -f "$STATE/commit-$t" ] || exit 1; echo "{\\"sha\\":\\"$(cat "$STATE/commit-$t")\\"}" ;;
   *) exit 1 ;;
 esac`;
@@ -32,9 +34,27 @@ esac`;
       releases?: unknown[];
       commits?: Record<string, string>;
       fail?: boolean;
+      /** hosted-publish.yml runs: id -> its jobs (name, conclusion). */
+      runs?: Record<string, { name: string; conclusion: string }[]>;
+      runsRaw?: string;
     } = {},
   ) => {
     const sb = sandbox({ gh });
+    if (state.runs || state.runsRaw)
+      writeFileSync(
+        join(sb.dir, "runs.json"),
+        state.runsRaw ??
+          JSON.stringify({
+            workflow_runs: Object.keys(state.runs ?? {}).map((id) => ({
+              id: Number(id),
+              head_branch: "main",
+              status: "completed",
+              head_repository: { full_name: REPO },
+            })),
+          }),
+      );
+    for (const [id, jobs] of Object.entries(state.runs ?? {}))
+      writeFileSync(join(sb.dir, `jobs-${id}.json`), JSON.stringify({ jobs }));
     writeFileSync(
       join(sb.dir, "releases.json"),
       JSON.stringify(state.releases ?? []),
@@ -131,9 +151,82 @@ esac`;
     expect(
       resolve({ ...d, TAG: "v0.80.0", DEPLOY_ENV: "staging" }).o,
     ).toMatchObject({ staging: "true", prod: "false" });
-    expect(
-      resolve({ ...d, TAG: "v0.80.0", DEPLOY_ENV: "prod" }).o,
-    ).toMatchObject({ staging: "false", prod: "true" });
+    // Prod alone: only once the tag's staging publish succeeded.
+    const staged = {
+      runs: {
+        "41": [
+          { name: "publish-staging release v0.80.0", conclusion: "success" },
+        ],
+      },
+    };
+    const r = resolve({ ...d, TAG: "v0.80.0", DEPLOY_ENV: "prod" }, staged);
+    expect(r.code, r.err).toBe(0);
+    expect(r.o).toMatchObject({ staging: "false", prod: "true" });
+    expect(r.out).toContain("v0.80.0 was published to staging (run 41)");
+  });
+  it("dispatch to prod alone refuses a tag with no successful staging publish, writing no output", () => {
+    const d = {
+      EVENT: "workflow_dispatch",
+      TAG: "v0.80.0",
+      DEPLOY_ENV: "prod",
+    };
+    const job = (name: string, conclusion = "success") => ({
+      name,
+      conclusion,
+    });
+    for (const [label, state] of [
+      ["no runs", {}],
+      ["no staging job", { runs: { "1": [job("resolve")] } }],
+      [
+        "another tag",
+        { runs: { "1": [job("publish-staging release v0.79.0")] } },
+      ],
+      [
+        "a longer tag",
+        { runs: { "1": [job("publish-staging release v0.80.01")] } },
+      ],
+      [
+        "failed",
+        { runs: { "1": [job("publish-staging release v0.80.0", "failure")] } },
+      ],
+      ["a floor", { runs: { "1": [job("publish-staging floor ")] } }],
+      ["only prod's", { runs: { "1": [job("publish-prod")] } }],
+    ] as [string, Parameters<typeof resolve>[1]][]) {
+      const r = resolve(d, state);
+      expect(r.code, label).toBe(1);
+      expect(r.err, label).toContain(
+        "v0.80.0 has no successful staging publish",
+      );
+      expect(r.o, label).toEqual({});
+    }
+    // Runs of another branch or a fork don't count.
+    const other = resolve(d, {
+      runsRaw: JSON.stringify({
+        workflow_runs: [
+          {
+            id: 1,
+            head_branch: "feature",
+            status: "completed",
+            head_repository: { full_name: REPO },
+          },
+          {
+            id: 2,
+            head_branch: "main",
+            status: "completed",
+            head_repository: { full_name: "evil/x" },
+          },
+        ],
+      }),
+    });
+    expect(other.code).toBe(1);
+    expect(other.log.filter((l) => l.includes("/jobs"))).toEqual([]);
+    // API errors fail closed.
+    expect(resolve(d, { fail: true }).code).toBe(1);
+    expect(resolve(d, { runsRaw: "not json" }).code).toBe(1);
+    expect(resolve(d, { runsRaw: "{}" }).code).toBe(1);
+    // Staging, or both envs, need no record.
+    expect(resolve({ ...d, DEPLOY_ENV: "staging" }).code).toBe(0);
+    expect(resolve({ ...d, DEPLOY_ENV: "" }).code).toBe(0);
   });
   it("dispatch with a floor run: its env only, which it needs", () => {
     const d = { EVENT: "workflow_dispatch" };

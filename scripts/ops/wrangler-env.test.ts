@@ -6,6 +6,7 @@ import { brokerKey } from "./broker-key.ts";
 import {
   alertPinProblems,
   committedRateLimits,
+  committedSignups,
   committedVars,
 } from "./wrangler-env.ts";
 
@@ -19,17 +20,33 @@ describe("wrangler-env.ts", () => {
   it("the provisioning vars: committed values, the repository id filled", () => {
     const v = committedVars(cfg("provisioning"), "staging", {
       GITHUB_REPOSITORY_ID: "123456",
+      SIGNUP_DAILY_CAP: "20",
     });
+    expect(v.SIGNUP_DAILY_CAP).toBe("20");
     expect(v.OA_ENV).toBe("staging");
     expect(v.OIDC_REPOSITORY_ID).toBe("123456");
     expect(v.MCP_REDIRECT_URIS).toBe("https://claude.ai/api/mcp/auth_callback");
     expect(JSON.stringify(v)).not.toContain("{{");
-    // Prod has no OIDC_* and needs no value.
-    const p = committedVars(cfg("provisioning"), "prod", {});
+    // Prod has no OIDC_* and needs only the cap.
+    const p = committedVars(cfg("provisioning"), "prod", {
+      SIGNUP_DAILY_CAP: "50",
+    });
     expect(Object.keys(p).filter((k) => k.startsWith("OIDC_"))).toEqual([]);
   });
+  it("signups: the committed SIGNUPS_ENABLED, a literal or as filled; null when absent", () => {
+    expect(committedSignups(cfg("provisioning"), "prod", {})).toBe("false");
+    expect(
+      committedSignups(cfg("provisioner"), "prod", { SIGNUPS_ENABLED: "true" }),
+    ).toBe("true");
+    expect(() => committedSignups(cfg("provisioner"), "prod", {})).toThrow(
+      "has no value",
+    );
+    expect(committedSignups(cfg("dispatch"), "prod", {})).toBeNull();
+  });
   it("refuses a placeholder with no value, or another env's", () => {
-    expect(() => committedVars(cfg("provisioning"), "staging", {})).toThrow(
+    expect(() =>
+      committedVars(cfg("provisioning"), "staging", { SIGNUP_DAILY_CAP: "20" }),
+    ).toThrow(
       /OIDC_REPOSITORY_ID: \{\{GITHUB_REPOSITORY_ID_STAGING\}\} has no value/,
     );
     const src = `{"env":{"prod":{"vars":{"A":"{{X_STAGING}}"}}}}`;

@@ -4,7 +4,8 @@
 // committed"). A {{NAME_<ENV>}} placeholder in a var is replaced by the
 // environment variable NAME (the value deploy-platform-worker.sh filled); an
 // unset or empty one exits 1, so a read-back never compares to a placeholder.
-// Usage: node scripts/ops/wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits|alert-pins
+// Usage: node scripts/ops/wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits|alert-pins|signups
+// signups: the env block's SIGNUPS_ENABLED as deployed (null when it has none).
 // alert-pins (the scheduler, design v7 4.8): "pinned" when the env block's
 // alert vars and ALERT_EMAIL's destination are all this env's placeholders,
 // "absent" when it holds none of them (before #915), else exit 1, so
@@ -57,23 +58,45 @@ function block(src: string, env: Env): Block {
   return b;
 }
 
+/** One var's committed value, each {{NAME_<ENV>}} filled from `values[NAME]`. */
+function fillVar(
+  k: string,
+  v: unknown,
+  env: Env,
+  values: Record<string, string | undefined>,
+): string {
+  const up = env.toUpperCase();
+  return String(v).replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, p: string) => {
+    const name = p.endsWith(`_${up}`) ? p.slice(0, -up.length - 1) : null;
+    const value = name ? values[name] : undefined;
+    if (!value) throw new Error(`${k}: {{${p}}} has no value`);
+    return value;
+  });
+}
+
 /** The env block's vars, each {{NAME_<ENV>}} filled from `values[NAME]`. */
 export function committedVars(
   src: string,
   env: Env,
   values: Record<string, string | undefined>,
 ): Record<string, string> {
-  const up = env.toUpperCase();
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(block(src, env).vars ?? {})) {
-    out[k] = String(v).replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, p: string) => {
-      const name = p.endsWith(`_${up}`) ? p.slice(0, -up.length - 1) : null;
-      const value = name ? values[name] : undefined;
-      if (!value) throw new Error(`${k}: {{${p}}} has no value`);
-      return value;
-    });
-  }
+  for (const [k, v] of Object.entries(block(src, env).vars ?? {}))
+    out[k] = fillVar(k, v, env, values);
   return out;
+}
+
+/**
+ * The env block's SIGNUPS_ENABLED as the deploy would fill it (a literal, or
+ * {{SIGNUPS_ENABLED_<ENV>}} from `values`); null when the block has none.
+ */
+export function committedSignups(
+  src: string,
+  env: Env,
+  values: Record<string, string | undefined>,
+): string | null {
+  const v = block(src, env).vars?.SIGNUPS_ENABLED;
+  return v === undefined ? null : fillVar("SIGNUPS_ENABLED", v, env, values);
 }
 
 /** The env block's rate limits, sorted by name, ids as strings. */
@@ -141,7 +164,7 @@ if (
   const [file, env, what] = process.argv.slice(2);
   if (!file || (env !== "staging" && env !== "prod") || !what) {
     console.error(
-      "usage: wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits|alert-pins",
+      "usage: wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits|alert-pins|signups",
     );
     process.exit(2);
   }
@@ -150,6 +173,7 @@ if (
     let out: unknown;
     if (what === "vars") out = committedVars(src, env, process.env);
     else if (what === "ratelimits") out = committedRateLimits(src, env);
+    else if (what === "signups") out = committedSignups(src, env, process.env);
     else if (what === "alert-pins") {
       if (!alertWired(src, env)) out = "absent";
       else {

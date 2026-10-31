@@ -5,8 +5,8 @@
 # zone wiring (DNS, routes, settings: planned, then applied in the same run).
 # No one approves a run: the release gate (scripts/ci/tag-passed-checks.sh)
 # refuses a tag unless every earlier check on it passed, and prod's
-# provisioner and provisioning also need a green redline-staging.yml run for
-# the same tag (scripts/ci/staging-first-gate.sh). Each env has its own
+# platform-db, provisioner and provisioning also need a green
+# redline-staging.yml run for the same tag (scripts/ci/staging-first-gate.sh). Each env has its own
 # Environment (hosted-staging-deploy, hosted-prod-deploy) holding the
 # same-named secrets (one Cloudflare token, CLOUDFLARE_API_TOKEN); only main
 # may run it. The constants are main's .github/hosted/<env>.json and the
@@ -123,6 +123,7 @@ jobs:
             scripts/ops
             scripts/ci
             packages/provision/src
+            apps/platform-db
             .github/hosted
           persist-credentials: false
       # main's provision pins the broker's Google client; the auth-broker
@@ -139,11 +140,14 @@ jobs:
             cp ".deploy-logic/scripts/ci/$f" "$RUNNER_TEMP/main-ci/$f"
           done
           cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"
+          # main's migration pins: the tag may add a migration, never re-pin one.
+          cp .deploy-logic/apps/platform-db/migration-lock.json "$RUNNER_TEMP/main-ci/migration-lock.json"
           rm -rf .deploy-logic
-      # Staging first, automatic: prod's provisioner and provisioning deploy a
-      # tag only after redline-staging.yml passed it (within 7 days).
+      # Staging first, automatic: prod's platform-db, provisioner and
+      # provisioning deploy a tag only after redline-staging.yml passed it
+      # (within 7 days; scripts/ci/staging-first-gate.sh states the contract).
       - name: Staging passed this tag
-        if: ${{ inputs.env == 'prod' && (contains(format(',{0},', inputs.targets), ',provisioner,') || contains(format(',{0},', inputs.targets), ',provisioning,')) }}
+        if: ${{ inputs.env == 'prod' && (contains(format(',{0},', inputs.targets), ',platform-db,') || contains(format(',{0},', inputs.targets), ',provisioner,') || contains(format(',{0},', inputs.targets), ',provisioning,')) }}
         env:
           TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
@@ -183,6 +187,7 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_DIRECTORY_CLIENT_SECRET: ${{ secrets.GOOGLE_DIRECTORY_CLIENT_SECRET }}
           BROKER_PIN_FILE: ${{ runner.temp }}/main-wfp.ts
+          MAIN_MIGRATION_LOCK: ${{ runner.temp }}/main-ci/migration-lock.json
           # The OIDC principal's repository (inventory, staging's provisioning);
           # GITHUB_REPOSITORY (owner/repo) is the runner's own.
           GITHUB_REPOSITORY_ID: ${{ github.repository_id }}

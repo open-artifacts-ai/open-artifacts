@@ -88,7 +88,7 @@ describe("deploy-hosted-platform.yml", () => {
       ref: "${{ github.sha }}",
       path: ".deploy-logic",
       "sparse-checkout":
-        "scripts/ops\nscripts/ci\npackages/provision/src\n.github/hosted\n",
+        "scripts/ops\nscripts/ci\npackages/provision/src\napps/platform-db\n.github/hosted\n",
     });
     expect(named("The checkout is exactly the tag").run).toContain(
       'test "$(git describe --tags --exact-match)" = "$TAG"',
@@ -113,6 +113,13 @@ describe("deploy-hosted-platform.yml", () => {
     );
     expect(use).toContain(
       'cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"',
+    );
+    // main's migration pins, never the tag's own lock alone.
+    expect(use).toContain(
+      'cp .deploy-logic/apps/platform-db/migration-lock.json "$RUNNER_TEMP/main-ci/migration-lock.json"',
+    );
+    expect(named("Deploy and verify").env.MAIN_MIGRATION_LOCK).toBe(
+      "${{ runner.temp }}/main-ci/migration-lock.json",
     );
   });
 
@@ -379,7 +386,7 @@ describe("deploy-hosted-platform.yml", () => {
     expect(order.at(-1)).toBe("zones");
   });
 
-  it("prod's provisioner and provisioning wait for a green staging run of the tag, before anything deploys", () => {
+  it("prod's platform-db, provisioner and provisioning wait for a green staging run of the tag, before anything deploys", () => {
     const g = named("Staging passed this tag");
     expect(g.run).toBe(
       'bash "$RUNNER_TEMP/main-ci/staging-first-gate.sh" "$TAG"',
@@ -401,6 +408,10 @@ describe("deploy-hosted-platform.yml", () => {
       )({ env }) as boolean;
     expect(runsFor("prod", "provisioner")).toBe(true);
     expect(runsFor("prod", "platform-db,provisioning,zones")).toBe(true);
+    // prod platform-db alone is held to staging first too.
+    expect(runsFor("prod", "platform-db")).toBe(true);
+    expect(runsFor("prod", "platform-db,auth-broker")).toBe(true);
+    expect(runsFor("staging", "platform-db")).toBe(false);
     expect(runsFor("prod", "provision-token,dispatch")).toBe(false);
     expect(runsFor("staging", "provisioner,provisioning")).toBe(false);
     const i = (n: string) => steps.indexOf(named(n));
