@@ -439,12 +439,14 @@ case "$target" in
     # would ship a scheduler bound to nothing.
     need_workers oa-$P-auth-broker oa-$P-directory-broker oa-$P-provisioner
     need_queue oa-$P-signups
-    # The tag's alert wiring (#915): "pinned" (every alert var and ALERT_EMAIL's
-    # destination is this env's placeholder) or "absent" (none of them, before
-    # #915); a half-pinned config refuses here.
+    # The tag's alert wiring (#915) must be "pinned": every alert var and
+    # ALERT_EMAIL's destination is this env's placeholder. "absent" (none of
+    # them, a tag before #915) refuses: an alert must have somewhere to go
+    # (4.8). A half-pinned config refuses too.
     alerts="$(committed scheduler alert-pins | jq -r .)" || alerts=""
     case "$alerts" in
-      pinned | absent) ;;
+      pinned) ;;
+      absent) echo "the tag's scheduler config doesn't pin the $env alerts (ALERT_TO, ALERT_EMAIL's destination_address: #915); alerts need a destination (4.8); refusing" >&2; exit 1 ;;
       *) echo "the tag's scheduler config half pins the $env alerts; refusing" >&2; exit 1 ;;
     esac
     PLATFORM_DB_ID="$PLATFORM_DB_ID" EMAIL_ZONE_TAGS="$EMAIL_ZONE_TAGS" EMAIL_DAILY_LIMIT="$EMAIL_DAILY_LIMIT" \
@@ -466,21 +468,13 @@ case "$target" in
     expect "$S" '.result.bindings[] | select(.name == "OA_ENV") | .text' "$env" "OA_ENV"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_QUOTA_ZONES") | .text' "$EMAIL_ZONE_TAGS" "EMAIL_QUOTA_ZONES"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_DAILY_LIMIT") | .text' "$EMAIL_DAILY_LIMIT" "EMAIL_DAILY_LIMIT"
-    if [ "$alerts" = pinned ]; then
-      expect "$S" '[.result.bindings[] | select(.name == "ALERT_TO") | .text] | join(",")' "$ALERT_TO" "ALERT_TO"
-      expect "$S" '[.result.bindings[] | select(.name == "ALERT_FROM") | .text] | join(",")' "$ALERT_FROM" "ALERT_FROM"
-      expect "$S" '[.result.bindings[] | select(.name == "SIGNUP_DAILY_CAP") | .text] | join(",")' "$SIGNUP_DAILY_CAP" "SIGNUP_DAILY_CAP"
-      expect "$S" '[.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text] | join(",")' "$SIGNUPS_ENABLED" "SIGNUPS_ENABLED"
-      # The alert mail goes to ALERT_TO and nowhere else.
-      expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address // ""] | join(",")' \
-        "$ALERT_TO" "ALERT_EMAIL destination"
-    else
-      # Before #915: none of them is deployed (alerts log no_destination).
-      expect "$S" '[.result.bindings[] | select(.name == "ALERT_TO" or .name == "ALERT_FROM" or .name == "SIGNUP_DAILY_CAP" or .name == "SIGNUPS_ENABLED") | .name] | join(",")' \
-        "" "alert vars (the tag commits none)"
-      expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address // ""] | join(",")' \
-        "" "ALERT_EMAIL destination (the tag commits none)"
-    fi
+    expect "$S" '[.result.bindings[] | select(.name == "ALERT_TO") | .text] | join(",")' "$ALERT_TO" "ALERT_TO"
+    expect "$S" '[.result.bindings[] | select(.name == "ALERT_FROM") | .text] | join(",")' "$ALERT_FROM" "ALERT_FROM"
+    expect "$S" '[.result.bindings[] | select(.name == "SIGNUP_DAILY_CAP") | .text] | join(",")' "$SIGNUP_DAILY_CAP" "SIGNUP_DAILY_CAP"
+    expect "$S" '[.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text] | join(",")' "$SIGNUPS_ENABLED" "SIGNUPS_ENABLED"
+    # The alert mail goes to ALERT_TO and nowhere else: never empty (4.8).
+    expect "$S" '[.result.bindings[] | select(.name == "ALERT_EMAIL") | .destination_address // ""] | join(",")' \
+      "$ALERT_TO" "ALERT_EMAIL destination"
     crons="$(cf_get /workers/scripts/oa-$P-scheduler/schedules | must "read oa-$P-scheduler schedules" | jq -r '[.result.schedules[].cron] | sort | join(",")')"
     [ "$crons" = "*/2 * * * *,17 3 * * *" ] || { echo "oa-$P-scheduler schedules are '$crons'" >&2; exit 1; }
     ;;

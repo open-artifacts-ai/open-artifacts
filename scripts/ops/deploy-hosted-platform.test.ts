@@ -135,8 +135,27 @@ const settings = (bindings: Record<string, unknown>[], obs = false) =>
   });
 // The scheduler's bindings as Cloudflare reads them back (apps/scheduler
 // wrangler.jsonc, per env).
-function schedulerBindings(p: "s" | "p"): Record<string, unknown>[] {
+// The alert wiring the deploy fills by default (ENV below holds the same).
+const SCHED_ALERTS = {
+  ALERT_TO: "ops@example.com",
+  ALERT_FROM: "alerts@open-artifacts.app",
+  SIGNUP_DAILY_CAP: "20",
+  SIGNUPS_ENABLED: "false",
+};
+// alerts null: the bindings without any alert var or ALERT_EMAIL destination.
+function schedulerBindings(
+  p: "s" | "p",
+  alerts: Record<string, string> | null = SCHED_ALERTS,
+): Record<string, unknown>[] {
+  const wiring = alerts
+    ? Object.entries(alerts).map(([name, text]) => ({
+        type: "plain_text",
+        name,
+        text,
+      }))
+    : [];
   return [
+    ...wiring,
     { type: "d1", name: "PLATFORM_DB", id: DB },
     {
       type: "dispatch_namespace",
@@ -159,7 +178,13 @@ function schedulerBindings(p: "s" | "p"): Record<string, unknown>[] {
     { type: "queue", name: "SIGNUPS", queue_name: `oa-${p}-signups` },
     { type: "workflow", name: "PROVISION_INSTALL" },
     { type: "workflow", name: "MANAGE_INSTALL" },
-    { type: "send_email", name: "ALERT_EMAIL" },
+    alerts
+      ? {
+          type: "send_email",
+          name: "ALERT_EMAIL",
+          destination_address: alerts.ALERT_TO,
+        }
+      : { type: "send_email", name: "ALERT_EMAIL" },
   ];
 }
 // A queue listing (GET /accounts/{id}/queues) of these names.
@@ -324,8 +349,8 @@ const ENV = {
   PLATFORM_DB_ID: DB,
   EMAIL_ZONE_TAGS: ZONE,
   EMAIL_DAILY_LIMIT: "1000",
-  ALERT_TO: "ops@example.com",
-  ALERT_FROM: "alerts@open-artifacts.app",
+  ALERT_TO: SCHED_ALERTS.ALERT_TO,
+  ALERT_FROM: SCHED_ALERTS.ALERT_FROM,
   GITHUB_REPOSITORY: "o/r",
   SECRETS_STORE_ID: STORE,
   SIGNUP_DAILY_CAP: FILLS.SIGNUP_DAILY_CAP,
@@ -342,8 +367,36 @@ const SCHED_DEPS = (p: "s" | "p") => [
   `oa-${p}-provisioner`,
 ];
 
+// The scheduler's config: #915's placeholders (the repo's own once it carries
+// them). A config without them refuses (4.8), so every scheduler run below
+// uses the repo's deploy script beside this config.
+const F915 = readFileSync(
+  join(root, "scripts/ops/testdata/scheduler-915.wrangler.jsonc"),
+  "utf8",
+);
+const REAL_SCHED = readFileSync(
+  join(root, "apps/scheduler/wrangler.jsonc"),
+  "utf8",
+);
+const pinned = (src: string) => src.includes("{{ALERT_TO_PROD}}");
+const SCHED_CONFIG = pinned(REAL_SCHED) ? REAL_SCHED : F915;
+/** The repo's deploy script and wrangler-env.ts beside these app configs (app -> wrangler.jsonc). */
+const tree = (configs: Record<string, string>) => {
+  const t = mkdtempSync(join(tmpdir(), "oa-hosted-tree-"));
+  for (const f of ["deploy-hosted-platform.sh", "wrangler-env.ts"])
+    write(
+      join(t, "scripts/ops", f),
+      readFileSync(join(root, "scripts/ops", f), "utf8"),
+    );
+  for (const [app, config] of Object.entries(configs))
+    write(join(t, "apps", app, "wrangler.jsonc"), config);
+  return join(t, "scripts/ops/deploy-hosted-platform.sh");
+};
+
 const setup = (
   opts: {
+    /** App configs to deploy from instead of the repo's (app -> wrangler.jsonc). */
+    configs?: Record<string, string>;
     exists?: string[];
     secrets?: Record<string, string[]>;
     next?: Record<string, string>;
@@ -404,7 +457,11 @@ const setup = (
     env: Record<string, string> = {},
     envName = "prod",
   ) => {
-    const r = sb.run(["bash", SCRIPT, envName, target], {
+    const script =
+      target === "scheduler" || opts.configs
+        ? tree({ scheduler: SCHED_CONFIG, ...opts.configs })
+        : SCRIPT;
+    const r = sb.run(["bash", script, envName, target], {
       env: {
         ...ENV,
         STATE: state,
@@ -534,31 +591,11 @@ describe("deploy-hosted-platform.sh", () => {
   });
   describe("the scheduler's alert wiring (#915's placeholders, or none before it)", () => {
     type Env = "staging" | "prod";
-    const F915 = readFileSync(
-      join(root, "scripts/ops/testdata/scheduler-915.wrangler.jsonc"),
-      "utf8",
-    );
-    const REAL = readFileSync(
-      join(root, "apps/scheduler/wrangler.jsonc"),
-      "utf8",
-    );
-    const pinned = (src: string) => src.includes("{{ALERT_TO_PROD}}");
     // #915's config, and the repo's own once it carries the placeholders.
     const PINNED = [
       ["#915's config", F915],
-      ...(pinned(REAL) ? [["apps/scheduler", REAL] as const] : []),
+      ...(pinned(REAL_SCHED) ? [["apps/scheduler", REAL_SCHED] as const] : []),
     ] as const;
-    /** The repo's deploy script and wrangler-env.ts beside this scheduler config. */
-    const tree = (config: string) => {
-      const t = mkdtempSync(join(tmpdir(), "oa-hosted-tree-"));
-      for (const f of ["deploy-hosted-platform.sh", "wrangler-env.ts"])
-        write(
-          join(t, "scripts/ops", f),
-          readFileSync(join(root, "scripts/ops", f), "utf8"),
-        );
-      write(join(t, "apps/scheduler/wrangler.jsonc"), config);
-      return join(t, "scripts/ops/deploy-hosted-platform.sh");
-    };
     const ALERTS = {
       ALERT_TO: "me@leourbina.com",
       ALERT_FROM: "alerts@open-artifacts.app",
@@ -573,7 +610,7 @@ describe("deploy-hosted-platform.sh", () => {
     ) =>
       settings(
         [
-          ...schedulerBindings(p).map((b) =>
+          ...schedulerBindings(p, null).map((b) =>
             b.name === "ALERT_EMAIL" && dest !== null
               ? { ...b, destination_address: dest }
               : b,
@@ -595,7 +632,7 @@ describe("deploy-hosted-platform.sh", () => {
         exists: SCHED_DEPS(p),
         next: { [`oa-${p}-scheduler`]: next },
       });
-      const r = s.sb.run(["bash", tree(config), env, "scheduler"], {
+      const r = s.sb.run(["bash", tree({ scheduler: config }), env, "scheduler"], {
         env: {
           ...ENV,
           ...ALERTS,
@@ -608,7 +645,7 @@ describe("deploy-hosted-platform.sh", () => {
       const log = s.sb.log();
       return { ...r, log };
     };
-    it("before #915 (no placeholders): deploys, and refuses any deployed alert var or ALERT_EMAIL destination", () => {
+    it("before #915 (no placeholders): refuses before any deploy, verify only too (4.8: an alert needs a destination)", () => {
       // #915's config with its alert lines cut, and the repo's own until #915.
       const strip = (c: string) =>
         c
@@ -620,46 +657,21 @@ describe("deploy-hosted-platform.sh", () => {
             /\{ "name": "ALERT_EMAIL", "destination_address": "\{\{ALERT_TO_[A-Z]+\}\}" \}/g,
             '{ "name": "ALERT_EMAIL" }',
           );
-      for (const BARE of [strip(F915), ...(pinned(REAL) ? [] : [REAL])]) {
+      for (const BARE of [strip(F915), ...(pinned(REAL_SCHED) ? [] : [REAL_SCHED])]) {
         expect(BARE).not.toContain("{{ALERT_");
-        for (const env of ["prod", "staging"] as const) {
-          const p = env[0] as "s" | "p";
-          const ok = go(BARE, env, settings(schedulerBindings(p), true));
-          expect(ok.err, env).toBe("");
-          expect(ok.code, env).toBe(0);
-          expect(ok.out).toContain(`${env} scheduler: deployed and verified`);
-          for (const [label, next, msg] of [
-            [
-              "a var",
-              wired(
-                p,
-                {
-                  ALERT_FROM: null,
-                  SIGNUP_DAILY_CAP: null,
-                  SIGNUPS_ENABLED: null,
-                },
-                null,
-              ),
-              "alert vars (the tag commits none)",
-            ],
-            [
-              "a destination",
-              settings(
-                schedulerBindings(p).map((b) =>
-                  b.name === "ALERT_EMAIL"
-                    ? { ...b, destination_address: "x@example.com" }
-                    : b,
-                ),
-                true,
-              ),
-              "ALERT_EMAIL destination (the tag commits none)",
-            ],
-          ] as const) {
-            const r = go(BARE, env, next);
-            expect(r.code, `${env} ${label}`).toBe(1);
-            expect(r.err).toContain(`${msg}: got`);
+        for (const env of ["prod", "staging"] as const)
+          for (const VERIFY_ONLY of ["", "1"]) {
+            const p = env[0] as "s" | "p";
+            const r = go(BARE, env, settings(schedulerBindings(p, null), true), {
+              VERIFY_ONLY,
+            });
+            expect(r.code, `${env} ${VERIFY_ONLY}`).toBe(1);
+            expect(r.err).toContain(
+              `the tag's scheduler config doesn't pin the ${env} alerts`,
+            );
+            expect(noDeploy(r.log)).toEqual([]);
+            expect(r.out).not.toContain("verified");
           }
-        }
       }
     });
     for (const [label, config] of PINNED) {
