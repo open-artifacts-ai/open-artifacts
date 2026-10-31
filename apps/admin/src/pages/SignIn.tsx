@@ -1,6 +1,6 @@
 import { Button } from "@oa/ui/shadcn";
-import { api } from "../api/client";
-import { safeNext } from "../auth/safeNext";
+import { AUTH_START } from "../api/client";
+import { safeReturn } from "../auth/safeReturn";
 import { EdgePanel } from "../layout/Edge";
 
 export type SignInError = "expired" | "denied" | "no_access" | "rate_limited";
@@ -18,33 +18,19 @@ export const parseSignInError = (raw: unknown): SignInError | undefined =>
     ? (raw as SignInError)
     : undefined;
 
-// TODO(C1): confirm the sign-in start path.
-export const SIGN_IN_START = "/v1/auth/google/start";
+/** GET /auth/start?return= (design 3.1; the broker always asks Google to select an account). */
+export const startHref = (ret: unknown) =>
+  `${AUTH_START}?return=${encodeURIComponent(safeReturn(ret))}`;
 
-// TODO(C1): confirm the sign-out path and the prompt parameter.
-export const SIGN_OUT = "/auth/sign-out";
-export const SWITCH_ACCOUNT_HREF = `${SIGN_IN_START}?next=%2F&prompt=select_account`;
-
-/** Signs out first (the server session survives otherwise), then Google's account chooser. */
-export function UseAnotherAccount() {
-  const go = async () => {
-    try {
-      await api.post(SIGN_OUT);
-    } catch {
-      // Still send them to the chooser; a stale session is replaced on sign-in.
-    }
-    window.location.assign(SWITCH_ACCOUNT_HREF);
-  };
-  return (
-    <button type="button" className="oa-link" onClick={go}>
-      Use another account?
-    </button>
-  );
-}
-
-export function SignIn({ error, next }: { error?: unknown; next?: unknown }) {
+export function SignIn({
+  error,
+  returnTo,
+}: {
+  error?: unknown;
+  returnTo?: unknown;
+}) {
   const known = parseSignInError(error);
-  const href = `${SIGN_IN_START}?next=${encodeURIComponent(safeNext(next))}`;
+  const href = startHref(returnTo);
   return (
     <EdgePanel>
       <h1>Open Artifacts Admin</h1>
@@ -59,7 +45,9 @@ export function SignIn({ error, next }: { error?: unknown; next?: unknown }) {
       </Button>
       {known && (
         <p style={{ marginTop: 16 }}>
-          <UseAnotherAccount />
+          <a className="oa-link" href={href}>
+            Use another account?
+          </a>
         </p>
       )}
     </EdgePanel>

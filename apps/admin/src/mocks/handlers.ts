@@ -8,4 +8,4 @@ export const me = {
   csrf: "csrf-token",
 };
 
-export const handlers = [http.get("*/v1/me", () => HttpResponse.json(me))];
+export const handlers = [http.get("*/api/v1/me", () => HttpResponse.json(me))];
