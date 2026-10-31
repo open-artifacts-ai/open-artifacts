@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ProvisioningEnv } from "./enums.js";
 import type { ApiErrorCode } from "./errors.js";
-import { ROUTES, type RouteId } from "./routes.js";
+import { type ApiRouteId, ROUTES, type RouteId } from "./routes.js";
 import type {
   Accepted,
   AuditEntry,
@@ -53,7 +53,8 @@ export type AdminToolName = z.infer<typeof AdminToolNameSchema>;
 
 export interface AdminToolDef {
   name: AdminToolName;
-  route: RouteId;
+  /** Never a browser route, so invokeRoute takes it as is. */
+  route: ApiRouteId;
   description: string;
   annotations: ToolAnnotations;
   /** One line from ids, enums, slugs, numbers and times only; never free text. */
@@ -130,7 +131,7 @@ function tool<B>(
 }
 const write = (
   name: AdminToolName,
-  route: RouteId,
+  route: ApiRouteId,
   what: string,
   extra: string[] = [],
 ) =>

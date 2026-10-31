@@ -66,6 +66,13 @@ export const ROUTE_IDS = [
 ] as const;
 export type RouteId = (typeof ROUTE_IDS)[number];
 export const RouteIdSchema = z.enum(ROUTE_IDS);
+/**
+ * The browser routes (R22-R24: cookies, Set-Cookie, redirects). They never
+ * reach invokeRoute (9A.4) and no admin tool names one.
+ */
+export type BrowserRouteId = "R22" | "R23" | "R24";
+/** The routes invokeRoute serves and admin tools name: every "api" base route. */
+export type ApiRouteId = Exclude<RouteId, BrowserRouteId>;
 
 type Obj = z.ZodObject<z.ZodRawShape>;
 export interface RouteDef {
@@ -252,6 +259,9 @@ export const ROUTES: Readonly<Record<RouteId, RouteDef>> = {
 };
 
 /** Protocol routes: no API principal, their own limits, fixed host (9A.3.1). */
+export const isApiRoute = (id: RouteId): id is ApiRouteId =>
+  ROUTES[id].base === "api";
+
 export const PROTOCOL_ROUTES = [
   { method: "POST", path: "/mcp", host: "api" },
   { method: "GET", path: "/oauth/authorize", host: "admin" },
