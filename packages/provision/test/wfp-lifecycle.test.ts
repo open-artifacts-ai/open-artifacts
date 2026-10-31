@@ -960,15 +960,13 @@ describe("rollback", () => {
     });
   });
 
-  it("rollback refuses an asset changed between plan and its bucket read before the script upload", async () => {
+  it("rollback refuses an asset changed between plan and apply before any probe or upload", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));
     await s.p.upgrade(inst.id, "0.24.0");
-    // Cloudflare asks for app.js again, so the apply reads it for its bucket.
-    s.fake.assetHashes.clear();
     const good = s.rel.reader.assetBytes;
     let reads = 0;
-    // The plan's pre-flight read is good; the bucket read is not.
+    // The plan's pre-flight read is good; the apply's read is not.
     s.rel.reader.assetBytes = async (version, variant, path) =>
       path === "app.js" && ++reads >= 2
         ? enc("console.log(2)")
@@ -980,23 +978,8 @@ describe("rollback", () => {
     expect(provisionErrorCode(e)).toBe("release_unverified");
     expect(reads).toBe(2);
     expect(uploads(s.fake, from)).toHaveLength(0);
+    expect(probes(s.fake, from)).toHaveLength(0);
     expect(s.audit(inst.id)).not.toContain("rollback.incomplete");
-  });
-
-  it("#882: rollback reads each asset once (the plan's verify), not again at apply", async () => {
-    const s = setup();
-    const inst = keep(await s.p.create(input()));
-    await s.p.upgrade(inst.id, "0.24.0");
-    const good = s.rel.reader.assetBytes;
-    const reads = new Map<string, number>();
-    s.rel.reader.assetBytes = async (version, variant, path) => {
-      reads.set(path, (reads.get(path) ?? 0) + 1);
-      return good(version, variant, path);
-    };
-    const r = keep(await s.p.rollback(inst.id));
-    expect(r).toMatchObject({ ok: true, rolledBack: true, to: "0.23.0" });
-    // Cloudflare still has 0.23.0's files: no bucket read either.
-    expect(Object.fromEntries(reads)).toEqual({ "index.html": 1, "app.js": 1 });
   });
 
   it("rollback refuses a previous version below the floor or revoked", async () => {
@@ -2835,9 +2818,8 @@ describe("P1 Task 8 follow-ups", () => {
     const p = s.mk();
     const near = await fails(p.verifyToken("refuse"));
     expect(near.message).toMatch(/within 5 days/);
-    // #882: terminal (3.5, 5.7), not a retryable token_invalid.
-    expect(near).not.toBeInstanceOf(ProvisionRetry);
-    expect(provisionErrorCode(near)).toBe("invalid_state");
+    expect(near).toBeInstanceOf(ProvisionRetry);
+    expect(provisionErrorCode(near)).toBe("token_invalid");
     const q = s.mk();
     await q.verifyToken("warn");
     expect(q.notes.join("\n")).toMatch(/WARNING/);
@@ -4785,6 +4767,25 @@ describe("W2 directFetch (5.2 f)", () => {
   });
 });
 
+describe("W2 directFetch on upgrade and rollback (5.2 f, 5.4)", () => {
+  it("a directFetch for another install's script is refused before any write or fetch", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    keep(await s.p.upgrade(inst.id, "0.24.0"));
+    const other = directOf(s, "iw2otheraaaa");
+    for (const run of [
+      () => s.mk({ fetch: other }).upgrade(inst.id, "0.25.0"),
+      () => s.mk({ fetch: other }).rollback(inst.id),
+    ]) {
+      const w = s.fake.writes().length;
+      const e = await fails(run());
+      expect(provisionErrorCode(e)).toBe("invalid_state");
+      expect(e.message).toMatch(/directFetch/);
+      expect(s.fake.writes().length).toBe(w);
+    }
+  });
+});
+
 describe("W2 create order (5.2)", () => {
   it("with directFetch: health and the selftest reach the script before HOSTS; sign-in is disabled until enable_signin", async () => {
     const s = setup();
@@ -4998,6 +4999,16 @@ describe("W2 create order (5.2)", () => {
   });
 
   describe("route (5.2 g) and parseHostsValue at create", () => {
+    it("a value that does not parse is slug_taken before any write, with no row yet", async () => {
+      for (const v of ["garbage", "i000000admin", "paused:i00000signup"]) {
+        const s = setup();
+        s.fake.kvValues(s.hostsId).set(appOf(s), v);
+        const e = await fails(s.p.create(input()));
+        expect(provisionErrorCode(e), v).toBe("slug_taken");
+        expect(s.fake.writes(), v).toEqual([]);
+      }
+    });
+
     it("a host held by another id in any mode is slug_taken before any write", async () => {
       for (const v of [
         "iw2otheraaaa",
@@ -5089,7 +5100,7 @@ describe("W2 create order (5.2)", () => {
     });
   });
 
-  it("ProvisionRetry at the retryable token sites; near expiry is terminal", async () => {
+  it("ProvisionRetry token_invalid at every token site, near expiry included (3.5)", async () => {
     const cases: [string, (s: S) => void, boolean][] = [
       [
         "inactive",
@@ -5121,7 +5132,7 @@ describe("W2 create order (5.2)", () => {
             NOW + 86_400_000,
           ).toISOString();
         },
-        false,
+        true,
       ],
     ];
     for (const [n, edit, retry] of cases) {
@@ -5350,8 +5361,8 @@ describe("W2 pause and unpause (5.5)", () => {
     expect(p.notes.join("\n")).toMatch(/WARNING/);
     const n = s.fake.log.length;
     const e = await fails(s.mk().unpause(inst.id, { kind: "resume" }));
-    expect(e).not.toBeInstanceOf(ProvisionRetry);
-    expect(provisionErrorCode(e)).toBe("invalid_state");
+    expect(e).toBeInstanceOf(ProvisionRetry);
+    expect(provisionErrorCode(e)).toBe("token_invalid");
     expect(kvPuts(s, n)).toEqual([]);
     expect(hostsOfInstall(s)).toEqual([
       `paused:${inst.id}`,

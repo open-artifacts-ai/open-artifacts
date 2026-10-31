@@ -243,7 +243,9 @@ export interface WfpOptions {
   /**
    * Called as create, upgrade and rollback reach each WFP_STEPS step, so the
    * Workflow can record it (design v7 5.2). Awaited; a throw fails the
-   * operation.
+   * operation. WFP_STEPS order holds with a directFetch (the hosted path);
+   * on the public route (the CLI, which never passes onStep) route comes
+   * before health, as health needs the route.
    */
   onStep?: (step: WfpStep) => void | Promise<void>;
   /**
@@ -1735,7 +1737,8 @@ export class WfpProvisioner {
     for (const h of [appHost, contentHost]) {
       const cur = await this.cf.kvGet(this.hostsKv.id, h);
       // 5.5: `<mode>:<own id>` is this install's own value too.
-      if (cur !== null && parseHostsValue(cur)?.installId !== row?.id)
+      const p = cur === null ? null : parseHostsValue(cur);
+      if (cur !== null && (!p || p.installId !== row?.id))
         throw new ProvisionRefused(
           `host ${h} is already taken by ${cur}`,
           "slug_taken",
@@ -1979,9 +1982,8 @@ export class WfpProvisioner {
       );
     if (exp <= now + REFUSE_TOKEN_DAYS * DAY) {
       const why = `the Cloudflare token expires on ${new Date(exp).toISOString().slice(0, 10)}, within ${REFUSE_TOKEN_DAYS} days; roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and ${this.tokenHome()}`;
-      // 3.5, 5.7: terminal; a retry within the backoff would not roll it.
       if (nearExpiry === "refuse")
-        throw new ProvisionRefused(`${why}, then start again`, "invalid_state");
+        throw new ProvisionRetry(`${why}, then retry`, "token_invalid");
       this.notes.push(`WARNING: ${why}`);
     }
     try {
@@ -3180,6 +3182,7 @@ export class WfpProvisioner {
 
   private async runUpgrade(id: InstallId, to: string): Promise<UpgradeResult> {
     const row = await this.openInstall(id, ["active"]);
+    this.checkDirect(row.app_host, row.id);
     const from = row.version;
     if (!from)
       throw new ProvisionRefused(
@@ -3394,6 +3397,7 @@ export class WfpProvisioner {
   async rollback(id: InstallId): Promise<UpgradeResult> {
     return this.guarded(async () => {
       const row = await this.openInstall(id, ["active"], "warn");
+      this.checkDirect(row.app_host, row.id);
       const plan = await this.planRollback(row);
       await this.claim(row, ["active"], "upgrading", "rollback");
       try {
@@ -3551,10 +3555,8 @@ export class WfpProvisioner {
     if (report) await this.step("upload");
     this.assertHooksAllowed(rel.rec.variant, p.m.testHooks);
     const mods = await this.readModules(rel.rec);
-    // planRollback's readRelease verified every file in this run; the list
-    // is re-checked here and a bucket read re-checks its file (#882: not
-    // every file twice).
-    const assets = await this.readAssets(rel.rec);
+    // Check-first: every file again, before the probe or any write.
+    const assets = await this.readAssets(rel.rec, true);
     // L5: the live tag, not only the journal; a rollback never crosses it.
     await this.hold();
     let live: string | null | undefined;

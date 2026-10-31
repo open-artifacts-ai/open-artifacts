@@ -2429,10 +2429,8 @@ describe("WfpProvisioner.create", () => {
         expect(e.message).toMatch(/expires/);
         expect(e.message).toMatch(/roll/i);
         expect(e.message).toMatch(/My Profile > API Tokens/);
-        // 3.5, 5.7 (#882): terminal, never a retryable token_invalid.
-        expect(e).toBeInstanceOf(ProvisionRefused);
-        expect(e).not.toBeInstanceOf(ProvisionRetry);
-        expect(provisionErrorCode(e)).toBe("invalid_state");
+        expect(e).toBeInstanceOf(ProvisionRetry);
+        expect(provisionErrorCode(e)).toBe("token_invalid");
         expect(s.fake.writes()).toEqual([]);
         expect(s.fake.log.map((e) => e.path)).toEqual(["/user/tokens/verify"]);
       },
