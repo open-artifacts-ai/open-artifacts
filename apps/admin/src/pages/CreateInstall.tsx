@@ -104,6 +104,8 @@ export function CreateInstall() {
         },
       }),
     {
+      // A retry after a dropped connection keeps its request id only while the body is the same.
+      key: [slug, ownerEmail, tier, auth.data, version, sendWelcome],
       invalidate: [["installs"], ["world"]],
       onSuccess: (r) =>
         void navigate({ to: "/jobs/$id", params: { id: r.job.id } }),

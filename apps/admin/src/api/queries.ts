@@ -45,21 +45,26 @@ export const slugQuery = (slug: string) =>
 export const jobIsTerminal = (status: string) =>
   status === "done" || status === "failed";
 export const JOB_POLL_MS = 2_000;
+/** After the job is this old, poll every 10 s (design 3.1). */
+export const JOB_FAST_WINDOW_MS = 120_000;
+export const JOB_POLL_SLOW_MS = 10_000;
 export const jobQuery = (jobId: string) =>
   queryOptions({
     queryKey: ["job", jobId],
     queryFn: () => api.call("R15", { params: { jobId } }),
     retry: false,
-    // Poll while the job runs; stop once it is done or failed.
+    // Poll every 2 s for the first 2 min of the job, then every 10 s; stop once it is done or failed.
     // Also stop when the first load failed (404 and the like): nothing to wait for.
-    refetchInterval: (q) =>
-      q.state.data
-        ? jobIsTerminal(q.state.data.status)
+    refetchInterval: (q) => {
+      const job = q.state.data;
+      if (job)
+        return jobIsTerminal(job.status)
           ? false
-          : JOB_POLL_MS
-        : q.state.status === "error"
-          ? false
-          : JOB_POLL_MS,
+          : Date.now() - job.createdAt < JOB_FAST_WINDOW_MS
+            ? JOB_POLL_MS
+            : JOB_POLL_SLOW_MS;
+      return q.state.status === "error" ? false : JOB_POLL_MS;
+    },
   });
 export const auditQuery = (o: {
   cursor?: string;

@@ -86,6 +86,7 @@ export function Audit({
         <label>
           Actor{" "}
           <input
+            maxLength={200}
             value={actorDraft}
             onChange={(e) => setActorDraft(e.target.value)}
           />
@@ -107,6 +108,9 @@ export function Audit({
             }}
           >
             <option value="">Any action</option>
+            {action && !Object.hasOwn(VERB, action) && (
+              <option value={action}>{action}</option>
+            )}
             {Object.keys(VERB).map((a) => (
               <option key={a} value={a}>
                 {actionPhrase(a)}

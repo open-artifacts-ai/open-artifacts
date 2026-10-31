@@ -1,7 +1,13 @@
 import { JOB_STEPS, type Job } from "@oa/shared/provisioning";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
-import { JOB_POLL_MS, jobIsTerminal, jobQuery } from "../src/api/queries";
+import {
+  JOB_FAST_WINDOW_MS,
+  JOB_POLL_MS,
+  JOB_POLL_SLOW_MS,
+  jobIsTerminal,
+  jobQuery,
+} from "../src/api/queries";
 import { fmtClock } from "../src/components/labels";
 import { FIXTURE_IDS, jobsByStatus } from "../src/mocks/fixtures";
 import { http, json, mock, renderApp, seen, use, writes } from "./harness";
@@ -59,7 +65,7 @@ it("shows Design's step labels, step count and the attempt line", async () => {
   ]);
   expect(screen.getByText(/· step 6 of 11/)).toBeInTheDocument();
   expect(screen.getByTestId("attempt-line")).toHaveTextContent(
-    `Attempt 2 · cf_error · next try at ${fmtClock(retryAt)}`,
+    `Attempt 2 · cf_error · next try at ${fmtClock(retryAt)} UTC`,
   );
 });
 
@@ -92,7 +98,7 @@ it("shows the attempt line on a queued job waiting for a retry", async () => {
   });
   renderApp(`/jobs/${JOB}`);
   expect(await screen.findByTestId("attempt-line")).toHaveTextContent(
-    /^Attempt 2 · cf_error · next try at \d\d:\d\d$/,
+    /^Attempt 2 · cf_error · next try at \d\d:\d\d UTC$/,
   );
 });
 
@@ -145,16 +151,61 @@ it("shows a queued job, a done job and a failed job", async () => {
   expect(screen.queryByTestId("retry-at")).toBeNull();
 });
 
-it("polls every 2 s while the job is active and not once it is done or failed", () => {
+it("polls every 2 s for the first 2 min of a job, then every 10 s, and not once it is over", () => {
   expect(JOB_POLL_MS).toBe(2000);
+  expect(JOB_POLL_SLOW_MS).toBe(10_000);
+  expect(JOB_FAST_WINDOW_MS).toBe(120_000);
   const interval = jobQuery(JOB).refetchInterval as (q: {
     state: { data?: Job };
   }) => number | false;
-  for (const s of ["queued", "running"] as const)
-    expect(interval({ state: { data: jobsByStatus[s] } })).toBe(2000);
+  const aged = (s: "queued" | "running", ms: number) => ({
+    state: { data: { ...jobsByStatus[s], createdAt: Date.now() - ms } },
+  });
+  for (const s of ["queued", "running"] as const) {
+    expect(interval(aged(s, 0))).toBe(2000);
+    expect(interval(aged(s, 119_000))).toBe(2000);
+    expect(interval(aged(s, 120_000))).toBe(10_000);
+    expect(interval(aged(s, 3_600_000))).toBe(10_000);
+  }
   for (const s of ["done", "failed"] as const) {
     expect(jobIsTerminal(s)).toBe(true);
     expect(interval({ state: { data: jobsByStatus[s] } })).toBe(false);
+  }
+});
+
+it("slows to 10 s once the job is 2 min old, and stops at done", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    let status: "running" | "done" = "running";
+    const createdAt = Date.now() - 118_000;
+    use(
+      http.get(`*/api/v1/jobs/${JOB}`, () =>
+        json({ ...jobsByStatus[status], createdAt }),
+      ),
+    );
+    renderApp(`/jobs/${JOB}`);
+    await screen.findByTestId("status");
+    const calls = () =>
+      seen.filter((s) => s.path.endsWith(`/jobs/${JOB}`)).length;
+    expect(calls()).toBe(1);
+    // Still inside the 2 min window: the next poll comes after 2 s.
+    await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
+    await waitFor(() => expect(calls()).toBe(2));
+    // Now past it: nothing for the next 8 s, then one poll at 10 s.
+    await vi.advanceTimersByTimeAsync(JOB_POLL_SLOW_MS - 2000);
+    expect(calls()).toBe(2);
+    await vi.advanceTimersByTimeAsync(2000);
+    await waitFor(() => expect(calls()).toBe(3));
+    status = "done";
+    await vi.advanceTimersByTimeAsync(JOB_POLL_SLOW_MS);
+    await waitFor(() =>
+      expect(screen.getByTestId("status")).toHaveTextContent("done"),
+    );
+    const settled = calls();
+    await vi.advanceTimersByTimeAsync(JOB_POLL_SLOW_MS * 3);
+    expect(calls()).toBe(settled);
+  } finally {
+    vi.useRealTimers();
   }
 });
 
@@ -174,6 +225,7 @@ async function startJob(slug = "polled") {
   return ((await res.json()) as { job: Job }).job.id;
 }
 
+// The mock's jobs are dated long ago, so they poll at the slow rate.
 it("keeps polling an active job, then stops once it is done", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
@@ -185,18 +237,18 @@ it("keeps polling an active job, then stops once it is done", async () => {
       seen.filter((s) => s.path.endsWith(`/jobs/${id}`)).length;
     expect(calls()).toBe(1);
     mock.advanceJob(id, "running");
-    await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
+    await vi.advanceTimersByTimeAsync(JOB_POLL_SLOW_MS);
     await waitFor(() =>
       expect(screen.getByTestId("status")).toHaveTextContent("running"),
     );
     expect(calls()).toBe(2);
     mock.advanceJob(id, "done");
-    await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
+    await vi.advanceTimersByTimeAsync(JOB_POLL_SLOW_MS);
     await waitFor(() =>
       expect(screen.getByTestId("status")).toHaveTextContent("done"),
     );
     const settled = calls();
-    await vi.advanceTimersByTimeAsync(JOB_POLL_MS * 5);
+    await vi.advanceTimersByTimeAsync(JOB_POLL_SLOW_MS * 5);
     expect(calls()).toBe(settled);
   } finally {
     vi.useRealTimers();
@@ -210,7 +262,7 @@ it("stops polling at a failed job and shows its error", async () => {
     renderApp(`/jobs/${id}`);
     await screen.findByTestId("status");
     mock.advanceJob(id, "failed", "prod_dirty");
-    await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
+    await vi.advanceTimersByTimeAsync(JOB_POLL_SLOW_MS);
     await waitFor(() =>
       expect(screen.getByTestId("status")).toHaveTextContent("failed"),
     );
@@ -218,7 +270,7 @@ it("stops polling at a failed job and shows its error", async () => {
     const calls = () =>
       seen.filter((s) => s.path.endsWith(`/jobs/${id}`)).length;
     const settled = calls();
-    await vi.advanceTimersByTimeAsync(JOB_POLL_MS * 5);
+    await vi.advanceTimersByTimeAsync(JOB_POLL_SLOW_MS * 5);
     expect(calls()).toBe(settled);
   } finally {
     vi.useRealTimers();

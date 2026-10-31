@@ -99,3 +99,10 @@ it("filters by actor and action, and keeps both in the URL", async () => {
   await waitFor(() => expect(screen.getByLabelText("Actor")).toHaveValue(""));
   expect(screen.getByLabelText("Action")).toHaveValue("");
 });
+
+it("shows an action from the URL that is not in the list, and limits the actor to 200 characters", async () => {
+  renderApp("/audit?action=token.mint");
+  await screen.findAllByRole("row");
+  expect(screen.getByLabelText("Action")).toHaveValue("token.mint");
+  expect(screen.getByLabelText("Actor")).toHaveAttribute("maxlength", "200");
+});

@@ -2,6 +2,7 @@ import { Button } from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet } from "@tanstack/react-router";
 import { KeyRound, ScrollText, Server } from "lucide-react";
+import { useEffect } from "react";
 import { api } from "../api/client";
 import { worldQuery } from "../api/queries";
 import { signOut } from "../auth/signOut";
@@ -11,8 +12,15 @@ import { LoadError } from "./LoadError";
 
 export function Shell() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
+  // The panel is for an admin session (C1 MeSchema: principal "admin", role "admin").
+  // Any other principal that gets a /me answer sees the no-access screen.
+  const isAdmin = me.data?.principal === "admin" && me.data.role === "admin";
+  const notAdmin = !!me.data && !isAdmin;
+  useEffect(() => {
+    if (notAdmin) api.redirect("/no-access?error=not_listed");
+  }, [notAdmin]);
   // Only for the token banner; a failure here just means no banner.
-  const world = useQuery({ ...worldQuery(), enabled: !!me.data, retry: false });
+  const world = useQuery({ ...worldQuery(), enabled: isAdmin, retry: false });
   const left = me.data?.sessionExpiresAt
     ? me.data.sessionExpiresAt - Date.now()
     : null;
@@ -60,12 +68,12 @@ export function Shell() {
         </div>
       </aside>
       <div className="oa-main">
-        {me.data?.env === "prod" && <ProductionBanner />}
+        {isAdmin && me.data?.env === "prod" && <ProductionBanner />}
         <main className="oa-page">
           <TokenBanner world={world.data} />
-          {me.data ? (
+          {isAdmin ? (
             <Outlet />
-          ) : me.isError ? (
+          ) : notAdmin ? null : me.isError ? (
             <LoadError
               title="Couldn't load your session"
               error={me.error}

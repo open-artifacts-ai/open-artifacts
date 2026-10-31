@@ -31,11 +31,11 @@ const stepState = (job: Job, index: number) =>
           : "waiting";
 
 /** "Attempt 2 · cf_error · next try at 11:42" */
-function attemptLine(job: Job, now: number) {
+function attemptLine(job: Job) {
   const parts = [`Attempt ${job.attempt}`];
   if (job.lastErrorCode) parts.push(job.lastErrorCode);
   if (job.retryAt && job.status !== "failed")
-    parts.push(`next try at ${fmtClock(job.retryAt)}`);
+    parts.push(`next try at ${fmtClock(job.retryAt)} UTC`);
   return parts.join(" · ");
 }
 
@@ -135,7 +135,7 @@ export function JobPage({ id }: { id: string }) {
                   {(st === "current" || (live && s.index === job.stepIndex)) &&
                     job.lastErrorCode && (
                       <small data-testid="attempt-line">
-                        {attemptLine(job, now)}
+                        {attemptLine(job)}
                       </small>
                     )}
                 </li>
@@ -148,7 +148,7 @@ export function JobPage({ id }: { id: string }) {
             {job.retryAt && live && (
               <>
                 <dt>Next retry</dt>
-                <dd data-testid="retry-at">at {fmtClock(job.retryAt)}</dd>
+                <dd data-testid="retry-at">at {fmtClock(job.retryAt)} UTC</dd>
               </>
             )}
           </dl>

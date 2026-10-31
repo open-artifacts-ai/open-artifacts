@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { HttpResponse } from "msw";
 import { expect, it, vi } from "vitest";
 import { tokens } from "../src/mocks/fixtures";
 import { mcpUrlFor } from "../src/pages/Tokens";
@@ -153,4 +154,28 @@ it("derives the MCP address from the admin host", () => {
   expect(mcpUrlFor("staging", "localhost")).toBe(
     "https://api.open-artifacts-staging.app/mcp",
   );
+});
+
+it("a network failure on mint keeps the request id for the same form and drops it once the form changes", async () => {
+  use(http.post("*/api/v1/tokens", () => HttpResponse.error()));
+  renderApp("/tokens");
+  await mint("first");
+  const ids = () =>
+    writes().map((w) => (w.body as { requestId: string }).requestId);
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Mint token" })).toBeEnabled(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Mint token" }));
+  await waitFor(() => expect(writes()).toHaveLength(2));
+  expect(ids()[1]).toBe(ids()[0]);
+  fireEvent.change(screen.getByLabelText("Label"), {
+    target: { value: "second" },
+  });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Mint token" })).toBeEnabled(),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Mint token" }));
+  await waitFor(() => expect(writes()).toHaveLength(3));
+  expect(ids()[2]).not.toBe(ids()[1]);
 });

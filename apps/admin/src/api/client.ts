@@ -159,7 +159,20 @@ export function createClient(opts: ClientOptions = {}) {
 
   /** GET /api/v1/me; keeps the CSRF token for later writes. */
   async function me(): Promise<Me> {
-    const body = MeSchema.parse(await request("/me"));
+    let raw: unknown;
+    try {
+      raw = await request("/me");
+    } catch (e) {
+      // Not an admin for this panel: the no-access screen (not from there).
+      if (
+        e instanceof ApiError &&
+        e.status === 403 &&
+        currentPath().split("?")[0] !== NO_ACCESS_PATH
+      )
+        redirect(NO_ACCESS_PATH);
+      throw e;
+    }
+    const body = MeSchema.parse(raw);
     csrf = body.csrf;
     return body;
   }

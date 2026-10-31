@@ -1,4 +1,5 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { HttpResponse } from "msw";
 import { expect, it } from "vitest";
 import { apiErr, http, renderApp, seen, use, writes } from "./harness";
 
@@ -122,4 +123,61 @@ it("shows the API's slug_taken answer in plain words", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "That name is taken.",
   );
+});
+
+it("keeps the request id for an unedited resubmit after a dropped connection, and takes a new one once the form is edited", async () => {
+  let drop = true;
+  use(
+    http.post("*/api/v1/installs", () => {
+      if (drop) {
+        drop = false;
+        return HttpResponse.error();
+      }
+      return apiErr("slug_taken", 409);
+    }),
+  );
+  renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  type("fresh-id");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  const ids = () =>
+    writes().map((w) => (w.body as { requestId: string }).requestId);
+  fireEvent.click(submit());
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  await waitFor(() => expect(submit()).toBeEnabled());
+  // Same body again: the same request id (the API replays it).
+  fireEvent.click(submit());
+  await waitFor(() => expect(writes()).toHaveLength(2));
+  expect(ids()[1]).toBe(ids()[0]);
+  // The first network failure is over; this one was answered, so the next is new anyway.
+  owner("other@example.com");
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(writes()).toHaveLength(3));
+  expect(ids()[2]).not.toBe(ids()[1]);
+});
+
+it("a network failure, then an edit: the resubmit has a new request id", async () => {
+  use(http.post("*/api/v1/installs", () => HttpResponse.error()));
+  renderApp("/installs/new");
+  await screen.findByLabelText("Slug");
+  type("fresh-net");
+  owner();
+  await screen.findByText(/ is available\./);
+  await waitFor(() => expect(submit()).toBeEnabled());
+  const ids = () =>
+    writes().map((w) => (w.body as { requestId: string }).requestId);
+  fireEvent.click(submit());
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(writes()).toHaveLength(2));
+  expect(ids()[1]).toBe(ids()[0]);
+  owner("edited@example.com");
+  await waitFor(() => expect(submit()).toBeEnabled());
+  fireEvent.click(submit());
+  await waitFor(() => expect(writes()).toHaveLength(3));
+  expect(ids()[2]).not.toBe(ids()[1]);
 });
