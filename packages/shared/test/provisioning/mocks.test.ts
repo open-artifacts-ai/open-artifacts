@@ -406,9 +406,22 @@ describe("provisioning MSW mocks", () => {
     expect(j.job.createdAt).toBe(1_800_000_005_000);
   });
 
-  it(`token_limit after ${LIVE_TOKENS_PER_ADMIN} live tokens; revoked and expired ones do not count`, async () => {
+  it(`token_limit after ${LIVE_TOKENS_PER_ADMIN} live tokens of both kinds; revoked and expired ones do not count`, async () => {
     let t = 1_800_000_000_000;
-    server.use(...createProvisioningMock({ now: () => t }).handlers);
+    const oauth = {
+      id: "01JMCKZZZZZZZZZZZZZZZZZZZZ",
+      kind: "oauth" as const,
+      label: "Claude Code",
+      clientName: "Claude Code",
+      scopes: ["installs:read" as const],
+      createdAt: t,
+      expiresAt: t + 8 * 3_600_000,
+      revokedAt: null,
+      lastUsedAt: null,
+    };
+    server.use(
+      ...createProvisioningMock({ now: () => t, tokens: [oauth] }).handlers,
+    );
     const mint = (n: number, ttlMinutes = 15) =>
       post(`${ADMIN}/tokens`, {
         requestId: `req_tok_limit_${String(n).padStart(8, "0")}`,
@@ -416,15 +429,30 @@ describe("provisioning MSW mocks", () => {
         scopes: ["installs:read"],
         ttlMinutes,
       });
-    for (let n = 0; n < LIVE_TOKENS_PER_ADMIN; n++)
-      expect((await mint(n)).status).toBe(201);
-    const refused = await mint(99);
+    const code = async (r: Response) =>
+      ProvisioningErrorSchema.parse(await r.json()).error.code;
+    // The oauth grant counts: 4 oat_ mints reach 5 live.
+    const ids: string[] = [];
+    for (let n = 0; n < LIVE_TOKENS_PER_ADMIN - 1; n++) {
+      const r = await mint(n);
+      expect(r.status).toBe(201);
+      ids.push(((await r.json()) as { id: string }).id);
+    }
+    const refused = await mint(90);
     expect(refused.status).toBe(409);
-    expect(ProvisioningErrorSchema.parse(await refused.json()).error.code).toBe(
-      "token_limit",
-    );
-    // Past the 15-minute expiry, none is live.
+    expect(await code(refused)).toBe("token_limit");
+    // A revoked token frees one slot.
+    expect(
+      (await fetch(`${ADMIN}/tokens/${ids[0]}`, { method: "DELETE" })).status,
+    ).toBe(204);
+    expect((await mint(91)).status).toBe(201);
+    const again = await mint(92);
+    expect(again.status).toBe(409);
+    expect(await code(again)).toBe("token_limit");
+    // Past the oat_ tokens' 15-minute expiry only the oauth grant is live.
     t += 15 * 60_000;
-    expect((await mint(100)).status).toBe(201);
+    for (let n = 100; n < 100 + LIVE_TOKENS_PER_ADMIN - 1; n++)
+      expect((await mint(n)).status).toBe(201);
+    expect(await code(await mint(200))).toBe("token_limit");
   });
 });

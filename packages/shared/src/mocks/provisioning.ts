@@ -70,6 +70,8 @@ export type ProvisioningMockOptions = {
    * dev and Playwright pass Date.now.
    */
   now?: () => number;
+  /** Tokens the mock starts with (e.g. an `oauth` grant, which R19 never mints). */
+  tokens?: readonly Token[];
 };
 
 export type ProvisioningMock = {
@@ -138,7 +140,7 @@ export function createProvisioningMock(
 
   const installs = new Map<string, InstallDetail>();
   const jobs = new Map<string, Job>();
-  const tokens: Token[] = [];
+  const tokens: Token[] = (opts.tokens ?? []).map((t) => ({ ...t }));
   const replays = new Map<
     string,
     { hash: string; jobId: string; installId: string }

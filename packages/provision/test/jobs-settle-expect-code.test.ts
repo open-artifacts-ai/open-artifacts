@@ -1,8 +1,10 @@
 // settleFailed's expectCode (C6, W7 review): a compare-and-set on the code
 // the caller read. With it, the settle UPDATE also requires
-// `error_code IS ?` (null matches null); a changed code writes nothing,
-// settled is false, and extras guarded on the settle do not run. Run on
-// the real 0008 schema with the stand-in UPDATE (W3 builds the real one).
+// `error_code IS ?` (null matches null); a changed code writes nothing and
+// settled is false. The extras still run in the batch and are deduplicated
+// by their own guards (settledWith plus NOT EXISTS cleanup plus INSERT OR
+// IGNORE). Run on the real 0008 schema with the stand-in UPDATE (W3 builds
+// the real one).
 import type { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { type SettleOptions, settledWith } from "../src/jobs.js";

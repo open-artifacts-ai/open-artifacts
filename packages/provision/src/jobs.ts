@@ -117,6 +117,8 @@ export interface SettleOptions {
    * - be `INSERT OR IGNORE`, so `jobs_one_active` (a cleanup already open)
    *   and `(actor_key, request_id)` (an earlier tick's `cleanup-<jobId>`)
    *   skip the row instead of failing the batch.
+   * Every extra MUST be idempotent: a unique id plus INSERT OR IGNORE,
+   * guarded by settledWith on the stored code. W3 builds to it.
    */
   extra?: readonly unknown[];
   /**
