@@ -3,8 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { root, sandbox, write } from "../ci/stubs.ts";
-// @ts-expect-error untyped .mjs
-import { envSection } from "./wrangler-env.mjs";
+import { committedRateLimits, committedVars } from "./wrangler-env.ts";
 
 // deploy-hosted-platform.sh: deploy through the allowlisted wrapper, secrets only
 // after the Worker exists (Google secrets every run, state keys only when
@@ -175,23 +174,18 @@ const FILLS = {
   ACCOUNT_ID: ACCT,
   GITHUB_REPOSITORY_ID: REPO_ID,
 };
-const committedVars = (app: string, env: "staging" | "prod") =>
+const varsOf = (app: string, env: "staging" | "prod") =>
   Object.entries(
-    envSection(
+    committedVars(
       readFileSync(join(root, "apps", app, "wrangler.jsonc"), "utf8"),
       env,
-      "vars",
       FILLS,
-    ) as Record<string, string>,
+    ),
   ).map(([name, text]) => ({ type: "plain_text", name, text }));
 const ratelimits = (env: "staging" | "prod") =>
-  (
-    envSection(
-      readFileSync(join(root, "apps/provisioning/wrangler.jsonc"), "utf8"),
-      env,
-      "ratelimits",
-      {},
-    ) as { name: string; namespace_id: string; limit: number; period: number }[]
+  committedRateLimits(
+    readFileSync(join(root, "apps/provisioning/wrangler.jsonc"), "utf8"),
+    env,
   ).map((r) => ({
     type: "ratelimit",
     name: r.name,
@@ -226,7 +220,7 @@ const provisionerSettings = (p = "p", env: "staging" | "prod" = "prod") =>
       workflow_name: `oa-${p}-manage-install`,
       class_name: "ManageInstall",
     },
-    ...committedVars("provisioner", env),
+    ...varsOf("provisioner", env),
   ]);
 const provisioningBindings = (p = "p", env: "staging" | "prod" = "prod") => [
   { type: "d1", name: "PLATFORM_DB", id: DB },
@@ -254,7 +248,7 @@ const provisioningBindings = (p = "p", env: "staging" | "prod" = "prod") => [
     };
   }),
   ...ratelimits(env),
-  ...committedVars("provisioning", env),
+  ...varsOf("provisioning", env),
   { type: "secret_text", name: "ADMIN_SESSION_KEY" },
   { type: "secret_text", name: "ADMIN_BROKER_KEY" },
 ];
@@ -614,11 +608,11 @@ describe("deploy-hosted-platform.sh", () => {
   });
 
   describe("platform-db", () => {
-    it("runs main's platform-db.mjs for the env, passing its exit code", () => {
+    it("runs main's platform-db.ts for the env, passing its exit code", () => {
       const r = setup({ node: true }).run("platform-db");
       expect(r.code).toBe(0);
       expect(r.log).toContain(
-        `node ${join(root, "scripts/ops/platform-db.mjs")} prod`,
+        `node --experimental-strip-types --no-warnings ${join(root, "scripts/ops/platform-db.ts")} prod`,
       );
       expect(r.out).toContain("prod platform-db: deployed and verified");
       const bad = setup({ node: true }).run("platform-db", { NODE_EXIT: "1" });
@@ -909,7 +903,8 @@ describe("deploy-hosted-platform.sh", () => {
       expect(none.code).toBe(1);
       expect(none.writes).toEqual([]);
     });
-    it("refuses every read-back that differs", () => {
+    // One test per case: each is a whole provisioning run.
+    {
       const b = provisioningBindings();
       const swap = (name: string, over: Record<string, unknown>) =>
         settings(b.map((x) => (x.name === name ? { ...x, ...over } : x)));
@@ -993,22 +988,25 @@ describe("deploy-hosted-platform.sh", () => {
           "is not the admin entry",
         ],
       ];
-      for (const [label, over, msg] of cases) {
-        const { next, content, ...files } = over;
-        const s = setup({
-          exists: brokers,
-          files: {
-            ...live,
-            ...files,
-            ...(content ? { "oa-p-provisioning.content": content } : {}),
-          },
-          secrets: liveSecrets,
-          ...(next ? { next: { "oa-p-provisioning": next } } : {}),
+      for (const [label, over, msg] of cases)
+        it(`refuses a read-back that differs: ${label}`, () => {
+          const { next, content, ...files } = over;
+          const s = setup({
+            exists: brokers,
+            files: {
+              ...live,
+              ...files,
+              ...(content ? { "oa-p-provisioning.content": content } : {}),
+            },
+            secrets: liveSecrets,
+            ...(next ? { next: { "oa-p-provisioning": next } } : {}),
+          });
+          const r = s.run("provisioning");
+          expect(r.code, label).toBe(1);
+          expect(r.err, label).toContain(msg);
         });
-        const r = s.run("provisioning");
-        expect(r.code, label).toBe(1);
-        expect(r.err, label).toContain(msg);
-      }
+    }
+    it("refuses a secret it doesn't make", () => {
       const extra = setup({
         exists: brokers,
         files: live,
@@ -1064,10 +1062,10 @@ describe("deploy-hosted-platform.sh", () => {
       '"name": "oa-p-inventory",',
       `"name": "oa-p-inventory", "vars": { "OIDC_AUDIENCE": "oa-p-inventory", "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_PROD}}", "OIDC_JOB_WORKFLOW_REFS": "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main" },`,
     );
-    /** The repo's deploy script and wrangler-env.mjs beside our own inventory config. */
+    /** The repo's deploy script and wrangler-env.ts beside our own inventory config. */
     const tree = (config: string) => {
       const t = mkdtempSync(join(tmpdir(), "oa-hosted-tree-"));
-      for (const f of ["deploy-hosted-platform.sh", "wrangler-env.mjs"])
+      for (const f of ["deploy-hosted-platform.sh", "wrangler-env.ts"])
         write(
           join(t, "scripts/ops", f),
           readFileSync(join(root, "scripts/ops", f), "utf8"),

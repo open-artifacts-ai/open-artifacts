@@ -4,12 +4,12 @@
 // committed"). A {{NAME_<ENV>}} placeholder in a var is replaced by the
 // environment variable NAME (the value deploy-platform-worker.sh filled); an
 // unset or empty one exits 1, so a read-back never compares to a placeholder.
-// Usage: node scripts/ops/wrangler-env.mjs <wrangler.jsonc> staging|prod vars|ratelimits
+// Usage: node scripts/ops/wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 /** JSONC to JSON: comments outside strings, then trailing commas. */
-export function stripJsonc(src) {
+export function stripJsonc(src: string): string {
   let out = "";
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
@@ -30,24 +30,38 @@ export function stripJsonc(src) {
   return out.replace(/,(\s*[}\]])/g, "$1");
 }
 
-/** The env block's vars (placeholders filled from `values`) or rate limits. */
-export function envSection(src, env, what, values) {
-  const block = JSON.parse(stripJsonc(src)).env?.[env];
-  if (!block) throw new Error(`no env.${env} block`);
-  if (what === "ratelimits")
-    return (block.ratelimits ?? [])
-      .map((r) => ({
-        name: r.name,
-        namespace_id: String(r.namespace_id),
-        limit: r.simple?.limit,
-        period: r.simple?.period,
-      }))
-      .sort((a, b) => (a.name < b.name ? -1 : 1));
-  if (what !== "vars") throw new Error(`unknown section ${what}`);
+export type Env = "staging" | "prod";
+export interface RateLimit {
+  name: string;
+  namespace_id: string;
+  limit: number | undefined;
+  period: number | undefined;
+}
+interface Block {
+  vars?: Record<string, unknown>;
+  ratelimits?: {
+    name: string;
+    namespace_id: string | number;
+    simple?: { limit?: number; period?: number };
+  }[];
+}
+
+function block(src: string, env: Env): Block {
+  const b = JSON.parse(stripJsonc(src)).env?.[env] as Block | undefined;
+  if (!b) throw new Error(`no env.${env} block`);
+  return b;
+}
+
+/** The env block's vars, each {{NAME_<ENV>}} filled from `values[NAME]`. */
+export function committedVars(
+  src: string,
+  env: Env,
+  values: Record<string, string | undefined>,
+): Record<string, string> {
   const up = env.toUpperCase();
-  const out = {};
-  for (const [k, v] of Object.entries(block.vars ?? {})) {
-    out[k] = String(v).replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, p) => {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(block(src, env).vars ?? {})) {
+    out[k] = String(v).replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, p: string) => {
       const name = p.endsWith(`_${up}`) ? p.slice(0, -up.length - 1) : null;
       const value = name ? values[name] : undefined;
       if (!value) throw new Error(`${k}: {{${p}}} has no value`);
@@ -55,6 +69,18 @@ export function envSection(src, env, what, values) {
     });
   }
   return out;
+}
+
+/** The env block's rate limits, sorted by name, ids as strings. */
+export function committedRateLimits(src: string, env: Env): RateLimit[] {
+  return (block(src, env).ratelimits ?? [])
+    .map((r) => ({
+      name: r.name,
+      namespace_id: String(r.namespace_id),
+      limit: r.simple?.limit,
+      period: r.simple?.period,
+    }))
+    .sort((a, b) => (a.name < b.name ? -1 : 1));
 }
 
 // Run as a script (paths compared after symlinks, as macOS's /var is one).
@@ -65,15 +91,19 @@ if (
   const [file, env, what] = process.argv.slice(2);
   if (!file || (env !== "staging" && env !== "prod") || !what) {
     console.error(
-      "usage: wrangler-env.mjs <wrangler.jsonc> staging|prod vars|ratelimits",
+      "usage: wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits",
     );
     process.exit(2);
   }
   try {
-    const out = envSection(readFileSync(file, "utf8"), env, what, process.env);
+    const src = readFileSync(file, "utf8");
+    let out: unknown;
+    if (what === "vars") out = committedVars(src, env, process.env);
+    else if (what === "ratelimits") out = committedRateLimits(src, env);
+    else throw new Error(`unknown section ${what}`);
     process.stdout.write(`${JSON.stringify(out)}\n`);
   } catch (e) {
-    console.error(`${file}: ${e.message}`);
+    console.error(`${file}: ${(e as Error).message}`);
     process.exit(1);
   }
 }

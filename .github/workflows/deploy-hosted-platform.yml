@@ -130,7 +130,7 @@ jobs:
       - name: Use main's deploy scripts
         run: |
           set -euo pipefail
-          for f in deploy-hosted-platform.sh deploy-platform-worker.sh hosted-zones.sh platform-db.mjs check-migration-lock.mjs wrangler-env.mjs broker-key.mjs; do
+          for f in deploy-hosted-platform.sh deploy-platform-worker.sh hosted-zones.sh platform-db.ts check-migration-lock.mjs wrangler-env.ts broker-key.ts; do
             cp ".deploy-logic/scripts/ops/$f" "scripts/ops/$f"
           done
           cp .deploy-logic/packages/provision/src/wfp.ts "$RUNNER_TEMP/main-wfp.ts"

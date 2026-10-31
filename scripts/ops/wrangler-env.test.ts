@@ -2,20 +2,18 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-// @ts-expect-error untyped .mjs
-import { brokerKey } from "./broker-key.mjs";
-// @ts-expect-error untyped .mjs
-import { envSection } from "./wrangler-env.mjs";
+import { brokerKey } from "./broker-key.ts";
+import { committedRateLimits, committedVars } from "./wrangler-env.ts";
 
-// The read-backs compare to the committed config through wrangler-env.mjs;
-// the provisioning target's admin broker key comes from broker-key.mjs.
+// The read-backs compare to the committed config through wrangler-env.ts;
+// the provisioning target's admin broker key comes from broker-key.ts.
 const root = join(import.meta.dirname, "../..");
 const cfg = (app: string) =>
   readFileSync(join(root, "apps", app, "wrangler.jsonc"), "utf8");
 
-describe("wrangler-env.mjs", () => {
+describe("wrangler-env.ts", () => {
   it("the provisioning vars: committed values, the repository id filled", () => {
-    const v = envSection(cfg("provisioning"), "staging", "vars", {
+    const v = committedVars(cfg("provisioning"), "staging", {
       GITHUB_REPOSITORY_ID: "123456",
     });
     expect(v.OA_ENV).toBe("staging");
@@ -23,22 +21,18 @@ describe("wrangler-env.mjs", () => {
     expect(v.MCP_REDIRECT_URIS).toBe("https://claude.ai/api/mcp/auth_callback");
     expect(JSON.stringify(v)).not.toContain("{{");
     // Prod has no OIDC_* and needs no value.
-    const p = envSection(cfg("provisioning"), "prod", "vars", {});
+    const p = committedVars(cfg("provisioning"), "prod", {});
     expect(Object.keys(p).filter((k) => k.startsWith("OIDC_"))).toEqual([]);
   });
   it("refuses a placeholder with no value, or another env's", () => {
-    expect(() =>
-      envSection(cfg("provisioning"), "staging", "vars", {}),
-    ).toThrow(
+    expect(() => committedVars(cfg("provisioning"), "staging", {})).toThrow(
       /OIDC_REPOSITORY_ID: \{\{GITHUB_REPOSITORY_ID_STAGING\}\} has no value/,
     );
     const src = `{"env":{"prod":{"vars":{"A":"{{X_STAGING}}"}}}}`;
-    expect(() => envSection(src, "prod", "vars", { X: "1" })).toThrow(
-      /no value/,
-    );
+    expect(() => committedVars(src, "prod", { X: "1" })).toThrow(/no value/);
   });
   it("the rate limits, sorted by name, ids as strings", () => {
-    const r = envSection(cfg("provisioning"), "prod", "ratelimits", {});
+    const r = committedRateLimits(cfg("provisioning"), "prod");
     expect(r).toContainEqual({
       name: "RL_PV_OAUTH_IP",
       namespace_id: "1156",
@@ -55,14 +49,14 @@ describe("wrangler-env.mjs", () => {
       // a comment
       "env": { "prod": { "vars": { "U": "https://x/y", /* b */ "V": "a//b", }, }, },
     }`;
-    expect(envSection(src, "prod", "vars", {})).toEqual({
+    expect(committedVars(src, "prod", {})).toEqual({
       U: "https://x/y",
       V: "a//b",
     });
   });
 });
 
-describe("broker-key.mjs", () => {
+describe("broker-key.ts", () => {
   it("kid derives from x as provision's brokerKid; pkcs8 is the matching private key", async () => {
     const k = brokerKey();
     // packages/provision/src/wfp.ts brokerKid.

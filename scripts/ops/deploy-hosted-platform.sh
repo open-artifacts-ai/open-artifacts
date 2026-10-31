@@ -14,7 +14,7 @@
 # VERIFY_ONLY=1 deploys and sets nothing: it only reads the live Worker back and
 # runs every check (a read-only rehearsal against what is deployed).
 # Usage (env as below): scripts/ops/deploy-hosted-platform.sh staging|prod <target>
-#   platform-db      PLATFORM_DB_ID (migrations, scripts/ops/platform-db.mjs)
+#   platform-db      PLATFORM_DB_ID (migrations, scripts/ops/platform-db.ts)
 #   auth-broker      BROKER_REGISTRY_ID GOOGLE_CLIENT_ID [GOOGLE_CLIENT_SECRET]
 #                    BROKER_PIN_FILE (main's packages/provision/src/wfp.ts: the
 #                    client must equal its BROKER_GOOGLE_CLIENT_ID[<env>])
@@ -128,8 +128,8 @@ kv_get() {
   esac
 }
 # committed <app> <vars|ratelimits>: the tag's committed values for this env
-# (scripts/ops/wrangler-env.mjs), placeholders filled from the environment.
-committed() { node "$root/scripts/ops/wrangler-env.mjs" "$root/apps/$1/wrangler.jsonc" "$env" "$2"; }
+# (scripts/ops/wrangler-env.ts), placeholders filled from the environment.
+committed() { node --experimental-strip-types --no-warnings "$root/scripts/ops/wrangler-env.ts" "$root/apps/$1/wrangler.jsonc" "$env" "$2"; }
 # vars_are <settings json> <app>: the deployed plain-text vars equal the
 # committed ones exactly (names and values).
 vars_are() {
@@ -173,7 +173,7 @@ broker_pin() {
 case "$target" in
   platform-db)
     need PLATFORM_DB_ID
-    node "$root/scripts/ops/platform-db.mjs" "$env"
+    node --experimental-strip-types --no-warnings "$root/scripts/ops/platform-db.ts" "$env"
     ;;
   provision-token)
     need SECRETS_STORE_ID
@@ -262,7 +262,7 @@ case "$target" in
     entry="$(kv_get "$BROKER_REGISTRY_ID" "$KEY")" || rc=$?
     [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || exit 1
     if [ -z "$VERIFY_ONLY" ] && { [ "$rc" -eq 3 ] || ! grep -qx ADMIN_BROKER_KEY <<< "$have"; }; then
-      key="$(node "$root/scripts/ops/broker-key.mjs")"
+      key="$(node --experimental-strip-types --no-warnings "$root/scripts/ops/broker-key.ts")"
       entry="$(jq -c --arg o "https://admin.$ZONE" '{installId: "i000000admin", origin: $o, keys: [{kid, x}], domains: []}' <<< "$key")"
       cf_send PUT "/storage/kv/namespaces/$BROKER_REGISTRY_ID/values/$KEY" "$entry" | must "write $KEY" > /dev/null
       echo "$W: registry entry $KEY written"

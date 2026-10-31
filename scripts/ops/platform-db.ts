@@ -21,27 +21,49 @@
 // recorded before 0008 runs.
 // The token goes in a request header, never argv, and is never printed.
 // Usage: CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID PLATFORM_DB_ID [VERIFY_ONLY]
-//   node scripts/ops/platform-db.mjs staging|prod
+//   node scripts/ops/platform-db.ts staging|prod
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { lockProblems } from "./check-migration-lock.mjs";
 
 export class Refused extends Error {}
 
+type Row = Record<string, unknown>;
+type All = (sql: string, params?: SQLInputValue[]) => Promise<Row[]>;
+/** The live database: rows for a statement, or a file run whole. Both throw on failure. */
+export interface Db {
+  all: All;
+  exec: (sql: string) => Promise<void>;
+}
+export interface Migration {
+  name: string;
+  sql: string;
+  sha256: string;
+}
+interface Shape {
+  columns: string[];
+  indexes: Record<string, string>;
+}
+interface Expected {
+  markers: Record<string, string[]>;
+  shapes: Record<string, Shape>;
+}
+interface Obj {
+  type: string;
+  name: string;
+  table: string;
+}
+
 /** Files 0006 onward are shape-checked; earlier ones are detected by schema. */
 const FIRST_CHECKED = "0006";
 const TRACKER = /CREATE TABLE IF NOT EXISTS platform_migrations \([^;]*\);/;
 
-/**
- * The pinned migrations in `dir`, in order: { name, sql, sha256 }.
- * @param {string} dir
- * @param {string} lockFile
- */
-export function loadMigrations(dir, lockFile) {
-  let lock;
+/** The pinned migrations in `dir`, in order. */
+export function loadMigrations(dir: string, lockFile: string): Migration[] {
+  let lock: Parameters<typeof lockProblems>[1];
   try {
     lock = JSON.parse(readFileSync(lockFile, "utf8"));
   } catch {
@@ -60,7 +82,7 @@ export function loadMigrations(dir, lockFile) {
 }
 
 // Schema reads, the same against node:sqlite (expected) and D1 (live).
-const objects = async (all) =>
+const objects = async (all: All): Promise<Obj[]> =>
   (
     await all(
       "SELECT type, name, tbl_name FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' AND name <> 'd1_migrations' ORDER BY type, name",
@@ -70,12 +92,12 @@ const objects = async (all) =>
     name: String(r.name),
     table: String(r.tbl_name),
   }));
-const columns = async (all, t) =>
+const columns = async (all: All, t: string): Promise<string[]> =>
   (await all(`PRAGMA table_info(${q(t)})`)).map((c) =>
     [c.name, c.type, c.notnull, c.dflt_value, c.pk].map(String).join("|"),
   );
-const indexes = async (all, t) => {
-  const out = {};
+const indexes = async (all: All, t: string) => {
+  const out: Record<string, string> = {};
   for (const i of await all(`PRAGMA index_list(${q(t)})`)) {
     const cols = (await all(`PRAGMA index_info(${q(String(i.name))})`)).map(
       (c) => `${c.seqno}:${c.name}`,
@@ -86,11 +108,19 @@ const indexes = async (all, t) => {
   return out;
 };
 // Names come from sqlite_master of the files we ship; quoted all the same.
-const q = (n) => `"${n.replaceAll('"', '""')}"`;
+const q = (n: string) => `"${n.replaceAll('"', '""')}"`;
 
 /** markers: what one file adds: "table:x", "index:x", "column:t.c", ... */
-async function markersOf(db, before) {
-  const all = async (sql) => db.prepare(sql).all();
+const local =
+  (db: DatabaseSync): All =>
+  async (sql, params) =>
+    db.prepare(sql).all(...(params ?? [])) as Row[];
+
+async function markersOf(
+  db: DatabaseSync,
+  before: Awaited<ReturnType<typeof snapshot>>,
+): Promise<string[]> {
+  const all = local(db);
   const now = await objects(all);
   const had = new Set(before.objects.map((o) => `${o.type}:${o.name}`));
   const out = now
@@ -104,10 +134,10 @@ async function markersOf(db, before) {
   return out;
 }
 
-async function snapshot(db) {
-  const all = async (sql) => db.prepare(sql).all();
+async function snapshot(db: DatabaseSync) {
+  const all = local(db);
   const objs = await objects(all);
-  const cols = {};
+  const cols: Record<string, string[]> = {};
   for (const o of objs.filter((o) => o.type === "table"))
     cols[o.name] = await columns(all, o.name);
   return { objects: objs, cols };
@@ -118,22 +148,23 @@ async function snapshot(db) {
  * (0001-0005 detection), and the shapes of every table, view and index of
  * the checked files (0006 onward).
  */
-export async function expected(migrations) {
+export async function expected(migrations: Migration[]): Promise<Expected> {
   const db = new DatabaseSync(":memory:");
-  const all = async (sql) => db.prepare(sql).all();
-  const markers = {};
-  const checked = [];
+  const all = local(db);
+  const markers: Record<string, string[]> = {};
+  const checked: string[] = [];
   for (const m of migrations) {
     const before = await snapshot(db);
     db.exec(m.sql);
-    markers[m.name] = await markersOf(db, before);
+    const ks = await markersOf(db, before);
+    markers[m.name] = ks;
     if (m.name >= FIRST_CHECKED)
-      for (const k of markers[m.name]) {
-        const [type, name] = k.split(":");
+      for (const k of ks) {
+        const [type, name] = k.split(":") as [string, string];
         if (type === "table" || type === "view") checked.push(name);
       }
   }
-  const shapes = {};
+  const shapes: Record<string, Shape> = {};
   for (const t of checked)
     shapes[t] = {
       columns: await columns(all, t),
@@ -144,9 +175,13 @@ export async function expected(migrations) {
 }
 
 /** The live database's shape problems against `want` (missing objects only when strict). */
-async function shapeProblems(all, want, strict) {
+async function shapeProblems(
+  all: All,
+  want: Expected,
+  strict: boolean,
+): Promise<string[]> {
   const live = new Map((await objects(all)).map((o) => [o.name, o]));
-  const out = [];
+  const out: string[] = [];
   for (const [t, w] of Object.entries(want.shapes)) {
     if (!live.has(t)) {
       if (strict) out.push(`${t} is missing`);
@@ -173,20 +208,24 @@ async function shapeProblems(all, want, strict) {
 }
 
 /** 0001-0005 present on the live database, by schema: a prefix, never partial. */
-async function detect(all, migrations, want) {
+async function detect(
+  all: All,
+  migrations: Migration[],
+  want: Expected,
+): Promise<Migration[]> {
   const live = new Set((await objects(all)).map((o) => `${o.type}:${o.name}`));
-  const colsOf = {};
-  const has = async (k) => {
+  const colsOf: Record<string, string[]> = {};
+  const has = async (k: string) => {
     if (!k.startsWith("column:")) return live.has(k);
-    const [t, c] = k.slice("column:".length).split(".");
+    const [t, c] = k.slice("column:".length).split(".") as [string, string];
     if (!live.has(`table:${t}`)) return false;
-    colsOf[t] ??= (await columns(all, t)).map((x) => x.split("|")[0]);
+    colsOf[t] ??= (await columns(all, t)).map((x) => x.split("|")[0] as string);
     return colsOf[t].includes(c);
   };
-  const found = [];
-  let gap = null;
+  const found: Migration[] = [];
+  let gap: string | null = null;
   for (const m of migrations.filter((m) => m.name < FIRST_CHECKED)) {
-    const ks = want.markers[m.name];
+    const ks = want.markers[m.name] ?? [];
     let n = 0;
     for (const k of ks) if (await has(k)) n++;
     if (n > 0 && n < ks.length)
@@ -208,8 +247,20 @@ async function detect(all, migrations, want) {
  * Migrates (or, verifyOnly, checks) the live database. `db.all(sql, params)`
  * returns rows; `db.exec(sql)` runs a file. Both throw on any failure.
  */
-export async function run({ db, migrations, verifyOnly, now, log }) {
-  const all = (sql, params) => db.all(sql, params);
+export async function run({
+  db,
+  migrations,
+  verifyOnly,
+  now,
+  log,
+}: {
+  db: Db;
+  migrations: Migration[];
+  verifyOnly: boolean;
+  now: () => number;
+  log: (s: string) => void;
+}): Promise<void> {
+  const all: All = (sql, params) => db.all(sql, params);
   const want = await expected(migrations);
   const pins = new Map(migrations.map((m) => [m.name, m.sha256]));
 
@@ -223,8 +274,8 @@ export async function run({ db, migrations, verifyOnly, now, log }) {
     ).map((r) => ({ name: String(r.name), sha256: String(r.sha256) }));
   };
   const rows = await tracked();
-  let recorded;
-  let bootstrap = [];
+  let recorded: Set<string>;
+  let bootstrap: Migration[] = [];
   if (rows && rows.length > 0) {
     rows.forEach((r, i) => {
       if (!pins.has(r.name))
@@ -257,7 +308,7 @@ export async function run({ db, migrations, verifyOnly, now, log }) {
         `not migrated: ${[...bootstrap, ...pending].map((m) => m.name).join(", ")} not in the tracker`,
       );
   } else {
-    const record = async (m) => {
+    const record = async (m: Migration) => {
       await all(
         "INSERT INTO platform_migrations (name, sha256, applied_at) VALUES (?, ?, ?)",
         [m.name, m.sha256, now()],
@@ -266,7 +317,7 @@ export async function run({ db, migrations, verifyOnly, now, log }) {
         "SELECT sha256 FROM platform_migrations WHERE name = ?",
         [m.name],
       );
-      if (back.length !== 1 || String(back[0].sha256) !== m.sha256)
+      if (back.length !== 1 || String(back[0]?.sha256) !== m.sha256)
         throw new Refused(`${m.name}: the tracker row did not read back`);
     };
     if (!rows) {
@@ -300,7 +351,7 @@ export async function run({ db, migrations, verifyOnly, now, log }) {
         if (!live.has(k)) shapes.push(`${k} is missing`);
         continue;
       }
-      const [t, c] = k.slice("column:".length).split(".");
+      const [t, c] = k.slice("column:".length).split(".") as [string, string];
       const cs = live.has(`table:${t}`)
         ? (await columns(all, t)).map((x) => x.split("|")[0])
         : [];
@@ -311,10 +362,24 @@ export async function run({ db, migrations, verifyOnly, now, log }) {
 }
 
 /** D1 over the REST API: /query, the token in a header. */
-export function d1({ token, accountId, databaseId, fetch: f = fetch }) {
+export function d1({
+  token,
+  accountId,
+  databaseId,
+  fetch: f = fetch,
+}: {
+  token: string;
+  accountId: string;
+  databaseId: string;
+  fetch?: (url: string, init: RequestInit) => Promise<Response>;
+}): Db {
   const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`;
-  const call = async (sql, params) => {
-    let body;
+  type Result = { success?: boolean; results?: Row[] };
+  const call = async (
+    sql: string,
+    params?: SQLInputValue[],
+  ): Promise<Result[]> => {
+    let body: { success?: unknown; result?: unknown; errors?: unknown };
     try {
       const res = await f(url, {
         method: "POST",
@@ -324,7 +389,7 @@ export function d1({ token, accountId, databaseId, fetch: f = fetch }) {
         },
         body: JSON.stringify(params ? { sql, params } : { sql }),
       });
-      body = await res.json();
+      body = (await res.json()) as typeof body;
     } catch {
       throw new Refused(
         "D1 query failed: network error or unparsable response",
@@ -334,10 +399,11 @@ export function d1({ token, accountId, databaseId, fetch: f = fetch }) {
       throw new Refused(
         `D1 query failed: ${JSON.stringify(body?.errors ?? null)}`,
       );
-    for (const r of body.result)
+    const result = body.result as Result[];
+    for (const r of result)
       if (r?.success === false)
         throw new Refused("D1 query failed: a statement failed");
-    return body.result;
+    return result;
   };
   return {
     all: async (sql, params) => (await call(sql, params))[0]?.results ?? [],
@@ -353,12 +419,12 @@ if (
   realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
 ) {
   const env = process.argv[2];
-  const fail = (msg, code = 1) => {
+  const fail = (msg: string, code = 1): never => {
     console.error(msg);
     process.exit(code);
   };
   if (env !== "staging" && env !== "prod")
-    fail("usage: platform-db.mjs staging|prod", 2);
+    fail("usage: platform-db.ts staging|prod", 2);
   const { CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, PLATFORM_DB_ID } =
     process.env;
   if (!CLOUDFLARE_API_TOKEN) fail("CLOUDFLARE_API_TOKEN is required", 2);
@@ -375,9 +441,9 @@ if (
   try {
     await run({
       db: d1({
-        token: CLOUDFLARE_API_TOKEN,
-        accountId: CLOUDFLARE_ACCOUNT_ID,
-        databaseId: PLATFORM_DB_ID,
+        token: CLOUDFLARE_API_TOKEN as string,
+        accountId: CLOUDFLARE_ACCOUNT_ID as string,
+        databaseId: PLATFORM_DB_ID as string,
       }),
       migrations: loadMigrations(
         join(root, "apps/platform-db/migrations"),
@@ -385,11 +451,11 @@ if (
       ),
       verifyOnly,
       now: () => Date.now(),
-      log: (s) => console.log(`oa-${env[0]}-platform: ${s}`),
+      log: (s) => console.log(`oa-${env?.[0]}-platform: ${s}`),
     });
   } catch (e) {
     fail(
-      `oa-${env[0]}-platform: ${e instanceof Refused ? e.message : "failed"}; refusing`,
+      `oa-${env?.[0]}-platform: ${e instanceof Refused ? e.message : "failed"}; refusing`,
     );
   }
 }

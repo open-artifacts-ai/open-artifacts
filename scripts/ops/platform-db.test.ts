@@ -3,10 +3,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-// @ts-expect-error untyped .mjs
-import { d1, loadMigrations, run } from "./platform-db.mjs";
+import { d1, loadMigrations, run } from "./platform-db.ts";
 
-// platform-db.mjs (design v7 8.4) against a local SQLite standing in for D1:
+// platform-db.ts (design v7 8.4) against a local SQLite standing in for D1:
 // bootstrap by schema, the shape check before any record, apply in order,
 // read back; verify only reads.
 const root = join(import.meta.dirname, "../..");
@@ -83,7 +82,7 @@ const SIGNUPS_859 = `CREATE TABLE signups (
 CREATE TABLE signup_secret (signup_id TEXT NOT NULL PRIMARY KEY, owner_email TEXT NOT NULL);
 CREATE INDEX signups_admitted_at ON signups (admitted_at);`;
 
-describe("platform-db.mjs", () => {
+describe("platform-db.ts", () => {
   it("a fresh database: every file applied in order, each recorded with its pin, then read back", async () => {
     const f = fakeDb();
     const r = await go(f);
@@ -282,7 +281,12 @@ describe("platform-db.mjs", () => {
     const cli = (args: string[], env: Record<string, string>) =>
       spawnSync(
         "node",
-        [join(import.meta.dirname, "platform-db.mjs"), ...args],
+        [
+          "--experimental-strip-types",
+          "--no-warnings",
+          join(import.meta.dirname, "platform-db.ts"),
+          ...args,
+        ],
         {
           env: { PATH: process.env.PATH as string, ...env },
           encoding: "utf8",
@@ -300,7 +304,7 @@ describe("platform-db.mjs", () => {
 
   it("the CLI never prints the token", () => {
     const src = readFileSync(
-      join(import.meta.dirname, "platform-db.mjs"),
+      join(import.meta.dirname, "platform-db.ts"),
       "utf8",
     );
     expect(src).not.toMatch(/console\.\w+\([^)]*TOKEN/);

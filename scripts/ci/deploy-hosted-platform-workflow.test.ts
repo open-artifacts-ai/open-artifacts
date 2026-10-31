@@ -85,7 +85,7 @@ describe("deploy-hosted-platform.yml", () => {
     );
     const use = named("Use main's deploy scripts").run as string;
     expect(use).toContain(
-      "for f in deploy-hosted-platform.sh deploy-platform-worker.sh hosted-zones.sh platform-db.mjs check-migration-lock.mjs wrangler-env.mjs broker-key.mjs; do",
+      "for f in deploy-hosted-platform.sh deploy-platform-worker.sh hosted-zones.sh platform-db.ts check-migration-lock.mjs wrangler-env.ts broker-key.ts; do",
     );
     // The broker's Google client pin is main's, never the tag's.
     expect(use).toContain(

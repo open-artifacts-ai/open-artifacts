@@ -9,9 +9,9 @@ import { createHash, generateKeyPairSync } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-export function brokerKey() {
+export function brokerKey(): { kid: string; x: string; pkcs8: string } {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  const x = publicKey.export({ format: "jwk" }).x;
+  const x = publicKey.export({ format: "jwk" }).x as string;
   const pkcs8 = privateKey
     .export({ format: "der", type: "pkcs8" })
     .toString("base64url");

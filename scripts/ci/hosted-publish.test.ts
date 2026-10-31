@@ -107,7 +107,7 @@ esac`;
       ],
       ["failed", { ...run, CONCLUSION: "failure" }, {}],
       ["branch", { ...run, HEAD_BRANCH: "feature" }, {}],
-    ] as const) {
+    ] as [string, Record<string, string>, Parameters<typeof resolve>[1]][]) {
       const r = resolve(env, state);
       expect(r.code, label).toBe(0);
       expect(r.o.kind, label).toBe("none");
@@ -154,7 +154,7 @@ esac`;
       { TAG: "v0.80.0-rc.1" },
       { TAG: "v0.80.0", DEPLOY_ENV: "dev" },
       {},
-    ]) {
+    ] as Record<string, string>[]) {
       const r = resolve({ ...d, ...env });
       expect(r.code, JSON.stringify(env)).toBe(2);
       expect(r.o).toEqual({});
