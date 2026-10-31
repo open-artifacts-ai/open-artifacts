@@ -1,6 +1,7 @@
 import type { ApiRouteId } from "@oa/shared/provisioning";
 import type { Env } from "../env.js";
 import type { Principal } from "../principal.js";
+import { recordTokenUse } from "../services/tokens.js";
 import type { Surface } from "./invoke.js";
 
 export type AuthenticatedCall = {
@@ -17,4 +18,9 @@ export type AuthenticatedCall = {
  * here, off the response path (ctx.waitUntil), without editing invokeRoute.
  * A throw never fails the call (invokeRoute drops it).
  */
-export function onAuthenticated(_call: AuthenticatedCall): void {}
+export function onAuthenticated(c: AuthenticatedCall): void {
+  // A failed write never fails the call, nor surfaces as unhandled.
+  c.ctx.waitUntil(
+    recordTokenUse(c.env, c.principal, c.route, c.surface).catch(() => {}),
+  );
+}

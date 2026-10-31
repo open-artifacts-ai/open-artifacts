@@ -4,7 +4,6 @@ import { NOT_IMPLEMENTED_BODY } from "../errors.js";
 import type { Principal } from "../principal.js";
 import { createInstall } from "./create.js";
 import type { RouteInput, RouteResult, Surface } from "./invoke.js";
-import { listTokensHandler, mintToken, revokeTokens } from "./tokens.js";
 import {
   checkSlug,
   getInstall,
@@ -15,6 +14,7 @@ import {
   me,
   queryAudit,
 } from "./reads.js";
+import { listTokensHandler, mintToken, revokeTokens } from "./tokens.js";
 import { world } from "./world.js";
 import { cancelJob, lifecycleWrite } from "./writes.js";
 

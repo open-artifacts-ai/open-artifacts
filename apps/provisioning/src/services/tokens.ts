@@ -6,7 +6,7 @@ import {
   type TokenScope,
   TokenScopeSchema,
 } from "@oa/shared/provisioning";
-import { hmac16, sha256Hex } from "../auth/crypto.js";
+import { hmac16, sameString, sha256Hex } from "../auth/crypto.js";
 import { isAdminIdentity } from "../auth/identities.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
@@ -152,7 +152,7 @@ const listed = (
 
 /**
  * The live session behind an admin principal, re-read from D1: the row its
- * `sessionHash` names, of kind admin, not revoked, unexpired, for the same
+ * `session.hash` (W5a's PrincipalSession) names, of kind admin, not revoked, unexpired, for the same
  * `(email, sub)`, which is still in ADMIN_IDENTITIES.
  */
 async function liveAdminSession(
@@ -161,7 +161,7 @@ async function liveAdminSession(
   now: number,
 ): Promise<SessionRow> {
   if (p.kind !== "admin") throw new ApiError("forbidden");
-  const hash = p.sessionHash;
+  const hash = p.session?.hash;
   if (!hash || !p.email || !p.sub) throw new ApiError("unauthenticated");
   const s = await env.PLATFORM_DB.prepare(
     "SELECT * FROM sessions WHERE id_hash = ?1",
@@ -441,7 +441,7 @@ export function tokenPrincipal(
   if (row.expires_at <= now) return no("expired");
   if (
     !session ||
-    session.id_hash !== row.session_hash ||
+    !sameString(session.id_hash, row.session_hash) ||
     session.kind !== "admin" ||
     session.revoked_at !== null ||
     session.expires_at <= now ||
@@ -490,7 +490,11 @@ async function principalWhere(
   )
     .bind(value)
     .first<AgentTokenRow>();
-  if (!row)
+  // The lookup finds the row; the constant-time compare decides (4.1).
+  if (
+    !row ||
+    (where === "token_hash" && !sameString(row.token_hash ?? "", value))
+  )
     return { refusal: true, code: "unauthenticated", reason: "revoked" };
   const session = await env.PLATFORM_DB.prepare(
     "SELECT * FROM sessions WHERE id_hash = ?1",

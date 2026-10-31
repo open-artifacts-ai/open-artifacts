@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   type Claims,
+  GITHUB_OIDC_ENVIRONMENT,
   GITHUB_OIDC_EVENT_NAMES,
   GITHUB_OIDC_ISSUER,
   GITHUB_OIDC_JWKS_URL,
@@ -9,6 +10,7 @@ import {
   JwksCache,
   OidcError,
   type Pins,
+  pinsFromEnv,
   verify,
 } from "../src/index.js";
 
@@ -463,5 +465,72 @@ describe("JWKS cache (4.4: 10 min; unknown kid refetch once per 60 s)", () => {
       });
       expect(srv.calls).toBe(1);
     }
+  });
+});
+
+describe("pinsFromEnv (4.4, 6.3)", () => {
+  const env = {
+    OIDC_AUDIENCE: pins.audience,
+    OIDC_REPOSITORY: pins.repository,
+    OIDC_REPOSITORY_ID: pins.repositoryId,
+    OIDC_JOB_WORKFLOW_REFS: ` ${pins.jobWorkflowRefs[0]} , other.yml@refs/heads/main,, `,
+    OIDC_ENVIRONMENT: "redline-staging",
+  };
+
+  it("reads every OIDC_* var; refs are a trimmed comma list", () => {
+    expect(GITHUB_OIDC_ENVIRONMENT).toBe("redline-staging");
+    expect(pinsFromEnv(env)).toEqual({
+      ...pins,
+      jobWorkflowRefs: [pins.jobWorkflowRefs[0], "other.yml@refs/heads/main"],
+    });
+  });
+
+  it("null when any var is missing or empty (fails closed)", () => {
+    for (const k of Object.keys(env) as (keyof typeof env)[]) {
+      expect(pinsFromEnv({ ...env, [k]: undefined }), k).toBeNull();
+      expect(pinsFromEnv({ ...env, [k]: "" }), k).toBeNull();
+    }
+    expect(pinsFromEnv({ ...env, OIDC_JOB_WORKFLOW_REFS: " , ," })).toBeNull();
+  });
+
+  it("OIDC_ENVIRONMENT cannot widen the 4.4 environment pin", () => {
+    expect(pinsFromEnv({ ...env, OIDC_ENVIRONMENT: "production" })).toBeNull();
+  });
+});
+
+describe("JWKS fails closed (4.4)", () => {
+  it("a stale key set is never reused when the refetch fails", async () => {
+    let up = true;
+    const srv = {
+      fetch: (async () => {
+        if (!up) throw new Error("network down");
+        return new Response(JSON.stringify({ keys: [key.jwk] }));
+      }) as typeof fetch,
+    };
+    const jwks = new JwksCache();
+    const o = (now: number) => ({
+      fetch: srv.fetch,
+      now: () => now,
+      jwks,
+      cache: null,
+    });
+    await verify(await sign(good()), pins, o(T));
+    up = false;
+    const late = await sign({
+      ...good(),
+      iat: S + 600,
+      nbf: S + 600,
+      exp: S + 700,
+    });
+    expect(await codeOf(verify(late, pins, o(T + 600_000)))).toBe("jwks");
+  });
+
+  it("an RSA key in the JWKS does not admit a non-RS256 header", async () => {
+    const srv = jwksServer(() => [key.jwk]);
+    for (const alg of ["RS384", "PS256", "ES256", "HS256", "none"]) {
+      const jwt = await sign(good(), key, { alg, kid: "k1" });
+      expect(await codeOf(verify(jwt, pins, opts(srv))), alg).toBe("alg");
+    }
+    expect(srv.calls).toBe(0);
   });
 });
