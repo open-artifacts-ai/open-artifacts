@@ -22,7 +22,7 @@ const stub = (...responses: Response[]) => {
 it("not_listed shows copy and makes no API call", () => {
   const { fetchMock } = stub();
   render(<NoAccess error="not_listed" />);
-  expect(screen.getByRole("alert")).toHaveTextContent(/not on the admin list/);
+  expect(screen.getByRole("alert")).toHaveTextContent(/isn't a platform admin/);
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
@@ -34,7 +34,7 @@ it("unknown_sub shows the account id", () => {
 it("an unknown error and a hostile sub fall back to plain copy", () => {
   render(<NoAccess error="<b>" sub="<b>x</b>" />);
   expect(screen.getByRole("alert")).toHaveTextContent(
-    "This account is not on the admin list.",
+    "This account isn't a platform admin.",
   );
   expect(screen.queryByText("<b>x</b>")).toBeNull();
 });
@@ -44,7 +44,7 @@ it("Use another account with no session (me 401): no logout, no loop, goes to st
     new Response(JSON.stringify(apiError("unauthenticated")), { status: 401 }),
   );
   render(<NoAccess error="not_listed" />);
-  fireEvent.click(screen.getByRole("button", { name: "Use another account?" }));
+  fireEvent.click(screen.getByRole("button", { name: "Use another account" }));
   await waitFor(() =>
     expect(assign).toHaveBeenCalledWith("/auth/start?return=%2Finstalls"),
   );
@@ -58,7 +58,7 @@ it("Use another account while signed in: logout with CSRF first, then start", as
     new Response(null, { status: 204 }),
   );
   render(<NoAccess error="not_listed" />);
-  fireEvent.click(screen.getByRole("button", { name: "Use another account?" }));
+  fireEvent.click(screen.getByRole("button", { name: "Use another account" }));
   await waitFor(() =>
     expect(assign).toHaveBeenCalledWith("/auth/start?return=%2Finstalls"),
   );

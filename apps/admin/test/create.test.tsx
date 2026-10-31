@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { apiErr, http, renderApp, seen, use, writes } from "./harness";
 
 const type = (slug: string) =>
-  fireEvent.change(screen.getByLabelText("Name"), { target: { value: slug } });
+  fireEvent.change(screen.getByLabelText("Slug"), { target: { value: slug } });
 const owner = (email = "owner@example.com") =>
   fireEvent.change(screen.getByLabelText("Owner email"), {
     target: { value: email },
@@ -12,7 +12,7 @@ const submit = () => screen.getByRole("button", { name: "Create install" });
 
 it("checks the slug rules on the client without calling the API", async () => {
   renderApp("/installs/new");
-  await screen.findByLabelText("Name");
+  await screen.findByLabelText("Slug");
   type("Bad_Slug");
   expect(await screen.findByTestId("slug-status")).toHaveTextContent(
     /lowercase/,
@@ -29,31 +29,35 @@ it("checks the slug rules on the client without calling the API", async () => {
 
 it("live-checks a valid slug: taken, then available", async () => {
   renderApp("/installs/new");
-  await screen.findByLabelText("Name");
+  await screen.findByLabelText("Slug");
   type("leo");
   expect(await screen.findByText("That name is taken.")).toBeInTheDocument();
   expect(submit()).toBeDisabled();
   type("fresh-one");
   owner();
-  expect(await screen.findByText("Available.")).toBeInTheDocument();
+  expect(
+    await screen.findByText(
+      "fresh-one.open-artifacts-staging.app is available.",
+    ),
+  ).toBeInTheDocument();
   expect(submit()).toBeEnabled();
 });
 
 it("debounces the live check to the last slug typed", async () => {
   renderApp("/installs/new");
-  await screen.findByLabelText("Name");
+  await screen.findByLabelText("Slug");
   for (const s of ["a", "ab", "abc"]) type(s);
-  await screen.findByText("Available.");
+  await screen.findByText(/ is available\./);
   const checks = seen.filter((s) => s.path.includes("/slugs/"));
   expect(checks.map((c) => c.path)).toEqual(["/api/v1/slugs/abc"]);
 });
 
 it("offers installable releases with the current one marked", async () => {
   renderApp("/installs/new");
-  const select = await screen.findByLabelText("Version");
+  const select = await screen.findByLabelText("Release");
   await waitFor(() => expect(select).toHaveValue("1.42.0"));
   expect(
-    screen.getByRole("option", { name: "1.42.0 (current)" }),
+    screen.getByRole("option", { name: "1.42.0 (latest)" }),
   ).toBeInTheDocument();
   expect(screen.getByRole("option", { name: "1.41.2" })).toBeInTheDocument();
 });
@@ -61,14 +65,14 @@ it("offers installable releases with the current one marked", async () => {
 it("creates the install with CSRF, a request id and the chosen version, then opens the job", async () => {
   const { router } = renderApp("/installs/new");
   await waitFor(() =>
-    expect(screen.getByLabelText("Version")).toHaveValue("1.42.0"),
+    expect(screen.getByLabelText("Release")).toHaveValue("1.42.0"),
   );
-  fireEvent.change(screen.getByLabelText("Version"), {
+  fireEvent.change(screen.getByLabelText("Release"), {
     target: { value: "1.41.2" },
   });
   type("fresh-one");
   owner();
-  await screen.findByText("Available.");
+  await screen.findByText(/ is available\./);
   fireEvent.click(submit());
   await waitFor(() =>
     expect(router.state.location.pathname, "never opened the job").toMatch(
@@ -92,15 +96,15 @@ it("creates the install with CSRF, a request id and the chosen version, then ope
 
 it("needs a sign-in domain when Google is on", async () => {
   renderApp("/installs/new");
-  await screen.findByLabelText("Name");
+  await screen.findByLabelText("Slug");
   type("fresh-three");
   owner();
-  await screen.findByText("Available.");
-  fireEvent.change(screen.getByLabelText("Allowed email domains"), {
+  await screen.findByText(/ is available\./);
+  fireEvent.change(screen.getByLabelText("Allowed domains"), {
     target: { value: "" },
   });
   expect(submit()).toBeDisabled();
-  fireEvent.change(screen.getByLabelText("Allowed email domains"), {
+  fireEvent.change(screen.getByLabelText("Allowed domains"), {
     target: { value: "a.com, b.org" },
   });
   expect(submit()).toBeEnabled();
@@ -109,10 +113,10 @@ it("needs a sign-in domain when Google is on", async () => {
 it("shows the API's slug_taken answer in plain words", async () => {
   use(http.post("*/api/v1/installs", () => apiErr("slug_taken", 409)));
   renderApp("/installs/new");
-  await screen.findByLabelText("Name");
+  await screen.findByLabelText("Slug");
   type("fresh-two");
   owner();
-  await screen.findByText("Available.");
+  await screen.findByText(/ is available\./);
   await waitFor(() => expect(submit()).toBeEnabled());
   fireEvent.click(submit());
   expect(await screen.findByRole("alert")).toHaveTextContent(

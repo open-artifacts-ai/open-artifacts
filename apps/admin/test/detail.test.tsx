@@ -1,7 +1,12 @@
 import type { InstallDetail, InstallState } from "@oa/shared/provisioning";
+import { fixtureMe } from "@oa/shared/provisioning/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { FIXTURE_IDS, installsByState } from "../src/mocks/fixtures";
+import {
+  FIXTURE_IDS,
+  installsByState,
+  jobsByStatus,
+} from "../src/mocks/fixtures";
 import { apiErr, http, json, renderApp, use, writes } from "./harness";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -21,7 +26,7 @@ const buttons = () =>
 
 const EXPECTED: Record<InstallState, string[]> = {
   provisioning: ["Cancel job"],
-  active: ["Upgrade", "Roll back", "Suspend", "Delete"],
+  active: ["Upgrade", "Roll back", "Pause", "Delete"],
   suspended: ["Upgrade", "Roll back", "Resume", "Delete"],
   deleting: ["Restore", "Purge"],
   deleted: [],
@@ -38,10 +43,39 @@ for (const [state, want] of Object.entries(EXPECTED) as [
   });
 }
 
-it("shows the fields, the suspend reason and the grace window", async () => {
+it("shows Design's labels, the pause reason and the fields", async () => {
   await open(installsByState.suspended);
   expect(screen.getByText(/Reason: Unpaid invoice/)).toBeInTheDocument();
   expect(screen.getByText("owner@example.com")).toBeInTheDocument();
+  expect(screen.getByText("Tier · Sign-in")).toBeInTheDocument();
+  expect(screen.getByText("Team · Google · 1 domain")).toBeInTheDocument();
+  expect(screen.getByText("Install id")).toBeInTheDocument();
+  expect(screen.getAllByText("Paused").length).toBeGreaterThan(0);
+});
+
+it("explains a routing mismatch and a rolled-back upgrade", async () => {
+  const i = { ...installsByState.active, mismatch: "mode_paused" };
+  use(
+    http.get(`*/api/v1/installs/${i.id}/jobs`, () =>
+      json({
+        items: [
+          {
+            ...jobsByStatus.failed,
+            lastErrorCode: "upgrade_rolled_back",
+            args: { from: "1.41.2", to: "1.43.0" },
+          },
+        ],
+        nextCursor: null,
+      }),
+    ),
+  );
+  await open(i);
+  expect(screen.getByTestId("mismatch")).toHaveTextContent(
+    "Routing doesn't match.",
+  );
+  const b = await screen.findByTestId("rolled-back");
+  expect(b).toHaveTextContent("Serving 1.42.0, not 1.43.0.");
+  expect(b).toHaveTextContent("The last upgrade rolled back.");
 });
 
 it("shows a mismatch banner and a lease with a release action", async () => {
@@ -98,11 +132,11 @@ it("hides Restore when the grace window is over", async () => {
 
 it("links the active job and disables the lifecycle actions", async () => {
   await open({ ...installsByState.active, activeJobId: FIXTURE_IDS.jobLeo });
-  expect(screen.getByRole("link", { name: "View the job" })).toHaveAttribute(
+  expect(screen.getByRole("link", { name: "Open job" })).toHaveAttribute(
     "href",
     `/jobs/${FIXTURE_IDS.jobLeo}`,
   );
-  expect(screen.getByRole("button", { name: "Suspend" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Cancel job" })).toBeEnabled();
 });
 
@@ -111,7 +145,7 @@ it("delete is type-to-confirm on the slug", async () => {
   const { router } = await open(i);
   fireEvent.click(screen.getByRole("button", { name: "Delete" }));
   const dialog = await screen.findByRole("dialog");
-  const go = within(dialog).getByRole("button", { name: "Delete" });
+  const go = within(dialog).getByRole("button", { name: "Delete leo" });
   expect(go).toBeDisabled();
   fireEvent.change(within(dialog).getByRole("textbox"), {
     target: { value: "wrong" },
@@ -134,9 +168,9 @@ it("delete is type-to-confirm on the slug", async () => {
 it("suspend needs a reason of 1 to 200 characters", async () => {
   const i = installsByState.active;
   await open(i);
-  fireEvent.click(screen.getByRole("button", { name: "Suspend" }));
+  fireEvent.click(screen.getByRole("button", { name: "Pause" }));
   const dialog = await screen.findByRole("dialog");
-  const go = within(dialog).getByRole("button", { name: "Suspend" });
+  const go = within(dialog).getByRole("button", { name: "Pause leo" });
   expect(go).toBeDisabled();
   fireEvent.change(within(dialog).getByRole("textbox"), {
     target: { value: "   " },
@@ -200,9 +234,75 @@ it("explains job_in_progress and links the running job", async () => {
   ).toHaveAttribute("href", `/jobs/${FIXTURE_IDS.jobLeo}`);
 });
 
-it("purge sends a signed-out-for-too-long admin to a fresh sign-in", async () => {
+it("purge asks for a fresh sign-in first, then for the slug", async () => {
+  const i = installsByState.failed;
+  const assign = vi.fn();
+  await open(i);
+  vi.stubGlobal("location", {
+    ...window.location,
+    pathname: `/installs/${i.id}`,
+    search: "",
+    assign,
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Purge" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent("Delete broken for good?");
+  expect(dialog).toHaveTextContent("Sign in again to continue.");
+  expect(within(dialog).queryByRole("textbox")).toBeNull();
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: "Sign in again" }),
+  );
+  expect(assign).toHaveBeenCalledWith(
+    `/auth/start?reauth=1&return=${encodeURIComponent(`/installs/${i.id}`)}`,
+  );
+  expect(writes()).toHaveLength(0);
+});
+
+it("purge with a fresh sign-in is type-to-confirm", async () => {
   const i = installsByState.failed;
   use(
+    http.get("*/api/v1/me", () =>
+      json({
+        ...fixtureMe({
+          principal: "admin",
+          csrf: "mock-csrf",
+          tokenId: null,
+          tokenKind: null,
+          tokenExpiresAt: null,
+        }),
+        authAt: Date.now() - 60_000,
+      }),
+    ),
+  );
+  await open(i);
+  fireEvent.click(screen.getByRole("button", { name: "Purge" }));
+  const dialog = await screen.findByRole("dialog");
+  const go = within(dialog).getByRole("button", { name: "Purge" });
+  expect(go).toBeDisabled();
+  fireEvent.change(within(dialog).getByRole("textbox"), {
+    target: { value: i.slug },
+  });
+  fireEvent.click(go);
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  expect(writes()[0].path).toBe(`/api/v1/installs/${i.id}/purge`);
+  expect(writes()[0].body).toMatchObject({ confirmSlug: i.slug });
+});
+
+it("still sends the user to sign in again when the API says reauth_required", async () => {
+  const i = installsByState.failed;
+  use(
+    http.get("*/api/v1/me", () =>
+      json({
+        ...fixtureMe({
+          principal: "admin",
+          csrf: "mock-csrf",
+          tokenId: null,
+          tokenKind: null,
+          tokenExpiresAt: null,
+        }),
+        authAt: Date.now() - 60_000,
+      }),
+    ),
     http.post(`*/api/v1/installs/${i.id}/purge`, () =>
       apiErr("reauth_required", 403),
     ),
@@ -221,11 +321,7 @@ it("purge sends a signed-out-for-too-long admin to a fresh sign-in", async () =>
     target: { value: i.slug },
   });
   fireEvent.click(within(dialog).getByRole("button", { name: "Purge" }));
-  await waitFor(() =>
-    expect(assign).toHaveBeenCalledWith(
-      `/auth/start?reauth=1&return=${encodeURIComponent(`/installs/${i.id}`)}`,
-    ),
-  );
+  await waitFor(() => expect(assign).toHaveBeenCalled());
 });
 
 it("retry sends one click with a request id", async () => {

@@ -38,7 +38,7 @@ it("shows a load error with retry when /api/v1/me answers 500", async () => {
   ).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   expect(
-    await screen.findByRole("heading", { name: "Audit" }),
+    await screen.findByRole("heading", { name: "Audit log" }),
   ).toBeInTheDocument();
 });
 

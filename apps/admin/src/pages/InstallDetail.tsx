@@ -9,10 +9,24 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { ApiError, api } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
-import { installJobsQuery, installQuery, releasesQuery } from "../api/queries";
+import {
+  installJobsQuery,
+  installQuery,
+  jobQuery,
+  releasesQuery,
+} from "../api/queries";
+import { reauthHref } from "../api/reauth";
 import { ActionDialog } from "../components/ActionDialog";
 import { ErrorLine, StateBadge, StatusBadge } from "../components/Bits";
 import { fmtTime } from "../components/format";
+import {
+  fmtDay,
+  HEALTH_LABEL,
+  JOB_VERB,
+  STATE_LABEL,
+  stepCount,
+  visibleSteps,
+} from "../components/labels";
 import { useAction } from "../hooks/useAction";
 import { LoadError } from "../layout/LoadError";
 
@@ -25,6 +39,8 @@ type Dialog =
   | "cancel"
   | null;
 
+const GRACE_DAYS = 7;
+const REAUTH_MS = 10 * 60_000;
 const can = (i: Install, kind: JobKind) => canTransition(i.state, kind, "A");
 
 function Actions({ install }: { install: Install }) {
@@ -38,6 +54,9 @@ function Actions({ install }: { install: Install }) {
     enabled: dialog === "upgrade",
   });
   const id = install.id;
+  // Purge needs a Google sign-in from the last 10 minutes (authz: reauth_required).
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const fresh = !!me.data?.authAt && Date.now() - me.data.authAt < REAUTH_MS;
   const busy = install.activeJobId !== null;
   const done = {
     invalidate: [
@@ -148,14 +167,6 @@ function Actions({ install }: { install: Install }) {
   );
   return (
     <section className="oa-actions" aria-label="Actions">
-      {busy && (
-        <p className="oa-note">
-          A job is running on this install.{" "}
-          <Link to="/jobs/$id" params={{ id: install.activeJobId ?? "" }}>
-            View the job
-          </Link>
-        </p>
-      )}
       {can(install, "upgrade") && (
         <Button disabled={busy} onClick={() => setDialog("upgrade")}>
           Upgrade
@@ -181,7 +192,7 @@ function Actions({ install }: { install: Install }) {
           disabled={busy}
           onClick={() => setDialog("suspend")}
         >
-          Suspend
+          Pause
         </Button>
       )}
       {can(install, "delete") && (
@@ -243,31 +254,34 @@ function Actions({ install }: { install: Install }) {
         <ActionDialog
           open
           onClose={close}
-          title="Suspend"
-          description="Visitors see the paused page until you resume."
-          submitLabel="Suspend"
+          title={`Pause ${install.slug}?`}
+          description="Visitors see the paused page. Nothing is deleted, and you can resume it at any time."
+          submitLabel={`Pause ${install.slug}`}
           canSubmit={reason.trim().length >= 1 && reason.trim().length <= 200}
           pending={suspend.isPending}
           error={suspend.error}
           onSubmit={() => suspend.mutate()}
         >
-          <Label htmlFor="reason">Reason (1 to 200 characters)</Label>
+          <Label htmlFor="reason">Reason</Label>
           <Textarea
             id="reason"
             value={reason}
             maxLength={200}
             onChange={(e) => setReason(e.target.value)}
           />
+          <small className="oa-hint">
+            Only admins and their agents see this.
+          </small>
         </ActionDialog>
       )}
       {dialog === "delete" && (
         <ActionDialog
           open
           onClose={close}
-          title="Delete install"
-          description="The install closes now and can be restored until the grace period ends."
+          title={`Delete ${install.slug}?`}
+          description={`${install.appHost} closes now and shows a closed page. You can restore it within ${GRACE_DAYS} days. After that it's deleted for good.`}
           expected={install.slug}
-          submitLabel="Delete"
+          submitLabel={`Delete ${install.slug}`}
           destructive
           pending={del.isPending}
           error={del.error}
@@ -278,14 +292,22 @@ function Actions({ install }: { install: Install }) {
         <ActionDialog
           open
           onClose={close}
-          title="Purge install"
-          description="This removes the install for good. You may be asked to sign in again first."
-          expected={install.slug}
-          submitLabel="Purge"
-          destructive
+          title={`Delete ${install.slug} for good?`}
+          description={`This can't be undone. Its artifacts, data and files are erased, and its people lose access.${fresh ? "" : " Sign in again to continue."}`}
+          expected={fresh ? install.slug : undefined}
+          submitLabel={fresh ? "Purge" : "Sign in again"}
+          destructive={fresh}
           pending={purge.isPending}
           error={purge.error}
-          onSubmit={() => purge.mutate()}
+          onSubmit={() =>
+            fresh
+              ? purge.mutate()
+              : api.redirect(
+                  reauthHref(
+                    `${window.location.pathname}${window.location.search}`,
+                  ),
+                )
+          }
         />
       )}
       {dialog === "release-lease" && (
@@ -331,6 +353,33 @@ function Actions({ install }: { install: Install }) {
   );
 }
 
+/** "Upgrading to 0.77.1, step 3 of 11, Reserve slug and hosts. Open job" */
+function ActiveJob({ jobId }: { jobId: string }) {
+  const q = useQuery(jobQuery(jobId));
+  const job = q.data;
+  const { n, of } = job ? stepCount(job) : { n: 0, of: 0 };
+  const at = job
+    ? visibleSteps(job.steps).find((s) => s.index === job.stepIndex)
+    : undefined;
+  return (
+    <p className="oa-note" data-testid="active-job">
+      {job ? (
+        <>
+          {JOB_VERB[job.kind].ing}
+          {typeof job.args.to === "string" ? ` to ${job.args.to}` : ""}, step{" "}
+          {n} of {of}
+          {at ? `, ${at.label}` : ""}.{" "}
+        </>
+      ) : (
+        "A job is running. "
+      )}
+      <Link to="/jobs/$id" params={{ id: jobId }}>
+        Open job
+      </Link>
+    </p>
+  );
+}
+
 export function InstallDetail({ id }: { id: string }) {
   const q = useQuery(installQuery(id));
   const jobs = useQuery(installJobsQuery(id));
@@ -350,15 +399,45 @@ export function InstallDetail({ id }: { id: string }) {
     );
   const i = q.data;
   if (!i) return null;
+  const last = jobs.data?.items[0];
+  const rolledBack =
+    last?.kind === "upgrade" && last.lastErrorCode === "upgrade_rolled_back";
   return (
     <>
+      <p className="oa-crumbs">
+        <Link to="/installs">Installs</Link> /
+      </p>
       <div className="oa-head">
-        <h1>{i.slug}</h1>
+        <div style={{ flex: 1 }}>
+          <h1>{i.slug}</h1>
+          <p className="oa-sub">{i.appHost}</p>
+        </div>
         <StateBadge state={i.state} />
       </div>
+      {i.activeJobId && <ActiveJob jobId={i.activeJobId} />}
       {i.mismatch && (
-        <p className="oa-error" role="alert" data-testid="mismatch">
-          State and serving disagree: {i.mismatch}
+        <p
+          className="oa-banner oa-banner-warn"
+          role="alert"
+          data-testid="mismatch"
+        >
+          <strong>Routing doesn't match.</strong> {i.slug} ({i.mismatch}).
+        </p>
+      )}
+      {rolledBack && last && (
+        <p
+          className="oa-banner oa-banner-warn"
+          role="alert"
+          data-testid="rolled-back"
+        >
+          <strong>
+            Serving {i.version ?? "an older version"}
+            {typeof last.args.to === "string" ? `, not ${last.args.to}` : ""}.
+          </strong>{" "}
+          The last upgrade rolled back.{" "}
+          <Link to="/jobs/$id" params={{ id: last.id }}>
+            The job says why.
+          </Link>
         </p>
       )}
       {i.state === "failed" && (
@@ -368,14 +447,15 @@ export function InstallDetail({ id }: { id: string }) {
       )}
       {i.state === "suspended" && (
         <p className="oa-note">
-          Suspended {fmtTime(i.suspendedAt)}. Reason: {i.suspendReason}
+          Paused {fmtDay(i.suspendedAt ?? i.createdAt)}. Reason:{" "}
+          {i.suspendReason}
         </p>
       )}
       {i.state === "deleting" && (
         <p className="oa-note">
-          Deleted {fmtTime(i.deletedAt)}.{" "}
+          Deleted {fmtDay(i.deletedAt ?? i.createdAt)}.{" "}
           {i.restorable
-            ? `It can be restored until ${fmtTime(i.purgeAt)}.`
+            ? `You can restore it until ${fmtDay(i.purgeAt ?? 0)}.`
             : "It can no longer be restored."}
         </p>
       )}
@@ -385,32 +465,34 @@ export function InstallDetail({ id }: { id: string }) {
         </p>
       )}
       <dl className="oa-fields">
-        <dt>App</dt>
-        <dd>{i.appHost}</dd>
-        <dt>Content</dt>
-        <dd>{i.contentHost}</dd>
+        <dt>State</dt>
+        <dd>{STATE_LABEL[i.state]}</dd>
+        <dt>Health</dt>
+        <dd>{HEALTH_LABEL[i.health]}</dd>
         <dt>Serving</dt>
-        <dd>{i.servingMode}</dd>
-        <dt>Version</dt>
         <dd>
-          {i.version ?? "none"}
+          {i.version ?? "nothing"}
           {i.previousVersion && ` (previous ${i.previousVersion})`}
         </dd>
-        <dt>Tier</dt>
-        <dd>{i.tier ?? "none"}</dd>
-        <dt>Health</dt>
-        <dd>{i.health}</dd>
+        <dt>Routing</dt>
+        <dd>{i.servingMode}</dd>
+        <dt>Tier · Sign-in</dt>
+        <dd>
+          {i.tier ? i.tier[0].toUpperCase() + i.tier.slice(1) : "None"} ·{" "}
+          {i.auth.providers
+            .map((p) => (p === "google" ? "Google" : "Email"))
+            .join(", ")}
+          {i.auth.domains.length > 0 &&
+            ` · ${i.auth.domains.length} ${i.auth.domains.length === 1 ? "domain" : "domains"}`}
+        </dd>
         <dt>Owner</dt>
         <dd>{i.ownerEmail ?? "hidden"}</dd>
-        <dt>Sign-in</dt>
-        <dd>
-          {i.auth.providers.join(", ")}
-          {i.auth.domains.length > 0 && ` (${i.auth.domains.join(", ")})`}
-        </dd>
-        <dt>Source</dt>
-        <dd>{i.source}</dd>
         <dt>Created</dt>
-        <dd>{fmtTime(i.createdAt)}</dd>
+        <dd>{fmtDay(i.createdAt)}</dd>
+        <dt>Domains</dt>
+        <dd>{i.auth.domains.join(", ") || "none"}</dd>
+        <dt>Install id</dt>
+        <dd>{i.id}</dd>
       </dl>
       <Actions install={i} />
       <h2>Recent jobs</h2>

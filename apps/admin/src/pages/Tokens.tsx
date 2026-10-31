@@ -220,7 +220,7 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
   const now = Date.now();
   return (
     <>
-      <h1>Tokens</h1>
+      <h1>Agent tokens</h1>
       <ConnectCard env={env} />
       {secret !== null && (
         <div className="oa-secret" role="alert" data-testid="secret">

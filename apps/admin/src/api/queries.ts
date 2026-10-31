@@ -10,7 +10,11 @@ export const worldQuery = () =>
     queryFn: () => api.call("R27"),
     refetchInterval: 30_000,
   });
-export const installsQuery = (o: { cursor?: string; state?: InstallState }) =>
+export const installsQuery = (o: {
+  cursor?: string;
+  state?: InstallState;
+  q?: string;
+}) =>
   queryOptions({
     queryKey: ["installs", o],
     queryFn: () => api.call("R2", { query: { ...o, limit: PAGE_SIZE } }),

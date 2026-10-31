@@ -1,4 +1,4 @@
-import type { Job } from "@oa/shared/provisioning";
+import { JOB_STEPS, type Job } from "@oa/shared/provisioning";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { JOB_POLL_MS, jobIsTerminal, jobQuery } from "../src/api/queries";
@@ -16,19 +16,69 @@ it("shows steps, attempt, the last error in plain words and the next retry", asy
   serve(jobsByStatus.running);
   renderApp(`/jobs/${JOB}`);
   expect(await screen.findByTestId("status")).toHaveTextContent("running");
-  expect(steps()).toEqual([
-    "done",
-    "done",
-    "done",
-    "done",
-    "current",
-    "waiting",
-  ]);
+  expect(steps()).toEqual(["done", "done", "done", "done", "current"]);
   expect(screen.getByTestId("attempt")).toHaveTextContent("1");
   expect(screen.getByTestId("retry-at")).toBeInTheDocument();
   expect(screen.getByTestId("job-error")).toHaveTextContent(
     /Cloudflare returned an error/,
   );
+});
+
+it("shows Design's step labels, step count and the attempt line", async () => {
+  serve({
+    ...jobsByStatus.running,
+    kind: "create",
+    steps: [...JOB_STEPS.create],
+    stepIndex: 5,
+    step: "verify_clean",
+    attempt: 2,
+    lastErrorCode: "cf_error",
+    retryAt: Date.now() + 60_000,
+  });
+  renderApp(`/jobs/${JOB}`);
+  expect(
+    await screen.findByRole("heading", { name: /^Creating/ }),
+  ).toBeInTheDocument();
+  const list = within(screen.getByRole("list", { name: "Steps" }));
+  expect(
+    list.getAllByRole("listitem").map((li) => li.firstChild?.textContent),
+  ).toEqual([
+    "Admit",
+    "Check the request",
+    "Reserve slug and hosts",
+    "Check the release",
+    "Upload",
+    "Verify clean",
+    "Health check",
+    "Route hosts",
+    "Turn on sign-in",
+    "Check it answers",
+    "Notify",
+  ]);
+  expect(screen.getByText(/· step 6 of 11/)).toBeInTheDocument();
+  expect(screen.getByTestId("attempt-line")).toHaveTextContent(
+    "Attempt 2 of 4 · cf_error · retrying in 1 min",
+  );
+});
+
+it("a failed create names the step and says nothing was routed; Retry is offered on a failed install", async () => {
+  serve({
+    ...jobsByStatus.failed,
+    kind: "create",
+    installId: FIXTURE_IDS.broken,
+    steps: [...JOB_STEPS.create],
+    stepIndex: 3,
+    lastErrorCode: "release_unverified",
+    error: { code: "release_unverified", message: "no signature" },
+  });
+  renderApp(`/jobs/${JOB}`);
+  const err = await screen.findByTestId("job-error");
+  expect(err).toHaveTextContent(
+    'Create stopped at "Check the release": release_unverified. Nothing was routed.',
+  );
+  fireEvent.click(await within(err).findByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  expect(writes()[0].path).toBe(`/api/v1/installs/${FIXTURE_IDS.broken}/retry`);
 });
 
 it("shows a queued job, a done job and a failed job", async () => {

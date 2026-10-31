@@ -1,12 +1,36 @@
 import { InstallIdSchema } from "@oa/shared/provisioning";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@oa/ui/shadcn";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { auditQuery } from "../api/queries";
 import { Pager } from "../components/Bits";
-import { fmtTime } from "../components/format";
+import { fmtDayClock, shortId } from "../components/labels";
 import { usePaging } from "../hooks/usePaging";
 import { LoadError } from "../layout/LoadError";
+
+const VERB: Record<string, string> = {
+  "install.create": "created",
+  "install.upgrade": "started an upgrade of",
+  "install.rollback": "started a rollback of",
+  "install.suspend": "paused",
+  "install.resume": "resumed",
+  "install.delete": "deleted",
+  "install.restore": "restored",
+  "install.purge": "deleted for good",
+  "install.retry": "retried the create of",
+  "install.release_lease": "released the lease on",
+};
+/** Design's sentence verb for a known action; the raw action name otherwise. */
+export const actionPhrase = (action: string) =>
+  Object.hasOwn(VERB, action) ? VERB[action] : action;
 
 export function Audit({ installId }: { installId?: string }) {
   const navigate = useNavigate();
@@ -20,7 +44,10 @@ export function Audit({ installId }: { installId?: string }) {
   });
   return (
     <>
-      <h1>Audit</h1>
+      <h1>Audit log</h1>
+      <p className="oa-sub">
+        Every admin action, agent token call and sign-in. Newest first.
+      </p>
       <form
         className="oa-filter"
         onSubmit={(e) => {
@@ -37,7 +64,7 @@ export function Audit({ installId }: { installId?: string }) {
         }}
       >
         <label>
-          Install id{" "}
+          Install{" "}
           <input value={draft} onChange={(e) => setDraft(e.target.value)} />
         </label>{" "}
         <button type="submit" className="oa-link">
@@ -75,35 +102,62 @@ export function Audit({ installId }: { installId?: string }) {
         <p className="oa-placeholder">No audit entries.</p>
       ) : q.data ? (
         <>
-          <ul className="oa-audit">
-            {q.data.items.map((e) => (
-              <li key={e.id} data-outcome={e.outcome}>
-                <time>{fmtTime(e.at)}</time> <strong>{e.action}</strong>{" "}
-                {e.outcome}
-                {e.code && ` (${e.code})`}
-                {e.count > 1 && <span data-testid="count"> x{e.count}</span>}
-                {" by "}
-                {e.actor.label} ({e.actor.kind})
-                {e.installId && (
-                  <>
-                    {" on "}
-                    <Link to="/installs/$id" params={{ id: e.installId }}>
-                      {e.installId}
-                    </Link>
-                  </>
-                )}
-                {e.jobId && (
-                  <>
-                    {" "}
-                    <Link to="/jobs/$id" params={{ id: e.jobId }}>
-                      job
-                    </Link>
-                  </>
-                )}
-                {e.detail && <code>{JSON.stringify(e.detail)}</code>}
-              </li>
-            ))}
-          </ul>
+          <div className="oa-tablewrap">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Time (UTC)</TableHead>
+                  <TableHead>Actor</TableHead>
+                  <TableHead>Action</TableHead>
+                  <TableHead>Target</TableHead>
+                  <TableHead>Detail</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {q.data.items.map((e) => (
+                  <TableRow key={e.id} data-outcome={e.outcome}>
+                    <TableCell>{fmtDayClock(e.at)}</TableCell>
+                    <TableCell>
+                      {e.actor.kind === "token"
+                        ? `token: ${e.actor.label}`
+                        : e.actor.label}
+                    </TableCell>
+                    <TableCell>
+                      {actionPhrase(e.action)}
+                      {e.outcome !== "ok" && (
+                        <span className="oa-chip oa-chip-danger">
+                          {e.outcome}
+                          {e.code ? `: ${e.code}` : ""}
+                        </span>
+                      )}
+                      {e.count > 1 && (
+                        <span data-testid="count"> x{e.count}</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {e.installId ? (
+                        <Link to="/installs/$id" params={{ id: e.installId }}>
+                          {e.installId}
+                        </Link>
+                      ) : (
+                        ""
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {e.jobId && (
+                        <>
+                          <Link to="/jobs/$id" params={{ id: e.jobId }}>
+                            job {shortId(e.jobId)}
+                          </Link>{" "}
+                        </>
+                      )}
+                      {e.detail && <code>{JSON.stringify(e.detail)}</code>}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
           <Pager
             canPrev={paging.canPrev}
             next={q.data.nextCursor}

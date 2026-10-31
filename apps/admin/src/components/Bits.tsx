@@ -3,6 +3,7 @@ import { Badge } from "@oa/ui/shadcn";
 import { Link } from "@tanstack/react-router";
 import { ApiError } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
+import { STATE_LABEL } from "./labels";
 
 const STATE_VARIANT = {
   provisioning: "secondary",
@@ -14,7 +15,7 @@ const STATE_VARIANT = {
 } as const satisfies Record<InstallState, string>;
 export const StateBadge = ({ state }: { state: InstallState }) => (
   <Badge variant={STATE_VARIANT[state]} data-testid="state">
-    {state}
+    {STATE_LABEL[state]}
   </Badge>
 );
 

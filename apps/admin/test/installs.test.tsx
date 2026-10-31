@@ -1,40 +1,92 @@
-import { emptyWorld } from "@oa/shared/provisioning/fixtures";
+import { emptyWorld, fixtureWorld } from "@oa/shared/provisioning/fixtures";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it } from "vitest";
+import { fmtClock } from "../src/components/labels";
 import { http, json, renderApp, seen, use } from "./harness";
 
-it("lists installs with state and version, and the header strip from the world", async () => {
+it("lists installs with state, release, sign-in and health, and six tiles from the world", async () => {
   renderApp("/installs");
-  const row = (await screen.findByRole("link", { name: "leo" })).closest("tr");
+  const row = (await screen.findAllByRole("link", { name: "leo" }))[0].closest(
+    "tr",
+  );
   expect(row).not.toBeNull();
-  expect(within(row as HTMLElement).getByText("active")).toBeInTheDocument();
-  expect(within(row as HTMLElement).getByText("1.42.0")).toBeInTheDocument();
-  expect(screen.getAllByRole("link", { name: "broken" })).not.toHaveLength(0);
+  const r = within(row as HTMLElement);
+  expect(r.getByTestId("state")).toHaveTextContent("Active");
+  expect(r.getByText("1.42.0")).toBeInTheDocument();
+  expect(r.getByText("Team")).toBeInTheDocument();
+  expect(r.getByText("Google · 1 domain")).toBeInTheDocument();
+  expect(r.getByText("OK")).toBeInTheDocument();
+  expect(r.getByText("leo.open-artifacts.app")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Create install" })).toHaveAttribute(
     "href",
     "/installs/new",
   );
-  const tiles = await screen.findByTestId("tile-installs");
-  expect(tiles).toHaveTextContent("3 installs");
-  expect(screen.getByTestId("tile-jobs")).toHaveTextContent("1 failed in 24 h");
-  expect(screen.getByTestId("tile-attention")).toHaveTextContent(
-    "2 need attention",
+  await screen.findByTestId("tile-active");
+  expect(screen.getByTestId("tile-active")).toHaveTextContent("2");
+  expect(screen.getByTestId("tile-creating")).toHaveTextContent("0");
+  expect(screen.getByTestId("tile-paused")).toHaveTextContent(
+    "Paused · Deleting",
   );
+  expect(screen.getByTestId("tile-attention")).toHaveTextContent("2");
   expect(screen.getByTestId("tile-token")).toHaveTextContent("340 days left");
-  expect(screen.getByTestId("tile-scheduler")).toHaveTextContent("running");
-  expect(screen.getByTestId("tile-prodclean")).toHaveTextContent("clean");
-  expect(
-    await screen.findByText(/job failed \(prod_dirty\)/),
-  ).toBeInTheDocument();
+  const at = fixtureWorld().prodClean?.at ?? 0;
+  expect(screen.getByTestId("tile-prodclean")).toHaveTextContent(
+    `${fmtClock(at)} passed`,
+  );
+  expect(screen.getByText("3 installs on staging.")).toBeInTheDocument();
 });
 
-it("says there are no instances yet when there are none", async () => {
+it("shows a failed create and its attention badges in the table", async () => {
+  renderApp("/installs");
+  const row = (
+    await screen.findAllByRole("link", { name: "broken" })
+  )[0].closest("tr");
+  const r = within(row as HTMLElement);
+  expect(r.getByTestId("state")).toHaveTextContent("Create failed");
+  expect(r.getByTestId("state")).toHaveTextContent("prod_dirty");
+  expect(r.getByTestId("state")).toHaveTextContent("job failed");
+});
+
+it("sorts the page by a column", async () => {
+  renderApp("/installs");
+  await screen.findAllByRole("link", { name: "leo" });
+  const slugs = () =>
+    screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((tr) => within(tr).getAllByRole("link")[0].textContent);
+  fireEvent.click(screen.getByRole("button", { name: "Install" }));
+  expect(slugs()).toEqual(["acme", "broken", "leo"]);
+  fireEvent.click(screen.getByRole("button", { name: /^Install/ }));
+  expect(slugs()).toEqual(["leo", "broken", "acme"]);
+  expect(screen.getByRole("columnheader", { name: /Install/ })).toHaveAttribute(
+    "aria-sort",
+    "descending",
+  );
+});
+
+it("says there are no installs yet when there are none", async () => {
   use(
     http.get("*/api/v1/installs", () => json({ items: [], nextCursor: null })),
     http.get("*/api/v1/world", () => json(emptyWorld("staging"))),
   );
   renderApp("/installs");
-  expect(await screen.findByText("No installs yet.")).toBeInTheDocument();
+  expect(await screen.findByText("No installs yet")).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      "Create the first one. It runs as a job, and nothing is reachable until every check passes.",
+    ),
+  ).toBeInTheDocument();
+});
+
+it("searches on the server and says so when nothing matches", async () => {
+  renderApp("/installs");
+  await screen.findAllByRole("link", { name: "leo" });
+  fireEvent.change(screen.getByLabelText("Search slug or host"), {
+    target: { value: "zzz" },
+  });
+  expect(await screen.findByText("No installs match.")).toBeInTheDocument();
+  expect(seen.some((s) => s.path.includes("q=zzz"))).toBe(true);
 });
 
 it("filters by state and says so when nothing matches", async () => {
@@ -97,7 +149,7 @@ it("shows a load error with retry", async () => {
   fireEvent.click(
     within(alert as HTMLElement).getByRole("button", { name: "Retry" }),
   );
-  expect(await screen.findByText("No installs yet.")).toBeInTheDocument();
+  expect(await screen.findByText("No installs yet")).toBeInTheDocument();
   await waitFor(() =>
     expect(screen.queryByText("Couldn't load installs")).toBeNull(),
   );

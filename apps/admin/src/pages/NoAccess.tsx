@@ -8,10 +8,9 @@ import { startHref } from "./SignIn";
 const COPY: Record<string, string> = {
   unknown_sub:
     "This email is already on the admin list under a different Google account. Ask an admin to check it.",
-  not_listed:
-    "This Google account is not on the admin list. Ask an admin to add it.",
+  not_listed: "This account isn't a platform admin.",
 };
-const FALLBACK = "This account is not on the admin list.";
+const FALLBACK = "This account isn't a platform admin.";
 
 /** A signed-in admin may land here; end that session before the account chooser. */
 async function useAnother() {
@@ -38,7 +37,7 @@ export function NoAccess({ error, sub }: { error?: string; sub?: string }) {
         </p>
       )}
       <button type="button" className="oa-link" onClick={useAnother}>
-        Use another account?
+        Use another account
       </button>
     </EdgePanel>
   );

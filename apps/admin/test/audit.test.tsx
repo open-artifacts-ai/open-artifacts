@@ -10,29 +10,30 @@ it("lists entries of each outcome; aggregated refusals show a count", async () =
     ),
   );
   renderApp("/audit");
-  const items = await screen.findAllByRole("listitem");
+  await screen.findAllByRole("row");
+  const items = screen.getAllByRole("row").slice(1);
   expect(items.map((i) => i.getAttribute("data-outcome"))).toEqual([
     "ok",
     "refused",
     "error",
   ]);
   expect(screen.getByTestId("count")).toHaveTextContent("x12");
-  expect(screen.getByText("install.purge")).toBeInTheDocument();
+  expect(screen.getByText(/deleted for good/)).toBeInTheDocument();
 });
 
 it("filters by install id from the query string", async () => {
   renderApp(`/audit?installId=${FIXTURE_IDS.leo}`);
-  await screen.findAllByRole("listitem");
+  await screen.findAllByRole("row");
   expect(
     seen.some((s) => s.path.includes(`installId=${FIXTURE_IDS.leo}`)),
   ).toBe(true);
-  expect(screen.getByLabelText("Install id")).toHaveValue(FIXTURE_IDS.leo);
+  expect(screen.getByLabelText("Install")).toHaveValue(FIXTURE_IDS.leo);
 });
 
 it("applies a typed filter and clears it", async () => {
   const { router } = renderApp("/audit");
-  await screen.findAllByRole("listitem");
-  fireEvent.change(screen.getByLabelText("Install id"), {
+  await screen.findAllByRole("row");
+  fireEvent.change(screen.getByLabelText("Install"), {
     target: { value: FIXTURE_IDS.acme },
   });
   fireEvent.click(screen.getByRole("button", { name: "Filter" }));
@@ -52,9 +53,9 @@ it("pages with the cursor", async () => {
     ),
   );
   renderApp("/audit");
-  await screen.findByText("install.upgrade");
+  await screen.findByText("started an upgrade of");
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
-  await screen.findByText("install.purge");
+  await screen.findByText(/deleted for good/);
   expect(seen.some((s) => s.path.includes("cursor=c2"))).toBe(true);
 });
 
