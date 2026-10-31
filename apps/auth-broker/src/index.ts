@@ -14,6 +14,8 @@ import {
   flowHash,
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_TOKEN_URL,
+  isPlatformPrincipal,
+  verifyBrokerTicket,
 } from "@oa/auth-core";
 import {
   ASSERTION_SKEW_MS,
@@ -122,6 +124,19 @@ async function authorize(
   if (limited) return limited;
   const entry = await lookupInstall(env.BROKER_REGISTRY, install, now);
   if (!entry) return log("authorize", "unknown_install"), notFound();
+  // Platform principals (the Provisioning API's admin sign-in, design v7
+  // 4.3): a ticket signed by the entry's key over this flow, checked before
+  // the install bucket, so nobody can drain it and lock the admin out.
+  if (
+    isPlatformPrincipal(install) &&
+    !(await verifyBrokerTicket(
+      entry.keys,
+      q.get("ticket") ?? "",
+      { install, state, challenge },
+      now,
+    ))
+  )
+    return log("authorize", "bad_ticket"), notFound();
   const busy = await installLimited(env, install, "authorize");
   if (busy) return busy;
   const u = new URL(GOOGLE_AUTHORIZE_URL);

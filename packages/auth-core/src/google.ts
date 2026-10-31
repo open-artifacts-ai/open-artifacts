@@ -101,25 +101,23 @@ async function sameString(a: string, b: string): Promise<boolean> {
   return diff === 0;
 }
 
-/**
- * Verifies a Google ID token for one install, in this order: signature
- * (RS256 only, Google's JWKS unless `jwks` is given), iss, aud, exp/iat
- * (60 s skew, issued at most 1 h ago) and required claims; then aud is exactly the client id; azp,
- * when present, is the client id; nonce equals this flow's nonce (constant
- * time); email_verified is true; the email normalizes (normalizeEmail); hd is one of `domains` exactly. The email
- * domain is never consulted.
- */
-export async function verifyGoogleIdToken(
-  opts: {
-    clientId: string;
-    domains: readonly string[];
-    jwks?: JWTVerifyGetKey;
-    /** ms; defaults to the clock. */
-    now?: number;
-  },
+/** What verifyGoogleIdTokenAnyDomain returns: hd, when sent, is reported, never checked. */
+export type GoogleAnyIdentity = Omit<GoogleIdentity, "hd"> & { hd: string | null };
+
+type VerifyOpts = {
+  clientId: string;
+  jwks?: JWTVerifyGetKey;
+  /** ms; defaults to the clock. */
+  now?: number;
+};
+
+/** Every check but the tenant one; `tenant` runs in its place in the order. */
+async function verifyClaims(
+  opts: VerifyOpts,
   idToken: string,
   nonce: string,
-): Promise<GoogleIdentity> {
+  tenant: ((hd: unknown) => boolean) | null,
+): Promise<GoogleAnyIdentity> {
   let claims: JWTPayload & Record<string, unknown>;
   try {
     googleJwks ??= createRemoteJWKSet(new URL(GOOGLE_JWKS_URL));
@@ -152,7 +150,7 @@ export async function verifyGoogleIdToken(
     throw new GoogleTokenError("nonce");
   if (claims.email_verified !== true)
     throw new GoogleTokenError("email_unverified");
-  if (!inDomains(opts.domains, claims.hd)) throw new GoogleTokenError("tenant");
+  if (tenant && !tenant(claims.hd)) throw new GoogleTokenError("tenant");
   const { sub } = claims;
   const email =
     typeof claims.email === "string" ? normalizeEmail(claims.email) : null;
@@ -165,5 +163,39 @@ export async function verifyGoogleIdToken(
   const at = claims.auth_time;
   const authTime =
     typeof at === "number" && Number.isFinite(at) && at > 0 ? at * 1000 : null;
-  return { sub, email, name, hd: claims.hd as string, authTime };
+  const hd = typeof claims.hd === "string" ? claims.hd : null;
+  return { sub, email, name, hd, authTime };
+}
+
+/**
+ * Verifies a Google ID token for one install, in this order: signature
+ * (RS256 only, Google's JWKS unless `jwks` is given), iss, aud, exp/iat
+ * (60 s skew, issued at most 1 h ago) and required claims; then aud is exactly the client id; azp,
+ * when present, is the client id; nonce equals this flow's nonce (constant
+ * time); email_verified is true; the email normalizes (normalizeEmail); hd is one of `domains` exactly. The email
+ * domain is never consulted.
+ */
+export async function verifyGoogleIdToken(
+  opts: VerifyOpts & { domains: readonly string[] },
+  idToken: string,
+  nonce: string,
+): Promise<GoogleIdentity> {
+  const id = await verifyClaims(opts, idToken, nonce, (hd) =>
+    inDomains(opts.domains, hd),
+  );
+  return { ...id, hd: id.hd as string };
+}
+
+/**
+ * verifyGoogleIdToken without the hd check, for the Provisioning API's admin
+ * sign-in (design v7 4.3 step 4): the caller pins the exact (email, sub)
+ * instead. A separate export, so no domain-checked caller can switch the
+ * check off. hd, when sent, is reported only.
+ */
+export function verifyGoogleIdTokenAnyDomain(
+  opts: VerifyOpts,
+  idToken: string,
+  nonce: string,
+): Promise<GoogleAnyIdentity> {
+  return verifyClaims(opts, idToken, nonce, null);
 }
