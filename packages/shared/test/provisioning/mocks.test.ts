@@ -8,6 +8,7 @@ import {
   AcceptedSchema,
   InstallDetailSchema,
   JobSchema,
+  LIVE_TOKENS_PER_ADMIN,
   MeSchema,
   ProvisioningErrorSchema,
   WorldSchema,
@@ -377,5 +378,81 @@ describe("provisioning MSW mocks", () => {
     };
     expect(t.items).toHaveLength(2);
     for (const x of t.items) expect(x.revokedAt).not.toBeNull();
+  });
+
+  it("mint stamps createdAt and expiresAt from opts.now", async () => {
+    let t = 1_800_000_000_000;
+    server.use(...createProvisioningMock({ now: () => t }).handlers);
+    const r = await post(`${ADMIN}/tokens`, {
+      requestId: "req_tok_clock_00000000",
+      label: "clock",
+      scopes: ["installs:read"],
+      ttlMinutes: 30,
+    });
+    expect(r.status).toBe(201);
+    const m = (await r.json()) as { createdAt: number; expiresAt: number };
+    expect(m.createdAt).toBe(1_800_000_000_000);
+    expect(m.expiresAt).toBe(1_800_000_000_000 + 30 * 60_000);
+    t += 5_000;
+    const j = (await (
+      await post(`${ADMIN}/installs`, {
+        requestId: "req_clock_install_0000",
+        slug: "clocked",
+        ownerEmail: "o@acme.test",
+        tier: "team",
+        auth: { providers: ["google"], domains: ["acme.test"] },
+      })
+    ).json()) as { job: { createdAt: number } };
+    expect(j.job.createdAt).toBe(1_800_000_005_000);
+  });
+
+  it(`token_limit after ${LIVE_TOKENS_PER_ADMIN} live tokens of both kinds; revoked and expired ones do not count`, async () => {
+    let t = 1_800_000_000_000;
+    const oauth = {
+      id: "01JMCKZZZZZZZZZZZZZZZZZZZZ",
+      kind: "oauth" as const,
+      label: "Claude Code",
+      clientName: "Claude Code",
+      scopes: ["installs:read" as const],
+      createdAt: t,
+      expiresAt: t + 8 * 3_600_000,
+      revokedAt: null,
+      lastUsedAt: null,
+    };
+    server.use(
+      ...createProvisioningMock({ now: () => t, tokens: [oauth] }).handlers,
+    );
+    const mint = (n: number, ttlMinutes = 15) =>
+      post(`${ADMIN}/tokens`, {
+        requestId: `req_tok_limit_${String(n).padStart(8, "0")}`,
+        label: `t${n}`,
+        scopes: ["installs:read"],
+        ttlMinutes,
+      });
+    const code = async (r: Response) =>
+      ProvisioningErrorSchema.parse(await r.json()).error.code;
+    // The oauth grant counts: 4 oat_ mints reach 5 live.
+    const ids: string[] = [];
+    for (let n = 0; n < LIVE_TOKENS_PER_ADMIN - 1; n++) {
+      const r = await mint(n);
+      expect(r.status).toBe(201);
+      ids.push(((await r.json()) as { id: string }).id);
+    }
+    const refused = await mint(90);
+    expect(refused.status).toBe(409);
+    expect(await code(refused)).toBe("token_limit");
+    // A revoked token frees one slot.
+    expect(
+      (await fetch(`${ADMIN}/tokens/${ids[0]}`, { method: "DELETE" })).status,
+    ).toBe(204);
+    expect((await mint(91)).status).toBe(201);
+    const again = await mint(92);
+    expect(again.status).toBe(409);
+    expect(await code(again)).toBe("token_limit");
+    // Past the oat_ tokens' 15-minute expiry only the oauth grant is live.
+    t += 15 * 60_000;
+    for (let n = 100; n < 100 + LIVE_TOKENS_PER_ADMIN - 1; n++)
+      expect((await mint(n)).status).toBe(201);
+    expect(await code(await mint(200))).toBe("token_limit");
   });
 });

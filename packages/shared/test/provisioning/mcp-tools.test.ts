@@ -14,6 +14,7 @@ import {
   AdminToolNameSchema,
   API_ERROR_CODES,
   AUTHZ,
+  bodyVariants,
   MCP_ERROR_RESULT,
   MCP_PROMPTS,
   MCP_SERVER,
@@ -22,12 +23,20 @@ import {
   REQUEST_ID_HINT,
   ROUTE_IDS,
   ROUTES,
+  type RouteDef,
   type RouteId,
   TOOL_OMIT,
   toolAnnotations,
   toolInput,
   toolOutput,
 } from "../../src/provisioning/index.js";
+
+/** A tool route's one object body (a union body has no tool). */
+const objBody = (r: RouteDef) => {
+  const [b, ...more] = bodyVariants(r);
+  if (!b || more.length) throw new Error(`${r.id}: union body`);
+  return b;
+};
 
 const byName = (n: string) => {
   const t = ADMIN_TOOLS.find((t) => t.name === n);
@@ -98,10 +107,12 @@ describe("derived schemas", () => {
   it("no field name appears in two of params, query and body", () => {
     for (const id of ROUTE_IDS) {
       const r = ROUTES[id];
-      const keys = [r.params, r.query, r.body].flatMap((s) =>
-        Object.keys(s.shape),
-      );
-      expect(new Set(keys).size, id).toBe(keys.length);
+      for (const b of bodyVariants(r)) {
+        const keys = [r.params, r.query, b].flatMap((s) =>
+          Object.keys(s.shape),
+        );
+        expect(new Set(keys).size, id).toBe(keys.length);
+      }
     }
   });
 
@@ -130,7 +141,7 @@ describe("derived schemas", () => {
     for (const [route, fields] of Object.entries(TOOL_OMIT))
       for (const f of fields ?? [])
         expect(
-          Object.keys(ROUTES[route as RouteId].body.shape),
+          Object.keys(objBody(ROUTES[route as RouteId]).shape),
           `${route}.${f}`,
         ).toContain(f);
     expect(
@@ -147,7 +158,7 @@ describe("derived schemas", () => {
       const own = {
         ...r.params.shape,
         ...r.query.shape,
-        ...r.body.shape,
+        ...objBody(r).shape,
       } as Record<string, z.ZodType>;
       for (const [k, v] of Object.entries(shape))
         expect(v, `${t.name}.${k}`).toBe(own[k]);
@@ -208,7 +219,7 @@ describe("annotations", () => {
     for (const t of ADMIN_TOOLS) {
       if (ROUTES[t.route].write)
         expect(t.description, t.name).toContain(REQUEST_ID_HINT);
-      if ("confirmSlug" in ROUTES[t.route].body.shape)
+      if ("confirmSlug" in objBody(ROUTES[t.route]).shape)
         expect(t.description, t.name).toContain("confirmSlug");
       expect(t.description, t.name).not.toContain("—");
     }

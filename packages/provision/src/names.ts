@@ -132,6 +132,8 @@ export function platformNames(env: Env): {
   provisioner: string;
   provisionInstall: string;
   manageInstall: string;
+  signups: string;
+  signupsDlq: string;
 } {
   if (!Object.hasOwn(ENV_PREFIX, env)) throw new ForeignResource("", env);
   const p = ENV_PREFIX[env];
@@ -161,6 +163,10 @@ export function platformNames(env: Env): {
     provisioner: `${p}provisioner`,
     provisionInstall: `${p}provision-install`,
     manageInstall: `${p}manage-install`,
+    // design v7 2.4, 10.2 (#859 apps/provisioner/wrangler.jsonc): the
+    // self-serve queue (API producer, provisioner consumer) and its DLQ.
+    signups: `${p}signups`,
+    signupsDlq: `${p}signups-dlq`,
   };
 }
 

@@ -1,7 +1,12 @@
 import { z } from "zod";
 import type { ProvisioningEnv } from "./enums.js";
 import type { ApiErrorCode } from "./errors.js";
-import { type ApiRouteId, ROUTES, type RouteId } from "./routes.js";
+import {
+  type ApiRouteId,
+  bodyVariants,
+  ROUTES,
+  type RouteId,
+} from "./routes.js";
 import type {
   Accepted,
   AuditEntry,
@@ -100,8 +105,12 @@ export const TOOL_OMIT: Readonly<Partial<Record<RouteId, readonly string[]>>> =
 export function toolInput(t: { route: RouteId }) {
   const r = ROUTES[t.route];
   const omit = TOOL_OMIT[t.route] ?? [];
+  const [only, ...more] = bodyVariants(r);
+  // A union body (R26) has no tool (NO_TOOL); one object per tool.
+  if (!only || more.length > 0)
+    throw new Error(`toolInput: ${t.route} has a union body`);
   const body = Object.fromEntries(
-    Object.entries(r.body.shape).filter(([k]) => !omit.includes(k)),
+    Object.entries(only.shape).filter(([k]) => !omit.includes(k)),
   );
   return z.object({ ...r.params.shape, ...r.query.shape, ...body }).strict();
 }
