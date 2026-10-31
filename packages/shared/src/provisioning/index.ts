@@ -1,5 +1,6 @@
 // @oa/shared/provisioning: the Provisioning API contract (design v7 section 3,
 // 4.2, 9A.5). Fakes and fixtures: @oa/shared/provisioning/fakes.
+export * from "./alerts.js";
 export * from "./authz.js";
 export * from "./bodyhash.js";
 export * from "./enums.js";
