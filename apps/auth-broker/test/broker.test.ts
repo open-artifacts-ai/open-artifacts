@@ -506,6 +506,12 @@ describe("rate limits", () => {
     ]);
   });
 
+  it("an unparseable cf-connecting-ip keeps its own bucket, not the shared unknown", async () => {
+    for (const ip of ["not-an-ip", "also-bad"])
+      await call(AUTHZ, { headers: { "cf-connecting-ip": ip } });
+    expect(ipLimit.keys).toEqual(["ip:not-an-ip", "ip:also-bad"]);
+  });
+
   it("no cf-connecting-ip and no valid gate header is the shared unknown bucket", async () => {
     await call(AUTHZ, {});
     await call(AUTHZ, { headers: { "x-oa-gate-install": "../evil" } });

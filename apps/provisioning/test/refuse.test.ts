@@ -11,12 +11,7 @@ describe("refuse (4.9)", () => {
       "rate_limited",
       "unavailable",
     ] as const) {
-      const res = await refuse(
-        env,
-        "pre_ip",
-        code,
-        new Request(`${API}/v1/me`),
-      );
+      const res = await refuse(env, "pre", code, new Request(`${API}/v1/me`));
       expect(res.status).toBe(API_ERROR_STATUS[code]);
       expect(res.headers.get("cache-control")).toBe("no-store");
       const body = (await res.json()) as { error: { code: string } };

@@ -59,7 +59,7 @@ export async function createSession(
 }
 
 /** The live admin session row for `sid` on this env's admin host, or null. */
-async function liveSession(
+export async function liveSession(
   env: Env,
   sid: string,
   now: number,
@@ -96,12 +96,29 @@ export async function sessionPrincipal(
     email: row.email,
     sub: row.sub,
     authAt: row.auth_at,
+    sessionHash: row.id_hash,
     session: {
-      hash: row.id_hash,
       csrf: await csrfToken(env, sid),
       expiresAt: row.expires_at,
     },
   };
+}
+
+/**
+ * A sign-in for the session's own (email, sub) (R11 reauth, a second
+ * sign-in): the sid, expiry and every token bound to it stay; only auth_at
+ * moves.
+ */
+export async function renewSession(
+  env: Env,
+  hash: string,
+  authAt: number,
+): Promise<void> {
+  await env.PLATFORM_DB.prepare(
+    "UPDATE sessions SET auth_at = ? WHERE id_hash = ? AND revoked_at IS NULL",
+  )
+    .bind(authAt, hash)
+    .run();
 }
 
 /** An OAuth grant in the library's store (R24 revokes it with its row). */

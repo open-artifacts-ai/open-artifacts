@@ -17,9 +17,15 @@ import {
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { handle } from "../src/app.js";
 import type { AuditEntry } from "../src/audit.js";
+import { csrfToken } from "../src/auth/csrf.js";
 import { FLOW_COOKIE, readFlow, writeFlow } from "../src/auth/flow.js";
 import { BROKER_GOOGLE_CLIENT_ID } from "../src/auth/google.js";
-import { SESSION_COOKIE, SESSION_TTL_MS } from "../src/auth/session.js";
+import {
+  createSession,
+  SESSION_COOKIE,
+  SESSION_TTL_MS,
+  sessionHash,
+} from "../src/auth/session.js";
 import type { SigninDeps } from "../src/auth/signin.js";
 import type { Env } from "../src/env.js";
 import { platformDb } from "./db.js";
@@ -121,6 +127,8 @@ async function signIn(
     q?: string;
     claims?: Record<string, unknown>;
     d?: Partial<SigninDeps>;
+    /** A session cookie already in the browser. */
+    sid?: string;
   } = {},
 ) {
   const s = await start(e, o.q ?? "", o.d ?? deps());
@@ -133,7 +141,14 @@ async function signIn(
   const res = await call(
     e,
     `${ADMIN}/auth/callback/google?code=C&state=${state}&bstate=BS`,
-    { headers: { cookie: `${FLOW_COOKIE}=${cookieValue(s.flow)}` } },
+    {
+      headers: {
+        cookie: [
+          `${FLOW_COOKIE}=${cookieValue(s.flow)}`,
+          ...(o.sid ? [`${SESSION_COOKIE}=${o.sid}`] : []),
+        ].join("; "),
+      },
+    },
     o.d ?? deps(),
   );
   return { start: s, res };
@@ -662,5 +677,116 @@ describe("reauth (4.3 step 4, R11)", () => {
     expect(
       await db.prepare("SELECT COUNT(*) AS n FROM sessions").first("n"),
     ).toBe(0);
+  });
+});
+
+describe("a session already in the browser (4.5: logout ends every grant)", () => {
+  const oat = (id: string, hash: string, email = EMAIL) =>
+    db
+      .prepare(
+        `INSERT INTO agent_tokens (id, kind, token_hash, session_hash, admin_email, label, scopes, created_at, expires_at)
+         VALUES (?, 'oat', ?, ?, ?, ?, '["installs:read"]', ?, ?)`,
+      )
+      .bind(id, `h-${id}`, hash, email, `label-${id}`, NOW, NOW + 3600_000)
+      .run();
+  const logout = (e: ReturnType<typeof fakeEnv>, sid: string) =>
+    csrfToken(e.env, sid).then((csrf) =>
+      call(e, `${ADMIN}/auth/logout`, {
+        method: "POST",
+        headers: {
+          cookie: `${SESSION_COOKIE}=${sid}`,
+          origin: ADMIN,
+          "x-csrf-token": csrf,
+        },
+      }),
+    );
+
+  it("a reauth for the same pair keeps the sid and updates auth_at; logout then revokes the tokens minted under it", async () => {
+    const e = env();
+    const a = await createSession(
+      e.env,
+      { email: EMAIL, sub: SUB, authAt: NOW - 3600_000 },
+      NOW - 60_000,
+    );
+    await oat("t1", await sessionHash(a.sid));
+    const { res } = await signIn(e, {
+      q: "?reauth=1",
+      claims: { auth_time: NOW / 1000 - 5 },
+      sid: a.sid,
+    });
+    expect(res.status).toBe(303);
+    expect(cookieValue(cookieOf(res, SESSION_COOKIE))).toBe(a.sid);
+    const rows = await db
+      .prepare("SELECT auth_at, expires_at, revoked_at FROM sessions")
+      .all();
+    expect(rows.results).toEqual([
+      {
+        auth_at: NOW - 5000,
+        expires_at: NOW - 60_000 + SESSION_TTL_MS,
+        revoked_at: null,
+      },
+    ]);
+    expect((await logout(e, a.sid)).status).toBe(204);
+    expect(
+      await db
+        .prepare("SELECT revoked_at FROM agent_tokens WHERE id = 't1'")
+        .first("revoked_at"),
+    ).toBe(NOW);
+  });
+
+  it("a live session of another identity is revoked with its tokens before the new one", async () => {
+    const e = env({
+      ADMIN_IDENTITIES: `${EMAIL}:${SUB},you@example.com:456`,
+    });
+    const b = await createSession(
+      e.env,
+      { email: "you@example.com", sub: "456", authAt: NOW },
+      NOW,
+    );
+    const bh = await sessionHash(b.sid);
+    await oat("t2", bh, "you@example.com");
+    const { res } = await signIn(e, { sid: b.sid });
+    const sid = cookieValue(cookieOf(res, SESSION_COOKIE));
+    expect(sid).not.toBe(b.sid);
+    expect(
+      await db
+        .prepare("SELECT revoked_at FROM sessions WHERE id_hash = ?")
+        .bind(bh)
+        .first("revoked_at"),
+    ).toBe(NOW);
+    expect(
+      await db
+        .prepare("SELECT revoked_at FROM agent_tokens WHERE id = 't2'")
+        .first("revoked_at"),
+    ).toBe(NOW);
+    expect(audits.map((a) => [a.action, a.detail?.tokenId ?? null])).toEqual([
+      ["token.revoke", "t2"],
+      ["signin.ok", null],
+    ]);
+  });
+});
+
+describe("audit failures (W4's audit not yet live)", () => {
+  const failing = () =>
+    deps({
+      audit: async () => {
+        throw new Error("audit down");
+      },
+    });
+
+  it("a failed signin.ok audit leaves no session row and sets no cookie", async () => {
+    const d = failing();
+    const { res } = await signIn(env(), { d });
+    expect(cookieOf(res, SESSION_COOKIE)).toBeNull();
+    expect(
+      await db.prepare("SELECT COUNT(*) AS n FROM sessions").first("n"),
+    ).toBe(0);
+  });
+
+  it("a failed refusal audit still counts the refused sign-in (4.7 limits fail closed)", async () => {
+    await signIn(env(), { d: failing(), claims: { email: "no@x.com" } });
+    expect(
+      await db.prepare("SELECT COUNT(*) AS n FROM rate_counters").first("n"),
+    ).toBe(2);
   });
 });

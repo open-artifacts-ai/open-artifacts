@@ -12,9 +12,11 @@ import type {
  * - rateKey: the rate-limit key; a token shares its admin's (`admin:<email>`).
  * - scopes: tokens only, always from the row, never the request.
  * - authAt: the session's sign-in time (R11 reauth); null for tokens.
- * - session: admin and user sessions only (W5a): the row's hash
- *   (agent_tokens.session_hash at mint), the CSRF token /me returns, and
- *   the session's end (/me sessionExpiresAt, the OAuth refresh cap).
+ * - sessionHash: admin sessions only, `sessions.id_hash`; mintAgentToken
+ *   binds the token to it (4.5, 9A.3.2).
+ * - session: admin and user sessions only (W5a): the CSRF token /me
+ *   returns and the session's end (/me sessionExpiresAt, the OAuth refresh
+ *   cap).
  */
 export type Principal = {
   kind: PrincipalKind;
@@ -26,7 +28,8 @@ export type Principal = {
   sub?: string;
   tokenId?: string;
   authAt?: number | null;
-  session?: { hash: string; csrf: string; expiresAt: number };
+  sessionHash?: string;
+  session?: { csrf: string; expiresAt: number };
 };
 
 /** A refusal before a handler runs; answered with the 3.5 envelope. */

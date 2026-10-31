@@ -77,7 +77,7 @@ async function route(
     return refuse(env, "auth", "unauthenticated", req);
 
   const pre = await limit(env, "pre_ip", clientIp(req));
-  if (pre) return refuse(env, "pre_ip", pre.code, req);
+  if (pre) return refuse(env, "pre", pre.code, req);
 
   // Protocol routes: method, path and host from PROTOCOL_ROUTES (9A.3.1).
   // Their own checks (the consent POST's Sec-Fetch-Site, 4.5) replace Origin.

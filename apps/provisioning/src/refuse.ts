@@ -1,15 +1,9 @@
-import type { ApiErrorCode } from "@oa/shared/provisioning";
+import type { ApiErrorCode, AuditRefusalBucket } from "@oa/shared/provisioning";
 import type { Env } from "./env.js";
 import { errorResponse } from "./errors.js";
-import type { RateBucket } from "./limits.js";
 
-/** audit_refusals buckets (4.9): the rate buckets plus the pre-authn checks. */
-export type RefusalBucket =
-  | RateBucket
-  | "auth"
-  | "csrf"
-  | "signin_flow"
-  | "oauth_register";
+/** The C4 name, kept for streams that import it; the buckets are 4.9's. */
+export type RefusalBucket = AuditRefusalBucket;
 
 /**
  * Answers a pre-authn or unauthenticated refusal. W5b adds the

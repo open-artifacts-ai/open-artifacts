@@ -3,16 +3,17 @@ import {
   brokerRedeemRequest,
   GoogleTokenError,
   ipKey,
+  PLATFORM_PRINCIPAL_IDS,
   pkceChallenge,
   signBrokerTicket,
   verifyGoogleIdTokenAnyDomain,
 } from "@oa/auth-core";
 import { type BrowserRouteId, safeReturn } from "@oa/shared/provisioning";
-import { type AuditEntry, audit } from "../audit.js";
+import { type AuditEntry, audit, type SigninActor } from "../audit.js";
 import type { Env } from "../env.js";
 import { errorResponse } from "../errors.js";
 import { limit } from "../limits.js";
-import { isRefusal } from "../principal.js";
+import { isRefusal, type Principal } from "../principal.js";
 import { refuse } from "../refuse.js";
 import { bump, peek, SIGNIN_REFUSALS } from "./counters.js";
 import { hmac16, randomToken, sameString } from "./crypto.js";
@@ -33,8 +34,11 @@ import {
   clearSessionCookie,
   createSession,
   type LibraryGrant,
+  liveSession,
   readCookie,
+  renewSession,
   revokeSession,
+  SESSION_COOKIE,
   sessionCookie,
   sessionPrincipal,
 } from "./session.js";
@@ -45,8 +49,12 @@ import {
 // hint); the ID token is checked without the hd rule and the identity is
 // pinned to an exact ADMIN_IDENTITIES (email, sub) pair instead.
 
-export const ADMIN_PRINCIPAL_ID = "i000000admin";
-/** The broker charges this install's gate bucket (broker-core rateKeyOf). */
+/** `i000000admin`, the first platform principal (auth-core broker-ticket). */
+export const ADMIN_PRINCIPAL_ID = PLATFORM_PRINCIPAL_IDS[0] as string;
+/**
+ * The broker charges this install's gate bucket (broker-core rateKeyOf,
+ * GATE_INSTALL_HEADER; this Worker does not depend on broker-core).
+ */
 const GATE_INSTALL_HEADER = "x-oa-gate-install";
 /**
  * The ticket only has to survive the redirect to the broker, which refuses
@@ -106,7 +114,7 @@ async function signinLimited(req: Request, env: Env): Promise<Response | null> {
   if (!r) return null;
   if (r.code !== "rate_limited") return errorResponse(r.code);
   // refuse() counts it (audit_refusals, 4.9); the browser gets the screen.
-  await refuse(env, "signin_ip", r.code, req);
+  await refuse(env, "signin", r.code, req);
   return signInError(env, "rate_limited");
 }
 
@@ -192,7 +200,7 @@ async function callback(
   const q = new URL(req.url).searchParams;
   const flow = await readFlow(env, readCookie(req, FLOW_COOKIE), now);
   if (!flow || !sameString(q.get("state") ?? "", flow.state)) {
-    await refuse(env, "signin_flow", "unauthenticated", req);
+    await refuse(env, "signin", "unauthenticated", req);
     return signInError(env, "expired");
   }
   const code = q.get("code");
@@ -205,7 +213,7 @@ async function callback(
   const ipCounter = `signin_refused:ip:${await hmac16(env.ADMIN_SESSION_KEY, ip)}`;
   const { email: byEmail, ip: byIp } = SIGNIN_REFUSALS;
   if ((await peek(db, ipCounter, byIp.windowMs, now)) >= byIp.limit) {
-    await refuse(env, "signin_ip", "rate_limited", req);
+    await refuse(env, "signin", "rate_limited", req);
     return signInError(env, "rate_limited");
   }
 
@@ -230,6 +238,7 @@ async function callback(
     );
   } catch (e) {
     if (!(e instanceof GoogleTokenError)) throw e;
+    await bump(db, ipCounter, byIp.windowMs, now);
     await d.audit(env, {
       action: "signin.refused",
       actor: { kind: "signin" },
@@ -239,7 +248,6 @@ async function callback(
       ip,
       detail: { stage: e.stage },
     });
-    await bump(db, ipCounter, byIp.windowMs, now);
     return signInError(env, "denied");
   }
 
@@ -251,9 +259,14 @@ async function callback(
     if (
       (await peek(db, emailCounter, byEmail.windowMs, now)) >= byEmail.limit
     ) {
-      await refuse(env, "signin_ip", "rate_limited", req);
+      await refuse(env, "signin", "rate_limited", req);
       return signInError(env, "rate_limited");
     }
+    // Count before the audit row, so a failed audit never lifts the limit.
+    const [ne, ni] = await Promise.all([
+      bump(db, emailCounter, byEmail.windowMs, now),
+      bump(db, ipCounter, byIp.windowMs, now),
+    ]);
     await d.audit(
       env,
       match === "unknown_sub"
@@ -278,10 +291,6 @@ async function callback(
             email: id.email,
           },
     );
-    const [ne, ni] = await Promise.all([
-      bump(db, emailCounter, byEmail.windowMs, now),
-      bump(db, ipCounter, byIp.windowMs, now),
-    ]);
     if (ne > byEmail.limit || ni > byIp.limit)
       return signInError(env, "rate_limited");
     // The No access screen (9.2); for unknown_sub it shows the account id,
@@ -310,25 +319,86 @@ async function callback(
     return signInError(env, "expired");
   }
 
-  const s = await createSession(
-    env,
-    // No auth_time: 0, never a recent sign-in, so R11 purge always goes
-    // through /auth/start?reauth=1 (hasRecentAuth).
-    { email: id.email, sub: id.sub, authAt: id.authTime ?? 0 },
-    now,
-  );
-  await d.audit(env, {
+  // No auth_time: 0, never a recent sign-in, so R11 purge always goes
+  // through /auth/start?reauth=1 (hasRecentAuth).
+  const authAt = id.authTime ?? 0;
+  const ok: AuditEntry = {
     action: "signin.ok",
     actor: { kind: "signin", email: id.email, sub: id.sub },
     outcome: "ok",
     route: "R23",
     ip,
-  });
+  };
+  // The session already in the browser (4.5): for the same pair it is kept
+  // (reauth moves auth_at), so its tokens and grants stay bound to the sid
+  // logout ends; another identity's is revoked with them. The audit row
+  // comes before any session write, so a failed audit leaves none.
+  const priorSid = readCookie(req, SESSION_COOKIE);
+  const prior = priorSid ? await liveSession(env, priorSid, now) : null;
+  let sid: string;
+  if (priorSid && prior?.email === id.email && prior.sub === id.sub) {
+    await d.audit(env, ok);
+    await renewSession(env, prior.id_hash, authAt);
+    sid = priorSid;
+  } else {
+    if (prior)
+      await endSession(env, d, prior.id_hash, now, {
+        actor: { kind: "signin", email: prior.email, sub: prior.sub },
+        route: "R23",
+        ip,
+        via: "signin",
+      });
+    await d.audit(env, ok);
+    ({ sid } = await createSession(
+      env,
+      { email: id.email, sub: id.sub, authAt },
+      now,
+    ));
+  }
   const origin = adminOrigin(env);
   return redirect(`${origin}${safeReturn(flow.return, origin)}`, 303, [
-    sessionCookie(s.sid),
+    sessionCookie(sid),
     clearFlowCookie(),
   ]);
+}
+
+/**
+ * Revokes a session with every agent token bound to it, both kinds, and
+ * the OAuth grants in the library's store; one token.revoke row each.
+ */
+async function endSession(
+  env: Env,
+  d: SigninDeps,
+  hash: string,
+  now: number,
+  a: {
+    actor: Principal | SigninActor;
+    route: "R23" | "R24";
+    ip: string;
+    via: "logout" | "signin";
+  },
+): Promise<void> {
+  for (const t of await revokeSession(env, hash, now)) {
+    if (t.kind === "oauth" && t.grant_id && t.oauth_user)
+      await d.revokeGrant(env, {
+        grantId: t.grant_id,
+        oauthUser: t.oauth_user,
+      });
+    await d.audit(env, {
+      action: "token.revoke",
+      actor: a.actor,
+      outcome: "ok",
+      route: a.route,
+      ip: a.ip,
+      detail: {
+        tokenId: t.id,
+        kind: t.kind,
+        label: t.label,
+        scopes: JSON.parse(t.scopes) as unknown,
+        via: a.via,
+      },
+    });
+  }
 }
 
 /** R24: revokes the session, its oat_ tokens and its OAuth grants. */
@@ -341,32 +411,18 @@ async function logout(
   const p = await sessionPrincipal(req, env, now);
   if (isRefusal(p)) return refuse(env, "auth", p.code, req);
   const c = checkCsrf(req, env, p);
-  if (c || !p.session) return refuse(env, "csrf", "csrf_failed", req);
-  // RL_PV_WRITE, as every write route (4.7).
+  if (c || !p.sessionHash) return refuse(env, "csrf", "csrf_failed", req);
+  // RL_PV_WRITE, as every write route (4.7); an authenticated 429 counts
+  // in bucket `auth` (4.9).
   const w = await limit(env, "write", p.rateKey);
-  if (w) return refuse(env, "write", w.code, req);
+  if (w) return refuse(env, "auth", w.code, req);
   const ip = ipKey(req);
-  for (const t of await revokeSession(env, p.session.hash, now)) {
-    if (t.kind === "oauth" && t.grant_id && t.oauth_user)
-      await d.revokeGrant(env, {
-        grantId: t.grant_id,
-        oauthUser: t.oauth_user,
-      });
-    await d.audit(env, {
-      action: "token.revoke",
-      actor: p,
-      outcome: "ok",
-      route: "R24",
-      ip,
-      detail: {
-        tokenId: t.id,
-        kind: t.kind,
-        label: t.label,
-        scopes: JSON.parse(t.scopes) as unknown,
-        via: "logout",
-      },
-    });
-  }
+  await endSession(env, d, p.sessionHash, now, {
+    actor: p,
+    route: "R24",
+    ip,
+    via: "logout",
+  });
   await d.audit(env, {
     action: "session.logout",
     actor: p,

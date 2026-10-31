@@ -86,8 +86,8 @@ describe("authenticate on the admin host (4.5)", () => {
       email: "me@example.com",
       sub: "123",
       authAt: NOW - 5000,
+      sessionHash: await sessionHash(s.sid),
       session: {
-        hash: await sessionHash(s.sid),
         csrf: await csrfToken(e.env, s.sid),
         expiresAt: NOW + SESSION_TTL_MS,
       },

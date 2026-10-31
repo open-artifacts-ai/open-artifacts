@@ -164,7 +164,11 @@ const GATE_INSTALL = /^i[a-z0-9]{11}$/;
 export function rateKeyOf(req: Request): string {
   const ip = req.headers.get("cf-connecting-ip")?.trim();
   // IPv6 by its /64 (ipKey, design v7 4.7): one subscriber holds the /64.
-  if (ip) return `ip:${ipKeyOf(ip)}`;
+  // An unparseable value keeps its own bucket, never the shared unknown one.
+  if (ip) {
+    const k = ipKeyOf(ip);
+    return `ip:${k === "unknown" ? ip : k}`;
+  }
   const gate = req.headers.get(GATE_INSTALL_HEADER)?.trim() ?? "";
   return GATE_INSTALL.test(gate) ? `gate:${gate}` : "ip:unknown";
 }
