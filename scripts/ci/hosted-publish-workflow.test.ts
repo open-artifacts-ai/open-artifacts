@@ -47,7 +47,7 @@ describe("hosted-publish.yml", () => {
 
   it("resolve reads only, from main, through the tested script", () => {
     const j = w.jobs.resolve;
-    expect(j.permissions).toEqual({ contents: "read" });
+    expect(j.permissions).toEqual({ contents: "read", actions: "read" });
     expect(j.environment).toBeUndefined();
     expect(JSON.stringify(j)).not.toContain("secrets.");
     expect(named("resolve", "Runs only from main").run).toBe(
@@ -68,6 +68,16 @@ describe("hosted-publish.yml", () => {
     ]);
   });
 
+  it("the staging job is named for its kind and tag: the record a prod-only dispatch looks for", () => {
+    expect(w.jobs["publish-staging"].name).toBe(
+      "publish-staging ${{ needs.resolve.outputs.kind }} ${{ needs.resolve.outputs.tag }}",
+    );
+    const resolveSh = readFileSync(
+      join(root, "scripts/ci/hosted-publish-resolve.sh"),
+      "utf8",
+    );
+    expect(resolveSh).toContain('"publish-staging release $1"');
+  });
   it("staging first: prod needs a green staging publish unless only prod was asked for", () => {
     expect(w.jobs["publish-staging"].needs).toBe("resolve");
     expect(w.jobs["publish-staging"].if).toBe(
