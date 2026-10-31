@@ -371,3 +371,40 @@ body {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+.oa-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0;
+}
+.oa-seg button {
+  font: inherit;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--oa-border);
+  background: var(--oa-surface);
+  color: var(--oa-text-2, var(--oa-text));
+  cursor: pointer;
+}
+.oa-seg button[aria-pressed="true"],
+.oa-seg button[aria-selected="true"] {
+  background: var(--oa-accent-soft);
+  color: var(--oa-accent-fg, var(--oa-text));
+  border-color: var(--oa-accent);
+}
+.oa-secret-code {
+  display: block;
+  overflow-x: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--oa-sunken);
+}
+fieldset.oa-seg {
+  border: 0;
+  padding: 0;
+}
+fieldset.oa-seg-field {
+  border: 0;
+  padding: 0;
+  margin: 0;
+}

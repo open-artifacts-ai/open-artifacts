@@ -604,10 +604,13 @@ describe("H-DV review fixes", () => {
       ),
     ).resolves.toBeUndefined();
     // The sync run after it aborts on its own fixed line, never raw text.
-    expect(lines).toEqual([
+    expect(lines.filter((l) => !l.startsWith("provapi "))).toEqual([
       "directory-revoke aborted exception",
       "directory-sync aborted exception",
     ]);
+    // The Provisioning API lines (provapi-index.test.ts) are fixed too.
+    expect(lines[0]).toBe("provapi tick failed db_error");
+    expect(lines.join("\n")).not.toMatch(/@|SECRET|D1_ERROR/);
   });
 
   it("L2: a late result never overwrites a revoke the operator settled meanwhile", async () => {
