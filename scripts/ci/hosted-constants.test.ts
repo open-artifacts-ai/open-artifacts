@@ -17,7 +17,7 @@ const KEYS = [
   "google_client_id",
   "google_directory_client_id",
 ];
-// Read by provapi-spikes.sh only; hosted-constants.sh does not load them.
+// Read by provapi-spikes.sh and provapi-token-verify.sh only; hosted-constants.sh does not load them.
 const SPIKE_KEYS = [
   "app_zone",
   "content_zone",
