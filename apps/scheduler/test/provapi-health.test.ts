@@ -40,7 +40,15 @@ const NOW = Date.UTC(2026, 9, 31, 12, 0);
 const TICK = 2 * 60_000;
 const env = { PLATFORM_DB: db, OA_ENV: "staging" } as unknown as ProvapiEnv;
 
-type Behave = "ok" | "wrongId" | "notOk" | "500" | "throw" | "hang" | "html";
+type Behave =
+  | "ok"
+  | "wrongId"
+  | "notOk"
+  | "500"
+  | "throw"
+  | "hang"
+  | "html"
+  | "hooks";
 
 function fakes(behave: (id: string) => Behave = () => "ok") {
   const calls: { id: string; host: string }[] = [];
@@ -60,6 +68,7 @@ function fakes(behave: (id: string) => Behave = () => "ok") {
       if (b === "html") return new Response("<html>", { status: 200 });
       return Response.json({
         ok: b !== "notOk",
+        ...(b === "hooks" ? { testHooks: true } : {}),
         installId: b === "wrongId" ? "iaaaaaaaaaaa" : id,
       });
     } finally {
@@ -69,9 +78,9 @@ function fakes(behave: (id: string) => Behave = () => "ok") {
   return { probe, calls, max: () => maxInFlight };
 }
 
-async function mapped(mode: string | null = "serving") {
+async function mapped(mode: string | null = "serving", testHooks = 0) {
   const id = installId();
-  const r = await install(id);
+  const r = await install(id, { test_hooks: testHooks });
   await lifecycle(id, { serving_mode: mode });
   return { id, host: r.app_host as string };
 }
@@ -157,6 +166,26 @@ describe("health", () => {
     expect(lines).toEqual([
       `provapi health checked mapped=${kinds.length} failing=${kinds.length}`,
     ]);
+  });
+
+  it("testHooks must match the install's test_hooks (design v7 5 step 7)", async () => {
+    const plain = await mapped("serving", 0);
+    const plainHooks = await mapped("serving", 0);
+    const hooked = await mapped("serving", 1);
+    const hookedNone = await mapped("serving", 1);
+    const b: Record<string, Behave> = {
+      [plain.id]: "ok",
+      [plainHooks.id]: "hooks",
+      [hooked.id]: "hooks",
+      [hookedNone.id]: "ok",
+    };
+    const f = fakes((id) => b[id] ?? "ok");
+    captureLogs(vi.spyOn);
+    await healthDue(env, NOW, { probe: f.probe });
+    expect((await health(plain.id))?.health).toBe("ok");
+    expect((await health(plainHooks.id))?.health).toBe("failing");
+    expect((await health(hooked.id))?.health).toBe("ok");
+    expect((await health(hookedNone.id))?.health).toBe("failing");
   });
 
   it(`at most ${HEALTH_CONCURRENCY} at a time`, async () => {

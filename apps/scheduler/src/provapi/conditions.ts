@@ -83,8 +83,11 @@ export async function tokenConditions(
   }
   const { status, daysLeft } = s.data;
   return {
+    // Invalid says nothing about the end date: left as it is, so an
+    // expiring token that expires never mails "no longer near its end
+    // date" while token_invalid opens. Only active or expiring decide it.
     token_expiring: {
-      open: status === "expiring",
+      open: status === "invalid" ? null : status === "expiring",
       rows: [],
       ...(daysLeft === null
         ? {}

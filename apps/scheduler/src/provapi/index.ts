@@ -8,6 +8,7 @@ import { type HealthProbe, healthDue } from "./health.js";
 import { prune } from "./prune.js";
 import { purgeDue } from "./purge.js";
 import { type Duty, type DutyOutcome, runDuties } from "./run.js";
+import { signupsDue } from "./signups.js";
 import { type SweepDeps, sweep } from "./sweep.js";
 
 export type { ProvapiEnv } from "./env.js";
@@ -16,6 +17,7 @@ export { SCHEDULER_TICK_KEY, writeTick } from "./run.js";
 /** Each duty's budget; together well inside the 2 minutes. */
 export const DUTY_TIMEOUT_MS = {
   sweep: 20_000,
+  signups: 5_000,
   purge: 10_000,
   health: 40_000,
   alerts: 30_000,
@@ -52,7 +54,7 @@ export interface ProvapiOptions extends SweepDeps {
 }
 
 /**
- * Sweep, purge, health, alerts, prune: in that order, so the alerts read the
+ * Sweep, signups, purge, health, alerts, prune: in that order, so the alerts read the
  * tick's own sweep, purge and health writes. Never throws.
  */
 export function provapiTick(
@@ -69,6 +71,11 @@ export function provapiTick(
       name: "sweep",
       timeoutMs: t.sweep,
       run: () => sweep(env, now, sweepDeps),
+    },
+    {
+      name: "signups",
+      timeoutMs: t.signups,
+      run: () => signupsDue(env, now),
     },
     { name: "purge", timeoutMs: t.purge, run: () => purgeDue(env, now) },
     {

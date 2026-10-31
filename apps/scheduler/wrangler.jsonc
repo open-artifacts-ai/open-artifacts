@@ -19,9 +19,11 @@
 // job sweep and purge after grace start the provisioner's Workflows
 // (PROVISION_INSTALL, MANAGE_INSTALL, script oa-<p>-provisioner, which must
 // deploy first), the alerts read PROVISIONER's ProvisionerRpc and email
-// through the send_email binding ALERT_EMAIL. Its ALERT_TO, ALERT_FROM and
-// SIGNUP_DAILY_CAP vars are Platform's deploy wiring; unset, alerts log
-// no_destination and the cap alert is off.
+// through the send_email binding ALERT_EMAIL; the signups duty re-sends
+// waiting_cap and lost pending signups on oa-<p>-signups (SIGNUPS, which
+// must exist first). Its ALERT_TO, ALERT_FROM, SIGNUP_DAILY_CAP and
+// SIGNUPS_ENABLED vars are Platform's deploy wiring; unset, alerts log
+// no_destination, the cap alert is off and the signups duty does nothing.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "compatibility_date": "2026-10-01",
@@ -65,6 +67,11 @@
           "script_name": "oa-s-provisioner"
         }
       ],
+      // The signups duty's producer (src/provapi/signups.ts): { signupId }
+      // only; the provisioner consumes it.
+      "queues": {
+        "producers": [{ "binding": "SIGNUPS", "queue": "oa-s-signups" }]
+      },
       "send_email": [{ "name": "ALERT_EMAIL" }],
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },
@@ -116,6 +123,11 @@
           "script_name": "oa-p-provisioner"
         }
       ],
+      // The signups duty's producer (src/provapi/signups.ts): { signupId }
+      // only; the provisioner consumes it.
+      "queues": {
+        "producers": [{ "binding": "SIGNUPS", "queue": "oa-p-signups" }]
+      },
       "send_email": [{ "name": "ALERT_EMAIL" }],
       "observability": { "enabled": true },
       "triggers": { "crons": ["17 3 * * *", "*/2 * * * *"] },

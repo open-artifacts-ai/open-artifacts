@@ -22,6 +22,10 @@ export interface ProvapiEnv {
   ALERT_FROM?: string;
   /** The provisioner's self-serve daily cap; unset or 0 means no cap alert. */
   SIGNUP_DAILY_CAP?: string;
+  /** The producer of oa-<p>-signups (the provisioner consumes it). */
+  SIGNUPS?: Queue<{ signupId: string }>;
+  /** The provisioner's self-serve gate; see signups.ts SIGNUPS_ON. */
+  SIGNUPS_ENABLED?: string;
 }
 
 /** A duty failure with a fixed log category (never the error text). */

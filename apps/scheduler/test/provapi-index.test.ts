@@ -247,6 +247,7 @@ describe("scheduled() and the provapi duties", () => {
     });
     expect(out).toEqual({
       sweep: "ok",
+      signups: "ok",
       purge: "ok",
       health: "ok",
       alerts: "timeout",

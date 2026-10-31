@@ -23,6 +23,7 @@ export async function writeTick(db: D1Database, now: number): Promise<void> {
 
 export const DUTY_NAMES = [
   "sweep",
+  "signups",
   "purge",
   "health",
   "alerts",

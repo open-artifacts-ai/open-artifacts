@@ -22,6 +22,8 @@ import {
   START_GRACE_MS,
   SWEEP_LIMIT,
   sweep,
+  TERMINATED_GRACE_MS,
+  TERMINATED_SEEN_PREFIX,
 } from "../src/provapi/sweep.js";
 import {
   captureLogs,
@@ -203,8 +205,16 @@ describe("sweep: dead runs", () => {
     it(`${status}: settled, then one cleanup job, started`, async () => {
       const f = fakes();
       const { id, inst } = await started(f, status);
+      // A terminated run waits TERMINATED_GRACE_MS from first sight (cancel).
+      const at = status === "terminated" ? NOW + TERMINATED_GRACE_MS : NOW;
+      if (status === "terminated") {
+        captureLogs(vi.spyOn);
+        await run(f.env);
+        expect(settled).toEqual([]);
+        vi.restoreAllMocks();
+      }
       const lines = captureLogs(vi.spyOn);
-      await run(f.env);
+      await run(f.env, at);
       expect(settled).toEqual([{ jobId: id, code: DEAD_RUN_CODE }]);
       const [c, ...rest] = await cleanups();
       expect(rest).toEqual([]);
@@ -218,7 +228,7 @@ describe("sweep: dead runs", () => {
         actor_key: SYSTEM_ACTOR.key,
         request_id: `cleanup-${id}`,
         status: "queued",
-        created_at: NOW,
+        created_at: at,
       });
       expect(c?.id).toMatch(ULID_RE);
       expect(c?.request_id).toMatch(REQUEST_ID_RE);
@@ -230,6 +240,60 @@ describe("sweep: dead runs", () => {
         `provapi sweep cleanup ${c?.id} ${id}`,
       ]);
     });
+
+  it("a cancel between terminate and its own settle wins: the sweep neither settles nor adds a cleanup", async () => {
+    const f = fakes();
+    const { id, inst } = await started(f, "terminated");
+    captureLogs(vi.spyOn);
+    // R25 cancel terminated the instance; the sweep lands before its settle.
+    await run(f.env);
+    expect(settled).toEqual([]);
+    expect(await cleanups()).toEqual([]);
+    // The cancel settles with canceled and inserts its own cleanup.
+    await db
+      .prepare(
+        "UPDATE jobs SET status = 'failed', error_code = 'canceled', finished_at = ?2, updated_at = ?2 WHERE id = ?1",
+      )
+      .bind(id, NOW + 1)
+      .run();
+    const own = await job(inst, {
+      kind: "cleanup",
+      workflow: "manage_install",
+      parent_job_id: id,
+      request_id: `cancel-${id}`,
+      created_at: NOW + 1,
+      updated_at: NOW + 1,
+    });
+    await run(f.env, NOW + TERMINATED_GRACE_MS);
+    expect(settled.map((x) => x.jobId)).not.toContain(id);
+    expect((await jobRow(id))?.error_code).toBe("canceled");
+    expect((await cleanups()).map((c) => c.id)).toEqual([own]);
+    // Its first-sight marker is gone once the job is closed.
+    expect(
+      await rows(
+        "SELECT key FROM platform_state WHERE key = ?1",
+        `${TERMINATED_SEEN_PREFIX}${id}`,
+      ),
+    ).toEqual([]);
+  });
+
+  it("a terminated run nobody settles is settled once TERMINATED_GRACE_MS has passed since first sight", async () => {
+    const f = fakes();
+    const { id } = await started(f, "terminated");
+    captureLogs(vi.spyOn);
+    await run(f.env);
+    await run(f.env, NOW + TERMINATED_GRACE_MS - 1);
+    expect(settled).toEqual([]);
+    await run(f.env, NOW + TERMINATED_GRACE_MS);
+    expect(settled).toEqual([{ jobId: id, code: DEAD_RUN_CODE }]);
+    expect(await cleanups()).toHaveLength(1);
+    expect(
+      await rows(
+        "SELECT key FROM platform_state WHERE key = ?1",
+        `${TERMINATED_SEEN_PREFIX}${id}`,
+      ),
+    ).toEqual([]);
+  });
 
   it("a running job whose instance is missing is dead", async () => {
     const f = fakes();
@@ -318,7 +382,7 @@ describe("sweep: dead runs", () => {
 
   it("a failed cleanup start leaves it queued; a later sweep starts it", async () => {
     const f = fakes();
-    await started(f, "terminated");
+    await started(f, "errored");
     f.manage.failNextCreate(new Error("boom"));
     const lines = captureLogs(vi.spyOn);
     await run(f.env);

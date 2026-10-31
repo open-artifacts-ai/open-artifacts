@@ -74,6 +74,11 @@ describe("wrangler.jsonc", () => {
           script_name: provisioner,
         },
       ]);
+      // The signups duty's producer (src/provapi/signups.ts), this env's
+      // queue only. TODO(contract): platformNames has no signups queue.
+      expect(e.queues).toEqual({
+        producers: [{ binding: "SIGNUPS", queue: `${ENV_PREFIX[env]}signups` }],
+      });
       // The operator alerts' one sending binding (src/provapi/alerts.ts).
       // ALERT_TO, ALERT_FROM and SIGNUP_DAILY_CAP are Platform's deploy
       // wiring, not vars here yet.
@@ -101,7 +106,6 @@ describe("wrangler.jsonc", () => {
         "kv_namespaces",
         "r2_buckets",
         "durable_objects",
-        "queues",
         "secrets",
       ])
         expect(e).not.toHaveProperty(k);

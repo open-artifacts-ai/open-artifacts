@@ -32,7 +32,7 @@ export const HEALTH_BUDGET_SLACK_MS = 2_000;
  * checked. Unmapped and null rows never are.
  */
 export const HEALTH_MODES = ["serving"] as const;
-const MAPPED = `SELECT l.install_id AS id, i.app_host AS app_host FROM install_lifecycle l JOIN installs i ON i.id = l.install_id WHERE l.serving_mode IN (${HEALTH_MODES.map((m) => `'${m}'`).join(", ")}) AND (l.health_at IS NULL OR l.health_at < ?1) ORDER BY l.health_at IS NOT NULL, l.health_at, l.install_id`;
+const MAPPED = `SELECT l.install_id AS id, i.app_host AS app_host, i.test_hooks AS test_hooks FROM install_lifecycle l JOIN installs i ON i.id = l.install_id WHERE l.serving_mode IN (${HEALTH_MODES.map((m) => `'${m}'`).join(", ")}) AND (l.health_at IS NULL OR l.health_at < ?1) ORDER BY l.health_at IS NOT NULL, l.health_at, l.install_id`;
 const WRITE =
   "UPDATE install_lifecycle SET health = ?2, health_at = ?3 WHERE install_id = ?1";
 
@@ -51,7 +51,9 @@ export const publicRouteProbe: HealthProbe = (_id, appHost) =>
   fetch(`https://${appHost}/healthz`, { redirect: "manual" });
 
 /**
- * ok iff 200 and the JSON says ok: true for this install. TODO(contract):
+ * ok iff 200 and the JSON says ok: true for this install, with testHooks
+ * on exactly when the install's test_hooks is (design v7 5 step 7: installId
+ * and testHooks must match; /healthz omits testHooks when off). TODO(contract):
  * the provisioner's check is private in C3 wfp.ts (it also wants plan and
  * version); no shared helper.
  */
@@ -60,6 +62,7 @@ export async function healthOf(
   id: string,
   appHost: string,
   timeoutMs: number,
+  testHooks = false,
 ): Promise<Health> {
   try {
     return await within(
@@ -69,8 +72,16 @@ export async function healthOf(
           await res.body?.cancel();
           return "failing";
         }
-        const j = (await res.json()) as { ok?: unknown; installId?: unknown };
-        return j?.ok === true && j.installId === id ? "ok" : "failing";
+        const j = (await res.json()) as {
+          ok?: unknown;
+          installId?: unknown;
+          testHooks?: unknown;
+        };
+        return j?.ok === true &&
+          j.installId === id &&
+          (j.testHooks === true) === testHooks
+          ? "ok"
+          : "failing";
       })(),
       timeoutMs,
     );
@@ -105,20 +116,20 @@ export async function healthDue(
   )
     return false;
   let round: number;
-  let results: { id: unknown; app_host: unknown }[];
+  let results: { id: unknown; app_host: unknown; test_hooks: unknown }[];
   try {
     round = (await getState(db, HEALTH_ROUND_KEY)) ?? now;
     ({ results } = await db
       .prepare(MAPPED)
       .bind(round)
-      .all<{ id: unknown; app_host: unknown }>());
+      .all<{ id: unknown; app_host: unknown; test_hooks: unknown }>());
   } catch {
     // Nothing was checked: give the hour back, so the next tick runs it.
     await unclaimState(db, HEALTH_GATE_KEY, now, prev).catch(() => {});
     throw new DutyFailure("db_error");
   }
   const rows = results.filter(
-    (r): r is { id: string; app_host: string } =>
+    (r): r is { id: string; app_host: string; test_hooks: unknown } =>
       typeof r.id === "string" &&
       isInstallId(r.id) &&
       typeof r.app_host === "string" &&
@@ -132,7 +143,13 @@ export async function healthDue(
       left++;
       return;
     }
-    const h = await healthOf(probe, r.id, r.app_host, timeoutMs);
+    const h = await healthOf(
+      probe,
+      r.id,
+      r.app_host,
+      timeoutMs,
+      r.test_hooks === 1,
+    );
     if (h === "failing") failing++;
     try {
       await db.prepare(WRITE).bind(r.id, h, now).run();

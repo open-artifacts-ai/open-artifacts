@@ -401,6 +401,16 @@ describe("unknown conditions are null", () => {
     expect(r.token_expiring).toEqual({ open: true, rows: [], daysLeft: 3 });
   });
 
+  it("invalid leaves token_expiring as it is: expiring to invalid sends no contradicting clear", async () => {
+    const r = await tokenConditions(
+      fakeProvisionerRpc({
+        tokenStatus: { status: "invalid", expiresAt: null, daysLeft: null },
+      }),
+    );
+    expect(r.token_expiring).toEqual({ open: null, rows: [] });
+    expect(r.token_invalid).toEqual({ open: true, rows: [] });
+  });
+
   it("SIGNUP_DAILY_CAP: a positive integer, else 0 (the cap alert is off)", () => {
     expect(signupDailyCap("25")).toBe(25);
     for (const v of [

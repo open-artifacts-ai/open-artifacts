@@ -56,6 +56,26 @@ export const DEAD_RUN_CODE: ProvisionErrorCode = "internal";
  */
 export const SWEEP_CURSOR_KEY = "sweep_open_cursor";
 
+/**
+ * A terminated instance is settled only this long after the sweep first saw
+ * it terminated: R25 cancel terminates the instance and then settles the job
+ * itself (code canceled, its own cleanup), so a sweep landing in between
+ * must not settle it first with DEAD_RUN_CODE. TODO(contract): no exported
+ * cancel grace, and cancel writes nothing on the job before it terminates.
+ */
+export const TERMINATED_GRACE_MS = START_GRACE_MS;
+/**
+ * platform_state `<prefix><jobId>`: when the sweep first saw that job's
+ * instance terminated. Removed once the job is no longer open.
+ * TODO(contract): not in 0006's key list.
+ */
+export const TERMINATED_SEEN_PREFIX = "sweep_terminated:";
+// First sight only: a later tick never moves it.
+const SEEN =
+  "INSERT INTO platform_state (key, value, updated_at) VALUES (?1, ?2, ?2) ON CONFLICT (key) DO NOTHING";
+// Markers of jobs no longer open (settled by the sweep, a cancel or the run).
+const SEEN_GC = `DELETE FROM platform_state WHERE substr(key, 1, ${TERMINATED_SEEN_PREFIX.length}) = '${TERMINATED_SEEN_PREFIX}' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = substr(platform_state.key, ${TERMINATED_SEEN_PREFIX.length + 1}) AND j.status IN ('queued', 'running'))`;
+
 const COLS =
   "rowid AS rid, id, kind, workflow, install_id, signup_id, status, created_at FROM jobs";
 // A self-serve create the queue consumer has not admitted yet (design v7 7
@@ -133,6 +153,7 @@ function withCleanup(db: D1Database, extra: D1PreparedStatement | null) {
 
 /** What one open job needs: start it, settle it, or nothing. */
 async function look(
+  db: D1Database,
   wf: WorkflowLike,
   j: OpenJob,
   now: number,
@@ -146,6 +167,14 @@ async function look(
       throw new DutyFailure(e instanceof Stall ? "timeout" : "rpc_error");
     if (j.status === "running") return "dead";
     return j.created_at <= now - START_GRACE_MS ? "start" : "alive";
+  }
+  if (status === "terminated") {
+    const key = `${TERMINATED_SEEN_PREFIX}${j.id}`;
+    await d1(db.prepare(SEEN).bind(key, now).run());
+    const seen = await d1(getState(db, key));
+    return seen !== null && seen <= now - TERMINATED_GRACE_MS
+      ? "dead"
+      : "alive";
   }
   if (DEAD.has(status) || status === "complete") return "dead";
   return "alive";
@@ -180,13 +209,18 @@ export async function sweep(
       now,
     ),
   );
+  // Best effort: a failed clean-up only leaves markers for the next tick.
+  await db
+    .prepare(SEEN_GC)
+    .run()
+    .catch(() => console.error("provapi sweep gc_failed db_error"));
   const todo = [...(unstarted?.results ?? []), ...(open?.results ?? [])];
   const one = async (j: OpenJob) => {
     const wf = flows[j.workflow];
     if (!wf) return;
     let step = "status";
     try {
-      const what = await look(wf, j, now);
+      const what = await look(db, wf, j, now);
       if (what === "start") {
         step = "start";
         await startJob(wf, j.id);
@@ -217,6 +251,11 @@ export async function sweep(
       await settleFailed(w.db, j.id, DEAD_RUN_CODE);
       if (await stillOpen(db, j.id)) return;
       console.warn("provapi sweep settled", j.id, DEAD_RUN_CODE);
+      await db
+        .prepare("DELETE FROM platform_state WHERE key = ?1")
+        .bind(`${TERMINATED_SEEN_PREFIX}${j.id}`)
+        .run()
+        .catch(() => {});
       if (cleanup === null) return;
       step = "cleanup";
       // A settleFailed that never batched: insert it on its own.

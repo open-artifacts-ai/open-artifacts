@@ -90,6 +90,13 @@ describe("runDuties", () => {
   });
 
   it("names every duty", () => {
-    expect(DUTY_NAMES).toEqual(["sweep", "purge", "health", "alerts", "prune"]);
+    expect(DUTY_NAMES).toEqual([
+      "sweep",
+      "signups",
+      "purge",
+      "health",
+      "alerts",
+      "prune",
+    ]);
   });
 });
