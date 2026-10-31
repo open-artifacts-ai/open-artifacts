@@ -341,7 +341,7 @@ describe("sweep: dead runs", () => {
     expect(f.manage.created).toEqual([]);
   });
 
-  it("the cleanup rides in the settle's batch as INSERT OR IGNORE, guarded by settledWith(?5, run_dead)", async () => {
+  it("the cleanup rides in the settle's batch as INSERT OR IGNORE, guarded by the parent settled with its stored code (run_dead when none) and no cleanup child", async () => {
     const f = fakes();
     const { id } = await started(f, "complete");
     const rec = recording(db);
@@ -356,6 +356,9 @@ describe("sweep: dead runs", () => {
     expect(inserts).toHaveLength(1);
     expect(inserts[0]).toMatch(/^INSERT OR IGNORE INTO jobs /);
     expect(inserts[0]).toContain(settledWith("?5", RUN_DEAD));
+    expect(inserts[0]).toContain(
+      "AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?5 AND c.kind = 'cleanup')",
+    );
     const [c, ...rest] = await cleanups();
     expect(rest).toEqual([]);
     expect(f.manage.created).toEqual([{ id: c?.id, params: { jobId: c?.id } }]);
@@ -363,6 +366,82 @@ describe("sweep: dead runs", () => {
       `provapi sweep settled ${id} ${RUN_DEAD}`,
       `provapi sweep cleanup ${c?.id} ${id}`,
     ]);
+  });
+
+  it("an open job holding canceled whose cancel settles and finishes its cleanup before the sweep's batch: no second cleanup, the batch does not fail", async () => {
+    const f = fakes();
+    const { id, inst } = await started(f, "complete", {
+      error_code: "canceled",
+    });
+    // The sweep read the stored canceled, so settledWith(?5, canceled) is
+    // true once the cancel settles, and a finished cleanup never trips
+    // jobs_one_active: only the no-cleanup-child guard keeps a second one out.
+    let result: Awaited<ReturnType<SettleFailed>> | undefined;
+    const afterCancel: SettleFailed = async (d, jobId, code, opts) => {
+      await db
+        .prepare("UPDATE jobs SET status = 'failed' WHERE id = ?1")
+        .bind(jobId)
+        .run();
+      await job(inst, {
+        kind: "cleanup",
+        workflow: "manage_install",
+        parent_job_id: jobId,
+        request_id: `admin-cancel-${jobId}`,
+        status: "done",
+      });
+      result = await fakeSettle(d, jobId, code, opts);
+      return result;
+    };
+    const lines = captureLogs(vi.spyOn);
+    await sweep(f.env, NOW, { settleFailed: afterCancel });
+    expect(result?.settled).toBe(false);
+    expect(result?.extra).toHaveLength(1);
+    expect(lines).toEqual([]);
+    expect((await jobRow(id))?.error_code).toBe("canceled");
+    expect((await cleanups()).map((c) => [c.request_id, c.status])).toEqual([
+      [`admin-cancel-${id}`, "done"],
+    ]);
+    expect(f.manage.created).toEqual([]);
+  });
+
+  it("a canceled-but-unsettled open job (stored canceled, no cleanup): exactly one cleanup across two ticks, started once", async () => {
+    const f = fakes();
+    const { id } = await started(f, "complete", { error_code: "canceled" });
+    await run(f.env);
+    await run(f.env, NOW + TICK);
+    expect(await jobRow(id)).toMatchObject({
+      status: "failed",
+      error_code: "canceled",
+    });
+    const [c, ...rest] = await cleanups();
+    expect(rest).toEqual([]);
+    expect(c).toMatchObject({
+      parent_job_id: id,
+      request_id: cleanupRequestId(id),
+    });
+    expect(f.manage.created).toEqual([{ id: c?.id, params: { jobId: c?.id } }]);
+  });
+
+  it("a stored error_code outside PROVISION_ERROR_CODES: the job is left untouched with one fixed line; other jobs in the tick are still processed", async () => {
+    const f = fakes();
+    const bad = await started(f, "complete", { error_code: "bogus_code" });
+    const good = await started(f, "complete");
+    const lines = captureLogs(vi.spyOn);
+    await run(f.env);
+    expect(await jobRow(bad.id)).toMatchObject({
+      status: "running",
+      error_code: "bogus_code",
+    });
+    expect(settled).toEqual([{ jobId: good.id, code: RUN_DEAD }]);
+    const [c, ...rest] = await cleanups();
+    expect(rest).toEqual([]);
+    expect(c).toMatchObject({ parent_job_id: good.id });
+    expect(f.manage.created).toEqual([{ id: c?.id, params: { jobId: c?.id } }]);
+    expect(lines.filter((l) => l.includes(bad.id))).toEqual([]);
+    expect(lines.filter((l) => l.includes("bogus"))).toEqual([]);
+    expect(
+      lines.filter((l) => l === "provapi sweep skipped bad_code"),
+    ).toHaveLength(1);
   });
 
   it("a sweep landing after an R25 cancel (parent canceled, its cleanup open): no second cleanup, the batch does not fail", async () => {

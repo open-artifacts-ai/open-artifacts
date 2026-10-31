@@ -3,6 +3,7 @@
 // (lease, owner tokens, signups) on ManageInstall, inserted in the settle's
 // own D1 batch.
 import {
+  PROVISION_ERROR_CODES,
   type ProvisionErrorCode,
   settleFailed as realSettleFailed,
   type SettleFailed,
@@ -102,23 +103,25 @@ const DEAD_AFTER_GRACE = new Set<WorkflowInstanceStatus["status"]>([
 const STILL_OPEN =
   "SELECT error_code FROM jobs WHERE id = ?1 AND status IN ('queued', 'running')";
 const stillOpen = (db: D1Database, id: string) =>
-  d1(
-    db
-      .prepare(STILL_OPEN)
-      .bind(id)
-      .first<{ error_code: ProvisionErrorCode | null }>(),
-  );
+  d1(db.prepare(STILL_OPEN).bind(id).first<{ error_code: string | null }>());
+
+const isCode = (c: string): c is ProvisionErrorCode =>
+  (PROVISION_ERROR_CODES as readonly string[]).includes(c);
 
 // The cleanup goes in only if its parent (?5, the insert's parent job id)
 // ends up failed with the code this settle call writes (C5 settledWith):
 // run_dead, or the code the open job already held, which settleFailed keeps
 // (a cancel that stored canceled and died before its settle and cleanup).
 // A job settled elsewhere is not settled here, so no cleanup from the sweep.
+// And only while the parent has no cleanup child, open or finished (that
+// cancel settling and running its own cleanup between the read and here).
 // INSERT OR IGNORE: jobs_one_active (a cleanup already open, e.g. that
 // cancel's own) and cleanup-<jobId> (an earlier tick's) skip the row
 // instead of failing the settle's batch.
+// Known gap (Platform's contract): the read sees null, then a cancel stores
+// canceled before this batch; C6's settleFailed expectCode closes it.
 const settledAs = (code: ProvisionErrorCode): JobGuard => ({
-  sql: settledWith("?5", code),
+  sql: `${settledWith("?5", code)} AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?5 AND c.kind = 'cleanup')`,
   params: [],
   orIgnore: true,
 });
@@ -204,6 +207,13 @@ export async function sweep(
       // complete run's last step marks it done): still open, or leave it.
       const openRow = await stillOpen(db, j.id);
       if (openRow === null) return;
+      // A stored code settledWith refuses: leave the job untouched (no
+      // settle, no cleanup); job_stuck alerts on it later. No code text.
+      const stored = openRow.error_code;
+      if (stored !== null && !isCode(stored)) {
+        console.warn("provapi sweep skipped bad_code");
+        return;
+      }
       // A dead cleanup is settled only, never given another cleanup.
       const cleanup: SystemJob | null =
         j.kind === "cleanup"
@@ -225,7 +235,7 @@ export async function sweep(
               db,
               cleanup,
               now,
-              settledAs(openRow.error_code ?? RUN_DEAD),
+              settledAs(stored ?? RUN_DEAD),
             ),
           ]
         : [];
