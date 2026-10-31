@@ -98,6 +98,11 @@ export async function renderOptions(
     registryDisabled?: boolean;
     /** upgrade, rollback: record the lease the operation claimed (5.4 fail). */
     recordLease?: boolean;
+    /**
+     * upgrade, rollback: the version rendered; its health report (sent
+     * only once verify_clean passed) sets jobs.args.verifiedClean to it.
+     */
+    verifiedClean?: string;
   },
 ): Promise<WfpProvisioner> {
   const e = deployEnv(ctx.env.OA_ENV);
@@ -120,6 +125,14 @@ export async function renderOptions(
         await recordLease(ctx, o.jobId, o.installId);
       }
       await markStep(ctx, o.jobId, s);
+      if (o.verifiedClean !== undefined && s === "health")
+        await transient(
+          ctx.env.PLATFORM_DB.prepare(
+            "UPDATE jobs SET args = json_set(args, '$.verifiedClean', ?3), updated_at = ?2 WHERE id = ?1 AND status = 'running'",
+          )
+            .bind(o.jobId, ctx.io.now(), o.verifiedClean)
+            .run(),
+        );
     },
     brokerEnabled: googleNewlyEnabled({}, o.vars),
     ...(turnstile ? { turnstile } : {}),

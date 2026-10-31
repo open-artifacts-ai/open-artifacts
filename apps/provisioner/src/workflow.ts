@@ -63,6 +63,7 @@ import {
 import {
   argsOf,
   auditStatement,
+  doneAuditStatement,
   doneStatement,
   failedAuditStatement,
   jobCode,
@@ -512,13 +513,7 @@ async function done(
   await transient(
     db.batch([
       // Audited only by the batch that marks it done (4.9).
-      auditStatement(
-        ctx,
-        installId,
-        `job.${job.kind}.done`,
-        { jobId: job.jobId },
-        job.jobId,
-      ),
+      doneAuditStatement(ctx, { ...job, installId }),
       doneStatement(ctx, job.jobId),
       db
         .prepare(`DELETE FROM signup_secret WHERE signup_id = ?1 AND ${mine}`)

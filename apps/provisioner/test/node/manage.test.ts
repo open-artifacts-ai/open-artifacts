@@ -70,6 +70,76 @@ const plain = (id: string, name: string) =>
       | undefined
   )?.text;
 
+/** The install's own D1 (its tokens table). */
+const installDb = (installId: string) =>
+  (
+    [...w.fake.d1.values()].find((d) => d.name === `oa-s-${installId}`) as {
+      db: import("node:sqlite").DatabaseSync;
+    }
+  ).db;
+
+/** NOT NULL columns with no default, filled; foreign keys to a real row. */
+function fill(
+  db: import("node:sqlite").DatabaseSync,
+  table: string,
+  id: string,
+): Record<string, unknown> {
+  const row: Record<string, unknown> = Object.fromEntries(
+    (
+      db.prepare(`PRAGMA table_info(${table})`).all() as {
+        name: string;
+        type: string;
+        notnull: number;
+        dflt_value: unknown;
+      }[]
+    )
+      .filter((c) => c.notnull === 1 && c.dflt_value === null)
+      .map((c) => [c.name, /INT/i.test(c.type) ? 1 : `x-${id}`]),
+  );
+  for (const fk of db.prepare(`PRAGMA foreign_key_list(${table})`).all() as {
+    table: string;
+    from: string;
+    to: string;
+  }[]) {
+    const have = db
+      .prepare(`SELECT ${fk.to} AS v FROM ${fk.table} LIMIT 1`)
+      .get() as { v: unknown } | undefined;
+    row[fk.from] = have
+      ? have.v
+      : insert(
+          db,
+          fk.table,
+          `${id}-${fk.table}`,
+          fk.table === "users" ? { role: "owner" } : {},
+        );
+  }
+  return row;
+}
+
+function insert(
+  db: import("node:sqlite").DatabaseSync,
+  table: string,
+  id: string,
+  extra: Record<string, unknown> = {},
+): unknown {
+  const row = { ...fill(db, table, id), id, ...extra };
+  const names = Object.keys(row);
+  db.prepare(
+    `INSERT INTO ${table} (${names.join(", ")}) VALUES (${names.map(() => "?").join(", ")})`,
+  ).run(...(Object.values(row) as never[]));
+  return id;
+}
+
+/** A live owner PAT under `label` in the install's D1 (a crashed run's). */
+function liveToken(installId: string, label: string, id: string) {
+  const db = installDb(installId);
+  insert(db, "tokens", id, { label, token_hash: `h-${id}` });
+  return () =>
+    db
+      .prepare("SELECT 1 FROM tokens WHERE id = ? AND revoked_at IS NOT NULL")
+      .all(id).length === 1;
+}
+
 describe("upgrade and rollback (5.4)", () => {
   it("upgrade: on `to`, google kept (brokerEnabled); a replay of every step changes nothing", async () => {
     const s = await active({ slug: "upco", version: V1 });
@@ -508,6 +578,38 @@ describe("retry (5.2, kind retry)", () => {
   });
 });
 
+describe("retry resume (5.2, R12)", () => {
+  it("a create that failed after its installs row resumes it; a leftover ss- token is swept", async () => {
+    const s = seedCreate(w, { slug: "resumeco" });
+    w.fake.health = () => new Response(null, { status: 503 });
+    await runCreate(w.ctx, event(s.jobId), stepRunner(w.clock).step).catch(
+      () => {},
+    );
+    w.fake.health = undefined;
+    expect(w.job(s.jobId)?.status).toBe("failed");
+    expect(w.install(s.installId)?.state).toBe("creating");
+    // A crashed attempt's owner PAT, still live.
+    const revoked = liveToken(s.installId, `ss-${s.signupId}`, "left-pat");
+    const retry = seedJob(w, {
+      kind: "retry",
+      installId: s.installId,
+      signupId: s.signupId,
+    });
+    w.db
+      .prepare("UPDATE jobs SET workflow = 'provision_install' WHERE id = ?")
+      .run(retry);
+    w.db
+      .prepare(
+        "UPDATE signups SET job_id = ?, status = 'queued', error = NULL WHERE signup_id = ?",
+      )
+      .run(retry, s.signupId);
+    await runCreate(w.ctx, event(retry), stepRunner(w.clock).step);
+    expect(w.job(retry)?.status).toBe("done");
+    expect(w.install(s.installId)?.state).toBe("active");
+    expect(revoked()).toBe(true);
+  });
+});
+
 describe("release_lease and cleanup (3.6, R13, R25)", () => {
   it("release_lease drops an expired lease; a live one needs force", async () => {
     const s = await active({ slug: "leaseco" });
@@ -583,6 +685,27 @@ describe("release_lease and cleanup (3.6, R13, R25)", () => {
       state: "active",
       lease: null,
     });
+  });
+});
+
+describe("cleanup sweeps the parent's owner-token label (3.6, R25)", () => {
+  it("a canceled upgrade's live ss- token is revoked", async () => {
+    const s = await active({ slug: "sweepco", version: V1 });
+    // The label the upgrade minted under: the install's signup (labelOf).
+    // The isolate died before guarded()'s revoke: a live owner PAT.
+    const revoked = liveToken(s.installId, `ss-${s.signupId}`, "live-pat");
+    const parent = seedJob(w, {
+      kind: "upgrade",
+      installId: s.installId,
+      args: { from: V1, to: V2 },
+      status: "failed",
+    });
+    w.db
+      .prepare("UPDATE jobs SET error_code = 'canceled' WHERE id = ?")
+      .run(parent);
+    const r = await manage("cleanup", s.installId, { parentJobId: parent });
+    expect(r.error).toBeNull();
+    expect(revoked()).toBe(true);
   });
 });
 
@@ -775,6 +898,47 @@ describe("near-expiry token mode per kind (5.7)", () => {
     expect(w.install(lease.installId)?.lease).toBeNull();
   });
 
+  it("token_invalid retries every 15 minutes for 2 hours, then fails", async () => {
+    const s = await active({ slug: "nxwait", version: V1 });
+    nearExpiry();
+    const t0 = w.clock.t;
+    const up = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2 },
+    });
+    expect(up.job).toMatchObject({
+      status: "failed",
+      error_code: "token_invalid",
+    });
+    const names = up.log.map((l) => l.name);
+    expect(new Set(names.filter((n) => /^upload_token\d$/.test(n))).size).toBe(
+      8,
+    );
+    expect(names).toContain("upload_token8");
+    expect(w.clock.t - t0).toBeGreaterThanOrEqual(2 * 3_600_000);
+  });
+
+  it("token_invalid: a token rolled during a wait lets the job finish", async () => {
+    const s = await active({ slug: "nxroll", version: V1 });
+    const good = w.fake.tokenInfo;
+    nearExpiry();
+    const id = seedJob(w, {
+      kind: "upgrade",
+      installId: s.installId,
+      args: { from: V1, to: V2 },
+    });
+    const r = stepRunner(w.clock, {
+      onStep: (n) => {
+        if (n === "upload_token2") w.fake.tokenInfo = good;
+      },
+    });
+    await runManage(w.ctx, event(id), r.step);
+    expect(w.job(id)?.status).toBe("done");
+    expect(r.log.find((l) => l.name === "upload")?.error?.message).toMatch(
+      /^token_invalid: /,
+    );
+    expect(w.install(s.installId)?.version).toBe(V2);
+  });
+
   it("refuse: redline_creds fails token_invalid before the hook key is rotated", async () => {
     const s = await active({ slug: "rl-n", actor: "oidc", testHooks: true });
     const { script } = stubInstall(s.installId);
@@ -799,38 +963,50 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
       installId,
       action,
     );
+  const jobAudits = (installId: string, kind: string, action: string) =>
+    w.all(
+      "SELECT actor, detail FROM hosted_audit WHERE install_id = ? AND action = ? AND json_extract(detail, '$.kind') = ?",
+      installId,
+      action,
+      kind,
+    );
 
-  it("job.<kind>.done is written once on a replay; job.<kind>.failed once with its code", async () => {
+  it("job.done is written once on a replay; job.failed once with its kind and code, as job:<id>", async () => {
     const s = await active({ slug: "auditco", version: V1 });
-    expect(audits(s.installId, "job.create.done")).toHaveLength(1);
-    await manage("suspend", s.installId, {
+    expect(jobAudits(s.installId, "create", "job.done")).toHaveLength(1);
+    const sus = await manage("suspend", s.installId, {
       args: { reason: "r" },
       twice: true,
     });
-    expect(audits(s.installId, "job.suspend.done")).toHaveLength(1);
+    expect(jobAudits(s.installId, "suspend", "job.done")).toEqual([
+      {
+        actor: `job:${sus.id}`,
+        detail: JSON.stringify({ jobId: sus.id, kind: "suspend" }),
+      },
+    ]);
     const bad = await manage("upgrade", s.installId, {
       args: { from: V2, to: V2 },
     });
     expect(bad.job?.status).toBe("failed");
-    expect(audits(s.installId, "job.upgrade.failed")).toEqual([
+    expect(jobAudits(s.installId, "upgrade", "job.failed")).toEqual([
       {
-        detail: JSON.stringify({ code: bad.job?.error_code, jobId: bad.id }),
+        actor: `job:${bad.id}`,
+        detail: JSON.stringify({
+          code: bad.job?.error_code,
+          jobId: bad.id,
+          kind: "upgrade",
+        }),
       },
     ]);
   });
 
-  it("a failed create is audited job.create.failed", async () => {
+  it("a failed create is audited job.failed", async () => {
     const s = seedCreate(w, { slug: "badrel", version: "9.9.9" });
     await runCreate(w.ctx, event(s.jobId), stepRunner(w.clock).step).catch(
       () => {},
     );
     expect(w.job(s.jobId)?.status).toBe("failed");
-    expect(
-      w.all(
-        "SELECT detail FROM hosted_audit WHERE action = 'job.create.failed' AND detail LIKE ?",
-        `%${s.jobId}%`,
-      ),
-    ).toHaveLength(1);
+    expect(jobAudits(s.installId, "create", "job.failed")).toHaveLength(1);
   });
 
   it("a dirty upgrade pauses in its own step; a replayed upload never renders again", async () => {
@@ -848,6 +1024,79 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
       dirty: true,
     });
     expect(audits(s.installId, "upgrade.start")).toHaveLength(1);
+    expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
+  });
+
+  it("a dirty upgrade whose prodDirty write failed still pauses (pause_dirty writes it again)", async () => {
+    const s = await active({ slug: "dirtylost", version: V1 });
+    w.fake.settingsEdit = (_x, b) => [...b, { name: "EXTRA", type: "service" }];
+    const db = w.env.PLATFORM_DB;
+    const prepare = db.prepare.bind(db);
+    let failed = 0;
+    db.prepare = (sql: string) => {
+      if (sql.includes("'$.prodDirty'") && failed++ === 0)
+        throw new Error("D1 went away");
+      return prepare(sql);
+    };
+    const r = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2 },
+    });
+    db.prepare = prepare;
+    w.fake.settingsEdit = undefined;
+    expect(failed).toBeGreaterThan(1);
+    expect(r.job).toMatchObject({ status: "failed", error_code: "prod_dirty" });
+    expect(JSON.parse(r.job?.args as string).prodDirty).toBe(true);
+    expect(audits(s.installId, "upgrade.start")).toHaveLength(1);
+    expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
+  });
+
+  it("a job that rendered `to` and never saw it verified clean: the retry pauses it, never done", async () => {
+    const s = await active({ slug: "dirtydied", version: V1 });
+    await manage("upgrade", s.installId, { args: { from: V1, to: V2 } });
+    expect(w.install(s.installId)).toMatchObject({
+      version: V2,
+      state: "active",
+    });
+    // The state a run leaves when it dies after the upload, before its
+    // result: rendered, no verifiedClean, `to` serving.
+    const r = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2, rendered: V2 },
+    });
+    expect(r.job).toMatchObject({ status: "failed", error_code: "prod_dirty" });
+    expect(r.log.map((l) => l.name)).toContain("pause_dirty");
+    expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
+  });
+
+  it("a clean upgrade is marked verifiedClean; its replay is done, never paused", async () => {
+    const s = await active({ slug: "cleanmark", version: V1 });
+    const r = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2 },
+      twice: true,
+    });
+    expect(r.job?.status).toBe("done");
+    expect(JSON.parse(r.job?.args as string)).toMatchObject({
+      rendered: V2,
+      verifiedClean: V2,
+    });
+    expect(w.lifecycle(s.installId)?.serving_mode).not.toBe("paused");
+  });
+
+  it("the dirty pause warns near expiry (a suspend), whatever the parent kind", async () => {
+    const s = await active({ slug: "dirtynear", version: V1 });
+    w.fake.settingsEdit = (_x, b) => {
+      // The token entered REFUSE_TOKEN_DAYS while the upgrade ran.
+      w.fake.tokenInfo = {
+        ...w.fake.tokenInfo,
+        expires_on: new Date(w.clock.t + 2 * 86_400_000).toISOString(),
+      };
+      return [...b, { name: "EXTRA", type: "service" }];
+    };
+    const r = await manage("upgrade", s.installId, {
+      args: { from: V1, to: V2 },
+    });
+    w.fake.settingsEdit = undefined;
+    expect(r.job).toMatchObject({ status: "failed", error_code: "prod_dirty" });
+    expect(w.hosts("dirtynear")[0]).toBe(`paused:${s.installId}`);
     expect(w.lifecycle(s.installId)?.serving_mode).toBe("paused");
   });
 
@@ -991,5 +1240,29 @@ describe("audit, lease and dirty-pause edges (4.9, 5.4, 3.6)", () => {
     expect(r.log.find((l) => l.name === "recheck")?.error?.message).toBe(
       "invalid_state: skipDirectoryRevoke is an admin's, with a reason",
     );
+  });
+});
+
+describe("recheck: actor and restore edges (2.5, 5.6)", () => {
+  it("a user job on an admin-sourced install is refused", async () => {
+    const s = await active({ slug: "notmine" });
+    const r = await manage("delete", s.installId, { actor: "user" });
+    expect(r.job).toMatchObject({
+      status: "failed",
+      error_code: "invalid_state",
+    });
+    expect(w.lifecycle(s.installId)?.deleted_at).toBeNull();
+  });
+
+  it("restore is refused once a purge job exists, inside the grace period", async () => {
+    const s = await active({ slug: "purgeco" });
+    expect((await manage("delete", s.installId)).job?.status).toBe("done");
+    seedJob(w, { kind: "purge", installId: s.installId, status: "failed" });
+    const r = await manage("restore", s.installId);
+    expect(r.job).toMatchObject({
+      status: "failed",
+      error_code: "invalid_state",
+    });
+    expect(w.lifecycle(s.installId)?.purge_at).toBeGreaterThan(w.clock.t);
   });
 });

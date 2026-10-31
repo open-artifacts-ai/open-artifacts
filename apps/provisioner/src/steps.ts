@@ -111,6 +111,7 @@ async function noteFailure(
   jobId: string,
   err: Error,
   config: WorkflowStepConfig | undefined,
+  retryIn: number | null = null,
 ): Promise<void> {
   const terminal = err instanceof NonRetryableError;
   const code = codeOf(err);
@@ -129,22 +130,41 @@ async function noteFailure(
         : `${base}`;
   await ctx.env.PLATFORM_DB.prepare(
     `UPDATE jobs SET last_error_code = ?2, error_message = ?3, updated_at = ?4,
-  retry_at = CASE WHEN ?5 = 0 AND attempt < ?6 THEN ?4 + ${next} ELSE NULL END,
+  retry_at = CASE WHEN ?7 IS NOT NULL THEN ?4 + ?7 WHEN ?5 = 0 AND attempt < ?6 THEN ?4 + ${next} ELSE NULL END,
   attempt = attempt + 1
 WHERE id = ?1 AND status = 'running'`,
   )
-    .bind(jobId, code, message, ctx.io.now(), terminal ? 1 : 0, r.limit)
+    .bind(
+      jobId,
+      code,
+      message,
+      ctx.io.now(),
+      terminal ? 1 : 0,
+      r.limit,
+      retryIn,
+    )
     .run()
     .catch(() => {});
 }
+
+/** 3.5: a Cloudflare token not active is retried every 15 min, up to 2 h. */
+export const TOKEN_WAIT = "15 minutes";
+export const TOKEN_WAITS = 8;
+// The step's error while it waits for the token (its own text, so a stored
+// token_invalid that markStep rethrows never waits).
+const TOKEN_WAITING =
+  "token_invalid: the Cloudflare token is not active; retrying in 15 minutes";
 
 /**
  * One job step: `step.do(name, config?, fn)` with the 3.6 bookkeeping. An
  * error leaves as stepError's (a job code; a terminal refusal keeps its
  * message, `email` scrubbed); a NonRetryableError stays as it is. `mark` is
  * the JOB_STEPS value written to jobs.step (the step's name by default).
+ * token_invalid skips the step's own retries: the step is run again as
+ * `<name>_token<n>` after a TOKEN_WAIT sleep, TOKEN_WAITS times, and the
+ * last run keeps the step's config.
  */
-export function jobStep<T>(
+export async function jobStep<T>(
   ctx: StepCtx,
   step: WorkflowStep,
   jobId: string,
@@ -154,19 +174,54 @@ export function jobStep<T>(
   email: () => string | null = () => null,
   mark: string = name,
 ): Promise<T> {
+  for (let round = 0; ; round++) {
+    const n = round === 0 ? name : `${name}_token${round}`;
+    try {
+      return await stepOnce(ctx, step, jobId, n, config, fn, email, mark, {
+        wait: round < TOKEN_WAITS,
+      });
+    } catch (e) {
+      if ((e as Error | null)?.message !== TOKEN_WAITING) throw e;
+      await step.sleep(`${name}_token_wait${round + 1}`, TOKEN_WAIT);
+    }
+  }
+}
+
+function stepOnce<T>(
+  ctx: StepCtx,
+  step: WorkflowStep,
+  jobId: string,
+  name: string,
+  config: WorkflowStepConfig | undefined,
+  fn: () => Promise<T>,
+  email: () => string | null,
+  mark: string,
+  o: { wait: boolean },
+): Promise<T> {
   const body = async (): Promise<T> => {
     await markStep(ctx, jobId, mark);
     let out: T;
     try {
       out = await fn();
     } catch (e) {
-      const err =
+      let err =
         e instanceof NonRetryableError
           ? e
           : e instanceof Transient
             ? new Error("internal")
             : stepError(e, email());
-      await noteFailure(ctx, jobId, err, config);
+      const waits =
+        o.wait &&
+        !(e instanceof NonRetryableError) &&
+        codeOf(err) === "token_invalid";
+      if (waits) err = new NonRetryableError(TOKEN_WAITING);
+      await noteFailure(
+        ctx,
+        jobId,
+        err,
+        config,
+        waits ? delayMs(TOKEN_WAIT) : null,
+      );
       throw err;
     }
     // attempt counts the failures of the step running now (3.6, the
@@ -199,37 +254,49 @@ WHERE id = ?1 AND status IN ('queued', 'running')`,
 }
 
 /**
- * A provisioner audit row (hosted_audit; never a secret or an email). With
- * `whileOpen`, only while that job is still open, so a retried batch that
- * already settled it appends nothing (hosted_audit is append-only).
+ * A provisioner audit row (hosted_audit; never a secret or an email), as
+ * `job:<jobId>` (4.9, PlatformDb.auditAs), only while that job is still
+ * open, so a retried batch that already settled it appends nothing
+ * (hosted_audit is append-only).
  */
 export function auditStatement(
   ctx: StepCtx,
   installId: string,
   action: string,
   detail: Record<string, string | number>,
-  whileOpen?: string,
+  jobId: string,
 ): D1PreparedStatement {
   const sorted = Object.fromEntries(
     Object.entries(detail).sort(([a], [b]) => (a < b ? -1 : 1)),
   );
-  const db = ctx.env.PLATFORM_DB;
-  const binds = [ctx.io.now(), installId, action, JSON.stringify(sorted)];
-  if (whileOpen === undefined)
-    return db
-      .prepare(
-        "INSERT INTO hosted_audit (at, actor, install_id, action, detail) VALUES (?1, 'system:provisioner', ?2, ?3, ?4)",
-      )
-      .bind(...binds);
-  return db
-    .prepare(
-      "INSERT INTO hosted_audit (at, actor, install_id, action, detail) SELECT ?1, 'system:provisioner', ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM jobs WHERE id = ?5 AND status IN ('queued', 'running'))",
-    )
-    .bind(...binds, whileOpen);
+  return ctx.env.PLATFORM_DB.prepare(
+    "INSERT INTO hosted_audit (at, actor, install_id, action, detail) SELECT ?1, ?5, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM jobs WHERE id = ?6 AND status IN ('queued', 'running'))",
+  ).bind(
+    ctx.io.now(),
+    installId,
+    action,
+    JSON.stringify(sorted),
+    `job:${jobId}`,
+    jobId,
+  );
+}
+
+/** `job.done` with the job's kind (4.9), only while the job is open. */
+export function doneAuditStatement(
+  ctx: StepCtx,
+  job: { jobId: string; kind: string; installId: string },
+): D1PreparedStatement {
+  return auditStatement(
+    ctx,
+    job.installId,
+    "job.done",
+    { jobId: job.jobId, kind: job.kind },
+    job.jobId,
+  );
 }
 
 /**
- * `job.<kind>.failed` with its code (4.9), only while the job is open: put
+ * `job.failed` with its kind and code (4.9), only while the job is open: put
  * before the settle in the same batch, it follows only the settle that
  * moves the job to failed (not a cancel's, nor a retried fail step's).
  */
@@ -241,8 +308,8 @@ export function failedAuditStatement(
   return auditStatement(
     ctx,
     job.install_id,
-    `job.${job.kind}.failed`,
-    { code, jobId: job.id },
+    "job.failed",
+    { code, jobId: job.id, kind: job.kind },
     job.id,
   );
 }

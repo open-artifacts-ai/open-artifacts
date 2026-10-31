@@ -14,7 +14,11 @@ import {
 
 const SITEVERIFY = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
-/** The env's widget pair; refused unless exactly one widget has its name. */
+/**
+ * The env's widget pair; refused unless exactly one widget has its name. A
+ * missing or doubled widget is a platform fault, `internal` (retry), never
+ * the recheck's invalid_state.
+ */
 export async function turnstilePair(
   cf: Cf,
   env: DeployEnv,
@@ -24,7 +28,7 @@ export async function turnstilePair(
   if (mine.length !== 1)
     throw new ProvisionRefused(
       `${mine.length} Turnstile widgets are named ${name}; exactly one is needed`,
-      "invalid_state",
+      "internal",
     );
   const sitekey = (mine[0] as { sitekey: string }).sitekey;
   const w = await cf.turnstileWidget(sitekey);
@@ -37,7 +41,7 @@ export async function turnstilePair(
   )
     throw new ProvisionRefused(
       `the Turnstile widget ${name} has no secret`,
-      "invalid_state",
+      "internal",
     );
   return { sitekey, secret: w.secret };
 }

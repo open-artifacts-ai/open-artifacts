@@ -5,7 +5,7 @@ import { HOSTED_DOMAINS, NAMESPACES } from "@oa/provision";
 import { JOB_STEPS } from "@oa/shared/provisioning";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_PUBKEY } from "../../../../packages/provision/test/fixtures/release.js";
-import { runCreate } from "../../src/workflow.js";
+import { REACHABLE_MS, runCreate } from "../../src/workflow.js";
 import {
   EMAIL,
   ENV,
@@ -104,10 +104,16 @@ describe("ProvisionInstall: create", () => {
     expect(w.mail).toEqual([]);
     expect(
       w.all(
-        "SELECT action FROM hosted_audit WHERE install_id = ? AND action LIKE 'job.%'",
+        "SELECT action, actor, detail FROM hosted_audit WHERE install_id = ? AND action LIKE 'job.%'",
         s.installId,
       ),
-    ).toEqual([{ action: "job.create.done" }]);
+    ).toEqual([
+      {
+        action: "job.done",
+        actor: `job:${s.jobId}`,
+        detail: JSON.stringify({ jobId: s.jobId, kind: "create" }),
+      },
+    ]);
     // No step output carries the owner's email.
     expect(JSON.stringify(log).toLowerCase()).not.toContain(
       EMAIL.toLowerCase(),
@@ -371,7 +377,7 @@ describe("ProvisionInstall: release gate and failures", () => {
     expect(w.hosts("flaky")).toEqual([undefined, undefined]);
   });
 
-  it("prod_dirty: never routed; snapshot, settle, then a purge job (system:provisioner) started", async () => {
+  it("prod_dirty: never routed; snapshot (as the job), settle, then a purge job (system:provisioner) started", async () => {
     const s = seedCreate(w, { slug: "dirtyco" });
     w.fake.settingsEdit = (_s, b) => [...b, { name: "EXTRA", type: "service" }];
     const r = await run(w, s.jobId);
@@ -386,7 +392,7 @@ describe("ProvisionInstall: release gate and failures", () => {
       "SELECT detail, actor FROM hosted_audit WHERE install_id = ? AND action = 'prod_dirty.snapshot'",
       s.installId,
     );
-    expect(snap?.actor).toBe("system:provisioner");
+    expect(snap?.actor).toBe(`job:${s.jobId}`);
     const d = JSON.parse(snap?.detail ?? "{}");
     expect(d.bindings).toContain("EXTRA:service");
     expect(d.secrets).toContain("SESSION_SECRET");
@@ -430,6 +436,27 @@ describe("ProvisionInstall: release gate and failures", () => {
         s.installId,
       ),
     ).toHaveLength(1);
+  });
+
+  it("unreachable after route: health is recorded failing and the job still reaches done (5.2 step 7)", async () => {
+    const s = seedCreate(w, { slug: "farco" });
+    const real = w.ctx.io.fetch;
+    let polls = 0;
+    w.ctx.io.fetch = (async (u: RequestInfo | URL, init?: RequestInit) => {
+      if (String(u) === `https://${app("farco")}/healthz`) {
+        polls++;
+        return new Response(null, { status: 503 });
+      }
+      return real(u, init);
+    }) as typeof fetch;
+    const t0 = w.clock.t;
+    const r = await run(w, s.jobId);
+    w.ctx.io.fetch = real;
+    expect(r.error).toBeNull();
+    expect(polls).toBeGreaterThan(1);
+    expect(w.clock.t - t0).toBeGreaterThanOrEqual(REACHABLE_MS);
+    expect(w.job(s.jobId)?.status).toBe("done");
+    expect(w.lifecycle(s.installId)?.health).toBe("failing");
   });
 
   it("a job canceled mid-run (R25) stops at its next step and keeps its code", async () => {
