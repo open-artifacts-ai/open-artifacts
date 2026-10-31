@@ -1,6 +1,5 @@
-// Tests call the Worker with fake bindings built per case (test/fakes.ts);
-// this config gives the pool a script to load and a local PLATFORM_DB (the
-// platform-db migrations, applied by test/db.ts).
+// Tests call the Worker with fake bindings built per case (test/fakes.ts)
+// and a local PLATFORM_DB (the platform-db migrations, applied by the test).
 {
   "name": "oa-provisioning-test",
   "main": "src/index.ts",

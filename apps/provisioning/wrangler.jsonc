@@ -14,6 +14,8 @@
 // admits no one until the first pin from a staging sign-in (4.3).
 // MCP_REDIRECT_URIS: exact redirect URIs besides loopback (9A.3.1); the
 // Claude.ai callback is unverified until acceptance (14.4).
+// SIGNUP_DAILY_CAP: the provisioner's and scheduler's cap, the same
+// placeholder, so R27's signup_cap runs with their value (9A.5).
 // OIDC_* (4.4) are staging only; the prod deploy read-back refuses them.
 // Ratelimit namespace ids: staging 1141-1146, prod 1151-1156 (4.7, 9A.7).
 // ASSETS: the admin SPA build (apps/admin), copied into dist-assets by CI.
@@ -37,6 +39,7 @@
         "ADMIN_IDENTITIES": "",
         "SIGNUPS_ENABLED": "false",
         "SELF_SERVE_TIER": "trial",
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_STAGING}}",
         "MCP_REDIRECT_URIS": "https://claude.ai/api/mcp/auth_callback",
         "OIDC_AUDIENCE": "https://api.open-artifacts-staging.app",
         "OIDC_REPOSITORY": "open-artifacts-ai/open-artifacts",
@@ -161,6 +164,7 @@
         "ADMIN_IDENTITIES": "",
         "SIGNUPS_ENABLED": "false",
         "SELF_SERVE_TIER": "trial",
+        "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",
         "MCP_REDIRECT_URIS": "https://claude.ai/api/mcp/auth_callback"
       },
       "d1_databases": [

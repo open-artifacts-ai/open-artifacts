@@ -18,3 +18,14 @@ export async function refuse(
 ): Promise<Response> {
   return errorResponse(code);
 }
+
+/**
+ * Counts an authenticated caller's 429 (4.9: audit_refusals holds any 429),
+ * from invokeRoute's limit and every handler limit (R18 RL_PV_SLUG_IP, the
+ * R4 /64 and /48 counters). W5b writes the count (its `countRateLimited`,
+ * same signature); never throws.
+ */
+export async function countRateLimited(
+  _env: Env,
+  _rateKey: string,
+): Promise<void> {}
