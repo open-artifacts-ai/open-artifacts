@@ -1,6 +1,7 @@
 import {
   type Auth,
   AuthProviderSchema,
+  canonicalJson,
   type Health,
   type InstallDetail,
   type InstallState,
@@ -304,18 +305,45 @@ export async function loadJob(env: Env, id: string): Promise<JobRow | null> {
     .first<JobRow>();
 }
 
-// Cursors (3.1): base64url of the sort key; anything else is invalid_input.
+// Cursors (3.1): base64url of the sort key and the query's tag; a cursor
+// from another query (route, path id or filters) is invalid_input.
 
-export function encodeCursor(key: unknown): string {
-  const s = btoa(JSON.stringify(key));
+/**
+ * A short tag of the query a cursor belongs to: FNV-1a of the canonical
+ * route, path id and filters (not limit), so a cursor never carries them.
+ */
+export function queryTag(
+  route: string,
+  filters: Record<string, unknown>,
+): string {
+  const defined = Object.fromEntries(
+    Object.entries(filters).filter(([, v]) => v !== undefined && v !== ""),
+  );
+  let h = 0x811c9dc5;
+  for (const ch of canonicalJson({ route, ...defined })) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
+
+export function encodeCursor(key: unknown, tag: string): string {
+  const s = btoa(JSON.stringify({ q: tag, k: key }));
   return s.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-export function decodeCursor<T>(c: string, schema: z.ZodType<T>): T {
+export function decodeCursor<T>(
+  c: string,
+  schema: z.ZodType<T>,
+  tag: string,
+): T {
   try {
     const b = c.replaceAll("-", "+").replaceAll("_", "/");
-    const v = schema.safeParse(JSON.parse(atob(b)));
-    if (v.success) return v.data;
+    const o = JSON.parse(atob(b)) as { q?: unknown; k?: unknown };
+    if (o && o.q === tag) {
+      const v = schema.safeParse(o.k);
+      if (v.success) return v.data;
+    }
   } catch {}
   throw new ApiError("invalid_input", "bad cursor");
 }

@@ -245,20 +245,25 @@ export async function seedInstall(o: Seed = {}) {
 }
 
 /** A create that failed before reserve: lifecycle and signup, no installs row. */
-export async function seedFailedCreate(o: { slug?: string } = {}) {
+export async function seedFailedCreate(
+  o: { slug?: string; ownerSub?: string } = {},
+) {
   const id = installId();
   const slug = o.slug ?? `f${next()}`;
   const jid = jobId();
+  const source = o.ownerSub ? "self-serve" : "admin";
   await insert("install_lifecycle", {
     install_id: id,
-    source: "admin",
+    source,
+    owner_sub: o.ownerSub ?? null,
     tier: "team",
     created_at: 1,
     updated_at: 1,
   });
   await insert("signups", {
     signup_id: jid,
-    source: "admin",
+    source,
+    owner_sub: o.ownerSub ?? null,
     slug,
     job_id: jid,
     vars: JSON.stringify({ AUTH_PROVIDERS: "email", AUTH_DOMAINS: "" }),

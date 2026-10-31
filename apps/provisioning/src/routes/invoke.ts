@@ -6,10 +6,12 @@ import {
   type RouteDef,
 } from "@oa/shared/provisioning";
 import { type AuditEntry, audit } from "../audit.js";
+import { LazyBody } from "../body.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
 import { limit } from "../limits.js";
 import type { Principal } from "../principal.js";
+import { countRateLimited } from "../refuse.js";
 import { HANDLERS } from "./handlers.js";
 
 // The one entry point both surfaces call (design v7 9A.4). It runs the
@@ -89,7 +91,11 @@ export async function invokeRoute(
 ): Promise<RouteResult> {
   const def = ROUTES[route];
   const r = await limit(env, def.write ? "write" : "read", principal.rateKey);
-  if (r) throw new ApiError(r.code);
+  if (r) {
+    if (r.code === "rate_limited")
+      await countRateLimited(env, principal.rateKey);
+    throw new ApiError(r.code);
+  }
   const d = authorize(route, principal, env.OA_ENV);
   if (!d.ok) {
     await tryAudit(env, {
@@ -102,7 +108,10 @@ export async function invokeRoute(
     });
     throw new ApiError(d.code);
   }
-  const parsed = parseInput(def, input);
+  // The HTTP body step (415, 413, JSON) runs here, as part of schema.
+  const body =
+    input.body instanceof LazyBody ? await input.body.read() : input.body;
+  const parsed = parseInput(def, { ...input, body });
   if (!parsed.ok)
     throw new ApiError("invalid_input", "invalid input", {
       fields: parsed.fields,
@@ -118,6 +127,9 @@ export async function invokeRoute(
       reach: d.reach,
     });
   } catch (e) {
+    // A handler's own limit (R18, R4 self-serve) is a 429 like any other.
+    if (e instanceof ApiError && e.code === "rate_limited")
+      await countRateLimited(env, principal.rateKey);
     // A refused job write (policy or business) is job.refused (4.9).
     if (e instanceof ApiError && def.job) {
       const body = parsed.input.body as { requestId?: string } | undefined;

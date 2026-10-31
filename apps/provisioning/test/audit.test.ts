@@ -59,6 +59,29 @@ describe("audit()", () => {
     });
   });
 
+  it("an MCP call by an OAuth token adds via and client (9A.8)", async () => {
+    const { env } = fakeEnv();
+    const t = {
+      ...tokenP(["installs:read"]),
+      tokenKind: "oauth" as const,
+      client: "Claude",
+    };
+    await audit(env, {
+      action: "test.via",
+      actor: t,
+      outcome: "ok",
+      surface: { kind: "mcp", tool: "get_world", clientVersion: "1.0" },
+    });
+    expect(JSON.parse((await last("test.via"))?.detail as string)).toEqual({
+      admin: "me@example.com",
+      surface: "mcp",
+      tool: "get_world",
+      via: "oauth",
+      client: "Claude",
+      clientVersion: "1.0",
+    });
+  });
+
   it("sign-in and system actors", async () => {
     const { env } = fakeEnv();
     await audit(env, {
@@ -66,8 +89,20 @@ describe("audit()", () => {
       actor: { kind: "signin", email: "a@b.test", sub: "9" },
       outcome: "refused",
     });
-    expect(await last("test.three")).toMatchObject({
+    // A refused sign-in keeps the email HMAC only (4.3 not_listed).
+    const three = await last("test.three");
+    expect(three).toMatchObject({
       actor_kind: "admin",
+      actor_label: "signin",
+      email_hmac: await hmac16(env, "a@b.test"),
+    });
+    expect(JSON.stringify(three)).not.toContain("a@b.test");
+    await audit(env, {
+      action: "test.three.ok",
+      actor: { kind: "signin", email: "a@b.test", sub: "9" },
+      outcome: "ok",
+    });
+    expect(await last("test.three.ok")).toMatchObject({
       actor_label: "a@b.test",
     });
     await audit(env, {

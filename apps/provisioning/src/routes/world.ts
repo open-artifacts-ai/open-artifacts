@@ -24,7 +24,7 @@ import {
   type StatusRow,
   summaryOf,
 } from "../model.js";
-import { releases, tokenStatus } from "../services/cache.js";
+import { knownTokenStatus, releases } from "../services/cache.js";
 import type { HandlerArgs } from "./handlers.js";
 import type { RouteResult } from "./invoke.js";
 
@@ -38,12 +38,11 @@ import type { RouteResult } from "./invoke.js";
 export const SCHEDULER_STALE_MS = 10 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
 
-/**
- * The API does not know the scheduler's SIGNUP_DAILY_CAP; 0 keeps the
- * `signup_cap` query shut here, and an open one still shows from
- * platform_state (W4 concern).
- */
-const SIGNUP_DAILY_CAP = 0;
+/** SIGNUP_DAILY_CAP as the scheduler binds it: unset or malformed is 0 (off). */
+export function signupDailyCap(v: string | undefined): number {
+  const n = Number(v);
+  return Number.isSafeInteger(n) && n > 0 ? n : 0;
+}
 
 const zeroes = <K extends string>(keys: readonly K[]) =>
   Object.fromEntries(keys.map((k) => [k, 0])) as Record<K, number>;
@@ -108,8 +107,13 @@ export async function world(a: HandlerArgs): Promise<RouteResult> {
   );
   const openedAt = (k: AlertKey) => kv.get(`${k}_opened_at`) ?? null;
 
-  const [rel, token] = await Promise.all([releases(env), tokenStatus(env)]);
-  const attention = await attentionOf(env, now, openedAt, token.status);
+  // Either RPC failing degrades its own field, never the whole call.
+  const [rel, known] = await Promise.all([
+    releases(env).catch(() => []),
+    knownTokenStatus(env),
+  ]);
+  const token = known ?? { status: "invalid" as const, daysLeft: null };
+  const attention = await attentionOf(env, now, openedAt, known?.status);
   const tickAt = kv.get("scheduler_tick_at") ?? null;
   const pc = prodClean?.results[0] as
     | { at: number; ok: number; code: string }
@@ -158,9 +162,12 @@ export async function alertRows(
   const db = env.PLATFORM_DB;
   const res = await db.batch<AlertRow>(
     SQL_ALERT_KEYS.map((k) =>
-      db
-        .prepare(ALERT_CONDITIONS[k].sql)
-        .bind(...alertParams(k, { now, signupDailyCap: SIGNUP_DAILY_CAP })),
+      db.prepare(ALERT_CONDITIONS[k].sql).bind(
+        ...alertParams(k, {
+          now,
+          signupDailyCap: signupDailyCap(env.SIGNUP_DAILY_CAP),
+        }),
+      ),
     ),
   );
   return SQL_ALERT_KEYS.flatMap((k, i) =>
@@ -172,7 +179,8 @@ async function attentionOf(
   env: Env,
   now: number,
   openedAt: (k: AlertKey) => number | null,
-  token: "active" | "expiring" | "invalid",
+  /** Undefined when tokenStatus() failed: no token item from it. */
+  token: "active" | "expiring" | "invalid" | undefined,
 ): Promise<{ items: Attention[]; truncated: boolean }> {
   const rows = await alertRows(env, now);
   // Every install an item may name: the candidates below and the rows' own.
@@ -227,7 +235,7 @@ async function attentionOf(
   }
   // The token alerts come from tokenStatus(), not D1 (C2 RPC_ALERT_KEYS).
   for (const k of RPC_ALERT_KEYS)
-    if (k === `token_${token}`) {
+    if (token && k === `token_${token}`) {
       keys.add(k);
       out.push(item(k, null, { code: token, since: openedAt(k) ?? now }));
     }

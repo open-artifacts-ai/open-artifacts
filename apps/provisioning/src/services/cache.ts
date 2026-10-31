@@ -19,13 +19,20 @@ async function cached<T>(
   key: object,
   ttl: number,
   load: () => Promise<T>,
+  stale = false,
 ): Promise<T> {
   const now = Date.now();
   const hit = cache.get(key);
   if (hit && now - hit.at < ttl) return hit.value;
-  const value = await load();
-  cache.set(key, { at: now, value });
-  return value;
+  try {
+    const value = await load();
+    cache.set(key, { at: now, value });
+    return value;
+  } catch (e) {
+    // A failed refresh keeps the last good value where `stale` allows.
+    if (stale && hit) return hit.value;
+    throw e;
+  }
 }
 
 /** GET /releases (R16), and the version checks of create and upgrade. */
@@ -39,13 +46,32 @@ export async function releases(env: Env): Promise<Release[]> {
   }
 }
 
-/** The provisioning token's status; a failed call reads as invalid, uncached. */
-export async function tokenStatus(env: Env): Promise<TokenStatus> {
+/**
+ * The provisioning token's status, or null when the call failed and no
+ * earlier answer exists: a transient RPC error is not an invalid token.
+ * A failed refresh serves the last good status.
+ */
+export async function knownTokenStatus(env: Env): Promise<TokenStatus | null> {
   try {
-    return await cached(tokenCache, env.PROVISIONER, TOKEN_STATUS_TTL_MS, () =>
-      env.PROVISIONER.tokenStatus(),
+    return await cached(
+      tokenCache,
+      env.PROVISIONER,
+      TOKEN_STATUS_TTL_MS,
+      () => env.PROVISIONER.tokenStatus(),
+      true,
     );
   } catch {
-    return { status: "invalid", expiresAt: null, daysLeft: null };
+    return null;
   }
+}
+
+/** R1's banner: an unknown status shows as invalid (the enum has no unknown). */
+export async function tokenStatus(env: Env): Promise<TokenStatus> {
+  return (
+    (await knownTokenStatus(env)) ?? {
+      status: "invalid",
+      expiresAt: null,
+      daysLeft: null,
+    }
+  );
 }

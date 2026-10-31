@@ -32,6 +32,7 @@ import {
 } from "../services/jobs.js";
 import type { HandlerArgs } from "./handlers.js";
 import type { RouteResult } from "./invoke.js";
+import { slugHeld } from "./reads.js";
 
 // The lifecycle writes R5-R13 and R26 (3.4, 5.4-5.6), R25 cancel (3.6).
 // After invokeRoute's authz and schema: reach (404) -> policy (field rules)
@@ -60,21 +61,25 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** The release a job installs: the given version, else the newest installable. */
+/**
+ * The release a job installs: the given version, else the newest
+ * installable one of the variant. A given version is checked for presence
+ * in GET /releases only (3.5); floor and variant are release_gate's
+ * (release_unverified, P32).
+ */
 export async function resolveRelease(
   env: Env,
   version: string | undefined,
   variant: "release" | "redline",
 ): Promise<string> {
-  const ok = (await releases(env)).filter(
-    (r) => r.installable && r.variants.includes(variant),
-  );
+  const all = await releases(env);
   if (version !== undefined) {
-    if (!ok.some((r) => r.version === version))
+    if (!all.some((r) => r.version === version))
       throw new ApiError("release_not_published");
     return version;
   }
-  const newest = ok
+  const newest = all
+    .filter((r) => r.installable && r.variants.includes(variant))
     .map((r) => r.version)
     .sort(compareVersions)
     .at(-1);
@@ -86,6 +91,10 @@ type Plan = {
   kind: JobKind;
   args: Record<string, unknown>;
   signupId?: string | null;
+  /** Rows written in the job's batch after the job row (R12). */
+  after?: (jobId: string) => D1PreparedStatement[];
+  /** How a constraint error maps besides job_in_progress (R12). */
+  conflict?: () => Promise<ApiError>;
 };
 type Planner = (a: HandlerArgs, row: StatusRow) => Promise<Plan>;
 
@@ -153,27 +162,57 @@ const PLANS: Partial<Record<ApiRouteId, Planner>> = {
       return { kind, args };
     }
     if (row.state === "deleting") {
-      if (p.kind === "token")
-        throw new ApiError(
-          TOKEN_DELETING_PURGE.code,
-          "purging a soft-deleted install needs an admin session",
-          TOKEN_DELETING_PURGE.details(adminOrigin(a.env), row.install_id),
-        );
+      // purgePolicy ran the token and reauth rules before business.
       refuseUnless(can(row, "purge", p));
-      if (
-        p.kind === "admin" &&
-        (p.authAt == null || Date.now() - p.authAt > PURGE_REAUTH_MS)
-      )
-        throw new ApiError("reauth_required", "sign in again to purge", {
-          reauthUrl: `${adminOrigin(a.env)}/auth/start?reauth=1&return=${encodeURIComponent(`/installs/${row.install_id}`)}`,
-        });
       return { kind: "purge", args };
     }
     throw new ApiError("invalid_state");
   },
   R12: async (a, row) => {
     refuseUnless(can(row, "retry", a.principal));
-    return { kind: "retry", args: {}, signupId: row.signup_id };
+    const sid = row.signup_id;
+    if (sid === null) throw new ApiError("invalid_state");
+    const { env } = a;
+    const db = env.PLATFORM_DB;
+    const sub = row.source === "self-serve" ? row.owner_sub : null;
+    const except = { installId: row.install_id, signupId: sid };
+    // A failed signup freed its slug and account (3.6 settleFailed); the
+    // retry holds them again or is refused like a create.
+    const conflict = async () =>
+      sub && (await claimedByOther(env, sub, sid))
+        ? new ApiError("signup_limit")
+        : new ApiError("slug_taken");
+    if (await slugHeld(env, row.slug, except)) throw new ApiError("slug_taken");
+    if (sub && (await claimedByOther(env, sub, sid)))
+      throw new ApiError("signup_limit");
+    return {
+      kind: "retry",
+      args: {},
+      signupId: sid,
+      conflict,
+      // signups.job_id is the current create or retry job (8.2); a live
+      // status puts the slug back under signups_live_slug.
+      after: (jobId) => [
+        db
+          .prepare(
+            "UPDATE signups SET job_id = ?2, status = 'queued', error = NULL, updated_at = ?3 WHERE signup_id = ?1 AND status = 'failed'",
+          )
+          .bind(sid, jobId, Date.now()),
+        guard(
+          env,
+          "SELECT 1 FROM signups WHERE signup_id = ? AND job_id = ?",
+          sid,
+          jobId,
+        ),
+        guard(
+          env,
+          "SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM installs WHERE slug = ? AND id <> ?)",
+          row.slug,
+          row.install_id,
+        ),
+        ...(sub ? claimAccount(env, sub, sid, Date.now()) : []),
+      ],
+    };
   },
   R13: async (a, row) => {
     refuseUnless(can(row, "release_lease", a.principal));
@@ -193,6 +232,68 @@ const PLANS: Partial<Record<ApiRouteId, Planner>> = {
   },
 };
 
+/** Another live signup holds the account's one-install claim (7). */
+export async function claimedByOther(
+  env: Env,
+  sub: string,
+  signupId: string,
+): Promise<boolean> {
+  return (
+    (await env.PLATFORM_DB.prepare(
+      "SELECT 1 AS x FROM signup_accounts WHERE owner_sub = ? AND freed_at IS NULL AND signup_id <> ?",
+    )
+      .bind(sub, signupId)
+      .first()) !== null
+  );
+}
+
+/**
+ * Claims the account for `signupId` (7): a new row, a freed one, or the
+ * signup's own; the guard aborts the batch when another signup holds it.
+ */
+export function claimAccount(
+  env: Env,
+  sub: string,
+  signupId: string,
+  now: number,
+): D1PreparedStatement[] {
+  return [
+    env.PLATFORM_DB.prepare(
+      `INSERT INTO signup_accounts (owner_sub, signup_id, created_at) VALUES (?1, ?2, ?3)
+ON CONFLICT (owner_sub) DO UPDATE SET signup_id = excluded.signup_id, created_at = excluded.created_at, freed_at = NULL
+WHERE signup_accounts.freed_at IS NOT NULL`,
+    ).bind(sub, signupId, now),
+    guard(
+      env,
+      "SELECT 1 FROM signup_accounts WHERE owner_sub = ? AND signup_id = ? AND freed_at IS NULL",
+      sub,
+      signupId,
+    ),
+  ];
+}
+
+/**
+ * R11's policy on a `deleting` install (4.2, 3.5), before business: a token
+ * is 403 with details.needs, an admin needs a sign-in within 10 min.
+ */
+function purgePolicy(a: HandlerArgs, row: StatusRow) {
+  if (row.state !== "deleting") return;
+  const p = a.principal;
+  if (p.kind === "token")
+    throw new ApiError(
+      TOKEN_DELETING_PURGE.code,
+      "purging a soft-deleted install needs an admin session",
+      TOKEN_DELETING_PURGE.details(adminOrigin(a.env), row.install_id),
+    );
+  if (
+    p.kind === "admin" &&
+    (p.authAt == null || Date.now() - p.authAt > PURGE_REAUTH_MS)
+  )
+    throw new ApiError("reauth_required", "sign in again to purge", {
+      reauthUrl: `${adminOrigin(a.env)}/auth/start?reauth=1&return=${encodeURIComponent(`/installs/${row.install_id}`)}`,
+    });
+}
+
 const createPrincipal = (p: Principal) =>
   p.kind === "system" ? "admin" : p.kind;
 
@@ -209,6 +310,7 @@ export async function lifecycleWrite(a: HandlerArgs): Promise<RouteResult> {
   if (route === "R11") {
     const f = checkPurgeFields(body, createPrincipal(a.principal));
     if (f) throw new ApiError(f.code, `${f.field} is not allowed`);
+    purgePolicy(a, row);
   }
   const w = await writeOf(a.env, a.principal, a.surface, route, id, body);
   const prior = await replay(w);
@@ -228,11 +330,14 @@ export async function lifecycleWrite(a: HandlerArgs): Promise<RouteResult> {
   };
   return accept(w, {
     job,
+    after: p.after,
     onConflict: async () => {
       const open = await activeJobId(a.env, id);
-      throw open
-        ? new ApiError("job_in_progress", "a job is running", { jobId: open })
-        : new ApiError("invalid_state");
+      if (open)
+        throw new ApiError("job_in_progress", "a job is running", {
+          jobId: open,
+        });
+      throw p.conflict ? await p.conflict() : new ApiError("invalid_state");
     },
   });
 }

@@ -292,6 +292,58 @@ describe("R27 /world", () => {
     expect(w.jobs.failed24h).toBe(1);
   });
 
+  it("signup_cap runs with the scheduler's SIGNUP_DAILY_CAP, the same rows", async () => {
+    await insert("signups", {
+      signup_id: "01JE0000000000000000000099",
+      source: "self-serve",
+      owner_sub: "u1",
+      slug: "capped",
+      job_id: "01JE0000000000000000000099",
+      vars: "{}",
+      status: "creating",
+      admitted_at: NOW - MIN,
+      created_at: NOW - MIN,
+      updated_at: NOW - MIN,
+    });
+    const capped = await world(fakeEnv({ SIGNUP_DAILY_CAP: "1" }));
+    const rows = await db
+      .prepare(ALERT_CONDITIONS.signup_cap.sql)
+      .bind(...alertParams("signup_cap", { now: NOW, signupDailyCap: 1 }))
+      .all<AlertRow>();
+    expect(rows.results).toHaveLength(1);
+    expect(
+      capped.attention.filter((x) => x.kind === "signup_cap"),
+    ).toHaveLength(1);
+    const off = await world(fakeEnv());
+    expect(off.attention.some((x) => x.kind === "signup_cap")).toBe(false);
+  });
+
+  it("degrades when releases() or tokenStatus() fails: still 200, no token_invalid item", async () => {
+    const PROVISIONER = fakeProvisionerRpc();
+    PROVISIONER.releases = async () => {
+      throw new Error("rpc down");
+    };
+    PROVISIONER.tokenStatus = async () => {
+      throw new Error("rpc down");
+    };
+    const w = await world(fakeEnv({ PROVISIONER }));
+    expect(w.releases).toEqual({ latest: null, installable: 0 });
+    expect(w.attention.some((x) => x.kind.startsWith("token_"))).toBe(false);
+  });
+
+  it("a failed tokenStatus() serves the last good status, not invalid", async () => {
+    const PROVISIONER = fakeProvisionerRpc();
+    const e = fakeEnv({ PROVISIONER });
+    expect((await world(e)).provisioningToken.status).toBe("active");
+    PROVISIONER.tokenStatus = async () => {
+      throw new Error("rpc down");
+    };
+    now = NOW + 6 * MIN;
+    const w = await world(e);
+    expect(w.provisioningToken).toEqual({ status: "active", daysLeft: 340 });
+    expect(w.attention.some((x) => x.kind === "token_invalid")).toBe(false);
+  });
+
   it("token status is cached 5 min per isolate", async () => {
     const e = fakeEnv();
     await world(e);

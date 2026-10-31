@@ -1,5 +1,14 @@
 import { ApiError } from "./errors.js";
 
+/**
+ * A write body the HTTP adapter has not read: invokeRoute reads it at the
+ * schema step, after the rate limit and authz (4.2), so 415, 413 and a bad
+ * JSON body never answer a caller the route would refuse, on either surface.
+ */
+export class LazyBody {
+  constructor(readonly read: () => Promise<unknown>) {}
+}
+
 /** Write bodies are capped at 16 KiB (3.1). */
 export const BODY_CAP = 16 * 1024;
 

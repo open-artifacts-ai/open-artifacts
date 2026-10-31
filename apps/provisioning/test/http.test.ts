@@ -5,12 +5,24 @@ import { API, ctx, fakeEnv, requestId, resetDb, tokenP } from "./fakes.js";
 // The HTTP adapter's body step (3.1) in front of invokeRoute, with authn
 // stubbed to a token principal (W5b builds the real one).
 
+const as = vi.hoisted(() => ({
+  scopes: null as null | string[],
+}));
 vi.mock("../src/auth/authenticate.js", () => ({
   authenticate: async () =>
-    tokenP(["installs:read", "installs:write", "installs:delete"]),
+    tokenP(
+      (as.scopes ?? [
+        "installs:read",
+        "installs:write",
+        "installs:delete",
+      ]) as Parameters<typeof tokenP>[0],
+    ),
 }));
 
-beforeEach(() => resetDb());
+beforeEach(() => {
+  as.scopes = null;
+  return resetDb();
+});
 afterEach(() => vi.restoreAllMocks());
 
 const post = (path: string, body: string, type = "application/json") =>
@@ -63,6 +75,26 @@ describe("POST /v1/installs over HTTP", () => {
       400,
       "invalid_input",
     ]);
+  });
+
+  it("the body step runs after the rate limit and authz (4.2): an unscoped token gets 403, not 415", async () => {
+    const e = fakeEnv();
+    as.scopes = ["installs:read"];
+    const res = await worker.fetch(
+      post("/installs", "{}", "text/plain"),
+      e.env,
+      ctx(),
+    );
+    expect(res.status).toBe(403);
+    expect(e.limits.RL_PV_WRITE.keys).toHaveLength(1);
+    as.scopes = null;
+    e.limits.RL_PV_WRITE.allow = false;
+    const limited = await worker.fetch(
+      post("/installs", `{"a":"${"x".repeat(17 * 1024)}"}`),
+      e.env,
+      ctx(),
+    );
+    expect(limited.status).toBe(429);
   });
 
   it("GET routes read no body", async () => {

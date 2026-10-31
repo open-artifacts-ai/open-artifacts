@@ -131,6 +131,17 @@ export type NewJob = {
   args: Record<string, unknown>;
 };
 
+/**
+ * jobs.actor_label, which JobSchema's actor shows on R14, R15 and R27: never
+ * an email (9A.5). An admin or a user is its kind (their labels are
+ * emails); a token keeps its label (9A.8), OIDC its repository; any label
+ * holding an `@` falls back to the kind.
+ */
+export const jobActorLabel = (p: Principal): string =>
+  p.kind === "admin" || p.kind === "user" || p.label.includes("@")
+    ? p.kind
+    : p.label;
+
 export function jobInsert(
   w: Write,
   id: string,
@@ -149,7 +160,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'queued', ?14, ?
     j.parentJobId ?? null,
     w.principal.kind,
     w.principal.actorKey,
-    w.principal.label,
+    jobActorLabel(w.principal),
     w.principal.tokenId ?? null,
     w.requestId,
     w.hash,

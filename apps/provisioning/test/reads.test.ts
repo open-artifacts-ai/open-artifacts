@@ -64,6 +64,19 @@ describe("R1 /me", () => {
     });
   });
 
+  it("session and token facts by the W5a/W5b Principal names", async () => {
+    const admin = {
+      ...ADMIN_P,
+      session: { hash: "h", csrf: "c1", expiresAt: NOW + 1000 },
+    };
+    expect((await call(fakeEnv(), admin, "R1")).body).toMatchObject({
+      csrf: "c1",
+      sessionExpiresAt: NOW + 1000,
+    });
+    const oauth = { ...READ, tokenKind: "oauth" as const };
+    expect((await call(fakeEnv(), oauth, "R1")).body.tokenKind).toBe("oauth");
+  });
+
   it("a user: role user", async () => {
     const r = await call(fakeEnv(), userP(), "R1");
     expect(r.body).toMatchObject({ principal: "user", role: "user" });
@@ -107,6 +120,51 @@ describe("R2 list and R3 detail", () => {
     const e = fakeEnv();
     expect(
       (await call(e, ADMIN_P, "R2", { query: { cursor: "garbage!" } })).code,
+    ).toBe("invalid_input");
+  });
+
+  it("a cursor from another query (route or filters) is 400 invalid_input", async () => {
+    const e = fakeEnv();
+    const { id } = await seedInstall({ createdAt: 5 });
+    await seedInstall({ createdAt: 6 });
+    await seedJob(id, { status: "done", created_at: 10 });
+    await seedJob(id, { status: "done", created_at: 20 });
+    const jobs = await call(e, ADMIN_P, "R14", {
+      params: { id },
+      query: { limit: "1" },
+    });
+    expect(jobs.body.nextCursor).not.toBeNull();
+    expect(
+      (
+        await call(e, ADMIN_P, "R2", {
+          query: { cursor: jobs.body.nextCursor },
+        })
+      ).code,
+    ).toBe("invalid_input");
+    const all = await call(e, ADMIN_P, "R2", { query: { limit: "1" } });
+    expect(all.body.nextCursor).not.toBeNull();
+    expect(
+      (
+        await call(e, ADMIN_P, "R2", {
+          query: { cursor: all.body.nextCursor, state: "active" },
+        })
+      ).code,
+    ).toBe("invalid_input");
+    expect(
+      (
+        await call(e, ADMIN_P, "R2", {
+          query: { cursor: all.body.nextCursor, limit: "1" },
+        })
+      ).status,
+    ).toBe(200);
+    const other = await seedInstall();
+    expect(
+      (
+        await call(e, ADMIN_P, "R14", {
+          params: { id: other.id },
+          query: { cursor: jobs.body.nextCursor },
+        })
+      ).code,
     ).toBe("invalid_input");
   });
 
@@ -292,6 +350,21 @@ describe("R18 slug check", () => {
     expect(await st("taken1")).toBe("taken");
   });
 
+  it("RL_PV_SLUG_IP keys IPv6 by /64 (4.7 ipKey)", async () => {
+    const e = fakeEnv();
+    for (const ip of ["2001:db8:1:2::5", "2001:db8:1:2:ffff::9"])
+      await call(
+        e,
+        userP(),
+        "R18",
+        { params: { slug: "x" } },
+        { kind: "http", client: { ip, host: "api.hosted.test" } },
+      );
+    const [a, b] = e.limits.RL_PV_SLUG_IP.keys;
+    expect(a).toBe(b);
+    expect(a).not.toContain("::5");
+  });
+
   it("a user is charged RL_PV_SLUG_IP by IP", async () => {
     const e = fakeEnv();
     await call(e, userP(), "R18", { params: { slug: "x" } });
@@ -382,6 +455,30 @@ describe("R17 audit", () => {
       p.body.items.find((x: { source: string }) => x.source === "api").detail
         .ownerEmail,
     ).toBe("o@acme.test");
+  });
+
+  it("an email actor label of another admin is hidden for a token without installs:pii", async () => {
+    const e = fakeEnv();
+    const { id } = await seedInstall();
+    await insert("admin_audit", {
+      at: NOW - 4,
+      actor_kind: "admin",
+      actor_label: "other@example.com",
+      action: "job.accepted",
+      install_id: id,
+      outcome: "ok",
+    });
+    const t = tokenP(["audit:read"]);
+    const r = await call(e, t, "R17", { query: { installId: id } });
+    const api = r.body.items.find(
+      (x: { source: string }) => x.source === "api",
+    );
+    expect(api.actor).toEqual({ kind: "admin", label: "hidden" });
+    const p = await call(e, PII, "R17", { query: { installId: id } });
+    expect(
+      p.body.items.find((x: { source: string }) => x.source === "api").actor
+        .label,
+    ).toBe("other@example.com");
   });
 
   it("O sees its own actor rows only", async () => {

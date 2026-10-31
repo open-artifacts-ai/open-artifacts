@@ -1,4 +1,5 @@
 import { JOB_STEPS } from "@oa/shared/provisioning";
+import { fakeProvisionerRpc } from "@oa/shared/provisioning/fakes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { call, type HTTP } from "./call.js";
 import {
@@ -68,7 +69,7 @@ describe("R4 create by an admin session", () => {
       stepIndex: 0,
       attempt: 0,
       sealed: null,
-      actor: { kind: "admin", label: "me@example.com", tokenId: null },
+      actor: { kind: "admin", label: "admin", tokenId: null },
       createdAt: NOW,
     });
     expect(install).toMatchObject({
@@ -376,7 +377,8 @@ describe("R4 self-serve policy (4.2 order)", () => {
     expect((await call(e, u(), "R4", { body: ss() })).code).toBe(
       "signups_closed",
     );
-    const tester = { ...u(), testUser: true };
+    // W5b's staging OIDC test users carry sub `rl-test-<a|b|c>`.
+    const tester = u("rl-test-a");
     expect((await call(e, tester, "R4", { body: ss() })).status).toBe(202);
   });
 
@@ -888,4 +890,191 @@ describe("audit of authz refusals", () => {
   });
 });
 
-void insert;
+describe("review round 1", () => {
+  const EMAIL = /[^\s@"]+@[^\s@"]+\.[^\s@"]+/;
+
+  it("an explicit version needs only presence in GET /releases (3.5); floor and variant are release_gate's", async () => {
+    const PROVISIONER = fakeProvisionerRpc({
+      releases: [
+        {
+          version: "1.42.0",
+          publishedAt: 2,
+          variants: ["release", "redline"],
+          installable: true,
+          latest: true,
+        },
+        {
+          version: "1.41.2",
+          publishedAt: 1,
+          variants: ["release"],
+          installable: true,
+          latest: false,
+        },
+        {
+          version: "1.30.0",
+          publishedAt: 0,
+          variants: ["release"],
+          installable: false,
+          latest: false,
+        },
+      ],
+    });
+    const e = fakeEnv({ PROVISIONER });
+    const below = await call(e, ADMIN_P, "R4", {
+      body: leo({ version: "1.30.0" }),
+    });
+    expect(below.status).toBe(202);
+    expect(below.body.job.args).toEqual({ version: "1.30.0" });
+    const oidc = await call(e, OIDC_P, "R4", {
+      body: {
+        requestId: requestId(),
+        slug: "rl-v1",
+        ownerEmail: "a@oa-redline-a.fyi",
+        tier: "team",
+        auth: { providers: ["email"], domains: [] },
+        testHooks: true,
+        version: "1.41.2",
+      },
+    });
+    expect(oidc.status).toBe(202);
+    expect(
+      (await call(e, ADMIN_P, "R4", { body: leo({ version: "9.9.9" }) })).code,
+    ).toBe("release_not_published");
+  });
+
+  it("job actors are never an email: admin and user creates, R14, R15 and R27", async () => {
+    const e = fakeEnv({ SIGNUPS_ENABLED: "true" });
+    const a = await call(e, ADMIN_P, "R4", { body: leo() });
+    const u = await call(
+      e,
+      { ...userP("u7"), hd: "acme.test" } as never,
+      "R4",
+      {
+        body: { requestId: requestId(), slug: "acme7", turnstile: "tok" },
+      },
+    );
+    expect(a.body.job.actor.label).toBe("admin");
+    expect(u.body.job.actor.label).toBe("user");
+    const labels = await db
+      .prepare("SELECT actor_label FROM jobs")
+      .all<{ actor_label: string }>();
+    for (const r of labels.results) expect(r.actor_label).not.toMatch(EMAIL);
+    const w = await call(e, ADMIN_P, "R27");
+    expect(JSON.stringify(w.body.jobs.recent)).not.toMatch(EMAIL);
+    const j = await call(e, ADMIN_P, "R14", {
+      params: { id: a.body.job.installId },
+    });
+    expect(JSON.stringify(j.body)).not.toMatch(EMAIL);
+  });
+
+  it("a lifecycle replay while its own job is queued is 202 replay, not job_in_progress", async () => {
+    const e = fakeEnv();
+    const { id } = await seedInstall();
+    const body = { requestId: requestId(), reason: "unpaid" };
+    const a = await call(e, ADMIN_P, "R7", { params: { id }, body });
+    const b = await call(e, ADMIN_P, "R7", { params: { id }, body });
+    expect(b.status).toBe(202);
+    expect(b.headers["oa-idempotent-replay"]).toBe("1");
+    expect(b.body.job.id).toBe(a.body.job.id);
+    expect(e.manageInstall.created).toHaveLength(1);
+  });
+
+  it("R11 policy (token on deleting, admin reauth) comes before job_in_progress (4.2)", async () => {
+    const e = fakeEnv();
+    const { id, slug } = await seedInstall({
+      state: "deleting",
+      lifecycle: { deleted_at: NOW, purge_at: NOW + DAY },
+    });
+    await seedJob(id, { kind: "delete", status: "running" });
+    const body = () => ({ requestId: requestId(), confirmSlug: slug });
+    expect(
+      (await call(e, WRITE, "R11", { params: { id }, body: body() })).code,
+    ).toBe("forbidden");
+    expect(
+      (
+        await call(e, { ...ADMIN_P, authAt: NOW - 11 * MIN }, "R11", {
+          params: { id },
+          body: body(),
+        })
+      ).code,
+    ).toBe("reauth_required");
+    expect(
+      (
+        await call(e, { ...ADMIN_P, authAt: NOW }, "R11", {
+          params: { id },
+          body: body(),
+        })
+      ).code,
+    ).toBe("job_in_progress");
+  });
+
+  it("R12 retry points signups.job_id at the retry and holds the slug again", async () => {
+    const e = fakeEnv();
+    const f = await seedFailedCreate();
+    const r = await call(e, WRITE, "R12", {
+      params: { id: f.id },
+      body: { requestId: requestId() },
+    });
+    expect(r.status).toBe(202);
+    expect(
+      await row(
+        "SELECT job_id, status FROM signups WHERE signup_id = ?",
+        f.jobId,
+      ),
+    ).toEqual({ job_id: r.body.job.id, status: "queued" });
+    // The slug is live again: a new create cannot take it.
+    expect(
+      (await call(e, ADMIN_P, "R4", { body: leo({ slug: f.slug }) })).code,
+    ).toBe("slug_taken");
+  });
+
+  it("R12 retry: slug_taken once another create holds the slug; signup_limit once the account is claimed", async () => {
+    const e = fakeEnv();
+    const f = await seedFailedCreate();
+    expect(
+      (await call(e, ADMIN_P, "R4", { body: leo({ slug: f.slug }) })).status,
+    ).toBe(202);
+    const r = await call(e, WRITE, "R12", {
+      params: { id: f.id },
+      body: { requestId: requestId() },
+    });
+    expect(r.code).toBe("slug_taken");
+    expect(e.provisionInstall.created).toHaveLength(1);
+
+    const s = await seedFailedCreate({ ownerSub: "u8" });
+    await insert("signup_accounts", {
+      owner_sub: "u8",
+      signup_id: f.jobId,
+      created_at: 1,
+    });
+    expect(
+      (
+        await call(e, ADMIN_P, "R12", {
+          params: { id: s.id },
+          body: { requestId: requestId() },
+        })
+      ).code,
+    ).toBe("signup_limit");
+  });
+
+  it("R12 retry of a self-serve create re-claims its freed account", async () => {
+    const e = fakeEnv();
+    const s = await seedFailedCreate({ ownerSub: "u9" });
+    await insert("signup_accounts", {
+      owner_sub: "u9",
+      signup_id: s.jobId,
+      created_at: 1,
+      freed_at: 2,
+    });
+    const r = await call(e, ADMIN_P, "R12", {
+      params: { id: s.id },
+      body: { requestId: requestId() },
+    });
+    expect(r.status).toBe(202);
+    expect(
+      await row(
+        "SELECT signup_id, freed_at FROM signup_accounts WHERE owner_sub = 'u9'",
+      ),
+    ).toEqual({ signup_id: s.jobId, freed_at: null });
+  });
+});

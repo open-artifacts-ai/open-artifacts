@@ -7,7 +7,7 @@ import {
 import { authenticate } from "./auth/authenticate.js";
 import { checkCsrf, checkOrigin } from "./auth/csrf.js";
 import { handleOAuth, isOAuthPath } from "./auth/oauth/index.js";
-import { readJsonBody } from "./body.js";
+import { LazyBody, readJsonBody } from "./body.js";
 import type { Env } from "./env.js";
 import {
   ApiError,
@@ -131,11 +131,12 @@ async function apiRoute(
     if (c) return refuse(env, "csrf", c.code, req);
   }
   return guard(async () => {
-    // Writes with a body: application/json, 16 KiB, then JSON (3.1).
+    // Writes with a body: application/json, 16 KiB, then JSON (3.1), read
+    // by invokeRoute after the rate limit and authz (4.2).
     const def = ROUTES[route];
     const body =
       def.method !== "GET" && Object.keys(def.body.shape).length > 0
-        ? await readJsonBody(req)
+        ? new LazyBody(() => readJsonBody(req))
         : undefined;
     const r = await invokeRoute(
       env,

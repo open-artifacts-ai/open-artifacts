@@ -14,6 +14,7 @@ import {
 import { z } from "zod";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
+import { factsOf } from "../facts.js";
 import { limit as rateLimit } from "../limits.js";
 import {
   CreatedCursor,
@@ -27,6 +28,7 @@ import {
   loadInReach,
   loadJob,
   loadStatus,
+  queryTag,
   reachSql,
   STATUS_SELECT,
   type StatusRow,
@@ -34,6 +36,7 @@ import {
 } from "../model.js";
 import type { Principal } from "../principal.js";
 import { releases, tokenStatus } from "../services/cache.js";
+import { ipPrefix } from "../services/counters.js";
 import type { HandlerArgs } from "./handlers.js";
 import type { RouteResult } from "./invoke.js";
 
@@ -45,33 +48,33 @@ const q = (a: HandlerArgs) => (a.input.query ?? {}) as Query;
 const pageLimit = (a: HandlerArgs) =>
   (q(a).limit as number | undefined) ?? PAGE_LIMIT.default;
 
-/**
- * What a principal may carry beyond the C4 Principal for R1 (W5a sessions,
- * W5b tokens set them); absent reads as null.
- */
-export type MeFacts = {
-  csrf?: string | null;
-  sessionExpiresAt?: number | null;
-  tokenKind?: Me["tokenKind"];
-  tokenExpiresAt?: number | null;
-};
-
+/** R1. A token's kind and expiry come from its agent_tokens row. */
 export async function me(a: HandlerArgs): Promise<RouteResult> {
-  const p = a.principal as Principal & MeFacts;
+  const p = factsOf(a.principal);
+  const t = p.tokenId
+    ? await a.env.PLATFORM_DB.prepare(
+        "SELECT kind, expires_at FROM agent_tokens WHERE id = ?",
+      )
+        .bind(p.tokenId)
+        .first<{ kind: "oat" | "oauth"; expires_at: number }>()
+    : null;
+  const tokenKind = p.tokenKind ?? t?.kind ?? null;
   const body: Me = {
     principal: p.kind,
     email: p.email ?? null,
     role: p.kind === "user" ? "user" : "admin",
     scopes: [...p.scopes],
     env: a.env.OA_ENV,
-    csrf: p.csrf ?? null,
-    sessionExpiresAt: p.sessionExpiresAt ?? null,
+    csrf: p.session?.csrf ?? null,
+    sessionExpiresAt: p.session?.expiresAt ?? null,
     authAt: p.authAt ?? null,
     provisioningToken:
       p.kind === "admin" ? (await tokenStatus(a.env)).status : null,
     tokenId: p.tokenId ?? null,
-    tokenKind: p.tokenKind ?? null,
-    tokenExpiresAt: p.tokenExpiresAt ?? null,
+    tokenKind,
+    // oauth: the grant chain's end is the session's, which the row does not
+    // hold (W5b concern); oat: the row's expiry.
+    tokenExpiresAt: tokenKind === "oat" ? (t?.expires_at ?? null) : null,
   };
   return ok(body);
 }
@@ -96,8 +99,13 @@ export async function listInstalls(a: HandlerArgs): Promise<RouteResult> {
     where.push("instr(st.slug, ?) > 0");
     binds.push(String(query.q).toLowerCase());
   }
+  const tag = queryTag("R2", {
+    state: query.state,
+    source: query.source,
+    q: query.q,
+  });
   if (query.cursor) {
-    const [at, id] = decodeCursor(String(query.cursor), CreatedCursor);
+    const [at, id] = decodeCursor(String(query.cursor), CreatedCursor, tag);
     where.push(
       "(st.created_at < ? OR (st.created_at = ? AND st.install_id < ?))",
     );
@@ -117,7 +125,9 @@ export async function listInstalls(a: HandlerArgs): Promise<RouteResult> {
   const last = rows.length > n ? rows[n - 1] : undefined;
   return ok({
     items,
-    nextCursor: last ? encodeCursor([last.created_at, last.install_id]) : null,
+    nextCursor: last
+      ? encodeCursor([last.created_at, last.install_id], tag)
+      : null,
   });
 }
 
@@ -140,8 +150,9 @@ export async function listJobs(a: HandlerArgs): Promise<RouteResult> {
   const query = q(a);
   const binds: unknown[] = [id];
   let after = "";
+  const tag = queryTag("R14", { id });
   if (query.cursor) {
-    const [at, jid] = decodeCursor(String(query.cursor), CreatedCursor);
+    const [at, jid] = decodeCursor(String(query.cursor), CreatedCursor, tag);
     after = "AND (created_at < ? OR (created_at = ? AND id < ?))";
     binds.push(at, at, jid);
   }
@@ -157,7 +168,7 @@ export async function listJobs(a: HandlerArgs): Promise<RouteResult> {
   const last = rows.length > n ? rows[n - 1] : undefined;
   return ok({
     items,
-    nextCursor: last ? encodeCursor([last.created_at, last.id]) : null,
+    nextCursor: last ? encodeCursor([last.created_at, last.id], tag) : null,
   });
 }
 
@@ -194,12 +205,19 @@ export async function listReleases(a: HandlerArgs): Promise<RouteResult> {
   return ok({ items: await releases(a.env) });
 }
 
-/** R18. A self-serve user spends RL_PV_SLUG_IP by IP (4.7). */
+/**
+ * R18. A self-serve user spends RL_PV_SLUG_IP by ipKey (4.7: IPv6 by /64;
+ * W5b's shared ipKey takes a Request, the surface carries the address).
+ */
 export async function checkSlug(a: HandlerArgs): Promise<RouteResult> {
   const { slug } = a.input.params as { slug: string };
   if (a.principal.kind === "user") {
     if (a.surface.kind !== "http") throw new ApiError("forbidden");
-    const r = await rateLimit(a.env, "slug_ip", a.surface.client.ip);
+    const r = await rateLimit(
+      a.env,
+      "slug_ip",
+      ipPrefix(a.surface.client.ip, 64),
+    );
     if (r) throw new ApiError(r.code);
   }
   const rule = slugRule(slug);
@@ -208,13 +226,20 @@ export async function checkSlug(a: HandlerArgs): Promise<RouteResult> {
   return ok({ slug, status } satisfies SlugCheck);
 }
 
-/** A live install or a live signup holds the slug (3.5 slug_taken). */
-export async function slugHeld(env: Env, slug: string): Promise<boolean> {
+/**
+ * A live install or a live signup holds the slug (3.5 slug_taken); `except`
+ * leaves out a retry's own install and signup (R12).
+ */
+export async function slugHeld(
+  env: Env,
+  slug: string,
+  except: { installId: string; signupId: string } | null = null,
+): Promise<boolean> {
   const r = await env.PLATFORM_DB.prepare(
-    `SELECT 1 AS x FROM installs WHERE slug = ?1
-UNION ALL SELECT 1 FROM signups WHERE slug = ?1 AND status <> 'failed' LIMIT 1`,
+    `SELECT 1 AS x FROM installs WHERE slug = ?1 AND id IS NOT ?2
+UNION ALL SELECT 1 FROM signups WHERE slug = ?1 AND status <> 'failed' AND signup_id IS NOT ?3 LIMIT 1`,
   )
-    .bind(slug)
+    .bind(slug, except?.installId ?? null, except?.signupId ?? null)
     .first();
   return r !== null;
 }
@@ -260,6 +285,18 @@ type AuditRow = {
 };
 
 const EMAIL_FIELDS = ["email", "ownerEmail"] as const;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** What a hidden email actor label reads as (W5b's REDACTED_LABEL). */
+export const HIDDEN_LABEL = "hidden";
+
+const hidesPii = (p: Principal) =>
+  p.kind === "token" && !p.scopes.includes("installs:pii");
+
+/** 4.9: an admin's or user's email label is hidden like a detail field. */
+function labelFor(p: Principal, label: string): string {
+  if (!hidesPii(p) || !EMAIL_RE.test(label)) return label;
+  return label.toLowerCase() === p.email?.toLowerCase() ? label : HIDDEN_LABEL;
+}
 
 /** 9A.8: a token without installs:pii sees no email-valued detail field. */
 function detailFor(
@@ -274,7 +311,7 @@ function detailFor(
   } catch {
     d = { value: raw };
   }
-  if (p.kind === "token" && !p.scopes.includes("installs:pii")) {
+  if (hidesPii(p)) {
     for (const f of EMAIL_FIELDS) if (f in d) d[f] = null;
     // The token's own minting admin stays; another admin's email does not.
     if ("admin" in d && d.admin !== p.email) d.admin = null;
@@ -310,8 +347,13 @@ export async function queryAudit(a: HandlerArgs): Promise<RouteResult> {
       binds.push(actor);
     }
   }
+  const tag = queryTag("R17", {
+    installId: query.installId,
+    action: query.action,
+    actor: query.actor,
+  });
   if (query.cursor) {
-    const c = decodeCursor(String(query.cursor), AuditCursor);
+    const c = decodeCursor(String(query.cursor), AuditCursor, tag);
     where.push(
       "(at < ? OR (at = ? AND (source > ? OR (source = ? AND id < ?))))",
     );
@@ -331,7 +373,7 @@ export async function queryAudit(a: HandlerArgs): Promise<RouteResult> {
     source: r.source,
     actor: {
       kind: PrincipalKindSchema.catch("system").parse(r.actor_kind),
-      label: r.actor_label,
+      label: labelFor(p, r.actor_label),
     },
     action: r.action,
     installId: InstallIdSchema.safeParse(r.install_id).success
@@ -347,7 +389,7 @@ export async function queryAudit(a: HandlerArgs): Promise<RouteResult> {
   return ok({
     items,
     nextCursor: last
-      ? encodeCursor({ at: last.at, source: last.source, id: last.id })
+      ? encodeCursor({ at: last.at, source: last.source, id: last.id }, tag)
       : null,
   });
 }

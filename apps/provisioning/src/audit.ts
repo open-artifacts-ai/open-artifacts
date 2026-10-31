@@ -1,12 +1,14 @@
 import type { RouteId } from "@oa/shared/provisioning";
 import type { Env } from "./env.js";
+import { factsOf } from "./facts.js";
 import type { Principal } from "./principal.js";
 import type { Surface } from "./routes/invoke.js";
 
 /**
  * A sign-in outcome before any principal exists (4.9 `signin.ok`,
  * `signin.refused`: `unknown_sub`, `not_listed`, `token_invalid`). Written as
- * `actor_kind = 'admin'`, `actor_label` the email when known.
+ * `actor_kind = 'admin'`; `actor_label` is the email on `signin.ok` only, a
+ * refusal keeps the email HMAC only (4.3) and the label `signin`.
  */
 export type SigninActor = {
   kind: "signin";
@@ -52,26 +54,48 @@ export async function hmac16(env: Env, value: string): Promise<string> {
   ).join("");
 }
 
-const actorOf = (a: AuditEntry["actor"]) => {
+export const SIGNIN_LABEL = "signin";
+
+const actorOf = (e: AuditEntry) => {
+  const a = e.actor;
   if (typeof a === "string")
     return { kind: "system", label: a.slice("system:".length), tokenId: null };
   if (a.kind === "signin")
-    return { kind: "admin", label: a.email ?? null, tokenId: null };
+    return {
+      kind: "admin",
+      label: e.outcome === "ok" && a.email ? a.email : SIGNIN_LABEL,
+      tokenId: null,
+    };
   return { kind: a.kind, label: a.label, tokenId: a.tokenId ?? null };
 };
 
+/** The raw email behind `email_hmac`: the entry's, else a sign-in actor's. */
+const emailOf = (e: AuditEntry) =>
+  e.email ??
+  (typeof e.actor !== "string" && e.actor.kind === "signin"
+    ? e.actor.email
+    : undefined);
+
 /**
  * The detail column: the caller's detail, the route, and for a token the
- * minting admin; an MCP call adds surface, tool and clientVersion (9A.8).
+ * minting admin; an MCP call adds surface, tool, via, client and
+ * clientVersion (9A.8; via and client once W5b sets them on the principal).
  */
 function detailOf(e: AuditEntry): Record<string, unknown> | null {
   const d: Record<string, unknown> = { ...e.detail };
   if (e.route) d.route = e.route;
-  if (typeof e.actor !== "string" && e.actor.kind === "token")
-    d.admin = e.actor.email ?? null;
+  const token =
+    typeof e.actor !== "string" && e.actor.kind === "token"
+      ? factsOf(e.actor)
+      : null;
+  if (token) d.admin = token.email ?? null;
   if (e.surface?.kind === "mcp") {
     d.surface = "mcp";
     d.tool = e.surface.tool;
+    if (token?.tokenKind) {
+      d.via = token.tokenKind;
+      d.client = token.client ?? null;
+    }
     d.clientVersion = e.surface.clientVersion;
   }
   return Object.keys(d).length ? d : null;
@@ -87,8 +111,9 @@ export async function auditStatement(
   env: Env,
   e: AuditEntry,
 ): Promise<D1PreparedStatement> {
-  const a = actorOf(e.actor);
+  const a = actorOf(e);
   const detail = detailOf(e);
+  const email = emailOf(e);
   return env.PLATFORM_DB.prepare(
     `INSERT INTO admin_audit (at, actor_kind, actor_label, token_id, action, install_id, job_id, request_id, outcome, code, ip_hmac, email_hmac, detail)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
@@ -104,7 +129,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
     e.outcome,
     e.code ?? null,
     e.ip ? await hmac16(env, e.ip) : null,
-    e.email ? await hmac16(env, e.email) : null,
+    email ? await hmac16(env, email) : null,
     detail ? JSON.stringify(detail) : null,
   );
 }
