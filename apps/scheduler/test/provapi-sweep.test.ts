@@ -281,7 +281,7 @@ describe("sweep: dead runs", () => {
       ]);
     });
 
-  it("an open job already holding another code (a cancel that died before its settle): settled, the code kept, no cleanup", async () => {
+  it("an open job already holding a code (a cancel that died before its settle and cleanup): settled, the code kept, one cleanup, started once", async () => {
     const f = fakes();
     const { id } = await started(f, "complete", { error_code: "canceled" });
     await run(f.env);
@@ -290,7 +290,52 @@ describe("sweep: dead runs", () => {
       status: "failed",
       error_code: "canceled",
     });
-    expect(await cleanups()).toEqual([]);
+    const [c, ...rest] = await cleanups();
+    expect(rest).toEqual([]);
+    expect(c).toMatchObject({
+      parent_job_id: id,
+      request_id: cleanupRequestId(id),
+      status: "queued",
+    });
+    expect(f.manage.created).toEqual([{ id: c?.id, params: { jobId: c?.id } }]);
+    // The next tick finds it settled: no second cleanup, no second start.
+    await run(f.env, NOW + TICK);
+    expect(await cleanups()).toHaveLength(1);
+    expect(f.manage.created).toHaveLength(1);
+  });
+
+  it("an open job holding canceled whose cancel settles and queues its cleanup before the sweep's settle (R25): no second cleanup, the batch does not fail", async () => {
+    const f = fakes();
+    const { id, inst } = await started(f, "complete", {
+      error_code: "canceled",
+    });
+    let result: Awaited<ReturnType<SettleFailed>> | undefined;
+    // The sweep read the stored canceled, so its guard is
+    // settledWith(?5, canceled), true once the cancel settles: only
+    // INSERT OR IGNORE (jobs_one_active) keeps the batch from failing.
+    const afterCancel: SettleFailed = async (d, jobId, code, opts) => {
+      await db
+        .prepare("UPDATE jobs SET status = 'failed' WHERE id = ?1")
+        .bind(jobId)
+        .run();
+      await job(inst, {
+        kind: "cleanup",
+        workflow: "manage_install",
+        parent_job_id: jobId,
+        request_id: `admin-cancel-${jobId}`,
+      });
+      result = await fakeSettle(d, jobId, code, opts);
+      return result;
+    };
+    const lines = captureLogs(vi.spyOn);
+    await sweep(f.env, NOW, { settleFailed: afterCancel });
+    expect(result?.settled).toBe(false);
+    expect(result?.extra).toHaveLength(1);
+    expect(lines).toEqual([]);
+    expect((await jobRow(id))?.error_code).toBe("canceled");
+    expect((await cleanups()).map((c) => [c.request_id, c.status])).toEqual([
+      [`admin-cancel-${id}`, "queued"],
+    ]);
     expect(f.manage.created).toEqual([]);
   });
 

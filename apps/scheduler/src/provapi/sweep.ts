@@ -98,21 +98,30 @@ const DEAD_AFTER_GRACE = new Set<WorkflowInstanceStatus["status"]>([
   "terminated",
 ]);
 
+// The job if still open, with its stored code (null when none).
 const STILL_OPEN =
-  "SELECT 1 AS open FROM jobs WHERE id = ?1 AND status IN ('queued', 'running')";
-const stillOpen = async (db: D1Database, id: string) =>
-  (await d1(db.prepare(STILL_OPEN).bind(id).first())) !== null;
+  "SELECT error_code FROM jobs WHERE id = ?1 AND status IN ('queued', 'running')";
+const stillOpen = (db: D1Database, id: string) =>
+  d1(
+    db
+      .prepare(STILL_OPEN)
+      .bind(id)
+      .first<{ error_code: ProvisionErrorCode | null }>(),
+  );
 
-// The cleanup goes in only if this call settled its parent (?5, the
-// insert's parent job id) with run_dead (C5 settledWith): a cancel's
-// canceled, or any other settler's code, never matches. INSERT OR IGNORE:
-// jobs_one_active (a cleanup already open) and cleanup-<jobId> (an earlier
-// tick's) skip the row instead of failing the settle's batch.
-const SETTLED_DEAD: JobGuard = {
-  sql: settledWith("?5", RUN_DEAD),
+// The cleanup goes in only if its parent (?5, the insert's parent job id)
+// ends up failed with the code this settle call writes (C5 settledWith):
+// run_dead, or the code the open job already held, which settleFailed keeps
+// (a cancel that stored canceled and died before its settle and cleanup).
+// A job settled elsewhere is not settled here, so no cleanup from the sweep.
+// INSERT OR IGNORE: jobs_one_active (a cleanup already open, e.g. that
+// cancel's own) and cleanup-<jobId> (an earlier tick's) skip the row
+// instead of failing the settle's batch.
+const settledAs = (code: ProvisionErrorCode): JobGuard => ({
+  sql: settledWith("?5", code),
   params: [],
   orIgnore: true,
-};
+});
 
 /** What one open job needs: start it, settle it, or nothing. */
 async function look(
@@ -193,7 +202,8 @@ export async function sweep(
       step = "settle";
       // The run may have settled the job itself since the select (a
       // complete run's last step marks it done): still open, or leave it.
-      if (!(await stillOpen(db, j.id))) return;
+      const openRow = await stillOpen(db, j.id);
+      if (openRow === null) return;
       // A dead cleanup is settled only, never given another cleanup.
       const cleanup: SystemJob | null =
         j.kind === "cleanup"
@@ -210,7 +220,14 @@ export async function sweep(
       // design v7 3.6), so a failure, an evicted tick or another job opening
       // in between never leaves a failed job without its cleanup.
       const extra = cleanup
-        ? [await systemJobStatement(db, cleanup, now, SETTLED_DEAD)]
+        ? [
+            await systemJobStatement(
+              db,
+              cleanup,
+              now,
+              settledAs(openRow.error_code ?? RUN_DEAD),
+            ),
+          ]
         : [];
       const r = await settleFailed(db, j.id, RUN_DEAD, { extra });
       if (r.settled) {
@@ -225,7 +242,7 @@ export async function sweep(
       step = "cleanup";
       const row = (r.extra[0] as D1Result<{ id?: unknown }> | undefined)
         ?.results?.[0];
-      // No id: not inserted (another settler's code, a cleanup already open
+      // No id: not inserted (settled elsewhere, a cleanup already open
       // on the install, or an overlapping tick's cleanup-<jobId>). Only a
       // row this batch inserted is started.
       const id = typeof row?.id === "string" ? row.id : null;
