@@ -1,0 +1,42 @@
+// Spike caller Worker (S1, S2, S3, S5, S7): staging only, throwaway, one per
+// run. scripts/ci/provapi-spikes.sh renders this file (every {{...}} filled,
+// any left is refused) into wrangler.rendered.jsonc and deploys that. No
+// route, custom domain, workers.dev or preview URL: it runs on its cron tick
+// and writes its results to its own D1 database. Observability stays off.
+{
+  "name": "oa-s-spike-{{RUN_ID}}",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    "ROLE": "caller",
+    "RUN_ID": "{{RUN_ID}}",
+    "SPIKES": "{{SPIKES}}",
+    "RLB_SCRIPT": "{{RLB_SCRIPT}}",
+    "RLA_HEALTHZ": "{{RLA_HEALTHZ}}"
+  },
+  // S2: the staging namespace, read with GETs to rl-b only.
+  "dispatch_namespaces": [
+    { "binding": "DISPATCHER", "namespace": "{{NAMESPACE}}" }
+  ],
+  // S3: cross-script, the class lives in oa-s-spike-<run>-wf.
+  "workflows": [
+    {
+      "binding": "WF",
+      "name": "oa-s-spike-{{RUN_ID}}",
+      "class_name": "SpikeWorkflow",
+      "script_name": "oa-s-spike-{{RUN_ID}}-wf"
+    }
+  ],
+  // S5, and the results table CI reads back.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "oa-s-spike-{{RUN_ID}}",
+      "database_id": "{{D1_ID}}"
+    }
+  ]
+}

@@ -59,7 +59,25 @@ async function startMocks() {
             ),
           ]
         : [];
-  const mock = createMock();
+  // The browser clock, so a token minted here is live; one OAuth grant is seeded
+  // so the page shows both kinds. Unit tests keep the mock's fixed clock.
+  const at = Date.now();
+  const mock = createMock({
+    now: Date.now,
+    tokens: [
+      {
+        id: "01JMCKSEED0000000000000001",
+        kind: "oauth",
+        label: "mcp",
+        clientName: "Claude Code",
+        scopes: ["installs:read", "audit:read"],
+        createdAt: at - 120_000,
+        expiresAt: at + 6 * 3_600_000,
+        revokedAt: null,
+        lastUsedAt: at - 120_000,
+      },
+    ],
+  });
   const worker = setupWorker(...extra, ...mock.handlers);
   autoAdvance(worker.events, mock, 1500);
   await worker.start({

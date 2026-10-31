@@ -75,6 +75,8 @@ export type BrowserRouteId = "R22" | "R23" | "R24";
 export type ApiRouteId = Exclude<RouteId, BrowserRouteId>;
 
 type Obj = z.ZodObject<z.ZodRawShape>;
+/** A route body: one object, or a union of objects (R26 mint | revoke). */
+export type RouteBody = Obj | z.ZodUnion<readonly [Obj, ...Obj[]]>;
 export interface RouteDef {
   id: RouteId;
   method: "GET" | "POST" | "DELETE";
@@ -82,7 +84,7 @@ export interface RouteDef {
   base: "api" | "browser";
   params: Obj;
   query: Obj;
-  body: Obj;
+  body: RouteBody;
   /** The 2xx body; z.null() for 204 and redirects. */
   response: z.ZodType;
   status: 200 | 201 | 202 | 204 | 302 | 303;
@@ -113,7 +115,12 @@ const read = (
   status: 200,
   write: false,
 });
-const job = (r: RouteId, path: string, kind: JobKind, body: Obj): RouteDef => ({
+const job = (
+  r: RouteId,
+  path: string,
+  kind: JobKind,
+  body: RouteBody,
+): RouteDef => ({
   id: r,
   method: "POST",
   path,
@@ -257,6 +264,10 @@ export const ROUTES: Readonly<Record<RouteId, RouteDef>> = {
   ),
   R27: read("R27", "/world", WorldSchema),
 };
+
+/** The object schemas of a route body: itself, or each union option. */
+export const bodyVariants = (r: RouteDef): readonly Obj[] =>
+  r.body instanceof z.ZodUnion ? r.body.options : [r.body];
 
 /** Protocol routes: no API principal, their own limits, fixed host (9A.3.1). */
 export const isApiRoute = (id: RouteId): id is ApiRouteId =>

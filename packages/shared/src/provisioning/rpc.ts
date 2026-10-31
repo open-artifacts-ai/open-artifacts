@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TOKEN_EXPIRING_DAYS } from "./constants.js";
 import { ProvisioningTokenStatusSchema, type Release } from "./schemas.js";
 
 // ProvisionerRpc (design v7 2.6): the provisioner's WorkerEntrypoint has
@@ -21,7 +22,7 @@ export type VerifyTurnstileInput = {
 };
 
 /** Every accepted token has an end date: daysLeft is null only when invalid; expiring is daysLeft <= 30. */
-export const TOKEN_EXPIRING_DAYS = 30;
+export { TOKEN_EXPIRING_DAYS };
 export const TokenStatusSchema = z
   .object({
     status: ProvisioningTokenStatusSchema,
