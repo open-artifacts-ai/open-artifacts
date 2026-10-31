@@ -1,0 +1,270 @@
+// Provisioning API and admin panel (design v7 2.1, 2.4): one Worker per env
+// on admin.<app> and api.<app>, deployed by the CI `provisioning` target.
+//
+// Deploy with --env staging or --env prod only: the top level has no name and
+// no main, so a deploy without --env is refused. No routes, custom domains or
+// workers.dev here: admin.<app>/* and api.<app>/* are wired by
+// scripts/ops/hosted-zones.sh. Placeholders ({{...}}) are filled at deploy.
+// Observability stays off: Workers Logs would hold request URLs (sign-in
+// codes and state, OAuth codes).
+// This Worker holds no Cloudflare token (2.5); the provisioner does.
+// Secrets (set by CI only if absent, 4.6): ADMIN_SESSION_KEY (32 random
+// bytes), ADMIN_BROKER_KEY (Ed25519 pkcs8). MCP adds none (2.4).
+// ADMIN_IDENTITIES is the committed `email:sub` comma list (4.1); empty
+// admits no one until the first pin from a staging sign-in (4.3).
+// MCP_REDIRECT_URIS: exact redirect URIs besides loopback (9A.3.1); the
+// Claude.ai callback is unverified until acceptance (14.4).
+// OIDC_* (4.4) are staging only; the prod deploy read-back refuses them.
+// Ratelimit namespace ids: staging 1141-1146, prod 1151-1156 (4.7, 9A.7).
+// ASSETS: the admin SPA build (apps/admin), copied into dist-assets by CI.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "env": {
+    "staging": {
+      "name": "oa-s-provisioning",
+      "main": "src/index.ts",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": {
+        "enabled": false
+      },
+      "vars": {
+        "OA_ENV": "staging",
+        "APP_DOMAIN": "open-artifacts-staging.app",
+        "ADMIN_IDENTITIES": "",
+        "SIGNUPS_ENABLED": "false",
+        "SELF_SERVE_TIER": "trial",
+        "MCP_REDIRECT_URIS": "https://claude.ai/api/mcp/auth_callback",
+        "OIDC_AUDIENCE": "https://api.open-artifacts-staging.app",
+        "OIDC_REPOSITORY": "open-artifacts-ai/open-artifacts",
+        "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID}}",
+        "OIDC_JOB_WORKFLOW_REFS": "open-artifacts-ai/open-artifacts/.github/workflows/redline-staging.yml@refs/heads/main",
+        "OIDC_ENVIRONMENT": "redline-staging"
+      },
+      "d1_databases": [
+        {
+          "binding": "PLATFORM_DB",
+          "database_name": "oa-s-platform",
+          "database_id": "{{PLATFORM_DB_ID_STAGING}}"
+        }
+      ],
+      "workflows": [
+        {
+          "binding": "PROVISION_INSTALL",
+          "name": "oa-s-provision-install",
+          "class_name": "ProvisionInstall",
+          "script_name": "oa-s-provisioner"
+        },
+        {
+          "binding": "MANAGE_INSTALL",
+          "name": "oa-s-manage-install",
+          "class_name": "ManageInstall",
+          "script_name": "oa-s-provisioner"
+        }
+      ],
+      "services": [
+        {
+          "binding": "PROVISIONER",
+          "service": "oa-s-provisioner",
+          "entrypoint": "ProvisionerRpc"
+        },
+        {
+          "binding": "AUTH_BROKER",
+          "service": "oa-s-auth-broker"
+        }
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "SIGNUPS",
+            "queue": "oa-s-signups"
+          }
+        ]
+      },
+      "assets": {
+        "directory": "./dist-assets",
+        "binding": "ASSETS",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": true
+      },
+      "ratelimits": [
+        {
+          "name": "RL_PV_PRE_IP",
+          "namespace_id": "1141",
+          "simple": {
+            "limit": 600,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_SIGNIN_IP",
+          "namespace_id": "1142",
+          "simple": {
+            "limit": 10,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_WRITE",
+          "namespace_id": "1143",
+          "simple": {
+            "limit": 30,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_READ",
+          "namespace_id": "1144",
+          "simple": {
+            "limit": 300,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_SLUG_IP",
+          "namespace_id": "1145",
+          "simple": {
+            "limit": 30,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_OAUTH_IP",
+          "namespace_id": "1146",
+          "simple": {
+            "limit": 20,
+            "period": 60
+          }
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "OAUTH_KV",
+          "id": "{{PROVISIONING_OAUTH_KV_ID_STAGING}}"
+        }
+      ]
+    },
+    "prod": {
+      "name": "oa-p-provisioning",
+      "main": "src/index.ts",
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": {
+        "enabled": false
+      },
+      "vars": {
+        "OA_ENV": "prod",
+        "APP_DOMAIN": "open-artifacts.app",
+        "ADMIN_IDENTITIES": "",
+        "SIGNUPS_ENABLED": "false",
+        "SELF_SERVE_TIER": "trial",
+        "MCP_REDIRECT_URIS": "https://claude.ai/api/mcp/auth_callback"
+      },
+      "d1_databases": [
+        {
+          "binding": "PLATFORM_DB",
+          "database_name": "oa-p-platform",
+          "database_id": "{{PLATFORM_DB_ID_PROD}}"
+        }
+      ],
+      "workflows": [
+        {
+          "binding": "PROVISION_INSTALL",
+          "name": "oa-p-provision-install",
+          "class_name": "ProvisionInstall",
+          "script_name": "oa-p-provisioner"
+        },
+        {
+          "binding": "MANAGE_INSTALL",
+          "name": "oa-p-manage-install",
+          "class_name": "ManageInstall",
+          "script_name": "oa-p-provisioner"
+        }
+      ],
+      "services": [
+        {
+          "binding": "PROVISIONER",
+          "service": "oa-p-provisioner",
+          "entrypoint": "ProvisionerRpc"
+        },
+        {
+          "binding": "AUTH_BROKER",
+          "service": "oa-p-auth-broker"
+        }
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "SIGNUPS",
+            "queue": "oa-p-signups"
+          }
+        ]
+      },
+      "assets": {
+        "directory": "./dist-assets",
+        "binding": "ASSETS",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": true
+      },
+      "ratelimits": [
+        {
+          "name": "RL_PV_PRE_IP",
+          "namespace_id": "1151",
+          "simple": {
+            "limit": 600,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_SIGNIN_IP",
+          "namespace_id": "1152",
+          "simple": {
+            "limit": 10,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_WRITE",
+          "namespace_id": "1153",
+          "simple": {
+            "limit": 30,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_READ",
+          "namespace_id": "1154",
+          "simple": {
+            "limit": 300,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_SLUG_IP",
+          "namespace_id": "1155",
+          "simple": {
+            "limit": 30,
+            "period": 60
+          }
+        },
+        {
+          "name": "RL_PV_OAUTH_IP",
+          "namespace_id": "1156",
+          "simple": {
+            "limit": 20,
+            "period": 60
+          }
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "OAUTH_KV",
+          "id": "{{PROVISIONING_OAUTH_KV_ID_PROD}}"
+        }
+      ]
+    }
+  }
+}
