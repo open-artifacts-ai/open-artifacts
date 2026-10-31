@@ -1,6 +1,6 @@
 import {
   type ApiRouteId,
-  CancelJobSchema,
+  type CancelJobSchema,
   canTransition,
   checkPurgeFields,
   type DeleteSchema,

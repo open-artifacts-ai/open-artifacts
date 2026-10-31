@@ -1,6 +1,6 @@
 import { JOB_STEPS } from "@oa/shared/provisioning";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { call, HTTP } from "./call.js";
+import { call, type HTTP } from "./call.js";
 import {
   ADMIN_P,
   db,

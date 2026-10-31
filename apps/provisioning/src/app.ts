@@ -2,10 +2,12 @@ import {
   type ApiRouteId,
   isApiRoute,
   PROTOCOL_ROUTES,
+  ROUTES,
 } from "@oa/shared/provisioning";
 import { authenticate } from "./auth/authenticate.js";
 import { checkCsrf, checkOrigin } from "./auth/csrf.js";
 import { handleOAuth, isOAuthPath } from "./auth/oauth/index.js";
+import { readJsonBody } from "./body.js";
 import type { Env } from "./env.js";
 import {
   ApiError,
@@ -129,13 +131,18 @@ async function apiRoute(
     if (c) return refuse(env, "csrf", c.code, req);
   }
   return guard(async () => {
-    // W4: content-type, the 16 KiB body cap and JSON parse (3.1).
+    // Writes with a body: application/json, 16 KiB, then JSON (3.1).
+    const def = ROUTES[route];
+    const body =
+      def.method !== "GET" && Object.keys(def.body.shape).length > 0
+        ? await readJsonBody(req)
+        : undefined;
     const r = await invokeRoute(
       env,
       ctx,
       p,
       route,
-      { params, query: Object.fromEntries(url.searchParams) },
+      { params, query: Object.fromEntries(url.searchParams), body },
       { kind: "http", client: { ip: clientIp(req), host: url.hostname } },
     );
     return new Response(r.body === null ? null : JSON.stringify(r.body), {

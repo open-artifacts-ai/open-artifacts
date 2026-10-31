@@ -10,8 +10,8 @@ import {
   InstallStateSchema,
   JobKindSchema,
   RPC_ALERT_KEYS,
-  SQL_ALERT_KEYS,
   ServingModeSchema,
+  SQL_ALERT_KEYS,
   WORLD_CAPS,
   type World,
 } from "@oa/shared/provisioning";

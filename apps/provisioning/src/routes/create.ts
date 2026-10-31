@@ -1,10 +1,10 @@
 import { STAGING_TEST_DOMAIN } from "@oa/provision/names";
 import {
+  type CreateInstallSchema,
   canonicalJson,
   checkCreateFields,
-  type CreateInstallSchema,
-  type Tier,
   slugError,
+  type Tier,
 } from "@oa/shared/provisioning";
 import type { z } from "zod";
 import type { Env } from "../env.js";
@@ -15,6 +15,7 @@ import { chargeSelfServeCreate } from "../services/counters.js";
 import { accept, guard, replay, writeOf } from "../services/jobs.js";
 import type { HandlerArgs } from "./handlers.js";
 import type { RouteResult } from "./invoke.js";
+import { slugHeld } from "./reads.js";
 import { resolveRelease } from "./writes.js";
 
 // R4 POST /installs (3.3, 3.6, 4.2, 7). One D1 batch writes the job, the
@@ -45,14 +46,6 @@ export function signupVars(
     ...(testHooks ? { TEST_DOMAIN: STAGING_TEST_DOMAIN } : {}),
   });
 }
-
-const slugTaken = async (env: Env, slug: string) =>
-  (await env.PLATFORM_DB.prepare(
-    `SELECT 1 AS x FROM installs WHERE slug = ?1
-UNION ALL SELECT 1 FROM signups WHERE slug = ?1 AND status <> 'failed' LIMIT 1`,
-  )
-    .bind(slug)
-    .first()) !== null;
 
 const liveClaim = async (env: Env, sub: string) =>
   (await env.PLATFORM_DB.prepare(
@@ -122,7 +115,7 @@ export async function createInstall(a: HandlerArgs): Promise<RouteResult> {
           body.version,
           testHooks ? "redline" : "release",
         );
-  if (await slugTaken(env, body.slug)) throw new ApiError("slug_taken");
+  if (await slugHeld(env, body.slug)) throw new ApiError("slug_taken");
 
   // checkCreateFields required these for every principal but U.
   const tier: Tier = ss ? env.SELF_SERVE_TIER : (body.tier as Tier);
