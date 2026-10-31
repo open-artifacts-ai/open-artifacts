@@ -489,24 +489,29 @@ const puts = (log: string[]) =>
   log.filter((l) => l.startsWith("stdin-len")).map((l) => l.split(" ")[1]);
 
 describe("deploy-hosted-platform.sh", () => {
-  it("auth-broker refuses a client that isn't provision's pin, or a null pin, before any wrangler call", () => {
-    for (const [pins, msg] of [
-      [
-        { prod: "other.apps.googleusercontent.com" },
-        "differs from provision's BROKER_GOOGLE_CLIENT_ID[prod]",
-      ],
-      [{ prod: null }, "BROKER_GOOGLE_CLIENT_ID[prod] is null in provision"],
-    ] as const) {
-      for (const verify of ["", "1"]) {
+  // Each script run spawns dozens of stub processes (about 0.5 s on an idle
+  // machine, several times that under load). So each case below is its own
+  // test, bounded by its own one or two runs rather than by the case count
+  // (a 26-run test took 13 s idle and hit the 30 s testTimeout under load).
+  for (const [pins, msg] of [
+    [
+      { prod: "other.apps.googleusercontent.com" },
+      "differs from provision's BROKER_GOOGLE_CLIENT_ID[prod]",
+    ],
+    [{ prod: null }, "BROKER_GOOGLE_CLIENT_ID[prod] is null in provision"],
+  ] as const) {
+    for (const verify of ["", "1"]) {
+      it(`auth-broker refuses before any wrangler call (${verify ? "verify only" : "deploy"}): ${msg}`, () => {
         const r = setup({ pins }).run("auth-broker", { VERIFY_ONLY: verify });
         expect(r.code, msg).toBe(1);
         expect(r.err).toContain(msg);
         expect(r.log.filter((l) => /^(pnpm|wrapper|curl) /.test(l))).toEqual(
           [],
         );
-      }
+      });
     }
-    // Staging's own pin, checked for staging only.
+  }
+  it("auth-broker checks staging's own pin for staging only", () => {
     const r = setup({ pins: { staging: "other" } }).run("auth-broker");
     expect(r.code, r.err).toBe(0);
   });
@@ -572,9 +577,8 @@ describe("deploy-hosted-platform.sh", () => {
     ]);
     clean(r);
   });
-  it("dispatch and the scheduler refuse until both brokers exist (the scheduler also the provisioner), then deploy and verify", () => {
-    const brokers = ["oa-p-auth-broker", "oa-p-directory-broker"];
-    for (const t of ["dispatch", "scheduler"]) {
+  for (const t of ["dispatch", "scheduler"]) {
+    it(`${t} refuses until both brokers exist, then deploys and verifies`, () => {
       const none = setup().run(t);
       expect(none.code, t).toBe(1);
       expect(none.err).toContain("oa-p-auth-broker does not exist");
@@ -584,14 +588,17 @@ describe("deploy-hosted-platform.sh", () => {
       expect(ok.code, t).toBe(0);
       expect(ok.out).toContain(`prod ${t}: deployed and verified`);
       clean(ok);
-    }
-    const noProv = setup({ exists: brokers }).run("scheduler");
+    });
+  }
+  it("the scheduler also refuses until the provisioner exists", () => {
+    const noProv = setup({
+      exists: ["oa-p-auth-broker", "oa-p-directory-broker"],
+    }).run("scheduler");
     expect(noProv.code).toBe(1);
     expect(noProv.err).toContain("oa-p-provisioner does not exist");
     expect(noProv.log.some((l) => l.startsWith("wrapper"))).toBe(false);
   });
   describe("the scheduler's alert wiring (#915's placeholders, or none before it)", () => {
-    type Env = "staging" | "prod";
     // #915's config, and the repo's own once it carries the placeholders.
     const PINNED = [
       ["#915's config", F915],
@@ -624,7 +631,7 @@ describe("deploy-hosted-platform.sh", () => {
       );
     const go = (
       config: string,
-      env: Env,
+      env: "staging" | "prod",
       next: string,
       vars: Record<string, string> = {},
     ) => {
@@ -649,25 +656,27 @@ describe("deploy-hosted-platform.sh", () => {
       const log = s.sb.log();
       return { ...r, log };
     };
-    it("before #915 (no placeholders): refuses before any deploy, verify only too (4.8: an alert needs a destination)", () => {
-      // #915's config with its alert lines cut, and the repo's own until #915.
-      const strip = (c: string) =>
-        c
-          .replace(
-            /\n\s*"(ALERT_TO|ALERT_FROM|SIGNUP_DAILY_CAP|SIGNUPS_ENABLED)": "\{\{[A-Z_]+\}\}",/g,
-            "",
-          )
-          .replace(
-            /\{ "name": "ALERT_EMAIL", "destination_address": "\{\{ALERT_TO_[A-Z]+\}\}" \}/g,
-            '{ "name": "ALERT_EMAIL" }',
-          );
-      for (const BARE of [
-        strip(F915),
-        ...(pinned(REAL_SCHED) ? [] : [REAL_SCHED]),
-      ]) {
-        expect(BARE).not.toContain("{{ALERT_");
-        for (const env of ["prod", "staging"] as const)
-          for (const VERIFY_ONLY of ["", "1"]) {
+    // Before #915 (no placeholders): #915's config with its alert lines cut,
+    // and the repo's own until #915.
+    const strip = (c: string) =>
+      c
+        .replace(
+          /\n\s*"(ALERT_TO|ALERT_FROM|SIGNUP_DAILY_CAP|SIGNUPS_ENABLED)": "\{\{[A-Z_]+\}\}",/g,
+          "",
+        )
+        .replace(
+          /\{ "name": "ALERT_EMAIL", "destination_address": "\{\{ALERT_TO_[A-Z]+\}\}" \}/g,
+          '{ "name": "ALERT_EMAIL" }',
+        );
+    const BARES = [
+      ["#915's config, cut", strip(F915)],
+      ...(pinned(REAL_SCHED) ? [] : [["apps/scheduler", REAL_SCHED] as const]),
+    ] as const;
+    for (const [label, BARE] of BARES)
+      for (const env of ["prod", "staging"] as const)
+        for (const VERIFY_ONLY of ["", "1"])
+          it(`before #915 (${label}), ${env}${VERIFY_ONLY ? ", verify only" : ""}: refuses before any deploy (4.8: an alert needs a destination)`, () => {
+            expect(BARE).not.toContain("{{ALERT_");
             const p = env[0] as "s" | "p";
             const r = go(
               BARE,
@@ -677,91 +686,104 @@ describe("deploy-hosted-platform.sh", () => {
                 VERIFY_ONLY,
               },
             );
-            expect(r.code, `${env} ${VERIFY_ONLY}`).toBe(1);
+            expect(r.code).toBe(1);
             expect(r.err).toContain(
               `the tag's scheduler config doesn't pin the ${env} alerts`,
             );
             expect(noDeploy(r.log)).toEqual([]);
             expect(r.out).not.toContain("verified");
-          }
-      }
-    });
+          });
     for (const [label, config] of PINNED) {
-      for (const env of ["prod", "staging"] as const)
+      for (const env of ["prod", "staging"] as const) {
+        const p = env[0] as "s" | "p";
         it(`${label}, ${env}: reads back every alert var and ALERT_EMAIL's destination`, () => {
-          {
-            const p = env[0] as "s" | "p";
-            const ok = go(config, env, wired(p));
-            expect(ok.err, env).toBe("");
-            expect(ok.code, env).toBe(0);
-            expect(ok.out).toContain(`${env} scheduler: deployed and verified`);
-            for (const [what, next, msg] of [
-              [
-                "destination",
-                wired(p, {}, "x@example.com"),
-                "ALERT_EMAIL destination",
-              ],
-              ["unpinned", wired(p, {}, null), "ALERT_EMAIL destination"],
-              ["alert to", wired(p, { ALERT_TO: "x@example.com" }), "ALERT_TO"],
-              ["no alert to", wired(p, { ALERT_TO: null }), "ALERT_TO"],
-              [
-                "alert from",
-                wired(p, { ALERT_FROM: "x@open-artifacts.app" }),
-                "ALERT_FROM",
-              ],
-              ["cap", wired(p, { SIGNUP_DAILY_CAP: "51" }), "SIGNUP_DAILY_CAP"],
-            ] as const) {
-              const r = go(config, env, next);
-              expect(r.code, `${env} ${what}`).toBe(1);
-              expect(r.err, `${env} ${what}`).toContain(`${msg}: got`);
-            }
-            // A deployed gate other than the env's (true allowed here, so the
-            // signups rule isn't what refuses it).
-            const gate = go(
-              config,
-              env,
-              wired(p, { SIGNUPS_ENABLED: "true" }),
-              {
-                ALLOW_SIGNUPS: "1",
-              },
-            );
-            expect(gate.code, `${env} gate`).toBe(1);
-            expect(gate.err).toContain(
-              "SIGNUPS_ENABLED: got 'true', want 'false'",
-            );
-            for (const k of Object.keys(ALERTS)) {
-              const r = go(config, env, wired(p), { [k]: "" });
-              expect(r.code, `${env} ${k}`).toBe(2);
-              expect(r.err).toContain(`${k} is required for scheduler`);
-              expect(
-                r.log.some((l) => l.startsWith("wrapper")),
-                k,
-              ).toBe(false);
-            }
-          }
+          const ok = go(config, env, wired(p));
+          expect(ok.err).toBe("");
+          expect(ok.code).toBe(0);
+          expect(ok.out).toContain(`${env} scheduler: deployed and verified`);
         });
-      it(`${label}: a half-pinned config refuses before any deploy`, () => {
-        for (const cut of [
+        for (const [what, over, dest, msg] of [
+          [
+            "a wrong destination",
+            {},
+            "x@example.com",
+            "ALERT_EMAIL destination",
+          ],
+          ["no destination", {}, null, "ALERT_EMAIL destination"],
+          [
+            "a wrong ALERT_TO",
+            { ALERT_TO: "x@example.com" },
+            ALERTS.ALERT_TO,
+            "ALERT_TO",
+          ],
+          ["no ALERT_TO", { ALERT_TO: null }, ALERTS.ALERT_TO, "ALERT_TO"],
+          [
+            "a wrong ALERT_FROM",
+            { ALERT_FROM: "x@open-artifacts.app" },
+            ALERTS.ALERT_TO,
+            "ALERT_FROM",
+          ],
+          [
+            "a wrong cap",
+            { SIGNUP_DAILY_CAP: "51" },
+            ALERTS.ALERT_TO,
+            "SIGNUP_DAILY_CAP",
+          ],
+        ] as const)
+          it(`${label}, ${env}: refuses ${what} read back`, () => {
+            const r = go(config, env, wired(p, over, dest));
+            expect(r.code).toBe(1);
+            expect(r.err).toContain(`${msg}: got`);
+          });
+        // A deployed gate other than the env's (true allowed here, so the
+        // signups rule isn't what refuses it).
+        it(`${label}, ${env}: refuses a deployed SIGNUPS_ENABLED other than the env's`, () => {
+          const gate = go(config, env, wired(p, { SIGNUPS_ENABLED: "true" }), {
+            ALLOW_SIGNUPS: "1",
+          });
+          expect(gate.code).toBe(1);
+          expect(gate.err).toContain(
+            "SIGNUPS_ENABLED: got 'true', want 'false'",
+          );
+        });
+        for (const k of Object.keys(ALERTS))
+          it(`${label}, ${env}: ${k} is required before any deploy`, () => {
+            const r = go(config, env, wired(p), { [k]: "" });
+            expect(r.code).toBe(2);
+            expect(r.err).toContain(`${k} is required for scheduler`);
+            expect(r.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+          });
+      }
+      for (const [what, cut] of [
+        [
+          "no ALERT_FROM",
           (c: string) => c.replace('"ALERT_FROM": "{{ALERT_FROM_PROD}}",', ""),
+        ],
+        [
+          "a fixed destination",
           (c: string) =>
             c.replace(
               '"destination_address": "{{ALERT_TO_PROD}}"',
               '"destination_address": "ops@example.com"',
             ),
+        ],
+        [
+          "a fixed SIGNUPS_ENABLED",
           (c: string) =>
             c.replace(
               '"SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}"',
               '"SIGNUPS_ENABLED": "false"',
             ),
-        ]) {
+        ],
+      ] as const)
+        it(`${label}: a half-pinned config (${what}) refuses before any deploy`, () => {
           const half = cut(config);
           expect(half).not.toBe(config);
           const r = go(half, "prod", wired("p"));
           expect(r.code).toBe(1);
           expect(r.err).toContain("half pins the prod alerts; refusing");
           expect(r.log.some((l) => l.startsWith("wrapper"))).toBe(false);
-        }
-      });
+        });
     }
   });
   it("the scheduler refuses before any deploy until the provisioner exists", () => {
@@ -776,28 +798,31 @@ describe("deploy-hosted-platform.sh", () => {
       expect(noDeploy(r.log)).toEqual([]);
     }
   });
-  it("the scheduler refuses before any deploy unless exactly one oa-<p>-signups queue is listed, on one page", () => {
-    const missing = "oa-p-signups queue does not exist: create it first";
-    const paged = "more than one page of queues; refusing";
-    for (const [queues, msg] of [
-      [queueList(["other"]), missing],
-      [queueList([]), missing],
-      // Staging's queue is not prod's.
-      [queueList(["oa-s-signups"]), missing],
-      [queueList(["oa-p-signups", "oa-p-signups"]), missing],
-      [queueList(["oa-p-signups"], 101), paged],
-      [queueList(["oa-p-signups"], 1, 2), paged],
-      // No result_info: can't tell the listing is whole.
-      [
-        JSON.stringify({
-          success: true,
-          result: [{ queue_name: "oa-p-signups" }],
-        }),
-        paged,
-      ],
-      [null, "list queues failed"],
-    ] as const) {
-      for (const verify of ["", "1"]) {
+  // The scheduler refuses before any deploy unless exactly one oa-<p>-signups
+  // queue is listed, on one page.
+  const missing = "oa-p-signups queue does not exist: create it first";
+  const paged = "more than one page of queues; refusing";
+  for (const [label, queues, msg] of [
+    ["only another queue", queueList(["other"]), missing],
+    ["no queues", queueList([]), missing],
+    // Staging's queue is not prod's.
+    ["only staging's queue", queueList(["oa-s-signups"]), missing],
+    ["two oa-p-signups", queueList(["oa-p-signups", "oa-p-signups"]), missing],
+    ["total_count over a page", queueList(["oa-p-signups"], 101), paged],
+    ["two pages", queueList(["oa-p-signups"], 1, 2), paged],
+    // No result_info: can't tell the listing is whole.
+    [
+      "no result_info",
+      JSON.stringify({
+        success: true,
+        result: [{ queue_name: "oa-p-signups" }],
+      }),
+      paged,
+    ],
+    ["a failed listing", null, "list queues failed"],
+  ] as const) {
+    for (const verify of ["", "1"]) {
+      it(`the scheduler refuses before any deploy (${verify ? "verify only" : "deploy"}): ${label}`, () => {
         const r = setup({ exists: SCHED_DEPS("p"), queues }).run("scheduler", {
           VERIFY_ONLY: verify,
         });
@@ -805,56 +830,58 @@ describe("deploy-hosted-platform.sh", () => {
         expect(r.err).toContain(msg);
         expect(noDeploy(r.log)).toEqual([]);
         clean(r);
-      }
+      });
     }
+  }
+  it("the scheduler lists queues on one page of 100 and deploys on exactly one oa-p-signups", () => {
     const ok = setup({ exists: SCHED_DEPS("p") }).run("scheduler");
     expect(ok.code, ok.err).toBe(0);
     expect(ok.log).toContain(
       `curl -sS -K - https://api.cloudflare.com/client/v4/accounts/${ACCT}/queues?per_page=100`,
     );
   });
-  describe("the scheduler fails on a readback mismatch in each provisioning binding, deployed or verify only", () => {
-    // The scheduler's bindings with one changed (null: removed).
-    const with_ = (name: string, v: Record<string, unknown> | null) =>
-      settings(
-        schedulerBindings("p").flatMap((b) =>
-          b.name !== name ? [b] : v === null ? [] : [{ ...b, ...v }],
-        ),
-        true,
-      );
-    for (const [name, v, msg] of [
-      ["PROVISIONER", { service: "oa-s-provisioner" }, "PROVISIONER: got"],
-      ["PROVISIONER", { entrypoint: "default" }, "PROVISIONER entrypoint: got"],
-      ["PROVISIONER", { type: "plain_text" }, "PROVISIONER type: got"],
-      ["PROVISIONER", null, "PROVISIONER type: got ''"],
-      ["SIGNUPS", { queue_name: "oa-s-signups" }, "SIGNUPS: got"],
-      ["SIGNUPS", { type: "service" }, "SIGNUPS type: got"],
-      ["SIGNUPS", null, "SIGNUPS type: got ''"],
-      ["PROVISION_INSTALL", { type: "service" }, "PROVISION_INSTALL: got"],
-      ["PROVISION_INSTALL", null, "PROVISION_INSTALL: got ''"],
-      ["MANAGE_INSTALL", { type: "queue" }, "MANAGE_INSTALL: got"],
-      ["MANAGE_INSTALL", null, "MANAGE_INSTALL: got ''"],
-      ["ALERT_EMAIL", { type: "plain_text" }, "ALERT_EMAIL: got"],
-      ["ALERT_EMAIL", null, "ALERT_EMAIL: got ''"],
-    ] as const)
-      it(`${msg}${v === null ? " (removed)" : ` (${JSON.stringify(v)})`}`, () => {
-        const bad = with_(name, v);
-        const r = setup({
-          exists: SCHED_DEPS("p"),
-          next: { "oa-p-scheduler": bad },
-        }).run("scheduler");
-        expect(r.code, msg).toBe(1);
-        expect(r.err).toContain(msg);
-        // Verify only runs the same check against the live Worker.
-        const live = setup({ exists: SCHED_DEPS("p") });
-        writeFileSync(join(live.state, "oa-p-scheduler.exists"), "");
-        writeFileSync(join(live.state, "oa-p-scheduler.settings.json"), bad);
-        const vr = live.run("scheduler", { VERIFY_ONLY: "1" });
-        expect(vr.code, `verify ${msg}`).toBe(1);
-        expect(vr.err).toContain(msg);
-        expect(noDeploy(vr.log)).toEqual([]);
-      });
-  });
+  // The scheduler fails on a readback mismatch in each provisioning binding,
+  // deployed or verify only. Its bindings with one changed (null: removed).
+  const with_ = (name: string, v: Record<string, unknown> | null) =>
+    settings(
+      schedulerBindings("p").flatMap((b) =>
+        b.name !== name ? [b] : v === null ? [] : [{ ...b, ...v }],
+      ),
+      true,
+    );
+  for (const [name, v, msg] of [
+    ["PROVISIONER", { service: "oa-s-provisioner" }, "PROVISIONER: got"],
+    ["PROVISIONER", { entrypoint: "default" }, "PROVISIONER entrypoint: got"],
+    ["PROVISIONER", { type: "plain_text" }, "PROVISIONER type: got"],
+    ["PROVISIONER", null, "PROVISIONER type: got ''"],
+    ["SIGNUPS", { queue_name: "oa-s-signups" }, "SIGNUPS: got"],
+    ["SIGNUPS", { type: "service" }, "SIGNUPS type: got"],
+    ["SIGNUPS", null, "SIGNUPS type: got ''"],
+    ["PROVISION_INSTALL", { type: "service" }, "PROVISION_INSTALL: got"],
+    ["PROVISION_INSTALL", null, "PROVISION_INSTALL: got ''"],
+    ["MANAGE_INSTALL", { type: "queue" }, "MANAGE_INSTALL: got"],
+    ["MANAGE_INSTALL", null, "MANAGE_INSTALL: got ''"],
+    ["ALERT_EMAIL", { type: "plain_text" }, "ALERT_EMAIL: got"],
+    ["ALERT_EMAIL", null, "ALERT_EMAIL: got ''"],
+  ] as const) {
+    it(`the scheduler fails on a readback mismatch, deployed or verify only: ${name} ${v === null ? "removed" : JSON.stringify(v)}`, () => {
+      const bad = with_(name, v);
+      const r = setup({
+        exists: SCHED_DEPS("p"),
+        next: { "oa-p-scheduler": bad },
+      }).run("scheduler");
+      expect(r.code, msg).toBe(1);
+      expect(r.err).toContain(msg);
+      // Verify only runs the same check against the live Worker.
+      const live = setup({ exists: SCHED_DEPS("p") });
+      writeFileSync(join(live.state, "oa-p-scheduler.exists"), "");
+      writeFileSync(join(live.state, "oa-p-scheduler.settings.json"), bad);
+      const vr = live.run("scheduler", { VERIFY_ONLY: "1" });
+      expect(vr.code, `verify ${msg}`).toBe(1);
+      expect(vr.err).toContain(msg);
+      expect(noDeploy(vr.log)).toEqual([]);
+    });
+  }
   it("the scheduler, verify only: no deploy, every check passes on a matching live Worker", () => {
     const s = setup({ exists: SCHED_DEPS("p") });
     writeFileSync(join(s.state, "oa-p-scheduler.exists"), "");
