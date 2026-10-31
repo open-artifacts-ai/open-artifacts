@@ -1606,6 +1606,32 @@ export class WfpProvisioner {
     let row = await this.findRow(i);
     let res: { d1: string | null; kv: string | null } | undefined;
     if (row) {
+      // 5.7 replay: the create finished but its step result was lost; the
+      // rerun under the same fixed id is a success, not slug_taken (3.5:
+      // the host held by *another* id). No write; no PAT is re-minted.
+      if (
+        row.state === "active" &&
+        i.installId !== undefined &&
+        row.id === i.installId
+      ) {
+        if (row.inputs_hash !== hash)
+          throw new ProvisionRefused(
+            `install ${row.id}: rerun inputs differ from the first run (owner, vars or testHooks); use the original inputs`,
+            "invalid_state",
+          );
+        if (row.version === null)
+          throw new ProvisionRefused(
+            `install ${row.id} is active with no version`,
+            "invalid_state",
+          );
+        return {
+          id: row.id,
+          slug: row.slug,
+          appHost: row.app_host,
+          contentHost: row.content_host,
+          version: row.version,
+        };
+      }
       if (row.state === "active")
         throw new ProvisionRefused(
           `slug ${i.slug} already exists as active install ${row.id}`,
