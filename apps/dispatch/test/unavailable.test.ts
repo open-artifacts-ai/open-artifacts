@@ -63,6 +63,10 @@ describe("HOSTS modes", () => {
         expect(body).toContain(copy.body);
         // Design's footer: the product name, nothing clickable (no href below).
         expect(body).toContain("<footer>Open Artifacts</footer>");
+        // Design's W11 layout A: a decorative icon tile above the title.
+        expect(body).toMatch(
+          /<div class="icon"><svg aria-hidden="true"[^>]*>.*<\/svg><\/div><h1>/,
+        );
         expect(body).toContain("prefers-color-scheme: dark");
         expect(body).toContain('name="viewport"');
         // Self-contained: nothing for the browser to fetch.
@@ -169,6 +173,18 @@ describe("HOSTS modes", () => {
       expect(r.status).toBe(404);
       expect(f.scripts).toEqual([]);
     }
+  });
+
+  it("paused shows the pause bars, closed the padlock", async () => {
+    const icon = async (mode: "paused" | "closed") =>
+      /<div class="icon">(.*?)<\/div>/.exec(
+        await (
+          await call(fakes(hostsValue(A, mode)).env, "/", { headers: HTML })
+        ).text(),
+      )?.[1];
+    expect(await icon("paused")).toContain('d="M6 3.5v9M10 3.5v9"');
+    expect(await icon("closed")).toContain("<rect");
+    expect(await icon("paused")).not.toBe(await icon("closed"));
   });
 
   it("paused and closed pages differ", async () => {
