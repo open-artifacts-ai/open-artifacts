@@ -1,0 +1,70 @@
+# The hourly prod-clean monitor (design v7 6): red-line's prodClean against
+# prod, the scheduler's dead-man tick and the red-line prod tokens' expiry.
+# It reads the prod inventory with a GitHub OIDC token (no stored key). The
+# repo is public, so the log shows only `prod-clean: pass` or
+# `prod-clean: fail (<code>)`; the detail goes to the prod inventory (POST
+# /prodclean), and the scheduler alerts and emails from there. A failed run
+# is the alert here: no issue is opened (that needs issues: write).
+# Secrets come only from the redline-staging Environment (main only), as 0600
+# files under RUNNER_TEMP, never as argv.
+name: prodclean-monitor
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: prodclean-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: redline-staging
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+      - run: pnpm install --frozen-lockfile
+      # Builds @oa/shared too. Before any secret file exists.
+      - run: pnpm --filter @oa/provision build
+      # Only this step sees the secrets. An empty one writes no file, and the
+      # monitor fails not_configured.
+      - name: Write the red-line prod token files
+        env:
+          PROD_R2_TOKEN: ${{ secrets.REDLINE_PROD_R2_TOKEN }}
+          PROD_SCRIPTS_TOKEN: ${{ secrets.REDLINE_PROD_SCRIPTS_TOKEN }}
+        run: |
+          set +x
+          set -euo pipefail
+          umask 077
+          d="$RUNNER_TEMP/prodclean-secrets"
+          mkdir -m 700 "$d"
+          if [ -n "${PROD_R2_TOKEN:-}" ]; then printf '%s' "$PROD_R2_TOKEN" > "$d/REDLINE_PROD_R2_TOKEN"; fi
+          if [ -n "${PROD_SCRIPTS_TOKEN:-}" ]; then printf '%s' "$PROD_SCRIPTS_TOKEN" > "$d/REDLINE_PROD_SCRIPTS_TOKEN"; fi
+      # The runner gives this step ACTIONS_ID_TOKEN_REQUEST_URL and _TOKEN;
+      # the script mints the JWT for the prod inventory's audience itself.
+      - name: Prod is clean
+        env:
+          INVENTORY_URL: ${{ vars.REDLINE_PROD_INVENTORY_URL }}
+          # The prod inventory's OIDC_AUDIENCE (apps/inventory/wrangler.jsonc).
+          INVENTORY_OIDC_AUDIENCE: oa-p-inventory
+          REDLINE_PROD_ACCOUNT_ID: ${{ vars.REDLINE_PROD_ACCOUNT_ID }}
+          REDLINE_PROD_SECRETS_DIR: ${{ runner.temp }}/prodclean-secrets
+          NODE_NO_WARNINGS: "1"
+        run: node apps/inventory/scripts/prodclean-monitor.ts
+      - name: Remove the token files
+        if: ${{ always() }}
+        run: rm -rf "$RUNNER_TEMP/prodclean-secrets"

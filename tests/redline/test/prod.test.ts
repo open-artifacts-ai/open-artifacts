@@ -565,7 +565,11 @@ describe("prod-clean-cli: the hosted-ops precheck", () => {
       process.execPath,
       [join(import.meta.dirname, "..", "src", "prod-clean-cli.ts")],
       {
-        env: { PATH: process.env.PATH ?? "", OPS_OP: "create" },
+        env: {
+          PATH: process.env.PATH ?? "",
+          OPS_OP: "create",
+          NODE_NO_WARNINGS: "1",
+        },
         encoding: "utf8",
       },
     );
