@@ -698,16 +698,18 @@ describe("deploy-hosted-platform.sh", () => {
                 "ALERT_FROM",
               ],
               ["cap", wired(p, { SIGNUP_DAILY_CAP: "51" }), "SIGNUP_DAILY_CAP"],
-              [
-                "gate",
-                wired(p, { SIGNUPS_ENABLED: "true" }),
-                "SIGNUPS_ENABLED",
-              ],
             ] as const) {
               const r = go(config, env, next);
               expect(r.code, `${env} ${what}`).toBe(1);
               expect(r.err, `${env} ${what}`).toContain(`${msg}: got`);
             }
+            // A deployed gate other than the env's (true allowed here, so the
+            // signups rule isn't what refuses it).
+            const gate = go(config, env, wired(p, { SIGNUPS_ENABLED: "true" }), {
+              ALLOW_SIGNUPS: "1",
+            });
+            expect(gate.code, `${env} gate`).toBe(1);
+            expect(gate.err).toContain("SIGNUPS_ENABLED: got 'true', want 'false'");
             for (const k of Object.keys(ALERTS)) {
               const r = go(config, env, wired(p), { [k]: "" });
               expect(r.code, `${env} ${k}`).toBe(2);
@@ -1031,6 +1033,132 @@ describe("deploy-hosted-platform.sh", () => {
       'wrapper="${DEPLOY_WRAPPER:-$root/scripts/ops/deploy-platform-worker.sh}"',
     );
     expect(src).not.toMatch(/Bearer \$|-H "Authorization/);
+  });
+
+  describe("the signups gate: SIGNUPS_ENABLED true needs ALLOW_SIGNUPS=1, before and after the deploy", () => {
+    const cfg = (app: string) =>
+      readFileSync(join(root, "apps", app, "wrangler.jsonc"), "utf8");
+    /** The prod block's SIGNUPS_ENABLED committed as a literal "true". */
+    const literalTrue = (app: string, src: string) => {
+      const out =
+        app === "provisioning"
+          ? src.replace(
+              /("prod"[\s\S]*)"SIGNUPS_ENABLED": "false"/,
+              '$1"SIGNUPS_ENABLED": "true"',
+            )
+          : src.replace(
+              '"SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}"',
+              '"SIGNUPS_ENABLED": "true"',
+            );
+      expect(out, app).not.toBe(src);
+      return out;
+    };
+    /** These settings with SIGNUPS_ENABLED deployed as `v`. */
+    const deployedAs = (json: string, v: string) =>
+      settings(
+        JSON.parse(json).result.bindings.map((b: { name: string }) =>
+          b.name === "SIGNUPS_ENABLED" ? { ...b, text: v } : b,
+        ),
+        JSON.parse(json).result.observability.enabled,
+      );
+    const provisioningReady = {
+      "kvns.json": JSON.stringify([
+        { id: OAUTH, title: "oa-p-provisioning-oauth" },
+      ]),
+      [`kv-${REG}-install:i000000admin`]: JSON.stringify({
+        installId: "i000000admin",
+        origin: "https://admin.open-artifacts.app",
+        keys: [{ kid: "k".repeat(16), x: "x".repeat(43) }],
+        domains: [],
+      }),
+      "queues.json": JSON.stringify([
+        { queue_name: "oa-p-signups" },
+        { queue_name: "oa-p-signups-dlq" },
+      ]),
+      "r2-oa-p-releases": "",
+    };
+    const TARGETS = [
+      ["provisioner", cfg("provisioner"), [] as string[], {}],
+      [
+        "provisioning",
+        cfg("provisioning"),
+        ["oa-p-provisioner", "oa-p-auth-broker"],
+        { "oa-p-provisioning": ["ADMIN_BROKER_KEY", "ADMIN_SESSION_KEY"] },
+      ],
+      ["scheduler", SCHED_CONFIG, SCHED_DEPS("p"), {}],
+    ] as const;
+    for (const [app, src, exists, secrets] of TARGETS) {
+      const W = `oa-p-${app}`;
+      const go = (
+        config: string,
+        deployed: string,
+        env: Record<string, string> = {},
+      ) =>
+        setup({
+          exists: [...exists],
+          secrets: { ...secrets },
+          files: app === "scheduler" ? {} : provisioningReady,
+          configs: { [app]: config },
+          next: { [W]: deployedAs(NEXT[W] as string, deployed) },
+        }).run(app, env);
+      it(`${app}: a tag that commits "true" (a literal; the scheduler's as filled) is refused before any deploy, and passes with ALLOW_SIGNUPS=1`, () => {
+        // The scheduler pins its gate to {{SIGNUPS_ENABLED_PROD}}: a literal
+        // is a half pin, refused before any deploy; its "true" comes from
+        // SIGNUPS_ENABLED (the committed value as filled), the same rule.
+        if (app === "scheduler") {
+          const r = go(literalTrue(app, src), "true", { ALLOW_SIGNUPS: "1" });
+          expect(r.code).toBe(1);
+          expect(r.err).toContain("half pins the prod alerts; refusing");
+          expect(noDeploy(r.log)).toEqual([]);
+        }
+        const yes = app === "scheduler" ? src : literalTrue(app, src);
+        const want = app === "scheduler" ? { SIGNUPS_ENABLED: "true" } : {};
+        for (const VERIFY_ONLY of ["", "1"]) {
+          const r = go(yes, "true", { ...want, VERIFY_ONLY });
+          expect(r.code, `${app} ${VERIFY_ONLY}`).toBe(1);
+          expect(r.err).toContain(
+            `the tag's prod ${app} config: SIGNUPS_ENABLED=true opens self-serve signups and needs ALLOW_SIGNUPS=1; refusing`,
+          );
+          expect(noDeploy(r.log)).toEqual([]);
+        }
+        const ok = go(yes, "true", { ...want, ALLOW_SIGNUPS: "1" });
+        expect(ok.err, app).toBe("");
+        expect(ok.code, app).toBe(0);
+        expect(ok.out).toContain(`prod ${app}: deployed and verified`);
+        // The committed false still deploys as before.
+        const closed = go(src, "false");
+        expect(closed.code, closed.err).toBe(0);
+      });
+      it(`${app}: a deployed "true" is refused on read-back unless ALLOW_SIGNUPS=1, verify only too`, () => {
+        for (const VERIFY_ONLY of ["", "1"]) {
+          const s = setup({
+            exists: [...exists, W],
+            secrets: { ...secrets },
+            files: app === "scheduler" ? {} : provisioningReady,
+            next: { [W]: deployedAs(NEXT[W] as string, "true") },
+          });
+          if (VERIFY_ONLY)
+            writeFileSync(
+              join(s.state, `${W}.settings.json`),
+              deployedAs(NEXT[W] as string, "true"),
+            );
+          const r = s.run(app, { VERIFY_ONLY });
+          expect(r.code, `${app} ${VERIFY_ONLY}`).toBe(1);
+          expect(r.err).toContain(
+            `deployed ${W}: SIGNUPS_ENABLED=true opens self-serve signups and needs ALLOW_SIGNUPS=1; refusing`,
+          );
+        }
+        for (const [v, msg] of [
+          ["", "SIGNUPS_ENABLED is '', want false"],
+          ["test-users", "test-users is staging only"],
+          ["yes", "SIGNUPS_ENABLED is 'yes', want false"],
+        ] as const) {
+          const r = go(src, v, { ALLOW_SIGNUPS: "1" });
+          expect(r.code, `${app} ${v}`).toBe(1);
+          expect(r.err, `${app} ${v}`).toContain(msg);
+        }
+      });
+    }
   });
 
   describe("platform-db", () => {

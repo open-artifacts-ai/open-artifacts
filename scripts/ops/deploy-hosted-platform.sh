@@ -172,6 +172,32 @@ vars_are() {
   got="$(jq -S -c '[.result.bindings[] | select(.type == "plain_text") | {(.name): .text}] | add // {}' <<< "$1")"
   [ "$got" = "$want" ] || { echo "$2 vars: got $got, want $want" >&2; exit 1; }
 }
+# The signups gate (design v7 7), on every Worker that reads it (provisioner,
+# provisioning, scheduler): false; staging also test-users. true opens
+# self-serve, which waits until after M1: it needs ALLOW_SIGNUPS=1 (a change
+# the Manager approves), whatever the tag commits or the env asks for.
+# signups_ok <value> <what>: refuses (exit 1) any other value.
+signups_ok() {
+  case "$1" in
+    false) return 0 ;;
+    test-users) [ "$env" = staging ] || { echo "$2: SIGNUPS_ENABLED=test-users is staging only; refusing" >&2; exit 1; } ;;
+    true) [ "${ALLOW_SIGNUPS:-}" = 1 ] || { echo "$2: SIGNUPS_ENABLED=true opens self-serve signups and needs ALLOW_SIGNUPS=1; refusing" >&2; exit 1; } ;;
+    *) echo "$2: SIGNUPS_ENABLED is '$1', want false (staging also test-users); refusing" >&2; exit 1 ;;
+  esac
+}
+# signups_committed <app>: before deploying, the tag's committed value for
+# this env (a literal, or the placeholder as SIGNUPS_ENABLED fills it).
+signups_committed() {
+  local v
+  v="$(node --experimental-strip-types --no-warnings "$root/scripts/ops/wrangler-env.ts" "$root/apps/$1/wrangler.jsonc" "$env" signups)" ||
+    { echo "can't read $1's committed SIGNUPS_ENABLED" >&2; exit 1; }
+  signups_ok "$(jq -r '. // ""' <<< "$v")" "the tag's $env $1 config"
+}
+# signups_deployed <settings json> <worker>: after deploying (or verify only),
+# the live value; exactly one binding.
+signups_deployed() {
+  signups_ok "$(jq -r '[.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text // ""] | join(",")' <<< "$1")" "deployed $2"
+}
 # names_are <settings json> <want>: the non-var, non-secret binding names, sorted, comma-joined.
 names_are() {
   local got
@@ -227,6 +253,7 @@ case "$target" in
     ;;
   provisioner)
     need PLATFORM_DB_ID; need SECRETS_STORE_ID; need SIGNUP_DAILY_CAP; need SIGNUPS_ENABLED; need WELCOME_FROM
+    signups_committed provisioner
     # Check first, create only when absent; a failed listing stops the run.
     queues="$(list_all "/queues?" "list queues" | jq -r '.[].queue_name')"
     for q in "oa-$P-signups" "oa-$P-signups-dlq"; do
@@ -258,6 +285,7 @@ case "$target" in
     expect "$S" '.result.bindings[] | select(.name == "MANAGE_INSTALL") | "\(.workflow_name) \(.class_name)"' \
       "oa-$P-manage-install ManageInstall" "MANAGE_INSTALL"
     names_are "$S" "DISPATCHER,MANAGE_INSTALL,PLATFORM_DB,PROVISION_INSTALL,PROVISION_TOKEN,RELEASES,WELCOME_EMAIL"
+    signups_deployed "$S" oa-$P-provisioner
     vars_are "$S" provisioner
     expect "$S" '.result.observability.enabled // false' false "observability"
     no_secret_bindings "$S" oa-$P-provisioner
@@ -277,6 +305,7 @@ case "$target" in
       [ "$(jq -r '.SIGNUPS_ENABLED // ""' <<< "$pre")" != test-users ] ||
         { echo "prod provisioning commits SIGNUPS_ENABLED=test-users (staging only); refusing" >&2; exit 1; }
     fi
+    signups_committed provisioning
     # The Worker and what it depends on, the admin SPA among them (@oa/admin
     # is a devDependency). Its vite build writes apps/provisioning/dist-assets
     # (ASSETS) itself, nothing is copied, and the wrapper refuses a deploy
@@ -346,6 +375,7 @@ case "$target" in
       [ -z "$oidc" ] || { echo "prod $W binds $oidc; prod has no OIDC principal" >&2; exit 1; }
       expect "$S" '.result.bindings[] | select(.name == "SIGNUPS_ENABLED") | .text | . == "test-users"' false "SIGNUPS_ENABLED (test-users is staging only)"
     fi
+    signups_deployed "$S" "$W"
     # ADMIN_IDENTITIES and MCP_REDIRECT_URIS among them.
     vars_are "$S" provisioning
     expect "$S" '.result.observability.enabled // false' false "observability"
@@ -449,6 +479,7 @@ case "$target" in
       absent) echo "the tag's scheduler config doesn't pin the $env alerts (ALERT_TO, ALERT_EMAIL's destination_address: #915); alerts need a destination (4.8); refusing" >&2; exit 1 ;;
       *) echo "the tag's scheduler config half pins the $env alerts; refusing" >&2; exit 1 ;;
     esac
+    signups_committed scheduler
     PLATFORM_DB_ID="$PLATFORM_DB_ID" EMAIL_ZONE_TAGS="$EMAIL_ZONE_TAGS" EMAIL_DAILY_LIMIT="$EMAIL_DAILY_LIMIT" \
       ALERT_TO="$ALERT_TO" ALERT_FROM="$ALERT_FROM" SIGNUP_DAILY_CAP="$SIGNUP_DAILY_CAP" SIGNUPS_ENABLED="$SIGNUPS_ENABLED" \
       deploy scheduler
@@ -468,6 +499,7 @@ case "$target" in
     expect "$S" '.result.bindings[] | select(.name == "OA_ENV") | .text' "$env" "OA_ENV"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_QUOTA_ZONES") | .text' "$EMAIL_ZONE_TAGS" "EMAIL_QUOTA_ZONES"
     expect "$S" '.result.bindings[] | select(.name == "EMAIL_DAILY_LIMIT") | .text' "$EMAIL_DAILY_LIMIT" "EMAIL_DAILY_LIMIT"
+    signups_deployed "$S" oa-$P-scheduler
     expect "$S" '[.result.bindings[] | select(.name == "ALERT_TO") | .text] | join(",")' "$ALERT_TO" "ALERT_TO"
     expect "$S" '[.result.bindings[] | select(.name == "ALERT_FROM") | .text] | join(",")' "$ALERT_FROM" "ALERT_FROM"
     expect "$S" '[.result.bindings[] | select(.name == "SIGNUP_DAILY_CAP") | .text] | join(",")' "$SIGNUP_DAILY_CAP" "SIGNUP_DAILY_CAP"

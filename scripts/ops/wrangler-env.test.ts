@@ -6,6 +6,7 @@ import { brokerKey } from "./broker-key.ts";
 import {
   alertPinProblems,
   committedRateLimits,
+  committedSignups,
   committedVars,
 } from "./wrangler-env.ts";
 
@@ -27,6 +28,16 @@ describe("wrangler-env.ts", () => {
     // Prod has no OIDC_* and needs no value.
     const p = committedVars(cfg("provisioning"), "prod", {});
     expect(Object.keys(p).filter((k) => k.startsWith("OIDC_"))).toEqual([]);
+  });
+  it("signups: the committed SIGNUPS_ENABLED, a literal or as filled; null when absent", () => {
+    expect(committedSignups(cfg("provisioning"), "prod", {})).toBe("false");
+    expect(
+      committedSignups(cfg("provisioner"), "prod", { SIGNUPS_ENABLED: "true" }),
+    ).toBe("true");
+    expect(() => committedSignups(cfg("provisioner"), "prod", {})).toThrow(
+      "has no value",
+    );
+    expect(committedSignups(cfg("dispatch"), "prod", {})).toBeNull();
   });
   it("refuses a placeholder with no value, or another env's", () => {
     expect(() => committedVars(cfg("provisioning"), "staging", {})).toThrow(
