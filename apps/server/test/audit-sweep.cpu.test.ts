@@ -16,6 +16,7 @@ import {
   AUDIT_SWEEP_STATEMENTS,
   sweepAuditEvents,
 } from "../src/services/audit.js";
+import { REPEATS } from "./cpu-time.js";
 
 const CAP = AUDIT_SWEEP_STATEMENTS * AUDIT_SWEEP_BATCH;
 
@@ -125,10 +126,11 @@ const median = (xs: number[]) =>
 /**
  * Sweep / baseline. Both sides are AUDIT_SWEEP_STATEMENTS bounded deletes of
  * AUDIT_SWEEP_BATCH rows, so the Worker-side difference is binds and a
- * counter; on an idle laptop and under 2x-cores busy-loop load the median
- * ratio stays near 1. 2.0 leaves room for run-to-run noise (per-repeat
- * ratios seen 0.8-1.3) while failing a sweep that doubles its statements or
- * does per-row work.
+ * counter. Measured medians (REPEATS pairs, order alternated): 1.00-1.11
+ * idle, 0.89-1.00 under 2x-cores busy loops; single pairs ranged 0.07-1.98
+ * under load and a 3-pair median hit 1.86 (one pair 4.17), hence REPEATS
+ * pairs, not 3. 2.0 is ~2x the worst REPEATS median seen and still fails a
+ * sweep that doubles its D1 work or adds per-row Worker work.
  */
 const MAX_RATIO = 2.0;
 
@@ -177,7 +179,7 @@ describe("audit sweep CPU", () => {
     const sweepMs: number[] = [];
     const baseMs: number[] = [];
     const ratios: number[] = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < REPEATS; i++) {
       const order = i % 2 === 0 ? [sweep, base] : [base, sweep];
       const out: { ms: number; n: number }[] = [];
       for (const f of order) {
