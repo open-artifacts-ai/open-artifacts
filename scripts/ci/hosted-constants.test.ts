@@ -8,6 +8,8 @@ import { root, sandbox, script } from "./stubs.ts";
 
 const KEYS = [
   "account_id",
+  "alert_from",
+  "alert_to",
   "app_zone",
   "content_zone",
   "deploy_token_id",
@@ -16,6 +18,9 @@ const KEYS = [
   "email_zone",
   "google_client_id",
   "google_directory_client_id",
+  "signup_daily_cap",
+  "signups_enabled",
+  "welcome_from",
 ];
 // Read by provapi-spikes.sh and provapi-token-verify.sh only; hosted-constants.sh does not load them.
 const SPIKE_KEYS = [
@@ -132,6 +137,35 @@ describe(".github/hosted/<env>.json", () => {
     expect(read("prod").email_daily_limit).toBe(5000);
     expect(read("staging").email_daily_limit).toBe(500);
   });
+  // The Manager's values (2026-10-31), filled into the provisioner's and the
+  // scheduler's placeholders.
+  it("signups stay closed, the caps and alert addresses are the Manager's", () => {
+    expect(read("prod").signup_daily_cap).toBe(50);
+    expect(read("staging").signup_daily_cap).toBe(20);
+    for (const env of ["prod", "staging"]) {
+      const c = read(env);
+      expect(c.signups_enabled, env).toBe("false");
+      expect(c.alert_to, env).toBe("me@leourbina.com");
+    }
+  });
+  // Email Sending only sends from an onboarded domain: mail.<app_zone> (#967),
+  // never the apex.
+  it("every sender (*_from) is on mail.<app_zone>, the env's onboarded sending domain", () => {
+    for (const env of ["prod", "staging"]) {
+      const c = read(env);
+      const senders = Object.keys(c).filter((k) => k.endsWith("_from"));
+      expect(senders.sort(), env).toEqual(["alert_from", "welcome_from"]);
+      expect(c.app_zone, env).toMatch(/^[a-z0-9-]+(\.[a-z0-9-]+)+$/);
+      for (const k of senders) {
+        const v = String(c[k]);
+        expect(
+          v.endsWith(`@mail.${String(c.app_zone)}`),
+          `${env} ${k}: ${v}`,
+        ).toBe(true);
+        expect(v.split("@")[0], `${env} ${k}`).toMatch(/^[a-z0-9._-]+$/);
+      }
+    }
+  });
 });
 
 describe("hosted-constants.sh", () => {
@@ -161,10 +195,15 @@ describe("hosted-constants.sh", () => {
     expect(r.ghEnv).toBe(
       [
         "CLOUDFLARE_ACCOUNT_ID=26ac346086d4405f7a976d48747a2a75",
+        "ALERT_FROM=alerts@mail.open-artifacts.app",
+        "ALERT_TO=me@leourbina.com",
         "EMAIL_ZONE=open-artifacts.app",
         "EMAIL_DAILY_LIMIT=5000",
         "GOOGLE_CLIENT_ID=206295999771-ntbp6nlf5ospa45ovc73aur4f05fpp5s.apps.googleusercontent.com",
         "GOOGLE_DIRECTORY_CLIENT_ID=206295999771-6cr3mbfc7g2ejnvdoqhlf2v8v6sdm023.apps.googleusercontent.com",
+        "SIGNUP_DAILY_CAP=50",
+        "SIGNUPS_ENABLED=false",
+        "WELCOME_FROM=welcome@mail.open-artifacts.app",
         "",
       ].join("\n"),
     );
@@ -185,7 +224,8 @@ describe("hosted-constants.sh", () => {
         { env: { GITHUB_ENV: ghEnv } },
       );
       expect(r.code, r.err).toBe(0);
-      expect(readFileSync(ghEnv, "utf8").split("\n")).toHaveLength(6);
+      const lines = readFileSync(ghEnv, "utf8").split("\n");
+      expect(lines).toHaveLength(LOADED.length + 1);
     }
   });
 
@@ -223,6 +263,15 @@ describe("hosted-constants.sh", () => {
       ["google_client_id", "UNCONFIRMED.apps.googleusercontent.com"],
       ["google_directory_client_id", "TODO"],
       ["google_directory_client_id", "1-x.apps.googleusercontent.com.evil"],
+      ["signup_daily_cap", 0],
+      ["signup_daily_cap", 10000],
+      ["signup_daily_cap", "20 "],
+      ["signups_enabled", "test-users"],
+      ["signups_enabled", "TRUE"],
+      ["signups_enabled", "true"],
+      ["welcome_from", "welcome"],
+      ["welcome_from", "W <a@b.com>"],
+      ["welcome_from", "a@b.com/x"],
     ];
     for (const [k, v] of bad) {
       const r = load({ ...PROD(), [k]: v });
@@ -230,6 +279,31 @@ describe("hosted-constants.sh", () => {
       expect(r.err).toContain(`${k} is not a valid value`);
       expect(r.ghEnv, `${k}=${v}`).toBe("");
     }
+  });
+
+  it("alert_to is required and checked like any other address", () => {
+    for (const v of ["ops", "A <a@b.com>", "a@b.com,c@d.com", "a@b.com/x"]) {
+      const bad = load({ ...PROD(), alert_to: v });
+      expect(bad.code, JSON.stringify(v)).toBe(1);
+      expect(bad.err).toContain("alert_to is not a valid value");
+      expect(bad.ghEnv).toBe("");
+    }
+  });
+
+  it("SIGNUPS_ENABLED test-users loads for staging only", () => {
+    const st = load(
+      { ...read("staging"), signups_enabled: "test-users" },
+      "staging",
+    );
+    expect(st.code, st.err).toBe(0);
+    expect(st.ghEnv).toContain("SIGNUPS_ENABLED=test-users\n");
+    expect(
+      load({ ...read("staging"), signups_enabled: "true" }, "staging").code,
+    ).toBe(1);
+    expect(
+      load({ ...read("staging"), signups_enabled: "TEST-USERS" }, "staging")
+        .code,
+    ).toBe(1);
   });
 
   it("refuses a bad account id, a missing file, bad JSON and a bad env", () => {
