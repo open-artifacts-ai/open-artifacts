@@ -8,6 +8,7 @@ import {
   type PurgeSchema,
   type RedlineCredsSchema,
   type ReleaseLeaseSchema,
+  redlineCredsJobArgs,
   type SuspendSchema,
   TOKEN_DELETING_PURGE,
   type TransitionFrom,
@@ -223,11 +224,11 @@ const PLANS: Partial<Record<ApiRouteId, Planner>> = {
   },
   R26: async (a, row) => {
     refuseUnless(can(row, "redline_creds", a.principal));
+    // Mint or revoke (C6): the shared helper narrows on `revoke` and owns
+    // the args shape, so a mint's key travels however C7 defines it.
     return {
       kind: "redline_creds",
-      args: {
-        recipientKey: bodyOf<typeof RedlineCredsSchema>(a).recipientKey,
-      },
+      args: redlineCredsJobArgs(bodyOf<typeof RedlineCredsSchema>(a)),
     };
   },
 };

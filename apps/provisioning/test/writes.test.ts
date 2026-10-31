@@ -1,4 +1,4 @@
-import { JOB_STEPS } from "@oa/shared/provisioning";
+import { JOB_STEPS, redlineCredsJobArgs } from "@oa/shared/provisioning";
 import { fakeProvisionerRpc } from "@oa/shared/provisioning/fakes";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { call, type HTTP } from "./call.js";
@@ -879,7 +879,7 @@ describe("R25 cancel and R26 redline-creds", () => {
     ).toBe("not_found");
   });
 
-  it("R26: OIDC on its own active rl- test install; args carry recipientKey", async () => {
+  it("R26 mint: OIDC on its own active rl- test install; args from the helper", async () => {
     const e = fakeEnv();
     const t = await seedInstall({ slug: "rl-b", testHooks: true });
     const key = `${"A".repeat(42)}A`;
@@ -887,11 +887,51 @@ describe("R25 cancel and R26 redline-creds", () => {
       params: { id: t.id },
       body: { requestId: requestId(), recipientKey: key },
     });
+    expect(r.status).toBe(202);
     expect(r.body.job).toMatchObject({
       kind: "redline_creds",
-      args: { recipientKey: key },
+      args: redlineCredsJobArgs({
+        requestId: "x",
+        revoke: false,
+        recipientKey: key,
+      }),
     });
+    expect(r.body.job.args.revoke).toBe(false);
     expect(e.manageInstall.created).toHaveLength(1);
+  });
+
+  it("R26 revoke: accepted without recipientKey", async () => {
+    const e = fakeEnv();
+    const t = await seedInstall({ slug: "rl-b", testHooks: true });
+    const r = await call(e, OIDC_P, "R26", {
+      params: { id: t.id },
+      body: { requestId: requestId(), revoke: true },
+    });
+    expect(r.status).toBe(202);
+    expect(r.body.job).toMatchObject({
+      kind: "redline_creds",
+      args: { revoke: true },
+    });
+    expect(r.body.job.args).not.toHaveProperty("recipientKey");
+  });
+
+  it("R26: revoke with recipientKey, and unknown keys on either variant, are invalid_input", async () => {
+    const e = fakeEnv();
+    const t = await seedInstall({ slug: "rl-b", testHooks: true });
+    const key = `${"A".repeat(42)}A`;
+    for (const body of [
+      { revoke: true, recipientKey: key },
+      { recipientKey: key, extra: 1 },
+      { revoke: false, recipientKey: key, extra: 1 },
+      { revoke: true, extra: 1 },
+    ]) {
+      const r = await call(e, OIDC_P, "R26", {
+        params: { id: t.id },
+        body: { requestId: requestId(), ...body },
+      });
+      expect(r.code, JSON.stringify(body)).toBe("invalid_input");
+    }
+    expect(e.manageInstall.created).toHaveLength(0);
   });
 });
 
