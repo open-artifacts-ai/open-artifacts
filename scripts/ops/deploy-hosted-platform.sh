@@ -453,6 +453,23 @@ case "$target" in
     need PLATFORM_DB_ID; need HOSTS_KV_ID; need GITHUB_REPOSITORY_ID; need GITHUB_REPOSITORY
     [[ "$GITHUB_REPOSITORY_ID" =~ ^[1-9][0-9]{0,19}$ ]] || { echo "GITHUB_REPOSITORY_ID must be digits" >&2; exit 2; }
     [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "GITHUB_REPOSITORY must be owner/repo" >&2; exit 2; }
+    # The refs are the tag's committed list (W8 owns it): each a full ref on
+    # main to one of 6.3's two workflows, prod's holding the monitor's
+    # (POST /prodclean) and staging's red-line's. Checked before deploying;
+    # the deployed list must equal it.
+    refs_want="$(ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" committed inventory vars | jq -r '.OIDC_JOB_WORKFLOW_REFS // empty')" || refs_want=""
+    [ -n "$refs_want" ] || { echo "the tag commits no OIDC_JOB_WORKFLOW_REFS for $env inventory" >&2; exit 1; }
+    base="$GITHUB_REPOSITORY/.github/workflows"
+    IFS=, read -ra refs <<< "$refs_want"
+    for ref in "${refs[@]}"; do
+      case "$ref" in
+        "$base/prodclean-monitor.yml@refs/heads/main" | "$base/redline-staging.yml@refs/heads/main") ;;
+        *) echo "committed OIDC_JOB_WORKFLOW_REFS has '$ref': not a 6.3 workflow's full ref on main" >&2; exit 1 ;;
+      esac
+    done
+    if [ "$env" = prod ]; then need_ref="$base/prodclean-monitor.yml@refs/heads/main"; else need_ref="$base/redline-staging.yml@refs/heads/main"; fi
+    printf '%s\n' "${refs[@]}" | grep -qxF "$need_ref" ||
+      { echo "committed OIDC_JOB_WORKFLOW_REFS lacks '$need_ref'" >&2; exit 1; }
     PLATFORM_DB_ID="$PLATFORM_DB_ID" HOSTS_KV_ID="$HOSTS_KV_ID" GITHUB_REPOSITORY_ID="$GITHUB_REPOSITORY_ID" deploy inventory
     S="$(settings oa-$P-inventory)"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
@@ -466,12 +483,7 @@ case "$target" in
     [ "$(oidc OIDC_REPOSITORY)" = "$GITHUB_REPOSITORY" ] || { echo "OIDC_REPOSITORY: got '$(oidc OIDC_REPOSITORY)', want '$GITHUB_REPOSITORY'" >&2; exit 1; }
     [ "$(oidc OIDC_REPOSITORY_ID)" = "$GITHUB_REPOSITORY_ID" ] || { echo "OIDC_REPOSITORY_ID: got '$(oidc OIDC_REPOSITORY_ID)', want '$GITHUB_REPOSITORY_ID'" >&2; exit 1; }
     [ "$(oidc OIDC_ENVIRONMENT)" = redline-staging ] || { echo "OIDC_ENVIRONMENT: got '$(oidc OIDC_ENVIRONMENT)', want 'redline-staging'" >&2; exit 1; }
-    # Full refs on main: prod's monitor; staging adds red-line.
-    files="prodclean-monitor.yml"
-    [ "$env" = staging ] && files="$files redline-staging.yml"
-    want=""
-    for f in $files; do want="$want,$GITHUB_REPOSITORY/.github/workflows/$f@refs/heads/main"; done
-    want="$(tr , '\n' <<< "${want#,}" | sort | paste -sd , -)"
+    want="$(tr , '\n' <<< "$refs_want" | sort | paste -sd , -)"
     got="$(oidc OIDC_JOB_WORKFLOW_REFS | tr , '\n' | sort | paste -sd , -)"
     [ "$got" = "$want" ] || { echo "OIDC_JOB_WORKFLOW_REFS: got '$got', want '$want'" >&2; exit 1; }
     vars_are "$S" inventory

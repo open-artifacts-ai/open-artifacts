@@ -69,7 +69,8 @@ case "$app" in
     ;;
 esac
 
-cd "$(dirname "${BASH_SOURCE[0]}")/../../$dir"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$here/../../$dir"
 
 copy=wrangler.deploy.jsonc
 trap 'command rm -f "$copy" "$copy.bak"' EXIT
@@ -109,8 +110,11 @@ case "$app" in
     fill "EMAIL_ZONE_TAG_${up}" "${EMAIL_ZONE_TAGS:-}" "$zones"
     fill "EMAIL_DAILY_LIMIT_${up}" "${EMAIL_DAILY_LIMIT:-}" "$limit"
     # The alerts (design v7 4.8): the vars and ALERT_EMAIL's pinned
-    # destination share {{ALERT_TO_<ENV>}}; required even before the config
-    # names them, so no scheduler deploys without a destination.
+    # destination share {{ALERT_TO_<ENV>}}. A config that doesn't hold this
+    # env's placeholders in all of them is refused here, before wrangler, so
+    # no fill is a silent no-op and no scheduler deploys unpinned.
+    node --experimental-strip-types --no-warnings "$here/wrangler-env.ts" wrangler.jsonc "$env" alert-pins > /dev/null ||
+      { echo "apps/scheduler/wrangler.jsonc doesn't pin the $env alerts; refusing" >&2; exit 1; }
     fill "ALERT_TO_${up}" "${ALERT_TO:-}" "$email"
     fill "ALERT_FROM_${up}" "${ALERT_FROM:-}" "$email"
     fill "SIGNUP_DAILY_CAP_${up}" "${SIGNUP_DAILY_CAP:-}" "$cap"

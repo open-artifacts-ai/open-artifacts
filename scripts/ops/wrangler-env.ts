@@ -4,7 +4,10 @@
 // committed"). A {{NAME_<ENV>}} placeholder in a var is replaced by the
 // environment variable NAME (the value deploy-platform-worker.sh filled); an
 // unset or empty one exits 1, so a read-back never compares to a placeholder.
-// Usage: node scripts/ops/wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits
+// Usage: node scripts/ops/wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits|alert-pins
+// alert-pins (the scheduler, design v7 4.8): exit 1 unless the env block's
+// alert vars and ALERT_EMAIL's destination are this env's placeholders, so
+// deploy-platform-worker.sh's fills always land.
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -39,6 +42,7 @@ export interface RateLimit {
 }
 interface Block {
   vars?: Record<string, unknown>;
+  send_email?: { name?: string; destination_address?: string }[];
   ratelimits?: {
     name: string;
     namespace_id: string | number;
@@ -83,6 +87,35 @@ export function committedRateLimits(src: string, env: Env): RateLimit[] {
     .sort((a, b) => (a.name < b.name ? -1 : 1));
 }
 
+/**
+ * What keeps the scheduler's alert wiring from being this env's placeholders:
+ * the ALERT_TO, ALERT_FROM, SIGNUP_DAILY_CAP and SIGNUPS_ENABLED vars, and one
+ * ALERT_EMAIL send_email binding whose destination_address is {{ALERT_TO_<ENV>}}.
+ * Empty when pinned.
+ */
+export function alertPinProblems(src: string, env: Env): string[] {
+  const up = env.toUpperCase();
+  const b = block(src, env);
+  const out: string[] = [];
+  for (const k of [
+    "ALERT_TO",
+    "ALERT_FROM",
+    "SIGNUP_DAILY_CAP",
+    "SIGNUPS_ENABLED",
+  ])
+    if (b.vars?.[k] !== `{{${k}_${up}}}`)
+      out.push(`vars.${k} is not {{${k}_${up}}}`);
+  const mail = (b.send_email ?? []).filter((m) => m.name === "ALERT_EMAIL");
+  if (
+    mail.length !== 1 ||
+    mail[0]?.destination_address !== `{{ALERT_TO_${up}}}`
+  )
+    out.push(
+      `send_email ALERT_EMAIL needs destination_address {{ALERT_TO_${up}}}`,
+    );
+  return out;
+}
+
 // Run as a script (paths compared after symlinks, as macOS's /var is one).
 if (
   process.argv[1] &&
@@ -91,7 +124,7 @@ if (
   const [file, env, what] = process.argv.slice(2);
   if (!file || (env !== "staging" && env !== "prod") || !what) {
     console.error(
-      "usage: wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits",
+      "usage: wrangler-env.ts <wrangler.jsonc> staging|prod vars|ratelimits|alert-pins",
     );
     process.exit(2);
   }
@@ -100,7 +133,11 @@ if (
     let out: unknown;
     if (what === "vars") out = committedVars(src, env, process.env);
     else if (what === "ratelimits") out = committedRateLimits(src, env);
-    else throw new Error(`unknown section ${what}`);
+    else if (what === "alert-pins") {
+      const problems = alertPinProblems(src, env);
+      if (problems.length) throw new Error(problems.join("; "));
+      out = "pinned";
+    } else throw new Error(`unknown section ${what}`);
     process.stdout.write(`${JSON.stringify(out)}\n`);
   } catch (e) {
     console.error(`${file}: ${(e as Error).message}`);

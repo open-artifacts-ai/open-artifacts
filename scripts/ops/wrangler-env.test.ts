@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { brokerKey } from "./broker-key.ts";
-import { committedRateLimits, committedVars } from "./wrangler-env.ts";
+import {
+  alertPinProblems,
+  committedRateLimits,
+  committedVars,
+} from "./wrangler-env.ts";
 
 // The read-backs compare to the committed config through wrangler-env.ts;
 // the provisioning target's admin broker key comes from broker-key.ts.
@@ -76,5 +80,36 @@ describe("broker-key.ts", () => {
     const jwk = (await crypto.subtle.exportKey("jwk", priv)) as JsonWebKey;
     expect(jwk.x).toBe(k.x);
     expect(brokerKey().kid).not.toBe(k.kid);
+  });
+  it("alert pins: each var and ALERT_EMAIL's destination must be this env's placeholder", () => {
+    const conf = (prod: Record<string, unknown>) =>
+      JSON.stringify({ env: { prod } });
+    const vars = {
+      ALERT_TO: "{{ALERT_TO_PROD}}",
+      ALERT_FROM: "{{ALERT_FROM_PROD}}",
+      SIGNUP_DAILY_CAP: "{{SIGNUP_DAILY_CAP_PROD}}",
+      SIGNUPS_ENABLED: "{{SIGNUPS_ENABLED_PROD}}",
+    };
+    const mail = [
+      { name: "ALERT_EMAIL", destination_address: "{{ALERT_TO_PROD}}" },
+    ];
+    expect(alertPinProblems(conf({ vars, send_email: mail }), "prod")).toEqual(
+      [],
+    );
+    expect(
+      alertPinProblems(
+        conf({ vars: { ...vars, ALERT_TO: "a@b.com" }, send_email: mail }),
+        "prod",
+      ),
+    ).toEqual(["vars.ALERT_TO is not {{ALERT_TO_PROD}}"]);
+    for (const send_email of [
+      undefined,
+      [{ name: "ALERT_EMAIL" }],
+      [{ name: "ALERT_EMAIL", destination_address: "{{ALERT_TO_STAGING}}" }],
+      [...mail, ...mail],
+    ])
+      expect(alertPinProblems(conf({ vars, send_email }), "prod")).toEqual([
+        "send_email ALERT_EMAIL needs destination_address {{ALERT_TO_PROD}}",
+      ]);
   });
 });

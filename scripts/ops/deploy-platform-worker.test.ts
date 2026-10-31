@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { root, sandbox, write } from "../ci/stubs.ts";
+import { alertPinProblems } from "./wrangler-env.ts";
 
 // The platform Worker deploy wrapper: an allowlisted app and one env, always from the app's dir,
 // this env's placeholders filled into a copy that is removed on exit, and
@@ -29,6 +30,24 @@ const run = (
   });
   return { ...r, log: sb.log(), snap };
 };
+
+// The scheduler's alert wiring as placeholders the deploy fills (design
+// v7 2.4, 4.8): W7's config plus the vars and ALERT_EMAIL's pinned
+// destination. The repo's own config once it pins them (alertPinProblems).
+const REAL = readFileSync(join(root, "apps/scheduler/wrangler.jsonc"), "utf8");
+const pinned = (src: string) =>
+  alertPinProblems(src, "staging").length === 0 &&
+  alertPinProblems(src, "prod").length === 0;
+const PINNED = pinned(REAL)
+  ? REAL
+  : REAL.replace(/"OA_ENV": "(staging|prod)",/g, (m, e: string) => {
+      const up = e.toUpperCase();
+      return `${m} "ALERT_TO": "{{ALERT_TO_${up}}}", "ALERT_FROM": "{{ALERT_FROM_${up}}}", "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_${up}}}", "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_${up}}}",`;
+    }).replace(
+      /("observability": \{ "enabled": true \},)(\s*"triggers": \{ "crons": \[[^\]]*\] \},\s*"dispatch_namespaces": \[\s*\{ "binding": "DISPATCHER", "namespace": "oa-(staging|prod)" \})/g,
+      (_, obs: string, rest: string, e: string) =>
+        `"send_email": [{ "name": "ALERT_EMAIL", "destination_address": "{{ALERT_TO_${e === "staging" ? "STAGING" : "PROD"}}}" }], ${obs}${rest}`,
+    );
 
 afterEach(() => expect(existsSync(COPY)).toBe(false));
 
@@ -120,24 +139,91 @@ describe("deploy-platform-worker.sh", () => {
       SIGNUP_DAILY_CAP: "20",
       SIGNUPS_ENABLED: "false",
     };
-    // W7's provapi vars and the pinned ALERT_EMAIL destination, as
-    // placeholders the deploy fills (design v7 2.4, 4.8).
-    const W7 = readFileSync(
-      join(root, "apps/scheduler/wrangler.jsonc"),
-      "utf8",
-    ).replace(/"OA_ENV": "(staging|prod)",/g, (m, e: string) => {
-      const up = e.toUpperCase();
-      return `${m} "ALERT_TO": "{{ALERT_TO_${up}}}", "ALERT_FROM": "{{ALERT_FROM_${up}}}", "SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_${up}}}", "SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_${up}}}", "__dest": "{{ALERT_TO_${up}}}",`;
-    });
     const schedTree = (config: string) => {
       const t = mkdtempSync(join(tmpdir(), "oa-deploy-tree-"));
-      write(
-        join(t, "scripts/ops/deploy-platform-worker.sh"),
-        readFileSync(SCRIPT, "utf8"),
-      );
+      for (const f of ["deploy-platform-worker.sh", "wrangler-env.ts"])
+        write(
+          join(t, "scripts/ops", f),
+          readFileSync(join(root, "scripts/ops", f), "utf8"),
+        );
       write(join(t, "apps/scheduler/wrangler.jsonc"), config);
       return join(t, "scripts/ops/deploy-platform-worker.sh");
     };
+
+    it("the pinned fixture pins both envs (and is the repo's config once W7's pins land)", () => {
+      expect(pinned(PINNED)).toBe(true);
+    });
+
+    it("scheduler: the repo's config deploys only if it pins the alerts; otherwise it's refused before wrangler", () => {
+      for (const env of ["staging", "prod"]) {
+        const r = run(["scheduler", env], {
+          ...SCHED,
+          ...(env === "staging" ? { SIGNUPS_ENABLED: "test-users" } : {}),
+        });
+        if (pinned(REAL)) {
+          expect(r.code, env).toBe(0);
+          expect(readFileSync(r.snap, "utf8")).toContain(
+            '"destination_address": "ops@example.com"',
+          );
+        } else {
+          expect(r.code, env).toBe(1);
+          expect(r.log, env).toEqual([]);
+          expect(r.err, env).toContain(`doesn't pin the ${env} alerts`);
+        }
+        expect(r.out + r.err).not.toContain("ops@example.com");
+      }
+    });
+
+    it("scheduler: refuses a config missing any alert pin, before wrangler", () => {
+      for (const [what, config] of [
+        [
+          "ALERT_TO var",
+          PINNED.replace('"ALERT_TO": "{{ALERT_TO_PROD}}",', ""),
+        ],
+        [
+          "ALERT_FROM var",
+          PINNED.replace('"ALERT_FROM": "{{ALERT_FROM_PROD}}",', ""),
+        ],
+        [
+          "SIGNUP_DAILY_CAP var",
+          PINNED.replace(
+            '"SIGNUP_DAILY_CAP": "{{SIGNUP_DAILY_CAP_PROD}}",',
+            "",
+          ),
+        ],
+        [
+          "SIGNUPS_ENABLED var",
+          PINNED.replace('"SIGNUPS_ENABLED": "{{SIGNUPS_ENABLED_PROD}}",', ""),
+        ],
+        [
+          "the destination",
+          PINNED.replace(
+            '"name": "ALERT_EMAIL", "destination_address": "{{ALERT_TO_PROD}}"',
+            '"name": "ALERT_EMAIL"',
+          ),
+        ],
+        [
+          "a hard-coded destination",
+          PINNED.replace(
+            '"destination_address": "{{ALERT_TO_PROD}}"',
+            '"destination_address": "else@example.com"',
+          ),
+        ],
+        [
+          "the pin only in a comment",
+          PINNED.replace(
+            '"name": "ALERT_EMAIL", "destination_address": "{{ALERT_TO_PROD}}"',
+            '"name": "ALERT_EMAIL" /* "destination_address": "{{ALERT_TO_PROD}}" */',
+          ),
+        ],
+      ] as const) {
+        expect(config, what).not.toBe(PINNED);
+        const r = run(["scheduler", "prod"], SCHED, schedTree(config));
+        expect(r.code, what).toBe(1);
+        expect(r.log, what).toEqual([]);
+        expect(r.err, what).toContain("doesn't pin the prod alerts");
+      }
+    });
 
     it("dispatch: deploys from apps/dispatch with its HOSTS id, for either env", () => {
       for (const env of ["staging", "prod"]) {
@@ -158,7 +244,7 @@ describe("deploy-platform-worker.sh", () => {
     });
 
     it("scheduler: fills the D1 id, the zone tags and the daily limit", () => {
-      const r = run(["scheduler", "prod"], SCHED);
+      const r = run(["scheduler", "prod"], SCHED, schedTree(PINNED));
       expect(r.code).toBe(0);
       const snap = readFileSync(r.snap, "utf8");
       expect(snap).toContain(`"database_id": "${UUID}"`);
@@ -172,15 +258,24 @@ describe("deploy-platform-worker.sh", () => {
 
     it("scheduler: fills ALERT_TO (the vars and the destination), ALERT_FROM and the signup vars, per env", () => {
       for (const env of ["staging", "prod"]) {
-        const r = run(["scheduler", env], SCHED, schedTree(W7));
+        const r = run(
+          ["scheduler", env],
+          {
+            ...SCHED,
+            ...(env === "staging" ? { SIGNUPS_ENABLED: "test-users" } : {}),
+          },
+          schedTree(PINNED),
+        );
         expect(r.err, env).toBe("");
         expect(r.code, env).toBe(0);
         const snap = readFileSync(r.snap, "utf8");
         expect(snap).toContain('"ALERT_TO": "ops@example.com"');
-        expect(snap).toContain('"__dest": "ops@example.com"');
+        expect(snap).toContain('"destination_address": "ops@example.com"');
         expect(snap).toContain('"ALERT_FROM": "alerts@open-artifacts.app"');
         expect(snap).toContain('"SIGNUP_DAILY_CAP": "20"');
-        expect(snap).toContain('"SIGNUPS_ENABLED": "false"');
+        expect(snap).toContain(
+          `"SIGNUPS_ENABLED": "${env === "staging" ? "test-users" : "false"}"`,
+        );
         expect(snap).not.toMatch(
           new RegExp(`\\{\\{[A-Z0-9_]*_${env.toUpperCase()}\\}\\}`),
         );
@@ -209,7 +304,11 @@ describe("deploy-platform-worker.sh", () => {
         ["scheduler", { ...SCHED, SIGNUPS_ENABLED: "test-users" }],
         ["scheduler", { ...SCHED, SIGNUPS_ENABLED: "" }],
       ] as const) {
-        const r = run([app, "prod"], env);
+        const r = run(
+          [app, "prod"],
+          env,
+          app === "scheduler" ? schedTree(PINNED) : SCRIPT,
+        );
         expect(r.code, `${app} ${JSON.stringify(env)}`).toBe(1);
         expect(r.log).toEqual([]);
       }
@@ -282,10 +381,11 @@ describe("deploy-platform-worker.sh", () => {
     /** A copy of the repo's wrapper beside an app config of our own. */
     const tree = (config: string, app = "provisioner") => {
       const t = mkdtempSync(join(tmpdir(), "oa-deploy-tree-"));
-      write(
-        join(t, "scripts/ops/deploy-platform-worker.sh"),
-        readFileSync(SCRIPT, "utf8"),
-      );
+      for (const f of ["deploy-platform-worker.sh", "wrangler-env.ts"])
+        write(
+          join(t, "scripts/ops", f),
+          readFileSync(join(root, "scripts/ops", f), "utf8"),
+        );
       write(join(t, `apps/${app}/wrangler.jsonc`), config);
       return join(t, "scripts/ops/deploy-platform-worker.sh");
     };
@@ -432,10 +532,7 @@ describe("deploy-platform-worker.sh", () => {
     });
 
     it("a config that names the provision token on any other target is refused", () => {
-      const SCHED = readFileSync(
-        join(root, "apps/scheduler/wrangler.jsonc"),
-        "utf8",
-      );
+      const SCHED = PINNED;
       const script = tree(
         SCHED.replace(
           '"d1_databases"',

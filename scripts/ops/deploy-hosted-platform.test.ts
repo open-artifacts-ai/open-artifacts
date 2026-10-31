@@ -670,13 +670,24 @@ describe("deploy-hosted-platform.sh", () => {
     );
     expect(bad.run("auth-broker", { VERIFY_ONLY: "1" }).code).toBe(1);
   });
-  it("inventory: deploys through the wrapper with its two ids; a Worker without the OIDC vars refuses", () => {
-    const r = setup().run("inventory");
+  it("inventory: the repo's config: refused before deploying until it commits the OIDC refs (W8), then deployed with its two ids and 6.3's bindings required", () => {
+    const real = readFileSync(
+      join(root, "apps/inventory/wrangler.jsonc"),
+      "utf8",
+    );
+    const repo = committedVars(real, "prod", {
+      GITHUB_REPOSITORY_ID: REPO_ID,
+    }).OIDC_REPOSITORY;
+    const r = setup().run("inventory", repo ? { GITHUB_REPOSITORY: repo } : {});
     const w = r.log.find((l) => l.startsWith("wrapper inventory prod "));
+    expect(r.code).toBe(1);
+    if (!repo) {
+      expect(w).toBeUndefined();
+      expect(r.err).toContain("commits no OIDC_JOB_WORKFLOW_REFS");
+      return;
+    }
     expect(w).toContain(`hosts=${HOSTS}`);
     expect(w).toContain(`db=${DB}`);
-    // 6.3's list, whatever the tag commits.
-    expect(r.code).toBe(1);
     expect(r.err).toContain("bindings: got 'HOSTS,PLATFORM_DB'");
   });
   it("in CI, prod runs only from main in hosted-prod-deploy; staging is not held to that", () => {
@@ -1252,16 +1263,29 @@ describe("deploy-hosted-platform.sh", () => {
     expect(lost.log.some((l) => l.startsWith("wrapper"))).toBe(false);
   });
 
-  describe("inventory read-back (6.3, W8's OIDC vars)", () => {
-    const INV = readFileSync(
+  describe("inventory read-back (6.3, the tag's committed OIDC vars)", () => {
+    type Env = "staging" | "prod";
+    const W8 = readFileSync(
+      join(root, "scripts/ops/testdata/inventory-w8.wrangler.jsonc"),
+      "utf8",
+    );
+    const REAL = readFileSync(
       join(root, "apps/inventory/wrangler.jsonc"),
       "utf8",
     );
-    const W8 = INV.replace(
-      '"name": "oa-p-inventory",',
-      `"name": "oa-p-inventory", "vars": { "OIDC_AUDIENCE": "https://oa-p-inventory", "OIDC_REPOSITORY": "o/r", "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_PROD}}", "OIDC_JOB_WORKFLOW_REFS": "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main", "OIDC_ENVIRONMENT": "redline-staging" },`,
-    );
-    /** The repo's deploy script and wrangler-env.ts beside our own inventory config. */
+    const commits = (src: string, env: Env) =>
+      "OIDC_JOB_WORKFLOW_REFS" in
+      committedVars(src, env, { GITHUB_REPOSITORY_ID: REPO_ID });
+    // W8's config verbatim, and the repo's own once it commits the refs (W8
+    // merged): the read-back's expectation comes from the config, never a
+    // list of our own.
+    const CONFIGS = [
+      ["W8's config", W8],
+      ...(commits(REAL, "prod") ? [["apps/inventory", REAL] as const] : []),
+    ] as const;
+    const varsFor = (src: string, env: Env) =>
+      committedVars(src, env, { GITHUB_REPOSITORY_ID: REPO_ID });
+    /** The repo's deploy script and wrangler-env.ts beside this inventory config. */
     const tree = (config: string) => {
       const t = mkdtempSync(join(tmpdir(), "oa-hosted-tree-"));
       for (const f of ["deploy-hosted-platform.sh", "wrangler-env.ts"])
@@ -1286,152 +1310,203 @@ describe("deploy-hosted-platform.sh", () => {
         })),
         ...extra,
       ]);
-    const VARS = {
-      OIDC_AUDIENCE: "https://oa-p-inventory",
-      OIDC_REPOSITORY: "o/r",
-      OIDC_REPOSITORY_ID: REPO_ID,
-      OIDC_JOB_WORKFLOW_REFS:
-        "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main",
-      OIDC_ENVIRONMENT: "redline-staging",
-    };
     const go = (
+      config: string,
+      env: Env,
       next: string,
-      target = "inventory",
-      s = setup({ next: { "oa-p-inventory": next } }),
-    ) =>
-      s.sb.run(["bash", tree(W8), "prod", target], {
+      opts: { secrets?: Record<string, string[]> } = {},
+    ) => {
+      const w = `oa-${env[0]}-inventory`;
+      const s = setup({ next: { [w]: next }, secrets: opts.secrets });
+      const r = s.sb.run(["bash", tree(config), env, "inventory"], {
         env: {
           ...ENV,
+          GITHUB_REPOSITORY: varsFor(config, env).OIDC_REPOSITORY ?? "o/r",
           STATE: s.state,
           DEPLOY_WRAPPER: wrapperStub(s.sb.dir),
           BROKER_PIN_FILE: "/dev/null",
         },
       });
-    it("the deployed OIDC vars equal the committed ones, the repository id filled", () => {
-      const r = go(deployed(VARS));
-      expect(r.err).toBe("");
-      expect(r.code).toBe(0);
-    });
-    it("refuses a var that differs, a missing one, or any secret", () => {
-      for (const [label, next] of [
-        [
-          "refs",
-          deployed({
-            ...VARS,
-            OIDC_JOB_WORKFLOW_REFS:
-              "o/r/.github/workflows/x.yml@refs/heads/main",
-          }),
-        ],
-        ["repo id", deployed({ ...VARS, OIDC_REPOSITORY_ID: "1" })],
-        [
-          "missing",
-          deployed({
-            OIDC_AUDIENCE: VARS.OIDC_AUDIENCE,
-            OIDC_REPOSITORY_ID: REPO_ID,
-          }),
-        ],
-        [
-          "secret",
-          deployed(VARS, [{ type: "secret_text", name: "OTHER_KEY" }]),
-        ],
-        [
-          "extra binding",
-          deployed(VARS, [
-            { type: "r2_bucket", name: "EXTRA", bucket_name: "x" },
-          ]),
-        ],
-      ] as const) {
-        const r = go(next);
-        expect(r.code, label).toBe(1);
-        expect(r.err, label).toMatch(
-          /inventory vars: got|has secret bindings|bindings: got|OIDC_[A-Z_]+: got/,
-        );
-      }
-    });
-    it("refuses an OIDC value that isn't 6.3's: audience, repository, environment, refs", () => {
-      for (const [label, vars, msg] of [
-        [
-          "audience",
-          { OIDC_AUDIENCE: "https://oa-s-inventory" },
-          "OIDC_AUDIENCE",
-        ],
-        ["repository", { OIDC_REPOSITORY: "o/x" }, "OIDC_REPOSITORY"],
-        [
-          "environment",
-          { OIDC_ENVIRONMENT: "hosted-prod-deploy" },
-          "OIDC_ENVIRONMENT",
-        ],
-        [
-          "short ref",
-          { OIDC_JOB_WORKFLOW_REFS: "prodclean-monitor.yml" },
-          "OIDC_JOB_WORKFLOW_REFS",
-        ],
-        [
-          "branch",
-          {
-            OIDC_JOB_WORKFLOW_REFS:
-              "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/dev",
-          },
-          "OIDC_JOB_WORKFLOW_REFS",
-        ],
-        [
-          "prod with red-line",
-          {
-            OIDC_JOB_WORKFLOW_REFS:
-              "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main,o/r/.github/workflows/redline-staging.yml@refs/heads/main",
-          },
-          "OIDC_JOB_WORKFLOW_REFS",
-        ],
-      ] as const) {
-        const r = go(deployed({ ...VARS, ...vars }));
-        expect(r.code, label).toBe(1);
-        expect(r.err, label).toContain(`${msg}: got`);
-      }
-    });
-    it("staging: the monitor's and red-line's full refs, in any order", () => {
-      const ST = W8.replace(
-        '"name": "oa-s-inventory",',
-        `"name": "oa-s-inventory", "vars": { "OIDC_AUDIENCE": "https://oa-s-inventory", "OIDC_REPOSITORY": "o/r", "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_STAGING}}", "OIDC_JOB_WORKFLOW_REFS": "o/r/.github/workflows/redline-staging.yml@refs/heads/main,o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main", "OIDC_ENVIRONMENT": "redline-staging" },`,
-      );
-      const vars = {
-        ...VARS,
-        OIDC_AUDIENCE: "https://oa-s-inventory",
-        OIDC_JOB_WORKFLOW_REFS:
-          "o/r/.github/workflows/redline-staging.yml@refs/heads/main,o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main",
+      return {
+        ...r,
+        deployedIt: s.sb.log().some((l) => l.startsWith("wrapper inventory")),
       };
-      const run = (v: Record<string, string>) => {
-        const s = setup({ next: { "oa-s-inventory": deployed(v) } });
-        return s.sb.run(["bash", tree(ST), "staging", "inventory"], {
-          env: {
-            ...ENV,
-            STATE: s.state,
-            DEPLOY_WRAPPER: wrapperStub(s.sb.dir),
-            BROKER_PIN_FILE: "/dev/null",
-          },
+    };
+
+    for (const [label, config] of CONFIGS)
+      for (const env of ["staging", "prod"] as const) {
+        const VARS = varsFor(config, env);
+        const refs = (VARS.OIDC_JOB_WORKFLOW_REFS as string).split(",");
+        const repo = VARS.OIDC_REPOSITORY as string;
+        const ref = (f: string, b = "main") =>
+          `${repo}/.github/workflows/${f}@refs/heads/${b}`;
+
+        it(`${label}, ${env}: the deployed vars equal the committed ones exactly`, () => {
+          const ok = go(config, env, deployed(VARS));
+          expect(ok.err).toBe("");
+          expect(ok.code).toBe(0);
+          // The string the tag commits, exactly (vars_are), even reordered.
+          if (refs.length > 1) {
+            const reordered = go(
+              config,
+              env,
+              deployed({
+                ...VARS,
+                OIDC_JOB_WORKFLOW_REFS: [...refs].reverse().join(","),
+              }),
+            );
+            expect(reordered.code).toBe(1);
+            expect(reordered.err).toContain("inventory vars: got");
+          }
         });
-      };
-      const ok = run(vars);
-      expect(ok.err).toBe("");
-      expect(ok.code).toBe(0);
-      const monitorOnly = run({
-        ...vars,
-        OIDC_JOB_WORKFLOW_REFS:
-          "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main",
-      });
-      expect(monitorOnly.code).toBe(1);
-      expect(monitorOnly.err).toContain("OIDC_JOB_WORKFLOW_REFS: got");
+
+        it(`${label}, ${env}: refuses a var that differs, a missing one, or any secret`, () => {
+          for (const [what, next] of [
+            ["repo id", deployed({ ...VARS, OIDC_REPOSITORY_ID: "1" })],
+            [
+              "missing",
+              deployed({
+                OIDC_AUDIENCE: VARS.OIDC_AUDIENCE as string,
+                OIDC_REPOSITORY_ID: REPO_ID,
+              }),
+            ],
+            [
+              "secret",
+              deployed(VARS, [{ type: "secret_text", name: "OTHER_KEY" }]),
+            ],
+            [
+              "extra binding",
+              deployed(VARS, [
+                { type: "r2_bucket", name: "EXTRA", bucket_name: "x" },
+              ]),
+            ],
+          ] as const) {
+            const r = go(config, env, next);
+            expect(r.code, what).toBe(1);
+            expect(r.err, what).toMatch(
+              /inventory vars: got|has secret bindings|bindings: got|OIDC_[A-Z_]+: got/,
+            );
+          }
+        });
+
+        it(`${label}, ${env}: refuses an OIDC value that isn't 6.3's or the tag's`, () => {
+          // A 6.3 workflow the tag doesn't commit for this env, else any other.
+          const other =
+            [ref("prodclean-monitor.yml"), ref("redline-staging.yml")].find(
+              (r) => !refs.includes(r),
+            ) ?? ref("x.yml");
+          for (const [what, vars, msg] of [
+            [
+              "audience",
+              {
+                OIDC_AUDIENCE: `https://oa-${env === "prod" ? "s" : "p"}-inventory`,
+              },
+              "OIDC_AUDIENCE",
+            ],
+            ["repository", { OIDC_REPOSITORY: "o/x" }, "OIDC_REPOSITORY"],
+            [
+              "environment",
+              { OIDC_ENVIRONMENT: "hosted-prod-deploy" },
+              "OIDC_ENVIRONMENT",
+            ],
+            [
+              "short ref",
+              { OIDC_JOB_WORKFLOW_REFS: "prodclean-monitor.yml" },
+              "OIDC_JOB_WORKFLOW_REFS",
+            ],
+            [
+              "branch",
+              {
+                OIDC_JOB_WORKFLOW_REFS: refs
+                  .map((r) => r.replace("@refs/heads/main", "@refs/heads/dev"))
+                  .join(","),
+              },
+              "OIDC_JOB_WORKFLOW_REFS",
+            ],
+            [
+              "a ref the tag doesn't commit",
+              { OIDC_JOB_WORKFLOW_REFS: [...refs, other].join(",") },
+              "OIDC_JOB_WORKFLOW_REFS",
+            ],
+            [
+              "one ref short",
+              {
+                OIDC_JOB_WORKFLOW_REFS:
+                  refs.length > 1 ? refs.slice(1).join(",") : other,
+              },
+              "OIDC_JOB_WORKFLOW_REFS",
+            ],
+          ] as const) {
+            const r = go(config, env, deployed({ ...VARS, ...vars }));
+            expect(r.code, what).toBe(1);
+            expect(r.err, what).toContain(`${msg}: got`);
+          }
+        });
+      }
+
+    it("refuses before deploying a tag whose committed refs aren't 6.3's", () => {
+      const prodRefs = varsFor(W8, "prod").OIDC_JOB_WORKFLOW_REFS as string;
+      const stagingRefs = varsFor(W8, "staging")
+        .OIDC_JOB_WORKFLOW_REFS as string;
+      const repo = varsFor(W8, "prod").OIDC_REPOSITORY as string;
+      const ref = (f: string) =>
+        `${repo}/.github/workflows/${f}@refs/heads/main`;
+      const swap = (from: string, to: string) => W8.replace(from, to);
+      for (const [what, config, env, msg] of [
+        [
+          "prod without the monitor",
+          swap(prodRefs, ref("redline-staging.yml")),
+          "prod",
+          "lacks",
+        ],
+        [
+          "staging without red-line",
+          swap(stagingRefs, ref("prodclean-monitor.yml")),
+          "staging",
+          "lacks",
+        ],
+        [
+          "another workflow",
+          swap(prodRefs, `${prodRefs},${ref("x.yml")}`),
+          "prod",
+          "not a 6.3 workflow",
+        ],
+        [
+          "a branch ref",
+          swap(
+            prodRefs,
+            prodRefs.replaceAll("refs/heads/main", "refs/heads/dev"),
+          ),
+          "prod",
+          "not a 6.3 workflow",
+        ],
+        [
+          "no refs",
+          swap(`"OIDC_JOB_WORKFLOW_REFS": "${prodRefs}",`, ""),
+          "prod",
+          "commits no OIDC_JOB_WORKFLOW_REFS",
+        ],
+      ] as const) {
+        expect(config, what).not.toBe(W8);
+        const r = go(config, env, deployed(varsFor(W8, env)));
+        expect(r.code, what).toBe(1);
+        expect(r.err, what).toContain(msg);
+        expect(r.deployedIt, what).toBe(false);
+      }
     });
+
     it("refuses INVENTORY_KEY like any other secret, as a binding or a listed secret", () => {
+      const VARS = varsFor(W8, "prod");
       const asBinding = go(
+        W8,
+        "prod",
         deployed(VARS, [{ type: "secret_text", name: "INVENTORY_KEY" }]),
       );
       expect(asBinding.code).toBe(1);
       expect(asBinding.err).toContain("has secret bindings (INVENTORY_KEY)");
-      const s = setup({
-        next: { "oa-p-inventory": deployed(VARS) },
+      const listed = go(W8, "prod", deployed(VARS), {
         secrets: { "oa-p-inventory": ["INVENTORY_KEY"] },
       });
-      const listed = go(deployed(VARS), "inventory", s);
       expect(listed.code).toBe(1);
       expect(listed.err).toContain("has secrets 'INVENTORY_KEY '");
     });
