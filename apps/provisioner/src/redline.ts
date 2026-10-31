@@ -6,7 +6,8 @@
 // admin test user is opened through DISPATCHER (POST /__test/session, as
 // the laptop command did), one PAT labelled redline-<jobId> is minted, every
 // other live redline-* PAT of this install is revoked (redlinePatsToRevoke,
-// keep = the new one), then {pat, hookKey} is sealed. Revoke (`revoke:
+// keep = the new one), then {pat, hookKey} is sealed; a job closed by then
+// (the seal matches no row) gets `sealed: false` and the new PAT revoked. Revoke (`revoke:
 // true`, the run's end): the same session (so TEST_HOOK_KEY is rotated too,
 // to a key delivered to nobody), then every live redline-* PAT of this
 // install is revoked; nothing is minted or sealed, so the run's end kills
@@ -289,12 +290,22 @@ async function rotateMintSeal(
     recipientKey,
     JSON.stringify({ pat, hookKey: s.hookKey }),
   );
-  await transient(
+  const r = await transient(
     ctx.env.PLATFORM_DB.prepare(
       "UPDATE jobs SET sealed = ?2, updated_at = ?3 WHERE id = ?1 AND status = 'running'",
     )
       .bind(jobId, sealed, ctx.io.now())
       .run(),
   );
-  return { sealed: true };
+  if ((r.meta.changes ?? 0) > 0) return { sealed: true };
+  // The job closed under us (an R25 cancel, the sweep): no one can read the
+  // PAT, so it is revoked here, before the step ends, never left live.
+  await call(
+    s.f,
+    `${s.app}/api/v1/tokens/${encodeURIComponent(minted.id)}`,
+    s.asAdmin({ method: "DELETE" }),
+    "revoke the unsealed token",
+    [204, 404],
+  );
+  return { sealed: false };
 }

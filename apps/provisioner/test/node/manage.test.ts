@@ -917,6 +917,51 @@ describe("redline_creds (10.1, R26)", () => {
     expect(again.job?.sealed).toBeNull();
   });
 
+  it("a seal that matches no row (the job closed): sealed false, the minted PAT revoked in the same step", async () => {
+    const s = await active({ slug: "rl-a", actor: "oidc", testHooks: true });
+    const { deleted, tokens } = stubInstall(s.installId);
+    const pair = (await crypto.subtle.generateKey({ name: "X25519" }, true, [
+      "deriveBits",
+    ])) as CryptoKeyPair;
+    const recipientKey = Buffer.from(
+      new Uint8Array(
+        (await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer,
+      ),
+    ).toString("base64url");
+    // An R25 cancel lands just before the seal UPDATE.
+    const db = w.env.PLATFORM_DB;
+    const prepare = db.prepare.bind(db);
+    let jobId = "";
+    db.prepare = ((sql: string) => {
+      if (sql.startsWith("UPDATE jobs SET sealed"))
+        w.db
+          .prepare(
+            "UPDATE jobs SET status = 'failed', error_code = 'canceled' WHERE id = ?",
+          )
+          .run(jobId);
+      return prepare(sql);
+    }) as typeof db.prepare;
+    jobId = seedJob(w, {
+      kind: "redline_creds",
+      installId: s.installId,
+      actor: "oidc",
+      args: { recipientKey },
+    });
+    const r = stepRunner(w.clock);
+    await runManage(w.ctx, event(jobId), r.step).catch(() => {});
+    db.prepare = prepare;
+    expect(r.log.find((l) => l.name === "rotate_hook_key")?.output).toEqual({
+      sealed: false,
+    });
+    expect(deleted).toEqual(["t1", "t-new"]);
+    expect(tokens.filter((t) => t.id === "t-new")).toEqual([]);
+    expect(w.job(jobId)).toMatchObject({
+      status: "failed",
+      error_code: "canceled",
+      sealed: null,
+    });
+  });
+
   it("revoke rotates TEST_HOOK_KEY to a key nobody is given: not sealed, not in any output or job column", async () => {
     const s = await active({ slug: "rl-b", actor: "oidc", testHooks: true });
     const { script } = stubInstall(s.installId);
