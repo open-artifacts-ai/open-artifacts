@@ -26,8 +26,9 @@ export function Audit({ installId }: { installId?: string }) {
         onSubmit={(e) => {
           e.preventDefault();
           const id = draft.trim();
-          setBad(id !== "" && !InstallIdSchema.safeParse(id).success);
-          if (id !== "" && !InstallIdSchema.safeParse(id).success) return;
+          const invalid = id !== "" && !InstallIdSchema.safeParse(id).success;
+          setBad(invalid);
+          if (invalid) return;
           paging.reset();
           void navigate({
             to: "/audit",
