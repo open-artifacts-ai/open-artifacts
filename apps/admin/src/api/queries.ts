@@ -47,8 +47,15 @@ export const jobQuery = (jobId: string) =>
     queryFn: () => api.call("R15", { params: { jobId } }),
     retry: false,
     // Poll while the job runs; stop once it is done or failed.
+    // Also stop when the first load failed (404 and the like): nothing to wait for.
     refetchInterval: (q) =>
-      q.state.data && jobIsTerminal(q.state.data.status) ? false : JOB_POLL_MS,
+      q.state.data
+        ? jobIsTerminal(q.state.data.status)
+          ? false
+          : JOB_POLL_MS
+        : q.state.status === "error"
+          ? false
+          : JOB_POLL_MS,
   });
 export const auditQuery = (o: { cursor?: string; installId?: string }) =>
   queryOptions({

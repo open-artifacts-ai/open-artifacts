@@ -75,24 +75,31 @@ function Mint({ onMinted }: { onMinted: (secret: string) => void }) {
   const [scopes, setScopes] = useState<string[]>(["installs:read"]);
   const [ttl, setTtl] = useState(15);
   const mint = useAction(
-    (_: void, requestId) =>
-      api.call("R19", {
+    async (_: void, requestId) => {
+      const r = await api.call("R19", {
         body: {
           requestId,
           label,
           scopes: TokenScopeSchema.options.filter((s) => scopes.includes(s)),
           ttlMinutes: ttl,
         },
-      }),
+      });
+      // The secret goes to the page and never stays in the mutation result.
+      onMinted(r.token);
+      return r.id;
+    },
     {
       invalidate: [["tokens"]],
-      onSuccess: (r) => {
-        onMinted(r.token);
-        setLabel("");
-      },
+      onSuccess: () => setLabel(""),
+      key: [label, scopes, ttl],
     },
   );
-  const ok = LABEL_RE.test(label) && scopes.length > 0 && ttl >= 5 && ttl <= 60;
+  const ok =
+    LABEL_RE.test(label) &&
+    scopes.length > 0 &&
+    Number.isInteger(ttl) &&
+    ttl >= 5 &&
+    ttl <= 60;
   return (
     <form
       className="oa-form"
@@ -223,7 +230,10 @@ export function Tokens({ env }: { env: "prod" | "staging" }) {
       {revokingAll && (
         <ActionDialog
           open
-          onClose={() => setRevokingAll(false)}
+          onClose={() => {
+            setRevokingAll(false);
+            revokeAll.reset();
+          }}
           title="Revoke all tokens"
           description="Every token and every connected AI agent stops working now."
           expected={REVOKE_ALL}

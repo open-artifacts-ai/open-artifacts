@@ -4,7 +4,7 @@ import { signOut } from "../auth/signOut";
 import { EdgePanel } from "../layout/Edge";
 import { startHref } from "./SignIn";
 
-// TODO(C1): confirm the callback's query shape (design 3.4: error=unknown_sub&sub=, error=not_listed).
+// The callback (R23) redirects here with ?error=unknown_sub&sub=<id> or ?error=not_listed (design 3.4).
 const COPY: Record<string, string> = {
   unknown_sub:
     "This email is already on the admin list under a different Google account. Ask an admin to check it.",

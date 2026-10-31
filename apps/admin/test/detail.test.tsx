@@ -55,6 +55,36 @@ it("shows a mismatch banner and a lease with a release action", async () => {
   expect(buttons()).toContain("Release lease");
 });
 
+for (const force of [false, true]) {
+  it(`release lease ${force ? "sends" : "does not send"} force when the Force box is ${force ? "ticked" : "left off"}`, async () => {
+    const i = {
+      ...installsByState.active,
+      lease: { held: true, until: Date.now() + 3_600_000 },
+    };
+    await open(i);
+    fireEvent.click(screen.getByRole("button", { name: "Release lease" }));
+    const dialog = await screen.findByRole("dialog");
+    const box = within(dialog).getByRole("checkbox", { name: /Force/ });
+    expect(box).not.toBeChecked();
+    if (force) fireEvent.click(box);
+    fireEvent.change(within(dialog).getByRole("textbox"), {
+      target: { value: i.slug },
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Release lease" }),
+    );
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    const body = writes()[0].body as Record<string, unknown>;
+    expect(body.confirmSlug).toBe(i.slug);
+    expect("force" in body).toBe(force);
+  });
+}
+
+it("hides Restore when the grace window is over", async () => {
+  await open({ ...installsByState.deleting, restorable: false });
+  expect(buttons()).toEqual(["Purge"]);
+});
+
 it("links the active job and disables the lifecycle actions", async () => {
   await open({ ...installsByState.active, activeJobId: FIXTURE_IDS.jobLeo });
   expect(screen.getByRole("link", { name: "View the job" })).toHaveAttribute(

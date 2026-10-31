@@ -32,6 +32,7 @@ function Actions({ install }: { install: Install }) {
   const [dialog, setDialog] = useState<Dialog>(null);
   const [reason, setReason] = useState("");
   const [version, setVersion] = useState("");
+  const [force, setForce] = useState(false);
   const releases = useQuery({
     ...releasesQuery(),
     enabled: dialog === "upgrade",
@@ -56,7 +57,7 @@ function Actions({ install }: { install: Install }) {
         params: { id },
         body: { requestId, ...(version ? { version } : {}) },
       }),
-    done,
+    { ...done, key: version },
   );
   const rollback = useAction(
     (_: void, requestId) =>
@@ -69,7 +70,7 @@ function Actions({ install }: { install: Install }) {
         params: { id },
         body: { requestId, reason: reason.trim() },
       }),
-    done,
+    { ...done, key: reason.trim() },
   );
   const resume = useAction(
     (_: void, requestId) =>
@@ -109,12 +110,10 @@ function Actions({ install }: { install: Install }) {
         body: {
           requestId,
           confirmSlug: install.slug,
-          ...(install.lease.until && install.lease.until > Date.now()
-            ? { force: true }
-            : {}),
+          ...(force ? { force: true } : {}),
         },
       }),
-    done,
+    { ...done, key: force },
   );
   const cancel = useAction(
     (_: void, requestId) =>
@@ -131,10 +130,18 @@ function Actions({ install }: { install: Install }) {
       run: rollback,
     },
     { label: "Resume", show: can(install, "resume"), run: resume },
-    { label: "Restore", show: can(install, "restore"), run: restore },
+    {
+      label: "Restore",
+      show: can(install, "restore") && install.restorable,
+      run: restore,
+    },
     { label: "Retry", show: can(install, "retry"), run: retry },
   ];
-  const close = () => setDialog(null);
+  const close = () => {
+    setDialog(null);
+    setForce(false);
+    for (const m of [upgrade, suspend, del, purge, lease, cancel]) m.reset();
+  };
   const versions = (releases.data?.items ?? []).filter(
     (r) => r.installable && r.version !== install.version,
   );
@@ -292,7 +299,16 @@ function Actions({ install }: { install: Install }) {
           pending={lease.isPending}
           error={lease.error}
           onSubmit={() => lease.mutate()}
-        />
+        >
+          <label className="oa-check">
+            <input
+              type="checkbox"
+              checked={force}
+              onChange={(e) => setForce(e.target.checked)}
+            />{" "}
+            Force (the lease is held until {fmtTime(install.lease.until)})
+          </label>
+        </ActionDialog>
       )}
       {dialog === "cancel" && (
         <ActionDialog

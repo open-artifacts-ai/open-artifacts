@@ -4,7 +4,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { useRef } from "react";
-import { ApiError } from "../api/client";
+import { ApiError, api } from "../api/client";
 import { reauthHref } from "../api/reauth";
 import { newRequestId } from "../api/requestId";
 
@@ -15,14 +15,21 @@ import { newRequestId } from "../api/requestId";
  */
 export function useAction<V, R>(
   fn: (v: V, requestId: string) => Promise<R>,
-  o: { invalidate?: QueryKey[]; onSuccess?: (r: R, v: V) => void } = {},
+  o: {
+    invalidate?: QueryKey[];
+    onSuccess?: (r: R, v: V) => void;
+    /** What the request body depends on; a change drops a request id kept for a retry. */
+    key?: unknown;
+  } = {},
 ) {
   const qc = useQueryClient();
-  const pending = useRef<string | null>(null);
+  const pending = useRef<{ id: string; key: string } | null>(null);
   return useMutation<R, unknown, V>({
     mutationFn: (v) => {
-      pending.current ??= newRequestId();
-      return fn(v, pending.current);
+      const key = JSON.stringify([o.key ?? null, v ?? null]);
+      if (pending.current?.key !== key)
+        pending.current = { id: newRequestId(), key };
+      return fn(v, pending.current.id);
     },
     onSuccess: (r, v) => {
       pending.current = null;
@@ -34,7 +41,7 @@ export function useAction<V, R>(
       if (e instanceof ApiError) {
         pending.current = null;
         if (e.code === "reauth_required")
-          window.location.assign(
+          api.redirect(
             reauthHref(`${window.location.pathname}${window.location.search}`),
           );
       }

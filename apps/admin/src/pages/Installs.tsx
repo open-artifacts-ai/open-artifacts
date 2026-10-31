@@ -146,7 +146,7 @@ export function Installs() {
         />
       ) : list.data && list.data.items.length === 0 ? (
         <p className="oa-placeholder">
-          {state || paging.canPrev ? "No installs match." : "No instances yet."}
+          {state || paging.canPrev ? "No installs match." : "No installs yet."}
         </p>
       ) : list.data ? (
         <>

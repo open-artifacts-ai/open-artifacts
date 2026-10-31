@@ -117,7 +117,10 @@ export function JobPage({ id }: { id: string }) {
       {confirming && install.data && (
         <ActionDialog
           open
-          onClose={() => setConfirming(false)}
+          onClose={() => {
+            setConfirming(false);
+            cancel.reset();
+          }}
           title="Cancel job"
           description="The job stops and cleanup runs."
           expected={install.data.slug}
