@@ -3,7 +3,7 @@ import {
   AUDIT_REFUSAL_WINDOW_MS,
 } from "@oa/shared/provisioning";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { hmac16 } from "../src/hmac.js";
+import { hmac16 } from "../src/auth/crypto.js";
 import { refuse } from "../src/refuse.js";
 import { platformDb } from "./db.js";
 import { API, fakeEnv } from "./fakes.js";
@@ -71,7 +71,7 @@ describe("refuse (4.9)", () => {
       for (let i = 0; i < 3; i++)
         await refuse(env, "auth", "unauthenticated", req(ip));
       await refuse(env, "csrf", "csrf_failed", req(ip));
-      const h = await hmac16(env, ip);
+      const h = await hmac16(env.ADMIN_SESSION_KEY, ip);
       expect(await rows(db, h)).toEqual([
         {
           bucket: "auth",
@@ -95,7 +95,7 @@ describe("refuse (4.9)", () => {
       const { env } = fakeEnv({ PLATFORM_DB: db });
       const ip = ip4();
       await refuse(env, "pre", "rate_limited", req(ip));
-      const h = await hmac16(env, ip);
+      const h = await hmac16(env.ADMIN_SESSION_KEY, ip);
       expect(h).toMatch(/^[0-9a-f]{32}$/);
       const all = await db
         .prepare("SELECT * FROM audit_refusals")
@@ -112,7 +112,7 @@ describe("refuse (4.9)", () => {
       await refuse(env, "auth", "unauthenticated", req(ip));
       vi.setSystemTime(T + AUDIT_REFUSAL_WINDOW_MS);
       await refuse(env, "auth", "unauthenticated", req(ip));
-      const r = await rows(db, await hmac16(env, ip));
+      const r = await rows(db, await hmac16(env.ADMIN_SESSION_KEY, ip));
       expect(r.map((x) => [x.window_start, x.count])).toEqual([
         [T, 2],
         [T + AUDIT_REFUSAL_WINDOW_MS, 1],
@@ -124,9 +124,38 @@ describe("refuse (4.9)", () => {
       const { env } = fakeEnv({ PLATFORM_DB: db });
       const p = `2001:db8:${Math.floor(Math.random() * 65535).toString(16)}:7`;
       for (const s of ["::1", "::2", ":ffff:ffff:ffff:ffff"])
-        await refuse(env, "pre", "rate_limited", req(`${p}${s}`));
-      const r = await rows(db, await hmac16(env, `${p}::/64`));
+        await refuse(env, "auth", "unauthenticated", req(`${p}${s}`));
+      const r = await rows(
+        db,
+        await hmac16(env.ADMIN_SESSION_KEY, `${p}::/64`),
+      );
       expect(r.map((x) => x.count)).toEqual([3]);
+    });
+
+    it("a pre-IP flood writes D1 once per IP key and window in an isolate", async () => {
+      const db = await platformDb();
+      let writes = 0;
+      const counting = {
+        prepare: (q: string) => {
+          writes++;
+          return db.prepare(q);
+        },
+      } as unknown as D1Database;
+      const { env } = fakeEnv({ PLATFORM_DB: counting });
+      const ip = ip4();
+      for (let i = 0; i < 5; i++) {
+        const res = await refuse(env, "pre", "rate_limited", req(ip));
+        expect(res.status).toBe(429);
+      }
+      expect(writes).toBe(1);
+      vi.setSystemTime(T + AUDIT_REFUSAL_WINDOW_MS);
+      await refuse(env, "pre", "rate_limited", req(ip));
+      expect(writes).toBe(2);
+      const r = await rows(db, await hmac16(env.ADMIN_SESSION_KEY, ip));
+      expect(r.map((x) => [x.window_start, x.count])).toEqual([
+        [T, 1],
+        [T + AUDIT_REFUSAL_WINDOW_MS, 1],
+      ]);
     });
   });
 });

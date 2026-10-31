@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuditEntry } from "../src/audit.js";
+import { hmac16 } from "../src/auth/crypto.js";
 import { ApiError } from "../src/errors.js";
-import { hmac16 } from "../src/hmac.js";
 import type { Principal } from "../src/principal.js";
 import { invokeRoute, type Surface } from "../src/routes/invoke.js";
 import { platformDb } from "./db.js";
@@ -69,7 +69,7 @@ describe("invokeRoute refusals are recorded (4.9)", () => {
       .prepare(
         "SELECT bucket, code, window_start, count FROM audit_refusals WHERE ip_hmac = ?1",
       )
-      .bind(await hmac16(env, p.rateKey))
+      .bind(await hmac16(env.ADMIN_SESSION_KEY, p.rateKey))
       .all();
     expect(rows.results).toEqual([
       { bucket: "auth", code: "rate_limited", window_start: T, count: 3 },

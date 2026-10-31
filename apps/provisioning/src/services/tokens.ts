@@ -6,10 +6,10 @@ import {
   type TokenScope,
   TokenScopeSchema,
 } from "@oa/shared/provisioning";
+import { hmac16, sha256Hex } from "../auth/crypto.js";
 import { isAdminIdentity } from "../auth/identities.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../errors.js";
-import { hmac16, sha256Hex } from "../hmac.js";
 import { countD1, D1_LIMITS } from "../limits.js";
 import type { Principal, Refusal } from "../principal.js";
 import { countRateLimited } from "../refuse.js";
@@ -115,12 +115,17 @@ export type RevokedGrant = { grantId: string; oauthUser: string };
 const GRANTS_SELECT =
   'SELECT grant_id AS "grantId", oauth_user AS "oauthUser" FROM agent_tokens';
 
-/** oat: the bearer, shown once. oauth: the library userId for completeAuthorization (9A.4). */
+/**
+ * oat: the bearer, shown once. oauth: the library userId for
+ * completeAuthorization (9A.4), and the older grants of the same client this
+ * consent revoked in D1 (4.6), for the consent path to end in KV.
+ */
 export type Minted = {
   tokenId: string;
   expiresAt: number;
   token?: string;
   oauthUser?: string;
+  superseded?: RevokedGrant[];
 };
 
 /** An `oauth` row's label (9A.3.3): the DCR client_name if it fits, else `unnamed`. */
@@ -213,7 +218,7 @@ export async function mintAgentToken(
   if ((live?.n ?? 0) >= TOKEN_LIVE_LIMIT) throw new ApiError("token_limit");
   const over = await countD1(
     env,
-    `mint:${await hmac16(env, `mint\n${email.toLowerCase()}`)}`,
+    `mint:${await hmac16(env.ADMIN_SESSION_KEY, `mint\n${email.toLowerCase()}`)}`,
     D1_LIMITS.mint.limit,
     D1_LIMITS.mint.windowMs,
     now,
@@ -252,7 +257,7 @@ export async function mintAgentToken(
   } else {
     // Stable per admin, so the library can list one admin's grants; never
     // the email itself.
-    oauthUser = `adm_${await hmac16(env, `oauth_user\n${email.toLowerCase()}`)}`;
+    oauthUser = `adm_${await hmac16(env.ADMIN_SESSION_KEY, `oauth_user\n${email.toLowerCase()}`)}`;
     const label = oauthLabel(opts.clientName);
     row = {
       id,
@@ -270,14 +275,27 @@ export async function mintAgentToken(
       expires_at: Math.min(s.expires_at, now + OAUTH_GRANT_MAX_MS),
     };
   }
-  const detail = JSON.stringify({
-    tokenId: id,
-    kind: row.kind,
-    label: row.label,
-    scopes: JSON.parse(scopes),
-    expiresAt: row.expires_at,
-    ...(opts.kind === "oauth" ? { clientId: opts.clientId } : {}),
-  });
+  // oat: `token.mint` (4.9). oauth: `oauth.grant` with the 9A.8 fields; the
+  // redirect host is not in the 9A.4 opts, so it is null until C4 adds it.
+  const action = opts.kind === "oauth" ? "oauth.grant" : "token.mint";
+  const detail = JSON.stringify(
+    opts.kind === "oauth"
+      ? {
+          tokenId: id,
+          clientId: opts.clientId,
+          clientName: row.client_name,
+          scopes: JSON.parse(scopes),
+          redirectHost: null,
+          grantEnd: row.expires_at,
+        }
+      : {
+          tokenId: id,
+          kind: row.kind,
+          label: row.label,
+          scopes: JSON.parse(scopes),
+          expiresAt: row.expires_at,
+        },
+  );
 
   const stmts: D1PreparedStatement[] = [];
   if (opts.kind === "oauth") {
@@ -294,7 +312,7 @@ export async function mintAgentToken(
         .bind(email, opts.clientId, now, TOKEN_LIVE_LIMIT),
       db
         .prepare(
-          `${AUDIT_INSERT} SELECT ?3, 'admin', ?1, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'reason', 'superseded', 'supersededBy', ?5) FROM agent_tokens ${where}`,
+          `${AUDIT_INSERT} SELECT ?3, 'admin', ?1, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'label', label, 'scopes', json(scopes), 'reason', 'superseded', 'supersededBy', ?5) FROM agent_tokens ${where}`,
         )
         .bind(email, opts.clientId, now, TOKEN_LIVE_LIMIT, id),
       db
@@ -331,12 +349,11 @@ export async function mintAgentToken(
       ),
     db
       .prepare(
-        `${AUDIT_INSERT} SELECT ?1, 'admin', ?2, ?3, 'token.mint', ?4, 'ok', ?5 WHERE EXISTS (SELECT 1 FROM agent_tokens WHERE id = ?3)`,
+        `${AUDIT_INSERT} SELECT ?1, 'admin', ?2, ?3, ?6, ?4, 'ok', ?5 WHERE EXISTS (SELECT 1 FROM agent_tokens WHERE id = ?3)`,
       )
-      .bind(now, email, id, requestId, detail),
+      .bind(now, email, id, requestId, detail, action),
   );
   const res = await db.batch(stmts);
-  // The superseded grants (res[0]) are W13b's to end in KV; D1 refuses them now.
   const inserted = res[stmts.length - 2]?.meta.changes ?? 0;
   if (inserted === 0) {
     if (requestId !== null)
@@ -348,6 +365,9 @@ export async function mintAgentToken(
     expiresAt: row.expires_at,
     ...(token ? { token } : {}),
     ...(oauthUser ? { oauthUser } : {}),
+    ...(opts.kind === "oauth"
+      ? { superseded: (res[0]?.results ?? []) as RevokedGrant[] }
+      : {}),
   };
 }
 
@@ -561,7 +581,7 @@ export async function revokeToken(
       .bind(id, email),
     db
       .prepare(
-        `${AUDIT_INSERT} SELECT ?3, 'admin', ?2, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'kind', kind, 'label', label) FROM agent_tokens ${where}`,
+        `${AUDIT_INSERT} SELECT ?3, 'admin', ?2, id, 'token.revoke', NULL, 'ok', json_object('tokenId', id, 'kind', kind, 'label', label, 'scopes', json(scopes)) FROM agent_tokens ${where}`,
       )
       .bind(id, email, now),
     db

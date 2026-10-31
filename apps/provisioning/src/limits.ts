@@ -1,3 +1,4 @@
+import { bump } from "./auth/counters.js";
 import type { Env } from "./env.js";
 import { type Refusal, refusal } from "./principal.js";
 
@@ -34,8 +35,8 @@ export const D1_LIMITS = {
 } as const satisfies Record<string, { limit: number; windowMs: number }>;
 
 /**
- * Charges one hit on a fixed-window D1 counter (atomic upsert `RETURNING
- * count`). Null while the count is within `max`; `rate_limited` past it.
+ * Charges one hit on a fixed-window D1 counter (auth/counters.ts bump, the
+ * one upsert). Null while the count is within `max`; `rate_limited` past it.
  * `key` must not hold a raw email or IP (hash it with hmac16).
  */
 export async function countD1(
@@ -45,15 +46,7 @@ export async function countD1(
   windowMs: number,
   now: number = Date.now(),
 ): Promise<Refusal | null> {
-  const windowStart = now - (now % windowMs);
-  const row = await env.PLATFORM_DB.prepare(
-    `INSERT INTO rate_counters (key, window_start, count) VALUES (?1, ?2, 1)
-     ON CONFLICT (key, window_start) DO UPDATE SET count = count + 1
-     RETURNING count`,
-  )
-    .bind(key, windowStart)
-    .first<{ count: number }>();
-  return (row?.count ?? Number.POSITIVE_INFINITY) > max
+  return (await bump(env.PLATFORM_DB, key, windowMs, now)) > max
     ? refusal("rate_limited")
     : null;
 }

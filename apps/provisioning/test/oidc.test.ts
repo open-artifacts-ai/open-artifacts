@@ -127,6 +127,12 @@ describe("GitHub OIDC principal (4.4)", () => {
     expect(oidcPins(stagingEnv({ OIDC_JOB_WORKFLOW_REFS: " , " }))).toBeNull();
   });
 
+  it("environment is pinned to redline-staging; any other OIDC_ENVIRONMENT has no pins", () => {
+    for (const v of ["production", "redline-staging ", "*"])
+      expect(oidcPins(stagingEnv({ OIDC_ENVIRONMENT: v })), v).toBeNull();
+    expect(oidcPins(stagingEnv())?.environment).toBe("redline-staging");
+  });
+
   it("prod has no pins, whatever its vars say", () => {
     expect(oidcPins(stagingEnv({ OA_ENV: "prod" }))).toBeNull();
   });

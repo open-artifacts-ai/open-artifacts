@@ -1,7 +1,7 @@
 import { ULID_RE } from "@oa/shared/provisioning";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hmac16, sha256Hex } from "../src/auth/crypto.js";
 import { ApiError } from "../src/errors.js";
-import { hmac16, sha256Hex } from "../src/hmac.js";
 import type { Principal } from "../src/principal.js";
 import {
   type AgentTokenRow,
@@ -126,6 +126,23 @@ describe("mintAgentToken: oat (R19)", () => {
       expiresAt: T + 15 * M,
     });
     expect(a[0]?.detail).not.toContain(m.token);
+  });
+
+  it("an oauth consent writes oauth.grant with the 9A.8 fields, not token.mint", async () => {
+    const db = await platformDb();
+    const { env, principal, session } = await seedAdmin(db, T);
+    const m = await mintAgentToken(env, principal, oauth("c1", "Claude"));
+    const a = await auditOf(db, m.tokenId);
+    expect(a.map((x) => x.action)).toEqual(["oauth.grant"]);
+    expect(a[0]).toMatchObject({ actor_label: session.email, outcome: "ok" });
+    expect(JSON.parse(a[0]?.detail as string)).toEqual({
+      tokenId: m.tokenId,
+      clientId: "c1",
+      clientName: "Claude",
+      scopes: ["installs:read"],
+      redirectHost: null,
+      grantEnd: m.expiresAt,
+    });
   });
 
   it("never outlives the minting session", async () => {
@@ -268,8 +285,11 @@ describe("mintAgentToken: limits (4.1, 4.7)", () => {
     expect((await rowOf(db, other.tokenId))?.revoked_at).toBeNull();
     expect((await rowOf(db, next.tokenId))?.revoked_at).toBeNull();
     const a = await auditOf(db, old.tokenId);
-    expect(a.map((x) => x.action)).toEqual(["token.mint", "token.revoke"]);
-    expect(JSON.parse(a[1]?.detail as string)).toMatchObject({
+    expect(a.map((x) => x.action)).toEqual(["oauth.grant", "token.revoke"]);
+    expect(JSON.parse(a[1]?.detail as string)).toEqual({
+      tokenId: old.tokenId,
+      label: "Claude",
+      scopes: ["installs:read"],
       reason: "superseded",
       supersededBy: next.tokenId,
     });
@@ -323,7 +343,7 @@ describe("mintAgentToken: limits (4.1, 4.7)", () => {
       .prepare(
         "SELECT bucket, code, count FROM audit_refusals WHERE ip_hmac = ?1",
       )
-      .bind(await hmac16(env, principal.rateKey))
+      .bind(await hmac16(env.ADMIN_SESSION_KEY, principal.rateKey))
       .all();
     expect(r.results).toEqual([
       { bucket: "auth", code: "rate_limited", count: 2 },
@@ -484,6 +504,35 @@ describe("oauth grants to end in KV (3.4 R21, 4.6)", () => {
     ).toBeNull();
   });
 
+  it("a superseding consent returns the older grant; an oat mint returns none", async () => {
+    const db = await platformDb();
+    const { env, principal } = await seedAdmin(db, T);
+    const first = await mintAgentToken(env, principal, oauth("same"));
+    expect(first.superseded).toEqual([]);
+    await withGrant(db, first.tokenId, "g-old");
+    const next = await mintAgentToken(env, principal, oauth("same"));
+    expect(next.superseded).toEqual([
+      { grantId: "g-old", oauthUser: first.oauthUser },
+    ]);
+    expect((await mintAgentToken(env, principal, oat())).superseded).toBe(
+      undefined,
+    );
+  });
+
+  it("revokeToken audits the token's id, kind, label and scopes", async () => {
+    const db = await platformDb();
+    const { env, principal, session } = await seedAdmin(db, T);
+    const t = await mintAgentToken(env, principal, oat());
+    await revokeToken(env, session.email, t.tokenId);
+    const a = await auditOf(db, t.tokenId);
+    expect(JSON.parse(a[1]?.detail as string)).toEqual({
+      tokenId: t.tokenId,
+      kind: "oat",
+      label: "ci bot",
+      scopes: ["installs:read", "audit:read"],
+    });
+  });
+
   it("revokeAllTokens returns every live oauth grant", async () => {
     const db = await platformDb();
     const { env, principal, session } = await seedAdmin(db, T);
@@ -542,7 +591,7 @@ describe("oauth grants to end in KV (3.4 R21, 4.6)", () => {
     ).toBe("token_limit");
     expect((await rowOf(db, old.tokenId))?.revoked_at).toBeNull();
     expect((await auditOf(db, old.tokenId)).map((x) => x.action)).toEqual([
-      "token.mint",
+      "oauth.grant",
     ]);
   });
 });

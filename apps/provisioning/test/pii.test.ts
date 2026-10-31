@@ -61,6 +61,23 @@ describe("R17 email rule (4.9): tokens without installs:pii see no email detail"
     });
   });
 
+  it("nulls a string that holds an email among other text", () => {
+    const d = {
+      message: "invite to a@acme.test failed",
+      owner: "Ann <ann@acme.test>",
+      note: "no email here",
+      nested: { why: "sent to b@acme.test" },
+    };
+    expect(
+      redactAuditEntry(entry(d), P("token", ["audit:read"])).detail,
+    ).toEqual({
+      message: null,
+      owner: null,
+      note: "no email here",
+      nested: { why: null },
+    });
+  });
+
   it("keeps detail.admin on the caller's own admin's rows (9A.8)", () => {
     const me = {
       ...P("token", ["audit:read"]),

@@ -9,6 +9,11 @@ import { type Principal, type Refusal, refusal } from "../principal.js";
 
 /** The one host that accepts an OIDC JWT. */
 export const STAGING_API_HOST = "api.open-artifacts-staging.app";
+/**
+ * The GitHub environment 4.4 fixes, a code constant like ref and event_name:
+ * OIDC_ENVIRONMENT must say the same, so a config edit cannot widen it.
+ */
+export const OIDC_STAGING_ENVIRONMENT = "redline-staging";
 /** `x-oa-test-user` turns the caller into a self-serve test user (M4). */
 export const TEST_USER_HEADER = "x-oa-test-user";
 const TEST_USERS = new Set(["a", "b", "c"]);
@@ -31,7 +36,7 @@ export function oidcPins(env: Env): Pins | null {
     !OIDC_AUDIENCE ||
     !OIDC_REPOSITORY ||
     !OIDC_REPOSITORY_ID ||
-    !OIDC_ENVIRONMENT ||
+    OIDC_ENVIRONMENT !== OIDC_STAGING_ENVIRONMENT ||
     refs.length === 0
   )
     return null;
@@ -40,7 +45,7 @@ export function oidcPins(env: Env): Pins | null {
     repository: OIDC_REPOSITORY,
     repositoryId: OIDC_REPOSITORY_ID,
     jobWorkflowRefs: refs,
-    environment: OIDC_ENVIRONMENT,
+    environment: OIDC_STAGING_ENVIRONMENT,
   };
 }
 
