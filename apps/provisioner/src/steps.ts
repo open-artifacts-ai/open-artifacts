@@ -18,6 +18,8 @@ import {
   stepError,
 } from "./errors.js";
 import { type ProvisionerIo, Transient, transient } from "./provisioner.js";
+// A cycle (workflow imports steps): called only at run time, never at load.
+import { ownerEmail } from "./workflow.js";
 
 /** The jobs row a step reads (0008); never an email. */
 export type JobRow = {
@@ -203,11 +205,8 @@ async function requestValues(ctx: StepCtx, jobId: string): Promise<string[]> {
       job.signup_id,
     );
     if (su) scalars([su.slug, parsed(su.vars), su.owner_sub], out);
-    const sec = await one<{ owner_email: string }>(
-      "SELECT owner_email FROM signup_secret WHERE signup_id = ?",
-      job.signup_id,
-    );
-    if (sec) out.push(sec.owner_email);
+    const email = await ownerEmail(ctx, job.signup_id).catch(() => null);
+    if (email) out.push(email);
   }
   const ins = await one<Record<string, unknown>>(
     "SELECT slug, vars FROM installs WHERE id = ?",

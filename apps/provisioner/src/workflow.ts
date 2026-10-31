@@ -206,7 +206,7 @@ export async function runCreate(
 
 /** The owner's email (the API wrote it); null once done has deleted it. */
 export async function ownerEmail(
-  ctx: CreateCtx,
+  ctx: { env: { PLATFORM_DB: D1Database } },
   signupId: string,
 ): Promise<string | null> {
   const r = await transient(

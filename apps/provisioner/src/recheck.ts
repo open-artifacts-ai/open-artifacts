@@ -4,7 +4,7 @@
 // from the shared install_status view, checks the kind against TRANSITIONS,
 // and for a create parses signups.vars with a strict schema. Any mismatch is
 // `invalid_state`, terminal.
-import { NonRetryableError } from "cloudflare:workflows";
+import type { NonRetryableError } from "cloudflare:workflows";
 import { type Env as DeployEnv, STAGING_TEST_DOMAIN } from "@oa/provision";
 import {
   canTransition,
