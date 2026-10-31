@@ -147,6 +147,7 @@ describe("redline-staging.yml", () => {
           REDLINE_TARGETS_BASE:
             '{"mode":"staging","a":{"name":"rl-a"},"b":{"name":"rl-b"}}',
           RUN_ID: "123-1",
+          REF: "refs/heads/main",
           ...env,
         });
         return {
@@ -193,6 +194,15 @@ describe("redline-staging.yml", () => {
       const r = go({ TAG: bad });
       expect(r.code).toBe(1);
       expect(r.out).toContain("tag must be vX.Y.Z");
+    }
+    // The gate counts main's runs only, so a dispatch off main stops here.
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(st.env.REF).toBe("${{ github.ref }}");
+    for (const ref of ["refs/heads/pl/x", "refs/tags/v0.82.0", ""]) {
+      const r = go({ TAG: "v0.82.0", REF: ref });
+      expect(r.code).toBe(1);
+      expect(r.out).toContain("dispatch redline-staging on main");
+      expect(r.env).toBe("");
     }
   });
 

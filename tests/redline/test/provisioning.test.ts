@@ -39,6 +39,7 @@ import {
   type Fault,
   fakeApi,
   jwt,
+  setVersion,
 } from "./provisioning-fake.ts";
 
 // The probes, bring-up and revoke on the in-memory staging fake (no network,
@@ -311,6 +312,11 @@ describe("bring-up and revoke (R5, R26)", () => {
     );
     await bringUpgrade(run, CONFIG.rlA.id, "rl-a");
     expect(await stagedVersion(run)).toBe("0.82.0");
+    // rl-b is checked too: rl-a alone reporting the tag is not enough.
+    setVersion(f, CONFIG.rlB.id, "0.81.0");
+    await expect(stagedVersion(run)).rejects.toThrow(
+      /rl-b \/healthz: want 200 version 0\.82\.0, got version 0\.81\.0/,
+    );
   });
 
   it("R26 mint opens the sealed creds; revoke makes the PAT 401", async () => {
