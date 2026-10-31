@@ -5,7 +5,12 @@ import { describe, expect, it } from "vitest";
 import * as entry from "../src/index.js";
 import { ManageInstall } from "../src/manage.js";
 import { ProvisionerRpc } from "../src/rpc.js";
-import { ProvisionInstall } from "../src/workflow.js";
+import {
+  CREATE_STEP,
+  ProvisionInstall,
+  REACHABLE_STEP,
+  RELEASE_GATE_STEP,
+} from "../src/workflow.js";
 
 // The Worker's surface (design v7 2.1, 2.6): a queue handler and no fetch
 // handler, the two Workflow classes, and ProvisionerRpc with exactly three
@@ -30,6 +35,21 @@ describe("entrypoint", () => {
   it("the default handler has a queue consumer and no fetch handler", () => {
     expect(Object.keys(entry.default)).toEqual(["queue"]);
   });
+});
+
+describe("Workflow classes (2.6)", () => {
+  // A Worker bound to either class as its entrypoint can call any prototype
+  // method, so neither carries a helper.
+  for (const [name, W] of [
+    ["ProvisionInstall", ProvisionInstall],
+    ["ManageInstall", ManageInstall],
+  ] as const)
+    it(`${name} has exactly constructor and run`, () => {
+      expect(Object.getOwnPropertyNames(W.prototype)).toEqual([
+        "constructor",
+        "run",
+      ]);
+    });
 });
 
 describe("ProvisionerRpc", () => {
@@ -104,4 +124,37 @@ describe("Workflow params (3.6)", () => {
         expect(names).toEqual([]);
       }
     });
+});
+
+describe("ProvisionInstall step options (5.2)", () => {
+  it("release_gate, create and reachable carry their retries; the rest the defaults", async () => {
+    const calls: [string, unknown][] = [];
+    const step = {
+      do: async (name: string, a: unknown, b?: unknown) => {
+        calls.push([name, b === undefined ? undefined : a]);
+        return {};
+      },
+    } as unknown as WorkflowStep;
+    await ProvisionInstall.prototype.run.call(
+      { env: {} } as never,
+      event({ jobId: JOB }),
+      step,
+    );
+    expect(calls).toEqual([
+      ["admit", undefined],
+      ["recheck", undefined],
+      ["reserve", undefined],
+      ["release_gate", RELEASE_GATE_STEP],
+      ["create", CREATE_STEP],
+      ["reachable", REACHABLE_STEP],
+      ["notify", undefined],
+      ["done", undefined],
+    ]);
+    expect(RELEASE_GATE_STEP.retries).toMatchObject({
+      limit: 3,
+      delay: "30 seconds",
+      backoff: "exponential",
+    });
+    expect(REACHABLE_STEP.retries.limit).toBe(2);
+  });
 });

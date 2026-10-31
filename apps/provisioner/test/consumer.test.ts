@@ -371,6 +371,20 @@ describe("handleSignup", () => {
     expect(await admit(db, id(3), 1, NOW)).toBe("waiting_cap");
   });
 
+  it("admin rows admitted today never count toward the self-serve cap", async () => {
+    for (const n of [10, 11])
+      await db
+        .prepare(
+          "INSERT INTO signups (signup_id, source, slug, job_id, vars, status, admitted_at, created_at, updated_at) VALUES (?1, 'admin', ?2, ?1, ?3, 'creating', ?4, ?4, ?4)",
+        )
+        .bind(id(n), slug(n), VARS, NOW)
+        .run();
+    await seed(1);
+    await seed(2);
+    expect(await admit(db, id(1), 1, NOW)).toBe("queued");
+    expect(await admit(db, id(2), 1, NOW)).toBe("waiting_cap");
+  });
+
   it("an invalid cap retries and logs cap_config", async () => {
     await seed(1);
     const caps = [

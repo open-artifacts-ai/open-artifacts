@@ -29,8 +29,8 @@ export type Admission =
 
 /**
  * Admits a signup once. A pending or waiting_cap row moves to queued (with
- * admitted_at) only while fewer than `cap` rows were admitted this UTC day,
- * else to waiting_cap: one batch (D1's transaction), so two deliveries at the
+ * admitted_at) only while fewer than `cap` self-serve rows were admitted this
+ * UTC day (admin rows never count), else to waiting_cap: one batch (D1's transaction), so two deliveries at the
  * boundary can't both pass.
  */
 export async function admit(
@@ -63,7 +63,8 @@ export async function admit(
       .prepare(
         `UPDATE signups SET status = 'queued', admitted_at = ?1, updated_at = ?1
          WHERE signup_id = ?2 AND status IN ('pending', 'waiting_cap')
-           AND (SELECT count(*) FROM signups WHERE admitted_at >= ?3) < ?4`,
+           AND (SELECT count(*) FROM signups
+                WHERE source = 'self-serve' AND admitted_at >= ?3) < ?4`,
       )
       .bind(now, signupId, dayStart, cap),
     db
