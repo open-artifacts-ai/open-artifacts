@@ -9,10 +9,10 @@ import type { Principal, Refusal } from "../principal.js";
 // module inserts into agent_tokens (test/node/layout.test.ts). W5b builds
 // both bodies.
 //
-// Deviations from the 9A.4 text, on purpose: both take `env` (this app has no
-// global env; mintAgentToken's is first, like invokeRoute's), and
-// tokenPrincipal takes the session as nullable (a missing row is a refusal,
-// not a caller's branch). The W13b refresh callback passes env.
+// These signatures are the 9A.4 contract (amended to match): both take `env`
+// (this app has no global env; mintAgentToken's is first, like
+// invokeRoute's), and tokenPrincipal takes the session as nullable (a missing
+// row is a refusal, not a caller's branch).
 
 /** An agent_tokens row (0008). */
 export type AgentTokenRow = {
