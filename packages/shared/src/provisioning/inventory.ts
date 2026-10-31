@@ -10,15 +10,28 @@ export const HostModeSchema = z
   .enum(["serving", "paused", "closed"])
   .nullable();
 
-export const InventoryInstallSchema = z.object({
-  id: InstallIdSchema,
-  appHost: z.string(),
-  contentHost: z.string(),
-  /** From install_status. */
-  state: InstallStateSchema,
-  testHooks: z.boolean(),
-  mode: HostModeSchema,
-});
+/**
+ * One install. `appHost` and `contentHost` come from its hosts row, so they
+ * are null together for an install that has none yet (a create before its
+ * route step): the monitor still sees and checks it, with no route to
+ * fetch, and its `mode` is then null.
+ */
+export const InventoryInstallSchema = z
+  .object({
+    id: InstallIdSchema,
+    appHost: z.string().nullable(),
+    contentHost: z.string().nullable(),
+    /** From install_status. */
+    state: InstallStateSchema,
+    testHooks: z.boolean(),
+    mode: HostModeSchema,
+  })
+  .refine((r) => (r.appHost === null) === (r.contentHost === null), {
+    message: "appHost and contentHost are both set or both null",
+  })
+  .refine((r) => r.appHost !== null || r.mode === null, {
+    message: "an install with no hosts has no HOSTS mode",
+  });
 export const InventoryInstallsSchema = z.object({
   installs: z.array(InventoryInstallSchema),
 });
