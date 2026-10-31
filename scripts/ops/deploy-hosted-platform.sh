@@ -92,7 +92,9 @@ put_secret() {
     echo "$1: verify only, not setting $3"
     return
   fi
-  (cd "$root/apps/$2" && pnpm exec wrangler secret put "$3" --env "$env" > /dev/null)
+  # A failure returns 1 (an `if` caller turns set -e off).
+  (cd "$root/apps/$2" && pnpm exec wrangler secret put "$3" --env "$env" > /dev/null) ||
+    { echo "$1: putting $3 failed" >&2; return 1; }
   echo "$1: $3 set"
 }
 # deploy <app>: through the wrapper, unless VERIFY_ONLY.
@@ -114,18 +116,36 @@ list_all() {
   echo "$2: did not end after 100 pages" >&2
   exit 1
 }
+# cf_raw <path>: a GET whose body is not the API's JSON envelope: the body on
+# stdout and "\n<HTTP status>" last.
+cf_raw() {
+  printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN" |
+    curl -sS -K - -w '\n%{http_code}' "$ACCT$1"
+}
 # kv_get <namespace id> <key>: the value on stdout, exit 0; 3 when the key is
 # absent; 1 on any other answer.
 kv_get() {
   local out code
-  out="$(printf 'header = "Authorization: Bearer %s"\n' "$CLOUDFLARE_API_TOKEN" |
-    curl -sS -K - -w '\n%{http_code}' "$ACCT/storage/kv/namespaces/$1/values/$2")" || return 1
+  out="$(cf_raw "/storage/kv/namespaces/$1/values/$2")" || return 1
   code="${out##*$'\n'}"
   case "$code" in
     200) printf '%s' "${out%$'\n'*}" ;;
     404) return 3 ;;
     *) echo "read $2 from KV $1 failed (HTTP $code)" >&2; return 1 ;;
   esac
+}
+# bundle_get <worker>: the deployed script content on stdout; exit 1 on any
+# answer but a 200 with a body that is not JSON (an error envelope is JSON;
+# a bundle never is).
+bundle_get() {
+  local out code body
+  out="$(cf_raw "/workers/scripts/$1/content/v2")" || { echo "read $1 content failed" >&2; return 1; }
+  code="${out##*$'\n'}"
+  body="${out%$'\n'*}"
+  [ "$code" = 200 ] || { echo "read $1 content failed (HTTP $code)" >&2; return 1; }
+  [ -n "$body" ] || { echo "read $1 content failed: empty" >&2; return 1; }
+  if jq -e . > /dev/null 2>&1 <<< "$body"; then echo "read $1 content failed: a JSON answer, not a bundle" >&2; return 1; fi
+  printf '%s' "$body"
 }
 # committed <app> <vars|ratelimits>: the tag's committed values for this env
 # (scripts/ops/wrangler-env.ts), placeholders filled from the environment.
@@ -234,6 +254,16 @@ case "$target" in
   provisioning)
     need PLATFORM_DB_ID; need BROKER_REGISTRY_ID; need DIRECTORY_REGISTRY_ID; need GITHUB_REPOSITORY_ID
     need_workers oa-$P-provisioner oa-$P-auth-broker
+    # Prod, before anything is deployed: the tag's committed vars carry no OIDC
+    # principal and no test-users gate (4.4); the read-back checks them again.
+    if [ "$env" = prod ]; then
+      pre="$(ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID" committed provisioning vars)" || pre=""
+      [ -n "$pre" ] || { echo "can't read provisioning's committed vars" >&2; exit 1; }
+      oidc="$(jq -r '[keys[] | select(startswith("OIDC_"))] | join(",")' <<< "$pre")"
+      [ -z "$oidc" ] || { echo "prod provisioning commits $oidc; prod has no OIDC principal; refusing" >&2; exit 1; }
+      [ "$(jq -r '.SIGNUPS_ENABLED // ""' <<< "$pre")" != test-users ] ||
+        { echo "prod provisioning commits SIGNUPS_ENABLED=test-users (staging only); refusing" >&2; exit 1; }
+    fi
     # The admin SPA into apps/provisioning/dist-assets (ASSETS), before the deploy.
     if [ -z "$VERIFY_ONLY" ]; then (cd "$root" && pnpm --filter @oa/admin build); fi
     # The OAuth KV namespace: check first, create only when absent.
@@ -255,7 +285,9 @@ case "$target" in
       openssl rand -base64 32 | put_secret "$W" provisioning ADMIN_SESSION_KEY
     fi
     # The admin's registry entry (4.3) carries the public half of
-    # ADMIN_BROKER_KEY: a new key when either is missing, entry first.
+    # ADMIN_BROKER_KEY: a new key when either is missing, entry first (4.6).
+    # A failed secret put deletes the new entry, so the next run makes both
+    # again rather than keeping an entry the secret doesn't match.
     KEY="install:i000000admin"
     entry=""
     rc=0
@@ -266,7 +298,15 @@ case "$target" in
       entry="$(jq -c --arg o "https://admin.$ZONE" '{installId: "i000000admin", origin: $o, keys: [{kid, x}], domains: []}' <<< "$key")"
       cf_send PUT "/storage/kv/namespaces/$BROKER_REGISTRY_ID/values/$KEY" "$entry" | must "write $KEY" > /dev/null
       echo "$W: registry entry $KEY written"
-      jq -r '.pkcs8' <<< "$key" | put_secret "$W" provisioning ADMIN_BROKER_KEY
+      if ! jq -r '.pkcs8' <<< "$key" | put_secret "$W" provisioning ADMIN_BROKER_KEY; then
+        key=""
+        if cf_send DELETE "/storage/kv/namespaces/$BROKER_REGISTRY_ID/values/$KEY" "" | must "delete $KEY" > /dev/null; then
+          echo "$W: ADMIN_BROKER_KEY was not set; $KEY deleted, rerun to make both" >&2
+        else
+          echo "$W: ADMIN_BROKER_KEY was not set and $KEY could not be deleted: delete it by hand, then rerun" >&2
+        fi
+        exit 1
+      fi
       key=""
     fi
     S="$(settings "$W")"
@@ -305,8 +345,7 @@ case "$target" in
     kv_get "$DIRECTORY_REGISTRY_ID" "$KEY" > /dev/null || rc=$?
     [ "$rc" -eq 3 ] || { [ "$rc" -eq 0 ] && echo "$KEY is in oa-$P-directory-registry; it must never be" >&2; exit 1; }
     # The sign-in stub never reaches a deployed bundle (12.1).
-    bundle="$(cf_get "/workers/scripts/$W/content/v2")" || { echo "read $W content failed" >&2; exit 1; }
-    [ -n "$bundle" ] || { echo "read $W content failed: empty" >&2; exit 1; }
+    bundle="$(bundle_get "$W")" || exit 1
     if grep -q 'test-signin' <<< "$bundle"; then echo "$W's bundle contains test-signin" >&2; exit 1; fi
     ;;
   auth-broker)
@@ -315,6 +354,12 @@ case "$target" in
     pin="$(broker_pin)" || { echo "can't read BROKER_GOOGLE_CLIENT_ID[$env] from $BROKER_PIN_FILE; refusing" >&2; exit 1; }
     [ "$pin" != null ] || { echo "BROKER_GOOGLE_CLIENT_ID[$env] is null in provision: pin the client first; refusing" >&2; exit 1; }
     [ "$pin" = "$GOOGLE_CLIENT_ID" ] || { echo "GOOGLE_CLIENT_ID differs from provision's BROKER_GOOGLE_CLIENT_ID[$env] ($pin); refusing" >&2; exit 1; }
+    # No secret given and none there (a new Worker has none): refuse before
+    # deploying, so no broker runs without its client secret.
+    if [ -z "${GOOGLE_CLIENT_SECRET:-}" ] && [ -z "$VERIFY_ONLY" ]; then
+      worker_exists oa-$P-auth-broker && grep -qx GOOGLE_CLIENT_SECRET <<< "$(secret_names oa-$P-auth-broker)" ||
+        { echo "oa-$P-auth-broker has no GOOGLE_CLIENT_SECRET: set it in the Environment and rerun" >&2; exit 1; }
+    fi
     BROKER_REGISTRY_ID="$BROKER_REGISTRY_ID" GOOGLE_CLIENT_ID_PROD="$GOOGLE_CLIENT_ID" \
       deploy auth-broker
     # Read first: a failed listing stops here, never reads as "absent" (which
@@ -389,10 +434,16 @@ case "$target" in
     S="$(settings oa-$P-inventory)"
     expect "$S" '.result.bindings[] | select(.name == "PLATFORM_DB") | .id' "$PLATFORM_DB_ID" "PLATFORM_DB"
     expect "$S" '.result.bindings[] | select(.name == "HOSTS") | .namespace_id' "$HOSTS_KV_ID" "HOSTS"
-    # The OIDC vars (6.3) equal the committed ones; no secret at all.
-    names_are "$S" "HOSTS,PLATFORM_DB"
+    # 6.3's exact list (the OIDC vars whatever the tag commits), each OIDC
+    # value equal to the committed one.
+    got="$(jq -r '[.result.bindings[] | select(.type != "secret_text") | .name] | sort | join(",")' <<< "$S")"
+    want="HOSTS,OIDC_AUDIENCE,OIDC_ENVIRONMENT,OIDC_JOB_WORKFLOW_REFS,OIDC_REPOSITORY,OIDC_REPOSITORY_ID,PLATFORM_DB"
+    [ "$got" = "$want" ] || { echo "bindings: got '$got', want '$want'" >&2; exit 1; }
     vars_are "$S" inventory
-    no_secret_bindings "$S" oa-$P-inventory
+    # No secret but INVENTORY_KEY, which the inventory-key target still puts
+    # until W9b retires both (10.1).
+    sec="$(jq -r '[.result.bindings[] | select(.type == "secret_text") | .name | select(. != "INVENTORY_KEY")] | join(",")' <<< "$S")"
+    [ -z "$sec" ] || { echo "oa-$P-inventory has secret bindings ($sec); want none but INVENTORY_KEY" >&2; exit 1; }
     ;;
   inventory-key)
     need_workers oa-$P-inventory

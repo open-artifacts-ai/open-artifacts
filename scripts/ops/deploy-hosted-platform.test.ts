@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -39,6 +45,7 @@ case "$*" in
   "exec wrangler secret put"*)
     v="$(cat)"
     echo "stdin-len $5 \${#v}" >> "$STUB_LOG"
+    [ -f "$STATE/fail-put-$5" ] && exit 1
     touch "$STATE/$w.secrets"; grep -qx "$5" "$STATE/$w.secrets" || echo "$5" >> "$STATE/$w.secrets"
     ;;
 esac`;
@@ -75,11 +82,15 @@ case "$path" in
   storage/kv/namespaces/*/values/*)
     ns="\${path#storage/kv/namespaces/}"; ns="\${ns%%/*}"; key="\${path##*/values/}"; f="$STATE/kv-$ns-$key"
     if [ "$m" = PUT ]; then printf %s "$body" > "$f"; ok '{}'
+    elif [ "$m" = DELETE ]; then rm -f "$f"; ok '{}'
     elif [ -f "$f" ]; then cat "$f"; [ -z "$wcode" ] || printf '\\n200'
     else echo '{"success":false,"errors":[{"code":10009}]}'; [ -z "$wcode" ] || printf '\\n404'; fi
     exit 0 ;;
   secrets_store/stores/*/secrets\\?*) [ -f "$STATE/fail-store" ] && { bad; exit 0; }; ok "$(cat "$STATE/store-secrets.json" 2>/dev/null || echo '[]')"; exit 0 ;;
-  workers/scripts/*/content/v2) w="\${path#workers/scripts/}"; w="\${w%%/*}"; cat "$STATE/$w.content" 2>/dev/null || echo 'export default {};'; exit 0 ;;
+  workers/scripts/*/content/v2) w="\${path#workers/scripts/}"; w="\${w%%/*}"
+    if [ -f "$STATE/fail-content" ]; then echo '{"success":false,"errors":[{"code":10000}]}'; [ -z "$wcode" ] || printf '\\n403'
+    else cat "$STATE/$w.content" 2>/dev/null || echo 'export default {};'; [ -z "$wcode" ] || printf '\\n200'; fi
+    exit 0 ;;
 esac
 w="$(printf %s "$url" | sed -E 's#.*/workers/scripts/([^/]+)/.*#\\1#')"
 kind="\${url##*/}"
@@ -557,24 +568,14 @@ describe("deploy-hosted-platform.sh", () => {
     );
     expect(bad.run("auth-broker", { VERIFY_ONLY: "1" }).code).toBe(1);
   });
-  it("inventory: deploys through the wrapper with its two ids and verifies exactly two bindings", () => {
+  it("inventory: deploys through the wrapper with its two ids; a Worker without the OIDC vars refuses", () => {
     const r = setup().run("inventory");
-    expect(r.err).toBe("");
-    expect(r.code).toBe(0);
     const w = r.log.find((l) => l.startsWith("wrapper inventory prod "));
     expect(w).toContain(`hosts=${HOSTS}`);
     expect(w).toContain(`db=${DB}`);
-    const extra = setup({
-      next: {
-        "oa-p-inventory": settings([
-          { type: "d1", name: "PLATFORM_DB", id: DB },
-          { type: "kv_namespace", name: "HOSTS", namespace_id: HOSTS },
-          { type: "r2_bucket", name: "EXTRA", bucket_name: "x" },
-        ]),
-      },
-    }).run("inventory");
-    expect(extra.code).toBe(1);
-    expect(extra.err).toContain("bindings: got 'EXTRA,HOSTS,PLATFORM_DB'");
+    // 6.3's list, whatever the tag commits.
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("bindings: got 'HOSTS,PLATFORM_DB'");
   });
   it("in CI, prod runs only from main in hosted-prod-deploy; staging is not held to that", () => {
     const ci = {
@@ -861,6 +862,25 @@ describe("deploy-hosted-platform.sh", () => {
       ]);
       expect(puts(r.log)).toEqual(["ADMIN_BROKER_KEY"]);
     });
+    it("a failed ADMIN_BROKER_KEY put deletes the new entry, so the next run makes both again", () => {
+      const { [`kv-${REG}-${KEY}`]: _, ...noEntry } = live;
+      const s = setup({
+        exists: brokers,
+        files: { ...noEntry, "fail-put-ADMIN_BROKER_KEY": "" },
+        secrets: liveSecrets,
+      });
+      const r = s.run("provisioning");
+      expect(r.code).toBe(1);
+      expect(r.err).toContain(`${KEY} deleted, rerun to make both`);
+      expect(r.writes.map((w) => w.split(" ").slice(0, 3).join(" "))).toEqual([
+        `WRITE PUT /storage/kv/namespaces/${REG}/values/${KEY}`,
+        `WRITE DELETE /storage/kv/namespaces/${REG}/values/${KEY}`,
+      ]);
+      rmSync(join(s.state, "fail-put-ADMIN_BROKER_KEY"));
+      const again = s.run("provisioning");
+      expect(again.code, again.err).toBe(0);
+      expect(puts(again.log).slice(-1)).toEqual(["ADMIN_BROKER_KEY"]);
+    });
     it("refuses until the provisioner and the auth broker exist", () => {
       const r = setup({ exists: ["oa-p-auth-broker"] }).run("provisioning");
       expect(r.code).toBe(1);
@@ -968,6 +988,16 @@ describe("deploy-hosted-platform.sh", () => {
           "bundle contains test-signin",
         ],
         [
+          "bundle read 403",
+          { "fail-content": "" },
+          "read oa-p-provisioning content failed (HTTP 403)",
+        ],
+        [
+          "bundle read JSON",
+          { content: '{"success":false,"errors":[]}' },
+          "a JSON answer, not a bundle",
+        ],
+        [
           "directory",
           { [`kv-${DIRREG}-${KEY}`]: entry() },
           "is in oa-p-directory-registry",
@@ -1006,6 +1036,61 @@ describe("deploy-hosted-platform.sh", () => {
           expect(r.err, label).toContain(msg);
         });
     }
+    it("prod refuses a tag that commits an OIDC var or test-users, before anything is deployed", () => {
+      const PV = readFileSync(
+        join(root, "apps/provisioning/wrangler.jsonc"),
+        "utf8",
+      );
+      const at = PV.lastIndexOf('"SIGNUPS_ENABLED": "false",');
+      expect(at).toBeGreaterThan(PV.indexOf('"SIGNUPS_ENABLED": "false",'));
+      const prodVar = (v: string) =>
+        PV.slice(0, at) +
+        v +
+        PV.slice(at + '"SIGNUPS_ENABLED": "false",'.length);
+      for (const [label, config, msg] of [
+        [
+          "oidc",
+          prodVar('"SIGNUPS_ENABLED": "false", "OIDC_AUDIENCE": "x",'),
+          "prod provisioning commits OIDC_AUDIENCE",
+        ],
+        [
+          "test-users",
+          prodVar('"SIGNUPS_ENABLED": "test-users",'),
+          "commits SIGNUPS_ENABLED=test-users",
+        ],
+      ] as const) {
+        const t = mkdtempSync(join(tmpdir(), "oa-hosted-tree-"));
+        for (const f of ["deploy-hosted-platform.sh", "wrangler-env.ts"])
+          write(
+            join(t, "scripts/ops", f),
+            readFileSync(join(root, "scripts/ops", f), "utf8"),
+          );
+        write(join(t, "apps/provisioning/wrangler.jsonc"), config);
+        const s = setup({ exists: brokers, files: live, secrets: liveSecrets });
+        const r = s.sb.run(
+          [
+            "bash",
+            join(t, "scripts/ops/deploy-hosted-platform.sh"),
+            "prod",
+            "provisioning",
+          ],
+          {
+            env: {
+              ...ENV,
+              STATE: s.state,
+              DEPLOY_WRAPPER: wrapperStub(s.sb.dir),
+              BROKER_PIN_FILE: "/dev/null",
+            },
+          },
+        );
+        expect(r.code, label).toBe(1);
+        expect(r.err, label).toContain(msg);
+        expect(
+          s.sb.log().filter((l) => /^(pnpm|wrapper) /.test(l)),
+          label,
+        ).toEqual([]);
+      }
+    });
     it("refuses a secret it doesn't make", () => {
       const extra = setup({
         exists: brokers,
@@ -1038,6 +1123,7 @@ describe("deploy-hosted-platform.sh", () => {
 
   it("auth-broker: the Google secret only when given or absent", () => {
     const keep = setup({
+      exists: ["oa-p-auth-broker"],
       secrets: {
         "oa-p-auth-broker": ["BROKER_STATE_KEY", "GOOGLE_CLIENT_SECRET"],
       },
@@ -1051,6 +1137,15 @@ describe("deploy-hosted-platform.sh", () => {
       "oa-p-auth-broker has no GOOGLE_CLIENT_SECRET",
     );
     expect(puts(absent.log)).toEqual([]);
+    // Refused before the deploy: a new env never gets a broker without it,
+    // nor does a live Worker that lost it.
+    expect(absent.log.some((l) => l.startsWith("wrapper"))).toBe(false);
+    const lost = setup({
+      exists: ["oa-p-auth-broker"],
+      secrets: { "oa-p-auth-broker": ["BROKER_STATE_KEY"] },
+    }).run("auth-broker", { GOOGLE_CLIENT_SECRET: "" });
+    expect(lost.code).toBe(1);
+    expect(lost.log.some((l) => l.startsWith("wrapper"))).toBe(false);
   });
 
   describe("inventory read-back (W8's OIDC vars)", () => {
@@ -1060,7 +1155,7 @@ describe("deploy-hosted-platform.sh", () => {
     );
     const W8 = INV.replace(
       '"name": "oa-p-inventory",',
-      `"name": "oa-p-inventory", "vars": { "OIDC_AUDIENCE": "oa-p-inventory", "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_PROD}}", "OIDC_JOB_WORKFLOW_REFS": "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main" },`,
+      `"name": "oa-p-inventory", "vars": { "OIDC_AUDIENCE": "https://oa-p-inventory", "OIDC_REPOSITORY": "o/r", "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_PROD}}", "OIDC_JOB_WORKFLOW_REFS": "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main", "OIDC_ENVIRONMENT": "redline-staging" },`,
     );
     /** The repo's deploy script and wrangler-env.ts beside our own inventory config. */
     const tree = (config: string) => {
@@ -1088,14 +1183,19 @@ describe("deploy-hosted-platform.sh", () => {
         ...extra,
       ]);
     const VARS = {
-      OIDC_AUDIENCE: "oa-p-inventory",
+      OIDC_AUDIENCE: "https://oa-p-inventory",
+      OIDC_REPOSITORY: "o/r",
       OIDC_REPOSITORY_ID: REPO_ID,
       OIDC_JOB_WORKFLOW_REFS:
         "o/r/.github/workflows/prodclean-monitor.yml@refs/heads/main",
+      OIDC_ENVIRONMENT: "redline-staging",
     };
-    const go = (next: string) => {
-      const s = setup({ next: { "oa-p-inventory": next } });
-      const r = s.sb.run(["bash", tree(W8), "prod", "inventory"], {
+    const go = (
+      next: string,
+      target = "inventory",
+      s = setup({ next: { "oa-p-inventory": next } }),
+    ) =>
+      s.sb.run(["bash", tree(W8), "prod", target], {
         env: {
           ...ENV,
           STATE: s.state,
@@ -1103,8 +1203,6 @@ describe("deploy-hosted-platform.sh", () => {
           BROKER_PIN_FILE: "/dev/null",
         },
       });
-      return r;
-    };
     it("the deployed OIDC vars equal the committed ones, the repository id filled", () => {
       const r = go(deployed(VARS));
       expect(r.err).toBe("");
@@ -1130,13 +1228,35 @@ describe("deploy-hosted-platform.sh", () => {
         ],
         [
           "secret",
-          deployed(VARS, [{ type: "secret_text", name: "INVENTORY_KEY" }]),
+          deployed(VARS, [{ type: "secret_text", name: "OTHER_KEY" }]),
+        ],
+        [
+          "extra binding",
+          deployed(VARS, [
+            { type: "r2_bucket", name: "EXTRA", bucket_name: "x" },
+          ]),
         ],
       ] as const) {
         const r = go(next);
         expect(r.code, label).toBe(1);
-        expect(r.err, label).toMatch(/inventory vars: got|has secret bindings/);
+        expect(r.err, label).toMatch(
+          /inventory vars: got|has secret bindings|bindings: got/,
+        );
       }
+    });
+    it("inventory-key then inventory, run after run: INVENTORY_KEY is the one secret allowed until W9b", () => {
+      const next = deployed(VARS, [
+        { type: "secret_text", name: "INVENTORY_KEY" },
+      ]);
+      const s = setup({
+        exists: ["oa-p-inventory"],
+        next: { "oa-p-inventory": next },
+      });
+      for (let i = 0; i < 2; i++)
+        for (const t of ["inventory-key", "inventory"]) {
+          const r = go(next, t, s);
+          expect(r.code, `${t} ${i}: ${r.err}`).toBe(0);
+        }
     });
   });
 });
