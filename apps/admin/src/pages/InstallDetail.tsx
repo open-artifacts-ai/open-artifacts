@@ -11,7 +11,7 @@ import { ApiError, api } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
 import { installJobsQuery, installQuery, releasesQuery } from "../api/queries";
 import { ActionDialog } from "../components/ActionDialog";
-import { StateBadge, StatusBadge } from "../components/Bits";
+import { ErrorLine, StateBadge, StatusBadge } from "../components/Bits";
 import { fmtTime } from "../components/format";
 import { useAction } from "../hooks/useAction";
 import { LoadError } from "../layout/LoadError";
@@ -164,11 +164,7 @@ function Actions({ install }: { install: Install }) {
             >
               {q.label}
             </Button>
-            {!!q.run.error && (
-              <small role="alert" className="oa-inline-error">
-                {errorCopy(q.run.error)}
-              </small>
-            )}
+            <ErrorLine error={q.run.error} />
           </span>
         ))}
       {can(install, "suspend") && (
