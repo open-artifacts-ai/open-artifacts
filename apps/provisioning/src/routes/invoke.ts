@@ -1,5 +1,6 @@
 import {
   type AdminToolName,
+  type ApiErrorCode,
   type ApiRouteId,
   authorize,
   INSTALL_ID_RE,
@@ -170,3 +171,31 @@ export async function invokeRoute(
     throw e;
   }
 }
+
+/**
+ * The MCP adapter's one charge for a request that is not a `tools/call`
+ * (`initialize`, `tools/list`, `resources/*`, `prompts/*`; 9A.7): one
+ * `RL_PV_READ` hit on the principal's rate key, its 429 counted (4.9).
+ * A `tools/call` is charged inside invokeRoute instead.
+ */
+export async function chargeTransport(
+  env: Env,
+  principal: Principal,
+): Promise<void> {
+  const r = await limit(env, "read", principal.rateKey);
+  if (!r) return;
+  if (r.code === "rate_limited") await countRateLimited(env, principal.rateKey);
+  throw new ApiError(r.code);
+}
+
+/** A refusal invokeRoute threw, as the 3.1 envelope's fields; null for any other error. */
+export const refusalOf = (
+  e: unknown,
+): { code: ApiErrorCode; message: string; details?: unknown } | null =>
+  e instanceof ApiError
+    ? {
+        code: e.code,
+        message: e.message,
+        ...(e.details === undefined ? {} : { details: e.details }),
+      }
+    : null;
