@@ -27,6 +27,7 @@
 import { type HttpHandler, HttpResponse, http } from "msw";
 import { checkCreateFields, TRANSITIONS } from "../provisioning/authz.js";
 import { bodyHash } from "../provisioning/bodyhash.js";
+import { LIVE_TOKENS_PER_ADMIN } from "../provisioning/constants.js";
 import {
   JOB_STEPS,
   jobStepsFor,
@@ -62,6 +63,13 @@ import { slugError, slugRule } from "../provisioning/slugs.js";
 export type ProvisioningMockOptions = {
   env?: ProvisioningEnv;
   world?: "fixtures" | "empty";
+  /**
+   * The clock for time-of-write fields (token createdAt/expiresAt, job and
+   * audit times, the token_limit liveness check). Default: the fixed
+   * fixture clock (T0, then +1 s per write), so tests stay deterministic;
+   * dev and Playwright pass Date.now.
+   */
+  now?: () => number;
 };
 
 export type ProvisioningMock = {
@@ -126,7 +134,7 @@ export function createProvisioningMock(
   const env = opts.env ?? "prod";
   const T0 = fixtureWorld().at;
   let seq = 0;
-  const now = () => T0 + ++seq * 1000;
+  const now = opts.now ?? (() => T0 + ++seq * 1000);
 
   const installs = new Map<string, InstallDetail>();
   const jobs = new Map<string, Job>();
@@ -581,6 +589,14 @@ export function createProvisioningMock(
           ttlMinutes: number;
         };
         const at = now();
+        const live = tokens.filter(
+          (x) => x.revokedAt === null && x.expiresAt > at,
+        ).length;
+        if (live >= LIVE_TOKENS_PER_ADMIN)
+          return err(
+            "token_limit",
+            `At most ${LIVE_TOKENS_PER_ADMIN} live tokens per admin.`,
+          );
         const t: Token = {
           id: mockUlid(++seq),
           kind: "oat",

@@ -44,6 +44,17 @@ export function isTokenStatus(v: unknown): v is {
  */
 export const DCR_COUNTER_PREFIX = "dcr:";
 
+/**
+ * How long a failed signup's `signup_secret` row (the owner email) is kept
+ * before the nightly prune deletes it: 30 days, the same as the deleted
+ * install's owner-email purge (#648). The design states no value; the
+ * Manager's decision (C6).
+ */
+export const FAILED_SECRET_RETENTION_MS = 30 * DAY;
+
+/** 3.5 `token_limit`, 4.1: 5 live tokens per admin across both kinds (`oat` and `oauth`). */
+export const LIVE_TOKENS_PER_ADMIN = 5;
+
 /** 8.3, 9A.7: an `oauth_clients` row with no grant this long is swept. */
 export const OAUTH_CLIENT_UNCLAIMED_MS = 24 * HOUR;
 /** 9A.3.1, 9A.7: every MCP client expires after 30 days (`clientRegistrationTTL: 2592000` s). */

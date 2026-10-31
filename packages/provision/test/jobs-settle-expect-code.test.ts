@@ -128,6 +128,35 @@ describe("SettleOptions.expectCode: compare-and-set on error_code", () => {
     expect(cleanupCount(db, parent)).toEqual({ n: 1 });
   });
 
+  it("expected null, a concurrent writer already set run_dead: settled=false, exactly one cleanup", () => {
+    const db = platformDb();
+    const parent = job(db, "i1", { status: "running" });
+    // The concurrent writer (another tick): settles run_dead, queues its cleanup.
+    batch(db, () => {
+      db.prepare(SETTLE).run(parent, "run_dead", 7);
+      db.prepare(
+        cleanupInsert(
+          `${settledWith("?1", "run_dead")} AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?1 AND c.kind = 'cleanup')`,
+        ),
+      ).run(parent, "c-first", "i1");
+    });
+    // This call read null; the settle writes nothing, and the extra (which
+    // still runs in the batch) is deduplicated by its own guards.
+    const guard = `${settledWith("?1", "run_dead")} AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_job_id = ?1 AND c.kind = 'cleanup')`;
+    expect(settle(db, parent, { expectCode: null }, guard)).toEqual({
+      settled: false,
+      inserted: 0,
+      row: { status: "failed", error_code: "run_dead" },
+    });
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'cleanup' AND parent_job_id = ?",
+        )
+        .get(parent),
+    ).toEqual({ n: 1 });
+  });
+
   it("absent: unchanged (settles over any stored code, never overwriting it)", () => {
     const db = platformDb();
     const parent = job(db, "i1", { status: "running", error_code: "canceled" });

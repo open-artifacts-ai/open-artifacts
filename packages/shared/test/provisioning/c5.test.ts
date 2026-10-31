@@ -392,6 +392,15 @@ describe("narrow subpath exports (no zod)", () => {
     }
   });
 
+  it("the constants subpath carries the C6 values with no zod", async () => {
+    const C = await import("../../src/provisioning/constants.js");
+    expect(C.FAILED_SECRET_RETENTION_MS).toBe(30 * DAY);
+    expect(C.LIVE_TOKENS_PER_ADMIN).toBe(5);
+    expect(graph(join(SRC, "provisioning/constants.ts")).has("zod")).toBe(
+      false,
+    );
+  });
+
   it("no constants module imports zod, directly or through another module", () => {
     for (const src of Object.values(CONST_SUBPATHS)) {
       const deps = graph(join(SRC, src));

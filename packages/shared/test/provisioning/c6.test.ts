@@ -6,7 +6,9 @@ import { bodyHash } from "../../src/provisioning/bodyhash.js";
 import * as CONSTANTS from "../../src/provisioning/constants.js";
 import {
   DCR_COUNTER_PREFIX,
+  FAILED_SECRET_RETENTION_MS,
   isTokenStatus,
+  LIVE_TOKENS_PER_ADMIN,
   OAUTH_CLIENT_TTL_MS,
   OAUTH_CLIENT_UNCLAIMED_MS,
   parseSignupsEnabled,
@@ -213,6 +215,14 @@ describe("zod-free constants (Backend minors)", () => {
       expect(isTokenStatus(c), JSON.stringify(c)).toBe(
         TokenStatusSchema.safeParse(c).success,
       );
+  });
+
+  it("a failed signup's secret is kept 30 days (Manager, as #648's owner-email purge)", () => {
+    expect(FAILED_SECRET_RETENTION_MS).toBe(30 * 24 * 60 * 60 * 1000);
+  });
+
+  it("5 live tokens per admin across both kinds (3.5, 4.1)", () => {
+    expect(LIVE_TOKENS_PER_ADMIN).toBe(5);
   });
 
   it("DCR counters share one prefix", () => {

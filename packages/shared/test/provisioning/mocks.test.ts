@@ -8,6 +8,7 @@ import {
   AcceptedSchema,
   InstallDetailSchema,
   JobSchema,
+  LIVE_TOKENS_PER_ADMIN,
   MeSchema,
   ProvisioningErrorSchema,
   WorldSchema,
@@ -377,5 +378,53 @@ describe("provisioning MSW mocks", () => {
     };
     expect(t.items).toHaveLength(2);
     for (const x of t.items) expect(x.revokedAt).not.toBeNull();
+  });
+
+  it("mint stamps createdAt and expiresAt from opts.now", async () => {
+    let t = 1_800_000_000_000;
+    server.use(...createProvisioningMock({ now: () => t }).handlers);
+    const r = await post(`${ADMIN}/tokens`, {
+      requestId: "req_tok_clock_00000000",
+      label: "clock",
+      scopes: ["installs:read"],
+      ttlMinutes: 30,
+    });
+    expect(r.status).toBe(201);
+    const m = (await r.json()) as { createdAt: number; expiresAt: number };
+    expect(m.createdAt).toBe(1_800_000_000_000);
+    expect(m.expiresAt).toBe(1_800_000_000_000 + 30 * 60_000);
+    t += 5_000;
+    const j = (await (
+      await post(`${ADMIN}/installs`, {
+        requestId: "req_clock_install_0000",
+        slug: "clocked",
+        ownerEmail: "o@acme.test",
+        tier: "team",
+        auth: { providers: ["google"], domains: ["acme.test"] },
+      })
+    ).json()) as { job: { createdAt: number } };
+    expect(j.job.createdAt).toBe(1_800_000_005_000);
+  });
+
+  it(`token_limit after ${LIVE_TOKENS_PER_ADMIN} live tokens; revoked and expired ones do not count`, async () => {
+    let t = 1_800_000_000_000;
+    server.use(...createProvisioningMock({ now: () => t }).handlers);
+    const mint = (n: number, ttlMinutes = 15) =>
+      post(`${ADMIN}/tokens`, {
+        requestId: `req_tok_limit_${String(n).padStart(8, "0")}`,
+        label: `t${n}`,
+        scopes: ["installs:read"],
+        ttlMinutes,
+      });
+    for (let n = 0; n < LIVE_TOKENS_PER_ADMIN; n++)
+      expect((await mint(n)).status).toBe(201);
+    const refused = await mint(99);
+    expect(refused.status).toBe(409);
+    expect(ProvisioningErrorSchema.parse(await refused.json()).error.code).toBe(
+      "token_limit",
+    );
+    // Past the 15-minute expiry, none is live.
+    t += 15 * 60_000;
+    expect((await mint(100)).status).toBe(201);
   });
 });

@@ -123,9 +123,12 @@ export interface SettleOptions {
    * Compare-and-set on the code the caller read (C6, W7 review). When
    * present (a string or null), the settle UPDATE also requires
    * `error_code IS ?` bound to `expectCode` (SQL `IS`, so null matches
-   * null). If the row's code changed since the caller read it, nothing is
-   * written, `settled` is false, and extras guarded on the settle do not
-   * run; the caller retries next tick. Absent: unchanged behaviour.
+   * null). Only a provision error code or null is accepted (as `code`);
+   * anything else is refused. On a mismatch (the row's code changed since
+   * the caller read it) the settle writes nothing and `settled` is false;
+   * extras still run in the batch and are deduplicated by their own guards
+   * (settledWith plus NOT EXISTS cleanup plus INSERT OR IGNORE). The caller
+   * retries next tick. Absent: unchanged behaviour.
    *
    * With expectCode 'canceled' the code written stays 'canceled', and the
    * cancel's own path may already have queued the cleanup. To keep exactly
@@ -141,7 +144,7 @@ export interface SettleOptions {
    * (the first line is `settledWith("?1", "canceled")`). Pinned on the real
    * 0008 schema in test/jobs-settle-expect-code.test.ts.
    */
-  expectCode?: string | null;
+  expectCode?: ProvisionErrorCode | null;
 }
 
 /**
@@ -201,9 +204,11 @@ export async function settleFailed(
   if (
     opts?.expectCode !== undefined &&
     opts.expectCode !== null &&
-    typeof opts.expectCode !== "string"
+    !(PROVISION_ERROR_CODES as readonly unknown[]).includes(opts.expectCode)
   )
-    throw new Error("settleFailed: expectCode must be a string or null");
+    throw new Error(
+      `settleFailed: expectCode must be a provision error code or null, not ${String(opts.expectCode)}`,
+    );
   throw new Error(`settleFailed is not built yet (W3); job ${jobId}`);
 }
 export type SettleFailed = typeof settleFailed;
