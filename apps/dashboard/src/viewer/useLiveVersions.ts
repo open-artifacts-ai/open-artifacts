@@ -42,6 +42,14 @@ export const isSafeSwap = (s: {
   chromeOpen: boolean;
 }) => s.following && s.hello && !s.touched && !s.engaged && !s.chromeOpen;
 
+/**
+ * The swapped note for `version` expired. A newer swap may have replaced it
+ * before the old note's timer fired (the timer runs before React unmounts
+ * it), so only that version's note is cleared.
+ */
+export const expireSwapped = (s: Swapped | null, version: number) =>
+  s?.version === version ? null : s;
+
 /** Design's announcements (one polite status region in the top document). */
 export const say = {
   held: (v: number, full: boolean) =>
@@ -390,6 +398,10 @@ export function useLiveVersions(o: {
     touched,
     check,
     undelete,
-    clearSwapped: useCallback(() => setSwapped(null), []),
+    /** A note expired: clears it only if it is still the one shown. */
+    clearSwapped: useCallback(
+      (version: number) => setSwapped((s) => expireSwapped(s, version)),
+      [],
+    ),
   };
 }
