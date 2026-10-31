@@ -1,4 +1,5 @@
 import { MintTokenSchema, TokenIdSchema } from "@oa/shared/provisioning";
+import { revokeLibraryGrants } from "../auth/oauth/server.js";
 import { ApiError } from "../errors.js";
 import {
   getToken,
@@ -44,19 +45,20 @@ export const listTokensHandler: Handler = async ({ env, principal }) => ({
 /**
  * R21 DELETE /tokens/:id?: one (404 if not this admin's) or all, both kinds;
  * a malformed id is 400 `invalid_input` (the C1 params schema). The D1
- * revoke refuses an oauth row at its next call; ending its library grant in
- * KV is W13b's (the service returns the grants).
+ * revoke refuses an oauth row at its next call; its library grant in KV is
+ * ended here too (4.6).
  */
 export const revokeTokens: Handler = async ({ env, principal, input }) => {
   const email = adminEmail(principal.email);
   const id = input.params?.id;
   if (id === undefined || id === "") {
-    await revokeAllTokens(env, email);
+    await revokeLibraryGrants(env, await revokeAllTokens(env, email));
   } else {
     if (!TokenIdSchema.safeParse(id).success)
       throw new ApiError("invalid_input");
-    if ((await revokeToken(env, email, id)) === null)
-      throw new ApiError("not_found");
+    const grants = await revokeToken(env, email, id);
+    if (grants === null) throw new ApiError("not_found");
+    await revokeLibraryGrants(env, grants);
   }
   return { status: 204, body: null, headers: {} };
 };

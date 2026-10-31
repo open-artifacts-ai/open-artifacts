@@ -11,6 +11,11 @@ import { isAdminIdentity } from "./identities.js";
 
 export const SESSION_COOKIE = "__Host-oa-admin";
 export const SESSION_TTL_MS = 8 * 3600_000;
+/**
+ * A sign-in for the session's own pair with less than this left gets a new
+ * session, not the old one (9A.3.2 step 4: MCP consent sends it here).
+ */
+export const SESSION_RENEW_UNDER_MS = 3_600_000;
 const SID_RE = /^[A-Za-z0-9_-]{43}$/;
 
 export const adminHost = (env: Env) => `admin.${env.APP_DOMAIN}`;

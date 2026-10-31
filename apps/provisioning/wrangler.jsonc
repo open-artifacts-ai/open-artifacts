@@ -33,6 +33,11 @@
       "observability": {
         "enabled": false
       },
+      // Hourly MCP client sweep (sweepOAuthClients): unclaimed after 24 h,
+      // any client after 30 days, with its grants.
+      "triggers": {
+        "crons": ["41 * * * *"]
+      },
       "vars": {
         "OA_ENV": "staging",
         "APP_DOMAIN": "open-artifacts-staging.app",
@@ -173,6 +178,11 @@
       "preview_urls": false,
       "observability": {
         "enabled": false
+      },
+      // Hourly MCP client sweep (sweepOAuthClients): unclaimed after 24 h,
+      // any client after 30 days, with its grants.
+      "triggers": {
+        "crons": ["41 * * * *"]
       },
       "vars": {
         "OA_ENV": "prod",

@@ -472,6 +472,9 @@ describe("mintAgentToken: oauth (MCP consent)", () => {
     expect(oauthLabel("<script>")).toBe("unnamed");
     expect(oauthLabel("Clauдe")).toBe("unnamed");
     expect(oauthLabel("x".repeat(41))).toBe("unnamed");
+    // L1: bidi and controls stripped, whitespace collapsed, before the check.
+    expect(oauthLabel("\u202eClaude\u0000  Code\u2069")).toBe("Claude Code");
+    expect(oauthLabel("\u202e\u0000")).toBe("unnamed");
   });
 
   it("stores an unfit client_name as unnamed", async () => {

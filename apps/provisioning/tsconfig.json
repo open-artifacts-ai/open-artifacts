@@ -7,5 +7,12 @@
       "@cloudflare/vitest-plugin/types"
     ]
   },
-  "include": ["src", "test", "vitest.config.ts", "vitest.node.config.ts"]
+  "include": [
+    "src",
+    "test",
+    "e2e",
+    "vitest.config.ts",
+    "vitest.node.config.ts",
+    "playwright.config.ts"
+  ]
 }
