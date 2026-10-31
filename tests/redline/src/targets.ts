@@ -36,10 +36,11 @@ export interface ProdProbe {
   r2TokenFile: string;
   /** REDLINE_PROD_SCRIPTS_TOKEN: Workers Scripts Read for the prod namespace. */
   scriptsTokenFile: string;
-  /** The P1 inventory Worker origin (GET /installs); absent until deployed. */
+  /**
+   * The prod inventory origin (GET /installs). Read with a GitHub OIDC
+   * bearer only (prodClean's inventoryBearer); there is no stored key.
+   */
   inventoryUrl?: string;
-  /** REDLINE_PROD_INVENTORY_KEY. */
-  inventoryKeyFile?: string;
 }
 
 export interface Targets {
@@ -145,7 +146,7 @@ interface Secrets {
 const SECRETS = new WeakMap<object, Secrets>();
 const PROD_SECRETS = new WeakMap<
   object,
-  { r2Token: string; scriptsToken: string; inventoryKey?: string }
+  { r2Token: string; scriptsToken: string; inventoryBearer?: string }
 >();
 
 /** @internal Secrets of a loaded target (http.ts only). */
@@ -288,13 +289,19 @@ function exists(p: string): boolean {
 const PROD_FILES = {
   r2TokenFile: "REDLINE_PROD_R2_TOKEN",
   scriptsTokenFile: "REDLINE_PROD_SCRIPTS_TOKEN",
-  inventoryKeyFile: "REDLINE_PROD_INVENTORY_KEY",
 } as const;
+
+/**
+ * The GitHub OIDC JWT the red-line job mints for the prod inventory's
+ * audience and writes into the scanned secrets dir (design 4.4). Optional:
+ * absent, prodClean fails inventory_unconfigured.
+ */
+export const PROD_INVENTORY_OIDC_FILE = "REDLINE_PROD_INVENTORY_OIDC";
 
 /**
  * The prod probe: from REDLINE_TARGETS.prod, else the CI layout
  * (<secretsDir>/REDLINE_PROD_R2_TOKEN, _SCRIPTS_TOKEN, optional
- * _INVENTORY_KEY, and env REDLINE_PROD_ACCOUNT_ID). Undefined when neither
+ * _INVENTORY_OIDC, and env REDLINE_PROD_ACCOUNT_ID). Undefined when neither
  * is configured.
  */
 export function parseProd(
@@ -325,7 +332,7 @@ export function parseProd(
   const secrets: {
     r2Token: string;
     scriptsToken: string;
-    inventoryKey?: string;
+    inventoryBearer?: string;
   } = {
     r2Token: readSecretFile(r2TokenFile, "REDLINE_PROD_R2_TOKEN"),
     scriptsToken: readSecretFile(
@@ -333,13 +340,13 @@ export function parseProd(
       "REDLINE_PROD_SCRIPTS_TOKEN",
     ),
   };
-  if (r.inventoryUrl !== undefined) {
+  if (r.inventoryUrl !== undefined)
     p.inventoryUrl = origin(r.inventoryUrl, "prod.inventoryUrl", "staging");
-    const kf = file("inventoryKeyFile");
-    if (!kf) throw new Error("prod: the inventory key file is required");
-    p.inventoryKeyFile = kf;
-    secrets.inventoryKey = readSecretFile(kf, "REDLINE_PROD_INVENTORY_KEY");
-  }
+  const jwtFile = secretsDir
+    ? join(secretsDir, PROD_INVENTORY_OIDC_FILE)
+    : undefined;
+  if (jwtFile && exists(jwtFile))
+    secrets.inventoryBearer = readSecretFile(jwtFile, PROD_INVENTORY_OIDC_FILE);
   PROD_SECRETS.set(p, secrets);
   return p;
 }
