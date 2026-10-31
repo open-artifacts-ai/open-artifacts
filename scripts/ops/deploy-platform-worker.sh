@@ -18,7 +18,7 @@
 #   true only with ALLOW_SIGNUPS=1)
 #                WELCOME_FROM=<address> CLOUDFLARE_ACCOUNT_ID=<32 hex> SECRETS_STORE_ID=<32 hex>
 #                PLATFORM_DB_ID=<uuid>
-#   provisioning: PLATFORM_DB_ID=<uuid> PROVISIONING_OAUTH_KV_ID=<32 hex>
+#   provisioning: PLATFORM_DB_ID=<uuid> PROVISIONING_OAUTH_KV_ID=<32 hex> SIGNUP_DAILY_CAP=<1-9999>
 #                 GITHUB_REPOSITORY_ID=<digits> (the OIDC principal; only staging's
 #                 block has one), and the admin build's dist-assets/index.html
 #                 (deploy-hosted-platform.sh builds it first)
@@ -145,6 +145,8 @@ case "$app" in
   provisioning)
     fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
     fill "PROVISIONING_OAUTH_KV_ID_${up}" "${PROVISIONING_OAUTH_KV_ID:-}" "$hex32"
+    # The API's per-day signup cap, the provisioner's value (#893).
+    fill "SIGNUP_DAILY_CAP_${up}" "${SIGNUP_DAILY_CAP:-}" "$cap"
     # Only staging has the OIDC principal (4.4); prod's block names no
     # repository, but the value is checked either way.
     fill "GITHUB_REPOSITORY_ID_${up}" "${GITHUB_REPOSITORY_ID:-}" "$repo_id"

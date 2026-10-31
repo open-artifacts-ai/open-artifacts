@@ -28,7 +28,7 @@
 #   inventory        PLATFORM_DB_ID HOSTS_KV_ID GITHUB_REPOSITORY_ID GITHUB_REPOSITORY
 #                    (owner/repo: the OIDC principal, design v7 6.3)
 #   provisioning     PLATFORM_DB_ID BROKER_REGISTRY_ID DIRECTORY_REGISTRY_ID
-#                    GITHUB_REPOSITORY_ID (the provisioner and auth broker must exist)
+#                    GITHUB_REPOSITORY_ID SIGNUP_DAILY_CAP (the provisioner and auth broker must exist)
 # Always: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.
 set -euo pipefail
 
@@ -293,7 +293,7 @@ case "$target" in
     [ -z "$names" ] || { echo "oa-$P-provisioner has secrets '$names'; want none" >&2; exit 1; }
     ;;
   provisioning)
-    need PLATFORM_DB_ID; need BROKER_REGISTRY_ID; need DIRECTORY_REGISTRY_ID; need GITHUB_REPOSITORY_ID
+    need PLATFORM_DB_ID; need BROKER_REGISTRY_ID; need DIRECTORY_REGISTRY_ID; need GITHUB_REPOSITORY_ID; need SIGNUP_DAILY_CAP
     need_workers oa-$P-provisioner oa-$P-auth-broker
     # Prod, before anything is deployed: the tag's committed vars carry no OIDC
     # principal and no test-users gate (4.4); the read-back checks them again.
@@ -323,7 +323,7 @@ case "$target" in
     [[ "$found" =~ ^[0-9a-f]{32}$ ]] || { echo "KV namespace $ns: want exactly one, with a 32 hex id" >&2; exit 1; }
     OAUTH_KV_ID="$found"
     PLATFORM_DB_ID="$PLATFORM_DB_ID" PROVISIONING_OAUTH_KV_ID="$OAUTH_KV_ID" GITHUB_REPOSITORY_ID="$GITHUB_REPOSITORY_ID" \
-      deploy provisioning
+      SIGNUP_DAILY_CAP="$SIGNUP_DAILY_CAP" deploy provisioning
     W="oa-$P-provisioning"
     have="$(secret_names "$W")"
     if ! grep -qx ADMIN_SESSION_KEY <<< "$have"; then

@@ -914,6 +914,7 @@ describe("deploy-hosted-platform.sh", () => {
       ["provision-token", { SECRETS_STORE_ID: "" }],
       ["provisioner", { WELCOME_FROM: "" }],
       ["provisioning", { GITHUB_REPOSITORY_ID: "" }],
+      ["provisioning", { SIGNUP_DAILY_CAP: "" }],
       ["inventory", { GITHUB_REPOSITORY_ID: "" }],
       ["inventory", { GITHUB_REPOSITORY: "" }],
       ["inventory", { GITHUB_REPOSITORY: "o/r/x" }],

@@ -637,6 +637,7 @@ describe("deploy-platform-worker.sh", () => {
       PLATFORM_DB_ID: DB,
       PROVISIONING_OAUTH_KV_ID: KV,
       GITHUB_REPOSITORY_ID: "1012345678",
+      SIGNUP_DAILY_CAP: "20",
     };
     /** A tree with this config and, unless `assets` is false, the admin build's index.html. */
     const tree = (config: string, assets = true) => {
@@ -672,6 +673,7 @@ describe("deploy-platform-worker.sh", () => {
         const up = env.toUpperCase();
         expect(snap).toContain(`"database_id": "${DB}"`);
         expect(snap).toContain(`"id": "${KV}"`);
+        expect(snap).toContain('"SIGNUP_DAILY_CAP": "20"');
         expect(snap).not.toMatch(new RegExp(`\\{\\{[A-Z0-9_]*_${up}\\}\\}`));
         if (env === "staging")
           expect(snap).toContain('"OIDC_REPOSITORY_ID": "1012345678"');
@@ -684,6 +686,7 @@ describe("deploy-platform-worker.sh", () => {
         PLATFORM_DB_ID: ["", KV],
         PROVISIONING_OAUTH_KV_ID: ["", DB, KV.toUpperCase()],
         GITHUB_REPOSITORY_ID: ["", "0123", "12a", "1/2"],
+        SIGNUP_DAILY_CAP: ["", "0", "10000", "1e3"],
       };
       for (const env of ["staging", "prod"])
         for (const [key, values] of Object.entries(bad))
