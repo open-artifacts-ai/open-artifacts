@@ -19,10 +19,11 @@ import {
   DOMAINS,
   HELP,
   main,
+  maxTokenDays,
   openNoFollow,
   RETIRED_COMMANDS,
 } from "../src/cli.ts";
-import { ACTOR, PUB, SECURITY, signed, world } from "./world.ts";
+import { ACTOR, NOW, PUB, SECURITY, signed, world } from "./world.ts";
 
 const G = vi.hoisted(() => ({
   RELEASE_PUBKEY: { staging: "", prod: "" } as Record<string, string>,
@@ -210,6 +211,67 @@ describe("token source", () => {
       expect(w.audit()).toEqual([]);
     }
   });
+});
+
+describe("token end date cap", () => {
+  const DAY = 86_400_000;
+  it.each([
+    [{ GITHUB_ACTIONS: "true", OA_HOSTED_ENVIRONMENT: "hosted-staging" }, 400],
+    [{}, 30],
+    [{ GITHUB_ACTIONS: "true" }, 30],
+    [{ GITHUB_ACTIONS: "true", OA_HOSTED_ENVIRONMENT: "" }, 30],
+    [{ OA_HOSTED_ENVIRONMENT: "hosted-staging" }, 30],
+  ])("%j gives %i days", (env, days) => {
+    expect(maxTokenDays(env)).toBe(days);
+  });
+
+  /** A staging CLI run, in the hosted-publish job or on a laptop. */
+  const run = async (inCi: boolean, expiresIn: number) => {
+    const w = world({ ci: inCi });
+    // Seeded before the token's end date moves (the seed checks it too).
+    const id = await w.seed();
+    if (inCi) {
+      const r2 = w.keychain.get("oa-hosted-staging-r2") as string;
+      w.keychain.clear();
+      w.files.set("/ci/token", {
+        bytes: new TextEncoder().encode(`${w.fake.token}\n`),
+        info: { mode: 0o100600, uid: 501, isFile: true },
+      });
+      w.files.set("/ci/r2", {
+        bytes: new TextEncoder().encode(`${r2}\n`),
+        info: { mode: 0o100600, uid: 501, isFile: true },
+      });
+      Object.assign(w.deps.env, {
+        GITHUB_ACTIONS: "true",
+        OA_HOSTED_ENVIRONMENT: "hosted-staging",
+        OA_HOSTED_TOKEN_FILE: "/ci/token",
+        OA_HOSTED_R2_FILE: "/ci/r2",
+      });
+    }
+    w.fake.tokenInfo.expires_on = new Date(NOW + expiresIn * DAY).toISOString();
+    return { w, id };
+  };
+
+  it("a 365-day token is accepted in CI and refused on a laptop", async () => {
+    const ops = await run(true, 365);
+    expect(await main(STATUS(ops.id), ops.w.deps)).toBe(0);
+    const { w: laptop, id } = await run(false, 365);
+    expect(await main(STATUS(id), laptop.deps)).toBe(1);
+    expect(lastLine(laptop)).toMatchObject({ step: "token", status: "error" });
+    expect(lastLine(laptop).message).toMatch(/more than 30 days out/);
+    expect(laptop.fake.writes()).toEqual([]);
+  });
+
+  it.each([true, false])(
+    "inCi=%s: a token within 5 days of expiry is still refused",
+    async (inCi) => {
+      const { w } = await run(inCi, 3);
+      expect(await main(FLOOR_CMD(), w.deps)).toBe(1);
+      expect(lastLine(w)).toMatchObject({ step: "token", status: "error" });
+      expect(lastLine(w).message).toMatch(/within 5 days/);
+      expect(w.fake.writes()).toEqual([]);
+    },
+  );
 });
 
 describe("audit", () => {

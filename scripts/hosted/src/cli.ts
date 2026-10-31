@@ -42,12 +42,14 @@ import { parseArgs } from "node:util";
 import {
   type Cf,
   cfClient,
+  DEFAULT_MAX_TOKEN_DAYS,
   type Env,
   googleNewlyEnabled,
   HOSTED_DOMAINS,
   isInstallId,
   NAMESPACES,
   PlatformDb,
+  PROVISIONER_MAX_TOKEN_DAYS,
   platformNames,
   probeR2Conditionals,
   publishFloor,
@@ -254,6 +256,18 @@ const prodCiAllowed = (env: Deps["env"]) =>
   env.OA_HOSTED_ENVIRONMENT === PROD_CI_ENVIRONMENT;
 
 /**
+ * The longest a Cloudflare token may run before its end date, in days. The
+ * hosted-publish job (GitHub Actions with OA_HOSTED_ENVIRONMENT set) runs with
+ * the env's one-year deploy token (design 2.5, Q2), so it gets
+ * PROVISIONER_MAX_TOKEN_DAYS; a laptop or any other job keeps
+ * DEFAULT_MAX_TOKEN_DAYS.
+ */
+export const maxTokenDays = (env: Deps["env"]) =>
+  env.GITHUB_ACTIONS === "true" && (env.OA_HOSTED_ENVIRONMENT ?? "") !== ""
+    ? PROVISIONER_MAX_TOKEN_DAYS
+    : DEFAULT_MAX_TOKEN_DAYS;
+
+/**
  * A secret from the only source `env` allows: the keychain item `item`, or
  * (CI) a 0600 file of this user named by `$fileVar`, opened with O_NOFOLLOW
  * and read through that fd. Prod on a laptop reads only the keychain; prod in
@@ -449,6 +463,7 @@ export async function main(argv: string[], d: Deps): Promise<number> {
       // answers on its host (review item 43). Every hosted release reports
       // installId in /healthz.
       requireInstallId: true,
+      maxTokenDays: maxTokenDays(d.env),
       ...(d.fetch ? { fetch: d.fetch } : {}),
       ...(d.now ? { now: d.now } : {}),
       ...(d.sleep ? { sleep: d.sleep } : {}),

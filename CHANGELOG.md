@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.84.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.83.0...v0.84.0) (2026-10-31)
+
+
+### Features
+
+* **provisioning:** W5b API tokens, OIDC, limits for the Provisioning API ([#890](https://github.com/open-artifacts-ai/open-artifacts/issues/890)) ([f091c4f](https://github.com/open-artifacts-ai/open-artifacts/commit/f091c4f115993ea3606a41c28eb338e9007a70bf))
+
+
+### Bug Fixes
+
+* **hosted:** oa:hosted in hosted-ops CI accepts the one-year deploy token (maxTokenDays 400); laptops stay at 30 ([#922](https://github.com/open-artifacts-ai/open-artifacts/issues/922)) ([654ffab](https://github.com/open-artifacts-ai/open-artifacts/commit/654ffabb3fbf73faca6f34fa68d75051ef14fc2d))
+
 ## [0.83.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.82.0...v0.83.0) (2026-10-31)
 
 

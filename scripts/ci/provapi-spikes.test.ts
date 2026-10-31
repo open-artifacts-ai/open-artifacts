@@ -734,6 +734,41 @@ describe("provapi-spikes.sh S4", () => {
     });
 });
 
+describe("provapi-spikes.sh S4 delete status", () => {
+  const A = `/accounts/${ACCT}`;
+  const name = `oa-s-spike-${RUN}`;
+  const sid = "e".repeat(32);
+  const fx = (del: string): Record<string, string> => ({
+    ...storeFx(),
+    [key("POST", `${A}/secrets_store/stores/${STORE}/secrets`)]: ok([
+      { id: sid },
+    ]),
+    [key(
+      "GET",
+      `${A}/secrets_store/stores/${STORE}/secrets?search=${name}&per_page=100`,
+    )]: ok([{ id: sid, name, modified: iso(1000) }]),
+    [key("DELETE", `${A}/secrets_store/stores/${STORE}/secrets/${sid}`)]: del,
+  });
+  const body = (success: boolean) =>
+    JSON.stringify({ success, errors: [], result: null });
+  for (const [del, pass] of [
+    [`200\n${body(true)}`, true],
+    [`202\n${body(true)}`, true],
+    ["204\n", true],
+    [`202\n${body(false)}`, false],
+    [`403\n${body(false)}`, false],
+    [`500\n${body(true)}`, false],
+  ] as const)
+    it(`records the delete as ${pass ? "passed" : "failed"} on HTTP ${del.split("\n")[0]}${del.includes("false") ? " success false" : ""}`, () => {
+      const t = setup(fx(del));
+      expect(t.run("s4").code).toBe(pass ? 0 : 1);
+      expect(t.results("s4").find((x) => x.check === "delete")).toMatchObject({
+        pass,
+        observed: `HTTP ${del.split("\n")[0]}`,
+      });
+    });
+});
+
 describe("provapi-spikes.sh cleanup", () => {
   const A = `/accounts/${ACCT}`;
   const mine = `oa-s-spike-${RUN}`;
@@ -833,6 +868,19 @@ describe("provapi-spikes.sh cleanup", () => {
     expect(t.reqs().some((q) => q.includes("..") || q.includes("%2F"))).toBe(
       false,
     );
+  });
+
+  it("passes a cleanup delete answered 202 or 204", () => {
+    const f = fx();
+    f[key("DELETE", `${A}/workers/scripts/${mine}?force=true`)] =
+      `202\n${JSON.stringify({ success: true, errors: [], result: null })}`;
+    f[key("DELETE", `${A}/d1/database/${UMINE}`)] = "204\n";
+    const t = setup(f);
+    t.run("cleanup");
+    for (const c of [`worker ${mine}`, `d1 ${mine}`])
+      expect(t.results("cleanup").find((x) => x.check === c)).toMatchObject({
+        pass: true,
+      });
   });
 
   it("guarded_delete and cf_write refuse a name without oa-s-spike-", () => {
@@ -947,6 +995,90 @@ describe("the spike Workers bundle", () => {
       }
     }
   }, 180_000);
+});
+
+describe("provapi-spikes.sh deploy render", () => {
+  const dir = join(root, "spikes/provapi-staging");
+  const files = ["wrangler.workflow.jsonc", "wrangler.jsonc"];
+
+  it("render fills every placeholder in both configs", () => {
+    const keys = /for k in ([A-Z0-9_ ]+); do/.exec(fn("render"))?.[1];
+    expect(keys).toBeTruthy();
+    const filled = new Set((keys as string).trim().split(/\s+/));
+    for (const f of files) {
+      const t = readFileSync(join(dir, f), "utf8");
+      // Only {{KEY}} placeholders, none in a comment or any other form.
+      const all = [...t.matchAll(/\{\{/g)].length;
+      const ph = [...t.matchAll(/\{\{([A-Z0-9_]+)\}\}/g)].map((m) => m[1]);
+      expect(ph.length, f).toBe(all);
+      for (const k of ph)
+        expect(filled.has(k as string), `${f}: ${k}`).toBe(true);
+    }
+  });
+
+  it("deploy renders both configs with the workflow's env and leaves no {{", () => {
+    // The env the workflow's job sets before the deploy step, with a run's values.
+    const jobEnv = Object.keys(wf.jobs.spikes.env);
+    expect(jobEnv).toEqual(expect.arrayContaining(["RUN_ID", "SPIKES"]));
+    const runId = "41237293557";
+    const d1 = "11111111-2222-4333-8444-555555555555";
+    const t = setup({
+      [key("POST", `/accounts/${ACCT}/d1/database`)]: ok({ uuid: d1 }),
+    });
+    // wrangler (through pnpm) keeps a copy of each config it is given.
+    const pnpm = `while [ $# -gt 0 ]; do [ "$1" = -c ] && cp "$2" "$STATE/deployed-$(basename "$2")"; shift; done`;
+    writeFileSync(
+      join(t.sb.dir, "bin", "pnpm"),
+      `#!/usr/bin/env bash\n${pnpm}\n`,
+      { mode: 0o755 },
+    );
+    try {
+      const r = t.run("deploy", {
+        RUN_ID: runId,
+        SPIKES: "s1,s2,s3,s4,s5,s6,s7,s8",
+      });
+      expect(r.code, r.err + r.out).toBe(0);
+      for (const f of files) {
+        const out = join(
+          t.sb.dir,
+          `deployed-${f.replace(/\.jsonc$/, ".rendered.jsonc")}`,
+        );
+        const txt = readFileSync(out, "utf8");
+        expect(txt, f).not.toContain("{{");
+        expect(txt, f).toContain(`oa-s-spike-${runId}`);
+      }
+      const caller = readFileSync(
+        join(t.sb.dir, "deployed-wrangler.rendered.jsonc"),
+        "utf8",
+      );
+      expect(caller).toContain(`"database_id": "${d1}"`);
+      expect(caller).toContain('"SPIKES": "s1,s2,s3,s5,s7"');
+      expect(caller).toContain('"namespace": "oa-staging"');
+    } finally {
+      spawnSync("/bin/rm", [
+        "-f",
+        ...files.map((f) =>
+          join(dir, f.replace(/\.jsonc$/, ".rendered.jsonc")),
+        ),
+      ]);
+    }
+  });
+
+  it("refuses a config with a placeholder render does not fill", () => {
+    const t = setup({});
+    const src = join(t.sb.dir, "in.jsonc");
+    writeFileSync(src, '{ "a": "{{RUN_ID}}", "b": "{{NOPE}}" }');
+    const r = t.sb.run(
+      [
+        "bash",
+        "-c",
+        `set -euo pipefail; . "${script(SH)}"; RUN_ID=1 SPIKES=s1 RLB_SCRIPT=oa-s-x RLA_HEALTHZ=https://x/healthz NAMESPACE=oa-staging D1_ID=u render "${src}" "${t.sb.dir}/out.jsonc"`,
+      ],
+      { env: t.env },
+    );
+    expect(r.code).toBe(3);
+    expect(r.err).toContain("placeholder left (line 1)");
+  });
 });
 
 describe("provapi-spikes.sh collect", () => {
