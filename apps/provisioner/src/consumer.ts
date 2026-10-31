@@ -8,7 +8,6 @@ import {
   createWorkflowInstance,
   getWorkflowInstance,
   isWorkflowExists,
-  type WorkflowLike,
 } from "@oa/shared/provisioning/workflow";
 import { parseSignup, signupIdOf } from "./message.js";
 

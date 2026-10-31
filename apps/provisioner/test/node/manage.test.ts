@@ -729,11 +729,14 @@ function stubInstall(
     { id: "t1", label: "redline-old" },
     { id: "t2", label: "ci-1" },
   ],
+  o: { failDelete?: (id: string, n: number) => boolean } = {},
 ) {
   const scriptName = `oa-s-${installId}`;
   const script = w.fake.script(NAMESPACES[ENV], scriptName);
   const deleted: string[] = [];
   const seen: string[] = [];
+  let mints = 0;
+  let deletes = 0;
   const real = w.env.DISPATCHER;
   w.env.DISPATCHER = {
     get: (name: string) => ({
@@ -753,6 +756,8 @@ function stubInstall(
           req.method === "DELETE"
         ) {
           const id = u.pathname.split("/").at(-1) as string;
+          if (o.failDelete?.(id, deletes++))
+            return new Response(null, { status: 500 });
           deleted.push(id);
           const i = tokens.findIndex((t) => t.id === id);
           if (i < 0) return new Response(null, { status: 404 });
@@ -761,9 +766,11 @@ function stubInstall(
         }
         if (u.pathname === "/api/v1/tokens" && req.method === "POST") {
           const { label } = (await req.json()) as { label: string };
-          tokens.push({ id: "t-new", label });
+          // The first mint is `t-new`; a retried mint is `t-new-<n>`.
+          const id = mints++ === 0 ? "t-new" : `t-new-${mints}`;
+          tokens.push({ id, label });
           return Response.json(
-            { id: "t-new", label, token: "oa_pat_minted_secret_value" },
+            { id, label, token: "oa_pat_minted_secret_value" },
             { status: 201 },
           );
         }
@@ -817,6 +824,53 @@ describe("redline_creds (10.1, R26)", () => {
     expect(text).not.toContain("oa_pat_minted");
     expect(text).not.toContain(newKey);
     expect(seen).toContain("POST /__test/session");
+  });
+
+  it("mint first, then revoke all older: a retry after a failed revoke leaves only the new PAT", async () => {
+    const s = await active({ slug: "rl-a", actor: "oidc", testHooks: true });
+    // The second DELETE fails once: the first older PAT is gone, two remain.
+    const { deleted, seen, tokens } = stubInstall(
+      s.installId,
+      [
+        { id: "r1", label: "redline-101" },
+        { id: "r2", label: "redline-102" },
+        { id: "r3", label: "redline-103" },
+        { id: "c1", label: "ci-1" },
+      ],
+      { failDelete: (_id, n) => n === 1 },
+    );
+    const pair = (await crypto.subtle.generateKey({ name: "X25519" }, true, [
+      "deriveBits",
+    ])) as CryptoKeyPair;
+    const recipientKey = Buffer.from(
+      new Uint8Array(
+        (await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer,
+      ),
+    ).toString("base64url");
+    const r = await manage("redline_creds", s.installId, {
+      actor: "oidc",
+      args: { recipientKey },
+    });
+    expect(r.error).toBeNull();
+    expect(r.job).toMatchObject({ status: "done", step: "done" });
+    // Each attempt mints before it revokes.
+    const order = seen.filter((x) =>
+      /^(POST|DELETE) \/api\/v1\/tokens/.test(x),
+    );
+    expect(order[0]).toBe("POST /api/v1/tokens");
+    expect(order.filter((x) => x === "POST /api/v1/tokens")).toHaveLength(2);
+    // The retry revoked every older redline-* PAT, the first attempt's mint
+    // included; only the retry's mint and the non-redline PAT remain.
+    expect(deleted).toEqual(["r1", "r2", "r3", "t-new"]);
+    expect(tokens.map((t) => t.id)).toEqual(["c1", "t-new-2"]);
+    expect(
+      tokens.filter((t) => t.label.startsWith("redline-")).map((t) => t.id),
+    ).toEqual(["t-new-2"]);
+    expect(
+      JSON.parse(await openSealed(pair, r.job?.sealed as string)),
+    ).toMatchObject({
+      pat: "oa_pat_minted_secret_value",
+    });
   });
 
   it("revoke (C6): revokes the install's live redline-* PATs, mints and seals nothing; a repeat is a no-op done", async () => {
