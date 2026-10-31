@@ -11,9 +11,12 @@
 #   dispatch: HOSTS_KV_ID=<32 hex>
 #   scheduler: PLATFORM_DB_ID=<uuid> EMAIL_ZONE_TAGS=<32 hex>[,...] (at most 10) EMAIL_DAILY_LIMIT=<1-9 digits>
 #   inventory: PLATFORM_DB_ID=<uuid> HOSTS_KV_ID=<32 hex>
+#              [GITHUB_REPOSITORY_ID=<digits>, when the config has its placeholder]
 #   provisioner: SIGNUP_DAILY_CAP=<1-9999> SIGNUPS_ENABLED=true|false (staging also test-users)
 #                WELCOME_FROM=<address> CLOUDFLARE_ACCOUNT_ID=<32 hex> SECRETS_STORE_ID=<32 hex>
 #                PLATFORM_DB_ID=<uuid>
+#   provisioning: PLATFORM_DB_ID=<uuid> PROVISIONING_OAUTH_KV_ID=<32 hex>
+#                 GITHUB_REPOSITORY_ID=<digits> (staging's OIDC principal)
 # Only the provisioner may bind the provision token (oa-<p>-provision-token),
 # and it binds no other secret.
 set -euo pipefail
@@ -45,6 +48,8 @@ if [ "$env" = staging ]; then onoff='^(true|false|test-users)$'; else onoff='^(t
 # One plain address: no slash, ampersand, backslash, quote, comma or space, so
 # it can't carry sed syntax or read as a list or display name.
 email='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(\.[A-Za-z0-9-]{1,63})+$'
+# A GitHub repository id: digits, no leading zero.
+repo_id='^[1-9][0-9]{0,19}$'
 
 # The allowlist: app -> dir, plus the placeholders filled below.
 case "$app" in
@@ -54,6 +59,7 @@ case "$app" in
   scheduler) dir=apps/scheduler ;;
   inventory) dir=apps/inventory ;;
   provisioner) dir=apps/provisioner ;;
+  provisioning) dir=apps/provisioning ;;
   *)
     echo "unknown app: not in the allowlist" >&2
     exit 2
@@ -103,6 +109,10 @@ case "$app" in
   inventory)
     fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
     fill "HOSTS_KV_ID_${up}" "${HOSTS_KV_ID:-}" "$hex32"
+    # The OIDC principal's repository (design v7 6.3), once the config pins it.
+    if grep -q "{{GITHUB_REPOSITORY_ID_${up}}}" "$copy"; then
+      fill "GITHUB_REPOSITORY_ID_${up}" "${GITHUB_REPOSITORY_ID:-}" "$repo_id"
+    fi
     ;;
   provisioner)
     fill "SIGNUP_DAILY_CAP_${up}" "${SIGNUP_DAILY_CAP:-}" "$cap"
@@ -113,6 +123,14 @@ case "$app" in
     fill "ACCOUNT_ID_${up}" "${CLOUDFLARE_ACCOUNT_ID:-}" "$hex32"
     fill "SECRETS_STORE_ID_${up}" "${SECRETS_STORE_ID:-}" "$hex32"
     fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
+    ;;
+  provisioning)
+    fill "PLATFORM_DB_ID_${up}" "${PLATFORM_DB_ID:-}" "$uuid"
+    fill "PROVISIONING_OAUTH_KV_ID_${up}" "${PROVISIONING_OAUTH_KV_ID:-}" "$hex32"
+    # Only staging has the OIDC principal (4.4); prod's block names no repository.
+    if [ "$env" = staging ]; then
+      fill GITHUB_REPOSITORY_ID_STAGING "${GITHUB_REPOSITORY_ID:-}" "$repo_id"
+    fi
     ;;
 esac
 

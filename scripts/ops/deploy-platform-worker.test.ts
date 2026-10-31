@@ -411,4 +411,133 @@ describe("deploy-platform-worker.sh", () => {
       ).toBe(0);
     });
   });
+
+  describe("provisioning", () => {
+    const DIR = join(root, "apps/provisioning");
+    const DB = "0123abcd-4567-89ef-0123-456789abcdef";
+    const KV = "d".repeat(32);
+    const OK = {
+      PLATFORM_DB_ID: DB,
+      PROVISIONING_OAUTH_KV_ID: KV,
+      GITHUB_REPOSITORY_ID: "1012345678",
+    };
+    const tree = (config: string) => {
+      const t = mkdtempSync(join(tmpdir(), "oa-deploy-tree-"));
+      write(
+        join(t, "scripts/ops/deploy-platform-worker.sh"),
+        readFileSync(SCRIPT, "utf8"),
+      );
+      write(join(t, "apps/provisioning/wrangler.jsonc"), config);
+      return join(t, "scripts/ops/deploy-platform-worker.sh");
+    };
+    const CONFIG = readFileSync(join(DIR, "wrangler.jsonc"), "utf8");
+
+    for (const env of ["staging", "prod"] as const)
+      it(`${env}: fills the D1 id, the OAuth KV id and (staging) the repository id; none left`, () => {
+        const r = run(["provisioning", env], OK);
+        expect(r.err).toBe("");
+        expect(r.code).toBe(0);
+        expect(r.log).toEqual([
+          `pnpm exec wrangler deploy -c wrangler.deploy.jsonc --env ${env}`,
+          DIR,
+          "copy-present",
+        ]);
+        const snap = readFileSync(r.snap, "utf8");
+        const up = env.toUpperCase();
+        expect(snap).toContain(`"database_id": "${DB}"`);
+        expect(snap).toContain(`"id": "${KV}"`);
+        expect(snap).not.toMatch(new RegExp(`\\{\\{[A-Z0-9_]*_${up}\\}\\}`));
+        if (env === "staging")
+          expect(snap).toContain('"OIDC_REPOSITORY_ID": "1012345678"');
+        else expect(snap).toContain("{{GITHUB_REPOSITORY_ID_STAGING}}");
+        expect(r.out + r.err).not.toContain(KV);
+      });
+
+    it("refuses a missing or malformed value without deploying", () => {
+      const bad: Record<string, string[]> = {
+        PLATFORM_DB_ID: ["", KV],
+        PROVISIONING_OAUTH_KV_ID: ["", DB, KV.toUpperCase()],
+        GITHUB_REPOSITORY_ID: ["", "0123", "12a", "1/2"],
+      };
+      for (const [key, values] of Object.entries(bad))
+        for (const v of values) {
+          const r = run(["provisioning", "staging"], { ...OK, [key]: v });
+          expect(r.code, `${key}=${v}`).toBe(1);
+          expect(r.log).toEqual([]);
+        }
+      // Prod needs no repository id.
+      expect(
+        run(["provisioning", "prod"], { ...OK, GITHUB_REPOSITORY_ID: "" }).code,
+      ).toBe(0);
+    });
+
+    it("fails closed on any placeholder left for the env", () => {
+      for (const env of ["staging", "prod"]) {
+        const up = env.toUpperCase();
+        const script = tree(
+          CONFIG.replace(
+            `"OA_ENV": "${env}",`,
+            `"OA_ENV": "${env}", "EXTRA": "{{EXTRA_${up}}}",`,
+          ),
+        );
+        const r = run(["provisioning", env], OK, script);
+        expect(r.code, env).toBe(1);
+        expect(r.log).toEqual([]);
+        expect(r.err).toContain(`{{EXTRA_${up}}}`);
+      }
+    });
+
+    it("refuses a provisioning config that names the provision token", () => {
+      const script = tree(
+        CONFIG.replace(
+          '"kv_namespaces"',
+          '"secrets_store_secrets": [{ "binding": "T", "store_id": "x", "secret_name": "oa-s-provision-token" }], "kv_namespaces"',
+        ),
+      );
+      const r = run(["provisioning", "staging"], OK, script);
+      expect(r.code).toBe(1);
+      expect(r.err).toMatch(/provision token/);
+      expect(r.log).toEqual([]);
+    });
+  });
+
+  describe("inventory", () => {
+    const DB = "0123abcd-4567-89ef-0123-456789abcdef";
+    const OK = { PLATFORM_DB_ID: DB, HOSTS_KV_ID: "e".repeat(32) };
+    const tree = (config: string) => {
+      const t = mkdtempSync(join(tmpdir(), "oa-deploy-tree-"));
+      write(
+        join(t, "scripts/ops/deploy-platform-worker.sh"),
+        readFileSync(SCRIPT, "utf8"),
+      );
+      write(join(t, "apps/inventory/wrangler.jsonc"), config);
+      return join(t, "scripts/ops/deploy-platform-worker.sh");
+    };
+    const CONFIG = readFileSync(
+      join(root, "apps/inventory/wrangler.jsonc"),
+      "utf8",
+    );
+    // W8's OIDC vars pin the repository id per env.
+    const OIDC = CONFIG.replace(
+      /"name": "oa-(s|p)-inventory",/g,
+      (m, p) =>
+        `${m} "vars": { "OIDC_REPOSITORY_ID": "{{GITHUB_REPOSITORY_ID_${p === "s" ? "STAGING" : "PROD"}}}" },`,
+    );
+
+    it("fills the repository id when the config has its placeholder, and only then needs it", () => {
+      expect(run(["inventory", "prod"], OK, tree(CONFIG)).code).toBe(0);
+      for (const env of ["staging", "prod"]) {
+        const r = run(
+          ["inventory", env],
+          { ...OK, GITHUB_REPOSITORY_ID: "42" },
+          tree(OIDC),
+        );
+        expect(r.code, env).toBe(0);
+        expect(readFileSync(r.snap, "utf8")).toContain(
+          '"OIDC_REPOSITORY_ID": "42"',
+        );
+        expect(run(["inventory", env], OK, tree(OIDC)).code, env).toBe(1);
+      }
+    });
+  });
 });
