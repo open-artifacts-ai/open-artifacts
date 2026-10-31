@@ -15,8 +15,10 @@
 //   -> KV (ids resolved by name and checked against the row) -> server
 //   migrations (re-read and re-checked) -> upload (modules, assets and
 //   template re-read and re-checked; secret_text bindings, DO tag probe)
-//   -> subdomain off (account only) -> broker keypair (flag) -> HOSTS
-//   -> /healthz -> owner PAT (0600) -> MCP selftest -> active.
+//   -> subdomain off (account only) -> broker keypair (flag; the sign-in
+//   copy disabled) -> verify_clean -> /healthz, owner PAT (0600) and MCP
+//   selftest through a directFetch -> HOSTS -> enable_signin -> active.
+//   With the public route (the CLI), HOSTS comes before /healthz.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, generateKeyPairSync, type KeyObject } from "node:crypto";
 import {
@@ -37,8 +39,10 @@ import {
   assetHash,
   type Cf,
   type Module,
+  type SettingsBinding,
   type Target,
 } from "./cf.js";
+import { type DirectRoute, directRouteOf } from "./direct-fetch.js";
 import {
   ALLOW_ACCOUNT_TARGET,
   FLOOR_MIN_SEQ,
@@ -70,12 +74,15 @@ import {
   assertOwnResource,
   type Env,
   ForeignResource,
+  type HostsMode,
   hosts,
+  hostsValue,
   isInstallId,
   isPlatformPrincipalId,
   names,
   newInstallId,
   ownerEmailOf,
+  parseHostsValue,
   platformNames,
   type RegistryEntry,
   registryDomains,
@@ -213,12 +220,19 @@ export interface WfpOptions {
   ciOwnerToken?: { label: string };
   /** Broker keypair (P2); off until the broker exists. */
   brokerEnabled?: boolean;
-  /** For /healthz and the MCP selftest. */
+  /**
+   * For /healthz and the MCP selftest: the public route (the CLI), or a
+   * directFetch to the install's script (the provisioner Worker), which
+   * also moves the HOSTS route after health (design v7 5.2 f, g).
+   */
   fetch?: typeof fetch;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   healthTimeoutMs?: number;
-  /** Require /healthz to report installId (Task 6b, Backend). */
+  /**
+   * Require /healthz to report installId (Task 6b, Backend) and testHooks
+   * equal to the install's; a directFetch requires both too.
+   */
   requireInstallId?: boolean;
   /**
    * The longest a Cloudflare token may run before its end date, in days
@@ -229,14 +243,16 @@ export interface WfpOptions {
   /**
    * Called as create, upgrade and rollback reach each WFP_STEPS step, so the
    * Workflow can record it (design v7 5.2). Awaited; a throw fails the
-   * operation. Not built yet (W2): passing it is refused.
+   * operation. WFP_STEPS order holds with a directFetch (the hosted path);
+   * on the public route (the CLI, which never passes onStep) route comes
+   * before health, as health needs the route.
    */
   onStep?: (step: WfpStep) => void | Promise<void>;
   /**
    * Keep the sign-in registry copy `disabled: true` on every rewrite
    * (upgrade, rollback, updateVars of a suspended or deleting install;
-   * design v7 5.4). The directory copy is never disabled. Not built yet
-   * (W2): `true` is refused, so a suspended install is never re-enabled.
+   * design v7 5.4), and create's enable_signin step skipped. The directory
+   * copy is never disabled. Set from install_lifecycle.
    */
   registryDisabled?: boolean;
 }
@@ -304,8 +320,8 @@ export function expectedSecretNames(o: {
 
 /**
  * verify_clean (design v7 5.2 e), run after the upload and before health,
- * route or any sign-in; W2 builds it. A refusal is `prod_dirty` (terminal,
- * never routed). In order:
+ * route or any sign-in. A refusal is `prod_dirty` (terminal, never routed).
+ * In order:
  * 1. Live settings (GET .../dispatch/namespaces/<ns>/scripts/<script>/settings)
  *    and cf.secretList.
  * 2. Refuse any binding of a VERIFY_CLEAN_REFUSED_BINDING_TYPES type.
@@ -315,7 +331,7 @@ export function expectedSecretNames(o: {
  * 5. TEST_HOOK_KEY, TEST_HOOKS and TEST_DOMAIN absent unless testHooks
  *    (keyed on testHooks, not OA_ENV).
  * 6. The release record's variant is `release` unless testHooks, and the
- *    live do_migration_tag equals the template's last tag.
+ *    install's do_migration_tag equals the template's last tag.
  */
 export interface VerifyCleanInput {
   id: InstallId;
@@ -330,8 +346,68 @@ export interface VerifyCleanInput {
   broker: boolean;
   codes: boolean;
   testHooks: boolean;
-  /** The template's last Durable Object migration tag. */
-  lastTag: string;
+  /** The template's last Durable Object migration tag (null: none). */
+  lastTag: string | null;
+  /** The tag the script runs: the upload's, or the row's when none ran. */
+  tag: string | null;
+}
+
+const HOOK_NAMES = ["TEST_HOOK_KEY", "TEST_HOOKS", "TEST_DOMAIN"];
+
+const isProdDirty = (e: unknown) =>
+  e instanceof ProvisionRefused && e.code === "prod_dirty";
+
+/**
+ * verify_clean's rules on what the settings GET and the secret list report,
+ * read-only: null when clean, else why (binding and secret names only, never
+ * a value).
+ */
+export function verifyCleanRefusal(
+  live: { bindings: readonly SettingsBinding[]; secrets: readonly string[] },
+  v: VerifyCleanInput,
+): string | null {
+  const refused: readonly string[] = VERIFY_CLEAN_REFUSED_BINDING_TYPES;
+  for (const b of live.bindings)
+    if (refused.includes(b.type))
+      return `binding ${b.name} is a ${b.type} binding`;
+  if (!v.testHooks)
+    for (const n of [...live.secrets, ...live.bindings.map((b) => b.name)])
+      if (HOOK_NAMES.includes(n)) return `${n} is set on a non-test install`;
+  const plain = (bs: readonly { name: string; type: string }[]) =>
+    bs.filter((b) => !b.type.startsWith("secret") && b.name !== "OWNER_EMAIL");
+  const key = (b: { name: string; type: string }) => `${b.name} (${b.type})`;
+  const got = plain(live.bindings).map(key).sort();
+  const want = plain(v.sent.bindings).map(key).sort();
+  for (const k of new Set([...got, ...want])) {
+    const n = got.filter((x) => x === k).length;
+    const m = want.filter((x) => x === k).length;
+    if (n > m) return `binding ${k} is not in the render`;
+    if (n < m) return `binding ${k} is missing`;
+  }
+  const digest = (b: { type: string; text?: unknown; json?: unknown }) =>
+    sha256Hex(
+      new TextEncoder().encode(
+        b.type === "json" ? canonicalJson(b.json ?? null) : String(b.text),
+      ),
+    );
+  for (const b of plain(v.sent.bindings)) {
+    if (b.type !== "plain_text" && b.type !== "json") continue;
+    const l = live.bindings.find((x) => x.name === b.name && x.type === b.type);
+    if (!l || digest(l) !== digest(b))
+      return `binding ${key(b)} has another value than the render`;
+  }
+  const secrets = [...live.secrets].sort();
+  const expected = expectedSecretNames(v);
+  for (const n of secrets)
+    if (!expected.includes(n)) return `secret ${n} is not expected`;
+  for (const n of expected)
+    if (!secrets.includes(n)) return `secret ${n} is missing`;
+  if (secrets.length !== expected.length) return "a secret is listed twice";
+  if (v.rec.variant !== (v.testHooks ? "redline" : "release"))
+    return `the release variant is ${String(v.rec.variant)}`;
+  if (v.tag !== v.lastTag)
+    return `the Durable Object tag is ${v.tag ?? "none"}, not ${v.lastTag ?? "none"}`;
+  return null;
 }
 
 /** An MCP call the install answered with an HTTP error. */
@@ -505,6 +581,10 @@ type Meta = {
   /** The verified Turnstile sitekey when codes are on. */
   sitekey: string | null;
 };
+
+/** The directory registry copy of a sign-in entry: the same, never disabled. */
+const directoryText = (e: RegistryEntry): string =>
+  JSON.stringify(registryEntry({ ...e, disabled: false }));
 
 /** How long a lifecycle operation holds the row's lock (installs.lease_until); renewed at each step. */
 const LEASE_MS = 30 * 60_000;
@@ -935,18 +1015,6 @@ export class WfpProvisioner {
     )
       throw new ProvisionRefused(
         "registryDisabled must be a boolean",
-        "invalid_state",
-      );
-    // Fail closed until W2 wires them: a silent no-op would re-enable a
-    // suspended install's sign-in or drop the Workflow's step record.
-    if (o.onStep !== undefined)
-      throw new ProvisionRefused(
-        "onStep is not built yet (W2)",
-        "invalid_state",
-      );
-    if (o.registryDisabled === true)
-      throw new ProvisionRefused(
-        "registryDisabled is not built yet (W2)",
         "invalid_state",
       );
     const d = HOSTED_DOMAINS[env];
@@ -1559,6 +1627,20 @@ export class WfpProvisioner {
     this.checkEmailCodeDomain(vars, "domains");
     this.checkGoogleBroker(vars);
     if (this.o.brokerEnabled) this.registryDomainsOf(vars);
+    // Without the version: replayOf compares it; a resume only refuses a downgrade.
+    const hash = inputsHash({ ownerEmail, vars, testHooks });
+    // 5.7 replay, before the release pre-flight (a fixed id only): the
+    // create finished but its step result was lost, so a release pulled
+    // since must not fail it. No release read, no write, no PAT re-minted.
+    let row: InstallRow | undefined;
+    if (i.installId !== undefined) {
+      await this.checkToken();
+      await this.resolvePlatform();
+      this.checkDirect(appHost, i.installId);
+      row = await this.findRow(i);
+      const done = this.replayOf(row, i, hash);
+      if (done) return done;
+    }
     const rel = await this.readRelease(i);
 
     // Secrets for a fresh upload; unused (and dropped) when the script exists.
@@ -1596,42 +1678,18 @@ export class WfpProvisioner {
       assetsJwt: "dry-run",
     });
 
-    await this.checkToken();
-    await this.resolvePlatform();
+    if (i.installId === undefined) {
+      await this.checkToken();
+      await this.resolvePlatform();
+      this.checkDirect(appHost, undefined);
+      row = await this.findRow(i);
+    }
     const raiseFloor = await this.checkFloorSeq(rel.floor);
     if (ts) await this.checkWidget(ts.sitekey, testHooks);
 
     // ---------- platform row ----------
-    const hash = inputsHash({ ownerEmail, vars, testHooks });
-    let row = await this.findRow(i);
     let res: { d1: string | null; kv: string | null } | undefined;
     if (row) {
-      // 5.7 replay: the create finished but its step result was lost; the
-      // rerun under the same fixed id is a success, not slug_taken (3.5:
-      // the host held by *another* id). No write; no PAT is re-minted.
-      if (
-        row.state === "active" &&
-        i.installId !== undefined &&
-        row.id === i.installId
-      ) {
-        if (row.inputs_hash !== hash)
-          throw new ProvisionRefused(
-            `install ${row.id}: rerun inputs differ from the first run (owner, vars or testHooks); use the original inputs`,
-            "invalid_state",
-          );
-        if (row.version === null)
-          throw new ProvisionRefused(
-            `install ${row.id} is active with no version`,
-            "invalid_state",
-          );
-        return {
-          id: row.id,
-          slug: row.slug,
-          appHost: row.app_host,
-          contentHost: row.content_host,
-          version: row.version,
-        };
-      }
       if (row.state === "active")
         throw new ProvisionRefused(
           `slug ${i.slug} already exists as active install ${row.id}`,
@@ -1648,7 +1706,8 @@ export class WfpProvisioner {
           `install ${row.id}: resume inputs differ from the first run (owner, vars or testHooks); use the original inputs`,
           "invalid_state",
         );
-      // F2/I1: never move an install to an older release.
+      // F2/I1: never move an install to an older release. A newer one is
+      // allowed; the Workflow pins args.resolvedVersion across retries (W3).
       if (row.version && compareVersions(rel.rec.version, row.version) < 0)
         throw new ProvisionRefused(
           `install ${row.id} is at ${row.version}; ${rel.rec.version} would be a downgrade`,
@@ -1679,7 +1738,9 @@ export class WfpProvisioner {
     }
     for (const h of [appHost, contentHost]) {
       const cur = await this.cf.kvGet(this.hostsKv.id, h);
-      if (cur !== null && cur !== row?.id)
+      // 5.5: `<mode>:<own id>` is this install's own value too.
+      const p = cur === null ? null : parseHostsValue(cur);
+      if (cur !== null && (!p || p.installId !== row?.id))
         throw new ProvisionRefused(
           `host ${h} is already taken by ${cur}`,
           "slug_taken",
@@ -1719,6 +1780,80 @@ export class WfpProvisioner {
         e.message = `install ${id}: ${e.message}`;
       throw e;
     }
+  }
+
+  /**
+   * 5.7: a create rerun under its fixed id on an active row is the finished
+   * install, when its inputs (owner, vars, testHooks and version) are the
+   * first run's; undefined when this is no replay.
+   */
+  private replayOf(
+    row: InstallRow | undefined,
+    i: WfpCreateInput,
+    hash: string,
+  ): Install | undefined {
+    if (row?.state !== "active" || row.id !== i.installId) return undefined;
+    // The version is part of the replay check only (not the hash).
+    if (row.inputs_hash !== hash || row.version !== i.version)
+      throw new ProvisionRefused(
+        `install ${row.id}: rerun inputs differ from the first run (owner, vars, testHooks or version); use the original inputs`,
+        "invalid_state",
+      );
+    return {
+      id: row.id,
+      slug: row.slug,
+      appHost: row.app_host,
+      contentHost: row.content_host,
+      version: row.version,
+    };
+  }
+
+  /** The install a directFetch option reaches; undefined for the public route. */
+  private direct(): DirectRoute | undefined {
+    return directRouteOf(this.o.fetch);
+  }
+
+  /**
+   * A directFetch must reach this install's own app host and script, so a
+   * health check or selftest never answers for another install. Read-only.
+   */
+  private checkDirect(appHost: string, id: InstallId | undefined): void {
+    const d = this.direct();
+    if (d === undefined) return;
+    if (
+      id === undefined ||
+      d.appHost !== appHost ||
+      d.script !== names(id, this.env).script
+    )
+      throw new ProvisionRefused(
+        "the directFetch option reaches another install (or the create has no fixed installId)",
+        "invalid_state",
+      );
+  }
+
+  /** Reports a WFP_STEPS step to the Workflow (design v7 5.2), awaited. */
+  private async step(s: WfpStep): Promise<void> {
+    await this.o.onStep?.(s);
+  }
+
+  /**
+   * verify_clean (design v7 5.2 e) on the script as it is now: a refusal is
+   * `prod_dirty`, audited, and nothing is routed or enabled after it.
+   */
+  private async verifyClean(
+    script: string,
+    v: VerifyCleanInput,
+  ): Promise<void> {
+    await this.hold();
+    const { bindings } = await this.cf.scriptSettings(this.target, script);
+    const secrets = await this.cf.secretList(this.target, script);
+    const why = verifyCleanRefusal({ bindings, secrets }, v);
+    if (why === null) return;
+    await this.logged("verify_clean.refused", {});
+    throw new ProvisionRefused(
+      `install ${v.id}: verify_clean refused: ${why}`,
+      "prod_dirty",
+    );
   }
 
   /** H1: the platform D1, HOSTS, registry and directory copy come from env names, never from ids handed in. */
@@ -1850,8 +1985,9 @@ export class WfpProvisioner {
       );
     if (exp <= now + REFUSE_TOKEN_DAYS * DAY) {
       const why = `the Cloudflare token expires on ${new Date(exp).toISOString().slice(0, 10)}, within ${REFUSE_TOKEN_DAYS} days; roll it (Cloudflare dashboard > My Profile > API Tokens > Roll) and ${this.tokenHome()}`;
+      // 3.5, 5.7 (#882): terminal; a retry within the backoff would not roll it.
       if (nearExpiry === "refuse")
-        throw new ProvisionRetry(`${why}, then retry`, "token_invalid");
+        throw new ProvisionRefused(`${why}, then start again`, "invalid_state");
       this.notes.push(`WARNING: ${why}`);
     }
     try {
@@ -1943,6 +2079,7 @@ export class WfpProvisioner {
     const id = row.id;
     const n = names(id, env);
     const testHooks = m.testHooks;
+    await this.step("upload");
     const res = resolved ?? (await this.resources(row));
 
     // D1, R2, KV (ids resolved by name, checked against the row)
@@ -1983,6 +2120,10 @@ export class WfpProvisioner {
     const have = exists ? await cf.secretList(target, n.script) : [];
     const missing = required.filter((k) => !have.includes(k));
     const behind = row.version !== version || row.do_migration_tag !== latest;
+    // What verify_clean compares with: this upload's render, or the stored
+    // render of `version` when the script is already current.
+    let sent: { bindings: VerifyCleanInput["sent"]["bindings"] } | undefined;
+    let tag = row.do_migration_tag;
     if (!exists || missing.length > 0 || behind) {
       const send = Object.fromEntries(
         missing.map((k) => [k, fresh[k] as string]),
@@ -2005,7 +2146,7 @@ export class WfpProvisioner {
       }
       await this.hold();
       const out: UploadOut = { reached: null, maybe: false };
-      const sent = await this.uploadRelease({
+      const up = await this.uploadRelease({
         id,
         script: n.script,
         rec,
@@ -2019,13 +2160,15 @@ export class WfpProvisioner {
         send,
         out,
       });
+      sent = up;
       const reached = out.reached;
+      tag = reached;
       // Stored before the row moves on: a rerun that finds the row current
       // skips the upload, so the version's render must already be kept.
       await this.hold();
       await this.platform.putVersion(id, version, {
         vars: m.vars,
-        metadata: storedMetadata(sent),
+        metadata: storedMetadata(up),
         do_migration_tag: reached,
       });
       await this.write({
@@ -2046,6 +2189,8 @@ export class WfpProvisioner {
       await cf.scriptSubdomain(target, n.script, scriptSubdomainSettings());
     }
 
+    // d: the sign-in copy stays disabled until enable_signin (nothing can
+    // grant before the install is verified and routed).
     if (this.o.brokerEnabled)
       await this.broker(
         id,
@@ -2054,21 +2199,31 @@ export class WfpProvisioner {
         this.registryDomainsOf(m.vars),
       );
 
-    // HOSTS: after the script exists and holds every secret.
-    for (const h of [m.appHost, m.contentHost]) {
-      const cur = await cf.kvGet(this.hostsKv.id, h);
-      if (cur === id) continue;
-      if (cur !== null)
-        throw new ProvisionRefused(
-          `host ${h} is already taken by ${cur}`,
-          "slug_taken",
-        );
-      assertOwnResource(this.hostsKv.title, env);
-      await this.hold();
-      await cf.kvPut(this.hostsKv.id, h, id);
-    }
+    // e: verify_clean, before any route or sign-in.
+    await this.step("verify_clean");
+    sent ??= (await this.storedOf(row, version)).metadata as unknown as {
+      bindings: VerifyCleanInput["sent"]["bindings"];
+    };
+    await this.verifyClean(n.script, {
+      id,
+      sent,
+      rec,
+      broker: this.o.brokerEnabled === true,
+      codes: m.sitekey !== null,
+      testHooks,
+      lastTag: latest,
+      tag,
+    });
 
-    await this.health(id, m.appHost, version);
+    // f, g: with a directFetch, health and the selftest reach the script
+    // before HOSTS routes it; the public route (the CLI) needs HOSTS first.
+    const direct = this.direct() !== undefined;
+    if (!direct) {
+      await this.step("route");
+      await this.route(id, m);
+    }
+    await this.step("health");
+    await this.health(id, m.appHost, version, undefined, testHooks);
     await this.hold();
     // CI: the selftest runs on an ephemeral token and the owner gets no PAT
     // from provisioning (they sign in); otherwise the 0600 PAT file.
@@ -2077,7 +2232,17 @@ export class WfpProvisioner {
       await this.mintCiToken(d1Id, n.d1, m.ownerEmail, true);
     else patFile = await this.mintPat(d1Id, n.d1, m.ownerEmail, m.appHost);
     await this.selftest(rec, m.appHost, patFile);
+    if (direct) {
+      await this.step("route");
+      await this.route(id, m);
+    }
 
+    // h: sign-in on, once the install is verified and routed.
+    await this.step("enable_signin");
+    if (this.o.brokerEnabled && this.o.registryDisabled !== true)
+      await this.setSignin(id, m.appHost, false, true);
+
+    await this.step("active");
     await this.logged("create.active", { version });
     await this.release("active");
     return {
@@ -2088,6 +2253,25 @@ export class WfpProvisioner {
       version,
       ...(patFile === undefined ? {} : { patFile }),
     };
+  }
+
+  /**
+   * HOSTS (design v7 5.2 g): both hosts to `<id>`. A value of this install
+   * in any mode is its own and left as it is; another id's is slug_taken.
+   */
+  private async route(id: InstallId, m: Meta): Promise<void> {
+    for (const h of [m.appHost, m.contentHost]) {
+      const cur = await this.cf.kvGet(this.hostsKv.id, h);
+      if (cur !== null && parseHostsValue(cur)?.installId === id) continue;
+      if (cur !== null)
+        throw new ProvisionRefused(
+          `host ${h} is already taken by ${cur}`,
+          "slug_taken",
+        );
+      assertOwnResource(this.hostsKv.title, this.env);
+      await this.hold();
+      await this.cf.kvPut(this.hostsKv.id, h, id);
+    }
   }
 
   /**
@@ -2731,7 +2915,7 @@ export class WfpProvisioner {
    * Design v7 5.5, under a lease claim(row, ["active"], "active", kind):
    * both HOSTS keys to `<mode>:<id>` (hostsValue), then the sign-in registry
    * copy `disabled: true`; the directory copy is never disabled, so a later
-   * purge's directory revoke still works. Idempotent. W2 builds the body.
+   * purge's directory revoke still works. Idempotent.
    */
   async pause(
     id: InstallId,
@@ -2745,13 +2929,16 @@ export class WfpProvisioner {
         "pause mode must be paused or closed",
         "invalid_state",
       );
-    this.jobKind(o);
-    throw new Error("pause is not built yet (W2)");
+    const k = this.jobKind(o);
+    return this.guarded(async () => {
+      await this.setMode(id, mode, k);
+      return { id, mode };
+    });
   }
 
   /**
    * Design v7 5.5: HOSTS back to `<id>`, then the sign-in registry copy
-   * re-enabled. Idempotent. W2 builds the body.
+   * re-enabled. Idempotent.
    */
   async unpause(
     id: InstallId,
@@ -2759,8 +2946,91 @@ export class WfpProvisioner {
   ): Promise<{ id: InstallId; mode: "serving" }> {
     if (!isInstallId(id))
       throw new ProvisionRefused("not an install id", "invalid_state");
-    this.jobKind(o);
-    throw new Error("unpause is not built yet (W2)");
+    const k = this.jobKind(o);
+    return this.guarded(async () => {
+      await this.setMode(id, "serving", k);
+      return { id, mode: "serving" as const };
+    });
+  }
+
+  /**
+   * pause and unpause: HOSTS first, then the sign-in copy, under the lease.
+   * Pausing writes HOSTS first so exposure drops before anything else;
+   * unpausing reaches the same end state in the same order. Each write only
+   * when the value differs, so a rerun finishes a partial one.
+   */
+  private async setMode(
+    id: InstallId,
+    mode: HostsMode,
+    k: { kind: ProvisionJobKind; nearExpiry: "refuse" | "warn" },
+  ): Promise<void> {
+    const row = await this.openInstall(id, ["active"], k.nearExpiry);
+    await this.claim(row, ["active"], "active", k.kind);
+    try {
+      const want = hostsValue(id, mode);
+      for (const h of [row.app_host, row.content_host]) {
+        const cur = await this.cf.kvGet(this.hostsKv.id, h);
+        if (cur === want) continue;
+        if (cur !== null && parseHostsValue(cur)?.installId !== id)
+          throw new ProvisionRefused(
+            `host ${h} is already taken by ${cur}`,
+            "slug_taken",
+          );
+        assertOwnResource(this.hostsKv.title, this.env);
+        await this.hold();
+        await this.cf.kvPut(this.hostsKv.id, h, want);
+      }
+      await this.setSignin(id, row.app_host, mode !== "serving", false);
+      await this.logged(`${k.kind}.hosts`, { mode });
+      await this.release("active");
+    } catch (e) {
+      if (!(e instanceof LostLease)) await this.releaseQuietly("active", e);
+      throw e;
+    }
+  }
+
+  /**
+   * The sign-in registry copy with `disabled` set or cleared; the directory
+   * copy is never touched. An install with no entry (no broker) has nothing
+   * to change, unless `required` (create's enable_signin, after its broker
+   * step wrote one).
+   */
+  private async setSignin(
+    id: InstallId,
+    appHost: string,
+    disabled: boolean,
+    required: boolean,
+  ): Promise<void> {
+    let reg = this.registryKv;
+    if (!reg) {
+      const title = platformNames(this.env).registry;
+      const regId = await this.cf.kvFind(title);
+      if (!regId)
+        throw new ProvisionRefused(
+          `broker registry KV ${title} not found`,
+          "invalid_state",
+        );
+      reg = { id: regId, title };
+    }
+    const raw = await this.cf.kvGet(reg.id, registryKey(id));
+    if (raw === null) {
+      if (required)
+        throw new Error(
+          `install ${id}: the broker registry entry is missing; rerun create`,
+        );
+      return;
+    }
+    const entry = JSON.parse(raw) as RegistryEntry;
+    if (entry.installId !== id || entry.origin !== brokerOrigin(appHost))
+      throw new ProvisionRefused(
+        `broker registry entry for ${id} has another origin or id`,
+        "invalid_state",
+      );
+    const text = JSON.stringify(registryEntry({ ...entry, disabled }));
+    if (raw === text) return;
+    assertOwnResource(reg.title, this.env);
+    await this.hold();
+    await this.cf.kvPut(reg.id, registryKey(id), text);
   }
 
   /**
@@ -2842,10 +3112,16 @@ export class WfpProvisioner {
             this.o.brokerEnabled === true;
       return owed ? { id, kind: "missing_both" } : null;
     }
-    if (reg === dir) return null;
     if (reg === null) return { id, kind: "missing_broker" };
     if (dir === null) return { id, kind: "missing_directory" };
-    return { id, kind: "mismatch" };
+    // Only the sign-in copy is ever disabled (5.5): equal but for that.
+    let copy: string | null = null;
+    try {
+      copy = directoryText(JSON.parse(reg) as RegistryEntry);
+    } catch {
+      copy = null;
+    }
+    return dir === copy || dir === reg ? null : { id, kind: "mismatch" };
   }
 
   /** The install's D1 and script, both present, and every secret create sends. */
@@ -2910,6 +3186,7 @@ export class WfpProvisioner {
 
   private async runUpgrade(id: InstallId, to: string): Promise<UpgradeResult> {
     const row = await this.openInstall(id, ["active"]);
+    this.checkDirect(row.app_host, row.id);
     const from = row.version;
     if (!from)
       throw new ProvisionRefused(
@@ -2962,6 +3239,7 @@ export class WfpProvisioner {
     let uploaded = false;
     try {
       await this.ciTokenUnderLease(d1Id, n.d1, m.ownerEmail);
+      await this.step("upload");
       if (raiseFloor) {
         await this.hold();
         await this.platform.raiseFloorSeq(rel.floor.seq);
@@ -3003,10 +3281,30 @@ export class WfpProvisioner {
       });
       await this.settleCutOrDefer(cut, vars, d1Id, n.d1, to);
       try {
-        await this.health(id, m.appHost, to, "the upgrade did not take");
+        // 5.4: verify_clean right after the upload, before health.
+        await this.step("verify_clean");
+        await this.verifyClean(n.script, {
+          id,
+          sent,
+          rec: rel.rec,
+          broker: row.broker_kid !== null,
+          codes: m.sitekey !== null,
+          testHooks: m.testHooks,
+          lastTag: tagsOf(rel.template).at(-1) ?? null,
+          tag: reached,
+        });
+        await this.step("health");
+        await this.health(
+          id,
+          m.appHost,
+          to,
+          "the upgrade did not take",
+          m.testHooks,
+        );
         await this.checkSelf(m.appHost, own.patFile);
       } catch (e) {
         if (e instanceof LostLease) throw e;
+        const dirty = isProdDirty(e);
         const reason = this.reasonOf(e);
         await this.logged("upgrade.failed", { from, to });
         const done = await this.afterFailedUpgrade(
@@ -3024,7 +3322,9 @@ export class WfpProvisioner {
           own,
         );
         await this.release("active");
-        return done;
+        // What serves now failed verify_clean: `to` with no rollback, or the
+        // rollback's own check (W3 pauses the install on it).
+        return dirty && !done.rolledBack ? { ...done, prodDirty: true } : done;
       }
       await this.logged("upgrade.done", { from, to });
       await this.release("active");
@@ -3073,10 +3373,10 @@ export class WfpProvisioner {
         reason: why,
       };
     };
-    let back: { ok: boolean; reason?: string };
+    let back: { ok: boolean; reason?: string; prodDirty?: true };
     try {
       const plan = await this.planRollback(row, own);
-      back = await this.applyRollback(plan, null);
+      back = await this.applyRollback(plan, null, false);
     } catch (e) {
       if (e instanceof LostLease || !(e instanceof ProvisionRefused)) throw e;
       return forwardFix(`${reason}; no rollback: ${this.reasonOf(e)}`);
@@ -3088,6 +3388,7 @@ export class WfpProvisioner {
       ok: false,
       rolledBack: true,
       reason: back.ok ? reason : `${reason}; ${back.reason}`,
+      ...(back.prodDirty ? { prodDirty: true } : {}),
     };
   }
 
@@ -3100,6 +3401,7 @@ export class WfpProvisioner {
   async rollback(id: InstallId): Promise<UpgradeResult> {
     return this.guarded(async () => {
       const row = await this.openInstall(id, ["active"], "warn");
+      this.checkDirect(row.app_host, row.id);
       const plan = await this.planRollback(row);
       await this.claim(row, ["active"], "upgrading", "rollback");
       try {
@@ -3108,7 +3410,7 @@ export class WfpProvisioner {
           names(id, this.env).d1,
           plan.m.ownerEmail,
         );
-        const r = await this.applyRollback(plan, this.pendingCut(row));
+        const r = await this.applyRollback(plan, this.pendingCut(row), true);
         await this.release("active");
         return {
           id,
@@ -3118,6 +3420,7 @@ export class WfpProvisioner {
           rolledBack: true,
           ...(r.ok ? {} : { reason: r.reason }),
           ...(r.note === undefined ? {} : { note: r.note }),
+          ...(r.prodDirty ? { prodDirty: true } : {}),
         };
       } catch (e) {
         if (!(e instanceof LostLease)) await this.releaseQuietly("active", e);
@@ -3234,10 +3537,17 @@ export class WfpProvisioner {
     };
   }
 
+  /** `report`: onStep sees upload, verify_clean and health (not in an auto-rollback). */
   private async applyRollback(
     p: RollbackPlan,
     cut: Cut | null,
-  ): Promise<{ ok: boolean; reason?: string; note?: string }> {
+    report: boolean,
+  ): Promise<{
+    ok: boolean;
+    reason?: string;
+    note?: string;
+    prodDirty?: true;
+  }> {
     const { row, from, to, rel } = p;
     const id = row.id;
     const n = names(id, this.env);
@@ -3246,10 +3556,13 @@ export class WfpProvisioner {
       await this.platform.raiseFloorSeq(rel.floor.seq);
     }
     await this.logged("rollback.start", { from, to });
+    if (report) await this.step("upload");
     this.assertHooksAllowed(rel.rec.variant, p.m.testHooks);
     const mods = await this.readModules(rel.rec);
-    // Check-first: every file again, before the probe or any write.
-    const assets = await this.readAssets(rel.rec, true);
+    // planRollback's readRelease verified every file in this run; the list
+    // is re-checked here and a bucket read re-checks its file (#882: not
+    // every file twice).
+    const assets = await this.readAssets(rel.rec);
     // L5: the live tag, not only the journal; a rollback never crosses it.
     await this.hold();
     let live: string | null | undefined;
@@ -3290,13 +3603,35 @@ export class WfpProvisioner {
       });
       await this.write({ version: to, previous_version: from });
       await this.settleCutOrDefer(cut, p.vars, p.d1Id, n.d1, to);
-      await this.health(id, p.m.appHost, to, "the rollback did not take");
+      if (report) await this.step("verify_clean");
+      await this.verifyClean(n.script, {
+        id,
+        sent: meta,
+        rec: rel.rec,
+        broker: row.broker_kid !== null,
+        codes: p.m.sitekey !== null,
+        testHooks: p.m.testHooks,
+        lastTag: tagsOf(rel.template).at(-1) ?? null,
+        tag: row.do_migration_tag,
+      });
+      if (report) await this.step("health");
+      await this.health(
+        id,
+        p.m.appHost,
+        to,
+        "the rollback did not take",
+        p.m.testHooks,
+      );
       if (p.refused === undefined) await this.checkSelf(p.m.appHost, p.patFile);
     } catch (e) {
       if (e instanceof LostLease) throw e;
       // L7: the rolled-back script is live; report it and leave a trail.
       await this.logged("rollback.unhealthy", { from, to });
-      return { ok: false, reason: `after the rollback: ${this.reasonOf(e)}` };
+      return {
+        ok: false,
+        reason: `after the rollback: ${this.reasonOf(e)}`,
+        ...(isProdDirty(e) ? { prodDirty: true as const } : {}),
+      };
     }
     if (p.refused !== undefined) {
       await this.logged("rollback.selftest_skipped", { from, to });
@@ -3639,7 +3974,8 @@ export class WfpProvisioner {
         // deleted is terminal, so no operation can claim the row meanwhile.
         let stale = 0;
         for (const h of [row.app_host, row.content_host]) {
-          if ((await this.cf.kvGet(this.hostsKv.id, h)) !== id) continue;
+          const cur = await this.cf.kvGet(this.hostsKv.id, h);
+          if (parseHostsValue(cur)?.installId !== id) continue;
           assertOwnResource(this.hostsKv.title, this.env);
           await this.cf.kvDeleteKey(this.hostsKv.id, h);
           stale++;
@@ -3873,7 +4209,8 @@ export class WfpProvisioner {
     for (const h of [row.app_host, row.content_host]) {
       const cur = await this.cf.kvGet(this.hostsKv.id, h);
       if (cur === null) continue;
-      if (cur !== id) {
+      // 5.5: this install's value in any mode (paused:, closed:) goes too.
+      if (parseHostsValue(cur)?.installId !== id) {
         this.notes.push(`HOSTS ${h} maps to ${cur}, not ${id}; left alone`);
         continue;
       }
@@ -3939,11 +4276,17 @@ export class WfpProvisioner {
     }
   }
 
-  /** The entry, written to the broker registry and then, identical, to its directory copy. */
+  /**
+   * The entry, written to the broker (sign-in) registry and then to its
+   * directory copy: the same entry, except that only the sign-in copy is
+   * ever `disabled` (design v7 5.2 d, 5.5); the directory broker refuses a
+   * disabled entry, and a purge's revoke needs it.
+   */
   private async putEntry(
     id: InstallId,
     appHost: string,
-    e: Omit<RegistryEntry, "installId" | "origin">,
+    e: Pick<RegistryEntry, "keys" | "domains">,
+    signinDisabled: boolean,
   ): Promise<void> {
     const reg = this.registryKv as { id: string; title: string };
     const dir = this.directoryKv as { id: string; title: string };
@@ -3951,13 +4294,13 @@ export class WfpProvisioner {
       installId: id,
       origin: brokerOrigin(appHost),
       ...e,
+      disabled: signinDisabled,
     });
     assertBrokerOrigin(value.origin, appHost);
-    const text = JSON.stringify(value);
     assertOwnResource(reg.title, this.env);
-    await this.cf.kvPut(reg.id, registryKey(id), text);
+    await this.cf.kvPut(reg.id, registryKey(id), JSON.stringify(value));
     assertOwnResource(dir.title, this.env);
-    await this.cf.kvPut(dir.id, registryKey(id), text);
+    await this.cf.kvPut(dir.id, registryKey(id), directoryText(value));
   }
 
   /**
@@ -3980,22 +4323,20 @@ export class WfpProvisioner {
         `broker registry entry for ${id} has another origin or id`,
         "invalid_state",
       );
-    const text = JSON.stringify(
-      registryEntry({ ...entry, domains, disabled: entry.disabled === true }),
-    );
+    // 5.4: a suspended or deleting install's sign-in copy stays disabled.
+    const disabled =
+      this.o.registryDisabled === true || entry.disabled === true;
+    const text = JSON.stringify(registryEntry({ ...entry, domains, disabled }));
     if (raw !== text) {
       await this.hold();
-      await this.putEntry(id, appHost, {
-        keys: entry.keys,
-        domains,
-        disabled: entry.disabled === true,
-      });
+      await this.putEntry(id, appHost, { keys: entry.keys, domains }, disabled);
       return;
     }
-    if ((await this.cf.kvGet(dir.id, registryKey(id))) !== raw) {
+    const copy = directoryText(entry);
+    if ((await this.cf.kvGet(dir.id, registryKey(id))) !== copy) {
       assertOwnResource(dir.title, this.env);
       await this.hold();
-      await this.cf.kvPut(dir.id, registryKey(id), raw);
+      await this.cf.kvPut(dir.id, registryKey(id), copy);
     }
   }
 
@@ -4025,26 +4366,25 @@ export class WfpProvisioner {
       entry.keys.length === 1 &&
       entry.keys[0]?.kid === kid &&
       secrets.includes("BROKER_SIGNING_KEY");
-    // H-DR: the directory copy is the broker entry byte for byte. A run that
-    // stopped between the two writes finishes the copy here.
+    // H-DR: the directory copy is the broker entry but never disabled. A
+    // run that stopped between the two writes finishes the copy here.
     const copy = async (value: string) => {
       assertOwnResource(dir.title, this.env);
       await this.cf.kvPut(dir.id, registryKey(id), value);
     };
+    // 5.2 d: create writes the sign-in copy disabled; enable_signin turns it on.
     const put = (keys: RegistryEntry["keys"]) =>
-      this.putEntry(id, appHost, {
-        keys,
-        domains,
-        disabled: entry?.disabled === true,
-      });
+      this.putEntry(id, appHost, { keys, domains }, true);
     if (healthy) {
       // H-RD: stale domains (or none, from before they existed) rewrite both.
       if (JSON.stringify(entry.domains ?? null) !== JSON.stringify(domains)) {
         await this.hold();
         await put(entry.keys);
-      } else if ((await this.cf.kvGet(dir.id, registryKey(id))) !== raw) {
+      } else if (
+        (await this.cf.kvGet(dir.id, registryKey(id))) !== directoryText(entry)
+      ) {
         await this.hold();
-        await copy(raw as string);
+        await copy(directoryText(entry));
       }
       return;
     }
@@ -4072,7 +4412,11 @@ export class WfpProvisioner {
     appHost: string,
     version: string,
     again = "rerun create to resume",
+    testHooks?: boolean,
   ): Promise<void> {
+    // 5.2 f: a directFetch (or requireInstallId) also pins the id and hooks.
+    const strict =
+      this.o.requireInstallId === true || this.direct() !== undefined;
     const timeout = this.o.healthTimeoutMs ?? HEALTH_TIMEOUT_MS;
     const start = this.now();
     let last = "no answer";
@@ -4085,8 +4429,14 @@ export class WfpProvisioner {
           if (j.ok !== true) last = "ok is not true";
           else if (j.plan !== "paid") last = "plan is not paid";
           else if (j.version !== version) last = `version is not ${version}`;
-          else if (this.o.requireInstallId && j.installId !== id)
+          else if (strict && j.installId !== id)
             last = "installId does not match";
+          else if (
+            strict &&
+            testHooks !== undefined &&
+            (j.testHooks === true) !== testHooks
+          )
+            last = `testHooks is not ${testHooks}`;
           else return;
         }
       } catch (e) {

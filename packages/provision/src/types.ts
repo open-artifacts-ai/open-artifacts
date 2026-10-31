@@ -39,6 +39,12 @@ export interface UpgradeResult {
   /** A failed upgrade that could not roll back (a DO tag changed, or the previous version is refused): it stays on `to`. */
   forwardFix?: boolean;
   reason?: string;
+  /**
+   * What the install serves now failed verify_clean (design v7 5.4): the
+   * new version with no rollback, or the rollback's own check. The Workflow
+   * pauses the install and the scheduler opens prod_dirty.
+   */
+  prodDirty?: boolean;
   /** Something the operator should know about a run that still succeeded. */
   note?: string;
 }
