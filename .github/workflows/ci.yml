@@ -404,13 +404,41 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # Fast path for release-only PRs, as in e2e-shard (decided inside the job:
+      # a skipped job would count as failing the `e2e` aggregate).
+      - id: ro
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          rel=false
+          if [ -n "${BASE_SHA:-}" ] && [ -n "${HEAD_SHA:-}" ] \
+            && git show "$BASE_SHA:scripts/ci/release-only.ts" > "$RUNNER_TEMP/release-only.ts" 2> /dev/null \
+            && out=$(node --experimental-strip-types --no-warnings "$RUNNER_TEMP/release-only.ts" "$BASE_SHA" "$HEAD_SHA" 2> /dev/null) \
+            && [ "$out" = "release-only" ]; then
+            rel=true
+          fi
+          echo "release_only=$rel" >> "$GITHUB_OUTPUT"
+      - name: release-only change
+        if: ${{ steps.ro.outputs.release_only == 'true' }}
+        run: |
+          echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
+      - uses: pnpm/action-setup@v4
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+      - uses: actions/setup-node@v4
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile --filter @oa/admin...
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
       - name: Playwright matches the image
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
         run: |
           v="$(node -p "require('./apps/admin/node_modules/@playwright/test/package.json').version")"
           if [ "$v" != "1.64.1" ]; then
@@ -418,6 +446,7 @@ jobs:
             exit 1
           fi
       - run: pnpm --filter @oa/admin test:e2e
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
